@@ -67,10 +67,13 @@ export interface RuntimePlanSkillV2 {
 
 export interface RuntimePlanMcpConnectionV2 {
   id: string;
+  presetId?: string;
   displayName?: string;
   readOnlyTools?: string[];
   writeTools?: string[];
   toolArgumentConstraints?: Record<string, Record<string, string[]>>;
+  oauthScope?: string;
+  oauthAttemptId?: string;
   url: string;
   transport: 'streamable-http' | 'sse';
   authMode: 'none' | 'bearer' | 'oauth';
@@ -187,7 +190,7 @@ export interface RuntimePlanV2 {
     kind: 'slack_conversation';
     channelId: string;
     /**
-     * Trusted Slack thread for file and chart delivery. Absent means the
+     * Trusted Slack thread for artifact delivery. Absent means the
      * files post at the top level of the conversation. Never a synthetic
      * timestamp: scheduled runs set it only from the saved routine thread.
      */
@@ -223,7 +226,7 @@ export interface CompileRuntimePlanV2Input {
   connectionChoices?: readonly RuntimePlanConnectionChoiceV2[];
   connectionSelections?: readonly ConnectionAccountSelection[];
   /**
-   * Thread that `post_artifact` and `render_chart` deliver into. Defaults to
+   * Thread that artifact tools deliver into. Defaults to
    * the turn's real Slack thread. Scheduled runs must pass the saved routine
    * destination thread, or `null` for top-level channel delivery, because
    * their turn timestamp is synthetic and not a Slack thread.
@@ -388,12 +391,11 @@ export function buildRuntimePlanActivityContext(
   if (plan.repositories.length > 0) families.add('repository');
   if (plan.apiConnections.length > 0) families.add('custom_connection');
 
-  // File and chart delivery is mounted for every sandbox mode.
+  // File delivery is mounted for every sandbox mode.
   const artifact = genericSemanticDescriptor('artifact');
   descriptors.push(
     { toolName: 'post_artifact', descriptor: artifact },
     { toolName: 'complete_file_delivery', descriptor: artifact },
-    { toolName: 'render_chart', descriptor: artifact },
     { toolName: 'generate_image', descriptor: artifact },
     { toolName: 'recover_image', descriptor: artifact },
   );
@@ -787,6 +789,7 @@ function compileMcpConnections(
     .map((connection) => ({
       id: connection.id,
       displayName: connection.displayName,
+      ...(connection.presetId ? { presetId: connection.presetId } : {}),
       readOnlyTools: sortedUnique(connection.allowedTools.filter((tool) => mcpToolEffect(connection, tool) === true)),
       writeTools: sortedUnique(connection.allowedTools.filter((tool) => mcpToolEffect(connection, tool) === false)),
       ...(connection.toolPolicies ? { toolArgumentConstraints: parseMcpArgumentConstraints(Object.fromEntries(connection.allowedTools
@@ -795,6 +798,8 @@ function compileMcpConnections(
       url: connection.url,
       transport: connection.transport,
       authMode: connection.authMode,
+      ...(connection.oauthScope ? { oauthScope: connection.oauthScope } : {}),
+      ...(connection.oauthAttemptId ? { oauthAttemptId: connection.oauthAttemptId } : {}),
       headerNames: sortedUnique(connection.headerNames.map((name) => name.toLowerCase())),
       allowedTools: sortedUnique(connection.allowedTools),
       // Current Chickpea policy degrades unavailable profile MCP servers.
@@ -1187,17 +1192,20 @@ function parseMcpConnection(value: unknown, index: number): RuntimePlanMcpConnec
   const label = `mcpConnections[${index}]`;
   const record = exactRecord(value, label, [
     'id',
+    'presetId',
     'displayName',
     'readOnlyTools',
     'writeTools',
     'toolArgumentConstraints',
+    'oauthScope',
+    'oauthAttemptId',
     'url',
     'transport',
     'authMode',
     'headerNames',
     'allowedTools',
     'optional',
-  ], ['displayName', 'readOnlyTools', 'writeTools', 'toolArgumentConstraints']);
+  ], ['presetId', 'displayName', 'readOnlyTools', 'writeTools', 'toolArgumentConstraints', 'oauthScope', 'oauthAttemptId']);
   if (record.optional !== true && record.optional !== false) {
     throw new Error(`Runtime plan ${label}.optional must be boolean.`);
   }
@@ -1212,12 +1220,18 @@ function parseMcpConnection(value: unknown, index: number): RuntimePlanMcpConnec
   }
   return {
     id: boundedString(record.id, `${label}.id`, 1, 120),
+    ...(record.presetId !== undefined
+      ? { presetId: boundedString(record.presetId, `${label}.presetId`, 1, 128) } : {}),
     ...(record.displayName !== undefined
       ? { displayName: boundedString(record.displayName, `${label}.displayName`, 1, 240) } : {}),
     ...(readOnlyTools !== undefined ? { readOnlyTools } : {}),
     ...(writeTools !== undefined ? { writeTools } : {}),
     ...(record.toolArgumentConstraints !== undefined
       ? { toolArgumentConstraints: parseMcpArgumentConstraints(record.toolArgumentConstraints, allowedTools) } : {}),
+    ...(record.oauthScope !== undefined
+      ? { oauthScope: boundedString(record.oauthScope, `${label}.oauthScope`, 1, 4096) } : {}),
+    ...(record.oauthAttemptId !== undefined
+      ? { oauthAttemptId: boundedString(record.oauthAttemptId, `${label}.oauthAttemptId`, 1, 192) } : {}),
     url: httpsUrl(record.url, `${label}.url`),
     transport: oneOf(
       record.transport,

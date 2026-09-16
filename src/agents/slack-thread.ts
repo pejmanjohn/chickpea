@@ -70,6 +70,10 @@ import {
   resolveRuntimePlanMcpConnections,
   resolveProfileMcpTools,
 } from '../config/profile-mcp.ts';
+import {
+  projectMcpPolicyInstructions,
+} from '../config/mcp-policy-instructions.ts';
+import { isMetaAdsMcpConnection } from '../config/meta-ads-policy.ts';
 import { resolveMcpOAuthAccessToken } from '../config/mcp-oauth.ts';
 import { resolveProfileSkills } from '../config/profile-skills.ts';
 import {
@@ -155,7 +159,6 @@ import {
   type SlackArtifactStageInput,
   type SlackArtifactStageOutcome,
 } from '../sandbox/artifact-tool.ts';
-import { createChartArtifactTool, RENDER_CHART_TOOL_NAME } from '../sandbox/chart-tool.ts';
 import {
   createImageArtifactTool,
   createRecoverImageTool,
@@ -945,6 +948,17 @@ export async function createSlackAgentRuntime(
         ],
         ...(input.actorMembershipId
           ? {
+              resolveCurrentConnection: async (connectionAccountId: string) => {
+                if (!(await isActiveConnectionActor({
+                  identity: getIdentityStore(env), workspaceId,
+                  actorMembershipId: input.actorMembershipId!,
+                }))) return undefined;
+                const current = await resolveEffectiveConnectionAccounts({
+                  config: store, workspaceId, agentId: config.agent.id,
+                  actorMembershipId: input.actorMembershipId!,
+                });
+                return projectEffectiveMcpConnections(current).find((server) => server.id === connectionAccountId);
+              },
               resolveBearerCredential: (connectionAccountId: string) =>
                 resolveConnectionSecretForInvocation({
                   config: store,
@@ -1048,8 +1062,8 @@ export async function createSlackAgentRuntime(
           : { attached: false, reason: 'missing-scope' };
     };
     // Every sandbox kind delivers files: the container freezes a bounded copy
-    // through the shell, the in-memory sandbox reads its bytes directly, and
-    // charts are rendered in-process, so no Agent depends on the coding tier.
+    // through the shell and the in-memory sandbox reads its bytes directly,
+    // so file delivery does not depend on the coding tier.
     const artifactCapability = createWorkspaceArtifactCapability({
       sandbox,
       sandboxKind: sandboxSelection,
@@ -1062,7 +1076,6 @@ export async function createSlackAgentRuntime(
       ...mcpTools,
       ...managedTools,
       artifactCapability.tool,
-      createChartArtifactTool({ channel: channelId, threadTs: artifactThreadTs, stageArtifact }),
     ];
   }
 
@@ -1087,7 +1100,6 @@ export async function createSlackAgentRuntime(
       const artifact = genericSemanticDescriptor('artifact');
       activityDescriptors.push(
         { toolName: POST_ARTIFACT_TOOL_NAME, descriptor: artifact },
-        { toolName: RENDER_CHART_TOOL_NAME, descriptor: artifact },
       );
     }
     registerActivityContext(id, buildSemanticActivityContext(activityDescriptors, [
@@ -1427,12 +1439,21 @@ export function useRuntimePlanAgent(
   )) {
     useSkill(skill);
   }
-  const restrictions = plan.mcpConnections.filter((connection) =>
-    Object.keys(connection.toolArgumentConstraints ?? {}).length > 0);
+  const { restrictions, metaHelperScopes, metaWriteScopes } = projectMcpPolicyInstructions(plan.mcpConnections);
   if (restrictions.length > 0) {
-    useInstruction(`The owner restricts these connection tool inputs. Use only the listed values; do not retry disallowed inputs: ${JSON.stringify(restrictions.map((connection) => ({
-      connection: connection.id, tools: connection.toolArgumentConstraints,
-    })))}`);
+    useInstruction(`The owner restricts these connection tool inputs. Use only the listed values; do not retry disallowed inputs: ${JSON.stringify(restrictions)}`);
+  }
+  if (metaHelperScopes.length > 0) {
+    useInstruction(`The owner selected these Meta Ads helper tools with an approved-account scope: ${JSON.stringify(metaHelperScopes)}. The scope is enforced by Chickpea policy and is not a provider input. Do not invent or send an ad-account argument. Use only helper metadata inputs declared by the tool, including reporting field names when requested. Account discovery returns only approved accounts; field context provides global reporting-field metadata.`);
+  }
+  if (metaWriteScopes.length > 0) {
+    useInstruction(`The owner restricts these Meta Ads audience tools to the listed ad accounts: ${JSON.stringify(metaWriteScopes)}. Chickpea verifies the target audience's owner before sending changes. This account scope is internal policy, not a provider input. Supply the actual audience ID using the tool's declared schema; do not invent an ad-account argument.`);
+  }
+  if (plan.mcpConnections.some(isMetaAdsMcpConnection)) {
+    useInstruction('For Meta Ads replies, use campaign and ad-account names as the primary identifiers. Include IDs only when the user asks for them or when needed to distinguish entities with the same name. Format these names and IDs as ordinary text or bold text, not inline code. Describe outcomes in user language. Do not mention tool names or actions that were not taken unless the user asks. If a requested write fails or makes no change, say so plainly and do not imply success.');
+  }
+  if (plan.mcpConnections.some((connection) => isMetaAdsMcpConnection(connection) && connection.writeTools?.length)) {
+    useInstruction('Selected Meta Ads write tools can change ads and audiences. Use them only for changes the user requested. Before activating ads or increasing spend, establish the exact ad account, entities, and budget the user authorized; ask for missing authorization. Campaign, ad set, and ad creation leave them paused. Activation starts spending; do not activate merely because creation succeeded. For ads_update_entity, include only fields the user requested and preserve the existing status during budget, name, targeting, or other ordinary edits. Never pause an entity to stage another edit. If the user explicitly requests a pause, make it a separate status-only update. After a successful entity write, read back both the requested values and status before reporting success. If the status changed unexpectedly, report it and do not automatically reactivate. Do not retry an uncertain write blindly: first read back whether it already happened.');
   }
   for (const connection of resolveRuntimePlanMcpConnections(
     plan.agentId,
@@ -1533,7 +1554,7 @@ function createRuntimePlanSandbox(
 ): SandboxFactory {
   if (plan.sandbox.mode === 'bash') {
     return {
-      async createSessionEnv(options) {
+      async createSandbox(options) {
         const env = await resolveAgentPlatformEnv();
         await prepareRuntimePlanModel(plan, env);
         // Native plans grant only their frozen connector scopes. Operator-wide
@@ -1541,19 +1562,19 @@ function createRuntimePlanSandbox(
         // incidental grant when any connection is bound. Empty plans need no
         // account or egress setting reads.
         if (!plan.apiConnections.length) {
-          return bash(() => new Bash({ fs: new InMemoryFs() })).createSessionEnv(options);
+          return bash(() => new Bash({ fs: new InMemoryFs() })).createSandbox(options);
         }
         const connections = await resolveRuntimePlanApiConnections(plan, env);
         const sandbox = createConnectorScopedBash(
           { mode: 'allowlist', domains: [] }, isCloudflareTarget(),
           mergeRepositoryAndApiConnectors([], connections.flatMap(({ connectors }) => connectors)),
         );
-        return sandbox.createSessionEnv(options);
+        return sandbox.createSandbox(options);
       },
     };
   }
   return {
-    async createSessionEnv({ id }) {
+    async createSandbox({ id }) {
       const env = await resolveAgentPlatformEnv();
       const current = await requireLiveFrozenAgent(getConfigStore(env), plan.agentId);
       const agent = projectRuntimePlanAgent(plan, current);
@@ -1587,7 +1608,7 @@ function createRuntimePlanSandbox(
         ...(sandboxConversationKey ? { sandboxConversationKey } : {}),
       });
       if (!runtime.sandbox) throw new Error('RuntimePlanV2 sandbox is unavailable.');
-      return runtime.sandbox.createSessionEnv({ id });
+      return runtime.sandbox.createSandbox({ id });
     },
   };
 }
@@ -1678,7 +1699,7 @@ function runtimeRepositoryMatches(
 }
 
 /**
- * Destination-bound file and chart staging for hook-mounted runtime plans.
+ * Destination-bound artifact staging for hook-mounted runtime plans.
  * Files follow the frozen artifact destination, not the conversation key: a
  * scheduled run's conversation thread is a synthetic due-time stamp and a DM
  * session key is `dm`, neither of which Slack accepts as thread_ts. Staging
@@ -1777,7 +1798,6 @@ export function createRuntimePlanArtifactTools(
   return [
     createWorkspaceArtifactTool({ ...binding, sandboxKind: plan.sandbox.mode }, options.fileCompletion?.deliver),
     ...(options.fileCompletion ? [options.fileCompletion.tool({ ...binding, sandboxKind: plan.sandbox.mode })] : []),
-    ...(options.fileCompletion?.repairing ? [] : [createChartArtifactTool(binding)]),
     ...(!options.fileCompletion?.repairing && imageOptions
       ? [createImageArtifactTool(imageOptions), createRecoverImageTool(imageOptions)] : []),
   ];

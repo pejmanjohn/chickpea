@@ -50,6 +50,8 @@ export interface RoutineRuntimeAccess {
   actorSlackUserId?: string;
   authorityReceiptId?: string;
   effectiveConnections?: EffectiveConnectionAccount[];
+  /** One-release bridge for v0.1.19 runs whose stored fence used the catalog revision. */
+  legacyAccessHashForCatalogRevision?: (catalogRevision: string | undefined) => string;
 }
 
 export class RoutineRuntimeError extends Error {
@@ -197,8 +199,8 @@ export async function resolveRoutineRuntimeAccess(
         'The direct-message destination is no longer eligible.',
       );
     }
-    const accessHash = hashRoutineValue(JSON.stringify({
-      config: computeSnapshotHash(config),
+    const directAccessHash = (configHash: string) => hashRoutineValue(JSON.stringify({
+      config: configHash,
       workspaceId: routine.workspaceId,
       actorSlackUserId,
       actorMembershipId: authority.reference.runsAsMembershipId,
@@ -207,9 +209,13 @@ export async function resolveRoutineRuntimeAccess(
       destinationKind: routine.destination.kind,
       destinationBindingDigest: authority.reference.destinationBindingDigest,
     }));
+    const accessHash = directAccessHash(routineConfigHash(config));
     return {
       config,
       accessHash,
+      legacyAccessHashForCatalogRevision: (catalogRevision) => directAccessHash(
+        computeSnapshotHash(configWithCatalogRevision(config, catalogRevision)),
+      ),
       ...(botToken ? { botToken } : {}),
       botUserId,
       client: directClient,
@@ -281,9 +287,9 @@ export async function resolveRoutineRuntimeAccess(
     }
   }
 
-  const accessHash = hashRoutineValue(
+  const channelAccessHash = (configHash: string) => hashRoutineValue(
     JSON.stringify({
-      config: computeSnapshotHash(config),
+      config: configHash,
       workspaceId: routine.workspaceId,
       actorSlackUserId,
       actorMembershipId: authority?.reference.runsAsMembershipId ?? null,
@@ -298,9 +304,13 @@ export async function resolveRoutineRuntimeAccess(
       channelShared: facts.shared || facts.externallyShared || facts.organizationShared,
     }),
   );
+  const accessHash = channelAccessHash(routineConfigHash(config));
   return {
     config,
     accessHash,
+    legacyAccessHashForCatalogRevision: (catalogRevision) => channelAccessHash(
+      computeSnapshotHash(configWithCatalogRevision(config, catalogRevision)),
+    ),
     ...(botToken ? { botToken } : {}),
     botUserId,
     ...(client ? { client } : {}),
@@ -314,6 +324,25 @@ export async function resolveRoutineRuntimeAccess(
         }
       : {}),
   };
+}
+
+function configWithCatalogRevision(
+  config: EffectiveSlackConfig,
+  catalogRevision: string | undefined,
+): EffectiveSlackConfig {
+  const { catalogRevision: _currentCatalogRevision, ...currentAttribution } = config.modelAttribution;
+  return {
+    ...config,
+    modelAttribution: {
+      ...currentAttribution,
+      ...(catalogRevision === undefined ? {} : { catalogRevision }),
+    },
+  };
+}
+
+/** Catalog hydration provenance is frozen in the runtime route, not authority. */
+function routineConfigHash(config: EffectiveSlackConfig): string {
+  return computeSnapshotHash(configWithCatalogRevision(config, undefined));
 }
 
 async function conversationFromClient(client: WebClient, channelId: string) {

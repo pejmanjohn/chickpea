@@ -39,9 +39,9 @@ The public V0 CLI is intentionally narrower than the internal runner protocol. `
 That coordinator does not ship in V0. Without it, doctor and deterministic checks may run, but live mutation is blocked. After U0 and V1, claim clean `cobalt` normally and exclusively for one protected origin/main Computer Use smoke, clean it, release it, then return `cobalt` to ordinary branch-lane use. If another task owns the claim, wait for release. Do not add a persistent qualification mode or dual-role registry state.
 
 The incremental `qa/live/coordinator.ts` core now binds the existing runner to
-one-use challenges, certified window captures, exact cleanup, postflight, and
-the host UI mutex. Observation polling releases that mutex between visible
-checks, retains the target lock, and has a bounded deadline. Its deterministic
+one-use challenges, certified window captures, exact cleanup, and postflight.
+Observation polling retains the target lock and has a bounded deadline while
+independent tasks continue in their own browser tabs. Its deterministic
 tests are not live qualification. Explicit `resume()` now reattests the original
 identity, resumes interrupted actions through visible readback, and resolves
 interrupted cleanup against its existing intent. The private Computer Use driver,
@@ -49,7 +49,7 @@ operator entrypoint, and evidence packaging must still be wired and verified bef
 the first live smoke. The public CLI continues to return `COORDINATOR_REQUIRED`.
 Do not feed hand-authored assertion tokens to the core and call that a live run.
 
-The coordinator remains verifier-owned when implemented. It acquires the per-target lock, sequences variants, journals one-use challenges and content-free receipts, packages evidence, performs exact cleanup bookkeeping, and owns the host-local UI mutex. Codex carries out scored product actions and observations as a real user through Computer Use in the actual Slack and Chickpea Admin interfaces. It must not substitute direct product APIs, database reads, hidden HTTP observers, or an API actor for that journey.
+The coordinator remains verifier-owned when implemented. It acquires the per-target lock, sequences variants, journals one-use challenges and content-free receipts, packages evidence, and performs exact cleanup bookkeeping. Codex carries out scored product actions and observations as a real user through Computer Use in its own tabs in the actual Slack and Chickpea Admin interfaces. It must not substitute direct product APIs, database reads, hidden HTTP observers, or an API actor for that journey.
 
 ## Public and private inputs
 
@@ -140,15 +140,18 @@ A cleanup intent without a receipt also requires readback, never another
 cleanup click. Exact visible readback may resolve it without inventing a
 receipt for the interrupted action. An ambiguous readback remains unresolved.
 
-There is no host-wide run lock. Different targets may run concurrently on one host. The coordinator uses one host-local Computer Use mutex only while it executes a semantic UI action or input window. A waiting human gate releases that mutex and reserves only its actor/browser. Reacquire the mutex for the short confirmation interaction, then release it after the visible page advances. Another run needing the same browser bounded-waits and becomes operationally `blocked`, never a product failure. Captures are window-scoped; never capture during secret entry or before the page advances. Environment commands and lock/journal bookkeeping on other targets do not take the UI mutex.
+Different targets may run concurrently on one host using task-owned tabs, including
+tabs in the same browser profile. The coordinator takes no host-wide or browser-wide
+UI lock. Follow [browser ownership](../../qa/live/operator/hosts.md): do not manipulate
+another task's tabs, and coordinate only operations that affect an actual shared
+resource. Environment claims and expensive-check reservations still apply.
 
-`HostUiMutex.clearStoppedOwner(runId, browserAlias)` is an explicit local crash
-recovery primitive, never an automatic takeover. It refuses live or foreign-host
-owners and removes only matching stopped-owner interaction/reservation files.
-It does not release a target lock or resolve a product mutation. After recovery,
-inspect the actual browser and leave any interrupted secret-entry page before
-capturing evidence or starting another journey. A resumed gate reattests the
-target before reacquiring its UI window.
+A waiting human gate keeps its tab with the owning task. `UiWindow.pause()` stops
+that operation from certifying captures; `resume()` reattests the target before
+capture can continue. Captures remain window-scoped; never capture during secret
+entry or before the page advances. After interruption, inspect the task's actual
+tab and reconcile its original action before continuing. Existing UI lock files
+and lease receipts belong to their original owners and are left untouched.
 
 ## Before a live run
 
@@ -183,7 +186,7 @@ Keep the accepted content-free summary. Delete superseded private run directorie
 
 ## When to add more infrastructure
 
-Keep the per-target file lock while runs are attended and single-host for that target. Different claimed targets may run in parallel without sharing a lock; only their Computer Use action/input windows serialize. Design a remote lease with fencing only before same-target multi-host, same-target parallel, or unattended operation. Implement the verifier-owned UI coordinator only after the environment can produce the target, claim, and attestation contracts above. Do not put resolved bindings in the OSS package.
+Keep the per-target file lock while runs are attended and single-host for that target. Different claimed targets may run in parallel using their own browser tabs. Coordinate only operations that affect an actual shared UI resource. Design a remote lease with fencing only before same-target multi-host, same-target parallel, or unattended operation. Implement the verifier-owned UI coordinator only after the environment can produce the target, claim, and attestation contracts above. Do not put resolved bindings in the OSS package.
 
 First-install automation is a continuation module. Phase 1 starts from the two provisioned color targets and scored verification begins at `LC01-V1-create-welcome`. Do not create an installation runner or score setup APIs as product proof.
 

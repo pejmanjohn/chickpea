@@ -2,9 +2,21 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 
-import { resolveConnectorCredential } from '../src/config/connector-secrets.ts';
+import {
+  resolveConnectorCredential,
+} from '../src/config/connector-secrets.ts';
+import { connectionAccountOAuthRef } from '../src/config/api-oauth.ts';
 import type { AuthPrincipal } from '../src/auth/types.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
+import {
+  META_ADS_OAUTH_DEFAULT_SCOPE,
+  META_ADS_OAUTH_MANAGEMENT_SCOPE,
+  saveConfiguredMcpOAuthClient,
+} from '../src/config/mcp-oauth-clients.ts';
+import {
+  mcpOAuthSettingKeys,
+  type StartMcpOAuthInput,
+} from '../src/config/mcp-oauth.ts';
 import {
   describeProviderKeySources,
   PROVIDER_KEY_SETTING_KEYS,
@@ -180,7 +192,7 @@ test('the initiating member claims one authenticated browser and completes an ex
     const cookie = exchanged.headers.get('set-cookie')!;
     assert.match(cookie, /HttpOnly/);
     assert.match(cookie, /SameSite=Lax/);
-    assert.match(cookie, /Path=\/setup\//);
+    assert.match(cookie, /Path=\/;/);
     assert.equal((await management.getSetup(setupId))?.tokenDigest, undefined);
 
     const replay = await app.request(`http://localhost/setup/${setupId}/exchange`, {
@@ -876,6 +888,335 @@ test('legacy Agent OAuth setup rechecks current edit authority before start and 
     assert.equal(deniedCallback.status, 403);
     assert.equal(completeCalls, 0);
     assert.equal((await management.getSetup(setupId))?.status, 'authorizing');
+  } finally {
+    identity.close();
+    config.close();
+    management.close();
+    settings.close();
+  }
+});
+
+test('Meta Ads management setup uses the canonical callback and requires explicit scoped access', async () => {
+  const identity = new SqliteIdentityStore(':memory:', { now: () => START });
+  const owner = await createSlackOwner(identity, { now: START, suffix: 'meta-ads-review' });
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const management = new SqliteManagementStore(':memory:');
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    await identity.updateOrganizationAuth({
+      organizationId: owner.membership.organizationId,
+      authMode: 'slack_active',
+      canonicalAdminOrigin: 'https://admin.example.com',
+    });
+    const authControl = await identity.getAuthControl();
+    assert.ok(authControl);
+    await identity.updateAuthControl({
+      expectedRevision: authControl.revision,
+      canonicalAdminOrigin: 'https://admin.example.com',
+    });
+    const agent = await config.createAgent({
+      id: 'agent_meta_ads',
+      name: 'Campaign Analyst',
+      creatorMembershipId: owner.membership.id,
+      editPolicy: 'creator_and_admins',
+      instructions: 'Review campaigns.',
+      enabled: true,
+      skills: [],
+      mcpServers: [],
+      apiConnections: [],
+      repositories: [],
+    });
+    let setupSequence = 0;
+    const service = new WorkspaceManagementService({
+      identity,
+      config,
+      management,
+      setupBaseUrl: 'http://localhost',
+      now: () => START,
+      randomId: () => `catalog_${++setupSequence}`,
+      randomCapability: () => 'm'.repeat(43),
+    });
+    const prepared = await service.prepareConnectorSetup({
+      userId: owner.user.id,
+      membershipId: owner.membership.id,
+      organizationId: owner.membership.organizationId,
+      origin: {
+        kind: 'slack',
+        workspaceId: owner.user.slackTeamId,
+        channelId: 'C_META',
+        threadTs: '1800100000.000300',
+        agentId: agent.id,
+      },
+    }, { agentId: agent.id, connector: 'Meta Ads', ownerKind: 'member' });
+    const setupId = prepared.setupOperationId;
+    assert.ok(setupId);
+    const startInputs: StartMcpOAuthInput[] = [];
+    let completeCalls = 0;
+    const app = createManagementSetupRoutes({
+      management,
+      config,
+      settings,
+      identity,
+      now: () => START,
+      authenticatePrincipal: async () => browserPrincipal(owner),
+      startMcpOAuth: async (input) => {
+        startInputs.push(input);
+        return { authorizationUrl: new URL('https://www.facebook.com/dialog/oauth'), state: 'state' };
+      },
+      completeMcpOAuth: async () => {
+        completeCalls += 1;
+        const [account] = await config.listConnectionAccounts(owner.user.slackTeamId);
+        assert.ok(account?.policy.kind === 'mcp' && account.policy.oauthAttemptId);
+        return {
+          ref: connectionAccountOAuthRef(account.id),
+          accountRevision: account.revision,
+          oauthAttemptId: account.policy.oauthAttemptId,
+          authorizationAuthority: {
+            organizationId: owner.membership.organizationId,
+            workspaceId: owner.user.slackTeamId,
+            membershipId: owner.membership.id,
+            agentId: agent.id,
+            ownerKind: 'member',
+          },
+        };
+      },
+      resolveMcpOAuthToken: async () => 'access-token',
+      discoverMcp: async () => ({
+        tools: [{
+          name: 'ads_get_ad_entities',
+          description: 'Review campaigns for an ad account.',
+          inputSchema: {
+            accountFields: [{ name: 'ad_account_id', type: 'string', required: true }],
+            ambiguous: false,
+            fingerprint: 'a'.repeat(64),
+            propertyNames: ['ad_account_id'],
+          },
+        }, {
+          name: 'ads_create_campaign',
+          description: 'Create a campaign in a paused state.',
+          inputSchema: {
+            accountFields: [{ name: 'ad_account_id', type: 'string', required: true }],
+            ambiguous: false,
+            fingerprint: 'c'.repeat(64),
+            propertyNames: ['ad_account_id'],
+          },
+        }, {
+          name: 'ambiguous_tool',
+          inputSchema: {
+            accountFields: [],
+            ambiguous: true,
+            fingerprint: 'b'.repeat(64),
+            propertyNames: [],
+          },
+        }],
+      }),
+      deliverReceipt: async () => ({ deliveryRef: 'slack:C_META:receipt.1' }),
+    });
+    const exchanged = await app.request(`http://localhost/setup/${setupId}/exchange`, {
+      method: 'POST',
+      headers: { origin: 'http://localhost', 'content-type': 'application/json' },
+      body: JSON.stringify({ capability: 'm'.repeat(43) }),
+    });
+    assert.equal(exchanged.status, 200, await exchanged.clone().text());
+    const cookie = exchanged.headers.get('set-cookie')!;
+    assert.match(cookie, /Path=\/;/);
+    const setupPage = await app.request(`http://localhost/setup/${setupId}`, { headers: { cookie } });
+    const setupHtml = await setupPage.text();
+    assert.match(setupHtml, /name="access" value="reporting" checked/);
+    assert.match(setupHtml, /name="access" value="editing"/);
+
+    const missingConfiguration = await app.request(`http://localhost/setup/${setupId}/authorize`, {
+      method: 'POST',
+      headers: {
+        accept: 'application/json',
+        'x-requested-with': 'chickpea-setup',
+        origin: 'http://localhost',
+        cookie,
+        'content-type': 'application/x-www-form-urlencoded',
+      },
+      body: 'ownerKind=member&access=editing',
+    });
+    assert.equal(missingConfiguration.status, 422);
+    assert.equal((await missingConfiguration.json() as { error: string }).error, 'oauth_configuration_required');
+    assert.deepEqual(await config.listConnectionAccounts(owner.user.slackTeamId), []);
+    assert.equal(startInputs.length, 0);
+
+    await saveConfiguredMcpOAuthClient(
+      'https://mcp.facebook.com/ads',
+      { clientId: '123456789' },
+      settings,
+      { randomId: () => 'configured_generation_1' },
+    );
+
+    const authorized = await app.request(`http://localhost/setup/${setupId}/authorize`, {
+      method: 'POST',
+      headers: {
+        accept: 'application/json',
+        'x-requested-with': 'chickpea-setup',
+        origin: 'http://localhost',
+        cookie,
+        'content-type': 'application/x-www-form-urlencoded',
+      },
+      body: 'ownerKind=member&access=editing',
+    });
+    assert.equal(authorized.status, 200, await authorized.clone().text());
+    assert.equal(startInputs[0]?.callbackUrl, 'https://admin.example.com/oauth/callback');
+    assert.equal(startInputs[0]?.setupOperationId, setupId);
+    assert.equal(startInputs[0]?.scope, META_ADS_OAUTH_MANAGEMENT_SCOPE);
+    const [pending] = await config.listConnectionAccounts(owner.user.slackTeamId);
+    assert.equal(pending?.lifecycle, 'pending');
+    assert.equal(pending?.policy.kind === 'mcp' ? pending.policy.oauthScope : undefined, META_ADS_OAUTH_MANAGEMENT_SCOPE);
+    assert.deepEqual(pending?.policy.kind === 'mcp' ? pending.policy.allowedTools : undefined, []);
+
+    assert.ok(pending && pending.policy.kind === 'mcp');
+    const pendingSetup = await management.getSetup(setupId);
+    const pendingBinding = await config.getAgentConnectionBindingForAccount(pending.id);
+    assert.equal(pendingSetup?.status, 'authorizing');
+    assert.equal(pending.providerId, pendingSetup?.target.presetId);
+    assert.equal(pending.workspaceId, owner.user.slackTeamId);
+    assert.equal(pending.ownerMembershipId, owner.membership.id);
+    assert.equal(pendingBinding?.agentId, agent.id);
+    const pendingResume = await app.request(`http://localhost/setup/${setupId}`, {
+      headers: { cookie },
+    });
+    assert.equal(pendingResume.status, 200);
+    assert.match(await pendingResume.text(), /Connect Meta Ads/);
+    const ref = connectionAccountOAuthRef(pending.id);
+    const state = Buffer.from(JSON.stringify({
+      a: ref.agentId,
+      c: ref.connectionId,
+      n: 'management-continuation',
+    })).toString('base64url');
+    await settings.setSetting(mcpOAuthSettingKeys(ref)[1], JSON.stringify({
+      state,
+      expiresAt: START + 60_000,
+      serverUrl: 'https://mcp.facebook.com/ads',
+      callbackUrl: 'https://admin.example.com/oauth/callback',
+      authorizationServerUrl: 'https://www.facebook.com/ads',
+      metadata: {
+        issuer: 'https://www.facebook.com/ads',
+        authorization_endpoint: 'https://www.facebook.com/ads/authorize',
+        token_endpoint: 'https://www.facebook.com/ads/token',
+        response_types_supported: ['code'],
+      },
+      resource: 'https://mcp.facebook.com/ads',
+      clientInformation: { client_id: '123456789' },
+      codeVerifier: 'verifier',
+      setupOperationId: setupId,
+    }));
+    const callback = await app.request(
+      `https://admin.example.com/oauth/callback?state=${encodeURIComponent(state)}&code=accepted`,
+      { headers: { cookie } },
+    );
+    assert.equal(callback.status, 303, `${await callback.clone().text()} completeCalls=${completeCalls}`);
+    assert.equal(callback.headers.get('location'), `/setup/${setupId}?review=1`);
+
+    const review = await app.request(`http://localhost/setup/${setupId}?review=1`, {
+      headers: { cookie },
+    });
+    assert.equal(review.status, 200);
+    const reviewHtml = await review.text();
+    assert.match(reviewHtml, /Choose what Campaign Analyst can use/);
+    assert.match(reviewHtml, /ads_get_ad_entities/);
+    assert.match(reviewHtml, /Not yet supported with ad account restrictions/);
+    assert.ok(reviewHtml.indexOf('Ad accounts') < reviewHtml.indexOf('Tools'));
+    assert.match(reviewHtml, /Reporting access/);
+    assert.match(reviewHtml, /ads_create_campaign/);
+    assert.match(reviewHtml, /May change ads/);
+    assert.match(reviewHtml, /Create a paused campaign/);
+    assert.doesNotMatch(reviewHtml, /name="tool:ads_create_campaign" checked/);
+    assert.equal((await management.getSetup(setupId))?.status, 'authorizing');
+
+    const [editingAccount] = await config.listConnectionAccounts(owner.user.slackTeamId);
+    assert.ok(editingAccount?.policy.kind === 'mcp');
+    if (!editingAccount || editingAccount.policy.kind !== 'mcp') throw new Error('expected MCP');
+    const reportingAccount = await config.putConnectionAccount({
+      ...editingAccount,
+      policy: { ...editingAccount.policy, oauthScope: META_ADS_OAUTH_DEFAULT_SCOPE },
+    }, editingAccount.revision);
+    assert.equal(reportingAccount.policy.kind, 'mcp');
+    if (reportingAccount.policy.kind !== 'mcp') throw new Error('expected MCP');
+    const reportingReview = await app.request(`http://localhost/setup/${setupId}?review=1`, {
+      headers: { cookie },
+    });
+    assert.match(await reportingReview.text(), /Reconnect with Reporting and editing access to select this tool/);
+    const rejectedWrite = await app.request(`http://localhost/setup/${setupId}/mcp/access`, {
+      method: 'POST',
+      headers: {
+        origin: 'http://localhost',
+        cookie,
+        'content-type': 'application/x-www-form-urlencoded',
+      },
+      body: 'tool%3Aads_create_campaign=on&adAccountIds=act_123456789',
+    });
+    assert.equal(rejectedWrite.status, 422);
+    assert.match(await rejectedWrite.text(), /Reconnect with Reporting and editing access/);
+    await config.putConnectionAccount({
+      ...reportingAccount,
+      policy: { ...reportingAccount.policy, oauthScope: META_ADS_OAUTH_MANAGEMENT_SCOPE },
+    }, reportingAccount.revision);
+
+    const saved = await app.request(`http://localhost/setup/${setupId}/mcp/access`, {
+      method: 'POST',
+      headers: {
+        origin: 'http://localhost',
+        cookie,
+        'content-type': 'application/x-www-form-urlencoded',
+      },
+      body: 'tool%3Aads_get_ad_entities=on&tool%3Aads_create_campaign=on&adAccountIds=act_123456789',
+    });
+    assert.equal(saved.status, 303, await saved.clone().text());
+    assert.equal((await management.getSetup(setupId))?.status, 'completed');
+    const [ready] = await config.listConnectionAccounts(owner.user.slackTeamId);
+    assert.deepEqual(ready?.policy.kind === 'mcp' ? ready.policy.allowedTools : undefined,
+      ['ads_get_ad_entities', 'ads_create_campaign']);
+    assert.deepEqual(
+      ready?.policy.kind === 'mcp'
+        ? ready.policy.toolPolicies?.ads_get_ad_entities?.argumentConstraints
+        : undefined,
+      { ad_account_id: ['act_123456789'] },
+    );
+    const binding = await config.getAgentConnectionBindingForAccount(ready!.id);
+    assert.deepEqual(binding?.allowedCapabilities, []);
+
+    const linearPrepared = await service.prepareConnectorSetup({
+      userId: owner.user.id,
+      membershipId: owner.membership.id,
+      organizationId: owner.membership.organizationId,
+      origin: {
+        kind: 'slack',
+        workspaceId: owner.user.slackTeamId,
+        channelId: 'C_META',
+        threadTs: '1800100000.000301',
+        agentId: agent.id,
+      },
+    }, { agentId: agent.id, connector: 'Linear', ownerKind: 'member' });
+    const linearSetupId = linearPrepared.setupOperationId;
+    assert.ok(linearSetupId);
+    const linearExchange = await app.request(`http://localhost/setup/${linearSetupId}/exchange`, {
+      method: 'POST',
+      headers: { origin: 'http://localhost', 'content-type': 'application/json' },
+      body: JSON.stringify({ capability: 'm'.repeat(43) }),
+    });
+    assert.equal(linearExchange.status, 200);
+    const linearCookie = linearExchange.headers.get('set-cookie')!;
+    const linearAuthorize = await app.request(`http://localhost/setup/${linearSetupId}/authorize`, {
+      method: 'POST',
+      headers: {
+        accept: 'application/json',
+        'x-requested-with': 'chickpea-setup',
+        origin: 'http://localhost',
+        cookie: linearCookie,
+        'content-type': 'application/x-www-form-urlencoded',
+      },
+      body: 'ownerKind=member',
+    });
+    assert.equal(linearAuthorize.status, 200, await linearAuthorize.clone().text());
+    const linearResume = await app.request(`http://localhost/setup/${linearSetupId}`, {
+      headers: { cookie: linearCookie },
+    });
+    assert.equal(linearResume.status, 200);
+    assert.match(await linearResume.text(), /Connect Linear/);
   } finally {
     identity.close();
     config.close();

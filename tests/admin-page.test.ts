@@ -8,6 +8,10 @@ import {
   CONNECTION_CATALOG_PRESETS,
 } from '../src/config/presets.ts';
 import { createDemoStarterAgent } from '../src/config/seed.ts';
+import {
+  META_ADS_OAUTH_DEFAULT_SCOPE,
+  META_ADS_OAUTH_MANAGEMENT_SCOPE,
+} from '../src/config/mcp-oauth-clients.ts';
 
 test('connection removal retries a schedule cleanup race once', () => {
   const page = renderAdminPage();
@@ -450,6 +454,15 @@ function runAdminPageHarness(
         catalog?: Array<Record<string, unknown>>;
       };
     };
+    connectionAccountsFetch?: (
+      agentId: string,
+      call: number,
+    ) => Promise<FakeResponse>;
+    connectionToolsPutFetch?: (
+      agentId: string,
+      connectionId: string,
+      body: Record<string, unknown>,
+    ) => Promise<FakeResponse>;
     composioSettings?: Record<string, unknown>;
     composioSettingsError?: {
       status: number;
@@ -542,8 +555,13 @@ function runAdminPageHarness(
   skillBrowseHostUpdates(): number;
   skillBrowseHtml(): string;
   skillBrowseScrollTop(): number;
-    mcpTestPosts: Array<Record<string, unknown>>;
+  mcpTestPosts: Array<Record<string, unknown>>;
   connectionAccountPosts: Array<{ agentId: string; body: Record<string, unknown> }>;
+  connectionToolsPuts: Array<{
+    agentId: string;
+    connectionId: string;
+    body: Record<string, unknown>;
+  }>;
   managedAuthorizationPosts: Array<{ agentId: string; body: Record<string, unknown> }>;
   composioSetupPosts: Array<Record<string, unknown>>;
   composioRetryCalls(): number;
@@ -763,6 +781,11 @@ function runAdminPageHarness(
   const settingsGetCalls: string[] = [];
   const mcpTestPosts: Array<Record<string, unknown>> = [];
   const connectionAccountPosts: Array<{ agentId: string; body: Record<string, unknown> }> = [];
+  const connectionToolsPuts: Array<{
+    agentId: string;
+    connectionId: string;
+    body: Record<string, unknown>;
+  }> = [];
   const managedAuthorizationPosts: Array<{ agentId: string; body: Record<string, unknown> }> = [];
   const composioSetupPosts: Array<Record<string, unknown>> = [];
   let composioRetryCalls = 0;
@@ -1589,11 +1612,30 @@ function runAdminPageHarness(
         lifecycle: 'revoked',
       } }));
     }
+    const connectionToolsMatch = path.match(
+      /^\/admin\/api\/agents\/([^/]+)\/connections\/([^/]+)\/mcp\/tools$/,
+    );
+    if (connectionToolsMatch && method === 'PUT') {
+      const agentId = decodeURIComponent(connectionToolsMatch[1] as string);
+      const connectionId = decodeURIComponent(connectionToolsMatch[2] as string);
+      const body = JSON.parse(options?.body ?? '{}') as Record<string, unknown>;
+      connectionToolsPuts.push({ agentId, connectionId, body });
+      if (harnessOptions.connectionToolsPutFetch) {
+        return harnessOptions.connectionToolsPutFetch(agentId, connectionId, body);
+      }
+      return Promise.resolve(jsonResponse({ error: 'not_found' }, 404));
+    }
     const agentConnectionsMatch = path.match(
       /^\/admin\/api\/agents\/([^/]+)\/connections(?:\?workspaceId=([^&]+))?$/,
     );
     if (agentConnectionsMatch && method === 'GET') {
       agentConnectionGets += 1;
+      if (harnessOptions.connectionAccountsFetch) {
+        return harnessOptions.connectionAccountsFetch(
+          decodeURIComponent(agentConnectionsMatch[1] as string),
+          agentConnectionGets,
+        );
+      }
       if (harnessOptions.connectionAccounts) {
         return Promise.resolve(jsonResponse(harnessOptions.connectionAccounts));
       }
@@ -1938,6 +1980,9 @@ function runAdminPageHarness(
       const connectionId = decodeURIComponent(accountMcpOAuthStartMatch[2] as string);
       const body = JSON.parse(options?.body ?? '{}') as Record<string, unknown>;
       oauthStartPosts.push({ agentId, connectionId, body });
+      if (oauthStartError) {
+        return Promise.resolve(jsonResponse(oauthStartError, oauthStartError.status));
+      }
       return Promise.resolve(jsonResponse(
         oauthStartResult ?? { authorizationUrl: 'https://auth.linear.example/authorize?state=opaque' },
       ));
@@ -1960,6 +2005,9 @@ function runAdminPageHarness(
       const connectionId = decodeURIComponent(accountApiOAuthStartMatch[2] as string);
       const body = JSON.parse(options?.body ?? '{}') as Record<string, unknown>;
       apiOAuthStartPosts.push({ agentId, connectionId, body });
+      if (apiOAuthStartError) {
+        return Promise.resolve(jsonResponse(apiOAuthStartError, apiOAuthStartError.status));
+      }
       return Promise.resolve(jsonResponse(
         apiOAuthStartResult ?? { authorizationUrl: 'https://accounts.google.com/o/oauth2/v2/auth?state=opaque' },
       ));
@@ -2792,6 +2840,7 @@ function runAdminPageHarness(
     skillBrowseScrollTop: () => skillBrowseList.scrollTop,
     mcpTestPosts,
     connectionAccountPosts,
+    connectionToolsPuts,
     managedAuthorizationPosts,
     composioSetupPosts,
     composioRetryCalls: () => composioRetryCalls,
@@ -6920,6 +6969,106 @@ test('Agent connections expose Agent-owned Team and personal accounts with manag
   assert.match(page, /\/oauth\/api\/start/);
 });
 
+test('Connections deep links wait for Slack identity before loading account inventory', async () => {
+  let resolveSlack!: (response: FakeResponse) => void;
+  let slackGets = 0;
+  const pendingSlack = new Promise<FakeResponse>((resolve) => { resolveSlack = resolve; });
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    initialPath: '/admin/agents/agent_conn',
+    initialSearch: '?tab=connections',
+    connectionAccounts: { attached: [] },
+    settingsLoadFetch(path, method) {
+      if (path !== '/admin/api/slack-connection' || method !== 'GET') return undefined;
+      slackGets += 1;
+      return pendingSlack;
+    },
+  });
+
+  await flushAsync();
+  assert.ok(slackGets > 0);
+  assert.equal(harness.agentConnectionGets(), 0);
+  assert.match(harness.app.innerHTML, /Loading connections&hellip;/);
+  assert.doesNotMatch(harness.app.innerHTML, /Connect Slack before adding Agent connections/);
+  assert.doesNotMatch(harness.app.innerHTML, /MCP servers and REST APIs/);
+
+  resolveSlack(jsonResponse(connectedSlackFixture()));
+  await flushAsync();
+  assert.equal(harness.agentConnectionGets(), 1);
+  assert.match(harness.app.innerHTML, /No connections in this Agent yet/);
+});
+
+test('Connections deep links keep the disconnected Slack guidance after identity resolves', async () => {
+  let resolveSlack!: (response: FakeResponse) => void;
+  const pendingSlack = new Promise<FakeResponse>((resolve) => { resolveSlack = resolve; });
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    initialPath: '/admin/agents/agent_conn',
+    initialSearch: '?tab=connections',
+    connectionAccounts: { attached: [] },
+    settingsLoadFetch(path, method) {
+      return path === '/admin/api/slack-connection' && method === 'GET'
+        ? pendingSlack
+        : undefined;
+    },
+  });
+
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /Loading connections&hellip;/);
+  resolveSlack(jsonResponse(disconnectedSlackFixture()));
+  await flushAsync();
+  assert.equal(harness.agentConnectionGets(), 0);
+  assert.match(harness.app.innerHTML, /Connect Slack before adding Agent connections/);
+  assert.doesNotMatch(harness.app.innerHTML, /MCP servers and REST APIs/);
+});
+
+test('opening Connections while Slack identity is pending defers and coalesces account loading', async () => {
+  let resolveSlack!: (response: FakeResponse) => void;
+  let slackGets = 0;
+  const pendingSlack = new Promise<FakeResponse>((resolve) => { resolveSlack = resolve; });
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    initialPath: '/admin/agents/agent_conn',
+    connectionAccounts: { attached: [] },
+    settingsLoadFetch(path, method) {
+      if (path !== '/admin/api/slack-connection' || method !== 'GET') return undefined;
+      slackGets += 1;
+      return pendingSlack;
+    },
+  });
+
+  await flushAsync();
+  const slackGetsBeforeTab = slackGets;
+  harness.listeners.click?.({
+    target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }),
+  });
+  await flushAsync();
+  assert.equal(slackGets, slackGetsBeforeTab);
+  assert.equal(harness.agentConnectionGets(), 0);
+  assert.match(harness.app.innerHTML, /Loading connections&hellip;/);
+  assert.doesNotMatch(harness.app.innerHTML, /Connect Slack before adding Agent connections/);
+
+  resolveSlack(jsonResponse(connectedSlackFixture()));
+  await flushAsync();
+  assert.equal(harness.agentConnectionGets(), 1);
+  assert.match(harness.app.innerHTML, /No connections in this Agent yet/);
+});
+
+test('Connections preserve the legacy panel after an explicit account endpoint 404', async () => {
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    initialPath: '/admin/agents/agent_conn',
+    initialSearch: '?tab=connections',
+    slackConnection: connectedSlackFixture(),
+    connectionAccountsFetch: async () => jsonResponse({ error: 'not_found' }, 404),
+  });
+
+  await flushAsync();
+  assert.equal(harness.agentConnectionGets(), 1);
+  assert.match(harness.app.innerHTML, /MCP servers and REST APIs/);
+  assert.doesNotMatch(harness.app.innerHTML, /Loading connections&hellip;/);
+});
+
 test('connection cards omit diagnostic records while retaining the account label', async () => {
   const account = { id: 'connection_exact', revision: 4, workspaceId: 'T_DESIGN', ownerKind: 'member',
     ownerMembershipId: 'membership_exact', createdByMembershipId: 'membership_creator', providerId: 'google',
@@ -7730,13 +7879,14 @@ test('Agent connection setup retains the complete preset catalog', async () => {
   const panel = harness.app.innerHTML;
   assert.match(panel, /Search connectors/);
   assert.match(panel, /data-action="connection-account-preset" data-preset="linear"/);
+  assert.match(panel, /data-action="connection-account-preset" data-preset="meta-ads"/);
   assert.match(panel, /data-action="connection-account-preset" data-preset="zendesk"/);
   assert.match(panel, /data-action="connection-account-preset" data-preset="gmail"/);
   assert.match(panel, /data-action="connection-account-preset" data-preset="google-calendar"/);
   assert.match(panel, /data-action="connection-account-preset" data-preset="google-drive"/);
   assert.equal(
     (panel.match(/data-action="connection-account-preset"/g) ?? []).length,
-    35,
+    37,
   );
 });
 
@@ -8056,7 +8206,7 @@ test('legacy Google access does not hide fresh Google connection presets', async
   assert.match(panel, /data-action="connection-account-preset" data-preset="gmail"/);
   assert.match(panel, /data-action="connection-account-preset" data-preset="google-calendar"/);
   assert.match(panel, /data-action="connection-account-preset" data-preset="google-drive"/);
-  assert.equal((panel.match(/data-action="connection-account-preset"/g) ?? []).length, 35);
+  assert.equal((panel.match(/data-action="connection-account-preset"/g) ?? []).length, 37);
 });
 
 test('every catalog connector opens an Agent-owned setup flow', async () => {
@@ -8101,7 +8251,7 @@ test('every catalog connector opens an Agent-owned setup flow', async () => {
     );
     click({ target: actionTarget({ 'data-action': 'connection-account-cancel' }) });
   }
-  assert.equal(presetIds.length, 35);
+  assert.equal(presetIds.length, 37);
 });
 
 test('Agent-owned Sentry accounts use OAuth and preserve an organization/project-scoped resource', async () => {
@@ -8296,6 +8446,126 @@ test('Agent-owned Linear accounts create policy before starting account-scoped M
     agentId: 'agent_conn', connectionId: 'connection_created', body: {},
   });
   assert.deepEqual(harness.assignedUrls, ['https://auth.linear.example/authorize?state=opaque']);
+});
+
+test('a failed Meta OAuth start reloads the saved account and retries that account without duplicating it', async () => {
+  const pending = ownedConnection({
+    id: 'connection_created', workspaceId: 'T_DESIGN', revision: 2,
+    ownerKind: 'member', providerId: 'meta-ads', label: 'Meta Ads',
+    lifecycle: 'pending', credentialConfigured: false,
+    policy: {
+      kind: 'mcp', url: 'https://mcp.facebook.com/ads', transport: 'streamable-http',
+      authMode: 'oauth', headerNames: [], presetId: 'meta-ads', toolAccessMode: 'review',
+      oauthScope: META_ADS_OAUTH_MANAGEMENT_SCOPE, discoveredTools: [], allowedTools: [], toolPolicies: {},
+    },
+  });
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    connectionAccountsFetch: async (_agentId, call) => jsonResponse({
+      attached: call === 1 ? [] : [pending],
+    }),
+    oauthStartError: { status: 502, error: 'oauth_unavailable' },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'connection-account-preset', 'data-preset': 'meta-ads' }) });
+  assert.match(harness.app.innerHTML, /Reporting and editing/);
+  click({ target: actionTarget({ 'data-action': 'connection-account-meta-ads-access', 'data-access': 'editing' }) });
+  chooseConnectionOwner(harness, 'member');
+  click({ target: actionTarget({ 'data-action': 'connection-account-create' }) });
+  await flushAsync();
+
+  assert.equal(harness.connectionAccountPosts.length, 1);
+  assert.equal((harness.connectionAccountPosts[0]?.body.mcp as Record<string, unknown>)?.oauthScope, META_ADS_OAUTH_MANAGEMENT_SCOPE);
+  assert.deepEqual(harness.oauthStartPosts, [
+    { agentId: 'agent_conn', connectionId: 'connection_created', body: {} },
+  ]);
+  assert.equal(harness.agentConnectionGets(), 2);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="connection-account-create"/);
+  assert.match(
+    harness.app.innerHTML,
+    /Meta Ads OAuth could not be prepared\. Check that this install has a reachable callback URL, then try again\. The connection was saved; use Sign in on its row to try again\./,
+  );
+  assert.match(
+    harness.app.innerHTML,
+    /data-action="connection-account-mcp-oauth-start"[^>]*data-connection-id="connection_created"/,
+  );
+
+  click({ target: actionTarget({
+    'data-action': 'connection-account-mcp-oauth-start',
+    'data-connection-id': 'connection_created',
+  }) });
+  await flushAsync();
+  assert.equal(harness.connectionAccountPosts.length, 1);
+  assert.deepEqual(harness.oauthStartPosts.map(({ connectionId }) => connectionId), [
+    'connection_created', 'connection_created',
+  ]);
+  assert.match(
+    harness.app.innerHTML,
+    /data-action="connection-account-mcp-oauth-start"[^>]*data-connection-id="connection_created"/,
+  );
+});
+
+test('a ready Agent-owned MCP OAuth account reconnects in place from its menu', async () => {
+  const account = {
+    id: 'connection_ready_oauth', workspaceId: 'T_DESIGN', revision: 4,
+    ownerKind: 'member', providerId: 'meta-ads', label: 'Meta Ads',
+    lifecycle: 'ready', credentialConfigured: true,
+    policy: {
+      kind: 'mcp', url: 'https://mcp.facebook.com/ads', transport: 'streamable-http',
+      authMode: 'oauth', headerNames: [], presetId: 'meta-ads', toolAccessMode: 'review',
+      oauthScope: META_ADS_OAUTH_DEFAULT_SCOPE,
+      discoveredTools: [{ name: 'ads_get_ad_entities' }],
+      allowedTools: ['ads_get_ad_entities'], toolPolicies: {},
+    },
+  };
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    connectionAccounts: { attached: [ownedConnection(account)] },
+    oauthStartResult: {
+      authorizationUrl: 'https://www.facebook.com/dialog/oauth?state=reconnect',
+    },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
+
+  assert.match(
+    harness.app.innerHTML,
+    /data-action="connection-account-mcp-oauth-start"[^>]*data-connection-id="connection_ready_oauth"[^>]*data-oauth-scope="ads_mcp_management ads_management"[^>]*>Reconnect for reporting and editing<\/button>/,
+  );
+  click({ target: actionTarget({
+    'data-action': 'connection-account-mcp-oauth-start',
+    'data-connection-id': 'connection_ready_oauth',
+    'data-oauth-scope': META_ADS_OAUTH_DEFAULT_SCOPE,
+  }) });
+  await flushAsync();
+  assert.deepEqual(harness.oauthStartPosts[0], {
+    agentId: 'agent_conn', connectionId: 'connection_ready_oauth', body: { scope: META_ADS_OAUTH_DEFAULT_SCOPE },
+  });
+  click({ target: actionTarget({
+    'data-action': 'connection-account-mcp-oauth-start',
+    'data-connection-id': 'connection_ready_oauth',
+    'data-oauth-scope': META_ADS_OAUTH_MANAGEMENT_SCOPE,
+  }) });
+  await flushAsync();
+
+  assert.deepEqual(harness.oauthStartPosts[1], {
+    agentId: 'agent_conn', connectionId: 'connection_ready_oauth', body: { scope: META_ADS_OAUTH_MANAGEMENT_SCOPE },
+  });
+  assert.deepEqual(harness.assignedUrls, [
+    'https://www.facebook.com/dialog/oauth?state=reconnect',
+    'https://www.facebook.com/dialog/oauth?state=reconnect',
+  ]);
 });
 
 test('Agent-owned Google Drive accounts start a Drive-only Composio Connect Link', async () => {
@@ -8512,6 +8782,73 @@ test('self-hosted Agent-owned Google connectors fall back to native OAuth setup 
   click({ target: actionTarget({ 'data-action': 'connection-account-new' }) });
   assert.doesNotMatch(harness.app.innerHTML, /<option value="google_oauth"/);
   assert.match(harness.app.innerHTML, /For Google sign-in, choose a Google connector/);
+});
+
+test('a failed native Google OAuth start reloads the saved account instead of recreating it', async () => {
+  const pending = ownedConnection({
+    id: 'connection_created', workspaceId: 'T_DESIGN', revision: 2,
+    ownerKind: 'team', providerId: 'google', label: 'Google Drive',
+    lifecycle: 'pending', credentialConfigured: false,
+    policy: {
+      kind: 'api', authMode: 'oauth', oauthProvider: 'google',
+      oauthScopes: ['https://www.googleapis.com/auth/drive.readonly'],
+      oauthAppType: 'external', allowedHosts: ['www.googleapis.com'],
+      pathPrefixes: ['/drive/v3'], headerName: 'Authorization',
+      headerValuePrefix: 'Bearer ', allowedMethods: ['GET', 'HEAD'],
+      presetId: 'google-workspace',
+    },
+  });
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    connectionAccountsFetch: async (_agentId, call) => jsonResponse({
+      attached: call === 1 ? [] : [pending],
+      managedConnectors: { composio: false },
+    }),
+    apiOAuthStartError: { status: 502, error: 'oauth_unavailable' },
+  });
+  await flushAsync();
+  const { click, input } = harness.listeners;
+  assert.ok(click && input);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'connection-account-preset', 'data-preset': 'google-drive' }) });
+  input({ target: inputTarget({ 'data-action': 'connection-account-oauth-client-id' }, 'client-id') });
+  input({ target: inputTarget({ 'data-action': 'connection-account-oauth-client-secret' }, 'client-secret') });
+  chooseConnectionOwner(harness);
+  click({ target: actionTarget({ 'data-action': 'connection-account-create' }) });
+  await flushAsync();
+
+  assert.equal(harness.connectionAccountPosts.length, 1);
+  assert.equal(harness.apiOAuthClientPuts.length, 1);
+  assert.deepEqual(harness.apiOAuthStartPosts, [
+    { agentId: 'agent_conn', connectionId: 'connection_created', body: {} },
+  ]);
+  assert.equal(harness.agentConnectionGets(), 2);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="connection-account-create"/);
+  assert.match(
+    harness.app.innerHTML,
+    /Google Drive OAuth could not be prepared\. Check the Google client and redirect URI, then try again\. The connection was saved; use Sign in on its row to try again\./,
+  );
+  assert.match(
+    harness.app.innerHTML,
+    /data-action="connection-account-oauth-start"[^>]*data-connection-id="connection_created"/,
+  );
+
+  click({ target: actionTarget({
+    'data-action': 'connection-account-oauth-start',
+    'data-connection-id': 'connection_created',
+  }) });
+  await flushAsync();
+  assert.equal(harness.connectionAccountPosts.length, 1);
+  assert.deepEqual(harness.apiOAuthStartPosts.map(({ connectionId }) => connectionId), [
+    'connection_created', 'connection_created',
+  ]);
+  assert.match(
+    harness.app.innerHTML,
+    /data-action="connection-account-oauth-start"[^>]*data-connection-id="connection_created"/,
+  );
 });
 
 test('Agent-owned Exa accounts support anonymous limits without an API key', async () => {
@@ -15270,7 +15607,7 @@ test('custom OAuth callback opens account tool review and keeps creation and edi
     initialSearch: '?oauth=connected&connection=connection_custom&lane=mcp',
     connectionAccounts: { attached: [{
       account: { id: 'connection_custom', workspaceId: 'T_DESIGN', ownerKind: 'team', providerId: 'reports', label: 'Reports', revision: 2, lifecycle: 'ready',
-        policy: { kind: 'mcp', authMode: 'oauth', url: 'https://reports.example.test/mcp', transport: 'streamable-http', headerNames: [], discoveredTools: [{ name: 'read_reports' }], allowedTools: [] } },
+        policy: { kind: 'mcp', authMode: 'oauth', url: 'https://reports.example.test/mcp', transport: 'streamable-http', headerNames: [], discoveredTools: [{ name: 'read_reports' }, { name: 'legacy_reports', available: false }], allowedTools: [] } },
       binding: { agentId: 'agent_conn', connectionAccountId: 'connection_custom', providerId: 'reports', allowedCapabilities: [], enabled: true },
     }] },
   });
@@ -15278,7 +15615,8 @@ test('custom OAuth callback opens account tool review and keeps creation and edi
   await flushAsync();
   assert.match(harness.app.innerHTML, /data-action="custom-mcp-tools-save"/);
   assert.doesNotMatch(harness.app.innerHTML, /account is ready for the Agent/);
-  assert.match(harness.app.innerHTML, /1 of 1 selected/);
+  assert.match(harness.app.innerHTML, /2 of 2 selected/);
+  assert.match(harness.app.innerHTML, /data-tool="legacy_reports"/);
   assert.doesNotMatch(harness.app.innerHTML, /Signed in\. Choose/);
   const { click } = harness.listeners;
   assert.ok(click);
@@ -15287,16 +15625,279 @@ test('custom OAuth callback opens account tool review and keeps creation and edi
   click({ target: actionTarget({ 'data-action': 'custom-mcp-tools-open', 'data-connection-id': 'connection_custom' }) });
   assert.doesNotMatch(harness.app.innerHTML, /data-action="connection-account-create"/);
   assert.match(harness.app.innerHTML, /data-action="custom-mcp-tools-save"/);
-  assert.match(harness.app.innerHTML, /0 of 1 selected/);
+  assert.match(harness.app.innerHTML, /0 of 2 selected/);
+  assert.match(harness.app.innerHTML, /data-tool="legacy_reports"/);
+});
+
+test('BugSnag OAuth review suggests reads, labels writes, and saves without ad-account controls', async () => {
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()], initialPath: '/admin/agents/agent_conn',
+    initialSearch: '?oauth=connected&connection=connection_bugsnag&lane=mcp',
+    connectionAccounts: { attached: [{
+      account: { id: 'connection_bugsnag', workspaceId: 'T_DESIGN', ownerKind: 'team', providerId: 'bugsnag', label: 'BugSnag', revision: 2, lifecycle: 'ready',
+        policy: { kind: 'mcp', authMode: 'oauth', url: 'https://bugsnag.mcp.smartbear.com/mcp', transport: 'streamable-http', headerNames: [], presetId: 'bugsnag', toolAccessMode: 'review',
+          discoveredTools: [{ name: 'bugsnag_get_error', readOnlyHint: true }, { name: 'bugsnag_update_error', readOnlyHint: false }, { name: 'future_tool' }], allowedTools: [] } },
+      binding: { agentId: 'agent_conn', connectionAccountId: 'connection_bugsnag', providerId: 'bugsnag', allowedCapabilities: [], enabled: true },
+    }] },
+  });
+  await flushAsync();
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /data-action="custom-mcp-tools-save"/);
+  assert.match(harness.app.innerHTML, /1 of 3 selected/);
+  assert.match(harness.app.innerHTML, /data-tool="bugsnag_get_error" checked/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-tool="bugsnag_update_error" checked/);
+  assert.match(harness.app.innerHTML, /Read only/);
+  assert.match(harness.app.innerHTML, /May change data/);
+  assert.match(harness.app.innerHTML, /every project available to your BugSnag account/);
+  assert.doesNotMatch(harness.app.innerHTML, /meta-ads-account-ids|May change ads|ad account restrictions/);
+  const { click, change } = harness.listeners;
+  assert.ok(click && change);
+  change({ target: checkboxTarget({ 'data-action': 'custom-mcp-tool', 'data-tool': 'bugsnag_update_error' }, true) });
+  click({ target: actionTarget({ 'data-action': 'custom-mcp-tools-save' }) });
+  await flushAsync();
+  assert.deepEqual(harness.connectionToolsPuts[0]?.body, {
+    expectedRevision: 2, allowedTools: ['bugsnag_get_error', 'bugsnag_update_error'],
+  });
+});
+
+test('Meta tool review shows only available reporting and write tools', async () => {
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    connectionAccounts: { attached: [ownedConnection({
+      id: 'connection_meta', workspaceId: 'T_DESIGN', revision: 3,
+      ownerKind: 'member', providerId: 'meta-ads', label: 'Meta Ads MCP',
+      lifecycle: 'ready', credentialConfigured: true,
+      policy: {
+        kind: 'mcp', url: 'https://mcp.facebook.com/ads', transport: 'streamable-http',
+        authMode: 'oauth', headerNames: [], presetId: 'meta-ads', toolAccessMode: 'review',
+        discoveredTools: [
+          {
+            name: 'ads_get_ad_entities',
+            description: 'Provider detail that is intentionally longer than the picker summary.',
+            available: true, effect: 'read',
+          },
+          {
+            name: 'ads_get_field_context',
+            description: 'Another verbose provider description.', available: true, effect: 'read',
+          },
+          {
+            name: 'ads_get_opportunity_score',
+            description: 'Provider tool without an availability classification.', effect: 'read',
+          },
+          {
+            name: 'ads_create_campaign',
+            description: 'Provider write description.', available: true, effect: 'write',
+          },
+          {
+            name: 'ads_create_ad_set',
+            description: 'Provider ad set description.', available: false, effect: 'write',
+          },
+          {
+            name: 'ads_create_creative',
+            description: 'Provider creative description.', available: true, effect: 'write',
+          },
+        ],
+        allowedTools: ['ads_get_ad_entities', 'ads_get_opportunity_score'], toolPolicies: {},
+      },
+    })] },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, />Meta Ads</);
+  assert.doesNotMatch(harness.app.innerHTML, />Meta Ads MCP</);
+  click({ target: actionTarget({
+    'data-action': 'custom-mcp-tools-open',
+    'data-connection-id': 'connection_meta',
+  }) });
+
+  assert.match(harness.app.innerHTML, /Choose the tools this Agent can use for the selected ad accounts/);
+  assert.match(harness.app.innerHTML, /ads_get_ad_entities · Reporting/);
+  assert.match(harness.app.innerHTML, /data-tool="ads_get_ad_entities" checked/);
+  assert.match(harness.app.innerHTML, /View campaigns, ad sets, ads, and their performance/);
+  assert.match(harness.app.innerHTML, /Check supported reporting fields and metric names/);
+  assert.match(harness.app.innerHTML, /ads_get_opportunity_score · Reporting/);
+  assert.match(harness.app.innerHTML, /data-tool="ads_get_opportunity_score" checked/);
+  assert.match(harness.app.innerHTML, /ads_create_campaign · May change ads/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-tool="ads_create_campaign" checked/);
+  assert.match(harness.app.innerHTML, /Create an ad creative from images, videos, or posts/);
+  assert.match(harness.app.innerHTML, /ads_create_creative · May change ads/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-tool="ads_create_creative" checked/);
+  assert.doesNotMatch(harness.app.innerHTML, /single-image link ad creative/);
+  assert.doesNotMatch(harness.app.innerHTML, /ads_create_ad_set/);
+  assert.doesNotMatch(harness.app.innerHTML, /Provider ad set description/);
+  // Selecting another tool rerenders the picker before a pasted field blurs.
+  harness.listeners.input!({ target: inputTarget({ 'data-action': 'meta-ads-account-ids' }, '123, 456') });
+  harness.listeners.change!({ target: checkboxTarget({
+    'data-action': 'custom-mcp-tool', 'data-tool': 'ads_get_field_context',
+  }, true) });
+  assert.match(harness.app.innerHTML, /id="meta-ads-account-ids"[^>]*value="123, 456"/);
+});
+
+test('background connection refresh keeps a same-Agent tool editor visible and in place', async () => {
+  let resolveRefresh!: (response: FakeResponse) => void;
+  const reports = ownedConnection({
+    id: 'connection_reports', workspaceId: 'T_DESIGN', revision: 3,
+    ownerKind: 'team', providerId: 'reports', label: 'Reports',
+    lifecycle: 'ready', credentialConfigured: true,
+    policy: {
+      kind: 'mcp', url: 'https://reports.example.test/mcp', transport: 'streamable-http',
+      authMode: 'oauth', headerNames: [],
+      discoveredTools: [{ name: 'read_reports', description: 'Read reports.' }],
+      allowedTools: ['read_reports'],
+    },
+  });
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    initialPath: '/admin/agents/agent_conn',
+    initialSearch: '?tab=connections',
+    connectionAccountsFetch(_agentId, call) {
+      if (call === 1) return Promise.resolve(jsonResponse({ attached: [reports] }));
+      return new Promise(resolve => { resolveRefresh = resolve; });
+    },
+  });
+  await flushAsync();
+  harness.listeners.click?.({ target: actionTarget({
+    'data-action': 'custom-mcp-tools-open', 'data-connection-id': 'connection_reports',
+  }) });
+  harness.setMainScrollTop(480);
+
+  harness.focusWindow();
+  await flushAsync();
+
+  assert.equal(harness.agentConnectionGets(), 2);
+  assert.match(harness.app.innerHTML, /Choose access/);
+  assert.match(harness.app.innerHTML, /data-action="custom-mcp-tools-save"/);
+  assert.match(harness.app.innerHTML, /Reports/);
+  assert.equal(harness.mainScrollTop(), 480);
+
+  resolveRefresh(jsonResponse({ attached: [reports] }));
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /data-action="custom-mcp-tools-save"/);
+});
+
+test('background connection refresh closes a tool editor when the account loses access', async () => {
+  let resolveRefresh!: (response: FakeResponse) => void;
+  const reports = ownedConnection({
+    id: 'connection_reports', workspaceId: 'T_DESIGN', revision: 3,
+    ownerKind: 'team', providerId: 'reports', label: 'Reports',
+    lifecycle: 'ready', credentialConfigured: true,
+    policy: {
+      kind: 'mcp', url: 'https://reports.example.test/mcp', transport: 'streamable-http',
+      authMode: 'oauth', headerNames: [],
+      discoveredTools: [{ name: 'read_reports', description: 'Read reports.' }],
+      allowedTools: ['read_reports'],
+    },
+  });
+  const revoked = ownedConnection({
+    ...(reports as { account: Record<string, unknown> }).account,
+    revision: 4, lifecycle: 'revoked',
+  });
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    initialPath: '/admin/agents/agent_conn',
+    initialSearch: '?tab=connections',
+    connectionAccountsFetch(_agentId, call) {
+      if (call === 1) return Promise.resolve(jsonResponse({ attached: [reports] }));
+      return new Promise(resolve => { resolveRefresh = resolve; });
+    },
+  });
+  await flushAsync();
+  harness.listeners.click?.({ target: actionTarget({
+    'data-action': 'custom-mcp-tools-open', 'data-connection-id': 'connection_reports',
+  }) });
+  harness.focusWindow();
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /data-action="custom-mcp-tools-save"/);
+
+  resolveRefresh(jsonResponse({ attached: [revoked] }));
+  await flushAsync();
+
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="custom-mcp-tools-save"/);
+  assert.match(harness.app.innerHTML, />Disconnected</);
+});
+
+test('Meta tool save applies its response before refresh and ignores the older in-flight snapshot', async () => {
+  let resolveOldRefresh!: (response: FakeResponse) => void;
+  let resolveSavedRefresh!: (response: FakeResponse) => void;
+  const metaAccount = (revision: number, accountId: string) => ownedConnection({
+    id: 'connection_meta', workspaceId: 'T_DESIGN', revision,
+    ownerKind: 'member', providerId: 'meta-ads', label: 'Meta Ads',
+    lifecycle: 'ready', credentialConfigured: true,
+    policy: {
+      kind: 'mcp', url: 'https://mcp.facebook.com/ads', transport: 'streamable-http',
+      authMode: 'oauth', headerNames: [], presetId: 'meta-ads', toolAccessMode: 'review',
+      discoveredTools: [{ name: 'ads_get_ad_entities', available: true, effect: 'read' }],
+      allowedTools: ['ads_get_ad_entities'],
+      toolPolicies: {
+        ads_get_ad_entities: { effect: 'read', argumentConstraints: { account_id: [accountId] } },
+      },
+    },
+  });
+  const original = metaAccount(3, '111');
+  const saved = metaAccount(4, '222');
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    initialPath: '/admin/agents/agent_conn',
+    initialSearch: '?tab=connections',
+    connectionAccountsFetch(_agentId, call) {
+      if (call === 1) return Promise.resolve(jsonResponse({ attached: [original] }));
+      if (call === 2) return new Promise(resolve => { resolveOldRefresh = resolve; });
+      return new Promise(resolve => { resolveSavedRefresh = resolve; });
+    },
+    connectionToolsPutFetch() {
+      return Promise.resolve(jsonResponse({ account: (saved as { account: unknown }).account }));
+    },
+  });
+  await flushAsync();
+  harness.listeners.click?.({ target: actionTarget({
+    'data-action': 'custom-mcp-tools-open', 'data-connection-id': 'connection_meta',
+  }) });
+  harness.focusWindow();
+  await flushAsync();
+  harness.listeners.input?.({
+    target: inputTarget({ 'data-action': 'meta-ads-account-ids' }, '222'),
+  });
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'custom-mcp-tools-save' }) });
+  await flushAsync();
+
+  assert.deepEqual(harness.connectionToolsPuts[0], {
+    agentId: 'agent_conn',
+    connectionId: 'connection_meta',
+    body: { expectedRevision: 3, allowedTools: ['ads_get_ad_entities'], approvedAccountIds: ['222'] },
+  });
+  assert.equal(harness.agentConnectionGets(), 3);
+
+  resolveOldRefresh(jsonResponse({ attached: [original] }));
+  await flushAsync();
+  harness.listeners.click?.({ target: actionTarget({
+    'data-action': 'custom-mcp-tools-open', 'data-connection-id': 'connection_meta',
+  }) });
+  assert.match(harness.app.innerHTML, /id="meta-ads-account-ids"[^>]*value="222"/);
+
+  resolveSavedRefresh(jsonResponse({ attached: [saved] }));
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /id="meta-ads-account-ids"[^>]*value="222"/);
 });
 
 test('Agent deep links render before channel discovery and auxiliary checks finish', async () => {
   const pending = new Map<string, (value: FakeResponse) => void>();
-  const delayed = new Set(['/admin/api/channels', '/admin/api/models', '/admin/api/onboarding', '/admin/api/environment/status']);
+  let resolveSlack!: (response: FakeResponse) => void;
+  const pendingSlack = new Promise<FakeResponse>((resolve) => { resolveSlack = resolve; });
+  let slackGets = 0;
+  const delayed = new Set(['/admin/api/channels', '/admin/api/models', '/admin/api/onboarding', '/admin/api/environment/status', '/admin/api/slack-connection']);
   const harness = runAdminPageHarness({
     agents: [connectionsAgent()], initialPath: '/admin/agents/agent_conn',
     settingsLoadFetch(path, method) {
       if (method !== 'GET' || !delayed.has(path)) return undefined;
+      if (path === '/admin/api/slack-connection') {
+        slackGets += 1;
+        return pendingSlack;
+      }
       return new Promise<FakeResponse>(resolve => { pending.set(path, resolve); });
     },
   });
@@ -15304,6 +15905,8 @@ test('Agent deep links render before channel discovery and auxiliary checks fini
   assert.match(harness.app.innerHTML, /Agent configuration/);
   assert.match(harness.app.innerHTML, /Instructions/);
   assert.equal(pending.size, 4);
+  assert.ok(slackGets > 0);
+  assert.equal(harness.agentConnectionGets(), 0);
   // The delayed channel response must update discovery without resetting the editor.
   const input = harness.listeners.input!;
   input({ target: inputTarget({ 'data-action': 'profile-instructions' }, 'Keep my unsaved instructions') });
@@ -15311,6 +15914,7 @@ test('Agent deep links render before channel discovery and auxiliary checks fini
   pending.get('/admin/api/models')!(jsonResponse({ providers: [] }));
   pending.get('/admin/api/onboarding')!(jsonResponse({ error: 'onboarding_not_found' }, 404));
   pending.get('/admin/api/environment/status')!(jsonResponse({}));
+  resolveSlack(jsonResponse(connectedSlackFixture()));
   await flushAsync();
   assert.match(harness.app.innerHTML, /Keep my unsaved instructions/);
   assert.match(harness.app.innerHTML, /Agent configuration/);

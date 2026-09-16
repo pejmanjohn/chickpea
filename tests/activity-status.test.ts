@@ -386,8 +386,8 @@ test('image generation narrates a non-terminal creation step', () => {
   });
   assert.deepEqual(status, activityStatus('running', 'Creating', 'an image'));
   assert.equal(status.text, 'Creating an image…');
-  // Sharing is the chart tool's terminal phrasing; generation precedes staging.
-  assert.notDeepEqual(status, toolActivityStatus('render_chart'));
+  // File delivery is terminal; image generation precedes staging.
+  assert.notDeepEqual(status, toolActivityStatus('post_artifact'));
   assert.doesNotMatch(status.text, /poster/);
 });
 

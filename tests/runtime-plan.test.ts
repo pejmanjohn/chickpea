@@ -773,13 +773,12 @@ function canonicalJson(value: unknown): string {
   return JSON.stringify(value);
 }
 
-test('bash-mode plans mount file and chart delivery like the container mode', () => {
+test('bash-mode plans classify file and image delivery like the container mode', () => {
   const context = buildRuntimePlanActivityContext(compile({ sandboxMode: 'bash' }));
   const descriptors = new Map(
     context.toolDescriptors?.map(({ toolName, descriptor }) => [toolName, descriptor]),
   );
   assert.equal(descriptors.get('post_artifact')?.target, 'artifact');
-  assert.equal(descriptors.get('render_chart')?.target, 'artifact');
   // Image generation delivers a file too: its observations classify the same.
   assert.equal(descriptors.get('generate_image')?.target, 'artifact');
   assert.ok((context.enabledFamilies ?? []).includes('artifact'));

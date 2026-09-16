@@ -87,7 +87,6 @@ test('a successful declaration arms answer-only authority before later tools exe
       'manage_slack_workspace',
       'bash',
       'post_artifact',
-      'render_chart',
       GENERATE_IMAGE_TOOL_NAME,
       'mcp__docs__search',
     ]) {
@@ -99,7 +98,7 @@ test('a successful declaration arms answer-only authority before later tools exe
         }),
         (error: unknown) => {
           assert.ok(error instanceof SlackAnswerOnlyToolDeniedError);
-          if (toolName === 'post_artifact' || toolName === 'render_chart' ||
+          if (toolName === 'post_artifact' ||
               toolName === GENERATE_IMAGE_TOOL_NAME) {
             assert.match(error.message, /Do not claim a denied tool ran or attached a file/);
           }
@@ -126,7 +125,7 @@ test('an envelope without the frozen offer cannot execute the declaration tool',
   });
 });
 
-for (const toolName of ['post_artifact', 'render_chart', GENERATE_IMAGE_TOOL_NAME]) {
+for (const toolName of ['post_artifact', GENERATE_IMAGE_TOOL_NAME]) {
   test(`${toolName} blocks a declaration while the upload is still pending`, async () => {
     await withSubmission(async () => {
       observeTurn([{ role: 'user', content: currentPrompt() }]);

@@ -29,6 +29,8 @@ const TARGET_SCHEMA_GENERATION_VAR = 'CHICKPEA_DEPLOY_SCHEMA_GENERATION';
 const AUTH_DB_SCHEMA_GENERATION_VAR = 'CHICKPEA_AUTH_DB_SCHEMA_GENERATION';
 const DURABLE_OBJECT_SCHEMA_GENERATION_VAR = 'CHICKPEA_DURABLE_OBJECT_SCHEMA_GENERATION';
 const TARGET_STATE_MODE_VAR = 'CHICKPEA_DEPLOY_STATE_MODE';
+const TELEMETRY_ENVIRONMENT_VAR = 'CHICKPEA_TELEMETRY_ENVIRONMENT';
+const QA_TELEMETRY_ENVIRONMENT = 'test';
 // Vite bundles this helper into a temporary config module, so import.meta.url
 // no longer points at `scripts/` during a build. Vite and the npm wrappers run
 // from the project root; resolve there to match Wrangler's authored-path
@@ -55,6 +57,18 @@ export function resolveCloudflareDeploymentTarget(value = process.env[TARGET_VAR
     `Invalid ${TARGET_VAR}=${JSON.stringify(value)}. ` +
       `Use exactly one of ${ACTIVE_CLOUDFLARE_DEPLOYMENT_TARGETS.join(', ')}.`,
   );
+}
+
+export function assertCloudflareQATelemetryEnvironment(value, target) {
+  if (!ACTIVE_CLOUDFLARE_DEPLOYMENT_TARGETS.includes(target)) {
+    throw new Error(`Cloudflare QA telemetry target ${JSON.stringify(target)} is invalid.`);
+  }
+  if (value !== QA_TELEMETRY_ENVIRONMENT) {
+    throw new Error(
+      `Cloudflare deployment target ${target} requires ${TELEMETRY_ENVIRONMENT_VAR}=${QA_TELEMETRY_ENVIRONMENT}.`,
+    );
+  }
+  return QA_TELEMETRY_ENVIRONMENT;
 }
 
 function trimmed(value) {
@@ -282,6 +296,14 @@ export function readCloudflareDeploymentTargetTuple(config, env = process.env) {
   }
   const expectedStateMode = immutableDatabaseId ? 'permanent' : 'disposable';
   if (stateMode !== expectedStateMode) failures.push(`${expectedStateMode} state mode`);
+  try {
+    assertCloudflareQATelemetryEnvironment(
+      config.vars?.[TELEMETRY_ENVIRONMENT_VAR],
+      requestedTarget,
+    );
+  } catch {
+    failures.push(`${TELEMETRY_ENVIRONMENT_VAR}=${QA_TELEMETRY_ENVIRONMENT}`);
+  }
   if (
     immutableDatabaseId &&
     trimmed(env[TARGET_SCHEMA_GENERATION_VAR]) !== schemaGeneration
@@ -377,6 +399,7 @@ export function applyCloudflareDeploymentProfile(config, env = process.env, opti
       [DURABLE_OBJECT_SCHEMA_GENERATION_VAR]: selected.durableObjectSchemaGeneration,
       [TARGET_SCHEMA_GENERATION_VAR]: selected.schemaGeneration,
       [TARGET_STATE_MODE_VAR]: selected.stateMode,
+      [TELEMETRY_ENVIRONMENT_VAR]: QA_TELEMETRY_ENVIRONMENT,
     };
   } else if (typeof overrideName === 'string' && overrideName.length > 0) {
     // Wrangler applies this name during Deploy-button builds. Applying it at

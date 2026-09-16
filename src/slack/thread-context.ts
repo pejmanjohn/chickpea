@@ -1,6 +1,7 @@
 import type { ThreadImageRecord } from './thread-images.ts';
 import type { NormalizedSlackTurn, SlackContextMode } from './types.ts';
 import { preserveSlackRichTextLinks } from './rich-text-links.ts';
+import { isSlackContentMessageSubtype } from './message-subtypes.ts';
 
 export interface SlackContextMessage {
   userId: string;
@@ -170,7 +171,7 @@ export function toContextMessages(messages: SlackWebApiMessage[]): SlackContextM
     if (!message.user || !text || !message.ts) {
       return [];
     }
-    if (message.bot_id || (message.subtype && message.subtype !== 'file_share')) {
+    if (message.bot_id || !isSlackContentMessageSubtype(message.subtype)) {
       return [];
     }
     return [

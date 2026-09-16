@@ -104,6 +104,8 @@ function baseline(target = 'amber') {
 function localContract() {
   return {
     manifestDigest: `sha256:${'1'.repeat(64)}`, requiredScopes: ['chat:write'],
+    existingInstallManifestDigest: `sha256:${'1'.repeat(64)}`,
+    existingInstallScopes: ['chat:write'],
     setupContractDigest: `sha256:${'2'.repeat(64)}`,
     schemaGeneration: 'd1:0002_mcp_oauth;do:v9',
     schemaHistory: {
@@ -135,6 +137,16 @@ function splitLocalContract(overrides: Record<string, unknown> = {}) {
     setupFlowDigest: FLOW_DIGEST,
     ...overrides,
   };
+}
+
+function optionalListsLocalContract(overrides: Record<string, unknown> = {}) {
+  return splitLocalContract({
+    manifestDigest: `sha256:${'3'.repeat(64)}`,
+    requiredScopes: ['chat:write', 'lists:read', 'lists:write'],
+    existingInstallManifestDigest: `sha256:${'1'.repeat(64)}`,
+    existingInstallScopes: ['chat:write'],
+    ...overrides,
+  });
 }
 
 function authority(target = 'amber', overrides: Record<string, unknown> = {}) {
@@ -463,8 +475,16 @@ test('preflight refuses baseline, scope, credential, and migration drift with no
   context.after(() => rmSync(f.parent, { recursive: true, force: true }));
   claimEnvironment('amber', f.options);
   for (const local of [
-    { ...localContract(), manifestDigest: `sha256:${'3'.repeat(64)}` },
-    { ...localContract(), requiredScopes: ['chat:write', 'users:read'] },
+    {
+      ...localContract(),
+      manifestDigest: `sha256:${'3'.repeat(64)}`,
+      existingInstallManifestDigest: `sha256:${'3'.repeat(64)}`,
+    },
+    {
+      ...localContract(),
+      requiredScopes: ['chat:write', 'users:read'],
+      existingInstallScopes: ['chat:write', 'users:read'],
+    },
     { ...localContract(), setupContractDigest: `sha256:${'4'.repeat(64)}` },
   ]) {
     await assert.rejects(preflightEnvironmentMutation('amber', {
@@ -1095,6 +1115,208 @@ test('release fencing is target-local and rejects live locks or unresolved verif
   assert.doesNotThrow(() => assertEnvironmentReleaseAllowed('cobalt', {
     ...f.options, worktreePath: f.worktree, skipClaimCheck: true,
   }));
+});
+
+test('a core-only lane admits only the exact whole-manifest optional Lists projection', async (context) => {
+  const f = fixture({ baseline: splitBaseline() });
+  context.after(() => rmSync(f.parent, { recursive: true, force: true }));
+  claimEnvironment('amber', f.options);
+  const contract = optionalListsLocalContract({
+    setupContractDigest: OTHER_COMBINED_DIGEST,
+    setupFlowDigest: OTHER_FLOW_DIGEST,
+  });
+  const preflight = await preflightEnvironmentMutation('amber', {
+    ...f.options,
+    baseline: splitBaseline(),
+    localContract: contract,
+    observeAuthority: async () => authority(),
+  });
+  assert.equal(preflight.deploymentMetadata.manifestDigest, baseline().manifestDigest);
+  assert.deepEqual(preflight.baseline.requiredScopes, ['chat:write']);
+  assert.deepEqual(preflight.setupFlow, {
+    proven: false, baselineDigest: FLOW_DIGEST, localDigest: OTHER_FLOW_DIGEST,
+  });
+
+  const mutationLease = beginEnvironmentDeployment(preflight, {
+    ...f.options, localContract: contract,
+  });
+  const receipt = await completeEnvironmentDeployment(preflight, {
+    ...f.options,
+    deployedVersion: 'version-next',
+    mutationLease,
+    observeAuthority: async () => authority('amber', {
+      activeVersion: 'version-next', deploymentMetadata: preflight.deploymentMetadata,
+    }),
+  });
+  assert.equal(receipt.manifestDigest, baseline().manifestDigest);
+  assert.equal(receipt.setupFlowUnprovenSince, f.revision);
+  assert.equal(readEnvironmentRegistry(f.options).targets.amber.setupFlowUnprovenSince, f.revision);
+});
+
+test('optional Lists compatibility rejects cross-pairs, other manifest changes, and scope drift', async (context) => {
+  const cases = [
+    {
+      name: 'full manifest with core-only baseline scopes',
+      baseline: splitBaseline({ manifestDigest: `sha256:${'3'.repeat(64)}` }),
+      local: optionalListsLocalContract(),
+    },
+    {
+      name: 'stripped manifest with full baseline scopes',
+      baseline: splitBaseline({ requiredScopes: ['chat:write', 'lists:read', 'lists:write'] }),
+      local: optionalListsLocalContract(),
+    },
+    {
+      name: 'unrelated whole-manifest change',
+      baseline: splitBaseline(),
+      local: optionalListsLocalContract({
+        existingInstallManifestDigest: `sha256:${'4'.repeat(64)}`,
+      }),
+    },
+    {
+      name: 'unknown requested scope',
+      baseline: splitBaseline(),
+      local: optionalListsLocalContract({
+        requiredScopes: ['chat:write', 'lists:read', 'lists:write', 'unknown:scope'],
+        existingInstallScopes: ['chat:write', 'unknown:scope'],
+      }),
+    },
+    {
+      name: 'baseline missing a core scope',
+      baseline: splitBaseline({ requiredScopes: ['channels:read'] }),
+      local: optionalListsLocalContract(),
+    },
+    {
+      name: 'changed install capability',
+      baseline: splitBaseline(),
+      local: optionalListsLocalContract({ installContractDigest: OTHER_INSTALL_DIGEST }),
+    },
+  ];
+  for (const entry of cases) {
+    const f = fixture({ baseline: entry.baseline });
+    context.after(() => rmSync(f.parent, { recursive: true, force: true }));
+    claimEnvironment('amber', f.options);
+    await assert.rejects(preflightEnvironmentMutation('amber', {
+      ...f.options,
+      baseline: entry.baseline,
+      localContract: entry.local,
+      observeAuthority: async () => authority('amber', {
+        scopes: entry.baseline.requiredScopes,
+      }),
+    }), (error: unknown) => {
+      assert.equal((error as { code?: unknown }).code, 'INSTALL_CONTINUATION_REQUIRED', entry.name);
+      return true;
+    });
+  }
+});
+
+test('optional Lists compatibility preserves exact full grants and exact live authority checks', async (context) => {
+  const fullBaseline = splitBaseline({
+    manifestDigest: `sha256:${'3'.repeat(64)}`,
+    requiredScopes: ['chat:write', 'lists:read', 'lists:write'],
+  });
+  const f = fixture({ baseline: fullBaseline });
+  context.after(() => rmSync(f.parent, { recursive: true, force: true }));
+  claimEnvironment('amber', f.options);
+  await preflightEnvironmentMutation('amber', {
+    ...f.options,
+    baseline: fullBaseline,
+    localContract: optionalListsLocalContract(),
+    observeAuthority: async () => authority('amber', {
+      slack: { ...authority().slack, scopes: fullBaseline.requiredScopes },
+    }),
+  });
+  await assert.rejects(preflightEnvironmentMutation('amber', {
+    ...f.options,
+    baseline: splitBaseline(),
+    localContract: optionalListsLocalContract(),
+    observeAuthority: async () => authority('amber', {
+      slack: { ...authority().slack, scopes: fullBaseline.requiredScopes },
+    }),
+  }), rejects('SLACK_SCOPE_MISMATCH'));
+});
+
+test('legacy supplied local contracts retain exact matching behavior and partial projections fail closed', async (context) => {
+  const f = fixture({ baseline: splitBaseline() });
+  context.after(() => rmSync(f.parent, { recursive: true, force: true }));
+  claimEnvironment('amber', f.options);
+  const legacyContract = splitLocalContract() as Record<string, unknown>;
+  delete legacyContract.existingInstallManifestDigest;
+  delete legacyContract.existingInstallScopes;
+  await preflightEnvironmentMutation('amber', {
+    ...f.options,
+    baseline: splitBaseline(),
+    localContract: legacyContract,
+    observeAuthority: async () => authority(),
+  });
+
+  const partialContract = splitLocalContract() as Record<string, unknown>;
+  delete partialContract.existingInstallScopes;
+  await assert.rejects(preflightEnvironmentMutation('amber', {
+    ...f.options,
+    baseline: splitBaseline(),
+    localContract: partialContract,
+    observeAuthority: async () => authority(),
+  }), rejects('INVALID_LOCAL_CONTRACT'));
+});
+
+test('optional Lists compatibility is rechecked consistently on resume and reconciliation', async (context) => {
+  for (const mode of ['resume', 'reconcile'] as const) {
+    const f = fixture({ baseline: splitBaseline() });
+    context.after(() => rmSync(f.parent, { recursive: true, force: true }));
+    claimEnvironment('amber', f.options);
+    const contract = optionalListsLocalContract(mode === 'resume'
+      ? { schemaGeneration: 'd1:0003_reviewed;do:v10' }
+      : {});
+    if (mode === 'resume') {
+      writeEnvironmentSchemaAdvancementIntent('amber', contract.schemaGeneration, {
+        ...f.options, localContract: contract,
+      });
+    }
+    const preflight = await preflightEnvironmentMutation('amber', {
+      ...f.options,
+      baseline: splitBaseline(),
+      localContract: contract,
+      observeAuthority: async () => authority(),
+    });
+    beginEnvironmentDeployment(preflight, {
+      ...f.options, localContract: contract,
+    });
+    makeMutationLockStale(f.records[0]!.evidenceRoot);
+
+    if (mode === 'resume') {
+      const resumed = await resumeEnvironmentDeployment('amber', {
+        ...f.options,
+        localContract: contract,
+        observeAuthority: async () => authority('amber', {
+          schemaGeneration: contract.schemaGeneration,
+        }),
+      });
+      assert.equal(
+        resumed.preflight.deploymentMetadata.manifestDigest,
+        baseline().manifestDigest,
+      );
+      await completeEnvironmentDeployment(resumed.preflight, {
+        ...f.options,
+        deployedVersion: 'version-optional-resumed',
+        mutationLease: resumed.mutationLease,
+        observeAuthority: async () => authority('amber', {
+          activeVersion: 'version-optional-resumed',
+          schemaGeneration: contract.schemaGeneration,
+          deploymentMetadata: resumed.preflight.deploymentMetadata,
+        }),
+      });
+    } else {
+      const receipt = await reconcileEnvironmentDeployment('amber', {
+        ...f.options,
+        localContract: contract,
+        observeAuthority: async () => authority('amber', {
+          activeVersion: 'version-optional-reconciled',
+          deploymentMetadata: preflight.deploymentMetadata,
+        }),
+      });
+      assert.equal(receipt.manifestDigest, baseline().manifestDigest);
+    }
+  }
 });
 
 test('reclaim respects the shared target mutation lock and stale release locks recover from journals', (context) => {
@@ -2201,6 +2423,18 @@ test('a legacy baseline treats combined drift as setup-flow drift unless the ins
 
 test('the local contract splits the setup sources into an install contract and a setup flow', () => {
   const contract = readLocalEnvironmentContract({ projectRoot: process.cwd() });
+  assert.equal(
+    contract.manifestDigest,
+    'sha256:7f18704b748f5c02253f493b2562bcf471097a237305776d277ceb463ab9ed0a',
+  );
+  assert.equal(
+    contract.existingInstallManifestDigest,
+    'sha256:ebb63684f95e53b72033bd3f1b709268e6ec6a73aeac8c8ba119e5c66366e248',
+  );
+  assert.deepEqual(
+    contract.existingInstallScopes,
+    contract.requiredScopes.filter((scope: string) => !['lists:read', 'lists:write'].includes(scope)),
+  );
   assert.match(contract.installContractDigest, /^sha256:[a-f0-9]{64}$/);
   assert.match(contract.setupFlowDigest, /^sha256:[a-f0-9]{64}$/);
   assert.notEqual(contract.installContractDigest, contract.setupFlowDigest);

@@ -26,12 +26,21 @@ export interface SkillConfig {
  * Truncated to keep the Agent row bounded (name ≤120, title ≤160, desc ≤400).
  * Policy only — never a secret.
  */
+export interface McpToolInputSchemaProjection {
+  propertyNames: string[];
+  accountFields: Array<{ name: 'ad_account_id' | 'account_id'; type: 'string'; required: boolean }>;
+  ambiguous: boolean;
+  fingerprint: string;
+}
+
 export interface McpConnectionToolInfo {
   name: string;
   title?: string;
   description?: string;
   /** Server declaration captured during discovery; absent means undeclared. */
   readOnlyHint?: boolean;
+  /** Bounded account-scope evidence from the provider's discovered input schema. */
+  inputSchema?: McpToolInputSchemaProjection;
 }
 
 /** Owner-reviewed effects and optional exact input restrictions. */
@@ -72,10 +81,14 @@ export interface McpConnectionConfig {
   lifecycleStatus: 'pending' | 'ready' | 'failed';
   statusText: string;
   discoveredTools: McpConnectionToolInfo[];
+  /** Reviewed connectors never grant newly discovered tools automatically. */
+  toolAccessMode?: 'auto' | 'review';
   toolPolicies?: Record<string, McpToolPolicy>;
   allowedTools: string[];
   /** OAuth scopes are connection policy, never credentials. */
   oauthScope?: string;
+  /** Internal account OAuth generation used to fence in-flight tool calls. */
+  oauthAttemptId?: string;
   lastCheckedAt?: number;
   identity?: McpConnectionIdentity;
   /**
@@ -514,6 +527,7 @@ export interface ConnectionAccountMcpPolicy {
   /** The connector remains usable when no credential is stored. */
   credentialOptional?: boolean;
   discoveredTools: McpConnectionToolInfo[];
+  toolAccessMode?: 'auto' | 'review';
   toolPolicies?: Record<string, McpToolPolicy>;
   allowedTools: string[];
   oauthScope?: string;

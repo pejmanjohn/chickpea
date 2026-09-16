@@ -87,6 +87,15 @@ const VERSION = /^(?:version-[A-Za-z0-9._-]{1,96}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-
 const CREDENTIAL_CLASSES = Object.freeze([
   'auth', 'cookie', 'signing', 'recovery', 'setup', 'encryption',
 ]);
+// These permissions expose an additive feature. A lane installed before the
+// feature may keep its narrower grant, but no other manifest difference is
+// compatible with that existing installation.
+const OPTIONAL_EXISTING_INSTALL_BOT_SCOPES = Object.freeze([
+  'lists:read', 'lists:write',
+]);
+const OPTIONAL_EXISTING_INSTALL_BOT_SCOPE_SET = new Set(
+  OPTIONAL_EXISTING_INSTALL_BOT_SCOPES,
+);
 const RUNTIME_SECRET_SOURCE_BINDINGS = Object.freeze({
   auth: 'CHICKPEA_AUTH_SECRET',
   cookie: 'hkdf(CHICKPEA_AUTH_SECRET,chickpea/cookie/v1)',
@@ -706,9 +715,7 @@ export async function resumeEnvironmentDeployment(target, options = {}) {
     localContract, baseline, context, recoveryOptions,
   );
   if (localContract.schemaGeneration !== intent.schemaGeneration
-    || localContract.manifestDigest !== intent.deploymentMetadata.manifestDigest
-    || stableEnvironmentJson(localContract.requiredScopes)
-      !== stableEnvironmentJson(baseline.requiredScopes)
+    || intent.deploymentMetadata.manifestDigest !== baseline.manifestDigest
     || contractVerdict.schemaAdvancement !== true) {
     throw fail('MUTATION_AUTHORITY_CHANGED');
   }
@@ -857,10 +864,9 @@ export async function reconcileEnvironmentDeployment(target, options = {}) {
       ?? context.registration.sourceRevision,
   });
   if (localContract.schemaGeneration !== intent.schemaGeneration
-    || localContract.manifestDigest !== intent.deploymentMetadata.manifestDigest
+    || intent.deploymentMetadata.manifestDigest !== baseline.manifestDigest
     || contractVerdict.installChanged
-    || stableEnvironmentJson(localContract.requiredScopes)
-      !== stableEnvironmentJson(baseline.requiredScopes)) {
+    || !installedSlackContractMatchesBaseline(localContract, baseline)) {
     throw fail('MUTATION_AUTHORITY_CHANGED');
   }
   const lease = Object.freeze({
@@ -1424,8 +1430,25 @@ export function readLocalEnvironmentContract(options = {}) {
   const manifestPath = join(projectRoot, 'slack-app-manifest.json');
   let manifest;
   try { manifest = JSON.parse(readFileSync(manifestPath, 'utf8')); } catch { throw fail('INVALID_LOCAL_CONTRACT'); }
-  const requiredScopes = [...new Set(manifest?.oauth_config?.scopes?.bot ?? [])].sort();
+  const manifestBotScopes = manifest?.oauth_config?.scopes?.bot;
+  if (!Array.isArray(manifestBotScopes)) throw fail('INVALID_LOCAL_CONTRACT');
+  const requiredScopes = [...new Set(manifestBotScopes)].sort();
   if (!validScopes(requiredScopes)) throw fail('INVALID_LOCAL_CONTRACT');
+  const existingInstallScopes = requiredScopes.filter(
+    (scope) => !OPTIONAL_EXISTING_INSTALL_BOT_SCOPE_SET.has(scope),
+  );
+  const existingInstallManifest = {
+    ...manifest,
+    oauth_config: {
+      ...manifest.oauth_config,
+      scopes: {
+        ...manifest.oauth_config.scopes,
+        bot: manifestBotScopes.filter(
+          (scope) => !OPTIONAL_EXISTING_INSTALL_BOT_SCOPE_SET.has(scope),
+        ),
+      },
+    },
+  };
   const installFiles = options.installContractFiles ?? [...INSTALL_CONTRACT_FILES];
   const setupFlowFiles = options.setupFlowFiles ?? [...SETUP_FLOW_FILES];
   const setupFiles = options.setupContractFiles ?? [...installFiles, ...setupFlowFiles];
@@ -1470,6 +1493,8 @@ export function readLocalEnvironmentContract(options = {}) {
   return validateLocalContract({
     manifestDigest: digest(manifest),
     requiredScopes,
+    existingInstallManifestDigest: digest(existingInstallManifest),
+    existingInstallScopes,
     setupContractDigest: digest(setupSources),
     installContractDigest: digest(installSources),
     setupFlowDigest: digest(setupFlowSources),
@@ -2106,13 +2131,27 @@ function validateBaseline(input) {
 }
 
 function validateLocalContract(input) {
+  const hasExistingInstallManifestDigest = input?.existingInstallManifestDigest !== undefined;
+  const hasExistingInstallScopes = input?.existingInstallScopes !== undefined;
   if (!isRecord(input)
     || !exactKeys(input, [
-      'manifestDigest', 'requiredScopes', 'setupContractDigest', 'schemaGeneration',
-      'schemaHistory',
-    ], ['installContractDigest', 'setupFlowDigest', 'installContractFiles'])
+      'manifestDigest', 'requiredScopes', 'setupContractDigest', 'schemaGeneration', 'schemaHistory',
+    ], [
+      'existingInstallManifestDigest', 'existingInstallScopes',
+      'installContractDigest', 'setupFlowDigest', 'installContractFiles',
+    ])
     || !DIGEST.test(input.manifestDigest)
     || !validScopes(input.requiredScopes)
+    || hasExistingInstallManifestDigest !== hasExistingInstallScopes
+    || (hasExistingInstallManifestDigest
+      && (!DIGEST.test(input.existingInstallManifestDigest)
+        || !validScopes(input.existingInstallScopes)
+        || stableEnvironmentJson(input.existingInstallScopes)
+          !== stableEnvironmentJson(input.requiredScopes.filter(
+            (scope) => !OPTIONAL_EXISTING_INSTALL_BOT_SCOPE_SET.has(scope),
+          ))
+        || (input.existingInstallScopes.length === input.requiredScopes.length
+          && input.existingInstallManifestDigest !== input.manifestDigest)))
     || !DIGEST.test(input.setupContractDigest)
     || !optionalDigest(input.installContractDigest)
     || !optionalDigest(input.setupFlowDigest)
@@ -2126,6 +2165,20 @@ function validateLocalContract(input) {
     throw fail('INVALID_LOCAL_CONTRACT');
   }
   return input;
+}
+
+function installedSlackContractMatchesBaseline(local, baseline) {
+  // Deployment metadata keeps stamping the installed lane contract from the
+  // baseline. The candidate's whole manifest may differ only by requesting
+  // these known optional scopes for new or explicitly reauthorized installs.
+  return (local.manifestDigest === baseline.manifestDigest
+      && stableEnvironmentJson(local.requiredScopes)
+        === stableEnvironmentJson(baseline.requiredScopes))
+    || (typeof local.existingInstallManifestDigest === 'string'
+      && Array.isArray(local.existingInstallScopes)
+      && local.existingInstallManifestDigest === baseline.manifestDigest
+      && stableEnvironmentJson(local.existingInstallScopes)
+        === stableEnvironmentJson(baseline.requiredScopes));
 }
 
 /**
@@ -2192,9 +2245,7 @@ function assertLocalContractMatchesBaseline(local, baseline, context, options = 
     sourceRevision: options.setupDriftSourceRevision
       ?? context?.registration?.sourceRevision,
   });
-  if (local.manifestDigest !== baseline.manifestDigest
-    || stableEnvironmentJson(local.requiredScopes) !== stableEnvironmentJson(baseline.requiredScopes)
-    || drift.installChanged) {
+  if (!installedSlackContractMatchesBaseline(local, baseline) || drift.installChanged) {
     throw fail('INSTALL_CONTINUATION_REQUIRED', {
       recoveryAction: SETUP_CONTRACT_RECOVERY_ACTION,
     });

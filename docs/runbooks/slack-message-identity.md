@@ -188,7 +188,7 @@ wording comes from one builder, `buildArtifactToolsInstruction` in
 `src/sandbox/artifact-tool.ts`, which every lane that mounts the artifact tools
 renders. With no image model configured, the Agent says so first, points Owners
 at Settings → Model providers (Default image model), offers only what it can
-actually produce — a chart PNG, an SVG mockup, or copy — and never calls an SVG
+actually produce — an SVG mockup or copy — and never calls an SVG
 a finished or edited image. With an image model configured, the Agent addresses
 images already in the conversation by their per-turn `img:N` handles and never
 by filename, link, or Slack file id; it calls the image tool at most once per

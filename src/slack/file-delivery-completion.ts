@@ -2,7 +2,7 @@ import {
   createBashTool, createEditTool, createGlobTool, createGrepTool, createReadTool,
   createWriteTool, defineTool, useAgentFinish, useDataWriter, useDelivery,
   usePersistentState, useResponseStart,
-  type SandboxFactory, type SessionEnv, type StateSetter,
+  type Sandbox, type SandboxFactory, type StateSetter,
 } from '@flue/runtime';
 import * as v from 'valibot';
 import { bindFileDeliveryCheck } from './presentation-tool-policy.ts';
@@ -78,7 +78,7 @@ export function createFileDeliveryCompletion(update: StateSetter<FileDeliverySta
   }
   function wrapSandbox(sandbox: SandboxFactory): SandboxFactory {
     return {
-      createSessionEnv: (options) => sandbox.createSessionEnv(options),
+      createSandbox: (options) => sandbox.createSandbox(options),
       tools(env, options) {
         const tools = sandbox.tools?.(env, options) ?? [createReadTool(env), createWriteTool(env),
           createEditTool(env), createBashTool(env), createGrepTool(env), createGlobTool(env)];
@@ -113,7 +113,7 @@ export function createFileDeliveryCompletion(update: StateSetter<FileDeliverySta
     if (known?.fileId) discard([known.fileId]);
     update((previous) => ({ ...previous, outcomes: previous.outcomes.filter((file) => file.path !== path) }));
   }
-  async function deliverOnce(env: SessionEnv, input: FileDeliveryInput, binding: ArtifactDestinationBinding): Promise<ArtifactToolResult> {
+  async function deliverOnce(env: Sandbox, input: FileDeliveryInput, binding: ArtifactDestinationBinding): Promise<ArtifactToolResult> {
     assertArtifactDeliveryAllowed();
     const generation = state().generation;
     let path = input.path;
@@ -161,12 +161,12 @@ export function createFileDeliveryCompletion(update: StateSetter<FileDeliverySta
       return { attached: false, reason: 'unavailable' };
     }
   }
-  function deliver(env: SessionEnv, input: FileDeliveryInput, binding: ArtifactDestinationBinding): Promise<ArtifactToolResult> {
+  function deliver(env: Sandbox, input: FileDeliveryInput, binding: ArtifactDestinationBinding): Promise<ArtifactToolResult> {
     const task = deliveryTail.then(() => deliverOnce(env, input, binding));
     deliveryTail = task.then(() => {}, () => {});
     return task;
   }
-  async function complete(env: SessionEnv, files: FileDeliveryInput[], binding: ArtifactDestinationBinding, excludedPaths: string[] = []) {
+  async function complete(env: Sandbox, files: FileDeliveryInput[], binding: ArtifactDestinationBinding, excludedPaths: string[] = []) {
     assertArtifactDeliveryAllowed();
     // Validate exclusions before any side effect; absence from files is never removal.
     const before = state();
@@ -322,7 +322,7 @@ function inlineOutcome(bytes: Uint8Array): { inline?: string } {
   return inline === undefined ? {} : { inline };
 }
 
-function resolveFilePath(env: SessionEnv, path: string, binding: ArtifactDestinationBinding): string {
+function resolveFilePath(env: Sandbox, path: string, binding: ArtifactDestinationBinding): string {
   const resolved = sandboxArtifactPath(env, path);
   return binding.sandboxKind === 'cloudflare' ? workspaceArtifactPath(resolved) : resolved;
 }

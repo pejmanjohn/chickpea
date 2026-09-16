@@ -96,6 +96,10 @@
    `src/auth/setup-capability.mjs` are hard-gated against the lane baseline; a
    mismatch refuses with `INSTALL_CONTINUATION_REQUIRED`, and the recovery is to
    prove a fresh install on a disposable target and re-record the baseline.
+   An existing installation may omit the optional `lists:read` and `lists:write`
+   scopes when its entire manifest otherwise matches. That deployment preserves
+   the baseline and still verifies the exact recorded live grant; it needs no
+   Slack reinstall or baseline rewrite.
    Changes to the setup flow (`src/auth/setup-handoff.ts`,
    `src/management/setup-routes.ts`, `src/config/onboarding-state.ts`,
    `src/admin/onboarding-proof.ts`) deploy normally and mark the lane
@@ -120,6 +124,32 @@ do not set this just to clear a refusal. Both package metadata and the selected
 remote must match that identity. Candidate metadata cannot redefine the default.
 This is an operator error guard, not a sandbox for untrusted deployment code.
 
+## Product telemetry isolation
+
+Before synthetic activity on any deployed target, run
+`npm run verify:telemetry -- --worker <resolved-worker-name>
+--account-id <resolved-account-id> --output
+<private-policy-receipt.json>`, including the target's recorded `--profile` and
+`--env` when present. Retain the receipt with the target capability's
+private evidence. Repeat after a serving-version or binding change. Every
+traffic-serving version must explicitly label telemetry `test` or verifiably
+disable it. Enabled telemetry without a `test` label, an unverified opt-out, or a
+serving change blocks dependent live actions until resolved through the target's
+normal configuration and deployment flow.
+
+Amber/Cobalt builds stamp `CHICKPEA_TELEMETRY_ENVIRONMENT=test` automatically,
+and the guarded deployment validates that artifact setting. Existing serving
+versions still require readback; source configuration alone is not proof.
+Local lanes already use `development`, and the offline Cloudflare smoke Worker
+disables telemetry directly in its bindings.
+
+For a fresh disposable installation outside those named targets, apply `test`
+or the telemetry opt-out before the first Slack connection, then run the same
+serving-version check. Do not infer this setting from a Worker name or from
+the shell's environment. Preserve the receipt before tearing down disposable
+state. See [product telemetry](../../../docs/runbooks/product-telemetry.md#keeping-tests-out-of-product-metrics)
+for the distinction between future labeling and historical exclusions.
+
 ## Repair worktrees and serving candidates
 
 Give repair agents separate worktrees based on an identified candidate, with
@@ -141,10 +171,10 @@ permits a stale claim, a mid-deploy HEAD change, or mutation of another task's l
 Refresh affected evidence after a candidate switch. See the
 [batch checkpoint policy](modes.md#repair-loop-and-final-checkpoint).
 
-Use the existing short UI mutex for competing browser actions. Release it during
-human waits and retain the affected browser reservation. A hostname change does
-not change local ownership. Recovery requires proof that the prior owner stopped.
-Never copy lock state between machines.
+Use task-owned browser tabs as described in [hosts.md](hosts.md). Coordinate only
+operations that affect an actual shared resource. A hostname change does not
+change environment or expensive-check lock ownership. Recovery of those locks
+requires proof that the prior owner stopped. Never copy lock state between machines.
 
 ## Fixture inventory
 

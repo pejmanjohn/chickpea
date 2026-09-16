@@ -20,7 +20,6 @@ import { appendRunJournal, createRunJournal, readRunJournal } from './safety/jou
 import { assertPrivateEvidencePath } from './safety/evidence.ts';
 import { acquireTargetLock, readTargetLock, recoverTargetLock, releaseOwnedTargetLock, targetLockPath,
   type TargetLockOwner } from './safety/lock.ts';
-import { HostUiMutex, type UiWindowLease } from './safety/ui-mutex.ts';
 import type { ActionRequiredRecord, AssertionRecord, RunnerRecord, TerminalRecord, WaitingRecord } from './state.ts';
 
 export interface WindowCapture<Value> {
@@ -32,10 +31,13 @@ export interface WindowCapture<Value> {
   value: Value;
 }
 
+/** Per-operation capture validity only; this does not reserve a browser, tab, or native UI. */
 export interface UiWindow {
   /** The private driver calls this only with the actual Computer Use window result. */
   capture<Value>(capture: WindowCapture<Value>): WindowCapture<Value>;
+  /** Suspend capture certification while this operation waits at a human gate. */
   pause(): void;
+  /** Reattest the target before this operation can certify another capture. */
   resume(): Promise<void>;
 }
 
@@ -76,7 +78,11 @@ export interface VisibleAssertion {
   pending?: boolean;
 }
 
-/** Implementation stays private. No CLI accepts action, assertion, or cleanup verdicts. */
+/**
+ * Implementation stays private. A driver must stay in its task's own tab/window
+ * and separately coordinate any truly shared native operation. No CLI accepts
+ * action, assertion, or cleanup verdicts.
+ */
 export interface ComputerUseDriver {
   transport: 'computer_use';
   browserAlias: string;
@@ -109,7 +115,6 @@ export class AttendedLiveCoordinator {
   private owner: TargetLockOwner;
   private readonly lockPath: string;
   private readonly operator: OperatorDriver;
-  private readonly uiMutex: HostUiMutex;
   private readonly usedCaptures = new Set<string>();
   private readonly cleanupProofs = new Map<string, PostflightProof>();
   private started = false;
@@ -118,7 +123,6 @@ export class AttendedLiveCoordinator {
   constructor(private readonly request: Omit<AdvanceLiveRunRequest, 'signal' | 'now'>,
     private readonly dependencies: {
       driver: ComputerUseDriver;
-      uiMutexRoot: string;
       attest(): Promise<DoctorSnapshot>;
       now?: () => number;
       observationTimeoutMs?: number;
@@ -154,7 +158,6 @@ export class AttendedLiveCoordinator {
     assertPrivateEvidencePath(request.journalPath, dirname(this.lockPath));
     this.owner = { runId: request.runId, pid: process.pid, host: hostname(), startedAt: this.at() };
     this.operator = new OperatorDriver(new JournalOperatorChallengeLedger(request.journalPath, this.identity), { now: () => this.now() });
-    this.uiMutex = new HostUiMutex(dependencies.uiMutexRoot);
   }
 
   async run(): Promise<TerminalRecord> {
@@ -526,16 +529,24 @@ export class AttendedLiveCoordinator {
   private async window<Value>(caseId: string, stepId: string,
     operation: (ui: UiWindow) => Promise<WindowCapture<Value>>): Promise<Value> {
     await this.snapshot(true);
-    let lease: UiWindowLease = this.uiMutex.acquire(this.request.runId, this.dependencies.driver.browserAlias);
+    let state: 'active' | 'paused' | 'closed' = 'active';
     const certified = new WeakMap<object, WindowCapture<unknown>>();
+    const assertActive = () => {
+      if (state !== 'active') throw new CoordinatorError('WINDOW_CAPTURE_REQUIRED');
+    };
     const ui: UiWindow = {
-      pause: () => lease.pause(),
+      pause: () => {
+        assertActive();
+        state = 'paused';
+      },
       resume: async () => {
+        if (state !== 'paused') throw new CoordinatorError('WINDOW_CAPTURE_REQUIRED');
         await this.snapshot(true);
-        lease = this.uiMutex.acquire(this.request.runId, this.dependencies.driver.browserAlias);
+        if (state !== 'paused') throw new CoordinatorError('WINDOW_CAPTURE_REQUIRED');
+        state = 'active';
       },
       capture: <Result>(capture: WindowCapture<Result>) => {
-        lease.assertOwned();
+        assertActive();
         if (capture.transport !== 'computer_use' || capture.observationScope !== 'window'
           || !capture.windowId || !/^sha256:[a-f0-9]{64}$/u.test(capture.captureDigest)
           || !Number.isFinite(Date.parse(capture.observedAt))
@@ -550,7 +561,8 @@ export class AttendedLiveCoordinator {
     };
     try {
       const returned = await operation(ui);
-      lease.assertOwned();
+      assertActive();
+      state = 'closed';
       const capture = certified.get(returned);
       if (!capture) throw new CoordinatorError('WINDOW_CAPTURE_REQUIRED');
       // Grade freshness when the driver returns its observation. Subsequent
@@ -560,14 +572,12 @@ export class AttendedLiveCoordinator {
         throw new CoordinatorError('WINDOW_CAPTURE_REQUIRED');
       }
       await this.snapshot(true);
-      lease.assertOwned();
       appendRunJournal(this.request.journalPath, { type: 'computer_use_window', caseId, stepId,
         targetAlias: this.target.targetAlias, captureDigest: capture.captureDigest,
         windowDigest: `sha256:${createHash('sha256').update(capture.windowId).digest('hex')}`,
         observedAt: capture.observedAt }, this.identity);
-      lease.finishReservation();
       return capture.value as Value;
-    } finally { lease.release(); }
+    } finally { state = 'closed'; }
   }
 
   private async snapshot(owned: boolean): Promise<DoctorSnapshot> {

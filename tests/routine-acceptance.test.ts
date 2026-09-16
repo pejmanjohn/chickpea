@@ -9,12 +9,18 @@ import type { AgentInstanceHandle } from '@flue/runtime';
 
 import { createRoutineAdminApi } from '../src/admin/routines-api.ts';
 import { ROUTINE_RESULT_DATA_NAME } from '../src/agents/routine-execution.ts';
-import type { EffectiveSlackConfig } from '../src/config/effective-config.ts';
+import {
+  computeSnapshotHash,
+  type EffectiveSlackConfig,
+} from '../src/config/effective-config.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import { RoutineAdmissionController } from '../src/routines/admission.ts';
-import { routineDestinationBindingDigest } from '../src/routines/ids.ts';
+import { hashRoutineValue, routineDestinationBindingDigest } from '../src/routines/ids.ts';
 import { executeRoutineOccurrence } from '../src/routines/execution.ts';
-import { RoutineRuntimeError } from '../src/routines/runtime.ts';
+import {
+  resolveRoutineRuntimeAccess,
+  RoutineRuntimeError,
+} from '../src/routines/runtime.ts';
 import { normalizeRoutineSchedule } from '../src/routines/schedule.ts';
 import { RoutineScheduler } from '../src/routines/scheduler.ts';
 import { SqliteRoutineStore } from '../src/routines/store.ts';
@@ -87,6 +93,7 @@ async function seedDirectAcceptanceRoutine(
   statePath: string,
   now: number,
   suffix: string,
+  triggerKind: 'schedule' | 'once' = 'schedule',
 ): Promise<{
   store: SqliteRoutineStore;
   configStore: SqliteConfigStore;
@@ -129,15 +136,17 @@ async function seedDirectAcceptanceRoutine(
         name: 'Private acceptance routine',
         description: '',
         taskText: 'Check the current private state.',
-        triggerKind: 'schedule',
-        scheduleInput: '0 * * * *',
-        scheduleJson: JSON.stringify({ version: 1, kind: 'cron', expression: '0 * * * *' }),
+        triggerKind,
+        scheduleInput: triggerKind === 'once' ? 'In one minute' : '0 * * * *',
+        scheduleJson: triggerKind === 'once'
+          ? JSON.stringify({ version: 1, kind: 'once', at: now })
+          : JSON.stringify({ version: 1, kind: 'cron', expression: '0 * * * *' }),
         timezone: 'UTC',
         outputPolicy: 'post',
         authorityMode: 'live_direct_member_v1',
       },
       nextRunAt: now,
-      projectedDailyStarts: 1,
+      projectedDailyStarts: triggerKind === 'once' ? 0 : 1,
       reservations: [{ windowStart: now, count: 1 }],
     },
     idempotencyKey: `acceptance:create:${suffix}`,
@@ -170,6 +179,145 @@ async function seedDirectAcceptanceRoutine(
   });
   return { store, configStore, routine, ownerAgentId };
 }
+
+test('a private once occurrence reattaches a legacy catalog hash and delivers to its saved thread', async (context) => {
+  const directory = mkdtempSync(join(tmpdir(), 'chickpea-direct-once-catalog-'));
+  const statePath = join(directory, 'state.sqlite');
+  context.after(() => rmSync(directory, { recursive: true, force: true }));
+  const now = Date.now();
+  const fixture = await seedDirectAcceptanceRoutine(statePath, now, 'once_catalog', 'once');
+  const destination = fixture.routine.destination;
+  assert.equal(destination.kind, 'direct_thread');
+  if (destination.kind !== 'direct_thread') throw new Error('expected direct destination');
+  const actorSlackUserId = 'U_DIRECT_once_catalog';
+  let catalogRevision = '0';
+  let legacyAdmittedHash: string | undefined;
+  let userChecks = 0;
+  let dmChecks = 0;
+  let redispatches = 0;
+  const posts: Array<Record<string, unknown>> = [];
+  const client = {
+    users: { info: async () => {
+      userChecks += 1;
+      return { ok: true, user: {
+        id: actorSlackUserId, team_id: fixture.routine.workspaceId,
+        deleted: false, is_bot: false, is_app_user: false, is_restricted: false,
+        is_ultra_restricted: false, is_stranger: false,
+      } };
+    } },
+    conversations: { open: async () => {
+      dmChecks += 1;
+      return { ok: true, channel: { id: destination.conversationId, is_im: true } };
+    } },
+    chat: { postMessage: async (input: Record<string, unknown>) => {
+      posts.push(input);
+      return { ok: true, channel: destination.conversationId, ts: '1787853828.000200' };
+    } },
+  };
+  const resolveAccess = async (run: RoutineRun, routine: RoutineDefinition) => {
+    const reference = await fixture.configStore.getAgentScheduleReference(routine.id);
+    const agent = await fixture.configStore.getAgent(fixture.ownerAgentId);
+    assert.ok(reference);
+    assert.ok(agent);
+    const access = await resolveRoutineRuntimeAccess(run, routine, undefined, {
+      authority: async () => ({
+        reference,
+        agent,
+        assignment: {
+          workspaceId: routine.workspaceId,
+          channelId: routine.channelId,
+          agentId: agent.id,
+          agent,
+          model: config.model,
+          modelAttribution: {
+            source: 'workspace_default', workspaceDefaultRevision: 2,
+            providerId: 'anthropic', catalogRevision,
+          },
+        },
+        actorSlackUserId,
+        effectiveConnections: [],
+      }),
+      installationExecution: async () => ({
+        workspaceId: routine.workspaceId, transportMode: 'gateway',
+        botUserId: 'UBOT', client: client as never,
+      }),
+    });
+    if (catalogRevision !== '0') return access;
+    legacyAdmittedHash = hashRoutineValue(JSON.stringify({
+      config: computeSnapshotHash(access.config),
+      workspaceId: routine.workspaceId,
+      actorSlackUserId,
+      actorMembershipId: reference.runsAsMembershipId,
+      authorityReceiptId: reference.authorityReceiptId,
+      botUserId: 'UBOT',
+      destinationKind: routine.destination.kind,
+      destinationBindingDigest: reference.destinationBindingDigest,
+    }));
+    return { ...access, accessHash: legacyAdmittedHash };
+  };
+  try {
+    const run = await fixture.store.createOccurrence({
+      runId: 'rrun_direct_once_catalog',
+      idempotencyKey: 'acceptance:run:direct-once-catalog',
+      routineId: fixture.routine.id,
+      routineVersion: fixture.routine.version,
+      scheduledFor: now,
+      triggerSource: 'once',
+      queuedAt: now,
+      deadlineAt: now + 60_000,
+    });
+    const attempt = await fixture.store.startAdmissionAttempt({
+      occurrenceId: run.id, owner: 'heartbeat',
+      invokeStartedAt: now, leaseUntil: now + 30_000,
+    });
+    const dependencies = {
+      ...executionDependencies(() => now + 1),
+      resolveAccess,
+      loadCatalog: async () => ({ status: 'bundled' as const, revision: 0 }),
+    };
+    assert.equal(await executeRoutineOccurrence({
+      env: {}, store: fixture.store, occurrenceId: run.id, attempt: attempt.attempt,
+    }, {
+      ...dependencies,
+      handle: handle(new DOMException('reader restarted', 'AbortError')),
+    }), 'resumable');
+    const admitted = await fixture.store.getRun(run.id);
+    assert.equal(admitted?.resolvedAccessHash, legacyAdmittedHash);
+    assert.equal(admitted?.status, 'running');
+
+    catalogRevision = '1';
+    const resumed = handle();
+    resumed.dispatch = async () => {
+      redispatches += 1;
+      throw new Error('must not redispatch');
+    };
+    resumed.read = async () => ({
+      submissionId: 'submission_acceptance', uid: 'uid_acceptance', text: 'Updated result',
+      data: { [ROUTINE_RESULT_DATA_NAME]: [{ outcome: 'succeeded', message: 'Updated result' }] },
+    });
+    assert.equal(await executeRoutineOccurrence({
+      env: {}, store: fixture.store, occurrenceId: run.id, attempt: attempt.attempt,
+    }, {
+      ...dependencies,
+      loadCatalog: async () => ({ status: 'activated' as const, revision: 1 }),
+      handle: resumed,
+    }), 'completed');
+
+    const completed = await fixture.store.getRun(run.id);
+    assert.equal(completed?.status, 'succeeded');
+    assert.equal(completed?.deliveryStatus, 'delivered');
+    assert.equal((await fixture.store.getRoutine(fixture.routine.id))?.state, 'completed');
+    assert.equal(redispatches, 0);
+    assert.equal(userChecks, 2);
+    assert.equal(dmChecks, 2);
+    assert.equal(posts.length, 1);
+    assert.equal(posts[0]?.channel, destination.conversationId);
+    assert.equal(posts[0]?.thread_ts, destination.threadTs);
+  } finally {
+    fixture.configStore.close();
+    fixture.store.close();
+  }
+});
 
 test('scheduled work crosses creation, v2 receipt, restart, reattached read, and Admin once', async (context) => {
   const directory = mkdtempSync(join(tmpdir(), 'chickpea-routine-acceptance-'));

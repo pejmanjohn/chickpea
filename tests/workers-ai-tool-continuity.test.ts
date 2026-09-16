@@ -1,10 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { init, useModel, useTool } from '@flue/runtime';
+import { init, useAgentFinish, useModel, useTool } from '@flue/runtime';
 import { start } from '@flue/runtime/node';
-import { cloudflareBindingProvider } from '@flue/runtime/cloudflare/workers-ai';
 import * as v from 'valibot';
-import { createCloudflareBindingProvider, cloudflareBindingProviderOptions } from '../src/cloudflare-provider.ts';
+import { createCloudflareBindingProvider } from '../src/cloudflare-provider.ts';
 
 test('Workers AI stop-with-tool-calls commits tool results and retains the conversation', { timeout: 15_000 }, async () => {
   let calls = 0;
@@ -17,6 +16,7 @@ test('Workers AI stop-with-tool-calls commits tool results and retains the conve
   }
   const provider = createCloudflareBindingProvider({ run: async (_model, inputs) => {
     generations += 1;
+    if (generations > 3) throw new Error('Unexpected additional continuity model call.');
     if (generations === 3) assert.match(JSON.stringify(inputs.messages), /Fixture is CEDAR/);
     const deltas = generations === 1 ? [
       { reasoning_content: 'Read the fixture.' },
@@ -40,40 +40,50 @@ test('Workers AI stop-with-tool-calls commits tool results and retains the conve
   } finally { await runtime.stop(); }
 });
 
-test('a conversation with an older stop/tool failure accepts a new turn without rerunning its tool', { timeout: 15_000 }, async () => {
+test('a conversation with a failed post-tool finish accepts a new turn without rerunning its tool', { timeout: 15_000 }, async () => {
   let fixed = false;
   let calls = 0;
+  let finishFailures = 0;
   let generations = 0;
   function LegacyProbe() {
     useModel('cloudflare/@cf/zai-org/glm-5.3-flash');
     useTool({ name: 'read_fixture', description: 'Read a fixture.', output: v.string(),
       run: () => { calls += 1; return { output: 'CEDAR' }; } });
+    useAgentFinish(() => {
+      if (!fixed) {
+        finishFailures += 1;
+        throw new Error('Synthetic post-tool finish failure.');
+      }
+    });
     return 'Read the fixture.';
   }
+  LegacyProbe.durability = { maxAttempts: 1, timeoutMs: 10_000 };
   const binding = { run: async (_model: string, inputs: Record<string, unknown>) => {
     generations += 1;
-    if (fixed) assert.match(JSON.stringify(inputs.messages), /RETAINED_REQUEST/);
-    const delta = fixed ? { content: 'Retained conversation resumed.' }
-      : { tool_calls: [{ index: 0, id: 'call_legacy', type: 'function',
-        function: { name: 'read_fixture', arguments: '{}' } }] };
+    if (generations > 3) throw new Error('Unexpected additional recovery model call.');
+    if (fixed) {
+      const messages = JSON.stringify(inputs.messages);
+      assert.match(messages, /RETAINED_REQUEST/);
+      assert.match(messages, /CEDAR/);
+    }
+    const delta = generations === 1
+      ? { tool_calls: [{ index: 0, id: 'call_legacy', type: 'function',
+        function: { name: 'read_fixture', arguments: '{}' } }] }
+      : { content: fixed ? 'Retained conversation resumed.' : 'The fixture was read.' };
     return new Response(`data: ${JSON.stringify({ choices: [{ index: 0, delta, finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n`,
       { headers: { 'content-type': 'text/event-stream' } });
   } };
-  const raw = cloudflareBindingProvider(cloudflareBindingProviderOptions(binding));
-  const normalized = createCloudflareBindingProvider(binding);
-  const runtime = await start({ agents: [{ agent: LegacyProbe, name: 'legacy-tool-continuity' }], providers: [{
-    ...normalized,
-    stream: (...args) => (fixed ? normalized : raw).stream(...args),
-    streamSimple: (...args) => (fixed ? normalized : raw).streamSimple(...args),
-  }] });
+  const provider = createCloudflareBindingProvider(binding);
+  const runtime = await start({ agents: [{ agent: LegacyProbe, name: 'legacy-tool-continuity' }], providers: [provider] });
   try {
     const agent = init(LegacyProbe, { id: 'retained-tool-failure' });
     await assert.rejects(async () => agent.read(await agent.dispatch('RETAINED_REQUEST: read the fixture.')));
-    assert.equal(calls, 1, 'the original tool ran before its result commit failed');
+    assert.equal(finishFailures, 1, 'the scripted finish failure must cause the rejected submission');
+    assert.equal(calls, 1, 'the original tool completed before the finish hook failed');
     fixed = true;
     const reply = await agent.read(await agent.dispatch('Continue this same conversation.'));
     assert.equal(reply.text, 'Retained conversation resumed.');
     assert.equal(calls, 1, 'the old tool must not run again');
-    assert.equal(generations, 2);
+    assert.equal(generations, 3);
   } finally { await runtime.stop(); }
 });

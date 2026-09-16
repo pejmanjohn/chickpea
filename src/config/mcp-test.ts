@@ -8,13 +8,29 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { CfWorkerJsonSchemaValidator } from '@modelcontextprotocol/sdk/validation/cfworker';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
+import { sha256 } from '@noble/hashes/sha2.js';
+import { bytesToHex } from '@noble/hashes/utils.js';
 
 import { McpBlockedUrlError } from './mcp-errors.ts';
+import {
+  META_ADS_ACCOUNT_HELPER,
+  META_ADS_FIELD_HELPER,
+  isMetaAdsMcpConnection,
+  isMetaAdsHelperTool,
+  isMetaAdsWriteTool,
+  isReviewedMetaAdsTool,
+  metaAdsNonAccountIdArgumentNames,
+  metaAdsWriteSchemaContract,
+} from './meta-ads-policy.ts';
 import {
   createMcpGuardedFetch,
   validateMcpUrl,
   type McpGuardedFetchOptions,
 } from './mcp-url.ts';
+import type {
+  McpConnectionToolInfo,
+  McpToolInputSchemaProjection,
+} from './types.ts';
 
 /**
  * Shared connect + discover routine for MCP connections. Reused by the admin
@@ -32,19 +48,22 @@ import {
 const DEFAULT_CONNECT_TIMEOUT_MS = 8_000;
 const DEFAULT_CALL_TIMEOUT_MS = 30_000;
 const MAX_TOOLS = 50;
+const MAX_META_DISCOVERY_RAW_TOOLS = 1_024;
+const MAX_META_DISCOVERY_PAGES = 20;
+const MAX_META_DISCOVERY_TIMEOUT_MS = 30_000;
 const NAME_MAX = 120;
 const DESCRIPTION_MAX = 400;
 const TOOL_NAME_PREFIX = /^mcp__[^_]+(?:_[^_]+)*__/;
-
-interface McpDiscoveredTool {
-  name: string;
-  title?: string;
-  description?: string;
-  readOnlyHint?: boolean;
-}
+const MAX_SCHEMA_DEPTH = 16;
+const MAX_SCHEMA_NODES = 4_096;
+const MAX_SCHEMA_KEYS = 256;
+const MAX_SCHEMA_ARRAY = 256;
+const MAX_SCHEMA_STRING = 4_096;
+const MAX_PROJECTED_PROPERTIES = MAX_SCHEMA_KEYS;
+const MAX_PROPERTY_NAME = 120;
 
 export interface McpDiscoveryResult {
-  tools: McpDiscoveredTool[];
+  tools: McpConnectionToolInfo[];
 }
 
 export interface McpConnectInput {
@@ -53,6 +72,10 @@ export interface McpConnectInput {
   url: string;
   transport: 'streamable-http' | 'sse';
   headers: Record<string, string>;
+  /** When present, each request resolves fresh headers instead of retaining these headers. */
+  resolveHeaders?: () => Promise<Record<string, string>>;
+  /** Optional policy response boundary used by reviewed server adapters. */
+  transformResponse?: (request: Request, response: Response) => Promise<Response>;
   /** Deadline around the initial connect (Flue's timeoutMs does not bound it). */
   connectTimeoutMs?: number;
   /** Per-request timeout passed to `createMcpConnection` (bounds tool calls). */
@@ -70,9 +93,11 @@ const connectWithFlueV2: McpConnector = (name, definition) =>
   createMcpConnection({ name, ...definition });
 
 /**
- * Connect + list tools + close. Returns truncated, prefix-stripped tool
- * metadata (max 50). Throws classifiable errors; callers map via
- * classify/safeText. The connection is always closed in `finally`.
+ * Connect + list tools + close. Generic servers retain their first 50 tools.
+ * Meta Ads scans a separately bounded complete catalog and retains only the
+ * reviewed reporting tools, including schema-incompatible entries that the UI
+ * must explain. Throws classifiable errors; callers map via classify/safeText.
+ * The connection is always closed in `finally`.
  */
 export async function discoverMcpTools(
   input: McpConnectInput,
@@ -84,7 +109,11 @@ export async function discoverMcpTools(
   if (!connect) return discoverProtocolTools(input, createGuardedFetch);
   const connection = await connectMcp(input, connect);
   try {
-    return { tools: mapTools(input.id, connection.tools) };
+    return { tools: mapTools(
+      input.id,
+      connection.tools,
+      isMetaAdsMcpConnection({ url: input.url }),
+    ) };
   } finally {
     await connection.close().catch(() => undefined);
   }
@@ -117,31 +146,67 @@ async function discoverProtocolTools(
       input.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS,
       (error) => controller.abort(error),
     );
-    const tools: McpDiscoveredTool[] = [];
+    const tools: McpConnectionToolInfo[] = [];
     const cursors = new Set<string>();
+    const metaAds = isMetaAdsMcpConnection({ url: validated.url });
+    const reviewedNames = new Set<string>();
+    let rawToolCount = 0;
+    let pageCount = 0;
     let cursor: string | undefined;
-    do {
-      const page = await client.listTools(cursor ? { cursor } : {}, {
-        timeout: input.callTimeoutMs ?? DEFAULT_CALL_TIMEOUT_MS,
-      });
-      for (const tool of page.tools) {
-        if (tool.execution?.taskSupport === 'required') continue;
-        if (tools.length >= MAX_TOOLS) break;
-        if (!supportedToolName(tool.name)) continue;
-        const description = truncate(tool.description, DESCRIPTION_MAX);
-        const title = truncate(tool.title ?? tool.annotations?.title, 160);
-        tools.push({
-          name: tool.name,
-          ...(title ? { title } : {}),
-          ...(description ? { description } : {}),
-          ...(typeof tool.annotations?.readOnlyHint === 'boolean'
-            ? { readOnlyHint: tool.annotations.readOnlyHint } : {}),
+    const listTools = async (): Promise<void> => {
+      do {
+        pageCount += 1;
+        const page = await client.listTools(cursor ? { cursor } : {}, {
+          timeout: input.callTimeoutMs ?? DEFAULT_CALL_TIMEOUT_MS,
         });
-      }
-      cursor = page.nextCursor;
-      if (cursor && cursors.has(cursor)) throw new Error('MCP discovery repeated a cursor.');
-      if (cursor) cursors.add(cursor);
-    } while (cursor && tools.length < MAX_TOOLS);
+        rawToolCount += page.tools.length;
+        if (metaAds && rawToolCount > MAX_META_DISCOVERY_RAW_TOOLS) {
+          throw new Error('Meta Ads MCP discovery exceeded the raw tool limit.');
+        }
+        for (const tool of page.tools) {
+          if (metaAds && isReviewedMetaAdsTool(tool.name)) {
+            if (reviewedNames.has(tool.name)) {
+              throw new Error(`Meta Ads MCP discovery returned duplicate reviewed tool ${tool.name}.`);
+            }
+            reviewedNames.add(tool.name);
+          }
+          if (metaAds && !isReviewedMetaAdsTool(tool.name)) continue;
+          if (tool.execution?.taskSupport === 'required') continue;
+          if (!metaAds && tools.length >= MAX_TOOLS) break;
+          if (!supportedToolName(tool.name)) continue;
+          const description = truncate(tool.description, DESCRIPTION_MAX);
+          const title = truncate(tool.title ?? tool.annotations?.title, 160);
+          const inputSchema = projectMcpToolInputSchema(
+            tool.inputSchema,
+            metaAds ? tool.name : undefined,
+          );
+          tools.push({
+            name: tool.name,
+            ...(title ? { title } : {}),
+            ...(description ? { description } : {}),
+            ...(typeof tool.annotations?.readOnlyHint === 'boolean'
+              ? { readOnlyHint: tool.annotations.readOnlyHint } : {}),
+            inputSchema,
+          });
+        }
+        cursor = page.nextCursor;
+        if (cursor && cursors.has(cursor)) throw new Error('MCP discovery repeated a cursor.');
+        if (cursor) cursors.add(cursor);
+        if (metaAds && cursor && pageCount >= MAX_META_DISCOVERY_PAGES) {
+          throw new Error('Meta Ads MCP discovery exceeded the page limit.');
+        }
+      } while (cursor && (metaAds || tools.length < MAX_TOOLS));
+    };
+    if (metaAds) {
+      await raceDeadline(
+        listTools(),
+        Math.min(input.callTimeoutMs ?? DEFAULT_CALL_TIMEOUT_MS, MAX_META_DISCOVERY_TIMEOUT_MS),
+        (error) => controller.abort(error),
+        'Meta Ads MCP discovery',
+      );
+      return { tools };
+    }
+    await listTools();
     return { tools };
   } finally {
     controller.abort();
@@ -166,15 +231,31 @@ export async function connectMcp(
   const callTimeoutMs = input.callTimeoutMs ?? DEFAULT_CALL_TIMEOUT_MS;
   const controller = new AbortController();
   let timedOut = false;
+  const guardedFetch = createGuardedFetch({
+    allowedOrigin: new URL(validated.url).origin,
+    signal: controller.signal,
+  });
+  const fetch = input.resolveHeaders || input.transformResponse
+    ? async (requestInput: RequestInfo | URL, requestInit?: RequestInit): Promise<Response> => {
+        const request = new Request(requestInput, requestInit);
+        const headers = new Headers(request.headers);
+        if (input.resolveHeaders) {
+          for (const [name, value] of Object.entries(await input.resolveHeaders())) headers.set(name, value);
+        }
+        const outbound = new Request(request, { headers });
+        const transformRequest = input.transformResponse ? outbound.clone() : undefined;
+        const response = await guardedFetch(outbound);
+        return input.transformResponse
+          ? input.transformResponse(transformRequest!, response)
+          : response;
+      }
+    : guardedFetch;
   const pending = connect(input.id, {
     url: validated.url,
     transport: input.transport,
-    headers: input.headers,
+    headers: input.resolveHeaders ? {} : input.headers,
     timeoutMs: callTimeoutMs,
-    fetch: createGuardedFetch({
-      allowedOrigin: new URL(validated.url).origin,
-      signal: controller.signal,
-    }),
+    fetch,
   });
   // A non-conforming connector may ignore the abort and resolve after our
   // deadline. Reclaim that late connection instead of leaking it indefinitely.
@@ -194,11 +275,12 @@ function raceDeadline<T>(
   promise: Promise<T>,
   ms: number,
   onTimeout: (timeoutError: Error) => void,
+  label = 'connect',
 ): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {
-      const timeoutError = new Error('connect timeout after ' + ms + 'ms');
+      const timeoutError = new Error(label + ' timeout after ' + ms + 'ms');
       onTimeout(timeoutError);
       reject(timeoutError);
     }, ms);
@@ -208,17 +290,30 @@ function raceDeadline<T>(
   });
 }
 
-function mapTools(id: string, tools: ToolDefinition[]): McpDiscoveredTool[] {
-  const mapped: McpDiscoveredTool[] = [];
+function mapTools(id: string, tools: ToolDefinition[], metaAds = false): McpConnectionToolInfo[] {
+  if (metaAds && tools.length > MAX_META_DISCOVERY_RAW_TOOLS) {
+    throw new Error('Meta Ads MCP discovery exceeded the raw tool limit.');
+  }
+  const mapped: McpConnectionToolInfo[] = [];
+  const reviewedNames = new Set<string>();
   for (const raw of tools) {
-    if (mapped.length >= MAX_TOOLS) break;
-    if (!supportedToolName(stripPrefix(id, raw.name))) continue;
+    const name = stripPrefix(id, raw.name);
+    if (metaAds) {
+      if (!isReviewedMetaAdsTool(name)) continue;
+      if (reviewedNames.has(name)) {
+        throw new Error(`Meta Ads MCP discovery returned duplicate reviewed tool ${name}.`);
+      }
+      reviewedNames.add(name);
+    } else if (mapped.length >= MAX_TOOLS) {
+      break;
+    }
+    if (!supportedToolName(name)) continue;
     mapped.push(toDiscovered(id, raw));
   }
   return mapped;
 }
 
-function toDiscovered(id: string, raw: ToolDefinition): McpDiscoveredTool {
+function toDiscovered(id: string, raw: ToolDefinition): McpConnectionToolInfo {
   const name = stripPrefix(id, raw.name);
   // Flue's adapter folds any MCP tool title into the description string, so the
   // adapted ToolDefinition never exposes a title field — we surface description
@@ -229,6 +324,307 @@ function toDiscovered(id: string, raw: ToolDefinition): McpDiscoveredTool {
     name,
     ...(description ? { description } : {}),
   };
+}
+
+/**
+ * Keep only the authenticated schema evidence needed to prove an exact Meta
+ * ad-account argument. The full schema is hashed, not persisted. Unsupported
+ * root composition, alternate account selectors, optional account fields, and
+ * unbounded schemas remain discoverable but cannot become account-scoped tools.
+ */
+export function projectMcpToolInputSchema(
+  inputSchema: unknown,
+  metaAdsToolName?: string,
+): McpToolInputSchemaProjection {
+  const bounded = boundedCanonicalSchema(inputSchema);
+  const accountFields: McpToolInputSchemaProjection['accountFields'] = [];
+  let propertyNames: string[] = [];
+  let ambiguous = bounded.truncated;
+  const metaAdsHelper = metaAdsToolName !== undefined && isMetaAdsHelperTool(metaAdsToolName);
+  const metaAdsWrite = metaAdsToolName !== undefined && isMetaAdsWriteTool(metaAdsToolName);
+  const helperEmptyProperties = metaAdsHelper && isRecord(inputSchema) && inputSchema.properties === undefined;
+  if (!isRecord(inputSchema) || inputSchema.type !== 'object' ||
+      (!isRecord(inputSchema.properties) && !helperEmptyProperties)) {
+    ambiguous = true;
+  } else {
+    const properties = isRecord(inputSchema.properties) ? inputSchema.properties : {};
+    const names = Object.keys(properties);
+    propertyNames = names.filter((name) => name.length <= MAX_PROPERTY_NAME)
+      .sort().slice(0, MAX_PROJECTED_PROPERTIES);
+    if (names.length > MAX_PROJECTED_PROPERTIES || propertyNames.length !== names.length) ambiguous = true;
+    if (['$ref', 'oneOf', 'anyOf', 'allOf'].some((key) => key in inputSchema)) ambiguous = true;
+    const required = Array.isArray(inputSchema.required) && inputSchema.required.every((value) => typeof value === 'string')
+      ? new Set(inputSchema.required as string[])
+      : new Set<string>();
+    const nonAccountIdArguments = new Set(metaAdsToolName
+      ? metaAdsNonAccountIdArgumentNames(metaAdsToolName)
+      : []);
+    if (inputSchema.required !== undefined &&
+        (!Array.isArray(inputSchema.required) || !inputSchema.required.every((value) => typeof value === 'string'))) {
+      ambiguous = true;
+    }
+    for (const [name, definition] of Object.entries(properties)) {
+      if (metaAdsHelper) {
+        if (!supportedMetaAdsHelperProperty(metaAdsToolName!, name, definition, required.has(name))) {
+          ambiguous = true;
+        }
+        if (containsNestedAccountSelector(definition)) ambiguous = true;
+        continue;
+      }
+      if (metaAdsWrite) {
+        if (name === 'ad_account_id' || name === 'account_id') {
+          const isRequired = required.has(name);
+          if (!simpleString(definition)) ambiguous = true;
+          accountFields.push({ name, type: 'string', required: isRequired });
+          if (!isRequired) ambiguous = true;
+        } else if (!supportedMetaAdsWriteProperty(
+          metaAdsToolName!, name, definition, required.has(name),
+        )) {
+          ambiguous = true;
+        }
+        continue;
+      }
+      if (name !== 'ad_account_id' && name !== 'account_id') {
+        if (nonAccountIdArguments.has(name)) {
+          if (name === 'client_conversation_id') {
+            if (!simpleStringOrNullableString(definition)) ambiguous = true;
+          } else if (required.has(name)) {
+            // Entity filters are safe only when callers can omit them. Runtime
+            // projection also removes them from the accepted argument keys.
+            ambiguous = true;
+          }
+          if (containsNestedAccountSelector(definition)) ambiguous = true;
+        } else if (looksLikeAlternateTargetSelector(name) || containsNestedAccountSelector(definition)) {
+          ambiguous = true;
+        }
+        continue;
+      }
+      if (!isRecord(definition) || definition.type !== 'string' ||
+          ['$ref', 'oneOf', 'anyOf', 'allOf'].some((key) => key in definition)) {
+        ambiguous = true;
+        continue;
+      }
+      const isRequired = required.has(name);
+      accountFields.push({ name, type: 'string', required: isRequired });
+      if (!isRequired) ambiguous = true;
+    }
+    if (metaAdsHelper) {
+      if (accountFields.length !== 0) ambiguous = true;
+    }
+  }
+  if (metaAdsHelper) {
+    if (accountFields.length !== 0) ambiguous = true;
+  } else if (metaAdsWrite) {
+    const contract = metaAdsWriteSchemaContract(metaAdsToolName!);
+    if (!contract || accountFields.length !== (contract.accountScoped ? 1 : 0) ||
+        contract.ownershipFields.some((field) => !propertyNames.includes(field)) ||
+        (contract.entityType && !propertyNames.includes('entity_type'))) ambiguous = true;
+  } else if (accountFields.length !== 1) {
+    ambiguous = true;
+  }
+  return {
+    accountFields,
+    propertyNames,
+    ambiguous,
+    fingerprint: bytesToHex(sha256(new TextEncoder().encode(bounded.value))),
+  };
+}
+
+function supportedMetaAdsWriteProperty(
+  tool: string,
+  name: string,
+  definition: unknown,
+  required: boolean,
+): boolean {
+  const contract = metaAdsWriteSchemaContract(tool);
+  if (!contract) return false;
+  if (name === 'advertiser_request') return simpleString(definition);
+  if (name === 'client_conversation_id') return simpleStringOrNullableString(definition);
+  if (contract.ownershipFields.includes(name)) {
+    return tool === 'ads_activate_entity'
+      ? runtimeCheckedStringOrNullableString(definition)
+      : required && simpleString(definition);
+  }
+  if (name === 'entity_type') {
+    return contract.entityType && (tool === 'ads_activate_entity'
+      ? runtimeCheckedStringOrNullableString(definition)
+      : required && simpleString(definition));
+  }
+  if (contract.blockedRuntimeFields.includes(name)) {
+    // A blocked optional route can be omitted safely only when the provider
+    // declares no active default that would restore it after key filtering.
+    return !required && safelyOmittedMetaAdsWriteProperty(definition);
+  }
+  if (contract.referenceFields.includes(name)) {
+    return required ? simpleString(definition) : simpleStringOrNullableString(definition);
+  }
+  if (name === 'account' || name === 'ad_account' || looksLikeAlternateTargetSelector(name)) return false;
+  // Other tool-specific payload fields may be strings, arrays, or nested JSON.
+  // They cannot establish account or ownership proof and remain covered by the
+  // full-schema fingerprint and the runtime top-level key allowlist.
+  return contract.nestedPayloadFields.includes(name)
+    ? !containsNestedExactAccountSelector(definition)
+    : !containsNestedAccountSelector(definition);
+}
+
+function safelyOmittedMetaAdsWriteProperty(definition: unknown): boolean {
+  if (!isRecord(definition) || !('default' in definition)) return isRecord(definition);
+  return definition.default === null ||
+    (Array.isArray(definition.default) && definition.default.length === 0);
+}
+
+function supportedMetaAdsHelperProperty(
+  tool: string,
+  name: string,
+  definition: unknown,
+  required: boolean,
+): boolean {
+  if (name === 'advertiser_request') {
+    return simpleString(definition);
+  }
+  if (name === 'client_conversation_id') {
+    return simpleStringOrNullableString(definition);
+  }
+  if (tool === META_ADS_ACCOUNT_HELPER && name === 'cursor') {
+    return !required && simpleStringOrNullableString(definition);
+  }
+  if (tool === META_ADS_ACCOUNT_HELPER && name === 'limit') {
+    return !required && simpleNumberSchema(definition);
+  }
+  if (tool === META_ADS_FIELD_HELPER && name === 'field_names') {
+    return simpleStringArray(definition);
+  }
+  return false;
+}
+
+function simpleStringArray(value: unknown): boolean {
+  if (!isRecord(value) || value.type !== 'array' ||
+      ['$ref', 'oneOf', 'anyOf', 'allOf'].some((key) => key in value) ||
+      !isRecord(value.items)) return false;
+  const items = value.items;
+  return items.type === 'string' &&
+    !['$ref', 'oneOf', 'anyOf', 'allOf'].some((key) => key in items);
+}
+
+function simpleString(value: unknown): boolean {
+  return isRecord(value) && value.type === 'string' &&
+    !['$ref', 'oneOf', 'anyOf', 'allOf'].some((key) => key in value);
+}
+
+function simpleNumberSchema(value: unknown): boolean {
+  if (!isRecord(value) || ['$ref', 'oneOf', 'anyOf', 'allOf'].some((key) => key in value)) return false;
+  return value.type === 'integer' || value.type === 'number';
+}
+
+function simpleStringOrNullableString(value: unknown): boolean {
+  if (!isRecord(value) || '$ref' in value || 'allOf' in value) return false;
+  const unionKeys = ['oneOf', 'anyOf'].filter((key) => key in value);
+  if (unionKeys.length === 0) {
+    if (value.type === 'string') return true;
+    return Array.isArray(value.type) && value.type.length === 2 &&
+      new Set(value.type).size === 2 && value.type.includes('string') && value.type.includes('null');
+  }
+  if (unionKeys.length !== 1 || value.type !== undefined) return false;
+  const branches = value[unionKeys[0]!];
+  if (!Array.isArray(branches) || branches.length !== 2) return false;
+  const types = branches.map((branch) => isRecord(branch) && Object.keys(branch).length === 1
+    ? branch.type
+    : undefined);
+  return new Set(types).size === 2 && types.includes('string') && types.includes('null');
+}
+
+function runtimeCheckedStringOrNullableString(value: unknown): boolean {
+  if (simpleStringOrNullableString(value)) return true;
+  if (!isRecord(value) || '$ref' in value || 'allOf' in value || value.type !== undefined) return false;
+  const unionKeys = ['oneOf', 'anyOf'].filter((key) => key in value);
+  if (unionKeys.length !== 1) return false;
+  const branches = value[unionKeys[0]!];
+  if (!Array.isArray(branches) || branches.length !== 2) return false;
+  return branches.some(simpleString) && branches.some((branch) =>
+    isRecord(branch) && branch.type === 'null' &&
+    !['$ref', 'oneOf', 'anyOf', 'allOf'].some((key) => key in branch));
+}
+
+function looksLikeAlternateAccountSelector(name: string): boolean {
+  return /account/i.test(name);
+}
+
+function looksLikeAlternateTargetSelector(name: string): boolean {
+  return looksLikeAlternateAccountSelector(name) || /(?:^|_)ids?$/i.test(name);
+}
+
+function containsNestedAccountSelector(value: unknown, depth = 0): boolean {
+  if (depth > MAX_SCHEMA_DEPTH) return false;
+  if (Array.isArray(value)) return value.some((entry) => containsNestedAccountSelector(entry, depth + 1));
+  if (!isRecord(value)) return false;
+  const properties = isRecord(value.properties) ? value.properties : undefined;
+  if (properties && Object.entries(properties).some(([name, definition]) =>
+    name === 'ad_account_id' || name === 'account_id' || looksLikeAlternateTargetSelector(name) ||
+      containsNestedAccountSelector(definition, depth + 1))) return true;
+  if (containsNestedAccountSelector(value.items, depth + 1) ||
+      containsNestedAccountSelector(value.additionalProperties, depth + 1) ||
+      containsNestedAccountSelector(value.unevaluatedProperties, depth + 1)) return true;
+  return ['oneOf', 'anyOf', 'allOf', 'prefixItems'].some((key) => Array.isArray(value[key]) &&
+    (value[key] as unknown[]).some((entry) => containsNestedAccountSelector(entry, depth + 1)));
+}
+
+function containsNestedExactAccountSelector(value: unknown, depth = 0): boolean {
+  if (depth > MAX_SCHEMA_DEPTH) return false;
+  if (Array.isArray(value)) return value.some((entry) => containsNestedExactAccountSelector(entry, depth + 1));
+  if (!isRecord(value)) return false;
+  const properties = isRecord(value.properties) ? value.properties : undefined;
+  if (properties && Object.entries(properties).some(([name, definition]) =>
+    looksLikeAlternateAccountSelector(name) || containsNestedExactAccountSelector(definition, depth + 1))) return true;
+  if (containsNestedExactAccountSelector(value.items, depth + 1) ||
+      containsNestedExactAccountSelector(value.additionalProperties, depth + 1) ||
+      containsNestedExactAccountSelector(value.unevaluatedProperties, depth + 1)) return true;
+  return ['oneOf', 'anyOf', 'allOf', 'prefixItems'].some((key) => Array.isArray(value[key]) &&
+    (value[key] as unknown[]).some((entry) => containsNestedExactAccountSelector(entry, depth + 1)));
+}
+
+function boundedCanonicalSchema(value: unknown): { value: string; truncated: boolean } {
+  const state = { nodes: 0, truncated: false };
+  const visit = (current: unknown, depth: number): unknown => {
+    state.nodes += 1;
+    if (state.nodes > MAX_SCHEMA_NODES || depth > MAX_SCHEMA_DEPTH) {
+      state.truncated = true;
+      return '[schema-limit]';
+    }
+    if (current === null || typeof current === 'boolean' || typeof current === 'number') return current;
+    if (typeof current === 'string') {
+      if (current.length <= MAX_SCHEMA_STRING) return current;
+      // Hash the complete string so long schema annotations remain bounded
+      // without making an otherwise exact input contract ambiguous. Every
+      // ordinary object key below is namespaced with `value:` or `sha256:`, so
+      // this unnamespaced marker cannot collide with any transformed schema
+      // object, string, or array.
+      return {
+        '$schema-string-sha256': bytesToHex(sha256(new TextEncoder().encode(JSON.stringify(current)))),
+        length: current.length,
+      };
+    }
+    if (Array.isArray(current)) {
+      if (current.length > MAX_SCHEMA_ARRAY) state.truncated = true;
+      return current.slice(0, MAX_SCHEMA_ARRAY).map((entry) => visit(entry, depth + 1));
+    }
+    if (!isRecord(current)) {
+      state.truncated = true;
+      return `[unsupported:${typeof current}]`;
+    }
+    const keys = Object.keys(current).sort();
+    if (keys.length > MAX_SCHEMA_KEYS) state.truncated = true;
+    return Object.fromEntries(keys.slice(0, MAX_SCHEMA_KEYS).map((key) => {
+      const boundedKey = key.length <= MAX_PROPERTY_NAME
+        ? `value:${key}`
+        : `sha256:${bytesToHex(sha256(new TextEncoder().encode(key)))}`;
+      return [boundedKey, visit(current[key], depth + 1)];
+    }));
+  };
+  return { value: JSON.stringify(visit(value, 0)), truncated: state.truncated };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 function supportedToolName(name: string): boolean {
