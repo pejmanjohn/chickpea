@@ -16,11 +16,19 @@ test('default Node live binding persists one authorized idempotent schedule and 
     await import('../src/config/state-backend.ts');
   const { setNodeRoutineSchedulerAvailable } = await import('../src/routines/runtime-state.ts');
   const { invokeLiveSlackScheduleAction } = await import('../src/management/slack-tools.ts');
+  const { ManagementError } = await import('../src/management/types.ts');
+  const { openStateDb } = await import('../src/state/node-state-db.ts');
   const { createSlackOwner } = await import('./helpers/slack-owner.ts');
   const identity = getIdentityStore();
   const config = getConfigStore();
   const management = getManagementStore();
   const routines = getRoutineStore();
+  const db = openStateDb(statePath);
+  const durableCounts = () => ({
+    requests: Number(db.get('SELECT COUNT(*) AS count FROM management_requests')?.count),
+    actions: Number(db.get('SELECT COUNT(*) AS count FROM routine_schedule_actions')?.count),
+    routines: Number(db.get('SELECT COUNT(*) AS count FROM routines')?.count),
+  });
 
   try {
     const owner = await createSlackOwner(identity, {
@@ -89,7 +97,7 @@ test('default Node live binding persists one authorized idempotent schedule and 
       outcome: 'failed',
       code: 'routines_unavailable_on_target',
     });
-    assert.equal((await routines.listRoutines(signal.workspaceId, signal.channelId)).length, 0);
+    assert.deepEqual(durableCounts(), { requests: 0, actions: 0, routines: 0 });
 
     setNodeRoutineSchedulerAvailable(true);
     const first = await invokeLiveSlackScheduleAction(signal, async () => undefined, operation);
@@ -100,6 +108,7 @@ test('default Node live binding persists one authorized idempotent schedule and 
     assert.equal(saved.length, 1);
     assert.equal((await config.getAgentScheduleReference(saved[0]!.id))?.agentId, agent.id);
     assert.equal((await routines.listScheduleActionsNeedingReceipts(10)).length, 0);
+    assert.deepEqual(durableCounts(), { requests: 1, actions: 1, routines: 1 });
 
     await assert.rejects(
       invokeLiveSlackScheduleAction(
@@ -107,8 +116,10 @@ test('default Node live binding persists one authorized idempotent schedule and 
         async () => undefined,
         { ...operation, agentId: foreignAgent.id, name: 'Foreign schedule' },
       ),
+      (error: unknown) => error instanceof ManagementError && error.code === 'forbidden' &&
+        error.message === 'The addressed user Agent must own this schedule.',
     );
-    assert.equal((await routines.listRoutines(signal.workspaceId, signal.channelId)).length, 1);
+    assert.deepEqual(durableCounts(), { requests: 1, actions: 1, routines: 1 });
 
     await assert.rejects(
       invokeLiveSlackScheduleAction(
@@ -116,10 +127,24 @@ test('default Node live binding persists one authorized idempotent schedule and 
         async () => undefined,
         operation,
       ),
+      (error: unknown) => error instanceof ManagementError && error.code === 'forbidden',
     );
-    assert.equal((await routines.listRoutines(signal.workspaceId, signal.channelId)).length, 1);
+    assert.deepEqual(durableCounts(), { requests: 1, actions: 1, routines: 1 });
+
+    setNodeRoutineSchedulerAvailable(false);
+    const stopped = await invokeLiveSlackScheduleAction(
+      { ...signal, eventId: 'Ev_NODE_STOPPED', turnJobId: 'turn_NODE_STOPPED' },
+      async () => undefined,
+      operation,
+    );
+    assert.deepEqual(stopped, {
+      outcome: 'failed',
+      code: 'routines_unavailable_on_target',
+    });
+    assert.deepEqual(durableCounts(), { requests: 1, actions: 1, routines: 1 });
   } finally {
     setNodeRoutineSchedulerAvailable(false);
+    db.close();
     for (const store of [routines, management, config, identity]) {
       if ('close' in store && typeof store.close === 'function') store.close();
     }

@@ -55,6 +55,7 @@ import {
   type ManagementOperation,
 } from './types.ts';
 import { resolveSlackPublicUrl } from '../slack/credentials.ts';
+import { nodeRoutineSchedulerAvailable } from '../routines/runtime-state.ts';
 import {
   slackActionLink,
   type SlackActionLink,
@@ -994,6 +995,9 @@ export async function invokeNodeSlackScheduleAction(input: {
   env: PlatformEnv | undefined;
   operation: SlackScheduleToolOperation;
 }): Promise<SlackScheduleActionOutcome> {
+  if (!nodeRoutineSchedulerAvailable()) {
+    return { outcome: 'failed', code: 'routines_unavailable_on_target' };
+  }
   const identity = getIdentityStore(input.env);
   const settings = getSettingsStore(input.env);
   const service = createLiveWorkspaceManagementService(input.env, {
