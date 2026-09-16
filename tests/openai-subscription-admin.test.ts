@@ -234,7 +234,7 @@ test('a first OpenAI API key initializes an unset image role without changing ch
   const fake = new FakeProvidersBackend();
   const response = await withEnv(
     { OPENAI_API_KEY: undefined, OPENAI_API_URL: 'https://openai.fake/v1' },
-    () => withFetch(fake.asFetch(), () => app.request('/admin/api/providers/openai/key', {
+    () => withFetch(fake.asFetch(), async () => app.request('/admin/api/providers/openai/key', {
       method: 'POST',
       headers: { ...auth(), 'content-type': 'application/json' },
       body: JSON.stringify({ apiKey: FAKE_PROVIDER_KEYS.openai }),
@@ -266,7 +266,7 @@ test('an explicitly cleared image role remains unset when an OpenAI API key is f
   const fake = new FakeProvidersBackend();
   const response = await withEnv(
     { OPENAI_API_KEY: undefined, OPENAI_API_URL: 'https://openai.fake/v1' },
-    () => withFetch(fake.asFetch(), () => app.request('/admin/api/providers/openai/key', {
+    () => withFetch(fake.asFetch(), async () => app.request('/admin/api/providers/openai/key', {
       method: 'POST',
       headers: { ...auth(), 'content-type': 'application/json' },
       body: JSON.stringify({ apiKey: FAKE_PROVIDER_KEYS.openai }),
@@ -317,7 +317,7 @@ test('a concurrent image choice wins the first-key default without failing key c
   const fake = new FakeProvidersBackend();
   const response = await withEnv(
     { OPENAI_API_KEY: undefined, OPENAI_API_URL: 'https://openai.fake/v1' },
-    () => withFetch(fake.asFetch(), () => app.request('/admin/api/providers/openai/key', {
+    () => withFetch(fake.asFetch(), async () => app.request('/admin/api/providers/openai/key', {
       method: 'POST',
       headers: { ...auth(), 'content-type': 'application/json' },
       body: JSON.stringify({ apiKey: FAKE_PROVIDER_KEYS.openai }),
@@ -359,7 +359,7 @@ test('an image-role storage failure does not fail or expose a completed API-key 
   const fake = new FakeProvidersBackend();
   const response = await withEnv(
     { OPENAI_API_KEY: undefined, OPENAI_API_URL: 'https://openai.fake/v1' },
-    () => withFetch(fake.asFetch(), () => app.request('/admin/api/providers/openai/key', {
+    () => withFetch(fake.asFetch(), async () => app.request('/admin/api/providers/openai/key', {
       method: 'POST',
       headers: { ...auth(), 'content-type': 'application/json' },
       body: JSON.stringify({ apiKey: FAKE_PROVIDER_KEYS.openai }),
