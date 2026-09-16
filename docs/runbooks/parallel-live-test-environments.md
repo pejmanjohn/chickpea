@@ -49,7 +49,10 @@ Require real DM/channel proof, connector behavior, cleanup and postflight before
 an adopted lane is declared ready. Fresh-install tests may temporarily reserve
 any free lane through the [installation workflow](../../qa/live/operator/environments.md#borrow-a-lane-for-a-fresh-install).
 Preserve standing state and hold ownership until restoration; no dedicated
-installation-only Slack workspace is required.
+installation-only Slack workspace is required. Select the installation runtime
+independently: local Node uses newly allocated private state and a guarded local
+launcher, while Cloudflare uses a temporary Worker/D1. A Node rehearsal on macOS
+does not require deploying its customer installation to Cloudflare.
 
 ## Historical three-lane capability pilot
 

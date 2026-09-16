@@ -21,6 +21,7 @@ import { hostname, homedir } from 'node:os';
 import path, { dirname, join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { QA_TARGETS, ORIGINAL_QA_TARGETS, validQaFleet } from '../../src/config/qa-targets.ts';
+import { assertNodeInstallationClean } from './environment-installation-node.mjs';
 
 import {
   readTargetLock,
@@ -394,6 +395,17 @@ export function releaseEnvironment(target, options = {}) {
   }, options);
 }
 
+export function withEnvironmentInstallationClaim(target, options, action) {
+  const root = canonicalRoot(options.root ?? defaultEnvironmentRoot());
+  return withRegistryLock(root, () => {
+    const installation = assertLiveEnvironmentClaim(target, options).registration.installation;
+    if (!installation) throw fail('INSTALLATION_RESERVATION_REQUIRED');
+    // Synchronous actions only: process receipt creation/reconciliation and
+    // restoration must share the same lock, not just check a lease beforehand.
+    return action(installation);
+  }, options);
+}
+
 /** Persist a borrowed lane until explicit, verified restoration. Claim expiry
  * and reclaim never erase this obligation or change the standing resources. */
 export function recordEnvironmentInstallation(target, installation, expectedRevision, options = {}) {
@@ -413,13 +425,18 @@ export function recordEnvironmentInstallation(target, installation, expectedRevi
     if (installation !== null && !validInstallation(installation)) throw fail('INVALID_INSTALLATION_RESERVATION');
     if (installation !== null) {
       for (const lane of Object.values(registry.targets)) {
-        if (lane.workerName === installation.workerName || lane.authDatabaseName === installation.authDatabaseName
-          || lane.authDatabaseId === installation.authDatabaseId
+        if ((installation.runtime !== 'node' && (lane.workerName === installation.workerName || lane.authDatabaseName === installation.authDatabaseName
+          || lane.authDatabaseId === installation.authDatabaseId))
           || (lane.installation && ['workerName', 'authDatabaseName', 'authDatabaseId', 'installerPath']
-            .some((key) => lane.installation[key] === installation[key]))) {
+            .some((key) => installation[key] !== undefined && lane.installation[key] === installation[key]))
+          || (installation.statePath && lane.installation?.statePath
+            && installationPathsOverlap(installation.statePath, lane.installation.statePath))) {
           throw fail('DUPLICATE_TARGET_IDENTITY');
         }
       }
+    }
+    if (installation === null && registration.installation.runtime === 'node') {
+      assertNodeInstallationClean(registration.installation);
     }
     const next = structuredClone(registry);
     next.revision += 1;
@@ -1270,18 +1287,28 @@ function validSetupFlowUnprovenSince(value) {
 }
 
 function validInstallation(value) {
-  return isRecord(value) && exactKeys(value, ['runId', 'startedAt', 'workerName', 'authDatabaseName',
-    'authDatabaseId', 'installerPath', 'baselineDigest', 'standingVersion', 'beforeEvidence', 'beforeDigest',
-    'databaseCreationReceipt', 'databaseReceiptDigest'])
+  if (!isRecord(value)) return false;
+  const runtime = value.runtime ?? 'cloudflare'; // Preserve reservations written before runtime discrimination.
+  const common = ['runId', 'startedAt', 'installerPath', 'baselineDigest', 'standingVersion', 'beforeEvidence', 'beforeDigest'];
+  const local = runtime === 'node';
+  return ['node', 'cloudflare'].includes(runtime)
+    && exactKeys(value, [...common, ...(local ? ['runtime', 'statePath'] : [
+      'workerName', 'authDatabaseName', 'authDatabaseId', 'databaseCreationReceipt', 'databaseReceiptDigest',
+    ])], local ? [] : ['runtime'])
     && /^[a-z0-9][a-z0-9-]{0,63}$/u.test(value.runId ?? '') && timestamp(value.startedAt)
-    && /^[a-z0-9][a-z0-9-]{0,62}$/u.test(value.workerName ?? '')
+    && (local || (/^[a-z0-9][a-z0-9-]{0,62}$/u.test(value.workerName ?? '')
     && /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/u.test(value.authDatabaseName ?? '')
-    && safeBounded(value.authDatabaseId) && validServingVersion(value.standingVersion)
+    && safeBounded(value.authDatabaseId)
+    && /^sha256:[a-f0-9]{64}$/u.test(value.databaseReceiptDigest ?? '')))
+    && validServingVersion(value.standingVersion)
     && /^sha256:[a-f0-9]{64}$/u.test(value.baselineDigest ?? '')
     && /^sha256:[a-f0-9]{64}$/u.test(value.beforeDigest ?? '')
-    && /^sha256:[a-f0-9]{64}$/u.test(value.databaseReceiptDigest ?? '')
-    && [value.installerPath, value.beforeEvidence, value.databaseCreationReceipt].every((entry) => typeof entry === 'string'
+    && [value.installerPath, value.beforeEvidence, local ? value.statePath : value.databaseCreationReceipt].every((entry) => typeof entry === 'string'
       && path.isAbsolute(entry) && resolve(entry) === entry && safeBounded(entry, 1024));
+}
+
+function installationPathsOverlap(left, right) {
+  return left === right || left.startsWith(`${right}${path.sep}`) || right.startsWith(`${left}${path.sep}`);
 }
 
 function validateClaim(input, target) {

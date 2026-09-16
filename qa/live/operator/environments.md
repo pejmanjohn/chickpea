@@ -202,58 +202,172 @@ Slack channel does not establish that its lane is free.
 
 ## Borrow a lane for a fresh install
 
-Fresh installation is a temporary use of any free registered lane. Its Slack
-workspace can be reused; the customer's installation starts with a separate
-Worker and empty D1. Never reset the standing Worker/database.
+Fresh installation is a temporary use of any eligible free registered lane's
+Slack workspace. Choose the installation runtime independently of the standing
+lane's Cloudflare runtime. A local Node installation on macOS needs isolated
+local state, not a temporary Cloudflare deployment or a permanently designated
+installation workspace. Preserve the standing installation and unrelated state.
 
-1. Claim a healthy free lane with `wait-claim any`. Inventory pending schedules,
-   proposals, deliveries and cleanup, and resolve ownership of independent apps
-   sharing the workspace. Record exact standing Slack, Admin and fixture state
-   in owner-only `before.json`, with `slack`, `admin`, `fixtures`,
-   `pendingWork: false` and `independentAppsResolved: true`. Those booleans are
-   attended observations, not permission to skip inspection.
-2. Prepare an isolated installation checkout/artifact and run-owned temporary
-   Worker/D1 coordinates. Create the empty D1 with the existing resource intent
-   and receipt workflow; retain exact IDs for cleanup. Write an owner-only spec
-   containing `runId`, `workerName`, `authDatabaseName`, `authDatabaseId`,
-   absolute `installerPath`, absolute `beforeEvidence`, and absolute
-   `databaseCreationReceipt`. The database receipt must identify the exact D1
-   created under this lane's current claim. Reserve before
-   disconnecting Slack or deploying:
+1. Select and claim a healthy free lane without asking the user to designate one:
+
+   ```sh
+   npm run env -- wait-claim any --timeout-ms 0 --poll-ms 1000
+   ```
+
+   Use the returned alias in the commands below. The selector skips claimed,
+   unhealthy and verifier-locked lanes. A timed-out selection is an actionable
+   availability blocker; do not reclaim another task's lane. Inventory pending
+   schedules, proposals, deliveries and cleanup, and resolve ownership of
+   independent apps sharing the workspace. Record exact standing Slack, Admin
+   and fixture state in owner-only `before.json`, with `slack`, `admin`,
+   `fixtures`, `pendingWork: false` and `independentAppsResolved: true`. Those
+   booleans are attended observations, not permission to skip inspection.
+2. Prepare an isolated installation checkout or release artifact. Use a private
+   directory outside Git for evidence and state. Write an owner-only spec with
+   `runId`, absolute `installerPath`, absolute `beforeEvidence`, and the runtime
+   fields below. Reserve before disconnecting Slack or starting the installation:
 
    ```sh
    npm run env -- install-reserve <alias> --installation /private/path/spec.json
    ```
 
    Reservation checks the current claim, unresolved verifier work and live
-   standing baseline. It pins the baseline and preserves standing identities.
-   Normal lane deployments and release are refused until restoration. Expiry,
-   interruption and reclaim retain the reservation.
-3. Follow the supported customer disconnect/install flow. Use the temporary
-   coordinates in the isolated installer's `wrangler.jsonc`, then its guarded
-   `npm run deploy` with `CHICKPEA_INSTALLATION_LANE=<alias>` and
-   `CHICKPEA_DEPLOY_TARGET=production`. Here `production` explicitly selects that
-   checkout's ordinary Worker; the installation fence checks the exact reserved
-   temporary Worker and D1 before build and mutation. Never point it at the
-   standing resources. Verify fresh setup, signed-in Admin and a real Slack request.
-   An existing temporary Worker is refused as well; reconcile an interrupted
-   attempt and clean its exact resources before starting another fresh install.
-   The installer must include this reservation-aware deployment wrapper; older
-   published releases that ignore `CHICKPEA_INSTALLATION_LANE` cannot establish
-   this guarded rehearsal. Do not patch an older artifact and call it an unchanged
-   customer release test.
-4. Clean the exact temporary resources, reconnect the standing installation,
-   and read back its routing, Admin and fixture state. Save private JSON evidence
-   and an owner-only restoration receipt with `runId`, `restored` equal to the
-   original before-state, `temporary: {workerName, authDatabaseId,
-   workerPresent: false, databasePresent: false}`, and absolute `slackEvidence`,
-   `adminEvidence`, `cleanupEvidence` paths. These are operator receipts; the
-   command also independently checks the standing live authority and baseline.
+   standing baseline. Normal lane deployment and release are refused until
+   restoration. Expiry, interruption and reclaim retain the reservation.
+   Standing Cloudflare authority is inspected for both runtimes; Node needs no
+   D1 creation receipt, Worker creation or Cloudflare deployment. Missing read
+   credentials for that authority remain a blocker.
 
-   ```sh
-   npm run env -- install-restore <alias> --installation /private/path/restore.json
-   npm run env -- release <alias>
-   ```
+### Local Node installation
+
+Use `runtime: "node"` and `stateParent`, an absolute, canonical, owner-only
+existing directory outside Git. For example:
+
+```json
+{
+  "runtime": "node",
+  "runId": "node-install-example",
+  "installerPath": "/private/path/customer-release",
+  "beforeEvidence": "/private/path/before.json",
+  "stateParent": "/private/path"
+}
+```
+
+The reservation creates a new empty directory under `stateParent` and returns
+its exact `installation.statePath`. It never adopts or empties an existing local
+installation. Keep this path in the private run record. The launcher fixes all
+four persistent paths beneath it:
+
+| Runtime variable | File beneath the reserved state path |
+| --- | --- |
+| `TAG_DB_PATH` | `transcripts.sqlite` |
+| `SLACK_STATE_DB_PATH` | `state.sqlite` |
+| `CHICKPEA_AUTH_DB_PATH` | `auth.sqlite` |
+| `CHICKPEA_CREDENTIAL_KEYRING_PATH` | `credential-keyring.json` |
+
+Follow the [Node installation procedure](../../../docs/runbooks/operations.md#production-node)
+for the exact candidate, including its Node build and supported Slack transport.
+Use Node 24.20.0. A checkout build uses `npm run flue:build`, with host coordination;
+do not deploy to Cloudflare for this local test. Record the artifact/revision,
+Node version, transport, local port and public endpoint. Inspect pending work and
+use the supported disconnect/install flow for the borrowed workspace. Do not
+change shared gateway/app configuration to make a Node test work. Use the
+registered test app and credentials required by the candidate's Node transport;
+a missing credential or incompatible app remains an explicit blocker.
+
+Put only this run's runtime variables in an owner-only JSON object at
+`/private/path/runtime-env.json`. Include its chosen port, public URL, fresh auth
+secret, setup capability and declared provider/Slack configuration. Values must
+be strings. Do not copy a standing environment wholesale or include another
+installation's database or keyring paths. From the claiming operator checkout:
+
+```sh
+npm run env -- install-start <alias> --runtime-env /private/path/runtime-env.json
+```
+
+The launcher runs the isolated release's unchanged `dist/server.mjs` with these
+variables and the reserved state paths. It does not inherit ambient credentials,
+load a development `.env`, or use a Cloudflare deployment wrapper. It rejects
+path overrides, symlinks, shared files, unsupported Node versions, expired claims
+and a second launcher. Its child creates files with an owner-only umask. Keep the
+launcher in its owning terminal. Restart through the same command to preserve
+this run's state; restarting is not another fresh-install pass. Verify setup,
+signed-in Admin and a real Slack request against the local runtime and retain
+its evidence separately from deployed-lane acceptance.
+
+Stop the launcher and its own child process group normally. It forwards SIGINT
+and SIGTERM to that group. It keeps a private `<statePath>.process.json` receipt
+if interrupted or descendants remain. Reclaim your expired claim through the
+existing recovery workflow, then run:
+
+```sh
+npm run env -- install-reconcile <alias>
+```
+
+Reconciliation removes only the process receipt, after proving both the launcher
+and child group have stopped. It neither kills processes nor deletes state. A
+receipt from interruption before the child PID was recorded is unresolved;
+preserve it and inspect the owning terminal/process tree before an attended
+recovery. Do not delete an unexplained receipt to obtain a pass. Other tooling
+must understand Node reservations before it operates this registry.
+
+After stopping all run-owned processes and endpoints, preserve private evidence
+outside the state directory and remove only the exact reserved state directory.
+The launcher never recursively deletes state for you. Reconnect the standing
+installation and read back its routing, Admin and fixtures. Use the common
+restoration receipt below with this `temporary` object:
+
+```json
+{
+  "runtime": "node",
+  "statePath": "/private/path/node-install-RETURNED_SUFFIX",
+  "processPresent": false,
+  "statePresent": false
+}
+```
+
+The command checks actual local absence as well as the operator receipt. An
+unresolved process receipt or any remaining state path blocks restoration,
+including if one appears during the live authority check.
+
+### Cloudflare installation
+
+Use `runtime: "cloudflare"`, `workerName`, `authDatabaseName`, `authDatabaseId`,
+and absolute `databaseCreationReceipt` in the spec. Omitted `runtime` remains
+compatible with older Cloudflare reservations. Create the empty temporary D1
+through the existing resource intent and receipt workflow. Its receipt must
+identify the exact D1 created under this lane's current claim.
+
+Follow the customer disconnect/install flow. Use the temporary coordinates in
+the isolated installer's `wrangler.jsonc`, then its guarded `npm run deploy` with
+`CHICKPEA_INSTALLATION_LANE=<alias>` and `CHICKPEA_DEPLOY_TARGET=production`.
+Here `production` selects that checkout's ordinary Worker; the installation fence
+checks the exact reserved temporary Worker and D1 before build and mutation.
+Never point it at standing resources. An existing temporary Worker is refused;
+reconcile an interrupted attempt before another fresh install. The installer
+must include the reservation-aware deployment wrapper. An older artifact that
+ignores `CHICKPEA_INSTALLATION_LANE` cannot establish this guarded Cloudflare
+rehearsal. Do not patch it and call it an unchanged customer release test.
+
+Verify fresh setup, signed-in Admin and a real Slack request. Clean the exact
+temporary Worker and D1, reconnect the standing installation, and read back its
+routing, Admin and fixture state. Its restoration receipt uses
+`temporary: {workerName, authDatabaseId, workerPresent: false, databasePresent: false}`.
+Cloudflare and Node startup guards reject a reservation for the other runtime.
+
+### Verify restoration and release
+
+For either runtime, save private JSON readbacks and an owner-only restoration
+receipt with `runId`, `restored` equal to the original before-state, the runtime's
+`temporary` object above, and absolute `slackEvidence`, `adminEvidence`,
+`cleanupEvidence` paths. Include exact run-owned app/endpoint cleanup where used.
+These are attended operator receipts. The command also independently checks the
+standing live authority, serving version and baseline.
+
+```sh
+npm run env -- install-restore <alias> --installation /private/path/restore.json
+npm run env -- release <alias>
+```
 
 If anything fails, retain the claim and reservation for recovery. Never submit
 a successful restoration receipt without actual readbacks. Other lanes can

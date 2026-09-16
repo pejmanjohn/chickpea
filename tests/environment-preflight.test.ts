@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
@@ -7,7 +7,7 @@ import { pathToFileURL } from 'node:url';
 import test from 'node:test';
 
 // @ts-expect-error Executable environment modules intentionally have no declarations.
-import { assertLiveEnvironmentClaim, claimEnvironment, createEnvironmentRegistry, environmentMarkerPath, migrateEnvironmentProviderAuthConfigs, readEnvironmentRegistry, reclaimEnvironment, recordEnvironmentAttestation, releaseEnvironment } from '../scripts/lib/environment-registry.mjs';
+import { assertLiveEnvironmentClaim, claimEnvironment, createEnvironmentRegistry, environmentMarkerPath, migrateEnvironmentProviderAuthConfigs, readEnvironmentRegistry, withEnvironmentInstallationClaim, reclaimEnvironment, recordEnvironmentInstallation, recordEnvironmentAttestation, releaseEnvironment } from '../scripts/lib/environment-registry.mjs';
 // @ts-expect-error Executable environment modules intentionally have no declarations.
 import { adoptEnvironmentFromFile, EnvironmentPreflightError, assertEnvironmentReleaseAllowed, beginEnvironmentDeployment, classifySetupContractDrift, completeEnvironmentDeployment, environmentBaselinePath, environmentDeployReceiptPath, readLocalEnvironmentContract, observeProductionEnvironmentAuthority, observeReceiptBackedEnvironment, preflightEnvironmentMutation, readEnvironmentDeployReceipt, authorizeEnvironmentCleanupPlan, reconcileEnvironmentDeployment, recheckEnvironmentMutationAuthority, resumeEnvironmentDeployment, writeEnvironmentBaseline, writeEnvironmentResourceCreationIntent, writeEnvironmentResourceCreationReceipt, writeEnvironmentSchemaAdvancementIntent, withEnvironmentReleaseFence } from '../scripts/lib/environment-preflight.mjs';
 import { acquireTargetLock, readTargetLock } from '../qa/live/safety/lock.ts';
@@ -16,7 +16,13 @@ import { attestEnvironment } from '../scripts/lib/environment-attestation.mjs';
 // @ts-expect-error Executable environment modules intentionally have no declarations.
 import { createPhaseOneBaselinePlan, projectProtectedProductInventory } from '../scripts/lib/environment-baseline.mjs';
 // @ts-expect-error Executable environment modules intentionally have no declarations.
-import { reserveEnvironmentInstallation, restoreEnvironmentInstallation, assertInstallationDeployment } from '../scripts/lib/environment-installation.mjs';
+import { reserveEnvironmentInstallation, restoreEnvironmentInstallation, assertInstallationDeployment, assertInstallationNodeRuntime } from '../scripts/lib/environment-installation.mjs';
+// @ts-expect-error Executable environment modules intentionally have no declarations.
+import { nodeInstallationEnvironment, nodeInstallationProcessPath, reconcileNodeInstallationProcess, runNodeInstallation } from '../scripts/lib/environment-installation-node.mjs';
+// @ts-expect-error Executable environment modules intentionally have no declarations.
+import { waitForEnvironmentClaim } from '../scripts/lib/environment-wait.mjs';
+// @ts-expect-error Executable environment modules intentionally have no declarations.
+import { runEnvironmentCli } from '../scripts/chickpea-environment.mjs';
 
 const NOW = Date.parse('2026-09-01T12:00:00.000Z');
 const DEAD_PID = 2_147_483_647;
@@ -269,6 +275,7 @@ test('borrowed installation retains its lane across expiry and refuses release u
   assert.throws(() => assertInstallationDeployment('amber', installer, { ...spec, authDatabaseId: 'd1-cobalt' }, f.options),
     { code: 'INSTALLATION_TARGET_MISMATCH' });
   assert.equal(assertInstallationDeployment('amber', installer, spec, f.options).runId, spec.runId);
+  assert.throws(() => assertInstallationNodeRuntime('amber', f.options), { code: 'INSTALLATION_RUNTIME_MISMATCH' });
   const later = { ...options, now: () => Date.parse(claim.expiresAt) + 1 };
   reclaimEnvironment('amber', later);
   assert.equal(readEnvironmentRegistry(f.options).targets.amber.installation.runId, spec.runId);
@@ -287,9 +294,247 @@ test('borrowed installation retains its lane across expiry and refuses release u
   }), { code: 'SLACK_TEAM_MISMATCH' });
   assert.ok(readEnvironmentRegistry(f.options).targets.amber.installation);
   await restoreEnvironmentInstallation('amber', receiptPath, later);
+  // Older private registries have no runtime discriminator. Keep their guarded
+  // deployment and restoration usable without rewriting the reservation.
+  const legacy = { ...saved.installation };
+  delete legacy.runtime;
+  recordEnvironmentInstallation('amber', legacy, readEnvironmentRegistry(later).revision, later);
+  assert.equal(assertInstallationDeployment('amber', installer, spec, later).runtime, undefined);
+  await restoreEnvironmentInstallation('amber', receiptPath, later);
   releaseEnvironment('amber', later);
   assert.equal(readEnvironmentRegistry(f.options).targets.amber.claim, null);
   assert.equal(readEnvironmentRegistry(f.options).targets.amber.authDatabaseId, 'd1-amber');
+});
+
+function nodeInstallationFixture(context: { after: (fn: () => void) => void }) {
+  const f = fixture();
+  context.after(() => rmSync(f.parent, { recursive: true, force: true }));
+  const installer = join(f.parent, 'node-release');
+  mkdirSync(join(installer, 'dist'), { recursive: true });
+  const before = { slack: { workspace: 'T_AMBER' }, admin: { owner: 'test-owner' },
+    fixtures: { agent: 'smoke-amber' }, pendingWork: false, independentAppsResolved: true };
+  const beforePath = join(f.parent, 'node-before.json');
+  writeFileSync(beforePath, JSON.stringify(before), { mode: 0o600 });
+  const spec = { runtime: 'node', runId: 'node-install', installerPath: installer,
+    beforeEvidence: beforePath, stateParent: f.parent };
+  const specPath = join(f.parent, 'node-spec.json');
+  writeFileSync(specPath, JSON.stringify(spec), { mode: 0o600 });
+  const envPath = join(f.parent, 'node-env.json');
+  writeFileSync(envPath, JSON.stringify({ DO_NOT_TRACK: '1' }), { mode: 0o600 });
+  return { ...f, installer, before, beforePath, spec, specPath, envPath,
+    options: { ...f.options, localContract: localContract(), observeAuthority: async () => authority() } };
+}
+
+test('a free lane supports a Node install, restart, expiry/reclaim and verified restoration without a temporary Worker or D1', async (context) => {
+  const f = nodeInstallationFixture(context);
+  // Exercise the real any-lane selector rather than permanently designating an installation lane.
+  const acquired = await waitForEnvironmentClaim('any', { ...f.options, timeoutMs: 0, pollMs: 250 });
+  assert.equal(acquired.target, 'amber');
+  const result = await reserveEnvironmentInstallation('amber', f.specPath, f.options);
+  const installation = result.installation;
+  assert.equal(installation.runtime, 'node');
+  assert.equal(installation.workerName, undefined);
+  assert.equal(installation.databaseCreationReceipt, undefined);
+  assert.deepEqual(readdirSync(installation.statePath), []);
+  assert.equal(lstatSync(installation.statePath).mode & 0o777, 0o700);
+  assert.throws(() => assertInstallationDeployment('amber', f.installer, undefined, f.options), { code: 'INSTALLATION_RUNTIME_MISMATCH' });
+  const unrelated = join(f.parent, 'standing-local.sqlite');
+  writeFileSync(unrelated, 'preserve standing local state');
+  const withClaim = (start: (installation: any) => void) => withEnvironmentInstallationClaim('amber', f.options, start);
+  writeFileSync(join(f.installer, 'dist', 'server.mjs'), `
+    import { DatabaseSync } from 'node:sqlite';
+    import { writeFileSync } from 'node:fs';
+    for (const key of ['TAG_DB_PATH', 'SLACK_STATE_DB_PATH', 'CHICKPEA_AUTH_DB_PATH']) {
+      const db = new DatabaseSync(process.env[key]);
+      db.exec('CREATE TABLE IF NOT EXISTS runs (value TEXT); INSERT INTO runs VALUES ("started");'.replaceAll('"', "'"));
+      db.close();
+    }
+    writeFileSync(process.env.CHICKPEA_CREDENTIAL_KEYRING_PATH, '{}');
+  `);
+  assert.deepEqual(await runNodeInstallation(installation, f.envPath, withClaim), { code: 0, signal: null });
+  assert.deepEqual(await runNodeInstallation(installation, f.envPath, withClaim), { code: 0, signal: null });
+  assert.equal(readFileSync(unrelated, 'utf8'), 'preserve standing local state');
+  assert.equal(existsSync(nodeInstallationProcessPath(installation)), false);
+  assert.equal(readEnvironmentRegistry(f.options).targets.amber.authDatabaseId, 'd1-amber');
+  const env = nodeInstallationEnvironment(installation);
+  for (const file of Object.values(env) as string[]) assert.equal(lstatSync(file).mode & 0o777, 0o600);
+  assert.throws(() => releaseEnvironment('amber', f.options), { code: 'INSTALLATION_RESTORATION_REQUIRED' });
+  await assert.rejects(preflightEnvironmentMutation('amber', f.options), { code: 'INSTALLATION_RESTORATION_REQUIRED' });
+  const later = { ...f.options, now: () => Date.parse(acquired.claim.expiresAt) + 1 };
+  assert.throws(() => assertInstallationNodeRuntime('amber', later), { code: 'CLAIM_EXPIRED_RECLAIM_REQUIRED' });
+  reclaimEnvironment('amber', later);
+  assert.equal(assertInstallationNodeRuntime('amber', later).statePath, installation.statePath);
+  const receiptPath = join(f.parent, 'node-restore.json');
+  const receipt = { runId: installation.runId, restored: f.before,
+    temporary: { runtime: 'node', statePath: installation.statePath, processPresent: false, statePresent: false },
+    slackEvidence: f.beforePath, adminEvidence: f.beforePath, cleanupEvidence: f.beforePath };
+  writeFileSync(receiptPath, JSON.stringify(receipt), { mode: 0o600 });
+  await assert.rejects(restoreEnvironmentInstallation('amber', receiptPath, later), { code: 'INSTALLATION_LOCAL_STATE_REMAINS' });
+  rmSync(installation.statePath, { recursive: true });
+  // A process starting during the live readback must still block registry release.
+  const processPath = nodeInstallationProcessPath(installation);
+  await assert.rejects(restoreEnvironmentInstallation('amber', receiptPath, {
+    ...later, observeAuthority: async () => {
+      writeFileSync(processPath, JSON.stringify({ runId: installation.runId, launcherPid: process.pid, childPgid: process.pid }), { mode: 0o600 });
+      return authority();
+    },
+  }), { code: 'INSTALLATION_PROCESS_RECONCILIATION_REQUIRED' });
+  rmSync(processPath);
+  await assert.rejects(restoreEnvironmentInstallation('amber', receiptPath, {
+    ...later, observeAuthority: async () => authority('amber', { slack: { ...authority().slack, teamId: 'T_OTHER' } }),
+  }), { code: 'SLACK_TEAM_MISMATCH' });
+  await restoreEnvironmentInstallation('amber', receiptPath, later);
+  releaseEnvironment('amber', later);
+  assert.equal(readEnvironmentRegistry(f.options).targets.amber.claim, null);
+  assert.equal(readFileSync(unrelated, 'utf8'), 'preserve standing local state');
+});
+
+test('Node reservations reject unsafe state, environment redirection, concurrent launch and changed authority', async (context) => {
+  const f = nodeInstallationFixture(context);
+  claimEnvironment('amber', f.options);
+  writeFileSync(f.specPath, JSON.stringify({ ...f.spec, authDatabaseId: 'standing-d1' }));
+  await assert.rejects(reserveEnvironmentInstallation('amber', f.specPath, f.options), { code: 'INVALID_INSTALLATION_RUNTIME' });
+  writeFileSync(f.specPath, JSON.stringify({ ...f.spec, stateParent: f.worktree }));
+  await assert.rejects(reserveEnvironmentInstallation('amber', f.specPath, f.options), /outside Git/);
+  writeFileSync(f.specPath, JSON.stringify(f.spec));
+  const { installation } = await reserveEnvironmentInstallation('amber', f.specPath, f.options);
+  const check = () => assertInstallationNodeRuntime('amber', f.options);
+  const withClaim = (start: (installation: any) => void) => withEnvironmentInstallationClaim('amber', f.options, start);
+  const entry = join(f.installer, 'dist', 'server.mjs');
+  writeFileSync(entry, 'process.exitCode = 0;');
+  writeFileSync(f.envPath, JSON.stringify({ TAG_DB_PATH: join(f.parent, 'unrelated.sqlite') }));
+  await assert.rejects(runNodeInstallation(installation, f.envPath, withClaim), { code: 'INSTALLATION_STATE_PATH_MISMATCH' });
+  writeFileSync(f.envPath, JSON.stringify({ NODE_OPTIONS: '--require=unrelated.js' }));
+  await assert.rejects(runNodeInstallation(installation, f.envPath, withClaim), { code: 'INVALID_INSTALLATION_ENVIRONMENT' });
+  writeFileSync(f.envPath, '{}');
+  const stateEnv = nodeInstallationEnvironment(installation);
+  symlinkSync(join(f.parent, 'unrelated.sqlite'), stateEnv.TAG_DB_PATH);
+  assert.throws(check, /private, owner-controlled/);
+  rmSync(stateEnv.TAG_DB_PATH);
+  chmodSync(installation.statePath, 0o755);
+  assert.throws(check, /private, owner-controlled/);
+  chmodSync(installation.statePath, 0o700);
+  const processPath = nodeInstallationProcessPath(installation);
+  writeFileSync(processPath, JSON.stringify({ runId: installation.runId, launcherPid: process.pid, childPgid: process.pid }), { mode: 0o600 });
+  await assert.rejects(runNodeInstallation(installation, f.envPath, withClaim), { code: 'INSTALLATION_PROCESS_RECONCILIATION_REQUIRED' });
+  assert.throws(() => reconcileNodeInstallationProcess(installation), { code: 'INSTALLATION_PROCESS_STILL_RUNNING' });
+  writeFileSync(processPath, JSON.stringify({ runId: installation.runId, launcherPid: DEAD_PID, childPgid: null }));
+  assert.throws(() => reconcileNodeInstallationProcess(installation), { code: 'INSTALLATION_PROCESS_START_UNRESOLVED' });
+  writeFileSync(processPath, JSON.stringify({ runId: installation.runId, launcherPid: DEAD_PID, childPgid: DEAD_PID }));
+  assert.equal(reconcileNodeInstallationProcess(installation).reconciled, true);
+  await assert.rejects(runNodeInstallation(installation, f.envPath, (start: (value: any) => void) => start({ ...installation, runId: 'replacement' })), { code: 'INSTALLATION_RESERVATION_CHANGED' });
+  assert.equal(existsSync(processPath), false);
+});
+
+test('a disconnected child keeps the Node reservation blocked until the owned process group has stopped', async (context) => {
+  const f = nodeInstallationFixture(context);
+  claimEnvironment('amber', f.options);
+  const { installation } = await reserveEnvironmentInstallation('amber', f.specPath, f.options);
+  const processPath = nodeInstallationProcessPath(installation);
+  const readyPath = join(installation.statePath, 'child-ready');
+  writeFileSync(join(f.installer, 'dist', 'server.mjs'), `
+    import { spawn } from 'node:child_process';
+    import { existsSync } from 'node:fs';
+    import { setTimeout } from 'node:timers/promises';
+    const child = spawn(process.execPath, ['-e', ${JSON.stringify(`require('node:fs').writeFileSync(${JSON.stringify(readyPath)}, 'ready'); setInterval(() => {}, 1000);`)}], { stdio: 'ignore' });
+    child.unref();
+    while (!existsSync(${JSON.stringify(readyPath)})) await setTimeout(10);
+  `);
+  const moduleUrl = new URL('../scripts/lib/environment-installation-node.mjs', import.meta.url).href;
+  const launcher = spawn(process.execPath, ['--input-type=module', '-e', `
+    import { runNodeInstallation } from ${JSON.stringify(moduleUrl)};
+    const installation = ${JSON.stringify(installation)};
+    try { await runNodeInstallation(installation, ${JSON.stringify(f.envPath)}, (start) => start(installation)); }
+    catch (error) { process.stderr.write(error.code); process.exitCode = 2; }
+  `], { stdio: ['ignore', 'pipe', 'pipe'] });
+  let stderr = '';
+  launcher.stderr.on('data', (value) => { stderr += value; });
+  context.after(() => {
+    launcher.kill();
+    if (existsSync(processPath)) {
+      const record = JSON.parse(readFileSync(processPath, 'utf8'));
+      try { process.kill(-record.childPgid, 'SIGTERM'); } catch { /* Already stopped. */ }
+    }
+  });
+  const status = await new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error('Fixture launcher did not finish')), 10000);
+    launcher.once('exit', (code) => { clearTimeout(timeout); resolve(code); });
+    launcher.once('error', (error) => { clearTimeout(timeout); reject(error); });
+  });
+  assert.equal(status, 2, stderr);
+  assert.match(stderr, /INSTALLATION_PROCESS_STILL_RUNNING/);
+  assert.throws(() => reconcileNodeInstallationProcess(installation), { code: 'INSTALLATION_PROCESS_STILL_RUNNING' });
+  const record = JSON.parse(readFileSync(processPath, 'utf8'));
+  process.kill(-record.childPgid, 'SIGTERM');
+  const deadline = Date.now() + 5000;
+  for (;;) {
+    try { process.kill(-record.childPgid, 0); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ESRCH') break;
+      throw error;
+    }
+    assert.ok(Date.now() < deadline, 'owned fixture descendants should stop');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.equal(reconcileNodeInstallationProcess(installation).reconciled, true);
+  assert.equal(existsSync(processPath), false);
+  assert.throws(() => releaseEnvironment('amber', f.options), { code: 'INSTALLATION_RESTORATION_REQUIRED' });
+});
+
+test('any-lane selection skips an occupied workspace and Node reservations stay isolated from each other', async (context) => {
+  const f = nodeInstallationFixture(context);
+  claimEnvironment('amber', f.options);
+  const first = (await reserveEnvironmentInstallation('amber', f.specPath, f.options)).installation;
+  const holder = join(f.parent, 'other-operator');
+  git(f.parent, 'clone', f.worktree, holder);
+  const options = { ...f.options, worktreePath: holder, observeAuthority: async () => authority('cobalt') };
+  const claim = await waitForEnvironmentClaim('any', { ...options, timeoutMs: 0, pollMs: 250 });
+  assert.equal(claim.target, 'cobalt');
+  writeEnvironmentBaseline(f.records[1]!.evidenceRoot, baseline('cobalt'));
+  await assert.rejects(reserveEnvironmentInstallation('cobalt', f.specPath, options), { code: 'DUPLICATE_TARGET_IDENTITY' });
+  const secondInstaller = join(f.parent, 'second-node-release');
+  mkdirSync(secondInstaller);
+  writeFileSync(f.specPath, JSON.stringify({ ...f.spec, runId: 'second-install', installerPath: secondInstaller }));
+  const second = (await reserveEnvironmentInstallation('cobalt', f.specPath, options)).installation;
+  assert.notEqual(second.statePath, first.statePath);
+  assert.equal(readdirSync(f.parent).filter((name) => name.startsWith('node-install-')).length, 2);
+  assert.throws(() => assertInstallationNodeRuntime('amber', options), { code: 'CLAIM_OWNER_MISMATCH' });
+});
+
+test('Node installation CLI validates arguments and launches the reserved release with isolated environment', async (context) => {
+  for (const args of [
+    ['install-start', 'amber'],
+    ['install-start', 'amber', '--runtime-env', '/private/runtime.json', '--profile', 'unrelated'],
+    ['install-reconcile', 'amber', '--runtime-env', '/private/runtime.json'],
+  ]) {
+    let error = '';
+    const status = await runEnvironmentCli(args, { stderr: (value: string) => { error += value; } });
+    assert.equal(status, 2);
+    assert.match(error, /INVALID_ARGUMENT/);
+  }
+  const f = nodeInstallationFixture(context);
+  f.options.now = () => Date.now();
+  claimEnvironment('amber', f.options);
+  const { installation } = await reserveEnvironmentInstallation('amber', f.specPath, f.options);
+  writeFileSync(join(f.installer, 'dist', 'server.mjs'), `
+    import { writeFileSync } from 'node:fs';
+    if (process.env.CHICKPEA_TEST_AMBIENT_SECRET) throw new Error('Inherited ambient credentials');
+    writeFileSync(process.env.TAG_DB_PATH, 'run-owned');
+    process.exitCode = 7;
+  `);
+  const previous = process.env.CHICKPEA_TEST_AMBIENT_SECRET;
+  process.env.CHICKPEA_TEST_AMBIENT_SECRET = 'synthetic-secret';
+  let output = '';
+  try {
+    const status = await runEnvironmentCli(['install-start', 'amber', '--worktree', f.worktree,
+      '--root', f.root, '--runtime-env', f.envPath], { hostFingerprint: 'host-fixture',
+      stdout: (value: string) => { output += value; }, stderr: (value: string) => { output += value; } });
+    assert.equal(status, 7, output);
+  } finally {
+    if (previous === undefined) delete process.env.CHICKPEA_TEST_AMBIENT_SECRET;
+    else process.env.CHICKPEA_TEST_AMBIENT_SECRET = previous;
+  }
+  assert.equal(readFileSync(join(installation.statePath, 'transcripts.sqlite'), 'utf8'), 'run-owned');
+  assert.equal(existsSync(nodeInstallationProcessPath(installation)), false);
 });
 
 test('adding Violet preserves older baselines while checking every prior fingerprint and new fingerprint isolation', async (context) => {

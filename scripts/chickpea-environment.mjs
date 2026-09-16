@@ -11,9 +11,11 @@ import {
   reclaimEnvironment,
   reconcileEnvironment,
   releaseEnvironment,
+  withEnvironmentInstallationClaim,
 } from './lib/environment-registry.mjs';
 import { EnvironmentWaitError, waitForEnvironmentClaim } from './lib/environment-wait.mjs';
-import { reserveEnvironmentInstallation, restoreEnvironmentInstallation } from './lib/environment-installation.mjs';
+import { assertInstallationNodeRuntime, reserveEnvironmentInstallation, restoreEnvironmentInstallation } from './lib/environment-installation.mjs';
+import { InstallationNodeError, reconcileNodeInstallationProcess, runNodeInstallation } from './lib/environment-installation-node.mjs';
 import { targetEnvironment } from './lib/environment-target.mjs';
 import {
   reconcileEnvironmentDeployment,
@@ -44,7 +46,24 @@ export async function runEnvironmentCli(argv, io = {}) {
       ...(io.allowSuppliedObservation === true ? { allowSuppliedObservation: true } : {}),
     };
     let result;
-    if (['install-reserve', 'install-restore'].includes(parsed.command)) {
+    if (['install-start', 'install-reconcile'].includes(parsed.command)) {
+      requireTarget(parsed.target);
+      if (Object.keys(parsed.flags).some((flag) => !['root', 'worktree', 'runtimeEnv'].includes(flag))
+        || (parsed.command === 'install-start' ? !parsed.flags.runtimeEnv : parsed.flags.runtimeEnv)) {
+        throw new EnvironmentRegistryError('INVALID_ARGUMENT');
+      }
+      if (parsed.command === 'install-start') {
+        const installation = assertInstallationNodeRuntime(parsed.target, options);
+        result = await runNodeInstallation(installation, parsed.flags.runtimeEnv,
+          (start) => withEnvironmentInstallationClaim(parsed.target, options, start));
+        stdout(`${JSON.stringify(result)}\n`);
+        return result.code ?? 1;
+      }
+      result = withEnvironmentInstallationClaim(parsed.target, options, (installation) => {
+        if (installation.runtime !== 'node') throw new EnvironmentRegistryError('INSTALLATION_RUNTIME_MISMATCH');
+        return reconcileNodeInstallationProcess(installation);
+      });
+    } else if (['install-reserve', 'install-restore'].includes(parsed.command)) {
       requireTarget(parsed.target);
       if (!parsed.flags.installation || Object.keys(parsed.flags).some((flag) => ![
         'root', 'worktree', 'installation', 'profile', 'environment',
@@ -149,13 +168,13 @@ export async function runEnvironmentCli(argv, io = {}) {
     stdout(`${JSON.stringify(result, null, 2)}\n`);
     return result?.kind === 'timeout' ? 3 : 0;
   } catch (error) {
-    const code = error instanceof EnvironmentRegistryError || error instanceof EnvironmentWaitError
+    const code = error instanceof EnvironmentRegistryError || error instanceof EnvironmentWaitError || error instanceof InstallationNodeError
       ? error.code
       : 'ENVIRONMENT_COMMAND_FAILED';
     // A non-registry failure used to surface as a bare code, which hid the
     // actual cause (a missing host variable, an unreachable Worker, a parse
     // error). Name it, bounded and without any token-shaped content.
-    const message = error instanceof EnvironmentRegistryError || error instanceof EnvironmentWaitError
+    const message = error instanceof EnvironmentRegistryError || error instanceof EnvironmentWaitError || error instanceof InstallationNodeError
       ? undefined
       : redactCommandFailure(error instanceof Error ? error.message : String(error));
     const body = {
@@ -202,6 +221,7 @@ function parseArgs(argv) {
       '--bindings': 'bindings',
       '--registration': 'registration',
       '--installation': 'installation',
+      '--runtime-env': 'runtimeEnv',
       '--profile': 'profile',
       '--env': 'environment',
     }[value];

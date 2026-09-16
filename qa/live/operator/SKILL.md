@@ -46,10 +46,14 @@ declared QA action. Scope restrictions from the current user request still apply
 Production, the shared gateway/app configuration, purchases, workspace deletion,
 unrelated accounts/data, global upstream grant revocation, source merges, and
 release publication are outside this authorization. A fresh Slack installation
-may borrow a free deployed lane using the [installation reservation](environments.md#borrow-a-lane-for-a-fresh-install).
-Preserve its standing Worker/database and hold the claim through verified
-restoration. No permanent installation-only workspace is required. Do not
-provision paid infrastructure outside the declared QA resources.
+may borrow any eligible free registered lane using the [installation reservation](environments.md#borrow-a-lane-for-a-fresh-install).
+Select it with `wait-claim any`; do not ask the user to permanently designate an
+installation workspace. Choose `node` for a local installation, including macOS,
+or `cloudflare` for a temporary Worker/D1 installation. Node uses newly allocated
+local state and the guarded local launcher; it requires no Cloudflare deployment.
+Preserve the standing installation and hold the claim through verified restoration.
+Missing credentials, occupied lanes and unresolved restoration remain blockers.
+Do not provision paid infrastructure outside the declared QA resources.
 
 Only request human input when a required fact or capability is actually missing:
 an unregistered account/target, a broader grant, unavailable credentials, MFA,
