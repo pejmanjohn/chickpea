@@ -192,8 +192,13 @@ test('the binding payload policy leaves every other Workers AI model unchanged',
   assert.equal(receivedPayload, payload);
 });
 
-for (const method of ['stream', 'streamSimple'] as const) {
-  test(`GPT-OSS ${method} has enough output budget to finish thinking and request a tool`, async () => {
+for (const [method, contentShape] of [
+  ['stream', 'omitted'],
+  ['stream', 'null'],
+  ['streamSimple', 'omitted'],
+  ['streamSimple', 'null'],
+] as const) {
+  test(`GPT-OSS ${method} accepts ${contentShape} content while finishing thinking and requesting a tool`, async () => {
     let receivedInputs: Record<string, unknown> | undefined;
     const provider = createCloudflareBindingProvider({
       run: async (_modelId, inputs) => {
@@ -203,10 +208,13 @@ for (const method of ['stream', 'streamSimple'] as const) {
         const truncated = Number(inputs.max_tokens ?? 256) <= 256;
         const chunks = [
           { choices: [{ index: 0, delta: { reasoning_content: 'Prepare the requested Agent.' }, finish_reason: null }] },
-          { choices: [{ index: 0, delta: truncated ? {} : { tool_calls: [{
-            index: 0, id: 'call_create', type: 'function',
-            function: { name: 'create_agent', arguments: '{"name":"QA helper"}' },
-          }] }, finish_reason: truncated ? 'length' : 'tool_calls' }] },
+          { choices: [{ index: 0, delta: truncated ? {} : {
+            ...(contentShape === 'null' ? { content: null } : {}),
+            tool_calls: [{
+              index: 0, id: 'call_create', type: 'function',
+              function: { name: 'create_agent', arguments: '{"name":"QA helper"}' },
+            }],
+          }, finish_reason: truncated ? 'length' : 'tool_calls' }] },
         ];
         return new Response(chunks.map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join('')
           + 'data: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } });
@@ -226,6 +234,62 @@ for (const method of ['stream', 'streamSimple'] as const) {
     assert.equal(Object.hasOwn(receivedInputs!, 'max_completion_tokens'), false);
   });
 }
+
+test('gateway Responses models clamp unsupported xhigh and max reasoning to high', async () => {
+  const efforts: unknown[] = [];
+  const provider = createCloudflareBindingProvider({
+    run: async (_modelId, inputs) => {
+      efforts.push((inputs.reasoning as { effort?: unknown } | undefined)?.effort);
+      const events = [
+        { type: 'response.created', response: { id: 'response_reasoning' } },
+        {
+          type: 'response.completed',
+          response: {
+            id: 'response_reasoning', status: 'completed', output: [],
+            usage: { input_tokens: 1, output_tokens: 0, total_tokens: 1,
+              input_tokens_details: { cached_tokens: 0 } },
+          },
+        },
+      ];
+      return new Response(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(''), {
+        headers: { 'content-type': 'text/event-stream' },
+      });
+    },
+  });
+  const model = provider.getModels().find(({ id }) => id === 'openai/gpt-5.6-sol');
+  assert.ok(model);
+
+  for (const reasoning of ['xhigh', 'max'] as const) {
+    const result = await provider.streamSimple(model, {
+      messages: [{ role: 'user', content: 'Check the fixture.', timestamp: 1 }],
+    }, { reasoning }).result();
+    assert.equal(result.stopReason, 'stop', result.errorMessage ?? 'reasoning request should complete');
+  }
+
+  assert.deepEqual(efforts, ['high', 'high']);
+});
+
+test('a malformed Workers AI text delta fails without exposing its value as content', async () => {
+  const provider = createCloudflareBindingProvider({
+    run: async () => new Response([
+      `data: ${JSON.stringify({ choices: [{
+        index: 0, delta: { content: { private: 'do-not-render' } }, finish_reason: null,
+      }] })}\n\n`,
+      'data: [DONE]\n\n',
+    ].join(''), { headers: { 'content-type': 'text/event-stream' } }),
+  });
+  const model = provider.getModels().find(({ id }) => id === '@cf/openai/gpt-oss-120b');
+  assert.ok(model);
+
+  const result = await provider.streamSimple(model, {
+    messages: [{ role: 'user', content: 'Use the tool.', timestamp: 1 }],
+  }).result();
+
+  assert.equal(result.stopReason, 'error');
+  assert.deepEqual(result.content, []);
+  assert.match(result.errorMessage ?? '', /invalid choices\[0\]\.delta\.content/);
+  assert.doesNotMatch(result.errorMessage ?? '', /do-not-render/);
+});
 
 test('the GPT-OSS binding maps explicit caller budgets without changing reasoning or options', async () => {
   let receivedInputs: Record<string, unknown> | undefined;

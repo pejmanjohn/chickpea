@@ -1,4 +1,4 @@
-import { defineTool, type SandboxFactory, type SessionEnv } from '@flue/runtime';
+import { defineTool, type Sandbox, type SandboxFactory } from '@flue/runtime';
 import * as v from 'valibot';
 
 import { assertArtifactDeliveryAllowed } from '../memory/tool-policy.ts';
@@ -147,7 +147,7 @@ interface WorkspaceArtifactCapabilityOptions extends ArtifactDestinationBinding 
 }
 
 type WorkspaceArtifactDelivery = (
-  env: SessionEnv,
+  env: Sandbox,
   input: { path: string; filename: string; title?: string | undefined },
   binding: ArtifactDestinationBinding,
 ) => Promise<ArtifactToolResult>;
@@ -182,18 +182,18 @@ export function createWorkspaceArtifactTool(options: ArtifactDestinationBinding,
 }
 
 /**
- * Capture the SessionEnv Flue creates for the selected sandbox and expose
+ * Capture the Sandbox Flue creates for the selected factory and expose
  * one destination-bound upload tool. The model selects only a file path and
  * presentation metadata; trusted code owns the Slack channel and thread.
  */
 export function createWorkspaceArtifactCapability(
   options: WorkspaceArtifactCapabilityOptions,
 ) {
-  let sessionEnv: SessionEnv | undefined;
+  let sandboxEnv: Sandbox | undefined;
   const sandbox: SandboxFactory = {
-    async createSessionEnv(createOptions) {
-      const created = await options.sandbox.createSessionEnv(createOptions);
-      sessionEnv = created;
+    async createSandbox(createOptions) {
+      const created = await options.sandbox.createSandbox(createOptions);
+      sandboxEnv = created;
       return created;
     },
     ...(options.sandbox.tools === undefined ? {} : { tools: options.sandbox.tools }),
@@ -204,10 +204,10 @@ export function createWorkspaceArtifactCapability(
     description: artifactToolDescription(options.sandboxKind),
     input: ARTIFACT_INPUT,
     async run({ data }) {
-      if (!sessionEnv) {
+      if (!sandboxEnv) {
         throw new Error('workspace is not initialized');
       }
-      return { output: await deliverArtifact(sessionEnv, data, options) };
+      return { output: await deliverArtifact(sandboxEnv, data, options) };
     },
   });
 
@@ -215,7 +215,7 @@ export function createWorkspaceArtifactCapability(
 }
 
 async function deliverArtifact(
-  sessionEnv: SessionEnv,
+  sessionEnv: Sandbox,
   data: v.InferOutput<typeof ARTIFACT_INPUT>,
   binding: ArtifactDestinationBinding,
 ): Promise<ArtifactToolResult> {
@@ -238,7 +238,7 @@ async function deliverArtifact(
  * and re-check the bytes actually obtained.
  */
 export async function readSandboxArtifact(
-  sessionEnv: SessionEnv,
+  sessionEnv: Sandbox,
   requestedPath: string,
   sandboxKind: SandboxSelection,
 ): Promise<Uint8Array> {
@@ -257,7 +257,7 @@ export async function readSandboxArtifact(
 }
 
 async function assertArtifactWithinCap(
-  sessionEnv: SessionEnv,
+  sessionEnv: Sandbox,
   path: string,
   maxBytes: number,
 ): Promise<void> {
@@ -275,7 +275,7 @@ async function assertArtifactWithinCap(
 
 /** Freeze a workspace-owned file under a trusted random name before reading it. */
 export async function freezeWorkspaceArtifact(
-  sessionEnv: SessionEnv,
+  sessionEnv: Sandbox,
   sourcePath: string,
   maxBytes: number,
   sourceAlreadyValidated = false,
@@ -370,7 +370,7 @@ export function workspaceArtifactPath(path: string): string {
  * file path so the model cannot smuggle traversal segments past the check.
  */
 export function sandboxArtifactPath(
-  sessionEnv: Pick<SessionEnv, 'resolvePath'>,
+  sessionEnv: Pick<Sandbox, 'resolvePath'>,
   requestedPath: string,
 ): string {
   const trimmed = requestedPath.trim();
