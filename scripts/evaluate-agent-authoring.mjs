@@ -561,8 +561,9 @@ async function runDeterministicSmoke(corpus) {
     const skill = corpus.cases.find(({ id }) => id === 'coding-bug-to-pr-skill');
     const confirmation = corpus.cases.find(({ id }) => id === 'successful-proposal-confirmation');
     const creation = corpus.cases.find(({ id }) => id === 'new-agent-single-approval');
+    const previewOnlyCreation = corpus.cases.find(({ id }) => id === 'new-agent-preview-only');
     assert(positive && negative && stale && reach && schedule && scheduleDeletion && skill &&
-      confirmation && creation,
+      confirmation && creation && previewOnlyCreation,
       'Smoke cases are missing.');
 
     faux.setResponses([
@@ -895,6 +896,29 @@ async function runDeterministicSmoke(corpus) {
       );
     }
 
+    faux.setResponses([
+      fauxAssistantMessage([
+        fauxToolCall('activate_skill', { name: 'agent-authoring' }),
+      ], { stopReason: 'toolUse' }),
+      fauxAssistantMessage([
+        fauxToolCall('record_eval_assessment', {
+          posture: 'explore',
+          placements: ['identity', 'instructions'],
+          approvalPosture: 'none',
+          capabilityClaimsGrounded: true,
+        }),
+      ], { stopReason: 'toolUse' }),
+    ]);
+    const previewOnlyCreationResult = await runCase('current', previewOnlyCreation);
+    const previewOnlyCreationEvaluation = evaluateResult(
+      previewOnlyCreationResult,
+      previewOnlyCreation.expected,
+    );
+    assert(
+      previewOnlyCreationEvaluation.assertions.find(({ id }) => id === 'no_mutation')?.passed,
+      'Preview-only Agent creation performed or proposed a configuration change.',
+    );
+
     for (const entry of corpus.cases.filter(({ id }) => id.startsWith('skill-import-'))) {
       faux.setResponses([
         fauxAssistantMessage([fauxToolCall('import_skill', {
@@ -932,6 +956,7 @@ async function runDeterministicSmoke(corpus) {
         'production_valid_skill_observed',
         'exact_confirmation_receipt_observed',
         'immediate_agent_creation_observed',
+        'preview_only_agent_creation_held',
         'usage_observed',
       ],
     };

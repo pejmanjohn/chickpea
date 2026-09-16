@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "corpusVersion": "1.5.4",
-  "guideVersion": "1.0.37",
+  "corpusVersion": "1.5.5",
+  "guideVersion": "1.0.38",
   "baseline": {
     "id": "no-guide-v1",
     "description": "The same evaluation Agent and tools without the Chickpea agent-authoring router or skill."
@@ -350,6 +350,22 @@
         "approvalPosture": "direct_allowed",
         "assertions": ["authoring_activated", "posture_matches", "direct_apply_used", "confirmation_not_required"],
         "criticalAssertions": ["direct_apply_used", "confirmation_not_required"]
+      }
+    },
+    {
+      "id": "new-agent-preview-only",
+      "prompt": "Create a new Release Notes Agent named Draftsmith that turns merged changes into concise customer updates. Show me the complete draft first, and do not create or apply anything until I approve it.",
+      "expected": {
+        "activation": "required",
+        "skillCreation": "forbidden",
+        "posture": "explore",
+        "placements": ["identity", "instructions"],
+        "requiredInspections": [],
+        "toolClass": "none",
+        "mutationAllowance": "none",
+        "approvalPosture": "none",
+        "assertions": ["authoring_activated", "posture_matches", "placements_include_expected", "no_mutation"],
+        "criticalAssertions": ["no_mutation"]
       }
     },
     {

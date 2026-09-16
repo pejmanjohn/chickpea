@@ -66,6 +66,9 @@ test('router covers all authoring postures while leaving detailed judgment lazy'
     'inspect_workspace',
     'do not answer from general knowledge or defer inspection',
     'before calling any configuration mutation tool',
+    'Preview-first or wait-for-approval Agent creation',
+    'read-only exploration',
+    'Only a later authenticated approval',
     'standalone base create_agent operation',
     'apply_workspace_changes immediately',
     'Never propose Agent creation',
@@ -101,6 +104,8 @@ test('shared creation tool descriptions agree on immediate standalone apply', ()
   assert.match(proposal, /standalone base Agent immediately with apply_workspace_changes/i);
   assert.match(apply, /created immediately as a standalone create_agent operation/i);
   assert.match(apply, /do not propose it or ask for confirmation/i);
+  assert.match(apply, /asks to preview, draft, or show the new Agent before applying it/i);
+  assert.match(apply, /Show a textual draft and wait for a later authenticated requester message/i);
 });
 
 test('workspace proposal guidance stays inside the typed configuration schema', () => {
@@ -169,6 +174,9 @@ test('guide encodes posture, placement, blueprint, inspection, and proportional 
     'call `manage_agent_skill`', 'Never construct a replacement `skills` array',
     'Ambiguity calls for clarification, not approval',
     'standalone base `create_agent` operation',
+    'keeps the current turn in `explore` posture',
+    'Show a textual draft and make no configuration change',
+    'creation proposals are not supported',
     'Do not call `propose_workspace_changes`',
     'ordered `connectorMentions`',
     'duplicate-identity clarification',
@@ -369,6 +377,12 @@ test('behavioral evaluation corpus is versioned, synthetic, and guide-bound', as
 
   const prompts = corpus.cases.map(({ prompt }) => prompt).join('\n');
   assert.doesNotMatch(prompts, /northstar|PRIVATE_|T_PRIVATE|C_PRIVATE/i);
+
+  const immediateCreation = corpus.cases.find(({ id }) => id === 'new-agent-single-approval');
+  const previewOnlyCreation = corpus.cases.find(({ id }) => id === 'new-agent-preview-only');
+  assert.equal(immediateCreation?.expected.mutationAllowance, 'direct_apply');
+  assert.equal(previewOnlyCreation?.expected.mutationAllowance, 'none');
+  assert.ok(previewOnlyCreation?.expected.criticalAssertions.includes('no_mutation'));
 });
 
 test('the deployed MCP verifier stays pinned to the canonical guide version', async () => {

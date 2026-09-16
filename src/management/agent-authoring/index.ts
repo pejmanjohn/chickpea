@@ -3,7 +3,7 @@ import { sha256 } from '@noble/hashes/sha2.js';
 import { defineSkill, useInstruction, useSkill } from '@flue/runtime';
 
 export const AGENT_AUTHORING_SKILL_NAME = 'agent-authoring' as const;
-export const AGENT_AUTHORING_GUIDE_VERSION = '1.0.37' as const;
+export const AGENT_AUTHORING_GUIDE_VERSION = '1.0.38' as const;
 export const AGENT_AUTHORING_GUIDE_URI = 'chickpea://guide/agent-authoring/v1' as const;
 export const AGENT_AUTHORING_REASONS = [
   'agent_creation',
@@ -18,6 +18,7 @@ export const AGENT_AUTHORING_ROUTER_INSTRUCTION = [
   'Always activate the `agent-authoring` skill for requests to create an Agent, edit an Agent, remember or edit Agent memory, explore Agent roles or workflows, ask a capability question about Agent configuration or design, or create or revise a skill. Do not activate it merely to answer which native or connected-service actions are mounted for the current turn; answer those questions from the mounted runtime declarations and tool descriptions.',
   'Remember via inspect_memory and update_agent_memory; claim saved only after an applied memory receipt.',
   'Before calling any configuration mutation tool, consider the whole request. Treat a compound request as one Agent-authoring request and never partially write it.',
+  'Preview-first or wait-for-approval Agent creation is read-only exploration, even when fully specified. Show a textual draft; call neither apply_workspace_changes nor propose_workspace_changes. Only a later authenticated approval reaches commit posture.',
   'For a sufficiently understood new Agent in commit posture, call apply_workspace_changes immediately with one standalone base create_agent operation. Never propose Agent creation or ask for confirmation.',
   'For compound creation, create the base first, pass named connectors as ordered welcome hints on Slack, then use existing policy for each follow-on. Clarify if the base is unresolved.',
   'Skill activation, reference reading, live inspection, and proposal drafting are read-only; do them without asking for separate permission.',
@@ -41,6 +42,8 @@ Classify the current turn semantically before selecting fields or tools:
 - \`clarify\`: the request is too ambiguous to design safely or an answer would materially change the design.
 
 An \`explore\`, \`capability_question\`, or unresolved \`clarify\` turn must not mutate configuration. Inspect live state when useful, answer or offer options, and make the next decision easy. A detailed request is not automatically authorization to commit.
+
+An explicit request to preview, draft, or show a proposed new Agent before applying it, or to wait for later approval, keeps the current turn in \`explore\` posture even when the identity and purpose are fully specified. Show a textual draft and make no configuration change. Do not call \`apply_workspace_changes\` or \`propose_workspace_changes\`: creation proposals are not supported. Only a later authenticated requester message that approves the draft can put creation in \`commit\` posture.
 
 Activating this skill, reading its references, inspecting live state, and drafting a proposal are read-only. Do those steps when needed without asking the requester for separate permission. Ask for approval only at the configuration boundary required by this guide and the management service.
 
@@ -88,7 +91,7 @@ For a new Agent, keep the design as text while posture is \`explore\` or \`clari
 
 Infer low-risk defaults when confidence is high and disclose them. For example, a support Agent can start with handle \`support\` and a concise support-oriented description. Ask only questions whose answers materially change the role, procedure, access, schedule, reach, or authority. Prefer one to three focused questions at a time.
 
-Once a sufficiently understood new-Agent request reaches \`commit\` posture, call \`apply_workspace_changes\` in that same turn with exactly one standalone base \`create_agent\` operation. Do not call \`propose_workspace_changes\`, show a creation preview, or ask the requester to say “create it”. The service creates the Agent immediately and the Slack host owns the single welcome. If the base identity or purpose remains materially unresolved, stay read-only and clarify first.
+Once a sufficiently understood new-Agent request reaches \`commit\` posture without an explicit preview-only or wait-for-approval constraint, call \`apply_workspace_changes\` in that same turn with exactly one standalone base \`create_agent\` operation. Do not call \`propose_workspace_changes\`, show a creation preview, or ask the requester to say “create it”. The service creates the Agent immediately and the Slack host owns the single welcome. If the base identity or purpose remains materially unresolved, stay read-only and clarify first.
 
 Keep connections, repositories, routines, memory, and caller-supplied Channel reach out of the base operation. For Slack, pass connector display names explicitly requested in the current message as ordered \`connectorMentions\`; they are only hints for independently authorized welcome links and never grant access. For a compound request, create the standalone base Agent first, then route every follow-on change through its existing tool and confirmation policy. If creation returns a duplicate-identity clarification, ask whether to use the existing Agent or choose a distinct name or handle; do not propose creation or retry unchanged content.
 
