@@ -28,6 +28,7 @@ import {
 } from './thread-images.ts';
 import type { NormalizedSlackTurn } from './types.ts';
 import { boundedSlackPublicHandoff, type SlackPublicHandoffMessage } from './public-context.ts';
+import { isSlackContentMessageSubtype } from './message-subtypes.ts';
 
 export const SLACK_SELF_MENTION_PLACEHOLDER = '[[CHICKPEA_SELF_MENTION]]';
 
@@ -97,7 +98,7 @@ export async function hydrateSlackPublicHandoffFallback(
     const entries = ((response.messages ?? []) as unknown as SlackWebApiMessage[])
       .flatMap((message) => {
         if (!message.text?.trim() || !message.ts ||
-            (message.subtype && message.subtype !== 'file_share')) return [];
+            !isSlackContentMessageSubtype(message.subtype)) return [];
         if (!atOrBeforeSlackWatermark(message.ts, turn.messageTs) || message.ts === turn.messageTs) {
           return [];
         }

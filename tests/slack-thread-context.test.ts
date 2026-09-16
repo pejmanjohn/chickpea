@@ -508,6 +508,38 @@ test('thread hydration retains human file-share text without copying Slack file 
   assert.doesNotMatch(JSON.stringify(context), /F_PRIVATE|url_private|files\.slack\.com/);
 });
 
+test('thread and DM history retain human broadcasts once and preserve their thread root', async () => {
+  const broadcast = {
+    user: 'U_HUMAN', subtype: 'thread_broadcast', text: 'Please use the corrected total.',
+    ts: '1001.0000', thread_ts: '1000.0000',
+    root: { bot_id: 'B_OTHER', text: 'Rendering-only root copy' },
+  };
+  const rows = [
+    humanMsg(0, '1000.0000'), broadcast,
+    { ...broadcast, bot_id: 'B_OTHER', ts: '1002.0000', text: 'Bot broadcast' },
+    { ...broadcast, subtype: 'message_changed', ts: '1003.0000', text: 'Mutation wrapper' },
+    { ...broadcast, ts: '2001.0000', text: 'Future broadcast' },
+  ];
+  for (const contextMode of ['thread', 'dm_history'] as const) {
+    const client = { conversations: {
+      replies: async () => ({ messages: rows }),
+      history: async () => ({ messages: [...rows].reverse() }),
+    } };
+    const turn = threadTurn({ channelId: 'D1', channelType: 'im', contextMode });
+    const context = await hydrateSlackContextViaWebClient(client as never, turn);
+    assert.deepEqual(context.messages.filter((message) => message.ts === broadcast.ts), [{
+      userId: 'U_HUMAN', text: broadcast.text, ts: broadcast.ts,
+      isTrigger: false, role: 'human', rootTs: broadcast.thread_ts,
+    }]);
+    assert.doesNotMatch(JSON.stringify(context), /Rendering-only|Bot broadcast|Mutation wrapper|Future broadcast/);
+
+    const trigger = { ...turn, messageTs: broadcast.ts, text: broadcast.text };
+    const triggerContext = await hydrateSlackContextViaWebClient(client as never, trigger);
+    assert.equal(triggerContext.messages.filter((message) => message.ts === broadcast.ts).length, 1);
+    assert.equal(triggerContext.messages.find((message) => message.ts === broadcast.ts)?.isTrigger, true);
+  }
+});
+
 test('thread hydration rejects messages newer than the admitted trigger watermark', async () => {
   const client = fakeClientWithReplyPages([
     {
@@ -613,7 +645,10 @@ test('legacy handoff fallback makes one request, excludes the trigger, and degra
           messages: [
             { user: 'U1', text: 'Visible question', ts: '1001.0000' },
             { bot_id: 'B1', text: 'Visible answer', ts: '1002.0000' },
+            { user: 'U1', subtype: 'thread_broadcast', text: 'Visible broadcast', ts: '1003.0000' },
+            { user: 'U1', subtype: 'message_changed', text: 'Mutation wrapper', ts: '1004.0000' },
             { user: 'U1', text: 'Transfer now', ts: '2000.0000' },
+            { user: 'U1', subtype: 'thread_broadcast', text: 'Future broadcast', ts: '2001.0000' },
           ],
           response_metadata: { next_cursor: 'ignored' },
         };
@@ -632,6 +667,7 @@ test('legacy handoff fallback makes one request, excludes the trigger, and degra
       messageTs: '1002.0000', role: 'agent', agentId: 'agent_previous',
       text: 'Visible answer',
     },
+    { messageTs: '1003.0000', role: 'human', text: 'Visible broadcast' },
   ]);
 
   const failed = await hydrateSlackPublicHandoffFallback({
