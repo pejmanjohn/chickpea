@@ -138,6 +138,16 @@ try {
   console.error(error instanceof Error ? error.message : String(error));
   process.exit(1);
 }
+if (
+  ['amber', 'cobalt'].includes(requestedDeploymentTarget) &&
+  cliVariable('CHICKPEA_TELEMETRY_ENVIRONMENT') !== undefined
+) {
+  console.error(
+    'Do not override CHICKPEA_TELEMETRY_ENVIRONMENT for a QA deployment target; ' +
+    'the reviewed artifact must supply the canonical test label.',
+  );
+  process.exit(1);
+}
 // Workers Builds runs its configured build command immediately before its
 // configured deploy command in the same build workspace. Reuse that exact
 // artifact, but only when both Workers-specific markers are present; local

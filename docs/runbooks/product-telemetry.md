@@ -39,6 +39,55 @@ The allowed events are:
 
 The dashboard and saved SQL insights use only event properties and `distinct_id`. Do not use PostHog Retention, Lifecycle, Stickiness, or person-cohort products because those depend on person profiles. App-version segmentation stays omitted until Chickpea exposes a real release version.
 
+## Keeping tests out of product metrics
+
+Use the existing environment label for test installations. Do not add personal
+identity, Slack workspace IDs, or hostnames to identify maintainer activity.
+
+- Automated Node tests and the offline Node harness disable telemetry.
+- The Cloudflare smoke test disables telemetry in both its generated Worker
+  variables and its generated `.dev.vars`. Setting an opt-out only in the
+  process that launches Wrangler is not a Worker-binding guarantee.
+- Local Worker lanes set `CHICKPEA_TELEMETRY_ENVIRONMENT=development`.
+- Amber and Cobalt deployment profiles force
+  `CHICKPEA_TELEMETRY_ENVIRONMENT=test`, including their disposable-state builds.
+  The deployment artifact validator rejects a missing or different label.
+- Other disposable installation fixtures must set the Worker binding to `test`
+  or disable telemetry before the first Slack connection. A new database gets a
+  new random installation identity, so repeated fresh installs otherwise inflate
+  adoption counts even when the same maintainer performs every test.
+
+Before sending synthetic activity to a deployed fixture, check the actual
+serving versions:
+
+```sh
+npm run verify:telemetry -- --worker YOUR_QA_WORKER \
+  --account-id YOUR_CLOUDFLARE_ACCOUNT_ID \
+  --output /private/path/telemetry-policy.json
+```
+
+Include `--profile` and `--env` when the target's recorded Wrangler context uses
+them, so the check reads through the same account credentials and environment.
+
+This read-only command checks every version receiving traffic. Each must have
+an explicit `test` label or a verifiable telemetry opt-out. It rechecks the
+deployment after reading the versions and refuses a changed serving set. An
+unreadable secret binding is not evidence of an opt-out. The receipt contains
+only the target, version/traffic, and telemetry policy result; it does not dump
+Worker bindings or credentials. Store it with the private run evidence and
+repeat after a deployment or binding change. A passing check verifies the serving
+telemetry configuration; it does not prove Slack delivery or PostHog ingestion.
+
+For historical cleanup, retain a private list of exact anonymous installation
+UUIDs backed by test evidence and apply the same exclusion to every product SQL
+insight. Keep the raw events. A short lifetime or repeated activity pattern can
+identify candidates for investigation, but does not prove ownership. Preserve
+unresolved identities as unknown rather than treating the remainder as confirmed
+customers. Where existing private evidence contains an installation identity,
+retain only its `installationId`, never its HMAC key. Changing a fixture's label
+does not rewrite its historical `production` events, and filtering by email is
+not available because the event contract does not collect it.
+
 ## Measurement assets
 
 - Dashboard: [Chickpea product telemetry](https://us.posthog.com/project/589233/dashboard/2055665)

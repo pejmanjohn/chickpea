@@ -64,6 +64,14 @@ Opting out is total. The telemetry composition returns a no-op before reading or
 
 `CHICKPEA_TELEMETRY_ENVIRONMENT` may be set to `production`, `development`, or `test`. It labels events; it does not disable them. Cloudflare defaults to `production`, Node defaults to `development`, and an unsupported value cannot enter the production measurement set.
 
+Maintainer QA builds for the Amber and Cobalt targets always set this label to
+`test`. Local Worker lanes use `development`, and automated Cloudflare smoke
+tests disable telemetry inside their Worker bindings. Other disposable test
+installations must explicitly set `test` or opt out before connecting Slack.
+The [operator runbook](docs/runbooks/product-telemetry.md#keeping-tests-out-of-product-metrics)
+describes the serving-version check and historical exclusions. Changing this
+setting affects future events only; it does not relabel events already stored.
+
 ## Delivery and network metadata
 
 Chickpea sends an HTTPS `POST` to the fixed PostHog US Cloud endpoint `https://us.i.posthog.com/batch`. The public project token compiled into the client grants ingestion only; it is not a secret and cannot read project data.

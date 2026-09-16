@@ -1282,6 +1282,42 @@ test('target dry-run prints the selected immutable D1 and permanent generation',
   assert.deepEqual(commands(harness.logPath), ['wrangler:["deploy","--dry-run"]']);
 });
 
+test('QA target refuses CLI telemetry environment overrides before Wrangler runs', (context) => {
+  for (const overrideArgs of [
+    ['--var', 'CHICKPEA_TELEMETRY_ENVIRONMENT:production'],
+    ['--var=CHICKPEA_TELEMETRY_ENVIRONMENT:production'],
+  ]) {
+    const harness = createHarness();
+    context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+    writeCutoverArtifact(harness, { target: 'amber', databaseId: '' });
+
+    const result = runHarness(harness, ['--skip-build', '--dry-run', ...overrideArgs], {
+      CHICKPEA_DEPLOY_TARGET: 'amber',
+    });
+
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /Do not override CHICKPEA_TELEMETRY_ENVIRONMENT/);
+    assert.equal(existsSync(harness.logPath), false);
+  }
+});
+
+test('ordinary customer deploys may still pass a telemetry environment override', (context) => {
+  const harness = createHarness();
+  context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+
+  const result = runHarness(harness, [
+    '--skip-build',
+    '--dry-run',
+    '--var',
+    'CHICKPEA_TELEMETRY_ENVIRONMENT:production',
+  ]);
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(commands(harness.logPath), [
+    'wrangler:["deploy","--dry-run","--var","CHICKPEA_TELEMETRY_ENVIRONMENT:production"]',
+  ]);
+});
+
 function commands(logPath: string): string[] {
   return readFileSync(logPath, 'utf8').trim().split('\n');
 }
@@ -1346,6 +1382,7 @@ function writeCutoverArtifact(
       SLACK_TAG_LEDGER_CANARY_CHANNELS: options.selector ?? '',
       ...(target ? {
         CHICKPEA_DEPLOY_TARGET: target,
+        CHICKPEA_TELEMETRY_ENVIRONMENT: 'test',
         CHICKPEA_AUTH_DB_SCHEMA_GENERATION: '0002_mcp_oauth',
         CHICKPEA_DURABLE_OBJECT_SCHEMA_GENERATION: 'v9',
         CHICKPEA_DEPLOY_SCHEMA_GENERATION: 'd1:0002_mcp_oauth;do:v9',
@@ -1408,6 +1445,7 @@ function writeCutoverArtifact(
     delete rootConfig.vars.CHICKPEA_DURABLE_OBJECT_SCHEMA_GENERATION;
     delete rootConfig.vars.CHICKPEA_DEPLOY_SCHEMA_GENERATION;
     delete rootConfig.vars.CHICKPEA_DEPLOY_STATE_MODE;
+    delete rootConfig.vars.CHICKPEA_TELEMETRY_ENVIRONMENT;
   }
   writeFileSync(path.join(harness.root, 'wrangler.jsonc'), JSON.stringify(rootConfig));
   const canarySeams = options.completeCanary === false

@@ -19,16 +19,22 @@ const TELEMETRY_ENABLED_TEST_ENV = Object.freeze({
 
 test('waitUntil lifecycle registers a bounded task without changing the product result', async () => {
   const registered: Promise<unknown>[] = [];
-  let fetchStarted = false;
+  let requestBody: string | undefined;
   const telemetry = createProductTelemetryRuntime({
-    env: TELEMETRY_ENABLED_TEST_ENV,
+    env: {
+      ...TELEMETRY_ENABLED_TEST_ENV,
+      CHICKPEA_DEPLOY_TARGET: 'amber',
+      CHICKPEA_TELEMETRY_ENVIRONMENT: 'test',
+    },
     settings: () => emptySettings(),
-    fetch: async () => { fetchStarted = true; return { status: 503 } as Response; },
+    fetch: async (_input, init) => {
+      requestBody = typeof init?.body === 'string' ? init.body : undefined;
+      return { status: 503 } as Response;
+    },
     lifecycle: createWaitUntilTelemetryLifecycle({
       waitUntil(task) { registered.push(task); },
     }),
     runtimeTarget: 'cloudflare',
-    telemetryEnvironment: 'test',
     randomUUID: () => INSTALLATION_ID,
     randomBytes: () => new Uint8Array(32).fill(5),
   });
@@ -41,7 +47,10 @@ test('waitUntil lifecycle registers a bounded task without changing the product 
   assert.equal(registered.length, 1);
   assert.deepEqual(productResult, { delivered: true });
   await registered[0];
-  assert.equal(fetchStarted, true);
+  assert.equal(
+    JSON.parse(requestBody ?? '{}').batch?.[0]?.properties?.telemetry_environment,
+    'test',
+  );
 });
 
 test('detached lifecycle handles rejections without an unhandledRejection signal', async () => {
@@ -76,22 +85,36 @@ test('request lifecycle registers Workers tasks and tolerates the throwing Node 
 });
 
 test('opt-out returns a real no-op before settings, endpoint, identity, or fetch construction', () => {
-  let sideEffects = 0;
-  const telemetry = createProductTelemetryRuntime({
-    env: { DO_NOT_TRACK: '1' },
-    settings: () => { sideEffects += 1; return emptySettings(); },
-    config: () => { sideEffects += 1; return {} as never; },
-    fetch: async () => { sideEffects += 1; return { status: 200 } as Response; },
-    lifecycle: () => { sideEffects += 1; },
-    runtimeTarget: 'node',
-    telemetryEnvironment: 'production',
-    randomUUID: () => { sideEffects += 1; return INSTALLATION_ID; },
-    randomBytes: () => { sideEffects += 1; return new Uint8Array(32); },
-  });
-  telemetry.capture({
-    event: 'workspace_connected', workspaceId: 'workspace', transportMode: 'direct',
-  });
-  assert.equal(sideEffects, 0);
+  for (const runtime of [
+    {
+      env: { DO_NOT_TRACK: '1' },
+      runtimeTarget: 'node' as const,
+      telemetryEnvironment: 'production' as const,
+    },
+    {
+      env: {
+        DO_NOT_TRACK: '1',
+        CHICKPEA_DEPLOY_TARGET: 'amber',
+        CHICKPEA_TELEMETRY_ENVIRONMENT: 'test',
+      },
+      runtimeTarget: 'cloudflare' as const,
+    },
+  ]) {
+    let sideEffects = 0;
+    const telemetry = createProductTelemetryRuntime({
+      ...runtime,
+      settings: () => { sideEffects += 1; return emptySettings(); },
+      config: () => { sideEffects += 1; return {} as never; },
+      fetch: async () => { sideEffects += 1; return { status: 200 } as Response; },
+      lifecycle: () => { sideEffects += 1; },
+      randomUUID: () => { sideEffects += 1; return INSTALLATION_ID; },
+      randomBytes: () => { sideEffects += 1; return new Uint8Array(32); },
+    });
+    telemetry.capture({
+      event: 'workspace_connected', workspaceId: 'workspace', transportMode: 'direct',
+    });
+    assert.equal(sideEffects, 0);
+  }
 });
 
 test('platform composition opt-out performs no settings, inventory, lifecycle, or network work', () => {

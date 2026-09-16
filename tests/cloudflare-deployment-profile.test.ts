@@ -6,7 +6,17 @@ import { fileURLToPath } from 'node:url';
 import { experimental_readRawConfig } from 'wrangler';
 
 // @ts-expect-error The cross-platform executable .mjs intentionally has no declaration file.
-import { ACTIVE_CLOUDFLARE_DEPLOYMENT_TARGETS, applyCloudflareDeploymentProfile, classifyCloudflareDeploymentProfile, resolveCloudflareDeploymentProfile, resolveCloudflareDeploymentTarget } from '../scripts/cloudflare-deployment-profile.mjs';
+import * as cloudflareDeploymentProfile from '../scripts/cloudflare-deployment-profile.mjs';
+
+const {
+  ACTIVE_CLOUDFLARE_DEPLOYMENT_TARGETS,
+  applyCloudflareDeploymentProfile,
+  assertCloudflareQATelemetryEnvironment,
+  classifyCloudflareDeploymentProfile,
+  readCloudflareDeploymentTargetTuple,
+  resolveCloudflareDeploymentProfile,
+  resolveCloudflareDeploymentTarget,
+} = cloudflareDeploymentProfile;
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -148,6 +158,7 @@ test('amber and cobalt resolve distinct Worker, D1, and stamped schema identitie
     }]);
     assert.deepEqual(config.vars, {
       CHICKPEA_DEPLOY_TARGET: target,
+      CHICKPEA_TELEMETRY_ENVIRONMENT: 'test',
       CHICKPEA_AUTH_DB_SCHEMA_GENERATION: '0002_mcp_oauth',
       CHICKPEA_DURABLE_OBJECT_SCHEMA_GENERATION: 'v9',
       CHICKPEA_DEPLOY_SCHEMA_GENERATION: 'd1:0002_mcp_oauth;do:v9',
@@ -167,6 +178,54 @@ test('amber and cobalt resolve distinct Worker, D1, and stamped schema identitie
     /Invalid CHICKPEA_DEPLOY_TARGET.*amber, cobalt/,
   );
   assert.equal(unregistered.name, 'chickpea');
+});
+
+test('QA targets force test telemetry for disposable and permanent artifacts', async () => {
+  for (const targetCase of [
+    { target: 'amber', authDatabaseId: undefined },
+    { target: 'cobalt', authDatabaseId: 'cobalt-database-id' },
+  ] as const) {
+    const config = await authoredConfig();
+    config.vars = {
+      ...(config.vars ?? {}),
+      CHICKPEA_TELEMETRY_ENVIRONMENT: 'production',
+      DO_NOT_TRACK: '1',
+    };
+    const env = {
+      CHICKPEA_DEPLOY_TARGET: targetCase.target,
+      CHICKPEA_TELEMETRY_ENVIRONMENT: 'production',
+      ...(targetCase.authDatabaseId
+        ? {
+            CHICKPEA_DEPLOY_AUTH_DB_ID: targetCase.authDatabaseId,
+            CHICKPEA_DEPLOY_SCHEMA_GENERATION: 'd1:0002_mcp_oauth;do:v9',
+          }
+        : {}),
+    };
+
+    applyCloudflareDeploymentProfile(config, env);
+
+    assert.equal(config.vars.CHICKPEA_TELEMETRY_ENVIRONMENT, 'test');
+    assert.equal(config.vars.DO_NOT_TRACK, '1');
+    assert.equal(readCloudflareDeploymentTargetTuple(config, env)?.target, targetCase.target);
+
+    config.vars.CHICKPEA_TELEMETRY_ENVIRONMENT = 'production';
+    assert.throws(
+      () => readCloudflareDeploymentTargetTuple(config, env),
+      /CHICKPEA_TELEMETRY_ENVIRONMENT=test/,
+    );
+
+    delete config.vars.CHICKPEA_TELEMETRY_ENVIRONMENT;
+    assert.throws(
+      () => readCloudflareDeploymentTargetTuple(config, env),
+      /CHICKPEA_TELEMETRY_ENVIRONMENT=test/,
+    );
+  }
+
+  assert.equal(assertCloudflareQATelemetryEnvironment('test', 'amber'), 'test');
+  assert.throws(
+    () => assertCloudflareQATelemetryEnvironment(' test ', 'cobalt'),
+    /CHICKPEA_TELEMETRY_ENVIRONMENT=test/,
+  );
 });
 
 test('standalone profiles refuse the parked Enterprise deployment names', async () => {
