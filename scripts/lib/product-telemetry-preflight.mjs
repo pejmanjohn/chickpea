@@ -20,6 +20,7 @@ const MAX_OUTPUT_BYTES = 1024 * 1024;
 const TIMEOUT_MS = 30_000;
 const WORKER_NAME = /^[a-z0-9_][a-z0-9_-]{0,127}$/u;
 const ACCOUNT_ID = /^[a-f0-9]{32}$/iu;
+const PROVIDER_CONTEXT_VALUE = /^[A-Za-z0-9._-]{1,128}$/u;
 const VERSION_ID = /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,127})$/u;
 const POLICY_BINDINGS = Object.freeze([
   'CHICKPEA_TELEMETRY_ENVIRONMENT',
@@ -29,6 +30,7 @@ const POLICY_BINDINGS = Object.freeze([
 const MESSAGES = Object.freeze({
   INVALID_WORKER: 'Provide one explicit Cloudflare Worker name with --worker.',
   INVALID_ACCOUNT: 'When provided, --account-id must be a 32-character Cloudflare account ID.',
+  INVALID_PROVIDER_CONTEXT: 'When provided, --profile and --env must be bounded Wrangler context names.',
   WRANGLER_READ_FAILED: 'Wrangler could not read the selected Worker. Check its account selection and login, then retry.',
   DEPLOYMENT_STATUS_INVALID: 'Wrangler returned an invalid serving deployment snapshot.',
   VERSION_RESPONSE_INVALID: 'Wrangler returned an invalid Worker version snapshot.',
@@ -69,8 +71,10 @@ export async function verifyProductTelemetry(options = {}) {
   try {
     if (!worker) throw failure('INVALID_WORKER', receipt);
     if (accountId === null) throw failure('INVALID_ACCOUNT', receipt);
+    const providerContext = resolveProviderContext(options.providerContext);
+    receipt.providerContext = providerContext;
     const runWrangler = options.runWrangler ?? defaultWranglerRunner(options);
-    const before = readDeploymentSnapshot(runWrangler, worker);
+    const before = readDeploymentSnapshot(runWrangler, worker, providerContext);
     receipt.versions = before.map(({ version, traffic }) => ({
       version,
       traffic,
@@ -83,6 +87,7 @@ export async function verifyProductTelemetry(options = {}) {
     for (const entry of receipt.versions) {
       const view = readCommandJson(runWrangler, [
         'versions', 'view', entry.version, '--json', '--name', worker,
+        ...providerContext,
       ], 'VERSION_RESPONSE_INVALID');
       if (!isRecord(view) || view.id !== entry.version) {
         throw failure(view?.id === undefined ? 'VERSION_RESPONSE_INVALID' : 'VERSION_ID_MISMATCH', receipt);
@@ -93,7 +98,7 @@ export async function verifyProductTelemetry(options = {}) {
       Object.assign(entry, evaluateBindings(view.resources.bindings));
     }
 
-    const after = readDeploymentSnapshot(runWrangler, worker);
+    const after = readDeploymentSnapshot(runWrangler, worker, providerContext);
     receipt.recheck = sameSnapshot(before, after) ? 'stable' : 'changed';
     if (receipt.recheck !== 'stable') throw failure('SERVING_SNAPSHOT_CHANGED', receipt);
     if (receipt.versions.some(({ policy }) => !['test_environment', 'plain_text_opt_out'].includes(policy))) {
@@ -165,9 +170,10 @@ function defaultWranglerRunner(options) {
   });
 }
 
-function readDeploymentSnapshot(runWrangler, worker) {
+function readDeploymentSnapshot(runWrangler, worker, providerContext) {
   const body = readCommandJson(runWrangler, [
     'deployments', 'status', '--json', '--name', worker,
+    ...providerContext,
   ], 'DEPLOYMENT_STATUS_INVALID');
   if (!isRecord(body) || !Array.isArray(body.versions) || body.versions.length === 0) {
     throw failure('DEPLOYMENT_STATUS_INVALID');
@@ -249,6 +255,26 @@ function validWorker(value) {
 
 function validAccount(value) {
   return typeof value === 'string' && ACCOUNT_ID.test(value);
+}
+
+function resolveProviderContext(input) {
+  if (input === undefined) return Object.freeze([]);
+  if (!Array.isArray(input) || input.length % 2 !== 0 || input.length > 4) {
+    throw failure('INVALID_PROVIDER_CONTEXT');
+  }
+  const context = [];
+  const seen = new Set();
+  for (let index = 0; index < input.length; index += 2) {
+    const flag = input[index];
+    const value = input[index + 1];
+    if (!['--profile', '--env'].includes(flag) || seen.has(flag)
+      || typeof value !== 'string' || !PROVIDER_CONTEXT_VALUE.test(value)) {
+      throw failure('INVALID_PROVIDER_CONTEXT');
+    }
+    seen.add(flag);
+    context.push(flag, value);
+  }
+  return Object.freeze(context);
 }
 
 function observationTime(now) {

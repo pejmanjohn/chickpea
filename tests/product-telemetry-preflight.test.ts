@@ -201,3 +201,40 @@ test('CLI prints a bounded failure receipt without requiring an output file', ()
   assert.equal(receipt.worker, null);
   assert.equal(receipt.failure.code, 'INVALID_WORKER');
 });
+
+test('Wrangler profile and environment context are validated and forwarded to every read', async () => {
+  const calls: string[][] = [];
+  const receipt = await verifyProductTelemetry({
+    worker: WORKER,
+    providerContext: ['--profile', 'qa.owner_1', '--env', 'amber-qa'],
+    runWrangler(args: string[]) {
+      calls.push(args);
+      return args[0] === 'deployments'
+        ? status([{ version_id: 'version-a', percentage: 100 }])
+        : view('version-a', [plain('CHICKPEA_TELEMETRY_ENVIRONMENT', 'test')]);
+    },
+  });
+  assert.deepEqual(receipt.providerContext, ['--profile', 'qa.owner_1', '--env', 'amber-qa']);
+  assert.deepEqual(calls, [
+    ['deployments', 'status', '--json', '--name', WORKER, '--profile', 'qa.owner_1', '--env', 'amber-qa'],
+    ['versions', 'view', 'version-a', '--json', '--name', WORKER, '--profile', 'qa.owner_1', '--env', 'amber-qa'],
+    ['deployments', 'status', '--json', '--name', WORKER, '--profile', 'qa.owner_1', '--env', 'amber-qa'],
+  ]);
+
+  for (const providerContext of [
+    ['--profile', '../owner'],
+    ['--env', 'bad/value'],
+    ['--profile', 'owner', '--profile', 'other'],
+  ]) {
+    let called = false;
+    await assert.rejects(verifyProductTelemetry({
+      worker: WORKER,
+      providerContext,
+      runWrangler() {
+        called = true;
+        return status([{ version_id: 'version-a', percentage: 100 }]);
+      },
+    }), preflightError('INVALID_PROVIDER_CONTEXT'));
+    assert.equal(called, false);
+  }
+});

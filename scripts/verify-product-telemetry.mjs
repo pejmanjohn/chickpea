@@ -8,7 +8,7 @@ import {
   writeProductTelemetryReceipt,
 } from './lib/product-telemetry-preflight.mjs';
 
-const usage = 'Usage: npm run verify:telemetry -- --worker <explicit-worker-name> [--account-id <cloudflare-account-id>] [--output <private-json-path>]';
+const usage = 'Usage: npm run verify:telemetry -- --worker <explicit-worker-name> [--account-id <cloudflare-account-id>] [--profile <wrangler-profile>] [--env <wrangler-environment>] [--output <private-json-path>]';
 
 let outputPath;
 try {
@@ -17,6 +17,8 @@ try {
     options: {
       worker: { type: 'string' },
       'account-id': { type: 'string' },
+      profile: { type: 'string' },
+      env: { type: 'string' },
       output: { type: 'string' },
       help: { type: 'boolean' },
     },
@@ -28,9 +30,13 @@ try {
       throw new Error('INVALID_ARGUMENTS');
     }
     outputPath = values.output;
+    const providerContext = [];
+    if (values.profile !== undefined) providerContext.push('--profile', values.profile);
+    if (values.env !== undefined) providerContext.push('--env', values.env);
     const receipt = await verifyProductTelemetry({
       worker: values.worker,
       ...(values['account-id'] ? { accountId: values['account-id'] } : {}),
+      ...(providerContext.length > 0 ? { providerContext } : {}),
     });
     if (outputPath) writeProductTelemetryReceipt(outputPath, receipt);
     console.log(JSON.stringify(receipt, null, 2));

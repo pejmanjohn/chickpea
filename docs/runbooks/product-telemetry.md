@@ -66,6 +66,9 @@ npm run verify:telemetry -- --worker YOUR_QA_WORKER \
   --output /private/path/telemetry-policy.json
 ```
 
+Include `--profile` and `--env` when the target's recorded Wrangler context uses
+them, so the check reads through the same account credentials and environment.
+
 This read-only command checks every version receiving traffic. Each must have
 an explicit `test` label or a verifiable telemetry opt-out. It rechecks the
 deployment after reading the versions and refuses a changed serving set. An

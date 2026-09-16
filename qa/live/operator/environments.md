@@ -129,7 +129,8 @@ This is an operator error guard, not a sandbox for untrusted deployment code.
 Before synthetic activity on any deployed target, run
 `npm run verify:telemetry -- --worker <resolved-worker-name>
 --account-id <resolved-account-id> --output
-<private-policy-receipt.json>`. Retain the receipt with the target capability's
+<private-policy-receipt.json>`, including the target's recorded `--profile` and
+`--env` when present. Retain the receipt with the target capability's
 private evidence. Repeat after a serving-version or binding change. Every
 traffic-serving version must explicitly label telemetry `test` or verifiably
 disable it. Enabled telemetry without a `test` label, an unverified opt-out, or a
