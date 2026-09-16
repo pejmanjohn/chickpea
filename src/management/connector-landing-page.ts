@@ -117,7 +117,9 @@ export function renderCatalogConnectionSetupPage(input: ConnectorLandingPageInpu
         <label class="owner-option"><input type="radio" name="access" value="editing"><span class="owner-radio" aria-hidden="true"></span><span><strong>Reporting and editing</strong><span>Selected tools may create or change ads.</span></span></label>
       </div><p>No tools are selected until you review them after sign-in.</p>`
     : undefined;
-  const accessSummary = mcpAuth?.kind === 'oauth'
+  const accessSummary = preset.id === 'bugsnag'
+    ? `${preset.notes} No tools are enabled until you save your choices after sign-in.`
+    : mcpAuth?.kind === 'oauth'
     ? `${connector} requests native ${/\bwrite\b/i.test(mcpAuth.scope ?? '') ? 'read and write' : 'account'} access. Selected tools can carry out your requests; Agent instructions can require confirmation.`
     : preset.notes ?? preset.description;
   const failureMessage = input.failureMessage ?? '';
@@ -177,6 +179,7 @@ export function renderCatalogConnectionAccessReviewPage(
   const { setup, agent, accessReview } = input;
   if (!accessReview) return renderManagedConnectionUnavailablePage();
   const connector = setup.target.targetLabel;
+  const metaAds = setup.target.presetId === 'meta-ads';
   const metaAdsDescriptions: Record<string, string> = {
     ads_create_campaign: 'Create a paused campaign.',
     ads_create_ad_set: 'Create a paused ad set with targeting and budget.',
@@ -198,8 +201,8 @@ export function renderCatalogConnectionAccessReviewPage(
       ? metaAdsDescriptions[tool.name] ?? tool.description?.trim()
       : tool.description?.trim();
     const effectLabel = tool.effect === 'read'
-      ? 'Reporting access'
-      : tool.effect === 'write' ? 'May change ads' : undefined;
+      ? (metaAds ? 'Reporting access' : 'Read only')
+      : tool.effect === 'write' ? (metaAds ? 'May change ads' : 'May change data') : undefined;
     return `<label class="tool-option${tool.available ? '' : ' tool-option-unavailable'}">
       <input type="checkbox" name="tool:${escapeHtml(tool.name)}"${tool.selected ? ' checked' : ''}${tool.available ? '' : ' disabled'}>
       <span class="tool-option-copy"><strong>${escapeHtml(label)}</strong>${effectLabel ? `<span class="tool-effect">${escapeHtml(effectLabel)}</span>` : ''}${description ? `<span>${escapeHtml(description)}</span>` : ''}${tool.available ? '' : `<span>${tool.requiresEditingAccess ? 'Reconnect with Reporting and editing access to select this tool.' : 'Not yet supported with ad account restrictions.'}</span>`}</span>
@@ -215,23 +218,23 @@ export function renderCatalogConnectionAccessReviewPage(
         <section class="flow-content">
           ${agentIdentity(agent, input.avatarUrl)}
           <h1 id="flow-title">Choose what ${escapeHtml(agent.name)} can use</h1>
-          <p class="setup-lead">${escapeHtml(connector)} is signed in. Select the tools and ad accounts this Agent may use.</p>
+          <p class="setup-lead">${escapeHtml(connector)} is signed in. Select the tools${metaAds ? ' and ad accounts' : ''} this Agent may use.</p>
           <section class="setup-card">
             <div class="connector-row">
               ${connectorLogo(setup)}
               <strong>${escapeHtml(connector)}</strong>
             </div>
             <form id="access-review-form" method="post" action="/setup/${encodeURIComponent(setup.setupOperationId)}/mcp/access">
-              <section class="choice-block" aria-labelledby="account-access-title">
+              ${metaAds ? `<section class="choice-block" aria-labelledby="account-access-title">
                 <label for="ad-account-ids"><h2 id="account-access-title">Ad accounts</h2></label>
                 <p>Enter Meta ad account IDs, one per line. Every selected tool is limited to these accounts.</p>
                 <textarea class="account-id-input" id="ad-account-ids" name="adAccountIds" rows="4" autocomplete="off" placeholder="act_1234567890">${escapeHtml(accessReview.approvedAccountIds.join('\n'))}</textarea>
-              </section>
+              </section>` : ''}
               <section class="choice-block" aria-labelledby="tool-access-title">
                 <h2 id="tool-access-title">Tools</h2>
-                <p>Selected tools can report on or change Meta ads for the approved accounts. Tools outside Chickpea&rsquo;s reviewed contract remain unavailable.</p>
-                <div class="tool-options">${toolChoices || '<p>No tools were returned by Meta Ads.</p>'}</div>
-                ${availableCount === 0 ? `<p class="review-note">${editingUpgradeNeeded ? 'Reconnect with Reporting and editing access to choose tools that may change ads.' : 'None of the discovered tools can yet be safely limited to an ad account, so access remains off.'}</p>` : ''}
+                <p>${metaAds ? 'Selected tools can report on or change Meta ads for the approved accounts. Tools outside Chickpea&rsquo;s reviewed contract remain unavailable.' : 'Investigation tools are suggested first. Editing tools are optional. Selected tools can access every project available to your BugSnag account. Error severity changes are not supported.'}</p>
+                <div class="tool-options">${toolChoices || '<p>No tools were returned.</p>'}</div>
+                ${availableCount === 0 ? `<p class="review-note">${metaAds ? (editingUpgradeNeeded ? 'Reconnect with Reporting and editing access to choose tools that may change ads.' : 'None of the discovered tools can yet be safely limited to an ad account, so access remains off.') : 'Reconnect to refresh the available tools.'}</p>` : ''}
               </section>
               <p class="security-copy">These choices become the maximum access available to ${escapeHtml(agent.name)}. You can change or remove the connection later in Admin.</p>
               <p class="flow-alert" id="flow-alert" role="alert"${failureMessage ? '' : ' hidden'}>${escapeHtml(failureMessage)}</p>
@@ -385,7 +388,7 @@ function catalogSetupScript(input: { connector: string; agentName: string }): st
 }
 
 function accessReviewScript(): string {
-  return `(function(){var form=document.getElementById("access-review-form"),button=document.querySelector('button[form="access-review-form"]'),accounts=document.getElementById("ad-account-ids"),tools=form&&form.querySelectorAll('input[type="checkbox"]:not(:disabled)');if(!form||!button||!accounts||!tools)return;function update(){var selected=false;tools.forEach(function(tool){if(tool.checked)selected=true});button.disabled=!selected||!accounts.value.trim()}tools.forEach(function(tool){tool.addEventListener("change",update)});accounts.addEventListener("input",update);form.addEventListener("submit",function(){button.disabled=true;button.textContent="Saving access…"});update()})();`;
+  return `(function(){var form=document.getElementById("access-review-form"),button=document.querySelector('button[form="access-review-form"]'),accounts=document.getElementById("ad-account-ids"),tools=form&&form.querySelectorAll('input[type="checkbox"]:not(:disabled)');if(!form||!button||!tools)return;function update(){var selected=false;tools.forEach(function(tool){if(tool.checked)selected=true});button.disabled=!selected||!!(accounts&&!accounts.value.trim())}tools.forEach(function(tool){tool.addEventListener("change",update)});if(accounts)accounts.addEventListener("input",update);form.addEventListener("submit",function(){button.disabled=true;button.textContent="Saving access…"});update()})();`;
 }
 
 function pollScript(setupId: string): string {

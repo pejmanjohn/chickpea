@@ -1,25 +1,34 @@
 # Parallel live test environments
 
-## Current execution scope: two standalone lanes
+## Current execution scope: Amber, Cobalt, and Violet
 
 For ordinary verification use the [operator skill](../../qa/live/operator/SKILL.md).
 Its invocation authorizes declared QA actions and exact cleanup, including
 test OAuth consent and product approval dialogs. The historical provisioning
 gates below do not add per-step confirmation to an already authorized QA run.
 New infrastructure, billing, unrelated permissions, and shared app/gateway changes
-remain outside that invocation. Existing claimed Amber and Cobalt lanes may test
+remain outside that invocation. Existing claimed Amber, Cobalt, and Violet lanes may test
 branch candidates without requiring a source merge.
 
-The latest user-approved amendment in
-`docs/plans/2026-08-27-parallel-lanes.md` starts with **Amber and Cobalt only**,
-each in a standalone Slack Pro workspace with the Chickpea-owned shared app.
-The earlier three-workspace Enterprise sandbox instructions below are historical
-capability-pilot instructions, not the active provisioning recipe.
+Amber and Cobalt remain the original registered lanes. Violet adopts an existing
+QA installation in a third standalone Slack workspace using the Chickpea-owned
+shared app. Its display name is `Chickpea Violet`. The earlier Enterprise sandbox
+instructions below are historical capability-pilot instructions.
 
 Keep Fern and the old sandbox resources intact but outside active registration,
 claims, browser aliases, connector provisioning, deployments, and acceptance.
-Do not buy a third workspace or invent a third registry entry. All active fleet
-operations must depend only on Amber and Cobalt. Reject Fern as inactive.
+Reject Fern as inactive. Supported aliases and registered lanes are distinct:
+existing two-lane registries and their immutable historical revisions stay
+readable. Automatic selection considers only registered lanes.
+
+Admit Violet only after preparing its authority endpoint, private read credential,
+baseline and reusable fixtures, while every existing lane is unclaimed and its
+mutation lock is clear. Use `npm run env -- register --registration FILE` with an
+owner-only file containing `expectedRegistryRevision` and the complete
+`registration`. Admission preserves other target records and audit history and
+refuses stale revisions, duplicate identities and unready registrations. All
+subsequent callers must use tooling that understands Violet; older checkouts
+reject the expanded registry instead of overwriting it.
 
 Confirm one paid human seat per workspace and monthly billing at checkout.
 Disable automatic email-domain membership and avoid invitations to unrelated
@@ -29,15 +38,21 @@ deployment state until an exact-target migration and rollback path are recorded.
 
 The active standalone resources are `chickpea-amber-live` with
 `chickpea-auth-db-amber-live`, and `chickpea-cobalt-live` with
-`chickpea-auth-db-cobalt-live`. The profile enforces these names. Keep the old
+`chickpea-auth-db-cobalt-live`. The profile enforces these names. Violet pins its
+existing Worker and D1 names and immutable IDs in private registration; a cosmetic
+workspace rename does not rename Cloudflare resources. The guarded wrapper
+resolves those exact names before building. Keep the old
 unsuffixed resources and installations unchanged for rollback, outside active
 registration. Never attach a fresh workspace to an already-installed deployment.
 
-Run the first protected-source smoke on clean, unclaimed Cobalt, then prove
-different worktree revisions on both lanes with the four existing smoke cases.
-Require real Computer Use DM/channel proof, connector behavior, cleanup, and
-postflight before either lane is declared ready. Add Fern only after the user
-decides to continue with a third verified lane.
+Require real DM/channel proof, connector behavior, cleanup and postflight before
+an adopted lane is declared ready. Fresh-install tests may temporarily reserve
+any free lane through the [installation workflow](../../qa/live/operator/environments.md#borrow-a-lane-for-a-fresh-install).
+Preserve standing state and hold ownership until restoration; no dedicated
+installation-only Slack workspace is required. Select the installation runtime
+independently: local Node uses newly allocated private state and a guarded local
+launcher, while Cloudflare uses a temporary Worker/D1. A Node rehearsal on macOS
+does not require deploying its customer installation to Cloudflare.
 
 ## Historical three-lane capability pilot
 

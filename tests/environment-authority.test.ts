@@ -91,6 +91,14 @@ test('environment authority projects only actual bindings and fresh Slack/versio
   assert.deepEqual(f.calls, ['installation', 'auth.test', 'session']);
 });
 
+test('Violet uses the same authenticated runtime authority contract', async () => {
+  const f = fixture();
+  f.env.CHICKPEA_ENV_TARGET = 'violet';
+  const response = await environmentAuthorityResponse(f.input);
+  assert.equal(response.status, 200);
+  assert.equal((await response.json() as { target: string }).target, 'violet');
+});
+
 test('environment authority reports only a fixed failure stage, never remote diagnostics or values', async () => {
   for (const [stage, mutate] of [
     ['installation', (f) => { f.installation.health = 'revoked'; }],

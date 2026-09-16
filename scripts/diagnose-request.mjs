@@ -10,7 +10,7 @@ import { cloudflareDiagnosticScript, localDiagnosticQuery, projectDiagnosticSess
 
 const HELP = `Usage: npm run diagnose -- <prepare|query> [options]
 
-prepare --target amber|cobalt --account-id ID --admin-origin https://HOST
+prepare --target amber|cobalt|violet --account-id ID --admin-origin https://HOST
         --slack-url URL [--run-id ID] [--from UTC --to UTC] [--trace-id ID]
         [--output-root PRIVATE_DIRECTORY]
   Or use explicit --worker NAME --workspace ID for another resolved target.
@@ -59,7 +59,7 @@ export async function runDiagnosticCli(argv, io = {}) {
       if (flags.record || flags.session || flags['no-session']) throw new Error('Evidence inputs belong to query.');
       let registration;
       if (flags.target) {
-        if (!['amber', 'cobalt'].includes(flags.target) || flags.local) throw new Error('Use a registered hosted target, or explicit local coordinates.');
+        if (!['amber', 'cobalt', 'violet'].includes(flags.target) || flags.local) throw new Error('Use a registered hosted target, or explicit local coordinates.');
         registration = (io.readRegistry ?? readEnvironmentRegistry)().targets[flags.target];
         if ((flags.worker && flags.worker !== registration.workerName) ||
           (flags.workspace && flags.workspace !== registration.workspaceId)) throw new Error('Coordinates disagree with the registered target.');

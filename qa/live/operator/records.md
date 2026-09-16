@@ -25,7 +25,7 @@ npm run verify:live:record -- preflight --run "$run_dir/run.json"
 
 The template starts unresolved. It never claims that a browser, actor, fixture,
 or disposable target exists. `release` includes fresh installation prerequisites
-on a separate target, fresh OAuth, distinct actors, private-channel and connector
+on separate temporary resources in an exclusively reserved lane, fresh OAuth, distinct actors, private-channel and connector
 fixtures. Review it against the advertised release matrix and add missing variants,
 hosting paths, upgrade journeys, and relevant permission/failure cases. For a
 documentation/workflow-only task, `cases: []` with empty contexts/capabilities

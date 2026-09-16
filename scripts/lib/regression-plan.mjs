@@ -17,7 +17,7 @@ export const REGRESSION_AREAS = Object.freeze({
   auth: ['slack-install-oauth', 'slack-oidc', 'auth-principal', 'admin-authorization'],
   admin: ['admin-page', 'agent-admin-routes', 'admin-authorization'],
   providers: ['provider-runtime-models', 'cloudflare-provider', 'runtime-model-route-evidence'],
-  verification: ['node-version', 'verification-record', 'verification-regression', 'verification-offline', 'verification-transition', 'verification-host', 'verification-fixtures', 'environment-wait', 'qa-candidate', 'live-contract-coordinator', 'live-contract-lock', 'schedule-contract-evaluation', 'deploy-with-epilogue', 'local-worker-lane', 'live-contract-schema', 'live-contract-runner', 'oss-export'],
+  verification: ['node-version', 'verification-record', 'verification-regression', 'verification-offline', 'verification-transition', 'verification-host', 'verification-fixtures', 'environment-registry', 'environment-preflight', 'environment-wait', 'qa-candidate', 'live-contract-coordinator', 'live-contract-lock', 'schedule-contract-evaluation', 'deploy-with-epilogue', 'local-worker-lane', 'live-contract-schema', 'live-contract-runner', 'oss-export'],
 });
 
 const rules = [

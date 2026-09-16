@@ -311,7 +311,7 @@ test('a frozen bash plan still rechecks live Agent execution authority', async (
   );
   const bashBranch = sandboxFactory.slice(
     sandboxFactory.indexOf("if (plan.sandbox.mode === 'bash')"),
-    sandboxFactory.indexOf("  return {\n    async createSessionEnv({ id })"),
+    sandboxFactory.indexOf("  return {\n    async createSandbox({ id })"),
   );
   const modelPreparation = sandboxFactory.slice(
     sandboxFactory.indexOf('async function prepareRuntimePlanModel'),

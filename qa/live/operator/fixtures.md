@@ -70,7 +70,8 @@ fixture change regardless of age.
 
 If registration is missing, gather the exact target/account, allowed operations,
 model, reset rights, lifetime, and evidence in one request while independent work
-continues. Do not infer those values or repurpose a standing lane. A production
+continues. Do not infer those values. Borrow a standing lane only through the
+[exclusive installation reservation](environments.md#borrow-a-lane-for-a-fresh-install). A production
 provider account, disposable Slack installation, cross-account actor, restore
 pair, or local state migration may need separate provisioning work. This helper
 makes those gaps visible; it does not implement that infrastructure.
