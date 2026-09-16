@@ -18,6 +18,7 @@ import {
   resolveRoutineCapability,
   type RoutineCapability,
 } from '../routines/scheduler-adapter.ts';
+import { nodeRoutineSchedulerAvailable } from '../routines/runtime-state.ts';
 import {
   RoutineStateError,
   type RoutineDefinition,
@@ -526,7 +527,10 @@ function safeAuditEvent(event: Awaited<ReturnType<RoutineStore['listAuditEvents'
 
 function capabilityFor(c: Context, options: RoutineAdminApiOptions): RoutineCapability {
   if (options.capability) return options.capability(c);
-  return resolveRoutineCapability({ cloudflare: isCloudflareTarget() });
+  return resolveRoutineCapability({
+    cloudflare: isCloudflareTarget(),
+    nodeAvailable: nodeRoutineSchedulerAvailable(),
+  });
 }
 
 function parseSafeMetadata(raw: string): Record<string, unknown> {

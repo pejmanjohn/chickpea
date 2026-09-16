@@ -61,18 +61,68 @@ export function assertProductionArtifact(file) {
   return file;
 }
 
+export async function startNodeApplication({
+  application,
+  loadApplication,
+  background,
+  serverOptions,
+}) {
+  const ownership = background.acquireNodeProcessOwnership();
+  let flueLifecycle;
+  let backgroundAttempted = false;
+  try {
+    const loadedApplication = application ?? await loadApplication();
+    flueLifecycle = await loadedApplication.startFlueNodeServer(serverOptions);
+    backgroundAttempted = true;
+    await background.startNodeBackground();
+  } catch (error) {
+    if (backgroundAttempted) await background.stopNodeBackground().catch(() => undefined);
+    if (flueLifecycle) await flueLifecycle.stop().catch(() => undefined);
+    ownership.release();
+    throw error;
+  }
+  let stopping;
+  return {
+    stop() {
+      if (stopping) return stopping;
+      stopping = (async () => {
+        const failures = [];
+        try { await background.stopNodeBackground(); } catch (error) { failures.push(error); }
+        try { await flueLifecycle.stop(); } catch (error) { failures.push(error); }
+        try { ownership.release(); } catch (error) { failures.push(error); }
+        if (failures.length === 1) throw failures[0];
+        if (failures.length > 1) throw new AggregateError(failures, 'Node shutdown failed');
+      })();
+      return stopping;
+    },
+  };
+}
+
 export async function startProductionNode({ args = process.argv.slice(2) } = {}) {
   assertNodeVersion();
   const { envFile } = parseStartArguments(args);
   applyEnvironmentFile(envFile);
   const options = resolveServerOptions();
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-  const artifact = assertProductionArtifact(path.join(root, 'dist', 'app.mjs'));
-  const { startFlueNodeServer } = await import(pathToFileURL(artifact).href);
-  if (typeof startFlueNodeServer !== 'function') {
-    throw new Error(`Production Node artifact at ${artifact} does not export startFlueNodeServer. Rebuild it with npm run flue:build.`);
+  const appArtifact = assertProductionArtifact(path.join(root, 'dist', 'app.mjs'));
+  const backgroundArtifact = assertProductionArtifact(path.join(root, 'dist', 'node-background.mjs'));
+  const background = await import(pathToFileURL(backgroundArtifact).href);
+  if (typeof background.acquireNodeProcessOwnership !== 'function' ||
+      typeof background.startNodeBackground !== 'function' ||
+      typeof background.stopNodeBackground !== 'function') {
+    throw new Error(`Production Node artifact at ${backgroundArtifact} is incomplete. Rebuild it with npm run flue:build.`);
   }
-  const lifecycle = await startFlueNodeServer(options);
+  const lifecycle = await startNodeApplication({
+    loadApplication: async () => {
+      const application = await import(pathToFileURL(appArtifact).href);
+      if (typeof application.startFlueNodeServer !== 'function') {
+        throw new Error(`Production Node artifact at ${appArtifact} does not export startFlueNodeServer. Rebuild it with npm run flue:build.`);
+      }
+      return application;
+    },
+    background,
+    serverOptions: options,
+  });
   let shutdown;
   const stop = (exitCode) => {
     if (shutdown) return shutdown;

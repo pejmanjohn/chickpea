@@ -300,7 +300,7 @@ Memory is advisory, never policy. Live instructions, current permissions, and ve
 
 Schedules belong to an Agent, target a granted Slack destination or a private DM thread, and record their creator as **Runs as**. Ask for one in Slack and the Agent sets it up.
 
-Every run rechecks the whole chain: is the Agent alive, does it still have the channel, is the creator still a member, do the required connections still work, does policy still allow it. If authority disappears, future runs pause. Chickpea never silently reassigns work to someone else. Cloudflare supplies the production scheduler; Node keeps inspection and shutdown controls but runs no timers.
+Every run rechecks the whole chain: is the Agent alive, does it still have the channel, is the creator still a member, do the required connections still work, does policy still allow it. If authority disappears, future runs pause. Chickpea never silently reassigns work to someone else. Cloudflare supplies alarms; the production Node launcher checks for due work at startup and every minute while its process is running.
 
 ---
 
@@ -526,7 +526,7 @@ The full list, including per-connector Composio auth config IDs and the Google A
 - Node durability is single-host SQLite. Multi-instance Node needs a shared state service.
 - The compressed Worker upload is about 2.5 MiB, under the Workers Free plan's 3 MiB limit; `npm run build` fails if it grows past the budget in `scripts/verify-worker-size.mjs`. Public images and the Admin application's browser code use Static Assets in the same deployment, which do not count toward that limit.
 - Anonymous, content-free [product telemetry](TELEMETRY.md) is enabled by default and has a complete operator opt-out.
-- The coding sandbox and scheduled execution are Cloudflare-only. Node uses the in-memory execution path and no scheduler.
+- The coding sandbox is Cloudflare-only. Node uses the in-memory execution path and runs scheduled work only while its production process is active; startup applies the same eligible missed-run policy after downtime.
 - Earlier experimental schemas may be incompatible. Never reset production state to upgrade; follow the [compatibility and recovery policy](docs/runbooks/operations.md#upgrade-and-compatibility-policy).
 
 Contributions go through GitHub pull requests; see [CONTRIBUTING.md](CONTRIBUTING.md).

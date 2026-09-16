@@ -9,9 +9,10 @@ Use Node 24.x, minimum 24.20.0, and one running Chickpea process per state direc
 Use the 24.20.0 baseline in `.nvmrc` for reproducible installs and verification.
 Later Node 24 updates are supported; other majors are outside the support policy.
 
-Node does not support scheduled execution or the coding sandbox. Use your own Slack
-app: the Node shared-gateway path does not yet have Cloudflare's durable event
-admission guarantee. See [gateway data handling](../shared-gateway-data-handling.md).
+Node supports scheduled execution while the Chickpea process is running, but not
+the coding sandbox. Use your own Slack app: the Node shared-gateway path does not
+yet have Cloudflare's durable event admission guarantee. See
+[gateway data handling](../shared-gateway-data-handling.md).
 
 ### Build a release
 
@@ -30,6 +31,14 @@ can bind to `HOST` (default `127.0.0.1`) and `PORT` (default `3000`). Existing
 process environment values take precedence over values in the file. Keep the
 release checkout, its `node_modules`, `migrations/`, and `assets/` available at
 runtime.
+
+The production wrapper starts the scheduler after Flue finishes assembling its
+runtime. It checks for due work immediately and every minute, using the same
+missed-slot policy as Cloudflare. A stopped or sleeping computer is not woken;
+the startup check recovers eligible missed work when Chickpea runs again. The
+wrapper also retries durable Slack schedule actions and performs Work and image
+retention maintenance. Starting a second process against the same state database
+is refused before the app runtime starts.
 
 ### Persist state and secrets
 
@@ -104,9 +113,10 @@ ReadWritePaths=/var/lib/chickpea
 WantedBy=multi-user.target
 ```
 
-The production entry point handles SIGTERM and waits for shutdown, with a
-60-second internal deadline. Do not run several processes against these SQLite
-files or use a network filesystem as a substitute for shared-state support.
+The production entry point handles SIGTERM, stops and drains the scheduler before
+Flue, and waits for shutdown with a 60-second internal deadline. The launcher
+enforces one process per state database. Do not use a network filesystem as a
+substitute for shared-state support.
 
 Terminate HTTPS at a reverse proxy and forward to port 3000. Keep the default
 loopback binding when the proxy runs on the same host. If the proxy requires a

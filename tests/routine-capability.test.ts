@@ -9,18 +9,21 @@ import {
 } from '../src/routines/scheduler-adapter.ts';
 import { RoutineStateError } from '../src/routines/types.ts';
 
-test('routine scheduling is permanently enabled on Cloudflare and unavailable on Node', () => {
+test('routine scheduling is enabled on Cloudflare and only after the Node scheduler starts', () => {
   assert.deepEqual(resolveRoutineCapability({ cloudflare: true }), {
     target: 'cloudflare', available: true, enabled: true, reason: 'enabled',
   });
-  assert.deepEqual(resolveRoutineCapability({ cloudflare: false }), {
+  assert.deepEqual(resolveRoutineCapability({ cloudflare: false, nodeAvailable: false }), {
     target: 'node', available: false, enabled: false, reason: 'unsupported_target',
+  });
+  assert.deepEqual(resolveRoutineCapability({ cloudflare: false, nodeAvailable: true }), {
+    target: 'node', available: true, enabled: true, reason: 'enabled',
   });
   assert.doesNotThrow(() => requireRoutineScheduling(
     resolveRoutineCapability({ cloudflare: true }),
   ));
   assert.throws(
-    () => requireRoutineScheduling(resolveRoutineCapability({ cloudflare: false })),
+    () => requireRoutineScheduling(resolveRoutineCapability({ cloudflare: false, nodeAvailable: false })),
     (error: unknown) =>
       error instanceof RoutineStateError && error.code === 'routines_unavailable_on_target',
   );

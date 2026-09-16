@@ -30,6 +30,7 @@ import {
   resolveRoutineCapability,
   type RoutineCapability,
 } from './scheduler-adapter.ts';
+import { nodeRoutineSchedulerAvailable } from './runtime-state.ts';
 import { RoutineService } from './service.ts';
 import {
   executeSlackScheduleCommand,
@@ -557,7 +558,10 @@ async function scopedDirectRoutines(
 }
 
 function routineCapability(): RoutineCapability {
-  return resolveRoutineCapability({ cloudflare: isCloudflareTarget() });
+  return resolveRoutineCapability({
+    cloudflare: isCloudflareTarget(),
+    nodeAvailable: nodeRoutineSchedulerAvailable(),
+  });
 }
 
 function isChickpeaAssignment(assignment: ResolvedAssignment): boolean {

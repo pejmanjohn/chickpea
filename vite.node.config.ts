@@ -10,6 +10,17 @@ export default defineConfig({
   define: buildIdentityDefines(fileURLToPath(new URL('.', import.meta.url))),
   publicDir: 'assets',
   plugins: [
+    {
+      name: 'chickpea-node-background-entry',
+      buildStart() {
+        this.emitFile({
+          type: 'chunk',
+          id: fileURLToPath(new URL('./src/node-background.ts', import.meta.url)),
+          fileName: 'node-background.mjs',
+          preserveSignature: 'strict',
+        });
+      },
+    },
     flue({
       // The v2 Cloudflare target rejects custom persistence. Giving only the
       // Node composition this non-discoverable entry removes the old rename,

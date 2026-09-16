@@ -74,7 +74,6 @@ import { localSlackStateStore } from './slack/local-state-store.ts';
 import {
   getConfigStore,
   getIdentityStore,
-  getRoutineStore,
   getSettingsStore,
   getSlackStateStore,
   type AppStores,
@@ -270,12 +269,7 @@ import {
   type WorkRpcResponse,
   type WorkStore,
 } from './work/types.ts';
-import {
-  RoutineAdmissionController,
-} from './routines/admission.ts';
-import { RoutineScheduler } from './routines/scheduler.ts';
-import { executeRoutineOccurrence } from './routines/execution.ts';
-import { drainRoutinePauseNotices } from './routines/delivery.ts';
+import { runRoutineHeartbeat as runSharedRoutineHeartbeat } from './routines/heartbeat.ts';
 
 // The generated default captures model and tool content. Register the native
 // Cloudflare adapter explicitly for this Cloudflare-only entry so Workers
@@ -2639,21 +2633,16 @@ async function runRoutineHeartbeat(
   rawEnv: Record<string, unknown>,
   context: { waitUntil(promise: Promise<unknown>): void },
 ): Promise<void> {
-  const store = getRoutineStore(rawEnv);
   const productTelemetry = createPlatformProductTelemetry({
     env: rawEnv,
     settings: getSettingsStore(rawEnv),
     config: getConfigStore(rawEnv),
     lifecycle: createWaitUntilTelemetryLifecycle(context),
   });
-  const admissions = new RoutineAdmissionController(store, {
-    execute: (run, attempt) => executeRoutineOccurrence({
-      env: rawEnv,
-      store,
-      occurrenceId: run.id,
-      attempt: attempt.attempt,
-    }, { productTelemetry }),
+  await runSharedRoutineHeartbeat({
+    scheduledTime,
+    owner,
+    env: rawEnv,
+    productTelemetry,
   });
-  await new RoutineScheduler(store, admissions).heartbeat(scheduledTime, owner);
-  await drainRoutinePauseNotices({ store, env: rawEnv as PlatformEnv });
 }

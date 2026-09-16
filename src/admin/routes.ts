@@ -364,6 +364,7 @@ import {
   resolveRoutineCapability,
   type RoutineCapability,
 } from '../routines/scheduler-adapter.ts';
+import { nodeRoutineSchedulerAvailable } from '../routines/runtime-state.ts';
 import { hashRoutineValue } from '../routines/ids.ts';
 import {
   reassignRoutineAgentAuthority,
@@ -8230,7 +8231,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       if (action === 'resume') {
         requireRoutineScheduling(
           options.routineCapability?.(c) ??
-            resolveRoutineCapability({ cloudflare: isCloudflareTarget() }),
+            resolveRoutineCapability({
+              cloudflare: isCloudflareTarget(),
+              nodeAvailable: nodeRoutineSchedulerAvailable(),
+            }),
         );
       }
       const updated = await new RoutineService(state).control({
