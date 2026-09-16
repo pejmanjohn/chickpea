@@ -263,8 +263,10 @@ async function readCompletedImageCall(
     reader.releaseLock();
   }
 
-  let terminal: 'completed' | undefined;
+  let terminalCount = 0;
   let terminalImageId: string | undefined;
+  let completedImageDoneCount = 0;
+  let completedImageDoneId: string | undefined;
   const calls = new Map<string, ObservedImageCall>();
   for (const block of text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n\n')) {
     const data = block.split('\n')
@@ -280,11 +282,17 @@ async function readCompletedImageCall(
     }
     if (!isRecord(event)) continue;
     if (event.type === 'response.completed') {
-      terminal = 'completed';
-      if (!isRecord(event.response) || !Array.isArray(event.response.output)) {
+      terminalCount += 1;
+      if (terminalCount !== 1 || !isRecord(event.response) ||
+          event.response.status !== 'completed' || event.response.error !== null ||
+          event.response.incomplete_details !== null || !Array.isArray(event.response.output)) {
         throw new OpenAiSubscriptionProtocolError('invalid_response');
       }
-      terminalImageId = recordTerminalImageCall(event.response.output, calls);
+      terminalImageId = recordTerminalImageCall(
+        event.response.output,
+        calls,
+        completedImageDoneId,
+      );
     }
     if (event.type === 'response.failed' || event.type === 'error') {
       throw new OpenAiSubscriptionProtocolError('invalid_response');
@@ -296,10 +304,15 @@ async function readCompletedImageCall(
       recordImageCall(event.item, calls, 'added');
     }
     if (event.type === 'response.output_item.done') {
-      recordImageCall(event.item, calls, 'done');
+      const imageId = recordImageCall(event.item, calls, 'done');
+      if (imageId) {
+        completedImageDoneCount += 1;
+        completedImageDoneId = imageId;
+      }
     }
   }
-  if (terminal !== 'completed' || !terminalImageId || calls.size !== 1) {
+  if (terminalCount !== 1 || completedImageDoneCount !== 1 || !completedImageDoneId ||
+      terminalImageId !== completedImageDoneId || calls.size !== 1) {
     throw new OpenAiSubscriptionProtocolError('invalid_response');
   }
   const imageCall = calls.get(terminalImageId);
@@ -313,10 +326,25 @@ async function readCompletedImageCall(
 function recordTerminalImageCall(
   items: unknown[],
   calls: Map<string, ObservedImageCall>,
+  completedImageDoneId: string | undefined,
 ): string {
   const imageItems = items.filter((value) => isRecord(value) && value.type === 'image_generation_call');
-  if (imageItems.length !== 1) throw new OpenAiSubscriptionProtocolError('invalid_response');
-  return recordImageCall(imageItems[0], calls, 'terminal');
+  // The observed ChatGPT stream carries the completed image in
+  // output_item.done, then a successful terminal response with output: [].
+  // A non-empty terminal snapshot is accepted only when it repeats that exact
+  // completed call; other non-empty terminal shapes fail closed.
+  if (items.length === 0) {
+    if (!completedImageDoneId) throw new OpenAiSubscriptionProtocolError('invalid_response');
+    return completedImageDoneId;
+  }
+  if (imageItems.length !== 1) {
+    throw new OpenAiSubscriptionProtocolError('invalid_response');
+  }
+  const terminalId = recordImageCall(imageItems[0], calls, 'terminal');
+  if (!completedImageDoneId || terminalId !== completedImageDoneId) {
+    throw new OpenAiSubscriptionProtocolError('invalid_response');
+  }
+  return terminalId;
 }
 
 function recordImageCall(

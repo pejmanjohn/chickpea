@@ -39,15 +39,43 @@ function eventStream(events: unknown[]): Response {
   return new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } });
 }
 
-function successfulEvents(id = 'ig_one'): unknown[] {
+function terminalEvent(output: unknown[]): unknown {
+  return {
+    type: 'response.completed',
+    response: {
+      status: 'completed',
+      error: null,
+      incomplete_details: null,
+      output,
+    },
+  };
+}
+
+function successfulEvents(id = 'ig_one', snapshot = false): unknown[] {
   const item = { id, type: 'image_generation_call', status: 'completed', result: PNG_BASE64 };
   return [
     {
       type: 'response.output_item.added',
-      item: { id, type: 'image_generation_call', status: 'in_progress', result: null },
+      item: { id, type: 'image_generation_call', status: 'in_progress' },
     },
     { type: 'response.output_item.done', item },
-    { type: 'response.completed', response: { id: 'resp_one', output: [item] } },
+    terminalEvent(snapshot ? [item] : []),
+  ];
+}
+
+function capturedSuccessfulEvents(): unknown[] {
+  return [
+    successfulEvents()[0],
+    successfulEvents()[1],
+    {
+      type: 'response.output_item.added',
+      item: { id: 'msg_one', type: 'message', status: 'in_progress' },
+    },
+    {
+      type: 'response.output_item.done',
+      item: { id: 'msg_one', type: 'message', status: 'completed' },
+    },
+    terminalEvent([]),
   ];
 }
 
@@ -182,26 +210,14 @@ test('terminal failure or a second image call invalidates the whole streamed res
   }
 });
 
-test('the terminal response must repeat the same well-formed completed image call', async () => {
+test('an optional nonempty terminal snapshot must repeat the same completed image call', async () => {
   const done = successfulEvents()[1];
   const invalidTerminals = [
-    { type: 'response.completed', response: { output: [] } },
-    {
-      type: 'response.completed',
-      response: { output: [{ type: 'image_generation_call', status: 'completed', result: PNG_BASE64 }] },
-    },
-    {
-      type: 'response.completed',
-      response: { output: [{ id: 'ig_one', type: 'image_generation_call', status: 'completed', result: 7 }] },
-    },
-    {
-      type: 'response.completed',
-      response: { output: [{ id: 'ig_one', type: 'image_generation_call', result: PNG_BASE64 }] },
-    },
-    {
-      type: 'response.completed',
-      response: { output: [{ id: 'ig_one', type: 'image_generation_call', status: 'failed', result: PNG_BASE64 }] },
-    },
+    terminalEvent([{ type: 'image_generation_call', status: 'completed', result: PNG_BASE64 }]),
+    terminalEvent([{ id: 'ig_one', type: 'image_generation_call', status: 'completed', result: 7 }]),
+    terminalEvent([{ id: 'ig_one', type: 'image_generation_call', result: PNG_BASE64 }]),
+    terminalEvent([{ id: 'ig_one', type: 'image_generation_call', status: 'failed', result: PNG_BASE64 }]),
+    terminalEvent([{ id: 'message_one', type: 'message', status: 'completed' }]),
   ];
   for (const terminal of invalidTerminals) {
     const client = createOpenAiSubscriptionImagesClient({
@@ -216,6 +232,93 @@ test('the terminal response must repeat the same well-formed completed image cal
       deadlineMs: 1_000,
     });
     assert.deepEqual(result, { ok: false, reason: 'unreachable', detail: 'invalid_response' });
+  }
+
+  const matching = createOpenAiSubscriptionImagesClient({
+    profile: PROFILE,
+    settings: store(),
+    fetchImpl: (async () => eventStream(successfulEvents('ig_one', true))) as typeof fetch,
+    dependencies: credentialsDependencies(),
+  });
+  assert.equal((await matching.generate({
+    prompt: 'one image',
+    format: { format: 'png' },
+    deadlineMs: 1_000,
+  })).ok, true);
+
+  const imageItem = {
+    id: 'ig_one',
+    type: 'image_generation_call',
+    status: 'completed',
+    result: PNG_BASE64,
+  };
+  const imageAndMessage = createOpenAiSubscriptionImagesClient({
+    profile: PROFILE,
+    settings: store(),
+    fetchImpl: (async () => eventStream([
+      successfulEvents()[0],
+      successfulEvents()[1],
+      terminalEvent([imageItem, { id: 'msg_one', type: 'message', status: 'completed' }]),
+    ])) as typeof fetch,
+    dependencies: credentialsDependencies(),
+  });
+  assert.equal((await imageAndMessage.generate({
+    prompt: 'one image',
+    format: { format: 'png' },
+    deadlineMs: 1_000,
+  })).ok, true);
+});
+
+test('an empty successful terminal requires one explicit completed image done event', async () => {
+  const capturedShape = createOpenAiSubscriptionImagesClient({
+    profile: PROFILE,
+    settings: store(),
+    fetchImpl: (async () => eventStream(capturedSuccessfulEvents())) as typeof fetch,
+    dependencies: credentialsDependencies(),
+  });
+  assert.equal((await capturedShape.generate({
+    prompt: 'one image',
+    format: { format: 'png' },
+    deadlineMs: 1_000,
+  })).ok, true);
+
+  const addedWithResult = {
+    type: 'response.output_item.added',
+    item: {
+      id: 'ig_one',
+      type: 'image_generation_call',
+      status: 'in_progress',
+      result: PNG_BASE64,
+    },
+  };
+  for (const events of [
+    [successfulEvents()[0], terminalEvent([])],
+    [addedWithResult, terminalEvent([])],
+    [successfulEvents()[1], terminalEvent([]), terminalEvent([])],
+    [successfulEvents()[1], {
+      type: 'response.completed',
+      response: { status: 'completed', error: null, incomplete_details: {}, output: [] },
+    }],
+    [successfulEvents()[1], {
+      type: 'response.completed',
+      response: { status: 'completed', error: {}, incomplete_details: null, output: [] },
+    }],
+    [successfulEvents()[1], {
+      type: 'response.completed',
+      response: { status: 'incomplete', error: null, incomplete_details: null, output: [] },
+    }],
+  ]) {
+    const client = createOpenAiSubscriptionImagesClient({
+      profile: PROFILE,
+      settings: store(),
+      fetchImpl: (async () => eventStream(events)) as typeof fetch,
+      dependencies: credentialsDependencies(),
+    });
+    assert.deepEqual(await client.generate({
+      prompt: 'one image',
+      format: { format: 'png' },
+      deadlineMs: 1_000,
+    }), { ok: false, reason: 'unreachable', detail: 'invalid_response' });
   }
 });
 
@@ -275,7 +378,7 @@ test('a completed image request does not release a concurrent chat binding', asy
     let peerCalls = 0;
     const peerFetch = createBoundOpenAiSubscriptionFetch((async () => {
       peerCalls += 1;
-      return eventStream([{ type: 'response.completed', response: { output: [] } }]);
+      return eventStream([terminalEvent([])]);
     }) as typeof fetch);
     await peerFetch(OPENAI_SUBSCRIPTION_ENDPOINTS.responses, {
       method: 'POST',
