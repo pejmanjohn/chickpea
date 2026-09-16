@@ -465,7 +465,7 @@ test('unsupported deployments report capability state without disclosing Routine
   try {
     assert.match(
       await handleRoutineSlackRequest(turn('!routines'), store, { capability: unavailable }) ?? '',
-      /Cloudflare-only/,
+      /Scheduling is unavailable on this deployment/,
     );
     assert.equal(
       await handleRoutineSlackRequest(turn('!routines show routine_secret'), store, {
