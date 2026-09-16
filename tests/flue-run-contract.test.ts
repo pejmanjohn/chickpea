@@ -106,7 +106,7 @@ test('the pinned Flue 2 handle exposes keyed admission, receipts, and reattachab
     await readFile(`${FLUE_ROOT}package.json`, 'utf8'),
   ) as { version?: unknown };
 
-  assert.equal(packageJson.version, '2.0.0');
+  assert.equal(packageJson.version, '2.0.7');
   assert.equal(DISPATCH_ACCEPTS_IDEMPOTENCY_KEY, true);
   assert.equal(RECEIPT_RETURNS_SUBMISSION_ID, true);
   assert.equal(RECEIPT_MARKS_DEDUPLICATION, true);
@@ -171,7 +171,7 @@ test('the exact patched artifact wraps model tools with a pre/post execution int
   );
   const start = wrapper.indexOf('type: "tool_start"');
   const intercept = wrapper.indexOf('const result = await interceptExecution({');
-  const underlyingCall = wrapper.indexOf('}, this.executionContext(), prepared.run)');
+  const underlyingCall = wrapper.indexOf('}, this.executionContext(), () => abandonToolOnAbort(prepared.run, signal))');
 
   assert.ok(start >= 0, 'tool start is observable before execution');
   assert.ok(intercept > start, 'the execution interceptor runs after tool start');
