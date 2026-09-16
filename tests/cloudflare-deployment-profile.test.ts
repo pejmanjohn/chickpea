@@ -82,6 +82,26 @@ test('deployment profile selector defaults to core and rejects unknown values', 
   );
 });
 
+test('Violet can adopt exact existing physical names while other lanes keep their canonical identity', async () => {
+  const config = await authoredConfig();
+  const tuple = applyCloudflareDeploymentProfile(config, {
+    CHICKPEA_DEPLOY_TARGET: 'violet', CHICKPEA_DEPLOY_WORKER_NAME: 'existing-install',
+    CHICKPEA_DEPLOY_AUTH_DB_NAME: 'existing-install-auth', CHICKPEA_DEPLOY_AUTH_DB_ID: 'violet-d1',
+    CHICKPEA_DEPLOY_SCHEMA_GENERATION: 'd1:0002_mcp_oauth;do:v9',
+  });
+  assert.equal(tuple.workerName, 'existing-install');
+  assert.equal(tuple.authDatabaseName, 'existing-install-auth');
+  assert.equal(config.name, 'existing-install');
+  assert.equal(config.d1_databases[0].database_id, 'violet-d1');
+  assert.throws(() => applyCloudflareDeploymentProfile(config, {
+    CHICKPEA_DEPLOY_TARGET: 'amber', CHICKPEA_DEPLOY_WORKER_NAME: 'existing-install',
+  }), /violet/i);
+  assert.throws(() => applyCloudflareDeploymentProfile(config, {
+    CHICKPEA_DEPLOY_TARGET: 'violet', CHICKPEA_DEPLOY_WORKER_NAME: '../unsafe',
+    CHICKPEA_DEPLOY_AUTH_DB_NAME: 'existing-install-auth',
+  }), /identity|name/i);
+});
+
 test('sandbox overlay adds exactly one reviewed binding and container without changing core state', async () => {
   const core = await authoredConfig();
   const sandbox = structuredClone(core);
@@ -126,8 +146,8 @@ test('deploy-button name override keeps Worker and generated container identitie
   );
 });
 
-test('amber and cobalt resolve distinct Worker, D1, and stamped schema identities', async () => {
-  assert.deepEqual(ACTIVE_CLOUDFLARE_DEPLOYMENT_TARGETS, ['amber', 'cobalt']);
+test('amber, cobalt, and violet resolve distinct Worker, D1, and stamped schema identities', async () => {
+  assert.deepEqual(ACTIVE_CLOUDFLARE_DEPLOYMENT_TARGETS, ['amber', 'cobalt', 'violet']);
   const tuples = [];
 
   for (const target of ACTIVE_CLOUDFLARE_DEPLOYMENT_TARGETS) {
@@ -166,8 +186,8 @@ test('amber and cobalt resolve distinct Worker, D1, and stamped schema identitie
     });
   }
 
-  assert.equal(new Set(tuples.map((tuple) => tuple.workerName)).size, 2);
-  assert.equal(new Set(tuples.map((tuple) => tuple.authDatabaseName)).size, 2);
+  assert.equal(new Set(tuples.map((tuple) => tuple.workerName)).size, 3);
+  assert.equal(new Set(tuples.map((tuple) => tuple.authDatabaseName)).size, 3);
   assert.throws(() => resolveCloudflareDeploymentTarget('fern'), /Invalid CHICKPEA_DEPLOY_TARGET/);
 
   const unregistered = await authoredConfig();

@@ -94,7 +94,14 @@ const claimedLaneRegistryRoot = process.env.CHICKPEA_ENVIRONMENT_ROOT?.trim()
 const explicitProductionTarget = process.env.CHICKPEA_DEPLOY_TARGET?.trim() === PRODUCTION_DEPLOY_TARGET;
 if (explicitProductionTarget) delete process.env.CHICKPEA_DEPLOY_TARGET;
 const requestedDeploymentTarget = process.env.CHICKPEA_DEPLOY_TARGET?.trim();
+const installationLane = process.env.CHICKPEA_INSTALLATION_LANE?.trim();
+let installationApi;
 try {
+  if (installationLane) {
+    if (!explicitProductionTarget || requestedDeploymentTarget) throw new Error('A borrowed installation uses the ordinary explicitly selected Worker in its isolated installation checkout.');
+    installationApi = await import('./lib/environment-installation.mjs');
+    installationApi.assertInstallationDeployment(installationLane, projectRoot);
+  }
   const markerPath = path.join(projectRoot, '.chickpea-environment');
   let markerStat;
   try { markerStat = lstatSync(markerPath); } catch (error) {
@@ -109,7 +116,7 @@ try {
       throw new Error('QA claim marker is unreadable. Refusing deployment.');
     }
     if (marker?.schemaVersion !== 'chickpea-environment-claim/v1'
-      || !['amber', 'cobalt'].includes(marker.target)) {
+      || !['amber', 'cobalt', 'violet'].includes(marker.target)) {
       throw new Error('QA claim marker is invalid. Refusing deployment.');
     }
     if (requestedDeploymentTarget !== marker.target) {
@@ -130,7 +137,7 @@ try {
     && process.env.WORKERS_CI !== '1' && existsSync(claimedLaneRegistryRoot)) {
     throw new Error(
       'This machine operates claimed QA lanes, so an unnamed deploy is refused. ' +
-      'Set CHICKPEA_DEPLOY_TARGET=amber or cobalt for a claimed lane, or ' +
+      'Set CHICKPEA_DEPLOY_TARGET=amber, cobalt, or violet for a claimed lane, or ' +
       `CHICKPEA_DEPLOY_TARGET=${PRODUCTION_DEPLOY_TARGET} to deploy the ordinary wrangler.jsonc Worker on purpose.`,
     );
   }
@@ -282,6 +289,18 @@ if (selectedEnvironmentTarget) {
     // exporting CHICKPEA_DEPLOY_AUTH_DB_ID and CHICKPEA_DEPLOY_SCHEMA_GENERATION
     // by hand; explicit values still win and are still checked below.
     const metadata = initialEnvironmentPreflight.deploymentMetadata;
+    if (selectedEnvironmentTarget === 'violet') {
+      const registration = initialEnvironmentPreflight.registration;
+      for (const [key, value] of Object.entries({
+        CHICKPEA_DEPLOY_WORKER_NAME: registration.workerName,
+        CHICKPEA_DEPLOY_AUTH_DB_NAME: registration.authDatabaseName,
+      })) {
+        if (process.env[key]?.trim() && process.env[key].trim() !== value) {
+          throw new Error(`${key} does not match the claimed Violet installation.`);
+        }
+        process.env[key] = value;
+      }
+    }
     const resolved = [];
     if (!process.env.CHICKPEA_DEPLOY_AUTH_DB_ID?.trim() && metadata?.authDatabaseId) {
       process.env.CHICKPEA_DEPLOY_AUTH_DB_ID = metadata.authDatabaseId;
@@ -395,6 +414,12 @@ function expectedWorkerName(targetTuple) {
 
 function validateArtifactIdentity(artifact, { requireDatabaseId = false } = {}) {
   const { config, configPath } = artifact;
+  if (installationLane) {
+    const database = config.d1_databases?.find((binding) => binding.binding === 'AUTH_DB');
+    installationApi.assertInstallationDeployment(installationLane, projectRoot, {
+      workerName: config.name, authDatabaseName: database?.database_name, authDatabaseId: database?.database_id,
+    });
+  }
   const failures = [];
   const targetTuple = readCloudflareDeploymentTargetTuple(config);
   const expectedName = expectedWorkerName(targetTuple);
@@ -1043,6 +1068,9 @@ if (!deployArgs.includes('--dry-run')) {
       verifyRemoteAuthSchema(builtArtifact);
     }
     remoteWorker = inspectRemoteWorker(builtArtifact);
+    if (installationLane && remoteWorker.exists) {
+      throw new Error('The reserved fresh-install Worker already exists. Preserve it for recovery; a fresh install must not overwrite existing Worker state.');
+    }
     if (selectedEnvironmentTarget && !remoteWorker.exists) {
       throw new Error(
         `Claimed environment ${selectedEnvironmentTarget} has no existing Worker; refusing to provision permanent lane infrastructure.`,

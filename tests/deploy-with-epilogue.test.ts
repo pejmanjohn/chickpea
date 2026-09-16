@@ -53,6 +53,8 @@ function createHarness() {
   mkdirSync(scriptsDir, { recursive: true });
   mkdirSync(scriptsLibDir, { recursive: true });
   mkdirSync(authDir, { recursive: true });
+  mkdirSync(path.join(root, 'src', 'config'), { recursive: true });
+  copyFileSync(path.join(PROJECT_ROOT, 'src/config/qa-targets.ts'), path.join(root, 'src/config/qa-targets.ts'));
   mkdirSync(releaseDir, { recursive: true });
   mkdirSync(authMigrationsDir, { recursive: true });
   mkdirSync(wranglerDir, { recursive: true });
@@ -1590,6 +1592,39 @@ test('a machine that operates claimed lanes refuses an unnamed deploy until prod
   assert.equal(wrongLane.status, 1);
   assert.match(wrongLane.stderr, /This worktree claims amber/);
   assert.equal(existsSync(claimed.logPath), false);
+});
+
+test('borrowed installation deployment requires its explicit target and rechecks reservation before mutation', (context) => {
+  for (const scenario of ['implicit', 'expired', 'changed', 'existing']) {
+    const harness = createHarness();
+    context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+    writeFileSync(path.join(harness.root, 'scripts/lib/environment-installation.mjs'), `
+      import { appendFileSync } from 'node:fs';
+      let calls = 0;
+      export function assertInstallationDeployment(target, root, tuple) {
+        appendFileSync(process.env.DEPLOY_TEST_LOG, 'installation-fence:' + (++calls) + '\\n');
+        if (process.env.DEPLOY_TEST_INSTALLATION_FAILURE === 'expired'
+          || (tuple && process.env.DEPLOY_TEST_INSTALLATION_FAILURE === 'changed')) throw new Error('installation reservation changed');
+      }
+    `);
+    const result = runHarness(harness, [], {
+      CHICKPEA_INSTALLATION_LANE: 'violet',
+      CHICKPEA_DEPLOY_TARGET: scenario === 'implicit' ? '' : 'production',
+      DEPLOY_TEST_INSTALLATION_FAILURE: scenario,
+      DEPLOY_TEST_WORKER_EXISTS: scenario === 'existing' ? '1' : '',
+    });
+    assert.equal(result.status, 1, scenario);
+    if (scenario === 'implicit') {
+      assert.match(result.stderr, /explicitly selected Worker/);
+      assert.equal(existsSync(harness.logPath), false);
+    } else {
+      const log = commands(harness.logPath);
+      assert.ok(!log.some((entry) => /wrangler:\["deploy"|wrangler:\["d1","(?:create|execute|migrations)"|wrangler:\["secret","(?:put|bulk|delete)"/.test(entry)), 'no database mutation, secret change, or upload');
+      if (scenario === 'expired') assert.deepEqual(log, ['installation-fence:1']);
+      if (scenario === 'existing') assert.match(result.stderr, /fresh-install Worker already exists/);
+      else assert.match(result.stderr, /installation reservation changed/);
+    }
+  }
 });
 
 test('a matching QA target still reaches the existing claim fence before building', (context) => {

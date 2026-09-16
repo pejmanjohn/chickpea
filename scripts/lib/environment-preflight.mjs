@@ -19,6 +19,7 @@ import { homedir, hostname } from 'node:os';
 import path, { dirname, join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { validQaFleet } from '../../src/config/qa-targets.ts';
 
 import {
   acquireTargetLock,
@@ -40,6 +41,8 @@ import {
   recordEnvironmentDeploymentIntent,
   recordEnvironmentDeployment,
   readEnvironmentRegistry,
+  normalizeTarget,
+  registerEnvironment,
   readEnvironmentTargetLockStatus,
   stableEnvironmentJson,
 } from './environment-registry.mjs';
@@ -126,6 +129,26 @@ export function environmentDeployReceiptPath(evidenceRoot) {
 
 export function readEnvironmentBaseline(evidenceRoot) {
   return validateBaseline(readOwnerOnlyJson(environmentBaselinePath(evidenceRoot), 'BASELINE_MISSING'));
+}
+
+/** Admission is staged outside the fleet until real authority agrees with its
+ * prepared baseline. The final registry write still uses revision CAS. */
+export async function adoptEnvironmentFromFile(file, options = {}) {
+  const input = readOwnerOnlyJson(file, 'INVALID_REGISTRATION');
+  const registration = normalizeTarget(input.registration);
+  const registry = readEnvironmentRegistry(options);
+  if (registration.target !== 'violet' || registry.targets.violet) throw fail('INVALID_REGISTRATION');
+  if (registry.revision !== input.expectedRegistryRevision) throw fail('REGISTRY_REVISION_MISMATCH');
+  if (Object.values(registry.targets).some((lane) => lane.claim)) throw fail('FLEET_BUSY');
+  const baseline = readEnvironmentBaseline(registration.evidenceRoot);
+  const authority = validateAuthority(await observeProductionEnvironmentAuthority({
+    target: registration.target, registration, phase: 'adopt',
+  }, { ...options, pendingRegistration: registration }));
+  assertUniqueCredentialFingerprints(authority.fleetCredentialFingerprints);
+  assertAuthorityMatches(registration, baseline, authority, {
+    expectedVersion: registration.servingVersion, expectedSchema: registration.schemaGeneration,
+  });
+  return registerEnvironment(input, options);
 }
 
 /**
@@ -247,7 +270,7 @@ export function authorizeEnvironmentCleanupPlan(targets, options = {}) {
   const inventories = options.allowSuppliedProtectedInventories === true
     ? options.protectedInventories
     : readProtectedEnvironmentInventories(context.registry);
-  for (const inventory of validateProtectedInventories(inventories)) {
+  for (const inventory of validateProtectedInventories(inventories, Object.keys(context.registry.targets))) {
     for (const resource of [...inventory.baseline, ...inventory.productOwned]) {
       protectedIds.add(resource.id);
     }
@@ -304,15 +327,15 @@ export function authorizeEnvironmentCleanupPlan(targets, options = {}) {
 }
 
 function readProtectedEnvironmentInventories(registry) {
-  return activeEnvironmentTargets.map((target) => readOwnerOnlyJson(
+  return Object.keys(registry.targets).map((target) => readOwnerOnlyJson(
     join(assertSafeEvidenceRoot(registry.targets[target].evidenceRoot),
       'protected-resource-inventory.json'),
     'PROTECTED_INVENTORY_REQUIRED',
   ));
 }
 
-function validateProtectedInventories(input) {
-  if (!Array.isArray(input) || input.length !== activeEnvironmentTargets.length) {
+function validateProtectedInventories(input, targets) {
+  if (!Array.isArray(input) || input.length !== targets.length) {
     throw fail('INVALID_PROTECTED_INVENTORY');
   }
   const inventories = input.map((inventory) => {
@@ -328,7 +351,8 @@ function validateProtectedInventories(input) {
     }
     return inventory;
   });
-  if (new Set(inventories.map(({ target }) => target)).size !== activeEnvironmentTargets.length) {
+  if (new Set(inventories.map(({ target }) => target)).size !== targets.length
+    || targets.some((target) => !inventories.some((inventory) => inventory.target === target))) {
     throw fail('INVALID_PROTECTED_INVENTORY');
   }
   return inventories;
@@ -345,6 +369,11 @@ function protectedEnvironmentResourceIds(registry) {
     ]) ids.add(value);
   }
   return ids;
+}
+
+export function readEnvironmentResourceCreationReceipt(filePath) {
+  assertSafeEvidenceRoot(dirname(filePath));
+  return validateResourceReceipt(readOwnerOnlyJson(filePath, 'RESOURCE_RECEIPT_REQUIRED'));
 }
 
 function validateResourceReceipt(input) {
@@ -488,6 +517,9 @@ export async function preflightEnvironmentMutation(target, options = {}) {
   // Legacy compatibility is only for finishing/releasing existing authority.
   options = { ...options, allowLegacyRegistryRecovery: false };
   const context = assertLiveEnvironmentClaim(target, options);
+  if (context.registration.installation && options.restoringInstallation !== true) {
+    throw fail('INSTALLATION_RESTORATION_REQUIRED');
+  }
   const baseline = validateBaseline(options.baseline ?? readEnvironmentBaseline(
     context.registration.evidenceRoot,
   ));
@@ -509,6 +541,7 @@ export async function preflightEnvironmentMutation(target, options = {}) {
     registration: Object.freeze({ ...context.registration }),
     phase: 'before',
   }, options));
+  assertUniqueCredentialFingerprints(authority.fleetCredentialFingerprints);
   assertAuthorityMatches(context.registration, baseline, authority, {
     expectedVersion: context.registration.servingVersion,
     expectedSchema: context.registration.schemaGeneration,
@@ -641,6 +674,7 @@ export async function resumeEnvironmentDeployment(target, options = {}) {
   const registry = readEnvironmentRegistry(options);
   const registration = registry.targets[target];
   if (!registration) throw fail('INVALID_TARGET');
+  if (registration.installation) throw fail('INSTALLATION_RESTORATION_REQUIRED');
   const evidenceRoot = assertSafeEvidenceRoot(registration.evidenceRoot);
   const intentPath = join(evidenceRoot, DEPLOY_INTENT_FILE);
   if (!lstatIfPresent(intentPath)) return null;
@@ -1673,19 +1707,42 @@ export async function observeProductionEnvironmentAuthority(context, options = {
       fetchImpl: options.fetchImpl ?? fetch,
       ...(options.credentialsRoot ? { credentialsRoot: options.credentialsRoot } : {}),
     }));
+  const registry = options.readFleetRuntimeAuthorities && options.allowTestRuntimeAuthorityReader === true
+    ? undefined : readEnvironmentRegistry(options);
+  if (registry && options.pendingRegistration) {
+    const pending = normalizeTarget(options.pendingRegistration);
+    if (context.phase !== 'adopt' || pending.target !== 'violet' || registry.targets.violet
+      || stableEnvironmentJson(pending) !== stableEnvironmentJson(context.registration)) throw fail('INVALID_REGISTRATION');
+    registry.targets.violet = pending;
+  }
+  const registeredTargets = registry && Object.keys(registry.targets);
+  const borrowed = Object.values(registry?.targets ?? {}).filter((lane) => lane.target !== target && lane.installation);
+  // A borrowed workspace may be disconnected, but its standing Worker and
+  // bindings must still be intact. Keep its pinned fingerprints in isolation
+  // checks; never present this as fresh Slack acceptance for that lane.
+  const borrowedFingerprints = Object.fromEntries(borrowed.map((lane) => {
+    const baseline = readEnvironmentBaseline(lane.evidenceRoot);
+    if (computeEnvironmentBaselineDigest(baseline) !== lane.installation.baselineDigest
+      || lane.servingVersion !== lane.installation.standingVersion) throw fail('INSTALLATION_BASELINE_CHANGED');
+    assertBorrowedWorkerUnchanged(lane, runWrangler, providerContext);
+    return [lane.target, baseline.credentialFingerprintsByTarget[lane.target]];
+  }));
   const runtimeAuthorities = await readFleetRuntimeAuthorities({
     target,
     workerName,
     activeVersion,
     transport: context.registration.transport,
+    targets: registeredTargets?.filter((lane) => !borrowedFingerprints[lane]),
   });
-  const validatedRuntimeAuthorities = Object.fromEntries(activeEnvironmentTargets.map((lane) => [
+  const fleetTargets = registeredTargets ?? Object.keys(runtimeAuthorities ?? {});
+  if (!validQaFleet(fleetTargets) || !fleetTargets.includes(target)) throw fail('RUNTIME_AUTHORITY_INVALID');
+  const validatedRuntimeAuthorities = Object.fromEntries(fleetTargets.filter((lane) => !borrowedFingerprints[lane]).map((lane) => [
     lane,
     validateRuntimeAuthority(runtimeAuthorities?.[lane], lane, options.now ? options.now() : Date.now()),
   ]));
-  const fleetCredentialFingerprints = Object.fromEntries(activeEnvironmentTargets.map((lane) => [
+  const fleetCredentialFingerprints = Object.fromEntries(fleetTargets.map((lane) => [
     lane,
-    validatedRuntimeAuthorities[lane].secretFingerprints.fingerprints,
+    borrowedFingerprints[lane] ?? validatedRuntimeAuthorities[lane].secretFingerprints.fingerprints,
   ]));
   assertUniqueCredentialFingerprints(fleetCredentialFingerprints);
   const credentialFingerprints = fleetCredentialFingerprints[target];
@@ -1733,13 +1790,21 @@ export async function observeProductionEnvironmentAuthority(context, options = {
  */
 function assertUnstampedRegisteredPredecessor(context, activeVersion, bindings, options) {
   const code = 'WORKER_METADATA_MISMATCH';
-  if (!['before', 'resume', 'reconcile'].includes(context.phase)
+  if (!['before', 'resume', 'reconcile', 'adopt'].includes(context.phase)
     || bindings.CHICKPEA_ENV_TARGET !== context.target
     || Object.keys(bindings).some((name) => name.startsWith('CHICKPEA_ENV_')
       && name !== 'CHICKPEA_ENV_TARGET')
     || activeVersion !== context.registration.servingVersion
     || context.registration.lastAttestation !== null) throw fail(code);
   const root = assertSafeEvidenceRoot(context.registration.evidenceRoot);
+  if (context.phase === 'adopt') {
+    if (context.target !== 'violet' || !options.pendingRegistration
+      || readEnvironmentRegistry(options).targets.violet
+      || stableEnvironmentJson(normalizeTarget(options.pendingRegistration)) !== stableEnvironmentJson(context.registration)
+      || [DEPLOY_RECEIPT_FILE, DEPLOY_RECEIPT_PENDING_FILE, DEPLOY_INTENT_FILE].some((name) => lstatIfPresent(join(root, name)))
+      || readEnvironmentTargetLockStatus(root).status !== 'clear') throw fail(code);
+    return;
+  }
   const intentPath = join(root, DEPLOY_INTENT_FILE);
   const intent = context.phase === 'before' ? null : readDeployIntent(intentPath);
   // Recovery retains the original nonce-bound mutation authority even after
@@ -1903,8 +1968,29 @@ export function resolveLaneAuthorityCredentials(target, options = {}) {
   return { url, token, source: 'lane-credentials' };
 }
 
-async function readProductionFleetRuntimeAuthorities(_request, { env, fetchImpl, credentialsRoot }) {
-  const endpoints = activeEnvironmentTargets.map((target) => {
+function assertBorrowedWorkerUnchanged(lane, runWrangler, providerContext) {
+  const deployment = parseCommandJson(runWrangler([
+    'deployments', 'status', '--json', '--name', lane.workerName, ...providerContext,
+  ]), 'WORKER_AUTHORITY_UNAVAILABLE');
+  const versions = deployment?.versions?.filter((version) => Number(version.percentage) > 0) ?? [];
+  if (versions.length !== 1 || versions[0].percentage !== 100
+    || versions[0].version_id !== lane.installation.standingVersion) throw fail('INSTALLATION_BASELINE_CHANGED');
+  const view = parseCommandJson(runWrangler([
+    'versions', 'view', versions[0].version_id, '--json', '--name', lane.workerName, ...providerContext,
+  ]), 'WORKER_AUTHORITY_UNAVAILABLE');
+  const bindings = view?.resources?.bindings ?? [];
+  const database = bindings.filter((binding) => binding.name === 'AUTH_DB' && binding.type === 'd1');
+  const state = bindings.filter((binding) => binding.name === 'TAG_STATE'
+    && ['durable_object_namespace', 'durable_object'].includes(binding.type) && binding.class_name === 'TagStateStore');
+  if (database.length !== 1 || (database[0].database_id ?? database[0].id) !== lane.authDatabaseId
+    || state.length !== 1 || (state[0].namespace_id ?? state[0].id ?? `${lane.workerName}:TagStateStore`)
+      !== lane.bindingIdentities.TAG_STATE) throw fail('INSTALLATION_BASELINE_CHANGED');
+}
+
+async function readProductionFleetRuntimeAuthorities(request, { env, fetchImpl, credentialsRoot }) {
+  if (!Array.isArray(request.targets) || !request.targets.includes(request.target)
+    || request.targets.some((target) => !activeEnvironmentTargets.includes(target))) throw fail('INVALID_LIVE_AUTHORITY_REQUEST');
+  const endpoints = request.targets.map((target) => {
     const { url, token } = resolveLaneAuthorityCredentials(target, {
       env,
       ...(credentialsRoot ? { credentialsRoot } : {}),
@@ -2036,7 +2122,8 @@ function validateBaseline(input) {
     || !DIGEST.test(input.setupContractDigest)
     || !validSchemaGeneration(input.schemaGeneration)
     || !isRecord(input.credentialFingerprintsByTarget)
-    || !exactKeys(input.credentialFingerprintsByTarget, activeEnvironmentTargets)
+    || !validQaFleet(Object.keys(input.credentialFingerprintsByTarget))
+    || !input.credentialFingerprintsByTarget[input.target]
     || Object.values(input.credentialFingerprintsByTarget).some((value) => !validFingerprints(value))) {
     throw fail('INVALID_BASELINE');
   }
@@ -2194,9 +2281,10 @@ function assertLocalContractMatchesBaseline(local, baseline, context, options = 
 }
 
 function assertUniqueCredentialFingerprints(byTarget) {
+  const targets = Object.keys(byTarget);
   for (const credentialClass of CREDENTIAL_CLASSES) {
-    const observed = activeEnvironmentTargets.map((target) => byTarget[target][credentialClass]);
-    if (new Set(observed).size !== activeEnvironmentTargets.length) {
+    const observed = targets.map((target) => byTarget[target][credentialClass]);
+    if (new Set(observed).size !== targets.length) {
       throw fail('CREDENTIAL_FINGERPRINT_REUSED', { credentialClass });
     }
   }
@@ -2222,7 +2310,8 @@ function validateAuthority(input) {
     || !validSchemaGeneration(input.schemaGeneration)
     || !validFingerprints(input.credentialFingerprints)
     || !isRecord(input.fleetCredentialFingerprints)
-    || !exactKeys(input.fleetCredentialFingerprints, activeEnvironmentTargets)
+    || !validQaFleet(Object.keys(input.fleetCredentialFingerprints))
+    || !input.fleetCredentialFingerprints[input.target]
     || Object.values(input.fleetCredentialFingerprints).some((value) => !validFingerprints(value))
     || !(input.deploymentMetadata === null || isRecord(input.deploymentMetadata))) {
     throw fail('INVALID_LIVE_AUTHORITY');
@@ -2255,8 +2344,12 @@ function assertAuthorityMatches(registration, baseline, authority, options) {
     !== stableEnvironmentJson(baseline.credentialFingerprintsByTarget[registration.target])) {
     throw fail('CREDENTIAL_FINGERPRINT_MISMATCH');
   }
-  if (stableEnvironmentJson(authority.fleetCredentialFingerprints)
-    !== stableEnvironmentJson(baseline.credentialFingerprintsByTarget)) {
+  // An adopted lane can extend the fleet without rewriting another lane's
+  // baseline or its stamped receipt. Compare every previously pinned identity;
+  // production observation separately checks all current registered lanes.
+  const pinnedFleet = Object.fromEntries(Object.keys(baseline.credentialFingerprintsByTarget)
+    .map((target) => [target, authority.fleetCredentialFingerprints[target]]));
+  if (stableEnvironmentJson(pinnedFleet) !== stableEnvironmentJson(baseline.credentialFingerprintsByTarget)) {
     throw fail('CREDENTIAL_FLEET_FINGERPRINT_MISMATCH');
   }
 }

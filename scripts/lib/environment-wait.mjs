@@ -3,6 +3,7 @@ import { existsSync } from 'node:fs';
 
 import {
   EnvironmentRegistryError,
+  activeEnvironmentTargets,
   assertLiveEnvironmentClaim,
   claimEnvironment,
   environmentMarkerPath,
@@ -10,7 +11,7 @@ import {
   releaseEnvironment,
 } from './environment-registry.mjs';
 
-const TARGETS = Object.freeze(['amber', 'cobalt']);
+const TARGETS = activeEnvironmentTargets;
 const RETRYABLE_CLAIM_ERRORS = new Set([
   'NO_TARGET_AVAILABLE',
   'TARGET_CLAIMED',

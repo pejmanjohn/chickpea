@@ -1,4 +1,5 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
+import { isQaTarget } from '../config/qa-targets.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import { cloudflareWorkerVersionId } from '../config/cloudflare-version.ts';
 import { decodeRecoverySecret } from '../auth/recovery-secret.ts';
@@ -30,7 +31,7 @@ export async function environmentAuthorityResponse(input: {
   const token = input.env[READ_TOKEN];
   const supplied = input.authorization?.match(/^Bearer ([A-Za-z0-9_-]{43})$/)?.[1];
   const target = input.env.CHICKPEA_ENV_TARGET;
-  if (!['amber', 'cobalt'].includes(String(target))
+  if (!isQaTarget(target)
     || typeof token !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(token)
     || !supplied || !timingSafeEqual(Buffer.from(token), Buffer.from(supplied))) {
     return new Response('{}', { status: 404, headers });

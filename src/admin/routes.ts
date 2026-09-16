@@ -7,6 +7,7 @@ import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 import * as v from 'valibot';
 import { actualBodyLimit } from '../security/request-body-limit.ts';
 import { applicationIdentity } from '../release/identity.ts';
+import { isQaTarget, validQaFleet } from '../config/qa-targets.ts';
 import { createUpdateChecker } from '../release/update-check.ts';
 import { supportReport, type InstallationDetails } from '../release/support-report.ts';
 
@@ -559,13 +560,12 @@ interface BetterAuthContext {
   organizationId: string;
 }
 
-const ADMIN_ENVIRONMENT_TARGETS = ['amber', 'cobalt'] as const;
 const ADMIN_ENVIRONMENT_HEALTH = [
   'ready', 'unreachable', 'stale_claim', 'identity_mismatch', 'expired_claim',
 ] as const;
 
 function deployedEnvironmentIdentity(env: unknown): Record<string, unknown> | null {
-  if (!isRecord(env) || !ADMIN_ENVIRONMENT_TARGETS.includes(env.CHICKPEA_ENV_TARGET as 'amber' | 'cobalt')) return null;
+  if (!isRecord(env) || !isQaTarget(env.CHICKPEA_ENV_TARGET)) return null;
   const sourceSha = env.CHICKPEA_ENV_SOURCE_REVISION;
   const dirty = env.CHICKPEA_ENV_SOURCE_DIRTY;
   const servingVersion = cloudflareWorkerVersionId(env);
@@ -592,14 +592,14 @@ export function projectAdminEnvironmentStatus(input: unknown): Record<string, un
     || !(input.registryRevision === null
       || (Number.isSafeInteger(input.registryRevision) && Number(input.registryRevision) >= 0))
     || !(input.selectedTarget === null
-      || ADMIN_ENVIRONMENT_TARGETS.includes(input.selectedTarget as typeof ADMIN_ENVIRONMENT_TARGETS[number]))
+      || isQaTarget(input.selectedTarget))
     || !Array.isArray(input.targets)
     || !(input.sandbox === null || isRecord(input.sandbox))) {
     throw new Error('INVALID_ENVIRONMENT_STATUS');
   }
   const targets = input.targets.map(projectAdminEnvironmentTarget);
   const targetNames = targets.map((target) => target.target).sort();
-  if (targetNames.join(',') !== [...ADMIN_ENVIRONMENT_TARGETS].sort().join(',')) {
+  if (!validQaFleet(targetNames.map(String))) {
     throw new Error('INVALID_ENVIRONMENT_STATUS');
   }
   if (input.sandbox !== null && (
@@ -637,7 +637,7 @@ export function projectAdminEnvironmentStatus(input: unknown): Record<string, un
 
 function projectAdminEnvironmentTarget(input: unknown): Record<string, unknown> {
   if (!isRecord(input)
-    || !ADMIN_ENVIRONMENT_TARGETS.includes(input.target as typeof ADMIN_ENVIRONMENT_TARGETS[number])
+    || !isQaTarget(input.target)
     || !ADMIN_ENVIRONMENT_HEALTH.includes(input.health as typeof ADMIN_ENVIRONMENT_HEALTH[number])
     || !(input.sourceSha === null
       || (typeof input.sourceSha === 'string' && /^[0-9a-f]{7,64}$/u.test(input.sourceSha)))
