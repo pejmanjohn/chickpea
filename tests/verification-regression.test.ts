@@ -22,6 +22,8 @@ test('changed verification includes each affected area and direct test changes',
   assert.ok(plan.steps.some((step: { script?: string }) => step.script === 'verify:cf-smoke'));
   assert.ok(plan.steps.some((step: { script?: string }) =>
     step.script === 'verify:node-scheduler-offline'));
+  assert.ok(plan.steps.some((step: { script?: string }) =>
+    step.script === 'verify:node-scheduler-capability'));
 });
 
 test('unknown runtime changes and deleted tests broaden verification instead of yielding a false pass', () => {

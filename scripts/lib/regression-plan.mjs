@@ -87,7 +87,10 @@ export function createRegressionPlan({ mode = 'changed', areas = [], files = [],
   if (broad || includes('releases')) npm('verify:release');
   if (broad || includes('delivery')) steps.push({ kind: 'node', file: 'scripts/verify-flue-offline-turn.mjs' });
   if (broad || includes('delivery', 'memory')) npm('verify:durability');
-  if (broad || includes('routines')) npm('verify:node-scheduler-offline');
+  if (broad || includes('routines')) {
+    npm('verify:node-scheduler-offline');
+    npm('verify:node-scheduler-capability');
+  }
   if (broad || includes('providers', 'connections')) npm('verify:providers');
   if (broad || includes('agents', 'routines', 'skills')) npm('evaluate:agent-authoring');
   if (broad || includes('routines')) npm('evaluate:schedule-contract');
