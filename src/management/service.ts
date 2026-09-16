@@ -1117,7 +1117,6 @@ export class WorkspaceManagementService {
         deferredHandoffProposal.actorMembershipId === actor.membershipId &&
         deferredHandoffProposal.originKey === managementActorOriginKey(actor) &&
         deferredHandoffProposal.approvalScopeKey === managementApprovalScopeKey(actor) &&
-        deferredHandoffProposal.authoringReason === 'agent_creation' &&
         deferredHandoffProposal.operations.some((operation) =>
           'agentId' in operation && operation.agentId === input.agentId
         )

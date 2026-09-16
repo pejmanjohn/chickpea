@@ -246,6 +246,7 @@ import {
 import type { WorkspaceManagementToolResult } from './management/tool-adapter.ts';
 import {
   completeAgentWelcomeDelivery,
+  completeSettledAgentWelcomeHandoff,
   deliverManagementReceiptToSlack,
   drainManagementReceiptOutbox,
   failAgentWelcomeDelivery,
@@ -2288,6 +2289,11 @@ async function drainCloudflareManagementReceipts(
   };
   await drainManagementReceiptOutbox({
     management: stores.management as unknown as ManagementStore,
+    onDeliveredSettled: (record) => completeSettledAgentWelcomeHandoff(
+      record,
+      stores.config,
+      stores.management as unknown as ManagementStore,
+    ),
     onTerminalFailure: async (record) => {
       await failAgentWelcomeDelivery(record, presentation);
       if (isAgentCreatedWelcome(record.receipt) && record.receipt.turnJobId) {
@@ -2303,7 +2309,6 @@ async function drainCloudflareManagementReceipts(
             deliveredRecord,
             delivery,
             stores.config,
-            stores.management as unknown as ManagementStore,
             presentation,
           );
         } finally {

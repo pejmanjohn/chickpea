@@ -26,6 +26,7 @@ import {
 import {
   managementActorOriginKey,
   managementApprovalScopeKey,
+  managementResultFullyApplied,
 } from './contracts.ts';
 
 export interface SlackManagementApprovalDependencies {
@@ -98,7 +99,7 @@ export async function executeHostSlackManagementApproval(input: {
       config: input.dependencies.config,
       management: input.dependencies.management,
     }).catch(() => {
-      console.warn('[chickpea:management] deferred Agent thread handoff will require retry');
+      console.warn('[chickpea:management] deferred Agent thread handoff failed');
     });
     return formatHostSlackManagementReceipt({
       result,
@@ -137,8 +138,7 @@ async function completeDeferredAgentCreationHandoff(input: {
     getChangeSetProposal?: ManagementStore['getChangeSetProposal'];
   };
 }): Promise<void> {
-  if (input.result.status !== 'completed' ||
-      input.result.outcomes.some(({ disposition }) => disposition !== 'applied')) return;
+  if (!managementResultFullyApplied(input.result)) return;
   const response = await input.management.execute({
     kind: 'get_deferred_agent_creation_welcome',
     workspaceId: input.turn.workspaceId,
@@ -153,7 +153,9 @@ async function completeDeferredAgentCreationHandoff(input: {
       welcome.status !== 'delivered' ||
       !('kind' in welcome.receipt) || welcome.receipt.kind !== 'agent_created_welcome' ||
       welcome.receipt.requesterMembershipId !== input.actor.membershipId ||
-      welcome.receipt.deferredHandoffProposalId !== input.proposalId) return;
+      welcome.receipt.deferredHandoffProposalId !== input.proposalId ||
+      welcome.receipt.deliveryPersona !== 'agent' ||
+      welcome.receipt.publication?.incomplete.includes('slack_presence')) return;
   const delivery = /^slack:([^:]+):(\d+\.\d+)$/.exec(welcome.deliveryRef ?? '');
   if (!delivery || delivery[1] !== input.turn.channelId) return;
   await handoffCreatedAgentThread({

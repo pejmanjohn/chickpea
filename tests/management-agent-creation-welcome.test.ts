@@ -221,7 +221,7 @@ test('a Slack creation freezes one welcome with connector handoffs and its publi
       approvalScopeKey: managementApprovalScopeKey(context),
       idempotencyKey: 'deck-welcome-reach',
       guideVersion: 'test',
-      authoringReason: 'agent_creation',
+      authoringReason: 'agent_edit',
       operations: [{
         itemId: 'reach',
         kind: 'grant_agent_channel',

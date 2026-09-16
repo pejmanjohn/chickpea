@@ -939,7 +939,7 @@ test('runTurn queues an Agent welcome as the pending terminal delivery', async (
         text: 'Agent welcome',
         persona: 'agent',
         client,
-      }, f.config, f.management, {
+      }, f.config, {
         state: h.state,
         resolveClient: async () => {
           throw new Error('delivery cleanup must reuse the posting client');

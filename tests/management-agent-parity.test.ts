@@ -11,7 +11,10 @@ import {
   AGENT_AUTHORING_GUIDE_VERSION,
 } from '../src/management/agent-authoring/index.ts';
 import { WorkspaceManagementService } from '../src/management/service.ts';
-import { completeAgentWelcomeDelivery } from '../src/management/receipts.ts';
+import {
+  completeAgentWelcomeDelivery,
+  completeSettledAgentWelcomeHandoff,
+} from '../src/management/receipts.ts';
 import { AgentPresenceError } from '../src/slack/agent-presence/errors.ts';
 import { resolvePrivateAgentAccess } from '../src/slack/agent-access.ts';
 import { resolveAgentRoute } from '../src/slack/agent-routing.ts';
@@ -37,6 +40,7 @@ import type {
   ManagementAgentPatch,
   ManagementApplyResult,
   ManagementOperation,
+  ManagementReceiptOutboxRecord,
   ManagementWorkspaceSnapshot,
 } from '../src/management/types.ts';
 import { ManagementError } from '../src/management/types.ts';
@@ -857,6 +861,7 @@ test('creation follow-on approval keeps Chickpea ownership until the exact propo
         text: 'Add Creation Reach to the requested Channel? Reply `approve` to continue.',
       }],
       deferredHandoffProposalId: proposalId,
+      deliveryPersona: 'agent' as const,
     },
     status: 'delivered' as const,
     attempts: 1,
@@ -900,7 +905,8 @@ test('creation follow-on approval keeps Chickpea ownership until the exact propo
       text: 'Agent welcome and proposal preview',
       persona: 'agent',
       client,
-    }, f.config, {
+    }, f.config);
+    await completeSettledAgentWelcomeHandoff(welcome, f.config, {
       getChangeSetProposal: async () => ({ ...proposal, status: 'pending' as const }),
     });
     assert.equal(
@@ -958,7 +964,10 @@ test('creation follow-on approval keeps Chickpea ownership until the exact propo
       runtimeContract: 'chickpea-v1' as const,
       agent: await f.config.materializeChickpeaAgent(),
     };
-    const approveWithResult = async (result: ManagementApplyResult) =>
+    const approveWithResult = async (
+      result: ManagementApplyResult,
+      outboxOverride?: ManagementReceiptOutboxRecord,
+    ) =>
       executeHostSlackManagementApproval({
         turn: approvalTurn,
         assignment: approvalAssignment,
@@ -970,7 +979,9 @@ test('creation follow-on approval keeps Chickpea ownership until the exact propo
           management: {
             putOutbox: (...args) => f.management.putOutbox(...args),
             getChangeSetProposal: async () => proposal as never,
-            execute: (...args) => f.management.execute(...args),
+            execute: outboxOverride
+              ? async () => ({ kind: 'outbox' as const, outbox: outboxOverride })
+              : (...args) => f.management.execute(...args),
           },
           service: {
             confirmWorkspaceChange: async () => result,
@@ -989,6 +1000,36 @@ test('creation follow-on approval keeps Chickpea ownership until the exact propo
       'an incomplete proposal cannot transfer the deferred thread',
     );
 
+    await approveWithResult(completedResult, {
+      ...welcome,
+      receipt: {
+        ...welcome.receipt,
+        publication: { status: 'partial' as const, incomplete: ['slack_presence' as const] },
+      },
+    });
+    assert.equal(
+      await f.config.getAgentThreadRoute(
+        welcome.destination.workspaceId,
+        welcome.destination.channelId,
+        threadTs,
+      ),
+      undefined,
+      'a Chickpea-persona welcome cannot transfer the thread after approval',
+    );
+    await approveWithResult(completedResult, {
+      ...welcome,
+      receipt: { ...welcome.receipt, deliveryPersona: 'chickpea' as const },
+    });
+    assert.equal(
+      await f.config.getAgentThreadRoute(
+        welcome.destination.workspaceId,
+        welcome.destination.channelId,
+        threadTs,
+      ),
+      undefined,
+      'a runtime persona fallback cannot transfer the thread after approval',
+    );
+
     await approveWithResult(completedResult);
 
     const route = await f.config.getAgentThreadRoute(
@@ -997,6 +1038,85 @@ test('creation follow-on approval keeps Chickpea ownership until the exact propo
       threadTs,
     );
     assert.equal(route?.agentId, created.id);
+
+    const raceWelcome = {
+      ...welcome,
+      outboxId: 'agent_welcome_creation_reach_race',
+      destination: { ...welcome.destination, threadTs: '200.210000' },
+      deliveryRef: 'slack:D_CREATION_REACH:200.220000',
+    };
+    await completeSettledAgentWelcomeHandoff(raceWelcome, f.config, {
+      getChangeSetProposal: async () => ({ ...proposal, result: completedResult }) as never,
+    });
+    assert.equal(
+      (await f.config.getAgentThreadRoute(
+        raceWelcome.destination.workspaceId,
+        raceWelcome.destination.channelId,
+        raceWelcome.destination.threadTs,
+      ))?.agentId,
+      created.id,
+      'settlement recovers an approval that completed while the welcome was delivering',
+    );
+
+    const staleWelcome = {
+      ...raceWelcome,
+      outboxId: 'agent_welcome_creation_reach_stale',
+      destination: { ...welcome.destination, threadTs: '200.310000' },
+      deliveryRef: 'slack:D_CREATION_REACH:200.320000',
+    };
+    await completeSettledAgentWelcomeHandoff(staleWelcome, f.config, {
+      getChangeSetProposal: async () => ({ ...proposal, status: 'stale' as const }),
+    });
+    assert.equal(
+      await f.config.getAgentThreadRoute(
+        staleWelcome.destination.workspaceId,
+        staleWelcome.destination.channelId,
+        staleWelcome.destination.threadTs,
+      ),
+      undefined,
+      'a stale proposal never transfers the thread implicitly',
+    );
+
+    const partialWelcome = {
+      ...raceWelcome,
+      outboxId: 'agent_welcome_creation_reach_partial',
+      destination: { ...welcome.destination, threadTs: '200.410000' },
+      deliveryRef: 'slack:D_CREATION_REACH:200.420000',
+    };
+    await completeSettledAgentWelcomeHandoff(partialWelcome, f.config, {
+      getChangeSetProposal: async () => ({
+        ...proposal,
+        result: { ...completedResult, status: 'partial' as const },
+      }) as never,
+    });
+    assert.equal(
+      await f.config.getAgentThreadRoute(
+        partialWelcome.destination.workspaceId,
+        partialWelcome.destination.channelId,
+        partialWelcome.destination.threadTs,
+      ),
+      undefined,
+      'a partial stored result cannot transfer the thread during settlement',
+    );
+
+    const { deferredHandoffProposalId: _deferredProposal, ...ordinaryReceipt } = welcome.receipt;
+    const ordinaryWelcome = {
+      ...raceWelcome,
+      outboxId: 'agent_welcome_creation_ordinary',
+      destination: { ...welcome.destination, threadTs: '200.510000' },
+      receipt: ordinaryReceipt,
+      deliveryRef: 'slack:D_CREATION_REACH:200.520000',
+    };
+    await completeSettledAgentWelcomeHandoff(ordinaryWelcome, f.config, f.management);
+    assert.equal(
+      (await f.config.getAgentThreadRoute(
+        ordinaryWelcome.destination.workspaceId,
+        ordinaryWelcome.destination.channelId,
+        ordinaryWelcome.destination.threadTs,
+      ))?.agentId,
+      created.id,
+      'ordinary welcomes still hand off after durable delivery settlement',
+    );
   } finally {
     f.close();
   }

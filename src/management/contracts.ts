@@ -8,6 +8,7 @@ import { isAgentId } from '../config/agent-id.ts';
 import {
   ManagementError,
   type ManagementActorContext,
+  type ManagementApplyResult,
   type ManagementOperation,
   type ManagementOrigin,
   type ManagementObjectRef,
@@ -30,6 +31,13 @@ const FORBIDDEN_KEYS = new Set([
   'secret',
   'token',
 ]);
+
+export function managementResultFullyApplied(
+  result: ManagementApplyResult | undefined,
+): result is ManagementApplyResult {
+  return result?.status === 'completed' &&
+    result.outcomes.every(({ disposition }) => disposition === 'applied');
+}
 
 export function validateManagementOperations(
   operations: readonly ManagementOperation[],

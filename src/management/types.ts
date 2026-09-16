@@ -420,6 +420,8 @@ export interface ManagementAgentCreatedWelcome {
   }>;
   /** Validated pending proposal that temporarily retains the creation thread under Chickpea. */
   deferredHandoffProposalId?: string;
+  /** Persona Slack actually accepted for the durable welcome delivery. */
+  deliveryPersona?: 'agent' | 'chickpea';
   viewAgentUrl?: string;
   /** Compatibility fields for proposal-created welcomes. */
   setupUrl?: string;
@@ -1340,6 +1342,7 @@ export type ManagementRpcRequest =
       at: number;
       nextAttemptAt?: number;
       deliveryRef?: string;
+      deliveryPersona?: 'agent' | 'chickpea';
       failureCode?: string;
     }
   | { kind: 'cleanup_retention'; at: number; limit: number };
