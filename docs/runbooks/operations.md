@@ -144,17 +144,18 @@ chmod 600 "$HOME/Library/Application Support/Chickpea/node/runtime.env"
 The conditional creation preserves an existing environment file and its stable
 auth secret. Do not truncate or replace that file during an update.
 
-Put the production variables above in `runtime.env`, using these stable state
-paths (write the absolute `/Users/...` paths; environment files do not expand
-`$HOME`):
+Put the production variables above in `runtime.env`. Run this command to print
+the stable paths for your account, then copy its output into that file.
+Environment files do not expand `$HOME`, so save the printed absolute paths:
 
-```dotenv
-HOST=127.0.0.1
-PORT=3000
-TAG_DB_PATH=/Users/you/Library/Application Support/Chickpea/node/state/transcripts.sqlite
-SLACK_STATE_DB_PATH=/Users/you/Library/Application Support/Chickpea/node/state/app.sqlite
-CHICKPEA_AUTH_DB_PATH=/Users/you/Library/Application Support/Chickpea/node/state/auth.sqlite
-CHICKPEA_CREDENTIAL_KEYRING_PATH=/Users/you/Library/Application Support/Chickpea/node/state/credential-keyring.json
+```sh
+printf '%s\n' \
+  'HOST=127.0.0.1' \
+  'PORT=3000' \
+  "TAG_DB_PATH=$HOME/Library/Application Support/Chickpea/node/state/transcripts.sqlite" \
+  "SLACK_STATE_DB_PATH=$HOME/Library/Application Support/Chickpea/node/state/app.sqlite" \
+  "CHICKPEA_AUTH_DB_PATH=$HOME/Library/Application Support/Chickpea/node/state/auth.sqlite" \
+  "CHICKPEA_CREDENTIAL_KEYRING_PATH=$HOME/Library/Application Support/Chickpea/node/state/credential-keyring.json"
 ```
 
 Then start the built release in the foreground:
