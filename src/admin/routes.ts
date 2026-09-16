@@ -353,7 +353,16 @@ import {
   type NonChatModelRole,
   type WorkspaceModelDefault,
 } from '../config/types.ts';
-import { findImageModel, listImageModels } from '../model-catalog/image-profiles.ts';
+import {
+  findImageModel,
+  listImageModels,
+  OPENAI_SUBSCRIPTION_IMAGE_MODEL_ID,
+  type ImageModelId,
+} from '../model-catalog/image-profiles.ts';
+import {
+  initializeWorkspaceImageDefaultBestEffort,
+  OPENAI_API_IMAGE_DEFAULT_MODEL_ID,
+} from '../config/initial-image-default.ts';
 import { imageModelProfileReady } from '../images/provider.ts';
 import { MemoryStateError, type MemoryStateStore } from '../memory/types.ts';
 import {
@@ -1583,6 +1592,25 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     options.identity ?? getIdentityStore(c.env as PlatformEnv | undefined);
   const settings = (c: Context) =>
     options.settings ?? getSettingsStore(c.env as PlatformEnv | undefined);
+  const initializeAuthenticatedWorkspaceImageDefault = async (
+    c: Context,
+    modelId: ImageModelId,
+  ): Promise<void> => {
+    await initializeWorkspaceImageDefaultBestEffort(async () => {
+      const principal = principalByContext.get(c);
+      if (!principal) return undefined;
+      const organization = await identity(c).getOrganization();
+      if (organization?.id !== principal.organizationId || !organization.slackTeamId) {
+        return undefined;
+      }
+      return {
+        config: store(c),
+        workspaceId: organization.slackTeamId,
+        modelId,
+        membershipId: principal.membershipId,
+      };
+    });
+  };
   const productTelemetry = (c: Context) => options.productTelemetry?.(c);
   const composioConfiguration = (c: Context): ComposioConfigurationOptions => ({
     ...options.composioConfiguration,
@@ -6622,10 +6650,19 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     if (!parsed.success) return invalidRequest(c);
     try {
       requireOpenAiSubscriptionAvailable();
+      const priorStatus = await getOpenAiSubscriptionAuthorizationStatus(settings(c));
+      const firstConnection = priorStatus.state === 'authorizing' &&
+        priorStatus.accountFingerprint === undefined && priorStatus.connectedAt === undefined;
       const result = await pollOpenAiSubscriptionAuthorization(
         parsed.output,
         openAiSubscriptionDependencies(c),
       );
+      if (firstConnection && result.state === 'connected') {
+        await initializeAuthenticatedWorkspaceImageDefault(
+          c,
+          OPENAI_SUBSCRIPTION_IMAGE_MODEL_ID,
+        );
+      }
       return c.json(result);
     } catch (error) {
       return openAiSubscriptionRouteError(c, error);
@@ -6692,6 +6729,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     try {
       const models = await validateProviderApiKey(id, apiKey);
       await saveProviderApiKey(id, apiKey, platformEnv, settingsStore, usage(c));
+      if (id === 'openai' && current.source === 'missing') {
+        await initializeAuthenticatedWorkspaceImageDefault(c, OPENAI_API_IMAGE_DEFAULT_MODEL_ID);
+      }
       primeProviderModelCache(id, models);
       return c.json({
         ok: true,

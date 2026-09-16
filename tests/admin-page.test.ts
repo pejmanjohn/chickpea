@@ -300,6 +300,61 @@ type ModelProviderFixture = {
     subscription: OpenAiSubscriptionStatusFixture;
   };
 };
+const FLARE_IMAGE_MODEL = 'openai/gpt-image-2.5-flare';
+const SUNBURST_IMAGE_MODEL = 'openai/gpt-image-2.5-sunburst';
+const CHATGPT_IMAGE_MODEL = 'openai/chatgpt-image';
+
+function imageCatalogFixture(includeApiKey: boolean, includeSubscription: boolean): Record<string, unknown> {
+  const models: Array<Record<string, unknown>> = [];
+  if (includeSubscription) {
+    models.push({
+      id: CHATGPT_IMAGE_MODEL,
+      name: 'ChatGPT Image',
+      providerId: 'openai',
+      acceptsImageInput: false,
+      authMethod: 'subscription',
+      maxOutputs: 1,
+      supportsOutputControls: false,
+      fasterAndCheaper: false,
+    });
+  }
+  if (includeApiKey) {
+    models.push(
+      {
+        id: FLARE_IMAGE_MODEL,
+        name: 'GPT Image 2.5 Flare',
+        providerId: 'openai',
+        acceptsImageInput: true,
+        authMethod: 'api_key',
+        maxOutputs: 10,
+        supportsOutputControls: true,
+        fasterAndCheaper: true,
+      },
+      {
+        id: SUNBURST_IMAGE_MODEL,
+        name: 'GPT Image 2.5 Sunburst',
+        providerId: 'openai',
+        acceptsImageInput: true,
+        authMethod: 'api_key',
+        maxOutputs: 10,
+        supportsOutputControls: true,
+        fasterAndCheaper: false,
+      },
+    );
+  }
+  return { models, providers: [{ id: 'openai', configured: models.length > 0 }] };
+}
+
+function workspaceImageRoleFixture(modelId: string | null, revision: number): Record<string, unknown> {
+  return {
+    workspaceModelRole: {
+      workspaceId: 'T_DESIGN',
+      role: 'image',
+      modelId,
+      revision,
+    },
+  };
+}
 type EgressPolicyFixture = {
   mode: 'allowlist' | 'open' | 'off';
   domains: string[];
@@ -12457,6 +12512,70 @@ test('onboarding skips channel publication, validates a provider, requires a mod
   assert.match(harness.app.innerHTML, /Step 4 of 4/);
 });
 
+test('onboarding refreshes the image catalog and server-selected image default after adding an OpenAI key', async () => {
+  let keyConnected = false;
+  let imageCatalogGets = 0;
+  let imageRoleGets = 0;
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/onboarding',
+    providers: [
+      { id: 'anthropic', status: 'missing', modelCount: null },
+      { id: 'openai', status: 'missing', modelCount: null, activeAuthMethod: 'api_key', subscription: { state: 'disconnected', updatedAt: 0 } },
+      { id: 'openrouter', status: 'missing', modelCount: null },
+    ],
+    modelProviders: [
+      { id: 'openai', configured: false, source: 'missing', suggestions: ['openai/gpt-5.6-terra'] },
+    ],
+    onboarding: {
+      stage: 'choose_provider',
+      revision: '{"version":1,"state":"active"}',
+      workspace: { id: 'T_DESIGN', name: 'Acme Inc' },
+      channel: null,
+      slackAppId: 'A_CHICKPEA',
+      tryStartedAt: null,
+      completedAt: null,
+    },
+    settingsLoadFetch(path, method) {
+      if (method === 'POST' && path === '/admin/api/providers/openai/key') {
+        keyConnected = true;
+        return undefined;
+      }
+      if (method === 'GET' && path === '/admin/api/image-models') {
+        imageCatalogGets += 1;
+        return Promise.resolve(jsonResponse(imageCatalogFixture(keyConnected, false)));
+      }
+      if (method === 'GET' && path === '/admin/api/workspace-model-roles/image') {
+        imageRoleGets += 1;
+        return Promise.resolve(jsonResponse(workspaceImageRoleFixture(
+          keyConnected ? FLARE_IMAGE_MODEL : null,
+          keyConnected ? 1 : 0,
+        )));
+      }
+      return undefined;
+    },
+  });
+  await flushAsync();
+  const initialImageCatalogGets = imageCatalogGets;
+  const initialImageRoleGets = imageRoleGets;
+
+  harness.listeners.click?.({
+    target: actionTarget({ 'data-action': 'onboarding-provider-select', 'data-provider': 'openai' }),
+  });
+  harness.listeners.input?.({
+    target: inputTarget({ 'data-action': 'onboarding-provider-key', 'data-provider': 'openai' }, 'sk-openai-onboarding'),
+  });
+  harness.listeners.click?.({
+    target: actionTarget({ 'data-action': 'onboarding-provider-continue' }),
+  });
+  await flushAsync();
+
+  assert.deepEqual(harness.providerKeyPosts.at(-1), { id: 'openai', key: 'sk-openai-onboarding' });
+  assert.equal(harness.onboardingProviderPosts.at(-1)?.providerId, 'openai');
+  assert.ok(imageCatalogGets > initialImageCatalogGets, 'successful onboarding refreshes image models');
+  assert.ok(imageRoleGets > initialImageRoleGets, 'successful onboarding loads the server-selected image default');
+  assert.match(harness.app.innerHTML, /Choose your model/);
+});
+
 test('onboarding translates provider and model conflicts into recovery copy', async () => {
   const rejectedKey = runAdminPageHarness({
     initialPath: '/admin/onboarding',
@@ -14632,6 +14751,9 @@ test('Settings lets Cloudflare recover a persisted subscription selection with a
 });
 
 test('Settings completes a transient OpenAI subscription device authorization and switches chat explicitly', async () => {
+  let imageCatalogGets = 0;
+  let imageRoleGets = 0;
+  let subscriptionConnected = false;
   const harness = runAdminPageHarness({
     initialPath: '/admin/settings/providers',
     providers: [
@@ -14640,10 +14762,30 @@ test('Settings completes a transient OpenAI subscription device authorization an
       { id: 'openrouter', status: 'missing', modelCount: null },
       { id: 'workers-ai', status: 'missing', modelCount: null },
     ],
+    settingsLoadFetch(path, method) {
+      if (method === 'POST' && path === '/admin/api/providers/openai/subscription/poll') {
+        subscriptionConnected = true;
+        return undefined;
+      }
+      if (method === 'GET' && path === '/admin/api/image-models') {
+        imageCatalogGets += 1;
+        return Promise.resolve(jsonResponse(imageCatalogFixture(true, subscriptionConnected)));
+      }
+      if (method === 'GET' && path === '/admin/api/workspace-model-roles/image') {
+        imageRoleGets += 1;
+        return Promise.resolve(jsonResponse(workspaceImageRoleFixture(
+          subscriptionConnected ? CHATGPT_IMAGE_MODEL : null,
+          subscriptionConnected ? 1 : 0,
+        )));
+      }
+      return undefined;
+    },
   });
   await flushAsync();
   const click = harness.listeners.click;
   assert.ok(click);
+  const initialImageCatalogGets = imageCatalogGets;
+  const initialImageRoleGets = imageRoleGets;
 
   click({ target: actionTarget({ 'data-action': 'openai-subscription-start' }) });
   await flushAsync();
@@ -14661,6 +14803,9 @@ test('Settings completes a transient OpenAI subscription device authorization an
     body: { attemptCapability: 'browser-attempt-capability-1234567890' },
   });
   assert.match(harness.app.innerHTML, /ChatGPT subscription[\s\S]*Connected/);
+  assert.ok(imageCatalogGets > initialImageCatalogGets, 'successful subscription connection refreshes image models');
+  assert.ok(imageRoleGets > initialImageRoleGets, 'successful subscription connection refreshes the image role');
+  assert.match(harness.app.innerHTML, new RegExp(`<option value="${CHATGPT_IMAGE_MODEL.replace('/', '\\/')}" selected>`));
   assert.doesNotMatch(harness.app.innerHTML, /browser-attempt-capability|oas_safe_fixture/);
 
   click({ target: actionTarget({ 'data-action': 'openai-auth-method', 'data-method': 'subscription' }) });
@@ -14760,6 +14905,8 @@ test('Settings cancels a delayed OpenAI start response after navigation without 
 });
 
 test('Settings confirms an OpenAI account change without rendering account fingerprints', async () => {
+  let imageCatalogGets = 0;
+  let imageRoleGets = 0;
   const harness = runAdminPageHarness({
     initialPath: '/admin/settings/providers',
     openAiSubscriptionPollResult: {
@@ -14768,10 +14915,28 @@ test('Settings confirms an OpenAI account change without rendering account finge
       accountFingerprint: 'old_account_fingerprint',
       candidateAccountFingerprint: 'new_account_fingerprint',
     },
+    settingsLoadFetch(path, method) {
+      if (method === 'GET' && path === '/admin/api/image-models') {
+        imageCatalogGets += 1;
+        return Promise.resolve(jsonResponse(imageCatalogFixture(true, true)));
+      }
+      if (method === 'GET' && path === '/admin/api/workspace-model-roles/image') {
+        imageRoleGets += 1;
+        return Promise.resolve(jsonResponse(workspaceImageRoleFixture(FLARE_IMAGE_MODEL, 3)));
+      }
+      return undefined;
+    },
   });
   await flushAsync();
   const click = harness.listeners.click;
-  assert.ok(click);
+  const change = harness.listeners.change;
+  assert.ok(click && change);
+  change({ target: valueTarget({ 'data-action': 'workspace-image-model' }, SUNBURST_IMAGE_MODEL) });
+  await flushAsync();
+  const initialImageCatalogGets = imageCatalogGets;
+  const initialImageRoleGets = imageRoleGets;
+  assert.match(harness.app.innerHTML, new RegExp(`<option value="${SUNBURST_IMAGE_MODEL.replace('/', '\\/')}" selected>`));
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="workspace-image-model-save" disabled/);
   click({ target: actionTarget({ 'data-action': 'openai-subscription-start' }) });
   await flushAsync();
   harness.runNextTimer();
@@ -14786,6 +14951,10 @@ test('Settings confirms an OpenAI account change without rendering account finge
     body: { attemptCapability: 'browser-attempt-capability-1234567890' },
   });
   assert.match(harness.app.innerHTML, /ChatGPT account updated/);
+  assert.ok(imageCatalogGets > initialImageCatalogGets, 'confirmed account replacement refreshes image models');
+  assert.ok(imageRoleGets > initialImageRoleGets, 'confirmed account replacement refreshes the image role');
+  assert.match(harness.app.innerHTML, new RegExp(`<option value="${SUNBURST_IMAGE_MODEL.replace('/', '\\/')}" selected>`));
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="workspace-image-model-save" disabled/);
 });
 
 test('Settings disconnects a ChatGPT subscription without silently changing the selected chat method', async () => {
@@ -14922,13 +15091,37 @@ test('Settings adds an outbound domain and saves the expected egress policy', as
 });
 
 test('Settings validates a pasted key and collapses the row to a stored status', async () => {
-  const harness = runAdminPageHarness();
+  let imageCatalogGets = 0;
+  let imageRoleGets = 0;
+  let keyConnected = false;
+  const harness = runAdminPageHarness({
+    settingsLoadFetch(path, method) {
+      if (method === 'POST' && path === '/admin/api/providers/openai/key') {
+        keyConnected = true;
+        return undefined;
+      }
+      if (method === 'GET' && path === '/admin/api/image-models') {
+        imageCatalogGets += 1;
+        return Promise.resolve(jsonResponse(imageCatalogFixture(keyConnected, false)));
+      }
+      if (method === 'GET' && path === '/admin/api/workspace-model-roles/image') {
+        imageRoleGets += 1;
+        return Promise.resolve(jsonResponse(workspaceImageRoleFixture(
+          keyConnected ? FLARE_IMAGE_MODEL : null,
+          keyConnected ? 1 : 0,
+        )));
+      }
+      return undefined;
+    },
+  });
   await flushAsync();
   const click = harness.listeners.click;
   const input = harness.listeners.input;
   assert.ok(click && input);
   click({ target: actionTarget({ 'data-action': 'open-settings' }) });
   await flushAsync();
+  const initialImageCatalogGets = imageCatalogGets;
+  const initialImageRoleGets = imageRoleGets;
 
   click({ target: actionTarget({ 'data-action': 'prov-add-key', 'data-provider': 'openai' }) });
   assert.match(harness.app.innerHTML, /data-action="prov-validate" data-provider="openai"/);
@@ -14943,6 +15136,40 @@ test('Settings validates a pasted key and collapses the row to a stored status',
   assert.match(harness.app.innerHTML, /Saved in Chickpea/);
   assert.match(harness.app.innerHTML, /ChatGPT subscription/);
   assert.match(harness.app.innerHTML, /data-action="openai-auth-method" data-method="api_key"[^>]*>Selected/);
+  assert.ok(imageCatalogGets > initialImageCatalogGets, 'successful OpenAI key connection refreshes image models');
+  assert.ok(imageRoleGets > initialImageRoleGets, 'successful OpenAI key connection refreshes the image role');
+  assert.match(harness.app.innerHTML, new RegExp(`<option value="${FLARE_IMAGE_MODEL.replace('/', '\\/')}" selected>`));
+});
+
+test('Settings does not refresh image configuration after a rejected OpenAI key', async () => {
+  let imageCatalogGets = 0;
+  let imageRoleGets = 0;
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/settings/providers',
+    providerKeyReject: { status: 401, detail: 'invalid_api_key' },
+    settingsLoadFetch(path, method) {
+      if (method === 'GET' && path === '/admin/api/image-models') {
+        imageCatalogGets += 1;
+        return Promise.resolve(jsonResponse(imageCatalogFixture(false, false)));
+      }
+      if (method === 'GET' && path === '/admin/api/workspace-model-roles/image') {
+        imageRoleGets += 1;
+        return Promise.resolve(jsonResponse(workspaceImageRoleFixture(null, 0)));
+      }
+      return undefined;
+    },
+  });
+  await flushAsync();
+  const baselineCatalogGets = imageCatalogGets;
+  const baselineRoleGets = imageRoleGets;
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'prov-add-key', 'data-provider': 'openai' }) });
+  harness.listeners.input?.({ target: inputTarget({ 'data-action': 'prov-key-input', 'data-provider': 'openai' }, 'sk-rejected') });
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'prov-validate', 'data-provider': 'openai' }) });
+  await flushAsync();
+
+  assert.equal(imageCatalogGets, baselineCatalogGets);
+  assert.equal(imageRoleGets, baselineRoleGets);
+  assert.match(harness.app.innerHTML, /OpenAI rejected the key/);
 });
 
 test('Settings ignores subscription status unless the server explicitly reports the capability', async () => {

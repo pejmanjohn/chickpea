@@ -224,6 +224,7 @@
     // default. Its readback (choice + revision) comes from the role endpoint;
     // its options come from the image catalog, never from the chat model list.
     imageModels: { loaded: false, error: false, models: [], providers: [] },
+    imageModelsRequestId: 0,
     workspaceImageRole: null,
     workspaceImageRoleLoaded: false,
     workspaceImageRoleDraft: "",
@@ -9644,12 +9645,13 @@
       if (!preserveDraft) state[draftKey] = (value && value.modelId) || "";
     }
 
-    function load(generation) {
+    function load(generation, preserveDraft) {
       var requestId = ++state[requestIdKey];
       state[errorKey] = "";
       return api(options.endpoint, { cache: "no-store" }).then(function (body) {
         if (requestId !== state[requestIdKey] || !settingsLoadIsCurrent(generation)) return;
-        apply(body[responseKey], false);
+        var keepDraft = typeof preserveDraft === "function" ? preserveDraft() : !!preserveDraft;
+        apply(body[responseKey], keepDraft);
       }).catch(function (error) {
         if (requestId !== state[requestIdKey] || !settingsLoadIsCurrent(generation)) return;
         state[loadedKey] = true;
@@ -9670,6 +9672,9 @@
         return;
       }
       state[busyKey] = true;
+      // A save owns the next authoritative value. Retire any earlier GET so it
+      // cannot repaint stale state after this mutation finishes.
+      state[requestIdKey] += 1;
       state[errorKey] = "";
       state[noticeKey] = "";
       render();
@@ -9773,13 +9778,34 @@
   // The image catalog. Loaded with the rest of the page data because the Agent
   // Model tab needs it without ever opening Settings.
   function loadImageModels() {
+    var requestId = ++state.imageModelsRequestId;
     return api("/admin/api/image-models")
-      .then(applyImageModels)
-      .catch(function () { applyImageModels(null); });
+      .then(function (body) {
+        if (requestId === state.imageModelsRequestId) applyImageModels(body);
+      })
+      .catch(function () {
+        if (requestId === state.imageModelsRequestId) applyImageModels(null);
+      });
   }
 
-  function loadWorkspaceImageRole(generation) {
-    return workspaceImageRoleControls.load(generation);
+  function loadWorkspaceImageRole(generation, preserveDraft) {
+    return workspaceImageRoleControls.load(generation, preserveDraft);
+  }
+
+  function workspaceImageRoleDraftChanged() {
+    var current = state.workspaceImageRole;
+    return state.workspaceImageRoleLoaded &&
+      String(state.workspaceImageRoleDraft || "") !== String(current && current.modelId || "");
+  }
+
+  function refreshImageConfigurationAfterOpenAiConnection() {
+    var generation = state.settingsLoadGeneration;
+    var roleRequest = !WORKSPACE_ADMIN_UI || state.workspaceImageRoleBusy
+      ? Promise.resolve()
+      : loadWorkspaceImageRole(generation, workspaceImageRoleDraftChanged);
+    return Promise.all([loadImageModels(), roleRequest]).then(function () {
+      renderSettingsLoad(generation);
+    });
   }
 
   function saveWorkspaceImageRole() {
@@ -10306,7 +10332,11 @@
       if (id === "openai") invalidateOpenAiProviderModels();
       // Refresh the provider list (status → Stored + count) and the picker's
       // suggestion source; the validate call primed the server model cache.
-      return loadSettings().then(function () { refreshModels(); render(); });
+      return loadSettings().then(function () {
+        refreshModels();
+        if (id === "openai") return refreshImageConfigurationAfterOpenAiConnection();
+        render();
+      });
     }).catch(function (error) {
       ui.busy = false;
       applyProviderKeyError(id, ui, error);
@@ -10460,7 +10490,7 @@
         invalidateOpenAiProviderModels();
         refreshModels();
         render();
-        return;
+        return refreshImageConfigurationAfterOpenAiConnection();
       }
       throw new Error("invalid_subscription_poll");
     }).catch(function (error) {
@@ -10517,6 +10547,7 @@
       invalidateOpenAiProviderModels();
       refreshModels();
       render();
+      return refreshImageConfigurationAfterOpenAiConnection();
     }).catch(function (error) {
       subscriptionUi.busy = "";
       subscriptionUi.error = openAiSubscriptionError(error, "Could not confirm the ChatGPT account change.");
@@ -11036,6 +11067,7 @@
     var providerId = state.onboardingProviderSelected || initialOnboardingProviderId();
     if (!providerId) return;
     var configured = onboardingProviderConfigured(providerId);
+    var addsOpenAiKey = providerId === "openai" && !configured;
     var key = String(state.onboardingProviderKey || "").trim();
     if (!configured && (providerId === "cloudflare" || !key)) {
       state.onboardingError = providerId === "cloudflare"
@@ -11063,6 +11095,7 @@
       state.onboardingProviderKey = "";
       state.onboardingModelSelected = "";
       render();
+      if (addsOpenAiKey) return refreshImageConfigurationAfterOpenAiConnection();
     }).catch(function (error) {
       state.onboardingBusy = false;
       state.onboardingError = onboardingMutationErrorText(

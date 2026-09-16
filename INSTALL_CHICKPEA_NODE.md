@@ -294,6 +294,12 @@ authentication method; it generates one image per call and does not edit
 images. ChatGPT chooses its output settings. Saving an API key does not change
 your selected chat authentication method.
 
+If the connected workspace has never had an image default configured, adding
+your first OpenAI API key selects **Flare**, or connecting your first ChatGPT
+subscription selects **ChatGPT Image**. Existing selections and deliberately
+cleared defaults stay unchanged, including when reconnecting or replacing a key.
+You can change the default in **Settings → Model providers**.
+
 ## Operate the installation
 
 ### Check status
