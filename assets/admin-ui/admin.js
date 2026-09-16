@@ -5803,6 +5803,7 @@
   function customMcpToolChoices(tools, selected) {
     var busy = !!((state.connectionAccountForm || state.customMcpToolEditor || {}).busy);
     var review = state.customMcpToolEditor && state.customMcpToolEditor.metaAds;
+    var bugsnag = state.customMcpToolEditor && state.customMcpToolEditor.bugsnag;
     var controls = review ? '<p class="hint">Choose the tools this Agent can use for the selected ad accounts.</p>' : '<div class="skill-form-actions"><button type="button" class="btn btn-ghost btn-sm" data-action="custom-mcp-tools-all"' + (busy ? ' disabled' : '') + '>Select all</button><button type="button" class="btn btn-ghost btn-sm" data-action="custom-mcp-tools-none"' + (busy ? ' disabled' : '') + '>Deselect all</button><span class="hint">' + tools.filter(function (tool) { return selected.indexOf(tool.name) >= 0; }).length + ' of ' + tools.length + ' selected</span></div>';
     var descriptions = {
       ads_get_ad_accounts: "Verify which approved ad accounts are available.",
@@ -5831,7 +5832,7 @@
       var checked = selected.indexOf(tool.name) >= 0;
       var description = review ? descriptions[tool.name] : tool.description;
       if (!supported) return '<div class="conn-tool conn-tool-unavailable"><span class="conn-tool-check-placeholder" aria-hidden="true"></span><span class="tool-body"><span class="tool-name">' + esc(tool.title || tool.name) + '</span><span class="tool-desc">' + (tool.requiresEditingAccess ? 'Reconnect with Reporting and editing access to select this tool.' : 'Not yet supported with ad account restrictions.') + '</span></span></div>';
-      return '<label class="conn-tool"><span class="import-check' + (checked ? ' on' : '') + '"><input type="checkbox" data-action="custom-mcp-tool" data-tool="' + esc(tool.name) + '"' + (checked ? ' checked' : '') + (busy ? ' disabled' : '') + '></span><span class="tool-body"><span class="tool-name">' + esc(tool.title || tool.name) + (review ? (tool.effect === 'read' ? ' · Reporting' : ' · May change ads') : '') + '</span>' + (description ? '<span class="tool-desc">' + esc(description) + '</span>' : '') + '</span></label>';
+      return '<label class="conn-tool"><span class="import-check' + (checked ? ' on' : '') + '"><input type="checkbox" data-action="custom-mcp-tool" data-tool="' + esc(tool.name) + '"' + (checked ? ' checked' : '') + (busy ? ' disabled' : '') + '></span><span class="tool-body"><span class="tool-name">' + esc(tool.title || tool.name) + (review ? (tool.effect === 'read' ? ' · Reporting' : ' · May change ads') : bugsnag ? (bugsnagReadTool(tool) ? ' · Read only' : ' · May change data') : '') + '</span>' + (description ? '<span class="tool-desc">' + esc(description) + '</span>' : '') + '</span></label>';
     }).join("");
     return controls + (choices ? '<div class="conn-tools custom-mcp-tool-list">' + choices + '</div>' : '<p class="hint">This server returned no tools.</p>');
   }
@@ -5861,23 +5862,28 @@
     if (!entry || entry.account.policy.kind !== 'mcp') return;
     var ceiling = entry.binding && entry.binding.allowedCapabilities || [];
     state.connectionAccountForm = null;
-    var metaAds = entry.account.policy.toolAccessMode === 'review' || entry.account.policy.presetId === 'meta-ads' || entry.account.policy.url === 'https://mcp.facebook.com/ads';
+    var metaAds = entry.account.policy.presetId === 'meta-ads' || entry.account.policy.url === 'https://mcp.facebook.com/ads';
+    var bugsnag = entry.account.policy.presetId === 'bugsnag' || entry.account.policy.url === 'https://bugsnag.mcp.smartbear.com/mcp';
     var accountIds = [];
     Object.values(entry.account.policy.toolPolicies || {}).forEach(function (policy) { Object.values(policy.argumentConstraints || {}).forEach(function (ids) { ids.forEach(function (id) { if (accountIds.indexOf(id) < 0) accountIds.push(id); }); }); });
-    state.customMcpToolEditor = { accountId: accountId, revision: entry.account.revision, metaAds: metaAds, accountIds: accountIds.join(', '),
+    state.customMcpToolEditor = { accountId: accountId, revision: entry.account.revision, metaAds: metaAds, bugsnag: bugsnag, accountIds: accountIds.join(', '),
       tools: (entry.account.policy.discoveredTools || []).filter(function (tool) { return !ceiling.length || ceiling.indexOf(tool.name) >= 0; }).map(function (tool) { return Object.assign({}, tool, (entry.mcpToolAccess || []).find(function (access) { return access.name === tool.name; }) || {}); }),
       selectedTools: entry.account.policy.allowedTools.slice(), busy: false, error: '' };
     if (!metaAds && selectAllIfEmpty && !state.customMcpToolEditor.selectedTools.length) {
-      state.customMcpToolEditor.selectedTools = state.customMcpToolEditor.tools.map(function (tool) { return tool.name; });
+      state.customMcpToolEditor.selectedTools = state.customMcpToolEditor.tools.filter(function (tool) { return !bugsnag || bugsnagReadTool(tool); }).map(function (tool) { return tool.name; });
     }
     render();
+  }
+
+  function bugsnagReadTool(tool) {
+    return tool.readOnlyHint === true && tool.name !== 'bugsnag_update_error' && tool.name !== 'bugsnag_set_network_endpoint_groupings';
   }
 
   function customMcpToolEditorHtml(entry) {
     var editor = state.customMcpToolEditor;
     if (!editor || editor.accountId !== entry.account.id) return '';
     var tools = editor.metaAds ? editor.tools.filter(function (tool) { return tool.available !== false; }) : editor.tools;
-    return '<div class="skill-form"><h3>Choose access</h3>' + (editor.metaAds ? '<div class="field"><label class="field-label" for="meta-ads-account-ids">Ad account IDs</label><input id="meta-ads-account-ids" class="input mono" data-action="meta-ads-account-ids" value="' + esc(editor.accountIds) + '"><p class="hint">Copy the ad account IDs from Ads Manager, separated by commas. Tools are restricted to these accounts.</p></div>' : '') + customMcpToolChoices(tools, editor.selectedTools) +
+    return '<div class="skill-form"><h3>Choose access</h3>' + (editor.metaAds ? '<div class="field"><label class="field-label" for="meta-ads-account-ids">Ad account IDs</label><input id="meta-ads-account-ids" class="input mono" data-action="meta-ads-account-ids" value="' + esc(editor.accountIds) + '"><p class="hint">Copy the ad account IDs from Ads Manager, separated by commas. Tools are restricted to these accounts.</p></div>' : '') + (editor.bugsnag ? '<p class="hint">Investigation tools are suggested first; editing tools are optional. Selected tools can access every project available to your BugSnag account. Error severity changes are not supported.</p>' : '') + customMcpToolChoices(tools, editor.selectedTools) +
       (editor.error ? '<div class="err" role="alert">' + esc(editor.error) + '</div>' : '') +
       '<div class="skill-form-actions"><button class="btn btn-ghost btn-sm" data-action="custom-mcp-tools-cancel"' + (editor.busy ? ' disabled' : '') + '>Cancel</button><button class="btn btn-primary btn-sm" data-action="custom-mcp-tools-save"' + (editor.busy ? ' disabled' : '') + '>Save tool access</button></div></div>';
   }

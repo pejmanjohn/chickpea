@@ -1,4 +1,5 @@
 import type { GoogleWorkspaceService } from './api-oauth-policy.ts';
+import { BUGSNAG_MCP_SERVER_URL } from './bugsnag-policy.ts';
 import {
   META_ADS_OAUTH_DEFAULT_SCOPE,
   META_ADS_OAUTH_MANAGEMENT_SCOPE,
@@ -295,6 +296,20 @@ export const CONNECTOR_PRESETS: ConnectorPreset[] = [
     tokenDocsHint: 'Sign in to Notion and choose the workspace access Chickpea should receive.',
     notes:
       'Notion MCP requires user OAuth. Chickpea discovers Notion metadata, registers this self-hosted install when needed, and stores the resulting credentials outside the profile.',
+  },
+  {
+    id: 'bugsnag',
+    name: 'BugSnag',
+    description: 'Investigate errors, releases, and performance, and manage error status.',
+    category: 'dev',
+    accent: '#4949E4',
+    url: BUGSNAG_MCP_SERVER_URL,
+    transport: 'streamable-http',
+    auth: { kind: 'oauth', scope: 'api' },
+    toolAccessMode: 'review',
+    tokenDocsUrl: 'https://developer.smartbear.com/smartbear-mcp/docs/remote-bugsnag',
+    tokenDocsHint: 'Sign in with SmartBear, then choose the tools this Agent may use.',
+    notes: 'Tool access can reach every project available to the signed-in BugSnag account. Investigation tools are suggested first; editing tools are optional. Error severity changes are not supported.',
   },
   {
     id: 'sentry',

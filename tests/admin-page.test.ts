@@ -7886,7 +7886,7 @@ test('Agent connection setup retains the complete preset catalog', async () => {
   assert.match(panel, /data-action="connection-account-preset" data-preset="google-drive"/);
   assert.equal(
     (panel.match(/data-action="connection-account-preset"/g) ?? []).length,
-    36,
+    37,
   );
 });
 
@@ -8206,7 +8206,7 @@ test('legacy Google access does not hide fresh Google connection presets', async
   assert.match(panel, /data-action="connection-account-preset" data-preset="gmail"/);
   assert.match(panel, /data-action="connection-account-preset" data-preset="google-calendar"/);
   assert.match(panel, /data-action="connection-account-preset" data-preset="google-drive"/);
-  assert.equal((panel.match(/data-action="connection-account-preset"/g) ?? []).length, 36);
+  assert.equal((panel.match(/data-action="connection-account-preset"/g) ?? []).length, 37);
 });
 
 test('every catalog connector opens an Agent-owned setup flow', async () => {
@@ -8251,7 +8251,7 @@ test('every catalog connector opens an Agent-owned setup flow', async () => {
     );
     click({ target: actionTarget({ 'data-action': 'connection-account-cancel' }) });
   }
-  assert.equal(presetIds.length, 36);
+  assert.equal(presetIds.length, 37);
 });
 
 test('Agent-owned Sentry accounts use OAuth and preserve an organization/project-scoped resource', async () => {
@@ -15627,6 +15627,37 @@ test('custom OAuth callback opens account tool review and keeps creation and edi
   assert.match(harness.app.innerHTML, /data-action="custom-mcp-tools-save"/);
   assert.match(harness.app.innerHTML, /0 of 2 selected/);
   assert.match(harness.app.innerHTML, /data-tool="legacy_reports"/);
+});
+
+test('BugSnag OAuth review suggests reads, labels writes, and saves without ad-account controls', async () => {
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()], initialPath: '/admin/agents/agent_conn',
+    initialSearch: '?oauth=connected&connection=connection_bugsnag&lane=mcp',
+    connectionAccounts: { attached: [{
+      account: { id: 'connection_bugsnag', workspaceId: 'T_DESIGN', ownerKind: 'team', providerId: 'bugsnag', label: 'BugSnag', revision: 2, lifecycle: 'ready',
+        policy: { kind: 'mcp', authMode: 'oauth', url: 'https://bugsnag.mcp.smartbear.com/mcp', transport: 'streamable-http', headerNames: [], presetId: 'bugsnag', toolAccessMode: 'review',
+          discoveredTools: [{ name: 'bugsnag_get_error', readOnlyHint: true }, { name: 'bugsnag_update_error', readOnlyHint: false }, { name: 'future_tool' }], allowedTools: [] } },
+      binding: { agentId: 'agent_conn', connectionAccountId: 'connection_bugsnag', providerId: 'bugsnag', allowedCapabilities: [], enabled: true },
+    }] },
+  });
+  await flushAsync();
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /data-action="custom-mcp-tools-save"/);
+  assert.match(harness.app.innerHTML, /1 of 3 selected/);
+  assert.match(harness.app.innerHTML, /data-tool="bugsnag_get_error" checked/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-tool="bugsnag_update_error" checked/);
+  assert.match(harness.app.innerHTML, /Read only/);
+  assert.match(harness.app.innerHTML, /May change data/);
+  assert.match(harness.app.innerHTML, /every project available to your BugSnag account/);
+  assert.doesNotMatch(harness.app.innerHTML, /meta-ads-account-ids|May change ads|ad account restrictions/);
+  const { click, change } = harness.listeners;
+  assert.ok(click && change);
+  change({ target: checkboxTarget({ 'data-action': 'custom-mcp-tool', 'data-tool': 'bugsnag_update_error' }, true) });
+  click({ target: actionTarget({ 'data-action': 'custom-mcp-tools-save' }) });
+  await flushAsync();
+  assert.deepEqual(harness.connectionToolsPuts[0]?.body, {
+    expectedRevision: 2, allowedTools: ['bugsnag_get_error', 'bugsnag_update_error'],
+  });
 });
 
 test('Meta tool review shows only available reporting and write tools', async () => {

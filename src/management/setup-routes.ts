@@ -70,10 +70,12 @@ import {
 } from '../config/mcp-access.ts';
 import {
   compileMetaAdsToolAccess,
+  isMetaAdsMcpConnection,
   metaAdsToolEffect,
   MetaAdsAccessPolicyError,
   normalizeMetaAdsAccountIds,
 } from '../config/meta-ads-policy.ts';
+import { BugsnagAccessPolicyError, compileBugsnagToolAccess, isBugsnagMcpConnection } from '../config/bugsnag-policy.ts';
 import { validateMcpUrl } from '../config/mcp-url.ts';
 import type { OAuthAuthorizationAuthority } from '../config/oauth-authorization.ts';
 import { discoverMcpConnectionIdentity } from '../config/mcp-identity.ts';
@@ -433,6 +435,7 @@ export function createManagementSetupRoutes(
         setup, principal, dependencies.config,
       );
       if (account.policy.kind !== 'mcp') throw new AuthorizationError();
+      const metaAds = isMetaAdsMcpConnection(account.policy);
       const discovered = new Set(account.policy.kind === 'mcp'
         ? account.policy.discoveredTools.map(({ name }) => name)
         : []);
@@ -440,28 +443,28 @@ export function createManagementSetupRoutes(
         .filter(([key, value]) => key.startsWith('tool:') && value === 'on')
         .map(([key]) => key.slice('tool:'.length));
       if (requestedTools.length === 0 || requestedTools.some((tool) => !discovered.has(tool))) {
-        throw new MetaAdsAccessPolicyError(
-          'Choose at least one tool that can be limited to the approved ad accounts.',
-        );
+        throw metaAds
+          ? new MetaAdsAccessPolicyError('Choose at least one tool that can be limited to the approved ad accounts.')
+          : new BugsnagAccessPolicyError('Choose at least one available tool.');
       }
-      if ((account.policy.authMode !== 'oauth' ||
+      if (metaAds && (account.policy.authMode !== 'oauth' ||
           account.policy.oauthScope !== META_ADS_OAUTH_MANAGEMENT_SCOPE) &&
           requestedTools.some((tool) => metaAdsToolEffect(tool) === 'write')) {
         throw new MetaAdsAccessPolicyError(
           'Reconnect with Reporting and editing access before selecting tools that may change ads.',
         );
       }
-      const approvedAccountIds = normalizeMetaAdsAccountIds(
+      const approvedAccountIds = metaAds ? normalizeMetaAdsAccountIds(
         (fields.adAccountIds ?? '')
           .split(/[\s,]+/)
           .map((value) => value.trim())
           .filter(Boolean),
-      );
-      const compiled = compileMetaAdsToolAccess({
+      ) : [];
+      const compiled = metaAds ? compileMetaAdsToolAccess({
         discoveredTools: account.policy.kind === 'mcp' ? account.policy.discoveredTools : [],
         requestedTools,
         approvedAccountIds,
-      });
+      }) : compileBugsnagToolAccess({ discoveredTools: account.policy.discoveredTools, requestedTools });
       const updated = await dependencies.config.putConnectionAccount({
         ...account,
         policy: {
@@ -486,7 +489,7 @@ export function createManagementSetupRoutes(
       if (error instanceof AuthorizationError) return genericDenied(c);
       const page = await catalogConnectionPageInput(
         c, setup, dependencies, principal,
-        error instanceof MetaAdsAccessPolicyError
+        error instanceof MetaAdsAccessPolicyError || error instanceof BugsnagAccessPolicyError
           ? error.message
           : 'Tool access could not be saved. Reload this page and try again.',
       );
@@ -1328,6 +1331,18 @@ async function catalogConnectionPageInput(
         }
         const allowed = new Set(account.policy.allowedTools);
         const tools = account.policy.discoveredTools.map((tool) => {
+          if (account.policy.kind === 'mcp' && isBugsnagMcpConnection(account.policy)) {
+            const readOnly = tool.readOnlyHint === true &&
+              tool.name !== 'bugsnag_update_error' && tool.name !== 'bugsnag_set_network_endpoint_groupings';
+            return {
+              name: tool.name,
+              ...(tool.title ? { title: tool.title } : {}),
+              ...(tool.description ? { description: tool.description } : {}),
+              available: true,
+              selected: allowed.has(tool.name) || allowed.size === 0 && readOnly,
+              effect: readOnly ? 'read' as const : 'write' as const,
+            };
+          }
           let schemaSupported = true;
           try {
             compileMetaAdsToolAccess({
@@ -1502,7 +1517,7 @@ async function beginCatalogConnectionSetup(
       let nextPolicy: ConnectionAccountPolicy = prepared.policy;
       if (account.policy.kind === 'mcp' && prepared.policy.kind === 'mcp' &&
           preserveReviewedAccess) {
-        const allowedTools = prepared.policy.authMode === 'oauth' &&
+        const allowedTools = !isMetaAdsMcpConnection(prepared.policy) || prepared.policy.authMode === 'oauth' &&
           prepared.policy.oauthScope === META_ADS_OAUTH_MANAGEMENT_SCOPE
           ? account.policy.allowedTools
           : account.policy.allowedTools.filter((tool) => metaAdsToolEffect(tool) !== 'write');
