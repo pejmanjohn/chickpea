@@ -124,6 +124,31 @@ do not set this just to clear a refusal. Both package metadata and the selected
 remote must match that identity. Candidate metadata cannot redefine the default.
 This is an operator error guard, not a sandbox for untrusted deployment code.
 
+## Product telemetry isolation
+
+Before synthetic activity on any deployed target, run
+`npm run verify:telemetry -- --worker <resolved-worker-name>
+--account-id <resolved-account-id> --output
+<private-policy-receipt.json>`. Retain the receipt with the target capability's
+private evidence. Repeat after a serving-version or binding change. Every
+traffic-serving version must explicitly label telemetry `test` or verifiably
+disable it. Enabled telemetry without a `test` label, an unverified opt-out, or a
+serving change blocks dependent live actions until resolved through the target's
+normal configuration and deployment flow.
+
+Amber/Cobalt builds stamp `CHICKPEA_TELEMETRY_ENVIRONMENT=test` automatically,
+and the guarded deployment validates that artifact setting. Existing serving
+versions still require readback; source configuration alone is not proof.
+Local lanes already use `development`, and the offline Cloudflare smoke Worker
+disables telemetry directly in its bindings.
+
+For a fresh disposable installation outside those named targets, apply `test`
+or the telemetry opt-out before the first Slack connection, then run the same
+serving-version check. Do not infer this setting from a Worker name or from
+the shell's environment. Preserve the receipt before tearing down disposable
+state. See [product telemetry](../../../docs/runbooks/product-telemetry.md#keeping-tests-out-of-product-metrics)
+for the distinction between future labeling and historical exclusions.
+
 ## Repair worktrees and serving candidates
 
 Give repair agents separate worktrees based on an identified candidate, with

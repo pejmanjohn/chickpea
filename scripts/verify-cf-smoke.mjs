@@ -49,6 +49,10 @@ import {
 } from './lib/offline-harness.mjs';
 import { runDrainCheck } from './lib/cf-drain-check.mjs';
 import {
+  cloudflareSmokeTelemetryDevVars,
+  withCloudflareSmokeTelemetryBindings,
+} from './lib/cf-smoke-telemetry.mjs';
+import {
   classifyCloudflareDeploymentProfile,
   resolveCloudflareDeploymentProfile,
 } from './cloudflare-deployment-profile.mjs';
@@ -298,14 +302,14 @@ function writeSmokeWranglerConfigs(setup) {
       database.binding === 'AUTH_DB'
         ? { ...database, database_id: '00000000-0000-0000-0000-000000000001' }
         : database),
-    vars: {
+    vars: withCloudflareSmokeTelemetryBindings({
       ...(productionConfig.vars ?? {}),
       [SETUP_CAPABILITY_DIGEST_BINDING]: setup.digest,
       [SETUP_CAPABILITY_ISSUED_AT_BINDING]: String(setup.issuedAt),
       // Exercise exactly one internal workspace/channel through the enforced
       // ledger lane while the ordinary and slow channels remain legacy.
       SLACK_TAG_LEDGER_CANARY_CHANNELS: `${WORKSPACE}/${AI_CHANNEL}`,
-    },
+    }),
     dev: { ...(productionConfig.dev ?? {}), enable_containers: false },
     compatibility_flags: smokeCompatibilityFlags,
     services: [
@@ -357,6 +361,7 @@ function writeDevVars(fakeUrl) {
       `ANTHROPIC_API_URL=${fakeUrl}`,
       `OPENAI_API_URL=${fakeUrl}/openai/v1`,
       `OPENROUTER_API_URL=${fakeUrl}/openrouter`,
+      ...cloudflareSmokeTelemetryDevVars(),
       '',
     ].join('\n'),
   );
