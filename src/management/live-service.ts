@@ -122,7 +122,9 @@ export function createLiveWorkspaceManagementService(
     memory: getMemoryStateStore(env),
     routines: getRoutineStore(env),
     work: getWorkStore(env),
-    routineSchedulingAvailable: isCloudflareTarget() || nodeRoutineSchedulerAvailable(),
+    routineSchedulingAvailable: isCloudflareTarget()
+      ? true
+      : nodeRoutineSchedulerAvailable,
     productTelemetry,
     providerCredentialSource: async (providerId) =>
       (await describeProviderKeySources(env, settings))[providerId],
