@@ -300,6 +300,42 @@ test('the legacy app-identity assembler never mounts the image tool', async () =
   assert.doesNotMatch(legacy, /createImageArtifactTool/);
 });
 
+test('a generation-only image capability limits each call before provider work', () => {
+  const accumulator = createArtifactReceiptAccumulator(update => update({ schemaVersion: 1, receipts: [] }));
+  const tool = createRuntimePlanArtifactTools(plan({ role: 'image', filled: true,
+    acceptsImageInput: false, maxOutputsPerCall: 1, supportsOutputControls: false }), accumulator, () => {}, {
+    reserveImageCall: () => { throw new Error('Schema validation must precede reservations.'); },
+  }).find(tool => tool.name === GENERATE_IMAGE_TOOL_NAME)!;
+  assert.match(tool.description, /one image per call/);
+  assert.doesNotMatch(tool.description, /count \(1-4\)/);
+  assert.equal(v.safeParse(tool.input, { prompt: 'One chickpea', count: 1 }).success, true);
+  assert.equal(v.safeParse(tool.input, { prompt: 'One chickpea' }).success, true);
+  assert.equal(v.safeParse(tool.input, { prompt: 'One chickpea', count: 2 }).success, false);
+  assert.equal(Object.hasOwn(tool.input.entries, 'inputs'), false);
+  for (const name of ['size', 'quality', 'background']) assert.equal(Object.hasOwn(tool.input.entries, name), false);
+  assert.match(tool.description, /ChatGPT chooses the output dimensions/);
+});
+
+test('provider-chosen dimensions attach and report actual facts without promising requested controls', async () => {
+  const fake = fauxImagesClient(FLARE, { ok: true, images: [IMAGE_BYTES],
+    appliedModel: 'openai/chatgpt-image', appliedSize: '1254x1254', appliedFormat: 'png' });
+  const state = harness({ acceptsImageInput: false, client: fake.client });
+  state.options.maxOutputsPerCall = 1;
+  state.options.supportsOutputControls = false;
+  state.options.prepareOutput = bytes => ({ bytes, width: 1254, height: 1254, format: 'png',
+    transparent: false, compressed: false, resized: false });
+  const result = await runImageTool(state.options, { prompt: 'A square green chickpea',
+    size: '1024x1024', quality: 'max', background: 'transparent' }, { includeDetails: true });
+  assert.equal(result.attached, true);
+  if (!result.attached) return;
+  assert.equal(result.appliedSize, '1254x1254');
+  assert.equal(result.appliedModel, 'openai/chatgpt-image');
+  assert.equal(fake.calls[0]?.request.size, 'auto');
+  assert.equal(fake.calls[0]?.request.quality, 'auto');
+  assert.equal(result.files[0]?.transparent, false);
+  assert.equal(state.staged.length, 1);
+});
+
 test('the schema exposes image inputs only when the resolved model accepts them', () => {
   const editing = createImageArtifactTool(harness({ acceptsImageInput: true }).options);
   const generateOnly = createImageArtifactTool(harness({ acceptsImageInput: false }).options);

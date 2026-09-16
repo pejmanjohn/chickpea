@@ -102,6 +102,9 @@ export interface ImageArtifactToolOptions {
   inspectOutput?: (input: ImageInspectionInput) => Promise<ImageInspection>;
   /** From the frozen plan's capability: image input fields exist only here. */
   acceptsImageInput: boolean;
+  /** A stricter call limit from the resolved image model's frozen capability. */
+  maxOutputsPerCall?: number;
+  supportsOutputControls?: boolean;
   /** Per-turn handles for images already in this conversation. */
   inventory: ThreadImageInventory;
   /** Keyed by tool call id so a durable replay keeps the images it already reserved. */
@@ -251,12 +254,6 @@ const OUTPUT_FIELDS = {
   background: v.optional(v.picklist(IMAGE_BACKGROUNDS)),
 };
 
-const IMAGE_GENERATE_INPUT = v.object({
-  ...OUTPUT_FIELDS,
-  prompt: PROMPT_FIELD,
-  filename: FILENAME_FIELD,
-  count: COUNT_FIELD,
-});
 const IMAGE_EDIT_INPUT = v.object({
   ...OUTPUT_FIELDS,
   prompt: PROMPT_FIELD,
@@ -272,16 +269,21 @@ const IMAGE_EDIT_INPUT = v.object({
 
 type ImageToolData = v.InferOutput<typeof IMAGE_EDIT_INPUT>;
 
-function imageToolDescription(acceptsImageInput: boolean): string {
+function imageToolDescription(acceptsImageInput: boolean, maxOutputsPerCall: number, supportsOutputControls: boolean): string {
   return [
     'Generate an image and attach it to your final reply in the bound Slack destination.',
-    'Write the whole prompt from the conversation. Choose size, quality and background from the user request; defaults are auto. Use 1024x1024 for square, 1536x1024 for landscape, 1024x1536 for portrait, low quality for a quick draft, and background transparent for a cutout or transparent logo. Custom WIDTHxHEIGHT dimensions must be multiples of 16, no edge above 3840, aspect ratio from 1:3 to 3:1, and 655360 to 8294400 pixels. Explain unsupported exact dimensions instead of silently rounding. The workspace owns the model and transport format.',
+    supportsOutputControls
+      ? 'Write the whole prompt from the conversation. Choose size, quality and background from the user request; defaults are auto. Use 1024x1024 for square, 1536x1024 for landscape, 1024x1536 for portrait, low quality for a quick draft, and background transparent for a cutout or transparent logo. Custom WIDTHxHEIGHT dimensions must be multiples of 16, no edge above 3840, aspect ratio from 1:3 to 3:1, and 655360 to 8294400 pixels. Explain unsupported exact dimensions instead of silently rounding. The workspace owns the model and transport format.'
+      : 'Write the whole prompt from the conversation. ChatGPT chooses the output dimensions, quality and background. Describe composition and appearance preferences in the prompt, but explain that exact dimensions and transparency cannot be guaranteed with this service. The result reports actual dimensions, format and transparency.',
     acceptsImageInput
       ? `To edit or combine images already in this conversation, list their img:N handles in inputs (at most ${MAX_IMAGE_TOOL_INPUTS}); with no inputs the model generates from the prompt alone.`
       : 'This model generates from the prompt alone and cannot take an existing image as input.',
-    `At most ${MAX_IMAGES_PER_RESPONSE} images per reply across every call. For variations of one prompt, make one call with count (1-${MAX_IMAGE_TOOL_OUTPUTS}); for different subjects, make separate calls with their own prompts. Each image attaches as its own file, and the result lists a call's files under files.`,
-    'With count above 1, the provider renders count separate images from the prompt, so write the prompt as one single image: never say "variations", "versions", "options", or a number of images in the prompt, or each rendered image becomes a collage of several.',
-    'The result reports the model and settings the provider applied.',
+    `At most ${MAX_IMAGES_PER_RESPONSE} images per reply across every call. ` + (maxOutputsPerCall === 1
+      ? 'This model generates one image per call. For multiple images, make separate calls with a prompt for each image; omit count or set it to 1.'
+      : `For variations of one prompt, make one call with count (1-${maxOutputsPerCall}); for different subjects, make separate calls with their own prompts.`) + ' Each image attaches as its own file, and the result lists a call\'s files under files.',
+    ...(maxOutputsPerCall > 1 ? ['With count above 1, the provider renders count separate images from the prompt, so write the prompt as one single image: never say "variations", "versions", "options", or a number of images in the prompt, or each rendered image becomes a collage of several.'] : []),
+    supportsOutputControls ? 'The result reports the model and settings the provider applied.'
+      : 'A ChatGPT Image result identifies the subscription service, not an exact underlying image model. Inspect the returned facts and disclose any mismatch with the user request instead of claiming preferences were applied.',
     'If the result reports attached: false, explain the returned reason and never say an image was attached or edited. A result may attach some variations and list the rest under unattached; say how many attached and why the others did not.',
   ].join(' ');
 }
@@ -291,12 +293,22 @@ function imageToolDescription(acceptsImageInput: boolean): string {
  * preparation and staging steps replay their metadata without repeating work.
  */
 export function createImageArtifactTool(options: ImageArtifactToolOptions) {
+  const maxOutputsPerCall = options.maxOutputsPerCall ?? MAX_IMAGE_TOOL_OUTPUTS;
+  if (!Number.isInteger(maxOutputsPerCall) || maxOutputsPerCall < 1 || maxOutputsPerCall > MAX_IMAGE_TOOL_OUTPUTS) {
+    throw new Error('Invalid image output limit.');
+  }
+  const supportsOutputControls = options.supportsOutputControls !== false;
+  const input = v.object({
+    ...(supportsOutputControls ? OUTPUT_FIELDS : {}),
+    prompt: PROMPT_FIELD,
+    filename: FILENAME_FIELD,
+    ...(options.acceptsImageInput ? { inputs: IMAGE_EDIT_INPUT.entries.inputs } : {}),
+    count: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1), v.maxValue(maxOutputsPerCall))),
+  });
   return defineTool({
     name: GENERATE_IMAGE_TOOL_NAME,
-    description: imageToolDescription(options.acceptsImageInput),
-    input: (options.acceptsImageInput
-      ? IMAGE_EDIT_INPUT
-      : IMAGE_GENERATE_INPUT) as typeof IMAGE_EDIT_INPUT,
+    description: imageToolDescription(options.acceptsImageInput, maxOutputsPerCall, supportsOutputControls),
+    input: input as typeof IMAGE_EDIT_INPUT,
     durable: true,
     async run({ data, toolCallId, step, signal }) {
       assertArtifactDeliveryAllowed();

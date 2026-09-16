@@ -288,8 +288,11 @@ providers → OpenAI**. Follow the device sign-in instructions using the account
 whose subscription you want to use. OpenAI may require enabling device code
 authorization for Codex in that account's security settings. Subscription usage
 shares that account's limits. Chickpea never switches to API billing automatically.
-Image generation still requires a separate OpenAI API key; saving that key does
-not change your selected chat authentication method.
+For images, Flare and Sunburst require a separate OpenAI API key. **ChatGPT
+Image** uses the connected subscription independently of the selected chat
+authentication method; it generates one image per call and does not edit
+images. ChatGPT chooses its output settings. Saving an API key does not change
+your selected chat authentication method.
 
 ## Operate the installation
 

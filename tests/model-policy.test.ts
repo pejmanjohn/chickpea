@@ -13,6 +13,7 @@ import { PROVIDER_KEY_SETTING_KEYS } from '../src/config/provider-keys.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import type { CustomAgentConfig, WorkspaceModelDefault } from '../src/config/types.ts';
 import { withEnv } from './helpers/env.ts';
+import { OPENAI_SUBSCRIPTION_IMAGE_MODEL_ID } from '../src/model-catalog/image-profiles.ts';
 
 function agent(overrides: Partial<CustomAgentConfig> = {}): CustomAgentConfig {
   return {
@@ -266,6 +267,20 @@ test('the frozen image capability carries the shape, never the model id', async 
   );
 });
 
+test('the subscription image capability freezes its one-output and provider-chosen controls', () => {
+  assert.deepEqual(imageCapabilityForResolution({
+    modelId: OPENAI_SUBSCRIPTION_IMAGE_MODEL_ID,
+    providerId: 'openai',
+    source: 'workspace_default',
+  }), {
+    role: 'image',
+    filled: true,
+    acceptsImageInput: false,
+    maxOutputsPerCall: 1,
+    supportsOutputControls: false,
+  });
+});
+
 test('a cleared Workspace role row resolves unset, not to a stale model', async () => {
   // Clearing the Workspace default leaves the row in place with its revision
   // bumped and no model. Resolution must read that as unset so the compile path
@@ -427,5 +442,52 @@ test('a provider id with no key lane resolves credential_missing via the real cr
     });
   } finally {
     settings.close();
+  }
+});
+
+test('a connected Node subscription fills the generic image role without an API key', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    await settings.setSetting('openai.subscription.status', JSON.stringify({
+      version: 1,
+      state: 'connected',
+      updatedAt: 1,
+      connectedAt: 1,
+    }));
+    await withEnv({ OPENAI_API_KEY: undefined }, async () => {
+      const resolved = await resolveAgentModelForRole({
+        role: 'image',
+        agent: agent(),
+        workspaceRole: { modelId: OPENAI_SUBSCRIPTION_IMAGE_MODEL_ID },
+        settings,
+      });
+      assert.deepEqual(resolved, {
+        modelId: OPENAI_SUBSCRIPTION_IMAGE_MODEL_ID,
+        providerId: 'openai',
+        source: 'workspace_default',
+      });
+    });
+  } finally {
+    settings.close();
+  }
+});
+
+test('the provider credential seam cannot enable subscription images on Cloudflare', async () => {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  Object.defineProperty(globalThis, 'navigator', {
+    configurable: true,
+    value: { userAgent: 'Cloudflare-Workers' },
+  });
+  try {
+    const resolved = await resolveAgentModelForRole({
+      role: 'image',
+      agent: agent(),
+      workspaceRole: { modelId: OPENAI_SUBSCRIPTION_IMAGE_MODEL_ID },
+      hasProviderCredential: async () => true,
+    });
+    assert.deepEqual(resolved, { unset: true, reason: 'credential_missing' });
+  } finally {
+    if (previous) Object.defineProperty(globalThis, 'navigator', previous);
+    else Reflect.deleteProperty(globalThis, 'navigator');
   }
 });

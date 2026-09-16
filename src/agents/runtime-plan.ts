@@ -202,10 +202,14 @@ export interface RuntimePlanV2 {
 /** Bounded capability record for the image model role. */
 export interface RuntimePlanImageCapabilityV3 {
   role: 'image';
-  /** A model resolved for this Agent's image role and its provider has a key. */
+  /** A model resolved for this Agent's image role with a usable credential. */
   filled: boolean;
   /** The resolved model accepts image input, so editing is offered. */
   acceptsImageInput: boolean;
+  /** Absent on older plans and models with the standard four-image call limit. */
+  maxOutputsPerCall?: number;
+  /** False when the image service chooses dimensions, quality and background. */
+  supportsOutputControls?: boolean;
 }
 
 export interface CompileRuntimePlanV2Input {
@@ -306,6 +310,12 @@ export function compileRuntimePlanV2(input: CompileRuntimePlanV2Input): RuntimeP
             role: 'image' as const,
             filled: input.imageCapability.filled,
             acceptsImageInput: input.imageCapability.acceptsImageInput,
+            ...(input.imageCapability.maxOutputsPerCall === undefined ? {} : {
+              maxOutputsPerCall: input.imageCapability.maxOutputsPerCall,
+            }),
+            ...(input.imageCapability.supportsOutputControls === undefined ? {} : {
+              supportsOutputControls: input.imageCapability.supportsOutputControls,
+            }),
           },
         }
       : {}),
@@ -927,7 +937,9 @@ function parseImageCapability(value: unknown): RuntimePlanImageCapabilityV3 {
     'role',
     'filled',
     'acceptsImageInput',
-  ]);
+    'maxOutputsPerCall',
+    'supportsOutputControls',
+  ], ['maxOutputsPerCall', 'supportsOutputControls']);
   const role = oneOf(record.role, 'imageCapability.role', ['image'] as const);
   const filled = booleanField(record.filled, 'imageCapability.filled');
   const acceptsImageInput = booleanField(
@@ -939,7 +951,19 @@ function parseImageCapability(value: unknown): RuntimePlanImageCapabilityV3 {
   if (acceptsImageInput && !filled) {
     throw new Error('Runtime plan imageCapability cannot accept image input while unfilled.');
   }
-  return { role, filled, acceptsImageInput };
+  const maxOutputsPerCall = record.maxOutputsPerCall;
+  if (maxOutputsPerCall !== undefined &&
+      (!filled || typeof maxOutputsPerCall !== 'number' || !Number.isInteger(maxOutputsPerCall) ||
+        maxOutputsPerCall < 1 || maxOutputsPerCall > 4)) {
+    throw new Error('Runtime plan imageCapability.maxOutputsPerCall is invalid.');
+  }
+  const supportsOutputControls = record.supportsOutputControls;
+  if (supportsOutputControls !== undefined && (!filled || typeof supportsOutputControls !== 'boolean')) {
+    throw new Error('Runtime plan imageCapability.supportsOutputControls is invalid.');
+  }
+  return { role, filled, acceptsImageInput,
+    ...(maxOutputsPerCall === undefined ? {} : { maxOutputsPerCall }),
+    ...(supportsOutputControls === undefined ? {} : { supportsOutputControls }) };
 }
 
 function parseHandoffContext(value: unknown): SlackPublicHandoffMessage[] {

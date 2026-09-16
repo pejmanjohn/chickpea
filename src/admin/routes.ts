@@ -354,6 +354,7 @@ import {
   type WorkspaceModelDefault,
 } from '../config/types.ts';
 import { findImageModel, listImageModels } from '../model-catalog/image-profiles.ts';
+import { imageModelProfileReady } from '../images/provider.ts';
 import { MemoryStateError, type MemoryStateStore } from '../memory/types.ts';
 import {
   RoutineStateError,
@@ -6191,7 +6192,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
 
   // The image role's picker source, kept separate from the chat model list so a
   // chat model can never reach an image field. Entries are the image catalog
-  // narrowed to providers whose credential is present, each flagged when it is
+  // narrowed to profiles whose own credential lane is ready, each flagged when it is
   // the faster, cheaper choice. `providers` lets Admin tell "no image
   // model chosen" apart from "no image provider connected".
   app.get('/admin/api/image-models', async (c) => {
@@ -11234,7 +11235,7 @@ function modelNotResolvable(
 /**
  * Owner-facing view of one non-chat model role: the stored choice, its
  * revision, and the models an Owner may pick from right now (the role's
- * catalog, narrowed to providers whose credential is present).
+ * catalog, narrowed to profiles whose credential lane is ready).
  */
 async function workspaceModelRoleProjection(input: {
   configStore: ConfigStore;
@@ -11265,7 +11266,7 @@ async function workspaceModelRoleProjection(input: {
 /**
  * the shape-only `modelSpecifier` regex would accept a chat model in the
  * image role, so a role choice is accepted only when the role's own catalog
- * knows it and its provider already has a credential.
+ * knows it and its own credential lane is ready.
  */
 async function modelRoleChoiceError(input: {
   settingsStore: SettingsStore;
@@ -11281,9 +11282,14 @@ async function modelRoleChoiceError(input: {
     input.platformEnv,
   );
   if (available.some(({ id }) => id === input.modelId)) return undefined;
-  return findImageModel(input.modelId)
-    ? `Connect the ${input.modelId.split('/')[0]} provider before choosing ${input.modelId}.`
-    : `${input.modelId} is not an image model.`;
+  const profile = findImageModel(input.modelId);
+  if (!profile) return `${input.modelId} is not an image model.`;
+  if (profile.authMethod === 'subscription') {
+    return openAiSubscriptionAvailable()
+      ? `Connect a ChatGPT subscription before choosing ${input.modelId}.`
+      : `${input.modelId} is not available on this installation.`;
+  }
+  return `Add an OpenAI API key before choosing ${input.modelId}.`;
 }
 
 /** One entry of a role's picker list: a catalog model an Owner may choose now. */
@@ -11292,6 +11298,9 @@ interface RoleModelChoice {
   name: string;
   providerId: string;
   acceptsImageInput: boolean;
+  authMethod: 'api_key' | 'subscription';
+  maxOutputs: number;
+  supportsOutputControls: boolean;
 }
 
 async function availableRoleModels(
@@ -11300,23 +11309,18 @@ async function availableRoleModels(
   platformEnv?: PlatformEnv,
 ): Promise<RoleModelChoice[]> {
   if (role !== 'image') return [];
-  const configured = new Map<string, boolean>();
   const models = [];
   for (const provider of IMAGE_ROLE_PROVIDER_IDS) {
-    let ready = configured.get(provider);
-    if (ready === undefined) {
-      ready = isProviderKeyId(provider)
-        ? Boolean((await resolveProviderApiKey(provider, platformEnv, settingsStore)).apiKey)
-        : false;
-      configured.set(provider, ready);
-    }
-    if (!ready) continue;
     for (const profile of listImageModels(provider)) {
+      if (!await imageModelProfileReady(profile, platformEnv, settingsStore)) continue;
       models.push({
         id: profile.id,
         name: profile.name,
         providerId: provider,
         acceptsImageInput: profile.input.includes('image'),
+        authMethod: profile.authMethod,
+        maxOutputs: profile.maxOutputs,
+        supportsOutputControls: profile.supportsOutputControls,
       });
     }
   }

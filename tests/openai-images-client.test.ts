@@ -433,6 +433,20 @@ test('a base URL that is not https or carries credentials is refused at construc
   );
 });
 
+test('the API-key client refuses the subscription catalog profile', () => {
+  const subscription = findImageModel('openai/chatgpt-image') as ImageModelProfile;
+  assert.throws(
+    () => createOpenAiImagesClient({
+      profile: subscription,
+      apiKey: 'sk-would-be-the-wrong-lane',
+      baseUrl: BASE_URL,
+      fetchImpl: (async () => { throw new Error('not called'); }) as typeof fetch,
+    }),
+    (error: unknown) => error instanceof OpenAiImagesConfigError &&
+      error.message === 'unsupported_auth_method',
+  );
+});
+
 test('a provider error never echoes the prompt back into the outcome', async () => {
   const prompt = 'a poster for the confidential Q4 launch of the Acme exam-prep bundle';
   const { fetchImpl } = recordingFetch(() =>

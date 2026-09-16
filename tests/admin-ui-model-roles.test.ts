@@ -11,6 +11,7 @@ import { renderAdminPageWithInlineAssets as renderAdminPage } from './helpers/ad
 
 const FLARE = 'openai/gpt-image-2.5-flare';
 const SUNBURST = 'openai/gpt-image-2.5-sunburst';
+const CHATGPT_IMAGE = 'openai/chatgpt-image';
 const CHAT_MODEL = 'local-stub/release';
 
 interface FakeResponse {
@@ -28,6 +29,9 @@ interface ImageCatalogFixture {
     providerId: string;
     acceptsImageInput: boolean;
     fasterAndCheaper: boolean;
+    authMethod: 'api_key' | 'subscription';
+    maxOutputs: number;
+    supportsOutputControls: boolean;
   }>;
   providers: Array<{ id: string; configured: boolean }>;
 }
@@ -102,6 +106,9 @@ function imageCatalog(configured: boolean): ImageCatalogFixture {
         providerId: 'openai',
         acceptsImageInput: true,
         fasterAndCheaper: true,
+        authMethod: 'api_key',
+        maxOutputs: 10,
+        supportsOutputControls: true,
       },
       {
         id: SUNBURST,
@@ -109,6 +116,19 @@ function imageCatalog(configured: boolean): ImageCatalogFixture {
         providerId: 'openai',
         acceptsImageInput: true,
         fasterAndCheaper: false,
+        authMethod: 'api_key',
+        maxOutputs: 10,
+        supportsOutputControls: true,
+      },
+      {
+        id: CHATGPT_IMAGE,
+        name: 'ChatGPT Image',
+        providerId: 'openai',
+        acceptsImageInput: false,
+        fasterAndCheaper: false,
+        authMethod: 'subscription',
+        maxOutputs: 1,
+        supportsOutputControls: false,
       },
     ],
     providers: [{ id: 'openai', configured: true }],
@@ -481,7 +501,7 @@ test('Settings hints at connecting OpenAI instead of rendering an empty image se
   const html = harness.app.innerHTML;
   assert.match(html, /id="workspace-image-model-heading">Default image model<\/h2>/);
   assert.doesNotMatch(html, /data-action="workspace-image-model"/);
-  assert.match(html, /Connect OpenAI/);
+  assert.match(html, /Connect an OpenAI API key or ChatGPT subscription/);
 });
 
 test('saving the default image model sends the current revision and re-renders the readback', async () => {
@@ -584,7 +604,22 @@ test('the Agent image picker lists image models only', async () => {
   const picker = html.slice(html.indexOf('id="p-image-model"'));
   assert.match(picker, new RegExp(`data-action="pick-image-model" data-model="${FLARE.replace('/', '\\/')}"`));
   assert.match(picker, new RegExp(`data-action="pick-image-model" data-model="${SUNBURST.replace('/', '\\/')}"`));
+  assert.match(picker, new RegExp(`data-action="pick-image-model" data-model="${CHATGPT_IMAGE.replace('/', '\\/')}"`));
+  assert.match(picker, /openai\/chatgpt-image · ChatGPT subscription · generation only/);
   assert.doesNotMatch(picker, new RegExp(`data-action="pick-image-model" data-model="${CHAT_MODEL.replace('/', '\\/')}"`));
+});
+
+test('Settings explains the bounded ChatGPT Image capability beside the image picker', async () => {
+  const harness = runHarness({
+    initialPath: '/admin/settings/providers',
+    imageRole: { workspaceId: 'T_DESIGN', role: 'image', modelId: CHATGPT_IMAGE, revision: 1 },
+  });
+  await flushAsync();
+
+  const html = harness.app.innerHTML;
+  assert.match(html, /ChatGPT Image · openai\/chatgpt-image · ChatGPT subscription · generation only/);
+  assert.match(html, /uses the connected ChatGPT subscription and generates one image per call/);
+  assert.match(html, /It is generation only, and exact output settings are unavailable/);
 });
 
 test('the system Agent has no image model override field', async () => {

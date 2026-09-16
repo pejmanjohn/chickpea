@@ -4160,7 +4160,9 @@
       html += '<div class="combo-group">' + esc(providerId) + '</div>';
       models.filter(function (model) { return model.providerId === providerId; })
         .forEach(function (model) {
-          var note = model.fasterAndCheaper ? " · faster, cheaper" : "";
+          var note = model.authMethod === "subscription"
+            ? " \u00b7 ChatGPT subscription \u00b7 generation only" + (model.maxOutputs === 1 ? " \u00b7 one per call" : "")
+            : model.fasterAndCheaper ? " \u00b7 faster, cheaper" : "";
           html += '<button type="button" class="combo-opt ' + (current === model.id ? "active" : "") + '" data-action="pick-image-model" data-model="' + esc(model.id) + '">' + esc(model.id + note) + '</button>';
         });
     });
@@ -8291,7 +8293,7 @@
       var providers = state.settings.providers || [];
       var rows = providers.map(providerRowHtml).join("");
       providerSection = '<section class="section provider-section"><div class="provider-section-head"><div class="provider-section-title"><h2 class="section-title">Model providers</h2>' +
-        '<p class="hint">Connect the API credentials Chickpea can use.</p></div>' + modelCatalogStatusHtml() + '</div>' +
+        '<p class="hint">Connect the model credentials Chickpea can use.</p></div>' + modelCatalogStatusHtml() + '</div>' +
         '<div class="provider-grid">' + rows + '</div></section>';
     }
     return head +
@@ -8533,16 +8535,19 @@
 
   // R16: the disclosure and the cost lever live with the picker, in one place,
   // because the model choice is the only cost control in this release.
-  function imageModelConsentNoteHtml() {
+  function imageModelConsentNoteHtml(modelId) {
     var faster = imageModelCatalog().filter(function (model) { return model.fasterAndCheaper; })[0];
+    var selected = imageModelById(modelId);
     var providers = [];
     imageModelCatalog().forEach(function (model) {
       if (providers.indexOf(model.providerId) < 0) providers.push(model.providerId);
     });
     var sentence = "When an Agent makes an image, the prompt text it writes and any images people post in that Slack thread are sent to " +
       (providers.length ? providers.join(", ") : "the model provider") + ".";
-    var cost = faster ? " " + faster.name + " is the faster, cheaper option." : "";
-    return '<p class="hint">' + esc(sentence + cost) + '</p>';
+    var detail = selected && selected.authMethod === "subscription"
+      ? " " + selected.name + " uses the connected ChatGPT subscription and generates one image per call. It is generation only, and exact output settings are unavailable."
+      : faster ? " " + faster.name + " is the faster, cheaper option." : "";
+    return '<p class="hint">' + esc(sentence + detail) + '</p>';
   }
 
   function workspaceImageRoleSectionHtml() {
@@ -8564,9 +8569,12 @@
     var chosen = String(role.modelId || "");
     var known = !chosen || models.some(function (model) { return model.id === chosen; });
     if (!models.length && !chosen) {
+      var connectionHint = IS_CLOUDFLARE
+        ? "Add an OpenAI API key in Model providers below to enable this choice."
+        : "Connect an OpenAI API key or ChatGPT subscription in Model providers below to enable this choice.";
       return shelf('<div class="workspace-default-title-row">' + title + '<span class="badge badge-off"><span class="dot"></span>Not set</span></div>' +
-        '<div class="workspace-default-copy"><p class="hint">Agents can generate and edit images once an image model is chosen here.</p>' +
-        '<p class="hint">Connect OpenAI in Model providers below to enable this choice. Image models come from OpenAI in this release.</p></div>', "");
+        '<div class="workspace-default-copy"><p class="hint">Agents can generate images once an image model is chosen here. Models with image input can also edit images.</p>' +
+        '<p class="hint">' + esc(connectionHint) + '</p></div>', "");
     }
     var healthBadge = !chosen
       ? '<span class="badge badge-off"><span class="dot"></span>Not set</span>'
@@ -8587,7 +8595,7 @@
     var optionHtml = '<option value=""' + (draft ? "" : " selected") + '>Not set</option>' +
       values.map(function (modelId) {
         var model = imageModelById(modelId);
-        var label = model ? model.name + " · " + modelId : modelId;
+        var label = model ? model.name + " · " + modelId + (model.authMethod === "subscription" ? " · ChatGPT subscription · generation only" + (model.maxOutputs === 1 ? " · one per call" : "") : "") : modelId;
         return '<option value="' + esc(modelId) + '"' + (modelId === draft ? ' selected' : '') + '>' + esc(label) + '</option>';
       }).join("");
     var changed = draft !== chosen;
@@ -8603,7 +8611,7 @@
       '<button type="button" class="btn btn-primary" data-action="workspace-image-model-save"' +
       (!changed || state.workspaceImageRoleBusy ? " disabled" : "") + '>' +
       (state.workspaceImageRoleBusy ? '<span class="spinner"></span>Saving&hellip;' : "Save image model") + '</button></div>' +
-      imageModelConsentNoteHtml() + status + '</div>';
+      imageModelConsentNoteHtml(draft) + status + '</div>';
     return shelf(summary, control);
   }
 
@@ -8743,7 +8751,7 @@
     var status = summary.subscription || { state: "disconnected" };
     var busy = !!subscriptionUi.busy;
     var controls = "";
-    var copy = "Connect a ChatGPT account to use its subscription for supported chat models.";
+    var copy = "Connect a ChatGPT account to use its subscription for supported chat models and ChatGPT Image generation.";
     if (status.state === "account_change_confirmation_required" && attempt) {
       copy = "A different ChatGPT account was authorized. Confirm the account change or cancel it.";
       controls = '<button type="button" class="btn btn-primary btn-sm" data-action="openai-subscription-confirm"' + (busy ? ' disabled' : '') + '>Confirm account change</button>' +
@@ -8759,11 +8767,11 @@
       copy = "Continue in the original sign-in tab, or wait for that code to expire before starting again here.";
       controls = '<button type="button" class="btn btn-soft btn-sm" data-action="openai-subscription-start"' + (busy ? ' disabled' : '') + '>Start again</button>';
     } else if (status.state === "connected") {
-      copy = "One connected ChatGPT account is shared by this Chickpea installation for chat.";
+      copy = "This installation shares one connected ChatGPT account for supported chat models and ChatGPT Image.";
       controls = '<button type="button" class="btn btn-soft btn-sm" data-action="openai-subscription-start"' + (busy ? ' disabled' : '') + '>Reauthenticate</button>' +
         '<button type="button" class="btn btn-ghost btn-sm danger-text" data-action="openai-subscription-disconnect"' + (busy ? ' disabled' : '') + '>Disconnect</button>';
     } else {
-      if (status.state === "reconnect_required") copy = "Reconnect the ChatGPT account before using the subscription for chat.";
+      if (status.state === "reconnect_required") copy = "Reconnect the ChatGPT account before using the subscription for chat or ChatGPT Image generation.";
       else if (status.state === "error") copy = "The ChatGPT connection needs attention. Start a fresh connection.";
       controls = '<button type="button" class="btn btn-soft btn-sm" data-action="openai-subscription-start"' + (busy ? ' disabled' : '') + '>Connect subscription</button>';
     }
@@ -8782,14 +8790,14 @@
     var editor = "";
     if (ui.removeOpen) editor = removeConfirmHtml("openai", summary);
     else if (ui.open) editor = pasteBodyHtml("openai", ui, meta);
-    var keySource = keyConnected ? (summary.status === "env" ? "Environment managed" : "Saved in Chickpea") : "Add an API key for chat and images.";
+    var keySource = keyConnected ? (summary.status === "env" ? "Environment managed" : "Saved in Chickpea") : "Add an API key for chat and API-key image models.";
     var head = '<div class="prov-head">' + providerCardIdentityHtml("openai", meta) +
       '<div class="prov-status"><span class="badge ' + (activeReady ? 'badge-on' : 'badge-off') + '"><span class="dot"></span>' + (activeReady ? 'Connected' : 'Needs attention') + '</span></div></div>';
     var choices = '<div class="provider-step-list openai-auth-methods" aria-label="OpenAI chat method">' +
       openAiAuthChoiceHtml("api_key", "API key", keySource, keyConnected, active === "api_key", !!state.openAiSubscription.busy) +
       openAiAuthChoiceHtml("subscription", "ChatGPT subscription", subscriptionConnected ? "Connected for supported chat models." : "Connect an account to use its subscription for chat.", subscriptionConnected, active === "subscription", !!state.openAiSubscription.busy) + '</div>';
     var keyBody = '<div class="provider-card-copy"><p><span class="openai-auth-title">API key</span> &middot; ' + esc(keySource) + '</p>' +
-      '<p class="provider-card-muted">Images continue to use the OpenAI API key even when ChatGPT subscription is selected for chat.</p></div>' +
+      '<p class="provider-card-muted">Flare and Sunburst use the API key. ChatGPT Image uses the connected subscription.</p></div>' +
       (editor ? '<div class="provider-card-editor">' + editor + '</div>' : '') +
       '<div class="provider-card-footer">' + providerActionsHtml("openai", summary, ui) + '</div>';
     return '<article class="prov-row provider-card" data-provider-card="openai">' + head + '<div class="prov-body">' + choices + keyBody + openAiSubscriptionControlsHtml(summary) + '</div></article>';
@@ -8923,7 +8931,7 @@
     if (id === "openai" && summary.activeAuthMethod === "subscription" && openAiSubscriptionConnected(summary)) {
       var subscriptionEnvNote = 'An <span class="mono" style="color:var(--text);">' + esc(meta.env) + '</span> in the environment, if set, still applies.';
       var subscriptionRemoveError = provUiFor(id).removeError ? '<p class="field-error">' + esc(provUiFor(id).removeError) + '</p>' : "";
-      return '<div class="callout">' + icon("exclamation-triangle", "ic-l g") + '<span>Remove the stored OpenAI key? Chat continues using the selected ChatGPT subscription. Image generation needs an OpenAI API key and will stop until a key is available. ' + subscriptionEnvNote + '</span></div>' + subscriptionRemoveError +
+      return '<div class="callout">' + icon("exclamation-triangle", "ic-l g") + '<span>Remove the stored OpenAI key? Chat continues using the selected ChatGPT subscription. Flare and Sunburst become unavailable until an API key is available; ChatGPT Image continues using the connected subscription. ' + subscriptionEnvNote + '</span></div>' + subscriptionRemoveError +
         '<div style="display:flex; gap:10px;"><button type="button" class="btn btn-soft btn-sm" data-action="prov-remove-cancel" data-provider="openai">Keep key</button>' +
         '<button type="button" class="btn btn-danger btn-sm" data-action="prov-remove-confirm" data-provider="openai">Remove key</button></div>';
     }
@@ -8950,6 +8958,10 @@
       impacts.push('<b style="font-weight:500; color:var(--text);">' + count + ' Agent' + (count === 1 ? "" : "s") + '</b> ' + (count === 1 ? "is" : "are") +
         ' pinned to an ' + esc(meta.name) + ' model &mdash; ' + names + '. ' + (count === 1 ? 'It keeps its pin' : 'They keep their pins') +
         ', but each will fail at reply time until the credential returns or the Agent is re-pinned.');
+    }
+    if (id === "openai") {
+      impacts.push("Flare and Sunburst image models become unavailable until an OpenAI API key is available." +
+        (IS_CLOUDFLARE ? "" : " ChatGPT Image uses a connected ChatGPT subscription instead."));
     }
     var consequence = lead + (impacts.length
       ? impacts.join(' ')

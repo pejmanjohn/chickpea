@@ -14527,13 +14527,14 @@ test('Settings renders all four providers in the Shelf grid on every target', as
   assert.match(html, /10 models available\./);
   assert.match(html, /<span class="prov-name">OpenAI<\/span>/);
   assert.doesNotMatch(html, /of 1 connected/);
-  assert.match(html, /Connect the API credentials Chickpea can use/);
+  assert.match(html, /Connect the model credentials Chickpea can use/);
   assert.match(html, /<span class="openai-auth-title">API key<\/span>/);
   assert.match(html, /data-provider-card="openai"[\s\S]*?<span class="dot"><\/span>Needs attention<\/span>/);
   assert.match(html, /ChatGPT subscription/);
   assert.match(html, /Connect subscription/);
   assert.match(html, /Usage shares the connected ChatGPT account&rsquo;s subscription limits/);
-  assert.match(html, /Images continue to use the OpenAI API key/);
+  assert.match(html, /Flare and Sunburst use the API key/);
+  assert.match(html, /ChatGPT Image uses the connected subscription/);
   assert.match(html, /data-action="prov-add-key" data-provider="openai"/);
   // OpenRouter (env) is read-only and starts in the compact selected-model summary.
   assert.match(html, /data-provider-card="openrouter"[\s\S]*?<span class="dot"><\/span>Connected<\/span>/);
@@ -14584,7 +14585,7 @@ test('Settings shows the selected OpenAI chat method without exposing account id
   assert.match(harness.app.innerHTML, /ChatGPT subscription/);
   assert.match(harness.app.innerHTML, /data-action="openai-auth-method" data-method="api_key"[^>]*>Selected/);
   assert.match(harness.app.innerHTML, /data-action="openai-auth-method" data-method="subscription"[^>]*>Use for chat/);
-  assert.match(harness.app.innerHTML, /One connected ChatGPT account is shared by this Chickpea installation/);
+  assert.match(harness.app.innerHTML, /This installation shares one connected ChatGPT account for supported chat models and ChatGPT Image/);
   assert.doesNotMatch(harness.app.innerHTML, /oas_safe_fixture/);
 });
 
@@ -14807,7 +14808,7 @@ test('Settings disconnects a ChatGPT subscription without silently changing the 
   assert.match(harness.app.innerHTML, /Needs attention/);
 });
 
-test('Settings explains that removing an inactive OpenAI API key affects images, not subscription chat', async () => {
+test('Settings explains that removing an inactive OpenAI API key affects only API-key image profiles', async () => {
   const harness = runAdminPageHarness({
     initialPath: '/admin/settings/providers',
     providers: [
@@ -14821,7 +14822,8 @@ test('Settings explains that removing an inactive OpenAI API key affects images,
   harness.listeners.click?.({ target: actionTarget({ 'data-action': 'prov-remove', 'data-provider': 'openai' }) });
 
   assert.match(harness.app.innerHTML, /Chat continues using the selected ChatGPT subscription/);
-  assert.match(harness.app.innerHTML, /Image generation needs an OpenAI API key/);
+  assert.match(harness.app.innerHTML, /Flare and Sunburst become unavailable until an API key is available/);
+  assert.match(harness.app.innerHTML, /ChatGPT Image continues using the connected subscription/);
   assert.doesNotMatch(harness.app.innerHTML, /will stop answering/);
 });
 
