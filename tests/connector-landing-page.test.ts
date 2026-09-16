@@ -3,6 +3,7 @@ import { test } from 'node:test';
 
 import { SqliteConfigStore } from '../src/config/store.ts';
 import {
+  renderCatalogConnectionAccessReviewPage,
   renderCatalogConnectionSetupPage,
   renderManagedConnectionSetupPage,
   renderManagedConnectionSuccessPage,
@@ -42,6 +43,32 @@ const setup: ManagementSetupRecord = {
   createdAt: 1_800_000_000_000,
   updatedAt: 1_800_000_000_000,
 };
+
+test('BugSnag setup reviews tools without Meta account fields or permission promises', async () => {
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  try {
+    const agent = await config.createAgent({ id: 'agent_bugsnag', name: 'Error Guide', instructions: 'Investigate errors.', enabled: true,
+      skills: [], mcpServers: [], apiConnections: [], repositories: [] });
+    const bugsnagSetup: ManagementSetupRecord = { ...setup, action: 'catalog_connection', target: { ...setup.target, kind: 'catalog_connection', provider: 'bugsnag', targetLabel: 'BugSnag', presetId: 'bugsnag' } };
+    const welcome = renderCatalogConnectionSetupPage({ setup: bugsnagSetup, agent });
+    assert.match(welcome, /every project available to the signed-in BugSnag account/);
+    assert.match(welcome, /No tools are enabled until you save your choices after sign-in/);
+    const page = renderCatalogConnectionAccessReviewPage({
+      setup: bugsnagSetup,
+      agent,
+      accessReview: { approvedAccountIds: [], tools: [
+        { name: 'bugsnag_get_error', title: 'Get Error', available: true, selected: true, effect: 'read' },
+        { name: 'bugsnag_update_error', title: 'Update Error', available: true, selected: false, effect: 'write' },
+      ] },
+    });
+    assert.match(page, /name="tool:bugsnag_get_error" checked/);
+    assert.doesNotMatch(page, /name="tool:bugsnag_update_error" checked/);
+    assert.match(page, /Read only/);
+    assert.match(page, /May change data/);
+    assert.match(page, /every project available to your BugSnag account/);
+    assert.doesNotMatch(page, /<textarea|May change ads|ad accounts this Agent/);
+  } finally { config.close(); }
+});
 
 test('native catalog connectors use the same dedicated Agent setup surface', async () => {
   const config = new SqliteConfigStore(':memory:', { agents: [] });

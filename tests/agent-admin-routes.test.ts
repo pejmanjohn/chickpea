@@ -5288,6 +5288,65 @@ test(`custom MCP ${recoverFromToken ? 'token recovery' : 'OAuth creation'} requi
 
 }
 
+test('BugSnag requires authenticated discovery and explicit tool access without Meta configuration', async () => {
+  const fixture = harness(new FakeTransport(), { startMcpOAuth: async () => ({
+    authorizationUrl: new URL('https://oauth.bugsnag.com/authorize'), state: 'opaque',
+  }) });
+  const request = (path: string, method: string, body?: unknown) => fixture.app.request(`http://localhost${path}`, {
+    method, headers: auth(), ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+  });
+  try {
+    await createAgent(fixture.app);
+    await fixture.store.ensureWorkspaceInstallation({ workspaceId: 'T_TEST', teamId: 'T_TEST', transportMode: 'direct', defaultAgentId: 'agent_support' });
+    const body = {
+      workspaceId: 'T_TEST', ownerKind: 'team', providerId: 'bugsnag', label: 'BugSnag', allowedCapabilities: ['forged'],
+      mcp: { id: 'bugsnag', displayName: 'BugSnag', url: 'https://bugsnag.mcp.smartbear.com/mcp', transport: 'streamable-http',
+        authMode: 'oauth', headerNames: [], enabled: true, lifecycleStatus: 'ready', statusText: 'forged', presetId: 'bugsnag',
+        discoveredTools: [{ name: 'forged', readOnlyHint: true }], allowedTools: ['forged'], toolPolicies: { forged: { effect: 'read' } } },
+    };
+    const path = '/admin/api/agents/agent_support/connections';
+    assert.equal((await request(path, 'POST', { ...body, mcp: { ...body.mcp, url: 'https://untrusted.example/mcp' } })).status, 400);
+    const created = await request(path, 'POST', body);
+    assert.equal(created.status, 201, await created.clone().text());
+    const { account, binding } = await created.json() as Record<string, any>;
+    assert.equal(account.policy.toolAccessMode, 'review');
+    assert.equal(account.policy.oauthScope, 'api');
+    assert.deepEqual(account.policy.discoveredTools, []);
+    assert.deepEqual(account.policy.allowedTools, []);
+    assert.deepEqual(account.policy.toolPolicies, {});
+    assert.deepEqual(binding.allowedCapabilities, []);
+    const toolsPath = `${path}/${account.id}/mcp/tools`;
+    assert.equal((await request(toolsPath, 'PUT', { expectedRevision: account.revision, allowedTools: ['forged'] })).status, 409);
+    const discoveredTools = ['bugsnag_get_error', 'bugsnag_update_error'].map((name) => ({ name,
+      readOnlyHint: name === 'bugsnag_get_error', inputSchema: {
+        propertyNames: ['projectId', 'errorId', 'operation'], accountFields: [], ambiguous: false, fingerprint: 'a'.repeat(64),
+      },
+    }));
+    const stored = (await fixture.store.listConnectionAccounts('T_TEST')).find(({ id }) => id === account.id)!;
+    const ready = await fixture.store.putConnectionAccount({ ...stored, lifecycle: 'ready',
+      policy: { ...account.policy, discoveredTools } }, account.revision);
+    const inventory = await (await request(`${path}?workspaceId=T_TEST`, 'GET')).json() as Record<string, any>;
+    assert.equal(inventory.attached[0].mcpToolAccess, undefined);
+    assert.equal((await request(toolsPath, 'PUT', { expectedRevision: ready.revision, allowedTools: ['forged'] })).status, 400);
+    const saved = await request(toolsPath, 'PUT', { expectedRevision: ready.revision,
+      allowedTools: ['bugsnag_get_error', 'bugsnag_update_error'],
+      toolPolicies: { bugsnag_update_error: { effect: 'read', argumentConstraints: { operation: ['override_severity'] } } },
+    });
+    assert.equal(saved.status, 200, await saved.clone().text());
+    const selected = (await saved.json() as Record<string, any>).account;
+    assert.equal(selected.policy.toolPolicies.bugsnag_get_error.effect, 'read');
+    assert.equal(selected.policy.toolPolicies.bugsnag_update_error.effect, 'write');
+    assert.equal(selected.policy.toolPolicies.bugsnag_update_error.argumentConstraints.operation.includes('override_severity'), false);
+    assert.equal((await request(toolsPath, 'PUT', { expectedRevision: ready.revision, allowedTools: [] })).status, 409);
+    assert.equal((await request(`${path}/${account.id}/oauth/mcp/start`, 'POST', {})).status, 200);
+    const pending = (await fixture.store.listConnectionAccounts('T_TEST')).find(({ id }) => id === account.id)!;
+    assert.equal(pending.policy.kind, 'mcp');
+    if (pending.policy.kind !== 'mcp') throw new Error('expected MCP');
+    assert.deepEqual(pending.policy.allowedTools, ['bugsnag_get_error', 'bugsnag_update_error']);
+    assert.deepEqual(pending.policy.toolPolicies, selected.policy.toolPolicies);
+  } finally { fixture.store.close(); fixture.settings.close(); }
+});
+
 test('Meta Ads installation config and account review reject forged grants', async () => {
   let startedInput: StartMcpOAuthInput | undefined;
   const fixture = harness(new FakeTransport(), { startMcpOAuth: async (input) => {

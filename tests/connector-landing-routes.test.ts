@@ -8,7 +8,7 @@ import {
   resolveConnectionAccountSecret,
 } from '../src/config/connector-secrets.ts';
 import type { OAuthAuthorizationAuthority } from '../src/config/oauth-authorization.ts';
-import { McpOAuthError } from '../src/config/mcp-oauth.ts';
+import { McpOAuthError, type StartMcpOAuthInput } from '../src/config/mcp-oauth.ts';
 import { SqliteConfigStore, type ConfigStore } from '../src/config/store.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import {
@@ -1176,6 +1176,85 @@ test('the managed connector link is reusable and completes from the dedicated pa
     management.close();
     settings.close();
   }
+});
+
+test('BugSnag Slack setup stays pending through OAuth until reviewed tool access is saved', async () => {
+  const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
+  const owner = await createSlackOwner(identity, { now: NOW, suffix: 'bugsnag-landing' });
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const management = new SqliteManagementStore(':memory:');
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    const agent = await config.createAgent({ id: 'agent_bugsnag', name: 'Error Guide', creatorMembershipId: owner.membership.id,
+      editPolicy: 'creator_and_admins', lifecycle: 'active', configurationGeneration: 1,
+      instructions: 'Investigate errors.', enabled: true, skills: [], mcpServers: [], apiConnections: [], repositories: [] });
+    await config.ensureWorkspaceInstallation({ workspaceId: owner.user.slackTeamId, transportMode: 'direct', defaultAgentId: agent.id });
+    const setupId = 'setup_bugsnag';
+    await management.putSetup({ record: {
+      setupOperationId: setupId, organizationId: owner.membership.organizationId,
+      actorUserId: owner.user.id, actorMembershipId: owner.membership.id,
+      origin: { kind: 'slack', workspaceId: owner.user.slackTeamId, channelId: 'D_BUGSNAG', threadTs: '1800200000.000200', agentId: agent.id },
+      action: 'catalog_connection', target: { kind: 'catalog_connection', provider: 'bugsnag', targetId: `agent:${agent.id}:catalog:bugsnag`,
+        targetLabel: 'BugSnag', expectedRevision: agent.revision, agentId: agent.id, agentName: agent.name,
+        connectionId: 'connection_bugsnag', replacement: false, ownerKind: 'member', presetId: 'bugsnag' },
+      scopes: [], tokenDigest: createHash('sha256').update(CAPABILITY).digest('base64url'), status: 'pending',
+      expiresAt: NOW + 60_000, createdAt: NOW, updatedAt: NOW,
+    } });
+    const principal: AuthPrincipal = { userId: owner.user.id, membershipId: owner.membership.id,
+      organizationId: owner.membership.organizationId, role: 'owner', authenticatorKind: 'better_auth',
+      credentialId: 'session_bugsnag', correlationId: 'bugsnag_owner', machine: false };
+    let started: StartMcpOAuthInput;
+    let state = '';
+    const discoveredTools = ['bugsnag_get_error', 'bugsnag_update_error'].map((name) => ({ name,
+      readOnlyHint: name === 'bugsnag_get_error', inputSchema: {
+        propertyNames: ['projectId', 'errorId', 'operation'], accountFields: [], ambiguous: false, fingerprint: 'a'.repeat(64),
+      },
+    }));
+    const app = createManagementSetupRoutes({ identity, config, management, settings, now: () => NOW,
+      authenticatePrincipal: async () => principal,
+      startMcpOAuth: async (input) => {
+        started = input;
+        state = mcpOAuthState(input.ref, 'bugsnag_nonce');
+        return { authorizationUrl: new URL('https://oauth.bugsnag.com/authorize'), state };
+      },
+      completeMcpOAuth: async () => ({ ref: started.ref, accountRevision: started.accountRevision!,
+        oauthAttemptId: started.oauthAttemptId!, authorizationAuthority: started.authorizationAuthority!, returnAgentId: agent.id }),
+      resolveMcpOAuthToken: async () => 'test-bugsnag-token',
+      discoverMcp: async () => ({ tools: discoveredTools }),
+      identifyMcp: async () => undefined,
+      deliverReceipt: async () => ({ deliveryRef: 'slack:D_BUGSNAG:receipt.1' }),
+    });
+    const exchanged = await exchange(app, setupId);
+    assert.equal(exchanged.status, 200, await exchanged.clone().text());
+    const cookie = exchanged.headers.get('set-cookie')!.split(';')[0]!;
+    const startedResponse = await authorize(app, setupId, cookie, { ownerKind: 'member' });
+    assert.equal(startedResponse.status, 200, await startedResponse.clone().text());
+    assert.equal(started!.scope, 'api');
+    const callback = await app.request(`http://localhost/setup/${setupId}/oauth/mcp/callback?state=${state}&code=bugsnag-code`, { headers: { cookie } });
+    assert.equal(callback.status, 303, await callback.clone().text());
+    assert.equal((await management.getSetup(setupId))?.status, 'authorizing');
+    const connected = (await config.listConnectionAccounts(owner.user.slackTeamId))[0]!;
+    assert.equal(connected.policy.kind, 'mcp');
+    if (connected.policy.kind !== 'mcp') throw new Error('expected MCP');
+    assert.deepEqual(connected.policy.allowedTools, []);
+    const review = await app.request(`http://localhost/setup/${setupId}`, { headers: { cookie } });
+    const html = await review.text();
+    assert.match(html, /name="tool:bugsnag_get_error" checked/);
+    assert.doesNotMatch(html, /name="tool:bugsnag_update_error" checked|<textarea/);
+    const save = (fields: Record<string, string>) => app.request(`http://localhost/setup/${setupId}/mcp/access`, {
+      method: 'POST', headers: { origin: 'http://localhost', cookie, 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams(fields).toString(),
+    });
+    assert.equal((await save({ 'tool:invented': 'on' })).status, 422);
+    const saved = await save({ 'tool:bugsnag_get_error': 'on', 'tool:bugsnag_update_error': 'on' });
+    assert.equal(saved.status, 303, await saved.clone().text());
+    assert.equal((await management.getSetup(setupId))?.status, 'completed');
+    const selected = (await config.listConnectionAccounts(owner.user.slackTeamId))[0]!;
+    if (selected.policy.kind !== 'mcp') throw new Error('expected MCP');
+    assert.deepEqual(selected.policy.allowedTools, ['bugsnag_get_error', 'bugsnag_update_error']);
+    assert.equal(selected.policy.toolPolicies?.bugsnag_update_error?.effect, 'write');
+    assert.equal(selected.policy.toolPolicies?.bugsnag_update_error?.argumentConstraints?.operation?.includes('override_severity'), false);
+  } finally { identity.close(); config.close(); management.close(); settings.close(); }
 });
 
 async function exchange(app: ReturnType<typeof createManagementSetupRoutes>, setupId: string) {

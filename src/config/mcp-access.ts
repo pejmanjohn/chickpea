@@ -1,4 +1,5 @@
 import { isMetaAdsMcpConnection } from './meta-ads-policy.ts';
+import { isBugsnagMcpConnection } from './bugsnag-policy.ts';
 import type { McpConnectionConfig } from './types.ts';
 
 type ReviewPolicy = { presetId?: string | undefined; toolAccessMode?: 'auto' | 'review' | undefined; url?: string | undefined };
@@ -7,7 +8,7 @@ type DiscoveryPolicy = Pick<McpConnectionConfig, 'allowedTools' | 'discoveredToo
   ReviewPolicy;
 
 export function isMcpToolReviewRequired(connection: ReviewPolicy): boolean {
-  return connection.toolAccessMode === 'review' || isMetaAdsMcpConnection({ ...(connection.presetId ? { presetId: connection.presetId } : {}), ...(connection.url ? { url: connection.url } : {}) });
+  return connection.toolAccessMode === 'review' || isBugsnagMcpConnection(connection) || isMetaAdsMcpConnection({ ...(connection.presetId ? { presetId: connection.presetId } : {}), ...(connection.url ? { url: connection.url } : {}) });
 }
 
 /** Rediscovery can narrow a reviewed grant, but cannot create or broaden one. */

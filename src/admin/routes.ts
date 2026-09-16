@@ -250,7 +250,8 @@ import {
   type StartMcpOAuthInput,
 } from '../config/mcp-oauth.ts';
 import { allowedToolsAfterMcpDiscovery, isMcpToolReviewRequired } from '../config/mcp-access.ts';
-import { compileMetaAdsToolAccess, metaAdsToolEffect, metaAdsToolSchemaSupported, MetaAdsAccessPolicyError } from '../config/meta-ads-policy.ts';
+import { BUGSNAG_MCP_SERVER_URL, BugsnagAccessPolicyError, compileBugsnagToolAccess, isBugsnagMcpConnection } from '../config/bugsnag-policy.ts';
+import { compileMetaAdsToolAccess, isMetaAdsMcpConnection, metaAdsToolEffect, metaAdsToolSchemaSupported, MetaAdsAccessPolicyError } from '../config/meta-ads-policy.ts';
 import { META_ADS_MCP_SERVER_URL, META_ADS_OAUTH_MANAGEMENT_SCOPE, configuredMcpOAuthCallbackUrl, configuredMcpOAuthClientDescriptor, getConfiguredMcpOAuthClient, saveConfiguredMcpOAuthClient, removeConfiguredMcpOAuthClient, resolveConfiguredMcpOAuthScope, ConfiguredMcpOAuthClientError } from '../config/mcp-oauth-clients.ts';
 import {
   buildMcpRequestHeaders,
@@ -7078,7 +7079,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     if (!parsed.success) {
       return invalidRequest(c, githubApiConnectionValidationMessage(parsed.issues));
     }
-    if (parsed.output.mcpServers.some((server) => isMcpToolReviewRequired(server))) return invalidRequest(c, 'Add Meta Ads from the Agent’s Connections tab so you can select ad accounts and tools.');
+    if (parsed.output.mcpServers.some((server) => isMcpToolReviewRequired(server))) return invalidRequest(c, 'Add this connector from the Agent’s Connections tab so you can review its tool access.');
     const requestedHandle = parsed.output.handle ?? parsed.output.name;
     if (reservedAgentIdentityField({
       id: parsed.output.id,
@@ -7767,7 +7768,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           if (account.ownerKind === 'member' &&
               account.ownerMembershipId !== principal.membershipId) return [];
           return [{ account, binding,
-            ...(account.policy.kind === 'mcp' && isMcpToolReviewRequired(account.policy) ? {
+            ...(account.policy.kind === 'mcp' && isMetaAdsMcpConnection(account.policy) ? {
               mcpToolAccess: account.policy.discoveredTools.map((tool) => {
                 const effect = metaAdsToolEffect(tool.name) ?? 'write';
                 const schemaSupported = metaAdsToolSchemaSupported(tool);
@@ -7860,11 +7861,17 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
             ...(parsed.output.mcp!.presetId ? { presetId: parsed.output.mcp!.presetId } : {}),
           };
       if (policy.kind === 'mcp' && isMcpToolReviewRequired(policy)) {
-        if (policy.url !== META_ADS_MCP_SERVER_URL || policy.transport !== 'streamable-http' || policy.authMode !== 'oauth' || policy.headerNames.length) return invalidRequest(c);
-        if (!(await getConfiguredMcpOAuthClient(policy.url, settings(c)))) return c.json({ error: 'oauth_configuration_required', message: 'An administrator must configure the Meta App ID in Settings → Connectors before adding this connection.' }, 409);
-        const oauthScope = resolveConfiguredMcpOAuthScope(policy.url, policy.oauthScope);
-        if (!oauthScope) return invalidRequest(c);
-        policy.oauthScope = oauthScope;
+        if (policy.transport !== 'streamable-http' || policy.authMode !== 'oauth' || policy.headerNames.length) return invalidRequest(c);
+        if (isMetaAdsMcpConnection(policy)) {
+          if (policy.url !== META_ADS_MCP_SERVER_URL) return invalidRequest(c);
+          if (!(await getConfiguredMcpOAuthClient(policy.url, settings(c)))) return c.json({ error: 'oauth_configuration_required', message: 'An administrator must configure the Meta App ID in Settings → Connectors before adding this connection.' }, 409);
+          const oauthScope = resolveConfiguredMcpOAuthScope(policy.url, policy.oauthScope);
+          if (!oauthScope) return invalidRequest(c);
+          policy.oauthScope = oauthScope;
+        } else if (isBugsnagMcpConnection(policy)) {
+          if (policy.url !== BUGSNAG_MCP_SERVER_URL) return invalidRequest(c);
+          policy.oauthScope = 'api';
+        }
         policy.toolAccessMode = 'review';
         policy.discoveredTools = [];
         policy.allowedTools = [];
@@ -7953,7 +7960,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       if (parsed.output.toolPolicies && Object.keys(parsed.output.toolPolicies).some((tool) => !allowedTools.includes(tool))) {
         return c.json({ error: 'invalid_tool_policy' }, 400);
       }
-      if (isMcpToolReviewRequired(account.policy) &&
+      if (isMetaAdsMcpConnection(account.policy) &&
           (account.policy.authMode !== 'oauth' ||
             account.policy.oauthScope !== META_ADS_OAUTH_MANAGEMENT_SCOPE) &&
           allowedTools.some((tool) => metaAdsToolEffect(tool) === 'write')) {
@@ -7962,9 +7969,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           message: 'Reconnect with Reporting and editing access before selecting tools that may change ads.',
         }, 400);
       }
-      const compiled = isMcpToolReviewRequired(account.policy)
+      const compiled = isMetaAdsMcpConnection(account.policy)
         ? compileMetaAdsToolAccess({ discoveredTools: account.policy.discoveredTools, requestedTools: allowedTools, approvedAccountIds: parsed.output.approvedAccountIds ?? [] })
-        : undefined;
+        : isBugsnagMcpConnection(account.policy)
+          ? compileBugsnagToolAccess({ discoveredTools: account.policy.discoveredTools, requestedTools: allowedTools })
+          : undefined;
       const updated = await store(c).putConnectionAccount({
         ...account, policy: { ...account.policy, allowedTools,
           ...(compiled ? { toolPolicies: compiled.toolPolicies } : parsed.output.toolPolicies ? { toolPolicies: parsed.output.toolPolicies } : {}),
@@ -7972,7 +7981,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       }, parsed.output.expectedRevision);
       return c.json({ account: toConnectionAccountView(updated) });
     } catch (error) {
-      if (error instanceof MetaAdsAccessPolicyError) return c.json({ error: 'invalid_tool_selection', message: error.message }, 400);
+      if (error instanceof MetaAdsAccessPolicyError || error instanceof BugsnagAccessPolicyError) return c.json({ error: 'invalid_tool_selection', message: error.message }, 400);
       if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
       if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
       if (error instanceof ConnectionAccountRevisionConflictError) return c.json({ error: 'revision_conflict', message: 'This connection changed. Reload it before saving tool access.' }, 409);
@@ -8407,7 +8416,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         };
       }
       if (patch.mcpServers?.some((server) => isMcpToolReviewRequired(server))) {
-        return invalidRequest(c, 'Add Meta Ads from the Agent’s Connections tab so you can select ad accounts and tools.');
+        return invalidRequest(c, 'Add this connector from the Agent’s Connections tab so you can review its tool access.');
       }
       if (patch.apiConnections) {
         patch.apiConnections = await normalizeApiOAuthPatch(
@@ -10052,7 +10061,7 @@ async function replacePendingMcpOAuthConnection(
     throw new McpOAuthError('connection_missing', 'OAuth connection no longer exists');
   }
   const policy = withoutIdentity.policy;
-  const allowedTools = !isMcpToolReviewRequired(policy) ||
+  const allowedTools = !isMetaAdsMcpConnection(policy) ||
     oauthScope === META_ADS_OAUTH_MANAGEMENT_SCOPE
     ? policy.allowedTools
     : policy.allowedTools.filter((tool) => metaAdsToolEffect(tool) !== 'write');
