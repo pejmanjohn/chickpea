@@ -159,7 +159,6 @@ import {
   type SlackArtifactStageInput,
   type SlackArtifactStageOutcome,
 } from '../sandbox/artifact-tool.ts';
-import { createChartArtifactTool, RENDER_CHART_TOOL_NAME } from '../sandbox/chart-tool.ts';
 import {
   createImageArtifactTool,
   createRecoverImageTool,
@@ -1063,8 +1062,8 @@ export async function createSlackAgentRuntime(
           : { attached: false, reason: 'missing-scope' };
     };
     // Every sandbox kind delivers files: the container freezes a bounded copy
-    // through the shell, the in-memory sandbox reads its bytes directly, and
-    // charts are rendered in-process, so no Agent depends on the coding tier.
+    // through the shell and the in-memory sandbox reads its bytes directly,
+    // so file delivery does not depend on the coding tier.
     const artifactCapability = createWorkspaceArtifactCapability({
       sandbox,
       sandboxKind: sandboxSelection,
@@ -1077,7 +1076,6 @@ export async function createSlackAgentRuntime(
       ...mcpTools,
       ...managedTools,
       artifactCapability.tool,
-      createChartArtifactTool({ channel: channelId, threadTs: artifactThreadTs, stageArtifact }),
     ];
   }
 
@@ -1102,7 +1100,6 @@ export async function createSlackAgentRuntime(
       const artifact = genericSemanticDescriptor('artifact');
       activityDescriptors.push(
         { toolName: POST_ARTIFACT_TOOL_NAME, descriptor: artifact },
-        { toolName: RENDER_CHART_TOOL_NAME, descriptor: artifact },
       );
     }
     registerActivityContext(id, buildSemanticActivityContext(activityDescriptors, [
@@ -1702,7 +1699,7 @@ function runtimeRepositoryMatches(
 }
 
 /**
- * Destination-bound file and chart staging for hook-mounted runtime plans.
+ * Destination-bound artifact staging for hook-mounted runtime plans.
  * Files follow the frozen artifact destination, not the conversation key: a
  * scheduled run's conversation thread is a synthetic due-time stamp and a DM
  * session key is `dm`, neither of which Slack accepts as thread_ts. Staging
@@ -1801,7 +1798,6 @@ export function createRuntimePlanArtifactTools(
   return [
     createWorkspaceArtifactTool({ ...binding, sandboxKind: plan.sandbox.mode }, options.fileCompletion?.deliver),
     ...(options.fileCompletion ? [options.fileCompletion.tool({ ...binding, sandboxKind: plan.sandbox.mode })] : []),
-    ...(options.fileCompletion?.repairing ? [] : [createChartArtifactTool(binding)]),
     ...(!options.fileCompletion?.repairing && imageOptions
       ? [createImageArtifactTool(imageOptions), createRecoverImageTool(imageOptions)] : []),
   ];

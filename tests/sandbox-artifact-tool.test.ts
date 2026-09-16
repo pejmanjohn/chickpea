@@ -497,7 +497,7 @@ test('the image-capable instruction names the tool, handles, and the call rules'
   // The frozen denial is gone; the rest of the artifact contract is unchanged.
   assert.doesNotMatch(instruction, /do not claim a general image-generation or SVG-to-PNG capability/);
   assert.doesNotMatch(instruction, /PNG charts are built in/);
-  assert.match(instruction, /Use `render_chart` for charts, graphs, plots, or images of numbers/);
+  assert.match(instruction, /Use `post_artifact` to attach a file you wrote in the sandbox/);
   assert.match(instruction, /If the reason is too-large, explain the returned size limit/);
   assert.match(instruction, /Never claim a file is attached without an attached: true tool result\./);
 });
@@ -507,12 +507,11 @@ test('with no image model the instruction states the limit, Settings, and the su
   assert.match(instruction, /no image model set up/);
   assert.match(instruction, /say that first, before offering anything else/);
   assert.match(instruction, /an Owner enables it in Settings → Model providers \(Default image model\)/);
-  assert.match(instruction, /a chart PNG with `render_chart`/);
   assert.match(instruction, /an SVG mockup or diagram with `post_artifact`/);
   assert.match(instruction, /written copy in the reply/);
   assert.match(
     instruction,
-    /Never describe an SVG mockup, diagram, or chart as a finished, generated, or edited image/,
+    /Never describe an SVG mockup or diagram as a finished, generated, or edited image/,
   );
   assert.doesNotMatch(instruction, new RegExp(GENERATE_IMAGE_TOOL_NAME));
   assert.doesNotMatch(instruction, /img:N/);
@@ -572,7 +571,7 @@ test('the image-capable instruction names every failure reason honestly', () => 
   // The generic file wording must not claim a provider failure was a Slack one.
   assert.match(
     instruction,
-    /If `render_chart` or `post_artifact` reports reason unavailable, say file attachments are temporarily unavailable/,
+    /If `post_artifact` reports reason unavailable, say file attachments are temporarily unavailable/,
   );
   assert.match(
     instruction,

@@ -108,7 +108,7 @@ fake-backend result as live acceptance.
 | --- | --- |
 | Slack transport, delivery, attachments, avatars | `src/slack/` |
 | Agent execution | `src/agents/` |
-| Chart rendering and file delivery tools | `src/charts/`, `src/sandbox/artifact-tool.ts`, `src/sandbox/chart-tool.ts` |
+| File delivery and image generation tools | `src/sandbox/artifact-tool.ts`, `src/sandbox/image-tool.ts` |
 | Admin pages and HTTP routes | `src/admin/` |
 | Authentication and workspace identity | `src/auth/`, `src/identity/` |
 | Connections and credentialed tools | `src/connections/` |

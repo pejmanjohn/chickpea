@@ -40,10 +40,11 @@ test('the unattended prompt makes host-owned Slack delivery explicit', () => {
 
 test('the unattended prompt stages files for combined host delivery', () => {
   const channel = routineExecutionInstructions().join('\n');
-  assert.match(channel, /`render_chart` or `post_artifact`/);
+  assert.match(channel, /follow the saved task and Agent instructions using the available tools/);
+  assert.match(channel, /`post_artifact` to attach files you create in the sandbox/);
   assert.match(channel, /publishes it with your returned message under your Agent identity at the saved destination/);
   assert.match(channel, /Return the text result in message/);
-  assert.match(channel, /staged: true/);
+  assert.match(channel, /attached: true/);
   assert.doesNotMatch(channel, /uploaded: true|exception to host delivery/);
 
   const channelThread = routineExecutionInstructions('channel', true).join('\n');
