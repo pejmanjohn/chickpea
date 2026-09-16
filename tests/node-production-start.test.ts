@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 // @ts-expect-error Shared executable JavaScript helper.
@@ -38,7 +39,7 @@ test('the production CLI rejects an invalid port without exposing environment-fi
   writeFileSync(file, 'PORT=invalid\nCHICKPEA_AUTH_SECRET=do-not-print-this-secret\n');
   const result = spawnSync(process.execPath, [
     '--',
-    new URL('../scripts/start-node.mjs', import.meta.url).pathname,
+    fileURLToPath(new URL('../scripts/start-node.mjs', import.meta.url)),
     '--env-file',
     file,
   ], { encoding: 'utf8', env: {} });
