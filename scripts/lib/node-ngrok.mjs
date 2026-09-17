@@ -65,11 +65,22 @@ export function watchNgrokOutput(child, onFailure, { origin, port, onReady } = {
         try {
           const record = JSON.parse(line);
           if (record.msg === 'started tunnel' && record.url === origin &&
-              record.addr === `http://127.0.0.1:${port}`) onReady?.();
+              matchesNgrokUpstream(record.addr, port)) onReady?.();
         } catch { /* Raw output, including malformed config with tokens, stays private. */ }
       }
     });
   }
+}
+
+function matchesNgrokUpstream(address, port) {
+  if (typeof address === 'string') return address === `http://127.0.0.1:${port}`;
+  // ngrok 3.39.11 serializes its upstream as Go's url.URL in JSON logs.
+  // Keep the same strict loopback/port check for that observed representation.
+  return address !== null && typeof address === 'object' && !Array.isArray(address) &&
+    address.Scheme === 'http' && address.Host === `127.0.0.1:${port}` &&
+    address.User == null && !address.ForceQuery && !address.OmitHost &&
+    ['Opaque', 'Path', 'RawPath', 'RawQuery', 'Fragment', 'RawFragment']
+      .every((field) => address[field] === '' || address[field] === undefined);
 }
 
 // Compare a public response with the local asset, so an HTML warning, a generic

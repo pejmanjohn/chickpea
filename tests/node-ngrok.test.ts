@@ -52,6 +52,28 @@ test('tunnel readiness requires the exact configured URL and upstream in this ch
   assert.equal(ready, 1);
 });
 
+test('ngrok 3.39.11 structured upstream logs identify only the configured loopback listener', () => {
+  const stdout = new PassThrough();
+  let ready = 0;
+  watchNgrokOutput({ stdout }, () => undefined, { origin: 'https://assigned.ngrok-free.dev', port: 39217,
+    onReady: () => { ready++; } });
+  const upstream = { Scheme: 'http', Opaque: '', User: null, Host: '127.0.0.1:39217',
+    Path: '', Fragment: '', RawQuery: '', RawPath: '', RawFragment: '', ForceQuery: false, OmitHost: false };
+  const emit = (addr: unknown, url = 'https://assigned.ngrok-free.dev') => stdout.write(
+    JSON.stringify({ msg: 'started tunnel', addr, url }) + '\n');
+  emit({ ...upstream, Host: '127.0.0.1:3000' });
+  emit({ ...upstream, Host: 'other.example:39217' });
+  emit({ ...upstream, Scheme: 'https' });
+  emit({ ...upstream, Path: '/other-service' });
+  emit({ ...upstream, User: { Username: 'unexpected' } });
+  emit({ ...upstream, RawQuery: 'unexpected=1' });
+  emit(upstream, 'https://other.ngrok-free.dev');
+  emit(null);
+  assert.equal(ready, 0);
+  emit(upstream);
+  assert.equal(ready, 1);
+});
+
 test('public verification rejects HTML warnings, redirects, wrong services and provider quota errors', async () => {
   const installation = { origin: 'https://assigned.ngrok-free.app', port: 39217 };
   const requests: Array<{ url: string; options: RequestInit }> = [];
