@@ -2,7 +2,11 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { resolveEffectiveSlackConfig } from '../src/config/effective-config.ts';
+import { saveOpenAiAuthMethod } from '../src/config/openai-auth.ts';
+import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { commitOpenAiSubscriptionCredentials } from '../src/openai-subscription/credentials.ts';
+import { clearOpenAiSubscriptionTransport } from '../src/openai-subscription/transport.ts';
 import {
   classifySlackInteraction,
   parseSlackInteractionIntent,
@@ -181,6 +185,88 @@ test('classifier failures use quiet owned-thread and written guaranteed fallback
       checklist: ['Findings', 'Supporting evidence'],
     },
   );
+});
+
+test('subscription interaction classification omits unsupported temperature', async (t) => {
+  const settings = new SqliteSettingsStore(':memory:');
+  await saveOpenAiAuthMethod(settings, 'subscription');
+  await commitOpenAiSubscriptionCredentials({
+    accessToken: 'classifier-access',
+    refreshToken: 'classifier-refresh',
+    idToken: undefined,
+    expiresAt: Date.now() + 3_600_000,
+    accountId: 'classifier-account',
+  }, {
+    settings,
+    randomBytes: (length) => new Uint8Array(length).fill(7),
+  });
+
+  let requestBody: Record<string, unknown> | undefined;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const request = new Request(input, init);
+    requestBody = await request.clone().json() as Record<string, unknown>;
+    const classifierResult = JSON.stringify({
+      disposition: 'reply',
+      reason: 'substantive_request',
+      memoryIntent: 'none',
+    });
+    const events = [
+      { type: 'response.created', response: { id: 'response_classifier' } },
+      {
+        type: 'response.output_item.added',
+        item: { type: 'message', id: 'message_classifier', role: 'assistant', status: 'in_progress', content: [] },
+      },
+      { type: 'response.content_part.added', part: { type: 'output_text', text: '', annotations: [] } },
+      { type: 'response.output_text.delta', delta: classifierResult },
+      {
+        type: 'response.output_item.done',
+        item: {
+          type: 'message',
+          id: 'message_classifier',
+          role: 'assistant',
+          status: 'completed',
+          content: [{ type: 'output_text', text: classifierResult, annotations: [] }],
+        },
+      },
+      {
+        type: 'response.completed',
+        response: {
+          id: 'response_classifier',
+          status: 'completed',
+          usage: {
+            input_tokens: 1,
+            output_tokens: 1,
+            total_tokens: 2,
+            input_tokens_details: { cached_tokens: 0 },
+          },
+        },
+      },
+    ];
+    return new Response(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(''), {
+      status: 200,
+      headers: { 'content-type': 'text/event-stream' },
+    });
+  };
+  t.after(() => {
+    clearOpenAiSubscriptionTransport();
+    globalThis.fetch = originalFetch;
+    settings.close();
+  });
+
+  const classification = await classifySlackInteraction({
+    ...baseContext,
+    text: 'Is this result significant?',
+    requestedModel: 'openai/gpt-5.6-terra',
+  }, undefined, undefined, undefined, { settings });
+
+  assert.equal(classification.failed, false);
+  assert.deepEqual(classification.intent, {
+    disposition: 'reply',
+    reason: 'substantive_request',
+  });
+  assert.equal(requestBody?.model, 'gpt-5.6-terra');
+  assert.equal(Object.hasOwn(requestBody ?? {}, 'temperature'), false);
 });
 
 test('high-confidence acknowledgments stay reaction-only even when a small model chooses prose', async () => {
