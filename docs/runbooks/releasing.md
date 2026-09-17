@@ -182,6 +182,7 @@ release's acceptance evidence:
 | Application release | Required protocol | Acceptance evidence |
 | --- | --- | --- |
 | v0.1.0 candidate | 1 | Pending the candidate's live release run |
+| v0.1.22 | 1 | Node/ngrok candidate `f51d4ec`: shared-app installation, signed-in Admin, real Slack replies, managed restart, and crash recovery passed. The release preserves that runtime source. |
 
 Run `npm run verify:gateway-live` against the explicitly selected approved
 gateway, followed by real installation/Slack delivery on the candidate. The
