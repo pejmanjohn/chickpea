@@ -38,6 +38,9 @@ export function parseRegressionArgs(argv) {
 export function regressionEnvironment(env = process.env) {
   const clean = { ...env };
   delete clean.CHICKPEA_CHECK_OWNER; // Coordination tokens are not verification inputs.
+  // Keep parent-process Node injection from changing tests and their nested tools.
+  delete clean.NODE_OPTIONS;
+  delete clean.NODE_PATH;
   // Do not let a QA deploy/local lane's selectors stamp offline build artifacts.
   for (const key of Object.keys(clean)) {
     if (/^(?:CHICKPEA_DEPLOY_|CHICKPEA_LOCAL_|CHICKPEA_ENV_|WRANGLER_CI_|WORKERS_CI|CLOUDFLARE_ENV$)/.test(key)) delete clean[key];

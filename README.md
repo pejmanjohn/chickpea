@@ -482,13 +482,19 @@ curl -fsSL https://chickpea.co/install.sh | bash
 
 The installer prepares a private Node 24.20.0 runtime, builds a stable application
 release, creates persistent SQLite state, and opens setup. It leaves system Node
-and existing Chickpea installations alone. You need a stable public HTTPS address,
-permission to install a Slack app, and a model provider account. The
+and existing Chickpea installations alone. Guided ngrok setup on `main` can
+provide a stable HTTPS address without buying a domain or using Cloudflare.
+It saves your assigned domain and privately entered token, and runs the tunnel
+alongside Chickpea. Cloudflare Tunnel and externally managed HTTPS remain options.
+You need permission to install a Slack app and a model provider account. The
 [Mac installation guide](INSTALL_CHICKPEA_NODE.md) explains the HTTPS options,
-start/stop commands, and optional start at login.
+start/stop/restart commands, and optional start at login. ngrok Free has usage
+limits and a browser warning; check its current account allowance before relying
+on it for ongoing traffic.
 
 The installer uses the latest stable application release. Mac installation is
-supported starting with v0.1.21.
+supported starting with v0.1.21. Guided ngrok setup requires a later release
+containing that feature; until then, follow the guide's reviewed-preview procedure.
 
 For an existing manual installation, keep using
 `npm run start:node -- --env-file <path>`. For Linux hosting, backups, restores,

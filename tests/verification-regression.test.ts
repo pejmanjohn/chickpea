@@ -79,11 +79,12 @@ test('offline execution clears live build selectors and overrides operator state
     CHICKPEA_LOCAL_STATE_PATH: '/private/state', CHICKPEA_ENV_TARGET: 'cobalt',
     WRANGLER_CI_OVERRIDE_NAME: 'live-worker', WORKERS_CI: '1', CLOUDFLARE_ENV: 'production',
     TAG_DB_PATH: '/operator/db', SLACK_STATE_DB_PATH: '/operator/slack', CHICKPEA_AUTH_DB_PATH: '/operator/auth',
+    NODE_OPTIONS: '--test-reporter=tap', NODE_PATH: '/operator/node-modules',
   });
   assert.ok(env.PATH.endsWith('/test/bin'));
   assert.equal(env.FLUE_NODE_BIN, process.execPath);
   for (const key of ['TAG_DB_PATH', 'SLACK_STATE_DB_PATH', 'CHICKPEA_AUTH_DB_PATH']) assert.equal(env[key], ':memory:');
-  for (const key of ['CHICKPEA_DEPLOY_TARGET', 'CHICKPEA_DEPLOY_AUTH_DB_ID', 'CHICKPEA_LOCAL_STATE_PATH', 'CHICKPEA_ENV_TARGET', 'WRANGLER_CI_OVERRIDE_NAME', 'WORKERS_CI', 'CLOUDFLARE_ENV']) assert.equal(env[key], undefined);
+  for (const key of ['CHICKPEA_DEPLOY_TARGET', 'CHICKPEA_DEPLOY_AUTH_DB_ID', 'CHICKPEA_LOCAL_STATE_PATH', 'CHICKPEA_ENV_TARGET', 'WRANGLER_CI_OVERRIDE_NAME', 'WORKERS_CI', 'CLOUDFLARE_ENV', 'NODE_OPTIONS', 'NODE_PATH']) assert.equal(env[key], undefined);
   assert.equal(env.TAG_REQUIRE_LOOPBACK, '1');
 });
 

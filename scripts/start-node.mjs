@@ -123,6 +123,9 @@ export async function startProductionNode({ args = process.argv.slice(2) } = {})
     background,
     serverOptions: options,
   });
+  // The managed tunnel must wait for this child's successful bind, not merely
+  // an HTTP response that another process on the requested port could serve.
+  if (process.send) process.send({ type: 'chickpea-ready' });
   let shutdown;
   const stop = (exitCode) => {
     if (shutdown) return shutdown;
