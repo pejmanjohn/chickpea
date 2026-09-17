@@ -63,7 +63,9 @@ let started = false;
 let draining: Promise<void> | undefined;
 let wakeRequested = false;
 let retryTimer: ReturnType<typeof setTimeout> | undefined;
+let reconcileTimer: ReturnType<typeof setInterval> | undefined;
 let autoWakeSuspended = false;
+let shuttingDown = false;
 
 export { slackPresentationStatePort } from './presentation-state-port.ts';
 
@@ -71,7 +73,7 @@ function scheduleNodeTurnRelayRetry(
   env: PlatformEnv | undefined,
   delayMs = NODE_RETRY_BACKOFF_MS,
 ): void {
-  if (retryTimer) return;
+  if (retryTimer || shuttingDown) return;
   retryTimer = setTimeout(() => {
     retryTimer = undefined;
     void wakeNodeTurnRelay(env);
@@ -84,14 +86,27 @@ function scheduleNodeTurnRelayRetry(
  * until an exact workspace/channel canary assigns future admissions. */
 export function startNodeTurnRelay(): void {
   if (started || isCloudflareTarget()) return;
+  shuttingDown = false;
   started = true;
   queueMicrotask(() => {
     void wakeNodeTurnRelay();
   });
-  const timer = setInterval(() => {
+  reconcileTimer = setInterval(() => {
     void wakeNodeTurnRelay();
   }, NODE_RECONCILE_INTERVAL_MS);
-  timer.unref();
+  reconcileTimer.unref();
+}
+
+/** Stop new wakes and wait for the active durable turn drain before ownership release. */
+export async function stopNodeTurnRelay(): Promise<void> {
+  shuttingDown = true;
+  started = false;
+  wakeRequested = false;
+  if (retryTimer) clearTimeout(retryTimer);
+  retryTimer = undefined;
+  if (reconcileTimer) clearInterval(reconcileTimer);
+  reconcileTimer = undefined;
+  await draining;
 }
 
 /** Wake once after admission; concurrent wakes join the same bounded drain. */
@@ -100,6 +115,7 @@ export async function wakeNodeTurnRelay(
   overrides: Omit<NodeTurnRelayDrainOptions, 'env'> = {},
 ): Promise<void> {
   if (isCloudflareTarget()) return;
+  if (shuttingDown) return;
   // A test may suspend the admission-triggered wake to drive execution itself.
   // The durable turn is already admitted; it stays pending until the next drain.
   if (autoWakeSuspended) return;
@@ -116,7 +132,7 @@ export async function wakeNodeTurnRelay(
     draining = undefined;
     // A wake can arrive after the loop reads wakeRequested=false but before
     // this completion callback clears `draining`. Do not lose that edge wake.
-    if (wakeRequested) await wakeNodeTurnRelay(env, overrides);
+    if (wakeRequested && !shuttingDown) await wakeNodeTurnRelay(env, overrides);
   });
   return draining;
 }

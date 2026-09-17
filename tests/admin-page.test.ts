@@ -12461,7 +12461,7 @@ test('onboarding skips channel publication, validates a provider, requires a mod
     /data-provider="openai"[\s\S]*data-provider="anthropic"[\s\S]*data-provider="openrouter"[\s\S]*data-provider="cloudflare"/,
   );
   assert.match(harness.app.innerHTML, /<span>Workers AI<\/span><span class="onboarding-provider-tab-status">Ready, no key<\/span>/);
-  assert.match(harness.app.innerHTML, /<span>OpenAI<\/span><span class="onboarding-provider-tab-sub">Needs API key<\/span>/);
+  assert.match(harness.app.innerHTML, /<span>OpenAI<\/span><span class="onboarding-provider-tab-sub">Needs API key or subscription<\/span>/);
   assert.doesNotMatch(harness.app.innerHTML, /aria-pressed="true"|Use Cloudflare Workers AI instead/);
   assert.match(harness.app.innerHTML, /Choose the provider you want Chickpea to use\. Each option shows the setup it needs\./);
   assert.match(harness.app.innerHTML, /data-action="onboarding-provider-continue" disabled>Validate and Continue<\/button>/);
@@ -12510,6 +12510,105 @@ test('onboarding skips channel publication, validates a provider, requires a mod
   );
   assert.match(harness.app.innerHTML, /data-action="onboarding-proceed-dashboard"[^>]*>Proceed to Dashboard<\/button>/);
   assert.match(harness.app.innerHTML, /Step 4 of 4/);
+});
+
+test('Node onboarding sends OpenAI subscription setup through Settings and accepts the selected subscription', async () => {
+  const onboarding: OnboardingFixture = {
+    stage: 'choose_provider',
+    revision: '{"version":1,"state":"active"}',
+    workspace: { id: 'T_DESIGN', name: 'Acme Inc' },
+    channel: null,
+    slackAppId: 'A_CHICKPEA',
+    tryStartedAt: null,
+    completedAt: null,
+  };
+  const missing = runAdminPageHarness({
+    initialPath: '/admin/onboarding',
+    modelProviders: [
+      { id: 'openai', configured: false, source: 'missing', suggestions: [] },
+    ],
+    onboarding,
+  });
+  await flushAsync();
+  missing.listeners.click?.({
+    target: actionTarget({ 'data-action': 'onboarding-provider-select', 'data-provider': 'openai' }),
+  });
+
+  assert.match(missing.app.innerHTML, /Have a ChatGPT subscription\?/);
+  assert.match(
+    missing.app.innerHTML,
+    /href="\/admin\/settings\/providers\?return=onboarding">Connect ChatGPT subscription<\/a>/,
+  );
+  assert.match(missing.app.innerHTML, /OpenAI API key/);
+  assert.match(missing.app.innerHTML, /Platform API key or ChatGPT subscription/);
+
+  const connected = runAdminPageHarness({
+    initialPath: '/admin/onboarding',
+    modelProviders: [{
+      id: 'openai',
+      configured: true,
+      source: 'ChatGPT subscription',
+      suggestions: ['openai/gpt-5.6-sol'],
+    }],
+    onboarding,
+  });
+  await flushAsync();
+  connected.listeners.click?.({
+    target: actionTarget({ 'data-action': 'onboarding-provider-select', 'data-provider': 'openai' }),
+  });
+  assert.match(connected.app.innerHTML, /OpenAI is ready to use/);
+  assert.doesNotMatch(connected.app.innerHTML, /id="onboarding-provider-key"/);
+
+  connected.listeners.click?.({
+    target: actionTarget({ 'data-action': 'onboarding-provider-continue' }),
+  });
+  await flushAsync();
+  assert.equal(connected.onboardingProviderPosts.at(-1)?.providerId, 'openai');
+  assert.match(connected.app.innerHTML, /<option value="openai\/gpt-5\.6-sol">gpt-5\.6-sol<\/option>/);
+
+  connected.listeners.change?.({
+    target: inputTarget({ 'data-action': 'onboarding-model-select' }, 'openai/gpt-5.6-sol'),
+  });
+  connected.listeners.click?.({
+    target: actionTarget({ 'data-action': 'onboarding-model-continue' }),
+  });
+  await flushAsync();
+  assert.equal(connected.onboardingTryPosts.at(-1)?.modelId, 'openai/gpt-5.6-sol');
+  assert.match(connected.app.innerHTML, /Meet Chickpea in Slack/);
+});
+
+test('subscription onboarding return affordances stay Node-only', async () => {
+  const settings = runAdminPageHarness({
+    initialPath: '/admin/settings/providers',
+    initialSearch: '?return=onboarding',
+  });
+  await flushAsync();
+  assert.match(settings.app.innerHTML, /Connect a ChatGPT subscription and select it for chat/);
+  assert.match(settings.app.innerHTML, /href="\/admin\/onboarding">Return to setup<\/a>/);
+
+  const cloudflare = runAdminPageHarness({
+    cloudflare: true,
+    initialPath: '/admin/onboarding',
+    onboarding: {
+      stage: 'choose_provider',
+      revision: '{"version":1,"state":"active"}',
+      workspace: { id: 'T_DESIGN', name: 'Acme Inc' },
+      channel: null,
+      slackAppId: 'A_CHICKPEA',
+      tryStartedAt: null,
+      completedAt: null,
+    },
+    modelProviders: [
+      { id: 'openai', configured: false, source: 'missing', suggestions: ['openai/gpt-5.6-terra'] },
+    ],
+  });
+  await flushAsync();
+  cloudflare.listeners.click?.({
+    target: actionTarget({ 'data-action': 'onboarding-provider-select', 'data-provider': 'openai' }),
+  });
+  assert.doesNotMatch(cloudflare.app.innerHTML, /ChatGPT subscription|return=onboarding/);
+  assert.match(cloudflare.app.innerHTML, /Needs API key/);
+  assert.match(cloudflare.app.innerHTML, /Use OpenAI models with a Platform API key\./);
 });
 
 test('onboarding refreshes the image catalog and server-selected image default after adding an OpenAI key', async () => {
@@ -14791,7 +14890,9 @@ test('Settings completes a transient OpenAI subscription device authorization an
   await flushAsync();
   assert.deepEqual(harness.openAiSubscriptionPosts, [{ action: 'start', body: {} }]);
   assert.match(harness.app.innerHTML, /CHICK-PEA/);
-  assert.match(harness.app.innerHTML, /Open OpenAI/);
+  assert.match(harness.app.innerHTML, /the 9-character code shown on this Chickpea page/);
+  assert.match(harness.app.innerHTML, /OpenAI calls this sign-in &ldquo;Codex CLI&rdquo;; no terminal is needed/);
+  assert.match(harness.app.innerHTML, /Keep this Chickpea tab open to finish connecting/);
   assert.equal(harness.scheduledTimerCount(), 1);
   assert.doesNotMatch(harness.app.innerHTML, /browser-attempt-capability/);
   assert.equal(harness.sessionStorageValue('browser-attempt-capability-1234567890'), null);
