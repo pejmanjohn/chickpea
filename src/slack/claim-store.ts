@@ -35,6 +35,7 @@ import {
 import { localSlackStateStore } from './local-state-store.ts';
 import { ACTIVE_WORK_TTL_MS, CLAIM_TTL_MS, THREAD_TTL_MS } from './state-limits.ts';
 import { slackTimestampUnits } from './thread-context.ts';
+import { SqliteGatewayInboxStore } from './gateway/node-inbox-store.ts';
 
 export { ACTIVE_WORK_TTL_MS, CLAIM_TTL_MS, THREAD_TTL_MS } from './state-limits.ts';
 
@@ -410,11 +411,13 @@ export class SlackStateLogic {
  * parity suite and offline harnesses rely on that isolation.
  */
 export interface SqliteSlackStateStore extends SlackStateStore {
+  gatewayInboxStore(): SqliteGatewayInboxStore;
   close(): void;
 }
 
 export class SqliteSlackStateStore {
   private readonly db: NodeStateDb;
+  private readonly gatewayInbox: SqliteGatewayInboxStore;
 
   constructor(path: string, now: () => number = Date.now) {
     this.db = openStateDb(path);
@@ -422,11 +425,16 @@ export class SqliteSlackStateStore {
     const turnJobs = new TurnJobStoreLogic(this.db, now);
     const presentations = new SlackRunPresentationStoreLogic(this.db, now);
     const work = new WorkStoreLogic(this.db, { now });
+    this.gatewayInbox = new SqliteGatewayInboxStore(this.db);
     const facade: SlackStateStore = localSlackStateStore({ slack, work, turnJobs, presentations });
     Object.assign(this, facade);
   }
 
   close(): void {
     this.db.close();
+  }
+
+  gatewayInboxStore(): SqliteGatewayInboxStore {
+    return this.gatewayInbox;
   }
 }

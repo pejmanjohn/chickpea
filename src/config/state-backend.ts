@@ -38,6 +38,7 @@ import type {
   SlackCredentialResolutionDependencies,
 } from '../slack/installation-credentials.ts';
 import { SqliteManagementStore, type ManagementStore } from '../management/store.ts';
+import type { SqliteGatewayInboxStore } from '../slack/gateway/node-inbox-store.ts';
 
 export { isCloudflareTarget } from './runtime-target.ts';
 
@@ -259,6 +260,14 @@ export function getManagementStore(env?: PlatformEnv): ManagementStore {
   return cachedManagementStore.store;
 }
 
+export function getNodeGatewayInboxStore(): SqliteGatewayInboxStore {
+  if (isCloudflareTarget()) {
+    throw new Error('The Node gateway inbox is unavailable on Cloudflare.');
+  }
+  getSlackStateStore();
+  return cachedSlackStateStore!.store.gatewayInboxStore();
+}
+
 export async function readRuntimeDrainStatus(env?: PlatformEnv): Promise<RuntimeDrainStatus> {
   if (isCloudflareTarget()) {
     const result = await tagStateStub(env).runtimeDrainStatus();
@@ -275,9 +284,7 @@ export async function readRuntimeDrainStatus(env?: PlatformEnv): Promise<Runtime
   ]);
   const categories = {
     ...turnJobs,
-    pendingGatewayInboxDeliveries: 0,
-    inFlightGatewayInboxDeliveries: 0,
-    recoveryRequiredGatewayInboxDeliveries: 0,
+    ...getNodeGatewayInboxStore().runtimeDrainCounts(),
     executingRuns,
     admittingOrRunningRoutineOccurrences,
   };

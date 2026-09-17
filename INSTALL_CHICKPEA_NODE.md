@@ -6,7 +6,9 @@ runtime settings and setup link, then starts Chickpea and opens your browser.
 You do not need nvm, Homebrew, a global npm package, or a Cloudflare Worker.
 
 You still choose a stable public HTTPS address and authorize Slack and your
-model provider. Slack must be able to reach the Mac through that address.
+model provider. The address serves setup, sign-in, connector callbacks, and
+Admin links. The shared Chickpea app delivers Slack events over an outbound
+connection from your Mac; a customer-owned Slack app uses the public address.
 Keep the Mac awake and connected. Scheduled work runs only while Chickpea is
 running. Node does not include the Cloudflare coding sandbox.
 
@@ -14,14 +16,18 @@ running. Node does not include the Cloudflare coding sandbox.
 
 - Use an Apple Silicon or Intel Mac with internet access and enough disk space
   for Node, application source, dependencies, and persistent data.
-- Use a Slack workspace where you can create and install an app. The Node
-  installation requires your own Slack app.
+- Use a Slack workspace where you can install the shared Chickpea app. You can
+  also create and use your own Slack app.
 - Have a supported model provider account or API credential ready.
 - Choose one of the [HTTPS options](#choose-an-https-route) below.
 
 Mac installation is supported starting with v0.1.21. The default command uses
 the latest stable application release. Installing the management CLI from npm
 does not install the application.
+
+The shared-app path below is newer than v0.1.21. Until a release includes it,
+select a reviewed commit containing this support with
+`--allow-unreleased --version COMMIT_SHA`, or use your own Slack app with v0.1.21.
 
 ## Install
 
@@ -122,18 +128,22 @@ The private setup link expires after 24 hours. The installer opens it without
 printing it. Keep saved setup links, runtime settings, and tunnel tokens out of
 messages, source control, and issue attachments.
 
-Follow [the customer-owned Slack app setup](SETUP_AGENT.md):
+Use the shared Chickpea app for the shortest setup:
 
-1. Choose **Create the Slack app** and supply a short-lived Slack configuration
-   token. Chickpea creates the app from its reviewed manifest.
-2. Install the app in your workspace and verify its Events URL.
-3. Sign in with Slack to become the first Owner.
-4. Choose a provider and model.
-5. Send a direct message to `@Chickpea`, confirm its reply, and sign in to Admin.
+1. Choose **Add to Slack** and authorize Chickpea in your workspace.
+2. Sign in with Slack to become the first Owner.
+3. Choose a provider and model.
+4. Send a direct message to `@Chickpea`, confirm its reply, and sign in to Admin.
 
 These are account choices and authorization steps. The shell installer does
-not grant itself Slack or model-provider access. This flow uses Slack's HTTP
-Events API and does not require an app-level `xapp-` token.
+not grant itself Slack or model-provider access. The shared app requires no
+Slack configuration token, signing secret, or app-level `xapp-` token. Your
+installation saves incoming deliveries to its SQLite inbox before acknowledging
+them and resumes pending work when it restarts. Keep its state directory.
+
+If you prefer to operate the Slack app yourself, follow
+[the customer-owned Slack app setup](SETUP_AGENT.md). That path uses Slack's
+HTTP Events API through your public HTTPS address.
 
 The setup page supports Anthropic, OpenAI, OpenRouter, and REST-based Cloudflare
 Workers AI. A Node installation cannot use a Worker-only binding.

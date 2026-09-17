@@ -2,9 +2,12 @@
 
 Chickpea's optional shared Slack app removes the need to create and configure your own Slack app. That convenience puts a Chickpea-operated gateway between Slack and your deployment. This document states the privacy and delivery contract for that path.
 
-The short version: **the shared gateway does not durably store Slack message or event bodies**. It verifies and routes them in memory. On Cloudflare, your Chickpea deployment durably admits an event before the gateway acknowledges it, then removes the body as soon as processing completes or enters recovery. Slack remains the retry source during an outage.
+The short version: **the shared gateway does not durably store Slack message or event bodies**. It verifies and routes them in memory. Your Cloudflare or Node deployment durably admits an event before the gateway acknowledges it, then removes the body as soon as processing completes or enters recovery. Slack remains the retry source during an outage.
 
-This durable-admission and 48-hour deduplication contract currently applies to Cloudflare deployments. The Node target does not advertise durable admission to the shared gateway. Use your own Slack app for reliable Node ingress in v1.
+Node receives shared-app deliveries over an outbound socket and stores its inbox
+in the installation's SQLite state. Keep one process per state directory and
+preserve that directory across restarts. The public HTTPS address is still used
+for setup, sign-in, connector callbacks, and Admin links.
 
 ## What is stored
 
@@ -19,8 +22,8 @@ the 8 MiB artifact limit.
 | Shared gateway request handling | The Slack request body in transient process memory while the signature is checked, the event is routed, and the deployment receipt is awaited. | Not written to Durable Object storage, KV, R2, logs, or analytics. A live delivery receipt times out after 2 seconds. |
 | Shared gateway installation state | Workspace, app, bot, installer, deployment, and binding identifiers; encrypted Slack installation tokens; granted scopes; health and delivery metadata, including encrypted per-binding HTTP signing keys and route revisions. | Until the workspace disconnects or Slack revokes the installation, subject to operational backup retention. This state contains credentials and identifiers, not message bodies. |
 | Shared gateway retry-notice suppression | Workspace and channel identifiers for 5 minutes, plus Slack `event_id` for 25 hours. | Content-free records expire logically at those times and are removed by scheduled cleanup. They prevent duplicate offline notices. |
-| Your Cloudflare deployment's inbox | The event envelope required to process a delivery, in the Durable Object state you operate. | Usually until processing completes. It is scrubbed immediately on completion, after the retry limit, or when recovery is required. An abandoned active delivery is scrubbed after at most 7 days. |
-| Your Cloudflare deployment's deduplication record | Delivery ID, binding and workspace IDs, event kind, status, attempt count, timestamps, and a bounded reason code. No event or message body. | 48 hours after the row becomes terminal. Up to 1,000,000 protected rows are retained; if that bound is full, Chickpea rejects new admission instead of deleting an unexpired deduplication record. |
+| Your deployment's inbox | The event envelope required to process a delivery, in your Cloudflare Durable Object state or Node SQLite state. | Usually until processing completes. It is scrubbed immediately on completion, after the retry limit, or when recovery is required. Active deliveries expire after 7 days and are scrubbed by the next cleanup while the deployment is running. A stopped Node process cannot erase data on disk. |
+| Your deployment's deduplication record | Delivery ID, binding and workspace IDs, event kind, status, attempt count, timestamps, and a bounded reason code. No event or message body. | 48 hours after the row becomes terminal. Up to 1,000,000 protected rows are retained; if that bound is full, Chickpea rejects new admission instead of deleting an unexpired deduplication record. |
 | Operational logs | Bounded reason codes and retry numbers, such as `session_missing` or `receipt_timeout`. | Controlled by the operator's log-retention policy. Message text, event envelopes, message-derived Slack fields, tool inputs and outputs, raw errors, and exception text are not part of the gateway delivery logs. |
 
 Chickpea's normal transcript, memory, and run retention inside your deployment are separate product features. They follow the settings of the infrastructure you operate; the gateway does not receive a copy of that stored state.
@@ -28,12 +31,12 @@ Chickpea's normal transcript, memory, and run retention inside your deployment a
 ## How delivery recovery works
 
 1. Slack sends an Events API request to the shared gateway.
-2. The gateway verifies the Slack signature and forwards the event using the bound deployment's selected transport. Cloudflare installations on supported `workers.dev` endpoints use authenticated HTTP; older gateways and other origins retain the socket.
-3. A Cloudflare deployment writes the delivery to its own durable inbox before returning `accepted` or `duplicate`.
+2. The gateway verifies the Slack signature and forwards the event using the bound deployment's selected transport. Cloudflare installations on supported `workers.dev` endpoints use authenticated HTTP; Node installations use an outbound socket.
+3. The deployment writes the delivery to its own durable inbox before returning `accepted` or `duplicate`. Processing happens after admission, so model latency does not hold up the receipt.
 4. Only then does the gateway acknowledge the request to Slack. Concurrent retries for the same delivery share the same pending receipt.
 5. If the selected transport is unavailable, the receipt times out, or admission is rejected, the gateway returns a failure. It does not acknowledge and discard the event.
 6. Slack performs its normal retries. By default, Slack does not deliver events that are more than two hours late. When the shared Slack app's **Delayed Events** setting is enabled, events remain eligible regardless of age and Slack follows the ordinary retries with hourly retries for 24 hours. Slack describes the Events API as best effort. This gives Chickpea a 24-hour recovery window, not an exactly-once guarantee.
-7. The Cloudflare deployment deduplicates by Slack's event identity. A retry can therefore recover a missed event without producing a second Agent run or reply.
+7. The deployment deduplicates by Slack's event identity. A retry can therefore recover a missed event without creating another inbox delivery. Processing and external side effects have their own recovery boundaries; this does not promise exactly-once Slack replies after every possible crash.
 
 Slack owns the event while it is waiting to retry. Slack's storage and deletion practices are governed by the workspace's Slack plan, settings, and Slack's own policies; Chickpea does not copy that waiting event into a gateway queue.
 
@@ -49,7 +52,7 @@ HTTP setup proves endpoint and key possession before marking the connection read
 
 ## Choosing the privacy boundary
 
-- **Shared Slack app on Cloudflare:** Chickpea operates the credential and routing gateway under the contract above. This is the easiest setup and preserves recovery without a durable gateway message queue.
+- **Shared Slack app on Cloudflare or Node:** Chickpea operates the credential and routing gateway under the contract above. This is the easiest setup and preserves recovery without a durable gateway message queue.
 - **Your own Slack app:** Slack sends requests directly to your deployment. The shared gateway and its installation state are absent from the path. This is the strongest infrastructure-isolation option and requires you to configure and operate the Slack app.
 
 In either lane, model traffic and durable Agent state remain in the deployment and provider accounts you selected.
@@ -59,7 +62,7 @@ In either lane, model traffic and durable Agent state remain in the deployment a
 Code deployment alone does not enable Slack's delayed retry policy. Before treating the shared lane as outage-tolerant:
 
 1. In the shared Slack app settings, open **Event Subscriptions** and enable **Delayed Events**.
-2. Deploy matching gateway and Cloudflare Chickpea revisions.
+2. Run compatible gateway and Chickpea revisions. Node requires a release with durable inbox support.
 3. Confirm Admin reports the shared Slack connection as **Connected** with healthy inbound delivery.
 4. Send a disposable DM while the deployment receiver is intentionally unavailable for longer than Slack's ordinary retry sequence.
 5. Restore the receiver, capture the actual `x-slack-retry-num` values on the delayed attempt, and verify exactly one Agent run and one reply for the original Slack `event_id`.

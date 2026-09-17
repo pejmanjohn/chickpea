@@ -1088,9 +1088,8 @@ export class GatewayLogicalSession {
     try {
       outcome = await this.input.onEvent(frame);
     } catch {
-      // The gateway lane is deliberately online-only: processing failures are
-      // rejected rather than queued. They are application failures, however,
-      // not malformed frames, so one bad event must not tear down the socket.
+      // Admission itself failed, so no durable deployment receipt exists.
+      // Reject for gateway/Slack retry without tearing down the socket.
       outcome = 'rejected';
     }
     this.input.send({

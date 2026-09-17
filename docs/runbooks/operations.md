@@ -12,8 +12,11 @@ Use the 24.20.0 baseline in `.nvmrc` for reproducible installs and verification.
 Later Node 24 updates are supported; other majors are outside the support policy.
 
 Node supports scheduled execution while the Chickpea process is running, but not
-the coding sandbox. Use your own Slack app: the Node shared-gateway path does not
-yet have Cloudflare's durable event admission guarantee. See
+the coding sandbox. The shared Slack app delivers over an outbound socket. Node
+saves each delivery to the installation's SQLite inbox before acknowledging it,
+then processes it asynchronously and resumes pending work at startup. The public
+HTTPS address serves setup, sign-in, connector callbacks, and Admin links. A
+customer-owned Slack app instead sends events to that public address. See
 [gateway data handling](../shared-gateway-data-handling.md).
 
 ### Build a release
