@@ -129,8 +129,9 @@ The [pricing page](https://ngrok.com/pricing) also describes Free as having $5
 of one-time usage credit with no additional usage beyond that credit. These
 pages do not describe the allowance identically. Check your account's
 [usage](https://dashboard.ngrok.com/usage) and billing; do not assume an unlimited
-or permanently renewable free service. If a limit is reached, Slack events,
-callbacks, and Admin may become unavailable. Choose a suitable paid plan or a
+or permanently renewable free service. If a limit is reached, setup, callbacks,
+and Admin may become unavailable. A customer-owned Slack app also depends on
+the tunnel for incoming events. Choose a suitable paid plan or a
 different stable HTTPS route for traffic that must stay available.
 
 ngrok's current [terms](https://ngrok.com/tos) cover individuals and companies;
@@ -259,8 +260,9 @@ start at login installed, it reloads that service; otherwise it stays in the
 foreground. `stop` unloads the login service for the current session. Use
 `service uninstall` to remove startup at future logins.
 
-Status checks show process and HTTP availability and return a failing exit code
-when the public route is unavailable. They do not prove that Slack
+Status checks show process and HTTP availability. The exit code reports whether
+the managed application is running and reachable locally; public HTTPS is
+reported separately. These checks do not prove that Slack
 can deliver a message, that your provider can answer, or that Admin sign-in
 works. Confirm those in Slack and your browser after first setup and restarts.
 

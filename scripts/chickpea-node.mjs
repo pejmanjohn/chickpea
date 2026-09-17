@@ -101,7 +101,7 @@ export async function main(argv = process.argv.slice(2)) {
       'Slack delivery: not verified by this command',
       '',
     ].join('\n'));
-    return status.managedProcess && status.localReachable && status.publicReachable ? 0 : 1;
+    return status.managedProcess && status.localReachable ? 0 : 1;
   }
   if (parsed.command === 'setup') {
     const renew = parseFlagOnly(parsed.args, '--renew');
