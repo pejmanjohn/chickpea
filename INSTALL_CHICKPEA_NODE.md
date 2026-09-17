@@ -38,7 +38,8 @@ curl -fsSL https://chickpea.co/install.sh | bash
 ```
 
 With a release that includes guided ngrok setup, the installer offers ngrok
-first, then Cloudflare Tunnel and an existing HTTPS route. It opens the ngrok
+as the default (press Enter), followed by Cloudflare Tunnel and an existing
+HTTPS route. It opens the ngrok
 dashboard so you can copy your assigned dev domain and authtoken. Token input
 is hidden. `--no-open` leaves dashboard and setup pages for you to open manually.
 It downloads tools into `~/.chickpea-node`, builds an immutable stable GitHub

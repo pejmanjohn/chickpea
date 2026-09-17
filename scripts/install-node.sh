@@ -228,9 +228,9 @@ if [[ -z $tunnel_mode && -n $tunnel_token_file ]]; then tunnel_mode=cloudflare; 
 if [[ -z $tunnel_mode ]]; then
   if [[ ${CHICKPEA_INSTALL_NONINTERACTIVE:-0} != 1 && -r /dev/tty && -w /dev/tty ]]; then
     note 'ngrok provides an assigned HTTPS domain without buying a domain. Free accounts have usage limits and an HTML browser warning. Review https://ngrok.com/pricing and your account before relying on it for ongoing traffic.'
-    printf 'HTTPS route [1 = ngrok (recommended), 2 = Cloudflare named tunnel, 3 = existing HTTPS route]: ' > /dev/tty
+    printf 'HTTPS route [1 = ngrok (default), 2 = Cloudflare Tunnel, 3 = existing HTTPS route]: ' > /dev/tty
     IFS= read -r tunnel_choice < /dev/tty || die 'unable to read the tunnel choice'
-    case "$tunnel_choice" in 1|ngrok) tunnel_mode=ngrok ;; 2|cloudflare) tunnel_mode=cloudflare ;; 3|external) tunnel_mode=external ;; *) die 'choose 1, 2, or 3' ;; esac
+    case "$tunnel_choice" in ''|1|ngrok) tunnel_mode=ngrok ;; 2|cloudflare) tunnel_mode=cloudflare ;; 3|external) tunnel_mode=external ;; *) die 'choose 1, 2, or 3' ;; esac
   else
     die '--tunnel is required when no interactive terminal is available'
   fi
