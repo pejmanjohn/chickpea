@@ -406,7 +406,9 @@ async function promptSlackInteractionIntentAgent(
     interactionClassifierContext(context),
     {
       maxTokens: 512,
-      temperature: 0,
+      // ChatGPT's Codex Responses endpoint rejects temperature for subscription
+      // models. Keep the established deterministic option on every other lane.
+      ...(runtimeModel.providerAuthRoute === 'openai_subscription' ? {} : { temperature: 0 }),
       maxRetries: 0,
       ...(apiKey ? { apiKey } : {}),
     },
