@@ -2137,13 +2137,16 @@
       var ready = onboardingProviderConfigured(provider.id);
       var status = ready
         ? '<span class="onboarding-provider-tab-status">' + (provider.id === "cloudflare" ? 'Ready, no key' : 'Ready') + '</span>'
-        : '<span class="onboarding-provider-tab-sub">' + esc(provider.sublabel) + '</span>';
+        : '<span class="onboarding-provider-tab-sub">' + esc(!IS_CLOUDFLARE && provider.id === "openai" ? "Needs API key or subscription" : provider.sublabel) + '</span>';
       return '<button type="button" class="onboarding-provider-tab' + (active ? ' selected' : '') + '" data-action="onboarding-provider-select" data-provider="' + esc(provider.id) + '" aria-pressed="' + String(active) + '">' +
         onboardingProviderLogoHtml(provider) + '<span class="onboarding-provider-tab-copy"><span>' + esc(provider.tabName || provider.name) + '</span>' + status + '</span></button>';
     }).join("");
     var canContinue = !!selected && (configured || (selected.id !== "cloudflare" && !!String(state.onboardingProviderKey || "").trim()));
+    var description = !IS_CLOUDFLARE && selected && selected.id === "openai"
+      ? "Use OpenAI models with a Platform API key or ChatGPT subscription."
+      : selected && selected.description;
     var panel = selected
-      ? '<div class="onboarding-provider-config"><h2>' + (configured ? 'Use ' : 'Connect ') + esc(selected.name) + '</h2><p class="hint">' + esc(selected.description) + '</p>' + onboardingProviderConfigurationHtml(selected, configured) + '</div>'
+      ? '<div class="onboarding-provider-config"><h2>' + (configured ? 'Use ' : 'Connect ') + esc(selected.name) + '</h2><p class="hint">' + esc(description) + '</p>' + onboardingProviderConfigurationHtml(selected, configured) + '</div>'
       : '<div class="onboarding-provider-config onboarding-provider-config-empty"><p class="hint">Choose the provider you want Chickpea to use. Each option shows the setup it needs.</p></div>';
     return '<section class="onboarding-panel onboarding-panel-wide"><p class="onboarding-eyebrow">Step 2 of 4</p>' +
       '<h1 class="onboarding-title">Choose your model provider</h1>' +
@@ -2154,11 +2157,14 @@
   }
 
   function onboardingProviderConfigurationHtml(selected, configured) {
-    return configured
+    var subscriptionSetup = !IS_CLOUDFLARE && selected.id === "openai"
+      ? '<div class="onboarding-form-actions"><p class="hint"><strong>Have a ChatGPT subscription?</strong><br>Connect it in Model providers, select it for chat, then return here to choose a model.</p><a class="btn btn-soft" href="/admin/settings/providers?return=onboarding">Connect ChatGPT subscription</a></div>'
+      : "";
+    return (configured
       ? '<p class="onboarding-provider-ready">' + esc(selected.name) + ' is ready to use.</p>'
       : selected.id === "cloudflare"
         ? '<p class="field-error" role="alert">Cloudflare Workers AI is not available for this deployment.</p>'
-        : '<label class="field" for="onboarding-provider-key"><span class="field-label">' + esc(selected.keyLabel) + '</span><input class="input" id="onboarding-provider-key" type="password" autocomplete="off" spellcheck="false" data-action="onboarding-provider-key" data-provider="' + esc(selected.id) + '" value="' + esc(state.onboardingProviderKey) + '" placeholder="Paste your key"></label><p class="onboarding-provider-secret-note">Stored encrypted and never shown again.</p>';
+        : '<label class="field" for="onboarding-provider-key"><span class="field-label">' + esc(selected.keyLabel) + '</span><input class="input" id="onboarding-provider-key" type="password" autocomplete="off" spellcheck="false" data-action="onboarding-provider-key" data-provider="' + esc(selected.id) + '" value="' + esc(state.onboardingProviderKey) + '" placeholder="Paste your key"></label><p class="onboarding-provider-secret-note">Stored encrypted and never shown again.</p>') + subscriptionSetup;
   }
 
   function onboardingModelOptions() {
@@ -8284,6 +8290,10 @@
     var head = '<div style="display:flex; flex-direction:column; gap:6px;">' +
       '<h1 class="page-title">Settings</h1>' +
       '<p class="hint">Configure GitHub, model providers, and outbound internet access for the sandbox.</p></div>';
+    var onboardingReturn = !IS_CLOUDFLARE && typeof location !== "undefined" &&
+        new URLSearchParams(location.search || "").get("return") === "onboarding"
+      ? '<div class="callout"><span>Connect a ChatGPT subscription and select it for chat. Then return to setup to choose its model.</span><a class="btn btn-primary btn-sm" href="/admin/onboarding">Return to setup</a></div>'
+      : "";
     var workspaceDefaultSection = workspaceDefaultSectionHtml();
     var providerSection;
     if (state.settingsError) {
@@ -8300,7 +8310,7 @@
     return head +
       settingsPanelHtml("slack", slackWorkspaceSettingsHtml()) +
       settingsPanelHtml("connectors", connectorsSettingsHtml()) +
-      settingsPanelHtml("providers", workspaceDefaultSection + workspaceImageRoleSectionHtml() + providerSection) +
+      settingsPanelHtml("providers", onboardingReturn + workspaceDefaultSection + workspaceImageRoleSectionHtml() + providerSection) +
       settingsPanelHtml("github", githubSectionHtml()) +
       settingsPanelHtml("sandbox", sandboxSectionHtml()) +
       settingsPanelHtml("outbound", egressSectionHtml());
@@ -8758,7 +8768,7 @@
       controls = '<button type="button" class="btn btn-primary btn-sm" data-action="openai-subscription-confirm"' + (busy ? ' disabled' : '') + '>Confirm account change</button>' +
         '<button type="button" class="btn btn-ghost btn-sm" data-action="openai-subscription-cancel"' + (busy ? ' disabled' : '') + '>Cancel</button>';
     } else if (attempt) {
-      copy = 'Open OpenAI and enter <strong class="mono">' + esc(attempt.userCode) + '</strong>. This page will finish when authorization completes.';
+      copy = 'Open OpenAI and enter <strong class="mono">' + esc(attempt.userCode) + '</strong>, the 9-character code shown on this Chickpea page. OpenAI calls this sign-in &ldquo;Codex CLI&rdquo;; no terminal is needed. Keep this Chickpea tab open to finish connecting.';
       controls = '<a class="btn btn-primary btn-sm" href="' + esc(attempt.verificationUri) + '" target="_blank" rel="noopener noreferrer">Open OpenAI &nearr;</a>' +
         '<button type="button" class="btn btn-ghost btn-sm" data-action="openai-subscription-cancel"' + (busy ? ' disabled' : '') + '>Cancel</button>';
     } else if (status.state === "account_change_confirmation_required") {
