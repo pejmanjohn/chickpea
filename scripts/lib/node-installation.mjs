@@ -21,6 +21,7 @@ import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
 import { parseEnv } from 'node:util';
 import { DatabaseSync } from 'node:sqlite';
+import { checkPublicRoute, ngrokArguments, renderNgrokConfig, validateNgrokOrigin, watchNgrokOutput } from './node-ngrok.mjs';
 
 import {
   mintSetupCapability,
@@ -101,6 +102,7 @@ async function initInstallationUnlocked(options) {
       failDuringPreparation(options, SETUP_FILE);
       writePrivate(path.join(preparing, INSTALLATION_FILE), `${JSON.stringify(installation, null, 2)}\n`);
       if (stagedTunnelToken) writePrivate(path.join(preparing, 'tunnel-token.txt'), stagedTunnelToken);
+      if (installation.tunnelMode === 'ngrok') writePrivate(path.join(preparing, 'ngrok.yml'), renderNgrokConfig(stagedTunnelToken));
     });
   } else {
     assertPrivateDirectory(staging);
@@ -113,7 +115,8 @@ async function initInstallationUnlocked(options) {
   ensurePrivateTree(home);
   ensureControlToken(home);
   const publish = [
-    ...(installation.tunnelMode === 'cloudflare' ? ['tunnel-token.txt'] : []),
+    ...(installation.tunnel ? ['tunnel-token.txt'] : []),
+    ...(installation.tunnelMode === 'ngrok' ? ['ngrok.yml'] : []),
     RUNTIME_FILE,
     SETUP_FILE,
     INSTALLATION_FILE,
@@ -135,25 +138,36 @@ function validateInstallationInput(options, home, sourceCommit) {
     throw new Error('Port must be an integer from 1 through 65535.');
   }
   const tunnelMode = options.tunnelMode ?? 'external';
-  if (!['external', 'cloudflare'].includes(tunnelMode)) {
-    throw new Error('--tunnel must be external or cloudflare.');
+  if (!['external', 'cloudflare', 'ngrok'].includes(tunnelMode)) {
+    throw new Error('--tunnel must be external, cloudflare, or ngrok.');
   }
   const hasToken = options.tunnelTokenFile !== undefined;
   const hasCloudflared = options.cloudflared !== undefined;
   if (tunnelMode === 'cloudflare' && (!hasToken || !hasCloudflared)) {
     throw new Error('Cloudflare tunnel mode requires --tunnel-token-file and --cloudflared.');
   }
-  if (tunnelMode === 'external' && (hasToken || hasCloudflared)) {
-    throw new Error('Tunnel paths are accepted only with --tunnel cloudflare.');
+  if (tunnelMode === 'ngrok' && (!hasToken || !options.ngrok)) {
+    throw new Error('ngrok mode requires --tunnel-token-file and --ngrok.');
   }
+  if ((tunnelMode !== 'cloudflare' && hasCloudflared) || (tunnelMode !== 'ngrok' && options.ngrok) ||
+      (tunnelMode === 'external' && hasToken)) {
+    throw new Error('Tunnel paths must match the selected tunnel provider.');
+  }
+  if (tunnelMode === 'ngrok') validateNgrokOrigin(origin);
   const installation = { schemaVersion: 1, sourceCommit, origin, port, tunnelMode };
   let stagedTunnelToken;
   if (hasToken) {
     const sourceToken = validateTunnelToken(options.tunnelTokenFile);
     const tokenFile = path.join(home, 'tunnel-token.txt');
     stagedTunnelToken = readFileSync(sourceToken);
-    const cloudflared = validateCloudflared(options.cloudflared);
-    installation.tunnel = { mode: 'cloudflare', tokenFile, cloudflared };
+    if (tunnelMode === 'ngrok') {
+      renderNgrokConfig(stagedTunnelToken);
+      const ngrok = validateTunnelExecutable(options.ngrok, 'ngrok');
+      installation.tunnel = { mode: 'ngrok', tokenFile, ngrok, configFile: path.join(home, 'ngrok.yml') };
+    } else {
+      const cloudflared = validateCloudflared(options.cloudflared);
+      installation.tunnel = { mode: 'cloudflare', tokenFile, cloudflared };
+    }
   }
   return { installation, stagedTunnelToken };
 }
@@ -200,6 +214,16 @@ function validateCloudflared(value) {
   return resolved;
 }
 
+function validateTunnelExecutable(value, label) {
+  if (!path.isAbsolute(value)) throw new Error(`${label} must be an absolute path.`);
+  // Explicit executables may be Homebrew symlinks; resolve and pin the target.
+  const resolved = realpathSync(value);
+  if (!statSync(resolved).isFile() || (statSync(resolved).mode & 0o111) === 0) {
+    throw new Error(`${label} must be an executable regular file.`);
+  }
+  return resolved;
+}
+
 function validateRelease(home, suppliedRoot) {
   if (!suppliedRoot) throw new Error('The installer could not identify its release root.');
   const releaseRoot = realpathSync(suppliedRoot);
@@ -219,7 +243,7 @@ function validateRelease(home, suppliedRoot) {
 }
 
 function refuseUnmanagedProductionFiles(home) {
-  const unmanaged = [INSTALLATION_FILE, RUNTIME_FILE, SETUP_FILE, 'tunnel-token.txt', 'state', 'logs', 'control']
+  const unmanaged = [INSTALLATION_FILE, RUNTIME_FILE, SETUP_FILE, 'tunnel-token.txt', 'ngrok.yml', 'state', 'logs', 'control']
     .filter((relative) => existsSync(path.join(home, relative)));
   if (unmanaged.length > 0) {
     throw new Error(`Found unmanaged installer state: ${unmanaged.join(', ')}.`);
@@ -238,7 +262,7 @@ function assertCompletedInstallation(home) {
   if (!existsSync(path.join(home, SETUP_FILE)) && ownership !== 'active') {
     throw new Error(`Managed installation is incomplete: ${SETUP_FILE} is missing.`);
   }
-  if (installation.tunnelMode === 'cloudflare') {
+  if (installation.tunnel) {
     assertPrivateRegularFile(installation.tunnel.tokenFile, 'tunnel token');
   }
 }
@@ -305,12 +329,20 @@ export function readInstallation(homeInput) {
       !Number.isSafeInteger(value.port)) throw new Error('installation.json is invalid.');
   validatePublicOrigin(value.origin);
   if (value.port < 1 || value.port > 65_535) throw new Error('installation.json has an invalid port.');
-  if (!['external', 'cloudflare'].includes(value.tunnelMode)) throw new Error('installation.json has an invalid tunnel mode.');
+  if (!['external', 'cloudflare', 'ngrok'].includes(value.tunnelMode)) throw new Error('installation.json has an invalid tunnel mode.');
   if (value.tunnelMode === 'cloudflare' && (value.tunnel?.mode !== 'cloudflare' ||
       typeof value.tunnel.tokenFile !== 'string' || typeof value.tunnel.cloudflared !== 'string')) {
     throw new Error('installation.json has an invalid tunnel configuration.');
   }
   if (value.tunnelMode === 'external' && value.tunnel !== undefined) throw new Error('installation.json has an unexpected tunnel configuration.');
+  if (value.tunnelMode === 'ngrok') {
+    validateNgrokOrigin(value.origin);
+    if (value.tunnel?.mode !== 'ngrok' || typeof value.tunnel.ngrok !== 'string' ||
+        value.tunnel.tokenFile !== path.join(home, 'tunnel-token.txt') ||
+        value.tunnel.configFile !== path.join(home, 'ngrok.yml')) {
+      throw new Error('installation.json has an invalid ngrok configuration.');
+    }
+  }
   return value;
 }
 
@@ -338,6 +370,12 @@ async function runStartUnlocked(homeInput, options = {}) {
   if (existsSync(path.join(home, '.setup-renewal'))) throw new Error('Setup renewal is incomplete. Run setup --renew again before starting.');
   const installation = readInstallation(home);
   const release = validateCurrentLink(home);
+  if (installation.tunnelMode === 'ngrok') {
+    assertPrivateRegularFile(installation.tunnel.tokenFile, 'ngrok authtoken');
+    // Regenerate only our config, never merge a user's global ngrok settings.
+    atomicPrivateWrite(installation.tunnel.configFile, renderNgrokConfig(readFileSync(installation.tunnel.tokenFile)));
+    validateTunnelExecutable(installation.tunnel.ngrok, 'ngrok');
+  }
   const privateNode = realpathRegularFile(path.join(home, PRIVATE_NODE_PATH_SUFFIX), 'Private Node runtime');
   const startScript = path.join(release, 'scripts', 'start-node.mjs');
   if (!existsSync(startScript)) throw new Error('The active release is missing scripts/start-node.mjs.');
@@ -358,6 +396,9 @@ async function runStartUnlocked(homeInput, options = {}) {
     if (!stopping) {
       requestedExitCode = 1;
       process.stderr.write(`[chickpea] ${name} stopped unexpectedly; shutting down.\n`);
+      if (name === 'tunnel' && installation.tunnelMode === 'ngrok') {
+        process.stderr.write('[chickpea] Check the ngrok account, authtoken, domain and usage at https://dashboard.ngrok.com. Then restart Chickpea. Raw provider output is withheld because it may contain credentials.\n');
+      }
       void shutdown();
     }
   };
@@ -385,7 +426,7 @@ async function runStartUnlocked(homeInput, options = {}) {
       running: true,
       stopping,
       appReady,
-      tunnelRunning: Boolean(installation.tunnel && children.find((child) => child.name === 'tunnel')?.runtimeExit === undefined),
+      tunnelRunning: Boolean(children.some((child) => child.name === 'tunnel' && child.runtimeExit === undefined)),
     };
     if (command === 'stop') {
       queueMicrotask(() => { void shutdown(); });
@@ -394,17 +435,21 @@ async function runStartUnlocked(homeInput, options = {}) {
     throw new Error('Unknown control command.');
   });
 
-  const spawnOwned = (name, command, args, logFd) => {
+  const spawnOwned = (name, command, args, logFd, { ipc = false, privateOutput = false } = {}) => {
     const detached = process.platform !== 'win32';
     const child = (options.spawnImpl ?? spawn)(command, args, {
       cwd: release,
       detached,
       env: childEnvironment,
-      stdio: ['ignore', logFd, logFd],
+      stdio: ['ignore', privateOutput ? 'pipe' : logFd, privateOutput ? 'pipe' : logFd, ...(ipc ? ['ipc'] : [])],
     });
     child.name = name;
     child.runtimeDetached = detached;
     child.runtimeExit = undefined;
+    child.on('message', (message) => { if (message?.type === 'chickpea-ready') child.runtimeReady = true; });
+    if (privateOutput) watchNgrokOutput(child, (hint) => process.stderr.write(`[chickpea] ${hint}\n`), {
+      origin: installation.origin, port: installation.port, onReady: () => { child.tunnelReady = true; },
+    });
     child.once('error', (error) => {
       process.stderr.write(`[chickpea] ${name} could not start: ${error.message}\n`);
       finishChild(name, child, 1, null);
@@ -417,13 +462,8 @@ async function runStartUnlocked(homeInput, options = {}) {
   let app;
   try {
     appLog = openPrivateAppend(path.join(home, 'logs', 'app.log'));
-    tunnelLog = installation.tunnel ? openPrivateAppend(path.join(home, 'logs', 'tunnel.log')) : undefined;
-    app = spawnOwned('application', privateNode, [startScript, '--env-file', path.join(home, RUNTIME_FILE)], appLog);
-    if (installation.tunnel) {
-      spawnOwned('tunnel', installation.tunnel.cloudflared, [
-        'tunnel', '--no-autoupdate', 'run', '--token-file', installation.tunnel.tokenFile,
-      ], tunnelLog);
-    }
+    tunnelLog = installation.tunnelMode === 'cloudflare' ? openPrivateAppend(path.join(home, 'logs', 'tunnel.log')) : undefined;
+    app = spawnOwned('application', privateNode, [startScript, '--env-file', path.join(home, RUNTIME_FILE)], appLog, { ipc: Boolean(installation.tunnel) });
   } catch (error) {
     requestedExitCode = 1;
     await shutdown();
@@ -446,9 +486,41 @@ async function runStartUnlocked(homeInput, options = {}) {
     await waitForReadiness(installation.port, app, {
       fetchImpl: options.fetchImpl,
       timeoutMs: options.readinessTimeoutMs ?? DEFAULT_READINESS_TIMEOUT_MS,
+      requireOwnedReady: Boolean(installation.tunnel),
     });
+    if (stopping) return await completion;
     appReady = true;
+    if (installation.tunnelMode === 'cloudflare') {
+      spawnOwned('tunnel', installation.tunnel.cloudflared, [
+        'tunnel', '--no-autoupdate', 'run', '--token-file', installation.tunnel.tokenFile,
+      ], tunnelLog);
+    } else if (installation.tunnelMode === 'ngrok') {
+      spawnOwned('tunnel', installation.tunnel.ngrok, ngrokArguments(installation), undefined, { privateOutput: true });
+    }
     process.stdout.write(`[chickpea] Running locally at http://127.0.0.1:${installation.port}. This does not verify Slack delivery.\n`);
+    if (installation.tunnel) {
+      const deadline = Date.now() + (options.publicReadinessTimeoutMs ?? 30_000);
+      let publicReady = false;
+      let hint;
+      while (!stopping && Date.now() < deadline) {
+        if (installation.tunnelMode === 'ngrok' && !children.find((child) => child.name === 'tunnel')?.tunnelReady) {
+          await delay(100);
+          continue;
+        }
+        const result = await checkPublicRoute(installation, options.fetchImpl);
+        if (result.reachable) { publicReady = true; break; }
+        if (result.hint) { hint = result.hint; break; }
+        await delay(300);
+      }
+      if (stopping) return await completion;
+      if (!publicReady) {
+        process.stderr.write(`[chickpea] ${hint ?? 'Public HTTPS is not reachable yet. Check your tunnel account, domain, usage and connection, then run status. Chickpea is still running locally.'}\n`);
+      } else {
+        process.stdout.write(`[chickpea] Public HTTPS reaches this installation at ${installation.origin}.\n`);
+      }
+      // Avoid sending a private setup capability to an unverified public route.
+      if (!publicReady) return await completion;
+    }
     if (options.open) {
       try { await openSetup(home, { openImpl: options.openImpl }); }
       catch (error) {
@@ -472,6 +544,7 @@ async function waitForReadiness(port, child, options) {
   const fetchImpl = options.fetchImpl ?? fetch;
   while (Date.now() < deadline) {
     if (child.runtimeExit !== undefined) throw new Error('The application exited before it became ready.');
+    if (options.requireOwnedReady && !child.runtimeReady) { await delay(100); continue; }
     try {
       const response = await fetchImpl(`http://127.0.0.1:${port}${READINESS_PATH}`, {
         redirect: 'manual',
@@ -638,9 +711,39 @@ export async function stopInstallation(homeInput) {
   if (response.accepted) {
     const deadline = Date.now() + 85_000;
     while (Date.now() < deadline && (await sendControlCommand(home, 'status')).running) await delay(100);
+    if ((await sendControlCommand(home, 'status')).running) throw new Error('Chickpea is still shutting down. Wait before restarting.');
   }
   if (service.loaded) bootoutLaunchAgent(service);
+  if (response.accepted) {
+    const lock = runtimeOperationLockPath(home, currentBootSessionIdentity());
+    const deadline = Date.now() + 2_000;
+    while (existsSync(lock) && Date.now() < deadline) await delay(50);
+    if (existsSync(lock)) throw new Error('Chickpea has not released its runtime lock. Wait before restarting.');
+  }
   return { stopped: Boolean(response.accepted), serviceUnloaded: service.loaded, serviceInstalled: service.installed };
+}
+
+export async function restartInstallation(homeInput, options = {}) {
+  const stopped = await stopInstallation(homeInput);
+  if (stopped.serviceInstalled) {
+    await installLaunchAgent(homeInput);
+    return 0;
+  }
+  return runStart(homeInput, options);
+}
+
+export async function authenticateNgrok(homeInput, tokenFile) {
+  const home = resolveManagedHome(homeInput);
+  assertMarker(home);
+  return withOperationLock(home, async () => {
+    if (await supervisorRunning(home)) throw new Error('Stop Chickpea before changing tunnel authentication.');
+    const installation = readInstallation(home);
+    if (installation.tunnelMode !== 'ngrok') throw new Error('This installation does not use ngrok.');
+    const token = readFileSync(validateTunnelToken(tokenFile));
+    renderNgrokConfig(token);
+    // The config is regenerated from this canonical token on the next start.
+    atomicPrivateWrite(installation.tunnel.tokenFile, token);
+  });
 }
 
 export async function installationStatus(homeInput, options = {}) {
@@ -651,9 +754,9 @@ export async function installationStatus(homeInput, options = {}) {
   try { installedVersion = String(readJson(path.join(current, 'package.json'), 'release package').version ?? 'unknown'); }
   catch { /* Status remains useful for a damaged release. */ }
   const managed = await sendControlCommand(home, 'status');
-  const localUrl = `http://127.0.0.1:${installation.port}${READINESS_PATH}`;
-  const localReachable = await httpReachable(localUrl, options.fetchImpl);
-  const publicReachable = await httpReachable(new URL(READINESS_PATH, installation.origin).href, options.fetchImpl);
+  const publicRoute = await checkPublicRoute(installation, options.fetchImpl);
+  const localReachable = publicRoute.localReachable;
+  const publicReachable = publicRoute.reachable;
   const service = launchAgentState(home);
   return {
     home,
@@ -663,19 +766,13 @@ export async function installationStatus(homeInput, options = {}) {
     appReady: Boolean(managed.appReady),
     localReachable,
     publicReachable,
+    publicHint: publicRoute.hint,
     tunnelConfigured: Boolean(installation.tunnel),
     tunnelRunning: Boolean(managed.tunnelRunning),
     launchAgentInstalled: service.installed,
     launchAgentLoaded: service.loaded,
     slackVerified: false,
   };
-}
-
-async function httpReachable(url, fetchImpl = fetch) {
-  try {
-    const response = await fetchImpl(url, { redirect: 'manual', signal: AbortSignal.timeout(2_000) });
-    return httpReachableStatus(response.status);
-  } catch { return false; }
 }
 
 function httpReachableStatus(status) {

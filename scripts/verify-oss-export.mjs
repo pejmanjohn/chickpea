@@ -765,6 +765,7 @@ function verifyNpmPackManifest(entries, packageJson) {
     'scripts/install-node.sh',
     'scripts/chickpea-node.mjs',
     'scripts/lib/node-installation.mjs',
+    'scripts/lib/node-ngrok.mjs',
     'docs/authentication.md',
     'docs/shared-gateway-data-handling.md',
     'docs/runbooks/agent-authoring-evaluation.md',

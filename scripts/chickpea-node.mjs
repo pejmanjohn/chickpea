@@ -6,12 +6,14 @@ import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import {
+  authenticateNgrok,
   defaultNodeInstallationHome,
   initInstallation,
   installLaunchAgent,
   installationStatus,
   openSetup,
   renewSetup,
+  restartInstallation,
   runStart,
   stopInstallation,
   UnsafeRuntimeOperationLockError,
@@ -69,6 +71,18 @@ export async function main(argv = process.argv.slice(2)) {
         : '[chickpea] No managed process is running.\n');
     return 0;
   }
+  if (parsed.command === 'restart') {
+    requireNoArguments(parsed.args, 'restart');
+    return restartInstallation(parsed.home);
+  }
+  if (parsed.command === 'tunnel') {
+    if (parsed.args.length !== 3 || parsed.args[0] !== 'authenticate' || parsed.args[1] !== '--token-file') {
+      throw new Error('Use tunnel authenticate --token-file /absolute/private/token-file.');
+    }
+    await authenticateNgrok(parsed.home, path.resolve(parsed.args[2]));
+    process.stdout.write('[chickpea] ngrok authentication saved. Start Chickpea to verify it. The public URL is unchanged.\n');
+    return 0;
+  }
   if (parsed.command === 'status') {
     requireNoArguments(parsed.args, 'status');
     const status = await installationStatus(parsed.home);
@@ -79,6 +93,7 @@ export async function main(argv = process.argv.slice(2)) {
       `Managed process: ${yesNo(status.managedProcess)}`,
       `Local HTTP: ${yesNo(status.localReachable)}`,
       `Public HTTPS: ${yesNo(status.publicReachable)}`,
+      ...(status.publicHint ? [status.publicHint] : []),
       `Tunnel configured: ${yesNo(status.tunnelConfigured)}`,
       `Tunnel process: ${status.tunnelConfigured ? yesNo(status.tunnelRunning) : 'not configured'}`,
       `Start-at-login service installed: ${yesNo(status.launchAgentInstalled)}`,
@@ -86,7 +101,7 @@ export async function main(argv = process.argv.slice(2)) {
       'Slack delivery: not verified by this command',
       '',
     ].join('\n'));
-    return status.managedProcess && status.localReachable ? 0 : 1;
+    return status.managedProcess && status.localReachable && status.publicReachable ? 0 : 1;
   }
   if (parsed.command === 'setup') {
     const renew = parseFlagOnly(parsed.args, '--renew');
@@ -121,7 +136,7 @@ export async function main(argv = process.argv.slice(2)) {
 
 function parseInitOptions(args) {
   const values = new Map();
-  const allowed = new Set(['--origin', '--port', '--tunnel', '--tunnel-token-file', '--cloudflared']);
+  const allowed = new Set(['--origin', '--port', '--tunnel', '--tunnel-token-file', '--cloudflared', '--ngrok']);
   for (let index = 0; index < args.length; index += 2) {
     const option = args[index];
     const value = args[index + 1];
@@ -139,6 +154,7 @@ function parseInitOptions(args) {
     tunnelMode: values.get('--tunnel') ?? 'external',
     ...(values.has('--tunnel-token-file') ? { tunnelTokenFile: path.resolve(values.get('--tunnel-token-file')) } : {}),
     ...(values.has('--cloudflared') ? { cloudflared: path.resolve(values.get('--cloudflared')) } : {}),
+    ...(values.has('--ngrok') ? { ngrok: path.resolve(values.get('--ngrok')) } : {}),
   };
 }
 
@@ -170,12 +186,14 @@ function yesNo(value) {
 
 function usage() {
   return `Usage: chickpea-node [--home DIR] <command>
-  init --origin URL --port PORT [--tunnel external|cloudflare] [--tunnel-token-file FILE --cloudflared FILE]
+  init --origin URL --port PORT [--tunnel ngrok|external|cloudflare] [--tunnel-token-file FILE] [--ngrok FILE | --cloudflared FILE]
   start [--open]
+  restart
   stop
   status
   setup [--renew]
-  service install|uninstall`;
+  service install|uninstall
+  tunnel authenticate --token-file FILE`;
 }
 
 export function isMainModule(argvEntry = process.argv[1], moduleUrl = import.meta.url) {

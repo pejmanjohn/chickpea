@@ -5,8 +5,9 @@ downloads Node 24.20.0, builds a versioned application release, creates the
 runtime settings and setup link, then starts Chickpea and opens your browser.
 You do not need nvm, Homebrew, a global npm package, or a Cloudflare Worker.
 
-You still choose a stable public HTTPS address and authorize Slack and your
-model provider. Slack must be able to reach the Mac through that address.
+The guided ngrok option provides an account-assigned public HTTPS address without
+buying a domain or using Cloudflare. You sign in to ngrok and authorize Slack and
+your model provider. Slack must be able to reach the Mac through that address.
 Keep the Mac awake and connected. Scheduled work runs only while Chickpea is
 running. Node does not include the Cloudflare coding sandbox.
 
@@ -23,6 +24,11 @@ Mac installation is supported starting with v0.1.21. The default command uses
 the latest stable application release. Installing the management CLI from npm
 does not install the application.
 
+Guided ngrok setup is new on `main` and is not included in v0.1.21. Until an
+application release includes it, use the [preview procedure](#test-an-unreleased-installer)
+with a reviewed commit containing this change. The bootstrap refuses ngrok mode
+when the selected application release does not support it.
+
 ## Install
 
 Run this command in Terminal as your usual user, without `sudo`:
@@ -31,8 +37,10 @@ Run this command in Terminal as your usual user, without `sudo`:
 curl -fsSL https://chickpea.co/install.sh | bash
 ```
 
-The installer asks for your HTTPS address and whether it should run a Cloudflare
-Tunnel or use a route you already operate. Cloudflare token input is hidden.
+With a release that includes guided ngrok setup, the installer offers ngrok
+first, then Cloudflare Tunnel and an existing HTTPS route. It opens the ngrok
+dashboard so you can copy your assigned dev domain and authtoken. Token input
+is hidden. `--no-open` leaves dashboard and setup pages for you to open manually.
 It downloads tools into `~/.chickpea-node`, builds an immutable stable GitHub
 application release, and starts in the foreground. Keep that Terminal open.
 
@@ -53,7 +61,8 @@ bash /path/to/install-node.sh \
 
 Replace `vX.Y.Z` with a compatible published application release. `--no-open`
 starts the service without opening the browser. `--port` changes the loopback
-port from 3000; update your HTTPS route to the same port. `--home` selects a
+port from 3000. Managed ngrok follows this port automatically; update an external
+or Cloudflare route yourself. `--home` selects a
 different absolute installation directory, including paths containing spaces.
 
 The installer leaves system Node, shell startup files, and other Chickpea
@@ -62,6 +71,76 @@ An installation made with the older manual guide stays on its existing
 launcher and state paths; the installer does not adopt or migrate it.
 
 ## Choose an HTTPS route
+
+### Managed ngrok, no domain purchase
+
+Use this option to try Chickpea on a Mac with ngrok's assigned HTTPS dev domain.
+It needs an ngrok account, but no DNS setup, Homebrew, or administrator access.
+
+1. Select **1, ngrok** in the installer.
+2. Sign in or create an account in the opened
+   [ngrok dashboard](https://dashboard.ngrok.com/domains). Copy the assigned dev
+   domain into the Terminal prompt. You can paste the hostname or its HTTPS URL.
+   Dedicate it to this installation; do not reuse a domain already serving another app.
+3. Copy only the authtoken from
+   [Your Authtoken](https://dashboard.ngrok.com/get-started/your-authtoken) into
+   the hidden prompt. Complete any account/email verification ngrok requests.
+4. The installer downloads a pinned, checksum-verified ngrok v3 client into its
+   private directory. It starts Chickpea, forwards to its actual loopback port,
+   and compares a public response with Chickpea's local setup asset before opening setup.
+5. If ngrok shows a browser warning, select **Visit Site** before continuing
+   setup and before beginning Slack sign-in or another browser OAuth flow.
+
+The domain belongs to your ngrok account and stays the same across restarts.
+The installer saves it and the token privately, so reruns do not ask again.
+It uses its own config, disables the local traffic inspector and remote agent
+management, and does not start endpoints from your global ngrok config. It never
+enables endpoint pooling or stops a competing tunnel. ngrok still handles public
+traffic; review its account-level traffic retention settings for your needs.
+
+For unattended installation, use a private token file and your assigned domain:
+
+```sh
+bash /path/to/install-node.sh \
+  --origin https://YOUR-ASSIGNED-DOMAIN.ngrok-free.app \
+  --tunnel ngrok \
+  --tunnel-token-file /absolute/path/to/private-ngrok-token.txt \
+  --no-start
+```
+
+Replace the example domain with the exact one shown in your dashboard. Supply
+`--ngrok /absolute/path/to/ngrok` to use an existing v3 executable, including one
+installed by Homebrew. Its global config and credentials are not imported.
+Keep token files readable only by your user. Never put the token in a command
+argument, shell history, issue, or chat message.
+
+#### Free-plan limits
+
+Checked September 16, 2026. ngrok's [free-plan documentation](https://ngrok.com/docs/pricing-limits/free-plan-limits)
+lists one assigned dev domain, HTTPS, no endpoint session timeout, up to three
+online endpoints, and monthly allowances of 1 GB outgoing data and 20,000 HTTP
+requests. HTML browser visits show a warning; after you continue, a cookie
+suppresses it for seven days. API requests and webhooks do not require that
+browser interaction. Chickpea uses its own Slack signature verification and
+OAuth, not ngrok's optional verification or OAuth traffic policies.
+
+The [pricing page](https://ngrok.com/pricing) also describes Free as having $5
+of one-time usage credit with no additional usage beyond that credit. These
+pages do not describe the allowance identically. Check your account's
+[usage](https://dashboard.ngrok.com/usage) and billing; do not assume an unlimited
+or permanently renewable free service. If a limit is reached, Slack events,
+callbacks, and Admin may become unavailable. Choose a suitable paid plan or a
+different stable HTTPS route for traffic that must stay available.
+
+ngrok's current [terms](https://ngrok.com/tos) cover individuals and companies;
+its Free comparison does not state a personal-only eligibility rule. It is
+presented as a development option, with production traffic on paid plans.
+Tailscale Funnel remains an external-route alternative, but Tailscale's
+[free Personal plan](https://tailscale.com/pricing) is for noncommercial use.
+[Funnel](https://tailscale.com/docs/features/tailscale-funnel) also has bandwidth
+limits, requires HTTPS and tailnet DNS setup, and supports only designated
+public ports. It can proxy local ports on macOS, but Chickpea does not configure
+or manage it.
 
 ### Managed Cloudflare Tunnel
 
@@ -159,6 +238,7 @@ when your shell has another Node version selected:
 
 ```sh
 "$HOME/.chickpea-node/bin/chickpea-node" start
+"$HOME/.chickpea-node/bin/chickpea-node" restart
 "$HOME/.chickpea-node/bin/chickpea-node" status
 "$HOME/.chickpea-node/bin/chickpea-node" stop
 "$HOME/.chickpea-node/bin/chickpea-node" setup
@@ -166,11 +246,20 @@ when your shell has another Node version selected:
 
 `start` stays in the foreground and starts the configured tunnel too. Use
 another Terminal for `status`, `stop`, or `setup`. `start --open` also opens
-setup after the local listener is ready. Stop with Control-C or the `stop`
+setup after the local listener is ready and the managed public route checks out.
+If public verification fails, the processes keep running so a temporary network
+failure can recover. Check `status`, then run `setup` once HTTPS is reachable.
+Stop with Control-C or the `stop`
 command and wait for graceful shutdown. A second Control-C does not skip the
 drain. Logs are private files inside the installation directory.
 
-Status checks show process and HTTP availability. They do not prove that Slack
+`restart` restarts both managed processes with the saved domain and port. With
+start at login installed, it reloads that service; otherwise it stays in the
+foreground. `stop` unloads the login service for the current session. Use
+`service uninstall` to remove startup at future logins.
+
+Status checks show process and HTTP availability and return a failing exit code
+when the public route is unavailable. They do not prove that Slack
 can deliver a message, that your provider can answer, or that Admin sign-in
 works. Confirm those in Slack and your browser after first setup and restarts.
 
@@ -198,6 +287,24 @@ settings. It does not automatically update to a newer release or replace your
 auth secret, databases, or connected accounts. Stop the installation before
 rerunning. A failed download or build does not activate incomplete source.
 Fix the reported issue and run the same command again.
+
+For ngrok authentication errors, sign in to the same ngrok account, verify it,
+and copy a valid authtoken into a file readable only by your user. Then run:
+
+```sh
+"$HOME/.chickpea-node/bin/chickpea-node" stop
+"$HOME/.chickpea-node/bin/chickpea-node" tunnel authenticate \
+  --token-file /absolute/path/to/private-ngrok-token.txt
+"$HOME/.chickpea-node/bin/chickpea-node" restart
+```
+
+This replaces the tunnel token and preserves the public URL, app credentials,
+and databases. Authentication is checked by ngrok when the tunnel starts.
+If the domain is already online or the agent limit is reached, inspect your
+ngrok dashboard. Do not stop an unrelated tunnel or enable pooling to work
+around the conflict. Quota errors require an allowance reset or plan change;
+reinstalling Chickpea does not fix them. The manager prints recognized error
+guidance but discards raw ngrok output because it can contain tokens.
 
 If setup expires before you finish, stop Chickpea, renew only the setup
 capability, then start it again:
@@ -241,12 +348,14 @@ The default layout is:
 | `runtime.env`, `installation.json` | Runtime secrets and installation settings |
 | `state/` | SQLite databases and credential keyring |
 | `setup-url.txt` | Private initial setup link |
+| `tunnel-token.txt`, `ngrok.yml` | Private managed tunnel credential and ngrok config |
 | `logs/` | Private process logs |
 
 Keep the application files available while it runs. Before a backup, stop
 Chickpea and ingress, then copy the whole state directory with any SQLite
 `-wal` and `-shm` files, its credential keyring, `runtime.env`, and
-`installation.json`. Include `tunnel-token.txt` when using a managed tunnel.
+`installation.json`. Include `tunnel-token.txt` when using a managed tunnel and
+`ngrok.yml` when using ngrok.
 Record the installed commit. Protect and test the backup as described in
 [operations](docs/runbooks/operations.md#back-up-and-restore-node).
 
@@ -270,8 +379,7 @@ bash scripts/install-node.sh \
   --source "$PWD" \
   --home "$HOME/.chickpea-node-preview" \
   --port 3300 \
-  --origin https://preview.example.com \
-  --tunnel external \
+  --tunnel ngrok \
   --no-start
 ```
 
@@ -279,6 +387,8 @@ bash scripts/install-node.sh \
 credentials nor local dependencies are copied. `--source`, `--ref`, and
 `--version` are mutually exclusive. Contributor tests and builds must also
 follow the host reservation instructions in [CONTRIBUTING.md](CONTRIBUTING.md).
+The command prompts for a disposable ngrok account's dev domain and authtoken.
+Use `--origin ... --tunnel external` instead for an existing disposable HTTPS route.
 
 The bootstrap supports macOS first. Linux can use the manual Node and systemd
 instructions in [operations](docs/runbooks/operations.md); this installer does

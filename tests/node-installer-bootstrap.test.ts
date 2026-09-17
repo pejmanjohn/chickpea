@@ -35,6 +35,8 @@ function git(directory: string, ...args: string[]): string {
 function createSource(root: string): { directory: string; sha: string } {
   const directory = path.join(root, 'source checkout');
   mkdirSync(path.join(directory, 'scripts'), { recursive: true });
+  mkdirSync(path.join(directory, 'scripts', 'lib'));
+  writeFileSync(path.join(directory, 'scripts', 'lib', 'node-ngrok.mjs'), '// fixture supports ngrok\n');
   writeFileSync(path.join(directory, 'package.json'), JSON.stringify({ name: 'chickpea-test', private: true, version: '0.1.20' }));
   writeFileSync(path.join(directory, 'package-lock.json'), JSON.stringify({ version: '0.1.20', lockfileVersion: 3, packages: { '': { version: '0.1.20' } } }));
   writeFileSync(path.join(directory, 'release.json'), JSON.stringify({ formatVersion: 1, version: '0.1.20' }));
@@ -57,10 +59,11 @@ const origin = args[args.indexOf('--origin') + 1];
 const port = Number(args[args.indexOf('--port') + 1]);
 const tunnelMode = args[args.indexOf('--tunnel') + 1];
 const cloudflaredIndex = args.indexOf('--cloudflared');
+const ngrokIndex = args.indexOf('--ngrok');
 const tokenIndex = args.indexOf('--tunnel-token-file');
 const sourceCommit = JSON.parse(readFileSync(new URL('../release-source.json', import.meta.url), 'utf8')).commit;
 mkdirSync(path.join(home, 'state'), { recursive: true });
-writeFileSync(path.join(home, 'installation.json'), JSON.stringify({ sourceCommit, origin, port, tunnelMode, ...(tunnelMode === 'cloudflare' ? { tunnel: { mode: 'cloudflare', cloudflared: args[cloudflaredIndex + 1], tokenFile: args[tokenIndex + 1] } } : {}) }));
+writeFileSync(path.join(home, 'installation.json'), JSON.stringify({ sourceCommit, origin, port, tunnelMode, ...(tunnelMode === 'cloudflare' ? { tunnel: { mode: 'cloudflare', cloudflared: args[cloudflaredIndex + 1], tokenFile: args[tokenIndex + 1] } } : tunnelMode === 'ngrok' ? { tunnel: { mode: 'ngrok', ngrok: args[ngrokIndex + 1], tokenFile: args[tokenIndex + 1] } } : {}) }));
 writeFileSync(path.join(home, 'runtime-args.json'), JSON.stringify(args));
 writeFileSync(path.join(home, 'runtime.env'), 'PRIVATE=1\\n', { mode: 0o600 });
 writeFileSync(path.join(home, 'setup-url.txt'), 'https://example.test/admin/setup#setup=secret\\n', { mode: 0o600 });
@@ -172,6 +175,62 @@ test('rerun without a selector reuses the installed release without rebuilding o
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test('ngrok bootstrap uses explicit executable and private token paths, preserves URL and port on rerun', { skip: process.platform !== 'darwin' }, () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'chickpea-ngrok-bootstrap-'));
+  try {
+    const source = createSource(root);
+    const { home, log } = createManagedHome(root);
+    const ngrok = path.join(root, 'ngrok');
+    const tokenFile = path.join(root, 'private-token');
+    writeExecutable(ngrok, '#!/bin/sh\necho "ngrok version 3.39.11"\n');
+    writeFileSync(tokenFile, 'private-ngrok-token', { mode: 0o600 });
+    const first = runInstaller(['--home', home, '--source', source.directory, '--port', '39217',
+      '--origin', 'https://assigned.ngrok-free.app', '--tunnel', 'ngrok', '--ngrok', ngrok,
+      '--tunnel-token-file', tokenFile, '--no-start', '--no-open']);
+    assert.equal(first.status, 0, first.stderr);
+    assert.doesNotMatch(first.stdout + first.stderr, /private-ngrok-token/);
+    const before = readFileSync(log, 'utf8');
+    const original = readFileSync(path.join(home, 'installation.json'), 'utf8');
+    const second = runInstaller(['--home', home, '--no-start', '--no-open']);
+    assert.equal(second.status, 0, second.stderr);
+    assert.equal(readFileSync(log, 'utf8'), before);
+    assert.equal(readFileSync(path.join(home, 'installation.json'), 'utf8'), original);
+    const args = JSON.parse(readFileSync(path.join(home, 'runtime-args.json'), 'utf8')) as string[];
+    assert.equal(args[args.indexOf('--ngrok') + 1], ngrok);
+    assert.equal(args[args.indexOf('--port') + 1], '39217');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('ngrok download fails closed on a checksum mismatch and can recover with a selected client', { skip: process.platform !== 'darwin' }, () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'chickpea-ngrok-checksum-'));
+  try {
+    const source = createSource(root);
+    const { home } = createManagedHome(root);
+    const fakeBin = path.join(root, 'fake-bin');
+    mkdirSync(fakeBin);
+    writeExecutable(path.join(fakeBin, 'curl'), `#!/bin/bash
+previous=''
+for argument in "$@"; do
+  if [[ $previous == --output ]]; then printf 'tampered archive' > "$argument"; fi
+  previous=$argument
+done
+`);
+    const tokenFile = path.join(root, 'private-token');
+    writeFileSync(tokenFile, 'private-ngrok-token', { mode: 0o600 });
+    const args = ['--home', home, '--source', source.directory, '--origin', 'https://assigned.ngrok-free.app',
+      '--tunnel', 'ngrok', '--tunnel-token-file', tokenFile, '--no-start', '--no-open'];
+    const failed = runInstaller(args, { PATH: `${fakeBin}:${process.env.PATH}` });
+    assert.notEqual(failed.status, 0);
+    assert.match(failed.stderr, /ngrok archive checksum verification failed/);
+    assert.equal(existsSync(path.join(home, 'current')), false);
+    const ngrok = path.join(root, 'ngrok');
+    writeExecutable(ngrok, '#!/bin/sh\necho "ngrok version 3.39.11"\n');
+    const retry = runInstaller([...args, '--ngrok', ngrok]);
+    assert.equal(retry.status, 0, retry.stderr);
+    assert.equal(existsSync(path.join(home, 'current')), true);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 test('selectors are exclusive and an existing installation refuses a different commit', { skip: process.platform !== 'darwin' }, () => {

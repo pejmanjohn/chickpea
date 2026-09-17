@@ -1,10 +1,15 @@
 #!/bin/bash
+# Hidden credential input must remain hidden even when invoked with bash -x.
+set +x
 set -euo pipefail
 
 INSTALLER_HOME_MARKER='chickpea-node-v1'
 NODE_VERSION='24.20.0'
 NODE_DARWIN_ARM64_SHA256='40e5607e5ecb3db9192723776da2d75d966260fc74a7a9e731c1bd67dda96bc8'
 NODE_DARWIN_X64_SHA256='9e5b2644cf107befb6aefca676b96d3296bc10138096f022ed378d6233ed81f4'
+NGROK_VERSION='3.39.11'
+NGROK_DARWIN_ARM64_SHA256='9324a6552d74e25d5bdfdbedc4b32422c96f044fda37877498ad8ef10bddf7f7'
+NGROK_DARWIN_AMD64_SHA256='c6b9b3d9184fc08c33fb8b181d9f241d8f5d61162a0be0521b6dfc1f11813a96'
 REPOSITORY_API='https://api.github.com/repos/pejmanjohn/chickpea'
 REPOSITORY_ARCHIVE='https://codeload.github.com/pejmanjohn/chickpea/tar.gz'
 
@@ -21,10 +26,11 @@ Usage: install-node.sh [options]
   --source ABSOLUTE_PATH     Archive a clean local Git checkout at HEAD
   --origin HTTPS_ORIGIN      Public Chickpea origin
   --port PORT                Loopback port (default: 3000)
-  --tunnel external|cloudflare
-                             HTTPS route mode
-  --tunnel-token-file PATH   Private Cloudflare named-tunnel token file
+  --tunnel ngrok|external|cloudflare
+                             HTTPS route mode (guided ngrok needs no domain)
+  --tunnel-token-file PATH   Private ngrok authtoken or Cloudflare tunnel token
   --cloudflared PATH         Existing cloudflared executable
+  --ngrok PATH               Existing ngrok v3 executable
   --no-start                 Initialize but do not start Chickpea
   --no-open                  Do not open the private setup page
 EOF
@@ -40,6 +46,7 @@ port='3000'
 port_supplied=0
 tunnel_token_file=''
 cloudflared=''
+ngrok=''
 tunnel_mode=''
 start_after=1
 open_after=1
@@ -47,7 +54,7 @@ selector_count=0
 
 while (($#)); do
   case "$1" in
-    --home|--version|--ref|--source|--origin|--port|--tunnel|--tunnel-token-file|--cloudflared)
+    --home|--version|--ref|--source|--origin|--port|--tunnel|--tunnel-token-file|--cloudflared|--ngrok)
       (($# >= 2)) || die "$1 requires a value"
       case "$1" in
         --home) install_home=$2 ;;
@@ -59,6 +66,7 @@ while (($#)); do
         --tunnel) tunnel_mode=$2 ;;
         --tunnel-token-file) tunnel_token_file=$2 ;;
         --cloudflared) cloudflared=$2 ;;
+        --ngrok) ngrok=$2 ;;
       esac
       shift 2 ;;
     --no-start) start_after=0; shift ;;
@@ -88,8 +96,8 @@ unset NODE_OPTIONS NODE_PATH
 [[ -z $local_source || $local_source == /* ]] || die '--source must be an absolute path'
 [[ -z $tunnel_token_file || $tunnel_token_file == /* ]] || die '--tunnel-token-file must be an absolute path'
 [[ -z $cloudflared || $cloudflared == /* ]] || die '--cloudflared must be an absolute path'
-[[ -z $tunnel_mode || $tunnel_mode == external || $tunnel_mode == cloudflare ]] || die '--tunnel must be external or cloudflare'
-[[ -z $tunnel_token_file || -z $tunnel_mode || $tunnel_mode == cloudflare ]] || die '--tunnel-token-file requires --tunnel cloudflare'
+[[ -z $ngrok || $ngrok == /* ]] || die '--ngrok must be an absolute path'
+[[ -z $tunnel_mode || $tunnel_mode == external || $tunnel_mode == cloudflare || $tunnel_mode == ngrok ]] || die '--tunnel must be ngrok, external, or cloudflare'
 [[ -z $tunnel_token_file || $tunnel_mode != external ]] || die '--tunnel external cannot use --tunnel-token-file'
 
 if [[ -L $install_home ]]; then die 'installation home must not be a symlink'; fi
@@ -201,7 +209,7 @@ if [[ -f $install_home/installation.json ]]; then
     [[ -z $saved_port ]] || port=$saved_port
   fi
   if [[ -z $tunnel_mode ]]; then
-    tunnel_mode=$("$node_bin" -e 'try{const x=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));const v=x.tunnelMode||x.tunnel?.mode;if(v==="external"||v==="cloudflare")process.stdout.write(v)}catch{}' "$install_home/installation.json")
+    tunnel_mode=$("$node_bin" -e 'try{const x=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));const v=x.tunnelMode||x.tunnel?.mode;if(["external","cloudflare","ngrok"].includes(v))process.stdout.write(v)}catch{}' "$install_home/installation.json")
   fi
   if [[ -z $tunnel_token_file ]]; then
     saved_token_file=$("$node_bin" -e 'try{const x=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));const v=x.tunnel?.tokenFile;if(typeof v==="string")process.stdout.write(v)}catch{}' "$install_home/installation.json")
@@ -211,37 +219,52 @@ if [[ -f $install_home/installation.json ]]; then
     saved_cloudflared=$("$node_bin" -e 'try{const x=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));const v=x.tunnel?.cloudflared;if(typeof v==="string")process.stdout.write(v)}catch{}' "$install_home/installation.json")
     [[ -z $saved_cloudflared ]] || cloudflared=$saved_cloudflared
   fi
+  if [[ -z $ngrok ]]; then
+    ngrok=$("$node_bin" -e 'try{const x=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));if(typeof x.tunnel?.ngrok==="string")process.stdout.write(x.tunnel.ngrok)}catch{}' "$install_home/installation.json")
+  fi
 fi
 
 if [[ -z $tunnel_mode && -n $tunnel_token_file ]]; then tunnel_mode=cloudflare; fi
 if [[ -z $tunnel_mode ]]; then
   if [[ ${CHICKPEA_INSTALL_NONINTERACTIVE:-0} != 1 && -r /dev/tty && -w /dev/tty ]]; then
-    printf 'HTTPS route [1 = external, 2 = Cloudflare named tunnel]: ' > /dev/tty
+    note 'ngrok provides an assigned HTTPS domain without buying a domain. Free accounts have usage limits and an HTML browser warning. Review https://ngrok.com/pricing and your account before relying on it for ongoing traffic.'
+    printf 'HTTPS route [1 = ngrok (recommended), 2 = Cloudflare named tunnel, 3 = existing HTTPS route]: ' > /dev/tty
     IFS= read -r tunnel_choice < /dev/tty || die 'unable to read the tunnel choice'
-    case "$tunnel_choice" in 1|external) tunnel_mode=external ;; 2|cloudflare) tunnel_mode=cloudflare ;; *) die 'choose external or cloudflare' ;; esac
+    case "$tunnel_choice" in 1|ngrok) tunnel_mode=ngrok ;; 2|cloudflare) tunnel_mode=cloudflare ;; 3|external) tunnel_mode=external ;; *) die 'choose 1, 2, or 3' ;; esac
   else
     die '--tunnel is required when no interactive terminal is available'
   fi
 fi
 [[ -z $cloudflared || $tunnel_mode == cloudflare ]] || die '--cloudflared requires --tunnel cloudflare'
+[[ -z $ngrok || $tunnel_mode == ngrok ]] || die '--ngrok requires --tunnel ngrok'
+[[ -z $tunnel_token_file || $tunnel_mode != external ]] || die '--tunnel external cannot use --tunnel-token-file'
 if [[ -z $origin ]]; then
   if [[ ${CHICKPEA_INSTALL_NONINTERACTIVE:-0} != 1 && -r /dev/tty && -w /dev/tty ]]; then
+    if [[ $tunnel_mode == ngrok ]]; then
+      note 'Sign in or create an ngrok account. Copy the dev domain assigned to that account from https://dashboard.ngrok.com/domains. It must be dedicated to this Chickpea installation.'
+      ((open_after == 0)) || /usr/bin/open 'https://dashboard.ngrok.com/domains' || true
+    fi
     printf 'Public HTTPS origin: ' > /dev/tty
     IFS= read -r origin < /dev/tty || die 'unable to read the public origin'
+    if [[ $tunnel_mode == ngrok && $origin != *://* ]]; then origin="https://$origin"; fi
   else
     die '--origin is required when no interactive terminal is available'
   fi
 fi
 "$node_bin" -e 'try{const u=new URL(process.argv[1]);if(u.protocol!=="https:"||u.username||u.password||u.pathname!=="/"||u.search||u.hash)process.exit(1)}catch{process.exit(1)}' "$origin" 2>/dev/null || die '--origin must be a bare HTTPS origin'
 
-if [[ $tunnel_mode == cloudflare && -z $tunnel_token_file ]]; then
+if [[ $tunnel_mode != external && -z $tunnel_token_file ]]; then
   canonical_token="$install_home/tunnel-token.txt"
   if [[ -f $canonical_token && ! -L $canonical_token ]]; then
     tunnel_token_file=$canonical_token
   else
-    [[ ${CHICKPEA_INSTALL_NONINTERACTIVE:-0} != 1 && -r /dev/tty && -w /dev/tty ]] || die '--tunnel-token-file is required for noninteractive Cloudflare tunnel setup'
+    [[ ${CHICKPEA_INSTALL_NONINTERACTIVE:-0} != 1 && -r /dev/tty && -w /dev/tty ]] || die '--tunnel-token-file is required for noninteractive managed tunnel setup'
     tunnel_token_file="$work/tunnel-token.txt"
-    printf 'Cloudflare named-tunnel token (input hidden): ' > /dev/tty
+    if [[ $tunnel_mode == ngrok ]]; then
+      note 'Copy only your authtoken from https://dashboard.ngrok.com/get-started/your-authtoken. Do not paste the ngrok config command. This is saved only inside this installation.'
+      ((open_after == 0)) || /usr/bin/open 'https://dashboard.ngrok.com/get-started/your-authtoken' || true
+    fi
+    printf '%s token (input hidden): ' "$tunnel_mode" > /dev/tty
     IFS= read -r -s tunnel_token < /dev/tty || die 'unable to read the tunnel token'
     printf '\n' > /dev/tty
     [[ -n $tunnel_token && $tunnel_token != *$'\n'* ]] || die 'tunnel token must be one non-empty line'
@@ -325,6 +348,7 @@ manifest_version=$("$node_bin" -e 'const p=require(process.argv[1]);if(typeof p.
 lock_versions=$("$node_bin" -e 'const x=require(process.argv[1]),v=process.argv[2];const a=x.version,b=x.packages?.[""]?.version;if(a!==v||b!==v)process.exit(1);process.stdout.write(v)' "$source_tree/package-lock.json" "$package_version") || die 'package-lock.json root versions disagree with the application version'
 [[ $(tr -d '[:space:]' < "$source_tree/.nvmrc") == "$NODE_VERSION" ]] || die "source requires a different Node pin; this installer supports $NODE_VERSION"
 [[ -f $source_tree/scripts/install-node.sh && -f $source_tree/scripts/chickpea-node.mjs ]] || die "selected source predates the one-command Node installer; choose a compatible release or use --ref/--source for a reviewed preview"
+[[ $tunnel_mode != ngrok || -f $source_tree/scripts/lib/node-ngrok.mjs ]] || die 'selected release predates guided ngrok setup; choose a release containing it or use --ref/--source for a reviewed preview'
 archive_sha=$("$node_bin" -e 'try{const x=require(process.argv[1]);if(typeof x.commit==="string")process.stdout.write(x.commit)}catch{}' "$source_tree/release-source.json")
 [[ $archive_sha == "$source_sha" ]] || die 'source archive provenance does not match the selected commit'
 if [[ -n $preview_ref || -n $local_source ]]; then
@@ -419,9 +443,44 @@ elif [[ $tunnel_mode == cloudflare ]]; then
   cloudflared="$install_home/tools/cloudflared/cloudflared"
 fi
 
+if [[ $tunnel_mode == ngrok ]]; then
+  managed_ngrok=$("$node_bin" -e 'process.stdout.write(require("path").join(require("fs").realpathSync(process.argv[1]),"tools/ngrok/ngrok"))' "$install_home")
+  [[ -n $ngrok ]] || ngrok=$managed_ngrok
+  if [[ $ngrok == "$managed_ngrok" ]]; then
+    ngrok_root="${managed_ngrok%/*}"
+    ngrok_receipt="$ngrok_root/.installer-ngrok"
+    [[ ! -L $ngrok_root ]] || die 'managed ngrok directory must not be a symlink'
+    if [[ ! -e $ngrok && ! -L $ngrok ]]; then
+      case "$machine" in
+        arm64) ngrok_asset='https://bin.ngrok.com/a/dy27whJwwmb/ngrok-v3-3.39.11-darwin-arm64.zip'; ngrok_digest=$NGROK_DARWIN_ARM64_SHA256 ;;
+        x86_64) ngrok_asset='https://bin.ngrok.com/a/8QQF2ciKqxM/ngrok-v3-3.39.11-darwin-amd64.zip'; ngrok_digest=$NGROK_DARWIN_AMD64_SHA256 ;;
+      esac
+      download "$ngrok_asset" "$work/ngrok.zip"
+      verify_sha256 "$work/ngrok.zip" "$ngrok_digest" 'ngrok archive'
+      mkdir "$work/ngrok"
+      unzip -q "$work/ngrok.zip" -d "$work/ngrok"
+      [[ -f $work/ngrok/ngrok && ! -L $work/ngrok/ngrok ]] || die 'ngrok archive lacks a regular executable'
+      chmod 700 "$work/ngrok/ngrok"
+      [[ $("$work/ngrok/ngrok" version) == "ngrok version $NGROK_VERSION" ]] || die 'ngrok executable has the wrong version'
+      mkdir -p "$ngrok_root"
+      [[ ! -L $ngrok_receipt ]] || die 'ngrok receipt must not be a symlink'
+      ngrok_binary_digest=$(shasum -a 256 "$work/ngrok/ngrok" | awk '{print $1}')
+      (umask 077; printf '%s\n' "$ngrok_binary_digest" > "$ngrok_receipt")
+      mv "$work/ngrok/ngrok" "$ngrok"
+    fi
+    [[ ! -L $ngrok && -f $ngrok && -x $ngrok ]] || die 'managed ngrok must be a real executable file'
+    [[ -f $ngrok_receipt && ! -L $ngrok_receipt ]] || die 'managed ngrok has no installer receipt; preserve it and investigate'
+    verify_sha256 "$ngrok" "$(cat "$ngrok_receipt")" 'managed ngrok executable'
+  fi
+  [[ -x $ngrok ]] || die '--ngrok must select an executable'
+  [[ $("$ngrok" version 2>/dev/null) == 'ngrok version 3.'* ]] || die 'ngrok v3 is required; download a current client from https://ngrok.com/download/mac-os'
+  note 'ngrok will forward only this installation. A free account has a browser warning and usage limits; check https://dashboard.ngrok.com/usage. Keep this Mac awake and connected.'
+fi
+
 runtime_args=(--home "$install_home" init --origin "$origin" --port "$port")
 [[ -z $tunnel_token_file ]] || runtime_args+=(--tunnel-token-file "$tunnel_token_file")
 [[ -z $cloudflared ]] || runtime_args+=(--cloudflared "$cloudflared")
+[[ -z $ngrok ]] || runtime_args+=(--ngrok "$ngrok")
 runtime_args+=(--tunnel "$tunnel_mode")
 "$node_bin" "$release_root/scripts/chickpea-node.mjs" "${runtime_args[@]}"
 

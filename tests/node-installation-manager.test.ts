@@ -22,6 +22,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import {
+  authenticateNgrok,
   SETUP_CAPABILITY_TTL_MS,
   controlSocketPath,
   controlledChildEnvironment,
@@ -35,6 +36,7 @@ import {
   renderLaunchAgentPlist,
   runtimeOperationLockPath,
   runStart,
+  stopInstallation,
   sendControlCommand,
   UnsafeRuntimeOperationLockError,
 // @ts-expect-error Installer runtime is plain JavaScript shipped in release archives.
@@ -181,6 +183,104 @@ test('cloudflare init copies one canonical private token and records prompt-free
   assert.equal(installation.tunnelMode, 'cloudflare');
   assert.equal(installation.tunnel.mode, 'cloudflare');
   assert.equal(installation.tunnel.tokenFile, path.join(realpathSync(f.home), 'tunnel-token.txt'));
+});
+
+test('ngrok init resumes, preserves URL and authority on rerun, and rotates only its private token', async (t) => {
+  const f = fixture();
+  t.after(() => rmSync(f.root, { recursive: true, force: true }));
+  const tokenFile = path.join(f.root, 'token');
+  const ngrok = path.join(f.root, 'ngrok');
+  writeFileSync(tokenFile, 'private-original-token', { mode: 0o600 });
+  writeFileSync(ngrok, '#!/bin/sh\nexit 0\n', { mode: 0o700 });
+  const extra = { tunnelMode: 'ngrok', tunnelTokenFile: tokenFile, ngrok, origin: 'https://assigned.ngrok-free.app' };
+  await assert.rejects(() => init(f, { ...extra, failAfterPublish: 'ngrok.yml' }), /simulated init interruption/);
+  const config = readFileSync(path.join(f.home, 'ngrok.yml'), 'utf8');
+  await init(f, extra);
+  const original = readFileSync(path.join(f.home, 'runtime.env'), 'utf8');
+  const setup = readFileSync(path.join(f.home, 'setup-url.txt'), 'utf8');
+  await init(f, extra);
+  assert.equal(readFileSync(path.join(f.home, 'ngrok.yml'), 'utf8'), config);
+  assert.equal(lstatSync(path.join(f.home, 'ngrok.yml')).mode & 0o777, 0o600);
+  assert.doesNotMatch(readFileSync(path.join(f.home, 'installation.json'), 'utf8'), /private-original-token/);
+  assert.match(original, /https:\/\/assigned.ngrok-free.app/);
+  await assert.rejects(() => init(f, { ...extra, origin: 'https://different.ngrok-free.app' }), /does not match/);
+  writeFileSync(tokenFile, 'replacement-token');
+  await authenticateNgrok(f.home, tokenFile);
+  assert.equal(readFileSync(path.join(f.home, 'tunnel-token.txt'), 'utf8'), 'replacement-token');
+  assert.equal(readFileSync(path.join(f.home, 'runtime.env'), 'utf8'), original);
+  assert.equal(readFileSync(path.join(f.home, 'setup-url.txt'), 'utf8'), setup);
+  chmodSync(tokenFile, 0o644);
+  await assert.rejects(() => authenticateNgrok(f.home, tokenFile), /not be readable/);
+});
+
+test('managed ngrok waits for the owned listener, uses the saved port and URL across restarts, and stops both children', async (t) => {
+  const f = fixture();
+  t.after(async () => { await stopInstallation(f.home); rmSync(f.root, { recursive: true, force: true }); });
+  const token = path.join(f.root, 'token');
+  const ngrok = path.join(f.root, 'ngrok');
+  writeFileSync(token, 'never-print-this-token', { mode: 0o600 });
+  writeFileSync(ngrok, '#!/bin/sh\nexit 0\n', { mode: 0o700 });
+  await init(f, { tunnelMode: 'ngrok', tunnelTokenFile: token, ngrok, origin: 'https://assigned.ngrok-free.app', port: 39217 });
+  symlinkSync(f.release, path.join(f.home, 'current'));
+  writeFileSync(path.join(f.release, 'scripts', 'start-node.mjs'), '// injected spawn');
+  const calls: Array<{ command: string; args: string[]; options: any; child: any }> = [];
+  const spawnImpl = (command: string, args: string[], options: any) => {
+    const child = new EventEmitter() as any;
+    child.kill = (signal: string) => { queueMicrotask(() => child.emit('exit', null, signal)); return true; };
+    calls.push({ command, args, options, child });
+    return child;
+  };
+  for (let iteration = 0; iteration < 2; iteration++) {
+    const start = runStart(f.home, { spawnImpl, installSignalHandlers: false,
+      fetchImpl: async () => new Response('same setup asset'), readinessTimeoutMs: 2000 });
+    await eventually(async () => calls.length === iteration * 2 + 1);
+    const app = calls[iteration * 2]!;
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    // An unrelated process returning HTTP 200 is insufficient to start ingress.
+    assert.equal(calls.length, iteration * 2 + 1);
+    assert.equal((await sendControlCommand(f.home, 'status')).tunnelRunning, false);
+    app.child.emit('message', { type: 'chickpea-ready' });
+    await eventually(async () => calls.length === iteration * 2 + 2);
+    const tunnel = calls[iteration * 2 + 1]!;
+    assert.equal(tunnel.command, realpathSync(ngrok));
+    assert.deepEqual(tunnel.args, ['http', 'http://127.0.0.1:39217', '--url', 'https://assigned.ngrok-free.app',
+      '--config', path.join(realpathSync(f.home), 'ngrok.yml'), '--inspect=false']);
+    assert.doesNotMatch(JSON.stringify(calls.map(({ args, options }) => ({ args, options }))), /never-print-this-token|NGROK_AUTHTOKEN/);
+    assert.deepEqual(tunnel.options.stdio, ['ignore', 'pipe', 'pipe']);
+    await stopInstallation(f.home);
+    assert.equal(await start, 0);
+    assert.equal(app.child.runtimeExit.signal, 'SIGTERM');
+    assert.equal(tunnel.child.runtimeExit.signal, 'SIGTERM');
+  }
+});
+
+test('managed tunnel never starts when application bind fails, and tunnel failure stops the application', async (t) => {
+  const f = fixture();
+  t.after(() => rmSync(f.root, { recursive: true, force: true }));
+  const token = path.join(f.root, 'token');
+  const ngrok = path.join(f.root, 'ngrok');
+  writeFileSync(token, 'test-token', { mode: 0o600 });
+  writeFileSync(ngrok, '#!/bin/sh\nexit 0\n', { mode: 0o700 });
+  await init(f, { tunnelMode: 'ngrok', tunnelTokenFile: token, ngrok, origin: 'https://assigned.ngrok-free.app' });
+  symlinkSync(f.release, path.join(f.home, 'current'));
+  writeFileSync(path.join(f.release, 'scripts', 'start-node.mjs'), '// injected spawn');
+  for (const bindFails of [true, false]) {
+    const children: any[] = [];
+    const start = runStart(f.home, { installSignalHandlers: false, readinessTimeoutMs: 1000,
+      publicReadinessTimeoutMs: 10, fetchImpl: async () => new Response('asset'),
+      spawnImpl: () => {
+        const child = new EventEmitter() as any;
+        child.kill = (signal: string) => { queueMicrotask(() => child.emit('exit', null, signal)); return true; };
+        children.push(child);
+        if (bindFails || children.length === 2) setImmediate(() => child.emit('exit', 1, null));
+        else setImmediate(() => child.emit('message', { type: 'chickpea-ready' }));
+        return child;
+      },
+    });
+    assert.equal(await start, 1);
+    assert.equal(children.length, bindFails ? 1 : 2);
+    if (!bindFails) assert.equal(children[0].runtimeExit.signal, 'SIGTERM');
+  }
 });
 
 test('child environment excludes ambient credentials and Node injection options', () => {
