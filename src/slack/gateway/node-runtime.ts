@@ -2,6 +2,7 @@ import {
   getNodeGatewayInboxStore,
   getSettingsStore,
   resolveStores,
+  type AppStores,
   type PlatformEnv,
 } from '../../config/state-backend.ts';
 import { isCloudflareTarget } from '../../config/runtime-target.ts';
@@ -11,7 +12,7 @@ import {
   processGatewaySlackEnvelope,
 } from '../../channels/slack.ts';
 import { createGatewayDeploymentClient } from './runtime.ts';
-import { GATEWAY_BINDING_SETTING } from './client.ts';
+import { GATEWAY_BINDING_SETTING, type GatewayDeploymentClient } from './client.ts';
 import { GATEWAY_INBOX_MAX_DRAIN_BATCH } from './inbox.ts';
 import {
   GATEWAY_DURABLE_ADMISSION_CAPABILITY,
@@ -28,7 +29,10 @@ type NodeGatewayRunner = Pick<GatewaySessionRunner, 'start' | 'stop'> &
   Partial<Pick<GatewaySessionRunner, 'healthSnapshot'>>;
 
 interface NodeGatewayInboxPort {
-  admit(delivery: GatewayInboundDelivery): 'accepted' | 'duplicate' | 'rejected';
+  admit(
+    delivery: GatewayInboundDelivery,
+    expectedBinding?: string,
+  ): 'accepted' | 'duplicate' | 'rejected';
   deliveryIsCurrent(delivery: GatewayInboundDelivery): boolean;
   claimPending(limit?: number): Array<{
     id: string;
@@ -48,6 +52,15 @@ interface NodeGatewayInboxWorkerOptions {
   clearTimer?: typeof clearTimeout;
   onError?: (error: unknown) => void;
   retryMs?: number;
+}
+
+interface NodeGatewayDeliveryDependencies {
+  getStore?: () => NodeGatewayInboxPort;
+  createClient?: (env?: PlatformEnv) => GatewayDeploymentClient;
+  resolveStores?: (env?: PlatformEnv) => AppStores;
+  processSlackEnvelope?: typeof processGatewaySlackEnvelope;
+  processAgentSelection?: typeof processGatewayAgentSelection;
+  processPrivateChannelSetup?: typeof processGatewayPrivateChannelSetup;
 }
 
 const NODE_GATEWAY_RETRY_MS = 5_000;
@@ -221,7 +234,7 @@ export function startNodeGatewaySession(
     const capabilities = [GATEWAY_DURABLE_ADMISSION_CAPABILITY] as const;
     const onEvent = async (delivery: GatewayInboundDelivery) => {
       if (runtimeQuiescing || generation !== lifecycleGeneration) return 'rejected';
-      const outcome = getInbox().admit(delivery);
+      const outcome = getInbox().admit(delivery, binding);
       if (outcome !== 'rejected') inboxWorker?.wake();
       return outcome;
     };
@@ -268,6 +281,17 @@ export async function startNodeGatewayRuntime(
   startNodeGatewaySession(env, dependencies);
 }
 
+/** Replace a live Node socket after a successful binding-incarnation change. */
+export function refreshNodeGatewaySession(
+  env?: PlatformEnv,
+  dependencies: NodeGatewayRuntimeDependencies = {},
+): void {
+  if ((dependencies.isCloudflare ?? isCloudflareTarget)() || runtimeQuiescing ||
+      runtimeStopPromise) return;
+  stopNodeGatewaySession();
+  startNodeGatewaySession(env, dependencies);
+}
+
 /** Stop socket admission immediately; persisted work remains owned by the worker. */
 export function stopNodeGatewaySession(): void {
   lifecycleGeneration += 1;
@@ -298,19 +322,29 @@ export function nodeGatewaySessionStatus(): GatewaySessionStatusSnapshot | undef
   return snapshot ? reconcileGatewaySessionStatus(snapshot, undefined) : undefined;
 }
 
-function createNodeGatewayInboxWorker(env?: PlatformEnv): NodeGatewayInboxWorker {
+export function createNodeGatewayInboxWorker(
+  env?: PlatformEnv,
+  dependencies: NodeGatewayDeliveryDependencies = {},
+): NodeGatewayInboxWorker {
+  const stores = dependencies.resolveStores ?? resolveStores;
+  const createClient = dependencies.createClient ?? createGatewayDeploymentClient;
+  const processSlackEnvelope = dependencies.processSlackEnvelope ?? processGatewaySlackEnvelope;
+  const processAgentSelection = dependencies.processAgentSelection ?? processGatewayAgentSelection;
+  const processPrivateChannelSetup =
+    dependencies.processPrivateChannelSetup ?? processGatewayPrivateChannelSetup;
   return new NodeGatewayInboxWorker({
-    getStore: getNodeGatewayInboxStore,
+    getStore: dependencies.getStore ?? getNodeGatewayInboxStore,
     processDelivery: async (delivery) => {
-      const client = createGatewayDeploymentClient(env);
+      const client = createClient(env);
+      const appStores = stores(env);
       return delivery.kind === 'event.deliver'
-        ? processGatewaySlackEnvelope(delivery.envelope, env, client, {
-            stores: resolveStores(env),
+        ? processSlackEnvelope(delivery.envelope, env, client, {
+            stores: appStores,
             durableIngress: true,
           })
         : delivery.kind === 'interaction.agent_selected'
-        ? processGatewayAgentSelection(delivery, env, client)
-        : processGatewayPrivateChannelSetup(delivery, env, client);
+        ? processAgentSelection(delivery, env, client, appStores)
+        : processPrivateChannelSetup(delivery, env, client, appStores);
     },
   });
 }

@@ -27,7 +27,7 @@ does not install the application.
 
 The shared-app path below is newer than v0.1.21. Until a release includes it,
 select a reviewed commit containing this support with
-`--allow-unreleased --version COMMIT_SHA`, or use your own Slack app with v0.1.21.
+`--ref FULL_40_CHAR_SHA`, or use your own Slack app with v0.1.21.
 
 ## Install
 

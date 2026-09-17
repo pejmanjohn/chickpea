@@ -9,6 +9,11 @@ in the installation's SQLite state. Keep one process per state directory and
 preserve that directory across restarts. The public HTTPS address is still used
 for setup, sign-in, connector callbacks, and Admin links.
 
+Node records which installation accepted each delivery. When that installation
+is replaced or its binding is removed, pending deliveries enter recovery and
+their bodies are scrubbed. Reauthorizing Slack replaces the active socket
+immediately; ordinary socket renewal keeps the same installation authority.
+
 ## What is stored
 
 Outbound file uploads pass through the gateway in memory as base64 inside a

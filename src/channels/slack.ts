@@ -985,12 +985,14 @@ export async function processGatewayAgentSelection(
   if (
     !installation || installation.transportMode !== 'gateway' ||
     installation.health === 'revoked' ||
-    !installation.botUserId || !installation.gatewayBindingId
+    !installation.appId || !installation.botUserId || !installation.gatewayBindingId
   ) return 'rejected';
   const gateway = providedClient ?? createGatewayDeploymentClient(platformEnv);
   const binding = await gateway.loadBinding();
   if (!binding || binding.bindingId !== installation.gatewayBindingId ||
-      binding.workspaceId !== selection.workspaceId) return 'rejected';
+      binding.workspaceId !== selection.workspaceId ||
+      binding.appId !== installation.appId ||
+      binding.botUserId !== installation.botUserId) return 'rejected';
   await seedAgentAppHomeThread({
     ...selection,
     stores,
