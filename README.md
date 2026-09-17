@@ -23,7 +23,7 @@
 
 <br /><br />
 
-**[Get started with your coding agent](#get-started-with-your-coding-agent)** &nbsp; · &nbsp; [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/pejmanjohn/chickpea) &nbsp; · &nbsp; **[Install on a Mac](INSTALL_CHICKPEA_NODE.md)**
+**[Install on a Mac](#node)** &nbsp; · &nbsp; [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/pejmanjohn/chickpea) &nbsp; · &nbsp; **[Install with your coding agent](#get-started-with-your-coding-agent)**
 
 <sub>Run Chickpea in your own Cloudflare account or on your own Mac.</sub>
 
@@ -350,7 +350,7 @@ The other exception is the optional shared Slack-app gateway, which exists so yo
 
 <a id="install-with-your-coding-agent"></a>
 
-### Install Chickpea
+### Install on Cloudflare
 
 Copy this prompt into a coding agent with terminal and browser access:
 
@@ -370,10 +370,10 @@ project lives.
 The [installation guide](INSTALL_CHICKPEA_CLOUDFLARE.md) stays current on `main`;
 the installation uses a stable application release.
 
-To run Chickpea on a Mac without deploying a Cloudflare Worker, use
-[Install Chickpea on a Mac with Node](INSTALL_CHICKPEA_NODE.md). It covers the
-pinned Node release, a stable HTTPS tunnel, private persistent state, a
-customer-owned Slack app, and foreground operation.
+For a Mac, use the [Node installer](#node), or give your coding agent the
+[Mac installation guide](INSTALL_CHICKPEA_NODE.md). It handles Node, the build,
+private state, and starting Chickpea. You choose a stable HTTPS address and
+complete Slack and provider authorization in your browser.
 
 ### Connect via MCP
 
@@ -474,14 +474,26 @@ Uses Cloudflare Workers, Durable Objects, D1, and Workers AI.
 
 ### Node
 
-For a production Mac installation, follow
-[Install Chickpea on a Mac with Node](INSTALL_CHICKPEA_NODE.md). It uses Node
-24.20.0, a built release, persistent SQLite state, a stable public HTTPS tunnel,
-and a customer-owned Slack app. It does not deploy a Cloudflare Worker.
+On a Mac, run:
 
-The production launcher is `npm run start:node -- --env-file <path>`.
-`npm run dev` and in-memory databases are for disposable development only. For
-Linux supervision, backups, restores, and upgrades, use
+```sh
+curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/pejmanjohn/chickpea/main/scripts/install-node.sh | bash
+```
+
+The installer prepares a private Node 24.20.0 runtime, builds a stable application
+release, creates persistent SQLite state, and opens setup. It leaves system Node
+and existing Chickpea installations alone. You need a stable public HTTPS address,
+permission to install a Slack app, and a model provider account. The
+[Mac installation guide](INSTALL_CHICKPEA_NODE.md) explains the HTTPS options,
+start/stop commands, and optional start at login.
+
+The installer requires a release containing the Node installer and production
+launcher. Older releases, including v0.1.20, are rejected. Until a compatible
+release is published, use the guide's explicit preview procedure.
+
+For an existing manual installation, keep using
+`npm run start:node -- --env-file <path>`. For Linux hosting, backups, restores,
+and upgrades, use
 [Operating and upgrading Chickpea](docs/runbooks/operations.md).
 
 ---
