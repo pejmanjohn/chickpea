@@ -26,11 +26,10 @@ Mac installation is supported starting with v0.1.21. The default command uses
 the latest stable application release. Installing the management CLI from npm
 does not install the application.
 
-Guided ngrok setup and Node shared-app support are newer than v0.1.21. Until an
-application release includes them, use the [preview procedure](#test-an-unreleased-installer)
-with a reviewed commit containing both changes. The bootstrap refuses ngrok mode
-when the selected application release does not support it. With v0.1.21, use
-your own Slack app and an existing HTTPS route or Cloudflare Tunnel.
+Guided ngrok setup and Node support for the shared Chickpea Slack app are
+available starting with v0.1.22. The bootstrap refuses ngrok mode when the
+selected application release does not support it. With v0.1.21, use your own
+Slack app and an existing HTTPS route or Cloudflare Tunnel.
 
 ## Install
 
@@ -40,9 +39,8 @@ Run this command in Terminal as your usual user, without `sudo`:
 curl -fsSL https://chickpea.co/install.sh | bash
 ```
 
-With a release that includes guided ngrok setup, the installer offers ngrok
-as the default (press Enter), followed by Cloudflare Tunnel and an existing
-HTTPS route. It opens the ngrok
+The installer offers ngrok as the default (press Enter), followed by Cloudflare
+Tunnel and an existing HTTPS route. It opens the ngrok
 dashboard so you can copy your assigned dev domain and authtoken. Token input
 is hidden. `--no-open` leaves dashboard and setup pages for you to open manually.
 It downloads tools into `~/.chickpea-node`, builds an immutable stable GitHub
