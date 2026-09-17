@@ -477,7 +477,7 @@ async function waitForReadiness(port, child, options) {
         redirect: 'manual',
         signal: AbortSignal.timeout(1_000),
       });
-      if (response.status === 200) return;
+      if (httpReachableStatus(response.status)) return;
     } catch { /* retry bounded local readiness only */ }
     await delay(100);
   }
@@ -674,8 +674,14 @@ export async function installationStatus(homeInput, options = {}) {
 async function httpReachable(url, fetchImpl = fetch) {
   try {
     const response = await fetchImpl(url, { redirect: 'manual', signal: AbortSignal.timeout(2_000) });
-    return response.status === 200;
+    return httpReachableStatus(response.status);
   } catch { return false; }
+}
+
+function httpReachableStatus(status) {
+  // Account recovery deliberately hides the setup asset with 404. Keep the
+  // server available; this probe does not establish setup or authentication health.
+  return status === 200 || status === 404;
 }
 
 export async function openSetup(homeInput, options = {}) {
@@ -816,7 +822,7 @@ async function acquireOperationLock(home, options = {}) {
         const parsed = JSON.parse(readFileSync(ownerPath, 'utf8'));
         owner = JSON.stringify({ pid: parsed.pid, startedAt: parsed.startedAt, bootSessionIdentity: parsed.bootSessionIdentity });
       } catch { /* The refusal remains conservative when metadata is damaged. */ }
-      throw new UnsafeRuntimeOperationLockError(lock, owner, { cause: error });
+      throw new UnsafeRuntimeOperationLockError(lock, owner);
     }
     throw error;
   }

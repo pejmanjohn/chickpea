@@ -271,7 +271,7 @@ test('foreground start keeps running when setup cannot open and authenticated st
   assert.equal(await expiredStart, 0);
 });
 
-test('forced shutdown targets only the detached child process group', async (t) => {
+test('404 recovery gate is HTTP-ready and forced shutdown targets only the detached child process group', async (t) => {
   const f = fixture();
   t.after(() => rmSync(f.root, { recursive: true, force: true }));
   await init(f);
@@ -292,7 +292,7 @@ test('forced shutdown targets only the detached child process group', async (t) 
     readinessTimeoutMs: 1_000,
     shutdownTimeoutMs: 10,
     spawnImpl: () => child,
-    fetchImpl: async () => new Response('ready', { status: 200 }),
+    fetchImpl: async () => new Response('recovery gate', { status: 404 }),
     forceKillImpl: (pid: number, signal: string) => {
       forced.push([pid, signal]);
       queueMicrotask(() => child.emit('exit', null, signal));
@@ -311,11 +311,14 @@ test('status probes the stable public setup asset before and after ownership', a
   await init(f);
   symlinkSync(f.release, path.join(f.home, 'current'));
   const requested: string[] = [];
+  let setupAssetStatus = 200;
   const fetchImpl = async (input: string | URL | Request) => {
     const url = new URL(String(input));
     requested.push(url.pathname);
     if (url.pathname === '/admin') return new Response('authentication_unavailable', { status: 503 });
-    if (url.pathname === '/admin/setup/client.js') return new Response('setup client', { status: 200 });
+    if (url.pathname === '/admin/setup/client.js') {
+      return new Response(setupAssetStatus === 200 ? 'setup client' : 'gated', { status: setupAssetStatus });
+    }
     return new Response('not found', { status: 404 });
   };
 
@@ -331,9 +334,17 @@ test('status probes the stable public setup asset before and after ownership', a
   `);
   database.close();
   requested.length = 0;
+  setupAssetStatus = 404;
   const afterOwner = await installationStatus(f.home, { fetchImpl });
   assert.equal(afterOwner.localReachable, true);
   assert.equal(afterOwner.publicReachable, true);
+  assert.deepEqual(requested, ['/admin/setup/client.js', '/admin/setup/client.js']);
+
+  requested.length = 0;
+  setupAssetStatus = 503;
+  const unavailable = await installationStatus(f.home, { fetchImpl });
+  assert.equal(unavailable.localReachable, false);
+  assert.equal(unavailable.publicReachable, false);
   assert.deepEqual(requested, ['/admin/setup/client.js', '/admin/setup/client.js']);
 });
 
