@@ -43,6 +43,10 @@ const INSTALLATION_FILE = 'installation.json';
 const RUNTIME_FILE = 'runtime.env';
 const SETUP_FILE = 'setup-url.txt';
 const INIT_STAGING = '.init-staging';
+// This public runtime route exists both before initial ownership and after
+// setup completes. `/admin` intentionally returns 503 before authentication
+// is configured, so it cannot serve as an installation readiness probe.
+const READINESS_PATH = '/admin/setup/client.js';
 
 export function defaultNodeInstallationHome(environment = process.env) {
   return path.join(environment.HOME || homedir(), '.chickpea-node');
@@ -50,7 +54,7 @@ export function defaultNodeInstallationHome(environment = process.env) {
 
 export async function initInstallation(options) {
   const home = resolveManagedHome(options.home);
-  return withOperationLock(home, () => initInstallationUnlocked(options));
+  return withOperationLock(home, () => initInstallationUnlocked(options), options);
 }
 
 async function initInstallationUnlocked(options) {
@@ -80,20 +84,24 @@ async function initInstallationUnlocked(options) {
 
   if (!existsSync(staging)) {
     refuseUnmanagedProductionFiles(home);
-    mkdirPrivate(staging);
-    const minted = await mintSetupCapability();
-    const authSecret = randomBytes(32).toString('base64url');
-    writePrivate(path.join(staging, 'request.json'), `${JSON.stringify(requested, null, 2)}\n`);
-    writePrivate(path.join(staging, RUNTIME_FILE), runtimeEnvironment({
-      home,
-      installation,
-      authSecret,
-      setupDigest: minted.digest,
-      setupIssuedAt: minted.issuedAt,
-    }));
-    writePrivate(path.join(staging, SETUP_FILE), `${setupCapabilityUrl(installation.origin, minted.capability)}\n`);
-    writePrivate(path.join(staging, INSTALLATION_FILE), `${JSON.stringify(installation, null, 2)}\n`);
-    if (stagedTunnelToken) writePrivate(path.join(staging, 'tunnel-token.txt'), stagedTunnelToken);
+    await preparePrivateStage(staging, async (preparing) => {
+      const minted = await mintSetupCapability();
+      const authSecret = randomBytes(32).toString('base64url');
+      writePrivate(path.join(preparing, 'request.json'), `${JSON.stringify(requested, null, 2)}\n`);
+      failDuringPreparation(options, 'request.json');
+      writePrivate(path.join(preparing, RUNTIME_FILE), runtimeEnvironment({
+        home,
+        installation,
+        authSecret,
+        setupDigest: minted.digest,
+        setupIssuedAt: minted.issuedAt,
+      }));
+      failDuringPreparation(options, RUNTIME_FILE);
+      writePrivate(path.join(preparing, SETUP_FILE), `${setupCapabilityUrl(installation.origin, minted.capability)}\n`);
+      failDuringPreparation(options, SETUP_FILE);
+      writePrivate(path.join(preparing, INSTALLATION_FILE), `${JSON.stringify(installation, null, 2)}\n`);
+      if (stagedTunnelToken) writePrivate(path.join(preparing, 'tunnel-token.txt'), stagedTunnelToken);
+    });
   } else {
     assertPrivateDirectory(staging);
     const staged = readJson(path.join(staging, 'request.json'), 'init transaction');
@@ -141,7 +149,7 @@ function validateInstallationInput(options, home, sourceCommit) {
   const installation = { schemaVersion: 1, sourceCommit, origin, port, tunnelMode };
   let stagedTunnelToken;
   if (hasToken) {
-    const sourceToken = validateTunnelToken(home, options.tunnelTokenFile);
+    const sourceToken = validateTunnelToken(options.tunnelTokenFile);
     const tokenFile = path.join(home, 'tunnel-token.txt');
     stagedTunnelToken = readFileSync(sourceToken);
     const cloudflared = validateCloudflared(options.cloudflared);
@@ -176,10 +184,9 @@ function privateIpLiteral(hostname) {
   return hostname === '::' || hostname === '::1' || /^f[cd]/i.test(hostname) || /^fe[89ab]/i.test(hostname);
 }
 
-function validateTunnelToken(home, value) {
+function validateTunnelToken(value) {
   if (!path.isAbsolute(value)) throw new Error('Tunnel token file must be an absolute path.');
   const resolved = realpathRegularFile(value, 'Tunnel token file');
-  if (!isInside(resolved, home)) throw new Error('Tunnel token file must be stored inside the installer home.');
   if ((statSync(resolved).mode & 0o077) !== 0) throw new Error('Tunnel token file must not be readable by group or other users.');
   return resolved;
 }
@@ -200,7 +207,11 @@ function validateRelease(home, suppliedRoot) {
   if (path.dirname(releaseRoot) !== releases || !SHA_PATTERN.test(path.basename(releaseRoot))) {
     throw new Error('The runtime manager must execute from HOME/releases/<full SHA>.');
   }
-  const source = readJson(path.join(releaseRoot, 'release-source.json'), 'release source identity');
+  const sourceFile = path.join(releaseRoot, 'release-source.json');
+  if (!existsSync(sourceFile) || lstatSync(sourceFile).isSymbolicLink() || !lstatSync(sourceFile).isFile()) {
+    throw new Error('release-source.json must be a real regular file.');
+  }
+  const source = readJson(sourceFile, 'release source identity');
   if (source?.commit !== path.basename(releaseRoot)) {
     throw new Error('release-source.json does not match the immutable release directory.');
   }
@@ -287,7 +298,9 @@ export function readRuntimeEnvironment(file) {
 
 export function readInstallation(homeInput) {
   const home = resolveManagedHome(homeInput);
-  const value = readJson(path.join(home, INSTALLATION_FILE), 'installation');
+  const file = path.join(home, INSTALLATION_FILE);
+  assertPrivateRegularFile(file, 'installation.json');
+  const value = readJson(file, 'installation');
   if (value?.schemaVersion !== 1 || !SHA_PATTERN.test(value.sourceCommit ?? '') || typeof value.origin !== 'string' ||
       !Number.isSafeInteger(value.port)) throw new Error('installation.json is invalid.');
   validatePublicOrigin(value.origin);
@@ -315,7 +328,7 @@ export function controlledChildEnvironment(privateNodeBin, ambient = process.env
 
 export async function runStart(homeInput, options = {}) {
   const home = resolveManagedHome(homeInput);
-  return withOperationLock(home, () => runStartUnlocked(home, options));
+  return withOperationLock(home, () => runStartUnlocked(home, options), options);
 }
 
 async function runStartUnlocked(homeInput, options = {}) {
@@ -355,7 +368,11 @@ async function runStartUnlocked(homeInput, options = {}) {
     for (const child of children) {
       if (child.runtimeExit === undefined) child.kill('SIGTERM');
     }
-    await Promise.all(children.map((child) => waitForChild(child, SHUTDOWN_TIMEOUT_MS)));
+    await Promise.all(children.map((child) => waitForChild(
+      child,
+      options.shutdownTimeoutMs ?? SHUTDOWN_TIMEOUT_MS,
+      options.forceKillImpl,
+    )));
     if (server) await closeServer(server);
     if (appLog !== undefined) closeSync(appLog);
     if (tunnelLog !== undefined) closeSync(tunnelLog);
@@ -378,13 +395,15 @@ async function runStartUnlocked(homeInput, options = {}) {
   });
 
   const spawnOwned = (name, command, args, logFd) => {
+    const detached = process.platform !== 'win32';
     const child = (options.spawnImpl ?? spawn)(command, args, {
       cwd: release,
-      detached: process.platform !== 'win32',
+      detached,
       env: childEnvironment,
       stdio: ['ignore', logFd, logFd],
     });
     child.name = name;
+    child.runtimeDetached = detached;
     child.runtimeExit = undefined;
     child.once('error', (error) => {
       process.stderr.write(`[chickpea] ${name} could not start: ${error.message}\n`);
@@ -430,7 +449,12 @@ async function runStartUnlocked(homeInput, options = {}) {
     });
     appReady = true;
     process.stdout.write(`[chickpea] Running locally at http://127.0.0.1:${installation.port}. This does not verify Slack delivery.\n`);
-    if (options.open) await openSetup(home, { openImpl: options.openImpl });
+    if (options.open) {
+      try { await openSetup(home, { openImpl: options.openImpl }); }
+      catch (error) {
+        process.stderr.write(`[chickpea] Setup was not opened: ${error instanceof Error ? error.message : String(error)} Chickpea is still running.\n`);
+      }
+    }
     return await completion;
   } catch (error) {
     if (stopping) return await completion;
@@ -449,18 +473,18 @@ async function waitForReadiness(port, child, options) {
   while (Date.now() < deadline) {
     if (child.runtimeExit !== undefined) throw new Error('The application exited before it became ready.');
     try {
-      const response = await fetchImpl(`http://127.0.0.1:${port}/admin`, {
+      const response = await fetchImpl(`http://127.0.0.1:${port}${READINESS_PATH}`, {
         redirect: 'manual',
         signal: AbortSignal.timeout(1_000),
       });
-      if (response.status < 500) return;
+      if (response.status === 200) return;
     } catch { /* retry bounded local readiness only */ }
     await delay(100);
   }
   throw new Error('The application did not become reachable before the startup deadline.');
 }
 
-async function waitForChild(child, timeoutMs) {
+async function waitForChild(child, timeoutMs, forceKillImpl = process.kill.bind(process)) {
   if (child.runtimeExit !== undefined) return;
   const exited = new Promise((resolve) => child.once('exit', resolve));
   let timeout;
@@ -471,17 +495,25 @@ async function waitForChild(child, timeoutMs) {
   const timedOut = await Promise.race([exited.then(() => false), deadline]);
   clearTimeout(timeout);
   if (timedOut && child.runtimeExit === undefined) {
-    child.kill('SIGKILL');
+    if (child.runtimeDetached && process.platform !== 'win32' && Number.isSafeInteger(child.pid) && child.pid > 1) {
+      try { forceKillImpl(-child.pid, 'SIGKILL'); }
+      catch (error) { if (error.code !== 'ESRCH') throw error; }
+    } else {
+      child.kill('SIGKILL');
+    }
     await exited;
   }
 }
 
 export async function sendControlCommand(homeInput, command, options = {}) {
   const home = resolveManagedHome(homeInput);
+  const socket = options.socketPath ?? controlSocketPath(home);
+  const endpoint = validateControlEndpoint(socket);
+  if (!endpoint) return { running: false, accepted: false };
   const tokenFile = path.join(home, 'control', 'token');
   if (!existsSync(tokenFile)) return { running: false, accepted: false };
+  assertPrivateRegularFile(tokenFile, 'Control token');
   const token = readFileSync(tokenFile, 'utf8').trim();
-  const socket = controlSocketPath(home);
   return new Promise((resolve, reject) => {
     const client = createConnection(socket);
     let response = '';
@@ -507,6 +539,33 @@ export async function sendControlCommand(homeInput, command, options = {}) {
       } catch (error) { reject(error); }
     });
   });
+}
+
+function validateControlEndpoint(socket) {
+  const directory = path.dirname(socket);
+  const directoryInfo = lstatSync(directory, { throwIfNoEntry: false });
+  if (!directoryInfo) return false;
+  if (!directoryInfo.isDirectory() || directoryInfo.isSymbolicLink()) {
+    throw new Error(`Control socket directory ${directory} must be a private real directory.`);
+  }
+  if (typeof process.getuid === 'function' && directoryInfo.uid !== process.getuid()) {
+    throw new Error(`Control socket directory ${directory} is owned by another user.`);
+  }
+  if ((directoryInfo.mode & 0o077) !== 0) {
+    throw new Error(`Control socket directory ${directory} must not be accessible by other users.`);
+  }
+  const socketInfo = lstatSync(socket, { throwIfNoEntry: false });
+  if (!socketInfo) return false;
+  if (!socketInfo.isSocket() || socketInfo.isSymbolicLink()) {
+    throw new Error(`Control socket ${socket} must be a Unix socket.`);
+  }
+  if (typeof process.getuid === 'function' && socketInfo.uid !== process.getuid()) {
+    throw new Error(`Control socket ${socket} is owned by another user.`);
+  }
+  if ((socketInfo.mode & 0o077) !== 0) {
+    throw new Error(`Control socket ${socket} must not be accessible by other users.`);
+  }
+  return true;
 }
 
 async function createControlServer(home, handle) {
@@ -592,9 +651,9 @@ export async function installationStatus(homeInput, options = {}) {
   try { installedVersion = String(readJson(path.join(current, 'package.json'), 'release package').version ?? 'unknown'); }
   catch { /* Status remains useful for a damaged release. */ }
   const managed = await sendControlCommand(home, 'status');
-  const localUrl = `http://127.0.0.1:${installation.port}/admin`;
+  const localUrl = `http://127.0.0.1:${installation.port}${READINESS_PATH}`;
   const localReachable = await httpReachable(localUrl, options.fetchImpl);
-  const publicReachable = await httpReachable(new URL('/admin', installation.origin).href, options.fetchImpl);
+  const publicReachable = await httpReachable(new URL(READINESS_PATH, installation.origin).href, options.fetchImpl);
   const service = launchAgentState(home);
   return {
     home,
@@ -615,12 +674,15 @@ export async function installationStatus(homeInput, options = {}) {
 async function httpReachable(url, fetchImpl = fetch) {
   try {
     const response = await fetchImpl(url, { redirect: 'manual', signal: AbortSignal.timeout(2_000) });
-    return response.status < 500;
+    return response.status === 200;
   } catch { return false; }
 }
 
 export async function openSetup(homeInput, options = {}) {
   const home = resolveManagedHome(homeInput);
+  if (existsSync(path.join(home, '.setup-renewal'))) {
+    throw new Error('Setup renewal is incomplete. Run setup --renew before opening setup.');
+  }
   const installation = readInstallation(home);
   let url;
   const ownership = installationOwnership(home);
@@ -646,7 +708,7 @@ export async function openSetup(homeInput, options = {}) {
 
 export async function renewSetup(homeInput, options = {}) {
   const home = resolveManagedHome(homeInput);
-  return withOperationLock(home, () => renewSetupUnlocked(home, options));
+  return withOperationLock(home, () => renewSetupUnlocked(home, options), options);
 }
 
 async function renewSetupUnlocked(home, options) {
@@ -659,40 +721,111 @@ async function renewSetupUnlocked(home, options) {
   const installation = readInstallation(home);
   const stage = path.join(home, '.setup-renewal');
   if (!existsSync(stage)) {
-    mkdirPrivate(stage);
-    const minted = await mintSetupCapability({ now: options.now });
-    const current = readFileSync(path.join(home, RUNTIME_FILE), 'utf8');
-    const updated = replaceEnvironmentValues(current, {
-      [SETUP_CAPABILITY_DIGEST_BINDING]: minted.digest,
-      [SETUP_CAPABILITY_ISSUED_AT_BINDING]: String(minted.issuedAt),
+    await preparePrivateStage(stage, async (preparing) => {
+      const minted = await mintSetupCapability({ now: options.now });
+      const current = readFileSync(path.join(home, RUNTIME_FILE), 'utf8');
+      const updated = replaceEnvironmentValues(current, {
+        [SETUP_CAPABILITY_DIGEST_BINDING]: minted.digest,
+        [SETUP_CAPABILITY_ISSUED_AT_BINDING]: String(minted.issuedAt),
+      });
+      writePrivate(path.join(preparing, RUNTIME_FILE), updated);
+      failDuringPreparation(options, RUNTIME_FILE);
+      writePrivate(path.join(preparing, SETUP_FILE), `${setupCapabilityUrl(installation.origin, minted.capability)}\n`);
     });
-    writePrivate(path.join(stage, RUNTIME_FILE), updated);
-    writePrivate(path.join(stage, SETUP_FILE), `${setupCapabilityUrl(installation.origin, minted.capability)}\n`);
+  } else {
+    assertPrivateDirectory(stage);
   }
   for (const relative of [RUNTIME_FILE, SETUP_FILE]) {
     atomicPrivateWrite(path.join(home, relative), readFileSync(path.join(stage, relative)));
+    if (options.failAfterPublish === relative) throw new Error('simulated setup renewal interruption');
   }
   rmSync(stage, { recursive: true, force: true });
   return { renewed: true };
 }
 
-async function withOperationLock(home, operation) {
-  const release = await acquireOperationLock(home);
+async function withOperationLock(home, operation, options = {}) {
+  const release = await acquireOperationLock(home, options);
   try { return await operation(); }
   finally { await release(); }
 }
 
-async function acquireOperationLock(home) {
-  const lock = path.join(home, '.runtime-operation-lock');
+async function preparePrivateStage(stage, writer) {
+  const preparing = `${stage}.prepare`;
+  if (existsSync(preparing)) {
+    assertPrivateDirectory(preparing);
+    rmSync(preparing, { recursive: true, force: true });
+  }
+  mkdirPrivate(preparing);
+  await writer(preparing);
+  renameSync(preparing, stage);
+}
+
+function failDuringPreparation(options, relative) {
+  if (options.failDuringPreparationAfter === relative) {
+    throw new Error('simulated staging preparation interruption');
+  }
+}
+
+export function currentBootSessionIdentity(options = {}) {
+  if (options.bootIdentity !== undefined) {
+    if (typeof options.bootIdentity !== 'string' || !options.bootIdentity.trim()) {
+      throw new Error('Injected boot session identity must be a non-empty string.');
+    }
+    return options.bootIdentity.trim();
+  }
+  if (process.platform === 'darwin') {
+    const result = spawnSync('/usr/sbin/sysctl', ['-n', 'kern.bootsessionuuid'], { encoding: 'utf8' });
+    const identity = result.status === 0 ? result.stdout.trim() : '';
+    if (identity) return identity;
+  } else if (process.platform === 'linux') {
+    try {
+      const identity = readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim();
+      if (identity) return identity;
+    } catch { /* Fail closed below. */ }
+  }
+  throw new Error('Cannot determine the operating system boot session identity; runtime coordination is unavailable.');
+}
+
+export function runtimeOperationLockPath(homeInput, bootIdentity) {
+  const digest = createHash('sha256').update(bootIdentity).digest('hex').slice(0, 24);
+  return path.join(path.resolve(homeInput), `.runtime-operation-lock-${digest}`);
+}
+
+export class UnsafeRuntimeOperationLockError extends Error {
+  constructor(lock, owner) {
+    const ownerPath = path.join(lock, 'owner.json');
+    super(`Another Chickpea runtime operation is active in this boot session, or a prior process stopped unexpectedly. Lock: ${lock}. Owner metadata: ${owner}. Inspect ${ownerPath} and running child processes; remove only ${lock} after confirming nothing is running.`);
+    this.name = 'UnsafeRuntimeOperationLockError';
+    this.code = 'CHICKPEA_UNSAFE_RUNTIME_LOCK';
+    this.lockPath = lock;
+  }
+}
+
+async function acquireOperationLock(home, options = {}) {
+  const bootIdentity = currentBootSessionIdentity(options);
+  const lock = runtimeOperationLockPath(home, bootIdentity);
   try {
     mkdirSync(lock, { mode: 0o700 });
   } catch (error) {
     if (error.code === 'EEXIST') {
-      throw new Error(`Another Chickpea runtime operation is active, or a prior process stopped unexpectedly. Inspect ${path.join(lock, 'owner.json')} and running child processes; remove only ${lock} after confirming nothing is running.`, { cause: error });
+      let owner = 'unreadable';
+      try {
+        assertPrivateDirectory(lock);
+        const ownerPath = path.join(lock, 'owner.json');
+        assertPrivateRegularFile(ownerPath, 'Runtime operation owner metadata');
+        const parsed = JSON.parse(readFileSync(ownerPath, 'utf8'));
+        owner = JSON.stringify({ pid: parsed.pid, startedAt: parsed.startedAt, bootSessionIdentity: parsed.bootSessionIdentity });
+      } catch { /* The refusal remains conservative when metadata is damaged. */ }
+      throw new UnsafeRuntimeOperationLockError(lock, owner, { cause: error });
     }
     throw error;
   }
-  writePrivate(path.join(lock, 'owner.json'), `${JSON.stringify({ pid: process.pid, startedAt: Date.now() })}\n`);
+  try {
+    writePrivate(path.join(lock, 'owner.json'), `${JSON.stringify({ pid: process.pid, startedAt: Date.now(), bootSessionIdentity: bootIdentity })}\n`);
+  } catch (error) {
+    rmSync(lock, { recursive: true, force: true });
+    throw error;
+  }
   return async () => { rmSync(lock, { recursive: true, force: true }); };
 }
 
@@ -735,8 +868,23 @@ function installationOwnership(home) {
 
 async function openUrl(url) {
   const command = process.platform === 'darwin' ? '/usr/bin/open' : 'xdg-open';
-  const child = spawn(command, [url], { detached: true, stdio: 'ignore', env: controlledChildEnvironment('/usr/bin') });
-  child.unref();
+  await new Promise((resolve, reject) => {
+    const child = spawn(command, [url], { stdio: 'ignore', env: controlledChildEnvironment('/usr/bin') });
+    const timer = setTimeout(() => {
+      child.kill('SIGTERM');
+      reject(new Error('Browser opener did not exit within 10 seconds.'));
+    }, 10_000);
+    timer.unref();
+    child.once('error', (error) => {
+      clearTimeout(timer);
+      reject(new Error(`Browser opener failed: ${error.message}`, { cause: error }));
+    });
+    child.once('exit', (code, signal) => {
+      clearTimeout(timer);
+      if (code === 0) resolve();
+      else reject(new Error(`Browser opener exited ${signal ? `with ${signal}` : `with status ${code}`}.`));
+    });
+  });
 }
 
 export function launchAgentIdentity(homeInput) {
@@ -752,7 +900,7 @@ export function renderLaunchAgentPlist({ home, node, label }) {
     TMPDIR: process.env.TMPDIR || tmpdir(),
     LANG: process.env.LANG || 'en_US.UTF-8',
   });
-  const args = [node, manager, '--home', home, 'start'];
+  const args = [node, manager, '--home', home, 'start', '--service'];
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
@@ -787,7 +935,8 @@ export async function installLaunchAgent(homeInput) {
   }
   if (!existsSync(plistPath)) atomicPrivateWrite(plistPath, plist);
   const state = launchAgentState(home);
-  if (!state.loaded) runLaunchctl(['bootstrap', `gui/${process.getuid()}`, plistPath]);
+  if (state.loaded) runLaunchctl(['kickstart', state.domain]);
+  else runLaunchctl(['bootstrap', `gui/${process.getuid()}`, plistPath]);
   return { label, plistPath };
 }
 
@@ -825,11 +974,11 @@ function requireMacOsService() {
 
 function validateCurrentLink(home, options = {}) {
   const current = path.join(home, 'current');
-  if (!existsSync(current)) {
+  const link = lstatSync(current, { throwIfNoEntry: false });
+  if (!link) {
     if (options.optional) return undefined;
     throw new Error('The installation has no active release.');
   }
-  const link = lstatSync(current);
   if (!link.isSymbolicLink()) throw new Error('current must be a symlink to a managed release.');
   const resolved = realpathSync(current);
   const releases = realpathSync(path.join(home, 'releases'));
@@ -929,11 +1078,6 @@ function readJson(file, label) {
 
 function sameJson(left, right) {
   return JSON.stringify(left) === JSON.stringify(right);
-}
-
-function isInside(candidate, parent) {
-  const relative = path.relative(parent, candidate);
-  return relative !== '' && !relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative);
 }
 
 function xml(value) {

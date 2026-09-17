@@ -14,6 +14,7 @@ import {
   renewSetup,
   runStart,
   stopInstallation,
+  UnsafeRuntimeOperationLockError,
   uninstallLaunchAgent,
 } from './lib/node-installation.mjs';
 
@@ -47,8 +48,16 @@ export async function main(argv = process.argv.slice(2)) {
     return 0;
   }
   if (parsed.command === 'start') {
-    const open = parseFlagOnly(parsed.args, '--open');
-    return runStart(parsed.home, { open });
+    const options = parseStartOptions(parsed.args);
+    try {
+      return await runStart(parsed.home, options);
+    } catch (error) {
+      if (options.service && error instanceof UnsafeRuntimeOperationLockError) {
+        process.stderr.write(`[chickpea] ${error.message}\n[chickpea] Service start will remain stopped until the lock is inspected and the service is installed again.\n`);
+        return 0;
+      }
+      throw error;
+    }
   }
   if (parsed.command === 'stop') {
     requireNoArguments(parsed.args, 'stop');
@@ -137,6 +146,18 @@ function parseFlagOnly(args, flag) {
   if (args.length === 0) return false;
   if (args.length === 1 && args[0] === flag) return true;
   throw new Error(`Only ${flag} is accepted for this command.`);
+}
+
+function parseStartOptions(args) {
+  const allowed = new Set(['--open', '--service']);
+  const seen = new Set();
+  for (const argument of args) {
+    if (!allowed.has(argument)) throw new Error(`Unknown start option: ${argument}`);
+    if (seen.has(argument)) throw new Error(`${argument} may only be provided once.`);
+    seen.add(argument);
+  }
+  if (seen.has('--open') && seen.has('--service')) throw new Error('--open is not available for service starts.');
+  return { open: seen.has('--open'), service: seen.has('--service') };
 }
 
 function requireNoArguments(args, command) {

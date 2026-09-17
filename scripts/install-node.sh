@@ -115,8 +115,18 @@ if ! mkdir "$lock" 2>/dev/null; then
 fi
 printf '%s\n' "$$" > "$lock/pid"
 work=''
+ln_tmp=''
+current_stage_created=0
+expected_current_target=''
 cleanup() {
   status=$?
+  if ((current_stage_created)); then
+    if [[ -L $ln_tmp && $(readlink "$ln_tmp") == "$expected_current_target" ]]; then
+      rm -f "$ln_tmp"
+    else
+      printf 'chickpea-node installer: preserving unexpected current-pointer staging path for inspection: %s\n' "$ln_tmp" >&2
+    fi
+  fi
   [[ -z $work || ! -e $work ]] || rm -rf "$work"
   rm -f "$lock/pid" 2>/dev/null || true
   rmdir "$lock" 2>/dev/null || true
@@ -130,12 +140,12 @@ work=$(mktemp -d "$install_home/.install-stage.XXXXXX")
 
 download() {
   url=$1 output=$2
-  curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 --retry 2 --connect-timeout 15 --max-time 300 "$url" --output "$output"
+  curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --tlsv1.2 --retry 2 --connect-timeout 15 --max-time 300 "$url" --output "$output"
 }
 
 github_json() {
   curl --fail --silent --show-error --proto '=https' --tlsv1.2 --connect-timeout 15 \
-    --max-time 30 --max-filesize 1048576 \
+    --max-time 30 --max-filesize 8388608 \
     -H 'Accept: application/vnd.github+json' \
     -H 'X-GitHub-Api-Version: 2022-11-28' \
     -H 'User-Agent: chickpea-node-installer' "$1" --output "$2"
@@ -290,7 +300,7 @@ else
 const fs=require('fs'); let o=JSON.parse(fs.readFileSync(process.argv[2],'utf8')).object;
 (async()=>{for(let i=0;o&&o.type==='tag'&&i<5;i++){
   if(!/^[0-9a-f]{40}$/.test(o.sha))process.exit(1);
-  const r=await fetch(`${process.argv[3]}/git/tags/${o.sha}`,{redirect:'error',headers:{Accept:'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','User-Agent':'chickpea-node-installer'}});
+  const r=await fetch(`${process.argv[3]}/git/tags/${o.sha}`,{redirect:'error',signal:AbortSignal.timeout(30000),headers:{Accept:'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','User-Agent':'chickpea-node-installer'}});
   if(!r.ok||!String(r.headers.get('content-type')).includes('json'))process.exit(1);
   const bytes=new Uint8Array(await r.arrayBuffer()); if(bytes.length>1048576)process.exit(1);
   o=JSON.parse(new TextDecoder().decode(bytes)).object;
@@ -347,6 +357,27 @@ elif [[ $(cat "$complete") != "$source_sha" ]]; then
   die 'installed release completeness marker is invalid'
 fi
 
+managed_cloudflared="$install_home/tools/cloudflared/cloudflared"
+managed_cloudflared_receipt="$install_home/tools/cloudflared/.installer-cloudflared"
+managed_cloudflared_canonical=$("$node_bin" -e 'const fs=require("fs"),p=require("path");process.stdout.write(p.join(fs.realpathSync(process.argv[1]),"tools","cloudflared","cloudflared"))' "$install_home")
+if [[ $tunnel_mode == cloudflare && ( $cloudflared == "$managed_cloudflared" || $cloudflared == "$managed_cloudflared_canonical" ) && ! -e $managed_cloudflared && ! -L $managed_cloudflared ]]; then
+  # This exact path is installer-owned. A user may deliberately remove the
+  # managed tool; reacquire it rather than treating it as an arbitrary missing
+  # external executable. Other --cloudflared paths still fail closed.
+  cloudflared=''
+fi
+if [[ $tunnel_mode == cloudflare && -z $cloudflared && ( -e $managed_cloudflared || -L $managed_cloudflared ) ]]; then
+  [[ -f $managed_cloudflared && -x $managed_cloudflared && ! -L $managed_cloudflared ]] || die 'managed cloudflared executable is not a private regular executable; preserve it and investigate'
+  [[ -f $managed_cloudflared_receipt && ! -L $managed_cloudflared_receipt ]] || die 'managed cloudflared is missing its installer receipt; preserve it and investigate'
+  saved_cf_digest=$(awk '$1 == "sha256" { print $2 }' "$managed_cloudflared_receipt")
+  saved_cf_version=$(awk '$1 == "version" { print $2 }' "$managed_cloudflared_receipt")
+  [[ $saved_cf_digest =~ ^[0-9a-f]{64}$ && $saved_cf_version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die 'managed cloudflared installer receipt is invalid'
+  verify_sha256 "$managed_cloudflared" "$saved_cf_digest" 'managed cloudflared'
+  observed_cf_version=$("$managed_cloudflared" version 2>/dev/null | sed -nE 's/.*version ([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' | head -1)
+  [[ $observed_cf_version == "$saved_cf_version" ]] || die 'managed cloudflared version disagrees with its installer receipt'
+  cloudflared=$managed_cloudflared
+fi
+
 if [[ -n $cloudflared ]]; then
   [[ -x $cloudflared ]] || die '--cloudflared must be an existing executable'
   cloudflared=$("$node_bin" -e 'const fs=require("fs");const p=fs.realpathSync(process.argv[1]);if(!fs.statSync(p).isFile())process.exit(1);process.stdout.write(p)' "$cloudflared") || die 'unable to resolve the cloudflared executable'
@@ -369,9 +400,18 @@ elif [[ $tunnel_mode == cloudflare ]]; then
   cf_candidate=$(find "$work/cloudflared" -type f -name cloudflared -print -quit)
   [[ -n $cf_candidate ]] || die 'cloudflared archive did not contain cloudflared'
   chmod 700 "$cf_candidate"
+  cf_binary_digest=$(shasum -a 256 "$cf_candidate" | awk '{print $1}')
+  [[ $cf_binary_digest =~ ^[0-9a-f]{64}$ ]] || die 'unable to digest the extracted cloudflared executable'
+  cf_version=$("$cf_candidate" version 2>/dev/null | sed -nE 's/.*version ([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' | head -1)
+  [[ $cf_version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die 'downloaded cloudflared did not report a valid version'
+  "$node_bin" -e 'const a=process.argv[1].split(".").map(Number),b=[2025,4,0];for(let i=0;i<3;i++){if(a[i]>b[i])process.exit(0);if(a[i]<b[i])process.exit(1)}' "$cf_version" || die 'downloaded cloudflared is older than version 2025.4.0'
   [[ ! -L $install_home/tools/cloudflared ]] || die 'managed cloudflared directory must not be a symlink'
   mkdir -p "$install_home/tools/cloudflared"
   [[ ! -e $install_home/tools/cloudflared/cloudflared && ! -L $install_home/tools/cloudflared/cloudflared ]] || die 'refusing to replace an existing unmanaged cloudflared executable'
+  cf_receipt_stage="$install_home/tools/cloudflared/.installer-cloudflared.$$.tmp"
+  [[ ! -e $cf_receipt_stage && ! -L $cf_receipt_stage ]] || die 'cloudflared receipt staging path already exists'
+  (umask 077; printf 'sha256 %s\narchive-sha256 %s\nversion %s\n' "$cf_binary_digest" "$cf_digest" "$cf_version" > "$cf_receipt_stage")
+  mv "$cf_receipt_stage" "$managed_cloudflared_receipt"
   cf_stage="$install_home/tools/cloudflared/.cloudflared.$$.tmp"
   [[ ! -e $cf_stage && ! -L $cf_stage ]] || die 'cloudflared staging path already exists'
   mv "$cf_candidate" "$cf_stage"
@@ -399,7 +439,10 @@ EOF
 chmod 700 "$wrapper_tmp"
 "$node_bin" -e 'require("fs").renameSync(process.argv[1],process.argv[2])' "$wrapper_tmp" "$wrapper"
 ln_tmp="$install_home/.current.$$.tmp"
-ln -s "releases/$source_sha" "$ln_tmp"
+expected_current_target="releases/$source_sha"
+[[ ! -e $ln_tmp && ! -L $ln_tmp ]] || die 'current-pointer staging path already exists'
+ln -s "$expected_current_target" "$ln_tmp"
+current_stage_created=1
 "$node_bin" -e '
   const fs=require("fs"),tmp=process.argv[1],current=process.argv[2],expected=process.argv[3];
   try {
@@ -407,6 +450,7 @@ ln -s "releases/$source_sha" "$ln_tmp"
     if(!s.isSymbolicLink()||fs.readlinkSync(current)!==expected)process.exit(2);
   } catch(e) { if(e.code!=="ENOENT")throw e; }
   fs.renameSync(tmp,current);' "$ln_tmp" "$install_home/current" "releases/$source_sha" || die 'current release pointer is not a managed installer symlink'
+current_stage_created=0
 
 note "Installed Chickpea $package_version from $source_sha."
 note "Management command: $(quote "$wrapper") status"

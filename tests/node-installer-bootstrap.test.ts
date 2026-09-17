@@ -7,8 +7,11 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   readlinkSync,
+  realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -46,11 +49,18 @@ const args = process.argv.slice(2);
 const home = args[args.indexOf('--home') + 1];
 const command = args[args.indexOf('--home') + 2];
 if (command !== 'init') process.exit(0);
+if (process.env.BOOTSTRAP_TEST_INIT_FAIL === '1') {
+  console.error('simulated runtime init failure');
+  process.exit(73);
+}
 const origin = args[args.indexOf('--origin') + 1];
 const port = Number(args[args.indexOf('--port') + 1]);
+const tunnelMode = args[args.indexOf('--tunnel') + 1];
+const cloudflaredIndex = args.indexOf('--cloudflared');
+const tokenIndex = args.indexOf('--tunnel-token-file');
 const sourceCommit = JSON.parse(readFileSync(new URL('../release-source.json', import.meta.url), 'utf8')).commit;
 mkdirSync(path.join(home, 'state'), { recursive: true });
-writeFileSync(path.join(home, 'installation.json'), JSON.stringify({ sourceCommit, origin, port, tunnelMode: args[args.indexOf('--tunnel') + 1] }));
+writeFileSync(path.join(home, 'installation.json'), JSON.stringify({ sourceCommit, origin, port, tunnelMode, ...(tunnelMode === 'cloudflare' ? { tunnel: { mode: 'cloudflare', cloudflared: args[cloudflaredIndex + 1], tokenFile: args[tokenIndex + 1] } } : {}) }));
 writeFileSync(path.join(home, 'runtime-args.json'), JSON.stringify(args));
 writeFileSync(path.join(home, 'runtime.env'), 'PRIVATE=1\\n', { mode: 0o600 });
 writeFileSync(path.join(home, 'setup-url.txt'), 'https://example.test/admin/setup#setup=secret\\n', { mode: 0o600 });
@@ -231,6 +241,77 @@ test('source download failure leaves no active or partial release', { skip: proc
   }
 });
 
+test('a downloaded cloudflared survives init failure and is verified and reused without downloading again', { skip: process.platform !== 'darwin' }, () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'chickpea-node-cloudflared-retry-'));
+  try {
+    const source = createSource(root);
+    const { home } = createManagedHome(root);
+    const token = path.join(root, 'tunnel-token.txt');
+    writeFileSync(token, 'private-token\n', { mode: 0o600 });
+    const archiveRoot = path.join(root, 'cloudflared-archive');
+    const archiveBinary = path.join(archiveRoot, 'cloudflared');
+    const archive = path.join(root, 'cloudflared.tgz');
+    mkdirSync(archiveRoot);
+    writeExecutable(archiveBinary, '#!/bin/bash\necho "cloudflared version 2026.8.1"\n');
+    execFileSync('tar', ['-czf', archive, '-C', archiveRoot, 'cloudflared']);
+    const archiveDigest = execFileSync('shasum', ['-a', '256', archive], { encoding: 'utf8' }).split(/\s+/)[0];
+    const fakeBin = path.join(root, 'fake-bin');
+    mkdirSync(fakeBin);
+    const curlLog = path.join(root, 'curl.log');
+    writeExecutable(path.join(fakeBin, 'curl'), `#!/bin/bash
+set -eu
+output=''
+url=''
+previous=''
+for argument in "$@"; do
+  if [[ $previous == --output ]]; then output=$argument; fi
+  previous=$argument
+  case "$argument" in https://*) url=$argument ;; esac
+done
+printf '%s\\n' "$url" >> ${JSON.stringify(curlLog)}
+case "$url" in
+  https://api.github.com/repos/cloudflare/cloudflared/releases/latest)
+    printf '%s' ${JSON.stringify(JSON.stringify({ assets: [{ name: process.arch === 'arm64' ? 'cloudflared-darwin-arm64.tgz' : 'cloudflared-darwin-amd64.tgz', browser_download_url: 'https://downloads.example.test/cloudflared.tgz', digest: `sha256:${archiveDigest}` }] }))} > "$output" ;;
+  https://downloads.example.test/cloudflared.tgz) cp ${JSON.stringify(archive)} "$output" ;;
+  *) echo unexpected download >&2; exit 92 ;;
+esac
+`);
+    const args = [
+      '--home', home,
+      '--source', source.directory,
+      '--origin', 'https://chickpea.example.test',
+      '--tunnel', 'cloudflare',
+      '--tunnel-token-file', token,
+      '--no-start',
+      '--no-open',
+    ];
+    const failed = runInstaller(args, { PATH: `${fakeBin}:${process.env.PATH}`, BOOTSTRAP_TEST_INIT_FAIL: '1' });
+    assert.equal(failed.status, 73, failed.stderr);
+    assert.match(failed.stderr, /simulated runtime init failure/);
+    const cloudflared = path.join(home, 'tools', 'cloudflared', 'cloudflared');
+    const receipt = readFileSync(path.join(home, 'tools', 'cloudflared', '.installer-cloudflared'), 'utf8');
+    const binaryDigest = execFileSync('shasum', ['-a', '256', cloudflared], { encoding: 'utf8' }).split(/\s+/)[0];
+    assert.match(receipt, new RegExp(`^sha256 ${binaryDigest}\\narchive-sha256 ${archiveDigest}\\nversion 2026\\.8\\.1\\n$`));
+    assert.equal(existsSync(path.join(home, 'installation.json')), false);
+    assert.equal(existsSync(path.join(home, 'current')), false);
+    const rejectingCurlBin = path.join(root, 'rejecting-curl-bin');
+    mkdirSync(rejectingCurlBin);
+    writeExecutable(path.join(rejectingCurlBin, 'curl'), '#!/bin/bash\necho unexpected retry download >&2\nexit 92\n');
+    const result = runInstaller(args, { PATH: `${rejectingCurlBin}:${process.env.PATH}` });
+    assert.equal(result.status, 0, result.stderr);
+    assert.doesNotMatch(result.stderr, /unexpected retry download/);
+    const runtimeArgs = JSON.parse(readFileSync(path.join(home, 'runtime-args.json'), 'utf8')) as string[];
+    assert.equal(runtimeArgs[runtimeArgs.indexOf('--cloudflared') + 1], realpathSync(cloudflared));
+    rmSync(path.dirname(cloudflared), { recursive: true });
+    const reacquired = runInstaller(args, { PATH: `${fakeBin}:${process.env.PATH}` });
+    assert.equal(reacquired.status, 0, reacquired.stderr);
+    assert.equal(existsSync(cloudflared), true);
+    assert.equal(readFileSync(curlLog, 'utf8').trim().split('\n').length, 4);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('a truncated piped installer cannot execute its parsed prefix', () => {
   const root = mkdtempSync(path.join(tmpdir(), 'chickpea-node-truncated-'));
   try {
@@ -240,6 +321,22 @@ test('a truncated piped installer cannot execute its parsed prefix', () => {
     const result = spawnSync('/bin/bash', ['-s', '--', '--home', home], { input: truncated, encoding: 'utf8', env: process.env });
     assert.notEqual(result.status, 0);
     assert.equal(existsSync(home), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('failed current activation removes only its own temporary symlink', { skip: process.platform !== 'darwin' }, () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'chickpea-node-current-cleanup-'));
+  try {
+    const source = createSource(root);
+    const { home } = createManagedHome(root);
+    symlinkSync('releases/unmanaged', path.join(home, 'current'));
+    const result = runInstaller(['--home', home, '--source', source.directory, '--origin', 'https://chickpea.example.test', '--tunnel', 'external', '--no-start']);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /current release pointer is not a managed installer symlink/);
+    assert.equal(readlinkSync(path.join(home, 'current')), 'releases/unmanaged');
+    assert.deepEqual(readdirSync(home).filter((name) => /^\.current\..*\.tmp$/.test(name)), []);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

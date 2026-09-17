@@ -224,9 +224,12 @@ credentials, and tunnel status. Do not reinstall or clear state to fix routing.
 An interrupted installer may leave its install lock. Follow its error message
 to verify the owning installer has stopped before removing that exact lock.
 A forcibly killed runtime manager can also leave a runtime lock.
-Verify that its application and tunnel have stopped before clearing it; the
-manager never kills an unverified PID to recover. Do not remove the runtime
-databases or another installation's process lock.
+Locks are tied to the operating system's boot session, so an old lock does not
+block startup after a reboot. Within the same boot, verify that the application
+and tunnel have stopped before clearing the exact lock named in the error.
+The login service stops retrying this condition; after resolving it, run
+`service install` again to restart it. The manager never kills an unverified PID
+to recover. Do not remove the runtime databases or another installation's lock.
 
 ## Files, backups, and upgrades
 
@@ -245,8 +248,9 @@ The default layout is:
 
 Keep the application files available while it runs. Before a backup, stop
 Chickpea and ingress, then copy the whole state directory with any SQLite
-`-wal` and `-shm` files, its credential keyring, and `runtime.env`. Record the
-installed commit. Protect and test the backup as described in
+`-wal` and `-shm` files, its credential keyring, `runtime.env`, and
+`installation.json`. Include `tunnel-token.txt` when using a managed tunnel.
+Record the installed commit. Protect and test the backup as described in
 [operations](docs/runbooks/operations.md#back-up-and-restore-node).
 
 The installer deliberately refuses to switch an existing installation to a
