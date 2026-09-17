@@ -15,6 +15,7 @@ const GATEWAY_INBOX_LEASE_MS = 2 * 60_000;
 export const GATEWAY_INBOX_MAX_DRAIN_BATCH = 16;
 
 export type GatewayInboxAdmissionOutcome = 'accepted' | 'duplicate';
+export type GatewayInboxValidatedAdmissionOutcome = GatewayInboxAdmissionOutcome | 'rejected';
 
 interface GatewayInboxLimits {
   maxTotalRows: number;
@@ -111,6 +112,16 @@ export class GatewayInboxStoreLogic {
   }
 
   admit(delivery: GatewayInboundDelivery): GatewayInboxAdmissionOutcome {
+    const outcome = this.admitValidated(delivery, () => true);
+    if (outcome === 'rejected') throw new Error('Unconditional gateway admission was rejected.');
+    return outcome;
+  }
+
+  /** Keep the current authority check and durable insert in one transaction. */
+  admitValidated(
+    delivery: GatewayInboundDelivery,
+    validate: () => boolean,
+  ): GatewayInboxValidatedAdmissionOutcome {
     const payload = JSON.stringify(delivery);
     const payloadBytes = new TextEncoder().encode(payload).byteLength;
     if (payloadBytes > this.limits.maxPayloadBytes) {
@@ -118,6 +129,7 @@ export class GatewayInboxStoreLogic {
     }
     this.maintain();
     return this.db.transaction(() => {
+      if (!validate()) return 'rejected';
       const existing = this.db.get(
         'SELECT binding_id, workspace_id, kind FROM gateway_inbox WHERE id = ?',
         delivery.deliveryId,

@@ -880,6 +880,8 @@ interface SlackEventExecution {
   botUserId: string;
   stores?: AppStores;
   enqueueTurn?: (job: TurnJob) => Promise<StateRpcResult<null>>;
+  /** A durable upstream inbox owns retry when local turn persistence fails. */
+  durableIngress?: boolean;
 }
 
 class SlackDurableEnqueueError extends Error {
@@ -898,7 +900,8 @@ export async function processGatewaySlackEnvelope(
   providedClient?: GatewayDeploymentClient,
   providedExecution?: {
     stores: AppStores;
-    enqueueTurn(job: TurnJob): Promise<StateRpcResult<null>>;
+    enqueueTurn?(job: TurnJob): Promise<StateRpcResult<null>>;
+    durableIngress?: boolean;
   },
 ): Promise<'accepted' | 'rejected'> {
   const stores = providedExecution?.stores ?? resolveStores(platformEnv);
@@ -965,7 +968,8 @@ export async function processGatewaySlackEnvelope(
     client,
     botUserId: installation.botUserId,
     stores,
-    ...(providedExecution ? { enqueueTurn: providedExecution.enqueueTurn } : {}),
+    ...(providedExecution?.enqueueTurn ? { enqueueTurn: providedExecution.enqueueTurn } : {}),
+    ...(providedExecution?.durableIngress ? { durableIngress: true } : {}),
   });
   return 'accepted';
 }
@@ -1740,9 +1744,13 @@ async function processSlackEvent(
       if (admission.run.executionAuthority === 'ledger') {
         // A selected canary must never fall back across authority lanes. The
         // transaction rolled its claims back, so Slack may safely redeliver.
-        console.error('[chickpea] ledger Work admission failed:', sanitizeError(err));
+        if (execution?.durableIngress) {
+          console.error('[chickpea] ledger Work admission failed: durable_ingress_failure');
+        } else {
+          console.error('[chickpea] ledger Work admission failed:', sanitizeError(err));
+        }
         if (promotedDecisionKey) await state.release(promotedDecisionKey);
-        if (execution?.enqueueTurn) {
+        if (execution?.enqueueTurn || execution?.durableIngress) {
           throw new SlackDurableEnqueueError('Canonical Work admission failed.');
         }
         return;
@@ -1852,16 +1860,32 @@ async function processSlackEvent(
       await state.release(msgKey);
       if (promotedDecisionKey) await state.release(promotedDecisionKey);
       if (marksActiveWork) await state.setActiveWork(threadKey, msgKey, false);
-      console.error('[chickpea] Node turn enqueue failed:', sanitizeError(err));
+      if (execution?.durableIngress) {
+        console.error('[chickpea] Node turn enqueue failed: durable_ingress_failure');
+      } else {
+        console.error('[chickpea] Node turn enqueue failed:', sanitizeError(err));
+      }
+      if (execution?.durableIngress) {
+        throw new SlackDurableEnqueueError('Node turn persistence failed.');
+      }
       return;
     }
   }
   await recordAcceptedSlackHumanMessage(stores.config, turn, assignment).catch(() => {
     console.warn('[chickpea] accepted Slack message was not added to public context');
   });
-  await wakeNodeTurnRelay(platformEnv).catch((err) => {
-    console.error('[chickpea] node turn wake failed:', sanitizeError(err));
+  const wake = wakeNodeTurnRelay(platformEnv).catch((err) => {
+    if (execution?.durableIngress) {
+      console.error('[chickpea] node turn wake failed: durable_ingress_failure');
+    } else {
+      console.error('[chickpea] node turn wake failed:', sanitizeError(err));
+    }
   });
+  if (execution?.durableIngress) {
+    void wake;
+    return;
+  }
+  await wake;
 }
 
 
