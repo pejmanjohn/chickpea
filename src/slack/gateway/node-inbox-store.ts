@@ -7,6 +7,19 @@ import {
 } from './inbox.ts';
 import { GATEWAY_BINDING_SETTING } from './settings.ts';
 
+export const NODE_GATEWAY_ADMISSION_AUTHORITY_FIELD = '__chickpeaNodeGatewayAuthority';
+
+interface NodeGatewayAdmissionAuthority {
+  version: 1;
+  bindingId: string;
+  deploymentId: string;
+  workspaceId: string;
+  appId: string;
+  clientId: string;
+  botUserId: string;
+  installedAt: number;
+}
+
 /** Node's deployment-owned gateway inbox over the canonical state database. */
 export class SqliteGatewayInboxStore {
   readonly #db: NodeStateDb;
@@ -19,12 +32,30 @@ export class SqliteGatewayInboxStore {
     this.#inbox = new GatewayInboxStoreLogic(this.#db);
   }
 
-  admit(delivery: GatewayInboundDelivery): GatewayInboxValidatedAdmissionOutcome {
-    return this.#inbox.admitValidated(delivery, () => this.deliveryIsCurrent(delivery));
+  admit(
+    delivery: GatewayInboundDelivery,
+    expectedBinding?: string,
+  ): GatewayInboxValidatedAdmissionOutcome {
+    return this.#inbox.admitValidated(delivery, () => {
+      const authority = this.#currentAuthority(delivery);
+      if (!authority) return undefined;
+      if (expectedBinding) {
+        const expected = parseBinding(expectedBinding);
+        if (!expected || !sameAuthority(authority, authorityFromBinding(expected))) {
+          return undefined;
+        }
+      }
+      return {
+        ...delivery,
+        [NODE_GATEWAY_ADMISSION_AUTHORITY_FIELD]: authority,
+      } as unknown as GatewayInboundDelivery;
+    });
   }
 
   deliveryIsCurrent(delivery: GatewayInboundDelivery): boolean {
-    return this.#deliveryIsCurrent(delivery);
+    const stored = nodeAdmissionAuthority(delivery);
+    const current = this.#currentAuthority(delivery);
+    return Boolean(stored && current && sameAuthority(stored, current));
   }
 
   claimPending(limit?: number) {
@@ -55,30 +86,55 @@ export class SqliteGatewayInboxStore {
     if (this.#ownsDb) this.#db.close();
   }
 
-  #deliveryIsCurrent(delivery: GatewayInboundDelivery): boolean {
+  #currentAuthority(
+    delivery: GatewayInboundDelivery,
+  ): NodeGatewayAdmissionAuthority | undefined {
     const rawBinding = this.#db.get(
       'SELECT value FROM app_settings WHERE key = ?',
       GATEWAY_BINDING_SETTING,
     )?.value;
-    if (typeof rawBinding !== 'string') return false;
+    if (typeof rawBinding !== 'string') return undefined;
     const binding = parseBinding(rawBinding);
     if (!binding || binding.bindingId !== delivery.bindingId ||
-        binding.workspaceId !== delivery.workspaceId) return false;
+        binding.workspaceId !== delivery.workspaceId) return undefined;
     const installation = this.#db.get(
       `SELECT workspace_id, transport_mode, team_id, app_id, bot_user_id,
               gateway_binding_id, health
        FROM config_workspace_installations WHERE workspace_id = ?`,
       delivery.workspaceId,
     );
-    return Boolean(
+    if (!(
       installation && installation.transport_mode === 'gateway' &&
       installation.health !== 'revoked' &&
       installation.gateway_binding_id === binding.bindingId &&
       installation.team_id === binding.workspaceId &&
       installation.app_id === binding.appId &&
-      installation.bot_user_id === binding.botUserId,
-    );
+      installation.bot_user_id === binding.botUserId
+    )) return undefined;
+    return {
+      version: 1,
+      bindingId: binding.bindingId,
+      deploymentId: binding.deploymentId,
+      workspaceId: binding.workspaceId,
+      appId: binding.appId,
+      clientId: binding.clientId,
+      botUserId: binding.botUserId,
+      installedAt: binding.installedAt,
+    };
   }
+}
+
+function authorityFromBinding(binding: GatewayWorkspaceBinding): NodeGatewayAdmissionAuthority {
+  return {
+    version: 1,
+    bindingId: binding.bindingId,
+    deploymentId: binding.deploymentId,
+    workspaceId: binding.workspaceId,
+    appId: binding.appId,
+    clientId: binding.clientId,
+    botUserId: binding.botUserId,
+    installedAt: binding.installedAt,
+  };
 }
 
 function parseBinding(raw: string | undefined): GatewayWorkspaceBinding | undefined {
@@ -87,11 +143,47 @@ function parseBinding(raw: string | undefined): GatewayWorkspaceBinding | undefi
     const value = JSON.parse(raw) as Partial<GatewayWorkspaceBinding>;
     if (!value || typeof value !== 'object' ||
         typeof value.bindingId !== 'string' || !value.bindingId ||
+        typeof value.deploymentId !== 'string' || !value.deploymentId ||
         typeof value.workspaceId !== 'string' || !value.workspaceId ||
         typeof value.appId !== 'string' || !value.appId ||
-        typeof value.botUserId !== 'string' || !value.botUserId) return undefined;
+        typeof value.clientId !== 'string' || !value.clientId ||
+        typeof value.botUserId !== 'string' || !value.botUserId ||
+        !Number.isSafeInteger(value.installedAt) || Number(value.installedAt) < 0) return undefined;
     return value as GatewayWorkspaceBinding;
   } catch {
     return undefined;
   }
+}
+
+function nodeAdmissionAuthority(
+  delivery: GatewayInboundDelivery,
+): NodeGatewayAdmissionAuthority | undefined {
+  const value = (delivery as unknown as Record<string, unknown>)[
+    NODE_GATEWAY_ADMISSION_AUTHORITY_FIELD
+  ];
+  if (!value || typeof value !== 'object') return undefined;
+  const authority = value as Partial<NodeGatewayAdmissionAuthority>;
+  if (authority.version !== 1 ||
+      typeof authority.bindingId !== 'string' ||
+      typeof authority.deploymentId !== 'string' ||
+      typeof authority.workspaceId !== 'string' ||
+      typeof authority.appId !== 'string' ||
+      typeof authority.clientId !== 'string' ||
+      typeof authority.botUserId !== 'string' ||
+      !Number.isSafeInteger(authority.installedAt)) return undefined;
+  return authority as NodeGatewayAdmissionAuthority;
+}
+
+function sameAuthority(
+  left: NodeGatewayAdmissionAuthority,
+  right: NodeGatewayAdmissionAuthority,
+): boolean {
+  return left.version === right.version &&
+    left.bindingId === right.bindingId &&
+    left.deploymentId === right.deploymentId &&
+    left.workspaceId === right.workspaceId &&
+    left.appId === right.appId &&
+    left.clientId === right.clientId &&
+    left.botUserId === right.botUserId &&
+    left.installedAt === right.installedAt;
 }

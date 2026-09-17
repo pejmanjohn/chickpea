@@ -507,7 +507,7 @@ import {
 } from '../slack/gateway/client.ts';
 import {
   nodeGatewaySessionStatus,
-  startNodeGatewaySession,
+  refreshNodeGatewaySession,
 } from '../slack/gateway/node-runtime.ts';
 import {
   reconcileGatewaySessionStatus,
@@ -3491,7 +3491,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
             : result.state === 'unknown' ? 'error' : 'disconnected';
           if (result.state === 'expired' || result.state === 'cancelled') gatewayNotice = 'gateway_claim_expired';
           if (gatewayState === 'connected') {
-            startNodeGatewaySession(c.env as PlatformEnv | undefined);
+            refreshNodeGatewaySession(c.env as PlatformEnv | undefined);
           }
         } else {
           gatewayState = c.req.query('gateway_status') === 'unknown' ? 'error' : 'pending';
@@ -3584,7 +3584,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         );
         await gateway.resumeClaimSetup({ setupId: setup.id, setupRevision: setup.revision });
         const result = await gateway.refreshClaim();
-        if (result.state === 'bound') startNodeGatewaySession(c.env as PlatformEnv | undefined);
+        if (result.state === 'bound') {
+          refreshNodeGatewaySession(c.env as PlatformEnv | undefined);
+        }
         return c.redirect(result.state === 'unknown' ? '/admin/setup?gateway_status=unknown'
           : result.state === 'expired' || result.state === 'cancelled' ? '/admin/setup?gateway_status=expired'
             : '/admin/setup', 303);
@@ -3622,7 +3624,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     } catch (error) {
       if (setup && (action === 'gateway_begin' || action === 'gateway_resume') && error instanceof SlackTransportError) {
         if (error.code === 'gateway_already_connected') {
-          startNodeGatewaySession(c.env as PlatformEnv | undefined);
+          refreshNodeGatewaySession(c.env as PlatformEnv | undefined);
           return c.redirect('/admin/setup', 303);
         }
         if (error.code === 'gateway_claim_retry') return c.redirect('/admin/setup', 303);
@@ -9844,7 +9846,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       if (result.state !== 'bound') {
         return c.redirect('/admin/settings/slack?slack_reconnect=pending', 303);
       }
-      startNodeGatewaySession(c.env as PlatformEnv | undefined);
+      refreshNodeGatewaySession(c.env as PlatformEnv | undefined);
       await restartCloudflareGatewaySession(c.env);
       return c.redirect('/admin/settings/slack?slack_reconnect=connected', 303);
     } catch (error) {

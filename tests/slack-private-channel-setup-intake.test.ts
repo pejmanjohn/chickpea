@@ -1,7 +1,15 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { processGatewayPrivateChannelSetup, processGatewaySlackEnvelope } from '../src/channels/slack.ts';
-import { closeNodeStateStores, resolveStores } from '../src/config/state-backend.ts';
+import {
+  processGatewayAgentSelection,
+  processGatewayPrivateChannelSetup,
+  processGatewaySlackEnvelope,
+} from '../src/channels/slack.ts';
+import {
+  closeNodeStateStores,
+  resolveStores,
+  type AppStores,
+} from '../src/config/state-backend.ts';
 import type { GatewayDeploymentClient } from '../src/slack/gateway/client.ts';
 import type { GatewayPrivateChannelSetupDelivery } from '../src/slack/gateway/protocol.ts';
 import { PRIVATE_CHANNEL_SETUP_ADD_ACTION } from '../src/slack/private-channel-setup.ts';
@@ -68,6 +76,37 @@ async function fixture() {
 }
 
 const databaseKeys = ['TAG_DB_PATH', 'SLACK_STATE_DB_PATH', 'CHICKPEA_AUTH_DB_PATH'] as const;
+
+test('Agent selection rejects a gateway whose app or bot identity no longer matches', async () => {
+  const installation = {
+    workspaceId: 'T1',
+    transportMode: 'gateway',
+    health: 'healthy',
+    appId: 'A1',
+    botUserId: 'UBOT',
+    gatewayBindingId: 'binding1',
+  };
+  const stores = {
+    config: {
+      getWorkspaceInstallation: async () => installation,
+    },
+  } as unknown as AppStores;
+  for (const binding of [
+    { bindingId: 'binding1', workspaceId: 'T1', appId: 'A_OTHER', botUserId: 'UBOT' },
+    { bindingId: 'binding1', workspaceId: 'T1', appId: 'A1', botUserId: 'U_OTHER' },
+  ]) {
+    const gateway = {
+      async loadBinding() { return binding; },
+      async call() { assert.fail('mismatched selection must not call Slack'); },
+    } as unknown as GatewayDeploymentClient;
+    assert.equal(await processGatewayAgentSelection({
+      workspaceId: 'T1',
+      userId: 'U1',
+      agentId: 'agent_ops',
+      deliveryId: 'selection1',
+    }, undefined, gateway, stores), 'rejected');
+  }
+});
 
 async function isolated(body: (f: Awaited<ReturnType<typeof fixture>>) => Promise<void>) {
   const previous = databaseKeys.map((key) => process.env[key]);

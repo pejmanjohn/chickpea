@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   NodeGatewayInboxWorker,
+  refreshNodeGatewaySession,
   startNodeGatewayRuntime,
   startNodeGatewaySession,
   stopNodeGatewayRuntime,
@@ -147,6 +148,65 @@ test('stopping during binding lookup fences the stale start and permits a clean 
   });
   await spin();
   assert.equal(created, 1);
+});
+
+test('binding refresh retires the old callback even when the binding ID is reused', async () => {
+  await stopNodeGatewayRuntime();
+  const admissions: Array<
+    (delivery: GatewayEventDelivery) => Promise<'accepted' | 'duplicate' | 'rejected'>
+  > = [];
+  const stopped: number[] = [];
+  let admitted = 0;
+  let installedAt = 100;
+  const dependencies = {
+    isCloudflare: () => false,
+    readBinding: async () => JSON.stringify({
+      bindingId: 'binding_test',
+      deploymentId: 'deployment_test',
+      workspaceId: 'T_TEST',
+      appId: 'A_TEST',
+      clientId: 'client_test',
+      botUserId: 'B_TEST',
+      installedAt,
+    }),
+    getInbox: () => ({
+      ...emptyInbox,
+      admit: (_delivery: GatewayEventDelivery, expectedBinding?: string) => {
+        if (!expectedBinding || JSON.parse(expectedBinding).installedAt !== installedAt) {
+          return 'rejected' as const;
+        }
+        admitted += 1;
+        return 'accepted' as const;
+      },
+    }),
+    createInboxWorker: () => idleWorker(),
+    createRunner: (_env: unknown, input: {
+      onEvent(delivery: GatewayEventDelivery): Promise<'accepted' | 'duplicate' | 'rejected'>;
+    }) => {
+      const index = admissions.length;
+      admissions.push(input.onEvent);
+      return {
+        start: async () => true,
+        stop: () => { stopped.push(index); },
+      };
+    },
+  };
+  await startNodeGatewayRuntime(undefined, dependencies);
+  await spin();
+  installedAt = 200;
+  assert.equal(
+    await admissions[0]!(eventDelivery('delivery:Ev_PRE_REFRESH_WINDOW')),
+    'rejected',
+  );
+  assert.equal(admitted, 0);
+  refreshNodeGatewaySession(undefined, dependencies);
+  await spin();
+
+  assert.equal(admissions.length, 2);
+  assert.deepEqual(stopped, [0]);
+  assert.equal(await admissions[0]!(eventDelivery('delivery:Ev_OLD_SOCKET')), 'rejected');
+  assert.equal(await admissions[1]!(eventDelivery('delivery:Ev_NEW_SOCKET')), 'accepted');
+  assert.equal(admitted, 1);
 });
 
 test('production quiescing blocks incidental session restarts until a deliberate runtime start', async () => {

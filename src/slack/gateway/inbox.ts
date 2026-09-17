@@ -112,7 +112,7 @@ export class GatewayInboxStoreLogic {
   }
 
   admit(delivery: GatewayInboundDelivery): GatewayInboxAdmissionOutcome {
-    const outcome = this.admitValidated(delivery, () => true);
+    const outcome = this.admitValidated(delivery, () => delivery);
     if (outcome === 'rejected') throw new Error('Unconditional gateway admission was rejected.');
     return outcome;
   }
@@ -120,16 +120,17 @@ export class GatewayInboxStoreLogic {
   /** Keep the current authority check and durable insert in one transaction. */
   admitValidated(
     delivery: GatewayInboundDelivery,
-    validate: () => boolean,
+    prepare: () => GatewayInboundDelivery | undefined,
   ): GatewayInboxValidatedAdmissionOutcome {
-    const payload = JSON.stringify(delivery);
-    const payloadBytes = new TextEncoder().encode(payload).byteLength;
-    if (payloadBytes > this.limits.maxPayloadBytes) {
-      throw new GatewayInboxCapacityError('Gateway inbox delivery exceeds the per-row byte limit.');
-    }
     this.maintain();
     return this.db.transaction(() => {
-      if (!validate()) return 'rejected';
+      const durableDelivery = prepare();
+      if (!durableDelivery) return 'rejected';
+      const payload = JSON.stringify(durableDelivery);
+      const payloadBytes = new TextEncoder().encode(payload).byteLength;
+      if (payloadBytes > this.limits.maxPayloadBytes) {
+        throw new GatewayInboxCapacityError('Gateway inbox delivery exceeds the per-row byte limit.');
+      }
       const existing = this.db.get(
         'SELECT binding_id, workspace_id, kind FROM gateway_inbox WHERE id = ?',
         delivery.deliveryId,

@@ -13,8 +13,16 @@ import {
 import { SettingsStoreLogic } from '../src/config/settings-store.ts';
 import { GatewayInboxStoreLogic } from '../src/slack/gateway/inbox.ts';
 import { GATEWAY_BINDING_SETTING } from '../src/slack/gateway/settings.ts';
-import { SqliteGatewayInboxStore } from '../src/slack/gateway/node-inbox-store.ts';
-import { NodeGatewayInboxWorker } from '../src/slack/gateway/node-runtime.ts';
+import {
+  NODE_GATEWAY_ADMISSION_AUTHORITY_FIELD,
+  SqliteGatewayInboxStore,
+} from '../src/slack/gateway/node-inbox-store.ts';
+import {
+  createNodeGatewayInboxWorker,
+  NodeGatewayInboxWorker,
+} from '../src/slack/gateway/node-runtime.ts';
+import type { AppStores } from '../src/config/state-backend.ts';
+import type { GatewayDeploymentClient } from '../src/slack/gateway/client.ts';
 import type {
   GatewayEventDelivery,
   GatewayInboundDelivery,
@@ -52,7 +60,17 @@ test('Node gateway admission atomically validates authority and survives a lost 
     assert.equal(inbox.admit(eventDelivery(delivery.deliveryId, 'changed retry body')), 'duplicate');
     const claimed = inbox.claimPending(1);
     assert.equal(claimed.length, 1);
-    assert.deepEqual(claimed[0]?.delivery, delivery);
+    assert.deepEqual(withoutNodeAuthority(claimed[0]!.delivery), delivery);
+    assert.deepEqual(nodeAuthority(claimed[0]!.delivery), {
+      version: 1,
+      bindingId: 'binding_test',
+      deploymentId: 'deployment_test',
+      workspaceId: 'T_TEST',
+      appId: 'A_TEST',
+      clientId: 'client_test',
+      botUserId: 'B_TEST',
+      installedAt: NOW,
+    });
     assert.equal(inbox.complete(delivery.deliveryId), true);
     assert.deepEqual(inbox.runtimeDrainCounts(), {
       pendingGatewayInboxDeliveries: 0,
@@ -74,6 +92,85 @@ test('Node gateway admission atomically validates authority and survives a lost 
     }
   } finally {
     inbox?.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('Node gateway rows are fenced to the exact binding incarnation', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'chickpea-node-gateway-incarnation-'));
+  const path = join(directory, 'state.db');
+  seedGatewayBinding(path);
+  const inbox = new SqliteGatewayInboxStore(path);
+  try {
+    const injected = {
+      ...eventDelivery('delivery:Ev_INCARNATION_A', 'body A'),
+      [NODE_GATEWAY_ADMISSION_AUTHORITY_FIELD]: {
+        version: 1,
+        bindingId: 'attacker_value',
+        deploymentId: 'attacker_value',
+        workspaceId: 'T_OTHER',
+        appId: 'A_OTHER',
+        clientId: 'client_other',
+        botUserId: 'B_OTHER',
+        installedAt: 1,
+      },
+    } as GatewayInboundDelivery;
+    assert.equal(inbox.admit(injected), 'accepted');
+    updateGatewayBinding(path, { installedAt: NOW + 1 });
+    assert.equal(
+      inbox.admit(
+        eventDelivery('delivery:Ev_PRE_REFRESH_WINDOW', 'old socket'),
+        JSON.stringify(gatewayBinding()),
+      ),
+      'rejected',
+    );
+    const installedAtStale = inbox.claimPending(1)[0]!;
+    assert.equal(nodeAuthority(installedAtStale.delivery)?.installedAt, NOW);
+    assert.equal(inbox.deliveryIsCurrent(installedAtStale.delivery), false);
+    assert.equal(
+      inbox.markRecoveryRequired(installedAtStale.id, 'binding_revalidation_rejected'),
+      true,
+    );
+
+    assert.equal(
+      inbox.admit(eventDelivery('delivery:Ev_INCARNATION_B', 'body B')),
+      'accepted',
+    );
+    updateGatewayBinding(path, { deploymentId: 'deployment_replaced' });
+    const deploymentStale = inbox.claimPending(1)[0]!;
+    assert.equal(nodeAuthority(deploymentStale.delivery)?.deploymentId, 'deployment_test');
+    assert.equal(inbox.deliveryIsCurrent(deploymentStale.delivery), false);
+    inbox.markRecoveryRequired(deploymentStale.id, 'binding_revalidation_rejected');
+
+    const legacyDb = openStateDb(path);
+    try {
+      new GatewayInboxStoreLogic(legacyDb).admit(
+        eventDelivery('delivery:Ev_LEGACY_UNPROVEN', 'legacy body'),
+      );
+    } finally {
+      legacyDb.close();
+    }
+    const legacy = inbox.claimPending(1)[0]!;
+    assert.equal(nodeAuthority(legacy.delivery), undefined);
+    assert.equal(inbox.deliveryIsCurrent(legacy.delivery), false);
+    inbox.markRecoveryRequired(legacy.id, 'binding_revalidation_rejected');
+
+    const db = openStateDb(path);
+    try {
+      const rows = db.all(
+        'SELECT status, payload_json, payload_bytes FROM gateway_inbox ORDER BY id',
+      );
+      assert.equal(rows.length, 3);
+      for (const row of rows) {
+        assert.equal(row.status, 'recovery_required');
+        assert.equal(row.payload_json, null);
+        assert.equal(row.payload_bytes, 0);
+      }
+    } finally {
+      db.close();
+    }
+  } finally {
+    inbox.close();
     rmSync(directory, { recursive: true, force: true });
   }
 });
@@ -148,10 +245,14 @@ test('Node gateway inbox durably dedupes and drains both interaction delivery ki
       assert.equal(inbox.admit(delivery), 'accepted');
       assert.equal(inbox.admit(delivery), 'duplicate');
     }
-    for (const delivery of deliveries) {
-      const claimed = inbox.claimPending(1)[0];
-      assert.deepEqual(claimed?.delivery, delivery);
-      assert.equal(inbox.complete(delivery.deliveryId), true);
+    const claimed = deliveries.map(() => inbox.claimPending(1)[0]!);
+    assert.deepEqual(
+      claimed.map(({ delivery }) => withoutNodeAuthority(delivery))
+        .sort((left, right) => left.deliveryId.localeCompare(right.deliveryId)),
+      [...deliveries].sort((left, right) => left.deliveryId.localeCompare(right.deliveryId)),
+    );
+    for (const item of claimed) {
+      assert.equal(inbox.complete(item.id), true);
     }
 
     const db = openStateDb(path);
@@ -169,6 +270,63 @@ test('Node gateway inbox durably dedupes and drains both interaction delivery ki
       db.close();
     }
   } finally {
+    inbox.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('production Node worker dispatches all delivery kinds after a persisted restart', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'chickpea-node-gateway-dispatch-'));
+  const path = join(directory, 'state.db');
+  seedGatewayBinding(path);
+  let inbox: SqliteGatewayInboxStore | undefined = new SqliteGatewayInboxStore(path);
+  const deliveries = allDeliveryKinds();
+  for (const delivery of deliveries) assert.equal(inbox.admit(delivery), 'accepted');
+  inbox.close();
+  inbox = new SqliteGatewayInboxStore(path);
+  const dispatched: GatewayInboundDelivery['kind'][] = [];
+  const client = {} as GatewayDeploymentClient;
+  const stores = {} as AppStores;
+  const worker = createNodeGatewayInboxWorker(undefined, {
+    getStore: () => inbox!,
+    createClient: () => client,
+    resolveStores: () => stores,
+    processSlackEnvelope: async () => {
+      dispatched.push('event.deliver');
+      return 'accepted';
+    },
+    processAgentSelection: async () => {
+      dispatched.push('interaction.agent_selected');
+      return 'accepted';
+    },
+    processPrivateChannelSetup: async () => {
+      dispatched.push('interaction.channel_agent_add');
+      return 'accepted';
+    },
+  });
+  try {
+    worker.start();
+    await spin();
+    assert.deepEqual(
+      [...dispatched].sort(),
+      deliveries.map(({ kind }) => kind).sort(),
+    );
+    const db = openStateDb(path);
+    try {
+      const rows = db.all(
+        'SELECT status, payload_json, payload_bytes FROM gateway_inbox ORDER BY accepted_at, id',
+      );
+      assert.equal(rows.length, 3);
+      for (const row of rows) {
+        assert.equal(row.status, 'completed');
+        assert.equal(row.payload_json, null);
+        assert.equal(row.payload_bytes, 0);
+      }
+    } finally {
+      db.close();
+    }
+  } finally {
+    await worker.stop();
     inbox.close();
     rmSync(directory, { recursive: true, force: true });
   }
@@ -329,17 +487,7 @@ test('Node gateway shutdown waits for the active delivery before its database ma
 function seedGatewayBinding(path: string): void {
   const db = openStateDb(path);
   try {
-    const binding: GatewayWorkspaceBinding = {
-      bindingId: 'binding_test',
-      deploymentId: 'deployment_test',
-      workspaceId: 'T_TEST',
-      appId: 'A_TEST',
-      clientId: 'client_test',
-      botUserId: 'B_TEST',
-      installerSlackUserId: 'U_INSTALLER',
-      sessionUrl: 'wss://gateway.test/session',
-      installedAt: NOW,
-    };
+    const binding = gatewayBinding();
     const config = new ConfigStoreLogic(db);
     const installation = config.ensureWorkspaceInstallation({
       workspaceId: binding.workspaceId,
@@ -358,6 +506,74 @@ function seedGatewayBinding(path: string): void {
   } finally {
     db.close();
   }
+}
+
+function updateGatewayBinding(
+  path: string,
+  patch: Partial<GatewayWorkspaceBinding>,
+): void {
+  const db = openStateDb(path);
+  try {
+    const settings = new SettingsStoreLogic(db);
+    const current = JSON.parse(
+      settings.getSetting(GATEWAY_BINDING_SETTING)!,
+    ) as GatewayWorkspaceBinding;
+    settings.setSetting(GATEWAY_BINDING_SETTING, JSON.stringify({ ...current, ...patch }));
+  } finally {
+    db.close();
+  }
+}
+
+function gatewayBinding(): GatewayWorkspaceBinding {
+  return {
+    bindingId: 'binding_test',
+    deploymentId: 'deployment_test',
+    workspaceId: 'T_TEST',
+    appId: 'A_TEST',
+    clientId: 'client_test',
+    botUserId: 'B_TEST',
+    installerSlackUserId: 'U_INSTALLER',
+    sessionUrl: 'wss://gateway.test/session',
+    installedAt: NOW,
+  };
+}
+
+function allDeliveryKinds(): GatewayInboundDelivery[] {
+  return [
+    eventDelivery('delivery:Ev_ALL_KINDS', 'body'),
+    {
+      protocolVersion: 1,
+      kind: 'interaction.agent_selected',
+      deliveryId: 'selection_all_kinds',
+      bindingId: 'binding_test',
+      workspaceId: 'T_TEST',
+      userId: 'U_TEST',
+      agentId: 'agent_support',
+    },
+    {
+      protocolVersion: 1,
+      kind: 'interaction.channel_agent_add',
+      deliveryId: 'channel_all_kinds',
+      bindingId: 'binding_test',
+      workspaceId: 'T_TEST',
+      userId: 'U_TEST',
+      channelId: 'C_PRIVATE',
+      setupId: '019f12cc-87e1-7000-8123-123456789abc',
+      agentId: 'agent_support',
+    },
+  ];
+}
+
+function nodeAuthority(delivery: GatewayInboundDelivery) {
+  return (delivery as unknown as Record<string, unknown>)[
+    NODE_GATEWAY_ADMISSION_AUTHORITY_FIELD
+  ] as Record<string, unknown> | undefined;
+}
+
+function withoutNodeAuthority(delivery: GatewayInboundDelivery): GatewayInboundDelivery {
+  const copy = { ...delivery } as unknown as Record<string, unknown>;
+  delete copy[NODE_GATEWAY_ADMISSION_AUTHORITY_FIELD];
+  return copy as unknown as GatewayInboundDelivery;
 }
 
 function eventDelivery(deliveryId: string, text: string): GatewayEventDelivery {
