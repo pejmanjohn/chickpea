@@ -1773,6 +1773,12 @@ export function createRuntimePlanArtifactTools(
   );
   const imageOptions = imageCapability?.filled && reserveImageCall ? {
     acceptsImageInput: imageCapability.acceptsImageInput,
+    ...(imageCapability.maxOutputsPerCall === undefined ? {} : {
+      maxOutputsPerCall: imageCapability.maxOutputsPerCall,
+    }),
+    ...(imageCapability.supportsOutputControls === undefined ? {} : {
+      supportsOutputControls: imageCapability.supportsOutputControls,
+    }),
     inventory: options.imageInventory ?? runtimePlanThreadImageInventory(plan, options.threadImages),
     reserveImageCall,
     resolveTransport: binding.resolveTransport,

@@ -97,6 +97,14 @@ export function clearOpenAiSubscriptionTransport(expectedRevision?: number): boo
   return true;
 }
 
+/** Release exactly one completed request binding without invalidating peers. */
+export function releaseOpenAiSubscriptionTransport(marker: string): boolean {
+  if (!isSafeTransportMarker(marker)) return false;
+  const released = activeBindings.delete(marker);
+  if (released) bindingRevision += 1;
+  return released;
+}
+
 export function openAiSubscriptionTransportRevision(): number {
   return bindingRevision;
 }
@@ -119,17 +127,29 @@ function installOpenAiSubscriptionFetchBoundary(): void {
   const current = globalThis.fetch as typeof globalThis.fetch & { [WRAPPED_FETCH]?: boolean };
   if (current[WRAPPED_FETCH]) return;
   const boundary = createOpenAiSubscriptionFetchBoundary({
-    binding: (marker) => {
-      const binding = activeBindings.get(marker);
-      if (!binding) {
-        throw new OpenAiSubscriptionProtocolError('auth_reconnect_required');
-      }
-      return binding;
-    },
+    binding: activeTransportBinding,
     fetch: current,
   }) as typeof globalThis.fetch & { [WRAPPED_FETCH]?: boolean };
   Object.defineProperty(boundary, WRAPPED_FETCH, { value: true });
   globalThis.fetch = boundary;
+}
+
+/**
+ * Test seam for a raw injected fetch. Production callers use the already
+ * installed global boundary; wrapping that boundary again would strip the
+ * private marker before the outer wrapper can authorize it.
+ */
+export function createBoundOpenAiSubscriptionFetch(fetchImpl: typeof fetch): typeof fetch {
+  return createOpenAiSubscriptionFetchBoundary({
+    binding: activeTransportBinding,
+    fetch: fetchImpl,
+  });
+}
+
+function activeTransportBinding(marker: string): ActiveTransportBinding | undefined {
+  const binding = activeBindings.get(marker);
+  if (!binding) throw new OpenAiSubscriptionProtocolError('auth_reconnect_required');
+  return binding;
 }
 
 export function createOpenAiSubscriptionFetchBoundary(

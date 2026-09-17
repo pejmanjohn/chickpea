@@ -24,6 +24,7 @@ import {
   saveProviderApiKey,
 } from '../src/config/provider-keys.ts';
 import { storedCredentialMetadata } from '../src/config/model-credential-refs.ts';
+import { OPENAI_API_IMAGE_DEFAULT_MODEL_ID } from '../src/config/initial-image-default.ts';
 import { GITHUB_SETTING_KEYS } from '../src/config/github-app.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
@@ -606,6 +607,10 @@ test('a provider key is validated in the browser lane and never enters MCP state
   const settings = new SqliteSettingsStore(':memory:');
   const usage = new SqliteUsageStore(':memory:');
   try {
+    await config.ensureWorkspaceInstallation({
+      workspaceId: owner.user.slackTeamId,
+      transportMode: 'direct',
+    });
     const service = new WorkspaceManagementService({
       identity,
       config,
@@ -665,6 +670,10 @@ test('a provider key is validated in the browser lane and never enters MCP state
     });
     assert.equal(completed.status, 303);
     assert.equal((await resolveProviderApiKey('openai', undefined, settings)).apiKey, 'sk-browser-only');
+    const imageRole = await config.getWorkspaceModelRole(owner.user.slackTeamId, 'image');
+    assert.equal(imageRole?.modelId, OPENAI_API_IMAGE_DEFAULT_MODEL_ID);
+    assert.equal(imageRole?.revision, 1);
+    assert.equal(imageRole?.lastChangedByMembershipId, owner.membership.id);
     const setup = await management.getSetup(setupId);
     assert.equal(setup?.status, 'completed');
     assert.doesNotMatch(JSON.stringify(setup), /sk-browser-only/);
@@ -1346,6 +1355,10 @@ test('an older provider setup link cannot overwrite a newer rotation', async () 
   const settings = new SqliteSettingsStore(':memory:');
   const usage = new SqliteUsageStore(':memory:');
   try {
+    await config.ensureWorkspaceInstallation({
+      workspaceId: owner.user.slackTeamId,
+      transportMode: 'direct',
+    });
     await saveProviderApiKey('openai', 'sk-initial', undefined, settings, usage);
     const service = new WorkspaceManagementService({
       identity,
@@ -1409,6 +1422,10 @@ test('an older provider setup link cannot overwrite a newer rotation', async () 
     assert.equal((await complete(newer, 'sk-newer')).status, 303);
     assert.equal((await complete(older, 'sk-older')).status, 422);
     assert.equal((await resolveProviderApiKey('openai', undefined, settings)).apiKey, 'sk-newer');
+    assert.equal(
+      await config.getWorkspaceModelRole(owner.user.slackTeamId, 'image'),
+      undefined,
+    );
   } finally {
     identity.close(); config.close(); management.close(); settings.close(); usage.close();
   }

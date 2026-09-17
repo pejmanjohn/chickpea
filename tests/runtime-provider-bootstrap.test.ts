@@ -68,6 +68,31 @@ test('a fresh process resolves every bundled internal model route before sandbox
   ]);
 });
 
+test('Cloudflare bootstrap omits the Node-only subscription provider', () => {
+  const script = String.raw`
+    Object.defineProperty(globalThis, 'navigator', {
+      configurable: true,
+      value: { userAgent: 'Cloudflare-Workers' },
+    });
+    const [{ bootstrapRuntimeProviders }, { registeredPiProvider }] = await Promise.all([
+      import('./src/runtime-bootstrap.ts'),
+      import('./src/config/pi-provider-registry.ts'),
+    ]);
+    bootstrapRuntimeProviders();
+    process.stdout.write(String(registeredPiProvider('openai-subscription') === undefined));
+  `;
+  const output = execFileSync(
+    process.execPath,
+    ['--import', 'tsx', '--input-type=module', '-e', script],
+    {
+      cwd: new URL('..', import.meta.url),
+      encoding: 'utf8',
+      env: providerHermeticEnv(),
+    },
+  );
+  assert.equal(output, 'true');
+});
+
 test('a frozen hosted route registers its revisioned provider in a fresh process', () => {
   const script = String.raw`
     import { resolveModel } from '@flue/runtime/internal';

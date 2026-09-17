@@ -353,7 +353,17 @@ import {
   type NonChatModelRole,
   type WorkspaceModelDefault,
 } from '../config/types.ts';
-import { findImageModel, listImageModels } from '../model-catalog/image-profiles.ts';
+import {
+  findImageModel,
+  listImageModels,
+  OPENAI_SUBSCRIPTION_IMAGE_MODEL_ID,
+  type ImageModelId,
+} from '../model-catalog/image-profiles.ts';
+import {
+  initializeWorkspaceImageDefaultBestEffort,
+  OPENAI_API_IMAGE_DEFAULT_MODEL_ID,
+} from '../config/initial-image-default.ts';
+import { imageModelProfileReady } from '../images/provider.ts';
 import { MemoryStateError, type MemoryStateStore } from '../memory/types.ts';
 import {
   RoutineStateError,
@@ -393,6 +403,10 @@ import {
 } from '../openai-subscription/device-auth.ts';
 import { disconnectOpenAiSubscription } from '../openai-subscription/credentials.ts';
 import { OpenAiSubscriptionError } from '../openai-subscription/errors.ts';
+import {
+  openAiSubscriptionAvailable,
+  requireOpenAiSubscriptionAvailable,
+} from '../openai-subscription/availability.ts';
 import {
   MODEL_CATALOG_SETTING_KEYS,
   activateBundledModelCatalog,
@@ -1578,6 +1592,25 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     options.identity ?? getIdentityStore(c.env as PlatformEnv | undefined);
   const settings = (c: Context) =>
     options.settings ?? getSettingsStore(c.env as PlatformEnv | undefined);
+  const initializeAuthenticatedWorkspaceImageDefault = async (
+    c: Context,
+    modelId: ImageModelId,
+  ): Promise<void> => {
+    await initializeWorkspaceImageDefaultBestEffort(async () => {
+      const principal = principalByContext.get(c);
+      if (!principal) return undefined;
+      const organization = await identity(c).getOrganization();
+      if (organization?.id !== principal.organizationId || !organization.slackTeamId) {
+        return undefined;
+      }
+      return {
+        config: store(c),
+        workspaceId: organization.slackTeamId,
+        modelId,
+        membershipId: principal.membershipId,
+      };
+    });
+  };
   const productTelemetry = (c: Context) => options.productTelemetry?.(c);
   const composioConfiguration = (c: Context): ComposioConfigurationOptions => ({
     ...options.composioConfiguration,
@@ -6131,22 +6164,32 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       getWorkersAiEnabled(settingsStore),
     ]);
     const openAiApiModels = activeCatalogModels('openai_api_key');
+    const subscriptionModels = activeCatalogModels('openai_subscription');
     const anthropicApiModels = activeCatalogModels('anthropic_api_key');
+    const subscriptionAvailable = openAiSubscriptionAvailable();
     const providers = await Promise.all(
       modelProviders()
         .filter((provider) => provider.id !== 'cloudflare' || workersAiEnabled)
         .map(async (provider) => {
         if (provider.id === 'openai') {
+          const subscriptionActive = activeAuthMethod === 'subscription';
           return {
             ...provider,
-            suggestions: uniqueStrings([
-              ...openAiApiModels.map((model) => model.canonical),
-              ...provider.suggestions,
-            ]),
+            configured: subscriptionActive
+              ? subscriptionAvailable && openAiSubscriptionIsReady(subscription)
+              : provider.configured,
+            source: subscriptionActive ? 'ChatGPT subscription' : provider.source,
+            suggestions: subscriptionActive
+              ? subscriptionModels.map((model) => model.canonical)
+              : uniqueStrings([
+                  ...openAiApiModels.map((model) => model.canonical),
+                  ...provider.suggestions,
+                ]),
             authMethods: {
               activeMethod: activeAuthMethod,
               apiKeyConfigured: provider.configured,
               subscription,
+              subscriptionAvailable,
             },
           };
         }
@@ -6177,7 +6220,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
 
   // The image role's picker source, kept separate from the chat model list so a
   // chat model can never reach an image field. Entries are the image catalog
-  // narrowed to providers whose credential is present, each flagged when it is
+  // narrowed to profiles whose own credential lane is ready, each flagged when it is
   // the faster, cheaper choice. `providers` lets Admin tell "no image
   // model chosen" apart from "no image provider connected".
   app.get('/admin/api/image-models', async (c) => {
@@ -6522,12 +6565,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       resolveOpenAiAuthMethod(settingsStore),
       getWorkersAiEnabled(settingsStore),
     ]);
+    const subscriptionAvailable = openAiSubscriptionAvailable();
     return c.json({
       providers: [
         ...PROVIDER_KEY_IDS.map((id) => ({
           ...providerSummary(id, sources[id]),
           ...(id === 'openai'
-            ? { activeAuthMethod, subscription }
+            ? { activeAuthMethod, subscription, subscriptionAvailable }
             : {}),
         })),
         {
@@ -6550,6 +6594,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   app.get('/admin/api/providers/openai/subscription', async (c) =>
     c.json({
       status: await getOpenAiSubscriptionAuthorizationStatus(settings(c)),
+      subscriptionAvailable: openAiSubscriptionAvailable(),
     }));
 
   app.put('/admin/api/providers/openai/auth-method', async (c) => {
@@ -6557,22 +6602,32 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     if (!parsed.success) return invalidRequest(c);
     const method = parsed.output.method;
     const settingsStore = settings(c);
-    if (method !== 'api_key') {
-      return c.json({
-        error: 'openai_auth_method_unsupported',
-        message: 'OpenAI now uses Platform API keys only.',
-      }, 410);
-    }
-    const key = await resolveProviderApiKey(
-      'openai',
-      c.env as PlatformEnv | undefined,
-      settingsStore,
-    );
-    if (key.source === 'missing') {
-      return c.json({
-        error: 'openai_api_key_missing',
-        message: 'Add an OpenAI API key before selecting it.',
-      }, 409);
+    if (method === 'api_key') {
+      const key = await resolveProviderApiKey(
+        'openai',
+        c.env as PlatformEnv | undefined,
+        settingsStore,
+      );
+      if (key.source === 'missing') {
+        return c.json({
+          error: 'openai_api_key_missing',
+          message: 'Add an OpenAI API key before selecting it.',
+        }, 409);
+      }
+    } else {
+      if (!openAiSubscriptionAvailable()) {
+        return c.json({
+          error: 'unsupported_runtime',
+          message: 'ChatGPT subscription authentication is available on Node installations only.',
+        }, 409);
+      }
+      const subscription = await getOpenAiSubscriptionAuthorizationStatus(settingsStore);
+      if (!openAiSubscriptionIsReady(subscription)) {
+        return c.json({
+          error: 'openai_subscription_missing',
+          message: 'Connect a ChatGPT subscription before selecting it.',
+        }, 409);
+      }
     }
     return c.json({
       activeAuthMethod: await saveOpenAiAuthMethod(settingsStore, method),
@@ -6583,6 +6638,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const parsed = v.safeParse(openAiSubscriptionStartSchema, await readJson(c.req));
     if (!parsed.success) return invalidRequest(c);
     try {
+      requireOpenAiSubscriptionAvailable();
       return c.json(await startOpenAiSubscriptionAuthorization(openAiSubscriptionDependencies(c)));
     } catch (error) {
       return openAiSubscriptionRouteError(c, error);
@@ -6593,10 +6649,20 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const parsed = v.safeParse(openAiSubscriptionAttemptSchema, await readJson(c.req));
     if (!parsed.success) return invalidRequest(c);
     try {
+      requireOpenAiSubscriptionAvailable();
+      const priorStatus = await getOpenAiSubscriptionAuthorizationStatus(settings(c));
+      const firstConnection = priorStatus.state === 'authorizing' &&
+        priorStatus.accountFingerprint === undefined && priorStatus.connectedAt === undefined;
       const result = await pollOpenAiSubscriptionAuthorization(
         parsed.output,
         openAiSubscriptionDependencies(c),
       );
+      if (firstConnection && result.state === 'connected') {
+        await initializeAuthenticatedWorkspaceImageDefault(
+          c,
+          OPENAI_SUBSCRIPTION_IMAGE_MODEL_ID,
+        );
+      }
       return c.json(result);
     } catch (error) {
       return openAiSubscriptionRouteError(c, error);
@@ -6607,6 +6673,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const parsed = v.safeParse(openAiSubscriptionAttemptSchema, await readJson(c.req));
     if (!parsed.success) return invalidRequest(c);
     try {
+      requireOpenAiSubscriptionAvailable();
       const status = await confirmOpenAiSubscriptionAccountChange(
         parsed.output,
         openAiSubscriptionDependencies(c),
@@ -6636,14 +6703,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const status = await disconnectOpenAiSubscription(settingsStore, {
         ...(options.openAiSubscriptionNow ? { now: options.openAiSubscriptionNow } : {}),
       });
-      const apiKey = await resolveProviderApiKey(
-        'openai',
-        c.env as PlatformEnv | undefined,
-        settingsStore,
-      );
-      if (apiKey.source !== 'missing') {
-        await saveOpenAiAuthMethod(settingsStore, 'api_key');
-      }
       return c.json({ status });
     } catch (error) {
       return openAiSubscriptionRouteError(c, error);
@@ -6671,7 +6730,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const models = await validateProviderApiKey(id, apiKey);
       await saveProviderApiKey(id, apiKey, platformEnv, settingsStore, usage(c));
       if (id === 'openai' && current.source === 'missing') {
-        await saveOpenAiAuthMethod(settingsStore, 'api_key');
+        await initializeAuthenticatedWorkspaceImageDefault(c, OPENAI_API_IMAGE_DEFAULT_MODEL_ID);
       }
       primeProviderModelCache(id, models);
       return c.json({
@@ -6765,6 +6824,19 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     try {
       const platformEnv = c.env as PlatformEnv | undefined;
       const settingsStore = settings(c);
+      if (id === 'openai' && await resolveOpenAiAuthMethod(settingsStore) === 'subscription') {
+        if (!openAiSubscriptionAvailable()) {
+          return c.json({ error: 'unsupported_runtime', provider: id }, 409);
+        }
+        await refreshCatalog(c, c.req.query('refresh') === '1');
+        const snapshot = activeModelCatalogSnapshot();
+        return c.json({
+          provider: id,
+          models: activeCatalogModels('openai_subscription').map((model) => ({ id: model.id })),
+          cached: true,
+          source: snapshot.source,
+        });
+      }
       if (id === 'openai' || id === 'anthropic') {
         await refreshCatalog(c, c.req.query('refresh') === '1');
       }
@@ -8995,6 +9067,15 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         workersAiStatus(c.env as PlatformEnv | undefined) !== 'missing';
     }
     if (!isProviderKeyId(providerId)) return false;
+    if (providerId === 'openai') {
+      const settingsStore = settings(c);
+      const method = await resolveOpenAiAuthMethod(settingsStore);
+      if (method === 'subscription') {
+        return openAiSubscriptionAvailable() && openAiSubscriptionIsReady(
+          await getOpenAiSubscriptionAuthorizationStatus(settingsStore),
+        );
+      }
+    }
     return (await resolveProviderApiKey(
       providerId,
       c.env as PlatformEnv | undefined,
@@ -9015,6 +9096,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       ]);
     }
     if (providerId === 'openai') {
+      const method = await resolveOpenAiAuthMethod(settings(c));
+      if (method === 'subscription') {
+        return openAiSubscriptionAvailable()
+          ? activeCatalogModels('openai_subscription').map((model) => model.canonical)
+          : [];
+      }
       return uniqueStrings([
         ...activeCatalogModels('openai_api_key').map((model) => model.canonical),
         ...(runtime?.suggestions ?? []),
@@ -11188,7 +11275,7 @@ function modelNotResolvable(
 /**
  * Owner-facing view of one non-chat model role: the stored choice, its
  * revision, and the models an Owner may pick from right now (the role's
- * catalog, narrowed to providers whose credential is present).
+ * catalog, narrowed to profiles whose credential lane is ready).
  */
 async function workspaceModelRoleProjection(input: {
   configStore: ConfigStore;
@@ -11219,7 +11306,7 @@ async function workspaceModelRoleProjection(input: {
 /**
  * the shape-only `modelSpecifier` regex would accept a chat model in the
  * image role, so a role choice is accepted only when the role's own catalog
- * knows it and its provider already has a credential.
+ * knows it and its own credential lane is ready.
  */
 async function modelRoleChoiceError(input: {
   settingsStore: SettingsStore;
@@ -11235,9 +11322,14 @@ async function modelRoleChoiceError(input: {
     input.platformEnv,
   );
   if (available.some(({ id }) => id === input.modelId)) return undefined;
-  return findImageModel(input.modelId)
-    ? `Connect the ${input.modelId.split('/')[0]} provider before choosing ${input.modelId}.`
-    : `${input.modelId} is not an image model.`;
+  const profile = findImageModel(input.modelId);
+  if (!profile) return `${input.modelId} is not an image model.`;
+  if (profile.authMethod === 'subscription') {
+    return openAiSubscriptionAvailable()
+      ? `Connect a ChatGPT subscription before choosing ${input.modelId}.`
+      : `${input.modelId} is not available on this installation.`;
+  }
+  return `Add an OpenAI API key before choosing ${input.modelId}.`;
 }
 
 /** One entry of a role's picker list: a catalog model an Owner may choose now. */
@@ -11246,6 +11338,9 @@ interface RoleModelChoice {
   name: string;
   providerId: string;
   acceptsImageInput: boolean;
+  authMethod: 'api_key' | 'subscription';
+  maxOutputs: number;
+  supportsOutputControls: boolean;
 }
 
 async function availableRoleModels(
@@ -11254,23 +11349,18 @@ async function availableRoleModels(
   platformEnv?: PlatformEnv,
 ): Promise<RoleModelChoice[]> {
   if (role !== 'image') return [];
-  const configured = new Map<string, boolean>();
   const models = [];
   for (const provider of IMAGE_ROLE_PROVIDER_IDS) {
-    let ready = configured.get(provider);
-    if (ready === undefined) {
-      ready = isProviderKeyId(provider)
-        ? Boolean((await resolveProviderApiKey(provider, platformEnv, settingsStore)).apiKey)
-        : false;
-      configured.set(provider, ready);
-    }
-    if (!ready) continue;
     for (const profile of listImageModels(provider)) {
+      if (!await imageModelProfileReady(profile, platformEnv, settingsStore)) continue;
       models.push({
         id: profile.id,
         name: profile.name,
         providerId: provider,
         acceptsImageInput: profile.input.includes('image'),
+        authMethod: profile.authMethod,
+        maxOutputs: profile.maxOutputs,
+        supportsOutputControls: profile.supportsOutputControls,
       });
     }
   }
@@ -11324,11 +11414,18 @@ async function workspaceModelDefaultProjection(input: {
   platformEnv: PlatformEnv | undefined;
   runtimeProviders: RuntimeModelProvider[];
 }): Promise<WorkspaceModelDefaultProjection> {
-  const [workspaceDefault, agents, openAiAuthMethod, workersAiEnabled] = await Promise.all([
+  const [
+    workspaceDefault,
+    agents,
+    openAiAuthMethod,
+    workersAiEnabled,
+    openAiSubscription,
+  ] = await Promise.all([
     input.configStore.getWorkspaceModelDefault(input.installation.workspaceId),
     input.configStore.listUserAgents(),
     resolveOpenAiAuthMethod(input.settingsStore),
     getWorkersAiEnabled(input.settingsStore),
+    getOpenAiSubscriptionAuthorizationStatus(input.settingsStore),
   ]);
   const modelId = workspaceDefault?.modelId ?? null;
   const separator = modelId?.indexOf('/') ?? -1;
@@ -11352,7 +11449,10 @@ async function workspaceModelDefaultProjection(input: {
     const provider = input.runtimeProviders.find(({ id }) => id === providerId);
     const workersAiReady = providerId !== 'cloudflare' ||
       (workersAiEnabled && workersAiStatus(input.platformEnv) !== 'missing');
-    health = provider?.configured && workersAiReady
+    const providerReady = providerId === 'openai' && openAiAuthMethod === 'subscription'
+      ? openAiSubscriptionAvailable() && openAiSubscriptionIsReady(openAiSubscription)
+      : Boolean(provider?.configured);
+    health = providerReady && workersAiReady
       ? { status: 'ready', providerId }
       : {
           status: 'repair_required',
@@ -11434,6 +11534,7 @@ function openAiSubscriptionRouteError(c: Context, error: unknown): Response {
     case 'authorization_pending':
     case 'account_change_confirmation_required':
     case 'auth_reconnect_required':
+    case 'unsupported_runtime':
       return c.json(body, 409);
     case 'unsupported_model':
       return c.json(body, 422);
@@ -11495,6 +11596,14 @@ function activeCatalogModels(
       ...(entry.displayName ? { name: entry.displayName } : {}),
     }];
   });
+}
+
+function openAiSubscriptionIsReady(
+  status: Awaited<ReturnType<typeof getOpenAiSubscriptionAuthorizationStatus>>,
+): boolean {
+  return status.state === 'connected' ||
+    status.state === 'account_change_confirmation_required' ||
+    (status.state === 'authorizing' && Boolean(status.accountFingerprint));
 }
 
 function uniqueStrings(values: readonly string[]): string[] {

@@ -10,7 +10,7 @@ if (!values.includes('--lane')) {
   process.argv.splice(2, 0, '--lane', 'subscription');
 }
 if (!values.includes('--model') && !values.includes('--help')) {
-  process.argv.push('--model', 'gpt-5.3-codex-spark');
+  process.argv.push('--model', 'gpt-5.6-sol');
 }
 
 await import('./verify-model-compatibility-live.mjs');

@@ -30,7 +30,7 @@ function profile(overrides: Partial<CustomAgentConfig> = {}): CustomAgentConfig 
   };
 }
 
-test('a legacy Subscription selection is normalized to the Platform API-key route', async () => {
+test('subscription routing maps to the isolated provider without resolving the Platform key', async () => {
   const agents = new SqliteConfigStore(':memory:', { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const applied: string[] = [];
@@ -45,12 +45,12 @@ test('a legacy Subscription selection is normalized to the Platform API-key rout
     });
 
     assert.deepEqual(route, {
-      model: 'openai/gpt-5.4',
-      providerAuthRoute: 'openai_api_key',
+      model: 'openai-subscription/gpt-5.4',
+      providerAuthRoute: 'openai_subscription',
     });
-    assert.equal(subscriptionBinds, 0);
-    assert.deepEqual(applied, ['openai']);
-    assert.equal(await settings.getSetting(OPENAI_AUTH_METHOD_SETTING_KEY), 'api_key');
+    assert.equal(subscriptionBinds, 1);
+    assert.deepEqual(applied, []);
+    assert.equal(await settings.getSetting(OPENAI_AUTH_METHOD_SETTING_KEY), 'subscription');
   } finally {
     settings.close();
     agents.close();
@@ -82,27 +82,26 @@ test('API-key routing preserves the canonical provider and never binds Subscript
   }
 });
 
-test('invalid legacy installation method state is normalized to the API-key lane', async () => {
+test('invalid installation method state fails before either credential lane', async () => {
   const settings = new SqliteSettingsStore(':memory:');
   const events: string[] = [];
   try {
     await settings.setSetting(OPENAI_AUTH_METHOD_SETTING_KEY, 'unexpected');
-    assert.deepEqual(
-      await resolveRuntimeModel('agent_openai_route', 'openai/gpt-5.4', {
+    await assert.rejects(
+      () => resolveRuntimeModel('agent_openai_route', 'openai/gpt-5.4', {
         settings,
         applyProviderKey: async (id) => { events.push(`key:${id}`); },
         bindSubscription: async () => { events.push('subscription'); },
       }),
-      { model: 'openai/gpt-5.4', providerAuthRoute: 'openai_api_key' },
+      /Stored OpenAI authentication method is invalid/,
     );
-    assert.deepEqual(events, ['key:openai']);
-    assert.equal(await settings.getSetting(OPENAI_AUTH_METHOD_SETTING_KEY), 'api_key');
+    assert.deepEqual(events, []);
   } finally {
     settings.close();
   }
 });
 
-test('a frozen OpenAI model stays on API-key routing after a legacy Subscription write', async () => {
+test('a frozen OpenAI model follows the selected Subscription lane on the next construction', async () => {
   const agents = new SqliteConfigStore(':memory:', { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const events: string[] = [];
@@ -115,15 +114,15 @@ test('a frozen OpenAI model stays on API-key routing after a legacy Subscription
       bindSubscription: async () => { events.push('subscription'); },
     });
 
-    assert.equal(route.providerAuthRoute, 'openai_api_key');
-    assert.deepEqual(events, ['key:openai']);
+    assert.equal(route.providerAuthRoute, 'openai_subscription');
+    assert.deepEqual(events, ['subscription']);
   } finally {
     settings.close();
     agents.close();
   }
 });
 
-test('retired Subscription callbacks cannot intercept OpenAI API-key routing', async () => {
+test('subscription failures and unsupported models fail closed without crossing credential lanes', async () => {
   const agents = new SqliteConfigStore(':memory:', { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const applied: string[] = [];
@@ -131,8 +130,8 @@ test('retired Subscription callbacks cannot intercept OpenAI API-key routing', a
   try {
     const agent = await agents.createAgent(profile());
     await saveOpenAiAuthMethod(settings, 'subscription');
-    assert.deepEqual(
-      await resolveRuntimeModel(agent.id, 'openai/gpt-5.4', {
+    await assert.rejects(
+      () => resolveRuntimeModel(agent.id, 'openai/gpt-5.4', {
         settings,
         applyProviderKey: async (id) => { applied.push(id); },
         bindSubscription: async () => {
@@ -140,7 +139,8 @@ test('retired Subscription callbacks cannot intercept OpenAI API-key routing', a
           throw new OpenAiSubscriptionError('auth_reconnect_required');
         },
       }),
-      { model: 'openai/gpt-5.4', providerAuthRoute: 'openai_api_key' },
+      (error: unknown) =>
+        error instanceof OpenAiSubscriptionError && error.code === 'auth_reconnect_required',
     );
     await assert.rejects(
       () => resolveRuntimeModel(agent.id, 'openai/../not-allowlisted', {
@@ -148,11 +148,12 @@ test('retired Subscription callbacks cannot intercept OpenAI API-key routing', a
         applyProviderKey: async (id) => { applied.push(id); },
         bindSubscription: async () => { binds += 1; },
       }),
-      /not supported by this Chickpea release/i,
+      (error: unknown) =>
+        error instanceof OpenAiSubscriptionError && error.code === 'unsupported_model',
     );
 
-    assert.equal(binds, 0);
-    assert.deepEqual(applied, ['openai']);
+    assert.equal(binds, 1, 'the invalid model must fail before credential binding');
+    assert.deepEqual(applied, [], 'neither failure may resolve the Platform API key');
   } finally {
     settings.close();
     agents.close();
@@ -200,7 +201,7 @@ test('profiles cannot address the internal subscription provider directly', asyn
   );
 });
 
-test('runtime admission rejects a persisted Subscription-only hosted route without fetching', async (t) => {
+test('runtime admission loads a persisted Subscription-only hosted route without fetching', async (t) => {
   resetModelCatalogActivationForTests();
   t.after(resetModelCatalogActivationForTests);
   const settings = new SqliteSettingsStore(':memory:');
@@ -228,16 +229,60 @@ test('runtime admission rejects a persisted Subscription-only hosted route witho
     throw new Error('runtime catalog admission must not fetch');
   };
   try {
-    await assert.rejects(
-      () => resolveRuntimeModel(
+    let capturedRoute: { snapshot?: { source?: string; revision?: number } } | undefined;
+    const resolved = await resolveRuntimeModel(
         'agent_openai_route',
         'openai/gpt-hosted-runtime',
-        { settings, bindSubscription: async () => { throw new Error('must not bind'); } },
-      ),
-      /not supported by this Chickpea release/i,
+        {
+          settings,
+          bindSubscription: async (options) => { capturedRoute = options.route; },
+        },
     );
+    assert.match(
+      resolved.model,
+      /^chickpea-openai-subscription-r73-[a-f0-9]{12}\/gpt-hosted-runtime$/,
+    );
+    assert.equal(resolved.providerAuthRoute, 'openai_subscription');
+    assert.equal(canonicalRuntimeModel(resolved.model), 'openai/gpt-hosted-runtime');
+    assert.equal(capturedRoute?.snapshot?.source, 'hosted');
+    assert.equal(capturedRoute?.snapshot?.revision, 73);
     assert.equal(fetches, 0);
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test('Cloudflare rejects a stored Subscription selection before catalog, credentials, or binding', async (t) => {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  Object.defineProperty(globalThis, 'navigator', {
+    configurable: true,
+    value: { userAgent: 'Cloudflare-Workers' },
+  });
+  t.after(() => {
+    if (descriptor) Object.defineProperty(globalThis, 'navigator', descriptor);
+    else Reflect.deleteProperty(globalThis, 'navigator');
+  });
+  const settings = new SqliteSettingsStore(':memory:');
+  t.after(() => settings.close());
+  await saveOpenAiAuthMethod(settings, 'subscription');
+  const events: string[] = [];
+
+  await assert.rejects(
+    () => resolveRuntimeModel('agent_openai_route', 'openai/gpt-5.4', {
+      settings,
+      loadCatalog: async () => {
+        events.push('catalog');
+        throw new Error('must not load');
+      },
+      resolveProviderKey: async () => {
+        events.push('key');
+        throw new Error('must not resolve');
+      },
+      bindSubscription: async () => { events.push('subscription'); },
+    }),
+    (error: unknown) =>
+      error instanceof OpenAiSubscriptionError && error.code === 'unsupported_runtime',
+  );
+  assert.deepEqual(events, []);
+  assert.equal(await settings.getSetting(OPENAI_AUTH_METHOD_SETTING_KEY), 'subscription');
 });

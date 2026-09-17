@@ -16,6 +16,7 @@ import type { SettingsStore } from './settings-store.ts';
 import type { PlatformEnv } from './state-backend.ts';
 import { resolveActiveCatalogRoute } from '../model-catalog/index.ts';
 import { findImageModel } from '../model-catalog/image-profiles.ts';
+import { imageModelProfileReady } from '../images/provider.ts';
 import type { RuntimePlanImageCapabilityV3 } from '../agents/runtime-plan.ts';
 
 // Accepts `model: null` alongside the stored shape so admin PATCH previews
@@ -232,11 +233,16 @@ export async function resolveAgentModelForRole(
       : undefined;
   if (!resolved) return { unset: true, reason: 'role_unset' };
   const providerId = providerPrefix(resolved.modelId);
-  const hasCredential = input.hasProviderCredential ??
-    ((id: string) => defaultProviderCredentialCheck(id, input.env, input.settings));
+  const imageProfile = input.role === 'image' ? findImageModel(resolved.modelId) : undefined;
+  const hasCredential = imageProfile?.authMethod === 'subscription'
+    // The provider-wide seam cannot make a Node-only subscription lane appear
+    // on Cloudflare or bypass its own connection status.
+    ? await imageModelProfileReady(imageProfile, input.env, input.settings)
+    : await (input.hasProviderCredential ??
+      ((id: string) => defaultProviderCredentialCheck(id, input.env, input.settings)))(providerId);
   // A model whose provider has no credential resolves to unset on purpose: the
   // Agent then states the limit instead of failing inside the adapter.
-  if (!await hasCredential(providerId)) return { unset: true, reason: 'credential_missing' };
+  if (!hasCredential) return { unset: true, reason: 'credential_missing' };
   return { modelId: resolved.modelId, providerId, source: resolved.source };
 }
 
@@ -285,6 +291,12 @@ export function imageCapabilityForResolution(
     filled: true,
     // An undeclared capability is an absent capability.
     acceptsImageInput: profile?.input.includes('image') === true,
+    ...(profile && profile.maxOutputs < 4
+      ? { maxOutputsPerCall: profile.maxOutputs }
+      : {}),
+    ...(profile?.supportsOutputControls === false
+      ? { supportsOutputControls: false }
+      : {}),
   };
 }
 

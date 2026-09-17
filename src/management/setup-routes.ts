@@ -85,6 +85,10 @@ import {
   type ConnectorPreset,
 } from '../config/presets.ts';
 import { saveOpenAiAuthMethod } from '../config/openai-auth.ts';
+import {
+  initializeWorkspaceImageDefaultBestEffort,
+  OPENAI_API_IMAGE_DEFAULT_MODEL_ID,
+} from '../config/initial-image-default.ts';
 import { validateProviderApiKey } from '../config/provider-models.ts';
 import {
   describeProviderKeySources,
@@ -2112,6 +2116,18 @@ async function completeFormAction(
     );
     if (providerId === 'openai' && current === 'missing') {
       await saveOpenAiAuthMethod(dependencies.settings, 'api_key');
+      await initializeWorkspaceImageDefaultBestEffort(async () => {
+        const organization = await dependencies.identity.getOrganization();
+        if (organization?.id !== setup.organizationId || !organization.slackTeamId) {
+          return undefined;
+        }
+        return {
+          config: dependencies.config,
+          workspaceId: organization.slackTeamId,
+          modelId: OPENAI_API_IMAGE_DEFAULT_MODEL_ID,
+          membershipId: setup.actorMembershipId,
+        };
+      });
     }
     return { connector: providerDisplayName(providerId) };
   }

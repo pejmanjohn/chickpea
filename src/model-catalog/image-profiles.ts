@@ -7,6 +7,9 @@ import type { ImagesModel } from '@earendil-works/pi-ai';
 export const OPENAI_IMAGES_API = 'openai-images';
 
 const OPENAI_API_BASE = 'https://api.openai.com/v1';
+const OPENAI_SUBSCRIPTION_BASE = 'https://chatgpt.com/backend-api';
+
+export const OPENAI_SUBSCRIPTION_IMAGE_MODEL_ID = 'openai/chatgpt-image' as const;
 
 /** Edits accept at most 16 input images (OpenAI Images API reference). */
 export const IMAGE_EDIT_INPUT_CAP = 16;
@@ -14,6 +17,7 @@ export const IMAGE_EDIT_INPUT_CAP = 16;
 export const IMAGE_OUTPUT_CAP = 10;
 
 export const IMAGE_MODEL_IDS = [
+  OPENAI_SUBSCRIPTION_IMAGE_MODEL_ID,
   'openai/gpt-image-2.5-flare',
   'openai/gpt-image-2.5-sunburst',
 ] as const;
@@ -27,11 +31,16 @@ export interface ImageModelProfile extends ImagesModel<typeof OPENAI_IMAGES_API>
   model: string;
   input: ('text' | 'image')[];
   output: ['image'];
-  maxEditInputs: typeof IMAGE_EDIT_INPUT_CAP;
-  maxOutputs: typeof IMAGE_OUTPUT_CAP;
+  authMethod: 'api_key' | 'subscription';
+  maxEditInputs: number;
+  maxOutputs: number;
+  supportsOutputControls: boolean;
 }
 
-function imageProfile(id: ImageModelId, name: string): ImageModelProfile {
+function apiKeyImageProfile(
+  id: Exclude<ImageModelId, typeof OPENAI_SUBSCRIPTION_IMAGE_MODEL_ID>,
+  name: string,
+): ImageModelProfile {
   const profile: ImageModelProfile = {
     id,
     name,
@@ -41,8 +50,10 @@ function imageProfile(id: ImageModelId, name: string): ImageModelProfile {
     model: id.slice('openai/'.length),
     input: ['text', 'image'],
     output: ['image'],
+    authMethod: 'api_key',
     maxEditInputs: IMAGE_EDIT_INPUT_CAP,
     maxOutputs: IMAGE_OUTPUT_CAP,
+    supportsOutputControls: true,
     // pi-ai's model type requires rates. Image calls are not metered in this
     // release (metering is deferred); the provider's own usage object is
     // returned by the client instead of being priced here.
@@ -54,11 +65,37 @@ function imageProfile(id: ImageModelId, name: string): ImageModelProfile {
   return Object.freeze(profile);
 }
 
+function subscriptionImageProfile(): ImageModelProfile {
+  const profile: ImageModelProfile = {
+    id: OPENAI_SUBSCRIPTION_IMAGE_MODEL_ID,
+    name: 'ChatGPT Image',
+    api: OPENAI_IMAGES_API,
+    provider: 'openai',
+    baseUrl: OPENAI_SUBSCRIPTION_BASE,
+    // This is only the bounded request hint verified by the private proof. The
+    // catalog id and returned appliedModel stay generic because the response
+    // did not attest which image model actually rendered the output.
+    model: 'gpt-image-2.5-flare',
+    input: ['text'],
+    output: ['image'],
+    authMethod: 'subscription',
+    maxEditInputs: 0,
+    maxOutputs: 1,
+    supportsOutputControls: false,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+  };
+  Object.freeze(profile.input);
+  Object.freeze(profile.output);
+  Object.freeze(profile.cost);
+  return Object.freeze(profile);
+}
+
 // Hand-authored: the Images endpoints have no model-list route worth trusting
-// for a two-model role, and an Owner-facing picker must not show chat models.
+// for this small role, and an Owner-facing picker must not show chat models.
 const IMAGE_MODEL_PROFILES: readonly ImageModelProfile[] = Object.freeze([
-  imageProfile('openai/gpt-image-2.5-flare', 'GPT Image 2.5 Flare'),
-  imageProfile('openai/gpt-image-2.5-sunburst', 'GPT Image 2.5 Sunburst'),
+  subscriptionImageProfile(),
+  apiKeyImageProfile('openai/gpt-image-2.5-flare', 'GPT Image 2.5 Flare'),
+  apiKeyImageProfile('openai/gpt-image-2.5-sunburst', 'GPT Image 2.5 Sunburst'),
 ]);
 
 /** Image-capable models for one provider id; empty for every other provider. */

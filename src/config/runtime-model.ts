@@ -16,6 +16,7 @@ import {
   registerCapturedOpenAiSubscriptionProvider,
 } from '../openai-subscription/provider.ts';
 import { OpenAiSubscriptionError } from '../openai-subscription/errors.ts';
+import { requireOpenAiSubscriptionAvailable } from '../openai-subscription/availability.ts';
 import {
   canonicalCompatibilityModel,
   isInternalCompatibilityProvider,
@@ -247,7 +248,6 @@ export async function resolveRuntimeModel(
   canonicalModel: string,
   dependencies: RuntimeModelDependencies,
 ): Promise<ResolvedRuntimeModel> {
-  await (dependencies.loadCatalog ?? loadModelCatalog)(dependencies.settings);
   const providerId = providerPrefix(canonicalModel);
   if (isOpenAiSubscriptionProviderId(providerId)) {
     throw new OpenAiSubscriptionError('unsupported_model');
@@ -255,6 +255,17 @@ export async function resolveRuntimeModel(
   if (isInternalCompatibilityProvider(providerId)) {
     throw new Error('Internal model providers cannot be selected in profiles.');
   }
+  const openAiAuthorization = providerId === 'openai'
+    ? await (dependencies.resolveOpenAiAuthorization ?? resolveOpenAiAuthMethod)(
+        dependencies.settings,
+      )
+    : undefined;
+  if (openAiAuthorization === 'subscription') {
+    // This target check precedes catalog refresh and credential binding so a
+    // stored Node selection cannot cause Cloudflare auth or model egress.
+    requireOpenAiSubscriptionAvailable();
+  }
+  await (dependencies.loadCatalog ?? loadModelCatalog)(dependencies.settings);
   if (providerId === 'anthropic') {
     const model = resolveApiKeyModelSpecifier(canonicalModel, 'anthropic');
     await requireProviderKey('anthropic', dependencies);
@@ -306,9 +317,7 @@ export async function resolveRuntimeModel(
     return { model: canonicalModel };
   }
 
-  const authorization = await (
-    dependencies.resolveOpenAiAuthorization ?? resolveOpenAiAuthMethod
-  )(dependencies.settings);
+  const authorization = openAiAuthorization ?? 'api_key';
   if (authorization === 'api_key') {
     const model = resolveApiKeyModelSpecifier(canonicalModel, 'openai');
     await requireProviderKey('openai', dependencies);

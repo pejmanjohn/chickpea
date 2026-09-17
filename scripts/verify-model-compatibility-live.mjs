@@ -11,13 +11,13 @@ import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 
 import { resolveModel } from '@flue/runtime/internal';
-import { getApiProvider } from '@earendil-works/pi-ai/compat';
-
 import { resolveRuntimeModel } from '../src/config/runtime-model.ts';
-import { resolveOpenAiAuthMethod, saveOpenAiAuthMethod } from '../src/config/openai-auth.ts';
+import { resolveOpenAiAuthMethod } from '../src/config/openai-auth.ts';
+import { registeredPiProvider } from '../src/config/pi-provider-registry.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { activateModelCatalog } from '../src/model-catalog/catalog.ts';
 import { parseModelCatalogBytes } from '../src/model-catalog/schema.ts';
+import { clearOpenAiSubscriptionTransport } from '../src/openai-subscription/transport.ts';
 
 const args = parseArgs(process.argv.slice(2));
 if (args.has('--help')) {
@@ -86,12 +86,14 @@ globalThis.fetch = async (input, init) => {
 };
 
 const settings = new SqliteSettingsStore(statePath);
-const priorOpenAiMethod = provider === 'openai'
-  ? await resolveOpenAiAuthMethod(settings)
-  : undefined;
 try {
   if (provider === 'openai') {
-    await saveOpenAiAuthMethod(settings, lane === 'subscription' ? 'subscription' : 'api_key');
+    const selected = await resolveOpenAiAuthMethod(settings);
+    assert.equal(
+      selected,
+      lane === 'subscription' ? 'subscription' : 'api_key',
+      `persisted OpenAI authentication method must be ${lane === 'subscription' ? 'subscription' : 'api_key'}`,
+    );
   }
   const route = await resolveRuntimeModel('live_model_compatibility', canonicalModel, {
     settings,
@@ -110,10 +112,10 @@ try {
       : {}),
   });
   const model = resolveModel(route.model);
-  const api = getApiProvider(model.api);
-  assert.ok(api, `API handler ${model.api} must be registered`);
+  const piProvider = registeredPiProvider(model.provider);
+  assert.ok(piProvider, `Pi provider ${model.provider} must be registered`);
   const marker = 'CHICKPEA_MODEL_COMPATIBILITY_OK';
-  const result = await api.stream(
+  const result = await piProvider.stream(
     model,
     {
       messages: [{
@@ -152,8 +154,8 @@ try {
     outputVerified: true,
   }));
 } finally {
+  clearOpenAiSubscriptionTransport();
   globalThis.fetch = nativeFetch;
-  if (priorOpenAiMethod) await saveOpenAiAuthMethod(settings, priorOpenAiMethod);
   settings.close();
 }
 

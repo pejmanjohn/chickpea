@@ -9,12 +9,14 @@ import { PROVIDER_KEY_SETTING_KEYS, invalidateProviderKeyCache } from '../src/co
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import { SqliteUsageStore } from '../src/usage/store.ts';
+import { commitOpenAiSubscriptionCredentials } from '../src/openai-subscription/credentials.ts';
 import { FAKE_PROVIDER_KEYS } from './helpers/fake-providers.ts';
 import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
 
 const ADMIN_TOKEN = 'model-roles-admin-token';
 const FLARE = 'openai/gpt-image-2.5-flare';
 const SUNBURST = 'openai/gpt-image-2.5-sunburst';
+const CHATGPT_IMAGE = 'openai/chatgpt-image';
 
 function auth(): HeadersInit {
   return testAdminHeaders(ADMIN_TOKEN, { 'content-type': 'application/json' });
@@ -73,6 +75,19 @@ async function connectOpenAi(fixture: ReturnType<typeof harness>) {
   invalidateProviderKeyCache();
 }
 
+async function connectOpenAiSubscription(fixture: ReturnType<typeof harness>) {
+  await commitOpenAiSubscriptionCredentials({
+    accessToken: 'image-subscription-access',
+    refreshToken: 'image-subscription-refresh',
+    idToken: undefined,
+    expiresAt: Date.now() + 3_600_000,
+    accountId: 'image-subscription-account',
+  }, {
+    settings: fixture.settings,
+    randomBytes: (length) => new Uint8Array(length).fill(7),
+  });
+}
+
 test('the image role rejects a chat model and accepts a catalog model once OpenAI is connected', async () => {
   const fixture = harness();
   try {
@@ -99,7 +114,7 @@ test('the image role rejects a chat model and accepts a catalog model once OpenA
     assert.equal(unconnected.status, 400);
     assert.match(
       (await unconnected.json() as { message: string }).message,
-      /Connect the openai provider/,
+      /Add an OpenAI API key/,
     );
 
     await connectOpenAi(fixture);
@@ -116,12 +131,16 @@ test('the image role rejects a chat model and accepts a catalog model once OpenA
         modelId: FLARE,
         revision: 1,
         availableModels: [
-          { id: FLARE, name: 'GPT Image 2.5 Flare', providerId: 'openai', acceptsImageInput: true },
+          { id: FLARE, name: 'GPT Image 2.5 Flare', providerId: 'openai', acceptsImageInput: true,
+            authMethod: 'api_key', maxOutputs: 10, supportsOutputControls: true },
           {
             id: SUNBURST,
             name: 'GPT Image 2.5 Sunburst',
             providerId: 'openai',
             acceptsImageInput: true,
+            authMethod: 'api_key',
+            maxOutputs: 10,
+            supportsOutputControls: true,
           },
         ],
       },
@@ -169,6 +188,9 @@ test('the image model list is empty until its provider has a credential', async 
           providerId: 'openai',
           acceptsImageInput: true,
           fasterAndCheaper: true,
+          authMethod: 'api_key',
+          maxOutputs: 10,
+          supportsOutputControls: true,
         },
         {
           id: SUNBURST,
@@ -176,6 +198,9 @@ test('the image model list is empty until its provider has a credential', async 
           providerId: 'openai',
           acceptsImageInput: true,
           fasterAndCheaper: false,
+          authMethod: 'api_key',
+          maxOutputs: 10,
+          supportsOutputControls: true,
         },
       ],
       providers: [{ id: 'openai', configured: true }],
@@ -186,6 +211,73 @@ test('the image model list is empty until its provider has a credential', async 
     const chatBody = await chatModels.text();
     assert.ok(!chatBody.includes('gpt-image-2.5'), 'chat model list must not carry image models');
   } finally {
+    fixture.close();
+  }
+});
+
+test('the image catalog exposes ChatGPT Image only for a connected Node subscription', async () => {
+  const fixture = harness();
+  try {
+    await installWorkspace(fixture);
+    await connectOpenAiSubscription(fixture);
+
+    const listed = await fixture.app.request('/admin/api/image-models', { headers: auth() });
+    assert.equal(listed.status, 200);
+    assert.deepEqual(await listed.json(), {
+      models: [{
+        id: CHATGPT_IMAGE,
+        name: 'ChatGPT Image',
+        providerId: 'openai',
+        acceptsImageInput: false,
+        authMethod: 'subscription',
+        maxOutputs: 1,
+        supportsOutputControls: false,
+        fasterAndCheaper: false,
+      }],
+      providers: [{ id: 'openai', configured: true }],
+    });
+
+    const saved = await fixture.app.request('/admin/api/workspace-model-roles/image', {
+      method: 'PUT',
+      headers: auth(),
+      body: JSON.stringify({ modelId: CHATGPT_IMAGE, expectedRevision: 0 }),
+    });
+    assert.equal(saved.status, 200);
+    const body = await saved.json() as { workspaceModelRole: { modelId: string } };
+    assert.equal(body.workspaceModelRole.modelId, CHATGPT_IMAGE);
+    assert.equal(await fixture.settings.getSetting('provider.openai.authMethod'), undefined);
+  } finally {
+    fixture.close();
+  }
+});
+
+test('Cloudflare never lists or accepts ChatGPT Image even when a subscription row exists', async () => {
+  const fixture = harness();
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  try {
+    await installWorkspace(fixture);
+    await connectOpenAi(fixture);
+    await connectOpenAiSubscription(fixture);
+    Object.defineProperty(globalThis, 'navigator', {
+      configurable: true,
+      value: { userAgent: 'Cloudflare-Workers' },
+    });
+
+    const listed = await fixture.app.request('/admin/api/image-models', { headers: auth() });
+    assert.equal(listed.status, 200);
+    const body = await listed.json() as { models: Array<{ id: string }> };
+    assert.deepEqual(body.models.map((model) => model.id), [FLARE, SUNBURST]);
+
+    const rejected = await fixture.app.request('/admin/api/workspace-model-roles/image', {
+      method: 'PUT',
+      headers: auth(),
+      body: JSON.stringify({ modelId: CHATGPT_IMAGE, expectedRevision: 0 }),
+    });
+    assert.equal(rejected.status, 400);
+    assert.match((await rejected.json() as { message: string }).message, /not available on this installation/);
+  } finally {
+    if (descriptor) Object.defineProperty(globalThis, 'navigator', descriptor);
+    else delete (globalThis as { navigator?: Navigator }).navigator;
     fixture.close();
   }
 });

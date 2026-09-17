@@ -113,6 +113,9 @@ export function openAiImagesApiBase(): string {
 }
 
 export function createOpenAiImagesClient(options: OpenAiImagesClientOptions): OpenAiImagesClient {
+  if (options.profile.authMethod !== 'api_key') {
+    throw new OpenAiImagesConfigError('unsupported_auth_method');
+  }
   const apiKey = options.apiKey.trim();
   if (!apiKey) {
     throw new OpenAiImagesConfigError('missing_api_key');

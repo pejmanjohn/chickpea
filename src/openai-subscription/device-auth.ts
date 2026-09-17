@@ -217,7 +217,6 @@ export async function pollOpenAiSubscriptionAuthorization(
     { ...dependencies, settings: dependencies.settings },
     {
       expectedPendingRaw: claimedRaw,
-      selectAuthMethod: claimed.previousStatus.state !== 'connected',
       ...(claimed.previousStatus.connectedAt === undefined
         ? {}
         : { connectedAt: claimed.previousStatus.connectedAt }),

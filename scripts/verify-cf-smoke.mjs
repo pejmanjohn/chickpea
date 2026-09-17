@@ -1205,6 +1205,56 @@ async function main() {
       JSON.stringify(providerSummaries.openai),
     );
     check(
+      providerSummaries.openai?.subscriptionAvailable === false,
+      'workerd reports ChatGPT subscription authentication unavailable',
+    );
+    for (const action of ['start', 'poll', 'confirm-account']) {
+      const rejected = await adminFetch(baseUrl, `/admin/api/providers/openai/subscription/${action}`, {
+        method: 'POST',
+        body: JSON.stringify(action === 'start' ? {} : { attemptCapability: 'synthetic-workerd-attempt-capability' }),
+      });
+      check(
+        rejected.status === 409 && rejected.body?.error === 'unsupported_runtime',
+        `workerd rejects subscription ${action}`,
+        `HTTP ${rejected.status} ${rejected.body?.error ?? ''}`,
+      );
+    }
+    const subscriptionSelection = await adminFetch(baseUrl, '/admin/api/providers/openai/auth-method', {
+      method: 'PUT',
+      body: JSON.stringify({ method: 'subscription' }),
+    });
+    check(
+      subscriptionSelection.status === 409 && subscriptionSelection.body?.error === 'unsupported_runtime',
+      'workerd rejects subscription selection even with an API key configured',
+    );
+    const imageModels = await adminFetch(baseUrl, '/admin/api/image-models');
+    const imageModelIds = (imageModels.body?.models ?? []).map((model) => model.id);
+    check(
+      imageModels.status === 200 &&
+        sameArray(imageModelIds, [
+          'openai/gpt-image-2.5-flare',
+          'openai/gpt-image-2.5-sunburst',
+        ]),
+      'workerd image catalog excludes ChatGPT Image even with an OpenAI API key configured',
+      `HTTP ${imageModels.status} ${JSON.stringify(imageModelIds)}`,
+    );
+    const subscriptionImageSelection = await adminFetch(
+      baseUrl,
+      '/admin/api/workspace-model-roles/image',
+      {
+        method: 'PUT',
+        body: JSON.stringify({ modelId: 'openai/chatgpt-image', expectedRevision: 0 }),
+      },
+    );
+    check(
+      subscriptionImageSelection.status === 400 &&
+        subscriptionImageSelection.body?.error === 'invalid_request' &&
+        subscriptionImageSelection.body?.message ===
+          'openai/chatgpt-image is not available on this installation.',
+      'workerd rejects ChatGPT Image selection even with an OpenAI API key configured',
+      `HTTP ${subscriptionImageSelection.status} ${subscriptionImageSelection.body?.error ?? ''}`,
+    );
+    check(
       providerSummaries.openrouter?.status === 'stored' && providerSummaries.openrouter?.modelCount === 2,
       'providers GET reports OpenRouter key stored with two fake models',
       JSON.stringify(providerSummaries.openrouter),

@@ -938,3 +938,24 @@ test('an image capability that claims input without a filled role is rejected', 
     /imageCapability.filled must be a boolean/,
   );
 });
+
+test('a stricter image call limit survives replay and rotates the tool harness', () => {
+  const standard = compile({ imageCapability: { role: 'image', filled: true, acceptsImageInput: false } });
+  const single = compile({ imageCapability: { role: 'image', filled: true, acceptsImageInput: false, maxOutputsPerCall: 1, supportsOutputControls: false } });
+  assert.equal(parseRuntimePlanV2(structuredClone(single)).imageCapability?.maxOutputsPerCall, 1);
+  assert.equal(parseRuntimePlanV2(structuredClone(single)).imageCapability?.supportsOutputControls, false);
+  assert.notEqual(standard.harnessRevision, single.harnessRevision);
+  for (const limit of [0, -1, 1.5, 5, '1']) {
+    assert.throws(() => parseRuntimePlanV2({ ...structuredClone(single),
+      imageCapability: { role: 'image', filled: true, acceptsImageInput: false, maxOutputsPerCall: limit },
+    }), /maxOutputsPerCall is invalid/);
+  }
+  assert.throws(() => parseRuntimePlanV2({ ...structuredClone(single),
+    imageCapability: { role: 'image', filled: false, acceptsImageInput: false, maxOutputsPerCall: 1 },
+  }), /maxOutputsPerCall is invalid/);
+  assert.throws(() => parseRuntimePlanV2({ ...structuredClone(single),
+    imageCapability: { role: 'image', filled: true, acceptsImageInput: false, supportsOutputControls: 'false' },
+  }), /supportsOutputControls is invalid/);
+  const controls = compile({ imageCapability: { role: 'image', filled: true, acceptsImageInput: false, maxOutputsPerCall: 1 } });
+  assert.notEqual(single.harnessRevision, controls.harnessRevision);
+});

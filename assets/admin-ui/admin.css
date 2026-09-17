@@ -1387,6 +1387,9 @@ details[open].advanced summary::before {
 .provider-step-number { align-items: center; background: #faedca; border-radius: 50%; color: var(--ember-deep); display: flex; font-family: var(--mono); font-size: .6875rem; font-weight: 700; height: 22px; justify-content: center; width: 22px; }
 .provider-step.complete .provider-step-number { background: var(--ok-tint); color: var(--ok); }
 .provider-step.pending { color: var(--text-3); }
+.openai-auth-methods .provider-step { align-items: start; grid-template-columns: minmax(0, 1fr) max-content; }
+.openai-auth-methods .provider-step > div { min-width: 0; }
+.openai-auth-methods .provider-step > .btn { justify-self: end; white-space: nowrap; width: auto; }
 .provider-model-chips { display: flex; flex-wrap: wrap; gap: 7px; }
 .provider-model-chip {
   align-items: center;
@@ -1425,6 +1428,8 @@ details[open].advanced summary::before {
   .provider-card .prov-name { align-self: center; grid-column: 2; grid-row: 1; }
   .provider-card .prov-sub { grid-column: 2 / 4; grid-row: 2; }
   .provider-card .prov-status, .provider-card .fav-provider-controls { grid-column: 3; grid-row: 1; margin-left: 0; }
+  .openai-auth-methods .provider-step { grid-template-columns: minmax(0, 1fr); }
+  .openai-auth-methods .provider-step > .btn { justify-self: start; }
 }
 @media (max-width: 620px) {
   .fav-summary { align-items: flex-start; flex-direction: column; padding: 14px 0; }

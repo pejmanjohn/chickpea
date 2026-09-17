@@ -318,7 +318,7 @@ test('credential invalidation removes an in-flight reconnect so cancel cannot re
   assert.equal(await settings.getSetting(openAiSubscriptionSettingKeys().tokens), undefined);
 });
 
-test('a first credential commit cannot reactivate the retired Subscription lane', async (t) => {
+test('a first authorized credential commit selects the Subscription chat lane', async (t) => {
   const settings = new SqliteSettingsStore(':memory:');
   t.after(() => settings.close());
 
@@ -328,7 +328,7 @@ test('a first credential commit cannot reactivate the retired Subscription lane'
     randomBytes: randomBytes(1),
   }, { selectAuthMethod: true });
 
-  assert.equal(await resolveOpenAiAuthMethod(settings), 'api_key');
+  assert.equal(await resolveOpenAiAuthMethod(settings), 'subscription');
 });
 
 test('disconnect deletes every secret record while preserving a safe disconnected status', async (t) => {
@@ -338,7 +338,7 @@ test('disconnect deletes every secret record while preserving a safe disconnecte
     settings,
     now: () => START_TIME,
     randomBytes: randomBytes(1),
-  });
+  }, { selectAuthMethod: true });
   await settings.setSetting(openAiSubscriptionSettingKeys().pending, 'pending-secret');
   await settings.setSetting(openAiSubscriptionSettingKeys().refreshLease, 'lease-secret');
   await settings.setSetting(openAiSubscriptionSettingKeys().modelCatalog, 'safe-model-cache');
@@ -358,4 +358,5 @@ test('disconnect deletes every secret record while preserving a safe disconnecte
     state: 'disconnected',
     updatedAt: START_TIME,
   });
+  assert.equal(await resolveOpenAiAuthMethod(settings), 'subscription');
 });
