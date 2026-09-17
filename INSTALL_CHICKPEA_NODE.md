@@ -1,343 +1,285 @@
-# Install Chickpea on a Mac with Node
+# Install Chickpea on a Mac
 
-This guide runs Chickpea on one Mac with Node and SQLite. It does not deploy a
-Cloudflare Worker. Chickpea still needs a stable public HTTPS origin so Slack
-can reach it. The example below uses a named Cloudflare Tunnel for HTTPS only.
+The Node installer prepares Chickpea on one Mac with private SQLite state. It
+downloads Node 24.20.0, builds a versioned application release, creates the
+runtime settings and setup link, then starts Chickpea and opens your browser.
+You do not need nvm, Homebrew, a global npm package, or a Cloudflare Worker.
 
-This installation is a foreground service. Keep the Mac awake and connected,
-and keep both Chickpea and the tunnel running. No background work runs while
-Chickpea is stopped. Check the selected release notes for current Node feature
-support. The Node target does not include the Cloudflare coding sandbox, and it
-uses single-host SQLite rather than Cloudflare Durable Objects and D1.
-This is a supported Node deployment, not full Cloudflare runtime parity.
+You still choose a stable public HTTPS address and authorize Slack and your
+model provider. Slack must be able to reach the Mac through that address.
+Keep the Mac awake and connected. Scheduled work runs only while Chickpea is
+running. Node does not include the Cloudflare coding sandbox.
 
-## What you need
+## Before you start
 
-- macOS with [nvm](https://github.com/nvm-sh/nvm) available in your shell
-- A Slack workspace where you may create and install an app
-- A model provider account and credential supported by Chickpea
-- A domain on Cloudflare nameservers if you use the named tunnel example
+- Use an Apple Silicon or Intel Mac with internet access and enough disk space
+  for Node, application source, dependencies, and persistent data.
+- Use a Slack workspace where you can create and install an app. The Node
+  installation requires your own Slack app.
+- Have a supported model provider account or API credential ready.
+- Choose one of the [HTTPS options](#choose-an-https-route) below.
 
-Use a customer-owned Slack app for Node. The shared Chickpea Slack app does not
-provide the durable event-admission contract that the Node target requires.
+Mac installation is supported starting with v0.1.21. The default command uses
+the latest stable application release. Installing the management CLI from npm
+does not install the application.
 
-## 1. Check out one release
+## Install
 
-Clone Chickpea and select the stable release tag you intend to run. The
-[GitHub releases page](https://github.com/pejmanjohn/chickpea/releases) lists
-published releases.
-
-```sh
-git clone https://github.com/pejmanjohn/chickpea.git
-cd chickpea
-git fetch --tags
-git tag --list 'v[0-9]*' --sort=-v:refname | head
-```
-
-Set the exact tag after reviewing the release, resolve it to a commit, and
-check out that commit. Recording both values makes the installed source
-unambiguous even if a tag is moved later.
+Run this command in Terminal as your usual user, without `sudo`:
 
 ```sh
-export CHICKPEA_RELEASE_TAG='vX.Y.Z'
-export CHICKPEA_RELEASE_COMMIT="$(git rev-parse "${CHICKPEA_RELEASE_TAG}^{commit}")"
-git checkout --detach "$CHICKPEA_RELEASE_COMMIT"
-printf 'Chickpea release: %s\nCommit: %s\n' \
-  "$CHICKPEA_RELEASE_TAG" "$CHICKPEA_RELEASE_COMMIT"
+curl -fsSL https://chickpea.co/install.sh | bash
 ```
 
-## 2. Install Node and build
+The installer asks for your HTTPS address and whether it should run a Cloudflare
+Tunnel or use a route you already operate. Cloudflare token input is hidden.
+It downloads tools into `~/.chickpea-node`, builds an immutable stable GitHub
+application release, and starts in the foreground. Keep that Terminal open.
 
-Chickpea pins Node 24.20.0 in `.nvmrc`.
+To inspect the script before running it, download
+[install-node.sh](https://github.com/pejmanjohn/chickpea/blob/main/scripts/install-node.sh)
+and run `bash /path/to/install-node.sh`. The bootstrap comes from `main`;
+the application comes from the selected release's exact commit.
+
+To choose a release explicitly or prepare an installation without starting it:
 
 ```sh
-nvm install
-nvm use
-node --version
-npm ci
-npm run flue:build
+bash /path/to/install-node.sh \
+  --version vX.Y.Z \
+  --origin https://chickpea.example.com \
+  --tunnel external \
+  --no-start
 ```
 
-`node --version` must print `v24.20.0`. `npm ci` installs the exact lockfile
-for the selected release. The production launcher uses the built files under
-`dist/`, so do not skip the build.
+Replace `vX.Y.Z` with a compatible published application release. `--no-open`
+starts the service without opening the browser. `--port` changes the loopback
+port from 3000; update your HTTPS route to the same port. `--home` selects a
+different absolute installation directory, including paths containing spaces.
 
-## 3. Create a stable HTTPS tunnel
+The installer leaves system Node, shell startup files, and other Chickpea
+installations alone. It refuses an existing directory that it does not own.
+An installation made with the older manual guide stays on its existing
+launcher and state paths; the installer does not adopt or migrate it.
 
-You may use any tunnel or reverse proxy that provides one stable public HTTPS
-origin and forwards it to `http://127.0.0.1:3000`. Keep the Node listener on
-loopback. If you already operate that route, skip the Cloudflare commands and
-set `CHICKPEA_PUBLIC_HOST` and `CHICKPEA_PUBLIC_ORIGIN` to its hostname and
-origin before step 4.
+## Choose an HTTPS route
 
-Install `cloudflared` and authenticate it with the Cloudflare account that owns
-your domain. Cloudflare publishes its supported installation options on the
-[cloudflared downloads page](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/downloads/).
+### Managed Cloudflare Tunnel
+
+Use this option if your domain is on Cloudflare and you want the installer to
+run the tunnel alongside Chickpea.
+
+1. In the [Cloudflare dashboard](https://dash.cloudflare.com/), create a
+   remotely managed Cloudflare Tunnel for this installation.
+2. Add a public hostname, such as `chickpea.example.com`, with service type
+   **HTTP** and URL **127.0.0.1:3000**. Use your chosen port if different.
+3. Copy the tunnel token from the connector installation command. It is the
+   long `eyJ...` value. Paste only that token into the installer's hidden prompt.
+   The installer runs the connector, so you do not need to run Cloudflare's
+   separate service-install command.
+
+The installer downloads a checksum-verified `cloudflared` into its own directory
+and saves the token privately. It passes a token-file path to `cloudflared`, so
+the token does not appear in process arguments. It does not request an
+account-wide certificate, create DNS records, or change another tunnel.
+
+For unattended provisioning, provide a private token file rather than a token
+in your shell command:
 
 ```sh
-brew install cloudflared
-cloudflared tunnel login
-cloudflared tunnel create chickpea-node
-cloudflared tunnel list
+bash /path/to/install-node.sh \
+  --origin https://chickpea.example.com \
+  --tunnel cloudflare \
+  --tunnel-token-file /absolute/path/to/private-tunnel-token.txt \
+  --no-start
 ```
 
-Copy the tunnel UUID from the command output and choose the public hostname.
+Keep that file readable only by your user. The installer copies it into its
+private installation directory. An existing `cloudflared` executable can be
+selected with `--cloudflared /absolute/path/to/cloudflared`.
 
-```sh
-export CHICKPEA_TUNNEL_ID='replace-with-the-tunnel-uuid'
-export CHICKPEA_PUBLIC_HOST='chickpea.example.com'
-export CHICKPEA_PUBLIC_ORIGIN="https://$CHICKPEA_PUBLIC_HOST"
-export CHICKPEA_TUNNEL_CREDENTIALS="$HOME/.cloudflared/$CHICKPEA_TUNNEL_ID.json"
-test -f "$CHICKPEA_TUNNEL_CREDENTIALS"
-```
+Cloudflare documents [tunnel tokens](https://developers.cloudflare.com/tunnel/reference/tunnel-tokens/)
+and [the token-file option](https://developers.cloudflare.com/tunnel/reference/run-parameters/).
+The dashboard's hostname and forwarding port must match your installation.
+The installer cannot infer or repair that remote configuration.
 
-Write the tunnel configuration. This forwards the one public hostname to
-Chickpea's loopback-only HTTP listener. The dedicated filename avoids replacing
-another tunnel's default configuration.
+### An existing tunnel or reverse proxy
 
-```sh
-install -d -m 700 "$HOME/.cloudflared"
-export CHICKPEA_TUNNEL_CONFIG="$HOME/.cloudflared/chickpea-node.yml"
-if test -e "$CHICKPEA_TUNNEL_CONFIG"; then
-  echo "Review the existing file: $CHICKPEA_TUNNEL_CONFIG" >&2
-else
-  cat > "$CHICKPEA_TUNNEL_CONFIG" <<EOF
-tunnel: $CHICKPEA_TUNNEL_ID
-credentials-file: $CHICKPEA_TUNNEL_CREDENTIALS
-ingress:
-  - hostname: $CHICKPEA_PUBLIC_HOST
-    service: http://127.0.0.1:3000
-  - service: http_status:404
-EOF
-  chmod 600 "$CHICKPEA_TUNNEL_CONFIG"
-fi
-cloudflared tunnel route dns chickpea-node "$CHICKPEA_PUBLIC_HOST"
-cloudflared tunnel --config "$CHICKPEA_TUNNEL_CONFIG" ingress validate
-```
+Choose `external` if you already have a stable HTTPS address forwarding to
+`http://127.0.0.1:3000`. Keep that tunnel or proxy running separately. Chickpea
+manages only its own process in this mode. The existing
+[locally managed Cloudflare Tunnel procedure](https://developers.cloudflare.com/tunnel/features/locally-managed-tunnels/create-local-tunnel/)
+also works with this option.
 
-Cloudflare documents the same locally managed named-tunnel flow in
-[Create a locally-managed tunnel](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/do-more-with-tunnels/local-management/create-local-tunnel/)
-and [Route traffic with a DNS record](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/routing-to-tunnel/dns/).
-Do not use a random `trycloudflare.com` quick tunnel for production. Cloudflare
-describes quick tunnels as testing and development tools, and their hostname is
-not stable.
+Preserve the public hostname and HTTPS scheme through the proxy, allow Slack
+events and OAuth callbacks, and support streaming responses. Keep Chickpea's
+HTTP listener on loopback. Do not put an interactive proxy login in front of
+Slack event or callback routes. Random `trycloudflare.com` quick tunnels are
+unsuitable because Slack needs a stable address.
 
-## 4. Create private state and runtime settings
+## Finish setup in your browser
 
-The next commands create one private installation directory outside the source
-checkout. The inline Node script writes the secret directly to a mode 0600 file
-and does not print it. It refuses to replace an existing runtime file, which
-protects the stable authentication secret on restarts and updates.
-
-```sh
-export CHICKPEA_NODE_HOME="$HOME/Library/Application Support/Chickpea/node"
-export CHICKPEA_RUNTIME_ENV="$CHICKPEA_NODE_HOME/runtime.env"
-install -d -m 700 "$CHICKPEA_NODE_HOME" "$CHICKPEA_NODE_HOME/state"
-
-node --input-type=module <<'NODE'
-import { randomBytes } from 'node:crypto';
-import {
-  closeSync,
-  mkdirSync,
-  openSync,
-  writeFileSync,
-} from 'node:fs';
-import { join } from 'node:path';
-
-const root = process.env.CHICKPEA_NODE_HOME;
-const envFile = process.env.CHICKPEA_RUNTIME_ENV;
-const rawOrigin = process.env.CHICKPEA_PUBLIC_ORIGIN;
-
-if (!root || !envFile || !rawOrigin) {
-  throw new Error('CHICKPEA_NODE_HOME, CHICKPEA_RUNTIME_ENV, and CHICKPEA_PUBLIC_ORIGIN are required');
-}
-
-const origin = new URL(rawOrigin);
-if (
-  origin.protocol !== 'https:' ||
-  origin.username ||
-  origin.password ||
-  origin.pathname !== '/' ||
-  origin.search ||
-  origin.hash
-) {
-  throw new Error('CHICKPEA_PUBLIC_ORIGIN must be an HTTPS origin with no path, query, or fragment');
-}
-
-const state = join(root, 'state');
-mkdirSync(state, { recursive: true, mode: 0o700 });
-
-const values = {
-  NODE_ENV: 'production',
-  HOST: '127.0.0.1',
-  PORT: '3000',
-  TAG_DB_PATH: join(state, 'transcripts.sqlite'),
-  SLACK_STATE_DB_PATH: join(state, 'app.sqlite'),
-  CHICKPEA_AUTH_DB_PATH: join(state, 'auth.sqlite'),
-  CHICKPEA_CREDENTIAL_KEYRING_PATH: join(state, 'credential-keyring.json'),
-  CHICKPEA_AUTH_SECRET: randomBytes(32).toString('base64url'),
-  SLACK_TAG_PUBLIC_URL: origin.origin,
-};
-
-const body = Object.entries(values)
-  .map(([key, value]) => `${key}=${JSON.stringify(value)}`)
-  .join('\n') + '\n';
-
-const fd = openSync(envFile, 'wx', 0o600);
-try {
-  writeFileSync(fd, body, 'utf8');
-} finally {
-  closeSync(fd);
-}
-NODE
-```
-
-Quoted dotenv values preserve the spaces in the macOS application-support
-path. Do not move only one database or the credential keyring. They form one
-installation state and must be backed up and restored together.
-
-## 5. Create the private setup link
-
-Create the setup link only when you are ready to finish setup. It expires after
-24 hours. The commands save the capability and URL in private files without
-printing either value to the terminal.
-
-```sh
-export CHICKPEA_SETUP_OUTPUT="$CHICKPEA_NODE_HOME/setup-link.txt"
-if test -e "$CHICKPEA_SETUP_OUTPUT" || \
-   grep -q '^CHICKPEA_SETUP_CAPABILITY_DIGEST=' "$CHICKPEA_RUNTIME_ENV"; then
-  echo 'A setup capability already exists. Keep it unless it has expired.' >&2
-elif (umask 077; node scripts/create-setup-link.mjs "$CHICKPEA_PUBLIC_ORIGIN" > "$CHICKPEA_SETUP_OUTPUT"); then
-  sed -n '1,2p' "$CHICKPEA_SETUP_OUTPUT" >> "$CHICKPEA_RUNTIME_ENV"
-  chmod 600 "$CHICKPEA_RUNTIME_ENV" "$CHICKPEA_SETUP_OUTPUT"
-else
-  rm -f "$CHICKPEA_SETUP_OUTPUT"
-fi
-```
-
-Keep `runtime.env` and `setup-link.txt` out of source control, shell history,
-logs, and messages.
-
-If the link expires before setup finishes, stop Chickpea, remove only the two
-setup capability lines and the saved link, then repeat this step. Keep every
-other runtime setting, especially `CHICKPEA_AUTH_SECRET`.
-
-```sh
-sed -i '' \
-  -e '/^CHICKPEA_SETUP_CAPABILITY_DIGEST=/d' \
-  -e '/^CHICKPEA_SETUP_CAPABILITY_ISSUED_AT=/d' \
-  "$CHICKPEA_RUNTIME_ENV"
-rm -f "$CHICKPEA_SETUP_OUTPUT"
-```
-
-## 6. Start Chickpea and the tunnel
-
-Open two Terminal windows. In the first, enter the Chickpea checkout and start
-the production launcher. Set the file path again because a new Terminal does
-not inherit variables from the earlier shell.
-
-```sh
-cd /path/to/chickpea
-nvm use
-CHICKPEA_RUNTIME_ENV="$HOME/Library/Application Support/Chickpea/node/runtime.env"
-npm run start:node -- --env-file "$CHICKPEA_RUNTIME_ENV"
-```
-
-In the second Terminal, start the named tunnel.
-
-```sh
-cloudflared tunnel --config "$HOME/.cloudflared/chickpea-node.yml" run chickpea-node
-```
-
-Both commands must remain running. Keep the Mac awake. Closing either Terminal,
-logging out, restarting, or allowing the Mac to sleep interrupts service.
-If you use another tunnel or reverse proxy, keep that process or service running
-instead of `cloudflared`.
-
-## 7. Install your Slack app and choose a model
-
-With Chickpea and the tunnel running, open the private setup link from a third
-Terminal:
-
-```sh
-CHICKPEA_SETUP_OUTPUT="$HOME/Library/Application Support/Chickpea/node/setup-link.txt"
-open "$(tail -n 1 "$CHICKPEA_SETUP_OUTPUT")"
-```
+The private setup link expires after 24 hours. The installer opens it without
+printing it. Keep saved setup links, runtime settings, and tunnel tokens out of
+messages, source control, and issue attachments.
 
 Follow [the customer-owned Slack app setup](SETUP_AGENT.md):
 
-1. Choose **Create the Slack app** and provide a short-lived Slack configuration
+1. Choose **Create the Slack app** and supply a short-lived Slack configuration
    token. Chickpea creates the app from its reviewed manifest.
-2. Install the app in the intended workspace and verify the Events URL.
+2. Install the app in your workspace and verify its Events URL.
 3. Sign in with Slack to become the first Owner.
-4. Choose a provider and model. Provider credentials can be stored in Settings.
-5. Send a real direct message to `@Chickpea` and confirm that it replies.
+4. Choose a provider and model.
+5. Send a direct message to `@Chickpea`, confirm its reply, and sign in to Admin.
 
-This flow uses Slack's HTTP Events API through your HTTPS tunnel. It does not
-need an app-level `xapp-` token. After setup succeeds, remove the saved URL:
+These are account choices and authorization steps. The shell installer does
+not grant itself Slack or model-provider access. This flow uses Slack's HTTP
+Events API and does not require an app-level `xapp-` token.
 
-```sh
-rm "$HOME/Library/Application Support/Chickpea/node/setup-link.txt"
-```
+The setup page supports Anthropic, OpenAI, OpenRouter, and REST-based Cloudflare
+Workers AI. A Node installation cannot use a Worker-only binding.
 
-The setup page can configure Anthropic, OpenAI, OpenRouter, or REST-based
-Cloudflare Workers AI. A Node installation cannot use a Worker-only binding.
+For OpenAI chat, connect a ChatGPT subscription in **Settings → Model providers
+→ OpenAI** and follow the device sign-in instructions. OpenAI may require
+enabling device code authorization for Codex in the account's security settings.
+Usage shares that account's limits; Chickpea does not switch to API billing
+automatically.
 
-For OpenAI chat, you can connect a ChatGPT subscription in **Settings → Model
-providers → OpenAI**. Follow the device sign-in instructions using the account
-whose subscription you want to use. OpenAI may require enabling device code
-authorization for Codex in that account's security settings. Subscription usage
-shares that account's limits. Chickpea never switches to API billing automatically.
-For images, Flare and Sunburst require a separate OpenAI API key. **ChatGPT
-Image** uses the connected subscription independently of the selected chat
-authentication method; it generates one image per call and does not edit
-images. ChatGPT chooses its output settings. Saving an API key does not change
-your selected chat authentication method.
+**ChatGPT Image** uses the connected subscription independently of the selected
+chat authentication method. It generates one image per call, does not edit
+images, and lets ChatGPT choose the output settings. Flare and Sunburst require
+a separate OpenAI API key. Saving that key does not change chat authentication.
+For a workspace with no previous image default, its first subscription connection
+selects ChatGPT Image, or its first OpenAI API key selects Flare. Existing
+selections and deliberately cleared defaults are preserved.
 
-If the connected workspace has never had an image default configured, adding
-your first OpenAI API key selects **Flare**, or connecting your first ChatGPT
-subscription selects **ChatGPT Image**. Existing selections and deliberately
-cleared defaults stay unchanged, including when reconnecting or replacing a key.
-You can change the default in **Settings → Model providers**.
+## Start, stop, and check status
 
-## Operate the installation
-
-### Check status
-
-Check the local listener, the public HTTPS route, and Cloudflare's tunnel
-record. Replace the public origin with your installation's origin.
+The commands live inside the installation, so they use its private Node even
+when your shell has another Node version selected:
 
 ```sh
-curl --fail --silent --show-error --output /dev/null \
-  http://127.0.0.1:3000/admin && echo 'Chickpea local HTTP is reachable'
-
-CHICKPEA_PUBLIC_ORIGIN='https://chickpea.example.com'
-curl --fail --silent --show-error --output /dev/null \
-  "$CHICKPEA_PUBLIC_ORIGIN/admin" && echo 'Chickpea public HTTPS is reachable'
-
-cloudflared tunnel info chickpea-node
+"$HOME/.chickpea-node/bin/chickpea-node" start
+"$HOME/.chickpea-node/bin/chickpea-node" status
+"$HOME/.chickpea-node/bin/chickpea-node" stop
+"$HOME/.chickpea-node/bin/chickpea-node" setup
 ```
 
-Reachability checks do not prove Slack delivery. A real Slack reply is the
-end-to-end check. Skip the `cloudflared` status command if you use another
-tunnel or reverse proxy.
+`start` stays in the foreground and starts the configured tunnel too. Use
+another Terminal for `status`, `stop`, or `setup`. `start --open` also opens
+setup after the local listener is ready. Stop with Control-C or the `stop`
+command and wait for graceful shutdown. A second Control-C does not skip the
+drain. Logs are private files inside the installation directory.
 
-### Stop
+Status checks show process and HTTP availability. They do not prove that Slack
+can deliver a message, that your provider can answer, or that Admin sign-in
+works. Confirm those in Slack and your browser after first setup and restarts.
 
-Press Control-C once in the Chickpea Terminal and wait for the process to exit.
-The launcher drains background work and Flue with a 60-second shutdown deadline.
-Then press Control-C in the tunnel Terminal. Do not use `kill -9` during normal
-operation.
+### Start at login
 
-### Restart
+Opt in to a macOS LaunchAgent with:
 
-Start the same built release with the same `runtime.env`, then start the same
-tunnel. Do not rerun the state-generation script, replace
-`CHICKPEA_AUTH_SECRET`, or create another tunnel. After a planned restart,
-confirm the local and public status checks, a real Slack reply, and existing
-state in Admin.
+```sh
+"$HOME/.chickpea-node/bin/chickpea-node" service install
+```
 
-This guide does not install a LaunchAgent or another supervisor. For unattended
-operation you must choose and maintain a macOS supervisor separately. The
-production launcher and backup details are documented in
-[Operating and upgrading Chickpea](docs/runbooks/operations.md).
+Stop the foreground instance first. The LaunchAgent starts Chickpea and its
+managed tunnel at login and restarts after a failure. It does not run before
+login or while the Mac is asleep. No root service or sleep-setting change is
+installed. Remove automatic startup with:
+
+```sh
+"$HOME/.chickpea-node/bin/chickpea-node" service uninstall
+```
+
+## Reruns and recovery
+
+Rerunning the installer for the same installation reuses its release and private
+settings. It does not automatically update to a newer release or replace your
+auth secret, databases, or connected accounts. Stop the installation before
+rerunning. A failed download or build does not activate incomplete source.
+Fix the reported issue and run the same command again.
+
+If setup expires before you finish, stop Chickpea, renew only the setup
+capability, then start it again:
+
+```sh
+"$HOME/.chickpea-node/bin/chickpea-node" stop
+"$HOME/.chickpea-node/bin/chickpea-node" setup --renew
+"$HOME/.chickpea-node/bin/chickpea-node" start --open
+```
+
+Renewal preserves the auth secret and state. It refuses to create a new
+first-owner setup link after the installation already has an Owner. Use normal
+Slack sign-in or the [auth recovery procedure](docs/runbooks/slack-auth-recovery.md)
+for an installed workspace.
+
+If port 3000 is occupied, stop only the process you own or choose another port
+for a new installation and update the HTTPS route. If the local service works
+but setup cannot open publicly, check your hostname, forwarding port, tunnel
+credentials, and tunnel status. Do not reinstall or clear state to fix routing.
+
+An interrupted installer may leave its install lock. Follow its error message
+to verify the owning installer has stopped before removing that exact lock.
+A forcibly killed runtime manager can also leave a runtime lock.
+Locks are tied to the operating system's boot session, so an old lock does not
+block startup after a reboot. Within the same boot, verify that the application
+and tunnel have stopped before clearing the exact lock named in the error.
+The login service stops retrying this condition; after resolving it, run
+`service install` again to restart it. The manager never kills an unverified PID
+to recover. Do not remove the runtime databases or another installation's lock.
+
+## Files, backups, and upgrades
+
+The default layout is:
+
+| Path under `~/.chickpea-node` | Contents |
+| --- | --- |
+| `tools/` | Private Node and optional tunnel executable |
+| `releases/<commit>/` | Exact application source, dependencies, and build |
+| `current` | Link to the installed release |
+| `bin/chickpea-node` | Installation management command |
+| `runtime.env`, `installation.json` | Runtime secrets and installation settings |
+| `state/` | SQLite databases and credential keyring |
+| `setup-url.txt` | Private initial setup link |
+| `logs/` | Private process logs |
+
+Keep the application files available while it runs. Before a backup, stop
+Chickpea and ingress, then copy the whole state directory with any SQLite
+`-wal` and `-shm` files, its credential keyring, `runtime.env`, and
+`installation.json`. Include `tunnel-token.txt` when using a managed tunnel.
+Record the installed commit. Protect and test the backup as described in
+[operations](docs/runbooks/operations.md#back-up-and-restore-node).
+
+The installer deliberately refuses to switch an existing installation to a
+different release. Follow the selected release's migration instructions and
+the [Node upgrade policy](docs/runbooks/operations.md#upgrade-and-compatibility-policy).
+Changing a code link alone cannot undo a database migration.
+
+## Test an unreleased installer
+
+For a reviewed commit that contains this installer, use `--ref` with its full
+40-character commit SHA. This explicitly opts into unreleased source; it does
+not pass the immutable-release check. Use a separate installation home, an
+unused port, and disposable accounts. Do not point a preview at an existing
+installation's state or live tunnel.
+
+From a clean, committed checkout containing the installer:
+
+```sh
+bash scripts/install-node.sh \
+  --source "$PWD" \
+  --home "$HOME/.chickpea-node-preview" \
+  --port 3300 \
+  --origin https://preview.example.com \
+  --tunnel external \
+  --no-start
+```
+
+`--source` requires Git and exports committed files only. Neither untracked
+credentials nor local dependencies are copied. `--source`, `--ref`, and
+`--version` are mutually exclusive. Contributor tests and builds must also
+follow the host reservation instructions in [CONTRIBUTING.md](CONTRIBUTING.md).
+
+The bootstrap supports macOS first. Linux can use the manual Node and systemd
+instructions in [operations](docs/runbooks/operations.md); this installer does
+not claim Linux or Windows acceptance.

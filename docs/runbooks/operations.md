@@ -18,11 +18,17 @@ yet have Cloudflare's durable event admission guarantee. See
 
 ### Build a release
 
+For a new Mac installation, the [Node installer](../../INSTALL_CHICKPEA_NODE.md)
+automates the runtime, release build, private settings, and setup launch. Its
+`chickpea-node` command is separate from the `chickpea` remote-management CLI.
+The manual instructions below remain useful for existing installations and
+Linux hosts.
+
 Check out the release tag you intend to run, then install its exact lockfile and
 build the production entry point:
 
 ```sh
-npm ci
+npm ci --strict-allow-scripts
 npm run flue:build
 ```
 
@@ -131,22 +137,55 @@ logging, and configure streaming rather than buffering Slack-related responses.
 Complete Slack setup using the exact HTTPS origin. Verify sign-in, a real Slack
 reply, and state surviving a service restart before routing normal traffic.
 
-### Run in the foreground on macOS
+### Operate an installer-managed Mac
 
-Use [Install Chickpea on a Mac with Node](../../INSTALL_CHICKPEA_NODE.md) for
-the supported first-install procedure. It writes a complete private environment
-file without printing the authentication secret, preserves paths that contain
-spaces, configures stable HTTPS, and uses a customer-owned Slack app.
+The [Mac installer](../../INSTALL_CHICKPEA_NODE.md) creates a separate home at
+`~/.chickpea-node`. It keeps a private Node runtime and complete release source
+under `tools/` and `releases/`, with persistent databases and the credential
+keyring under `state/`. `runtime.env` holds the stable authentication secret.
+The `current` link identifies the installed code. It does not adopt a manual
+installation from `~/Library/Application Support/Chickpea/node`.
 
-To start an existing installation, run the built release in the foreground:
+```sh
+"$HOME/.chickpea-node/bin/chickpea-node" start
+"$HOME/.chickpea-node/bin/chickpea-node" status
+"$HOME/.chickpea-node/bin/chickpea-node" stop
+```
+
+`start` runs in the foreground. It manages the application and an optional
+Cloudflare Tunnel connector as one lifetime and drains them on shutdown.
+Use another Terminal for status and stop. An external proxy remains separately
+operated. Logs and setup material are private files inside the installation.
+
+`service install` opts into a per-installation macOS LaunchAgent; `service
+uninstall` removes it. Stop foreground operation before enabling it. The agent
+starts at login and restarts on failure. It cannot run while the Mac is asleep
+or before login. Its absolute private-Node path avoids dependence on nvm and
+shell startup settings.
+
+The installer sanitizes the application child environment so shell variables
+cannot override its private runtime file. This differs from a direct invocation
+of `start:node`, which intentionally lets ambient variables take precedence.
+To change managed runtime settings, stop the installation and edit its private
+file deliberately. Do not change its state paths, origin, or port independently
+of its installation configuration and HTTPS route.
+
+Reruns reuse the same release and settings. The installer refuses a different
+release for existing state; it is not an updater. Use the release's migration
+instructions and the stopped-backup procedure below. Installing a preview into
+a separate home proves neither a safe upgrade nor live Slack acceptance.
+
+### Run an existing manual installation on macOS
+
+Keep the original release checkout and private environment file. To start an
+installation created with the earlier manual guide, run its built release:
 
 ```sh
 npm run start:node -- \
   --env-file "$HOME/Library/Application Support/Chickpea/node/runtime.env"
 ```
 
-Use a process supervisor for unattended operation. This foreground recipe does
-not install a LaunchAgent or make Chickpea start at login. Keep the Mac awake,
+This direct launcher does not install a LaunchAgent or start at login. Keep the Mac awake,
 and keep both this launcher and the HTTPS tunnel running. Stop the launcher with
 Control-C and wait for its graceful shutdown before closing the Terminal. Reuse
 the same environment file and authentication secret for every restart.

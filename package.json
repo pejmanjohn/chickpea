@@ -1,6 +1,6 @@
 {
   "name": "chickpea",
-  "version": "0.1.20",
+  "version": "0.1.21",
   "private": true,
   "description": "Self-hosted, model-agnostic AI agent for Slack.",
   "license": "Apache-2.0",
@@ -86,7 +86,7 @@
   },
   "overrides": {
     "@flue/slack": {
-      "hono": "4.13.1"
+      "hono": "4.13.5"
     }
   },
   "scripts": {
@@ -182,7 +182,7 @@
     "@slack/web-api": "^8.0.0",
     "better-auth": "1.7.1",
     "croner": "10.0.1",
-    "hono": "^4.13.1",
+    "hono": "^4.13.5",
     "image-in-browser": "3.6.0",
     "jose": "6.2.8",
     "just-bash": "3.0.2",
