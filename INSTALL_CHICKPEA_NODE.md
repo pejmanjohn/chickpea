@@ -19,19 +19,16 @@ running. Node does not include the Cloudflare coding sandbox.
 - Have a supported model provider account or API credential ready.
 - Choose one of the [HTTPS options](#choose-an-https-route) below.
 
-**Release availability:** v0.1.20 and earlier do not contain the Node installer
-and production launcher. The default command needs a compatible published
-application release. It stops with an explanation when none is available.
-The [preview procedure](#test-an-unreleased-installer) is for explicitly testing
-a reviewed commit before that release exists. Installing the management CLI
-from npm does not install the application.
+Mac installation is supported starting with v0.1.21. The default command uses
+the latest stable application release. Installing the management CLI from npm
+does not install the application.
 
 ## Install
 
 Run this command in Terminal as your usual user, without `sudo`:
 
 ```sh
-curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/pejmanjohn/chickpea/main/scripts/install-node.sh | bash
+curl -fsSL https://chickpea.co/install.sh | bash
 ```
 
 The installer asks for your HTTPS address and whether it should run a Cloudflare

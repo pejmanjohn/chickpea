@@ -477,7 +477,7 @@ Uses Cloudflare Workers, Durable Objects, D1, and Workers AI.
 On a Mac, run:
 
 ```sh
-curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/pejmanjohn/chickpea/main/scripts/install-node.sh | bash
+curl -fsSL https://chickpea.co/install.sh | bash
 ```
 
 The installer prepares a private Node 24.20.0 runtime, builds a stable application
@@ -487,9 +487,8 @@ permission to install a Slack app, and a model provider account. The
 [Mac installation guide](INSTALL_CHICKPEA_NODE.md) explains the HTTPS options,
 start/stop commands, and optional start at login.
 
-The installer requires a release containing the Node installer and production
-launcher. Older releases, including v0.1.20, are rejected. Until a compatible
-release is published, use the guide's explicit preview procedure.
+The installer uses the latest stable application release. Mac installation is
+supported starting with v0.1.21.
 
 For an existing manual installation, keep using
 `npm run start:node -- --env-file <path>`. For Linux hosting, backups, restores,
