@@ -162,6 +162,53 @@ const opsAgent = {
   model: 'local-stub/ops',
 };
 
+const MCP_ORIGIN = 'https://chickpea.example';
+const MCP_CLIENTS_FIXTURE = {
+  url: `${MCP_ORIGIN}/mcp`,
+  guideUrl: `${MCP_ORIGIN}/connect.md`,
+  connectUrl: `${MCP_ORIGIN}/connect`,
+  prompt: `Connect my coding agent to my Chickpea using ${MCP_ORIGIN}/connect.md`,
+  clients: [
+    {
+      id: 'claude-code',
+      title: 'Claude Code',
+      language: 'bash',
+      text: `claude mcp add --transport http chickpea ${MCP_ORIGIN}/mcp`,
+      note: 'Run `/mcp` inside Claude Code, choose `chickpea`, and follow the browser sign-in.',
+    },
+    {
+      id: 'codex',
+      title: 'Codex',
+      language: 'bash',
+      text: `codex mcp add chickpea --url ${MCP_ORIGIN}/mcp\ncodex mcp login chickpea`,
+      note: 'Codex opens the browser sign-in for you.',
+    },
+    {
+      id: 'cursor',
+      title: 'Cursor',
+      language: 'json',
+      text: `{\n  "chickpea": { "url": "${MCP_ORIGIN}/mcp" }\n}`,
+      note: 'Cursor asks you to sign in the first time it calls a tool.',
+      deepLink: { href: 'https://cursor.com/en/install-mcp?name=chickpea&config=eyJ1cmwifQ', label: 'Add to Cursor' },
+    },
+    {
+      id: 'vscode',
+      title: 'VS Code',
+      language: 'bash',
+      text: `code --add-mcp '{"name":"chickpea","url":"${MCP_ORIGIN}/mcp"}'`,
+      note: 'VS Code prompts for the Slack sign-in on first use.',
+      deepLink: { href: 'https://vscode.dev/redirect/mcp/install?name=chickpea&config=eyJ1cmwifQ', label: 'Add to VS Code' },
+    },
+    {
+      id: 'claude-ai',
+      title: 'claude.ai and Claude Desktop',
+      language: 'text',
+      text: `${MCP_ORIGIN}/mcp`,
+      note: 'Customize -> Connectors -> Add custom connector, then paste this URL and sign in with Slack.',
+    },
+  ],
+};
+
 function inlineScript(usageAdminUi = false, workspaceAdminUi = true, installationOwner = false): string {
   const script = renderAdminPage({ usageAdminUi, workspaceAdminUi, installationOwner })
     .match(/<script>([\s\S]*?)<\/script>/)?.[1];
@@ -540,6 +587,7 @@ function runAdminPageHarness(
     initialSearch?: string;
     usageAdminUi?: boolean;
     workspaceAdminUi?: boolean;
+    mcpClientsError?: boolean;
     environmentStatus?: EnvironmentStatusFixture;
     usageApiError?: boolean;
     usageCoverage?: { pricedOperationCount: number; meteredOperationCount: number };
@@ -1373,6 +1421,11 @@ function runAdminPageHarness(
     if (path === '/admin/api/installation') return Promise.resolve(jsonResponse({ identity: { version: '0.1.0', sourceCommit: 'a'.repeat(40) }, deployment: harnessOptions.cloudflare ? 'cloudflare' : 'node', setup: 'ready', providers: {}, errors: [] }));
     if (path.startsWith('/admin/api/installation/updates')) return Promise.resolve(jsonResponse(harnessOptions.installationUpdates?.() ?? { status: 'no-release', checkedAt: '2026-09-07T12:00:00Z' }));
     if (path === '/admin/api/installation/support') return Promise.resolve(jsonResponse({ report: 'Chickpea support report\nApplication version: 0.1.0' }));
+    if (path === '/admin/api/mcp-clients') {
+      return Promise.resolve(harnessOptions.mcpClientsError
+        ? jsonResponse({ error: 'not_found' }, 404)
+        : jsonResponse(MCP_CLIENTS_FIXTURE));
+    }
     if (
       method === 'GET' &&
       ['/admin/api/github/status', '/admin/api/egress', '/admin/api/sandbox/status'].includes(path)
@@ -16532,4 +16585,103 @@ test('Agent deep links render before channel discovery and auxiliary checks fini
   await flushAsync();
   assert.match(harness.app.innerHTML, /Keep my unsaved instructions/);
   assert.match(harness.app.innerHTML, /Agent configuration/);
+});
+
+test('Coding agents settings gives every member the MCP setup copy for their client', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/settings/agents-clients',
+    workspaceAdminUi: false,
+  });
+  await flushAsync();
+
+  const sectionSwitcher = harness.app.innerHTML.match(
+    /<nav class="section-switcher"[^>]*>[\s\S]*?<\/nav>/,
+  )?.[0];
+  assert.ok(sectionSwitcher);
+  assert.match(sectionSwitcher, />Coding agents<\/button>/);
+  assert.doesNotMatch(sectionSwitcher, />Settings<\/button>/);
+
+  // The member rail carries the one Settings page they can open, and none of
+  // the workspace-owner pages.
+  const rail = harness.app.innerHTML.match(/<nav class="rail[^"]*"[^>]*>[\s\S]*?<\/nav>/)?.[0];
+  assert.ok(rail);
+  assert.match(rail, /data-action="settings-section" data-section="agents-clients"/);
+  assert.doesNotMatch(rail, /data-section="providers"|data-section="github"|data-section="outbound"/);
+
+  assert.match(harness.app.innerHTML, /<h1 class="page-title">Coding agents<\/h1>/);
+  assert.match(harness.app.innerHTML, /Connect my coding agent to my Chickpea using https:\/\/chickpea\.example\/connect\.md/);
+  assert.match(harness.app.innerHTML, /href="https:\/\/chickpea\.example\/connect"[^>]*>Open the connect page/);
+  assert.match(harness.app.innerHTML, /data-action="mcp-copy-url"/);
+  // Default selection is Claude Code, with its snippet and plain-text note.
+  assert.match(
+    harness.app.innerHTML,
+    /class="mcp-client-tab on" data-action="mcp-client-pick" data-client="claude-code"/,
+  );
+  assert.match(harness.app.innerHTML, /claude mcp add --transport http chickpea https:\/\/chickpea\.example\/mcp/);
+  assert.match(harness.app.innerHTML, /Run <code>\/mcp<\/code> inside Claude Code, choose <code>chickpea<\/code>/);
+  for (const title of ['Codex', 'Cursor', 'VS Code', 'claude.ai and Claude Desktop']) {
+    assert.ok(harness.app.innerHTML.includes(`>${title}</button>`));
+  }
+  assert.equal(harness.locationPath(), '/admin/settings/agents-clients');
+});
+
+test('Coding agents is a Settings rail entry and each client keeps its own install link', async () => {
+  const harness = runAdminPageHarness({ initialPath: '/admin/settings/agents-clients' });
+  await flushAsync();
+
+  const rail = harness.app.innerHTML.match(/<nav class="rail[^"]*"[^>]*>[\s\S]*?<\/nav>/)?.[0];
+  assert.ok(rail);
+  assert.match(rail, /data-section="providers"/);
+  assert.match(
+    rail,
+    /data-action="settings-section" data-section="agents-clients"[^>]*>(<span class="chan-name">Coding agents<\/span><span class="chan-meta">Claude Code, Codex, Cursor<\/span>)/,
+  );
+  assert.doesNotMatch(harness.app.innerHTML, /Add to Cursor/);
+
+  const click = harness.listeners.click!;
+  click({ target: actionTarget({ 'data-action': 'mcp-client-pick', 'data-client': 'cursor' }) });
+  await flushAsync();
+  assert.match(
+    harness.app.innerHTML,
+    /<a class="btn btn-primary" href="https:\/\/cursor\.com\/en\/install-mcp\?name=chickpea&amp;config=eyJ1cmwifQ" target="_blank" rel="noopener noreferrer">Add to Cursor<\/a>/,
+  );
+  assert.doesNotMatch(harness.app.innerHTML, /claude mcp add --transport http/);
+
+  click({ target: actionTarget({ 'data-action': 'mcp-client-pick', 'data-client': 'vscode' }) });
+  await flushAsync();
+  assert.match(
+    harness.app.innerHTML,
+    /href="https:\/\/vscode\.dev\/redirect\/mcp\/install\?name=chickpea&amp;config=eyJ1cmwifQ"[^>]*>Add to VS Code<\/a>/,
+  );
+});
+
+test('a member deep-linked to an owner Settings page lands on Coding agents', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/settings/providers',
+    workspaceAdminUi: false,
+  });
+  await flushAsync();
+
+  assert.equal(harness.locationPath(), '/admin/settings/agents-clients');
+  assert.match(harness.app.innerHTML, /<h1 class="page-title">Coding agents<\/h1>/);
+  assert.doesNotMatch(harness.app.innerHTML, /Model providers|Outbound access/);
+  const fetchedPaths = harness.fetchCalls.map(({ path }) => path);
+  assert.ok(fetchedPaths.includes('/admin/api/mcp-clients'));
+  assert.ok(!fetchedPaths.includes('/admin/api/egress'));
+});
+
+test('Coding agents offers a retry when its client table cannot be read', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/settings/agents-clients',
+    workspaceAdminUi: false,
+    mcpClientsError: true,
+  });
+  await flushAsync();
+
+  assert.match(
+    harness.app.innerHTML,
+    /Couldn’t load client settings\. Reopen Settings to retry\./,
+  );
+  assert.match(harness.app.innerHTML, /data-action="mcp-clients-retry"/);
+  assert.doesNotMatch(harness.app.innerHTML, /mcp-client-pick/);
 });
