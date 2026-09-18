@@ -464,17 +464,20 @@ does not deploy or update the Cloudflare installation. Slack and Admin work
 without it, so a blocked connection never invalidates the verified install.
 
 Fetch `https://<deployment>/connect.md`, replacing `<deployment>` with the
-public deployment URL saved in step 3, and follow it. It is written for you
-and carries the real server URL, the configuration for every client, and the
-sign-in and verification rules below. If that address answers 404, the
-installed release predates the connect guide; use the table at the end of
-this step instead. Either way:
+public deployment URL saved in step 3, and follow its steps 1 to 5. It is
+written for you and carries the real server URL, the configuration for every
+client, and the same sign-in and verification rules restated here. Skip its
+last step; this guide already covers the first teammate. If that address
+answers 404, the installed release predates the connect guide; use the table
+at the end of this step instead. Either way:
 
 1. Add the server to the client you are running in, for the project you are
-   working in, using the public deployment URL ending in `/mcp`. You know
-   which client you are; do not ask. Use the server name `chickpea` unless it
-   is already taken, and preserve every other server the user has configured.
-   Never create, copy, or paste a bearer token.
+   working in, using the public deployment URL ending in `/mcp`. You should
+   know which client you are; ask only if you genuinely cannot tell. Some
+   clients only have a user-level configuration file; say so when you write
+   one. Use the server name `chickpea` unless it is already taken, and
+   preserve every other server the user has configured. Never create, copy,
+   or paste a bearer token.
 2. Start the client's normal sign-in for the new server. The browser shows
    Slack sign-in for the installed workspace, then Chickpea's consent screen
    with one permission: manage this Chickpea workspace. Ask the user to take
@@ -486,28 +489,29 @@ this step instead. Either way:
 Report the three parts on separate lines, each with its own result:
 configured (which client and where the configuration was written), signed in
 (whether the browser sign-in and consent completed), and tested (the
-workspace and person that `inspect_workspace` returned). A saved URL is not a
-tested connection.
+workspace and person that `inspect_workspace` returned). A saved
+configuration is not a tested connection.
 
 If the client needs a restart to load the server, leave the configuration
 prepared, name the one remaining action, and stop there. Do not restart the
 user's active session yourself, and do not claim the tool call was tested. If
 the connection fails, preserve the first error and report the connection as
-blocked while leaving the verified Slack installation available.
+blocked while leaving the verified Slack installation available. If the user
+declines the connection, record that in the hand-over and continue.
 
 | Client | Where | What to write or run |
 | --- | --- | --- |
 | Claude Code | terminal | `claude mcp add --transport http chickpea https://<deployment>/mcp`, then `/mcp` inside Claude Code to sign in |
 | Codex | terminal | `codex mcp add chickpea --url https://<deployment>/mcp` then `codex mcp login chickpea` |
-| Cursor | `.cursor/mcp.json` in the project | `{"mcpServers":{"chickpea":{"url":"https://<deployment>/mcp"}}}` |
-| VS Code | terminal | `code --add-mcp '{"name":"chickpea","type":"http","url":"https://<deployment>/mcp"}'` |
+| Cursor | `.cursor/mcp.json` in the project, or `~/.cursor/mcp.json` for every project | `{"mcpServers":{"chickpea":{"url":"https://<deployment>/mcp"}}}` |
+| VS Code | terminal, or `.vscode/mcp.json` | `code --add-mcp '{"name":"chickpea","type":"http","url":"https://<deployment>/mcp"}'` |
 | Windsurf | `~/.codeium/windsurf/mcp_config.json` | `{"mcpServers":{"chickpea":{"serverUrl":"https://<deployment>/mcp"}}}` |
 | Gemini CLI | terminal | `gemini mcp add --transport http chickpea https://<deployment>/mcp` |
 | Any other MCP client | the client's MCP server configuration | `{"mcpServers":{"chickpea":{"type":"http","url":"https://<deployment>/mcp"}}}` |
 
 Anyone on the team can connect their own coding agent later from Admin
-**Settings → MCP** or by pasting `Connect my coding agent to my Chickpea using
-https://<deployment>/connect.md` into it.
+**Settings → MCP**, or by pasting `Connect my coding agent to my Chickpea
+using https://<deployment>/connect.md` into that agent.
 
 ## Hand over
 

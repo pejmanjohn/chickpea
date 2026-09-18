@@ -240,57 +240,62 @@ selections and deliberately cleared defaults are preserved.
 
 ## Connect this coding agent
 
-If a coding agent ran this installation, connect it to the new installation's
-management MCP server before handing over, so you can keep managing Chickpea
-from the same conversation. Do this after the Slack reply is confirmed: the
-`/mcp` endpoint and its sign-in answer 404 until setup in the browser is
-finished. MCP provides workspace management tools; it does not install,
-update, or restart Chickpea, and Slack and Admin work without it.
+If a coding agent ran this installation, it connects itself to the new
+installation's management MCP server before it finishes, so you can keep
+managing Chickpea from the same conversation. This happens after the Slack
+reply is confirmed: the `/mcp` endpoint and its OAuth metadata answer 404
+until setup in the browser is finished. MCP provides workspace management
+tools; it does not install, update, or restart Chickpea, and Slack and Admin
+work without it. If you decline the connection, the agent says so and moves
+on.
 
-Fetch `https://<deployment>/connect.md`, replacing `<deployment>` with the
-installation's public HTTPS address, and follow it. It is written for the
-agent and carries the real server URL, the configuration for every client,
-and the sign-in and verification rules below. If that address answers 404,
-the installed release predates the connect guide; use the table at the end of
-this section instead. Either way:
+The agent fetches `https://<deployment>/connect.md`, with `<deployment>`
+replaced by the installation's public HTTPS address, and follows its steps 1
+to 5. That page is written for the agent and carries the real server URL, the
+configuration for every client, and the same sign-in and verification rules
+restated here. If the address answers 404, the installed release predates the
+connect guide and the agent uses the table at the end of this section
+instead. Either way, the agent:
 
-1. Add the server to the client the agent is running in, for the project it
-   is working in, using the public address ending in `/mcp`. The agent knows
-   which client it is and does not need to ask. Use the server name `chickpea`
-   unless it is already taken, and preserve every other configured server.
-   Never create, copy, or paste a bearer token.
-2. Start the client's normal sign-in for the new server. The browser shows
+1. Adds the server to the client it is running in, for the project it is
+   working in, using the public address ending in `/mcp`. It should know
+   which client it is and asks only if it genuinely cannot tell. Some clients
+   only have a user-level configuration file; it says so when it writes one.
+   It uses the server name `chickpea` unless that is already taken, preserves
+   every other configured server, and never creates, copies, or pastes a
+   bearer token.
+2. Starts the client's normal sign-in for the new server. The browser shows
    Slack sign-in for the installed workspace, then Chickpea's consent screen
    with one permission: manage this Chickpea workspace. Slack sign-in needs
    the person who became the Owner; the agent keeps the page open and
-   continues when they finish.
-3. Call `inspect_workspace` without making changes. Confirm it names the
-   installed workspace and the signed-in user.
+   continues when you finish.
+3. Calls `inspect_workspace` without making changes and confirms it names
+   the installed workspace and the signed-in user.
 
 The agent reports the three parts on separate lines, each with its own
 result: configured (which client and where the configuration was written),
 signed in (whether the browser sign-in and consent completed), and tested
-(the workspace and person that `inspect_workspace` returned). A saved URL is
-not a tested connection. If the client needs a restart to load the server,
-the agent leaves the configuration prepared, names the one remaining action,
-and stops there without restarting the active session or claiming the tool
-call was tested. If the connection fails, it preserves the first error and
-reports the connection as blocked while the verified installation stays
-available.
+(the workspace and person that `inspect_workspace` returned). A saved
+configuration is not a tested connection. If the client needs a restart to
+load the server, the agent leaves the configuration prepared, names the one
+remaining action, and stops there without restarting the active session or
+claiming the tool call was tested. If the connection fails, it preserves the
+first error and reports the connection as blocked while the verified
+installation stays available.
 
 | Client | Where | What to write or run |
 | --- | --- | --- |
 | Claude Code | terminal | `claude mcp add --transport http chickpea https://<deployment>/mcp`, then `/mcp` inside Claude Code to sign in |
 | Codex | terminal | `codex mcp add chickpea --url https://<deployment>/mcp` then `codex mcp login chickpea` |
-| Cursor | `.cursor/mcp.json` in the project | `{"mcpServers":{"chickpea":{"url":"https://<deployment>/mcp"}}}` |
-| VS Code | terminal | `code --add-mcp '{"name":"chickpea","type":"http","url":"https://<deployment>/mcp"}'` |
+| Cursor | `.cursor/mcp.json` in the project, or `~/.cursor/mcp.json` for every project | `{"mcpServers":{"chickpea":{"url":"https://<deployment>/mcp"}}}` |
+| VS Code | terminal, or `.vscode/mcp.json` | `code --add-mcp '{"name":"chickpea","type":"http","url":"https://<deployment>/mcp"}'` |
 | Windsurf | `~/.codeium/windsurf/mcp_config.json` | `{"mcpServers":{"chickpea":{"serverUrl":"https://<deployment>/mcp"}}}` |
 | Gemini CLI | terminal | `gemini mcp add --transport http chickpea https://<deployment>/mcp` |
 | Any other MCP client | the client's MCP server configuration | `{"mcpServers":{"chickpea":{"type":"http","url":"https://<deployment>/mcp"}}}` |
 
 Anyone on the team can connect their own coding agent later from Admin
-**Settings → MCP** or by pasting `Connect my coding agent to my Chickpea using
-https://<deployment>/connect.md` into it.
+**Settings → MCP**, or by pasting `Connect my coding agent to my Chickpea
+using https://<deployment>/connect.md` into that agent.
 
 ## Start, stop, and check status
 

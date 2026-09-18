@@ -38,7 +38,7 @@ for (const name of Object.keys(GUIDES) as Array<keyof typeof GUIDES>) {
     assert.match(text, CONNECT_HEADING);
     assert.doesNotMatch(text, /Optional: connect a coding agent/);
     for (const line of text.split('\n')) {
-      if (/\bmcp\b|coding[- ]agent/i.test(line)) {
+      if (/MCP server|coding[- ]agent/i.test(line)) {
         assert.doesNotMatch(line, /\boptional\b/i, `MCP is described as optional: ${line}`);
       }
     }
@@ -47,14 +47,15 @@ for (const name of Object.keys(GUIDES) as Array<keyof typeof GUIDES>) {
   test(`${GUIDES[name]}: the step points at /connect.md and proves the connection`, async () => {
     const step = connectSection(await guide(name));
     assert.match(step, /https:\/\/<deployment>\/connect\.md/);
+    assert.match(step, /steps 1\s+to 5/);
     assert.match(step, /answers 404/);
-    assert.match(step, /`inspect_workspace` without making changes/);
-    assert.match(step, /three parts on separate lines/);
+    assert.match(step, /`inspect_workspace`\s+without\s+making\s+changes/);
+    assert.match(step, /three\s+parts\s+on\s+separate\s+lines/);
     assert.match(step, /configured\s+\(/);
     assert.match(step, /signed\s+in\s+\(/);
     assert.match(step, /tested\s+\(/);
-    assert.match(step, /needs a restart/);
-    assert.match(step, /Never create, copy, or paste a bearer token/);
+    assert.match(step, /needs\s+a\s+restart/);
+    assert.match(step, /[Nn]ever\s+creates?,\s+cop(?:y|ies),\s+or\s+pastes?\s+a\s+bearer\s+token/);
     assert.match(step, /\*\*Settings → MCP\*\*/);
   });
 
@@ -65,6 +66,7 @@ for (const name of Object.keys(GUIDES) as Array<keyof typeof GUIDES>) {
     for (const client of CONNECT_CLIENTS) {
       const row = rows.find((line) => line.startsWith(`| ${client.title} |`));
       assert.ok(row, `row for ${client.title}`);
+      assert.ok(row.startsWith(`| ${client.title} | ${client.where} | `), `${client.title} row names where the configuration lives`);
       const snippet = client.snippet(PLACEHOLDER_URL);
       const expected = client.language === 'json'
         ? [JSON.stringify(JSON.parse(snippet))]
