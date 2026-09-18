@@ -76,8 +76,8 @@ for (const name of Object.keys(GUIDES) as Array<keyof typeof GUIDES>) {
     assert.match(step, /in\s+that same\s+turn/);
     assert.match(step, /say\s+"create it" or confirm a second time/);
     assert.match(step, /duplicate[- ]identity/i);
-    assert.match(step, /does? not retry unchanged/);
-    assert.match(step, /whichever links (?:the result returned|it received)/);
+    assert.match(step, /do(?:es)? not retry unchanged/);
+    assert.match(step, /whichever links (?:the result\s+returned|it received)/);
     assert.match(step, /never constructs? one/);
     assert.match(step, /Slack handle\s+needs attention/);
     assert.match(step, /created with its handle pending/);
