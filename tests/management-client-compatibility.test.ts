@@ -27,10 +27,39 @@ import {
   AGENT_SKILL_CREATION_GUIDE_MCP,
 } from '../src/management/agent-authoring/mcp-guide.ts';
 import { MANAGEMENT_OPERATION_KINDS } from '../src/management/schemas.ts';
+import {
+  WORKSPACE_MANAGEMENT_PROMPT_NAMES,
+  WORKSPACE_MANAGEMENT_PROMPTS,
+  workspaceManagementPromptText,
+  type WorkspaceManagementPromptArguments,
+  type WorkspaceManagementPromptName,
+} from '../src/management/prompts.ts';
 import { WORKSPACE_MANAGEMENT_TOOL_NAMES } from '../src/management/tool-adapter.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
 
 const DEPLOYMENT_BASE_URL = 'https://chickpea-team.example.test/';
+
+/** Wording a coding agent must never be told; it has no Slack thread, DM, or Slack preview. */
+const SLACK_ONLY_WORDING = /presentation\.slack|\bDMs?\b|Slack turn|Slack Lists|Slack conversation|requester message|current command on Slack|progress UI/;
+
+/**
+ * One invocation with only the required arguments and one with every optional
+ * argument supplied, so a client that fills the whole slash-command line and a
+ * client that fills none both get a rendered brief.
+ */
+const PROMPT_INVOCATIONS: {
+  [K in WorkspaceManagementPromptName]: ReadonlyArray<WorkspaceManagementPromptArguments[K]>;
+} = {
+  'new-agent': [{}, { purpose: 'answer billing questions from the support channel' }],
+  'edit-agent': [{ handle: 'editor' }, { handle: '@editor', change: 'keep British spelling' }],
+  connect: [{ service: 'gmail' }, { service: 'Google Calendar', handle: '@notes' }],
+  schedule: [{ handle: 'notes' }, { handle: '@notes', what: 'post the standup digest' }],
+  'import-skill': [
+    { url: 'owner/repo' },
+    { url: 'https://github.com/owner/repo/tree/main/skills/changelog', handle: '@brief' },
+  ],
+  status: [{}],
+};
 
 const CLIENTS = [
   { name: 'Codex CLI/Desktop', protocol: '2025-11-25', redirect: 'http://127.0.0.1:47321/callback' },
@@ -223,9 +252,82 @@ test('supported coding clients share public PKCE registration and stateless MCP 
       const contract = JSON.parse(resource.text) as {
         schemaVersion: number;
         operationKinds: string[];
+        prompts: string[];
       };
       assert.equal(contract.schemaVersion, 2);
       assert.deepEqual(contract.operationKinds, MANAGEMENT_OPERATION_KINDS);
+      assert.deepEqual(contract.prompts, WORKSPACE_MANAGEMENT_PROMPT_NAMES, client.name);
+
+      const promptList = await mcpCall(handler.fetch, client.protocol, 'prompts/list', {});
+      const listedPrompts = (promptList.result as {
+        prompts: Array<{
+          name: string;
+          title?: string;
+          description?: string;
+          arguments?: Array<{ name: string; description?: string; required?: boolean }>;
+        }>;
+      }).prompts;
+      assert.deepEqual(
+        listedPrompts.map(({ name }) => name),
+        WORKSPACE_MANAGEMENT_PROMPT_NAMES,
+        `${client.name} must advertise every workspace prompt in order`,
+      );
+      for (const prompt of listedPrompts) {
+        const definition = WORKSPACE_MANAGEMENT_PROMPTS[prompt.name as WorkspaceManagementPromptName];
+        assert.equal(prompt.title, definition.title, `${client.name} ${prompt.name} title`);
+        assert.equal(prompt.description, definition.description, `${client.name} ${prompt.name} description`);
+        assert.ok((prompt.title ?? '').length > 0 && (prompt.description ?? '').length > 0, prompt.name);
+        assert.deepEqual(
+          (prompt.arguments ?? []).map(({ name, description, required }) => ({
+            name,
+            description,
+            required: required === true,
+          })),
+          definition.arguments.map(({ name, description, required }) => ({ name, description, required })),
+          `${client.name} ${prompt.name} arguments`,
+        );
+        for (const { name } of prompt.arguments ?? []) {
+          // Claude Code splits a slash command's arguments on whitespace, so each name is one token.
+          assert.match(name, /^[a-z]+$/, `${client.name} ${prompt.name} argument ${name}`);
+        }
+      }
+
+      for (const name of WORKSPACE_MANAGEMENT_PROMPT_NAMES) {
+        for (const args of PROMPT_INVOCATIONS[name]) {
+          const got = await mcpCall(handler.fetch, client.protocol, 'prompts/get', {
+            name,
+            arguments: args,
+          });
+          const messages = (got.result as {
+            messages: Array<{ role: string; content: { type: string; text: string } }>;
+          }).messages;
+          assert.equal(messages.length, 1, `${client.name} ${name} must return one message`);
+          assert.equal(messages[0]!.role, 'user', `${client.name} ${name} role`);
+          assert.equal(messages[0]!.content.type, 'text', `${client.name} ${name} content type`);
+          const text = messages[0]!.content.text;
+          assert.equal(
+            text,
+            workspaceManagementPromptText(name, args, DEPLOYMENT_BASE_URL),
+            `${client.name} ${name} must serve the rendered brief`,
+          );
+          assert.ok(
+            text.includes(`${new URL(DEPLOYMENT_BASE_URL).origin}/admin`),
+            `${client.name} ${name} must link the real Admin origin`,
+          );
+          assert.doesNotMatch(text, SLACK_ONLY_WORDING, `${client.name} ${name}`);
+        }
+      }
+
+      const missingArgument = await mcpCall(handler.fetch, client.protocol, 'prompts/get', {
+        name: 'edit-agent',
+        arguments: {},
+      });
+      assert.equal(
+        (missingArgument.error as { code?: number } | undefined)?.code,
+        -32602,
+        `${client.name} must reject a prompt missing a required argument`,
+      );
+      assert.equal(missingArgument.result, undefined, client.name);
 
       const resources = await mcpCall(handler.fetch, client.protocol, 'resources/list', {});
       assert.ok((resources.result as { resources: Array<{ uri: string }> }).resources.some(
@@ -334,7 +436,7 @@ test('server instructions stay under the client cap and link the deployment Admi
 test('workspace management MCP publishes the version 2 server contract', () => {
   assert.deepEqual(WORKSPACE_MANAGEMENT_SERVER_INFO, {
     name: 'chickpea-workspace',
-    version: '2.7.0',
+    version: '2.8.0',
   });
   assert.match(WORKSPACE_MANAGEMENT_OPERATION_SCHEMA_URI, /\/v2$/);
 });
@@ -352,6 +454,8 @@ test('management and evaluation runbooks track the additive authoring contract',
     'confirm_workspace_change',
   ]) assert.match(management, new RegExp(value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   assert.doesNotMatch(management, /contract version `2\.0\.0`/);
+  assert.match(management, /\/chickpea:new-agent/);
+  assert.match(management, /prompts\/list/);
   assert.match(evaluation, /no-guide-v1/);
   assert.match(evaluation, /npm run evaluate:agent-authoring:live/);
   assert.match(evaluation, /must not be committed/i);
@@ -371,7 +475,9 @@ async function mcpCall(
       'content-type': 'application/json',
       'mcp-protocol-version': protocol,
       ...(protocol === '2026-07-28' ? { 'mcp-method': method } : {}),
-      ...(protocol === '2026-07-28' && method === 'tools/call' && typeof params.name === 'string'
+      ...(protocol === '2026-07-28'
+        && (method === 'tools/call' || method === 'prompts/get')
+        && typeof params.name === 'string'
         ? { 'mcp-name': params.name }
         : {}),
       ...(protocol === '2026-07-28' && method === 'resources/read' && typeof params.uri === 'string'
