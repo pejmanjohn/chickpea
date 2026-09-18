@@ -362,8 +362,8 @@ https://chickpea.co/install.md
 The address serves the [installation guide](INSTALL_CHICKPEA_CLOUDFLARE.md),
 which stays current on `main`. It has your agent pick the latest stable
 release, walk you through the Cloudflare, Slack, and model-provider choices,
-verify a real Slack reply and Admin sign-in, and report the installed release
-and local project path.
+verify a real Slack reply and Admin sign-in, connect itself to your new
+Chickpea over MCP, and report the installed release and local project path.
 
 ### Install on your Mac
 
@@ -377,8 +377,8 @@ https://chickpea.co/install-mac.md
 The address serves the [Mac installation guide](INSTALL_CHICKPEA_NODE.md). It
 handles Node, the build, private state, and starting Chickpea. You choose a
 stable HTTPS address and complete Slack and provider authorization in your
-browser. Prefer a shell to an agent? The [one-line installer](#node) does the
-same job.
+browser, and the agent connects itself over MCP before it finishes. Prefer a
+shell to an agent? The [one-line installer](#node) does the same job.
 
 ### Connect via MCP
 
