@@ -297,6 +297,84 @@ Anyone on the team can connect their own coding agent later from Admin
 **Settings → MCP**, or by pasting `Connect my coding agent to my Chickpea
 using https://<deployment>/connect.md` into that agent.
 
+## Create the first teammate
+
+Once the connection is tested, the agent designs and creates your first
+teammate from the same conversation and proves it answers in Slack. It skips
+this section, and says so, if the client still needs a restart, the
+connection is blocked, or you declined it; ask it again once the connection
+works. It does not create the teammate through Slack instead.
+
+The agent reads the resource `chickpea://guide/agent-authoring/v1` before it
+drafts. If you already named a first use case, it confirms that in one line
+instead of asking; otherwise it asks, in these words:
+
+> What should your first teammate do for your team?
+
+It offers starters from this list as a numbered list, one line each, never
+as a table and never one it invents. If you have said what your team does,
+it offers the three that fit best; otherwise it shows all five. None of them
+exist yet, and each works today with nothing to connect. Reply with a number
+or describe the job you have in mind.
+
+1. @editor: tightens anything you paste: announcements, emails, posts. Keeps your voice.
+2. @notes: turns raw meeting notes into decisions, owners, and next steps.
+3. @buddy: answers “how do we do X here” once you tell it a few things about how the team works.
+4. @brief: turns a messy ask into a clear brief with goal, scope, and open questions.
+5. @planner: breaks a goal into a checklist you can start on today.
+
+Design takes a few turns. The agent calls `inspect_workspace` again before
+it drafts, for the handles already in use and the model providers
+available. It asks at most three more questions, only where the answer
+changes the role, procedure, or reach, and prefers inferring low-risk
+defaults and saying so. It drafts the teammate in the conversation: name,
+handle, one-line description, and complete instructions. A chosen starter
+keeps its catalog name and handle and uses these instructions unchanged:
+
+- `@editor` (Editor): You are an editor. When someone pastes a draft, return a tighter version that keeps their voice, meaning, and format. Cut filler, fix grammar, and keep the length close to the original unless asked to shorten. Show the rewrite first; list only the changes that matter.
+- `@notes` (Notes): You turn raw meeting notes into a short record. Return three lists: Decisions, Action items with an owner and a date when one is stated, and Open questions. Keep wording from the notes; never invent owners, dates, or decisions that are not there.
+- `@buddy` (Buddy): You answer questions about how this team works. Rely on what people have told you and on your memory of earlier answers. When you do not know, say so and ask the person to tell you, then remember it for next time. Keep answers short and practical.
+- `@brief` (Brief): You write briefs. Given a rough request, return a one-page brief with Goal, Audience, Scope and non-goals, Success looks like, and Open questions. Ask at most one clarifying question before drafting; otherwise draft and mark assumptions.
+- `@planner` (Planner): You break goals into plans. Given a goal, return an ordered checklist of concrete steps, each small enough to finish in a sitting, with the first step something the person can do today. Flag dependencies and the riskiest step. Keep it under fifteen items.
+
+You choose the starter or describe the job; nothing is created while that
+is still open. If you decline a teammate or stop answering, the agent
+creates nothing and reports the step as skipped.
+
+Once the draft is settled, the agent calls `apply_workspace_changes` in
+that same turn with exactly one `create_agent` operation and nothing else:
+no Channel reach, connections, repositories, or schedules unless you asked
+for them, no proposal in place of the creation, and no request that you say
+"create it" or confirm a second time. The result usually carries
+`links.admin`, the Agent's page in Admin, and `links.slack`, which opens the
+Chickpea app in Slack; the agent passes on whichever links it received and
+never constructs one. If creation reports a duplicate identity, the agent
+asks whether to use the existing Agent or pick a distinct name or handle,
+and does not retry unchanged. If the result warns that the Slack handle
+needs attention, the agent skips the mention below, reports the teammate as
+created with its handle pending, and gives you the warning and the Admin
+link.
+
+Then it proves it. In the Chickpea DM you used to confirm setup, or a Channel
+you name, it sends one message that mentions the new `@handle` with a small
+request the teammate was built for, using your Slack account through browser
+or computer use, and asks for approval first if its harness requires that. It
+waits for a substantive reply from the new Agent; the tool result is not a
+reply, and a canned welcome, typing indicator, reaction, or error reply is
+insufficient. It keeps the request and reply permalinks in its private
+receipt without copying the conversation. If the mention gets no reply or an
+error, it preserves the first error, diagnoses it once, and reports the
+teammate as created but not verified, without creating another Agent or
+editing this one blind. A created Agent is not a verified teammate.
+
+The agent reports two parts on separate lines, each with its own result:
+created (the `@handle` from the tool result) and verified (the reply it
+observed). It then gives you `links.admin`, `links.slack`, and one line on
+how to try it: mention `@handle` in Slack. Next time, ask it here to create,
+change, or connect a teammate; `/chickpea:new-agent` starts the next one if
+your client shows Chickpea's prompts as slash commands (with the server name
+the agent chose in place of `chickpea` if `chickpea` was taken).
+
 ## Start, stop, and check status
 
 The commands live inside the installation, so they use its private Node even
