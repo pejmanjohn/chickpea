@@ -24,13 +24,8 @@ import {
   revokeSetupLinkZodSchema,
   undoWorkspaceChangeZodSchema,
 } from './schemas.ts';
-import {
-  AGENT_AUTHORING_GUIDE,
-  AGENT_AUTHORING_GUIDE_DIGEST,
-  AGENT_AUTHORING_GUIDE_URI,
-  AGENT_AUTHORING_GUIDE_VERSION,
-  AGENT_SKILL_CREATION_GUIDE,
-} from './agent-authoring/index.ts';
+import { AGENT_AUTHORING_GUIDE_URI } from './agent-authoring/index.ts';
+import { codingAgentAuthoringGuideResource } from './agent-authoring/mcp-guide.ts';
 import { WorkspaceManagementService } from './service.ts';
 import { workspaceManagementInstructions } from './instructions.ts';
 import { createLiveWorkspaceManagementService } from './live-service.ts';
@@ -45,7 +40,7 @@ import type { ManagementActorContext, ManagementOperation } from './types.ts';
 
 export const WORKSPACE_MANAGEMENT_SERVER_INFO = {
   name: 'chickpea-workspace',
-  version: '2.6.0',
+  version: '2.7.0',
 } as const;
 export const WORKSPACE_MANAGEMENT_OPERATION_SCHEMA_URI =
   'chickpea://schema/operations/v2' as const;
@@ -94,7 +89,7 @@ export function createWorkspaceManagementMcpServer(
 
   server.registerTool('inspect_workspace', {
     title: 'Inspect Chickpea workspace',
-    description: workspaceManagementToolDescription('inspect_workspace'),
+    description: workspaceManagementToolDescription('inspect_workspace', 'mcp'),
     inputSchema: inspectWorkspaceZodSchema,
     annotations: { readOnlyHint: true },
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
@@ -105,7 +100,7 @@ export function createWorkspaceManagementMcpServer(
 
   server.registerTool('prepare_connector_setup', {
     title: 'Prepare Agent connector setup',
-    description: workspaceManagementToolDescription('prepare_connector_setup'),
+    description: workspaceManagementToolDescription('prepare_connector_setup', 'mcp'),
     inputSchema: prepareConnectorSetupZodSchema,
     annotations: { readOnlyHint: true },
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
@@ -116,7 +111,7 @@ export function createWorkspaceManagementMcpServer(
 
   server.registerTool('discover_slack_channels', {
     title: 'Discover Slack Channels',
-    description: workspaceManagementToolDescription('discover_slack_channels'),
+    description: workspaceManagementToolDescription('discover_slack_channels', 'mcp'),
     inputSchema: discoverSlackChannelsZodSchema,
     annotations: { readOnlyHint: true },
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
@@ -127,7 +122,7 @@ export function createWorkspaceManagementMcpServer(
 
   server.registerTool('test_mcp_connection', {
     title: 'Test saved MCP connection',
-    description: workspaceManagementToolDescription('test_mcp_connection'),
+    description: workspaceManagementToolDescription('test_mcp_connection', 'mcp'),
     inputSchema: testMcpConnectionZodSchema,
     annotations: { readOnlyHint: true },
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
@@ -138,7 +133,7 @@ export function createWorkspaceManagementMcpServer(
 
   server.registerTool('inspect_memory', {
     title: 'Inspect Chickpea memory',
-    description: workspaceManagementToolDescription('inspect_memory'),
+    description: workspaceManagementToolDescription('inspect_memory', 'mcp'),
     inputSchema: inspectMemoryZodSchema,
     annotations: { readOnlyHint: true },
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
@@ -149,7 +144,7 @@ export function createWorkspaceManagementMcpServer(
 
   server.registerTool('inspect_routines', {
     title: 'Inspect Chickpea routines',
-    description: workspaceManagementToolDescription('inspect_routines'),
+    description: workspaceManagementToolDescription('inspect_routines', 'mcp'),
     inputSchema: inspectRoutinesZodSchema,
     annotations: { readOnlyHint: true },
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
@@ -160,7 +155,7 @@ export function createWorkspaceManagementMcpServer(
 
   server.registerTool('export_workspace_recipe', {
     title: 'Export Chickpea workspace recipe',
-    description: workspaceManagementToolDescription('export_workspace_recipe'),
+    description: workspaceManagementToolDescription('export_workspace_recipe', 'mcp'),
     inputSchema: exportRecipeZodSchema,
     annotations: { readOnlyHint: true },
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
@@ -171,7 +166,7 @@ export function createWorkspaceManagementMcpServer(
 
   server.registerTool('preview_workspace_recipe', {
     title: 'Preview Chickpea workspace recipe',
-    description: workspaceManagementToolDescription('preview_workspace_recipe'),
+    description: workspaceManagementToolDescription('preview_workspace_recipe', 'mcp'),
     inputSchema: previewRecipeZodSchema,
     annotations: { readOnlyHint: true },
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
@@ -182,7 +177,7 @@ export function createWorkspaceManagementMcpServer(
 
   server.registerTool('propose_skill_import', {
     title: 'Propose GitHub skill import',
-    description: workspaceManagementToolDescription('propose_skill_import'),
+    description: workspaceManagementToolDescription('propose_skill_import', 'mcp'),
     inputSchema: proposeSkillImportZodSchema,
     annotations: { readOnlyHint: false, idempotentHint: false },
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
@@ -193,7 +188,7 @@ export function createWorkspaceManagementMcpServer(
 
   server.registerTool('import_skill', {
     title: 'Install GitHub skill',
-    description: workspaceManagementToolDescription('import_skill'),
+    description: workspaceManagementToolDescription('import_skill', 'mcp'),
     inputSchema: importSkillZodSchema,
     annotations: { readOnlyHint: false, idempotentHint: true },
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
@@ -204,7 +199,7 @@ export function createWorkspaceManagementMcpServer(
 
   server.registerTool('manage_agent_skill', {
     title: 'Manage an installed Agent skill',
-    description: workspaceManagementToolDescription('manage_agent_skill'),
+    description: workspaceManagementToolDescription('manage_agent_skill', 'mcp'),
     inputSchema: manageAgentSkillZodSchema,
     annotations: { readOnlyHint: false, idempotentHint: true },
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
@@ -215,7 +210,7 @@ export function createWorkspaceManagementMcpServer(
 
   server.registerTool('propose_workspace_changes', {
     title: 'Propose Chickpea workspace changes',
-    description: workspaceManagementToolDescription('propose_workspace_changes'),
+    description: workspaceManagementToolDescription('propose_workspace_changes', 'mcp'),
     inputSchema: proposeWorkspaceChangesZodSchema,
     annotations: { readOnlyHint: false, idempotentHint: false },
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
@@ -226,7 +221,7 @@ export function createWorkspaceManagementMcpServer(
 
   server.registerTool('apply_workspace_changes', {
     title: 'Apply Chickpea workspace changes',
-    description: workspaceManagementToolDescription('apply_workspace_changes'),
+    description: workspaceManagementToolDescription('apply_workspace_changes', 'mcp'),
     inputSchema: applyWorkspaceChangesZodSchema,
     annotations: { idempotentHint: true },
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
@@ -240,7 +235,7 @@ export function createWorkspaceManagementMcpServer(
 
   server.registerTool('confirm_workspace_change', {
     title: 'Confirm Chickpea workspace change',
-    description: workspaceManagementToolDescription('confirm_workspace_change'),
+    description: workspaceManagementToolDescription('confirm_workspace_change', 'mcp'),
     inputSchema: confirmWorkspaceChangeZodSchema,
     annotations: { destructiveHint: true, idempotentHint: true },
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
@@ -251,7 +246,7 @@ export function createWorkspaceManagementMcpServer(
 
   server.registerTool('undo_workspace_change', {
     title: 'Undo Chickpea workspace change',
-    description: workspaceManagementToolDescription('undo_workspace_change'),
+    description: workspaceManagementToolDescription('undo_workspace_change', 'mcp'),
     inputSchema: undoWorkspaceChangeZodSchema,
     annotations: { destructiveHint: true, idempotentHint: true },
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
@@ -262,7 +257,7 @@ export function createWorkspaceManagementMcpServer(
 
   server.registerTool('get_operation', {
     title: 'Get Chickpea operation',
-    description: workspaceManagementToolDescription('get_operation'),
+    description: workspaceManagementToolDescription('get_operation', 'mcp'),
     inputSchema: getOperationZodSchema,
     annotations: { readOnlyHint: true },
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
@@ -273,7 +268,7 @@ export function createWorkspaceManagementMcpServer(
 
   server.registerTool('revoke_setup_link', {
     title: 'Revoke Chickpea setup link',
-    description: workspaceManagementToolDescription('revoke_setup_link'),
+    description: workspaceManagementToolDescription('revoke_setup_link', 'mcp'),
     inputSchema: revokeSetupLinkZodSchema,
     annotations: { destructiveHint: true, idempotentHint: true },
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
@@ -321,19 +316,14 @@ export function createWorkspaceManagementMcpServer(
     WORKSPACE_MANAGEMENT_AGENT_AUTHORING_GUIDE_URI,
     {
       title: 'Chickpea Agent-authoring guide',
-      description: 'Canonical versioned guidance for exploring, creating, and editing Chickpea Agents.',
+      description: 'Versioned guidance for exploring, creating, and editing Chickpea Agents, written for a coding agent on this connection. Pass its version as guideVersion.',
       mimeType: 'application/json',
     },
     async (uri) => ({
       contents: [{
         uri: uri.href,
         mimeType: 'application/json',
-        text: JSON.stringify({
-          version: AGENT_AUTHORING_GUIDE_VERSION,
-          digest: AGENT_AUTHORING_GUIDE_DIGEST,
-          guide: AGENT_AUTHORING_GUIDE,
-          files: { 'skill-creation.md': AGENT_SKILL_CREATION_GUIDE },
-        }),
+        text: JSON.stringify(codingAgentAuthoringGuideResource()),
       }],
     }),
   );

@@ -102,7 +102,44 @@ const TOOL_DESCRIPTIONS: Record<WorkspaceManagementToolName, string> = {
   revoke_setup_link: 'Revoke one unused requester-owned setup link and optionally issue a fresh 24-hour link.',
 };
 
-export function workspaceManagementToolDescription(name: WorkspaceManagementToolName): string {
+/**
+ * Coding agents connect over MCP and never see a Slack thread, DM, or Slack
+ * preview. These overlays replace only the Slack-specific wording; every
+ * Slack string above stays byte-identical, and the mutation rules described
+ * are the same on both doors.
+ */
+const MCP_TOOL_DESCRIPTION_OVERLAY: Partial<Record<WorkspaceManagementToolName, string>> = {
+  prepare_connector_setup: 'Create a safe browser handoff URL for connecting one catalog service to an editable Agent. Set ownerKind to "member" for a personal connection or "team" for a team-owned connection. The resulting connection belongs only to that Agent. agentId is required. Give the person the returned handoffUrl to open in a browser; it expires after 24 hours and anyone holding it can complete that exact setup, so never paste it anywhere shared. Never ask for or relay the credential itself.',
+  inspect_routines: 'Inspect routine schedules and safely projected content for one workspace, Channel, or routine. When reporting the next due time, use nextRunTime.display. Respect explicit user preferences for language, timezone, and clock format while preserving the instant. Do not append an IANA timezone identifier to the display value unless the requester asks for the identifier itself. When a machine-readable timestamp is requested or required, copy nextRunTime.isoUtc exactly in code formatting, preserving its ASCII punctuation; do not calculate a date from nextRunAt epoch milliseconds. A null nextRunTime means no next scheduled occurrence.',
+  import_skill: 'Install one exact public GitHub-hosted SKILL.md on an editable Agent. Immediate installation requires the trusted Slack request binding, which this MCP connection does not carry, so this tool currently returns invalid_request here; use propose_skill_import instead, show its presentation.markdown to the person, and call confirm_workspace_change after they approve. Pass the exact source the person supplied unchanged. When they name a skill alongside a repository or parent URL, pass that name separately as skillName; never synthesize an @name source.',
+  manage_agent_skill: 'Enable, disable, or remove one named existing Agent skill immediately. The narrow authenticated tool resolves current Agent state, verifies authority, preserves every other skill, and returns a receipt plus undo without a proposal. An authenticated MCP invocation is already the exact typed command. Use it instead of propose_workspace_changes or a model-authored skills array. Show the returned presentation.markdown to the person.',
+  propose_skill_import: 'Resolve one public GitHub-hosted SKILL.md inside the trusted management service and create the normal requester-bound review for adding or replacing it on an editable Agent. Prefer a direct GitHub skill-directory URL. If selection is required, ask the person to choose one returned candidate and call this tool again with that candidate’s sourceUrl as source. Show presentation.markdown to the person and wait for their explicit approval before calling confirm_workspace_change; this tool never installs the skill by itself.',
+  propose_workspace_changes: TOOL_DESCRIPTIONS.propose_workspace_changes
+    .replace('It does not execute actions in Slack Lists or connected services; use an available native or connector tool for those actions.', 'It does not execute actions in Slack or connected services.')
+    .replace('Show presentation.slack verbatim; keep proposalId as opaque control data for confirm_workspace_change.', 'Show presentation.markdown to the person; keep proposalId as opaque control data for confirm_workspace_change, which you call only after they approve in this conversation.'),
+  apply_workspace_changes: TOOL_DESCRIPTIONS.apply_workspace_changes
+    .replace('It does not execute actions in Slack Lists or connected services.', 'It does not execute actions in Slack or connected services.')
+    .replace('Show a textual draft and wait for a later authenticated requester message.', 'Show a textual draft and wait for the person’s later approval in this conversation.')
+    .replace('Other confirmation-required configuration operations return one bound proposal; never add a separate conversational approval gate around it.', 'Other confirmation-required configuration operations return one bound proposal; show its presentation.markdown, wait for the person’s approval, then call confirm_workspace_change. Receipts carry links.admin (open the Agent in Admin) and links.slack (open Chickpea in Slack); share them so the person can try the Agent by mentioning @handle.'),
+  confirm_workspace_change: TOOL_DESCRIPTIONS.confirm_workspace_change
+    .replace('It does not confirm actions in Slack Lists or connected services, and approval cannot make an unsupported operation available.', 'It does not confirm actions in Slack or connected services, and approval cannot make an unsupported operation available.')
+    .replace('After this tool returns, always send visible final text with the terminal status and what changed or why nothing changed; never end on the tool call or progress UI.', 'After this tool returns, always tell the person the terminal status and what changed or why nothing changed, and share links.admin and links.slack when present.'),
+};
+
+for (const [name, overlay] of Object.entries(MCP_TOOL_DESCRIPTION_OVERLAY)) {
+  if (overlay === TOOL_DESCRIPTIONS[name as WorkspaceManagementToolName]) {
+    throw new Error(`MCP tool description overlay for ${name} did not change the Slack text.`);
+  }
+}
+
+/** The door a tool description is rendered for; only wording differs, never behavior. */
+export type WorkspaceManagementToolSurface = 'slack' | 'mcp';
+
+export function workspaceManagementToolDescription(
+  name: WorkspaceManagementToolName,
+  surface: WorkspaceManagementToolSurface = 'slack',
+): string {
+  if (surface === 'mcp') return MCP_TOOL_DESCRIPTION_OVERLAY[name] ?? TOOL_DESCRIPTIONS[name];
   return TOOL_DESCRIPTIONS[name];
 }
 

@@ -262,11 +262,34 @@ export interface ManagementObjectRef {
   revision?: number;
 }
 
+/**
+ * Human-readable copy for one result, rendered once per dialect. Both carry the
+ * same facts; only wording, escaping, and links differ by door.
+ */
+export interface ManagementPresentation {
+  /** Slack mrkdwn copy; the opaque proposal id remains control data. */
+  slack: string;
+  /** Portable Markdown copy for coding agents connected over MCP. */
+  markdown: string;
+}
+
+/**
+ * Presentation-only deep links to the changed Agent. They are computed per
+ * response for every door and never persisted with a durable result.
+ */
+export interface ManagementResultLinks {
+  /** Admin editor for the changed Agent. */
+  admin: string;
+  /** Opens the Chickpea Slack app so the person can mention the Agent. */
+  slack?: string;
+}
+
 export interface ManagementItemOutcome {
   itemId: string;
   operationKind: ManagementOperation['kind'];
   disposition: ManagementDisposition;
   changed?: ManagementObjectRef[];
+  links?: ManagementResultLinks;
   proposalId?: string;
   setupOperationId?: string;
   setupUrl?: string;
@@ -635,6 +658,8 @@ export interface ManagementApplyResult {
   idempotencyKey: string;
   status: 'completed' | 'partial' | 'confirmation_required';
   outcomes: ManagementItemOutcome[];
+  /** Links of the first outcome that changed an Agent; response-only. */
+  links?: ManagementResultLinks;
   /** Workspace mutation receipt token; it is not comparable to an actor-scoped inspection token. */
   effectiveRevision: string;
   activation: 'next_turn';
@@ -653,7 +678,7 @@ export interface ManagementDuplicateIdentityResult {
     matches: Array<{ id: string; name: string; handle: string }>;
     options: ['use_existing', 'create_distinct'];
   };
-  presentation: { slack: string };
+  presentation: ManagementPresentation;
 }
 
 export type ApplyWorkspaceChangesResult =
@@ -893,10 +918,7 @@ export interface ProposeWorkspaceChangesResult {
     digest: string;
   };
   preview: ManagementChangeSetPreview;
-  presentation: {
-    /** Human-readable Slack copy; the opaque proposal id remains control data. */
-    slack: string;
-  };
+  presentation: ManagementPresentation;
   confirmationTool: 'confirm_workspace_change';
 }
 
@@ -932,7 +954,8 @@ export type ManageAgentSkillResult = {
   operationId?: string;
   activation?: 'next_turn';
   undoAvailable: boolean;
-  presentation: { slack: string };
+  presentation: ManagementPresentation;
+  links?: ManagementResultLinks;
 };
 
 export type ProposeSkillImportResult =
@@ -958,12 +981,13 @@ export type ImportSkillResult =
       operationId: string;
       activation: 'next_turn';
       undoAvailable: boolean;
-      presentation: { slack: string };
+      presentation: ManagementPresentation;
+      links?: ManagementResultLinks;
       import: SkillImportReceiptMetadata;
     }
   | {
       status: 'already_installed';
-      presentation: { slack: string };
+      presentation: ManagementPresentation;
       import: {
         sourceUrl: string;
         path: string;

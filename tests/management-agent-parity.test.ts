@@ -1729,6 +1729,7 @@ test('direct apply creates a standalone base Agent immediately but still reviews
     assert.equal(create.status, 'completed');
     assert.equal(create.outcomes[0]?.disposition, 'applied');
     assert.equal(create.outcomes[0]?.undoAvailable, undefined);
+    assert.equal(create.links?.admin, 'http://localhost/admin/agents/agent_support');
     const current = await f.config.getAgent('agent_support');
 
     const patches: Array<[string, ManagementAgentPatch]> = [

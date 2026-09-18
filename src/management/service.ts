@@ -96,6 +96,10 @@ import {
 } from './recipes.ts';
 import type { ManagementStore } from './store.ts';
 import {
+  formatMarkdownChangeSetProposal,
+  formatMarkdownSkillImportProposal,
+} from './markdown-presentation.ts';
+import {
   formatSlackChangeSetProposal,
   formatSlackSkillImportProposal,
 } from './slack-presentation.ts';
@@ -118,6 +122,9 @@ import {
   type ChickpeaManagementHandoff,
   type ManagementDuplicateIdentityResult,
   type ManagementItemOutcome,
+  type ManagementPresentation,
+  type ManagementResultLinks,
+  type ManagementActorContext,
   type ImportSkillInput,
   type ImportSkillResult,
   type ManageAgentSkillInput,
@@ -340,6 +347,80 @@ export class WorkspaceManagementService {
     }
   }
 
+  /**
+   * Opens the Chickpea app in Slack for the requester's workspace. Presentation
+   * only: an unknown team or installation simply omits the link.
+   */
+  private async slackAppLink(context: ManagementActorContext): Promise<string | undefined> {
+    const teamId = context.origin.kind === 'slack'
+      ? context.origin.workspaceId
+      : (await this.stores.identity.getUser(context.userId))?.slackTeamId;
+    if (!teamId) return undefined;
+    const team = encodeURIComponent(teamId);
+    const installation = await this.stores.config.getWorkspaceInstallation(teamId);
+    if (installation?.appId) {
+      return `https://slack.com/app_redirect?team=${team}&app=${encodeURIComponent(installation.appId)}`;
+    }
+    if (installation?.botUserId) {
+      return `https://slack.com/app_redirect?team=${team}&channel=${encodeURIComponent(installation.botUserId)}`;
+    }
+    return `slack://open?team=${team}`;
+  }
+
+  /** Response-only links for one changed Agent; identical for every door. */
+  private async agentResultLinks(
+    context: ManagementActorContext,
+    agentId: string,
+  ): Promise<ManagementResultLinks | undefined> {
+    try {
+      const admin = await this.agentEditorUrl(agentId);
+      if (!admin) return undefined;
+      const slack = await this.slackAppLink(context);
+      return { admin, ...(slack ? { slack } : {}) };
+    } catch {
+      // A link is never worth failing a committed workspace mutation.
+      return undefined;
+    }
+  }
+
+  /**
+   * Decorates a committed result with Agent links at return time. The durable
+   * result stays link-free, so replay through get_operation is unaffected.
+   */
+  private async withAgentLinks(
+    context: ManagementActorContext,
+    result: ManagementApplyResult,
+  ): Promise<ManagementApplyResult> {
+    try {
+      const targets = result.outcomes.map((outcome) => outcome.disposition === 'applied'
+        ? outcome.changed?.find(({ kind }) => kind === 'agent')?.id
+        : undefined);
+      const changedAgentIds = [...new Set(targets.filter((agentId): agentId is string =>
+        agentId !== undefined))];
+      if (changedAgentIds.length === 0) return result;
+      const adminUrls = new Map<string, string>();
+      for (const agentId of changedAgentIds) {
+        const admin = await this.agentEditorUrl(agentId);
+        if (admin) adminUrls.set(agentId, admin);
+      }
+      if (adminUrls.size === 0) return result;
+      const slack = await this.slackAppLink(context);
+      const linksFor = (agentId: string | undefined): ManagementResultLinks | undefined => {
+        const admin = agentId === undefined ? undefined : adminUrls.get(agentId);
+        return admin ? { admin, ...(slack ? { slack } : {}) } : undefined;
+      };
+      const outcomes = result.outcomes.map((outcome, index) => {
+        const links = linksFor(targets[index]);
+        return links ? { ...outcome, links } : outcome;
+      });
+      const first = outcomes.find(({ links }) => links !== undefined)?.links;
+      return { ...result, outcomes, ...(first ? { links: first } : {}) };
+    } catch {
+      // A link is never worth failing a committed workspace mutation.
+      return result;
+    }
+  }
+
   async inspectWorkspace(
     context: ApplyWorkspaceChangesInput['context'],
   ): Promise<ManagementWorkspaceSnapshot> {
@@ -371,7 +452,15 @@ export class WorkspaceManagementService {
       ...publicProposal,
       presentation: {
         slack: formatSlackSkillImportProposal(proposal.preview, skill.sourceUrl) +
-          formatSkillImportDisclosures(skillImportMetadata(skill, existingIndex >= 0)),
+          formatSkillImportDisclosures(
+            skillImportMetadata(skill, existingIndex >= 0),
+            escapeSlackControlCharacters,
+          ),
+        markdown: formatMarkdownSkillImportProposal(proposal.preview, skill.sourceUrl) +
+          formatSkillImportDisclosures(
+            skillImportMetadata(skill, existingIndex >= 0),
+            plainPresentationText,
+          ),
       },
       import: skillImportMetadata(skill, existingIndex >= 0),
     };
@@ -393,11 +482,12 @@ export class WorkspaceManagementService {
       const partial = Boolean(metadata.omittedPaths?.length || metadata.warnings?.length);
       return {
         status: 'already_installed',
-        presentation: {
-          slack: `${partial ? 'Instructions for skill' : 'Skill'} \`${escapeSlackControlCharacters(skill.name)}\` ${partial ? 'are' : 'is'} already installed on ${
-            escapeSlackControlCharacters(agent.name)
-          }. No changes were made.${formatSkillImportDisclosures(metadata)}`,
-        },
+        presentation: skillAlreadyInstalledPresentation(
+          skill.name,
+          agent.name,
+          partial,
+          metadata,
+        ),
         import: { ...metadata, replacedExisting: false },
       };
     }
@@ -444,9 +534,8 @@ export class WorkspaceManagementService {
       operationId: applied.operationId,
       activation: applied.activation,
       undoAvailable,
-      presentation: {
-        slack: formatSkillImportReceipt(metadata, agent.name, undoAvailable),
-      },
+      presentation: skillImportReceiptPresentation(metadata, agent.name, undoAvailable),
+      ...(outcome.links ? { links: outcome.links } : {}),
       import: metadata,
     };
   }
@@ -478,7 +567,7 @@ export class WorkspaceManagementService {
     const operationId = skillActionOperationId(actor, input, agentId);
     const replay = await this.stores.management.getRequest(operationId);
     if (replay?.status === 'completed' || replay?.status === 'failed') {
-      return await this.replayManagedAgentSkill(replay);
+      return await this.replayManagedAgentSkill(input.context, replay);
     }
     if (replay) {
       const operation = replay.operations[0];
@@ -583,10 +672,12 @@ export class WorkspaceManagementService {
       applied.operationId,
       metadata,
       outcome.undoAvailable === true,
+      outcome.links,
     );
   }
 
   private async replayManagedAgentSkill(
+    context: ManagementActorContext,
     request: ManagementRequestRecord,
   ): Promise<ManageAgentSkillResult> {
     const result = request.result;
@@ -625,6 +716,7 @@ export class WorkspaceManagementService {
       result.operationId,
       metadata,
       outcome.undoAvailable === true && undo?.status === 'available',
+      await this.agentResultLinks(context, operation.agentId),
     );
   }
 
@@ -656,7 +748,7 @@ export class WorkspaceManagementService {
       at,
     });
     if (reservation.request.status === 'completed') {
-      return await this.replayManagedAgentSkill(reservation.request);
+      return await this.replayManagedAgentSkill(input.context, reservation.request);
     }
     if (reservation.request.status !== 'reserved') {
       throw new ManagementError(
@@ -708,6 +800,7 @@ export class WorkspaceManagementService {
       },
     };
     return await this.replayManagedAgentSkill(
+      input.context,
       await this.stores.management.completeRequest(request.operationId, result, this.now()),
     );
   }
@@ -751,14 +844,14 @@ export class WorkspaceManagementService {
       );
     }
     const undoAvailable = outcome.undoAvailable === true && undo?.status === 'available';
+    const links = await this.agentResultLinks(actor, agent.id);
     return {
       status: 'installed',
       operationId: result.operationId,
       activation: result.activation,
       undoAvailable,
-      presentation: {
-        slack: formatSkillImportReceipt(metadata, agent.name, undoAvailable),
-      },
+      presentation: skillImportReceiptPresentation(metadata, agent.name, undoAvailable),
+      ...(links ? { links } : {}),
       import: metadata,
     };
   }
@@ -1464,6 +1557,13 @@ export class WorkspaceManagementService {
   async applyWorkspaceChanges(
     input: ApplyWorkspaceChangesInput,
   ): Promise<ApplyWorkspaceChangesResult> {
+    const result = await this.applyRequestedWorkspaceChanges(input);
+    return 'outcomes' in result ? await this.withAgentLinks(input.context, result) : result;
+  }
+
+  private async applyRequestedWorkspaceChanges(
+    input: ApplyWorkspaceChangesInput,
+  ): Promise<ApplyWorkspaceChangesResult> {
     const actor = await this.requireLiveActor(input.context);
     const requestedOperations = validateManagementOperations(input.operations);
     assertBaseAgentCreationContract(requestedOperations);
@@ -1821,6 +1921,15 @@ export class WorkspaceManagementService {
   }
 
   async confirmWorkspaceChange(input: ConfirmWorkspaceChangeInput): Promise<ManagementApplyResult> {
+    return await this.withAgentLinks(
+      input.context,
+      await this.confirmRequestedWorkspaceChange(input),
+    );
+  }
+
+  private async confirmRequestedWorkspaceChange(
+    input: ConfirmWorkspaceChangeInput,
+  ): Promise<ManagementApplyResult> {
     const actor = await this.requireLiveActor(input.context);
     const changeSet = await this.stores.management.getChangeSetProposal(input.proposalId);
     if (changeSet) {
@@ -2325,7 +2434,7 @@ export class WorkspaceManagementService {
     if (result.status === 'completed') {
       await this.stores.management.consumeUndo(input.operationId, this.now());
     }
-    return result;
+    return result.links ? result : await this.withAgentLinks(input.context, result);
   }
 
   async getOperation(
@@ -2822,11 +2931,8 @@ export class WorkspaceManagementService {
         options: ['use_existing', 'create_distinct'],
       },
       presentation: {
-        slack: projected.length === 1
-          ? `An editable Agent already matches this identity: ${
-            escapeSlackControlCharacters(projected[0]!.name)
-          } (@${projected[0]!.handle}). Ask whether to use it or create a distinct Agent.`
-          : `${projected.length} editable Agents already match this identity. Ask which existing Agent to use or whether to create a distinct Agent.`,
+        slack: duplicateAgentIdentityText(projected, escapeSlackControlCharacters),
+        markdown: duplicateAgentIdentityText(projected, plainPresentationText),
       },
     };
   }
@@ -5617,6 +5723,7 @@ function publicChangeSetProposal(
     preview: proposal.preview,
     presentation: {
       slack: formatSlackChangeSetProposal(proposal.preview),
+      markdown: formatMarkdownChangeSetProposal(proposal.preview),
     },
     confirmationTool: 'confirm_workspace_change',
   };
@@ -5726,24 +5833,83 @@ async function routineContentAccess(
   }
 }
 
+/** Markdown readers want the literal characters, not Slack mrkdwn escapes. */
+function plainPresentationText(value: string): string {
+  return value;
+}
+
+type PresentationEscape = (value: string) => string;
+
 function formatSkillImportReceipt(
   metadata: { name: string; replacedExisting: boolean; omittedPaths?: string[]; warnings?: string[] },
   agentName: string,
   undoAvailable: boolean,
+  escape: PresentationEscape,
 ): string {
   const partial = Boolean(metadata.omittedPaths?.length || metadata.warnings?.length);
   const headline = partial
-    ? `Instructions ${metadata.replacedExisting ? 'replaced' : 'imported'} for skill \`${escapeSlackControlCharacters(metadata.name)}\``
-    : `${metadata.replacedExisting ? 'Replaced' : 'Installed'} skill \`${escapeSlackControlCharacters(metadata.name)}\``;
-  return `${headline} on ${escapeSlackControlCharacters(agentName)}. It’s active from the next message.${formatSkillImportDisclosures(metadata)}${undoAvailable ? ' You can undo this change.' : ''}`;
+    ? `Instructions ${metadata.replacedExisting ? 'replaced' : 'imported'} for skill \`${escape(metadata.name)}\``
+    : `${metadata.replacedExisting ? 'Replaced' : 'Installed'} skill \`${escape(metadata.name)}\``;
+  return `${headline} on ${escape(agentName)}. It’s active from the next message.${formatSkillImportDisclosures(metadata, escape)}${undoAvailable ? ' You can undo this change.' : ''}`;
+}
+
+function skillImportReceiptPresentation(
+  metadata: { name: string; replacedExisting: boolean; omittedPaths?: string[]; warnings?: string[] },
+  agentName: string,
+  undoAvailable: boolean,
+): ManagementPresentation {
+  return {
+    slack: formatSkillImportReceipt(
+      metadata,
+      agentName,
+      undoAvailable,
+      escapeSlackControlCharacters,
+    ),
+    markdown: formatSkillImportReceipt(
+      metadata,
+      agentName,
+      undoAvailable,
+      plainPresentationText,
+    ),
+  };
+}
+
+function skillAlreadyInstalledPresentation(
+  skillName: string,
+  agentName: string,
+  partial: boolean,
+  metadata: { omittedPaths?: string[]; warnings?: string[] },
+): ManagementPresentation {
+  const text = (escape: PresentationEscape) =>
+    `${partial ? 'Instructions for skill' : 'Skill'} \`${escape(skillName)}\` ${
+      partial ? 'are' : 'is'
+    } already installed on ${
+      escape(agentName)
+    }. No changes were made.${formatSkillImportDisclosures(metadata, escape)}`;
+  return {
+    slack: text(escapeSlackControlCharacters),
+    markdown: text(plainPresentationText),
+  };
+}
+
+function duplicateAgentIdentityText(
+  projected: ReadonlyArray<{ name: string; handle: string }>,
+  escape: PresentationEscape,
+): string {
+  return projected.length === 1
+    ? `An editable Agent already matches this identity: ${
+      escape(projected[0]!.name)
+    } (@${projected[0]!.handle}). Ask whether to use it or create a distinct Agent.`
+    : `${projected.length} editable Agents already match this identity. Ask which existing Agent to use or whether to create a distinct Agent.`;
 }
 
 function formatSkillImportDisclosures(
   metadata: { omittedPaths?: string[]; warnings?: string[] },
+  escape: PresentationEscape,
 ): string {
   const omitted = metadata.omittedPaths?.length
-    ? ` Supporting files omitted: ${escapeSlackControlCharacters(describeSkillPaths(metadata.omittedPaths))}.` : '';
-  const warnings = metadata.warnings?.length ? ` ${escapeSlackControlCharacters(metadata.warnings.join(' '))}` : '';
+    ? ` Supporting files omitted: ${escape(describeSkillPaths(metadata.omittedPaths))}.` : '';
+  const warnings = metadata.warnings?.length ? ` ${escape(metadata.warnings.join(' '))}` : '';
   return `${omitted}${warnings}`;
 }
 
@@ -6015,6 +6181,7 @@ function managedSkillActionResult(
   operationId: string,
   metadata: NonNullable<ManagementApplyResult['receiptMetadata']>['skillAction'],
   undoAvailable: boolean,
+  links?: ManagementResultLinks,
 ): ManageAgentSkillResult {
   if (!metadata) {
     throw new ManagementError('invalid_state', 'The skill change receipt is unavailable.');
@@ -6025,6 +6192,12 @@ function managedSkillActionResult(
     ? 'Disabled'
     : 'Removed';
   const preposition = metadata.action === 'remove' ? 'from' : 'on';
+  const text = (escape: PresentationEscape) =>
+    `${verb} skill \`${escape(metadata.name)}\` ${preposition} ${
+      escape(metadata.agentName)
+    }. The change takes effect from the next message.${
+      undoAvailable ? ' You can undo this change.' : ''
+    }`;
   return {
     status: 'updated',
     action: metadata.action,
@@ -6033,12 +6206,10 @@ function managedSkillActionResult(
     activation: 'next_turn',
     undoAvailable,
     presentation: {
-      slack: `${verb} skill \`${escapeSlackControlCharacters(metadata.name)}\` ${preposition} ${
-        escapeSlackControlCharacters(metadata.agentName)
-      }. The change takes effect from the next message.${
-        undoAvailable ? ' You can undo this change.' : ''
-      }`,
+      slack: text(escapeSlackControlCharacters),
+      markdown: text(plainPresentationText),
     },
+    ...(links ? { links } : {}),
   };
 }
 
@@ -6048,18 +6219,19 @@ function unchangedSkillActionResult(
   agentName: string,
   reason: 'missing' | 'already_set',
 ): ManageAgentSkillResult {
-  const escapedSkill = escapeSlackControlCharacters(skillName);
-  const escapedAgent = escapeSlackControlCharacters(agentName);
   const state = action === 'enable' ? 'enabled' : 'disabled';
-  const slack = reason === 'missing'
-    ? `Skill \`${escapedSkill}\` is not installed on ${escapedAgent}. No changes were made.`
-    : `Skill \`${escapedSkill}\` is already ${state} on ${escapedAgent}. No changes were made.`;
+  const text = (escape: PresentationEscape) => reason === 'missing'
+    ? `Skill \`${escape(skillName)}\` is not installed on ${escape(agentName)}. No changes were made.`
+    : `Skill \`${escape(skillName)}\` is already ${state} on ${escape(agentName)}. No changes were made.`;
   return {
     status: 'unchanged',
     action,
     skillName,
     undoAvailable: false,
-    presentation: { slack },
+    presentation: {
+      slack: text(escapeSlackControlCharacters),
+      markdown: text(plainPresentationText),
+    },
   };
 }
 
@@ -6075,10 +6247,12 @@ function singleChangedSkill(
 }
 
 function withoutSetupCapabilities(result: ManagementApplyResult): ManagementApplyResult {
+  const { links: _links, ...durable } = result;
   return {
-    ...result,
+    ...durable,
     outcomes: result.outcomes.map(({
       setupUrl: _setupUrl,
+      links: _outcomeLinks,
       ...outcome
     }) => outcome),
   };
@@ -6091,6 +6265,7 @@ function withoutSetupCapabilitiesFromProgress(
     ...progress,
     outcomes: progress.outcomes.map(({
       setupUrl: _setupUrl,
+      links: _outcomeLinks,
       ...outcome
     }) => outcome),
   };

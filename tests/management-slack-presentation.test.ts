@@ -2,6 +2,10 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import {
+  formatMarkdownChangeSetProposal,
+  formatMarkdownSkillImportProposal,
+} from '../src/management/markdown-presentation.ts';
+import {
   formatSlackChangeSetProposal,
   formatSlackSkillImportProposal,
 } from '../src/management/slack-presentation.ts';
@@ -393,4 +397,193 @@ test('skill proposal instructions are visibly bounded while approval keeps the f
   assert.match(presentation, /more characters; approval applies the full skill/);
   assert.match(presentation, /Reply `approve` to apply these exact changes/);
   assert.ok(!presentation.includes(longInstructions));
+});
+
+const MARKDOWN_APPROVAL_INSTRUCTION =
+  'Show these changes to the person. When they approve, call confirm_workspace_change with the ' +
+  'proposalId; if they want changes, propose again.';
+
+test('Markdown Agent creation previews carry the same facts in a portable dialect', () => {
+  const preview = {
+    summary: '1 reviewed workspace change',
+    changes: [{
+      itemId: 'create',
+      operationKind: 'create_agent',
+      target: 'agent:agent_paid_marketing',
+      after: {
+        id: 'agent_paid_marketing',
+        revision: 1,
+        name: 'Paid Marketing',
+        description: 'Helps with Google Ads budgets & ad copy <fast>.',
+        instructions: 'Review spend, flag budget risks, and improve ad copy.',
+        enabled: true,
+        editPolicy: 'creator_and_admins',
+        slackPresence: {
+          requestedHandle: 'Paid Marketing',
+          normalizedHandle: 'paid-marketing',
+          desiredState: 'unpublished',
+          health: 'unpublished',
+          avatar: { kind: 'generated', revision: 1, seed: 'private-seed' },
+        },
+      },
+    }],
+    missingSetup: [],
+  } satisfies ManagementChangeSetPreview;
+
+  assert.equal(formatMarkdownChangeSetProposal(preview), [
+    '**Proposed changes**',
+    '**New Agent**',
+    '**Name**',
+    '> Paid Marketing',
+    '',
+    '**Slack Handle**',
+    '> @paid-marketing',
+    '',
+    '**Description**',
+    '> Helps with Google Ads budgets & ad copy <fast>.',
+    '',
+    '**Instructions**',
+    '> Review spend, flag budget risks, and improve ad copy.',
+    '',
+    MARKDOWN_APPROVAL_INSTRUCTION,
+  ].join('\n'));
+
+  const markdown = formatMarkdownChangeSetProposal(preview);
+  assert.doesNotMatch(markdown, /&amp;|&lt;|&gt;/);
+  assert.doesNotMatch(markdown, /Reply `approve`|truncated to fit Slack|private-seed/);
+  assert.match(formatSlackChangeSetProposal(preview), /budgets &amp; ad copy &lt;fast&gt;/);
+});
+
+test('Markdown Agent edits keep the before and after comparison', () => {
+  const markdown = formatMarkdownChangeSetProposal({
+    summary: '1 reviewed workspace change',
+    changes: [{
+      itemId: 'update',
+      operationKind: 'update_agent',
+      target: 'agent:agent_paid_marketing',
+      before: {
+        name: 'Paid Marketing',
+        description: 'Helps with Google Ads.',
+        slackPresence: { requestedHandle: 'Paid Marketing', normalizedHandle: 'paid-marketing' },
+      },
+      after: {
+        name: 'Paid Marketing',
+        description: 'Helps with Google Ads budgets and copy.',
+        slackPresence: {
+          requestedHandle: 'Performance Marketing',
+          normalizedHandle: 'performance-marketing',
+        },
+      },
+    }],
+    missingSetup: [],
+  });
+
+  assert.match(markdown, /\*\*Paid Marketing — Description\*\*\n\*\*Before\*\*\n> Helps with Google Ads\.\n\*\*After\*\*\n> Helps with Google Ads budgets and copy\./);
+  assert.match(markdown, /\*\*Paid Marketing — Slack Handle\*\*[\s\S]*@paid-marketing[\s\S]*@performance-marketing/);
+  assert.ok(markdown.endsWith(MARKDOWN_APPROVAL_INSTRUCTION));
+  assert.doesNotMatch(markdown, /(^|[^*])\*[A-Z][a-z]+\*/);
+});
+
+test('Markdown skill import proposals show the source and only the changed skill', () => {
+  const markdown = formatMarkdownSkillImportProposal({
+    summary: '1 reviewed workspace change',
+    changes: [{
+      itemId: 'update',
+      operationKind: 'update_agent',
+      target: 'agent:agent_sprout',
+      before: {
+        name: 'Sprout',
+        skills: [{
+          name: 'existing-skill',
+          description: 'Keep this skill.',
+          instructions: 'Keep working as before.',
+          enabled: true,
+        }],
+      },
+      after: {
+        name: 'Sprout',
+        skills: [{
+          name: 'existing-skill',
+          description: 'Keep this skill.',
+          instructions: 'Keep working as before.',
+          enabled: true,
+        }, {
+          name: 'unslop',
+          description: 'Remove AI writing tells from prose & drafts.',
+          instructions: 'Rewrite the draft plainly and preserve its meaning.',
+          enabled: true,
+        }],
+      },
+    }],
+    missingSetup: [],
+  }, 'https://github.com/cursor/plugins/tree/main/pstack/skills/unslop');
+
+  assert.match(markdown, /^\*\*Proposed changes\*\*\n\*\*Source\*\*\n> https:\/\/github\.com/);
+  assert.match(markdown, /\*\*Sprout — Skill: unslop\*\*\n\*\*Add\*\*/);
+  assert.match(markdown, /\*\*Description\*\*\n> Remove AI writing tells from prose & drafts\./);
+  assert.match(markdown, /\*\*Instructions\*\*\n> Rewrite the draft plainly/);
+  assert.doesNotMatch(markdown, /existing-skill|Keep this skill|&amp;/);
+  assert.ok(markdown.endsWith(MARKDOWN_APPROVAL_INSTRUCTION));
+});
+
+test('Markdown destructive proposals name the target and action', () => {
+  const markdown = formatMarkdownChangeSetProposal({
+    summary: '1 reviewed workspace change',
+    changes: [{
+      itemId: 'delete',
+      operationKind: 'delete_agent',
+      target: 'agent:agent_paid_marketing',
+    }],
+    missingSetup: [],
+  });
+
+  assert.equal(markdown, [
+    '**Proposed changes**',
+    '**agent:agent_paid_marketing — Delete Agent**',
+    '',
+    MARKDOWN_APPROVAL_INSTRUCTION,
+  ].join('\n'));
+});
+
+test('Markdown previews stay whole well past the Slack block limit', () => {
+  const markdown = formatMarkdownChangeSetProposal({
+    summary: '1 reviewed workspace change',
+    changes: [{
+      itemId: 'create',
+      operationKind: 'create_agent',
+      target: 'agent:agent_paid_marketing',
+      after: {
+        name: 'Paid Marketing',
+        instructions: 'x'.repeat(5_000),
+        slackPresence: { requestedHandle: 'Paid Marketing', normalizedHandle: 'paid-marketing' },
+      },
+    }],
+    missingSetup: [],
+  });
+
+  assert.ok(markdown.includes('x'.repeat(5_000)));
+  assert.doesNotMatch(markdown, /preview truncated|truncated to fit Slack/);
+  assert.ok(markdown.endsWith(MARKDOWN_APPROVAL_INSTRUCTION));
+});
+
+test('Markdown previews cap runaway proposals with a plain truncation note', () => {
+  const markdown = formatMarkdownChangeSetProposal({
+    summary: '1 reviewed workspace change',
+    changes: [{
+      itemId: 'create',
+      operationKind: 'create_agent',
+      target: 'agent:agent_paid_marketing',
+      after: {
+        name: 'Paid Marketing',
+        instructions: 'x'.repeat(40_000),
+        slackPresence: { requestedHandle: 'Paid Marketing', normalizedHandle: 'paid-marketing' },
+      },
+    }],
+    missingSetup: [],
+  });
+
+  assert.ok(markdown.length <= 20_000);
+  assert.match(markdown, /\*\*Name\*\*\n> Paid Marketing/);
+  assert.match(markdown, /… \(preview truncated; confirmation applies the full proposal\)/);
+  assert.ok(markdown.endsWith(MARKDOWN_APPROVAL_INSTRUCTION));
 });
