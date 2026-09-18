@@ -67,7 +67,7 @@ Chickpea is for those teams. Each Agent keeps its own connected accounts and its
 | **Repositories** | Grant GitHub repositories to an Agent through the Chickpea GitHub App (Settings → GitHub). Access uses short-lived installation tokens scoped to the granted repositories. | |
 | **Coding sandbox** | Optional Cloudflare container tier for Agents that need to clone a repo, install packages, and run tests. | [Details](#coding-sandbox) |
 | **Schedules** | Agent-owned recurring or one-time work, set up conversationally in Slack, delivered to a granted channel or a private DM thread. | [Details](#schedules) |
-| **Manage from Slack** | Admin, Slack, and an MCP server are three doors to the same controls. Create Agents, install skills, set schedules, and edit memory by asking, with consequential changes gated behind an approval. | [Details](#managing-chickpea) |
+| **Manage from Slack** | Admin, Slack, and an MCP server are three doors to the same controls. Create Agents, install skills, set schedules, and edit memory by asking, with consequential changes gated behind an approval. Connect your coding agent from Settings → MCP or with one pasted line. | [Details](#managing-chickpea) |
 | **Slack-native answers** | Progressive streaming for long replies, adaptive tables (prose, inline Markdown, or a native sortable Slack table) when the data earns one, and task cards for multi-step work. | |
 | **Reads attachments** | Images, PDFs, UTF-8 text and source files, and Slack's generated previews for docs, slides, and sheets. A file is untrusted reference material: its contents inform the answer, and text inside it never authorizes a tool or a change. | |
 | **Files** | Agents attach final or revised sandbox deliverables, including Markdown, through their Slack reply. Scratch files stay private, and explicit no-attachment requests are respected. Missed exports get one repair attempt; files that cannot be attached are identified in the reply. Direct Slack installs support files up to 8 MiB; keep shared-app files below 700 KiB to fit the gateway request limit. Works without a coding sandbox or repository grant on Cloudflare and Node. | |
@@ -241,7 +241,7 @@ Chickpea has an Admin panel. It is not the only way in. The same controls have t
 
 - **Admin**, the browser UI on your deployment.
 - **Slack**, by asking `@Chickpea`, or asking any Agent about itself.
-- **[MCP](#connect-via-mcp)**, from any MCP client you already use, through the management MCP server.
+- **[MCP](#connect-via-mcp)**, from any MCP client you already use, through the management MCP server. Settings → MCP in Admin has the snippet for each client, and `https://<your Chickpea>/connect` has the one-line prompt.
 
 Most days the Slack door is the one you want.
 
@@ -275,7 +275,7 @@ For scripts, there is a fourth door: the official [`chickpea-cli`](packages/cli/
 
 ```bash
 npx chickpea-cli doctor https://chickpea.example.com        # public checks, no sign-in
-npx chickpea-cli mcp config https://chickpea.example.com    # client config for Claude Code, Codex, Cursor
+npx chickpea-cli mcp config https://chickpea.example.com    # client config for Claude Code, Codex, Cursor, and more
 npx chickpea-cli login https://chickpea.example.com         # browser sign-in, tokens stored 0600
 npx chickpea-cli workspace inspect https://chickpea.example.com
 npx chickpea-cli call https://chickpea.example.com <tool> --args '{...}'
@@ -387,39 +387,46 @@ Chickpea Agents, update their instructions, manage connections, edit memory,
 and set up schedules.
 
 You need an existing Chickpea installation and permission to manage the Agents
-you want to work with.
-
-Replace `https://chickpea.example.com` below with your installation's address:
-the same address you use for Admin, without `/admin`. Ask whoever installed
+you want to work with. Every address below uses your installation's address:
+the same one you use for Admin, without `/admin`. Ask whoever installed
 Chickpea if you don't know it.
 
-#### Claude Code
+The quickest way is to paste one line into your coding agent:
 
-Run in your terminal:
+```text
+Connect my coding agent to my Chickpea using https://<your Chickpea>/connect.md
+```
+
+The agent reads that guide from your own deployment, writes its own client
+configuration, signs in through Slack, and proves the connection with one
+read-only call. Two places give you that prompt with the real address filled
+in, plus the exact snippet for every client:
+
+- **Settings → MCP** in Admin (`https://<your Chickpea>/admin/settings/agents-clients`).
+  The Coding agents page lists Claude Code, Codex, Cursor, VS Code, Windsurf,
+  Gemini CLI, claude.ai and Claude Desktop, ChatGPT, and a generic JSON block,
+  each with a Copy button, plus one-click **Add to Cursor** and **Add to VS
+  Code**. Every member can open it.
+- **`https://<your Chickpea>/connect`**, a public page on your deployment, for
+  anyone who is not signed in to Admin yet. It works before Slack setup is
+  finished, although `/mcp` answers 404 until setup completes.
+
+Prefer to type it yourself? One example, for Claude Code, with
+`chickpea.example.com` standing in for your address:
 
 ```bash
 claude mcp add --transport http --scope user chickpea https://chickpea.example.com/mcp
 ```
 
-This makes Chickpea available across your Claude Code projects. Open Claude
-Code, run `/mcp`, select `chickpea`, and follow the browser sign-in steps.
-
-#### Codex
-
-Run in your terminal:
-
-```bash
-codex mcp add chickpea --url https://chickpea.example.com/mcp
-codex mcp login chickpea
-```
-
-Follow the browser sign-in steps.
+Then open Claude Code, run `/mcp`, select `chickpea`, and follow the browser
+sign-in steps. The Settings page has the equivalent for every other client.
 
 #### Sign in and try it
 
 Sign in with your Slack account for the workspace where Chickpea is installed,
 then approve access to manage your Chickpea workspace. Authentication uses
-OAuth; no API key or separate MCP package is needed.
+OAuth; no API key or separate MCP package is needed, and you never create or
+paste a token.
 
 Start a conversation in your coding agent and ask:
 
@@ -428,6 +435,10 @@ Start a conversation in your coding agent and ask:
 Then try:
 
 > Create a Chickpea Agent named Support that helps our team answer billing questions.
+
+In Claude Code, `/chickpea:new-agent` opens the same guided flow from the
+slash menu; `/chickpea:status`, `/chickpea:edit-agent`, `/chickpea:connect`,
+`/chickpea:schedule`, and `/chickpea:import-skill` cover the rest.
 
 Chickpea applies your existing permissions. Changes that expand access or
 require confirmation produce a proposal for you to approve. Connecting an
