@@ -13,7 +13,7 @@ Requires Node 24.x, minimum 24.20.0 (`>=24.20.0 <25`). Development and publishin
 | Command | Sign-in | What it does |
 | --- | --- | --- |
 | `chickpea doctor <url>` | no | Fetches the OAuth discovery documents, the signing keys, and the unauthenticated MCP challenge. One line per check, exit 1 on any failure. |
-| `chickpea mcp config <url> [--client claude-code\|codex\|cursor\|json]` | no | Prints the MCP client configuration for `<url>/mcp`. Default: every client. |
+| `chickpea mcp config <url> [--client claude-code\|codex\|cursor\|vscode\|windsurf\|gemini-cli\|json]` | no | Prints the MCP client configuration for `<url>/mcp`, the same snippets the deployment serves at `/connect.md` and in Admin Settings. Default: every client. |
 | `chickpea login <url>` | browser | Registers a public PKCE client, opens the browser for Slack sign-in and consent, and saves the tokens. |
 | `chickpea logout <url>` | saved | Revokes the refresh token at the deployment and deletes the saved session. |
 | `chickpea workspace inspect <url> [--json]` | saved | Calls `inspect_workspace` and prints Agents, skills, connections, repositories, channels, provider availability, and team. |

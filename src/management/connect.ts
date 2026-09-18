@@ -20,6 +20,8 @@ export const CONNECT_PAGE_PATH = '/connect';
 export const MCP_RESOURCE_PATH = '/mcp';
 export const ADMIN_PATH = '/admin';
 export const ADMIN_SETTINGS_PATH = '/admin/settings';
+/** Settings → Coding agents: every client's snippet plus the one-click installs. */
+export const ADMIN_CODING_AGENTS_PATH = '/admin/settings/agents-clients';
 export const MCP_SERVER_NAME = 'chickpea';
 export const AGENT_AUTHORING_GUIDE_URI = 'chickpea://guide/agent-authoring/v1';
 
@@ -307,7 +309,7 @@ ${snippetHtml('claude-code', claude.snippet(url))}
 ${snippetHtml('codex', codex.snippet(url))}
 <p class="meta">Any MCP client: add a remote server at <code>${escapeHtml(url)}</code>. Sign-in uses your Slack account; there is no API key or token to paste. Full instructions for Cursor, VS Code, Windsurf, and Gemini CLI are in <a href="${escapeHtml(guideUrl)}">the guide</a>.</p>
 <h2>Then</h2>
-<p>Ask your coding agent what Agents it can manage, or tell it what your first teammate should do. Model providers, GitHub, and other workspace settings stay in <a href="${ADMIN_SETTINGS_PATH}">Admin Settings</a>.</p>
+<p>Ask your coding agent what Agents it can manage, or tell it what your first teammate should do. Signed in to Admin? <a href="${ADMIN_CODING_AGENTS_PATH}">Settings → Coding agents</a> has every client's snippet and one-click install for Cursor and VS Code. Model providers, GitHub, and other workspace settings stay in <a href="${ADMIN_SETTINGS_PATH}">Admin Settings</a>.</p>
 </div>
 </main>
 <script nonce="${nonce}">${COPY_SCRIPT}</script>

@@ -532,6 +532,17 @@ try {
     `create=${secondCreated.status} publish=${secondPublished.status} grants=${String(verifiedChannel?.grants?.length)}`,
   );
 
+  const mcpClients = await adminJson(app, '/admin/api/mcp-clients');
+  record(
+    'Coding agents Settings reads the nine-client MCP table for this deployment',
+    mcpClients.status === 200 &&
+      Array.isArray(mcpClients.body?.clients) &&
+      mcpClients.body.clients.length === 9 &&
+      typeof mcpClients.body?.url === 'string' &&
+      mcpClients.body.url.endsWith('/mcp'),
+    `status=${mcpClients.status} clients=${String(mcpClients.body?.clients?.length)} url=${String(mcpClients.body?.url)}`,
+  );
+
   const initialMemory = await adminBody(app, 'PUT', `/admin/api/agents/${AGENT_ID}/memory`, {
     expectedRevision: 0,
     body: 'Prefer small, reversible releases.',

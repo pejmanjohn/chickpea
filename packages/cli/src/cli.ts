@@ -184,9 +184,9 @@ async function commandDoctor(args: readonly string[], io: Io, deps: CliDeps): Pr
 function commandMcp(args: readonly string[], flags: ParsedArgs['flags'], io: Io): number {
   const [subcommand, ...rest] = args;
   if (subcommand !== 'config') {
-    throw new CliError('UNKNOWN_COMMAND', `Unknown mcp subcommand "${subcommand ?? ''}"`, 'Usage: chickpea mcp config <deployment-url> [--client claude-code|codex|cursor|json]');
+    throw new CliError('UNKNOWN_COMMAND', `Unknown mcp subcommand "${subcommand ?? ''}"`, `Usage: chickpea mcp config <deployment-url> [--client ${MCP_CLIENTS.join('|')}]`);
   }
-  const origin = requireOrigin(rest, 'chickpea mcp config <deployment-url> [--client claude-code|codex|cursor|json]');
+  const origin = requireOrigin(rest, `chickpea mcp config <deployment-url> [--client ${MCP_CLIENTS.join('|')}]`);
   const requested = flags.get('--client');
   let clients: readonly McpClient[] = MCP_CLIENTS;
   if (typeof requested === 'string') {
