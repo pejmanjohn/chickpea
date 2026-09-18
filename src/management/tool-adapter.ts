@@ -7,6 +7,8 @@ import {
   type ManageAgentSkillAction,
   type ManagementOperation,
   type PrepareConnectorSetupInput,
+  type PrepareProviderSetupInput,
+  type ManagementResultLinks,
   type ManagementRoutineInspectionInput,
 } from './types.ts';
 import type { PreviewWorkspaceRecipeInput } from './recipes.ts';
@@ -23,6 +25,7 @@ import {
 export const WORKSPACE_MANAGEMENT_TOOL_NAMES = [
   'inspect_workspace',
   'prepare_connector_setup',
+  'prepare_provider_setup',
   'discover_slack_channels',
   'test_mcp_connection',
   'inspect_memory',
@@ -48,6 +51,7 @@ const WORKSPACE_MANAGEMENT_SEMANTICS: Record<
 > = {
   inspect_workspace: genericSemanticDescriptor('workspace'),
   prepare_connector_setup: unknownSemanticDescriptor(),
+  prepare_provider_setup: unknownSemanticDescriptor(),
   discover_slack_channels: unknownSemanticDescriptor(),
   test_mcp_connection: unknownSemanticDescriptor(),
   inspect_memory: unknownSemanticDescriptor(),
@@ -85,6 +89,7 @@ export function workspaceManagementSemanticInvocation(
 const TOOL_DESCRIPTIONS: Record<WorkspaceManagementToolName, string> = {
   inspect_workspace: 'Inspect current non-secret Chickpea Agents, skills, connections, repositories, Channels, provider availability, and Owner-only team authority. The connectors field is a setup catalog, not current access; currentAgent.effectiveConnections lists ready connections eligible for the routed Agent, while request selection and surface policy can narrow the current turn, and an empty array means none. Required before recommending specific capabilities for Agent design or answering what services an Agent can use.',
   prepare_connector_setup: 'Create a safe browser handoff URL for connecting one catalog service to an editable Agent. Set ownerKind to "member" for a personal connection or "team" for a team-owned connection. The resulting connection belongs only to that Agent. In a specific Agent Slack conversation, agentId may be omitted to target that Agent.',
+  prepare_provider_setup: 'Create a safe browser handoff URL for adding or replacing one workspace model provider API key (anthropic, openai, or openrouter). Owner or Admin only, the same as Admin Settings → Model providers. The requester types the key on the Chickpea page; it never passes through this tool. When a key is already stored, pass replaceExisting true to issue a link that replaces it. A deployment-provided key is read-only and cannot be replaced here. The link expires after 24 hours and anyone holding it can complete that exact setup. Never ask for or relay the key itself.',
   discover_slack_channels: 'Discover Channels in the connected Slack workspace before publishing a Chickpea Agent.',
   test_mcp_connection: 'Test one saved Agent MCP connection with its write-only credentials and return a sanitized result plus discovered tools.',
   inspect_memory: 'Inspect the single durable memory body owned by one Agent.',
@@ -109,6 +114,7 @@ const TOOL_DESCRIPTIONS: Record<WorkspaceManagementToolName, string> = {
  * are the same on both doors.
  */
 const MCP_TOOL_DESCRIPTION_OVERLAY: Partial<Record<WorkspaceManagementToolName, string>> = {
+  prepare_provider_setup: 'Create a safe browser handoff URL for adding or replacing one workspace model provider API key (anthropic, openai, or openrouter). Owner or Admin only, the same as Admin Settings → Model providers; a member gets a forbidden error with links.admin to send to an Owner. Give the person the returned handoffUrl to open in a browser; they type the key on the Chickpea page and it never passes through this tool. When a key is already stored, the tool refuses until you pass replaceExisting true, so tell the person the link will replace the current key. A deployment-provided key is read-only and cannot be replaced here. The link expires after 24 hours and anyone holding it can complete that exact setup, so never paste it anywhere shared. Never ask for, accept, or relay the key itself.',
   prepare_connector_setup: 'Create a safe browser handoff URL for connecting one catalog service to an editable Agent. Set ownerKind to "member" for a personal connection or "team" for a team-owned connection. The resulting connection belongs only to that Agent. agentId is required. Give the person the returned handoffUrl to open in a browser; it expires after 24 hours and anyone holding it can complete that exact setup, so never paste it anywhere shared. Never ask for or relay the credential itself.',
   inspect_routines: 'Inspect routine schedules and safely projected content for one workspace, Channel, or routine. When reporting the next due time, use nextRunTime.display. Respect explicit user preferences for language, timezone, and clock format while preserving the instant. Do not append an IANA timezone identifier to the display value unless the requester asks for the identifier itself. When a machine-readable timestamp is requested or required, copy nextRunTime.isoUtc exactly in code formatting, preserving its ASCII punctuation; do not calculate a date from nextRunAt epoch milliseconds. A null nextRunTime means no next scheduled occurrence.',
   import_skill: 'Install one exact public GitHub-hosted SKILL.md on an editable Agent. Immediate installation requires the trusted Slack request binding, which this MCP connection does not carry, so this tool currently returns invalid_request here; use propose_skill_import instead, show its presentation.markdown to the person, and call confirm_workspace_change after they approve. Pass the exact source the person supplied unchanged. When they name a skill alongside a repository or parent URL, pass that name separately as skillName; never synthesize an @name source.',
@@ -148,6 +154,7 @@ export type WorkspaceManagementToolArguments = {
   prepare_connector_setup: Omit<PrepareConnectorSetupInput, 'agentId'> & {
     agentId?: string | undefined;
   };
+  prepare_provider_setup: PrepareProviderSetupInput;
   discover_slack_channels: { refresh?: boolean | undefined };
   test_mcp_connection: { agentId: string; connectionId: string };
   inspect_memory: { agentId: string };
@@ -190,7 +197,15 @@ export type WorkspaceManagementToolArguments = {
 
 export type WorkspaceManagementToolResult =
   | { ok: true; result: unknown }
-  | { ok: false; error: { code: string; message: string } };
+  | {
+      ok: false;
+      error: {
+        code: string;
+        message: string;
+        /** Present when the failure names something only Admin can change. */
+        links?: ManagementResultLinks;
+      };
+    };
 
 interface WorkspaceManagementToolAdapterInput {
   service: WorkspaceManagementService;
@@ -284,6 +299,15 @@ async function executeWorkspaceManagementTool<TName extends WorkspaceManagementT
           agentId,
           connector: value.connector,
           ownerKind: value.ownerKind,
+        });
+      }
+      case 'prepare_provider_setup': {
+        const value = args as WorkspaceManagementToolArguments['prepare_provider_setup'];
+        return service.prepareProviderSetup(context, {
+          providerId: value.providerId,
+          ...(value.replaceExisting !== undefined
+            ? { replaceExisting: value.replaceExisting }
+            : {}),
         });
       }
       case 'discover_slack_channels': {
@@ -388,6 +412,7 @@ function failure(error: unknown): WorkspaceManagementToolResult {
       error: {
         code: error.code,
         message: error.message,
+        ...(error instanceof ManagementError && error.links ? { links: error.links } : {}),
       },
     };
   }

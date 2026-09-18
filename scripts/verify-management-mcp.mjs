@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 const REQUEST_TIMEOUT_MS = 15_000;
 const AGENT_AUTHORING_GUIDE_URI = 'chickpea://guide/agent-authoring/v1';
 const AGENT_AUTHORING_GUIDE_VERSION = '1.0.38';
-const MANAGEMENT_MCP_SERVER_VERSION = '2.8.0';
+const MANAGEMENT_MCP_SERVER_VERSION = '2.9.0';
 
 function fetchWithDeadline(input, init = {}) {
   return fetch(input, { ...init, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });

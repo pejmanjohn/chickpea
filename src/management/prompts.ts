@@ -219,7 +219,7 @@ function statusPrompt(baseUrl?: string): string {
     'Give this person a short status of their Chickpea workspace.',
     '',
     '1. Call inspect_workspace, then inspect_routines for the workspace.',
-    '2. Report, in this order and in plain prose or short lists: the workspace and who you are signed in as; each Agent by @handle with its one-line description and whether it is enabled and which Channels it is in; connections that are ready versus setup still needed (the connectors field is the catalog, not current access); scheduled work with each next run from nextRunTime.display; anything only Admin can change today, such as model provider keys, with the Settings link.',
+    '2. Report, in this order and in plain prose or short lists: the workspace and who you are signed in as; each Agent by @handle with its one-line description and whether it is enabled and which Channels it is in; connections that are ready versus setup still needed (the connectors field is the catalog, not current access); scheduled work with each next run from nextRunTime.display; anything only Admin can change today, such as GitHub, the coding sandbox, and outbound access, with the Settings link; a missing model provider key can be added by an Owner or Admin through prepare_provider_setup\'s handoff link.',
     '3. Do not change anything. Do not show raw ids, revisions, or JSON.',
     `4. End with the Admin link and one offer: to create a new Agent, edit one, connect a service, or schedule work. Admin: ${adminLink(baseUrl)}`,
   ].join('\n');

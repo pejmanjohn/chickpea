@@ -14,6 +14,7 @@ import {
   getOperationZodSchema,
   inspectWorkspaceZodSchema,
   prepareConnectorSetupZodSchema,
+  prepareProviderSetupZodSchema,
   discoverSlackChannelsZodSchema,
   testMcpConnectionZodSchema,
   inspectMemoryZodSchema,
@@ -44,7 +45,7 @@ import type { ManagementActorContext, ManagementOperation } from './types.ts';
 
 export const WORKSPACE_MANAGEMENT_SERVER_INFO = {
   name: 'chickpea-workspace',
-  version: '2.8.0',
+  version: '2.9.0',
 } as const;
 export const WORKSPACE_MANAGEMENT_OPERATION_SCHEMA_URI =
   'chickpea://schema/operations/v2' as const;
@@ -110,6 +111,17 @@ export function createWorkspaceManagementMcpServer(
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
     adapter,
     'prepare_connector_setup',
+    args,
+  )));
+
+  server.registerTool('prepare_provider_setup', {
+    title: 'Prepare model provider key setup',
+    description: workspaceManagementToolDescription('prepare_provider_setup', 'mcp'),
+    inputSchema: prepareProviderSetupZodSchema,
+    annotations: { readOnlyHint: true },
+  }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
+    adapter,
+    'prepare_provider_setup',
     args,
   )));
 

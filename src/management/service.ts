@@ -149,6 +149,8 @@ import {
   type ManagementWorkspaceSnapshot,
   type PrepareConnectorSetupInput,
   type PrepareConnectorSetupResult,
+  type PrepareProviderSetupInput,
+  type PrepareProviderSetupResult,
   type FinalizeSlackAgentCreationWelcomeInput,
   type FinalizeSlackAgentCreationWelcomeResult,
   type ManagementAgentCreatedWelcome,
@@ -159,6 +161,7 @@ import {
   type ProposeWorkspaceChangesResult,
   type UndoWorkspaceChangeInput,
 } from './types.ts';
+import { adminSettingsLinks, adminTeamLinks } from './admin-links.ts';
 
 const MANAGEMENT_CHANGE_SET_APPLY_LEASE_MS = 30_000;
 const SETUP_TTL_MS = 24 * 60 * 60_000;
@@ -390,6 +393,7 @@ export class WorkspaceManagementService {
   private async withAgentLinks(
     context: ManagementActorContext,
     result: ManagementApplyResult,
+    operations?: readonly ManagementOperation[],
   ): Promise<ManagementApplyResult> {
     try {
       const targets = result.outcomes.map((outcome) => outcome.disposition === 'applied'
@@ -397,27 +401,68 @@ export class WorkspaceManagementService {
         : undefined);
       const changedAgentIds = [...new Set(targets.filter((agentId): agentId is string =>
         agentId !== undefined))];
-      if (changedAgentIds.length === 0) return result;
       const adminUrls = new Map<string, string>();
       for (const agentId of changedAgentIds) {
         const admin = await this.agentEditorUrl(agentId);
         if (admin) adminUrls.set(agentId, admin);
       }
-      if (adminUrls.size === 0) return result;
-      const slack = await this.slackAppLink(context);
+      const slack = adminUrls.size > 0 ? await this.slackAppLink(context) : undefined;
       const linksFor = (agentId: string | undefined): ManagementResultLinks | undefined => {
         const admin = agentId === undefined ? undefined : adminUrls.get(agentId);
         return admin ? { admin, ...(slack ? { slack } : {}) } : undefined;
       };
-      const outcomes = result.outcomes.map((outcome, index) => {
-        const links = linksFor(targets[index]);
-        return links ? { ...outcome, links } : outcome;
-      });
+      const outcomes: ManagementItemOutcome[] = [];
+      for (const [index, outcome] of result.outcomes.entries()) {
+        const links = linksFor(targets[index]) ??
+          outcome.links ??
+          await this.adminOnlyOutcomeLinks(outcome, operations);
+        outcomes.push(links ? { ...outcome, links } : outcome);
+      }
       const first = outcomes.find(({ links }) => links !== undefined)?.links;
       return { ...result, outcomes, ...(first ? { links: first } : {}) };
     } catch {
       // A link is never worth failing a committed workspace mutation.
       return result;
+    }
+  }
+
+  /**
+   * Settings deep link for an outcome that names something only Admin can
+   * change: a model provider key (setup link issued, replacement awaiting
+   * confirmation, removal, or a member denied) and member authority. The
+   * operation supplies the target when the caller has it; a setup-link
+   * outcome falls back to its own setup record so confirm and replay paths
+   * agree with apply.
+   */
+  private async adminOnlyOutcomeLinks(
+    outcome: ManagementItemOutcome,
+    operations?: readonly ManagementOperation[],
+  ): Promise<ManagementResultLinks | undefined> {
+    const baseUrl = await this.optionalSetupBaseUrl();
+    if (outcome.operationKind === 'update_member') return adminTeamLinks(baseUrl);
+    if (outcome.operationKind === 'remove_provider_credential') {
+      return adminSettingsLinks(baseUrl, 'providers');
+    }
+    if (outcome.operationKind !== 'request_setup') return undefined;
+    const operation = operations?.find(({ itemId }) => itemId === outcome.itemId);
+    if (operation?.kind === 'request_setup') {
+      return operation.target.kind === 'provider_credential'
+        ? adminSettingsLinks(baseUrl, 'providers')
+        : undefined;
+    }
+    if (!outcome.setupOperationId) return undefined;
+    const setup = await this.stores.management.getSetup(outcome.setupOperationId, this.now());
+    return setup?.target.kind === 'provider_credential'
+      ? adminSettingsLinks(baseUrl, 'providers')
+      : undefined;
+  }
+
+  /** The deployment base URL for presentation links, or undefined when unset; never throws. */
+  private async optionalSetupBaseUrl(): Promise<string | undefined> {
+    try {
+      return await this.resolveSetupBaseUrl();
+    } catch {
+      return undefined;
     }
   }
 
@@ -976,6 +1021,60 @@ export class WorkspaceManagementService {
       importedSkill,
       skills,
       existingIndex,
+    };
+  }
+
+  /**
+   * Direct, secret-free handoff for one workspace model provider key: the
+   * same 24-hour setup record `request_setup` issues, without a proposal
+   * round trip. Gating matches Admin Settings → Model providers (Owner or
+   * Admin). The key is typed on the handoff page and never enters this
+   * service through a tool argument or result.
+   */
+  async prepareProviderSetup(
+    context: ApplyWorkspaceChangesInput['context'],
+    input: PrepareProviderSetupInput,
+  ): Promise<PrepareProviderSetupResult> {
+    const actor = await this.requireLiveActor(context, { cleanupRetention: false });
+    const providerId = input.providerId;
+    if (!MANAGED_PROVIDER_IDS.includes(providerId)) {
+      throw new ManagementError(
+        'invalid_request',
+        `Unknown model provider. Choose one of: ${MANAGED_PROVIDER_IDS.join(', ')}.`,
+      );
+    }
+    this.assertActingAgentScope(actor, {
+      scope: 'authority',
+      requestedAction: 'prepare_provider_setup',
+      target: { kind: 'provider', id: providerId },
+    });
+    const links = adminSettingsLinks(await this.optionalSetupBaseUrl(), 'providers');
+    const name = providerLabel(providerId);
+    if (actor.role !== 'owner' && actor.role !== 'admin') {
+      throw new ManagementError(
+        'forbidden',
+        `Only a workspace Owner or Admin can add or replace the ${name} key. Ask one to open Model providers in Admin Settings.`,
+        undefined,
+        links,
+      );
+    }
+    const setup = await this.resolveSetupTarget({ kind: 'provider_credential', providerId });
+    if (setup.target.replacement && !input.replaceExisting) {
+      throw new ManagementError(
+        'invalid_request',
+        `A ${name} key is already stored for this workspace. Pass replaceExisting true to issue a link that replaces it.`,
+        undefined,
+        links,
+      );
+    }
+    const issued = await this.issueSetupRecord(actor, setup);
+    return {
+      provider: { id: providerId, name },
+      replacement: setup.target.replacement,
+      handoffUrl: issued.url,
+      setupOperationId: issued.record.setupOperationId,
+      expiresAt: issued.record.expiresAt,
+      links,
     };
   }
 
@@ -1558,7 +1657,9 @@ export class WorkspaceManagementService {
     input: ApplyWorkspaceChangesInput,
   ): Promise<ApplyWorkspaceChangesResult> {
     const result = await this.applyRequestedWorkspaceChanges(input);
-    return 'outcomes' in result ? await this.withAgentLinks(input.context, result) : result;
+    return 'outcomes' in result
+      ? await this.withAgentLinks(input.context, result, input.operations)
+      : result;
   }
 
   private async applyRequestedWorkspaceChanges(
@@ -1764,6 +1865,9 @@ export class WorkspaceManagementService {
             : {}),
           ...(error instanceof ManagementError && error.changed
             ? { changed: error.changed }
+            : {}),
+          ...(error instanceof ManagementError && error.links
+            ? { links: error.links }
             : {}),
         });
         request = await this.stores.management.saveRequestProgress(
@@ -2635,7 +2739,12 @@ export class WorkspaceManagementService {
     if (request.kind === 'provider_credential') {
       const source = await this.stores.providerCredentialSource?.(request.providerId) ?? 'missing';
       if (source === 'env') {
-        throw new ManagementError('invalid_request', 'Deployment-provided credentials are read-only.');
+        throw new ManagementError(
+          'invalid_request',
+          'Deployment-provided credentials are read-only.',
+          undefined,
+          adminSettingsLinks(await this.optionalSetupBaseUrl(), 'providers'),
+        );
       }
       return {
         action: 'provider_credential',
@@ -3583,10 +3692,20 @@ export class WorkspaceManagementService {
       if (actor.role === 'member') return { actor, operation, adminRequired: true };
       const source = await this.stores.providerCredentialSource?.(operation.providerId) ?? 'missing';
       if (source === 'env') {
-        throw new ManagementError('invalid_request', 'Deployment-provided credentials are read-only.');
+        throw new ManagementError(
+          'invalid_request',
+          'Deployment-provided credentials are read-only.',
+          undefined,
+          adminSettingsLinks(await this.optionalSetupBaseUrl(), 'providers'),
+        );
       }
       if (source !== 'stored') {
-        throw new ManagementError('invalid_request', 'No stored provider credential is available to remove.');
+        throw new ManagementError(
+          'invalid_request',
+          'No stored provider credential is available to remove.',
+          undefined,
+          adminSettingsLinks(await this.optionalSetupBaseUrl(), 'providers'),
+        );
       }
       return { actor, operation, adminRequired: true };
     }

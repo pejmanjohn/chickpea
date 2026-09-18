@@ -246,6 +246,7 @@ export interface ChickpeaManagementHandoff {
   chickpeaAgentId: 'agent_chickpea';
   actingAgentId: string;
   requestedAction: ManagementOperation['kind'] | 'prepare_connector_setup' |
+    'prepare_provider_setup' |
     'discover_slack_channels' | 'test_mcp_connection' | 'inspect_routines' |
     'inspect_memory' | 'export_workspace_recipe' | 'preview_workspace_recipe' |
     'revoke_setup_link';
@@ -825,6 +826,30 @@ export interface PrepareConnectorSetupResult {
   setupOperationId?: string;
 }
 
+export type ManagedProviderKeyId = 'anthropic' | 'openai' | 'openrouter';
+
+export interface PrepareProviderSetupInput {
+  providerId: ManagedProviderKeyId;
+  /** Required when a key is already stored; the handoff page then replaces it. */
+  replaceExisting?: boolean | undefined;
+}
+
+/**
+ * A 24-hour browser handoff for adding or replacing one workspace model
+ * provider key. The key is typed on the handoff page and never enters a tool
+ * argument or result.
+ */
+export interface PrepareProviderSetupResult {
+  provider: { id: ManagedProviderKeyId; name: string };
+  /** True when the page replaces a stored key instead of adding a first one. */
+  replacement: boolean;
+  handoffUrl: string;
+  setupOperationId: string;
+  expiresAt: number;
+  /** The Model providers Settings section, where an Owner or Admin can do the same by hand. */
+  links: ManagementResultLinks;
+}
+
 export interface FinalizeSlackAgentCreationWelcomeInput {
   context: ManagementActorContext;
   operationId: string;
@@ -1141,6 +1166,8 @@ export class ManagementError extends Error {
       | 'schedule_authority_missing',
     message: string,
     readonly changed?: ManagementObjectRef[],
+    /** Admin deep link when the failure names something only Admin can change; response-only. */
+    readonly links?: ManagementResultLinks,
   ) {
     super(message);
   }

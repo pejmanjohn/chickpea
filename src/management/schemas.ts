@@ -354,6 +354,10 @@ export const prepareConnectorSetupZodSchema = z.strictObject({
   connector: zText(128),
   ownerKind: z.enum(['team', 'member']),
 });
+export const prepareProviderSetupZodSchema = z.strictObject({
+  providerId: z.enum(['anthropic', 'openai', 'openrouter']),
+  replaceExisting: z.boolean().optional(),
+});
 export const discoverSlackChannelsZodSchema = z.strictObject({
   refresh: z.boolean().optional(),
 });
@@ -705,6 +709,10 @@ export const prepareConnectorSetupValibotSchema = v.strictObject({
   agentId: v.optional(vAgentId),
   connector: vt(128),
   ownerKind: v.picklist(['team', 'member']),
+});
+export const prepareProviderSetupValibotSchema = v.strictObject({
+  providerId: v.picklist(['anthropic', 'openai', 'openrouter']),
+  replaceExisting: v.optional(v.boolean()),
 });
 export const discoverSlackChannelsValibotSchema = v.strictObject({
   refresh: v.optional(v.boolean()),
