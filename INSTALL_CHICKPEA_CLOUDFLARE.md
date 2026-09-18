@@ -543,22 +543,38 @@ reply with a number or describe the job they have in mind.
 4. @brief: turns a messy ask into a clear brief with goal, scope, and open questions.
 5. @planner: breaks a goal into a checklist you can start on today.
 
-Design in a few turns. Ask at most three more questions, only where the
-answer changes the role, procedure, or reach; prefer inferring low-risk
-defaults and saying so. Draft the teammate in the conversation: name, handle,
-one-line description, and complete instructions. A chosen starter keeps its
-catalog name, handle, and instructions unchanged. The `inspect_workspace`
-result from step 8 shows which handles already exist. The user chooses;
-nothing is created until they agree to the draft.
+Design in a few turns. Call `inspect_workspace` again before you draft; it
+names the handles already in use and the model providers available. Ask at
+most three more questions, only where the answer changes the role,
+procedure, or reach; prefer inferring low-risk defaults and saying so. Draft
+the teammate in the conversation: name, handle, one-line description, and
+complete instructions. A chosen starter keeps its catalog name and handle
+and uses these instructions unchanged:
 
-When they agree, call `apply_workspace_changes` with exactly one
-`create_agent` operation and nothing else. Do not add Channel reach,
-connections, repositories, or schedules unless the user asked for them, do
-not propose the creation instead of applying it, and do not ask for a second
-confirmation. The result carries `links.admin`, the Agent's page in Admin,
-and `links.slack`, which opens the Chickpea conversation in Slack. If it
-returns a duplicate-identity clarification, ask whether to use the existing
-Agent or choose a distinct name or handle; do not retry unchanged.
+- `@editor` (Editor): You are an editor. When someone pastes a draft, return a tighter version that keeps their voice, meaning, and format. Cut filler, fix grammar, and keep the length close to the original unless asked to shorten. Show the rewrite first; list only the changes that matter.
+- `@notes` (Notes): You turn raw meeting notes into a short record. Return three lists: Decisions, Action items with an owner and a date when one is stated, and Open questions. Keep wording from the notes; never invent owners, dates, or decisions that are not there.
+- `@buddy` (Buddy): You answer questions about how this team works. Rely on what people have told you and on your memory of earlier answers. When you do not know, say so and ask the person to tell you, then remember it for next time. Keep answers short and practical.
+- `@brief` (Brief): You write briefs. Given a rough request, return a one-page brief with Goal, Audience, Scope and non-goals, Success looks like, and Open questions. Ask at most one clarifying question before drafting; otherwise draft and mark assumptions.
+- `@planner` (Planner): You break goals into plans. Given a goal, return an ordered checklist of concrete steps, each small enough to finish in a sitting, with the first step something the person can do today. Flag dependencies and the riskiest step. Keep it under fifteen items.
+
+The user chooses the starter or describes the job; nothing is created while
+that is still open. If they decline a teammate or stop answering, create
+nothing, say the step is still open, and report it as skipped in the
+hand-over.
+
+Once the draft is settled, call `apply_workspace_changes` in that same
+turn with exactly one `create_agent` operation and nothing else. Do not add
+Channel reach, connections, repositories, or schedules unless the user asked
+for them, do not propose the creation instead of applying it, and do not
+ask the user to say "create it" or confirm a second time. The result
+usually carries `links.admin`, the Agent's page in Admin, and `links.slack`,
+which opens the Chickpea app in Slack; pass on whichever links the result
+returned and never construct one yourself. If it returns a
+duplicate-identity clarification, ask whether to use the existing Agent or
+choose a distinct name or handle; do not retry unchanged. If it carries a
+warning that the Slack handle needs attention, do not send the mention
+below: report the teammate as created with its handle pending, and give the
+user the warning and the Admin link.
 
 Then prove it. In the Chickpea DM from step 6, or a Channel the user names,
 send one message that mentions the new `@handle` with a small request it was
@@ -570,7 +586,8 @@ error reply is insufficient. Preserve the request permalink, reply permalink
 when available, and time in the private receipt without copying the
 conversation. If the mention gets no reply or an error, preserve the first
 error, diagnose it once, and report the teammate as created but not verified;
-do not create another Agent or edit this one blind.
+do not create another Agent or edit this one blind. A created Agent is not a
+verified teammate.
 
 Report two parts on separate lines, each with its own result: created (the
 `@handle` from the tool result) and verified (the reply you observed, with
@@ -578,7 +595,8 @@ its permalink in the receipt). Then give the user `links.admin`,
 `links.slack`, and one line on how to try it: mention `@handle` in Slack.
 Close by saying that next time they can ask you here to create, change, or
 connect a teammate, and that `/chickpea:new-agent` starts the next one if
-their client shows Chickpea's prompts as slash commands.
+their client shows Chickpea's prompts as slash commands (with the server
+name from step 8 in place of `chickpea` if you used another).
 
 ## Hand over
 
@@ -593,11 +611,12 @@ Leave a short final response containing:
   configured, signed in, and tested, or the one remaining action if the
   client still needs a restart.
 - The first teammate from step 9 as two separate lines: created, with its
-  `@handle`, Admin link, and Slack link, and verified, with whether a real
-  reply was observed; or the reason the step was skipped.
+  `@handle` and the links the result returned, and verified, with whether a
+  real reply was observed; or the reason the step was skipped.
 - The private receipt path and a simple next prompt to use here: "Create
-  another teammate for us" (`/chickpea:new-agent` where slash commands are
-  shown) or "Help me update this Chickpea installation."
+  another teammate for us", or "Create our first teammate" if step 9 was
+  skipped (`/chickpea:new-agent` where slash commands are shown), or "Help
+  me update this Chickpea installation."
 
 If any required step is blocked, name it plainly. For example, "Deployed to
 Cloudflare; Slack admin approval is still pending." Do not call the install

@@ -57,15 +57,32 @@ for (const name of Object.keys(GUIDES) as Array<keyof typeof GUIDES>) {
     FIRST_TEAMMATE_STARTERS.forEach((starter, index) => {
       assert.equal(rows[index], `${index + 1}. @${starter.handle}: ${starter.pitch}`);
     });
-    assert.match(step, /keeps its\s+catalog name, handle, and instructions unchanged/);
-    assert.match(step, /nothing is created until (?:they|you) agree/);
+    assert.match(step, /keeps its catalog name and handle\s+and uses these instructions unchanged/);
+    const instructionRows = step.split('\n').filter((line) => /^- `@/.test(line));
+    assert.equal(instructionRows.length, FIRST_TEAMMATE_STARTERS.length, 'one instruction line per starter');
+    FIRST_TEAMMATE_STARTERS.forEach((starter, index) => {
+      assert.equal(instructionRows[index], `- \`@${starter.handle}\` (${starter.name}): ${starter.instructions}`);
+    });
+    assert.match(step, /nothing is created while\s+that\s+is still open/);
+    assert.match(step, /(?:If they|If you) decline a teammate or stop answering/);
+    assert.match(step, /`inspect_workspace` again before/);
   });
 
   test(`${GUIDES[name]}: creation goes over MCP and verification is a real Slack reply`, async () => {
     const step = section(await guide(name), TEAMMATE_HEADING);
     assert.match(step, /chickpea:\/\/guide\/agent-authoring\/v1/);
-    assert.match(step, /`apply_workspace_changes` with exactly one\s+`create_agent` operation and nothing else/);
-    assert.match(step, /no(?:t add| Channel reach)/);
+    assert.match(step, /`apply_workspace_changes` in\s+that same\s+turn with exactly one\s+`create_agent` operation and nothing else/);
+    assert.match(step, /(?:Do not add|no) Channel reach,\s+connections,\s+repositories, or schedules unless (?:the user|you) asked/);
+    assert.match(step, /in\s+that same\s+turn/);
+    assert.match(step, /say "create it" or confirm a second time/);
+    assert.match(step, /duplicate[- ]identity/i);
+    assert.match(step, /does? not retry unchanged/);
+    assert.match(step, /whichever links (?:the result returned|it received)/);
+    assert.match(step, /never constructs? one/);
+    assert.match(step, /Slack handle\s+needs attention/);
+    assert.match(step, /created with its handle pending/);
+    assert.match(step, /(?:request it for\s+this exact message|asks for approval first)/);
+    assert.match(step, /A created Agent is not a\s+verified teammate/);
     assert.match(step, /`links\.admin`/);
     assert.match(step, /`links\.slack`/);
     assert.match(step, /mentions the new `@handle`/);
@@ -90,10 +107,13 @@ test('INSTALL_CHICKPEA_CLOUDFLARE.md: step 6 carries the use case to step 9 and 
   assert.match(stepEight, /step 9 of this guide covers the first teammate/);
   const handOver = section(text, /^## Hand over$/m);
   assert.match(handOver, /first teammate from step 9 as two separate lines/);
-  assert.match(handOver, /created, with its\s+`@handle`, Admin link, and Slack link/);
-  assert.match(handOver, /verified, with whether a real\s+reply was observed/);
+  assert.match(handOver, /created, with its\s+`@handle` and the links the result returned/);
+  assert.match(handOver, /verified, with whether a\s+real reply was observed/);
   assert.match(handOver, /Create\s+another teammate for us/);
+  assert.match(handOver, /"Create our first teammate" if step 9 was\s+skipped/);
+  const stepNine = section(text, TEAMMATE_HEADING);
+  assert.match(stepNine, /only after\s+step 8 reported the connection as tested/);
   assert.match(handOver, new RegExp(`\`/${MCP_SERVER_NAME}:new-agent\``));
-  assert.match(handOver, /Help me update this Chickpea installation/);
+  assert.match(handOver, /Help\s+me update this Chickpea installation/);
   assert.match(text, /creating their first\s+teammate from this conversation in step 9/);
 });
