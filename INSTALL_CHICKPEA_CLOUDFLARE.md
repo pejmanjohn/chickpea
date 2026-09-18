@@ -32,9 +32,10 @@ from another task is still valid.
 The requested installation includes cloning and configuring the project,
 deploying its Cloudflare resources, completing the normal Cloudflare and Slack
 authorization screens, sending the setup DM in step 6, verifying the
-installation in step 7, and connecting this coding agent to the new
+installation in step 7, connecting this coding agent to the new
 deployment's MCP server in step 8, so the user can keep managing their
-workspace from the agent that installed it. The Chickpea CLI is not required
+workspace from the agent that installed it, and creating their first
+teammate from this conversation in step 9. The Chickpea CLI is not required
 for this guide. Perform the installation steps within the user's selected
 accounts and your harness's permission rules:
 
@@ -435,11 +436,12 @@ and then send one new test DM. Do not repeatedly spam messages, create new
 installations, or change providers without explaining the cause. Follow the
 recovery section if the failure persists.
 
-The built-in Chickpea assistant is enough to complete installation. Do not
-invent a custom teammate, publish it to channels, connect unrelated accounts,
-or create schedules as part of a generic install. If the user already supplied
-a specific first use case, help them set up that teammate afterward. Otherwise
-leave the working DM ready for them to ask, "Help me create my first teammate."
+The built-in Chickpea assistant is enough to complete this step. Do not
+create a teammate through Slack, publish anything to channels, connect
+unrelated accounts, or create schedules here. The first teammate is designed
+and created from this conversation in step 9, after this coding agent is
+connected; if the user already supplied a specific first use case, carry it
+to that step.
 
 ## 7. Verify the installation
 
@@ -467,7 +469,7 @@ Fetch `https://<deployment>/connect.md`, replacing `<deployment>` with the
 public deployment URL saved in step 3, and follow its steps 1 to 5. It is
 written for you and carries the real server URL, the configuration for every
 client, and the same sign-in and verification rules restated here. Skip its
-last step; this guide already covers the first teammate. If that address
+last step; step 9 of this guide covers the first teammate. If that address
 answers 404, the installed release predates the connect guide; use the table
 at the end of this step instead. Either way:
 
@@ -513,6 +515,71 @@ Anyone on the team can connect their own coding agent later from Admin
 **Settings → MCP**, or by pasting `Connect my coding agent to my Chickpea
 using https://<deployment>/connect.md` into that agent.
 
+## 9. Create the first teammate
+
+Design and create the user's first teammate from this conversation, over the
+connection from step 8, then prove it answers in Slack. Do this only after
+step 8 reported the connection as tested. If the client still needs a
+restart, the connection is blocked, or the user declined it, skip this step,
+say so in the hand-over, and tell the user to ask you here once the
+connection works. Do not create the teammate through Slack instead.
+
+Read the resource `chickpea://guide/agent-authoring/v1` before you draft. If
+the user already named a specific first use case earlier in the
+installation, treat it as their answer to the question below and confirm it
+in one line instead of asking again. Otherwise ask, in these words:
+
+> What should your first teammate do for your team?
+
+Offer starters from this list as a numbered list, one line each, never as a
+table and never one you invent. If the user has said what their team does,
+offer the three that fit best; otherwise show all five. Say that none of
+them exist yet and that each works today with nothing to connect. They can
+reply with a number or describe the job they have in mind.
+
+1. @editor: tightens anything you paste: announcements, emails, posts. Keeps your voice.
+2. @notes: turns raw meeting notes into decisions, owners, and next steps.
+3. @buddy: answers “how do we do X here” once you tell it a few things about how the team works.
+4. @brief: turns a messy ask into a clear brief with goal, scope, and open questions.
+5. @planner: breaks a goal into a checklist you can start on today.
+
+Design in a few turns. Ask at most three more questions, only where the
+answer changes the role, procedure, or reach; prefer inferring low-risk
+defaults and saying so. Draft the teammate in the conversation: name, handle,
+one-line description, and complete instructions. A chosen starter keeps its
+catalog name, handle, and instructions unchanged. The `inspect_workspace`
+result from step 8 shows which handles already exist. The user chooses;
+nothing is created until they agree to the draft.
+
+When they agree, call `apply_workspace_changes` with exactly one
+`create_agent` operation and nothing else. Do not add Channel reach,
+connections, repositories, or schedules unless the user asked for them, do
+not propose the creation instead of applying it, and do not ask for a second
+confirmation. The result carries `links.admin`, the Agent's page in Admin,
+and `links.slack`, which opens the Chickpea conversation in Slack. If it
+returns a duplicate-identity clarification, ask whether to use the existing
+Agent or choose a distinct name or handle; do not retry unchanged.
+
+Then prove it. In the Chickpea DM from step 6, or a Channel the user names,
+send one message that mentions the new `@handle` with a small request it was
+built for. Use the same human Slack account as step 6 through browser or
+computer use; if your harness requires approval for the send, request it for
+this exact message. Observe a substantive reply from the new Agent. The tool
+result is not a reply, and a canned welcome, typing indicator, reaction, or
+error reply is insufficient. Preserve the request permalink, reply permalink
+when available, and time in the private receipt without copying the
+conversation. If the mention gets no reply or an error, preserve the first
+error, diagnose it once, and report the teammate as created but not verified;
+do not create another Agent or edit this one blind.
+
+Report two parts on separate lines, each with its own result: created (the
+`@handle` from the tool result) and verified (the reply you observed, with
+its permalink in the receipt). Then give the user `links.admin`,
+`links.slack`, and one line on how to try it: mention `@handle` in Slack.
+Close by saying that next time they can ask you here to create, change, or
+connect a teammate, and that `/chickpea:new-agent` starts the next one if
+their client shows Chickpea's prompts as slash commands.
+
 ## Hand over
 
 Leave a short final response containing:
@@ -525,8 +592,12 @@ Leave a short final response containing:
 - The coding-agent connection from step 8 as three separate lines:
   configured, signed in, and tested, or the one remaining action if the
   client still needs a restart.
-- The private receipt path and a simple next prompt: "Help me create my first
-  teammate" or "Help me update this Chickpea installation."
+- The first teammate from step 9 as two separate lines: created, with its
+  `@handle`, Admin link, and Slack link, and verified, with whether a real
+  reply was observed; or the reason the step was skipped.
+- The private receipt path and a simple next prompt to use here: "Create
+  another teammate for us" (`/chickpea:new-agent` where slash commands are
+  shown) or "Help me update this Chickpea installation."
 
 If any required step is blocked, name it plainly. For example, "Deployed to
 Cloudflare; Slack admin approval is still pending." Do not call the install
