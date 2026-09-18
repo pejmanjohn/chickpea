@@ -356,19 +356,14 @@ Copy this prompt into a coding agent with terminal and browser access:
 
 ```text
 Install Chickpea for my Slack workspace on my Cloudflare account using this guide:
-https://github.com/pejmanjohn/chickpea/blob/main/INSTALL_CHICKPEA_CLOUDFLARE.md
-
-Select the latest stable Chickpea application release and follow the setup
-instructions matching that release. Walk me through the Cloudflare account,
-Slack workspace, and model-provider choices, and handle the installation.
-Help me complete any sign-in steps that need my input. Before calling setup
-complete, send a test message in Slack and verify Chickpea's reply, then confirm
-I can sign in to Admin. Tell me which release was installed and where the local
-project lives.
+https://chickpea.co/install.md
 ```
 
-The [installation guide](INSTALL_CHICKPEA_CLOUDFLARE.md) stays current on `main`;
-the installation uses a stable application release.
+The address serves the [installation guide](INSTALL_CHICKPEA_CLOUDFLARE.md),
+which stays current on `main`. It has your agent pick the latest stable
+release, walk you through the Cloudflare, Slack, and model-provider choices,
+verify a real Slack reply and Admin sign-in, and report the installed release
+and local project path.
 
 For a Mac, use the [Node installer](#node), or give your coding agent the
 [Mac installation guide](INSTALL_CHICKPEA_NODE.md). It handles Node, the build,
@@ -442,10 +437,10 @@ Open your Chickpea folder in your coding agent and paste:
 
 ```text
 Update this Chickpea installation to the latest stable release. Follow:
-https://github.com/pejmanjohn/chickpea/blob/main/UPDATE_CHICKPEA_CLOUDFLARE.md
+https://chickpea.co/update.md
 ```
 
-The [update guide](UPDATE_CHICKPEA_CLOUDFLARE.md) stays current on `main`. Your
+The address serves the [update guide](UPDATE_CHICKPEA_CLOUDFLARE.md), which stays current on `main`. Your
 coding agent preserves the existing installation settings, deploys the latest
 release, and verifies Admin access. It does not send test messages to Slack.
 
