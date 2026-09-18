@@ -18,11 +18,14 @@ import {
   workspaceManagementInstructions,
 } from '../src/management/instructions.ts';
 import {
-  AGENT_AUTHORING_GUIDE,
   AGENT_AUTHORING_GUIDE_DIGEST,
   AGENT_AUTHORING_GUIDE_VERSION,
-  AGENT_SKILL_CREATION_GUIDE,
 } from '../src/management/agent-authoring/index.ts';
+import {
+  AGENT_AUTHORING_GUIDE_MCP,
+  AGENT_AUTHORING_GUIDE_MCP_DIGEST,
+  AGENT_SKILL_CREATION_GUIDE_MCP,
+} from '../src/management/agent-authoring/mcp-guide.ts';
 import { MANAGEMENT_OPERATION_KINDS } from '../src/management/schemas.ts';
 import { WORKSPACE_MANAGEMENT_TOOL_NAMES } from '../src/management/tool-adapter.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
@@ -107,6 +110,7 @@ test('supported coding clients share public PKCE registration and stateless MCP 
       const listedTools = (listed.result as {
         tools: Array<{
           name: string;
+          description?: string;
           inputSchema?: { required?: string[] };
           annotations?: { readOnlyHint?: boolean; idempotentHint?: boolean };
         }>;
@@ -241,9 +245,17 @@ test('supported coding clients share public PKCE registration and stateless MCP 
       assert.deepEqual(guide, {
         version: AGENT_AUTHORING_GUIDE_VERSION,
         digest: AGENT_AUTHORING_GUIDE_DIGEST,
-        guide: AGENT_AUTHORING_GUIDE,
-        files: { 'skill-creation.md': AGENT_SKILL_CREATION_GUIDE },
+        variant: 'coding-agent',
+        variantDigest: AGENT_AUTHORING_GUIDE_MCP_DIGEST,
+        guide: AGENT_AUTHORING_GUIDE_MCP,
+        files: { 'skill-creation.md': AGENT_SKILL_CREATION_GUIDE_MCP },
       });
+      assert.doesNotMatch(guide.guide.slice(guide.guide.indexOf('# Chickpea Agent authoring')), /presentation\.slack/);
+      const listedDescriptions = listedTools.map(({ name, description }) => `${name}: ${description ?? ''}`);
+      for (const line of listedDescriptions) {
+        if (line.startsWith('discover_slack_channels:')) continue;
+        assert.doesNotMatch(line, /presentation\.slack|\bDM\b|Slack turn|Slack Lists|Slack conversation|requester message/, `${client.name} ${line.slice(0, 40)}`);
+      }
 
       const proposed = await mcpCall(handler.fetch, client.protocol, 'tools/call', {
         name: 'propose_workspace_changes',
@@ -295,11 +307,13 @@ test('server instructions stay under the client cap and link the deployment Admi
       'create_agent',
       'confirm_workspace_change',
       'prepare_connector_setup',
-      '#/settings/providers',
-      '#/settings/github',
-      '#/settings/sandbox',
-      '#/settings/outbound',
+      '/admin/settings/providers',
+      '/admin/settings/github',
+      '/admin/settings/sandbox',
+      '/admin/settings/outbound',
       'mention it in Slack',
+      'presentation.markdown',
+      'links.admin',
     ]) assert.ok(text.includes(required), `instructions must mention ${required}`);
   }
 
@@ -320,7 +334,7 @@ test('server instructions stay under the client cap and link the deployment Admi
 test('workspace management MCP publishes the version 2 server contract', () => {
   assert.deepEqual(WORKSPACE_MANAGEMENT_SERVER_INFO, {
     name: 'chickpea-workspace',
-    version: '2.6.0',
+    version: '2.7.0',
   });
   assert.match(WORKSPACE_MANAGEMENT_OPERATION_SCHEMA_URI, /\/v2$/);
 });
