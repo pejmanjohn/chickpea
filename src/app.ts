@@ -21,6 +21,7 @@ import type { OAuthContinuation } from './connections/types.ts';
 import { createBetterAuthRuntimeRoutes } from './auth/better-auth-runtime.ts';
 import { createMcpOAuthRuntimeRoutes } from './auth/mcp-oauth-routes.ts';
 import { createManagementSetupRoutes } from './management/setup-routes.ts';
+import { createConnectRoutes } from './management/connect-routes.ts';
 import { activityStatusForObservation } from './activity/status.ts';
 import {
   observeProviderAuthRoute,
@@ -206,6 +207,7 @@ app.route('/', createMcpOAuthRuntimeRoutes({ productTelemetry: productTelemetryF
 app.route('/', createManagementSetupRoutes({
   productTelemetry: productTelemetryForRequest,
 }));
+app.route('/', createConnectRoutes());
 app.route('/', createAdminRoutes({
   onOAuthContinuationReady: resumeOAuthContinuation,
   productTelemetry: productTelemetryForRequest,

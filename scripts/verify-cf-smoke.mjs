@@ -515,6 +515,33 @@ async function completeSlackNativeSetup(baseUrl, eventsUrl, setup, backend) {
     'fresh setup GET renders the real Slack stage without password or capability echo',
     `HTTP ${setupPage.status}`,
   );
+
+  // The connect surface is public and answers before Slack setup finishes, so
+  // a person can hand their coding agent one line on a fresh install. It
+  // renders the deployment's own public origin: SLACK_TAG_PUBLIC_URL is pinned
+  // in .dev.vars, so the guide carries PUBLIC_ORIGIN, not the loopback address
+  // the smoke happens to reach the Worker on.
+  const connectGuide = await fetch(`${baseUrl}/connect.md`);
+  const connectGuideBody = await connectGuide.text();
+  const connectPage = await fetch(`${baseUrl}/connect`);
+  const connectPageBody = await connectPage.text();
+  const connectConditions = {
+    guide: connectGuide.status === 200,
+    guideType: (connectGuide.headers.get('content-type') ?? '').startsWith('text/markdown'),
+    guideMcpUrl: connectGuideBody.includes(`${PUBLIC_ORIGIN}/mcp`),
+    page: connectPage.status === 200,
+    pagePrompt: connectPageBody.includes(
+      `Connect my coding agent to my Chickpea using ${PUBLIC_ORIGIN}/connect.md`,
+    ),
+  };
+  check(
+    Object.values(connectConditions).every(Boolean),
+    'public connect surface serves the coding-agent guide and its copy prompt',
+    `guide HTTP ${connectGuide.status}; page HTTP ${connectPage.status}; failed: ${
+      Object.entries(connectConditions).filter(([, ok]) => !ok).map(([name]) => name).join(',') || 'none'
+    }`,
+  );
+
   const opened = await postForm(baseUrl, '/admin/setup', {
     action: 'open', capability: setup.capability, destination: '/admin/channels',
   });
