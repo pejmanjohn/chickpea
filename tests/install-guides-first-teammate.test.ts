@@ -72,9 +72,9 @@ for (const name of Object.keys(GUIDES) as Array<keyof typeof GUIDES>) {
     const step = section(await guide(name), TEAMMATE_HEADING);
     assert.match(step, /chickpea:\/\/guide\/agent-authoring\/v1/);
     assert.match(step, /`apply_workspace_changes` in\s+that same\s+turn with exactly one\s+`create_agent` operation and nothing else/);
-    assert.match(step, /(?:Do not add|no) Channel reach,\s+connections,\s+repositories, or schedules unless (?:the user|you) asked/);
+    assert.match(step, /(?:Do not add|no)\s+Channel reach,\s+connections,\s+repositories,\s+or schedules unless (?:the user|you) asked/);
     assert.match(step, /in\s+that same\s+turn/);
-    assert.match(step, /say "create it" or confirm a second time/);
+    assert.match(step, /say\s+"create it" or confirm a second time/);
     assert.match(step, /duplicate[- ]identity/i);
     assert.match(step, /does? not retry unchanged/);
     assert.match(step, /whichever links (?:the result returned|it received)/);
