@@ -28,6 +28,10 @@ import { AGENT_AUTHORING_GUIDE_URI } from './agent-authoring/index.ts';
 import { codingAgentAuthoringGuideResource } from './agent-authoring/mcp-guide.ts';
 import { WorkspaceManagementService } from './service.ts';
 import { workspaceManagementInstructions } from './instructions.ts';
+import {
+  registerWorkspaceManagementPrompts,
+  WORKSPACE_MANAGEMENT_PROMPT_NAMES,
+} from './prompts.ts';
 import { createLiveWorkspaceManagementService } from './live-service.ts';
 import type { ProductTelemetryCapture } from '../telemetry/client.ts';
 import {
@@ -40,7 +44,7 @@ import type { ManagementActorContext, ManagementOperation } from './types.ts';
 
 export const WORKSPACE_MANAGEMENT_SERVER_INFO = {
   name: 'chickpea-workspace',
-  version: '2.7.0',
+  version: '2.8.0',
 } as const;
 export const WORKSPACE_MANAGEMENT_OPERATION_SCHEMA_URI =
   'chickpea://schema/operations/v2' as const;
@@ -304,6 +308,7 @@ export function createWorkspaceManagementMcpServer(
       text: JSON.stringify({
         schemaVersion: 2,
         tools: WORKSPACE_MANAGEMENT_TOOL_NAMES,
+        prompts: WORKSPACE_MANAGEMENT_PROMPT_NAMES,
         operationKinds: MANAGEMENT_OPERATION_KINDS,
         activation: 'next_turn',
         confirmation: 'Use proposalId with confirm_workspace_change.',
@@ -327,6 +332,8 @@ export function createWorkspaceManagementMcpServer(
       }],
     }),
   );
+
+  registerWorkspaceManagementPrompts(server, input.baseUrl);
 
   return server;
 }
