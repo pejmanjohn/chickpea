@@ -1330,7 +1330,7 @@
       : "";
     var memberActions = WORKSPACE_ADMIN_UI
       ? ""
-      : '<button type="button" class="btn btn-soft' + (primarySection() === "settings" ? " nav-active" : "") + '" data-action="open-coding-agents" data-section-switcher="true">Coding agents</button>';
+      : '<button type="button" class="btn btn-soft' + (primarySection() === "settings" ? " nav-active" : "") + '" data-action="open-coding-agents" data-section-switcher="true">MCP</button>';
     var actions = mobileRoster
       ? mobileAgentRosterHtml()
       : (WORKSPACE_ADMIN_UI ? connectedBadge : "") + agentsAction + workspaceActions + memberActions;
@@ -1424,7 +1424,7 @@
       sections.push({ id: "settings", label: "Settings", action: "open-settings" });
     } else {
       // A member has no Settings destination; Coding agents is its own entry.
-      sections.push({ id: "settings", label: "Coding agents", action: "open-coding-agents" });
+      sections.push({ id: "settings", label: "MCP", action: "open-coding-agents" });
     }
     return '<nav class="section-switcher" aria-label="Admin navigation">' +
       sections.map(function (section) {
@@ -1580,7 +1580,7 @@
   }
 
   function settingsRailHtml() {
-    var codingAgents = { id: "agents-clients", name: "Coding agents", meta: "Claude Code, Codex, Cursor" };
+    var codingAgents = { id: "agents-clients", name: "MCP", meta: "Claude Code, Codex, Cursor" };
     // Members reach Settings only for their own coding-agent connection.
     var sections = WORKSPACE_ADMIN_UI ? [
       { id: "connectors", name: "Connectors", meta: "Managed integrations" },

@@ -16598,7 +16598,7 @@ test('Coding agents settings gives every member the MCP setup copy for their cli
     /<nav class="section-switcher"[^>]*>[\s\S]*?<\/nav>/,
   )?.[0];
   assert.ok(sectionSwitcher);
-  assert.match(sectionSwitcher, />Coding agents<\/button>/);
+  assert.match(sectionSwitcher, />MCP<\/button>/);
   assert.doesNotMatch(sectionSwitcher, />Settings<\/button>/);
 
   // The member rail carries the one Settings page they can open, and none of
@@ -16625,7 +16625,7 @@ test('Coding agents settings gives every member the MCP setup copy for their cli
   assert.equal(harness.locationPath(), '/admin/settings/agents-clients');
 });
 
-test('Coding agents is a Settings rail entry and each client keeps its own install link', async () => {
+test('MCP is a Settings rail entry and each client keeps its own install link', async () => {
   const harness = runAdminPageHarness({ initialPath: '/admin/settings/agents-clients' });
   await flushAsync();
 
@@ -16634,7 +16634,7 @@ test('Coding agents is a Settings rail entry and each client keeps its own insta
   assert.match(rail, /data-section="providers"/);
   assert.match(
     rail,
-    /data-action="settings-section" data-section="agents-clients"[^>]*>(<span class="chan-name">Coding agents<\/span><span class="chan-meta">Claude Code, Codex, Cursor<\/span>)/,
+    /data-action="settings-section" data-section="agents-clients"[^>]*>(<span class="chan-name">MCP<\/span><span class="chan-meta">Claude Code, Codex, Cursor<\/span>)/,
   );
   assert.doesNotMatch(harness.app.innerHTML, /Add to Cursor/);
 
