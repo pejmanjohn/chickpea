@@ -126,7 +126,19 @@ export async function wakeNodeTurnRelay(
   draining = (async () => {
     do {
       wakeRequested = false;
-      await drainNodeTurnRelayOnce({ ...overrides, ...(env ? { env } : {}) });
+      try {
+        await drainNodeTurnRelayOnce({ ...overrides, ...(env ? { env } : {}) });
+      } catch (error) {
+        // A store failure must never reject this promise: every caller wakes the
+        // relay with `void wakeNodeTurnRelay(...)`, so a rejection here would take
+        // the Node process down as an unhandled rejection. Log it, hand production
+        // drains to the bounded retry timer, and leave the loop rather than
+        // spinning on the same failure.
+        console.error('[chickpea] node turn relay drain failed:', sanitizeError(error));
+        wakeRequested = false;
+        if (!overrides.state) scheduleNodeTurnRelayRetry(env);
+        return;
+      }
     } while (wakeRequested);
   })().finally(async () => {
     draining = undefined;
