@@ -437,10 +437,10 @@ Open your Chickpea folder in your coding agent and paste:
 
 ```text
 Update this Chickpea installation to the latest stable release. Follow:
-https://github.com/pejmanjohn/chickpea/blob/main/UPDATE_CHICKPEA_CLOUDFLARE.md
+https://chickpea.co/update.md
 ```
 
-The [update guide](UPDATE_CHICKPEA_CLOUDFLARE.md) stays current on `main`. Your
+The address serves the [update guide](UPDATE_CHICKPEA_CLOUDFLARE.md), which stays current on `main`. Your
 coding agent preserves the existing installation settings, deploys the latest
 release, and verifies Admin access. It does not send test messages to Slack.
 
