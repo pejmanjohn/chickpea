@@ -33,6 +33,7 @@
   var API_CONNECTION_METHODS = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"];
   var GOOGLE_WORKSPACE_SCOPES = CONFIG.googleWorkspaceScopes;
   var ONBOARDING_PROMPT = "Hi Chickpea. I'm on the marketing team. What's a good first teammate for us?";
+  var MCP_CLIENTS_LOAD_ERROR = "Couldn’t load client settings. Reopen Settings to retry.";
   var CHANNEL_TRY_PROMPT = "@Chickpea Give me three useful ways you can help this channel, each with an example prompt I could try next.";
   var state = {
     agents: [],
@@ -210,6 +211,10 @@
     settingsLoadGeneration: 0,
     connectionInventory: { accounts: [], loading: false, error: "", notice: "" },
     metaAdsSettings: { loading: true, configured: false, canConfigure: false, clientId: "", callbackUrl: "", busy: false, error: "", notice: "" },
+    // Settings → Coding agents. The payload is public, origin-derived client
+    // setup copy; the picked client is a view preference and is never stored.
+    mcpClients: { loading: false, error: "", data: null, notice: "", noticeFor: "" },
+    mcpClientPick: "claude-code",
     connectorSettings: { provider: null, catalog: [], canConfigure: false, recoveryMode: false, impact: { accounts: 0, schedules: 0 }, loading: false, busy: "", error: "", notice: "", key: "", editing: false, confirm: "" },
     providerSettingsRequestId: 0,
     settingsError: "",
@@ -875,6 +880,12 @@
       try { return decodeURIComponent(part); } catch (err) { return part; }
     });
     state.leavePrompt = null;
+    // Coding agents is the one Settings page every member can open; any other
+    // settings path collapses onto it rather than bouncing back to the Agent.
+    if (!WORKSPACE_ADMIN_UI && parts[1] === "settings") {
+      openSettings("agents-clients");
+      return;
+    }
     if (!WORKSPACE_ADMIN_UI && parts[1] && parts[1] !== "agents") {
       var memberAgent = state.agents[0] || null;
       if (memberAgent) return openProfileEditor(memberAgent);
@@ -1317,9 +1328,12 @@
         (USAGE_ADMIN_UI ? '<button type="button" class="btn btn-soft' + (primarySection() === "usage" ? " nav-active" : "") + '" data-action="open-usage" data-section-switcher="true">Usage</button>' : '') +
         '<button type="button" class="btn btn-soft' + (primarySection() === "settings" ? " nav-active" : "") + '" data-action="open-settings" data-section-switcher="true">Settings</button>'
       : "";
+    var memberActions = WORKSPACE_ADMIN_UI
+      ? ""
+      : '<button type="button" class="btn btn-soft' + (primarySection() === "settings" ? " nav-active" : "") + '" data-action="open-coding-agents" data-section-switcher="true">MCP</button>';
     var actions = mobileRoster
       ? mobileAgentRosterHtml()
-      : (WORKSPACE_ADMIN_UI ? connectedBadge : "") + agentsAction + workspaceActions;
+      : (WORKSPACE_ADMIN_UI ? connectedBadge : "") + agentsAction + workspaceActions + memberActions;
     // The brand doubles as a home affordance to the canonical Agent.
     return '<header class="topbar' + (scoped ? ' admin-mobile-topbar' : '') + '">' +
       '<div class="brand"><button type="button" class="brand-home" data-action="go-home" aria-label="Home">' + peaMarkHtml() + wordmarkHtml() + '</button>' + environmentStatusHtml('topbar') + '</div>' +
@@ -1408,6 +1422,9 @@
       );
       if (USAGE_ADMIN_UI) sections.push({ id: "usage", label: "Usage", action: "open-usage" });
       sections.push({ id: "settings", label: "Settings", action: "open-settings" });
+    } else {
+      // A member has no Settings destination; Coding agents is its own entry.
+      sections.push({ id: "settings", label: "MCP", action: "open-coding-agents" });
     }
     return '<nav class="section-switcher" aria-label="Admin navigation">' +
       sections.map(function (section) {
@@ -1563,14 +1580,17 @@
   }
 
   function settingsRailHtml() {
-    var sections = [
+    var codingAgents = { id: "agents-clients", name: "MCP", meta: "Claude Code, Codex, Cursor" };
+    // Members reach Settings only for their own coding-agent connection.
+    var sections = WORKSPACE_ADMIN_UI ? [
       { id: "connectors", name: "Connectors", meta: "Managed integrations" },
       { id: "providers", name: "Model providers", meta: "Keys and models" },
       { id: "github", name: "GitHub", meta: "Accounts and access" },
       { id: "sandbox", name: "Coding sandbox", meta: "Workspace runtime" },
-      { id: "outbound", name: "Outbound access", meta: "Network policy" }
-    ];
-    if (INSTALLATION_OWNER) sections.push({ id: "updates", name: "About &amp; updates", meta: "Version and support" });
+      { id: "outbound", name: "Outbound access", meta: "Network policy" },
+      codingAgents
+    ] : [codingAgents];
+    if (WORKSPACE_ADMIN_UI && INSTALLATION_OWNER) sections.push({ id: "updates", name: "About &amp; updates", meta: "Version and support" });
     var primaryShell = isPrimaryAdminSurface();
     var html = '<nav class="rail' + (primaryShell ? ' primary-shell-sidebar' : '') + '" aria-label="Settings">' +
       (primaryShell ? primaryShellBrandHtml() : '') + '<div class="rail-context">' +
@@ -8278,7 +8298,122 @@
     catch (_) { failed(); }
   }
 
+  // ---- Settings: Coding agents ---------------------------------------------
+  // One public, origin-derived table of MCP client setup copy. Everything here
+  // is text the user pastes into their own coding agent; nothing is stored.
+
+  function mcpClientList() {
+    var data = state.mcpClients.data;
+    return (data && data.clients) || [];
+  }
+
+  function selectedMcpClient() {
+    var clients = mcpClientList();
+    var picked = String(state.mcpClientPick || "claude-code");
+    var fallback = null;
+    for (var index = 0; index < clients.length; index += 1) {
+      if (clients[index].id === picked) return clients[index];
+      if (clients[index].id === "claude-code") fallback = clients[index];
+    }
+    return fallback || clients[0] || null;
+  }
+
+  function mcpNoticeHtml(scope) {
+    var current = state.mcpClients;
+    if (!current.notice || current.noticeFor !== scope) return "";
+    return '<p class="hint mcp-notice" role="status">' + esc(current.notice) + '</p>';
+  }
+
+  // Notes come from the same table as /connect.md and mark commands and
+  // server names with backticks; show those as inline code, nothing else.
+  function mcpNoteHtml(note) {
+    return String(note || "").split("`").map(function (part, index) {
+      return index % 2 === 1 ? "<code>" + esc(part) + "</code>" : esc(part);
+    }).join("");
+  }
+
+  function codingAgentsSettingsHtml() {
+    var current = state.mcpClients;
+    var head = '<div class="section-head"><div><h1 class="page-title">Coding agents</h1>' +
+      '<p class="hint">Connect Claude Code, Codex, Cursor, or any MCP client to manage this workspace’s Agents as you.</p></div></div>';
+    if (current.loading) return '<div class="coding-agents-page">' + head + '<p class="hint">Loading&hellip;</p></div>';
+    if (current.error || !current.data) {
+      return '<div class="coding-agents-page">' + head +
+        '<p class="field-error" role="alert">' + esc(current.error || MCP_CLIENTS_LOAD_ERROR) + '</p>' +
+        '<p><button type="button" class="btn btn-soft" data-action="mcp-clients-retry">Retry</button></p></div>';
+    }
+    var data = current.data;
+    var selected = selectedMcpClient();
+    var tabs = mcpClientList().map(function (client) {
+      var on = !!selected && client.id === selected.id;
+      return '<button type="button" class="mcp-client-tab' + (on ? " on" : "") + '" data-action="mcp-client-pick" data-client="' + esc(client.id) + '" aria-pressed="' + (on ? "true" : "false") + '">' + esc(client.title) + '</button>';
+    }).join("");
+    var panel = selected
+      ? '<div class="mcp-client-panel"><h3 class="mcp-client-title">' + esc(selected.title) + '</h3>' +
+        '<div class="mcp-snippet"><pre class="mcp-snippet-code"><code>' + esc(selected.text) + '</code></pre>' +
+        '<button type="button" class="btn btn-soft btn-sm" data-action="mcp-copy-snippet">Copy</button></div>' +
+        mcpNoticeHtml("snippet") +
+        (selected.note ? '<p class="hint">' + mcpNoteHtml(selected.note) + '</p>' : '') +
+        (selected.deepLink ? '<p class="mcp-client-deeplink"><a class="btn btn-primary" href="' + esc(selected.deepLink.href) + '" target="_blank" rel="noopener noreferrer">' + esc(selected.deepLink.label) + '</a></p>' : '') +
+        '</div>'
+      : '<p class="hint">No setup snippets are available for this deployment.</p>';
+    return '<div class="coding-agents-page">' + head +
+      '<section class="section"><div class="section-head"><div><h2 class="section-title">Copy setup prompt</h2>' +
+      '<p class="hint">Paste this into a coding agent and it connects itself.</p></div></div>' +
+      '<div class="command-box"><code>' + esc(data.prompt) + '</code>' +
+      '<button type="button" class="btn btn-primary btn-sm" data-action="mcp-copy-prompt">Copy</button></div>' +
+      mcpNoticeHtml("prompt") +
+      (data.connectUrl ? '<p class="hint"><a class="hint-link" href="' + esc(data.connectUrl) + '" target="_blank" rel="noopener noreferrer">Open the connect page</a></p>' : '') +
+      '</section>' +
+      '<section class="section"><div class="section-head"><div><h2 class="section-title">MCP server address</h2>' +
+      '<p class="hint">Any MCP client connects to this deployment here and signs in with Slack.</p></div></div>' +
+      '<div class="command-box"><code>' + esc(data.url) + '</code>' +
+      '<button type="button" class="btn btn-soft btn-sm" data-action="mcp-copy-url">Copy</button></div>' +
+      mcpNoticeHtml("url") +
+      '</section>' +
+      '<section class="section"><div class="section-head"><div><h2 class="section-title">Set it up yourself</h2>' +
+      '<p class="hint">Pick your coding agent for its exact step.</p></div></div>' +
+      '<div class="mcp-client-tabs" role="group" aria-label="Choose a coding agent">' + tabs + '</div>' +
+      panel + '</section></div>';
+  }
+
+  function loadMcpClients(generation) {
+    var current = state.mcpClients;
+    current.loading = true;
+    current.error = "";
+    return api("/admin/api/mcp-clients", { cache: "no-store" }).then(function (body) {
+      if (!settingsLoadIsCurrent(generation) || state.settingsSection !== "agents-clients") return;
+      state.mcpClients = { loading: false, error: "", data: body, notice: "", noticeFor: "" };
+      render();
+    }).catch(function () {
+      if (!settingsLoadIsCurrent(generation) || state.settingsSection !== "agents-clients") return;
+      state.mcpClients = { loading: false, error: MCP_CLIENTS_LOAD_ERROR, data: null, notice: "", noticeFor: "" };
+      render();
+    });
+  }
+
+  function copyMcpText(text, scope) {
+    if (!text) return;
+    var current = state.mcpClients;
+    function failed() {
+      current.notice = "Clipboard unavailable. Select and copy the text above.";
+      current.noticeFor = scope;
+      render();
+    }
+    if (!navigator.clipboard || !navigator.clipboard.writeText) { failed(); return; }
+    try {
+      Promise.resolve(navigator.clipboard.writeText(text)).then(function () {
+        current.notice = "Copied.";
+        current.noticeFor = scope;
+        render();
+      }).catch(failed);
+    } catch (_) { failed(); }
+  }
+
   function settingsMainHtml() {
+    // Coding agents is the one page a plain member can reach, so it returns
+    // before any owner-only panel is built.
+    if (state.settingsSection === "agents-clients") return codingAgentsSettingsHtml();
     if (state.settingsSection === "updates" && INSTALLATION_OWNER) return installationPageHtml();
     if (state.settingsSection === "slack") {
       return '<div class="section-head"><div><h1 class="page-title">Slack</h1><p class="hint">Manage the workspace installation and transport behavior. Agent handles and avatars live on each Agent.</p></div></div>' +
@@ -9101,11 +9236,14 @@
       "connections": "connectors",
       "github-settings": "github",
       "sandbox-settings": "sandbox",
-      "egress-settings": "outbound"
+      "egress-settings": "outbound",
+      "coding-agents": "agents-clients"
     };
     var section = aliases[String(value || "")] || String(value || "");
+    // A member's only Settings page is Coding agents.
+    if (!WORKSPACE_ADMIN_UI) return "agents-clients";
     if (section === "updates" && INSTALLATION_OWNER) return section;
-    return ["slack", "connectors", "providers", "github", "sandbox", "outbound"].includes(section) ? section : "providers";
+    return ["slack", "connectors", "providers", "github", "sandbox", "outbound", "agents-clients"].includes(section) ? section : "providers";
   }
 
   function settingsLoadIsCurrent(generation) {
@@ -9137,6 +9275,12 @@
     state.workspaceDefaultNotice = "";
     state.workspaceImageRoleError = "";
     state.workspaceImageRoleNotice = "";
+    if (state.settingsSection === "agents-clients") {
+      state.mcpClients = { loading: true, error: "", data: null, notice: "", noticeFor: "" };
+      render();
+      loadMcpClients(generation);
+      return;
+    }
     if (state.settingsSection === "updates") { loadInstallation(false); return; }
     if (state.settingsSection === "slack") {
       render();
@@ -11503,6 +11647,7 @@
     }
     if (state.ownerMemory.dirty && (
       action === "open-channels" || action === "open-destinations" || action === "open-profiles" || action === "open-team" || action === "open-settings" ||
+      action === "open-coding-agents" ||
       action === "open-audit" || action === "open-usage" || action === "go-home" || action === "profiles-back" ||
       action === "edit-profile" || action === "new-profile" || action === "duplicate-profile" || action === "open-channel-from-profile" ||
       action === "open-channel-index" || action === "select-channel" || action === "channel-back"
@@ -11636,6 +11781,20 @@
     if (action === "onboarding-proceed-dashboard") { proceedFromOnboardingTry(); }
     if (action === "onboarding-open-dashboard") { enterProfiles(null); }
     if (action === "copy-onboarding-prompt") { copyOnboardingPrompt(); }
+    if (action === "open-coding-agents") { openSettings("agents-clients"); }
+    if (action === "mcp-clients-retry") { openSettings("agents-clients"); }
+    if (action === "mcp-client-pick") {
+      state.mcpClientPick = target.getAttribute("data-client") || "claude-code";
+      state.mcpClients.notice = "";
+      state.mcpClients.noticeFor = "";
+      render();
+    }
+    if (action === "mcp-copy-prompt" && state.mcpClients.data) copyMcpText(state.mcpClients.data.prompt, "prompt");
+    if (action === "mcp-copy-url" && state.mcpClients.data) copyMcpText(state.mcpClients.data.url, "url");
+    if (action === "mcp-copy-snippet") {
+      var snippetClient = selectedMcpClient();
+      if (snippetClient) copyMcpText(snippetClient.text, "snippet");
+    }
     if (action === "copy-channel-prompt") { copyChannelPrompt(); }
     if (action === "select-channel") { state.view = "channels"; state.channelScreen = "detail"; selectActive(target.getAttribute("data-workspace"), target.getAttribute("data-channel")); render(); }
     if (action === "open-channel-scheduled") {
@@ -14734,12 +14893,14 @@
   // the brand-home logo, and the "<- Profiles" back link.
   function isEditLeaveAction(action) {
     return action === "open-channels" || action === "open-destinations" || action === "open-profiles" || action === "open-team" || action === "open-settings" ||
+      action === "open-coding-agents" ||
       action === "open-audit" || action === "open-usage" || action === "go-home" || action === "profiles-back" ||
       action === "edit-profile" || action === "new-profile" || action === "duplicate-profile" || action === "open-channel-from-profile";
   }
 
   function isChannelLeaveAction(action) {
     return action === "open-channels" || action === "open-destinations" || action === "open-profiles" || action === "open-team" || action === "open-settings" ||
+      action === "open-coding-agents" ||
       action === "open-audit" || action === "open-usage" || action === "go-home" || action === "channel-back" ||
       action === "edit-profile" || action === "new-profile" || action === "open-channel-index" || action === "select-channel";
   }

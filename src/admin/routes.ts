@@ -40,6 +40,8 @@ import {
   safeMutationRequest as safeAdminMutationRequest,
 } from './api-support.ts';
 import { requestOrigin } from '../http/request-origin.ts';
+import { connectOrigin } from '../management/connect.ts';
+import { mcpClientsPayload } from '../management/mcp-client-config.ts';
 import { createUsageAdminApi } from './usage-api.ts';
 import { createWorkAdminApi } from './work-api.ts';
 import { createTeamAdminApi } from './team-api.ts';
@@ -6057,6 +6059,17 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
   });
 
+  // Settings → Coding agents renders exactly this table, and it is the same
+  // one `/connect.md` serves publicly. Every authenticated principal may read
+  // it — a member connecting their own coding agent needs the snippets too —
+  // and the body carries only public origin-derived facts, no secrets.
+  app.get('/admin/api/mcp-clients', (c) => {
+    const origin = connectOrigin(requestOrigin(c));
+    if (!origin) return c.notFound();
+    c.header('Cache-Control', 'no-store');
+    return c.json(mcpClientsPayload(origin));
+  });
+
   app.get('/admin/api/agents', async (c) => {
     const platformEnv = c.env as PlatformEnv | undefined;
     const settingsStore = settings(c);
@@ -10904,6 +10917,10 @@ function permissionForAdminRequest(c: Context, _principal: AuthPrincipal): Permi
     return 'admin.configure';
   }
   if (c.req.path === '/admin/logout') return 'account.view';
+  // The coding-agent client table is the same public material `/connect.md`
+  // serves unauthenticated, so any signed-in person may read it to connect
+  // their own client — it grants no configuration authority.
+  if (c.req.method === 'GET' && c.req.path === '/admin/api/mcp-clients') return 'account.view';
   if (c.req.method === 'GET' && ['/admin/api/settings/connectors/composio', '/admin/api/settings/connectors/meta-ads'].includes(c.req.path)) {
     return 'agent.create';
   }

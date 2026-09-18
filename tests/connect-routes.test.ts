@@ -5,6 +5,7 @@ import { test } from 'node:test';
 import { createConnectRoutes } from '../src/management/connect-routes.ts';
 import {
   AGENT_AUTHORING_GUIDE_URI,
+  ADMIN_CODING_AGENTS_PATH,
   ADMIN_SETTINGS_PATH,
   CONNECT_CLIENTS,
   connectOrigin,
@@ -161,6 +162,7 @@ test('the page hands the person one line to paste and a way to copy it', async (
   assert.ok(snippetIds.length >= 3, snippetIds.join(','));
 
   assert.ok(html.includes(`href="${ADMIN_SETTINGS_PATH}"`), 'link to Admin Settings');
+  assert.ok(html.includes(`href="${ADMIN_CODING_AGENTS_PATH}"`), 'link to Settings → Coding agents');
   assert.ok(html.includes(`href="${ORIGIN}/connect.md"`), 'link to the agent guide');
 });
 

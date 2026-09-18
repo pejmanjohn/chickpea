@@ -3248,3 +3248,69 @@ button.capability-pill { cursor: pointer; }
 }
 
 .installation-dialog a { color:var(--text-2); text-underline-offset:3px; }
+
+/* ---- Settings → Coding agents -------------------------------------------
+   Light-mode only, like the rest of Admin. The copy boxes and the snippet
+   block share one clay-well shape; the picker is a pill strip that wraps
+   instead of scrolling so every client stays reachable on a phone. */
+.coding-agents-page { display: flex; flex-direction: column; gap: 22px; min-width: 0; }
+.coding-agents-page .command-box, .mcp-snippet {
+  background: var(--well);
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  padding: 13px 13px 13px 15px;
+}
+.coding-agents-page .command-box { align-items: center; }
+.mcp-snippet { align-items: flex-start; }
+.coding-agents-page .command-box code {
+  color: var(--text-2);
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  line-height: 1.7;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.coding-agents-page .command-box .btn, .mcp-snippet .btn { flex-shrink: 0; white-space: nowrap; }
+.coding-agents-page .mcp-notice { color: var(--ok); font-weight: 700; }
+.mcp-client-tabs { display: flex; flex-wrap: wrap; gap: 6px; }
+.mcp-client-tab {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--text-2);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 0.8125rem;
+  font-weight: 700;
+  line-height: 1;
+  padding: 9px 14px;
+  white-space: nowrap;
+}
+.mcp-client-tab:hover { background: var(--well); color: var(--text); }
+.mcp-client-tab.on {
+  background: var(--text);
+  border-color: var(--text);
+  box-shadow: 0 2px 0 rgba(30, 24, 12, 0.5);
+  color: #f6edda;
+}
+.mcp-client-tab:focus-visible { outline: 2px solid var(--ember-press); outline-offset: 2px; }
+.mcp-client-panel { display: flex; flex-direction: column; gap: 11px; }
+.mcp-client-title { color: var(--text); font-family: var(--display); font-size: 0.9375rem; font-weight: 700; }
+.mcp-snippet-code {
+  color: var(--text-2);
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  line-height: 1.7;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.mcp-snippet-code code { font: inherit; }
+.mcp-client-deeplink { display: flex; }
+@media (max-width: 720px) {
+  .coding-agents-page .command-box, .mcp-snippet { align-items: stretch; flex-direction: column; gap: 12px; }
+  .coding-agents-page .command-box .btn, .mcp-snippet .btn, .mcp-client-deeplink .btn { width: 100%; }
+}
