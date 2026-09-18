@@ -23,9 +23,9 @@
 
 <br /><br />
 
-**[Install on a Mac](#node)** &nbsp; · &nbsp; [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/pejmanjohn/chickpea) &nbsp; · &nbsp; **[Install with your coding agent](#get-started-with-your-coding-agent)**
+<a href="#install-on-cloudflare"><img src="assets/install-cloudflare.svg" alt="Install on Cloudflare" height="46"></a>&nbsp;&nbsp;&nbsp;<a href="#install-on-your-mac"><img src="assets/install-mac.svg" alt="Install on your Mac" height="46"></a>
 
-<sub>Run Chickpea in your own Cloudflare account or on your own Mac.</sub>
+<sub>Paste one prompt into Claude Code, Codex, or Cursor. Chickpea runs in your own Cloudflare account or on your own Mac.</sub>
 
 Already installed? [Connect via MCP](#connect-via-mcp) · [Update](#update-chickpea)
 
@@ -365,10 +365,20 @@ release, walk you through the Cloudflare, Slack, and model-provider choices,
 verify a real Slack reply and Admin sign-in, and report the installed release
 and local project path.
 
-For a Mac, use the [Node installer](#node), or give your coding agent the
-[Mac installation guide](INSTALL_CHICKPEA_NODE.md). It handles Node, the build,
-private state, and starting Chickpea. You choose a stable HTTPS address and
-complete Slack and provider authorization in your browser.
+### Install on your Mac
+
+Copy this prompt into a coding agent running on the Mac:
+
+```text
+Install Chickpea on this Mac using this guide:
+https://chickpea.co/install-mac.md
+```
+
+The address serves the [Mac installation guide](INSTALL_CHICKPEA_NODE.md). It
+handles Node, the build, private state, and starting Chickpea. You choose a
+stable HTTPS address and complete Slack and provider authorization in your
+browser. Prefer a shell to an agent? The [one-line installer](#node) does the
+same job.
 
 ### Connect via MCP
 
@@ -454,9 +464,9 @@ release, and verifies Admin access. It does not send test messages to Slack.
 
 The compressed Worker fits within the Workers Free size limit; only the optional coding sandbox requires Workers Paid. See [Good to Know](#good-to-know).
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/pejmanjohn/chickpea)
+The [installation guide](INSTALL_CHICKPEA_CLOUDFLARE.md) is written for a coding agent, but every step in it is an ordinary command or browser action you can carry out yourself: clone a release tag, install dependencies, authorize Wrangler, deploy, and open the private setup link it prints.
 
-Deploy, then open the private setup link and pick a Slack lane:
+Then pick a Slack lane:
 
 - **Add to Slack** installs the unlisted shared Chickpea app through the private gateway. No configuration token, client secret, signing secret, public Events URL, or app-level token required from you.
 - **Use your own Slack app** creates and installs a customer-owned app from the reviewed manifest. Paste a configuration token and it's done; a manual manifest path with screenshots is the fallback. Step-by-step in [SETUP_AGENT.md](SETUP_AGENT.md).
@@ -524,7 +534,7 @@ The full list, including per-connector Composio auth config IDs and the Google A
 
 - One deployment currently serves one Slack workspace.
 - The shared gateway is private infrastructure. Its implementation and Slack credentials are not in this public repository, and it does not durably queue Slack event bodies. Delivery recovery relies on Slack retries plus deployment-owned admission; [the data-handling contract](docs/shared-gateway-data-handling.md) spells out what is stored, where, and for how long.
-- Updates are manual. The Cloudflare Deploy button clones this repository rather than forking it.
+- Updates are manual. The [update guide](UPDATE_CHICKPEA_CLOUDFLARE.md) walks a coding agent through them; your installation is a clone of a release tag, not a fork.
 - Node durability is single-host SQLite. Multi-instance Node needs a shared state service.
 - The compressed Worker upload is about 2.5 MiB, under the Workers Free plan's 3 MiB limit; `npm run build` fails if it grows past the budget in `scripts/verify-worker-size.mjs`. Public images and the Admin application's browser code use Static Assets in the same deployment, which do not count toward that limit.
 - Anonymous, content-free [product telemetry](TELEMETRY.md) is enabled by default and has a complete operator opt-out.
