@@ -13,6 +13,11 @@ import {
   WORKSPACE_MANAGEMENT_SERVER_INFO,
 } from '../src/management/mcp.ts';
 import {
+  WORKSPACE_MANAGEMENT_INSTRUCTIONS_MAX_BYTES,
+  workspaceManagementAdminOrigin,
+  workspaceManagementInstructions,
+} from '../src/management/instructions.ts';
+import {
   AGENT_AUTHORING_GUIDE,
   AGENT_AUTHORING_GUIDE_DIGEST,
   AGENT_AUTHORING_GUIDE_VERSION,
@@ -21,6 +26,8 @@ import {
 import { MANAGEMENT_OPERATION_KINDS } from '../src/management/schemas.ts';
 import { WORKSPACE_MANAGEMENT_TOOL_NAMES } from '../src/management/tool-adapter.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
+
+const DEPLOYMENT_BASE_URL = 'https://chickpea-team.example.test/';
 
 const CLIENTS = [
   { name: 'Codex CLI/Desktop', protocol: '2025-11-25', redirect: 'http://127.0.0.1:47321/callback' },
@@ -54,7 +61,11 @@ test('supported coding clients share public PKCE registration and stateless MCP 
       repositories: [],
     });
     const handler = createMcpHandler(
-      () => createWorkspaceManagementMcpServer({ principal, service: f.service }),
+      () => createWorkspaceManagementMcpServer({
+        principal,
+        service: f.service,
+        baseUrl: DEPLOYMENT_BASE_URL,
+      }),
       { legacy: 'stateless' },
     );
 
@@ -75,9 +86,21 @@ test('supported coding clients share public PKCE registration and stateless MCP 
           capabilities: {},
           clientInfo: { name: client.name, version: '1.0.0' },
         });
-        assert.equal((initialized.result as {
+        const initializeResult = initialized.result as {
           serverInfo: { version: string };
-        }).serverInfo.version, WORKSPACE_MANAGEMENT_SERVER_INFO.version, client.name);
+          instructions?: string;
+        };
+        assert.equal(initializeResult.serverInfo.version, WORKSPACE_MANAGEMENT_SERVER_INFO.version, client.name);
+        assert.equal(typeof initializeResult.instructions, 'string', `${client.name} must receive instructions`);
+        assert.ok(
+          Buffer.byteLength(initializeResult.instructions!, 'utf8') <= WORKSPACE_MANAGEMENT_INSTRUCTIONS_MAX_BYTES,
+          `${client.name} instructions must fit the client cap`,
+        );
+        assert.ok(
+          initializeResult.instructions!.includes(`${new URL(DEPLOYMENT_BASE_URL).origin}/admin`),
+          `${client.name} instructions must link the real Admin origin`,
+        );
+        assert.equal(initializeResult.instructions, workspaceManagementInstructions(DEPLOYMENT_BASE_URL));
       }
 
       const listed = await mcpCall(handler.fetch, client.protocol, 'tools/list', {});
@@ -257,10 +280,47 @@ test('supported coding clients share public PKCE registration and stateless MCP 
   }
 });
 
+test('server instructions stay under the client cap and link the deployment Admin', () => {
+  const longOrigin = `https://${'chickpea-'.repeat(12)}workspace.example-account.workers.dev`;
+  for (const baseUrl of [undefined, 'https://chickpea.example.test', `${longOrigin}/setup/x?y=1#z`]) {
+    const text = workspaceManagementInstructions(baseUrl);
+    assert.ok(
+      Buffer.byteLength(text, 'utf8') <= WORKSPACE_MANAGEMENT_INSTRUCTIONS_MAX_BYTES,
+      `instructions for ${baseUrl ?? 'no origin'} exceed the cap`,
+    );
+    for (const required of [
+      'inspect_workspace',
+      WORKSPACE_MANAGEMENT_AGENT_AUTHORING_GUIDE_URI,
+      'apply_workspace_changes',
+      'create_agent',
+      'confirm_workspace_change',
+      'prepare_connector_setup',
+      '#/settings/providers',
+      '#/settings/github',
+      '#/settings/sandbox',
+      '#/settings/outbound',
+      'mention it in Slack',
+    ]) assert.ok(text.includes(required), `instructions must mention ${required}`);
+  }
+
+  assert.equal(workspaceManagementAdminOrigin(undefined), undefined);
+  assert.equal(workspaceManagementAdminOrigin('not a url'), undefined);
+  assert.equal(workspaceManagementAdminOrigin('ftp://chickpea.example.test'), undefined);
+  assert.equal(workspaceManagementAdminOrigin('https://chickpea.example.test/setup/abc?x=1#y'), 'https://chickpea.example.test');
+  assert.equal(workspaceManagementAdminOrigin('http://localhost:8787/'), 'http://localhost:8787');
+
+  const withOrigin = workspaceManagementInstructions(`${longOrigin}/setup/x?y=1#z`);
+  assert.ok(withOrigin.includes(`Admin: ${longOrigin}/admin`));
+  assert.ok(!withOrigin.includes('/setup/x'), 'instructions must not leak a setup path');
+  const withoutOrigin = workspaceManagementInstructions(undefined);
+  assert.ok(!withoutOrigin.includes('https://'), 'no origin must not invent a link');
+  assert.ok(withoutOrigin.includes('/admin'));
+});
+
 test('workspace management MCP publishes the version 2 server contract', () => {
   assert.deepEqual(WORKSPACE_MANAGEMENT_SERVER_INFO, {
     name: 'chickpea-workspace',
-    version: '2.5.0',
+    version: '2.6.0',
   });
   assert.match(WORKSPACE_MANAGEMENT_OPERATION_SCHEMA_URI, /\/v2$/);
 });

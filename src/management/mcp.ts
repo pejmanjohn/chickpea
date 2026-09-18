@@ -32,6 +32,7 @@ import {
   AGENT_SKILL_CREATION_GUIDE,
 } from './agent-authoring/index.ts';
 import { WorkspaceManagementService } from './service.ts';
+import { workspaceManagementInstructions } from './instructions.ts';
 import { createLiveWorkspaceManagementService } from './live-service.ts';
 import type { ProductTelemetryCapture } from '../telemetry/client.ts';
 import {
@@ -44,7 +45,7 @@ import type { ManagementActorContext, ManagementOperation } from './types.ts';
 
 export const WORKSPACE_MANAGEMENT_SERVER_INFO = {
   name: 'chickpea-workspace',
-  version: '2.5.0',
+  version: '2.6.0',
 } as const;
 export const WORKSPACE_MANAGEMENT_OPERATION_SCHEMA_URI =
   'chickpea://schema/operations/v2' as const;
@@ -53,6 +54,8 @@ export const WORKSPACE_MANAGEMENT_AGENT_AUTHORING_GUIDE_URI =
 interface WorkspaceManagementMcpServerInput {
   principal: McpAuthenticatedPrincipal;
   service: WorkspaceManagementService;
+  /** Public base URL of this deployment, used to make the Admin links in `instructions` real. */
+  baseUrl?: string;
 }
 
 export function createWorkspaceManagementMcpHandler(
@@ -68,7 +71,11 @@ export function createWorkspaceManagementMcpHandler(
     },
   });
   const handler = createMcpHandler(
-    () => createWorkspaceManagementMcpServer({ principal, service }),
+    () => createWorkspaceManagementMcpServer({
+      principal,
+      service,
+      ...(setupBaseUrl ? { baseUrl: setupBaseUrl } : {}),
+    }),
     { legacy: 'stateless' },
   );
   return handler.fetch;
@@ -77,7 +84,9 @@ export function createWorkspaceManagementMcpHandler(
 export function createWorkspaceManagementMcpServer(
   input: WorkspaceManagementMcpServerInput,
 ): McpServer {
-  const server = new McpServer(WORKSPACE_MANAGEMENT_SERVER_INFO);
+  const server = new McpServer(WORKSPACE_MANAGEMENT_SERVER_INFO, {
+    instructions: workspaceManagementInstructions(input.baseUrl),
+  });
   const adapter = {
     service: input.service,
     resolveContext: async () => mcpActorContext(input.principal),
