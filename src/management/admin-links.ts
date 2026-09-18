@@ -23,7 +23,7 @@ export const ADMIN_SETTINGS_SECTIONS = {
 
 export type AdminSettingsSection = keyof typeof ADMIN_SETTINGS_SECTIONS;
 
-/** Settings sections a coding agent cannot change over MCP today, in rail order. */
+/** Settings sections with no MCP operation today (a provider key or connector still hands off through a tool). */
 export const ADMIN_ONLY_SETTINGS_SECTIONS: readonly AdminSettingsSection[] = [
   'providers', 'github', 'sandbox', 'outbound', 'connectors',
 ];
@@ -59,14 +59,18 @@ export function adminTeamUrl(baseUrl: string | undefined): string {
   return origin ? `${origin}${ADMIN_TEAM_PATH}` : ADMIN_TEAM_PATH;
 }
 
-/** `links.admin` for a receipt or error that names one Admin-only Settings section. */
+/**
+ * `links.admin` for a receipt or error that names one Admin-only Settings
+ * section. Without a usable deployment origin there is no link: a bare path
+ * in a field clients treat as a URL would read as clickable and not be.
+ */
 export function adminSettingsLinks(
   baseUrl: string | undefined,
   section: AdminSettingsSection,
-): ManagementResultLinks {
-  return { admin: adminSettingsUrl(baseUrl, section) };
+): ManagementResultLinks | undefined {
+  return adminOrigin(baseUrl) ? { admin: adminSettingsUrl(baseUrl, section) } : undefined;
 }
 
-export function adminTeamLinks(baseUrl: string | undefined): ManagementResultLinks {
-  return { admin: adminTeamUrl(baseUrl) };
+export function adminTeamLinks(baseUrl: string | undefined): ManagementResultLinks | undefined {
+  return adminOrigin(baseUrl) ? { admin: adminTeamUrl(baseUrl) } : undefined;
 }

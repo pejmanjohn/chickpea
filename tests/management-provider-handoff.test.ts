@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import { test } from 'node:test';
 
 import type { AuthPrincipal } from '../src/auth/types.ts';
@@ -9,6 +10,7 @@ import {
 } from '../src/config/provider-keys.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { storedCredentialMetadata } from '../src/config/model-credential-refs.ts';
+import { prepareProviderSetupZodSchema } from '../src/management/schemas.ts';
 import { createManagementSetupRoutes } from '../src/management/setup-routes.ts';
 import {
   invokeWorkspaceManagementTool,
@@ -230,6 +232,33 @@ test('an Owner gets a 24-hour provider key handoff over MCP and the key never en
       'revoked',
     );
 
+    // With a key stored, the typed request_setup path returns a proposal that
+    // carries the Settings link, and confirming it yields the setup link with
+    // the same Settings link derived from the setup record itself.
+    const proposed = await invokeWorkspaceManagementTool(adapter, 'apply_workspace_changes', {
+      idempotencyKey: 'replace-openai-typed',
+      operations: [{
+        itemId: 'openai',
+        kind: 'request_setup',
+        target: { kind: 'provider_credential', providerId: 'openai' },
+      }],
+    });
+    observed.push(proposed);
+    assert.ok(proposed.ok, JSON.stringify(proposed));
+    const proposal = proposed.result as ManagementApplyResult;
+    assert.equal(proposal.outcomes[0]?.disposition, 'confirmation_required');
+    assert.deepEqual(proposal.outcomes[0]?.links, { admin: PROVIDERS_SETTINGS_URL });
+    const confirmed = await invokeWorkspaceManagementTool(adapter, 'confirm_workspace_change', {
+      proposalId: proposal.outcomes[0]!.proposalId!,
+    });
+    observed.push(confirmed);
+    assert.ok(confirmed.ok, JSON.stringify(confirmed));
+    const confirmedResult = confirmed.result as ManagementApplyResult;
+    assert.equal(confirmedResult.outcomes[0]?.disposition, 'setup_required');
+    assert.match(confirmedResult.outcomes[0]?.setupUrl ?? '', /#setup=/);
+    assert.deepEqual(confirmedResult.outcomes[0]?.links, { admin: PROVIDERS_SETTINGS_URL });
+    assert.deepEqual(confirmedResult.links, { admin: PROVIDERS_SETTINGS_URL });
+
     // Nothing that crossed the MCP door, the setup records, or the receipt
     // carries the key.
     const snapshot = await invokeWorkspaceManagementTool(adapter, 'inspect_workspace', {});
@@ -240,6 +269,7 @@ test('an Owner gets a 24-hour provider key handoff over MCP and the key never en
       receipts,
       setups: await Promise.all([result, replacement].map(({ setupOperationId }) =>
         f.management.getSetup(setupOperationId, NOW))),
+      confirmedSetup: await f.management.getSetup(confirmedResult.outcomes[0]!.setupOperationId!, NOW),
     });
     assert.doesNotMatch(everything, /sk-typed-in-browser-only/);
     assert.doesNotMatch(everything, /sk-/);
@@ -268,7 +298,8 @@ test('a member is refused with the Model providers link and no setup record is c
     assert.match(result.error.message, /Owner or Admin/);
     assert.match(result.error.message, /Anthropic key/);
     assert.deepEqual(result.error.links, { admin: PROVIDERS_SETTINGS_URL });
-    assert.equal(await f.management.getSetup(`${'provider-handoff-member'}_1`, NOW), undefined);
+    // The fixture's first issued record would be setup_<suffix>_1; a refusal issues none.
+    assert.equal(await f.management.getSetup('setup_provider-handoff-member_1', NOW), undefined);
 
     // An Admin is gated exactly like Admin Settings → Model providers: allowed.
     const admin = await invokeWorkspaceManagementTool(
@@ -319,6 +350,49 @@ test('provider and member outcomes from apply_workspace_changes carry Settings l
     assert.equal(applied.outcomes[0]?.disposition, 'setup_required');
     assert.deepEqual(applied.outcomes[0]?.links, { admin: PROVIDERS_SETTINGS_URL });
     assert.deepEqual(applied.links, { admin: PROVIDERS_SETTINGS_URL });
+
+    // In a mixed apply the top-level links stay the changed Agent's (with the
+    // Slack link), while the provider outcome keeps its own Settings link.
+    const agent = await f.config.createAgent({
+      id: 'agent_support',
+      name: 'Support',
+      description: 'Helps the support team.',
+      creatorMembershipId: f.owner.membership.id,
+      editPolicy: 'creator_and_admins',
+      lifecycle: 'active',
+      configurationGeneration: 1,
+      instructions: 'Help with support.',
+      enabled: true,
+      skills: [],
+      mcpServers: [],
+      apiConnections: [],
+      repositories: [],
+    });
+    const mixed = await invokeWorkspaceManagementTool(owner, 'apply_workspace_changes', {
+      idempotencyKey: 'mixed-provider-and-agent',
+      operations: [
+        {
+          itemId: 'anthropic',
+          kind: 'request_setup',
+          target: { kind: 'provider_credential', providerId: 'anthropic' },
+        },
+        {
+          itemId: 'describe',
+          kind: 'update_agent',
+          agentId: agent.id,
+          expectedRevision: agent.revision,
+          patch: { description: 'Helps the support team answer tickets.' },
+        },
+      ],
+    });
+    assert.ok(mixed.ok, JSON.stringify(mixed));
+    const mixedResult = mixed.result as ManagementApplyResult;
+    assert.equal(mixedResult.outcomes[0]?.disposition, 'setup_required');
+    assert.deepEqual(mixedResult.outcomes[0]?.links, { admin: PROVIDERS_SETTINGS_URL });
+    assert.equal(mixedResult.outcomes[1]?.disposition, 'applied');
+    assert.equal(mixedResult.outcomes[1]?.links?.admin, `http://localhost/admin/agents/${agent.id}`);
+    assert.ok(mixedResult.outcomes[1]?.links?.slack, 'the Agent outcome keeps its Slack link');
+    assert.deepEqual(mixedResult.links, mixedResult.outcomes[1]?.links);
 
     const replay = await invokeWorkspaceManagementTool(owner, 'get_operation', {
       operationId: applied.operationId,
@@ -381,13 +455,20 @@ test('provider and member outcomes from apply_workspace_changes carry Settings l
   }
 });
 
-test('the MCP description tells a coding agent how to hand off a provider key without touching it', () => {
+test('the MCP description tells a coding agent how to hand off a provider key without touching it', async () => {
   const mcp = workspaceManagementToolDescription('prepare_provider_setup', 'mcp');
   for (const required of [
-    'Owner or Admin', 'replaceExisting', 'links.admin', '24 hours', 'Never ask for, accept, or relay the key',
+    'Owner or Admin', 'replaceExisting', 'links.admin', '24 hours', 'only this same person',
+    'Never ask for, accept, or relay the key',
   ]) assert.ok(mcp.includes(required), `MCP description must mention ${required}`);
-  assert.doesNotMatch(mcp, /presentation\.slack|\bDM\b/);
+  assert.doesNotMatch(mcp, /presentation\.slack|\bDM\b|anyone holding it/);
   const slack = workspaceManagementToolDescription('prepare_provider_setup');
   assert.match(slack, /Owner or Admin only/);
   assert.notEqual(slack, mcp);
+
+  // The tool takes no key field and is an MCP-door tool only; Chickpea in
+  // Slack keeps the typed request_setup path and its replacement proposal.
+  assert.deepEqual(Object.keys(prepareProviderSetupZodSchema.shape).sort(), ['providerId', 'replaceExisting']);
+  const slackTools = await readFile(new URL('../src/management/slack-tools.ts', import.meta.url), 'utf8');
+  assert.doesNotMatch(slackTools, /prepare_provider_setup/);
 });

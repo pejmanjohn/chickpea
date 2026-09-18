@@ -411,14 +411,20 @@ export class WorkspaceManagementService {
         const admin = agentId === undefined ? undefined : adminUrls.get(agentId);
         return admin ? { admin, ...(slack ? { slack } : {}) } : undefined;
       };
+      let baseUrl: Promise<string | undefined> | undefined;
       const outcomes: ManagementItemOutcome[] = [];
+      let agentLinks: ManagementResultLinks | undefined;
       for (const [index, outcome] of result.outcomes.entries()) {
-        const links = linksFor(targets[index]) ??
-          outcome.links ??
-          await this.adminOnlyOutcomeLinks(outcome, operations);
+        const forAgent = linksFor(targets[index]);
+        agentLinks ??= forAgent;
+        const links = forAgent ?? outcome.links ??
+          await this.adminOnlyOutcomeLinks(outcome, operations, () =>
+            baseUrl ??= this.optionalSetupBaseUrl());
         outcomes.push(links ? { ...outcome, links } : outcome);
       }
-      const first = outcomes.find(({ links }) => links !== undefined)?.links;
+      // The top-level links stay the first changed Agent's, as before; a
+      // Settings link is the top-level fallback only when no Agent changed.
+      const first = agentLinks ?? outcomes.find(({ links }) => links !== undefined)?.links;
       return { ...result, outcomes, ...(first ? { links: first } : {}) };
     } catch {
       // A link is never worth failing a committed workspace mutation.
@@ -436,25 +442,30 @@ export class WorkspaceManagementService {
    */
   private async adminOnlyOutcomeLinks(
     outcome: ManagementItemOutcome,
-    operations?: readonly ManagementOperation[],
+    operations: readonly ManagementOperation[] | undefined,
+    baseUrl: () => Promise<string | undefined>,
   ): Promise<ManagementResultLinks | undefined> {
-    const baseUrl = await this.optionalSetupBaseUrl();
-    if (outcome.operationKind === 'update_member') return adminTeamLinks(baseUrl);
-    if (outcome.operationKind === 'remove_provider_credential') {
-      return adminSettingsLinks(baseUrl, 'providers');
-    }
-    if (outcome.operationKind !== 'request_setup') return undefined;
-    const operation = operations?.find(({ itemId }) => itemId === outcome.itemId);
-    if (operation?.kind === 'request_setup') {
-      return operation.target.kind === 'provider_credential'
-        ? adminSettingsLinks(baseUrl, 'providers')
+    try {
+      if (outcome.operationKind === 'update_member') return adminTeamLinks(await baseUrl());
+      if (outcome.operationKind === 'remove_provider_credential') {
+        return adminSettingsLinks(await baseUrl(), 'providers');
+      }
+      if (outcome.operationKind !== 'request_setup') return undefined;
+      const operation = operations?.find(({ itemId }) => itemId === outcome.itemId);
+      if (operation?.kind === 'request_setup') {
+        return operation.target.kind === 'provider_credential'
+          ? adminSettingsLinks(await baseUrl(), 'providers')
+          : undefined;
+      }
+      if (!outcome.setupOperationId) return undefined;
+      const setup = await this.stores.management.getSetup(outcome.setupOperationId, this.now());
+      return setup?.target.kind === 'provider_credential'
+        ? adminSettingsLinks(await baseUrl(), 'providers')
         : undefined;
+    } catch {
+      // The optional Settings link must never cost the Agent links or the result.
+      return undefined;
     }
-    if (!outcome.setupOperationId) return undefined;
-    const setup = await this.stores.management.getSetup(outcome.setupOperationId, this.now());
-    return setup?.target.kind === 'provider_credential'
-      ? adminSettingsLinks(baseUrl, 'providers')
-      : undefined;
   }
 
   /** The deployment base URL for presentation links, or undefined when unset; never throws. */
@@ -1074,7 +1085,7 @@ export class WorkspaceManagementService {
       handoffUrl: issued.url,
       setupOperationId: issued.record.setupOperationId,
       expiresAt: issued.record.expiresAt,
-      links,
+      ...(links ? { links } : {}),
     };
   }
 

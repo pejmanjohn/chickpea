@@ -710,10 +710,6 @@ export const prepareConnectorSetupValibotSchema = v.strictObject({
   connector: vt(128),
   ownerKind: v.picklist(['team', 'member']),
 });
-export const prepareProviderSetupValibotSchema = v.strictObject({
-  providerId: v.picklist(['anthropic', 'openai', 'openrouter']),
-  replaceExisting: v.optional(v.boolean()),
-});
 export const discoverSlackChannelsValibotSchema = v.strictObject({
   refresh: v.optional(v.boolean()),
 });

@@ -847,7 +847,7 @@ export interface PrepareProviderSetupResult {
   setupOperationId: string;
   expiresAt: number;
   /** The Model providers Settings section, where an Owner or Admin can do the same by hand. */
-  links: ManagementResultLinks;
+  links?: ManagementResultLinks;
 }
 
 export interface FinalizeSlackAgentCreationWelcomeInput {
