@@ -343,7 +343,7 @@ try {
   record(
     'visible Admin resources revalidate without polling or full-page reloads',
     pageSource.includes('var visibleResources = {};') &&
-      pageSource.includes('function revalidateCurrentVisibleResources()') &&
+      pageSource.includes('function revalidateCurrentVisibleResources(') &&
       pageSource.includes('window.addEventListener("focus"') &&
       pageSource.includes('document.addEventListener("visibilitychange"') &&
       pageSource.includes('function invalidateVisibleResource(name, ownerKey)') &&

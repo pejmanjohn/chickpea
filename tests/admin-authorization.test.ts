@@ -338,3 +338,45 @@ test('Members can resolve public skills without gaining shared GitHub App access
   });
   assert.equal(unauthenticated.status, 401);
 });
+
+test('Admin reads auth control once per request and defers the success audit past the response on Cloudflare', async () => {
+  const identity = new SqliteIdentityStore(':memory:');
+  try {
+    let controlReads = 0;
+    const authority = testAdminAuthority('owner-token', undefined, identity);
+    const counted = new Proxy(authority.identity, {
+      get(target, property, receiver) {
+        if (property === 'getAuthControl') {
+          return async () => { controlReads += 1; return target.getAuthControl(); };
+        }
+        const value = Reflect.get(target, property, receiver) as unknown;
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    const app = createAdminRoutes({ ...authority, identity: counted });
+    const deferred: Promise<unknown>[] = [];
+    const executionContext = {
+      waitUntil(promise: Promise<unknown>) { deferred.push(promise); },
+      passThroughOnException() {},
+    };
+    const response = await app.request(
+      'http://localhost/admin/api/models',
+      { headers: testAdminHeaders('owner-token') },
+      {},
+      executionContext as never,
+    );
+    assert.equal(response.status, 200);
+    assert.equal(controlReads, 1, 'the recovery gate, Better Auth context, and authentication share one read');
+    assert.equal(deferred.length, 1, 'the authorization success audit is scheduled with waitUntil');
+    await Promise.all(deferred);
+    const events = await identity.listAuditEvents(10);
+    assert.ok(events.some((event) => event.eventType === 'identity.authorization' && event.outcome === 'success'));
+
+    // Without an execution context the audit is written inline.
+    const inline = await app.request('http://localhost/admin/api/models', { headers: testAdminHeaders('owner-token') });
+    assert.equal(inline.status, 200);
+    assert.equal((await identity.listAuditEvents(10)).filter((event) => event.eventType === 'identity.authorization').length, 2);
+  } finally {
+    identity.close();
+  }
+});

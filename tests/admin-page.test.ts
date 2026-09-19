@@ -462,6 +462,8 @@ function runAdminPageHarness(
   options: {
     assignments?: AssignmentFixture[];
     slackConnection?: SlackConnectionFixture | null;
+    /** `workspaceId` the Agent inventory reports; omitted by default. */
+    agentsWorkspaceId?: string | null;
     slackTestError?: { status: number; error: string; detail?: string };
     slackDisconnectError?: { status: number; error: string };
     initialPath?: string;
@@ -1855,7 +1857,10 @@ function runAdminPageHarness(
           harnessOptions.agentsGetError.status,
         ));
       }
-      return Promise.resolve(jsonResponse({ agents: agentsList }));
+      return Promise.resolve(jsonResponse({
+        agents: agentsList,
+        workspaceId: harnessOptions.agentsWorkspaceId ?? null,
+      }));
     }
     const creationStatusMatch = path.match(/^\/admin\/api\/runtime\/agents\/([^/]+)\/creation-status$/);
     if (creationStatusMatch && method === 'GET') {
@@ -7198,6 +7203,81 @@ test('opening Connections while Slack identity is pending defers and coalesces a
   assert.match(harness.app.innerHTML, /No connections in this Agent yet/);
 });
 
+test('Connections wait for the first account inventory instead of painting the legacy gallery', async () => {
+  // Rendering the legacy gallery while the first account request was in
+  // flight flashed smaller rows (14px names, 30px logos) that were replaced by
+  // the account rows a moment later. Support is unknown until the server
+  // answers, so the panel holds its loading hint until then.
+  let resolveAccounts!: (response: FakeResponse) => void;
+  const pendingAccounts = new Promise<FakeResponse>((resolve) => { resolveAccounts = resolve; });
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    initialPath: '/admin/agents/agent_conn',
+    initialSearch: '?tab=connections',
+    slackConnection: connectedSlackFixture(),
+    connectionAccountsFetch: () => pendingAccounts,
+  });
+
+  await flushAsync();
+  assert.equal(harness.agentConnectionGets(), 1);
+  assert.match(harness.app.innerHTML, /Loading connections&hellip;/);
+  assert.doesNotMatch(harness.app.innerHTML, /MCP servers and REST APIs/);
+  assert.doesNotMatch(harness.app.innerHTML, /class="gallery-row/);
+  // The catalog itself ships with the page, so its rows are already painted
+  // in their final layout; only each row's state and action wait.
+  const pendingRow = harness.app.innerHTML.match(
+    /<div class="connection-account-row connection-catalog-row">[\s\S]*?data-preset="linear"[^>]*>Connect<\/button>[\s\S]*?<\/div>/,
+  )?.[0] ?? '';
+  assert.match(pendingRow, /<span class="connection-account-name">Linear<\/span>/);
+  assert.match(pendingRow, /connection-account-state-placeholder/);
+  assert.doesNotMatch(pendingRow, /No account/);
+  assert.match(pendingRow, /data-preset="linear" disabled>Connect<\/button>/);
+
+  resolveAccounts(jsonResponse({ attached: [] }));
+  await flushAsync();
+  assert.doesNotMatch(harness.app.innerHTML, /Loading connections&hellip;/);
+  assert.match(harness.app.innerHTML, /No connections in this Agent yet/);
+  const readyRow = harness.app.innerHTML.match(
+    /<div class="connection-account-row connection-catalog-row">[\s\S]*?data-preset="linear"[^>]*>Connect<\/button>[\s\S]*?<\/div>/,
+  )?.[0] ?? '';
+  assert.match(readyRow, /<span class="connection-account-state">No account<\/span>/);
+  assert.match(readyRow, /data-preset="linear">Connect<\/button>/);
+});
+
+test('Connections load against the workspace the Agent inventory reports without waiting for Slack status', async () => {
+  // Slack status is the slowest Admin request. When boot already knows the
+  // workspace, the inventory request starts immediately and the panel is
+  // complete before Slack status answers.
+  let resolveSlack!: (response: FakeResponse) => void;
+  const pendingSlack = new Promise<FakeResponse>((resolve) => { resolveSlack = resolve; });
+  let slackGets = 0;
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    agentsWorkspaceId: 'T_DESIGN',
+    initialPath: '/admin/agents/agent_conn',
+    initialSearch: '?tab=connections',
+    connectionAccounts: { attached: [] },
+    settingsLoadFetch(path, method) {
+      if (path !== '/admin/api/slack-connection' || method !== 'GET') return undefined;
+      slackGets += 1;
+      return pendingSlack;
+    },
+  });
+
+  await flushAsync();
+  assert.equal(harness.agentConnectionGets(), 1);
+  assert.match(harness.app.innerHTML, /No connections in this Agent yet/);
+  assert.doesNotMatch(harness.app.innerHTML, /Loading connections&hellip;/);
+  assert.match(harness.fetchCalls.map(({ path }) => path).join(' '), /\/connections\?workspaceId=T_DESIGN/);
+
+  // Boot issued exactly one Slack status request; the tab did not add another.
+  assert.equal(slackGets, 1);
+  resolveSlack(jsonResponse(connectedSlackFixture()));
+  await flushAsync();
+  assert.equal(slackGets, 1);
+  assert.equal(harness.agentConnectionGets(), 1);
+});
+
 test('Connections preserve the legacy panel after an explicit account endpoint 404', async () => {
   const harness = runAdminPageHarness({
     agents: [connectionsAgent()],
@@ -9223,6 +9303,7 @@ test('Custom connection opens the MCP lane by default', async () => {
   assert.ok(click);
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
   click({ target: actionTarget({ 'data-action': 'conn-custom' }) });
 
   const editor = harness.app.innerHTML;
@@ -9242,6 +9323,7 @@ test('the Custom connection lane tab switches between MCP and API forms', async 
   assert.ok(click);
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
   click({ target: actionTarget({ 'data-action': 'conn-custom' }) });
 
   click({ target: actionTarget({ 'data-action': 'custom-lane', 'data-lane': 'api' }) });
@@ -9265,6 +9347,7 @@ test('the Custom connection lane tab preserves MCP input while visiting API', as
   assert.ok(click && input);
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
   click({ target: actionTarget({ 'data-action': 'conn-custom' }) });
 
   input({ target: inputTarget({ 'data-action': 'conn-field-name' }, 'Preserved MCP') });
@@ -9282,6 +9365,7 @@ test('the Connections panel has one custom create entry point and no separate AP
   assert.ok(click);
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
 
   const panel = harness.app.innerHTML;
   assert.equal((panel.match(/data-action="conn-custom"/g) ?? []).length, 1);
@@ -9308,6 +9392,7 @@ test('a connected preset drops out of the Available gallery until it is removed'
   assert.ok(click);
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
 
   const panel = harness.app.innerHTML;
   // Linear and Asana are already connected, so the gallery no longer offers them...
@@ -9349,6 +9434,7 @@ test('OAuth rows surface a persisted reconnect requirement instead of stale conn
   assert.ok(click);
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
 
   const panel = harness.app.innerHTML;
   assert.equal((panel.match(/Reconnect required/g) ?? []).length, 2);
@@ -9373,6 +9459,7 @@ test('saved MCP and API connections share one lane-badged list with matching inl
   assert.ok(click);
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
 
   const panel = harness.app.innerHTML;
   assert.equal((panel.match(/<div class="skill-list">/g) ?? []).length, 1);
@@ -9407,6 +9494,7 @@ test('a saved bearer Linear connection stays Advanced after the catalog upgrades
   assert.ok(click);
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
   click({ target: actionTarget({ 'data-action': 'conn-edit', 'data-index': '0' }) });
 
   const editor = harness.app.innerHTML;
@@ -9447,6 +9535,7 @@ test('a saved PAT Airtable connection stays Advanced after the catalog upgrades 
   assert.ok(click);
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
   click({ target: actionTarget({ 'data-action': 'conn-edit', 'data-index': '0' }) });
 
   const editor = harness.app.innerHTML;
@@ -9478,6 +9567,7 @@ test('a saved API-key PostHog connection stays Advanced after the catalog upgrad
   assert.ok(click);
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
   click({ target: actionTarget({ 'data-action': 'conn-edit', 'data-index': '0' }) });
 
   const editor = harness.app.innerHTML;
@@ -9509,6 +9599,7 @@ test('a saved access-token Supabase connection stays Advanced after the catalog 
   assert.ok(click);
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
   click({ target: actionTarget({ 'data-action': 'conn-edit', 'data-index': '0' }) });
 
   const editor = harness.app.innerHTML;
@@ -9545,6 +9636,7 @@ test('a saved read-only Linear OAuth connection stays Advanced after the catalog
   assert.ok(click);
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
   click({ target: actionTarget({ 'data-action': 'conn-edit', 'data-index': '0' }) });
 
   const editor = harness.app.innerHTML;
@@ -9613,6 +9705,7 @@ test('a URL-customized OAuth connection keeps lifecycle controls and its saved s
   assert.ok(click);
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
   click({ target: actionTarget({ 'data-action': 'conn-edit', 'data-index': '0' }) });
 
   const editor = harness.app.innerHTML;
@@ -9644,6 +9737,7 @@ test('canceling the custom API form clears custom mode and restores the gallery'
   assert.ok(click);
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
   click({ target: actionTarget({ 'data-action': 'conn-custom' }) });
   click({ target: actionTarget({ 'data-action': 'custom-lane', 'data-lane': 'api' }) });
   click({ target: actionTarget({ 'data-action': 'apiconn-cancel' }) });
@@ -9662,6 +9756,7 @@ test('preset Connect keeps a fixed lane and the Recommended and Advanced setup t
   assert.ok(click);
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
   click({ target: actionTarget({ 'data-action': 'conn-preset', 'data-preset': 'asana' }) });
 
   assert.doesNotMatch(harness.app.innerHTML, /data-action="custom-lane"/);
@@ -9683,6 +9778,7 @@ test('the Connections tab adds an API connection policy and stores its credentia
 
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
 
   click({ target: actionTarget({ 'data-action': 'conn-custom' }) });
   click({ target: actionTarget({ 'data-action': 'custom-lane', 'data-lane': 'api' }) });
@@ -9805,6 +9901,7 @@ test('editing a saved API connection shows a stored write-only credential placeh
   assert.ok(click);
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
   click({ target: actionTarget({ 'data-action': 'apiconn-edit', 'data-index': '0' }) });
 
   assert.match(harness.app.innerHTML, /class="on" data-action="apiconn-view" data-view="recommended"/);
@@ -9883,6 +9980,7 @@ test('editing a saved API connection with no stored credential does not claim "s
   assert.ok(click);
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
   click({ target: actionTarget({ 'data-action': 'apiconn-edit', 'data-index': '0' }) });
 
   // The editor prompts to paste a credential rather than showing the stored
@@ -9901,6 +9999,7 @@ test('the API connection editor enforces its required policy fields', async () =
   assert.ok(click && input && change);
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
   click({ target: actionTarget({ 'data-action': 'conn-custom' }) });
   click({ target: actionTarget({ 'data-action': 'custom-lane', 'data-lane': 'api' }) });
 
@@ -9994,6 +10093,7 @@ test('the searchable Connections gallery is immediate, renders brand logos, and 
   assert.ok(click && input);
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
 
   const gallery = harness.app.innerHTML;
   assert.match(gallery, /data-action="conn-gallery-search"/);
@@ -10185,6 +10285,7 @@ test('saved GitHub connections keep their controls and link to the Repositories 
   assert.ok(click);
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
 
   assert.match(
     harness.app.innerHTML,
@@ -10207,6 +10308,7 @@ test('the Asana gallery preset opens a compact Recommended API editor', async ()
   assert.ok(click);
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
   click({ target: actionTarget({ 'data-action': 'conn-preset', 'data-preset': 'asana' }) });
 
   const recommended = harness.app.innerHTML;
@@ -10243,6 +10345,7 @@ test('the Gmail catalog entry saves one shared Google connection and its BYO OAu
   assert.ok(click && input);
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
   click({ target: actionTarget({ 'data-action': 'conn-preset', 'data-preset': 'gmail' }) });
 
   assert.match(harness.app.innerHTML, /Use a dedicated Google account for Chickpea when possible/);
@@ -10337,6 +10440,7 @@ test('enabling Drive reuses the connected Gmail OAuth client and preserves Gmail
   assert.ok(click);
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
 
   const gallery = harness.app.innerHTML;
   assert.doesNotMatch(gallery, /data-preset="gmail"/);
@@ -10424,6 +10528,7 @@ test('the Asana API editor keeps its credential and seeded policy in Advanced be
   assert.ok(click && input);
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
   click({ target: actionTarget({ 'data-action': 'conn-preset', 'data-preset': 'asana' }) });
 
   input({ target: inputTarget({ 'data-action': 'apiconn-field-credential' }, 'asana-secret') });
@@ -10477,6 +10582,7 @@ test('the Zendesk Recommended editor keeps the template guard when its subdomain
   assert.ok(click && input);
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
   click({ target: actionTarget({ 'data-action': 'conn-preset', 'data-preset': 'zendesk' }) });
 
   const recommended = harness.app.innerHTML;
@@ -10505,6 +10611,7 @@ test('the Zendesk Recommended subdomain resolves into the Advanced host and back
   assert.ok(click && input);
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
   click({ target: actionTarget({ 'data-action': 'conn-preset', 'data-preset': 'zendesk' }) });
 
   input({
@@ -10528,6 +10635,7 @@ test('the Sentry preset uses OAuth and saves its narrowed resource before author
   assert.ok(click && input);
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
   click({ target: actionTarget({ 'data-action': 'conn-preset', 'data-preset': 'sentry' }) });
   const recommended = harness.app.innerHTML;
   assert.match(recommended, /data-action="conn-sentry-organization"/);
@@ -10633,6 +10741,7 @@ test('the Granola preset saves OAuth policy before requesting its MCP resource s
   assert.ok(click);
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
   click({ target: actionTarget({ 'data-action': 'conn-preset', 'data-preset': 'granola' }) });
 
   assert.match(harness.app.innerHTML, /Sign into Granola/);
@@ -10690,6 +10799,7 @@ test('the Airtable preset saves OAuth policy before requesting its documented sc
   assert.ok(click);
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
   click({ target: actionTarget({ 'data-action': 'conn-preset', 'data-preset': 'airtable' }) });
 
   const editor = harness.app.innerHTML;
@@ -10763,6 +10873,7 @@ test('the PostHog preset saves OAuth policy before starting provider-managed aut
   assert.ok(click);
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
   click({ target: actionTarget({ 'data-action': 'conn-preset', 'data-preset': 'posthog' }) });
 
   const editor = harness.app.innerHTML;
@@ -10826,6 +10937,7 @@ test('the Supabase preset saves OAuth policy before requesting every required sc
   assert.ok(click && input);
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
   click({ target: actionTarget({ 'data-action': 'conn-preset', 'data-preset': 'supabase' }) });
 
   const editor = harness.app.innerHTML;
@@ -10896,6 +11008,7 @@ test('the Atlassian preset saves OAuth policy before requesting its advertised r
   assert.ok(click);
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
   click({ target: actionTarget({ 'data-action': 'conn-preset', 'data-preset': 'atlassian' }) });
 
   const editor = harness.app.innerHTML;
@@ -10948,6 +11061,7 @@ test('the Cloudflare API preset replaces the narrow catalog rows with the full O
   assert.ok(click);
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
   assert.match(harness.app.innerHTML, /data-preset="cloudflare-api"/);
   assert.doesNotMatch(harness.app.innerHTML, /data-preset="cloudflare-(docs|bindings|observability)"/);
   click({ target: actionTarget({ 'data-action': 'conn-preset', 'data-preset': 'cloudflare-api' }) });
@@ -10969,6 +11083,7 @@ test('the Notion preset saves OAuth policy before starting authorization and nev
   assert.ok(click);
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
   click({ target: actionTarget({ 'data-action': 'conn-preset', 'data-preset': 'notion' }) });
 
   assert.match(harness.app.innerHTML, /mcp\.notion\.com/);
@@ -11027,6 +11142,7 @@ test('a Notion OAuth start failure keeps the saved connection recoverable in pla
   assert.ok(click);
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
   click({ target: actionTarget({ 'data-action': 'conn-preset', 'data-preset': 'notion' }) });
   click({ target: actionTarget({ 'data-action': 'conn-oauth-start' }) });
   await flushAsync();
@@ -11056,6 +11172,7 @@ test('a blocked profile save re-enables OAuth start after returning to Connectio
   input({ target: inputTarget({ 'data-action': 'skill-field-description' }, 'x') });
   input({ target: inputTarget({ 'data-action': 'skill-field-instructions' }, 'y') });
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
   click({ target: actionTarget({ 'data-action': 'conn-preset', 'data-preset': 'notion' }) });
   click({ target: actionTarget({ 'data-action': 'conn-oauth-start' }) });
   await flushAsync();
@@ -11063,6 +11180,7 @@ test('a blocked profile save re-enables OAuth start after returning to Connectio
   assert.deepEqual(harness.agentPatchBodies, []);
   assert.deepEqual(harness.oauthStartPosts, []);
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
   assert.match(harness.app.innerHTML, /data-action="conn-oauth-start"[^>]*>[\s\S]*?<span>Sign into Native Notion<\/span>/);
   assert.doesNotMatch(harness.app.innerHTML, /Opening Native Notion/);
 });
@@ -11152,6 +11270,7 @@ test('changing connected OAuth tool access saves immediately without dirtying th
   assert.ok(click && change);
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
   click({ target: actionTarget({ 'data-action': 'conn-edit', 'data-index': '0' }) });
 
   assert.match(harness.app.innerHTML, /Tool access is already saved/);
@@ -11294,6 +11413,9 @@ test('a connected OAuth account offers confirmed disconnect and clears its store
   const click = harness.listeners.click;
   assert.ok(click);
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
   click({ target: actionTarget({ 'data-action': 'conn-edit', 'data-index': '0' }) });
 
   assert.match(harness.app.innerHTML, /data-action="conn-oauth-start">Reconnect<\/button>/);
@@ -11369,6 +11491,7 @@ test('custom MCP OAuth saves an explicit scope before starting generic authoriza
   assert.ok(click && input && change);
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
   click({ target: actionTarget({ 'data-action': 'conn-custom' }) });
 
   assert.match(harness.app.innerHTML, /<option value="oauth">OAuth<\/option>/);
@@ -11499,6 +11622,9 @@ test('an existing OAuth connection remains editable and stages token cleanup whe
   const change = harness.listeners.change;
   assert.ok(click && change);
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
   click({ target: actionTarget({ 'data-action': 'conn-edit', 'data-index': '0' }) });
 
   assert.match(
@@ -11534,6 +11660,9 @@ test('the Connections section renders its gallery, with the STDIO-greyed form, e
   assert.ok(click && input && change);
 
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
 
   // The Connections capability tab renders its gallery with the
   // tokens-by-reference note.
@@ -11575,6 +11704,9 @@ test('testing a connection renders discovered-tool checkboxes all checked and ca
   assert.ok(click && input && change);
 
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
   click({ target: actionTarget({ 'data-action': 'conn-custom' }) });
 
   input({ target: inputTarget({ 'data-action': 'conn-field-name' }, 'Linear') });
@@ -11775,6 +11907,9 @@ test('re-testing a connection refreshes discovered tools; a vanished tool drops 
   assert.ok(click);
 
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
 
   // The card shows the connected pill for the persisted (1-approved) connection.
   assert.match(harness.app.innerHTML, /Connected &middot; 1 tool/);
@@ -11837,6 +11972,9 @@ test('re-testing preserves a deliberately-unchecked tool that still exists (no s
   assert.ok(click);
 
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
   click({ target: actionTarget({ 'data-action': 'conn-edit', 'data-index': '0' }) });
   click({ target: actionTarget({ 'data-action': 'conn-test' }) });
   await flushAsync();
@@ -11865,6 +12003,9 @@ test('a failed test marks the connection failed with the safe status text and no
   assert.ok(click && input && change);
 
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
   click({ target: actionTarget({ 'data-action': 'conn-custom' }) });
   input({ target: inputTarget({ 'data-action': 'conn-field-name' }, 'Linear') });
   input({ target: inputTarget({ 'data-action': 'conn-field-url' }, 'https://mcp.example.com/mcp') });
@@ -11914,6 +12055,9 @@ test('removing a connection confirms in a modal and DELETEs its secrets on save'
   assert.ok(click);
 
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
   assert.match(harness.app.innerHTML, /Linear/);
 
   // Remove opens a confirm modal rather than dropping the row immediately.
@@ -12037,6 +12181,9 @@ test('a duplicate connection name and a non-https URL are rejected inline before
   assert.ok(click && input);
 
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
   click({ target: actionTarget({ 'data-action': 'conn-custom' }) });
 
   // A non-https URL is rejected inline.

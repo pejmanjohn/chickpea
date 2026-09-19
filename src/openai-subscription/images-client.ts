@@ -139,9 +139,9 @@ async function generateOnce(
     if (!response.ok) return await mapProviderFailure(response);
     const imageCall = await readCompletedImageCall(response, signal);
     const bytes = decodeStandardBase64(imageCall.result);
-    let facts: ReturnType<typeof decodeGeneratedImage>['facts'];
+    let facts: Awaited<ReturnType<typeof decodeGeneratedImage>>['facts'];
     try {
-      facts = decodeGeneratedImage(bytes).facts;
+      facts = (await decodeGeneratedImage(bytes)).facts;
     } catch {
       return { ok: false, reason: 'unreachable', detail: 'invalid_image' };
     }

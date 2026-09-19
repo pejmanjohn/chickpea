@@ -19,6 +19,7 @@ interface SlackGatewaySessionRpc {
   wake(): Promise<void>;
   restart(): Promise<void>;
   status(): Promise<GatewaySessionStatusSnapshot>;
+  observe(): Promise<GatewaySessionStatusSnapshot>;
 }
 
 /**
@@ -112,6 +113,26 @@ export class SlackGatewaySession extends DurableObject implements SlackGatewaySe
 
   async status(): Promise<GatewaySessionStatusSnapshot> {
     await this.wake();
+    return this.snapshot();
+  }
+
+  /**
+   * The current inbound-health snapshot without running the wake routine on
+   * the caller's request path. Admin reads this on every Slack status view;
+   * the wake routine (settings reads, delivery registration, session
+   * supervision) still runs, in the background, so an evicted session
+   * recovers from an Admin visit exactly as before.
+   */
+  async observe(): Promise<GatewaySessionStatusSnapshot> {
+    this.state.waitUntil(this.wake().catch((error: unknown) => {
+      console.warn({ component: 'slack_gateway', event: 'observe_wake_failed',
+        detail: error instanceof Error ? error.message : 'unknown',
+        versionId: cloudflareWorkerVersionId(this.env) ?? null });
+    }));
+    return this.snapshot();
+  }
+
+  private async snapshot(): Promise<GatewaySessionStatusSnapshot> {
     const delivery = parseHttpDeliveryState(await getSettingsStore(this.env as PlatformEnv).getSetting(GATEWAY_HTTP_SETTING));
     if (delivery?.mode === 'http' && delivery.active) {
       return {healthy:true,phase:'healthy',detail:null,generation:null,versionId:cloudflareWorkerVersionId(this.env) ?? null};

@@ -9,11 +9,10 @@ import {
 import * as v from 'valibot';
 
 import {
-  ChickpeaRoutineExecution,
   parseRoutineExecutionInitialData,
   ROUTINE_RESULT_DATA_NAME,
   type RoutineExecutionInitialData,
-} from '../agents/routine-execution.ts';
+} from '../agents/routine-execution-data.ts';
 import {
   compileRuntimePlanV2,
   runtimePlanSandboxConversationKey,
@@ -267,6 +266,10 @@ export async function executeRoutineOccurrence(
     }
   }
 
+  // The agent module carries the whole turn runtime (Flue, provider SDKs,
+  // the sandbox shell). Loading it here, when a routine actually runs, keeps
+  // it out of the Worker's startup graph for every Admin and Slack request.
+  const { ChickpeaRoutineExecution } = await import('../agents/routine-execution.ts');
   const handle = dependencies.handle ?? init(ChickpeaRoutineExecution, {
     id: prepared.envelope.instanceId,
     ...(prepared.receipt?.uid ? { uid: prepared.receipt.uid } : {}),

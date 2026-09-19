@@ -11,7 +11,6 @@ import {
 import * as v from 'valibot';
 
 import {
-  parseRuntimePlanV2,
   runtimePlanSandboxConversationKey,
   type RuntimePlanV2,
 } from './runtime-plan.ts';
@@ -19,47 +18,16 @@ import { useRuntimePlanAgent } from './slack-thread.ts';
 import { RoutineModelResultSchema } from '../routines/prompt.ts';
 import { useChickpeaResponseMetadata } from '../usage/response-metadata.ts';
 
-export const ROUTINE_RESULT_DATA_NAME = 'routineResult';
-
-export interface RoutineExecutionInitialData {
-  runtimePlan: RuntimePlanV2;
-  requestedModel: string;
-  connectorUsageCorrelation?: {
-    operationId: string;
-    runId?: string;
-  };
-}
-
-export function parseRoutineExecutionInitialData(value: unknown): RoutineExecutionInitialData {
-  const parsed = v.safeParse(v.strictObject({
-    runtimePlan: v.unknown(),
-    requestedModel: v.pipe(v.string(), v.minLength(3), v.maxLength(240)),
-    connectorUsageCorrelation: v.optional(v.strictObject({
-      operationId: v.pipe(v.string(), v.regex(/^[A-Za-z0-9][A-Za-z0-9:._/@-]{0,255}$/)),
-      runId: v.optional(v.pipe(
-        v.string(),
-        v.regex(/^[A-Za-z0-9][A-Za-z0-9:._/@-]{0,255}$/),
-      )),
-    })),
-  }), value);
-  if (!parsed.success) throw new Error('Routine execution creation data is invalid.');
-  return {
-    // Queued envelopes from before artifact threads were frozen carry a
-    // synthetic due-time conversation stamp; never let it become a thread.
-    runtimePlan: parseRuntimePlanV2(parsed.output.runtimePlan, { legacyArtifactThread: 'none' }),
-    requestedModel: parsed.output.requestedModel,
-    ...(parsed.output.connectorUsageCorrelation
-      ? {
-          connectorUsageCorrelation: {
-            operationId: parsed.output.connectorUsageCorrelation.operationId,
-            ...(parsed.output.connectorUsageCorrelation.runId
-              ? { runId: parsed.output.connectorUsageCorrelation.runId }
-              : {}),
-          },
-        }
-      : {}),
-  };
-}
+export {
+  ROUTINE_RESULT_DATA_NAME,
+  parseRoutineExecutionInitialData,
+  type RoutineExecutionInitialData,
+} from './routine-execution-data.ts';
+import {
+  ROUTINE_RESULT_DATA_NAME,
+  parseRoutineExecutionInitialData,
+  type RoutineExecutionInitialData,
+} from './routine-execution-data.ts';
 
 export function ChickpeaRoutineExecution({ id }: { id: string }) {
   const data = parseRoutineExecutionInitialData(useInitialData());

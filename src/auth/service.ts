@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import type { IdentityStore } from '../identity/types.ts';
+import type { AuthControl, IdentityStore } from '../identity/types.ts';
 import type { PersonalTokenService } from './personal-token.ts';
 import type {
   AdminAuthenticationService,
@@ -17,6 +17,13 @@ interface AuthServiceOptions {
   identity: IdentityStore;
   personalTokens?: PersonalTokenService;
   sessionAuthenticator?: PrincipalAuthenticator;
+  /** Auth control already read for this request (the Admin middleware reads it
+   * once per request); omitted, the service reads it from the identity store. */
+  authControl?: (request: Request) => Promise<AuthControl | undefined>;
+  /** Runs a success audit write. The Cloudflare host defers it past the
+   * response (waitUntil) so the write's store round trip leaves the request
+   * path; without a host scheduler the write is awaited as before. */
+  background?: (task: () => Promise<void>) => Promise<void>;
 }
 
 const principalByRequest = new WeakMap<Request, AuthPrincipal>();
@@ -27,7 +34,9 @@ export class AuthService implements AdminAuthenticationService {
 
   async authenticateRequest(request: Request): Promise<AuthPrincipal> {
     const requestCorrelationId = correlationId(request);
-    const control = await this.options.identity.getAuthControl();
+    const control = this.options.authControl
+      ? await this.options.authControl(request)
+      : await this.options.identity.getAuthControl();
     const authenticatorKind = control?.authMode === 'slack_active'
       ? 'better_auth'
       : 'unavailable';
@@ -64,15 +73,17 @@ export class AuthService implements AdminAuthenticationService {
       throw error instanceof AuthDeniedError ? error : new AuthDeniedError();
     }
     principal = { ...principal, correlationId: requestCorrelationId };
-    await this.options.identity.recordAuthAudit({
-      event: 'authentication',
-      outcome: 'success',
+    const successAudit = {
+      event: 'authentication' as const,
+      outcome: 'success' as const,
       action: 'admin.authenticate',
       correlationId: principal.correlationId,
       authenticatorKind: principal.authenticatorKind,
       userId: principal.userId,
       membershipId: principal.membershipId,
-    });
+    };
+    const write = () => this.options.identity.recordAuthAudit(successAudit);
+    await (this.options.background ? this.options.background(write) : write());
     return principal;
   }
 
