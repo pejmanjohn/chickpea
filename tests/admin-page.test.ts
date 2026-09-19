@@ -180,7 +180,7 @@ const MCP_CLIENTS_FIXTURE = {
       id: 'codex',
       title: 'Codex',
       language: 'bash',
-      text: `codex mcp add chickpea --url ${MCP_ORIGIN}/mcp\ncodex mcp login chickpea`,
+      text: `codex mcp add chickpea --url ${MCP_ORIGIN}/mcp`,
       note: 'Codex opens the browser sign-in for you.',
     },
     {

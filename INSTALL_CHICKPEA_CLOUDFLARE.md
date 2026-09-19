@@ -480,11 +480,16 @@ at the end of this step instead. Either way:
    one. Use the server name `chickpea` unless it is already taken, and
    preserve every other server the user has configured. Never create, copy,
    or paste a bearer token.
-2. Start the client's normal sign-in for the new server. The browser shows
-   Slack sign-in for the installed workspace, then Chickpea's consent screen
+2. Adding the server may already start sign-in. Keep that command running
+   and use the browser tab it opens. Do not open a second copy of the URL or
+   start another login while it is pending. Open the printed URL once only
+   if no tab opened. If the command reports successful login, go to step 3.
+   Otherwise, start the client's normal sign-in if still needed after the
+   add command finishes. The browser shows Slack sign-in for the installed
+   workspace, then Chickpea's consent screen
    with one permission: manage this Chickpea workspace. Ask the user to take
    over for Slack sign-in with the account that became the Owner, keep the
-   page open, and continue when they finish.
+   page open, and click Allow there. Wait for the client's result.
 3. Call `inspect_workspace` without making changes. Confirm it names the
    installed workspace and the signed-in user.
 
@@ -504,7 +509,7 @@ declines the connection, record that in the hand-over and continue.
 | Client | Where | What to write or run |
 | --- | --- | --- |
 | Claude Code | terminal | `claude mcp add --transport http chickpea https://<deployment>/mcp`, then `/mcp` inside Claude Code to sign in |
-| Codex | terminal | `codex mcp add chickpea --url https://<deployment>/mcp` then `codex mcp login chickpea` |
+| Codex | terminal | `codex mcp add chickpea --url https://<deployment>/mcp`; only if sign-in is still needed after it finishes, run `codex mcp login chickpea` |
 | Cursor | `.cursor/mcp.json` in the project, or `~/.cursor/mcp.json` for every project | `{"mcpServers":{"chickpea":{"url":"https://<deployment>/mcp"}}}` |
 | VS Code | terminal, or `.vscode/mcp.json` | `code --add-mcp '{"name":"chickpea","type":"http","url":"https://<deployment>/mcp"}'` |
 | Windsurf | `~/.codeium/windsurf/mcp_config.json` | `{"mcpServers":{"chickpea":{"serverUrl":"https://<deployment>/mcp"}}}` |

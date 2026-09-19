@@ -15,7 +15,7 @@ test('every client printer targets <origin>/mcp over streamable HTTP with no tok
   // These texts are the deployment's own `/connect.md` snippets, byte for byte;
   // `tests/mcp-client-config.test.ts` in the repository root asserts the match.
   assert.equal(mcpClientConfig(origin, 'claude-code').text, `claude mcp add --transport http chickpea ${origin}/mcp`);
-  assert.equal(mcpClientConfig(origin, 'codex').text, `codex mcp add chickpea --url ${origin}/mcp\ncodex mcp login chickpea`);
+  assert.equal(mcpClientConfig(origin, 'codex').text, `codex mcp add chickpea --url ${origin}/mcp`);
   assert.deepEqual(JSON.parse(mcpClientConfig(origin, 'cursor').text), { mcpServers: { chickpea: { url: `${origin}/mcp` } } });
   assert.equal(mcpClientConfig(origin, 'vscode').text, `code --add-mcp '{"name":"chickpea","type":"http","url":"${origin}/mcp"}'`);
   assert.deepEqual(JSON.parse(mcpClientConfig(origin, 'windsurf').text), { mcpServers: { chickpea: { serverUrl: `${origin}/mcp` } } });

@@ -41,6 +41,35 @@ The agent-run install guides make this a required step: `INSTALL_CHICKPEA_CLOUDF
 
 Add a remote/custom MCP server in the client and use the exact Chickpea deployment URL ending in `/mcp`. Do not create or paste a bearer token. A compatible client discovers OAuth metadata, registers as a public PKCE client when needed, opens Slack sign-in and Chickpea consent, then reconnects with a resource-bound access token.
 
+Use one authorization tab and keep the initiating command running until it
+reports a result. `codex mcp add` can start OAuth itself; run `codex mcp login`
+only if sign-in is still needed after `add` finishes. Use the tab the client
+opens. Open its printed URL once only if no tab opened.
+
+The MCP client owns its loopback callback page. Codex 0.154.0 responds to the
+first callback with a completion message and then closes the listener after
+the login finishes. See its [callback handler](https://github.com/openai/codex/blob/rust-v0.154.0/codex-rs/rmcp-client/src/perform_oauth_login.rs#L262-L310)
+and [automatic login during add](https://github.com/openai/codex/blob/rust-v0.154.0/codex-rs/cli/src/mcp_cmd.rs#L490-L523).
+A later consent click in a duplicate tab or a callback revisit can therefore
+show connection refused at `127.0.0.1` or `localhost`. This is distinct from a
+404 at Chickpea's `/mcp` endpoint before Slack setup finishes.
+
+Check the client's result before retrying. If it reports success, close the
+leftover tab and verify with `inspect_workspace`. If login failed or timed
+out, preserve the first error and retry once using a fresh login URL. Keep
+working credentials. If the first callback fails while the command is still
+waiting, investigate the client's listener and browser restrictions separately;
+the duplicate-tab explanation is not established in that case. Chickpea must
+return the exact registered callback, and cannot replace it with a success page
+before the client exchanges the authorization code.
+
+`ERR_BLOCKED_BY_CLIENT` is a separate browser-side failure. It can appear even
+when the client receives the callback and completes authentication. Check the
+client's result and the read-only MCP call before treating the connection as
+failed. Compare with a direct callback in an isolated local fixture before
+attributing the block to Chickpea's consent handoff; do not relax OAuth or
+browser protections to hide the error.
+
 Authorization should show one permission: manage this Chickpea workspace. Slack OIDC proves the person, while Chickpea independently requires the exact active workspace binding and membership on every MCP request. Disconnect or revoke the MCP connection from the client when it should no longer hold a refresh token. Suspending or removing the Chickpea member immediately blocks live MCP requests without waiting for client cleanup.
 
 Dynamic Client Registration is an intentionally bounded compatibility window for current clients. It accepts public clients only, validates exact loopback or HTTPS redirects, rate-limits registrations, caps stored clients, and prunes unused clients. Do not enable confidential client metadata or widen redirect rules. Replacing DCR with client-ID metadata is a follow-up gate: the Worker implementation must safely resolve DNS, reject special addresses, pin the resolved address through TLS, and refuse redirects before remote metadata is trusted.
