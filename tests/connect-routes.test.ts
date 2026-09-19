@@ -34,7 +34,7 @@ test('both public connect routes serve cacheable, sniff-proof documents', async 
   assert.equal(markdown.status, 200);
   assert.equal(markdown.headers.get('content-type'), 'text/markdown; charset=utf-8');
   assert.equal(markdown.headers.get('cache-control'), 'public, max-age=300');
-  assert.equal(markdown.headers.get('vary'), 'Host');
+  assert.equal(markdown.headers.get('vary'), 'Host, X-Forwarded-Host, X-Forwarded-Proto');
   assert.equal(markdown.headers.get('x-content-type-options'), 'nosniff');
   assert.equal(markdown.headers.get('referrer-policy'), 'no-referrer');
 
@@ -42,7 +42,7 @@ test('both public connect routes serve cacheable, sniff-proof documents', async 
   assert.equal(page.status, 200);
   assert.equal(page.headers.get('content-type'), 'text/html; charset=utf-8');
   assert.equal(page.headers.get('cache-control'), 'public, max-age=300');
-  assert.equal(page.headers.get('vary'), 'Host');
+  assert.equal(page.headers.get('vary'), 'Host, X-Forwarded-Host, X-Forwarded-Proto');
   assert.equal(page.headers.get('x-content-type-options'), 'nosniff');
   assert.equal(page.headers.get('referrer-policy'), 'no-referrer');
   assert.equal(page.headers.get('x-frame-options'), 'DENY');
@@ -162,7 +162,7 @@ test('the page hands the person one line to paste and a way to copy it', async (
   assert.ok(snippetIds.length >= 3, snippetIds.join(','));
 
   assert.ok(html.includes(`href="${ADMIN_SETTINGS_PATH}"`), 'link to Admin Settings');
-  assert.ok(html.includes(`href="${ADMIN_CODING_AGENTS_PATH}"`), 'link to Settings → Coding agents');
+  assert.ok(html.includes(`href="${ADMIN_CODING_AGENTS_PATH}"`), 'link to Settings → MCP');
   assert.ok(html.includes(`href="${ORIGIN}/connect.md"`), 'link to the agent guide');
 });
 

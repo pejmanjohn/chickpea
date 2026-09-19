@@ -1,7 +1,7 @@
 /**
  * MCP prompts for the workspace-management server.
  *
- * Coding agents render these as slash commands (`/chickpea:new-agent` in
+ * Coding agents render these as slash commands (`/mcp__chickpea__new-agent` in
  * Claude Code, where `chickpea` is whatever the person named the server).
  * Each prompt returns one user message: a short scripted brief that starts
  * with inspection, asks at most a few questions, drafts, then applies or

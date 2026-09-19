@@ -371,7 +371,7 @@ The agent reports two parts on separate lines, each with its own result:
 created (the `@handle` from the tool result) and verified (the reply it
 observed). It then gives you `links.admin`, `links.slack`, and one line on
 how to try it: mention `@handle` in Slack. Next time, ask it here to create,
-change, or connect a teammate; `/chickpea:new-agent` starts the next one if
+change, or connect a teammate; `/mcp__chickpea__new-agent` starts the next one if
 your client shows Chickpea's prompts as slash commands (with the server name
 the agent chose in place of `chickpea` if `chickpea` was taken).
 

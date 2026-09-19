@@ -594,7 +594,7 @@ Report two parts on separate lines, each with its own result: created (the
 its permalink in the receipt). Then give the user `links.admin`,
 `links.slack`, and one line on how to try it: mention `@handle` in Slack.
 Close by saying that next time they can ask you here to create, change, or
-connect a teammate, and that `/chickpea:new-agent` starts the next one if
+connect a teammate, and that `/mcp__chickpea__new-agent` starts the next one if
 their client shows Chickpea's prompts as slash commands (with the server
 name from step 8 in place of `chickpea` if you used another).
 
@@ -615,7 +615,7 @@ Leave a short final response containing:
   real reply was observed; or the reason the step was skipped.
 - The private receipt path and a simple next prompt to use here: "Create
   another teammate for us", or "Create our first teammate" if step 9 was
-  skipped (`/chickpea:new-agent` where slash commands are shown), or "Help
+  skipped (`/mcp__chickpea__new-agent` where slash commands are shown), or "Help
   me update this Chickpea installation."
 
 If any required step is blocked, name it plainly. For example, "Deployed to

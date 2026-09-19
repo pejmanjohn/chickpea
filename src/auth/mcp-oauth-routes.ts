@@ -424,33 +424,63 @@ function compareQueryEntries(
   return 0;
 }
 
-function renderConsentPage(input: {
-  clientId: string;
-  scope: string;
-  oauthQuery: string;
-}): string {
+const CONSENT_STYLE = `
+:root{--canvas:#f4ebd8;--card:#fffdf6;--well:#f8f1df;--line:rgba(59,50,32,.12);--text:#3b3220;--text-2:#6b5c42;--gold:#dda033;--gold-press:#b27e1f}
+*{box-sizing:border-box}
+body{margin:0;background:var(--canvas);color:var(--text);font:16px/1.55 Quicksand,system-ui,-apple-system,"Segoe UI",sans-serif}
+main{max-width:560px;margin:8vh auto 10vh;padding:0 20px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:28px 28px 24px;box-shadow:0 2px 0 rgba(59,50,32,.08)}
+.brand{display:flex;align-items:center;gap:12px;margin-bottom:22px}
+.brand img{width:40px;height:40px;border-radius:10px}
+.brand span{font-weight:700;letter-spacing:.02em}
+h1{font-size:28px;line-height:1.15;margin:0 0 10px}
+p{margin:0 0 14px;color:var(--text-2)}
+dl{display:grid;grid-template-columns:auto 1fr;gap:6px 16px;margin:0 0 22px;padding:14px 16px;background:var(--well);border:1px solid var(--line);border-radius:12px}
+dt{color:var(--text-2);font-size:14px}
+dd{margin:0;font:14px/1.5 "JetBrains Mono",ui-monospace,Menlo,Consolas,monospace;overflow-wrap:anywhere}
+form{display:flex;gap:10px;flex-wrap:wrap}
+button{font:inherit;font-weight:700;font-size:15px;padding:10px 18px;border:0;border-radius:10px;cursor:pointer}
+button[value=allow]{background:var(--gold);color:#3b3220;box-shadow:0 2px 0 var(--gold-press)}
+button[value=allow]:active{transform:translateY(1px);box-shadow:0 1px 0 var(--gold-press)}
+button[value=deny]{background:transparent;color:var(--text-2);border:1px solid var(--line)}
+a{color:#8a6410}
+`.trim();
+
+function brandPage(title: string, body: string): string {
   return `<!doctype html>
 <html lang="en">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Authorize Chickpea</title></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><link rel="icon" href="/chickpea-favicon-32.png"><style>${CONSENT_STYLE}</style></head>
 <body>
   <main>
-    <h1>Allow workspace management?</h1>
-    <p>A coding agent is requesting permission to manage this Chickpea workspace as you.</p>
-    <dl><dt>Client</dt><dd>${escapeHtml(input.clientId)}</dd><dt>Permission</dt><dd>${escapeHtml(input.scope)}</dd></dl>
-    <form method="post" action="/auth/mcp/consent">
-      <input type="hidden" name="oauth_query" value="${escapeHtml(input.oauthQuery)}">
-      <button type="submit" name="decision" value="allow">Allow</button>
-      <button type="submit" name="decision" value="deny">Deny</button>
-    </form>
+    <div class="card">
+      <div class="brand"><img src="/chickpea-mark-128.png" alt=""><span>Chickpea</span></div>
+${body}
+    </div>
   </main>
 </body>
 </html>`;
 }
 
+function renderConsentPage(input: {
+  clientId: string;
+  scope: string;
+  oauthQuery: string;
+}): string {
+  return brandPage('Authorize Chickpea', `      <h1>Allow workspace management?</h1>
+      <p>A coding agent is asking to manage this Chickpea workspace as you. It signs in as you and can only do what you can do.</p>
+      <dl><dt>Client</dt><dd>${escapeHtml(input.clientId)}</dd><dt>Permission</dt><dd>${escapeHtml(input.scope)}</dd></dl>
+      <form method="post" action="/auth/mcp/consent">
+        <input type="hidden" name="oauth_query" value="${escapeHtml(input.oauthQuery)}">
+        <button type="submit" name="decision" value="allow">Allow</button>
+        <button type="submit" name="decision" value="deny">Deny</button>
+      </form>`);
+}
+
 function browserHeaders(contentType: string): Headers {
   return new Headers({
     'Cache-Control': 'no-store',
-    'Content-Security-Policy': "default-src 'none'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+    // Scriptless pages: inline styles only, brand images from this origin.
+    'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
     'Content-Type': contentType,
     'Referrer-Policy': 'no-referrer',
     'X-Content-Type-Options': 'nosniff',
@@ -463,11 +493,9 @@ export function createMcpConsentRedirectResponse(location: string): Response {
   // Chrome applies the submitting page's form-action policy to HTTP redirects.
   // Finish the same-origin POST before navigating to the OAuth client's callback.
   // A scriptless document also supports loopback clients without relaxing CSP.
-  return new Response(`<!doctype html>
-<html lang="en">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="0;url=${destination}"><title>Return to your coding agent</title></head>
-<body><main><h1>Return to your coding agent</h1><p>You are being returned to the app that requested access.</p><p><a href="${destination}">Continue</a> if you are not redirected automatically.</p></main></body>
-</html>`, {
+  return new Response(brandPage('Return to your coding agent', `      <h1>Return to your coding agent</h1>
+      <p>You are being returned to the app that requested access.</p>
+      <p><a href="${destination}">Continue</a> if you are not redirected automatically.</p>`).replace('<title>', `<meta http-equiv="refresh" content="0;url=${destination}"><title>`), {
     status: 200,
     headers: browserHeaders('text/html; charset=utf-8'),
   });

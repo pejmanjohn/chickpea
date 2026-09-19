@@ -24,7 +24,12 @@ export function parseToolEnvelope(result: CallToolResult): ToolEnvelope {
     }
   }
   if (result.isError) {
-    return { ok: false, error: { code: 'tool_error', message: 'The tool reported an error without a readable body.' } };
+    // The MCP SDK reports argument validation failures as plain text, not as a
+    // Chickpea envelope; show that text so the caller can fix the arguments.
+    const message = first && first.type === 'text' && first.text.trim()
+      ? first.text.trim()
+      : 'The tool reported an error without a readable body.';
+    return { ok: false, error: { code: 'tool_error', message } };
   }
   throw new CliError('UNEXPECTED_RESULT', 'The tool result did not carry a { ok, result | error } envelope', 'Check that the URL points at a Chickpea deployment');
 }
