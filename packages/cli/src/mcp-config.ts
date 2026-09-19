@@ -22,7 +22,7 @@ export function isMcpClient(value: string): value is McpClient {
 const CLIENT_TABLE: Record<McpClient, { title: string; text: (url: string) => string }> = {
   'claude-code': {
     title: 'Claude Code (terminal)',
-    text: (url) => `claude mcp add --transport http ${MCP_SERVER_NAME} ${url}`,
+    text: (url) => `claude mcp add --transport http --scope user ${MCP_SERVER_NAME} ${url}`,
   },
   codex: {
     title: 'Codex (terminal)',

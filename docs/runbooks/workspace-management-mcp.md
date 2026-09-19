@@ -19,8 +19,13 @@ so their clients received no refresh token. Update the server before signing
 in again. Existing clients registered with only the workspace scope need a
 fresh client registration as well as fresh consent; clearing only an expired
 access token cannot repair that registration. Use the client's normal controls
-to reset only this Chickpea connection, preserving other MCP servers. CLI
-`doctor` reports missing refresh support independently of initial sign-in.
+to reset only this Chickpea connection, preserving other MCP servers. Codex
+registers again with `codex mcp login chickpea`. In Claude Code, use `/mcp` →
+`chickpea` → Clear authentication, then authenticate again. Claude versions with
+the terminal commands can use `claude mcp logout chickpea` followed by
+`claude mcp login chickpea`. Merely re-authenticating can preserve the old client
+registration. CLI `doctor` reports missing refresh support independently of
+initial sign-in.
 
 The compact tool surface is:
 

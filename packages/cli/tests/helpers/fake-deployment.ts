@@ -192,7 +192,7 @@ export class FakeDeployment {
       response_types: metadata.response_types,
       token_endpoint_auth_method: 'none',
       application_type: metadata.application_type,
-      scope: metadata.scope ?? OAUTH_SCOPE,
+      scope: OAUTH_SCOPE,
       resources: [`${this.canonical}/mcp`],
     };
     this.clients.set(clientId, record);

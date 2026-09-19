@@ -200,14 +200,14 @@ function createOptions(
         consentPage: '/auth/mcp/consent',
         // offline_access enables renewable client sessions. The MCP plugin keeps
         // this authorization-server scope out of protected-resource metadata.
-        scopes: MCP_OAUTH_SCOPES,
+        scopes: [...MCP_OAUTH_SCOPES],
         grantTypes: ['authorization_code', 'refresh_token'],
         accessTokenExpiresIn: 15 * 60,
         refreshTokenExpiresIn: 30 * 24 * 60 * 60,
         codeExpiresIn: 10 * 60,
         allowDynamicClientRegistration: true,
         allowUnauthenticatedClientRegistration: true,
-        clientRegistrationDefaultScopes: MCP_OAUTH_SCOPES,
+        clientRegistrationDefaultScopes: [...MCP_OAUTH_SCOPES],
         clientRegistrationAllowedScopes: [],
         clientRegistrationRequirePKCE: true,
       }) as unknown as BetterAuthPlugin,

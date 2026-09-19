@@ -20,6 +20,7 @@ import {
   createMcpConsentRedirectResponse,
   createMcpAuthenticatedRequestHandler,
   verifySignedOAuthQuery,
+  renderMcpConsentPage,
 } from '../src/auth/mcp-oauth-routes.ts';
 import { validateBrowserMutationProvenance } from '../src/auth/request-provenance.ts';
 
@@ -216,6 +217,18 @@ test('MCP consent can opt into opaque-origin same-origin form navigation', () =>
     ok: false,
     code: 'cross_origin_denied',
   });
+});
+
+test('MCP consent explains renewable access without changing the signed request', () => {
+  const oauthQuery = 'scope=chickpea%3Aworkspace+offline_access&sig=test';
+  const html = renderMcpConsentPage({
+    clientId: 'test-client', scope: 'chickpea:workspace offline_access', oauthQuery,
+  });
+  assert.ok(html.includes('<dd>Manage this Chickpea workspace and stay signed in</dd>'));
+  assert.ok(html.includes(`value="${oauthQuery.replaceAll('&', '&amp;')}"`));
+  const temporary = renderMcpConsentPage({ clientId: 'test-client', scope: MCP_WORKSPACE_SCOPE, oauthQuery });
+  assert.ok(temporary.includes('<dd>Manage this Chickpea workspace</dd>'));
+  assert.ok(!temporary.includes('stay signed in'));
 });
 
 test('MCP consent finishes its form POST before returning to a client callback', async () => {

@@ -57,19 +57,25 @@ async function fixture() {
     });
     return response;
   }
-  async function authorize(clientId: string, scope: string) {
+  async function beginAuthorize(clientId: string, scope: string) {
     const verifier = 'f'.repeat(64);
     const query = new URLSearchParams({
       response_type: 'code', client_id: clientId, redirect_uri: REDIRECT,
       scope, state: 'fixture-state', resource: RESOURCE,
       code_challenge: createHash('sha256').update(verifier).digest('base64url'),
-      code_challenge_method: 'S256', prompt: 'consent',
+      code_challenge_method: 'S256',
     });
     const response = await handler(new Request(`${ORIGIN}/api/auth/oauth2/authorize?${query}`, {
       headers: { cookie },
     }));
+    return { response, verifier };
+  }
+  async function authorize(clientId: string, scope: string) {
+    const { response, verifier } = await beginAuthorize(clientId, scope);
     assert.equal(response.status, 302);
-    const consentQuery = new URL(response.headers.get('location')!, ORIGIN).search.slice(1);
+    const consentUrl = new URL(response.headers.get('location')!, ORIGIN);
+    assert.equal(consentUrl.pathname, '/auth/mcp/consent');
+    const consentQuery = consentUrl.search.slice(1);
     const consent = await json('/api/auth/oauth2/consent', { accept: true, oauth_query: consentQuery });
     assert.equal(consent.status, 200);
     const { url } = await consent.json() as { url: string };
@@ -82,7 +88,7 @@ async function fixture() {
       redirect_uri: REDIRECT, resource: RESOURCE,
     });
   }
-  return { backend, handler, register, authorize, token };
+  return { backend, handler, register, beginAuthorize, authorize, token };
 }
 
 for (const explicitRegistrationScope of [true, false]) {
@@ -131,6 +137,21 @@ for (const explicitRegistrationScope of [true, false]) {
     assert.notEqual(next.access_token, tokens.access_token);
     assert.equal(next.scope, RENEWABLE_SCOPE);
     await jwtVerify(next.access_token!, key, verifyOptions);
+
+    // MCP allows a 30-second retry overlap; reuse outside it revokes the family.
+    t.mock.timers.tick(31_000);
+    const replay = await f.token({
+      grant_type: 'refresh_token', client_id: client.client_id,
+      refresh_token: String(tokens.refresh_token), resource: RESOURCE,
+    });
+    assert.equal(replay.status, 400);
+    assert.equal((await replay.json() as { error: string }).error, 'invalid_grant');
+    const revokedFamily = await f.token({
+      grant_type: 'refresh_token', client_id: client.client_id,
+      refresh_token: next.refresh_token!, resource: RESOURCE,
+    });
+    assert.equal(revokedFamily.status, 400);
+    assert.equal((await revokedFamily.json() as { error: string }).error, 'invalid_grant');
   });
 }
 
@@ -140,6 +161,7 @@ test('offline access is optional and registration still rejects unrelated scopes
   const denied = await f.register(`${RENEWABLE_SCOPE} admin`);
   assert.equal(denied.status, 400);
   assert.deepEqual(await denied.json(), { error: 'invalid_scope' });
+  assert.equal((await f.register('offline_access')).status, 400, 'workspace permission is required');
   const registered = await f.register(WORKSPACE_SCOPE);
   assert.equal(registered.status, 201);
   const client = await registered.json() as { client_id: string };
@@ -148,4 +170,26 @@ test('offline access is optional and registration still rejects unrelated scopes
   const tokens = await exchange.json() as Record<string, unknown>;
   assert.equal(typeof tokens.access_token, 'string');
   assert.equal(tokens.refresh_token, undefined, 'do not silently grant unrequested offline access');
+  // DCR stores all server-allowed scopes. Recreate a client from before the
+  // server supported offline_access, rather than registering a new one now.
+  f.backend.database.prepare('UPDATE oauthClient SET scopes = ? WHERE clientId = ?')
+    .run(JSON.stringify([WORKSPACE_SCOPE]), client.client_id);
+  const upgrade = await f.beginAuthorize(client.client_id, RENEWABLE_SCOPE);
+  assert.equal(upgrade.response.status, 302);
+  assert.equal(new URL(upgrade.response.headers.get('location')!, ORIGIN).searchParams.get('error'), 'invalid_scope',
+    'an old client registration needs replacing before it can request offline access');
+});
+
+test('adding offline access requires new consent even after workspace access was approved', async (t) => {
+  const f = await fixture();
+  t.after(() => f.backend.close());
+  const registered = await f.register(RENEWABLE_SCOPE);
+  const client = await registered.json() as { client_id: string };
+  assert.equal((await f.authorize(client.client_id, WORKSPACE_SCOPE)).status, 200);
+  const same = await f.beginAuthorize(client.client_id, WORKSPACE_SCOPE);
+  assert.equal(new URL(same.response.headers.get('location')!).pathname, '/callback',
+    'the existing consent covers an unchanged scope request');
+  const upgrade = await f.authorize(client.client_id, RENEWABLE_SCOPE);
+  assert.equal(upgrade.status, 200, 'authorize checks that the extra scope went through consent');
+  assert.equal(typeof (await upgrade.json() as { refresh_token: unknown }).refresh_token, 'string');
 });

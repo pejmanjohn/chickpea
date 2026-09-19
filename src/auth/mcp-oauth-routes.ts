@@ -212,7 +212,7 @@ async function showMcpConsent(c: Context, options: McpOAuthRuntimeOptions): Prom
   }
   const clientId = query.get('client_id') ?? '';
   const scope = query.get('scope') ?? MCP_WORKSPACE_SCOPE;
-  return new Response(renderConsentPage({ clientId, scope, oauthQuery: query.toString() }), {
+  return new Response(renderMcpConsentPage({ clientId, scope, oauthQuery: query.toString() }), {
     status: 200,
     headers: browserHeaders('text/html; charset=utf-8'),
   });
@@ -461,14 +461,19 @@ ${body}
 </html>`;
 }
 
-function renderConsentPage(input: {
+export function renderMcpConsentPage(input: {
   clientId: string;
   scope: string;
   oauthQuery: string;
 }): string {
+  const permission = input.scope.split(/\s+/).filter(Boolean).map((scope) => {
+    if (scope === MCP_WORKSPACE_SCOPE) return 'Manage this Chickpea workspace';
+    if (scope === 'offline_access') return 'stay signed in';
+    return scope;
+  }).join(' and ');
   return brandPage('Authorize Chickpea', `      <h1>Allow workspace management?</h1>
       <p>A coding agent is asking to manage this Chickpea workspace as you. It signs in as you and can only do what you can do.</p>
-      <dl><dt>Client</dt><dd>${escapeHtml(input.clientId)}</dd><dt>Permission</dt><dd>${escapeHtml(input.scope)}</dd></dl>
+      <dl><dt>Client</dt><dd>${escapeHtml(input.clientId)}</dd><dt>Permission</dt><dd>${escapeHtml(permission)}</dd></dl>
       <form method="post" action="/auth/mcp/consent">
         <input type="hidden" name="oauth_query" value="${escapeHtml(input.oauthQuery)}">
         <button type="submit" name="decision" value="allow">Allow</button>
