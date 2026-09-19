@@ -3,6 +3,7 @@ import { CliError } from './errors.ts';
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
 export const MCP_RESOURCE_PATH = '/mcp';
 export const MCP_WORKSPACE_SCOPE = 'chickpea:workspace';
+export const MCP_OAUTH_SCOPE = `${MCP_WORKSPACE_SCOPE} offline_access`;
 
 export function isLoopbackHost(hostname: string): boolean {
   if (LOOPBACK_HOSTS.has(hostname)) return true;

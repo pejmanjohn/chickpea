@@ -129,8 +129,9 @@ test('connect hands off in the browser and never touches a credential', () => {
     'prepare_connector_setup',
     'handoffUrl',
     'ownerKind',
-    '24 hours',
+    'signed-in Admin browser',
   ]) assert.ok(text.includes(required), `connect must mention ${required}`);
+  assert.ok(!text.includes('24 hours'), 'MCP Admin links are not expiring Slack setup capabilities');
   assert.match(
     text,
     /Never ask for, accept, or relay an API key, token, password, or OAuth code\./,

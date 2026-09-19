@@ -171,7 +171,7 @@ function connectPrompt(args: { service: string; handle?: string | undefined }, b
       ? `2. The target Agent is @${handle}. Confirm it exists and the person can edit it; if not, say so and stop.`
       : '2. Ask which Agent should get the connection, listing the editable Agents by handle. One question.',
     '3. Ask whether this is a personal connection (ownerKind "member") or a team-owned one (ownerKind "team"), unless they already said.',
-    '4. Call prepare_connector_setup with the agentId, connector, and ownerKind. Give the person the returned handoffUrl to open in a browser. It expires in 24 hours and anyone holding it can complete that exact setup, so tell them not to paste it anywhere shared.',
+    '4. Call prepare_connector_setup with the agentId, connector, and ownerKind. Give the person the returned handoffUrl to open in their signed-in Admin browser. Describe any expiry only if the server returns one.',
     '5. Never ask for, accept, or relay an API key, token, password, or OAuth code. The browser page collects it; you never see it.',
     '6. When they say the setup finished, call inspect_workspace again and confirm the connection is ready. If it is not, say what is still missing.',
     `7. End with the Agent's Admin page and one line on how to try it: mention @handle in Slack and ask for something that uses the new service. Admin: ${adminLink(baseUrl)}`,

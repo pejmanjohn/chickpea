@@ -1,4 +1,5 @@
 export const MCP_WORKSPACE_SCOPE = 'chickpea:workspace';
+export const MCP_OAUTH_SCOPES = [MCP_WORKSPACE_SCOPE, 'offline_access'];
 const MCP_RESOURCE_PATH = '/mcp';
 const MAX_MCP_DCR_BODY_BYTES = 16 * 1024;
 
@@ -69,7 +70,7 @@ export function validatePublicMcpClientRegistration(
   if (input.scope !== undefined) {
     if (typeof input.scope !== 'string') return denied('invalid_scope');
     const scopes = input.scope.split(/\s+/).filter(Boolean);
-    if (!scopes.length || scopes.some((scope) => scope !== MCP_WORKSPACE_SCOPE)) {
+    if (!scopes.length || scopes.some((scope) => !MCP_OAUTH_SCOPES.includes(scope))) {
       return denied('invalid_scope');
     }
   }

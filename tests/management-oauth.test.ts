@@ -6,6 +6,7 @@ import { makeSignature } from 'better-auth/crypto';
 
 import {
   MCP_WORKSPACE_SCOPE,
+  MCP_OAUTH_SCOPES,
   mcpResourceForOrigin,
   validatePublicMcpClientRegistration,
 } from '../src/auth/mcp-oauth.ts';
@@ -67,7 +68,7 @@ test('Better Auth publishes MCP discovery and registers only public clients', as
     assert.equal(metadata.registration_endpoint, `${origin}/api/auth/oauth2/register`);
     assert.equal(metadata.revocation_endpoint, `${origin}/api/auth/oauth2/revoke`);
     assert.deepEqual(metadata.code_challenge_methods_supported, ['S256']);
-    assert.deepEqual(metadata.scopes_supported, [MCP_WORKSPACE_SCOPE]);
+    assert.deepEqual(metadata.scopes_supported, MCP_OAUTH_SCOPES);
 
     const registration = {
       application_type: 'native',
