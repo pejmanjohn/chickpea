@@ -92,7 +92,7 @@ for (const name of Object.keys(GUIDES) as Array<keyof typeof GUIDES>) {
     assert.match(step, /two parts on separate lines/);
     assert.match(step, /created \(/);
     assert.match(step, /verified \(/);
-    assert.match(step, new RegExp(`\`/${MCP_SERVER_NAME}:new-agent\``));
+    assert.match(step, new RegExp(`\`/mcp__${MCP_SERVER_NAME}__new-agent\``));
     assert.doesNotMatch(step, /through Slack instead\. [A-Z]/, 'the Slack fallback is refused, not offered');
     assert.match(step, /[Dd]o(?:es)? not create the teammate through Slack instead/);
   });
@@ -113,7 +113,7 @@ test('INSTALL_CHICKPEA_CLOUDFLARE.md: step 6 carries the use case to step 9 and 
   assert.match(handOver, /"Create our first teammate" if step 9 was\s+skipped/);
   const stepNine = section(text, TEAMMATE_HEADING);
   assert.match(stepNine, /only after\s+step 8 reported the connection as tested/);
-  assert.match(handOver, new RegExp(`\`/${MCP_SERVER_NAME}:new-agent\``));
+  assert.match(handOver, new RegExp(`\`/mcp__${MCP_SERVER_NAME}__new-agent\``));
   assert.match(handOver, /Help\s+me update this Chickpea installation/);
   assert.match(text, /creating their first\s+teammate from this conversation in step 9/);
 });

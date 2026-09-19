@@ -454,7 +454,7 @@ test('management and evaluation runbooks track the additive authoring contract',
     'confirm_workspace_change',
   ]) assert.match(management, new RegExp(value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   assert.doesNotMatch(management, /contract version `2\.0\.0`/);
-  assert.match(management, /\/chickpea:new-agent/);
+  assert.match(management, /\/mcp__chickpea__new-agent/);
   assert.match(management, /prompts\/list/);
   assert.match(evaluation, /no-guide-v1/);
   assert.match(evaluation, /npm run evaluate:agent-authoring:live/);

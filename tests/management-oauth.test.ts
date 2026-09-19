@@ -230,7 +230,7 @@ test('MCP consent finishes its form POST before returning to a client callback',
     assert.equal(response.headers.get('cache-control'), 'no-store');
     assert.equal(response.headers.get('referrer-policy'), 'no-referrer');
     assert.equal(response.headers.get('content-security-policy'),
-      "default-src 'none'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'");
+      "default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'");
     const html = await response.text();
     const escapedCallback = callback.replaceAll('&', '&amp;');
     assert.ok(html.includes(`http-equiv="refresh" content="0;url=${escapedCallback}"`));

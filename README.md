@@ -436,9 +436,9 @@ Then try:
 
 > Create a Chickpea Agent named Support that helps our team answer billing questions.
 
-In Claude Code, `/chickpea:new-agent` opens the same guided flow from the
-slash menu; `/chickpea:status`, `/chickpea:edit-agent`, `/chickpea:connect`,
-`/chickpea:schedule`, and `/chickpea:import-skill` cover the rest.
+In Claude Code, `/mcp__chickpea__new-agent` opens the same guided flow from the
+slash menu; `/mcp__chickpea__status`, `/mcp__chickpea__edit-agent`, `/mcp__chickpea__connect`,
+`/mcp__chickpea__schedule`, and `/mcp__chickpea__import-skill` cover the rest.
 
 Chickpea applies your existing permissions. Changes that expand access or
 require confirmation produce a proposal for you to approve. Connecting an

@@ -4160,7 +4160,7 @@
       icon("chevron-down", "model-combo-caret") +
       (open ? imageModelPickerHtml(model) : "") +
       '</div>' +
-      '<p class="hint">' + (model ? 'This Agent stays on its pinned image model until you <button type="button" class="link-btn" data-action="profile-image-model-reset">use the Workspace default</button>.' : 'This Agent follows the Workspace default image model.') + ' Manage image models in <button type="button" class="link-btn" data-action="open-settings">Settings &nearr;</button></p>' +
+      '<p class="hint">' + (model ? 'This Agent stays on its pinned image model until you <button type="button" class="link-btn" data-action="profile-image-model-reset">use the Workspace default</button>.' : 'This Agent follows the Workspace default image model.') + (WORKSPACE_ADMIN_UI ? ' Manage image models in <button type="button" class="link-btn" data-action="open-settings">Settings &nearr;</button>' : '') + '</p>' +
       '</div>';
   }
 
@@ -4169,7 +4169,8 @@
   function imageModelPickerHtml(current) {
     var filter = (state.imageModelPickerFilter || "").toLowerCase();
     var html = '<div class="combo-list" role="listbox">';
-    var settingsRow = '<div class="combo-settings"><button type="button" class="link-btn" data-action="open-settings">Manage image models in Settings &nearr;</button></div>';
+    // Members have no Model providers page; the Settings row would land them on MCP.
+    var settingsRow = WORKSPACE_ADMIN_UI ? '<div class="combo-settings"><button type="button" class="link-btn" data-action="open-settings">Manage image models in Settings &nearr;</button></div>' : '';
     var models = imageModelCatalog().filter(function (model) {
       return !filter || model.id.toLowerCase().indexOf(filter) >= 0 ||
         String(model.name || "").toLowerCase().indexOf(filter) >= 0;
@@ -7154,7 +7155,8 @@
     // foot, persistent across every filter state (the moment of need is an open
     // dropdown missing the model you want). Settings itself lands with the
     // model-providers build.
-    var settingsRow = '<div class="combo-settings"><button type="button" class="link-btn" data-action="open-settings">Manage providers &amp; models in Settings &nearr;</button></div>';
+    // Members have no Model providers page; the Settings row would land them on MCP.
+    var settingsRow = WORKSPACE_ADMIN_UI ? '<div class="combo-settings"><button type="button" class="link-btn" data-action="open-settings">Manage providers &amp; models in Settings &nearr;</button></div>' : '';
     if (!rendered) {
       if (sawConfigured) {
         return html + '<div class="combo-foot">Star models in Settings to add picker shortcuts, or type any provider/model specifier.</div>' + settingsRow + '</div>';

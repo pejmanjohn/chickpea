@@ -47,9 +47,12 @@ function resolveOrigin(c: Context): string | undefined {
 
 function publicHeaders(c: Context): void {
   // Content depends only on the public origin, so short shared caching is
-  // safe; a changed SLACK_TAG_PUBLIC_URL or host shows up within minutes.
+  // safe; a changed SLACK_TAG_PUBLIC_URL or host shows up within minutes. On
+  // Node the origin can also come from the forwarded headers, so a shared
+  // cache must key on them too, or one caller's forwarded host would be
+  // served to everyone behind the same Host for five minutes.
   c.header('Cache-Control', 'public, max-age=300');
-  c.header('Vary', 'Host');
+  c.header('Vary', 'Host, X-Forwarded-Host, X-Forwarded-Proto');
   c.header('X-Content-Type-Options', 'nosniff');
   c.header('Referrer-Policy', 'no-referrer');
 }

@@ -120,7 +120,10 @@ const zAgentFields = {
   apiConnections: z.array(zApiConnection).max(50),
   repositories: z.array(zRepository).max(100),
 };
-const zAgent = z.strictObject({ id: zAgentId, ...zAgentFields });
+const zAgent = z.strictObject({
+  id: zAgentId.describe('A new id for the Agent, chosen by the caller: lowercase letters, digits, "_" or "-", for example agent_support. It must not belong to an existing Agent.'),
+  ...zAgentFields,
+});
 const zAgentPatch = z.strictObject({
   name: zAgentFields.name.optional(),
   description: zAgentFields.description,
