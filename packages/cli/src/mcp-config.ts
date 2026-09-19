@@ -26,7 +26,7 @@ const CLIENT_TABLE: Record<McpClient, { title: string; text: (url: string) => st
   },
   codex: {
     title: 'Codex (terminal)',
-    text: (url) => `codex mcp add ${MCP_SERVER_NAME} --url ${url}\ncodex mcp login ${MCP_SERVER_NAME}`,
+    text: (url) => `codex mcp add ${MCP_SERVER_NAME} --url ${url}`,
   },
   cursor: {
     title: 'Cursor (.cursor/mcp.json)',

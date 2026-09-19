@@ -59,8 +59,8 @@ export const CONNECT_CLIENTS: readonly ConnectClient[] = Object.freeze([
     title: 'Codex',
     where: 'terminal',
     language: 'bash',
-    snippet: (url) => `codex mcp add ${MCP_SERVER_NAME} --url ${url}\ncodex mcp login ${MCP_SERVER_NAME}`,
-    login: `\`codex mcp login ${MCP_SERVER_NAME}\` opens the browser sign-in.`,
+    snippet: (url) => `codex mcp add ${MCP_SERVER_NAME} --url ${url}`,
+    login: `Use the browser tab Codex opens and wait for the command to finish. Run codex mcp login ${MCP_SERVER_NAME} only if sign-in is still needed afterward.`,
     restart: 'A running Codex session loads the server on its next start.',
   },
   {
@@ -205,7 +205,11 @@ export function connectMarkdown(origin: string): string {
     '',
     '## 3. Sign in',
     '',
-    'Start your client\'s sign-in for the new server. The browser shows Slack sign-in for the workspace where Chickpea is installed, then Chickpea\'s consent screen with one permission: manage this Chickpea workspace. Slack sign-in needs the person; ask them to take over in the browser, keep the page open, and wait.',
+    'Adding the server may already start sign-in. Keep that command running and use the browser tab it opens. Do not open a second copy of the authorization URL or start another login while the first is pending. Open the printed URL once only if no tab opened. If the command already reports successful login, continue to step 4.',
+    '',
+    'If sign-in is still needed after adding the server, start your client\'s sign-in once. The browser shows Slack sign-in for the workspace where Chickpea is installed, then Chickpea\'s consent screen with one permission: manage this Chickpea workspace. Ask the person to complete Slack sign-in and click Allow in that tab, then wait for the client to report the result.',
+    '',
+    'If an old or duplicate tab shows connection refused at localhost or 127.0.0.1 after consent, check the client\'s result first. A successful login can close the client\'s temporary callback listener. Close the leftover tab and continue to the read-only check in step 5 if the client reports success. If login failed or timed out, preserve the first error and retry once with a fresh login URL. Do not reuse the old authorization or callback URL, or remove working credentials to retry.',
     '',
     `If the server answers 404 at \`${MCP_RESOURCE_PATH}\` or your client cannot find its OAuth metadata, Chickpea\'s Slack setup is not finished yet. Send the person to ${admin} to finish it, leave the configuration in place, and stop here.`,
     '',
@@ -221,7 +225,7 @@ export function connectMarkdown(origin: string): string {
     '2. Signed in: whether the browser sign-in and consent completed.',
     '3. Tested: the workspace name and the signed-in person from `inspect_workspace`.',
     '',
-    'A saved configuration is not a tested connection. If a step failed, say which one, keep the first error, and stop.',
+    'A saved configuration is not a tested connection. If a step remains blocked after following the guidance above, say which one, keep the first error, and stop.',
     '',
     '## 6. Offer the first teammate',
     '',
@@ -307,6 +311,7 @@ ${snippetHtml('prompt', connectPrompt(origin))}
 ${snippetHtml('claude-code', claude.snippet(url))}
 <p class="meta">Codex</p>
 ${snippetHtml('codex', codex.snippet(url))}
+<p class="meta">${escapeHtml(codex.login)}</p>
 <p class="meta">Any MCP client: add a remote server at <code>${escapeHtml(url)}</code>. Sign-in uses your Slack account; there is no API key or token to paste. Full instructions for Cursor, VS Code, Windsurf, and Gemini CLI are in <a href="${escapeHtml(guideUrl)}">the guide</a>.</p>
 <h2>Then</h2>
 <p>Ask your coding agent what Agents it can manage, or tell it what your first teammate should do. Signed in to Admin? <a href="${ADMIN_CODING_AGENTS_PATH}">Settings → MCP</a> has every client's snippet and one-click install for Cursor and VS Code. Model providers, GitHub, and other workspace settings stay in <a href="${ADMIN_SETTINGS_PATH}">Admin Settings</a>.</p>
