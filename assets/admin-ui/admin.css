@@ -2761,28 +2761,56 @@ button.capability-pill { cursor: pointer; }
 .connection-state-stack .connection-row-menu-panel button.danger { color: var(--danger); }
 .connection-state-stack .connection-row-editor { grid-column: 2 / -1; padding: 0 0 10px; }
 .connection-state-stack .connection-empty { border: 1px solid var(--line-strong); border-radius: 14px; color: var(--text-3); font-size: 0.8125rem; padding: 14px 16px; }
-.managed-provider-section { display: grid; gap: 16px; }
-.managed-provider-card { background: var(--well); border: 1px solid var(--line); border-radius: 16px; display: grid; gap: 16px; padding: 18px; }
-.managed-provider-status { align-items: flex-start; display: flex; gap: 11px; }
-.managed-provider-status p { margin: 3px 0 0; }
-.managed-provider-dot { border: 2px solid var(--text-3); border-radius: 50%; flex: 0 0 10px; height: 10px; margin-top: 5px; width: 10px; }
-.managed-provider-dot.ready { background: var(--ok); border-color: var(--ok); }
+.connector-providers-section { gap: 14px; }
+.provider-panel { background: var(--bg); border: 1px solid var(--line-strong); border-radius: 16px; display: grid; overflow: hidden; }
+.provider-panel + .provider-panel { margin-top: 2px; }
+.provider-panel-head { align-items: center; display: grid; gap: 12px; grid-template-columns: auto minmax(0, 1fr) auto; padding: 14px 16px; }
+.provider-panel-head .conn-logo { border-radius: 10px; height: 38px; width: 38px; }
+.provider-panel-head .conn-logo-img svg { max-height: 24px; max-width: 24px; }
+.provider-mark { align-items: center; background: var(--ember-tint); border-radius: 10px; color: var(--ember-deep); display: inline-flex; flex: none; font-family: var(--display); font-size: .9375rem; font-weight: 800; height: 38px; justify-content: center; letter-spacing: -0.01em; width: 38px; }
+.provider-panel-copy { display: grid; gap: 2px; min-width: 0; }
+.provider-panel-name { color: var(--text); font-size: .9375rem; font-weight: 700; line-height: 1.25; }
+.provider-panel-meta { color: var(--text-3); font-size: .8125rem; line-height: 1.45; text-wrap: pretty; }
+.provider-panel-meta .mono { color: var(--text-2); font-size: .75rem; }
+.provider-panel-body { border-top: 1px solid var(--line); display: grid; gap: 14px; padding: 16px; }
+.provider-panel-body > .callout { margin: 0; }
+.provider-panel-foot { align-items: center; background: var(--well); border-top: 1px solid var(--line); display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 10px; }
+.provider-panel-foot .spacer { flex: 1; }
+.badge-attention { background: #fbedc8; color: var(--ember-deep); }
 .managed-provider-actions { align-items: center; display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
 .managed-provider-guidance { color: var(--text-2); font-size: .8125rem; margin: 0; }
-.managed-key-form { display: grid; gap: 10px; }
-.managed-settings-list { border: 1px solid var(--line-strong); border-radius: 16px; overflow: hidden; }
-.managed-settings-row { align-items: center; background: var(--bg); display: grid; gap: 12px; grid-template-columns: 38px minmax(0, 1fr) auto; min-height: 58px; padding: 8px 14px; }
+.managed-key-form { display: grid; gap: 14px; }
+.managed-key-form .field { max-width: 520px; }
+.managed-setup-steps { color: var(--text-2); counter-reset: managed-step; display: grid; font-size: .8125rem; gap: 9px; line-height: 1.5; list-style: none; margin: 0; padding: 0; }
+.managed-setup-steps li { align-items: start; display: grid; gap: 10px; grid-template-columns: 22px minmax(0, 1fr); }
+.managed-setup-steps li::before { align-items: center; background: var(--well); border: 1px solid var(--line-strong); border-radius: 999px; color: var(--text-2); content: counter(managed-step); counter-increment: managed-step; display: inline-flex; font-size: .6875rem; font-weight: 700; height: 22px; justify-content: center; width: 22px; }
+.managed-setup-steps li > span { padding-top: 2px; }
+.managed-setup-steps strong { color: var(--text); }
+.managed-setup-code { background: var(--well); border: 1px solid var(--line); border-radius: 8px; color: var(--text); display: block; font-family: var(--mono); font-size: .75rem; grid-column: 2; overflow-wrap: anywhere; padding: 7px 10px; }
+.managed-list-head { border-top: 1px solid var(--line); color: var(--text-3); display: flex; font-size: .6875rem; font-weight: 700; gap: 12px; justify-content: space-between; letter-spacing: .06em; padding: 10px 16px 8px; text-transform: uppercase; }
+.managed-settings-list { display: grid; }
+.managed-settings-row { align-items: center; display: grid; gap: 12px; grid-template-columns: 34px minmax(0, 1fr) auto; min-height: 54px; padding: 8px 16px; }
 .managed-settings-row + .managed-settings-row { border-top: 1px solid var(--line); }
-.managed-settings-row .conn-logo { border-radius: 9px; height: 38px; width: 38px; }
-.managed-settings-row .conn-logo-img svg { max-height: 26px; max-width: 26px; }
-.managed-settings-copy { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.managed-readiness { color: var(--text-3); font-size: .75rem; white-space: nowrap; }
+.managed-settings-row .conn-logo { border-radius: 9px; height: 34px; width: 34px; }
+.managed-settings-row .conn-logo-img svg { max-height: 22px; max-width: 22px; }
+.managed-settings-copy { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.managed-settings-copy .connection-account-name { color: var(--text); font-size: .875rem; font-weight: 700; line-height: 1.25; }
+.managed-settings-copy .connection-account-identity { color: var(--text-3); font-size: .8125rem; line-height: 1.4; }
+.managed-readiness { color: var(--text-3); font-size: .75rem; font-weight: 600; white-space: nowrap; }
 .managed-readiness::before { border: 1.5px solid currentColor; border-radius: 50%; content: ""; display: inline-block; height: 6px; margin-right: 7px; vertical-align: 1px; width: 6px; }
 .managed-readiness-ready { color: var(--ok); }
 .managed-readiness-ready::before { background: var(--ok); border-color: var(--ok); }
 .managed-readiness-prerequisite { color: #946000; }
-.connection-inventory-row { align-items: center; border: 1px solid var(--line); border-radius: 14px; display: flex; gap: 14px; justify-content: space-between; padding: 12px 14px; }
-.connection-inventory-row + .connection-inventory-row { margin-top: 8px; }
+.connection-inventory-list { border: 1px solid var(--line-strong); border-radius: 16px; overflow: hidden; }
+.connection-inventory-row .connection-account-copy { display: grid; gap: 6px; }
+.connection-inventory-row .connection-account-copy > div:first-child { align-items: center; display: flex; flex-wrap: wrap; gap: 6px; }
+.connection-inventory-row .connection-account-copy > div:first-child strong { font-size: .875rem; }
+.connection-inventory-row .connection-account-copy .hint { margin: 0; }
+.connection-inventory-row .where-list { border: 0; border-radius: 0; display: flex; flex-wrap: wrap; gap: 6px; overflow: visible; }
+.connection-inventory-row .where-list .capability-pill { min-height: 28px; padding: 4px 10px; }
+.connection-inventory-row .where-list .hint { align-self: center; }
+.connection-inventory-row { align-items: center; display: flex; gap: 14px; justify-content: space-between; padding: 12px 16px; }
+.connection-inventory-row + .connection-inventory-row { border-top: 1px solid var(--line); }
 .connection-inventory-row .connection-account-copy { min-width: 0; }
 .connection-inventory-actions { align-items: center; display: flex; flex-shrink: 0; gap: 6px; }
 .danger-text { color: var(--danger); }
@@ -2790,8 +2818,10 @@ button.capability-pill { cursor: pointer; }
   .skill-row.conn-row { align-items: stretch; flex-direction: column; }
 }
 @media (max-width: 620px) {
-  .managed-settings-row { align-items: start; grid-template-columns: 38px minmax(0, 1fr); }
+  .managed-settings-row { align-items: start; grid-template-columns: 34px minmax(0, 1fr); }
   .managed-readiness { grid-column: 2; }
+  .provider-panel-head { align-items: start; grid-template-columns: auto minmax(0, 1fr); }
+  .provider-panel-head .badge { grid-column: 2; justify-self: start; }
   .connection-inventory-row { align-items: stretch; flex-direction: column; }
   .connection-inventory-actions { justify-content: flex-end; }
 }
