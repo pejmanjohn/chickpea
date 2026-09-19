@@ -183,6 +183,7 @@ release's acceptance evidence:
 | --- | --- | --- |
 | v0.1.0 candidate | 1 | Pending the candidate's live release run |
 | v0.1.22 | 1 | Node/ngrok candidate `f51d4ec`: shared-app installation, signed-in Admin, real Slack replies, managed restart, and crash recovery passed. The release preserves that runtime source. |
+| v0.1.23 | 1 | Cobalt QA lane on `1dfcd57e` (Worker a1958ce6) plus local checks on the release commit: real Slack DM/mention/thread replies, Agent creation with one welcome, instruction proposal approved and read back in Admin, MCP door (instructions, prompts, `create_agent` links) and `/connect` verified; Codex/Claude Code OAuth logins passed. Shared gateway protocol 1 unchanged. |
 
 Run `npm run verify:gateway-live` against the explicitly selected approved
 gateway, followed by real installation/Slack delivery on the candidate. The
