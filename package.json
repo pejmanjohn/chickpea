@@ -90,7 +90,7 @@
     }
   },
   "scripts": {
-    "test": "npm run typecheck && DO_NOT_TRACK=1 node --test --test-concurrency=4 --import tsx tests/*.test.ts tests/usage/*.test.ts && npm test --workspace packages/cli",
+    "test": "npm run typecheck && DO_NOT_TRACK=1 node scripts/run-tests.mjs tests/*.test.ts tests/usage/*.test.ts && npm test --workspace packages/cli",
     "test:ci": "TAG_REQUIRE_LOOPBACK=1 npm test",
     "typecheck": "tsc --noEmit",
     "dev": "vite dev --config vite.node.config.ts",

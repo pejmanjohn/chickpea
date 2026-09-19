@@ -47,6 +47,14 @@ covers the declared test inventory and offline checks only after the whole expor
 passes. Old receipts do not acquire new coverage retroactively. Missing logs,
 source/configuration drift, and unresolved failures still block completion.
 
+The root test suite runs through `scripts/run-tests.mjs`: files that fail under
+the parallel pass are rerun once, alone. A file that passes alone is logged as
+`RETRIED IN ISOLATION` and the run still passes; note it in the release notes.
+A file that fails twice, or more than five failing files, fails the run. The
+offline durability harness likewise retries a server start that lost its
+allocated port to another process. Neither retry covers a test that fails the
+same way twice, so a repeat is a real failure to fix, not a host race.
+
 Use `--record <private-run.json>` for the existing skill's evidence notebook.
 Passing an earlier commit does not validate new changes. Verify the actual merge
 result before landing. The command never tags, publishes, or deploys a release.
