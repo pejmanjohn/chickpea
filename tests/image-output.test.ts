@@ -26,11 +26,11 @@ test('image controls enforce provider geometry, including custom dimensions', ()
 test('dimensions and transparency are decoded from PNG, JPEG, and WebP pixels', async () => {
   for (const format of ['png', 'jpeg', 'webp'] as const) {
     const transparent = format !== 'jpeg';
-    const { facts } = decodeGeneratedImage(await fixture(format, transparent));
+    const { facts } = await decodeGeneratedImage(await fixture(format, transparent));
     assert.deepEqual(facts, { width: 1024, height: 1024, transparent, format });
   }
-  assert.equal(decodeGeneratedImage(await fixture('png')).facts.transparent, false, 'an alpha channel alone is not transparency');
-  assert.throws(() => decodeGeneratedImage(new Uint8Array([1, 2, 3])));
+  assert.equal((await decodeGeneratedImage(await fixture('png'))).facts.transparent, false, 'an alpha channel alone is not transparency');
+  await assert.rejects(() => decodeGeneratedImage(new Uint8Array([1, 2, 3])));
 });
 
 test('compression fits noisy PNG output without changing requested dimensions', async () => {
@@ -38,7 +38,7 @@ test('compression fits noisy PNG output without changing requested dimensions', 
   let seed = 42;
   for (let i = 0; i < pixels.length; i++) { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; pixels[i] = seed >>> 24; }
   const png = new Uint8Array(await sharp(pixels, { raw: { width: 1024, height: 1024, channels: 3 } }).png().toBuffer());
-  const result = prepareImageOutput(png, 700 * 1024, true);
+  const result = await prepareImageOutput(png, 700 * 1024, true);
   assert.ok(result.bytes.length <= 700 * 1024);
   assert.equal(result.compressed, true);
   assert.equal(result.resized, false);
@@ -52,8 +52,8 @@ test('compression fits noisy PNG output without changing requested dimensions', 
 test('inspection composites alpha without changing retained PNG or WebP bytes', async () => {
   for (const format of ['png', 'webp'] as const) {
     const bytes = await fixture(format, true), original = bytes.slice();
-    const preview = prepareImageInspection(bytes);
-    const facts = decodeGeneratedImage(preview.bytes).facts;
+    const preview = await prepareImageInspection(bytes);
+    const facts = (await decodeGeneratedImage(preview.bytes)).facts;
     assert.deepEqual(bytes, original);
     assert.deepEqual(facts, { width: 1024, height: 1024, transparent: false, format: 'png' });
     const { data, info } = await sharp(preview.bytes).raw().toBuffer({ resolveWithObject: true });
@@ -65,13 +65,13 @@ test('inspection composites alpha without changing retained PNG or WebP bytes', 
 test('large opaque reference photos bypass pixel decoding, while unresolved alpha stays bounded', async () => {
   for (const format of ['jpeg', 'png', 'webp'] as const) {
     const bytes = new Uint8Array(await sharp({ create: { width: 4032, height: 3024, channels: 3, background: '#123456' } }).toFormat(format).toBuffer());
-    assert.throws(() => decodeGeneratedImage(bytes), /image_pixel_limit/);
-    const preview = prepareImageInspection(bytes);
+    await assert.rejects(() => decodeGeneratedImage(bytes), /image_pixel_limit/);
+    const preview = await prepareImageInspection(bytes);
     assert.equal(preview.bytes, bytes);
     assert.equal(preview.mimeType, `image/${format}`);
   }
   const largeAlpha = new Uint8Array(await sharp({ create: { width: 4032, height: 3024, channels: 4, background: { r: 255, g: 0, b: 0, alpha: 0 } } }).png().toBuffer());
-  assert.throws(() => prepareImageInspection(largeAlpha), /image_pixel_limit/, 'never bypass alpha compositing or allocate unbounded pixels');
+  await assert.rejects(() => prepareImageInspection(largeAlpha), /image_pixel_limit/, 'never bypass alpha compositing or allocate unbounded pixels');
 });
 
 test('retained bytes survive a new store instance, stay destination-bound, and are physically purged at TTL', async () => {

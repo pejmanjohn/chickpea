@@ -39,7 +39,7 @@ export async function inspectImageOutput(
     let previewBytes = 0;
     const previews = [];
     for (const image of images) {
-      const preview = prepareImageInspection(image.bytes);
+      const preview = await prepareImageInspection(image.bytes);
       previewBytes += preview.bytes.length;
       if (previewBytes > 8 * 1024 * 1024) return tooLarge();
       previews.push({ type: 'image' as const, data: Buffer.from(preview.bytes).toString('base64'), mimeType: preview.mimeType });

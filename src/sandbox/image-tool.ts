@@ -98,7 +98,7 @@ export type ImageClientResolution =
 
 export interface ImageArtifactToolOptions {
   outputStore?: ImageOutputStore;
-  prepareOutput?: typeof prepareImageOutput;
+  prepareOutput?: (...args: Parameters<typeof prepareImageOutput>) => PreparedImage | Promise<PreparedImage>;
   inspectOutput?: (input: ImageInspectionInput) => Promise<ImageInspection>;
   /** From the frozen plan's capability: image input fields exist only here. */
   acceptsImageInput: boolean;
@@ -415,7 +415,7 @@ export function createImageArtifactTool(options: ImageArtifactToolOptions) {
           const bytes = await source();
           if (!bytes) return { ok: false as const, detail: 'bytes_unavailable' };
           let image: PreparedImage;
-          try { image = (options.prepareOutput ?? prepareImageOutput)(bytes, maxBytes, data.size !== undefined && data.size !== 'auto'); }
+          try { image = await (options.prepareOutput ?? prepareImageOutput)(bytes, maxBytes, data.size !== undefined && data.size !== 'auto'); }
           catch { return { ok: false as const, detail: 'invalid_image' }; }
           const { bytes: preparedBytes, ...facts } = image;
           currentBytes = preparedBytes;
@@ -721,7 +721,7 @@ export function createRecoverImageTool(options: ImageArtifactToolOptions) {
           const facts = retainedImageFacts(saved.metadata);
           image = saved.bytes.length <= maxBytes && facts
             ? { ...facts, bytes: saved.bytes, compressed: false, resized: false }
-            : (options.prepareOutput ?? prepareImageOutput)(saved.bytes, maxBytes, !data.allowResize);
+            : await (options.prepareOutput ?? prepareImageOutput)(saved.bytes, maxBytes, !data.allowResize);
         }
         catch { return { attached: false, reason: 'invalid_image', ...source }; }
         if ((!data.allowResize && saved.metadata.size && saved.metadata.size !== 'auto' && saved.metadata.size !== `${image.width}x${image.height}`) ||

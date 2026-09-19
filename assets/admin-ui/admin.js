@@ -155,6 +155,10 @@
     // Each connection belongs to one Agent. The browser receives display-safe
     // account and binding details, never credentials or secret references.
     agentConnections: { agentId: "", workspaceId: "", attached: [], managedCatalog: [], managedCanConfigure: false, managedConfigurationReadOnly: false, loading: false, error: "", notice: "" },
+    // The connected workspace as the Agent inventory reports it. Connections
+    // can load against it right away instead of waiting for Slack status.
+    installationWorkspaceId: "",
+    slackStatusAt: 0,
     composioSetup: null,
     managedAuthorization: null,
     agentSchedules: { agentId: "", schedules: [], loading: false, busy: "", error: "", notice: "" },
@@ -754,7 +758,7 @@
     state.profileDraft = cloneAgent(selected);
     resetProfileTransientState();
     state.profileTab = normalizedProfileTab(initialTab || "instructions");
-    if (state.profileTab === "connections" && selected.canEdit !== false) {
+    if (state.profileTab === "connections" && selected.canEdit !== false && !connectedTeamId()) {
       waitForAgentConnectionsWorkspace(selected.id);
     }
     markVisibleResourceCurrent("agent-detail", selected.id);
@@ -763,7 +767,7 @@
       prepareReadOnlyAgentState(selected.id);
       render();
     }
-    return revalidateCurrentVisibleResources();
+    return revalidateCurrentVisibleResources({ navigation: true });
   }
 
   function prepareReadOnlyAgentState(agentId) {
@@ -2806,6 +2810,7 @@
   function connectedTeamId() {
     if (state.slackChannels && state.slackChannels.teamId) return state.slackChannels.teamId;
     if (state.slack && state.slack.teamId) return state.slack.teamId;
+    if (state.installationWorkspaceId) return state.installationWorkspaceId;
     return "";
   }
 
@@ -4912,6 +4917,11 @@
       : [];
     var connectedAccountPresetIds = new Set(accountPresets.map(function (preset) { return preset.id; }));
     var catalogVisible = showCatalog !== false;
+    // Until this Agent's inventory answers, the catalog is still the embedded
+    // preset list: rows paint immediately, and only the per-row state and the
+    // Connect action wait for the server.
+    var pending = accountMode &&
+      !(state.agentConnections.agentId === draft.id && state.agentConnections.loaded === true);
     var shown = (catalogVisible ? catalog : []).filter(function (preset) {
       if (!accountMode && preset.toolAccessMode === "review") return false;
       var googleService = googleServicePresetById(preset.id);
@@ -4945,9 +4955,11 @@
         return '<div class="connection-account-row connection-catalog-row">' + connectorLogoHtml(preset) +
           '<span class="connection-account-copy"><span class="connection-account-name">' + esc(preset.name) + '</span>' +
           '<span class="connection-account-identity">' + esc(preset.description || "Connect an account.") + '</span></span>' +
-          '<span class="connection-account-state' + (readiness && readiness.kind !== "ready" ? ' connection-account-state-warn' : '') + '">' + esc(stateLabel) + '</span>' +
+          (pending
+            ? '<span class="connection-account-state-placeholder" aria-hidden="true"></span>'
+            : '<span class="connection-account-state' + (readiness && readiness.kind !== "ready" ? ' connection-account-state-warn' : '') + '">' + esc(stateLabel) + '</span>') +
           '<span class="connection-capability-placeholder" aria-hidden="true"></span>' +
-          '<button type="button" class="btn btn-soft btn-sm connection-row-action" data-action="connection-account-preset" data-preset="' + esc(preset.id) + '">' + esc(actionLabel) + '</button>' +
+          '<button type="button" class="btn btn-soft btn-sm connection-row-action" data-action="connection-account-preset" data-preset="' + esc(preset.id) + '"' + (pending ? ' disabled' : '') + '>' + esc(actionLabel) + '</button>' +
           '<span class="connection-row-menu-placeholder" aria-hidden="true"></span></div>';
       }
       var lanes = (googleService || managedPreset) ? { mcp: false, api: true } : presetLanes(preset);
@@ -4964,8 +4976,8 @@
     var custom = accountMode
       ? '<div class="connection-account-row connection-catalog-row"><span class="conn-logo conn-logo-mono" style="background:var(--ember)">+</span>' +
         '<span class="connection-account-copy"><span class="connection-account-name">Custom connection</span><span class="connection-account-identity">Connect another API or MCP server.</span></span>' +
-        '<span class="connection-account-state">No account</span><span class="connection-capability-placeholder" aria-hidden="true"></span>' +
-        '<button type="button" class="btn btn-soft btn-sm connection-row-action" data-action="connection-account-new">Connect</button><span class="connection-row-menu-placeholder" aria-hidden="true"></span></div>'
+        (pending ? '<span class="connection-account-state-placeholder" aria-hidden="true"></span>' : '<span class="connection-account-state">No account</span>') + '<span class="connection-capability-placeholder" aria-hidden="true"></span>' +
+        '<button type="button" class="btn btn-soft btn-sm connection-row-action" data-action="connection-account-new"' + (pending ? ' disabled' : '') + '>Connect</button><span class="connection-row-menu-placeholder" aria-hidden="true"></span></div>'
       : '<div class="gallery-row"><span class="conn-logo conn-logo-mono" style="background:var(--ember)">+</span>' +
         '<span class="gallery-row-name">Custom connection</span><span class="gallery-row-spacer"></span>' +
         '<button type="button" class="btn btn-soft btn-sm" data-action="conn-custom">Connect</button></div>';
@@ -6021,11 +6033,21 @@
     }
     var accounts = state.agentConnections;
     if (accounts.agentId !== draft.id || (accounts.loading && !accounts.refreshing)) {
-      if (state.connectionAccountsSupported === null && draft.mcpServers !== undefined &&
-          accounts.waitingForWorkspace !== true) {
+      // Only a server that already answered without account support renders
+      // the legacy panel while a load is in flight. While support is still
+      // unknown the panel waits: painting the legacy gallery first and then
+      // swapping in the account rows flashed a smaller row layout (14px names,
+      // 30px logos) before the real one (15px names, 42px logos) arrived.
+      if (state.connectionAccountsSupported === false && draft.mcpServers !== undefined) {
         return legacyConnectionsPanelHtml(draft);
       }
-      return '<p class="hint ptab-hint">Loading connections&hellip;</p>';
+      // The catalog is embedded in the page, so its rows paint now; the
+      // inventory fills in this Agent's connections and each row's state.
+      var pendingGallery = state.connectionAccountForm ? "" : connectorGalleryHtml(true, [], true);
+      return oauthReturnNoticeHtml(draft) + '<div class="connection-state-stack">' +
+        '<section class="connection-state-section"><div class="connection-section-head"><h4>In this Agent</h4></div>' +
+        '<p class="hint ptab-hint">Loading connections&hellip;</p></section>' +
+        (pendingGallery ? '<section class="connection-state-section">' + pendingGallery + '</section>' : '') + '</div>';
     }
     if (accounts.legacyFallback) return legacyConnectionsPanelHtml(draft);
     if (accounts.error) {
@@ -11046,7 +11068,9 @@
     if (tab === "connections") {
       var connectionsAgentId = draft.id;
       var connectionsRefreshGeneration = refreshGeneration;
-      if (!WORKSPACE_ADMIN_UI) return loadAgentConnections(connectionsAgentId);
+      // The inventory only needs the workspace id. When boot already reported
+      // it, skip the Slack status round trip (the slowest Admin request).
+      if (!WORKSPACE_ADMIN_UI || connectedTeamId()) return loadAgentConnections(connectionsAgentId);
       return loadVisibleSlackStatus().then(function () {
         if (refreshGeneration !== connectionsRefreshGeneration || state.view !== "profiles" ||
             state.profileScreen !== "edit" || !state.profileDraft ||
@@ -11359,10 +11383,142 @@
   }
 
   var refreshGeneration = 0;
+  var bootAuxiliaryStarter = null;
+  var slackStatusInFlight = null;
+
+  // Slack status is the slowest Admin request. Boot and any visible resource
+  // that needs it share one in-flight request instead of asking twice.
+  function requestSlackStatus() {
+    if (slackStatusInFlight) return slackStatusInFlight;
+    var request = api("/admin/api/slack-connection", { cache: "no-store" });
+    slackStatusInFlight = request;
+    function settle() { if (slackStatusInFlight === request) slackStatusInFlight = null; }
+    request.then(settle, settle);
+    return request;
+  }
+
+  function startBootAuxiliaryRequests() {
+    var starter = bootAuxiliaryStarter;
+    bootAuxiliaryStarter = null;
+    if (starter) starter();
+  }
   function refreshData(renderAfterRefresh, progressive) {
     var generation = ++refreshGeneration;
+    // The server answers Admin requests one at a time behind one state store,
+    // so auxiliary requests started alongside the Agent inventory stretch the
+    // first paint. Progressive boot asks for the inventory alone, paints, then
+    // starts the rest.
+    var auxiliaryRequestsCreated = null;
+    function auxiliaryRequests() {
+      if (!auxiliaryRequestsCreated) auxiliaryRequestsCreated = createBootAuxiliaryRequests();
+      return auxiliaryRequestsCreated;
+    }
+    if (progressive) {
+      var progressiveReady = false;
+      // Agent deep links must not wait for Slack discovery or provider checks.
+      // Each response updates only its own state and never replaces an edit draft.
+      function auxiliary(request, apply) {
+        return request.then(function (body) {
+          if (generation !== refreshGeneration) return;
+          apply(body);
+          syncChannelFormWorkspacePrefill();
+          if (progressiveReady) renderPreservingPagePosition();
+        }).catch(function () {});
+      }
+      var auxiliaryStarted = false;
+      function startAuxiliary() {
+        if (auxiliaryStarted || generation !== refreshGeneration) return;
+        auxiliaryStarted = true;
+        var requests = auxiliaryRequests();
+        auxiliary(api("/admin/api/models"), function (body) { state.models = body; });
+        auxiliary(requests.imageModels, function (body) { applyImageModels(body); });
+        auxiliary(requests.slack, function (body) { state.slack = body; state.slackStatusAt = Date.now(); });
+        auxiliary(requests.onboarding, function (result) { state.onboarding = result.body; state.onboardingError = result.error; });
+        auxiliary(requests.workspaceDefault, function (body) {
+          if (body && body.workspaceDefault) applyWorkspaceDefault(body.workspaceDefault, false);
+        });
+        auxiliary(requests.environmentStatus, function (body) { state.environmentStatus = body; });
+        auxiliary(requests.channels, function (result) {
+          state.channelIndex = result.channels;
+          state.channelIndexError = result.error;
+          state.grants = [];
+          result.channels.forEach(function (channel) {
+            (channel.grants || []).forEach(function (grant) {
+              state.grants.push(Object.assign({}, grant, {
+                workspaceId: channel.workspaceId, channelId: channel.channelId,
+                channelLabel: channel.channelName || channel.channelId
+              }));
+            });
+          });
+        });
+      }
+      return api("/admin/api/agents").then(function (body) {
+        state.agents = body.agents || [];
+        state.installationWorkspaceId = body.workspaceId || "";
+        progressiveReady = true;
+        render();
+        // The route's own visible resource (for example the Connections
+        // inventory) enters the request queue first: boot starts these right
+        // after it applies the route, and the timer covers other callers.
+        bootAuxiliaryStarter = startAuxiliary;
+        setTimeout(startAuxiliary, 0);
+      }).catch(function (error) {
+        document.querySelector(".main-inner").innerHTML = '<div class="empty"><p class="field-label">Admin failed to load</p><p class="error">' + esc(error.message) + '</p></div>';
+      });
+    }
+    var requests = auxiliaryRequests();
+    var slackRequest = requests.slack;
+    var onboardingRequest = requests.onboarding;
+    var channelsRequest = requests.channels;
+    var workspaceDefaultRequest = requests.workspaceDefault;
+    var imageModelsRequest = requests.imageModels;
+    var environmentStatusRequest = requests.environmentStatus;
+    return Promise.all([
+      api("/admin/api/agents"),
+      api("/admin/api/models"),
+      // Resilient on purpose: the connection card is auxiliary — if this
+      // endpoint fails, the rest of the admin page must still render.
+      slackRequest,
+      onboardingRequest,
+      channelsRequest,
+      workspaceDefaultRequest,
+      environmentStatusRequest,
+      imageModelsRequest
+    ]).then(function (parts) {
+      state.agents = parts[0].agents || [];
+      state.installationWorkspaceId = parts[0].workspaceId || "";
+      state.grants = [];
+      state.models = parts[1];
+      state.slack = parts[2];
+      state.slackStatusAt = Date.now();
+      state.onboarding = parts[3].body;
+      state.onboardingError = parts[3].error;
+      state.channelIndex = parts[4].channels;
+      state.channelIndex.forEach(function (channel) {
+        (channel.grants || []).forEach(function (grant) {
+          state.grants.push(Object.assign({}, grant, {
+            workspaceId: channel.workspaceId,
+            channelId: channel.channelId,
+            channelLabel: channel.channelName || channel.channelId
+          }));
+        });
+      });
+      state.channelIndexError = parts[4].error;
+      if (parts[5] && parts[5].workspaceDefault) applyWorkspaceDefault(parts[5].workspaceDefault, false);
+      state.environmentStatus = parts[6];
+      applyImageModels(parts[7]);
+      syncChannelFormWorkspacePrefill();
+      if (renderAfterRefresh) renderAfterRefresh();
+      else render();
+    }).catch(function (error) {
+      document.querySelector(".main-inner").innerHTML = '<div class="empty"><p class="field-label">Admin failed to load</p><p class="error">' + esc(error.message) + '</p></div>';
+    });
+  }
+
+  // The boot requests other than the Agent inventory.
+  function createBootAuxiliaryRequests() {
     var slackRequest = WORKSPACE_ADMIN_UI
-      ? api("/admin/api/slack-connection").catch(function () { return null; })
+      ? requestSlackStatus().catch(function () { return null; })
       : Promise.resolve(null);
     var onboardingRequest = WORKSPACE_ADMIN_UI
       ? api("/admin/api/onboarding").then(function (body) {
@@ -11390,85 +11546,14 @@
     var environmentStatusRequest = WORKSPACE_ADMIN_UI
       ? api("/admin/api/environment/status", { cache: "no-store" }).catch(function () { return null; })
       : Promise.resolve(null);
-    if (progressive) {
-      var progressiveReady = false;
-      // Agent deep links must not wait for Slack discovery or provider checks.
-      // Each response updates only its own state and never replaces an edit draft.
-      function auxiliary(request, apply) {
-        return request.then(function (body) {
-          if (generation !== refreshGeneration) return;
-          apply(body);
-          syncChannelFormWorkspacePrefill();
-          if (progressiveReady) renderPreservingPagePosition();
-        }).catch(function () {});
-      }
-      auxiliary(api("/admin/api/models"), function (body) { state.models = body; });
-      auxiliary(imageModelsRequest, function (body) { applyImageModels(body); });
-      auxiliary(slackRequest, function (body) { state.slack = body; });
-      auxiliary(onboardingRequest, function (result) { state.onboarding = result.body; state.onboardingError = result.error; });
-      auxiliary(workspaceDefaultRequest, function (body) {
-        if (body && body.workspaceDefault) applyWorkspaceDefault(body.workspaceDefault, false);
-      });
-      auxiliary(environmentStatusRequest, function (body) { state.environmentStatus = body; });
-      auxiliary(channelsRequest, function (result) {
-        state.channelIndex = result.channels;
-        state.channelIndexError = result.error;
-        state.grants = [];
-        result.channels.forEach(function (channel) {
-          (channel.grants || []).forEach(function (grant) {
-            state.grants.push(Object.assign({}, grant, {
-              workspaceId: channel.workspaceId, channelId: channel.channelId,
-              channelLabel: channel.channelName || channel.channelId
-            }));
-          });
-        });
-      });
-      return api("/admin/api/agents").then(function (body) {
-        state.agents = body.agents || [];
-        progressiveReady = true;
-        render();
-      }).catch(function (error) {
-        document.querySelector(".main-inner").innerHTML = '<div class="empty"><p class="field-label">Admin failed to load</p><p class="error">' + esc(error.message) + '</p></div>';
-      });
-    }
-    return Promise.all([
-      api("/admin/api/agents"),
-      api("/admin/api/models"),
-      // Resilient on purpose: the connection card is auxiliary — if this
-      // endpoint fails, the rest of the admin page must still render.
-      slackRequest,
-      onboardingRequest,
-      channelsRequest,
-      workspaceDefaultRequest,
-      environmentStatusRequest,
-      imageModelsRequest
-    ]).then(function (parts) {
-      state.agents = parts[0].agents || [];
-      state.grants = [];
-      state.models = parts[1];
-      state.slack = parts[2];
-      state.onboarding = parts[3].body;
-      state.onboardingError = parts[3].error;
-      state.channelIndex = parts[4].channels;
-      state.channelIndex.forEach(function (channel) {
-        (channel.grants || []).forEach(function (grant) {
-          state.grants.push(Object.assign({}, grant, {
-            workspaceId: channel.workspaceId,
-            channelId: channel.channelId,
-            channelLabel: channel.channelName || channel.channelId
-          }));
-        });
-      });
-      state.channelIndexError = parts[4].error;
-      if (parts[5] && parts[5].workspaceDefault) applyWorkspaceDefault(parts[5].workspaceDefault, false);
-      state.environmentStatus = parts[6];
-      applyImageModels(parts[7]);
-      syncChannelFormWorkspacePrefill();
-      if (renderAfterRefresh) renderAfterRefresh();
-      else render();
-    }).catch(function (error) {
-      document.querySelector(".main-inner").innerHTML = '<div class="empty"><p class="field-label">Admin failed to load</p><p class="error">' + esc(error.message) + '</p></div>';
-    });
+    return {
+      slack: slackRequest,
+      onboarding: onboardingRequest,
+      channels: channelsRequest,
+      workspaceDefault: workspaceDefaultRequest,
+      imageModels: imageModelsRequest,
+      environmentStatus: environmentStatusRequest
+    };
   }
 
   function refreshSavedAgentDetail(agentId) {
@@ -13430,7 +13515,7 @@
       state.editingAgentId = null;
     }
     render();
-    return revalidateCurrentVisibleResources();
+    return revalidateCurrentVisibleResources({ navigation: true });
   }
 
   function openHome() {
@@ -13474,28 +13559,38 @@
     if (!ensureSlackChannelsLoaded()) render();
   }
 
+  var SLACK_STATUS_FRESH_MS = 60000;
+  function slackStatusStale() {
+    return !state.slackStatusAt || Date.now() - state.slackStatusAt > SLACK_STATUS_FRESH_MS;
+  }
+
   function loadVisibleSlackStatus() {
     var resourceOwner = connectedTeamId() || "installation";
     var resourceTicket = beginVisibleResourceLoad("slack-status", resourceOwner, false);
     if (!resourceTicket) return coalescedVisibleResourcePromise("slack-status", resourceOwner);
-    var request = api("/admin/api/slack-connection", { cache: "no-store" }).then(function (body) {
+    var request = requestSlackStatus().then(function (body) {
       if (!visibleResourceLoadIsCurrent(resourceTicket)) return;
       state.slack = body;
+      state.slackStatusAt = Date.now();
       finishVisibleResourceLoad(resourceTicket);
       renderPreservingPagePosition();
     }).catch(function (error) {
       if (!visibleResourceLoadIsCurrent(resourceTicket)) return;
-      if (error && error.status === 404) state.slack = null;
+      if (error && error.status === 404) { state.slack = null; state.slackStatusAt = Date.now(); }
       finishVisibleResourceLoad(resourceTicket);
       renderPreservingPagePosition();
     });
     return trackVisibleResourcePromise(resourceTicket, request);
   }
 
-  function revalidateCurrentVisibleResources() {
+  // `options.navigation` marks an in-app route change (opening an Agent,
+  // returning to the roster). Focus and visibility returns pass nothing and
+  // refresh everything the surface shows.
+  function revalidateCurrentVisibleResources(options) {
     if (typeof document !== "undefined" && document.visibilityState && document.visibilityState !== "visible") {
       return Promise.resolve();
     }
+    var navigation = !!(options && options.navigation);
     var loads = [];
     if (state.view === "profiles" && state.profileScreen === "edit" && state.profileDraft) {
       if (state.profileDraft.canEdit !== false) {
@@ -13503,7 +13598,10 @@
         loads.push(revalidateProfileTab(state.profileTab));
       }
       if (state.attachPicker) loads.push(loadSlackChannelsOnReturn());
-      if (WORKSPACE_ADMIN_UI) loads.push(loadVisibleSlackStatus());
+      // The Agent page only shows the Slack connection card, and Slack status
+      // is the slowest Admin request. A route change re-reads it only when
+      // the copy could be stale; focus returns still refresh it.
+      if (WORKSPACE_ADMIN_UI && (!navigation || slackStatusStale())) loads.push(loadVisibleSlackStatus());
     } else if (state.view === "channels") {
       loads.push(loadVisibleSlackStatus());
     } else if (state.view === "settings" && state.settingsSection === "slack") {
@@ -15532,7 +15630,9 @@
     // Managed-only presets and the native-vs-managed Google decision both
     // depend on the Agent connections response. Do not consume the one-shot
     // connector handoff until that catalog and availability flag are known.
-    await applyRoute(initialRoute);
+    var routed = applyRoute(initialRoute);
+    startBootAuxiliaryRequests();
+    await routed;
     if (connectorSetup && state.profileDraft && state.profileScreen === "edit") {
       state.profileTab = "connections";
       // The one-shot handoff lands directly on Connections, so this is the
@@ -15577,6 +15677,12 @@
         if (returnedAccount && returnedAccount.account.policy.kind === "mcp" && (!returnedAccount.account.policy.presetId || returnedAccount.account.policy.toolAccessMode === "review")) {
           openCustomMcpTools(returnedAccount.account.id, true);
         }
+      } else {
+        // The return lands on Connections without the editor's normal tab
+        // load, and the panel no longer paints the legacy gallery while
+        // account support is unknown. Start the same load a tab visit would,
+        // in the background so the return notice renders first.
+        revalidateProfileTab("connections");
       }
       render();
       // The callback URL carries status and connection identity only, but it is

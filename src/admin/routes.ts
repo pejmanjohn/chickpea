@@ -389,6 +389,7 @@ import type { WorkStore } from '../work/types.ts';
 import { parseSlackThreadKey } from '../slack/thread-key.ts';
 import { hasDeliveredOnboardingReply } from './onboarding-proof.ts';
 import type {
+  AuthControl,
   HumanIdentityDirectory,
   IdentityStore,
   SlackSetupTransaction,
@@ -529,6 +530,7 @@ import {
 } from '../slack/install-oauth.ts';
 import { setCookieValues } from '../auth/cookies.ts';
 import { AuthDeniedError, AuthService, setRequestPrincipal } from '../auth/service.ts';
+import { runWithRequestTiming, serverTimingHeader, timed } from '../http/request-timing.ts';
 import {
   BetterAuthDirectory,
   BetterAuthSessionAuthenticator,
@@ -1727,11 +1729,60 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   const sharedManagementEnabled = (!options.store && !options.identity) || Boolean(options.management);
   const slackState = (c: Context) =>
     options.slackState ?? getSlackStateStore(c.env as PlatformEnv | undefined);
+  // Every Admin request reads auth control at the recovery gate, again while
+  // building the Better Auth context, and again inside authentication. Each
+  // read is a store round trip; one per request is enough. The memo is
+  // request-scoped so a mutation later in the same request is never masked
+  // for the middleware chain that runs before it.
+  const authControlByRequest = new WeakMap<Request, Promise<AuthControl | undefined>>();
+  const requestAuthControl = (c: Context): Promise<AuthControl | undefined> => {
+    const request = c.req.raw;
+    let pending = authControlByRequest.get(request);
+    if (!pending) {
+      pending = timed('authctl', () => identity(c).getAuthControl());
+      authControlByRequest.set(request, pending);
+      // A failed read must not pin the failure for the request's later readers.
+      pending.catch(() => { authControlByRequest.delete(request); });
+    }
+    return pending;
+  };
+  // Success audit writes leave the request path on Cloudflare: waitUntil keeps
+  // the Worker alive until the store round trip completes, after the response
+  // is sent. Hosts without an execution context (Node, unit tests) await it.
+  const backgroundTask = (c: Context, task: () => Promise<void>): Promise<void> => {
+    let executionContext: { waitUntil(promise: Promise<unknown>): void } | undefined;
+    try {
+      executionContext = c.executionCtx;
+    } catch {
+      executionContext = undefined;
+    }
+    if (executionContext && typeof executionContext.waitUntil === 'function') {
+      executionContext.waitUntil(task().catch((error) => {
+        console.error('[chickpea] Deferred auth audit write failed:', error instanceof Error ? error.message : 'unknown error');
+      }));
+      return Promise.resolve();
+    }
+    return task();
+  };
+  // Wall-clock breakdown of the request, reported to authenticated Admin
+  // callers as Server-Timing so browser resource timing can show where a
+  // slow response spent its time.
+  app.use('*', (c, next) => runWithRequestTiming(async () => {
+    await next();
+    if (!principalByContext.get(c)) return;
+    const header = serverTimingHeader();
+    if (!header) return;
+    try {
+      c.res.headers.set('Server-Timing', header);
+    } catch {
+      // Immutable headers (pass-through asset responses) keep their shape.
+    }
+  }));
   app.use('*', async (c, next) => {
     // Deployment activation has its own short-lived bearer capability and
     // must remain callable while an older release left Admin in recovery.
     if (c.req.path === '/internal/deployment/ready' || c.req.path === '/internal/deployment/recover-delivery' || c.req.path === ENVIRONMENT_AUTHORITY_PATH) return next();
-    const control = await identity(c).getAuthControl();
+    const control = await requestAuthControl(c);
     if (control?.healthGate === 'recovery_only' &&
         c.req.path !== '/admin/recovery' &&
         c.req.path !== '/auth/slack/recovery/callback') return c.notFound();
@@ -2528,7 +2579,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     if (cached) return cached;
     const pending = (async () => {
       const identityStore = identity(c);
-      const control = await identityStore.getAuthControl();
+      const control = await requestAuthControl(c);
       if (control?.authMode !== 'slack_active' || control.healthGate !== 'normal' ||
           !control.betterAuthOrganizationId ||
           !control.canonicalAdminOrigin) return undefined;
@@ -2569,6 +2620,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           organizationId,
         }),
         personalTokens: new PersonalTokenService(identityStore, { directory }),
+        authControl: () => requestAuthControl(c),
+        background: (task) => backgroundTask(c, task),
       });
     }
     const organization = await identityStore.getOrganization();
@@ -2792,7 +2845,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   const adminGate = async (c: Context, next: Next) => {
     let authService: AdminAuthenticationService | undefined;
     try {
-      authService = await configuredAuthService(c);
+      authService = await timed('authsvc', () => configuredAuthService(c));
     } catch (error) {
       console.error(
         '[chickpea] Admin authentication initialization failed:',
@@ -2802,7 +2855,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
     if (authService) {
       try {
-        const principal = await authService.authenticateRequest(c.req.raw);
+        const principal = await timed('auth', () => authService.authenticateRequest(c.req.raw));
         copyAuthResponseCookies(c, authService.takeResponseHeaders?.(c.req.raw));
         principalByContext.set(c, principal);
         setRequestPrincipal(c.req.raw, principal);
@@ -2810,9 +2863,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         try {
           if (principal.machine && !machinePrincipalAllowed(c)) throw new AuthorizationError();
           requirePermission(principal, permission);
-          await enforceAgentRouteAuthority(c, principal);
-          await enforceAgentMemoryAuthority(c, principal);
-          await identity(c).recordAuthAudit({
+          await timed('authz', async () => {
+            await enforceAgentRouteAuthority(c, principal);
+            await enforceAgentMemoryAuthority(c, principal);
+          });
+          await backgroundTask(c, () => identity(c).recordAuthAudit({
             event: 'authorization',
             outcome: 'success',
             action: permission,
@@ -2820,7 +2875,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
             authenticatorKind: principal.authenticatorKind,
             userId: principal.userId,
             membershipId: principal.membershipId,
-          });
+          }));
         } catch (error) {
           if (error instanceof AuthorizationError) {
             await identity(c).recordAuthAudit({
@@ -4240,7 +4295,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       return next();
     }
     const settingsStore = settings(c);
-    await applyResolvedProviderKeys(platformEnv, settingsStore);
+    // No explicit store here: the module cache then coalesces the stored-key
+    // read across requests (an explicit store bypasses it, which tests rely on).
+    await timed('pkeys', () => applyResolvedProviderKeys(platformEnv, options.settings));
     // Opportunistically pin the resolved origin so the Slack "Configure" deep
     // link works even on a button deploy that never set SLACK_TAG_PUBLIC_URL.
     // No-op on the steady state.
@@ -6110,6 +6167,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         [workspaceId, await configStore.getWorkspaceModelRole(workspaceId, 'image')] as const),
     ));
     return c.json({
+      // The connected workspace, when unambiguous. Admin loads Agent
+      // connections against it without first waiting for Slack status.
+      workspaceId: installations.length === 1 ? installations[0]!.workspaceId : null,
       agents: await Promise.all(agents.map((agent, index) =>
         agentAdminProjection(agent, configStore, snapshots(c), {
           references: {
@@ -9631,7 +9691,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         Boolean(installation.gatewayBindingId) &&
         installation.health !== 'revoked';
       const gateway = gatewayConnected
-        ? await readGatewaySessionStatus(c.env)
+        ? await readGatewaySessionStatus(c.env, { observe: true })
         : null;
       let effectiveHealth = installation?.health ?? 'pending';
       let effectiveHealthDetail = installation?.healthDetail ?? null;
@@ -10503,15 +10563,25 @@ async function restartCloudflareGatewaySession(rawEnv: unknown): Promise<void> {
   await namespace.get(namespace.idFromName('deployment')).restart();
 }
 
-async function readGatewaySessionStatus(rawEnv: unknown): Promise<GatewaySessionStatusSnapshot> {
+async function readGatewaySessionStatus(
+  rawEnv: unknown,
+  options: { observe?: boolean } = {},
+): Promise<GatewaySessionStatusSnapshot> {
   const env = (rawEnv ?? {}) as Record<string, unknown>;
   const namespace = env.SLACK_GATEWAY_SESSION as {
     idFromName(name: string): unknown;
-    get(id: unknown): { status(): Promise<GatewaySessionStatusSnapshot> };
+    get(id: unknown): {
+      status(): Promise<GatewaySessionStatusSnapshot>;
+      observe?(): Promise<GatewaySessionStatusSnapshot>;
+    };
   } | undefined;
   if (namespace) {
     try {
-      const status = await namespace.get(namespace.idFromName('deployment')).status();
+      const stub = namespace.get(namespace.idFromName('deployment'));
+      // Deployment readiness must see the woken session; an Admin observation
+      // reads the snapshot and lets the wake run behind the response.
+      const status = await timed('gw', () =>
+        options.observe && typeof stub.observe === 'function' ? stub.observe() : stub.status());
       if (typeof status?.healthy === 'boolean') {
         const currentVersion = cloudflareWorkerVersionId(rawEnv);
         if (currentVersion && status.versionId !== currentVersion) {

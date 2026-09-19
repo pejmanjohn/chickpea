@@ -129,7 +129,14 @@ export async function applyResolvedProviderKeys(
   env?: PlatformEnv,
   store?: SettingsStore,
 ): Promise<void> {
-  await Promise.all(PROVIDER_KEY_IDS.map((id) => applyResolvedProviderKey(id, env, store)));
+  // One stored read covers every provider; resolving each id separately read
+  // the same three settings once per provider on every Admin request.
+  const stored = PROVIDER_KEY_IDS.every((id) => envApiKey(id))
+    ? {}
+    : await readStoredProviderKeys(env, store);
+  for (const id of PROVIDER_KEY_IDS) {
+    rebindBuiltinProvider(id, envApiKey(id) ?? stored[id]);
+  }
 }
 
 /** Resolve and bind only the provider selected for this model operation. */

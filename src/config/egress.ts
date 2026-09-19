@@ -1,4 +1,4 @@
-import { Bash, InMemoryFs, type NetworkConfig, type SecureFetch } from 'just-bash';
+import type { NetworkConfig, SecureFetch } from 'just-bash';
 import { bash, type SandboxFactory } from '@flue/runtime';
 
 import { getSettingsStore, type PlatformEnv } from './state-backend.ts';
@@ -393,18 +393,23 @@ export function createConnectorScopedBash(
   cloudflare: boolean,
   connectors: ResolvedApiConnection[],
 ): SandboxFactory {
-  if (connectors.length === 0 && policy.mode !== 'open' && policy.domains.length === 0) {
-    return bash(() => new Bash({ fs: new InMemoryFs() }));
-  }
-  const { scopes, baseNetwork, baseMethods } = buildEgressPlan(policy, { cloudflare }, connectors);
-  const secureFetchOf = (network: NetworkConfig) =>
-    (new Bash({ fs: new InMemoryFs(), network }) as unknown as { secureFetch?: SecureFetch }).secureFetch;
-  const baseDelegate = secureFetchOf(baseNetwork);
-  const delegates = scopes.map((scope) => ({ ...scope, delegate: secureFetchOf(scope.network) }));
-  if (!baseDelegate || delegates.some(({ delegate }) => !delegate)) {
-    // Without the scoped admission seam, credentials must never be mounted.
-    return bash(() => new Bash({ fs: new InMemoryFs() }));
-  }
-  const fetch = createScopedFetch({ scopes: delegates as ScopedDelegate[], baseDelegate, baseMethods });
-  return bash(() => new Bash({ fs: new InMemoryFs(), fetch }));
+  // The interpreter is a 1 MB bundle that only a running turn needs; loading
+  // it inside the factory keeps it out of the Worker's startup graph.
+  return bash(async () => {
+    const { Bash, InMemoryFs } = await import('just-bash');
+    if (connectors.length === 0 && policy.mode !== 'open' && policy.domains.length === 0) {
+      return new Bash({ fs: new InMemoryFs() });
+    }
+    const { scopes, baseNetwork, baseMethods } = buildEgressPlan(policy, { cloudflare }, connectors);
+    const secureFetchOf = (network: NetworkConfig) =>
+      (new Bash({ fs: new InMemoryFs(), network }) as unknown as { secureFetch?: SecureFetch }).secureFetch;
+    const baseDelegate = secureFetchOf(baseNetwork);
+    const delegates = scopes.map((scope) => ({ ...scope, delegate: secureFetchOf(scope.network) }));
+    if (!baseDelegate || delegates.some(({ delegate }) => !delegate)) {
+      // Without the scoped admission seam, credentials must never be mounted.
+      return new Bash({ fs: new InMemoryFs() });
+    }
+    const fetch = createScopedFetch({ scopes: delegates as ScopedDelegate[], baseDelegate, baseMethods });
+    return new Bash({ fs: new InMemoryFs(), fetch });
+  });
 }

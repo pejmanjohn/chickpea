@@ -5,6 +5,7 @@ import { BetterAuthDirectory, BetterAuthSessionAuthenticator } from '../src/auth
 import { createBetterAuth, type BetterAuthAdmissionOperation } from '../src/auth/better-auth.ts';
 import { NodeBetterAuthBackend } from '../src/auth/better-auth-node.ts';
 import { AuthDeniedError, AuthService } from '../src/auth/service.ts';
+import type { IdentityStore } from '../src/identity/types.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
 
 const NOW = 1_786_100_000_000;
@@ -222,4 +223,52 @@ test('Better Auth backend revokes every browser session for one user', async () 
   } finally {
     backend.close();
   }
+});
+
+test('the service reuses a request-scoped auth control and defers the success audit through the host', async () => {
+  const control = {
+    installationId: 'installation_test', authMode: 'slack_active' as const, healthGate: 'normal' as const,
+    canonicalAdminOrigin: ORIGIN, betterAuthOrganizationId: 'better_auth_org_test',
+    revision: 1, createdAt: NOW, updatedAt: NOW,
+  };
+  const audits: string[] = [];
+  let storeReads = 0;
+  const identity = {
+    getAuthControl: async () => { storeReads += 1; return control; },
+    recordAuthAudit: async (input: { event: string; outcome: string }) => { audits.push(`${input.event}:${input.outcome}`); },
+  } as unknown as IdentityStore;
+  const deferred: Array<() => Promise<void>> = [];
+  const service = new AuthService({
+    identity,
+    sessionAuthenticator: {
+      kind: 'test_session',
+      authenticate: async () => ({ principal: {
+        userId: 'user_1', membershipId: 'membership_1', organizationId: 'org_1', role: 'owner',
+        authenticatorKind: 'better_auth', credentialId: 'session_1', correlationId: 'request_1', machine: false,
+      } }),
+    },
+    authControl: async () => control,
+    background: async (task) => { deferred.push(task); },
+  });
+
+  const principal = await service.authenticateRequest(new Request(`${ORIGIN}/admin`));
+  assert.equal(principal.userId, 'user_1');
+  // The middleware's read is reused, and the success audit is handed to the host.
+  assert.equal(storeReads, 0);
+  assert.deepEqual(audits, []);
+  assert.equal(deferred.length, 1);
+  await deferred[0]!();
+  assert.deepEqual(audits, ['authentication:success']);
+
+  // Without a host scheduler the audit is written before the call returns.
+  const inline = new AuthService({
+    identity,
+    sessionAuthenticator: {
+      kind: 'test_session',
+      authenticate: async () => ({ principal: { ...principal, correlationId: 'request_2' } }),
+    },
+  });
+  await inline.authenticateRequest(new Request(`${ORIGIN}/admin`));
+  assert.equal(storeReads, 1);
+  assert.deepEqual(audits, ['authentication:success', 'authentication:success']);
 });
