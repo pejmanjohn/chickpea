@@ -440,6 +440,10 @@ In Claude Code, `/mcp__chickpea__new-agent` opens the same guided flow from the
 slash menu; `/mcp__chickpea__status`, `/mcp__chickpea__edit-agent`, `/mcp__chickpea__connect`,
 `/mcp__chickpea__schedule`, and `/mcp__chickpea__import-skill` cover the rest.
 
+These are MCP prompts, not installed local skills. In Codex, ask for the same
+work in plain language; they do not appear in the `$` skills picker. No separate
+skills installation is required in either client.
+
 Chickpea applies your existing permissions. Changes that expand access or
 require confirmation produce a proposal for you to approve. Connecting an
 account opens a browser setup flow.

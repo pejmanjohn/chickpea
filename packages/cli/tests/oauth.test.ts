@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync, statSync } from 'node:fs';
 import { after, before, test } from 'node:test';
 
-import { FakeDeployment, fakeBrowser, SCOPE } from './helpers/fake-deployment.ts';
+import { FakeDeployment, fakeBrowser, OAUTH_SCOPE } from './helpers/fake-deployment.ts';
 import { runCli, temporaryStore } from './helpers/run-cli.ts';
 
 const clock = { now: Date.parse('2026-09-04T12:00:00.000Z') };
@@ -33,7 +33,7 @@ test('login registers a public PKCE client, exchanges the code, and stores token
   assert.equal(registration.client_name, 'Chickpea CLI');
   assert.deepEqual(registration.response_types, ['code']);
   assert.deepEqual(registration.grant_types, ['authorization_code', 'refresh_token']);
-  assert.equal(registration.scope, SCOPE);
+  assert.equal(registration.scope, OAUTH_SCOPE);
   const redirects = registration.redirect_uris as string[];
   assert.equal(redirects.length, 1);
   assert.match(redirects[0]!, /^http:\/\/127\.0\.0\.1:\d+\/callback$/);
@@ -42,7 +42,7 @@ test('login registers a public PKCE client, exchanges the code, and stores token
   const authorize = deployment.authorizeRequests.at(-1)!;
   assert.equal(authorize.get('code_challenge_method'), 'S256');
   assert.equal(authorize.get('resource'), `${deployment.url}/mcp`);
-  assert.equal(authorize.get('scope'), SCOPE);
+  assert.equal(authorize.get('scope'), OAUTH_SCOPE);
   assert.ok(authorize.get('state'));
   assert.ok(authorizationUrl.startsWith(`${deployment.url}/api/auth/oauth2/authorize?`));
 

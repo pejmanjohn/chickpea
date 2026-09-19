@@ -291,7 +291,7 @@ installation stays available.
 
 | Client | Where | What to write or run |
 | --- | --- | --- |
-| Claude Code | terminal | `claude mcp add --transport http chickpea https://<deployment>/mcp`, then `/mcp` inside Claude Code to sign in |
+| Claude Code | terminal | `claude mcp add --transport http --scope user chickpea https://<deployment>/mcp`, then `/mcp` inside Claude Code to sign in |
 | Codex | terminal | `codex mcp add chickpea --url https://<deployment>/mcp`; only if sign-in is still needed after it finishes, run `codex mcp login chickpea` |
 | Cursor | `.cursor/mcp.json` in the project, or `~/.cursor/mcp.json` for every project | `{"mcpServers":{"chickpea":{"url":"https://<deployment>/mcp"}}}` |
 | VS Code | terminal, or `.vscode/mcp.json` | `code --add-mcp '{"name":"chickpea","type":"http","url":"https://<deployment>/mcp"}'` |

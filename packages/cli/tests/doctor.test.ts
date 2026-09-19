@@ -51,6 +51,26 @@ test('doctor explains a 404 on the auth surface as unfinished setup and exits 1'
   assert.equal(report.checks.length, 4);
 });
 
+test('doctor rejects an authorization server that cannot issue renewable credentials', async () => {
+  for (const missing of ['offline_access', 'refresh_token']) {
+    const report = await runDoctor(deployments.ready.url, {
+      fetch: async (input, init) => {
+        const response = await fetch(input, init);
+        if (!String(input).includes('/.well-known/oauth-authorization-server/')) return response;
+        const metadata = await response.json() as Record<string, unknown>;
+        const field = missing === 'offline_access' ? 'scopes_supported' : 'grant_types_supported';
+        metadata[field] = (metadata[field] as string[]).filter((value) => value !== missing);
+        return Response.json(metadata);
+      },
+    });
+    assert.equal(report.ok, false);
+    const auth = report.checks.find((check) => check.id === 'authorization_server');
+    assert.equal(auth?.ok, false);
+    assert.ok(auth?.detail.includes(missing));
+    assert.equal(report.checks.find((check) => check.id === 'protected_resource')?.ok, true);
+  }
+});
+
 test('doctor fails when the metadata names a different origin than the one used', async () => {
   const report = await runDoctor(deployments.wrongOrigin.url);
   assert.equal(report.ok, false);

@@ -108,7 +108,7 @@ test('supported coding clients share public PKCE registration and stateless MCP 
         grant_types: ['authorization_code', 'refresh_token'],
         redirect_uris: [client.redirect],
         response_types: ['code'],
-        scope: 'chickpea:workspace',
+        scope: 'chickpea:workspace offline_access',
         token_endpoint_auth_method: 'none',
       }).ok, true, client.name);
 
