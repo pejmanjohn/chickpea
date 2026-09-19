@@ -14,7 +14,7 @@ import {
 } from '@modelcontextprotocol/client';
 
 import { CliError } from './errors.ts';
-import { MCP_WORKSPACE_SCOPE, mcpUrl } from './origin.ts';
+import { MCP_OAUTH_SCOPE, mcpUrl } from './origin.ts';
 import {
   CredentialStore,
   tokensExpired,
@@ -94,7 +94,7 @@ class CliOAuthProvider implements OAuthClientProvider {
       response_types: ['code'],
       token_endpoint_auth_method: 'none',
       application_type: 'native',
-      scope: MCP_WORKSPACE_SCOPE,
+      scope: MCP_OAUTH_SCOPE,
     };
   }
 
@@ -272,7 +272,7 @@ export async function login(origin: string, deps: AuthDeps, options: LoginOption
   });
 
   try {
-    const first = await auth(provider, { serverUrl, scope: MCP_WORKSPACE_SCOPE, fetchFn: deps.fetch });
+    const first = await auth(provider, { serverUrl, scope: MCP_OAUTH_SCOPE, fetchFn: deps.fetch });
     if (first !== 'AUTHORIZED') {
       const params = await withTimeout(
         listener.waitForCallback(),
@@ -292,7 +292,7 @@ export async function login(origin: string, deps: AuthDeps, options: LoginOption
       const result = await auth(provider, {
         serverUrl,
         authorizationCode: code,
-        scope: MCP_WORKSPACE_SCOPE,
+        scope: MCP_OAUTH_SCOPE,
         fetchFn: deps.fetch,
         ...(iss ? { iss } : {}),
       });
@@ -373,7 +373,7 @@ export async function connectManagementClient(origin: string, deps: AuthDeps): P
   const provider = new CliOAuthProvider({ origin, store: deps.store, mode: 'session', now: deps.now });
   const serverUrl = mcpUrl(origin);
   if (tokensExpired(entry.tokens, deps.now())) {
-    const result = await auth(provider, { serverUrl, scope: MCP_WORKSPACE_SCOPE, fetchFn: deps.fetch });
+    const result = await auth(provider, { serverUrl, scope: MCP_OAUTH_SCOPE, fetchFn: deps.fetch });
     if (result !== 'AUTHORIZED') {
       throw new CliError('SESSION_EXPIRED', `The saved session for ${origin} could not be refreshed`, `Sign in again with: chickpea login ${origin}`);
     }

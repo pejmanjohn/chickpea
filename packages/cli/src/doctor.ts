@@ -123,11 +123,14 @@ export async function runDoctor(origin: string, options: DoctorOptions = {}): Pr
       if (!methods.includes('S256')) problems.push('code_challenge_methods_supported lacks S256');
       const scopes = Array.isArray(body.scopes_supported) ? body.scopes_supported : [];
       if (!scopes.includes(MCP_WORKSPACE_SCOPE)) problems.push(`scopes_supported lacks ${MCP_WORKSPACE_SCOPE}`);
+      if (!scopes.includes('offline_access')) problems.push('scopes_supported lacks offline_access; clients cannot obtain refresh tokens');
+      const grants = Array.isArray(body.grant_types_supported) ? body.grant_types_supported : [];
+      if (!grants.includes('refresh_token')) problems.push('grant_types_supported lacks refresh_token');
       checks.push({
         id: 'authorization_server',
         label: 'authorization server metadata',
         ok: problems.length === 0,
-        detail: problems.length ? problems.join('; ') : 'PKCE S256, dynamic registration, token and revocation endpoints published',
+        detail: problems.length ? problems.join('; ') : 'PKCE S256, refresh-token support, dynamic registration, token and revocation endpoints published',
       });
     }
   }

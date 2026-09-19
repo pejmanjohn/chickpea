@@ -7,7 +7,7 @@ import { mcp } from '@better-auth/mcp';
 
 import type { BetterAuthDatabaseBackend } from './better-auth-backend.ts';
 import {
-  MCP_WORKSPACE_SCOPE,
+  MCP_OAUTH_SCOPES,
   mcpResourceForOrigin,
 } from './mcp-oauth.ts';
 
@@ -198,14 +198,16 @@ function createOptions(
         resource: mcpResourceForOrigin(input.baseURL),
         loginPage: '/auth/mcp/login',
         consentPage: '/auth/mcp/consent',
-        scopes: [MCP_WORKSPACE_SCOPE],
+        // offline_access enables renewable client sessions. The MCP plugin keeps
+        // this authorization-server scope out of protected-resource metadata.
+        scopes: [...MCP_OAUTH_SCOPES],
         grantTypes: ['authorization_code', 'refresh_token'],
         accessTokenExpiresIn: 15 * 60,
         refreshTokenExpiresIn: 30 * 24 * 60 * 60,
         codeExpiresIn: 10 * 60,
         allowDynamicClientRegistration: true,
         allowUnauthenticatedClientRegistration: true,
-        clientRegistrationDefaultScopes: [MCP_WORKSPACE_SCOPE],
+        clientRegistrationDefaultScopes: [...MCP_OAUTH_SCOPES],
         clientRegistrationAllowedScopes: [],
         clientRegistrationRequirePKCE: true,
       }) as unknown as BetterAuthPlugin,

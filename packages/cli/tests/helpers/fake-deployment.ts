@@ -6,6 +6,7 @@ import { McpServer, createMcpHandler } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 
 export const SCOPE = 'chickpea:workspace';
+export const OAUTH_SCOPE = `${SCOPE} offline_access`;
 
 export type FakeEnvelope =
   | { ok: true; result: unknown }
@@ -29,6 +30,7 @@ interface IssuedAccessToken {
 interface IssuedRefreshToken {
   clientId: string;
   revoked: boolean;
+  scope: string;
 }
 
 interface PendingCode {
@@ -36,6 +38,7 @@ interface PendingCode {
   redirectUri: string;
   challenge: string;
   resource: string | null;
+  scope: string;
 }
 
 /**
@@ -139,7 +142,7 @@ export class FakeDeployment {
           grant_types_supported: ['authorization_code', 'refresh_token'],
           code_challenge_methods_supported: ['S256'],
           token_endpoint_auth_methods_supported: ['none'],
-          scopes_supported: [SCOPE],
+          scopes_supported: [SCOPE, 'offline_access'],
         });
       case 'GET /api/auth/jwks':
         return json(response, 200, {
@@ -176,7 +179,7 @@ export class FakeDeployment {
     if (!redirects.length || redirects.some((uri) => !isLoopbackOrHttps(uri))) {
       return json(response, 400, { error: 'invalid_redirect_uri' });
     }
-    if (typeof metadata.scope === 'string' && metadata.scope.split(/\s+/).some((scope) => scope !== SCOPE)) {
+    if (typeof metadata.scope === 'string' && metadata.scope.split(/\s+/).some((scope) => ![SCOPE, 'offline_access'].includes(scope))) {
       return json(response, 400, { error: 'invalid_scope' });
     }
     const clientId = `client_${randomBytes(8).toString('hex')}`;
@@ -189,7 +192,7 @@ export class FakeDeployment {
       response_types: metadata.response_types,
       token_endpoint_auth_method: 'none',
       application_type: metadata.application_type,
-      scope: SCOPE,
+      scope: OAUTH_SCOPE,
       resources: [`${this.canonical}/mcp`],
     };
     this.clients.set(clientId, record);
@@ -206,12 +209,17 @@ export class FakeDeployment {
     if (query.get('response_type') !== 'code' || query.get('code_challenge_method') !== 'S256' || !query.get('code_challenge')) {
       return json(response, 400, { error: 'invalid_request' });
     }
+    const scope = query.get('scope') ?? String(client.scope);
+    if (scope.split(/\s+/).some((value) => !String(client.scope).split(/\s+/).includes(value))) {
+      return json(response, 400, { error: 'invalid_scope' });
+    }
     const code = `code_${randomBytes(12).toString('base64url')}`;
     this.codes.set(code, {
       clientId: client.client_id as string,
       redirectUri,
       challenge: query.get('code_challenge')!,
       resource: query.get('resource'),
+      scope,
     });
     const target = new URL(redirectUri);
     target.searchParams.set('code', code);
@@ -234,7 +242,7 @@ export class FakeDeployment {
       const verifier = form.get('code_verifier') ?? '';
       const digest = createHash('sha256').update(verifier).digest('base64url');
       if (digest !== pending.challenge) return json(response, 400, { error: 'invalid_grant', error_description: 'PKCE verification failed' });
-      return json(response, 200, this.issue(clientId));
+      return json(response, 200, this.issue(clientId, pending.scope));
     }
     if (grant === 'refresh_token') {
       const presented = form.get('refresh_token') ?? '';
@@ -242,22 +250,23 @@ export class FakeDeployment {
       if (!refresh || refresh.revoked || refresh.clientId !== clientId) return json(response, 400, { error: 'invalid_grant' });
       refresh.revoked = true;
       this.refreshCount += 1;
-      return json(response, 200, this.issue(clientId));
+      return json(response, 200, this.issue(clientId, refresh.scope));
     }
     json(response, 400, { error: 'unsupported_grant_type' });
   }
 
-  private issue(clientId: string): Record<string, unknown> {
+  private issue(clientId: string, scope: string): Record<string, unknown> {
     const accessToken = `at_${randomBytes(16).toString('base64url')}`;
     const refreshToken = `rt_${randomBytes(16).toString('base64url')}`;
     this.accessTokens.set(accessToken, { clientId, expiresAt: this.now() + this.ttl * 1_000, revoked: false });
-    this.refreshTokens.set(refreshToken, { clientId, revoked: false });
+    const renewable = scope.split(/\s+/).includes('offline_access');
+    if (renewable) this.refreshTokens.set(refreshToken, { clientId, revoked: false, scope });
     return {
       access_token: accessToken,
       token_type: 'Bearer',
       expires_in: this.ttl,
-      refresh_token: refreshToken,
-      scope: SCOPE,
+      ...(renewable ? { refresh_token: refreshToken } : {}),
+      scope,
     };
   }
 

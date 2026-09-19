@@ -6,6 +6,7 @@ import { makeSignature } from 'better-auth/crypto';
 
 import {
   MCP_WORKSPACE_SCOPE,
+  MCP_OAUTH_SCOPES,
   mcpResourceForOrigin,
   validatePublicMcpClientRegistration,
 } from '../src/auth/mcp-oauth.ts';
@@ -19,6 +20,7 @@ import {
   createMcpConsentRedirectResponse,
   createMcpAuthenticatedRequestHandler,
   verifySignedOAuthQuery,
+  renderMcpConsentPage,
 } from '../src/auth/mcp-oauth-routes.ts';
 import { validateBrowserMutationProvenance } from '../src/auth/request-provenance.ts';
 
@@ -67,7 +69,7 @@ test('Better Auth publishes MCP discovery and registers only public clients', as
     assert.equal(metadata.registration_endpoint, `${origin}/api/auth/oauth2/register`);
     assert.equal(metadata.revocation_endpoint, `${origin}/api/auth/oauth2/revoke`);
     assert.deepEqual(metadata.code_challenge_methods_supported, ['S256']);
-    assert.deepEqual(metadata.scopes_supported, [MCP_WORKSPACE_SCOPE]);
+    assert.deepEqual(metadata.scopes_supported, MCP_OAUTH_SCOPES);
 
     const registration = {
       application_type: 'native',
@@ -215,6 +217,18 @@ test('MCP consent can opt into opaque-origin same-origin form navigation', () =>
     ok: false,
     code: 'cross_origin_denied',
   });
+});
+
+test('MCP consent explains renewable access without changing the signed request', () => {
+  const oauthQuery = 'scope=chickpea%3Aworkspace+offline_access&sig=test';
+  const html = renderMcpConsentPage({
+    clientId: 'test-client', scope: 'chickpea:workspace offline_access', oauthQuery,
+  });
+  assert.ok(html.includes('<dd>Manage this Chickpea workspace and stay signed in</dd>'));
+  assert.ok(html.includes(`value="${oauthQuery.replaceAll('&', '&amp;')}"`));
+  const temporary = renderMcpConsentPage({ clientId: 'test-client', scope: MCP_WORKSPACE_SCOPE, oauthQuery });
+  assert.ok(temporary.includes('<dd>Manage this Chickpea workspace</dd>'));
+  assert.ok(!temporary.includes('stay signed in'));
 });
 
 test('MCP consent finishes its form POST before returning to a client callback', async () => {
