@@ -8465,16 +8465,47 @@
     });
   }
 
+  function providerPanelHeadHtml(mark, name, meta, badge) {
+    return '<div class="provider-panel-head">' + mark + '<div class="provider-panel-copy"><strong class="provider-panel-name">' + name + '</strong>' +
+      (meta ? '<span class="provider-panel-meta">' + meta + '</span>' : '') + '</div>' + (badge || '') + '</div>';
+  }
+
+  function providerStatusBadgeHtml(kind, label) {
+    var cls = kind === "ready" ? "badge-on" : kind === "attention" ? "badge-attention" : "badge-off";
+    return '<span class="badge ' + cls + '">' + esc(label) + '</span>';
+  }
+
   function metaAdsSettingsHtml() {
     var current = state.metaAdsSettings;
-    var head = '<section class="section"><div class="section-head"><div><h2 class="section-title">Meta Ads</h2><p class="hint">Connect directly to Meta using your own developer app. Each Agent signs in and receives only the ad accounts and tools you select.</p></div></div>';
-    if (current.loading) return head + '<p class="hint">Loading Meta Ads settings&hellip;</p></section>';
-    if (current.error && !current.callbackUrl) return head + '<p class="field-error" role="alert">' + esc(current.error) + '</p></section>';
-    if (!current.canConfigure) return head + '<p class="hint">' + (current.configured ? 'Meta Ads is configured. Add it from an Agent’s Connections tab.' : 'A Chickpea owner or admin must configure the Meta app for this installation.') + '</p></section>';
-    return head + '<p class="hint">In Meta for Developers, enable the Ads MCP use case and Facebook Login for Business. Register this exact OAuth callback:</p><p><code>' + esc(current.callbackUrl || 'Complete installation setup first.') + '</code></p>' +
-      '<div class="field"><label class="field-label" for="meta-ads-app-id">Meta App ID</label><input id="meta-ads-app-id" class="input mono" autocomplete="off" inputmode="numeric" data-action="meta-ads-app-id" value="' + esc(current.clientId) + '"' + (current.busy ? ' disabled' : '') + '></div><p class="hint">The App ID is public; no app secret is stored. Changing or removing it requires connected accounts to sign in again.</p>' +
+    var preset = presetById("meta-ads");
+    var mark = preset ? connectorLogoHtml(preset) : '<span class="provider-mark" aria-hidden="true">M</span>';
+    var description = 'Connect directly to Meta using your own developer app. Each Agent signs in and receives only the ad accounts and tools you select.';
+    function panel(meta, badge, body) {
+      return '<div class="provider-panel">' + providerPanelHeadHtml(mark, 'Meta Ads', meta, badge) + (body ? '<div class="provider-panel-body">' + body + '</div>' : '') + '</div>';
+    }
+    if (current.loading) return panel('Loading Meta Ads settings&hellip;', '');
+    if (current.error && !current.callbackUrl) return panel(esc(description), '', '<p class="field-error" role="alert">' + esc(current.error) + '</p>');
+    var badge = providerStatusBadgeHtml(current.configured ? "ready" : "setup", current.configured ? "Configured" : "Not configured");
+    if (!current.canConfigure) {
+      return panel(esc(current.configured ? 'Configured. Add Meta Ads from an Agent’s Connections tab.' : 'A Chickpea owner or admin must configure the Meta app for this installation.'), badge);
+    }
+    var meta = current.configured
+      ? 'App ID <span class="mono">' + esc(current.clientId) + '</span>. Agents sign in through your Meta developer app.'
+      : esc(description);
+    if (current.configured && !current.editing) {
+      var foot = '<button type="button" class="btn btn-soft btn-sm" data-action="meta-ads-edit"' + (current.busy ? ' disabled' : '') + '>Change App ID</button><span class="spacer"></span>' +
+        '<button type="button" class="btn btn-ghost btn-sm danger-text" data-action="meta-ads-remove"' + (current.busy ? ' disabled' : '') + '>Remove app configuration</button>';
+      var status = (current.error ? '<p class="field-error" role="alert">' + esc(current.error) + '</p>' : '') + (current.notice ? '<p class="hint" role="status">' + esc(current.notice) + '</p>' : '');
+      return '<div class="provider-panel">' + providerPanelHeadHtml(mark, 'Meta Ads', meta, badge) + (status ? '<div class="provider-panel-body">' + status + '</div>' : '') + '<div class="provider-panel-foot">' + foot + '</div></div>';
+    }
+    var body = '<ol class="managed-setup-steps"><li><span>In Meta for Developers, enable the Ads MCP use case and Facebook Login for Business.</span></li>' +
+      '<li><span>Register this exact OAuth callback:</span><code class="managed-setup-code">' + esc(current.callbackUrl || 'Complete installation setup first.') + '</code></li>' +
+      '<li><span>Paste the App ID below. It is public; no app secret is stored.</span></li></ol>' +
+      '<div class="field"><label class="field-label" for="meta-ads-app-id">Meta App ID</label><input id="meta-ads-app-id" name="meta-ads-app-id" class="input mono" autocomplete="off" inputmode="numeric" data-action="meta-ads-app-id" value="' + esc(current.clientId) + '"' + (current.busy ? ' disabled' : '') + '><p class="hint">Changing or removing it requires connected accounts to sign in again.</p></div>' +
       (current.error ? '<p class="field-error" role="alert">' + esc(current.error) + '</p>' : '') + (current.notice ? '<p class="hint" role="status">' + esc(current.notice) + '</p>' : '') +
-      '<div class="skill-form-actions"><button type="button" class="btn btn-primary btn-sm" data-action="meta-ads-save"' + (current.busy || !current.callbackUrl ? ' disabled' : '') + '>Save App ID</button>' + (current.configured ? '<button type="button" class="btn btn-ghost btn-sm" data-action="meta-ads-remove"' + (current.busy ? ' disabled' : '') + '>Remove app configuration</button>' : '') + '</div></section>';
+      '<div class="managed-provider-actions">' + (current.configured ? '<button type="button" class="btn btn-ghost btn-sm" data-action="meta-ads-edit-cancel"' + (current.busy ? ' disabled' : '') + '>Cancel</button>' : '') +
+      '<button type="button" class="btn btn-soft btn-sm" data-action="meta-ads-save"' + (current.busy || !current.callbackUrl ? ' disabled' : '') + '>Save App ID</button></div>';
+    return panel(meta, badge, body);
   }
 
   function loadMetaAdsSettings(generation) {
@@ -8493,53 +8524,105 @@
     current.busy = true; current.error = ''; current.notice = ''; render();
     postJson('/admin/api/settings/connectors/meta-ads', remove ? 'DELETE' : 'PUT', remove ? {} : { clientId: String(current.clientId || '').trim() }).then(function () {
       current.busy = false;
+      current.editing = false;
       current.notice = remove ? 'Meta app configuration removed.' : 'Meta App ID saved. Add Meta Ads from an Agent’s Connections tab.';
       return loadMetaAdsSettings(state.settingsLoadGeneration);
     }).catch(function (error) { current.busy = false; current.error = error.serverMessage || error.message || 'Could not save the Meta App ID.'; render(); });
   }
 
+  function composioKeyFormHtml(settings, options) {
+    var configured = options.configured;
+    var recovering = options.recovering;
+    var steps = '<ol class="managed-setup-steps">' +
+      '<li><span>Create a project in Composio. <a class="hint-link" href="https://dashboard.composio.dev" target="_blank" rel="noopener noreferrer">Open Composio &nearr;</a></span></li>' +
+      '<li><span>In Settings &rarr; General, leave OAuth user verification set to <strong>Not configured</strong>. Chickpea sends each sign-in back to this installation.</span></li>' +
+      '<li><span>In Settings &rarr; Project Settings &rarr; API Keys, copy the project key and paste it below.</span></li></ol>';
+    var label = configured ? 'New Composio project key' : 'Composio project key';
+    var help = recovering
+      ? 'Add the current project key to repair this configuration. It is stored encrypted and never shown again.'
+      : 'Stored encrypted and never shown again.';
+    var saveLabel = settings.busy === "setup"
+      ? (recovering ? 'Repairing&hellip;' : 'Setting up&hellip;')
+      : recovering ? 'Validate and repair' : configured ? 'Validate and replace' : 'Validate and save';
+    var secondary = recovering
+      ? '<button type="button" class="btn btn-ghost btn-sm danger-text" data-action="connector-settings-disable-open"' + (settings.busy ? ' disabled' : '') + '>Disable in Chickpea</button>'
+      : configured
+        ? '<button type="button" class="btn btn-ghost btn-sm" data-action="connector-settings-edit-cancel"' + (settings.busy ? ' disabled' : '') + '>Cancel</button>'
+        : '';
+    return '<div class="managed-key-form">' + steps +
+      '<div class="field"><label class="field-label" for="connector-settings-key">' + label + '</label><input class="input mono" id="connector-settings-key" name="connector-settings-key" type="password" autocomplete="off" value="' + esc(settings.key || "") + '" data-action="connector-settings-key" aria-describedby="connector-settings-key-help"' + (settings.busy ? ' disabled' : '') + '><p class="hint" id="connector-settings-key-help">' + help + '</p></div>' +
+      '<div class="managed-provider-actions">' + secondary + '<button type="button" class="btn btn-primary" data-action="connector-settings-save"' + (settings.busy || !String(settings.key || "").trim() ? ' disabled' : '') + '>' + saveLabel + '</button></div></div>';
+  }
+
+  function composioCatalogListHtml(settings, options) {
+    var catalog = settings.catalog || [];
+    var configured = options.configured;
+    var readyCount = 0;
+    var rows = catalog.map(function (descriptor) {
+      var preset = connectorPresetForToolkit(descriptor.toolkit) || { id: descriptor.id, name: descriptor.label, accent: "#8b6b2e" };
+      var readiness = "";
+      if (options.recovering) {
+        readiness = '<span class="managed-readiness managed-readiness-prerequisite">Needs attention</span>';
+      } else if (configured) {
+        var state = managedConnectorLaneReady(descriptor, "read")
+          ? { label: "Ready", kind: "ready" }
+          : managedConnectorMissingCode(descriptor, "read", "provider_prerequisite_missing")
+            ? { label: "Blocked by deployment policy", kind: "prerequisite" }
+            : { label: "Setup required", kind: "setup" };
+        if (state.kind === "ready") readyCount += 1;
+        readiness = '<span class="managed-readiness managed-readiness-' + state.kind + '">' + esc(state.label) + '</span>';
+      }
+      return '<div class="managed-settings-row">' + connectorLogoHtml(preset) + '<span class="managed-settings-copy"><span class="connection-account-name">' + esc(descriptor.label) + '</span><span class="connection-account-identity">' + esc(descriptor.description || "") + '</span></span>' + readiness + '</div>';
+    }).join("");
+    var summary = options.recovering
+      ? 'Paused until the configuration is repaired'
+      : configured
+        ? readyCount + ' of ' + catalog.length + ' ready'
+        : options.canConfigure ? 'Available after you add a project key' : 'Available after setup';
+    return '<div class="managed-list-head"><span>' + catalog.length + ' connector' + (catalog.length === 1 ? '' : 's') + '</span><span>' + esc(summary) + '</span></div>' +
+      '<div class="managed-settings-list" aria-label="' + esc(options.label) + '">' + rows + '</div>';
+  }
+
   function connectorSettingsProviderHtml() {
     var settings = state.connectorSettings;
     var provider = settings.provider;
+    // Members never see the vendor name; the panel reads as "Managed connectors" for them.
+    var providerName = settings.canConfigure ? 'Composio' : 'Managed connectors';
+    var mark = '<span class="provider-mark" aria-hidden="true">' + (settings.canConfigure ? 'Co' : 'Mc') + '</span>';
     var providerDescription = settings.canConfigure
       ? 'Some Chickpea connectors are managed by Composio. Add one project key to use them; Chickpea handles the standard authentication setup.'
       : 'Some Chickpea connectors use managed authentication. A Chickpea owner or admin can enable them for this installation.';
-    var managedCatalogLabel = settings.canConfigure
-      ? 'Composio-managed connectors'
-      : 'Managed connectors';
-    var verificationGuidance = settings.canConfigure
-      ? '<div class="callout" role="note"><span>In Composio Settings &rarr; General, leave OAuth user verification set to <strong>Not configured</strong>. Chickpea sends each sign-in back to this installation.</span></div>'
-      : '';
-    var head = '<section class="section managed-provider-section"><div class="section-head"><div><h2 class="section-title">Managed connectors</h2><p class="hint">' + providerDescription + '</p></div></div>';
-    if (settings.loading) return head + '<p class="hint">Loading managed connector status&hellip;</p></section>';
-    if (settings.error && !provider && !settings.recoveryMode) {
-      return head + '<div class="callout" role="alert"><span>' + esc(settings.error) + '</span><button type="button" class="btn btn-soft btn-sm" data-action="connector-settings-retry-load">Retry</button></div></section>';
+    var managedCatalogLabel = settings.canConfigure ? 'Composio-managed connectors' : 'Managed connectors';
+    function panel(meta, badge, body, list, foot) {
+      return '<div class="provider-panel">' + providerPanelHeadHtml(mark, providerName, meta, badge) +
+        (body ? '<div class="provider-panel-body">' + body + '</div>' : '') + (list || '') +
+        (foot ? '<div class="provider-panel-foot">' + foot + '</div>' : '') + '</div>';
     }
+    function retryLoadCallout() {
+      return '<div class="callout" role="alert"><span>' + esc(settings.error) + '</span><button type="button" class="btn btn-soft btn-sm" data-action="connector-settings-retry-load">Retry</button></div>';
+    }
+    if (settings.loading) return panel('Loading managed connector status&hellip;', '');
+    if (settings.error && !provider && !settings.recoveryMode) return panel(esc(providerDescription), '', retryLoadCallout());
     if (settings.error && !provider) {
-      var recoveryRows = (settings.catalog || []).map(function (descriptor) {
-        var preset = connectorPresetForToolkit(descriptor.toolkit) || { id: descriptor.id, name: descriptor.label, accent: "#8b6b2e" };
-        return '<div class="managed-settings-row">' + connectorLogoHtml(preset) + '<span class="managed-settings-copy"><span class="connection-account-name">' + esc(descriptor.label) + '</span><span class="connection-account-identity">' + esc(descriptor.description || "") + '</span></span><span class="managed-readiness managed-readiness-prerequisite">Needs attention</span></div>';
-      }).join("");
-      var recoveryControls = settings.canConfigure
-        ? '<div class="managed-key-form"><div class="field"><label class="field-label" for="connector-settings-key">Composio project key</label><input class="input mono" id="connector-settings-key" type="password" autocomplete="off" value="' + esc(settings.key || "") + '" data-action="connector-settings-key" aria-describedby="connector-settings-key-help"' + (settings.busy ? ' disabled' : '') + '><p class="hint" id="connector-settings-key-help">Add the current project key to repair this configuration. It is stored encrypted and never shown again. <a class="hint-link" href="https://dashboard.composio.dev" target="_blank" rel="noopener noreferrer">Open Composio &nearr;</a></p></div><div class="managed-provider-actions"><button type="button" class="btn btn-ghost danger-text" data-action="connector-settings-disable-open"' + (settings.busy ? ' disabled' : '') + '>Disable in Chickpea</button><button type="button" class="btn btn-primary" data-action="connector-settings-save"' + (settings.busy || !String(settings.key || "").trim() ? ' disabled' : '') + '>' + (settings.busy === "setup" ? 'Repairing&hellip;' : 'Validate and repair') + '</button></div></div>'
-        : '<p class="managed-provider-guidance">A Chickpea owner or admin can repair this configuration.</p>';
-      return head + '<div class="callout" role="alert"><span>' + esc(settings.error) + '</span><button type="button" class="btn btn-soft btn-sm" data-action="connector-settings-retry-load">Retry</button></div><div class="managed-provider-card"><div class="managed-provider-status"><span class="managed-provider-dot setup" aria-hidden="true"></span><div><strong>Configuration needs attention</strong><p class="hint">Replace the stored project key or disable managed connectors to recover.</p></div></div>' + recoveryControls + '</div>' + (recoveryRows ? '<div class="managed-settings-list" aria-label="' + managedCatalogLabel + '">' + recoveryRows + '</div>' : '') + '</section>';
+      var recoveryBody = retryLoadCallout() + (settings.canConfigure
+        ? composioKeyFormHtml(settings, { configured: false, recovering: true })
+        : '<p class="managed-provider-guidance">A Chickpea owner or admin can repair this configuration.</p>');
+      return panel('Replace the stored project key or disable managed connectors to recover.', providerStatusBadgeHtml("attention", "Configuration needs attention"), recoveryBody,
+        composioCatalogListHtml(settings, { configured: false, recovering: true, canConfigure: settings.canConfigure, label: managedCatalogLabel }));
     }
-    if (!provider) return head + '<p class="field-error">Managed connector status is unavailable.</p></section>';
+    if (!provider) return panel(esc(providerDescription), '', '<p class="field-error">Managed connector status is unavailable.</p>');
     var configured = provider.configured && provider.desiredState === "enabled";
     var statusLabel = provider.readOnly
       ? (configured ? "Configured by deployment" : "Deployment setup required")
-      : configured
-        ? "Connected"
-        : "Not configured";
+      : configured ? "Connected" : "Not configured";
     var statusDetail = provider.readOnly
       ? (configured
           ? "This installation reads its project key from deployment configuration. It cannot be replaced or disabled in Admin."
           : "This hosted installation expects a deployment-managed project key. Add the secret binding before managed connectors can be used.")
       : configured
-        ? "The project key is stored encrypted. Replace it only when rotating projects or credentials."
+        ? "Project key stored encrypted. Replace it only when rotating projects or credentials."
         : settings.canConfigure
-          ? "Create a Composio project, then add its project key here."
+          ? providerDescription
           : "A Chickpea owner or admin can enable managed connectors for this installation.";
     var deploymentPreparationRequired = provider.readOnly && configured &&
       (settings.catalog || []).some(function (descriptor) {
@@ -8550,50 +8633,44 @@
       return descriptor.toolkit === "googleads" &&
         managedConnectorMissingCode(descriptor, "read", "provider_prerequisite_missing");
     });
-    var controls = "";
+    var body = "";
+    var foot = "";
     if (!settings.canConfigure) {
-      controls = '<p class="managed-provider-guidance">A Chickpea owner or admin can add or change this project key.</p>';
+      // The head meta already explains that an owner or admin must act.
     } else if (deploymentPreparationRequired) {
-      controls = '<div class="managed-provider-actions"><button type="button" class="btn btn-primary" data-action="connector-settings-retry">' +
+      body += '<div class="managed-provider-actions"><button type="button" class="btn btn-primary" data-action="connector-settings-retry">' +
         (settings.busy === "retry" ? 'Preparing&hellip;' : 'Prepare connector defaults') + '</button></div>';
     } else if (!provider.readOnly) {
       if (configured && !settings.editing) {
-        controls = '<div class="managed-provider-actions"><button type="button" class="btn btn-soft" data-action="connector-settings-edit-key">Replace project key</button><button type="button" class="btn btn-ghost danger-text" data-action="connector-settings-disable-open">Disable in Chickpea</button></div>';
+        foot += '<button type="button" class="btn btn-soft btn-sm" data-action="connector-settings-edit-key">Replace project key</button>';
       } else {
-        controls = '<div class="managed-key-form"><div class="field"><label class="field-label" for="connector-settings-key">' + (configured ? 'New Composio project key' : 'Composio project key') + '</label><input class="input mono" id="connector-settings-key" type="password" autocomplete="off" value="' + esc(settings.key || "") + '" data-action="connector-settings-key" aria-describedby="connector-settings-key-help"' + (settings.busy ? ' disabled' : '') + '><p class="hint" id="connector-settings-key-help">Stored encrypted and never shown again. In Composio, open Settings &rarr; Project Settings &rarr; API Keys. <a class="hint-link" href="https://dashboard.composio.dev" target="_blank" rel="noopener noreferrer">Open Composio &nearr;</a></p></div><div class="managed-provider-actions">' +
-          (configured ? '<button type="button" class="btn btn-ghost" data-action="connector-settings-edit-cancel"' + (settings.busy ? ' disabled' : '') + '>Cancel</button>' : '') +
-          '<button type="button" class="btn btn-primary" data-action="connector-settings-save"' + (settings.busy || !String(settings.key || "").trim() ? ' disabled' : '') + '>' + (settings.busy === "setup" ? 'Setting up&hellip;' : configured ? 'Validate and replace' : 'Validate and save') + '</button></div></div>';
+        body += composioKeyFormHtml(settings, { configured: configured, recovering: false });
       }
     }
     if (provider.reconciliationPending) {
-      controls += '<div class="callout" role="status"><span>Chickpea is finishing connector reconciliation. Managed execution remains paused.</span>' +
+      body += '<div class="callout" role="status"><span>Chickpea is finishing connector reconciliation. Managed execution remains paused.</span>' +
         (settings.canConfigure ? '<button type="button" class="btn btn-soft btn-sm" data-action="connector-settings-retry">Retry</button>' : '') + '</div>';
     } else if (provider.lastSetupResult && provider.lastSetupResult.status !== "ready" && configured) {
-      controls += '<div class="callout" role="alert"><span>Some connectors still need setup. Ready connectors remain available.</span><button type="button" class="btn btn-soft btn-sm" data-action="connector-settings-retry">Retry setup</button></div>';
+      body += '<div class="callout" role="alert"><span>Some connectors still need setup. Ready connectors remain available.</span><button type="button" class="btn btn-soft btn-sm" data-action="connector-settings-retry">Retry setup</button></div>';
     } else if (settings.canConfigure && configured && !settings.editing && !deploymentPreparationRequired && !googleAdsPolicyBlocked) {
-      controls += '<div class="managed-provider-actions"><button type="button" class="btn btn-soft btn-sm" data-action="connector-settings-retry"' + (settings.busy ? ' disabled' : '') + '>' +
-        (settings.busy === "retry" ? 'Preparing&hellip;' : 'Refresh connector setup') + '</button><span class="hint">Apply current deployment settings without replacing the project key.</span></div>';
+      foot += '<button type="button" class="btn btn-ghost btn-sm" data-action="connector-settings-retry" title="Apply current deployment settings without replacing the project key."' + (settings.busy ? ' disabled' : '') + '>' +
+        (settings.busy === "retry" ? 'Preparing&hellip;' : 'Refresh connector setup') + '</button>';
+    }
+    if (foot && configured && !settings.editing && !provider.readOnly && settings.canConfigure) {
+      foot += '<span class="spacer"></span><button type="button" class="btn btn-ghost btn-sm danger-text" data-action="connector-settings-disable-open">Disable in Chickpea</button>';
     }
     if (googleAdsPolicyBlocked) {
-      controls += '<div class="callout" role="status"><span>Google Ads is blocked by deployment policy. A deployment operator must allow Composio managed OAuth or configure Explorer, Basic, or Standard API access. Preparing connector defaults will not change this setting.</span></div>';
+      body += '<div class="callout" role="status"><span>Google Ads is blocked by deployment policy. A deployment operator must allow Composio managed OAuth or configure Explorer, Basic, or Standard API access. Preparing connector defaults will not change this setting.</span></div>';
     }
-    var catalogRows = (settings.catalog || []).map(function (descriptor) {
-      var preset = connectorPresetForToolkit(descriptor.toolkit) || { id: descriptor.id, name: descriptor.label, accent: "#8b6b2e" };
-      var readiness = managedConnectorLaneReady(descriptor, "read")
-        ? { label: "Ready", kind: "ready" }
-        : managedConnectorMissingCode(descriptor, "read", "provider_prerequisite_missing")
-          ? { label: "Blocked by deployment policy", kind: "prerequisite" }
-          : { label: configured ? "Setup required" : "Add project key", kind: "setup" };
-      return '<div class="managed-settings-row">' + connectorLogoHtml(preset) + '<span class="managed-settings-copy"><span class="connection-account-name">' + esc(descriptor.label) + '</span><span class="connection-account-identity">' + esc(descriptor.description || "") + '</span></span><span class="managed-readiness managed-readiness-' + readiness.kind + '">' + esc(readiness.label) + '</span></div>';
-    }).join("");
-    return head + '<div class="managed-provider-card"><div class="managed-provider-status"><span class="managed-provider-dot ' + (configured ? 'ready' : 'setup') + '" aria-hidden="true"></span><div><strong>' + esc(statusLabel) + '</strong><p class="hint">' + esc(statusDetail) + '</p></div></div>' + verificationGuidance + controls +
-      (settings.error ? '<div class="callout" role="alert"><span>' + esc(settings.error) + '</span><button type="button" class="btn btn-soft btn-sm" data-action="connector-settings-retry-load">Retry</button></div>' : '') +
-      (settings.notice ? '<p class="oauth-return ok" role="status">' + esc(settings.notice) + '</p>' : '') + '</div>' +
-      '<div class="managed-settings-list" aria-label="' + managedCatalogLabel + '">' + catalogRows + '</div></section>';
+    if (settings.error) body += retryLoadCallout();
+    if (settings.notice) body += '<p class="oauth-return ok" role="status">' + esc(settings.notice) + '</p>';
+    return panel(esc(statusDetail), providerStatusBadgeHtml(configured ? "ready" : "setup", statusLabel), body,
+      composioCatalogListHtml(settings, { configured: configured, recovering: false, canConfigure: settings.canConfigure, label: managedCatalogLabel }), foot);
   }
 
   function connectorsSettingsHtml() {
-    return metaAdsSettingsHtml() + connectorSettingsProviderHtml() + connectionInventoryHtml();
+    return '<section class="section connector-providers-section"><div class="section-head"><div><h2 class="section-title">Providers</h2><p class="hint">Set up each provider once for this installation. Agents then connect their own accounts through it.</p></div></div>' +
+      connectorSettingsProviderHtml() + metaAdsSettingsHtml() + '</section>' + connectionInventoryHtml();
   }
 
   function connectorSettingsConfirmModalHtml() {
@@ -8799,7 +8876,7 @@
           : '<p class="hint">' + esc(account.providerId || "Custom") + '</p>';
       return '<article class="connection-inventory-row"><div class="connection-account-copy"><div><strong>' + esc(accountLabel) + '</strong> <span class="badge-src">' + esc(owner) + '</span> <span class="badge ' + (account.lifecycle === "ready" ? "badge-on" : "badge-off") + '">' + esc(status) + '</span></div>' + detail + '<div class="where-list" aria-label="Agents using ' + esc(accountLabel) + '">' + agentLinks + '</div></div>' + actions + '</article>';
     }).join("");
-    return head + (inventory.notice ? '<p class="oauth-return ok" role="status">' + esc(inventory.notice) + '</p>' : '') + '<div class="connection-account-list">' + rows + '</div></section>';
+    return head + (inventory.notice ? '<p class="oauth-return ok" role="status">' + esc(inventory.notice) + '</p>' : '') + '<div class="connection-account-list connection-inventory-list">' + rows + '</div></section>';
   }
 
   function modelCatalogStatusHtml() {
@@ -12010,6 +12087,8 @@
     if (action === "connection-inventory-retry") { loadConnectionInventory(state.settingsLoadGeneration); }
     if (action === "meta-ads-save") saveMetaAdsSettings(false);
     if (action === "meta-ads-remove") saveMetaAdsSettings(true);
+    if (action === "meta-ads-edit") { state.metaAdsSettings.editing = true; state.metaAdsSettings.error = ""; state.metaAdsSettings.notice = ""; render(); }
+    if (action === "meta-ads-edit-cancel") { state.metaAdsSettings.editing = false; state.metaAdsSettings.error = ""; render(); }
     if (action === "connector-settings-retry-load") { loadConnectorSettings(state.settingsLoadGeneration); }
     if (action === "connector-settings-edit-key") {
       state.connectorSettings.editing = true;
