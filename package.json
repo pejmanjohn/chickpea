@@ -182,7 +182,7 @@
     "@slack/web-api": "^8.0.0",
     "better-auth": "1.7.1",
     "croner": "10.0.1",
-    "hono": "^4.13.5",
+    "hono": "^4.13.7",
     "image-in-browser": "3.6.0",
     "jose": "6.2.8",
     "just-bash": "3.0.2",
