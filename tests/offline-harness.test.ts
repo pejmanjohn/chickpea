@@ -44,3 +44,62 @@ test('offline verifier can load overlapping TypeScript graphs repeatedly and con
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /offline loader complete/);
 });
+
+test('spawnReadyServer retries only a lost port, and stops every child it abandons', async () => {
+  // @ts-expect-error The offline harness intentionally has no declaration file.
+  const { spawnReadyServer } = await import('../scripts/lib/offline-harness.mjs');
+  const ports = [41001, 41002, 41003];
+  const stopped: string[] = [];
+  const logs: string[] = [];
+  const started: Array<{ port: number }> = [];
+  const fakes = {
+    allocatePort: async () => ports[started.length]!,
+    start: (options: { port: number }) => {
+      started.push(options);
+      return { child: `child-${options.port}`, eventsUrl: `http://127.0.0.1:${options.port}/events`, getOutput: () => '' };
+    },
+    stop: async (child: string) => { stopped.push(child); },
+    log: (line: string) => { logs.push(line); },
+  };
+
+  // A port lost between allocation and bind is retried on a fresh port.
+  const collisions = { count: 0 };
+  const server = await spawnReadyServer({ serverEntry: 'server.mjs' }, {
+    ...fakes,
+    ready: async () => {
+      if (collisions.count++ === 0) {
+        throw new Error('server exited early (exit 1):\nError: listen EADDRINUSE: address already in use :::41001');
+      }
+    },
+  });
+  assert.equal(server.port, 41002);
+  assert.equal(server.child, 'child-41002');
+  assert.deepEqual(stopped, ['child-41001']);
+  assert.equal(logs.length, 1);
+  assert.match(logs[0]!, /port 41001 was taken/);
+
+  // Any other startup failure propagates unchanged after stopping the child.
+  started.length = 0; stopped.length = 0; logs.length = 0;
+  await assert.rejects(
+    spawnReadyServer({ serverEntry: 'server.mjs' }, {
+      ...fakes,
+      ready: async () => { throw new Error('server never became ready:\nboot loop'); },
+    }),
+    /never became ready/,
+  );
+  assert.deepEqual(stopped, ['child-41001']);
+  assert.deepEqual(logs, []);
+
+  // The attempt budget is bounded: the last collision is the error.
+  started.length = 0; stopped.length = 0; logs.length = 0;
+  await assert.rejects(
+    spawnReadyServer({ serverEntry: 'server.mjs' }, {
+      ...fakes,
+      attempts: 2,
+      ready: async () => { throw new Error('EADDRINUSE'); },
+    }),
+    /EADDRINUSE/,
+  );
+  assert.deepEqual(stopped, ['child-41001', 'child-41002']);
+  assert.equal(logs.length, 1);
+});

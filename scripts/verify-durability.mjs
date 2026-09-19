@@ -41,16 +41,14 @@ import {
   assertNodeVersion,
   buildNodeServer,
   delay,
-  getFreePort,
   loadFake,
   loadTsModule,
   postSignedEvent,
   seedOfflineDemoChannelConfig,
   seedOfflineSlackAuthority,
-  spawnServer,
+  spawnReadyServer,
   stopChild,
   waitForFinals,
-  waitForReady,
 } from './lib/offline-harness.mjs';
 
 const DURABILITY_MARKER = 'DURABILITY_MARKER_ALPHA';
@@ -111,10 +109,10 @@ function mention({ eventId, ts, threadTs }) {
 }
 
 async function runServerTurn({ serverEntry, fakeUrl, dbPath, netGuardLog, payload }) {
-  const port = await getFreePort();
-  const { child, eventsUrl, getOutput } = spawnServer({
+  // Each restart probe takes a fresh port; a port lost to another process
+  // between allocation and bind is retried rather than failing the gate.
+  const { child, eventsUrl, getOutput } = await spawnReadyServer({
     serverEntry,
-    port,
     fakeUrl,
     netGuardLog,
     env: {
@@ -130,7 +128,6 @@ async function runServerTurn({ serverEntry, fakeUrl, dbPath, netGuardLog, payloa
     },
   });
   try {
-    await waitForReady(child, eventsUrl, getOutput);
     await postSignedEvent(eventsUrl, payload);
   } catch (error) {
     await stopChild(child);

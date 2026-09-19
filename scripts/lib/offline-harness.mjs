@@ -290,6 +290,40 @@ export async function waitForReady(child, eventsUrl, getOutput, timeoutMs = 25_0
   throw new Error(`server never became ready:\n${getOutput()}`);
 }
 
+/**
+ * Allocate a port, spawn the server on it, and wait until it answers.
+ *
+ * `getFreePort` probes a port by binding and releasing it, so another process
+ * can take the port before the child binds it. When the child exits with
+ * EADDRINUSE, stop it and try again on a fresh port instead of failing the
+ * whole verification. Any other startup failure propagates unchanged.
+ */
+export async function spawnReadyServer(options, {
+  attempts = 3,
+  allocatePort = getFreePort,
+  start = spawnServer,
+  ready = waitForReady,
+  stop = stopChild,
+  log = (line) => console.log(line),
+} = {}) {
+  for (let attempt = 1; ; attempt += 1) {
+    const port = await allocatePort();
+    const server = start({ ...options, port });
+    try {
+      await ready(server.child, server.eventsUrl, server.getOutput);
+      return { ...server, port };
+    } catch (error) {
+      await stop(server.child);
+      if (attempt >= attempts || !isPortCollision(error)) throw error;
+      log(`[offline-harness] port ${port} was taken before the server bound it; retrying on a fresh port (${attempt}/${attempts - 1})`);
+    }
+  }
+}
+
+function isPortCollision(error) {
+  return /EADDRINUSE/.test(String(error?.message ?? error));
+}
+
 export function stopChild(child) {
   return new Promise((resolve) => {
     if (child.exitCode !== null || child.signalCode !== null) {
