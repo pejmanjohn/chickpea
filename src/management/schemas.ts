@@ -354,6 +354,10 @@ export const prepareConnectorSetupZodSchema = z.strictObject({
   connector: zText(128),
   ownerKind: z.enum(['team', 'member']),
 });
+export const prepareProviderSetupZodSchema = z.strictObject({
+  providerId: z.enum(['anthropic', 'openai', 'openrouter']),
+  replaceExisting: z.boolean().optional(),
+});
 export const discoverSlackChannelsZodSchema = z.strictObject({
   refresh: z.boolean().optional(),
 });

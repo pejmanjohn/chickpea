@@ -8,15 +8,15 @@
  * sent to every authenticated principal.
  */
 
-export const WORKSPACE_MANAGEMENT_INSTRUCTIONS_MAX_BYTES = 2000;
+import {
+  ADMIN_ONLY_SETTINGS_SECTIONS,
+  ADMIN_PATH,
+  ADMIN_SETTINGS_SECTIONS,
+  adminOrigin,
+  adminSettingsPath,
+} from './admin-links.ts';
 
-const ADMIN_PATH = '/admin';
-const ADMIN_SETTINGS_SECTIONS = {
-  providers: 'Model providers',
-  github: 'GitHub',
-  sandbox: 'Coding sandbox',
-  outbound: 'Outbound access',
-} as const;
+export const WORKSPACE_MANAGEMENT_INSTRUCTIONS_MAX_BYTES = 2000;
 
 /**
  * Normalize a deployment base URL to its origin. Returns undefined when the
@@ -24,14 +24,7 @@ const ADMIN_SETTINGS_SECTIONS = {
  * Admin path instead of printing a broken link.
  */
 export function workspaceManagementAdminOrigin(baseUrl?: string): string | undefined {
-  if (!baseUrl) return undefined;
-  try {
-    const url = new URL(baseUrl);
-    if (url.protocol !== 'https:' && url.protocol !== 'http:') return undefined;
-    return url.origin;
-  } catch {
-    return undefined;
-  }
+  return adminOrigin(baseUrl);
 }
 
 /**
@@ -43,8 +36,8 @@ export function workspaceManagementInstructions(baseUrl?: string): string {
   const origin = workspaceManagementAdminOrigin(baseUrl);
   const adminUrl = origin ? `${origin}${ADMIN_PATH}` : ADMIN_PATH;
   const admin = origin ? adminUrl : `your Chickpea deployment's ${ADMIN_PATH} page`;
-  const settings = (Object.keys(ADMIN_SETTINGS_SECTIONS) as Array<keyof typeof ADMIN_SETTINGS_SECTIONS>)
-    .map((id) => `${ADMIN_SETTINGS_SECTIONS[id]} (${ADMIN_PATH}/settings/${id})`)
+  const settings = ADMIN_ONLY_SETTINGS_SECTIONS
+    .map((id) => `${ADMIN_SETTINGS_SECTIONS[id]} (${adminSettingsPath(id)})`)
     .join(', ');
 
   return [
@@ -53,8 +46,8 @@ export function workspaceManagementInstructions(baseUrl?: string): string {
     '1. Call inspect_workspace before recommending or changing anything. Its connectors field is the setup catalog, not current access.',
     '2. Before propose_workspace_changes, read the resource chickpea://guide/agent-authoring/v1 and pass its version as guideVersion.',
     '3. A sufficiently understood new Agent is created immediately: call apply_workspace_changes with exactly one create_agent operation. Other consequential changes return a proposal; show it to the person, wait for their approval in this conversation, then call confirm_workspace_change with the proposalId.',
-    '4. Never ask for, accept, or pass along secrets: API keys, tokens, OAuth codes, passwords. To connect a service, call prepare_connector_setup and give the person its handoff link.',
-    `5. Admin-only today: Agent avatars (open the Agent in Admin, then Configure) and these Settings sections under ${adminUrl}: ${settings}. Send the person there with the link; do not try to do these over MCP.`,
+    '4. Never ask for, accept, or relay secrets: API keys, tokens, OAuth codes, passwords. To connect a service, call prepare_connector_setup; for a model provider key (Owner or Admin), prepare_provider_setup. Give the person the handoff link.',
+    `5. Admin-only today, beyond the handoffs in 4: Agent avatars (Agent page, then Configure) and these Settings sections under ${adminUrl}: ${settings}. Send the person the link; results touching them carry links.admin.`,
     '6. Show each result\'s presentation.markdown, never presentation.slack. After creating or changing an Agent, give the person the receipt\'s links.admin and links.slack and tell them to mention it in Slack (@handle) to try it.',
     '',
     `Admin: ${admin}`,
