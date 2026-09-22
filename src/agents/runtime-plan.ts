@@ -375,7 +375,14 @@ export function buildRuntimePlanActivityContext(
     families.add('managed_connector');
   }
 
-  if (plan.skills.length > 0 || options.includeAgentAuthoringSkill) {
+  // Repository grants mount the built-in Repositories skill and a Cloudflare
+  // workspace mounts the workspace skill, even when the Agent has none.
+  if (
+    plan.skills.length > 0 ||
+    plan.repositories.length > 0 ||
+    plan.sandbox.mode === 'cloudflare' ||
+    options.includeAgentAuthoringSkill
+  ) {
     const skill = genericSemanticDescriptor('skill');
     descriptors.push(
       { toolName: 'activate_skill', descriptor: skill },
