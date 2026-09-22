@@ -33,6 +33,12 @@ export default defineConfig(({ command }) => {
       // where the committed build identity does not track working-tree schema
       // edits. Local serve must never attach to a persisted schema marker.
       __CHICKPEA_VITE_SERVE__: JSON.stringify(command === 'serve'),
+      // How this Worker was built, so Admin can show matching redeploy steps.
+      // Cloudflare Workers Builds sets WORKERS_CI=1; a local or generic-CI
+      // `npm run deploy` does not. A serve lane is neither.
+      __CHICKPEA_CLOUDFLARE_BUILD_SOURCE__: JSON.stringify(
+        command === 'serve' ? 'unknown' : process.env.WORKERS_CI === '1' ? 'workers-builds' : 'command',
+      ),
     },
     // Public images are uploaded as Static Assets, not embedded in Worker code.
     publicDir: 'assets',

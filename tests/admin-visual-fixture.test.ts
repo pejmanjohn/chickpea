@@ -39,6 +39,7 @@ interface VisualFixtureModule {
     runtimeContract?: 'legacy' | 'chickpea-v1';
     onboardingStage?: 'choose_provider' | 'choose_model' | 'try';
     principalRole?: 'owner' | 'admin' | 'member';
+    sandboxState?: string;
   }): Promise<VisualFixture>;
 }
 
@@ -447,6 +448,31 @@ test('visual fixture serves full synthetic proposals through isolated authentica
     await fixture.close();
   }
   assert.equal(existsSync(fixture.stateDirectory), false);
+});
+
+test('visual fixture presents the Sandbox redeploy-required state for each build source', async () => {
+  const { startAdminVisualFixture } = await loadFixtureModule();
+  await assert.rejects(startAdminVisualFixture({ sandboxState: 'installed' }), /Unknown sandbox visual state/);
+  for (const [sandboxState, deploySource] of [
+    ['redeploy-command', 'command'],
+    ['redeploy-dashboard', 'workers-builds'],
+    ['redeploy-unknown', 'unknown'],
+  ] as const) {
+    const fixture = await startAdminVisualFixture({ sandboxState });
+    try {
+      const status = await fixtureJson<{
+        target: string; installRequested: boolean; installed: boolean; deploySource: string; unmetPrerequisites: string[];
+      }>(fixture, '/admin/api/sandbox/status');
+      assert.equal(status.target, 'cloudflare');
+      assert.equal(status.installRequested, true);
+      assert.equal(status.installed, false);
+      assert.equal(status.deploySource, deploySource);
+      assert.ok(status.unmetPrerequisites.includes('sandbox_binding'));
+      assert.ok(!status.unmetPrerequisites.includes('cloudflare_target'));
+    } finally {
+      await fixture.close();
+    }
+  }
 });
 
 test('canonical visual states use authenticated production URLs and UI actions only', async () => {

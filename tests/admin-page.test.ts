@@ -420,6 +420,7 @@ type SandboxStatusFixture = {
   repositoryGrantReady: boolean;
   unmetPrerequisites: string[];
   workersPaidNote: string | null;
+  deploySource?: 'workers-builds' | 'command' | 'unknown';
 };
 type ModelCatalogStatusFixture = {
   mode: 'bundled' | 'hosted';
@@ -1254,7 +1255,7 @@ function runAdminPageHarness(
           setSelectionRange() {},
         };
       }
-      if (id === 'sandbox-build-variable' && appHtml.includes('id="sandbox-build-variable"')) {
+      if (id.startsWith('sandbox-copy-') && appHtml.includes(`id="${id}"`)) {
         var attachedGeneration = renderGeneration;
         return {
           focus() {},
@@ -14082,32 +14083,102 @@ test('Settings requests a paid Sandbox install, hands off one Cloudflare variabl
   await flushAsync();
 
   assert.deepEqual(harness.sandboxInstallCalls, ['POST']);
-  assert.match(harness.app.innerHTML, /Redeploy required/);
-  assert.match(harness.app.innerHTML, /Workers &amp; Pages.*your Worker.*Settings.*Builds.*Variables/);
-  assert.match(harness.app.innerHTML, /CHICKPEA_DEPLOY_PROFILE/);
-  assert.match(harness.app.innerHTML, /sandbox/);
-  assert.match(harness.app.innerHTML, /Retry deployment/);
-  assert.match(harness.app.innerHTML, /start a fresh dashboard build/);
-  assert.match(harness.app.innerHTML, /npm run deploy:sandbox/);
-  assert.match(harness.app.innerHTML, /Chickpea cannot redeploy itself/);
-  assert.match(harness.app.innerHTML, /data-action="sandbox-check-again"/);
-  assert.match(harness.app.innerHTML, /data-action="sandbox-cancel-install"/);
+  const redeploy = harness.app.innerHTML;
+  // One visible status: the badge. The request confirmation is announced to
+  // screen readers only, and the lead explains what to do.
+  assert.equal(redeploy.match(/Redeploy required/g)?.length, 1);
+  assert.doesNotMatch(redeploy, /class="inline-status ok"[^>]*>Installation requested/);
+  assert.match(redeploy, /class="sr-only" role="status" aria-live="polite">Installation requested\. Follow the redeploy steps to finish\./);
+  assert.match(redeploy, /Redeploy Chickpea to finish installing/);
+  assert.match(redeploy, /Chickpea can&rsquo;t redeploy itself/);
+  // The Workers Paid prerequisite comes before any step.
+  assert.ok(redeploy.indexOf('Workers Paid plan required') < redeploy.indexOf('class="sbx-steps"'));
+  assert.match(redeploy, /href="https:\/\/dash\.cloudflare\.com\/\?to=\/:account\/workers\/plans"/);
+  // Unknown build source defaults to the command path, with both paths offered.
+  assert.match(redeploy, /How do you deploy Chickpea\?/);
+  assert.match(redeploy, /aria-pressed="true" data-action="sandbox-deploy-path" data-path="command"/);
+  assert.match(redeploy, /aria-pressed="false" data-action="sandbox-deploy-path" data-path="dashboard"/);
+  assert.match(redeploy, /Choose the way you usually install and update Chickpea\./);
+  assert.match(redeploy, /id="sandbox-copy-command" readonly spellcheck="false" value="npm run deploy:sandbox"/);
+  assert.match(redeploy, /-- --profile &lt;name&gt;<\/code> after <code class="sbx-inline-code">npm run deploy<\/code>, add it here too/);
+  assert.match(redeploy, /can take several minutes/);
+  assert.match(redeploy, /changes to <b>Installed but off<\/b>/);
+  assert.match(redeploy, /keep deploying with <code class="sbx-inline-code">npm run deploy:sandbox<\/code> so the sandbox stays installed/);
+  assert.match(redeploy, /Docker must be running/);
+  assert.doesNotMatch(redeploy, /core artifact|Finish in Cloudflare|CHICKPEA_DEPLOY_PROFILE/);
+  assert.match(redeploy, /data-action="sandbox-check-again"/);
+  assert.match(redeploy, /data-action="sandbox-cancel-install"/);
+  assert.match(redeploy, /doesn&rsquo;t change anything in Cloudflare/);
 
-  click({ target: actionTarget({ 'data-action': 'sandbox-copy-profile' }) });
+  click({ target: actionTarget({ 'data-action': 'sandbox-copy', 'data-copy': 'command' }) });
   await flushAsync();
-  assert.deepEqual(harness.clipboardWrites, ['CHICKPEA_DEPLOY_PROFILE=sandbox']);
-  assert.match(harness.app.innerHTML, /Sandbox build variable copied/);
+  assert.deepEqual(harness.clipboardWrites, ['npm run deploy:sandbox']);
+  assert.match(harness.app.innerHTML, /data-copy="command">.*Copied<\/button>/);
+  assert.match(harness.app.innerHTML, /role="status" aria-live="polite">Copied npm run deploy:sandbox\./);
+
+  click({ target: actionTarget({ 'data-action': 'sandbox-deploy-path', 'data-path': 'dashboard' }) });
+  const dashboard = harness.app.innerHTML;
+  assert.match(dashboard, /aria-pressed="true" data-action="sandbox-deploy-path" data-path="dashboard"/);
+  assert.match(dashboard, /<b>Workers &amp; Pages<\/b> &rarr; your Chickpea Worker &rarr; <b>Settings<\/b> &rarr; <b>Builds<\/b>/);
+  assert.match(dashboard, /<b>Build variables and secrets<\/b>/);
+  assert.match(dashboard, /id="sandbox-copy-name" readonly spellcheck="false" value="CHICKPEA_DEPLOY_PROFILE"/);
+  assert.match(dashboard, /id="sandbox-copy-value" readonly spellcheck="false" value="sandbox"/);
+  assert.match(dashboard, /Start a new build/);
+  assert.doesNotMatch(dashboard, /npm run deploy:sandbox/);
+  click({ target: actionTarget({ 'data-action': 'sandbox-copy', 'data-copy': 'name' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'sandbox-copy', 'data-copy': 'value' }) });
+  await flushAsync();
+  assert.deepEqual(harness.clipboardWrites, ['npm run deploy:sandbox', 'CHICKPEA_DEPLOY_PROFILE', 'sandbox']);
 
   click({ target: actionTarget({ 'data-action': 'sandbox-check-again' }) });
   assert.match(harness.app.innerHTML, /role="status" aria-live="polite">Checking the live deployment\./);
   await flushAsync();
-  assert.match(harness.app.innerHTML, /role="status" aria-live="polite">No Sandbox binding yet/);
+  assert.match(harness.app.innerHTML, /class="sbx-check-result" role="status" aria-live="polite">Not found yet\. If your deploy is still running/);
+  assert.equal(harness.app.innerHTML.match(/Redeploy required/g)?.length, 1);
 
   click({ target: actionTarget({ 'data-action': 'sandbox-cancel-install' }) });
   await flushAsync();
   assert.deepEqual(harness.sandboxInstallCalls, ['POST', 'DELETE']);
   assert.match(harness.app.innerHTML, /Installation request canceled/);
   assert.match(harness.app.innerHTML, /Not installed in this deployment/);
+});
+
+test('Redeploy required opens on the Cloudflare Git builds path when this Worker was built there', async () => {
+  const harness = runAdminPageHarness({
+    cloudflare: true,
+    sandboxStatus: {
+      installRequested: true,
+      installed: false,
+      storedEnabled: false,
+      enabled: false,
+      instanceType: 'standard-1',
+      allowedHosts: [],
+      monthlySessionCap: 200,
+      monthlySessionCapConfigured: true,
+      target: 'cloudflare',
+      githubConnected: false,
+      repositoryGrantReady: false,
+      unmetPrerequisites: ['sandbox_binding', 'github_app', 'repository_grant'],
+      workersPaidNote: 'Requires Workers Paid.',
+      deploySource: 'workers-builds',
+    },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'open-settings' }) });
+  await flushAsync();
+
+  const html = harness.app.innerHTML;
+  assert.match(html, /aria-pressed="true" data-action="sandbox-deploy-path" data-path="dashboard"/);
+  assert.match(html, /Chosen because this installation was built by Cloudflare from a connected repository\./);
+  assert.match(html, /value="CHICKPEA_DEPLOY_PROFILE"/);
+  assert.match(html, /Keep <code class="sbx-inline-code">CHICKPEA_DEPLOY_PROFILE<\/code> in your build variables so later builds keep the sandbox installed/);
+
+  click({ target: actionTarget({ 'data-action': 'sandbox-deploy-path', 'data-path': 'command' }) });
+  assert.match(harness.app.innerHTML, /value="npm run deploy:sandbox"/);
+  assert.doesNotMatch(harness.app.innerHTML, /Chosen because this installation was deployed with a command/);
 });
 
 test('installed Sandbox gates enablement on GitHub and grants, then requires a readiness attestation', async () => {
@@ -14316,10 +14387,11 @@ for (const clipboard of ['missing', 'reject', 'throw'] as const) {
     click({ target: actionTarget({ 'data-action': 'sandbox-install-confirm' }) });
     await flushAsync();
 
-    click({ target: actionTarget({ 'data-action': 'sandbox-copy-profile' }) });
+    click({ target: actionTarget({ 'data-action': 'sandbox-copy', 'data-copy': 'command' }) });
     await flushAsync();
 
-    assert.match(harness.app.innerHTML, /Clipboard access was unavailable/);
+    assert.match(harness.app.innerHTML, /Couldn&rsquo;t reach the clipboard\. The text is selected/);
+    assert.doesNotMatch(harness.app.innerHTML, /Copied<\/button>/);
     assert.equal(harness.sandboxBuildVariableSelectedAttached(), true);
   });
 }

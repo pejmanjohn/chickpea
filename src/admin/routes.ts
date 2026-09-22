@@ -345,6 +345,7 @@ import {
   readRuntimeDrainStatus,
   type PlatformEnv,
 } from '../config/state-backend.ts';
+import { cloudflareBuildSource } from '../config/runtime-target.ts';
 import type { AgentSnapshotStore } from '../config/snapshot-store.ts';
 import type { RuntimeDrainStatus } from '../config/state-rpc.ts';
 import type { AgentModelRolePatch, ConfigStore } from '../config/store.ts';
@@ -1550,6 +1551,7 @@ async function sandboxStatus(
     monthlySessionCap: resolved.monthlySessionCap,
     monthlySessionCapConfigured: resolved.monthlySessionCapConfigured,
     target: cloudflare ? ('cloudflare' as const) : ('node' as const),
+    deploySource: cloudflare ? cloudflareBuildSource() : ('unknown' as const),
     githubConnected,
     repositoryGrantReady,
     unmetPrerequisites,
