@@ -8244,7 +8244,7 @@
         sandboxStepHtml(3, 'Start a new build',
           '<p class="sbx-step-text">Push a commit to the connected repository, or retry the latest build from the Worker&rsquo;s <b>Deployments</b> page. Wait for the build to finish.</p>' + imageWait)
       : sandboxStepHtml(1, 'Open a terminal in your Chickpea folder',
-          '<p class="sbx-step-text">Use the folder you install and update Chickpea from, signed in to the same Cloudflare account.</p>') +
+          '<p class="sbx-step-text">Use the folder you install and update Chickpea from, signed in to the same Cloudflare account. Docker must be running, because the deploy builds the sandbox image on this computer.</p>') +
         sandboxStepHtml(2, 'Run the sandbox deploy command',
           sandboxCopyRowHtml("command", "", disabled) +
           '<p class="sbx-step-text">If you normally add <code class="sbx-inline-code">-- --profile &lt;name&gt;</code> after <code class="sbx-inline-code">npm run deploy</code>, add it here too.</p>') +
@@ -8254,8 +8254,8 @@
       '<p class="sbx-step-text">When Chickpea finds the sandbox, this page changes to <b>Installed but off</b> and you can turn it on.</p>' +
       '<div class="sbx-check-row"><button type="button" class="btn btn-primary" data-action="sandbox-check-again"' + disabled + '>' + (checking ? "Checking&hellip;" : "Check again") + '</button>' + live + '</div>');
     var keep = path === "dashboard"
-      ? 'Keep <code class="sbx-inline-code">CHICKPEA_DEPLOY_PROFILE</code> in your build variables. Removing it removes the sandbox on the next build.'
-      : 'For later updates, deploy with <code class="sbx-inline-code">npm run deploy:sandbox</code>. A plain <code class="sbx-inline-code">npm run deploy</code> removes the sandbox.';
+      ? 'Keep <code class="sbx-inline-code">CHICKPEA_DEPLOY_PROFILE</code> in your build variables so later builds keep the sandbox installed.'
+      : 'For later updates, keep deploying with <code class="sbx-inline-code">npm run deploy:sandbox</code> so the sandbox stays installed.';
     return '<div class="sbx-redeploy">' +
       '<div class="sbx-lead"><p class="sbx-lead-title">Redeploy Chickpea to finish installing</p>' +
       '<p class="sbx-lead-text">Your request is saved. The sandbox runs in a Cloudflare Container, which is added the next time Chickpea is deployed from your Cloudflare account. Chickpea can&rsquo;t redeploy itself, so follow these steps and then come back here.</p></div>' +

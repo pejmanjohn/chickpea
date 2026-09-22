@@ -14103,7 +14103,8 @@ test('Settings requests a paid Sandbox install, hands off one Cloudflare variabl
   assert.match(redeploy, /-- --profile &lt;name&gt;<\/code> after <code class="sbx-inline-code">npm run deploy<\/code>, add it here too/);
   assert.match(redeploy, /can take several minutes/);
   assert.match(redeploy, /changes to <b>Installed but off<\/b>/);
-  assert.match(redeploy, /A plain <code class="sbx-inline-code">npm run deploy<\/code> removes the sandbox/);
+  assert.match(redeploy, /keep deploying with <code class="sbx-inline-code">npm run deploy:sandbox<\/code> so the sandbox stays installed/);
+  assert.match(redeploy, /Docker must be running/);
   assert.doesNotMatch(redeploy, /core artifact|Finish in Cloudflare|CHICKPEA_DEPLOY_PROFILE/);
   assert.match(redeploy, /data-action="sandbox-check-again"/);
   assert.match(redeploy, /data-action="sandbox-cancel-install"/);
@@ -14173,7 +14174,7 @@ test('Redeploy required opens on the Cloudflare Git builds path when this Worker
   assert.match(html, /aria-pressed="true" data-action="sandbox-deploy-path" data-path="dashboard"/);
   assert.match(html, /Chosen because this installation was built by Cloudflare from a connected repository\./);
   assert.match(html, /value="CHICKPEA_DEPLOY_PROFILE"/);
-  assert.match(html, /Keep <code class="sbx-inline-code">CHICKPEA_DEPLOY_PROFILE<\/code> in your build variables/);
+  assert.match(html, /Keep <code class="sbx-inline-code">CHICKPEA_DEPLOY_PROFILE<\/code> in your build variables so later builds keep the sandbox installed/);
 
   click({ target: actionTarget({ 'data-action': 'sandbox-deploy-path', 'data-path': 'command' }) });
   assert.match(harness.app.innerHTML, /value="npm run deploy:sandbox"/);
