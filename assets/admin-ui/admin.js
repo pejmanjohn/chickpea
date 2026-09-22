@@ -773,6 +773,7 @@
       prepareReadOnlyAgentState(selected.id);
       render();
     }
+    ensureProfileGithubStatus();
     return revalidateCurrentVisibleResources({ navigation: true });
   }
 
@@ -4609,6 +4610,9 @@
     function panel(tab, html) {
       if (readOnly && tab.id === "memory") {
         html = '<p class="hint">Only Agent editors can view or change durable memory for this Agent.</p>';
+      }
+      if (readOnly && tab.id === "repositories") {
+        html = '<p class="hint">Only Agent editors can view or change which repositories this Agent can use.</p>';
       }
       if (readOnly && tab.id === "schedules") {
         html = '<p class="hint">Only Agent editors can manage schedules and Runs as authority for this Agent. Private DM schedules are not shown here.</p>';
@@ -11229,11 +11233,25 @@
       if (!visibleResourceLoadIsCurrent(resourceTicket)) return;
       finishVisibleResourceLoad(resourceTicket);
       if (
-        state.view === "profiles" && state.profileScreen === "edit" &&
-        state.profileDraft && state.profileDraft.id === agentId && state.profileTab === "repositories"
+        state.view === "profiles" && (state.profileScreen === "edit" || state.profileScreen === "create") &&
+        state.profileDraft && (state.profileDraft.id || "") === agentId && state.profileTab === "repositories"
       ) renderPreservingPagePosition();
     });
     return trackVisibleResourcePromise(resourceTicket, request);
+  }
+
+  // The Repositories panel renders from the install-wide GitHub status, which
+  // otherwise only Settings or a visible-tab revalidation loads. A new Agent
+  // (whose screen starts on Instructions, so its tab switch is the trigger)
+  // or a deep link opened in a background tab must not wait on either.
+  function ensureProfileGithubStatus() {
+    var draft = state.profileDraft;
+    if (
+      state.githubStatusLoaded || state.view !== "profiles" || state.profileTab !== "repositories" ||
+      (state.profileScreen !== "edit" && state.profileScreen !== "create") ||
+      !draft || draft.canEdit === false
+    ) return Promise.resolve();
+    return loadProfileRepositories(draft.id || "");
   }
 
   function revalidateProfileTab(tab) {
@@ -11276,6 +11294,7 @@
       }
       render();
     }
+    ensureProfileGithubStatus();
     revalidateProfileTab(tab);
   }
 
