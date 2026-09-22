@@ -336,7 +336,9 @@ export async function prebuildSandboxImage(options) {
       const result = await stream(process.execPath,
         wranglerArgs(options, ['containers', 'build', context, '--tag', tag, '--push']),
         { cwd: options.projectRoot, env: options.env ?? process.env });
-      if (!result.error && result.status === 0) return pushedImageReference(result.output, tag);
+      if (!result.error && result.status === 0) {
+        return pushedImageReference(result.output, tag, { run: options.run, env: options.env });
+      }
       if (attempt < attempts) await sleep(attempt * (options.retryDelayMs ?? 10_000));
     }
   } finally {
@@ -351,20 +353,41 @@ export async function prebuildSandboxImage(options) {
 
 /**
  * Wrangler rejects a bare `name:tag` in `containers[].image`, so the generated
- * config needs the account-registry reference. Wrangler first probes the
- * image by digest (`.../name@sha256:...`) and only then prints the tagged push
- * reference; prefer that exact reference, else pair the account registry with
- * the tag that was just pushed.
+ * config needs an account-registry reference.
+ *
+ * - A new image: Wrangler probes by digest (`.../name@sha256:...`) and then
+ *   prints the tagged push reference. Use that exact reference.
+ * - An unchanged image: Wrangler prints "Image already exists remotely,
+ *   skipping push" and never pushes the new tag. Like Wrangler itself, resolve
+ *   the pushed digest from the local image's RepoDigests, restricted to this
+ *   application's repository in exactly one Cloudflare registry account.
  */
-export function pushedImageReference(output, tag) {
+export function pushedImageReference(output, tag, options = {}) {
   const references = [...output.matchAll(/registry\.cloudflare\.com\/[a-f0-9]{32}\/[^\s'"`]+/gi)]
     .map(([reference]) => reference);
   const exact = references.find((reference) => reference.endsWith(`/${tag}`));
   if (exact) return exact;
-  const registry = references[0]?.match(/^registry\.cloudflare\.com\/[a-f0-9]{32}\//i)?.[0];
-  if (registry) return `${registry}${tag}`;
+  const name = tag.slice(0, tag.lastIndexOf(':'));
+  const manifest = [...output.matchAll(/exporting manifest (sha256:[a-f0-9]{64})/gi)].at(-1)?.[1];
+  if (/Image already exists remotely/i.test(output) && manifest) {
+    const run = options.run ?? defaultRun;
+    const result = run(dockerBinary(options.env), ['image', 'inspect', manifest, '--format', '{{json .RepoDigests}}'], {
+      env: options.env ?? process.env,
+    });
+    let digests = [];
+    try {
+      digests = result.status === 0 ? JSON.parse(String(result.stdout).trim()) : [];
+    } catch {
+      digests = [];
+    }
+    const matches = (Array.isArray(digests) ? digests : []).filter((digest) =>
+      typeof digest === 'string' &&
+      /^registry\.cloudflare\.com\/[a-f0-9]{32}\/[^/]+$/i.test(digest) &&
+      digest.endsWith(`/${name}@${manifest}`));
+    if (matches.length === 1) return matches[0];
+  }
   throw new Error(
-    `The Sandbox image ${tag} was built, but Wrangler did not report the Cloudflare registry it was pushed to. ` +
+    `The Sandbox image ${tag} was built, but its Cloudflare registry reference could not be determined from Wrangler's output. ` +
     'Nothing was uploaded and the live Worker is unchanged. Rerun the same command; if this repeats, ' +
     'check the `wrangler containers build --push` output above.',
   );
