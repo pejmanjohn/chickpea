@@ -106,7 +106,7 @@ test('the pinned Flue 2 handle exposes keyed admission, receipts, and reattachab
     await readFile(`${FLUE_ROOT}package.json`, 'utf8'),
   ) as { version?: unknown };
 
-  assert.equal(packageJson.version, '2.0.7');
+  assert.equal(packageJson.version, '2.1.0');
   assert.equal(DISPATCH_ACCEPTS_IDEMPOTENCY_KEY, true);
   assert.equal(RECEIPT_RETURNS_SUBMISSION_ID, true);
   assert.equal(RECEIPT_MARKS_DEDUPLICATION, true);

@@ -7,6 +7,13 @@ export const SlackMemoryUpdateSchema = v.strictObject({
   operationId: v.pipe(v.string(), v.minLength(1), v.maxLength(256)),
   revision: v.pipe(v.number(), v.integer(), v.minValue(1)),
   summary: v.optional(memoryUpdateSummarySchema),
+  /**
+   * Host-established at the write: the new body kept the injected memory
+   * snapshot verbatim, so the model draft grounded in that snapshot discloses
+   * nothing forgotten. Absent for forgets, rewrites, replays, and writes over
+   * a snapshot the model was not shown.
+   */
+  preservesContext: v.optional(v.literal(true)),
 });
 export type SlackMemoryUpdate = v.InferOutput<typeof SlackMemoryUpdateSchema>;
 

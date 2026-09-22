@@ -90,15 +90,15 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
       return;
     }
     if (chunk.type === 'message-started' && chunk.submissionId === this.submissionId) {
-      if (this.targetMessageCompleted) {
-        this.denyAndInvalidate('identity_conflict', 'message_identity_conflict', true);
-        return;
-      }
       if (this.targetMessageId && this.targetMessageId !== chunk.messageId) {
         this.denyAndInvalidate('identity_conflict', 'message_identity_conflict', true);
         return;
       }
       this.targetMessageId = chunk.messageId;
+      // Flue folds successive model steps into one response ID. A tool step
+      // can complete before the answer reopens that same response; completion
+      // does not settle the submission or change its incremental identity.
+      this.targetMessageCompleted = false;
       return;
     }
     if (chunk.type === 'message-completed' && chunk.messageId === this.targetMessageId) {

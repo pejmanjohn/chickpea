@@ -1315,8 +1315,10 @@ export async function runTurn(
     const recoveredText = await options.beforeDelivery?.();
     let acknowledgeMemoryUpdate = false;
     if (agentResult?.memoryUpdate && preparedMemory?.validateReceiptLease) {
-      // A changed memory invalidates the model draft, including forgotten facts.
-      // Only a verified own-turn receipt permits this host acknowledgement.
+      // A changed memory invalidates the ordinary lease. Only a verified
+      // own-turn receipt permits this host acknowledgement, which either keeps
+      // the model's answer (a write that only added to the injected snapshot)
+      // or replaces it with the bounded summary (anything that could forget).
       try {
         const dependencies = resolveManagementApprovalDependencies(options.managementApproval, () => {
           const identity = options.appStores?.identity ?? getIdentityStore(platformEnv);
@@ -1375,7 +1377,11 @@ export async function runTurn(
         acknowledgeMemoryUpdate = false;
       }
     }
-    if (acknowledgeMemoryUpdate) {
+    // Memory was in the model's context at generation time. A write that kept
+    // that snapshot verbatim leaves nothing forgotten for the draft to
+    // disclose, so the answer and its presentation deliver as usual. A forget,
+    // rewrite, replay, or write over an unseen snapshot replaces the draft.
+    if (acknowledgeMemoryUpdate && agentResult?.memoryUpdate?.preservesContext !== true) {
       text = recoveredText ?? agentResult?.memoryUpdate?.summary ?? 'I updated my memory.';
       tablePresentation = undefined;
       artifacts = undefined;

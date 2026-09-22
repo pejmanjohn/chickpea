@@ -146,6 +146,7 @@ test('memory tool handler emits only safe applied confirmations and never lets p
     });
     assert.equal(applied, 1);
     assert.equal(receipt?.summary, summary?.startsWith('  I') ? summary.trim() : 'I updated my memory.');
+    assert.equal(receipt?.preservesContext, true, 'an addition over the shown snapshot keeps the model answer');
     assert.deepEqual(parseSlackMemoryUpdate([receipt]), receipt);
   }
   const rejected = await executeSlackMemoryUpdate({
@@ -156,4 +157,52 @@ test('memory tool handler emits only safe applied confirmations and never lets p
     apply: async () => ({ ok: false, error: { code: 'revision_conflict', message: 'Changed' } }),
   });
   assert.equal(rejected.receipt, undefined, 'a failed write never emits a success confirmation');
+});
+
+test('memory receipts only claim preserved context for a verbatim addition to the shown snapshot', async () => {
+  const applied = (revision: number) => async () => ({ ok: true as const, result: {
+    status: 'completed', operationId: 'op', outcomes: [{
+      operationKind: 'update_agent_memory', disposition: 'applied', changed: [{ kind: 'memory', id: 'a', revision }],
+    }],
+  } });
+  const shown = { agentId: 'a', revision: 3, body: 'Secret canary: BLUEBIRD.\nKeep links.' };
+  const run = (input: {
+    body: string; memoryEpoch?: number; expectedRevision?: number; summary?: string;
+    inspect?: () => Promise<{ ok: true; result: unknown }>;
+  }) => executeSlackMemoryUpdate({
+    signal: { agentId: 'a', turnJobId: 't' },
+    memoryEpoch: input.memoryEpoch ?? 4,
+    data: { expectedRevision: input.expectedRevision ?? 3, body: input.body, summary: input.summary },
+    inspect: input.inspect ?? (async () => ({ ok: true, result: shown })),
+    apply: applied((input.expectedRevision ?? 3) + 1),
+  });
+
+  const addition = await run({ body: `${shown.body}\nAudit word: saffron.`, summary: 'I saved the audit word.' });
+  assert.deepEqual(addition.receipt, { operationId: 'op', revision: 4, summary: 'I saved the audit word.', preservesContext: true });
+  const additionWithoutSummary = await run({ body: `Audit word: saffron.\n${shown.body}` });
+  assert.deepEqual(additionWithoutSummary.receipt, { operationId: 'op', revision: 4, summary: 'I updated my memory.', preservesContext: true },
+    'a missing summary still lets the model answer deliver');
+  const unchanged = await run({ body: shown.body, summary: 'I already had that saved.' });
+  assert.deepEqual(unchanged.receipt, { operationId: 'op', revision: 4, summary: 'I updated my memory.', preservesContext: true },
+    'writing the shown body back unchanged keeps the model answer without echoing a change');
+
+  for (const [name, input] of Object.entries({
+    'forget one fact': { body: 'Keep links.', summary: 'I forgot BLUEBIRD.' },
+    'rewrite': { body: 'Secret canary: GREENBIRD.\nKeep links.', summary: 'I changed the canary.' },
+    'forget all': { body: '', summary: 'I forgot everything.' },
+    'write over an unseen revision': { body: `${shown.body}\nAudit word: saffron.`, memoryEpoch: 2, summary: 'I saved the audit word.' },
+    'inspection disagrees with the shown revision': { body: `${shown.body}\nAudit word: saffron.`, summary: 'I saved the audit word.',
+      inspect: async () => ({ ok: true as const, result: { ...shown, revision: 2 } }) },
+  })) {
+    const { receipt } = await run(input);
+    assert.ok(receipt, name);
+    assert.equal(receipt.preservesContext, undefined, `${name} must not release the model draft`);
+    assert.equal(receipt.summary, input.body ? 'I updated my memory.' : 'I cleared my saved memory.', name);
+  }
+
+  const receipt = { operationId: 'op', revision: 4 };
+  assert.deepEqual(parseSlackMemoryUpdate([{ ...receipt, preservesContext: true }]), { ...receipt, preservesContext: true });
+  for (const preservesContext of [false, 'true', 1, null]) {
+    assert.equal(parseSlackMemoryUpdate([{ ...receipt, preservesContext }]), undefined, 'only an explicit true claim is accepted');
+  }
 });
