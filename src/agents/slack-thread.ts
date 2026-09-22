@@ -134,7 +134,7 @@ import type {
 } from '../sandbox/cloudflare-policy.ts';
 import {
   CLOUDFLARE_SANDBOX_OPTIONS,
-  SandboxLifecycleRegistry,
+  acquireSandbox,
   contentFreeSandboxExec,
   serializeSandboxActivation,
   type DestroyableSandbox,
@@ -248,9 +248,6 @@ interface ConfigurableCloudflareSandbox extends DestroyableSandbox, SandboxTurnC
     turnId: string,
   ): Promise<void>;
 }
-
-const cloudflareSandboxLifecycle =
-  new SandboxLifecycleRegistry<ConfigurableCloudflareSandbox>();
 
 export class SealedAgentThreadError extends Error {
   constructor(readonly agentId: string) {
@@ -2026,8 +2023,10 @@ async function resolveAgentSandbox(options: AgentSandboxOptions): Promise<Sandbo
   }
   const sandboxKey = sandboxThreadKey(options.conversationKey);
   let turnId: string | undefined;
-  const sandbox = await cloudflareSandboxLifecycle.acquire(
-    sandboxKey,
+  // Never cache the stub in module state: it is bound to this agent DO's I/O
+  // context, and the next turn in this thread may run in a different DO that
+  // shares the isolate.
+  const sandbox = await acquireSandbox(
     async () =>
       getSandbox(
         binding as Parameters<typeof getSandbox>[0],

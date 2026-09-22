@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { test } from 'node:test';
 
 import {
   CLOUDFLARE_SANDBOX_OPTIONS,
-  SandboxLifecycleRegistry,
+  acquireSandbox,
   cloudflareSandboxOptionVariants,
   contentFreeSandboxExec,
   serializeSandboxActivation,
@@ -64,65 +65,123 @@ test('uppercase thread ids bridge legacy and normalized Sandbox identities durin
   ]);
 });
 
-test('sandbox creation is serialized per thread and same-isolate cleanup destroys once', async () => {
-  let creates = 0;
-  let destroys = 0;
-  const registry = new SandboxLifecycleRegistry<{ destroy(): Promise<void> }>();
-  let release: (() => void) | undefined;
-  const ready = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  const factory = async () => {
-    creates += 1;
-    await ready;
-    return {
-      async destroy() {
-        destroys += 1;
-      },
-    };
+// Workers binds each Durable Object stub to the I/O context that minted it.
+// This fake namespace enforces the same rule so a stub cached across agent DOs
+// fails exactly like production (Cobalt, 2026-09-22).
+function durableObjectContexts() {
+  const current = new AsyncLocalStorage<string>();
+  let minted = 0;
+  let destroyed = 0;
+  const namespace = {
+    get(threadId: string) {
+      minted += 1;
+      const owner = current.getStore();
+      const guard = () => {
+        if (current.getStore() !== owner) {
+          throw new Error(
+            'Cannot perform I/O on behalf of a different Durable Object. (I/O type: OutgoingFactory)',
+          );
+        }
+      };
+      return {
+        threadId,
+        owner,
+        async getTurnId() {
+          guard();
+          return `turn-for-${current.getStore()}`;
+        },
+        async destroy() {
+          guard();
+          destroyed += 1;
+        },
+      };
+    },
   };
+  return {
+    namespace,
+    runIn: <T>(durableObject: string, fn: () => Promise<T>) => current.run(durableObject, fn),
+    counts: () => ({ minted, destroyed }),
+  };
+}
 
-  const first = registry.create('thread-1', factory);
-  const second = registry.create('thread-1', factory);
-  release?.();
-  assert.equal(await first, await second);
-  assert.equal(creates, 1);
-  assert.equal(registry.hasActive('thread-1'), true);
+test('follow-up turns in another agent DO never reuse a stub minted by the first DO', async () => {
+  const contexts = durableObjectContexts();
+  // Mirrors the module-level resolver in slack-thread.ts: one closure shared
+  // by every agent DO in the isolate.
+  const acquireForThread = (threadId: string) =>
+    acquireSandbox(
+      async () => contexts.namespace.get(threadId),
+      async (sandbox) => {
+        await sandbox.getTurnId();
+      },
+    );
 
-  assert.equal(await registry.destroy('thread-1'), true);
-  assert.equal(await registry.destroy('thread-1'), false);
-  assert.equal(destroys, 1);
+  const first = await contexts.runIn('agent-do-a', () => acquireForThread('thread-1'));
+  const second = await contexts.runIn('agent-do-b', () => acquireForThread('thread-1'));
+
+  assert.equal(first.owner, 'agent-do-a');
+  assert.equal(second.owner, 'agent-do-b');
+  assert.notEqual(first, second);
+  assert.equal(
+    await contexts.runIn('agent-do-b', () => second.getTurnId()),
+    'turn-for-agent-do-b',
+  );
+  await assert.rejects(
+    contexts.runIn('agent-do-b', () => first.getTurnId()),
+    /different Durable Object/,
+  );
+  assert.deepEqual(contexts.counts(), { minted: 2, destroyed: 0 });
 });
 
-test('cached sandbox acquisition reapplies current turn grants every time', async () => {
+test('sandbox acquisition reapplies current turn grants every time', async () => {
   let creates = 0;
   const configured: string[][] = [];
-  const registry = new SandboxLifecycleRegistry<{ destroy(): Promise<void> }>();
   const factory = async () => {
     creates += 1;
     return { async destroy() {} };
   };
 
-  await registry.acquire('thread-1', factory, async () => {
+  await acquireSandbox(factory, async () => {
     configured.push(['Acme/Old']);
   });
-  await registry.acquire('thread-1', factory, async () => {
+  await acquireSandbox(factory, async () => {
     configured.push(['Acme/New']);
   });
 
-  assert.equal(creates, 1);
+  assert.equal(creates, 2);
   assert.deepEqual(configured, [['Acme/Old'], ['Acme/New']]);
 });
 
+test('failed configuration destroys the handle in the acquiring DO and rethrows', async () => {
+  const contexts = durableObjectContexts();
+  await assert.rejects(
+    contexts.runIn('agent-do-a', () =>
+      acquireSandbox(
+        async () => contexts.namespace.get('thread-1'),
+        async () => {
+          throw new Error('Sandbox turn context was not prepared before agent dispatch');
+        },
+      ),
+    ),
+    /turn context was not prepared/,
+  );
+  assert.deepEqual(contexts.counts(), { minted: 1, destroyed: 1 });
+});
+
 test('sandbox destroy is best-effort when the provider teardown fails', async () => {
-  const registry = new SandboxLifecycleRegistry<{ destroy(): Promise<void> }>();
-  await registry.create('thread-1', async () => ({
-    async destroy() {
-      throw new Error('control plane unavailable');
-    },
-  }));
-  assert.equal(await registry.destroy('thread-1'), false);
-  assert.equal(registry.hasActive('thread-1'), false);
+  await assert.rejects(
+    acquireSandbox(
+      async () => ({
+        async destroy() {
+          throw new Error('control plane unavailable');
+        },
+      }),
+      async () => {
+        throw new Error('egress policy rejected');
+      },
+    ),
+    /egress policy rejected/,
+  );
 });
 
 test('the first concurrent sandbox operations share one activation probe', async () => {

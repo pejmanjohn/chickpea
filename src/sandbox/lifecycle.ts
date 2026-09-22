@@ -164,75 +164,42 @@ function isSandboxInfrastructureFailure(err: unknown): boolean {
 }
 
 /**
- * One in-flight provider setup per thread prevents concurrent requests from
- * racing the Sandbox SDK's create path. Active handles stay reusable in this
- * isolate; container lifetime is bounded by keepAlive:false + sleepAfter.
+ * Acquire a sandbox handle for one agent turn. The handle is a Durable Object
+ * RPC stub, and Workers binds every stub to the I/O context (the Durable
+ * Object or request) that minted it. The module-level caller is shared by
+ * every agent DO in the isolate, so a stub cached from one thread's turn can
+ * later be reached from a different DO and fail with "Cannot perform I/O on
+ * behalf of a different Durable Object". Mint a fresh stub on every
+ * acquisition instead: getSandbox is cheap and lazy, and the Sandbox DO (the
+ * container, its files, and its persisted turn context) outlives any stub.
+ *
+ * Turn-scoped configuration is applied on every acquisition because the
+ * Sandbox DO can outlive both this agent request and the Worker isolate, so
+ * policy must never be treated as create-only state. If configuration fails,
+ * the handle minted for this acquisition is torn down in the same context;
+ * keepAlive:false + sleepAfter remains the bound for everything else.
  */
-export class SandboxLifecycleRegistry<T extends DestroyableSandbox> {
-  private readonly creating = new Map<string, Promise<T>>();
-  private readonly active = new Map<string, T>();
-
-  async create(threadId: string, factory: () => Promise<T>): Promise<T> {
-    const active = this.active.get(threadId);
-    if (active) return active;
-
-    const existing = this.creating.get(threadId);
-    if (existing) return existing;
-
-    const pending = factory()
-      .then((sandbox) => {
-        this.active.set(threadId, sandbox);
-        return sandbox;
-      })
-      .finally(() => {
-        if (this.creating.get(threadId) === pending) {
-          this.creating.delete(threadId);
-        }
-      });
-    this.creating.set(threadId, pending);
-    return pending;
+export async function acquireSandbox<T extends DestroyableSandbox>(
+  factory: () => Promise<T>,
+  configure: (sandbox: T) => Promise<void>,
+): Promise<T> {
+  const sandbox = await factory();
+  try {
+    await configure(sandbox);
+    return sandbox;
+  } catch (err) {
+    await destroySandbox(sandbox);
+    throw err;
   }
+}
 
-  /**
-   * Reuse the per-thread stub while applying turn-scoped configuration on
-   * every acquisition. The Sandbox DO can outlive both this agent request and
-   * the Worker isolate, so policy must never be treated as create-only state.
-   */
-  async acquire(
-    threadId: string,
-    factory: () => Promise<T>,
-    configure: (sandbox: T) => Promise<void>,
-  ): Promise<T> {
-    const sandbox = await this.create(threadId, factory);
-    try {
-      await configure(sandbox);
-      return sandbox;
-    } catch (err) {
-      // This registry lives in the agent DO isolate. Invalidating here is a
-      // same-isolate cleanup; sleepAfter remains the cross-isolate bound.
-      await this.destroy(threadId);
-      throw err;
-    }
-  }
-
-  async destroy(threadId: string): Promise<boolean> {
-    const pending = this.creating.get(threadId);
-    const sandbox =
-      this.active.get(threadId) ??
-      (pending ? await pending.catch(() => undefined) : undefined);
-    this.active.delete(threadId);
-    if (!sandbox) return false;
-    try {
-      await sandbox.destroy();
-      return true;
-    } catch {
-      // Teardown is best-effort. keepAlive:false + sleepAfter remains the
-      // self-healing billing bound if the control-plane destroy call fails.
-      return false;
-    }
-  }
-
-  hasActive(threadId: string): boolean {
-    return this.active.has(threadId);
+export async function destroySandbox(sandbox: DestroyableSandbox): Promise<boolean> {
+  try {
+    await sandbox.destroy();
+    return true;
+  } catch {
+    // Teardown is best-effort. keepAlive:false + sleepAfter remains the
+    // self-healing billing bound if the control-plane destroy call fails.
+    return false;
   }
 }
