@@ -342,6 +342,14 @@ export class Sandbox extends CloudflareSandbox<SandboxWorkerEnv> {
   // handlers; this only removes the path that bypasses them.
   enableInternet = false;
 
+  /**
+   * Reached only when the Containers SDK constructor succeeded, which requires
+   * a linked Container application. Starts nothing.
+   */
+  async probeContainerRuntime(): Promise<boolean> {
+    return (this.ctx as { container?: unknown }).container !== undefined;
+  }
+
   async prepareTurn(turnId: string): Promise<void> {
     await this.policyState().prepareTurn(turnId);
   }

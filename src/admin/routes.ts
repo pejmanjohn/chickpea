@@ -322,7 +322,7 @@ import {
   SANDBOX_SETTING_KEYS,
 } from '../config/sandbox-settings.ts';
 import { validEnabledRepositoryGrants } from '../sandbox/egress-handler.ts';
-import { sandboxBindingInstalled } from '../sandbox/select.ts';
+import { probeSandboxContainer, sandboxBindingInstalled } from '../sandbox/select.ts';
 import { parseSkillSource, resolveSkillSource, SkillImportError } from '../config/skill-import.ts';
 import { skillImportSourceSchema } from '../config/skill-provenance.ts';
 import { legacyAgentAdminRedirect } from './agent-url.ts';
@@ -1517,25 +1517,32 @@ async function sandboxStatus(
   configStore: ConfigStore,
   env: PlatformEnv | undefined,
 ) {
-  const [resolved, github, agents] = await Promise.all([
+  const cloudflare = isCloudflareTarget();
+  const bound = cloudflare && sandboxBindingInstalled(env);
+  // The binding alone survives a deploy that failed before its Container
+  // application existed; installation needs the Container too. An unknown
+  // probe result keeps the binding's answer instead of inventing a failure.
+  const [resolved, github, agents, containerApplication] = await Promise.all([
     resolveSandboxSettings(settingsStore),
     getGithubConnection(settingsStore),
     configStore.listUserAgents(),
+    bound ? probeSandboxContainer(env) : null,
   ]);
-  const cloudflare = isCloudflareTarget();
-  const installed = cloudflare && sandboxBindingInstalled(env);
+  const installed = bound && containerApplication !== 'missing';
   const githubConnected = github.mode === 'app';
   const repositoryGrantReady = validEnabledRepositoryGrants(
     agents.flatMap((agent) => agent.repositories),
   ).length > 0;
   const unmetPrerequisites: string[] = [];
   if (!cloudflare) unmetPrerequisites.push('cloudflare_target');
-  if (!installed) unmetPrerequisites.push('sandbox_binding');
+  if (!bound) unmetPrerequisites.push('sandbox_binding');
+  else if (containerApplication === 'missing') unmetPrerequisites.push('sandbox_container');
   if (!githubConnected) unmetPrerequisites.push('github_app');
   if (!repositoryGrantReady) unmetPrerequisites.push('repository_grant');
   return {
     installRequested: resolved.installRequested,
     installed,
+    containerApplication,
     storedEnabled: resolved.enabled,
     enabled: installed && resolved.enabled,
     instanceType: resolved.instanceType,
@@ -4347,7 +4354,15 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     return details;
   };
   app.get('/admin/api/installation', async (c) => c.json(await installationDetails(c)));
-  app.get('/admin/api/installation/updates', async (c) => c.json(await checkUpdates(c.req.query('refresh') === '1')));
+  app.get('/admin/api/installation/updates', async (c) => {
+    const status = await checkUpdates(c.req.query('refresh') === '1');
+    // The guided `npm run upgrade` path supports only the core profile, so a
+    // live coding sandbox must follow the update guide's deploy:sandbox path.
+    return c.json(status.guidedUpdate === 'supported' && isCloudflareTarget()
+      && sandboxBindingInstalled(c.env as PlatformEnv | undefined)
+      ? { ...status, guidedUpdate: 'unsupported' as const }
+      : status);
+  });
   app.get('/admin/api/installation/support', async (c) => c.json({ report: supportReport(await installationDetails(c)) }));
 
   app.get('/admin/api/settings/connectors/meta-ads', async (c) => {
@@ -7023,7 +7038,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       await recordSandboxAudit(c, 'sandbox.runtime.enable', 'denied', 'target_unsupported');
       return c.json({ error: 'sandbox_unsupported' }, 409);
     }
-    if (sandbox.enabled && !sandboxBindingInstalled(c.env as PlatformEnv | undefined)) {
+    if (sandbox.enabled && (!sandboxBindingInstalled(c.env as PlatformEnv | undefined)
+      || await probeSandboxContainer(c.env as PlatformEnv | undefined) === 'missing')) {
       await recordSandboxAudit(c, 'sandbox.runtime.enable', 'denied', 'binding_missing');
       return c.json({ error: 'sandbox_not_installed' }, 409);
     }

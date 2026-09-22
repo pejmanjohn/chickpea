@@ -181,7 +181,8 @@ The core installation supports Workers Free; a Workers Paid upgrade is not
 required for this setup. Keep the account's existing plan. Cloudflare hosting
 and model-provider usage are separate: using Workers Free does not make OpenAI
 or another provider's API usage free. The optional coding sandbox requires
-Workers Paid and is outside this installation. See the README's
+Workers Paid and is outside this installation; it is added later with the
+[coding sandbox guide](docs/runbooks/coding-sandbox-deployment.md#deploy-from-the-command-line). See the README's
 [usage and billing notes](README.md#good-to-know) for limits and optional costs.
 
 Use the repository's installed Wrangler:
@@ -224,6 +225,12 @@ account:
 ```sh
 npx --no-install wrangler auth create <selected-profile>
 ```
+
+Without `--scopes`, Wrangler requests its default scope set. That set includes
+`containers:write`, which the optional coding sandbox needs later. If you pass
+an explicit `--scopes` list, include `containers:write` when the user may want
+the sandbox. Otherwise the profile must be re-authorized before a sandbox
+deploy. Never list `offline_access`; Wrangler adds it and rejects it as a scope.
 
 Activate the selected profile from this checkout, then verify its identity and
 account access:

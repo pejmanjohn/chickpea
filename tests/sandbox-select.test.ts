@@ -3,6 +3,7 @@ import { test } from 'node:test';
 
 import type { RepositoryGrant } from '../src/config/types.ts';
 import {
+  probeSandboxContainer,
   resolveSandboxSelection,
   sandboxBindingInstalled,
   selectSandbox,
@@ -135,4 +136,35 @@ test('selection identifies only a missing live binding as an unavailable fallbac
     }),
     { selection: 'bash', unavailableFallback: false },
   );
+});
+
+function probeNamespace(probe: () => Promise<boolean>) {
+  const names: string[] = [];
+  return {
+    names,
+    SANDBOX: {
+      idFromName: (name: string) => { names.push(name); return name; },
+      get: () => ({ probeContainerRuntime: probe }),
+    },
+  };
+}
+
+test('an attached Container application is the evidence for an installed sandbox', async () => {
+  const env = probeNamespace(async () => true);
+  assert.equal(await probeSandboxContainer(env), 'attached');
+  assert.deepEqual(env.names, ['chickpea-container-probe']);
+});
+
+test('a binding left by a failed deploy without its Container reports missing', async () => {
+  const env = probeNamespace(async () => {
+    throw new Error('Containers have not been enabled for this Durable Object class. Have you correctly setup your Wrangler config?');
+  });
+  assert.equal(await probeSandboxContainer(env), 'missing');
+});
+
+test('unexpected probe failures and hangs stay unknown instead of guessed', async () => {
+  assert.equal(await probeSandboxContainer(probeNamespace(async () => { throw new Error('Network connection lost.'); })), 'unknown');
+  assert.equal(await probeSandboxContainer(probeNamespace(() => new Promise<boolean>(() => {})), 5), 'unknown');
+  assert.equal(await probeSandboxContainer({ SANDBOX: {} }), 'unknown');
+  assert.equal(await probeSandboxContainer(undefined), 'unknown');
 });
