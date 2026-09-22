@@ -336,12 +336,7 @@ export async function prebuildSandboxImage(options) {
       const result = await stream(process.execPath,
         wranglerArgs(options, ['containers', 'build', context, '--tag', tag, '--push']),
         { cwd: options.projectRoot, env: options.env ?? process.env });
-      if (!result.error && result.status === 0) {
-        const pushed = result.output.match(/registry\.cloudflare\.com\/[a-f0-9]{32}\/[^\s'"`]+/i)?.[0];
-        // Prefer the exact reference Wrangler pushed; a bare tag resolves to
-        // the same account registry at deploy time.
-        return pushed?.endsWith(`/${tag}`) ? pushed : tag;
-      }
+      if (!result.error && result.status === 0) return pushedImageReference(result.output, tag);
       if (attempt < attempts) await sleep(attempt * (options.retryDelayMs ?? 10_000));
     }
   } finally {
@@ -351,6 +346,27 @@ export async function prebuildSandboxImage(options) {
     `The Sandbox image did not build and push after ${attempts} attempts. Nothing was uploaded and the live Worker is unchanged. ` +
     'Read the Docker output above: a "DeadlineExceeded" or registry timeout usually clears once Docker has fully started ' +
     '(check with `docker pull --platform linux/amd64 <base image>`). Then rerun the same command.',
+  );
+}
+
+/**
+ * Wrangler rejects a bare `name:tag` in `containers[].image`, so the generated
+ * config needs the account-registry reference. Wrangler first probes the
+ * image by digest (`.../name@sha256:...`) and only then prints the tagged push
+ * reference; prefer that exact reference, else pair the account registry with
+ * the tag that was just pushed.
+ */
+export function pushedImageReference(output, tag) {
+  const references = [...output.matchAll(/registry\.cloudflare\.com\/[a-f0-9]{32}\/[^\s'"`]+/gi)]
+    .map(([reference]) => reference);
+  const exact = references.find((reference) => reference.endsWith(`/${tag}`));
+  if (exact) return exact;
+  const registry = references[0]?.match(/^registry\.cloudflare\.com\/[a-f0-9]{32}\//i)?.[0];
+  if (registry) return `${registry}${tag}`;
+  throw new Error(
+    `The Sandbox image ${tag} was built, but Wrangler did not report the Cloudflare registry it was pushed to. ` +
+    'Nothing was uploaded and the live Worker is unchanged. Rerun the same command; if this repeats, ' +
+    'check the `wrangler containers build --push` output above.',
   );
 }
 

@@ -12,6 +12,7 @@ import {
   parseListedScopes,
   prebuildSandboxImage,
   pullBaseImage,
+  pushedImageReference,
   rerunCommand,
   resolveWranglerAuth,
   sandboxApplicationName,
@@ -140,6 +141,25 @@ test('the prebuild pushes from a Dockerfile-only context and retries before anyt
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test('the prebuilt image reference is the tagged registry push, never a bare tag', () => {
+  const account = 'c'.repeat(32);
+  const tag = 'chickpea-acme-sandbox:52ef51a12092-muda5ted';
+  // Wrangler 4.124 probes the digest first, then pushes the tag.
+  const pushOutput = [
+    'Login Succeeded',
+    `no such manifest: registry.cloudflare.com/${account}/chickpea-acme-sandbox@sha256:${'d'.repeat(64)}`,
+    `Image does not exist remotely, pushing: registry.cloudflare.com/${account}/${tag}`,
+    `The push refers to repository [registry.cloudflare.com/${account}/chickpea-acme-sandbox]`,
+  ].join('\n');
+  assert.equal(pushedImageReference(pushOutput, tag), `registry.cloudflare.com/${account}/${tag}`);
+  // An already-present image only reports the digest; keep the account registry.
+  assert.equal(
+    pushedImageReference(`registry.cloudflare.com/${account}/chickpea-acme-sandbox@sha256:${'d'.repeat(64)} exists`, tag),
+    `registry.cloudflare.com/${account}/${tag}`,
+  );
+  assert.throws(() => pushedImageReference('Build complete\n', tag), /did not report the Cloudflare registry/);
 });
 
 test('partial-deploy detection and verification read Wrangler output honestly', () => {
