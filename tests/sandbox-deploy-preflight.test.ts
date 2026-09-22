@@ -12,6 +12,7 @@ import {
   parseListedScopes,
   prebuildSandboxImage,
   pullBaseImage,
+  pushedImageReference,
   rerunCommand,
   resolveWranglerAuth,
   sandboxApplicationName,
@@ -140,6 +141,52 @@ test('the prebuild pushes from a Dockerfile-only context and retries before anyt
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test('the prebuilt image reference is the tagged registry push, never a bare tag', () => {
+  const account = 'c'.repeat(32);
+  const tag = 'chickpea-acme-sandbox:52ef51a12092-muda5ted';
+  // Wrangler 4.124 probes the digest first, then pushes the tag.
+  const pushOutput = [
+    'Login Succeeded',
+    `no such manifest: registry.cloudflare.com/${account}/chickpea-acme-sandbox@sha256:${'d'.repeat(64)}`,
+    `Image does not exist remotely, pushing: registry.cloudflare.com/${account}/${tag}`,
+    `The push refers to repository [registry.cloudflare.com/${account}/chickpea-acme-sandbox]`,
+  ].join('\n');
+  assert.equal(pushedImageReference(pushOutput, tag), `registry.cloudflare.com/${account}/${tag}`);
+  // An unchanged image: Wrangler skips the push, so the new tag never exists
+  // remotely. Resolve the digest from RepoDigests for this repository only.
+  const manifest = `sha256:${'e'.repeat(64)}`;
+  const skipped = [
+    `#8 exporting manifest ${manifest} done`,
+    'Login Succeeded',
+    'Image already exists remotely, skipping push',
+    `Untagged: ${tag}`,
+  ].join('\n');
+  const repoDigests = (digests: string[]) => () => ({ status: 0, stdout: JSON.stringify(digests) });
+  const inspected: string[][] = [];
+  assert.equal(
+    pushedImageReference(skipped, tag, {
+      run: (_: string, args: string[]) => {
+        inspected.push(args);
+        return repoDigests([
+          `chickpea-acme-sandbox@${manifest}`,
+          `registry.cloudflare.com/${'f'.repeat(32)}/chickpea-other-sandbox@${manifest}`,
+          `registry.cloudflare.com/${account}/chickpea-acme-sandbox@${manifest}`,
+        ])();
+      },
+    }),
+    `registry.cloudflare.com/${account}/chickpea-acme-sandbox@${manifest}`,
+  );
+  assert.deepEqual(inspected[0], ['image', 'inspect', manifest, '--format', '{{json .RepoDigests}}']);
+  // The same repository in two registry accounts is ambiguous: refuse.
+  assert.throws(() => pushedImageReference(skipped, tag, {
+    run: repoDigests([
+      `registry.cloudflare.com/${account}/chickpea-acme-sandbox@${manifest}`,
+      `registry.cloudflare.com/${'f'.repeat(32)}/chickpea-acme-sandbox@${manifest}`,
+    ]),
+  }), /registry reference could not be determined/);
+  assert.throws(() => pushedImageReference('Build complete\n', tag), /registry reference could not be determined/);
 });
 
 test('partial-deploy detection and verification read Wrangler output honestly', () => {
