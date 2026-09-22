@@ -45,7 +45,7 @@ test('memory confirmation survives durable settlement storage with legacy receip
       }));
       turns.prepareFlueDispatch(id, 'Test memory.', { generation: id });
       turns.recordFlueReceipt(id, { submissionId: id, acceptedAt: '2026-08-01T12:00:00.000Z', uid: 'inst_01ARZ3NDEKTSV4RRFFQ69G5FAV' });
-      const memoryUpdate = { operationId: id, revision: 1, ...(summary ? { summary } : {}) };
+      const memoryUpdate = { operationId: id, revision: 1, ...(summary ? { summary, preservesContext: true as const } : {}) };
       turns.recordFlueSettlement(id, { outcome: 'completed', settledAt: NOW, result: {
         text: 'Hidden old draft', memoryUpdate, requestedModel: null, returnedModel: null,
         reportedUsage: null, usageCompleteness: 'not_reported',
