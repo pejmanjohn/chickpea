@@ -30,6 +30,7 @@ import {
 } from '../config/runtime-model.ts';
 import { isCompiledModelProfileId } from '../model-catalog/profiles.ts';
 import { mcpToolEffect } from '../config/mcp-tool-policy.ts';
+import { GITHUB_OWNER_PATTERN } from '../config/github-app.ts';
 import {
   buildSemanticActivityContext,
   type ActivityContext,
@@ -108,8 +109,11 @@ export interface RuntimePlanManagedConnectionV2 {
 
 export interface RuntimePlanRepositoryV2 {
   id: string;
+  /** `owner/repo` for a single-repository grant; empty for an all-repositories grant. */
   fullName: string;
   allRepos?: boolean;
+  /** Owner login, present only on all-repositories grants, which name no repository. */
+  accountLogin?: string;
 }
 
 export interface RuntimePlanConnectionAuthorizationV2 {
@@ -868,10 +872,17 @@ function compileRepositories(
 ): RuntimePlanRepositoryV2[] {
   return (repositories ?? [])
     .filter((repository) => repository.enabled)
+    // Egress honors an all-repositories grant only in its canonical shape.
+    .filter((repository) =>
+      !repository.allRepos ||
+      (repository.fullName === '' && GITHUB_OWNER_PATTERN.test(repository.accountLogin))
+    )
     .map((repository) => ({
       id: repository.id,
       fullName: repository.fullName,
-      ...(repository.allRepos ? { allRepos: true } : {}),
+      ...(repository.allRepos
+        ? { allRepos: true, accountLogin: repository.accountLogin }
+        : {}),
     }))
     .sort(compareBy('id'));
 }
@@ -1398,15 +1409,38 @@ function sortResourceConstraints(
 
 function parseRepository(value: unknown, index: number): RuntimePlanRepositoryV2 {
   const label = `repositories[${index}]`;
-  const record = exactRecord(value, label, ['id', 'fullName', 'allRepos'], ['allRepos']);
+  const record = exactRecord(
+    value,
+    label,
+    ['id', 'fullName', 'allRepos', 'accountLogin'],
+    ['allRepos', 'accountLogin'],
+  );
   if (record.allRepos !== undefined && record.allRepos !== true) {
     throw new Error(`Runtime plan ${label}.allRepos must be true when present.`);
   }
-  return {
-    id: boundedString(record.id, `${label}.id`, 1, 120),
-    fullName: boundedString(record.fullName, `${label}.fullName`, 1, 260),
-    ...(record.allRepos === true ? { allRepos: true } : {}),
-  };
+  const id = boundedString(record.id, `${label}.id`, 1, 120);
+  if (record.allRepos !== true) {
+    if (record.accountLogin !== undefined) {
+      throw new Error(`Runtime plan ${label}.accountLogin is only valid on an all-repositories grant.`);
+    }
+    return { id, fullName: boundedString(record.fullName, `${label}.fullName`, 1, 260) };
+  }
+  // Plans compiled before accountLogin existed kept the stored fullName verbatim.
+  if (record.accountLogin === undefined) {
+    return {
+      id,
+      fullName: boundedString(record.fullName, `${label}.fullName`, 1, 260),
+      allRepos: true,
+    };
+  }
+  // An all-repositories grant names its owner, never a repository.
+  if (record.fullName !== '') {
+    throw new Error(`Runtime plan ${label}.fullName must be empty on an all-repositories grant.`);
+  }
+  if (typeof record.accountLogin !== 'string' || !GITHUB_OWNER_PATTERN.test(record.accountLogin)) {
+    throw new Error(`Runtime plan ${label}.accountLogin must be a GitHub owner login.`);
+  }
+  return { id, fullName: '', allRepos: true, accountLogin: record.accountLogin };
 }
 
 function exactRecord(

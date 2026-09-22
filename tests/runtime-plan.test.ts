@@ -16,6 +16,7 @@ import type { EffectiveConnectionAccount } from '../src/connections/types.ts';
 import { sandboxThreadKey } from '../src/sandbox/thread-key.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import { revisionedAlias } from '../src/model-catalog/provider-alias.ts';
+import { runtimeRepositoryMatches } from '../src/agents/slack-thread.ts';
 
 const AGENT: CustomAgentConfig = {
   id: 'agent_runtime',
@@ -700,6 +701,110 @@ test('strict parsing rejects unknown and explicit auth fields without token heur
     instructions: 'Discuss sk-live-looking-example as untrusted user text.',
   }));
   assert.match(legitimate.instructions, /sk-live-looking-example/);
+});
+
+const ALL_REPOS_GRANT = {
+  id: 'all',
+  installationId: 1,
+  accountLogin: 'magoosh',
+  fullName: '',
+  allRepos: true,
+  enabled: true,
+};
+
+function allReposPlan() {
+  return compile({
+    assignment: assignment({ agent: { ...structuredClone(AGENT), repositories: [{ ...ALL_REPOS_GRANT }] } }),
+  });
+}
+
+test('an all-repositories grant compiles with its owner and survives parsing', () => {
+  const plan = allReposPlan();
+  assert.deepEqual(plan.repositories, [
+    { id: 'all', fullName: '', allRepos: true, accountLogin: 'magoosh' },
+  ]);
+  const parsed = parseRuntimePlanV2(structuredClone(plan));
+  assert.deepEqual(parsed.repositories, plan.repositories);
+  assert.equal(parsed.harnessRevision, plan.harnessRevision);
+
+  // Single-repository plans are unchanged, so their instance ids do not rotate.
+  assert.deepEqual(compile().repositories, [{ id: 'repo_acme', fullName: 'acme/product' }]);
+});
+
+test('all-repositories plan entries require an owner login and no repository name', () => {
+  const plan = allReposPlan();
+  const withRepository = (patch: Record<string, unknown>) => ({
+    ...plan,
+    repositories: [{ ...plan.repositories[0]!, ...patch }],
+  });
+  assert.throws(
+    () => parseRuntimePlanV2(withRepository({ fullName: 'magoosh/rails' })),
+    /fullName must be empty/,
+  );
+  assert.throws(
+    () => parseRuntimePlanV2(withRepository({ accountLogin: '../evil' })),
+    /accountLogin must be a GitHub owner login/,
+  );
+  assert.throws(
+    () => parseRuntimePlanV2({
+      ...plan,
+      repositories: [{ id: 'repo_acme', fullName: 'acme/product', accountLogin: 'acme' }],
+    }),
+    /accountLogin is only valid on an all-repositories grant/,
+  );
+});
+
+test('malformed all-repositories grants stay out of the plan like they stay out of egress', () => {
+  const plan = compile({
+    assignment: assignment({
+      agent: {
+        ...structuredClone(AGENT),
+        repositories: [
+          { ...ALL_REPOS_GRANT, id: 'named', fullName: 'magoosh/rails' },
+          { ...ALL_REPOS_GRANT, id: 'bad_owner', accountLogin: '../evil' },
+          { ...ALL_REPOS_GRANT },
+        ],
+      },
+    }),
+  });
+  assert.deepEqual(plan.repositories.map(({ id }) => id), ['all']);
+});
+
+test('persisted all-repositories plan entries without an owner login remain readable', () => {
+  const legacy = compile();
+  legacy.repositories = [{ id: 'all', fullName: 'magoosh', allRepos: true }];
+  legacy.harnessRevision = compatibilityHarnessRevision(legacy);
+  assert.deepEqual(parseRuntimePlanV2(structuredClone(legacy)).repositories, [
+    { id: 'all', fullName: 'magoosh', allRepos: true },
+  ]);
+});
+
+test('frozen all-repositories grants match the live grant by owner login', () => {
+  const [planned] = allReposPlan().repositories;
+  assert.equal(runtimeRepositoryMatches({ ...ALL_REPOS_GRANT }, planned!), true);
+  assert.equal(
+    runtimeRepositoryMatches({ ...ALL_REPOS_GRANT, accountLogin: 'MAGOOSH' }, planned!),
+    true,
+  );
+  assert.equal(
+    runtimeRepositoryMatches({ ...ALL_REPOS_GRANT, accountLogin: 'other-org' }, planned!),
+    false,
+  );
+  assert.equal(runtimeRepositoryMatches({ ...ALL_REPOS_GRANT, enabled: false }, planned!), false);
+  assert.equal(
+    runtimeRepositoryMatches(
+      { ...ALL_REPOS_GRANT, allRepos: false, fullName: 'magoosh/rails' },
+      planned!,
+    ),
+    false,
+  );
+  assert.equal(
+    runtimeRepositoryMatches(
+      { id: 'repo_acme', installationId: 42, accountLogin: 'acme', fullName: 'Acme/Product', enabled: true },
+      { id: 'repo_acme', fullName: 'acme/product' },
+    ),
+    true,
+  );
 });
 
 test('direct plans use stable coordinates and normalize persisted App Home surfaces', () => {
