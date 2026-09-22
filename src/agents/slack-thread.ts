@@ -1296,7 +1296,7 @@ export function runtimePlanConnectedServicesInstruction(
   plan: Pick<
     RuntimePlanV2,
     'apiConnections' | 'mcpConnections' | 'managedConnections' | 'connectionChoices'
-  >,
+  > & Partial<Pick<RuntimePlanV2, 'repositories' | 'sandbox'>>,
 ): string {
   const selected = [
     ...plan.apiConnections.map(({ id, displayName }) => ({
@@ -1336,7 +1336,26 @@ export function runtimePlanConnectedServicesInstruction(
     'Providers marked account_selection_required are pending selection, not unavailable; ask the user to choose. ' +
     'Pending selections and setup or authorization options are not active tools or permissions. The active ' +
     'selection is the permission ceiling for connected-service actions in this turn, not a guarantee of remote ' +
-    'service health; use only the connected tools or REST declarations actually mounted.';
+    'service health; use only the connected tools or REST declarations actually mounted.' +
+    runtimePlanRepositoriesDeclaration(plan);
+}
+
+/** Name frozen repository grants so the model does not guess at their absence. */
+function runtimePlanRepositoriesDeclaration(
+  plan: Partial<Pick<RuntimePlanV2, 'repositories' | 'sandbox'>>,
+): string {
+  const repositories = plan.repositories ?? [];
+  if (repositories.length === 0) return '';
+  const names = JSON.stringify(
+    [...new Set(repositories.map(({ fullName, allRepos }) =>
+      allRepos ? `all repositories in ${fullName.split('/', 1)[0] || fullName}` : fullName))].sort(),
+  );
+  const access = plan.sandbox?.mode === 'cloudflare'
+    ? 'The workspace starts empty: clone a granted repository with a plain HTTPS URL such as ' +
+      '`git clone https://github.com/{owner}/{repo}.git`; GitHub credentials are injected automatically, ' +
+      'so never add a credential to the URL. See the workspace and Repositories skills.'
+    : 'Use the GitHub REST recipes in the Repositories skill; GitHub credentials are injected automatically.';
+  return ` Granted GitHub repositories for this turn: ${names}. ${access}`;
 }
 
 /** Declare the closed native Lists surface from the exact Slack mount decision. */
@@ -1358,6 +1377,47 @@ export function runtimePlanSlackCapabilitiesInstruction(input: {
     : 'Workspace-management tools are not mounted for this turn.';
   return `Native Slack Lists action tools mounted for this turn (closed set): ${listTools}. ` +
     `${listScope} ${managementScope}`;
+}
+
+/**
+ * Policy-only repository grants frozen into the plan. Installation tokens
+ * resolve live at the egress boundary, never into skill text.
+ */
+function runtimePlanRepositoryGrants(
+  plan: Pick<RuntimePlanV2, 'repositories'>,
+): RepositoryGrant[] {
+  return plan.repositories.map(({ id, fullName, allRepos }) => ({
+    id,
+    installationId: null,
+    accountLogin: fullName.split('/', 1)[0] ?? fullName,
+    fullName,
+    ...(allRepos ? { allRepos: true } : {}),
+    enabled: true,
+  }));
+}
+
+/**
+ * Mirror the legacy runtime's skill order: built-in connector skills (with the
+ * Repositories skill for granted repositories) first so a same-named Agent
+ * skill can deliberately override them, then Agent skills, then the
+ * sandbox-derived workspace skill last so no stored Agent skill can hide it.
+ */
+export function runtimePlanSkills(
+  plan: Pick<RuntimePlanV2, 'apiConnections' | 'repositories' | 'skills' | 'sandbox'>,
+): ReturnType<typeof resolveProfileSkills> {
+  const agentSkills = plan.skills.map((entry) => ({ ...entry, enabled: true }));
+  const workspaceSkill = workspaceSkillForSandbox(plan.sandbox.mode);
+  return resolveProfileSkills(
+    [
+      ...suppressProfileNamedConnectorSkills(
+        connectorSkillsForConnections(plan.apiConnections, runtimePlanRepositoryGrants(plan)),
+        agentSkills,
+      ),
+      ...agentSkills,
+      ...(workspaceSkill ? [workspaceSkill] : []),
+    ],
+    { reservedNames: [AGENT_AUTHORING_SKILL_NAME] },
+  );
 }
 
 /** Compose the declarations shared by Slack and fresh routine agents. */
@@ -1434,13 +1494,7 @@ export function useRuntimePlanAgent(
       JSON.stringify(plan.apiConnections.map(({ id, displayName, allowedHosts, pathPrefixes, allowedMethods }) => ({ id, displayName, allowedHosts, pathPrefixes, allowedMethods }))),
     ].join('\n'));
   }
-  for (const skill of resolveProfileSkills(
-    [
-      ...suppressProfileNamedConnectorSkills(connectorSkillsForConnections(plan.apiConnections), plan.skills.map((entry) => ({ ...entry, enabled: true }))),
-      ...plan.skills.map((entry) => ({ ...entry, enabled: true })),
-    ],
-    { reservedNames: [AGENT_AUTHORING_SKILL_NAME] },
-  )) {
+  for (const skill of runtimePlanSkills(plan)) {
     useSkill(skill);
   }
   const { restrictions, metaHelperScopes, metaWriteScopes } = projectMcpPolicyInstructions(plan.mcpConnections);
@@ -1565,13 +1619,19 @@ function createRuntimePlanSandbox(
         // egress settings belong to the legacy runtime and must not become an
         // incidental grant when any connection is bound. Empty plans need no
         // account or egress setting reads.
-        if (!plan.apiConnections.length) {
+        if (!plan.apiConnections.length && !plan.repositories.length) {
           return bash(() => new Bash({ fs: new InMemoryFs() })).createSandbox(options);
         }
-        const connections = await resolveRuntimePlanApiConnections(plan, env);
+        const [repositoryAccess, connections] = await Promise.all([
+          resolveRuntimePlanBashRepositoryAccess(plan, env),
+          resolveRuntimePlanApiConnections(plan, env),
+        ]);
         const sandbox = createConnectorScopedBash(
           { mode: 'allowlist', domains: [] }, isCloudflareTarget(),
-          mergeRepositoryAndApiConnectors([], connections.flatMap(({ connectors }) => connectors)),
+          mergeRepositoryAndApiConnectors(
+            repositoryAccess.connectors,
+            connections.flatMap(({ connectors }) => connectors),
+          ),
         );
         return sandbox.createSandbox(options);
       },
@@ -1617,6 +1677,45 @@ function createRuntimePlanSandbox(
   };
 }
 
+/**
+ * Resolve GitHub App credentials for a bash-mode plan's frozen repository
+ * grants, as the legacy runtime does for bash turns. Live revocations win, and
+ * a configured Cloudflare workspace whose binding is missing fails closed.
+ */
+async function resolveRuntimePlanBashRepositoryAccess(
+  plan: RuntimePlanV2,
+  env: PlatformEnv | undefined,
+): Promise<ResolvedRepositoryAccess> {
+  if (!plan.repositories.length) {
+    return { grants: [], connectors: [], governsGithubHosts: false };
+  }
+  const current = await requireLiveFrozenAgent(getConfigStore(env), plan.agentId);
+  const repositories = liveRuntimePlanRepositories(plan, current);
+  let unavailableFallback = false;
+  if (isCloudflareTarget()) {
+    const settingsStore = getSettingsStore(env);
+    const [sandboxSettings, githubAppConnected] = await Promise.all([
+      resolveSandboxSettings(settingsStore),
+      getGithubConnection(settingsStore).then(
+        (connection) => connection.mode === 'app',
+        () => false,
+      ),
+    ]);
+    unavailableFallback = resolveSandboxSelection({
+      target: 'cloudflare',
+      installed: sandboxBindingInstalled(env),
+      enabled: sandboxSettings.enabled,
+      appConnected: githubAppConnected,
+      repositoryGrants: repositories,
+    }).unavailableFallback;
+  }
+  return resolveSandboxScopedRepositoryAccess({
+    repositories,
+    ...(env ? { env } : {}),
+    unavailableFallback,
+  });
+}
+
 /** Bind the frozen model lane before any model call. */
 async function prepareRuntimePlanModel(
   plan: RuntimePlanV2,
@@ -1656,13 +1755,7 @@ function projectRuntimePlanAgent(
     throw new SealedAgentThreadError(plan.agentId);
   }
   const apiConnections: CustomAgentConfig['apiConnections'] = [];
-  const repositories = plan.repositories.map((declaration) => {
-    const live = current.repositories.find((candidate) =>
-      candidate.id === declaration.id && runtimeRepositoryMatches(candidate, declaration)
-    );
-    if (!live) throw new Error('RuntimePlanV2 repository policy changed.');
-    return live;
-  });
+  const repositories = liveRuntimePlanRepositories(plan, current);
   const mcpServers: CustomAgentConfig['mcpServers'] = [];
   return {
     id: current.id,
@@ -1677,6 +1770,19 @@ function projectRuntimePlanAgent(
     apiConnections,
     repositories,
   };
+}
+
+function liveRuntimePlanRepositories(
+  plan: RuntimePlanV2,
+  current: CustomAgentConfig,
+): RepositoryGrant[] {
+  return plan.repositories.map((declaration) => {
+    const live = current.repositories.find((candidate) =>
+      candidate.id === declaration.id && runtimeRepositoryMatches(candidate, declaration)
+    );
+    if (!live) throw new Error('RuntimePlanV2 repository policy changed.');
+    return live;
+  });
 }
 
 async function requireLiveFrozenAgent(
