@@ -58,7 +58,7 @@ function createHarness() {
   mkdirSync(releaseDir, { recursive: true });
   mkdirSync(authMigrationsDir, { recursive: true });
   mkdirSync(wranglerDir, { recursive: true });
-  for (const name of ['upgrade-source.mjs', 'build-identity.mjs', 'built-worker-config.mjs', 'inspect-deployment.mjs', 'auth-schema.mjs', 'upgrade-installation.mjs', 'upgrade-receipt.mjs', 'release-manifest.mjs']) {
+  for (const name of ['upgrade-source.mjs', 'build-identity.mjs', 'built-worker-config.mjs', 'inspect-deployment.mjs', 'auth-schema.mjs', 'upgrade-installation.mjs', 'upgrade-receipt.mjs', 'release-manifest.mjs', 'sandbox-deploy-preflight.mjs']) {
     copyFileSync(path.join(PROJECT_ROOT, 'scripts/lib', name), path.join(scriptsLibDir, name));
   }
   copyFileSync(DEPLOY_SCRIPT, path.join(scriptsDir, 'deploy-with-epilogue.mjs'));
@@ -212,9 +212,51 @@ function createHarness() {
     wranglerStub,
     commandLogger('wrangler') + `
       import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+      import { appendFileSync as appendLog } from 'node:fs';
       import { DatabaseSync } from 'node:sqlite';
       import path from 'node:path';
       const args = process.argv.slice(2);
+      const counter = (name) => {
+        const file = path.join(process.cwd(), name + '.count');
+        const count = existsSync(file) ? Number(readFileSync(file, 'utf8')) : 0;
+        writeFileSync(file, String(count + 1));
+        return count;
+      };
+      if (args[0] === 'auth' && args[1] === 'list') {
+        process.stdout.write(process.env.DEPLOY_TEST_AUTH_LIST || 'No profiles found.');
+        process.exit(0);
+      }
+      if (args[0] === 'containers' && args[1] === 'list') {
+        const mode = process.env.DEPLOY_TEST_CONTAINERS_ACCESS || 'ok';
+        if (mode === 'scope') {
+          process.stderr.write("✘ You don't have 'containers:write' in your list of scopes\\n");
+          process.stdout.write('┌─┬─┐\\n│ Scope │ Description │\\n│ account:read │ read │\\n│ user:read │ read │\\n│ workers:write │ w │\\n│ d1:write │ w │\\n│ offline_access │ refresh │\\n');
+          process.stderr.write("✘ You need 'containers:write', try logging in again or creating an appropiate API token\\n");
+          process.exit(1);
+        }
+        if (mode === 'denied') {
+          process.stderr.write('Authentication error [code: 10000]');
+          process.exit(1);
+        }
+        const sequence = JSON.parse(process.env.DEPLOY_TEST_CONTAINER_APPS_SEQUENCE || '[[{"name":"chickpea-sandbox","state":"active"}]]');
+        process.stdout.write(JSON.stringify(sequence[Math.min(counter('containers-list'), sequence.length - 1)]));
+        process.exit(0);
+      }
+      if (args[0] === 'containers' && args[1] === 'build') {
+        if (counter('containers-build') < Number(process.env.DEPLOY_TEST_CONTAINER_BUILD_FAILS || 0)) {
+          process.stderr.write('ERROR: failed to solve: DeadlineExceeded: context deadline exceeded\\n');
+          process.exit(1);
+        }
+        const tag = args[args.indexOf('--tag') + 1];
+        process.stdout.write('Image does not exist remotely, pushing: registry.cloudflare.com/' + 'a'.repeat(32) + '/' + tag + '\\n');
+        process.exit(0);
+      }
+      if (args[0] === 'deploy') {
+        const built = path.join(process.cwd(), 'dist-cf', 'chickpea', 'wrangler.json');
+        const image = existsSync(built) ? JSON.parse(readFileSync(built, 'utf8')).containers?.[0]?.image : undefined;
+        if (image && !image.startsWith('/')) appendLog(process.env.DEPLOY_TEST_LOG, 'deploy-image:' + image + '\\n');
+        if (process.env.DEPLOY_TEST_DEPLOY_UPLOADED === '1') process.stdout.write('Uploaded chickpea (1.00 sec)\\n');
+      }
       if (args[0] === 'secret' && args[1] === 'list') {
         if (process.env.DEPLOY_TEST_SECRET_LIST_NOT_FOUND === '1' ||
             (!Object.hasOwn(process.env, 'DEPLOY_TEST_SECRET_LIST') &&
@@ -324,6 +366,21 @@ function createHarness() {
       }
     `,
   );
+  writeFileSync(path.join(root, 'Dockerfile'), 'FROM docker.io/cloudflare/sandbox:0.12.4\nEXPOSE 3000\n');
+  const dockerStub = path.join(root, 'fake-docker.mjs');
+  writeFileSync(dockerStub, `#!${process.execPath}
+    import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+    import path from 'node:path';
+    const args = process.argv.slice(2);
+    appendFileSync(process.env.DEPLOY_TEST_LOG, 'docker:' + JSON.stringify(args) + '\\n');
+    if (args[0] === 'info') process.exit(process.env.DEPLOY_TEST_DOCKER_DOWN === '1' ? 1 : 0);
+    if (args[0] === 'pull') {
+      const file = path.join(path.dirname(process.env.DEPLOY_TEST_LOG), 'docker-pull.count');
+      const count = existsSync(file) ? Number(readFileSync(file, 'utf8')) : 0;
+      writeFileSync(file, String(count + 1));
+      process.exit(count < Number(process.env.DEPLOY_TEST_DOCKER_PULL_FAILS || 0) ? 1 : 0);
+    }
+  `, { mode: 0o755 });
   writeFileSync(
     path.join(root, 'slack-app-manifest.json'),
     JSON.stringify({ features: { agent_view: { agent_description: 'Test agent' } } }),
@@ -331,6 +388,7 @@ function createHarness() {
 
   const harness = {
     root,
+    dockerStub,
     logPath,
     secretCapturePath,
     npmStub,
@@ -2310,4 +2368,156 @@ test('deploy refuses a ledger canary override on an artifact without driver seam
   assert.equal(result.status, 1);
   assert.match(result.stderr, /missing durable driver seams/);
   assert.equal(existsSync(harness.logPath), false);
+});
+
+function sandboxHarness(context: { after(fn: () => void): void }) {
+  const harness = createHarness();
+  context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+  writeCutoverArtifact(harness, { profile: 'sandbox' });
+  return harness;
+}
+
+function sandboxEnv(harness: ReturnType<typeof createHarness>, extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+  return {
+    CHICKPEA_DEPLOY_PROFILE: 'sandbox',
+    WRANGLER_DOCKER_BIN: harness.dockerStub,
+    DEPLOY_TEST_SANDBOX_RETRY_MS: '1',
+    DEPLOY_TEST_URL: 'https://chickpea.example.workers.dev',
+    CLOUDFLARE_API_TOKEN: '',
+    CF_API_TOKEN: '',
+    ...extra,
+  };
+}
+
+test('sandbox preflight reports every blocking problem before build, D1, or upload', (context) => {
+  const harness = sandboxHarness(context);
+  const result = runHarness(harness, ['--profile', 'acme'], sandboxEnv(harness, {
+    DEPLOY_TEST_DOCKER_DOWN: '1',
+    DEPLOY_TEST_CONTAINERS_ACCESS: 'scope',
+  }));
+  assert.equal(result.status, 1, result.stdout);
+  assert.match(result.stderr, /found 2 problems\. Nothing was built, migrated, or uploaded/);
+  assert.match(result.stderr, /Docker daemon is not reachable/);
+  assert.match(result.stderr, /auth profile "acme" does not include containers:write/);
+  assert.match(
+    result.stderr,
+    /npx wrangler auth create acme --scopes account:read user:read workers:write d1:write containers:write\n/,
+  );
+  assert.doesNotMatch(result.stderr, /--scopes[^\n]*offline_access/);
+  assert.doesNotMatch(result.stderr, /\n\s+npx wrangler login --profile/);
+  const invoked = commands(harness.logPath);
+  assert.equal(invoked.some((line) => line.startsWith('npm:') || /"(d1|deploy)"/.test(line)), false, invoked.join('\n'));
+  assert.equal(invoked.some((line) => line.startsWith('docker:["pull"')), false, 'no pull without a daemon');
+});
+
+test('sandbox re-auth guidance matches global logins, bound profiles, and API tokens', (context) => {
+  const global = sandboxHarness(context);
+  const globalResult = runHarness(global, [], sandboxEnv(global, { DEPLOY_TEST_CONTAINERS_ACCESS: 'scope' }));
+  assert.equal(globalResult.status, 1);
+  assert.match(globalResult.stderr, /npx wrangler login --scopes account:read user:read workers:write d1:write containers:write\n/);
+
+  const bound = sandboxHarness(context);
+  const boundResult = runHarness(bound, [], sandboxEnv(bound, {
+    DEPLOY_TEST_CONTAINERS_ACCESS: 'scope',
+    DEPLOY_TEST_AUTH_LIST: `│ Profile │ Bound Directories │\n│ customer │ ${realpathSync(bound.root)} │\n`,
+  }));
+  assert.equal(boundResult.status, 1);
+  assert.match(boundResult.stderr, /npx wrangler auth create customer --scopes /);
+
+  const token = sandboxHarness(context);
+  const tokenResult = runHarness(token, [], sandboxEnv(token, {
+    DEPLOY_TEST_CONTAINERS_ACCESS: 'denied',
+    CLOUDFLARE_API_TOKEN: 'test-token',
+  }));
+  assert.equal(tokenResult.status, 1);
+  assert.match(tokenResult.stderr, /API token in the environment cannot manage Containers.*Containers: Edit/s);
+  assert.doesNotMatch(tokenResult.stderr, /test-token/);
+});
+
+test('sandbox deploy retries the base image pull and prebuilds the image before the upload', (context) => {
+  const harness = sandboxHarness(context);
+  const result = runHarness(harness, ['--skip-build', '--profile', 'acme'], sandboxEnv(harness, {
+    DEPLOY_TEST_DOCKER_PULL_FAILS: '1',
+    DEPLOY_TEST_CONTAINER_BUILD_FAILS: '1',
+  }));
+  assert.equal(result.status, 0, result.stderr);
+  const invoked = commands(harness.logPath);
+  assert.equal(invoked.filter((line) => line.startsWith('docker:["pull","--platform","linux/amd64","docker.io/cloudflare/sandbox:0.12.4"]')).length, 2);
+  const builds = invoked.flatMap((line, index) => /^wrangler:\["containers","build"/.test(line) ? [index] : []);
+  assert.equal(builds.length, 2, 'a failed image build is retried before anything is live');
+  assert.match(invoked[builds[0]!]!, /"--push".*"--profile","acme"/);
+  const migration = invoked.findIndex((line) => line.startsWith('wrangler:["d1","migrations","apply"'));
+  const deploy = invoked.findIndex((line) => line.startsWith('wrangler:["deploy"'));
+  assert.ok(builds[1]! < migration && migration < deploy, invoked.join('\n'));
+  const image = invoked.find((line) => line.startsWith('deploy-image:'));
+  assert.match(image ?? '', new RegExp(`^deploy-image:registry\\.cloudflare\\.com/${'a'.repeat(32)}/chickpea-sandbox:[a-f0-9]{12}-[a-z0-9]+$`));
+  assert.match(result.stdout, /Container application chickpea-sandbox exists \(state: active\)/);
+  assert.match(result.stdout, /Coding sandbox, choose Check again, and choose Enable coding sandbox/);
+});
+
+test('an image that never builds leaves the live Worker untouched', (context) => {
+  const harness = sandboxHarness(context);
+  const result = runHarness(harness, ['--skip-build'], sandboxEnv(harness, { DEPLOY_TEST_CONTAINER_BUILD_FAILS: '9' }));
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /did not build and push after 3 attempts\. Nothing was uploaded/);
+  assert.equal(commands(harness.logPath).some((line) => /"(d1|deploy)"/.test(line)), false);
+});
+
+test('a sandbox deploy that fails after the upload prints rerun and rollback recovery', (context) => {
+  const harness = sandboxHarness(context);
+  const result = runHarness(harness, ['--skip-build', '--profile', 'acme'], sandboxEnv(harness, {
+    CHICKPEA_DEPLOY_TARGET: 'production',
+    DEPLOY_TEST_WORKER_EXISTS: '1',
+    DEPLOY_TEST_SECRET_LIST: JSON.stringify([
+      { name: 'CHICKPEA_AUTH_SECRET' },
+      { name: 'CHICKPEA_CREDENTIAL_KEY_CURRENT_ID' },
+      { name: 'CHICKPEA_CREDENTIAL_KEY_KEY_V1' },
+    ]),
+    DEPLOY_TEST_DEPLOYMENT_STATUS: JSON.stringify({ versions: [{ version_id: 'previous-core-version', percentage: 100 }] }),
+    DEPLOY_TEST_DEPLOY_UPLOADED: '1',
+    DEPLOY_TEST_DEPLOY_STATUS: '1',
+  }));
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /PARTIAL SANDBOX DEPLOY/);
+  assert.match(result.stderr, /CHICKPEA_DEPLOY_TARGET=production npm run deploy:sandbox -- --profile acme\n/);
+  assert.match(result.stderr, /npx wrangler rollback previous-core-version --name chickpea --profile acme/);
+  assert.doesNotMatch(result.stdout, /Worker deployed|SETUP LINK/);
+});
+
+test('a finished sandbox deploy without its Container application is not reported as success', (context) => {
+  const harness = sandboxHarness(context);
+  const result = runHarness(harness, ['--skip-build'], sandboxEnv(harness, {
+    DEPLOY_TEST_CONTAINER_APPS_SEQUENCE: JSON.stringify([[], []]),
+  }));
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /no Container application named chickpea-sandbox exists/);
+  assert.match(result.stderr, /PARTIAL SANDBOX DEPLOY/);
+  assert.doesNotMatch(result.stdout, /SETUP LINK/);
+});
+
+test('a core deploy refuses to silently remove a live coding sandbox', (context) => {
+  const existingSandbox = {
+    DEPLOY_TEST_WORKER_EXISTS: '1',
+    DEPLOY_TEST_VERSION_VIEWS: JSON.stringify({ 'deployed-version': { resources: { bindings: [
+      { name: 'AUTH_DB', type: 'd1', id: 'test-database-id', database_id: 'test-database-id' },
+      { name: 'SANDBOX', type: 'durable_object_namespace', class_name: 'Sandbox', namespace_id: 'ns' },
+    ] } } }),
+  };
+  const implicit = createHarness();
+  const explicit = createHarness();
+  context.after(() => {
+    rmSync(implicit.root, { recursive: true, force: true });
+    rmSync(explicit.root, { recursive: true, force: true });
+  });
+  const refused = runHarness(implicit, ['--skip-build', '--profile', 'acme'], existingSandbox);
+  assert.equal(refused.status, 1);
+  assert.match(refused.stderr, /live Worker has the coding sandbox.*npm run deploy:sandbox.*CHICKPEA_DEPLOY_PROFILE=core/s);
+  assert.equal(commands(implicit.logPath).some((line) => /"(d1","migrations|deploy)"/.test(line)), false);
+
+  const removed = runHarness(explicit, ['--skip-build'], {
+    ...existingSandbox,
+    CHICKPEA_DEPLOY_PROFILE: 'core',
+    DEPLOY_TEST_URL: 'https://chickpea.example.workers.dev',
+  });
+  assert.equal(removed.status, 0, removed.stderr);
 });

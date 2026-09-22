@@ -3344,3 +3344,94 @@ button.capability-pill { cursor: pointer; }
   .coding-agents-page .command-box, .mcp-snippet { align-items: stretch; flex-direction: column; gap: 12px; }
   .coding-agents-page .command-box .btn, .mcp-snippet .btn, .mcp-client-deeplink .btn { width: 100%; }
 }
+
+/* ---- Settings → Coding sandbox: redeploy required ------------------------
+   One status (the section badge), then prerequisite, path choice, and
+   numbered steps. Copyable values are full-width so nothing truncates. */
+.sbx-redeploy { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.sbx-lead { display: flex; flex-direction: column; gap: 4px; }
+.sbx-lead-title { color: var(--text); font-family: var(--display); font-size: 1rem; font-weight: 700; }
+.sbx-lead-text, .sbx-step-text { color: var(--text-2); font-size: 0.8125rem; line-height: 1.55; text-wrap: pretty; }
+.sbx-prereq {
+  align-items: flex-start;
+  background: rgba(221, 160, 51, 0.16);
+  border-radius: 14px;
+  display: flex;
+  gap: 10px;
+  padding: 12px 14px;
+}
+.sbx-prereq > div { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.sbx-prereq-icon { color: var(--ember-deep); display: inline-flex; flex-shrink: 0; padding-top: 2px; }
+.sbx-prereq-title { color: var(--text); font-size: 0.8125rem; font-weight: 700; }
+.sbx-path { display: flex; flex-direction: column; gap: 7px; }
+.sbx-path-label { color: var(--text); font-size: 0.8125rem; font-weight: 700; }
+.sbx-path-seg { align-self: flex-start; }
+.sbx-path-hint { color: var(--text-3); font-size: 0.75rem; }
+.sbx-steps { display: flex; flex-direction: column; gap: 0; list-style: none; margin: 0; padding: 0; }
+.sbx-step { display: flex; gap: 12px; min-width: 0; padding-bottom: 16px; position: relative; }
+.sbx-step:not(:last-child)::before {
+  background: var(--line-strong);
+  bottom: 2px;
+  content: "";
+  left: 12px;
+  position: absolute;
+  top: 30px;
+  width: 1.5px;
+}
+.sbx-step:last-child { padding-bottom: 0; }
+.sbx-step-num {
+  align-items: center;
+  background: var(--well);
+  border-radius: 999px;
+  box-shadow: inset 0 0 0 1.5px var(--line-strong);
+  color: var(--text);
+  display: inline-flex;
+  flex-shrink: 0;
+  font-size: 0.75rem;
+  font-weight: 700;
+  height: 25px;
+  justify-content: center;
+  width: 25px;
+}
+.sbx-step-body { display: flex; flex: 1; flex-direction: column; gap: 6px; min-width: 0; padding-top: 3px; }
+.sbx-step-title { color: var(--text); font-size: 0.875rem; font-weight: 700; }
+.sbx-copy-group { display: flex; flex-direction: column; gap: 6px; }
+.sbx-copy-row {
+  align-items: center;
+  background: var(--well);
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  max-width: 520px;
+  padding: 6px 6px 6px 12px;
+}
+.sbx-copy-label { color: var(--text-3); flex: 0 0 44px; font-size: 0.75rem; font-weight: 700; }
+.sbx-copy-value {
+  background: transparent;
+  border: 0;
+  color: var(--text);
+  flex: 1 1 12ch;
+  font-family: var(--mono);
+  font-size: 0.8125rem;
+  min-width: 0;
+  outline: none;
+  padding: 4px 0;
+}
+.sbx-copy-value:focus-visible { outline: 2px solid var(--ember-press); outline-offset: 2px; border-radius: 4px; }
+.sbx-copy-row .btn { flex-shrink: 0; }
+.sbx-copy-note { color: var(--text-2); flex-basis: 100%; font-size: 0.75rem; padding: 0 0 4px; }
+.sbx-inline-code { background: var(--well); border-radius: 5px; color: var(--text); font-family: var(--mono); font-size: 0.75rem; padding: 1px 5px; white-space: nowrap; }
+.sbx-check-row { align-items: center; display: flex; flex-wrap: wrap; gap: 8px 12px; margin-top: 4px; }
+.sbx-check-result { color: var(--text-2); flex: 1 1 220px; font-size: 0.8125rem; font-weight: 600; }
+.sbx-check-row .field-error { flex: 1 1 220px; }
+.sbx-foot { border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 8px; padding-top: 14px; }
+.sbx-cancel-row { align-items: center; display: flex; flex-wrap: wrap; gap: 6px 12px; justify-content: space-between; }
+.sbx-cancel-row .sbx-step-text { flex: 1 1 260px; }
+@media (max-width: 720px) {
+  .sbx-path-seg { align-self: stretch; display: flex; }
+  .sbx-path-seg button { flex: 1; }
+  .sbx-copy-label { flex-basis: 100%; }
+  .sbx-check-row .btn { width: 100%; }
+}
