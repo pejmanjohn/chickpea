@@ -588,6 +588,7 @@ function runAdminPageHarness(
     }>;
     deferAgentPatch?: boolean;
     initialSearch?: string;
+    initialVisibility?: 'hidden' | 'visible';
     usageAdminUi?: boolean;
     workspaceAdminUi?: boolean;
     mcpClientsError?: boolean;
@@ -1087,7 +1088,7 @@ function runAdminPageHarness(
   const windowListeners: Record<string, (event: Record<string, unknown>) => void> = {};
   const scheduledTimers = new Map<number, () => void>();
   let nextTimerId = 1;
-  let documentVisibilityState: 'hidden' | 'visible' = 'visible';
+  let documentVisibilityState: 'hidden' | 'visible' = options.initialVisibility ?? 'visible';
   let documentScrollLeft = 0;
   let documentScrollTop = 0;
   const window = {
@@ -5067,6 +5068,79 @@ test('a connection mutation refreshes Connections without loading hidden Agent r
   assert.equal(harness.agentScheduleGets(), 0);
   assert.deepEqual(harness.ownerMemoryGetCaches, []);
   assert.match(harness.app.innerHTML, /No connections in this Agent yet/);
+});
+
+const connectedGithubStatus: GithubStatusFixture = {
+  mode: 'app',
+  installations: [{ id: 77, accountLogin: 'acme', accountType: 'Organization', repoCount: 1 }],
+  referencingProfiles: [],
+};
+
+function githubStatusGets(harness: { settingsGetCalls: string[] }): number {
+  return harness.settingsGetCalls.filter((path) => path === '/admin/api/github/status').length;
+}
+
+for (const initialVisibility of ['visible', 'hidden'] as const) {
+  test(`a Repositories deep link loads GitHub status without visiting Settings (${initialVisibility} tab)`, async () => {
+    const harness = runAdminPageHarness({
+      initialPath: '/admin/agents/agent_release',
+      initialSearch: '?tab=repositories',
+      initialVisibility,
+      githubStatus: connectedGithubStatus,
+    });
+    await flushAsync();
+
+    assert.equal(githubStatusGets(harness), 1);
+    assert.match(harness.app.innerHTML, /id="ptab-repositories" class="ptab on"/);
+    assert.doesNotMatch(harness.app.innerHTML, /Loading GitHub connection/);
+    assert.match(harness.app.innerHTML, /No repositories selected/);
+  });
+}
+
+test('opening the Repositories tab on an Agent loads GitHub status once', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/agents/agent_release',
+    githubStatus: connectedGithubStatus,
+  });
+  await flushAsync();
+  assert.equal(githubStatusGets(harness), 0);
+
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'repositories' }) });
+  await flushAsync();
+
+  assert.equal(githubStatusGets(harness), 1);
+  assert.doesNotMatch(harness.app.innerHTML, /Loading GitHub connection/);
+  assert.match(harness.app.innerHTML, /No repositories selected/);
+});
+
+test('a new Agent loads GitHub status when its Repositories tab opens', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/agents/new',
+    githubStatus: connectedGithubStatus,
+  });
+  await flushAsync();
+  assert.equal(githubStatusGets(harness), 0);
+
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'repositories' }) });
+  await flushAsync();
+
+  assert.equal(githubStatusGets(harness), 1);
+  assert.doesNotMatch(harness.app.innerHTML, /Loading GitHub connection/);
+  assert.match(harness.app.innerHTML, /No repositories selected/);
+});
+
+test('a read-only Agent explains Repositories instead of waiting on GitHub status', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/agents/agent_release',
+    initialSearch: '?tab=repositories',
+    agents: [{ ...releaseAgent, canEdit: false }],
+    githubStatus: connectedGithubStatus,
+  });
+  await flushAsync();
+
+  assert.equal(githubStatusGets(harness), 0);
+  assert.doesNotMatch(harness.app.innerHTML, /Loading GitHub connection/);
+  assert.match(harness.app.innerHTML, /Only Agent editors can view or change which repositories this Agent can use/);
 });
 
 test('a repository draft mutation revalidates only Repositories on focus', async () => {
