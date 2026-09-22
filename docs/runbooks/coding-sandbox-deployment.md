@@ -50,24 +50,47 @@ binding without a Container, which an interrupted deploy leaves behind, reports
 1. In Chickpea, open **Settings → Coding sandbox** and choose **Install coding
    sandbox**. Review the Workers Paid, build-time, and retained-infrastructure
    disclosure, then choose **Request installation**.
-2. Chickpea now shows **Redeploy required**. It records the request, but cannot
-   use deployment authority that belongs to the customer's Cloudflare account.
-3. Open **Cloudflare dashboard → Workers & Pages → your Worker → Settings →
-   Builds → Variables**.
-4. Add the non-secret build variable `CHICKPEA_DEPLOY_PROFILE` with the value
-   `sandbox`, then choose **Retry deployment**.
+2. Chickpea now shows **Redeploy required** with step-by-step instructions. It
+   records the request, but cannot use deployment authority that belongs to the
+   customer's Cloudflare account. Confirm the account is on **Workers Paid**
+   before continuing.
+3. Redeploy with the Sandbox deployment profile, using the same method that
+   deploys this installation. Admin preselects the method that built the
+   running Worker: Cloudflare Workers Builds sets `WORKERS_CI=1` at build time,
+   and any other build counts as a command deploy. Either choice can be
+   switched on the page.
 
-If Retry reuses the earlier core artifact, start a fresh dashboard build and
-then use **Check again** in Chickpea. Do not treat a completed retry as proof
-that the new deployment profile was selected.
+**Deployed with a command** (a local checkout, a release archive, or your own
+CI). From the checkout you install and update from, run your usual deploy
+command with `deploy` changed to `deploy:sandbox`, keeping every flag and
+environment variable, for example `npm run deploy:sandbox` or
+`npm run deploy:sandbox -- --profile <existing-profile>`. It needs Docker
+running and the Containers permission; see
+[Deploy from the command line](#deploy-from-the-command-line) for the
+prerequisites, exact commands, and recovery.
 
-A local or CI operator deploys the same Sandbox deployment profile from the
-command line; see [Deploy from the command line](#deploy-from-the-command-line).
+**Cloudflare Git builds** (Workers Builds, including Deploy to Cloudflare
+installs):
+
+1. Open **Cloudflare dashboard → Workers & Pages → your Worker → Settings →
+   Builds**.
+2. Under **Build variables and secrets**, add the plain (non-secret) variable
+   `CHICKPEA_DEPLOY_PROFILE` with the value `sandbox`.
+3. Start a new build: push a commit to the connected repository, or retry the
+   latest build from the Worker's **Deployments** page.
+
+If the build finishes but **Check again** still reports **Redeploy required**,
+push a new commit so Cloudflare runs a fresh build with the variable. Do not
+treat a completed retry as proof that the new deployment profile was selected.
 
 While the redeploy is outstanding, **Check again** reads the live deployment
 without changing the request. **Cancel request** atomically clears both the
-installation request and runtime enablement. A later redeploy therefore cannot
-silently turn a canceled Sandbox on.
+installation request and runtime enablement; it changes nothing in Cloudflare.
+A later redeploy therefore cannot silently turn a canceled Sandbox on.
+
+Keep the Sandbox profile for every later deployment: `npm run deploy:sandbox`,
+or builds that keep `CHICKPEA_DEPLOY_PROFILE=sandbox`. Returning to the core
+profile is a deliberate uninstall; see below.
 
 ## Deploy from the command line
 
@@ -205,7 +228,7 @@ named `<worker>-sandbox` exists.
 | --- | --- | --- |
 | **Unsupported on Node** | This target cannot install the Cloudflare Container tier. | Use the standard in-memory bash sandbox, or deploy Chickpea to Cloudflare. |
 | **Not installed in this deployment** | This is the slim core deployment profile and no install is pending. | Choose **Install coding sandbox** if the feature is needed. |
-| **Redeploy required** | Chickpea saved the request, but the live Worker has no Sandbox binding yet, or it has the binding without a Container application (an interrupted deploy). | Complete the Cloudflare build-variable redeploy, then choose **Check again**. |
+| **Redeploy required** | Chickpea saved the request, but the live Worker has no Sandbox binding yet, or it has the binding without a Container application (an interrupted deploy). | Redeploy with the Sandbox profile (`npm run deploy:sandbox` or the build variable), then choose **Check again**. |
 | **Installed but off** | The binding and its Container application are live, but runtime use is disabled. | Complete GitHub/grant setup, verify the Container rollout, then enable. |
 | **On** | The binding, stored runtime choice, GitHub App, and a repository grant are all ready. | Test a repository-backed request in Slack. |
 | **On, setup required** | Runtime was previously enabled, but GitHub or repository access is now missing. | Follow the single prerequisite action shown; coding work remains unavailable until repaired. |
@@ -225,10 +248,10 @@ For a complete uninstall or rollback to the slim core deployment profile:
 1. Choose **Disable** in Chickpea.
 2. Select the core profile explicitly. The deploy refuses to remove a live
    sandbox by default. For Workers Builds, set `CHICKPEA_DEPLOY_PROFILE` to
-   `core` under **Settings → Builds → Variables**. For a command-line deploy,
+   `core` under **Settings → Builds → Build variables and secrets**. For a command-line deploy,
    prefix your usual command, for example
    `CHICKPEA_DEPLOY_PROFILE=core npm run deploy -- --profile <name>`.
-3. Retry the deployment, or run that command, to deploy the core deployment profile.
+3. Start a new build, or run that command, to deploy the core deployment profile.
 4. Verify ordinary Slack replies and Admin access on the core deployment.
 5. Only after that verification, delete the retained Container application and
    image from Cloudflare.
@@ -252,9 +275,11 @@ Container infrastructure. Its supported default is the slim core deployment prof
 
 ## Troubleshooting
 
-- **Check again still says Redeploy required:** confirm the variable is a
-  **Builds → Variables** value, not a runtime secret, and confirm the latest
-  deployment actually used value `sandbox`.
+- **Check again still says Redeploy required:** for a command deploy, confirm
+  you ran `npm run deploy:sandbox` (not `npm run deploy`) against this Worker
+  and that it finished. For Git builds, confirm the variable is under **Build
+  variables and secrets**, not a runtime variable or secret, and that the latest
+  build started after you added it.
 - **The build looks stuck:** the first Ubuntu image build can take several
   minutes. Inspect the Cloudflare build log and Container application rollout
   before retrying.

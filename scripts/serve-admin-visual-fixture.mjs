@@ -60,6 +60,12 @@ export const CANONICAL_CONNECTOR_VISUAL_STATES = Object.freeze({
   success: Object.freeze({ path: '/__admin_visual_fixture/connectors/success' }),
 });
 
+const SANDBOX_VISUAL_DEPLOY_SOURCES = Object.freeze({
+  'redeploy-command': 'command',
+  'redeploy-dashboard': 'workers-builds',
+  'redeploy-unknown': 'unknown',
+});
+
 export const VISUAL_ENVIRONMENT_STATUS = Object.freeze({
   schemaVersion: 'chickpea-environment-status/v1',
   generatedAt: '2026-09-01T12:00:00.000Z',
@@ -649,8 +655,12 @@ export async function startAdminVisualFixture(options = {}) {
   const onboardingStage = options.onboardingStage ?? null;
   const principalRole = options.principalRole ?? 'owner';
   const updateState = options.updateState ?? null;
+  const sandboxState = options.sandboxState ?? null;
   if (updateState !== null && !['available', 'current', 'failed', 'unversioned', 'no-release'].includes(updateState)) {
     throw new Error('Unknown update visual state.');
+  }
+  if (sandboxState !== null && !Object.hasOwn(SANDBOX_VISUAL_DEPLOY_SOURCES, sandboxState)) {
+    throw new Error('Unknown sandbox visual state.');
   }
   assertLoopbackHost(host);
   if (!Number.isSafeInteger(port) || port < 0 || port > 65_535) {
@@ -963,6 +973,22 @@ export async function startAdminVisualFixture(options = {}) {
         c.res = Response.json({ report: body.report.replace('Application version: development', 'Application version: 0.1.0').replace('Source commit: unknown', `Source commit: ${'a'.repeat(40)}`).replace('Deployment: Node', 'Deployment: Cloudflare') });
       }
     });
+    // The fixture runs on Node, where the coding sandbox is unsupported. This
+    // presents the Cloudflare redeploy-required status for visual review only.
+    app.use('/admin/api/sandbox/status', async (c, next) => {
+      await next();
+      if (!sandboxState || c.req.method !== 'GET' || c.res.status !== 200) return;
+      const body = await c.res.json();
+      c.res = Response.json({
+        ...body,
+        target: 'cloudflare',
+        installRequested: true,
+        installed: false,
+        deploySource: SANDBOX_VISUAL_DEPLOY_SOURCES[sandboxState],
+        unmetPrerequisites: ['sandbox_binding', ...body.unmetPrerequisites.filter((item) => item !== 'cloudflare_target')],
+        workersPaidNote: 'Requires Workers Paid. Real containers run on your Cloudflare account; a typical session costs about 1 cent.',
+      });
+    });
     app.use('/admin/api/installation', async (c, next) => {
       await next();
       if (!updateState || updateState === 'unversioned' || c.res.status !== 200) return;
@@ -1070,6 +1096,7 @@ function parseCliArgs(args) {
     else if (value === '--runtime-contract') parsed.runtimeContract = args[++index];
     else if (value === '--onboarding-stage') parsed.onboardingStage = args[++index];
     else if (value === '--update-state') parsed.updateState = args[++index];
+    else if (value === '--sandbox-state') parsed.sandboxState = args[++index];
     else throw new Error(`Unknown argument: ${value}`);
   }
   return parsed;

@@ -268,6 +268,12 @@
     sandboxConfirm: "",
     sandboxReadyAttested: false,
     sandboxNotice: "",
+    // Redeploy-required guidance: the path the person picked (empty follows
+    // how this deployment was built), the last copy result, and a screen-reader
+    // announcement that must not repeat the visible status.
+    sandboxDeployPath: "",
+    sandboxCopy: null,
+    sandboxAnnounce: "",
     // Profile-local repository selection UI. The picker is a working selection
     // only; Apply writes grants into profileDraft and the existing profile Save
     // action remains the sole persistence path.
@@ -8155,10 +8161,7 @@
         : '<div class="action-well"><div class="danger-copy"><span class="field-label">Not installed in this deployment</span><span class="hint">The slim deployment does not build Ubuntu or create Container infrastructure. A Container application or image from an earlier install may still remain in Cloudflare until you remove it.</span></div>' +
           '<button type="button" class="btn btn-primary" data-action="sandbox-install-open"' + disabled + '>Install coding sandbox</button></div>';
     } else if (!status.installed) {
-      body = '<div class="action-well"><div class="danger-copy"><span class="field-label">Redeploy required</span><span class="hint">Chickpea saved your request, but Chickpea cannot redeploy itself because deployment authority stays in your Cloudflare account.</span></div>' +
-        '<button type="button" class="btn btn-primary" data-action="sandbox-check-again"' + disabled + '>' + (state.sandboxSaving === "check" ? "Checking&hellip;" : "Check again") + '</button>' +
-        '<button type="button" class="btn btn-ghost" data-action="sandbox-cancel-install"' + disabled + '>' + (state.sandboxSaving === "cancel" ? "Canceling&hellip;" : "Cancel request") + '</button></div>' +
-        '<div class="callout"><p class="field-label">Finish in Cloudflare</p><p class="hint">Open Cloudflare dashboard &rarr; Workers &amp; Pages &rarr; your Worker &rarr; Settings &rarr; Builds &rarr; Variables. Add the non-secret build variable below, then choose <b>Retry deployment</b>.</p><div class="team-link-row"><input class="input mono" id="sandbox-build-variable" readonly value="CHICKPEA_DEPLOY_PROFILE=sandbox" aria-label="Sandbox build variable"><button type="button" class="btn btn-soft btn-sm" data-action="sandbox-copy-profile"' + disabled + '>Copy variable</button></div><p class="hint">If Retry reuses the earlier core artifact, start a fresh dashboard build. Local or CI operators can instead run <span class="mono">npm run deploy:sandbox</span>. The first image build can take several minutes.</p></div>';
+      return '<section class="section" id="sandbox-settings">' + head + sandboxRedeployHtml(status, disabled) + progress + '</section>';
     } else {
       var prerequisite = '';
       if (!status.githubConnected) {
@@ -8182,6 +8185,94 @@
     }
 
     return '<section class="section" id="sandbox-settings">' + head + body + paidNote + live + progress + '</section>';
+  }
+
+  var SANDBOX_COPY_TEXT = {
+    command: "npm run deploy:sandbox",
+    name: "CHICKPEA_DEPLOY_PROFILE",
+    value: "sandbox"
+  };
+
+  function sandboxDeployPath(status) {
+    if (state.sandboxDeployPath === "command" || state.sandboxDeployPath === "dashboard") return state.sandboxDeployPath;
+    return status.deploySource === "workers-builds" ? "dashboard" : "command";
+  }
+
+  function sandboxCopyRowHtml(id, label, disabled) {
+    var copied = state.sandboxCopy && state.sandboxCopy.id === id;
+    var failed = copied && !state.sandboxCopy.ok;
+    return '<div class="sbx-copy-row">' +
+      (label ? '<label class="sbx-copy-label" for="sandbox-copy-' + id + '">' + label + '</label>' : '') +
+      '<input class="sbx-copy-value" id="sandbox-copy-' + id + '" readonly spellcheck="false" value="' + esc(SANDBOX_COPY_TEXT[id]) + '"' +
+      (label ? '' : ' aria-label="Command"') + '>' +
+      '<button type="button" class="btn btn-soft btn-sm i-lead" data-action="sandbox-copy" data-copy="' + id + '"' + disabled + '>' +
+      icon(copied && !failed ? "check" : "copy") + (copied && !failed ? "Copied" : "Copy") + '</button>' +
+      (failed ? '<p class="sbx-copy-note" role="status">Couldn&rsquo;t reach the clipboard. The text is selected, so press &#8984;C or Ctrl+C to copy it.</p>' : '') +
+      '</div>';
+  }
+
+  function sandboxStepHtml(number, title, detail) {
+    return '<li class="sbx-step"><span class="sbx-step-num" aria-hidden="true">' + number + '</span><div class="sbx-step-body"><p class="sbx-step-title">' + title + '</p>' + (detail || '') + '</div></li>';
+  }
+
+  // Redeploy required: the install request is saved, but only a deployment
+  // from the customer's own Cloudflare account can add the Container. One
+  // status (the badge), prerequisites first, then steps for how this
+  // installation is actually deployed.
+  function sandboxRedeployHtml(status, disabled) {
+    var path = sandboxDeployPath(status);
+    // Check and cancel results sit beside Check again. "Not found yet" is
+    // an expected answer while a deploy runs, so it is neutral, not success.
+    var live = state.sandboxError
+      ? '<p class="field-error" role="alert" aria-live="assertive">' + esc(state.sandboxError) + '</p>'
+      : state.sandboxNotice
+        ? '<p class="sbx-check-result" role="status" aria-live="polite">' + esc(state.sandboxNotice) + '</p>'
+        : '';
+    var detected = status.deploySource === "workers-builds" || status.deploySource === "command";
+    var pathButton = function (value, label) {
+      var on = path === value;
+      return '<button type="button" class="' + (on ? "on" : "") + '" aria-pressed="' + (on ? "true" : "false") + '" data-action="sandbox-deploy-path" data-path="' + value + '"' + disabled + '>' + label + '</button>';
+    };
+    var imageWait = '<p class="sbx-step-text">The first time, Cloudflare builds the sandbox image, which can take several minutes.</p>';
+    var steps = path === "dashboard"
+      ? sandboxStepHtml(1, 'Open your Worker&rsquo;s build settings',
+          '<p class="sbx-step-text">In the Cloudflare dashboard, go to <b>Workers &amp; Pages</b> &rarr; your Chickpea Worker &rarr; <b>Settings</b> &rarr; <b>Builds</b>.</p>' +
+          '<a class="hint-link" href="https://dash.cloudflare.com/?to=/:account/workers-and-pages" target="_blank" rel="noopener noreferrer">Open Cloudflare dashboard &nearr;</a>') +
+        sandboxStepHtml(2, 'Add a build variable',
+          '<p class="sbx-step-text">Under <b>Build variables and secrets</b>, add this as a plain variable, not a secret.</p>' +
+          '<div class="sbx-copy-group">' + sandboxCopyRowHtml("name", "Name", disabled) + sandboxCopyRowHtml("value", "Value", disabled) + '</div>') +
+        sandboxStepHtml(3, 'Start a new build',
+          '<p class="sbx-step-text">Push a commit to the connected repository, or retry the latest build from the Worker&rsquo;s <b>Deployments</b> page. Wait for the build to finish.</p>' + imageWait)
+      : sandboxStepHtml(1, 'Open a terminal in your Chickpea folder',
+          '<p class="sbx-step-text">Use the folder you install and update Chickpea from, signed in to the same Cloudflare account.</p>') +
+        sandboxStepHtml(2, 'Run the sandbox deploy command',
+          sandboxCopyRowHtml("command", "", disabled) +
+          '<p class="sbx-step-text">If you normally add <code class="sbx-inline-code">-- --profile &lt;name&gt;</code> after <code class="sbx-inline-code">npm run deploy</code>, add it here too.</p>') +
+        sandboxStepHtml(3, 'Wait for the deploy to finish', imageWait);
+    var checking = state.sandboxSaving === "check";
+    steps += sandboxStepHtml(4, 'Come back and check',
+      '<p class="sbx-step-text">When Chickpea finds the sandbox, this page changes to <b>Installed but off</b> and you can turn it on.</p>' +
+      '<div class="sbx-check-row"><button type="button" class="btn btn-primary" data-action="sandbox-check-again"' + disabled + '>' + (checking ? "Checking&hellip;" : "Check again") + '</button>' + live + '</div>');
+    var keep = path === "dashboard"
+      ? 'Keep <code class="sbx-inline-code">CHICKPEA_DEPLOY_PROFILE</code> in your build variables. Removing it removes the sandbox on the next build.'
+      : 'For later updates, deploy with <code class="sbx-inline-code">npm run deploy:sandbox</code>. A plain <code class="sbx-inline-code">npm run deploy</code> removes the sandbox.';
+    return '<div class="sbx-redeploy">' +
+      '<div class="sbx-lead"><p class="sbx-lead-title">Redeploy Chickpea to finish installing</p>' +
+      '<p class="sbx-lead-text">Your request is saved. The sandbox runs in a Cloudflare Container, which is added the next time Chickpea is deployed from your Cloudflare account. Chickpea can&rsquo;t redeploy itself, so follow these steps and then come back here.</p></div>' +
+      '<div class="sbx-prereq"><span class="sbx-prereq-icon" aria-hidden="true">' + icon("exclamation-triangle") + '</span><div><p class="sbx-prereq-title">Before you start: Workers Paid plan required</p>' +
+      '<p class="sbx-step-text">Containers aren&rsquo;t available on Workers Free. They run on your Cloudflare account; a typical coding session costs about 1 cent.</p>' +
+      '<a class="hint-link" href="https://dash.cloudflare.com/?to=/:account/workers/plans" target="_blank" rel="noopener noreferrer">Check your Workers plan &nearr;</a></div></div>' +
+      '<div class="sbx-path"><p class="sbx-path-label" id="sandbox-deploy-path-label">How do you deploy Chickpea?</p>' +
+      '<div class="seg sbx-path-seg" role="group" aria-labelledby="sandbox-deploy-path-label">' + pathButton("command", "With a command") + pathButton("dashboard", "Cloudflare Git builds") + '</div>' +
+      '<p class="sbx-path-hint">' + (detected
+        ? (status.deploySource === "workers-builds" ? "Chosen because this installation was built by Cloudflare from a connected repository." : "Chosen because this installation was deployed with a command.")
+        : "Choose the way you usually install and update Chickpea.") + '</p></div>' +
+      '<ol class="sbx-steps">' + steps + '</ol>' +
+      '<div class="sbx-foot"><p class="sbx-step-text">' + keep + '</p>' +
+      '<div class="sbx-cancel-row"><p class="sbx-step-text">Changed your mind? Canceling clears the saved request and doesn&rsquo;t change anything in Cloudflare.</p>' +
+      '<button type="button" class="btn btn-ghost btn-sm" data-action="sandbox-cancel-install"' + disabled + '>' + (state.sandboxSaving === "cancel" ? "Canceling&hellip;" : "Cancel request") + '</button></div></div>' +
+      (state.sandboxAnnounce ? '<p class="sr-only" role="status" aria-live="polite">' + esc(state.sandboxAnnounce) + '</p>' : '') +
+      '</div>';
   }
 
   function sandboxAdvancedHtml(disabled) {
@@ -9369,6 +9460,9 @@
     state.sandboxConfirm = "";
     state.sandboxReadyAttested = false;
     state.sandboxNotice = "";
+    state.sandboxAnnounce = "";
+    state.sandboxCopy = null;
+    state.sandboxDeployPath = "";
     state.sandboxError = "";
     state.modelCatalogLoaded = false;
     state.modelCatalogError = "";
@@ -10194,7 +10288,9 @@
       applySandboxStatus(body);
       state.sandboxSaving = false;
       state.sandboxConfirm = "";
-      state.sandboxNotice = "Installation requested. Redeploy required.";
+      state.sandboxNotice = "";
+      state.sandboxCopy = null;
+      state.sandboxAnnounce = "Installation requested. Follow the redeploy steps to finish.";
       render();
     }).catch(function (error) {
       state.sandboxSaving = false;
@@ -10209,6 +10305,8 @@
     state.sandboxSaving = "cancel";
     state.sandboxError = "";
     state.sandboxNotice = "";
+    state.sandboxAnnounce = "";
+    state.sandboxCopy = null;
     render();
     api("/admin/api/sandbox/install", { method: "DELETE" }).then(function (body) {
       applySandboxStatus(body);
@@ -10229,13 +10327,15 @@
     state.sandboxSaving = "check";
     state.sandboxError = "";
     state.sandboxNotice = "";
+    state.sandboxAnnounce = "";
+    state.sandboxCopy = null;
     render();
     api("/admin/api/sandbox/status").then(function (body) {
       applySandboxStatus(body);
       state.sandboxSaving = false;
       state.sandboxNotice = body.installed
         ? "Coding Sandbox installation found."
-        : "No Sandbox binding yet. Finish the Cloudflare redeploy and check again.";
+        : "Not found yet. If your deploy is still running, wait for it to finish and check again.";
       render();
     }).catch(function (error) {
       state.sandboxSaving = false;
@@ -12289,25 +12389,35 @@
     if (action === "sandbox-check-again") { checkSandboxInstall(); }
     if (action === "sandbox-cancel-install") { cancelSandboxInstall(); }
     if (action === "sandbox-disable") { putSandbox(false, false, "disable"); }
-    if (action === "sandbox-copy-profile") {
-      var sandboxBuildVariable = "CHICKPEA_DEPLOY_PROFILE=sandbox";
-      var selectSandboxBuildVariable = function () {
-        state.sandboxNotice = "Clipboard access was unavailable. The build variable is selected for manual copy.";
+    if (action === "sandbox-deploy-path") {
+      state.sandboxDeployPath = target.getAttribute("data-path") === "dashboard" ? "dashboard" : "command";
+      state.sandboxCopy = null;
+      state.sandboxAnnounce = "";
+      render();
+    }
+    if (action === "sandbox-copy") {
+      var sandboxCopyId = target.getAttribute("data-copy");
+      var sandboxCopyText = Object.prototype.hasOwnProperty.call(SANDBOX_COPY_TEXT, sandboxCopyId) ? SANDBOX_COPY_TEXT[sandboxCopyId] : "";
+      if (!sandboxCopyText) return;
+      var selectSandboxCopy = function () {
+        state.sandboxCopy = { id: sandboxCopyId, ok: false };
         render();
-        var sandboxBuildVariableInput = document.getElementById("sandbox-build-variable");
-        if (sandboxBuildVariableInput && sandboxBuildVariableInput.focus) sandboxBuildVariableInput.focus();
-        if (sandboxBuildVariableInput && sandboxBuildVariableInput.select) sandboxBuildVariableInput.select();
+        var sandboxCopyInput = document.getElementById("sandbox-copy-" + sandboxCopyId);
+        if (sandboxCopyInput && sandboxCopyInput.focus) sandboxCopyInput.focus();
+        if (sandboxCopyInput && sandboxCopyInput.select) sandboxCopyInput.select();
       };
+      state.sandboxAnnounce = "";
       if (!navigator.clipboard || !navigator.clipboard.writeText) {
-        selectSandboxBuildVariable();
+        selectSandboxCopy();
       } else {
         try {
-          Promise.resolve(navigator.clipboard.writeText(sandboxBuildVariable)).then(function () {
-            state.sandboxNotice = "Sandbox build variable copied.";
+          Promise.resolve(navigator.clipboard.writeText(sandboxCopyText)).then(function () {
+            state.sandboxCopy = { id: sandboxCopyId, ok: true };
+            state.sandboxAnnounce = "Copied " + sandboxCopyText + ".";
             render();
-          }).catch(selectSandboxBuildVariable);
+          }).catch(selectSandboxCopy);
         } catch (_) {
-          selectSandboxBuildVariable();
+          selectSandboxCopy();
         }
       }
     }
