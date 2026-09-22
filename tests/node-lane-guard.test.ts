@@ -15,10 +15,10 @@ test('Flue 2 has one compatible Pi/Agents/MCP dependency graph', () => {
   const lock = JSON.parse(readFileSync(path.join(PROJECT_ROOT, 'package-lock.json'), 'utf8'));
   const packages = lock.packages as Record<string, { version?: string }>;
 
-  assert.equal(packageJson.dependencies['@flue/runtime'], '2.0.7');
-  assert.equal(packageJson.dependencies['@flue/slack'], '2.0.7');
-  assert.equal(packageJson.devDependencies['@flue/cli'], '2.0.7');
-  assert.equal(packageJson.devDependencies['@flue/vite'], '2.0.7');
+  assert.equal(packageJson.dependencies['@flue/runtime'], '2.1.0');
+  assert.equal(packageJson.dependencies['@flue/slack'], '2.1.0');
+  assert.equal(packageJson.devDependencies['@flue/cli'], '2.1.0');
+  assert.equal(packageJson.devDependencies['@flue/vite'], '2.1.0');
   assert.equal(packageJson.dependencies.agents, undefined);
   assert.equal(packageJson.dependencies['@earendil-works/pi-ai'], '0.83.0');
   assert.equal(packages['node_modules/@earendil-works/pi-ai']?.version, '0.83.0');
