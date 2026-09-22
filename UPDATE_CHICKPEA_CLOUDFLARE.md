@@ -66,8 +66,16 @@ updated checkout:
 npm run deploy
 ```
 
-An installation with the optional coding sandbox also follows its
-[sandbox deployment guide](docs/runbooks/coding-sandbox-deployment.md).
+An installation with the optional coding sandbox must keep it. If Admin
+**Settings → Coding sandbox** shows **Installed but off** or **On**, or the
+deploy reports that the live Worker has the coding sandbox, deploy with
+`npm run deploy:sandbox` and the same flags and environment variables described
+below. For example, use
+`CHICKPEA_DEPLOY_TARGET=production npm run deploy:sandbox -- --profile <existing-profile>`.
+This needs Docker running and the `containers:write` permission; see
+[Deploy from the command line](docs/runbooks/coding-sandbox-deployment.md#deploy-from-the-command-line).
+A plain `npm run deploy` refuses to replace a live sandbox, and the guided
+`npm run upgrade` tool supports only core installations.
 
 If the installation uses a named Wrangler login, use
 `npm run deploy -- --profile <existing-profile>` instead. On a host with a

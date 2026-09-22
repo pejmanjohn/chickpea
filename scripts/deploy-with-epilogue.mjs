@@ -37,6 +37,17 @@ import { validateInstallation, validateTarget, assertSameInstallation, overlayIn
 import { readPrivateJson, writePrivateJson, writeDeploymentEvent } from './lib/upgrade-receipt.mjs';
 import { verifyRetainedBuildRoot } from './lib/upgrade-source.mjs';
 import { preflightCloudflareAccount, assertCloudflareAccountConfig } from './lib/cloudflare-account-preflight.mjs';
+import {
+  formatPreflightProblems,
+  prebuildSandboxImage,
+  preflightSandboxDeployment,
+  rerunCommand,
+  sandboxApplicationName,
+  sandboxPartialDeployRecovery,
+  uploadedBeforeFailure,
+  useSandboxImage,
+  verifySandboxContainerApplication,
+} from './lib/sandbox-deploy-preflight.mjs';
 
 import {
   classifyCloudflareDeploymentProfile,
@@ -172,6 +183,19 @@ try {
   console.error(error instanceof Error ? error.message : String(error));
   process.exit(1);
 }
+// An unset profile means core, but only an explicit `core` may replace a live
+// coding sandbox: a routine update must not silently uninstall it.
+const explicitCoreProfile = process.env.CHICKPEA_DEPLOY_PROFILE?.trim() === 'core';
+// Local sandbox deploys prove Docker, the base image, and Containers access,
+// then push the image, all before the Worker upload that makes the SANDBOX
+// binding live. Workers Builds keeps Wrangler's own container build; a
+// `--containers-rollout=none` deploy deliberately skips the Container step.
+const guardedSandboxDeploy = deploymentProfile === 'sandbox' &&
+  !preflightOnly &&
+  !deployArgs.some((arg) => ['--dry-run', '--help', '-h'].includes(arg)) &&
+  !deployArgs.some((arg) => arg === '--containers-rollout=none' || arg === '--containers-rollout') &&
+  process.env.WORKERS_CI !== '1' &&
+  !upgradeContextPath;
 
 const BETA_FLUE_CLASSES = Object.freeze([
   'FlueRegistry',
@@ -360,6 +384,29 @@ try {
 } catch (error) {
   console.error(error.message);
   process.exit(1);
+}
+function sandboxToolOptions(configPath) {
+  return {
+    wranglerBin,
+    projectRoot,
+    configPath,
+    providerContext: deploymentResourceArgs(),
+    dockerfilePath: path.join(projectRoot, 'Dockerfile'),
+    accountId: checkedAccount?.accountId ?? process.env.CLOUDFLARE_ACCOUNT_ID,
+    ...(process.env.DEPLOY_TEST_SANDBOX_RETRY_MS ? { retryDelayMs: Number(process.env.DEPLOY_TEST_SANDBOX_RETRY_MS) } : {}),
+  };
+}
+if (guardedSandboxDeploy) {
+  try {
+    const problems = preflightSandboxDeployment(sandboxToolOptions(path.join(projectRoot, 'wrangler.jsonc')));
+    if (problems.length) {
+      console.error(formatPreflightProblems(problems));
+      process.exit(1);
+    }
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  }
 }
 if (!skipBuild && !reuseWorkersBuildArtifact) buildCloudflareArtifact();
 
@@ -712,6 +759,19 @@ try {
   process.exit(1);
 }
 
+let prebuiltSandboxImage;
+if (guardedSandboxDeploy) {
+  try {
+    prebuiltSandboxImage = await prebuildSandboxImage({
+      ...sandboxToolOptions(builtArtifact.configPath),
+      applicationName: sandboxApplicationName(builtArtifact.config),
+    });
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  }
+}
+
 const AUTH_SECRET = 'CHICKPEA_AUTH_SECRET';
 const CREDENTIAL_CURRENT_KEY = 'CHICKPEA_CREDENTIAL_KEY_CURRENT_ID';
 const CREDENTIAL_KEY_PREFIX = 'CHICKPEA_CREDENTIAL_KEY_';
@@ -753,12 +813,17 @@ function deployedAuthDatabase(artifact) {
   const databaseIds = [];
   const setupAuthorities = [];
   let versionsWithoutAuthDatabase = 0;
+  let sandboxBound = false;
   for (const version of versions) {
     let details;
     try { details = inspector(artifact).version(version.version_id); } catch {
       throw new Error(`Unable to inspect active Worker version ${version.version_id}. Refusing an update without its current AUTH_DB binding.`);
     }
     const allBindings = details?.resources?.bindings ?? [];
+    if (allBindings.some((binding) => binding?.type === 'durable_object_namespace'
+      && (binding.name === 'SANDBOX' || binding.class_name === 'Sandbox'))) {
+      sandboxBound = true;
+    }
     const bindings = allBindings.filter(
       (binding) => binding?.name === 'AUTH_DB' && binding?.type === 'd1',
     );
@@ -809,6 +874,8 @@ function deployedAuthDatabase(artifact) {
   return {
     databaseId: uniqueIds[0],
     fingerprint: deploymentFingerprint(versions),
+    sandboxBound,
+    servingVersionId: versions.length === 1 ? versions[0].version_id : undefined,
     ...((selectedEnvironmentTarget || upgradeContext) ? {
       setupAuthority: { digest: setupDigest, issuedAt: Number(setupIssuedAt) },
     } : {}),
@@ -1058,6 +1125,7 @@ function verifyRemoteAuthSchema(artifact) {
 let deploymentAuthority;
 let remoteWorker;
 let expectedActiveDeploymentFingerprint;
+let previousServingVersionId;
 let finalEnvironmentPreflight;
 if (!deployArgs.includes('--dry-run')) {
   try {
@@ -1090,6 +1158,15 @@ if (!deployArgs.includes('--dry-run')) {
       throw new Error('Upgrade requires the existing Worker and AUTH_DB; provisioning is forbidden.');
     }
     expectedActiveDeploymentFingerprint = deployed?.fingerprint;
+    previousServingVersionId = deployed?.servingVersionId;
+    if (deployed?.sandboxBound && deploymentProfile === 'core' && !explicitCoreProfile) {
+      throw new Error(
+        'The live Worker has the coding sandbox (SANDBOX binding), and this command would deploy the core profile ' +
+        'and remove it. To keep the sandbox, run the same command as `npm run deploy:sandbox` with the same flags and ' +
+        'environment (for Workers Builds, keep the CHICKPEA_DEPLOY_PROFILE=sandbox build variable). To uninstall it ' +
+        'on purpose, set CHICKPEA_DEPLOY_PROFILE=core and rerun. Nothing was changed.',
+      );
+    }
     builtArtifact = ensureAuthDatabase(builtArtifact, deployed?.databaseId);
     // This is the final gate immediately before the first mutation of an
     // existing customer resource. It intentionally reruns after both D1 reuse
@@ -1269,6 +1346,13 @@ if (upgradeContext) {
 
 try {
   if (qaSourceAdmission) qaCandidateApi.recheckQaCandidate(qaSourceAdmission);
+  if (prebuiltSandboxImage) {
+    // Last write before the upload: Wrangler now applies the Container
+    // application from the already-pushed image instead of building it after
+    // the new Worker version is live.
+    useSandboxImage(builtArtifact.config, prebuiltSandboxImage);
+    writeFileSync(builtArtifact.configPath, `${JSON.stringify(builtArtifact.config, null, 2)}\n`);
+  }
 } catch (error) {
   removeSecretsFile(preparedSecrets);
   console.error(error instanceof Error ? error.message : String(error));
@@ -1304,6 +1388,7 @@ for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
 
 let deployedUrl = '';
 let deployedVersionId = '';
+let workerUploaded = false;
 let tail = '';
 child.stdout.on('data', (chunk) => {
   process.stdout.write(chunk);
@@ -1314,6 +1399,7 @@ child.stdout.on('data', (chunk) => {
   if (match && !deployedUrl) {
     deployedUrl = match[0];
   }
+  if (!workerUploaded && uploadedBeforeFailure(text)) workerUploaded = true;
   const versionMatch = text.match(/(?:Current|Worker) Version ID:\s*([A-Za-z0-9-]+)/);
   if (versionMatch?.[1] && versionMatch[1] !== deployedVersionId) {
     deployedVersionId = versionMatch[1];
@@ -1430,9 +1516,21 @@ function printPrivateSetupPath(setup) {
 // Workers Builds receives stdout through a pipe. Let Node exit naturally after
 // this callback so the final setup link and Cloudflare's completion event can
 // flush; process.exit() can truncate asynchronous pipe writes.
+function sandboxRecovery() {
+  return sandboxPartialDeployRecovery({
+    workerName: builtArtifact.config.name,
+    previousVersionId: previousServingVersionId,
+    providerContext: deploymentResourceArgs(),
+    rerun: rerunCommand({ explicitProductionTarget, deployArgs, workersBuilds: process.env.WORKERS_CI === '1' }),
+  });
+}
+
 child.on('close', async (code) => {
   cleanupSecrets();
   if (code !== 0) {
+    // Wrangler activates the uploaded version before it creates the Container
+    // application, so a failure after `Uploaded` is a live partial deploy.
+    if (deploymentProfile === 'sandbox' && workerUploaded) console.error(sandboxRecovery());
     process.exitCode = code ?? 1;
     return;
   }
@@ -1468,6 +1566,22 @@ child.on('close', async (code) => {
       deployedVersionId,
       deploymentAuthority.activation,
     );
+    if (guardedSandboxDeploy) {
+      const container = verifySandboxContainerApplication({
+        ...sandboxToolOptions(builtArtifact.configPath),
+        applicationName: sandboxApplicationName(builtArtifact.config),
+      });
+      if (container.missing) throw new Error(`${container.message}\n${sandboxRecovery()}`);
+      // An unreadable listing is not evidence of failure; say what is unknown.
+      if (!container.ok) process.stdout.write(`! ${container.message}\n`);
+      else {
+        process.stdout.write(
+          `${container.message} The first image rollout can take several minutes (wait for state "ready"). ` +
+          'Then open Admin → Settings → Coding sandbox, choose Check again, and choose Enable coding sandbox: ' +
+          'repository grants do not use the Container until it is enabled.\n',
+        );
+      }
+    }
     if (selectedEnvironmentTarget) {
       await environmentPreflightApi.completeEnvironmentDeployment(
         finalEnvironmentPreflight,

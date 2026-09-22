@@ -39,8 +39,12 @@ const stableJson = (value) => JSON.stringify(value, (_, entry) => entry && typeo
   ? Object.fromEntries(Object.entries(entry).sort(([a], [b]) => a.localeCompare(b))) : entry);
 export const inventoryDigest = (value) => createHash('sha256').update(stableJson(value)).digest('hex');
 
+const SANDBOX_UPGRADE_UNSUPPORTED = 'Guided upgrades currently support the core profile only. Sandbox container images ' +
+  'require the existing coding-sandbox deployment runbook: update the checkout as UPDATE_CHICKPEA_CLOUDFLARE.md describes, ' +
+  'then deploy with `npm run deploy:sandbox` and the same flags and environment you normally deploy with.';
+
 export function validateTarget(target) {
-  if (target?.profile === 'sandbox') throw new Error('Guided upgrades currently support the core profile only. Sandbox container images require the existing coding-sandbox deployment runbook.');
+  if (target?.profile === 'sandbox') throw new Error(SANDBOX_UPGRADE_UNSUPPORTED);
   if (!target || !/^[a-f0-9]{32}$/i.test(target.account) || !/^[a-z0-9][a-z0-9-]{0,62}$/.test(target.worker) || target.profile !== 'core') {
     throw new Error('Select an existing Cloudflare account ID, Worker name, and core profile.');
   }
@@ -96,6 +100,11 @@ export function validateInstallation(remote) {
   const databases = resources.filter((binding) => binding.type === 'd1');
   const databaseId = databases[0]?.id ?? databases[0]?.database_id;
   if (databases.length !== 1 || databases[0].name !== 'AUTH_DB' || typeof databaseId !== 'string' || !databaseId) throw new Error('Exactly one existing AUTH_DB is required.');
+  // A core upgrade would drop a live coding sandbox; say so instead of
+  // failing later on an unexplained binding mismatch.
+  if (resources.some((binding) => binding.type === 'durable_object_namespace' && (binding.name === 'SANDBOX' || binding.class_name === 'Sandbox'))) {
+    throw new Error(`This installation serves the coding sandbox. ${SANDBOX_UPGRADE_UNSUPPORTED}`);
+  }
   for (const binding of resources.filter((entry) => entry.type === 'durable_object_namespace')) {
     if (typeof binding.namespace_id !== 'string' || !binding.namespace_id || typeof binding.class_name !== 'string' || !binding.class_name) throw new Error('Unreadable Durable Object identity.');
   }
