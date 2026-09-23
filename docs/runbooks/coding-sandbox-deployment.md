@@ -237,6 +237,28 @@ Errors and unchanged checks leave the last confirmed status on screen. Retry
 only after reading the inline result; do not treat a button click as proof that
 Cloudflare finished the deployment.
 
+## Workspace lifetime and cost
+
+Each Slack thread gets one coding workspace. It starts on the first command an
+Agent runs and stays warm between turns, so a follow-up in the same thread
+reuses the checkout instead of cloning again.
+
+- **Warm window:** the container sleeps 30 minutes after the thread's last
+  turn. Sleep wipes its disk and stops all billing. An idle `standard-1`
+  container costs about $0.04 per hour while it waits.
+- **Retirement:** the workspace is destroyed before the next turn if a
+  different Agent takes over the thread or the Agent's repository grants
+  change, so a checkout never outlives the access that created it.
+- **Credentials:** GitHub access exists only while a turn runs. The turn's
+  egress grants are revoked when it ends, even though the container stays up.
+- **Scheduled work:** a routine run always starts a fresh workspace and
+  destroys it when the run ends.
+- **Monthly session cap:** counts workspace starts, not turns. Follow-ups that
+  reuse a warm workspace do not count again.
+
+Anything that must survive longer belongs on a pushed branch or pull request;
+the Agent's workspace instructions say so.
+
 ## Disable, uninstall, or roll back
 
 **Disable** in Chickpea is immediate. It stops selecting the coding sandbox for
