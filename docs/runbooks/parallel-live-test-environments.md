@@ -30,6 +30,16 @@ refuses stale revisions, duplicate identities and unready registrations. All
 subsequent callers must use tooling that understands Violet; older checkouts
 reject the expanded registry instead of overwriting it.
 
+Finish activation after registration: claim Violet, deploy through the guarded
+wrapper with `CHICKPEA_DEPLOY_TARGET=violet`, attest it, verify signed-in Admin
+and a real Slack reply, then release the claim. Confirm `npm run env -- status
+--all` lists Violet as ready and unclaimed. Verify ordinary acquisition with
+`npm run env -- wait-claim violet --timeout-ms 0 --poll-ms 1000`, then release
+that check's claim with `npm run env -- release violet`.
+A workspace rename, successful bootstrap, or merged lane-support PR alone does
+not activate the private registry. Keep any unfinished activation steps explicit
+in the handoff.
+
 Confirm one paid human seat per workspace and monthly billing at checkout.
 Disable automatic email-domain membership and avoid invitations to unrelated
 people. Record each workspace-local actor, bot, DM, and installation identity.

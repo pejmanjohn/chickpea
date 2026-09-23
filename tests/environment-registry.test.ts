@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import fs from 'node:fs';
 import {
   chmodSync,
   existsSync,
@@ -16,6 +17,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { hostname, tmpdir } from 'node:os';
+import { syncBuiltinESMExports } from 'node:module';
 import { basename, join } from 'node:path';
 import test from 'node:test';
 
@@ -1188,6 +1190,43 @@ test('immutable revision snapshots recover a whole older registry file', (contex
   const recovered = readEnvironmentRegistry(registryOptions(f.root));
   assert.equal(recovered.revision, claimedRevision);
   assert.ok(recovered.targets.amber.claim);
+});
+
+test('registry reads stay consistent when a writer publishes after the snapshot listing', (context) => {
+  const f = fixture();
+  context.after(() => rmSync(f.parent, { recursive: true, force: true }));
+  const original = fs.readdirSync;
+  let published = false;
+  fs.readdirSync = ((...args: Parameters<typeof original>) => {
+    const entries = original(...args);
+    if (!published && String(args[0]) === join(f.root, 'revisions')) {
+      published = true;
+      claimEnvironment('amber', { ...registryOptions(f.root), worktreePath: f.first.path });
+    }
+    return entries;
+  }) as typeof original;
+  syncBuiltinESMExports();
+  try {
+    const observed = readEnvironmentRegistry(registryOptions(f.root));
+    assert.equal(published, true);
+    assert.equal(observed.revision, 0);
+    assert.equal(observed.targets.amber.claim, null);
+  } finally {
+    fs.readdirSync = original;
+    syncBuiltinESMExports();
+  }
+  const current = readEnvironmentRegistry(registryOptions(f.root));
+  assert.equal(current.revision, 1);
+  assert.ok(current.targets.amber.claim);
+});
+
+test('registry reads still refuse a current revision without its immutable snapshot', (context) => {
+  const f = fixture();
+  context.after(() => rmSync(f.parent, { recursive: true, force: true }));
+  claimEnvironment('amber', { ...registryOptions(f.root), worktreePath: f.first.path });
+  rmSync(join(f.root, 'revisions', 'revision-0000000000000001.json'));
+  assert.throws(() => readEnvironmentRegistry(registryOptions(f.root)),
+    rejectsCode('REGISTRY_REVISION_HISTORY_MISSING'));
 });
 
 test('snapshot-first crash ordering recovers the committed claim authority', (context) => {
