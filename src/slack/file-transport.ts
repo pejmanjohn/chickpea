@@ -1,8 +1,6 @@
 import type { WebClient } from '@slack/web-api';
 
-import { MAX_ARTIFACT_BYTES } from '../sandbox/artifact-tool.ts';
 import { isRecord } from '../security/content-validation.ts';
-import { MAX_GATEWAY_ARTIFACT_BYTES } from './gateway/protocol.ts';
 import { isGatewaySlackWebClient } from './gateway/web-client.ts';
 import { SlackTransportError } from './transport/types.ts';
 import { slackPlatformErrorCode } from './errors.ts';
@@ -51,12 +49,20 @@ export interface SlackFileCompletionResult {
   share?: SlackFileShare;
 }
 
+/**
+ * The largest file either transport sends. Bytes go straight to Slack's
+ * pre-signed upload URL; the shared gateway only issues the ticket, and its
+ * own ticket ceiling is this same size.
+ */
+export const MAX_SLACK_UPLOAD_BYTES = 24 * 1024 * 1024;
+
 export interface SlackFileTransport {
   /**
-   * The largest file this installation can upload: the direct artifact cap,
-   * or the shared gateway's much smaller request cap. Set at construction
-   * because nothing else distinguishes the two transports before an upload
-   * fails, and the image tool must choose its output format before the call.
+   * The largest file this installation can upload. Set at construction
+   * because the image tool must choose its output format before the call.
+   * An older shared gateway without upload tickets falls back to carrying
+   * the file inside its request, which fails as too-large beyond
+   * MAX_GATEWAY_ARTIFACT_BYTES.
    */
   maxBytes: number;
   /** Completes privately once. A missing method marks a legacy transport. */
@@ -95,23 +101,43 @@ export function createSlackFileTransport(
   client: WebClient,
   options: { fetch?: typeof fetch } = {},
 ): SlackPrivateFileTransport {
+  const fetcher = options.fetch ?? globalThis.fetch.bind(globalThis);
   return isGatewaySlackWebClient(client)
-    ? createGatewayFileTransport(client)
-    : createDirectFileTransport(client, options.fetch ?? globalThis.fetch.bind(globalThis));
+    ? createGatewayFileTransport(client, fetcher)
+    : createDirectFileTransport(client, fetcher);
 }
 
-function createGatewayFileTransport(client: WebClient): SlackPrivateFileTransport {
+/**
+ * Over the shared gateway the file bytes still go straight to Slack: the
+ * gateway issues the upload ticket and completes the file, and only those
+ * two small calls cross it. A gateway that predates tickets answers with an
+ * unsupported operation, and the file then rides inside the gateway request
+ * as before, subject to that request's cap.
+ */
+function createGatewayFileTransport(client: WebClient, fetcher: typeof fetch): SlackPrivateFileTransport {
   return {
-    maxBytes: MAX_GATEWAY_ARTIFACT_BYTES,
+    maxBytes: MAX_SLACK_UPLOAD_BYTES,
     async stagePrivate(input) {
-      const result = await client.files.uploadV2({
-        filename: input.filename,
-        file: Buffer.from(input.bytes.buffer, input.bytes.byteOffset, input.bytes.byteLength),
-        ...(input.title ? { title: input.title } : {}),
-      });
-      return privateStageResult(result, input.bytes.byteLength, 'files.uploadV2');
+      let staged: SlackFileStageResult;
+      try {
+        staged = await stageWithTicket(client, fetcher, input);
+      } catch (error) {
+        if (!isSlackFileTransportUnsupported(error)) throw error;
+        const result = await client.files.uploadV2({
+          filename: input.filename,
+          file: Buffer.from(input.bytes.buffer, input.bytes.byteOffset, input.bytes.byteLength),
+          ...(input.title ? { title: input.title } : {}),
+        });
+        return privateStageResult(result, input.bytes.byteLength, 'files.uploadV2');
+      }
+      return completePrivately(client, input, staged);
     },
     async stage(input) {
+      try {
+        return await stageWithTicket(client, fetcher, input);
+      } catch (error) {
+        if (!isSlackFileTransportUnsupported(error)) throw error;
+      }
       const result = await client.apiCall(SLACK_FILE_STAGE_OPERATION, {
         filename: input.filename,
         file: input.bytes,
@@ -143,43 +169,12 @@ function createGatewayFileTransport(client: WebClient): SlackPrivateFileTranspor
 
 function createDirectFileTransport(client: WebClient, fetcher: typeof fetch): SlackPrivateFileTransport {
   const transport: SlackPrivateFileTransport = {
-    maxBytes: MAX_ARTIFACT_BYTES,
+    maxBytes: MAX_SLACK_UPLOAD_BYTES,
     async stagePrivate(input) {
-      const staged = await transport.stage(input);
-      const result = await client.files.completeUploadExternal({
-        files: [{ id: staged.fileId, ...(input.title ? { title: input.title } : {}) }],
-      });
-      return privateStageResult(result, staged.byteLength, SLACK_FILE_COMPLETE_OPERATION, staged.fileId);
+      return completePrivately(client, input, await transport.stage(input));
     },
     async stage(input) {
-      const ticket = await client.files.getUploadURLExternal({
-        filename: input.filename,
-        length: input.bytes.byteLength,
-        ...(input.altText ? { alt_text: input.altText } : {}),
-        ...(input.snippetType ? { snippet_type: input.snippetType } : {}),
-      });
-      const fileId = typeof ticket.file_id === 'string' && SLACK_FILE_ID.test(ticket.file_id)
-        ? ticket.file_id
-        : undefined;
-      const uploadUrl = uploadUrlFrom(ticket.upload_url);
-      if (!fileId || !uploadUrl) {
-        throw new SlackTransportError('files.getUploadURLExternal', 'invalid_upload_ticket');
-      }
-      let response: Response;
-      try {
-        response = await fetcher(uploadUrl, {
-          method: 'POST',
-          body: input.bytes as BodyInit,
-          redirect: 'manual',
-        });
-      } catch {
-        throw new SlackTransportError('files.upload', 'upload_unreachable', { retryable: true });
-      }
-      await response.body?.cancel().catch(() => undefined);
-      if (response.status !== 200) {
-        throw new SlackTransportError('files.upload', `upload_http_${response.status}`);
-      }
-      return { fileId, byteLength: input.bytes.byteLength };
+      return stageWithTicket(client, fetcher, input);
     },
     async complete(input) {
       return completeFiles(client, input);
@@ -193,6 +188,54 @@ function createDirectFileTransport(client: WebClient, fetcher: typeof fetch): Sl
     },
   };
   return transport;
+}
+
+/** Ask Slack (directly or through the gateway) for an upload ticket, then send the bytes to it. */
+async function stageWithTicket(
+  client: WebClient,
+  fetcher: typeof fetch,
+  input: SlackFileStageInput,
+): Promise<SlackFileStageResult> {
+  const ticket = await client.files.getUploadURLExternal({
+    filename: input.filename,
+    length: input.bytes.byteLength,
+    ...(input.altText ? { alt_text: input.altText } : {}),
+    ...(input.snippetType ? { snippet_type: input.snippetType } : {}),
+  });
+  const fileId = typeof ticket.file_id === 'string' && SLACK_FILE_ID.test(ticket.file_id)
+    ? ticket.file_id
+    : undefined;
+  const uploadUrl = uploadUrlFrom(ticket.upload_url);
+  if (!fileId || !uploadUrl) {
+    throw new SlackTransportError('files.getUploadURLExternal', 'invalid_upload_ticket');
+  }
+  let response: Response;
+  try {
+    response = await fetcher(uploadUrl, {
+      method: 'POST',
+      body: input.bytes as BodyInit,
+      redirect: 'manual',
+    });
+  } catch {
+    throw new SlackTransportError('files.upload', 'upload_unreachable', { retryable: true });
+  }
+  await response.body?.cancel().catch(() => undefined);
+  if (response.status !== 200) {
+    throw new SlackTransportError('files.upload', `upload_http_${response.status}`);
+  }
+  return { fileId, byteLength: input.bytes.byteLength };
+}
+
+/** Finish a staged file without a destination; the reply shares its permalink. */
+async function completePrivately(
+  client: WebClient,
+  input: SlackFileStageInput,
+  staged: SlackFileStageResult,
+): Promise<SlackFilePrivateStageResult> {
+  const result = await client.files.completeUploadExternal({
+    files: [{ id: staged.fileId, ...(input.title ? { title: input.title } : {}) }],
+  });
+  return privateStageResult(result, staged.byteLength, SLACK_FILE_COMPLETE_OPERATION, staged.fileId);
 }
 
 function privateStageResult(

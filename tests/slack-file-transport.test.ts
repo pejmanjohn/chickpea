@@ -41,11 +41,15 @@ test('direct staging preserves byte subviews and native completion keeps Agent p
   assert.deepEqual(await transport.resolveShare({ fileId, channelId, threadTs }), { shared: true, channelId, ts });
 });
 
-test('gateway uses stage, native completion and exact-share readback without uploadV2', async () => {
+test('gateway issues an upload ticket, sends bytes to Slack itself, completes natively, and reads the exact share', async () => {
   const operations: string[] = [];
+  const uploads: RequestInit[] = [];
   const client = createGatewaySlackWebClient({ workspaceId: 'T12345678', async call(operation, value) {
     operations.push(operation);
-    if (operation === 'chickpea.files.stage') return { file_id: fileId, byteLength: 3 };
+    if (operation === 'files.getUploadURLExternal') {
+      assert.deepEqual(value, { filename: 'file.csv', length: 3 });
+      return { file_id: fileId, upload_url: 'https://files.slack.com/upload/test' };
+    }
     if (operation === 'files.completeUploadExternal') {
       assert.equal(value.username, 'Smoke Amber');
       assert.equal(value.channel_id, channelId);
@@ -56,11 +60,34 @@ test('gateway uses stage, native completion and exact-share readback without upl
     assert.deepEqual(value, { file: fileId, channel: channelId, thread_ts: threadTs });
     return { shared: true, channel: channelId, ts };
   } } as GatewayOperationClient);
-  const transport = createSlackFileTransport(client);
-  await transport.stage({ filename: 'file.csv', bytes: new Uint8Array(3) });
+  const transport = createSlackFileTransport(client, { fetch: async (url, init) => {
+    assert.equal(String(url), 'https://files.slack.com/upload/test');
+    uploads.push(init!);
+    return new Response('OK');
+  } });
+  await transport.stage({ filename: 'file.csv', bytes: new Uint8Array([7, 8, 9]) });
   await transport.complete(input);
   await transport.resolveShare({ fileId, channelId, threadTs });
-  assert.deepEqual(operations, ['chickpea.files.stage', 'files.completeUploadExternal', 'chickpea.files.getShare']);
+  assert.deepEqual(operations, ['files.getUploadURLExternal', 'files.completeUploadExternal', 'chickpea.files.getShare']);
+  assert.deepEqual(Array.from(uploads[0]!.body as Uint8Array), [7, 8, 9]);
+  assert.equal(new Headers(uploads[0]!.headers).has('authorization'), false);
+});
+
+test('an older gateway without upload tickets still carries small files inside its request', async () => {
+  const operations: string[] = [];
+  const bytes = new Uint8Array([1, 2, 3]);
+  const client = createGatewaySlackWebClient({ workspaceId: 'T12345678', async call(operation, value) {
+    operations.push(operation);
+    if (operation === 'files.getUploadURLExternal') throw new SlackTransportError(operation, 'operation_not_allowed');
+    if (operation === 'chickpea.files.stage') return { file_id: fileId, byteLength: 3 };
+    assert.equal(operation, 'files.uploadV2');
+    assert.deepEqual(Object.keys(value).sort(), ['file', 'filename', 'title']);
+    return { files: [{ id: fileId, permalink, size: 3 }] };
+  } } as GatewayOperationClient);
+  const transport = createSlackFileTransport(client, { fetch: async () => { throw new Error('no direct upload expected'); } });
+  assert.deepEqual(await transport.stage({ filename: 'file.csv', bytes }), { fileId, byteLength: 3 });
+  assert.deepEqual(await transport.stagePrivate({ filename: 'file.csv', title: 'Synthetic data', bytes }), { fileId, permalink, byteLength: 3 });
+  assert.deepEqual(operations, ['files.getUploadURLExternal', 'chickpea.files.stage', 'files.getUploadURLExternal', 'files.uploadV2']);
 });
 
 test('direct and gateway completion send the same full initial comment without blocks', async () => {
@@ -132,19 +159,24 @@ test('direct private staging completes once without a destination and preserves 
   }
 });
 
-test('gateway private staging uses the existing destination-free uploadV2 operation once', async () => {
+test('gateway private staging completes a ticketed upload without a destination', async () => {
   const operations: string[] = [];
   const bytes = new Uint8Array([99, 1, 2, 3, 99]).subarray(1, 4);
   const transport = createSlackFileTransport(createGatewaySlackWebClient({ workspaceId: 'T12345678', async call(operation, value) {
     operations.push(operation);
-    assert.deepEqual(Object.keys(value).sort(), ['file', 'filename', 'title']);
-    assert.equal(value.filename, 'file.csv');
-    assert.equal(value.title, 'Synthetic data');
-    assert.deepEqual(Array.from(value.file as Uint8Array), [1, 2, 3]);
+    if (operation === 'files.getUploadURLExternal') {
+      assert.deepEqual(value, { filename: 'file.csv', length: 3, alt_text: 'Chart text' });
+      return { file_id: fileId, upload_url: 'https://files.slack.com/upload/test' };
+    }
+    assert.equal(operation, 'files.completeUploadExternal');
+    assert.deepEqual(value, { files: [{ id: fileId, title: 'Synthetic data' }] });
     return { files: [{ id: fileId, permalink, size: 3 }] };
-  } } as GatewayOperationClient));
+  } } as GatewayOperationClient), { fetch: async (_url, init) => {
+    assert.deepEqual(Array.from(init!.body as Uint8Array), [1, 2, 3]);
+    return new Response('OK');
+  } });
   assert.deepEqual(await transport.stagePrivate({ filename: 'file.csv', title: 'Synthetic data', bytes, altText: 'Chart text' }), { fileId, permalink, byteLength: 3 });
-  assert.deepEqual(operations, ['files.uploadV2']);
+  assert.deepEqual(operations, ['files.getUploadURLExternal', 'files.completeUploadExternal']);
 });
 
 for (const gateway of [false, true]) {
@@ -159,7 +191,8 @@ for (const gateway of [false, true]) {
     ]) {
       let completions = 0;
       const client = gateway ? createGatewaySlackWebClient({ workspaceId: 'T12345678', async call(operation) {
-        assert.equal(operation, 'files.uploadV2');
+        if (operation === 'files.getUploadURLExternal') return { file_id: fileId, upload_url: 'https://files.slack.com/upload/test' };
+        assert.equal(operation, 'files.completeUploadExternal');
         completions++;
         return response;
       } } as GatewayOperationClient) : { files: {
@@ -177,7 +210,8 @@ for (const gateway of [false, true]) {
     let completions = 0;
     const fail = async () => { completions++; throw new Error('Response was lost.'); };
     const client = gateway ? createGatewaySlackWebClient({ workspaceId: 'T12345678', async call(operation) {
-      assert.equal(operation, 'files.uploadV2');
+      if (operation === 'files.getUploadURLExternal') return { file_id: fileId, upload_url: 'https://files.slack.com/upload/test' };
+      assert.equal(operation, 'files.completeUploadExternal');
       return fail();
     } } as GatewayOperationClient) : { files: {
       async getUploadURLExternal() { return { ok: true, file_id: fileId, upload_url: 'https://files.slack.com/upload/test' }; },
