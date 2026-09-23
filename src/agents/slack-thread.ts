@@ -906,13 +906,6 @@ export async function createSlackAgentRuntime(
       });
   const workspaceSkill = workspaceSkillForSandbox(sandboxSelection);
 
-  // Repository credentials take precedence over legacy/custom GitHub
-  // connections. Down-scoped installation tokens are authoritative whenever
-  // grants are active, including for narrower legacy path prefixes.
-  const resolvedConnectors = mergeRepositoryAndApiConnectors(
-    repositoryAccess.connectors,
-    resolvedApiConnections.flatMap(({ connectors }) => connectors),
-  );
   // Project resolved connectors into credential-free scope before skill
   // construction. Connector skills come first so the existing last-writer-wins
   // dedupe lets an Agent-authored skill deliberately override the built-in.
@@ -1042,7 +1035,9 @@ export async function createSlackAgentRuntime(
         },
       });
 
-  const virtualSandbox = createConnectorScopedBash(egressPolicy, isCloudflareTarget(), resolvedConnectors);
+  // API connections are called through connection_request, never the
+  // shell, so the virtual sandbox mounts only repository scopes.
+  const virtualSandbox = createConnectorScopedBash(egressPolicy, isCloudflareTarget(), repositoryAccess.connectors);
   let sandbox = await resolveAgentSandbox({
     selection: sandboxSelection,
     fallback: virtualSandbox,
@@ -1552,10 +1547,8 @@ export function useRuntimePlanAgent(
   // which may not use connections, goes without.
   if (runtimePlanAllowsConnectionRequests(plan) && !fileCompletion.repairing) {
     useTool(createRuntimePlanConnectionRequestTool(plan));
-  }
-  if (plan.sandbox.mode === 'bash' && plan.apiConnections.length > 0) {
     useInstruction([
-      'REST connections are declared for this turn. Use the bash tool with curl -sS to perform requested HTTP operations within the listed hosts, path prefixes, and methods, preserving error messages. Credentials are injected automatically by the connection transport; do not supply, retrieve, or print authentication headers or credential values.',
+      'API connections are declared for this turn. Call them with the connection_request tool, within the listed hosts, path prefixes, and methods, and report the service\'s answer including error messages. Credentials are added automatically; never supply, retrieve, or print authentication headers or credential values. The shell cannot reach these services.',
       'These declarations describe the frozen permission ceiling, not a guarantee of availability. The runtime rechecks current account authority on every request; if access is denied or unavailable, report that result without bypassing it or claiming success.',
       JSON.stringify(plan.apiConnections.map(({ id, displayName, allowedHosts, pathPrefixes, allowedMethods }) => ({ id, displayName, allowedHosts, pathPrefixes, allowedMethods }))),
     ].join('\n'));
@@ -1714,19 +1707,15 @@ function createRuntimePlanSandbox(
         // egress settings belong to the legacy runtime and must not become an
         // incidental grant when any connection is bound. Empty plans need no
         // account or egress setting reads.
-        if (!plan.apiConnections.length && !plan.repositories.length) {
+        if (!plan.repositories.length) {
           return bash(() => new Bash({ fs: new InMemoryFs() })).createSandbox(options);
         }
-        const [repositoryAccess, connections] = await Promise.all([
-          resolveRuntimePlanBashRepositoryAccess(plan, env),
-          resolveRuntimePlanApiConnections(plan, env),
-        ]);
+        // API connections are called through connection_request, never the
+        // shell; the sandbox mounts only repository scopes.
+        const repositoryAccess = await resolveRuntimePlanBashRepositoryAccess(plan, env);
         const sandbox = createConnectorScopedBash(
           { mode: 'allowlist', domains: [] }, isCloudflareTarget(),
-          mergeRepositoryAndApiConnectors(
-            repositoryAccess.connectors,
-            connections.flatMap(({ connectors }) => connectors),
-          ),
+          repositoryAccess.connectors,
         );
         return sandbox.createSandbox(options);
       },

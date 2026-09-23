@@ -16,6 +16,20 @@ import { apiOAuthSettingKeys, connectionAccountOAuthRef } from '../src/config/ap
 import { googleWorkspaceApiPolicy } from '../src/config/api-oauth-policy.ts';
 import { resolveEffectiveConnectionAccounts } from '../src/connections/runtime.ts';
 import { serializeCurrentRequestEnvelope } from '../src/memory/tool-policy.ts';
+import { CONNECTION_REQUEST_TOOL_NAME } from '../src/connections/request-tool.ts';
+import * as v from 'valibot';
+
+/** Call the mounted connection_request tool the way the harness does. */
+async function callConnection(harness: unknown, data: Record<string, unknown>): Promise<any> {
+  const tool = (harness as any).agentTools.find((candidate: any) => candidate.name === CONNECTION_REQUEST_TOOL_NAME);
+  assert.ok(tool, 'connection_request is mounted');
+  const result = await tool.run({
+    data: v.parse(tool.input as v.GenericSchema, data),
+    toolCallId: 'call_connection',
+    log: { info() {}, warn() {}, error() {} },
+  });
+  return JSON.parse(JSON.stringify(result.output));
+}
 
 const basePolicy = { kind: 'api' as const, authMode: 'credential' as const, allowedHosts: ['93.184.216.34', 'app.asana.com'], pathPrefixes: ['/v1'], headerName: 'X-Test-Key', headerValuePrefix: 'Token ', allowedMethods: ['GET', 'HEAD', 'POST'] };
 
@@ -86,7 +100,8 @@ test(`native REST session: ${scenario}`, async (t) => {
       assert.match(instructions, /proposal or approval cannot execute or unlock a native Slack Lists action/i);
     }
     if (scenario === 'empty') {
-      assert.doesNotMatch(instructions, /REST connections are declared/);
+      assert.doesNotMatch(instructions, /API connections are declared/);
+      assert.equal(mountedToolNames.includes(CONNECTION_REQUEST_TOOL_NAME), false);
       assert.match(connectedServices, /Active connected-service access selected and configured for this turn: none\./);
       assert.match(connectedServices, /"providerId":"linear","status":"account_selection_required"/);
       assert.match(connectedServices, /"label":"Linear workspace","scope":"team"/);
@@ -95,10 +110,11 @@ test(`native REST session: ${scenario}`, async (t) => {
     }
     else {
       assert.match(connectedServices, /\{"kind":"api","id":"connection_rest","name":"REST"\}/);
-      assert.match(instructions, /REST connections are declared/);
-      assert.match(instructions, /bash tool with curl/);
-      assert.match(instructions, /curl -sS/);
-      assert.match(instructions, /Credentials are injected automatically/);
+      assert.match(instructions, /API connections are declared/);
+      assert.match(instructions, /connection_request tool/);
+      assert.doesNotMatch(instructions, /curl -sS/);
+      assert.match(instructions, /Credentials are added automatically/);
+      assert.ok(mountedToolNames.includes(CONNECTION_REQUEST_TOOL_NAME));
       assert.match(instructions, /93\.184\.216\.34/);
       assert.match(instructions, /"id":"connection_rest"/);
       assert.match(instructions, /"displayName":"REST"/);
@@ -107,6 +123,11 @@ test(`native REST session: ${scenario}`, async (t) => {
     assert.equal(settingReads.mock.calls.filter(({ arguments: args }) => args[0] === 'egress.policy').length, 0);
     if (scenario === 'empty' || scenario === 'wider') {
       assert.notEqual((await harness.sandbox.exec('curl -sS https://93.184.216.34/v1/data')).exitCode, 0);
+      if (scenario === 'wider') {
+        const widened = await callConnection(harness, { url: 'https://93.184.216.34/v1/data' });
+        assert.equal(widened.sent, false);
+        assert.equal(widened.reason, 'no_connection');
+      }
       assert.equal(calls.length, 0);
       if (scenario === 'empty') {
         assert.equal(accountReads.mock.callCount(), 0);
@@ -124,37 +145,42 @@ test(`native REST session: ${scenario}`, async (t) => {
     }
     if (scenario !== 'personal-custom') assert.ok((harness as any).config.skills['asana-api']);
     else assert.equal((harness as any).config.skills?.['asana-api'], undefined);
-    const first = await harness.sandbox.exec('curl -sS https://93.184.216.34/v1/data');
-    assert.equal(first.exitCode, 0, JSON.stringify(first));
-    assert.equal(JSON.parse(first.stdout).nonce, calls[0]?.nonce);
+    // The shell no longer reaches API connections; the tool does.
+    assert.notEqual((await harness.sandbox.exec('curl -sS https://93.184.216.34/v1/data')).exitCode, 0);
+    assert.equal(calls.length, 0);
+    const first = await callConnection(harness, { url: 'https://93.184.216.34/v1/data' });
+    assert.equal(first.ok, true, JSON.stringify(first));
+    assert.equal(first.connection, 'connection_rest');
+    assert.equal(first.response.nonce, calls[0]?.nonce);
     assert.equal(calls[0]?.headers.get('x-test-key'), 'Token fixture-secret');
-    const head = await harness.sandbox.exec('curl -sS -I https://93.184.216.34/v1/data');
-    assert.equal(head.exitCode, 0, JSON.stringify(head));
+    assert.doesNotMatch(JSON.stringify(first), /fixture-secret/);
+    const head = await callConnection(harness, { method: 'HEAD', url: 'https://93.184.216.34/v1/data' });
+    assert.equal(head.ok, true, JSON.stringify(head));
     assert.equal(calls[1]?.method, 'HEAD');
-    const denied = await harness.sandbox.exec('curl -sS -X DELETE https://93.184.216.34/v1/data');
-    assert.equal(denied.exitCode, 3);
-    assert.match(denied.stderr, /HTTP method 'DELETE' not allowed/);
-    assert.equal(calls.length, 2);
-    assert.notEqual((await harness.sandbox.exec('curl -sS https://93.184.216.35/v1/data')).exitCode, 0);
-    assert.notEqual((await harness.sandbox.exec('curl -sS -L https://93.184.216.34/v1/redirect')).exitCode, 0);
+    const created = await callConnection(harness, { method: 'POST', url: 'https://93.184.216.34/v1/data', json: { name: 'x' } });
+    assert.equal(created.ok, true, JSON.stringify(created));
+    assert.equal(calls[2]?.method, 'POST');
+    assert.equal(calls[2]?.headers.get('content-type'), 'application/json');
+    const denied = await callConnection(harness, { method: 'DELETE', url: 'https://93.184.216.34/v1/data' });
+    assert.equal(denied.reason, 'method_not_allowed');
     assert.equal(calls.length, 3);
+    assert.equal((await callConnection(harness, { url: 'https://93.184.216.35/v1/data' })).reason, 'url_not_allowed');
+    assert.equal((await callConnection(harness, { url: 'https://93.184.216.34/v1/redirect' })).reason, 'url_not_allowed');
+    assert.equal(calls.length, 4, 'the redirect hop to another host is refused by the scope');
     membershipStatus = 'suspended';
-    const revokedActor = await harness.sandbox.exec('curl -sS https://93.184.216.34/v1/data');
-    assert.equal(revokedActor.exitCode, 1);
-    assert.match(revokedActor.stderr, /Connection authority changed/);
-    assert.equal(calls.length, 3);
+    const revokedActor = await callConnection(harness, { url: 'https://93.184.216.34/v1/data' });
+    assert.equal(revokedActor.sent, false, JSON.stringify(revokedActor));
+    assert.equal(calls.length, 4);
     membershipStatus = 'active';
     binding.allowedCapabilities = ['GET'];
-    const narrowed = await harness.sandbox.exec('curl -sS -X POST https://93.184.216.34/v1/data');
-    assert.equal(narrowed.exitCode, 1);
-    assert.match(narrowed.stderr, /Connection authority changed/);
-    assert.equal(calls.length, 3);
+    const narrowed = await callConnection(harness, { method: 'POST', url: 'https://93.184.216.34/v1/data', json: {} });
+    assert.equal(narrowed.reason, 'method_not_allowed', JSON.stringify(narrowed));
+    assert.equal(calls.length, 4);
     binding.allowedCapabilities = ['GET', 'HEAD', 'POST'];
     binding.enabled = false;
-    const disabled = await harness.sandbox.exec('curl -sS https://93.184.216.34/v1/data');
-    assert.equal(disabled.exitCode, 1);
-    assert.match(disabled.stderr, /Connection authority changed/);
-    assert.equal(calls.length, 3);
+    const disabled = await callConnection(harness, { url: 'https://93.184.216.34/v1/data' });
+    assert.equal(disabled.reason, 'no_connection', JSON.stringify(disabled));
+    assert.equal(calls.length, 4);
   } finally { await harness.close(); }
 });
 }
@@ -300,9 +326,10 @@ test(`native Google session: ${oauthState}`, async (t) => {
   const harness = await context.initializeRootHarness(ChickpeaSlack, signal, plan);
   try {
     assert.doesNotMatch(String((harness as any).config.instructions), /fixture-google-token/);
-    const read = await harness.sandbox.exec('curl -sS "https://www.googleapis.com/drive/v3/files?pageSize=1"');
+    assert.notEqual((await harness.sandbox.exec('curl -sS "https://www.googleapis.com/drive/v3/files?pageSize=1"')).exitCode, 0);
+    const read = await callConnection(harness, { url: 'https://www.googleapis.com/drive/v3/files', query: { pageSize: 1 } });
     if (oauthState !== 'ready') {
-      assert.notEqual(read.exitCode, 0);
+      assert.equal(read.reason, 'no_connection', JSON.stringify(read));
       assert.deepEqual(calls.map(({ url }) => url), ['https://oauth2.googleapis.com/token']);
       assert.equal(account.lifecycle, oauthState === 'invalid_grant' ? 'needs_attention' : 'ready');
       assert.equal(accountWrites.mock.callCount(), oauthState === 'invalid_grant' ? 1 : 0);
@@ -311,16 +338,16 @@ test(`native Google session: ${oauthState}`, async (t) => {
       assert.equal(nextTurn.length, oauthState === 'invalid_grant' ? 0 : 1);
       return;
     }
-    assert.equal(read.exitCode, 0, JSON.stringify(read));
-    assert.equal(JSON.parse(read.stdout).nonce, calls[0]?.nonce);
+    assert.equal(read.ok, true, JSON.stringify(read));
+    assert.equal(read.url, 'https://www.googleapis.com/drive/v3/files?pageSize=1');
+    assert.equal(read.response.nonce, calls[0]?.nonce);
     assert.equal(calls[0]?.authorization, 'Bearer fixture-google-token');
-    const post = await harness.sandbox.exec('curl -sS -X POST https://www.googleapis.com/drive/v3/files');
-    assert.equal(post.exitCode, 3);
-    assert.match(post.stderr, /HTTP method 'POST' not allowed/);
+    assert.doesNotMatch(JSON.stringify(read), /fixture-google-token/);
+    const post = await callConnection(harness, { method: 'POST', url: 'https://www.googleapis.com/drive/v3/files', json: {} });
+    assert.equal(post.reason, 'method_not_allowed');
     for (const url of ['https://www.googleapis.com/upload/drive/v3/files', 'https://gmail.googleapis.com/gmail/v1/users/me/messages']) {
-      const denied = await harness.sandbox.exec(`curl -sS ${url}`);
-      assert.equal(denied.exitCode, 7);
-      assert.match(denied.stderr, /not in allow-list/);
+      const denied = await callConnection(harness, { url });
+      assert.equal(denied.reason, 'url_not_allowed', url);
     }
     assert.equal(calls.length, 1);
   } finally {
