@@ -2,20 +2,20 @@ import { closeSync, existsSync, fsyncSync, lstatSync, openSync, readFileSync, re
 import { createHash, randomBytes } from 'node:crypto';
 import path from 'node:path';
 
-export function assertPrivatePath(file, { directory = false } = {}) {
+export function assertPrivatePath(file, { directory = false, label = 'Upgrade state' } = {}) {
   const stat = lstatSync(file);
   if (stat.isSymbolicLink() || !(directory ? stat.isDirectory() : stat.isFile()) || (stat.mode & 0o077) !== 0 ||
       (process.getuid && stat.uid !== process.getuid()) || (!directory && stat.nlink !== 1)) {
-    throw new Error('Upgrade state must be a private, owner-controlled regular file or directory.');
+    throw new Error(`${label} must be a private, owner-controlled regular file or directory.`);
   }
   return stat;
 }
 
-export function readPrivateJson(file) {
-  assertPrivatePath(path.dirname(file), { directory: true });
-  const stat = assertPrivatePath(file);
-  if (stat.size > 1024 * 1024) throw new Error('Upgrade state exceeds its size limit.');
-  try { return JSON.parse(readFileSync(file, 'utf8')); } catch { throw new Error('Upgrade state is not readable JSON. Preserve it for investigation.'); }
+export function readPrivateJson(file, { label = 'Upgrade state' } = {}) {
+  assertPrivatePath(path.dirname(file), { directory: true, label });
+  const stat = assertPrivatePath(file, { label });
+  if (stat.size > 1024 * 1024) throw new Error(`${label} exceeds its size limit.`);
+  try { return JSON.parse(readFileSync(file, 'utf8')); } catch { throw new Error(`${label} is not readable JSON. Preserve it for investigation.`); }
 }
 
 export function writePrivateJson(file, value) {

@@ -9,12 +9,13 @@
  * secret inside the wrapper's own `--secrets-file` keeps one version per
  * deploy, so the receipt and the live Worker stay identical.
  *
- * The file is an owner-only JSON object of string values. Names are plain
- * environment identifiers. The wrapper's managed authority names cannot be
- * overridden here.
+ * The file is an owner-only JSON object of string values in an owner-only
+ * directory. Names are plain environment identifiers. The wrapper's managed
+ * authority names cannot be overridden here.
  */
-import { readFileSync, statSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
+
+import { readPrivateJson } from './upgrade-receipt.mjs';
 
 export const OPERATOR_SECRETS_ENV = 'CHICKPEA_DEPLOY_SECRETS_FILE';
 
@@ -23,24 +24,15 @@ const MAX_SECRETS = 32;
 const MAX_VALUE_LENGTH = 4096;
 const RESERVED_PREFIXES = ['CHICKPEA_'];
 
-export function readOperatorSecretsFile(filePath, options = {}) {
+export function readOperatorSecretsFile(filePath) {
   if (typeof filePath !== 'string' || filePath.length === 0) {
     throw new Error(`${OPERATOR_SECRETS_ENV} must be an absolute path to an owner-only JSON file.`);
   }
   if (!isAbsolute(filePath)) {
     throw new Error(`${OPERATOR_SECRETS_ENV} must be an absolute path.`);
   }
-  const stat = (options.statSync ?? statSync)(filePath);
-  if (!stat.isFile()) throw new Error(`${OPERATOR_SECRETS_ENV} must name a regular file.`);
-  if (process.platform !== 'win32' && (stat.mode & 0o077) !== 0) {
-    throw new Error(`${OPERATOR_SECRETS_ENV} must be owner-only (chmod 600).`);
-  }
-  let parsed;
-  try {
-    parsed = JSON.parse((options.readFileSync ?? readFileSync)(filePath, 'utf8'));
-  } catch {
-    throw new Error(`${OPERATOR_SECRETS_ENV} is not valid JSON.`);
-  }
+  // Both the file and its directory must be private and owner-controlled.
+  const parsed = readPrivateJson(filePath, { label: OPERATOR_SECRETS_ENV });
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     throw new Error(`${OPERATOR_SECRETS_ENV} must contain one JSON object of string values.`);
   }

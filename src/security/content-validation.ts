@@ -27,6 +27,7 @@ const CREDENTIAL_SIGNATURES: readonly {
     markers: ['ghp_', 'gho_', 'ghu_', 'ghs_', 'ghr_', 'github_pat_'],
   },
   { source: String.raw`\b(?:AKIA|ASIA)[A-Z0-9]{16}\b`, flags: '', markers: ['AKIA', 'ASIA'] },
+  { source: String.raw`\bbb_(?:live|test)_[a-z0-9_-]{8,}`, flags: 'i', markers: ['bb_live_', 'bb_test_'] },
   {
     // Consume complete armor, including traditional encrypted-PEM metadata
     // and blank lines. The hard character ceiling bounds malformed input.
@@ -43,7 +44,7 @@ const CREDENTIAL_SIGNATURES: readonly {
     markers: [],
   },
   {
-    source: String.raw`\b(?:CHICKPEA_(?:AUTH_SECRET|RECOVERY_TOKEN|CREDENTIAL_KEY_[A-Z0-9_]+)|TAG_ADMIN_TOKEN|ADMIN_TOKEN|SLACK_(?:BOT|APP)_TOKEN|ANTHROPIC_API_KEY|OPENAI_API_KEY|COMPOSIO_(?:API_KEY|WEBHOOK_SECRET)|GITHUB_TOKEN)\s*=\s*[^\s]{8,}`,
+    source: String.raw`\b(?:CHICKPEA_(?:AUTH_SECRET|RECOVERY_TOKEN|CREDENTIAL_KEY_[A-Z0-9_]+)|TAG_ADMIN_TOKEN|ADMIN_TOKEN|SLACK_(?:BOT|APP)_TOKEN|ANTHROPIC_API_KEY|OPENAI_API_KEY|COMPOSIO_(?:API_KEY|WEBHOOK_SECRET)|GITHUB_TOKEN|BROWSERBASE_API_KEY)\s*=\s*[^\s]{8,}`,
     flags: 'i',
     markers: [
       'CHICKPEA_AUTH_SECRET',
@@ -58,6 +59,7 @@ const CREDENTIAL_SIGNATURES: readonly {
       'COMPOSIO_API_KEY',
       'COMPOSIO_WEBHOOK_SECRET',
       'GITHUB_TOKEN',
+      'BROWSERBASE_API_KEY',
     ],
   },
   {

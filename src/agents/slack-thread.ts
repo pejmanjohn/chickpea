@@ -15,7 +15,6 @@ import {
   useMcpConnection,
   useModel,
   useSandbox,
-  useAgentFinish,
   useSkill,
   useTool,
 } from '@flue/runtime';
@@ -175,15 +174,13 @@ import {
 } from '../sandbox/image-tool.ts';
 import { createImageOutputStore } from '../images/output-store.ts';
 import { inspectImageOutput, type ImageInspectionInput } from '../images/inspect-output.ts';
-import { createBrowserbaseProvider } from '../browser/browserbase.ts';
-import { connectCdpSocket } from '../browser/cdp.ts';
 import { answerScreenshotQuestion } from '../browser/look.ts';
-import { browserSessionFor, createLazyBrowserProvider, endBrowserSessionFor } from '../browser/runtime.ts';
+import { createLazyBrowserProvider, useBrowserSession } from '../browser/runtime.ts';
 import { recordBrowserSessionUsage, resolveBrowserSettings } from '../browser/settings.ts';
 import { browserSkillForPlan } from '../browser/skill.ts';
 import { createBrowserTools } from '../browser/tools.ts';
 import { BrowserTurnSession } from '../browser/turn-session.ts';
-import { isProviderKeyId, resolveProviderApiKey } from '../config/provider-keys.ts';
+import { resolveModelApiKeyForStatelessCall } from '../config/provider-keys.ts';
 import { workspaceSkillForSandbox } from '../sandbox/workspace-skill.ts';
 import { publishActivityStatus } from '../slack/activity-publisher.ts';
 import {
@@ -1434,9 +1431,10 @@ export function runtimePlanSkills(
 ): ReturnType<typeof resolveProfileSkills> {
   const agentSkills = plan.skills.map((entry) => ({ ...entry, enabled: true }));
   const workspaceSkill = workspaceSkillForSandbox(plan.sandbox.mode);
-  // The browser skill rides with its tools; like the workspace skill it comes
-  // last so a stored Agent skill cannot hide it.
-  const browserSkill = options.browser === false ? undefined : browserSkillForPlan(plan);
+  // The browser skill rides with its tools, so it mounts only when the render
+  // mounted them; like the workspace skill it comes last so a stored Agent
+  // skill cannot hide it.
+  const browserSkill = options.browser ? browserSkillForPlan(plan) : undefined;
   return resolveProfileSkills(
     [
       ...suppressProfileNamedConnectorSkills(
@@ -1475,6 +1473,11 @@ export function useRuntimePlanAgent(
     writeArtifactReceipts({ schemaVersion: 1, receipts: artifactAccumulator.remove(fileIds) });
   }, !options.artifactToolsDisabled);
   const reserveImageCall = useImageCallBudget();
+  // A connected browser mounts with the artifact tools, whose staging carries
+  // its proof: the session, skill, tools, and activity all follow this one
+  // predicate.
+  const browserMounted = plan.browserCapability !== undefined &&
+    !options.artifactToolsDisabled && !fileCompletion.repairing;
   // The delivery gate compares a re-stamped attachment-context envelope against
   // the host-owned conversation. Only the frozen plan can supply it.
   bindCurrentRequestConversation({
@@ -1487,6 +1490,7 @@ export function useRuntimePlanAgent(
       ? {}
       : { includeAgentAuthoringSkill: options.includeAgentAuthoringSkill }),
     reservedToolNames: [AGENT_AUTHORING_SKILL_NAME],
+    browserMounted,
     ...(options.additionalActivityToolDescriptors === undefined
       ? {}
       : { additionalToolDescriptors: options.additionalActivityToolDescriptors }),
@@ -1525,23 +1529,7 @@ export function useRuntimePlanAgent(
       JSON.stringify(plan.apiConnections.map(({ id, displayName, allowedHosts, pathPrefixes, allowedMethods }) => ({ id, displayName, allowedHosts, pathPrefixes, allowedMethods }))),
     ].join('\n'));
   }
-  // A connected browser mounts with the artifact tools, whose staging carries
-  // its proof. The session outlives re-renders within the response and always
-  // ends when the response would stop.
-  const browserMounted = plan.browserCapability?.enabled === true &&
-    !options.artifactToolsDisabled && !fileCompletion.repairing;
-  const browserSession = browserMounted
-    ? browserSessionFor(id, createRuntimePlanBrowserSession)
-    : undefined;
-  if (browserSession) {
-    useAgentFinish(async () => {
-      try {
-        await endBrowserSessionFor(id);
-      } catch {
-        console.warn('[chickpea] Browser session did not end cleanly; the provider timeout will end it');
-      }
-    });
-  }
+  const browserSession = browserMounted ? useBrowserSession(id, createRuntimePlanBrowserSession) : undefined;
   for (const skill of runtimePlanSkills(plan, { browser: browserMounted })) {
     useSkill(skill);
   }
@@ -1944,10 +1932,7 @@ export function createRuntimePlanArtifactTools(
       try {
         const env = await resolveAgentPlatformEnv();
         const model = await prepareRuntimePlanModel(plan, env);
-        const provider = plan.model.split('/', 1)[0] ?? '';
-        const apiKey = isProviderKeyId(provider)
-          ? (await resolveProviderApiKey(provider, env, getSettingsStore(env))).apiKey
-          : provider === 'cloudflare-workers-ai' ? process.env.CLOUDFLARE_API_TOKEN : undefined;
+        const apiKey = await resolveModelApiKeyForStatelessCall(plan.model, env, getSettingsStore(env));
         return await inspectImageOutput(model.model, input, apiKey);
       } catch {
         return { status: 'unavailable' as const, observations: 'Visual inspection is unavailable with the configured chat model.' };
@@ -1966,13 +1951,14 @@ export function createRuntimePlanArtifactTools(
     reuseImage: async (input: { record: ThreadImageRecord; filename: string; byteLength: number }) =>
       reuseImageWithReceipt({ ...input, destination, accumulator, writeReceipts: writeArtifactReceipts }),
   } : undefined;
-  const browserSession = plan.browserCapability?.enabled === true && !options.fileCompletion?.repairing
-    ? options.browserSession ?? createRuntimePlanBrowserSession()
+  // The render owns the response's browser session and supplies it only when
+  // the browser is mounted, like the image quota above.
+  const browserSession = plan.browserCapability && !options.fileCompletion?.repairing
+    ? options.browserSession
     : undefined;
   const browserTools = browserSession
     ? createBrowserTools({
         session: browserSession,
-        provider: browserSession.provider,
         stageArtifact: binding.stageArtifact,
         transportMaxBytes: async () => (await resolveFileTransport()).maxBytes,
         // Same route as the image tool's inspection: the frozen chat model
@@ -1980,10 +1966,7 @@ export function createRuntimePlanArtifactTools(
         inspectScreenshot: async (input) => {
           const env = await resolveAgentPlatformEnv();
           const model = await prepareRuntimePlanModel(plan, env);
-          const provider = plan.model.split('/', 1)[0] ?? '';
-          const apiKey = isProviderKeyId(provider)
-            ? (await resolveProviderApiKey(provider, env, getSettingsStore(env))).apiKey
-            : provider === 'cloudflare-workers-ai' ? process.env.CLOUDFLARE_API_TOKEN : undefined;
+          const apiKey = await resolveModelApiKeyForStatelessCall(plan.model, env, getSettingsStore(env));
           return answerScreenshotQuestion(model.model, input, apiKey);
         },
         log: { warn: (message) => console.warn(`[chickpea] ${message}`) },
@@ -2004,10 +1987,13 @@ export function createRuntimePlanArtifactTools(
  * ended session is tallied into the install's monthly browser usage.
  */
 export function createRuntimePlanBrowserSession(): BrowserTurnSession {
+  // The Browserbase client and CDP transport load only when a turn browses,
+  // which keeps them out of the Worker's startup graph.
   const provider = createLazyBrowserProvider(async () => {
     const env = await resolveAgentPlatformEnv();
-    const settings = await resolveBrowserSettings(getSettingsStore(env), env ?? process.env);
+    const settings = await resolveBrowserSettings(getSettingsStore(env), env);
     if (!settings.apiKey) return undefined;
+    const { createBrowserbaseProvider } = await import('../browser/browserbase.ts');
     return createBrowserbaseProvider({
       apiKey: settings.apiKey,
       ...(settings.projectId ? { projectId: settings.projectId } : {}),
@@ -2015,7 +2001,7 @@ export function createRuntimePlanBrowserSession(): BrowserTurnSession {
   });
   return new BrowserTurnSession({
     provider,
-    connect: (connectUrl) => connectCdpSocket(connectUrl),
+    connect: async (connectUrl) => (await import('../browser/cdp.ts')).connectCdpSocket(connectUrl),
     onClosed: async ({ sessionId, seconds }) => {
       try {
         const env = await resolveAgentPlatformEnv();
@@ -2037,7 +2023,7 @@ export interface RuntimePlanArtifactToolOptions {
   reserveImageCall?: ImageCallReservation | undefined;
   /** Focused seam; production resolves the role and provider at call time. */
   resolveImageClient?: (() => Promise<ImageClientResolution>) | undefined;
-  /** The response's browser session; the render keeps one per instance. */
+  /** The response's browser session, from `useBrowserSession`; absent, no browser tools mount. */
   browserSession?: BrowserTurnSession | undefined;
 }
 

@@ -1765,19 +1765,18 @@ async function freezeRuntimePlanForTurn(input: {
     throw new Error('Runtime plan compilation requires a frozen model.');
   }
   const settingsStore = input.settingsStore ?? getSettingsStore(input.platformEnv);
-  const runtimeModel = await resolveRuntimeModel(
-    input.assignment.agentId,
-    canonicalModel,
-    {
-      settings: settingsStore,
-      ...(input.platformEnv ? { env: input.platformEnv } : {}),
-    },
-  );
-  // The image role is the store's alone. Freezing its bounded capability here
-  // is what mounts `generate_image` on the Agent; an unresolved or
-  // uncredentialed role freezes an unfilled capability instead.
-  const imageCapability = imageCapabilityForResolution(
-    await resolveAgentModelRoleFromStore({
+  // The runtime model, the image role, and the browser capability resolve
+  // independently.
+  const [runtimeModel, imageRole, browserCapability] = await Promise.all([
+    resolveRuntimeModel(
+      input.assignment.agentId,
+      canonicalModel,
+      {
+        settings: settingsStore,
+        ...(input.platformEnv ? { env: input.platformEnv } : {}),
+      },
+    ),
+    resolveAgentModelRoleFromStore({
       role: 'image',
       workspaceId: input.turn.workspaceId,
       agent: { id: input.assignment.agent.id, kind: input.assignment.agent.kind },
@@ -1789,14 +1788,18 @@ async function freezeRuntimePlanForTurn(input: {
       ...(input.platformEnv ? { env: input.platformEnv } : {}),
       settings: settingsStore,
     }),
-  );
+    // A connected hosted browser mounts the browser tools. The key stays in
+    // settings and is read again at call time; only the capability is frozen.
+    browserCapabilityForTurn(settingsStore, input.platformEnv),
+  ]);
+  // The image role is the store's alone. Freezing its bounded capability here
+  // is what mounts `generate_image` on the Agent; an unresolved or
+  // uncredentialed role freezes an unfilled capability instead.
+  const imageCapability = imageCapabilityForResolution(imageRole);
   const runtimeModelRoute = freezeRuntimeModelRoute(
     canonicalModel,
     runtimeModel.providerAuthRoute,
   );
-  // A connected hosted browser mounts the browser tools. The key stays in
-  // settings and is read again at call time; only the flag is frozen.
-  const browserCapability = await browserCapabilityForTurn(settingsStore, input.platformEnv);
   const candidate = compileRuntimePlanV2({
     turn: input.turn,
     assignment: input.assignment,

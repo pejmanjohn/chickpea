@@ -4,34 +4,23 @@ import { createBrowserbaseProvider } from '../src/browser/browserbase.ts';
 import {
   awaitRecordingDownload,
   BrowserProviderError,
-  type BrowserProvider,
   type BrowserRecordingDownload,
 } from '../src/browser/provider.ts';
+import {
+  fakeBrowserProvider,
+  fakeFetch as sharedFakeFetch,
+  type FakeFetchCall,
+} from './helpers/fake-cdp-socket.ts';
 
 const API_KEY = 'bb_live_secret_key_123';
 
-interface Call {
-  method: string;
-  url: string;
-  headers: Record<string, string>;
-  body: unknown;
-}
-
-function fakeFetch(respond: (call: Call) => { status: number; body?: unknown }) {
-  const calls: Call[] = [];
-  const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
-    const call: Call = {
-      method: init?.method ?? 'GET',
-      url: String(input),
-      headers: { ...(init?.headers as Record<string, string>) },
-      body: typeof init?.body === 'string' ? JSON.parse(init.body) : undefined,
-    };
-    calls.push(call);
+/** Answers each call with a JSON (or text) body and status. */
+function fakeFetch(respond: (call: FakeFetchCall) => { status: number; body?: unknown }) {
+  return sharedFakeFetch((call) => {
     const { status, body } = respond(call);
     const text = body === undefined ? '' : typeof body === 'string' ? body : JSON.stringify(body);
     return new Response(status === 204 ? null : text, { status });
-  }) as typeof fetch;
-  return { calls, fetchImpl };
+  });
 }
 
 test('createSession posts browser settings with the API key header and returns the handle', async () => {
@@ -188,26 +177,22 @@ function fakeProvider(script: {
   lists: BrowserRecordingDownload[][];
 }) {
   const log: string[] = [];
-  const provider: BrowserProvider = {
-    id: 'browserbase',
-    createSession: async () => ({ id: 's', connectUrl: 'wss://x' }),
-    endSession: async () => undefined,
+  const next = <T>(queue: T[]): T => (queue.length > 1 ? queue.shift()! : queue[0]!);
+  const { provider } = fakeBrowserProvider({
     sessionStatus: async () => {
       log.push('status');
-      return script.statuses.length > 1 ? script.statuses.shift()! : script.statuses[0]!;
+      return next(script.statuses);
     },
-    liveView: async () => ({ fullscreenUrl: '', url: '', pages: [] }),
     requestRecordingDownloads: async () => {
       log.push('request');
-      const next = script.requestResults.length > 1 ? script.requestResults.shift()! : script.requestResults[0]!;
-      if (next !== 'ok') throw new BrowserProviderError(`status ${next}`, next);
+      const result = next(script.requestResults);
+      if (result !== 'ok') throw new BrowserProviderError(`status ${result}`, result);
     },
     listRecordingDownloads: async () => {
       log.push('list');
-      return script.lists.length > 1 ? script.lists.shift()! : script.lists[0]!;
+      return next(script.lists);
     },
-    createContext: async () => ({ id: 'c' }),
-  };
+  });
   return { provider, log };
 }
 

@@ -13,8 +13,8 @@ export async function browserCapabilityForTurn(
   env: Record<string, unknown> | undefined,
 ): Promise<RuntimePlanBrowserCapabilityV1 | undefined> {
   try {
-    const settings = await resolveBrowserSettings(store, env ?? process.env);
-    return settings.connected ? { provider: 'browserbase', enabled: true } : undefined;
+    const settings = await resolveBrowserSettings(store, env);
+    return settings.connected ? { provider: 'browserbase' } : undefined;
   } catch {
     // A settings read failure must not fail the turn; browse is simply off.
     return undefined;

@@ -10,6 +10,7 @@ import {
   type SkillConfig,
 } from '../config/types.ts';
 import { opaqueId } from '../work/admission.ts';
+import { BROWSER_TOOL_ACTIVITY } from '../browser/tools.ts';
 import { slackAgentThreadKey } from '../slack/thread-key.ts';
 import type { NormalizedSlackTurn } from '../slack/types.ts';
 import {
@@ -178,8 +179,9 @@ export interface RuntimePlanV2 {
    */
   imageCapability?: RuntimePlanImageCapabilityV3;
   /**
-   * Frozen hosted-browser capability. Carries only the provider and whether
-   * the install has a browser connected; the API key is read at call time.
+   * Frozen hosted-browser capability. Present only when the install had a
+   * browser connected; carries the provider, and the API key is read at call
+   * time.
    */
   browserCapability?: RuntimePlanBrowserCapabilityV1;
   /** Non-secret model policy facts frozen with the admitted turn. Required on V3. */
@@ -221,10 +223,12 @@ export interface RuntimePlanImageCapabilityV3 {
   supportsOutputControls?: boolean;
 }
 
-/** Bounded capability record for the hosted browser. Never carries a key. */
+/**
+ * Bounded capability record for the hosted browser. Its presence means the
+ * browser is on. Never carries a key.
+ */
 export interface RuntimePlanBrowserCapabilityV1 {
   provider: 'browserbase';
-  enabled: boolean;
 }
 
 export interface CompileRuntimePlanV2Input {
@@ -262,6 +266,8 @@ export interface RuntimePlanActivityContextOptions {
   includeAgentAuthoringSkill?: boolean;
   /** Names withheld from managed tools by the same declaration owner. */
   reservedToolNames?: readonly string[];
+  /** The render mounted the browser skill and tools. */
+  browserMounted?: boolean;
 }
 
 /**
@@ -336,14 +342,7 @@ export function compileRuntimePlanV2(input: CompileRuntimePlanV2Input): RuntimeP
           },
         }
       : {}),
-    ...(input.browserCapability
-      ? {
-          browserCapability: {
-            provider: 'browserbase' as const,
-            enabled: input.browserCapability.enabled,
-          },
-        }
-      : {}),
+    ...(input.browserCapability ? { browserCapability: { provider: 'browserbase' as const } } : {}),
     modelAttribution: frozenModelAttribution(input.assignment),
     ...(input.assignment.modelCredential
       ? {
@@ -407,7 +406,7 @@ export function buildRuntimePlanActivityContext(
     plan.skills.length > 0 ||
     plan.repositories.length > 0 ||
     plan.sandbox.mode === 'cloudflare' ||
-    plan.browserCapability?.enabled === true ||
+    options.browserMounted ||
     options.includeAgentAuthoringSkill
   ) {
     const skill = genericSemanticDescriptor('skill');
@@ -445,17 +444,13 @@ export function buildRuntimePlanActivityContext(
   );
   families.add('artifact');
 
-  if (plan.browserCapability?.enabled === true) {
+  if (options.browserMounted) {
     // Browsing reads arbitrary public pages, so its baseline stays the generic
     // unknown narration; attaching proof is ordinary artifact creation.
     const browsing = unknownSemanticDescriptor();
-    for (const toolName of ['browser_open', 'browser_snapshot', 'browser_act', 'browser_look']) {
-      descriptors.push({ toolName, descriptor: browsing });
+    for (const [toolName, activity] of Object.entries(BROWSER_TOOL_ACTIVITY)) {
+      descriptors.push({ toolName, descriptor: activity.descriptor === 'artifact' ? artifact : browsing });
     }
-    descriptors.push(
-      { toolName: 'browser_screenshot', descriptor: artifact },
-      { toolName: 'browser_recording', descriptor: artifact },
-    );
   }
 
   for (const descriptor of options.additionalToolDescriptors ?? []) {
@@ -1028,10 +1023,8 @@ function parseImageCapability(value: unknown): RuntimePlanImageCapabilityV3 {
 }
 
 function parseBrowserCapability(value: unknown): RuntimePlanBrowserCapabilityV1 {
-  const record = exactRecord(value, 'browserCapability', ['provider', 'enabled']);
-  const provider = oneOf(record.provider, 'browserCapability.provider', ['browserbase'] as const);
-  const enabled = booleanField(record.enabled, 'browserCapability.enabled');
-  return { provider, enabled };
+  const record = exactRecord(value, 'browserCapability', ['provider']);
+  return { provider: oneOf(record.provider, 'browserCapability.provider', ['browserbase'] as const) };
 }
 
 function parseHandoffContext(value: unknown): SlackPublicHandoffMessage[] {

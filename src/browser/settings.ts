@@ -1,4 +1,7 @@
+import { envValue } from '../config/env-value.ts';
+import { readMonthlyCounter, updateMonthlyCounter } from '../config/monthly-counter.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
+import { trimmedNonEmpty } from '../security/content-validation.ts';
 
 /**
  * Install-wide Browser settings. One hosted-browser provider per install
@@ -30,25 +33,11 @@ export interface BrowserSettings {
 }
 
 const MONTHLY_USAGE_PREFIX = 'browser.monthlyUsage.';
-const MAX_SESSION_IDS = 1_000;
-const MAX_CAS_ATTEMPTS = 12;
 
 export interface BrowserMonthlyUsage {
   month: string;
   sessions: number;
   seconds: number;
-}
-
-interface StoredMonthlyUsage {
-  sessions: number;
-  seconds: number;
-  sessionIds: string[];
-}
-
-function nonEmpty(value: unknown): string | undefined {
-  if (typeof value !== 'string') return undefined;
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : undefined;
 }
 
 export function describeBrowserSettings(
@@ -59,11 +48,11 @@ export function describeBrowserSettings(
     envProjectId?: string | undefined;
   },
 ): BrowserSettings {
-  const envKey = nonEmpty(values.envApiKey);
-  const storedKey = nonEmpty(values.storedApiKey);
+  const envKey = trimmedNonEmpty(values.envApiKey);
+  const storedKey = trimmedNonEmpty(values.storedApiKey);
   const apiKey = envKey ?? storedKey;
   const source: BrowserKeySource = envKey ? 'env' : storedKey ? 'stored' : 'missing';
-  const projectId = nonEmpty(values.envProjectId) ?? nonEmpty(values.storedProjectId);
+  const projectId = trimmedNonEmpty(values.envProjectId) ?? trimmedNonEmpty(values.storedProjectId);
   return {
     provider: 'browserbase',
     connected: apiKey !== undefined,
@@ -73,9 +62,14 @@ export function describeBrowserSettings(
   };
 }
 
+/**
+ * `env` is the platform env (Worker bindings). `envValue` falls back to
+ * `process.env` for a name the bindings do not carry, so Node callers may
+ * pass undefined.
+ */
 export async function resolveBrowserSettings(
   store: SettingsStore,
-  env: Record<string, unknown> | NodeJS.ProcessEnv = process.env,
+  env: Record<string, unknown> | undefined,
 ): Promise<BrowserSettings> {
   const [storedApiKey, storedProjectId] = await store.getSettings([
     BROWSER_SETTING_KEYS.apiKey,
@@ -84,8 +78,8 @@ export async function resolveBrowserSettings(
   return describeBrowserSettings({
     storedApiKey,
     storedProjectId,
-    envApiKey: nonEmpty(env[BROWSER_ENV_VARS.apiKey]),
-    envProjectId: nonEmpty(env[BROWSER_ENV_VARS.projectId]),
+    envApiKey: envValue(env, BROWSER_ENV_VARS.apiKey),
+    envProjectId: envValue(env, BROWSER_ENV_VARS.projectId),
   });
 }
 
@@ -102,7 +96,7 @@ export async function saveBrowserSettings(
   const apiKey = input.apiKey.trim();
   if (!apiKey) throw new Error('A Browserbase API key is required.');
   await store.setSetting(BROWSER_SETTING_KEYS.apiKey, apiKey);
-  const projectId = nonEmpty(input.projectId);
+  const projectId = trimmedNonEmpty(input.projectId);
   if (projectId) await store.setSetting(BROWSER_SETTING_KEYS.projectId, projectId);
   else await store.deleteSetting(BROWSER_SETTING_KEYS.projectId);
 }
@@ -111,23 +105,19 @@ export async function clearBrowserSettings(store: SettingsStore): Promise<void> 
   await store.applySettingsPatch({ delete: Object.values(BROWSER_SETTING_KEYS) });
 }
 
-export function browserUsageMonth(now: Date = new Date()): string {
-  return `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
-}
-
-function parseStoredUsage(raw: string | undefined): StoredMonthlyUsage {
-  if (!raw) return { sessions: 0, seconds: 0, sessionIds: [] };
-  try {
-    const parsed = JSON.parse(raw) as Partial<StoredMonthlyUsage>;
-    const sessions = Number.isSafeInteger(parsed.sessions) && (parsed.sessions as number) >= 0 ? (parsed.sessions as number) : 0;
-    const seconds = Number.isFinite(parsed.seconds) && (parsed.seconds as number) >= 0 ? Math.round(parsed.seconds as number) : 0;
-    const sessionIds = Array.isArray(parsed.sessionIds)
-      ? parsed.sessionIds.filter((id): id is string => typeof id === 'string')
-      : [];
-    return { sessions, seconds, sessionIds };
-  } catch {
-    return { sessions: 0, seconds: 0, sessionIds: [] };
-  }
+function parseStoredUsage(
+  stored: Record<string, unknown> | undefined,
+): { counter: { sessions: number; seconds: number }; ids: string[] } {
+  const sessions = stored?.sessions;
+  const seconds = stored?.seconds;
+  const ids = stored?.sessionIds;
+  return {
+    counter: {
+      sessions: typeof sessions === 'number' && Number.isSafeInteger(sessions) && sessions >= 0 ? sessions : 0,
+      seconds: typeof seconds === 'number' && Number.isFinite(seconds) && seconds >= 0 ? Math.round(seconds) : 0,
+    },
+    ids: Array.isArray(ids) ? ids.filter((id): id is string => typeof id === 'string') : [],
+  };
 }
 
 /**
@@ -141,34 +131,26 @@ export async function recordBrowserSessionUsage(options: {
   seconds: number;
   now?: Date;
 }): Promise<BrowserMonthlyUsage> {
-  const month = browserUsageMonth(options.now ?? new Date());
-  const key = `${MONTHLY_USAGE_PREFIX}${month}`;
   const seconds = Math.max(0, Math.round(options.seconds));
-  for (let attempt = 0; attempt < MAX_CAS_ATTEMPTS; attempt += 1) {
-    const raw = await options.store.getSetting(key);
-    const usage = parseStoredUsage(raw);
-    if (usage.sessionIds.includes(options.sessionId)) {
-      return { month, sessions: usage.sessions, seconds: usage.seconds };
-    }
-    const next: StoredMonthlyUsage = {
-      sessions: usage.sessions + 1,
-      seconds: usage.seconds + seconds,
-      sessionIds: [...usage.sessionIds, options.sessionId].slice(-MAX_SESSION_IDS),
-    };
-    const applied = await options.store.applySettingsPatch({
-      expected: { key, value: raw ?? null },
-      set: [{ key, value: JSON.stringify(next) }],
-    });
-    if (applied) return { month, sessions: next.sessions, seconds: next.seconds };
-  }
-  throw new Error('Could not record browser usage after concurrent updates');
+  return updateMonthlyCounter(options.store, {
+    prefix: MONTHLY_USAGE_PREFIX,
+    id: options.sessionId,
+    ...(options.now ? { now: options.now } : {}),
+    idsField: 'sessionIds',
+    parse: parseStoredUsage,
+    next: (usage, { month, seen }) => {
+      if (seen) return { result: { month, ...usage } };
+      const counter = { sessions: usage.sessions + 1, seconds: usage.seconds + seconds };
+      return { counter, result: { month, ...counter } };
+    },
+    contendedMessage: 'Could not record browser usage after concurrent updates',
+  });
 }
 
 export async function readBrowserMonthlyUsage(
   store: SettingsStore,
   now: Date = new Date(),
 ): Promise<BrowserMonthlyUsage> {
-  const month = browserUsageMonth(now);
-  const usage = parseStoredUsage(await store.getSetting(`${MONTHLY_USAGE_PREFIX}${month}`));
-  return { month, sessions: usage.sessions, seconds: usage.seconds };
+  const { month, counter } = await readMonthlyCounter(store, { prefix: MONTHLY_USAGE_PREFIX, now, parse: parseStoredUsage });
+  return { month, ...counter };
 }

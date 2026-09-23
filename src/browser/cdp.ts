@@ -17,11 +17,6 @@ export interface CdpEvent {
   sessionId?: string;
 }
 
-export interface CdpEventRecord {
-  method: string;
-  sessionId?: string;
-}
-
 export class CdpError extends Error {
   constructor(message: string, readonly method: string, readonly code?: number) {
     super(message);
@@ -71,10 +66,7 @@ export interface CdpClientOptions {
   defaultTimeoutMs?: number;
 }
 
-const EVENT_RING_LIMIT = 200;
-
 export class CdpClient {
-  readonly events: CdpEventRecord[] = [];
   private nextId = 1;
   private readonly pending = new Map<number, PendingCall>();
   private readonly listeners = new Map<string, Set<(event: CdpEvent) => void>>();
@@ -214,10 +206,6 @@ export class CdpClient {
         params: (message.params as Record<string, unknown> | undefined) ?? {},
       };
       if (typeof message.sessionId === 'string') cdpEvent.sessionId = message.sessionId;
-      const record: CdpEventRecord = { method: cdpEvent.method };
-      if (cdpEvent.sessionId) record.sessionId = cdpEvent.sessionId;
-      this.events.push(record);
-      if (this.events.length > EVENT_RING_LIMIT) this.events.splice(0, this.events.length - EVENT_RING_LIMIT);
       this.emit(cdpEvent.method, cdpEvent);
     }
   }

@@ -3,11 +3,7 @@ import { resolveModel } from '@flue/runtime/internal';
 
 import { providerStreamsForModel } from '../config/pi-provider.ts';
 import { resolveRuntimeModel } from '../config/runtime-model.ts';
-import {
-  isProviderKeyId,
-  resolveProviderApiKey,
-  type ProviderKeyId,
-} from '../config/provider-keys.ts';
+import { resolveModelApiKeyForStatelessCall } from '../config/provider-keys.ts';
 import { getSettingsStore, type PlatformEnv } from '../config/state-backend.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import {
@@ -400,7 +396,7 @@ async function promptSlackInteractionIntentAgent(
     ...(env ? { env } : {}),
   });
   const model = resolveModel(runtimeModel.model);
-  const apiKey = await statelessClassifierApiKey(requestedModel, env, settings);
+  const apiKey = await resolveModelApiKeyForStatelessCall(requestedModel, env, settings);
   const response = await providerStreamsForModel(model).streamSimple(
     model,
     interactionClassifierContext(context),
@@ -453,20 +449,6 @@ function interactionClassifierContext(context: SlackInteractionIntentContext): C
     systemPrompt: SLACK_INTERACTION_CLASSIFIER_INSTRUCTIONS,
     messages: [{ role: 'user', content: message, timestamp: Date.now() }],
   };
-}
-
-async function statelessClassifierApiKey(
-  requestedModel: string,
-  env: PlatformEnv | undefined,
-  settings?: SettingsStore,
-): Promise<string | undefined> {
-  const provider = requestedModel.split('/', 1)[0] ?? '';
-  if (isProviderKeyId(provider)) {
-    return (await resolveProviderApiKey(provider as ProviderKeyId, env, settings)).apiKey;
-  }
-  if (provider === 'cloudflare-workers-ai') return process.env.CLOUDFLARE_API_TOKEN;
-  if (provider === 'local-stub') return process.env.LOCAL_STUB_API_KEY ?? 'offline-stub-key';
-  return undefined;
 }
 
 function assistantText(message: AssistantMessage): string {

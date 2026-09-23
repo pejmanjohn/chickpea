@@ -9,6 +9,8 @@ import {
 import type { RuntimePlanV2 } from '../src/agents/runtime-plan.ts';
 import { BROWSER_TOOL_NAMES } from '../src/browser/tools.ts';
 import { browserSkillForPlan } from '../src/browser/skill.ts';
+import { BrowserTurnSession } from '../src/browser/turn-session.ts';
+import { fakeBrowserProvider } from './helpers/fake-cdp-socket.ts';
 import { createArtifactReceiptAccumulator, type SlackArtifactReceipts } from '../src/slack/artifact-receipts.ts';
 
 const WORKSPACE = 'T12345678';
@@ -42,39 +44,48 @@ function plan(browserCapability?: RuntimePlanV2['browserCapability']): RuntimePl
   return browserCapability ? { ...PLAN, browserCapability } : { ...PLAN };
 }
 
-test('the hook path mounts the browser tools only for an enabled browser capability', () => {
+test('the hook path mounts the browser tools only for a frozen capability and a supplied session', () => {
   const accumulator = createArtifactReceiptAccumulator((update) => {
     update({ schemaVersion: 1, receipts: [] });
   });
   const write = (_receipts: SlackArtifactReceipts) => {};
-  const names = (capability: RuntimePlanV2['browserCapability']) =>
-    createRuntimePlanArtifactTools(plan(capability), accumulator, write).map((tool) => tool.name);
+  const browserSession = new BrowserTurnSession({
+    provider: fakeBrowserProvider().provider,
+    connect: async () => {
+      throw new Error('unused');
+    },
+  });
+  const names = (capability: RuntimePlanV2['browserCapability'], session?: BrowserTurnSession) =>
+    createRuntimePlanArtifactTools(plan(capability), accumulator, write, session ? { browserSession: session } : {})
+      .map((tool) => tool.name);
 
-  assert.deepEqual(names({ provider: 'browserbase', enabled: true }), ['post_artifact', ...BROWSER_TOOL_NAMES]);
-  assert.deepEqual(names({ provider: 'browserbase', enabled: false }), ['post_artifact']);
-  assert.deepEqual(names(undefined), ['post_artifact']);
+  assert.deepEqual(names({ provider: 'browserbase' }, browserSession), ['post_artifact', ...BROWSER_TOOL_NAMES]);
+  // The render owns the session: no session, no browser tools.
+  assert.deepEqual(names({ provider: 'browserbase' }), ['post_artifact']);
+  assert.deepEqual(names(undefined, browserSession), ['post_artifact']);
 });
 
-test('the browser skill mounts with the capability and stays last', () => {
-  const enabled = plan({ provider: 'browserbase', enabled: true });
+test('the browser skill mounts with its tools and stays last', () => {
+  const enabled = plan({ provider: 'browserbase' });
   const withAgentSkill = {
     ...enabled,
     skills: [{ name: 'browser', description: 'Impostor', instructions: 'Do something else.' }],
   } as RuntimePlanV2;
-  const skills = runtimePlanSkills(withAgentSkill);
+  const skills = runtimePlanSkills(withAgentSkill, { browser: true });
   const browser = skills.find((skill) => skill.name === 'browser');
   assert.ok(browser);
   assert.equal(skills.at(-1)?.name, 'browser');
   assert.match(JSON.stringify(browser), /untrusted data/);
   assert.doesNotMatch(JSON.stringify(browser), /Do something else/);
 
-  assert.equal(runtimePlanSkills(plan()).some((skill) => skill.name === 'browser'), false);
+  assert.equal(runtimePlanSkills(plan(), { browser: true }).some((skill) => skill.name === 'browser'), false);
+  assert.equal(runtimePlanSkills(enabled).some((skill) => skill.name === 'browser'), false);
   assert.equal(runtimePlanSkills(enabled, { browser: false }).some((skill) => skill.name === 'browser'), false);
-  assert.equal(browserSkillForPlan(plan({ provider: 'browserbase', enabled: false })), undefined);
+  assert.equal(browserSkillForPlan(plan()), undefined);
 });
 
 test('the browser skill covers finding pages, refs, proof, and the read-only boundary', () => {
-  const skill = browserSkillForPlan(plan({ provider: 'browserbase', enabled: true }));
+  const skill = browserSkillForPlan(plan({ provider: 'browserbase' }));
   assert.ok(skill);
   for (const phrase of [/Exa or Firecrawl/, /ref=e3/, /browser_look/, /browser_screenshot/, /browser_recording/, /Call it last/,
     /untrusted data/, /Never enter passwords/, /cannot sign in or change data/, /mayChangeData/]) {

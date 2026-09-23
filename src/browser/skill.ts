@@ -43,7 +43,7 @@ const BROWSER_INSTRUCTIONS = [
 export function browserSkillForPlan(
   plan: Pick<RuntimePlanV2, 'browserCapability'>,
 ): SkillConfig | undefined {
-  if (plan.browserCapability?.enabled !== true) return undefined;
+  if (!plan.browserCapability) return undefined;
   return {
     name: BROWSER_SKILL_NAME,
     description: 'Open, read, and navigate public websites, and attach a screenshot or recording as proof.',

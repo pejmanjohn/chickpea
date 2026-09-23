@@ -6,8 +6,8 @@
  * budget bounds cost: once the turn has used `maxSessionMs` of browser time,
  * further browsing is refused.
  */
-import { CdpClient, type CdpSocket } from './cdp.ts';
-import { BrowserPage, type BrowserPageOptions } from './page.ts';
+import type { CdpClient, CdpSocket } from './cdp.ts';
+import type { BrowserPage } from './page.ts';
 import type { BrowserProvider } from './provider.ts';
 
 export const DEFAULT_BROWSER_SESSION_MS = 10 * 60 * 1000;
@@ -18,15 +18,22 @@ export interface BrowserSessionClosedInfo {
   seconds: number;
 }
 
+/** What the Agent may do in the browser this turn. */
+export interface BrowserPolicy {
+  /** Refuse actions the model flags as changing data on a website. */
+  readOnly: boolean;
+}
+
 export interface BrowserTurnSessionDeps {
   provider: BrowserProvider;
+  /** Defaults to read-only browsing. */
+  policy?: BrowserPolicy;
   connect: (connectUrl: string) => Promise<CdpSocket>;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
   /** Total browser time this turn may use across sessions. */
   maxSessionMs?: number;
   onClosed?: (info: BrowserSessionClosedInfo) => Promise<void>;
-  pageOptions?: BrowserPageOptions;
 }
 
 export class BrowserBudgetExhaustedError extends Error {
@@ -50,10 +57,12 @@ export class BrowserTurnSession {
   private usedMs = 0;
   private readonly now: () => number;
   private readonly maxSessionMs: number;
+  readonly policy: BrowserPolicy;
 
   constructor(private readonly deps: BrowserTurnSessionDeps) {
     this.now = deps.now ?? Date.now;
     this.maxSessionMs = deps.maxSessionMs ?? DEFAULT_BROWSER_SESSION_MS;
+    this.policy = deps.policy ?? { readOnly: true };
   }
 
   get active(): boolean {
@@ -105,14 +114,17 @@ export class BrowserTurnSession {
     });
     const startedAt = this.now();
     try {
-      const socket = await this.deps.connect(handle.connectUrl);
+      // The CDP client and page driver load only when a turn actually
+      // browses, which keeps them out of the Worker's startup graph.
+      const [socket, { CdpClient }, { BrowserPage }] = await Promise.all([
+        this.deps.connect(handle.connectUrl),
+        import('./cdp.ts'),
+        import('./page.ts'),
+      ]);
       const client = new CdpClient(socket);
       try {
         const pageSessionId = await client.attachFirstPage();
-        const page = new BrowserPage(client, pageSessionId, {
-          ...(this.deps.sleep ? { sleep: this.deps.sleep } : {}),
-          ...this.deps.pageOptions,
-        });
+        const page = new BrowserPage(client, pageSessionId, this.deps.sleep ? { sleep: this.deps.sleep } : {});
         const active: ActiveSession = { sessionId: handle.id, client, page, startedAt };
         this.current = active;
         return active;

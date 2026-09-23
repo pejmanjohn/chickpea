@@ -11,18 +11,30 @@ import {
   type SlackArtifactStageInput,
   type SlackArtifactStageOutcome,
 } from '../sandbox/artifact-tool.ts';
-import { awaitRecordingDownload, type BrowserProvider } from './provider.ts';
+import type { ActivityKind } from '../activity/semantic.ts';
+import { redactCredentialLikeContent } from '../security/content-validation.ts';
+import type { PageInfo } from './page.ts';
+import { awaitRecordingDownload } from './provider.ts';
 import type { BrowserTurnSession } from './turn-session.ts';
 
-export const BROWSER_TOOL_NAMES = [
-  'browser_open',
-  'browser_snapshot',
-  'browser_act',
-  'browser_look',
-  'browser_screenshot',
-  'browser_recording',
-] as const;
-export type BrowserToolName = (typeof BROWSER_TOOL_NAMES)[number];
+/**
+ * Every browser tool, in mount order, with its activity narration: the
+ * semantic descriptor family and the status kind, verb, and object Slack
+ * shows.
+ */
+export const BROWSER_TOOL_ACTIVITY = {
+  browser_open: { descriptor: 'unknown', status: ['running', 'Browsing', 'a website'] },
+  browser_snapshot: { descriptor: 'unknown', status: ['running', 'Browsing', 'a website'] },
+  browser_act: { descriptor: 'unknown', status: ['running', 'Browsing', 'a website'] },
+  browser_look: { descriptor: 'unknown', status: ['checking', 'Looking at', 'a web page'] },
+  browser_screenshot: { descriptor: 'artifact', status: ['finishing', 'Attaching', 'a screenshot'] },
+  browser_recording: { descriptor: 'artifact', status: ['finishing', 'Attaching', 'a browser recording'] },
+} as const satisfies Record<string, {
+  descriptor: 'artifact' | 'unknown';
+  status: readonly [ActivityKind, string, string];
+}>;
+export type BrowserToolName = keyof typeof BROWSER_TOOL_ACTIVITY;
+export const BROWSER_TOOL_NAMES = Object.keys(BROWSER_TOOL_ACTIVITY) as BrowserToolName[];
 
 export const MAX_SNAPSHOT_CHARS = 12_000;
 export const NAVIGATION_TIMEOUT_MS = 20_000;
@@ -64,7 +76,6 @@ export interface ScreenshotInspectionInput {
 
 export interface BrowserToolsOptions {
   session: BrowserTurnSession;
-  provider: BrowserProvider;
   stageArtifact: BindingStageArtifact;
   /** The Slack transport's upload cap, when known. */
   transportMaxBytes: () => Promise<number | undefined>;
@@ -104,9 +115,8 @@ export function resolveBrowserTarget(input: string): { url: string; searched: bo
 /** Error text for the model: never a credential or a signed URL's query. */
 export function browserErrorMessage(error: unknown): string {
   const raw = error instanceof Error ? error.message : String(error);
-  return raw
+  return redactCredentialLikeContent(raw)
     .replace(/(wss?|https?):\/\/[^\s"'<>]*\?[^\s"'<>]*/gi, (match) => `${match.split('?')[0]}?[redacted]`)
-    .replace(/\b(bb_(?:live|test)_[A-Za-z0-9_-]+)/g, '[redacted]')
     .replace(/((?:api[-_]?key|signingKey|token)\s*[=:]\s*)[^\s&"',]+/gi, '$1[redacted]')
     .slice(0, 500);
 }
@@ -194,9 +204,9 @@ export function createBrowserTools(options: BrowserToolsOptions) {
     return session.ensure();
   };
 
-  const readPage = async () => {
+  const readPage = async (pageInfo?: PageInfo) => {
     const { page } = await requireOpenPage();
-    const snap = await page.snapshot();
+    const snap = await page.snapshot(pageInfo ? { pageInfo } : {});
     const capped = capSnapshot(snap.text, snap.truncated);
     return { url: snap.url, title: snap.title, snapshot: capped.snapshot, truncated: capped.truncated };
   };
@@ -209,8 +219,8 @@ export function createBrowserTools(options: BrowserToolsOptions) {
       try {
         const target = resolveBrowserTarget(data.url);
         const { page } = await session.ensure();
-        await page.navigate(target.url, { timeoutMs: NAVIGATION_TIMEOUT_MS });
-        return { output: { ...(target.searched ? { searched: true } : {}), ...(await readPage()) } };
+        const info = await page.navigate(target.url, { timeoutMs: NAVIGATION_TIMEOUT_MS });
+        return { output: { ...(target.searched ? { searched: true } : {}), ...(await readPage(info)) } };
       } catch (error) {
         return fail(error, 'browser_open');
       }
@@ -235,11 +245,14 @@ export function createBrowserTools(options: BrowserToolsOptions) {
     description: ACT_DESCRIPTION,
     input: ACT_INPUT,
     async run({ data }) {
-      if (data.mayChangeData) return { output: { refused: true, reason: BROWSER_DATA_CHANGE_REFUSAL } };
+      if (data.mayChangeData && session.policy.readOnly) {
+        return { output: { refused: true, reason: BROWSER_DATA_CHANGE_REFUSAL } };
+      }
       try {
         const { page } = await requireOpenPage();
+        let info: PageInfo;
         try {
-          await page.act(data.ref, data.action, {
+          info = await page.act(data.ref, data.action, {
             ...(data.text === undefined ? {} : { text: data.text }),
             ...(data.key === undefined ? {} : { key: data.key }),
             ...(data.submit === undefined ? {} : { submit: data.submit }),
@@ -251,7 +264,7 @@ export function createBrowserTools(options: BrowserToolsOptions) {
           }
           throw error;
         }
-        return { output: await readPage() };
+        return { output: await readPage(info) };
       } catch (error) {
         return fail(error, 'browser_act');
       }
@@ -315,27 +328,34 @@ export function createBrowserTools(options: BrowserToolsOptions) {
           return { output: { attached: false, error: 'No browser session is open, so there is nothing to record. Open a page first.' } };
         }
         const sessionNote = 'The browser session has ended. A later browser_open starts a new session.';
-        const download = await awaitRecordingDownload(options.provider, ended.sessionId, {
+        // The upload cap resolves while the recording is prepared.
+        const maxBytesPromise = options.transportMaxBytes();
+        maxBytesPromise.catch(() => undefined);
+        const download = await awaitRecordingDownload(session.provider, ended.sessionId, {
           timeoutMs: RECORDING_TIMEOUT_MS,
           pollMs: options.recordingPollMs ?? RECORDING_POLL_MS,
           ...(options.recordingSleep ? { sleep: options.recordingSleep } : {}),
         });
         const response = await doFetch(download.downloadUrl);
         if (!response.ok) throw new Error(`The recording download returned HTTP ${response.status}`);
-        const bytes = new Uint8Array(await response.arrayBuffer());
-        const maxBytes = await options.transportMaxBytes();
-        if (maxBytes !== undefined && bytes.byteLength > maxBytes) {
-          return {
-            output: {
-              attached: false,
-              reason: 'too-large',
-              byteLength: bytes.byteLength,
-              maxBytes,
-              hint: 'The recording is larger than this workspace can attach. Describe what the session showed, or attach a screenshot instead.',
-              note: sessionNote,
-            },
-          };
+        const maxBytes = await maxBytesPromise;
+        const tooLarge = (byteLength: number) => ({
+          output: {
+            attached: false,
+            reason: 'too-large',
+            byteLength,
+            maxBytes,
+            hint: 'The recording is larger than this workspace can attach. Describe what the session showed, or attach a screenshot instead.',
+            note: sessionNote,
+          },
+        });
+        const declaredLength = Number(response.headers.get('content-length') ?? Number.NaN);
+        if (maxBytes !== undefined && Number.isSafeInteger(declaredLength) && declaredLength > maxBytes) {
+          await response.body?.cancel().catch(() => undefined);
+          return tooLarge(declaredLength);
         }
+        const bytes = new Uint8Array(await response.arrayBuffer());
+        if (maxBytes !== undefined && bytes.byteLength > maxBytes) return tooLarge(bytes.byteLength);
         const filename = recordingFilename(now());
         const outcome = await options.stageArtifact({
           bytes,

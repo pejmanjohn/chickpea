@@ -7,6 +7,7 @@ import {
 } from './curl-request-urls.ts';
 import { SLACK_STREAM_ANSWER_TOOL_NAME } from '../slack/presentation-intent.ts';
 import { ActivityLifecycleReducer } from './lifecycle.ts';
+import { BROWSER_TOOL_ACTIVITY, type BrowserToolName } from '../browser/tools.ts';
 import {
   activityStatus,
   genericSemanticDescriptor,
@@ -342,17 +343,9 @@ export function toolActivityStatus(
   if (toolName === 'recover_image') {
     return activityStatus('finishing', 'Attaching', 'a saved image');
   }
-  if (toolName === 'browser_open' || toolName === 'browser_snapshot' || toolName === 'browser_act') {
-    return activityStatus('running', 'Browsing', 'a website');
-  }
-  if (toolName === 'browser_look') {
-    return activityStatus('checking', 'Looking at', 'a web page');
-  }
-  if (toolName === 'browser_screenshot') {
-    return activityStatus('finishing', 'Attaching', 'a screenshot');
-  }
-  if (toolName === 'browser_recording') {
-    return activityStatus('finishing', 'Attaching', 'a browser recording');
+  if (Object.hasOwn(BROWSER_TOOL_ACTIVITY, toolName)) {
+    const [kind, action, object] = BROWSER_TOOL_ACTIVITY[toolName as BrowserToolName].status;
+    return activityStatus(kind, action, object);
   }
   return activityStatus('running', 'Working with', 'a tool');
 }

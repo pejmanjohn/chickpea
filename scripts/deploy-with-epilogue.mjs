@@ -1298,8 +1298,7 @@ try {
   if (operatorSecrets) {
     console.log(`Deploying with operator secrets: ${Object.keys(operatorSecrets).join(', ')}`);
   }
-  const secretsToUpload = mergeDeploymentSecrets(deploymentAuthority?.generatedSecrets, operatorSecrets);
-  preparedSecrets = Object.keys(secretsToUpload).length > 0 ? createSecretsFile(secretsToUpload) : undefined;
+  preparedSecrets = createSecretsFile(mergeDeploymentSecrets(deploymentAuthority?.generatedSecrets, operatorSecrets));
 } catch (error) {
   console.error(`Unable to prepare the temporary Worker secrets file: ${error instanceof Error ? error.message : String(error)}`);
   process.exit(1);

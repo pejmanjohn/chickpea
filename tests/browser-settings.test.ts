@@ -93,3 +93,21 @@ test('monthly usage tallies sessions and seconds, once per session id', async ()
     store.close?.();
   }
 });
+
+test('the monthly usage row keeps its stored JSON shape, and an existing row still counts', async () => {
+  const store = new SqliteSettingsStore(':memory:');
+  try {
+    const now = new Date('2026-09-22T12:00:00Z');
+    await store.setSetting('browser.monthlyUsage.2026-09', JSON.stringify({ sessions: 3, seconds: 90, sessionIds: ['a', 'b', 'c'] }));
+    assert.deepEqual(await recordBrowserSessionUsage({ store, sessionId: 'b', seconds: 5, now }), { month: '2026-09', sessions: 3, seconds: 90 });
+    await recordBrowserSessionUsage({ store, sessionId: 'd', seconds: 10, now });
+    assert.equal(
+      await store.getSetting('browser.monthlyUsage.2026-09'),
+      JSON.stringify({ sessions: 4, seconds: 100, sessionIds: ['a', 'b', 'c', 'd'] }),
+    );
+    await store.setSetting('browser.monthlyUsage.2026-09', 'not json');
+    assert.deepEqual(await readBrowserMonthlyUsage(store, now), { month: '2026-09', sessions: 0, seconds: 0 });
+  } finally {
+    store.close?.();
+  }
+});

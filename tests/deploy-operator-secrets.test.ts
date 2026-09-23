@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 
 // @ts-expect-error Deployment tooling JavaScript helper.
 import { mergeDeploymentSecrets, OPERATOR_SECRETS_ENV, readOperatorSecretsFile } from '../scripts/lib/deploy-operator-secrets.mjs';
 
+// mkdtemp creates an owner-only (0700) directory, which readPrivateJson requires.
 function withSecretsFile(contents: string, mode = 0o600): { path: string; cleanup: () => void } {
   const directory = mkdtempSync(join(tmpdir(), 'chickpea-operator-secrets-'));
   const path = join(directory, 'secrets.json');
@@ -30,16 +31,23 @@ test('reads an owner-only JSON object of named string secrets', () => {
 test('refuses group- or world-readable files, relative paths, and malformed content', () => {
   const loose = withSecretsFile(JSON.stringify({ BROWSERBASE_API_KEY: 'x' }), 0o644);
   try {
-    assert.throws(() => readOperatorSecretsFile(loose.path), /owner-only/);
+    assert.throws(() => readOperatorSecretsFile(loose.path), /private, owner-controlled/);
   } finally {
     loose.cleanup();
   }
   assert.throws(() => readOperatorSecretsFile('relative/secrets.json'), /absolute path/);
   const broken = withSecretsFile('{not json');
   try {
-    assert.throws(() => readOperatorSecretsFile(broken.path), /not valid JSON/);
+    assert.throws(() => readOperatorSecretsFile(broken.path), /not readable JSON/);
   } finally {
     broken.cleanup();
+  }
+  const openDirectory = withSecretsFile(JSON.stringify({ BROWSERBASE_API_KEY: 'x' }));
+  try {
+    chmodSync(dirname(openDirectory.path), 0o755);
+    assert.throws(() => readOperatorSecretsFile(openDirectory.path), /private, owner-controlled/);
+  } finally {
+    openDirectory.cleanup();
   }
   const list = withSecretsFile('["BROWSERBASE_API_KEY"]');
   try {

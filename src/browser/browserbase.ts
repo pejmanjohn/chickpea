@@ -6,6 +6,7 @@ import {
   type BrowserSessionHandle,
   type CreateBrowserSessionOptions,
 } from './provider.ts';
+import { isRecord } from '../security/content-validation.ts';
 
 export interface BrowserbaseProviderOptions {
   apiKey: string;
@@ -20,7 +21,7 @@ const ERROR_BODY_LIMIT = 300;
 type Json = Record<string, unknown>;
 
 function asObject(value: unknown): Json {
-  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Json) : {};
+  return isRecord(value) ? value : {};
 }
 
 function str(value: unknown): string {
@@ -32,6 +33,8 @@ export function createBrowserbaseProvider(options: BrowserbaseProviderOptions): 
   const baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, '');
   const apiKey = options.apiKey;
 
+  // The exact key, whatever its shape: an environment key is never checked
+  // against the bb_ signature that the shared redactor recognizes.
   const redact = (text: string) => (apiKey ? text.split(apiKey).join('[redacted]') : text);
 
   async function request(method: 'GET' | 'POST', path: string, body?: unknown): Promise<{ status: number; data: unknown }> {

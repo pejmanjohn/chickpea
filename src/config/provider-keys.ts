@@ -70,6 +70,24 @@ export async function resolveProviderApiKey(
   return { apiKey, source: apiKey ? 'stored' : 'missing' };
 }
 
+/**
+ * The API key for one stateless model call outside the Agent harness (a
+ * classifier or a visual check) on `model`'s provider: the provider key for
+ * keyed providers, the Cloudflare token for Workers AI, and the local stub's
+ * key offline.
+ */
+export async function resolveModelApiKeyForStatelessCall(
+  model: string,
+  env: PlatformEnv | undefined,
+  settings?: SettingsStore,
+): Promise<string | undefined> {
+  const provider = model.split('/', 1)[0] ?? '';
+  if (isProviderKeyId(provider)) return (await resolveProviderApiKey(provider, env, settings)).apiKey;
+  if (provider === 'cloudflare-workers-ai') return process.env.CLOUDFLARE_API_TOKEN;
+  if (provider === 'local-stub') return process.env.LOCAL_STUB_API_KEY ?? 'offline-stub-key';
+  return undefined;
+}
+
 export async function describeProviderKeySources(
   env?: PlatformEnv,
   store?: SettingsStore,

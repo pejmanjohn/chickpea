@@ -500,8 +500,8 @@ async function prepareExecution(
     const reader = dependencies.modelRoleReader ?? getConfigStore(input.env);
     // Same store authority as a Slack turn: a routine's Agent keeps whatever
     // image role its workspace or per-Agent override resolves to.
-    const imageCapability = imageCapabilityForResolution(
-      await resolveAgentModelRoleFromStore({
+    const [imageRole, browserCapability] = await Promise.all([
+      resolveAgentModelRoleFromStore({
         role: 'image',
         workspaceId: input.routine.workspaceId,
         agent: { id: access.config.agent.id, kind: access.config.agent.kind },
@@ -513,8 +513,9 @@ async function prepareExecution(
         ...(input.env ? { env: input.env } : {}),
         settings: settingsStore,
       }),
-    );
-    const browserCapability = await browserCapabilityForTurn(settingsStore, input.env);
+      browserCapabilityForTurn(settingsStore, input.env),
+    ]);
+    const imageCapability = imageCapabilityForResolution(imageRole);
     envelope = createEnvelope({
       routine: input.routine,
       run: input.run,

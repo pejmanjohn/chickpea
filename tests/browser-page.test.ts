@@ -1,62 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { CdpClient, type CdpSocket } from '../src/browser/cdp.ts';
-import { BrowserPage, decodeBase64, type AXNode } from '../src/browser/page.ts';
+import { CdpClient } from '../src/browser/cdp.ts';
+import { BrowserPage, type AXNode } from '../src/browser/page.ts';
+import { FakeCdpSocket } from './helpers/fake-cdp-socket.ts';
 
 const SESSION = 'page-sess';
 
-interface Sent {
-  id: number;
-  method: string;
-  params: Record<string, unknown>;
-  sessionId?: string;
-}
-
-type Responder = (message: Sent) => { result?: Record<string, unknown>; error?: { code: number; message: string } } | undefined;
-
-class FakeSocket implements CdpSocket {
-  readonly sent: Sent[] = [];
-  readonly log: string[] = [];
-  readonly responders = new Map<string, Responder>();
-  private readonly handlers: Record<string, Array<(event: any) => void>> = { message: [], close: [], error: [] };
-
-  addEventListener(type: 'message' | 'close' | 'error', listener: (event: any) => void): void {
-    this.handlers[type]!.push(listener);
-  }
-
-  send(data: string): void {
-    const message = JSON.parse(data) as Sent;
-    this.sent.push(message);
-    this.log.push(message.method);
-    const reply = this.responders.get(message.method)?.(message) ?? {};
-    queueMicrotask(() => {
-      const payload: Record<string, unknown> = { id: message.id, sessionId: message.sessionId };
-      if (reply.error) payload.error = reply.error;
-      else payload.result = reply.result ?? {};
-      this.dispatch('message', { data: JSON.stringify(payload) });
-    });
-  }
-
-  close(): void {
-    this.dispatch('close', {});
-  }
-
-  emitEvent(method: string, sessionId = SESSION): void {
-    this.log.push(`event:${method}`);
-    this.dispatch('message', { data: JSON.stringify({ method, params: {}, sessionId }) });
-  }
-
-  methods(): string[] {
-    return this.sent.map((m) => m.method);
-  }
-
-  private dispatch(type: string, event: unknown): void {
-    for (const handler of this.handlers[type] ?? []) handler(event);
-  }
-}
-
 function setup() {
-  const socket = new FakeSocket();
+  const socket = new FakeCdpSocket();
   socket.responders.set('Runtime.evaluate', (message) => {
     const expression = String(message.params.expression);
     if (expression.includes('location.href')) {
@@ -161,7 +112,7 @@ test('navigate enables Page once, waits for loadEventFired, and returns url and 
   // Real sleep so readyState polling (after 500ms) cannot beat the load event.
   const page = new BrowserPage(client, SESSION);
   socket.responders.set('Page.navigate', () => {
-    setTimeout(() => socket.emitEvent('Page.loadEventFired'), 5);
+    setTimeout(() => socket.emitEvent('Page.loadEventFired', {}, SESSION), 5);
     return { result: { frameId: 'f1', loaderId: 'l1' } };
   });
   const info = await page.navigate('https://example.com', { timeoutMs: 2000 });
@@ -203,9 +154,9 @@ async function pageWithRefs() {
   return ctx;
 }
 
-const mouse = (socket: FakeSocket) =>
+const mouse = (socket: FakeCdpSocket) =>
   socket.sent.filter((m) => m.method === 'Input.dispatchMouseEvent').map((m) => m.params);
-const keys = (socket: FakeSocket) =>
+const keys = (socket: FakeCdpSocket) =>
   socket.sent.filter((m) => m.method === 'Input.dispatchKeyEvent').map((m) => m.params);
 
 test('act click scrolls into view, reads the box model, and clicks its center', async () => {
@@ -233,14 +184,14 @@ test('act click scrolls into view, reads the box model, and clicks its center', 
 });
 
 test('act click waits for the load event when a navigation starts', async () => {
-  const socket = new FakeSocket();
+  const socket = new FakeCdpSocket();
   socket.responders.set('Accessibility.getFullAXTree', () => ({ result: { nodes: SAMPLE_TREE } }));
   socket.responders.set('DOM.getBoxModel', () => ({ result: { model: { content: [0, 0, 10, 0, 10, 10, 0, 10] } } }));
   socket.responders.set('Runtime.evaluate', () => ({ result: { result: { value: { url: 'https://example.com/next', title: 'Next' } } } }));
   socket.responders.set('Input.dispatchMouseEvent', (message) => {
     if (message.params.type === 'mouseReleased') {
-      setTimeout(() => socket.emitEvent('Page.frameStartedLoading'), 0);
-      setTimeout(() => socket.emitEvent('Page.loadEventFired'), 30);
+      setTimeout(() => socket.emitEvent('Page.frameStartedLoading', {}, SESSION), 0);
+      setTimeout(() => socket.emitEvent('Page.loadEventFired', {}, SESSION), 30);
     }
     return undefined;
   });
@@ -344,7 +295,6 @@ test('screenshot decodes base64 image data', async () => {
     clip: { x: 0, y: 0, width: 1281, height: 3000, scale: 1 },
     captureBeyondViewport: true,
   });
-  assert.deepEqual([...decodeBase64('')], []);
   client.close();
 });
 

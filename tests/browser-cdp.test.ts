@@ -1,59 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { CdpClient, CdpError, connectCdpSocket, type CdpSocket } from '../src/browser/cdp.ts';
-
-type Responder = (message: { id: number; method: string; params: Record<string, unknown>; sessionId?: string }) =>
-  | { result?: Record<string, unknown>; error?: { code: number; message: string }; noReply?: boolean }
-  | undefined;
-
-class FakeSocket implements CdpSocket {
-  readonly sent: Array<{ id: number; method: string; params: Record<string, unknown>; sessionId?: string }> = [];
-  readonly responders = new Map<string, Responder>();
-  closedWith: { code?: number | undefined; reason?: string | undefined } | null = null;
-  private readonly handlers: Record<string, Array<(event: any) => void>> = { message: [], close: [], error: [] };
-
-  addEventListener(type: 'message' | 'close' | 'error', listener: (event: any) => void): void {
-    this.handlers[type]!.push(listener);
-  }
-
-  send(data: string): void {
-    const message = JSON.parse(data);
-    this.sent.push(message);
-    const reply = this.responders.get(message.method)?.(message) ?? {};
-    if (reply.noReply) return;
-    queueMicrotask(() => {
-      const payload: Record<string, unknown> = { id: message.id };
-      if (message.sessionId) payload.sessionId = message.sessionId;
-      if (reply.error) payload.error = reply.error;
-      else payload.result = reply.result ?? {};
-      this.deliver(payload);
-    });
-  }
-
-  close(code?: number, reason?: string): void {
-    this.closedWith = { code, reason };
-    this.dispatch('close', {});
-  }
-
-  deliver(payload: unknown): void {
-    this.dispatch('message', { data: JSON.stringify(payload) });
-  }
-
-  emitEvent(method: string, params: Record<string, unknown> = {}, sessionId?: string): void {
-    this.deliver(sessionId ? { method, params, sessionId } : { method, params });
-  }
-
-  remoteClose(): void {
-    this.dispatch('close', {});
-  }
-
-  private dispatch(type: string, event: unknown): void {
-    for (const handler of this.handlers[type] ?? []) handler(event);
-  }
-}
+import { CdpClient, CdpError, connectCdpSocket } from '../src/browser/cdp.ts';
+import { FakeCdpSocket } from './helpers/fake-cdp-socket.ts';
 
 test('send correlates responses by id even when they arrive out of order', async () => {
-  const socket = new FakeSocket();
+  const socket = new FakeCdpSocket();
   socket.responders.set('A.first', () => ({ noReply: true }));
   socket.responders.set('A.second', () => ({ noReply: true }));
   const client = new CdpClient(socket);
@@ -71,7 +22,7 @@ test('send correlates responses by id even when they arrive out of order', async
 });
 
 test('send rejects with CdpError on protocol errors', async () => {
-  const socket = new FakeSocket();
+  const socket = new FakeCdpSocket();
   socket.responders.set('Bad.method', () => ({ error: { code: -32601, message: "'Bad.method' wasn't found" } }));
   const client = new CdpClient(socket);
   await assert.rejects(client.send('Bad.method'), (error: unknown) => {
@@ -85,7 +36,7 @@ test('send rejects with CdpError on protocol errors', async () => {
 });
 
 test('send times out and ignores a late reply', async () => {
-  const socket = new FakeSocket();
+  const socket = new FakeCdpSocket();
   socket.responders.set('Slow.call', () => ({ noReply: true }));
   const client = new CdpClient(socket);
   await assert.rejects(client.send('Slow.call', {}, undefined, 20), /timed out after 20ms/);
@@ -94,7 +45,7 @@ test('send times out and ignores a late reply', async () => {
 });
 
 test('pending calls reject when the socket closes, and later sends fail fast', async () => {
-  const socket = new FakeSocket();
+  const socket = new FakeCdpSocket();
   socket.responders.set('Hang.call', () => ({ noReply: true }));
   const client = new CdpClient(socket);
   const pending = client.send('Hang.call');
@@ -105,7 +56,7 @@ test('pending calls reject when the socket closes, and later sends fail fast', a
 });
 
 test('close() closes the socket and resolves waiters with null', async () => {
-  const socket = new FakeSocket();
+  const socket = new FakeCdpSocket();
   const client = new CdpClient(socket);
   const waiting = client.waitForEvent('Page.loadEventFired', 's1', 10_000);
   client.close();
@@ -114,7 +65,7 @@ test('close() closes the socket and resolves waiters with null', async () => {
 });
 
 test('waitForEvent filters by sessionId and returns null on timeout; on() delivers events', async () => {
-  const socket = new FakeSocket();
+  const socket = new FakeCdpSocket();
   const client = new CdpClient(socket);
   const seen: string[] = [];
   const off = client.on('Page.loadEventFired', (event) => seen.push(event.sessionId ?? 'browser'));
@@ -134,18 +85,8 @@ test('waitForEvent filters by sessionId and returns null on timeout; on() delive
   client.close();
 });
 
-test('events ring keeps the last 200 entries with method and sessionId only', () => {
-  const socket = new FakeSocket();
-  const client = new CdpClient(socket);
-  for (let i = 0; i < 250; i++) socket.emitEvent(`Evt.n${i}`, { big: 'x'.repeat(10) }, i % 2 ? 's' : undefined);
-  assert.equal(client.events.length, 200);
-  assert.deepEqual(client.events[0], { method: 'Evt.n50' });
-  assert.deepEqual(client.events[199], { method: 'Evt.n249', sessionId: 's' });
-  client.close();
-});
-
 test('attachFirstPage picks the first page target and attaches flattened', async () => {
-  const socket = new FakeSocket();
+  const socket = new FakeCdpSocket();
   socket.responders.set('Target.getTargets', () => ({
     result: {
       targetInfos: [
@@ -163,7 +104,7 @@ test('attachFirstPage picks the first page target and attaches flattened', async
 });
 
 test('attachFirstPage throws a clear error without a page target', async () => {
-  const socket = new FakeSocket();
+  const socket = new FakeCdpSocket();
   socket.responders.set('Target.getTargets', () => ({ result: { targetInfos: [{ targetId: 'b', type: 'browser' }] } }));
   const client = new CdpClient(socket);
   await assert.rejects(client.attachFirstPage(), /no open page/);

@@ -1,9 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import * as v from 'valibot';
-import type { CdpSocket } from '../src/browser/cdp.ts';
 import type { AXNode } from '../src/browser/page.ts';
-import type { BrowserProvider } from '../src/browser/provider.ts';
 import {
   BROWSER_TOOL_NAMES,
   BrowserVisionUnavailableError,
@@ -15,13 +13,7 @@ import {
 } from '../src/browser/tools.ts';
 import { BrowserTurnSession } from '../src/browser/turn-session.ts';
 import type { SlackArtifactStageInput, SlackArtifactStageOutcome } from '../src/sandbox/artifact-tool.ts';
-
-interface Sent {
-  id: number;
-  method: string;
-  params: Record<string, unknown>;
-  sessionId?: string;
-}
+import { FakeCdpSocket, fakeBrowserProvider } from './helpers/fake-cdp-socket.ts';
 
 const PNG_BYTES = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
 const JPEG_BYTES = new Uint8Array([0xff, 0xd8, 0xff, 9, 9]);
@@ -38,107 +30,65 @@ const TREE: AXNode[] = [
   ax('3', 'link', { parentId: '1', label: 'Plans', backendDOMNodeId: 7 }),
 ];
 
-class ScriptedBrowser implements CdpSocket {
-  readonly sent: Sent[] = [];
+/** A scripted page: navigation sets the URL and title, and fires the load event. */
+class ScriptedBrowser extends FakeCdpSocket {
   url = 'about:blank';
   title = '';
   tree: AXNode[] = TREE;
-  private readonly handlers: Record<string, Array<(event: any) => void>> = { message: [], close: [], error: [] };
 
-  addEventListener(type: 'message' | 'close' | 'error', listener: (event: any) => void): void {
-    this.handlers[type]!.push(listener);
-  }
-
-  send(data: string): void {
-    const message = JSON.parse(data) as Sent;
-    this.sent.push(message);
-    const result = this.respond(message);
-    queueMicrotask(() => this.dispatch('message', { data: JSON.stringify({ id: message.id, sessionId: message.sessionId, result }) }));
-  }
-
-  close(): void {
-    this.dispatch('close', {});
-  }
-
-  methods(): string[] {
-    return this.sent.map((m) => m.method);
-  }
-
-  private respond(message: Sent): Record<string, unknown> {
-    switch (message.method) {
-      case 'Target.getTargets':
-        return { targetInfos: [{ targetId: 't1', type: 'page' }] };
-      case 'Target.attachToTarget':
-        return { sessionId: 'page-1' };
-      case 'Page.navigate':
-        this.url = String(message.params.url);
-        this.title = this.url.includes('duckduckgo') ? 'Search results' : 'Example Pricing';
-        queueMicrotask(() => this.dispatch('message', {
-          data: JSON.stringify({ method: 'Page.loadEventFired', params: {}, sessionId: 'page-1' }),
-        }));
-        return { frameId: 'f1', loaderId: 'l1' };
-      case 'Runtime.evaluate': {
-        const expression = String(message.params.expression);
-        if (expression.includes('location.href')) return { result: { type: 'object', value: { url: this.url, title: this.title } } };
-        return { result: { type: 'string', value: 'complete' } };
-      }
-      case 'Accessibility.getFullAXTree':
-        return { nodes: this.tree };
-      case 'DOM.getBoxModel':
-        return { model: { content: [0, 0, 10, 0, 10, 10, 0, 10] } };
-      case 'Page.captureScreenshot':
-        return { data: toBase64(message.params.format === 'jpeg' ? JPEG_BYTES : PNG_BYTES) };
-      default:
-        return {};
-    }
-  }
-
-  private dispatch(type: string, event: unknown): void {
-    for (const handler of this.handlers[type] ?? []) handler(event);
+  constructor() {
+    super();
+    const pageSocket = FakeCdpSocket.withPage();
+    for (const [method, responder] of pageSocket.responders) this.responders.set(method, responder);
+    this.responders.set('Page.navigate', (message) => {
+      this.url = String(message.params.url);
+      this.title = this.url.includes('duckduckgo') ? 'Search results' : 'Example Pricing';
+      queueMicrotask(() => this.emitEvent('Page.loadEventFired', {}, 'page-1'));
+      return { result: { frameId: 'f1', loaderId: 'l1' } };
+    });
+    this.responders.set('Runtime.evaluate', (message) => ({
+      result: String(message.params.expression).includes('location.href')
+        ? { result: { type: 'object', value: { url: this.url, title: this.title } } }
+        : { result: { type: 'string', value: 'complete' } },
+    }));
+    this.responders.set('Accessibility.getFullAXTree', () => ({ result: { nodes: this.tree } }));
+    this.responders.set('DOM.getBoxModel', () => ({ result: { model: { content: [0, 0, 10, 0, 10, 10, 0, 10] } } }));
+    this.responders.set('Page.captureScreenshot', (message) => ({
+      result: { data: toBase64(message.params.format === 'jpeg' ? JPEG_BYTES : PNG_BYTES) },
+    }));
   }
 }
 
 function fakeProvider() {
-  const ended: string[] = [];
-  const provider: BrowserProvider = {
-    id: 'browserbase',
+  return fakeBrowserProvider({
     async createSession() {
       return { id: 'sess-1', connectUrl: 'wss://connect.example/?signingKey=bb_live_secretvalue123' };
     },
-    async endSession(sessionId) {
-      ended.push(sessionId);
-    },
-    async sessionStatus() {
-      return 'COMPLETED';
-    },
-    async liveView() {
-      throw new Error('unused');
-    },
-    async requestRecordingDownloads() {},
     async listRecordingDownloads() {
       return [{ pageId: 'p1', status: 'COMPLETED', downloadUrl: 'https://recordings.example/sess-1.mp4?sig=abc' }];
     },
-    async createContext() {
-      return { id: 'ctx' };
-    },
-  };
-  return { provider, ended };
+  });
 }
 
-function setup(overrides: Partial<BrowserToolsOptions> & { maxBytes?: number; stage?: (input: SlackArtifactStageInput) => SlackArtifactStageOutcome } = {}) {
+function setup(overrides: Partial<BrowserToolsOptions> & {
+  maxBytes?: number;
+  stage?: (input: SlackArtifactStageInput) => SlackArtifactStageOutcome;
+  readOnly?: boolean;
+  recordingResponse?: () => Response;
+} = {}) {
   const browser = new ScriptedBrowser();
   const { provider, ended } = fakeProvider();
   const session = new BrowserTurnSession({
     provider,
     connect: async () => browser,
     sleep: async () => undefined,
+    ...(overrides.readOnly === undefined ? {} : { policy: { readOnly: overrides.readOnly } }),
   });
   const staged: SlackArtifactStageInput[] = [];
   const fetched: string[] = [];
-  const { maxBytes, stage, ...rest } = overrides;
+  const { maxBytes, stage, readOnly: _readOnly, recordingResponse, ...rest } = overrides;
   const tools = createBrowserTools({
     session,
-    provider,
     stageArtifact: async (input) => {
       staged.push(input);
       return stage ? stage(input) : { attached: true, byteLength: input.bytes.byteLength };
@@ -146,7 +96,7 @@ function setup(overrides: Partial<BrowserToolsOptions> & { maxBytes?: number; st
     transportMaxBytes: async () => maxBytes,
     fetch: (async (url: string | URL | Request) => {
       fetched.push(String(url));
-      return new Response(new Uint8Array(2048));
+      return recordingResponse ? recordingResponse() : new Response(new Uint8Array(2048));
     }) as typeof fetch,
     recordingSleep: async () => undefined,
     now: () => new Date(Date.UTC(2026, 8, 22, 14, 5)),
@@ -242,6 +192,24 @@ test('browser_act refuses data-changing actions without touching the page', asyn
   });
   assert.equal(browser.sent.length, 0);
   assert.equal(session.active, false);
+});
+
+test('a session whose policy allows changes lets a data-changing action through', async () => {
+  const { run, browser, session } = setup({ readOnly: false });
+  await run('browser_open', { url: 'https://example.com/pricing' });
+  const output = await run('browser_act', { ref: 'e1', action: 'click', mayChangeData: true });
+  assert.equal(output.refused, undefined);
+  assert.ok(browser.methods().includes('Input.dispatchMouseEvent'));
+  await session.close();
+});
+
+test('browser_open and browser_act read the page title once per call', async () => {
+  const { run, browser, session } = setup();
+  await run('browser_open', { url: 'https://example.com/pricing' });
+  await run('browser_act', { ref: 'e1', action: 'click' });
+  const infoReads = browser.sent.filter((m) => String(m.params.expression ?? '').includes('location.href'));
+  assert.equal(infoReads.length, 2);
+  await session.close();
 });
 
 test('browser_act reports an unknown ref in the output with a fresh snapshot', async () => {
@@ -343,6 +311,27 @@ test('browser_recording reports too-large without staging', async () => {
   assert.equal(session.active, false);
 });
 
+test('browser_recording refuses a declared oversize download without reading its body', async () => {
+  let bodyRead = false;
+  const body = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      bodyRead = true;
+      controller.enqueue(new Uint8Array(4096));
+      controller.close();
+    },
+  }, { highWaterMark: 0 });
+  const { run, staged } = setup({
+    maxBytes: 1024,
+    recordingResponse: () => new Response(body, { headers: { 'content-length': '4096' } }),
+  });
+  await run('browser_open', { url: 'https://example.com/pricing' });
+  const output = await run('browser_recording');
+  assert.equal(output.reason, 'too-large');
+  assert.equal(output.byteLength, 4096);
+  assert.equal(bodyRead, false);
+  assert.equal(staged.length, 0);
+});
+
 test('provider failures become error outputs without secrets', async () => {
   const browser = new ScriptedBrowser();
   const { provider } = fakeProvider();
@@ -352,7 +341,6 @@ test('provider failures become error outputs without secrets', async () => {
   const session = new BrowserTurnSession({ provider, connect: async () => browser });
   const [open] = createBrowserTools({
     session,
-    provider,
     stageArtifact: async () => ({ attached: false, reason: 'unavailable' }),
     transportMaxBytes: async () => undefined,
   });
@@ -372,7 +360,6 @@ test('a missing key surfaces the not-connected message', async () => {
   const session = new BrowserTurnSession({ provider, connect: async () => new ScriptedBrowser() });
   const [open] = createBrowserTools({
     session,
-    provider,
     stageArtifact: async () => ({ attached: false, reason: 'unavailable' }),
     transportMaxBytes: async () => undefined,
   });

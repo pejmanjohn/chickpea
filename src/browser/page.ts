@@ -4,6 +4,7 @@
  * The Agent reads the page as a compact accessibility snapshot, then acts on
  * elements by the refs (e1, e2, ...) that snapshot handed out.
  */
+import { base64ToBytes } from '../security/base64url.ts';
 import type { CdpClient } from './cdp.ts';
 
 export interface PageInfo {
@@ -38,14 +39,15 @@ export interface BrowserActOptions {
 
 export interface BrowserPageOptions {
   sleep?: (ms: number) => Promise<void>;
-  /** Time to wait after an action for a navigation to start. */
-  settleMs?: number;
-  /** Maximum time to wait for a started navigation to load after an action. */
-  actionLoadTimeoutMs?: number;
-  /** Delay before `navigate` starts polling document.readyState. */
-  readyStatePollDelayMs?: number;
-  readyStatePollMs?: number;
 }
+
+/** Time to wait after an action for a navigation to start. */
+const SETTLE_MS = 150;
+/** Maximum time to wait for a started navigation to load after an action. */
+const ACTION_LOAD_TIMEOUT_MS = 1500;
+/** Delay before `navigate` starts polling document.readyState. */
+const READY_STATE_POLL_DELAY_MS = 500;
+const READY_STATE_POLL_MS = 250;
 
 export interface AXValue {
   type?: string;
@@ -127,14 +129,6 @@ export function keyDefinition(name: string): { key: string; code: string; keyCod
   throw new Error(`Unsupported key "${name}". Use a single character or one of: ${Object.keys(KEY_DEFINITIONS).join(', ')}`);
 }
 
-/** Base64 decode that works in workerd and Node without Buffer. */
-export function decodeBase64(data: string): Uint8Array {
-  const binary = atob(data);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  return bytes;
-}
-
 function axString(value: AXValue | undefined): string {
   if (!value || value.value === undefined || value.value === null) return '';
   return typeof value.value === 'string' ? value.value : String(value.value);
@@ -163,17 +157,9 @@ export class BrowserPage {
   refs = new Map<string, ElementRef>();
   private pageEnabled = false;
   private readonly sleep: (ms: number) => Promise<void>;
-  private readonly settleMs: number;
-  private readonly actionLoadTimeoutMs: number;
-  private readonly readyStatePollDelayMs: number;
-  private readonly readyStatePollMs: number;
 
   constructor(readonly client: CdpClient, readonly sessionId: string, options: BrowserPageOptions = {}) {
     this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
-    this.settleMs = options.settleMs ?? 150;
-    this.actionLoadTimeoutMs = options.actionLoadTimeoutMs ?? 1500;
-    this.readyStatePollDelayMs = options.readyStatePollDelayMs ?? 500;
-    this.readyStatePollMs = options.readyStatePollMs ?? 250;
   }
 
   private cdp<T extends Record<string, unknown> = Record<string, unknown>>(
@@ -211,7 +197,7 @@ export class BrowserPage {
 
   private async pollReadyState(timeoutMs: number, signal: AbortSignal): Promise<void> {
     const deadline = Date.now() + timeoutMs;
-    await this.sleep(Math.min(this.readyStatePollDelayMs, timeoutMs));
+    await this.sleep(Math.min(READY_STATE_POLL_DELAY_MS, timeoutMs));
     while (!signal.aborted && Date.now() < deadline) {
       try {
         const state = await this.evaluate('document.readyState');
@@ -220,7 +206,7 @@ export class BrowserPage {
         // The execution context may be replaced mid-navigation; keep polling.
       }
       if (signal.aborted) return;
-      await this.sleep(this.readyStatePollMs);
+      await this.sleep(READY_STATE_POLL_MS);
     }
   }
 
@@ -245,7 +231,11 @@ export class BrowserPage {
     return result.result?.value;
   }
 
-  async snapshot(options: { maxNodes?: number } = {}): Promise<PageSnapshot> {
+  /**
+   * Reads the page as an accessibility snapshot. Pass the `pageInfo` a
+   * `navigate` or `act` just returned to skip reading it again.
+   */
+  async snapshot(options: { maxNodes?: number; pageInfo?: PageInfo } = {}): Promise<PageSnapshot> {
     const maxNodes = options.maxNodes ?? 400;
     const tree = await this.cdp<{ nodes?: AXNode[] }>('Accessibility.getFullAXTree');
     const lines = buildSnapshotLines(tree.nodes ?? []);
@@ -256,7 +246,7 @@ export class BrowserPage {
     this.refs = refs;
     let text = kept.map((line) => line.text).join('\n');
     if (truncated) text += `\n… (${lines.length - kept.length} more nodes)`;
-    const info = await this.pageInfo();
+    const info = options.pageInfo ?? await this.pageInfo();
     return { text, nodeCount: lines.length, truncated, url: info.url, title: info.title };
   }
 
@@ -274,7 +264,7 @@ export class BrowserPage {
     const loaded = this.client.waitForEvent(
       'Page.loadEventFired',
       this.sessionId,
-      this.settleMs + this.actionLoadTimeoutMs,
+      SETTLE_MS + ACTION_LOAD_TIMEOUT_MS,
       abort.signal,
     );
     try {
@@ -325,7 +315,7 @@ export class BrowserPage {
         default:
           throw new Error(`Unsupported browser action ${String(action)}`);
       }
-      await this.sleep(this.settleMs);
+      await this.sleep(SETTLE_MS);
       if (navigationStarted) await loaded;
     } finally {
       abort.abort();
@@ -351,7 +341,7 @@ export class BrowserPage {
     }
     const result = await this.cdp<{ data?: string }>('Page.captureScreenshot', params, 60_000);
     if (!result.data) throw new Error('The browser returned an empty screenshot');
-    return decodeBase64(result.data);
+    return base64ToBytes(result.data);
   }
 
   private async elementCenter(backendNodeId: number): Promise<{ x: number; y: number }> {

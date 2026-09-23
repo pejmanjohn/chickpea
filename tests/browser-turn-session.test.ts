@@ -1,71 +1,17 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { CdpSocket } from '../src/browser/cdp.ts';
-import type { BrowserProvider, CreateBrowserSessionOptions } from '../src/browser/provider.ts';
 import { BrowserBudgetExhaustedError, BrowserTurnSession } from '../src/browser/turn-session.ts';
-
-class FakeSocket implements CdpSocket {
-  closed = false;
-  private readonly handlers: Record<string, Array<(event: any) => void>> = { message: [], close: [], error: [] };
-  addEventListener(type: 'message' | 'close' | 'error', listener: (event: any) => void): void {
-    this.handlers[type]!.push(listener);
-  }
-  send(data: string): void {
-    const message = JSON.parse(data) as { id: number; method: string };
-    const result = message.method === 'Target.getTargets'
-      ? { targetInfos: [{ targetId: 't1', type: 'page' }] }
-      : message.method === 'Target.attachToTarget' ? { sessionId: 'page-1' } : {};
-    queueMicrotask(() => this.dispatch('message', { data: JSON.stringify({ id: message.id, result }) }));
-  }
-  close(): void {
-    this.closed = true;
-    this.dispatch('close', {});
-  }
-  private dispatch(type: string, event: unknown): void {
-    for (const handler of this.handlers[type] ?? []) handler(event);
-  }
-}
-
-function fakeProvider() {
-  const created: CreateBrowserSessionOptions[] = [];
-  const ended: string[] = [];
-  let counter = 0;
-  const provider: BrowserProvider = {
-    id: 'browserbase',
-    async createSession(options) {
-      created.push(options);
-      counter += 1;
-      return { id: `sess-${counter}`, connectUrl: `wss://connect.example/?signingKey=secret-${counter}` };
-    },
-    async endSession(sessionId) {
-      ended.push(sessionId);
-    },
-    async sessionStatus() {
-      return 'COMPLETED';
-    },
-    async liveView() {
-      throw new Error('unused');
-    },
-    async requestRecordingDownloads() {},
-    async listRecordingDownloads() {
-      return [];
-    },
-    async createContext() {
-      return { id: 'ctx' };
-    },
-  };
-  return { provider, created, ended };
-}
+import { FakeCdpSocket, fakeBrowserProvider } from './helpers/fake-cdp-socket.ts';
 
 function setup(overrides: { maxSessionMs?: number } = {}) {
   let clock = 1_000_000;
-  const sockets: FakeSocket[] = [];
+  const sockets: FakeCdpSocket[] = [];
   const closedInfo: Array<{ sessionId: string; seconds: number }> = [];
-  const fake = fakeProvider();
+  const fake = fakeBrowserProvider();
   const session = new BrowserTurnSession({
     provider: fake.provider,
     connect: async () => {
-      const socket = new FakeSocket();
+      const socket = FakeCdpSocket.withPage();
       sockets.push(socket);
       return socket;
     },
@@ -97,6 +43,7 @@ test('ensure creates one recorded session lazily and reuses it', async () => {
   assert.equal(session.active, true);
   assert.equal(session.sessionId, 'sess-1');
   assert.equal(session.startedAt, 1_000_000);
+  assert.deepEqual(session.policy, { readOnly: true });
   await session.close();
 });
 
@@ -137,7 +84,7 @@ test('the per-turn budget refuses more browsing once it is used up', async () =>
 });
 
 test('a failed connection ends the paid session instead of leaking it', async () => {
-  const fake = fakeProvider();
+  const fake = fakeBrowserProvider();
   const session = new BrowserTurnSession({
     provider: fake.provider,
     connect: async () => {
@@ -150,10 +97,10 @@ test('a failed connection ends the paid session instead of leaking it', async ()
 });
 
 test('a failing usage callback does not break close', async () => {
-  const fake = fakeProvider();
+  const fake = fakeBrowserProvider();
   const session = new BrowserTurnSession({
     provider: fake.provider,
-    connect: async () => new FakeSocket(),
+    connect: async () => FakeCdpSocket.withPage(),
     onClosed: async () => {
       throw new Error('store down');
     },

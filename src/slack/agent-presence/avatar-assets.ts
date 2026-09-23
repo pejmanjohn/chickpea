@@ -5,7 +5,8 @@ import {
   defaultAgentAvatarPng,
   isDefaultAgentAvatarSeed,
 } from './default-avatar-pool.ts';
-import { base64ToBytes, fnv1aHash } from './hash.ts';
+import { base64ToBytes } from '../../security/base64url.ts';
+import { fnv1aHash } from './hash.ts';
 
 // Uploads are stored as sent, minus embedded metadata. The Worker no longer
 // decodes or resizes images: the wasm codec that did so cost 600 KiB of the
