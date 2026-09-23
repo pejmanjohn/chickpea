@@ -220,6 +220,7 @@ const allowedPublicDocs = new Set([
   exportPath('docs', 'runbooks', 'semantic-activity-status.md'),
   exportPath('docs', 'runbooks', 'workspace-management-mcp.md'),
   exportPath('docs', 'runbooks', 'slack-lists.md'),
+  exportPath('docs', 'runbooks', 'browser-feature.md'),
 ]);
 
 const forbiddenSourcePaths = new Set([
