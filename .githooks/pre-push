@@ -1,0 +1,16 @@
+#!/bin/sh
+# Source hygiene for every commit being pushed: manifest policy, private-name
+# leak scan, release manifest, lockfile integrity, package metadata, and the
+# npm pack manifest. Seconds per commit, no install or build. Install with
+# `npm run hooks:install` (sets core.hooksPath to this directory).
+set -eu
+zero=0000000000000000000000000000000000000000
+status=0
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [ "$local_sha" = "$zero" ] && continue
+  if ! node scripts/verify-hygiene.mjs --revision "$local_sha"; then
+    echo "pre-push: source hygiene failed for $local_ref ($local_sha). Fix the findings; bypass only for a deliberate exception with --no-verify." >&2
+    status=1
+  fi
+done
+exit $status

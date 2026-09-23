@@ -103,3 +103,36 @@ test('spawnReadyServer retries only a lost port, and stops every child it abando
   assert.deepEqual(stopped, ['child-41001', 'child-41002']);
   assert.equal(logs.length, 1);
 });
+
+test('verification ports come from a fixed range, are locked per host, and skip live reservations', async () => {
+  // @ts-expect-error The port allocator intentionally has no declaration file.
+  const ports = await import('../scripts/lib/verification-ports.mjs');
+  const { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const lockDir = mkdtempSync(join(tmpdir(), 'chickpea-ports-'));
+  try {
+    const range = { first: 20900, last: 20903 };
+    // The test runner is a live process: its reservation must be respected.
+    writeFileSync(join(lockDir, '20900.json'), JSON.stringify({ pid: process.ppid, startedAt: new Date().toISOString() }));
+    // A reservation whose owner is gone, or is far too old, is reclaimed.
+    writeFileSync(join(lockDir, '20901.json'), JSON.stringify({ pid: 2 ** 22 - 1, startedAt: new Date().toISOString() }));
+    writeFileSync(join(lockDir, '20902.json'), JSON.stringify({ pid: process.ppid, startedAt: '2020-01-01T00:00:00.000Z' }));
+    const first = await ports.reserveVerificationPort({ range, lockDir });
+    const second = await ports.reserveVerificationPort({ range, lockDir });
+    const third = await ports.reserveVerificationPort({ range, lockDir });
+    assert.deepEqual([first, second, third].sort(), [20901, 20902, 20903]);
+    for (const port of [first, second, third]) {
+      assert.equal(JSON.parse(readFileSync(join(lockDir, `${port}.json`), 'utf8')).pid, process.pid);
+    }
+    await assert.rejects(ports.reserveVerificationPort({ range, lockDir }), /No free verification port in 20900-20903/);
+    ports.releaseVerificationPort(first, { lockDir });
+    assert.equal(await ports.reserveVerificationPort({ range, lockDir }), first);
+    for (const port of [first, second, third]) ports.releaseVerificationPort(port, { lockDir });
+    assert.deepEqual(readdirSync(lockDir).sort(), ['20900.json']);
+    // Defaults sit outside the macOS and Linux ephemeral ranges.
+    assert.ok(ports.VERIFICATION_PORT_RANGE.first >= 1024 && ports.VERIFICATION_PORT_RANGE.last < 32768);
+  } finally {
+    rmSync(lockDir, { recursive: true, force: true });
+  }
+});

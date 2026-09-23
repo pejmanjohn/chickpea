@@ -9,7 +9,9 @@ reservations, process inspection, or test suites.
 
 Use `verify:regression` for normal check groups. It reserves
 `~/.chickpea/verification-host/owner.json` for the whole serial group, including
-export children. The reservation is shared across this user's worktrees and
+export children. A plan that consists only of `verify:hygiene` (seconds, no
+servers, no build) runs without a reservation; so does `npm run verify:hygiene`
+on its own. The reservation is shared across this user's worktrees and
 does not depend on a checkout's temporary directory. For standalone commands:
 
 ```sh

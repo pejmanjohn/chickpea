@@ -80,6 +80,8 @@ function changedFiles(base) {
   ].filter(Boolean))];
 }
 
+export const isHygieneStep = (step) => step.kind === 'npm' && step.script === 'verify:hygiene';
+
 export function runRegressionSteps(steps, run) {
   const results = [];
   for (const step of steps) {
@@ -95,7 +97,7 @@ export async function main(argv) {
   let lease, interrupted = false;
   try {
     if (argv.includes('--help')) {
-      console.log(`Usage: npm run verify:regression -- [--mode changed|regression|release] [--area NAME] [--base REF] [--plan] [--record PRIVATE_RUN] [--reuse] [--timeout-ms MS] [--wait-ms MS]\nAreas: ${Object.keys(REGRESSION_AREAS).join(', ')}\n--area may repeat and selects explicit scope; otherwise changed mode includes branch and uncommitted changes.\n--record saves private logs, durations, failures and final release receipts. --reuse accepts only unchanged successful inputs and retained logs; build always runs. Release never reuses steps.`);
+      console.log(`Usage: npm run verify:regression -- [--mode changed|regression|release] [--area NAME] [--base REF] [--plan] [--record PRIVATE_RUN] [--reuse] [--timeout-ms MS] [--wait-ms MS]\nAreas: ${Object.keys(REGRESSION_AREAS).join(', ')}\n--area may repeat and selects explicit scope; otherwise changed mode includes branch and uncommitted changes.\nEvery plan starts with verify:hygiene (seconds, no host reservation); the remaining steps run cheapest first.\n--record saves private logs, durations, failures and final release receipts. --reuse accepts only unchanged successful inputs and retained logs; build always runs. Release never reuses steps.`);
       return 0;
     }
     const options = parseRegressionArgs(argv);
@@ -112,14 +114,17 @@ export async function main(argv) {
       throw new Error('Release checks require clean committed source; verify:oss-export archives HEAD. Use changed or regression for working changes.');
     }
     if (options.mode === 'release') assertReleaseEnvironment(ROOT);
-    if (plan.steps.length && !existsSync(path.join(ROOT, 'node_modules', 'tsx'))) throw new Error('Run npm ci first with the repository Node version.');
+    // Hygiene alone needs neither installed dependencies, loopback, nor the
+    // host reservation; everything else does.
+    const expensive = plan.steps.some((step) => !isHygieneStep(step));
+    if (expensive && !existsSync(path.join(ROOT, 'node_modules', 'tsx'))) throw new Error('Run npm ci first with the repository Node version.');
     if (options.record) {
       const run = readRun(options.record); // Validate before executing any checks.
       if (run.events.some((event) => event.type === 'offline_begin' && !run.events.some((end) => end.type === 'offline_finish' && end.attemptId === event.id))) {
         throw new Error('An offline attempt is still open. Inspect the owning process and log; record offline_interrupted only after its processes have stopped.');
       }
     }
-    if (plan.steps.length) {
+    if (expensive) {
       const waitingSource = options.waitMs ? sourceInputs(ROOT) : null;
       const controller = new AbortController();
       const cancel = () => controller.abort();
@@ -141,7 +146,7 @@ export async function main(argv) {
       npm_config_cache: path.join(scratch, 'npm-cache'),
       WRANGLER_LOG_PATH: path.join(scratch, 'wrangler.log'),
     };
-    if (plan.steps.length) {
+    if (expensive) {
       const probe = spawnSync(process.execPath, ['--input-type=module', '-e',
         "import {createServer} from 'node:net'; const server=createServer(); server.on('error',()=>process.exit(2)); server.listen(0,'127.0.0.1',()=>server.close());",
       ], { cwd: ROOT, env, timeout: 5_000, stdio: 'ignore' });
@@ -170,8 +175,9 @@ export async function main(argv) {
       const log = attempt ? path.join(path.dirname(path.resolve(options.record)), `${attempt.id}.log`) : undefined;
       const fd = log ? openSync(log, 'wx', 0o600) : undefined;
       console.log(`Running ${label}${log ? `; log ${log}` : ''}`);
+      const scriptArgs = step.kind === 'npm' && step.args?.length ? ['--', ...step.args] : [];
       const args = step.kind === 'npm'
-        ? [process.env.npm_execpath, 'run', step.script]
+        ? [process.env.npm_execpath, 'run', step.script, ...scriptArgs]
         : step.kind === 'tests'
           ? ['--test', '--import', 'tsx', ...step.files]
           : [step.file];
@@ -181,7 +187,7 @@ export async function main(argv) {
       let result;
       try {
         result = spawnSync(directNpm ? 'npm' : process.execPath,
-          directNpm ? ['run', step.script] : args,
+          directNpm ? ['run', step.script, ...scriptArgs] : args,
           { cwd: ROOT, env, timeout: options.timeoutMs, killSignal: 'SIGKILL', stdio: fd === undefined ? 'inherit' : ['ignore', fd, fd] });
       } finally { if (fd !== undefined) closeSync(fd); }
       if (result.signal || result.error) interrupted = true;
@@ -202,7 +208,7 @@ export async function main(argv) {
         record({ type: 'checkpoint', result: 'pass', source: input, node: process.version, planId: receiptPlan.id, fingerprint, evidence });
       }
     }
-    console.log(JSON.stringify({ result: plan.steps.length === 0 ? 'no_runtime_changes' : passed ? 'pass' : 'fail', results, coverage: plan.coverage }, null, 2));
+    console.log(JSON.stringify({ result: passed ? 'pass' : 'fail', results, coverage: plan.coverage }, null, 2));
     return passed ? 0 : 1;
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));

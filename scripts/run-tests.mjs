@@ -8,6 +8,11 @@
  * file that fails twice fails the run. When many files fail in the parallel
  * pass, nothing is retried: that is breakage, not a lost port or a killed
  * worker, and a rerun would only hide it for ten minutes.
+ *
+ * A file whose process ends without reporting a single test counts as failed.
+ * node:test reports such a file as passing (its only event is a file-level
+ * pass with no subtests), which is how a worker that dies quietly with exit 0
+ * used to pass the gate.
  */
 import { resolve, relative } from 'node:path';
 import { finished } from 'node:stream/promises';
@@ -44,19 +49,32 @@ async function main(list) {
 
 async function runFiles(list, concurrency) {
   const failed = new Set();
+  const reported = new Set();
   // A child spawned by node:test inherits this marker and would treat the
   // files here as already-running test children, reporting nothing. Clear it
   // so the runner also works when a test launches it.
   delete process.env.NODE_TEST_CONTEXT;
   const stream = run({ files: list, concurrency, execArgv: ['--import', 'tsx'] });
   // Every failure event names its file, including a file whose process exited
-  // before reporting (a killed worker or a crash at load).
+  // non-zero before reporting (a killed worker or a crash at load).
   stream.on('test:fail', (event) => {
     if (event.file) failed.add(resolve(event.file));
   });
+  // The file itself is reported as one pass/fail event whose name is its path;
+  // anything else under that file is a real test that ran.
+  for (const type of ['test:pass', 'test:fail']) {
+    stream.on(type, (event) => {
+      if (event.file && resolve(event.file) !== resolve(event.name)) reported.add(resolve(event.file));
+    });
+  }
   const report = stream.compose(spec);
   report.pipe(process.stdout, { end: false });
   await finished(report);
+  const silent = list.filter((file) => !reported.has(file) && !failed.has(file));
+  if (silent.length > 0) {
+    console.error(`\n[run-tests] ${silent.length} file(s) ended without reporting any test; treating each as failed:\n${listing(silent)}`);
+    for (const file of silent) failed.add(file);
+  }
   return [...failed];
 }
 

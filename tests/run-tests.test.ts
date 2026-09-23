@@ -44,6 +44,29 @@ test('files that lose a race in the parallel pass are rerun alone once and repor
   }
 });
 
+test('a file that ends without reporting any test is treated as failed, retried alone, and reported', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'chickpea-run-tests-'));
+  try {
+    const result = runRunner(['pass.test.ts', 'silent.test.ts'], {
+      RUN_TESTS_FIXTURE_SILENT_MARKER: join(directory, 'silent'),
+    });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.match(result.stderr, /1 file\(s\) ended without reporting any test; treating each as failed:[\s\S]*silent\.test\.ts/);
+    assert.match(result.stdout, /rerunning each alone once:[\s\S]*silent\.test\.ts/);
+    assert.match(result.stdout, /RETRIED IN ISOLATION: 1 file\(s\)[\s\S]*silent\.test\.ts/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('a file that never reports a test fails the run instead of passing silently', () => {
+  const result = runRunner(['pass.test.ts', 'always-silent.test.ts']);
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stderr, /ended without reporting any test[\s\S]*always-silent\.test\.ts/);
+  assert.match(result.stderr, /still failing alone:[\s\S]*always-silent\.test\.ts/);
+  assert.doesNotMatch(result.stdout, /RETRIED IN ISOLATION/);
+});
+
 test('a file that fails alone as well fails the run', () => {
   const result = runRunner(['pass.test.ts', 'fail.test.ts']);
   assert.equal(result.status, 1, result.stdout + result.stderr);

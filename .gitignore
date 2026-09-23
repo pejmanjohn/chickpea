@@ -74,3 +74,20 @@ design-qa.md
 # A worktree claim is machine-local authority, never repository state.
 .chickpea-environment
 !docs/runbooks/browser-feature.md
+
+# Public documents that were tracked before their un-ignore lines existed.
+# Every tracked docs/ file must be listed here; verify:hygiene checks it.
+!docs/authentication.md
+!docs/reference/
+docs/reference/*
+!docs/reference/scheduled-routines.md
+!docs/runbooks/agent-authoring-evaluation.md
+!docs/runbooks/agent-private-use-acceptance-2026-08-27.md
+!docs/runbooks/agent-runtime-rollout.md
+!docs/runbooks/auth-db-deployment.md
+!docs/runbooks/chickpea-system-agent-cutover.md
+!docs/runbooks/gateway-http-delivery.md
+!docs/runbooks/memory-schedules-acceptance.md
+!docs/runbooks/meta-ads-connector.md
+!docs/runbooks/slack-auth-recovery.md
+!docs/runbooks/workspace-management-mcp.md

@@ -23,6 +23,17 @@ the package and lockfile versions. No first release is implied by these docs.
 
 ## Source gates
 
+Source hygiene runs before every merge, so a release does not discover it
+late. `npm run verify:hygiene` takes about two seconds and needs no install,
+build, or network; the tracked pre-push hook (`npm run hooks:install`) runs
+it for every pushed commit. It checks the tracked manifest against the
+public-source policy (forbidden roots, private `docs/` shapes, the exact
+live-verifier inventory), that every tracked `docs/` file is deliberately
+un-ignored in `.gitignore`, the private-name leak scan, that a `git archive`
+of the commit reproduces every tracked byte, the release manifest and version
+agreement, lockfile integrity hashes, package metadata, the authentication
+export contract, and the npm pack manifest.
+
 Start from a clean checkout of the exact candidate commit, with no private
 environment files. Use the lockfile and run checks serially per checkout:
 
@@ -38,22 +49,37 @@ supported major, minimum 24.20.0. Update the single baseline for later patch or
 security releases, then verify it once; do not retain a second runtime sweep.
 
 The release command requires clean committed source without private environment
-files. It restores build artifacts and runs authoring, Admin, local workerd,
-lockfile, and immutable source-export checks serially. The export installs from
-the lockfile, builds HEAD, and runs the full root/CLI suite plus offline turn,
-durability, and provider checks and a deployment dry run. Those checks run once
-inside the export instead of again in the outer release sequence. Its receipt
-covers the declared test inventory and offline checks only after the whole export
-passes. Old receipts do not acquire new coverage retroactively. Missing logs,
-source/configuration drift, and unresolved failures still block completion.
+files. Its steps run cheapest and most likely to fail first, and the first
+failure ends the run:
 
-The root test suite runs through `scripts/run-tests.mjs`: files that fail under
-the parallel pass are rerun once, alone. A file that passes alone is logged as
+| step | proves | typical |
+| --- | --- | --- |
+| `verify:hygiene` | source hygiene of committed HEAD (above) | 2 s |
+| `build` | the Cloudflare artifact builds within the size budget | 3 s |
+| `verify:node-scheduler-capability`, `evaluate:agent-authoring`, `evaluate:schedule-contract`, `verify:admin-ui` | authoring, schedule, and Admin contracts | 5 s |
+| `verify:node-scheduler-offline` | Node schedules deliver once across restarts and crashes | 35 s |
+| `verify:cf-smoke` | both Cloudflare profiles build; the core profile runs in local workerd | 80 s |
+| `verify:oss-export` | the immutable archive installs from the lockfile with an empty npm cache, builds, passes the full root/CLI suite, the offline turn, durability, and provider checks, and a deployment dry run | 215 s |
+
+The full suite runs exactly once per release, inside the export, where a pass is
+the strongest evidence: no `.git`, no untracked files, no reused dependencies.
+Do not add a second outer run. The export repeats hygiene on the archived
+commit before installing anything. Its receipt covers the declared test
+inventory and offline checks only after the whole export passes. Old receipts
+do not acquire new coverage retroactively. Missing logs, source/configuration
+drift, and unresolved failures still block completion.
+
+The root test suite runs through `scripts/run-tests.mjs` under 4-way
+concurrency: files that fail, or that end without reporting a single test,
+are rerun once, alone. A file that passes alone is logged as
 `RETRIED IN ISOLATION` and the run still passes; note it in the release notes.
-A file that fails twice, or more than five failing files, fails the run. The
-offline durability harness likewise retries a server start that lost its
-allocated port to another process. Neither retry covers a test that fails the
-same way twice, so a repeat is a real failure to fix, not a host race.
+A file that fails or stays silent twice, or more than five failing files, fails
+the run. Verification servers take loopback ports from a fixed range outside
+the OS ephemeral range, locked per host under
+`~/.chickpea/verification-host/ports/`; the offline durability harness still
+retries a server start that lost its port to a foreign process. Neither retry
+covers a test that fails the same way twice, so a repeat is a real failure to
+fix, not a host race.
 
 Use `--record <private-run.json>` for the existing skill's evidence notebook.
 Passing an earlier commit does not validate new changes. Verify the actual merge

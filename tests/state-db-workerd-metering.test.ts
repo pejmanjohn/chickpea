@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { createServer as createNetServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -9,6 +8,8 @@ import { fileURLToPath } from 'node:url';
 
 import type { meterMaintenance } from './fixtures/state-db/maintenance-meter.ts';
 import { stateSchemaFingerprint } from '../src/state/schema-lifecycle.ts';
+// @ts-expect-error Executable helpers are JavaScript, shared with the verifiers.
+import { reserveVerificationPort } from '../scripts/lib/verification-ports.mjs';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const WRANGLER = join(ROOT, 'node_modules', '.bin', 'wrangler');
@@ -165,14 +166,9 @@ async function waitForWorker(handle: WorkerHandle, origin: string): Promise<Prob
   throw new Error(`wrangler dev did not become ready:\n${handle.output()}`);
 }
 
+// Ports come from the shared verification allocator: a fixed range outside
+// the OS ephemeral range, locked per host, so the 4-way suite and the
+// harness's own connections cannot take a probed port back before workerd binds it.
 async function availablePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const server = createNetServer();
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address();
-      const port = typeof address === 'object' && address ? address.port : 0;
-      server.close((error) => error ? reject(error) : resolve(port));
-    });
-  });
+  return reserveVerificationPort();
 }

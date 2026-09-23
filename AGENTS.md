@@ -22,7 +22,9 @@
 - Use a topic branch and a GitHub pull request by default. A maintainer may
   explicitly authorize a verified local worktree merge into root `main` and a
   direct push. Do not force-push `main`.
-- Run tests and release verification locally. Do not add GitHub Actions workflows
+- Run tests and release verification locally. Run `npm run verify:hygiene`
+  (seconds) before every merge; `npm run hooks:install` makes the pre-push hook
+  run it per pushed commit. Do not add GitHub Actions workflows
   or require GitHub-hosted test results for merging. The one exception is
   `.github/workflows/publish-cli.yml`, which runs only on a `cli-v*` tag to
   publish `packages/cli` to npm; it is not a merge gate and never runs on push.
