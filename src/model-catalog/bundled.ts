@@ -9,10 +9,7 @@ import type {
 } from './types.ts';
 
 export const BUNDLED_MODEL_CATALOG: readonly ModelCatalogEntry[] = [
-  // Astra rejects the `none` reasoning effort every compiled OpenAI API
-  // profile sends by default, so it is subscription-only until a profile
-  // that omits the effort ships.
-  subscriptionOnlyEntry('gpt-6-astra', 'GPT-6 Astra'),
+  openAiEntry('gpt-6-astra', 'GPT-6 Astra', 'openai-platform-responses-astra-tier@1'),
   openAiEntry('gpt-6-sol', 'GPT-6 Sol', 'openai-platform-responses-sol-tier@1'),
   openAiEntry('gpt-6-luna', 'GPT-6 Luna', 'openai-platform-responses-luna-tier@1'),
   openAiEntry('gpt-5.6-sol', 'GPT-5.6 Sol', 'openai-platform-responses-sol-tier@1'),
@@ -120,10 +117,12 @@ function openAiEntry(
     | 'gpt-5.6-luna'
     | 'gpt-5.6-sol'
     | 'gpt-5.6-terra'
+    | 'gpt-6-astra'
     | 'gpt-6-luna'
     | 'gpt-6-sol',
   displayName: string,
   apiProfile:
+    | 'openai-platform-responses-astra-tier@1'
     | 'openai-platform-responses-luna-tier@1'
     | 'openai-platform-responses-sol-tier@1'
     | 'openai-platform-responses-terra-tier@1',
@@ -139,7 +138,7 @@ function openAiEntry(
 }
 
 function subscriptionOnlyEntry(
-  modelId: 'gpt-5.3-codex-spark' | 'gpt-5.4' | 'gpt-5.4-mini' | 'gpt-5.5' | 'gpt-6-astra',
+  modelId: 'gpt-5.3-codex-spark' | 'gpt-5.4' | 'gpt-5.4-mini' | 'gpt-5.5',
   displayName: string,
   textOnly = false,
 ): ModelCatalogEntry {

@@ -207,7 +207,15 @@ test('models newer than the pinned Pi release route through reviewed profiles on
         assert.equal(resolveModel(route.modelSpecifier).id, route.model.id);
       }
     }
-    // Astra rejects the `none` effort compiled OpenAI API profiles send.
-    assert.equal(resolveActiveCatalogRoute('openai/gpt-6-astra', 'openai_api_key'), undefined);
+    // Astra's API-key profile omits the `none` effort Astra rejects. It is
+    // bundled only: installs that predate the profile would reject a hosted
+    // revision naming it.
+    const astra = resolveActiveCatalogRoute('openai/gpt-6-astra', 'openai_api_key');
+    if (source === 'hosted') {
+      assert.equal(astra, undefined);
+    } else {
+      assert.equal(astra?.source, 'catalog');
+      assert.equal(astra.model.thinkingLevelMap?.off, null);
+    }
   }
 });
