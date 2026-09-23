@@ -5,11 +5,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 
 // @ts-expect-error Deployment tooling JavaScript helper.
-import {
-  mergeDeploymentSecrets,
-  OPERATOR_SECRETS_ENV,
-  readOperatorSecretsFile,
-} from '../scripts/lib/deploy-operator-secrets.mjs';
+import { mergeDeploymentSecrets, OPERATOR_SECRETS_ENV, readOperatorSecretsFile } from '../scripts/lib/deploy-operator-secrets.mjs';
 
 function withSecretsFile(contents: string, mode = 0o600): { path: string; cleanup: () => void } {
   const directory = mkdtempSync(join(tmpdir(), 'chickpea-operator-secrets-'));
