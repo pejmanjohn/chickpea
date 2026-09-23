@@ -27,6 +27,9 @@ repository checkouts, package installation, and the Playwright screenshot recipe
   complete, but runtime enablement cannot.
 - Expect the first Sandbox image build to take several minutes. Cloudflare must
   build and distribute the Ubuntu-based image before it can report ready.
+- **R2** must be enabled on the Cloudflare account. The deploy creates the
+  workspace checkpoint bucket itself, but Cloudflare refuses to create any
+  bucket until R2 is enabled once in the dashboard.
 - For a [command-line deploy](#deploy-from-the-command-line), the deploying
   machine needs a running Docker engine, and the Wrangler credential needs the
   Containers permission (`containers:write` for an OAuth login or profile,
@@ -101,6 +104,13 @@ build-variable steps above.
 ### Prerequisites
 
 - **Workers Paid** on the Cloudflare account that hosts the Worker.
+- **R2 enabled** on the same account. In the Cloudflare dashboard, open
+  **R2 Object Storage** and enable it; the free tier is enough. Do not create a
+  bucket: Wrangler creates the workspace checkpoint bucket for the
+  `BACKUP_BUCKET` binding on the first sandbox deploy. Until R2 is enabled,
+  that step fails with Cloudflare API error 10042 ("Please enable R2 through
+  the Cloudflare Dashboard"). An API token also needs **Workers R2 Storage:
+  Edit**.
 - **Docker running** on the deploying machine. The deploy builds the Ubuntu
   image locally and pushes it to Cloudflare's registry. Start Docker Desktop
   (or your engine) and wait until `docker info` succeeds.
@@ -147,6 +157,9 @@ following. It stops with one actionable message per problem.
 3. The Wrangler credential can list Container applications. A missing scope
    prints the exact re-authorization command for the global login, the named
    profile, or the API token, whichever you deploy with.
+4. R2 is enabled on the account (`wrangler r2 bucket list` succeeds for the
+   deploy's account). If it is not, the command names the dashboard step and
+   stops with nothing changed.
 
 It then builds and pushes the image with `wrangler containers build --push`,
 retrying a failed build. Only after that does it apply migrations and run
@@ -187,6 +200,12 @@ exact choices:
 
 The same message appears if the deploy finishes but no Container application
 named `<worker>-sandbox` exists.
+
+If `wrangler deploy` fails before it uploads the Worker script, for example
+while creating a new resource such as the checkpoint R2 bucket after the asset
+upload, the command prints `SANDBOX DEPLOY STOPPED BEFORE THE WORKER UPLOAD`
+instead. The live Worker version is unchanged, so no rollback is needed. Fix
+the reported error and rerun the same command.
 
 ## Confirm readiness and enable
 
@@ -322,6 +341,9 @@ Container infrastructure. Its supported default is the slim core deployment prof
 - **`You don't have 'containers:write' in your list of scopes`:** re-authorize
   as in [Prerequisites](#prerequisites); the preflight prints the exact
   command for your login.
+- **`R2 is not enabled` or API error 10042 (`Please enable R2 through the
+  Cloudflare Dashboard`):** enable R2 as in [Prerequisites](#prerequisites),
+  then rerun the same `deploy:sandbox` command. Nothing needs to be rolled back.
 - **`PARTIAL SANDBOX DEPLOY`:** follow
   [Recovering from a partial deploy](#recovering-from-a-partial-deploy).
 - **Installed but enable is unavailable:** connect the GitHub App and grant at

@@ -72,7 +72,12 @@ deploy reports that the live Worker has the coding sandbox, deploy with
 `npm run deploy:sandbox` and the same flags and environment variables described
 below. For example, use
 `CHICKPEA_DEPLOY_TARGET=production npm run deploy:sandbox -- --profile <existing-profile>`.
-This needs Docker running and the `containers:write` permission; see
+This needs Docker running, the `containers:write` permission, and R2 enabled
+on the Cloudflare account. Since v0.1.25 the sandbox keeps workspace
+checkpoints in an R2 bucket that the deploy creates itself; if the account has
+never used R2, open **R2 Object Storage** in the Cloudflare dashboard and
+enable it (the free tier is enough) before updating. The command checks all
+three before it changes anything; see
 [Deploy from the command line](docs/runbooks/coding-sandbox-deployment.md#deploy-from-the-command-line).
 A plain `npm run deploy` refuses to replace a live sandbox, and the guided
 `npm run upgrade` tool supports only core installations.

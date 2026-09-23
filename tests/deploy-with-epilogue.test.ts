@@ -242,6 +242,15 @@ function createHarness() {
         process.stdout.write(JSON.stringify(sequence[Math.min(counter('containers-list'), sequence.length - 1)]));
         process.exit(0);
       }
+      if (args[0] === 'r2' && args[1] === 'bucket' && args[2] === 'list') {
+        appendLog(process.env.DEPLOY_TEST_LOG, 'r2-account:' + (process.env.CLOUDFLARE_ACCOUNT_ID || '') + '\\n');
+        if (process.env.DEPLOY_TEST_R2_ACCESS === 'disabled') {
+          process.stderr.write('✘ [ERROR] A request to the Cloudflare API (/accounts/' + 'a'.repeat(32) + '/r2/buckets) failed.\\n\\n  Please enable R2 through the Cloudflare Dashboard. [code: 10042]\\n');
+          process.exit(1);
+        }
+        process.stdout.write('Listing buckets...\\n');
+        process.exit(0);
+      }
       if (args[0] === 'containers' && args[1] === 'build') {
         if (counter('containers-build') < Number(process.env.DEPLOY_TEST_CONTAINER_BUILD_FAILS || 0)) {
           process.stderr.write('ERROR: failed to solve: DeadlineExceeded: context deadline exceeded\\n');
@@ -256,6 +265,13 @@ function createHarness() {
         const image = existsSync(built) ? JSON.parse(readFileSync(built, 'utf8')).containers?.[0]?.image : undefined;
         if (image && !image.startsWith('/')) appendLog(process.env.DEPLOY_TEST_LOG, 'deploy-image:' + image + '\\n');
         if (process.env.DEPLOY_TEST_DEPLOY_UPLOADED === '1') process.stdout.write('Uploaded chickpea (1.00 sec)\\n');
+        // Wrangler provisions new bindings after the asset upload and before
+        // the script upload; this is the 2026-09-23 R2 failure shape.
+        if (process.env.DEPLOY_TEST_DEPLOY_R2_DISABLED === '1') {
+          process.stdout.write('Uploaded 1 of 3 assets\\nUploaded 3 of 3 assets\\n✨ Success! Uploaded 3 files (0.91 sec)\\n');
+          process.stderr.write('✘ [ERROR] A request to the Cloudflare API (/accounts/' + 'a'.repeat(32) + '/r2/buckets) failed.\\n\\n  Please enable R2 through the Cloudflare Dashboard. [code: 10042]\\n');
+          process.exit(1);
+        }
       }
       if (args[0] === 'secret' && args[1] === 'list') {
         if (process.env.DEPLOY_TEST_SECRET_LIST_NOT_FOUND === '1' ||
@@ -2410,6 +2426,26 @@ test('sandbox preflight reports every blocking problem before build, D1, or uplo
   assert.equal(invoked.some((line) => line.startsWith('docker:["pull"')), false, 'no pull without a daemon');
 });
 
+test('sandbox preflight stops before anything is uploaded when R2 is not enabled on the account', (context) => {
+  const harness = sandboxHarness(context);
+  const result = runHarness(harness, ['--profile', 'acme'], sandboxEnv(harness, { DEPLOY_TEST_R2_ACCESS: 'disabled' }));
+  assert.equal(result.status, 1, result.stdout);
+  assert.match(result.stderr, /found 1 problem\. Nothing was built, migrated, or uploaded, and the live Worker is unchanged\./);
+  assert.match(result.stderr, new RegExp(`R2 is not enabled on Cloudflare account ${'a'.repeat(32)}\\.`));
+  assert.match(result.stderr, /In the Cloudflare dashboard, open R2 Object Storage and enable R2 \(the free tier is enough/);
+  assert.doesNotMatch(result.stderr, /PARTIAL SANDBOX DEPLOY|10042/);
+  const invoked = commands(harness.logPath);
+  const probe = invoked.find((line) => line.startsWith('wrangler:["r2","bucket","list"'));
+  assert.match(probe ?? '', /"--profile","acme"/, invoked.join('\n'));
+  // `r2 bucket list` ignores the config's account_id, so the probe pins it.
+  assert.ok(invoked.includes(`r2-account:${'a'.repeat(32)}`), invoked.join('\n'));
+  assert.equal(
+    invoked.some((line) => line.startsWith('npm:') || /"(d1|deploy)"|"containers","build"/.test(line)),
+    false,
+    invoked.join('\n'),
+  );
+});
+
 test('sandbox re-auth guidance matches global logins, bound profiles, and API tokens', (context) => {
   const global = sandboxHarness(context);
   const globalResult = runHarness(global, [], sandboxEnv(global, { DEPLOY_TEST_CONTAINERS_ACCESS: 'scope' }));
@@ -2481,6 +2517,28 @@ test('a sandbox deploy that fails after the upload prints rerun and rollback rec
   assert.match(result.stderr, /PARTIAL SANDBOX DEPLOY/);
   assert.match(result.stderr, /CHICKPEA_DEPLOY_TARGET=production npm run deploy:sandbox -- --profile acme\n/);
   assert.match(result.stderr, /npx wrangler rollback previous-core-version --name chickpea --profile acme/);
+  assert.doesNotMatch(result.stdout, /Worker deployed|SETUP LINK/);
+});
+
+test('a sandbox deploy that fails before the script upload says the live version is unchanged', (context) => {
+  const harness = sandboxHarness(context);
+  const result = runHarness(harness, ['--skip-build', '--profile', 'acme'], sandboxEnv(harness, {
+    CHICKPEA_DEPLOY_TARGET: 'production',
+    DEPLOY_TEST_WORKER_EXISTS: '1',
+    DEPLOY_TEST_SECRET_LIST: JSON.stringify([
+      { name: 'CHICKPEA_AUTH_SECRET' },
+      { name: 'CHICKPEA_CREDENTIAL_KEY_CURRENT_ID' },
+      { name: 'CHICKPEA_CREDENTIAL_KEY_KEY_V1' },
+    ]),
+    DEPLOY_TEST_DEPLOYMENT_STATUS: JSON.stringify({ versions: [{ version_id: 'previous-core-version', percentage: 100 }] }),
+    // The asset upload prints `Uploaded 3 of 3 assets`; that is not the Worker upload.
+    DEPLOY_TEST_DEPLOY_R2_DISABLED: '1',
+  }));
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /Uploaded 3 of 3 assets/);
+  assert.doesNotMatch(result.stderr, /PARTIAL SANDBOX DEPLOY|new Worker version is live|wrangler rollback/);
+  assert.match(result.stderr, /STOPPED BEFORE THE WORKER UPLOAD: no new Worker version was uploaded, and the live version is\nunchanged/);
+  assert.match(result.stderr, /CHICKPEA_DEPLOY_TARGET=production npm run deploy:sandbox -- --profile acme\n/);
   assert.doesNotMatch(result.stdout, /Worker deployed|SETUP LINK/);
 });
 

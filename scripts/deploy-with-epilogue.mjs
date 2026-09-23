@@ -45,6 +45,7 @@ import {
   rerunCommand,
   sandboxApplicationName,
   sandboxPartialDeployRecovery,
+  sandboxStoppedBeforeUpload,
   uploadedBeforeFailure,
   useSandboxImage,
   verifySandboxContainerApplication,
@@ -1524,12 +1525,16 @@ function printPrivateSetupPath(setup) {
 // Workers Builds receives stdout through a pipe. Let Node exit naturally after
 // this callback so the final setup link and Cloudflare's completion event can
 // flush; process.exit() can truncate asynchronous pipe writes.
+function sandboxRerun() {
+  return rerunCommand({ explicitProductionTarget, deployArgs, workersBuilds: process.env.WORKERS_CI === '1' });
+}
+
 function sandboxRecovery() {
   return sandboxPartialDeployRecovery({
     workerName: builtArtifact.config.name,
     previousVersionId: previousServingVersionId,
     providerContext: deploymentResourceArgs(),
-    rerun: rerunCommand({ explicitProductionTarget, deployArgs, workersBuilds: process.env.WORKERS_CI === '1' }),
+    rerun: sandboxRerun(),
   });
 }
 
@@ -1537,8 +1542,14 @@ child.on('close', async (code) => {
   cleanupSecrets();
   if (code !== 0) {
     // Wrangler activates the uploaded version before it creates the Container
-    // application, so a failure after `Uploaded` is a live partial deploy.
-    if (deploymentProfile === 'sandbox' && workerUploaded) console.error(sandboxRecovery());
+    // application, so a failure after `Uploaded <worker>` is a live partial
+    // deploy. Earlier failures (resource provisioning such as the checkpoint
+    // R2 bucket runs after the asset upload) leave the live version unchanged.
+    if (deploymentProfile === 'sandbox') {
+      console.error(workerUploaded || deployedVersionId
+        ? sandboxRecovery()
+        : sandboxStoppedBeforeUpload({ rerun: sandboxRerun() }));
+    }
     process.exitCode = code ?? 1;
     return;
   }

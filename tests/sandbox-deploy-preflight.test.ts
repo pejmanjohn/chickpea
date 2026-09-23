@@ -7,7 +7,9 @@ import { test } from 'node:test';
 import {
   boundProfile,
   checkDockerDaemon,
+  checkR2Access,
   classifyContainersAccess,
+  classifyR2Access,
   containersReauthInstruction,
   parseListedScopes,
   prebuildSandboxImage,
@@ -17,6 +19,7 @@ import {
   resolveWranglerAuth,
   sandboxApplicationName,
   sandboxBaseImage,
+  sandboxStoppedBeforeUpload,
   uploadedBeforeFailure,
   useSandboxImage,
   verifySandboxContainerApplication,
@@ -189,9 +192,49 @@ test('the prebuilt image reference is the tagged registry push, never a bare tag
   assert.throws(() => pushedImageReference('Build complete\n', tag), /registry reference could not be determined/);
 });
 
+// The exact error Wrangler 4.124 printed on 2026-09-23 for an account that never enabled R2.
+const R2_DISABLED_OUTPUT = '✘ [ERROR] A request to the Cloudflare API (/accounts/0123/r2/buckets) failed.\n\n' +
+  '  Please enable R2 through the Cloudflare Dashboard. [code: 10042]\n';
+
+test('R2 access failures are classified, and the probe pins the resolved account', () => {
+  assert.deepEqual(classifyR2Access({ status: 0, stdout: 'Listing buckets...\n' }), { ok: true });
+  assert.equal(classifyR2Access({ status: 1, stderr: R2_DISABLED_OUTPUT }).reason, 'not-enabled');
+  assert.equal(classifyR2Access({ status: 1, stderr: 'Authentication error [code: 10000]' }).reason, 'denied');
+  assert.equal(classifyR2Access({ status: 1, stderr: 'You are not authenticated. Please run `wrangler login`.' }).reason, 'signed-out');
+  assert.equal(classifyR2Access({ status: null, error: new Error('timeout') }).reason, 'unknown');
+
+  const calls: { args: string[]; env: NodeJS.ProcessEnv }[] = [];
+  const check = (result: Run, env: NodeJS.ProcessEnv = {}) => checkR2Access({
+    wranglerBin: '/w.js', configPath: '/c.jsonc', providerContext: ['--profile', 'acme'], accountId: 'a'.repeat(32), env,
+    run: (_command: string, args: string[], options: { env: NodeJS.ProcessEnv }): Run => {
+      calls.push({ args, env: options.env });
+      return result;
+    },
+  });
+  assert.equal(check({ status: 0 }).problem, undefined);
+  assert.deepEqual(calls[0]!.args, ['/w.js', 'r2', 'bucket', 'list', '--config', '/c.jsonc', '--profile', 'acme']);
+  assert.equal(calls[0]!.env.CLOUDFLARE_ACCOUNT_ID, 'a'.repeat(32));
+
+  const disabled = check({ status: 1, stderr: R2_DISABLED_OUTPUT }).problem;
+  assert.match(disabled, /R2 is not enabled on Cloudflare account a{32}\./);
+  assert.match(disabled, /open R2 Object Storage and enable R2 \(the free tier is enough; you do not need to create a bucket\)/);
+  assert.doesNotMatch(disabled, /10042|\/accounts\//, 'Wrangler output is classified, not echoed');
+  assert.match(check({ status: 1, stderr: 'code: 10000' }, { CLOUDFLARE_API_TOKEN: 'secret' }).problem,
+    /API token in the environment cannot manage R2.*Workers R2 Storage: Edit/s);
+  assert.match(check({ status: 1, stderr: 'code: 10000' }).problem, /Cloudflare refused R2 access for account a{32}/);
+});
+
 test('partial-deploy detection and verification read Wrangler output honestly', () => {
   assert.equal(uploadedBeforeFailure('Total Upload: 1 KiB\nUploaded chickpea-acme (3.21 sec)\n'), true);
   assert.equal(uploadedBeforeFailure('Building image...\n'), false);
+  // Asset and multipart progress come before the script upload: no version exists yet.
+  assert.equal(uploadedBeforeFailure(
+    'Uploaded 1 of 3 assets\nUploaded 3 of 3 assets\n✨ Success! Uploaded 3 files (1 already uploaded) (0.91 sec)\nUploaded part 1\n',
+  ), false);
+  const stopped = sandboxStoppedBeforeUpload({ rerun: 'npm run deploy:sandbox -- --profile acme' });
+  assert.match(stopped, /no new Worker version was uploaded, and the live version is\nunchanged/);
+  assert.match(stopped, /\n {7}npm run deploy:sandbox -- --profile acme\n/);
+  assert.doesNotMatch(stopped, /PARTIAL|rollback/);
   assert.equal(rerunCommand({ explicitProductionTarget: true, deployArgs: ['--skip-build', '--profile', 'acme'] }),
     'CHICKPEA_DEPLOY_TARGET=production npm run deploy:sandbox -- --profile acme');
   assert.match(rerunCommand({ workersBuilds: true }), /Workers Builds.*CHICKPEA_DEPLOY_PROFILE=sandbox/);
