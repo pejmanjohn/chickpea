@@ -10,6 +10,7 @@ import {
   type SkillConfig,
 } from '../config/types.ts';
 import { opaqueId } from '../work/admission.ts';
+import { BROWSER_TOOL_ACTIVITY } from '../browser/tools.ts';
 import { slackAgentThreadKey } from '../slack/thread-key.ts';
 import type { NormalizedSlackTurn } from '../slack/types.ts';
 import {
@@ -177,6 +178,12 @@ export interface RuntimePlanV2 {
    * incarnation; the tool re-resolves the concrete id at call time.
    */
   imageCapability?: RuntimePlanImageCapabilityV3;
+  /**
+   * Frozen hosted-browser capability. Present only when the install had a
+   * browser connected; carries the provider, and the API key is read at call
+   * time.
+   */
+  browserCapability?: RuntimePlanBrowserCapabilityV1;
   /** Non-secret model policy facts frozen with the admitted turn. Required on V3. */
   modelAttribution?: AgentModelAttribution;
   /** Frozen credential epoch; values and labels never cross the boundary. */
@@ -216,6 +223,14 @@ export interface RuntimePlanImageCapabilityV3 {
   supportsOutputControls?: boolean;
 }
 
+/**
+ * Bounded capability record for the hosted browser. Its presence means the
+ * browser is on. Never carries a key.
+ */
+export interface RuntimePlanBrowserCapabilityV1 {
+  provider: 'browserbase';
+}
+
 export interface CompileRuntimePlanV2Input {
   turn: NormalizedSlackTurn;
   assignment: ResolvedAssignment;
@@ -228,6 +243,8 @@ export interface CompileRuntimePlanV2Input {
   runtimeModelRoute?: FrozenRuntimeModelRoute;
   /** Resolved image-role capability. Absent means no image capability is frozen. */
   imageCapability?: RuntimePlanImageCapabilityV3;
+  /** Resolved hosted-browser capability. Absent means no browser is frozen. */
+  browserCapability?: RuntimePlanBrowserCapabilityV1;
   continuityPolicy?: string;
   effectiveConnections?: readonly EffectiveConnectionAccount[];
   connectionAuthorizations?: readonly PersonalConnectionAuthorizationOption[];
@@ -249,6 +266,8 @@ export interface RuntimePlanActivityContextOptions {
   includeAgentAuthoringSkill?: boolean;
   /** Names withheld from managed tools by the same declaration owner. */
   reservedToolNames?: readonly string[];
+  /** The render mounted the browser skill and tools. */
+  browserMounted?: boolean;
 }
 
 /**
@@ -323,6 +342,7 @@ export function compileRuntimePlanV2(input: CompileRuntimePlanV2Input): RuntimeP
           },
         }
       : {}),
+    ...(input.browserCapability ? { browserCapability: { provider: 'browserbase' as const } } : {}),
     modelAttribution: frozenModelAttribution(input.assignment),
     ...(input.assignment.modelCredential
       ? {
@@ -380,11 +400,13 @@ export function buildRuntimePlanActivityContext(
   }
 
   // Repository grants mount the built-in Repositories skill and a Cloudflare
-  // workspace mounts the workspace skill, even when the Agent has none.
+  // workspace mounts the workspace skill, and a connected browser mounts the
+  // browser skill, even when the Agent has none.
   if (
     plan.skills.length > 0 ||
     plan.repositories.length > 0 ||
     plan.sandbox.mode === 'cloudflare' ||
+    options.browserMounted ||
     options.includeAgentAuthoringSkill
   ) {
     const skill = genericSemanticDescriptor('skill');
@@ -421,6 +443,15 @@ export function buildRuntimePlanActivityContext(
     { toolName: 'recover_image', descriptor: artifact },
   );
   families.add('artifact');
+
+  if (options.browserMounted) {
+    // Browsing reads arbitrary public pages, so its baseline stays the generic
+    // unknown narration; attaching proof is ordinary artifact creation.
+    const browsing = unknownSemanticDescriptor();
+    for (const [toolName, activity] of Object.entries(BROWSER_TOOL_ACTIVITY)) {
+      descriptors.push({ toolName, descriptor: activity.descriptor === 'artifact' ? artifact : browsing });
+    }
+  }
 
   for (const descriptor of options.additionalToolDescriptors ?? []) {
     descriptors.push(descriptor);
@@ -552,6 +583,7 @@ export function parseRuntimePlanV2(
     'runtimeModelRoute',
     'model',
     'imageCapability',
+    'browserCapability',
     'modelAttribution',
     'modelCredential',
     'instructions',
@@ -577,6 +609,7 @@ export function parseRuntimePlanV2(
     'runtimeModel',
     'runtimeModelRoute',
     'imageCapability',
+    'browserCapability',
     'modelAttribution',
     'modelCredential',
   ]);
@@ -671,6 +704,9 @@ export function parseRuntimePlanV2(
   const imageCapability = record.imageCapability === undefined
     ? undefined
     : parseImageCapability(record.imageCapability);
+  const browserCapability = record.browserCapability === undefined
+    ? undefined
+    : parseBrowserCapability(record.browserCapability);
   const instructions = boundedString(record.instructions, 'instructions', 1, 200_000);
   const memoryEpoch = positiveInteger(record.memoryEpoch, 'memoryEpoch');
   const skills = arrayOf(record.skills, 'skills', parseSkill, 128);
@@ -737,6 +773,7 @@ export function parseRuntimePlanV2(
     ...(runtimeModelRoute ? { runtimeModelRoute } : {}),
     model,
     ...(imageCapability ? { imageCapability } : {}),
+    ...(browserCapability ? { browserCapability } : {}),
     ...(modelAttribution ? { modelAttribution } : {}),
     ...(modelCredential ? { modelCredential } : {}),
     instructions,
@@ -933,6 +970,7 @@ function computeHarnessRevision(
       ...(plan.runtimeModelRoute ? { runtimeModelRoute: plan.runtimeModelRoute } : {}),
       model: plan.model,
       ...(plan.imageCapability ? { imageCapability: plan.imageCapability } : {}),
+      ...(plan.browserCapability ? { browserCapability: plan.browserCapability } : {}),
       ...(plan.modelAttribution ? { modelAttribution: plan.modelAttribution } : {}),
       ...(plan.modelCredential ? { modelCredential: plan.modelCredential } : {}),
       instructions: plan.instructions,
@@ -982,6 +1020,11 @@ function parseImageCapability(value: unknown): RuntimePlanImageCapabilityV3 {
   return { role, filled, acceptsImageInput,
     ...(maxOutputsPerCall === undefined ? {} : { maxOutputsPerCall }),
     ...(supportsOutputControls === undefined ? {} : { supportsOutputControls }) };
+}
+
+function parseBrowserCapability(value: unknown): RuntimePlanBrowserCapabilityV1 {
+  const record = exactRecord(value, 'browserCapability', ['provider']);
+  return { provider: oneOf(record.provider, 'browserCapability.provider', ['browserbase'] as const) };
 }
 
 function parseHandoffContext(value: unknown): SlackPublicHandoffMessage[] {

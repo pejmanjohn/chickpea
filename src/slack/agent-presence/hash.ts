@@ -7,8 +7,3 @@ export function fnv1aHash(value: string): number {
   }
   return hash;
 }
-
-export function base64ToBytes(value: string): Uint8Array {
-  const binary = atob(value);
-  return Uint8Array.from(binary, (character) => character.charCodeAt(0));
-}

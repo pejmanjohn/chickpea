@@ -10,3 +10,9 @@ export function decodeBase64Url(value: string): Uint8Array {
   const binary = atob(padded);
   return Uint8Array.from(binary, (character) => character.charCodeAt(0));
 }
+
+/** Standard (non-URL) base64, decoded without Buffer so it works in workerd. */
+export function base64ToBytes(value: string): Uint8Array {
+  const binary = atob(value);
+  return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+}

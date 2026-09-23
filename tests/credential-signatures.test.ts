@@ -41,6 +41,7 @@ const SAMPLES: readonly { input: string; redacted: string }[] = [
     redacted: 'token [credential redacted] here',
   },
   { input: `id ${awsExampleAccessKeyId('AKIA')} here`, redacted: 'id [credential redacted] here' },
+  { input: 'key bb_live_abcdefghijkl1234 here', redacted: 'key [credential redacted] here' },
   { input: pemBegin('RSA PRIVATE KEY'), redacted: '[credential redacted]' },
   {
     input: 'CHICKPEA_AUTH_SECRET=supersecretvalue',
@@ -52,6 +53,10 @@ const SAMPLES: readonly { input: string; redacted: string }[] = [
   },
   {
     input: 'COMPOSIO_WEBHOOK_SECRET=webhook-signing-secret',
+    redacted: '[credential redacted]',
+  },
+  {
+    input: 'BROWSERBASE_API_KEY=browserbase-key-value',
     redacted: '[credential redacted]',
   },
   {
@@ -74,6 +79,8 @@ test('credential markers stay the exact projection the streaming path relies on'
     'github_pat_',
     'AKIA',
     'ASIA',
+    'bb_live_',
+    'bb_test_',
     '-----BEGIN ',
     'CHICKPEA_AUTH_SECRET',
     'CHICKPEA_RECOVERY_TOKEN',
@@ -87,6 +94,7 @@ test('credential markers stay the exact projection the streaming path relies on'
     'COMPOSIO_API_KEY',
     'COMPOSIO_WEBHOOK_SECRET',
     'GITHUB_TOKEN',
+    'BROWSERBASE_API_KEY',
     'AWS_ACCESS_KEY_ID',
     'AWS_SECRET_ACCESS_KEY',
   ]);

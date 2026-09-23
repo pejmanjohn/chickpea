@@ -263,6 +263,9 @@
     // sandbox switch.
     sandboxStatus: null,
     sandboxLoaded: false,
+    // Settings › Browser: the hosted-browser key card. The pasted key lives
+    // here only until Connect succeeds; status never carries the key itself.
+    browser: { status: null, loaded: false, error: "", busy: "", key: "", keyError: "", replacing: false, confirmDisconnect: false, readOnlyEnv: "" },
     sandboxError: "",
     sandboxSaving: false,
     sandboxConfirm: "",
@@ -1598,6 +1601,7 @@
       { id: "providers", name: "Model providers", meta: "Keys and models" },
       { id: "github", name: "GitHub", meta: "Accounts and access" },
       { id: "sandbox", name: "Coding sandbox", meta: "Workspace runtime" },
+      { id: "browser", name: "Browser", meta: "Real browser for Agents" },
       { id: "outbound", name: "Outbound access", meta: "Network policy" },
       codingAgents
     ] : [codingAgents];
@@ -8112,6 +8116,160 @@
     return '<section class="section" id="github-settings">' + head + body + '</section>';
   }
 
+  function browserUsageTime(seconds) {
+    var total = Math.max(0, Math.floor(Number(seconds) || 0));
+    var hours = Math.floor(total / 3600);
+    var minutes = Math.floor((total % 3600) / 60);
+    return hours + " h " + minutes + " m";
+  }
+
+  function browserKeyErrorText(code) {
+    if (code === "invalid_key") return "That key was not accepted by Browserbase. Copy it again from Settings → API keys.";
+    if (code === "provider_unreachable") return "Browserbase could not be reached. Try again in a moment.";
+    return "Could not save the key. Try again in a moment.";
+  }
+
+  function browserReadOnlyHtml(envVar) {
+    return '<div class="callout"><span>This key is set by <span class="mono">' + esc(envVar || "BROWSERBASE_API_KEY") + '</span> in the environment, so it is changed there, not here.</span></div>';
+  }
+
+  function browserPasteHtml() {
+    var b = state.browser;
+    var busy = b.busy === "connect";
+    var input = '<input class="input mono" type="password" autocomplete="off" spellcheck="false" placeholder="bb_live_&hellip;" aria-label="Browserbase API key" value="' + esc(b.key) + '" data-action="browser-key-input"' + (busy ? ' disabled' : '') + '>';
+    var button = busy
+      ? '<button type="button" class="btn btn-primary" disabled><span class="spinner"></span>Connecting&hellip;</button>'
+      : '<button type="button" class="btn btn-primary" data-action="browser-connect">Connect</button>';
+    return '<div class="paste-row">' + input + button + '</div>' +
+      (b.keyError ? '<p class="field-error" role="alert">' + esc(b.keyError) + '</p>' : '');
+  }
+
+  function browserSetupHtml() {
+    var b = state.browser;
+    var third = b.readOnlyEnv ? browserReadOnlyHtml(b.readOnlyEnv) : browserPasteHtml();
+    return '<section class="section" id="browser-settings"><div class="section-head"><div><h2 class="section-title">Browserbase</h2>' +
+      '<p class="hint">The browser runs in your own Browserbase project. Chickpea drives it and records it. The free plan includes one browser hour a month.</p></div></div>' +
+      '<ol class="sbx-steps">' +
+      sandboxStepHtml(1, 'Create a Browserbase project', '<p class="sbx-step-text">Sign up at browserbase.com, or open an existing project. Any plan works.</p>') +
+      sandboxStepHtml(2, 'Copy the project&rsquo;s API key', '<p class="sbx-step-text">Settings &rarr; API keys in Browserbase. Chickpea stores it and never shows it again.</p>') +
+      sandboxStepHtml(3, 'Paste it here', third) +
+      '</ol></section>';
+  }
+
+  function browserConnectedHtml(status) {
+    var b = state.browser;
+    var line = 'Connected &middot; key ending &hellip;' + esc(status.keyHint || "");
+    var readOnly = status.source === "env";
+    var actions = '';
+    if (!readOnly && !b.replacing && !b.confirmDisconnect) {
+      actions = '<button type="button" class="btn btn-soft" data-action="browser-replace-open">Replace key</button>' +
+        '<button type="button" class="btn btn-soft" data-action="browser-disconnect-open">Disconnect</button>';
+    }
+    var html = '<section class="section" id="browser-settings">' +
+      '<div class="action-well"><div class="danger-copy"><span class="field-label">Browserbase</span><span class="hint">' + line + '</span></div>' + actions + '</div>';
+    if (readOnly) html += browserReadOnlyHtml(status.envVar);
+    if (!readOnly && b.replacing) {
+      html += browserPasteHtml() +
+        '<div><button type="button" class="btn btn-ghost btn-sm" data-action="browser-replace-cancel"' + (b.busy ? ' disabled' : '') + '>Cancel</button></div>';
+    }
+    if (!readOnly && b.confirmDisconnect) {
+      var busy = b.busy === "disconnect";
+      html += '<div class="action-well"><div class="danger-copy"><span class="field-label">Disconnect Browserbase?</span><span class="hint">Agents cannot open a browser until a key is connected again.</span></div>' +
+        '<button type="button" class="btn btn-ghost" data-action="browser-disconnect-cancel"' + (busy ? ' disabled' : '') + '>Keep connected</button>' +
+        '<button type="button" class="btn btn-danger" data-action="browser-disconnect-confirm"' + (busy ? ' disabled' : '') + '>' + (busy ? 'Disconnecting&hellip;' : 'Disconnect') + '</button></div>' +
+        (b.error ? '<p class="field-error" role="alert">' + esc(b.error) + '</p>' : '');
+    }
+    var usage = status.usage || {};
+    html += '<div class="well"><dl>' +
+      '<div class="kv"><dt>Browser time this month</dt><dd>' + browserUsageTime(usage.seconds) + '</dd></div>' +
+      '<div class="kv"><dt>Sessions this month</dt><dd>' + (Number(usage.sessions) || 0) + '</dd></div>' +
+      '<div class="kv"><dt>Where the browser runs</dt><dd>one browser per session, destroyed afterwards</dd></div>' +
+      '<div class="kv"><dt>Recordings kept at Browserbase for</dt><dd>30 days</dd></div>' +
+      '</dl></div></section>';
+    return html;
+  }
+
+  function browserSettingsHtml() {
+    var b = state.browser;
+    var status = b.status;
+    var badge = !b.loaded || !status ? ''
+      : status.connected
+        ? '<span class="badge badge-on"><span class="dot"></span>Ready</span>'
+        : '<span class="badge badge-off"><span class="dot"></span>Not connected</span>';
+    var head = '<div class="section-head"><div><h1 class="page-title">Browser</h1>' +
+      '<p class="hint">Agents open a real browser to check pages and show you what they saw. Every session is recorded, and the Agent attaches a screenshot or the recording when it helps.</p></div>' + badge + '</div>';
+    if (!b.loaded) return head + '<p class="hint">Loading browser settings&hellip;</p>';
+    if (!status) {
+      return head + '<p class="field-error" role="alert">' + esc(b.error || "Could not load browser settings.") + '</p>' +
+        '<div><button type="button" class="btn btn-soft btn-sm i-lead" data-action="browser-refresh">' + icon("arrow-path") + 'Retry</button></div>';
+    }
+    return head + (status.connected ? browserConnectedHtml(status) : browserSetupHtml()) +
+      '<p class="hint">Agents can open any public website whenever a task needs it.</p>';
+  }
+
+  function loadBrowserStatus(generation) {
+    state.browser.error = "";
+    return api("/admin/api/browser/status").then(function (body) {
+      if (!settingsLoadIsCurrent(generation)) return;
+      state.browser.status = body;
+      state.browser.loaded = true;
+    }).catch(function (error) {
+      if (!settingsLoadIsCurrent(generation)) return;
+      state.browser.status = null;
+      state.browser.loaded = true;
+      state.browser.error = (error && (error.serverMessage || error.message)) || "Could not load browser settings.";
+    });
+  }
+
+  function connectBrowserKey() {
+    var b = state.browser;
+    var apiKey = String(b.key || "").trim();
+    if (b.busy) return;
+    if (!apiKey) { b.keyError = browserKeyErrorText("invalid_key"); render(); return; }
+    b.busy = "connect";
+    b.keyError = "";
+    render();
+    postJson("/admin/api/browser/key", "PUT", { apiKey: apiKey }).then(function (body) {
+      b.busy = "";
+      b.key = "";
+      b.replacing = false;
+      b.status = body;
+      render();
+    }).catch(function (error) {
+      b.busy = "";
+      if (error && error.status === 409) {
+        b.readOnlyEnv = (error.payload && error.payload.envVar) || "BROWSERBASE_API_KEY";
+        b.key = "";
+      } else {
+        b.keyError = browserKeyErrorText(error && error.message);
+      }
+      render();
+    });
+  }
+
+  function disconnectBrowser() {
+    var b = state.browser;
+    if (b.busy) return;
+    b.busy = "disconnect";
+    b.error = "";
+    render();
+    api("/admin/api/browser/key", { method: "DELETE" }).then(function (body) {
+      b.busy = "";
+      b.confirmDisconnect = false;
+      b.status = body;
+      render();
+    }).catch(function (error) {
+      b.busy = "";
+      if (error && error.status === 409) {
+        b.confirmDisconnect = false;
+        b.readOnlyEnv = (error.payload && error.payload.envVar) || "BROWSERBASE_API_KEY";
+      } else {
+        b.error = "Could not disconnect Browserbase. Try again in a moment.";
+      }
+      render();
+    });
+  }
+
   function sandboxSectionHtml() {
     var status = state.sandboxStatus;
     var badge = '<span class="badge badge-off">Unavailable</span>';
@@ -8538,6 +8696,7 @@
       return '<div class="section-head"><div><h1 class="page-title">Slack</h1><p class="hint">Manage the workspace installation and transport behavior. Agent handles and avatars live on each Agent.</p></div></div>' +
         slackWorkspaceSettingsHtml();
     }
+    if (state.settingsSection === "browser") return browserSettingsHtml();
     if (state.settingsSection === "connectors") {
       return '<div class="section-head"><div><h1 class="page-title">Connectors</h1><p class="hint">Configure managed integrations and review connected accounts for this Chickpea installation.</p></div></div>' + connectorsSettingsHtml();
     }
@@ -9432,6 +9591,7 @@
       "connections": "connectors",
       "github-settings": "github",
       "sandbox-settings": "sandbox",
+      "browser-settings": "browser",
       "egress-settings": "outbound",
       "coding-agents": "agents-clients"
     };
@@ -9439,7 +9599,7 @@
     // A member's only Settings page is Coding agents.
     if (!WORKSPACE_ADMIN_UI) return "agents-clients";
     if (section === "updates" && INSTALLATION_OWNER) return section;
-    return ["slack", "connectors", "providers", "github", "sandbox", "outbound", "agents-clients"].includes(section) ? section : "providers";
+    return ["slack", "connectors", "providers", "github", "sandbox", "browser", "outbound", "agents-clients"].includes(section) ? section : "providers";
   }
 
   function settingsLoadIsCurrent(generation) {
@@ -9494,6 +9654,12 @@
       loadConnectionInventory(generation);
       loadConnectorSettings(generation);
       loadMetaAdsSettings(generation);
+      return;
+    }
+    if (state.settingsSection === "browser") {
+      state.browser = { status: null, loaded: false, error: "", busy: "", key: "", keyError: "", replacing: false, confirmDisconnect: false, readOnlyEnv: "" };
+      render();
+      loadBrowserStatus(generation).then(function () { renderSettingsLoad(generation); });
       return;
     }
     render();
@@ -12282,7 +12448,7 @@
     if (action === "settings-section") {
       var nextSettingsSection = normalizeSettingsSection(target.getAttribute("data-section") || "providers");
       if (nextSettingsSection === "slack") openDestination("connection");
-      else if (state.view !== "settings" || nextSettingsSection === "connectors" || state.settingsSection === "connectors" || nextSettingsSection === "updates" || state.settingsSection === "updates") openSettings(nextSettingsSection);
+      else if (state.view !== "settings" || nextSettingsSection === "connectors" || state.settingsSection === "connectors" || nextSettingsSection === "browser" || state.settingsSection === "browser" || nextSettingsSection === "updates" || state.settingsSection === "updates") openSettings(nextSettingsSection);
       else {
         state.settingsSection = nextSettingsSection;
         render();
@@ -12390,6 +12556,13 @@
       render();
     }
     if (state.sandboxSaving && action.indexOf("sandbox-") === 0) return;
+    if (action === "browser-refresh") { loadBrowserStatus().then(render); }
+    if (action === "browser-connect") { connectBrowserKey(); }
+    if (action === "browser-replace-open") { state.browser.replacing = true; state.browser.confirmDisconnect = false; state.browser.keyError = ""; render(); }
+    if (action === "browser-replace-cancel" && !state.browser.busy) { state.browser.replacing = false; state.browser.key = ""; state.browser.keyError = ""; render(); }
+    if (action === "browser-disconnect-open") { state.browser.confirmDisconnect = true; state.browser.replacing = false; state.browser.error = ""; render(); }
+    if (action === "browser-disconnect-cancel" && !state.browser.busy) { state.browser.confirmDisconnect = false; state.browser.error = ""; render(); }
+    if (action === "browser-disconnect-confirm") { disconnectBrowser(); }
     if (action === "sandbox-refresh") { loadSandboxStatus().then(render); }
     if (action === "sandbox-save") { saveSandbox(); }
     if (action === "sandbox-install-open") {
@@ -12890,6 +13063,7 @@
     // spinner) never wipes it; the favorites search re-renders only its own
     // results container to keep the input focused.
     if (action === "prov-key-input") { provUiFor(target.getAttribute("data-provider")).key = target.value; }
+    if (action === "browser-key-input") { state.browser.key = target.value; state.browser.keyError = ""; }
     if (action === "onboarding-provider-key") {
       state.onboardingProviderKey = target.value;
       state.onboardingError = "";

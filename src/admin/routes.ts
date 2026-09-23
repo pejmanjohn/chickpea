@@ -43,6 +43,14 @@ import { requestOrigin } from '../http/request-origin.ts';
 import { connectOrigin } from '../management/connect.ts';
 import { mcpClientsPayload } from '../management/mcp-client-config.ts';
 import { createUsageAdminApi } from './usage-api.ts';
+import {
+  BROWSER_ENV_VARS,
+  clearBrowserSettings,
+  looksLikeBrowserbaseKey,
+  readBrowserMonthlyUsage,
+  resolveBrowserSettings,
+  saveBrowserSettings,
+} from '../browser/settings.ts';
 import { createWorkAdminApi } from './work-api.ts';
 import { createTeamAdminApi } from './team-api.ts';
 import { readProposalApprovalStatus } from './proposal-status.ts';
@@ -1506,6 +1514,11 @@ const sandboxSettingsSchema = v.object({
   readinessConfirmed: v.optional(v.boolean()),
   allowedHosts: v.array(v.picklist(SANDBOX_PACKAGE_REGISTRY_HOSTS)),
   monthlySessionCap: v.pipe(v.number(), v.integer(), v.minValue(0), v.maxValue(100_000)),
+});
+
+const browserKeySchema = v.object({
+  apiKey: v.pipe(v.string(), v.minLength(1), v.maxLength(512)),
+  projectId: v.optional(v.pipe(v.string(), v.maxLength(200))),
 });
 
 const sandboxAdvancedSettingsSchema = v.object({
@@ -7098,6 +7111,74 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       store(c),
       c.env as PlatformEnv | undefined,
     ));
+  });
+
+  // Settings › Browser: one hosted-browser key per install. The response
+  // carries only what the Admin card shows (key hint, project, monthly usage).
+  // The platform env: Worker bindings, or undefined on Node (process.env).
+  const browserEnv = (c: Context) => c.env as Record<string, unknown> | undefined;
+  const browserStatus = async (c: Context, settingsStore: SettingsStore) => {
+    const [resolved, usage] = await Promise.all([
+      resolveBrowserSettings(settingsStore, browserEnv(c)),
+      readBrowserMonthlyUsage(settingsStore),
+    ]);
+    return {
+      provider: resolved.provider,
+      connected: resolved.connected,
+      source: resolved.source,
+      ...(resolved.source === 'env' ? { envVar: BROWSER_ENV_VARS.apiKey } : {}),
+      ...(resolved.keyHint ? { keyHint: resolved.keyHint } : {}),
+      ...(resolved.projectId ? { projectId: resolved.projectId } : {}),
+      usage,
+    };
+  };
+  const browserKeyReadOnly = (c: Context) =>
+    c.json({ error: 'browser_key_read_only', envVar: BROWSER_ENV_VARS.apiKey }, 409);
+
+  app.get('/admin/api/browser/status', async (c) => {
+    try {
+      return c.json(await browserStatus(c, settings(c)));
+    } catch (err) {
+      return internalError(c, err);
+    }
+  });
+
+  app.put('/admin/api/browser/key', async (c) => {
+    const parsed = v.safeParse(browserKeySchema, await readJson(c.req));
+    if (!parsed.success) {
+      return invalidRequest(c);
+    }
+    try {
+      const settingsStore = settings(c);
+      if ((await resolveBrowserSettings(settingsStore, browserEnv(c))).source === 'env') return browserKeyReadOnly(c);
+      const apiKey = parsed.output.apiKey.trim();
+      if (!looksLikeBrowserbaseKey(apiKey)) {
+        return c.json({ error: 'invalid_key' }, 422);
+      }
+      const { verifyBrowserbaseApiKey } = await import('../browser/browserbase.ts');
+      const verified = await verifyBrowserbaseApiKey({ apiKey });
+      if (!verified.ok) {
+        return verified.reason === 'invalid_key'
+          ? c.json({ error: 'invalid_key' }, 422)
+          : c.json({ error: 'provider_unreachable' }, 502);
+      }
+      const projectId = parsed.output.projectId?.trim() || verified.projectId;
+      await saveBrowserSettings(settingsStore, { apiKey, ...(projectId ? { projectId } : {}) });
+      return c.json(await browserStatus(c, settingsStore));
+    } catch (err) {
+      return internalError(c, err);
+    }
+  });
+
+  app.delete('/admin/api/browser/key', async (c) => {
+    try {
+      const settingsStore = settings(c);
+      if ((await resolveBrowserSettings(settingsStore, browserEnv(c))).source === 'env') return browserKeyReadOnly(c);
+      await clearBrowserSettings(settingsStore);
+      return c.json(await browserStatus(c, settingsStore));
+    } catch (err) {
+      return internalError(c, err);
+    }
   });
 
   app.get('/admin/api/github/status', async (c) => {

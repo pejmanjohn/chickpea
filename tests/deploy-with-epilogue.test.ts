@@ -58,7 +58,7 @@ function createHarness() {
   mkdirSync(releaseDir, { recursive: true });
   mkdirSync(authMigrationsDir, { recursive: true });
   mkdirSync(wranglerDir, { recursive: true });
-  for (const name of ['upgrade-source.mjs', 'build-identity.mjs', 'built-worker-config.mjs', 'inspect-deployment.mjs', 'auth-schema.mjs', 'upgrade-installation.mjs', 'upgrade-receipt.mjs', 'release-manifest.mjs', 'sandbox-deploy-preflight.mjs']) {
+  for (const name of ['upgrade-source.mjs', 'build-identity.mjs', 'built-worker-config.mjs', 'inspect-deployment.mjs', 'auth-schema.mjs', 'upgrade-installation.mjs', 'upgrade-receipt.mjs', 'release-manifest.mjs', 'sandbox-deploy-preflight.mjs', 'deploy-operator-secrets.mjs']) {
     copyFileSync(path.join(PROJECT_ROOT, 'scripts/lib', name), path.join(scriptsLibDir, name));
   }
   copyFileSync(DEPLOY_SCRIPT, path.join(scriptsDir, 'deploy-with-epilogue.mjs'));
