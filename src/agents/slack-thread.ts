@@ -51,7 +51,6 @@ import type { SettingsStore } from '../config/settings-store.ts';
 import type { ConfigStore } from '../config/store.ts';
 import { connectorSkillsForConnections } from '../config/connector-skills.ts';
 import {
-  createConnectionScopedFetch,
   createConnectorScopedBash,
   matchesEgressPrefix,
   resolveEgressPolicy,
@@ -188,6 +187,7 @@ import type { BrowserLoginOptions } from '../browser/binding.ts';
 import { BROWSER_APPROVAL_ACTIVITY } from '../browser/messages.ts';
 import { createBrowserTools, openRecordingDownload } from '../browser/tools.ts';
 import { createRecordingHandleStore, resolveUploadFile } from '../connections/file-handles.ts';
+import { buildConnectionAccess, type ConnectionAccess } from '../connections/access.ts';
 import {
   allowsConnectionFileUpload,
   ATTACH_FILE_TO_CONNECTION_TOOL_NAME,
@@ -2197,24 +2197,34 @@ function createRuntimePlanBrowserProvider(): BrowserTurnSession['provider'] {
 }
 
 /**
- * The API connections a runtime plan may send a file to: its frozen
- * declarations, narrowed by live authority, through the same per-connector
- * egress scopes the sandbox `curl` uses. GitHub hosts stay with the
- * repository integration.
+ * The runtime plan's API connections for a Worker-side connection tool: its
+ * frozen declarations, narrowed by live authority, each behind its own
+ * per-connector egress scopes. Resolved per call, so a connection disabled or
+ * narrowed mid-turn is gone or narrowed on the next call. GitHub hosts stay
+ * with the repository integration.
  */
-async function resolveRuntimePlanUploadFetch(plan: RuntimePlanV2): Promise<ConnectionUploadFetch | undefined> {
+export async function resolveRuntimePlanConnectionAccess(
+  plan: RuntimePlanV2,
+  options: { timeoutMs: number; filter?: (connector: ResolvedApiConnection) => boolean },
+): Promise<ConnectionAccess> {
   const env = await resolveAgentPlatformEnv();
-  const connectors = mergeRepositoryAndApiConnectors(
-    [],
-    (await resolveRuntimePlanApiConnections(plan, env)).flatMap(({ connectors }) => connectors),
-  ).filter((connector) => allowsConnectionFileUpload(connector.allowedMethods));
-  const fetch = await createConnectionScopedFetch(connectors, {
+  const resolved = (await resolveRuntimePlanApiConnections(plan, env)).map(({ policy, connectors }) => ({
+    policy,
+    connectors: mergeRepositoryAndApiConnectors([], connectors),
+  }));
+  return buildConnectionAccess(resolved, {
     cloudflare: isCloudflareTarget(),
-    timeoutMs: CONNECTION_UPLOAD_TIMEOUT_MS,
+    timeoutMs: options.timeoutMs,
+    ...(options.filter ? { filter: options.filter } : {}),
   });
-  if (!fetch) return undefined;
-  const secrets = connectors.flatMap(({ headerValue }) => [headerValue, headerValue.replace(/^\S+\s+/, '')]);
-  return { fetch, secrets };
+}
+
+async function resolveRuntimePlanUploadFetch(plan: RuntimePlanV2): Promise<ConnectionUploadFetch | undefined> {
+  const access = await resolveRuntimePlanConnectionAccess(plan, {
+    timeoutMs: CONNECTION_UPLOAD_TIMEOUT_MS,
+    filter: (connector) => allowsConnectionFileUpload(connector.allowedMethods),
+  });
+  return access.fetchAll();
 }
 
 /** Mounted only for a plan with a writable API connection its actor can use. */

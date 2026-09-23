@@ -2,9 +2,8 @@ import { defineTool, type JsonValue } from '@flue/runtime';
 import * as v from 'valibot';
 
 import type { ConnectionScopedFetch } from '../config/egress.ts';
-import { assertConnectionFileUploadAllowed } from '../memory/tool-policy.ts';
+import { assertConnectionWriteAllowed } from '../memory/tool-policy.ts';
 import { artifactFilename } from '../sandbox/artifact-tool.ts';
-import { redactCredentialLikeContent } from '../security/content-validation.ts';
 import { MAX_SLACK_UPLOAD_BYTES } from '../slack/file-transport.ts';
 import {
   UPLOAD_FILE_HANDLE,
@@ -16,6 +15,11 @@ import {
   FORM_FIELD_NAME,
   prepareRequestBody,
 } from './file-upload-body.ts';
+import {
+  connectionFetchFailureReason,
+  connectionRefusal,
+  readConnectionResponse,
+} from './response.ts';
 
 export const ATTACH_FILE_TO_CONNECTION_TOOL_NAME = 'attach_file_to_connection';
 
@@ -101,7 +105,7 @@ type RefusalReason =
   | 'failed';
 
 function refused(reason: RefusalReason, message: string, extra: Record<string, JsonValue> = {}) {
-  return { output: { ok: false, sent: false, reason, message, ...extra } as JsonValue };
+  return connectionRefusal(reason, message, extra);
 }
 
 /** The extension a sanitized filename keeps: the source file's, or `bin`. */
@@ -117,7 +121,7 @@ export function createAttachFileToConnectionTool(options: AttachFileToConnection
     input: INPUT,
     timeoutMs: CONNECTION_UPLOAD_TOOL_TIMEOUT_MS,
     async run({ data }) {
-      assertConnectionFileUploadAllowed();
+      assertConnectionWriteAllowed('upload');
       let url: URL;
       try {
         url = new URL(data.url);
@@ -172,7 +176,9 @@ export function createAttachFileToConnectionTool(options: AttachFileToConnection
         await prepared.cleanup().catch(() => undefined);
       }
       const ok = result.status >= 200 && result.status < 300;
-      const response = readResponse(result.body, result.headers['content-type'], connection.secrets);
+      const response = readConnectionResponse(result.body, result.headers['content-type'], connection.secrets, {
+        maxChars: MAX_UPLOAD_RESPONSE_CHARS,
+      });
       return {
         output: {
           ok,
@@ -192,40 +198,15 @@ export function createAttachFileToConnectionTool(options: AttachFileToConnection
 
 /** Static categories only: an upstream error message can echo the URL or headers. */
 function failure(error: unknown, method: string) {
-  const name = error instanceof Error ? error.name : '';
-  if (name === 'MethodNotAllowedError') {
+  const reason = connectionFetchFailureReason(error);
+  if (reason === 'method_not_allowed') {
     return refused('method_not_allowed', `The connection does not allow ${method} requests to that URL.`);
   }
-  if (name === 'BlockedUrlError' || name === 'NetworkAccessDeniedError' || name === 'RedirectNotAllowedError') {
+  if (reason === 'url_not_allowed') {
     return refused('url_not_allowed', "That URL is not an endpoint this Agent's connections allow.");
   }
   if (error instanceof Error && error.message === 'upload_source_length_mismatch') {
     return refused('failed', 'The file changed size while it was being sent, so the upload was stopped.');
   }
   return refused('failed', 'The upload did not complete (network error or timeout). It may be retried once.');
-}
-
-function readResponse(
-  body: Uint8Array,
-  contentType: string | undefined,
-  secrets: readonly string[],
-): Record<string, JsonValue> {
-  if (body.byteLength === 0) return {};
-  let text = new TextDecoder().decode(body.subarray(0, MAX_UPLOAD_RESPONSE_CHARS * 4));
-  for (const secret of secrets) {
-    if (secret.length >= 8) text = text.split(secret).join('[credential redacted]');
-  }
-  text = redactCredentialLikeContent(text);
-  const truncated = body.byteLength > MAX_UPLOAD_RESPONSE_CHARS * 4 || text.length > MAX_UPLOAD_RESPONSE_CHARS;
-  if (!truncated && /json/i.test(contentType ?? '')) {
-    try {
-      return { response: JSON.parse(text) as JsonValue };
-    } catch {
-      // Fall through to text.
-    }
-  }
-  return {
-    response: text.slice(0, MAX_UPLOAD_RESPONSE_CHARS),
-    ...(truncated ? { responseTruncated: true } : {}),
-  };
 }
