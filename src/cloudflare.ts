@@ -154,6 +154,11 @@ import {
   type WorkspaceTurnState,
 } from './sandbox/workspace-lifecycle.ts';
 import {
+  checkpointWorkspace,
+  restoreWorkspaceCheckpoint,
+  workspaceCheckpointsAvailable,
+} from './sandbox/workspace-checkpoints.ts';
+import {
   isGithubPullRequestCreateResponse,
   pullRequestProgressFromGithubResponse,
 } from './sandbox/progress.ts';
@@ -392,7 +397,7 @@ export class Sandbox extends CloudflareSandbox<SandboxWorkerEnv> {
     return {
       state: decision.state,
       reservationId: decision.reservationId,
-      restorable: decision.restorable && checkpointBucket(this.env) !== undefined,
+      restorable: decision.restorable && workspaceCheckpointsAvailable(this.env),
     };
   }
 
@@ -402,16 +407,15 @@ export class Sandbox extends CloudflareSandbox<SandboxWorkerEnv> {
    * and the Agent clones again.
    */
   async restoreWorkspace(fingerprint: string): Promise<'restored' | 'unavailable'> {
-    if (!checkpointBucket(this.env)) return 'unavailable';
-    const backup = await this.workspaceState().checkpointForRestore(fingerprint, Date.now());
-    if (!backup) return 'unavailable';
-    try {
-      await this.restoreBackup(backup as Parameters<CloudflareSandbox['restoreBackup']>[0]);
-      return 'restored';
-    } catch {
-      console.warn('[chickpea] coding workspace checkpoint restore did not complete');
-      return 'unavailable';
-    }
+    return restoreWorkspaceCheckpoint({
+      env: this.env,
+      state: this.workspaceState(),
+      fingerprint,
+      now: Date.now,
+      restore: async (backup) => {
+        await this.restoreBackup(backup as Parameters<CloudflareSandbox['restoreBackup']>[0]);
+      },
+    });
   }
 
   /**
@@ -421,18 +425,18 @@ export class Sandbox extends CloudflareSandbox<SandboxWorkerEnv> {
   async endTurn(): Promise<void> {
     await this.policyState().revokeEgress();
     // Never start a container just to checkpoint it.
-    if (!this.containerRunning() || !checkpointBucket(this.env)) return;
-    try {
-      const backup = await this.createBackup({
+    await checkpointWorkspace({
+      env: this.env,
+      containerRunning: this.containerRunning(),
+      state: this.workspaceState(),
+      now: Date.now,
+      create: () => this.createBackup({
         dir: WORKSPACE_DIR,
         ttl: WORKSPACE_CHECKPOINT_TTL_SECONDS,
         excludes: [...WORKSPACE_CHECKPOINT_EXCLUDES],
         localBucket: true,
-      });
-      await this.workspaceState().recordCheckpoint(backup, Date.now());
-    } catch {
-      console.warn('[chickpea] coding workspace checkpoint did not complete');
-    }
+      }),
+    });
   }
 
   private containerRunning(): boolean {

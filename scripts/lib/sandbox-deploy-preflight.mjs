@@ -10,11 +10,14 @@
  * - `preflightSandboxDeployment` checks the Docker daemon, pulls the base
  *   image (with retries: the build's metadata fetch is flaky right after
  *   Docker starts), confirms the Wrangler credential can manage
- *   Containers, and confirms R2 is enabled on the account (the profile's
- *   `BACKUP_BUCKET` binding makes `wrangler deploy` create a bucket, and
- *   Cloudflare refuses that on an account that never enabled R2). Each
- *   problem gets one actionable message, including a re-authentication
- *   command that is valid for how the operator signs in.
+ *   Containers, and asks whether R2 is enabled on the account. The profile's
+ *   `BACKUP_BUCKET` binding makes `wrangler deploy` create the workspace
+ *   checkpoint bucket, and Cloudflare refuses that (API error 10042) on an
+ *   account that never enabled R2, after migrations and the asset upload.
+ *   Checkpoints are optional, so R2 being off is not a problem: the deploy
+ *   drops the binding (`withoutCheckpointBucket`) and says how to turn
+ *   checkpoints on. Each real problem gets one actionable message, including
+ *   a re-authentication command that is valid for how the operator signs in.
  * - `prebuildSandboxImage` builds and pushes the image with
  *   `wrangler containers build --push`, so the deploy only has to create or
  *   update the Container application from an image that already exists.
@@ -301,13 +304,8 @@ export function checkR2Access(options) {
   const account = options.accountId ? ` ${options.accountId}` : '';
   switch (access.reason) {
     case 'not-enabled':
-      return {
-        access,
-        problem: `R2 is not enabled on Cloudflare account${account}. The coding sandbox keeps workspace checkpoints in an ` +
-          'R2 bucket that the deploy creates for its BACKUP_BUCKET binding, and Cloudflare refuses to create buckets until ' +
-          'R2 is enabled. In the Cloudflare dashboard, open R2 Object Storage and enable R2 (the free tier is enough; ' +
-          'you do not need to create a bucket). Then rerun the same command.',
-      };
+      // Not a problem: the deploy proceeds with workspace checkpoints off.
+      return { access };
     case 'denied':
       return {
         access,
@@ -330,7 +328,28 @@ export function checkR2Access(options) {
   }
 }
 
-/** Run every check and return all problems, in the order an operator should fix them. */
+export const CHECKPOINT_BUCKET_BINDING = 'BACKUP_BUCKET';
+
+/** One line for an operator whose account has R2 off; printed when the deploy continues without checkpoints. */
+export function checkpointsOffNotice(accountId) {
+  const account = accountId ? ` ${accountId}` : '';
+  return `R2 is not enabled on Cloudflare account${account}, so this deploy leaves coding workspace checkpoints off ` +
+    '(a coding thread clones its repository again after the sandbox sleeps). To turn them on, open R2 Object Storage ' +
+    'in the Cloudflare dashboard, enable R2 (the free tier is enough; do not create a bucket), and rerun the same command.';
+}
+
+/** Drop the checkpoint bucket binding so Wrangler does not try to create a bucket on an account without R2. */
+export function withoutCheckpointBucket(config) {
+  const buckets = (config.r2_buckets ?? []).filter((entry) => entry?.binding !== CHECKPOINT_BUCKET_BINDING);
+  if (buckets.length) config.r2_buckets = buckets;
+  else delete config.r2_buckets;
+  return config;
+}
+
+/**
+ * Run every check. Returns all problems, in the order an operator should fix
+ * them, and whether the account can hold the checkpoint bucket.
+ */
 export function preflightSandboxDeployment(options) {
   const problems = [];
   const log = options.log ?? ((message) => process.stdout.write(message));
@@ -347,12 +366,17 @@ export function preflightSandboxDeployment(options) {
     const { problem } = checkContainersAccess(options);
     if (problem) problems.push(problem);
   }
+  let checkpoints = true;
   if (options.checkR2 !== false) {
-    const { problem } = checkR2Access(options);
+    const { access, problem } = checkR2Access(options);
     // A signed-out credential fails both checks with the same instruction.
     if (problem && !problems.includes(problem)) problems.push(problem);
+    if (access.reason === 'not-enabled') {
+      checkpoints = false;
+      log('R2 is not enabled on this account; deploying with coding workspace checkpoints off.\n');
+    }
   }
-  return problems;
+  return { problems, checkpoints };
 }
 
 export function formatPreflightProblems(problems) {

@@ -331,6 +331,7 @@ import {
 } from '../config/sandbox-settings.ts';
 import { validEnabledRepositoryGrants } from '../sandbox/egress-handler.ts';
 import { probeSandboxContainer, sandboxBindingInstalled } from '../sandbox/select.ts';
+import { workspaceCheckpointsAvailable } from '../sandbox/workspace-checkpoints.ts';
 import { parseSkillSource, resolveSkillSource, SkillImportError } from '../config/skill-import.ts';
 import { skillImportSourceSchema } from '../config/skill-provenance.ts';
 import { legacyAgentAdminRedirect } from './agent-url.ts';
@@ -1622,7 +1623,14 @@ async function sandboxStatus(
     repositoryGrantReady,
     unmetPrerequisites,
     workersPaidNote: cloudflare
-      ? 'Requires Workers Paid. Real containers run on your Cloudflare account; a typical session costs about 1 cent.'
+      ? 'Requires Workers Paid. Real containers run on your Cloudflare account; a typical session costs about 1 cent. ' +
+        'Workspace checkpoints also need R2 enabled on the account; the free tier is enough.'
+      : null,
+    // A command deploy on an account without R2 leaves out the checkpoint
+    // bucket binding rather than failing; say so, with the fix.
+    checkpointsNote: installed && !workspaceCheckpointsAvailable(env as Record<string, unknown> | undefined)
+      ? 'Workspace checkpoints are off until R2 is enabled, so a coding thread clones its repository again after ' +
+        'the sandbox sleeps. Enable R2 in the Cloudflare dashboard, then redeploy the same way you installed the sandbox.'
       : null,
   };
 }

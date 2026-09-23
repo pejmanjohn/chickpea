@@ -8,6 +8,7 @@ import {
   boundProfile,
   checkDockerDaemon,
   checkR2Access,
+  checkpointsOffNotice,
   classifyContainersAccess,
   classifyR2Access,
   containersReauthInstruction,
@@ -23,6 +24,7 @@ import {
   uploadedBeforeFailure,
   useSandboxImage,
   verifySandboxContainerApplication,
+  withoutCheckpointBucket,
   // @ts-expect-error Release tooling JavaScript helper.
 } from '../scripts/lib/sandbox-deploy-preflight.mjs';
 
@@ -215,13 +217,24 @@ test('R2 access failures are classified, and the probe pins the resolved account
   assert.deepEqual(calls[0]!.args, ['/w.js', 'r2', 'bucket', 'list', '--config', '/c.jsonc', '--profile', 'acme']);
   assert.equal(calls[0]!.env.CLOUDFLARE_ACCOUNT_ID, 'a'.repeat(32));
 
-  const disabled = check({ status: 1, stderr: R2_DISABLED_OUTPUT }).problem;
-  assert.match(disabled, /R2 is not enabled on Cloudflare account a{32}\./);
-  assert.match(disabled, /open R2 Object Storage and enable R2 \(the free tier is enough; you do not need to create a bucket\)/);
-  assert.doesNotMatch(disabled, /10042|\/accounts\//, 'Wrangler output is classified, not echoed');
+  // R2 off is not a problem: the deploy continues with checkpoints off.
+  const disabled = check({ status: 1, stderr: R2_DISABLED_OUTPUT });
+  assert.equal(disabled.problem, undefined);
+  assert.equal(disabled.access.reason, 'not-enabled');
+  const notice = checkpointsOffNotice('a'.repeat(32));
+  assert.match(notice, /R2 is not enabled on Cloudflare account a{32}, so this deploy leaves coding workspace checkpoints off/);
+  assert.match(notice, /enable R2 \(the free tier is enough; do not create a bucket\), and rerun the same command/);
+  assert.match(check({ status: 1, stderr: 'Wrangler exploded' }).problem, /could not confirm R2 access for account a{32}/);
   assert.match(check({ status: 1, stderr: 'code: 10000' }, { CLOUDFLARE_API_TOKEN: 'secret' }).problem,
     /API token in the environment cannot manage R2.*Workers R2 Storage: Edit/s);
   assert.match(check({ status: 1, stderr: 'code: 10000' }).problem, /Cloudflare refused R2 access for account a{32}/);
+});
+
+test('dropping the checkpoint bucket keeps every other R2 binding', () => {
+  const both = { r2_buckets: [{ binding: 'BACKUP_BUCKET' }, { binding: 'OTHER', bucket_name: 'other' }] };
+  assert.deepEqual(withoutCheckpointBucket(both).r2_buckets, [{ binding: 'OTHER', bucket_name: 'other' }]);
+  const only = withoutCheckpointBucket({ name: 'chickpea', r2_buckets: [{ binding: 'BACKUP_BUCKET' }] });
+  assert.equal('r2_buckets' in only, false);
 });
 
 test('partial-deploy detection and verification read Wrangler output honestly', () => {

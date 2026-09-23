@@ -264,6 +264,10 @@ function createHarness() {
         const built = path.join(process.cwd(), 'dist-cf', 'chickpea', 'wrangler.json');
         const image = existsSync(built) ? JSON.parse(readFileSync(built, 'utf8')).containers?.[0]?.image : undefined;
         if (image && !image.startsWith('/')) appendLog(process.env.DEPLOY_TEST_LOG, 'deploy-image:' + image + '\\n');
+        if (image && !image.startsWith('/')) {
+          const buckets = JSON.parse(readFileSync(built, 'utf8')).r2_buckets ?? [];
+          appendLog(process.env.DEPLOY_TEST_LOG, 'deploy-r2:' + JSON.stringify(buckets.map((entry) => entry.binding)) + '\\n');
+        }
         if (process.env.DEPLOY_TEST_DEPLOY_UPLOADED === '1') process.stdout.write('Uploaded chickpea (1.00 sec)\\n');
         // Wrangler provisions new bindings after the asset upload and before
         // the script upload; this is the 2026-09-23 R2 failure shape.
@@ -1488,7 +1492,9 @@ function writeCutoverArtifact(
       migrations_dir: '../../migrations/better-auth',
     }],
     workflows: [],
-    ...(profile === 'sandbox' ? { containers: [sandboxContainer] } : {}),
+    ...(profile === 'sandbox'
+      ? { containers: [sandboxContainer], r2_buckets: [{ binding: 'BACKUP_BUCKET' }] }
+      : {}),
     migrations: [
       { tag: 'v3', new_sqlite_classes: ['Sandbox'] },
       {
@@ -2426,24 +2432,28 @@ test('sandbox preflight reports every blocking problem before build, D1, or uplo
   assert.equal(invoked.some((line) => line.startsWith('docker:["pull"')), false, 'no pull without a daemon');
 });
 
-test('sandbox preflight stops before anything is uploaded when R2 is not enabled on the account', (context) => {
+test('a sandbox deploy on an account without R2 goes ahead with workspace checkpoints off', (context) => {
   const harness = sandboxHarness(context);
-  const result = runHarness(harness, ['--profile', 'acme'], sandboxEnv(harness, { DEPLOY_TEST_R2_ACCESS: 'disabled' }));
-  assert.equal(result.status, 1, result.stdout);
-  assert.match(result.stderr, /found 1 problem\. Nothing was built, migrated, or uploaded, and the live Worker is unchanged\./);
-  assert.match(result.stderr, new RegExp(`R2 is not enabled on Cloudflare account ${'a'.repeat(32)}\\.`));
-  assert.match(result.stderr, /In the Cloudflare dashboard, open R2 Object Storage and enable R2 \(the free tier is enough/);
-  assert.doesNotMatch(result.stderr, /PARTIAL SANDBOX DEPLOY|10042/);
+  // The prepared sandbox artifact carries the BACKUP_BUCKET binding.
+  const result = runHarness(harness, ['--skip-build', '--profile', 'acme'], sandboxEnv(harness, {
+    DEPLOY_TEST_R2_ACCESS: 'disabled',
+    CLOUDFLARE_ACCOUNT_ID: 'a'.repeat(32),
+  }));
+  assert.equal(result.status, 0, result.stderr);
   const invoked = commands(harness.logPath);
-  const probe = invoked.find((line) => line.startsWith('wrangler:["r2","bucket","list"'));
-  assert.match(probe ?? '', /"--profile","acme"/, invoked.join('\n'));
+  const probe = invoked.findIndex((line) => line.startsWith('wrangler:["r2","bucket","list"'));
+  const deploy = invoked.findIndex((line) => line.startsWith('wrangler:["deploy"'));
+  assert.ok(probe >= 0 && probe < deploy, invoked.join('\n'));
+  assert.match(invoked[probe]!, /"--profile","acme"/);
   // `r2 bucket list` ignores the config's account_id, so the probe pins it.
   assert.ok(invoked.includes(`r2-account:${'a'.repeat(32)}`), invoked.join('\n'));
-  assert.equal(
-    invoked.some((line) => line.startsWith('npm:') || /"(d1|deploy)"|"containers","build"/.test(line)),
-    false,
-    invoked.join('\n'),
-  );
+  // Wrangler never sees the binding, so it never tries to create a bucket.
+  assert.ok(invoked.includes('deploy-r2:[]'), invoked.join('\n'));
+  assert.match(result.stdout, /deploying with coding workspace checkpoints off/);
+  assert.match(result.stdout, new RegExp(`! R2 is not enabled on Cloudflare account ${'a'.repeat(32)}, so this deploy leaves coding workspace checkpoints off`));
+  assert.match(result.stdout, /open R2 Object Storage in the Cloudflare dashboard, enable R2 \(the free tier is enough; do not create a bucket\), and rerun the same command/);
+  assert.match(result.stdout, /Container application chickpea-sandbox exists/);
+  assert.doesNotMatch(result.stderr, /PARTIAL SANDBOX DEPLOY|10042/);
 });
 
 test('sandbox re-auth guidance matches global logins, bound profiles, and API tokens', (context) => {
@@ -2487,6 +2497,8 @@ test('sandbox deploy retries the base image pull and prebuilds the image before 
   assert.ok(builds[1]! < migration && migration < deploy, invoked.join('\n'));
   const image = invoked.find((line) => line.startsWith('deploy-image:'));
   assert.match(image ?? '', new RegExp(`^deploy-image:registry\\.cloudflare\\.com/${'a'.repeat(32)}/chickpea-sandbox:[a-f0-9]{12}-[a-z0-9]+$`));
+  assert.ok(invoked.includes('deploy-r2:["BACKUP_BUCKET"]'), 'R2 enabled keeps the checkpoint bucket binding');
+  assert.doesNotMatch(result.stdout, /checkpoints off/);
   assert.match(result.stdout, /Container application chickpea-sandbox exists \(state: active\)/);
   assert.match(result.stdout, /Coding sandbox, choose Check again, and choose Enable coding sandbox/);
 });

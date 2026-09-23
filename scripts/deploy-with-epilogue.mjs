@@ -48,6 +48,8 @@ import {
   sandboxStoppedBeforeUpload,
   uploadedBeforeFailure,
   useSandboxImage,
+  checkpointsOffNotice,
+  withoutCheckpointBucket,
   verifySandboxContainerApplication,
 } from './lib/sandbox-deploy-preflight.mjs';
 
@@ -398,9 +400,13 @@ function sandboxToolOptions(configPath) {
     ...(process.env.DEPLOY_TEST_SANDBOX_RETRY_MS ? { retryDelayMs: Number(process.env.DEPLOY_TEST_SANDBOX_RETRY_MS) } : {}),
   };
 }
+// An account without R2 cannot hold the checkpoint bucket. Checkpoints are
+// optional, so the deploy drops that binding instead of failing mid-deploy.
+let sandboxCheckpointsOff = false;
 if (guardedSandboxDeploy) {
   try {
-    const problems = preflightSandboxDeployment(sandboxToolOptions(path.join(projectRoot, 'wrangler.jsonc')));
+    const { problems, checkpoints } = preflightSandboxDeployment(sandboxToolOptions(path.join(projectRoot, 'wrangler.jsonc')));
+    sandboxCheckpointsOff = !checkpoints;
     if (problems.length) {
       console.error(formatPreflightProblems(problems));
       process.exit(1);
@@ -1355,11 +1361,12 @@ if (upgradeContext) {
 
 try {
   if (qaSourceAdmission) qaCandidateApi.recheckQaCandidate(qaSourceAdmission);
-  if (prebuiltSandboxImage) {
+  if (prebuiltSandboxImage || sandboxCheckpointsOff) {
     // Last write before the upload: Wrangler now applies the Container
     // application from the already-pushed image instead of building it after
     // the new Worker version is live.
-    useSandboxImage(builtArtifact.config, prebuiltSandboxImage);
+    if (prebuiltSandboxImage) useSandboxImage(builtArtifact.config, prebuiltSandboxImage);
+    if (sandboxCheckpointsOff) withoutCheckpointBucket(builtArtifact.config);
     writeFileSync(builtArtifact.configPath, `${JSON.stringify(builtArtifact.config, null, 2)}\n`);
   }
 } catch (error) {
@@ -1599,6 +1606,9 @@ child.on('close', async (code) => {
           'Then open Admin → Settings → Coding sandbox, choose Check again, and choose Enable coding sandbox: ' +
           'repository grants do not use the Container until it is enabled.\n',
         );
+      }
+      if (sandboxCheckpointsOff) {
+        process.stdout.write(`! ${checkpointsOffNotice(checkedAccount?.accountId ?? process.env.CLOUDFLARE_ACCOUNT_ID)}\n`);
       }
     }
     if (selectedEnvironmentTarget) {
