@@ -372,8 +372,15 @@ test('each skill body is bounded, teaches automatic auth, and includes the requi
       assert.ok(!skill.instructions.includes(unsupportedFlag), `${skill.name}: ${unsupportedFlag}`);
     }
     assert.ok(!skill.description.includes('\n'), skill.name);
-    const recipeCount = skill.instructions.match(/```bash\n\s*curl\b/g)?.length ?? 0;
+    // GitHub keeps curl in the sandbox; API connections use connection_request.
+    const recipeCount = skill.name === 'github-api'
+      ? skill.instructions.match(/```bash\n\s*curl\b/g)?.length ?? 0
+      : skill.instructions.match(/```json\n\{/g)?.length ?? 0;
     assert.ok(recipeCount >= 6 && recipeCount <= 10, `${skill.name}: ${recipeCount} recipes`);
+    if (skill.name !== 'github-api') {
+      assert.doesNotMatch(skill.instructions, /\bcurl\b/, skill.name);
+      assert.match(skill.instructions, /`connection_request`/, skill.name);
+    }
     for (const expected of expectations.get(skill.name) ?? []) {
       assert.ok(skill.instructions.includes(expected), `${skill.name}: ${expected}`);
     }
