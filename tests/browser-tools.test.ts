@@ -564,7 +564,10 @@ test('live grants are read once at mount and again only to bind, sign in, or cla
 
 test('browser_sign_in types the stored secrets through fillSecret and never leaks them', async () => {
   const { run, browsers, github, settings, session } = await loginSetup();
+  assert.equal((await getWebsiteLogin(settings, github.id))?.lastUsedAt, undefined);
   await run('browser_open', { url: 'https://github.com/login' });
+  // Opening the site on its saved session already counts as a use.
+  assert.ok((await getWebsiteLogin(settings, github.id))?.lastUsedAt);
   const result = await run('browser_sign_in', {
     loginId: github.id, usernameRef: 'e1', passwordRef: 'e2', codeRef: 'e3', submitRef: 'e4',
   });

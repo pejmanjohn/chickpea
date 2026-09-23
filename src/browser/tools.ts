@@ -288,7 +288,7 @@ export function createBrowserTools(options: BrowserToolsOptions) {
   };
   const refuse = (error: string) => ({ output: { error } });
 
-  const logins = new BrowserLoginBinder(session, options.logins, sleep);
+  const logins = new BrowserLoginBinder(session, options.logins, sleep, () => now().getTime());
   const formSteps = new BrowserFormSteps();
 
   const readPage = async (pageInfo?: PageInfo) => {

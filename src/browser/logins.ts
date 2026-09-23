@@ -341,7 +341,7 @@ export async function deleteWebsiteLogin(
   return existed;
 }
 
-/** Record a successful sign-in time. Returns false when the login is gone. */
+/** Record when the login was last used (bound to a session or signed in). Returns false when the login is gone. */
 export async function touchWebsiteLoginUsed(
   store: SettingsStore,
   id: string,

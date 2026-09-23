@@ -10,6 +10,7 @@ import {
   getWebsiteLogin,
   intersectFrozenWebsiteLogins,
   setWebsiteLoginContext,
+  touchWebsiteLoginUsed,
   setWebsiteLoginHandoff,
   type FrozenWebsiteLoginEntry,
   type WebsiteLogin,
@@ -92,6 +93,7 @@ export class BrowserLoginBinder {
     private readonly session: BrowserTurnSession,
     private readonly options: BrowserLoginOptions | undefined,
     private readonly sleep: (ms: number) => Promise<void>,
+    private readonly now: () => number = Date.now,
   ) {}
 
   get granted(): readonly BrowserWebsiteLogin[] {
@@ -179,6 +181,8 @@ export class BrowserLoginBinder {
       contextId = (await this.session.provider.createContext(stored.label)).id;
       await setWebsiteLoginContext(deps.store, stored.id, contextId);
     }
+    // Opening the site on its saved session is a use of the login, signed in or not.
+    await touchWebsiteLoginUsed(deps.store, stored.id, this.now()).catch(() => undefined);
     return { loginId: stored.id, host: stored.host, contextId, level: current.level };
   }
 
