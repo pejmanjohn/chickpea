@@ -189,6 +189,10 @@ import { createBrowserTools, openRecordingDownload } from '../browser/tools.ts';
 import { createRecordingHandleStore, resolveUploadFile } from '../connections/file-handles.ts';
 import { buildConnectionAccess, type ConnectionAccess } from '../connections/access.ts';
 import {
+  CONNECTION_REQUEST_TIMEOUT_MS,
+  createConnectionRequestTool,
+} from '../connections/request-tool.ts';
+import {
   allowsConnectionFileUpload,
   ATTACH_FILE_TO_CONNECTION_TOOL_NAME,
   CONNECTION_UPLOAD_TIMEOUT_MS,
@@ -1543,6 +1547,12 @@ export function useRuntimePlanAgent(
     options.connectorUsageCorrelation,
     [AGENT_AUTHORING_SKILL_NAME],
   );
+  // Not an artifact tool: an old routine occurrence without a file
+  // destination still calls its connections. Only a file-delivery repair,
+  // which may not use connections, goes without.
+  if (runtimePlanAllowsConnectionRequests(plan) && !fileCompletion.repairing) {
+    useTool(createRuntimePlanConnectionRequestTool(plan));
+  }
   if (plan.sandbox.mode === 'bash' && plan.apiConnections.length > 0) {
     useInstruction([
       'REST connections are declared for this turn. Use the bash tool with curl -sS to perform requested HTTP operations within the listed hosts, path prefixes, and methods, preserving error messages. Credentials are injected automatically by the connection transport; do not supply, retrieve, or print authentication headers or credential values.',
@@ -2225,6 +2235,20 @@ async function resolveRuntimePlanUploadFetch(plan: RuntimePlanV2): Promise<Conne
     filter: (connector) => allowsConnectionFileUpload(connector.allowedMethods),
   });
   return access.fetchAll();
+}
+
+/** connection_request for a runtime plan, resolving the plan's connections per call. */
+export function createRuntimePlanConnectionRequestTool(
+  plan: RuntimePlanV2,
+  resolveAccess: () => Promise<ConnectionAccess> = () =>
+    resolveRuntimePlanConnectionAccess(plan, { timeoutMs: CONNECTION_REQUEST_TIMEOUT_MS }),
+) {
+  return createConnectionRequestTool({ agentId: plan.agentId, resolveAccess });
+}
+
+/** Mounted for a plan with any API connection its actor can use. */
+export function runtimePlanAllowsConnectionRequests(plan: RuntimePlanV2): boolean {
+  return Boolean(plan.actorMembershipId) && plan.apiConnections.length > 0;
 }
 
 /** Mounted only for a plan with a writable API connection its actor can use. */
