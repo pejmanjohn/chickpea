@@ -183,7 +183,6 @@ test('runtime route reads never fetch and the seventeenth hosted activation requ
 
 test('models newer than the pinned Pi release route through reviewed profiles on every lane', async () => {
   const apiKeyModels = [
-    ['openai/gpt-6-astra', 'openai_api_key'],
     ['openai/gpt-6-sol', 'openai_api_key'],
     ['openai/gpt-6-luna', 'openai_api_key'],
     ['openai/gpt-6-astra', 'openai_subscription'],
@@ -208,5 +207,7 @@ test('models newer than the pinned Pi release route through reviewed profiles on
         assert.equal(resolveModel(route.modelSpecifier).id, route.model.id);
       }
     }
+    // Astra rejects the `none` effort compiled OpenAI API profiles send.
+    assert.equal(resolveActiveCatalogRoute('openai/gpt-6-astra', 'openai_api_key'), undefined);
   }
 });

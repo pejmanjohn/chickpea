@@ -7,16 +7,14 @@
       "canonical": "openai/gpt-6-astra",
       "displayName": "GPT-6 Astra",
       "lanes": {
-        "subscription": "openai-codex-responses-standard@1",
-        "apiKey": "openai-platform-responses-sol-tier@1"
+        "subscription": "openai-codex-responses-standard@1"
       },
       "provenance": {
         "sourceRefs": ["npm:@earendil-works/pi-ai@0.87.1"],
         "reviewedAt": "2026-09-22"
       },
       "laneStatus": {
-        "subscription": { "state": "contract_owned" },
-        "apiKey": { "state": "backfill" }
+        "subscription": { "state": "contract_owned" }
       }
     },
     {

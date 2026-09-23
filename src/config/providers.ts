@@ -46,7 +46,6 @@ const BUILTIN_ENV_PROVIDERS: readonly ProviderCatalogEntry[] = [
     id: 'openai',
     envVars: ['OPENAI_API_KEY'],
     suggestions: [
-      'openai/gpt-6-astra',
       'openai/gpt-6-sol',
       'openai/gpt-6-luna',
       'openai/gpt-5.6-sol',

@@ -35,7 +35,6 @@ const OPENAI_COMPAT_API = 'chickpea-openai-platform-responses-bundled-v1';
 const ANTHROPIC_COMPAT_PROVIDER_ID = 'chickpea-anthropic-api-bundled-v1';
 const ANTHROPIC_COMPAT_API = 'chickpea-anthropic-messages-bundled-v1';
 const REVIEWED_OPENAI_MODELS = new Set([
-  'gpt-6-astra',
   'gpt-6-sol',
   'gpt-6-luna',
   'gpt-5.6-sol',
