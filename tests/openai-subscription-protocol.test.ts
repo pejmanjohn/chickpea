@@ -242,6 +242,9 @@ test('subscription request headers override caller credentials and use a curated
   assert.equal(headers.get('session-id'), 'session-random');
   assert.equal(headers.get('x-request-id'), 'safe-request-id');
   assert.deepEqual(OPENAI_SUBSCRIPTION_MODELS, [
+    'gpt-6-astra',
+    'gpt-6-sol',
+    'gpt-6-luna',
     'gpt-5.6-sol',
     'gpt-5.6-terra',
     'gpt-5.6-luna',
