@@ -1799,13 +1799,16 @@ async function requireLiveFrozenAgent(
   }
 }
 
-function runtimeRepositoryMatches(
+export function runtimeRepositoryMatches(
   current: RepositoryGrant,
   planned: RuntimePlanRepositoryV2,
 ): boolean {
-  return current.enabled &&
-    current.fullName.toLowerCase() === planned.fullName.toLowerCase() &&
-    Boolean(current.allRepos) === Boolean(planned.allRepos);
+  if (!current.enabled || Boolean(current.allRepos) !== Boolean(planned.allRepos)) return false;
+  // An all-repositories grant names no repository; its owner is the policy.
+  if (planned.allRepos && planned.accountLogin !== undefined) {
+    return current.accountLogin.toLowerCase() === planned.accountLogin.toLowerCase();
+  }
+  return current.fullName.toLowerCase() === planned.fullName.toLowerCase();
 }
 
 /**
