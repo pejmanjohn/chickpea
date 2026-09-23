@@ -96,7 +96,7 @@ function useProbe() {
         probe.oversizeAttempts++;
         throw new SlackTransportError('files.stage', 'gateway_request_too_large');
       }
-      probe.staged.push({ ...input, bytes: input.bytes.slice() });
+      probe.staged.push({ ...input, bytes: (input.bytes as Uint8Array).slice() });
       const fileId = `FPROBE${String(probe.staged.length).padStart(5, '0')}`;
       return { fileId, byteLength: input.bytes.byteLength,
         permalink: `https://example.slack.com/files/${ACTOR}/${fileId}/${input.filename}` };
@@ -386,7 +386,7 @@ test('native file-delivery completion preserves authority, response state, and b
         assert.equal(faux.state.callCount - callsBefore, 4);
         assert.equal(probe.staged.length, 1);
         assert.equal(probe.staged[0]!.filename, 'report.md');
-        assert.equal(new TextDecoder().decode(probe.staged[0]!.bytes), REPORT);
+        assert.equal(new TextDecoder().decode(probe.staged[0]!.bytes as Uint8Array), REPORT);
         assert.equal(completionResult(reply).unresolved, false);
         assert.equal(result.text, 'Attached the install report.');
         assert.equal(result.artifacts?.length, 1);
@@ -416,7 +416,7 @@ test('native file-delivery completion preserves authority, response state, and b
       assert.equal(faux.state.callCount - callsBefore, 6);
       assert.equal(probe.oversizeAttempts, 1);
       assert.deepEqual(probe.staged.map((file) => file.filename), ['small.md']);
-      assert.equal(new TextDecoder().decode(probe.staged[0]!.bytes), 'AE6F-SMALL: ready\n');
+      assert.equal(new TextDecoder().decode(probe.staged[0]!.bytes as Uint8Array), 'AE6F-SMALL: ready\n');
       assert.equal(completionResult(reply).unresolved, false);
       assert.equal(result.artifacts?.length, 1);
       assert.match(result.text, /large.txt because it exceeds the upload limit/);
@@ -470,7 +470,7 @@ test('native file-delivery completion preserves authority, response state, and b
         assert.equal(faux.state.callCount - callsBefore, 5);
         assert.ok(probe.toolOutcomes.some((outcome) => outcome.tool === mutation.tool && outcome.isError));
         assert.equal(probe.staged.length, 1);
-        assert.equal(new TextDecoder().decode(probe.staged[0]!.bytes), REPORT);
+        assert.equal(new TextDecoder().decode(probe.staged[0]!.bytes as Uint8Array), REPORT);
         assert.equal(completionResult(reply).unresolved, false);
         assert.equal(result.artifacts?.length, 1);
         assert.equal(result.text, 'Attached the original completed report.');
@@ -503,7 +503,7 @@ test('native file-delivery completion preserves authority, response state, and b
       assert.equal(faux.state.callCount - callsBefore, 3);
       assert.equal(probe.responseStarts, 2);
       assert.equal(probe.staged.length, 2);
-      assert.equal(new TextDecoder().decode(probe.staged[1]!.bytes), revised);
+      assert.equal(new TextDecoder().decode(probe.staged[1]!.bytes as Uint8Array), revised);
       assert.deepEqual(result.artifacts?.map((file) => file.fileId), ['FPROBE00002']);
       assert.equal(result.text, 'Attached the report from your new request.');
     });
@@ -548,7 +548,7 @@ test('native file-delivery completion preserves authority, response state, and b
       assert.ok(probe.toolOutcomes.some((outcome) => outcome.tool === 'read' && outcome.isError));
       assert.equal(probe.oversizeAttempts, 1);
       assert.equal(probe.staged.length, 2);
-      assert.equal(new TextDecoder().decode(probe.staged[1]!.bytes), 'AE6F-SMALL: ready\n');
+      assert.equal(new TextDecoder().decode(probe.staged[1]!.bytes as Uint8Array), 'AE6F-SMALL: ready\n');
       assert.deepEqual(result.artifacts?.map((file) => file.fileId), ['FPROBE00002']);
       assert.match(result.text, /large.txt because it exceeds the upload limit/);
       assert.doesNotMatch(result.text, /couldn't attach small|Both files attached/);

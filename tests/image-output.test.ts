@@ -123,7 +123,7 @@ async function setup(bytes: Uint8Array, inspect: () => ImageInspection = () => (
     async inspectOutput() { return inspect(); },
     async stageArtifact(input) {
       if (state.failStage) return { attached: false, reason: 'unavailable', detail: 'private_stage_failed' };
-      state.stages.push(input.bytes); return { attached: true, byteLength: input.bytes.length };
+      state.stages.push(input.bytes as Uint8Array); return { attached: true, byteLength: input.bytes.byteLength };
     },
   };
   return { options, state, settings };

@@ -18,7 +18,7 @@ immediately; ordinary socket renewal keeps the same installation authority.
 
 Outbound file bytes do not pass through the gateway. Your deployment asks the
 gateway for Slack's pre-signed upload ticket (a file ID and upload URL for an
-exact byte length, up to 24 MiB), sends the bytes to Slack itself, and asks the
+exact byte length, up to Slack's 1 GB limit), sends the bytes to Slack itself, and asks the
 gateway to complete the file. The gateway sees the filename, length, and ticket
 in transient memory and retains none of them. A gateway version without upload
 tickets falls back to carrying the file as base64 inside the signed JSON

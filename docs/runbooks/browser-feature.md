@@ -27,11 +27,15 @@ state, deploy path, and first checks when a browser tool fails.
 - Budget: ten minutes of browser time per reply. When it is spent the Agent is
   told to answer with what it found.
 - Recordings attach through the normal Slack file path. The bytes go straight
-  to Slack's pre-signed upload URL on both transports; the shared gateway only
-  issues the upload ticket and completes the file. The cap is 24 MiB
-  (`MAX_SLACK_UPLOAD_BYTES`). A shared gateway that predates upload tickets
-  carries the file inside its request instead, capped at 700 KiB. A recording
-  over the cap is not attached and the Agent says so.
+  to Slack's pre-signed upload URL on both transports, streamed from the
+  provider's download when its length is known (a recording runs about
+  250 KB/s at 1280x800, so a full ten-minute session is roughly 150 MB), and
+  the shared gateway only issues the upload ticket and completes the file. The
+  cap is Slack's own 1 GB (`MAX_SLACK_UPLOAD_BYTES`). A download without a
+  declared length is held in memory only up to 64 MiB. A shared gateway that
+  predates upload tickets carries in-memory files inside its request instead,
+  capped at 700 KiB, and cannot take a streamed recording at all. A recording
+  over a cap is not attached and the Agent says so.
 
 ## Website logins
 

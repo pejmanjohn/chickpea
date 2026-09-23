@@ -164,6 +164,7 @@ import {
   POST_ARTIFACT_TOOL_NAME,
   type SlackArtifactStageInput,
   type SlackArtifactStageOutcome,
+  isStreamedFile,
 } from '../sandbox/artifact-tool.ts';
 import {
   createImageArtifactTool,
@@ -1073,6 +1074,8 @@ export async function createSlackAgentRuntime(
     // Legacy assembly has no settled-reply receipt channel, so it keeps the
     // immediate app-identity upload. Hook-mounted plans stage instead.
     const stageArtifact = async (input: SlackArtifactStageInput): Promise<SlackArtifactStageOutcome> => {
+      // The immediate upload holds the whole file; a streamed file has no place here.
+      if (isStreamedFile(input.bytes)) return { attached: false, reason: 'unavailable', detail: 'transport_unsupported' };
       const result = await postArtifact({
         channel: channelId,
         threadTs: artifactThreadTs,

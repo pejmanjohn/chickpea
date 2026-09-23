@@ -274,7 +274,7 @@ test('browser_screenshot stages a PNG image with its caption', async () => {
   assert.equal(staged.length, 1);
   assert.equal(staged[0]!.kind, 'image');
   assert.equal(staged[0]!.title, 'Broken pricing table');
-  assert.deepEqual([...staged[0]!.bytes], [...PNG_BYTES]);
+  assert.deepEqual([...(staged[0]!.bytes as Uint8Array)], [...PNG_BYTES]);
   await session.close();
 
   const denied = setup({ stage: () => ({ attached: false, reason: 'missing-scope' }) });
@@ -301,6 +301,30 @@ test('browser_recording ends the session, downloads the recording, and stages an
   const again = await run('browser_recording');
   assert.equal(again.attached, false);
   assert.match(again.error, /No browser session is open/);
+});
+
+test('browser_recording streams a download with a known length instead of holding it in memory', async () => {
+  const chunks = [new Uint8Array([1, 2, 3]), new Uint8Array([4, 5])];
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(chunk);
+      controller.close();
+    },
+  });
+  const { run, staged } = setup({
+    maxBytes: 1_000_000_000,
+    recordingResponse: () => new Response(body, { headers: { 'content-length': '5' } }),
+  });
+  await run('browser_open', { url: 'https://example.com/pricing' });
+  const output = await run('browser_recording');
+  assert.equal(output.attached, true);
+  assert.equal(output.byteLength, 5);
+  const content = staged[0]!.bytes;
+  assert.ok(!(content instanceof Uint8Array), 'a known-length download is passed as a stream');
+  assert.equal((content as { byteLength: number }).byteLength, 5);
+  const received: number[] = [];
+  for await (const chunk of (content as { stream: ReadableStream<Uint8Array> }).stream) received.push(...chunk);
+  assert.deepEqual(received, [1, 2, 3, 4, 5]);
 });
 
 test('browser_recording reports too-large without staging', async () => {
@@ -918,7 +942,7 @@ test('an action login holds a data-changing step for approval with a screenshot,
   assert.equal(ask.staged[0]!.kind, 'image');
   assert.equal(ask.staged[0]!.title, 'About to: click "Confirm change"');
   assert.match(ask.staged[0]!.filename, /\.jpg$/);
-  assert.deepEqual([...ask.staged[0]!.bytes], [...JPEG_BYTES]);
+  assert.deepEqual([...(ask.staged[0]!.bytes as Uint8Array)], [...JPEG_BYTES]);
   assert.equal(ask.waiting(), 1);
   // Approval in this same turn is not possible: the person has not replied yet.
   assert.match((await ask.run('browser_act', { ref: 'e3', action: 'click', approvedActionId: held.actionId })).error, /has not approved/);

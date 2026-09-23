@@ -1,5 +1,6 @@
 import type { WebClient } from '@slack/web-api';
 
+import { isStreamedFile, type SlackFileContent } from '../sandbox/artifact-tool.ts';
 import { isRecord } from '../security/content-validation.ts';
 import { isGatewaySlackWebClient } from './gateway/web-client.ts';
 import { SlackTransportError } from './transport/types.ts';
@@ -15,7 +16,8 @@ import { SLACK_FILE_ID, SLACK_TS } from './ids.ts';
 
 export interface SlackFileStageInput {
   filename: string;
-  bytes: Uint8Array;
+  /** In-memory bytes, or a stream with a known length for files too large to hold. */
+  bytes: SlackFileContent;
   title?: string;
   altText?: string;
   snippetType?: string;
@@ -50,19 +52,20 @@ export interface SlackFileCompletionResult {
 }
 
 /**
- * The largest file either transport sends. Bytes go straight to Slack's
- * pre-signed upload URL; the shared gateway only issues the ticket, and its
- * own ticket ceiling is this same size.
+ * The largest file either transport sends: Slack's own 1 GB file limit. Bytes
+ * go straight to Slack's pre-signed upload URL, streamed when the producer
+ * cannot hold them; the shared gateway only issues the ticket, and its own
+ * ticket ceiling is this same size.
  */
-export const MAX_SLACK_UPLOAD_BYTES = 24 * 1024 * 1024;
+export const MAX_SLACK_UPLOAD_BYTES = 1_000_000_000;
 
 export interface SlackFileTransport {
   /**
    * The largest file this installation can upload. Set at construction
    * because the image tool must choose its output format before the call.
    * An older shared gateway without upload tickets falls back to carrying
-   * the file inside its request, which fails as too-large beyond
-   * MAX_GATEWAY_ARTIFACT_BYTES.
+   * in-memory bytes inside its request, which fails as too-large beyond
+   * MAX_GATEWAY_ARTIFACT_BYTES; a streamed file cannot take that path.
    */
   maxBytes: number;
   /** Completes privately once. A missing method marks a legacy transport. */
@@ -123,9 +126,10 @@ function createGatewayFileTransport(client: WebClient, fetcher: typeof fetch): S
         staged = await stageWithTicket(client, fetcher, input);
       } catch (error) {
         if (!isSlackFileTransportUnsupported(error)) throw error;
+        const bytes = inMemoryOrTooLarge(input.bytes, 'files.uploadV2');
         const result = await client.files.uploadV2({
           filename: input.filename,
-          file: Buffer.from(input.bytes.buffer, input.bytes.byteOffset, input.bytes.byteLength),
+          file: Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength),
           ...(input.title ? { title: input.title } : {}),
         });
         return privateStageResult(result, input.bytes.byteLength, 'files.uploadV2');
@@ -140,7 +144,7 @@ function createGatewayFileTransport(client: WebClient, fetcher: typeof fetch): S
       }
       const result = await client.apiCall(SLACK_FILE_STAGE_OPERATION, {
         filename: input.filename,
-        file: input.bytes,
+        file: inMemoryOrTooLarge(input.bytes, SLACK_FILE_STAGE_OPERATION),
         ...(input.altText ? { alt_text: input.altText } : {}),
         ...(input.snippetType ? { snippet_type: input.snippetType } : {}),
       });
@@ -211,11 +215,15 @@ async function stageWithTicket(
   }
   let response: Response;
   try {
+    // A streamed body is sent with its exact length: Slack's upload URL, like
+    // most pre-signed uploads, does not take chunked transfer encoding.
     response = await fetcher(uploadUrl, {
       method: 'POST',
-      body: input.bytes as BodyInit,
+      headers: { 'content-length': String(input.bytes.byteLength) },
+      body: (isStreamedFile(input.bytes) ? input.bytes.stream : input.bytes) as BodyInit,
       redirect: 'manual',
-    });
+      ...(isStreamedFile(input.bytes) ? { duplex: 'half' } : {}),
+    } as RequestInit);
   } catch {
     throw new SlackTransportError('files.upload', 'upload_unreachable', { retryable: true });
   }
@@ -224,6 +232,14 @@ async function stageWithTicket(
     throw new SlackTransportError('files.upload', `upload_http_${response.status}`);
   }
   return { fileId, byteLength: input.bytes.byteLength };
+}
+
+/** The legacy in-request path carries only in-memory bytes; a streamed file is by definition too large for it. */
+function inMemoryOrTooLarge(content: SlackFileContent, operation: string): Uint8Array {
+  if (isStreamedFile(content)) {
+    throw new SlackTransportError(operation, 'gateway_request_too_large', { retryable: false, effectOutcome: 'failed' });
+  }
+  return content;
 }
 
 /** Finish a staged file without a destination; the reply shares its permalink. */

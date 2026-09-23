@@ -73,6 +73,35 @@ test('gateway issues an upload ticket, sends bytes to Slack itself, completes na
   assert.equal(new Headers(uploads[0]!.headers).has('authorization'), false);
 });
 
+test('a streamed file is sent to Slack with its exact length and never through the in-request fallback', async () => {
+  const stream = new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(new Uint8Array([7, 8, 9])); controller.close(); } });
+  const uploads: RequestInit[] = [];
+  const client = createGatewaySlackWebClient({ workspaceId: 'T12345678', async call(operation, value) {
+    if (operation === 'files.getUploadURLExternal') {
+      assert.deepEqual(value, { filename: 'session.mp4', length: 3 });
+      return { file_id: fileId, upload_url: 'https://files.slack.com/upload/test' };
+    }
+    assert.equal(operation, 'files.completeUploadExternal');
+    return { files: [{ id: fileId, permalink: permalink.replace('file.csv', 'session.mp4'), size: 3 }] };
+  } } as GatewayOperationClient);
+  const transport = createSlackFileTransport(client, { fetch: async (_url, init) => { uploads.push(init!); return new Response('OK'); } });
+  const staged = await transport.stagePrivate({ filename: 'session.mp4', bytes: { stream, byteLength: 3 } });
+  assert.equal(staged.byteLength, 3);
+  assert.equal(new Headers(uploads[0]!.headers).get('content-length'), '3');
+  assert.equal((uploads[0] as { duplex?: string }).duplex, 'half');
+  assert.equal(uploads[0]!.body, stream);
+
+  // Without tickets there is no path for a stream: it is refused as too large, not buffered.
+  const legacy = createSlackFileTransport(createGatewaySlackWebClient({ workspaceId: 'T12345678', async call(operation) {
+    if (operation === 'files.getUploadURLExternal') throw new SlackTransportError(operation, 'operation_not_allowed');
+    throw new Error(`unexpected ${operation}`);
+  } } as GatewayOperationClient), { fetch: async () => new Response('OK') });
+  await assert.rejects(
+    legacy.stagePrivate({ filename: 'session.mp4', bytes: { stream: new ReadableStream(), byteLength: 3 } }),
+    (error: unknown) => error instanceof SlackTransportError && error.code === 'gateway_request_too_large',
+  );
+});
+
 test('an older gateway without upload tickets still carries small files inside its request', async () => {
   const operations: string[] = [];
   const bytes = new Uint8Array([1, 2, 3]);

@@ -24,7 +24,7 @@ function setup(outcome?: SlackArtifactStageOutcome) {
   const binding: ArtifactDestinationBinding = {
     sandboxKind: 'bash', channel: 'C_BOUND', threadTs: '1789063000.000100',
     async stageArtifact(input) {
-      uploads.push(input);
+      uploads.push({ ...input, bytes: input.bytes as Uint8Array });
       return outcome ?? { attached: true, byteLength: input.bytes.byteLength, fileId: `F${uploads.length}` };
     },
   };

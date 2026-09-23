@@ -17,6 +17,7 @@ import {
   artifactFilename,
   type SlackArtifactStageInput,
   type SlackArtifactStageOutcome,
+  type SlackFileContent,
 } from '../sandbox/artifact-tool.ts';
 import type { ActivityKind } from '../activity/semantic.ts';
 import { redactCredentialLikeContent } from '../security/content-validation.ts';
@@ -81,6 +82,8 @@ export const BROWSER_TOOL_NAMES = Object.keys(BROWSER_TOOL_ACTIVITY) as BrowserT
 export const MAX_SNAPSHOT_CHARS = 12_000;
 export const NAVIGATION_TIMEOUT_MS = 20_000;
 export const RECORDING_TIMEOUT_MS = 90_000;
+/** A recording download without a declared length is held in memory only up to this size. */
+const MAX_BUFFERED_RECORDING_BYTES = 64 * 1024 * 1024;
 export const RECORDING_POLL_MS = 2_000;
 
 /** Thrown by a lazy provider when the install no longer has a browser key. */
@@ -181,6 +184,37 @@ const REDACTION_MARGIN_CHARS = 1_024;
 function capSnapshot(text: string, truncated: boolean): { snapshot: string; truncated: boolean } {
   if (text.length <= MAX_SNAPSHOT_CHARS) return { snapshot: text, truncated };
   return { snapshot: `${text.slice(0, MAX_SNAPSHOT_CHARS)}\n… (snapshot cut at ${MAX_SNAPSHOT_CHARS} characters)`, truncated: true };
+}
+
+/**
+ * Read a body into memory unless it exceeds `limit`; then the rest is
+ * discarded and the byte count seen so far is returned instead.
+ */
+async function readBounded(response: Response, limit: number): Promise<Uint8Array | number> {
+  if (!response.body) {
+    const whole = new Uint8Array(await response.arrayBuffer());
+    return whole.byteLength > limit ? whole.byteLength : whole;
+  }
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > limit) {
+      await reader.cancel().catch(() => undefined);
+      return total;
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
 }
 
 function recordingFilename(date: Date): string {
@@ -473,15 +507,24 @@ export function createBrowserTools(options: BrowserToolsOptions) {
           },
         });
         const declaredLength = Number(response.headers.get('content-length') ?? Number.NaN);
-        if (maxBytes !== undefined && Number.isSafeInteger(declaredLength) && declaredLength > maxBytes) {
+        const declared = Number.isSafeInteger(declaredLength) && declaredLength > 0 ? declaredLength : undefined;
+        if (maxBytes !== undefined && declared !== undefined && declared > maxBytes) {
           await response.body?.cancel().catch(() => undefined);
-          return tooLarge(declaredLength);
+          return tooLarge(declared);
         }
-        const bytes = new Uint8Array(await response.arrayBuffer());
-        if (maxBytes !== undefined && bytes.byteLength > maxBytes) return tooLarge(bytes.byteLength);
+        // A recording can run to hundreds of megabytes, so a download with a
+        // known length streams to Slack instead of being held in memory.
+        let content: SlackFileContent;
+        if (declared !== undefined && response.body) {
+          content = { stream: response.body, byteLength: declared };
+        } else {
+          const bytes = await readBounded(response, Math.min(maxBytes ?? MAX_BUFFERED_RECORDING_BYTES, MAX_BUFFERED_RECORDING_BYTES));
+          if (typeof bytes === 'number') return tooLarge(bytes);
+          content = bytes;
+        }
         const filename = recordingFilename(now());
         const outcome = await options.stageArtifact({
-          bytes,
+          bytes: content,
           filename,
           ...(data.caption ? { title: data.caption } : {}),
           kind: 'file',
