@@ -73,3 +73,26 @@ test('an attached Container application, or an inconclusive probe, keeps the bin
     }
   });
 });
+
+test('an installed sandbox without the checkpoint bucket says checkpoints are off until R2 is enabled', async () => {
+  await onCloudflare(async () => {
+    const attached = fakeSandbox(async () => true);
+    const off = await routes().request('http://localhost/admin/api/sandbox/status',
+      { headers: testAdminHeaders('token') }, { SANDBOX: attached });
+    const offBody = await off.json() as { installed: boolean; checkpointsNote: string | null; workersPaidNote: string };
+    assert.equal(offBody.installed, true);
+    assert.match(offBody.checkpointsNote ?? '', /^Workspace checkpoints are off until R2 is enabled/);
+    assert.match(offBody.workersPaidNote, /Workspace checkpoints also need R2 enabled on the account/);
+
+    const bucket = { list: async () => ({ objects: [], truncated: false }), delete: async () => {} };
+    const on = await routes().request('http://localhost/admin/api/sandbox/status',
+      { headers: testAdminHeaders('token') }, { SANDBOX: attached, BACKUP_BUCKET: bucket });
+    assert.equal((await on.json() as { checkpointsNote: string | null }).checkpointsNote, null);
+
+    // Not installed yet: the redeploy steps carry the R2 prerequisite instead.
+    const missing = fakeSandbox(async () => { throw new Error('Containers have not been enabled for this Durable Object class.'); });
+    const pending = await routes().request('http://localhost/admin/api/sandbox/status',
+      { headers: testAdminHeaders('token') }, { SANDBOX: missing });
+    assert.equal((await pending.json() as { checkpointsNote: string | null }).checkpointsNote, null);
+  });
+});

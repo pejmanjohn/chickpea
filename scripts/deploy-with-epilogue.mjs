@@ -45,8 +45,11 @@ import {
   rerunCommand,
   sandboxApplicationName,
   sandboxPartialDeployRecovery,
+  sandboxStoppedBeforeUpload,
   uploadedBeforeFailure,
   useSandboxImage,
+  checkpointsOffNotice,
+  withoutCheckpointBucket,
   verifySandboxContainerApplication,
 } from './lib/sandbox-deploy-preflight.mjs';
 
@@ -397,9 +400,13 @@ function sandboxToolOptions(configPath) {
     ...(process.env.DEPLOY_TEST_SANDBOX_RETRY_MS ? { retryDelayMs: Number(process.env.DEPLOY_TEST_SANDBOX_RETRY_MS) } : {}),
   };
 }
+// An account without R2 cannot hold the checkpoint bucket. Checkpoints are
+// optional, so the deploy drops that binding instead of failing mid-deploy.
+let sandboxCheckpointsOff = false;
 if (guardedSandboxDeploy) {
   try {
-    const problems = preflightSandboxDeployment(sandboxToolOptions(path.join(projectRoot, 'wrangler.jsonc')));
+    const { problems, checkpoints } = preflightSandboxDeployment(sandboxToolOptions(path.join(projectRoot, 'wrangler.jsonc')));
+    sandboxCheckpointsOff = !checkpoints;
     if (problems.length) {
       console.error(formatPreflightProblems(problems));
       process.exit(1);
@@ -1354,11 +1361,12 @@ if (upgradeContext) {
 
 try {
   if (qaSourceAdmission) qaCandidateApi.recheckQaCandidate(qaSourceAdmission);
-  if (prebuiltSandboxImage) {
+  if (prebuiltSandboxImage || sandboxCheckpointsOff) {
     // Last write before the upload: Wrangler now applies the Container
     // application from the already-pushed image instead of building it after
     // the new Worker version is live.
-    useSandboxImage(builtArtifact.config, prebuiltSandboxImage);
+    if (prebuiltSandboxImage) useSandboxImage(builtArtifact.config, prebuiltSandboxImage);
+    if (sandboxCheckpointsOff) withoutCheckpointBucket(builtArtifact.config);
     writeFileSync(builtArtifact.configPath, `${JSON.stringify(builtArtifact.config, null, 2)}\n`);
   }
 } catch (error) {
@@ -1524,12 +1532,16 @@ function printPrivateSetupPath(setup) {
 // Workers Builds receives stdout through a pipe. Let Node exit naturally after
 // this callback so the final setup link and Cloudflare's completion event can
 // flush; process.exit() can truncate asynchronous pipe writes.
+function sandboxRerun() {
+  return rerunCommand({ explicitProductionTarget, deployArgs, workersBuilds: process.env.WORKERS_CI === '1' });
+}
+
 function sandboxRecovery() {
   return sandboxPartialDeployRecovery({
     workerName: builtArtifact.config.name,
     previousVersionId: previousServingVersionId,
     providerContext: deploymentResourceArgs(),
-    rerun: rerunCommand({ explicitProductionTarget, deployArgs, workersBuilds: process.env.WORKERS_CI === '1' }),
+    rerun: sandboxRerun(),
   });
 }
 
@@ -1537,8 +1549,14 @@ child.on('close', async (code) => {
   cleanupSecrets();
   if (code !== 0) {
     // Wrangler activates the uploaded version before it creates the Container
-    // application, so a failure after `Uploaded` is a live partial deploy.
-    if (deploymentProfile === 'sandbox' && workerUploaded) console.error(sandboxRecovery());
+    // application, so a failure after `Uploaded <worker>` is a live partial
+    // deploy. Earlier failures (resource provisioning such as the checkpoint
+    // R2 bucket runs after the asset upload) leave the live version unchanged.
+    if (deploymentProfile === 'sandbox') {
+      console.error(workerUploaded || deployedVersionId
+        ? sandboxRecovery()
+        : sandboxStoppedBeforeUpload({ rerun: sandboxRerun() }));
+    }
     process.exitCode = code ?? 1;
     return;
   }
@@ -1588,6 +1606,9 @@ child.on('close', async (code) => {
           'Then open Admin → Settings → Coding sandbox, choose Check again, and choose Enable coding sandbox: ' +
           'repository grants do not use the Container until it is enabled.\n',
         );
+      }
+      if (sandboxCheckpointsOff) {
+        process.stdout.write(`! ${checkpointsOffNotice(checkedAccount?.accountId ?? process.env.CLOUDFLARE_ACCOUNT_ID)}\n`);
       }
     }
     if (selectedEnvironmentTarget) {

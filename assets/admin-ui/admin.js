@@ -8770,6 +8770,7 @@
         ? (prerequisite ? 'The saved runtime preference is on, but coding tasks cannot use the Container until setup is complete.' : 'Repository-backed coding tasks can use the Cloudflare Container.')
         : (prerequisite ? 'Complete the required repository setup before enabling.' : 'The Container is installed. Enable it only after Cloudflare reports the rollout ready.');
       body = '<div class="action-well"><div class="danger-copy"><span class="field-label">' + (status.storedEnabled ? (prerequisite ? "On, setup required" : "On") : "Installed but off") + '</span><span class="hint">' + statusCopy + '</span></div>' + runtimeAction + '</div>' +
+        (status.checkpointsNote ? '<p class="hint">' + esc(status.checkpointsNote) + ' <a class="hint-link" href="https://dash.cloudflare.com/?to=/:account/r2/overview" target="_blank" rel="noopener noreferrer">Open R2 in Cloudflare &nearr;</a></p>' : '') +
         '<p class="hint">Disabling is immediate, but the Container application and image remain in Cloudflare and may retain costs. To remove them, disable first, remove <span class="mono">CHICKPEA_DEPLOY_PROFILE</span> from Builds, redeploy the core profile, verify normal Slack behavior, and then delete the retained Container application and image.</p>' +
         sandboxAdvancedHtml(disabled);
     }
@@ -8849,9 +8850,11 @@
     return '<div class="sbx-redeploy">' +
       '<div class="sbx-lead"><p class="sbx-lead-title">Redeploy Chickpea to finish installing</p>' +
       '<p class="sbx-lead-text">Your request is saved. The sandbox runs in a Cloudflare Container, which is added the next time Chickpea is deployed from your Cloudflare account. Chickpea can&rsquo;t redeploy itself, so follow these steps and then come back here.</p></div>' +
-      '<div class="sbx-prereq"><span class="sbx-prereq-icon" aria-hidden="true">' + icon("exclamation-triangle") + '</span><div><p class="sbx-prereq-title">Before you start: Workers Paid plan required</p>' +
+      '<div class="sbx-prereq"><span class="sbx-prereq-icon" aria-hidden="true">' + icon("exclamation-triangle") + '</span><div><p class="sbx-prereq-title">Before you start: Workers Paid plan and R2</p>' +
       '<p class="sbx-step-text">Containers aren&rsquo;t available on Workers Free. They run on your Cloudflare account; a typical coding session costs about 1 cent.</p>' +
-      '<a class="hint-link" href="https://dash.cloudflare.com/?to=/:account/workers/plans" target="_blank" rel="noopener noreferrer">Check your Workers plan &nearr;</a></div></div>' +
+      '<p class="sbx-step-text">Also enable R2 on the same account; the free tier is enough. Don&rsquo;t create a bucket: the deploy creates one for coding workspace checkpoints.</p>' +
+      '<a class="hint-link" href="https://dash.cloudflare.com/?to=/:account/workers/plans" target="_blank" rel="noopener noreferrer">Check your Workers plan &nearr;</a> ' +
+      '<a class="hint-link" href="https://dash.cloudflare.com/?to=/:account/r2/overview" target="_blank" rel="noopener noreferrer">Open R2 in Cloudflare &nearr;</a></div></div>' +
       '<div class="sbx-path"><p class="sbx-path-label" id="sandbox-deploy-path-label">How do you deploy Chickpea?</p>' +
       '<div class="seg sbx-path-seg" role="group" aria-labelledby="sandbox-deploy-path-label">' + pathButton("command", "With a command") + pathButton("dashboard", "Cloudflare Git builds") + '</div>' +
       '<p class="sbx-path-hint">' + (detected

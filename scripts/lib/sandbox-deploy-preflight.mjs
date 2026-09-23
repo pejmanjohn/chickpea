@@ -9,15 +9,22 @@
  *
  * - `preflightSandboxDeployment` checks the Docker daemon, pulls the base
  *   image (with retries: the build's metadata fetch is flaky right after
- *   Docker starts), and confirms the Wrangler credential can manage
- *   Containers. Each problem gets one actionable message, including a
- *   re-authentication command that is valid for how the operator signs in.
+ *   Docker starts), confirms the Wrangler credential can manage
+ *   Containers, and asks whether R2 is enabled on the account. The profile's
+ *   `BACKUP_BUCKET` binding makes `wrangler deploy` create the workspace
+ *   checkpoint bucket, and Cloudflare refuses that (API error 10042) on an
+ *   account that never enabled R2, after migrations and the asset upload.
+ *   Checkpoints are optional, so R2 being off is not a problem: the deploy
+ *   drops the binding (`withoutCheckpointBucket`) and says how to turn
+ *   checkpoints on. Each real problem gets one actionable message, including
+ *   a re-authentication command that is valid for how the operator signs in.
  * - `prebuildSandboxImage` builds and pushes the image with
  *   `wrangler containers build --push`, so the deploy only has to create or
  *   update the Container application from an image that already exists.
  * - `sandboxPartialDeployRecovery` and `verifySandboxContainerApplication`
  *   keep the epilogue honest when the upload happened but the Container step
- *   did not.
+ *   did not; `sandboxStoppedBeforeUpload` says the live version is unchanged
+ *   when `wrangler deploy` failed before its script upload.
  *
  * Wrangler output can contain account details, so it is classified rather
  * than echoed, except for the build output that the operator watches live.
@@ -170,6 +177,25 @@ export function classifyContainersAccess(result) {
   return { ok: false, reason: 'unknown' };
 }
 
+const SIGNED_OUT = 'Wrangler is not signed in for this deployment. Sign in the same way as for `npm run deploy`, then rerun.';
+
+/**
+ * `wrangler r2 bucket list` exits non-zero with Cloudflare API error 10042
+ * ("Please enable R2 through the Cloudflare Dashboard") on an account that
+ * never enabled R2: the same error `wrangler deploy` hits when it provisions
+ * the checkpoint bucket after migrations and the asset upload.
+ */
+export function classifyR2Access(result) {
+  if (!result.error && result.status === 0) return { ok: true };
+  const output = text(result);
+  if (/code:\s*10042\b|enable R2/i.test(output)) return { ok: false, reason: 'not-enabled' };
+  if (/Authentication error|code:\s*10000|\b403\b|forbidden|unauthori[sz]ed|not authorized/i.test(output)) {
+    return { ok: false, reason: 'denied' };
+  }
+  if (/not authenticated|wrangler login/i.test(output)) return { ok: false, reason: 'signed-out' };
+  return { ok: false, reason: 'unknown' };
+}
+
 function wranglerArgs(options, args) {
   return [options.wranglerBin, ...args, '--config', options.configPath, ...(options.providerContext ?? [])];
 }
@@ -255,7 +281,7 @@ export function checkContainersAccess(options) {
           'upgrade under Workers & Pages → Plans in the Cloudflare dashboard, then rerun the same command.',
       };
     case 'signed-out':
-      return { access, problem: 'Wrangler is not signed in for this deployment. Sign in the same way as for `npm run deploy`, then rerun.' };
+      return { access, problem: SIGNED_OUT };
     default:
       return {
         access,
@@ -266,11 +292,68 @@ export function checkContainersAccess(options) {
   }
 }
 
-/** Run every check and return all problems, in the order an operator should fix them. */
+/**
+ * `r2 bucket list` is account-level and ignores the config's `account_id`,
+ * so pin the account the deploy already resolved.
+ */
+export function checkR2Access(options) {
+  const env = { ...(options.env ?? process.env) };
+  if (options.accountId) env.CLOUDFLARE_ACCOUNT_ID = options.accountId;
+  const access = classifyR2Access(runWrangler({ ...options, env }, ['r2', 'bucket', 'list']));
+  if (access.ok) return { access };
+  const account = options.accountId ? ` ${options.accountId}` : '';
+  switch (access.reason) {
+    case 'not-enabled':
+      // Not a problem: the deploy proceeds with workspace checkpoints off.
+      return { access };
+    case 'denied':
+      return {
+        access,
+        problem: resolveWranglerAuth({ env: options.env ?? process.env, providerContext: options.providerContext ?? [] }).kind === 'api-token'
+          ? 'The Cloudflare API token in the environment cannot manage R2. In the Cloudflare dashboard, open My Profile → ' +
+            'API Tokens, edit that token, and add the account permission "Workers R2 Storage: Edit" while keeping its ' +
+            'existing permissions. Then rerun the same command.'
+          : `Cloudflare refused R2 access for account${account}. Confirm the signed-in user can manage R2 on this account ` +
+            '(Super Administrator or a role with R2 edit), then rerun the same command.',
+      };
+    case 'signed-out':
+      return { access, problem: SIGNED_OUT };
+    default:
+      return {
+        access,
+        problem: `Wrangler could not confirm R2 access for account${account} (\`wrangler r2 bucket list\` failed). ` +
+          'Confirm R2 is enabled under R2 Object Storage in the Cloudflare dashboard and that ' +
+          '`npx wrangler r2 bucket list` works with the same flags you deploy with, then rerun.',
+      };
+  }
+}
+
+export const CHECKPOINT_BUCKET_BINDING = 'BACKUP_BUCKET';
+
+/** One line for an operator whose account has R2 off; printed when the deploy continues without checkpoints. */
+export function checkpointsOffNotice(accountId) {
+  const account = accountId ? ` ${accountId}` : '';
+  return `R2 is not enabled on Cloudflare account${account}, so this deploy leaves coding workspace checkpoints off ` +
+    '(a coding thread clones its repository again after the sandbox sleeps). To turn them on, open R2 Object Storage ' +
+    'in the Cloudflare dashboard, enable R2 (the free tier is enough; do not create a bucket), and rerun the same command.';
+}
+
+/** Drop the checkpoint bucket binding so Wrangler does not try to create a bucket on an account without R2. */
+export function withoutCheckpointBucket(config) {
+  const buckets = (config.r2_buckets ?? []).filter((entry) => entry?.binding !== CHECKPOINT_BUCKET_BINDING);
+  if (buckets.length) config.r2_buckets = buckets;
+  else delete config.r2_buckets;
+  return config;
+}
+
+/**
+ * Run every check. Returns all problems, in the order an operator should fix
+ * them, and whether the account can hold the checkpoint bucket.
+ */
 export function preflightSandboxDeployment(options) {
   const problems = [];
   const log = options.log ?? ((message) => process.stdout.write(message));
-  log('Checking coding sandbox prerequisites (Docker, base image, Containers access)...\n');
+  log('Checking coding sandbox prerequisites (Docker, base image, Containers and R2 access)...\n');
   const dockerProblem = checkDockerDaemon(options);
   if (dockerProblem) problems.push(dockerProblem);
   else {
@@ -283,12 +366,23 @@ export function preflightSandboxDeployment(options) {
     const { problem } = checkContainersAccess(options);
     if (problem) problems.push(problem);
   }
-  return problems;
+  let checkpoints = true;
+  if (options.checkR2 !== false) {
+    const { access, problem } = checkR2Access(options);
+    // A signed-out credential fails both checks with the same instruction.
+    if (problem && !problems.includes(problem)) problems.push(problem);
+    if (access.reason === 'not-enabled') {
+      checkpoints = false;
+      log('R2 is not enabled on this account; deploying with coding workspace checkpoints off.\n');
+    }
+  }
+  return { problems, checkpoints };
 }
 
 export function formatPreflightProblems(problems) {
   return [
-    `Coding sandbox preflight found ${problems.length} problem${problems.length === 1 ? '' : 's'}. Nothing was built, migrated, or uploaded.`,
+    `Coding sandbox preflight found ${problems.length} problem${problems.length === 1 ? '' : 's'}. ` +
+      'Nothing was built, migrated, or uploaded, and the live Worker is unchanged.',
     ...problems.map((problem, index) => `\n${index + 1}. ${problem}`),
   ].join('\n');
 }
@@ -408,9 +502,31 @@ export function rerunCommand({ explicitProductionTarget, deployArgs = [], worker
   return `${prefix}npm run deploy:sandbox${args.length ? ` -- ${args.join(' ')}` : ''}`;
 }
 
-/** Wrangler prints `Uploaded <worker>` once the version is live, before the Container step. */
+/**
+ * Wrangler prints `Uploaded <worker> (1.23 sec)` once the script upload
+ * finished and the version is live, before the Container step. The asset
+ * upload that runs earlier prints `Uploaded 3 of 3 assets`, and large
+ * uploads print `Uploaded part 1`: neither means a new version exists.
+ */
 export function uploadedBeforeFailure(stdout) {
-  return /^Uploaded\s+\S+/m.test(stdout);
+  return /^Uploaded\s+\S+\s+\(\d+(?:\.\d+)?\s+sec\)/m.test(stdout);
+}
+
+/**
+ * `wrangler deploy` failed before its script upload: the live version is the
+ * one that served before this command. Migrations already applied are
+ * additive and uploaded assets are not served until a version uses them.
+ */
+export function sandboxStoppedBeforeUpload({ rerun }) {
+  return [
+    '',
+    'SANDBOX DEPLOY STOPPED BEFORE THE WORKER UPLOAD: no new Worker version was uploaded, and the live version is',
+    'unchanged. Chickpea keeps serving the version that was live before this command.',
+    '',
+    '  Fix the error above and rerun the same command (the migrations and image push are safe to repeat):',
+    `       ${rerun}`,
+    '',
+  ].join('\n');
 }
 
 export function sandboxPartialDeployRecovery({ workerName, previousVersionId, providerContext = [], rerun }) {

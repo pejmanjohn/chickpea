@@ -17,6 +17,11 @@ import {
   sweepExpiredWorkspaceCheckpoints,
   type CheckpointBucket,
 } from '../src/sandbox/checkpoint-sweep.ts';
+import {
+  checkpointWorkspace,
+  restoreWorkspaceCheckpoint,
+  workspaceCheckpointsAvailable,
+} from '../src/sandbox/workspace-checkpoints.ts';
 
 class MemoryStorage implements SandboxPolicyStorage {
   readonly values = new Map<string, unknown>();
@@ -254,4 +259,41 @@ test('checkpoints are off without a bucket binding, and the sweep runs hourly', 
   const sweepMinutes = Array.from({ length: 60 }, (_, minute) => NOW + minute * 60_000)
     .filter(isCheckpointSweepMinute);
   assert.equal(sweepMinutes.length, 1);
+});
+
+test('without the R2 bucket binding a cold follow-up clones again instead of restoring', async () => {
+  const state = new SandboxWorkspaceState(new MemoryStorage());
+  await state.beginTurn({ fingerprint: ALPHA, turnId: 'turn-1', containerRunning: false, now: NOW });
+  const noBucket = {};
+  const withBucket = { BACKUP_BUCKET: new MemoryBucket(new Map()) };
+  assert.equal(workspaceCheckpointsAvailable(noBucket), false);
+  assert.equal(workspaceCheckpointsAvailable(withBucket), true);
+
+  // End of turn: no bucket means no backup is taken or recorded.
+  let created = 0;
+  const create = async () => { created += 1; return BACKUP; };
+  assert.equal(await checkpointWorkspace({ env: noBucket, containerRunning: true, state, now: () => NOW, create }), 'skipped');
+  assert.equal(created, 0);
+  assert.equal(await state.checkpointForRestore(ALPHA, NOW + HOUR), undefined);
+
+  // A checkpoint recorded while the bucket existed is still never restored without it.
+  assert.equal(await checkpointWorkspace({ env: withBucket, containerRunning: true, state, now: () => NOW, create }), 'saved');
+  assert.equal(created, 1);
+  let restored = 0;
+  const restore = async () => { restored += 1; };
+  assert.equal(
+    await restoreWorkspaceCheckpoint({ env: noBucket, state, fingerprint: ALPHA, now: () => NOW + HOUR, restore }),
+    'unavailable',
+  );
+  assert.equal(restored, 0);
+  assert.equal(
+    await restoreWorkspaceCheckpoint({ env: withBucket, state, fingerprint: ALPHA, now: () => NOW + HOUR, restore }),
+    'restored',
+  );
+  assert.equal(restored, 1);
+
+  // A sleeping container is never started just to checkpoint it, and a failed backup is not fatal.
+  assert.equal(await checkpointWorkspace({ env: withBucket, containerRunning: false, state, now: () => NOW, create }), 'skipped');
+  const failing = async () => { throw new Error('backup failed'); };
+  assert.equal(await checkpointWorkspace({ env: withBucket, containerRunning: true, state, now: () => NOW, create: failing }), 'failed');
 });

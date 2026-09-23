@@ -420,6 +420,7 @@ type SandboxStatusFixture = {
   repositoryGrantReady: boolean;
   unmetPrerequisites: string[];
   workersPaidNote: string | null;
+  checkpointsNote?: string | null;
   deploySource?: 'workers-builds' | 'command' | 'unknown';
 };
 type ModelCatalogStatusFixture = {
@@ -14193,9 +14194,11 @@ test('Settings requests a paid Sandbox install, hands off one Cloudflare variabl
   assert.match(redeploy, /class="sr-only" role="status" aria-live="polite">Installation requested\. Follow the redeploy steps to finish\./);
   assert.match(redeploy, /Redeploy Chickpea to finish installing/);
   assert.match(redeploy, /Chickpea can&rsquo;t redeploy itself/);
-  // The Workers Paid prerequisite comes before any step.
-  assert.ok(redeploy.indexOf('Workers Paid plan required') < redeploy.indexOf('class="sbx-steps"'));
+  // The Workers Paid and R2 prerequisites come before any step.
+  assert.ok(redeploy.indexOf('Before you start: Workers Paid plan and R2') < redeploy.indexOf('class="sbx-steps"'));
   assert.match(redeploy, /href="https:\/\/dash\.cloudflare\.com\/\?to=\/:account\/workers\/plans"/);
+  assert.match(redeploy, /Also enable R2 on the same account; the free tier is enough\. Don&rsquo;t create a bucket/);
+  assert.match(redeploy, /href="https:\/\/dash\.cloudflare\.com\/\?to=\/:account\/r2\/overview"/);
   // Unknown build source defaults to the command path, with both paths offered.
   assert.match(redeploy, /How do you deploy Chickpea\?/);
   assert.match(redeploy, /aria-pressed="true" data-action="sandbox-deploy-path" data-path="command"/);
@@ -14307,6 +14310,16 @@ test('installed Sandbox gates enablement on GitHub and grants, then requires a r
   assert.match(missingGithub.app.innerHTML, /data-action="open-settings" data-section="github-settings">Connect GitHub/);
   assert.doesNotMatch(missingGithub.app.innerHTML, /data-action="sandbox-enable-open"/);
   assert.match(missingGithub.app.innerHTML, /server copy &lt;must be escaped&gt;/);
+  assert.doesNotMatch(missingGithub.app.innerHTML, /Open R2 in Cloudflare/, 'no checkpoints notice while checkpoints are on');
+
+  const checkpointsOff = runAdminPageHarness({
+    cloudflare: true,
+    sandboxStatus: { ...installedBase, checkpointsNote: 'Workspace checkpoints are off <until R2 is enabled>.' },
+  });
+  await flushAsync();
+  checkpointsOff.listeners.click?.({ target: actionTarget({ 'data-action': 'open-settings' }) });
+  await flushAsync();
+  assert.match(checkpointsOff.app.innerHTML, /Workspace checkpoints are off &lt;until R2 is enabled&gt;\. <a class="hint-link" href="https:\/\/dash\.cloudflare\.com\/\?to=\/:account\/r2\/overview"/);
 
   const missingGrant = runAdminPageHarness({
     cloudflare: true,

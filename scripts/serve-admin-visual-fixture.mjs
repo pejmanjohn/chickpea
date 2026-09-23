@@ -990,7 +990,9 @@ export async function startAdminVisualFixture(options = {}) {
         installed: false,
         deploySource: SANDBOX_VISUAL_DEPLOY_SOURCES[sandboxState],
         unmetPrerequisites: ['sandbox_binding', ...body.unmetPrerequisites.filter((item) => item !== 'cloudflare_target')],
-        workersPaidNote: 'Requires Workers Paid. Real containers run on your Cloudflare account; a typical session costs about 1 cent.',
+        workersPaidNote: 'Requires Workers Paid. Real containers run on your Cloudflare account; a typical session costs about 1 cent. ' +
+          'Workspace checkpoints also need R2 enabled on the account; the free tier is enough.',
+        checkpointsNote: null,
       });
     });
     // The Websites tab reads display-safe login rows for an Agent. The fixture
