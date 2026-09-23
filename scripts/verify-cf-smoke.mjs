@@ -1206,6 +1206,42 @@ async function main() {
 
     // --- Settings/model-provider screen APIs --------------------------------
 
+    // The hosted model catalog is fetched live from GitHub, so pin this
+    // workerd to the bundled catalog and derive the expected merge from it.
+    const catalogMode = await adminFetch(baseUrl, '/admin/api/model-catalog/mode', {
+      method: 'PUT',
+      body: JSON.stringify({ mode: 'bundled' }),
+    });
+    check(
+      catalogMode.status === 200 &&
+        catalogMode.body?.refresh?.status === 'bundled' &&
+        catalogMode.body?.catalog?.source === 'bundled',
+      'model catalog mode PUT pins workerd to the bundled catalog',
+      `HTTP ${catalogMode.status} ${JSON.stringify(catalogMode.body?.catalog ?? {})}`,
+    );
+    const { BUNDLED_MODEL_CATALOG } = await loadTsModule('src/model-catalog/bundled.ts');
+    const expectedProviderModels = (provider, lane, fakeModelIds) => {
+      const catalogIds = BUNDLED_MODEL_CATALOG
+        .filter((entry) => entry.lanes[lane])
+        .map((entry) => entry.id.slice(`${provider}/`.length));
+      return {
+        catalogCount: catalogIds.length,
+        overlap: fakeModelIds.filter((id) => catalogIds.includes(id)).length,
+        modelCount: new Set([...fakeModelIds, ...catalogIds]).size,
+      };
+    };
+    // Mirrors the fake /v1/models bodies in tests/parity/fake-slack.ts after
+    // provider-models.ts drops OpenAI's non-chat models.
+    const expectedAnthropic = expectedProviderModels(
+      'anthropic',
+      'anthropic_api_key',
+      ['claude-sonnet-4-6', 'claude-haiku-4-5'],
+    );
+    const expectedOpenAi = expectedProviderModels(
+      'openai',
+      'openai_api_key',
+      ['gpt-4.1', 'gpt-4.1-mini'],
+    );
     for (const [provider, key] of Object.entries(FAKE_PROVIDER_KEYS)) {
       const savedProvider = await adminFetch(baseUrl, `/admin/api/providers/${provider}/key`, {
         method: 'POST',
@@ -1222,14 +1258,18 @@ async function main() {
       (providers.body?.providers ?? []).map((provider) => [provider.id, provider]),
     );
     check(
-      providerSummaries.anthropic?.status === 'stored' && providerSummaries.anthropic?.modelCount === 4,
-      'providers GET combines two fake Anthropic models with two catalog models',
-      JSON.stringify(providerSummaries.anthropic),
+      expectedAnthropic.overlap === 0 &&
+        providerSummaries.anthropic?.status === 'stored' &&
+        providerSummaries.anthropic?.modelCount === expectedAnthropic.modelCount,
+      `providers GET combines two fake Anthropic models with ${expectedAnthropic.catalogCount} bundled catalog models`,
+      `${JSON.stringify(providerSummaries.anthropic)} expected=${expectedAnthropic.modelCount}`,
     );
     check(
-      providerSummaries.openai?.status === 'stored' && providerSummaries.openai?.modelCount === 5,
-      'providers GET combines two fake OpenAI models with three catalog models',
-      JSON.stringify(providerSummaries.openai),
+      expectedOpenAi.overlap === 0 &&
+        providerSummaries.openai?.status === 'stored' &&
+        providerSummaries.openai?.modelCount === expectedOpenAi.modelCount,
+      `providers GET combines two fake OpenAI models with ${expectedOpenAi.catalogCount} bundled catalog models`,
+      `${JSON.stringify(providerSummaries.openai)} expected=${expectedOpenAi.modelCount}`,
     );
     check(
       providerSummaries.openai?.subscriptionAvailable === false,

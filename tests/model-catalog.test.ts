@@ -10,7 +10,7 @@ import {
 } from '../src/model-catalog/index.ts';
 
 test('the bundled catalog describes only canonical ids, lane profiles, and shrink-only limits', () => {
-  assert.equal(BUNDLED_MODEL_CATALOG.length, 9);
+  assert.equal(BUNDLED_MODEL_CATALOG.length, 14);
   assert.deepEqual(
     BUNDLED_MODEL_CATALOG.filter((entry) => entry.id.startsWith('openai/gpt-5.6-'))
       .map((entry) => entry.id),

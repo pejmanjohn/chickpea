@@ -8,6 +8,7 @@ const ANTHROPIC_API_BASE = 'https://api.anthropic.com';
 
 function openAiApiModel(
   cost: Model<string>['cost'],
+  reasoningRequired = false,
 ): Model<'openai-responses'> {
   return {
     id: 'catalog-candidate',
@@ -23,7 +24,9 @@ function openAiApiModel(
     // Pi 0.80.2 has no `max` ThinkingLevel. The remaining values preserve
     // every effort level its compiled OpenAI Responses adapter can express.
     thinkingLevelMap: {
-      off: 'none',
+      // Pi sends the `off` value as the default reasoning effort. `null`
+      // omits it for models that reject `none`.
+      off: reasoningRequired ? null : 'none',
       minimal: null,
       low: 'low',
       medium: 'medium',
@@ -76,6 +79,10 @@ function subscriptionModel(
 }
 
 const COMPILED_MODEL_PROFILES: Record<CompiledModelProfileId, Model<string>> = {
+  'openai-platform-responses-astra-tier@1': openAiApiModel(
+    { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 },
+    true,
+  ),
   'openai-platform-responses-sol-tier@1': openAiApiModel(
     { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 6.25 },
   ),

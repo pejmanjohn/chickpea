@@ -34,6 +34,8 @@ const BUILTIN_ENV_PROVIDERS: readonly ProviderCatalogEntry[] = [
     id: 'anthropic',
     envVars: ['ANTHROPIC_API_KEY'],
     suggestions: [
+      'anthropic/claude-fable-5-1',
+      'anthropic/claude-opus-5-5',
       'anthropic/claude-fable-5',
       'anthropic/claude-opus-5',
       'anthropic/claude-sonnet-5',
@@ -43,7 +45,14 @@ const BUILTIN_ENV_PROVIDERS: readonly ProviderCatalogEntry[] = [
   {
     id: 'openai',
     envVars: ['OPENAI_API_KEY'],
-    suggestions: ['openai/gpt-5.6-sol', 'openai/gpt-5.6-terra', 'openai/gpt-5.6-luna'],
+    suggestions: [
+      'openai/gpt-6-astra',
+      'openai/gpt-6-sol',
+      'openai/gpt-6-luna',
+      'openai/gpt-5.6-sol',
+      'openai/gpt-5.6-terra',
+      'openai/gpt-5.6-luna',
+    ],
   },
   {
     id: 'openrouter',

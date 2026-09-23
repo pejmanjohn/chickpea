@@ -10,6 +10,7 @@ export type CompiledModelProfileId =
   | 'anthropic-messages-sonnet-tier@1'
   | 'openai-codex-responses-standard@1'
   | 'openai-codex-responses-text-only@1'
+  | 'openai-platform-responses-astra-tier@1'
   | 'openai-platform-responses-luna-tier@1'
   | 'openai-platform-responses-sol-tier@1'
   | 'openai-platform-responses-terra-tier@1';

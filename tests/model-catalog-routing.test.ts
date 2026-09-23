@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { test } from 'node:test';
 
 import { resolveModel } from '@flue/runtime/internal';
@@ -6,6 +7,7 @@ import type { AssistantMessageEventStream, Model } from '@earendil-works/pi-ai';
 
 import {
   activeModelCatalogSnapshot,
+  activateBundledModelCatalog,
   activateModelCatalog,
   resetModelCatalogActivationForTests,
   resolveActiveCatalogRoute,
@@ -176,5 +178,44 @@ test('runtime route reads never fetch and the seventeenth hosted activation requ
     assert.equal(fetches, 0);
   } finally {
     globalThis.fetch = originalFetch;
+  }
+});
+
+test('models newer than the pinned Pi release route through reviewed profiles on every lane', async () => {
+  const apiKeyModels = [
+    ['openai/gpt-6-sol', 'openai_api_key'],
+    ['openai/gpt-6-luna', 'openai_api_key'],
+    ['openai/gpt-6-astra', 'openai_subscription'],
+    ['openai/gpt-6-sol', 'openai_subscription'],
+    ['openai/gpt-6-luna', 'openai_subscription'],
+    ['anthropic/claude-opus-5-5', 'anthropic_api_key'],
+    ['anthropic/claude-fable-5-1', 'anthropic_api_key'],
+  ] as const;
+  const published = parseModelCatalogBytes(await readFile(new URL('../catalog/current.json', import.meta.url)));
+
+  // Bundled compatibility providers are registered at app bootstrap, so only
+  // the hosted revision's aliases are resolvable through Flue here.
+  for (const source of ['bundled', 'hosted'] as const) {
+    resetModelCatalogActivationForTests();
+    if (source === 'bundled') activateBundledModelCatalog();
+    else activateModelCatalog({ document: published, sha256: 'e'.repeat(64) });
+    for (const [canonical, lane] of apiKeyModels) {
+      const route = resolveActiveCatalogRoute(canonical, lane);
+      assert.equal(route?.source, 'catalog', `${canonical} ${lane}`);
+      assert.equal(route.model.id, canonical.slice(canonical.indexOf('/') + 1));
+      if (source === 'hosted' && lane !== 'openai_subscription') {
+        assert.equal(resolveModel(route.modelSpecifier).id, route.model.id);
+      }
+    }
+    // Astra's API-key profile omits the `none` effort Astra rejects. It is
+    // bundled only: installs that predate the profile would reject a hosted
+    // revision naming it.
+    const astra = resolveActiveCatalogRoute('openai/gpt-6-astra', 'openai_api_key');
+    if (source === 'hosted') {
+      assert.equal(astra, undefined);
+    } else {
+      assert.equal(astra?.source, 'catalog');
+      assert.equal(astra.model.thinkingLevelMap?.off, null);
+    }
   }
 });
