@@ -362,8 +362,20 @@ import {
   type AgentCreateInput,
   type AgentScheduleState,
   type NonChatModelRole,
+  type WebsiteLoginGrant,
   type WorkspaceModelDefault,
 } from '../config/types.ts';
+import {
+  createWebsiteLogin,
+  deleteWebsiteLogin,
+  listWebsiteLogins,
+  websiteLoginDependencies,
+  WebsiteLoginInputError,
+  WebsiteLoginLimitError,
+  WebsiteLoginStateError,
+  type WebsiteLogin,
+  type WebsiteLoginDependencies,
+} from '../browser/logins.ts';
 import {
   findImageModel,
   listImageModels,
@@ -816,6 +828,11 @@ interface AdminRoutesOptions {
    * cause an unrelated keyring file to be created.
    */
   slackCredentials?: SlackCredentialDependencies | undefined;
+  /**
+   * Explicit website-login realm (settings + keyring) for tests and embedded
+   * hosts. Production resolves TAG_STATE and the target keyring per request.
+   */
+  websiteLogins?: WebsiteLoginDependencies | undefined;
   slackAdmissionService?: SlackAdmissionService | undefined;
   gatewayAvatarPublish?: ((input: {
     workspaceId: string;
@@ -1279,6 +1296,34 @@ const repositoriesSchema = v.pipe(
   ),
 );
 
+const websiteLoginIdSchema = v.pipe(v.string(), v.regex(/^wl_[a-f0-9]{32}$/));
+
+const websiteLoginGrantSchema = v.object({
+  loginId: websiteLoginIdSchema,
+  level: v.picklist(['check', 'act']),
+  enabled: v.boolean(),
+});
+
+const websiteLoginsSchema = v.pipe(
+  v.array(websiteLoginGrantSchema),
+  v.maxLength(50),
+  v.check(
+    (grants) => new Set(grants.map((grant) => grant.loginId)).size === grants.length,
+    'website login grants must name each login once',
+  ),
+);
+
+const websiteLoginCreateSchema = v.strictObject({
+  host: v.pipe(v.string(), v.maxLength(260)),
+  label: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(80)),
+  ownerKind: v.picklist(['team', 'member']),
+  method: v.picklist(['credentials', 'handoff']),
+  username: v.optional(v.pipe(v.string(), v.maxLength(320))),
+  password: v.optional(v.pipe(v.string(), v.minLength(1), v.maxLength(1_024))),
+  totpSeed: v.optional(v.pipe(v.string(), v.maxLength(256))),
+  level: v.optional(v.picklist(['check', 'act']), 'check'),
+});
+
 const agentSchema = v.object({
   id: agentIdSchema,
   name: nonEmptyString,
@@ -1293,6 +1338,7 @@ const agentSchema = v.object({
   mcpServers: v.optional(mcpServersSchema, []),
   apiConnections: v.optional(apiConnectionsSchema, []),
   repositories: v.optional(repositoriesSchema, []),
+  websiteLogins: v.optional(websiteLoginsSchema, []),
 });
 
 const agentPatchSchema = v.object({
@@ -1309,6 +1355,7 @@ const agentPatchSchema = v.object({
   mcpServers: v.optional(mcpServersSchema),
   apiConnections: v.optional(apiConnectionsSchema),
   repositories: v.optional(repositoriesSchema),
+  websiteLogins: v.optional(websiteLoginsSchema),
 });
 
 const agentMemorySchema = v.strictObject({
@@ -7362,6 +7409,14 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       return invalidRequest(c);
     }
     const principal = principalByContext.get(c);
+    if (parsed.output.websiteLogins.length > 0 && websiteLoginGrantWidensWithoutAuthority(
+      principal,
+      [],
+      parsed.output.websiteLogins,
+      await listWebsiteLogins(websiteLoginSettings(c)),
+    )) {
+      return c.json({ error: 'forbidden' }, 403);
+    }
     let agent: AgentCreateInput = {
       ...toAgentConfig(parsed.output),
       // Saved Agents are ready for creator-only private use before publication.
@@ -8294,6 +8349,169 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
   });
 
+  // Website logins: metadata + per-Agent grants. Secrets are written once,
+  // encrypted, and never returned by any of these routes.
+  const websiteLoginSettings = (c: Context): SettingsStore =>
+    options.websiteLogins?.store ?? settings(c);
+  const websiteLoginWriteDependencies = (c: Context): WebsiteLoginDependencies | undefined =>
+    options.websiteLogins ??
+    // Injected plain settings (route unit tests) never pair with a keyring
+    // implicitly; only an explicit realm or production state may.
+    (options.settings ? undefined : websiteLoginDependencies(c.env as PlatformEnv | undefined));
+
+  /** Apply a grant-list change through the ordinary Agent update path. */
+  const updateAgentWebsiteLogins = async (
+    c: Context,
+    agentId: string,
+    change: (grants: WebsiteLoginGrant[]) => WebsiteLoginGrant[] | undefined,
+  ): Promise<CustomAgentConfig | undefined> => {
+    const configStore = store(c);
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const current = await configStore.getAgent(agentId);
+      const next = change([...(current.websiteLogins ?? [])]);
+      if (!next) return current;
+      try {
+        return await configStore.updateAgent(agentId, { websiteLogins: next }, current.revision);
+      } catch (error) {
+        if (!(error instanceof AgentRevisionConflictError) || attempt === 2) throw error;
+      }
+    }
+    return undefined;
+  };
+
+  app.get('/admin/api/agents/:id/website-logins', async (c) => {
+    try {
+      const principal = principalByContext.get(c);
+      if (!principal) throw new AuthorizationError('principal_required');
+      const agent = await store(c).getAgent(c.req.param('id'));
+      // Same visibility gate as the Agent's Connections GET (and the Agents
+      // list): anyone who can see this Agent in Admin may read its website
+      // logins. The list is metadata only; widening access is gated separately.
+      if (!canEditAgent(principal, agent)) throw new AuthorizationError();
+      const logins = await listWebsiteLogins(websiteLoginSettings(c));
+      return c.json({ logins: projectAgentWebsiteLogins(agent.websiteLogins, logins, principal) });
+    } catch (error) {
+      if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
+      if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
+      return internalError(c, error);
+    }
+  });
+
+  app.post('/admin/api/agents/:id/website-logins', async (c) => {
+    const parsed = v.safeParse(websiteLoginCreateSchema, await readJson(c.req));
+    if (!parsed.success) return invalidRequest(c);
+    const input = parsed.output;
+    if (input.method === 'credentials' && input.password === undefined) {
+      return invalidRequest(c, 'Enter the password for this website.');
+    }
+    if (input.method === 'handoff' &&
+        (input.password !== undefined || input.totpSeed !== undefined)) {
+      return invalidRequest(c);
+    }
+    const agentId = c.req.param('id');
+    let created: WebsiteLogin | undefined;
+    let deps: WebsiteLoginDependencies | undefined;
+    try {
+      const principal = principalByContext.get(c);
+      if (!principal) throw new AuthorizationError('principal_required');
+      const agent = await store(c).getAgent(agentId);
+      requireAgentEdit(principal, agent);
+      requirePermission(
+        principal,
+        input.ownerKind === 'team' ? 'connection.create_team' : 'connection.create_personal',
+      );
+      if ((agent.websiteLogins ?? []).length >= 50) {
+        return c.json({ error: 'website_login_limit', message: 'This Agent already has 50 website logins.' }, 409);
+      }
+      deps = websiteLoginWriteDependencies(c);
+      if (!deps) return c.json({ error: 'website_logins_unavailable' }, 503);
+      created = await createWebsiteLogin(deps, {
+        host: input.host,
+        label: input.label,
+        ownerKind: input.ownerKind,
+        ...(input.ownerKind === 'member' ? { ownerMembershipId: principal.membershipId } : {}),
+        createdByMembershipId: principal.membershipId,
+        method: input.method,
+        ...(input.username !== undefined ? { username: input.username } : {}),
+        ...(input.password !== undefined ? { password: input.password } : {}),
+        ...(input.totpSeed !== undefined ? { totpSeed: input.totpSeed } : {}),
+      });
+      const loginId = created.id;
+      const grant: WebsiteLoginGrant = { loginId, level: input.level, enabled: true };
+      let full = false;
+      const updated = await updateAgentWebsiteLogins(c, agentId, (grants) => {
+        if (grants.length >= 50) {
+          full = true;
+          return undefined;
+        }
+        return [...grants, grant];
+      });
+      if (full || !updated) throw new WebsiteLoginLimitError();
+      const login = created;
+      created = undefined;
+      return c.json({ login: websiteLoginView(login, grant) }, 201);
+    } catch (error) {
+      // The Agent never received the grant, so the new login is unreachable:
+      // remove it and its secret rather than leave an orphan behind.
+      if (created && deps) {
+        await deleteWebsiteLogin(deps, created.id).catch(() => undefined);
+      }
+      if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
+      if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
+      if (error instanceof WebsiteLoginInputError) {
+        return c.json({ error: 'invalid_website_login', field: error.code }, 422);
+      }
+      if (error instanceof WebsiteLoginLimitError) {
+        return c.json({ error: 'website_login_limit', message: error.message }, 409);
+      }
+      if (error instanceof WebsiteLoginStateError || error instanceof AgentRevisionConflictError) {
+        return c.json({ error: 'website_login_conflict' }, 409);
+      }
+      return internalError(c, error);
+    }
+  });
+
+  app.delete('/admin/api/agents/:id/website-logins/:loginId', async (c) => {
+    const agentId = c.req.param('id');
+    const loginId = c.req.param('loginId');
+    if (!/^wl_[a-f0-9]{32}$/.test(loginId)) return invalidRequest(c);
+    try {
+      const principal = principalByContext.get(c);
+      if (!principal) throw new AuthorizationError('principal_required');
+      const agent = await store(c).getAgent(agentId);
+      requireAgentEdit(principal, agent);
+      if (!(agent.websiteLogins ?? []).some((grant) => grant.loginId === loginId)) {
+        return c.json({ error: 'not_found' }, 404);
+      }
+      const login = (await listWebsiteLogins(websiteLoginSettings(c)))
+        .find((candidate) => candidate.id === loginId);
+      // A grant whose login is already gone is removable by any editor.
+      if (login && !canManageWebsiteLogin(principal, login)) throw new AuthorizationError();
+      await updateAgentWebsiteLogins(c, agentId, (grants) => {
+        const next = grants.filter((grant) => grant.loginId !== loginId);
+        return next.length === grants.length ? undefined : next;
+      });
+      let loginDeleted = false;
+      if (login) {
+        const stillGranted = (await store(c).listAgents()).some((candidate) =>
+          (candidate.websiteLogins ?? []).some((grant) => grant.loginId === loginId));
+        if (!stillGranted) {
+          const deps = websiteLoginWriteDependencies(c);
+          if (!deps) return c.json({ error: 'website_logins_unavailable' }, 503);
+          loginDeleted = await deleteWebsiteLogin(deps, loginId);
+        }
+      }
+      return c.json({ removed: true, loginDeleted });
+    } catch (error) {
+      if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
+      if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
+      if (error instanceof WebsiteLoginStateError || error instanceof AgentRevisionConflictError) {
+        return c.json({ error: 'website_login_conflict' }, 409);
+      }
+      return internalError(c, error);
+    }
+  });
+
   app.post('/admin/api/connections/:connectionAccountId/revoke', async (c) => {
     const body = await readJson(c.req);
     if (!isRecord(body) || Object.keys(body).length > 0) return invalidRequest(c);
@@ -8680,6 +8898,14 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         );
       }
       const patch = toAgentPatch(parsed.output);
+      if (patch.websiteLogins && websiteLoginGrantWidensWithoutAuthority(
+        principal,
+        current.websiteLogins ?? [],
+        patch.websiteLogins,
+        await listWebsiteLogins(websiteLoginSettings(c)),
+      )) {
+        throw new AuthorizationError();
+      }
       if (parsed.output.handle !== undefined) {
         const requestedHandle = parsed.output.handle;
         const presence = current.slackPresence;
@@ -11233,6 +11459,7 @@ function toAgentConfig(input: v.InferOutput<typeof agentSchema>): AgentCreateInp
     mcpServers: toMcpServers(input.mcpServers),
     apiConnections: toApiConnections(input.apiConnections),
     repositories: toRepositories(input.repositories),
+    websiteLogins: toWebsiteLogins(input.websiteLogins),
   };
 }
 
@@ -11380,6 +11607,81 @@ function toRepositories(
   }));
 }
 
+function toWebsiteLogins(
+  grants: v.InferOutput<typeof websiteLoginsSchema>,
+): WebsiteLoginGrant[] {
+  return grants.map((grant) => ({
+    loginId: grant.loginId,
+    level: grant.level,
+    enabled: grant.enabled,
+  }));
+}
+
+/** requireManage semantics for a website login: Owners/Admins, or the owning member. */
+function canManageWebsiteLogin(principal: AuthPrincipal, login: WebsiteLogin): boolean {
+  if (principal.role === 'owner' || principal.role === 'admin') return true;
+  return login.ownerKind === 'member' && login.ownerMembershipId === principal.membershipId;
+}
+
+/**
+ * Agent editors may always narrow website-login access (remove, disable, or
+ * lower a grant). Anything that widens it — a new grant, re-enabling one, or
+ * raising `check` to `act` — must name an existing login the principal can
+ * manage, so an Agent PATCH cannot reach another member's personal login.
+ */
+function websiteLoginGrantWidensWithoutAuthority(
+  principal: AuthPrincipal | undefined,
+  current: readonly WebsiteLoginGrant[],
+  next: readonly WebsiteLoginGrant[],
+  logins: readonly WebsiteLogin[],
+): boolean {
+  const before = new Map(current.map((grant) => [grant.loginId, grant]));
+  const byId = new Map(logins.map((login) => [login.id, login]));
+  return next.some((grant) => {
+    const previous = before.get(grant.loginId);
+    const widens = grant.enabled && (
+      !previous || !previous.enabled || (grant.level === 'act' && previous.level !== 'act')
+    );
+    if (!widens) return false;
+    const login = byId.get(grant.loginId);
+    return !login || !principal || !canManageWebsiteLogin(principal, login);
+  });
+}
+
+function projectAgentWebsiteLogins(
+  grants: readonly WebsiteLoginGrant[] | undefined,
+  logins: readonly WebsiteLogin[],
+  principal: AuthPrincipal,
+) {
+  const byId = new Map(logins.map((login) => [login.id, login]));
+  const privileged = principal.role === 'owner' || principal.role === 'admin';
+  return (grants ?? []).flatMap((grant) => {
+    const login = byId.get(grant.loginId);
+    if (!login) return [];
+    // Mirror connection accounts: another member's personal login stays
+    // private to that member (and to Owners/Admins, who can manage it).
+    if (login.ownerKind === 'member' && !privileged &&
+        login.ownerMembershipId !== principal.membershipId) return [];
+    return [websiteLoginView(login, grant)];
+  });
+}
+
+/** The only website-login shape Admin returns. Never a password or TOTP seed. */
+function websiteLoginView(login: WebsiteLogin, grant: WebsiteLoginGrant) {
+  return {
+    loginId: login.id,
+    host: login.host,
+    label: login.label,
+    ownerKind: login.ownerKind,
+    ...(login.ownerMembershipId ? { ownerMembershipId: login.ownerMembershipId } : {}),
+    method: login.method,
+    ...(login.username ? { username: login.username } : {}),
+    ...(login.lastUsedAt !== undefined ? { lastUsedAt: login.lastUsedAt } : {}),
+    level: grant.level,
+    enabled: grant.enabled,
+  };
+}
+
 type AgentPatch = Partial<Omit<CustomAgentConfig, 'id' | 'revision' | 'model'>> & {
   model?: string | null;
 };
@@ -11399,6 +11701,9 @@ function toAgentPatch(input: v.InferOutput<typeof agentPatchSchema>): AgentPatch
   }
   if (input.repositories !== undefined) {
     patch.repositories = toRepositories(input.repositories);
+  }
+  if (input.websiteLogins !== undefined) {
+    patch.websiteLogins = toWebsiteLogins(input.websiteLogins);
   }
   return patch;
 }
@@ -12103,7 +12408,7 @@ async function agentAdminProjection(
           agent.slackPresence.desiredState,
         )
       : null,
-    tabs: ['instructions', 'skills', 'connectors', 'repositories', 'memory', 'schedules', 'model'],
+    tabs: ['instructions', 'skills', 'connectors', 'repositories', 'websites', 'memory', 'schedules', 'model'],
     capabilityPreviews: {
       skills: agent.skills.map(({ name, description, enabled }) => ({ name, description, enabled })),
       connectors: [
@@ -12129,6 +12434,7 @@ async function agentAdminProjection(
         name: fullName || accountLogin,
         enabled,
       })),
+      websiteLogins: (agent.websiteLogins ?? []).filter(({ enabled }) => enabled).length,
     },
     isWorkspaceDefault: legacyDefaultInstallations.length > 0,
     defaultForWorkspaces: legacyDefaultInstallations

@@ -8,7 +8,9 @@ import {
   type RepositoryGrant,
   type ResolvedAssignment,
   type SkillConfig,
+  type WebsiteLoginGrant,
 } from '../config/types.ts';
+import type { WebsiteLogin } from '../browser/logins.ts';
 import { opaqueId } from '../work/admission.ts';
 import { BROWSER_TOOL_ACTIVITY } from '../browser/tools.ts';
 import { slackAgentThreadKey } from '../slack/thread-key.ts';
@@ -184,6 +186,12 @@ export interface RuntimePlanV2 {
    * time.
    */
   browserCapability?: RuntimePlanBrowserCapabilityV1;
+  /**
+   * Website logins this Agent may use in the hosted browser, frozen as
+   * metadata only (never a password or TOTP seed). Present only alongside
+   * `browserCapability` and only when at least one grant is enabled.
+   */
+  websiteLogins?: RuntimePlanWebsiteLoginV1[];
   /** Non-secret model policy facts frozen with the admitted turn. Required on V3. */
   modelAttribution?: AgentModelAttribution;
   /** Frozen credential epoch; values and labels never cross the boundary. */
@@ -231,6 +239,16 @@ export interface RuntimePlanBrowserCapabilityV1 {
   provider: 'browserbase';
 }
 
+/** One granted website login, joined from the Agent grant and login metadata. */
+export interface RuntimePlanWebsiteLoginV1 {
+  id: string;
+  host: string;
+  label: string;
+  level: 'check' | 'act';
+  method: 'credentials' | 'handoff';
+  username?: string;
+}
+
 export interface CompileRuntimePlanV2Input {
   turn: NormalizedSlackTurn;
   assignment: ResolvedAssignment;
@@ -245,6 +263,11 @@ export interface CompileRuntimePlanV2Input {
   imageCapability?: RuntimePlanImageCapabilityV3;
   /** Resolved hosted-browser capability. Absent means no browser is frozen. */
   browserCapability?: RuntimePlanBrowserCapabilityV1;
+  /**
+   * Granted website logins, already joined by `compileWebsiteLogins`. Frozen
+   * only when `browserCapability` is present.
+   */
+  websiteLogins?: readonly RuntimePlanWebsiteLoginV1[];
   continuityPolicy?: string;
   effectiveConnections?: readonly EffectiveConnectionAccount[];
   connectionAuthorizations?: readonly PersonalConnectionAuthorizationOption[];
@@ -290,6 +313,18 @@ export function compileRuntimePlanV2(input: CompileRuntimePlanV2Input): RuntimeP
   const managedConnections = compileManagedConnections(
     projectEffectiveManagedConnections(effectiveConnections),
   );
+  const websiteLogins = input.browserCapability
+    ? [...(input.websiteLogins ?? [])]
+      .map((login) => ({
+        id: login.id,
+        host: login.host,
+        label: login.label,
+        level: login.level,
+        method: login.method,
+        ...(login.username ? { username: login.username } : {}),
+      }))
+      .sort(compareBy('id'))
+    : [];
   const planWithoutRevision: Omit<RuntimePlanV2, 'harnessRevision'> = {
     schemaVersion: RUNTIME_PLAN_SCHEMA_VERSION,
     continuityPolicy: input.continuityPolicy ?? DEFAULT_CONTINUITY_POLICY,
@@ -343,6 +378,7 @@ export function compileRuntimePlanV2(input: CompileRuntimePlanV2Input): RuntimeP
         }
       : {}),
     ...(input.browserCapability ? { browserCapability: { provider: 'browserbase' as const } } : {}),
+    ...(websiteLogins.length > 0 ? { websiteLogins } : {}),
     modelAttribution: frozenModelAttribution(input.assignment),
     ...(input.assignment.modelCredential
       ? {
@@ -584,6 +620,7 @@ export function parseRuntimePlanV2(
     'model',
     'imageCapability',
     'browserCapability',
+    'websiteLogins',
     'modelAttribution',
     'modelCredential',
     'instructions',
@@ -610,6 +647,7 @@ export function parseRuntimePlanV2(
     'runtimeModelRoute',
     'imageCapability',
     'browserCapability',
+    'websiteLogins',
     'modelAttribution',
     'modelCredential',
   ]);
@@ -707,6 +745,16 @@ export function parseRuntimePlanV2(
   const browserCapability = record.browserCapability === undefined
     ? undefined
     : parseBrowserCapability(record.browserCapability);
+  const websiteLogins = record.websiteLogins === undefined
+    ? undefined
+    : arrayOf(record.websiteLogins, 'websiteLogins', parseWebsiteLogin, 50);
+  if (websiteLogins && (!browserCapability || websiteLogins.length === 0)) {
+    throw new Error('Runtime plan websiteLogins require a browser capability and at least one login.');
+  }
+  if (websiteLogins &&
+      new Set(websiteLogins.map(({ id }) => id)).size !== websiteLogins.length) {
+    throw new Error('Runtime plan websiteLogins ids must be unique.');
+  }
   const instructions = boundedString(record.instructions, 'instructions', 1, 200_000);
   const memoryEpoch = positiveInteger(record.memoryEpoch, 'memoryEpoch');
   const skills = arrayOf(record.skills, 'skills', parseSkill, 128);
@@ -774,6 +822,7 @@ export function parseRuntimePlanV2(
     model,
     ...(imageCapability ? { imageCapability } : {}),
     ...(browserCapability ? { browserCapability } : {}),
+    ...(websiteLogins ? { websiteLogins } : {}),
     ...(modelAttribution ? { modelAttribution } : {}),
     ...(modelCredential ? { modelCredential } : {}),
     instructions,
@@ -931,6 +980,34 @@ function compileRepositories(
     .sort(compareBy('id'));
 }
 
+/**
+ * Join an Agent's enabled website-login grants with live login metadata.
+ * Grants naming a deleted login drop out; output is sorted by login id and
+ * carries no secret. Accepts undefined grants for Agents frozen before the
+ * field existed.
+ */
+export function compileWebsiteLogins(
+  grants: readonly WebsiteLoginGrant[] | undefined,
+  logins: readonly WebsiteLogin[],
+): RuntimePlanWebsiteLoginV1[] {
+  const byId = new Map(logins.map((login) => [login.id, login]));
+  const seen = new Set<string>();
+  return (grants ?? []).flatMap((grant) => {
+    if (!grant.enabled || seen.has(grant.loginId)) return [];
+    const login = byId.get(grant.loginId);
+    if (!login) return [];
+    seen.add(grant.loginId);
+    return [{
+      id: login.id,
+      host: login.host,
+      label: login.label,
+      level: grant.level === 'act' ? 'act' as const : 'check' as const,
+      method: login.method,
+      ...(login.username ? { username: login.username } : {}),
+    }];
+  }).sort(compareBy('id'));
+}
+
 function surfaceForTurn(turn: NormalizedSlackTurn): RuntimePlanSurface {
   if (
     turn.source === 'dm_message' ||
@@ -971,6 +1048,7 @@ function computeHarnessRevision(
       model: plan.model,
       ...(plan.imageCapability ? { imageCapability: plan.imageCapability } : {}),
       ...(plan.browserCapability ? { browserCapability: plan.browserCapability } : {}),
+      ...(plan.websiteLogins ? { websiteLogins: plan.websiteLogins } : {}),
       ...(plan.modelAttribution ? { modelAttribution: plan.modelAttribution } : {}),
       ...(plan.modelCredential ? { modelCredential: plan.modelCredential } : {}),
       instructions: plan.instructions,
@@ -1020,6 +1098,28 @@ function parseImageCapability(value: unknown): RuntimePlanImageCapabilityV3 {
   return { role, filled, acceptsImageInput,
     ...(maxOutputsPerCall === undefined ? {} : { maxOutputsPerCall }),
     ...(supportsOutputControls === undefined ? {} : { supportsOutputControls }) };
+}
+
+function parseWebsiteLogin(value: unknown, index: number): RuntimePlanWebsiteLoginV1 {
+  const label = `websiteLogins[${index}]`;
+  const record = exactRecord(
+    value,
+    label,
+    ['id', 'host', 'label', 'level', 'method', 'username'],
+    ['username'],
+  );
+  const id = boundedString(record.id, `${label}.id`, 1, 64);
+  if (!/^wl_[a-f0-9]{32}$/.test(id)) throw new Error(`Runtime plan ${label}.id is invalid.`);
+  return {
+    id,
+    host: boundedString(record.host, `${label}.host`, 1, 260),
+    label: boundedString(record.label, `${label}.label`, 1, 80),
+    level: oneOf(record.level, `${label}.level`, ['check', 'act'] as const),
+    method: oneOf(record.method, `${label}.method`, ['credentials', 'handoff'] as const),
+    ...(record.username === undefined
+      ? {}
+      : { username: boundedString(record.username, `${label}.username`, 1, 320) }),
+  };
 }
 
 function parseBrowserCapability(value: unknown): RuntimePlanBrowserCapabilityV1 {

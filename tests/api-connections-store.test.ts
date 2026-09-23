@@ -46,6 +46,7 @@ function agent(apiConnections: ApiConnectionConfig[]): CustomAgentConfig {
     mcpServers: [],
     apiConnections,
     repositories: [],
+    websiteLogins: [],
   };
 }
 

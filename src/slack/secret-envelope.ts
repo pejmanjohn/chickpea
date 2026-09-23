@@ -7,7 +7,8 @@ export type SlackCredentialPurpose =
   | 'connected_credentials'
   | 'gateway_deployment_key'
   | 'gateway_delivery_key'
-  | 'managed_connector_project_key';
+  | 'managed_connector_project_key'
+  | 'website_login';
 
 export interface CredentialKeyring {
   currentKeyId: string;

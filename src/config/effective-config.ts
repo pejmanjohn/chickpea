@@ -206,6 +206,11 @@ export function computeSnapshotHash(config: EffectiveSlackConfig): string {
         // Repository grants freeze like the rest of the capability policy
         // (grant list only — installation tokens are always minted live).
         repositories: config.agent.repositories,
+        // Website login grants (ids and levels only). Omitted while empty so
+        // hashes of threads frozen before the field existed stay stable.
+        ...(config.agent.websiteLogins?.length
+          ? { websiteLogins: config.agent.websiteLogins }
+          : {}),
       }),
     )
     .digest('hex');

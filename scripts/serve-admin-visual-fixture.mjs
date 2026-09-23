@@ -35,6 +35,7 @@ export const CANONICAL_ADMIN_VISUAL_STATES = Object.freeze({
   agentBlankDescription: Object.freeze({ path: '/admin/agents/agent_customer', actions: Object.freeze([]) }),
   agentMemory: Object.freeze({ path: '/admin/agents/agent_research', actions: Object.freeze(['Memory']) }),
   agentSchedules: Object.freeze({ path: '/admin/agents/agent_release', actions: Object.freeze(['Schedules']) }),
+  agentWebsites: Object.freeze({ path: '/admin/agents/agent_research', actions: Object.freeze(['Websites']) }),
   channelsIndex: Object.freeze({ path: '/admin/channels', actions: Object.freeze([]) }),
   channelDetail: Object.freeze({ path: '/admin/channels/TVISUAL/C_RELEASES', actions: Object.freeze([]) }),
   channelAdvanced: Object.freeze({
@@ -60,6 +61,8 @@ export const CANONICAL_CONNECTOR_VISUAL_STATES = Object.freeze({
   waiting: Object.freeze({ path: '/__admin_visual_fixture/connectors/waiting' }),
   success: Object.freeze({ path: '/__admin_visual_fixture/connectors/success' }),
 });
+
+const VISUAL_FIXTURE_AGENT_IDS = Object.freeze(['agent_customer', 'agent_release', 'agent_research']);
 
 const SANDBOX_VISUAL_DEPLOY_SOURCES = Object.freeze({
   'redeploy-command': 'command',
@@ -988,6 +991,30 @@ export async function startAdminVisualFixture(options = {}) {
         deploySource: SANDBOX_VISUAL_DEPLOY_SOURCES[sandboxState],
         unmetPrerequisites: ['sandbox_binding', ...body.unmetPrerequisites.filter((item) => item !== 'cloudflare_target')],
         workersPaidNote: 'Requires Workers Paid. Real containers run on your Cloudflare account; a typical session costs about 1 cent.',
+      });
+    });
+    // The Websites tab reads display-safe login rows for an Agent. The fixture
+    // answers for its own Agents after the real authorization gate, so the
+    // state renders without a Browserbase project or stored sign-ins.
+    app.use('/admin/api/agents/:agentId/website-logins', async (c, next) => {
+      await next();
+      if (c.req.method !== 'GET' || (c.res.status !== 200 && c.res.status !== 404)) return;
+      const agentId = decodeURIComponent(c.req.path.split('/')[4] ?? '');
+      if (!VISUAL_FIXTURE_AGENT_IDS.includes(agentId)) return;
+      const now = Date.now();
+      c.res = Response.json({
+        logins: agentId === 'agent_research' ? [
+          {
+            loginId: `wl_${'a1'.repeat(16)}`, host: 'magoosh.com', label: 'Magoosh team', ownerKind: 'team',
+            method: 'credentials', username: 'qa-team@magoosh.com',
+            lastUsedAt: now - 2 * 3_600_000, level: 'check', enabled: true,
+          },
+          {
+            loginId: `wl_${'b2'.repeat(16)}`, host: 'admin.magoosh.com', label: 'Magoosh admin', ownerKind: 'member',
+            ownerMembershipId: 'membership_visual_owner', method: 'handoff',
+            lastUsedAt: now - 6 * 86_400_000, level: 'check', enabled: true,
+          },
+        ] : [],
       });
     });
     app.use('/admin/api/installation', async (c, next) => {

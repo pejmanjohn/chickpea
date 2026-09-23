@@ -134,6 +134,17 @@ export interface RepositoryGrant {
   enabled: boolean;
 }
 
+/**
+ * One Agent's use of a stored website login. `check` lets the Agent sign in
+ * and read; `act` also lets it submit changes. The login's secrets never ride
+ * on the grant: only its id does.
+ */
+export interface WebsiteLoginGrant {
+  loginId: string;
+  level: 'check' | 'act';
+  enabled: boolean;
+}
+
 export type OpenAiAuthMethod = 'api_key' | 'subscription';
 
 /** Internal credential-store coordinate for the single customer-owned Slack app. */
@@ -217,6 +228,13 @@ export interface CustomAgentConfig {
   mcpServers: McpConnectionConfig[];
   apiConnections: ApiConnectionConfig[];
   repositories: RepositoryGrant[];
+  /**
+   * Website sign-in grants. The config store always materializes this (rows
+   * persisted before the field read as []), but Agents frozen into thread or
+   * routine snapshots before it existed deserialize without it, so readers
+   * treat a missing value as [].
+   */
+  websiteLogins?: WebsiteLoginGrant[];
 }
 
 export type SlackTransportMode = 'direct' | 'gateway';
