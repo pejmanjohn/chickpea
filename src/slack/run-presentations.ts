@@ -233,6 +233,8 @@ interface SlackPresentationStream {
   };
   presentationOutcome?: SlackPresentationOutcome;
   degradationReason?: SlackPresentationDegradationReason;
+  /** Answer bytes the terminal effect delivered beyond the progressive prefix. */
+  terminalSuffixBytes?: number;
 }
 
 interface SlackPresentationPlan {
@@ -468,6 +470,7 @@ export type SlackPresentationMutation =
         'progressive' | 'terminal_only' | 'corrected' | 'withdrawn'
       >;
       degradationReason?: SlackPresentationDegradationReason;
+      terminalSuffixBytes?: number;
     }
   | { kind: 'mark_finalizing' }
   | { kind: 'mark_fallback'; outcome: 'fallback' }
@@ -615,6 +618,8 @@ export interface SlackPresentationFinalizationRecord {
   deliveryOutcome: SlackPresentationOutcome | 'pending';
   degradation: SlackPresentationDegradationReason | 'none';
   acceptedBytes: number;
+  /** Answer bytes delivered by the terminal Slack effect instead of appends. */
+  terminalSuffixBytes: number;
   timingMs: {
     offerToRequest?: number;
     requestToFirstEffect?: number;
@@ -1569,6 +1574,12 @@ function applyMutation(
       next.stream.state = 'reconciling';
       if (mutation.outcome) next.stream.presentationOutcome = mutation.outcome;
       if (mutation.degradationReason) next.stream.degradationReason = mutation.degradationReason;
+      if (mutation.terminalSuffixBytes !== undefined) {
+        if (!Number.isSafeInteger(mutation.terminalSuffixBytes) || mutation.terminalSuffixBytes < 0) {
+          throw stateError('invalid_input', 'Terminal suffix length is invalid.');
+        }
+        next.stream.terminalSuffixBytes = mutation.terminalSuffixBytes;
+      }
       return next;
     case 'mark_finalizing':
       requireState(current, 'reconciling');
@@ -2240,6 +2251,7 @@ export function slackPresentationFinalizationRecord(
     deliveryOutcome: presentation.stream.presentationOutcome ?? 'pending',
     degradation: presentation.stream.degradationReason ?? 'none',
     acceptedBytes: presentation.stream.acknowledgedByteLength,
+    terminalSuffixBytes: presentation.stream.terminalSuffixBytes ?? 0,
     timingMs: {
       ...(timing.offerToRequest === undefined
         ? {}

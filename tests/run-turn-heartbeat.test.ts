@@ -1713,7 +1713,11 @@ test('a lease lost after visible activity and agent completion settles a frozen-
     });
 
     assert.equal(finalPayloads.length, 1);
-    assert.match(String(finalPayloads[0]?.markdown_text), /agent run failed before completion/);
+    const finalChunks = finalPayloads[0]?.chunks as Array<{ type: string; text?: string }> | undefined;
+    assert.match(
+      String(finalChunks?.find((chunk) => chunk.type === 'markdown_text')?.text),
+      /agent run failed before completion/,
+    );
     assert.equal(delivered, 1, 'the terminal failure still writes the delivery tombstone');
     assert.deepEqual(terminalOutcomes, ['failed']);
     const persisted = h.store.get(runId);

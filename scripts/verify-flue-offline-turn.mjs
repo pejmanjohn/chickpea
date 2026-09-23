@@ -200,7 +200,9 @@ try {
       : -1;
     const startStreams = backend
       .callsOfMethod('chat.startStream')
-      .filter((entry) => typeof entry.body.markdown_text === 'string');
+      .filter((entry) => typeof entry.body.markdown_text === 'string' ||
+        (Array.isArray(entry.body.chunks) &&
+          entry.body.chunks.some((chunk) => chunk?.type === 'markdown_text')));
     const stopStreams = backend.callsOfMethod('chat.stopStream');
     const statuses = backend.statusCalls();
     const nonEmpty = statuses.filter((entry) => String(entry.body.status) !== '');

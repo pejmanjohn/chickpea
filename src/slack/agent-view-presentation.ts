@@ -929,12 +929,12 @@ export class SlackAgentViewPresentation {
       });
       return this.stopKnownStream(
         presentation,
-        text,
         attemptId,
         observer,
         [],
         footerBlocks,
         terminalTaskStatus,
+        utf8Length(approved),
       );
     }
 
@@ -974,12 +974,12 @@ export class SlackAgentViewPresentation {
     });
     return this.stopKnownStream(
       presentation,
-      text,
       attemptId,
       observer,
       stopChunks,
       footerBlocks,
       terminalTaskStatus,
+      utf8Length(suffix),
     );
   }
 
@@ -1141,7 +1141,7 @@ export class SlackAgentViewPresentation {
       await this.options.client.chat.appendStream({
         channel: presentation.root.channelId,
         ts: presentation.stream.messageTs!,
-        markdown_text: delta,
+        chunks: [{ type: 'markdown_text', text: delta }],
       });
     } catch (error) {
       const outcome = slackEffectOutcome(error);
@@ -1254,17 +1254,18 @@ export class SlackAgentViewPresentation {
 
   private async stopKnownStream(
     presentation: SlackRunPresentation,
-    approvedOutput: string,
     attemptId: string | undefined,
     observer: SlackPresentationDeliveryObserver,
     chunks: AnyChunk[],
     blocks: KnownBlock[],
     terminalTaskStatus: 'complete' | 'error',
+    terminalSuffixBytes: number,
   ): Promise<AgentViewFinalResult> {
     presentation = await this.transition(presentation, {
       kind: 'close_stream',
       outcome: presentation.stream.acknowledgedByteLength > 0 ? 'progressive' : 'terminal_only',
       ...(this.degradedReason ? { degradationReason: this.degradedReason } : {}),
+      terminalSuffixBytes,
     });
     if (presentation.schemaVersion !== 3 && presentation.plan &&
         presentationUsesNativeTasks(presentation)) {
@@ -1305,7 +1306,6 @@ export class SlackAgentViewPresentation {
       outcome: 'delivered',
       deliveryRef: deliveryRef(presentation),
     });
-    void approvedOutput;
     return { handled: true, messageTs: presentation.stream.messageTs! };
   }
 
@@ -1349,6 +1349,10 @@ export class SlackAgentViewPresentation {
       });
       await this.recordTerminalDeliveryReceipt('acknowledged');
     } catch (error) {
+      console.warn(
+        `[chickpea] Slack Agent View stream recovery ${slackEffectOutcome(error)}: ` +
+        safeSlackErrorCode(error),
+      );
       // Keep finalizing and its exact coordinate: another recovery can safely
       // repeat stop-without-chunks and replacement, never a new message post.
       await observer.after({ attemptId, outcome: 'unknown', safeFailureCode: 'slack_stream_recovery_unknown' });
@@ -1728,9 +1732,10 @@ function streamStartPayload(
     thread_ts: presentation.root.threadTs,
     recipient_user_id: presentation.root.requesterUserId,
     recipient_team_id: presentation.root.workspaceId,
-    ...(chunks.length === 1 && chunks[0]?.type === 'markdown_text' && taskChunks.length === 0
-      ? { markdown_text: input.markdownText! }
-      : { chunks }),
+    // Slack fixes a stream's mode at start: a stream opened with
+    // `markdown_text` rejects any later `chunks` (streaming_mode_mismatch),
+    // including the terminal suffix and task updates. Always use chunks.
+    chunks,
     ...(taskChunks.length > 0 && presentation.plan
       ? { task_display_mode: presentation.plan.displayMode }
       : {}),
