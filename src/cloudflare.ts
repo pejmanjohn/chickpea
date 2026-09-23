@@ -142,6 +142,18 @@ import {
 } from './sandbox/cloudflare-policy.ts';
 import { cloudflareSandboxOptionVariants } from './sandbox/lifecycle.ts';
 import {
+  checkpointBucket,
+  isCheckpointSweepMinute,
+  sweepExpiredWorkspaceCheckpoints,
+} from './sandbox/checkpoint-sweep.ts';
+import {
+  SandboxWorkspaceState,
+  WORKSPACE_CHECKPOINT_EXCLUDES,
+  WORKSPACE_CHECKPOINT_TTL_SECONDS,
+  WORKSPACE_DIR,
+  type WorkspaceTurnState,
+} from './sandbox/workspace-lifecycle.ts';
+import {
   isGithubPullRequestCreateResponse,
   pullRequestProgressFromGithubResponse,
 } from './sandbox/progress.ts';
@@ -359,6 +371,76 @@ export class Sandbox extends CloudflareSandbox<SandboxWorkerEnv> {
     turnId: string,
   ): Promise<void> {
     await this.policyState().configureEgress(input, turnId);
+  }
+
+  /**
+   * Decide whether this turn may reuse the running container. The workspace
+   * stays warm across turns for the same Agent and grants; any other owner
+   * gets a destroyed container rather than the prior checkout. Destroy only
+   * clears the SDK's own storage keys, so the prepared turn id survives.
+   */
+  async beginWorkspaceTurn(input: {
+    fingerprint: string;
+    turnId: string;
+  }): Promise<{ state: WorkspaceTurnState; reservationId: string; restorable: boolean }> {
+    const decision = await this.workspaceState().beginTurn({
+      ...input,
+      containerRunning: this.containerRunning(),
+      now: Date.now(),
+    });
+    if (decision.retire) await this.destroy();
+    return {
+      state: decision.state,
+      reservationId: decision.reservationId,
+      restorable: decision.restorable && checkpointBucket(this.env) !== undefined,
+    };
+  }
+
+  /**
+   * Bring back the thread's last checkpoint into a cold container. Best
+   * effort: an expired, missing, or failed restore leaves an empty workspace
+   * and the Agent clones again.
+   */
+  async restoreWorkspace(fingerprint: string): Promise<'restored' | 'unavailable'> {
+    if (!checkpointBucket(this.env)) return 'unavailable';
+    const backup = await this.workspaceState().checkpointForRestore(fingerprint, Date.now());
+    if (!backup) return 'unavailable';
+    try {
+      await this.restoreBackup(backup as Parameters<CloudflareSandbox['restoreBackup']>[0]);
+      return 'restored';
+    } catch {
+      console.warn('[chickpea] coding workspace checkpoint restore did not complete');
+      return 'unavailable';
+    }
+  }
+
+  /**
+   * End the turn's credential window without stopping the warm container,
+   * then checkpoint the workspace so the thread can resume after it sleeps.
+   */
+  async endTurn(): Promise<void> {
+    await this.policyState().revokeEgress();
+    // Never start a container just to checkpoint it.
+    if (!this.containerRunning() || !checkpointBucket(this.env)) return;
+    try {
+      const backup = await this.createBackup({
+        dir: WORKSPACE_DIR,
+        ttl: WORKSPACE_CHECKPOINT_TTL_SECONDS,
+        excludes: [...WORKSPACE_CHECKPOINT_EXCLUDES],
+        localBucket: true,
+      });
+      await this.workspaceState().recordCheckpoint(backup, Date.now());
+    } catch {
+      console.warn('[chickpea] coding workspace checkpoint did not complete');
+    }
+  }
+
+  private containerRunning(): boolean {
+    return (this.ctx as { container?: { running?: boolean } }).container?.running === true;
+  }
+
+  private workspaceState(): SandboxWorkspaceState {
+    return new SandboxWorkspaceState(this.policyStorage());
   }
 
   async getEgressPolicy(): Promise<SandboxEgressPolicy> {
@@ -1910,7 +1992,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
           ...(replayText === undefined ? {} : { replayText }),
           beforeDelivery: persistSandboxProgress,
           // Record terminal delivery before runTurn's post-delivery Sandbox
-          // teardown. A hung control-plane destroy must never leave an
+          // turn close. A hung control-plane call must never leave an
           // already-posted Slack final eligible for relay retry.
           onDelivered: (outcome) => {
             stores.turnJobs.markDelivered(job.id);
@@ -2616,6 +2698,11 @@ async function runWorkMaintenance(
     const platformEnv = rawEnv as PlatformEnv;
     try { await purgeExpiredImageOutputs(getSettingsStore(platformEnv), scheduledTime); }
     catch { console.warn('[chickpea] Image cache maintenance did not complete'); }
+    const checkpoints = checkpointBucket(platformEnv);
+    if (checkpoints && isCheckpointSweepMinute(scheduledTime)) {
+      try { await sweepExpiredWorkspaceCheckpoints(checkpoints, scheduledTime); }
+      catch { console.warn('[chickpea] Coding workspace checkpoint cleanup did not complete'); }
+    }
     await repairPendingOAuthContinuationResumes({
       settings: getSettingsStore(platformEnv),
       onReady: async (continuation) => {

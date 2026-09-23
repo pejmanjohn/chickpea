@@ -51,8 +51,8 @@ import { isRoutineSlackTurn } from '../routines/slack-context.ts';
 import {
   agentFailureText,
   AgentPromptFailure,
+  endCloudflareSandboxTurn,
   promptSlackThreadAgent,
-  releaseCloudflareSandboxTurn,
   type AgentDispatchResult,
   type SlackFlueDispatchState,
 } from './flue-dispatch.ts';
@@ -1450,8 +1450,9 @@ export async function runTurn(
       await removeWorkAcknowledgment();
     } finally {
       // The Sandbox DO lives in a different isolate from the agent factory;
-      // release it by its durable thread id at the actual end-of-turn seam.
-      await releaseCloudflareSandboxTurn(
+      // close the turn by its durable thread id at the actual end-of-turn
+      // seam. The workspace stays warm for follow-ups in this thread.
+      await endCloudflareSandboxTurn(
         platformEnv,
         conversationKey,
         usedCloudflareSandbox,

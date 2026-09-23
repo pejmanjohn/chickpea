@@ -102,7 +102,7 @@ test('Violet can adopt exact existing physical names while other lanes keep thei
   }), /identity|name/i);
 });
 
-test('sandbox overlay adds exactly one reviewed binding and container without changing core state', async () => {
+test('sandbox overlay adds exactly one reviewed binding, container, and checkpoint bucket without changing core state', async () => {
   const core = await authoredConfig();
   const sandbox = structuredClone(core);
   applyCloudflareDeploymentProfile(sandbox, {
@@ -128,6 +128,8 @@ test('sandbox overlay adds exactly one reviewed binding and container without ch
       max_instances: 25,
     },
   ]);
+  assert.deepEqual(core.r2_buckets ?? [], []);
+  assert.deepEqual(sandbox.r2_buckets, [{ binding: 'BACKUP_BUCKET' }]);
 });
 
 test('deploy-button name override keeps Worker and generated container identities paired', async () => {

@@ -237,6 +237,37 @@ Errors and unchanged checks leave the last confirmed status on screen. Retry
 only after reading the inline result; do not treat a button click as proof that
 Cloudflare finished the deployment.
 
+## Workspace lifetime and cost
+
+Each Slack thread gets one coding workspace. It starts on the first command an
+Agent runs and stays warm between turns, so a follow-up in the same thread
+reuses the checkout instead of cloning again.
+
+- **Warm window:** the container sleeps 30 minutes after the thread's last
+  turn. Sleep wipes its disk and stops all billing. An idle `standard-1`
+  container costs about $0.04 per hour while it waits.
+- **Checkpoints:** after each turn, the workspace files (without dependency
+  folders such as `node_modules` or `.venv`) are saved to the `BACKUP_BUCKET`
+  R2 bucket. If the thread resumes within three days, a new container restores
+  them. A checkpoint of a few hundred megabytes costs a fraction of a cent to
+  keep for three days, and R2's free tier usually covers it. The Worker's
+  maintenance cron deletes checkpoints older than three days every hour.
+  Wrangler creates the bucket on the first Sandbox-profile deploy; without it,
+  a resumed thread simply clones again.
+- **Retirement:** the workspace and its checkpoint are discarded before the
+  next turn if a different Agent takes over the thread or the Agent's
+  repository grants change, so a checkout never outlives the access that
+  created it.
+- **Credentials:** GitHub access exists only while a turn runs. The turn's
+  egress grants are revoked when it ends, even though the container stays up.
+- **Scheduled work:** a routine run always starts a fresh workspace and
+  destroys it when the run ends.
+- **Monthly session cap:** counts workspace starts, not turns. Follow-ups that
+  reuse a warm workspace do not count again.
+
+Anything that must survive longer belongs on a pushed branch or pull request;
+the Agent's workspace instructions say so.
+
 ## Disable, uninstall, or roll back
 
 **Disable** in Chickpea is immediate. It stops selecting the coding sandbox for
@@ -254,7 +285,8 @@ For a complete uninstall or rollback to the slim core deployment profile:
 3. Start a new build, or run that command, to deploy the core deployment profile.
 4. Verify ordinary Slack replies and Admin access on the core deployment.
 5. Only after that verification, delete the retained Container application and
-   image from Cloudflare.
+   image from Cloudflare, and the workspace checkpoint R2 bucket that Wrangler
+   created for the `BACKUP_BUCKET` binding (**R2 → Buckets**).
 
 This order preserves a working rollback and avoids deleting resources while a
 live Worker may still reference them.

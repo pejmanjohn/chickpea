@@ -20,11 +20,11 @@ import {
   requireSandboxTurnId,
 } from '../src/sandbox/turn-context.ts';
 
-test('Cloudflare sandbox guardrail options pin sleep and prohibit keep-alive', () => {
+test('Cloudflare sandbox guardrail options keep threads warm for 30 minutes and prohibit keep-alive', () => {
   assert.deepEqual(CLOUDFLARE_SANDBOX_OPTIONS, {
     transport: 'rpc',
     keepAlive: false,
-    sleepAfter: '5m',
+    sleepAfter: '30m',
     normalizeId: false,
   });
 });

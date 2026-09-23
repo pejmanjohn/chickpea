@@ -8451,7 +8451,7 @@
       '<p class="hint">Fixed by the Sandbox deployment profile.</p></div>' +
       '<div class="field" style="margin-top:14px;"><label class="field-label" for="sandbox-monthly-cap">Monthly session cap</label>' +
       '<input class="input mono" id="sandbox-monthly-cap" type="number" min="0" max="100000" step="1" value="' + esc(String(sandboxDraft.monthlySessionCap)) + '" data-action="sandbox-monthly-cap"' + disabled + '>' +
-      '<p class="hint">New coding sessions decline cleanly at this UTC-month limit. Set to <span class="mono">0</span> for no cap.</p></div>' +
+      '<p class="hint">New coding sessions decline cleanly at this UTC-month limit. A session is one workspace start; follow-ups in the same thread within 30 minutes reuse it. Set to <span class="mono">0</span> for no cap.</p></div>' +
       '<div class="field" style="margin-top:14px;"><span class="field-label">Package registry access</span>' +
       '<p class="hint">GitHub access comes from Agent repository grants. These are the only optional package hosts.</p>' + hostRows + '</div>' +
       '</div></details>' +

@@ -12,13 +12,17 @@ const WORKSPACE_INSTRUCTIONS = [
   '- Use the **Repositories** GitHub API recipes to read code, answer repository questions, or make a small single-file pull request that does not need execution.',
   '- Open the full workspace with the shell and file tools when the task requires installing dependencies, changing multiple files, running or building code, executing tests, or taking a screenshot.',
   '',
+  '## Workspace lifetime',
+  '',
+  'The workspace belongs to this Slack thread. It stays warm between turns, so files from an earlier turn in this thread may still be there. After 30 minutes without a turn the container sleeps; when the thread resumes within three days, the workspace files are restored from a checkpoint, but installed dependencies such as `node_modules` or `.venv` are not, so reinstall them. The workspace is wiped when this Agent\'s repository access changes. Never assume either way: check before you clone.',
+  '',
   '## Full workspace loop',
   '',
-  '1. Clone one of the granted repositories with a plain HTTPS URL, for example `git clone https://github.com/{owner}/{repo}.git`. Never add a credential to the URL. GitHub authentication is injected automatically at the sandbox egress boundary.',
+  '1. Run `ls /workspace` first. If the repository you need is already checked out, reuse it: enter it, run `git status`, and `git fetch` before relying on it. Otherwise clone one of the granted repositories with a plain HTTPS URL, for example `git clone https://github.com/{owner}/{repo}.git`. Never add a credential to the URL. GitHub authentication is injected automatically at the sandbox egress boundary.',
   '2. Enter the clone and install its dependencies with the repository-native command, such as `npm ci` / `npm install` or `pip install`.',
   '3. Create a feature branch and make the requested changes.',
   '4. Run the relevant verification. Prefer the repository scripts; common fallbacks are `npm test` and `pytest`. Run a build when the task or repository requires one.',
-  '5. Commit and push the branch early with normal Git commands. The workspace disk is ephemeral and a five-minute sleep wipes it, so the remote branch is the durable checkpoint.',
+  '5. Commit and push the branch early with normal Git commands. The workspace disk does not outlive an idle thread, so the remote branch is the durable checkpoint.',
   '6. Open the pull request through the normal GitHub API recipe in the **Repositories** skill, then report the pull-request link. If retry context says a pull request was already recorded, report that link and do not open another.',
   '',
   '## Screenshot recipe',
@@ -52,7 +56,7 @@ export function workspaceSkillForSandbox(
     name: 'workspace',
     description:
       declineReason === undefined
-        ? 'Run, build, test, and verify changes in an ephemeral coding workspace.'
+        ? 'Run, build, test, and verify changes in this thread\'s coding workspace.'
         : 'Explain why the coding workspace is temporarily unavailable.',
     instructions:
       declineReason === undefined
