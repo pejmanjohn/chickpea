@@ -1344,8 +1344,10 @@ function runtimePlanRepositoriesDeclaration(
   const repositories = plan.repositories ?? [];
   if (repositories.length === 0) return '';
   const names = JSON.stringify(
-    [...new Set(repositories.map(({ fullName, allRepos }) =>
-      allRepos ? `all repositories in ${fullName.split('/', 1)[0] || fullName}` : fullName))].sort(),
+    [...new Set(repositories.map((repository) =>
+      repository.allRepos
+        ? `all repositories in ${runtimePlanRepositoryOwner(repository)}`
+        : repository.fullName))].sort(),
   );
   const access = plan.sandbox?.mode === 'cloudflare'
     ? 'The workspace starts empty: clone a granted repository with a plain HTTPS URL such as ' +
@@ -1383,14 +1385,22 @@ export function runtimePlanSlackCapabilitiesInstruction(input: {
 function runtimePlanRepositoryGrants(
   plan: Pick<RuntimePlanV2, 'repositories'>,
 ): RepositoryGrant[] {
-  return plan.repositories.map(({ id, fullName, allRepos }) => ({
-    id,
+  return plan.repositories.map((repository) => ({
+    id: repository.id,
     installationId: null,
-    accountLogin: fullName.split('/', 1)[0] ?? fullName,
-    fullName,
-    ...(allRepos ? { allRepos: true } : {}),
+    accountLogin: runtimePlanRepositoryOwner(repository),
+    fullName: repository.fullName,
+    ...(repository.allRepos ? { allRepos: true } : {}),
     enabled: true,
   }));
+}
+
+/**
+ * An all-repositories grant names no repository, so its plan entry carries the
+ * owner login; single-repository entries and older plans derive it from fullName.
+ */
+function runtimePlanRepositoryOwner(repository: RuntimePlanRepositoryV2): string {
+  return repository.accountLogin ?? (repository.fullName.split('/', 1)[0] || repository.fullName);
 }
 
 /**

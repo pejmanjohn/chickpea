@@ -2,7 +2,11 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { generateKeyPairSync, randomUUID } from 'node:crypto';
 import { createFlueContext } from '@flue/runtime/internal';
-import { ChickpeaSlack, runtimePlanSkills } from '../src/agents/slack-thread.ts';
+import {
+  ChickpeaSlack,
+  runtimePlanConnectedServicesInstruction,
+  runtimePlanSkills,
+} from '../src/agents/slack-thread.ts';
 import { ChickpeaRoutineExecution } from '../src/agents/routine-execution.ts';
 import { compileRuntimePlanV2, type RuntimePlanSandboxMode } from '../src/agents/runtime-plan.ts';
 import { getConfigStore, getSettingsStore } from '../src/config/state-backend.ts';
@@ -199,4 +203,23 @@ test('runtime plan skills keep connector precedence and the reserved authoring n
   assert.deepEqual(bash.map(({ name }) => name), ['repositories']);
   const none = runtimePlanSkills({ ...plan, skills: [], repositories: [], sandbox: { mode: 'bash' } } as any);
   assert.deepEqual(none, []);
+});
+
+test('an all-repositories grant names its org in the Repositories skill and the turn instruction', () => {
+  const agent = {
+    ...supportAgent(),
+    repositories: [{
+      id: 'all', installationId: 1, accountLogin: 'magoosh', fullName: '', allRepos: true, enabled: true,
+    }],
+  };
+  const plan = compilePlan(agent, 'cloudflare');
+  assert.deepEqual(plan.repositories, [
+    { id: 'all', fullName: '', allRepos: true, accountLogin: 'magoosh' },
+  ]);
+
+  const repositories = runtimePlanSkills(plan).find(({ name }) => name === 'repositories');
+  assert.match((repositories as any).instructions, /- all repositories in `magoosh`/);
+
+  const instruction = runtimePlanConnectedServicesInstruction(plan);
+  assert.match(instruction, /Granted GitHub repositories for this turn: \["all repositories in magoosh"\]/);
 });
