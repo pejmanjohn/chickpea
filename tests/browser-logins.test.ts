@@ -16,6 +16,7 @@ import {
   normalizeWebsiteLoginHost,
   readWebsiteLoginSecrets,
   setWebsiteLoginContext,
+  setWebsiteLoginHandoff,
   touchWebsiteLoginUsed,
   WEBSITE_LOGINS_SETTING,
   WebsiteLoginInputError,
@@ -221,14 +222,26 @@ test('the login list is capped', async () => {
   });
 });
 
-test('touch and context updates change only metadata, and malformed rows are ignored', async () => {
+test('touch and context updates write the per-login state row, not the catalog, and malformed rows are ignored', async () => {
   await withLogins(async ({ deps, settings }) => {
     const login = await createWebsiteLogin(deps, credentialsInput);
+    const catalog = await settings.getSetting(WEBSITE_LOGINS_SETTING);
     assert.equal(await touchWebsiteLoginUsed(settings, login.id, 1234), true);
     assert.equal(await setWebsiteLoginContext(settings, login.id, 'ctx_abc-123'), true);
+    assert.equal(await setWebsiteLoginHandoff(settings, login.id, 'sess-1'), true);
+    assert.equal(await settings.getSetting(WEBSITE_LOGINS_SETTING), catalog);
+    assert.deepEqual(JSON.parse((await settings.getSetting(`website_login_state.${login.id}`))!), {
+      lastUsedAt: 1234,
+      contextId: 'ctx_abc-123',
+      handoffSessionId: 'sess-1',
+    });
     const updated = await getWebsiteLogin(settings, login.id);
     assert.equal(updated?.lastUsedAt, 1234);
     assert.equal(updated?.contextId, 'ctx_abc-123');
+    assert.equal(updated?.handoffSessionId, 'sess-1');
+    assert.deepEqual(await listWebsiteLogins(settings), [updated]);
+    assert.equal(await setWebsiteLoginHandoff(settings, login.id, undefined), true);
+    assert.equal((await getWebsiteLogin(settings, login.id))?.handoffSessionId, undefined);
     assert.equal(await touchWebsiteLoginUsed(settings, `wl_${'f'.repeat(32)}`, 1), false);
     assert.deepEqual(await readWebsiteLoginSecrets(deps, login.id), {
       username: 'ops@example.com',
@@ -326,4 +339,38 @@ test('snapshot hashes of Agents without grants are unchanged by the new field', 
     ...config,
     agent: { ...agent, websiteLogins: [{ loginId: `wl_${'a'.repeat(32)}`, level: 'check', enabled: true }] },
   }), legacy);
+});
+
+test('runtime fields still in an older catalog entry keep reading, and the state row takes over on write', async () => {
+  await withLogins(async ({ deps, settings }) => {
+    const login = await createWebsiteLogin(deps, credentialsInput);
+    const [entry] = JSON.parse((await settings.getSetting(WEBSITE_LOGINS_SETTING))!) as Record<string, unknown>[];
+    await settings.setSetting(WEBSITE_LOGINS_SETTING, JSON.stringify([
+      { ...entry, contextId: 'ctx_legacy', handoffSessionId: 'sess-legacy', lastUsedAt: 7 },
+    ]));
+    const legacy = await getWebsiteLogin(settings, login.id);
+    assert.equal(legacy?.contextId, 'ctx_legacy');
+    assert.equal(legacy?.handoffSessionId, 'sess-legacy');
+    assert.equal(legacy?.lastUsedAt, 7);
+
+    // The first state write starts from the catalog's values.
+    assert.equal(await setWebsiteLoginHandoff(settings, login.id, undefined), true);
+    const moved = await getWebsiteLogin(settings, login.id);
+    assert.equal(moved?.contextId, 'ctx_legacy');
+    assert.equal(moved?.handoffSessionId, undefined);
+    assert.equal(moved?.lastUsedAt, 7);
+    assert.deepEqual((await listWebsiteLogins(settings))[0], moved);
+  });
+});
+
+test('deleting a login removes its state row', async () => {
+  await withLogins(async ({ deps, settings }) => {
+    const login = await createWebsiteLogin(deps, credentialsInput);
+    await setWebsiteLoginContext(settings, login.id, 'ctx_1');
+    assert.ok(await settings.getSetting(`website_login_state.${login.id}`));
+    assert.equal(await deleteWebsiteLogin(deps, login.id), true);
+    assert.equal(await settings.getSetting(`website_login_state.${login.id}`), undefined);
+    assert.equal(await setWebsiteLoginContext(settings, login.id, 'ctx_2'), false);
+    assert.equal(await settings.getSetting(`website_login_state.${login.id}`), undefined);
+  });
 });

@@ -99,6 +99,27 @@ async function createAgent(
   assert.equal(response.status, 201, await response.text());
 }
 
+async function createAgentWithLogins(
+  f: Fixture,
+  who: Who,
+  id: string,
+  websiteLogins: Array<{ loginId: string; level: 'check' | 'act'; enabled: boolean }>,
+): Promise<Response> {
+  return f.call(who, '/admin/api/agents', {
+    method: 'POST',
+    body: {
+      id,
+      name: id.replace('agent_', 'Agent '),
+      handle: id.replace('agent_', ''),
+      editPolicy: 'all_workspace_members',
+      instructions: 'Help.',
+      enabled: true,
+      model: 'local-stub/admin-agent',
+      websiteLogins,
+    },
+  });
+}
+
 async function addLogin(
   f: Fixture,
   who: Who,
@@ -237,20 +258,12 @@ test('DELETE removes the grant and deletes the login only when no other Agent us
   const f = fixture();
   try {
     await createAgent(f, 'agent_one');
-    await createAgent(f, 'agent_two');
     const created = await addLogin(f, 'admin', 'agent_one', teamLogin);
     const loginId = String(((await created.json()) as { login: { loginId: string } }).login.loginId);
 
-    // Share the login with agent_two through a whole-Agent PATCH.
-    const two = await f.store.getAgent('agent_two');
-    const patched = await f.call('admin', '/admin/api/agents/agent_two', {
-      method: 'PATCH',
-      body: {
-        expectedRevision: two.revision,
-        websiteLogins: [{ loginId, level: 'act', enabled: true }],
-      },
-    });
-    assert.equal(patched.status, 200, await patched.clone().text());
+    // Share the login with agent_two by creating it with the grant.
+    const shared = await createAgentWithLogins(f, 'admin', 'agent_two', [{ loginId, level: 'act', enabled: true }]);
+    assert.equal(shared.status, 201, await shared.clone().text());
 
     // A member editor may not remove a team login's grant.
     const memberDelete = await f.call('ana', `/admin/api/agents/agent_one/website-logins/${loginId}`, { method: 'DELETE' });
@@ -292,7 +305,7 @@ test('the owning member may delete a personal login grant; another member may no
   }
 });
 
-test('whole-Agent PATCH round-trips grants and cannot widen access to logins the editor cannot manage', async () => {
+test('whole-Agent PATCH leaves grants alone, and creating an Agent cannot widen access to logins the creator cannot manage', async () => {
   const f = fixture();
   try {
     await createAgent(f, 'agent_one');
@@ -303,70 +316,44 @@ test('whole-Agent PATCH round-trips grants and cannot widen access to logins the
     const agent = await f.store.getAgent('agent_one');
     assert.deepEqual(agent.websiteLogins, [{ loginId, level: 'check', enabled: true }]);
 
-    // Round trip: the grants come back unchanged through any editor's PATCH.
-    const unchanged = await f.call('bo', '/admin/api/agents/agent_one', {
-      method: 'PATCH',
-      body: { expectedRevision: agent.revision, instructions: 'Help more.', websiteLogins: agent.websiteLogins },
-    });
-    assert.equal(unchanged.status, 200, await unchanged.clone().text());
-    const afterUnchanged = await f.store.getAgent('agent_one');
-    assert.deepEqual(afterUnchanged.websiteLogins, agent.websiteLogins);
-
-    // Bo cannot raise Ana's personal login to act, or add it to another Agent.
-    const raise = await f.call('bo', '/admin/api/agents/agent_one', {
+    // Grants change only through the website-logins routes: a whole-Agent
+    // PATCH carrying them saves its other fields and ignores the grants.
+    const ignored = await f.call('bo', '/admin/api/agents/agent_one', {
       method: 'PATCH',
       body: {
-        expectedRevision: afterUnchanged.revision,
+        expectedRevision: agent.revision,
+        instructions: 'Help more.',
         websiteLogins: [{ loginId, level: 'act', enabled: true }],
       },
     });
-    assert.equal(raise.status, 403);
-    // Unknown logins cannot be granted.
-    const unknown = await f.call('owner', '/admin/api/agents/agent_one', {
-      method: 'PATCH',
-      body: {
-        expectedRevision: afterUnchanged.revision,
-        websiteLogins: [{ loginId: `wl_${'e'.repeat(32)}`, level: 'check', enabled: true }],
-      },
-    });
-    assert.equal(unknown.status, 403);
-    // Narrowing is always allowed.
-    const disable = await f.call('bo', '/admin/api/agents/agent_one', {
-      method: 'PATCH',
-      body: {
-        expectedRevision: afterUnchanged.revision,
-        websiteLogins: [{ loginId, level: 'check', enabled: false }],
-      },
-    });
-    assert.equal(disable.status, 200);
-    const disabled = await f.store.getAgent('agent_one');
+    assert.equal(ignored.status, 200, await ignored.clone().text());
+    const afterPatch = await f.store.getAgent('agent_one');
+    assert.equal(afterPatch.instructions, 'Help more.');
+    assert.deepEqual(afterPatch.websiteLogins, agent.websiteLogins);
+
+    // A disabled grant is not counted in the Agent's preview.
+    const disabled = await f.store.updateAgent('agent_one', {
+      websiteLogins: [{ loginId, level: 'check', enabled: false }],
+    }, afterPatch.revision);
     assert.deepEqual(disabled.websiteLogins, [{ loginId, level: 'check', enabled: false }]);
     const projected = await (await f.call('owner', '/admin/api/agents/agent_one')).json() as { agent: Record<string, any> };
     assert.equal(projected.agent.capabilityPreviews.websiteLogins, 0);
 
-    // Ana, who owns it, can raise it.
-    const anaRaise = await f.call('ana', '/admin/api/agents/agent_one', {
-      method: 'PATCH',
-      body: {
-        expectedRevision: disabled.revision,
-        websiteLogins: [{ loginId, level: 'act', enabled: true }],
-      },
-    });
-    assert.equal(anaRaise.status, 200);
-
+    // Bo cannot grant Ana's personal login to a new Agent; unknown logins cannot be granted.
+    assert.equal((await createAgentWithLogins(f, 'bo', 'agent_bo_plain', [])).status, 201);
+    assert.equal((await createAgentWithLogins(f, 'bo', 'agent_bo', [{ loginId, level: 'check', enabled: true }])).status, 403);
+    assert.equal((await createAgentWithLogins(f, 'owner', 'agent_unknown', [
+      { loginId: `wl_${'e'.repeat(32)}`, level: 'check', enabled: true },
+    ])).status, 403);
     // Duplicate grants are rejected by validation.
-    const latest = await f.store.getAgent('agent_one');
-    const duplicate = await f.call('owner', '/admin/api/agents/agent_one', {
-      method: 'PATCH',
-      body: {
-        expectedRevision: latest.revision,
-        websiteLogins: [
-          { loginId, level: 'act', enabled: true },
-          { loginId, level: 'check', enabled: true },
-        ],
-      },
-    });
-    assert.equal(duplicate.status, 400);
+    assert.equal((await createAgentWithLogins(f, 'owner', 'agent_duplicate', [
+      { loginId, level: 'act', enabled: true },
+      { loginId, level: 'check', enabled: true },
+    ])).status, 400);
+    // Ana, who owns it, can.
+    const anaCreate = await createAgentWithLogins(f, 'ana', 'agent_ana', [{ loginId, level: 'act', enabled: true }]);
+    assert.equal(anaCreate.status, 201, await anaCreate.clone().text());
+    assert.deepEqual((await f.store.getAgent('agent_ana')).websiteLogins, [{ loginId, level: 'act', enabled: true }]);
   } finally {
     f.close();
   }

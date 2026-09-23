@@ -5837,8 +5837,8 @@
     return '<div class="connection-account-owner" aria-labelledby="connection-account-owner-title">' +
       '<div class="connection-account-owner-head"><span class="field-label" id="connection-account-owner-title">Who uses this connection?</span><p class="hint">Pick one to continue.</p></div>' +
       '<div class="connection-account-owner-options" role="radiogroup" aria-labelledby="connection-account-owner-title">' +
-        '<label class="connection-account-owner-option"><input type="radio" name="connection-account-owner" value="member" data-action="connection-account-owner"' + (form.ownerKind === "member" ? " checked" : "") + '><span class="connection-account-owner-radio" aria-hidden="true"></span><span class="connection-account-owner-icon connection-account-owner-icon-personal" aria-hidden="true">' + icon("user") + '</span><span class="connection-account-owner-copy"><strong>Personal</strong><span>Each person signs in with their own account. ' + esc(agentName) + ' uses yours only for your requests.</span></span></label>' +
-        '<label class="connection-account-owner-option"><input type="radio" name="connection-account-owner" value="team" data-action="connection-account-owner"' + (form.ownerKind === "team" ? " checked" : "") + '><span class="connection-account-owner-radio" aria-hidden="true"></span><span class="connection-account-owner-icon connection-account-owner-icon-team" aria-hidden="true">' + icon("user-group") + '</span><span class="connection-account-owner-copy"><strong>Team</strong><span>One shared account for everyone who can use ' + esc(agentName) + '.</span></span></label>' +
+        websiteLoginRadioHtml("connection-account-owner", "member", form.ownerKind === "member", false, "user", "connection-account-owner-icon-personal", "Personal", "Each person signs in with their own account. " + esc(agentName) + " uses yours only for your requests.") +
+        websiteLoginRadioHtml("connection-account-owner", "team", form.ownerKind === "team", false, "user-group", "connection-account-owner-icon-team", "Team", "One shared account for everyone who can use " + esc(agentName) + ".") +
       '</div></div>';
   }
 
@@ -6662,7 +6662,7 @@
     var code = error && error.message;
     var field = error && error.payload && error.payload.field;
     if (code === "invalid_host" || field === "invalid_host") return WEBSITE_LOGIN_HOST_ERROR;
-    if (code === "login_limit" || code === "website_login_limit") return "The limit of website logins has been reached. Remove one first.";
+    if (code === "website_login_limit") return "The limit of website logins has been reached. Remove one first.";
     if (field === "invalid_totp_seed") return "That one-time code secret doesn't look right. Paste the setup key exactly as the site shows it.";
     return "The login could not be saved. Try again.";
   }
@@ -8529,6 +8529,9 @@
     var total = Math.max(0, Math.floor(Number(seconds) || 0));
     var hours = Math.floor(total / 3600);
     var minutes = Math.floor((total % 3600) / 60);
+    if (total === 0) return "none yet";
+    if (hours === 0 && minutes === 0) return total + " s";
+    if (hours === 0) return minutes + " m";
     return hours + " h " + minutes + " m";
   }
 
@@ -14094,6 +14097,7 @@
       render();
       return;
     }
+    if (state.websiteLoginDialog && trapModalTab(event, '[data-role="website-login-dialog"]')) return;
     if (state.agentScheduleDeleteConfirm) {
       if (trapModalTab(event, '[data-role="agent-schedule-delete-dialog"]')) return;
       if (event.key === "Escape" || event.key === "Esc") {

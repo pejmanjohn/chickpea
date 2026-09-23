@@ -2,6 +2,7 @@ import { resolveBrowserActionReply } from '../browser/actions.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
 import { slackBrowserActionReply } from './interaction-intent.ts';
+import { conversationThreadTs } from './thread-key.ts';
 import type { NormalizedSlackTurn } from './types.ts';
 
 /**
@@ -23,14 +24,12 @@ export async function admitSlackBrowserActionReply(input: {
   const { turn } = input;
   const answer = await resolveBrowserActionReply({
     settings: input.settings,
-    text: word,
+    word,
     scope: {
       workspaceId: turn.workspaceId,
       channelId: turn.channelId,
       // The same thread coordinate the Agent's Slack signal carries.
-      threadTs: input.assignment.runtimeContract === 'chickpea-v1'
-        ? turn.threadTs
-        : turn.sessionThreadTs ?? turn.threadTs,
+      threadTs: conversationThreadTs(turn, input.assignment.runtimeContract),
       agentId: input.assignment.agent.id,
       actorSlackUserId: turn.userId,
       ...(input.actorMembershipId ? { actorMembershipId: input.actorMembershipId } : {}),

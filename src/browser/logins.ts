@@ -6,18 +6,24 @@ import {
   encryptSlackSecretEnvelope,
   type CredentialKeyring,
   type SlackSecretEnvelopeContext,
+  workspaceCredentialContext,
 } from '../slack/secret-envelope.ts';
+import { updateJsonSetting } from '../config/setting-string-set.ts';
 
 /**
  * Website logins: a person's sign-in to a website, which Agents granted it can
- * use in the hosted browser. Metadata (host, label, owner, username) lives in
- * one bounded settings row; each login's password and optional TOTP seed live
- * only as an encrypted credential revision. Nothing here returns or logs a
- * password or TOTP seed except `readWebsiteLoginSecrets`, the call-time reader.
+ * use in the hosted browser. Admin-owned metadata (host, label, owner,
+ * username) lives in one bounded catalog row; the runtime state the browser
+ * tools write (saved context, open hand-off, last use) lives in one small row
+ * per login, so a busy login never rewrites the catalog. Each login's password
+ * and optional TOTP seed live only as an encrypted credential revision.
+ * Nothing here returns or logs a password or TOTP seed except
+ * `readWebsiteLoginSecrets`, the call-time reader.
  */
 
 export const WEBSITE_LOGINS_SETTING = 'browser.logins.v1';
 export const MAX_WEBSITE_LOGINS = 100;
+const STATE_KEY_PREFIX = 'website_login_state.';
 const MAX_CAS_ATTEMPTS = 12;
 const SECRET_KEY_PREFIX = 'website_login.';
 const CREDENTIAL_IDENTITY_ID = 'website_login';
@@ -33,7 +39,10 @@ const MAX_PASSWORD_LENGTH = 1_024;
 export type WebsiteLoginOwnerKind = 'team' | 'member';
 export type WebsiteLoginMethod = 'credentials' | 'handoff';
 
-/** Metadata only. Secrets are never part of this shape. */
+/**
+ * Metadata only, with the login's runtime state joined in. Secrets are never
+ * part of this shape.
+ */
 export interface WebsiteLogin {
   id: string;
   /** Lowercase hostname, with an explicit non-default port when one was given. */
@@ -56,6 +65,9 @@ export interface WebsiteLogin {
   createdAt: number;
   lastUsedAt?: number;
 }
+
+/** The runtime fields, stored apart from the catalog row. */
+type WebsiteLoginState = Pick<WebsiteLogin, 'contextId' | 'handoffSessionId' | 'lastUsedAt'>;
 
 export interface WebsiteLoginSecrets {
   username: string;
@@ -156,7 +168,10 @@ export function normalizeWebsiteLoginHost(raw: string): string {
 }
 
 export async function listWebsiteLogins(store: SettingsStore): Promise<WebsiteLogin[]> {
-  return parseLogins(await store.getSetting(WEBSITE_LOGINS_SETTING));
+  const logins = parseLogins(await store.getSetting(WEBSITE_LOGINS_SETTING));
+  if (!logins.length) return logins;
+  const states = await store.getSettings(logins.map((login) => stateKey(login.id)));
+  return logins.map((login, index) => withState(login, states[index]));
 }
 
 export async function getWebsiteLogin(
@@ -164,7 +179,9 @@ export async function getWebsiteLogin(
   id: string,
 ): Promise<WebsiteLogin | undefined> {
   if (!LOGIN_ID_PATTERN.test(id)) return undefined;
-  return (await listWebsiteLogins(store)).find((login) => login.id === id);
+  const [catalog, state] = await store.getSettings([WEBSITE_LOGINS_SETTING, stateKey(id)]);
+  const login = parseLogins(catalog).find((entry) => entry.id === id);
+  return login && withState(login, state);
 }
 
 /**
@@ -297,8 +314,9 @@ export async function readWebsiteLoginSecrets(
 }
 
 /**
- * Delete a login: metadata first (so no reader can reach the secret), then
- * its secret. A missing secret is fine. Returns whether metadata existed.
+ * Delete a login: metadata and runtime state first (so no reader can reach
+ * the secret), then its secret. A missing secret is fine. Returns whether
+ * metadata existed.
  */
 export async function deleteWebsiteLogin(
   deps: Pick<WebsiteLoginDependencies, 'store'>,
@@ -309,7 +327,7 @@ export async function deleteWebsiteLogin(
   const outcome = await updateLogins(deps.store, (logins) => {
     const next = logins.filter((login) => login.id !== id);
     existed = next.length !== logins.length;
-    return existed ? { next } : {};
+    return existed ? { next, delete: [stateKey(id)] } : {};
   });
   if (outcome instanceof Error) throw outcome;
   const active = await deps.store.getEncryptedCredentialRevision(secretKey(id));
@@ -329,7 +347,7 @@ export async function touchWebsiteLoginUsed(
   id: string,
   at: number,
 ): Promise<boolean> {
-  return patchLogin(store, id, (login) => ({ ...login, lastUsedAt: at }));
+  return patchLoginState(store, id, (state) => ({ ...state, lastUsedAt: at }));
 }
 
 /** Remember the hosted-browser context holding this login's session. */
@@ -341,7 +359,7 @@ export async function setWebsiteLoginContext(
   if (!BROWSER_CONTEXT_ID_PATTERN.test(contextId)) {
     throw new WebsiteLoginInputError('invalid_context');
   }
-  return patchLogin(store, id, (login) => ({ ...login, contextId }));
+  return patchLoginState(store, id, (state) => ({ ...state, contextId }));
 }
 
 /** Remember (or, with undefined, forget) a hand-off session still open for this login. */
@@ -353,8 +371,8 @@ export async function setWebsiteLoginHandoff(
   if (sessionId !== undefined && !BROWSER_CONTEXT_ID_PATTERN.test(sessionId)) {
     throw new WebsiteLoginInputError('invalid_context');
   }
-  return patchLogin(store, id, (login) => {
-    const { handoffSessionId: _previous, ...rest } = login;
+  return patchLoginState(store, id, (state) => {
+    const { handoffSessionId: _previous, ...rest } = state;
     return sessionId === undefined ? rest : { ...rest, handoffSessionId: sessionId };
   });
 }
@@ -401,15 +419,17 @@ function secretContextId(id: string): string {
 }
 
 function credentialContext(contextId: string, revision: string): SlackSecretEnvelopeContext {
-  return {
-    deploymentId: contextId,
+  return workspaceCredentialContext({
+    contextId,
     identityId: CREDENTIAL_IDENTITY_ID,
-    identityClass: 'workspace_installation',
     appId: CREDENTIAL_APP_ID,
-    teamId: null,
     purpose: 'website_login',
     revision,
-  };
+  });
+}
+
+function stateKey(id: string): string {
+  return `${STATE_KEY_PREFIX}${id}`;
 }
 
 function normalizeTotpSeed(raw: string): string | undefined {
@@ -424,23 +444,27 @@ function randomHex(): string {
   return crypto.randomUUID().replaceAll('-', '');
 }
 
-async function patchLogin(
+/**
+ * Compare-and-set one login's runtime state row. Returns false when the login
+ * is gone. A login whose state still sits in its catalog entry (written before
+ * the state row existed) starts from that entry.
+ */
+async function patchLoginState(
   store: SettingsStore,
   id: string,
-  change: (login: WebsiteLogin) => WebsiteLogin,
+  change: (state: WebsiteLoginState) => WebsiteLoginState,
 ): Promise<boolean> {
   if (!LOGIN_ID_PATTERN.test(id)) return false;
-  let found = false;
-  const outcome = await updateLogins(store, (logins) => {
-    const index = logins.findIndex((login) => login.id === id);
-    found = index >= 0;
-    if (!found) return {};
-    const next = [...logins];
-    next[index] = change(logins[index]!);
-    return { next };
-  });
-  if (outcome instanceof Error) throw outcome;
-  return found;
+  const login = parseLogins(await store.getSetting(WEBSITE_LOGINS_SETTING)).find((entry) => entry.id === id);
+  if (!login) return false;
+  const written = await updateJsonSetting<WebsiteLoginState>(
+    store,
+    stateKey(id),
+    (current) => change(current ?? stateOf(login)),
+    parseState,
+  );
+  if (!written) throw new WebsiteLoginStateError();
+  return true;
 }
 
 /**
@@ -449,7 +473,7 @@ async function patchLogin(
  */
 async function updateLogins(
   store: SettingsStore,
-  step: (logins: WebsiteLogin[]) => { next?: WebsiteLogin[]; error?: Error },
+  step: (logins: WebsiteLogin[]) => { next?: WebsiteLogin[]; delete?: string[]; error?: Error },
 ): Promise<Error | undefined> {
   for (let attempt = 0; attempt < MAX_CAS_ATTEMPTS; attempt += 1) {
     const raw = await store.getSetting(WEBSITE_LOGINS_SETTING);
@@ -459,6 +483,7 @@ async function updateLogins(
     const applied = await store.applySettingsPatch({
       expected: { key: WEBSITE_LOGINS_SETTING, value: raw ?? null },
       set: [{ key: WEBSITE_LOGINS_SETTING, value: JSON.stringify(result.next) }],
+      ...(result.delete ? { delete: result.delete } : {}),
     });
     if (applied) return undefined;
   }
@@ -478,6 +503,40 @@ function parseLogins(raw: string | undefined): WebsiteLogin[] {
     const login = parseLogin(entry);
     return login ? [login] : [];
   }).slice(0, MAX_WEBSITE_LOGINS);
+}
+
+/** The catalog entry with its state row applied; no row keeps the entry's own (older) fields. */
+function withState(login: WebsiteLogin, raw: string | undefined): WebsiteLogin {
+  const state = raw === undefined ? undefined : parseState(raw);
+  if (!state) return login;
+  const { contextId: _context, handoffSessionId: _handoff, lastUsedAt: _used, ...catalog } = login;
+  return { ...catalog, ...state };
+}
+
+function stateOf(login: WebsiteLogin): WebsiteLoginState {
+  return {
+    ...(login.contextId ? { contextId: login.contextId } : {}),
+    ...(login.handoffSessionId ? { handoffSessionId: login.handoffSessionId } : {}),
+    ...(login.lastUsedAt !== undefined ? { lastUsedAt: login.lastUsedAt } : {}),
+  };
+}
+
+function parseState(raw: string): WebsiteLoginState | undefined {
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  return {
+    ...(typeof record.contextId === 'string' && record.contextId ? { contextId: record.contextId } : {}),
+    ...(typeof record.handoffSessionId === 'string' && record.handoffSessionId
+      ? { handoffSessionId: record.handoffSessionId }
+      : {}),
+    ...(typeof record.lastUsedAt === 'number' ? { lastUsedAt: record.lastUsedAt } : {}),
+  };
 }
 
 function parseLogin(value: unknown): WebsiteLogin | undefined {
@@ -501,6 +560,7 @@ function parseLogin(value: unknown): WebsiteLogin | undefined {
   const ownerMembershipId = text('ownerMembershipId');
   if (ownerKind === 'member' && !ownerMembershipId) return undefined;
   const username = text('username');
+  // Runtime fields now live in the state row; older catalog entries may still carry them.
   const contextId = text('contextId');
   const handoffSessionId = text('handoffSessionId');
   const lastUsedAt = typeof record.lastUsedAt === 'number' ? record.lastUsedAt : undefined;

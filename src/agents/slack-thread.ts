@@ -181,12 +181,10 @@ import { recordBrowserSessionUsage, resolveBrowserSettings } from '../browser/se
 import { browserSkillForPlan } from '../browser/skill.ts';
 import { listWebsiteLogins, websiteLoginDependencies } from '../browser/logins.ts';
 import { createSlackRequesterNotifier, type SlackRequester } from '../browser/requester.ts';
-import {
-  BROWSER_APPROVAL_ACTIVITY,
-  createBrowserTools,
-  type BrowserApprovalOptions,
-  type BrowserLoginOptions,
-} from '../browser/tools.ts';
+import type { BrowserApprovalOptions } from '../browser/approval.ts';
+import type { BrowserLoginOptions } from '../browser/binding.ts';
+import { BROWSER_APPROVAL_ACTIVITY } from '../browser/messages.ts';
+import { createBrowserTools } from '../browser/tools.ts';
 import { BrowserTurnSession } from '../browser/turn-session.ts';
 import { resolveModelApiKeyForStatelessCall } from '../config/provider-keys.ts';
 import { workspaceSkillForSandbox } from '../sandbox/workspace-skill.ts';
@@ -1540,15 +1538,17 @@ export function useRuntimePlanAgent(
     ].join('\n'));
   }
   const browserSession = browserMounted ? useBrowserSession(id, createRuntimePlanBrowserSession) : undefined;
+  // The delivery's verified Slack signal, parsed once for the two uses below.
+  const browserSignal = browserSession && plan.websiteLogins?.length
+    ? runtimePlanSlackSignal(plan)
+    : undefined;
   // A sign-in hand-off link goes privately to the verified Slack requester;
   // a turn without one (a scheduled run) cannot hand off.
-  const browserRequester = browserSession && plan.websiteLogins?.length
-    ? runtimePlanBrowserRequester(plan)
-    : undefined;
+  const browserRequester = browserSignal ? runtimePlanBrowserRequester(browserSignal) : undefined;
   // Data-changing steps on a login granted `act` wait for the verified Slack
   // requester's "approve"; a turn without one (a scheduled run) cannot ask.
-  const browserApprovals = browserSession && plan.websiteLogins?.some(({ level }) => level === 'act')
-    ? runtimePlanBrowserApprovals(plan, () => {
+  const browserApprovals = browserSignal && plan.websiteLogins?.some(({ level }) => level === 'act')
+    ? runtimePlanBrowserApprovals(plan, browserSignal, () => {
         const [kind, action, object] = BROWSER_APPROVAL_ACTIVITY;
         publishActivityStatus(id, activityStatus(kind, action, object));
       })
@@ -2042,19 +2042,23 @@ export function createRuntimePlanArtifactTools(
 
 type SlackInstallationClient = Awaited<ReturnType<typeof resolveSlackInstallationExecutionContext>>['client'];
 
+type RuntimePlanSlackSignal = NonNullable<ReturnType<typeof parseSlackManagementSignal>>;
+
 /**
- * The Slack person a browser hand-off link may reach: the verified requester
- * of the current delivery, when the delivery is a host-authored Slack signal
- * for this plan's conversation.
+ * The current delivery's host-authored Slack signal for this plan's
+ * conversation, or undefined when there is none (a scheduled run) or it does
+ * not verify.
  */
-function runtimePlanBrowserRequester(plan: RuntimePlanV2): SlackRequester | undefined {
-  let signal: ReturnType<typeof parseSlackManagementSignal>;
+function runtimePlanSlackSignal(plan: RuntimePlanV2): RuntimePlanSlackSignal | undefined {
   try {
-    signal = parseSlackManagementSignal(useDelivery(), plan);
+    return parseSlackManagementSignal(useDelivery(), plan) ?? undefined;
   } catch {
     return undefined;
   }
-  if (!signal) return undefined;
+}
+
+/** The Slack person a browser hand-off link may reach: the verified requester of the delivery. */
+function runtimePlanBrowserRequester(signal: RuntimePlanSlackSignal): SlackRequester {
   return {
     slackUserId: signal.slackUserId,
     channelId: signal.channelId,
@@ -2069,15 +2073,9 @@ function runtimePlanBrowserRequester(plan: RuntimePlanV2): SlackRequester | unde
  */
 function runtimePlanBrowserApprovals(
   plan: RuntimePlanV2,
+  signal: RuntimePlanSlackSignal,
   onAwaitingApproval: () => void,
-): BrowserApprovalOptions | undefined {
-  let signal: ReturnType<typeof parseSlackManagementSignal>;
-  try {
-    signal = parseSlackManagementSignal(useDelivery(), plan);
-  } catch {
-    return undefined;
-  }
-  if (!signal) return undefined;
+): BrowserApprovalOptions {
   return {
     scope: {
       workspaceId: signal.workspaceId,

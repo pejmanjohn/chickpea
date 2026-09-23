@@ -13,7 +13,7 @@ import {
 import type { WebsiteLogin } from '../browser/logins.ts';
 import { opaqueId } from '../work/admission.ts';
 import { BROWSER_TOOL_ACTIVITY } from '../browser/tools.ts';
-import { slackAgentThreadKey } from '../slack/thread-key.ts';
+import { conversationThreadTs, slackAgentThreadKey } from '../slack/thread-key.ts';
 import type { NormalizedSlackTurn } from '../slack/types.ts';
 import {
   MAX_SLACK_PUBLIC_HANDOFF_CHARS,
@@ -300,9 +300,7 @@ export interface RuntimePlanActivityContextOptions {
  * trusted request-time resolvers own the current credential material.
  */
 export function compileRuntimePlanV2(input: CompileRuntimePlanV2Input): RuntimePlanV2 {
-  const conversationThreadTs = input.assignment.runtimeContract === 'chickpea-v1'
-    ? input.turn.threadTs
-    : input.turn.sessionThreadTs ?? input.turn.threadTs;
+  const threadTs = conversationThreadTs(input.turn, input.assignment.runtimeContract);
   const continuityKey = opaqueId('agent', slackAgentThreadKey(input.turn, input.assignment));
   const artifactThreadTs = input.artifactThreadTs === undefined
     ? input.turn.threadTs
@@ -355,7 +353,7 @@ export function compileRuntimePlanV2(input: CompileRuntimePlanV2Input): RuntimeP
     conversation: {
       workspaceId: input.turn.workspaceId,
       channelId: input.turn.channelId,
-      threadTs: conversationThreadTs,
+      threadTs,
       surface: surfaceForTurn(input.turn),
       continuityKey,
     },

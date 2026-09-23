@@ -63,7 +63,7 @@ import { activityStatus, initialActivityStatus } from '../activity/status.ts';
 import { registerSlackStatusTurn } from './status-registry.ts';
 import { currentMessageOnlyContext } from './thread-context.ts';
 import { collectAdmittedSlackListIds } from './lists/admission.ts';
-import { slackAgentThreadKey, slackConversationKind } from './thread-key.ts';
+import { conversationThreadTs, slackAgentThreadKey, slackConversationKind } from './thread-key.ts';
 import { slackTimestampMs } from './timestamp.ts';
 import { assembleRetainedSlackContext, formatSlackPublicHandoff } from './public-context.ts';
 import type { NormalizedSlackTurn } from './types.ts';
@@ -1273,9 +1273,7 @@ export async function runTurn(
         agentId: assignment.agent.id,
         workspaceId: turn.workspaceId,
         channelId: turn.channelId,
-        threadTs: assignment.runtimeContract === 'chickpea-v1'
-          ? turn.threadTs
-          : turn.sessionThreadTs ?? turn.threadTs,
+        threadTs: conversationThreadTs(turn, assignment.runtimeContract),
         conversationKind: slackConversationKind(turn),
         slackUserId: turn.userId,
         eventId: turn.eventId,
@@ -1354,9 +1352,7 @@ export async function runTurn(
           agentId: assignment.agent.id,
           workspaceId: turn.workspaceId,
           channelId: turn.channelId,
-          threadTs: assignment.runtimeContract === 'chickpea-v1'
-            ? turn.threadTs
-            : turn.sessionThreadTs ?? turn.threadTs,
+          threadTs: conversationThreadTs(turn, assignment.runtimeContract),
           conversationKind: slackConversationKind(turn),
           slackUserId: turn.userId,
           eventId: turn.eventId,

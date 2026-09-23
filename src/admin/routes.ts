@@ -567,6 +567,7 @@ import { createBetterAuthEnvironmentPublicHandler } from '../auth/better-auth-ru
 import {
   AuthorizationError,
   canEditAgent,
+  canManageOwnedResource,
   permissionForRole,
   requireAgentEdit,
   requirePermission,
@@ -1359,7 +1360,7 @@ const agentPatchSchema = v.object({
   mcpServers: v.optional(mcpServersSchema),
   apiConnections: v.optional(apiConnectionsSchema),
   repositories: v.optional(repositoriesSchema),
-  websiteLogins: v.optional(websiteLoginsSchema),
+  // Website-login grants change only through /agents/:id/website-logins.
 });
 
 const agentMemorySchema = v.strictObject({
@@ -8536,7 +8537,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const login = (await listWebsiteLogins(websiteLoginSettings(c)))
         .find((candidate) => candidate.id === loginId);
       // A grant whose login is already gone is removable by any editor.
-      if (login && !canManageWebsiteLogin(principal, login)) throw new AuthorizationError();
+      if (login && !canManageOwnedResource(principal, login)) throw new AuthorizationError();
       await updateAgentWebsiteLogins(c, agentId, (grants) => {
         const next = grants.filter((grant) => grant.loginId !== loginId);
         return next.length === grants.length ? undefined : next;
@@ -8948,14 +8949,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         );
       }
       const patch = toAgentPatch(parsed.output);
-      if (patch.websiteLogins && websiteLoginGrantWidensWithoutAuthority(
-        principal,
-        current.websiteLogins ?? [],
-        patch.websiteLogins,
-        await listWebsiteLogins(websiteLoginSettings(c)),
-      )) {
-        throw new AuthorizationError();
-      }
       if (parsed.output.handle !== undefined) {
         const requestedHandle = parsed.output.handle;
         const presence = current.slackPresence;
@@ -11667,17 +11660,11 @@ function toWebsiteLogins(
   }));
 }
 
-/** requireManage semantics for a website login: Owners/Admins, or the owning member. */
-function canManageWebsiteLogin(principal: AuthPrincipal, login: WebsiteLogin): boolean {
-  if (principal.role === 'owner' || principal.role === 'admin') return true;
-  return login.ownerKind === 'member' && login.ownerMembershipId === principal.membershipId;
-}
-
 /**
  * Agent editors may always narrow website-login access (remove, disable, or
  * lower a grant). Anything that widens it — a new grant, re-enabling one, or
  * raising `check` to `act` — must name an existing login the principal can
- * manage, so an Agent PATCH cannot reach another member's personal login.
+ * manage, so creating an Agent cannot reach another member's personal login.
  */
 function websiteLoginGrantWidensWithoutAuthority(
   principal: AuthPrincipal | undefined,
@@ -11694,7 +11681,7 @@ function websiteLoginGrantWidensWithoutAuthority(
     );
     if (!widens) return false;
     const login = byId.get(grant.loginId);
-    return !login || !principal || !canManageWebsiteLogin(principal, login);
+    return !login || !principal || !canManageOwnedResource(principal, login);
   });
 }
 
@@ -11704,14 +11691,12 @@ function projectAgentWebsiteLogins(
   principal: AuthPrincipal,
 ) {
   const byId = new Map(logins.map((login) => [login.id, login]));
-  const privileged = principal.role === 'owner' || principal.role === 'admin';
   return (grants ?? []).flatMap((grant) => {
     const login = byId.get(grant.loginId);
     if (!login) return [];
     // Mirror connection accounts: another member's personal login stays
     // private to that member (and to Owners/Admins, who can manage it).
-    if (login.ownerKind === 'member' && !privileged &&
-        login.ownerMembershipId !== principal.membershipId) return [];
+    if (login.ownerKind === 'member' && !canManageOwnedResource(principal, login)) return [];
     return [websiteLoginView(login, grant)];
   });
 }
@@ -11751,9 +11736,6 @@ function toAgentPatch(input: v.InferOutput<typeof agentPatchSchema>): AgentPatch
   }
   if (input.repositories !== undefined) {
     patch.repositories = toRepositories(input.repositories);
-  }
-  if (input.websiteLogins !== undefined) {
-    patch.websiteLogins = toWebsiteLogins(input.websiteLogins);
   }
   return patch;
 }

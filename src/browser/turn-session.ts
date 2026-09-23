@@ -305,12 +305,4 @@ export class BrowserTurnSession {
     if (this.deps.onClosed) await this.deps.onClosed(info).catch(() => undefined);
     return info;
   }
-
-  /**
-   * Ends the session so its recording can be finalized. Returns the ended
-   * session, or undefined when nothing was open.
-   */
-  async release(): Promise<BrowserSessionClosedInfo | undefined> {
-    return this.close();
-  }
 }

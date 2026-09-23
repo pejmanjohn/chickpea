@@ -4,7 +4,6 @@ import test from 'node:test';
 import {
   BROWSER_ACTION_TTL_MS,
   BrowserActionError,
-  browserActionReplyWord,
   claimApprovedBrowserAction,
   createBrowserAction,
   getBrowserAction,
@@ -48,10 +47,10 @@ async function pending(settings: SqliteSettingsStore, overrides: Partial<Paramet
 
 test('the reply word is exactly approve or stop, with an optional trailing period', () => {
   for (const text of ['approve', 'Approve', 'APPROVE.', ' approve ', 'stop', 'Stop.']) {
-    assert.ok(browserActionReplyWord(text), text);
+    assert.ok(slackBrowserActionReply(text), text);
   }
   for (const text of ['approved', 'approve!', 'approve it', 'yes', 'stop now', 'ok approve', 'approve..']) {
-    assert.equal(browserActionReplyWord(text), undefined, text);
+    assert.equal(slackBrowserActionReply(text), undefined, text);
   }
   assert.equal(slackBrowserActionReply('<@U123> Approve.'), 'approve');
   assert.equal(slackBrowserActionReply('stop'), 'stop');
@@ -73,14 +72,13 @@ test('a pending action is approved by the same person in the same thread, then c
     { ...SCOPE, agentId: 'agent_other' },
     { ...SCOPE, channelId: 'C_OTHER' },
   ]) {
-    assert.equal(await resolveBrowserActionReply({ settings, text: 'approve', scope, messageTs: '1800000001.000100', now: T0 + 1 }), undefined);
+    assert.equal(await resolveBrowserActionReply({ settings, word: 'approve', scope, messageTs: '1800000001.000100', now: T0 + 1 }), undefined);
   }
-  assert.equal(await resolveBrowserActionReply({ settings, text: 'sure', scope: SCOPE, messageTs: '1800000001.000100', now: T0 + 1 }), undefined);
 
-  const answer = await resolveBrowserActionReply({ settings, text: 'approve', scope: SCOPE, messageTs: '1800000001.000100', now: T0 + 1 });
+  const answer = await resolveBrowserActionReply({ settings, word: 'approve', scope: SCOPE, messageTs: '1800000001.000100', now: T0 + 1 });
   assert.deepEqual(answer, { kind: 'approved', id: record.id });
   // A second "approve" finds nothing pending.
-  assert.equal(await resolveBrowserActionReply({ settings, text: 'approve', scope: SCOPE, messageTs: '1800000002.000100', now: T0 + 2 }), undefined);
+  assert.equal(await resolveBrowserActionReply({ settings, word: 'approve', scope: SCOPE, messageTs: '1800000002.000100', now: T0 + 2 }), undefined);
 
   // Only the turn for the approving message may claim it, and only once.
   await assert.rejects(
@@ -110,12 +108,12 @@ test('stop spends a pending action, and a newer question replaces the older one'
   const second = await pending(settings, { ref: 'e9', description: 'click "Delete"' });
   // The thread points at the newest question; the older one cannot be approved.
   assert.deepEqual(
-    await resolveBrowserActionReply({ settings, text: 'Stop.', scope: SCOPE, messageTs: '1800000001.000100', now: T0 + 1 }),
+    await resolveBrowserActionReply({ settings, word: 'stop', scope: SCOPE, messageTs: '1800000001.000100', now: T0 + 1 }),
     { kind: 'stopped', id: second.id },
   );
   assert.equal((await getBrowserAction(settings, second.id))?.status, 'consumed');
   assert.equal((await getBrowserAction(settings, first.id))?.status, 'pending');
-  assert.equal(await resolveBrowserActionReply({ settings, text: 'approve', scope: SCOPE, messageTs: '1800000002.000100', now: T0 + 2 }), undefined);
+  assert.equal(await resolveBrowserActionReply({ settings, word: 'approve', scope: SCOPE, messageTs: '1800000002.000100', now: T0 + 2 }), undefined);
   await assert.rejects(
     claimApprovedBrowserAction({ settings, id: first.id, scope: SCOPE, messageTs: '1800000002.000100', now: T0 + 2 }),
     (error: unknown) => error instanceof BrowserActionError && error.code === 'not_approved',
@@ -127,13 +125,13 @@ test('actions expire after 15 minutes, before or after approval, and the sweep c
   const settings = new SqliteSettingsStore(':memory:');
   const late = await pending(settings);
   assert.equal(
-    await resolveBrowserActionReply({ settings, text: 'approve', scope: SCOPE, messageTs: '1800000001.000100', now: T0 + BROWSER_ACTION_TTL_MS }),
+    await resolveBrowserActionReply({ settings, word: 'approve', scope: SCOPE, messageTs: '1800000001.000100', now: T0 + BROWSER_ACTION_TTL_MS }),
     undefined,
   );
   assert.equal((await getBrowserAction(settings, late.id))?.status, 'expired');
 
   const approvedLate = await pending(settings);
-  await resolveBrowserActionReply({ settings, text: 'approve', scope: SCOPE, messageTs: '1800000002.000100', now: T0 + 1 });
+  await resolveBrowserActionReply({ settings, word: 'approve', scope: SCOPE, messageTs: '1800000002.000100', now: T0 + 1 });
   await assert.rejects(
     claimApprovedBrowserAction({ settings, id: approvedLate.id, scope: SCOPE, messageTs: '1800000002.000100', now: T0 + BROWSER_ACTION_TTL_MS + 1 }),
     (error: unknown) => error instanceof BrowserActionError && error.code === 'expired',
@@ -141,6 +139,9 @@ test('actions expire after 15 minutes, before or after approval, and the sweep c
   assert.equal((await getBrowserAction(settings, approvedLate.id))?.status, 'expired');
 
   const stale = await pending(settings);
+  // A small index is left for later: claims enforce expiry on their own.
+  assert.deepEqual(await sweepBrowserActions({ settings, now: T0 + 3 * 60 * 60_000, minIndexSize: 3 }), { expired: 0, removed: 0 });
+  assert.equal((await getBrowserAction(settings, stale.id))?.status, 'pending');
   assert.deepEqual(await sweepBrowserActions({ settings, now: T0 + BROWSER_ACTION_TTL_MS + 5 }), { expired: 1, removed: 0 });
   assert.equal((await getBrowserAction(settings, stale.id))?.status, 'expired');
   // Settled records are deleted after the retention window, with their thread pointer.

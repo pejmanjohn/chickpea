@@ -62,11 +62,11 @@ test('close is idempotent, ends the session once, and reports its duration', asy
   assert.equal(session.active, false);
 });
 
-test('release ends the session and a later ensure starts a new one within the budget', async () => {
+test('close ends the session and a later ensure starts a new one within the budget', async () => {
   const { session, created, advance } = setup();
   await session.ensure();
   advance(60_000);
-  assert.deepEqual(await session.release(), { sessionId: 'sess-1', seconds: 60 });
+  assert.deepEqual(await session.close(), { sessionId: 'sess-1', seconds: 60 });
   const next = await session.ensure();
   assert.equal(next.sessionId, 'sess-2');
   // The second session only gets the remaining budget plus the grace minute.

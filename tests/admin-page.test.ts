@@ -7204,8 +7204,8 @@ function chooseConnectionOwner(
 
 test('Agent connections expose Agent-owned Team and personal accounts with managed Google OAuth', () => {
   const page = renderAdminPage();
-  assert.match(page, />Personal</);
-  assert.match(page, />Team</);
+  assert.match(page, /"connection-account-owner", "member", [^\n]*"Personal"/);
+  assert.match(page, /"connection-account-owner", "team", [^\n]*"Team"/);
   assert.match(page, /Who uses this connection\?/);
   assert.match(page, /Each person signs in with their own account/);
   assert.match(page, /One shared account for everyone who can use/);

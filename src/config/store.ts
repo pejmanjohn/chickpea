@@ -108,10 +108,15 @@ export const CONFIG_CHICKPEA_EXTENSION_MIGRATION = '2026-08-23-chickpea-system-a
 export const CONFIG_CHICKPEA_ROUTING_MIGRATION = '2026-08-24-chickpea-routing-retry-v1';
 export const CONFIG_CHICKPEA_CUTOVER_MIGRATION = '2026-08-24-chickpea-cutover-v1';
 export const CONFIG_MODEL_ROLE_MIGRATION = '2026-09-11-model-roles-v1';
-function parseWebsiteLogins(raw: string | null | undefined): WebsiteLoginGrant[] {
+/**
+ * A stored JSON array column; a missing, malformed, or non-array value reads
+ * as empty. `isItem`, when given, drops entries that do not fit.
+ */
+function parseJsonArray<T>(raw: string | null | undefined, isItem?: (value: unknown) => value is T): T[] {
   try {
     const parsed: unknown = JSON.parse(raw ?? '[]');
-    return Array.isArray(parsed) ? (parsed as WebsiteLoginGrant[]) : [];
+    if (!Array.isArray(parsed)) return [];
+    return isItem ? parsed.filter(isItem) : (parsed as T[]);
   } catch {
     return [];
   }
@@ -3372,9 +3377,9 @@ function rowToAgent(row: AgentRow): CustomAgentConfig {
     ...(row.model ? { model: row.model } : {}),
     skills: JSON.parse(row.skills_json) as CustomAgentConfig['skills'],
     mcpServers: JSON.parse(row.mcp_servers_json) as CustomAgentConfig['mcpServers'],
-    apiConnections: parseApiConnections(row.api_connections_json),
-    repositories: parseRepositories(row.repositories_json),
-    websiteLogins: parseWebsiteLogins(row.website_logins_json),
+    apiConnections: parseJsonArray<CustomAgentConfig['apiConnections'][number]>(row.api_connections_json),
+    repositories: parseJsonArray<CustomAgentConfig['repositories'][number]>(row.repositories_json),
+    websiteLogins: parseJsonArray<WebsiteLoginGrant>(row.website_logins_json),
   };
 }
 
@@ -3792,24 +3797,6 @@ function normalizeScheduleReferenceDestination(input: AgentScheduleReferenceInpu
     throw new Error('A direct schedule requires a valid destination binding');
   }
   return { kind, bindingDigest };
-}
-
-function parseApiConnections(raw: string | null | undefined): CustomAgentConfig['apiConnections'] {
-  try {
-    const parsed: unknown = JSON.parse(raw ?? '[]');
-    return Array.isArray(parsed) ? (parsed as CustomAgentConfig['apiConnections']) : [];
-  } catch {
-    return [];
-  }
-}
-
-function parseRepositories(raw: string | null | undefined): CustomAgentConfig['repositories'] {
-  try {
-    const parsed: unknown = JSON.parse(raw ?? '[]');
-    return Array.isArray(parsed) ? (parsed as CustomAgentConfig['repositories']) : [];
-  } catch {
-    return [];
-  }
 }
 
 function rowToChannel(row: ChannelRow): ChannelConfig {

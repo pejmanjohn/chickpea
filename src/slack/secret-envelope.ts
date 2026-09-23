@@ -26,6 +26,29 @@ export interface SlackSecretEnvelopeContext {
   revision: string;
 }
 
+/**
+ * The envelope context for a workspace-level secret that is not tied to a
+ * Slack team: the context id stands in for the deployment id, and the team
+ * is null.
+ */
+export function workspaceCredentialContext(input: {
+  contextId: string;
+  identityId: string;
+  appId: string;
+  purpose: SlackCredentialPurpose;
+  revision: string;
+}): SlackSecretEnvelopeContext {
+  return {
+    deploymentId: input.contextId,
+    identityId: input.identityId,
+    identityClass: 'workspace_installation',
+    appId: input.appId,
+    teamId: null,
+    purpose: input.purpose,
+    revision: input.revision,
+  };
+}
+
 export interface SlackSecretEnvelope {
   version: typeof SLACK_SECRET_ENVELOPE_VERSION;
   algorithm: typeof SLACK_SECRET_ENVELOPE_ALGORITHM;

@@ -67,6 +67,18 @@ export function canEditAgent(
     agent.editPolicy === 'all_workspace_members';
 }
 
+/**
+ * Who may manage a resource owned by the team or by one member (a connection
+ * account, a website login): Owners and Admins, or the owning member.
+ */
+export function canManageOwnedResource(
+  principal: AuthPrincipal,
+  resource: { ownerKind: 'team' | 'member'; ownerMembershipId?: string | undefined },
+): boolean {
+  if (principal.role === 'owner' || principal.role === 'admin') return true;
+  return resource.ownerKind === 'member' && resource.ownerMembershipId === principal.membershipId;
+}
+
 export function requireAgentEdit(
   principal: AuthPrincipal | undefined,
   agent: AgentAuthorityDescriptor,

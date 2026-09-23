@@ -435,7 +435,7 @@ async function loginSetup(options: {
     ...(login.username ? { username: login.username } : {}),
   });
   const granted = [frozen(github), frozen(portal)];
-  const state = { live: [...granted] };
+  const state = { live: [...granted], reads: 0 };
   const browsers: EchoingLoginBrowser[] = [];
   const fake = fakeBrowserProvider({
     async liveView() {
@@ -466,7 +466,7 @@ async function loginSetup(options: {
     now: () => new Date(Date.UTC(2026, 8, 22, 14, 5)),
     log: { warn: (...args: unknown[]) => { warnings.push(args); } },
     ...(options.withLogins === false ? {} : {
-      logins: { granted, readLive: async () => state.live, dependencies: async () => deps },
+      logins: { granted, readLive: async () => { state.reads += 1; return state.live; }, dependencies: async () => deps },
     }),
     ...(options.notify === false ? {} : { notifyRequester: async (message: { text: string }) => { notices.push(message); } }),
   });
@@ -530,17 +530,36 @@ test('browser_open reuses a stored context, and a loginId must match the site', 
   await secondTurn.session.close();
 });
 
-test('a grant revoked mid-turn refuses the site and closes its signed-in browser', async () => {
+test('a grant revoked mid-turn refuses the site and closes its signed-in browser when it is next bound', async () => {
   const { run, state, github, ended, session } = await loginSetup();
   await run('browser_open', { url: 'https://github.com/' });
   state.live = state.live.filter(({ id }) => id !== github.id);
-  const snapshot = await run('browser_snapshot');
-  assert.match(snapshot.error, /access to that website login was removed.*browser was closed/);
+  // Reading the open page does not re-check grants.
+  assert.ok((await run('browser_snapshot')).snapshot);
+  const reopened = await run('browser_open', { url: 'https://github.com/' });
+  assert.match(reopened.error, /access to that website login was removed.*browser was closed/);
   assert.deepEqual(ended, ['sess-1']);
   assert.equal(session.active, false);
   assert.match((await run('browser_open', { url: 'https://github.com/' })).error, /access to that website login was removed/);
   assert.match((await run('browser_sign_in', { loginId: github.id, passwordRef: 'e2' })).error, /access to that website login was removed/);
   assert.match((await run('browser_handoff', { loginId: github.id, reason: 'x' })).error, /access to that website login was removed/);
+});
+
+test('live grants are read once at mount and again only to bind, sign in, or claim', async () => {
+  const { run, state, github, session } = await loginSetup();
+  await run('browser_open', { url: 'https://github.com/' });
+  // Mount intersection, then the binding check.
+  assert.equal(state.reads, 2);
+  await run('browser_snapshot');
+  await run('browser_screenshot');
+  await run('browser_act', { ref: 'e5', action: 'hover' });
+  assert.equal(state.reads, 2);
+  await run('browser_sign_in', { loginId: github.id, passwordRef: 'e3' });
+  assert.equal(state.reads, 3);
+  // Opening another page on the bound site re-checks once.
+  await run('browser_open', { url: 'https://github.com/settings' });
+  assert.equal(state.reads, 4);
+  await session.close();
 });
 
 test('browser_sign_in types the stored secrets through fillSecret and never leaks them', async () => {
@@ -805,6 +824,7 @@ async function actTurn(options: {
   });
   const staged: SlackArtifactStageInput[] = [];
   let waiting = 0;
+  let liveReads = 0;
   const tools = createBrowserTools({
     session,
     stageArtifact: async (input) => {
@@ -814,7 +834,7 @@ async function actTurn(options: {
     transportMaxBytes: async () => undefined,
     sleep: async () => undefined,
     now: () => new Date(Date.UTC(2026, 8, 22, 14, 5)),
-    logins: { granted, readLive: async () => live, dependencies: async () => deps },
+    logins: { granted, readLive: async () => { liveReads += 1; return live; }, dependencies: async () => deps },
     ...(options.approvals === false ? {} : {
       approvals: {
         scope: {
@@ -836,14 +856,14 @@ async function actTurn(options: {
     });
     return JSON.parse(JSON.stringify(result.output));
   };
-  return { run, session, browsers, staged, billing, waiting: () => waiting, ...fake };
+  return { run, session, browsers, staged, billing, waiting: () => waiting, liveReads: () => liveReads, ...fake };
 }
 
 async function approveFromSlack(settings: SqliteSettingsStore, messageTs: string) {
   const { resolveBrowserActionReply } = await import('../src/browser/actions.ts');
   return resolveBrowserActionReply({
     settings,
-    text: 'approve',
+    word: 'approve',
     scope: {
       workspaceId: 'T_TEST', channelId: 'C_TEST', threadTs: '1800000000.000100', agentId: 'agent_ops',
       actorSlackUserId: 'U_ASKER', actorMembershipId: 'membership_asker',
@@ -878,7 +898,10 @@ test('an action login holds a data-changing step for approval with a screenshot,
   await ask.run('browser_act', { ref: 'e1', action: 'type', text: 'Ada Lovelace' });
   assert.deepEqual(ask.browsers[0]!.inserted, ['Ada Lovelace']);
 
+  const readsBeforeAsking = ask.liveReads();
   const held = await ask.run('browser_act', { ref: 'e3', action: 'click', mayChangeData: true });
+  // Asking relies on the grants read at mount and binding.
+  assert.equal(ask.liveReads(), readsBeforeAsking);
   assert.deepEqual(Object.keys(held).sort(), ['actionId', 'awaitingApproval', 'description', 'instruction']);
   assert.equal(held.awaitingApproval, true);
   assert.match(held.actionId, /^[a-f0-9]{32}$/);
@@ -902,6 +925,8 @@ test('an action login holds a data-changing step for approval with a screenshot,
   const approved = await actTurn({ settings, messageTs: TURN_2_TS, tree: FORM_TREE_SHIFTED });
   const done = await approved.run('browser_act', { ref: 'e3', action: 'click', approvedActionId: held.actionId });
   assert.equal(done.approvedStepTaken, 'click "Confirm change"');
+  // One live read covers the claim and binding the new session.
+  assert.equal(approved.liveReads(), 1);
   assert.match(done.snapshot, /button "Confirm change" \[ref=e4\]/);
   const browser = approved.browsers[0]!;
   assert.ok(browser.sent.some((m) => m.method === 'Page.navigate' && m.params.url === 'https://billing.example.com/plan'));

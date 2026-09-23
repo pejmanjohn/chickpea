@@ -3,6 +3,7 @@
  * link is a bearer URL to a live browser, so it reaches only that person: an
  * ephemeral message in a channel, or an ordinary message in their own DM.
  */
+import { escapeSlackControlCharacters, renderSlackActionLink } from '../slack/message-format.ts';
 
 export interface SlackRequester {
   slackUserId: string;
@@ -54,15 +55,10 @@ export function createSlackRequesterNotifier(input: SlackRequesterNotifierInput)
   };
 }
 
-function escapeSlackText(text: string): string {
-  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
-
 /** The hand-off message. The live-view URL appears only here, never in model context. */
 export function browserHandoffMessage(host: string, liveViewUrl: string): string {
-  // Slack reads `&`, `<`, and `>` as entities inside a link too; `|` ends the URL.
-  const url = escapeSlackText(liveViewUrl).replace(/\|/g, '%7C');
-  return `${escapeSlackText(host)} needs you to sign in before I can continue. <${url}|Open the browser> and sign in; ` +
+  return `${escapeSlackControlCharacters(host)} needs you to sign in before I can continue. ` +
+    `${renderSlackActionLink(liveViewUrl, 'Open the browser')} and sign in; ` +
     'it stays open for 10 minutes and only this link reaches it. ' +
     'When you are done, reply here and I will pick up where I left off.';
 }

@@ -1,6 +1,6 @@
 import { sha256Hex } from '../security/digest.ts';
 import type { AuthPrincipal } from '../auth/types.ts';
-import { canEditAgent, requirePermission, AuthorizationError } from '../auth/permissions.ts';
+import { canEditAgent, canManageOwnedResource, requirePermission, AuthorizationError } from '../auth/permissions.ts';
 import {
   saveConnectionAccountSecret,
   tombstoneConnectionAccountSecret,
@@ -897,9 +897,7 @@ export class ConnectionAccountService {
   }
 
   private requireManage(principal: AuthPrincipal, account: ConnectionAccount): void {
-    if (principal.role === 'owner' || principal.role === 'admin') return;
-    if (account.ownerKind === 'member' && account.ownerMembershipId === principal.membershipId) return;
-    throw new AuthorizationError();
+    if (!canManageOwnedResource(principal, account)) throw new AuthorizationError();
   }
 
   private id(): string {

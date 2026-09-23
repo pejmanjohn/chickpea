@@ -10,6 +10,12 @@
  * (a clone of the OAuth continuation pattern) and carry no secret.
  */
 import type { SettingsStore } from '../config/settings-store.ts';
+import {
+  addSettingStringSetValues,
+  readSettingStringSet,
+  removeSettingStringSetValues,
+  updateJsonSetting,
+} from '../config/setting-string-set.ts';
 import { sha256HexNode } from '../security/digest.ts';
 import type { BrowserAction } from './page.ts';
 
@@ -20,7 +26,6 @@ const INDEX_KEY = 'browseraction_index';
 const ID_PATTERN = /^[a-f0-9]{32}$/;
 /** Spent or expired records are kept this long for a late claim to explain itself. */
 const RETAIN_SETTLED_MS = 60 * 60_000;
-const MAX_CAS_ATTEMPTS = 4;
 
 export type BrowserActionStatus = 'pending' | 'approved' | 'consumed' | 'expired';
 /** At most this many form-filling steps are replayed before an approved action. */
@@ -147,7 +152,7 @@ export async function createBrowserAction(
   };
   // Index first: a crash can leave a harmless index entry, never an
   // unswept record.
-  await settings.mergeSettingStringSet(INDEX_KEY, [id]);
+  await addSettingStringSetValues(settings, INDEX_KEY, [id]);
   await settings.applySettingsPatch({
     set: [
       { key: recordKey(id), value: JSON.stringify(record) },
@@ -167,29 +172,19 @@ export async function getBrowserAction(
 }
 
 /**
- * The exact reply that answers a pending browser action: "approve" or
- * "stop", case-insensitive, with an optional trailing period.
- */
-export function browserActionReplyWord(text: string): 'approve' | 'stop' | undefined {
-  const match = /^\s*(approve|stop)\.?\s*$/i.exec(text);
-  return match ? (match[1]!.toLowerCase() as 'approve' | 'stop') : undefined;
-}
-
-/**
  * Admission: answer the pending action for this thread, Agent, and person.
  * "approve" marks it approved for the replying message; "stop" spends it.
- * Returns undefined when the text is not an answer or nothing is pending for
- * exactly this scope.
+ * The caller matches the reply text (slackBrowserActionReply). Returns
+ * undefined when nothing is pending for exactly this scope.
  */
 export async function resolveBrowserActionReply(input: {
   settings: SettingsStore;
-  text: string;
+  word: 'approve' | 'stop';
   scope: BrowserActionScope;
   messageTs: string;
   now?: number;
 }): Promise<{ kind: 'approved' | 'stopped'; id: string } | undefined> {
-  const word = browserActionReplyWord(input.text);
-  if (!word) return undefined;
+  const { word } = input;
   const id = await input.settings.getSetting(threadKey(input.scope));
   if (!id || !ID_PATTERN.test(id)) return undefined;
   const now = input.now ?? Date.now();
@@ -244,17 +239,22 @@ export async function claimApprovedBrowserAction(input: {
 
 /**
  * Expire overdue records and delete settled ones after a retention window.
- * Bounded per call; runs opportunistically whenever a new action is asked.
+ * Bounded per call; runs opportunistically when a new action is asked. With
+ * `minIndexSize`, a smaller index is left alone: expiry is also enforced at
+ * claim time, so sweeping is only cleanup.
  */
 export async function sweepBrowserActions(input: {
   settings: SettingsStore;
   now?: number;
   limit?: number;
+  minIndexSize?: number;
 }): Promise<{ expired: number; removed: number }> {
   const now = input.now ?? Date.now();
   let expired = 0;
   let removed = 0;
-  for (const id of (await indexIds(input.settings)).slice(0, input.limit ?? 25)) {
+  const ids = await indexIds(input.settings);
+  if (ids.length <= (input.minIndexSize ?? 0)) return { expired, removed };
+  for (const id of ids.slice(0, input.limit ?? 25)) {
     const raw = await input.settings.getSetting(recordKey(id));
     const record = raw ? safeParse(raw) : undefined;
     if (!raw || !record) {
@@ -304,19 +304,13 @@ async function updateRecord(
   change: (record: BrowserActionRecord) => BrowserActionRecord | undefined,
 ): Promise<BrowserActionRecord | undefined> {
   if (!ID_PATTERN.test(id)) return undefined;
-  for (let attempt = 0; attempt < MAX_CAS_ATTEMPTS; attempt += 1) {
-    const raw = await settings.getSetting(recordKey(id));
-    const record = raw ? safeParse(raw) : undefined;
-    if (!raw || !record) return undefined;
-    const next = change(record);
-    if (!next) return undefined;
-    const changed = await settings.applySettingsPatch({
-      expected: { key: recordKey(id), value: raw },
-      set: [{ key: recordKey(id), value: JSON.stringify(next) }],
-    });
-    if (changed) return next;
-  }
-  return undefined;
+  const next = await updateJsonSetting<BrowserActionRecord>(
+    settings,
+    recordKey(id),
+    (record) => (record ? change(record) : undefined),
+    safeParse,
+  );
+  return next ?? undefined;
 }
 
 function recordKey(id: string): string {
@@ -327,39 +321,12 @@ function threadKey(scope: Pick<BrowserActionScope, 'workspaceId' | 'channelId' |
   return `${THREAD_PREFIX}${sha256HexNode(`${scope.workspaceId}\n${scope.channelId}\n${scope.threadTs}\n${scope.agentId}`).slice(0, 40)}`;
 }
 
-async function indexIds(settings: SettingsStore): Promise<string[]> {
-  const raw = await settings.getSetting(INDEX_KEY);
-  if (!raw) return [];
-  try {
-    const value = JSON.parse(raw) as unknown;
-    return Array.isArray(value)
-      ? [...new Set(value.filter((id): id is string => typeof id === 'string' && ID_PATTERN.test(id)))]
-      : [];
-  } catch {
-    return [];
-  }
+function indexIds(settings: SettingsStore): Promise<string[]> {
+  return readSettingStringSet(settings, INDEX_KEY, (id) => ID_PATTERN.test(id));
 }
 
-async function removeIndexId(settings: SettingsStore, id: string): Promise<void> {
-  for (let attempt = 0; attempt < MAX_CAS_ATTEMPTS; attempt += 1) {
-    const raw = await settings.getSetting(INDEX_KEY);
-    if (!raw) return;
-    let ids: string[];
-    try {
-      const value = JSON.parse(raw) as unknown;
-      ids = Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : [];
-    } catch {
-      ids = [];
-    }
-    const remaining = [...new Set(ids)].filter((candidate) => candidate !== id);
-    const changed = await settings.applySettingsPatch({
-      expected: { key: INDEX_KEY, value: raw },
-      ...(remaining.length
-        ? { set: [{ key: INDEX_KEY, value: JSON.stringify(remaining) }] }
-        : { delete: [INDEX_KEY] }),
-    });
-    if (changed) return;
-  }
+function removeIndexId(settings: SettingsStore, id: string): Promise<void> {
+  return removeSettingStringSetValues(settings, INDEX_KEY, [id]);
 }
 
 const ACTIONS = new Set<string>(['click', 'type', 'press', 'select', 'scroll', 'hover', 'clear']);
