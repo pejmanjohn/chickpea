@@ -26,7 +26,7 @@ export type AdminSettingsSection = keyof typeof ADMIN_SETTINGS_SECTIONS;
 
 /** Settings sections with no MCP operation today (a provider key or connector still hands off through a tool). */
 export const ADMIN_ONLY_SETTINGS_SECTIONS: readonly AdminSettingsSection[] = [
-  'providers', 'github', 'sandbox', 'outbound', 'connectors',
+  'providers', 'github', 'sandbox', 'browser', 'outbound', 'connectors',
 ];
 
 export function adminSettingsPath(section: AdminSettingsSection): string {

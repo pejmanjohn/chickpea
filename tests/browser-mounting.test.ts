@@ -88,7 +88,7 @@ test('the browser skill covers finding pages, refs, proof, and the read-only bou
   const skill = browserSkillForPlan(plan({ provider: 'browserbase' }));
   assert.ok(skill);
   for (const phrase of [/Exa or Firecrawl/, /ref=e3/, /browser_look/, /browser_screenshot/, /browser_recording/, /Call it last/,
-    /untrusted data/, /Never enter passwords/, /cannot change data/, /mayChangeData/]) {
+    /untrusted data/, /Never enter passwords/, /Public websites and check-only logins are read-only/, /mayChangeData/]) {
     assert.match(skill.instructions, phrase);
   }
   // Without granted logins the skill says signing in is unavailable.
@@ -107,12 +107,23 @@ test('the browser skill lists granted websites and the sign-in rules', () => {
   assert.ok(skill);
   assert.match(skill.description, /sign in to granted websites/);
   assert.match(skill.instructions, /## Signing in/);
-  assert.match(skill.instructions, new RegExp(`- GitHub: github\\.com \\(loginId \`wl_a{32}\`, saved password\\)`));
-  assert.match(skill.instructions, new RegExp(`- Portal: portal\\.example\\.com \\(loginId \`wl_b{32}\`, the person signs in\\)`));
+  assert.match(skill.instructions, new RegExp(`- GitHub: github\\.com \\(loginId \`wl_a{32}\`, saved password, check only\\)`));
+  assert.match(skill.instructions, new RegExp(`- Portal: portal\\.example\\.com \\(loginId \`wl_b{32}\`, the person signs in, may take actions with approval\\)`));
   for (const phrase of [/open it with `browser_open` first/, /call `browser_sign_in`/, /call `browser_handoff`/,
-    /Never type credentials with `browser_act`/, /never reveal a username or password/, /does not permit changing data/]) {
+    /Never type credentials with `browser_act`/, /never reveal a username or password/, /does not by itself permit changing data/]) {
     assert.match(skill.instructions, phrase);
   }
+  // An action login adds the approval loop: ask, end the reply, continue with the actionId.
+  assert.match(skill.instructions, /## Taking actions/);
+  for (const phrase of [/mayChangeData set to true/, /reply "approve" in this thread/, /or "stop"\. Then end your reply/,
+    /approvedActionId set to that actionId/, /An approval covers one step only/]) {
+    assert.match(skill.instructions, phrase);
+  }
+  const checkOnly = browserSkillForPlan({
+    ...plan({ provider: 'browserbase' }),
+    websiteLogins: [{ id: 'wl_' + 'a'.repeat(32), host: 'github.com', label: 'GitHub', level: 'check', method: 'credentials' }],
+  });
+  assert.doesNotMatch(checkOnly!.instructions, /## Taking actions|approvedActionId/);
   // The display username is never part of the skill text.
   assert.doesNotMatch(skill.instructions, /octo@example\.com/);
 });

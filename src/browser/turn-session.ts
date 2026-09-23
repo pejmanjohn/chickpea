@@ -25,6 +25,8 @@ export interface BrowserSessionBinding {
   host: string;
   /** The hosted-browser context holding the login's saved session. */
   contextId: string;
+  /** What the grant allows: `act` lifts read-only browsing for this session. */
+  level?: 'check' | 'act';
 }
 
 export interface BrowserSessionClosedInfo {
@@ -32,7 +34,7 @@ export interface BrowserSessionClosedInfo {
   seconds: number;
 }
 
-/** What the Agent may do in the browser this turn. */
+/** What the Agent may do in the open browser session. */
 export interface BrowserPolicy {
   /** Refuse actions the model flags as changing data on a website. */
   readOnly: boolean;
@@ -40,7 +42,10 @@ export interface BrowserPolicy {
 
 export interface BrowserTurnSessionDeps {
   provider: BrowserProvider;
-  /** Defaults to read-only browsing. */
+  /**
+   * A fixed policy for every session. Absent, a session is read-only unless
+   * it is bound to a login whose grant allows actions.
+   */
   policy?: BrowserPolicy;
   connect: (connectUrl: string) => Promise<CdpSocket>;
   now?: () => number;
@@ -95,12 +100,18 @@ export class BrowserTurnSession {
   readonly handedOff = new Set<string>();
   private readonly now: () => number;
   private readonly maxSessionMs: number;
-  readonly policy: BrowserPolicy;
 
   constructor(private readonly deps: BrowserTurnSessionDeps) {
     this.now = deps.now ?? Date.now;
     this.maxSessionMs = deps.maxSessionMs ?? DEFAULT_BROWSER_SESSION_MS;
-    this.policy = deps.policy ?? { readOnly: true };
+  }
+
+  /**
+   * What the open session allows. Public sessions and sessions on check-only
+   * logins are read-only; a session on a login granted `act` is not.
+   */
+  get policy(): BrowserPolicy {
+    return this.deps.policy ?? { readOnly: this.current?.binding?.level !== 'act' };
   }
 
   get active(): boolean {

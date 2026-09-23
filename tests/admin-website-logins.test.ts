@@ -372,6 +372,51 @@ test('whole-Agent PATCH round-trips grants and cannot widen access to logins the
   }
 });
 
+test('PATCH one grant level: any editor lowers it, only a manager of the login raises it', async () => {
+  const f = fixture();
+  try {
+    await createAgent(f, 'agent_one');
+    const team = await addLogin(f, 'admin', 'agent_one', teamLogin);
+    const teamId = String(((await team.json()) as { login: { loginId: string } }).login.loginId);
+    const personal = await addLogin(f, 'ana', 'agent_one', {
+      host: 'mail.example.com', label: 'Mail', ownerKind: 'member', method: 'handoff', level: 'act',
+    });
+    const personalId = String(((await personal.json()) as { login: { loginId: string } }).login.loginId);
+    const level = (who: Who, loginId: string, body: unknown) =>
+      f.call(who, `/admin/api/agents/agent_one/website-logins/${loginId}`, { method: 'PATCH', body });
+    const grants = async () => Object.fromEntries(((await f.store.getAgent('agent_one')).websiteLogins ?? [])
+      .map((grant) => [grant.loginId, grant.level]));
+    assert.deepEqual(await grants(), { [teamId]: 'check', [personalId]: 'act' });
+
+    // A member cannot raise a team login; an Admin can, and the view comes back.
+    assert.equal((await level('bo', teamId, { level: 'act' })).status, 403);
+    const raised = await level('admin', teamId, { level: 'act' });
+    assert.equal(raised.status, 200);
+    const view = (await raised.json()) as { login: Record<string, unknown> };
+    assert.equal(view.login.level, 'act');
+    assert.equal(view.login.loginId, teamId);
+    assert.doesNotMatch(JSON.stringify(view), new RegExp(PASSWORD));
+
+    // Any editor may lower; only the owning member raises a personal login.
+    assert.equal((await level('bo', personalId, { level: 'check' })).status, 200);
+    assert.equal((await level('bo', personalId, { level: 'act' })).status, 403);
+    assert.equal((await level('ana', personalId, { level: 'act' })).status, 200);
+    assert.deepEqual(await grants(), { [teamId]: 'act', [personalId]: 'act' });
+    // Setting the same level again is a no-op.
+    const before = (await f.store.getAgent('agent_one')).revision;
+    assert.equal((await level('owner', teamId, { level: 'act' })).status, 200);
+    assert.equal((await f.store.getAgent('agent_one')).revision, before);
+
+    // Validation and unknown grants.
+    assert.equal((await level('owner', teamId, { level: 'admin' })).status, 400);
+    assert.equal((await level('owner', teamId, { level: 'act', enabled: false })).status, 400);
+    assert.equal((await level('owner', 'wl_nope', { level: 'act' })).status, 400);
+    assert.equal((await level('owner', `wl_${'e'.repeat(32)}`, { level: 'act' })).status, 404);
+  } finally {
+    f.close();
+  }
+});
+
 test('the website-login list uses the same visibility gate as the Agent Connections list', async () => {
   const f = fixture();
   try {

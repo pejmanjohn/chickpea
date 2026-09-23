@@ -193,18 +193,18 @@ test('browser_act refuses data-changing actions without touching the page', asyn
   const output = await run('browser_act', { ref: 'e1', action: 'click', mayChangeData: true });
   assert.deepEqual(output, {
     refused: true,
-    reason: 'Changing data on websites is not available yet. This version can read and navigate only.',
+    reason: 'Public websites are read-only: changing data needs a website login that allows actions. Tell the person what they can do themselves.',
   });
   assert.equal(browser.sent.length, 0);
   assert.equal(session.active, false);
 });
 
-test('a session whose policy allows changes lets a data-changing action through', async () => {
+test('a public session stays read-only even when its policy is lifted', async () => {
   const { run, browser, session } = setup({ readOnly: false });
   await run('browser_open', { url: 'https://example.com/pricing' });
   const output = await run('browser_act', { ref: 'e1', action: 'click', mayChangeData: true });
-  assert.equal(output.refused, undefined);
-  assert.ok(browser.methods().includes('Input.dispatchMouseEvent'));
+  assert.equal(output.refused, true);
+  assert.ok(!browser.methods().includes('Input.dispatchMouseEvent'));
   await session.close();
 });
 
@@ -485,7 +485,7 @@ async function loginSetup(options: {
 test('browser_open binds a granted host and its subdomains, and switches sessions when the site changes', async () => {
   const { run, created, ended, github, portal, settings, session } = await loginSetup();
   const first = await run('browser_open', { url: 'https://github.com/settings/profile' });
-  assert.deepEqual(first.login, { id: github.id, label: 'GitHub', host: 'github.com', method: 'credentials' });
+  assert.deepEqual(first.login, { id: github.id, label: 'GitHub', host: 'github.com', method: 'credentials', level: 'check' });
   assert.deepEqual(created[0], {
     recording: true, viewport: { width: 1280, height: 800 }, timeoutSeconds: 660,
     contextId: 'ctx-1', persistContext: true, allowedDomains: ['github.com'],
@@ -723,4 +723,265 @@ test('the requester notifier posts ephemerally in channels and group DMs, and di
     ['postEphemeral', { channel: 'G1', user: 'U123', text: 'hi', thread_ts: '3.4' }],
     ['postEphemeral', { channel: 'D2', user: 'U123', text: 'hi' }],
   ]);
+});
+
+// ---------------------------------------------------------------------------
+// Login levels and approval before data-changing steps (S3)
+// ---------------------------------------------------------------------------
+
+const FORM_TREE: AXNode[] = [
+  ax('1', 'RootWebArea', { childIds: ['2', '3', '4', '5'] }),
+  ax('2', 'textbox', { parentId: '1', label: 'Customer name', backendDOMNodeId: 21 }),
+  ax('3', 'button', { parentId: '1', label: 'Cancel', backendDOMNodeId: 22 }),
+  ax('4', 'button', { parentId: '1', label: 'Confirm change', backendDOMNodeId: 23 }),
+  ax('5', 'link', { parentId: '1', label: 'Help', backendDOMNodeId: 24 }),
+];
+// The same page in a new session: another element first, so every ref shifts.
+const FORM_TREE_SHIFTED: AXNode[] = [
+  ax('1', 'RootWebArea', { childIds: ['9', '2', '3', '4', '5'] }),
+  ax('9', 'link', { parentId: '1', label: 'Skip to content', backendDOMNodeId: 30 }),
+  ...FORM_TREE.slice(1),
+];
+const TURN_1_TS = '1800000001.000100';
+const TURN_2_TS = '1800000002.000100';
+
+class FormBrowser extends ScriptedBrowser {
+  inserted: string[] = [];
+  redirectTo: string | undefined;
+  constructor(tree: AXNode[]) {
+    super();
+    this.tree = tree;
+    const navigate = this.responders.get('Page.navigate')!;
+    this.responders.set('Page.navigate', (message) => {
+      const reply = navigate(message);
+      if (this.redirectTo) this.url = this.redirectTo;
+      return reply;
+    });
+    this.responders.set('Input.insertText', (message) => {
+      this.inserted.push(String(message.params.text));
+      return { result: {} };
+    });
+    this.responders.set('DOM.getBoxModel', (message) => {
+      const id = Number(message.params.backendNodeId);
+      return { result: { model: { content: [id, id, id + 2, id, id + 2, id + 2, id, id + 2] } } };
+    });
+  }
+  /** Backend node ids of elements clicked, by their box centre. */
+  clicked(): number[] {
+    return this.sent
+      .filter((m) => m.method === 'Input.dispatchMouseEvent' && m.params.type === 'mousePressed')
+      .map((m) => Number(m.params.x) - 1);
+  }
+}
+
+async function actTurn(options: {
+  settings: SqliteSettingsStore;
+  messageTs: string;
+  level?: 'check' | 'act';
+  liveLevel?: 'check' | 'act';
+  tree?: AXNode[];
+  redirectTo?: string;
+  approvals?: boolean;
+}) {
+  const deps = { store: options.settings, keyring: generateCredentialKeyring('browser_tools_test') };
+  const existing = await import('../src/browser/logins.ts').then((m) => m.listWebsiteLogins(options.settings));
+  const billing = existing.find((login) => login.host === 'billing.example.com') ?? await createWebsiteLogin(deps, {
+    host: 'billing.example.com', label: 'Billing', ownerKind: 'team', createdByMembershipId: 'mem_owner', method: 'handoff',
+  });
+  const granted = [{ id: billing.id, host: billing.host, label: billing.label, level: options.level ?? 'act', method: billing.method }];
+  const live = [{ ...granted[0]!, level: options.liveLevel ?? options.level ?? 'act' }];
+  const fake = fakeBrowserProvider();
+  fake.provider.createContext = async () => ({ id: 'ctx-billing' });
+  const browsers: FormBrowser[] = [];
+  const session = new BrowserTurnSession({
+    provider: fake.provider,
+    connect: async () => {
+      const browser = new FormBrowser(options.tree ?? FORM_TREE);
+      if (options.redirectTo) browser.redirectTo = options.redirectTo;
+      browsers.push(browser);
+      return browser;
+    },
+    sleep: async () => undefined,
+  });
+  const staged: SlackArtifactStageInput[] = [];
+  let waiting = 0;
+  const tools = createBrowserTools({
+    session,
+    stageArtifact: async (input) => {
+      staged.push(input);
+      return { attached: true, byteLength: input.bytes.byteLength };
+    },
+    transportMaxBytes: async () => undefined,
+    sleep: async () => undefined,
+    now: () => new Date(Date.UTC(2026, 8, 22, 14, 5)),
+    logins: { granted, readLive: async () => live, dependencies: async () => deps },
+    ...(options.approvals === false ? {} : {
+      approvals: {
+        scope: {
+          workspaceId: 'T_TEST', channelId: 'C_TEST', threadTs: '1800000000.000100', agentId: 'agent_ops',
+          actorSlackUserId: 'U_ASKER', actorMembershipId: 'membership_asker',
+        },
+        messageTs: options.messageTs,
+        settings: async () => options.settings,
+        onAwaitingApproval: () => { waiting += 1; },
+      },
+    }),
+  });
+  const byName = new Map(tools.map((tool) => [tool.name, tool]));
+  const run = async (name: string, data: Record<string, unknown> = {}): Promise<any> => {
+    const tool = byName.get(name)!;
+    const parsed = v.parse(tool.input as v.GenericSchema, data);
+    const result = await (tool.run as (context: unknown) => Promise<{ output: unknown }>)({
+      data: parsed, toolCallId: 'call_1', log: { info() {}, warn() {}, error() {} },
+    });
+    return JSON.parse(JSON.stringify(result.output));
+  };
+  return { run, session, browsers, staged, billing, waiting: () => waiting, ...fake };
+}
+
+async function approveFromSlack(settings: SqliteSettingsStore, messageTs: string) {
+  const { resolveBrowserActionReply } = await import('../src/browser/actions.ts');
+  return resolveBrowserActionReply({
+    settings,
+    text: 'approve',
+    scope: {
+      workspaceId: 'T_TEST', channelId: 'C_TEST', threadTs: '1800000000.000100', agentId: 'agent_ops',
+      actorSlackUserId: 'U_ASKER', actorMembershipId: 'membership_asker',
+    },
+    messageTs,
+    now: Date.UTC(2026, 8, 22, 14, 6),
+  });
+}
+
+test('a check-only login keeps its session read-only and names the site in the refusal', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const turn = await actTurn({ settings, messageTs: TURN_1_TS, level: 'check' });
+  const opened = await turn.run('browser_open', { url: 'https://billing.example.com/plan' });
+  assert.equal(opened.login.level, 'check');
+  assert.equal(turn.session.policy.readOnly, true);
+  const output = await turn.run('browser_act', { ref: 'e3', action: 'click', mayChangeData: true });
+  assert.deepEqual(output, {
+    refused: true,
+    reason: 'This login allows checking only. Ask an Admin to allow actions on billing.example.com if this step should be taken.',
+  });
+  assert.deepEqual(turn.browsers[0]!.clicked(), []);
+  await turn.session.close();
+});
+
+test('an action login holds a data-changing step for approval with a screenshot, then takes it once after approval', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const ask = await actTurn({ settings, messageTs: TURN_1_TS });
+  const opened = await ask.run('browser_open', { url: 'https://billing.example.com/plan' });
+  assert.equal(opened.login.level, 'act');
+  assert.equal(ask.session.policy.readOnly, false);
+  // Filling a field is not data-changing and happens right away.
+  await ask.run('browser_act', { ref: 'e1', action: 'type', text: 'Ada Lovelace' });
+  assert.deepEqual(ask.browsers[0]!.inserted, ['Ada Lovelace']);
+
+  const held = await ask.run('browser_act', { ref: 'e3', action: 'click', mayChangeData: true });
+  assert.deepEqual(Object.keys(held).sort(), ['actionId', 'awaitingApproval', 'description', 'instruction']);
+  assert.equal(held.awaitingApproval, true);
+  assert.match(held.actionId, /^[a-f0-9]{32}$/);
+  assert.equal(held.description, 'click "Confirm change"');
+  assert.equal(held.instruction, 'Ask the person to reply exactly "approve" in this thread to let you take this step, or "stop". End your reply after asking.');
+  assert.deepEqual(ask.browsers[0]!.clicked(), [21], 'only the field was clicked; the button waits');
+  assert.equal(ask.staged.length, 1);
+  assert.equal(ask.staged[0]!.kind, 'image');
+  assert.equal(ask.staged[0]!.title, 'About to: click "Confirm change"');
+  assert.match(ask.staged[0]!.filename, /\.jpg$/);
+  assert.deepEqual([...ask.staged[0]!.bytes], [...JPEG_BYTES]);
+  assert.equal(ask.waiting(), 1);
+  // Approval in this same turn is not possible: the person has not replied yet.
+  assert.match((await ask.run('browser_act', { ref: 'e3', action: 'click', approvedActionId: held.actionId })).error, /has not approved/);
+  await ask.session.close();
+
+  // The person replies "approve"; the next turn reopens the page in a new
+  // session where every ref has shifted, restores the typed name, and clicks
+  // the same button by its role and name.
+  assert.deepEqual(await approveFromSlack(settings, TURN_2_TS), { kind: 'approved', id: held.actionId });
+  const approved = await actTurn({ settings, messageTs: TURN_2_TS, tree: FORM_TREE_SHIFTED });
+  const done = await approved.run('browser_act', { ref: 'e3', action: 'click', approvedActionId: held.actionId });
+  assert.equal(done.approvedStepTaken, 'click "Confirm change"');
+  assert.match(done.snapshot, /button "Confirm change" \[ref=e4\]/);
+  const browser = approved.browsers[0]!;
+  assert.ok(browser.sent.some((m) => m.method === 'Page.navigate' && m.params.url === 'https://billing.example.com/plan'));
+  assert.deepEqual(browser.inserted, ['Ada Lovelace']);
+  assert.deepEqual(browser.clicked(), [21, 23]);
+  assert.equal(approved.created[0]?.contextId, 'ctx-billing');
+  // Spent: a second use is refused and nothing more is clicked.
+  assert.match((await approved.run('browser_act', { ref: 'e4', action: 'click', approvedActionId: held.actionId })).error, /already used/);
+  assert.deepEqual(browser.clicked(), [21, 23]);
+  await approved.session.close();
+});
+
+test('an approved step is refused when the page changed, moved host, expired, or the grant was lowered', async () => {
+  const setupHeld = async () => {
+    const settings = new SqliteSettingsStore(':memory:');
+    const ask = await actTurn({ settings, messageTs: TURN_1_TS });
+    await ask.run('browser_open', { url: 'https://billing.example.com/plan' });
+    const held = await ask.run('browser_act', { ref: 'e3', action: 'click', mayChangeData: true });
+    await ask.session.close();
+    await approveFromSlack(settings, TURN_2_TS);
+    return { settings, held };
+  };
+
+  // The button is gone from the page.
+  {
+    const { settings, held } = await setupHeld();
+    const turn = await actTurn({ settings, messageTs: TURN_2_TS, tree: FORM_TREE.filter((node) => node.nodeId !== '4') });
+    const output = await turn.run('browser_act', { ref: 'e3', action: 'click', approvedActionId: held.actionId });
+    assert.equal(output.error, 'The page changed since approval; take a new snapshot and ask again if the step is still right.');
+    assert.deepEqual(turn.browsers[0]!.clicked(), []);
+    await turn.session.close();
+  }
+  // The recorded URL now lands on another host.
+  {
+    const { settings, held } = await setupHeld();
+    const turn = await actTurn({ settings, messageTs: TURN_2_TS, redirectTo: 'https://sso.other-host.example/login' });
+    const output = await turn.run('browser_act', { ref: 'e3', action: 'click', approvedActionId: held.actionId });
+    assert.equal(output.error, 'The page changed since approval; take a new snapshot and ask again if the step is still right.');
+    assert.deepEqual(turn.browsers[0]!.clicked(), []);
+    await turn.session.close();
+  }
+  // The grant was lowered to checking only after approval.
+  {
+    const { settings, held } = await setupHeld();
+    const turn = await actTurn({ settings, messageTs: TURN_2_TS, liveLevel: 'check' });
+    const output = await turn.run('browser_act', { ref: 'e3', action: 'click', approvedActionId: held.actionId });
+    assert.match(output.error, /This login allows checking only/);
+    assert.equal(turn.session.active, false);
+  }
+  // Expired before the approved turn ran.
+  {
+    const { settings, held } = await setupHeld();
+    const raw = await settings.getSetting(`browseraction_${held.actionId}`);
+    await settings.setSetting(`browseraction_${held.actionId}`, JSON.stringify({ ...JSON.parse(raw!), expiresAt: 1 }));
+    const turn = await actTurn({ settings, messageTs: TURN_2_TS });
+    const output = await turn.run('browser_act', { ref: 'e3', action: 'click', approvedActionId: held.actionId });
+    assert.match(output.error, /approval expired/);
+    assert.equal(turn.session.active, false);
+  }
+  // Another message's turn cannot use the approval.
+  {
+    const { settings, held } = await setupHeld();
+    const turn = await actTurn({ settings, messageTs: '1800000003.000100' });
+    const output = await turn.run('browser_act', { ref: 'e3', action: 'click', approvedActionId: held.actionId });
+    assert.match(output.error, /has not approved/);
+  }
+});
+
+test('a data-changing step without a person to ask, or after a live downgrade, is refused', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const scheduled = await actTurn({ settings, messageTs: TURN_1_TS, approvals: false });
+  await scheduled.run('browser_open', { url: 'https://billing.example.com/plan' });
+  assert.match((await scheduled.run('browser_act', { ref: 'e3', action: 'click', mayChangeData: true })).error, /no person in this conversation to approve/);
+  assert.deepEqual(scheduled.staged, []);
+  await scheduled.session.close();
+
+  const lowered = await actTurn({ settings, messageTs: TURN_1_TS, liveLevel: 'check' });
+  await lowered.run('browser_open', { url: 'https://billing.example.com/plan' });
+  const output = await lowered.run('browser_act', { ref: 'e3', action: 'click', mayChangeData: true });
+  assert.equal(output.refused, true);
+  assert.match(output.reason, /checking only/);
+  await lowered.session.close();
 });

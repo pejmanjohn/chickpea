@@ -158,6 +158,7 @@ import {
 import type { AuthPrincipal } from '../auth/types.ts';
 import { emitManagementMetric } from '../management/telemetry.ts';
 import { resolveHostSlackManagementApproval } from '../management/slack-approval.ts';
+import { admitSlackBrowserActionReply } from '../slack/browser-action-admission.ts';
 import {
   agentAvatarUrlForPresentation,
   refreshLegacyAgentAvatar,
@@ -1508,7 +1509,20 @@ async function processSlackEvent(
     turn.actorMembershipId = admittedActorMembershipId;
   }
 
+  // An exact "approve" or "stop" answers a browser step this Agent is holding
+  // for the same person in the same thread. It is checked before management
+  // approvals because it is bound to this thread, and the Agent then runs
+  // with the reply (the approved step is bound to this message).
+  const browserActionAnswered = admissionTruth.eligible && !candidateTurn &&
+    await admitSlackBrowserActionReply({
+      turn,
+      assignment,
+      settings: stores.settings,
+      actorMembershipId: admittedActorMembershipId,
+    });
+
   if (
+    !browserActionAnswered &&
     admissionTruth.eligible && admittedActorMembershipId &&
     shouldResolveSlackManagementApproval(turn.text)
   ) {
@@ -1526,7 +1540,7 @@ async function processSlackEvent(
     }
   }
 
-  if (!deterministicCommand && !candidateTurn) {
+  if (!deterministicCommand && !browserActionAnswered && !candidateTurn) {
     const immediateIntent = resolveImmediateSlackInteractionIntent({
       workspaceId: turn.workspaceId,
       channelId: turn.channelId,

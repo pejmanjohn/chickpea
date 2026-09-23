@@ -28,6 +28,7 @@ import {
   type ActivityToolDescriptor,
 } from '../activity/status.ts';
 import {
+  activityStatus,
   genericSemanticDescriptor,
   semanticDescriptorForCoreTool,
   unknownSemanticDescriptor,
@@ -180,7 +181,12 @@ import { recordBrowserSessionUsage, resolveBrowserSettings } from '../browser/se
 import { browserSkillForPlan } from '../browser/skill.ts';
 import { listWebsiteLogins, websiteLoginDependencies } from '../browser/logins.ts';
 import { createSlackRequesterNotifier, type SlackRequester } from '../browser/requester.ts';
-import { createBrowserTools, type BrowserLoginOptions } from '../browser/tools.ts';
+import {
+  BROWSER_APPROVAL_ACTIVITY,
+  createBrowserTools,
+  type BrowserApprovalOptions,
+  type BrowserLoginOptions,
+} from '../browser/tools.ts';
 import { BrowserTurnSession } from '../browser/turn-session.ts';
 import { resolveModelApiKeyForStatelessCall } from '../config/provider-keys.ts';
 import { workspaceSkillForSandbox } from '../sandbox/workspace-skill.ts';
@@ -1539,6 +1545,14 @@ export function useRuntimePlanAgent(
   const browserRequester = browserSession && plan.websiteLogins?.length
     ? runtimePlanBrowserRequester(plan)
     : undefined;
+  // Data-changing steps on a login granted `act` wait for the verified Slack
+  // requester's "approve"; a turn without one (a scheduled run) cannot ask.
+  const browserApprovals = browserSession && plan.websiteLogins?.some(({ level }) => level === 'act')
+    ? runtimePlanBrowserApprovals(plan, () => {
+        const [kind, action, object] = BROWSER_APPROVAL_ACTIVITY;
+        publishActivityStatus(id, activityStatus(kind, action, object));
+      })
+    : undefined;
   for (const skill of runtimePlanSkills(plan, { browser: browserMounted })) {
     useSkill(skill);
   }
@@ -1585,6 +1599,7 @@ export function useRuntimePlanAgent(
         fileCompletion,
         ...(browserSession ? { browserSession } : {}),
         ...(browserRequester ? { browserRequester } : {}),
+        ...(browserApprovals ? { browserApprovals } : {}),
       },
     )) {
       useTool(tool);
@@ -2002,6 +2017,7 @@ export function createRuntimePlanArtifactTools(
               }),
             }
           : {}),
+        ...(options.browserApprovals ? { approvals: options.browserApprovals } : {}),
         stageArtifact: binding.stageArtifact,
         transportMaxBytes: async () => (await resolveFileTransport()).maxBytes,
         // Same route as the image tool's inspection: the frozen chat model
@@ -2043,6 +2059,37 @@ function runtimePlanBrowserRequester(plan: RuntimePlanV2): SlackRequester | unde
     slackUserId: signal.slackUserId,
     channelId: signal.channelId,
     ...(signal.conversationKind ? { conversationKind: signal.conversationKind } : {}),
+  };
+}
+
+/**
+ * Where a data-changing browser step waits for approval: the verified Slack
+ * requester, conversation, and Agent of the current delivery, and the
+ * message it answers, which is what an admission-time "approve" binds to.
+ */
+function runtimePlanBrowserApprovals(
+  plan: RuntimePlanV2,
+  onAwaitingApproval: () => void,
+): BrowserApprovalOptions | undefined {
+  let signal: ReturnType<typeof parseSlackManagementSignal>;
+  try {
+    signal = parseSlackManagementSignal(useDelivery(), plan);
+  } catch {
+    return undefined;
+  }
+  if (!signal) return undefined;
+  return {
+    scope: {
+      workspaceId: signal.workspaceId,
+      channelId: signal.channelId,
+      threadTs: signal.threadTs,
+      agentId: plan.agentId,
+      actorSlackUserId: signal.slackUserId,
+      ...(plan.actorMembershipId ? { actorMembershipId: plan.actorMembershipId } : {}),
+    },
+    messageTs: signal.messageTs,
+    settings: async () => getSettingsStore(await resolveAgentPlatformEnv()),
+    onAwaitingApproval,
   };
 }
 
@@ -2114,6 +2161,8 @@ export interface RuntimePlanArtifactToolOptions {
   browserSession?: BrowserTurnSession | undefined;
   /** The verified Slack requester a browser sign-in hand-off link may reach. */
   browserRequester?: SlackRequester | undefined;
+  /** Where data-changing browser steps wait for the requester's approval. */
+  browserApprovals?: BrowserApprovalOptions | undefined;
 }
 
 /**

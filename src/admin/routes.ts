@@ -1324,6 +1324,10 @@ const websiteLoginCreateSchema = v.strictObject({
   level: v.optional(v.picklist(['check', 'act']), 'check'),
 });
 
+const websiteLoginLevelSchema = v.strictObject({
+  level: v.picklist(['check', 'act']),
+});
+
 const agentSchema = v.object({
   id: agentIdSchema,
   name: nonEmptyString,
@@ -8465,6 +8469,52 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         return c.json({ error: 'website_login_limit', message: error.message }, 409);
       }
       if (error instanceof WebsiteLoginStateError || error instanceof AgentRevisionConflictError) {
+        return c.json({ error: 'website_login_conflict' }, 409);
+      }
+      return internalError(c, error);
+    }
+  });
+
+  // Change what an Agent may do with one granted login. Any Agent editor may
+  // lower it to checking only; raising it to actions needs authority over the
+  // login itself (Owner/Admin, or the personal login's owner).
+  app.patch('/admin/api/agents/:id/website-logins/:loginId', async (c) => {
+    const agentId = c.req.param('id');
+    const loginId = c.req.param('loginId');
+    if (!/^wl_[a-f0-9]{32}$/.test(loginId)) return invalidRequest(c);
+    const parsed = v.safeParse(websiteLoginLevelSchema, await readJson(c.req));
+    if (!parsed.success) return invalidRequest(c);
+    const level = parsed.output.level;
+    try {
+      const principal = principalByContext.get(c);
+      if (!principal) throw new AuthorizationError('principal_required');
+      const agent = await store(c).getAgent(agentId);
+      requireAgentEdit(principal, agent);
+      if (!(agent.websiteLogins ?? []).some((grant) => grant.loginId === loginId)) {
+        return c.json({ error: 'not_found' }, 404);
+      }
+      const logins = await listWebsiteLogins(websiteLoginSettings(c));
+      const login = logins.find((candidate) => candidate.id === loginId);
+      if (!login) return c.json({ error: 'not_found' }, 404);
+      let changed: WebsiteLoginGrant | undefined;
+      const updated = await updateAgentWebsiteLogins(c, agentId, (grants) => {
+        const index = grants.findIndex((grant) => grant.loginId === loginId);
+        if (index < 0) return undefined;
+        const next = [...grants];
+        next[index] = { ...grants[index]!, level };
+        if (websiteLoginGrantWidensWithoutAuthority(principal, grants, next, logins)) {
+          throw new AuthorizationError();
+        }
+        changed = next[index];
+        return grants[index]!.level === level ? undefined : next;
+      });
+      const grant = changed ?? (updated?.websiteLogins ?? []).find((candidate) => candidate.loginId === loginId);
+      if (!grant) return c.json({ error: 'not_found' }, 404);
+      return c.json({ login: websiteLoginView(login, grant) });
+    } catch (error) {
+      if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
+      if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
+      if (error instanceof AgentRevisionConflictError) {
         return c.json({ error: 'website_login_conflict' }, 409);
       }
       return internalError(c, error);

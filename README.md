@@ -66,6 +66,7 @@ Chickpea is for those teams. Each Agent keeps its own connected accounts and its
 | **Skills** | Import from a GitHub repo or a `skills.sh` link, in Admin or by handing the link to an Agent in Slack. You see which skills were found before anything is installed. | |
 | **Repositories** | Grant GitHub repositories to an Agent through the Chickpea GitHub App (Settings → GitHub). Access uses short-lived installation tokens scoped to the granted repositories. | |
 | **Coding sandbox** | Optional Cloudflare container tier for Agents that need to clone a repo, install packages, and run tests. | [Details](#coding-sandbox) |
+| **Browser** | Optional. Agents open a real browser in your own Browserbase project to check live pages, sign in with website logins you grant, and attach a screenshot or recording as proof. Connect it in Settings → Browser. | |
 | **Schedules** | Agent-owned recurring or one-time work, set up conversationally in Slack, delivered to a granted channel or a private DM thread. | [Details](#schedules) |
 | **Manage from Slack** | Admin, Slack, and an MCP server are three doors to the same controls. Create Agents, install skills, set schedules, and edit memory by asking, with consequential changes gated behind an approval. Connect your coding agent from Settings → MCP or with one pasted line. | [Details](#managing-chickpea) |
 | **Slack-native answers** | Progressive streaming for long replies, adaptive tables (prose, inline Markdown, or a native sortable Slack table) when the data earns one, and task cards for multi-step work. | |

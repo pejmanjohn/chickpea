@@ -202,6 +202,12 @@ export interface NormalizedSlackTurn {
    * Slack conversation, and acting Agent binding. Slack text cannot supply this id.
    */
   managementApprovalProposalId?: string;
+  /**
+   * A pending browser action this exact reply approved at admission, for the
+   * same requester, thread, and Agent. The action is bound to this message's
+   * timestamp; Slack text cannot supply the id.
+   */
+  approvedBrowserActionId?: string;
 }
 
 interface IgnoredSlackTurn {

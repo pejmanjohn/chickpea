@@ -284,7 +284,7 @@
     repositoryAddOpen: false,
     // Agent Websites tab. The list holds display-safe rows only; the add
     // dialog holds a typed password just until its save request starts.
-    websiteLogins: { agentId: "", logins: [], loading: false, loaded: false, error: "", removeConfirm: "", removing: "", removeError: "" },
+    websiteLogins: { agentId: "", logins: [], loading: false, loaded: false, error: "", removeConfirm: "", removing: "", removeError: "", levelSaving: "", levelError: null },
     websiteLoginDialog: null,
     egress: null,
     egressLoaded: false,
@@ -6409,7 +6409,7 @@
   var websiteLoginsRequest = 0;
 
   function emptyWebsiteLoginsState() {
-    return { agentId: "", logins: [], loading: false, loaded: false, error: "", removeConfirm: "", removing: "", removeError: "" };
+    return { agentId: "", logins: [], loading: false, loaded: false, error: "", removeConfirm: "", removing: "", removeError: "", levelSaving: "", levelError: null };
   }
 
   function websiteLoginsFor(draft) {
@@ -6473,7 +6473,9 @@
       error: "",
       removeConfirm: same ? current.removeConfirm : "",
       removing: same ? current.removing : "",
-      removeError: same ? current.removeError : ""
+      removeError: same ? current.removeError : "",
+      levelSaving: same ? current.levelSaving : "",
+      levelError: same ? current.levelError : null
     };
     return api("/admin/api/agents/" + encodeURIComponent(agentId) + "/website-logins", { cache: "no-store" }).then(function (body) {
       if (requestId !== websiteLoginsRequest || state.websiteLogins.agentId !== agentId) return;
@@ -6518,7 +6520,9 @@
     var logins = state.websiteLogins;
     var confirming = !readOnly && logins.removeConfirm === login.loginId;
     var removing = logins.removing === login.loginId;
-    var actions = '<div class="agent-schedule-actions"><span class="badge badge-off">Check only</span>' +
+    var acts = login.level === "act";
+    var levelError = logins.levelError && logins.levelError.loginId === login.loginId ? logins.levelError.message : "";
+    var actions = '<div class="agent-schedule-actions">' + websiteLoginLevelHtml(login, readOnly) +
       (readOnly || confirming ? "" : '<button type="button" class="btn btn-ghost btn-sm agent-schedule-delete" data-action="website-login-remove" data-login-id="' + esc(login.loginId) + '" aria-label="Remove ' + esc(login.host) + '">Remove</button>') +
       '</div>';
     var confirm = confirming
@@ -6529,7 +6533,67 @@
       : "";
     return '<article class="agent-schedule-row website-login-row"><div class="agent-schedule-copy"><div class="agent-schedule-heading"><span class="agent-schedule-name">' + esc(login.host) + '</span>' +
       (login.ownerKind === "team" ? '<span class="badge-src">Team login</span>' : "") + '</div>' +
-      '<div class="agent-schedule-meta">' + meta + '</div></div>' + actions + confirm + '</article>';
+      '<div class="agent-schedule-meta">' + meta + '</div>' +
+      (acts ? '<p class="hint">' + WEBSITE_LOGIN_ACT_HINT + '</p>' : "") +
+      (levelError ? '<p class="field-error" role="alert">' + esc(levelError) + '</p>' : "") +
+      '</div>' + actions + confirm + '</article>';
+  }
+
+  var WEBSITE_LOGIN_ACT_HINT = "Asks in Slack before anything that changes data.";
+  var WEBSITE_LOGIN_LEVELS = [["check", "Check only"], ["act", "Check and take actions"]];
+
+  // Raising a login to actions needs authority over the login: Owners and
+  // Admins manage every login, and a member sees only team logins and their
+  // own personal ones. Anyone who can edit the Agent may lower it.
+  function websiteLoginCanRaise(login) {
+    return WORKSPACE_ADMIN_UI || login.ownerKind === "member";
+  }
+
+  function websiteLoginLevelHtml(login, readOnly) {
+    var level = login.level === "act" ? "act" : "check";
+    var label = level === "act" ? "Check and take actions" : "Check only";
+    if (readOnly) return '<span class="badge badge-off">' + label + '</span>';
+    var saving = state.websiteLogins.levelSaving === login.loginId;
+    var canRaise = websiteLoginCanRaise(login);
+    var disabled = saving || (!canRaise && level !== "act");
+    var options = WEBSITE_LOGIN_LEVELS.map(function (entry) {
+      var blocked = entry[0] === "act" && !canRaise && level !== "act";
+      return '<option value="' + entry[0] + '"' + (entry[0] === level ? " selected" : "") + (blocked ? " disabled" : "") + '>' + entry[1] + '</option>';
+    }).join("");
+    return '<span class="select-wrap"><select class="input" data-action="website-login-level" data-login-id="' + esc(login.loginId) + '" aria-label="What this Agent may do on ' + esc(login.host) + '"' + (disabled ? " disabled" : "") + '>' + options + '</select><span class="select-caret">' + icon("chevron-down") + '</span></span>';
+  }
+
+  function changeWebsiteLoginLevel(loginId, level) {
+    var draft = state.profileDraft;
+    var logins = state.websiteLogins;
+    if (!draft || !draft.id || draft.canEdit === false || logins.agentId !== draft.id || logins.levelSaving) return;
+    if (level !== "check" && level !== "act") return;
+    var login = logins.logins.filter(function (candidate) { return candidate.loginId === loginId; })[0];
+    if (!login || login.level === level) return;
+    var agentId = draft.id;
+    var previous = login.level;
+    login.level = level;
+    logins.levelSaving = loginId;
+    logins.levelError = null;
+    renderPreservingPagePosition();
+    return postJson("/admin/api/agents/" + encodeURIComponent(agentId) + "/website-logins/" + encodeURIComponent(loginId), "PATCH", { level: level }).then(function (body) {
+      if (state.websiteLogins.agentId !== agentId) return;
+      state.websiteLogins.levelSaving = "";
+      var saved = body && body.login && body.login.level;
+      if (saved === "check" || saved === "act") login.level = saved;
+      renderPreservingPagePosition();
+    }).catch(function (error) {
+      if (state.websiteLogins.agentId !== agentId) return;
+      login.level = previous;
+      state.websiteLogins.levelSaving = "";
+      state.websiteLogins.levelError = {
+        loginId: loginId,
+        message: error && error.status === 403
+          ? "Only an Admin or the person who added this login can allow actions."
+          : "The change could not be saved. Try again."
+      };
+      renderPreservingPagePosition();
+    });
   }
 
   function websitesPanelHtml(draft, readOnly) {
@@ -6575,6 +6639,7 @@
       username: "",
       password: "",
       totpSeed: "",
+      level: "check",
       busy: false,
       error: "",
       focus: "website-login-host"
@@ -6597,7 +6662,7 @@
     var code = error && error.message;
     var field = error && error.payload && error.payload.field;
     if (code === "invalid_host" || field === "invalid_host") return WEBSITE_LOGIN_HOST_ERROR;
-    if (code === "login_limit" || code === "website_login_limit") return "This Agent has reached its limit of website logins. Remove one first.";
+    if (code === "login_limit" || code === "website_login_limit") return "The limit of website logins has been reached. Remove one first.";
     if (field === "invalid_totp_seed") return "That one-time code secret doesn't look right. Paste the setup key exactly as the site shows it.";
     return "The login could not be saved. Try again.";
   }
@@ -6637,6 +6702,11 @@
           websiteLoginRadioHtml("website-login-owner", "team", dialog.ownerKind === "team", dialog.busy || !canTeam, "user-group", "connection-account-owner-icon-team", "Any Agent I grant it to", "A team login, managed by Admins." + (canTeam ? "" : " Only Admins can add one.")) +
           websiteLoginRadioHtml("website-login-owner", "member", dialog.ownerKind === "member", dialog.busy, "user", "connection-account-owner-icon-personal", "Only my Agents", "Stays with your account.") +
         '</div></div>' +
+      '<div class="connection-account-owner"><span class="field-label" id="website-login-level-title">What this Agent may do there</span>' +
+        '<div class="connection-account-owner-options" role="radiogroup" aria-labelledby="website-login-level-title">' +
+          websiteLoginRadioHtml("website-login-level", "check", dialog.level !== "act", dialog.busy, "check", "connection-account-owner-icon-team", "Check only", "Read pages, run searches, follow links.") +
+          websiteLoginRadioHtml("website-login-level", "act", dialog.level === "act", dialog.busy, "pencil", "connection-account-owner-icon-personal", "Check and take actions", "Fill forms and click through flows. Asks in Slack before anything that changes data.") +
+        '</div></div>' +
       (dialog.error ? '<p class="field-error" id="website-login-error" role="alert">' + esc(dialog.error) + '</p>' : "") +
       '<p class="hint">Stored encrypted in your Chickpea install. Sign-in sessions live in your Browserbase project.</p>' +
       '<div class="modal-foot"><button type="button" class="btn btn-ghost" data-action="website-login-cancel"' + dis + '>Cancel</button><span class="spacer"></span>' +
@@ -6661,7 +6731,7 @@
       render();
       return;
     }
-    var body = { host: host, label: label, ownerKind: dialog.ownerKind === "team" ? "team" : "member", method: handoff ? "handoff" : "credentials", level: "check" };
+    var body = { host: host, label: label, ownerKind: dialog.ownerKind === "team" ? "team" : "member", method: handoff ? "handoff" : "credentials", level: dialog.level === "act" ? "act" : "check" };
     if (username) body.username = username;
     if (!handoff) {
       body.password = dialog.password;
@@ -13597,7 +13667,13 @@
         else updateTeamMembership(roleMember.id, "role", nextRole);
       }
     }
-    if (state.websiteLoginDialog && !state.websiteLoginDialog.busy && (action === "website-login-method" || action === "website-login-owner")) {
+    if (action === "website-login-level" && target.getAttribute("data-login-id")) {
+      changeWebsiteLoginLevel(target.getAttribute("data-login-id"), target.value);
+    }
+    if (state.websiteLoginDialog && !state.websiteLoginDialog.busy && (action === "website-login-method" || action === "website-login-owner" || action === "website-login-level")) {
+      if (action === "website-login-level" && (target.value === "check" || target.value === "act")) {
+        state.websiteLoginDialog.level = target.value;
+      }
       if (action === "website-login-method" && (target.value === "credentials" || target.value === "handoff")) {
         state.websiteLoginDialog.method = target.value;
         if (target.value === "handoff") { state.websiteLoginDialog.password = ""; state.websiteLoginDialog.totpSeed = ""; }

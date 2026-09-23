@@ -179,3 +179,19 @@ test('redaction replaces typed secrets and skips values too short to redact safe
   session.addRedaction('ab');
   assert.equal(session.redact('pw hunter2! code 287082 tab'), 'pw [redacted] code [redacted] tab');
 });
+
+test('the policy follows the bound login: read-only unless its grant allows actions', async () => {
+  const { session } = setup();
+  const check = { loginId: `wl_${'a'.repeat(32)}`, host: 'a.example.com', contextId: 'ctx-a', level: 'check' as const };
+  const act = { loginId: `wl_${'b'.repeat(32)}`, host: 'b.example.com', contextId: 'ctx-b', level: 'act' as const };
+  assert.deepEqual(session.policy, { readOnly: true });
+  await session.ensureFor(check);
+  assert.deepEqual(session.policy, { readOnly: true });
+  await session.ensureFor(act);
+  assert.deepEqual(session.policy, { readOnly: false });
+  await session.ensureFor(undefined);
+  assert.deepEqual(session.policy, { readOnly: true });
+  await session.ensureFor(act);
+  await session.close();
+  assert.deepEqual(session.policy, { readOnly: true });
+});

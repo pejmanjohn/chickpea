@@ -1007,7 +1007,7 @@ export async function startAdminVisualFixture(options = {}) {
           {
             loginId: `wl_${'a1'.repeat(16)}`, host: 'magoosh.com', label: 'Magoosh team', ownerKind: 'team',
             method: 'credentials', username: 'qa-team@magoosh.com',
-            lastUsedAt: now - 2 * 3_600_000, level: 'check', enabled: true,
+            lastUsedAt: now - 2 * 3_600_000, level: 'act', enabled: true,
           },
           {
             loginId: `wl_${'b2'.repeat(16)}`, host: 'admin.magoosh.com', label: 'Magoosh admin', ownerKind: 'member',

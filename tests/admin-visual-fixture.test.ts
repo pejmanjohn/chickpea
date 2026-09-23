@@ -492,7 +492,7 @@ test('visual fixture serves display-safe website logins for the Websites tab aft
     assert.deepEqual(
       research.logins.map(({ host, ownerKind, method, username, level, enabled }) => ({ host, ownerKind, method, username, level, enabled })),
       [
-        { host: 'magoosh.com', ownerKind: 'team', method: 'credentials', username: 'qa-team@magoosh.com', level: 'check', enabled: true },
+        { host: 'magoosh.com', ownerKind: 'team', method: 'credentials', username: 'qa-team@magoosh.com', level: 'act', enabled: true },
         { host: 'admin.magoosh.com', ownerKind: 'member', method: 'handoff', username: undefined, level: 'check', enabled: true },
       ],
     );

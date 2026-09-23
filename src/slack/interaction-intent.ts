@@ -300,6 +300,17 @@ export function shouldResolveSlackManagementApproval(text: string): boolean {
   return EXACT_MANAGEMENT_APPROVALS.has(approval);
 }
 
+/**
+ * The exact reply that answers a pending browser action, after any leading
+ * mention: "approve" or "stop", with an optional trailing period. Like a
+ * management approval it is only a candidate: admission must find a pending
+ * action for the same person, thread, and Agent before it means anything.
+ */
+export function slackBrowserActionReply(text: string): 'approve' | 'stop' | undefined {
+  const match = /^(approve|stop)\.?$/i.exec(normalizedInteractionText(text));
+  return match ? (match[1]!.toLowerCase() as 'approve' | 'stop') : undefined;
+}
+
 function normalizedInteractionText(text: string): string {
   return text
     .replace(/^\s*(?:<@[A-Z0-9_]+>\s*)+/i, '')
