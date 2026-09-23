@@ -31,6 +31,7 @@ import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { hasScheduledComposition } from './worker-artifact.mjs';
 import { builtWorkerConfigPath } from './lib/built-worker-config.mjs';
+import { mergeDeploymentSecrets, OPERATOR_SECRETS_ENV, readOperatorSecretsFile } from './lib/deploy-operator-secrets.mjs';
 import { wranglerInspector, deploymentFingerprint } from './lib/inspect-deployment.mjs';
 import { AUTH_SCHEMA_QUERY, expectedAuthSchema, normalizeAuthSchemaRows } from './lib/auth-schema.mjs';
 import { validateInstallation, validateTarget, assertSameInstallation, overlayInstallation, wranglerProfileArgs } from './lib/upgrade-installation.mjs';
@@ -1288,9 +1289,17 @@ try {
   if (deploymentAuthority) {
     deploymentAuthority.activation = await bindDeploymentActivation(builtArtifact);
   }
-  preparedSecrets = deploymentAuthority
-    ? createSecretsFile(deploymentAuthority.generatedSecrets)
+  // Operator-supplied secrets (for example a QA lane's provider key) ride the
+  // same atomic secrets file, so one deploy yields one live version and the
+  // receipt keeps matching the Worker. Names are logged; values never are.
+  const operatorSecrets = process.env[OPERATOR_SECRETS_ENV]
+    ? readOperatorSecretsFile(process.env[OPERATOR_SECRETS_ENV])
     : undefined;
+  if (operatorSecrets) {
+    console.log(`Deploying with operator secrets: ${Object.keys(operatorSecrets).join(', ')}`);
+  }
+  const secretsToUpload = mergeDeploymentSecrets(deploymentAuthority?.generatedSecrets, operatorSecrets);
+  preparedSecrets = Object.keys(secretsToUpload).length > 0 ? createSecretsFile(secretsToUpload) : undefined;
 } catch (error) {
   console.error(`Unable to prepare the temporary Worker secrets file: ${error instanceof Error ? error.message : String(error)}`);
   process.exit(1);

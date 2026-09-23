@@ -70,6 +70,20 @@
    the token. Never use a bare/default deploy to reach a QA lane. Preserve
    source/claim fences. Verification does not imply landing on main.
 
+   A lane that needs a provider credential the product reads from the
+   environment (for example `BROWSERBASE_API_KEY` for the Browser feature)
+   gets it through the same guarded deploy: put the names and values in an
+   owner-only JSON object at a private absolute path and set
+   `CHICKPEA_DEPLOY_SECRETS_FILE=<path>` for that `npm run deploy`. The wrapper
+   uploads them in its atomic secrets file, so the deploy still yields one
+   live version that matches its receipt. Never upload a lane secret with the
+   bare Wrangler secret command: that creates a live version the registry has
+   not recorded, and every later guarded deploy and attestation refuses with
+   a serving-version mismatch until the Worker is restored to the recorded
+   version. A secret uploaded this way persists across later guarded deploys.
+   Deleting it would drift the live version the same way the bare upload
+   does, so leave it in place at cleanup and report it in the run record.
+
    Before a guarded QA deployment, `npm run verify:live:candidate -- [--remote
    origin]` provides the same read-only source admission used by the wrapper.
    It observes canonical remote `main` without rewriting refs, verifies that
