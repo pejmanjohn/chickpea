@@ -5,7 +5,9 @@ import { SandboxUnavailableError } from './errors.ts';
 export const CLOUDFLARE_SANDBOX_OPTIONS = {
   transport: 'rpc',
   keepAlive: false,
-  sleepAfter: '5m',
+  // The thread's workspace stays warm this long after its last turn, so a
+  // follow-up reuses the checkout. Sleep wipes the disk and stops all billing.
+  sleepAfter: '30m',
   // This participates in the Durable Object identity. Keep the legacy value
   // explicit so an SDK default change cannot strand a thread's persisted retry
   // markers. Normalizing existing ids requires a deliberate state migration.

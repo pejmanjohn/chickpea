@@ -703,6 +703,45 @@ export async function prepareCloudflareSandboxTurn(
   }
 }
 
+/**
+ * End a Slack turn without stopping the thread's workspace. The container
+ * stays warm for follow-ups until `sleepAfter` idles it out; only the turn's
+ * egress grants are revoked, so nothing left running in it keeps GitHub
+ * access between turns.
+ */
+export async function endCloudflareSandboxTurn(
+  env: PlatformEnv | undefined,
+  conversationKey: string,
+  usedCloudflareSandbox: boolean,
+): Promise<void> {
+  if (!usedCloudflareSandbox || !isCloudflareTarget()) return;
+  const binding = env?.SANDBOX ?? env?.Sandbox;
+  if (!binding) return;
+  try {
+    const { getSandbox } = await import('@cloudflare/sandbox');
+    const sandboxKey = sandboxThreadKey(conversationKey);
+    const revocations = await Promise.allSettled(
+      cloudflareSandboxOptionVariants(sandboxKey).map(async (options) => {
+        const sandbox = getSandbox(
+          binding as Parameters<typeof getSandbox>[0],
+          sandboxKey,
+          options,
+        ) as ReturnType<typeof getSandbox> & { endTurn(): Promise<void> };
+        await sandbox.endTurn();
+      }),
+    );
+    if (revocations.some((result) => result.status === 'rejected')) {
+      console.warn('[chickpea] coding workspace egress revocation did not complete');
+    }
+  } catch {
+    console.warn('[chickpea] coding workspace egress revocation did not complete');
+  }
+}
+
+/**
+ * Destroy the workspace outright. Routine runs use this at their end: nobody
+ * follows up in a scheduled run's workspace, so it never stays warm.
+ */
 export async function releaseCloudflareSandboxTurn(
   env: PlatformEnv | undefined,
   conversationKey: string,

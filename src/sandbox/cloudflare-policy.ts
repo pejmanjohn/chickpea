@@ -62,6 +62,15 @@ export class SandboxPolicyState {
     await this.storage.put(SANDBOX_EGRESS_POLICY_STORAGE_KEY, policy);
   }
 
+  /**
+   * Close the turn's credential window. The container can stay warm between
+   * turns, so a process left running in it must not keep the last turn's
+   * GitHub grants. The turn id and progress stay for retry/recovery reads.
+   */
+  async revokeEgress(): Promise<void> {
+    await this.storage.put(SANDBOX_EGRESS_POLICY_STORAGE_KEY, EMPTY_EGRESS_POLICY);
+  }
+
   async getEgressPolicy(): Promise<SandboxEgressPolicy> {
     const stored = await this.storage.get<unknown>(SANDBOX_EGRESS_POLICY_STORAGE_KEY);
     if (!isSandboxEgressPolicy(stored)) {

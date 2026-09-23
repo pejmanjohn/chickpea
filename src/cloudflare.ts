@@ -142,6 +142,10 @@ import {
 } from './sandbox/cloudflare-policy.ts';
 import { cloudflareSandboxOptionVariants } from './sandbox/lifecycle.ts';
 import {
+  SandboxWorkspaceState,
+  type WorkspaceTurnState,
+} from './sandbox/workspace-lifecycle.ts';
+import {
   isGithubPullRequestCreateResponse,
   pullRequestProgressFromGithubResponse,
 } from './sandbox/progress.ts';
@@ -359,6 +363,31 @@ export class Sandbox extends CloudflareSandbox<SandboxWorkerEnv> {
     turnId: string,
   ): Promise<void> {
     await this.policyState().configureEgress(input, turnId);
+  }
+
+  /**
+   * Decide whether this turn may reuse the running container. The workspace
+   * stays warm across turns for the same Agent and grants; any other owner
+   * gets a destroyed container rather than the prior checkout. Destroy only
+   * clears the SDK's own storage keys, so the prepared turn id survives.
+   */
+  async beginWorkspaceTurn(input: {
+    fingerprint: string;
+    turnId: string;
+  }): Promise<{ state: WorkspaceTurnState; reservationId: string }> {
+    const containerRunning =
+      (this.ctx as { container?: { running?: boolean } }).container?.running === true;
+    const decision = await new SandboxWorkspaceState(this.policyStorage()).beginTurn({
+      ...input,
+      containerRunning,
+    });
+    if (decision.retire) await this.destroy();
+    return { state: decision.state, reservationId: decision.reservationId };
+  }
+
+  /** End the turn's credential window without stopping the warm container. */
+  async endTurn(): Promise<void> {
+    await this.policyState().revokeEgress();
   }
 
   async getEgressPolicy(): Promise<SandboxEgressPolicy> {
@@ -1910,7 +1939,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
           ...(replayText === undefined ? {} : { replayText }),
           beforeDelivery: persistSandboxProgress,
           // Record terminal delivery before runTurn's post-delivery Sandbox
-          // teardown. A hung control-plane destroy must never leave an
+          // turn close. A hung control-plane call must never leave an
           // already-posted Slack final eligible for relay retry.
           onDelivered: (outcome) => {
             stores.turnJobs.markDelivered(job.id);

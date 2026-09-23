@@ -149,6 +149,10 @@ import {
 import { reserveMonthlySandboxSession } from '../sandbox/session-cap.ts';
 import { sandboxThreadKey } from '../sandbox/thread-key.ts';
 import {
+  workspaceFingerprint,
+  type WorkspaceTurnState,
+} from '../sandbox/workspace-lifecycle.ts';
+import {
   requireSandboxTurnId,
   type SandboxTurnContext,
 } from '../sandbox/turn-context.ts';
@@ -247,6 +251,10 @@ interface ConfigurableCloudflareSandbox extends DestroyableSandbox, SandboxTurnC
     input: SandboxEgressPolicyInput,
     turnId: string,
   ): Promise<void>;
+  beginWorkspaceTurn(input: {
+    fingerprint: string;
+    turnId: string;
+  }): Promise<{ state: WorkspaceTurnState; reservationId: string }>;
 }
 
 export class SealedAgentThreadError extends Error {
@@ -1010,6 +1018,7 @@ export async function createSlackAgentRuntime(
     fallback: virtualSandbox,
     env,
     conversationKey: input.sandboxConversationKey ?? adapterContext.threadKey,
+    agentId: config.agent.id,
     grants: repositoryAccess.grants,
     ...(repositoryAccess.credentialMode
       ? { credentialMode: repositoryAccess.credentialMode }
@@ -2013,6 +2022,7 @@ interface AgentSandboxOptions {
   fallback: SandboxFactory;
   env: PlatformEnv | undefined;
   conversationKey: string;
+  agentId: string;
   grants: readonly RepositoryGrant[];
   credentialMode?: SandboxCredentialMode;
   settingsStore: ReturnType<typeof getSettingsStore>;
@@ -2036,6 +2046,7 @@ async function resolveAgentSandbox(options: AgentSandboxOptions): Promise<Sandbo
   }
   const sandboxKey = sandboxThreadKey(options.conversationKey);
   let turnId: string | undefined;
+  let reservationId: string | undefined;
   // Never cache the stub in module state: it is bound to this agent DO's I/O
   // context, and the next turn in this thread may run in a different DO that
   // shares the isolate.
@@ -2051,6 +2062,14 @@ async function resolveAgentSandbox(options: AgentSandboxOptions): Promise<Sandbo
       if (!options.credentialMode) {
         throw new Error('Sandbox repository credential mode is unavailable');
       }
+      // Reuse or retire the warm workspace before this turn's grants are
+      // installed, so a different Agent or changed grants never see the prior
+      // checkout.
+      const workspace = await candidate.beginWorkspaceTurn({
+        fingerprint: workspaceFingerprint(options.agentId, options.grants),
+        turnId,
+      });
+      reservationId = workspace.reservationId;
       await candidate.configureEgress(
         {
           grants: validEnabledRepositoryGrants(options.grants),
@@ -2064,13 +2083,15 @@ async function resolveAgentSandbox(options: AgentSandboxOptions): Promise<Sandbo
     sandbox as unknown as Parameters<typeof cloudflareSandbox>[0],
     '/workspace',
     async () => {
-      if (!turnId) {
+      if (!reservationId) {
         throw new Error('Sandbox turn context is unavailable at activation');
       }
+      // Counted per container start: a warm follow-up carries the starting
+      // turn's reservation and does not consume the cap again.
       const reservation = await reserveMonthlySandboxSession({
         store: options.settingsStore,
         cap: options.monthlySessionCap,
-        reservationId: turnId,
+        reservationId,
       });
       if (!reservation.allowed) {
         throw new SandboxSessionCapError();
