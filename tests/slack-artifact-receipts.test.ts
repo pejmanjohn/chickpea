@@ -150,7 +150,7 @@ test('reuse stages the original file id and freezes its destination without an u
     messageTs: destination.threadTs, permalink: 'https://example.slack.com/files/U1/F12345671/original.jpg' };
   const input = { record, filename: 'resend.jpg', byteLength: 123, destination, now: () => 5,
     accumulator: createArtifactReceiptAccumulator(fn => { state = fn(state); }), writeReceipts: () => {} };
-  assert.deepEqual(reuseImageWithReceipt(input), { attached: true, byteLength: 123 });
+  assert.deepEqual(reuseImageWithReceipt(input), { attached: true, byteLength: 123, permalink: record.permalink });
   assert.equal(state.receipts[0]?.fileId, record.fileId);
   assert.equal(state.receipts[0]?.filename, 'resend.jpg', 'the link label can differ without renaming the original Slack file');
   assert.equal(selectDeliverableArtifacts(state.receipts, destination).length, 1);
@@ -178,7 +178,7 @@ test('artifact staging writes a v2 receipt only after valid private completion',
   assert.equal(state.writes.length, 0);
   assert.deepEqual(state.state().receipts, [receipt(0)]);
   finish();
-  assert.deepEqual(await pending, { attached: true, byteLength: 3 });
+  assert.deepEqual(await pending, { attached: true, byteLength: 3, permalink: completed.permalink });
   assert.equal(calls, 1);
   assert.equal(stagedInput?.filename, 'chart.png');
   assert.equal(stagedInput?.title, 'Synthetic chart');
@@ -260,8 +260,8 @@ test('an image receipt round-trips through staging, parsing, and selection', asy
   );
   const outcome = await state.run();
 
-  assert.deepEqual(outcome, { attached: true, byteLength: 3 });
   const written = state.writes[0]?.receipts.at(-1)!;
+  assert.deepEqual(outcome, { attached: true, byteLength: 3, permalink: written.schemaVersion === 2 ? written.permalink : undefined });
   assert.equal(written.kind, 'image');
   // The list survives the reader and stays deliverable to its own destination.
   assert.deepEqual(parseSlackArtifactReceipts([{ schemaVersion: 1, receipts: [written] }]), [written]);

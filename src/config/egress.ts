@@ -158,7 +158,7 @@ export function buildEgressNetworkConfig(
 
 export function buildEgressPlan(
   policy: EgressPolicy,
-  opts: { cloudflare: boolean },
+  opts: { cloudflare: boolean; timeoutMs?: number },
   connectors: ResolvedApiConnection[] = [],
 ): EgressPlan {
   const domainEntries = buildDomainEntries(policy);
@@ -184,13 +184,17 @@ export function buildEgressPlan(
   return { scopes, baseNetwork, baseMethods };
 }
 
-function buildScopeNetwork(spec: ConnectorScopeSpec, opts: { cloudflare: boolean }): NetworkConfig {
+function buildScopeNetwork(
+  spec: ConnectorScopeSpec,
+  opts: { cloudflare: boolean; timeoutMs?: number },
+): NetworkConfig {
   const network: NetworkConfig = {
     allowedMethods: [...new Set(spec.methods)] as NonNullable<NetworkConfig['allowedMethods']>,
     denyPrivateRanges: true,
     allowedUrlPrefixes: spec.entries.map(({ url, transform }) =>
       transform === undefined ? url : { url, transform },
     ),
+    ...(opts.timeoutMs === undefined ? {} : { timeoutMs: opts.timeoutMs }),
   };
   if (opts.cloudflare) {
     network._dnsResolve = dohResolve;
@@ -401,8 +405,7 @@ export function createConnectorScopedBash(
       return new Bash({ fs: new InMemoryFs() });
     }
     const { scopes, baseNetwork, baseMethods } = buildEgressPlan(policy, { cloudflare }, connectors);
-    const secureFetchOf = (network: NetworkConfig) =>
-      (new Bash({ fs: new InMemoryFs(), network }) as unknown as { secureFetch?: SecureFetch }).secureFetch;
+    const secureFetchOf = secureFetchFactory(Bash, InMemoryFs);
     const baseDelegate = secureFetchOf(baseNetwork);
     const delegates = scopes.map((scope) => ({ ...scope, delegate: secureFetchOf(scope.network) }));
     if (!baseDelegate || delegates.some(({ delegate }) => !delegate)) {
@@ -412,4 +415,65 @@ export function createConnectorScopedBash(
     const fetch = createScopedFetch({ scopes: delegates as ScopedDelegate[], baseDelegate, baseMethods });
     return new Bash({ fs: new InMemoryFs(), fetch });
   });
+}
+
+type JustBashModule = typeof import('just-bash');
+
+/** just-bash builds its allow-list-enforcing fetch per Bash instance; borrow it. */
+function secureFetchFactory(
+  BashClass: JustBashModule['Bash'],
+  InMemoryFsClass: JustBashModule['InMemoryFs'],
+): (network: NetworkConfig) => SecureFetch | undefined {
+  return (network) =>
+    (new BashClass({ fs: new InMemoryFsClass(), network }) as unknown as { secureFetch?: SecureFetch }).secureFetch;
+}
+
+/** A request body a Chickpea tool sends as real bytes, never as shell text. */
+export type ConnectionRequestBody = Uint8Array | Blob | ReadableStream<Uint8Array>;
+
+export type ConnectionFetchOptions = Omit<NonNullable<Parameters<SecureFetch>[1]>, 'body'> & {
+  body?: ConnectionRequestBody;
+};
+
+export type ConnectionScopedFetch = (
+  url: string,
+  options?: ConnectionFetchOptions,
+) => ReturnType<SecureFetch>;
+
+const ALL_HTTP_METHODS = new Set(['GET', 'HEAD', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS']);
+
+/**
+ * The fetch a Worker-side tool uses to send a file to a connection. It is
+ * built from the SAME per-connector scopes as the sandbox `curl`: each scope's
+ * own just-bash secure fetch enforces that connector's hosts, path prefixes,
+ * and methods, injects its credential, and applies the private-range and DNS
+ * checks. Unlike the sandbox there is no base route: a URL no connection
+ * governs is refused rather than sent through operator Domains or open mode.
+ *
+ * just-bash hands `body` to the platform fetch unchanged, so binary bodies
+ * (bytes, a Blob, or a stream on Workers) arrive byte-exact; the shell's own
+ * `curl` is what re-encodes file contents as text.
+ */
+export async function createConnectionScopedFetch(
+  connectors: ResolvedApiConnection[],
+  opts: { cloudflare: boolean; timeoutMs?: number },
+): Promise<ConnectionScopedFetch | undefined> {
+  const { scopes } = buildEgressPlan({ mode: 'allowlist', domains: [] }, opts, connectors);
+  if (scopes.length === 0) return undefined;
+  const { Bash, InMemoryFs } = await import('just-bash');
+  const secureFetchOf = secureFetchFactory(Bash, InMemoryFs);
+  const delegates = scopes.map((scope) => ({ ...scope, delegate: secureFetchOf(scope.network) }));
+  if (delegates.some(({ delegate }) => !delegate)) return undefined;
+  const refuse: SecureFetch = async (url) => {
+    const error = new Error('URL is not governed by a connection: ' + url);
+    error.name = 'BlockedUrlError';
+    throw error;
+  };
+  const fetch = createScopedFetch({
+    scopes: delegates as ScopedDelegate[],
+    baseDelegate: refuse,
+    // Every method reaches `refuse`, so an ungoverned URL reports the URL, not the method.
+    baseMethods: ALL_HTTP_METHODS,
+  });
+  return (url, options) => fetch(url, options as Parameters<SecureFetch>[1]);
 }

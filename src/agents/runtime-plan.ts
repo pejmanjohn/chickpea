@@ -13,6 +13,10 @@ import {
 import type { WebsiteLogin } from '../browser/logins.ts';
 import { opaqueId } from '../work/admission.ts';
 import { BROWSER_TOOL_ACTIVITY } from '../browser/tools.ts';
+import {
+  allowsConnectionFileUpload,
+  ATTACH_FILE_TO_CONNECTION_TOOL_NAME,
+} from '../connections/file-upload-tool.ts';
 import { conversationThreadTs, slackAgentThreadKey } from '../slack/thread-key.ts';
 import type { NormalizedSlackTurn } from '../slack/types.ts';
 import {
@@ -477,6 +481,9 @@ export function buildRuntimePlanActivityContext(
     { toolName: 'recover_image', descriptor: artifact },
   );
   families.add('artifact');
+  if (plan.actorMembershipId && plan.apiConnections.some((connection) => allowsConnectionFileUpload(connection.allowedMethods))) {
+    descriptors.push({ toolName: ATTACH_FILE_TO_CONNECTION_TOOL_NAME, descriptor: artifact });
+  }
 
   if (options.browserMounted) {
     // Browsing reads arbitrary public pages, so its baseline stays the generic

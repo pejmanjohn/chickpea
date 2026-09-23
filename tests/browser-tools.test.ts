@@ -283,6 +283,43 @@ test('browser_screenshot stages a PNG image with its caption', async () => {
   await denied.session.close();
 });
 
+test('browser_screenshot and browser_recording return a file handle and the Slack link', async () => {
+  const retainedScreens: Uint8Array[] = [];
+  const retainedRecordings: unknown[] = [];
+  const permalink = 'https://example.slack.com/files/U1/F12345671/screenshot.png';
+  const { run, session } = setup({
+    stage: (input) => ({ attached: true, byteLength: input.bytes.byteLength, permalink }),
+    retainScreenshot: async (bytes) => {
+      retainedScreens.push(bytes);
+      return { id: 'saved:00000000-0000-4000-8000-000000000001', expiresAt: 42 };
+    },
+    retainRecording: async (input) => {
+      retainedRecordings.push(input);
+      return { id: 'rec:00000000-0000-4000-8000-000000000002', expiresAt: 43 };
+    },
+    recordingResponse: () => new Response(new Uint8Array(5), { headers: { 'content-length': '5' } }),
+  });
+  await run('browser_open', { url: 'https://example.com/pricing' });
+  const screenshot = await run('browser_screenshot');
+  assert.deepEqual(screenshot, {
+    attached: true, filename: 'screenshot.png', byteLength: PNG_BYTES.byteLength,
+    slackPermalink: permalink, fileHandle: 'saved:00000000-0000-4000-8000-000000000001', expiresAt: 42,
+  });
+  assert.deepEqual([...retainedScreens[0]!], [...PNG_BYTES]);
+  const recording = await run('browser_recording');
+  assert.equal(recording.fileHandle, 'rec:00000000-0000-4000-8000-000000000002');
+  assert.equal(recording.slackPermalink, permalink);
+  // The handle keeps the provider session, never the recording bytes.
+  assert.deepEqual(retainedRecordings, [{ sessionId: 'sess-1', filename: 'browser-session-20260922-1405.mp4', byteLength: 5 }]);
+  await session.close();
+
+  // Retention is best effort: a failure still attaches, just without a handle.
+  const failing = setup({ retainScreenshot: async () => { throw new Error('busy'); } });
+  await failing.run('browser_open', { url: 'https://example.com' });
+  assert.deepEqual(await failing.run('browser_screenshot'), { attached: true, filename: 'screenshot.png', byteLength: PNG_BYTES.byteLength });
+  await failing.session.close();
+});
+
 test('browser_recording ends the session, downloads the recording, and stages an MP4 file', async () => {
   const { run, staged, fetched, ended, session } = setup({ maxBytes: 8 * 1024 * 1024 });
   await run('browser_open', { url: 'https://example.com/pricing' });
