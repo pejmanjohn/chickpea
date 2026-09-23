@@ -73,9 +73,12 @@ Verified on Cobalt on September 22, 2026 with exact-message
 
 Every stream, progressive append, and terminal stop therefore uses `chunks`.
 Slack documents `blocks` as rendering after `chunks` on stop, and that held.
-Whole-message `chat.update` replacement of a stopped stream renders a bold
-title as plain text, and it failed on retry for a 12,000-character answer.
-Treat it as recovery, not the normal terminal path.
+A stream opened in `markdown_text` mode by an earlier build still finalizes
+through the existing recovery path: the rejected stop marks the stream
+unknown, and the retry stops it without chunks and replaces the whole message
+with `chat.update`. That replacement renders a bold title as plain text, and
+it failed on retry for a 12,000-character answer. Treat it as recovery, not
+the normal terminal path.
 
 ### Public message readback is a projection
 

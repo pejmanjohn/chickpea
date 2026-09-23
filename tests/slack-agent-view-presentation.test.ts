@@ -34,8 +34,6 @@ function harness(input: {
   failIntentMutation?: boolean;
   startStreamError?: unknown;
   stopStreamError?: unknown;
-  /** Rejects only a stop that carries chunks, like a markdown_text-mode stream. */
-  chunkedStopStreamError?: unknown;
   /** Grants this many progressive appends, then reports an exhausted budget. */
   appendReservations?: number;
   deleteError?: unknown;
@@ -118,7 +116,6 @@ function harness(input: {
       async stopStream(value: Record<string, unknown>) {
         calls.push({ method: 'chat.stopStream', input: value });
         if (input.stopStreamError) throw input.stopStreamError;
-        if (input.chunkedStopStreamError && value.chunks) throw input.chunkedStopStreamError;
         return { ok: true };
       },
       async update(value: Record<string, unknown>) {
@@ -558,48 +555,6 @@ test('finalize delivers the whole unstreamed suffix once after early degradation
       Buffer.byteLength(LONG_TRIAGE_ANSWER) - streamed.stream.acknowledgedByteLength,
     );
     assert.equal(JSON.stringify(record).includes('GMAT'), false);
-  } finally {
-    h.db.close();
-  }
-});
-
-test('a markdown_text-mode stream that rejects terminal chunks is replaced in full, once', async () => {
-  const h = harness({
-    schemaVersion: 3,
-    appendReservations: 0,
-    chunkedStopStreamError: {
-      code: ErrorCode.PlatformError,
-      data: { error: 'streaming_mode_mismatch' },
-    },
-  });
-  try {
-    await streamFirstChunkThenDegrade(h, LONG_TRIAGE_ANSWER);
-    const events: Array<Record<string, unknown>> = [];
-    const result = await h.presentation.finalize(
-      LONG_TRIAGE_ANSWER, 'markdown', 'complete', observer(events),
-    );
-    assert.deepEqual(result, { handled: true, messageTs: '1785700100.000201' });
-    await h.presentation.markCanonicalFinalized();
-
-    const writes = h.calls.filter((call) => call.method.startsWith('chat.'));
-    assert.deepEqual(writes.map((call) => call.method), [
-      'chat.startStream',
-      'chat.stopStream',
-      'chat.stopStream',
-      'chat.update',
-    ]);
-    assert.equal(writes[2]!.input.chunks, undefined);
-    const update = writes[3]!.input as { ts: string; blocks: Array<{ type: string; text?: string }> };
-    assert.equal(update.ts, '1785700100.000201');
-    assert.deepEqual(update.blocks.map(({ type }) => type), ['markdown', 'context']);
-    assert.equal(update.blocks[0]!.text, LONG_TRIAGE_ANSWER);
-    assert.equal(h.calls.some((call) => call.method === 'chat.postMessage'), false);
-    assert.deepEqual(events.map((event) => [event.phase, event.outcome]), [
-      ['before', undefined],
-      ['after', 'delivered'],
-    ]);
-    assert.equal(h.store.get(h.runId)?.stream.state, 'finalized');
-    assert.equal(h.finalizationRecords[0]?.degradation, 'budget_exhausted');
   } finally {
     h.db.close();
   }

@@ -135,13 +135,6 @@ interface PreparedSlackActivityWrite {
   messageTs?: string;
 }
 
-interface SlackMessageReplacement {
-  channel: string;
-  ts: string;
-  text: string;
-  blocks: NonNullable<ReturnType<typeof renderSlackMessage>['blocks']>;
-}
-
 const MAX_PROGRESSIVE_BUFFER_BYTES = 128 * 1_024;
 const DEFAULT_APPEND_INTERVAL_MS = 750;
 const CORRECTED_MARKER = '_Corrected_';
@@ -941,7 +934,7 @@ export class SlackAgentViewPresentation {
         [],
         footerBlocks,
         terminalTaskStatus,
-        { suffixBytes: utf8Length(approved), replacement: this.replacementUpdate(presentation, approved, renderedTable) },
+        utf8Length(approved),
       );
     }
 
@@ -968,7 +961,6 @@ export class SlackAgentViewPresentation {
     const stop = stopChunks.length > 0
       ? { chunks: stopChunks, blocks: footerBlocks }
       : { blocks: footerBlocks };
-    const replacement = this.replacementUpdate(presentation, approved, renderedTable);
     const attemptId = await observer.before({
       method: 'slack_chat_stream_resume',
       approvedOutput: approved,
@@ -977,7 +969,6 @@ export class SlackAgentViewPresentation {
         channel: presentation.root.channelId,
         ts: presentation.stream.messageTs,
         stop,
-        ...(stopChunks.length > 0 ? { update: replacement } : {}),
         terminalTaskStatus,
       }),
     });
@@ -988,7 +979,7 @@ export class SlackAgentViewPresentation {
       stopChunks,
       footerBlocks,
       terminalTaskStatus,
-      { suffixBytes: utf8Length(suffix), replacement },
+      utf8Length(suffix),
     );
   }
 
@@ -1268,13 +1259,13 @@ export class SlackAgentViewPresentation {
     chunks: AnyChunk[],
     blocks: KnownBlock[],
     terminalTaskStatus: 'complete' | 'error',
-    terminal: { suffixBytes: number; replacement: SlackMessageReplacement },
+    terminalSuffixBytes: number,
   ): Promise<AgentViewFinalResult> {
     presentation = await this.transition(presentation, {
       kind: 'close_stream',
       outcome: presentation.stream.acknowledgedByteLength > 0 ? 'progressive' : 'terminal_only',
       ...(this.degradedReason ? { degradationReason: this.degradedReason } : {}),
-      terminalSuffixBytes: terminal.suffixBytes,
+      terminalSuffixBytes,
     });
     if (presentation.schemaVersion !== 3 && presentation.plan &&
         presentationUsesNativeTasks(presentation)) {
@@ -1285,22 +1276,12 @@ export class SlackAgentViewPresentation {
     }
     presentation = await this.transition(presentation, { kind: 'mark_finalizing' });
     try {
-      try {
-        await this.options.client.chat.stopStream({
-          channel: presentation.root.channelId,
-          ts: presentation.stream.messageTs!,
-          ...(chunks.length > 0 ? { chunks } : {}),
-          blocks,
-        });
-      } catch (error) {
-        // A stream opened in markdown_text mode (an earlier build) rejects
-        // terminal chunks. The rejection proves nothing was applied, so stop
-        // it as-is and replace its contents with the whole approved answer.
-        if (chunks.length === 0 || slackEffectOutcome(error) !== 'failed' ||
-            safeSlackErrorCode(error) !== 'streaming_mode_mismatch') throw error;
-        console.warn('[chickpea] Slack Agent View stream mode mismatch; replacing the terminal message');
-        await this.replaceStreamedMessage(terminal.replacement);
-      }
+      await this.options.client.chat.stopStream({
+        channel: presentation.root.channelId,
+        ts: presentation.stream.messageTs!,
+        ...(chunks.length > 0 ? { chunks } : {}),
+        blocks,
+      });
     } catch (error) {
       console.warn(
         `[chickpea] Slack Agent View stream finalization ${slackEffectOutcome(error)}: ` +
@@ -1328,39 +1309,6 @@ export class SlackAgentViewPresentation {
     return { handled: true, messageTs: presentation.stream.messageTs! };
   }
 
-  /** Whole-answer replacement for a known stream coordinate, footer included. */
-  private replacementUpdate(
-    presentation: SlackRunPresentation,
-    approved: string,
-    table?: RenderedSlackTablePresentation,
-  ): SlackMessageReplacement {
-    const content = table
-      ? appendSlackTableToRenderedMessage(renderSlackMessage(approved, 'markdown'), approved, table)
-      : renderSlackMessage(approved, 'markdown');
-    const rendered = appendSlackReplyFooter(content, this.options.footer);
-    return {
-      channel: presentation.root.channelId,
-      ts: presentation.stream.messageTs ?? '',
-      text: rendered.text,
-      blocks: rendered.blocks!,
-    };
-  }
-
-  /**
-   * Stop without chunks, which can never append twice, then replace the
-   * message. Both effects are idempotent on the same coordinate.
-   */
-  private async replaceStreamedMessage(update: SlackMessageReplacement): Promise<void> {
-    try {
-      await this.options.client.chat.stopStream({ channel: update.channel, ts: update.ts });
-    } catch (error) {
-      // Slack explicitly reports an already-stopped stream. Other failures
-      // do not establish that it is safe to update the terminal artifact.
-      if (safeSlackErrorCode(error) !== 'message_not_in_streaming_state') throw error;
-    }
-    await this.options.client.chat.update(update);
-  }
-
   /** Reconcile a crash after stop intent using only the saved message coordinate.
    * Stopping with no chunks cannot append the suffix twice. Updating the same
    * message then replaces its contents with the already-approved final answer.
@@ -1376,14 +1324,26 @@ export class SlackAgentViewPresentation {
     const table = tablePresentation
       ? renderSlackTablePresentation(tablePresentation, Math.max(0, 12_000 - approved.length - 2))
       : undefined;
-    const update = this.replacementUpdate(presentation, approved, table);
-    const messageTs = update.ts;
+    const content = table
+      ? appendSlackTableToRenderedMessage(renderSlackMessage(approved, 'markdown'), approved, table)
+      : renderSlackMessage(approved, 'markdown');
+    const rendered = appendSlackReplyFooter(content, this.options.footer);
+    const messageTs = presentation.stream.messageTs!;
+    const update = { channel: presentation.root.channelId, ts: messageTs,
+      text: rendered.text, blocks: rendered.blocks! };
     const attemptId = await observer.before({
       method: 'slack_chat_stream_recover', approvedOutput: approved,
       renderedPayload: JSON.stringify({ method: 'slack_chat_stream_recover', update }),
     });
     try {
-      await this.replaceStreamedMessage(update);
+      try {
+        await this.options.client.chat.stopStream({ channel: update.channel, ts: messageTs });
+      } catch (error) {
+        // Slack explicitly reports an already-stopped stream. Other failures
+        // do not establish that it is safe to update the terminal artifact.
+        if (safeSlackErrorCode(error) !== 'message_not_in_streaming_state') throw error;
+      }
+      await this.options.client.chat.update(update);
       presentation = await this.transition(presentation, {
         kind: 'mark_artifact_delivered', outcome: presentation.stream.presentationOutcome ?? 'terminal_only',
       });

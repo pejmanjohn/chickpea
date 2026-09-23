@@ -1034,26 +1034,11 @@ export async function deliverPersistedSlackPayload(
   }
   if (envelope.method === 'slack_chat_stream_resume') {
     try {
-      try {
-        await client.chat.stopStream({
-          channel: envelope.channel,
-          ts: envelope.ts,
-          ...envelope.stop,
-        });
-      } catch (error) {
-        // A markdown_text-mode stream rejects terminal chunks without applying
-        // them; replace the stopped message with the whole answer instead.
-        if (!envelope.update || slackDeliveryFailureOutcome(error) !== 'failed' ||
-            slackErrorCode(error) !== 'streaming_mode_mismatch') throw error;
-        try {
-          await client.chat.stopStream({ channel: envelope.channel, ts: envelope.ts });
-        } catch (stopError) {
-          if (slackErrorCode(stopError) !== 'message_not_in_streaming_state') throw stopError;
-        }
-        await client.chat.update(
-          envelope.update as unknown as Parameters<WebClient['chat']['update']>[0],
-        );
-      }
+      await client.chat.stopStream({
+        channel: envelope.channel,
+        ts: envelope.ts,
+        ...envelope.stop,
+      });
       return {
         method: envelope.method,
         deliveryRef: slackDeliveryRef(envelope.channel, envelope.ts),
@@ -1115,14 +1100,6 @@ export async function deliverPersistedSlackPayload(
   }
 }
 
-/** Slack platform error code from a Web API rejection, when present. */
-function slackErrorCode(error: unknown): string | undefined {
-  if (!error || typeof error !== 'object') return undefined;
-  const data = (error as { data?: unknown }).data;
-  const code = data && typeof data === 'object' ? (data as { error?: unknown }).error : undefined;
-  return typeof code === 'string' ? code : undefined;
-}
-
 export function slackDeliveryFailureOutcome(error: unknown): 'failed' | 'unknown' {
   if (error instanceof SlackTransportError) return error.effectOutcome;
   const code = error && typeof error === 'object'
@@ -1169,8 +1146,6 @@ type PersistedEnvelope =
       channel: string;
       ts: string;
       stop: Record<string, unknown>;
-      /** Whole-answer replacement used only when Slack rejects the stop's mode. */
-      update?: Record<string, unknown>;
       terminalTaskStatus?: 'complete' | 'error';
     }
   | {
@@ -1250,10 +1225,6 @@ export function parsePersistedEnvelope(raw: string): PersistedEnvelope {
       channel: record.channel,
       ts: record.ts,
       stop: record.stop,
-      ...(isRecord(record.update) && record.update.channel === record.channel &&
-          record.update.ts === record.ts
-        ? { update: record.update }
-        : {}),
       ...terminalTaskStatusField(record),
     };
   }
