@@ -1005,12 +1005,12 @@ export async function startAdminVisualFixture(options = {}) {
       c.res = Response.json({
         logins: agentId === 'agent_research' ? [
           {
-            loginId: `wl_${'a1'.repeat(16)}`, host: 'magoosh.com', label: 'Magoosh team', ownerKind: 'team',
-            method: 'credentials', username: 'qa-team@magoosh.com',
+            loginId: `wl_${'a1'.repeat(16)}`, host: 'acme.com', label: 'Acme team', ownerKind: 'team',
+            method: 'credentials', username: 'qa-team@acme.com',
             lastUsedAt: now - 2 * 3_600_000, level: 'act', enabled: true,
           },
           {
-            loginId: `wl_${'b2'.repeat(16)}`, host: 'admin.magoosh.com', label: 'Magoosh admin', ownerKind: 'member',
+            loginId: `wl_${'b2'.repeat(16)}`, host: 'admin.acme.com', label: 'Acme admin', ownerKind: 'member',
             ownerMembershipId: 'membership_visual_owner', method: 'handoff',
             lastUsedAt: now - 6 * 86_400_000, level: 'check', enabled: true,
           },
