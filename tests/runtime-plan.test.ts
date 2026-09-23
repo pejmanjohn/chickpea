@@ -1107,7 +1107,7 @@ test('a mounted browser registers browsing and proof activity and the skill fami
   const descriptors = new Map(
     context.toolDescriptors?.map(({ toolName, descriptor }) => [toolName, descriptor]),
   );
-  for (const name of ['browser_open', 'browser_snapshot', 'browser_act', 'browser_look']) {
+  for (const name of ['browser_open', 'browser_snapshot', 'browser_act', 'browser_look', 'browser_sign_in', 'browser_handoff']) {
     assert.equal(descriptors.get(name)?.target, 'unknown', name);
   }
   assert.equal(descriptors.get('browser_screenshot')?.target, 'artifact');

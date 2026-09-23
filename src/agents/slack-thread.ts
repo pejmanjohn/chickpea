@@ -178,7 +178,9 @@ import { answerScreenshotQuestion } from '../browser/look.ts';
 import { createLazyBrowserProvider, useBrowserSession } from '../browser/runtime.ts';
 import { recordBrowserSessionUsage, resolveBrowserSettings } from '../browser/settings.ts';
 import { browserSkillForPlan } from '../browser/skill.ts';
-import { createBrowserTools } from '../browser/tools.ts';
+import { listWebsiteLogins, websiteLoginDependencies } from '../browser/logins.ts';
+import { createSlackRequesterNotifier, type SlackRequester } from '../browser/requester.ts';
+import { createBrowserTools, type BrowserLoginOptions } from '../browser/tools.ts';
 import { BrowserTurnSession } from '../browser/turn-session.ts';
 import { resolveModelApiKeyForStatelessCall } from '../config/provider-keys.ts';
 import { workspaceSkillForSandbox } from '../sandbox/workspace-skill.ts';
@@ -241,11 +243,13 @@ import { useChickpeaResponseMetadata } from '../usage/response-metadata.ts';
 import { bootstrapRuntimeProviders } from '../runtime-bootstrap.ts';
 import {
   buildRuntimePlanActivityContext,
+  compileWebsiteLogins,
   parseRuntimePlanV2,
   type RuntimePlanApiConnectionV2,
   type RuntimePlanModelCredentialV3,
   type RuntimePlanRepositoryV2,
   type RuntimePlanV2,
+  type RuntimePlanWebsiteLoginV1,
 } from './runtime-plan.ts';
 
 bootstrapRuntimeProviders();
@@ -1426,7 +1430,7 @@ function runtimePlanRepositoryOwner(repository: RuntimePlanRepositoryV2): string
  * sandbox-derived workspace skill last so no stored Agent skill can hide it.
  */
 export function runtimePlanSkills(
-  plan: Pick<RuntimePlanV2, 'apiConnections' | 'repositories' | 'skills' | 'sandbox' | 'browserCapability'>,
+  plan: Pick<RuntimePlanV2, 'apiConnections' | 'repositories' | 'skills' | 'sandbox' | 'browserCapability' | 'websiteLogins'>,
   options: { browser?: boolean } = {},
 ): ReturnType<typeof resolveProfileSkills> {
   const agentSkills = plan.skills.map((entry) => ({ ...entry, enabled: true }));
@@ -1530,6 +1534,11 @@ export function useRuntimePlanAgent(
     ].join('\n'));
   }
   const browserSession = browserMounted ? useBrowserSession(id, createRuntimePlanBrowserSession) : undefined;
+  // A sign-in hand-off link goes privately to the verified Slack requester;
+  // a turn without one (a scheduled run) cannot hand off.
+  const browserRequester = browserSession && plan.websiteLogins?.length
+    ? runtimePlanBrowserRequester(plan)
+    : undefined;
   for (const skill of runtimePlanSkills(plan, { browser: browserMounted })) {
     useSkill(skill);
   }
@@ -1570,7 +1579,13 @@ export function useRuntimePlanAgent(
       plan,
       artifactAccumulator,
       writeArtifactReceipts,
-      { imageInventory, reserveImageCall, fileCompletion, ...(browserSession ? { browserSession } : {}) },
+      {
+        imageInventory,
+        reserveImageCall,
+        fileCompletion,
+        ...(browserSession ? { browserSession } : {}),
+        ...(browserRequester ? { browserRequester } : {}),
+      },
     )) {
       useTool(tool);
     }
@@ -1862,14 +1877,15 @@ export function createRuntimePlanArtifactTools(
   options: RuntimePlanArtifactToolOptions = {},
 ) {
   let transport: Promise<SlackFileTransport> | undefined;
+  let installationClient: Promise<SlackInstallationClient> | undefined;
   const destination = {
     workspaceId: plan.conversation.workspaceId,
     agentId: plan.agentId,
     channelId: plan.artifactDestination.channelId,
     ...(plan.artifactDestination.threadTs ? { threadTs: plan.artifactDestination.threadTs } : {}),
   };
-  const resolveFileTransport = (): Promise<SlackFileTransport> => {
-    transport ??= (async () => {
+  const resolveInstallationClient = (): Promise<SlackInstallationClient> => {
+    installationClient ??= (async () => {
       const env = await resolveAgentPlatformEnv();
       const installation = await resolveSlackInstallationExecutionContext(
         plan.conversation.workspaceId,
@@ -1880,8 +1896,16 @@ export function createRuntimePlanArtifactTools(
           credentialDependencies: getSlackCredentialResolutionDependencies(env),
         },
       );
-      return createSlackFileTransport(installation.client);
+      return installation.client;
     })();
+    // A failed resolve is retried by the next caller.
+    installationClient.catch(() => {
+      installationClient = undefined;
+    });
+    return installationClient;
+  };
+  const resolveFileTransport = (): Promise<SlackFileTransport> => {
+    transport ??= (async () => createSlackFileTransport(await resolveInstallationClient()))();
     return transport;
   };
   const binding = {
@@ -1956,9 +1980,28 @@ export function createRuntimePlanArtifactTools(
   const browserSession = plan.browserCapability && !options.fileCompletion?.repairing
     ? options.browserSession
     : undefined;
+  const websiteLogins = plan.websiteLogins ?? [];
+  const requester = options.browserRequester;
   const browserTools = browserSession
     ? createBrowserTools({
         session: browserSession,
+        ...(websiteLogins.length > 0 ? { logins: runtimePlanBrowserLogins(plan, websiteLogins) } : {}),
+        ...(requester && websiteLogins.length > 0
+          ? {
+              notifyRequester: createSlackRequesterNotifier({
+                requester,
+                surface: plan.conversation.surface,
+                ...(plan.artifactDestination.threadTs ? { threadTs: plan.artifactDestination.threadTs } : {}),
+                client: async () => {
+                  const client = await resolveInstallationClient();
+                  return {
+                    postMessage: (args) => client.chat.postMessage(args as never),
+                    postEphemeral: (args) => client.chat.postEphemeral(args as never),
+                  };
+                },
+              }),
+            }
+          : {}),
         stageArtifact: binding.stageArtifact,
         transportMaxBytes: async () => (await resolveFileTransport()).maxBytes,
         // Same route as the image tool's inspection: the frozen chat model
@@ -1979,6 +2022,50 @@ export function createRuntimePlanArtifactTools(
       ? [createImageArtifactTool(imageOptions), createRecoverImageTool(imageOptions)] : []),
     ...browserTools,
   ];
+}
+
+type SlackInstallationClient = Awaited<ReturnType<typeof resolveSlackInstallationExecutionContext>>['client'];
+
+/**
+ * The Slack person a browser hand-off link may reach: the verified requester
+ * of the current delivery, when the delivery is a host-authored Slack signal
+ * for this plan's conversation.
+ */
+function runtimePlanBrowserRequester(plan: RuntimePlanV2): SlackRequester | undefined {
+  let signal: ReturnType<typeof parseSlackManagementSignal>;
+  try {
+    signal = parseSlackManagementSignal(useDelivery(), plan);
+  } catch {
+    return undefined;
+  }
+  if (!signal) return undefined;
+  return {
+    slackUserId: signal.slackUserId,
+    channelId: signal.channelId,
+    ...(signal.conversationKind ? { conversationKind: signal.conversationKind } : {}),
+  };
+}
+
+/**
+ * The website-login seams for the browser tools. The plan's frozen logins are
+ * the ceiling; the Agent's live grants, joined with current login metadata,
+ * apply revocations at call time. Secrets stay in the login store until the
+ * sign-in tool reads them.
+ */
+function runtimePlanBrowserLogins(
+  plan: RuntimePlanV2,
+  granted: readonly RuntimePlanWebsiteLoginV1[],
+): BrowserLoginOptions {
+  return {
+    granted,
+    readLive: async () => {
+      const env = await resolveAgentPlatformEnv();
+      const agent = await getConfigStore(env).getAgent(plan.agentId);
+      if (!agent.enabled) return [];
+      return compileWebsiteLogins(agent.websiteLogins, await listWebsiteLogins(getSettingsStore(env)));
+    },
+    dependencies: async () => websiteLoginDependencies(await resolveAgentPlatformEnv()),
+  };
 }
 
 /**
@@ -2025,6 +2112,8 @@ export interface RuntimePlanArtifactToolOptions {
   resolveImageClient?: (() => Promise<ImageClientResolution>) | undefined;
   /** The response's browser session, from `useBrowserSession`; absent, no browser tools mount. */
   browserSession?: BrowserTurnSession | undefined;
+  /** The verified Slack requester a browser sign-in hand-off link may reach. */
+  browserRequester?: SlackRequester | undefined;
 }
 
 /**

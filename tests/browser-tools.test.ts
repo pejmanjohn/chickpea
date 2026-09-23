@@ -12,6 +12,11 @@ import {
   type BrowserToolsOptions,
 } from '../src/browser/tools.ts';
 import { BrowserTurnSession } from '../src/browser/turn-session.ts';
+import { createWebsiteLogin, getWebsiteLogin, type WebsiteLogin } from '../src/browser/logins.ts';
+import { BrowserProviderError, type BrowserProvider } from '../src/browser/provider.ts';
+import { browserHandoffMessage, createSlackRequesterNotifier } from '../src/browser/requester.ts';
+import { SqliteSettingsStore } from '../src/config/settings-store.ts';
+import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
 import type { SlackArtifactStageInput, SlackArtifactStageOutcome } from '../src/sandbox/artifact-tool.ts';
 import { FakeCdpSocket, fakeBrowserProvider } from './helpers/fake-cdp-socket.ts';
 
@@ -117,7 +122,7 @@ function setup(overrides: Partial<BrowserToolsOptions> & {
   return { browser, session, staged, fetched, ended, tools, run };
 }
 
-test('the browser toolset exposes the six tools in a stable order', () => {
+test('the browser toolset exposes its eight tools in a stable order', () => {
   const { tools } = setup();
   assert.deepEqual(tools.map((tool) => tool.name), [...BROWSER_TOOL_NAMES]);
   for (const tool of tools) assert.match(tool.description, /./);
@@ -369,4 +374,353 @@ test('a missing key surfaces the not-connected message', async () => {
     log: { info() {}, warn() {}, error() {} },
   });
   assert.deepEqual(result.output, { error: 'The browser is not connected. Ask an Admin to connect it in Settings › Browser.' });
+});
+
+// ---------------------------------------------------------------------------
+// Website logins (S2)
+// ---------------------------------------------------------------------------
+
+const PASSWORD = 'pw-Sentinel-9f3c-plaintext';
+const USERNAME = 'octo@example.com';
+// RFC 6238 seed; at the fixed test clock (2026-09-22T14:05Z) the code is computed by the tool.
+const TOTP_SEED = 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ';
+const LIVE_VIEW_URL = 'https://www.browserbase.com/devtools-fullscreen/inspector.html?wss=connect.browserbase.com/debug/s/devtools&secret=lv-sentinel';
+
+const LOGIN_TREE: AXNode[] = [
+  ax('1', 'RootWebArea', { childIds: ['2', '3', '4', '5'] }),
+  ax('2', 'textbox', { parentId: '1', label: 'Email', backendDOMNodeId: 11 }),
+  ax('3', 'textbox', { parentId: '1', label: 'Password', backendDOMNodeId: 12 }),
+  ax('4', 'textbox', { parentId: '1', label: 'Authentication code', backendDOMNodeId: 13 }),
+  ax('5', 'button', { parentId: '1', label: 'Sign in', backendDOMNodeId: 14 }),
+];
+
+/** A login page that echoes whatever was typed into it, in its text and URL. */
+class EchoingLoginBrowser extends ScriptedBrowser {
+  inserted: string[] = [];
+  constructor() {
+    super();
+    this.tree = LOGIN_TREE;
+    this.responders.set('Input.insertText', (message) => {
+      this.inserted.push(String(message.params.text));
+      this.tree = [
+        ...LOGIN_TREE.slice(0, 1).map((node) => ({ ...node, childIds: [...node.childIds!, '9'] })),
+        ...LOGIN_TREE.slice(1),
+        ax('9', 'StaticText', { parentId: '1', label: `You typed ${this.inserted.join(' and ')}` }),
+      ];
+      this.url = `https://github.com/session?echo=${encodeURIComponent(this.inserted.join(','))}`;
+      this.title = `Welcome ${this.inserted.at(-1)}`;
+      return { result: {} };
+    });
+  }
+}
+
+async function loginSetup(options: {
+  provider?: Partial<BrowserProvider>;
+  notify?: boolean;
+  withLogins?: boolean;
+  settings?: SqliteSettingsStore;
+} = {}) {
+  const settings = options.settings ?? new SqliteSettingsStore(':memory:');
+  const deps = { store: settings, keyring: generateCredentialKeyring('browser_tools_test') };
+  const existing = await import('../src/browser/logins.ts').then((m) => m.listWebsiteLogins(settings));
+  const github = existing.find((login) => login.host === 'github.com') ?? await createWebsiteLogin(deps, {
+    host: 'github.com', label: 'GitHub', ownerKind: 'team', createdByMembershipId: 'mem_owner',
+    method: 'credentials', username: USERNAME, password: PASSWORD, totpSeed: TOTP_SEED,
+  });
+  const portal = existing.find((login) => login.host === 'portal.example.com') ?? await createWebsiteLogin(deps, {
+    host: 'portal.example.com', label: 'Portal', ownerKind: 'team', createdByMembershipId: 'mem_owner', method: 'handoff',
+  });
+  const frozen = (login: WebsiteLogin) => ({
+    id: login.id, host: login.host, label: login.label, level: 'check' as const, method: login.method,
+    ...(login.username ? { username: login.username } : {}),
+  });
+  const granted = [frozen(github), frozen(portal)];
+  const state = { live: [...granted] };
+  const browsers: EchoingLoginBrowser[] = [];
+  const fake = fakeBrowserProvider({
+    async liveView() {
+      return { fullscreenUrl: LIVE_VIEW_URL, url: 'https://debug.example/', pages: [] };
+    },
+    ...options.provider,
+  });
+  let contexts = 0;
+  if (!options.provider?.createContext) {
+    fake.provider.createContext = async () => ({ id: `ctx-${(contexts += 1)}` });
+  }
+  const session = new BrowserTurnSession({
+    provider: fake.provider,
+    connect: async () => {
+      const browser = new EchoingLoginBrowser();
+      browsers.push(browser);
+      return browser;
+    },
+    sleep: async () => undefined,
+  });
+  const notices: Array<{ text: string }> = [];
+  const warnings: unknown[] = [];
+  const tools = createBrowserTools({
+    session,
+    stageArtifact: async (input) => ({ attached: true, byteLength: input.bytes.byteLength }),
+    transportMaxBytes: async () => undefined,
+    sleep: async () => undefined,
+    now: () => new Date(Date.UTC(2026, 8, 22, 14, 5)),
+    log: { warn: (...args: unknown[]) => { warnings.push(args); } },
+    ...(options.withLogins === false ? {} : {
+      logins: { granted, readLive: async () => state.live, dependencies: async () => deps },
+    }),
+    ...(options.notify === false ? {} : { notifyRequester: async (message: { text: string }) => { notices.push(message); } }),
+  });
+  const byName = new Map(tools.map((tool) => [tool.name, tool]));
+  const run = async (name: string, data: Record<string, unknown> = {}): Promise<any> => {
+    const tool = byName.get(name)!;
+    const parsed = v.parse(tool.input as v.GenericSchema, data);
+    const result = await (tool.run as (context: unknown) => Promise<{ output: unknown }>)({
+      data: parsed, toolCallId: 'call_1', log: { info() {}, warn() {}, error() {} },
+    });
+    return JSON.parse(JSON.stringify(result.output));
+  };
+  return { settings, deps, github, portal, granted, state, browsers, session, notices, warnings, run, ...fake };
+}
+
+test('browser_open binds a granted host and its subdomains, and switches sessions when the site changes', async () => {
+  const { run, created, ended, github, portal, settings, session } = await loginSetup();
+  const first = await run('browser_open', { url: 'https://github.com/settings/profile' });
+  assert.deepEqual(first.login, { id: github.id, label: 'GitHub', host: 'github.com', method: 'credentials' });
+  assert.deepEqual(created[0], {
+    recording: true, viewport: { width: 1280, height: 800 }, timeoutSeconds: 660,
+    contextId: 'ctx-1', persistContext: true, allowedDomains: ['github.com'],
+  });
+  // The context is created once and remembered on the login.
+  assert.equal((await getWebsiteLogin(settings, github.id))?.contextId, 'ctx-1');
+  // A subdomain of the login host stays in the same bound session.
+  const gist = await run('browser_open', { url: 'gist.github.com/octo' });
+  assert.equal(gist.login.id, github.id);
+  assert.equal(created.length, 1);
+  // A public site ends the bound session and opens a public one.
+  const publicPage = await run('browser_open', { url: 'https://example.com/' });
+  assert.equal(publicPage.login, undefined);
+  assert.deepEqual(ended, ['sess-1']);
+  assert.equal(created[1]?.contextId, undefined);
+  // A different login's site switches again, with its own context.
+  const portalPage = await run('browser_open', { url: 'https://portal.example.com/home' });
+  assert.equal(portalPage.login.id, portal.id);
+  assert.deepEqual(ended, ['sess-1', 'sess-2']);
+  assert.equal(created[2]?.contextId, 'ctx-2');
+  assert.equal(session.binding?.loginId, portal.id);
+  // Look-alike hosts and other ports are not the login's site.
+  assert.equal((await run('browser_open', { url: 'https://notgithub.com/' })).login, undefined);
+  assert.equal((await run('browser_open', { url: 'https://github.com:8443/' })).login, undefined);
+  // A search never binds.
+  assert.equal((await run('browser_open', { url: 'github login page' })).login, undefined);
+  await session.close();
+});
+
+test('browser_open reuses a stored context, and a loginId must match the site', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const firstTurn = await loginSetup({ settings });
+  await firstTurn.run('browser_open', { url: 'https://github.com/' });
+  await firstTurn.session.close();
+  const secondTurn = await loginSetup({ settings, provider: { createContext: async () => { throw new Error('should reuse'); } } });
+  await secondTurn.run('browser_open', { url: 'https://github.com/' });
+  assert.equal(secondTurn.created[0]?.contextId, 'ctx-1');
+  const wrong = await secondTurn.run('browser_open', { url: 'https://example.com/', loginId: secondTurn.github.id });
+  assert.match(wrong.error, /That login is for github\.com/);
+  const unknown = await secondTurn.run('browser_open', { url: 'https://github.com/', loginId: 'wl_nope' });
+  assert.match(unknown.error, /no website login with that id/);
+  await secondTurn.session.close();
+});
+
+test('a grant revoked mid-turn refuses the site and closes its signed-in browser', async () => {
+  const { run, state, github, ended, session } = await loginSetup();
+  await run('browser_open', { url: 'https://github.com/' });
+  state.live = state.live.filter(({ id }) => id !== github.id);
+  const snapshot = await run('browser_snapshot');
+  assert.match(snapshot.error, /access to that website login was removed.*browser was closed/);
+  assert.deepEqual(ended, ['sess-1']);
+  assert.equal(session.active, false);
+  assert.match((await run('browser_open', { url: 'https://github.com/' })).error, /access to that website login was removed/);
+  assert.match((await run('browser_sign_in', { loginId: github.id, passwordRef: 'e2' })).error, /access to that website login was removed/);
+  assert.match((await run('browser_handoff', { loginId: github.id, reason: 'x' })).error, /access to that website login was removed/);
+});
+
+test('browser_sign_in types the stored secrets through fillSecret and never leaks them', async () => {
+  const { run, browsers, github, settings, session } = await loginSetup();
+  await run('browser_open', { url: 'https://github.com/login' });
+  const result = await run('browser_sign_in', {
+    loginId: github.id, usernameRef: 'e1', passwordRef: 'e2', codeRef: 'e3', submitRef: 'e4',
+  });
+  const browser = browsers[0]!;
+  const [username, password, code] = browser.inserted;
+  assert.equal(username, USERNAME);
+  assert.equal(password, PASSWORD);
+  assert.match(code ?? '', /^\d{6}$/);
+  // Each value went in through focus + insertText on its own field.
+  const focused = browser.sent.filter((m) => m.method === 'DOM.focus').map((m) => m.params.backendNodeId);
+  assert.deepEqual(focused, [11, 12, 13]);
+  // Submitted by clicking the button (no Enter key needed).
+  assert.equal(browser.sent.filter((m) => m.method === 'Input.dispatchMouseEvent' && m.params.type === 'mousePressed').length, 1);
+  assert.equal(result.signedIn, 'unknown');
+  assert.match(result.note, /Judge from the page/);
+  const text = JSON.stringify(result);
+  assert.doesNotMatch(text, new RegExp(PASSWORD));
+  assert.doesNotMatch(text, new RegExp(code!));
+  assert.match(result.snapshot, /You typed octo@example\.com and \[redacted\] and \[redacted\]/);
+  assert.match(result.title, /\[redacted\]/);
+  // Later reads keep redacting for the rest of the turn.
+  assert.doesNotMatch(JSON.stringify(await run('browser_snapshot')), new RegExp(PASSWORD));
+  assert.ok((await getWebsiteLogin(settings, github.id))?.lastUsedAt);
+  await session.close();
+});
+
+test('browser_sign_in without a submit ref presses Enter in the last field, and errors stay redacted', async () => {
+  const { run, browsers, github, session } = await loginSetup();
+  await run('browser_open', { url: 'https://github.com/login' });
+  await run('browser_sign_in', { loginId: github.id, usernameRef: 'e1', passwordRef: 'e2' });
+  const browser = browsers[0]!;
+  const enter = browser.sent.filter((m) => m.method === 'Input.dispatchKeyEvent' && m.params.key === 'Enter');
+  assert.equal(enter.length, 2);
+  // The Enter went to the password field, the last one filled.
+  const focusedLast = browser.sent.filter((m) => m.method === 'DOM.focus').at(-1)?.params.backendNodeId;
+  assert.equal(focusedLast, 12);
+  // A failure whose message echoes the password is redacted.
+  browser.responders.set('DOM.getBoxModel', () => ({ error: { code: -1, message: `node ${PASSWORD} detached` } }));
+  browser.responders.set('Input.insertText', () => ({ error: { code: -1, message: `cannot insert ${PASSWORD}` } }));
+  await run('browser_snapshot');
+  const failed = await run('browser_sign_in', { loginId: github.id, passwordRef: 'e2' });
+  assert.ok(failed.error);
+  assert.doesNotMatch(JSON.stringify(failed), new RegExp(PASSWORD));
+  await session.close();
+});
+
+test('browser_sign_in refuses without a bound session, without fields, and for hand-off logins', async () => {
+  const { run, github, portal, session } = await loginSetup();
+  assert.match((await run('browser_sign_in', { loginId: github.id, passwordRef: 'e2' })).error, /Open github\.com with browser_open first/);
+  await run('browser_open', { url: 'https://example.com/' });
+  assert.match((await run('browser_sign_in', { loginId: github.id, passwordRef: 'e2' })).error, /Open github\.com/);
+  await run('browser_open', { url: 'https://github.com/' });
+  assert.match((await run('browser_sign_in', { loginId: github.id })).error, /at least one sign-in field/);
+  assert.match((await run('browser_sign_in', { loginId: portal.id, passwordRef: 'e2' })).error, /Portal has no saved password.*browser_handoff/);
+  assert.match((await run('browser_sign_in', { loginId: 'wl_nope', passwordRef: 'e2' })).error, /no website login with that id/);
+  await session.close();
+});
+
+test('the sign-in tools explain when the Agent has no website logins', async () => {
+  const { run, session } = await loginSetup({ withLogins: false });
+  assert.match((await run('browser_sign_in', { loginId: 'wl_x', passwordRef: 'e1' })).error, /no website logins/);
+  assert.match((await run('browser_handoff', { loginId: 'wl_x', reason: 'x' })).error, /no website logins/);
+  // Browsing is unchanged: a would-be login host opens publicly.
+  const opened = await run('browser_open', { url: 'https://github.com/' });
+  assert.equal(opened.login, undefined);
+  assert.equal(opened.title, 'Example Pricing');
+  await session.close();
+});
+
+test('browser_handoff sends a private live-view link, detaches the session, and keeps the link out of outputs', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const { run, notices, created, ended, portal, session } = await loginSetup({ settings });
+  await run('browser_open', { url: 'https://portal.example.com/reports?q=1' });
+  const result = await run('browser_handoff', { loginId: portal.id, reason: 'The portal needs a person to sign in.' });
+  assert.deepEqual(result, {
+    handedOff: true,
+    host: 'portal.example.com',
+    note: 'Tell the person you have sent them a private sign-in link and that you will continue when they reply. End your reply now.',
+  });
+  assert.doesNotMatch(JSON.stringify(result), /lv-sentinel|browserbase\.com/);
+  // The bound browsing session ended; the hand-off session is kept alive and detached.
+  assert.deepEqual(ended, ['sess-1']);
+  assert.equal(created[1]?.keepAlive, true);
+  assert.equal(created[1]?.timeoutSeconds, 600);
+  assert.equal(created[1]?.contextId, created[0]?.contextId);
+  assert.equal(session.active, false);
+  assert.equal(await session.close(), undefined);
+  assert.deepEqual(ended, ['sess-1']);
+  assert.equal((await getWebsiteLogin(settings, portal.id))?.handoffSessionId, 'sess-2');
+  assert.equal(notices.length, 1);
+  assert.equal(notices[0]!.text, browserHandoffMessage('portal.example.com', LIVE_VIEW_URL));
+  assert.match(notices[0]!.text, /^portal\.example\.com needs you to sign in before I can continue\. <https:\/\/www\.browserbase\.com\/.*&amp;secret=lv-sentinel\|Open the browser> and sign in; it stays open for 10 minutes/);
+  // Browsing that site again this turn waits for the person.
+  assert.match((await run('browser_open', { url: 'https://portal.example.com/' })).error, /already sent the person a private sign-in link/);
+  assert.match((await run('browser_handoff', { loginId: portal.id, reason: 'again' })).error, /already sent/);
+
+  // The next turn ends the kept-alive session first so its sign-in is saved.
+  const next = await loginSetup({ settings });
+  await next.run('browser_open', { url: 'https://portal.example.com/' });
+  assert.deepEqual(next.ended, ['sess-2']);
+  assert.equal((await getWebsiteLogin(settings, portal.id))?.handoffSessionId, undefined);
+  await next.session.close();
+});
+
+test('browser_handoff continues from the page reached on that site', async () => {
+  const { run, browsers, portal } = await loginSetup();
+  await run('browser_open', { url: 'https://portal.example.com/reports?q=1' });
+  await run('browser_handoff', { loginId: portal.id, reason: 'sign in' });
+  const navigated = browsers[1]!.sent.find((m) => m.method === 'Page.navigate')?.params.url;
+  assert.equal(navigated, 'https://portal.example.com/reports?q=1');
+});
+
+test('browser_handoff refuses without keep-alive support or a requester, and cleans up a failed send', async () => {
+  const paid = await loginSetup({
+    provider: {
+      async createSession(options) {
+        if (options.keepAlive) {
+          throw new BrowserProviderError('Browserbase POST /v1/sessions returned 402: upgrade your plan to use keepAlive', 402);
+        }
+        return { id: 'sess-x', connectUrl: 'wss://connect.example/' };
+      },
+    },
+  });
+  const refused = await paid.run('browser_handoff', { loginId: paid.portal.id, reason: 'sign in' });
+  assert.match(refused.error, /needs a paid Browserbase plan/);
+  assert.equal(paid.notices.length, 0);
+
+  const scheduled = await loginSetup({ notify: false });
+  const noPerson = await scheduled.run('browser_handoff', { loginId: scheduled.portal.id, reason: 'sign in' });
+  assert.match(noPerson.error, /no person in this conversation/);
+  assert.equal(scheduled.created.length, 0);
+
+  const broken = await loginSetup();
+  const tools = createBrowserTools({
+    session: broken.session,
+    stageArtifact: async () => ({ attached: false, reason: 'unused' } as never),
+    transportMaxBytes: async () => undefined,
+    sleep: async () => undefined,
+    logins: { granted: broken.granted, readLive: async () => broken.state.live, dependencies: async () => broken.deps },
+    notifyRequester: async () => { throw new Error(`channel_not_found ${LIVE_VIEW_URL}`); },
+  });
+  const handoffTool = tools.find((tool) => tool.name === 'browser_handoff')!;
+  const failed = await (handoffTool.run as (context: unknown) => Promise<{ output: any }>)({
+    data: { loginId: broken.portal.id, reason: 'sign in' }, toolCallId: 'c', log: { info() {}, warn() {}, error() {} },
+  });
+  assert.match(failed.output.error, /could not be sent/);
+  assert.doesNotMatch(JSON.stringify(failed.output), /lv-sentinel/);
+  // The kept-alive session was ended rather than left open.
+  assert.deepEqual(broken.ended, ['sess-1']);
+  assert.equal(broken.session.active, false);
+});
+
+test('the requester notifier posts ephemerally in channels and group DMs, and directly only in a 1:1 DM', async () => {
+  const calls: Array<[string, Record<string, unknown>]> = [];
+  const client = {
+    postMessage: async (args: Record<string, unknown>) => { calls.push(['postMessage', args]); },
+    postEphemeral: async (args: Record<string, unknown>) => { calls.push(['postEphemeral', args]); },
+  };
+  const requester = { slackUserId: 'U123', channelId: 'C999' };
+  await createSlackRequesterNotifier({
+    requester: { ...requester, conversationKind: 'channel' }, surface: 'channel_thread', threadTs: '1.2', client: async () => client,
+  })({ text: 'hi' });
+  await createSlackRequesterNotifier({
+    requester: { ...requester, channelId: 'D1', conversationKind: 'im' }, surface: 'direct_message', client: async () => client,
+  })({ text: 'hi' });
+  await createSlackRequesterNotifier({
+    requester: { ...requester, channelId: 'G1', conversationKind: 'mpim' }, surface: 'direct_message', threadTs: '3.4', client: async () => client,
+  })({ text: 'hi' });
+  await createSlackRequesterNotifier({
+    requester: { ...requester, channelId: 'D2' }, surface: 'direct_message', client: async () => client,
+  })({ text: 'hi' });
+  assert.deepEqual(calls, [
+    ['postEphemeral', { channel: 'C999', user: 'U123', text: 'hi', thread_ts: '1.2' }],
+    ['postMessage', { channel: 'D1', text: 'hi', unfurl_links: false, unfurl_media: false }],
+    ['postEphemeral', { channel: 'G1', user: 'U123', text: 'hi', thread_ts: '3.4' }],
+    ['postEphemeral', { channel: 'D2', user: 'U123', text: 'hi' }],
+  ]);
 });

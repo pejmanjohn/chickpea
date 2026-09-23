@@ -109,3 +109,73 @@ test('a failing usage callback does not break close', async () => {
   const info = await session.close();
   assert.equal(info?.sessionId, 'sess-1');
 });
+
+const GITHUB = { loginId: 'wl_github', host: 'github.com', contextId: 'ctx-github' };
+const PORTAL = { loginId: 'wl_portal', host: 'portal.example.com:8443', contextId: 'ctx-portal' };
+
+test('a bound session loads and persists its login context, limited to the login domain', async () => {
+  const { session, created } = setup();
+  const opened = await session.ensureFor(GITHUB);
+  assert.equal(opened.sessionId, 'sess-1');
+  assert.deepEqual(created[0], {
+    recording: true,
+    viewport: { width: 1280, height: 800 },
+    timeoutSeconds: 600 + 60,
+    contextId: 'ctx-github',
+    persistContext: true,
+    allowedDomains: ['github.com'],
+  });
+  assert.deepEqual(session.binding, GITHUB);
+  // The same login reuses the session; ensure() takes whatever is open.
+  assert.equal((await session.ensureFor(GITHUB)).sessionId, 'sess-1');
+  assert.equal((await session.ensure()).sessionId, 'sess-1');
+  assert.equal(created.length, 1);
+  await session.close();
+});
+
+test('switching between logins or to public ends the open session and shares the budget', async () => {
+  const { session, created, ended, closedInfo, advance } = setup();
+  await session.ensureFor(GITHUB);
+  advance(60_000);
+  assert.equal((await session.ensureFor(PORTAL)).sessionId, 'sess-2');
+  assert.deepEqual(ended, ['sess-1']);
+  // A port never reaches the domain allowlist.
+  assert.deepEqual(created[1]?.allowedDomains, ['portal.example.com']);
+  assert.equal(created[1]?.timeoutSeconds, 540 + 60);
+  advance(30_000);
+  assert.equal((await session.ensureFor(undefined)).sessionId, 'sess-3');
+  assert.equal(session.binding, undefined);
+  assert.equal(created[2]?.contextId, undefined);
+  assert.equal(created[2]?.persistContext, undefined);
+  assert.deepEqual(ended, ['sess-1', 'sess-2']);
+  assert.deepEqual(closedInfo.map(({ seconds }) => seconds), [60, 30]);
+  await session.close();
+});
+
+test('a hand-off session is kept alive for ten minutes and detach lets it outlive the turn', async () => {
+  const { session, created, ended, closedInfo, sockets, advance } = setup();
+  await session.ensure();
+  const opened = await session.openForHandoff(GITHUB);
+  assert.equal(opened.sessionId, 'sess-2');
+  assert.deepEqual(ended, ['sess-1']);
+  assert.equal(created[1]?.keepAlive, true);
+  assert.equal(created[1]?.timeoutSeconds, 600);
+  assert.equal(created[1]?.contextId, 'ctx-github');
+  advance(5_000);
+  assert.deepEqual(await session.detach(), { sessionId: 'sess-2', seconds: 0 });
+  assert.equal(session.active, false);
+  assert.equal(sockets[1]!.closed, true);
+  // Closing afterwards (as the finish hook does) has nothing to end.
+  assert.equal(await session.close(), undefined);
+  assert.deepEqual(ended, ['sess-1']);
+  assert.deepEqual(closedInfo.at(-1), { sessionId: 'sess-2', seconds: 0 });
+  assert.equal(await session.detach(), undefined);
+});
+
+test('redaction replaces typed secrets and skips values too short to redact safely', () => {
+  const { session } = setup();
+  session.addRedaction('hunter2!');
+  session.addRedaction('287082');
+  session.addRedaction('ab');
+  assert.equal(session.redact('pw hunter2! code 287082 tab'), 'pw [redacted] code [redacted] tab');
+});

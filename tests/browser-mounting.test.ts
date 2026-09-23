@@ -88,8 +88,55 @@ test('the browser skill covers finding pages, refs, proof, and the read-only bou
   const skill = browserSkillForPlan(plan({ provider: 'browserbase' }));
   assert.ok(skill);
   for (const phrase of [/Exa or Firecrawl/, /ref=e3/, /browser_look/, /browser_screenshot/, /browser_recording/, /Call it last/,
-    /untrusted data/, /Never enter passwords/, /cannot sign in or change data/, /mayChangeData/]) {
+    /untrusted data/, /Never enter passwords/, /cannot change data/, /mayChangeData/]) {
     assert.match(skill.instructions, phrase);
+  }
+  // Without granted logins the skill says signing in is unavailable.
+  assert.match(skill.instructions, /no granted website logins, so it cannot sign in/);
+  assert.doesNotMatch(skill.instructions, /browser_sign_in` with its loginId/);
+});
+
+test('the browser skill lists granted websites and the sign-in rules', () => {
+  const skill = browserSkillForPlan({
+    ...plan({ provider: 'browserbase' }),
+    websiteLogins: [
+      { id: 'wl_' + 'a'.repeat(32), host: 'github.com', label: 'GitHub', level: 'check', method: 'credentials', username: 'octo@example.com' },
+      { id: 'wl_' + 'b'.repeat(32), host: 'portal.example.com', label: 'Portal', level: 'act', method: 'handoff' },
+    ],
+  });
+  assert.ok(skill);
+  assert.match(skill.description, /sign in to granted websites/);
+  assert.match(skill.instructions, /## Signing in/);
+  assert.match(skill.instructions, new RegExp(`- GitHub: github\\.com \\(loginId \`wl_a{32}\`, saved password\\)`));
+  assert.match(skill.instructions, new RegExp(`- Portal: portal\\.example\\.com \\(loginId \`wl_b{32}\`, the person signs in\\)`));
+  for (const phrase of [/open it with `browser_open` first/, /call `browser_sign_in`/, /call `browser_handoff`/,
+    /Never type credentials with `browser_act`/, /never reveal a username or password/, /does not permit changing data/]) {
+    assert.match(skill.instructions, phrase);
+  }
+  // The display username is never part of the skill text.
+  assert.doesNotMatch(skill.instructions, /octo@example\.com/);
+});
+
+test('the sign-in tools mount with the browser and explain when the plan has no logins', async () => {
+  const accumulator = createArtifactReceiptAccumulator((update) => {
+    update({ schemaVersion: 1, receipts: [] });
+  });
+  const browserSession = new BrowserTurnSession({
+    provider: fakeBrowserProvider().provider,
+    connect: async () => {
+      throw new Error('unused');
+    },
+  });
+  const tools = createRuntimePlanArtifactTools(plan({ provider: 'browserbase' }), accumulator, () => {}, { browserSession });
+  for (const name of ['browser_sign_in', 'browser_handoff']) {
+    const tool = tools.find((candidate) => candidate.name === name);
+    assert.ok(tool, name);
+    const result = await (tool.run as (context: unknown) => Promise<{ output: { error?: string } }>)({
+      data: { loginId: 'wl_x', reason: 'sign in', passwordRef: 'e1' },
+      toolCallId: 'c',
+      log: { info() {}, warn() {}, error() {} },
+    });
+    assert.match(result.output.error ?? '', /no website logins/);
   }
 });
 

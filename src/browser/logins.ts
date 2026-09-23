@@ -48,6 +48,11 @@ export interface WebsiteLogin {
   username?: string;
   /** Hosted-browser context holding this login's saved session, once one exists. */
   contextId?: string;
+  /**
+   * A kept-alive hosted-browser session handed to a person to sign in. The
+   * next bound session ends it first so its sign-in is saved to the context.
+   */
+  handoffSessionId?: string;
   createdAt: number;
   lastUsedAt?: number;
 }
@@ -339,6 +344,21 @@ export async function setWebsiteLoginContext(
   return patchLogin(store, id, (login) => ({ ...login, contextId }));
 }
 
+/** Remember (or, with undefined, forget) a hand-off session still open for this login. */
+export async function setWebsiteLoginHandoff(
+  store: SettingsStore,
+  id: string,
+  sessionId: string | undefined,
+): Promise<boolean> {
+  if (sessionId !== undefined && !BROWSER_CONTEXT_ID_PATTERN.test(sessionId)) {
+    throw new WebsiteLoginInputError('invalid_context');
+  }
+  return patchLogin(store, id, (login) => {
+    const { handoffSessionId: _previous, ...rest } = login;
+    return sessionId === undefined ? rest : { ...rest, handoffSessionId: sessionId };
+  });
+}
+
 /**
  * A login entry frozen into a runtime plan, as the call-time intersection
  * sees it. Structural so frozen plan rows and live compiled rows both fit.
@@ -482,6 +502,7 @@ function parseLogin(value: unknown): WebsiteLogin | undefined {
   if (ownerKind === 'member' && !ownerMembershipId) return undefined;
   const username = text('username');
   const contextId = text('contextId');
+  const handoffSessionId = text('handoffSessionId');
   const lastUsedAt = typeof record.lastUsedAt === 'number' ? record.lastUsedAt : undefined;
   return {
     id,
@@ -493,6 +514,7 @@ function parseLogin(value: unknown): WebsiteLogin | undefined {
     method,
     ...(username ? { username } : {}),
     ...(contextId ? { contextId } : {}),
+    ...(handoffSessionId ? { handoffSessionId } : {}),
     createdAt,
     ...(lastUsedAt !== undefined ? { lastUsedAt } : {}),
   };
