@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
+// @ts-expect-error Deployment tooling JavaScript helper.
 import {
   mergeDeploymentSecrets,
   OPERATOR_SECRETS_ENV,
