@@ -1135,6 +1135,49 @@ test('persisted progressive finalization resumes the exact known stream without 
   });
 });
 
+test('persisted finalization replaces a markdown_text-mode stream that rejects its chunks', async () => {
+  const calls: Array<{ method: string; input: Record<string, unknown> }> = [];
+  const update = {
+    channel: 'C_BOUND', ts: '1782770400.000952',
+    text: 'Whole answer', blocks: [{ type: 'markdown', text: 'Whole answer' }],
+  };
+  const result = await deliverPersistedSlackPayload(
+    {
+      chat: {
+        async stopStream(input: Record<string, unknown>) {
+          calls.push({ method: 'stop', input });
+          if (input.chunks) {
+            throw Object.assign(new Error('streaming_mode_mismatch'), {
+              code: ErrorCode.PlatformError,
+              data: { ok: false, error: 'streaming_mode_mismatch' },
+            });
+          }
+          return { ok: true };
+        },
+        async update(input: Record<string, unknown>) {
+          calls.push({ method: 'update', input });
+          return { ok: true };
+        },
+        async postMessage(input: Record<string, unknown>) {
+          calls.push({ method: 'post', input });
+          return { ok: true, ts: 'should-not-post' };
+        },
+      },
+    } as unknown as WebClient,
+    JSON.stringify({
+      method: 'slack_chat_stream_resume',
+      channel: 'C_BOUND',
+      ts: '1782770400.000952',
+      stop: { chunks: [{ type: 'markdown_text', text: ' suffix' }], blocks: [] },
+      update,
+    }),
+  );
+  assert.deepEqual(calls.map((call) => call.method), ['stop', 'stop', 'update']);
+  assert.equal(calls[1]?.input.chunks, undefined);
+  assert.deepEqual(calls[2]?.input, update);
+  assert.equal(result.deliveryRef, 'slack:C_BOUND:1782770400.000952');
+});
+
 test('persisted correction stops then updates only the exact streamed artifact', async () => {
   const calls: Array<{ method: string; input: unknown }> = [];
   await deliverPersistedSlackPayload(
