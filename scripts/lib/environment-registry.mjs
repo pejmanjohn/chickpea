@@ -1461,8 +1461,14 @@ function readRegistryAt(root, optional, allowLegacy = false) {
     throw fail('REGISTRY_MISSING');
   }
   assertSafeDirectory(root);
+  // Writers publish the immutable snapshot before replacing registry.json.
+  // Read the pointer first so a concurrent publication cannot make it newer
+  // than the history listing and look like missing revision history.
+  const current = existsSync(registryPath)
+    ? validateRegistry(readOwnerOnlyJson(registryPath, 'INVALID_REGISTRY'), true)
+    : undefined;
   const latest = readLatestRegistrySnapshot(root);
-  if (!existsSync(registryPath) && !latest) {
+  if (!current && !latest) {
     if (optional) return undefined;
     throw fail('REGISTRY_MISSING');
   }
@@ -1470,8 +1476,7 @@ function readRegistryAt(root, optional, allowLegacy = false) {
   if (!allowLegacy && latest.schemaVersion === LEGACY_ENVIRONMENT_REGISTRY_SCHEMA) {
     throw fail('PROVIDER_AUTH_CONFIG_MIGRATION_REQUIRED');
   }
-  if (!existsSync(registryPath)) return latest;
-  const current = validateRegistry(readOwnerOnlyJson(registryPath, 'INVALID_REGISTRY'), true);
+  if (!current) return latest;
   if (current.revision > latest.revision) throw fail('REGISTRY_REVISION_HISTORY_MISSING');
   if (current.revision < latest.revision) return latest;
   if (registryDigest(current) !== registryDigest(latest)) throw fail('REGISTRY_SNAPSHOT_MISMATCH');

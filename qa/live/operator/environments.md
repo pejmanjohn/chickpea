@@ -137,7 +137,7 @@ disable it. Enabled telemetry without a `test` label, an unverified opt-out, or 
 serving change blocks dependent live actions until resolved through the target's
 normal configuration and deployment flow.
 
-Amber/Cobalt builds stamp `CHICKPEA_TELEMETRY_ENVIRONMENT=test` automatically,
+Amber, Cobalt, and Violet builds stamp `CHICKPEA_TELEMETRY_ENVIRONMENT=test` automatically,
 and the guarded deployment validates that artifact setting. Existing serving
 versions still require readback; source configuration alone is not proof.
 Local lanes already use `development`, and the offline Cloudflare smoke Worker
