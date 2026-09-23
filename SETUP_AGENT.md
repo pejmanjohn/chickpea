@@ -27,6 +27,8 @@ A Cloudflare Worker itself runs in workerd, independently of build-time Node.
 
 For Meta Ads, configure an installation-owned Meta App ID before connecting an Agent. See [Meta Ads setup](docs/runbooks/meta-ads-connector.md).
 
+Optional: to let Agents open websites, create a Browserbase project, copy its API key (**Settings → API keys** in Browserbase), and paste it in Admin **Settings → Browser** (`/admin/settings/browser`). Nothing is enabled per Agent; website logins are added on an Agent's **Websites** tab. See [the browser runbook](docs/runbooks/browser-feature.md).
+
 ## Manual adoption
 
 Manual app adoption is a secondary recovery path on the setup page. Use the same reviewed manifest and unchanged deployment callback URLs. Client secret and signing secret inputs are write-only and encrypted before persistence. Do not use an app-level `xapp-` token; Chickpea uses Slack's HTTP Events API and a bot OAuth token issued by the install flow.

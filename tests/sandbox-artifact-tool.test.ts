@@ -341,7 +341,7 @@ test('in-memory sandbox artifacts are read directly, byte for byte, with no shel
     channel: 'C_BOUND',
     threadTs: '1782770400.000300',
     async stageArtifact(input) {
-      uploads.push({ bytes: input.bytes, filename: input.filename });
+      uploads.push({ bytes: (input.bytes as Uint8Array), filename: input.filename });
       return { attached: true, byteLength: input.bytes.byteLength };
     },
   });

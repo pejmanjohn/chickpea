@@ -2,6 +2,11 @@ import { timingSafeEqual } from 'node:crypto';
 
 import { sha256HexNode } from '../security/digest.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
+import {
+  addSettingStringSetValues,
+  readSettingStringSet,
+  removeSettingStringSetValues,
+} from '../config/setting-string-set.ts';
 import type { IdentityStore } from '../identity/types.ts';
 import { isActiveConnectionActor } from './runtime.ts';
 import type {
@@ -123,7 +128,7 @@ export async function authorizeOAuthContinuationFromProvider(input: {
   }
   // Index first. A crash can leave a harmless pending entry, but can never
   // leave an authorized continuation invisible to the periodic repair loop.
-  await input.settings.mergeSettingStringSet(RESUME_PENDING_INDEX_KEY, [continuation.id]);
+  await addSettingStringSetValues(input.settings, RESUME_PENDING_INDEX_KEY, [continuation.id]);
   const authorized: OAuthContinuation = { ...continuation, status: 'authorized', updatedAt: now };
   const changed = await input.settings.applySettingsPatch({
     expected: { key: settingKey, value: raw },
@@ -344,41 +349,13 @@ function providerStateKey(providerState: string): string {
   return `connection-oauth-provider-state.${sha256HexNode(providerState)}`;
 }
 
-async function pendingResumeIds(settings: SettingsStore): Promise<string[]> {
-  const raw = await settings.getSetting(RESUME_PENDING_INDEX_KEY);
-  if (!raw) return [];
-  try {
-    const value = JSON.parse(raw) as unknown;
-    return Array.isArray(value)
-      ? [...new Set(value.filter((id): id is string =>
-          typeof id === 'string' && /^oauthcontinuation_[a-zA-Z0-9_-]{1,160}$/.test(id)
-        ))]
-      : [];
-  } catch {
-    return [];
-  }
+function pendingResumeIds(settings: SettingsStore): Promise<string[]> {
+  return readSettingStringSet(settings, RESUME_PENDING_INDEX_KEY, (id) =>
+    /^oauthcontinuation_[a-zA-Z0-9_-]{1,160}$/.test(id));
 }
 
-async function removePendingResumeId(settings: SettingsStore, id: string): Promise<void> {
-  for (let attempt = 0; attempt < 4; attempt += 1) {
-    const raw = await settings.getSetting(RESUME_PENDING_INDEX_KEY);
-    if (!raw) return;
-    let ids: string[];
-    try {
-      const value = JSON.parse(raw) as unknown;
-      ids = Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : [];
-    } catch {
-      ids = [];
-    }
-    const remaining = [...new Set(ids)].filter((candidate) => candidate !== id);
-    const changed = await settings.applySettingsPatch({
-      expected: { key: RESUME_PENDING_INDEX_KEY, value: raw },
-      ...(remaining.length
-        ? { set: [{ key: RESUME_PENDING_INDEX_KEY, value: JSON.stringify(remaining) }] }
-        : { delete: [RESUME_PENDING_INDEX_KEY] }),
-    });
-    if (changed) return;
-  }
+function removePendingResumeId(settings: SettingsStore, id: string): Promise<void> {
+  return removeSettingStringSetValues(settings, RESUME_PENDING_INDEX_KEY, [id]);
 }
 
 function encodeState(id: string, capability: string): string {

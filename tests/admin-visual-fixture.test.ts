@@ -475,6 +475,38 @@ test('visual fixture presents the Sandbox redeploy-required state for each build
   }
 });
 
+test('visual fixture serves display-safe website logins for the Websites tab after authorization', async () => {
+  const { startAdminVisualFixture } = await loadFixtureModule();
+  const fixture = await startAdminVisualFixture();
+  try {
+    const unauthenticated = await fetch(`${fixture.baseUrl}/admin/api/agents/agent_research/website-logins`, {
+      redirect: 'manual',
+    });
+    assert.notEqual(unauthenticated.status, 200);
+    assert.doesNotMatch(await unauthenticated.text(), /magoosh\.com/);
+
+    const research = await fixtureJson<{ logins: Array<Record<string, unknown>> }>(
+      fixture,
+      '/admin/api/agents/agent_research/website-logins',
+    );
+    assert.deepEqual(
+      research.logins.map(({ host, ownerKind, method, username, level, enabled }) => ({ host, ownerKind, method, username, level, enabled })),
+      [
+        { host: 'magoosh.com', ownerKind: 'team', method: 'credentials', username: 'qa-team@magoosh.com', level: 'act', enabled: true },
+        { host: 'admin.magoosh.com', ownerKind: 'member', method: 'handoff', username: undefined, level: 'check', enabled: true },
+      ],
+    );
+    for (const login of research.logins) {
+      assert.equal(typeof login.lastUsedAt, 'number');
+      assert.ok(!('password' in login) && !('totpSeed' in login));
+    }
+    const release = await fixtureJson<{ logins: unknown[] }>(fixture, '/admin/api/agents/agent_release/website-logins');
+    assert.deepEqual(release.logins, []);
+  } finally {
+    await fixture.close();
+  }
+});
+
 test('canonical visual states use authenticated production URLs and UI actions only', async () => {
   const { startAdminVisualFixture } = await loadFixtureModule();
   const fixture = await startAdminVisualFixture();
@@ -498,6 +530,7 @@ test('canonical visual states use authenticated production URLs and UI actions o
       agentBlankDescription: { path: '/admin/agents/agent_customer', actions: [] },
       agentMemory: { path: '/admin/agents/agent_research', actions: ['Memory'] },
       agentSchedules: { path: '/admin/agents/agent_release', actions: ['Schedules'] },
+      agentWebsites: { path: '/admin/agents/agent_research', actions: ['Websites'] },
       channelsIndex: { path: '/admin/channels', actions: [] },
       channelDetail: { path: '/admin/channels/TVISUAL/C_RELEASES', actions: [] },
       channelAdvanced: {

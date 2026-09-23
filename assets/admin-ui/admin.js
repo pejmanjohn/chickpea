@@ -282,6 +282,10 @@
     // action remains the sole persistence path.
     repositoryPicker: null,
     repositoryAddOpen: false,
+    // Agent Websites tab. The list holds display-safe rows only; the add
+    // dialog holds a typed password just until its save request starts.
+    websiteLogins: { agentId: "", logins: [], loading: false, loaded: false, error: "", removeConfirm: "", removing: "", removeError: "", levelSaving: "", levelError: null },
+    websiteLoginDialog: null,
     egress: null,
     egressLoaded: false,
     egressError: "",
@@ -577,6 +581,9 @@
       sparkle: "M8 1.25a.75.75 0 0 1 .72.54l.52 1.83a4.5 4.5 0 0 0 3.14 3.14l1.83.52a.75.75 0 0 1 0 1.44l-1.83.52a4.5 4.5 0 0 0-3.14 3.14l-.52 1.83a.75.75 0 0 1-1.44 0l-.52-1.83a4.5 4.5 0 0 0-3.14-3.14l-1.83-.52a.75.75 0 0 1 0-1.44l1.83-.52a4.5 4.5 0 0 0 3.14-3.14l.52-1.83A.75.75 0 0 1 8 1.25Z",
       "bars-3": "M2 4.75A.75.75 0 0 1 2.75 4h10.5a.75.75 0 0 1 0 1.5H2.75A.75.75 0 0 1 2 4.75Zm0 3.5A.75.75 0 0 1 2.75 7.5h10.5a.75.75 0 0 1 0 1.5H2.75A.75.75 0 0 1 2 8.25Zm0 3.5a.75.75 0 0 1 .75-.75h10.5a.75.75 0 0 1 0 1.5H2.75a.75.75 0 0 1-.75-.75Z"
     };
+    if (name === "globe") {
+      return '<svg class="ic' + (extra ? " " + extra : "") + '" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><circle cx="8" cy="8" r="6.25"/><path d="M1.75 8h12.5M8 1.75c1.7 1.75 2.6 3.83 2.6 6.25S9.7 12.5 8 14.25C6.3 12.5 5.4 10.42 5.4 8S6.3 3.5 8 1.75Z"/></svg>';
+    }
     if (name === "users") {
       return '<svg class="ic' + (extra ? " " + extra : "") + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><path d="M18 21a8 8 0 0 0-16 0"/><circle cx="10" cy="8" r="5"/><path d="M22 20c0-3.37-2-6.5-4-8a5 5 0 0 0-.45-8.3"/></svg>';
     }
@@ -730,6 +737,9 @@
     state.apiConnectionRemove = null;
     state.connectionAccountForm = null;
     resetRepositoryTransientState();
+    websiteLoginsRequest += 1;
+    state.websiteLogins = emptyWebsiteLoginsState();
+    state.websiteLoginDialog = null;
     state.modelPickerOpen = false;
     state.modelPickerFilter = "";
     state.imageModelPickerOpen = false;
@@ -740,7 +750,7 @@
   // Open a profile's edit screen (from a click or a route), resetting every
   // transient editor state.
   function normalizedProfileTab(tab) {
-    return ["instructions", "skills", "connections", "repositories", "memory", "schedules", "model"].includes(tab)
+    return ["instructions", "skills", "connections", "repositories", "websites", "memory", "schedules", "model"].includes(tab)
       ? tab
       : "instructions";
   }
@@ -777,6 +787,7 @@
       render();
     }
     ensureProfileGithubStatus();
+    ensureProfileWebsiteLogins();
     return revalidateCurrentVisibleResources({ navigation: true });
   }
 
@@ -979,7 +990,22 @@
     lastRenderedPath = renderedPath;
     var app = document.getElementById("app");
     if (app.removeAttribute) app.removeAttribute("aria-busy");
-    var overlays = installationDialogHtml() + teamConfirmModalHtml() + composioSetupModalHtml() + managedAuthorizationModalHtml() + connectorSettingsConfirmModalHtml() + leavePromptModalHtml() + connectionRemoveModalHtml() + apiConnectionRemoveModalHtml() + slackDisconnectModalHtml() + githubDisconnectModalHtml() + sandboxConfirmModalHtml() + agentScheduleDeleteModalHtml() + scheduledRoutineSummaryModalHtml() + scheduledDeleteModalHtml();
+    // A background render (a list refresh, a window focus revalidation) must
+    // not pull focus out of the field a person is typing into in the add-login
+    // dialog: remember it and its caret, and put them back below.
+    var websiteLoginTyping = null;
+    if (state.websiteLoginDialog && !state.websiteLoginDialog.focus && document.activeElement &&
+        document.activeElement.id && document.activeElement.closest &&
+        document.activeElement.closest('[data-role="website-login-dialog"]')) {
+      var typingField = document.activeElement;
+      websiteLoginTyping = { id: typingField.id, start: null, end: null, direction: "none" };
+      try {
+        websiteLoginTyping.start = typingField.selectionStart;
+        websiteLoginTyping.end = typingField.selectionEnd == null ? typingField.selectionStart : typingField.selectionEnd;
+        websiteLoginTyping.direction = typingField.selectionDirection || "none";
+      } catch (error) { /* not a text field */ }
+    }
+    var overlays = installationDialogHtml() + teamConfirmModalHtml() + composioSetupModalHtml() + managedAuthorizationModalHtml() + connectorSettingsConfirmModalHtml() + leavePromptModalHtml() + connectionRemoveModalHtml() + apiConnectionRemoveModalHtml() + slackDisconnectModalHtml() + githubDisconnectModalHtml() + sandboxConfirmModalHtml() + agentScheduleDeleteModalHtml() + websiteLoginDialogHtml() + scheduledRoutineSummaryModalHtml() + scheduledDeleteModalHtml();
     if (state.view === "onboarding") {
       app.className = "frame onboarding-frame";
       app.innerHTML = onboardingShellHtml() + overlays;
@@ -1073,6 +1099,27 @@
         ? document.querySelector('[data-role="agent-schedule-delete-dialog"]')
         : document.querySelector('[data-action="agent-schedule-delete-cancel"]');
       if (agentScheduleDeleteFocus && agentScheduleDeleteFocus.focus) agentScheduleDeleteFocus.focus();
+    }
+    if (state.websiteLoginDialog) {
+      [document.querySelector(".topbar"), document.querySelector(".body")].forEach(function (region) {
+        if (!region) return;
+        region.inert = true;
+        if (region.setAttribute) region.setAttribute("aria-hidden", "true");
+      });
+      var websiteLoginFocusId = state.websiteLoginDialog.focus;
+      state.websiteLoginDialog.focus = "";
+      if (!websiteLoginFocusId && state.websiteLoginDialog.error) websiteLoginFocusId = "website-login-error";
+      var websiteLoginFocus = websiteLoginFocusId ? document.getElementById(websiteLoginFocusId) : null;
+      if (websiteLoginFocus && websiteLoginFocus.focus) websiteLoginFocus.focus();
+      else if (websiteLoginTyping) {
+        var typingAgain = document.getElementById(websiteLoginTyping.id);
+        if (typingAgain && typingAgain.focus) {
+          try { typingAgain.focus({ preventScroll: true }); } catch (error) { typingAgain.focus(); }
+          if (websiteLoginTyping.start != null && typingAgain.setSelectionRange) {
+            try { typingAgain.setSelectionRange(websiteLoginTyping.start, websiteLoginTyping.end, websiteLoginTyping.direction); } catch (error) { /* ignore */ }
+          }
+        }
+      }
     }
     if (state.scheduledSelection && !state.scheduledInspector && !state.scheduledDeleteConfirm) {
       [document.querySelector(".topbar"), document.querySelector(".body")].forEach(function (region) {
@@ -4591,6 +4638,7 @@
       skills: !!(state.skillEditor || state.skillImport),
       connections: !!(state.connectionEditor || state.apiConnectionEditor),
       repositories: !!(state.repositoryPicker || state.repositoryAddOpen),
+      websites: !!state.websiteLoginDialog,
       memory: !!state.ownerMemory.dirty,
       schedules: !!state.agentSchedules.error,
       model: false
@@ -4601,6 +4649,7 @@
       { id: "skills", label: "Skills", count: (draft.skills || []).filter(function (skill) { return skill.enabled; }).length, icon: "sparkle", tone: "skill", description: "Repeatable ways this Agent knows how to help." },
       { id: "connections", label: "Connections", count: state.agentConnections.agentId === draft.id && !state.agentConnections.legacyFallback ? state.agentConnections.attached.length : (draft.mcpServers || []).length + (draft.apiConnections || []).length, icon: "check", tone: "connector", description: "Team and personal accounts this Agent can use." },
       { id: "repositories", label: "Repositories", count: repositoryCount, icon: "repository", tone: "repository", description: "Code and documentation this Agent can work with." },
+      { id: "websites", label: "Websites", count: websiteLoginCount(draft), icon: "globe", tone: "neutral", description: "Sites this Agent can open in a browser, and the sign-ins it may use there." },
       { id: "memory", label: "Memory", count: 0, icon: "robot", tone: "memory", description: "Durable context this Agent can use wherever it works." },
       { id: "schedules", label: "Schedules", count: state.agentSchedules.agentId === draft.id ? state.agentSchedules.schedules.length : 0, icon: "clock", tone: "schedule", description: "Recurring and one-time work owned by this Agent." },
       { id: "model", label: "Model", count: 0, icon: "robot", tone: "model", description: "The intelligence this Agent uses for every response. Changes apply to new threads." }
@@ -4635,9 +4684,10 @@
       panel(tabs[1], skillsPanelHtml(draft)) +
       panel(tabs[2], connectionsPanelHtml(draft)) +
       panel(tabs[3], repositoriesPanelHtml(draft)) +
-      panel(tabs[4], ownerMemoryPanelHtml("agent", draft.id, draft.name)) +
-      panel(tabs[5], agentSchedulesPanelHtml(draft)) +
-      panel(tabs[6], '<div class="agent-model-row agent-model-tab-row">' + modelFieldHtml(draft) + imageModelFieldHtml(draft) + '</div>') +
+      panel(tabs[4], websitesPanelHtml(draft, readOnly)) +
+      panel(tabs[5], ownerMemoryPanelHtml("agent", draft.id, draft.name)) +
+      panel(tabs[6], agentSchedulesPanelHtml(draft)) +
+      panel(tabs[7], '<div class="agent-model-row agent-model-tab-row">' + modelFieldHtml(draft) + imageModelFieldHtml(draft) + '</div>') +
       '</div>' +
       '</section>';
   }
@@ -5811,8 +5861,8 @@
     return '<div class="connection-account-owner" aria-labelledby="connection-account-owner-title">' +
       '<div class="connection-account-owner-head"><span class="field-label" id="connection-account-owner-title">Who uses this connection?</span><p class="hint">Pick one to continue.</p></div>' +
       '<div class="connection-account-owner-options" role="radiogroup" aria-labelledby="connection-account-owner-title">' +
-        '<label class="connection-account-owner-option"><input type="radio" name="connection-account-owner" value="member" data-action="connection-account-owner"' + (form.ownerKind === "member" ? " checked" : "") + '><span class="connection-account-owner-radio" aria-hidden="true"></span><span class="connection-account-owner-icon connection-account-owner-icon-personal" aria-hidden="true">' + icon("user") + '</span><span class="connection-account-owner-copy"><strong>Personal</strong><span>Each person signs in with their own account. ' + esc(agentName) + ' uses yours only for your requests.</span></span></label>' +
-        '<label class="connection-account-owner-option"><input type="radio" name="connection-account-owner" value="team" data-action="connection-account-owner"' + (form.ownerKind === "team" ? " checked" : "") + '><span class="connection-account-owner-radio" aria-hidden="true"></span><span class="connection-account-owner-icon connection-account-owner-icon-team" aria-hidden="true">' + icon("user-group") + '</span><span class="connection-account-owner-copy"><strong>Team</strong><span>One shared account for everyone who can use ' + esc(agentName) + '.</span></span></label>' +
+        websiteLoginRadioHtml("connection-account-owner", "member", form.ownerKind === "member", false, "user", "connection-account-owner-icon-personal", "Personal", "Each person signs in with their own account. " + esc(agentName) + " uses yours only for your requests.") +
+        websiteLoginRadioHtml("connection-account-owner", "team", form.ownerKind === "team", false, "user-group", "connection-account-owner-icon-team", "Team", "One shared account for everyone who can use " + esc(agentName) + ".") +
       '</div></div>';
   }
 
@@ -6374,6 +6424,381 @@
     return capabilityHint + content + repositoryAccountChoicesHtml(status) +
       (state.repositoryPicker ? '<div class="repo-picker-host">' + repositoryPickerHtml() + '</div>' : "") +
       repositoryFooterHtml(status);
+  }
+
+  // ---- Websites tab: signed-in website logins -----------------------------
+  // The list loads once, the first time the tab shows for an opened Agent, and
+  // again only after an add or remove. Rows are display-safe: the server never
+  // returns a password or one-time-code secret.
+  var websiteLoginsRequest = 0;
+
+  function emptyWebsiteLoginsState() {
+    return { agentId: "", logins: [], loading: false, loaded: false, error: "", removeConfirm: "", removing: "", removeError: "", levelSaving: "", levelError: null };
+  }
+
+  function websiteLoginsFor(draft) {
+    var current = state.websiteLogins;
+    return draft && draft.id && current.agentId === draft.id && current.loaded ? current.logins : null;
+  }
+
+  function websiteLoginCount(draft) {
+    var logins = websiteLoginsFor(draft);
+    if (logins) return logins.filter(function (login) { return login && login.enabled !== false; }).length;
+    var agent = draft && draft.id ? agentById(draft.id) : null;
+    var preview = agent && agent.capabilityPreviews ? Number(agent.capabilityPreviews.websiteLogins) : 0;
+    return preview > 0 ? preview : 0;
+  }
+
+  // lastUsedAt arrives as epoch milliseconds; an ISO string is accepted too.
+  function websiteLoginRelativeTime(value) {
+    var at = typeof value === "number" ? value : Date.parse(value);
+    if (!isFinite(at)) return "";
+    var minutes = Math.floor(Math.max(0, Date.now() - at) / 60000);
+    function ago(count, unit) { return count + " " + unit + (count === 1 ? "" : "s") + " ago"; }
+    if (minutes < 1) return "just now";
+    if (minutes < 60) return ago(minutes, "minute");
+    var hours = Math.floor(minutes / 60);
+    if (hours < 24) return ago(hours, "hour");
+    var days = Math.floor(hours / 24);
+    if (days < 30) return ago(days, "day");
+    if (days < 365) return ago(Math.floor(days / 30), "month");
+    return ago(Math.floor(days / 365), "year");
+  }
+
+  // "added by" is shown only when this browser can tell who added the login:
+  // a personal login names its owner, and the Team page reports the viewer.
+  function websiteLoginAddedBy(login) {
+    var viewer = state.team && state.team.viewer ? state.team.viewer.membershipId : "";
+    if (login.ownerKind !== "member" || !login.ownerMembershipId || !viewer) return "";
+    return login.ownerMembershipId === viewer ? "you" : "a teammate";
+  }
+
+  // Accepts a bare domain or a pasted URL and keeps only its host name.
+  function websiteLoginHost(value) {
+    var text = String(value || "").trim().toLowerCase();
+    if (!text) return "";
+    text = text.replace(/^[a-z][a-z0-9+.-]*:\/\//, "").split(/[\/?#\s]/)[0];
+    var at = text.lastIndexOf("@");
+    if (at >= 0) text = text.slice(at + 1);
+    text = text.replace(/:\d*$/, "").replace(/\.$/, "");
+    return /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(text) ? text : "";
+  }
+
+  function loadWebsiteLogins(agentId, force) {
+    var current = state.websiteLogins;
+    var same = current.agentId === agentId;
+    if (!agentId || (!force && same && (current.loaded || current.loading))) return Promise.resolve();
+    var requestId = ++websiteLoginsRequest;
+    state.websiteLogins = {
+      agentId: agentId,
+      logins: same ? current.logins : [],
+      loading: true,
+      loaded: same && current.loaded,
+      error: "",
+      removeConfirm: same ? current.removeConfirm : "",
+      removing: same ? current.removing : "",
+      removeError: same ? current.removeError : "",
+      levelSaving: same ? current.levelSaving : "",
+      levelError: same ? current.levelError : null
+    };
+    return api("/admin/api/agents/" + encodeURIComponent(agentId) + "/website-logins", { cache: "no-store" }).then(function (body) {
+      if (requestId !== websiteLoginsRequest || state.websiteLogins.agentId !== agentId) return;
+      var logins = body && Array.isArray(body.logins) ? body.logins : [];
+      state.websiteLogins.logins = logins;
+      state.websiteLogins.loading = false;
+      state.websiteLogins.loaded = true;
+      if (state.websiteLogins.removeConfirm && !logins.some(function (login) { return login.loginId === state.websiteLogins.removeConfirm; })) {
+        state.websiteLogins.removeConfirm = "";
+      }
+      renderPreservingPagePosition();
+    }).catch(function (error) {
+      if (requestId !== websiteLoginsRequest || state.websiteLogins.agentId !== agentId) return;
+      state.websiteLogins.loading = false;
+      state.websiteLogins.forbidden = !!(error && error.status === 403);
+      state.websiteLogins.error = "Website logins could not be loaded. Try again.";
+      renderPreservingPagePosition();
+    });
+  }
+
+  function ensureProfileWebsiteLogins() {
+    var draft = state.profileDraft;
+    if (
+      state.view !== "profiles" || state.profileScreen !== "edit" ||
+      state.profileTab !== "websites" || !draft || !draft.id
+    ) return Promise.resolve();
+    return loadWebsiteLogins(draft.id, false);
+  }
+
+  function websiteLoginRowHtml(login, agentName, readOnly) {
+    var parts = [];
+    if (login.method === "handoff") parts.push("signs in by hand");
+    else if (login.username) parts.push(login.username);
+    var addedBy = websiteLoginAddedBy(login);
+    if (addedBy) parts.push("added by " + addedBy);
+    var lastUsed = login.lastUsedAt != null ? websiteLoginRelativeTime(login.lastUsedAt) : "";
+    parts.push(lastUsed ? "last used " + lastUsed : "never used");
+    var meta = parts.map(function (part, index) {
+      return (index ? '<span class="agent-schedule-separator" aria-hidden="true">&middot;</span>' : "") +
+        '<span class="agent-schedule-meta-item">' + esc(part) + '</span>';
+    }).join("");
+    var logins = state.websiteLogins;
+    var confirming = !readOnly && logins.removeConfirm === login.loginId;
+    var removing = logins.removing === login.loginId;
+    var acts = login.level === "act";
+    var levelError = logins.levelError && logins.levelError.loginId === login.loginId ? logins.levelError.message : "";
+    var actions = '<div class="agent-schedule-actions">' + websiteLoginLevelHtml(login, readOnly) +
+      (readOnly || confirming ? "" : '<button type="button" class="btn btn-ghost btn-sm agent-schedule-delete" data-action="website-login-remove" data-login-id="' + esc(login.loginId) + '" aria-label="Remove ' + esc(login.host) + '">Remove</button>') +
+      '</div>';
+    var confirm = confirming
+      ? '<div class="action-well" style="grid-column: 1 / -1;"><div class="danger-copy"><span class="hint">Remove this login from ' + esc(agentName) + '? If no other Agent uses it, the saved sign-in is deleted too.</span>' +
+        (logins.removeError ? '<span class="field-error" role="alert">' + esc(logins.removeError) + '</span>' : "") + '</div>' +
+        '<button type="button" class="btn btn-ghost btn-sm" data-action="website-login-remove-keep"' + (removing ? " disabled" : "") + '>Keep</button>' +
+        '<button type="button" class="btn btn-danger btn-sm" data-action="website-login-remove-confirm" data-login-id="' + esc(login.loginId) + '"' + (removing ? " disabled" : "") + '>' + (removing ? "Removing&hellip;" : "Remove") + '</button></div>'
+      : "";
+    return '<article class="agent-schedule-row website-login-row"><div class="agent-schedule-copy"><div class="agent-schedule-heading"><span class="agent-schedule-name">' + esc(login.host) + '</span></div>' +
+      '<div class="agent-schedule-meta">' + meta + '</div>' +
+      (acts ? '<p class="hint">' + WEBSITE_LOGIN_ACT_HINT + '</p>' : "") +
+      (levelError ? '<p class="field-error" role="alert">' + esc(levelError) + '</p>' : "") +
+      '</div>' + actions + confirm + '</article>';
+  }
+
+  var WEBSITE_LOGIN_ACT_HINT = "Asks in Slack before anything that changes data.";
+  var WEBSITE_LOGIN_LEVELS = [["check", "Check only"], ["act", "Check and take actions"]];
+
+  // Raising a login to actions needs authority over the login: Owners and
+  // Admins manage every login, and a member sees only team logins and their
+  // own personal ones. Anyone who can edit the Agent may lower it.
+  function websiteLoginCanRaise(login) {
+    return WORKSPACE_ADMIN_UI || login.ownerKind === "member";
+  }
+
+  function websiteLoginLevelHtml(login, readOnly) {
+    var level = login.level === "act" ? "act" : "check";
+    var label = level === "act" ? "Check and take actions" : "Check only";
+    if (readOnly) return '<span class="badge badge-off">' + label + '</span>';
+    var saving = state.websiteLogins.levelSaving === login.loginId;
+    var canRaise = websiteLoginCanRaise(login);
+    var disabled = saving || (!canRaise && level !== "act");
+    var options = WEBSITE_LOGIN_LEVELS.map(function (entry) {
+      var blocked = entry[0] === "act" && !canRaise && level !== "act";
+      return '<option value="' + entry[0] + '"' + (entry[0] === level ? " selected" : "") + (blocked ? " disabled" : "") + '>' + entry[1] + '</option>';
+    }).join("");
+    return '<span class="select-wrap"><select class="input" data-action="website-login-level" data-login-id="' + esc(login.loginId) + '" aria-label="What this Agent may do on ' + esc(login.host) + '"' + (disabled ? " disabled" : "") + '>' + options + '</select><span class="select-caret">' + icon("chevron-down") + '</span></span>';
+  }
+
+  function changeWebsiteLoginLevel(loginId, level) {
+    var draft = state.profileDraft;
+    var logins = state.websiteLogins;
+    if (!draft || !draft.id || draft.canEdit === false || logins.agentId !== draft.id || logins.levelSaving) return;
+    if (level !== "check" && level !== "act") return;
+    var login = logins.logins.filter(function (candidate) { return candidate.loginId === loginId; })[0];
+    if (!login || login.level === level) return;
+    var agentId = draft.id;
+    var previous = login.level;
+    login.level = level;
+    logins.levelSaving = loginId;
+    logins.levelError = null;
+    renderPreservingPagePosition();
+    return postJson("/admin/api/agents/" + encodeURIComponent(agentId) + "/website-logins/" + encodeURIComponent(loginId), "PATCH", { level: level }).then(function (body) {
+      if (state.websiteLogins.agentId !== agentId) return;
+      state.websiteLogins.levelSaving = "";
+      var saved = body && body.login && body.login.level;
+      if (saved === "check" || saved === "act") login.level = saved;
+      renderPreservingPagePosition();
+    }).catch(function (error) {
+      if (state.websiteLogins.agentId !== agentId) return;
+      login.level = previous;
+      state.websiteLogins.levelSaving = "";
+      state.websiteLogins.levelError = {
+        loginId: loginId,
+        message: error && error.status === 403
+          ? "Only an Admin or the person who added this login can allow actions."
+          : "The change could not be saved. Try again."
+      };
+      renderPreservingPagePosition();
+    });
+  }
+
+  function websitesPanelHtml(draft, readOnly) {
+    var hint = '<p class="hint ptab-hint">This Agent can open any public website when a task calls for it. A sign-in below lets it go where a visitor cannot, and each signed-in session stays on that site.</p>';
+    var note = '<p class="agent-instructions-guidance">' + icon("lock-closed") + '<span>Passwords are stored encrypted and typed by Chickpea itself. Agents never see them.</span></p>';
+    if (!draft || !draft.id) {
+      return hint + '<div class="empty"><p class="field-label">Save this Agent to add website logins</p></div>' + note;
+    }
+    var addButton = readOnly ? "" : '<button type="button" class="btn btn-primary btn-sm" data-action="website-login-add">Add a website login</button>';
+    var head = '<div class="repo-panel-head"><span class="section-eyebrow">Signed-in websites</span>' + addButton + '</div>';
+    var current = state.websiteLogins;
+    var logins = websiteLoginsFor(draft);
+    var body;
+    if (current.agentId === draft.id && current.forbidden && !logins) {
+      return hint + '<p class="hint">Only Agent editors can view or change which website logins this Agent can use.</p>' + note;
+    }
+    if (current.agentId === draft.id && current.error && !logins) {
+      body = '<div class="empty"><p class="field-error" role="alert">' + esc(current.error) + '</p>' +
+        '<button type="button" class="btn btn-soft btn-sm" data-action="website-login-retry">Retry</button></div>';
+    } else if (!logins) {
+      body = '<div class="empty"><p class="hint">Loading website logins&hellip;</p></div>';
+    } else if (!logins.length) {
+      body = '<div class="empty"><p class="hint">No website logins yet. Add one to let this Agent sign in somewhere.</p>' + addButton + '</div>';
+    } else {
+      var agentName = String(draft.name || "this Agent").trim() || "this Agent";
+      body = '<div class="agent-schedule-list">' + logins.map(function (login) {
+        return websiteLoginRowHtml(login, agentName, readOnly);
+      }).join("") + '</div>';
+    }
+    return hint + head + body + note;
+  }
+
+  function openWebsiteLoginDialog() {
+    var draft = state.profileDraft;
+    if (!draft || !draft.id || draft.canEdit === false) return;
+    state.websiteLogins.removeConfirm = "";
+    state.websiteLoginDialog = {
+      agentId: draft.id,
+      host: "",
+      label: "",
+      method: "credentials",
+      username: "",
+      password: "",
+      totpSeed: "",
+      level: "check",
+      busy: false,
+      error: "",
+      focus: "website-login-host"
+    };
+    render();
+  }
+
+  function closeWebsiteLoginDialog() {
+    if (!state.websiteLoginDialog) return;
+    state.websiteLoginDialog = null;
+    render();
+    focusAction("website-login-add");
+  }
+
+  var WEBSITE_LOGIN_HOST_ERROR = "That doesn't look like a website address. Enter the site's domain, such as example.com.";
+
+  // The server reports input problems as invalid_website_login with a field
+  // code, and a full Agent as website_login_limit.
+  function websiteLoginErrorText(error) {
+    var code = error && error.message;
+    var field = error && error.payload && error.payload.field;
+    if (code === "invalid_host" || field === "invalid_host") return WEBSITE_LOGIN_HOST_ERROR;
+    if (code === "website_login_limit") return "The limit of website logins has been reached. Remove one first.";
+    if (field === "invalid_totp_seed") return "That one-time code secret doesn't look right. Paste the setup key exactly as the site shows it.";
+    return "The login could not be saved. Try again.";
+  }
+
+  function websiteLoginRadioHtml(name, value, checked, disabled, iconName, iconClass, title, detail) {
+    return '<label class="connection-account-owner-option"' + (disabled ? ' aria-disabled="true"' : "") + '><input type="radio" name="' + name + '" value="' + value + '" data-action="' + name + '"' + (checked ? " checked" : "") + (disabled ? " disabled" : "") + '>' +
+      '<span class="connection-account-owner-radio" aria-hidden="true"></span><span class="connection-account-owner-icon ' + iconClass + '" aria-hidden="true">' + icon(iconName) + '</span>' +
+      '<span class="connection-account-owner-copy"><strong>' + title + '</strong><span>' + detail + '</span></span></label>';
+  }
+
+  function websiteLoginDialogHtml() {
+    var dialog = state.websiteLoginDialog;
+    if (!dialog) return "";
+    var draft = state.profileDraft;
+    var agentName = String(draft && draft.name || "This Agent").trim() || "This Agent";
+    var dis = dialog.busy ? " disabled" : "";
+    var handoff = dialog.method === "handoff";
+    return '<div class="modal-backdrop"><div class="modal-card website-login-dialog" role="dialog" aria-modal="true" aria-labelledby="website-login-title" aria-describedby="website-login-sub" tabindex="-1" data-role="website-login-dialog">' +
+      '<div><h2 class="modal-title" id="website-login-title">Add a website login</h2>' +
+      '<p class="modal-body" id="website-login-sub">' + esc(agentName) + ' will sign in here when a task needs it. You can change what it may do at any time.</p></div>' +
+      '<div class="form-grid">' +
+        '<div class="field"><label class="field-label" for="website-login-host">Website</label><input class="input" id="website-login-host" type="text" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://example.com" value="' + esc(dialog.host) + '" data-action="website-login-host"' + dis + '></div>' +
+        '<div class="field"><label class="field-label" for="website-login-label">Label</label><input class="input" id="website-login-label" type="text" autocomplete="off" value="' + esc(dialog.label) + '" data-action="website-login-label"' + dis + '></div>' +
+      '</div>' +
+      '<div class="connection-account-owner"><span class="field-label" id="website-login-method-title">How should Chickpea sign in?</span>' +
+        '<div class="connection-account-owner-options" role="radiogroup" aria-labelledby="website-login-method-title">' +
+          websiteLoginRadioHtml("website-login-method", "credentials", !handoff, dialog.busy, "lock-closed", "connection-account-owner-icon-personal", "With a username and password I provide", "Chickpea types them itself. The Agent never sees the values.") +
+          websiteLoginRadioHtml("website-login-method", "handoff", handoff, dialog.busy, "user", "connection-account-owner-icon-team", "I&rsquo;ll sign in myself the first time", "For single sign-on or two-factor accounts. Chickpea opens a browser for you, then keeps the signed-in session.") +
+        '</div></div>' +
+      '<div class="field"><label class="field-label" for="website-login-username">Username or email</label><input class="input" id="website-login-username" type="text" autocomplete="off" spellcheck="false" value="' + esc(dialog.username) + '" data-action="website-login-username"' + dis + '></div>' +
+      (handoff ? "" :
+        '<div class="field"><label class="field-label" for="website-login-password">Password</label><input class="input" id="website-login-password" type="password" autocomplete="new-password" value="' + esc(dialog.password) + '" data-action="website-login-password"' + dis + '></div>' +
+        '<div class="field"><label class="field-label" for="website-login-totp">One-time code secret (optional, for authenticator-app codes)</label><input class="input mono" id="website-login-totp" type="password" autocomplete="off" spellcheck="false" placeholder="Paste the setup key from the site&rsquo;s authenticator screen" value="' + esc(dialog.totpSeed) + '" data-action="website-login-totp"' + dis + '></div>') +
+      '<div class="connection-account-owner"><span class="field-label" id="website-login-level-title">What this Agent may do there</span>' +
+        '<div class="connection-account-owner-options" role="radiogroup" aria-labelledby="website-login-level-title">' +
+          websiteLoginRadioHtml("website-login-level", "check", dialog.level !== "act", dialog.busy, "check", "connection-account-owner-icon-team", "Check only", "Read pages, run searches, follow links.") +
+          websiteLoginRadioHtml("website-login-level", "act", dialog.level === "act", dialog.busy, "pencil", "connection-account-owner-icon-personal", "Check and take actions", "Fill forms and click through flows. Asks in Slack before anything that changes data.") +
+        '</div></div>' +
+      (dialog.error ? '<p class="field-error" id="website-login-error" role="alert">' + esc(dialog.error) + '</p>' : "") +
+      '<p class="hint">Stored encrypted in your Chickpea install. Sign-in sessions live in your Browserbase project.</p>' +
+      '<div class="modal-foot"><button type="button" class="btn btn-ghost" data-action="website-login-cancel"' + dis + '>Cancel</button><span class="spacer"></span>' +
+      '<button type="button" class="btn btn-primary" data-action="website-login-save"' + dis + '>' + (dialog.busy ? "Saving&hellip;" : "Save login") + '</button></div>' +
+      '</div></div>';
+  }
+
+  function saveWebsiteLogin() {
+    var dialog = state.websiteLoginDialog;
+    if (!dialog || dialog.busy) return;
+    var host = websiteLoginHost(dialog.host);
+    var label = String(dialog.label || "").trim();
+    var handoff = dialog.method === "handoff";
+    var error = "";
+    var username = String(dialog.username || "").trim();
+    if (!host) error = WEBSITE_LOGIN_HOST_ERROR;
+    else if (!label) error = "Add a label so you can recognize this login.";
+    else if (!handoff && !username) error = "Enter the username or email for this website.";
+    else if (!handoff && !dialog.password) error = "Enter the password Chickpea should use.";
+    if (error) {
+      dialog.error = error;
+      render();
+      return;
+    }
+    var body = { host: host, label: label, method: handoff ? "handoff" : "credentials", level: dialog.level === "act" ? "act" : "check" };
+    if (username) body.username = username;
+    if (!handoff) {
+      body.password = dialog.password;
+      var totpSeed = String(dialog.totpSeed || "").replace(/\s+/g, "");
+      if (totpSeed) body.totpSeed = totpSeed;
+    }
+    // The secrets leave browser state as the request starts; the re-render
+    // below clears the password fields whether the save succeeds or fails.
+    dialog.password = "";
+    dialog.totpSeed = "";
+    dialog.busy = true;
+    dialog.error = "";
+    var agentId = dialog.agentId;
+    render();
+    var request = postJson("/admin/api/agents/" + encodeURIComponent(agentId) + "/website-logins", "POST", body);
+    body = null;
+    return request.then(function () {
+      if (state.websiteLoginDialog !== dialog) return;
+      state.websiteLoginDialog = null;
+      render();
+      focusAction("website-login-add");
+      return loadWebsiteLogins(agentId, true);
+    }).catch(function (failure) {
+      if (state.websiteLoginDialog !== dialog) return;
+      dialog.busy = false;
+      dialog.error = websiteLoginErrorText(failure);
+      render();
+    });
+  }
+
+  function removeWebsiteLogin(loginId) {
+    var draft = state.profileDraft;
+    var logins = state.websiteLogins;
+    if (!draft || !draft.id || draft.canEdit === false || !loginId || logins.removing || logins.agentId !== draft.id) return;
+    var agentId = draft.id;
+    logins.removing = loginId;
+    logins.removeError = "";
+    render();
+    return api("/admin/api/agents/" + encodeURIComponent(agentId) + "/website-logins/" + encodeURIComponent(loginId), { method: "DELETE" }).then(function () {
+      if (state.websiteLogins.agentId !== agentId) return;
+      state.websiteLogins.removing = "";
+      state.websiteLogins.removeConfirm = "";
+      state.websiteLogins.logins = state.websiteLogins.logins.filter(function (login) { return login.loginId !== loginId; });
+      renderPreservingPagePosition();
+      return loadWebsiteLogins(agentId, true);
+    }).catch(function () {
+      if (state.websiteLogins.agentId !== agentId) return;
+      state.websiteLogins.removing = "";
+      state.websiteLogins.removeError = "The login could not be removed. Try again.";
+      renderPreservingPagePosition();
+    });
   }
 
   function customConnectionLaneTabHtml() {
@@ -8120,6 +8545,9 @@
     var total = Math.max(0, Math.floor(Number(seconds) || 0));
     var hours = Math.floor(total / 3600);
     var minutes = Math.floor((total % 3600) / 60);
+    if (total === 0) return "none yet";
+    if (hours === 0 && minutes === 0) return total + " s";
+    if (hours === 0) return minutes + " m";
     return hours + " h " + minutes + " m";
   }
 
@@ -11461,6 +11889,7 @@
       render();
     }
     ensureProfileGithubStatus();
+    ensureProfileWebsiteLogins();
     revalidateProfileTab(tab);
   }
 
@@ -12276,6 +12705,25 @@
     if (action === "profile-tab" && state.profileDraft) {
       showProfileTab(target.getAttribute("data-tab") || "instructions");
     }
+    if (action === "website-login-add") { openWebsiteLoginDialog(); }
+    if (action === "website-login-cancel" && state.websiteLoginDialog && !state.websiteLoginDialog.busy) { closeWebsiteLoginDialog(); }
+    if (action === "website-login-save") { saveWebsiteLogin(); }
+    if (action === "website-login-retry" && state.profileDraft && state.profileDraft.id) { loadWebsiteLogins(state.profileDraft.id, true); render(); }
+    if (action === "website-login-remove" && state.profileDraft && state.profileDraft.canEdit !== false && !state.websiteLogins.removing) {
+      state.websiteLogins.removeConfirm = target.getAttribute("data-login-id") || "";
+      state.websiteLogins.removeError = "";
+      render();
+      focusAction("website-login-remove-keep");
+    }
+    if (action === "website-login-remove-keep" && !state.websiteLogins.removing) {
+      var keptLoginId = state.websiteLogins.removeConfirm;
+      state.websiteLogins.removeConfirm = "";
+      state.websiteLogins.removeError = "";
+      render();
+      var keptRemove = document.querySelector('[data-action="website-login-remove"][data-login-id="' + String(keptLoginId).replace(/["\\]/g, "") + '"]');
+      if (keptRemove && keptRemove.focus) keptRemove.focus();
+    }
+    if (action === "website-login-remove-confirm") { removeWebsiteLogin(target.getAttribute("data-login-id") || ""); }
     if (action === "agent-destination-toggle" && state.profileDraft) {
       // Click fires before <details> applies its native toggle, so invert the
       // last rendered state without re-rendering. The next unrelated render
@@ -13064,6 +13512,12 @@
     // results container to keep the input focused.
     if (action === "prov-key-input") { provUiFor(target.getAttribute("data-provider")).key = target.value; }
     if (action === "browser-key-input") { state.browser.key = target.value; state.browser.keyError = ""; }
+    // Mirror the add-login fields so a background render keeps them. The
+    // password and one-time-code secret are dropped when the save starts.
+    if (state.websiteLoginDialog && !state.websiteLoginDialog.busy) {
+      var websiteLoginFields = { "website-login-host": "host", "website-login-label": "label", "website-login-username": "username", "website-login-password": "password", "website-login-totp": "totpSeed" };
+      if (websiteLoginFields[action]) state.websiteLoginDialog[websiteLoginFields[action]] = target.value;
+    }
     if (action === "onboarding-provider-key") {
       state.onboardingProviderKey = target.value;
       state.onboardingError = "";
@@ -13231,6 +13685,20 @@
         if (roleMember.role === "owner" || nextRole === "owner") confirmTeamRole(roleMember, nextRole);
         else updateTeamMembership(roleMember.id, "role", nextRole);
       }
+    }
+    if (action === "website-login-level" && target.getAttribute("data-login-id")) {
+      changeWebsiteLoginLevel(target.getAttribute("data-login-id"), target.value);
+    }
+    if (state.websiteLoginDialog && !state.websiteLoginDialog.busy && (action === "website-login-method" || action === "website-login-level")) {
+      if (action === "website-login-level" && (target.value === "check" || target.value === "act")) {
+        state.websiteLoginDialog.level = target.value;
+      }
+      if (action === "website-login-method" && (target.value === "credentials" || target.value === "handoff")) {
+        state.websiteLoginDialog.method = target.value;
+        if (target.value === "handoff") { state.websiteLoginDialog.password = ""; state.websiteLoginDialog.totpSeed = ""; }
+      }
+      state.websiteLoginDialog.error = "";
+      render();
     }
     if (state.connectionAccountForm && action === "connection-account-owner") {
       if (target.value !== "member" && target.value !== "team") return;
@@ -13642,6 +14110,7 @@
       render();
       return;
     }
+    if (state.websiteLoginDialog && trapModalTab(event, '[data-role="website-login-dialog"]')) return;
     if (state.agentScheduleDeleteConfirm) {
       if (trapModalTab(event, '[data-role="agent-schedule-delete-dialog"]')) return;
       if (event.key === "Escape" || event.key === "Esc") {
@@ -13753,6 +14222,7 @@
     }
     if (event.key === "Escape" || event.key === "Esc") {
       if (state.leavePrompt) { state.leavePrompt = null; render(); return; }
+      if (state.websiteLoginDialog) { if (!state.websiteLoginDialog.busy) closeWebsiteLoginDialog(); return; }
       if (state.profileTab === "skills" && state.skillImport && state.skillImport.browse) { closeSkillImportBrowse(); return; }
       if (state.repositoryPicker || state.repositoryAddOpen) { closeRepositoryPicker(); return; }
       if (state.modelPickerOpen) { closeModelPicker(); }
@@ -13778,7 +14248,7 @@
     var tabButton = event.target && event.target.closest && event.target.closest(".ptab");
     if (tabButton && (event.key === "ArrowLeft" || event.key === "ArrowRight" || event.key === "Home" || event.key === "End")) {
       event.preventDefault();
-      var order = ["instructions", "skills", "connections", "repositories", "memory", "schedules", "model"];
+      var order = ["instructions", "skills", "connections", "repositories", "websites", "memory", "schedules", "model"];
       var current = order.indexOf(state.profileTab || "instructions");
       var next =
         event.key === "ArrowLeft" ? (current + order.length - 1) % order.length :

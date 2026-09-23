@@ -5,6 +5,7 @@ import { test } from 'node:test';
 import {
   buildRuntimePlanActivityContext,
   compileRuntimePlanV2,
+  compileWebsiteLogins,
   deriveRuntimePlanInstanceId,
   parseRuntimePlanV2,
   runtimePlanConversationKey,
@@ -1106,7 +1107,7 @@ test('a mounted browser registers browsing and proof activity and the skill fami
   const descriptors = new Map(
     context.toolDescriptors?.map(({ toolName, descriptor }) => [toolName, descriptor]),
   );
-  for (const name of ['browser_open', 'browser_snapshot', 'browser_act', 'browser_look']) {
+  for (const name of ['browser_open', 'browser_snapshot', 'browser_act', 'browser_look', 'browser_sign_in', 'browser_handoff']) {
     assert.equal(descriptors.get(name)?.target, 'unknown', name);
   }
   assert.equal(descriptors.get('browser_screenshot')?.target, 'artifact');
@@ -1121,4 +1122,84 @@ test('a mounted browser registers browsing and proof activity and the skill fami
     const offNames = new Set(off.toolDescriptors?.map(({ toolName }) => toolName));
     assert.equal(offNames.has('browser_open'), false);
   }
+});
+
+test('website logins compile from grants, freeze only with the browser, and rotate the harness', () => {
+  const idA = `wl_${'a'.repeat(32)}`;
+  const idB = `wl_${'b'.repeat(32)}`;
+  const idC = `wl_${'c'.repeat(32)}`;
+  const logins = [
+    {
+      id: idB, host: 'b.example', label: 'B', ownerKind: 'team' as const,
+      createdByMembershipId: 'm', method: 'handoff' as const, createdAt: 1,
+    },
+    {
+      id: idA, host: 'a.example', label: 'A', ownerKind: 'member' as const, ownerMembershipId: 'm',
+      createdByMembershipId: 'm', method: 'credentials' as const, username: 'ana', createdAt: 1,
+      contextId: 'ctx_1', lastUsedAt: 5,
+    },
+  ];
+  const compiled = compileWebsiteLogins([
+    { loginId: idB, level: 'check', enabled: true },
+    { loginId: idC, level: 'act', enabled: true },
+    { loginId: idA, level: 'act', enabled: true },
+    { loginId: idA, level: 'check', enabled: false },
+  ], logins);
+  // Sorted by id; deleted logins drop out; only metadata is carried.
+  assert.deepEqual(compiled, [
+    { id: idA, host: 'a.example', label: 'A', level: 'act', method: 'credentials', username: 'ana' },
+    { id: idB, host: 'b.example', label: 'B', level: 'check', method: 'handoff' },
+  ]);
+  assert.deepEqual(compileWebsiteLogins(undefined, logins), []);
+  assert.deepEqual(compileWebsiteLogins([{ loginId: idA, level: 'act', enabled: false }], logins), []);
+
+  const browser = { provider: 'browserbase' as const };
+  const withLogins = compile({ browserCapability: browser, websiteLogins: [...compiled].reverse() });
+  assert.deepEqual(withLogins.websiteLogins, compiled);
+  const reparsed = parseRuntimePlanV2(structuredClone(withLogins));
+  assert.deepEqual(reparsed.websiteLogins, compiled);
+  assert.equal(reparsed.harnessRevision, withLogins.harnessRevision);
+
+  // No browser: logins are never frozen. No enabled grants: the field is absent
+  // and the harness matches a browser-only plan.
+  const noBrowser = compile({ websiteLogins: compiled });
+  assert.equal(Object.hasOwn(noBrowser, 'websiteLogins'), false);
+  assert.equal(noBrowser.harnessRevision, compile().harnessRevision);
+  const browserOnly = compile({ browserCapability: browser });
+  const browserEmpty = compile({ browserCapability: browser, websiteLogins: [] });
+  assert.equal(Object.hasOwn(browserEmpty, 'websiteLogins'), false);
+  assert.equal(browserEmpty.harnessRevision, browserOnly.harnessRevision);
+  assert.notEqual(withLogins.harnessRevision, browserOnly.harnessRevision);
+
+  // A level change rotates the harness.
+  const lowered = compile({
+    browserCapability: browser,
+    websiteLogins: compiled.map((login) => ({ ...login, level: 'check' as const })),
+  });
+  assert.notEqual(lowered.harnessRevision, withLogins.harnessRevision);
+
+  // Parsing rejects secrets, unknown fields, additions after admission, and logins without a browser.
+  assert.throws(
+    () => parseRuntimePlanV2({
+      ...structuredClone(withLogins),
+      websiteLogins: [{ ...compiled[0], password: 'x' }],
+    }),
+    /websiteLogins\[0\] has unknown field password/,
+  );
+  assert.throws(
+    () => parseRuntimePlanV2({ ...structuredClone(browserOnly), websiteLogins: compiled }),
+    /harnessRevision does not match/,
+  );
+  const { browserCapability: _dropped, ...withoutBrowser } = structuredClone(withLogins);
+  assert.throws(
+    () => parseRuntimePlanV2(withoutBrowser),
+    /websiteLogins require a browser capability/,
+  );
+  assert.throws(
+    () => parseRuntimePlanV2({
+      ...structuredClone(withLogins),
+      websiteLogins: [{ ...compiled[0], level: 'admin' }],
+    }),
+    /level is invalid/,
+  );
 });

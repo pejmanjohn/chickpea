@@ -925,3 +925,32 @@ test('an Agent PATCH that fails on its role row leaves config_agents unchanged',
     db.close();
   }
 });
+
+test('website login grants install additively and pre-column Agents read as no grants', () => {
+  const db = openStateDb(':memory:');
+  try {
+    installSchema12Fixture(db);
+    const store = new ConfigStoreLogic(db, { agents: [] });
+    assert.ok(db.all('PRAGMA table_info(config_agents)')
+      .some((column) => column.name === 'website_logins_json'));
+    assert.equal(
+      db.get('SELECT value FROM config_meta WHERE key = ?', 'schema_version')?.value,
+      String(CONFIG_SCHEMA_VERSION),
+    );
+    const legacy = store.getAgent('agent_default');
+    assert.deepEqual(legacy.websiteLogins, []);
+
+    const grants = [{ loginId: `wl_${'a'.repeat(32)}`, level: 'act' as const, enabled: true }];
+    const updated = store.updateAgent('agent_default', { websiteLogins: grants }, legacy.revision);
+    assert.deepEqual(updated.websiteLogins, grants);
+    // Other edits leave the grants untouched.
+    const renamed = store.updateAgent('agent_default', { instructions: 'Still help.' }, updated.revision);
+    assert.deepEqual(renamed.websiteLogins, grants);
+
+    // Reopening an already-migrated store is a no-op.
+    const reopened = new ConfigStoreLogic(db, { agents: [] });
+    assert.deepEqual(reopened.getAgent('agent_default').websiteLogins, grants);
+  } finally {
+    db.close();
+  }
+});

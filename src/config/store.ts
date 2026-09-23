@@ -47,6 +47,7 @@ import {
   type ChickpeaCutoverModelClassification,
   type ChickpeaCutoverPreflight,
   type CustomAgentConfig,
+  type WebsiteLoginGrant,
   type ConnectionAccount,
   type ConnectionAccountInput,
   type EnsureWorkspaceInstallationInput,
@@ -107,6 +108,20 @@ export const CONFIG_CHICKPEA_EXTENSION_MIGRATION = '2026-08-23-chickpea-system-a
 export const CONFIG_CHICKPEA_ROUTING_MIGRATION = '2026-08-24-chickpea-routing-retry-v1';
 export const CONFIG_CHICKPEA_CUTOVER_MIGRATION = '2026-08-24-chickpea-cutover-v1';
 export const CONFIG_MODEL_ROLE_MIGRATION = '2026-09-11-model-roles-v1';
+/**
+ * A stored JSON array column; a missing, malformed, or non-array value reads
+ * as empty. `isItem`, when given, drops entries that do not fit.
+ */
+function parseJsonArray<T>(raw: string | null | undefined, isItem?: (value: unknown) => value is T): T[] {
+  try {
+    const parsed: unknown = JSON.parse(raw ?? '[]');
+    if (!Array.isArray(parsed)) return [];
+    return isItem ? parsed.filter(isItem) : (parsed as T[]);
+  } catch {
+    return [];
+  }
+}
+
 const MAX_STORED_SLACK_PUBLIC_CONTEXT_ROWS = 200;
 const SLACK_PUBLIC_CONTEXT_RETENTION_MS = 30 * 24 * 60 * 60_000;
 
@@ -121,6 +136,7 @@ interface AgentRow {
   mcp_servers_json: string;
   api_connections_json?: string | null;
   repositories_json?: string | null;
+  website_logins_json?: string | null;
   description?: string | null;
   lifecycle?: string | null;
   creator_membership_id?: string | null;
@@ -500,6 +516,15 @@ export class ConfigStoreLogic {
       // Existing installs already carry the extension marker. Their column
       // upgrades must run after the marker-guarded table creation path too.
       addColumnIfMissing(this.db, 'config_slack_public_context', 'content_version_ts', 'TEXT');
+      // Additive: older code never reads the column, so no schema-version bump.
+      if (tableExists(this.db, 'config_agents')) {
+        addColumnIfMissing(
+          this.db,
+          'config_agents',
+          'website_logins_json',
+          "TEXT NOT NULL DEFAULT '[]'",
+        );
+      }
     }
     // Column presence, read from the schema cache rather than by scanning
     // sqlite_master: this runs on every construction, including attach.
@@ -2114,7 +2139,7 @@ export class ConfigStoreLogic {
            creator_membership_id = ?, edit_policy = ?,
            configuration_generation = ?, slack_presence_json = ?, archived_at = ?, model = ?,
            skills_json = ?, mcp_servers_json = ?, api_connections_json = ?, repositories_json = ?,
-           revision = revision + 1
+           website_logins_json = ?, revision = revision + 1
        WHERE id = ? AND revision = ?`,
       next.name,
       next.description ?? null,
@@ -2131,6 +2156,7 @@ export class ConfigStoreLogic {
       JSON.stringify(next.mcpServers),
       JSON.stringify(next.apiConnections),
       JSON.stringify(next.repositories),
+      JSON.stringify(next.websiteLogins ?? []),
       agentId,
       requiredRevision,
     );
@@ -2755,8 +2781,9 @@ export class ConfigStoreLogic {
         id, agent_kind, revision, name, description, instructions, enabled, lifecycle,
         creator_membership_id, edit_policy, configuration_generation,
         slack_presence_json, archived_at, model,
-        skills_json, mcp_servers_json, api_connections_json, repositories_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        skills_json, mcp_servers_json, api_connections_json, repositories_json,
+        website_logins_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       agent.id,
       kind,
       1,
@@ -2777,6 +2804,7 @@ export class ConfigStoreLogic {
       JSON.stringify(agent.mcpServers ?? []),
       JSON.stringify(agent.apiConnections ?? []),
       JSON.stringify(agent.repositories ?? []),
+      JSON.stringify(agent.websiteLogins ?? []),
     );
   }
 
@@ -3349,8 +3377,9 @@ function rowToAgent(row: AgentRow): CustomAgentConfig {
     ...(row.model ? { model: row.model } : {}),
     skills: JSON.parse(row.skills_json) as CustomAgentConfig['skills'],
     mcpServers: JSON.parse(row.mcp_servers_json) as CustomAgentConfig['mcpServers'],
-    apiConnections: parseApiConnections(row.api_connections_json),
-    repositories: parseRepositories(row.repositories_json),
+    apiConnections: parseJsonArray<CustomAgentConfig['apiConnections'][number]>(row.api_connections_json),
+    repositories: parseJsonArray<CustomAgentConfig['repositories'][number]>(row.repositories_json),
+    websiteLogins: parseJsonArray<WebsiteLoginGrant>(row.website_logins_json),
   };
 }
 
@@ -3768,24 +3797,6 @@ function normalizeScheduleReferenceDestination(input: AgentScheduleReferenceInpu
     throw new Error('A direct schedule requires a valid destination binding');
   }
   return { kind, bindingDigest };
-}
-
-function parseApiConnections(raw: string | null | undefined): CustomAgentConfig['apiConnections'] {
-  try {
-    const parsed: unknown = JSON.parse(raw ?? '[]');
-    return Array.isArray(parsed) ? (parsed as CustomAgentConfig['apiConnections']) : [];
-  } catch {
-    return [];
-  }
-}
-
-function parseRepositories(raw: string | null | undefined): CustomAgentConfig['repositories'] {
-  try {
-    const parsed: unknown = JSON.parse(raw ?? '[]');
-    return Array.isArray(parsed) ? (parsed as CustomAgentConfig['repositories']) : [];
-  } catch {
-    return [];
-  }
 }
 
 function rowToChannel(row: ChannelRow): ChannelConfig {

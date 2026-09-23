@@ -5165,6 +5165,7 @@ function materializeManagedAgent(
     mcpServers: [],
     apiConnections: [],
     repositories: [],
+    websiteLogins: [],
     creatorMembershipId: actor.membershipId,
     editPolicy: input.editPolicy ?? 'creator_and_admins',
     configurationGeneration: 1,
@@ -5225,6 +5226,7 @@ function fullAgentPatch(agent: CustomAgentConfig): ConfigAgentPatch {
     mcpServers: agent.mcpServers,
     apiConnections: agent.apiConnections,
     repositories: agent.repositories,
+    websiteLogins: agent.websiteLogins ?? [],
   };
 }
 

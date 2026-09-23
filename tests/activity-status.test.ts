@@ -391,6 +391,14 @@ test('image generation narrates a non-terminal creation step', () => {
   assert.doesNotMatch(status.text, /poster/);
 });
 
+test('browser sign-in tools narrate fixed statuses without their arguments', () => {
+  const signIn = toolActivityStatus('browser_sign_in', { loginId: 'wl_secret-login', passwordRef: 'e2' });
+  assert.deepEqual(signIn, activityStatus('running', 'Signing in to', 'a website'));
+  const handoff = toolActivityStatus('browser_handoff', { loginId: 'wl_secret-login', reason: 'needs a code' });
+  assert.deepEqual(handoff, activityStatus('running', 'Handing off', 'a sign-in'));
+  assert.doesNotMatch(`${signIn.text} ${handoff.text}`, /wl_secret|needs a code/);
+});
+
 test('sandbox primitives use fixed statuses without exposing their arguments', () => {
   const secret = 'credential-do-not-leak';
   const expected = new Map([

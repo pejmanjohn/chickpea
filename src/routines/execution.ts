@@ -17,6 +17,7 @@ import {
   compileRuntimePlanV2,
   runtimePlanSandboxConversationKey,
   type RuntimePlanBrowserCapabilityV1,
+  type RuntimePlanWebsiteLoginV1,
   type RuntimePlanImageCapabilityV3,
 } from '../agents/runtime-plan.ts';
 import {
@@ -36,7 +37,7 @@ import {
 import type { EffectiveSlackConfig } from '../config/effective-config.ts';
 import { loadModelCatalog } from '../model-catalog/index.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
-import { browserCapabilityForTurn } from '../browser/capability.ts';
+import { browserCapabilityForTurn, websiteLoginsForTurn } from '../browser/capability.ts';
 import {
   getConfigStore,
   getSettingsStore,
@@ -500,7 +501,7 @@ async function prepareExecution(
     const reader = dependencies.modelRoleReader ?? getConfigStore(input.env);
     // Same store authority as a Slack turn: a routine's Agent keeps whatever
     // image role its workspace or per-Agent override resolves to.
-    const [imageRole, browserCapability] = await Promise.all([
+    const [imageRole, browserCapability, websiteLogins] = await Promise.all([
       resolveAgentModelRoleFromStore({
         role: 'image',
         workspaceId: input.routine.workspaceId,
@@ -514,6 +515,7 @@ async function prepareExecution(
         settings: settingsStore,
       }),
       browserCapabilityForTurn(settingsStore, input.env),
+      websiteLoginsForTurn(settingsStore, access.config.agent.websiteLogins),
     ]);
     const imageCapability = imageCapabilityForResolution(imageRole);
     envelope = createEnvelope({
@@ -526,7 +528,7 @@ async function prepareExecution(
       runtimeModel: runtimeModel.model,
       ...(runtimeModelRoute ? { runtimeModelRoute } : {}),
       imageCapability,
-      ...(browserCapability ? { browserCapability } : {}),
+      ...(browserCapability ? { browserCapability, websiteLogins } : {}),
       modelCredential,
       sandboxMode: sandboxDecision.selection,
     });
@@ -663,6 +665,7 @@ function createEnvelope(input: {
   runtimeModelRoute?: FrozenRuntimeModelRoute;
   imageCapability?: RuntimePlanImageCapabilityV3;
   browserCapability?: RuntimePlanBrowserCapabilityV1;
+  websiteLogins?: readonly RuntimePlanWebsiteLoginV1[];
   modelCredential: EffectiveSlackConfig['modelCredential'] | null;
   sandboxMode: 'bash' | 'cloudflare';
 }): RoutineAgentDispatchEnvelopeV2 {
@@ -684,6 +687,7 @@ function createEnvelope(input: {
     ...(input.runtimeModelRoute ? { runtimeModelRoute: input.runtimeModelRoute } : {}),
     ...(input.imageCapability ? { imageCapability: input.imageCapability } : {}),
     ...(input.browserCapability ? { browserCapability: input.browserCapability } : {}),
+    ...(input.websiteLogins ? { websiteLogins: input.websiteLogins } : {}),
     instructions: [
       input.access.config.instructions,
       externalActionAuthorityInstructions(input.access.config.agent.instructions),

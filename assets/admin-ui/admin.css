@@ -992,6 +992,7 @@ details[open].advanced summary::before {
 .modal-foot { align-items: center; display: flex; gap: 8px; margin-top: 18px; }
 .modal-foot .spacer { flex: 1; }
 .managed-setup-modal { display: grid; gap: 16px; max-width: 560px; padding: 26px; }
+.website-login-dialog { display: grid; gap: 16px; max-width: none; width: min(760px, calc(100vw - 32px)); max-height: calc(100dvh - 40px); overflow: auto; padding: 26px 28px; }
 .managed-setup-modal .modal-title { font-size: 1.25rem; }
 .managed-setup-intro { color: var(--text-2); display: grid; font-size: .875rem; gap: 10px; line-height: 1.55; }
 .managed-setup-intro p { margin: 0; }

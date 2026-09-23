@@ -381,6 +381,27 @@ change, or connect a teammate; `/mcp__chickpea__new-agent` starts the next one i
 your client shows Chickpea's prompts as slash commands (with the server name
 the agent chose in place of `chickpea` if `chickpea` was taken).
 
+## Give Agents a browser (optional)
+
+You can skip this. It lets Agents open a real browser to check live pages and
+attach a screenshot or recording as proof. The browser runs in your own
+Browserbase project, not on your Mac, so it works the same on Node as on
+Cloudflare.
+
+1. Sign up at browserbase.com, or open an existing project, and copy the
+   project's API key from **Settings → API keys** in Browserbase. The free
+   plan includes one browser hour a month; sign-in hand-offs, where you sign
+   in to a website for an Agent, need a paid Browserbase plan.
+2. In Admin, open **Settings → Browser**, paste the key, and select
+   **Connect**. Paste it only there, never into a chat with your coding
+   agent.
+3. Chickpea checks the key with Browserbase before saving it. The badge reads
+   **Ready** and the card shows **Connected · key ending …**.
+
+Nothing is enabled per Agent: once connected, every Agent can open public
+websites when a task calls for it. Add website logins for sites that need a
+sign-in on an Agent's **Websites** tab.
+
 ## Start, stop, and check status
 
 The commands live inside the installation, so they use its private Node even

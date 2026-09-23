@@ -531,6 +531,7 @@ function runAdminPageHarness(
     skillResolveFetch?: (source: string) => Promise<FakeResponse>;
     githubStatus?: GithubStatusFixture;
     settingsLoadFetch?: (path: string, method: string) => Promise<FakeResponse> | undefined;
+    websiteLoginsFetch?: (path: string, method: string, body: string | undefined) => Promise<FakeResponse> | undefined;
     githubRepoPages?: Record<string, GithubRepoPageFixture>;
     githubRepoError?: { status: number; error: string; message?: string };
     githubRepoFetch?: (path: string) => Promise<FakeResponse>;
@@ -1005,6 +1006,7 @@ function runAdminPageHarness(
   const deferAgentPatch = options.deferAgentPatch === true;
   const githubStatus = options.githubStatus;
   const settingsLoadFetch = options.settingsLoadFetch;
+  const websiteLoginsFetch = options.websiteLoginsFetch;
   const githubRepoPages = options.githubRepoPages;
   const githubRepoError = options.githubRepoError;
   const githubRepoFetch = options.githubRepoFetch;
@@ -1437,6 +1439,10 @@ function runAdminPageHarness(
       ['/admin/api/github/status', '/admin/api/egress', '/admin/api/sandbox/status'].includes(path)
     ) {
       settingsGetCalls.push(path);
+    }
+    if (websiteLoginsFetch && /^\/admin\/api\/agents\/[^/]+\/website-logins(?:\/|$)/.test(path)) {
+      const websiteLoginsResponse = websiteLoginsFetch(path, method, options?.body);
+      if (websiteLoginsResponse) return websiteLoginsResponse;
     }
     const settingsLoadResponse = settingsLoadFetch?.(path, method);
     if (settingsLoadResponse) return settingsLoadResponse;
@@ -5461,7 +5467,7 @@ test('Agent detail follows the approved compact hierarchy and capability vocabul
   assert.match(harness.app.innerHTML, /data-action="profile-description-edit"/);
   assert.doesNotMatch(harness.app.innerHTML, /Mention as|agent-replies-as/);
   assert.match(harness.app.innerHTML, /aria-label="Agent setup"/);
-  for (const tab of ['Instructions', 'Skills', 'Connections', 'Repositories', 'Memory', 'Schedules', 'Model']) {
+  for (const tab of ['Instructions', 'Skills', 'Connections', 'Repositories', 'Websites', 'Memory', 'Schedules', 'Model']) {
     assert.match(harness.app.innerHTML, new RegExp(`role="tab"[^>]*>${tab}`));
   }
   assert.match(harness.app.innerHTML, /aria-label="Agent instructions"/);
@@ -7198,8 +7204,8 @@ function chooseConnectionOwner(
 
 test('Agent connections expose Agent-owned Team and personal accounts with managed Google OAuth', () => {
   const page = renderAdminPage();
-  assert.match(page, />Personal</);
-  assert.match(page, />Team</);
+  assert.match(page, /"connection-account-owner", "member", [^\n]*"Personal"/);
+  assert.match(page, /"connection-account-owner", "team", [^\n]*"Team"/);
   assert.match(page, /Who uses this connection\?/);
   assert.match(page, /Each person signs in with their own account/);
   assert.match(page, /One shared account for everyone who can use/);
@@ -17075,4 +17081,306 @@ test('Settings › Browser renders the connected card with monthly usage', async
   click({ target: actionTarget({ 'data-action': 'browser-disconnect-open' }) });
   html = harness.app.innerHTML;
   assert.match(html, /data-action="browser-disconnect-confirm">Disconnect<\/button>/);
+});
+
+// ---- Agent Websites tab ----------------------------------------------------
+
+const WEBSITE_LOGIN_TEAM_ID = `wl_${'a'.repeat(32)}`;
+const WEBSITE_LOGIN_MEMBER_ID = `wl_${'b'.repeat(32)}`;
+
+function websiteLoginFixtures(): Array<Record<string, unknown>> {
+  return [
+    {
+      loginId: WEBSITE_LOGIN_TEAM_ID, host: 'magoosh.com', label: 'Magoosh team', ownerKind: 'team',
+      method: 'credentials', username: 'qa-team@magoosh.com', lastUsedAt: Date.now() - 2 * 3_600_000,
+      level: 'check', enabled: true,
+    },
+    {
+      loginId: WEBSITE_LOGIN_MEMBER_ID, host: 'admin.magoosh.com', label: 'Magoosh admin', ownerKind: 'member',
+      ownerMembershipId: 'membership_owner', method: 'handoff', level: 'check', enabled: true,
+    },
+  ];
+}
+
+function websiteLoginsHarness(
+  initialLogins: Array<Record<string, unknown>>,
+  options: Parameters<typeof runAdminPageHarness>[0] = {},
+  responses: { post?: () => FakeResponse; get?: () => FakeResponse; patch?: () => FakeResponse } = {},
+) {
+  let logins = initialLogins.map((login) => ({ ...login }));
+  const calls = {
+    gets: 0,
+    posts: [] as Array<Record<string, unknown>>,
+    deletes: [] as string[],
+    patches: [] as Array<{ loginId: string; body: Record<string, unknown> }>,
+  };
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/agents/agent_release',
+    ...options,
+    websiteLoginsFetch(path, method, body) {
+      if (!path.startsWith('/admin/api/agents/agent_release/website-logins')) return undefined;
+      if (method === 'GET') {
+        calls.gets += 1;
+        return Promise.resolve(responses.get?.() ?? jsonResponse({ logins }));
+      }
+      if (method === 'POST') {
+        const parsed = JSON.parse(body ?? '{}') as Record<string, unknown>;
+        calls.posts.push(parsed);
+        const failure = responses.post?.();
+        if (failure) return Promise.resolve(failure);
+        const created = {
+          loginId: `wl_${'c'.repeat(32)}`, host: parsed.host, label: parsed.label, ownerKind: parsed.ownerKind,
+          method: parsed.method, ...(parsed.username ? { username: parsed.username } : {}),
+          level: parsed.level ?? 'check', enabled: true,
+        };
+        logins = [...logins, created];
+        return Promise.resolve(jsonResponse({ login: created }, 201));
+      }
+      if (method === 'PATCH') {
+        const loginId = decodeURIComponent(path.split('/').pop() ?? '');
+        const parsed = JSON.parse(body ?? '{}') as Record<string, unknown>;
+        calls.patches.push({ loginId, body: parsed });
+        const failure = responses.patch?.();
+        if (failure) return Promise.resolve(failure);
+        logins = logins.map((login) => login.loginId === loginId ? { ...login, level: parsed.level } : login);
+        return Promise.resolve(jsonResponse({ login: logins.find((login) => login.loginId === loginId) }));
+      }
+      if (method === 'DELETE') {
+        const loginId = decodeURIComponent(path.split('/').pop() ?? '');
+        calls.deletes.push(loginId);
+        logins = logins.filter((login) => login.loginId !== loginId);
+        return Promise.resolve({ ok: true, status: 204, async text() { return ''; } });
+      }
+      return undefined;
+    },
+  });
+  return { harness, calls };
+}
+
+test('the Websites tab lists signed-in websites and shows an empty state', async () => {
+  const { harness, calls } = websiteLoginsHarness(websiteLoginFixtures());
+  await flushAsync();
+  assert.equal(calls.gets, 0, 'the list loads only when the tab first shows');
+  assert.match(harness.app.innerHTML, /id="ptab-websites" class="ptab"[^>]*>Websites</);
+
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'websites' }) });
+  await flushAsync();
+
+  const html = harness.app.innerHTML;
+  assert.equal(calls.gets, 1);
+  assert.match(html, /id="ptab-websites" class="ptab on"[^>]*>Websites<span class="ptab-count">2<\/span>/);
+  assert.match(html, /id="ptab-panel-websites"[\s\S]*?<h3>Websites<\/h3><p>Sites this Agent can open in a browser, and the sign-ins it may use there\.<\/p>/);
+  assert.match(html, /This Agent can open any public website when a task calls for it\. A sign-in below lets it go where a visitor cannot, and each signed-in session stays on that site\./);
+  assert.match(html, /Signed-in websites<\/span><button type="button" class="btn btn-primary btn-sm" data-action="website-login-add">Add a website login<\/button>/);
+  assert.match(html, /magoosh\.com<\/span><\/div>[\s\S]*?qa-team@magoosh\.com[\s\S]*?last used 2 hours ago/);
+  assert.doesNotMatch(html, /Team login/);
+  assert.match(html, /admin\.magoosh\.com<\/span><\/div>[\s\S]*?signs in by hand[\s\S]*?never used/);
+  assert.equal((html.match(/>Check only</g) ?? []).length, 2);
+  assert.equal((html.match(/data-action="website-login-remove"/g) ?? []).length, 2);
+  assert.match(html, /Passwords are stored encrypted and typed by Chickpea itself\. Agents never see them\./);
+  const panel = html.match(/id="ptab-panel-websites"[\s\S]*?(?=id="ptab-panel-memory")/)?.[0] ?? '';
+  assert.ok(panel);
+  // Internal ids appear only as action attributes, never as visible copy.
+  assert.doesNotMatch(panel.replace(/data-login-id="[^"]*"/g, ''), /wl_a{32}|wl_b{32}|membership_owner|>check</);
+
+  const empty = websiteLoginsHarness([], { initialSearch: '?tab=websites' });
+  await flushAsync();
+  assert.match(empty.harness.app.innerHTML, /No website logins yet\. Add one to let this Agent sign in somewhere\.<\/p><button type="button" class="btn btn-primary btn-sm" data-action="website-login-add">/);
+  assert.doesNotMatch(empty.harness.app.innerHTML, /id="ptab-websites"[^>]*>Websites<span class="ptab-count">/);
+});
+
+test('a Websites deep link selects the tab and loads the list exactly once', async () => {
+  const { harness, calls } = websiteLoginsHarness(websiteLoginFixtures(), { initialSearch: '?tab=websites' });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /id="ptab-websites" class="ptab on" role="tab" aria-selected="true"/);
+  assert.doesNotMatch(harness.app.innerHTML, /id="ptab-panel-websites"[^>]* hidden/);
+  assert.equal(calls.gets, 1);
+
+  // No polling: returning to the page or re-selecting the tab reuses the list.
+  harness.focusWindow();
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'instructions' }) });
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'websites' }) });
+  await flushAsync();
+  assert.equal(calls.gets, 1);
+  assert.equal(harness.locationPath(), '/admin/agents/agent_release');
+});
+
+test('Add a website login validates, posts the host only, refreshes, and drops the password', async () => {
+  const { harness, calls } = websiteLoginsHarness(websiteLoginFixtures(), { initialSearch: '?tab=websites' });
+  await flushAsync();
+  const click = (attributes: Record<string, string>) => harness.listeners.click?.({ target: actionTarget(attributes) });
+  const type = (action: string, value: string) => harness.listeners.input?.({ target: inputTarget({ 'data-action': action }, value) });
+
+  click({ 'data-action': 'website-login-add' });
+  let html = harness.app.innerHTML;
+  assert.match(html, /role="dialog" aria-modal="true" aria-labelledby="website-login-title"/);
+  assert.match(html, /<h2 class="modal-title" id="website-login-title">Add a website login<\/h2>/);
+  assert.match(html, /Release Profile will sign in here when a task needs it\. You can change what it may do at any time\./);
+  assert.match(html, /placeholder="https:\/\/example\.com"/);
+  assert.match(html, /How should Chickpea sign in\?[\s\S]*?value="credentials" data-action="website-login-method" checked[\s\S]*?With a username and password I provide[\s\S]*?Chickpea types them itself\. The Agent never sees the values\./);
+  assert.match(html, /I&rsquo;ll sign in myself the first time[\s\S]*?For single sign-on or two-factor accounts\. Chickpea opens a browser for you, then keeps the signed-in session\./);
+  assert.match(html, /id="website-login-password" type="password"/);
+  assert.match(html, /One-time code secret \(optional, for authenticator-app codes\)[\s\S]*?placeholder="Paste the setup key from the site&rsquo;s authenticator screen"/);
+  // The login belongs to this Agent: no owner choice in the dialog.
+  assert.doesNotMatch(html, /Who can use it|website-login-owner/);
+  assert.match(html, /class="modal-card website-login-dialog"/);
+  assert.match(html, /Stored encrypted in your Chickpea install\. Sign-in sessions live in your Browserbase project\./);
+  assert.match(html, /data-action="website-login-cancel">Cancel<\/button>[\s\S]*?data-action="website-login-save">Save login<\/button>/);
+  assert.equal(harness.bodyRegion.inert, true);
+
+  // Handoff hides the password fields; switching back restores them.
+  harness.listeners.change?.({ target: valueTarget({ 'data-action': 'website-login-method' }, 'handoff', true) });
+  assert.doesNotMatch(harness.app.innerHTML, /id="website-login-password"|id="website-login-totp"/);
+  harness.listeners.change?.({ target: valueTarget({ 'data-action': 'website-login-method' }, 'credentials', true) });
+  assert.match(harness.app.innerHTML, /id="website-login-password"/);
+
+  click({ 'data-action': 'website-login-save' });
+  assert.match(harness.app.innerHTML, /That doesn&#39;t look like a website address\. Enter the site&#39;s domain, such as example\.com\./);
+  type('website-login-host', 'https://Example.com/login?next=%2F');
+  click({ 'data-action': 'website-login-save' });
+  assert.match(harness.app.innerHTML, /Add a label so you can recognize this login\./);
+  type('website-login-label', 'Example');
+  type('website-login-username', 'me@example.com');
+  click({ 'data-action': 'website-login-save' });
+  assert.match(harness.app.innerHTML, /Enter the password Chickpea should use\./);
+  assert.deepEqual(calls.posts, []);
+
+  type('website-login-password', 'hunter2-secret');
+  type('website-login-totp', 'jbsw y3dp ehpk 3pxp');
+  click({ 'data-action': 'website-login-save' });
+  assert.doesNotMatch(harness.app.innerHTML, /hunter2-secret|jbsw/);
+  await flushAsync();
+
+  assert.deepEqual(calls.posts, [{
+    host: 'example.com', label: 'Example', method: 'credentials', level: 'check',
+    username: 'me@example.com', password: 'hunter2-secret', totpSeed: 'jbswy3dpehpk3pxp',
+  }]);
+  html = harness.app.innerHTML;
+  assert.doesNotMatch(html, /data-role="website-login-dialog"/);
+  assert.equal(calls.gets, 2, 'the list refreshes after a save');
+  assert.match(html, /id="ptab-websites" class="ptab on"[^>]*>Websites<span class="ptab-count">3<\/span>/);
+  assert.match(html, /example\.com<\/span><\/div>/);
+  assert.ok(harness.renderHistory.every((rendered) => !rendered.includes('hunter2-secret')));
+});
+
+test('Add a website login explains server rejections and clears the typed password', async () => {
+  const cases: Array<[FakeResponse, RegExp]> = [
+    [jsonResponse({ error: 'invalid_website_login', field: 'invalid_host' }, 422), /That doesn&#39;t look like a website address\./],
+    [jsonResponse({ error: 'website_login_limit', message: 'This Agent already has 50 website logins.' }, 409), /The limit of website logins has been reached\. Remove one first\./],
+    [jsonResponse({ error: 'forbidden' }, 403), /The login could not be saved\. Try again\./],
+  ];
+  for (const [response, message] of cases) {
+    const { harness, calls } = websiteLoginsHarness([], { initialSearch: '?tab=websites' }, { post: () => response });
+    await flushAsync();
+    harness.listeners.click?.({ target: actionTarget({ 'data-action': 'website-login-add' }) });
+    for (const [action, value] of [
+      ['website-login-host', 'intranet.example.com'], ['website-login-label', 'Intranet'],
+      ['website-login-username', 'me'], ['website-login-password', 'pw-never-rendered'],
+    ] as const) {
+      harness.listeners.input?.({ target: inputTarget({ 'data-action': action }, value) });
+    }
+    harness.listeners.click?.({ target: actionTarget({ 'data-action': 'website-login-save' }) });
+    await flushAsync();
+    assert.equal(calls.posts[0]?.ownerKind, undefined, 'the server picks the owner kind');
+    assert.match(harness.app.innerHTML, message);
+    assert.match(harness.app.innerHTML, /id="website-login-password" type="password" autocomplete="new-password" value=""/);
+    assert.ok(harness.renderHistory.every((rendered) => !rendered.includes('pw-never-rendered')));
+  }
+});
+
+test('Remove confirms inline, deletes the login, and refreshes the list', async () => {
+  const { harness, calls } = websiteLoginsHarness(websiteLoginFixtures(), { initialSearch: '?tab=websites' });
+  await flushAsync();
+  const click = (attributes: Record<string, string>) => harness.listeners.click?.({ target: actionTarget(attributes) });
+
+  click({ 'data-action': 'website-login-remove', 'data-login-id': WEBSITE_LOGIN_TEAM_ID });
+  assert.match(harness.app.innerHTML, /Remove this login from Release Profile\? If no other Agent uses it, the saved sign-in is deleted too\./);
+  assert.match(harness.app.innerHTML, /data-action="website-login-remove-keep">Keep<\/button>/);
+  click({ 'data-action': 'website-login-remove-keep' });
+  assert.doesNotMatch(harness.app.innerHTML, /Remove this login from/);
+  assert.deepEqual(calls.deletes, []);
+
+  click({ 'data-action': 'website-login-remove', 'data-login-id': WEBSITE_LOGIN_TEAM_ID });
+  click({ 'data-action': 'website-login-remove-confirm', 'data-login-id': WEBSITE_LOGIN_TEAM_ID });
+  await flushAsync();
+
+  assert.deepEqual(calls.deletes, [WEBSITE_LOGIN_TEAM_ID]);
+  assert.equal(calls.gets, 2);
+  assert.ok(harness.fetchCalls.some(({ path, method }) =>
+    method === 'DELETE' && path === `/admin/api/agents/agent_release/website-logins/${WEBSITE_LOGIN_TEAM_ID}`));
+  assert.doesNotMatch(harness.app.innerHTML, /qa-team@magoosh\.com|Remove this login from/);
+  assert.match(harness.app.innerHTML, /admin\.magoosh\.com/);
+  assert.match(harness.app.innerHTML, /id="ptab-websites" class="ptab on"[^>]*>Websites<span class="ptab-count">1<\/span>/);
+});
+
+test('each website login row has a level selector that saves the new level', async () => {
+  const { harness, calls } = websiteLoginsHarness(websiteLoginFixtures(), { initialSearch: '?tab=websites' });
+  await flushAsync();
+  let html = harness.app.innerHTML;
+  assert.equal((html.match(/data-action="website-login-level" data-login-id=/g) ?? []).length, 2);
+  assert.match(html, new RegExp(`<select class="input" data-action="website-login-level" data-login-id="${WEBSITE_LOGIN_TEAM_ID}" aria-label="What this Agent may do on magoosh\\.com"><option value="check" selected>Check only</option><option value="act">Check and take actions</option></select>`));
+  assert.doesNotMatch(html, /Asks in Slack before anything that changes data\./);
+
+  harness.listeners.change?.({ target: valueTarget({ 'data-action': 'website-login-level', 'data-login-id': WEBSITE_LOGIN_TEAM_ID }, 'act') });
+  await flushAsync();
+  assert.deepEqual(calls.patches, [{ loginId: WEBSITE_LOGIN_TEAM_ID, body: { level: 'act' } }]);
+  assert.ok(harness.fetchCalls.some(({ path, method }) =>
+    method === 'PATCH' && path === `/admin/api/agents/agent_release/website-logins/${WEBSITE_LOGIN_TEAM_ID}`));
+  html = harness.app.innerHTML;
+  assert.match(html, /<option value="act" selected>Check and take actions<\/option>/);
+  assert.match(html, /Asks in Slack before anything that changes data\./);
+  assert.equal(calls.gets, 1, 'a level change does not reload the list');
+
+  // A refused raise puts the level back and explains who can allow actions.
+  const refused = websiteLoginsHarness(websiteLoginFixtures(), { initialSearch: '?tab=websites' }, {
+    patch: () => jsonResponse({ error: 'forbidden' }, 403),
+  });
+  await flushAsync();
+  refused.harness.listeners.change?.({ target: valueTarget({ 'data-action': 'website-login-level', 'data-login-id': WEBSITE_LOGIN_MEMBER_ID }, 'act') });
+  await flushAsync();
+  html = refused.harness.app.innerHTML;
+  assert.match(html, /Only an Admin or the person who added this login can allow actions\./);
+  assert.doesNotMatch(html, /<option value="act" selected>/);
+});
+
+test('the add-login dialog asks what the Agent may do there and sends the level', async () => {
+  const { harness, calls } = websiteLoginsHarness([], { initialSearch: '?tab=websites' });
+  await flushAsync();
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'website-login-add' }) });
+  let html = harness.app.innerHTML;
+  assert.match(html, /What this Agent may do there[\s\S]*?value="check" data-action="website-login-level" checked[\s\S]*?<strong>Check only<\/strong><span>Read pages, run searches, follow links\.<\/span>[\s\S]*?value="act" data-action="website-login-level"[\s\S]*?<strong>Check and take actions<\/strong><span>Fill forms and click through flows\. Asks in Slack before anything that changes data\.<\/span>/);
+  harness.listeners.change?.({ target: valueTarget({ 'data-action': 'website-login-level' }, 'act', true) });
+  html = harness.app.innerHTML;
+  assert.match(html, /value="act" data-action="website-login-level" checked/);
+  for (const [action, value] of [
+    ['website-login-host', 'billing.example.com'], ['website-login-label', 'Billing'],
+    ['website-login-username', 'ops'], ['website-login-password', 'pw-level-test'],
+  ] as const) {
+    harness.listeners.input?.({ target: inputTarget({ 'data-action': action }, value) });
+  }
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'website-login-save' }) });
+  await flushAsync();
+  assert.equal(calls.posts[0]?.level, 'act');
+  assert.match(harness.app.innerHTML, /<option value="act" selected>Check and take actions<\/option>/);
+});
+
+test('a read-only Agent shows its website logins without Add or Remove', async () => {
+  const { harness, calls } = websiteLoginsHarness(websiteLoginFixtures(), {
+    initialSearch: '?tab=websites',
+    agents: [{ ...releaseAgent, canEdit: false }],
+  });
+  await flushAsync();
+  assert.equal(calls.gets, 1);
+  assert.match(harness.app.innerHTML, /magoosh\.com<\/span><\/div>/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="website-login-(?:add|remove|level)"/);
+  assert.equal((harness.app.innerHTML.match(/<span class="badge badge-off">Check only<\/span>/g) ?? []).length, 2);
+
+  const forbidden = websiteLoginsHarness([], {
+    initialSearch: '?tab=websites',
+    agents: [{ ...releaseAgent, canEdit: false }],
+  }, { get: () => jsonResponse({ error: 'forbidden' }, 403) });
+  await flushAsync();
+  assert.match(forbidden.harness.app.innerHTML, /Only Agent editors can view or change which website logins this Agent can use\./);
+  assert.doesNotMatch(forbidden.harness.app.innerHTML, /data-action="website-login-(?:add|remove|retry)"/);
 });

@@ -9,6 +9,7 @@ import {
   encryptSlackSecretEnvelope,
   type CredentialKeyring,
   type SlackSecretEnvelopeContext,
+  workspaceCredentialContext,
 } from '../slack/secret-envelope.ts';
 import { envValue } from './env-value.ts';
 import type { EncryptedCredentialStore, SettingsStore } from './settings-store.ts';
@@ -528,15 +529,13 @@ export function composioConfigurationIsMutable(
 }
 
 function credentialContext(deploymentId: string, revision: string): SlackSecretEnvelopeContext {
-  return {
-    deploymentId,
+  return workspaceCredentialContext({
+    contextId: deploymentId,
     identityId: CREDENTIAL_IDENTITY_ID,
-    identityClass: 'workspace_installation',
     appId: CREDENTIAL_APP_ID,
-    teamId: null,
     purpose: 'managed_connector_project_key',
     revision,
-  };
+  });
 }
 
 function missingConfiguration(

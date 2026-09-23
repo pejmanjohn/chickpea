@@ -100,9 +100,24 @@ export function buildArtifactToolsInstruction(
   ].join('\n\n');
 }
 
-/** What the model chose for one staged file: bytes, visible name, optional title. */
+/**
+ * A file too large to hold in memory, such as a browser recording: it is
+ * streamed to Slack, which needs its exact byte length up front.
+ */
+export interface SlackStreamedFile {
+  stream: ReadableStream<Uint8Array>;
+  byteLength: number;
+}
+
+export type SlackFileContent = Uint8Array | SlackStreamedFile;
+
+export function isStreamedFile(content: SlackFileContent): content is SlackStreamedFile {
+  return !(content instanceof Uint8Array);
+}
+
+/** What the model chose for one staged file: content, visible name, optional title. */
 export interface SlackArtifactStageInput {
-  bytes: Uint8Array;
+  bytes: SlackFileContent;
   filename: string;
   title?: string;
   kind: 'file' | 'chart' | 'image';

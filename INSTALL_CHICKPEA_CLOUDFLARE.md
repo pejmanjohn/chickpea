@@ -610,6 +610,32 @@ connect a teammate, and that `/mcp__chickpea__new-agent` starts the next one if
 their client shows Chickpea's prompts as slash commands (with the server
 name from step 8 in place of `chickpea` if you used another).
 
+## 10. Give Agents a browser (optional)
+
+This step is optional. Skip it unless the user wants Agents to open websites,
+and do not hold the hand-over for it. Offer it once, in one line: Agents can
+open a real browser to check live pages and attach a screenshot or recording
+as proof, using the user's own Browserbase project.
+
+If the user wants it:
+
+1. The user signs up at browserbase.com, or opens an existing project, and
+   copies the project's API key from **Settings → API keys** in Browserbase.
+   The free plan includes one browser hour a month; sign-in hand-offs, where
+   a person signs in to a website for an Agent, need a paid Browserbase plan.
+2. Open Admin **Settings → Browser** (`https://<deployment>/admin/settings/browser`)
+   in the signed-in Admin tab. The user pastes the key there and selects
+   **Connect**. Never ask for the key in the conversation, and never copy it
+   into a file or the receipt.
+3. Chickpea checks the key with Browserbase before saving it. Confirm the
+   badge reads **Ready** and the card shows **Connected · key ending …** with
+   the last four characters of the key.
+
+No redeploy is needed, and nothing is enabled per Agent: once connected,
+every Agent can open public websites when a task calls for it. Website
+logins for sites that need a sign-in are added later on an Agent's
+**Websites** tab. If the user declines, report the step as skipped.
+
 ## Hand over
 
 Leave a short final response containing:
@@ -625,6 +651,7 @@ Leave a short final response containing:
 - The first teammate from step 9 as two separate lines: created, with its
   `@handle` and the links the result returned, and verified, with whether a
   real reply was observed; or the reason the step was skipped.
+- The optional browser from step 10: connected, or skipped.
 - The private receipt path and a simple next prompt to use here: "Create
   another teammate for us", or "Create our first teammate" if step 9 was
   skipped (`/mcp__chickpea__new-agent` where slash commands are shown), or "Help

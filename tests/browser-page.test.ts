@@ -274,6 +274,36 @@ test('act scroll and hover dispatch wheel and move events at the element center'
   client.close();
 });
 
+test('fillSecret focuses the node, clears it, and inserts the value without touching refs or snapshots', async () => {
+  const { socket, page, client } = await pageWithRefs();
+  const refsBefore = JSON.stringify([...page.refs.entries()]);
+  const secret = 'correct horse battery staple';
+  await page.fillSecret('e3', secret);
+  const methods = socket.sent.map((m) => m.method);
+  const focusAt = methods.indexOf('DOM.focus');
+  const insertAt = methods.indexOf('Input.insertText');
+  assert.ok(focusAt >= 0 && insertAt > focusAt);
+  assert.deepEqual(socket.sent[focusAt]!.params, { backendNodeId: 30 });
+  assert.deepEqual(socket.sent[insertAt]!.params, { text: secret });
+  // Cleared first: select-all then Delete, before the insert.
+  assert.deepEqual(keys(socket).map((k) => [k.type, k.key]), [
+    ['rawKeyDown', 'a'], ['keyUp', 'a'], ['rawKeyDown', 'Delete'], ['keyUp', 'Delete'],
+  ]);
+  // No click, no act path: the value never passes through a mouse or key event.
+  assert.equal(methods.includes('Input.dispatchMouseEvent'), false);
+  assert.equal(keys(socket).some((k) => JSON.stringify(k).includes(secret)), false);
+  assert.equal(JSON.stringify([...page.refs.entries()]), refsBefore);
+  assert.doesNotMatch(refsBefore, /correct horse/);
+  const snap = await page.snapshot();
+  assert.doesNotMatch(snap.text, /correct horse/);
+  await assert.rejects(page.fillSecret('e9', secret), (error: Error) =>
+    /Unknown element reference e9/.test(error.message) && !error.message.includes(secret));
+  socket.responders.set('DOM.focus', () => ({ error: { code: -32000, message: 'Element is not focusable' } }));
+  await assert.rejects(page.fillSecret('e1', secret), (error: Error) =>
+    /cannot take text/.test(error.message) && !error.message.includes(secret));
+  client.close();
+});
+
 test('act with an unknown ref asks for a new snapshot', async () => {
   const { page, client } = await pageWithRefs();
   await assert.rejects(page.act('e9', 'click'), { message: 'Unknown element reference e9; take a new snapshot' });

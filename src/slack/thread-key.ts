@@ -6,6 +6,18 @@ export function slackThreadKey(turn: NormalizedSlackTurn): string {
 }
 
 /**
+ * The thread coordinate a turn's conversation is keyed by: the real Slack
+ * thread for chickpea-v1 installations, and the legacy session thread (a DM's
+ * channel-wide key) otherwise.
+ */
+export function conversationThreadTs(
+  turn: Pick<NormalizedSlackTurn, 'threadTs' | 'sessionThreadTs'>,
+  runtimeContract: ResolvedAssignment['runtimeContract'],
+): string {
+  return runtimeContract === 'chickpea-v1' ? turn.threadTs : turn.sessionThreadTs ?? turn.threadTs;
+}
+
+/**
  * Trusted Slack conversation shape. Direct-message events can omit
  * `channel_type`, so the normalized DM source is authoritative as well.
  */

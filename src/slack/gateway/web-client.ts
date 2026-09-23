@@ -49,6 +49,7 @@ const NAMESPACED_OPERATIONS = new Set<GatewaySlackOperation>([
   'chat.startStream',
   'chat.appendStream',
   'chat.stopStream',
+  'files.getUploadURLExternal',
   'files.uploadV2',
   'files.completeUploadExternal',
   'reactions.get',

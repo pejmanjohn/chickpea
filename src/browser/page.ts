@@ -293,15 +293,7 @@ export class BrowserPage {
         }
         case 'clear': {
           await this.clickAt(await this.elementCenter(backendNodeId));
-          const a = keyDefinition('a');
-          await this.cdp('Input.dispatchKeyEvent', {
-            type: 'rawKeyDown', key: a.key, code: a.code, windowsVirtualKeyCode: a.keyCode, modifiers: MODIFIER_CTRL,
-            commands: ['selectAll'],
-          });
-          await this.cdp('Input.dispatchKeyEvent', {
-            type: 'keyUp', key: a.key, code: a.code, windowsVirtualKeyCode: a.keyCode, modifiers: MODIFIER_CTRL,
-          });
-          await this.pressKey('Delete');
+          await this.selectAllAndDelete();
           break;
         }
         case 'select':
@@ -322,6 +314,35 @@ export class BrowserPage {
       stopWatching();
     }
     return this.pageInfo();
+  }
+
+  /**
+   * Types a secret into the element behind `ref`: focus it, clear it, and
+   * insert the value as one text input. The value never passes through `act`,
+   * a snapshot, or an error message, and the refs map is left untouched.
+   */
+  async fillSecret(ref: string, value: string): Promise<void> {
+    const target = this.refs.get(ref);
+    if (!target) throw new Error(`Unknown element reference ${ref}; take a new snapshot`);
+    const backendNodeId = target.backendDOMNodeId;
+    await this.cdp('DOM.scrollIntoViewIfNeeded', { backendNodeId }).catch(() => undefined);
+    try {
+      await this.cdp('DOM.focus', { backendNodeId });
+    } catch {
+      throw new Error(`Element ${ref} cannot take text; take a new snapshot and pick the input field`);
+    }
+    await this.selectAllAndDelete();
+    await this.cdp('Input.insertText', { text: value });
+  }
+
+  /** Waits until the document finishes loading, up to `timeoutMs`. */
+  async waitForReady(timeoutMs: number): Promise<void> {
+    const abort = new AbortController();
+    try {
+      await this.pollReadyState(timeoutMs, abort.signal);
+    } finally {
+      abort.abort();
+    }
   }
 
   async screenshot(options: { format?: 'png' | 'jpeg'; quality?: number; fullPage?: boolean } = {}): Promise<Uint8Array> {
@@ -367,6 +388,18 @@ export class BrowserPage {
     await this.cdp('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
     await this.cdp('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount: 1 });
     await this.cdp('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 });
+  }
+
+  private async selectAllAndDelete(): Promise<void> {
+    const a = keyDefinition('a');
+    await this.cdp('Input.dispatchKeyEvent', {
+      type: 'rawKeyDown', key: a.key, code: a.code, windowsVirtualKeyCode: a.keyCode, modifiers: MODIFIER_CTRL,
+      commands: ['selectAll'],
+    });
+    await this.cdp('Input.dispatchKeyEvent', {
+      type: 'keyUp', key: a.key, code: a.code, windowsVirtualKeyCode: a.keyCode, modifiers: MODIFIER_CTRL,
+    });
+    await this.pressKey('Delete');
   }
 
   private pressKey(name: string): Promise<void> {

@@ -8,7 +8,7 @@ import {
 } from '../slack/agent-routing.ts';
 import { agentAvatarUrlForPresentation } from '../slack/agent-presence/avatar-assets.ts';
 import { escapeSlackControlCharacters } from '../slack/message-format.ts';
-import { slackConversationKind } from '../slack/thread-key.ts';
+import { conversationThreadTs, slackConversationKind } from '../slack/thread-key.ts';
 import type { NormalizedSlackTurn } from '../slack/types.ts';
 import type { ManagementStore } from './store.ts';
 import { WorkspaceManagementService } from './service.ts';
@@ -179,9 +179,7 @@ function slackManagementSignal(
     agentId: assignment.agent.id,
     workspaceId: turn.workspaceId,
     channelId: turn.channelId,
-    threadTs: assignment.runtimeContract === 'chickpea-v1'
-      ? turn.threadTs
-      : turn.sessionThreadTs ?? turn.threadTs,
+    threadTs: conversationThreadTs(turn, assignment.runtimeContract),
     conversationKind: slackConversationKind(turn),
     slackUserId: turn.userId,
     eventId: turn.eventId,

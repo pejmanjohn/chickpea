@@ -73,3 +73,4 @@ design-qa.md
 
 # A worktree claim is machine-local authority, never repository state.
 .chickpea-environment
+!docs/runbooks/browser-feature.md

@@ -27,7 +27,7 @@ import {
 } from '../config/state-backend.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
-import { browserCapabilityForTurn } from '../browser/capability.ts';
+import { browserCapabilityForTurn, websiteLoginsForTurn } from '../browser/capability.ts';
 import type {
   SlackInteractionProgress,
   SlackInteractionProgressPatch,
@@ -63,7 +63,7 @@ import { activityStatus, initialActivityStatus } from '../activity/status.ts';
 import { registerSlackStatusTurn } from './status-registry.ts';
 import { currentMessageOnlyContext } from './thread-context.ts';
 import { collectAdmittedSlackListIds } from './lists/admission.ts';
-import { slackAgentThreadKey, slackConversationKind } from './thread-key.ts';
+import { conversationThreadTs, slackAgentThreadKey, slackConversationKind } from './thread-key.ts';
 import { slackTimestampMs } from './timestamp.ts';
 import { assembleRetainedSlackContext, formatSlackPublicHandoff } from './public-context.ts';
 import type { NormalizedSlackTurn } from './types.ts';
@@ -1273,9 +1273,7 @@ export async function runTurn(
         agentId: assignment.agent.id,
         workspaceId: turn.workspaceId,
         channelId: turn.channelId,
-        threadTs: assignment.runtimeContract === 'chickpea-v1'
-          ? turn.threadTs
-          : turn.sessionThreadTs ?? turn.threadTs,
+        threadTs: conversationThreadTs(turn, assignment.runtimeContract),
         conversationKind: slackConversationKind(turn),
         slackUserId: turn.userId,
         eventId: turn.eventId,
@@ -1354,9 +1352,7 @@ export async function runTurn(
           agentId: assignment.agent.id,
           workspaceId: turn.workspaceId,
           channelId: turn.channelId,
-          threadTs: assignment.runtimeContract === 'chickpea-v1'
-            ? turn.threadTs
-            : turn.sessionThreadTs ?? turn.threadTs,
+          threadTs: conversationThreadTs(turn, assignment.runtimeContract),
           conversationKind: slackConversationKind(turn),
           slackUserId: turn.userId,
           eventId: turn.eventId,
@@ -1765,9 +1761,9 @@ async function freezeRuntimePlanForTurn(input: {
     throw new Error('Runtime plan compilation requires a frozen model.');
   }
   const settingsStore = input.settingsStore ?? getSettingsStore(input.platformEnv);
-  // The runtime model, the image role, and the browser capability resolve
-  // independently.
-  const [runtimeModel, imageRole, browserCapability] = await Promise.all([
+  // The runtime model, the image role, the browser capability, and the
+  // granted website logins resolve independently.
+  const [runtimeModel, imageRole, browserCapability, websiteLogins] = await Promise.all([
     resolveRuntimeModel(
       input.assignment.agentId,
       canonicalModel,
@@ -1791,6 +1787,8 @@ async function freezeRuntimePlanForTurn(input: {
     // A connected hosted browser mounts the browser tools. The key stays in
     // settings and is read again at call time; only the capability is frozen.
     browserCapabilityForTurn(settingsStore, input.platformEnv),
+    // Login metadata only; passwords are decrypted at call time.
+    websiteLoginsForTurn(settingsStore, input.assignment.agent.websiteLogins),
   ]);
   // The image role is the store's alone. Freezing its bounded capability here
   // is what mounts `generate_image` on the Agent; an unresolved or
@@ -1806,7 +1804,7 @@ async function freezeRuntimePlanForTurn(input: {
     runtimeModel: runtimeModel.model,
     ...(runtimeModelRoute ? { runtimeModelRoute } : {}),
     imageCapability,
-    ...(browserCapability ? { browserCapability } : {}),
+    ...(browserCapability ? { browserCapability, websiteLogins } : {}),
     instructions,
     memoryEpoch: input.memoryEpoch,
     sandboxMode: sandboxDecision.selection,

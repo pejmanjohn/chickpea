@@ -16,11 +16,13 @@ immediately; ordinary socket renewal keeps the same installation authority.
 
 ## What is stored
 
-Outbound file uploads pass through the gateway in memory as base64 inside a
-signed JSON request. Its 1 MiB request limit includes that encoding and metadata,
-so keep individual files below 700 KiB for this transport. Chickpea rejects an
-oversized encoded request before sending it; using your own Slack app retains
-the 8 MiB artifact limit.
+Outbound file bytes do not pass through the gateway. Your deployment asks the
+gateway for Slack's pre-signed upload ticket (a file ID and upload URL for an
+exact byte length, up to Slack's 1 GB limit), sends the bytes to Slack itself, and asks the
+gateway to complete the file. The gateway sees the filename, length, and ticket
+in transient memory and retains none of them. A gateway version without upload
+tickets falls back to carrying the file as base64 inside the signed JSON
+request, whose 1 MiB limit keeps such files below 700 KiB.
 
 | Location | Data | Retention |
 |---|---|---|

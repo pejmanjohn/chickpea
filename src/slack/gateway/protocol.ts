@@ -40,6 +40,7 @@ const GATEWAY_SLACK_OPERATIONS = [
   'assistant.threads.setTitle',
   'chickpea.files.getImage',
   'chickpea.files.stage',
+  'files.getUploadURLExternal',
   'chickpea.files.getShare',
   'files.uploadV2',
   'files.completeUploadExternal',

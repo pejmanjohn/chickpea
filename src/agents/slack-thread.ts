@@ -28,6 +28,7 @@ import {
   type ActivityToolDescriptor,
 } from '../activity/status.ts';
 import {
+  activityStatus,
   genericSemanticDescriptor,
   semanticDescriptorForCoreTool,
   unknownSemanticDescriptor,
@@ -163,6 +164,7 @@ import {
   POST_ARTIFACT_TOOL_NAME,
   type SlackArtifactStageInput,
   type SlackArtifactStageOutcome,
+  isStreamedFile,
 } from '../sandbox/artifact-tool.ts';
 import {
   createImageArtifactTool,
@@ -178,6 +180,11 @@ import { answerScreenshotQuestion } from '../browser/look.ts';
 import { createLazyBrowserProvider, useBrowserSession } from '../browser/runtime.ts';
 import { recordBrowserSessionUsage, resolveBrowserSettings } from '../browser/settings.ts';
 import { browserSkillForPlan } from '../browser/skill.ts';
+import { listWebsiteLogins, websiteLoginDependencies } from '../browser/logins.ts';
+import { createSlackRequesterNotifier, type SlackRequester } from '../browser/requester.ts';
+import type { BrowserApprovalOptions } from '../browser/approval.ts';
+import type { BrowserLoginOptions } from '../browser/binding.ts';
+import { BROWSER_APPROVAL_ACTIVITY } from '../browser/messages.ts';
 import { createBrowserTools } from '../browser/tools.ts';
 import { BrowserTurnSession } from '../browser/turn-session.ts';
 import { resolveModelApiKeyForStatelessCall } from '../config/provider-keys.ts';
@@ -241,11 +248,13 @@ import { useChickpeaResponseMetadata } from '../usage/response-metadata.ts';
 import { bootstrapRuntimeProviders } from '../runtime-bootstrap.ts';
 import {
   buildRuntimePlanActivityContext,
+  compileWebsiteLogins,
   parseRuntimePlanV2,
   type RuntimePlanApiConnectionV2,
   type RuntimePlanModelCredentialV3,
   type RuntimePlanRepositoryV2,
   type RuntimePlanV2,
+  type RuntimePlanWebsiteLoginV1,
 } from './runtime-plan.ts';
 
 bootstrapRuntimeProviders();
@@ -1065,6 +1074,8 @@ export async function createSlackAgentRuntime(
     // Legacy assembly has no settled-reply receipt channel, so it keeps the
     // immediate app-identity upload. Hook-mounted plans stage instead.
     const stageArtifact = async (input: SlackArtifactStageInput): Promise<SlackArtifactStageOutcome> => {
+      // The immediate upload holds the whole file; a streamed file has no place here.
+      if (isStreamedFile(input.bytes)) return { attached: false, reason: 'unavailable', detail: 'transport_unsupported' };
       const result = await postArtifact({
         channel: channelId,
         threadTs: artifactThreadTs,
@@ -1426,7 +1437,7 @@ function runtimePlanRepositoryOwner(repository: RuntimePlanRepositoryV2): string
  * sandbox-derived workspace skill last so no stored Agent skill can hide it.
  */
 export function runtimePlanSkills(
-  plan: Pick<RuntimePlanV2, 'apiConnections' | 'repositories' | 'skills' | 'sandbox' | 'browserCapability'>,
+  plan: Pick<RuntimePlanV2, 'apiConnections' | 'repositories' | 'skills' | 'sandbox' | 'browserCapability' | 'websiteLogins'>,
   options: { browser?: boolean } = {},
 ): ReturnType<typeof resolveProfileSkills> {
   const agentSkills = plan.skills.map((entry) => ({ ...entry, enabled: true }));
@@ -1530,6 +1541,21 @@ export function useRuntimePlanAgent(
     ].join('\n'));
   }
   const browserSession = browserMounted ? useBrowserSession(id, createRuntimePlanBrowserSession) : undefined;
+  // The delivery's verified Slack signal, parsed once for the two uses below.
+  const browserSignal = browserSession && plan.websiteLogins?.length
+    ? runtimePlanSlackSignal(plan)
+    : undefined;
+  // A sign-in hand-off link goes privately to the verified Slack requester;
+  // a turn without one (a scheduled run) cannot hand off.
+  const browserRequester = browserSignal ? runtimePlanBrowserRequester(browserSignal) : undefined;
+  // Data-changing steps on a login granted `act` wait for the verified Slack
+  // requester's "approve"; a turn without one (a scheduled run) cannot ask.
+  const browserApprovals = browserSignal && plan.websiteLogins?.some(({ level }) => level === 'act')
+    ? runtimePlanBrowserApprovals(plan, browserSignal, () => {
+        const [kind, action, object] = BROWSER_APPROVAL_ACTIVITY;
+        publishActivityStatus(id, activityStatus(kind, action, object));
+      })
+    : undefined;
   for (const skill of runtimePlanSkills(plan, { browser: browserMounted })) {
     useSkill(skill);
   }
@@ -1570,7 +1596,14 @@ export function useRuntimePlanAgent(
       plan,
       artifactAccumulator,
       writeArtifactReceipts,
-      { imageInventory, reserveImageCall, fileCompletion, ...(browserSession ? { browserSession } : {}) },
+      {
+        imageInventory,
+        reserveImageCall,
+        fileCompletion,
+        ...(browserSession ? { browserSession } : {}),
+        ...(browserRequester ? { browserRequester } : {}),
+        ...(browserApprovals ? { browserApprovals } : {}),
+      },
     )) {
       useTool(tool);
     }
@@ -1862,14 +1895,15 @@ export function createRuntimePlanArtifactTools(
   options: RuntimePlanArtifactToolOptions = {},
 ) {
   let transport: Promise<SlackFileTransport> | undefined;
+  let installationClient: Promise<SlackInstallationClient> | undefined;
   const destination = {
     workspaceId: plan.conversation.workspaceId,
     agentId: plan.agentId,
     channelId: plan.artifactDestination.channelId,
     ...(plan.artifactDestination.threadTs ? { threadTs: plan.artifactDestination.threadTs } : {}),
   };
-  const resolveFileTransport = (): Promise<SlackFileTransport> => {
-    transport ??= (async () => {
+  const resolveInstallationClient = (): Promise<SlackInstallationClient> => {
+    installationClient ??= (async () => {
       const env = await resolveAgentPlatformEnv();
       const installation = await resolveSlackInstallationExecutionContext(
         plan.conversation.workspaceId,
@@ -1880,8 +1914,16 @@ export function createRuntimePlanArtifactTools(
           credentialDependencies: getSlackCredentialResolutionDependencies(env),
         },
       );
-      return createSlackFileTransport(installation.client);
+      return installation.client;
     })();
+    // A failed resolve is retried by the next caller.
+    installationClient.catch(() => {
+      installationClient = undefined;
+    });
+    return installationClient;
+  };
+  const resolveFileTransport = (): Promise<SlackFileTransport> => {
+    transport ??= (async () => createSlackFileTransport(await resolveInstallationClient()))();
     return transport;
   };
   const binding = {
@@ -1956,9 +1998,29 @@ export function createRuntimePlanArtifactTools(
   const browserSession = plan.browserCapability && !options.fileCompletion?.repairing
     ? options.browserSession
     : undefined;
+  const websiteLogins = plan.websiteLogins ?? [];
+  const requester = options.browserRequester;
   const browserTools = browserSession
     ? createBrowserTools({
         session: browserSession,
+        ...(websiteLogins.length > 0 ? { logins: runtimePlanBrowserLogins(plan, websiteLogins) } : {}),
+        ...(requester && websiteLogins.length > 0
+          ? {
+              notifyRequester: createSlackRequesterNotifier({
+                requester,
+                surface: plan.conversation.surface,
+                ...(plan.artifactDestination.threadTs ? { threadTs: plan.artifactDestination.threadTs } : {}),
+                client: async () => {
+                  const client = await resolveInstallationClient();
+                  return {
+                    postMessage: (args) => client.chat.postMessage(args as never),
+                    postEphemeral: (args) => client.chat.postEphemeral(args as never),
+                  };
+                },
+              }),
+            }
+          : {}),
+        ...(options.browserApprovals ? { approvals: options.browserApprovals } : {}),
         stageArtifact: binding.stageArtifact,
         transportMaxBytes: async () => (await resolveFileTransport()).maxBytes,
         // Same route as the image tool's inspection: the frozen chat model
@@ -1979,6 +2041,79 @@ export function createRuntimePlanArtifactTools(
       ? [createImageArtifactTool(imageOptions), createRecoverImageTool(imageOptions)] : []),
     ...browserTools,
   ];
+}
+
+type SlackInstallationClient = Awaited<ReturnType<typeof resolveSlackInstallationExecutionContext>>['client'];
+
+type RuntimePlanSlackSignal = NonNullable<ReturnType<typeof parseSlackManagementSignal>>;
+
+/**
+ * The current delivery's host-authored Slack signal for this plan's
+ * conversation, or undefined when there is none (a scheduled run) or it does
+ * not verify.
+ */
+function runtimePlanSlackSignal(plan: RuntimePlanV2): RuntimePlanSlackSignal | undefined {
+  try {
+    return parseSlackManagementSignal(useDelivery(), plan) ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The Slack person a browser hand-off link may reach: the verified requester of the delivery. */
+function runtimePlanBrowserRequester(signal: RuntimePlanSlackSignal): SlackRequester {
+  return {
+    slackUserId: signal.slackUserId,
+    channelId: signal.channelId,
+    ...(signal.conversationKind ? { conversationKind: signal.conversationKind } : {}),
+  };
+}
+
+/**
+ * Where a data-changing browser step waits for approval: the verified Slack
+ * requester, conversation, and Agent of the current delivery, and the
+ * message it answers, which is what an admission-time "approve" binds to.
+ */
+function runtimePlanBrowserApprovals(
+  plan: RuntimePlanV2,
+  signal: RuntimePlanSlackSignal,
+  onAwaitingApproval: () => void,
+): BrowserApprovalOptions {
+  return {
+    scope: {
+      workspaceId: signal.workspaceId,
+      channelId: signal.channelId,
+      threadTs: signal.threadTs,
+      agentId: plan.agentId,
+      actorSlackUserId: signal.slackUserId,
+      ...(plan.actorMembershipId ? { actorMembershipId: plan.actorMembershipId } : {}),
+    },
+    messageTs: signal.messageTs,
+    settings: async () => getSettingsStore(await resolveAgentPlatformEnv()),
+    onAwaitingApproval,
+  };
+}
+
+/**
+ * The website-login seams for the browser tools. The plan's frozen logins are
+ * the ceiling; the Agent's live grants, joined with current login metadata,
+ * apply revocations at call time. Secrets stay in the login store until the
+ * sign-in tool reads them.
+ */
+function runtimePlanBrowserLogins(
+  plan: RuntimePlanV2,
+  granted: readonly RuntimePlanWebsiteLoginV1[],
+): BrowserLoginOptions {
+  return {
+    granted,
+    readLive: async () => {
+      const env = await resolveAgentPlatformEnv();
+      const agent = await getConfigStore(env).getAgent(plan.agentId);
+      if (!agent.enabled) return [];
+      return compileWebsiteLogins(agent.websiteLogins, await listWebsiteLogins(getSettingsStore(env)));
+    },
+    dependencies: async () => websiteLoginDependencies(await resolveAgentPlatformEnv()),
+  };
 }
 
 /**
@@ -2025,6 +2160,10 @@ export interface RuntimePlanArtifactToolOptions {
   resolveImageClient?: (() => Promise<ImageClientResolution>) | undefined;
   /** The response's browser session, from `useBrowserSession`; absent, no browser tools mount. */
   browserSession?: BrowserTurnSession | undefined;
+  /** The verified Slack requester a browser sign-in hand-off link may reach. */
+  browserRequester?: SlackRequester | undefined;
+  /** Where data-changing browser steps wait for the requester's approval. */
+  browserApprovals?: BrowserApprovalOptions | undefined;
 }
 
 /**

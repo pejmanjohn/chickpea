@@ -12,6 +12,11 @@ import {
   type BrowserToolsOptions,
 } from '../src/browser/tools.ts';
 import { BrowserTurnSession } from '../src/browser/turn-session.ts';
+import { createWebsiteLogin, getWebsiteLogin, type WebsiteLogin } from '../src/browser/logins.ts';
+import { BrowserProviderError, type BrowserProvider } from '../src/browser/provider.ts';
+import { browserHandoffMessage, createSlackRequesterNotifier } from '../src/browser/requester.ts';
+import { SqliteSettingsStore } from '../src/config/settings-store.ts';
+import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
 import type { SlackArtifactStageInput, SlackArtifactStageOutcome } from '../src/sandbox/artifact-tool.ts';
 import { FakeCdpSocket, fakeBrowserProvider } from './helpers/fake-cdp-socket.ts';
 
@@ -117,7 +122,7 @@ function setup(overrides: Partial<BrowserToolsOptions> & {
   return { browser, session, staged, fetched, ended, tools, run };
 }
 
-test('the browser toolset exposes the six tools in a stable order', () => {
+test('the browser toolset exposes its eight tools in a stable order', () => {
   const { tools } = setup();
   assert.deepEqual(tools.map((tool) => tool.name), [...BROWSER_TOOL_NAMES]);
   for (const tool of tools) assert.match(tool.description, /./);
@@ -188,18 +193,18 @@ test('browser_act refuses data-changing actions without touching the page', asyn
   const output = await run('browser_act', { ref: 'e1', action: 'click', mayChangeData: true });
   assert.deepEqual(output, {
     refused: true,
-    reason: 'Changing data on websites is not available yet. This version can read and navigate only.',
+    reason: 'Public websites are read-only: changing data needs a website login that allows actions. Tell the person what they can do themselves.',
   });
   assert.equal(browser.sent.length, 0);
   assert.equal(session.active, false);
 });
 
-test('a session whose policy allows changes lets a data-changing action through', async () => {
+test('a public session stays read-only even when its policy is lifted', async () => {
   const { run, browser, session } = setup({ readOnly: false });
   await run('browser_open', { url: 'https://example.com/pricing' });
   const output = await run('browser_act', { ref: 'e1', action: 'click', mayChangeData: true });
-  assert.equal(output.refused, undefined);
-  assert.ok(browser.methods().includes('Input.dispatchMouseEvent'));
+  assert.equal(output.refused, true);
+  assert.ok(!browser.methods().includes('Input.dispatchMouseEvent'));
   await session.close();
 });
 
@@ -269,7 +274,7 @@ test('browser_screenshot stages a PNG image with its caption', async () => {
   assert.equal(staged.length, 1);
   assert.equal(staged[0]!.kind, 'image');
   assert.equal(staged[0]!.title, 'Broken pricing table');
-  assert.deepEqual([...staged[0]!.bytes], [...PNG_BYTES]);
+  assert.deepEqual([...(staged[0]!.bytes as Uint8Array)], [...PNG_BYTES]);
   await session.close();
 
   const denied = setup({ stage: () => ({ attached: false, reason: 'missing-scope' }) });
@@ -296,6 +301,30 @@ test('browser_recording ends the session, downloads the recording, and stages an
   const again = await run('browser_recording');
   assert.equal(again.attached, false);
   assert.match(again.error, /No browser session is open/);
+});
+
+test('browser_recording streams a download with a known length instead of holding it in memory', async () => {
+  const chunks = [new Uint8Array([1, 2, 3]), new Uint8Array([4, 5])];
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(chunk);
+      controller.close();
+    },
+  });
+  const { run, staged } = setup({
+    maxBytes: 1_000_000_000,
+    recordingResponse: () => new Response(body, { headers: { 'content-length': '5' } }),
+  });
+  await run('browser_open', { url: 'https://example.com/pricing' });
+  const output = await run('browser_recording');
+  assert.equal(output.attached, true);
+  assert.equal(output.byteLength, 5);
+  const content = staged[0]!.bytes;
+  assert.ok(!(content instanceof Uint8Array), 'a known-length download is passed as a stream');
+  assert.equal((content as { byteLength: number }).byteLength, 5);
+  const received: number[] = [];
+  for await (const chunk of (content as { stream: ReadableStream<Uint8Array> }).stream) received.push(...chunk);
+  assert.deepEqual(received, [1, 2, 3, 4, 5]);
 });
 
 test('browser_recording reports too-large without staging', async () => {
@@ -369,4 +398,676 @@ test('a missing key surfaces the not-connected message', async () => {
     log: { info() {}, warn() {}, error() {} },
   });
   assert.deepEqual(result.output, { error: 'The browser is not connected. Ask an Admin to connect it in Settings › Browser.' });
+});
+
+// ---------------------------------------------------------------------------
+// Website logins (S2)
+// ---------------------------------------------------------------------------
+
+const PASSWORD = 'pw-Sentinel-9f3c-plaintext';
+const USERNAME = 'octo@example.com';
+// RFC 6238 seed; at the fixed test clock (2026-09-22T14:05Z) the code is computed by the tool.
+const TOTP_SEED = 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ';
+const LIVE_VIEW_URL = 'https://www.browserbase.com/devtools-fullscreen/inspector.html?wss=connect.browserbase.com/debug/s/devtools&secret=lv-sentinel';
+
+const LOGIN_TREE: AXNode[] = [
+  ax('1', 'RootWebArea', { childIds: ['2', '3', '4', '5'] }),
+  ax('2', 'textbox', { parentId: '1', label: 'Email', backendDOMNodeId: 11 }),
+  ax('3', 'textbox', { parentId: '1', label: 'Password', backendDOMNodeId: 12 }),
+  ax('4', 'textbox', { parentId: '1', label: 'Authentication code', backendDOMNodeId: 13 }),
+  ax('5', 'button', { parentId: '1', label: 'Sign in', backendDOMNodeId: 14 }),
+];
+
+/** A login page that echoes whatever was typed into it, in its text and URL. */
+class EchoingLoginBrowser extends ScriptedBrowser {
+  inserted: string[] = [];
+  constructor() {
+    super();
+    this.tree = LOGIN_TREE;
+    this.responders.set('Input.insertText', (message) => {
+      this.inserted.push(String(message.params.text));
+      this.tree = [
+        ...LOGIN_TREE.slice(0, 1).map((node) => ({ ...node, childIds: [...node.childIds!, '9'] })),
+        ...LOGIN_TREE.slice(1),
+        ax('9', 'StaticText', { parentId: '1', label: `You typed ${this.inserted.join(' and ')}` }),
+      ];
+      this.url = `https://github.com/session?echo=${encodeURIComponent(this.inserted.join(','))}`;
+      this.title = `Welcome ${this.inserted.at(-1)}`;
+      return { result: {} };
+    });
+  }
+}
+
+async function loginSetup(options: {
+  provider?: Partial<BrowserProvider>;
+  notify?: boolean;
+  withLogins?: boolean;
+  settings?: SqliteSettingsStore;
+} = {}) {
+  const settings = options.settings ?? new SqliteSettingsStore(':memory:');
+  const deps = { store: settings, keyring: generateCredentialKeyring('browser_tools_test') };
+  const existing = await import('../src/browser/logins.ts').then((m) => m.listWebsiteLogins(settings));
+  const github = existing.find((login) => login.host === 'github.com') ?? await createWebsiteLogin(deps, {
+    host: 'github.com', label: 'GitHub', ownerKind: 'team', createdByMembershipId: 'mem_owner',
+    method: 'credentials', username: USERNAME, password: PASSWORD, totpSeed: TOTP_SEED,
+  });
+  const portal = existing.find((login) => login.host === 'portal.example.com') ?? await createWebsiteLogin(deps, {
+    host: 'portal.example.com', label: 'Portal', ownerKind: 'team', createdByMembershipId: 'mem_owner', method: 'handoff',
+  });
+  const frozen = (login: WebsiteLogin) => ({
+    id: login.id, host: login.host, label: login.label, level: 'check' as const, method: login.method,
+    ...(login.username ? { username: login.username } : {}),
+  });
+  const granted = [frozen(github), frozen(portal)];
+  const state = { live: [...granted], reads: 0 };
+  const browsers: EchoingLoginBrowser[] = [];
+  const fake = fakeBrowserProvider({
+    async liveView() {
+      return { fullscreenUrl: LIVE_VIEW_URL, url: 'https://debug.example/', pages: [] };
+    },
+    ...options.provider,
+  });
+  let contexts = 0;
+  if (!options.provider?.createContext) {
+    fake.provider.createContext = async () => ({ id: `ctx-${(contexts += 1)}` });
+  }
+  const session = new BrowserTurnSession({
+    provider: fake.provider,
+    connect: async () => {
+      const browser = new EchoingLoginBrowser();
+      browsers.push(browser);
+      return browser;
+    },
+    sleep: async () => undefined,
+  });
+  const notices: Array<{ text: string }> = [];
+  const warnings: unknown[] = [];
+  const tools = createBrowserTools({
+    session,
+    stageArtifact: async (input) => ({ attached: true, byteLength: input.bytes.byteLength }),
+    transportMaxBytes: async () => undefined,
+    sleep: async () => undefined,
+    now: () => new Date(Date.UTC(2026, 8, 22, 14, 5)),
+    log: { warn: (...args: unknown[]) => { warnings.push(args); } },
+    ...(options.withLogins === false ? {} : {
+      logins: { granted, readLive: async () => { state.reads += 1; return state.live; }, dependencies: async () => deps },
+    }),
+    ...(options.notify === false ? {} : { notifyRequester: async (message: { text: string }) => { notices.push(message); } }),
+  });
+  const byName = new Map(tools.map((tool) => [tool.name, tool]));
+  const run = async (name: string, data: Record<string, unknown> = {}): Promise<any> => {
+    const tool = byName.get(name)!;
+    const parsed = v.parse(tool.input as v.GenericSchema, data);
+    const result = await (tool.run as (context: unknown) => Promise<{ output: unknown }>)({
+      data: parsed, toolCallId: 'call_1', log: { info() {}, warn() {}, error() {} },
+    });
+    return JSON.parse(JSON.stringify(result.output));
+  };
+  return { settings, deps, github, portal, granted, state, browsers, session, notices, warnings, run, ...fake };
+}
+
+test('browser_open binds a granted host and its subdomains, and switches sessions when the site changes', async () => {
+  const { run, created, ended, github, portal, settings, session } = await loginSetup();
+  const first = await run('browser_open', { url: 'https://github.com/settings/profile' });
+  assert.deepEqual(first.login, { id: github.id, label: 'GitHub', host: 'github.com', method: 'credentials', level: 'check' });
+  assert.deepEqual(created[0], {
+    recording: true, viewport: { width: 1280, height: 800 }, timeoutSeconds: 660,
+    contextId: 'ctx-1', persistContext: true, allowedDomains: ['github.com'],
+  });
+  // The context is created once and remembered on the login.
+  assert.equal((await getWebsiteLogin(settings, github.id))?.contextId, 'ctx-1');
+  // A subdomain of the login host stays in the same bound session.
+  const gist = await run('browser_open', { url: 'gist.github.com/octo' });
+  assert.equal(gist.login.id, github.id);
+  assert.equal(created.length, 1);
+  // A public site ends the bound session and opens a public one.
+  const publicPage = await run('browser_open', { url: 'https://example.com/' });
+  assert.equal(publicPage.login, undefined);
+  assert.deepEqual(ended, ['sess-1']);
+  assert.equal(created[1]?.contextId, undefined);
+  // A different login's site switches again, with its own context.
+  const portalPage = await run('browser_open', { url: 'https://portal.example.com/home' });
+  assert.equal(portalPage.login.id, portal.id);
+  assert.deepEqual(ended, ['sess-1', 'sess-2']);
+  assert.equal(created[2]?.contextId, 'ctx-2');
+  assert.equal(session.binding?.loginId, portal.id);
+  // Look-alike hosts and other ports are not the login's site.
+  assert.equal((await run('browser_open', { url: 'https://notgithub.com/' })).login, undefined);
+  assert.equal((await run('browser_open', { url: 'https://github.com:8443/' })).login, undefined);
+  // A search never binds.
+  assert.equal((await run('browser_open', { url: 'github login page' })).login, undefined);
+  await session.close();
+});
+
+test('browser_open reuses a stored context, and a loginId must match the site', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const firstTurn = await loginSetup({ settings });
+  await firstTurn.run('browser_open', { url: 'https://github.com/' });
+  await firstTurn.session.close();
+  const secondTurn = await loginSetup({ settings, provider: { createContext: async () => { throw new Error('should reuse'); } } });
+  await secondTurn.run('browser_open', { url: 'https://github.com/' });
+  assert.equal(secondTurn.created[0]?.contextId, 'ctx-1');
+  const wrong = await secondTurn.run('browser_open', { url: 'https://example.com/', loginId: secondTurn.github.id });
+  assert.match(wrong.error, /That login is for github\.com/);
+  const unknown = await secondTurn.run('browser_open', { url: 'https://github.com/', loginId: 'wl_nope' });
+  assert.match(unknown.error, /no website login with that id/);
+  await secondTurn.session.close();
+});
+
+test('a grant revoked mid-turn refuses the site and closes its signed-in browser when it is next bound', async () => {
+  const { run, state, github, ended, session } = await loginSetup();
+  await run('browser_open', { url: 'https://github.com/' });
+  state.live = state.live.filter(({ id }) => id !== github.id);
+  // Reading the open page does not re-check grants.
+  assert.ok((await run('browser_snapshot')).snapshot);
+  const reopened = await run('browser_open', { url: 'https://github.com/' });
+  assert.match(reopened.error, /access to that website login was removed.*browser was closed/);
+  assert.deepEqual(ended, ['sess-1']);
+  assert.equal(session.active, false);
+  assert.match((await run('browser_open', { url: 'https://github.com/' })).error, /access to that website login was removed/);
+  assert.match((await run('browser_sign_in', { loginId: github.id, passwordRef: 'e2' })).error, /access to that website login was removed/);
+  assert.match((await run('browser_handoff', { loginId: github.id, reason: 'x' })).error, /access to that website login was removed/);
+});
+
+test('live grants are read once at mount and again only to bind, sign in, or claim', async () => {
+  const { run, state, github, session } = await loginSetup();
+  await run('browser_open', { url: 'https://github.com/' });
+  // Mount intersection, then the binding check.
+  assert.equal(state.reads, 2);
+  await run('browser_snapshot');
+  await run('browser_screenshot');
+  await run('browser_act', { ref: 'e5', action: 'hover' });
+  assert.equal(state.reads, 2);
+  await run('browser_sign_in', { loginId: github.id, passwordRef: 'e3' });
+  assert.equal(state.reads, 3);
+  // Opening another page on the bound site re-checks once.
+  await run('browser_open', { url: 'https://github.com/settings' });
+  assert.equal(state.reads, 4);
+  await session.close();
+});
+
+test('browser_sign_in types the stored secrets through fillSecret and never leaks them', async () => {
+  const { run, browsers, github, settings, session } = await loginSetup();
+  assert.equal((await getWebsiteLogin(settings, github.id))?.lastUsedAt, undefined);
+  await run('browser_open', { url: 'https://github.com/login' });
+  // Opening the site on its saved session already counts as a use.
+  assert.ok((await getWebsiteLogin(settings, github.id))?.lastUsedAt);
+  const result = await run('browser_sign_in', {
+    loginId: github.id, usernameRef: 'e1', passwordRef: 'e2', codeRef: 'e3', submitRef: 'e4',
+  });
+  const browser = browsers[0]!;
+  const [username, password, code] = browser.inserted;
+  assert.equal(username, USERNAME);
+  assert.equal(password, PASSWORD);
+  assert.match(code ?? '', /^\d{6}$/);
+  // Each value went in through focus + insertText on its own field.
+  const focused = browser.sent.filter((m) => m.method === 'DOM.focus').map((m) => m.params.backendNodeId);
+  assert.deepEqual(focused, [11, 12, 13]);
+  // Submitted by clicking the button (no Enter key needed).
+  assert.equal(browser.sent.filter((m) => m.method === 'Input.dispatchMouseEvent' && m.params.type === 'mousePressed').length, 1);
+  assert.equal(result.signedIn, 'unknown');
+  assert.match(result.note, /Judge from the page/);
+  const text = JSON.stringify(result);
+  assert.doesNotMatch(text, new RegExp(PASSWORD));
+  assert.doesNotMatch(text, new RegExp(code!));
+  assert.match(result.snapshot, /You typed octo@example\.com and \[redacted\] and \[redacted\]/);
+  assert.match(result.title, /\[redacted\]/);
+  // Later reads keep redacting for the rest of the turn.
+  assert.doesNotMatch(JSON.stringify(await run('browser_snapshot')), new RegExp(PASSWORD));
+  assert.ok((await getWebsiteLogin(settings, github.id))?.lastUsedAt);
+  await session.close();
+});
+
+test('browser_sign_in without a submit ref presses Enter in the last field, and errors stay redacted', async () => {
+  const { run, browsers, github, session } = await loginSetup();
+  await run('browser_open', { url: 'https://github.com/login' });
+  await run('browser_sign_in', { loginId: github.id, usernameRef: 'e1', passwordRef: 'e2' });
+  const browser = browsers[0]!;
+  const enter = browser.sent.filter((m) => m.method === 'Input.dispatchKeyEvent' && m.params.key === 'Enter');
+  assert.equal(enter.length, 2);
+  // The Enter went to the password field, the last one filled.
+  const focusedLast = browser.sent.filter((m) => m.method === 'DOM.focus').at(-1)?.params.backendNodeId;
+  assert.equal(focusedLast, 12);
+  // A failure whose message echoes the password is redacted.
+  browser.responders.set('DOM.getBoxModel', () => ({ error: { code: -1, message: `node ${PASSWORD} detached` } }));
+  browser.responders.set('Input.insertText', () => ({ error: { code: -1, message: `cannot insert ${PASSWORD}` } }));
+  await run('browser_snapshot');
+  const failed = await run('browser_sign_in', { loginId: github.id, passwordRef: 'e2' });
+  assert.ok(failed.error);
+  assert.doesNotMatch(JSON.stringify(failed), new RegExp(PASSWORD));
+  await session.close();
+});
+
+test('browser_sign_in refuses without a bound session, without fields, and for hand-off logins', async () => {
+  const { run, github, portal, session } = await loginSetup();
+  assert.match((await run('browser_sign_in', { loginId: github.id, passwordRef: 'e2' })).error, /Open github\.com with browser_open first/);
+  await run('browser_open', { url: 'https://example.com/' });
+  assert.match((await run('browser_sign_in', { loginId: github.id, passwordRef: 'e2' })).error, /Open github\.com/);
+  await run('browser_open', { url: 'https://github.com/' });
+  assert.match((await run('browser_sign_in', { loginId: github.id })).error, /at least one sign-in field/);
+  assert.match((await run('browser_sign_in', { loginId: portal.id, passwordRef: 'e2' })).error, /Portal has no saved password.*browser_handoff/);
+  assert.match((await run('browser_sign_in', { loginId: 'wl_nope', passwordRef: 'e2' })).error, /no website login with that id/);
+  await session.close();
+});
+
+test('the sign-in tools explain when the Agent has no website logins', async () => {
+  const { run, session } = await loginSetup({ withLogins: false });
+  assert.match((await run('browser_sign_in', { loginId: 'wl_x', passwordRef: 'e1' })).error, /no website logins/);
+  assert.match((await run('browser_handoff', { loginId: 'wl_x', reason: 'x' })).error, /no website logins/);
+  // Browsing is unchanged: a would-be login host opens publicly.
+  const opened = await run('browser_open', { url: 'https://github.com/' });
+  assert.equal(opened.login, undefined);
+  assert.equal(opened.title, 'Example Pricing');
+  await session.close();
+});
+
+test('browser_handoff sends a private live-view link, detaches the session, and keeps the link out of outputs', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const { run, notices, created, ended, portal, session } = await loginSetup({ settings });
+  await run('browser_open', { url: 'https://portal.example.com/reports?q=1' });
+  const result = await run('browser_handoff', { loginId: portal.id, reason: 'The portal needs a person to sign in.' });
+  assert.deepEqual(result, {
+    handedOff: true,
+    host: 'portal.example.com',
+    note: 'Tell the person you have sent them a private sign-in link and that you will continue when they reply. End your reply now.',
+  });
+  assert.doesNotMatch(JSON.stringify(result), /lv-sentinel|browserbase\.com/);
+  // The bound browsing session ended; the hand-off session is kept alive and detached.
+  assert.deepEqual(ended, ['sess-1']);
+  assert.equal(created[1]?.keepAlive, true);
+  assert.equal(created[1]?.timeoutSeconds, 600);
+  assert.equal(created[1]?.contextId, created[0]?.contextId);
+  assert.equal(session.active, false);
+  assert.equal(await session.close(), undefined);
+  assert.deepEqual(ended, ['sess-1']);
+  assert.equal((await getWebsiteLogin(settings, portal.id))?.handoffSessionId, 'sess-2');
+  assert.equal(notices.length, 1);
+  assert.equal(notices[0]!.text, browserHandoffMessage('portal.example.com', LIVE_VIEW_URL));
+  assert.match(notices[0]!.text, /^portal\.example\.com needs you to sign in before I can continue\. <https:\/\/www\.browserbase\.com\/.*&amp;secret=lv-sentinel\|Open the browser> and sign in; it stays open for 10 minutes/);
+  // Browsing that site again this turn waits for the person.
+  assert.match((await run('browser_open', { url: 'https://portal.example.com/' })).error, /already sent the person a private sign-in link/);
+  assert.match((await run('browser_handoff', { loginId: portal.id, reason: 'again' })).error, /already sent/);
+
+  // The next turn ends the kept-alive session first so its sign-in is saved.
+  const next = await loginSetup({ settings });
+  await next.run('browser_open', { url: 'https://portal.example.com/' });
+  assert.deepEqual(next.ended, ['sess-2']);
+  assert.equal((await getWebsiteLogin(settings, portal.id))?.handoffSessionId, undefined);
+  await next.session.close();
+});
+
+test('browser_handoff continues from the page reached on that site', async () => {
+  const { run, browsers, portal } = await loginSetup();
+  await run('browser_open', { url: 'https://portal.example.com/reports?q=1' });
+  await run('browser_handoff', { loginId: portal.id, reason: 'sign in' });
+  const navigated = browsers[1]!.sent.find((m) => m.method === 'Page.navigate')?.params.url;
+  assert.equal(navigated, 'https://portal.example.com/reports?q=1');
+});
+
+test('browser_handoff refuses without keep-alive support or a requester, and cleans up a failed send', async () => {
+  const paid = await loginSetup({
+    provider: {
+      async createSession(options) {
+        if (options.keepAlive) {
+          throw new BrowserProviderError('Browserbase POST /v1/sessions returned 402: upgrade your plan to use keepAlive', 402);
+        }
+        return { id: 'sess-x', connectUrl: 'wss://connect.example/' };
+      },
+    },
+  });
+  const refused = await paid.run('browser_handoff', { loginId: paid.portal.id, reason: 'sign in' });
+  assert.match(refused.error, /needs a paid Browserbase plan/);
+  assert.equal(paid.notices.length, 0);
+
+  const scheduled = await loginSetup({ notify: false });
+  const noPerson = await scheduled.run('browser_handoff', { loginId: scheduled.portal.id, reason: 'sign in' });
+  assert.match(noPerson.error, /no person in this conversation/);
+  assert.equal(scheduled.created.length, 0);
+
+  const broken = await loginSetup();
+  const tools = createBrowserTools({
+    session: broken.session,
+    stageArtifact: async () => ({ attached: false, reason: 'unused' } as never),
+    transportMaxBytes: async () => undefined,
+    sleep: async () => undefined,
+    logins: { granted: broken.granted, readLive: async () => broken.state.live, dependencies: async () => broken.deps },
+    notifyRequester: async () => { throw new Error(`channel_not_found ${LIVE_VIEW_URL}`); },
+  });
+  const handoffTool = tools.find((tool) => tool.name === 'browser_handoff')!;
+  const failed = await (handoffTool.run as (context: unknown) => Promise<{ output: any }>)({
+    data: { loginId: broken.portal.id, reason: 'sign in' }, toolCallId: 'c', log: { info() {}, warn() {}, error() {} },
+  });
+  assert.match(failed.output.error, /could not be sent/);
+  assert.doesNotMatch(JSON.stringify(failed.output), /lv-sentinel/);
+  // The kept-alive session was ended rather than left open.
+  assert.deepEqual(broken.ended, ['sess-1']);
+  assert.equal(broken.session.active, false);
+});
+
+test('the requester notifier posts ephemerally in channels and group DMs, and directly only in a 1:1 DM', async () => {
+  const calls: Array<[string, Record<string, unknown>]> = [];
+  const client = {
+    postMessage: async (args: Record<string, unknown>) => { calls.push(['postMessage', args]); },
+    postEphemeral: async (args: Record<string, unknown>) => { calls.push(['postEphemeral', args]); },
+  };
+  const requester = { slackUserId: 'U123', channelId: 'C999' };
+  await createSlackRequesterNotifier({
+    requester: { ...requester, conversationKind: 'channel' }, surface: 'channel_thread', threadTs: '1.2', client: async () => client,
+  })({ text: 'hi' });
+  await createSlackRequesterNotifier({
+    requester: { ...requester, channelId: 'D1', conversationKind: 'im' }, surface: 'direct_message', client: async () => client,
+  })({ text: 'hi' });
+  await createSlackRequesterNotifier({
+    requester: { ...requester, channelId: 'G1', conversationKind: 'mpim' }, surface: 'direct_message', threadTs: '3.4', client: async () => client,
+  })({ text: 'hi' });
+  await createSlackRequesterNotifier({
+    requester: { ...requester, channelId: 'D2' }, surface: 'direct_message', client: async () => client,
+  })({ text: 'hi' });
+  assert.deepEqual(calls, [
+    ['postEphemeral', { channel: 'C999', user: 'U123', text: 'hi', thread_ts: '1.2' }],
+    ['postMessage', { channel: 'D1', text: 'hi', unfurl_links: false, unfurl_media: false }],
+    ['postEphemeral', { channel: 'G1', user: 'U123', text: 'hi', thread_ts: '3.4' }],
+    ['postEphemeral', { channel: 'D2', user: 'U123', text: 'hi' }],
+  ]);
+});
+
+// ---------------------------------------------------------------------------
+// Login levels and approval before data-changing steps (S3)
+// ---------------------------------------------------------------------------
+
+const FORM_TREE: AXNode[] = [
+  ax('1', 'RootWebArea', { childIds: ['2', '3', '4', '5'] }),
+  ax('2', 'textbox', { parentId: '1', label: 'Customer name', backendDOMNodeId: 21 }),
+  ax('3', 'button', { parentId: '1', label: 'Cancel', backendDOMNodeId: 22 }),
+  ax('4', 'button', { parentId: '1', label: 'Confirm change', backendDOMNodeId: 23 }),
+  ax('5', 'link', { parentId: '1', label: 'Help', backendDOMNodeId: 24 }),
+];
+// The same page in a new session: another element first, so every ref shifts.
+const FORM_TREE_SHIFTED: AXNode[] = [
+  ax('1', 'RootWebArea', { childIds: ['9', '2', '3', '4', '5'] }),
+  ax('9', 'link', { parentId: '1', label: 'Skip to content', backendDOMNodeId: 30 }),
+  ...FORM_TREE.slice(1),
+];
+const TURN_1_TS = '1800000001.000100';
+const TURN_2_TS = '1800000002.000100';
+
+class FormBrowser extends ScriptedBrowser {
+  inserted: string[] = [];
+  redirectTo: string | undefined;
+  constructor(tree: AXNode[]) {
+    super();
+    this.tree = tree;
+    const navigate = this.responders.get('Page.navigate')!;
+    this.responders.set('Page.navigate', (message) => {
+      const reply = navigate(message);
+      if (this.redirectTo) this.url = this.redirectTo;
+      return reply;
+    });
+    this.responders.set('Input.insertText', (message) => {
+      this.inserted.push(String(message.params.text));
+      return { result: {} };
+    });
+    this.responders.set('DOM.getBoxModel', (message) => {
+      const id = Number(message.params.backendNodeId);
+      return { result: { model: { content: [id, id, id + 2, id, id + 2, id + 2, id, id + 2] } } };
+    });
+  }
+  /** Backend node ids of elements clicked, by their box centre. */
+  clicked(): number[] {
+    return this.sent
+      .filter((m) => m.method === 'Input.dispatchMouseEvent' && m.params.type === 'mousePressed')
+      .map((m) => Number(m.params.x) - 1);
+  }
+}
+
+async function actTurn(options: {
+  settings: SqliteSettingsStore;
+  messageTs: string;
+  level?: 'check' | 'act';
+  liveLevel?: 'check' | 'act';
+  tree?: AXNode[];
+  /** Adjust a browser as soon as the session connects to it. */
+  prepare?: (browser: FormBrowser) => void;
+  redirectTo?: string;
+  approvals?: boolean;
+}) {
+  const deps = { store: options.settings, keyring: generateCredentialKeyring('browser_tools_test') };
+  const existing = await import('../src/browser/logins.ts').then((m) => m.listWebsiteLogins(options.settings));
+  const billing = existing.find((login) => login.host === 'billing.example.com') ?? await createWebsiteLogin(deps, {
+    host: 'billing.example.com', label: 'Billing', ownerKind: 'team', createdByMembershipId: 'mem_owner', method: 'handoff',
+  });
+  const granted = [{ id: billing.id, host: billing.host, label: billing.label, level: options.level ?? 'act', method: billing.method }];
+  const live = [{ ...granted[0]!, level: options.liveLevel ?? options.level ?? 'act' }];
+  const fake = fakeBrowserProvider();
+  fake.provider.createContext = async () => ({ id: 'ctx-billing' });
+  const browsers: FormBrowser[] = [];
+  const session = new BrowserTurnSession({
+    provider: fake.provider,
+    connect: async () => {
+      const browser = new FormBrowser(options.tree ?? FORM_TREE);
+      if (options.redirectTo) browser.redirectTo = options.redirectTo;
+      options.prepare?.(browser);
+      browsers.push(browser);
+      return browser;
+    },
+    sleep: async () => undefined,
+  });
+  const staged: SlackArtifactStageInput[] = [];
+  let waiting = 0;
+  let liveReads = 0;
+  const tools = createBrowserTools({
+    session,
+    stageArtifact: async (input) => {
+      staged.push(input);
+      return { attached: true, byteLength: input.bytes.byteLength };
+    },
+    transportMaxBytes: async () => undefined,
+    sleep: async () => undefined,
+    now: () => new Date(Date.UTC(2026, 8, 22, 14, 5)),
+    logins: { granted, readLive: async () => { liveReads += 1; return live; }, dependencies: async () => deps },
+    ...(options.approvals === false ? {} : {
+      approvals: {
+        scope: {
+          workspaceId: 'T_TEST', channelId: 'C_TEST', threadTs: '1800000000.000100', agentId: 'agent_ops',
+          actorSlackUserId: 'U_ASKER', actorMembershipId: 'membership_asker',
+        },
+        messageTs: options.messageTs,
+        settings: async () => options.settings,
+        onAwaitingApproval: () => { waiting += 1; },
+      },
+    }),
+  });
+  const byName = new Map(tools.map((tool) => [tool.name, tool]));
+  const run = async (name: string, data: Record<string, unknown> = {}): Promise<any> => {
+    const tool = byName.get(name)!;
+    const parsed = v.parse(tool.input as v.GenericSchema, data);
+    const result = await (tool.run as (context: unknown) => Promise<{ output: unknown }>)({
+      data: parsed, toolCallId: 'call_1', log: { info() {}, warn() {}, error() {} },
+    });
+    return JSON.parse(JSON.stringify(result.output));
+  };
+  return { run, session, browsers, staged, billing, waiting: () => waiting, liveReads: () => liveReads, ...fake };
+}
+
+async function approveFromSlack(settings: SqliteSettingsStore, messageTs: string) {
+  const { resolveBrowserActionReply } = await import('../src/browser/actions.ts');
+  return resolveBrowserActionReply({
+    settings,
+    word: 'approve',
+    scope: {
+      workspaceId: 'T_TEST', channelId: 'C_TEST', threadTs: '1800000000.000100', agentId: 'agent_ops',
+      actorSlackUserId: 'U_ASKER', actorMembershipId: 'membership_asker',
+    },
+    messageTs,
+    now: Date.UTC(2026, 8, 22, 14, 6),
+  });
+}
+
+test('a check-only login keeps its session read-only and names the site in the refusal', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const turn = await actTurn({ settings, messageTs: TURN_1_TS, level: 'check' });
+  const opened = await turn.run('browser_open', { url: 'https://billing.example.com/plan' });
+  assert.equal(opened.login.level, 'check');
+  assert.equal(turn.session.policy.readOnly, true);
+  const output = await turn.run('browser_act', { ref: 'e3', action: 'click', mayChangeData: true });
+  assert.deepEqual(output, {
+    refused: true,
+    reason: 'This login allows checking only. Ask an Admin to allow actions on billing.example.com if this step should be taken.',
+  });
+  assert.deepEqual(turn.browsers[0]!.clicked(), []);
+  await turn.session.close();
+});
+
+test('an action login holds a data-changing step for approval with a screenshot, then takes it once after approval', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const ask = await actTurn({ settings, messageTs: TURN_1_TS });
+  const opened = await ask.run('browser_open', { url: 'https://billing.example.com/plan' });
+  assert.equal(opened.login.level, 'act');
+  assert.equal(ask.session.policy.readOnly, false);
+  // Filling a field is not data-changing and happens right away.
+  await ask.run('browser_act', { ref: 'e1', action: 'type', text: 'Ada Lovelace' });
+  assert.deepEqual(ask.browsers[0]!.inserted, ['Ada Lovelace']);
+
+  const readsBeforeAsking = ask.liveReads();
+  const held = await ask.run('browser_act', { ref: 'e3', action: 'click', mayChangeData: true });
+  // Asking relies on the grants read at mount and binding.
+  assert.equal(ask.liveReads(), readsBeforeAsking);
+  assert.deepEqual(Object.keys(held).sort(), ['actionId', 'awaitingApproval', 'description', 'instruction']);
+  assert.equal(held.awaitingApproval, true);
+  assert.match(held.actionId, /^[a-f0-9]{32}$/);
+  assert.equal(held.description, 'click "Confirm change"');
+  assert.equal(held.instruction, 'Ask the person to reply exactly "approve" in this thread to let you take this step, or "stop". End your reply after asking.');
+  assert.deepEqual(ask.browsers[0]!.clicked(), [21], 'only the field was clicked; the button waits');
+  assert.equal(ask.staged.length, 1);
+  assert.equal(ask.staged[0]!.kind, 'image');
+  assert.equal(ask.staged[0]!.title, 'About to: click "Confirm change"');
+  assert.match(ask.staged[0]!.filename, /\.jpg$/);
+  assert.deepEqual([...(ask.staged[0]!.bytes as Uint8Array)], [...JPEG_BYTES]);
+  assert.equal(ask.waiting(), 1);
+  // Approval in this same turn is not possible: the person has not replied yet.
+  assert.match((await ask.run('browser_act', { ref: 'e3', action: 'click', approvedActionId: held.actionId })).error, /has not approved/);
+  await ask.session.close();
+
+  // The person replies "approve"; the next turn reopens the page in a new
+  // session where every ref has shifted, restores the typed name, and clicks
+  // the same button by its role and name.
+  assert.deepEqual(await approveFromSlack(settings, TURN_2_TS), { kind: 'approved', id: held.actionId });
+  const approved = await actTurn({ settings, messageTs: TURN_2_TS, tree: FORM_TREE_SHIFTED });
+  const done = await approved.run('browser_act', { ref: 'e3', action: 'click', approvedActionId: held.actionId });
+  assert.equal(done.approvedStepTaken, 'click "Confirm change"');
+  // One live read covers the claim and binding the new session.
+  assert.equal(approved.liveReads(), 1);
+  assert.match(done.snapshot, /button "Confirm change" \[ref=e4\]/);
+  const browser = approved.browsers[0]!;
+  assert.ok(browser.sent.some((m) => m.method === 'Page.navigate' && m.params.url === 'https://billing.example.com/plan'));
+  assert.deepEqual(browser.inserted, ['Ada Lovelace']);
+  assert.deepEqual(browser.clicked(), [21, 23]);
+  assert.equal(approved.created[0]?.contextId, 'ctx-billing');
+  // Spent: a second use is refused and nothing more is clicked.
+  assert.match((await approved.run('browser_act', { ref: 'e4', action: 'click', approvedActionId: held.actionId })).error, /already used/);
+  assert.deepEqual(browser.clicked(), [21, 23]);
+  await approved.session.close();
+});
+
+test('an approved step waits for its element when the reopened page is still rendering', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const ask = await actTurn({ settings, messageTs: TURN_1_TS });
+  await ask.run('browser_open', { url: 'https://billing.example.com/plan' });
+  const held = await ask.run('browser_act', { ref: 'e3', action: 'click', mayChangeData: true });
+  await ask.session.close();
+  await approveFromSlack(settings, TURN_2_TS);
+
+  // The button is absent from the first snapshot after reopening and present from the second.
+  let snapshots = 0;
+  const turn = await actTurn({
+    settings,
+    messageTs: TURN_2_TS,
+    tree: FORM_TREE.filter((node) => node.nodeId !== '4'),
+    prepare: (browser) => {
+      const fullTree = browser.responders.get('Accessibility.getFullAXTree')!;
+      browser.responders.set('Accessibility.getFullAXTree', (message) => {
+        snapshots += 1;
+        if (snapshots === 2) browser.tree = FORM_TREE;
+        return fullTree(message);
+      });
+    },
+  });
+  const output = await turn.run('browser_act', { ref: 'e3', action: 'click', approvedActionId: held.actionId });
+  const browser = turn.browsers[0]!;
+  assert.equal(output.approvedStepTaken, 'click "Confirm change"');
+  assert.deepEqual(browser.clicked(), [23]);
+  await turn.session.close();
+  settings.close();
+});
+
+test('an approved step is refused when the page changed, moved host, expired, or the grant was lowered', async () => {
+  const setupHeld = async () => {
+    const settings = new SqliteSettingsStore(':memory:');
+    const ask = await actTurn({ settings, messageTs: TURN_1_TS });
+    await ask.run('browser_open', { url: 'https://billing.example.com/plan' });
+    const held = await ask.run('browser_act', { ref: 'e3', action: 'click', mayChangeData: true });
+    await ask.session.close();
+    await approveFromSlack(settings, TURN_2_TS);
+    return { settings, held };
+  };
+
+  // The button is gone from the page.
+  {
+    const { settings, held } = await setupHeld();
+    const turn = await actTurn({ settings, messageTs: TURN_2_TS, tree: FORM_TREE.filter((node) => node.nodeId !== '4') });
+    const output = await turn.run('browser_act', { ref: 'e3', action: 'click', approvedActionId: held.actionId });
+    assert.equal(output.error, 'The page changed since approval; take a new snapshot and ask again if the step is still right.');
+    assert.deepEqual(turn.browsers[0]!.clicked(), []);
+    await turn.session.close();
+  }
+  // The recorded URL now lands on another host.
+  {
+    const { settings, held } = await setupHeld();
+    const turn = await actTurn({ settings, messageTs: TURN_2_TS, redirectTo: 'https://sso.other-host.example/login' });
+    const output = await turn.run('browser_act', { ref: 'e3', action: 'click', approvedActionId: held.actionId });
+    assert.equal(output.error, 'The page changed since approval; take a new snapshot and ask again if the step is still right.');
+    assert.deepEqual(turn.browsers[0]!.clicked(), []);
+    await turn.session.close();
+  }
+  // The grant was lowered to checking only after approval.
+  {
+    const { settings, held } = await setupHeld();
+    const turn = await actTurn({ settings, messageTs: TURN_2_TS, liveLevel: 'check' });
+    const output = await turn.run('browser_act', { ref: 'e3', action: 'click', approvedActionId: held.actionId });
+    assert.match(output.error, /This login allows checking only/);
+    assert.equal(turn.session.active, false);
+  }
+  // Expired before the approved turn ran.
+  {
+    const { settings, held } = await setupHeld();
+    const raw = await settings.getSetting(`browseraction_${held.actionId}`);
+    await settings.setSetting(`browseraction_${held.actionId}`, JSON.stringify({ ...JSON.parse(raw!), expiresAt: 1 }));
+    const turn = await actTurn({ settings, messageTs: TURN_2_TS });
+    const output = await turn.run('browser_act', { ref: 'e3', action: 'click', approvedActionId: held.actionId });
+    assert.match(output.error, /approval expired/);
+    assert.equal(turn.session.active, false);
+  }
+  // Another message's turn cannot use the approval.
+  {
+    const { settings, held } = await setupHeld();
+    const turn = await actTurn({ settings, messageTs: '1800000003.000100' });
+    const output = await turn.run('browser_act', { ref: 'e3', action: 'click', approvedActionId: held.actionId });
+    assert.match(output.error, /has not approved/);
+  }
+});
+
+test('a data-changing step without a person to ask, or after a live downgrade, is refused', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const scheduled = await actTurn({ settings, messageTs: TURN_1_TS, approvals: false });
+  await scheduled.run('browser_open', { url: 'https://billing.example.com/plan' });
+  assert.match((await scheduled.run('browser_act', { ref: 'e3', action: 'click', mayChangeData: true })).error, /no person in this conversation to approve/);
+  assert.deepEqual(scheduled.staged, []);
+  await scheduled.session.close();
+
+  const lowered = await actTurn({ settings, messageTs: TURN_1_TS, liveLevel: 'check' });
+  await lowered.run('browser_open', { url: 'https://billing.example.com/plan' });
+  const output = await lowered.run('browser_act', { ref: 'e3', action: 'click', mayChangeData: true });
+  assert.equal(output.refused, true);
+  assert.match(output.reason, /checking only/);
+  await lowered.session.close();
 });
