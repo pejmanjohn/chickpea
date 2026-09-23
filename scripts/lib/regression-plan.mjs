@@ -72,7 +72,12 @@ export function createRegressionPlan({ mode = 'changed', areas = [], files = [],
   const missing = requestedTests.filter((file) => !testFiles.includes(file));
   if (missing.length) throw new Error(`Regression inventory is stale: ${missing.join(', ')}`);
   const steps = [];
-  const npm = (script) => steps.push({ kind: 'npm', script });
+  const npm = (script, args) => steps.push(args ? { kind: 'npm', script, args } : { kind: 'npm', script });
+  // Cheapest and most likely to fail first: source hygiene (manifest policy,
+  // leak scan, release manifest, lockfile) takes seconds and runs in every
+  // plan, including documentation-only changes. Release scans committed HEAD;
+  // iteration scans the index and working tree.
+  npm('verify:hygiene', mode === 'release' ? undefined : ['--working-tree']);
   const hasChecks = fullTests || requestedTests.length > 0;
   if (hasChecks) {
     npm('build');
@@ -84,24 +89,20 @@ export function createRegressionPlan({ mode = 'changed', areas = [], files = [],
   }
   const broad = mode !== 'changed' || noSelection || fullTests;
   const includes = (...values) => values.some((area) => selected.has(area));
-  if (broad || includes('releases')) npm('verify:release');
-  if (broad || includes('delivery')) steps.push({ kind: 'node', file: 'scripts/verify-flue-offline-turn.mjs' });
-  if (broad || includes('delivery', 'memory')) npm('verify:durability');
-  if (broad || includes('routines')) {
-    npm('verify:node-scheduler-offline');
-    npm('verify:node-scheduler-capability');
-  }
-  if (broad || includes('providers', 'connections')) npm('verify:providers');
+  // Then the evaluators that finish in seconds, the offline runtime checks,
+  // and finally the two long process-level proofs.
+  if (broad || includes('routines')) npm('verify:node-scheduler-capability');
   if (broad || includes('agents', 'routines', 'skills')) npm('evaluate:agent-authoring');
   if (broad || includes('routines')) npm('evaluate:schedule-contract');
   if (broad || includes('admin')) npm('verify:admin-ui');
+  if (broad || includes('providers', 'connections')) npm('verify:providers');
+  if (broad || includes('delivery')) steps.push({ kind: 'node', file: 'scripts/verify-flue-offline-turn.mjs' });
+  if (broad || includes('delivery', 'memory')) npm('verify:durability');
+  if (broad || includes('routines')) npm('verify:node-scheduler-offline');
   if (fullTests || includes('auth')) npm('verify:cf-smoke');
-  if (mode === 'release') {
-    npm('verify:lockfile-integrity');
-    npm('verify:oss-export');
-  }
-  // Retain artifact restoration, workerd, Admin and authoring checks. The
-  // export already installs/builds/tests HEAD and runs these offline checks.
+  if (mode === 'release') npm('verify:oss-export');
+  // Retain hygiene, artifact restoration, workerd, Admin and authoring checks.
+  // The export installs/builds/tests HEAD and runs these offline checks once.
   const selectedSteps = mode === 'release' ? steps.filter((step) => !SOURCE_EXPORT_CHECKS.includes(
     step.kind === 'npm' ? `npm:${step.script}` : step.file,
   )) : steps;

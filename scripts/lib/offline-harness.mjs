@@ -8,9 +8,9 @@
  */
 import { execFileSync, spawn } from 'node:child_process';
 import { createHmac } from 'node:crypto';
-import { createServer } from 'node:net';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { reserveVerificationPort } from './verification-ports.mjs';
 
 export const REPO_ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const VITE_BIN = join(REPO_ROOT, 'node_modules', '.bin', 'vite');
@@ -181,15 +181,9 @@ export function buildNodeServer(outputDir = 'dist') {
   });
 }
 
+/** A loopback port reserved for this process; see verification-ports.mjs. */
 export function getFreePort() {
-  return new Promise((resolve, reject) => {
-    const server = createServer();
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      const { port } = server.address();
-      server.close((err) => (err ? reject(err) : resolve(port)));
-    });
-  });
+  return reserveVerificationPort();
 }
 
 export function signedHeaders(rawBody, { tamper = false } = {}) {
@@ -293,10 +287,11 @@ export async function waitForReady(child, eventsUrl, getOutput, timeoutMs = 25_0
 /**
  * Allocate a port, spawn the server on it, and wait until it answers.
  *
- * `getFreePort` probes a port by binding and releasing it, so another process
- * can take the port before the child binds it. When the child exits with
- * EADDRINUSE, stop it and try again on a fresh port instead of failing the
- * whole verification. Any other startup failure propagates unchanged.
+ * `getFreePort` reserves a port from a range no other verification process or
+ * outgoing connection should take, then bind-probes it; a foreign service can
+ * still appear before the child binds. When the child exits with EADDRINUSE,
+ * stop it and try again on a fresh port instead of failing the whole
+ * verification. Any other startup failure propagates unchanged.
  */
 export async function spawnReadyServer(options, {
   attempts = 3,

@@ -5,7 +5,7 @@ import test from 'node:test';
 // @ts-expect-error Executable helpers are JavaScript, shared with the CLI.
 import { createRegressionPlan } from '../scripts/lib/regression-plan.mjs';
 // @ts-expect-error Executable helpers are JavaScript, shared with the CLI.
-import { parseRegressionArgs, regressionEnvironment, runRegressionSteps } from '../scripts/verify-regression.mjs';
+import { isHygieneStep, parseRegressionArgs, regressionEnvironment, runRegressionSteps } from '../scripts/verify-regression.mjs';
 
 const testFiles = readdirSync(new URL('.', import.meta.url), { recursive: true })
   .map(String).filter((file) => file.endsWith('.test.ts')).map((file) => `tests/${file.replaceAll('\\', '/')}`);
@@ -35,9 +35,10 @@ test('unknown runtime changes and deleted tests broaden verification instead of 
   }
 });
 
-test('documentation changes skip runtime checks while an unspecified scope runs core regression', () => {
-  assert.deepEqual(createRegressionPlan({ files: ['README.md'], testFiles }).steps, []);
-  assert.ok(createRegressionPlan({ testFiles }).steps.length > 0);
+test('documentation changes run only source hygiene while an unspecified scope runs core regression', () => {
+  assert.deepEqual(createRegressionPlan({ files: ['README.md'], testFiles }).steps,
+    [{ kind: 'npm', script: 'verify:hygiene', args: ['--working-tree'] }]);
+  assert.ok(createRegressionPlan({ testFiles }).steps.length > 1);
   assert.ok(createRegressionPlan({ files: ['qa/live/operator/SKILL.md'], testFiles }).areas.includes('verification'));
 });
 
@@ -67,7 +68,10 @@ test('regression and release preserve distinct inventories and reject stale sele
   assert.equal(release.steps.at(-1).script, 'verify:oss-export');
   for (const script of ['test', 'verify:durability', 'verify:providers']) assert.equal(release.steps.some((step: any) => step.script === script), false);
   assert.equal(release.steps.some((step: any) => step.file === 'scripts/verify-flue-offline-turn.mjs'), false);
-  for (const script of ['build', 'verify:admin-ui', 'verify:cf-smoke', 'evaluate:agent-authoring', 'verify:lockfile-integrity']) assert.ok(release.steps.some((step: any) => step.script === script));
+  for (const script of ['build', 'verify:admin-ui', 'verify:cf-smoke', 'evaluate:agent-authoring', 'verify:node-scheduler-offline']) assert.ok(release.steps.some((step: any) => step.script === script));
+  // Hygiene (manifest policy, leak scan, release manifest, lockfile) replaces
+  // the separate verify:release and verify:lockfile-integrity steps.
+  for (const script of ['verify:release', 'verify:lockfile-integrity']) assert.equal(release.steps.some((step: any) => step.script === script), false);
   assert.throws(() => createRegressionPlan({ areas: ['routines'], testFiles: [] }), /inventory is stale/);
   assert.throws(() => createRegressionPlan({ mode: 'typo', testFiles }), /mode must/);
   assert.throws(() => createRegressionPlan({ areas: ['typo'], testFiles }), /Unknown area/);
@@ -86,6 +90,22 @@ test('offline execution clears live build selectors and overrides operator state
   for (const key of ['TAG_DB_PATH', 'SLACK_STATE_DB_PATH', 'CHICKPEA_AUTH_DB_PATH']) assert.equal(env[key], ':memory:');
   for (const key of ['CHICKPEA_DEPLOY_TARGET', 'CHICKPEA_DEPLOY_AUTH_DB_ID', 'CHICKPEA_LOCAL_STATE_PATH', 'CHICKPEA_ENV_TARGET', 'WRANGLER_CI_OVERRIDE_NAME', 'WORKERS_CI', 'CLOUDFLARE_ENV', 'NODE_OPTIONS', 'NODE_PATH']) assert.equal(env[key], undefined);
   assert.equal(env.TAG_REQUIRE_LOOPBACK, '1');
+});
+
+test('every plan starts with source hygiene and orders the rest cheapest first', () => {
+  const release = createRegressionPlan({ mode: 'release', testFiles });
+  assert.deepEqual(release.steps[0], { kind: 'npm', script: 'verify:hygiene' });
+  const order = release.steps.map((step: { script?: string }) => step.script);
+  assert.ok(order.indexOf('build') < order.indexOf('verify:admin-ui'));
+  assert.ok(order.indexOf('verify:admin-ui') < order.indexOf('verify:node-scheduler-offline'));
+  assert.ok(order.indexOf('verify:node-scheduler-offline') < order.indexOf('verify:cf-smoke'));
+  assert.ok(order.indexOf('verify:cf-smoke') < order.indexOf('verify:oss-export'));
+  for (const plan of [createRegressionPlan({ mode: 'regression', testFiles }), createRegressionPlan({ files: ['src/routines/scheduler.ts'], testFiles })]) {
+    assert.deepEqual(plan.steps[0], { kind: 'npm', script: 'verify:hygiene', args: ['--working-tree'] });
+    assert.equal(plan.steps.filter((step: { script?: string }) => step.script === 'verify:hygiene').length, 1);
+  }
+  assert.equal(isHygieneStep({ kind: 'npm', script: 'verify:hygiene' }), true);
+  assert.equal(isHygieneStep({ kind: 'npm', script: 'build' }), false);
 });
 
 test('checks run serially and preserve the first failure without replay', () => {

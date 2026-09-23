@@ -43,11 +43,31 @@ Merging or pushing does not deploy Chickpea or publish a release.
 
 ## Verification
 
+Every plan starts with `npm run verify:hygiene`: source hygiene in about two
+seconds with no install, build, or network. It checks the tracked manifest
+against the public-source policy (forbidden roots, private `docs/` shapes,
+the live-verifier inventory), that every tracked `docs/` file is deliberately
+un-ignored in `.gitignore`, the private-name leak scan, that a `git archive`
+of the commit reproduces every tracked byte, the release manifest and version
+agreement, lockfile integrity hashes, package metadata, the authentication
+export contract, and the npm pack manifest. Run it before every merge; install
+the tracked pre-push hook once so it runs for each pushed commit:
+
+```sh
+npm run hooks:install
+```
+
+`verify:hygiene -- --working-tree` scans the index with working-tree bytes for
+pre-commit iteration; `--revision SHA` scans any commit.
+
 For iteration, `npm run verify:regression -- --plan` selects checks from the
 branch and working changes. Run without `--plan` to execute them, or select
 `--area routines` and other named areas explicitly. `--mode regression` runs
 the fixed core checks; `--mode release` runs the full local sequence on clean
-committed source. These commands need no browser, live account, or OAuth.
+committed source. Steps run cheapest first: hygiene, build, typecheck and
+tests, the second-scale evaluators, the offline runtime checks, then the
+scheduler and workerd proofs. A documentation-only change runs hygiene alone.
+These commands need no browser, live account, or OAuth.
 Use `$chickpea-live-verification` for the corresponding real QA journeys.
 Its private [run record](qa/live/operator/records.md) can also capture offline
 checks with `verify:regression --record <private-run.json>`. Add `--reuse` only
@@ -75,6 +95,7 @@ runs the full suite and offline turn/durability/provider checks inside the clean
 export, so do not also run those as a second outer release gate.
 
 ```sh
+npm run verify:hygiene -- --working-tree
 npm run build
 TAG_DB_PATH=:memory: SLACK_STATE_DB_PATH=:memory: CHICKPEA_AUTH_DB_PATH=:memory: TAG_REQUIRE_LOOPBACK=1 npm test
 npm run verify:admin-ui
@@ -82,8 +103,17 @@ DO_NOT_TRACK=1 node scripts/verify-flue-offline-turn.mjs
 DO_NOT_TRACK=1 npm run verify:durability
 DO_NOT_TRACK=1 npm run verify:providers
 DO_NOT_TRACK=1 npm run verify:cf-smoke
-npm run verify:lockfile-integrity
 ```
+
+The root test suite runs through `scripts/run-tests.mjs` under 4-way
+concurrency. A file that fails, or that ends without reporting a single test,
+is rerun once alone; a file that then passes is logged as `RETRIED IN
+ISOLATION`, and a file that fails or stays silent twice fails the run. Local
+verification servers take loopback ports from `scripts/lib/verification-ports.mjs`:
+a fixed range outside the OS ephemeral range, locked per host under
+`~/.chickpea/verification-host/ports/`, so the suite's own connections cannot
+take a probed port back before a child binds it. Use it instead of probing
+`listen(0)` when a test starts a server in a child process.
 
 The offline verifiers use fake Slack/provider services and isolated local state.
 They do not require production credentials. `verify:cf-smoke` builds both
@@ -91,11 +121,15 @@ Cloudflare profiles and runs the core profile in local workerd; it takes several
 minutes. Each run uses a free local port and its own disposable temporary state;
 it does not reset an operator's local Worker state.
 
-After committing the proposed source, run `npm run verify:oss-export`. It checks
-an archive of **HEAD**, not uncommitted edits, installs from the lockfile, and
-runs tests, offline runtime checks, and a deployment dry run in a temporary
-directory. Private working documents must stay outside the public export;
-adding a public document requires updating the explicit export allowlist.
+After committing the proposed source, run `npm run verify:oss-export`. It runs
+hygiene on an archive of **HEAD**, not uncommitted edits, then installs from
+the lockfile and runs the build, the full suite, the offline runtime checks,
+and a deployment dry run inside that archive. Private working documents stay
+outside the public export: `docs/` is default-denied in `.gitignore`, so adding
+a public document means un-ignoring that exact file there (and listing it in
+`package.json#files` if the npm package should carry it). Private roots such as
+`docs/plans/` and private artifact shapes are refused by policy regardless, and
+the leak scan denies private names, local user paths, tokens, and binaries.
 
 Local automated checks cannot establish real Slack/provider acceptance.
 Changes to setup, authority, delivery, or persistence also need the relevant

@@ -5,6 +5,9 @@ import { dirname, relative, resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+// @ts-expect-error Executable helpers are JavaScript, shared with the verifiers.
+import { liveVerifierExportPolicy, publicSourceManifestFindings } from '../scripts/lib/source-export-policy.mjs';
+
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 
 function read(path: string): string {
@@ -55,37 +58,28 @@ test('npm package includes every public live verifier file and discovery entrypo
 });
 
 test('the explicit OSS verifier allowlist stays complete without admitting private artifacts', () => {
-  const policy = read('scripts/verify-oss-export.mjs').split('const liveVerifierExportPolicy =')[1]
-    ?.split('const forbiddenLiveVerifierArtifactPaths =')[0];
-  assert.ok(policy);
-  const paths = [...policy.matchAll(/exportPath\(([^)]+)\)/gu)]
-    .map((match) => [...match[1]!.matchAll(/'([^']+)'/gu)].map((part) => part[1]).join('/'))
-    .filter((path) => path.startsWith('qa/live/'));
+  const paths = [...liveVerifierExportPolicy.requiredPaths].filter((path: string) => path.startsWith('qa/live/'));
   assert.deepEqual(paths.sort(), filesBelow('qa/live'));
 });
 
 test('source privacy policy permits only the exact discoverable skill path', () => {
-  const script = read('scripts/verify-oss-export.mjs');
-  const roots = script.slice(script.indexOf('const forbiddenSourcePathRoots ='),
-    script.indexOf('const liveVerifierExportPolicy ='));
-  const policy = script.slice(script.indexOf('function assertPublicSourceManifest(entries)'),
-    script.indexOf('function isLiveVerifierPublicPath(path)'));
   // Run the real source-path filter without invoking the export/install pipeline.
-  const check = new Function(`
-    const exportPath = (...parts) => parts.join('/');
-    ${roots}
-    const forbiddenSourcePaths = new Set();
-    const allowedPublicDocs = new Set();
-    const allowedBinaryFiles = new Set();
-    const assertLiveVerifierSourcePolicy = () => {};
-    const fail = (message) => { throw new Error(message); };
-    ${policy}
-    return assertPublicSourceManifest;
-  `)() as (entries: Array<{ path: string }>) => void;
-  assert.doesNotThrow(() => check([{ path: '.agents/skills/chickpea-live-verification/SKILL.md' }]));
+  const forbidden = (path: string) => publicSourceManifestFindings([{ path }])
+    .filter((finding: string) => finding.startsWith(`${path}: `));
+  assert.deepEqual(forbidden('.agents/skills/chickpea-live-verification/SKILL.md'), []);
+  assert.deepEqual(forbidden('docs/runbooks/releasing.md'), []);
   for (const path of ['.agents/private.json', '.agents/skills/another/SKILL.md',
-    '.agents/skills/chickpea-live-verification/evidence.json', '.agents/skills/chickpea-live-verification/skill.md']) {
-    assert.throws(() => check([{ path }]), /forbidden public-source paths/u);
+    '.agents/skills/chickpea-live-verification/evidence.json', '.agents/skills/chickpea-live-verification/skill.md',
+    'tmp/notes.md', 'evidence/run.json', '.worktreeinclude']) {
+    assert.match(forbidden(path).join('\n'), /forbidden public-source path/u, path);
+  }
+  // docs/ has no hand-kept allowlist any more: private roots and artifact
+  // shapes are denied, the leak scan covers content, and .gitignore stays the
+  // deliberate per-file gate.
+  for (const path of ['docs/plans/2026-09-23-private-plan.md', 'docs/plans/evidence/run.json',
+    'docs/evidence/screenshot.txt', 'docs/private/notes.md', 'docs/runbooks/rehearsal.transcript.txt',
+    'docs/runbooks/lane.target.json', 'docs/runbooks/debug.log']) {
+    assert.match(forbidden(path).join('\n'), /under docs\/ is not public/u, path);
   }
 });
 

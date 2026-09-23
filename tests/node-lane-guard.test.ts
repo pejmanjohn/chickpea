@@ -97,6 +97,9 @@ test('OpenAI subscription verifier rejects remote plaintext HTTP before reading 
     env: { ...process.env },
   });
 
-  assert.equal(result.status, 1);
+  // A child that never started or was signalled reports `status: null`; say
+  // why, so a lost host race is diagnosable instead of `null !== 1`.
+  const detail = JSON.stringify({ error: result.error?.message, signal: result.signal, stderr: result.stderr.slice(-500) });
+  assert.equal(result.status, 1, `verifier exit status ${result.status}: ${detail}`);
   assert.match(result.stderr, /Node target must use HTTPS unless it is an explicit loopback host/);
 });
