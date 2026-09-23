@@ -34,6 +34,8 @@ function harness(input: {
   failIntentMutation?: boolean;
   startStreamError?: unknown;
   stopStreamError?: unknown;
+  /** Grants this many progressive appends, then reports an exhausted budget. */
+  appendReservations?: number;
   deleteError?: unknown;
   failRetirementReceipt?: boolean;
   sessionError?: unknown;
@@ -85,6 +87,7 @@ function harness(input: {
   let threadReplies: Array<Record<string, unknown>> = [];
   let threadRepliesComplete = true;
   let stream = 0;
+  let reservedAppends = 0;
   const client = {
     async apiCall(method: string, value: Record<string, unknown>) {
       calls.push({ method, input: value });
@@ -149,7 +152,13 @@ function harness(input: {
       }
       return store.transition(value);
     },
-    reserveSlackAppend: (workspaceId) => store.reserveAppend(workspaceId),
+    reserveSlackAppend: (workspaceId) => {
+      if (input.appendReservations !== undefined && reservedAppends >= input.appendReservations) {
+        return { outcome: 'exhausted', retryAt: clock + 60_000, budgetVersion: 0 };
+      }
+      reservedAppends += 1;
+      return store.reserveAppend(workspaceId);
+    },
     applySlackAppendCooldown: (workspaceId, retryAfterMs) =>
       store.applyAppendCooldown(workspaceId, retryAfterMs),
     matchFlueObservation: (instanceId, submissionId) => ({
@@ -446,6 +455,111 @@ test('file retirement must acquire the current presentation fence before touchin
   } finally { h.db.close(); }
 });
 
+const LONG_TRIAGE_ANSWER = [
+  '**GMAT Data Sufficiency drill has an incorrect answer key and a misleading explanation**',
+  '',
+  ...Array.from({ length: 30 }, (_, index) =>
+    `${index + 1}. **Finding ${index + 1}.** The drill's stored answer disagrees with the ` +
+    'worked solution, and the explanation cites a statement that the question never gives. ' +
+    'Learners who chose the correct option were marked wrong.'),
+].join('\n');
+
+async function streamFirstChunkThenDegrade(h: ReturnType<typeof harness>, answer: string) {
+  const relay = await prepareReceipt(h, {
+    instanceId: 'instance_degraded',
+    receipt: { submissionId: 'submission_degraded', acceptedAt: 'now', uid: 'uid' },
+    eligibility: { allowed: true, reason: 'safe_early_release' },
+  });
+  assert.ok(relay);
+  relay.onEvent({
+    type: 'message-started', conversationId: 'conversation',
+    submissionId: 'submission_degraded', messageId: 'message_degraded',
+    position: { batch: 1, index: 0 },
+  });
+  declareProgressiveIntent(relay, {
+    submissionId: 'submission_degraded',
+    messageId: 'message_degraded',
+  });
+  const firstBreak = answer.indexOf('\n\n') + 2;
+  relay.onEvent({
+    type: 'message-delta', conversationId: 'conversation', messageId: 'message_degraded',
+    kind: 'text', delta: answer.slice(0, firstBreak), position: { batch: 4, index: 0 },
+  });
+  // Let the first chunk open the stream before the rest of the answer arrives.
+  for (let turn = 0; turn < 100 && h.store.get(h.runId)?.stream.state !== 'streaming'; turn += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.equal(h.store.get(h.runId)?.stream.state, 'streaming');
+  relay.onEvent({
+    type: 'message-delta', conversationId: 'conversation', messageId: 'message_degraded',
+    kind: 'text', delta: answer.slice(firstBreak), position: { batch: 5, index: 0 },
+  });
+  relay.onEvent({
+    type: 'message-completed', conversationId: 'conversation', messageId: 'message_degraded',
+    position: { batch: 6, index: 0 },
+  });
+  await relay.closeAndDrain();
+}
+
+function markdownChunkText(input: Record<string, unknown>): string {
+  return ((input.chunks as Array<{ type: string; text?: string }> | undefined) ?? [])
+    .filter((chunk) => chunk.type === 'markdown_text')
+    .map((chunk) => chunk.text ?? '')
+    .join('');
+}
+
+test('finalize delivers the whole unstreamed suffix once after early degradation', async () => {
+  const h = harness({ schemaVersion: 3, appendReservations: 0 });
+  try {
+    await streamFirstChunkThenDegrade(h, LONG_TRIAGE_ANSWER);
+    const streamed = h.store.get(h.runId)!;
+    assert.equal(streamed.stream.state, 'streaming');
+    assert.ok(streamed.stream.acknowledgedByteLength > 0);
+    assert.equal(h.calls.some((call) => call.method === 'chat.appendStream'), false);
+
+    const events: Array<Record<string, unknown>> = [];
+    const result = await h.presentation.finalize(
+      LONG_TRIAGE_ANSWER, 'markdown', 'complete', observer(events),
+    );
+    await h.presentation.markCanonicalFinalized();
+    // A redelivered terminal must not write again.
+    assert.deepEqual(
+      await h.presentation.finalize(LONG_TRIAGE_ANSWER, 'markdown', 'complete', observer([])),
+      result,
+    );
+
+    const writes = h.calls.filter((call) => call.method.startsWith('chat.'));
+    assert.deepEqual(writes.map((call) => call.method), ['chat.startStream', 'chat.stopStream']);
+    const [start, stop] = writes;
+    // Slack rejects terminal chunks on a stream opened with markdown_text.
+    assert.equal(start!.input.markdown_text, undefined);
+    assert.equal(stop!.input.markdown_text, undefined);
+    assert.equal(
+      markdownChunkText(start!.input) + markdownChunkText(stop!.input),
+      LONG_TRIAGE_ANSWER,
+    );
+    const blocks = stop!.input.blocks as Array<{ type: string }>;
+    assert.deepEqual(blocks.map(({ type }) => type), ['context']);
+    assert.deepEqual(events.map((event) => [event.phase, event.outcome]), [
+      ['before', undefined],
+      ['after', 'delivered'],
+    ]);
+
+    assert.equal(h.store.get(h.runId)?.stream.state, 'finalized');
+    assert.equal(h.finalizationRecords.length, 1);
+    const record = h.finalizationRecords[0]!;
+    assert.equal(record.degradation, 'budget_exhausted');
+    assert.equal(record.acceptedBytes, streamed.stream.acknowledgedByteLength);
+    assert.equal(
+      record.terminalSuffixBytes,
+      Buffer.byteLength(LONG_TRIAGE_ANSWER) - streamed.stream.acknowledgedByteLength,
+    );
+    assert.equal(JSON.stringify(record).includes('GMAT'), false);
+  } finally {
+    h.db.close();
+  }
+});
+
 test('ordinary eligible answers start once, append ordered suffixes, and stop once', async () => {
   const h = harness({
     schemaVersion: 3,
@@ -515,7 +629,13 @@ test('ordinary eligible answers start once, append ordered suffixes, and stop on
     assert.equal(h.calls.filter((call) => call.method === 'chat.stopStream').length, 1);
     const visible = h.calls
       .filter((call) => call.method === 'chat.startStream' || call.method === 'chat.appendStream')
-      .map((call) => String(call.input.markdown_text ?? ''))
+      .flatMap((call) => {
+        // Slack fixes a stream's mode at start, so every write uses chunks.
+        assert.equal(call.input.markdown_text, undefined);
+        return (call.input.chunks as Array<{ type: string; text?: string }>)
+          .filter((chunk) => chunk.type === 'markdown_text')
+          .map((chunk) => chunk.text ?? '');
+      })
       .join('');
     assert.equal(visible, 'Hello progressive world.');
     assert.equal(h.store.get(h.runId)?.stream.state, 'finalized');

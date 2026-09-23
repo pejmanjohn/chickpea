@@ -60,6 +60,26 @@ Agent acceptance records separate, even when they establish the same method
 shape. Do not implement an attachment-update architecture solely because Slack
 accepted `file_ids`.
 
+### A stream's mode is fixed when it starts
+
+Verified on Cobalt on September 22, 2026 with exact-message
+`conversations.replies` readback after each stop:
+
+| Stream start | Terminal `chat.stopStream` | Result |
+| --- | --- | --- |
+| `markdown_text` | `chunks` (answer suffix) plus footer `blocks` | Rejected with `streaming_mode_mismatch`; nothing applied, and the reply stays at its streamed prefix |
+| `chunks` (task card only) | `chunks` with a 10 KB markdown suffix and task update, plus footer `blocks` | Whole answer, task card, and footer stored; `streaming_state: completed` |
+| `chunks` | `appendStream` chunks in three pieces, then `chunks` (task) plus `blocks` | Whole answer and footer stored |
+
+Every stream, progressive append, and terminal stop therefore uses `chunks`.
+Slack documents `blocks` as rendering after `chunks` on stop, and that held.
+A stream opened in `markdown_text` mode by an earlier build still finalizes
+through the existing recovery path: the rejected stop marks the stream
+unknown, and the retry stops it without chunks and replaces the whole message
+with `chat.update`. That replacement renders a bold title as plain text, and
+it failed on retry for a 12,000-character answer. Treat it as recovery, not
+the normal terminal path.
+
 ### Public message readback is a projection
 
 In the tested permalink replies, `conversations.replies` omitted `username`,
