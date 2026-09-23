@@ -284,7 +284,10 @@ export function createBrowserApprovalSteps(context: BrowserApprovalContext) {
         now: context.now().getTime(),
       });
     } catch (error) {
-      if (error instanceof BrowserActionError) return refuse(approvalErrorMessage(error));
+      if (error instanceof BrowserActionError) {
+        context.log?.warn('browser_act approval claim refused', { code: error.code });
+        return refuse(approvalErrorMessage(error));
+      }
       throw error;
     }
     const live = logins.liveReader();

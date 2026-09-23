@@ -177,25 +177,38 @@ export async function getBrowserAction(
  * The caller matches the reply text (slackBrowserActionReply). Returns
  * undefined when nothing is pending for exactly this scope.
  */
+export type BrowserActionReplyMiss = 'no_pending' | 'not_pending' | 'wrong_scope' | 'expired';
+
 export async function resolveBrowserActionReply(input: {
   settings: SettingsStore;
   word: 'approve' | 'stop';
   scope: BrowserActionScope;
   messageTs: string;
   now?: number;
-}): Promise<{ kind: 'approved' | 'stopped'; id: string } | undefined> {
+}): Promise<{ kind: 'approved' | 'stopped'; id: string } | { kind: 'none'; reason: BrowserActionReplyMiss }> {
   const { word } = input;
   const id = await input.settings.getSetting(threadKey(input.scope));
-  if (!id || !ID_PATTERN.test(id)) return undefined;
+  if (!id || !ID_PATTERN.test(id)) return { kind: 'none', reason: 'no_pending' };
   const now = input.now ?? Date.now();
+  let reason: BrowserActionReplyMiss = 'no_pending';
   const outcome = await updateRecord(input.settings, id, (record) => {
-    if (record.status !== 'pending' || !sameScope(record, input.scope)) return undefined;
-    if (record.expiresAt <= now) return { ...record, status: 'expired', updatedAt: now };
+    if (record.status !== 'pending') {
+      reason = 'not_pending';
+      return undefined;
+    }
+    if (!sameScope(record, input.scope)) {
+      reason = 'wrong_scope';
+      return undefined;
+    }
+    if (record.expiresAt <= now) {
+      reason = 'expired';
+      return { ...record, status: 'expired', updatedAt: now };
+    }
     return word === 'approve'
       ? { ...record, status: 'approved', approvedMessageTs: input.messageTs, updatedAt: now }
       : { ...record, status: 'consumed', updatedAt: now };
   });
-  if (!outcome || outcome.status === 'expired') return undefined;
+  if (!outcome || outcome.status === 'expired') return { kind: 'none', reason };
   return { kind: word === 'approve' ? 'approved' : 'stopped', id };
 }
 

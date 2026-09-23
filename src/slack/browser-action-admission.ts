@@ -37,7 +37,12 @@ export async function admitSlackBrowserActionReply(input: {
     messageTs: turn.messageTs,
     ...(input.now === undefined ? {} : { now: input.now }),
   }).catch(() => undefined);
-  if (!answer) return false;
+  console.info('[chickpea] browser_action.reply', {
+    word,
+    outcome: answer?.kind ?? 'error',
+    ...(answer?.kind === 'none' ? { reason: answer.reason } : {}),
+  });
+  if (!answer || answer.kind === 'none') return false;
   if (answer.kind === 'approved') turn.approvedBrowserActionId = answer.id;
   turn.interactionIntent = { disposition: 'reply', reason: 'substantive_request' };
   return true;

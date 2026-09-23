@@ -72,13 +72,13 @@ test('a pending action is approved by the same person in the same thread, then c
     { ...SCOPE, agentId: 'agent_other' },
     { ...SCOPE, channelId: 'C_OTHER' },
   ]) {
-    assert.equal(await resolveBrowserActionReply({ settings, word: 'approve', scope, messageTs: '1800000001.000100', now: T0 + 1 }), undefined);
+    assert.equal((await resolveBrowserActionReply({ settings, word: 'approve', scope, messageTs: '1800000001.000100', now: T0 + 1 })).kind, 'none');
   }
 
   const answer = await resolveBrowserActionReply({ settings, word: 'approve', scope: SCOPE, messageTs: '1800000001.000100', now: T0 + 1 });
   assert.deepEqual(answer, { kind: 'approved', id: record.id });
   // A second "approve" finds nothing pending.
-  assert.equal(await resolveBrowserActionReply({ settings, word: 'approve', scope: SCOPE, messageTs: '1800000002.000100', now: T0 + 2 }), undefined);
+  assert.deepEqual(await resolveBrowserActionReply({ settings, word: 'approve', scope: SCOPE, messageTs: '1800000002.000100', now: T0 + 2 }), { kind: 'none', reason: 'not_pending' });
 
   // Only the turn for the approving message may claim it, and only once.
   await assert.rejects(
@@ -113,7 +113,7 @@ test('stop spends a pending action, and a newer question replaces the older one'
   );
   assert.equal((await getBrowserAction(settings, second.id))?.status, 'consumed');
   assert.equal((await getBrowserAction(settings, first.id))?.status, 'pending');
-  assert.equal(await resolveBrowserActionReply({ settings, word: 'approve', scope: SCOPE, messageTs: '1800000002.000100', now: T0 + 2 }), undefined);
+  assert.deepEqual(await resolveBrowserActionReply({ settings, word: 'approve', scope: SCOPE, messageTs: '1800000002.000100', now: T0 + 2 }), { kind: 'none', reason: 'not_pending' });
   await assert.rejects(
     claimApprovedBrowserAction({ settings, id: first.id, scope: SCOPE, messageTs: '1800000002.000100', now: T0 + 2 }),
     (error: unknown) => error instanceof BrowserActionError && error.code === 'not_approved',
@@ -124,9 +124,9 @@ test('stop spends a pending action, and a newer question replaces the older one'
 test('actions expire after 15 minutes, before or after approval, and the sweep clears settled records', async () => {
   const settings = new SqliteSettingsStore(':memory:');
   const late = await pending(settings);
-  assert.equal(
+  assert.deepEqual(
     await resolveBrowserActionReply({ settings, word: 'approve', scope: SCOPE, messageTs: '1800000001.000100', now: T0 + BROWSER_ACTION_TTL_MS }),
-    undefined,
+    { kind: 'none', reason: 'expired' },
   );
   assert.equal((await getBrowserAction(settings, late.id))?.status, 'expired');
 
