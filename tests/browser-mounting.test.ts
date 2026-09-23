@@ -115,7 +115,7 @@ test('the browser skill lists granted websites and the sign-in rules', () => {
   }
   // An action login adds the approval loop: ask, end the reply, continue with the actionId.
   assert.match(skill.instructions, /## Taking actions/);
-  for (const phrase of [/mayChangeData set to true/, /reply "approve" in this thread/, /or "stop"\. Then end your reply/,
+  for (const phrase of [/mayChangeData set to true/, /reply "approve" in this thread/, /or "stop"\. End your reply/,
     /approvedActionId set to that actionId/, /An approval covers one step only/]) {
     assert.match(skill.instructions, phrase);
   }

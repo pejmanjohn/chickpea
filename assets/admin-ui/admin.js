@@ -990,6 +990,21 @@
     lastRenderedPath = renderedPath;
     var app = document.getElementById("app");
     if (app.removeAttribute) app.removeAttribute("aria-busy");
+    // A background render (a list refresh, a window focus revalidation) must
+    // not pull focus out of the field a person is typing into in the add-login
+    // dialog: remember it and its caret, and put them back below.
+    var websiteLoginTyping = null;
+    if (state.websiteLoginDialog && !state.websiteLoginDialog.focus && document.activeElement &&
+        document.activeElement.id && document.activeElement.closest &&
+        document.activeElement.closest('[data-role="website-login-dialog"]')) {
+      var typingField = document.activeElement;
+      websiteLoginTyping = { id: typingField.id, start: null, end: null, direction: "none" };
+      try {
+        websiteLoginTyping.start = typingField.selectionStart;
+        websiteLoginTyping.end = typingField.selectionEnd == null ? typingField.selectionStart : typingField.selectionEnd;
+        websiteLoginTyping.direction = typingField.selectionDirection || "none";
+      } catch (error) { /* not a text field */ }
+    }
     var overlays = installationDialogHtml() + teamConfirmModalHtml() + composioSetupModalHtml() + managedAuthorizationModalHtml() + connectorSettingsConfirmModalHtml() + leavePromptModalHtml() + connectionRemoveModalHtml() + apiConnectionRemoveModalHtml() + slackDisconnectModalHtml() + githubDisconnectModalHtml() + sandboxConfirmModalHtml() + agentScheduleDeleteModalHtml() + websiteLoginDialogHtml() + scheduledRoutineSummaryModalHtml() + scheduledDeleteModalHtml();
     if (state.view === "onboarding") {
       app.className = "frame onboarding-frame";
@@ -1096,6 +1111,15 @@
       if (!websiteLoginFocusId && state.websiteLoginDialog.error) websiteLoginFocusId = "website-login-error";
       var websiteLoginFocus = websiteLoginFocusId ? document.getElementById(websiteLoginFocusId) : null;
       if (websiteLoginFocus && websiteLoginFocus.focus) websiteLoginFocus.focus();
+      else if (websiteLoginTyping) {
+        var typingAgain = document.getElementById(websiteLoginTyping.id);
+        if (typingAgain && typingAgain.focus) {
+          try { typingAgain.focus({ preventScroll: true }); } catch (error) { typingAgain.focus(); }
+          if (websiteLoginTyping.start != null && typingAgain.setSelectionRange) {
+            try { typingAgain.setSelectionRange(websiteLoginTyping.start, websiteLoginTyping.end, websiteLoginTyping.direction); } catch (error) { /* ignore */ }
+          }
+        }
+      }
     }
     if (state.scheduledSelection && !state.scheduledInspector && !state.scheduledDeleteConfirm) {
       [document.querySelector(".topbar"), document.querySelector(".body")].forEach(function (region) {
@@ -6531,8 +6555,7 @@
         '<button type="button" class="btn btn-ghost btn-sm" data-action="website-login-remove-keep"' + (removing ? " disabled" : "") + '>Keep</button>' +
         '<button type="button" class="btn btn-danger btn-sm" data-action="website-login-remove-confirm" data-login-id="' + esc(login.loginId) + '"' + (removing ? " disabled" : "") + '>' + (removing ? "Removing&hellip;" : "Remove") + '</button></div>'
       : "";
-    return '<article class="agent-schedule-row website-login-row"><div class="agent-schedule-copy"><div class="agent-schedule-heading"><span class="agent-schedule-name">' + esc(login.host) + '</span>' +
-      (login.ownerKind === "team" ? '<span class="badge-src">Team login</span>' : "") + '</div>' +
+    return '<article class="agent-schedule-row website-login-row"><div class="agent-schedule-copy"><div class="agent-schedule-heading"><span class="agent-schedule-name">' + esc(login.host) + '</span></div>' +
       '<div class="agent-schedule-meta">' + meta + '</div>' +
       (acts ? '<p class="hint">' + WEBSITE_LOGIN_ACT_HINT + '</p>' : "") +
       (levelError ? '<p class="field-error" role="alert">' + esc(levelError) + '</p>' : "") +
@@ -6635,7 +6658,6 @@
       host: "",
       label: "",
       method: "credentials",
-      ownerKind: WORKSPACE_ADMIN_UI ? "team" : "member",
       username: "",
       password: "",
       totpSeed: "",
@@ -6680,8 +6702,7 @@
     var agentName = String(draft && draft.name || "This Agent").trim() || "This Agent";
     var dis = dialog.busy ? " disabled" : "";
     var handoff = dialog.method === "handoff";
-    var canTeam = WORKSPACE_ADMIN_UI;
-    return '<div class="modal-backdrop"><div class="modal-card managed-setup-modal" style="max-height: calc(100dvh - 40px); overflow: auto;" role="dialog" aria-modal="true" aria-labelledby="website-login-title" aria-describedby="website-login-sub" tabindex="-1" data-role="website-login-dialog">' +
+    return '<div class="modal-backdrop"><div class="modal-card website-login-dialog" role="dialog" aria-modal="true" aria-labelledby="website-login-title" aria-describedby="website-login-sub" tabindex="-1" data-role="website-login-dialog">' +
       '<div><h2 class="modal-title" id="website-login-title">Add a website login</h2>' +
       '<p class="modal-body" id="website-login-sub">' + esc(agentName) + ' will sign in here when a task needs it. You can change what it may do at any time.</p></div>' +
       '<div class="form-grid">' +
@@ -6697,11 +6718,6 @@
       (handoff ? "" :
         '<div class="field"><label class="field-label" for="website-login-password">Password</label><input class="input" id="website-login-password" type="password" autocomplete="new-password" value="' + esc(dialog.password) + '" data-action="website-login-password"' + dis + '></div>' +
         '<div class="field"><label class="field-label" for="website-login-totp">One-time code secret (optional, for authenticator-app codes)</label><input class="input mono" id="website-login-totp" type="password" autocomplete="off" spellcheck="false" placeholder="Paste the setup key from the site&rsquo;s authenticator screen" value="' + esc(dialog.totpSeed) + '" data-action="website-login-totp"' + dis + '></div>') +
-      '<div class="connection-account-owner"><span class="field-label" id="website-login-owner-title">Who can use it</span>' +
-        '<div class="connection-account-owner-options" role="radiogroup" aria-labelledby="website-login-owner-title">' +
-          websiteLoginRadioHtml("website-login-owner", "team", dialog.ownerKind === "team", dialog.busy || !canTeam, "user-group", "connection-account-owner-icon-team", "Any Agent I grant it to", "A team login, managed by Admins." + (canTeam ? "" : " Only Admins can add one.")) +
-          websiteLoginRadioHtml("website-login-owner", "member", dialog.ownerKind === "member", dialog.busy, "user", "connection-account-owner-icon-personal", "Only my Agents", "Stays with your account.") +
-        '</div></div>' +
       '<div class="connection-account-owner"><span class="field-label" id="website-login-level-title">What this Agent may do there</span>' +
         '<div class="connection-account-owner-options" role="radiogroup" aria-labelledby="website-login-level-title">' +
           websiteLoginRadioHtml("website-login-level", "check", dialog.level !== "act", dialog.busy, "check", "connection-account-owner-icon-team", "Check only", "Read pages, run searches, follow links.") +
@@ -6731,7 +6747,7 @@
       render();
       return;
     }
-    var body = { host: host, label: label, ownerKind: dialog.ownerKind === "team" ? "team" : "member", method: handoff ? "handoff" : "credentials", level: dialog.level === "act" ? "act" : "check" };
+    var body = { host: host, label: label, method: handoff ? "handoff" : "credentials", level: dialog.level === "act" ? "act" : "check" };
     if (username) body.username = username;
     if (!handoff) {
       body.password = dialog.password;
@@ -13673,16 +13689,13 @@
     if (action === "website-login-level" && target.getAttribute("data-login-id")) {
       changeWebsiteLoginLevel(target.getAttribute("data-login-id"), target.value);
     }
-    if (state.websiteLoginDialog && !state.websiteLoginDialog.busy && (action === "website-login-method" || action === "website-login-owner" || action === "website-login-level")) {
+    if (state.websiteLoginDialog && !state.websiteLoginDialog.busy && (action === "website-login-method" || action === "website-login-level")) {
       if (action === "website-login-level" && (target.value === "check" || target.value === "act")) {
         state.websiteLoginDialog.level = target.value;
       }
       if (action === "website-login-method" && (target.value === "credentials" || target.value === "handoff")) {
         state.websiteLoginDialog.method = target.value;
         if (target.value === "handoff") { state.websiteLoginDialog.password = ""; state.websiteLoginDialog.totpSeed = ""; }
-      }
-      if (action === "website-login-owner" && (target.value === "member" || (target.value === "team" && WORKSPACE_ADMIN_UI))) {
-        state.websiteLoginDialog.ownerKind = target.value;
       }
       state.websiteLoginDialog.error = "";
       render();

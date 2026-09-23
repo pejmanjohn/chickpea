@@ -1317,7 +1317,8 @@ const websiteLoginsSchema = v.pipe(
 const websiteLoginCreateSchema = v.strictObject({
   host: v.pipe(v.string(), v.maxLength(260)),
   label: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(80)),
-  ownerKind: v.picklist(['team', 'member']),
+  /** Absent, the login is a team login when the caller may create one, else personal. */
+  ownerKind: v.optional(v.picklist(['team', 'member'])),
   method: v.picklist(['credentials', 'handoff']),
   username: v.optional(v.pipe(v.string(), v.maxLength(320))),
   password: v.optional(v.pipe(v.string(), v.minLength(1), v.maxLength(1_024))),
@@ -8421,9 +8422,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       if (!principal) throw new AuthorizationError('principal_required');
       const agent = await store(c).getAgent(agentId);
       requireAgentEdit(principal, agent);
+      const ownerKind = input.ownerKind ??
+        (permissionForRole(principal.role).has('connection.create_team') ? 'team' : 'member');
       requirePermission(
         principal,
-        input.ownerKind === 'team' ? 'connection.create_team' : 'connection.create_personal',
+        ownerKind === 'team' ? 'connection.create_team' : 'connection.create_personal',
       );
       if ((agent.websiteLogins ?? []).length >= 50) {
         return c.json({ error: 'website_login_limit', message: 'This Agent already has 50 website logins.' }, 409);
@@ -8433,8 +8436,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       created = await createWebsiteLogin(deps, {
         host: input.host,
         label: input.label,
-        ownerKind: input.ownerKind,
-        ...(input.ownerKind === 'member' ? { ownerMembershipId: principal.membershipId } : {}),
+        ownerKind,
+        ...(ownerKind === 'member' ? { ownerMembershipId: principal.membershipId } : {}),
         createdByMembershipId: principal.membershipId,
         method: input.method,
         ...(input.username !== undefined ? { username: input.username } : {}),

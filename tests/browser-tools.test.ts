@@ -799,6 +799,8 @@ async function actTurn(options: {
   level?: 'check' | 'act';
   liveLevel?: 'check' | 'act';
   tree?: AXNode[];
+  /** Adjust a browser as soon as the session connects to it. */
+  prepare?: (browser: FormBrowser) => void;
   redirectTo?: string;
   approvals?: boolean;
 }) {
@@ -817,6 +819,7 @@ async function actTurn(options: {
     connect: async () => {
       const browser = new FormBrowser(options.tree ?? FORM_TREE);
       if (options.redirectTo) browser.redirectTo = options.redirectTo;
+      options.prepare?.(browser);
       browsers.push(browser);
       return browser;
     },
@@ -937,6 +940,37 @@ test('an action login holds a data-changing step for approval with a screenshot,
   assert.match((await approved.run('browser_act', { ref: 'e4', action: 'click', approvedActionId: held.actionId })).error, /already used/);
   assert.deepEqual(browser.clicked(), [21, 23]);
   await approved.session.close();
+});
+
+test('an approved step waits for its element when the reopened page is still rendering', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const ask = await actTurn({ settings, messageTs: TURN_1_TS });
+  await ask.run('browser_open', { url: 'https://billing.example.com/plan' });
+  const held = await ask.run('browser_act', { ref: 'e3', action: 'click', mayChangeData: true });
+  await ask.session.close();
+  await approveFromSlack(settings, TURN_2_TS);
+
+  // The button is absent from the first snapshot after reopening and present from the second.
+  let snapshots = 0;
+  const turn = await actTurn({
+    settings,
+    messageTs: TURN_2_TS,
+    tree: FORM_TREE.filter((node) => node.nodeId !== '4'),
+    prepare: (browser) => {
+      const fullTree = browser.responders.get('Accessibility.getFullAXTree')!;
+      browser.responders.set('Accessibility.getFullAXTree', (message) => {
+        snapshots += 1;
+        if (snapshots === 2) browser.tree = FORM_TREE;
+        return fullTree(message);
+      });
+    },
+  });
+  const output = await turn.run('browser_act', { ref: 'e3', action: 'click', approvedActionId: held.actionId });
+  const browser = turn.browsers[0]!;
+  assert.equal(output.approvedStepTaken, 'click "Confirm change"');
+  assert.deepEqual(browser.clicked(), [23]);
+  await turn.session.close();
+  settings.close();
 });
 
 test('an approved step is refused when the page changed, moved host, expired, or the grant was lowered', async () => {

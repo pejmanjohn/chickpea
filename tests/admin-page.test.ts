@@ -17172,8 +17172,8 @@ test('the Websites tab lists signed-in websites and shows an empty state', async
   assert.match(html, /id="ptab-panel-websites"[\s\S]*?<h3>Websites<\/h3><p>Sites this Agent can open in a browser, and the sign-ins it may use there\.<\/p>/);
   assert.match(html, /This Agent can open any public website when a task calls for it\. A sign-in below lets it go where a visitor cannot, and each signed-in session stays on that site\./);
   assert.match(html, /Signed-in websites<\/span><button type="button" class="btn btn-primary btn-sm" data-action="website-login-add">Add a website login<\/button>/);
-  assert.match(html, /magoosh\.com<\/span><span class="badge-src">Team login<\/span>/);
-  assert.match(html, /qa-team@magoosh\.com[\s\S]*?last used 2 hours ago/);
+  assert.match(html, /magoosh\.com<\/span><\/div>[\s\S]*?qa-team@magoosh\.com[\s\S]*?last used 2 hours ago/);
+  assert.doesNotMatch(html, /Team login/);
   assert.match(html, /admin\.magoosh\.com<\/span><\/div>[\s\S]*?signs in by hand[\s\S]*?never used/);
   assert.equal((html.match(/>Check only</g) ?? []).length, 2);
   assert.equal((html.match(/data-action="website-login-remove"/g) ?? []).length, 2);
@@ -17222,7 +17222,9 @@ test('Add a website login validates, posts the host only, refreshes, and drops t
   assert.match(html, /I&rsquo;ll sign in myself the first time[\s\S]*?For single sign-on or two-factor accounts\. Chickpea opens a browser for you, then keeps the signed-in session\./);
   assert.match(html, /id="website-login-password" type="password"/);
   assert.match(html, /One-time code secret \(optional, for authenticator-app codes\)[\s\S]*?placeholder="Paste the setup key from the site&rsquo;s authenticator screen"/);
-  assert.match(html, /Who can use it[\s\S]*?value="team" data-action="website-login-owner" checked[\s\S]*?Any Agent I grant it to[\s\S]*?A team login, managed by Admins\.[\s\S]*?Only my Agents[\s\S]*?Stays with your account\./);
+  // The login belongs to this Agent: no owner choice in the dialog.
+  assert.doesNotMatch(html, /Who can use it|website-login-owner/);
+  assert.match(html, /class="modal-card website-login-dialog"/);
   assert.match(html, /Stored encrypted in your Chickpea install\. Sign-in sessions live in your Browserbase project\./);
   assert.match(html, /data-action="website-login-cancel">Cancel<\/button>[\s\S]*?data-action="website-login-save">Save login<\/button>/);
   assert.equal(harness.bodyRegion.inert, true);
@@ -17251,14 +17253,14 @@ test('Add a website login validates, posts the host only, refreshes, and drops t
   await flushAsync();
 
   assert.deepEqual(calls.posts, [{
-    host: 'example.com', label: 'Example', ownerKind: 'team', method: 'credentials', level: 'check',
+    host: 'example.com', label: 'Example', method: 'credentials', level: 'check',
     username: 'me@example.com', password: 'hunter2-secret', totpSeed: 'jbswy3dpehpk3pxp',
   }]);
   html = harness.app.innerHTML;
   assert.doesNotMatch(html, /data-role="website-login-dialog"/);
   assert.equal(calls.gets, 2, 'the list refreshes after a save');
   assert.match(html, /id="ptab-websites" class="ptab on"[^>]*>Websites<span class="ptab-count">3<\/span>/);
-  assert.match(html, /example\.com<\/span><span class="badge-src">Team login<\/span>/);
+  assert.match(html, /example\.com<\/span><\/div>/);
   assert.ok(harness.renderHistory.every((rendered) => !rendered.includes('hunter2-secret')));
 });
 
@@ -17272,7 +17274,6 @@ test('Add a website login explains server rejections and clears the typed passwo
     const { harness, calls } = websiteLoginsHarness([], { initialSearch: '?tab=websites' }, { post: () => response });
     await flushAsync();
     harness.listeners.click?.({ target: actionTarget({ 'data-action': 'website-login-add' }) });
-    harness.listeners.change?.({ target: valueTarget({ 'data-action': 'website-login-owner' }, 'member', true) });
     for (const [action, value] of [
       ['website-login-host', 'intranet.example.com'], ['website-login-label', 'Intranet'],
       ['website-login-username', 'me'], ['website-login-password', 'pw-never-rendered'],
@@ -17281,7 +17282,7 @@ test('Add a website login explains server rejections and clears the typed passwo
     }
     harness.listeners.click?.({ target: actionTarget({ 'data-action': 'website-login-save' }) });
     await flushAsync();
-    assert.equal(calls.posts[0]?.ownerKind, 'member');
+    assert.equal(calls.posts[0]?.ownerKind, undefined, 'the server picks the owner kind');
     assert.match(harness.app.innerHTML, message);
     assert.match(harness.app.innerHTML, /id="website-login-password" type="password" autocomplete="new-password" value=""/);
     assert.ok(harness.renderHistory.every((rendered) => !rendered.includes('pw-never-rendered')));
@@ -17371,7 +17372,7 @@ test('a read-only Agent shows its website logins without Add or Remove', async (
   });
   await flushAsync();
   assert.equal(calls.gets, 1);
-  assert.match(harness.app.innerHTML, /magoosh\.com<\/span><span class="badge-src">Team login<\/span>/);
+  assert.match(harness.app.innerHTML, /magoosh\.com<\/span><\/div>/);
   assert.doesNotMatch(harness.app.innerHTML, /data-action="website-login-(?:add|remove|level)"/);
   assert.equal((harness.app.innerHTML.match(/<span class="badge badge-off">Check only<\/span>/g) ?? []).length, 2);
 

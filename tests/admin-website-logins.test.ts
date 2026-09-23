@@ -185,6 +185,24 @@ test('an Admin adds a team login; secrets are encrypted and never returned', asy
   }
 });
 
+test('a login without an owner kind is a team login for an Admin and personal for a member', async () => {
+  const f = fixture();
+  try {
+    await createAgent(f, 'agent_one');
+    const { ownerKind: _omit, ...noOwner } = teamLogin;
+    const byAdmin = await addLogin(f, 'owner', 'agent_one', noOwner);
+    assert.equal(byAdmin.status, 201);
+    assert.equal(((await byAdmin.json()) as { login: { ownerKind: string } }).login.ownerKind, 'team');
+    const byMember = await addLogin(f, 'ana', 'agent_one', { ...noOwner, host: 'mail.example.com', label: 'Mail' });
+    assert.equal(byMember.status, 201);
+    const { login } = await byMember.json() as { login: Record<string, unknown> };
+    assert.equal(login.ownerKind, 'member');
+    assert.equal(login.ownerMembershipId, 'membership_ana');
+  } finally {
+    f.close();
+  }
+});
+
 test('members create personal logins only; team logins need an Admin', async () => {
   const f = fixture();
   try {

@@ -311,6 +311,7 @@ export function createBrowserTools(options: BrowserToolsOptions) {
     errorMessage: (error) => browserErrorMessage(error, redact),
     now,
     navigationTimeoutMs: NAVIGATION_TIMEOUT_MS,
+    sleep,
     log: options.log,
   });
 

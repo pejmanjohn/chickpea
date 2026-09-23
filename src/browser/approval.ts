@@ -71,6 +71,13 @@ export interface BrowserPageReport {
 
 /** Pending records are swept only once the index holds more than this many. */
 const SWEEP_MIN_INDEX = 8;
+/**
+ * A reopened page keeps rendering after load, so an element recorded at
+ * asking time is looked for again a few times before the page is called
+ * changed.
+ */
+const ELEMENT_SETTLE_ATTEMPTS = 4;
+const ELEMENT_SETTLE_MS = 1500;
 const FORM_STEP_ROLES = new Set(['checkbox', 'radio', 'switch', 'option', 'tab', 'combobox', 'menuitemcheckbox', 'menuitemradio']);
 
 function quoted(text: string, max: number): string {
@@ -183,6 +190,7 @@ export interface BrowserApprovalContext {
   errorMessage: (error: unknown) => string;
   now: () => Date;
   navigationTimeoutMs: number;
+  sleep: (ms: number) => Promise<void>;
   log?: Pick<FlueLogger, 'warn'> | undefined;
 }
 
@@ -314,21 +322,34 @@ export function createBrowserApprovalSteps(context: BrowserApprovalContext) {
         return false;
       }
     };
-    if (!onRecordedHost()) return { output: { error: BROWSER_PAGE_CHANGED_MESSAGE, ...(await readPage(info)) } };
+    const pageChanged = async (reason: 'host_changed' | 'element_missing', current?: PageInfo) => {
+      context.log?.warn('browser_act approved step refused: page changed', { reason });
+      return { output: { error: BROWSER_PAGE_CHANGED_MESSAGE, ...(await readPage(current)) } };
+    };
+    // Find an element again in fresh snapshots, allowing the page to finish rendering.
+    const settledRef = async (step: Pick<BrowserFormStep, 'role' | 'name' | 'occurrence'>, current: PageInfo) => {
+      await readPage(current);
+      let ref = findRef(page, step);
+      for (let attempt = 1; !ref && attempt < ELEMENT_SETTLE_ATTEMPTS; attempt += 1) {
+        await context.sleep(ELEMENT_SETTLE_MS);
+        await readPage();
+        ref = findRef(page, step);
+      }
+      return ref;
+    };
+    if (!onRecordedHost()) return pageChanged('host_changed', info);
     // Restore what was filled in before the step, then find its element.
     for (const step of record.prelude ?? []) {
-      await readPage(info);
-      const ref = findRef(page, step);
-      if (!ref) return { output: { error: BROWSER_PAGE_CHANGED_MESSAGE, ...(await readPage()) } };
+      const ref = await settledRef(step, info);
+      if (!ref) return pageChanged('element_missing');
       info = await page.act(ref, step.action, {
         ...(step.text === undefined ? {} : { text: step.text }),
         ...(step.key === undefined ? {} : { key: step.key }),
       });
-      if (!onRecordedHost()) return { output: { error: BROWSER_PAGE_CHANGED_MESSAGE, ...(await readPage(info)) } };
+      if (!onRecordedHost()) return pageChanged('host_changed', info);
     }
-    await readPage(info);
-    const ref = findRef(page, record);
-    if (!ref) return { output: { error: BROWSER_PAGE_CHANGED_MESSAGE, ...(await readPage()) } };
+    const ref = await settledRef(record, info);
+    if (!ref) return pageChanged('element_missing');
     const done = await page.act(ref, record.action, {
       ...(record.text === undefined ? {} : { text: record.text }),
       ...(record.key === undefined ? {} : { key: record.key }),
