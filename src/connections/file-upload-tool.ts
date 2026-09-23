@@ -21,6 +21,17 @@ export const ATTACH_FILE_TO_CONNECTION_TOOL_NAME = 'attach_file_to_connection';
 
 /** Long enough for a large recording on a slow upstream; the Slack path has no tighter bound. */
 export const CONNECTION_UPLOAD_TIMEOUT_MS = 10 * 60 * 1000;
+/**
+ * Mirrors `RECORDING_TIMEOUT_MS` in browser/tools.ts; importing it would close
+ * an import cycle through the activity status map.
+ */
+const RECORDING_REOPEN_MS = 90_000;
+/**
+ * The whole call's bound: re-opening a recording (up to the browser tool's
+ * 90 s wait), the request itself, and a margin. On expiry Flue settles the call
+ * with a ToolTimeoutError and the conversation continues.
+ */
+export const CONNECTION_UPLOAD_TOOL_TIMEOUT_MS = CONNECTION_UPLOAD_TIMEOUT_MS + RECORDING_REOPEN_MS + 60_000;
 /** The largest file sent: the same ceiling as a Slack upload. */
 export const MAX_CONNECTION_UPLOAD_BYTES = MAX_SLACK_UPLOAD_BYTES;
 /** How much of the service's response the model reads back. */
@@ -92,6 +103,7 @@ export function createAttachFileToConnectionTool(options: AttachFileToConnection
     name: ATTACH_FILE_TO_CONNECTION_TOOL_NAME,
     description: DESCRIPTION,
     input: INPUT,
+    timeoutMs: CONNECTION_UPLOAD_TOOL_TIMEOUT_MS,
     async run({ data }) {
       assertConnectionFileUploadAllowed();
       let url: URL;

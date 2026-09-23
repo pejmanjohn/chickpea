@@ -6,7 +6,7 @@ import {
   createRuntimePlanArtifactTools,
 } from '../src/agents/slack-thread.ts';
 import type { RuntimePlanV2 } from '../src/agents/runtime-plan.ts';
-import { openRecordingDownload } from '../src/browser/tools.ts';
+import { openRecordingDownload, RECORDING_TIMEOUT_MS } from '../src/browser/tools.ts';
 import { createConnectionScopedFetch, type ResolvedApiConnection } from '../src/config/egress.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import {
@@ -22,6 +22,8 @@ import {
 } from '../src/connections/file-upload-body.ts';
 import {
   ATTACH_FILE_TO_CONNECTION_TOOL_NAME,
+  CONNECTION_UPLOAD_TIMEOUT_MS,
+  CONNECTION_UPLOAD_TOOL_TIMEOUT_MS,
   createAttachFileToConnectionTool,
   type AttachFileToConnectionOptions,
 } from '../src/connections/file-upload-tool.ts';
@@ -377,6 +379,10 @@ test('an unavailable handle or missing connection is refused before any request'
     assert.equal(noConnection.reason, 'no_connection');
     assert.equal(requests.length, 0);
   });
+  // The call is bounded as a whole, beyond the request's own timeout.
+  const bounded = createAttachFileToConnectionTool({ resolveFetch: async () => undefined, resolveFile: PNG_FILE, streamMode: 'stream' });
+  assert.equal((bounded as { timeoutMs?: number }).timeoutMs, CONNECTION_UPLOAD_TOOL_TIMEOUT_MS);
+  assert.ok(CONNECTION_UPLOAD_TOOL_TIMEOUT_MS > CONNECTION_UPLOAD_TIMEOUT_MS + RECORDING_TIMEOUT_MS);
   assert.throws(() => v.parse(
     createAttachFileToConnectionTool({ resolveFetch: async () => undefined, resolveFile: PNG_FILE, streamMode: 'stream' }).input as v.GenericSchema,
     { file: 'F0123456789', url: 'https://app.asana.com/api/1.0/attachments' },
