@@ -10,12 +10,18 @@ export const WORKSPACE_CHECKPOINT_TTL_SECONDS = 3 * 24 * 60 * 60;
 export const WORKSPACE_DIR = '/workspace';
 
 // Rebuildable dependency and cache trees stay out of checkpoints; the Agent
-// reinstalls them. mksquashfs wildcards match one path segment per `*`, so
-// cover the workspace root, each checkout, and nested monorepo packages.
-const REBUILDABLE_DIRS = ['node_modules', '.venv', '__pycache__', '.next', '.turbo', '.cache'];
-export const WORKSPACE_CHECKPOINT_EXCLUDES: readonly string[] = [0, 1, 2, 3].flatMap((depth) =>
-  REBUILDABLE_DIRS.map((name) => `${'*/'.repeat(depth)}${name}`),
-);
+// reinstalls them. Keep these to bare directory names: the Sandbox container
+// already adds a `... <name>` variant that matches at any depth, and a pattern
+// with a wildcard directory segment (for example `*/node_modules`) under that
+// prefix makes mksquashfs exclude everything, leaving an empty checkpoint.
+export const WORKSPACE_CHECKPOINT_EXCLUDES: readonly string[] = [
+  'node_modules',
+  '.venv',
+  '__pycache__',
+  '.next',
+  '.turbo',
+  '.cache',
+];
 
 /**
  * How a turn found the thread's coding workspace:

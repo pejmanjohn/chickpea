@@ -191,11 +191,16 @@ test('restore re-checks the owner at restore time', async () => {
   assert.equal(await state.checkpointForRestore(otherGrants, NOW + HOUR), undefined);
 });
 
-test('checkpoints exclude rebuildable dependency trees at every checkout depth', () => {
-  for (const pattern of ['node_modules', '*/node_modules', '*/*/*/node_modules', '*/.venv', '*/__pycache__']) {
-    assert.ok(WORKSPACE_CHECKPOINT_EXCLUDES.includes(pattern), pattern);
+test('checkpoint excludes are bare directory names the container matches at any depth', () => {
+  for (const name of ['node_modules', '.venv', '__pycache__']) {
+    assert.ok(WORKSPACE_CHECKPOINT_EXCLUDES.includes(name), name);
   }
-  assert.ok(WORKSPACE_CHECKPOINT_EXCLUDES.every((pattern) => !pattern.includes('**')));
+  // The container prefixes each pattern with `... ` (any depth). A wildcard or
+  // path segment under that prefix makes mksquashfs exclude the whole tree,
+  // which shipped as empty checkpoints before this guard (Cobalt, 2026-09-23).
+  for (const pattern of WORKSPACE_CHECKPOINT_EXCLUDES) {
+    assert.doesNotMatch(pattern, /[*/?[\]]/, pattern);
+  }
 });
 
 class MemoryBucket implements CheckpointBucket {
