@@ -555,10 +555,20 @@ test('provider key POST validates, stores, primes model cache, and rejects bad k
           assert.equal(saved.status, 200);
           assert.deepEqual(await saved.json(), {
             ok: true,
-            provider: { id: 'anthropic', status: 'stored', modelCount: 4 },
+            provider: { id: 'anthropic', status: 'stored', modelCount: 6 },
             models: [
               { id: 'claude-sonnet-4-6', display_name: 'Claude Sonnet 4.6' },
               { id: 'claude-haiku-4-5', display_name: 'Claude Haiku 4.5' },
+              {
+                id: 'claude-fable-5-1',
+                display_name: 'Claude Fable 5.1',
+                context_length: 1_000_000,
+              },
+              {
+                id: 'claude-opus-5-5',
+                display_name: 'Claude Opus 5.5',
+                context_length: 1_000_000,
+              },
               {
                 id: 'claude-opus-5',
                 display_name: 'Claude Opus 5',
@@ -728,6 +738,21 @@ test('provider models proxy caches OpenAI chat models and refresh bypasses the c
               { id: 'gpt-4.1' },
               { id: 'gpt-4.1-mini' },
               {
+                id: 'gpt-6-astra',
+                display_name: 'GPT-6 Astra',
+                context_length: 272_000,
+              },
+              {
+                id: 'gpt-6-sol',
+                display_name: 'GPT-6 Sol',
+                context_length: 272_000,
+              },
+              {
+                id: 'gpt-6-luna',
+                display_name: 'GPT-6 Luna',
+                context_length: 272_000,
+              },
+              {
                 id: 'gpt-5.6-sol',
                 display_name: 'GPT-5.6 Sol',
                 context_length: 272_000,
@@ -758,6 +783,21 @@ test('provider models proxy caches OpenAI chat models and refresh bypasses the c
               { id: 'gpt-4.1' },
               { id: 'gpt-4.1-mini' },
               {
+                id: 'gpt-6-astra',
+                display_name: 'GPT-6 Astra',
+                context_length: 272_000,
+              },
+              {
+                id: 'gpt-6-sol',
+                display_name: 'GPT-6 Sol',
+                context_length: 272_000,
+              },
+              {
+                id: 'gpt-6-luna',
+                display_name: 'GPT-6 Luna',
+                context_length: 272_000,
+              },
+              {
                 id: 'gpt-5.6-sol',
                 display_name: 'GPT-5.6 Sol',
                 context_length: 272_000,
@@ -785,6 +825,21 @@ test('provider models proxy caches OpenAI chat models and refresh bypasses the c
             provider: 'openai',
             models: [
               { id: 'gpt-5.5' },
+              {
+                id: 'gpt-6-astra',
+                display_name: 'GPT-6 Astra',
+                context_length: 272_000,
+              },
+              {
+                id: 'gpt-6-sol',
+                display_name: 'GPT-6 Sol',
+                context_length: 272_000,
+              },
+              {
+                id: 'gpt-6-luna',
+                display_name: 'GPT-6 Luna',
+                context_length: 272_000,
+              },
               {
                 id: 'gpt-5.6-sol',
                 display_name: 'GPT-5.6 Sol',

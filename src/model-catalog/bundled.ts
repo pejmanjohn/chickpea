@@ -9,6 +9,9 @@ import type {
 } from './types.ts';
 
 export const BUNDLED_MODEL_CATALOG: readonly ModelCatalogEntry[] = [
+  openAiEntry('gpt-6-astra', 'GPT-6 Astra', 'openai-platform-responses-astra-tier@1'),
+  openAiEntry('gpt-6-sol', 'GPT-6 Sol', 'openai-platform-responses-sol-tier@1'),
+  openAiEntry('gpt-6-luna', 'GPT-6 Luna', 'openai-platform-responses-luna-tier@1'),
   openAiEntry('gpt-5.6-sol', 'GPT-5.6 Sol', 'openai-platform-responses-sol-tier@1'),
   openAiEntry('gpt-5.6-terra', 'GPT-5.6 Terra', 'openai-platform-responses-terra-tier@1'),
   openAiEntry('gpt-5.6-luna', 'GPT-5.6 Luna', 'openai-platform-responses-luna-tier@1'),
@@ -20,6 +23,16 @@ export const BUNDLED_MODEL_CATALOG: readonly ModelCatalogEntry[] = [
     'GPT-5.3 Codex Spark',
     true,
   ),
+  {
+    id: 'anthropic/claude-fable-5-1',
+    displayName: 'Claude Fable 5.1',
+    lanes: { anthropic_api_key: 'anthropic-messages-sonnet-tier@1' },
+  },
+  {
+    id: 'anthropic/claude-opus-5-5',
+    displayName: 'Claude Opus 5.5',
+    lanes: { anthropic_api_key: 'anthropic-messages-opus-tier@1' },
+  },
   {
     id: 'anthropic/claude-opus-5',
     displayName: 'Claude Opus 5',
@@ -100,9 +113,16 @@ export function isPiNativeModel(canonicalModel: string): boolean {
 }
 
 function openAiEntry(
-  modelId: 'gpt-5.6-luna' | 'gpt-5.6-sol' | 'gpt-5.6-terra',
+  modelId:
+    | 'gpt-5.6-luna'
+    | 'gpt-5.6-sol'
+    | 'gpt-5.6-terra'
+    | 'gpt-6-astra'
+    | 'gpt-6-luna'
+    | 'gpt-6-sol',
   displayName: string,
   apiProfile:
+    | 'openai-platform-responses-astra-tier@1'
     | 'openai-platform-responses-luna-tier@1'
     | 'openai-platform-responses-sol-tier@1'
     | 'openai-platform-responses-terra-tier@1',
