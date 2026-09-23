@@ -23,8 +23,8 @@ const APP_PRIVATE_KEY = String(
 const GRANT = {
   id: 'repo_rails',
   installationId: 50_001,
-  accountLogin: 'magoosh',
-  fullName: 'magoosh/magoosh-rails',
+  accountLogin: 'acme',
+  fullName: 'acme/acme-rails',
   enabled: true,
 };
 
@@ -85,7 +85,7 @@ test('RuntimePlanV2 Cloudflare workspace turn mounts the workspace and Repositor
   t.mock.method(getConfigStore(), 'getAgent', async () => agent);
   const plan = compilePlan(agent, 'cloudflare');
   assert.equal(plan.sandbox.mode, 'cloudflare');
-  assert.deepEqual(plan.repositories.map(({ fullName }) => fullName), ['magoosh/magoosh-rails']);
+  assert.deepEqual(plan.repositories.map(({ fullName }) => fullName), ['acme/acme-rails']);
 
   const context = createFlueContext({
     id: 'repo-cloudflare-test', agentName: 'chickpea-slack-v2', env: {},
@@ -98,10 +98,10 @@ test('RuntimePlanV2 Cloudflare workspace turn mounts the workspace and Repositor
     assert.match(skills.workspace.instructions, /# Coding workspace/);
     assert.match(skills.workspace.instructions, /git clone https:\/\/github\.com\/\{owner\}\/\{repo\}\.git/);
     assert.doesNotMatch(skills.workspace.instructions, /Never clone anything/);
-    assert.match(skills.repositories.instructions, /- `magoosh\/magoosh-rails`/);
+    assert.match(skills.repositories.instructions, /- `acme\/acme-rails`/);
 
     const instructions = String((harness as any).config.instructions);
-    assert.match(instructions, /Granted GitHub repositories for this turn: \["magoosh\/magoosh-rails"\]/);
+    assert.match(instructions, /Granted GitHub repositories for this turn: \["acme\/acme-rails"\]/);
     assert.match(instructions, /clone a granted repository with a plain HTTPS URL/);
     assert.match(instructions, /credentials are injected automatically/);
   } finally {
@@ -149,7 +149,7 @@ test('RuntimePlanV2 bash turn with repository grants mounts Repositories and cre
         expires_at: new Date(Date.now() + 60 * 60 * 1_000).toISOString(),
       });
     }
-    return Response.json({ full_name: 'magoosh/magoosh-rails', nonce });
+    return Response.json({ full_name: 'acme/acme-rails', nonce });
   });
 
   const plan = compilePlan(agent, 'bash');
@@ -163,21 +163,21 @@ test('RuntimePlanV2 bash turn with repository grants mounts Repositories and cre
     // No workspace skill without a Cloudflare workspace; Repositories still mounts.
     assert.deepEqual(skillNames(harness), ['agent-authoring', 'repositories', 'ticket-triage']);
     const instructions = String((harness as any).config.instructions);
-    assert.match(instructions, /Granted GitHub repositories for this turn: \["magoosh\/magoosh-rails"\]/);
+    assert.match(instructions, /Granted GitHub repositories for this turn: \["acme\/acme-rails"\]/);
     assert.match(instructions, /GitHub REST recipes in the Repositories skill/);
     assert.doesNotMatch(instructions, /fixture-installation-token/);
 
     const read = await harness.sandbox.exec(
-      'curl -sS https://api.github.com/repos/magoosh/magoosh-rails',
+      'curl -sS https://api.github.com/repos/acme/acme-rails',
     );
     assert.equal(read.exitCode, 0, JSON.stringify(read));
-    const apiCall = calls.find(({ url }) => url === 'https://api.github.com/repos/magoosh/magoosh-rails');
+    const apiCall = calls.find(({ url }) => url === 'https://api.github.com/repos/acme/acme-rails');
     assert.ok(apiCall, JSON.stringify(calls.map(({ url }) => url)));
     assert.equal(JSON.parse(read.stdout).nonce, apiCall.nonce);
     assert.equal(apiCall.authorization, 'Bearer fixture-installation-token');
     assert.doesNotMatch(read.stdout, /fixture-installation-token/);
 
-    const ungranted = await harness.sandbox.exec('curl -sS https://api.github.com/repos/magoosh/other');
+    const ungranted = await harness.sandbox.exec('curl -sS https://api.github.com/repos/acme/other');
     assert.notEqual(ungranted.exitCode, 0);
   } finally {
     await harness.close();
@@ -187,7 +187,7 @@ test('RuntimePlanV2 bash turn with repository grants mounts Repositories and cre
 test('runtime plan skills keep connector precedence and the reserved authoring name', () => {
   const plan = {
     apiConnections: [],
-    repositories: [{ id: 'repo_rails', fullName: 'magoosh/magoosh-rails' }],
+    repositories: [{ id: 'repo_rails', fullName: 'acme/acme-rails' }],
     sandbox: { mode: 'cloudflare' as const },
     skills: [
       // Agent-authored Repositories deliberately overrides the built-in one.
@@ -209,17 +209,17 @@ test('an all-repositories grant names its org in the Repositories skill and the 
   const agent = {
     ...supportAgent(),
     repositories: [{
-      id: 'all', installationId: 1, accountLogin: 'magoosh', fullName: '', allRepos: true, enabled: true,
+      id: 'all', installationId: 1, accountLogin: 'acme', fullName: '', allRepos: true, enabled: true,
     }],
   };
   const plan = compilePlan(agent, 'cloudflare');
   assert.deepEqual(plan.repositories, [
-    { id: 'all', fullName: '', allRepos: true, accountLogin: 'magoosh' },
+    { id: 'all', fullName: '', allRepos: true, accountLogin: 'acme' },
   ]);
 
   const repositories = runtimePlanSkills(plan).find(({ name }) => name === 'repositories');
-  assert.match((repositories as any).instructions, /- all repositories in `magoosh`/);
+  assert.match((repositories as any).instructions, /- all repositories in `acme`/);
 
   const instruction = runtimePlanConnectedServicesInstruction(plan);
-  assert.match(instruction, /Granted GitHub repositories for this turn: \["all repositories in magoosh"\]/);
+  assert.match(instruction, /Granted GitHub repositories for this turn: \["all repositories in acme"\]/);
 });

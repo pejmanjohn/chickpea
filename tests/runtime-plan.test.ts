@@ -707,7 +707,7 @@ test('strict parsing rejects unknown and explicit auth fields without token heur
 const ALL_REPOS_GRANT = {
   id: 'all',
   installationId: 1,
-  accountLogin: 'magoosh',
+  accountLogin: 'acme',
   fullName: '',
   allRepos: true,
   enabled: true,
@@ -722,7 +722,7 @@ function allReposPlan() {
 test('an all-repositories grant compiles with its owner and survives parsing', () => {
   const plan = allReposPlan();
   assert.deepEqual(plan.repositories, [
-    { id: 'all', fullName: '', allRepos: true, accountLogin: 'magoosh' },
+    { id: 'all', fullName: '', allRepos: true, accountLogin: 'acme' },
   ]);
   const parsed = parseRuntimePlanV2(structuredClone(plan));
   assert.deepEqual(parsed.repositories, plan.repositories);
@@ -739,7 +739,7 @@ test('all-repositories plan entries require an owner login and no repository nam
     repositories: [{ ...plan.repositories[0]!, ...patch }],
   });
   assert.throws(
-    () => parseRuntimePlanV2(withRepository({ fullName: 'magoosh/rails' })),
+    () => parseRuntimePlanV2(withRepository({ fullName: 'acme/rails' })),
     /fullName must be empty/,
   );
   assert.throws(
@@ -761,7 +761,7 @@ test('malformed all-repositories grants stay out of the plan like they stay out 
       agent: {
         ...structuredClone(AGENT),
         repositories: [
-          { ...ALL_REPOS_GRANT, id: 'named', fullName: 'magoosh/rails' },
+          { ...ALL_REPOS_GRANT, id: 'named', fullName: 'acme/rails' },
           { ...ALL_REPOS_GRANT, id: 'bad_owner', accountLogin: '../evil' },
           { ...ALL_REPOS_GRANT },
         ],
@@ -773,10 +773,10 @@ test('malformed all-repositories grants stay out of the plan like they stay out 
 
 test('persisted all-repositories plan entries without an owner login remain readable', () => {
   const legacy = compile();
-  legacy.repositories = [{ id: 'all', fullName: 'magoosh', allRepos: true }];
+  legacy.repositories = [{ id: 'all', fullName: 'acme', allRepos: true }];
   legacy.harnessRevision = compatibilityHarnessRevision(legacy);
   assert.deepEqual(parseRuntimePlanV2(structuredClone(legacy)).repositories, [
-    { id: 'all', fullName: 'magoosh', allRepos: true },
+    { id: 'all', fullName: 'acme', allRepos: true },
   ]);
 });
 
@@ -784,7 +784,7 @@ test('frozen all-repositories grants match the live grant by owner login', () =>
   const [planned] = allReposPlan().repositories;
   assert.equal(runtimeRepositoryMatches({ ...ALL_REPOS_GRANT }, planned!), true);
   assert.equal(
-    runtimeRepositoryMatches({ ...ALL_REPOS_GRANT, accountLogin: 'MAGOOSH' }, planned!),
+    runtimeRepositoryMatches({ ...ALL_REPOS_GRANT, accountLogin: 'ACME' }, planned!),
     true,
   );
   assert.equal(
@@ -794,7 +794,7 @@ test('frozen all-repositories grants match the live grant by owner login', () =>
   assert.equal(runtimeRepositoryMatches({ ...ALL_REPOS_GRANT, enabled: false }, planned!), false);
   assert.equal(
     runtimeRepositoryMatches(
-      { ...ALL_REPOS_GRANT, allRepos: false, fullName: 'magoosh/rails' },
+      { ...ALL_REPOS_GRANT, allRepos: false, fullName: 'acme/rails' },
       planned!,
     ),
     false,

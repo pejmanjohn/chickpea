@@ -17091,12 +17091,12 @@ const WEBSITE_LOGIN_MEMBER_ID = `wl_${'b'.repeat(32)}`;
 function websiteLoginFixtures(): Array<Record<string, unknown>> {
   return [
     {
-      loginId: WEBSITE_LOGIN_TEAM_ID, host: 'magoosh.com', label: 'Magoosh team', ownerKind: 'team',
-      method: 'credentials', username: 'qa-team@magoosh.com', lastUsedAt: Date.now() - 2 * 3_600_000,
+      loginId: WEBSITE_LOGIN_TEAM_ID, host: 'acme.com', label: 'Acme team', ownerKind: 'team',
+      method: 'credentials', username: 'qa-team@acme.com', lastUsedAt: Date.now() - 2 * 3_600_000,
       level: 'check', enabled: true,
     },
     {
-      loginId: WEBSITE_LOGIN_MEMBER_ID, host: 'admin.magoosh.com', label: 'Magoosh admin', ownerKind: 'member',
+      loginId: WEBSITE_LOGIN_MEMBER_ID, host: 'admin.acme.com', label: 'Acme admin', ownerKind: 'member',
       ownerMembershipId: 'membership_owner', method: 'handoff', level: 'check', enabled: true,
     },
   ];
@@ -17172,9 +17172,9 @@ test('the Websites tab lists signed-in websites and shows an empty state', async
   assert.match(html, /id="ptab-panel-websites"[\s\S]*?<h3>Websites<\/h3><p>Sites this Agent can open in a browser, and the sign-ins it may use there\.<\/p>/);
   assert.match(html, /This Agent can open any public website when a task calls for it\. A sign-in below lets it go where a visitor cannot, and each signed-in session stays on that site\./);
   assert.match(html, /Signed-in websites<\/span><button type="button" class="btn btn-primary btn-sm" data-action="website-login-add">Add a website login<\/button>/);
-  assert.match(html, /magoosh\.com<\/span><\/div>[\s\S]*?qa-team@magoosh\.com[\s\S]*?last used 2 hours ago/);
+  assert.match(html, /acme\.com<\/span><\/div>[\s\S]*?qa-team@acme\.com[\s\S]*?last used 2 hours ago/);
   assert.doesNotMatch(html, /Team login/);
-  assert.match(html, /admin\.magoosh\.com<\/span><\/div>[\s\S]*?signs in by hand[\s\S]*?never used/);
+  assert.match(html, /admin\.acme\.com<\/span><\/div>[\s\S]*?signs in by hand[\s\S]*?never used/);
   assert.equal((html.match(/>Check only</g) ?? []).length, 2);
   assert.equal((html.match(/data-action="website-login-remove"/g) ?? []).length, 2);
   assert.match(html, /Passwords are stored encrypted and typed by Chickpea itself\. Agents never see them\./);
@@ -17309,8 +17309,8 @@ test('Remove confirms inline, deletes the login, and refreshes the list', async 
   assert.equal(calls.gets, 2);
   assert.ok(harness.fetchCalls.some(({ path, method }) =>
     method === 'DELETE' && path === `/admin/api/agents/agent_release/website-logins/${WEBSITE_LOGIN_TEAM_ID}`));
-  assert.doesNotMatch(harness.app.innerHTML, /qa-team@magoosh\.com|Remove this login from/);
-  assert.match(harness.app.innerHTML, /admin\.magoosh\.com/);
+  assert.doesNotMatch(harness.app.innerHTML, /qa-team@acme\.com|Remove this login from/);
+  assert.match(harness.app.innerHTML, /admin\.acme\.com/);
   assert.match(harness.app.innerHTML, /id="ptab-websites" class="ptab on"[^>]*>Websites<span class="ptab-count">1<\/span>/);
 });
 
@@ -17319,7 +17319,7 @@ test('each website login row has a level selector that saves the new level', asy
   await flushAsync();
   let html = harness.app.innerHTML;
   assert.equal((html.match(/data-action="website-login-level" data-login-id=/g) ?? []).length, 2);
-  assert.match(html, new RegExp(`<select class="input" data-action="website-login-level" data-login-id="${WEBSITE_LOGIN_TEAM_ID}" aria-label="What this Agent may do on magoosh\\.com"><option value="check" selected>Check only</option><option value="act">Check and take actions</option></select>`));
+  assert.match(html, new RegExp(`<select class="input" data-action="website-login-level" data-login-id="${WEBSITE_LOGIN_TEAM_ID}" aria-label="What this Agent may do on acme\\.com"><option value="check" selected>Check only</option><option value="act">Check and take actions</option></select>`));
   assert.doesNotMatch(html, /Asks in Slack before anything that changes data\./);
 
   harness.listeners.change?.({ target: valueTarget({ 'data-action': 'website-login-level', 'data-login-id': WEBSITE_LOGIN_TEAM_ID }, 'act') });
@@ -17372,7 +17372,7 @@ test('a read-only Agent shows its website logins without Add or Remove', async (
   });
   await flushAsync();
   assert.equal(calls.gets, 1);
-  assert.match(harness.app.innerHTML, /magoosh\.com<\/span><\/div>/);
+  assert.match(harness.app.innerHTML, /acme\.com<\/span><\/div>/);
   assert.doesNotMatch(harness.app.innerHTML, /data-action="website-login-(?:add|remove|level)"/);
   assert.equal((harness.app.innerHTML.match(/<span class="badge badge-off">Check only<\/span>/g) ?? []).length, 2);
 

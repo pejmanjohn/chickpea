@@ -483,7 +483,7 @@ test('visual fixture serves display-safe website logins for the Websites tab aft
       redirect: 'manual',
     });
     assert.notEqual(unauthenticated.status, 200);
-    assert.doesNotMatch(await unauthenticated.text(), /magoosh\.com/);
+    assert.doesNotMatch(await unauthenticated.text(), /acme\.com/);
 
     const research = await fixtureJson<{ logins: Array<Record<string, unknown>> }>(
       fixture,
@@ -492,8 +492,8 @@ test('visual fixture serves display-safe website logins for the Websites tab aft
     assert.deepEqual(
       research.logins.map(({ host, ownerKind, method, username, level, enabled }) => ({ host, ownerKind, method, username, level, enabled })),
       [
-        { host: 'magoosh.com', ownerKind: 'team', method: 'credentials', username: 'qa-team@magoosh.com', level: 'act', enabled: true },
-        { host: 'admin.magoosh.com', ownerKind: 'member', method: 'handoff', username: undefined, level: 'check', enabled: true },
+        { host: 'acme.com', ownerKind: 'team', method: 'credentials', username: 'qa-team@acme.com', level: 'act', enabled: true },
+        { host: 'admin.acme.com', ownerKind: 'member', method: 'handoff', username: undefined, level: 'check', enabled: true },
       ],
     );
     for (const login of research.logins) {
