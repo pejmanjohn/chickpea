@@ -30,6 +30,9 @@ test('a live coding sandbox gets the sandbox update route instead of a binding m
   const remote = fixture();
   remote.bindings.push({ name: 'SANDBOX', type: 'durable_object_namespace', namespace_id: 'ns-2', class_name: 'Sandbox' });
   assert.throws(() => validateInstallation(remote), /serves the coding sandbox.*npm run deploy:sandbox/s);
+  // Sandbox installs also carry the checkpoint bucket; it must not mask the route.
+  (remote.bindings as Array<Record<string, string>>).push({ name: 'BACKUP_BUCKET', type: 'r2_bucket', bucket_name: 'customer-backup-bucket' });
+  assert.throws(() => validateInstallation(remote), /serves the coding sandbox.*npm run deploy:sandbox/s);
 });
 test('inspection performs only reads and returns the serving inventory', () => {
   const calls: string[][] = [];

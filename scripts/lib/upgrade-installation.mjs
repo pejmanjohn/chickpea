@@ -75,6 +75,12 @@ export function validateInstallation(remote) {
   if (!secrets.includes('CHICKPEA_AUTH_SECRET') || !secrets.includes('CHICKPEA_CREDENTIAL_KEY_CURRENT_ID') || !secrets.some((name) => /^CHICKPEA_CREDENTIAL_KEY_(?!CURRENT_ID$)[A-Z0-9_]+$/.test(name))) {
     throw new Error('Permanent auth or credential-encryption secrets are missing. Restore the existing authority before upgrading.');
   }
+  // A core upgrade would drop a live coding sandbox; say so before any other
+  // binding check, since sandbox installs also carry sandbox-only resources
+  // (the checkpoint bucket) that a core upgrade does not recognize.
+  if ((remote.bindings ?? []).some((binding) => binding?.type === 'durable_object_namespace' && (binding.name === 'SANDBOX' || binding.class_name === 'Sandbox'))) {
+    throw new Error(`This installation serves the coding sandbox. ${SANDBOX_UPGRADE_UNSUPPORTED}`);
+  }
   const variables = {};
   const resources = [];
   const names = new Set();
@@ -100,11 +106,6 @@ export function validateInstallation(remote) {
   const databases = resources.filter((binding) => binding.type === 'd1');
   const databaseId = databases[0]?.id ?? databases[0]?.database_id;
   if (databases.length !== 1 || databases[0].name !== 'AUTH_DB' || typeof databaseId !== 'string' || !databaseId) throw new Error('Exactly one existing AUTH_DB is required.');
-  // A core upgrade would drop a live coding sandbox; say so instead of
-  // failing later on an unexplained binding mismatch.
-  if (resources.some((binding) => binding.type === 'durable_object_namespace' && (binding.name === 'SANDBOX' || binding.class_name === 'Sandbox'))) {
-    throw new Error(`This installation serves the coding sandbox. ${SANDBOX_UPGRADE_UNSUPPORTED}`);
-  }
   for (const binding of resources.filter((entry) => entry.type === 'durable_object_namespace')) {
     if (typeof binding.namespace_id !== 'string' || !binding.namespace_id || typeof binding.class_name !== 'string' || !binding.class_name) throw new Error('Unreadable Durable Object identity.');
   }

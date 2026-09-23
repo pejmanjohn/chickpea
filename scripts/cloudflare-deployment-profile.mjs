@@ -424,6 +424,11 @@ export function applyCloudflareDeploymentProfile(config, env = process.env, opti
         max_instances: 25,
       },
     ];
+    // Coding-workspace checkpoints. No bucket_name: Wrangler provisions the
+    // bucket on the first deploy and reuses it by binding name afterwards, so
+    // every install path (CLI, Deploy button, Workers Builds) gets one. The
+    // Worker's maintenance cron deletes checkpoints past their 3-day window.
+    config.r2_buckets = [...(config.r2_buckets ?? []), { binding: 'BACKUP_BUCKET' }];
   }
   return preparedTarget?.selected;
 }

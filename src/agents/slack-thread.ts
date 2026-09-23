@@ -254,7 +254,8 @@ interface ConfigurableCloudflareSandbox extends DestroyableSandbox, SandboxTurnC
   beginWorkspaceTurn(input: {
     fingerprint: string;
     turnId: string;
-  }): Promise<{ state: WorkspaceTurnState; reservationId: string }>;
+  }): Promise<{ state: WorkspaceTurnState; reservationId: string; restorable: boolean }>;
+  restoreWorkspace(fingerprint: string): Promise<'restored' | 'unavailable'>;
 }
 
 export class SealedAgentThreadError extends Error {
@@ -2047,6 +2048,8 @@ async function resolveAgentSandbox(options: AgentSandboxOptions): Promise<Sandbo
   const sandboxKey = sandboxThreadKey(options.conversationKey);
   let turnId: string | undefined;
   let reservationId: string | undefined;
+  let restorable = false;
+  const fingerprint = workspaceFingerprint(options.agentId, options.grants);
   // Never cache the stub in module state: it is bound to this agent DO's I/O
   // context, and the next turn in this thread may run in a different DO that
   // shares the isolate.
@@ -2065,11 +2068,9 @@ async function resolveAgentSandbox(options: AgentSandboxOptions): Promise<Sandbo
       // Reuse or retire the warm workspace before this turn's grants are
       // installed, so a different Agent or changed grants never see the prior
       // checkout.
-      const workspace = await candidate.beginWorkspaceTurn({
-        fingerprint: workspaceFingerprint(options.agentId, options.grants),
-        turnId,
-      });
+      const workspace = await candidate.beginWorkspaceTurn({ fingerprint, turnId });
       reservationId = workspace.reservationId;
+      restorable = workspace.restorable;
       await candidate.configureEgress(
         {
           grants: validEnabledRepositoryGrants(options.grants),
@@ -2096,6 +2097,9 @@ async function resolveAgentSandbox(options: AgentSandboxOptions): Promise<Sandbo
       if (!reservation.allowed) {
         throw new SandboxSessionCapError();
       }
+      // A cold follow-up resumes from the thread's checkpoint. The restore
+      // starts the container, so it happens only once the turn needs it.
+      if (restorable) await sandbox.restoreWorkspace(fingerprint);
     },
   );
   return cloudflareSandbox(contentFreeSandboxExec(serialized), { cwd: '/workspace' });

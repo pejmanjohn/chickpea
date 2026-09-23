@@ -14,7 +14,7 @@ const WORKSPACE_INSTRUCTIONS = [
   '',
   '## Workspace lifetime',
   '',
-  'The workspace belongs to this Slack thread. It stays warm between turns, so files from an earlier turn in this thread may still be there. It is wiped after 30 minutes without a turn, and whenever this Agent\'s repository access changes. Never assume either way: check before you clone.',
+  'The workspace belongs to this Slack thread. It stays warm between turns, so files from an earlier turn in this thread may still be there. After 30 minutes without a turn the container sleeps; when the thread resumes within three days, the workspace files are restored from a checkpoint, but installed dependencies such as `node_modules` or `.venv` are not, so reinstall them. The workspace is wiped when this Agent\'s repository access changes. Never assume either way: check before you clone.',
   '',
   '## Full workspace loop',
   '',

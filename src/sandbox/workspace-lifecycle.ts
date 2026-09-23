@@ -4,6 +4,25 @@ import { validEnabledRepositoryGrants } from './egress-handler.ts';
 
 const SANDBOX_WORKSPACE_STORAGE_KEY = 'chickpea.sandbox.workspace.v1';
 
+/** How long a thread's checkpoint can be restored after its last turn. */
+export const WORKSPACE_CHECKPOINT_TTL_SECONDS = 3 * 24 * 60 * 60;
+
+export const WORKSPACE_DIR = '/workspace';
+
+// Rebuildable dependency and cache trees stay out of checkpoints; the Agent
+// reinstalls them. Keep these to bare directory names: the Sandbox container
+// already adds a `... <name>` variant that matches at any depth, and a pattern
+// with a wildcard directory segment (for example `*/node_modules`) under that
+// prefix makes mksquashfs exclude everything, leaving an empty checkpoint.
+export const WORKSPACE_CHECKPOINT_EXCLUDES: readonly string[] = [
+  'node_modules',
+  '.venv',
+  '__pycache__',
+  '.next',
+  '.turbo',
+  '.cache',
+];
+
 /**
  * How a turn found the thread's coding workspace:
  * - `warm`: the container from an earlier turn is still running for the same
@@ -24,11 +43,23 @@ export interface WorkspaceTurnDecision {
   reservationId: string;
   /** The caller must destroy the running container before continuing. */
   retire: boolean;
+  /**
+   * A cold turn for the same owner whose last checkpoint has not expired. The
+   * caller restores it when the turn first uses the workspace.
+   */
+  restorable: boolean;
+}
+
+interface WorkspaceCheckpoint {
+  /** The Sandbox SDK's serializable backup handle. */
+  backup: unknown;
+  createdAt: number;
 }
 
 interface WorkspaceRecord {
   fingerprint: string;
   reservationId: string;
+  checkpoint?: WorkspaceCheckpoint;
 }
 
 /**
@@ -65,25 +96,68 @@ export class SandboxWorkspaceState {
     fingerprint: string;
     turnId: string;
     containerRunning: boolean;
+    now: number;
   }): Promise<WorkspaceTurnDecision> {
-    const stored = await this.storage.get<unknown>(SANDBOX_WORKSPACE_STORAGE_KEY);
-    const record = isWorkspaceRecord(stored) ? stored : undefined;
-    if (input.containerRunning && record?.fingerprint === input.fingerprint) {
-      return { state: 'warm', reservationId: record.reservationId, retire: false };
+    const record = await this.record();
+    const sameOwner = record?.fingerprint === input.fingerprint;
+    if (input.containerRunning && sameOwner && record) {
+      return {
+        state: 'warm',
+        reservationId: record.reservationId,
+        retire: false,
+        restorable: false,
+      };
     }
     // A running container without a matching record belongs to another owner
-    // or predates this record. Fail closed: retire it rather than guess.
+    // or predates this record. Fail closed: retire it rather than guess. A
+    // changed owner also drops the checkpoint, so it can never be restored.
     const retire = input.containerRunning;
+    const checkpoint =
+      !retire && sameOwner && record?.checkpoint && !checkpointExpired(record.checkpoint, input.now)
+        ? record.checkpoint
+        : undefined;
     await this.storage.put<WorkspaceRecord>(SANDBOX_WORKSPACE_STORAGE_KEY, {
       fingerprint: input.fingerprint,
       reservationId: input.turnId,
+      ...(checkpoint ? { checkpoint } : {}),
     });
     return {
       state: retire ? 'retired' : 'fresh',
       reservationId: input.turnId,
       retire,
+      restorable: checkpoint !== undefined,
     };
   }
+
+  /** Attach a new checkpoint to the current owner's record. */
+  async recordCheckpoint(backup: unknown, now: number): Promise<void> {
+    const record = await this.record();
+    if (!record) return;
+    await this.storage.put<WorkspaceRecord>(SANDBOX_WORKSPACE_STORAGE_KEY, {
+      ...record,
+      checkpoint: { backup, createdAt: now },
+    });
+  }
+
+  /**
+   * The backup handle to restore, re-checked against the owner at restore
+   * time so a handoff that interleaved since `beginTurn` gets nothing.
+   */
+  async checkpointForRestore(fingerprint: string, now: number): Promise<unknown> {
+    const record = await this.record();
+    if (!record || record.fingerprint !== fingerprint || !record.checkpoint) return undefined;
+    if (checkpointExpired(record.checkpoint, now)) return undefined;
+    return record.checkpoint.backup;
+  }
+
+  private async record(): Promise<WorkspaceRecord | undefined> {
+    const stored = await this.storage.get<unknown>(SANDBOX_WORKSPACE_STORAGE_KEY);
+    return isWorkspaceRecord(stored) ? stored : undefined;
+  }
+}
+
+function checkpointExpired(checkpoint: WorkspaceCheckpoint, now: number): boolean {
+  return now - checkpoint.createdAt >= WORKSPACE_CHECKPOINT_TTL_SECONDS * 1000;
 }
 
 function isWorkspaceRecord(value: unknown): value is WorkspaceRecord {
@@ -92,6 +166,10 @@ function isWorkspaceRecord(value: unknown): value is WorkspaceRecord {
   return (
     typeof candidate.fingerprint === 'string' &&
     typeof candidate.reservationId === 'string' &&
-    candidate.reservationId.length > 0
+    candidate.reservationId.length > 0 &&
+    (candidate.checkpoint === undefined ||
+      (typeof candidate.checkpoint === 'object' &&
+        candidate.checkpoint !== null &&
+        typeof candidate.checkpoint.createdAt === 'number'))
   );
 }
