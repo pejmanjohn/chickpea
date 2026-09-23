@@ -503,6 +503,8 @@ function runAdminPageHarness(
     egressPolicy?: EgressPolicyFixture;
     sandboxStatus?: SandboxStatusFixture;
     sandboxMutationError?: { status: number; error: string; message?: string };
+    browserStatus?: Record<string, unknown>;
+    browserKeyError?: { status: number; body: Record<string, unknown> };
     clipboard?: 'available' | 'defer' | 'missing' | 'reject' | 'throw';
     modelCatalogStatus?: ModelCatalogStatusFixture;
     deferModelCatalogStatus?: boolean;
@@ -2007,6 +2009,26 @@ function runAdminPageHarness(
           ],
         };
       return Promise.resolve(jsonResponse({ resolution }));
+    }
+    if (path === '/admin/api/browser/status' && method === 'GET') {
+      return Promise.resolve(jsonResponse(harnessOptions.browserStatus ?? {
+        provider: 'browserbase',
+        connected: false,
+        source: 'missing',
+        usage: { month: '2026-09', sessions: 0, seconds: 0 },
+      }));
+    }
+    if (path === '/admin/api/browser/key' && method === 'PUT') {
+      if (harnessOptions.browserKeyError) {
+        return Promise.resolve(jsonResponse(harnessOptions.browserKeyError.body, harnessOptions.browserKeyError.status));
+      }
+      return Promise.resolve(jsonResponse({
+        provider: 'browserbase',
+        connected: true,
+        source: 'stored',
+        keyHint: 'wxyz',
+        usage: { month: '2026-09', sessions: 0, seconds: 0 },
+      }));
     }
     if (path === '/admin/api/github/status' && method === 'GET' && githubStatus) {
       return Promise.resolve(jsonResponse(githubStatus));
@@ -16977,4 +16999,80 @@ test('Coding agents offers a retry when its client table cannot be read', async 
   );
   assert.match(harness.app.innerHTML, /data-action="mcp-clients-retry"/);
   assert.doesNotMatch(harness.app.innerHTML, /mcp-client-pick/);
+});
+
+test('Settings › Browser renders the Browserbase setup steps when no key is connected', async () => {
+  const harness = runAdminPageHarness({ initialPath: '/admin/settings/browser' });
+  await flushAsync();
+  await flushAsync();
+  const html = harness.app.innerHTML;
+  assert.match(html, /data-section="browser"[^>]*><span class="chan-name">Browser<\/span><span class="chan-meta">Real browser for Agents<\/span>/);
+  assert.match(html, /<h1 class="page-title">Browser<\/h1>/);
+  assert.match(html, /Not connected/);
+  assert.match(html, /Agents open a real browser to check pages and show you what they saw\./);
+  assert.match(html, /The free plan includes one browser hour a month\./);
+  assert.match(html, /Create a Browserbase project/);
+  assert.match(html, /Copy the project&rsquo;s API key/);
+  assert.match(html, /Paste it here/);
+  assert.match(html, /type="password"[^>]*placeholder="bb_live_&hellip;"[^>]*data-action="browser-key-input"/);
+  assert.match(html, /data-action="browser-connect">Connect<\/button>/);
+  assert.match(html, /Agents can open any public website whenever a task needs it\./);
+  assert.doesNotMatch(html, /Browser time this month/);
+  assert.ok(harness.fetchCalls.some((call) => call.path === '/admin/api/browser/status'));
+  assert.ok(!harness.fetchCalls.some((call) => call.path === '/admin/api/sandbox/status'));
+});
+
+test('Settings › Browser shows a rejected key without keeping it in the page', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/settings/browser',
+    browserKeyError: { status: 422, body: { error: 'invalid_key' } },
+  });
+  await flushAsync();
+  await flushAsync();
+  const click = harness.listeners.click;
+  const input = harness.listeners.input;
+  assert.ok(click && input);
+  input({ target: inputTarget({ 'data-action': 'browser-key-input' }, 'bb_live_wrongwrongwrong') });
+  click({ target: actionTarget({ 'data-action': 'browser-connect' }) });
+  await flushAsync();
+  await flushAsync();
+  const html = harness.app.innerHTML;
+  assert.match(html, /That key was not accepted by Browserbase\. Copy it again from Settings → API keys\./);
+  assert.ok(harness.fetchCalls.some((call) => call.path === '/admin/api/browser/key' && call.method === 'PUT'));
+});
+
+test('Settings › Browser renders the connected card with monthly usage', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/settings/browser',
+    browserStatus: {
+      provider: 'browserbase',
+      connected: true,
+      source: 'stored',
+      keyHint: 'a1b2',
+      projectId: 'proj_demo',
+      usage: { month: '2026-09', sessions: 7, seconds: 4_380 },
+    },
+  });
+  await flushAsync();
+  await flushAsync();
+  let html = harness.app.innerHTML;
+  assert.match(html, /<span class="badge badge-on"><span class="dot"><\/span>Ready<\/span>/);
+  assert.match(html, /Connected &middot; key ending &hellip;a1b2/);
+  assert.match(html, /<dt>Browser time this month<\/dt><dd>1 h 13 m<\/dd>/);
+  assert.match(html, /<dt>Sessions this month<\/dt><dd>7<\/dd>/);
+  assert.match(html, /<dt>Where the browser runs<\/dt><dd>one browser per session, destroyed afterwards<\/dd>/);
+  assert.match(html, /<dt>Recordings kept at Browserbase for<\/dt><dd>30 days<\/dd>/);
+  assert.match(html, /data-action="browser-replace-open">Replace key<\/button>/);
+  assert.match(html, /data-action="browser-disconnect-open">Disconnect<\/button>/);
+  assert.doesNotMatch(html, /data-action="browser-key-input"/);
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'browser-replace-open' }) });
+  html = harness.app.innerHTML;
+  assert.match(html, /data-action="browser-key-input"/);
+  click({ target: actionTarget({ 'data-action': 'browser-replace-cancel' }) });
+  click({ target: actionTarget({ 'data-action': 'browser-disconnect-open' }) });
+  html = harness.app.innerHTML;
+  assert.match(html, /data-action="browser-disconnect-confirm">Disconnect<\/button>/);
 });

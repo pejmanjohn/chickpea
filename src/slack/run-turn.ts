@@ -27,6 +27,7 @@ import {
 } from '../config/state-backend.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
+import { browserCapabilityForTurn } from '../browser/capability.ts';
 import type {
   SlackInteractionProgress,
   SlackInteractionProgressPatch,
@@ -1792,12 +1793,16 @@ async function freezeRuntimePlanForTurn(input: {
     canonicalModel,
     runtimeModel.providerAuthRoute,
   );
+  // A connected hosted browser mounts the browser tools. The key stays in
+  // settings and is read again at call time; only the flag is frozen.
+  const browserCapability = await browserCapabilityForTurn(settingsStore, input.platformEnv);
   const candidate = compileRuntimePlanV2({
     turn: input.turn,
     assignment: input.assignment,
     runtimeModel: runtimeModel.model,
     ...(runtimeModelRoute ? { runtimeModelRoute } : {}),
     imageCapability,
+    ...(browserCapability ? { browserCapability } : {}),
     instructions,
     memoryEpoch: input.memoryEpoch,
     sandboxMode: sandboxDecision.selection,

@@ -1064,3 +1064,60 @@ test('a stricter image call limit survives replay and rotates the tool harness',
   const controls = compile({ imageCapability: { role: 'image', filled: true, acceptsImageInput: false, maxOutputsPerCall: 1 } });
   assert.notEqual(single.harnessRevision, controls.harnessRevision);
 });
+
+test('the browser capability round-trips, rotates the harness, and never carries a key', () => {
+  const enabled = compile({ browserCapability: { provider: 'browserbase', enabled: true } });
+  const disabled = compile({ browserCapability: { provider: 'browserbase', enabled: false } });
+  const legacy = compile();
+
+  assert.deepEqual(enabled.browserCapability, { provider: 'browserbase', enabled: true });
+  const reparsed = parseRuntimePlanV2(structuredClone(enabled));
+  assert.deepEqual(reparsed.browserCapability, enabled.browserCapability);
+  assert.equal(reparsed.harnessRevision, enabled.harnessRevision);
+
+  assert.equal(Object.hasOwn(legacy, 'browserCapability'), false);
+  assert.equal(parseRuntimePlanV2(structuredClone(legacy)).browserCapability, undefined);
+  assert.equal(legacy.schemaVersion, 3);
+
+  assert.notEqual(enabled.harnessRevision, legacy.harnessRevision);
+  assert.notEqual(enabled.harnessRevision, disabled.harnessRevision);
+  assert.equal(JSON.stringify(enabled).includes('bb_'), false);
+
+  // A tampered capability no longer matches the frozen harness revision.
+  assert.throws(
+    () => parseRuntimePlanV2({ ...structuredClone(disabled), browserCapability: { provider: 'browserbase', enabled: true } }),
+    /harnessRevision does not match/,
+  );
+  assert.throws(
+    () => parseRuntimePlanV2({ ...structuredClone(enabled), browserCapability: { provider: 'browserbase', enabled: true, apiKey: 'bb_live_x' } }),
+    /browserCapability has unknown field apiKey/,
+  );
+  assert.throws(
+    () => parseRuntimePlanV2({ ...structuredClone(enabled), browserCapability: { provider: 'steel', enabled: true } }),
+    /browserCapability.provider is invalid/,
+  );
+  assert.throws(
+    () => parseRuntimePlanV2({ ...structuredClone(enabled), browserCapability: { provider: 'browserbase', enabled: 'yes' } }),
+    /browserCapability.enabled must be a boolean/,
+  );
+});
+
+test('an enabled browser registers browsing and proof activity and the skill family', () => {
+  const context = buildRuntimePlanActivityContext(compile({
+    sandboxMode: 'bash',
+    browserCapability: { provider: 'browserbase', enabled: true },
+  }));
+  const descriptors = new Map(
+    context.toolDescriptors?.map(({ toolName, descriptor }) => [toolName, descriptor]),
+  );
+  for (const name of ['browser_open', 'browser_snapshot', 'browser_act', 'browser_look']) {
+    assert.equal(descriptors.get(name)?.target, 'unknown', name);
+  }
+  assert.equal(descriptors.get('browser_screenshot')?.target, 'artifact');
+  assert.equal(descriptors.get('browser_recording')?.target, 'artifact');
+  assert.ok((context.enabledFamilies ?? []).includes('skill'));
+
+  const off = buildRuntimePlanActivityContext(compile({ sandboxMode: 'bash' }));
+  const offNames = new Set(off.toolDescriptors?.map(({ toolName }) => toolName));
+  assert.equal(offNames.has('browser_open'), false);
+});

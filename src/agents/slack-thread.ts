@@ -15,6 +15,7 @@ import {
   useMcpConnection,
   useModel,
   useSandbox,
+  useAgentFinish,
   useSkill,
   useTool,
 } from '@flue/runtime';
@@ -170,6 +171,14 @@ import {
 } from '../sandbox/image-tool.ts';
 import { createImageOutputStore } from '../images/output-store.ts';
 import { inspectImageOutput, type ImageInspectionInput } from '../images/inspect-output.ts';
+import { createBrowserbaseProvider } from '../browser/browserbase.ts';
+import { connectCdpSocket } from '../browser/cdp.ts';
+import { answerScreenshotQuestion } from '../browser/look.ts';
+import { browserSessionFor, createLazyBrowserProvider, endBrowserSessionFor } from '../browser/runtime.ts';
+import { recordBrowserSessionUsage, resolveBrowserSettings } from '../browser/settings.ts';
+import { browserSkillForPlan } from '../browser/skill.ts';
+import { createBrowserTools } from '../browser/tools.ts';
+import { BrowserTurnSession } from '../browser/turn-session.ts';
 import { isProviderKeyId, resolveProviderApiKey } from '../config/provider-keys.ts';
 import { workspaceSkillForSandbox } from '../sandbox/workspace-skill.ts';
 import { publishActivityStatus } from '../slack/activity-publisher.ts';
@@ -1410,10 +1419,14 @@ function runtimePlanRepositoryOwner(repository: RuntimePlanRepositoryV2): string
  * sandbox-derived workspace skill last so no stored Agent skill can hide it.
  */
 export function runtimePlanSkills(
-  plan: Pick<RuntimePlanV2, 'apiConnections' | 'repositories' | 'skills' | 'sandbox'>,
+  plan: Pick<RuntimePlanV2, 'apiConnections' | 'repositories' | 'skills' | 'sandbox' | 'browserCapability'>,
+  options: { browser?: boolean } = {},
 ): ReturnType<typeof resolveProfileSkills> {
   const agentSkills = plan.skills.map((entry) => ({ ...entry, enabled: true }));
   const workspaceSkill = workspaceSkillForSandbox(plan.sandbox.mode);
+  // The browser skill rides with its tools; like the workspace skill it comes
+  // last so a stored Agent skill cannot hide it.
+  const browserSkill = options.browser === false ? undefined : browserSkillForPlan(plan);
   return resolveProfileSkills(
     [
       ...suppressProfileNamedConnectorSkills(
@@ -1422,6 +1435,7 @@ export function runtimePlanSkills(
       ),
       ...agentSkills,
       ...(workspaceSkill ? [workspaceSkill] : []),
+      ...(browserSkill ? [browserSkill] : []),
     ],
     { reservedNames: [AGENT_AUTHORING_SKILL_NAME] },
   );
@@ -1501,7 +1515,24 @@ export function useRuntimePlanAgent(
       JSON.stringify(plan.apiConnections.map(({ id, displayName, allowedHosts, pathPrefixes, allowedMethods }) => ({ id, displayName, allowedHosts, pathPrefixes, allowedMethods }))),
     ].join('\n'));
   }
-  for (const skill of runtimePlanSkills(plan)) {
+  // A connected browser mounts with the artifact tools, whose staging carries
+  // its proof. The session outlives re-renders within the response and always
+  // ends when the response would stop.
+  const browserMounted = plan.browserCapability?.enabled === true &&
+    !options.artifactToolsDisabled && !fileCompletion.repairing;
+  const browserSession = browserMounted
+    ? browserSessionFor(id, createRuntimePlanBrowserSession)
+    : undefined;
+  if (browserSession) {
+    useAgentFinish(async () => {
+      try {
+        await endBrowserSessionFor(id);
+      } catch {
+        console.warn('[chickpea] Browser session did not end cleanly; the provider timeout will end it');
+      }
+    });
+  }
+  for (const skill of runtimePlanSkills(plan, { browser: browserMounted })) {
     useSkill(skill);
   }
   const { restrictions, metaHelperScopes, metaWriteScopes } = projectMcpPolicyInstructions(plan.mcpConnections);
@@ -1541,7 +1572,7 @@ export function useRuntimePlanAgent(
       plan,
       artifactAccumulator,
       writeArtifactReceipts,
-      { imageInventory, reserveImageCall, fileCompletion },
+      { imageInventory, reserveImageCall, fileCompletion, ...(browserSession ? { browserSession } : {}) },
     )) {
       useTool(tool);
     }
@@ -1925,12 +1956,65 @@ export function createRuntimePlanArtifactTools(
     reuseImage: async (input: { record: ThreadImageRecord; filename: string; byteLength: number }) =>
       reuseImageWithReceipt({ ...input, destination, accumulator, writeReceipts: writeArtifactReceipts }),
   } : undefined;
+  const browserSession = plan.browserCapability?.enabled === true && !options.fileCompletion?.repairing
+    ? options.browserSession ?? createRuntimePlanBrowserSession()
+    : undefined;
+  const browserTools = browserSession
+    ? createBrowserTools({
+        session: browserSession,
+        provider: browserSession.provider,
+        stageArtifact: binding.stageArtifact,
+        transportMaxBytes: async () => (await resolveFileTransport()).maxBytes,
+        // Same route as the image tool's inspection: the frozen chat model
+        // with the provider key read at call time.
+        inspectScreenshot: async (input) => {
+          const env = await resolveAgentPlatformEnv();
+          const model = await prepareRuntimePlanModel(plan, env);
+          const provider = plan.model.split('/', 1)[0] ?? '';
+          const apiKey = isProviderKeyId(provider)
+            ? (await resolveProviderApiKey(provider, env, getSettingsStore(env))).apiKey
+            : provider === 'cloudflare-workers-ai' ? process.env.CLOUDFLARE_API_TOKEN : undefined;
+          return answerScreenshotQuestion(model.model, input, apiKey);
+        },
+        log: { warn: (message) => console.warn(`[chickpea] ${message}`) },
+      })
+    : [];
   return [
     createWorkspaceArtifactTool({ ...binding, sandboxKind: plan.sandbox.mode }, options.fileCompletion?.deliver),
     ...(options.fileCompletion ? [options.fileCompletion.tool({ ...binding, sandboxKind: plan.sandbox.mode })] : []),
     ...(!options.fileCompletion?.repairing && imageOptions
       ? [createImageArtifactTool(imageOptions), createRecoverImageTool(imageOptions)] : []),
+    ...browserTools,
   ];
+}
+
+/**
+ * A lazily connected browser session for one hook-mounted turn. The key is
+ * read from current settings on first use, never from the plan, and each
+ * ended session is tallied into the install's monthly browser usage.
+ */
+export function createRuntimePlanBrowserSession(): BrowserTurnSession {
+  const provider = createLazyBrowserProvider(async () => {
+    const env = await resolveAgentPlatformEnv();
+    const settings = await resolveBrowserSettings(getSettingsStore(env), env ?? process.env);
+    if (!settings.apiKey) return undefined;
+    return createBrowserbaseProvider({
+      apiKey: settings.apiKey,
+      ...(settings.projectId ? { projectId: settings.projectId } : {}),
+    });
+  });
+  return new BrowserTurnSession({
+    provider,
+    connect: (connectUrl) => connectCdpSocket(connectUrl),
+    onClosed: async ({ sessionId, seconds }) => {
+      try {
+        const env = await resolveAgentPlatformEnv();
+        await recordBrowserSessionUsage({ store: getSettingsStore(env), sessionId, seconds });
+      } catch {
+        console.warn('[chickpea] Browser usage could not be recorded for a finished session');
+      }
+    },
+  });
 }
 
 export interface RuntimePlanArtifactToolOptions {
@@ -1943,6 +2027,8 @@ export interface RuntimePlanArtifactToolOptions {
   reserveImageCall?: ImageCallReservation | undefined;
   /** Focused seam; production resolves the role and provider at call time. */
   resolveImageClient?: (() => Promise<ImageClientResolution>) | undefined;
+  /** The response's browser session; the render keeps one per instance. */
+  browserSession?: BrowserTurnSession | undefined;
 }
 
 /**

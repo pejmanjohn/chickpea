@@ -43,6 +43,15 @@ import { requestOrigin } from '../http/request-origin.ts';
 import { connectOrigin } from '../management/connect.ts';
 import { mcpClientsPayload } from '../management/mcp-client-config.ts';
 import { createUsageAdminApi } from './usage-api.ts';
+import {
+  BROWSER_ENV_VARS,
+  clearBrowserSettings,
+  looksLikeBrowserbaseKey,
+  readBrowserMonthlyUsage,
+  resolveBrowserSettings,
+  saveBrowserSettings,
+} from '../browser/settings.ts';
+import { verifyBrowserbaseApiKey, type BrowserbaseKeyVerification } from '../browser/browserbase.ts';
 import { createWorkAdminApi } from './work-api.ts';
 import { createTeamAdminApi } from './team-api.ts';
 import { readProposalApprovalStatus } from './proposal-status.ts';
@@ -767,6 +776,8 @@ function adminEnvironmentTimestamp(input: unknown): input is string {
 
 interface AdminRoutesOptions {
   updateFetch?: typeof fetch | undefined;
+  /** Test seam for Settings › Browser: checks a pasted Browserbase key. */
+  browserKeyVerifier?: ((apiKey: string) => Promise<BrowserbaseKeyVerification>) | undefined;
   // Injection seam for tests/harnesses: any async ConfigStore serves the
   // routes; absent, the platform backend is resolved per request (c.env is the
   // Cloudflare bindings object there; Node ignores it).
@@ -1506,6 +1517,11 @@ const sandboxSettingsSchema = v.object({
   readinessConfirmed: v.optional(v.boolean()),
   allowedHosts: v.array(v.picklist(SANDBOX_PACKAGE_REGISTRY_HOSTS)),
   monthlySessionCap: v.pipe(v.number(), v.integer(), v.minValue(0), v.maxValue(100_000)),
+});
+
+const browserKeySchema = v.object({
+  apiKey: v.pipe(v.string(), v.minLength(1), v.maxLength(512)),
+  projectId: v.optional(v.pipe(v.string(), v.maxLength(200))),
 });
 
 const sandboxAdvancedSettingsSchema = v.object({
@@ -7098,6 +7114,85 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       store(c),
       c.env as PlatformEnv | undefined,
     ));
+  });
+
+  // Settings › Browser: one hosted-browser key per install. The response
+  // carries only what the Admin card shows (key hint, project, monthly usage).
+  const browserEnv = (c: Context): Record<string, unknown> => {
+    const platformEnv = (c.env ?? {}) as Record<string, unknown>;
+    const pick = (name: string) =>
+      typeof platformEnv[name] === 'string' ? platformEnv[name] : process.env[name];
+    return {
+      [BROWSER_ENV_VARS.apiKey]: pick(BROWSER_ENV_VARS.apiKey),
+      [BROWSER_ENV_VARS.projectId]: pick(BROWSER_ENV_VARS.projectId),
+    };
+  };
+  const browserStatus = async (c: Context) => {
+    const settingsStore = settings(c);
+    const [resolved, usage] = await Promise.all([
+      resolveBrowserSettings(settingsStore, browserEnv(c)),
+      readBrowserMonthlyUsage(settingsStore),
+    ]);
+    return {
+      provider: resolved.provider,
+      connected: resolved.connected,
+      source: resolved.source,
+      ...(resolved.source === 'env' ? { envVar: BROWSER_ENV_VARS.apiKey } : {}),
+      ...(resolved.keyHint ? { keyHint: resolved.keyHint } : {}),
+      ...(resolved.projectId ? { projectId: resolved.projectId } : {}),
+      usage,
+    };
+  };
+  const verifyBrowserKey = options.browserKeyVerifier
+    ?? ((apiKey: string) => verifyBrowserbaseApiKey({ apiKey }));
+
+  app.get('/admin/api/browser/status', async (c) => {
+    try {
+      return c.json(await browserStatus(c));
+    } catch (err) {
+      return internalError(c, err);
+    }
+  });
+
+  app.put('/admin/api/browser/key', async (c) => {
+    const parsed = v.safeParse(browserKeySchema, await readJson(c.req));
+    if (!parsed.success) {
+      return invalidRequest(c);
+    }
+    try {
+      const current = await resolveBrowserSettings(settings(c), browserEnv(c));
+      if (current.source === 'env') {
+        return c.json({ error: 'browser_key_read_only', envVar: BROWSER_ENV_VARS.apiKey }, 409);
+      }
+      const apiKey = parsed.output.apiKey.trim();
+      if (!looksLikeBrowserbaseKey(apiKey)) {
+        return c.json({ error: 'invalid_key' }, 422);
+      }
+      const verified = await verifyBrowserKey(apiKey);
+      if (!verified.ok) {
+        return verified.reason === 'invalid_key'
+          ? c.json({ error: 'invalid_key' }, 422)
+          : c.json({ error: 'provider_unreachable' }, 502);
+      }
+      const projectId = parsed.output.projectId?.trim() || verified.projectId;
+      await saveBrowserSettings(settings(c), { apiKey, ...(projectId ? { projectId } : {}) });
+      return c.json(await browserStatus(c));
+    } catch (err) {
+      return internalError(c, err);
+    }
+  });
+
+  app.delete('/admin/api/browser/key', async (c) => {
+    try {
+      const current = await resolveBrowserSettings(settings(c), browserEnv(c));
+      if (current.source === 'env') {
+        return c.json({ error: 'browser_key_read_only', envVar: BROWSER_ENV_VARS.apiKey }, 409);
+      }
+      await clearBrowserSettings(settings(c));
+      return c.json(await browserStatus(c));
+    } catch (err) {
+      return internalError(c, err);
+    }
   });
 
   app.get('/admin/api/github/status', async (c) => {

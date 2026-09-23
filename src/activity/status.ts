@@ -342,6 +342,18 @@ export function toolActivityStatus(
   if (toolName === 'recover_image') {
     return activityStatus('finishing', 'Attaching', 'a saved image');
   }
+  if (toolName === 'browser_open' || toolName === 'browser_snapshot' || toolName === 'browser_act') {
+    return activityStatus('running', 'Browsing', 'a website');
+  }
+  if (toolName === 'browser_look') {
+    return activityStatus('checking', 'Looking at', 'a web page');
+  }
+  if (toolName === 'browser_screenshot') {
+    return activityStatus('finishing', 'Attaching', 'a screenshot');
+  }
+  if (toolName === 'browser_recording') {
+    return activityStatus('finishing', 'Attaching', 'a browser recording');
+  }
   return activityStatus('running', 'Working with', 'a tool');
 }
 

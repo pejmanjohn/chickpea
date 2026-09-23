@@ -30,6 +30,7 @@ export const CANONICAL_ADMIN_VISUAL_STATES = Object.freeze({
   settingsUpdates: Object.freeze({ path: '/admin/settings/updates', actions: Object.freeze(['Preview report']) }),
   settingsProviders: Object.freeze({ path: '/admin/settings/providers', actions: Object.freeze([]) }),
   settingsCodingAgents: Object.freeze({ path: '/admin/settings/agents-clients', actions: Object.freeze([]) }),
+  settingsBrowser: Object.freeze({ path: '/admin/settings/browser', actions: Object.freeze([]) }),
   agentInstructions: Object.freeze({ path: '/admin/agents/agent_research', actions: Object.freeze([]) }),
   agentBlankDescription: Object.freeze({ path: '/admin/agents/agent_customer', actions: Object.freeze([]) }),
   agentMemory: Object.freeze({ path: '/admin/agents/agent_research', actions: Object.freeze(['Memory']) }),

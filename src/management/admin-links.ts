@@ -17,6 +17,7 @@ export const ADMIN_SETTINGS_SECTIONS = {
   providers: 'Model providers',
   github: 'GitHub',
   sandbox: 'Coding sandbox',
+  browser: 'Browser',
   outbound: 'Outbound access',
   'agents-clients': 'MCP',
 } as const;

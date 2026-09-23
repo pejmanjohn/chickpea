@@ -493,6 +493,7 @@ test('canonical visual states use authenticated production URLs and UI actions o
       settingsProviders: { path: '/admin/settings/providers', actions: [] },
       settingsUpdates: { path: '/admin/settings/updates', actions: ['Preview report'] },
       settingsCodingAgents: { path: '/admin/settings/agents-clients', actions: [] },
+      settingsBrowser: { path: '/admin/settings/browser', actions: [] },
       agentInstructions: { path: '/admin/agents/agent_research', actions: [] },
       agentBlankDescription: { path: '/admin/agents/agent_customer', actions: [] },
       agentMemory: { path: '/admin/agents/agent_research', actions: ['Memory'] },
