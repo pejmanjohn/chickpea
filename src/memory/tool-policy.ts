@@ -43,7 +43,15 @@ interface CurrentRequestEnvelopeV1 extends CurrentRequestEnvelopeBase {
 interface CurrentRequestEnvelopeV2 extends CurrentRequestEnvelopeBase {
   schemaVersion: 2;
   progressiveStreamingOffered: boolean;
+  /**
+   * Written only for a final-answer offer. Builds that predate it reject the
+   * whole envelope, so a rollback withholds stream_answer instead of offering
+   * the early-mode contract to an effect-capable Agent.
+   */
+  progressiveStreamingMode?: ProgressiveStreamingMode;
 }
+
+export type ProgressiveStreamingMode = 'early' | 'final_answer';
 
 export type CurrentRequestEnvelope = CurrentRequestEnvelopeV1 | CurrentRequestEnvelopeV2;
 
@@ -120,6 +128,7 @@ export function serializeCurrentRequestEnvelope(
   options: {
     schemaVersion?: 1 | 2;
     progressiveStreamingOffered?: boolean;
+    progressiveStreamingMode?: ProgressiveStreamingMode;
   } = {},
 ): string {
   const shared: CurrentRequestEnvelopeBase = {
@@ -138,6 +147,12 @@ export function serializeCurrentRequestEnvelope(
         ...shared,
         schemaVersion: 2,
         progressiveStreamingOffered: options.progressiveStreamingOffered === true,
+        // Early is the default and keeps the wire shape older builds accept;
+        // the parser still reads an explicit 'early'.
+        ...(options.progressiveStreamingOffered === true &&
+            options.progressiveStreamingMode === 'final_answer'
+          ? { progressiveStreamingMode: 'final_answer' as const }
+          : {}),
       };
   const markers = schemaVersion === 1
     ? [MEMORY_CURRENT_REQUEST_ENVELOPE_START, MEMORY_CURRENT_REQUEST_ENVELOPE_END]
@@ -256,6 +271,16 @@ export function currentRequestOffersProgressiveStreaming(
   return envelope?.schemaVersion === 2 && envelope.progressiveStreamingOffered;
 }
 
+/** The declaration contract of an offered envelope; absent means early. */
+export function currentRequestProgressiveStreamingMode(
+  envelope: CurrentRequestEnvelope | undefined,
+): ProgressiveStreamingMode | undefined {
+  if (!currentRequestOffersProgressiveStreaming(envelope)) return undefined;
+  return envelope?.schemaVersion === 2 && envelope.progressiveStreamingMode === 'final_answer'
+    ? 'final_answer'
+    : 'early';
+}
+
 function parseCurrentRequestEnvelopeVersion(
   prompt: string,
   schemaVersion: 1 | 2,
@@ -284,7 +309,9 @@ function parseCurrentRequestEnvelopeVersion(
       'slackActorId',
       'slackMessageTs',
       'progressiveStreamingOffered',
+      'progressiveStreamingMode',
     ]);
+    const hasStreamingMode = value.progressiveStreamingMode !== undefined;
     const hasSlackCoordinates = value.slackActorId !== undefined &&
       value.slackMessageTs !== undefined;
     const hasScopedEffectIntents = value.externalSideEffectIntents !== undefined;
@@ -304,6 +331,12 @@ function parseCurrentRequestEnvelopeVersion(
         typeof value.explicitArtifactDeliveryIntent !== 'boolean') ||
       (schemaVersion === 2 && typeof value.progressiveStreamingOffered !== 'boolean') ||
       (schemaVersion === 1 && value.progressiveStreamingOffered !== undefined) ||
+      (hasStreamingMode && (
+        schemaVersion !== 2 ||
+        value.progressiveStreamingOffered !== true ||
+        (value.progressiveStreamingMode !== 'early' &&
+          value.progressiveStreamingMode !== 'final_answer')
+      )) ||
       (value.slackActorId !== undefined && !isSlackActorId(value.slackActorId)) ||
       (value.slackMessageTs !== undefined && !isSlackMessageTs(value.slackMessageTs)) ||
       (value.slackActorId === undefined) !== (value.slackMessageTs === undefined) ||
@@ -311,7 +344,7 @@ function parseCurrentRequestEnvelopeVersion(
       keys.length !== (hasSlackCoordinates ? 5 : 3) +
         (value.explicitArtifactDeliveryIntent !== undefined ? 1 : 0) +
         (schemaVersion === 2 ? 1 : 0) + (hasScopedEffectIntents ? 1 : 0) +
-        (hasManagedCapabilityIntents ? 1 : 0)
+        (hasManagedCapabilityIntents ? 1 : 0) + (hasStreamingMode ? 1 : 0)
     ) {
       return undefined;
     }
@@ -342,6 +375,9 @@ function parseCurrentRequestEnvelopeVersion(
           ...shared,
           schemaVersion: 2,
           progressiveStreamingOffered: value.progressiveStreamingOffered as boolean,
+          ...(hasStreamingMode
+            ? { progressiveStreamingMode: value.progressiveStreamingMode as ProgressiveStreamingMode }
+            : {}),
         };
   } catch {
     return undefined;

@@ -80,7 +80,10 @@ import {
   decideProgressiveEligibility,
   type ProgressiveEligibilityDecision,
 } from './progressive-eligibility.ts';
-import type { SlackPresentationOwner } from './run-presentations.ts';
+import {
+  progressiveStreamingModeForReason,
+  type SlackPresentationOwner,
+} from './run-presentations.ts';
 import { slackProgressiveStreamingEnabled } from './progressive-ops-flag.ts';
 import { slackSemanticActivityStatusEnabled } from './semantic-status-flag.ts';
 import {
@@ -1081,13 +1084,19 @@ export async function runTurn(
         frozenProgressiveEligibility = candidate;
       }
     }
+    const offeredEligibility =
+      currentRequestPolicyVersion === 2 && frozenProgressiveEligibility?.allowed === true
+        ? frozenProgressiveEligibility
+        : undefined;
     const prompt = assembleSlackPrompt(turn, context, {
       ...(handoffBlock ? { handoffBlock } : {}),
       ...(preparedMemory?.promptBlock ? { memoryBlock: preparedMemory.promptBlock } : {}),
       memorySelected: (preparedMemory?.selection?.entries.length ?? 0) > 0,
       currentRequestPolicyVersion,
-      progressiveStreamingOffered:
-        currentRequestPolicyVersion === 2 && frozenProgressiveEligibility?.allowed === true,
+      progressiveStreamingOffered: offeredEligibility !== undefined,
+      ...(offeredEligibility
+        ? { progressiveStreamingMode: progressiveStreamingModeForReason(offeredEligibility.reason) }
+        : {}),
       ...(installationContext
         ? {
             slackApp: {

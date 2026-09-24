@@ -14,7 +14,10 @@ import { getConfigStore } from '../src/config/state-backend.ts';
 import type { CustomAgentConfig, ResolvedAssignment } from '../src/config/types.ts';
 
 import { hashRoutineValue } from '../src/routines/ids.ts';
-import { parseCurrentRequestEnvelope } from '../src/memory/tool-policy.ts';
+import {
+  currentRequestProgressiveStreamingMode,
+  parseCurrentRequestEnvelope,
+} from '../src/memory/tool-policy.ts';
 import {
   normalizeRoutineModelResult,
   prepareRoutinePrompt,
@@ -125,6 +128,10 @@ test('a private routine hydrates only its stored thread with the saved task as a
   assert.match(prepared.prompt, /Slack history.*untrusted background/i);
   assert.match(prepared.prompt, /Current Slack request[\s\S]*<@UBOT>, attach the CSV report/);
   assert.ok(parseCurrentRequestEnvelope(prepared.prompt));
+  // Routines never run the Slack turn path that builds a progressive relay,
+  // so their envelope never offers stream_answer in either mode.
+  assert.equal(currentRequestProgressiveStreamingMode(parseCurrentRequestEnvelope(prepared.prompt)), undefined);
+  assert.doesNotMatch(prepared.prompt, /progressiveStreamingMode/);
 });
 
 test('scheduled thread prompts recover bounded admitted corrections', async () => {

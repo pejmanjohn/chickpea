@@ -25,6 +25,7 @@ import {
   SLACK_STREAM_ANSWER_ACKNOWLEDGEMENT,
   SLACK_STREAM_ANSWER_TOOL_NAME,
 } from '../src/slack/presentation-intent.ts';
+import { ReceiptScopedTextRelay } from '../src/slack/progressive-relay.ts';
 
 const MODEL = 'faux/characterization';
 let failStreamDeclaration = false;
@@ -62,6 +63,12 @@ function StreamIntentProbe() {
     description: 'Return one synthetic lookup result.',
     output: v.string(),
     run: () => ({ output: 'synthetic lookup result' }),
+  });
+  useTool({
+    name: 'failing_lookup',
+    description: 'Fail one synthetic lookup.',
+    output: v.string(),
+    run: () => { throw new Error('synthetic lookup failure'); },
   });
   return 'Use stream_answer only before useful stable answer text.';
 }
@@ -412,6 +419,78 @@ test(
       assert.ok(firstRead.events.every(({ chunk }) =>
         Number.isInteger(chunk.position.batch) && Number.isInteger(chunk.position.index)
       ));
+    } finally {
+      await flue.stop();
+    }
+  },
+);
+
+test(
+  'Flue orders tool work, a final-answer declaration, and the final step for the relay',
+  { timeout: 30_000 },
+  async () => {
+    const faux = fauxProvider({
+      models: [{ id: 'characterization', reasoning: true }],
+      tokensPerSecond: 100,
+      tokenSize: { min: 3, max: 3 },
+    });
+    const flue = await start({
+      agents: [{ agent: StreamIntentProbe, name: 'stream-intent-characterization' }],
+      providers: [faux.provider],
+    });
+    try {
+      for (const toolName of ['lookup', 'failing_lookup']) {
+        const answer = `## Findings\n\nThe ${toolName} step settled before this final answer.`;
+        faux.setResponses([
+          fauxAssistantMessage([fauxText('Checking first. '), fauxToolCall(toolName, {})], {
+            stopReason: 'toolUse',
+          }),
+          fauxAssistantMessage([fauxToolCall(SLACK_STREAM_ANSWER_TOOL_NAME, {})], {
+            stopReason: 'toolUse',
+          }),
+          fauxAssistantMessage(answer),
+        ]);
+        const handle = init(StreamIntentProbe, { id: `stream-final-${toolName}` });
+        const receipt = await handle.dispatch('Look this up, then explain in depth.');
+        const read = await capture(handle, receipt);
+
+        const order = read.events.flatMap(({ chunk }) => {
+          if (chunk.type === 'tool-input') return [`input:${chunk.toolName}`];
+          if (chunk.type === 'tool-output') return ['output'];
+          if (chunk.type === 'tool-output-error') return ['error'];
+          if (chunk.type === 'message-started' && chunk.submissionId === receipt.submissionId) {
+            return ['step'];
+          }
+          return [];
+        });
+        assert.deepEqual(order, [
+          'step', `input:${toolName}`, toolName === 'lookup' ? 'output' : 'error',
+          'step', `input:${SLACK_STREAM_ANSWER_TOOL_NAME}`, 'output',
+          'step',
+        ], toolName);
+        assert.equal(messageIdsFor(read.events, receipt.submissionId).length, 1);
+
+        // Replaying the read through a final-answer relay releases exactly
+        // the final step, never the earlier narration.
+        const appended: string[] = [];
+        const intents: string[] = [];
+        const relay = new ReceiptScopedTextRelay({
+          submissionId: receipt.submissionId,
+          mode: 'final_answer',
+          modelIntent: {
+            initial: { status: 'unresolved' },
+            async transition(intent) { intents.push(intent.kind); },
+          },
+          async append(chunk) { appended.push(chunk.delta); },
+          async invalidate(reason) { assert.fail(`unexpected invalidation: ${reason}`); },
+        });
+        for (const { chunk } of read.events) relay.onEvent(chunk);
+        const summary = await relay.closeAndDrain();
+        assert.deepEqual(intents, ['candidate', 'requested'], toolName);
+        assert.equal(appended.join(''), answer, toolName);
+        assert.equal(summary.targetMessageCompleted, true);
+        assert.ok(read.reply.text.endsWith(answer), toolName);
+      }
     } finally {
       await flue.stop();
     }

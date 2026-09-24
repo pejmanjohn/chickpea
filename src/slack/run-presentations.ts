@@ -6,6 +6,7 @@ import type {
   SemanticActivityPhase,
   SemanticTargetFamily,
 } from '../activity/status.ts';
+import type { ProgressiveStreamingMode } from '../memory/tool-policy.ts';
 import { hasCredentialLikeContent } from '../security/content-validation.ts';
 
 export const SLACK_PRESENTATION_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
@@ -26,6 +27,9 @@ const DEFAULT_SLACK_ACTIVITY_STATUS_BUDGET = {
 
 export type SlackProgressiveEligibilityReason =
   | 'safe_early_release'
+  // Effect-capable plans: answer text may stream only after a declaration the
+  // model makes once its last tool has settled.
+  | 'final_answer_release'
   | 'operations_disabled'
   | 'memory'
   // Retired: a Cloudflare sandbox always carries repository grants, so
@@ -83,6 +87,9 @@ export type SlackProgressiveIntentDenialReason =
   | 'declaration_failed'
   | 'mismatched_declaration'
   | 'non_presentation_tool'
+  // A final-answer declaration shared its model step with another tool, or
+  // arrived while an earlier tool call was still unsettled.
+  | 'concurrent_tool'
   | 'structured_output'
   | 'reset'
   | 'identity_conflict'
@@ -1238,7 +1245,7 @@ export class SlackRunPresentationStoreLogic {
       const eligibility = presentation.progressiveEligibility.status === 'pending'
         ? 'pending'
         : presentation.progressiveEligibility.allowed
-          ? 'allowed'
+          ? `allowed:${presentation.progressiveEligibility.reason}`
           : `denied:${presentation.progressiveEligibility.reason}`;
       increment(summary.eligibility, eligibility);
       increment(summary.outcomes, presentation.stream.presentationOutcome ?? 'pending');
@@ -1419,10 +1426,10 @@ function applyMutation(
       if (current.progressiveEligibility.status !== 'pending') {
         throw stateError('eligibility_frozen', 'Progressive eligibility is already frozen.');
       }
-      if (mutation.eligibility.allowed && mutation.eligibility.reason !== 'safe_early_release') {
+      if (mutation.eligibility.allowed && !isAllowedProgressiveReason(mutation.eligibility.reason)) {
         throw stateError('invalid_input', 'Allowed progressive eligibility requires safe release.');
       }
-      if (!mutation.eligibility.allowed && mutation.eligibility.reason === 'safe_early_release') {
+      if (!mutation.eligibility.allowed && isAllowedProgressiveReason(mutation.eligibility.reason)) {
         throw stateError('invalid_input', 'Denied progressive eligibility requires a closed reason.');
       }
       next.progressiveEligibility = {
@@ -2269,7 +2276,8 @@ export function slackPresentationFinalizationRecord(
 function presentationOffer(presentation: SlackRunPresentation): string {
   const eligibility = presentation.progressiveEligibility;
   if (eligibility.status === 'pending') return 'pending';
-  return eligibility.allowed ? 'offered' : `denied:${eligibility.reason}`;
+  if (!eligibility.allowed) return `denied:${eligibility.reason}`;
+  return eligibility.reason === 'final_answer_release' ? 'offered:final_answer_release' : 'offered';
 }
 
 function presentationIntent(presentation: SlackRunPresentation): string {
@@ -2292,7 +2300,11 @@ function presentationPolicyOutcome(presentation: SlackRunPresentation): string {
   if (intent.status === 'denied') return `requested_denied:${intent.reason}`;
   if (intent.status !== 'requested') return `offered_${intent.status}`;
   const outcome = presentation.stream.presentationOutcome;
-  if (outcome === 'progressive') return 'requested_progressive';
+  if (outcome === 'progressive') {
+    return eligibility.reason === 'final_answer_release'
+      ? 'requested_final_progressive'
+      : 'requested_progressive';
+  }
   if (outcome === 'corrected') return 'requested_corrected';
   if (outcome === 'fallback') return 'requested_fallback';
   return 'requested_terminal';
@@ -2413,12 +2425,24 @@ function requireProgressiveIntentState<S extends SlackProgressiveIntent['status'
   }
 }
 
+function isAllowedProgressiveReason(reason: SlackProgressiveEligibilityReason): boolean {
+  return reason === 'safe_early_release' || reason === 'final_answer_release';
+}
+
+/** The relay and prompt mode an allowed frozen reason admits. */
+export function progressiveStreamingModeForReason(
+  reason: SlackProgressiveEligibilityReason,
+): ProgressiveStreamingMode {
+  return reason === 'final_answer_release' ? 'final_answer' : 'early';
+}
+
 function isProgressiveIntentDenialReason(
   value: unknown,
 ): value is SlackProgressiveIntentDenialReason {
   return value === 'late_declaration' || value === 'repeated_declaration' ||
     value === 'declaration_failed' || value === 'mismatched_declaration' ||
-    value === 'non_presentation_tool' || value === 'structured_output' ||
+    value === 'non_presentation_tool' || value === 'concurrent_tool' ||
+    value === 'structured_output' ||
     value === 'reset' || value === 'identity_conflict' ||
     value === 'persistence_failure' || value === 'runtime_denied';
 }

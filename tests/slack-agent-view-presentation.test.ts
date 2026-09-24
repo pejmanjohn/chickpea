@@ -2125,3 +2125,350 @@ test('V3 unknown-stream reconciliation re-validates after a competing actor chan
     assert.equal(stored?.schemaVersion === 3 ? stored.terminalDelivery.state : undefined, 'abandoned');
   } finally { competingAbandonment.db.close(); }
 });
+
+function finalAnswerEvents(
+  relay: NonNullable<Awaited<ReturnType<typeof prepareReceipt>>>,
+  input: {
+    submissionId: string;
+    messageId: string;
+    toolFailed?: boolean;
+    declare?: boolean;
+    between?: () => Promise<void>;
+  },
+) {
+  const conversationId = 'conversation';
+  const { messageId } = input;
+  return {
+    async beforeDeclaration() {
+      relay.onEvent({
+        type: 'message-started', conversationId, submissionId: input.submissionId, messageId,
+        position: { batch: 1, index: 0 },
+      });
+      relay.onEvent({
+        type: 'message-delta', conversationId, messageId, kind: 'text',
+        delta: 'Let me look that up.', position: { batch: 2, index: 0 },
+      });
+      relay.onEvent({
+        type: 'tool-input', conversationId, messageId, toolCallId: 'lookup_1',
+        toolName: 'mcp__docs__search', input: {}, position: { batch: 3, index: 0 },
+      });
+      relay.onEvent({
+        type: 'message-completed', conversationId, messageId, position: { batch: 4, index: 0 },
+      });
+      relay.onEvent(input.toolFailed
+        ? {
+            type: 'tool-output-error', conversationId, toolCallId: 'lookup_1',
+            errorText: 'synthetic lookup failure', position: { batch: 5, index: 0 },
+          }
+        : {
+            type: 'tool-output', conversationId, toolCallId: 'lookup_1',
+            output: 'synthetic lookup result', position: { batch: 5, index: 0 },
+          });
+      relay.onEvent({
+        type: 'message-started', conversationId, submissionId: input.submissionId, messageId,
+        position: { batch: 6, index: 0 },
+      });
+    },
+    async declaration() {
+      declareProgressiveIntent(relay, { submissionId: input.submissionId, messageId, firstBatch: 7 });
+      relay.onEvent({
+        type: 'message-started', conversationId, submissionId: input.submissionId, messageId,
+        position: { batch: 9, index: 0 },
+      });
+    },
+    text(delta: string, batch: number) {
+      relay.onEvent({
+        type: 'message-delta', conversationId, messageId, kind: 'text', delta,
+        position: { batch, index: 0 },
+      });
+    },
+  };
+}
+
+test('a final-answer declaration streams after an activity message without retiring it early', async () => {
+  const h = harness({
+    schemaVersion: 3,
+    owner: { kind: 'selected_agent', persona: {
+      name: 'Docs Helper',
+      avatarUrl: 'https://chickpea.example/assets/agents/docs/avatar/1',
+      avatarRevision: 1,
+    } },
+  });
+  try {
+    const activity = await h.presentation.beginActivity({
+      kind: 'reading', action: 'Reading', object: 'the docs', text: 'Reading the docs',
+    }, 'message');
+    assert.ok(activity);
+    await h.presentation.recordActivityReceipt(
+      activity.operationId, 'acknowledged', '1785700100.000150',
+    );
+
+    const relay = await prepareReceipt(h, {
+      instanceId: 'instance_final_activity',
+      receipt: { submissionId: 'submission_final_activity', acceptedAt: 'now', uid: 'uid' },
+      eligibility: { allowed: true, reason: 'final_answer_release' },
+    });
+    assert.ok(relay);
+    const events = finalAnswerEvents(relay, {
+      submissionId: 'submission_final_activity', messageId: 'message_final_activity',
+    });
+    await events.beforeDeclaration();
+    assert.equal(h.calls.some((call) => call.method === 'chat.startStream'), false);
+    await events.declaration();
+    events.text('## Result\n\n', 10);
+    events.text('The final answer streams.', 11);
+    relay.onEvent({
+      type: 'message-completed', conversationId: 'conversation',
+      messageId: 'message_final_activity', position: { batch: 12, index: 0 },
+    });
+    const summary = await relay.closeAndDrain();
+    assert.equal(summary.invalidated, false);
+
+    const streaming = h.store.get(h.runId);
+    assert.equal(streaming?.schemaVersion, 3);
+    if (streaming?.schemaVersion === 3) {
+      assert.equal(streaming.progressiveIntent.status, 'requested');
+      assert.equal(streaming.stream.state, 'streaming');
+      // Retirement stays at terminal delivery, as for every other answer.
+      assert.deepEqual(streaming.activityProjection, {
+        surface: 'message', state: 'visible', messageTs: '1785700100.000150',
+      });
+    }
+    const start = h.calls.find((call) => call.method === 'chat.startStream')?.input;
+    assert.equal(start?.username, 'Docs Helper');
+    assert.equal(start?.icon_url, 'https://chickpea.example/assets/agents/docs/avatar/1');
+
+    await h.presentation.finalize(
+      '## Result\n\nThe final answer streams.', 'markdown', 'complete', observer([]),
+    );
+    const visible = h.calls
+      .filter((call) => call.method === 'chat.startStream' || call.method === 'chat.appendStream')
+      .flatMap((call) => ((call.input.chunks ?? []) as Array<{ type: string; text?: string }>)
+        .filter((chunk) => chunk.type === 'markdown_text')
+        .map((chunk) => chunk.text ?? ''))
+      .join('');
+    assert.equal(visible, '## Result\n\nThe final answer streams.');
+    assert.equal(visible.includes('Let me look that up.'), false);
+    assert.equal(h.calls.some((call) => call.method === 'chat.update'), false);
+    const stop = h.calls.filter((call) => call.method === 'chat.stopStream');
+    assert.equal(stop.length, 1);
+    const blocks = stop[0]?.input.blocks as Array<{ type: string }>;
+    assert.deepEqual(blocks.map((block) => block.type), ['context']);
+    assert.equal(h.store.get(h.runId)?.stream.presentationOutcome, 'progressive');
+    await h.presentation.markCanonicalFinalized();
+    assert.equal(h.finalizationRecords[0]?.policyOutcome, 'requested_final_progressive');
+    assert.equal(h.finalizationRecords[0]?.offer, 'offered:final_answer_release');
+
+    const cleanup = await h.presentation.prepareActivityCleanup();
+    assert.equal(cleanup.kind, 'prepared');
+  } finally {
+    h.db.close();
+  }
+});
+
+test('final-answer text appends onto an open native plan stream while milestones update', async () => {
+  const h = harness({
+    schemaVersion: 3,
+    tasks: ['Search the docs', 'Write the answer'],
+  });
+  try {
+    const persisted = h.store.get(h.runId);
+    assert.equal(persisted?.schemaVersion, 3);
+    if (persisted?.schemaVersion !== 3 || !persisted.plan) return;
+    const [searchId, writeId] = persisted.plan.tasks.map((task) => task.id);
+    await h.presentation.transitionMilestone({ taskId: searchId!, to: 'in_progress' });
+    const relay = await prepareReceipt(h, {
+      instanceId: 'instance_final_plan',
+      receipt: { submissionId: 'submission_final_plan', acceptedAt: 'now', uid: 'uid' },
+      eligibility: { allowed: true, reason: 'final_answer_release' },
+    });
+    assert.ok(relay);
+    assert.equal(h.calls.filter((call) => call.method === 'chat.startStream').length, 1);
+
+    const events = finalAnswerEvents(relay, {
+      submissionId: 'submission_final_plan', messageId: 'message_final_plan',
+    });
+    await events.beforeDeclaration();
+    await h.presentation.transitionMilestone({
+      taskId: searchId!, to: 'completed', detail: 'Completed: docs searched.',
+    });
+    await h.presentation.transitionMilestone({ taskId: writeId!, to: 'in_progress' });
+    await events.declaration();
+    events.text('First part. ', 10);
+    const firstAppend = () => h.calls.some((call) => call.method === 'chat.appendStream' &&
+      JSON.stringify(call.input.chunks).includes('First part.'));
+    for (let attempt = 0; attempt < 50 && !firstAppend(); attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    assert.ok(firstAppend(), 'the declared answer appends onto the open plan stream');
+    await h.presentation.transitionMilestone({
+      taskId: writeId!, to: 'completed', detail: 'Completed: answer written.',
+    });
+    events.text('Second part.', 11);
+    relay.onEvent({
+      type: 'message-completed', conversationId: 'conversation',
+      messageId: 'message_final_plan', position: { batch: 12, index: 0 },
+    });
+    const summary = await relay.closeAndDrain();
+    assert.equal(summary.invalidated, false);
+
+    await h.presentation.finalize('First part. Second part.', 'markdown', 'complete', observer([]));
+    assert.equal(h.calls.filter((call) => call.method === 'chat.startStream').length, 1);
+    assert.equal(h.calls.some((call) => call.method === 'chat.update'), false);
+    const writes = h.calls.filter((call) =>
+      call.method === 'chat.startStream' || call.method === 'chat.appendStream' ||
+      call.method === 'chat.stopStream');
+    const visible = writes
+      .flatMap((call) => ((call.input.chunks ?? []) as Array<{ type: string; text?: string }>)
+        .filter((chunk) => chunk.type === 'markdown_text')
+        .map((chunk) => chunk.text ?? ''))
+      .join('');
+    assert.equal(visible, 'First part. Second part.');
+    // Task updates and answer text share one ordered stream: the milestone
+    // completed between the two text appends, and never repeats answer bytes.
+    const order = writes.flatMap((call) =>
+      ((call.input.chunks ?? []) as Array<{ type: string; text?: string; id?: string; status?: string }>)
+        .map((chunk) => chunk.type === 'markdown_text'
+          ? `text:${chunk.text}`
+          : `task:${chunk.id === searchId ? 'search' : 'write'}:${chunk.status}`));
+    const firstText = order.findIndex((entry) => entry.startsWith('text:First part.'));
+    const writeComplete = order.indexOf('task:write:complete');
+    assert.ok(firstText >= 0 && writeComplete > firstText, order.join(' | '));
+    assert.equal(h.store.get(h.runId)?.stream.presentationOutcome, 'progressive');
+  } finally {
+    h.db.close();
+  }
+});
+
+test('a turn failure after final-answer text corrects the streamed message in place', async () => {
+  const h = harness({ schemaVersion: 3, owner: { kind: 'chickpea' } });
+  try {
+    const relay = await prepareReceipt(h, {
+      instanceId: 'instance_final_failure',
+      receipt: { submissionId: 'submission_final_failure', acceptedAt: 'now', uid: 'uid' },
+      eligibility: { allowed: true, reason: 'final_answer_release' },
+    });
+    assert.ok(relay);
+    const events = finalAnswerEvents(relay, {
+      submissionId: 'submission_final_failure', messageId: 'message_final_failure',
+    });
+    await events.beforeDeclaration();
+    await events.declaration();
+    events.text('A partial final answer', 10);
+    await relay.invalidateAndDrain('run_failed');
+
+    await h.presentation.finalize(
+      'Something went wrong while I was answering.', 'plain_text', 'error', observer([]),
+    );
+    const methods = h.calls.filter((call) => call.method.startsWith('chat.')).map((call) => call.method);
+    assert.equal(methods.filter((method) => method === 'chat.startStream').length, 1);
+    assert.ok(methods.includes('chat.update'), methods.join(','));
+    const update = h.calls.find((call) => call.method === 'chat.update')?.input;
+    assert.equal(update?.ts, '1785700100.000201');
+    assert.match(JSON.stringify(update), /Something went wrong/);
+    assert.equal(h.store.get(h.runId)?.stream.presentationOutcome, 'corrected');
+  } finally {
+    h.db.close();
+  }
+});
+
+test('a failed tool without a final-answer declaration stays terminal-only', async () => {
+  const h = harness({ schemaVersion: 3, owner: { kind: 'chickpea' } });
+  try {
+    const relay = await prepareReceipt(h, {
+      instanceId: 'instance_final_tool_failed',
+      receipt: { submissionId: 'submission_final_tool_failed', acceptedAt: 'now', uid: 'uid' },
+      eligibility: { allowed: true, reason: 'final_answer_release' },
+    });
+    assert.ok(relay);
+    const events = finalAnswerEvents(relay, {
+      submissionId: 'submission_final_tool_failed',
+      messageId: 'message_final_tool_failed',
+      toolFailed: true,
+    });
+    await events.beforeDeclaration();
+    events.text('The lookup failed, so here is what I know.', 7);
+    const summary = await relay.closeAndDrain();
+    assert.equal(summary.acceptedBytes, 0);
+    assert.equal(h.calls.some((call) => call.method.startsWith('chat.')), false);
+    const stored = h.store.get(h.runId);
+    assert.equal(stored?.schemaVersion === 3 ? stored.progressiveIntent.status : undefined, 'not_requested');
+
+    await h.presentation.finalize(
+      'The lookup failed, so here is what I know.', 'markdown', 'complete', observer([]),
+    );
+    assert.deepEqual(
+      h.calls.filter((call) => call.method.startsWith('chat.')).map((call) => call.method),
+      ['chat.startStream', 'chat.stopStream'],
+    );
+  } finally {
+    h.db.close();
+  }
+});
+
+test('a V1 row freezes a final-answer candidate as the effect-capable denial', async () => {
+  const h = harness({ schemaVersion: 1, progressive: true, native: false });
+  try {
+    assert.deepEqual(
+      await h.presentation.freezeProgressiveEligibility({
+        allowed: true, reason: 'final_answer_release',
+      }),
+      { allowed: false, reason: 'effect_capable', presentationSchemaVersion: 1 },
+    );
+    assert.equal(await h.presentation.prepareReceipt({
+      instanceId: 'instance_v1_final',
+      receipt: { submissionId: 'submission_v1_final', acceptedAt: 'now', uid: 'uid' },
+      eligibility: { allowed: false, reason: 'effect_capable' },
+    }), undefined);
+  } finally {
+    h.db.close();
+  }
+});
+
+test('a resumed final-answer read replays narration and tool work without correcting the stream', async () => {
+  const h = harness({ schemaVersion: 3, owner: { kind: 'chickpea' } });
+  try {
+    const receipt = { submissionId: 'submission_final_resume', acceptedAt: 'now', uid: 'uid' } as const;
+    const input = {
+      instanceId: 'instance_final_resume',
+      receipt,
+      eligibility: { allowed: true, reason: 'final_answer_release' } as const,
+    };
+    const replayAll = async (relay: NonNullable<Awaited<ReturnType<typeof prepareReceipt>>>) => {
+      const events = finalAnswerEvents(relay, {
+        submissionId: receipt.submissionId, messageId: 'message_final_resume',
+      });
+      await events.beforeDeclaration();
+      await events.declaration();
+      events.text('Streamed final answer.', 10);
+    };
+    const first = await prepareReceipt(h, input);
+    assert.ok(first);
+    await replayAll(first);
+    await first.closeAndDrain();
+    const visible = () => h.calls.filter((call) =>
+      call.method === 'chat.startStream' || call.method === 'chat.appendStream');
+    const effectsAfterFirst = visible().length;
+    assert.ok(effectsAfterFirst >= 1);
+
+    // A later attempt reads the same receipt from its start.
+    const resumed = await h.presentation.prepareReceipt(input);
+    assert.ok(resumed);
+    await replayAll(resumed);
+    const summary = await resumed.closeAndDrain();
+    assert.equal(summary.invalidated, false);
+    assert.equal(visible().length, effectsAfterFirst);
+
+    await h.presentation.finalize('Streamed final answer.', 'markdown', 'complete', observer([]));
+    assert.equal(h.calls.some((call) => call.method === 'chat.update'), false);
+    assert.equal(h.store.get(h.runId)?.stream.presentationOutcome, 'progressive');
+    const text = h.calls
+      .filter((call) => ['chat.startStream', 'chat.appendStream', 'chat.stopStream'].includes(call.method))
+      .flatMap((call) => ((call.input.chunks ?? []) as Array<{ type: string; text?: string }>)
+        .filter((chunk) => chunk.type === 'markdown_text').map((chunk) => chunk.text ?? ''))
+      .join('');
+    assert.equal(text, 'Streamed final answer.');
+  } finally {
+    h.db.close();
+  }
+});

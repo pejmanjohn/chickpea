@@ -484,6 +484,108 @@ test('presentation diagnostics aggregate only content-free workspace outcomes', 
   }
 });
 
+test('the freeze validator admits final-answer release and buckets its telemetry', () => {
+  let clock = 1_800_000_000_000;
+  const db = openStateDb(':memory:');
+  try {
+    const store = new SlackRunPresentationStoreLogic(db, () => (clock += 10));
+    let thread = 1785700030;
+    const fresh = (runId: string) => {
+      const { taskLabels: _taskLabels, ...input } = createInput(runId);
+      thread += 1;
+      return store.create({ ...input, root: { ...ROOT, threadTs: `${thread}.000100` } });
+    };
+    const freeze = (row: SlackRunPresentation, eligibility: {
+      allowed: boolean;
+      reason: 'final_answer_release' | 'effect_capable' | 'safe_early_release';
+    }) => store.transition({
+      runId: row.runId,
+      workBindingGeneration: row.workBindingGeneration,
+      runFencingToken: row.runFencingToken,
+      expectedProjectionVersion: row.projectionVersion,
+      expectedStreamState: row.stream.state,
+      mutation: { kind: 'freeze_progressive_eligibility', eligibility },
+    });
+
+    for (const eligibility of [
+      { allowed: false, reason: 'final_answer_release' as const },
+      { allowed: true, reason: 'effect_capable' as const },
+    ]) {
+      assert.throws(
+        () => freeze(fresh(`run_invalid_${eligibility.reason}`), eligibility),
+        (error: unknown) =>
+          error instanceof SlackPresentationStateError && error.code === 'invalid_input',
+      );
+    }
+
+    let final = advance(store, fresh('run_final_progressive'), {
+      kind: 'freeze_progressive_eligibility',
+      eligibility: { allowed: true, reason: 'final_answer_release' },
+    });
+    final = advance(store, final, { kind: 'progressive_intent_candidate', toolCallId: 'final_1' });
+    final = advance(store, final, { kind: 'progressive_intent_requested', toolCallId: 'final_1' });
+    final = advance(store, final, { kind: 'stream_start_intent' });
+    final = advance(store, final, {
+      kind: 'stream_started',
+      messageTs: '1785700031.000200',
+      flue: { instanceId: 'instance_final', submissionId: 'submission_final', messageId: 'message_final' },
+    });
+    final = advance(store, final, {
+      kind: 'append_intent', position: { batch: 5, index: 0 }, from: 0, to: 5, hash: 'b'.repeat(64),
+    });
+    final = advance(store, final, {
+      kind: 'append_acknowledged', cursor: 1, acknowledgedPrefixHash: 'b'.repeat(64),
+    });
+    final = advance(store, final, { kind: 'close_stream', outcome: 'progressive' });
+    final = advance(store, final, { kind: 'mark_finalizing' });
+    final = advance(store, final, { kind: 'mark_artifact_delivered', outcome: 'progressive' });
+    advance(store, final, { kind: 'mark_finalized' });
+
+    let concurrent = advance(store, fresh('run_final_concurrent'), {
+      kind: 'freeze_progressive_eligibility',
+      eligibility: { allowed: true, reason: 'final_answer_release' },
+    });
+    concurrent = advance(store, concurrent, {
+      kind: 'progressive_intent_denied', reason: 'concurrent_tool',
+    });
+    advance(store, concurrent, { kind: 'mark_non_stream_finalized' });
+
+    let early = advance(store, fresh('run_early_declined'), {
+      kind: 'freeze_progressive_eligibility',
+      eligibility: { allowed: true, reason: 'safe_early_release' },
+    });
+    early = advance(store, early, { kind: 'progressive_intent_not_requested' });
+    advance(store, early, { kind: 'mark_non_stream_finalized' });
+
+    const summary = store.summarize(ROOT.workspaceId);
+    // The two rejected freezes leave their rows pending.
+    assert.deepEqual(summary.offers, {
+      pending: 2,
+      'offered:final_answer_release': 2,
+      offered: 1,
+    });
+    assert.deepEqual(summary.eligibility, {
+      pending: 2,
+      'allowed:final_answer_release': 2,
+      'allowed:safe_early_release': 1,
+    });
+    assert.deepEqual(summary.intents, {
+      unresolved: 2,
+      requested: 1,
+      'denied:concurrent_tool': 1,
+      not_requested: 1,
+    });
+    assert.deepEqual(summary.policyOutcomes, {
+      pending: 2,
+      requested_final_progressive: 1,
+      'requested_denied:concurrent_tool': 1,
+      offered_not_requested: 1,
+    });
+  } finally {
+    db.close();
+  }
+});
+
 test('a row frozen with the retired sandbox reason still reads and summarizes', () => {
   let clock = 1_800_000_000_000;
   const db = openStateDb(':memory:');

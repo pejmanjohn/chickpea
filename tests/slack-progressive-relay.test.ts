@@ -30,11 +30,13 @@ function event(
 function modelRelay(input: {
   initial?: SlackProgressiveIntent;
   failIntent?: ProgressiveIntentTransition['kind'];
+  mode?: 'early' | 'final_answer';
 } = {}) {
   const operations: string[] = [];
   const delivered: ProgressiveTextChunk[] = [];
   const relay = new ReceiptScopedTextRelay({
     submissionId: 'submission_model_intent',
+    ...(input.mode ? { mode: input.mode } : {}),
     modelIntent: {
       initial: input.initial ?? { status: 'unresolved' },
       async transition(intent) {
@@ -269,6 +271,321 @@ test('late, repeated, failed, mixed-tool, and structured declarations fail close
   }
 });
 
+function stepStarted(batch: number) {
+  return {
+    type: 'message-started' as const,
+    conversationId: 'conversation_model_intent',
+    messageId: 'message_model_intent',
+    submissionId: 'submission_model_intent',
+    position: { batch, index: 0 },
+  };
+}
+
+function stepCompleted(batch: number) {
+  return {
+    type: 'message-completed' as const,
+    conversationId: 'conversation_model_intent',
+    messageId: 'message_model_intent',
+    position: { batch, index: 0 },
+  };
+}
+
+function effectInput(batch: number, toolCallId = 'lookup_1', index = 0) {
+  return {
+    type: 'tool-input' as const,
+    conversationId: 'conversation_model_intent',
+    messageId: 'message_model_intent',
+    toolCallId,
+    toolName: 'lookup',
+    input: {},
+    position: { batch, index },
+  };
+}
+
+function effectOutcome(batch: number, toolCallId = 'lookup_1', failed = false) {
+  return failed
+    ? {
+        type: 'tool-output-error' as const,
+        conversationId: 'conversation_model_intent',
+        toolCallId,
+        errorText: 'private failure',
+        position: { batch, index: 0 },
+      }
+    : {
+        type: 'tool-output' as const,
+        conversationId: 'conversation_model_intent',
+        toolCallId,
+        output: 'private lookup result',
+        position: { batch, index: 0 },
+      };
+}
+
+test('final-answer relay streams a declaration made after settled tool work', async () => {
+  for (const failed of [false, true]) {
+    const h = modelRelay({ mode: 'final_answer' });
+    h.emit(effectInput(2));
+    h.emit(stepCompleted(3));
+    h.emit(effectOutcome(4, 'lookup_1', failed));
+    h.emit(stepStarted(5));
+    h.emit(streamInput({ batch: 6, index: 0 }));
+    h.emit(stepCompleted(7));
+    h.emit(streamOutput({ batch: 8, index: 0 }));
+    h.emit(stepStarted(9));
+    h.emit(answerDelta('Final ', { batch: 10, index: 0 }));
+    h.emit(answerDelta('answer.', { batch: 11, index: 0 }));
+    h.emit(stepCompleted(12));
+
+    const summary = await h.relay.closeAndDrain();
+    assert.deepEqual(h.operations, [
+      'intent:candidate:stream_call_1',
+      'intent:requested:stream_call_1',
+      'append:Final answer.',
+    ], `failed=${failed}`);
+    assert.equal(summary.invalidated, false);
+  }
+});
+
+test('final-answer relay ignores earlier-step narration but not same-step text', async () => {
+  const earlier = modelRelay({ mode: 'final_answer' });
+  earlier.emit(answerDelta('Let me look that up. ', { batch: 2, index: 0 }));
+  earlier.emit(effectInput(3));
+  earlier.emit(stepCompleted(4));
+  earlier.emit(effectOutcome(5));
+  earlier.emit(stepStarted(6));
+  earlier.emit(streamInput({ batch: 7, index: 0 }));
+  earlier.emit(streamOutput({ batch: 8, index: 0 }));
+  earlier.emit(stepStarted(9));
+  earlier.emit(answerDelta('Found it.', { batch: 10, index: 0 }));
+  await earlier.relay.closeAndDrain();
+  assert.deepEqual(earlier.operations, [
+    'intent:candidate:stream_call_1',
+    'intent:requested:stream_call_1',
+    'append:Found it.',
+  ]);
+
+  const sameStep = modelRelay({ mode: 'final_answer' });
+  sameStep.emit(effectInput(2));
+  sameStep.emit(effectOutcome(3));
+  sameStep.emit(stepStarted(4));
+  sameStep.emit(answerDelta('Text before the declaration. ', { batch: 5, index: 0 }));
+  sameStep.emit(streamInput({ batch: 6, index: 0 }));
+  sameStep.emit(streamOutput({ batch: 7, index: 0 }));
+  sameStep.emit(stepStarted(8));
+  sameStep.emit(answerDelta('must remain terminal', { batch: 9, index: 0 }));
+  await sameStep.relay.closeAndDrain();
+  assert.deepEqual(sameStep.operations, ['intent:denied:late_declaration']);
+  assert.deepEqual(sameStep.delivered, []);
+});
+
+test('final-answer declarations beside or ahead of unsettled tools fail closed', async () => {
+  const cases: Array<{
+    name: string;
+    events: Array<Parameters<ReturnType<typeof modelRelay>['emit']>[0]>;
+    reason: string;
+  }> = [
+    {
+      name: 'sibling before',
+      events: [effectInput(2), streamInput({ batch: 3, index: 0 })],
+      reason: 'concurrent_tool',
+    },
+    {
+      name: 'sibling after',
+      events: [streamInput({ batch: 2, index: 0 }), effectInput(3)],
+      reason: 'concurrent_tool',
+    },
+    {
+      name: 'unsettled earlier call',
+      events: [effectInput(2), stepStarted(3), streamInput({ batch: 4, index: 0 })],
+      reason: 'concurrent_tool',
+    },
+    {
+      name: 'sibling after an acknowledged declaration',
+      events: [
+        streamInput({ batch: 2, index: 0 }),
+        streamOutput({ batch: 3, index: 0 }),
+        effectInput(4),
+      ],
+      reason: 'concurrent_tool',
+    },
+    {
+      name: 'structured output before the declaration',
+      events: [{
+        type: 'data-part', conversationId: 'conversation_model_intent',
+        messageId: 'message_model_intent', name: 'slackMemoryUpdate', data: {},
+        position: { batch: 2, index: 0 },
+      }, stepStarted(3), streamInput({ batch: 4, index: 0 })],
+      reason: 'structured_output',
+    },
+    {
+      name: 'failed declaration',
+      events: [streamInput({ batch: 2, index: 0 }), {
+        type: 'tool-output-error', conversationId: 'conversation_model_intent',
+        toolCallId: 'stream_call_1', errorText: 'unavailable',
+        position: { batch: 3, index: 0 },
+      }],
+      reason: 'declaration_failed',
+    },
+  ];
+  for (const scenario of cases) {
+    const h = modelRelay({ mode: 'final_answer' });
+    for (const candidate of scenario.events) h.emit(candidate);
+    h.emit(stepStarted(20));
+    h.emit(answerDelta('must remain terminal', { batch: 21, index: 0 }));
+    await h.relay.closeAndDrain();
+    assert.ok(
+      h.operations.includes(`intent:denied:${scenario.reason}`),
+      `${scenario.name}: ${h.operations.join(', ')}`,
+    );
+    assert.deepEqual(h.delivered, [], scenario.name);
+  }
+});
+
+test('a refused tool after a final-answer declaration keeps the stream only while nothing is relayed', async () => {
+  // Declared, then a refused tool with no text yet: the next step streams.
+  const quiet = modelRelay({ mode: 'final_answer' });
+  quiet.emit(streamInput({ batch: 2, index: 0 }));
+  quiet.emit(streamOutput({ batch: 3, index: 0 }));
+  quiet.emit(stepStarted(4));
+  quiet.emit(effectInput(5, 'refused_1'));
+  quiet.emit(effectOutcome(6, 'refused_1', true));
+  quiet.emit(stepStarted(7));
+  quiet.emit(answerDelta('Answer from gathered facts.', { batch: 8, index: 0 }));
+  const quietSummary = await quiet.relay.closeAndDrain();
+  assert.deepEqual(quiet.operations, [
+    'intent:candidate:stream_call_1',
+    'intent:requested:stream_call_1',
+    'append:Answer from gathered facts.',
+  ]);
+  assert.equal(quietSummary.invalidated, false);
+
+  // Text in the refused tool's own step is not the final step's text.
+  const sameStep = modelRelay({ mode: 'final_answer' });
+  sameStep.emit(streamInput({ batch: 2, index: 0 }));
+  sameStep.emit(streamOutput({ batch: 3, index: 0 }));
+  sameStep.emit(stepStarted(4));
+  sameStep.emit(effectInput(5, 'refused_1'));
+  sameStep.emit(answerDelta('narration', { batch: 6, index: 0 }));
+  await sameStep.relay.closeAndDrain();
+  assert.deepEqual(sameStep.delivered, []);
+  assert.ok(sameStep.operations.includes('intent:denied:non_presentation_tool'));
+
+  // Relayed text followed by a refused tool cannot be reconciled: correct it.
+  const relayed = modelRelay({ mode: 'final_answer' });
+  relayed.emit(streamInput({ batch: 2, index: 0 }));
+  relayed.emit(streamOutput({ batch: 3, index: 0 }));
+  relayed.emit(stepStarted(4));
+  relayed.emit(answerDelta('Streamed prefix. ', { batch: 5, index: 0 }));
+  relayed.emit(effectInput(6, 'refused_1'));
+  const relayedSummary = await relayed.relay.closeAndDrain();
+  assert.deepEqual(relayed.operations, [
+    'intent:candidate:stream_call_1',
+    'intent:requested:stream_call_1',
+    'append:Streamed prefix. ',
+    'intent:denied:non_presentation_tool',
+    'invalidate:tool_activity',
+  ]);
+  assert.equal(relayedSummary.invalidationReason, 'tool_activity');
+});
+
+test('the empty end-of-response file-delivery record does not deny a streamed answer', async () => {
+  for (const mode of ['early', 'final_answer'] as const) {
+    const h = modelRelay({ mode });
+    h.emit(streamInput({ batch: 2, index: 0 }));
+    h.emit(streamOutput({ batch: 3, index: 0 }));
+    h.emit(stepStarted(4));
+    h.emit(answerDelta('The whole answer.', { batch: 5, index: 0 }));
+    h.emit({
+      type: 'data-part', conversationId: 'conversation_model_intent',
+      messageId: 'message_model_intent', name: 'fileDeliveryCompletion',
+      data: { unresolved: false, files: [] }, position: { batch: 6, index: 0 },
+    });
+    const summary = await h.relay.closeAndDrain();
+    assert.deepEqual(h.operations, [
+      'intent:candidate:stream_call_1',
+      'intent:requested:stream_call_1',
+      'append:The whole answer.',
+    ], mode);
+    assert.equal(summary.invalidated, false, mode);
+  }
+  // A record that changes the delivered text still denies.
+  for (const data of [
+    { unresolved: true, files: [] },
+    { unresolved: false, files: [{ path: '/w/a.csv', filename: 'a.csv', attached: false }] },
+  ]) {
+    const h = modelRelay({ mode: 'final_answer' });
+    h.emit(streamInput({ batch: 2, index: 0 }));
+    h.emit(streamOutput({ batch: 3, index: 0 }));
+    h.emit(stepStarted(4));
+    h.emit(answerDelta('Partial.', { batch: 5, index: 0 }));
+    h.emit({
+      type: 'data-part', conversationId: 'conversation_model_intent',
+      messageId: 'message_model_intent', name: 'fileDeliveryCompletion',
+      data, position: { batch: 6, index: 0 },
+    });
+    await h.relay.closeAndDrain();
+    assert.ok(h.operations.includes('intent:denied:structured_output'), JSON.stringify(data));
+  }
+});
+
+test('a resumed final-answer read replays pre-declaration work without releasing it', async () => {
+  const replay = (h: ReturnType<typeof modelRelay>, narration: boolean) => {
+    if (narration) h.emit(answerDelta('Let me check. ', { batch: 2, index: 0 }));
+    h.emit(effectInput(3));
+    h.emit(stepCompleted(4));
+    h.emit(effectOutcome(5));
+    h.emit(stepStarted(6));
+    h.emit(streamInput({ batch: 7, index: 0 }));
+    h.emit(stepCompleted(8));
+    h.emit(streamOutput({ batch: 9, index: 0 }));
+    h.emit(stepStarted(10));
+    h.emit(answerDelta('Final answer.', { batch: 11, index: 0 }));
+  };
+  for (const narration of [false, true]) {
+    const requested = modelRelay({
+      mode: 'final_answer',
+      initial: { status: 'requested', toolCallId: 'stream_call_1', requestedAt: 1 },
+    });
+    replay(requested, narration);
+    const summary = await requested.relay.closeAndDrain();
+    assert.deepEqual(requested.operations, ['append:Final answer.'], `requested narration=${narration}`);
+    assert.equal(summary.invalidated, false);
+
+    const pending = modelRelay({
+      mode: 'final_answer',
+      initial: { status: 'pending', toolCallId: 'stream_call_1' },
+    });
+    replay(pending, narration);
+    await pending.relay.closeAndDrain();
+    assert.deepEqual(pending.operations, [
+      'intent:requested:stream_call_1',
+      'append:Final answer.',
+    ], `pending narration=${narration}`);
+  }
+
+  // A read that never reaches the durable declaration releases nothing.
+  const truncated = modelRelay({
+    mode: 'final_answer',
+    initial: { status: 'requested', toolCallId: 'stream_call_1', requestedAt: 1 },
+  });
+  truncated.emit(effectInput(2));
+  truncated.emit(stepStarted(3));
+  truncated.emit(answerDelta('not the declared answer', { batch: 4, index: 0 }));
+  await truncated.relay.closeAndDrain();
+  assert.deepEqual(truncated.delivered, []);
+});
+
+test('early mode still denies any tool before the declaration', async () => {
+  const h = modelRelay();
+  h.emit(effectInput(2));
+  h.emit(effectOutcome(3));
+  h.emit(stepStarted(4));
+  h.emit(streamInput({ batch: 5, index: 0 }));
+  h.emit(answerDelta('must remain terminal', { batch: 6, index: 0 }));
+  await h.relay.closeAndDrain();
+  assert.deepEqual(h.operations, ['intent:denied:non_presentation_tool']);
+  assert.deepEqual(h.delivered, []);
+});
+
 test('foreign tool outcomes cannot deny a valid pending declaration', async () => {
   const h = modelRelay();
   h.emit(streamInput());
@@ -426,7 +743,7 @@ test('sink failure becomes one bounded invalidation and closes the content queue
   assert.equal(summary.acceptedChunks, 0);
 });
 
-test('progressive eligibility closes every replacement and external-effect path', () => {
+test('progressive eligibility closes replacement paths and holds effect-capable plans to a final answer', () => {
   const basePlan = {
     schemaVersion: 2,
     continuityPolicy: 'slack-runtime-v2',
@@ -478,15 +795,16 @@ test('progressive eligibility closes every replacement and external-effect path'
     concurrentAttributionProven: true,
     replacementCapable: false,
   }), { allowed: false, reason: 'other' });
-  // A Cloudflare sandbox is only selected with repository grants; with them it
-  // is effect-capable, and on the Worker replacement-capable decides first.
+  // A Cloudflare sandbox is only selected with repository grants, which make
+  // it effect-capable. On the Worker replacement-capable decides first, so
+  // container Agents stay terminal-only.
   assert.deepEqual(decide({
     runtimePlan: {
       ...basePlan,
       repositories: [{ id: 'repo_1', fullName: 'acme/example' }],
       sandbox: { mode: 'cloudflare' },
     },
-  }), { allowed: false, reason: 'effect_capable' });
+  }), { allowed: true, reason: 'final_answer_release' });
   assert.deepEqual(decide({
     runtimePlan: {
       ...basePlan,
@@ -495,6 +813,7 @@ test('progressive eligibility closes every replacement and external-effect path'
     },
     replacementCapable: true,
   }), { allowed: false, reason: 'other' });
+  // Effect-capable plans may stream only a declared final answer.
   for (const runtimePlan of [
     { ...basePlan, mcpConnections: [{
       id: 'mcp_1', url: 'https://mcp.example.test', transport: 'streamable-http' as const,
@@ -506,7 +825,23 @@ test('progressive eligibility closes every replacement and external-effect path'
     }] },
     { ...basePlan, repositories: [{ id: 'repo_1', fullName: 'acme/example' }] },
   ]) {
-    assert.deepEqual(decide({ runtimePlan }), { allowed: false, reason: 'effect_capable' });
+    assert.deepEqual(decide({ runtimePlan }), { allowed: true, reason: 'final_answer_release' });
+    // Every earlier rule still wins over the final-answer release.
+    assert.deepEqual(decide({ runtimePlan, operationsEnabled: false }), {
+      allowed: false, reason: 'operations_disabled',
+    });
+    assert.deepEqual(decide({ runtimePlan, recoveryRequired: true }), {
+      allowed: false, reason: 'recovery',
+    });
+    assert.deepEqual(decide({ runtimePlan, memorySelected: true }), {
+      allowed: false, reason: 'memory',
+    });
+    assert.deepEqual(decide({ runtimePlan, replacementCapable: true }), {
+      allowed: false, reason: 'other',
+    });
+    assert.deepEqual(decide({ runtimePlan, concurrentAttributionProven: false }), {
+      allowed: false, reason: 'concurrent_join',
+    });
   }
 });
 
