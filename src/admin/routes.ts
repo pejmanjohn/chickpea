@@ -56,7 +56,9 @@ import { createTeamAdminApi } from './team-api.ts';
 import { readProposalApprovalStatus } from './proposal-status.ts';
 import { ENVIRONMENT_AUTHORITY_PATH, environmentAuthorityResponse } from './environment-authority.ts';
 import {
+  ENVIRONMENT_MODELS_PATH,
   ENVIRONMENT_SEED_PATH,
+  environmentModelsResponse,
   environmentSeedResponse,
   seedFingerprintSettingKey,
 } from './environment-seed.ts';
@@ -1925,6 +1927,20 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   }));
   // QA-lane connection seeding has its own lane token and acts as the
   // workspace owner; it answers nothing outside a registered QA target.
+  app.get(ENVIRONMENT_MODELS_PATH, (c) => environmentModelsResponse({
+    authorization: c.req.header('authorization'),
+    env: (c.env ?? {}) as PlatformEnv,
+    readModels: async () => {
+      const configStore = store(c);
+      const installation = await modelDefaultInstallation(configStore);
+      if (!installation) return undefined;
+      const [chat, image] = await Promise.all([
+        configStore.getWorkspaceModelDefault(installation.workspaceId),
+        configStore.getWorkspaceModelRole(installation.workspaceId, 'image'),
+      ]);
+      return { defaultChatModel: chat?.modelId ?? null, imageModel: image?.modelId ?? null };
+    },
+  }));
   app.post(ENVIRONMENT_SEED_PATH, (c) => environmentSeedResponse({
     authorization: c.req.header('authorization'),
     env: (c.env ?? {}) as PlatformEnv,
