@@ -11,6 +11,7 @@ import { MANAGED_SUBMISSION_AGENT_NAMES } from '../agents/names.ts';
 import {
   ARTIFACT_DELIVERY_TOOL_NAMES,
   currentRequestOffersProgressiveStreaming,
+  currentRequestProgressiveStreamingMode,
   isCurrentRequestContinuationMarker,
   parseModelVisibleCurrentRequestEnvelope,
   type CurrentRequestEnvelope,
@@ -22,6 +23,10 @@ interface PresentationToolPolicyState {
   envelope?: CurrentRequestEnvelope;
   answerOnly: boolean;
   artifactDeliveryAttempted: boolean;
+  /** A tool ran whose result the host may substitute for the model draft. */
+  draftReplacementAttempted?: boolean;
+  /** Final-answer mode: non-declaration tools currently executing. */
+  inFlightTools?: number;
   fileDeliveryPending?: () => boolean;
   fileDeliveryAttempted?: () => boolean;
   fileDeliveryRepairing?: () => boolean;
@@ -30,6 +35,19 @@ interface PresentationToolPolicyState {
 const FILE_REPAIR_TOOLS = new Set([
   'read', 'glob', 'grep', 'post_artifact', 'complete_file_delivery', 'submit_routine_result',
   SLACK_STREAM_ANSWER_TOOL_NAME, SLACK_PRESENT_TABLE_TOOL_NAME,
+]);
+
+/**
+ * Tools after which the host can replace the model's draft at delivery: a
+ * memory update or rewrite swaps in its summary, and an Agent creation swaps
+ * in the welcome. A streamed answer could then be overwritten, so a later
+ * declaration is refused and the reply stays terminal.
+ */
+const DRAFT_REPLACING_TOOL_NAMES: ReadonlySet<string> = new Set([
+  'update_agent_memory',
+  'apply_workspace_changes',
+  'confirm_workspace_change',
+  'undo_workspace_change',
 ]);
 
 const submissionPolicy = new AsyncLocalStorage<PresentationToolPolicyState>();
@@ -86,16 +104,21 @@ export const presentationToolPolicyInterceptor: FlueExecutionInterceptor = async
 
   if (operation.toolName === SLACK_STREAM_ANSWER_TOOL_NAME) {
     assertFileDeliveryChecked(active);
+    const finalAnswer =
+      currentRequestProgressiveStreamingMode(active.envelope) === 'final_answer';
     if (!currentRequestOffersProgressiveStreaming(active.envelope) ||
-        artifactDeliveryAttempted(active)) {
+        artifactDeliveryAttempted(active) || active.draftReplacementAttempted ||
+        (finalAnswer && (active.inFlightTools ?? 0) > 0)) {
       throw new SlackPresentationToolUnavailableError();
     }
     const result = await next();
     assertFileDeliveryChecked(active);
     // Another tool in the same model batch may have begun an upload while
     // the declaration was awaiting its result. File delivery wins until the
-    // answer-only lock is committed; never acknowledge both paths.
-    if (artifactDeliveryAttempted(active)) {
+    // answer-only lock is committed; never acknowledge both paths. A final
+    // answer likewise cannot be declared beside a tool still running.
+    if (artifactDeliveryAttempted(active) || active.draftReplacementAttempted ||
+        (finalAnswer && (active.inFlightTools ?? 0) > 0)) {
       throw new SlackPresentationToolUnavailableError();
     }
     active.answerOnly = true;
@@ -117,7 +140,15 @@ export const presentationToolPolicyInterceptor: FlueExecutionInterceptor = async
   if (isArtifactUploadTool(operation.toolName)) {
     active.artifactDeliveryAttempted = true;
   }
-  return next();
+  if (DRAFT_REPLACING_TOOL_NAMES.has(operation.toolName)) {
+    active.draftReplacementAttempted = true;
+  }
+  active.inFlightTools = (active.inFlightTools ?? 0) + 1;
+  try {
+    return await next();
+  } finally {
+    active.inFlightTools -= 1;
+  }
 };
 
 function isArtifactUploadTool(name: string): boolean {
@@ -154,12 +185,14 @@ export function observePresentationToolPolicy(
   else delete active.envelope;
   if (current.successfulDeclaration) active.answerOnly = true;
   if (current.artifactDeliveryAttempted) active.artifactDeliveryAttempted = true;
+  if (current.draftReplacementAttempted) active.draftReplacementAttempted = true;
 }
 
 function currentResponsePolicy(messages: readonly LlmMessage[]): {
   envelope?: CurrentRequestEnvelope;
   successfulDeclaration: boolean;
   artifactDeliveryAttempted: boolean;
+  draftReplacementAttempted: boolean;
 } {
   let newestUserIndex = -1;
   let envelope: CurrentRequestEnvelope | undefined;
@@ -172,16 +205,26 @@ function currentResponsePolicy(messages: readonly LlmMessage[]): {
     if (envelope && userMessageTexts(message).some((text) => text.startsWith('<slack_file_delivery_check '))) continue;
     break;
   }
-  if (newestUserIndex < 0) return { successfulDeclaration: false, artifactDeliveryAttempted: false };
+  if (newestUserIndex < 0) {
+    return {
+      successfulDeclaration: false,
+      artifactDeliveryAttempted: false,
+      draftReplacementAttempted: false,
+    };
+  }
 
   const declaredCalls = new Set<string>();
   let successfulDeclaration = false;
   let artifactDeliveryAttempted = false;
+  let draftReplacementAttempted = false;
   for (const message of messages.slice(newestUserIndex + 1)) {
     if (message.role === 'assistant') {
       for (const content of message.content) {
         if (content.type === 'toolCall' && isArtifactUploadTool(content.name)) {
           artifactDeliveryAttempted = true;
+        }
+        if (content.type === 'toolCall' && DRAFT_REPLACING_TOOL_NAMES.has(content.name)) {
+          draftReplacementAttempted = true;
         }
         if (content.type === 'toolCall' && (
           content.name === SLACK_STREAM_ANSWER_TOOL_NAME ||
@@ -206,6 +249,7 @@ function currentResponsePolicy(messages: readonly LlmMessage[]): {
     ...(envelope ? { envelope } : {}),
     successfulDeclaration,
     artifactDeliveryAttempted,
+    draftReplacementAttempted,
   };
 }
 

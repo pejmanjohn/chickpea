@@ -120,6 +120,30 @@ test('streaming policy evaluator fails closed on weak decisions, malformed calls
   assert.deepEqual(report.failedFixtureIds, ['negative_failed', 'positive_failed']);
 });
 
+test('the evaluator accepts post-tool declarations only in final-answer mode', () => {
+  const trial = (mode: 'early' | 'final_answer'): SlackStreamingPolicyTrial => ({
+    fixtureId: `positive_${mode}`, expectation: 'clear_positive', category: 'analysis',
+    mode, declared: true, declarationAfterTools: true,
+    declarationBeforeText: true, declarationShapeValid: true,
+    contaminationDetected: false, offeredProviderReadyMs: 500, declarationMs: 250,
+    controlProviderReadyMs: 1_500,
+  });
+  const final = evaluateSlackStreamingPolicy([trial('final_answer')]);
+  assert.equal(final.protocolViolations, 0);
+  assert.deepEqual(final.positive, { total: 1, selected: 1, recall: 1 });
+  assert.deepEqual(final.failedFixtureIds, []);
+
+  const early = evaluateSlackStreamingPolicy([trial('early')]);
+  assert.equal(early.protocolViolations, 1);
+  assert.deepEqual(early.positive, { total: 1, selected: 0, recall: 0 });
+  assert.deepEqual(early.failedFixtureIds, ['positive_early']);
+
+  assert.throws(
+    () => evaluateSlackStreamingPolicy([{ ...trial('final_answer'), mode: 'always' as never }]),
+    /invalid mode/,
+  );
+});
+
 test('streaming policy fixture parser rejects duplicate identities', () => {
   assert.throws(
     () => parseSlackStreamingPolicyFixtureSet({

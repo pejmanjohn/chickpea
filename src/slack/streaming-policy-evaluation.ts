@@ -25,6 +25,10 @@ export interface SlackStreamingPolicyTrial {
   declared: boolean;
   /** A declaration, when present, preceded all answer text. */
   declarationBeforeText: boolean;
+  /** Offered contract; absent means early (declaration before any tool). */
+  mode?: 'early' | 'final_answer';
+  /** Other tool calls ran before the declaration. Legal only in final-answer mode. */
+  declarationAfterTools?: boolean;
   /** Exactly one no-argument stream_answer call was made. */
   declarationShapeValid: boolean;
   /** The final answer mentioned the hidden delivery mechanism or acknowledgement. */
@@ -163,14 +167,17 @@ export function evaluateSlackStreamingPolicy(
   const positive = trials.filter((trial) => trial.expectation === 'clear_positive');
   const negative = trials.filter((trial) => trial.expectation === 'clear_negative');
   const ambiguous = trials.filter((trial) => trial.expectation === 'ambiguous');
+  const protocolViolated = (trial: SlackStreamingPolicyTrial) =>
+    trial.declared && (
+      !trial.declarationBeforeText || !trial.declarationShapeValid ||
+      (trial.declarationAfterTools === true && trial.mode !== 'final_answer')
+    );
   const validSelection = (trial: SlackStreamingPolicyTrial) =>
-    trial.declared && trial.declarationBeforeText && trial.declarationShapeValid;
+    trial.declared && !protocolViolated(trial);
   const positiveSelected = positive.filter(validSelection).length;
   const negativeAbstained = negative.filter((trial) => !trial.declared).length;
   const ambiguousSelected = ambiguous.filter(validSelection).length;
-  const protocolViolations = trials.filter((trial) =>
-    trial.declared && (!trial.declarationBeforeText || !trial.declarationShapeValid)
-  ).length;
+  const protocolViolations = trials.filter(protocolViolated).length;
   const contaminationCount = trials.filter((trial) => trial.contaminationDetected).length;
   const pairedPositive = positive.filter((trial) =>
     validSelection(trial) && trial.controlProviderReadyMs !== undefined
@@ -193,8 +200,7 @@ export function evaluateSlackStreamingPolicy(
     const failedExpectation = trial.expectation === 'clear_positive'
       ? !validSelection(trial)
       : trial.expectation === 'clear_negative' && trial.declared;
-    const failedProtocol = trial.declared &&
-      (!trial.declarationBeforeText || !trial.declarationShapeValid);
+    const failedProtocol = protocolViolated(trial);
     return failedExpectation || failedProtocol || trial.contaminationDetected
       ? [trial.fixtureId]
       : [];
@@ -250,6 +256,9 @@ function validateTrial(trial: SlackStreamingPolicyTrial): void {
     if (value !== undefined && (!Number.isFinite(value) || value < 0)) {
       throw new Error(`Streaming policy trial ${trial.fixtureId} has invalid timing.`);
     }
+  }
+  if (trial.mode !== undefined && trial.mode !== 'early' && trial.mode !== 'final_answer') {
+    throw new Error(`Streaming policy trial ${trial.fixtureId} has an invalid mode.`);
   }
   if (!trial.declared && trial.declarationMs !== undefined) {
     throw new Error(`Streaming policy trial ${trial.fixtureId} timed a missing declaration.`);
