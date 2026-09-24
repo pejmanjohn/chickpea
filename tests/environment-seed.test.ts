@@ -23,7 +23,7 @@ function dependencies(overrides: Partial<EnvironmentSeedDependencies> = {}) {
   const created: Array<{ presetId: string; fields: Record<string, string> }> = [];
   const deps: EnvironmentSeedDependencies = {
     owner: async () => owner,
-    agentExists: async (agentId) => agentId === 'qa-agent',
+    agentState: async (agentId) => agentId === 'qa-agent' ? 'ready' : agentId === 'off-agent' ? 'inactive' : 'missing',
     existingConnection: async () => undefined,
     createConnection: async ({ preset, fields }) => {
       created.push({ presetId: preset.id, fields });
@@ -122,6 +122,9 @@ test('refuses malformed requests, an unknown Agent, and a missing owner', async 
   const unknownAgent = await seed({ agentId: 'other-agent', connections: [{ connector: 'asana', credential: 'x' }] });
   assert.equal(unknownAgent.status, 404);
   assert.equal(unknownAgent.body.error, 'unknown_agent');
+  const inactive = await seed({ agentId: 'off-agent', connections: [{ connector: 'asana', credential: 'x' }] });
+  assert.equal(inactive.status, 409);
+  assert.equal(inactive.body.error, 'agent_inactive');
   const { deps } = dependencies({ owner: async () => undefined });
   assert.equal((await seed({ agentId: 'qa-agent', connections: [{ connector: 'asana', credential: 'x' }] }, { deps })).status, 503);
   assert.equal(parseSeedRequest('x'.repeat(600 * 1024)), undefined);

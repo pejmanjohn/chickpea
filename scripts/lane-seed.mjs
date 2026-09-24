@@ -147,6 +147,9 @@ async function main() {
   try { parsed = JSON.parse(text); } catch { parsed = undefined; }
   if (!response.ok) {
     const code = typeof parsed?.error === 'string' ? parsed.error : `http_${response.status}`;
+    if (code === 'agent_inactive') {
+      throw new Error(`Agent ${options.agentId} is disabled or archived on ${options.lane}; enable it before seeding connections.`);
+    }
     throw new Error(response.status === 404 && !parsed?.error
       ? `The ${options.lane} lane did not accept its seed token (404). Redeploy the lane so it serves the seed route and token.`
       : `Seeding ${options.lane} failed: ${code}.`);
