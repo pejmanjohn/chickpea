@@ -190,7 +190,9 @@ import { createBrowserTools, openRecordingDownload } from '../browser/tools.ts';
 import { createRecordingHandleStore, resolveUploadFile } from '../connections/file-handles.ts';
 import {
   allowsConnectionFileUpload,
+  ATTACH_FILE_TO_CONNECTION_TOOL_NAME,
   CONNECTION_UPLOAD_TIMEOUT_MS,
+  planAllowsConnectionFileUpload,
   createAttachFileToConnectionTool,
   type ConnectionUploadFetch,
 } from '../connections/file-upload-tool.ts';
@@ -1621,6 +1623,12 @@ export function useRuntimePlanAgent(
         canEdit: plan.imageCapability?.acceptsImageInput === true,
         ...(imageInventory.manifest ? { imageManifest: imageInventory.manifest } : {}),
       }));
+      // Without an image model the artifact instruction lists no images, but
+      // the upload tool still takes a conversation image by its handle.
+      if (plan.imageCapability?.filled !== true && imageInventory.manifest &&
+          runtimePlanAllowsConnectionFileUpload(plan)) {
+        useInstruction(`To send one of these images to a connection, pass its handle to \`${ATTACH_FILE_TO_CONNECTION_TOOL_NAME}\`. Images already in this conversation:\n${imageInventory.manifest}`);
+      }
     }
     useInstruction(FILE_COMPLETION_INSTRUCTION);
     if (fileCompletion.repairing) {
@@ -2211,8 +2219,7 @@ async function resolveRuntimePlanUploadFetch(plan: RuntimePlanV2): Promise<Conne
 
 /** Mounted only for a plan with a writable API connection its actor can use. */
 export function runtimePlanAllowsConnectionFileUpload(plan: RuntimePlanV2): boolean {
-  return Boolean(plan.actorMembershipId) &&
-    plan.apiConnections.some((connection) => allowsConnectionFileUpload(connection.allowedMethods));
+  return planAllowsConnectionFileUpload(plan);
 }
 
 export interface RuntimePlanArtifactToolOptions {

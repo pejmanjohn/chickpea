@@ -44,6 +44,18 @@ export function allowsConnectionFileUpload(methods: readonly string[]): boolean 
   return methods.some((method) => (WRITE_METHODS as readonly string[]).includes(method.toUpperCase()));
 }
 
+/**
+ * The tool mounts only for a plan with a writable API connection and an actor
+ * whose connection credentials can be resolved.
+ */
+export function planAllowsConnectionFileUpload(plan: {
+  actorMembershipId?: string | undefined;
+  apiConnections: ReadonlyArray<{ allowedMethods: readonly string[] }>;
+}): boolean {
+  return Boolean(plan.actorMembershipId) &&
+    plan.apiConnections.some((connection) => allowsConnectionFileUpload(connection.allowedMethods));
+}
+
 export interface ConnectionUploadFetch {
   fetch: ConnectionScopedFetch;
   /** The credential values in play, removed from anything the model reads. */

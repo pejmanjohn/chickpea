@@ -1,3 +1,4 @@
+import { planAllowsConnectionFileUpload } from '../connections/file-upload-tool.ts';
 import { verifyMemoryUpdateAcknowledgement } from './memory-update-terminal.ts';
 import { WebClient } from '@slack/web-api';
 
@@ -1167,10 +1168,11 @@ export async function runTurn(
             : {}),
           // The host fetch is the only place these records exist; the dispatch
           // envelope is the only channel that reaches the Agent object. Only a
-          // plan whose image role resolved can use them, so a workspace that
-          // never enabled an image model never writes the attribute.
-          ...(context.images?.length &&
-          runtimePlanDecision?.runtimePlan.imageCapability?.filled === true
+          // plan that can use them gets them: one whose image role resolved, or
+          // one that can send a conversation image to a connection.
+          ...(context.images?.length && runtimePlanDecision &&
+          (runtimePlanDecision.runtimePlan.imageCapability?.filled === true ||
+            planAllowsConnectionFileUpload(runtimePlanDecision.runtimePlan))
             ? { threadImages: context.images }
             : {}),
           ...(admittedListIds.length ? { admittedListIds } : {}),

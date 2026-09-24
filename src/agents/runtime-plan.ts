@@ -14,8 +14,8 @@ import type { WebsiteLogin } from '../browser/logins.ts';
 import { opaqueId } from '../work/admission.ts';
 import { BROWSER_TOOL_ACTIVITY } from '../browser/tools.ts';
 import {
-  allowsConnectionFileUpload,
   ATTACH_FILE_TO_CONNECTION_TOOL_NAME,
+  planAllowsConnectionFileUpload,
 } from '../connections/file-upload-tool.ts';
 import { conversationThreadTs, slackAgentThreadKey } from '../slack/thread-key.ts';
 import type { NormalizedSlackTurn } from '../slack/types.ts';
@@ -481,7 +481,7 @@ export function buildRuntimePlanActivityContext(
     { toolName: 'recover_image', descriptor: artifact },
   );
   families.add('artifact');
-  if (plan.actorMembershipId && plan.apiConnections.some((connection) => allowsConnectionFileUpload(connection.allowedMethods))) {
+  if (planAllowsConnectionFileUpload(plan)) {
     descriptors.push({ toolName: ATTACH_FILE_TO_CONNECTION_TOOL_NAME, descriptor: artifact });
   }
 

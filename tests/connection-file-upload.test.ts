@@ -25,6 +25,7 @@ import {
   CONNECTION_UPLOAD_TIMEOUT_MS,
   CONNECTION_UPLOAD_TOOL_TIMEOUT_MS,
   createAttachFileToConnectionTool,
+  planAllowsConnectionFileUpload,
   type AttachFileToConnectionOptions,
 } from '../src/connections/file-upload-tool.ts';
 import { createImageOutputStore, IMAGE_RETENTION_MS } from '../src/images/output-store.ts';
@@ -530,4 +531,12 @@ test('the upload tool mounts only with a writable API connection its actor can u
   assert.equal(mounted({ ...PLAN, apiConnections: [connection(['GET', 'POST'])] }), false, 'no actor to resolve credentials');
   assert.equal(mounted({ ...PLAN, ...actor, apiConnections: [connection(['GET', 'POST', 'PUT'])] }), true);
   assert.equal(mounted({ ...PLAN, ...actor, apiConnections: [connection(['get', 'patch'])] }), true);
+});
+
+test('planAllowsConnectionFileUpload needs an actor and a writable API connection', () => {
+  const writable = [{ allowedMethods: ['GET', 'post'] }];
+  assert.equal(planAllowsConnectionFileUpload({ actorMembershipId: 'mem_1', apiConnections: writable }), true);
+  assert.equal(planAllowsConnectionFileUpload({ apiConnections: writable }), false);
+  assert.equal(planAllowsConnectionFileUpload({ actorMembershipId: 'mem_1', apiConnections: [{ allowedMethods: ['GET'] }] }), false);
+  assert.equal(planAllowsConnectionFileUpload({ actorMembershipId: 'mem_1', apiConnections: [] }), false);
 });
