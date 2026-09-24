@@ -152,6 +152,24 @@
    check out the claimed revision, run `npm run env -- reconciliation <alias>`
    (it adopts the uploaded version and clears the intent lock), release, and
    only then move HEAD again.
+
+   Claims need a named branch. `claim` and `wait-claim` refuse a detached HEAD
+   with `INVALID_WORKTREE`, so create a branch at the candidate first. To land
+   a fix commit during a claimed run, with no deploy in flight:
+
+   ```sh
+   git branch <fix-tip>                # keep the new commit
+   git reset --hard <claimed-revision>
+   npm run env -- release <alias> --worktree <absolute-worktree>
+   git reset --hard <fix-tip>
+   npm run env -- wait-claim <alias> --timeout-ms 0 --poll-ms 1000 --worktree <absolute-worktree>
+   ```
+
+   Batch fixes between deploys to keep these cycles rare. When `main` has
+   moved, the deploy refuses with `QA_SOURCE_BEHIND_MAIN`. Merge or rebase onto
+   the new `origin/main` just before the deploy, re-run affected offline checks,
+   and re-claim at the new HEAD. For stacked candidates, build a local verify
+   branch from `origin/main` plus the needed commits.
    Only the Slack manifest digest, the required scopes, and
    `src/auth/setup-capability.mjs` are hard-gated against the lane baseline; a
    mismatch refuses with `INSTALL_CONTINUATION_REQUIRED`, and the recovery is to
@@ -172,6 +190,33 @@
    --snapshot <snapshot>`. A doctor `missing_actor` diagnostic is a registry
    gap (no registered actor alias for that lane), not a build failure: report
    it, and continue with the attended checklist as the signed-in test actor.
+
+## Choose a lane by capability
+
+Lanes are not interchangeable. They differ in deploy profile, provider keys,
+model roles, registered fixtures, and registered actors, and the registry
+records only identity and claim state. Before `wait-claim` or `claim`, read the
+private lane capability matrix at `~/.chickpea/environments/lane-capabilities.md`
+and pick a lane that covers every selected case. Use `wait-claim <alias>` for
+that lane. Use `wait-claim any` only when all lanes qualify. Keep lane-specific
+values in that private file, not in this repository.
+
+| Column | Read-only readback |
+| --- | --- |
+| Deploy profile (`core` or `sandbox`), sandbox runtime on or off, GitHub App and granted repositories | Admin Settings › Coding sandbox and GitHub. A core deploy over a sandbox Worker is refused, so use `npm run deploy:sandbox` there. |
+| Provider keys by name (for example `OPENAI_API_KEY`, `BROWSERBASE_API_KEY`) | `npx wrangler secret list --name <worker>` lists names only. Admin Settings › Model providers and Browser. |
+| Default chat model and image role | Admin Settings › Model providers, or the model footer of a one-word Agent reply. |
+| Registered connector fixtures and standing QA connections | The private fixture inventory ([fixtures.md](fixtures.md)). |
+| Missing actor aliases | `missingActorAliases` in `env status`. `missing_actor` limits Member-view checks. |
+| Slack workspace display name, and whether Chrome is signed in to Slack and Admin | The browser. A lane's workspace can display under an older name. |
+| Transport | `env status`. A `gateway` lane has no operator Slack token (see [hosts.md](hosts.md#slack-evidence-on-gateway-lanes)). |
+
+Record each row with its observation date. Refresh a row after any deploy,
+profile switch, secret upload, model change, or fixture change on that lane.
+If no lane covers a case, report that as a blocker. Queueing for a capable lane
+beats running the case on a lane that must fail it. A weak default model can
+produce model failures that look like product bugs. Grade them `model`, or pin
+the case's declared model. Do not substitute a model silently.
 
 Use one suitable lane by default. Multiple colors are needed when explicitly
 requested or testing cross-lane isolation, not for every application change.
