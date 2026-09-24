@@ -23,14 +23,13 @@ import { SandboxSessionCapError, SandboxUnavailableError } from './errors.ts';
 import { WORKSPACE_DIR } from './workspace-lifecycle.ts';
 import {
   MAX_RUNNING_TASKS_PER_WORKSPACE,
-  MAX_WORKSPACE_NAME_CHARS,
   WorkspaceLimitError,
   WorkspaceNameError,
   normalizeWorkspaceName,
 } from './workspace-limits.ts';
 import type { WorkspaceSession } from './workspace-session.ts';
 import {
-  WORKSPACE_NAME_DESCRIPTION,
+  WORKSPACE_NAME,
   WORKSPACE_SESSION_CAP_MESSAGE,
   WORKSPACE_TASK_TOOL_NAME,
   WORKSPACE_UNAVAILABLE_MESSAGE,
@@ -171,12 +170,7 @@ export function createWorkspaceTaskTool(options: WorkspaceTaskToolOptions) {
     description:
       `Delegate repository work that needs a real checkout to a coding worker in the coding workspace: cloning, installing dependencies, editing several files, running tests or a build, pushing a branch, and opening a pull request. The worker cannot see this conversation, so the task must be a complete brief: the repository, what to change, how to verify it, the branch name to use, and whether to open a pull request. It returns the worker's answer and any pull requests it opened. One task can run for up to ${taskTimeoutMs / 60_000} minutes; at most ${MAX_WORKSPACE_TASKS_PER_RESPONSE} tasks per response. Use workspace_write and workspace_read to move files in and out, and post_artifact with the workspace to attach a file the worker made.`,
     input: v.object({
-      workspace: v.optional(v.pipe(
-        v.string(),
-        v.minLength(1),
-        v.maxLength(MAX_WORKSPACE_NAME_CHARS),
-        v.description(WORKSPACE_NAME_DESCRIPTION),
-      )),
+      workspace: WORKSPACE_NAME,
       task: v.pipe(v.string(), v.minLength(1), v.maxLength(MAX_WORKSPACE_TASK_BRIEF_CHARS)),
     }),
     durable: true,
@@ -186,8 +180,6 @@ export function createWorkspaceTaskTool(options: WorkspaceTaskToolOptions) {
       try {
         session = await options.resolve(normalizeWorkspaceName(data.workspace), 'use');
       } catch (error) {
-        if (error instanceof WorkspaceLimitError) return { output: failure('workspace_limit', error.message) };
-        if (error instanceof WorkspaceNameError) return { output: failure('invalid_input', error.message) };
         const mapped = workspaceFailure(error);
         if (mapped) return { output: mapped };
         throw error;
@@ -461,6 +453,8 @@ function workerToolStatus(toolName: string): ActivityStatus {
 }
 
 function workspaceFailure(error: unknown): WorkspaceTaskFailure | undefined {
+  if (error instanceof WorkspaceLimitError) return failure('workspace_limit', error.message);
+  if (error instanceof WorkspaceNameError) return failure('invalid_input', error.message);
   if (error instanceof SandboxSessionCapError) return failure('session_cap', WORKSPACE_SESSION_CAP_MESSAGE);
   if (error instanceof SandboxUnavailableError || error instanceof SandboxDiedError) {
     return failure('workspace_unavailable', WORKSPACE_UNAVAILABLE_MESSAGE);

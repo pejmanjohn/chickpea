@@ -20,8 +20,6 @@ import {
   type WorkspaceTurnState,
 } from './workspace-lifecycle.ts';
 
-export { DEFAULT_WORKSPACE_NAME };
-
 /**
  * The Sandbox Durable Object id of a conversation's default workspace. It is
  * the thread key the attached container has always used, so warm containers

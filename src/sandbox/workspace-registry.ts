@@ -21,9 +21,7 @@ interface RegisteredWorkspace {
 }
 
 /** A workspace the registry creates on first use, with the turn end it owns. */
-export type WorkspaceSessionFactory = (
-  key: string,
-) => Promise<{ session: WorkspaceSession; end: () => Promise<void> } | undefined>;
+export type WorkspaceSessionFactory = () => Promise<{ session: WorkspaceSession; end: () => Promise<void> } | undefined>;
 
 /**
  * The coding workspaces one agent submission has touched, by key: the
@@ -53,7 +51,7 @@ export class WorkspaceTurnRegistry {
     if (registered) return Promise.resolve(registered);
     let pending = this.pending.get(key);
     if (!pending) {
-      pending = create(key).then((created) => {
+      pending = create().then((created) => {
         if (!created) return undefined;
         this.register(created.session, created.end, key);
         return created.session;

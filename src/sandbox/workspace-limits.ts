@@ -16,13 +16,16 @@ export const DEFAULT_WORKSPACE_NAME = 'main';
 /** Longest workspace name. The id hashes it, so this bounds nothing but readability. */
 export const MAX_WORKSPACE_NAME_CHARS = 32;
 const WORKSPACE_NAME_PATTERN = /^[a-z0-9][a-z0-9_-]*$/;
-/** Workspaces the roster remembers, open or closed, so retirement survives a close. */
-const MAX_REMEMBERED_WORKSPACES = 16;
 /**
  * An open workspace unused this long holds nothing: its container slept long
  * ago and its checkpoint has expired. It stops counting as open.
  */
 const OPEN_WORKSPACE_IDLE_MS = WORKSPACE_CHECKPOINT_TTL_SECONDS * 1000;
+/**
+ * How stale an open workspace's last use may be before a use records it
+ * again, so a chain of commands is not one persistent write each.
+ */
+const LAST_USED_RESOLUTION_MS = 60_000;
 
 /** A model-supplied workspace name that is not a valid name. */
 export class WorkspaceNameError extends Error {
@@ -36,11 +39,20 @@ export class WorkspaceNameError extends Error {
 
 /** Opening another workspace would exceed {@link MAX_OPEN_WORKSPACES}. */
 export class WorkspaceLimitError extends Error {
-  constructor(readonly open: readonly string[]) {
+  constructor(readonly open: readonly string[], message?: string) {
     super(
-      `At most ${MAX_OPEN_WORKSPACES} coding workspaces can be open in this thread (open: ${open.join(', ')}). Close one you no longer need with workspace_close, or use an open one.`,
+      message ??
+        `At most ${MAX_OPEN_WORKSPACES} coding workspaces can be open in this thread (open: ${open.join(', ')}). Close one you no longer need with workspace_close, or use an open one.`,
     );
     this.name = 'WorkspaceLimitError';
+  }
+
+  /** A plan that has only the default workspace. */
+  static defaultOnly(): WorkspaceLimitError {
+    return new WorkspaceLimitError(
+      [DEFAULT_WORKSPACE_NAME],
+      `This request has only the "${DEFAULT_WORKSPACE_NAME}" workspace; use it, or omit the workspace name.`,
+    );
   }
 }
 
@@ -68,7 +80,8 @@ export interface WorkspaceRosterEntry {
 /**
  * The conversation's coding workspaces, kept in the coordinator's persistent
  * state: which names are open (for the open cap), and each name's retirement
- * generation (part of its workspace id).
+ * generation (part of its workspace id). Names are never forgotten, so a
+ * retired generation is never reused.
  */
 export interface WorkspaceRosterState {
   schemaVersion: 1;
@@ -83,14 +96,10 @@ export type WorkspaceAdmission =
 
 /** Names that count against the open cap at `now`. */
 export function openWorkspaceNames(state: WorkspaceRosterState, now: number): string[] {
-  return Object.entries(rosterEntries(state))
+  return Object.entries(state.workspaces)
     .filter(([, entry]) => entry.open && now - entry.lastUsedAt < OPEN_WORKSPACE_IDLE_MS)
     .map(([name]) => name)
     .sort();
-}
-
-export function workspaceGeneration(state: WorkspaceRosterState, name: string): number {
-  return rosterEntries(state)[name]?.generation ?? 0;
 }
 
 /**
@@ -102,15 +111,19 @@ export function admitWorkspace(
   name: string,
   now: number,
 ): { state: WorkspaceRosterState; admission: WorkspaceAdmission } {
-  const workspaces = { ...rosterEntries(state) };
   const open = openWorkspaceNames(state, now);
-  if (!open.includes(name) && open.length >= MAX_OPEN_WORKSPACES) {
+  const current = state.workspaces[name];
+  const generation = current?.generation ?? 0;
+  if (open.includes(name)) {
+    // Already open: refresh its last use only once it has gone stale.
+    if (now - current!.lastUsedAt < LAST_USED_RESOLUTION_MS) {
+      return { state, admission: { ok: true, generation } };
+    }
+  } else if (open.length >= MAX_OPEN_WORKSPACES) {
     return { state, admission: { ok: false, open } };
   }
-  const generation = workspaces[name]?.generation ?? 0;
-  workspaces[name] = { generation, open: true, lastUsedAt: now };
   return {
-    state: { schemaVersion: 1, workspaces: forgetOldest(workspaces, now) },
+    state: { schemaVersion: 1, workspaces: { ...state.workspaces, [name]: { generation, open: true, lastUsedAt: now } } },
     admission: { ok: true, generation },
   };
 }
@@ -125,25 +138,25 @@ export function closeWorkspace(
   name: string,
   options: { discard: boolean; now: number },
 ): WorkspaceRosterState {
-  const workspaces = { ...rosterEntries(state) };
-  const current = workspaces[name];
+  const current = state.workspaces[name];
   const generation = current?.generation ?? 0;
-  workspaces[name] = {
-    generation: options.discard ? generation + 1 : generation,
-    open: false,
-    lastUsedAt: current?.lastUsedAt ?? options.now,
+  return {
+    schemaVersion: 1,
+    workspaces: {
+      ...state.workspaces,
+      [name]: {
+        generation: options.discard ? generation + 1 : generation,
+        open: false,
+        lastUsedAt: current?.lastUsedAt ?? options.now,
+      },
+    },
   };
-  return { schemaVersion: 1, workspaces: forgetOldest(workspaces, options.now) };
 }
 
 /** Names the roster knows, with the default workspace always first. */
 export function rosterWorkspaceNames(state: WorkspaceRosterState): string[] {
-  const names = Object.keys(rosterEntries(state)).filter((name) => name !== DEFAULT_WORKSPACE_NAME).sort();
+  const names = Object.keys(state.workspaces).filter((name) => name !== DEFAULT_WORKSPACE_NAME).sort();
   return [DEFAULT_WORKSPACE_NAME, ...names];
-}
-
-export function rosterEntry(state: WorkspaceRosterState, name: string): WorkspaceRosterEntry | undefined {
-  return rosterEntries(state)[name];
 }
 
 /**
@@ -153,6 +166,8 @@ export function rosterEntry(state: WorkspaceRosterState, name: string): Workspac
 export interface WorkspaceRoster {
   /** Open `name` for use; throws {@link WorkspaceLimitError} past the cap. */
   admit(name: string): number;
+  /** Put `name` back as it was before an admission whose workspace never came up. */
+  restore(name: string, entry: WorkspaceRosterEntry | undefined): void;
   close(name: string, options: { discard: boolean }): void;
   generation(name: string): number;
   /** Whether the conversation has ever used `name` (the default always counts). */
@@ -161,35 +176,34 @@ export interface WorkspaceRoster {
 }
 
 export function createWorkspaceRoster(
-  initial: WorkspaceRosterState,
+  initial: unknown,
   update: (updater: (previous: WorkspaceRosterState) => WorkspaceRosterState) => void,
   now: () => number = Date.now,
 ): WorkspaceRoster {
+  // The mirror is the source of truth for this render; every write goes
+  // through it, so the updater's previous value is always the mirror.
   let latest = parseRoster(initial);
-  const write = (next: (previous: WorkspaceRosterState) => WorkspaceRosterState) => {
-    update((previous) => {
-      latest = next(parseRoster(previous));
-      return latest;
-    });
+  const write = (next: WorkspaceRosterState) => {
+    if (next === latest) return;
+    latest = next;
+    update(() => next);
   };
   return {
     admit(name) {
-      let admission: WorkspaceAdmission | undefined;
-      write((previous) => {
-        const result = admitWorkspace(previous, name, now());
-        admission = result.admission;
-        return result.state;
-      });
-      const outcome = admission as WorkspaceAdmission | undefined;
-      if (!outcome) throw new Error('Workspace roster update did not run');
-      if (!outcome.ok) throw new WorkspaceLimitError(outcome.open);
-      return outcome.generation;
+      const { state, admission } = admitWorkspace(latest, name, now());
+      if (!admission.ok) throw new WorkspaceLimitError(admission.open);
+      write(state);
+      return admission.generation;
+    },
+    restore(name, entry) {
+      const { [name]: _removed, ...rest } = latest.workspaces;
+      write({ schemaVersion: 1, workspaces: entry ? { ...rest, [name]: entry } : rest });
     },
     close(name, options) {
-      write((previous) => closeWorkspace(previous, name, { ...options, now: now() }));
+      write(closeWorkspace(latest, name, { ...options, now: now() }));
     },
-    generation: (name) => workspaceGeneration(latest, name),
-    knows: (name) => name === DEFAULT_WORKSPACE_NAME || rosterEntry(latest, name) !== undefined,
+    generation: (name) => latest.workspaces[name]?.generation ?? 0,
+    knows: (name) => name === DEFAULT_WORKSPACE_NAME || latest.workspaces[name] !== undefined,
     snapshot: () => latest,
   };
 }
@@ -198,9 +212,10 @@ export function createWorkspaceRoster(
 export function defaultOnlyWorkspaceRoster(): WorkspaceRoster {
   return {
     admit(name) {
-      if (name !== DEFAULT_WORKSPACE_NAME) throw new WorkspaceLimitError([DEFAULT_WORKSPACE_NAME]);
+      if (name !== DEFAULT_WORKSPACE_NAME) throw WorkspaceLimitError.defaultOnly();
       return 0;
     },
+    restore() {},
     close() {},
     generation: () => 0,
     knows: (name) => name === DEFAULT_WORKSPACE_NAME,
@@ -225,23 +240,4 @@ export function parseRoster(value: unknown): WorkspaceRosterState {
     }
   }
   return { schemaVersion: 1, workspaces };
-}
-
-function rosterEntries(state: WorkspaceRosterState): Record<string, WorkspaceRosterEntry> {
-  return state.workspaces;
-}
-
-/** Drop the least recently used closed or idle names past the remembered bound. */
-function forgetOldest(
-  workspaces: Record<string, WorkspaceRosterEntry>,
-  now: number,
-): Record<string, WorkspaceRosterEntry> {
-  const names = Object.keys(workspaces);
-  if (names.length <= MAX_REMEMBERED_WORKSPACES) return workspaces;
-  const closed = names
-    .filter((name) => !workspaces[name]!.open || now - workspaces[name]!.lastUsedAt >= OPEN_WORKSPACE_IDLE_MS)
-    .sort((left, right) => workspaces[left]!.lastUsedAt - workspaces[right]!.lastUsedAt);
-  const kept = { ...workspaces };
-  for (const name of closed.slice(0, names.length - MAX_REMEMBERED_WORKSPACES)) delete kept[name];
-  return kept;
 }

@@ -3,7 +3,7 @@ import { test } from 'node:test';
 
 import type { FlueExecutionOperation, Sandbox } from '@flue/runtime';
 
-import { runtimePlanWorkspaceToolsMounted } from '../src/agents/slack-thread.ts';
+import { runtimePlanWorkspaceResolver, runtimePlanWorkspaceToolsMounted } from '../src/agents/slack-thread.ts';
 import { createWorkspaceArtifactTool } from '../src/sandbox/artifact-tool.ts';
 import { SandboxUnavailableError } from '../src/sandbox/errors.ts';
 import { sandboxThreadKey } from '../src/sandbox/thread-key.ts';
@@ -13,7 +13,6 @@ import {
   workspaceRegistryInterceptor,
 } from '../src/sandbox/workspace-registry.ts';
 import {
-  DEFAULT_WORKSPACE_NAME,
   WorkspaceSession,
   defaultWorkspaceId,
   workspaceIdFor,
@@ -21,6 +20,7 @@ import {
   type WorkspaceSandboxStub,
 } from '../src/sandbox/workspace-session.ts';
 import {
+  DEFAULT_WORKSPACE_NAME,
   EMPTY_WORKSPACE_ROSTER,
   MAX_OPEN_WORKSPACES,
   WorkspaceLimitError,
@@ -583,7 +583,6 @@ test('the resolver building a workspace can fail as a typed result for every too
   }).map((tool) => [tool.name, tool]));
   for (const [name, input] of [
     ['workspace_open', {}],
-    ['workspace_list', {}],
     ['workspace_exec', { command: 'true' }],
     ['workspace_write', { path: 'a.txt', content: 'x' }],
   ] as const) {
@@ -591,6 +590,10 @@ test('the resolver building a workspace can fail as a typed result for every too
     assert.equal(output.ok, false, name);
     assert.equal(output.reason, 'workspace_unavailable', name);
   }
+  // A listing reports a workspace it cannot read instead of failing whole.
+  const listed = await run(tools.workspace_list!, {});
+  assert.equal(listed.ok, true);
+  assert.deepEqual(listed.workspaces, [{ workspace: 'main', open: false, state: 'unavailable' }]);
 });
 
 test('the registry builds a workspace lazily, once per name, and retries a failed build', async () => {
@@ -805,6 +808,8 @@ test('the roster persists through its updater and keeps its own writes visible',
     stored = updater(stored as WorkspaceRosterState);
   }, () => 10);
   assert.equal(roster.generation('api'), 2);
+  assert.equal(roster.admit('api'), 2);
+  assert.equal(writes, 0, 'a use within a minute of the last one writes nothing');
   assert.equal(roster.admit('web'), 0);
   assert.throws(() => roster.admit('docs'), (error) => error instanceof WorkspaceLimitError);
   roster.close('api', { discard: true });
@@ -813,7 +818,7 @@ test('the roster persists through its updater and keeps its own writes visible',
   assert.equal(roster.knows('docs'), false);
   assert.equal(roster.knows('main'), true, 'the default workspace always exists');
   assert.equal(roster.admit('docs'), 0);
-  assert.equal(writes, 4);
+  assert.equal(writes, 3);
   assert.deepEqual(parseRoster(stored), roster.snapshot());
 
   // Malformed state from an earlier release is dropped, not trusted.
@@ -947,4 +952,50 @@ test('workspace_list reports every workspace with its state, open flag, and runn
   // Listing reads DO records only and admits nothing.
   assert.deepEqual(log.calls.sort(), ['describe:api', 'describe:main', 'describe:web']);
   assert.equal((await run(tools.workspace_open!, { workspace: 'docs' })).ok, true, 'list never took a slot');
+});
+
+test('closing a workspace with a task running in it is refused as busy', async () => {
+  const running = new Set<string>();
+  const { tools, log, conversation } = multiWorkspaceTools({ running });
+  await run(tools.workspace_open!, { workspace: 'api' });
+  running.add(workspaceIdFor(conversation, 'api'));
+  for (const discard of [false, true]) {
+    const refused = await run(tools.workspace_close!, { workspace: 'api', discard });
+    assert.equal(refused.reason, 'busy');
+  }
+  assert.equal(log.calls.includes('discard:api'), false, 'the running task keeps its container');
+  // The slot stays taken while the task runs.
+  await run(tools.workspace_open!, { workspace: 'web' });
+  assert.equal((await run(tools.workspace_open!, { workspace: 'docs' })).reason, 'workspace_limit');
+});
+
+test('the coordinator resolver never creates a workspace to inspect, and a use that fails gives its slot back', async () => {
+  let stored: WorkspaceRosterState = EMPTY_WORKSPACE_ROSTER;
+  const roster = createWorkspaceRoster(stored, (updater) => { stored = updater(stored); });
+  const plan = {
+    sandbox: { mode: 'bash' },
+    codingWorkspace: { available: true },
+  } as never;
+  const resolve = runtimePlanWorkspaceResolver(plan, { release: false, roster });
+  await runWithWorkspaceRegistry(async () => {
+    // Off Cloudflare no workspace can be created, which stands in for a
+    // workspace that did not come up.
+    assert.equal(await resolve('api', 'use'), undefined);
+    assert.deepEqual(stored, EMPTY_WORKSPACE_ROSTER, 'the failed open holds no slot');
+    assert.equal(await resolve('never-used', 'inspect'), undefined);
+    assert.equal(roster.knows('never-used'), false);
+  });
+
+  const legacy = runtimePlanWorkspaceResolver({ sandbox: { mode: 'cloudflare' } } as never, { release: false });
+  assert.throws(() => legacy('api', 'use'), (error) =>
+    error instanceof WorkspaceLimitError && /only the "main" workspace/.test(error.message));
+});
+
+test('a retired name keeps its generation however many other names the thread uses', () => {
+  let state: WorkspaceRosterState = EMPTY_WORKSPACE_ROSTER;
+  state = closeWorkspace(admitWorkspace(state, 'api', 1).state, 'api', { discard: true, now: 1 });
+  for (let index = 0; index < 40; index += 1) {
+    state = closeWorkspace(admitWorkspace(state, `w${index}`, 2).state, `w${index}`, { discard: false, now: 2 });
+  }
+  assert.deepEqual(admitWorkspace(state, 'api', 3).admission, { ok: true, generation: 1 });
 });

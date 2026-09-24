@@ -26,13 +26,16 @@ import {
 } from '../src/sandbox/coding-worker-binding.ts';
 import { CODING_WORKER_INSTRUCTIONS } from '../src/sandbox/coding-worker-instructions.ts';
 import {
-  DEFAULT_WORKSPACE_NAME,
   WorkspaceSession,
   defaultWorkspaceId,
   workspaceIdFor,
   type WorkspaceSandboxStub,
 } from '../src/sandbox/workspace-session.ts';
-import { MAX_RUNNING_TASKS_PER_WORKSPACE, WorkspaceLimitError } from '../src/sandbox/workspace-limits.ts';
+import {
+  DEFAULT_WORKSPACE_NAME,
+  MAX_RUNNING_TASKS_PER_WORKSPACE,
+  WorkspaceLimitError,
+} from '../src/sandbox/workspace-limits.ts';
 import {
   MAX_WORKSPACE_TASKS_PER_RESPONSE,
   WORKSPACE_TASK_TIMEOUT_MS,

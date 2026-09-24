@@ -154,6 +154,7 @@ import { CODING_WORKSPACE_USE_DATA_NAME } from '../sandbox/workspace-use.ts';
 import {
   DEFAULT_WORKSPACE_NAME,
   EMPTY_WORKSPACE_ROSTER,
+  WorkspaceLimitError,
   createWorkspaceRoster,
   defaultOnlyWorkspaceRoster,
   normalizeWorkspaceName,
@@ -1527,15 +1528,16 @@ export function useRuntimePlanAgent(
     CODING_WORKSPACE_ROSTER_STATE_NAME,
     EMPTY_WORKSPACE_ROSTER,
   );
+  // A plan with an attached container has only that one workspace.
   const workspaceRoster = plan.sandbox.mode === 'cloudflare'
-    ? defaultOnlyWorkspaceRoster()
+    ? undefined
     : createWorkspaceRoster(workspaceRosterState, updateWorkspaceRoster);
   const resolveWorkspace = runtimePlanWorkspaceResolver(plan, {
     ...(options.sandboxConversationKey ? { sandboxConversationKey: options.sandboxConversationKey } : {}),
     release: options.releaseCodingWorkspace === true,
     turnId: runtimePlanWorkspaceTurnId(),
     onOpen: () => writeWorkspaceUse({ opened: true }),
-    roster: workspaceRoster,
+    ...(workspaceRoster ? { roster: workspaceRoster } : {}),
   });
   // A connected browser mounts with the artifact tools, whose staging carries
   // its proof: the session, skill, tools, and activity all follow this one
@@ -1655,7 +1657,7 @@ export function useRuntimePlanAgent(
   if (workspaceToolsMounted) {
     for (const tool of createWorkspaceTools({
       resolve: resolveWorkspace,
-      ...(plan.sandbox.mode === 'cloudflare' ? {} : { roster: workspaceRoster }),
+      ...(workspaceRoster ? { roster: workspaceRoster } : {}),
       taskRunning: workspaceTaskRunning,
     })) {
       useTool(tool);
@@ -1778,9 +1780,6 @@ export function runtimePlanWorkspaceToolsMounted(
   return runtimePlanHasCodingWorkspace(plan) && isCloudflareTarget() && !repairing;
 }
 
-/** Resolves a workspace name to this submission's session, or undefined. */
-export type RuntimePlanWorkspaceResolver = WorkspaceResolver;
-
 /** Persistent coordinator state: the thread's workspace names, open set, and retirements. */
 export const CODING_WORKSPACE_ROSTER_STATE_NAME = 'codingWorkspaceRoster';
 
@@ -1804,22 +1803,37 @@ interface RuntimePlanWorkspaceInput {
 export function runtimePlanWorkspaceResolver(
   plan: RuntimePlanV2,
   input: RuntimePlanWorkspaceInput,
-): RuntimePlanWorkspaceResolver {
+): WorkspaceResolver {
   if (plan.sandbox.mode === 'cloudflare') {
     // The attached container is the only workspace such a plan has.
-    return (name) => name === DEFAULT_WORKSPACE_NAME ? currentWorkspaceRegistry()?.get(name) : undefined;
+    return (name) => {
+      if (name !== DEFAULT_WORKSPACE_NAME) throw WorkspaceLimitError.defaultOnly();
+      return currentWorkspaceRegistry()?.get(name);
+    };
   }
   const roster = input.roster ?? defaultOnlyWorkspaceRoster();
-  return async (name, access = 'use') => {
+  return async (name, access) => {
     const registry = currentWorkspaceRegistry();
     if (!registry) return undefined;
+    // Inspecting never brings a workspace into being: a name the thread has
+    // never used has nothing to read or close.
+    if (access === 'inspect' && !roster.knows(name)) return undefined;
+    const before = roster.snapshot().workspaces[name];
     // A use opens the name (refused past the open cap); either way the
     // name's current retirement generation picks its workspace id.
     const generation = access === 'use' ? roster.admit(name) : roster.generation(name);
-    return registry.resolve(
+    const created = registry.resolve(
       workspaceRegistryKey(name, generation),
       () => createRuntimePlanWorkspace(plan, name, generation, input),
     );
+    if (access === 'inspect' || before?.open) return created;
+    // A newly opened workspace that never came up must not hold a slot.
+    const session = await created.catch((error: unknown) => {
+      roster.restore(name, before);
+      throw error;
+    });
+    if (!session) roster.restore(name, before);
+    return session;
   };
 }
 
@@ -2498,7 +2512,7 @@ export interface RuntimePlanArtifactToolOptions {
   /** Focused seam; production resolves the plan's connections at call time. */
   resolveUploadFetch?: (() => Promise<ConnectionUploadFetch | undefined>) | undefined;
   /** This submission's coding-workspace lookup, shared with the workspace tools. */
-  resolveWorkspace?: RuntimePlanWorkspaceResolver | undefined;
+  resolveWorkspace?: WorkspaceResolver | undefined;
 }
 
 /**
