@@ -18,6 +18,11 @@ import { assertInstallationNodeRuntime, reserveEnvironmentInstallation, restoreE
 import { InstallationNodeError, reconcileNodeInstallationProcess, runNodeInstallation } from './lib/environment-installation-node.mjs';
 import { targetEnvironment } from './lib/environment-target.mjs';
 import {
+  readEnvironmentCapabilities,
+  renderCapabilityTable,
+  writeCapabilityMatrix,
+} from './lib/environment-capabilities.mjs';
+import {
   reconcileEnvironmentDeployment,
   adoptEnvironmentFromFile,
   withEnvironmentReleaseFence,
@@ -117,6 +122,28 @@ export async function runEnvironmentCli(argv, io = {}) {
           process.removeListener('SIGTERM', interrupt);
         }
       }
+    } else if (parsed.command === 'capabilities') {
+      requireTarget(parsed.target);
+      if (Object.keys(parsed.flags).some((flag) => ![
+        'root', 'profile', 'environment', 'json', 'write',
+      ].includes(flag)) || (parsed.flags.write && parsed.target !== 'all')) {
+        throw new EnvironmentRegistryError('INVALID_ARGUMENT');
+      }
+      const report = await readEnvironmentCapabilities(parsed.target, {
+        ...options,
+        // Test harnesses inject fake Wrangler and registry readers here only.
+        ...(io.capabilityOptions ?? {}),
+      });
+      const written = parsed.flags.write
+        ? writeCapabilityMatrix(report, { ...options, ...(io.capabilityOptions ?? {}) })
+        : undefined;
+      if (parsed.flags.json) {
+        stdout(`${JSON.stringify(written ? { ...report, matrix: written } : report, null, 2)}\n`);
+      } else {
+        stdout(renderCapabilityTable(report));
+        if (written) stdout(`\nUpdated the generated section of ${written.path}.\n`);
+      }
+      return 0;
     } else if (parsed.command === 'status') {
       result = readEnvironmentStatus({
         ...options,
@@ -207,6 +234,10 @@ function parseArgs(argv) {
       flags.all = true;
       continue;
     }
+    if (value === '--json' || value === '--write') {
+      flags[value.slice(2)] = true;
+      continue;
+    }
     if (value === '--adopt-orphan') {
       flags.adoptOrphan = true;
       continue;
@@ -241,6 +272,7 @@ function parseArgs(argv) {
   if (flags.bindings && positional[0] !== 'migrate-provider-auth') {
     throw new EnvironmentRegistryError('INVALID_ARGUMENT');
   }
+  if ((flags.json || flags.write) && positional[0] !== 'capabilities') throw new EnvironmentRegistryError('INVALID_ARGUMENT');
   if (flags.registration && positional[0] !== 'register') throw new EnvironmentRegistryError('INVALID_ARGUMENT');
   if (flags.installation && !['install-reserve', 'install-restore'].includes(positional[0])) throw new EnvironmentRegistryError('INVALID_ARGUMENT');
   if (positional[0] !== 'wait-claim'

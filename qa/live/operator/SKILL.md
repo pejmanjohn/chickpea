@@ -82,7 +82,8 @@ produces false failures that look pre-existing.
 Before claiming a lane, gather every human-dependent prerequisite in one pass,
 so a run does not stall mid-journey while the maintainer is away:
 
-1. Pick the lane from the [lane capability matrix](environments.md#choose-a-lane-by-capability):
+1. Run `npm run env -- capabilities all` and pick the lane
+   ([choose a lane by capability](environments.md#choose-a-lane-by-capability)):
    deploy profile, provider keys, image role, default model, and registered
    connector fixtures must cover every selected case.
 2. Confirm one connected browser for the Chrome extension, signed in to the
