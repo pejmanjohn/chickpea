@@ -9,6 +9,7 @@ import {
   compileWebsiteLogins,
   deriveRuntimePlanInstanceId,
   parseRuntimePlanV2,
+  runtimePlanHasCodingWorkspace,
   runtimePlanConversationKey,
   runtimePlanSandboxConversationKey,
 } from '../src/agents/runtime-plan.ts';
@@ -891,13 +892,55 @@ test('bash-mode plans classify file and image delivery like the container mode',
   assert.ok((context.enabledFamilies ?? []).includes('artifact'));
 });
 
-test('only container plans classify the coding-workspace tools', () => {
+test('plain virtual-sandbox plans do not classify the coding-workspace tools', () => {
   const names = (sandboxMode: 'bash' | 'cloudflare') => new Set(
     buildRuntimePlanActivityContext(compile({ sandboxMode })).toolDescriptors?.map(({ toolName }) => toolName),
   );
   assert.equal(names('bash').has('workspace_exec'), false);
   const container = names('cloudflare');
   for (const toolName of WORKSPACE_TOOL_NAMES) assert.ok(container.has(toolName), toolName);
+});
+
+test('current plans keep the Agent in the virtual sandbox and freeze the coding workspace beside it', () => {
+  const current = (codingWorkspace: boolean) => compileRuntimePlanV2({
+    turn: turn(),
+    assignment: assignment(),
+    instructions: 'Complete instructions.',
+    memoryEpoch: 3,
+    effectiveConnections: structuredClone(EFFECTIVE_CONNECTIONS),
+    codingWorkspace,
+  });
+  const plan = current(true);
+  assert.deepEqual(plan.sandbox, { mode: 'bash' });
+  assert.deepEqual(plan.codingWorkspace, { available: true });
+  assert.deepEqual(parseRuntimePlanV2(structuredClone(plan)), plan);
+  assert.equal(runtimePlanHasCodingWorkspace(plan), true);
+
+  const plain = current(false);
+  assert.deepEqual(plain.sandbox, { mode: 'bash' });
+  assert.equal('codingWorkspace' in plain, false);
+  assert.equal(runtimePlanHasCodingWorkspace(plain), false);
+  // The capability is part of the frozen harness.
+  assert.notEqual(plan.harnessRevision, plain.harnessRevision);
+  // A legacy plan admitted with an attached container still reads and reaches its workspace.
+  const legacy = compile({ sandboxMode: 'cloudflare' });
+  assert.equal(runtimePlanHasCodingWorkspace(parseRuntimePlanV2(structuredClone(legacy))), true);
+
+  // The workspace capability never rides on an attached-container plan.
+  assert.throws(
+    () => parseRuntimePlanV2({ ...structuredClone(legacy), codingWorkspace: { available: true } }),
+    /codingWorkspace requires the virtual sandbox/,
+  );
+  assert.throws(
+    () => parseRuntimePlanV2({ ...structuredClone(plan), codingWorkspace: { available: false } }),
+    /codingWorkspace.available must be true/,
+  );
+  // Current plans classify the workspace tools and the workspace skill.
+  const names = new Set(
+    buildRuntimePlanActivityContext(plan).toolDescriptors?.map(({ toolName }) => toolName),
+  );
+  for (const toolName of WORKSPACE_TOOL_NAMES) assert.ok(names.has(toolName), toolName);
+  assert.ok(names.has('activate_skill'));
 });
 
 test('file delivery follows the real turn thread by default and only a trusted override otherwise', () => {
@@ -1226,14 +1269,14 @@ const CODING_MODEL = {
 };
 
 test('the coding model freezes inside an available coding workspace and rotates the harness', () => {
-  const withCoding = compile({ codingWorkspace: true, codingModel: CODING_MODEL });
+  const withCoding = compile({ sandboxMode: 'bash', codingWorkspace: true, codingModel: CODING_MODEL });
   assert.deepEqual(withCoding.codingWorkspace, { available: true, codingModel: CODING_MODEL });
   const reparsed = parseRuntimePlanV2(structuredClone(withCoding));
   assert.deepEqual(reparsed.codingWorkspace, withCoding.codingWorkspace);
   assert.equal(reparsed.harnessRevision, withCoding.harnessRevision);
 
   // No workspace, no coding model: the model is only frozen with the capability.
-  const noWorkspace = compile({ codingModel: CODING_MODEL });
+  const noWorkspace = compile({ sandboxMode: 'bash', codingModel: CODING_MODEL });
   assert.equal(Object.hasOwn(noWorkspace, 'codingWorkspace'), false);
   // A plan without the field keeps the revision it had before the field existed.
   assert.equal(noWorkspace.harnessRevision, compatibilityHarnessRevision(noWorkspace));
@@ -1241,6 +1284,7 @@ test('the coding model freezes inside an available coding workspace and rotates 
   // The plan is immutable instance data, so a different coding model is a new
   // incarnation rather than a stale record under the same id.
   const other = compile({
+    sandboxMode: 'bash',
     codingWorkspace: true,
     codingModel: {
       ...CODING_MODEL,
@@ -1254,7 +1298,7 @@ test('the coding model freezes inside an available coding workspace and rotates 
 });
 
 test('a malformed coding workspace or coding model is rejected', () => {
-  const plan = compile({ codingWorkspace: true, codingModel: CODING_MODEL });
+  const plan = compile({ sandboxMode: 'bash', codingWorkspace: true, codingModel: CODING_MODEL });
   const withWorkspace = (codingWorkspace: unknown) => ({ ...structuredClone(plan), codingWorkspace });
   assert.throws(
     () => parseRuntimePlanV2(withWorkspace({ available: false })),

@@ -1,6 +1,11 @@
 import type { RepositoryGrant } from '../config/types.ts';
 import { validEnabledRepositoryGrants } from './egress-handler.ts';
 
+/**
+ * The environment a sandbox-reading tool addresses: the virtual sandbox, or a
+ * coding workspace container. New plans always give the Agent `bash`;
+ * `cloudflare` remains for plans admitted with an attached container.
+ */
 export type SandboxSelection = 'bash' | 'cloudflare';
 
 interface SandboxSelectionInput {
@@ -10,12 +15,6 @@ interface SandboxSelectionInput {
   enabled: boolean;
   appConnected: boolean;
   repositoryGrants: readonly RepositoryGrant[];
-}
-
-export interface SandboxSelectionDecision {
-  selection: SandboxSelection;
-  /** The configured Cloudflare path was eligible except for its live binding. */
-  unavailableFallback: boolean;
 }
 
 export function sandboxBindingInstalled(
@@ -69,32 +68,38 @@ export async function probeSandboxContainer(
   }
 }
 
+/** Whether a turn may use a coding workspace through the workspace tools. */
+export type CodingWorkspaceCapability = 'available' | 'unavailable';
+
+export interface CodingWorkspaceCapabilityDecision {
+  capability: CodingWorkspaceCapability;
+  /** The configured coding workspace was eligible except for its live binding. */
+  unavailableFallback: boolean;
+}
+
 /**
- * Select only the Flue adapter. Provider construction stays at the agent seam,
- * after this pure decision, so tests never need a real container.
+ * Whether the coding workspace is available this turn. The Agent itself always
+ * runs in the virtual sandbox; this only decides whether the workspace tools
+ * are mounted. Pure, so tests never need a real container.
  */
-export function selectSandbox(input: SandboxSelectionInput): SandboxSelection {
-  if (input.target === 'node') return 'bash';
-  if (!input.installed) return 'bash';
-  if (!input.enabled) return 'bash';
+export function codingWorkspaceCapability(input: SandboxSelectionInput): CodingWorkspaceCapability {
+  if (input.target === 'node') return 'unavailable';
+  if (!input.installed) return 'unavailable';
+  if (!input.enabled) return 'unavailable';
   const repositoryAccessReady =
     input.appConnected &&
     validEnabledRepositoryGrants(input.repositoryGrants).length > 0;
-  if (!repositoryAccessReady) return 'bash';
-  return 'cloudflare';
+  return repositoryAccessReady ? 'available' : 'unavailable';
 }
 
-/** Distinguish an intentional bash selection from a missing-binding fallback. */
-export function resolveSandboxSelection(
+/** Distinguish an unconfigured workspace from a missing-binding fallback. */
+export function resolveCodingWorkspaceCapability(
   input: SandboxSelectionInput,
-): SandboxSelectionDecision {
-  const selection = selectSandbox(input);
+): CodingWorkspaceCapabilityDecision {
+  const capability = codingWorkspaceCapability(input);
   const unavailableFallback =
     input.target === 'cloudflare' &&
     !input.installed &&
-    selectSandbox({ ...input, installed: true }) === 'cloudflare';
-  return {
-    selection,
-    unavailableFallback,
-  };
+    codingWorkspaceCapability({ ...input, installed: true }) === 'available';
+  return { capability, unavailableFallback };
 }

@@ -141,7 +141,7 @@ async function dispatchedOccurrence(
           actorMembershipId: 'membership_member', actorSlackUserId: 'U_MEMBER',
         }),
         resolveModel: async () => ({ model: config.model }),
-        useCloudflareSandbox: async () => false,
+        codingWorkspaceConfigured: async () => false,
         // The real prompt assembly: saved task as current intent, bounded Slack
         // context, and the terminal current-request envelope.
         preparePrompt: (occurrence, routine, access, env) => prepareRoutinePrompt(occurrence, routine, access, env, client, {

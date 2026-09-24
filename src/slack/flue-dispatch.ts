@@ -21,6 +21,10 @@ import type { PlatformEnv } from '../config/state-backend.ts';
 import { isCloudflareTarget } from '../config/runtime-target.ts';
 import { cloudflareSandboxOptionVariants } from '../sandbox/lifecycle.ts';
 import { sandboxThreadKey } from '../sandbox/thread-key.ts';
+import {
+  CODING_WORKSPACE_USE_DATA_NAME,
+  codingWorkspaceOpenedFromReplyData,
+} from '../sandbox/workspace-use.ts';
 import { prepareSandboxTurn, type SandboxTurnContext } from '../sandbox/turn-context.ts';
 import {
   CHICKPEA_RESPONSE_METADATA_KEY,
@@ -98,6 +102,12 @@ export interface AgentDispatchResult {
   reportedUsage: AgentReportedUsage | null;
   usageCompleteness: AgentUsageCompleteness;
   flueSubmissionRef?: string | null;
+  /**
+   * Whether the Agent opened a coding workspace, read from this attempt's own
+   * reply. Never persisted with the settlement, so a replayed settlement
+   * leaves it undefined (unknown).
+   */
+  codingWorkspaceOpened?: boolean;
 }
 
 export class AgentPromptFailure extends Error {
@@ -322,7 +332,16 @@ export async function promptSlackThreadAgent(
       // possibly completed turn as a permanent failure.
       throw new AgentPromptFailure('agent', 503, false, true);
     }
-    const kind = classifyFlueRunFailure(error);
+    const classified = classifyFlueRunFailure(error);
+    // Only an attached container can fail a turn as a sandbox failure. A
+    // workspace tool reports its failures to the model as tool results.
+    const attachedContainer = input.runtimePlan
+      ? input.runtimePlan.sandbox.mode === 'cloudflare'
+      : input.useCloudflareSandbox;
+    const kind = !attachedContainer &&
+        (classified === 'sandbox' || classified === 'sandbox-session-cap')
+      ? 'agent'
+      : classified;
     logDispatchFailure('settlement_failed', receipt.submissionId, undefined, error);
     let checkpoint: FlueSettlementCheckpointV1;
     try {
@@ -379,7 +398,12 @@ export async function promptSlackThreadAgent(
   input.state.flueSettlement = checkpoint;
   await progressiveRelay?.closeAndDrain();
   await input.beforeResult?.();
-  return resultFromSettlement(checkpoint);
+  return {
+    ...resultFromSettlement(checkpoint),
+    codingWorkspaceOpened: codingWorkspaceOpenedFromReplyData(
+      reply.data?.[CODING_WORKSPACE_USE_DATA_NAME],
+    ),
+  };
 }
 
 /** Slack presents the final self-contained assistant step, not working narration. */

@@ -164,6 +164,11 @@ export interface ArtifactDestinationBinding {
    * because just-bash pipes are string-based and would re-encode binary data.
    */
   sandboxKind: SandboxSelection;
+  /**
+   * The named coding workspace the file is read from, when it is not the
+   * Agent's own sandbox. File-delivery completion re-reads it from there.
+   */
+  sourceWorkspace?: string;
 }
 
 interface WorkspaceArtifactCapabilityOptions extends ArtifactDestinationBinding {
@@ -197,7 +202,7 @@ export type ArtifactToolResult =
  * named coding workspace, or undefined when the request has no such workspace.
  */
 export interface WorkspaceArtifactSource {
-  sandbox(name: string): Promise<Sandbox> | undefined;
+  sandbox(name: string): Promise<Sandbox | undefined> | undefined;
 }
 
 const WORKSPACE_ARTIFACT_INPUT = v.object({
@@ -244,7 +249,9 @@ export function createWorkspaceArtifactTool(
         };
         return { output: unavailable };
       }
-      return { output: await deliver(env, input, { ...options, sandboxKind: 'cloudflare' }) };
+      return {
+        output: await deliver(env, input, { ...options, sandboxKind: 'cloudflare', sourceWorkspace: workspace }),
+      };
     },
   });
 }

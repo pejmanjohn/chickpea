@@ -238,3 +238,40 @@ test('malformed completion data fails closed; ordinary answers remain unchanged'
   assert.throws(() => resolveFileDeliveryText('attached', [{}]), /invalid/);
   assert.match(resolveFileDeliveryText('Here is /home/user/report.md', [{ unresolved: true, files: [] }]), /couldn't finish checking/);
 });
+
+test('a file prepared from a coding workspace is re-read from that workspace at completion', async () => {
+  const h = setup();
+  const workspaceReads: string[] = [];
+  const workspaceEnv = {
+    cwd: '/workspace', resolvePath: (path: string) => posix.resolve('/workspace', path),
+    async exec() { return { stdout: '', stderr: '', exitCode: 0 }; },
+    async stat() { return { isFile: true, isDirectory: false, size: 3 }; },
+    async readFileBuffer(path: string) { workspaceReads.push(path); return new Uint8Array([1, 2, 3]); },
+    async rm() {},
+  } as unknown as SessionEnv;
+  const workspaces = { sandbox: async (name: string) => (name === 'main' ? workspaceEnv : undefined) };
+  // post_artifact { workspace } delivers from the workspace.
+  const first = await h.completion.deliver(workspaceEnv, { path: '/workspace/r2.sh', filename: 'r2.sh' },
+    { ...h.binding, sandboxKind: 'cloudflare', sourceWorkspace: 'main' });
+  assert.equal(first.attached, true);
+  assert.equal(h.completion.state().outcomes[0]?.workspace, 'main');
+
+  // Completion runs on the Agent's own virtual sandbox, where the path does
+  // not exist; it must reuse the workspace receipt instead of failing it.
+  const completed = await h.completion.complete(h.env, [{ path: '/workspace/r2.sh', filename: 'r2.sh' }],
+    h.binding, [], workspaces);
+  assert.equal(completed.checked, true);
+  assert.deepEqual(completed.needsCorrection, []);
+  assert.equal(h.uploads.length, 1, 'unchanged bytes are not uploaded twice');
+  assert.ok(workspaceReads.length >= 2, 'both reads went to the workspace');
+  assert.equal(h.completion.unresolved(), false);
+
+  // Without the workspace source the same selection is a correctable failure,
+  // never a silent success.
+  const h2 = setup();
+  await h2.completion.deliver(workspaceEnv, { path: '/workspace/r2.sh', filename: 'r2.sh' },
+    { ...h2.binding, sandboxKind: 'cloudflare', sourceWorkspace: 'main' });
+  const unavailable = await h2.completion.complete(h2.env, [{ path: '/workspace/r2.sh', filename: 'r2.sh' }], h2.binding);
+  assert.equal(unavailable.checked, false);
+  assert.equal(unavailable.needsCorrection[0]?.detail, 'source_unavailable');
+});

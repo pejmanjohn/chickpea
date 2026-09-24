@@ -92,9 +92,9 @@ import {
 import { slackProgressiveStreamingEnabled } from './progressive-ops-flag.ts';
 import { slackSemanticActivityStatusEnabled } from './semantic-status-flag.ts';
 import {
-  resolveSandboxSelection,
+  resolveCodingWorkspaceCapability,
   sandboxBindingInstalled,
-  type SandboxSelectionDecision,
+  type CodingWorkspaceCapabilityDecision,
 } from '../sandbox/select.ts';
 import {
   assembleSlackPrompt,
@@ -194,7 +194,10 @@ export interface RunTurnOptions {
   /** Recovery replays can be a durable failure rather than a successful answer. */
   replayTerminalResult?: 'answer' | 'failure';
   /** Persist sandbox side effects before the final Slack delivery can fail. */
-  beforeDelivery?: () => Promise<string | undefined>;
+  beforeDelivery?: (input?: {
+    /** Whether the Agent opened a coding workspace; undefined when unknown. */
+    codingWorkspaceOpened?: boolean;
+  }) => Promise<string | undefined>;
   /** Persist terminal delivery before post-delivery workspace teardown begins. */
   onDelivered?: (outcome?: 'succeeded' | 'no_op' | 'failed') => void | Promise<void>;
   /** A durable outbox now owns the terminal; keep the TurnJob open until it settles. */
@@ -1081,8 +1084,7 @@ export async function runTurn(
         memorySelected: (preparedMemory?.selection?.entries.length ?? 0) > 0,
         recoveryRequired: false,
         concurrentAttributionProven: options.progressiveAttributionProven === true,
-        replacementCapable: options.beforeDelivery !== undefined &&
-          runtimePlanDecision.runtimePlan.sandbox.mode === 'cloudflare',
+        replacementCapable: false,
       });
       if (agentViewPresentation) {
         const frozen = await agentViewPresentation.freezeProgressiveEligibility(candidate);
@@ -1150,11 +1152,14 @@ export async function runTurn(
       text = options.replayText;
     } else {
       try {
-        usedCloudflareSandbox = runtimePlanDecision
-          ? runtimePlanDecision.runtimePlan.sandbox.mode === 'cloudflare' &&
-            !turn.attachmentIntake && !turn.attachments?.length &&
-            !sandboxUnavailableFallback
-          : await shouldUseCloudflareSandbox(assignment, platformEnv);
+        // Only a plan admitted with an attached container has the relay
+        // prepare and end its workspace turn. Current plans keep the Agent in
+        // the virtual sandbox, and the workspace tools open and end their own
+        // workspace turn, so a turn that never uses one touches no container.
+        usedCloudflareSandbox = runtimePlanDecision !== undefined &&
+          runtimePlanDecision.runtimePlan.sandbox.mode === 'cloudflare' &&
+          !turn.attachmentIntake && !turn.attachments?.length &&
+          !sandboxUnavailableFallback;
         if (!options.agentPrompt && !options.flueDispatch) {
           throw new Error('Durable Flue dispatch state is unavailable.');
         }
@@ -1332,7 +1337,11 @@ export async function runTurn(
       await options.onDeferredTerminal?.();
       return;
     }
-    const recoveredText = await options.beforeDelivery?.();
+    const recoveredText = await options.beforeDelivery?.(
+      agentResult?.codingWorkspaceOpened === undefined
+        ? undefined
+        : { codingWorkspaceOpened: agentResult.codingWorkspaceOpened },
+    );
     let acknowledgeMemoryUpdate = false;
     if (agentResult?.memoryUpdate && preparedMemory?.validateReceiptLease) {
       // A changed memory invalidates the ordinary lease. Only a verified
@@ -1683,22 +1692,19 @@ function agentFailureBeforeModelInvocation(error: unknown): boolean {
   ].includes(error.kind);
 }
 
-export async function shouldUseCloudflareSandbox(
-  assignment: ResolvedAssignment,
-  env: PlatformEnv | undefined,
-): Promise<boolean> {
-  return (await resolveCloudflareSandboxDecision(assignment, env)).selection === 'cloudflare';
-}
-
-export async function resolveCloudflareSandboxDecision(
+/**
+ * Whether this turn's Agent may use a coding workspace. It never changes the
+ * Agent's own environment; it only decides whether the workspace tools mount.
+ */
+export async function resolveCodingWorkspaceDecision(
   assignment: ResolvedAssignment,
   env: PlatformEnv | undefined,
   store?: SettingsStore,
-): Promise<SandboxSelectionDecision> {
-  if (!isCloudflareTarget()) return { selection: 'bash', unavailableFallback: false };
+): Promise<CodingWorkspaceCapabilityDecision> {
+  if (!isCloudflareTarget()) return { capability: 'unavailable', unavailableFallback: false };
   const repositories = assignment.agent.repositories ?? [];
   if (repositories.length === 0) {
-    return { selection: 'bash', unavailableFallback: false };
+    return { capability: 'unavailable', unavailableFallback: false };
   }
 
   try {
@@ -1707,7 +1713,7 @@ export async function resolveCloudflareSandboxDecision(
       resolveSandboxSettings(settingsStore),
       getGithubConnection(settingsStore),
     ]);
-    return resolveSandboxSelection({
+    return resolveCodingWorkspaceCapability({
       target: 'cloudflare',
       installed: sandboxBindingInstalled(env),
       enabled: settings.enabled,
@@ -1715,9 +1721,8 @@ export async function resolveCloudflareSandboxDecision(
       repositoryGrants: repositories,
     });
   } catch {
-    // The agent factory resolves the same live settings and will fail closed.
-    // Avoid touching a container when its policy cannot be established here.
-    return { selection: 'bash', unavailableFallback: false };
+    // Without its policy the workspace is simply not offered this turn.
+    return { capability: 'unavailable', unavailableFallback: false };
   }
 }
 
@@ -1734,7 +1739,7 @@ async function freezeRuntimePlanForTurn(input: {
   decision: FrozenRuntimePlanDecision;
   unavailableFallback: boolean;
 }> {
-  const sandboxDecision = await resolveRuntimePlanSandboxSelection(
+  const workspaceDecision = await resolveCodingWorkspaceDecision(
     input.assignment,
     input.platformEnv,
     input.settingsStore,
@@ -1819,7 +1824,7 @@ async function freezeRuntimePlanForTurn(input: {
     canonicalModel,
     runtimeModel.providerAuthRoute,
   );
-  const codingWorkspace = sandboxDecision.selection === 'cloudflare';
+  const codingWorkspace = workspaceDecision.capability === 'available';
   const codingModel = codingWorkspace
     ? await freezeCodingModelForTurn({
         workspaceId: input.turn.workspaceId,
@@ -1844,7 +1849,6 @@ async function freezeRuntimePlanForTurn(input: {
     ...(browserCapability ? { browserCapability, websiteLogins } : {}),
     instructions,
     memoryEpoch: input.memoryEpoch,
-    sandboxMode: sandboxDecision.selection,
     effectiveConnections: connectionResolution.selected,
     ...(connectionAuthorizations ? { connectionAuthorizations } : {}),
     connectionChoices: connectionResolution.ambiguous,
@@ -1862,7 +1866,7 @@ async function freezeRuntimePlanForTurn(input: {
   ) {
     throw new Error('Frozen RuntimePlanV2 belongs to another Slack conversation.');
   }
-  return { decision, unavailableFallback: sandboxDecision.unavailableFallback };
+  return { decision, unavailableFallback: workspaceDecision.unavailableFallback };
 }
 
 /**
@@ -1903,17 +1907,6 @@ export async function freezeCodingModelForTurn(input: {
       };
     },
   });
-}
-
-async function resolveRuntimePlanSandboxSelection(
-  assignment: ResolvedAssignment,
-  env: PlatformEnv | undefined,
-  store?: SettingsStore,
-): Promise<SandboxSelectionDecision> {
-  if (!isCloudflareTarget()) {
-    return { selection: 'bash', unavailableFallback: false };
-  }
-  return resolveCloudflareSandboxDecision(assignment, env, store);
 }
 
 const MEMORY_CHANGED_RETRY_TEXT =

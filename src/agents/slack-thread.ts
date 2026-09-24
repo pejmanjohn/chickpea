@@ -5,6 +5,7 @@ import { SLACK_MEMORY_UPDATE_DATA_NAME, SlackMemoryUpdateSchema, type SlackMemor
 
 import {
   bash,
+  FlueError,
   type AgentProps,
   type AgentRuntimeConfig,
   type SandboxFactory,
@@ -135,13 +136,14 @@ import {
   contentFreeSandboxExec,
 } from '../sandbox/lifecycle.ts';
 import {
-  resolveSandboxSelection,
+  codingWorkspaceCapability,
+  resolveCodingWorkspaceCapability,
   sandboxBindingInstalled,
-  selectSandbox,
   type SandboxSelection,
 } from '../sandbox/select.ts';
 import { reserveMonthlySandboxSession } from '../sandbox/session-cap.ts';
 import { currentWorkspaceRegistry } from '../sandbox/workspace-registry.ts';
+import { CODING_WORKSPACE_USE_DATA_NAME } from '../sandbox/workspace-use.ts';
 import {
   DEFAULT_WORKSPACE_NAME,
   WorkspaceSession,
@@ -149,6 +151,7 @@ import {
   type WorkspaceSandboxStub,
 } from '../sandbox/workspace-session.ts';
 import { createWorkspaceTools } from '../sandbox/workspace-tools.ts';
+import { SandboxUnavailableError } from '../sandbox/errors.ts';
 import {
   buildArtifactToolsInstruction,
   createWorkspaceArtifactCapability,
@@ -156,6 +159,7 @@ import {
   POST_ARTIFACT_TOOL_NAME,
   type SlackArtifactStageInput,
   type SlackArtifactStageOutcome,
+  type WorkspaceArtifactSource,
   isStreamedFile,
 } from '../sandbox/artifact-tool.ts';
 import {
@@ -195,7 +199,11 @@ import {
 } from '../connections/file-upload-tool.ts';
 import { BrowserTurnSession } from '../browser/turn-session.ts';
 import { resolveModelApiKeyForStatelessCall } from '../config/provider-keys.ts';
-import { workspaceSkillForSandbox } from '../sandbox/workspace-skill.ts';
+import {
+  CODING_WORKSPACE_INSTRUCTION,
+  codingWorkspaceSkill,
+  workspaceSkillForSandbox,
+} from '../sandbox/workspace-skill.ts';
 import { publishActivityStatus } from '../slack/activity-publisher.ts';
 import {
   bindCurrentRequestConversation,
@@ -257,6 +265,8 @@ import {
   buildRuntimePlanActivityContext,
   compileWebsiteLogins,
   parseRuntimePlanV2,
+  runtimePlanConversationKey,
+  runtimePlanHasCodingWorkspace,
   type RuntimePlanApiConnectionV2,
   type RuntimePlanModelCredentialV3,
   type RuntimePlanRepositoryV2,
@@ -861,7 +871,7 @@ export async function createSlackAgentRuntime(
       ),
     ]);
   const installed = sandboxBindingInstalled(env);
-  const configuredSandbox = resolveSandboxSelection({
+  const configuredSandbox = resolveCodingWorkspaceCapability({
     target: isCloudflareTarget() ? 'cloudflare' : 'node',
     installed,
     enabled: sandboxSettings.enabled,
@@ -876,15 +886,17 @@ export async function createSlackAgentRuntime(
     ...(env ? { env } : {}),
     unavailableFallback,
   });
-  const sandboxSelection = input.forcedSandbox
+  // This assembler serves plans admitted with an attached container (forced)
+  // and the legacy entry point, which still attaches the workspace directly.
+  const sandboxSelection: SandboxSelection = input.forcedSandbox
     ? input.forcedSandbox === 'cloudflare' && installed ? 'cloudflare' : 'bash'
-    : selectSandbox({
+    : codingWorkspaceCapability({
         target: isCloudflareTarget() ? 'cloudflare' : 'node',
         installed,
         enabled: sandboxSettings.enabled,
         appConnected: githubAppConnected,
         repositoryGrants: repositoryAccess.grants,
-      });
+      }) === 'available' ? 'cloudflare' : 'bash';
   const workspaceSkill = workspaceSkillForSandbox(sandboxSelection);
 
   // Project resolved connectors into credential-free scope before skill
@@ -1310,7 +1322,7 @@ export function runtimePlanConnectedServicesInstruction(
   plan: Pick<
     RuntimePlanV2,
     'apiConnections' | 'mcpConnections' | 'managedConnections' | 'connectionChoices'
-  > & Partial<Pick<RuntimePlanV2, 'repositories' | 'sandbox'>>,
+  > & Partial<Pick<RuntimePlanV2, 'repositories' | 'sandbox' | 'codingWorkspace'>>,
 ): string {
   const selected = [
     ...plan.apiConnections.map(({ id, displayName }) => ({
@@ -1356,7 +1368,7 @@ export function runtimePlanConnectedServicesInstruction(
 
 /** Name frozen repository grants so the model does not guess at their absence. */
 function runtimePlanRepositoriesDeclaration(
-  plan: Partial<Pick<RuntimePlanV2, 'repositories' | 'sandbox'>>,
+  plan: Partial<Pick<RuntimePlanV2, 'repositories' | 'sandbox' | 'codingWorkspace'>>,
 ): string {
   const repositories = plan.repositories ?? [];
   if (repositories.length === 0) return '';
@@ -1370,7 +1382,10 @@ function runtimePlanRepositoriesDeclaration(
     ? 'The workspace starts empty: clone a granted repository with a plain HTTPS URL such as ' +
       '`git clone https://github.com/{owner}/{repo}.git`; GitHub credentials are injected automatically, ' +
       'so never add a credential to the URL. See the workspace and Repositories skills.'
-    : 'Use the GitHub REST recipes in the Repositories skill; GitHub credentials are injected automatically.';
+    : plan.codingWorkspace
+      ? 'Use the GitHub REST recipes in the Repositories skill; GitHub credentials are injected automatically. ' +
+        'Your own shell cannot clone them; for a real checkout, use the coding workspace tools (see the workspace skill).'
+      : 'Use the GitHub REST recipes in the Repositories skill; GitHub credentials are injected automatically.';
   return ` Granted GitHub repositories for this turn: ${names}. ${access}`;
 }
 
@@ -1427,11 +1442,15 @@ function runtimePlanRepositoryOwner(repository: RuntimePlanRepositoryV2): string
  * sandbox-derived workspace skill last so no stored Agent skill can hide it.
  */
 export function runtimePlanSkills(
-  plan: Pick<RuntimePlanV2, 'apiConnections' | 'repositories' | 'skills' | 'sandbox' | 'browserCapability' | 'websiteLogins'>,
+  plan: Pick<RuntimePlanV2, 'apiConnections' | 'repositories' | 'skills' | 'sandbox' | 'codingWorkspace' | 'browserCapability' | 'websiteLogins'>,
   options: { browser?: boolean } = {},
 ): ReturnType<typeof resolveProfileSkills> {
   const agentSkills = plan.skills.map((entry) => ({ ...entry, enabled: true }));
-  const workspaceSkill = workspaceSkillForSandbox(plan.sandbox.mode);
+  // A current plan reaches its workspace through tools; a plan admitted with
+  // an attached container keeps the in-container skill.
+  const workspaceSkill = plan.codingWorkspace
+    ? codingWorkspaceSkill()
+    : workspaceSkillForSandbox(plan.sandbox.mode);
   // The browser skill rides with its tools, so it mounts only when the render
   // mounted them; like the workspace skill it comes last so a stored Agent
   // skill cannot hide it.
@@ -1467,6 +1486,11 @@ export function useRuntimePlanAgent(
     additionalActivityToolDescriptors?: readonly ActivityToolDescriptor[];
     /** Images already in this conversation, collected by the host fetch. */
     threadImages?: readonly ThreadImageRecord[];
+    /**
+     * Destroy a coding workspace this run opened when it settles, instead of
+     * keeping it warm and checkpointed. Scheduled runs have no follow-up.
+     */
+    releaseCodingWorkspace?: boolean;
   } = {},
 ): void {
   const { accumulator: artifactAccumulator, writeReceipts: writeArtifactReceipts } = useSlackArtifactReceipts();
@@ -1474,6 +1498,15 @@ export function useRuntimePlanAgent(
     writeArtifactReceipts({ schemaVersion: 1, receipts: artifactAccumulator.remove(fileIds) });
   }, !options.artifactToolsDisabled);
   const reserveImageCall = useImageCallBudget();
+  const writeWorkspaceUse = useDataWriter(CODING_WORKSPACE_USE_DATA_NAME, {
+    schema: v.object({ opened: v.literal(true) }),
+  });
+  const resolveWorkspace = runtimePlanWorkspaceResolver(plan, {
+    ...(options.sandboxConversationKey ? { sandboxConversationKey: options.sandboxConversationKey } : {}),
+    release: options.releaseCodingWorkspace === true,
+    turnId: runtimePlanWorkspaceTurnId(),
+    onOpen: () => writeWorkspaceUse({ opened: true }),
+  });
   // A connected browser mounts with the artifact tools, whose staging carries
   // its proof: the session, skill, tools, and activity all follow this one
   // predicate.
@@ -1512,6 +1545,9 @@ export function useRuntimePlanAgent(
     useInstruction(runtimePlanSlackCapabilitiesInstruction(options.slackCapabilities));
   }
   useInstruction('Sandbox files are temporary working data, not durable Agent memory. They do not follow this Agent into a fresh conversation. A successful file or shell write cannot establish that a fact was remembered. Never promise future recall from a sandbox file.');
+  if (plan.codingWorkspace && isCloudflareTarget() && !fileCompletion.repairing) {
+    useInstruction(CODING_WORKSPACE_INSTRUCTION);
+  }
   if (plan.sandbox.mode === 'bash') {
     useInstruction('This virtual sandbox starts with a fresh filesystem for each new request, including a follow-up in the same Slack thread. Files from an earlier request are gone. When the current user asks to return or revise those files, recreate them from the available contents in this request before attaching them; do not assume an earlier path still exists. The internal file-delivery check continues the current request and may only read and export existing files.');
   }
@@ -1583,7 +1619,7 @@ export function useRuntimePlanAgent(
   useSandbox(options.artifactToolsDisabled ? sandbox : fileCompletion.wrapSandbox(sandbox));
   const workspaceToolsMounted = runtimePlanWorkspaceToolsMounted(plan, fileCompletion.repairing);
   if (workspaceToolsMounted) {
-    for (const tool of createWorkspaceTools({ resolve: resolveRegisteredWorkspace })) {
+    for (const tool of createWorkspaceTools({ resolve: resolveWorkspace })) {
       useTool(tool);
     }
   }
@@ -1600,6 +1636,7 @@ export function useRuntimePlanAgent(
         imageInventory,
         reserveImageCall,
         fileCompletion,
+        resolveWorkspace,
         ...(browserSession ? { browserSession } : {}),
         ...(browserRequester ? { browserRequester } : {}),
         ...(browserApprovals ? { browserApprovals } : {}),
@@ -1682,20 +1719,131 @@ ChickpeaSlack.initialData = v.custom<RuntimePlanV2>((value) => {
 }, 'RuntimePlanV2 is invalid.');
 
 /**
- * The coding-workspace tools mount beside the attached container: only a
- * Cloudflare plan has a workspace, and an export-only file repair may not
- * change or run anything in it.
+ * The coding-workspace tools mount when the plan can reach a workspace: a
+ * current plan with the coding-workspace capability, or a plan admitted with
+ * an attached container. Only the Cloudflare target has one, and an
+ * export-only file repair may not change or run anything in it.
  */
 export function runtimePlanWorkspaceToolsMounted(
-  plan: Pick<RuntimePlanV2, 'sandbox'>,
+  plan: Pick<RuntimePlanV2, 'sandbox' | 'codingWorkspace'>,
   repairing: boolean,
 ): boolean {
-  return plan.sandbox.mode === 'cloudflare' && isCloudflareTarget() && !repairing;
+  return runtimePlanHasCodingWorkspace(plan) && isCloudflareTarget() && !repairing;
 }
 
-/** The workspace this submission opened under `name`, shared with the attached container. */
-function resolveRegisteredWorkspace(name: string) {
-  return currentWorkspaceRegistry()?.get(name);
+/** Resolves a workspace name to this submission's session, or undefined. */
+export type RuntimePlanWorkspaceResolver = (
+  name: string,
+) => Promise<WorkspaceSession | undefined> | WorkspaceSession | undefined;
+
+/**
+ * How the workspace tools find a workspace this submission. A plan admitted
+ * with an attached container shares the session that container opened. A
+ * current plan creates the session on the first tool call; it prepares and
+ * ends its own workspace turn, so a submission that never calls a workspace
+ * tool touches no Sandbox Durable Object at all.
+ */
+interface RuntimePlanWorkspaceInput {
+  sandboxConversationKey?: string;
+  /** Destroy the workspace when the run settles instead of keeping it warm. */
+  release: boolean;
+  turnId?: string | undefined;
+  onOpen?: () => void;
+}
+
+export function runtimePlanWorkspaceResolver(
+  plan: RuntimePlanV2,
+  input: RuntimePlanWorkspaceInput,
+): RuntimePlanWorkspaceResolver {
+  if (plan.sandbox.mode === 'cloudflare') {
+    return (name) => currentWorkspaceRegistry()?.get(name);
+  }
+  return async (name) => currentWorkspaceRegistry()?.resolve(
+    name,
+    (requested) => createRuntimePlanWorkspace(plan, requested, input),
+  );
+}
+
+/**
+ * The durable turn this submission binds a workspace to: the Slack TurnJob or
+ * the routine occurrence, both host-authored signal attributes. The relay
+ * reads pull-request progress back under the same id when it retries.
+ */
+function runtimePlanWorkspaceTurnId(): string | undefined {
+  try {
+    const delivery = useDelivery();
+    if (delivery.kind !== 'signal') return undefined;
+    const attributes = delivery.attributes ?? {};
+    const turnId = attributes.turnJobId ?? attributes.occurrenceId;
+    return typeof turnId === 'string' && turnId.length > 0 && turnId.length <= 200
+      ? turnId
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function createRuntimePlanWorkspace(
+  plan: RuntimePlanV2,
+  name: string,
+  input: RuntimePlanWorkspaceInput,
+): Promise<{ session: WorkspaceSession; end: () => Promise<void> } | undefined> {
+  if (!isCloudflareTarget() || name !== DEFAULT_WORKSPACE_NAME || !plan.codingWorkspace) {
+    return undefined;
+  }
+  try {
+    const env = await resolveAgentPlatformEnv();
+    const binding = env?.SANDBOX ?? env?.Sandbox;
+    if (!binding) return undefined;
+    const settingsStore = getSettingsStore(env);
+    const current = await requireLiveFrozenAgent(getConfigStore(env), plan.agentId);
+    const repositories = liveRuntimePlanRepositories(plan, current);
+    const [sandboxSettings, githubAppConnected] = await Promise.all([
+      resolveSandboxSettings(settingsStore),
+      getGithubConnection(settingsStore).then(
+        (connection) => connection.mode === 'app',
+        () => false,
+      ),
+    ]);
+    // Live settings win over the frozen capability: a workspace disabled or
+    // disconnected since admission is simply unavailable.
+    if (codingWorkspaceCapability({
+      target: 'cloudflare',
+      installed: true,
+      enabled: sandboxSettings.enabled,
+      appConnected: githubAppConnected,
+      repositoryGrants: repositories,
+    }) !== 'available') return undefined;
+    const access = await resolveSandboxScopedRepositoryAccess({
+      repositories,
+      ...(env ? { env } : {}),
+      unavailableFallback: false,
+    });
+    const session = await createCloudflareWorkspaceSession({
+      binding,
+      conversationKey: input.sandboxConversationKey ?? runtimePlanConversationKey(plan),
+      agentId: plan.agentId,
+      grants: access.grants,
+      ...(access.credentialMode ? { credentialMode: access.credentialMode } : {}),
+      turnId: input.turnId ?? `workspace_${crypto.randomUUID()}`,
+      ...(input.onOpen ? { onOpen: input.onOpen } : {}),
+      settingsStore,
+      monthlySessionCap: sandboxSettings.monthlySessionCap,
+    });
+    return {
+      session: session.session,
+      // Only a workspace this submission bound to its turn has a turn to end.
+      end: async () => {
+        if (!session.session.wasOpened) return;
+        const stub = await session.mintStub();
+        if (input.release) await stub.destroy();
+        else await stub.endTurn();
+      },
+    };
+  } catch (error) {
+    if (error instanceof FlueError) throw error;
+    throw new SandboxUnavailableError(error);
+  }
 }
 
 function createRuntimePlanSandbox(
@@ -1789,7 +1937,7 @@ async function resolveRuntimePlanBashRepositoryAccess(
         () => false,
       ),
     ]);
-    unavailableFallback = resolveSandboxSelection({
+    unavailableFallback = resolveCodingWorkspaceCapability({
       target: 'cloudflare',
       installed: sandboxBindingInstalled(env),
       enabled: sandboxSettings.enabled,
@@ -2078,17 +2226,26 @@ export function createRuntimePlanArtifactTools(
         streamMode: isCloudflareTarget() ? 'stream' : 'file',
       })
     : undefined;
+  // Reading a workspace file for delivery is export-only, so it stays
+  // available during a file-delivery repair.
+  const workspaceSource: WorkspaceArtifactSource | undefined = runtimePlanWorkspaceToolsMounted(plan, false)
+    ? {
+        sandbox: async (name) => {
+          const resolve = options.resolveWorkspace ??
+            runtimePlanWorkspaceResolver(plan, { release: false });
+          return (await resolve(name))?.sandbox();
+        },
+      }
+    : undefined;
   return [
     createWorkspaceArtifactTool(
       { ...binding, sandboxKind: plan.sandbox.mode },
       options.fileCompletion?.deliver,
-      // Reading a workspace file for delivery is export-only, so it stays
-      // available during a file-delivery repair.
-      runtimePlanWorkspaceToolsMounted(plan, false)
-        ? { sandbox: (name) => resolveRegisteredWorkspace(name)?.sandbox() }
-        : undefined,
+      workspaceSource,
     ),
-    ...(options.fileCompletion ? [options.fileCompletion.tool({ ...binding, sandboxKind: plan.sandbox.mode })] : []),
+    ...(options.fileCompletion
+      ? [options.fileCompletion.tool({ ...binding, sandboxKind: plan.sandbox.mode }, workspaceSource)]
+      : []),
     ...(!options.fileCompletion?.repairing && imageOptions
       ? [createImageArtifactTool(imageOptions), createRecoverImageTool(imageOptions)] : []),
     ...browserTools,
@@ -2270,6 +2427,8 @@ export interface RuntimePlanArtifactToolOptions {
   browserApprovals?: BrowserApprovalOptions | undefined;
   /** Focused seam; production resolves the plan's connections at call time. */
   resolveUploadFetch?: (() => Promise<ConnectionUploadFetch | undefined>) | undefined;
+  /** This submission's coding-workspace lookup, shared with the workspace tools. */
+  resolveWorkspace?: RuntimePlanWorkspaceResolver | undefined;
 }
 
 /**
@@ -2354,35 +2513,71 @@ async function resolveAgentSandbox(options: AgentSandboxOptions): Promise<Sandbo
   // mints a lazy DO stub; configureEgress persists policy without booting the
   // container, whose first exec remains the creation boundary.
   if (!isCloudflareTarget()) return options.fallback;
-  const [{ cloudflareSandbox }, { getSandbox }] = await Promise.all([
-    import('@flue/runtime/cloudflare'),
-    import('@cloudflare/sandbox'),
-  ]);
   const binding = options.env?.SANDBOX ?? options.env?.Sandbox;
   if (!binding) {
     return options.fallback;
   }
+  const { session, provider } = await createCloudflareWorkspaceSession({
+    binding,
+    conversationKey: options.conversationKey,
+    agentId: options.agentId,
+    grants: options.grants,
+    ...(options.credentialMode ? { credentialMode: options.credentialMode } : {}),
+    settingsStore: options.settingsStore,
+    monthlySessionCap: options.monthlySessionCap,
+  });
+  // Opened here, before the agent's first model call, exactly as the attached
+  // container always was. The relay prepared this turn and ends it, so the
+  // registry only shares the session with the workspace tools.
+  const serialized = await session.activatable();
+  currentWorkspaceRegistry()?.register(session);
+  return provider(serialized);
+}
+
+/**
+ * The default coding workspace of a conversation, on the Sandbox Durable
+ * Object the attached container has always used, so warm containers and
+ * checkpoints carry over.
+ */
+async function createCloudflareWorkspaceSession(options: {
+  binding: unknown;
+  conversationKey: string;
+  agentId: string;
+  grants: readonly RepositoryGrant[];
+  credentialMode?: SandboxCredentialMode;
+  turnId?: string;
+  onOpen?: () => void;
+  settingsStore: ReturnType<typeof getSettingsStore>;
+  monthlySessionCap: number;
+}) {
+  const [{ cloudflareSandbox }, { getSandbox }] = await Promise.all([
+    import('@flue/runtime/cloudflare'),
+    import('@cloudflare/sandbox'),
+  ]);
   const workspaceId = defaultWorkspaceId(options.conversationKey);
   const provider = (stub: WorkspaceSandboxStub) =>
     cloudflareSandbox(
       contentFreeSandboxExec(stub as unknown as Parameters<typeof cloudflareSandbox>[0]),
       { cwd: '/workspace' },
     );
+  // Never cache the stub in module state: it is bound to this agent DO's I/O
+  // context, and the next turn in this thread may run in a different DO that
+  // shares the isolate.
+  const mintStub = async () =>
+    getSandbox(
+      options.binding as Parameters<typeof getSandbox>[0],
+      workspaceId,
+      CLOUDFLARE_SANDBOX_OPTIONS,
+    ) as unknown as WorkspaceSandboxStub;
   const session = new WorkspaceSession({
     id: workspaceId,
     name: DEFAULT_WORKSPACE_NAME,
     agentId: options.agentId,
     grants: options.grants,
     ...(options.credentialMode ? { credentialMode: options.credentialMode } : {}),
-    // Never cache the stub in module state: it is bound to this agent DO's I/O
-    // context, and the next turn in this thread may run in a different DO that
-    // shares the isolate.
-    mintStub: async () =>
-      getSandbox(
-        binding as Parameters<typeof getSandbox>[0],
-        workspaceId,
-        CLOUDFLARE_SANDBOX_OPTIONS,
-      ) as unknown as WorkspaceSandboxStub,
+    ...(options.turnId === undefined ? {} : { turnId: options.turnId }),
+    ...(options.onOpen ? { onOpen: options.onOpen } : {}),
+    mintStub,
     reserveSession: async (reservationId) =>
       (await reserveMonthlySandboxSession({
         store: options.settingsStore,
@@ -2391,12 +2586,7 @@ async function resolveAgentSandbox(options: AgentSandboxOptions): Promise<Sandbo
       })).allowed,
     toSandbox: (stub) => provider(stub).createSandbox({ id: workspaceId }),
   });
-  // Opened here, before the agent's first model call, exactly as the attached
-  // container always was. The relay prepared this turn and ends it, so the
-  // registry only shares the session with the workspace tools.
-  const serialized = await session.activatable();
-  currentWorkspaceRegistry()?.register(session);
-  return provider(serialized);
+  return { session, provider, mintStub };
 }
 
 /**

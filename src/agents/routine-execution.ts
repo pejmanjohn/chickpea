@@ -35,6 +35,8 @@ export function ChickpeaRoutineExecution({ id }: { id: string }) {
   useRuntimePlanAgent(artifactPlan ?? data.runtimePlan, id, {
     artifactToolsDisabled: artifactPlan === undefined,
     sandboxConversationKey: runtimePlanSandboxConversationKey(data.runtimePlan, id),
+    // Nobody follows up in a scheduled run's workspace, so it never stays warm.
+    releaseCodingWorkspace: true,
     ...(data.connectorUsageCorrelation
       ? { connectorUsageCorrelation: data.connectorUsageCorrelation }
       : {}),

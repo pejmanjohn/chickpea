@@ -1,9 +1,9 @@
-import type { Sandbox } from '@flue/runtime';
+import { FlueError, type Sandbox } from '@flue/runtime';
 
 import type { RepositoryGrant } from '../config/types.ts';
 import type { SandboxCredentialMode, SandboxEgressPolicyInput } from './cloudflare-policy.ts';
 import { validEnabledRepositoryGrants } from './egress-handler.ts';
-import { SandboxSessionCapError } from './errors.ts';
+import { SandboxSessionCapError, SandboxUnavailableError } from './errors.ts';
 import {
   acquireSandbox,
   serializeSandboxActivation,
@@ -46,6 +46,8 @@ export interface WorkspaceSandboxStub extends DestroyableSandbox, SandboxTurnCon
   restoreWorkspace(fingerprint: string): Promise<'restored' | 'unavailable'>;
   describeWorkspace(fingerprint: string): Promise<WorkspaceDescription>;
   discardWorkspace(): Promise<void>;
+  /** Revoke this turn's egress and checkpoint the workspace; the container stays warm. */
+  endTurn(): Promise<void>;
 }
 
 /**
@@ -61,12 +63,20 @@ export interface WorkspaceSessionOptions<TStub extends WorkspaceSandboxStub> {
   agentId: string;
   grants: readonly RepositoryGrant[];
   credentialMode?: SandboxCredentialMode;
+  /**
+   * The turn this request binds the workspace to. When given, opening the
+   * workspace prepares that turn on the Durable Object itself; otherwise the
+   * relay must already have prepared it (the attached-container path).
+   */
+  turnId?: string;
   /** Mint a fresh DO stub. Never cached across acquisitions: stubs are bound to one I/O context. */
   mintStub: () => Promise<TStub>;
   /** Reserve one counted container start; false when the monthly cap refuses it. */
   reserveSession: (reservationId: string) => Promise<boolean>;
   /** Wrap the activatable stub into a Flue Sandbox (Workers-only import stays with the caller). */
   toSandbox: (stub: TStub) => Promise<Sandbox>;
+  /** Called once, when this request first binds the workspace to its turn. */
+  onOpen?: () => void;
 }
 
 /**
@@ -83,6 +93,7 @@ export class WorkspaceSession<TStub extends WorkspaceSandboxStub = WorkspaceSand
   private readonly fingerprint: string;
   private opened: Promise<{ stub: TStub; state: WorkspaceOpenState }> | undefined;
   private flueSandbox: Promise<Sandbox> | undefined;
+  private touched = false;
 
   constructor(private readonly options: WorkspaceSessionOptions<TStub>) {
     this.id = options.id;
@@ -93,6 +104,14 @@ export class WorkspaceSession<TStub extends WorkspaceSandboxStub = WorkspaceSand
   /** Whether this request already opened the workspace. */
   get isOpen(): boolean {
     return this.opened !== undefined;
+  }
+
+  /**
+   * Whether this request ever bound the workspace to its turn, even if it was
+   * later discarded. Only such a workspace has a turn for this request to end.
+   */
+  get wasOpened(): boolean {
+    return this.touched;
   }
 
   /** Prepare DO state for this request. Idempotent; never starts a container. */
@@ -137,9 +156,16 @@ export class WorkspaceSession<TStub extends WorkspaceSandboxStub = WorkspaceSand
   }
 
   private prepare(): Promise<{ stub: TStub; state: WorkspaceOpenState }> {
+    if (!this.touched) {
+      this.touched = true;
+      this.options.onOpen?.();
+    }
     this.opened ??= this.acquire().catch((error: unknown) => {
       this.opened = undefined;
-      throw error;
+      // Deliberate refusals keep their public-safe type; any other failure to
+      // reach or configure the workspace is infrastructure.
+      if (error instanceof FlueError) throw error;
+      throw new SandboxUnavailableError(error);
     });
     return this.opened;
   }
@@ -148,7 +174,10 @@ export class WorkspaceSession<TStub extends WorkspaceSandboxStub = WorkspaceSand
     const options = this.options;
     let turn: { state: WorkspaceTurnState; reservationId: string; restorable: boolean } | undefined;
     const stub = await acquireSandbox(options.mintStub, async (candidate) => {
-      const turnId = await requireSandboxTurnId(candidate);
+      // Preparing the turn revokes whatever egress the previous turn left
+      // before this turn's grants are installed.
+      if (options.turnId !== undefined) await candidate.prepareTurn(options.turnId);
+      const turnId = options.turnId ?? await requireSandboxTurnId(candidate);
       if (!options.credentialMode) {
         throw new Error('Sandbox repository credential mode is unavailable');
       }

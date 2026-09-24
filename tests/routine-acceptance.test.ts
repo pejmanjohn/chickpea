@@ -52,7 +52,7 @@ function executionDependencies(now: () => number) {
       accessHash: 'a'.repeat(64), botToken: 'xoxb-acceptance', botUserId: 'UBOT',
     }),
     resolveModel: async () => ({ model: config.model }),
-    useCloudflareSandbox: async () => false,
+    codingWorkspaceConfigured: async () => false,
     preparePrompt: async (run: RoutineRun, routine: RoutineDefinition) => ({
       prompt: `Execute ${run.id}`,
       turn: {
