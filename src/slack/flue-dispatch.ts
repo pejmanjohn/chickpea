@@ -1,4 +1,5 @@
 import { SLACK_MEMORY_UPDATE_DATA_NAME, parseSlackMemoryUpdate, type SlackMemoryUpdate } from './memory-update-terminal.ts';
+import { CODING_WORKER_RUN_DATA_NAME, parseCodingWorkerRunModel } from './coding-worker-run.ts';
 import { FILE_DELIVERY_DATA_NAME, resolveFileDeliveryText } from './file-delivery-completion.ts';
 import {
   AgentInstanceExistsError,
@@ -97,6 +98,8 @@ export interface AgentDispatchResult {
   artifacts?: SlackArtifactReceipt[];
   agentCreationTerminal?: SlackAgentCreationTerminalIntent;
   memoryUpdate?: SlackMemoryUpdate;
+  /** The coding model a coding worker ran on this response; names it in the footer. */
+  codingModel?: string;
   requestedModel: string | null;
   returnedModel: AgentReturnedModel | null;
   reportedUsage: AgentReportedUsage | null;
@@ -505,6 +508,7 @@ export function resultFromAgentReply(
     reply.data?.[SLACK_TABLE_PRESENTATION_DATA_NAME],
   );
   const memoryUpdate = parseSlackMemoryUpdate(reply.data?.[SLACK_MEMORY_UPDATE_DATA_NAME]);
+  const codingModel = parseCodingWorkerRunModel(reply.data?.[CODING_WORKER_RUN_DATA_NAME]);
   const agentCreationTerminal = parseSlackAgentCreationTerminalIntents(
     reply.data?.[SLACK_AGENT_CREATION_TERMINAL_DATA_NAME],
   )[0];
@@ -514,6 +518,7 @@ export function resultFromAgentReply(
     ...(artifacts.length > 0 ? { artifacts } : {}),
     ...(agentCreationTerminal ? { agentCreationTerminal } : {}),
     ...(memoryUpdate ? { memoryUpdate } : {}),
+    ...(codingModel ? { codingModel } : {}),
     requestedModel: metadata?.requestedModel ?? nonEmptyString(requestedModel),
     returnedModel: metadata?.returnedModel ?? null,
     reportedUsage: usage.reportedUsage,

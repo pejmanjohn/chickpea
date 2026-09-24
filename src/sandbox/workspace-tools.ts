@@ -19,6 +19,8 @@ export const WORKSPACE_EXEC_TOOL_NAME = 'workspace_exec';
 export const WORKSPACE_READ_TOOL_NAME = 'workspace_read';
 export const WORKSPACE_WRITE_TOOL_NAME = 'workspace_write';
 export const WORKSPACE_LIST_FILES_TOOL_NAME = 'workspace_list_files';
+/** Delegation to a coding worker; defined in ./workspace-task.ts. */
+export const WORKSPACE_TASK_TOOL_NAME = 'workspace_task';
 
 export const WORKSPACE_TOOL_NAMES = [
   WORKSPACE_OPEN_TOOL_NAME,
@@ -28,6 +30,7 @@ export const WORKSPACE_TOOL_NAMES = [
   WORKSPACE_READ_TOOL_NAME,
   WORKSPACE_WRITE_TOOL_NAME,
   WORKSPACE_LIST_FILES_TOOL_NAME,
+  WORKSPACE_TASK_TOOL_NAME,
 ] as const;
 
 /** Output kept per stream from one `workspace_exec` call. */
@@ -74,9 +77,9 @@ export interface WorkspaceToolsOptions {
 
 const WORKSPACE_NAME = v.optional(v.pipe(v.string(), v.minLength(1), v.maxLength(64)));
 
-const UNAVAILABLE_MESSAGE =
+export const WORKSPACE_UNAVAILABLE_MESSAGE =
   'The coding workspace is temporarily unavailable. Say so, and use the Repositories API path if it covers the request; do not retry this call in the same reply.';
-const SESSION_CAP_MESSAGE =
+export const WORKSPACE_SESSION_CAP_MESSAGE =
   'The coding workspace monthly session limit has been reached. Say so; an administrator can review the coding sandbox limit in Settings. Do not retry.';
 
 /**
@@ -91,7 +94,7 @@ export function createWorkspaceTools(options: WorkspaceToolsOptions) {
     if (requested !== DEFAULT_WORKSPACE_NAME) {
       return failure('unknown_workspace', `Only the "${DEFAULT_WORKSPACE_NAME}" workspace is available.`);
     }
-    return (await options.resolve(requested)) ?? failure('workspace_unavailable', UNAVAILABLE_MESSAGE);
+    return (await options.resolve(requested)) ?? failure('workspace_unavailable', WORKSPACE_UNAVAILABLE_MESSAGE);
   };
 
   // Every tool body runs under `guard`, so path normalization inside it
@@ -369,9 +372,9 @@ async function guard<T>(
 }
 
 function workspaceFailure(error: unknown, signal?: AbortSignal): WorkspaceFailure | undefined {
-  if (error instanceof SandboxSessionCapError) return failure('session_cap', SESSION_CAP_MESSAGE);
+  if (error instanceof SandboxSessionCapError) return failure('session_cap', WORKSPACE_SESSION_CAP_MESSAGE);
   if (error instanceof SandboxUnavailableError || error instanceof SandboxDiedError) {
-    return failure('workspace_unavailable', UNAVAILABLE_MESSAGE);
+    return failure('workspace_unavailable', WORKSPACE_UNAVAILABLE_MESSAGE);
   }
   if (signal?.aborted || (error instanceof Error && error.name === 'AbortError')) {
     return failure('timeout', 'The workspace operation did not finish in time.');

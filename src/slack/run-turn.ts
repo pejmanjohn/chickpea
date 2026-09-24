@@ -333,9 +333,8 @@ export async function runTurn(
     : undefined;
   const visibleOwner: SlackPresentationOwner | undefined =
     frozenPresentation?.schemaVersion === 3 ? frozenPresentation.owner : undefined;
-  // No coding worker exists yet, so the label is the Agent's model alone; the
-  // worker's turn registry supplies `codingWorkerRan` and the frozen
-  // `plan.codingWorkspace.codingModel` when it lands.
+  // The Agent's model until the reply shows a coding worker ran; then the
+  // label also names the coding model (see `codingModel` below).
   const footerModelLabel = replyFooterModelLabel({
     agentModel: resolvedModel,
     codingWorkerRan: false,
@@ -1217,6 +1216,15 @@ export async function runTurn(
           : agentResult.text;
         tablePresentation = agentResult.tablePresentations?.[0];
         artifacts = agentResult.artifacts;
+        if (agentResult.codingModel) {
+          const codingFooterLabel = replyFooterModelLabel({
+            agentModel: resolvedModel,
+            codingModel: agentResult.codingModel,
+            codingWorkerRan: true,
+          });
+          presenter.setFooterModelLabel(codingFooterLabel);
+          agentViewPresentation?.setFooterModelLabel(codingFooterLabel);
+        }
         await workLifecycle?.settleExecution({
           outcome: 'succeeded',
           rawStatus: 'flue_succeeded',

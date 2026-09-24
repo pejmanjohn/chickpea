@@ -57,6 +57,26 @@ test('memory confirmation survives durable settlement storage with legacy receip
   } finally { db.close(); }
 });
 
+test('the coding model a worker ran on survives durable settlement storage', () => {
+  const db = openStateDb(':memory:');
+  try {
+    const turns = new TurnJobStoreLogic(db, () => NOW);
+    const id = 'coding-worker-replay';
+    turns.enqueue({ id, evtKey: id, msgKey: id, turn: turn(), assignment: assignment() });
+    turns.freezeRuntimePlan(id, compileRuntimePlanV2({
+      turn: turn(), assignment: assignment(), instructions: 'Test coding.', memoryEpoch: 1, sandboxMode: 'bash',
+    }));
+    turns.prepareFlueDispatch(id, 'Test coding.', { generation: id });
+    turns.recordFlueReceipt(id, { submissionId: id, acceptedAt: '2026-08-01T12:00:00.000Z', uid: 'inst_01ARZ3NDEKTSV4RRFFQ69G5FAV' });
+    turns.recordFlueSettlement(id, { outcome: 'completed', settledAt: NOW, result: {
+      text: 'Opened the pull request.', codingModel: 'openai/gpt-6', requestedModel: null, returnedModel: null,
+      reportedUsage: null, usageCompleteness: 'not_reported',
+    } });
+    const restored = turns.getFlueSettlement(id);
+    assert.equal(restored?.outcome === 'completed' ? restored.result.codingModel : undefined, 'openai/gpt-6');
+  } finally { db.close(); }
+});
+
 test('pull request recovery uses descriptive link text', () => {
   assert.equal(replayTextForTurnProgress({
     pullRequest: {

@@ -86,6 +86,7 @@ export type FlueSettlementCheckpointV1 =
         artifacts?: SlackArtifactReceipt[];
         agentCreationTerminal?: SlackAgentCreationTerminalIntent;
         memoryUpdate?: SlackMemoryUpdate;
+        codingModel?: string;
         requestedModel: string | null;
         returnedModel: { provider: string; id: string } | null;
         reportedUsage: {

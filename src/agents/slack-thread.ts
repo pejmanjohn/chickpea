@@ -2,6 +2,7 @@
 
 import { apiOAuthLifecycleDependencies } from '../connections/api-oauth-lifecycle.ts';
 import { SLACK_MEMORY_UPDATE_DATA_NAME, SlackMemoryUpdateSchema, type SlackMemoryUpdate } from '../slack/memory-update-terminal.ts';
+import { CODING_WORKER_RUN_DATA_NAME, CodingWorkerRunSchema } from '../slack/coding-worker-run.ts';
 
 import {
   bash,
@@ -152,6 +153,11 @@ import {
 } from '../sandbox/workspace-session.ts';
 import { createWorkspaceTools } from '../sandbox/workspace-tools.ts';
 import { SandboxUnavailableError } from '../sandbox/errors.ts';
+import {
+  CHICKPEA_SUBMISSION_DURABILITY,
+  WORKSPACE_TASK_INSTRUCTION,
+  createRuntimePlanWorkspaceTaskTool,
+} from './coding-worker-task.ts';
 import {
   buildArtifactToolsInstruction,
   createWorkspaceArtifactCapability,
@@ -1617,11 +1623,19 @@ export function useRuntimePlanAgent(
   }
   const sandbox = createRuntimePlanSandbox(plan, options.sandboxConversationKey);
   useSandbox(options.artifactToolsDisabled ? sandbox : fileCompletion.wrapSandbox(sandbox));
+  const writeCodingWorkerRun = useDataWriter(CODING_WORKER_RUN_DATA_NAME, { schema: CodingWorkerRunSchema });
   const workspaceToolsMounted = runtimePlanWorkspaceToolsMounted(plan, fileCompletion.repairing);
   if (workspaceToolsMounted) {
     for (const tool of createWorkspaceTools({ resolve: resolveWorkspace })) {
       useTool(tool);
     }
+    useTool(createRuntimePlanWorkspaceTaskTool({
+      plan,
+      coordinatorId: id,
+      resolve: resolveWorkspace,
+      onWorkerStarted: writeCodingWorkerRun,
+    }));
+    useInstruction(WORKSPACE_TASK_INSTRUCTION);
   }
   if (!options.artifactToolsDisabled) {
     // Built once per render: the tool resolves `img:N` handles against this
@@ -1709,6 +1723,7 @@ function slackActivityToolDescriptors(input: {
 
 // Must stay a static literal — see the note on ChickpeaRoutineExecution.
 ChickpeaSlack.agentName = 'chickpea-slack-v2';
+ChickpeaSlack.durability = CHICKPEA_SUBMISSION_DURABILITY;
 ChickpeaSlack.initialData = v.custom<RuntimePlanV2>((value) => {
   try {
     parseRuntimePlanV2(value);

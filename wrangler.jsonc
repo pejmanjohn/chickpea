@@ -130,6 +130,14 @@
 			"new_sqlite_classes": [
 				"SlackGatewaySession"
 			]
+		},
+		{
+			// Coding workers (src/agents/coding-worker.ts): one instance per
+			// coding workspace and binding, driven by `workspace_task`.
+			"tag": "v10",
+			"new_sqlite_classes": [
+				"FlueChickpeaCodingWorkerV1Agent"
+			]
 		}
 	]
 }
