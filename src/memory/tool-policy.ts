@@ -147,6 +147,8 @@ export function serializeCurrentRequestEnvelope(
         ...shared,
         schemaVersion: 2,
         progressiveStreamingOffered: options.progressiveStreamingOffered === true,
+        // Early is the default and keeps the wire shape older builds accept;
+        // the parser still reads an explicit 'early'.
         ...(options.progressiveStreamingOffered === true &&
             options.progressiveStreamingMode === 'final_answer'
           ? { progressiveStreamingMode: 'final_answer' as const }

@@ -114,7 +114,8 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
       this.refusedToolStepOpen = false;
       // Only the final step's text reaches Slack, so undeclared narration
       // from an earlier step never makes a later final-answer declaration late.
-      if (this.finalAnswerMode && this.intentStatus === 'unresolved') {
+      if (this.finalAnswerMode &&
+          (this.intentStatus === 'unresolved' || this.awaitingReplayedDeclaration)) {
         this.preIntentTextSeen = false;
       }
       return;
@@ -172,7 +173,8 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
       this.denyAndInvalidate('non_presentation_tool', 'tool_activity', false);
       return;
     }
-    if (this.usesModelIntent && this.intentStatus !== 'requested') {
+    if (this.usesModelIntent &&
+        (this.intentStatus !== 'requested' || this.awaitingReplayedDeclaration)) {
       // A normal no-tool answer remains unresolved until close so it records
       // not_requested. If a declaration arrives later, it becomes explicitly
       // denied as late without exposing this already-seen text.
@@ -208,6 +210,12 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
   private declarationStepOpen = false;
   /** Final-answer mode: the answer-only lock refused a tool in this step. */
   private refusedToolStepOpen = false;
+  /**
+   * Final-answer mode, resumed read: a durable declaration exists, but this
+   * read replays the whole response from its start. Until the replay reaches
+   * that declaration, events belong to the pre-declaration tool work.
+   */
+  private awaitingReplayedDeclaration = false;
 
   constructor(
     private readonly options: ProgressiveTextSink & {
@@ -226,6 +234,7 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
     if (initial?.status === 'not_requested' || initial?.status === 'denied') {
       throw new Error('A terminal model intent cannot open a progressive relay.');
     }
+    this.awaitingReplayedDeclaration = this.finalAnswerMode && this.intentToolCallId !== undefined;
   }
 
   private get submissionId(): string {
@@ -308,6 +317,10 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
         this.intentToolCallId === toolCallId) {
       // Full receipt replay repeats the same positioned declaration. The
       // durable state is already authoritative, so this is a no-op.
+      if (this.awaitingReplayedDeclaration) {
+        this.awaitingReplayedDeclaration = false;
+        this.declarationStepOpen = true;
+      }
       return;
     }
     this.denyAndInvalidate('repeated_declaration', 'tool_activity', this.hasQueuedOrAcceptedText());
@@ -315,7 +328,7 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
 
   /** Final-answer mode: a non-declaration tool call in the target response. */
   private handleFinalAnswerEffectTool(toolCallId: string): void {
-    if (this.intentStatus === 'unresolved') {
+    if (this.intentStatus === 'unresolved' || this.awaitingReplayedDeclaration) {
       // Effect work before the declaration is the point of this mode.
       this.unsettledToolCallIds.add(toolCallId);
       return;
@@ -336,7 +349,8 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
 
   private handleToolOutcome(toolCallId: string, succeeded: boolean): void {
     if (!this.usesModelIntent) return;
-    this.unsettledToolCallIds.delete(toolCallId);
+    // A settled pre-declaration effect call says nothing about the declaration.
+    if (this.unsettledToolCallIds.delete(toolCallId)) return;
     if (this.intentStatus === 'requested' && this.intentToolCallId === toolCallId) {
       return;
     }
@@ -495,9 +509,9 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
 
 function isEmptyFileDeliveryResult(name: string, data: unknown): boolean {
   if (name !== FILE_DELIVERY_DATA_NAME || !data || typeof data !== 'object') return false;
+  // The same condition under which resolveFileDeliveryText keeps the text.
   const result = data as { unresolved?: unknown; files?: unknown };
-  return Object.keys(result).length === 2 && result.unresolved === false &&
-    Array.isArray(result.files) && result.files.length === 0;
+  return result.unresolved === false && Array.isArray(result.files) && result.files.length === 0;
 }
 
 function validPosition(value: { batch: number; index: number }): boolean {

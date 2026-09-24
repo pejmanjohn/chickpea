@@ -527,6 +527,53 @@ test('the empty end-of-response file-delivery record does not deny a streamed an
   }
 });
 
+test('a resumed final-answer read replays pre-declaration work without releasing it', async () => {
+  const replay = (h: ReturnType<typeof modelRelay>, narration: boolean) => {
+    if (narration) h.emit(answerDelta('Let me check. ', { batch: 2, index: 0 }));
+    h.emit(effectInput(3));
+    h.emit(stepCompleted(4));
+    h.emit(effectOutcome(5));
+    h.emit(stepStarted(6));
+    h.emit(streamInput({ batch: 7, index: 0 }));
+    h.emit(stepCompleted(8));
+    h.emit(streamOutput({ batch: 9, index: 0 }));
+    h.emit(stepStarted(10));
+    h.emit(answerDelta('Final answer.', { batch: 11, index: 0 }));
+  };
+  for (const narration of [false, true]) {
+    const requested = modelRelay({
+      mode: 'final_answer',
+      initial: { status: 'requested', toolCallId: 'stream_call_1', requestedAt: 1 },
+    });
+    replay(requested, narration);
+    const summary = await requested.relay.closeAndDrain();
+    assert.deepEqual(requested.operations, ['append:Final answer.'], `requested narration=${narration}`);
+    assert.equal(summary.invalidated, false);
+
+    const pending = modelRelay({
+      mode: 'final_answer',
+      initial: { status: 'pending', toolCallId: 'stream_call_1' },
+    });
+    replay(pending, narration);
+    await pending.relay.closeAndDrain();
+    assert.deepEqual(pending.operations, [
+      'intent:requested:stream_call_1',
+      'append:Final answer.',
+    ], `pending narration=${narration}`);
+  }
+
+  // A read that never reaches the durable declaration releases nothing.
+  const truncated = modelRelay({
+    mode: 'final_answer',
+    initial: { status: 'requested', toolCallId: 'stream_call_1', requestedAt: 1 },
+  });
+  truncated.emit(effectInput(2));
+  truncated.emit(stepStarted(3));
+  truncated.emit(answerDelta('not the declared answer', { batch: 4, index: 0 }));
+  await truncated.relay.closeAndDrain();
+  assert.deepEqual(truncated.delivered, []);
+});
+
 test('early mode still denies any tool before the declaration', async () => {
   const h = modelRelay();
   h.emit(effectInput(2));

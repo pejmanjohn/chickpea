@@ -2424,3 +2424,51 @@ test('a V1 row freezes a final-answer candidate as the effect-capable denial', a
     h.db.close();
   }
 });
+
+test('a resumed final-answer read replays narration and tool work without correcting the stream', async () => {
+  const h = harness({ schemaVersion: 3, owner: { kind: 'chickpea' } });
+  try {
+    const receipt = { submissionId: 'submission_final_resume', acceptedAt: 'now', uid: 'uid' } as const;
+    const input = {
+      instanceId: 'instance_final_resume',
+      receipt,
+      eligibility: { allowed: true, reason: 'final_answer_release' } as const,
+    };
+    const replayAll = async (relay: NonNullable<Awaited<ReturnType<typeof prepareReceipt>>>) => {
+      const events = finalAnswerEvents(relay, {
+        submissionId: receipt.submissionId, messageId: 'message_final_resume',
+      });
+      await events.beforeDeclaration();
+      await events.declaration();
+      events.text('Streamed final answer.', 10);
+    };
+    const first = await prepareReceipt(h, input);
+    assert.ok(first);
+    await replayAll(first);
+    await first.closeAndDrain();
+    const visible = () => h.calls.filter((call) =>
+      call.method === 'chat.startStream' || call.method === 'chat.appendStream');
+    const effectsAfterFirst = visible().length;
+    assert.ok(effectsAfterFirst >= 1);
+
+    // A later attempt reads the same receipt from its start.
+    const resumed = await h.presentation.prepareReceipt(input);
+    assert.ok(resumed);
+    await replayAll(resumed);
+    const summary = await resumed.closeAndDrain();
+    assert.equal(summary.invalidated, false);
+    assert.equal(visible().length, effectsAfterFirst);
+
+    await h.presentation.finalize('Streamed final answer.', 'markdown', 'complete', observer([]));
+    assert.equal(h.calls.some((call) => call.method === 'chat.update'), false);
+    assert.equal(h.store.get(h.runId)?.stream.presentationOutcome, 'progressive');
+    const text = h.calls
+      .filter((call) => ['chat.startStream', 'chat.appendStream', 'chat.stopStream'].includes(call.method))
+      .flatMap((call) => ((call.input.chunks ?? []) as Array<{ type: string; text?: string }>)
+        .filter((chunk) => chunk.type === 'markdown_text').map((chunk) => chunk.text ?? ''))
+      .join('');
+    assert.equal(text, 'Streamed final answer.');
+  } finally {
+    h.db.close();
+  }
+});
