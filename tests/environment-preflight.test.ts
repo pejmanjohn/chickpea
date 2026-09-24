@@ -1862,7 +1862,11 @@ for (const transport of ['events', 'gateway']) test(`production ${transport} aut
     ]));
     let oversized = false;
     let bridgeCalls = 0;
+    // The real reader resolves the fleet from the registry; use a fixture so
+    // the operator's own lane registrations never leak into the test.
+    const fleet = fixture({ transport });
     const realBridgeOptions = { ...options, env: bridgeEnv, readFleetRuntimeAuthorities: undefined,
+      root: fleet.root, hostFingerprint: 'host-fixture',
       fetchImpl: async (url: URL, init: RequestInit) => {
         bridgeCalls += 1;
         const target = url.hostname.split('.')[0]!;
@@ -1882,6 +1886,7 @@ for (const transport of ['events', 'gateway']) test(`production ${transport} aut
     bridgeEnv[tokenName] = validToken;
     oversized = true;
     await assert.rejects(observeProductionEnvironmentAuthority(context, realBridgeOptions), rejects('LIVE_AUTHORITY_BRIDGE_UNAVAILABLE'));
+    rmSync(fleet.parent, { recursive: true, force: true });
   }
 });
 

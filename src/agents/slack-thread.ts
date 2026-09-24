@@ -129,18 +129,11 @@ import {
 } from '../connections/managed-tools.ts';
 import { usePersonalConnectionAuthorizationSlackTool } from '../connections/slack-authorization.ts';
 
-import type {
-  SandboxCredentialMode,
-  SandboxEgressPolicyInput,
-} from '../sandbox/cloudflare-policy.ts';
+import type { SandboxCredentialMode } from '../sandbox/cloudflare-policy.ts';
 import {
   CLOUDFLARE_SANDBOX_OPTIONS,
-  acquireSandbox,
   contentFreeSandboxExec,
-  serializeSandboxActivation,
-  type DestroyableSandbox,
 } from '../sandbox/lifecycle.ts';
-import { SandboxSessionCapError } from '../sandbox/errors.ts';
 import {
   resolveSandboxSelection,
   sandboxBindingInstalled,
@@ -148,15 +141,14 @@ import {
   type SandboxSelection,
 } from '../sandbox/select.ts';
 import { reserveMonthlySandboxSession } from '../sandbox/session-cap.ts';
-import { sandboxThreadKey } from '../sandbox/thread-key.ts';
+import { currentWorkspaceRegistry } from '../sandbox/workspace-registry.ts';
 import {
-  workspaceFingerprint,
-  type WorkspaceTurnState,
-} from '../sandbox/workspace-lifecycle.ts';
-import {
-  requireSandboxTurnId,
-  type SandboxTurnContext,
-} from '../sandbox/turn-context.ts';
+  DEFAULT_WORKSPACE_NAME,
+  WorkspaceSession,
+  defaultWorkspaceId,
+  type WorkspaceSandboxStub,
+} from '../sandbox/workspace-session.ts';
+import { createWorkspaceTools } from '../sandbox/workspace-tools.ts';
 import {
   buildArtifactToolsInstruction,
   createWorkspaceArtifactCapability,
@@ -260,18 +252,6 @@ import {
 bootstrapRuntimeProviders();
 
 export { resolveAgentModel } from '../config/model-policy.ts';
-
-interface ConfigurableCloudflareSandbox extends DestroyableSandbox, SandboxTurnContext {
-  configureEgress(
-    input: SandboxEgressPolicyInput,
-    turnId: string,
-  ): Promise<void>;
-  beginWorkspaceTurn(input: {
-    fingerprint: string;
-    turnId: string;
-  }): Promise<{ state: WorkspaceTurnState; reservationId: string; restorable: boolean }>;
-  restoreWorkspace(fingerprint: string): Promise<'restored' | 'unavailable'>;
-}
 
 export class SealedAgentThreadError extends Error {
   constructor(readonly agentId: string) {
@@ -1587,6 +1567,12 @@ export function useRuntimePlanAgent(
   }
   const sandbox = createRuntimePlanSandbox(plan, options.sandboxConversationKey);
   useSandbox(options.artifactToolsDisabled ? sandbox : fileCompletion.wrapSandbox(sandbox));
+  const workspaceToolsMounted = runtimePlanWorkspaceToolsMounted(plan, fileCompletion.repairing);
+  if (workspaceToolsMounted) {
+    for (const tool of createWorkspaceTools({ resolve: resolveRegisteredWorkspace })) {
+      useTool(tool);
+    }
+  }
   if (!options.artifactToolsDisabled) {
     // Built once per render: the tool resolves `img:N` handles against this
     // inventory, and `imageInventory.manifest` is the model-facing listing
@@ -1674,6 +1660,23 @@ ChickpeaSlack.initialData = v.custom<RuntimePlanV2>((value) => {
     return false;
   }
 }, 'RuntimePlanV2 is invalid.');
+
+/**
+ * The coding-workspace tools mount beside the attached container: only a
+ * Cloudflare plan has a workspace, and an export-only file repair may not
+ * change or run anything in it.
+ */
+export function runtimePlanWorkspaceToolsMounted(
+  plan: Pick<RuntimePlanV2, 'sandbox'>,
+  repairing: boolean,
+): boolean {
+  return plan.sandbox.mode === 'cloudflare' && isCloudflareTarget() && !repairing;
+}
+
+/** The workspace this submission opened under `name`, shared with the attached container. */
+function resolveRegisteredWorkspace(name: string) {
+  return currentWorkspaceRegistry()?.get(name);
+}
 
 function createRuntimePlanSandbox(
   plan: RuntimePlanV2,
@@ -2035,7 +2038,15 @@ export function createRuntimePlanArtifactTools(
       })
     : [];
   return [
-    createWorkspaceArtifactTool({ ...binding, sandboxKind: plan.sandbox.mode }, options.fileCompletion?.deliver),
+    createWorkspaceArtifactTool(
+      { ...binding, sandboxKind: plan.sandbox.mode },
+      options.fileCompletion?.deliver,
+      // Reading a workspace file for delivery is export-only, so it stays
+      // available during a file-delivery repair.
+      runtimePlanWorkspaceToolsMounted(plan, false)
+        ? { sandbox: (name) => resolveRegisteredWorkspace(name)?.sandbox() }
+        : undefined,
+    ),
     ...(options.fileCompletion ? [options.fileCompletion.tool({ ...binding, sandboxKind: plan.sandbox.mode })] : []),
     ...(!options.fileCompletion?.repairing && imageOptions
       ? [createImageArtifactTool(imageOptions), createRecoverImageTool(imageOptions)] : []),
@@ -2256,64 +2267,41 @@ async function resolveAgentSandbox(options: AgentSandboxOptions): Promise<Sandbo
   if (!binding) {
     return options.fallback;
   }
-  const sandboxKey = sandboxThreadKey(options.conversationKey);
-  let turnId: string | undefined;
-  let reservationId: string | undefined;
-  let restorable = false;
-  const fingerprint = workspaceFingerprint(options.agentId, options.grants);
-  // Never cache the stub in module state: it is bound to this agent DO's I/O
-  // context, and the next turn in this thread may run in a different DO that
-  // shares the isolate.
-  const sandbox = await acquireSandbox(
-    async () =>
+  const workspaceId = defaultWorkspaceId(options.conversationKey);
+  const provider = (stub: WorkspaceSandboxStub) =>
+    cloudflareSandbox(
+      contentFreeSandboxExec(stub as unknown as Parameters<typeof cloudflareSandbox>[0]),
+      { cwd: '/workspace' },
+    );
+  const session = new WorkspaceSession({
+    id: workspaceId,
+    name: DEFAULT_WORKSPACE_NAME,
+    agentId: options.agentId,
+    grants: options.grants,
+    ...(options.credentialMode ? { credentialMode: options.credentialMode } : {}),
+    // Never cache the stub in module state: it is bound to this agent DO's I/O
+    // context, and the next turn in this thread may run in a different DO that
+    // shares the isolate.
+    mintStub: async () =>
       getSandbox(
         binding as Parameters<typeof getSandbox>[0],
-        sandboxKey,
+        workspaceId,
         CLOUDFLARE_SANDBOX_OPTIONS,
-      ) as ReturnType<typeof getSandbox> & ConfigurableCloudflareSandbox,
-    async (candidate) => {
-      turnId = await requireSandboxTurnId(candidate);
-      if (!options.credentialMode) {
-        throw new Error('Sandbox repository credential mode is unavailable');
-      }
-      // Reuse or retire the warm workspace before this turn's grants are
-      // installed, so a different Agent or changed grants never see the prior
-      // checkout.
-      const workspace = await candidate.beginWorkspaceTurn({ fingerprint, turnId });
-      reservationId = workspace.reservationId;
-      restorable = workspace.restorable;
-      await candidate.configureEgress(
-        {
-          grants: validEnabledRepositoryGrants(options.grants),
-          mode: options.credentialMode,
-        },
-        turnId,
-      );
-    },
-  );
-  const serialized = serializeSandboxActivation(
-    sandbox as unknown as Parameters<typeof cloudflareSandbox>[0],
-    '/workspace',
-    async () => {
-      if (!reservationId) {
-        throw new Error('Sandbox turn context is unavailable at activation');
-      }
-      // Counted per container start: a warm follow-up carries the starting
-      // turn's reservation and does not consume the cap again.
-      const reservation = await reserveMonthlySandboxSession({
+      ) as unknown as WorkspaceSandboxStub,
+    reserveSession: async (reservationId) =>
+      (await reserveMonthlySandboxSession({
         store: options.settingsStore,
         cap: options.monthlySessionCap,
         reservationId,
-      });
-      if (!reservation.allowed) {
-        throw new SandboxSessionCapError();
-      }
-      // A cold follow-up resumes from the thread's checkpoint. The restore
-      // starts the container, so it happens only once the turn needs it.
-      if (restorable) await sandbox.restoreWorkspace(fingerprint);
-    },
-  );
-  return cloudflareSandbox(contentFreeSandboxExec(serialized), { cwd: '/workspace' });
+      })).allowed,
+    toSandbox: (stub) => provider(stub).createSandbox({ id: workspaceId }),
+  });
+  // Opened here, before the agent's first model call, exactly as the attached
+  // container always was. The relay prepared this turn and ends it, so the
+  // registry only shares the session with the workspace tools.
+  const serialized = await session.activatable();
+  currentWorkspaceRegistry()?.register(session);
+  return provider(serialized);
 }
 
 /**
