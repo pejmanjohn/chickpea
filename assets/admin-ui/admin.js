@@ -982,6 +982,14 @@
   }
 
   function render() {
+    // A load finishing or a focus revalidation must not replace #app while a
+    // native dropdown is showing its options: removing the <select> closes
+    // the list under the person's cursor. Wait until it closes instead.
+    if (!renderingForUserEvent() && nativePickerIsOpen()) {
+      deferRenderUntilPickerCloses();
+      return;
+    }
+    deferredRender.pending = false;
     if ((state.openAiSubscription.attempt || state.openAiSubscription.busy === "start") && (state.view !== "settings" || state.settingsSection !== "providers")) {
       stopOpenAiSubscriptionAttempt(true);
     }
@@ -994,6 +1002,10 @@
     // not pull focus out of the field a person is typing into: remember it and
     // its caret, and put them back below unless the render moves focus itself.
     var typingFocus = captureTypingFocus(app);
+    // Native <details> menus carry their open state only in the DOM. Keep the
+    // ones the person opened when a background render redraws the page; a
+    // render from their own click still closes menus as that action intends.
+    var openDetails = renderingForUserEvent() ? null : captureOpenDetails(app);
     var overlays = installationDialogHtml() + teamConfirmModalHtml() + composioSetupModalHtml() + managedAuthorizationModalHtml() + connectorSettingsConfirmModalHtml() + leavePromptModalHtml() + connectionRemoveModalHtml() + apiConnectionRemoveModalHtml() + slackDisconnectModalHtml() + githubDisconnectModalHtml() + sandboxConfirmModalHtml() + agentScheduleDeleteModalHtml() + websiteLoginDialogHtml() + scheduledRoutineSummaryModalHtml() + scheduledDeleteModalHtml();
     if (state.view === "onboarding") {
       app.className = "frame onboarding-frame";
@@ -1010,6 +1022,7 @@
       app.className = "frame" + (isPrimaryAdminSurface() ? " primary-admin-shell" : "") + adminSurfaceClass;
       app.innerHTML = topbarHtml() + '<div class="body">' + railHtml() + mainHtml() + "</div>" + overlays;
     }
+    restoreOpenDetails(app, openDetails);
     if (state.mobileAgentRosterFocus) {
       var mobileRosterFocus = state.mobileAgentRosterFocus === "close"
         ? document.querySelector('[data-action="mobile-agents-close"]')
@@ -1132,6 +1145,101 @@
   }
 
   var TYPING_INPUT_TYPES = /^(?:text|password|search|url|email|tel|number)$/i;
+  var PICKER_INPUT_TYPES = /^(?:date|time|datetime-local|month|week|color)$/i;
+
+  // One pending background render, flushed by a short poll once the picker
+  // closes and no pointer is pressed (a flush between pointerdown and click
+  // would replace the element being clicked).
+  var deferredRender = { pending: false, timer: 0 };
+  var nativePicker = { armed: null, pointerDown: false };
+
+  // window.event is set only while an event listener runs, so a render with it
+  // present answers the person's own click, change, or key.
+  function renderingForUserEvent() {
+    return typeof window !== "undefined" && !!window.event;
+  }
+
+  function nativePickerIsOpen() {
+    if (typeof document === "undefined" || !document.getElementById) return false;
+    var active = document.activeElement;
+    var app = document.getElementById("app");
+    if (!active || !app || !app.contains || !app.contains(active)) return false;
+    if (active.tagName !== "SELECT" && !(active.tagName === "INPUT" && PICKER_INPUT_TYPES.test(active.type || ""))) return false;
+    try {
+      return active.matches(":open");
+    } catch (error) {
+      // Browsers without :open: treat a select as open from the press that
+      // opens it until a choice, Escape, Tab, or leaving it.
+      return nativePicker.armed === active;
+    }
+  }
+
+  function deferRenderUntilPickerCloses() {
+    deferredRender.pending = true;
+    if (deferredRender.timer || typeof window === "undefined" || typeof window.setInterval !== "function") return;
+    deferredRender.timer = window.setInterval(function () {
+      if (!deferredRender.pending) {
+        window.clearInterval(deferredRender.timer);
+        deferredRender.timer = 0;
+        return;
+      }
+      if (nativePicker.pointerDown || nativePickerIsOpen()) return;
+      window.clearInterval(deferredRender.timer);
+      deferredRender.timer = 0;
+      deferredRender.pending = false;
+      renderPreservingPagePosition();
+    }, 150);
+  }
+
+  function detailsKey(details) {
+    var summary = details.querySelector ? details.querySelector("summary") : null;
+    var label = summary ? (summary.getAttribute("aria-label") || summary.textContent || "") : "";
+    return String(details.className || "") + "|" + String(label).replace(/\s+/g, " ").trim();
+  }
+
+  function captureOpenDetails(app) {
+    if (!app.querySelectorAll) return null;
+    var seen = {};
+    var open = {};
+    Array.prototype.forEach.call(app.querySelectorAll("details"), function (details) {
+      var key = detailsKey(details);
+      var index = seen[key] = (seen[key] || 0) + 1;
+      if (details.open) open[key + "#" + index] = true;
+    });
+    return open;
+  }
+
+  function restoreOpenDetails(app, open) {
+    if (!open || !app.querySelectorAll) return;
+    var seen = {};
+    Array.prototype.forEach.call(app.querySelectorAll("details"), function (details) {
+      var key = detailsKey(details);
+      var index = seen[key] = (seen[key] || 0) + 1;
+      if (open[key + "#" + index] && !details.open) details.open = true;
+    });
+  }
+
+  if (typeof document !== "undefined" && document.addEventListener) {
+    document.addEventListener("pointerdown", function (event) {
+      nativePicker.pointerDown = true;
+      var target = event.target;
+      if (target && target.tagName === "SELECT") nativePicker.armed = target;
+    }, true);
+    ["pointerup", "pointercancel"].forEach(function (type) {
+      document.addEventListener(type, function () { nativePicker.pointerDown = false; }, true);
+    });
+    document.addEventListener("keydown", function (event) {
+      var target = event.target;
+      if (!target || target.tagName !== "SELECT") return;
+      if (event.key === " " || event.key === "Enter" || event.key === "F4" || (event.altKey && (event.key === "ArrowDown" || event.key === "ArrowUp"))) nativePicker.armed = target;
+      else if (event.key === "Escape" || event.key === "Esc" || event.key === "Tab") nativePicker.armed = null;
+    }, true);
+    ["change", "focusout"].forEach(function (type) {
+      document.addEventListener(type, function (event) {
+        if (event.target === nativePicker.armed) nativePicker.armed = null;
+      }, true);
+    });
+  }
 
   function selectionSnapshot(field) {
     var selection = { start: null, end: null, direction: "none" };
@@ -1156,7 +1264,7 @@
     var active = document.activeElement;
     if (!active || !app.contains || !app.contains(active)) return null;
     var tag = active.tagName;
-    if (tag !== "TEXTAREA" && !(tag === "INPUT" && TYPING_INPUT_TYPES.test(active.type || "text"))) return null;
+    if (tag !== "TEXTAREA" && tag !== "SELECT" && !(tag === "INPUT" && TYPING_INPUT_TYPES.test(active.type || "text"))) return null;
     var snapshot = { id: active.id || "", action: "", index: -1, selection: selectionSnapshot(active) };
     if (!snapshot.id) {
       var action = active.getAttribute("data-action") || "";

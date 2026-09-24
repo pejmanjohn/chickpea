@@ -72,6 +72,7 @@ interface FakeTypingField {
   getAttribute(name: string): string | null;
   focus(): void;
   setSelectionRange(start: number, end: number): void;
+  matches?(selector: string): boolean;
 }
 
 interface FakeRegion {
@@ -743,6 +744,11 @@ function runAdminPageHarness(
   modelSelectionRanges: Array<[number, number]>;
   focusTypingField(action: string, caret: number): void;
   focusedTypingField(): { action: string; caret: [number, number] } | null;
+  focusNativeSelect(action: string): void;
+  setNativeSelectOpen(open: boolean): void;
+  runIntervals(): void;
+  intervalCount(): number;
+  dispatchAsUserEvent(dispatch: () => void): void;
   sessionStorageValue(key: string): string | null;
 } {
   const makeRegion = (): FakeRegion => ({
@@ -844,11 +850,20 @@ function runAdminPageHarness(
   // An id-less text field (most Admin form inputs) addressed only by its
   // data-action. Each render replaces it with a new node, like a real browser.
   let typingField: { action: string; generation: number; element: FakeTypingField } | null = null;
+  // focusNativeSelect() turns the tracked field into a <select> whose option
+  // list reports :open while nativeSelectOpen is set.
+  let typingFieldIsSelect = false;
+  let nativeSelectOpen = false;
   const typingFieldFor = (action: string): FakeTypingField => {
     if (!typingField || typingField.action !== action || typingField.generation !== renderGeneration) {
       const element: FakeTypingField = {
-        tagName: 'INPUT',
-        type: 'password',
+        tagName: typingFieldIsSelect ? 'SELECT' : 'INPUT',
+        type: typingFieldIsSelect ? 'select-one' : 'password',
+        matches(selector: string) {
+          if (selector !== ':open') throw new Error(`unsupported selector ${selector}`);
+          return typingFieldIsSelect && nativeSelectOpen && typingField?.element === element &&
+            typingField.generation === renderGeneration;
+        },
         id: '',
         selectionStart: 0,
         selectionEnd: 0,
@@ -1158,7 +1173,15 @@ function runAdminPageHarness(
   let documentVisibilityState: 'hidden' | 'visible' = options.initialVisibility ?? 'visible';
   let documentScrollLeft = 0;
   let documentScrollTop = 0;
+  const intervals = new Map<number, () => void>();
   const window = {
+    event: undefined as unknown,
+    setInterval(callback: () => void) {
+      const intervalId = nextTimerId++;
+      intervals.set(intervalId, callback);
+      return intervalId;
+    },
+    clearInterval(intervalId: number) { intervals.delete(intervalId); },
     get scrollX() { return documentScrollLeft; },
     get scrollY() { return documentScrollTop; },
     get pageXOffset() { return documentScrollLeft; },
@@ -3168,6 +3191,25 @@ function runAdminPageHarness(
         action: typingField.action,
         caret: [typingField.element.selectionStart, typingField.element.selectionEnd] as [number, number],
       };
+    },
+    focusNativeSelect(action: string) {
+      assert.ok(appHtml.includes(`data-action="${action}"`), `expected a rendered ${action} select`);
+      typingFieldIsSelect = true;
+      typingField = null;
+      typingFieldFor(action).focus();
+    },
+    setNativeSelectOpen(open: boolean) {
+      nativeSelectOpen = open;
+    },
+    runIntervals() {
+      for (const [intervalId, callback] of [...intervals]) {
+        if (intervals.has(intervalId)) callback();
+      }
+    },
+    intervalCount: () => intervals.size,
+    dispatchAsUserEvent(dispatch: () => void) {
+      window.event = { isTrusted: true };
+      try { dispatch(); } finally { window.event = undefined; }
     },
     sessionStorageValue(key: string) {
       return sessionStorage.getItem(key);
@@ -17498,6 +17540,45 @@ test('each website login row has a level selector that saves the new level', asy
   html = refused.harness.app.innerHTML;
   assert.match(html, /Only an Admin or the person who added this login can allow actions\./);
   assert.doesNotMatch(html, /<option value="act" selected>/);
+});
+
+test('a background render waits while a native dropdown is open, then restores its focus', async () => {
+  const { harness } = websiteLoginsHarness(websiteLoginFixtures(), { initialSearch: '?tab=websites' });
+  await flushAsync();
+  harness.focusNativeSelect('website-login-level');
+  harness.setNativeSelectOpen(true);
+  const detailGetsBefore = harness.agentDetailGets();
+  const rendersBefore = harness.renderHistory.length;
+
+  // Returning to the window refreshes the Agent while the options are showing.
+  harness.focusWindow();
+  await flushAsync();
+  assert.ok(harness.agentDetailGets() > detailGetsBefore, 'expected the Agent to refresh');
+  assert.equal(harness.renderHistory.length, rendersBefore, 'expected no redraw under the open dropdown');
+  assert.equal(harness.intervalCount(), 1, 'expected one pending render');
+
+  harness.runIntervals();
+  assert.equal(harness.renderHistory.length, rendersBefore, 'expected the render to keep waiting while open');
+
+  harness.setNativeSelectOpen(false);
+  harness.runIntervals();
+  assert.equal(harness.renderHistory.length, rendersBefore + 1, 'expected one render once the dropdown closed');
+  assert.equal(harness.intervalCount(), 0);
+  assert.equal(harness.focusedTypingField()?.action, 'website-login-level');
+});
+
+test('a render from the person’s own event runs even while a native dropdown is open', async () => {
+  const { harness } = websiteLoginsHarness(websiteLoginFixtures(), { initialSearch: '?tab=websites' });
+  await flushAsync();
+  harness.focusNativeSelect('website-login-level');
+  harness.setNativeSelectOpen(true);
+  const rendersBefore = harness.renderHistory.length;
+
+  harness.dispatchAsUserEvent(() => {
+    harness.listeners.change?.({ target: valueTarget({ 'data-action': 'website-login-level', 'data-login-id': WEBSITE_LOGIN_TEAM_ID }, 'act') });
+  });
+  assert.ok(harness.renderHistory.length > rendersBefore, 'expected the change to render immediately');
+  assert.equal(harness.intervalCount(), 0, 'expected nothing deferred');
 });
 
 test('the add-login dialog asks what the Agent may do there and sends the level', async () => {
