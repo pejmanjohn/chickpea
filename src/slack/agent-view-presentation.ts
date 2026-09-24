@@ -159,6 +159,11 @@ export class SlackAgentViewPresentation {
 
   constructor(private readonly options: AgentViewPresentationOptions) {}
 
+  /** Replace the footer's model label, for a label only the finished reply can decide. */
+  setFooterModelLabel(modelLabel: string | undefined): void {
+    this.options.footer = { ...this.options.footer, modelLabel };
+  }
+
   /**
    * Persist the activity intent before its Slack write. The admission activity
    * already owns a pending receipt, so the first call reuses it; later facts

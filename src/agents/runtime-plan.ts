@@ -1216,12 +1216,7 @@ function parseCodingModel(value: unknown): RuntimePlanCodingModelV1 {
     ['model', 'runtimeModel', 'runtimeModelRoute', 'attribution'],
     ['runtimeModelRoute'],
   );
-  const model = boundedString(record.model, 'codingModel.model', 3, 240);
-  const runtimeModel = boundedString(record.runtimeModel, 'codingModel.runtimeModel', 3, 240);
-  const runtimeModelRoute = record.runtimeModelRoute === undefined
-    ? undefined
-    : parseFrozenRuntimeModelRoute(record.runtimeModelRoute);
-  validateFrozenRuntimeModelRoute(model, runtimeModel, runtimeModelRoute);
+  const { model, runtimeModel, runtimeModelRoute } = parseCodingModelRoute(record);
   const attributionRecord = exactRecord(
     record.attribution,
     'codingModel.attribution',
@@ -1248,6 +1243,30 @@ function parseCodingModel(value: unknown): RuntimePlanCodingModelV1 {
       fallback,
     },
   };
+}
+
+/** The model half of a frozen coding model, as a coding worker's binding carries it. */
+export function parseRuntimePlanCodingModelRoute(
+  value: unknown,
+): Pick<RuntimePlanCodingModelV1, 'model' | 'runtimeModel' | 'runtimeModelRoute'> {
+  const record = exactRecord(
+    value,
+    'codingModel',
+    ['model', 'runtimeModel', 'runtimeModelRoute'],
+    ['runtimeModelRoute'],
+  );
+  const { model, runtimeModel, runtimeModelRoute } = parseCodingModelRoute(record);
+  return { model, runtimeModel, ...(runtimeModelRoute ? { runtimeModelRoute } : {}) };
+}
+
+function parseCodingModelRoute(record: Record<string, unknown>) {
+  const model = boundedString(record.model, 'codingModel.model', 3, 240);
+  const runtimeModel = boundedString(record.runtimeModel, 'codingModel.runtimeModel', 3, 240);
+  const runtimeModelRoute = record.runtimeModelRoute === undefined
+    ? undefined
+    : parseFrozenRuntimeModelRoute(record.runtimeModelRoute);
+  validateFrozenRuntimeModelRoute(model, runtimeModel, runtimeModelRoute);
+  return { model, runtimeModel, runtimeModelRoute };
 }
 
 function parseWebsiteLogin(value: unknown, index: number): RuntimePlanWebsiteLoginV1 {
@@ -1707,7 +1726,8 @@ function sortResourceConstraints(
   ]));
 }
 
-function parseRepository(value: unknown, index: number): RuntimePlanRepositoryV2 {
+/** One frozen repository declaration; a coding worker's binding carries the same shape. */
+export function parseRepository(value: unknown, index: number): RuntimePlanRepositoryV2 {
   const label = `repositories[${index}]`;
   const record = exactRecord(
     value,

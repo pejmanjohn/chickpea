@@ -1521,6 +1521,7 @@ function parseSettledResult(value: unknown): Extract<FlueSettlementCheckpointV1,
     'artifacts',
     'agentCreationTerminal',
     'memoryUpdate',
+    'codingModel',
     'requestedModel',
     'returnedModel',
     'reportedUsage',
@@ -1536,6 +1537,9 @@ function parseSettledResult(value: unknown): Extract<FlueSettlementCheckpointV1,
   const agentCreationTerminal = parseSlackAgentCreationTerminalIntents(
     record.agentCreationTerminal === undefined ? undefined : [record.agentCreationTerminal],
   )[0];
+  const codingModel = record.codingModel === undefined
+    ? undefined
+    : validateBoundedString(record.codingModel, 'coding model', 240);
   const requestedModel = record.requestedModel === null
     ? null
     : validateBoundedString(record.requestedModel, 'requested model', 240);
@@ -1580,6 +1584,7 @@ function parseSettledResult(value: unknown): Extract<FlueSettlementCheckpointV1,
     ...(artifacts.length > 0 ? { artifacts } : {}),
     ...(agentCreationTerminal ? { agentCreationTerminal } : {}),
     ...(memoryUpdate ? { memoryUpdate } : {}),
+    ...(codingModel ? { codingModel } : {}),
     requestedModel,
     returnedModel,
     reportedUsage,

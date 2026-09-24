@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
+import { CodingWorker } from '../src/agents/coding-worker.ts';
 import { ChickpeaRoutineExecution } from '../src/agents/routine-execution.ts';
 import { ChickpeaRoutineIntent } from '../src/agents/routine-intent.ts';
 import { ChickpeaSlack } from '../src/agents/slack-thread.ts';
 import {
+  CHICKPEA_CODING_WORKER_AGENT_NAME,
   CHICKPEA_ROUTINE_EXECUTION_AGENT_NAME,
   CHICKPEA_ROUTINE_INTENT_AGENT_NAME,
   CHICKPEA_SLACK_AGENT_NAME,
@@ -21,9 +23,17 @@ test('registered agent names match the constants runtime policy keys off', () =>
   assert.equal(ChickpeaSlack.agentName, CHICKPEA_SLACK_AGENT_NAME);
   assert.equal(ChickpeaRoutineIntent.agentName, CHICKPEA_ROUTINE_INTENT_AGENT_NAME);
   assert.equal(ChickpeaRoutineExecution.agentName, CHICKPEA_ROUTINE_EXECUTION_AGENT_NAME);
+  assert.equal(CodingWorker.agentName, CHICKPEA_CODING_WORKER_AGENT_NAME);
 });
 
-test('every registered agent is covered by the managed-submission policy set', () => {
+test('the coding worker carries no tool authority, so it is not a managed submission', () => {
+  assert.equal(
+    (MANAGED_SUBMISSION_AGENT_NAMES as readonly string[]).includes(CodingWorker.agentName!),
+    false,
+  );
+});
+
+test('every agent that runs a Slack submission is covered by the managed-submission policy set', () => {
   const registered = [
     ChickpeaSlack.agentName,
     ChickpeaRoutineIntent.agentName,

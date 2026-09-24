@@ -896,6 +896,11 @@ export class WebClientPresenter {
       : 'failed';
   }
 
+  /** Replace the footer's model label, for a label only the finished reply can decide. */
+  setFooterModelLabel(modelLabel: string | undefined): void {
+    this.target.modelLabel = modelLabel;
+  }
+
   private replyFooter(): SlackReplyFooter {
     return {
       agentName: this.target.agentName,

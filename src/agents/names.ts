@@ -18,6 +18,11 @@
 export const CHICKPEA_SLACK_AGENT_NAME = 'chickpea-slack-v2';
 export const CHICKPEA_ROUTINE_INTENT_AGENT_NAME = 'chickpea-routine-intent-v2';
 export const CHICKPEA_ROUTINE_EXECUTION_AGENT_NAME = 'chickpea-routine-execution-v2';
+/**
+ * The coding worker a coordinator delegates workspace tasks to. It carries no
+ * tool authority of its own, so it is deliberately not a managed submission.
+ */
+export const CHICKPEA_CODING_WORKER_AGENT_NAME = 'chickpea-coding-worker-v1';
 
 /** Agents that run a Slack submission on a human's behalf and carry tool authority. */
 export const MANAGED_SUBMISSION_AGENT_NAMES = [

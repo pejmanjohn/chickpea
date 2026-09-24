@@ -1,5 +1,6 @@
 import { FlueError, type Sandbox } from '@flue/runtime';
 
+import type { TurnProgress } from '../config/state-rpc.ts';
 import type { RepositoryGrant } from '../config/types.ts';
 import type { SandboxCredentialMode, SandboxEgressPolicyInput } from './cloudflare-policy.ts';
 import { validEnabledRepositoryGrants } from './egress-handler.ts';
@@ -48,6 +49,8 @@ export interface WorkspaceSandboxStub extends DestroyableSandbox, SandboxTurnCon
   discardWorkspace(): Promise<void>;
   /** Revoke this turn's egress and checkpoint the workspace; the container stays warm. */
   endTurn(): Promise<void>;
+  /** What egress recorded for this turn, such as a pull request it saw created. */
+  getTurnProgress?(): Promise<TurnProgress>;
 }
 
 /**
