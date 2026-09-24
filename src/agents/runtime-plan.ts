@@ -1269,11 +1269,6 @@ function parseCodingModelRoute(record: Record<string, unknown>) {
   return { model, runtimeModel, runtimeModelRoute };
 }
 
-/** One frozen repository declaration, as a coding worker's binding carries it. */
-export function parseRuntimePlanRepository(value: unknown, index: number): RuntimePlanRepositoryV2 {
-  return parseRepository(value, index);
-}
-
 function parseWebsiteLogin(value: unknown, index: number): RuntimePlanWebsiteLoginV1 {
   const label = `websiteLogins[${index}]`;
   const record = exactRecord(
@@ -1731,7 +1726,8 @@ function sortResourceConstraints(
   ]));
 }
 
-function parseRepository(value: unknown, index: number): RuntimePlanRepositoryV2 {
+/** One frozen repository declaration; a coding worker's binding carries the same shape. */
+export function parseRepository(value: unknown, index: number): RuntimePlanRepositoryV2 {
   const label = `repositories[${index}]`;
   const record = exactRecord(
     value,

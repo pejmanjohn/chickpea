@@ -192,27 +192,30 @@ export const CHICKPEA_SLACK_AGENT_BINDING = agentObjectBindingName(CHICKPEA_SLAC
 
 export class AgentObjectBindingUnavailableError extends Error {
   constructor(binding: string) {
-    super(`Durable Object binding "${binding}" is unavailable; the Slack agent reply cannot be observed.`);
+    super(`Durable Object binding "${binding}" is unavailable; the agent reply cannot be observed.`);
     this.name = 'AgentObjectBindingUnavailableError';
   }
 }
 
 /**
- * The Cloudflare reader for the Slack agent. It reaches the agent object
- * through its namespace exactly as Flue's own router does; ids from
- * `idFromName` carry the name the SDK needs, so no name-bootstrap RPC is
- * required. A missing binding fails here, before any dispatch, instead of
- * silently returning to the long-poll read this module exists to replace.
+ * The Cloudflare reader for one agent (the Slack agent by default). It
+ * reaches the agent object through its namespace exactly as Flue's own router
+ * does; ids from `idFromName` carry the name the SDK needs, so no
+ * name-bootstrap RPC is required. A missing binding fails here, before any
+ * dispatch, instead of silently returning to the long-poll read this module
+ * exists to replace.
  */
 export function createCloudflareBoundedAgentReplyReader(
   env: Record<string, unknown> | undefined,
+  agentName: string = CHICKPEA_SLACK_AGENT_NAME,
 ): BoundedReplyReader {
-  const binding = env?.[CHICKPEA_SLACK_AGENT_BINDING] as AgentObjectNamespace | undefined;
+  const bindingName = agentObjectBindingName(agentName);
+  const binding = env?.[bindingName] as AgentObjectNamespace | undefined;
   if (!binding || typeof binding.idFromName !== 'function' || typeof binding.get !== 'function') {
-    throw new AgentObjectBindingUnavailableError(CHICKPEA_SLACK_AGENT_BINDING);
+    throw new AgentObjectBindingUnavailableError(bindingName);
   }
   return createBoundedAgentReplyReader({
-    agentName: CHICKPEA_SLACK_AGENT_NAME,
+    agentName,
     resolveRoute: (instanceId) => {
       const stub = binding.get(binding.idFromName(instanceId));
       return (request) => stub.fetch(request);

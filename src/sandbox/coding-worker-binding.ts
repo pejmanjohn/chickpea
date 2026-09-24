@@ -1,7 +1,7 @@
 import type { RepositoryGrant } from '../config/types.ts';
 import {
+  parseRepository,
   parseRuntimePlanCodingModelRoute,
-  parseRuntimePlanRepository,
   type RuntimePlanCodingModelV1,
   type RuntimePlanRepositoryV2,
   type RuntimePlanV2,
@@ -28,38 +28,19 @@ export interface CodingWorkerBindingV1 {
 
 export type CodingWorkerModel = Pick<RuntimePlanCodingModelV1, 'model' | 'runtimeModel' | 'runtimeModelRoute'>;
 
-/**
- * The coding model frozen for this turn, or the Agent's own route when the
- * plan carries none (a coding role that resolved to nothing falls back to the
- * Agent's model, never to "no model").
- */
-export function codingWorkerModelForPlan(
-  plan: Pick<RuntimePlanV2, 'model' | 'runtimeModel' | 'runtimeModelRoute' | 'codingWorkspace'>,
-): CodingWorkerModel {
-  const frozen = plan.codingWorkspace?.codingModel;
-  if (frozen) {
-    return {
-      model: frozen.model,
-      runtimeModel: frozen.runtimeModel,
-      ...(frozen.runtimeModelRoute ? { runtimeModelRoute: frozen.runtimeModelRoute } : {}),
-    };
-  }
-  return {
-    model: plan.model,
-    runtimeModel: plan.runtimeModel ?? plan.model,
-    ...(plan.runtimeModelRoute ? { runtimeModelRoute: plan.runtimeModelRoute } : {}),
-  };
-}
-
 export function codingWorkerBindingForPlan(
   plan: Pick<RuntimePlanV2, 'agentId' | 'model' | 'runtimeModel' | 'runtimeModelRoute' | 'codingWorkspace' | 'repositories'>,
   workspaceId: string,
 ): CodingWorkerBindingV1 {
+  // The coding model frozen for this turn, or the Agent's own route when the
+  // plan carries none: a coding role that resolved to nothing falls back to
+  // the Agent's model, never to "no model".
+  const { model, runtimeModel = model, runtimeModelRoute } = plan.codingWorkspace?.codingModel ?? plan;
   return {
     schemaVersion: 1,
     workspaceId,
     agentId: plan.agentId,
-    codingModel: codingWorkerModelForPlan(plan),
+    codingModel: { model, runtimeModel, ...(runtimeModelRoute ? { runtimeModelRoute } : {}) },
     repositories: plan.repositories.map((repository) => ({ ...repository })),
   };
 }
@@ -102,7 +83,7 @@ export function parseCodingWorkerBinding(value: unknown): CodingWorkerBindingV1 
   if (!Array.isArray(record.repositories) || record.repositories.length > 200) {
     throw new Error('Coding worker binding repositories must be a bounded list.');
   }
-  const repositories = record.repositories.map((entry, index) => parseRuntimePlanRepository(entry, index));
+  const repositories = record.repositories.map((entry, index) => parseRepository(entry, index));
   // Attribution stays with the coordinator's plan and footer.
   const codingModel = parseRuntimePlanCodingModelRoute(record.codingModel);
   return { schemaVersion: 1, workspaceId, agentId, codingModel, repositories };

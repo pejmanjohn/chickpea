@@ -228,33 +228,25 @@ export function createWorkspaceTaskTool(options: WorkspaceTaskToolOptions) {
           throw error;
         }
 
-        const pullRequests = await collectPullRequests(target, reply.text, binding);
+        // Egress saw a pull request being created: the authoritative record,
+        // ahead of the links the worker wrote.
+        const found = new Map<string, WorkspaceTaskPullRequest>();
+        const recorded = await options.recordedPullRequest?.(target).catch(() => undefined);
+        if (recorded) found.set(recorded.url.toLowerCase(), { ...recorded });
+        for (const pullRequest of pullRequestLinks(reply.text, binding)) {
+          if (!found.has(pullRequest.url.toLowerCase())) found.set(pullRequest.url.toLowerCase(), pullRequest);
+        }
         const { text, truncated } = keepTail(reply.text.trim(), MAX_WORKSPACE_TASK_REPLY_CHARS);
         return {
           ok: true,
           workspace: target.name,
           reply: text,
           replyTruncated: truncated,
-          pullRequests,
+          pullRequests: [...found.values()].slice(0, MAX_REPORTED_PULL_REQUESTS),
         };
       }
     },
   });
-
-  async function collectPullRequests(
-    session: WorkspaceSession,
-    text: string,
-    binding: CodingWorkerBindingV1,
-  ): Promise<WorkspaceTaskPullRequest[]> {
-    const found = new Map<string, WorkspaceTaskPullRequest>();
-    // Egress saw the pull request being created: the authoritative record.
-    const recorded = await options.recordedPullRequest?.(session).catch(() => undefined);
-    if (recorded) found.set(recorded.url.toLowerCase(), { ...recorded });
-    for (const pullRequest of pullRequestLinks(text, binding)) {
-      if (!found.has(pullRequest.url.toLowerCase())) found.set(pullRequest.url.toLowerCase(), pullRequest);
-    }
-    return [...found.values()].slice(0, MAX_REPORTED_PULL_REQUESTS);
-  }
 }
 
 /**
@@ -275,8 +267,7 @@ export function pullRequestLinks(
   const links: WorkspaceTaskPullRequest[] = [];
   const seen = new Set<string>();
   const pattern = /https:\/\/github\.com\/([A-Za-z0-9-]{1,39})\/([A-Za-z0-9._-]{1,100})\/pull\/(\d{1,9})(?![\w/])/g;
-  for (const match of text.matchAll(pattern)) {
-    const [, owner, name, digits] = match as unknown as [string, string, string, string];
+  for (const [, owner = '', name = '', digits = ''] of text.matchAll(pattern)) {
     const repository = `${owner}/${name}`;
     const granted = repositories.has(repository.toLowerCase()) || owners.has(owner.toLowerCase());
     const url = `https://github.com/${repository}/pull/${Number(digits)}`;

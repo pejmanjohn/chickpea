@@ -1,21 +1,17 @@
 import { init, type AgentInstanceHandle, type DurabilityConfig } from '@flue/runtime';
 
-import {
-  agentObjectBindingName,
-  createBoundedAgentReplyReader,
-  type AgentObjectNamespace,
-} from '../slack/bounded-agent-observation.ts';
+import { createCloudflareBoundedAgentReplyReader } from '../slack/bounded-agent-observation.ts';
 import { publishActivityStatus } from '../slack/activity-publisher.ts';
 import {
   codingWorkerBindingForPlan,
   codingWorkerInstanceId,
 } from '../sandbox/coding-worker-binding.ts';
 import { currentWorkspaceRegistry, type WorkspaceTurnRegistry } from '../sandbox/workspace-registry.ts';
-import type { WorkspaceSession } from '../sandbox/workspace-session.ts';
 import {
   createWorkspaceTaskTool,
   type CodingWorkerClient,
   type WorkspaceTaskResponseState,
+  type WorkspaceTaskToolOptions,
 } from '../sandbox/workspace-task.ts';
 import { CHICKPEA_CODING_WORKER_AGENT_NAME } from './names.ts';
 import type { CodingWorkerRunRecord } from '../slack/coding-worker-run.ts';
@@ -40,18 +36,13 @@ export function createRuntimePlanWorkspaceTaskTool(input: {
   plan: RuntimePlanV2;
   /** The coordinator's own instance id; its status line shows the worker's progress. */
   coordinatorId: string;
-  resolve: (name: string) => WorkspaceSession | undefined | Promise<WorkspaceSession | undefined>;
+  resolve: WorkspaceTaskToolOptions['resolve'];
   onWorkerStarted: (record: CodingWorkerRunRecord) => void;
 }) {
   return createWorkspaceTaskTool({
     resolve: input.resolve,
     binding: (workspaceId) => codingWorkerBindingForPlan(input.plan, workspaceId),
-    instanceId: (binding) => {
-      const id = codingWorkerInstanceId(binding);
-      // Reading a submission on the instance running this tool deadlocks.
-      if (id === input.coordinatorId) throw new Error('A coding worker cannot be its own coordinator.');
-      return id;
-    },
+    instanceId: codingWorkerInstanceId,
     client: cloudflareCodingWorkerClient(),
     responseState: () => responseState(currentWorkspaceRegistry()),
     onWorkerStarted: (model) => input.onWorkerStarted({ schemaVersion: 1, model }),
@@ -86,31 +77,22 @@ function cloudflareCodingWorkerClient(): CodingWorkerClient {
     const { CodingWorker } = await import('./coding-worker.ts');
     return init(CodingWorker, { id: instanceId });
   };
-  const reader = createBoundedAgentReplyReader({
-    agentName: CHICKPEA_CODING_WORKER_AGENT_NAME,
-    resolveRoute: async (instanceId) => {
-      const { getCloudflareContext } = await import('@flue/runtime/cloudflare');
-      const bindingName = agentObjectBindingName(CHICKPEA_CODING_WORKER_AGENT_NAME);
-      const namespace = (getCloudflareContext().env as Record<string, unknown>)[bindingName] as
-        AgentObjectNamespace | undefined;
-      if (!namespace || typeof namespace.idFromName !== 'function' || typeof namespace.get !== 'function') {
-        throw new Error(`Durable Object binding "${bindingName}" is unavailable.`);
-      }
-      const stub = namespace.get(namespace.idFromName(instanceId));
-      return (request) => stub.fetch(request);
-    },
-  });
   return {
-    handle: (instanceId) => ({
-      dispatch: async (request) => (await workerHandle(instanceId)).dispatch(request),
-      abort: async () => (await workerHandle(instanceId)).abort(),
-    }),
-    observe: async ({ instanceId, receipt, onEvent, signal }) => reader({
-      handle: await workerHandle(instanceId),
-      instanceId,
-      receipt,
-      onEvent,
-      signal,
-    }),
+    handle: (instanceId) => {
+      let worker: Promise<AgentInstanceHandle> | undefined;
+      const get = () => (worker ??= workerHandle(instanceId));
+      return {
+        dispatch: async (request) => (await get()).dispatch(request),
+        abort: async () => (await get()).abort(),
+      };
+    },
+    observe: async ({ instanceId, receipt, onEvent, signal }) => {
+      const { getCloudflareContext } = await import('@flue/runtime/cloudflare');
+      const reader = createCloudflareBoundedAgentReplyReader(
+        getCloudflareContext().env as Record<string, unknown>,
+        CHICKPEA_CODING_WORKER_AGENT_NAME,
+      );
+      return reader({ handle: await workerHandle(instanceId), instanceId, receipt, onEvent, signal });
+    },
   };
 }
