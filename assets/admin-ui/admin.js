@@ -14449,9 +14449,6 @@
     return trackVisibleResourcePromise(resourceTicket, request);
   }
 
-  // `options.navigation` marks an in-app route change (opening an Agent,
-  // returning to the roster). Focus and visibility returns pass nothing and
-  // refresh everything the surface shows.
   // Returning to the page can fire the window focus event in the middle of a
   // click that is moving focus into a field. Revalidating in that same task
   // redraws #app before focus lands, so the clicked field is gone and nothing
@@ -14464,6 +14461,9 @@
     revalidateCurrentVisibleResources();
   }
 
+  // `options.navigation` marks an in-app route change (opening an Agent,
+  // returning to the roster). Focus and visibility returns pass nothing and
+  // refresh everything the surface shows.
   function revalidateCurrentVisibleResources(options) {
     if (typeof document !== "undefined" && document.visibilityState && document.visibilityState !== "visible") {
       return Promise.resolve();

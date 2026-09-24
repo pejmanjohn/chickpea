@@ -3114,12 +3114,12 @@ function runAdminPageHarness(
     focusWindow() {
       runTimersScheduledBy(() => windowListeners.focus?.({}));
     },
+    focusWindowWithoutRunningTimers() {
+      windowListeners.focus?.({});
+    },
     setVisibility(nextState) {
       documentVisibilityState = nextState;
       runTimersScheduledBy(() => listeners.visibilitychange?.({ target: actionTarget({}) }));
-    },
-    focusWindowWithoutRunningTimers() {
-      windowListeners.focus?.({});
     },
     scheduledControlPosts,
     clipboardWrites,
@@ -9344,7 +9344,8 @@ test('a click that returns focus to the window keeps the credential field it foc
   harness.focusWindowWithoutRunningTimers();
   assert.equal(harness.renderHistory.length, rendersBefore, 'expected no redraw inside the focus event');
   harness.focusTypingField('connection-account-credential', 4);
-  while (harness.scheduledTimerCount() > 0) harness.runNextTimer();
+  assert.equal(harness.scheduledTimerCount(), 1, 'expected one deferred revalidation');
+  harness.runNextTimer();
   await flushAsync();
 
   assert.ok(harness.agentConnectionGets() > connectionGetsBefore, 'expected the connections list to refresh');
