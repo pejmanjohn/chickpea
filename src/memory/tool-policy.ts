@@ -459,13 +459,17 @@ export function assertArtifactDeliveryAllowed(): void {
 }
 
 /**
- * Sending a file to a connection is a connection write. Its authority is the
- * connection grant, enforced by the connection's egress scope exactly as for
- * `curl`; like file delivery, it also requires the host's current-request
- * envelope, so it never runs for a response without one.
+ * A write through an API connection (a request with a write method, or a
+ * file upload). Its authority is the connection grant, enforced by the
+ * connection's egress scope; like file delivery, it also requires the host's
+ * current-request envelope, so it never runs for a response without one.
  */
-export function assertConnectionFileUploadAllowed(): void {
-  assertCurrentRequestContext('Sending files to a connection is unavailable because this response has no valid current request context.');
+export function assertConnectionWriteAllowed(kind: 'upload' | 'request'): void {
+  assertCurrentRequestContext(
+    kind === 'upload'
+      ? 'Sending files to a connection is unavailable because this response has no valid current request context.'
+      : 'Changing data through a connection is unavailable because this response has no valid current request context.',
+  );
 }
 
 function assertCurrentRequestContext(message: string): void {

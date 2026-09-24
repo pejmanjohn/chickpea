@@ -17,6 +17,10 @@ import {
   ATTACH_FILE_TO_CONNECTION_TOOL_NAME,
   planAllowsConnectionFileUpload,
 } from '../connections/file-upload-tool.ts';
+import {
+  CONNECTION_REQUEST_TOOL_NAME,
+  planAllowsConnectionRequests,
+} from '../connections/request-tool.ts';
 import { WORKSPACE_TOOL_NAMES } from '../sandbox/workspace-tools.ts';
 import { conversationThreadTs, slackAgentThreadKey } from '../slack/thread-key.ts';
 import type { NormalizedSlackTurn } from '../slack/types.ts';
@@ -488,6 +492,12 @@ export function buildRuntimePlanActivityContext(
     { toolName: 'recover_image', descriptor: artifact },
   );
   families.add('artifact');
+  if (planAllowsConnectionRequests(plan)) {
+    descriptors.push({
+      toolName: CONNECTION_REQUEST_TOOL_NAME,
+      descriptor: genericSemanticDescriptor('custom_connection'),
+    });
+  }
   if (planAllowsConnectionFileUpload(plan)) {
     descriptors.push({ toolName: ATTACH_FILE_TO_CONNECTION_TOOL_NAME, descriptor: artifact });
   }

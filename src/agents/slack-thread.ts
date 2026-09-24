@@ -51,7 +51,6 @@ import type { SettingsStore } from '../config/settings-store.ts';
 import type { ConfigStore } from '../config/store.ts';
 import { connectorSkillsForConnections } from '../config/connector-skills.ts';
 import {
-  createConnectionScopedFetch,
   createConnectorScopedBash,
   matchesEgressPrefix,
   resolveEgressPolicy,
@@ -180,6 +179,12 @@ import type { BrowserLoginOptions } from '../browser/binding.ts';
 import { BROWSER_APPROVAL_ACTIVITY } from '../browser/messages.ts';
 import { createBrowserTools, openRecordingDownload } from '../browser/tools.ts';
 import { createRecordingHandleStore, resolveUploadFile } from '../connections/file-handles.ts';
+import { buildConnectionAccess, type ConnectionAccess } from '../connections/access.ts';
+import {
+  CONNECTION_REQUEST_TIMEOUT_MS,
+  createConnectionRequestTool,
+  planAllowsConnectionRequests,
+} from '../connections/request-tool.ts';
 import {
   allowsConnectionFileUpload,
   ATTACH_FILE_TO_CONNECTION_TOOL_NAME,
@@ -882,13 +887,6 @@ export async function createSlackAgentRuntime(
       });
   const workspaceSkill = workspaceSkillForSandbox(sandboxSelection);
 
-  // Repository credentials take precedence over legacy/custom GitHub
-  // connections. Down-scoped installation tokens are authoritative whenever
-  // grants are active, including for narrower legacy path prefixes.
-  const resolvedConnectors = mergeRepositoryAndApiConnectors(
-    repositoryAccess.connectors,
-    resolvedApiConnections.flatMap(({ connectors }) => connectors),
-  );
   // Project resolved connectors into credential-free scope before skill
   // construction. Connector skills come first so the existing last-writer-wins
   // dedupe lets an Agent-authored skill deliberately override the built-in.
@@ -1018,7 +1016,9 @@ export async function createSlackAgentRuntime(
         },
       });
 
-  const virtualSandbox = createConnectorScopedBash(egressPolicy, isCloudflareTarget(), resolvedConnectors);
+  // API connections are called through connection_request, never the
+  // shell, so the virtual sandbox mounts only repository scopes.
+  const virtualSandbox = createConnectorScopedBash(egressPolicy, isCloudflareTarget(), repositoryAccess.connectors);
   let sandbox = await resolveAgentSandbox({
     selection: sandboxSelection,
     fallback: virtualSandbox,
@@ -1523,9 +1523,13 @@ export function useRuntimePlanAgent(
     options.connectorUsageCorrelation,
     [AGENT_AUTHORING_SKILL_NAME],
   );
-  if (plan.sandbox.mode === 'bash' && plan.apiConnections.length > 0) {
+  // Not an artifact tool: an old routine occurrence without a file
+  // destination still calls its connections. Only a file-delivery repair,
+  // which may not use connections, goes without.
+  if (runtimePlanAllowsConnectionRequests(plan) && !fileCompletion.repairing) {
+    useTool(createRuntimePlanConnectionRequestTool(plan));
     useInstruction([
-      'REST connections are declared for this turn. Use the bash tool with curl -sS to perform requested HTTP operations within the listed hosts, path prefixes, and methods, preserving error messages. Credentials are injected automatically by the connection transport; do not supply, retrieve, or print authentication headers or credential values.',
+      'API connections are declared for this turn. Call them with the connection_request tool, within the listed hosts, path prefixes, and methods, and report the service\'s answer including error messages. Credentials are added automatically; never supply, retrieve, or print authentication headers or credential values. The shell cannot reach these services.',
       'These declarations describe the frozen permission ceiling, not a guarantee of availability. The runtime rechecks current account authority on every request; if access is denied or unavailable, report that result without bypassing it or claiming success.',
       JSON.stringify(plan.apiConnections.map(({ id, displayName, allowedHosts, pathPrefixes, allowedMethods }) => ({ id, displayName, allowedHosts, pathPrefixes, allowedMethods }))),
     ].join('\n'));
@@ -1707,19 +1711,15 @@ function createRuntimePlanSandbox(
         // egress settings belong to the legacy runtime and must not become an
         // incidental grant when any connection is bound. Empty plans need no
         // account or egress setting reads.
-        if (!plan.apiConnections.length && !plan.repositories.length) {
+        if (!plan.repositories.length) {
           return bash(() => new Bash({ fs: new InMemoryFs() })).createSandbox(options);
         }
-        const [repositoryAccess, connections] = await Promise.all([
-          resolveRuntimePlanBashRepositoryAccess(plan, env),
-          resolveRuntimePlanApiConnections(plan, env),
-        ]);
+        // API connections are called through connection_request, never the
+        // shell; the sandbox mounts only repository scopes.
+        const repositoryAccess = await resolveRuntimePlanBashRepositoryAccess(plan, env);
         const sandbox = createConnectorScopedBash(
           { mode: 'allowlist', domains: [] }, isCloudflareTarget(),
-          mergeRepositoryAndApiConnectors(
-            repositoryAccess.connectors,
-            connections.flatMap(({ connectors }) => connectors),
-          ),
+          repositoryAccess.connectors,
         );
         return sandbox.createSandbox(options);
       },
@@ -2208,24 +2208,43 @@ function createRuntimePlanBrowserProvider(): BrowserTurnSession['provider'] {
 }
 
 /**
- * The API connections a runtime plan may send a file to: its frozen
- * declarations, narrowed by live authority, through the same per-connector
- * egress scopes the sandbox `curl` uses. GitHub hosts stay with the
- * repository integration.
+ * The runtime plan's API connections for a Worker-side connection tool: its
+ * frozen declarations, narrowed by live authority, each behind its own
+ * per-connector egress scopes. Resolved per call, so a connection disabled or
+ * narrowed mid-turn is gone or narrowed on the next call. GitHub hosts stay
+ * with the repository integration.
  */
-async function resolveRuntimePlanUploadFetch(plan: RuntimePlanV2): Promise<ConnectionUploadFetch | undefined> {
+export async function resolveRuntimePlanConnectionAccess(
+  plan: RuntimePlanV2,
+  options: { timeoutMs: number; filter?: (connector: ResolvedApiConnection) => boolean },
+): Promise<ConnectionAccess> {
   const env = await resolveAgentPlatformEnv();
-  const connectors = mergeRepositoryAndApiConnectors(
-    [],
-    (await resolveRuntimePlanApiConnections(plan, env)).flatMap(({ connectors }) => connectors),
-  ).filter((connector) => allowsConnectionFileUpload(connector.allowedMethods));
-  const fetch = await createConnectionScopedFetch(connectors, {
-    cloudflare: isCloudflareTarget(),
+  const resolved = (await resolveRuntimePlanApiConnections(plan, env)).map(({ policy, connectors }) => ({
+    policy,
+    connectors: mergeRepositoryAndApiConnectors([], connectors),
+  }));
+  return buildConnectionAccess(resolved, { cloudflare: isCloudflareTarget(), ...options });
+}
+
+async function resolveRuntimePlanUploadFetch(plan: RuntimePlanV2): Promise<ConnectionUploadFetch | undefined> {
+  const access = await resolveRuntimePlanConnectionAccess(plan, {
     timeoutMs: CONNECTION_UPLOAD_TIMEOUT_MS,
+    filter: (connector) => allowsConnectionFileUpload(connector.allowedMethods),
   });
-  if (!fetch) return undefined;
-  const secrets = connectors.flatMap(({ headerValue }) => [headerValue, headerValue.replace(/^\S+\s+/, '')]);
-  return { fetch, secrets };
+  return access.fetchAll();
+}
+
+/** connection_request for a runtime plan, resolving the plan's connections per call. */
+export function createRuntimePlanConnectionRequestTool(plan: RuntimePlanV2) {
+  return createConnectionRequestTool({
+    agentId: plan.agentId,
+    resolveAccess: () => resolveRuntimePlanConnectionAccess(plan, { timeoutMs: CONNECTION_REQUEST_TIMEOUT_MS }),
+  });
+}
+
+/** Mounted for a plan with any API connection its actor can use. */
+export function runtimePlanAllowsConnectionRequests(plan: RuntimePlanV2): boolean {
+  return planAllowsConnectionRequests(plan);
 }
 
 /** Mounted only for a plan with a writable API connection its actor can use. */
