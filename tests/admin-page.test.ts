@@ -7503,9 +7503,8 @@ test('Connections load against the workspace the Agent inventory reports without
 });
 
 test('Connections deep links opened in a hidden tab load without a tab click', async () => {
-  // A deep link opened in a background tab (or a hidden automation tab) used
-  // to skip the route's loads, leaving "Loading connections…" until the tab
-  // was clicked again. A route loads what it shows whatever the visibility.
+  // Both branches of the Connections load: workspace known at boot, and
+  // workspace learned from a Slack status round trip first.
   for (const agentsWorkspaceId of ['T_DESIGN', null]) {
     const harness = runAdminPageHarness({
       agents: [connectionsAgent()],

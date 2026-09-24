@@ -14641,12 +14641,11 @@
 
   // `options.navigation` marks an in-app route change (opening an Agent,
   // returning to the roster). Focus and visibility returns pass nothing and
-  // refresh everything the surface shows.
+  // refresh everything the surface shows. A hidden page skips those returns
+  // but still loads what a route shows: a deep link opened in a background
+  // tab otherwise sat on "Loading…" until the tab was clicked.
   function revalidateCurrentVisibleResources(options) {
     var navigation = !!(options && options.navigation);
-    // A hidden page skips return refreshes, but a route still loads what it
-    // shows: a deep link opened in a background tab otherwise kept its tab on
-    // "Loading…" until someone clicked the tab again.
     if (!navigation && typeof document !== "undefined" && document.visibilityState && document.visibilityState !== "visible") {
       return Promise.resolve();
     }
