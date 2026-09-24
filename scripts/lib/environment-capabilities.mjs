@@ -12,10 +12,12 @@
  *   for the SANDBOX binding, `secret list` for secret names; never values);
  * - whether the operator holds the lane's seed token file (existence only).
  *
- * The default chat model and image role live in the lane's database, and no
- * read-only authenticated host path exposes them, so they are reported as
- * unknown. Every lane is read independently: one unreachable Worker marks its
- * own row and never fails the others.
+ * - the lane's default chat model and image role, read from the lane's
+ *   QA-only `/internal/environment/models` route with the operator's seed
+ *   token (reported as unknown until the lane serves that route).
+ *
+ * Every lane is read independently: one unreachable Worker marks its own row
+ * and never fails the others.
  */
 import { spawn } from 'node:child_process';
 import { existsSync, lstatSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
@@ -30,7 +32,7 @@ import {
   readEnvironmentRegistry,
   readEnvironmentStatus,
 } from './environment-registry.mjs';
-import { laneCredentialsDirectory } from './lane-secrets.mjs';
+import { laneCredentialsDirectory, readLaneSeedToken } from './lane-secrets.mjs';
 
 export const ENVIRONMENT_CAPABILITIES_SCHEMA = 'chickpea-environment-capabilities/v1';
 export const CAPABILITY_MATRIX_FILE = 'lane-capabilities.md';
@@ -69,8 +71,9 @@ export async function readEnvironmentCapabilities(target, options = {}) {
   const runWrangler = options.runWrangler ?? defaultWranglerRunner(options);
   const env = options.env ?? process.env;
   const now = options.now ?? Date.now;
+  const readModels = options.readModels ?? ((lane) => readLaneModels(lane, env, options.fetchImpl ?? fetch));
   const rows = await Promise.all(lanes.map((lane) => readLaneRow(lane, {
-    runWrangler, providerContext, env, now,
+    runWrangler, providerContext, env, now, readModels,
   })));
   return Object.freeze({
     schemaVersion: ENVIRONMENT_CAPABILITIES_SCHEMA,
@@ -109,9 +112,12 @@ export function readRegisteredLanes(target, options = {}) {
   });
 }
 
-async function readLaneRow(lane, { runWrangler, providerContext, env, now }) {
+async function readLaneRow(lane, { runWrangler, providerContext, env, now, readModels }) {
   const errors = [];
-  const worker = await readLiveWorker(lane.workerName, runWrangler, providerContext, errors);
+  const [worker, models] = await Promise.all([
+    readLiveWorker(lane.workerName, runWrangler, providerContext, errors),
+    readModels(lane).catch(() => undefined),
+  ]);
   const secrets = worker.secretNames
     ? Object.fromEntries(CAPABILITY_SECRET_NAMES.map((name) => [name, worker.secretNames.has(name)]))
     : null;
@@ -128,9 +134,11 @@ async function readLaneRow(lane, { runWrangler, providerContext, env, now }) {
     sourceSha: lane.sourceSha,
     secrets,
     seedTokenFile: seedTokenFileExists(lane.target, env),
-    defaultChatModel: null,
-    imageRole: null,
-    modelRoles: MODEL_ROLES_UNKNOWN,
+    defaultChatModel: models ? models.defaultChatModel : null,
+    imageRole: models ? models.imageModel : null,
+    modelRoles: models
+      ? `${models.defaultChatModel ?? 'unset'} / image ${models.imageModel ?? 'unset'}`
+      : MODEL_ROLES_UNKNOWN,
     transport: lane.transport,
     workspaceLabel: lane.workspaceLabel,
     missingActorAliases: Object.freeze([...lane.missingActorAliases]),
@@ -213,6 +221,32 @@ function workerMissing(run) {
 function parseJson(run) {
   if (!run || run.error || run.status !== 0 || typeof run.stdout !== 'string') return undefined;
   try { return JSON.parse(run.stdout); } catch { return undefined; }
+}
+
+const MODEL_ID = /^[A-Za-z0-9@._:/-]{1,200}$/u;
+
+/**
+ * The lane's model roles via its QA-only models route, authorized by the
+ * operator's seed token. Returns undefined when the token, origin or route is
+ * unavailable; the token is never logged.
+ */
+export async function readLaneModels(lane, env = process.env, fetchImpl = fetch) {
+  const token = readLaneSeedToken(lane.target, { env });
+  if (!token) return undefined;
+  const credentials = path.join(laneCredentialsDirectory(env), `${lane.target}-live.json`);
+  if (!existsSync(credentials)) return undefined;
+  const origin = new URL(JSON.parse(readFileSync(credentials, 'utf8')).origin);
+  if (origin.protocol !== 'https:' || origin.username || origin.password) return undefined;
+  const response = await fetchImpl(new URL('/internal/environment/models', origin.origin), {
+    headers: { Authorization: `Bearer ${token}` },
+    redirect: 'error',
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!response.ok) return undefined;
+  const body = await response.json();
+  const pick = (value) => (typeof value === 'string' && MODEL_ID.test(value) ? value : null);
+  if (body?.schemaVersion !== 'chickpea-environment-models/v1' || body.target !== lane.target) return undefined;
+  return { defaultChatModel: pick(body.defaultChatModel), imageModel: pick(body.imageModel) };
 }
 
 function seedTokenFileExists(target, env) {

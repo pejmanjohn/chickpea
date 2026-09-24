@@ -339,3 +339,28 @@ function safeErrorCode(error: unknown): string {
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
+
+export const ENVIRONMENT_MODELS_PATH = '/internal/environment/models';
+
+/**
+ * Read-only lane model roles for `npm run env -- capabilities`: the workspace
+ * default chat model and the image role. Same QA-only gate and seed token as
+ * the seed route; anything else gets the same empty 404.
+ */
+export async function environmentModelsResponse(input: {
+  authorization: string | undefined;
+  env: PlatformEnv;
+  readModels: () => Promise<{ defaultChatModel: string | null; imageModel: string | null } | undefined>;
+}): Promise<Response> {
+  const headers = { 'Cache-Control': 'no-store', 'Content-Type': 'application/json' };
+  if (!authorizedSeed(input.authorization, input.env)) {
+    return new Response('{}', { status: 404, headers });
+  }
+  const models = await input.readModels();
+  if (!models) return Response.json({ error: 'installation_unavailable' }, { status: 503, headers });
+  return Response.json({
+    schemaVersion: 'chickpea-environment-models/v1',
+    target: input.env.CHICKPEA_ENV_TARGET,
+    ...models,
+  }, { headers });
+}

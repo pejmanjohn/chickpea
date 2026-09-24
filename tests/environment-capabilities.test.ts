@@ -307,3 +307,30 @@ test('the CLI prints a table or JSON and writes the matrix only for all lanes', 
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test('reads lane model roles from the QA models route with the seed token', async () => {
+  // @ts-expect-error Environment tooling JavaScript helper.
+  const { readLaneModels } = await import('../scripts/lib/environment-capabilities.mjs');
+  const directory = mkdtempSync(join(tmpdir(), 'chickpea-capabilities-models-'));
+  try {
+    const token = 'T'.repeat(43);
+    writeFileSync(join(directory, 'amber-seed.json'), JSON.stringify({ target: 'amber', seedToken: token }), { mode: 0o600 });
+    writeFileSync(join(directory, 'amber-live.json'), JSON.stringify({ origin: 'https://amber.example.workers.dev' }), { mode: 0o600 });
+    const env = { CHICKPEA_LANE_CREDENTIALS_DIR: directory };
+    const calls: string[] = [];
+    const fetchImpl = async (url: URL, init: RequestInit) => {
+      calls.push(`${url.href} ${new Headers(init.headers).get('authorization') === `Bearer ${token}`}`);
+      return Response.json({
+        schemaVersion: 'chickpea-environment-models/v1', target: 'amber',
+        defaultChatModel: 'openai/gpt-5.6-terra', imageModel: '<script>',
+      });
+    };
+    const models = await readLaneModels({ target: 'amber' }, env, fetchImpl);
+    assert.deepEqual(models, { defaultChatModel: 'openai/gpt-5.6-terra', imageModel: null });
+    assert.deepEqual(calls, ['https://amber.example.workers.dev/internal/environment/models true']);
+    assert.equal(await readLaneModels({ target: 'amber' }, env, async () => new Response('{}', { status: 404 })), undefined);
+    assert.equal(await readLaneModels({ target: 'cobalt' }, env, fetchImpl), undefined, 'no seed token file');
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
