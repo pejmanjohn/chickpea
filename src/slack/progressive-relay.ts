@@ -1,5 +1,6 @@
 import type { ConversationStreamChunk } from '@flue/runtime';
 
+import { FILE_DELIVERY_DATA_NAME } from './file-delivery-completion.ts';
 import { SLACK_STREAM_ANSWER_TOOL_NAME } from './presentation-intent.ts';
 import type {
   SlackProgressiveIntent,
@@ -136,6 +137,9 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
       return;
     }
     if (chunk.type === 'data-part' && chunk.messageId === this.targetMessageId) {
+      // Every response ends by recording its file-delivery check. With no
+      // files and nothing unresolved it leaves the answer text unchanged.
+      if (isEmptyFileDeliveryResult(chunk.name, chunk.data)) return;
       if (this.usesModelIntent) {
         this.denyAndInvalidate(
           'structured_output',
@@ -500,6 +504,13 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
       ...(this.invalidationReason ? { invalidationReason: this.invalidationReason } : {}),
     };
   }
+}
+
+function isEmptyFileDeliveryResult(name: string, data: unknown): boolean {
+  if (name !== FILE_DELIVERY_DATA_NAME || !data || typeof data !== 'object') return false;
+  const result = data as { unresolved?: unknown; files?: unknown };
+  return Object.keys(result).length === 2 && result.unresolved === false &&
+    Array.isArray(result.files) && result.files.length === 0;
 }
 
 function validPosition(value: { batch: number; index: number }): boolean {

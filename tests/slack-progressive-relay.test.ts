@@ -487,6 +487,46 @@ test('a refused tool after a final-answer declaration keeps the stream only whil
   assert.equal(relayedSummary.invalidationReason, 'tool_activity');
 });
 
+test('the empty end-of-response file-delivery record does not deny a streamed answer', async () => {
+  for (const mode of ['early', 'final_answer'] as const) {
+    const h = modelRelay({ mode });
+    h.emit(streamInput({ batch: 2, index: 0 }));
+    h.emit(streamOutput({ batch: 3, index: 0 }));
+    h.emit(stepStarted(4));
+    h.emit(answerDelta('The whole answer.', { batch: 5, index: 0 }));
+    h.emit({
+      type: 'data-part', conversationId: 'conversation_model_intent',
+      messageId: 'message_model_intent', name: 'fileDeliveryCompletion',
+      data: { unresolved: false, files: [] }, position: { batch: 6, index: 0 },
+    });
+    const summary = await h.relay.closeAndDrain();
+    assert.deepEqual(h.operations, [
+      'intent:candidate:stream_call_1',
+      'intent:requested:stream_call_1',
+      'append:The whole answer.',
+    ], mode);
+    assert.equal(summary.invalidated, false, mode);
+  }
+  // A record that changes the delivered text still denies.
+  for (const data of [
+    { unresolved: true, files: [] },
+    { unresolved: false, files: [{ path: '/w/a.csv', filename: 'a.csv', attached: false }] },
+  ]) {
+    const h = modelRelay({ mode: 'final_answer' });
+    h.emit(streamInput({ batch: 2, index: 0 }));
+    h.emit(streamOutput({ batch: 3, index: 0 }));
+    h.emit(stepStarted(4));
+    h.emit(answerDelta('Partial.', { batch: 5, index: 0 }));
+    h.emit({
+      type: 'data-part', conversationId: 'conversation_model_intent',
+      messageId: 'message_model_intent', name: 'fileDeliveryCompletion',
+      data, position: { batch: 6, index: 0 },
+    });
+    await h.relay.closeAndDrain();
+    assert.ok(h.operations.includes('intent:denied:structured_output'), JSON.stringify(data));
+  }
+});
+
 test('early mode still denies any tool before the declaration', async () => {
   const h = modelRelay();
   h.emit(effectInput(2));
