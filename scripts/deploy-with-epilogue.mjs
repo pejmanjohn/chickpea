@@ -32,6 +32,7 @@ import { fileURLToPath } from 'node:url';
 import { hasScheduledComposition } from './worker-artifact.mjs';
 import { builtWorkerConfigPath } from './lib/built-worker-config.mjs';
 import { mergeDeploymentSecrets, OPERATOR_SECRETS_ENV, readOperatorSecretsFile } from './lib/deploy-operator-secrets.mjs';
+import { describeLaneSecrets, resolveLaneSecrets } from './lib/lane-secrets.mjs';
 import { wranglerInspector, deploymentFingerprint } from './lib/inspect-deployment.mjs';
 import { AUTH_SCHEMA_QUERY, expectedAuthSchema, normalizeAuthSchemaRows } from './lib/auth-schema.mjs';
 import { validateInstallation, validateTarget, assertSameInstallation, overlayInstallation, wranglerProfileArgs } from './lib/upgrade-installation.mjs';
@@ -1305,7 +1306,15 @@ try {
   if (operatorSecrets) {
     console.log(`Deploying with operator secrets: ${Object.keys(operatorSecrets).join(', ')}`);
   }
-  preparedSecrets = createSecretsFile(mergeDeploymentSecrets(deploymentAuthority?.generatedSecrets, operatorSecrets));
+  // A claimed lane also carries the standing provider keys from the
+  // operator's lane secrets file, so a rebuilt lane regains them. An explicit
+  // operator secrets file wins over it, and the wrapper's own names win over both.
+  const laneSecrets = resolveLaneSecrets(requestedDeploymentTarget);
+  if (laneSecrets) console.log(describeLaneSecrets(laneSecrets));
+  preparedSecrets = createSecretsFile(mergeDeploymentSecrets(
+    deploymentAuthority?.generatedSecrets,
+    { ...(laneSecrets?.secrets ?? {}), ...(operatorSecrets ?? {}) },
+  ));
 } catch (error) {
   console.error(`Unable to prepare the temporary Worker secrets file: ${error instanceof Error ? error.message : String(error)}`);
   process.exit(1);
