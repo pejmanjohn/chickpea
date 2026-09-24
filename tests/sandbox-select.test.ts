@@ -4,9 +4,9 @@ import { test } from 'node:test';
 import type { RepositoryGrant } from '../src/config/types.ts';
 import {
   probeSandboxContainer,
-  resolveSandboxSelection,
+  resolveCodingWorkspaceCapability,
   sandboxBindingInstalled,
-  selectSandbox,
+  codingWorkspaceCapability,
 } from '../src/sandbox/select.ts';
 
 function grant(overrides: Partial<RepositoryGrant> = {}): RepositoryGrant {
@@ -20,16 +20,16 @@ function grant(overrides: Partial<RepositoryGrant> = {}): RepositoryGrant {
   };
 }
 
-test('Cloudflare selects its Flue sandbox only when the tier and a valid grant are enabled', () => {
+test('Cloudflare offers the coding workspace only when the tier and a valid grant are enabled', () => {
   assert.equal(
-    selectSandbox({
+    codingWorkspaceCapability({
       target: 'cloudflare',
       installed: true,
       enabled: true,
       appConnected: true,
       repositoryGrants: [grant()],
     }),
-    'cloudflare',
+    'available',
   );
 
   for (const input of [
@@ -76,22 +76,22 @@ test('Cloudflare selects its Flue sandbox only when the tier and a valid grant a
       repositoryGrants: [grant()],
     },
   ]) {
-    assert.equal(selectSandbox(input), 'bash');
+    assert.equal(codingWorkspaceCapability(input), 'unavailable');
   }
 });
 
-test('Node always selects the in-memory bash sandbox', () => {
+test('Node never offers a coding workspace', () => {
   for (const enabled of [false, true]) {
     for (const appConnected of [false, true]) {
       assert.equal(
-        selectSandbox({
+        codingWorkspaceCapability({
           target: 'node',
           installed: true,
           enabled,
           appConnected,
           repositoryGrants: [grant()],
         }),
-        'bash',
+        'unavailable',
       );
     }
   }
@@ -107,34 +107,34 @@ test('live binding availability accepts only the supported Cloudflare binding al
 
 test('selection identifies only a missing live binding as an unavailable fallback', () => {
   assert.deepEqual(
-    resolveSandboxSelection({
+    resolveCodingWorkspaceCapability({
       target: 'cloudflare',
       installed: false,
       enabled: true,
       appConnected: true,
       repositoryGrants: [grant()],
     }),
-    { selection: 'bash', unavailableFallback: true },
+    { capability: 'unavailable', unavailableFallback: true },
   );
   assert.deepEqual(
-    resolveSandboxSelection({
+    resolveCodingWorkspaceCapability({
       target: 'cloudflare',
       installed: true,
       enabled: false,
       appConnected: true,
       repositoryGrants: [grant()],
     }),
-    { selection: 'bash', unavailableFallback: false },
+    { capability: 'unavailable', unavailableFallback: false },
   );
   assert.deepEqual(
-    resolveSandboxSelection({
+    resolveCodingWorkspaceCapability({
       target: 'node',
       installed: false,
       enabled: true,
       appConnected: true,
       repositoryGrants: [grant()],
     }),
-    { selection: 'bash', unavailableFallback: false },
+    { capability: 'unavailable', unavailableFallback: false },
   );
 });
 

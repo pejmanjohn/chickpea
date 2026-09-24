@@ -296,7 +296,7 @@ function dependencies(events: string[] = []) {
       events.push('model');
       return { model: config.model };
     },
-    useCloudflareSandbox: async () => false,
+    codingWorkspaceConfigured: async () => false,
     preparePrompt: async (run: RoutineRun, routine: RoutineDefinition) => ({
       prompt: `Execute ${run.id}`,
       turn: {
@@ -516,18 +516,13 @@ test('live access and a frozen app checkpoint precede Flue dispatch', async () =
 
 test('an interrupted local read stays resumable and the next execution reads the saved receipt', async () => {
   const store = new SqliteRoutineStore(':memory:', () => NOW);
-  const preparedSandboxKeys: string[] = [];
-  const releasedSandboxKeys: string[] = [];
+  const sandboxCalls: string[] = [];
   const sandboxDependencies = {
     ...dependencies(),
     sandboxInstalled: () => true,
-    useCloudflareSandbox: async () => true,
-    prepareSandbox: async (_env: unknown, conversationKey: string) => {
-      preparedSandboxKeys.push(conversationKey);
-    },
-    releaseSandbox: async (_env: unknown, conversationKey: string) => {
-      releasedSandboxKeys.push(conversationKey);
-    },
+    codingWorkspaceConfigured: async () => true,
+    prepareSandbox: async () => { sandboxCalls.push('prepare'); },
+    releaseSandbox: async () => { sandboxCalls.push('release'); },
   };
   try {
     const fixture = await admittedFixture(store, 'resume');
@@ -537,8 +532,6 @@ test('an interrupted local read stays resumable and the next execution reads the
     }, { ...sandboxDependencies, handle: fakeHandle({ readError: interrupted }) });
     assert.equal(first, 'resumable');
     assert.equal((await store.getRun(fixture.run.id))?.status, 'running');
-    assert.equal(preparedSandboxKeys.length, 1);
-    assert.deepEqual(releasedSandboxKeys, []);
 
     let dispatches = 0;
     const resumed = fakeHandle({});
@@ -548,8 +541,9 @@ test('an interrupted local read stays resumable and the next execution reads the
     }, { ...sandboxDependencies, handle: resumed });
     assert.equal(second, 'completed');
     assert.equal(dispatches, 0);
-    assert.equal(preparedSandboxKeys[0], preparedSandboxKeys[1]);
-    assert.deepEqual(releasedSandboxKeys, [preparedSandboxKeys[0]]);
+    // The Agent opens and releases its own coding workspace; the relay never
+    // touches the Sandbox Durable Object for a current plan.
+    assert.deepEqual(sandboxCalls, []);
     assert.equal((await store.getRun(fixture.run.id))?.status, 'no_op');
   } finally {
     store.close();
@@ -1111,29 +1105,19 @@ test('a preparation failure stays silent when fresh destination authorization fa
   }
 });
 
-test('an ambiguous dispatch keeps its sandbox until the frozen request settles', async () => {
+test('an ambiguous dispatch freezes the coding workspace once and never touches the sandbox from the relay', async () => {
   const store = new SqliteRoutineStore(':memory:', () => NOW);
   const events: string[] = [];
-  const preparedSandboxKeys: string[] = [];
-  const releasedSandboxKeys: string[] = [];
-  let sandboxSelectionCalls = 0;
-  let releases = 0;
+  let capabilityChecks = 0;
   const sandboxDependencies = {
     ...dependencies(events),
     sandboxInstalled: () => true,
-    useCloudflareSandbox: async () => {
-      sandboxSelectionCalls += 1;
-      return sandboxSelectionCalls === 1;
+    codingWorkspaceConfigured: async () => {
+      capabilityChecks += 1;
+      return capabilityChecks === 1;
     },
-    prepareSandbox: async (_env: unknown, conversationKey: string) => {
-      preparedSandboxKeys.push(conversationKey);
-      events.push('sandbox:prepare');
-    },
-    releaseSandbox: async (_env: unknown, conversationKey: string) => {
-      releasedSandboxKeys.push(conversationKey);
-      releases += 1;
-      events.push('sandbox:release');
-    },
+    prepareSandbox: async () => { events.push('sandbox:prepare'); },
+    releaseSandbox: async () => { events.push('sandbox:release'); },
   };
   try {
     const fixture = await admittedFixture(store, 'dispatch_retry');
@@ -1144,21 +1128,17 @@ test('an ambiguous dispatch keeps its sandbox until the frozen request settles',
       handle: fakeHandle({ events, dispatchError: new Error('connection ended after dispatch') }),
     });
     assert.equal(first, 'resumable');
-    assert.equal(releases, 0);
     const frozen = (await store.getRun(fixture.run.id))?.flueAgentEnvelope;
+    const plan = parseRoutineExecutionInitialData(frozen?.initialData).runtimePlan;
+    assert.equal(plan.sandbox.mode, 'bash');
+    assert.deepEqual(plan.codingWorkspace, { available: true });
 
     const second = await executeRoutineOccurrence({
       env: {}, store, occurrenceId: fixture.run.id, attempt: fixture.attempt.attempt,
     }, { ...sandboxDependencies, handle: fakeHandle({ events }) });
     assert.equal(second, 'completed');
-    assert.equal(sandboxSelectionCalls, 1);
-    assert.equal(releases, 1);
-    assert.equal(preparedSandboxKeys[0], preparedSandboxKeys[1]);
-    assert.match(
-      preparedSandboxKeys[0] ?? '',
-      /^sandbox_[a-f0-9]{40}$/,
-    );
-    assert.deepEqual(releasedSandboxKeys, [preparedSandboxKeys[0]]);
+    assert.equal(capabilityChecks, 1);
+    assert.equal(events.some((event) => event.startsWith('sandbox:')), false);
     assert.deepEqual((await store.getRun(fixture.run.id))?.flueAgentEnvelope, frozen);
     assert.equal(
       (await store.listAdmissions(fixture.run.id))[0]?.flueAgentReceipt?.submissionId,
@@ -1169,80 +1149,24 @@ test('an ambiguous dispatch keeps its sandbox until the frozen request settles',
   }
 });
 
-test('concurrent routine occurrences isolate sandbox preparation and release by frozen owner', async () => {
+test('an unconfigured coding workspace freezes no workspace capability', async () => {
   const store = new SqliteRoutineStore(':memory:', () => NOW);
-  const prepared: Array<{ conversationKey: string; turnId: string }> = [];
-  const released: string[] = [];
-  const { promise: holdFirstRead, resolve: releaseFirstRead } = Promise.withResolvers<void>();
-  const { promise: firstReadStarted, resolve: markFirstReadStarted } = Promise.withResolvers<void>();
-  let firstExecution: Promise<Awaited<ReturnType<typeof executeRoutineOccurrence>>> | undefined;
-  const sandboxDependencies = {
-    ...dependencies(),
-    sandboxInstalled: () => true,
-    useCloudflareSandbox: async () => true,
-    prepareSandbox: async (_env: unknown, conversationKey: string, turnId: string) => {
-      prepared.push({ conversationKey, turnId });
-    },
-    releaseSandbox: async (_env: unknown, conversationKey: string) => {
-      released.push(conversationKey);
-    },
-  };
   try {
-    const firstFixture = await admittedFixture(store, 'sandbox_owner_first');
-    const secondFixture = await admittedFixture(store, 'sandbox_owner_second');
-    const firstHandle = fakeHandle({});
-    const originalFirstRead = firstHandle.read.bind(firstHandle);
-    firstHandle.read = async (...args) => {
-      markFirstReadStarted();
-      await holdFirstRead;
-      return originalFirstRead(...args);
-    };
-
-    firstExecution = executeRoutineOccurrence({
-      env: {}, store, occurrenceId: firstFixture.run.id, attempt: firstFixture.attempt.attempt,
-    }, { ...sandboxDependencies, handle: firstHandle });
-    await firstReadStarted;
-
-    const secondOutcome = await executeRoutineOccurrence({
-      env: {}, store, occurrenceId: secondFixture.run.id, attempt: secondFixture.attempt.attempt,
-    }, { ...sandboxDependencies, handle: fakeHandle({}) });
-    assert.equal(secondOutcome, 'completed');
-    assert.equal(prepared.length, 2);
-    assert.notEqual(prepared[0]?.conversationKey, prepared[1]?.conversationKey);
-    assert.deepEqual(released, [prepared[1]?.conversationKey]);
-
-    releaseFirstRead();
-    assert.equal(await firstExecution, 'completed');
-    assert.deepEqual(released, [
-      prepared[1]?.conversationKey,
-      prepared[0]?.conversationKey,
-    ]);
-  } finally {
-    releaseFirstRead();
-    await firstExecution?.catch(() => undefined);
-    store.close();
-  }
-});
-
-test('a sandbox preparation failure terminalizes the already-started occurrence and cleans up', async () => {
-  const store = new SqliteRoutineStore(':memory:', () => NOW);
-  let releases = 0;
-  try {
-    const fixture = await admittedFixture(store, 'sandbox_failure');
+    const fixture = await admittedFixture(store, 'workspace_unconfigured');
     const outcome = await executeRoutineOccurrence({
       env: {}, store, occurrenceId: fixture.run.id, attempt: fixture.attempt.attempt,
     }, {
-      ...offlineDependencies(),
+      ...dependencies(),
       sandboxInstalled: () => true,
-      useCloudflareSandbox: async () => true,
-      prepareSandbox: async () => { throw new Error('sandbox unavailable'); },
-      releaseSandbox: async () => { releases += 1; },
+      codingWorkspaceConfigured: async () => false,
       handle: fakeHandle({}),
     });
-
     assert.equal(outcome, 'completed');
-    assert.equal(releases, 1);
-    assert.equal((await store.getRun(fixture.run.id))?.status, 'failed');
+    const plan = parseRoutineExecutionInitialData(
+      (await store.getRun(fixture.run.id))?.flueAgentEnvelope?.initialData,
+    ).runtimePlan;
+    assert.equal(plan.sandbox.mode, 'bash');
+    assert.equal(plan.codingWorkspace, undefined);
   } finally {
     store.close();
   }
@@ -1258,7 +1182,7 @@ test('an admitted routine with a pre-dispatch cloud plan narrows when the bindin
     }, {
       ...dependencies(),
       sandboxInstalled: () => false,
-      useCloudflareSandbox: async () => true,
+      codingWorkspaceConfigured: async () => true,
       prepareSandbox: async () => { preparations += 1; },
       handle: fakeHandle({}),
     });
@@ -1267,19 +1191,16 @@ test('an admitted routine with a pre-dispatch cloud plan narrows when the bindin
     assert.equal(preparations, 0);
     const completed = await store.getRun(fixture.run.id);
     assert.equal(completed?.status, 'no_op');
-    assert.equal(
-      parseRoutineExecutionInitialData(completed?.flueAgentEnvelope?.initialData).runtimePlan
-        .sandbox.mode,
-      'bash',
-    );
+    const plan = parseRoutineExecutionInitialData(completed?.flueAgentEnvelope?.initialData).runtimePlan;
+    assert.equal(plan.sandbox.mode, 'bash');
+    assert.equal(plan.codingWorkspace, undefined);
   } finally {
     store.close();
   }
 });
 
-test('a persisted cloud plan narrows when the binding disappears before resume', async () => {
+test('a persisted workspace plan survives a missing binding on resume without relay preparation', async () => {
   const store = new SqliteRoutineStore(':memory:', () => NOW);
-  const preparations: string[] = [];
   try {
     const fixture = await admittedFixture(store, 'persisted_binding_removed');
     const first = await executeRoutineOccurrence({
@@ -1287,15 +1208,15 @@ test('a persisted cloud plan narrows when the binding disappears before resume',
     }, {
       ...dependencies(),
       sandboxInstalled: () => true,
-      useCloudflareSandbox: async () => true,
-      prepareSandbox: async (_env: unknown, key: string) => { preparations.push(key); },
+      codingWorkspaceConfigured: async () => true,
+      prepareSandbox: async () => { throw new Error('must not prepare a current plan'); },
       handle: fakeHandle({ dispatchError: new Error('dispatch interrupted') }),
     });
     assert.equal(first, 'resumable');
     const persisted = (await store.getRun(fixture.run.id))?.flueAgentEnvelope;
-    assert.equal(
-      parseRoutineExecutionInitialData(persisted?.initialData).runtimePlan.sandbox.mode,
-      'cloudflare',
+    assert.deepEqual(
+      parseRoutineExecutionInitialData(persisted?.initialData).runtimePlan.codingWorkspace,
+      { available: true },
     );
 
     const resumed = await executeRoutineOccurrence({
@@ -1303,13 +1224,12 @@ test('a persisted cloud plan narrows when the binding disappears before resume',
     }, {
       ...dependencies(),
       sandboxInstalled: () => false,
-      useCloudflareSandbox: async () => { throw new Error('must preserve stored plan'); },
+      codingWorkspaceConfigured: async () => { throw new Error('must preserve stored plan'); },
       prepareSandbox: async () => { throw new Error('must not prepare missing binding'); },
       handle: fakeHandle({}),
     });
 
     assert.equal(resumed, 'completed');
-    assert.equal(preparations.length, 1);
     const completed = await store.getRun(fixture.run.id);
     assert.equal(completed?.status, 'no_op');
     assert.deepEqual(completed?.flueAgentEnvelope, persisted);

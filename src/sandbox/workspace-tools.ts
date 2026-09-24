@@ -65,8 +65,11 @@ export type WorkspaceFailure = {
 };
 
 export interface WorkspaceToolsOptions {
-  /** The session for a workspace name this request, or undefined when it has none. */
-  resolve: (name: string) => WorkspaceSession | undefined;
+  /**
+   * The session for a workspace name this request, or undefined when it has
+   * none. Resolving builds a handle only; it never starts a container.
+   */
+  resolve: (name: string) => Promise<WorkspaceSession | undefined> | WorkspaceSession | undefined;
 }
 
 const WORKSPACE_NAME = v.optional(v.pipe(v.string(), v.minLength(1), v.maxLength(64)));
@@ -83,12 +86,12 @@ const SESSION_CAP_MESSAGE =
  * `{ ok: false, reason, message }` results; only unexpected faults throw.
  */
 export function createWorkspaceTools(options: WorkspaceToolsOptions) {
-  const session = (name: string | undefined): WorkspaceSession | WorkspaceFailure => {
+  const session = async (name: string | undefined): Promise<WorkspaceSession | WorkspaceFailure> => {
     const requested = name ?? DEFAULT_WORKSPACE_NAME;
     if (requested !== DEFAULT_WORKSPACE_NAME) {
       return failure('unknown_workspace', `Only the "${DEFAULT_WORKSPACE_NAME}" workspace is available.`);
     }
-    return options.resolve(requested) ?? failure('workspace_unavailable', UNAVAILABLE_MESSAGE);
+    return (await options.resolve(requested)) ?? failure('workspace_unavailable', UNAVAILABLE_MESSAGE);
   };
 
   // Every tool body runs under `guard`, so path normalization inside it
@@ -98,8 +101,12 @@ export function createWorkspaceTools(options: WorkspaceToolsOptions) {
     work: (target: WorkspaceSession) => Promise<T>,
     signal?: AbortSignal,
   ): Promise<T | WorkspaceFailure> => {
-    const target = session(name);
-    return 'ok' in target ? target : guard(() => work(target), signal);
+    // Resolving runs under `guard` too: a workspace that cannot be reached is
+    // a typed result the model sees, never a failed turn.
+    return guard(async () => {
+      const target = await session(name);
+      return 'ok' in target ? target : work(target);
+    }, signal);
   };
 
   const open = defineTool({

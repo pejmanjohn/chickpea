@@ -27,6 +27,7 @@ import {
 } from '../src/slack/web-client-presenter.ts';
 import type { SlackProgressiveReadRelay } from '../src/slack/progressive-relay.ts';
 import { SLACK_TABLE_PRESENTATION_DATA_NAME } from '../src/slack/table-presentation.ts';
+import { CODING_WORKSPACE_USE_DATA_NAME } from '../src/sandbox/workspace-use.ts';
 
 function envelope(type: string, message: string): string {
   return JSON.stringify({ error: { type, message, details: 'private detail' } });
@@ -794,4 +795,45 @@ test('on Cloudflare the adapter observes through the agent namespace binding wit
     }
     assert.equal(dispatchState.flueSettlement?.outcome, 'completed');
   });
+});
+
+test('a completed reply reports whether the Agent opened a coding workspace, without persisting it', async () => {
+  const opened = state();
+  const result = await promptSlackThreadAgent(promptInput(opened, handle({
+    read: async () => ({
+      text: 'done',
+      data: { [CODING_WORKSPACE_USE_DATA_NAME]: [{ opened: true }] },
+      submissionId: RECEIPT.submissionId,
+      uid: RECEIPT.uid,
+      metadata: {},
+    }),
+  })));
+  assert.equal(result.codingWorkspaceOpened, true);
+  assert.equal(
+    opened.flueSettlement?.outcome === 'completed' && 'codingWorkspaceOpened' in opened.flueSettlement.result,
+    false,
+  );
+
+  const plain = await promptSlackThreadAgent(promptInput(state(), handle({})));
+  assert.equal(plain.codingWorkspaceOpened, false);
+});
+
+test('only a turn with an attached container fails as a sandbox failure', async () => {
+  const sandboxFailure = () => handle({
+    async read() {
+      throw new AgentRunError({ outcome: 'failed', submissionId: RECEIPT.submissionId,
+        cause: { type: 'sandbox_unavailable', message: 'The coding workspace is temporarily unavailable.' } });
+    },
+  });
+  // A legacy attached container keeps the sandbox category.
+  await assert.rejects(
+    () => promptSlackThreadAgent({ ...promptInput(state(), sandboxFailure()), useCloudflareSandbox: true,
+      prepareSandbox: async () => {} }),
+    (error: unknown) => error instanceof AgentPromptFailure && error.kind === 'sandbox',
+  );
+  // The Agent in the virtual sandbox never fails its turn on a workspace.
+  await assert.rejects(
+    () => promptSlackThreadAgent(promptInput(state(), sandboxFailure())),
+    (error: unknown) => error instanceof AgentPromptFailure && error.kind === 'agent',
+  );
 });

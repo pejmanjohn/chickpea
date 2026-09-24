@@ -54,8 +54,7 @@ import {
 } from '../slack/flue-dispatch.ts';
 import {
   freezeCodingModelForTurn,
-  resolveCloudflareSandboxDecision,
-  shouldUseCloudflareSandbox,
+  resolveCodingWorkspaceDecision,
 } from '../slack/run-turn.ts';
 import {
   CHICKPEA_RESPONSE_METADATA_KEY,
@@ -124,8 +123,12 @@ interface RoutineExecutionDependencies {
   resolveAccess?: typeof resolveRoutineRuntimeAccess;
   resolveModel?: typeof resolveRuntimeModel;
   preparePrompt?: typeof prepareRoutinePrompt;
-  useCloudflareSandbox?: typeof shouldUseCloudflareSandbox;
-  resolveSandboxDecision?: typeof resolveCloudflareSandboxDecision;
+  /** Focused seam: whether the Agent's coding workspace is configured, before the live binding check. */
+  codingWorkspaceConfigured?: (
+    assignment: RoutineRuntimeAccess['config'],
+    env: PlatformEnv | undefined,
+  ) => Promise<boolean>;
+  resolveWorkspaceDecision?: typeof resolveCodingWorkspaceDecision;
   sandboxInstalled?: typeof sandboxBindingInstalled;
   prepareSandbox?: typeof prepareCloudflareSandboxTurn;
   releaseSandbox?: typeof releaseCloudflareSandboxTurn;
@@ -483,19 +486,19 @@ async function prepareExecution(
   let envelope = input.run.flueAgentEnvelope;
   let sandboxUnavailableFallback = false;
   if (!envelope) {
-    const sandboxDecision = dependencies.useCloudflareSandbox
+    const workspaceDecision = dependencies.codingWorkspaceConfigured
       ? await (async () => {
-          const cloudflareRequested = await dependencies.useCloudflareSandbox!(
+          const configured = await dependencies.codingWorkspaceConfigured!(
             access.config,
             input.env,
           );
           const installed = (dependencies.sandboxInstalled ?? sandboxBindingInstalled)(input.env);
           return {
-            selection: cloudflareRequested && installed ? 'cloudflare' as const : 'bash' as const,
-            unavailableFallback: cloudflareRequested && !installed,
+            capability: configured && installed ? 'available' as const : 'unavailable' as const,
+            unavailableFallback: configured && !installed,
           };
         })()
-      : await (dependencies.resolveSandboxDecision ?? resolveCloudflareSandboxDecision)(
+      : await (dependencies.resolveWorkspaceDecision ?? resolveCodingWorkspaceDecision)(
           access.config,
           input.env,
           settingsStore,
@@ -520,7 +523,7 @@ async function prepareExecution(
       websiteLoginsForTurn(settingsStore, access.config.agent.websiteLogins),
     ]);
     const imageCapability = imageCapabilityForResolution(imageRole);
-    const codingWorkspace = sandboxDecision.selection === 'cloudflare';
+    const codingWorkspace = workspaceDecision.capability === 'available';
     const codingModel = codingWorkspace
       ? await freezeCodingModelForTurn({
           workspaceId: input.routine.workspaceId,
@@ -549,11 +552,13 @@ async function prepareExecution(
       ...(codingWorkspace ? { codingWorkspace, ...(codingModel ? { codingModel } : {}) } : {}),
       ...(browserCapability ? { browserCapability, websiteLogins } : {}),
       modelCredential,
-      sandboxMode: sandboxDecision.selection,
     });
-    sandboxUnavailableFallback = sandboxDecision.unavailableFallback;
+    sandboxUnavailableFallback = workspaceDecision.unavailableFallback;
   }
   const initialData = executionInitialData(envelope);
+  // Only a plan admitted with an attached container has this relay prepare
+  // and release its workspace. A current plan's workspace tools open the
+  // workspace themselves, and the Agent releases it when its run settles.
   const cloudflareSandboxRequested = initialData.runtimePlan.sandbox.mode === 'cloudflare';
   const sandboxInstalled = (dependencies.sandboxInstalled ?? sandboxBindingInstalled)(input.env);
   sandboxUnavailableFallback ||= cloudflareSandboxRequested && !sandboxInstalled;
@@ -688,7 +693,6 @@ function createEnvelope(input: {
   browserCapability?: RuntimePlanBrowserCapabilityV1;
   websiteLogins?: readonly RuntimePlanWebsiteLoginV1[];
   modelCredential: EffectiveSlackConfig['modelCredential'] | null;
-  sandboxMode: 'bash' | 'cloudflare';
 }): RoutineAgentDispatchEnvelopeV2 {
   const runtimePlan = compileRuntimePlanV2({
     turn: input.prompt.turn,
@@ -718,7 +722,6 @@ function createEnvelope(input: {
       ...routineExecutionInstructions(input.routine.destination.kind, Boolean(input.routine.destination.threadTs)),
     ].join('\n'),
     memoryEpoch: input.prompt.memoryEpoch,
-    sandboxMode: input.sandboxMode,
     // Artifacts follow the saved destination only. The prompt turn's
     // thread is the synthetic due-time stamp when no thread was saved.
     artifactThreadTs: input.routine.destination.threadTs ?? null,
@@ -1349,6 +1352,8 @@ async function releasePreparedSandbox(
   prepared: PreparedExecution,
   dependencies: RoutineExecutionDependencies,
 ): Promise<void> {
+  // Only an attached container prepared here is released here.
+  if (!prepared.usedCloudflareSandbox) return;
   await (dependencies.releaseSandbox ?? releaseCloudflareSandboxTurn)(
     env,
     prepared.sandboxConversationKey,

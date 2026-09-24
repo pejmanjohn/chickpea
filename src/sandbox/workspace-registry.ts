@@ -15,9 +15,15 @@ interface RegisteredWorkspace {
   end?: () => Promise<void>;
 }
 
+/** A workspace the registry creates on first use, with the turn end it owns. */
+export type WorkspaceSessionFactory = (
+  name: string,
+) => Promise<{ session: WorkspaceSession; end: () => Promise<void> } | undefined>;
+
 /** The coding workspaces one agent submission has touched, by workspace name. */
 export class WorkspaceTurnRegistry {
   private readonly workspaces = new Map<string, RegisteredWorkspace>();
+  private readonly pending = new Map<string, Promise<WorkspaceSession | undefined>>();
 
   register(session: WorkspaceSession, end?: () => Promise<void>): void {
     this.workspaces.set(session.name, { session, ...(end ? { end } : {}) });
@@ -25,6 +31,29 @@ export class WorkspaceTurnRegistry {
 
   get(name: string): WorkspaceSession | undefined {
     return this.workspaces.get(name)?.session;
+  }
+
+  /**
+   * The workspace registered under `name`, or one created now by `create`.
+   * Creation builds only a handle: nothing reaches the Sandbox Durable Object
+   * until a tool opens it. Concurrent callers share one creation, and a
+   * failed or empty creation is retried by the next caller.
+   */
+  resolve(name: string, create: WorkspaceSessionFactory): Promise<WorkspaceSession | undefined> {
+    const registered = this.get(name);
+    if (registered) return Promise.resolve(registered);
+    let pending = this.pending.get(name);
+    if (!pending) {
+      pending = create(name).then((created) => {
+        if (!created) return undefined;
+        this.register(created.session, created.end);
+        return created.session;
+      }).finally(() => {
+        this.pending.delete(name);
+      });
+      this.pending.set(name, pending);
+    }
+    return pending;
   }
 
   /**

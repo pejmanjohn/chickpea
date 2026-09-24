@@ -219,6 +219,12 @@ export interface RuntimePlanV2 {
   /** Provider/account references resolve live and never cross this boundary. */
   managedConnections?: RuntimePlanManagedConnectionV2[];
   repositories: RuntimePlanRepositoryV2[];
+  /**
+   * The Agent's own environment. New plans always write `bash`: the Agent
+   * lives in the virtual sandbox and reaches a coding workspace only through
+   * the workspace tools. `cloudflare` is read only from plans admitted with
+   * an attached container.
+   */
   sandbox: { mode: RuntimePlanSandboxMode };
   artifactDestination: {
     kind: 'slack_conversation';
@@ -297,7 +303,8 @@ export interface CompileRuntimePlanV2Input {
   /** Complete, already-layered model instruction text. */
   instructions: string;
   memoryEpoch: number;
-  sandboxMode: RuntimePlanSandboxMode;
+  /** Legacy compatibility only: new plans compile `bash`. Defaults to `bash`. */
+  sandboxMode?: RuntimePlanSandboxMode;
   /** Resolved internal Flue route; defaults to the canonical model for compatibility. */
   runtimeModel?: string;
   runtimeModelRoute?: FrozenRuntimeModelRoute;
@@ -450,7 +457,7 @@ export function compileRuntimePlanV2(input: CompileRuntimePlanV2Input): RuntimeP
       ? { managedConnections }
       : {}),
     repositories: compileRepositories(input.assignment.agent.repositories),
-    sandbox: { mode: input.sandboxMode },
+    sandbox: { mode: input.sandboxMode ?? 'bash' },
     artifactDestination: {
       kind: 'slack_conversation',
       channelId: input.turn.channelId,
@@ -487,13 +494,13 @@ export function buildRuntimePlanActivityContext(
     families.add('managed_connector');
   }
 
-  // Repository grants mount the built-in Repositories skill and a Cloudflare
+  // Repository grants mount the built-in Repositories skill and a coding
   // workspace mounts the workspace skill, and a connected browser mounts the
   // browser skill, even when the Agent has none.
   if (
     plan.skills.length > 0 ||
     plan.repositories.length > 0 ||
-    plan.sandbox.mode === 'cloudflare' ||
+    runtimePlanHasCodingWorkspace(plan) ||
     options.browserMounted ||
     options.includeAgentAuthoringSkill
   ) {
@@ -520,7 +527,7 @@ export function buildRuntimePlanActivityContext(
     descriptors.push({ toolName, descriptor: sandboxDescriptor });
   }
   // The coding-workspace tools are the same primitives on the container.
-  if (plan.sandbox.mode === 'cloudflare') {
+  if (runtimePlanHasCodingWorkspace(plan)) {
     for (const toolName of WORKSPACE_TOOL_NAMES) {
       descriptors.push({ toolName, descriptor: sandboxDescriptor });
     }
@@ -637,6 +644,16 @@ export function runtimePlanConversationKey(plan: RuntimePlanV2): string {
     validated.conversation.channelId,
     validated.conversation.threadTs,
   ].join(':');
+}
+
+/**
+ * Whether this plan can reach a coding workspace: through the workspace tools
+ * on a current plan, or through the attached container on a legacy one.
+ */
+export function runtimePlanHasCodingWorkspace(
+  plan: Pick<RuntimePlanV2, 'sandbox' | 'codingWorkspace'>,
+): boolean {
+  return plan.codingWorkspace !== undefined || plan.sandbox.mode === 'cloudflare';
 }
 
 /**
@@ -855,6 +872,11 @@ export function parseRuntimePlanV2(
   const sandbox = {
     mode: oneOf(sandboxRecord.mode, 'sandbox.mode', ['bash', 'cloudflare'] as const),
   };
+  // The workspace tools serve the virtual-sandbox Agent; a plan admitted with
+  // an attached container never carries the capability.
+  if (codingWorkspace && sandbox.mode !== 'bash') {
+    throw new Error('Runtime plan codingWorkspace requires the virtual sandbox.');
+  }
   const artifactRecord = exactRecord(
     record.artifactDestination,
     'artifactDestination',

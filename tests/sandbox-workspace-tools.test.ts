@@ -55,6 +55,9 @@ function fakeStub(
     async prepareTurn() {
       log.calls.push('prepareTurn');
     },
+    async endTurn() {
+      log.calls.push('endTurn');
+    },
     async beginWorkspaceTurn() {
       log.calls.push('beginWorkspaceTurn');
       return {
@@ -431,9 +434,119 @@ test('the registry interceptor scopes managed agent submissions only', async () 
 
 test('workspace tools are absent on bash plans and on the Node target', () => {
   assert.equal(runtimePlanWorkspaceToolsMounted({ sandbox: { mode: 'bash' } } as never, false), false);
-  // This suite runs on Node, where no plan mounts them even in cloudflare mode.
+  // This suite runs on Node, where no plan mounts them even with a workspace.
   assert.equal(runtimePlanWorkspaceToolsMounted({ sandbox: { mode: 'cloudflare' } } as never, false), false);
+  assert.equal(runtimePlanWorkspaceToolsMounted(
+    { sandbox: { mode: 'bash' }, codingWorkspace: { available: true } } as never,
+    false,
+  ), false);
   assert.deepEqual([...WORKSPACE_TOOL_NAMES].every((name) => name.startsWith('workspace_')), true);
+});
+
+test('on Cloudflare the tools mount for a virtual-sandbox plan with a coding workspace, never in a repair', () => {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { userAgent: 'Cloudflare-Workers' } });
+  try {
+    const current = { sandbox: { mode: 'bash' }, codingWorkspace: { available: true } } as never;
+    assert.equal(runtimePlanWorkspaceToolsMounted(current, false), true);
+    assert.equal(runtimePlanWorkspaceToolsMounted(current, true), false);
+    // A plan admitted with an attached container keeps its tools.
+    assert.equal(runtimePlanWorkspaceToolsMounted({ sandbox: { mode: 'cloudflare' } } as never, false), true);
+    assert.equal(runtimePlanWorkspaceToolsMounted({ sandbox: { mode: 'bash' } } as never, false), false);
+  } finally {
+    if (previous) Object.defineProperty(globalThis, 'navigator', previous);
+    else delete (globalThis as { navigator?: unknown }).navigator;
+  }
+});
+
+test('a session bound to its own turn prepares that turn before any workspace state', async () => {
+  const log: StubLog = { calls: [] };
+  const opened: string[] = [];
+  const target = new WorkspaceSession({
+    id: 'sandbox_' + 'c'.repeat(40),
+    name: DEFAULT_WORKSPACE_NAME,
+    agentId: 'agent-1',
+    grants: [GRANT],
+    credentialMode: 'app',
+    turnId: 'turnjob-7',
+    mintStub: async () => fakeStub(log),
+    reserveSession: async () => true,
+    toSandbox: async () => fakeSandbox(),
+    onOpen: () => opened.push('open'),
+  });
+  assert.equal(target.wasOpened, false);
+  await target.open();
+  await target.open();
+  // No relay prepared this turn: the session prepares it and never reads a
+  // turn id someone else left on the Durable Object.
+  assert.deepEqual(log.calls, ['prepareTurn', 'beginWorkspaceTurn', 'configureEgress']);
+  assert.deepEqual(opened, ['open']);
+  assert.equal(target.wasOpened, true);
+  await target.discard();
+  assert.equal(target.isOpen, false);
+  assert.equal(target.wasOpened, true, 'a discarded workspace still has a turn to end');
+});
+
+test('a workspace that cannot be reached at open is a typed result, not a turn failure', async () => {
+  const log: StubLog = { calls: [] };
+  const target = new WorkspaceSession({
+    id: 'sandbox_' + 'd'.repeat(40),
+    name: DEFAULT_WORKSPACE_NAME,
+    agentId: 'agent-1',
+    grants: [GRANT],
+    credentialMode: 'app',
+    turnId: 'turnjob-8',
+    mintStub: async () => ({
+      ...fakeStub(log),
+      async prepareTurn() { throw new Error('Durable Object reset because its code was updated'); },
+    }),
+    reserveSession: async () => true,
+    toSandbox: async () => fakeSandbox(),
+  });
+  const output = await run(toolsFor(target).workspace_open!, {});
+  assert.equal(output.ok, false);
+  assert.equal(output.reason, 'workspace_unavailable');
+});
+
+test('the resolver building a workspace can fail as a typed result for every tool', async () => {
+  const tools = Object.fromEntries(createWorkspaceTools({
+    resolve: async () => { throw new SandboxUnavailableError(new Error('binding gone')); },
+  }).map((tool) => [tool.name, tool]));
+  for (const [name, input] of [
+    ['workspace_open', {}],
+    ['workspace_list', {}],
+    ['workspace_exec', { command: 'true' }],
+    ['workspace_write', { path: 'a.txt', content: 'x' }],
+  ] as const) {
+    const output = await run(tools[name]!, input, { harness: { sandbox: fakeSandbox() } });
+    assert.equal(output.ok, false, name);
+    assert.equal(output.reason, 'workspace_unavailable', name);
+  }
+});
+
+test('the registry builds a workspace lazily, once per name, and retries a failed build', async () => {
+  await runWithWorkspaceRegistry(async () => {
+    const registry = currentWorkspaceRegistry()!;
+    let builds = 0;
+    const log: StubLog = { calls: [] };
+    const factory = async () => {
+      builds += 1;
+      if (builds === 1) throw new Error('first build fails');
+      return { session: session(log), end: async () => { log.calls.push('end'); } };
+    };
+    await assert.rejects(registry.resolve('main', factory), /first build fails/);
+    const [first, second] = await Promise.all([
+      registry.resolve('main', factory),
+      registry.resolve('main', factory),
+    ]);
+    assert.equal(first, second);
+    assert.equal(builds, 2);
+    assert.equal(await registry.resolve('main', factory), first);
+    // Building a session reaches no Durable Object.
+    assert.deepEqual(log.calls, []);
+    const empty = await registry.resolve('other', async () => undefined);
+    assert.equal(empty, undefined);
+  });
 });
 
 test('post_artifact with a workspace reads that workspace and fails closed without one', async () => {

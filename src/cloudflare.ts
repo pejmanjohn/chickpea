@@ -202,6 +202,7 @@ import {
   replayTextForTurnProgress,
   TurnJobStoreLogic,
 } from './slack/turn-jobs.ts';
+import { runtimePlanHasCodingWorkspace } from './agents/runtime-plan.ts';
 import { DoSqlStateDb } from './state/do-state-db.ts';
 import { StateSchemaMarker, stateSchemaFingerprint } from './state/schema-lifecycle.ts';
 import { cloudflareWorkerVersionId } from './config/cloudflare-version.ts';
@@ -1942,7 +1943,18 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
         }
       };
       try {
-        const persistSandboxProgress = async (): Promise<string | undefined> => {
+        // The plan this job froze, kept current as runTurn freezes it.
+        let frozenPlan = job.runtimePlan;
+        const persistSandboxProgress = async (
+          use?: { codingWorkspaceOpened?: boolean },
+        ): Promise<string | undefined> => {
+          // Only a turn that could have opened a coding workspace has
+          // progress there. A turn whose own reply says it opened none skips
+          // the Sandbox Durable Object entirely; an unknown one still checks.
+          if (!frozenPlan || !runtimePlanHasCodingWorkspace(frozenPlan)) return undefined;
+          if (frozenPlan.sandbox.mode !== 'cloudflare' && use?.codingWorkspaceOpened === false) {
+            return undefined;
+          }
           const binding =
             (this.env as PlatformEnv).SANDBOX ?? (this.env as PlatformEnv).Sandbox;
           if (!binding) return undefined;
@@ -1993,7 +2005,11 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
           appStores,
           managementApproval: resolveManagementApproval,
           ...(runtimePlanDecision ? { runtimePlanDecision } : {}),
-          onRuntimePlan: (candidate) => stores.turnJobs.freezeRuntimePlan(job.id, candidate),
+          onRuntimePlan: (candidate) => {
+            const decision = stores.turnJobs.freezeRuntimePlan(job.id, candidate);
+            frozenPlan = decision.runtimePlan;
+            return decision;
+          },
           getBoundRuntimePlan: (...args) => stores.turnJobs.getBoundRuntimePlan(...args),
           flueDispatch,
           presentationState,

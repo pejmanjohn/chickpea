@@ -197,7 +197,7 @@ export type ArtifactToolResult =
  * named coding workspace, or undefined when the request has no such workspace.
  */
 export interface WorkspaceArtifactSource {
-  sandbox(name: string): Promise<Sandbox> | undefined;
+  sandbox(name: string): Promise<Sandbox | undefined> | undefined;
 }
 
 const WORKSPACE_ARTIFACT_INPUT = v.object({

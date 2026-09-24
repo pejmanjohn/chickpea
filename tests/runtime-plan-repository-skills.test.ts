@@ -40,6 +40,23 @@ function supportAgent(skills: Array<{ name: string; description: string; instruc
   };
 }
 
+function compilePlanInput(agent: ReturnType<typeof supportAgent>, eventSuffix = 'current') {
+  return {
+    turn: {
+      workspaceId: 'T_TEST', channelId: 'C_TEST', eventId: `E_REPO_${eventSuffix}`,
+      text: 'Look at the repo', userId: 'U_TEST', messageTs: '1787000000.000200',
+      threadTs: '1787000000.000100', source: 'app_mention', contextMode: 'thread',
+    },
+    assignment: {
+      workspaceId: 'T_TEST', channelId: 'C_TEST', agentId: agent.id, agent, model: agent.model,
+      modelAttribution: { source: 'workspace_default', providerId: 'local-stub', workspaceDefaultRevision: 1 },
+    },
+    instructions: agent.instructions,
+    memoryEpoch: 1,
+    effectiveConnections: [],
+  };
+}
+
 function compilePlan(agent: ReturnType<typeof supportAgent>, sandboxMode: RuntimePlanSandboxMode) {
   return compileRuntimePlanV2({
     turn: {
@@ -104,6 +121,36 @@ test('RuntimePlanV2 Cloudflare workspace turn mounts the workspace and Repositor
     assert.match(instructions, /Granted GitHub repositories for this turn: \["acme\/acme-rails"\]/);
     assert.match(instructions, /clone a granted repository with a plain HTTPS URL/);
     assert.match(instructions, /credentials are injected automatically/);
+  } finally {
+    await harness.close();
+  }
+});
+
+test('a current plan keeps the Agent in its virtual sandbox and teaches the workspace through tools', async (t) => {
+  const agent = supportAgent();
+  t.mock.method(getConfigStore(), 'getAgent', async () => agent);
+  const plan = compileRuntimePlanV2({
+    ...(compilePlanInput(agent)),
+    codingWorkspace: true,
+  } as any);
+  assert.equal(plan.sandbox.mode, 'bash');
+  assert.deepEqual(plan.codingWorkspace, { available: true });
+
+  const context = createFlueContext({
+    id: 'repo-coordinator-test', agentName: 'chickpea-slack-v2', env: {},
+    agentConfig: { resolveModel: () => ({}) } as any,
+  });
+  const harness = await context.initializeRootHarness(ChickpeaSlack, slackSignal(plan), plan);
+  try {
+    const skills = (harness as any).config.skills;
+    assert.deepEqual(skillNames(harness), ['agent-authoring', 'repositories', 'ticket-triage', 'workspace']);
+    assert.match(skills.workspace.instructions, /workspace_exec/);
+    assert.match(skills.workspace.instructions, /never in the workspace, and cannot clone a repository/);
+    assert.match(skills.workspace.instructions, /`workspace_close` with `discard: true`/);
+    assert.doesNotMatch(skills.workspace.instructions, /Use the write tool to create/);
+    const instructions = String((harness as any).config.instructions);
+    assert.match(instructions, /Your own shell cannot clone them; for a real checkout, use the coding workspace tools/);
+    assert.doesNotMatch(instructions, /clone a granted repository with a plain HTTPS URL/);
   } finally {
     await harness.close();
   }
