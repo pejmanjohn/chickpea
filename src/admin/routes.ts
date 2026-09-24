@@ -1934,11 +1934,16 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const configStore = store(c);
       const installation = await modelDefaultInstallation(configStore);
       if (!installation) return undefined;
-      const [chat, image] = await Promise.all([
+      const [chat, image, coding] = await Promise.all([
         configStore.getWorkspaceModelDefault(installation.workspaceId),
         configStore.getWorkspaceModelRole(installation.workspaceId, 'image'),
+        configStore.getWorkspaceModelRole(installation.workspaceId, 'coding'),
       ]);
-      return { defaultChatModel: chat?.modelId ?? null, imageModel: image?.modelId ?? null };
+      return {
+        defaultChatModel: chat?.modelId ?? null,
+        imageModel: image?.modelId ?? null,
+        codingModel: coding?.modelId ?? null,
+      };
     },
   }));
   app.post(ENVIRONMENT_SEED_PATH, (c) => environmentSeedResponse({

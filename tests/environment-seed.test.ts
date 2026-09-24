@@ -243,12 +243,14 @@ test('parses exactly one seed target and boolean flags', () => {
 
 test('the models route answers only the lane seed token on a QA target', async () => {
   const { environmentModelsResponse } = await import('../src/admin/environment-seed.ts');
-  const readModels = async () => ({ defaultChatModel: 'openai/gpt-5.6-terra', imageModel: null });
+  const readModels = async () => ({
+    defaultChatModel: 'openai/gpt-5.6-terra', imageModel: null, codingModel: 'anthropic/claude-opus-5-5',
+  });
   const ok = await environmentModelsResponse({ authorization: `Bearer ${SEED_TOKEN}`, env: laneEnv, readModels });
   assert.equal(ok.status, 200);
   assert.deepEqual(await ok.json(), {
     schemaVersion: 'chickpea-environment-models/v1', target: 'cobalt',
-    defaultChatModel: 'openai/gpt-5.6-terra', imageModel: null,
+    defaultChatModel: 'openai/gpt-5.6-terra', imageModel: null, codingModel: 'anthropic/claude-opus-5-5',
   });
   const denied = await environmentModelsResponse({ authorization: `Bearer ${'W'.repeat(43)}`, env: laneEnv, readModels });
   assert.equal(denied.status, 404);

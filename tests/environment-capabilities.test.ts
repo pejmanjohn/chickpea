@@ -326,7 +326,7 @@ test('reads lane model roles from the QA models route with the seed token', asyn
       });
     };
     const models = await readLaneModels({ target: 'amber' }, env, fetchImpl);
-    assert.deepEqual(models, { defaultChatModel: 'openai/gpt-5.6-terra', imageModel: null });
+    assert.deepEqual(models, { defaultChatModel: 'openai/gpt-5.6-terra', imageModel: null, codingModel: null });
     assert.deepEqual(calls, ['https://amber.example.workers.dev/internal/environment/models true']);
     assert.equal(await readLaneModels({ target: 'amber' }, env, async () => new Response('{}', { status: 404 })), undefined);
     assert.equal(await readLaneModels({ target: 'cobalt' }, env, fetchImpl), undefined, 'no seed token file');
