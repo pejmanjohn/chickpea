@@ -45,7 +45,12 @@ interface StubLog {
 
 function fakeStub(
   log: StubLog,
-  options: { restorable?: boolean; state?: 'warm' | 'fresh' | 'retired'; turnId?: string } = {},
+  options: {
+    restorable?: boolean;
+    state?: 'warm' | 'fresh' | 'retired';
+    turnId?: string;
+    gitIdentityFails?: boolean;
+  } = {},
 ): WorkspaceSandboxStub {
   return {
     async getTurnId() {
@@ -86,6 +91,10 @@ function fakeStub(
     },
     async destroy() {
       log.calls.push('destroy');
+    },
+    async applyGitIdentity() {
+      log.calls.push('applyGitIdentity');
+      if (options.gitIdentityFails) throw new Error('git config failed');
     },
   };
 }
@@ -211,6 +220,33 @@ test('the first operation reserves the session and restores the checkpoint once,
   assert.equal(log.calls.filter((call) => call === 'beginWorkspaceTurn').length, 1);
   assert.equal(log.calls.filter((call) => call === 'reserveSession').length, 1);
   assert.equal(log.calls.filter((call) => call === 'restoreWorkspace').length, 1);
+});
+
+test('activation presets the Git identity after the checkpoint restore, before the first operation', async () => {
+  const log: StubLog = { calls: [] };
+  const target = session(log, { stub: { restorable: true } });
+  await run(toolsFor(target).workspace_exec!, { command: 'git commit -m x' });
+  const start = log.calls.indexOf('reserveSession');
+  assert.deepEqual(log.calls.slice(start, start + 4), [
+    'reserveSession',
+    'restoreWorkspace',
+    'applyGitIdentity',
+    'exists',
+  ]);
+});
+
+test('a failed Git identity preset leaves the workspace usable', async () => {
+  const log: StubLog = { calls: [] };
+  const target = session(log, { stub: { gitIdentityFails: true } });
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    const output = await run(toolsFor(target).workspace_exec!, { command: 'true' });
+    assert.equal(output.ok, true);
+  } finally {
+    console.warn = warn;
+  }
+  assert.equal(log.calls.includes('applyGitIdentity'), true);
 });
 
 test('a refused session cap and an unavailable container become typed results, not turn failures', async () => {

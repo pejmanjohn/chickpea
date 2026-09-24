@@ -148,6 +148,7 @@ test('agent statics: the worker identity, and submission budgets that fit the ta
 test('the worker instructions describe the workspace, not Slack, and end with a result line', () => {
   assert.match(CODING_WORKER_INSTRUCTIONS, /\/workspace/);
   assert.match(CODING_WORKER_INSTRUCTIONS, /Pull request:/);
+  assert.match(CODING_WORKER_INSTRUCTIONS, /Git author and committer are preset/);
   assert.equal(/slack/i.test(CODING_WORKER_INSTRUCTIONS), false);
   assert.equal(/post_artifact/.test(CODING_WORKER_INSTRUCTIONS), false);
 });
@@ -187,6 +188,7 @@ function stub(calls: string[], options: { broken?: boolean } = {}): WorkspaceSan
     async discardWorkspace() {},
     async destroy() {},
     async endTurn() {},
+    async applyGitIdentity() {},
     async getTurnProgress() {
       return { pullRequest: { number: 7, url: 'https://github.com/acme/app/pull/7', repository: 'acme/app', branch: 'fix-test' } };
     },

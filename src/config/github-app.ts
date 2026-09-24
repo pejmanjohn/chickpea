@@ -34,6 +34,9 @@ export const GITHUB_SETTING_KEYS = {
   appSlug: 'github.app.slug',
   privateKey: 'github.app.private_key',
   webhookSecret: 'github.app.webhook_secret',
+  // The App's bot account ({appId, slug, id}) that workspace commits are
+  // authored as. Cached because the bot user id never changes for an App.
+  botUser: 'github.app.bot_user',
   // Single-use CSRF state for the manifest setup flow; listed here so a
   // disconnect clears any half-finished setup handshake too.
   setupState: 'github.setup_state',
@@ -233,6 +236,105 @@ export async function getGithubConnection(settings: SettingsStore): Promise<Gith
     };
   }
   return { mode: 'none' };
+}
+
+export interface GithubAppBotUser {
+  appId: string;
+  slug: string;
+  id: number;
+}
+
+interface CachedGithubAppBotUser extends GithubAppBotUser {
+  resolvedAt: number;
+}
+
+const BOT_USER_REFRESH_AFTER_MS = 24 * 60 * 60 * 1_000;
+const BOT_USER_RETRY_AFTER_MS = 10 * 60 * 1_000;
+const botUserRetryAfter = new Map<string, number>();
+
+/**
+ * The connected App's bot account, cached with the connection and refreshed
+ * daily so a renamed App is picked up. The slug comes from GET /app; the bot
+ * user id is public (GET /users/<slug>[bot]). A failed refresh keeps the
+ * cached account; with none, the result is undefined and GitHub is retried at
+ * most every ten minutes per isolate.
+ */
+export async function resolveGithubAppBotUser(
+  settings: SettingsStore,
+  fetchImpl: FetchImpl = fetch,
+): Promise<GithubAppBotUser | undefined> {
+  const connection = await getGithubConnection(settings);
+  if (connection.mode !== 'app') return undefined;
+  const stored = parseBotUser(await settings.getSetting(GITHUB_SETTING_KEYS.botUser));
+  const cached = stored?.appId === connection.appId
+    ? { appId: stored.appId, slug: stored.slug, id: stored.id }
+    : undefined;
+  const now = Date.now();
+  if (cached && stored && now - stored.resolvedAt < BOT_USER_REFRESH_AFTER_MS) return cached;
+  if ((botUserRetryAfter.get(connection.appId) ?? 0) > now) return cached;
+  try {
+    const appResponse = await githubFetch(
+      `${GITHUB_API_BASE}/app`,
+      { headers: githubHeaders(`Bearer ${await currentAppJwt(connection)}`) },
+      fetchImpl,
+    );
+    const app: unknown = await appResponse.json();
+    if (!isRecord(app) || typeof app.slug !== 'string' || app.slug === '') {
+      throw new Error('GitHub App response was invalid');
+    }
+    const login = `${app.slug}[bot]`;
+    const userResponse = await githubFetch(
+      `${GITHUB_API_BASE}/users/${encodeURIComponent(login)}`,
+      { headers: githubHeaders() },
+      fetchImpl,
+    );
+    const user: unknown = await userResponse.json();
+    if (
+      !isRecord(user) ||
+      typeof user.id !== 'number' ||
+      !Number.isSafeInteger(user.id) ||
+      user.id < 1 ||
+      typeof user.login !== 'string' ||
+      user.login.toLowerCase() !== login.toLowerCase()
+    ) {
+      throw new Error('GitHub App bot user response was invalid');
+    }
+    const botUser: GithubAppBotUser = { appId: connection.appId, slug: app.slug, id: user.id };
+    await settings.setSetting(
+      GITHUB_SETTING_KEYS.botUser,
+      JSON.stringify({ ...botUser, resolvedAt: now } satisfies CachedGithubAppBotUser),
+    );
+    botUserRetryAfter.delete(connection.appId);
+    return botUser;
+  } catch {
+    botUserRetryAfter.set(connection.appId, now + BOT_USER_RETRY_AFTER_MS);
+    return cached;
+  }
+}
+
+/** Test seam: forget failed bot-user lookups. */
+export function resetGithubAppBotUserRetryForTests(): void {
+  botUserRetryAfter.clear();
+}
+
+function parseBotUser(raw: string | undefined): CachedGithubAppBotUser | undefined {
+  if (!raw) return undefined;
+  try {
+    const value: unknown = JSON.parse(raw);
+    if (
+      isRecord(value) &&
+      typeof value.appId === 'string' &&
+      typeof value.slug === 'string' &&
+      typeof value.id === 'number' &&
+      Number.isSafeInteger(value.id)
+    ) {
+      const resolvedAt = typeof value.resolvedAt === 'number' ? value.resolvedAt : 0;
+      return { appId: value.appId, slug: value.slug, id: value.id, resolvedAt };
+    }
+  } catch {
+    // A corrupt cache entry resolves again.
+  }
+  return undefined;
 }
 
 export async function listInstallations(

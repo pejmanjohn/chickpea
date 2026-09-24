@@ -34,6 +34,7 @@ import {
 } from './config/github-app.ts';
 import { slackAgentThreadKey } from './slack/thread-key.ts';
 import { sandboxThreadKey } from './sandbox/thread-key.ts';
+import { gitIdentityConfigCommand, resolveWorkspaceGitIdentity } from './sandbox/git-identity.ts';
 import { recordDeliveredSlackAgentMessage } from './slack/public-context.ts';
 import {
   cacheSlackInstallationExecutionContexts,
@@ -418,6 +419,20 @@ export class Sandbox extends CloudflareSandbox<SandboxWorkerEnv> {
         await this.restoreBackup(backup as Parameters<CloudflareSandbox['restoreBackup']>[0]);
       },
     });
+  }
+
+  /**
+   * Preset the Git author and committer for this workspace: the GitHub App's
+   * bot account, or the neutral Chickpea identity. Runs at each activation,
+   * because a cold container or a restored checkpoint has no global config.
+   * Identity only; credentials never enter Git configuration.
+   */
+  async applyGitIdentity(): Promise<void> {
+    const identity = await resolveWorkspaceGitIdentity(
+      getSettingsStore(sandboxWorkerEnv(this.env)),
+    );
+    const result = await this.exec(gitIdentityConfigCommand(identity));
+    if (result.exitCode !== 0) throw new Error('Workspace Git identity was not applied');
   }
 
   /**

@@ -294,6 +294,25 @@ reuses the checkout instead of cloning again.
 Anything that must survive longer belongs on a pushed branch or pull request;
 the Agent's workspace instructions say so.
 
+## Commit author
+
+Commits made in a coding workspace are authored as the connected GitHub App's
+bot account, for example `chickpea-735adc[bot]`. GitHub shows that login with
+the App's logo and links it to the App. Chickpea looks up the bot account
+after the App is connected, refreshes it daily (so renaming the App carries
+over), and presets it in the workspace's global Git configuration each time the
+workspace starts; no credential is written there. If the first lookup fails
+(for example GitHub is unreachable), commits use the neutral
+`Chickpea <chickpea@noreply.invalid>` identity until a later lookup succeeds.
+Disconnecting the App forgets the cached bot account.
+
+The name GitHub shows is the App's name, which is unique per install. A new
+App has a generated logo, and GitHub does not let an App set its logo at
+creation. To show the Chickpea mark, an Owner of the App uploads it once under
+**GitHub → Settings → Developer settings → GitHub Apps → (the App) → Display
+information**; `assets/chickpea-avatars/install-default.png` in this
+repository works.
+
 ## Disable, uninstall, or roll back
 
 **Disable** in Chickpea is immediate. It stops selecting the coding sandbox for
