@@ -298,7 +298,7 @@ the Agent's workspace instructions say so.
 
 Commits made in a coding workspace are authored as the connected GitHub App's
 bot account, for example `chickpea-735adc[bot]`. GitHub shows that login with
-the App's logo and links it to the App. Chickpea looks up the bot account
+the App's avatar (see below) and links it to the App. Chickpea looks up the bot account
 after the App is connected, refreshes it daily (so renaming the App carries
 over), and presets it in the workspace's global Git configuration each time the
 workspace starts; no credential is written there. If the first lookup fails
@@ -306,9 +306,11 @@ workspace starts; no credential is written there. If the first lookup fails
 `Chickpea <chickpea@noreply.invalid>` identity until a later lookup succeeds.
 Disconnecting the App forgets the cached bot account.
 
-The name GitHub shows is the App's name, which is unique per install. A new
-App has a generated logo, and GitHub does not let an App set its logo at
-creation. To show the Chickpea mark, an Owner of the App uploads it once under
+The name GitHub shows is the App's name, which is unique per install. GitHub
+does not let an App set its logo at creation, and until one is uploaded the
+bot's avatar is the avatar of the account that owns the App, so its commits
+and pull requests look like that person's photo. To show the Chickpea mark,
+an Owner of the App uploads it once under
 **GitHub → Settings → Developer settings → GitHub Apps → (the App) → Display
 information**; `assets/chickpea-avatars/install-default.png` in this
 repository works.
