@@ -24,12 +24,11 @@ import type { RuntimePlanV2 } from './runtime-plan.ts';
 /**
  * The budget of one coordinator submission (Flue's default is one hour and 10
  * attempts). It covers `MAX_WORKSPACE_TASKS_PER_RESPONSE` full-length coding
- * tasks plus the coordinator's own model time, and stays under the two-hour
- * Slack thread claim.
+ * tasks plus the coordinator's own model time.
  */
 export const CHICKPEA_SUBMISSION_DURABILITY: DurabilityConfig = {
   maxAttempts: 10,
-  timeoutMs: 90 * 60_000,
+  timeoutMs: 155 * 60_000,
 };
 
 /** The coordinator's one line on delegating; the tool description carries the rest. */

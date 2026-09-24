@@ -21,8 +21,12 @@ import {
   WORKSPACE_UNAVAILABLE_MESSAGE,
 } from './workspace-tools.ts';
 
-/** Default and longest wall time for one delegated task. */
-export const WORKSPACE_TASK_TIMEOUT_MS = 25 * 60_000;
+/**
+ * Default and longest wall time for one delegated task. A first live run on a
+ * full repository (install, tests, push) took about 20 minutes for a one-file
+ * fix, so an hour leaves room for real work.
+ */
+export const WORKSPACE_TASK_TIMEOUT_MS = 60 * 60_000;
 /**
  * The harness deadline sits this far past the task's own, so an expired task
  * reports a typed timeout (after aborting the worker) before the harness gives

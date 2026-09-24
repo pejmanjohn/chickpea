@@ -44,6 +44,7 @@ import { WORKSPACE_TOOL_NAMES } from '../src/sandbox/workspace-tools.ts';
 import { CODING_WORKER_RUN_DATA_NAME, parseCodingWorkerRunModel } from '../src/slack/coding-worker-run.ts';
 import { resultFromAgentReply } from '../src/slack/flue-dispatch.ts';
 import { replyFooterModelLabel } from '../src/slack/message-format.ts';
+import { ACTIVE_WORK_TTL_MS } from '../src/slack/state-limits.ts';
 
 const WORKSPACE_ID = defaultWorkspaceId('sandbox_' + 'a'.repeat(40));
 
@@ -140,6 +141,8 @@ test('agent statics: the worker identity, and submission budgets that fit the ta
   // The worker settles on its own before a coordinator stops waiting for long.
   assert.ok(CodingWorker.durability!.timeoutMs! > WORKSPACE_TASK_TIMEOUT_MS);
   assert.ok(CodingWorker.durability!.timeoutMs! < CHICKPEA_SUBMISSION_DURABILITY.timeoutMs!);
+  // The active-work hint outlives the longest turn that delegates coding tasks.
+  assert.ok(ACTIVE_WORK_TTL_MS > CHICKPEA_SUBMISSION_DURABILITY.timeoutMs!);
 });
 
 test('the worker instructions describe the workspace, not Slack, and end with a result line', () => {

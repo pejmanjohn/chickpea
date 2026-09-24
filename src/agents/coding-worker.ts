@@ -121,4 +121,4 @@ CodingWorker.initialData = v.custom<CodingWorkerBindingV1>((value) => {
 }, 'Coding worker binding is invalid.');
 // A worker settles on its own before the coordinator's longest wait ends, so a
 // runaway task can never outlive the turn that asked for it.
-CodingWorker.durability = { maxAttempts: 5, timeoutMs: 30 * 60_000 };
+CodingWorker.durability = { maxAttempts: 5, timeoutMs: 65 * 60_000 };
