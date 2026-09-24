@@ -162,6 +162,19 @@ test('a cold follow-up for the same owner can restore the last checkpoint within
   assert.equal(warm.restorable, false);
 });
 
+test('a discarded workspace drops its checkpoint but keeps its owner record', async () => {
+  const state = new SandboxWorkspaceState(new MemoryStorage());
+  await state.beginTurn({ fingerprint: ALPHA, turnId: 'turn-1', containerRunning: false, now: NOW });
+  await state.recordCheckpoint(BACKUP, NOW);
+  assert.equal(await state.hasCheckpoint(ALPHA, NOW + HOUR), true);
+  assert.equal(await state.hasCheckpoint(workspaceFingerprint('agent_beta', [grant()]), NOW + HOUR), false);
+
+  await state.dropCheckpoint();
+  assert.equal(await state.hasCheckpoint(ALPHA, NOW + HOUR), false);
+  const next = await state.beginTurn({ fingerprint: ALPHA, turnId: 'turn-2', containerRunning: false, now: NOW + HOUR });
+  assert.deepEqual(next, { state: 'fresh', reservationId: 'turn-2', retire: false, restorable: false });
+});
+
 test('an expired checkpoint is not restored', async () => {
   const state = new SandboxWorkspaceState(new MemoryStorage());
   await state.beginTurn({ fingerprint: ALPHA, turnId: 'turn-1', containerRunning: false, now: NOW });

@@ -1,5 +1,7 @@
 import type { ConversationStreamChunk } from '@flue/runtime';
 
+import type { ProgressiveStreamingMode } from '../memory/tool-policy.ts';
+import { FILE_DELIVERY_DATA_NAME } from './file-delivery-completion.ts';
 import { SLACK_STREAM_ANSWER_TOOL_NAME } from './presentation-intent.ts';
 import type {
   SlackProgressiveIntent,
@@ -62,6 +64,14 @@ type RelayOperation =
   | { kind: 'invalidate'; reason: ProgressiveRelayInvalidationReason };
 
 /**
+ * `early`: the declaration must precede every other tool and all answer text.
+ * `final_answer`: effect tools may run first; the declaration must come alone
+ * in its model step after every earlier call has settled. Earlier-step
+ * narration is not late, because Slack only receives the final step's text.
+ */
+export type ProgressiveRelayMode = ProgressiveStreamingMode;
+
+/**
  * Active-turn content relay for one exact Flue receipt. The callback is
  * deliberately synchronous: it copies only bounded public protocol facts
  * into a serialized queue. V2 answer text enters that queue only after a
@@ -99,6 +109,15 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
       // can complete before the answer reopens that same response; completion
       // does not settle the submission or change its incremental identity.
       this.targetMessageCompleted = false;
+      this.stepToolCallIds.clear();
+      this.declarationStepOpen = false;
+      this.refusedToolStepOpen = false;
+      // Only the final step's text reaches Slack, so undeclared narration
+      // from an earlier step never makes a later final-answer declaration late.
+      if (this.finalAnswerMode &&
+          (this.intentStatus === 'unresolved' || this.awaitingReplayedDeclaration)) {
+        this.preIntentTextSeen = false;
+      }
       return;
     }
     if (chunk.type === 'message-completed' && chunk.messageId === this.targetMessageId) {
@@ -120,6 +139,9 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
       return;
     }
     if (chunk.type === 'data-part' && chunk.messageId === this.targetMessageId) {
+      // Every response ends by recording its file-delivery check. With no
+      // files and nothing unresolved it leaves the answer text unchanged.
+      if (isEmptyFileDeliveryResult(chunk.name, chunk.data)) return;
       if (this.usesModelIntent) {
         this.denyAndInvalidate(
           'structured_output',
@@ -145,7 +167,14 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
       this.denyAndInvalidate('identity_conflict', 'message_identity_conflict', true);
       return;
     }
-    if (this.usesModelIntent && this.intentStatus !== 'requested') {
+    if (this.refusedToolStepOpen) {
+      // Text sharing a step with a refused tool is not the final step's text.
+      // Nothing was relayed yet, so terminal delivery needs no correction.
+      this.denyAndInvalidate('non_presentation_tool', 'tool_activity', false);
+      return;
+    }
+    if (this.usesModelIntent &&
+        (this.intentStatus !== 'requested' || this.awaitingReplayedDeclaration)) {
       // A normal no-tool answer remains unresolved until close so it records
       // not_requested. If a declaration arrives later, it becomes explicitly
       // denied as late without exposing this already-seen text.
@@ -174,9 +203,25 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
   private intentToolCallId: string | undefined;
   private preIntentTextSeen = false;
   private readonly targetToolCallIds = new Set<string>();
+  /** Calls in the current model step. */
+  private readonly stepToolCallIds = new Set<string>();
+  /** Final-answer mode: non-declaration calls without an outcome yet. */
+  private readonly unsettledToolCallIds = new Set<string>();
+  private declarationStepOpen = false;
+  /** Final-answer mode: the answer-only lock refused a tool in this step. */
+  private refusedToolStepOpen = false;
+  /**
+   * Final-answer mode, resumed read: a durable declaration exists, but this
+   * read replays the whole response from its start. Until the replay reaches
+   * that declaration, events belong to the pre-declaration tool work.
+   */
+  private awaitingReplayedDeclaration = false;
 
   constructor(
-    private readonly options: ProgressiveTextSink & { submissionId: string },
+    private readonly options: ProgressiveTextSink & {
+      submissionId: string;
+      mode?: ProgressiveRelayMode;
+    },
   ) {
     if (!boundedIdentity(options.submissionId)) {
       throw new Error('Progressive relay submission identity is invalid.');
@@ -189,6 +234,7 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
     if (initial?.status === 'not_requested' || initial?.status === 'denied') {
       throw new Error('A terminal model intent cannot open a progressive relay.');
     }
+    this.awaitingReplayedDeclaration = this.finalAnswerMode && this.intentToolCallId !== undefined;
   }
 
   private get submissionId(): string {
@@ -197,6 +243,10 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
 
   private get usesModelIntent(): boolean {
     return this.options.modelIntent !== undefined;
+  }
+
+  private get finalAnswerMode(): boolean {
+    return this.usesModelIntent && this.options.mode === 'final_answer';
   }
 
   async closeAndDrain(): Promise<ProgressiveRelaySummary> {
@@ -232,7 +282,13 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
       return;
     }
     this.targetToolCallIds.add(toolCallId);
+    const sibling = this.stepToolCallIds.size > 0;
+    this.stepToolCallIds.add(toolCallId);
     if (toolName !== SLACK_STREAM_ANSWER_TOOL_NAME) {
+      if (this.finalAnswerMode) {
+        this.handleFinalAnswerEffectTool(toolCallId);
+        return;
+      }
       this.denyAndInvalidate(
         'non_presentation_tool',
         'tool_activity',
@@ -245,8 +301,15 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
       return;
     }
     if (this.intentStatus === 'unresolved') {
+      if (this.finalAnswerMode && (sibling || this.unsettledToolCallIds.size > 0)) {
+        // A final answer is declared alone in its step, after every earlier
+        // call has settled.
+        this.denyAndInvalidate('concurrent_tool', 'tool_activity', false);
+        return;
+      }
       this.intentStatus = 'pending';
       this.intentToolCallId = toolCallId;
+      this.declarationStepOpen = true;
       this.queueIntent({ kind: 'candidate', toolCallId });
       return;
     }
@@ -254,13 +317,40 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
         this.intentToolCallId === toolCallId) {
       // Full receipt replay repeats the same positioned declaration. The
       // durable state is already authoritative, so this is a no-op.
+      if (this.awaitingReplayedDeclaration) {
+        this.awaitingReplayedDeclaration = false;
+        this.declarationStepOpen = true;
+      }
       return;
     }
     this.denyAndInvalidate('repeated_declaration', 'tool_activity', this.hasQueuedOrAcceptedText());
   }
 
+  /** Final-answer mode: a non-declaration tool call in the target response. */
+  private handleFinalAnswerEffectTool(toolCallId: string): void {
+    if (this.intentStatus === 'unresolved' || this.awaitingReplayedDeclaration) {
+      // Effect work before the declaration is the point of this mode.
+      this.unsettledToolCallIds.add(toolCallId);
+      return;
+    }
+    if (this.intentStatus === 'pending' || this.declarationStepOpen) {
+      this.denyAndInvalidate('concurrent_tool', 'tool_activity', this.hasQueuedOrAcceptedText());
+      return;
+    }
+    // The answer-only lock refuses this call before it runs, so no effect
+    // can follow released text. Released text cannot be reconciled with a
+    // later step, though, so any text already relayed ends the stream.
+    if (this.hasQueuedOrAcceptedText()) {
+      this.denyAndInvalidate('non_presentation_tool', 'tool_activity', true);
+      return;
+    }
+    this.refusedToolStepOpen = true;
+  }
+
   private handleToolOutcome(toolCallId: string, succeeded: boolean): void {
     if (!this.usesModelIntent) return;
+    // A settled pre-declaration effect call says nothing about the declaration.
+    if (this.unsettledToolCallIds.delete(toolCallId)) return;
     if (this.intentStatus === 'requested' && this.intentToolCallId === toolCallId) {
       return;
     }
@@ -415,6 +505,13 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
       ...(this.invalidationReason ? { invalidationReason: this.invalidationReason } : {}),
     };
   }
+}
+
+function isEmptyFileDeliveryResult(name: string, data: unknown): boolean {
+  if (name !== FILE_DELIVERY_DATA_NAME || !data || typeof data !== 'object') return false;
+  // The same condition under which resolveFileDeliveryText keeps the text.
+  const result = data as { unresolved?: unknown; files?: unknown };
+  return result.unresolved === false && Array.isArray(result.files) && result.files.length === 0;
 }
 
 function validPosition(value: { batch: number; index: number }): boolean {

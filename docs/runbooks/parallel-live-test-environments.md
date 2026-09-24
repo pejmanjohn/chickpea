@@ -22,8 +22,9 @@ existing two-lane registries and their immutable historical revisions stay
 readable. Automatic selection considers only registered lanes.
 
 Admit Violet only after preparing its authority endpoint, private read credential,
-baseline and reusable fixtures, while every existing lane is unclaimed and its
-mutation lock is clear. Use `npm run env -- register --registration FILE` with an
+baseline and reusable fixtures, while no existing lane has a deployment in
+flight (its mutation lock and pending intent are clear). Other lanes may stay
+claimed; admission changes none of their records. Use `npm run env -- register --registration FILE` with an
 owner-only file containing `expectedRegistryRevision` and the complete
 `registration`. Admission preserves other target records and audit history and
 refuses stale revisions, duplicate identities and unready registrations. All

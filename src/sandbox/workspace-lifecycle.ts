@@ -150,6 +150,19 @@ export class SandboxWorkspaceState {
     return record.checkpoint.backup;
   }
 
+  /** Whether the current owner has an unexpired checkpoint. Reads storage only. */
+  async hasCheckpoint(fingerprint: string, now: number): Promise<boolean> {
+    return (await this.checkpointForRestore(fingerprint, now)) !== undefined;
+  }
+
+  /** Forget the checkpoint so a discarded workspace can never be restored. */
+  async dropCheckpoint(): Promise<void> {
+    const record = await this.record();
+    if (!record?.checkpoint) return;
+    const { checkpoint: _dropped, ...rest } = record;
+    await this.storage.put<WorkspaceRecord>(SANDBOX_WORKSPACE_STORAGE_KEY, rest);
+  }
+
   private async record(): Promise<WorkspaceRecord | undefined> {
     const stored = await this.storage.get<unknown>(SANDBOX_WORKSPACE_STORAGE_KEY);
     return isWorkspaceRecord(stored) ? stored : undefined;

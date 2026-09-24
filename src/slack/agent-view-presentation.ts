@@ -36,6 +36,7 @@ import {
   presentationHasTerminalOutcome,
   presentationAllowsProgressive,
   presentationUsesNativeTasks,
+  progressiveStreamingModeForReason,
   slackPresentationFinalizationRecord,
   type SlackPresentationFinalizationRecord,
   type SlackAppendReservation,
@@ -649,7 +650,12 @@ export class SlackAgentViewPresentation {
     if (presentation.progressiveEligibility.status === 'pending') {
       presentation = await this.transition(presentation, {
         kind: 'freeze_progressive_eligibility',
-        eligibility: candidate,
+        // A V1 row has no model intent, so it cannot hold text until a
+        // final-answer declaration. It keeps the effect-capable denial.
+        eligibility: presentation.schemaVersion === 1 &&
+            candidate.reason === 'final_answer_release'
+          ? { allowed: false, reason: 'effect_capable' }
+          : candidate,
       });
     }
     if (presentation.progressiveEligibility.status !== 'frozen') {
@@ -742,6 +748,7 @@ export class SlackAgentViewPresentation {
     }
     return new ReceiptScopedTextRelay({
       submissionId: input.receipt.submissionId,
+      mode: progressiveStreamingModeForReason(frozenEligibility.reason),
       append: (chunk) => this.appendProgressiveText(
         input.instanceId,
         input.receipt.submissionId,

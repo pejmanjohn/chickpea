@@ -32,7 +32,7 @@ const OBSERVATION_CONTEXT = {
   agentName: CHICKPEA_SLACK_AGENT_NAME,
 } as unknown as FlueEventContext;
 
-function currentPrompt(offered = true): string {
+function currentPrompt(offered = true, mode: 'early' | 'final_answer' = 'early'): string {
   return [
     'Current request: explain the tradeoffs.',
     serializeCurrentRequestEnvelope(
@@ -40,7 +40,7 @@ function currentPrompt(offered = true): string {
       false,
       'U_POLICY',
       '1785700300.000100',
-      { schemaVersion: 2, progressiveStreamingOffered: offered },
+      { schemaVersion: 2, progressiveStreamingOffered: offered, progressiveStreamingMode: mode },
     ),
   ].join('\n');
 }
@@ -340,3 +340,169 @@ for (const declaration of [SLACK_STREAM_ANSWER_TOOL_NAME, SLACK_PRESENT_TABLE_TO
     });
   });
 }
+
+test('final-answer mode declares after settled tool work and then locks every later tool', async () => {
+  const finalHistory: LlmMessage[] = [
+    { role: 'user', content: currentPrompt(true, 'final_answer') },
+    {
+      role: 'assistant',
+      content: [{ type: 'toolCall', id: 'call_lookup', name: 'mcp__docs__search', arguments: {} }],
+    },
+    {
+      role: 'toolResult', toolCallId: 'call_lookup', toolName: 'mcp__docs__search',
+      content: [{ type: 'text', text: 'result' }], isError: false,
+    },
+    {
+      role: 'assistant',
+      content: [{
+        type: 'toolCall', id: 'call_final_stream', name: SLACK_STREAM_ANSWER_TOOL_NAME,
+        arguments: {},
+      }],
+    },
+    {
+      role: 'toolResult', toolCallId: 'call_final_stream', toolName: SLACK_STREAM_ANSWER_TOOL_NAME,
+      content: [{ type: 'text', text: 'Delivery preference noted.' }], isError: false,
+    },
+  ];
+  await withSubmission(async () => {
+    observeTurn([finalHistory[0]!]);
+    assert.equal(
+      await executeTool('mcp__docs__search', 'call_lookup', async () => 'result'),
+      'result',
+    );
+    assert.equal(
+      await executeTool(SLACK_STREAM_ANSWER_TOOL_NAME, 'call_final_stream', async () => 'noted'),
+      'noted',
+    );
+    let executed = false;
+    await assert.rejects(
+      () => executeTool('mcp__docs__search', 'call_after', async () => { executed = true; }),
+      SlackAnswerOnlyToolDeniedError,
+    );
+    assert.equal(executed, false);
+  });
+
+  // A resumed render rehydrates the lock from durable history.
+  await withSubmission(async () => {
+    observeTurn(finalHistory);
+    await assert.rejects(
+      () => executeTool('mcp__docs__search', 'call_after_resume', async () => 'must not execute'),
+      SlackAnswerOnlyToolDeniedError,
+    );
+  });
+});
+
+test('final-answer mode refuses a declaration while another tool is running', async () => {
+  await withSubmission(async () => {
+    observeTurn([{ role: 'user', content: currentPrompt(true, 'final_answer') }]);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const running = executeTool('mcp__docs__search', 'call_running', async () => {
+      await gate;
+      return 'done';
+    });
+    await assert.rejects(
+      executeTool(SLACK_STREAM_ANSWER_TOOL_NAME, 'call_beside', async () => 'noted'),
+      SlackPresentationToolUnavailableError,
+    );
+    release();
+    assert.equal(await running, 'done');
+
+    // A tool that starts while the declaration runs also refuses it.
+    let releaseDeclaration!: () => void;
+    const declarationGate = new Promise<void>((resolve) => { releaseDeclaration = resolve; });
+    const declaration = executeTool(SLACK_STREAM_ANSWER_TOOL_NAME, 'call_racing', async () => {
+      await declarationGate;
+      return 'noted';
+    });
+    let releaseSibling!: () => void;
+    const siblingGate = new Promise<void>((resolve) => { releaseSibling = resolve; });
+    const sibling = executeTool('mcp__docs__search', 'call_sibling', async () => {
+      await siblingGate;
+      return 'sibling';
+    });
+    releaseDeclaration();
+    await assert.rejects(declaration, SlackPresentationToolUnavailableError);
+    releaseSibling();
+    assert.equal(await sibling, 'sibling');
+
+    // Once nothing else runs, the declaration is available again.
+    assert.equal(
+      await executeTool(SLACK_STREAM_ANSWER_TOOL_NAME, 'call_settled', async () => 'noted'),
+      'noted',
+    );
+  });
+});
+
+for (const toolName of [
+  'update_agent_memory',
+  'apply_workspace_changes',
+  'confirm_workspace_change',
+  'undo_workspace_change',
+]) {
+  test(`a declaration after ${toolName} is refused, live and on resume`, async () => {
+    for (const mode of ['early', 'final_answer'] as const) {
+      await withSubmission(async () => {
+        observeTurn([{ role: 'user', content: currentPrompt(true, mode) }]);
+        await executeTool(toolName, 'call_memory', async () => 'updated');
+        let executed = false;
+        await assert.rejects(
+          executeTool(SLACK_STREAM_ANSWER_TOOL_NAME, 'call_stream', async () => { executed = true; }),
+          SlackPresentationToolUnavailableError,
+        );
+        assert.equal(executed, false, mode);
+      });
+      await withSubmission(async () => {
+        observeTurn([
+          { role: 'user', content: currentPrompt(true, mode) },
+          {
+            role: 'assistant',
+            content: [{ type: 'toolCall', id: 'call_memory', name: toolName, arguments: {} }],
+          },
+          {
+            role: 'toolResult', toolCallId: 'call_memory', toolName,
+            content: [{ type: 'text', text: 'updated' }], isError: false,
+          },
+        ]);
+        await assert.rejects(
+          executeTool(SLACK_STREAM_ANSWER_TOOL_NAME, 'call_stream', async () => 'noted'),
+          SlackPresentationToolUnavailableError,
+        );
+      });
+    }
+  });
+}
+
+test('a held browser step that staged its screenshot keeps the reply terminal', async () => {
+  for (const staged of [true, false]) {
+    await withSubmission(async () => {
+      observeTurn([{ role: 'user', content: currentPrompt(true, 'final_answer') }]);
+      bindFileDeliveryCheck(() => false, () => staged);
+      // The held step returns awaitingApproval; nothing acts until a later
+      // turn claims the person's approval.
+      assert.deepEqual(
+        await executeTool('browser_act', 'call_held', async () => ({ awaitingApproval: true })),
+        { awaitingApproval: true },
+      );
+      if (staged) {
+        await assert.rejects(
+          executeTool(SLACK_STREAM_ANSWER_TOOL_NAME, 'call_stream', async () => 'noted'),
+          SlackPresentationToolUnavailableError,
+        );
+        return;
+      }
+      // Without a staged file the approval prompt may stream, and the lock
+      // refuses any further browser step in this response.
+      assert.equal(
+        await executeTool(SLACK_STREAM_ANSWER_TOOL_NAME, 'call_stream', async () => 'noted'),
+        'noted',
+      );
+      let executed = false;
+      await assert.rejects(
+        executeTool('browser_act', 'call_again', async () => { executed = true; }),
+        SlackAnswerOnlyToolDeniedError,
+      );
+      assert.equal(executed, false);
+    });
+  }
+});

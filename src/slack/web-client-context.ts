@@ -1,6 +1,6 @@
 import type { WebClient } from '@slack/web-api';
 
-import { serializeCurrentRequestEnvelope } from '../memory/tool-policy.ts';
+import { serializeCurrentRequestEnvelope, type ProgressiveStreamingMode } from '../memory/tool-policy.ts';
 import {
   formatSlackContextRows,
   slackContextWindowLabel,
@@ -303,6 +303,7 @@ export function assembleSlackPrompt(
     memorySelected?: boolean;
     currentRequestPolicyVersion?: 1 | 2;
     progressiveStreamingOffered?: boolean;
+    progressiveStreamingMode?: ProgressiveStreamingMode;
     slackApp?: SlackPromptApp;
   } = {},
 ): string {
@@ -395,6 +396,9 @@ export function assembleSlackPrompt(
       {
         schemaVersion: options.currentRequestPolicyVersion ?? 2,
         progressiveStreamingOffered: options.progressiveStreamingOffered === true,
+        ...(options.progressiveStreamingMode
+          ? { progressiveStreamingMode: options.progressiveStreamingMode }
+          : {}),
       },
     ),
   );

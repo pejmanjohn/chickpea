@@ -10,12 +10,17 @@ import {
   CURRENT_REQUEST_ENVELOPE_V2_END,
   CURRENT_REQUEST_ENVELOPE_V2_START,
   currentRequestOffersProgressiveStreaming,
+  currentRequestProgressiveStreamingMode,
   MEMORY_CURRENT_REQUEST_ENVELOPE_END,
   MEMORY_CURRENT_REQUEST_ENVELOPE_START,
   parseCurrentRequestEnvelope,
   serializeCurrentRequestEnvelope,
 } from '../src/memory/tool-policy.ts';
-import { slackPresentationIntentCapability } from '../src/slack/presentation-intent.ts';
+import {
+  SLACK_STREAM_ANSWER_INSTRUCTION,
+  SLACK_STREAM_FINAL_ANSWER_INSTRUCTION,
+  slackPresentationIntentCapability,
+} from '../src/slack/presentation-intent.ts';
 import {
   assembleRetainedSlackContext,
   boundedSlackPublicHandoff,
@@ -732,6 +737,95 @@ test('only the terminal V2 envelope can offer the presentation tool', () => {
   assert.equal(legacy?.schemaVersion, 1);
   assert.equal(currentRequestOffersProgressiveStreaming(legacy), false);
   assert.equal(slackPresentationIntentCapability(legacy), undefined);
+});
+
+test('a final-answer offer carries its mode and the post-tool instruction', () => {
+  const turn = threadTurn({ userId: 'U_REAL', messageTs: '1785700401.000100' });
+  const context = {
+    mode: 'thread' as const,
+    messages: [{ ts: turn.messageTs, userId: turn.userId, text: turn.text, isTrigger: true }],
+    window: { mode: 'thread' as const, oldest: turn.threadTs, latest: turn.messageTs, reason: 'thread_root' as const },
+    truncated: false,
+    degradations: [],
+  };
+  const finalPrompt = assembleSlackPrompt(turn, context, {
+    currentRequestPolicyVersion: 2,
+    progressiveStreamingOffered: true,
+    progressiveStreamingMode: 'final_answer',
+  });
+  assert.match(finalPrompt, /"progressiveStreamingMode":"final_answer"/);
+  const final = parseCurrentRequestEnvelope(finalPrompt);
+  assert.equal(currentRequestProgressiveStreamingMode(final), 'final_answer');
+  const finalCapability = slackPresentationIntentCapability(final);
+  assert.equal(finalCapability?.tool.name, 'stream_answer');
+  assert.equal(finalCapability?.instruction, SLACK_STREAM_FINAL_ANSWER_INSTRUCTION);
+  assert.match(finalCapability?.instruction ?? '', /after every other tool call/);
+  assert.match(finalCapability?.tool.description ?? '', /after your last other tool call/);
+
+  // An early offer keeps the exact wire shape older builds already parse.
+  const earlyPrompt = assembleSlackPrompt(turn, context, {
+    currentRequestPolicyVersion: 2,
+    progressiveStreamingOffered: true,
+    progressiveStreamingMode: 'early',
+  });
+  assert.doesNotMatch(earlyPrompt, /progressiveStreamingMode/);
+  const early = parseCurrentRequestEnvelope(earlyPrompt);
+  assert.equal(currentRequestProgressiveStreamingMode(early), 'early');
+  assert.equal(slackPresentationIntentCapability(early)?.instruction, SLACK_STREAM_ANSWER_INSTRUCTION);
+
+  // A mode never rides on a withheld offer.
+  const withheld = parseCurrentRequestEnvelope(assembleSlackPrompt(turn, context, {
+    currentRequestPolicyVersion: 2,
+    progressiveStreamingOffered: false,
+    progressiveStreamingMode: 'final_answer',
+  }));
+  assert.equal(withheld?.schemaVersion === 2 && withheld.progressiveStreamingMode, undefined);
+  assert.equal(currentRequestProgressiveStreamingMode(withheld), undefined);
+});
+
+test('the envelope parser rejects malformed or unoffered streaming modes', () => {
+  const envelope = (payload: Record<string, unknown>) => [
+    CURRENT_REQUEST_ENVELOPE_V2_START,
+    JSON.stringify({
+      schemaVersion: 2,
+      memoryInfluenced: false,
+      explicitExternalSideEffectIntent: false,
+      externalSideEffectIntents: [],
+      managedCapabilityIntents: [],
+      progressiveStreamingOffered: true,
+      ...payload,
+    }),
+    CURRENT_REQUEST_ENVELOPE_V2_END,
+  ].join('\n');
+  assert.equal(
+    currentRequestProgressiveStreamingMode(parseCurrentRequestEnvelope(envelope({
+      progressiveStreamingMode: 'final_answer',
+    }))),
+    'final_answer',
+  );
+  assert.equal(
+    currentRequestProgressiveStreamingMode(parseCurrentRequestEnvelope(envelope({
+      progressiveStreamingMode: 'early',
+    }))),
+    'early',
+  );
+  for (const payload of [
+    { progressiveStreamingMode: 'always' },
+    { progressiveStreamingMode: null },
+    { progressiveStreamingMode: 'final_answer', progressiveStreamingOffered: false },
+  ]) {
+    assert.equal(parseCurrentRequestEnvelope(envelope(payload)), undefined, JSON.stringify(payload));
+  }
+  assert.equal(parseCurrentRequestEnvelope([
+    MEMORY_CURRENT_REQUEST_ENVELOPE_START,
+    JSON.stringify({
+      schemaVersion: 1,
+      memoryInfluenced: false,
+      explicitExternalSideEffectIntent: false,
+      progressiveStreamingMode: 'final_answer',
+    }),
+    MEMORY_CURRENT_REQUEST_ENVELOPE_END,
+  ].join('\n')), undefined);
 });
 
 test('pre-scope V1 and V2 envelopes remain readable but lose coarse write authority', () => {

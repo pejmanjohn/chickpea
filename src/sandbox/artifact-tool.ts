@@ -192,15 +192,59 @@ export type ArtifactToolResult =
   | { attached: true; filename: string; byteLength: number }
   | Extract<SlackArtifactStageOutcome, { attached: false }>;
 
+/**
+ * Where `post_artifact { workspace }` reads: this request's own Sandbox on a
+ * named coding workspace, or undefined when the request has no such workspace.
+ */
+export interface WorkspaceArtifactSource {
+  sandbox(name: string): Promise<Sandbox> | undefined;
+}
+
+const WORKSPACE_ARTIFACT_INPUT = v.object({
+  ...ARTIFACT_INPUT.entries,
+  workspace: v.optional(v.pipe(v.string(), v.minLength(1), v.maxLength(64))),
+});
+
+const WORKSPACE_ARTIFACT_SENTENCE =
+  ' To attach a file from a coding workspace instead, pass workspace (for example "main") with a path under /workspace.';
+
 /** Flue 2 hook-agent variant: the harness supplies the initialized sandbox. */
-export function createWorkspaceArtifactTool(options: ArtifactDestinationBinding, deliver: WorkspaceArtifactDelivery = deliverArtifact) {
+export function createWorkspaceArtifactTool(
+  options: ArtifactDestinationBinding,
+  deliver: WorkspaceArtifactDelivery = deliverArtifact,
+  workspaces?: WorkspaceArtifactSource,
+) {
+  if (!workspaces) {
+    return defineTool({
+      name: POST_ARTIFACT_TOOL_NAME,
+      description: artifactToolDescription(options.sandboxKind),
+      input: ARTIFACT_INPUT,
+      harness: true,
+      async run({ data, harness }) {
+        return { output: await deliver(harness.sandbox, data, options) };
+      },
+    });
+  }
   return defineTool({
     name: POST_ARTIFACT_TOOL_NAME,
-    description: artifactToolDescription(options.sandboxKind),
-    input: ARTIFACT_INPUT,
+    description: artifactToolDescription(options.sandboxKind) + WORKSPACE_ARTIFACT_SENTENCE,
+    input: WORKSPACE_ARTIFACT_INPUT,
     harness: true,
     async run({ data, harness }) {
-      return { output: await deliver(harness.sandbox, data, options) };
+      const { workspace, ...input } = data;
+      if (workspace === undefined) {
+        return { output: await deliver(harness.sandbox, input, options) };
+      }
+      const env = await workspaces.sandbox(workspace)?.catch(() => undefined);
+      if (!env) {
+        const unavailable: ArtifactToolResult = {
+          attached: false,
+          reason: 'unavailable',
+          detail: 'source_unavailable',
+        };
+        return { output: unavailable };
+      }
+      return { output: await deliver(env, input, { ...options, sandboxKind: 'cloudflare' }) };
     },
   });
 }
