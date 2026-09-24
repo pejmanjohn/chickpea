@@ -85,11 +85,21 @@ const SESSION_CAP_MESSAGE =
 export function createWorkspaceTools(options: WorkspaceToolsOptions) {
   const session = (name: string | undefined): WorkspaceSession | WorkspaceFailure => {
     const requested = name ?? DEFAULT_WORKSPACE_NAME;
-    const found = requested === DEFAULT_WORKSPACE_NAME ? options.resolve(requested) : undefined;
-    if (found) return found;
-    return requested === DEFAULT_WORKSPACE_NAME
-      ? failure('workspace_unavailable', UNAVAILABLE_MESSAGE)
-      : failure('unknown_workspace', `Only the "${DEFAULT_WORKSPACE_NAME}" workspace is available.`);
+    if (requested !== DEFAULT_WORKSPACE_NAME) {
+      return failure('unknown_workspace', `Only the "${DEFAULT_WORKSPACE_NAME}" workspace is available.`);
+    }
+    return options.resolve(requested) ?? failure('workspace_unavailable', UNAVAILABLE_MESSAGE);
+  };
+
+  // Every tool body runs under `guard`, so path normalization inside it
+  // surfaces as an `invalid_path` result like any other expected refusal.
+  const withWorkspace = async <T>(
+    name: string | undefined,
+    work: (target: WorkspaceSession) => Promise<T>,
+    signal?: AbortSignal,
+  ): Promise<T | WorkspaceFailure> => {
+    const target = session(name);
+    return 'ok' in target ? target : guard(() => work(target), signal);
   };
 
   const open = defineTool({
@@ -99,10 +109,8 @@ export function createWorkspaceTools(options: WorkspaceToolsOptions) {
     input: v.object({ workspace: WORKSPACE_NAME }),
     timeoutMs: SHORT_TIMEOUT_MS,
     async run({ data }) {
-      const target = session(data.workspace);
-      if ('ok' in target) return { output: target };
       return {
-        output: await guard(async () => ({
+        output: await withWorkspace(data.workspace, async (target) => ({
           ok: true as const,
           workspace: target.name,
           state: await target.open(),
@@ -119,16 +127,11 @@ export function createWorkspaceTools(options: WorkspaceToolsOptions) {
     timeoutMs: SHORT_TIMEOUT_MS,
     annotations: { readOnlyHint: true },
     async run() {
-      const target = options.resolve(DEFAULT_WORKSPACE_NAME);
-      if (!target) return { output: failure('workspace_unavailable', UNAVAILABLE_MESSAGE) };
       return {
-        output: await guard(async () => {
-          const description = await target.describe();
-          return {
-            ok: true as const,
-            workspaces: [{ workspace: target.name, open: target.isOpen, ...description }],
-          };
-        }),
+        output: await withWorkspace(undefined, async (target) => ({
+          ok: true as const,
+          workspaces: [{ workspace: target.name, open: target.isOpen, ...(await target.describe()) }],
+        })),
       };
     },
   });
@@ -140,12 +143,11 @@ export function createWorkspaceTools(options: WorkspaceToolsOptions) {
     input: v.object({ workspace: WORKSPACE_NAME, discard: v.optional(v.boolean()) }),
     timeoutMs: SHORT_TIMEOUT_MS,
     async run({ data }) {
-      const target = session(data.workspace);
-      if ('ok' in target) return { output: target };
+      const discarded = data.discard === true;
       return {
-        output: await guard(async () => {
-          if (data.discard === true) await target.discard();
-          return { ok: true as const, workspace: target.name, closed: true, discarded: data.discard === true };
+        output: await withWorkspace(data.workspace, async (target) => {
+          if (discarded) await target.discard();
+          return { ok: true as const, workspace: target.name, closed: true, discarded };
         }),
       };
     },
@@ -165,16 +167,9 @@ export function createWorkspaceTools(options: WorkspaceToolsOptions) {
     }),
     timeoutMs: EXEC_TOOL_TIMEOUT_MS,
     async run({ data, signal }) {
-      const target = session(data.workspace);
-      if ('ok' in target) return { output: target };
-      let cwd: string;
-      try {
-        cwd = workspaceDirectoryPath(data.cwd ?? WORKSPACE_DIR);
-      } catch (error) {
-        return { output: failure('invalid_path', errorMessage(error)) };
-      }
       return {
-        output: await guard(async () => {
+        output: await withWorkspace(data.workspace, async (target) => {
+          const cwd = workspaceDirectoryPath(data.cwd ?? WORKSPACE_DIR);
           const sandbox = await target.sandbox();
           const result = await sandbox.exec(data.command, {
             cwd,
@@ -207,16 +202,9 @@ export function createWorkspaceTools(options: WorkspaceToolsOptions) {
     harness: true,
     timeoutMs: TRANSFER_TIMEOUT_MS,
     async run({ data, harness, signal }) {
-      const target = session(data.workspace);
-      if ('ok' in target) return { output: target };
-      let path: string;
-      try {
-        path = workspaceFilePath(data.path);
-      } catch (error) {
-        return { output: failure('invalid_path', errorMessage(error)) };
-      }
       return {
-        output: await guard(async () => {
+        output: await withWorkspace(data.workspace, async (target) => {
+          const path = workspaceFilePath(data.path);
           const sandbox = await target.sandbox();
           if (!(await sandbox.exists(path))) {
             return failure('not_found', `${path} does not exist in the workspace.`);
@@ -251,19 +239,12 @@ export function createWorkspaceTools(options: WorkspaceToolsOptions) {
     harness: true,
     timeoutMs: TRANSFER_TIMEOUT_MS,
     async run({ data, harness, signal }) {
-      const target = session(data.workspace);
-      if ('ok' in target) return { output: target };
-      if ((data.content === undefined) === (data.from === undefined)) {
-        return { output: failure('invalid_input', 'Give exactly one of content or from.') };
-      }
-      let path: string;
-      try {
-        path = workspaceFilePath(data.path);
-      } catch (error) {
-        return { output: failure('invalid_path', errorMessage(error)) };
-      }
       return {
-        output: await guard(async () => {
+        output: await withWorkspace(data.workspace, async (target) => {
+          if ((data.content === undefined) === (data.from === undefined)) {
+            return failure('invalid_input', 'Give exactly one of content or from.');
+          }
+          const path = workspaceFilePath(data.path);
           let content: string | Uint8Array;
           if (data.from !== undefined) {
             try {
@@ -300,16 +281,9 @@ export function createWorkspaceTools(options: WorkspaceToolsOptions) {
     timeoutMs: SHORT_TIMEOUT_MS,
     annotations: { readOnlyHint: true },
     async run({ data, signal }) {
-      const target = session(data.workspace);
-      if ('ok' in target) return { output: target };
-      let path: string;
-      try {
-        path = workspaceDirectoryPath(data.path ?? WORKSPACE_DIR);
-      } catch (error) {
-        return { output: failure('invalid_path', errorMessage(error)) };
-      }
       return {
-        output: await guard(async () => {
+        output: await withWorkspace(data.workspace, async (target) => {
+          const path = workspaceDirectoryPath(data.path ?? WORKSPACE_DIR);
           const sandbox = await target.sandbox();
           return listWorkspaceFiles(sandbox, path, data.depth ?? 2, signal);
         }, signal),
@@ -324,7 +298,7 @@ export function createWorkspaceTools(options: WorkspaceToolsOptions) {
  * List a workspace directory with one bounded `find`. Pruned directories are
  * reported but not descended into.
  */
-export async function listWorkspaceFiles(
+async function listWorkspaceFiles(
   sandbox: Pick<Sandbox, 'exec'>,
   path: string,
   depth: number,
@@ -382,7 +356,7 @@ async function guard<T>(
   }
 }
 
-export function workspaceFailure(error: unknown, signal?: AbortSignal): WorkspaceFailure | undefined {
+function workspaceFailure(error: unknown, signal?: AbortSignal): WorkspaceFailure | undefined {
   if (error instanceof SandboxSessionCapError) return failure('session_cap', SESSION_CAP_MESSAGE);
   if (error instanceof SandboxUnavailableError || error instanceof SandboxDiedError) {
     return failure('workspace_unavailable', UNAVAILABLE_MESSAGE);
@@ -411,10 +385,6 @@ function keepTail(text: string): { text: string; truncated: boolean } {
     text: new TextDecoder().decode(bytes.subarray(bytes.byteLength - MAX_WORKSPACE_EXEC_OUTPUT_BYTES)),
     truncated: true,
   };
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : 'invalid path';
 }
 
 function shellQuote(value: string): string {

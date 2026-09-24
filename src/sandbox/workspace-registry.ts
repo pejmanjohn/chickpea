@@ -27,10 +27,6 @@ export class WorkspaceTurnRegistry {
     return this.workspaces.get(name)?.session;
   }
 
-  list(): WorkspaceSession[] {
-    return [...this.workspaces.values()].map(({ session }) => session);
-  }
-
   /**
    * End every workspace this submission owns. Best effort and exhaustive: one
    * failed end never skips another, and nothing here fails the submission.

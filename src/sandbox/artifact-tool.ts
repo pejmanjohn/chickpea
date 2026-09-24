@@ -226,12 +226,7 @@ export function createWorkspaceArtifactTool(
       if (workspace === undefined) {
         return { output: await deliver(harness.sandbox, input, options) };
       }
-      let env: Sandbox | undefined;
-      try {
-        env = await workspaces.sandbox(workspace);
-      } catch {
-        env = undefined;
-      }
+      const env = await workspaces.sandbox(workspace)?.catch(() => undefined);
       if (!env) {
         const unavailable: ArtifactToolResult = {
           attached: false,

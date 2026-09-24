@@ -109,14 +109,14 @@ export class WorkspaceSession<TStub extends WorkspaceSandboxStub = WorkspaceSand
   }
 
   /** This request's own Flue Sandbox on the workspace (never the coordinator's). */
-  async sandbox(): Promise<Sandbox> {
-    this.flueSandbox ??= this.activatable().then((stub) => this.options.toSandbox(stub));
-    try {
-      return await this.flueSandbox;
-    } catch (error) {
-      this.flueSandbox = undefined;
-      throw error;
-    }
+  sandbox(): Promise<Sandbox> {
+    this.flueSandbox ??= this.activatable()
+      .then((stub) => this.options.toSandbox(stub))
+      .catch((error: unknown) => {
+        this.flueSandbox = undefined;
+        throw error;
+      });
+    return this.flueSandbox;
   }
 
   /** DO records only: running state and checkpoint presence. Starts nothing. */
@@ -146,8 +146,7 @@ export class WorkspaceSession<TStub extends WorkspaceSandboxStub = WorkspaceSand
 
   private async acquire(): Promise<{ stub: TStub; state: WorkspaceOpenState }> {
     const options = this.options;
-    let reservationId: string | undefined;
-    let decision: { state: WorkspaceTurnState; restorable: boolean } | undefined;
+    let turn: { state: WorkspaceTurnState; reservationId: string; restorable: boolean } | undefined;
     const stub = await acquireSandbox(options.mintStub, async (candidate) => {
       const turnId = await requireSandboxTurnId(candidate);
       if (!options.credentialMode) {
@@ -156,22 +155,15 @@ export class WorkspaceSession<TStub extends WorkspaceSandboxStub = WorkspaceSand
       // Reuse or retire the warm workspace before this turn's grants are
       // installed, so a different Agent or changed grants never see the prior
       // checkout.
-      const workspace = await candidate.beginWorkspaceTurn({
-        fingerprint: this.fingerprint,
-        turnId,
-      });
-      reservationId = workspace.reservationId;
-      decision = { state: workspace.state, restorable: workspace.restorable };
+      turn = await candidate.beginWorkspaceTurn({ fingerprint: this.fingerprint, turnId });
       await candidate.configureEgress(
         { grants: validEnabledRepositoryGrants(options.grants), mode: options.credentialMode },
         turnId,
       );
     });
-    const restorable = decision?.restorable === true;
+    if (!turn) throw new Error('Sandbox turn context is unavailable at activation');
+    const { reservationId, restorable } = turn;
     const activatable = serializeSandboxActivation(stub, WORKSPACE_DIR, async () => {
-      if (!reservationId) {
-        throw new Error('Sandbox turn context is unavailable at activation');
-      }
       // Counted per container start: a warm follow-up carries the starting
       // turn's reservation and does not consume the cap again.
       if (!(await options.reserveSession(reservationId))) {
@@ -181,7 +173,6 @@ export class WorkspaceSession<TStub extends WorkspaceSandboxStub = WorkspaceSand
       // starts the container, so it happens only once the turn needs it.
       if (restorable) await stub.restoreWorkspace(this.fingerprint);
     });
-    const state: WorkspaceOpenState = restorable ? 'restored' : decision?.state ?? 'fresh';
-    return { stub: activatable, state };
+    return { stub: activatable, state: restorable ? 'restored' : turn.state };
   }
 }

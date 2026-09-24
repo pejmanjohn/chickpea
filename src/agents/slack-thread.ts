@@ -2267,8 +2267,14 @@ async function resolveAgentSandbox(options: AgentSandboxOptions): Promise<Sandbo
   if (!binding) {
     return options.fallback;
   }
+  const workspaceId = defaultWorkspaceId(options.conversationKey);
+  const provider = (stub: WorkspaceSandboxStub) =>
+    cloudflareSandbox(
+      contentFreeSandboxExec(stub as unknown as Parameters<typeof cloudflareSandbox>[0]),
+      { cwd: '/workspace' },
+    );
   const session = new WorkspaceSession({
-    id: defaultWorkspaceId(options.conversationKey),
+    id: workspaceId,
     name: DEFAULT_WORKSPACE_NAME,
     agentId: options.agentId,
     grants: options.grants,
@@ -2279,7 +2285,7 @@ async function resolveAgentSandbox(options: AgentSandboxOptions): Promise<Sandbo
     mintStub: async () =>
       getSandbox(
         binding as Parameters<typeof getSandbox>[0],
-        defaultWorkspaceId(options.conversationKey),
+        workspaceId,
         CLOUDFLARE_SANDBOX_OPTIONS,
       ) as unknown as WorkspaceSandboxStub,
     reserveSession: async (reservationId) =>
@@ -2288,20 +2294,14 @@ async function resolveAgentSandbox(options: AgentSandboxOptions): Promise<Sandbo
         cap: options.monthlySessionCap,
         reservationId,
       })).allowed,
-    toSandbox: (stub) =>
-      cloudflareSandbox(contentFreeSandboxExec(stub as unknown as Parameters<typeof cloudflareSandbox>[0]), {
-        cwd: '/workspace',
-      }).createSandbox({ id: defaultWorkspaceId(options.conversationKey) }),
+    toSandbox: (stub) => provider(stub).createSandbox({ id: workspaceId }),
   });
   // Opened here, before the agent's first model call, exactly as the attached
   // container always was. The relay prepared this turn and ends it, so the
   // registry only shares the session with the workspace tools.
   const serialized = await session.activatable();
   currentWorkspaceRegistry()?.register(session);
-  return cloudflareSandbox(
-    contentFreeSandboxExec(serialized as unknown as Parameters<typeof cloudflareSandbox>[0]),
-    { cwd: '/workspace' },
-  );
+  return provider(serialized);
 }
 
 /**
