@@ -982,6 +982,14 @@
   }
 
   function render() {
+    // A load finishing or a focus revalidation must not replace #app while a
+    // native dropdown is showing its options: removing the <select> closes
+    // the list under the person's cursor. Wait until it closes instead.
+    if (!renderingForUserEvent() && nativePickerIsOpen()) {
+      deferRenderUntilPickerCloses();
+      return;
+    }
+    clearDeferredRender();
     if ((state.openAiSubscription.attempt || state.openAiSubscription.busy === "start") && (state.view !== "settings" || state.settingsSection !== "providers")) {
       stopOpenAiSubscriptionAttempt(true);
     }
@@ -994,6 +1002,10 @@
     // not pull focus out of the field a person is typing into: remember it and
     // its caret, and put them back below unless the render moves focus itself.
     var typingFocus = captureTypingFocus(app);
+    // Native <details> menus carry their open state only in the DOM. Keep the
+    // ones the person opened when a background render redraws the page; a
+    // render from their own click still closes menus as that action intends.
+    var openDetails = renderingForUserEvent() ? null : captureOpenDetails(app);
     var overlays = installationDialogHtml() + teamConfirmModalHtml() + composioSetupModalHtml() + managedAuthorizationModalHtml() + connectorSettingsConfirmModalHtml() + leavePromptModalHtml() + connectionRemoveModalHtml() + apiConnectionRemoveModalHtml() + slackDisconnectModalHtml() + githubDisconnectModalHtml() + sandboxConfirmModalHtml() + agentScheduleDeleteModalHtml() + websiteLoginDialogHtml() + scheduledRoutineSummaryModalHtml() + scheduledDeleteModalHtml();
     if (state.view === "onboarding") {
       app.className = "frame onboarding-frame";
@@ -1010,6 +1022,7 @@
       app.className = "frame" + (isPrimaryAdminSurface() ? " primary-admin-shell" : "") + adminSurfaceClass;
       app.innerHTML = topbarHtml() + '<div class="body">' + railHtml() + mainHtml() + "</div>" + overlays;
     }
+    restoreOpenDetails(app, openDetails);
     if (state.mobileAgentRosterFocus) {
       var mobileRosterFocus = state.mobileAgentRosterFocus === "close"
         ? document.querySelector('[data-action="mobile-agents-close"]')
@@ -1133,6 +1146,75 @@
 
   var TYPING_INPUT_TYPES = /^(?:text|password|search|url|email|tel|number)$/i;
 
+  // A background render (a load finishing, a focus revalidation) waits while a
+  // native picker is open. A short poll flushes it once the picker closes and
+  // no pointer is pressed: a flush between pointerdown and click would replace
+  // the element being clicked.
+  var deferredRenderTimer = 0;
+  var pointerDown = false;
+
+  // window.event is set only while an event listener runs, so a render with it
+  // present answers the person's own click, change, or key.
+  function renderingForUserEvent() {
+    return typeof window !== "undefined" && !!window.event;
+  }
+
+  // :open matches a <select> or <input> showing its picker. Browsers without
+  // it throw, and their renders proceed as before.
+  function nativePickerIsOpen() {
+    var active = document.activeElement;
+    var app = document.getElementById("app");
+    if (!active || !active.matches || !app || !app.contains || !app.contains(active)) return false;
+    try { return active.matches(":open"); } catch (error) { return false; }
+  }
+
+  function clearDeferredRender() {
+    if (!deferredRenderTimer) return;
+    window.clearInterval(deferredRenderTimer);
+    deferredRenderTimer = 0;
+  }
+
+  function deferRenderUntilPickerCloses() {
+    if (deferredRenderTimer || typeof window === "undefined") return;
+    deferredRenderTimer = window.setInterval(function () {
+      if (pointerDown || nativePickerIsOpen()) return;
+      clearDeferredRender();
+      renderPreservingPagePosition();
+    }, 150);
+  }
+
+  if (typeof document !== "undefined" && document.addEventListener) {
+    document.addEventListener("pointerdown", function () { pointerDown = true; }, true);
+    ["pointerup", "pointercancel"].forEach(function (type) {
+      document.addEventListener(type, function () { pointerDown = false; }, true);
+    });
+  }
+
+  // Native <details> keep their open state only in the DOM. Match them across
+  // a render by class, summary label, and position among equals.
+  function eachDetails(app, callback) {
+    if (!app.querySelectorAll) return;
+    var seen = {};
+    Array.prototype.forEach.call(app.querySelectorAll("details"), function (details) {
+      var summary = details.querySelector("summary");
+      var label = summary ? (summary.getAttribute("aria-label") || summary.textContent || "") : "";
+      var key = details.className + "|" + label.replace(/\s+/g, " ").trim();
+      seen[key] = (seen[key] || 0) + 1;
+      callback(details, key + "#" + seen[key]);
+    });
+  }
+
+  function captureOpenDetails(app) {
+    var open = {};
+    eachDetails(app, function (details, key) { if (details.open) open[key] = true; });
+    return open;
+  }
+
+  function restoreOpenDetails(app, open) {
+    if (!open) return;
+    eachDetails(app, function (details, key) { if (open[key]) details.open = true; });
+  }
+
   function selectionSnapshot(field) {
     var selection = { start: null, end: null, direction: "none" };
     try {
@@ -1156,7 +1238,7 @@
     var active = document.activeElement;
     if (!active || !app.contains || !app.contains(active)) return null;
     var tag = active.tagName;
-    if (tag !== "TEXTAREA" && !(tag === "INPUT" && TYPING_INPUT_TYPES.test(active.type || "text"))) return null;
+    if (tag !== "TEXTAREA" && tag !== "SELECT" && !(tag === "INPUT" && TYPING_INPUT_TYPES.test(active.type || "text"))) return null;
     var snapshot = { id: active.id || "", action: "", index: -1, selection: selectionSnapshot(active) };
     if (!snapshot.id) {
       var action = active.getAttribute("data-action") || "";
