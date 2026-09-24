@@ -91,8 +91,8 @@ for revocation. Credential-backed cases use standing QA fixtures:
   is blocked until a test tenant exists. Do not run it against real data.
 - A lane secret the product reads from its environment reaches the lane only
   through `CHICKPEA_DEPLOY_SECRETS_FILE` (see
-  [environments.md](environments.md)). Update the lane capability matrix
-  afterward.
+  [environments.md](environments.md)). Refresh the lane capability matrix
+  afterward with `npm run env -- capabilities all --write`.
 
 If the fixture is missing, ask for it once during the kickoff preflight, keep
 dependent cases blocked, and finish the rest.
