@@ -139,7 +139,6 @@ export async function adoptEnvironmentFromFile(file, options = {}) {
   const registry = readEnvironmentRegistry(options);
   if (registration.target !== 'violet' || registry.targets.violet) throw fail('INVALID_REGISTRATION');
   if (registry.revision !== input.expectedRegistryRevision) throw fail('REGISTRY_REVISION_MISMATCH');
-  if (Object.values(registry.targets).some((lane) => lane.claim)) throw fail('FLEET_BUSY');
   const baseline = readEnvironmentBaseline(registration.evidenceRoot);
   const authority = validateAuthority(await observeProductionEnvironmentAuthority({
     target: registration.target, registration, phase: 'adopt',
