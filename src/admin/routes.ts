@@ -55,8 +55,12 @@ import { createWorkAdminApi } from './work-api.ts';
 import { createTeamAdminApi } from './team-api.ts';
 import { readProposalApprovalStatus } from './proposal-status.ts';
 import { ENVIRONMENT_AUTHORITY_PATH, environmentAuthorityResponse } from './environment-authority.ts';
-import { ENVIRONMENT_SEED_PATH, environmentSeedResponse } from './environment-seed.ts';
-import { prepareSeededCatalogConnection } from '../management/setup-routes.ts';
+import {
+  ENVIRONMENT_SEED_PATH,
+  environmentSeedResponse,
+  seedFingerprintSettingKey,
+} from './environment-seed.ts';
+import { prepareSeededCatalogConnection, replaceCatalogConnection } from '../management/setup-routes.ts';
 import {
   ConnectionScheduleConflictError,
   ConnectionAccountService,
@@ -1955,15 +1959,36 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         if (!agent) return 'missing';
         return agent.enabled && agent.lifecycle !== 'archived' ? 'ready' : 'inactive';
       },
+      createFixturesAgent: async ({ id, name }) => {
+        // Enabled so it can own connections; unpublished with no creator and
+        // no Channel grants, so nobody reaches it in Slack or a private DM.
+        await store(c).createAgent({
+          id,
+          name,
+          description: 'Holds this QA lane\'s standing test connections.',
+          instructions: 'QA fixture Agent. It holds standing test connections for verification runs.',
+          enabled: true,
+          lifecycle: 'active',
+          editPolicy: 'creator_and_admins',
+          configurationGeneration: 1,
+          skills: [],
+          mcpServers: [],
+          apiConnections: [],
+          repositories: [],
+        });
+      },
       existingConnection: async ({ agentId, workspaceId, presetId }) => {
         const configStore = store(c);
         const bindings = (await configStore.listAgentConnectionBindings(agentId))
           .filter((binding) => binding.providerId === presetId);
         if (bindings.length === 0) return undefined;
         const accounts = await configStore.listConnectionAccounts(workspaceId);
-        return bindings
+        const connectionId = bindings
           .map((binding) => accounts.find((account) => account.id === binding.connectionAccountId))
           .find((account) => account && account.lifecycle !== 'revoked')?.id;
+        if (!connectionId) return undefined;
+        const fingerprint = await settings(c).getSetting(seedFingerprintSettingKey(connectionId));
+        return { connectionId, ...(fingerprint ? { fingerprint } : {}) };
       },
       createConnection: async ({ owner, agentId, preset, fields }) => {
         const prepared = await prepareSeededCatalogConnection(preset, fields);
@@ -1981,6 +2006,29 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         });
         return account.id;
       },
+      replaceConnection: async ({ owner, agentId, connectionId, preset, fields }) => {
+        const configStore = store(c);
+        const account = (await configStore.listConnectionAccounts(owner.workspaceId))
+          .find((candidate) => candidate.id === connectionId);
+        const binding = await configStore.getAgentConnectionBindingForAccount(connectionId);
+        if (!account || !binding || !canManageOwnedResource(owner.principal, account) ||
+            !canEditAgent(owner.principal, await configStore.getAgent(agentId)) ||
+            binding.agentId !== agentId || account.providerId !== preset.id ||
+            account.workspaceId !== owner.workspaceId || account.lifecycle === 'revoked') {
+          throw new Error('target_changed');
+        }
+        const prepared = await prepareSeededCatalogConnection(preset, fields);
+        await replaceCatalogConnection({
+          config: configStore,
+          settings: settings(c),
+          ...(c.env ? { platformEnv: c.env as PlatformEnv } : {}),
+          account,
+          binding,
+          prepared,
+        });
+      },
+      recordFingerprint: ({ connectionId, fingerprint }) =>
+        settings(c).setSetting(seedFingerprintSettingKey(connectionId), fingerprint),
       adminSetupUrl: ({ agentId, presetId }) => new URL(
         `/admin/agents/${encodeURIComponent(agentId)}/connections/new/${encodeURIComponent(presetId)}/team`,
         new URL(c.req.url).origin,

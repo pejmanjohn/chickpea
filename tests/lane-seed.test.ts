@@ -94,3 +94,28 @@ test('validates arguments, the lane origin, and prints results without credentia
   assert.match(lines[0], /asana\s+created\s+connection_1/);
   assert.match(lines[1], /linear\s+needs_consent\s+https:\/\/lane\/admin\/x/);
 });
+
+test('--fixtures targets the standing fixtures Agent, --replace is forwarded, and --bind explains why it is absent', () => {
+  const fixtures = parseArguments(['cobalt', '--fixtures', '--replace']);
+  assert.equal(fixtures.fixtures, true);
+  assert.equal(fixtures.replace, true);
+  assert.equal(fixtures.agentId, undefined);
+  assert.equal(parseArguments(['cobalt', '--agent', 'qa-agent']).fixtures, false);
+  assert.throws(() => parseArguments(['cobalt', '--fixtures', '--agent', 'qa-agent']), /either --fixtures or --agent/);
+  assert.throws(() => parseArguments(['cobalt', '--fixtures', '--bind', 'run-agent']), /exactly one Agent/);
+
+  const connections = [{ connector: 'asana', secret: 'ASANA_QA_TOKEN' }];
+  const entries = parseLaneSecrets('ASANA_QA_TOKEN=token\n');
+  assert.deepEqual(
+    buildSeedRequest({ lane: 'cobalt', fixtures: true, replace: true, connections, entries }).body,
+    { fixtures: true, replace: true, connections: [{ connector: 'asana', credential: 'token' }] },
+  );
+  assert.deepEqual(
+    buildSeedRequest({ lane: 'cobalt', agentId: 'qa-agent', connections, entries }).body,
+    { agentId: 'qa-agent', connections: [{ connector: 'asana', credential: 'token' }] },
+  );
+  const [stale] = describeResults({ connections: [
+    { connector: 'asana', status: 'stale', connectionId: 'connection_1', reason: 'changed' },
+  ] });
+  assert.match(stale, /asana\s+stale\s+connection_1 changed/);
+});
