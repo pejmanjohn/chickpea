@@ -201,7 +201,7 @@
 Lanes are not interchangeable. They differ in deploy profile, provider keys,
 model roles, registered fixtures, and registered actors, and the registry
 records only identity and claim state. Before `wait-claim` or `claim`, read the
-private lane capability matrix at `~/.chickpea/environments/lane-capabilities.md`
+private lane capability matrix (lane-capabilities.md in `~/.chickpea/environments/`)
 and pick a lane that covers every selected case. Use `wait-claim <alias>` for
 that lane. Use `wait-claim any` only when all lanes qualify. Keep lane-specific
 values in that private file, not in this repository.
