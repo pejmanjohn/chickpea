@@ -989,7 +989,7 @@
       deferRenderUntilPickerCloses();
       return;
     }
-    deferredRender.pending = false;
+    clearDeferredRender();
     if ((state.openAiSubscription.attempt || state.openAiSubscription.busy === "start") && (state.view !== "settings" || state.settingsSection !== "providers")) {
       stopOpenAiSubscriptionAttempt(true);
     }
@@ -1145,13 +1145,13 @@
   }
 
   var TYPING_INPUT_TYPES = /^(?:text|password|search|url|email|tel|number)$/i;
-  var PICKER_INPUT_TYPES = /^(?:date|time|datetime-local|month|week|color)$/i;
 
-  // One pending background render, flushed by a short poll once the picker
-  // closes and no pointer is pressed (a flush between pointerdown and click
-  // would replace the element being clicked).
-  var deferredRender = { pending: false, timer: 0 };
-  var nativePicker = { armed: null, pointerDown: false };
+  // A background render (a load finishing, a focus revalidation) waits while a
+  // native picker is open. A short poll flushes it once the picker closes and
+  // no pointer is pressed: a flush between pointerdown and click would replace
+  // the element being clicked.
+  var deferredRenderTimer = 0;
+  var pointerDown = false;
 
   // window.event is set only while an event listener runs, so a render with it
   // present answers the person's own click, change, or key.
@@ -1159,86 +1159,60 @@
     return typeof window !== "undefined" && !!window.event;
   }
 
+  // :open matches a <select> or <input> showing its picker. Browsers without
+  // it throw, and their renders proceed as before.
   function nativePickerIsOpen() {
-    if (typeof document === "undefined" || !document.getElementById) return false;
     var active = document.activeElement;
     var app = document.getElementById("app");
-    if (!active || !app || !app.contains || !app.contains(active)) return false;
-    if (active.tagName !== "SELECT" && !(active.tagName === "INPUT" && PICKER_INPUT_TYPES.test(active.type || ""))) return false;
-    try {
-      return active.matches(":open");
-    } catch (error) {
-      // Browsers without :open: treat a select as open from the press that
-      // opens it until a choice, Escape, Tab, or leaving it.
-      return nativePicker.armed === active;
-    }
+    if (!active || !active.matches || !app || !app.contains || !app.contains(active)) return false;
+    try { return active.matches(":open"); } catch (error) { return false; }
+  }
+
+  function clearDeferredRender() {
+    if (!deferredRenderTimer) return;
+    window.clearInterval(deferredRenderTimer);
+    deferredRenderTimer = 0;
   }
 
   function deferRenderUntilPickerCloses() {
-    deferredRender.pending = true;
-    if (deferredRender.timer || typeof window === "undefined" || typeof window.setInterval !== "function") return;
-    deferredRender.timer = window.setInterval(function () {
-      if (!deferredRender.pending) {
-        window.clearInterval(deferredRender.timer);
-        deferredRender.timer = 0;
-        return;
-      }
-      if (nativePicker.pointerDown || nativePickerIsOpen()) return;
-      window.clearInterval(deferredRender.timer);
-      deferredRender.timer = 0;
-      deferredRender.pending = false;
+    if (deferredRenderTimer || typeof window === "undefined") return;
+    deferredRenderTimer = window.setInterval(function () {
+      if (pointerDown || nativePickerIsOpen()) return;
+      clearDeferredRender();
       renderPreservingPagePosition();
     }, 150);
   }
 
-  function detailsKey(details) {
-    var summary = details.querySelector ? details.querySelector("summary") : null;
-    var label = summary ? (summary.getAttribute("aria-label") || summary.textContent || "") : "";
-    return String(details.className || "") + "|" + String(label).replace(/\s+/g, " ").trim();
+  if (typeof document !== "undefined" && document.addEventListener) {
+    document.addEventListener("pointerdown", function () { pointerDown = true; }, true);
+    ["pointerup", "pointercancel"].forEach(function (type) {
+      document.addEventListener(type, function () { pointerDown = false; }, true);
+    });
+  }
+
+  // Native <details> keep their open state only in the DOM. Match them across
+  // a render by class, summary label, and position among equals.
+  function eachDetails(app, callback) {
+    if (!app.querySelectorAll) return;
+    var seen = {};
+    Array.prototype.forEach.call(app.querySelectorAll("details"), function (details) {
+      var summary = details.querySelector("summary");
+      var label = summary ? (summary.getAttribute("aria-label") || summary.textContent || "") : "";
+      var key = details.className + "|" + label.replace(/\s+/g, " ").trim();
+      seen[key] = (seen[key] || 0) + 1;
+      callback(details, key + "#" + seen[key]);
+    });
   }
 
   function captureOpenDetails(app) {
-    if (!app.querySelectorAll) return null;
-    var seen = {};
     var open = {};
-    Array.prototype.forEach.call(app.querySelectorAll("details"), function (details) {
-      var key = detailsKey(details);
-      var index = seen[key] = (seen[key] || 0) + 1;
-      if (details.open) open[key + "#" + index] = true;
-    });
+    eachDetails(app, function (details, key) { if (details.open) open[key] = true; });
     return open;
   }
 
   function restoreOpenDetails(app, open) {
-    if (!open || !app.querySelectorAll) return;
-    var seen = {};
-    Array.prototype.forEach.call(app.querySelectorAll("details"), function (details) {
-      var key = detailsKey(details);
-      var index = seen[key] = (seen[key] || 0) + 1;
-      if (open[key + "#" + index] && !details.open) details.open = true;
-    });
-  }
-
-  if (typeof document !== "undefined" && document.addEventListener) {
-    document.addEventListener("pointerdown", function (event) {
-      nativePicker.pointerDown = true;
-      var target = event.target;
-      if (target && target.tagName === "SELECT") nativePicker.armed = target;
-    }, true);
-    ["pointerup", "pointercancel"].forEach(function (type) {
-      document.addEventListener(type, function () { nativePicker.pointerDown = false; }, true);
-    });
-    document.addEventListener("keydown", function (event) {
-      var target = event.target;
-      if (!target || target.tagName !== "SELECT") return;
-      if (event.key === " " || event.key === "Enter" || event.key === "F4" || (event.altKey && (event.key === "ArrowDown" || event.key === "ArrowUp"))) nativePicker.armed = target;
-      else if (event.key === "Escape" || event.key === "Esc" || event.key === "Tab") nativePicker.armed = null;
-    }, true);
-    ["change", "focusout"].forEach(function (type) {
-      document.addEventListener(type, function (event) {
-        if (event.target === nativePicker.armed) nativePicker.armed = null;
-      }, true);
-    });
+    if (!open) return;
+    eachDetails(app, function (details, key) { if (open[key]) details.open = true; });
   }
 
   function selectionSnapshot(field) {

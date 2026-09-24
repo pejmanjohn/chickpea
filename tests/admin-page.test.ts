@@ -861,8 +861,7 @@ function runAdminPageHarness(
         type: typingFieldIsSelect ? 'select-one' : 'password',
         matches(selector: string) {
           if (selector !== ':open') throw new Error(`unsupported selector ${selector}`);
-          return typingFieldIsSelect && nativeSelectOpen && typingField?.element === element &&
-            typingField.generation === renderGeneration;
+          return nativeSelectOpen && typingField?.element === element && typingField.generation === renderGeneration;
         },
         id: '',
         selectionStart: 0,
@@ -3208,7 +3207,7 @@ function runAdminPageHarness(
     },
     intervalCount: () => intervals.size,
     dispatchAsUserEvent(dispatch: () => void) {
-      window.event = { isTrusted: true };
+      window.event = {};
       try { dispatch(); } finally { window.event = undefined; }
     },
     sessionStorageValue(key: string) {
