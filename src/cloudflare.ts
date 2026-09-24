@@ -439,6 +439,28 @@ export class Sandbox extends CloudflareSandbox<SandboxWorkerEnv> {
     });
   }
 
+  /**
+   * What the workspace tools report without a container round trip: whether
+   * the container is running and whether this owner has a checkpoint.
+   */
+  async describeWorkspace(fingerprint: string): Promise<{ running: boolean; hasCheckpoint: boolean }> {
+    return {
+      running: this.containerRunning(),
+      hasCheckpoint:
+        workspaceCheckpointsAvailable(this.env) &&
+        (await this.workspaceState().hasCheckpoint(fingerprint, Date.now())),
+    };
+  }
+
+  /**
+   * Destroy the container and forget its checkpoint, so the next turn starts
+   * from an empty workspace. The owner record and prepared turn survive.
+   */
+  async discardWorkspace(): Promise<void> {
+    await this.workspaceState().dropCheckpoint();
+    await this.destroy();
+  }
+
   private containerRunning(): boolean {
     return (this.ctx as { container?: { running?: boolean } }).container?.running === true;
   }

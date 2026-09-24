@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 
+import { WORKSPACE_TOOL_NAMES } from '../src/sandbox/workspace-tools.ts';
 import {
   buildRuntimePlanActivityContext,
   compileRuntimePlanV2,
@@ -888,6 +889,15 @@ test('bash-mode plans classify file and image delivery like the container mode',
   // Image generation delivers a file too: its observations classify the same.
   assert.equal(descriptors.get('generate_image')?.target, 'artifact');
   assert.ok((context.enabledFamilies ?? []).includes('artifact'));
+});
+
+test('only container plans classify the coding-workspace tools', () => {
+  const names = (sandboxMode: 'bash' | 'cloudflare') => new Set(
+    buildRuntimePlanActivityContext(compile({ sandboxMode })).toolDescriptors?.map(({ toolName }) => toolName),
+  );
+  assert.equal(names('bash').has('workspace_exec'), false);
+  const container = names('cloudflare');
+  for (const toolName of WORKSPACE_TOOL_NAMES) assert.ok(container.has(toolName), toolName);
 });
 
 test('file delivery follows the real turn thread by default and only a trusted override otherwise', () => {
