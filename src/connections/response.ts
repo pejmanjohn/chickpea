@@ -64,6 +64,11 @@ export function connectionFetchFailureReason(
 ): 'method_not_allowed' | 'url_not_allowed' | 'failed' {
   const name = error instanceof Error ? error.name : '';
   if (name === 'MethodNotAllowedError') return 'method_not_allowed';
+  // A resolver outage is transient, not a scope restriction the model must
+  // never retry.
+  if (name === 'NetworkAccessDeniedError' && /DNS resolution failed/i.test((error as Error).message)) {
+    return 'failed';
+  }
   if (
     name === 'BlockedUrlError' ||
     name === 'NetworkAccessDeniedError' ||

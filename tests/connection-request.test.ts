@@ -336,6 +336,25 @@ test('a network failure is reported with a static message', async () => {
   }
 });
 
+test('a DNS resolver outage is a transient failure, not a scope refusal', async () => {
+  const run = requestTool([ASANA_ENTRY]);
+  const previous = globalThis.fetch;
+  const requests: string[] = [];
+  globalThis.fetch = (async (input: string | URL | Request) => {
+    const url = String(input);
+    if (url.startsWith('https://cloudflare-dns.com/')) return new Response('unavailable', { status: 503 });
+    requests.push(url);
+    return Response.json({});
+  }) as typeof fetch;
+  try {
+    const output = await run({ url: 'https://app.asana.com/api/1.0/users/me' });
+    assert.equal(output.reason, 'failed', JSON.stringify(output));
+    assert.equal(requests.length, 0);
+  } finally {
+    globalThis.fetch = previous;
+  }
+});
+
 test('the tool mounts for any API connection with an actor, and narration names the call', () => {
   const plan = {
     actorMembershipId: 'mem_1',
