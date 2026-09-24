@@ -306,7 +306,9 @@ async function listWorkspaceFiles(
 ) {
   const format = `-printf '%y\\t%s\\t%P\\n'`;
   const result = await sandbox.exec(
-    `find ${shellQuote(path)} -mindepth 1 -maxdepth ${depth} \\( -name .git -o -name node_modules \\) -prune ${format} -o ${format} | head -n ${MAX_LISTED_FILES + 1}`,
+    // `test -d` first: without pipefail the pipeline's status is head's, so a
+    // missing directory would otherwise read as an empty listing.
+    `test -d ${shellQuote(path)} && find ${shellQuote(path)} -mindepth 1 -maxdepth ${depth} \\( -name .git -o -name node_modules \\) -prune ${format} -o ${format} | head -n ${MAX_LISTED_FILES + 1}`,
     { timeoutMs: 30_000, ...(signal ? { signal } : {}) },
   );
   if (result.exitCode !== 0) {
@@ -334,9 +336,12 @@ export function workspaceFilePath(path: string): string {
 
 /** A model-supplied directory: the workspace root or a normalized path under it. */
 export function workspaceDirectoryPath(path: string): string {
-  const trimmed = path.trim().replace(/\/+$/, '');
-  if (trimmed === WORKSPACE_DIR || trimmed === '' || trimmed === '.') return WORKSPACE_DIR;
-  return workspaceFilePath(trimmed);
+  const trimmed = path.trim();
+  if (trimmed === '' || trimmed === '.') return WORKSPACE_DIR;
+  const withoutSlash = trimmed.replace(/\/+$/, '');
+  if (withoutSlash === WORKSPACE_DIR) return WORKSPACE_DIR;
+  // A bare "/" strips to "" and must stay outside the workspace, not map onto it.
+  return workspaceFilePath(withoutSlash === '' ? trimmed : withoutSlash);
 }
 
 /**
@@ -369,6 +374,9 @@ function workspaceFailure(error: unknown, signal?: AbortSignal): WorkspaceFailur
   }
   if (error instanceof Error && /must be (?:under|a normalized file under) \/workspace/.test(error.message)) {
     return failure('invalid_path', error.message);
+  }
+  if (error instanceof Error && error.message === 'artifact path must identify a file') {
+    return failure('not_found', 'That path is not a file in the workspace.');
   }
   return undefined;
 }

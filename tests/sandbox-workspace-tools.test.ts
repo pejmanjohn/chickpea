@@ -474,3 +474,37 @@ test('post_artifact with a workspace reads that workspace and fails closed witho
   const plain = createWorkspaceArtifactTool(binding, deliver);
   assert.equal(plain.description.includes('pass workspace'), false);
 });
+
+test('list_files reports a missing directory, and read of a directory is a typed refusal', async () => {
+  const missing = session({ calls: [] }, {
+    sandbox: fakeSandbox({
+      async exec(command) {
+        assert.match(command, /^test -d '\/workspace\/nope' && find /);
+        return { stdout: '', stderr: '', exitCode: 1 };
+      },
+    }),
+  });
+  const listed = await run(toolsFor(missing).workspace_list_files!, { path: 'nope' });
+  assert.equal(listed.reason, 'not_found');
+
+  const directory = session({ calls: [] }, {
+    sandbox: fakeSandbox({
+      async stat() {
+        return { isFile: false, isDirectory: true };
+      },
+    }),
+  });
+  const read = await run(toolsFor(directory).workspace_read!, { path: 'repo' }, {
+    harness: { sandbox: fakeSandbox() },
+  });
+  assert.equal(read.reason, 'not_found');
+});
+
+test('a root cwd stays outside the workspace instead of mapping onto it', async () => {
+  assert.throws(() => workspaceDirectoryPath('/'), /under \/workspace/);
+  assert.throws(() => workspaceDirectoryPath('///'), /under \/workspace/);
+  assert.equal(workspaceDirectoryPath(''), '/workspace');
+  assert.equal(workspaceDirectoryPath('/workspace//'), '/workspace');
+  const output = await run(toolsFor(session({ calls: [] })).workspace_exec!, { command: 'ls', cwd: '/' });
+  assert.equal(output.reason, 'invalid_path');
+});
