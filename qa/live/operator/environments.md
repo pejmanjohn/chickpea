@@ -66,7 +66,12 @@
    `_READ_TOKEN`, or from the owner-only file
    `~/.chickpea/lane-credentials/<color>-live.json` (`origin`,
    `authorityReadToken`). A `LIVE_AUTHORITY_READ_TOKEN_INVALID` on a lane you
-   did not claim means that other lane's credential is missing. Never print
+   did not claim means that other lane's credential is missing. Lanes deploy
+   independently: another lane's authority is briefly unavailable while that
+   lane is itself deploying, so it gets one retry and then its recorded
+   credential fingerprints stand in (the deploy prints a notice naming it).
+   The claimed lane must always answer live; `LIVE_AUTHORITY_BRIDGE_UNAVAILABLE`
+   now names that lane or a lane with no recorded baseline. Never print
    the token. Never use a bare/default deploy to reach a QA lane. Preserve
    source/claim fences. Verification does not imply landing on main.
 

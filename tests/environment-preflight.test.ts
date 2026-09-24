@@ -1862,14 +1862,18 @@ for (const transport of ['events', 'gateway']) test(`production ${transport} aut
     ]));
     let oversized = false;
     let bridgeCalls = 0;
+    let down = new Set<string>();
+    const notices: string[] = [];
     // The real reader resolves the fleet from the registry; use a fixture so
     // the operator's own lane registrations never leak into the test.
     const fleet = fixture({ transport });
     const realBridgeOptions = { ...options, env: bridgeEnv, readFleetRuntimeAuthorities: undefined,
-      root: fleet.root, hostFingerprint: 'host-fixture',
+      root: fleet.root, hostFingerprint: 'host-fixture', authorityRetryDelayMs: 0,
+      notice: (message: string) => { notices.push(message); },
       fetchImpl: async (url: URL, init: RequestInit) => {
         bridgeCalls += 1;
         const target = url.hostname.split('.')[0]!;
+        if (down.has(target)) return new Response('{}', { status: 503 });
         assert.equal(new Headers(init.headers).get('authorization'), `Bearer ${Buffer.alloc(32, target.charCodeAt(0)).toString('base64url')}`);
         assert.equal(init.redirect, 'error');
         assert.ok(init.signal);
@@ -1877,6 +1881,20 @@ for (const transport of ['events', 'gateway']) test(`production ${transport} aut
       },
     };
     assert.equal((await observeProductionEnvironmentAuthority(context, realBridgeOptions)).slack.teamId, 'T_AMBER');
+    assert.deepEqual(notices, []);
+    // Another lane that is mid-deploy answers 503. It is retried once, then its
+    // recorded fingerprints stand in; the deploy target must always answer.
+    const sibling = TARGETS.find((lane) => lane !== 'amber')!;
+    writeEnvironmentBaseline(fleet.records.find((record) => record.target === sibling)!.evidenceRoot, baseline(sibling));
+    down = new Set([sibling]);
+    bridgeCalls = 0;
+    const withSiblingDown = await observeProductionEnvironmentAuthority(context, realBridgeOptions);
+    assert.deepEqual(withSiblingDown.fleetCredentialFingerprints[sibling], fingerprints(sibling));
+    assert.equal(bridgeCalls, TARGETS.length + 1, 'the unavailable lane is retried once');
+    assert.match(notices.join('\n'), new RegExp(`Lane ${sibling} authority is unavailable`));
+    down = new Set(['amber']);
+    await assert.rejects(observeProductionEnvironmentAuthority(context, realBridgeOptions), rejects('LIVE_AUTHORITY_BRIDGE_UNAVAILABLE'));
+    down = new Set();
     const tokenName = 'CHICKPEA_ENV_AMBER_LIVE_AUTHORITY_READ_TOKEN';
     const validToken = bridgeEnv[tokenName]!;
     bridgeEnv[tokenName] = 'a'.repeat(64);
