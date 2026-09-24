@@ -222,6 +222,61 @@ test('runTurn withholds the thread images when the frozen plan has no image capa
   }
 });
 
+test('runTurn dispatches thread images to a plan that can send files to a writable connection', async () => {
+  const f = await createManagementAdapterFixture('thread-images-upload');
+  try {
+    const agent = await f.config.createAgent({ ...assignment.agent,
+      creatorMembershipId: f.admin.membership.id, editPolicy: 'creator_and_admins' });
+    const workspaceId = f.admin.binding.slackTeamId;
+    await f.config.ensureWorkspaceInstallation({ workspaceId, transportMode: 'direct', defaultAgentId: agent.id });
+    const turn: NormalizedSlackTurn = {
+      ...workTurn('Ev_THREAD_IMAGES_UPLOAD'), workspaceId, userId: f.admin.binding.slackUserId,
+      actorMembershipId: f.admin.membership.id, contextMode: 'thread',
+      threadTs: '1785509000.000100', messageTs: '1785509201.000100',
+      interactionIntent: { disposition: 'reply', reason: 'substantive_request' },
+    };
+    const bound: ResolvedAssignment = { ...assignment, workspaceId, agent, runtimeContract: 'chickpea-v1' };
+    const client = {
+      conversations: { replies: async () => ({ ok: true, messages: [{
+        user: turn.userId, ts: '1785509100.000100', text: 'Attach this to the task.',
+        files: [{ id: 'F00000000AA', name: 'bug.png', mimetype: 'image/png', size: 2_048 }],
+      }] }) },
+      chat: {
+        postMessage: async () => ({ ok: true, ts: '1785509300.000100' }),
+        startStream: async () => ({ ok: true, ts: '1785509300.000100' }),
+        stopStream: async () => ({ ok: true }),
+      },
+    } as unknown as WebClient;
+    // No image model, but attach_file_to_connection takes a conversation
+    // image by its img:N handle, so the plan still needs the inventory.
+    const compiled = compileRuntimePlanV2({ turn, assignment: bound,
+      instructions: agent.instructions, memoryEpoch: 1, sandboxMode: 'bash',
+      imageCapability: { role: 'image', filled: false, acceptsImageInput: false } });
+    const runtimePlan = {
+      ...compiled,
+      actorMembershipId: f.admin.membership.id,
+      apiConnections: [{
+        id: 'conn_asana', presetId: 'asana', allowedHosts: ['app.asana.com'], pathPrefixes: ['/api/1.0'],
+        allowedMethods: ['GET', 'POST', 'PUT'], headerName: 'Authorization', headerValuePrefix: 'Bearer ',
+        authMode: 'credential' as const,
+      }],
+    };
+    let dispatched: readonly { fileId: string }[] | undefined;
+    await runTurn(turn, bound, undefined, {
+      client, usageRecordingEnabled: false,
+      runtimePlanDecision: { runtimePlan, instanceId: deriveRuntimePlanInstanceId(compiled) },
+      appStores: { config: f.config, memory: f.memory, identity: f.identity, management: f.management } as never,
+      agentPrompt: async ({ threadImages }) => {
+        dispatched = threadImages;
+        return { text: '42', requestedModel: null, returnedModel: null, reportedUsage: null, usageCompleteness: 'not_reported' };
+      },
+    });
+    assert.deepEqual(dispatched?.map(({ fileId }) => fileId), ['F00000000AA']);
+  } finally {
+    await f.close();
+  }
+});
+
 test('the production compile path freezes the image capability the store resolves', async () => {
   const f = await createManagementAdapterFixture('image-capability');
   try {

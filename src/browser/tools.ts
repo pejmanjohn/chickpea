@@ -119,6 +119,15 @@ export interface BrowserToolsOptions {
   /** Sends text privately to the person who asked; absent, hand-offs are refused. */
   notifyRequester?: NotifyRequester;
   stageArtifact: BindingStageArtifact;
+  /**
+   * Keeps a screenshot's bytes under the turn's scoped retention and returns
+   * its handle, so a later tool can send the same file to a connection.
+   * Absent or failing, the screenshot is still attached without a handle.
+   */
+  retainScreenshot?: (bytes: Uint8Array) => Promise<{ id: string; expiresAt: number } | undefined>;
+  /** Records which provider session holds a recording; the bytes stay with the provider. */
+  retainRecording?: (input: { sessionId: string; filename: string; byteLength?: number }) =>
+    Promise<{ id: string; expiresAt: number } | undefined>;
   /** The Slack transport's upload cap, when known. */
   transportMaxBytes: () => Promise<number | undefined>;
   inspectScreenshot?: (input: ScreenshotInspectionInput) => Promise<string>;
@@ -217,6 +226,35 @@ async function readBounded(response: Response, limit: number): Promise<Uint8Arra
   return bytes;
 }
 
+/**
+ * Stream a finished session's recording from the provider again, for a tool
+ * that sends it somewhere other than Slack. A download with a declared length
+ * streams; one without is held only up to the same bound the Slack path uses.
+ * Undefined means the provider no longer has it or it is too large to hold.
+ */
+export async function openRecordingDownload(
+  provider: BrowserTurnSession['provider'],
+  sessionId: string,
+  options: { fetch?: typeof fetch; pollMs?: number; sleep?: (ms: number) => Promise<void> } = {},
+): Promise<SlackFileContent | undefined> {
+  const download = await awaitRecordingDownload(provider, sessionId, {
+    timeoutMs: RECORDING_TIMEOUT_MS,
+    pollMs: options.pollMs ?? RECORDING_POLL_MS,
+    ...(options.sleep ? { sleep: options.sleep } : {}),
+  });
+  const response = await (options.fetch ?? globalThis.fetch)(download.downloadUrl);
+  if (!response.ok) {
+    await response.body?.cancel().catch(() => undefined);
+    return undefined;
+  }
+  const declaredLength = Number(response.headers.get('content-length') ?? Number.NaN);
+  if (Number.isSafeInteger(declaredLength) && declaredLength > 0 && response.body) {
+    return { stream: response.body, byteLength: declaredLength };
+  }
+  const bytes = await readBounded(response, MAX_BUFFERED_RECORDING_BYTES);
+  return typeof bytes === 'number' || bytes.byteLength === 0 ? undefined : bytes;
+}
+
 function recordingFilename(date: Date): string {
   const pad = (n: number) => String(n).padStart(2, '0');
   return `browser-session-${date.getUTCFullYear()}${pad(date.getUTCMonth() + 1)}${pad(date.getUTCDate())}-${pad(date.getUTCHours())}${pad(date.getUTCMinutes())}.mp4`;
@@ -245,16 +283,20 @@ const ACT_DESCRIPTION = [
 
 const LOOK_DESCRIPTION = 'Look at the visible part of the current page and answer a question about how it appears (layout, images, charts, colors, visual bugs). Prefer browser_snapshot for reading text.';
 
+const FILE_HANDLE_NOTE = 'The result includes slackPermalink, a link that opens for people in this conversation once your reply is delivered, and fileHandle, which attach_file_to_connection (when available) accepts to send the same file to a connected service.';
+
 const SCREENSHOT_DESCRIPTION = [
   'Attach a PNG screenshot of the current page to your final reply.',
   'Attach proof only when it helps: when something looks wrong, when the person asked to see it, or when a picture says more than words.',
   'Do not attach a screenshot for every page you read.',
+  FILE_HANDLE_NOTE,
 ].join(' ');
 
 const RECORDING_DESCRIPTION = [
   'End the browser session and attach its screen recording (MP4) to your final reply.',
   'Use it when you exercised a multi-step flow or are claiming that something works or is broken and the recording is the proof.',
   'Call it last: it ends the browser session, and a later browser_open starts a new one without this recording.',
+  FILE_HANDLE_NOTE,
 ].join(' ');
 
 const SIGN_IN_DESCRIPTION = [
@@ -465,8 +507,16 @@ export function createBrowserTools(options: BrowserToolsOptions) {
           ...(data.caption ? { title: data.caption } : {}),
           kind: 'image',
         });
-        if (!outcome.attached) return { output: { ...outcome } };
-        return { output: { attached: true, filename, byteLength: outcome.byteLength } };
+        const retained = await options.retainScreenshot?.(bytes).catch(() => undefined);
+        const handle = retained ? { fileHandle: retained.id, expiresAt: retained.expiresAt } : {};
+        if (!outcome.attached) return { output: { ...outcome, ...handle } };
+        return {
+          output: {
+            attached: true, filename, byteLength: outcome.byteLength,
+            ...(outcome.permalink ? { slackPermalink: outcome.permalink } : {}),
+            ...handle,
+          },
+        };
       } catch (error) {
         return fail(error, 'browser_screenshot');
       }
@@ -529,9 +579,22 @@ export function createBrowserTools(options: BrowserToolsOptions) {
           ...(data.caption ? { title: data.caption } : {}),
           kind: 'file',
         });
-        if (!outcome.attached) return { output: { ...outcome, note: sessionNote } };
+        // The handle names the provider session, not the bytes: a recording
+        // is streamed from the provider again when it is sent elsewhere.
+        const retained = await options.retainRecording?.({
+          sessionId: ended.sessionId,
+          filename,
+          ...(declared === undefined ? {} : { byteLength: declared }),
+        }).catch(() => undefined);
+        const handle = retained ? { fileHandle: retained.id, expiresAt: retained.expiresAt } : {};
+        if (!outcome.attached) return { output: { ...outcome, ...handle, note: sessionNote } };
         return {
-          output: { attached: true, filename, byteLength: outcome.byteLength, seconds: ended.seconds, note: sessionNote },
+          output: {
+            attached: true, filename, byteLength: outcome.byteLength, seconds: ended.seconds,
+            ...(outcome.permalink ? { slackPermalink: outcome.permalink } : {}),
+            ...handle,
+            note: sessionNote,
+          },
         };
       } catch (error) {
         return fail(error, 'browser_recording');

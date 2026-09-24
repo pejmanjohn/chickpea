@@ -62,7 +62,7 @@ export function reuseImageWithReceipt(input: {
     stagedAt: now, completedAt: now, destination: { ...destination },
   });
   input.writeReceipts({ schemaVersion: 1, receipts: input.accumulator.add(receipt) });
-  return { attached: true, byteLength: receipt.byteLength };
+  return { attached: true, byteLength: receipt.byteLength, permalink: record.permalink };
 }
 
 /**
@@ -131,7 +131,7 @@ export async function stageArtifactWithReceipt(input: {
   const receipts = input.accumulator.add(receipt);
   input.writeReceipts({ schemaVersion: 1, receipts });
   input.onReceipt?.(receipt);
-  return { attached: true, byteLength: receipt.byteLength };
+  return { attached: true, byteLength: receipt.byteLength, permalink: receipt.permalink };
 }
 
 /**

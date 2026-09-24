@@ -147,6 +147,8 @@ export interface ImageArtifactFile {
   byteLength: number;
   savedImage?: string | undefined;
   expiresAt?: number | undefined;
+  /** The file's Slack link; it opens for the conversation once the reply is delivered. */
+  slackPermalink?: string | undefined;
   format?: ImageOutputFormat;
   width?: number;
   height?: number;
@@ -568,6 +570,7 @@ export function createImageArtifactTool(options: ImageArtifactToolOptions) {
               width: delivery.width, height: delivery.height, transparent: delivery.transparent,
               savedImage: delivery.savedImage, expiresAt: delivery.expiresAt, inspection: delivery.inspection,
               corrected: delivery.corrected, compressed: delivery.compressed, resized: delivery.resized,
+              ...(outcome.permalink ? { slackPermalink: outcome.permalink } : {}),
             } }
             : { ok: false, failure: stagingFailure(outcome), savedImage: delivery.savedImage, expiresAt: delivery.expiresAt };
         });

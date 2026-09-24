@@ -51,6 +51,7 @@ import type { SettingsStore } from '../config/settings-store.ts';
 import type { ConfigStore } from '../config/store.ts';
 import { connectorSkillsForConnections } from '../config/connector-skills.ts';
 import {
+  createConnectionScopedFetch,
   createConnectorScopedBash,
   matchesEgressPrefix,
   resolveEgressPolicy,
@@ -177,7 +178,16 @@ import { createSlackRequesterNotifier, type SlackRequester } from '../browser/re
 import type { BrowserApprovalOptions } from '../browser/approval.ts';
 import type { BrowserLoginOptions } from '../browser/binding.ts';
 import { BROWSER_APPROVAL_ACTIVITY } from '../browser/messages.ts';
-import { createBrowserTools } from '../browser/tools.ts';
+import { createBrowserTools, openRecordingDownload } from '../browser/tools.ts';
+import { createRecordingHandleStore, resolveUploadFile } from '../connections/file-handles.ts';
+import {
+  allowsConnectionFileUpload,
+  ATTACH_FILE_TO_CONNECTION_TOOL_NAME,
+  CONNECTION_UPLOAD_TIMEOUT_MS,
+  planAllowsConnectionFileUpload,
+  createAttachFileToConnectionTool,
+  type ConnectionUploadFetch,
+} from '../connections/file-upload-tool.ts';
 import { BrowserTurnSession } from '../browser/turn-session.ts';
 import { resolveModelApiKeyForStatelessCall } from '../config/provider-keys.ts';
 import { workspaceSkillForSandbox } from '../sandbox/workspace-skill.ts';
@@ -1599,6 +1609,12 @@ export function useRuntimePlanAgent(
         canEdit: plan.imageCapability?.acceptsImageInput === true,
         ...(imageInventory.manifest ? { imageManifest: imageInventory.manifest } : {}),
       }));
+      // Without an image model the artifact instruction lists no images, but
+      // the upload tool still takes a conversation image by its handle.
+      if (plan.imageCapability?.filled !== true && imageInventory.manifest &&
+          runtimePlanAllowsConnectionFileUpload(plan)) {
+        useInstruction(`To send one of these images to a connection, pass its handle to \`${ATTACH_FILE_TO_CONNECTION_TOOL_NAME}\`. Images already in this conversation:\n${imageInventory.manifest}`);
+      }
     }
     useInstruction(FILE_COMPLETION_INSTRUCTION);
     if (fileCompletion.repairing) {
@@ -1961,6 +1977,13 @@ export function createRuntimePlanArtifactTools(
   const resolveOutputStore = async () => outputStore ??= createImageOutputStore(
     getSettingsStore(await resolveAgentPlatformEnv()), destination,
   );
+  // Recordings and screenshots share the image store's destination scope, so
+  // a handle never resolves in another thread or for another Agent.
+  let recordingStore: ReturnType<typeof createRecordingHandleStore> | undefined;
+  const resolveRecordingStore = async () => recordingStore ??= createRecordingHandleStore(
+    getSettingsStore(await resolveAgentPlatformEnv()), destination,
+  );
+  const imageInventory = options.imageInventory ?? runtimePlanThreadImageInventory(plan, options.threadImages);
   const imageOptions = imageCapability?.filled && reserveImageCall ? {
     acceptsImageInput: imageCapability.acceptsImageInput,
     ...(imageCapability.maxOutputsPerCall === undefined ? {} : {
@@ -1969,7 +1992,7 @@ export function createRuntimePlanArtifactTools(
     ...(imageCapability.supportsOutputControls === undefined ? {} : {
       supportsOutputControls: imageCapability.supportsOutputControls,
     }),
-    inventory: options.imageInventory ?? runtimePlanThreadImageInventory(plan, options.threadImages),
+    inventory: imageInventory,
     reserveImageCall,
     resolveTransport: binding.resolveTransport,
     resolveClient: options.resolveImageClient ?? (() => resolveRuntimePlanImageClient(plan)),
@@ -2025,6 +2048,9 @@ export function createRuntimePlanArtifactTools(
           : {}),
         ...(options.browserApprovals ? { approvals: options.browserApprovals } : {}),
         stageArtifact: binding.stageArtifact,
+        retainScreenshot: async (bytes) =>
+          (await resolveOutputStore()).save(bytes, { format: 'png', source: 'browser_screenshot' }),
+        retainRecording: async (input) => (await resolveRecordingStore()).save(input),
         transportMaxBytes: async () => (await resolveFileTransport()).maxBytes,
         // Same route as the image tool's inspection: the frozen chat model
         // with the provider key read at call time.
@@ -2037,6 +2063,21 @@ export function createRuntimePlanArtifactTools(
         log: { warn: (message) => console.warn(`[chickpea] ${message}`) },
       })
     : [];
+  const uploadTool = !options.fileCompletion?.repairing && runtimePlanAllowsConnectionFileUpload(plan)
+    ? createAttachFileToConnectionTool({
+        resolveFetch: options.resolveUploadFetch ?? (() => resolveRuntimePlanUploadFetch(plan)),
+        resolveFile: (handle) => resolveUploadFile(handle, {
+          images: { read: async (id) => (await resolveOutputStore()).read(id) },
+          recordings: { read: async (id) => (await resolveRecordingStore()).read(id) },
+          openRecording: (sessionId) => openRecordingDownload(
+            options.browserSession?.provider ?? createRuntimePlanBrowserProvider(), sessionId),
+          inventory: imageInventory,
+          createImageReader: async () =>
+            createThreadImageReader({ client: createSlackAttachmentClient(await resolveAgentPlatformEnv()) }),
+        }),
+        streamMode: isCloudflareTarget() ? 'stream' : 'file',
+      })
+    : undefined;
   return [
     createWorkspaceArtifactTool(
       { ...binding, sandboxKind: plan.sandbox.mode },
@@ -2051,6 +2092,7 @@ export function createRuntimePlanArtifactTools(
     ...(!options.fileCompletion?.repairing && imageOptions
       ? [createImageArtifactTool(imageOptions), createRecoverImageTool(imageOptions)] : []),
     ...browserTools,
+    ...(uploadTool ? [uploadTool] : []),
   ];
 }
 
@@ -2133,20 +2175,8 @@ function runtimePlanBrowserLogins(
  * ended session is tallied into the install's monthly browser usage.
  */
 export function createRuntimePlanBrowserSession(): BrowserTurnSession {
-  // The Browserbase client and CDP transport load only when a turn browses,
-  // which keeps them out of the Worker's startup graph.
-  const provider = createLazyBrowserProvider(async () => {
-    const env = await resolveAgentPlatformEnv();
-    const settings = await resolveBrowserSettings(getSettingsStore(env), env);
-    if (!settings.apiKey) return undefined;
-    const { createBrowserbaseProvider } = await import('../browser/browserbase.ts');
-    return createBrowserbaseProvider({
-      apiKey: settings.apiKey,
-      ...(settings.projectId ? { projectId: settings.projectId } : {}),
-    });
-  });
   return new BrowserTurnSession({
-    provider,
+    provider: createRuntimePlanBrowserProvider(),
     connect: async (connectUrl) => (await import('../browser/cdp.ts')).connectCdpSocket(connectUrl),
     onClosed: async ({ sessionId, seconds }) => {
       try {
@@ -2157,6 +2187,50 @@ export function createRuntimePlanBrowserSession(): BrowserTurnSession {
       }
     },
   });
+}
+
+/**
+ * The install's browser provider, keyed from current settings on first use.
+ * The Browserbase client and CDP transport load only when a turn browses (or
+ * re-reads a recording), which keeps them out of the Worker's startup graph.
+ */
+function createRuntimePlanBrowserProvider(): BrowserTurnSession['provider'] {
+  return createLazyBrowserProvider(async () => {
+    const env = await resolveAgentPlatformEnv();
+    const settings = await resolveBrowserSettings(getSettingsStore(env), env);
+    if (!settings.apiKey) return undefined;
+    const { createBrowserbaseProvider } = await import('../browser/browserbase.ts');
+    return createBrowserbaseProvider({
+      apiKey: settings.apiKey,
+      ...(settings.projectId ? { projectId: settings.projectId } : {}),
+    });
+  });
+}
+
+/**
+ * The API connections a runtime plan may send a file to: its frozen
+ * declarations, narrowed by live authority, through the same per-connector
+ * egress scopes the sandbox `curl` uses. GitHub hosts stay with the
+ * repository integration.
+ */
+async function resolveRuntimePlanUploadFetch(plan: RuntimePlanV2): Promise<ConnectionUploadFetch | undefined> {
+  const env = await resolveAgentPlatformEnv();
+  const connectors = mergeRepositoryAndApiConnectors(
+    [],
+    (await resolveRuntimePlanApiConnections(plan, env)).flatMap(({ connectors }) => connectors),
+  ).filter((connector) => allowsConnectionFileUpload(connector.allowedMethods));
+  const fetch = await createConnectionScopedFetch(connectors, {
+    cloudflare: isCloudflareTarget(),
+    timeoutMs: CONNECTION_UPLOAD_TIMEOUT_MS,
+  });
+  if (!fetch) return undefined;
+  const secrets = connectors.flatMap(({ headerValue }) => [headerValue, headerValue.replace(/^\S+\s+/, '')]);
+  return { fetch, secrets };
+}
+
+/** Mounted only for a plan with a writable API connection its actor can use. */
+export function runtimePlanAllowsConnectionFileUpload(plan: RuntimePlanV2): boolean {
+  return planAllowsConnectionFileUpload(plan);
 }
 
 export interface RuntimePlanArtifactToolOptions {
@@ -2175,6 +2249,8 @@ export interface RuntimePlanArtifactToolOptions {
   browserRequester?: SlackRequester | undefined;
   /** Where data-changing browser steps wait for the requester's approval. */
   browserApprovals?: BrowserApprovalOptions | undefined;
+  /** Focused seam; production resolves the plan's connections at call time. */
+  resolveUploadFetch?: (() => Promise<ConnectionUploadFetch | undefined>) | undefined;
 }
 
 /**

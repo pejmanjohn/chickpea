@@ -8,6 +8,7 @@ import {
 import { SLACK_STREAM_ANSWER_TOOL_NAME } from '../slack/presentation-intent.ts';
 import { ActivityLifecycleReducer } from './lifecycle.ts';
 import { BROWSER_TOOL_ACTIVITY, type BrowserToolName } from '../browser/tools.ts';
+import { ATTACH_FILE_TO_CONNECTION_TOOL_NAME } from '../connections/file-upload-tool.ts';
 import {
   activityStatus,
   genericSemanticDescriptor,
@@ -342,6 +343,9 @@ export function toolActivityStatus(
   }
   if (toolName === 'recover_image') {
     return activityStatus('finishing', 'Attaching', 'a saved image');
+  }
+  if (toolName === ATTACH_FILE_TO_CONNECTION_TOOL_NAME) {
+    return activityStatus('running', 'Uploading', 'a file');
   }
   if (Object.hasOwn(BROWSER_TOOL_ACTIVITY, toolName)) {
     const [kind, action, object] = BROWSER_TOOL_ACTIVITY[toolName as BrowserToolName].status;

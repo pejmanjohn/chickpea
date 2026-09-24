@@ -129,7 +129,16 @@ export interface SlackArtifactStageInput {
  * Slack file id or upload coordinates.
  */
 export type SlackArtifactStageOutcome =
-  | { attached: true; byteLength: number; fileId?: string }
+  | {
+      attached: true;
+      byteLength: number;
+      fileId?: string;
+      /**
+       * The staged file's Slack link. It opens for people in the conversation
+       * once the reply that shares the file is delivered.
+       */
+      permalink?: string;
+    }
   | { attached: false; reason: 'missing-scope' }
   | { attached: false; reason: 'too-large'; maxBytes: number }
   | { attached: false; reason: 'unavailable'; detail?: SlackArtifactStagingDetail };
