@@ -1133,26 +1133,38 @@
 
   var TYPING_INPUT_TYPES = /^(?:text|password|search|url|email|tel|number)$/i;
 
+  function selectionSnapshot(field) {
+    var selection = { start: null, end: null, direction: "none" };
+    try {
+      selection.start = field.selectionStart;
+      selection.end = field.selectionEnd == null ? field.selectionStart : field.selectionEnd;
+      selection.direction = field.selectionDirection || "none";
+    } catch (error) { /* a type without a selection API */ }
+    return selection;
+  }
+
+  function focusField(field, selection) {
+    try { field.focus({ preventScroll: true }); } catch (error) { field.focus(); }
+    if (selection.start != null && field.setSelectionRange) {
+      try { field.setSelectionRange(selection.start, selection.end, selection.direction); } catch (error) { /* ignore */ }
+    }
+  }
+
   // Rendering replaces #app, so a focused text field becomes a new node. Most
   // form fields carry no id, so find them again by data-action and position.
   function captureTypingFocus(app) {
-    var active = typeof document !== "undefined" ? document.activeElement : null;
-    if (!active || !active.tagName || !app || !app.contains || !app.contains(active)) return null;
-    var tag = String(active.tagName).toUpperCase();
+    var active = document.activeElement;
+    if (!active || !app.contains || !app.contains(active)) return null;
+    var tag = active.tagName;
     if (tag !== "TEXTAREA" && !(tag === "INPUT" && TYPING_INPUT_TYPES.test(active.type || "text"))) return null;
-    var snapshot = { id: active.id || "", action: "", index: -1, start: null, end: null, direction: "none" };
+    var snapshot = { id: active.id || "", action: "", index: -1, selection: selectionSnapshot(active) };
     if (!snapshot.id) {
-      var action = active.getAttribute ? active.getAttribute("data-action") : "";
-      if (!action || !/^[a-z0-9-]+$/i.test(action) || !app.querySelectorAll) return null;
+      var action = active.getAttribute("data-action") || "";
+      if (!/^[a-z0-9-]+$/i.test(action) || !app.querySelectorAll) return null;
       snapshot.action = action;
       snapshot.index = Array.prototype.indexOf.call(app.querySelectorAll('[data-action="' + action + '"]'), active);
       if (snapshot.index < 0) return null;
     }
-    try {
-      snapshot.start = active.selectionStart;
-      snapshot.end = active.selectionEnd == null ? active.selectionStart : active.selectionEnd;
-      snapshot.direction = active.selectionDirection || "none";
-    } catch (error) { /* type without a selection API */ }
     return snapshot;
   }
 
@@ -1161,15 +1173,11 @@
   function restoreTypingFocus(app, snapshot) {
     if (!snapshot) return;
     var current = document.activeElement;
-    if (current && current !== document.body && current !== document.documentElement) return;
+    if (current && current !== document.body) return;
     var next = snapshot.id
       ? document.getElementById(snapshot.id)
-      : (app.querySelectorAll ? app.querySelectorAll('[data-action="' + snapshot.action + '"]')[snapshot.index] : null);
-    if (!next || !next.focus || next.disabled) return;
-    try { next.focus({ preventScroll: true }); } catch (error) { next.focus(); }
-    if (snapshot.start != null && next.setSelectionRange) {
-      try { next.setSelectionRange(snapshot.start, snapshot.end, snapshot.direction); } catch (error) { /* ignore */ }
-    }
+      : app.querySelectorAll('[data-action="' + snapshot.action + '"]')[snapshot.index];
+    if (next && next.focus && !next.disabled) focusField(next, snapshot.selection);
   }
 
   // Inline Agent controls can re-render the whole shell below the fold.
@@ -1184,19 +1192,7 @@
     var pageY = typeof window !== "undefined" ? (window.scrollY || window.pageYOffset || 0) : 0;
     var active = document.activeElement;
     var activeId = active && active.id ? active.id : "";
-    var selectionStart = null;
-    var selectionEnd = null;
-    var selectionDirection = "none";
-    if (activeId) {
-      try {
-        selectionStart = active.selectionStart;
-        selectionEnd = active.selectionEnd == null ? selectionStart : active.selectionEnd;
-        selectionDirection = active.selectionDirection || "none";
-      } catch (error) {
-        selectionStart = null;
-        selectionEnd = null;
-      }
-    }
+    var selection = activeId ? selectionSnapshot(active) : null;
     render();
     var nextMain = document.querySelector(".main");
     if (nextMain) {
@@ -1205,12 +1201,7 @@
     }
     if (activeId) {
       var nextActive = document.getElementById(activeId);
-      if (nextActive && nextActive.focus) {
-        try { nextActive.focus({ preventScroll: true }); } catch (error) { nextActive.focus(); }
-        if (selectionStart != null && nextActive.setSelectionRange) {
-          try { nextActive.setSelectionRange(selectionStart, selectionEnd, selectionDirection); } catch (error) { /* ignore */ }
-        }
-      }
+      if (nextActive && nextActive.focus) focusField(nextActive, selection);
     }
     // Focus restoration can itself scroll an off-screen input into view in
     // browsers that ignore preventScroll. Make page position the final state.

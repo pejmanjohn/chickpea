@@ -67,10 +67,8 @@ interface FakeTypingField {
   tagName: string;
   type: string;
   id: string;
-  disabled: boolean;
   selectionStart: number;
   selectionEnd: number;
-  selectionDirection: string;
   getAttribute(name: string): string | null;
   focus(): void;
   setSelectionRange(start: number, end: number): void;
@@ -851,10 +849,8 @@ function runAdminPageHarness(
         tagName: 'INPUT',
         type: 'password',
         id: '',
-        disabled: false,
         selectionStart: 0,
         selectionEnd: 0,
-        selectionDirection: 'none',
         getAttribute(name: string) {
           return name === 'data-action' ? action : null;
         },
