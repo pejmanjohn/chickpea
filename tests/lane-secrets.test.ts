@@ -42,6 +42,23 @@ test('shares plain names across lanes and lets a lane prefix override one', () =
   }
 });
 
+test('uploads a Composio key only from its own lane override and warns about a shared one', () => {
+  const file = withLaneFile('COMPOSIO_API_KEY=shared-composio\nAMBER__COMPOSIO_API_KEY=amber-composio\n');
+  try {
+    const amber = resolveLaneSecrets('amber', { env: noEnv, file: file.path });
+    assert.equal(amber.secrets.COMPOSIO_API_KEY, 'amber-composio');
+    assert.deepEqual(amber.warnings, []);
+    const cobalt = resolveLaneSecrets('cobalt', { env: noEnv, file: file.path });
+    assert.equal('COMPOSIO_API_KEY' in cobalt.secrets, false);
+    assert.equal(cobalt.held.includes('COMPOSIO_API_KEY'), false);
+    const line = describeLaneSecrets(cobalt);
+    assert.match(line, /WARNING: shared COMPOSIO_API_KEY ignored; set COBALT__COMPOSIO_API_KEY/);
+    assert.doesNotMatch(line, /shared-composio|amber-composio/);
+  } finally {
+    file.cleanup();
+  }
+});
+
 test('reports names and fingerprints but never values', () => {
   const file = withLaneFile('OPENAI_API_KEY=sk-very-secret\nASANA_QA_TOKEN=asana-secret\n');
   try {

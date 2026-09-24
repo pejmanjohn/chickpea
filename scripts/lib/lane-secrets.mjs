@@ -36,6 +36,11 @@ export const LANE_WORKER_SECRET_NAMES = [
   'OPENROUTER_API_KEY',
 ];
 
+// Keys tied to one lane's own provider project. Each lane is registered with
+// its own Composio project and auth configs, so a shared value would point
+// every lane at one project; only `<LANE>__NAME` is uploaded for these.
+export const LANE_ONLY_SECRET_NAMES = ['COMPOSIO_API_KEY'];
+
 const LABEL = 'The lane secrets file';
 const NAME = /^[A-Z][A-Z0-9_]*$/;
 const MAX_FILE_BYTES = 64 * 1024;
@@ -106,13 +111,24 @@ export function resolveLaneSecrets(target, { env = process.env, file = defaultLa
     secrets[name] = value;
     report.push({ name, source, fingerprint: fingerprint(value) });
   }
+  const warnings = [];
+  for (const name of LANE_ONLY_SECRET_NAMES) {
+    const override = entries.get(`${own}${name}`);
+    if (override) {
+      secrets[name] = override;
+      report.push({ name, source: `${target} override`, fingerprint: fingerprint(override) });
+    } else if (entries.get(name)) {
+      warnings.push(`shared ${name} ignored; set ${own}${name} to this lane's own key`);
+    }
+  }
   const held = [...entries.entries()]
     .filter(([, value]) => value)
     .map(([name]) => name)
     .map((name) => (name.startsWith(own) ? name.slice(own.length) : name))
     .filter((name, index, all) => !prefixes.some((prefix) => name.startsWith(prefix))
-      && !LANE_WORKER_SECRET_NAMES.includes(name) && all.indexOf(name) === index);
-  return { file, secrets, report, held };
+      && !LANE_WORKER_SECRET_NAMES.includes(name) && !LANE_ONLY_SECRET_NAMES.includes(name)
+      && all.indexOf(name) === index);
+  return { file, secrets, report, held, warnings };
 }
 
 /** A short, non-reversible marker for comparing a key across lanes. */
@@ -126,7 +142,8 @@ export function describeLaneSecrets(resolved) {
     ? 'no provider keys set'
     : resolved.report.map((entry) => `${entry.name} (${entry.source}, ${entry.fingerprint})`).join(', ');
   const held = resolved.held.length ? `; not uploaded (for seeding): ${resolved.held.join(', ')}` : '';
-  return `Lane secrets from ${resolved.file}: ${uploaded}${held}`;
+  const warnings = resolved.warnings?.length ? `; WARNING: ${resolved.warnings.join('; ')}` : '';
+  return `Lane secrets from ${resolved.file}: ${uploaded}${held}${warnings}`;
 }
 
 // Preview without deploying: `node scripts/lib/lane-secrets.mjs <lane>...`

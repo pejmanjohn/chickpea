@@ -78,7 +78,12 @@
    lane. Every guarded deploy to a claimed lane uploads the provider keys the
    product reads from its environment (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`,
    `OPENROUTER_API_KEY`, `BROWSERBASE_API_KEY`) in its atomic secrets file.
-   Empty values are skipped. A rebuilt lane therefore regains its keys on its
+   Empty values are skipped. `COMPOSIO_API_KEY` is lane-only: each lane is
+   registered with its own Composio project and auth configs, so only
+   `<LANE>__COMPOSIO_API_KEY` is uploaded (use that lane's current project key
+   so existing managed connections keep working), and a shared value is
+   ignored with a warning. With it set, Admin shows the Composio key as
+   deployment-managed. A rebuilt lane therefore regains its keys on its
    first deploy, and changing a key means editing the file and redeploying each
    lane. Other names, such as a connector token that belongs in the database,
    are reported and left for a seeding step. The deploy log and
