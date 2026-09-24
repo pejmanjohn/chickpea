@@ -31,7 +31,7 @@ report    [--output FILE]            Generate Markdown from the record
 All files must be outside Git. The record is private and never runs a browser,
 claims/deploys a lane, retries an action, or cleans a resource. See
 qa/live/operator/records.md for a spec and event examples. Use existing
-verify:regression --record FILE [--reuse] for measured offline check receipts.
+verify:regression --record FILE for measured offline check receipts.
 `;
 
 export function runRecordCli(argv, root = ROOT, io = {}) {

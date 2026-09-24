@@ -50,15 +50,17 @@ security releases, then verify it once; do not retain a second runtime sweep.
 
 The release command requires clean committed source without private environment
 files. Its steps run cheapest and most likely to fail first, and the first
-failure ends the run:
+failure ends the run. The contract checks, the Node scheduler proof, and
+cf-smoke run together after one shared Node build; the export runs last and
+alone:
 
 | step | proves | typical |
 | --- | --- | --- |
 | `verify:hygiene` | source hygiene of committed HEAD (above) | 2 s |
 | `build` | the Cloudflare artifact builds within the size budget | 3 s |
 | `verify:node-scheduler-capability`, `evaluate:agent-authoring`, `evaluate:schedule-contract`, `verify:admin-ui` | authoring, schedule, and Admin contracts | 5 s |
-| `verify:node-scheduler-offline` | Node schedules deliver once across restarts and crashes | 35 s |
-| `verify:cf-smoke` | both Cloudflare profiles build; the core profile runs in local workerd | 80 s |
+| `verify:node-scheduler-offline` | Node schedules deliver once across restarts and crashes, including Flue's own 30 s crash-lease expiry (other modes expire the lease directly) | 35 s |
+| `verify:cf-smoke` | both Cloudflare profiles build; the core profile runs in local workerd | 55 s |
 | `verify:oss-export` | the immutable archive installs from the lockfile with an empty npm cache, builds, passes the full root/CLI suite, the offline turn, durability, and provider checks, and a deployment dry run | 215 s |
 
 The full suite runs exactly once per release, inside the export, where a pass is
@@ -69,12 +71,12 @@ inventory and offline checks only after the whole export passes. Old receipts
 do not acquire new coverage retroactively. Missing logs, source/configuration
 drift, and unresolved failures still block completion.
 
-The root test suite runs through `scripts/run-tests.mjs` under 4-way
+The root test suite runs through `scripts/run-tests.mjs` under 8-way
 concurrency: files that fail, or that end without reporting a single test,
 are rerun once, alone. A file that passes alone is logged as
 `RETRIED IN ISOLATION` and the run still passes; note it in the release notes.
-A file that fails or stays silent twice, or more than five failing files, fails
-the run. Verification servers take loopback ports from a fixed range outside
+A file that fails or stays silent twice, or more failing files than the
+runner's concurrency, fails the run. Verification servers take loopback ports from a fixed range outside
 the OS ephemeral range, locked per host under
 `~/.chickpea/verification-host/ports/`; the offline durability harness still
 retries a server start that lost its port to a foreign process. Neither retry

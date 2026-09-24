@@ -161,7 +161,7 @@ npm run verify:live:record -- finish --run "$run_dir/run.json" \
 npm run verify:live:record -- status --run "$run_dir/run.json"
 # Refresh observed contexts/capabilities after a fix, restart, actor or browser change.
 npm run verify:live:record -- refresh --spec "$run_dir/spec.json" --reason "Local candidate updated after diagnosis" --run "$run_dir/run.json"
-npm run verify:regression -- --area routines --record "$run_dir/run.json" --reuse
+npm run verify:regression -- --area routines --record "$run_dir/run.json"
 npm run verify:live:record -- begin --case channel-schedule --reason "Fixed persisted destination; new conversation and due occurrence" --run "$run_dir/run.json"
 ```
 
@@ -409,7 +409,7 @@ customer fixture before-values, schedule limits, or acceptance outcomes. It does
 not verify cleanup. Obtain a fresh archival and access readback, then append a
 new cleanup event. The original registration and failed cleanup remain visible.
 
-## Evidence reuse and the final checkpoint
+## Offline receipts and the final checkpoint
 
 The offline runner records each step's start, finish, private log, exit/signal,
 duration, Node version, source identity, and effective configuration digest. An
@@ -424,12 +424,13 @@ and the partial log. Once stopped, record `type: offline_interrupted`, `attemptI
 this while the owning process exists. This closes the open attempt as an
 infrastructure failure and permits a deliberate retry without erasing its log.
 
-`--reuse` reuses a successful receipt only for matching working contents including
-dirty/untracked files, Node version, effective environment, check inventory, timeout,
-and intact retained logs. Builds always rerun to restore ignored artifacts. A later
-failure/open attempt defeats an older pass. Environment changes may conservatively
-prevent reuse. Ignored external configuration must be represented in the effective
-environment or recorded context. Never treat unchanged HEAD as sufficient.
+Every offline run executes its checks; a receipt is never copied forward.
+(Records written before `--reuse` was removed show a reused step as not run.) It
+covers only its working contents including dirty/untracked files, Node version,
+effective environment, check inventory, timeout, and intact retained logs. A later
+failure/open attempt defeats an older pass. Ignored external configuration must be
+represented in the effective environment or recorded context. Never treat
+unchanged HEAD as sufficient.
 
 Required offline coverage accumulates across the run's Node 24 plans. A Node 24
 update carries those obligations forward, but receipts must match the current
@@ -450,8 +451,7 @@ intermediate full tests and clean export are unnecessary unless
 the impact or failures justify them.
 
 Once the candidate is stable and committed, deliberately run the complete release
-inventory on Node 24.20.0 from `.nvmrc` with `--mode release --record FILE`. `--reuse`
-is refused in release mode. The report requires this one current-source checkpoint;
+inventory on Node 24.20.0 from `.nvmrc` with `--mode release --record FILE`. The report requires this one current-source checkpoint;
 a build change invalidates them. Follow [releasing](../../../docs/runbooks/releasing.md)
 for audit and profile checks and finish the selected live release matrix. These
 receipts never tag, publish, deploy, or grant release approval. The clean export
@@ -467,8 +467,7 @@ npm run verify:live:record -- report --run "$run_dir/run.json" --output "$run_di
 Run that first command once with the pinned Node 24 runtime on PATH. Generate a new
 report filename after updates; the command refuses to overwrite evidence. Reports
 include first failures, current invalidation, open attempts, exact cleanup, measured
-time and known/unknown cost. Original command duration on a reused receipt is an
-avoided check duration, not a measured end-to-end speedup.
+time and known/unknown cost.
 
 ## Follow-up run history
 

@@ -6,7 +6,7 @@ import { join, resolve } from 'node:path';
 import test, { type TestContext } from 'node:test';
 
 // @ts-expect-error Shared executable JavaScript helpers.
-import { appendEvent, createRun, evidenceRefs, offlineEvent, preflight, readPrivateJson, readRun, renderReport, reusableOffline, status, updateRun } from '../scripts/lib/verification-record.mjs';
+import { appendEvent, createRun, evidenceRefs, offlineEvent, preflight, readPrivateJson, readRun, renderReport, status, updateRun } from '../scripts/lib/verification-record.mjs';
 // @ts-expect-error Shared executable JavaScript helpers.
 import { digest, sourceInputs } from '../scripts/lib/verification-inputs.mjs';
 // @ts-expect-error Shared executable JavaScript helpers.
@@ -327,19 +327,9 @@ test('ordinary recurring schedules stop at count or deadline; duplicate receipts
   assert.equal(status(f.run, source(), NOW + 20000).resources.find((r: { id: string }) => r.id === second.id).stopDue, true);
 });
 
-test('offline reuse rejects changed input, missing/replaced log, build, and newer failure/open attempt', (t) => {
-  const f = fixture(t), fp = 'same';
-  const receipt = offlineEvent(f.run, { type: 'offline_finish', label: 'npm:test', result: 'pass', fingerprint: fp, evidence: evidenceRefs([f.evidence]) });
-  assert.equal(reusableOffline(f.run, 'npm:test', fp)?.id, receipt.id);
-  assert.equal(reusableOffline(f.run, 'npm:test', 'changed'), undefined);
-  assert.equal(reusableOffline(f.run, 'npm:build', fp), undefined);
-  offlineEvent(f.run, { type: 'offline_begin', label: 'npm:test', fingerprint: fp });
-  assert.equal(reusableOffline(f.run, 'npm:test', fp), undefined);
-  offlineEvent(f.run, { ...receipt, type: 'offline_finish', result: 'fail' });
-  assert.equal(reusableOffline(f.run, 'npm:test', fp), undefined);
-  offlineEvent(f.run, { ...receipt, type: 'offline_finish' });
-  writeFileSync(f.evidence, 'new log');
-  assert.equal(reusableOffline(f.run, 'npm:test', fp), undefined);
+test('offline receipts cannot be copied forward from an earlier execution', (t) => {
+  const f = fixture(t);
+  assert.throws(() => offlineEvent(f.run, { type: 'offline_reuse', label: 'npm:test', fingerprint: 'same' }), /Invalid offline receipt/);
 });
 
 test('Node 24 alone completes a release checkpoint with current clean content and intact logs', (t) => {

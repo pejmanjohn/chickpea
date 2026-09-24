@@ -192,10 +192,9 @@ required; an Agent's success claim, a log, build, or simulated cron is insuffici
 Keep Local, deployed, deterministic, and model-only grades separate. Use the lane's
 actual model without substitution. Missing or sampled telemetry proves no absence.
 
-Offline reuse is explicit with `--reuse` and requires matching working contents,
-Node version, effective environment, check inventory, and retained logs. Builds
-always run to restore generated artifacts. Changes invalidate dependent attended
-cases; workflow-only edits preserve earlier product evidence. Serving build,
+Offline checks always execute; a receipt covers only the working contents, Node
+version, effective environment, and check inventory it ran with. Changes
+invalidate dependent attended cases; workflow-only edits preserve earlier product evidence. Serving build,
 model, actor, connection, fixture, or lane-state changes invalidate dependent live
 proof. Record refreshes truthfully; a source SHA alone is not an input fingerprint.
 

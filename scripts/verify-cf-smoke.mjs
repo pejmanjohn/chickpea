@@ -102,13 +102,18 @@ const BETA_FLUE_CLASSES = [
 ];
 const RETIRED_AUTH_CLASSES = ['AuthGuard'];
 
-// Slow-turn case: a distinct channel + thread whose provider is held open past
-// the old ~30s waitUntil horizon, proving the DO alarm relay delivers anyway.
+// Slow-turn case: a distinct channel + thread whose provider reply is held, so
+// the events ack must return before the turn and the DO alarm relay delivers it.
 const SLOW_CHANNEL = 'C0SMOKESLOW';
 const SLOW_MENTION_TS = '1782771000.000100';
-// >35s so the turn outlives the ~30s cancellation a real deploy's events-
-// invocation waitUntil would hit. Overridable for iteration; keep it above 35s.
-const SLOW_TURN_DELAY_MS = Number(process.env.SMOKE_SLOW_TURN_DELAY_MS ?? 36_000);
+// Local workerd does not cancel waitUntil at ~30s (checked 2026-09-24: a 40s
+// waitUntil completed under `wrangler dev`), so a hold past 30s proves nothing
+// here. The hold only has to exceed the 10s fast-ack bound so an inline turn
+// would fail that check. Overridable for iteration; keep it above 10s.
+const SLOW_TURN_DELAY_MS = Number(process.env.SMOKE_SLOW_TURN_DELAY_MS ?? 12_000);
+if (!(SLOW_TURN_DELAY_MS > 10_000)) {
+  throw new Error('SMOKE_SLOW_TURN_DELAY_MS must exceed the 10000 ms fast-ack bound.');
+}
 
 const failures = [];
 let adminCookie = '';
@@ -1840,13 +1845,13 @@ async function main() {
 
     // --- Slow-turn case: DO alarm relay past the old ~30s waitUntil horizon ---
     //
-    // The provider now holds its SSE response open for SLOW_TURN_DELAY_MS
-    // (>35s) — longer than a real deploy's events-invocation waitUntil survives
-    // (tail-log-confirmed death at ~29.5s). Under the relay the events handler
-    // only enqueues (fast ack) and the state DO's alarm() runs the turn with the
-    // platform's 15-minute budget, so the final still lands. miniflare does not
-    // enforce the 30s cap, so this proves the relay PATH works end-to-end for a
-    // long turn; the cancellation it replaces is doc/tail-log-backed.
+    // The provider holds its SSE response open for SLOW_TURN_DELAY_MS. A real
+    // deploy's events-invocation waitUntil dies at ~29.5s (tail-log-confirmed);
+    // under the relay the events handler only enqueues (fast ack) and the state
+    // DO's alarm() runs the turn with the platform's 15-minute budget. Local
+    // workerd does not enforce the 30s cap, so this proves the relay PATH: the
+    // ack returns before the held turn, and the final lands after it. The
+    // cancellation it replaces is doc/tail-log-backed.
     console.log(`• slow-turn case: provider will hold ${SLOW_TURN_DELAY_MS}ms before replying…`);
     backend.configure({ provider: { delayMs: SLOW_TURN_DELAY_MS } });
     const slowGrant = await adminFetch(baseUrl, '/admin/api/agents/agent_default/channels', {
@@ -1892,11 +1897,6 @@ async function main() {
       'slow-turn final carries the stub provider reply (not the failure text)',
     );
     check(slowFinal?.channel === SLOW_CHANNEL, 'slow-turn final landed in the slow channel');
-    check(
-      slowDeliveryMs > 35_000,
-      'slow-turn delivery exceeded the old ~30s waitUntil ceiling',
-      `${slowDeliveryMs}ms`,
-    );
     console.log(
       `• measured slow-turn delivery: ${slowDeliveryMs}ms (fast ack ${slowAckMs}ms; provider held ${SLOW_TURN_DELAY_MS}ms)`,
     );
