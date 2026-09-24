@@ -7502,6 +7502,27 @@ test('Connections load against the workspace the Agent inventory reports without
   assert.equal(harness.agentConnectionGets(), 1);
 });
 
+test('Connections deep links opened in a hidden tab load without a tab click', async () => {
+  // Both branches of the Connections load: workspace known at boot, and
+  // workspace learned from a Slack status round trip first.
+  for (const agentsWorkspaceId of ['T_DESIGN', null]) {
+    const harness = runAdminPageHarness({
+      agents: [connectionsAgent()],
+      agentsWorkspaceId,
+      initialVisibility: 'hidden',
+      initialPath: '/admin/agents/agent_conn',
+      initialSearch: '?tab=connections',
+      slackConnection: connectedSlackFixture(),
+      connectionAccounts: { attached: [] },
+    });
+
+    await flushAsync();
+    assert.equal(harness.agentConnectionGets(), 1, `workspace ${agentsWorkspaceId}`);
+    assert.match(harness.app.innerHTML, /No connections in this Agent yet/);
+    assert.doesNotMatch(harness.app.innerHTML, /Loading connections&hellip;/);
+  }
+});
+
 test('Connections preserve the legacy panel after an explicit account endpoint 404', async () => {
   const harness = runAdminPageHarness({
     agents: [connectionsAgent()],
