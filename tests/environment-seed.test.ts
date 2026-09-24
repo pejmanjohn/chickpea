@@ -96,7 +96,17 @@ test('reports failures as codes without echoing provider text or credentials', a
     createConnection: async () => { throw new Error('upstream said: token sk_live_leak is invalid'); },
   });
   const coded = dependencies({ createConnection: async () => { throw new Error('credential_required'); } });
-  const leaked = await seed({ agentId: 'qa-agent', connections: [{ connector: 'asana', credential: 'sk_live_leak' }] }, { deps });
+  const logged: string[] = [];
+  const originalError = console.error;
+  console.error = (...args: unknown[]) => { logged.push(args.map(String).join(' ')); };
+  let leaked: Awaited<ReturnType<typeof seed>>;
+  try {
+    leaked = await seed({ agentId: 'qa-agent', connections: [{ connector: 'asana', credential: 'sk_live_leak' }] }, { deps });
+  } finally {
+    console.error = originalError;
+  }
+  assert.match(logged.join('\n'), /environment seed connection failed.*"presetId":"asana".*token \[credential\] is invalid/);
+  assert.doesNotMatch(logged.join('\n'), /sk_live_leak/);
   assert.equal(leaked.body.connections[0].status, 'failed');
   assert.equal(leaked.body.connections[0].error, 'connection_failed');
   assert.doesNotMatch(JSON.stringify(leaked.body), /sk_live_leak/);

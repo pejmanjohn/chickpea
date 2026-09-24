@@ -149,8 +149,25 @@ async function seedOne(
     });
     return { ...base, status: 'created', connectionId };
   } catch (error) {
+    console.error('[chickpea] environment seed connection failed', JSON.stringify({
+      presetId: preset.id,
+      error: describeError(error, connection.credential),
+    }));
     return { ...base, status: 'failed', error: safeErrorCode(error) };
   }
+}
+
+/** Operator log detail: error names and bounded messages, with the credential removed. */
+function describeError(error: unknown, credential: string | undefined, depth = 0): unknown {
+  if (!(error instanceof Error)) return { type: typeof error };
+  const scrub = (text: string) => (credential ? text.split(credential).join('[credential]') : text).slice(0, 300);
+  return {
+    name: error.name,
+    message: scrub(error.message),
+    ...(error instanceof AggregateError && depth < 2
+      ? { errors: error.errors.slice(0, 3).map((inner) => describeError(inner, credential, depth + 1)) }
+      : {}),
+  };
 }
 
 function authorizedSeed(authorization: string | undefined, env: PlatformEnv): boolean {
