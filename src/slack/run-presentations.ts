@@ -28,6 +28,8 @@ export type SlackProgressiveEligibilityReason =
   | 'safe_early_release'
   | 'operations_disabled'
   | 'memory'
+  // Retired: a Cloudflare sandbox always carries repository grants, so
+  // `effect_capable` decides first. Kept so previously frozen rows still parse.
   | 'sandbox'
   | 'recovery'
   | 'effect_capable'

@@ -484,6 +484,27 @@ test('presentation diagnostics aggregate only content-free workspace outcomes', 
   }
 });
 
+test('a row frozen with the retired sandbox reason still reads and summarizes', () => {
+  let clock = 1_800_000_000_000;
+  const db = openStateDb(':memory:');
+  try {
+    const store = new SlackRunPresentationStoreLogic(db, () => (clock += 10));
+    const { taskLabels: _taskLabels, ...input } = createInput('run_retired_sandbox');
+    let row = store.create({ ...input, root: { ...ROOT, threadTs: '1785700020.000100' } });
+    row = advance(store, row, {
+      kind: 'freeze_progressive_eligibility',
+      eligibility: { allowed: false, reason: 'sandbox' },
+    });
+    assert.deepEqual(row.progressiveEligibility, {
+      status: 'frozen', allowed: false, reason: 'sandbox',
+    });
+    row = advance(store, row, { kind: 'mark_non_stream_finalized' });
+    assert.deepEqual(store.summarize(ROOT.workspaceId).offers, { 'denied:sandbox': 1 });
+  } finally {
+    db.close();
+  }
+});
+
 test('presentation evidence separates offer, intent, delivery, bytes, and latency without content', () => {
   let clock = 1_800_000_000_000;
   const db = openStateDb(':memory:');
