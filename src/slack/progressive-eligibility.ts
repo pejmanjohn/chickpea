@@ -31,14 +31,28 @@ export function decideProgressiveEligibility(
   }
   const plan = input.runtimePlan;
   if (!plan) return { allowed: false, reason: 'other' };
-  if (
-    plan.mcpConnections.length > 0 ||
-    plan.apiConnections.length > 0 ||
-    plan.repositories.length > 0
-  ) {
+  if (runtimePlanMountsEffectTools(plan)) {
     // Text streams only after the model declares its final answer, once its
     // last tool has settled; the answer-only lock refuses any later tool.
     return { allowed: true, reason: 'final_answer_release' };
   }
   return { allowed: true, reason: 'safe_early_release' };
+}
+
+/**
+ * Whether the frozen plan mounts a tool that can change something outside
+ * this Slack reply. Mirrors the mount predicates in `slack-thread.ts`:
+ * `connection_request` and `attach_file_to_connection` ride on API
+ * connections, the workspace tools on a Cloudflare sandbox, and a browser
+ * data change runs only under an `act` login. Image generation, sign-in
+ * links, and pending account choices post to this conversation only.
+ */
+function runtimePlanMountsEffectTools(plan: RuntimePlanV2): boolean {
+  return plan.mcpConnections.length > 0 ||
+    plan.apiConnections.length > 0 ||
+    (plan.managedConnections?.length ?? 0) > 0 ||
+    plan.repositories.length > 0 ||
+    plan.sandbox.mode === 'cloudflare' ||
+    (plan.browserCapability !== undefined &&
+      (plan.websiteLogins ?? []).some(({ level }) => level === 'act'));
 }
