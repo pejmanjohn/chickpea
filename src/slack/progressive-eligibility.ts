@@ -31,9 +31,6 @@ export function decideProgressiveEligibility(
   }
   const plan = input.runtimePlan;
   if (!plan) return { allowed: false, reason: 'other' };
-  if (plan.sandbox.mode === 'cloudflare') {
-    return { allowed: false, reason: 'sandbox' };
-  }
   if (
     plan.mcpConnections.length > 0 ||
     plan.apiConnections.length > 0 ||

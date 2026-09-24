@@ -478,9 +478,23 @@ test('progressive eligibility closes every replacement and external-effect path'
     concurrentAttributionProven: true,
     replacementCapable: false,
   }), { allowed: false, reason: 'other' });
+  // A Cloudflare sandbox is only selected with repository grants; with them it
+  // is effect-capable, and on the Worker replacement-capable decides first.
   assert.deepEqual(decide({
-    runtimePlan: { ...basePlan, sandbox: { mode: 'cloudflare' } },
-  }), { allowed: false, reason: 'sandbox' });
+    runtimePlan: {
+      ...basePlan,
+      repositories: [{ id: 'repo_1', fullName: 'acme/example' }],
+      sandbox: { mode: 'cloudflare' },
+    },
+  }), { allowed: false, reason: 'effect_capable' });
+  assert.deepEqual(decide({
+    runtimePlan: {
+      ...basePlan,
+      repositories: [{ id: 'repo_1', fullName: 'acme/example' }],
+      sandbox: { mode: 'cloudflare' },
+    },
+    replacementCapable: true,
+  }), { allowed: false, reason: 'other' });
   for (const runtimePlan of [
     { ...basePlan, mcpConnections: [{
       id: 'mcp_1', url: 'https://mcp.example.test', transport: 'streamable-http' as const,
