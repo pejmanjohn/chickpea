@@ -13,6 +13,9 @@ import {
   imageCapabilityForResolution,
   resolveAgentModel,
   resolveAgentModelRoleFromStore,
+  resolveCodingModelForPlan,
+  type CodingModelAgentRoute,
+  type ModelRoleReader,
 } from '../config/model-policy.ts';
 import { getGithubConnection } from '../config/github-app.ts';
 import { isCloudflareTarget } from '../config/runtime-target.ts';
@@ -49,6 +52,7 @@ import {
   shouldHandleRoutineCommandTurn,
 } from '../routines/commands.ts';
 import { isRoutineSlackTurn } from '../routines/slack-context.ts';
+import { replyFooterModelLabel } from './message-format.ts';
 import {
   agentFailureText,
   AgentPromptFailure,
@@ -326,7 +330,13 @@ export async function runTurn(
     : undefined;
   const visibleOwner: SlackPresentationOwner | undefined =
     frozenPresentation?.schemaVersion === 3 ? frozenPresentation.owner : undefined;
-  const footerModelLabel = resolvedModel;
+  // No coding worker exists yet, so the label is the Agent's model alone; the
+  // worker's turn registry supplies `codingWorkerRan` and the frozen
+  // `plan.codingWorkspace.codingModel` when it lands.
+  const footerModelLabel = replyFooterModelLabel({
+    agentModel: resolvedModel,
+    codingWorkerRan: false,
+  });
   const visibleAgentName = visibleOwner?.kind === 'selected_agent'
     ? visibleOwner.persona.name
     : visibleOwner?.kind === 'chickpea'
@@ -1809,12 +1819,28 @@ async function freezeRuntimePlanForTurn(input: {
     canonicalModel,
     runtimeModel.providerAuthRoute,
   );
+  const codingWorkspace = sandboxDecision.selection === 'cloudflare';
+  const codingModel = codingWorkspace
+    ? await freezeCodingModelForTurn({
+        workspaceId: input.turn.workspaceId,
+        agent: input.assignment.agent,
+        reader: configStore,
+        agentRoute: {
+          model: canonicalModel,
+          runtimeModel: runtimeModel.model,
+          ...(runtimeModelRoute ? { runtimeModelRoute } : {}),
+        },
+        settings: settingsStore,
+        ...(input.platformEnv ? { env: input.platformEnv } : {}),
+      })
+    : undefined;
   const candidate = compileRuntimePlanV2({
     turn: input.turn,
     assignment: input.assignment,
     runtimeModel: runtimeModel.model,
     ...(runtimeModelRoute ? { runtimeModelRoute } : {}),
     imageCapability,
+    ...(codingWorkspace ? { codingWorkspace, ...(codingModel ? { codingModel } : {}) } : {}),
     ...(browserCapability ? { browserCapability, websiteLogins } : {}),
     instructions,
     memoryEpoch: input.memoryEpoch,
@@ -1837,6 +1863,46 @@ async function freezeRuntimePlanForTurn(input: {
     throw new Error('Frozen RuntimePlanV2 belongs to another Slack conversation.');
   }
   return { decision, unavailableFallback: sandboxDecision.unavailableFallback };
+}
+
+/**
+ * Freeze the coding model for a turn that has a coding workspace. Shared by
+ * Slack turns and routines so both coordinators resolve the role the same way.
+ */
+export async function freezeCodingModelForTurn(input: {
+  workspaceId: string;
+  agent: { id: string; kind: ResolvedAssignment['agent']['kind'] };
+  reader: ModelRoleReader;
+  agentRoute: CodingModelAgentRoute;
+  settings: SettingsStore;
+  env?: PlatformEnv;
+  resolveModel?: typeof resolveRuntimeModel;
+}) {
+  return resolveCodingModelForPlan({
+    workspaceId: input.workspaceId,
+    agent: { id: input.agent.id, kind: input.agent.kind },
+    reader: {
+      getWorkspaceModelRole: (workspaceId, role) =>
+        input.reader.getWorkspaceModelRole(workspaceId, role),
+      getAgentModelRole: (agentId, role) => input.reader.getAgentModelRole(agentId, role),
+    },
+    agentRoute: input.agentRoute,
+    resolveRoute: async (canonicalModel) => {
+      const resolved = await (input.resolveModel ?? resolveRuntimeModel)(
+        input.agent.id,
+        canonicalModel,
+        { settings: input.settings, ...(input.env ? { env: input.env } : {}) },
+      );
+      const runtimeModelRoute = freezeRuntimeModelRoute(
+        canonicalModel,
+        resolved.providerAuthRoute,
+      );
+      return {
+        runtimeModel: resolved.model,
+        ...(runtimeModelRoute ? { runtimeModelRoute } : {}),
+      };
+    },
+  });
 }
 
 async function resolveRuntimePlanSandboxSelection(

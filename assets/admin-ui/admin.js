@@ -241,6 +241,15 @@
     workspaceImageRoleError: "",
     workspaceImageRoleNotice: "",
     workspaceImageRoleRequestId: 0,
+    // The coding model role picks from the same chat models as the default
+    // above; unset means each Agent's coding workspace uses the Agent's model.
+    workspaceCodingRole: null,
+    workspaceCodingRoleLoaded: false,
+    workspaceCodingRoleDraft: "",
+    workspaceCodingRoleBusy: false,
+    workspaceCodingRoleError: "",
+    workspaceCodingRoleNotice: "",
+    workspaceCodingRoleRequestId: 0,
     modelCatalog: null,
     modelCatalogLoaded: false,
     modelCatalogError: "",
@@ -9167,7 +9176,7 @@
     return head +
       settingsPanelHtml("slack", slackWorkspaceSettingsHtml()) +
       settingsPanelHtml("connectors", connectorsSettingsHtml()) +
-      settingsPanelHtml("providers", onboardingReturn + workspaceDefaultSection + workspaceImageRoleSectionHtml() + providerSection) +
+      settingsPanelHtml("providers", onboardingReturn + workspaceDefaultSection + workspaceImageRoleSectionHtml() + workspaceCodingRoleSectionHtml() + providerSection) +
       settingsPanelHtml("github", githubSectionHtml()) +
       settingsPanelHtml("sandbox", sandboxSectionHtml()) +
       settingsPanelHtml("outbound", egressSectionHtml());
@@ -9405,7 +9414,7 @@
     return '<div class="modal-backdrop"><div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="connector-settings-confirm-title" tabindex="-1" data-role="connector-settings-confirm-dialog"><h2 class="modal-title" id="connector-settings-confirm-title">' + esc(title) + '</h2><p class="modal-body">' + esc(detail) + '</p><p class="managed-impact">Affects ' + Number(impact.accounts || 0) + ' connected account' + (Number(impact.accounts || 0) === 1 ? '' : 's') + ' and ' + Number(impact.schedules || 0) + ' schedule' + (Number(impact.schedules || 0) === 1 ? '' : 's') + '.</p><div class="modal-foot"><button type="button" class="btn btn-ghost" data-action="connector-settings-confirm-cancel">Cancel</button><span class="spacer"></span><button type="button" class="btn ' + (replacing ? 'btn-primary' : 'btn-danger') + '" data-action="connector-settings-confirm-apply">' + (replacing ? 'Validate and replace' : 'Disable in Chickpea') + '</button></div></div></div>';
   }
 
-  function workspaceDefaultModelOptions() {
+  function workspaceDefaultModelOptions(currentDraft) {
     var values = [];
     (state.models && state.models.providers ? state.models.providers : []).forEach(function (provider) {
       if (!provider.configured) return;
@@ -9416,7 +9425,7 @@
         if (values.indexOf(model) < 0) values.push(model);
       });
     });
-    var current = String(state.workspaceDefaultDraft || "");
+    var current = String(currentDraft === undefined ? state.workspaceDefaultDraft || "" : currentDraft || "");
     if (current && values.indexOf(current) < 0) values.unshift(current);
     return values;
   }
@@ -9557,6 +9566,59 @@
       (!changed || state.workspaceImageRoleBusy ? " disabled" : "") + '>' +
       (state.workspaceImageRoleBusy ? '<span class="spinner"></span>Saving&hellip;' : "Save image model") + '</button></div>' +
       imageModelConsentNoteHtml(draft) + status + '</div>';
+    return shelf(summary, control);
+  }
+
+  function workspaceCodingRoleSectionHtml() {
+    var head = '<section class="section workspace-default-section" aria-labelledby="workspace-coding-model-heading">';
+    var title = '<h2 class="section-title" id="workspace-coding-model-heading">Default coding model</h2>';
+    function shelf(summary, control) {
+      return head + '<div class="workspace-default-card workspace-default-shelf"><div class="workspace-default-summary">' +
+        summary + '</div>' + (control || "") + '</div></section>';
+    }
+    if (!state.workspaceCodingRoleLoaded) {
+      return shelf('<div class="workspace-default-title-row">' + title + '</div><p class="hint">Loading coding model&hellip;</p>', "");
+    }
+    var role = state.workspaceCodingRole;
+    if (!role) {
+      return shelf('<div class="workspace-default-title-row">' + title + '</div><p class="field-error" role="alert">' +
+        esc(state.workspaceCodingRoleError || "Connect Slack before choosing a default coding model.") + '</p>', "");
+    }
+    var chosen = String(role.modelId || "");
+    var healthBadge = !chosen
+      ? '<span class="badge badge-off"><span class="dot"></span>Not set</span>'
+      : role.ready === false
+        ? '<span class="badge badge-off"><span class="dot"></span>Repair required</span>'
+        : '<span class="badge badge-on"><span class="dot"></span>Ready</span>';
+    var repair = chosen && role.ready === false
+      ? '<a class="link-btn" href="/admin/settings/providers">Review ' + esc(chosen.split("/")[0] || "model") + ' provider settings</a>'
+      : "";
+    var summary = '<div class="workspace-default-title-row">' + title + healthBadge + '</div>' +
+      '<div class="workspace-default-copy"><p class="hint">Used by coding workspaces. Agents without one use their own model.</p>' +
+      (IS_CLOUDFLARE ? "" : '<p class="hint">Cloudflare coding sandbox only.</p>') +
+      (chosen && role.ready === false ? '<p class="hint">' + esc(chosen + " is unavailable, so coding workspaces use each Agent's own model until its provider is ready.") + '</p>' : "") +
+      '</div>' + repair;
+    var draft = String(state.workspaceCodingRoleDraft || "");
+    var values = workspaceDefaultModelOptions(draft);
+    if (chosen && values.indexOf(chosen) < 0) values.unshift(chosen);
+    var optionHtml = '<option value=""' + (draft ? "" : " selected") + '>Not set</option>' +
+      values.map(function (modelId) {
+        return '<option value="' + esc(modelId) + '"' + (modelId === draft ? ' selected' : '') + '>' + esc(modelId) + '</option>';
+      }).join("");
+    var changed = draft !== chosen;
+    var disabled = state.workspaceCodingRoleBusy ? " disabled" : "";
+    var status = state.workspaceCodingRoleError
+      ? '<p class="field-error" role="alert" aria-live="assertive">' + esc(state.workspaceCodingRoleError) + '</p>'
+      : state.workspaceCodingRoleNotice
+        ? '<p class="inline-status ok" role="status" aria-live="polite">' + esc(state.workspaceCodingRoleNotice) + '</p>'
+        : '<span class="sr-only" role="status" aria-live="polite"></span>';
+    var control = '<div><div class="workspace-default-control"><label class="field" for="workspace-coding-model"><span class="sr-only">Coding model</span>' +
+      '<span class="select-wrap"><select class="input mono" id="workspace-coding-model" data-action="workspace-coding-model"' + disabled + '>' + optionHtml + '</select>' +
+      icon("chevron-down", "select-caret") + '</span></label>' +
+      '<button type="button" class="btn btn-primary" data-action="workspace-coding-model-save"' +
+      (!changed || state.workspaceCodingRoleBusy ? " disabled" : "") + '>' +
+      (state.workspaceCodingRoleBusy ? '<span class="spinner"></span>Saving&hellip;' : "Save coding model") + '</button></div>' +
+      status + '</div>';
     return shelf(summary, control);
   }
 
@@ -10078,6 +10140,8 @@
     state.workspaceDefaultNotice = "";
     state.workspaceImageRoleError = "";
     state.workspaceImageRoleNotice = "";
+    state.workspaceCodingRoleError = "";
+    state.workspaceCodingRoleNotice = "";
     if (state.settingsSection === "agents-clients") {
       state.mcpClients = { loading: true, error: "", data: null, notice: "", noticeFor: "" };
       render();
@@ -10110,6 +10174,7 @@
     loadSettings(generation).then(function () { renderSettingsLoad(generation); });
     loadWorkspaceDefault(generation).then(function () { renderSettingsLoad(generation); });
     loadWorkspaceImageRole(generation).then(function () { renderSettingsLoad(generation); });
+    workspaceCodingRoleControls.load(generation).then(function () { renderSettingsLoad(generation); });
     // The image catalog already loaded with the page data; re-render from state
     // instead of re-fetching it, the same guard the picker's lazy lists use.
     // A boot fetch that failed is still retried here.
@@ -10586,10 +10651,11 @@
     });
   }
 
-  // The Workspace chat default and the workspace default image model are the
-  // same section twice over: one value carrying one revision, a staleness-
-  // guarded load, and an optimistic save that re-applies the server's value on a
-  // revision conflict while preserving the operator's draft. Both triplets come
+  // The Workspace chat default and the workspace default image and coding
+  // models are the same section three times over: one value carrying one
+  // revision, a staleness-guarded load, and an optimistic save that re-applies
+  // the server's value on a revision conflict while preserving the operator's
+  // draft. Every triplet comes
   // from this factory; only the state prefix, the endpoint, the response key,
   // the client-side validation and the copy differ.
   function createWorkspaceModelSection(options) {
@@ -10711,6 +10777,28 @@
     loadErrorText: "Could not load the default image model.",
     saveErrorText: "Could not save the default image model.",
     conflictText: "The default image model changed in another session. Your selection is preserved; save again to replace the current value."
+  });
+
+  var workspaceCodingRoleControls = createWorkspaceModelSection({
+    stateKey: "workspaceCodingRole",
+    endpoint: "/admin/api/workspace-model-roles/coding",
+    responseKey: "workspaceModelRole",
+    conflictCode: "model_role_revision_conflict",
+    actionId: "workspace-coding-model",
+    // Options are the configured chat models and the empty option is the
+    // clear; the server checks the catalog and provider before saving.
+    clearable: true,
+    validate: function () {
+      return "";
+    },
+    savedNotice: function (value) {
+      return value && value.modelId
+        ? "Default coding model saved. Coding workspaces use it from the next request."
+        : "Default coding model cleared. Coding workspaces use each Agent's own model from the next request.";
+    },
+    loadErrorText: "Could not load the default coding model.",
+    saveErrorText: "Could not save the default coding model.",
+    conflictText: "The default coding model changed in another session. Your selection is preserved; save again to replace the current value."
   });
 
   function applyWorkspaceDefault(value, preserveDraft) {
@@ -13097,6 +13185,7 @@
     if (action === "model-catalog-refresh") { refreshModelCatalogFromSettings(); }
     if (action === "workspace-default-save") { saveWorkspaceDefault(); }
     if (action === "workspace-image-model-save") { saveWorkspaceImageRole(); }
+    if (action === "workspace-coding-model-save") { workspaceCodingRoleControls.save(); }
     if (action === "prov-add-key") { openProviderPaste(target.getAttribute("data-provider"), "add"); }
     if (action === "prov-change-key") { openProviderPaste(target.getAttribute("data-provider"), "change"); }
     if (action === "prov-cancel-key") { closeProviderPaste(target.getAttribute("data-provider")); }
@@ -13769,6 +13858,13 @@
       state.workspaceDefaultNotice = "";
       render();
       focusAction("workspace-default-model");
+    }
+    if (action === "workspace-coding-model" && !state.workspaceCodingRoleBusy) {
+      state.workspaceCodingRoleDraft = target.value;
+      state.workspaceCodingRoleError = "";
+      state.workspaceCodingRoleNotice = "";
+      render();
+      focusAction("workspace-coding-model");
     }
     if (action === "workspace-image-model" && !state.workspaceImageRoleBusy) {
       state.workspaceImageRoleDraft = target.value;

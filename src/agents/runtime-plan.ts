@@ -196,6 +196,12 @@ export interface RuntimePlanV2 {
    */
   browserCapability?: RuntimePlanBrowserCapabilityV1;
   /**
+   * Frozen coding-workspace capability. Present only when a coding workspace
+   * is available this turn; carries the coding model frozen for the whole
+   * turn, so a long coding run never changes model midway.
+   */
+  codingWorkspace?: RuntimePlanCodingWorkspaceV1;
+  /**
    * Website logins this Agent may use in the hosted browser, frozen as
    * metadata only (never a password or TOTP seed). Present only alongside
    * `browserCapability` and only when at least one grant is enabled.
@@ -240,6 +246,33 @@ export interface RuntimePlanImageCapabilityV3 {
   supportsOutputControls?: boolean;
 }
 
+/** Coding-workspace capability; its presence means a workspace is available. */
+export interface RuntimePlanCodingWorkspaceV1 {
+  available: true;
+  codingModel?: RuntimePlanCodingModelV1;
+}
+
+/**
+ * The coding model role, resolved at admission: the Agent pin, then the
+ * Workspace default, else the Agent's own chat route (`agent_model`).
+ * `fallback` marks a role that was set but could not be used this turn.
+ */
+export interface RuntimePlanCodingModelV1 {
+  /** Canonical provider/model id, used for attribution in the reply footer. */
+  model: string;
+  /** Internal Flue route for the coding model. */
+  runtimeModel: string;
+  runtimeModelRoute?: FrozenRuntimeModelRoute;
+  attribution: RuntimePlanCodingModelAttributionV1;
+}
+
+export interface RuntimePlanCodingModelAttributionV1 {
+  role: 'coding';
+  source: 'pinned' | 'workspace_default' | 'agent_model';
+  providerId: string;
+  fallback: boolean;
+}
+
 /**
  * Bounded capability record for the hosted browser. Its presence means the
  * browser is on. Never carries a key.
@@ -272,6 +305,10 @@ export interface CompileRuntimePlanV2Input {
   imageCapability?: RuntimePlanImageCapabilityV3;
   /** Resolved hosted-browser capability. Absent means no browser is frozen. */
   browserCapability?: RuntimePlanBrowserCapabilityV1;
+  /** A coding workspace is available this turn. */
+  codingWorkspace?: boolean;
+  /** Frozen coding model; emitted only inside an available coding workspace. */
+  codingModel?: RuntimePlanCodingModelV1;
   /**
    * Granted website logins, already joined by `compileWebsiteLogins`. Frozen
    * only when `browserCapability` is present.
@@ -385,6 +422,14 @@ export function compileRuntimePlanV2(input: CompileRuntimePlanV2Input): RuntimeP
         }
       : {}),
     ...(input.browserCapability ? { browserCapability: { provider: 'browserbase' as const } } : {}),
+    ...(input.codingWorkspace
+      ? {
+          codingWorkspace: {
+            available: true as const,
+            ...(input.codingModel ? { codingModel: parseCodingModel(input.codingModel) } : {}),
+          },
+        }
+      : {}),
     ...(websiteLogins.length > 0 ? { websiteLogins } : {}),
     modelAttribution: frozenModelAttribution(input.assignment),
     ...(input.assignment.modelCredential
@@ -642,6 +687,7 @@ export function parseRuntimePlanV2(
     'model',
     'imageCapability',
     'browserCapability',
+    'codingWorkspace',
     'websiteLogins',
     'modelAttribution',
     'modelCredential',
@@ -669,6 +715,7 @@ export function parseRuntimePlanV2(
     'runtimeModelRoute',
     'imageCapability',
     'browserCapability',
+    'codingWorkspace',
     'websiteLogins',
     'modelAttribution',
     'modelCredential',
@@ -767,6 +814,9 @@ export function parseRuntimePlanV2(
   const browserCapability = record.browserCapability === undefined
     ? undefined
     : parseBrowserCapability(record.browserCapability);
+  const codingWorkspace = record.codingWorkspace === undefined
+    ? undefined
+    : parseCodingWorkspace(record.codingWorkspace);
   const websiteLogins = record.websiteLogins === undefined
     ? undefined
     : arrayOf(record.websiteLogins, 'websiteLogins', parseWebsiteLogin, 50);
@@ -844,6 +894,7 @@ export function parseRuntimePlanV2(
     model,
     ...(imageCapability ? { imageCapability } : {}),
     ...(browserCapability ? { browserCapability } : {}),
+    ...(codingWorkspace ? { codingWorkspace } : {}),
     ...(websiteLogins ? { websiteLogins } : {}),
     ...(modelAttribution ? { modelAttribution } : {}),
     ...(modelCredential ? { modelCredential } : {}),
@@ -1070,6 +1121,9 @@ function computeHarnessRevision(
       model: plan.model,
       ...(plan.imageCapability ? { imageCapability: plan.imageCapability } : {}),
       ...(plan.browserCapability ? { browserCapability: plan.browserCapability } : {}),
+      // Hashed because the plan is the instance's immutable initial data: a
+      // changed coding model must reach a new incarnation, not a stale one.
+      ...(plan.codingWorkspace ? { codingWorkspace: plan.codingWorkspace } : {}),
       ...(plan.websiteLogins ? { websiteLogins: plan.websiteLogins } : {}),
       ...(plan.modelAttribution ? { modelAttribution: plan.modelAttribution } : {}),
       ...(plan.modelCredential ? { modelCredential: plan.modelCredential } : {}),
@@ -1120,6 +1174,58 @@ function parseImageCapability(value: unknown): RuntimePlanImageCapabilityV3 {
   return { role, filled, acceptsImageInput,
     ...(maxOutputsPerCall === undefined ? {} : { maxOutputsPerCall }),
     ...(supportsOutputControls === undefined ? {} : { supportsOutputControls }) };
+}
+
+function parseCodingWorkspace(value: unknown): RuntimePlanCodingWorkspaceV1 {
+  const record = exactRecord(value, 'codingWorkspace', ['available', 'codingModel'], ['codingModel']);
+  if (record.available !== true) {
+    throw new Error('Runtime plan codingWorkspace.available must be true.');
+  }
+  return {
+    available: true,
+    ...(record.codingModel === undefined ? {} : { codingModel: parseCodingModel(record.codingModel) }),
+  };
+}
+
+function parseCodingModel(value: unknown): RuntimePlanCodingModelV1 {
+  const record = exactRecord(
+    value,
+    'codingWorkspace.codingModel',
+    ['model', 'runtimeModel', 'runtimeModelRoute', 'attribution'],
+    ['runtimeModelRoute'],
+  );
+  const model = boundedString(record.model, 'codingModel.model', 3, 240);
+  const runtimeModel = boundedString(record.runtimeModel, 'codingModel.runtimeModel', 3, 240);
+  const runtimeModelRoute = record.runtimeModelRoute === undefined
+    ? undefined
+    : parseFrozenRuntimeModelRoute(record.runtimeModelRoute);
+  validateFrozenRuntimeModelRoute(model, runtimeModel, runtimeModelRoute);
+  const attributionRecord = exactRecord(
+    record.attribution,
+    'codingModel.attribution',
+    ['role', 'source', 'providerId', 'fallback'],
+  );
+  const source = oneOf(attributionRecord.source, 'codingModel.attribution.source', [
+    'pinned',
+    'workspace_default',
+    'agent_model',
+  ] as const);
+  const fallback = booleanField(attributionRecord.fallback, 'codingModel.attribution.fallback');
+  // Only the Agent's own model can stand in for a role that failed.
+  if (fallback && source !== 'agent_model') {
+    throw new Error('Runtime plan codingModel fallback must use the Agent model.');
+  }
+  return {
+    model,
+    runtimeModel,
+    ...(runtimeModelRoute ? { runtimeModelRoute } : {}),
+    attribution: {
+      role: oneOf(attributionRecord.role, 'codingModel.attribution.role', ['coding'] as const),
+      source,
+      providerId: boundedString(attributionRecord.providerId, 'codingModel.attribution.providerId', 1, 128),
+      fallback,
+    },
+  };
 }
 
 function parseWebsiteLogin(value: unknown, index: number): RuntimePlanWebsiteLoginV1 {

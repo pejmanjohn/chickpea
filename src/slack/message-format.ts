@@ -390,6 +390,23 @@ function contentBlockFor(rendered: RenderedSlackMessage): SlackMessageBlock {
   return { type: 'markdown', text };
 }
 
+/**
+ * The footer's model label. A turn in which a coding worker ran names the
+ * model that did the code work too, as attribution: "<agent> · coding: <coding>".
+ * It stays the Agent's model alone when no worker ran or both models match.
+ */
+export function replyFooterModelLabel(input: {
+  agentModel: string | undefined;
+  codingModel?: string;
+  codingWorkerRan: boolean;
+}): string | undefined {
+  const { agentModel, codingModel } = input;
+  if (!agentModel || !input.codingWorkerRan || !codingModel || codingModel === agentModel) {
+    return agentModel;
+  }
+  return `${agentModel} · coding: ${codingModel}`;
+}
+
 export function renderSlackReplyFooterBlock(footer: SlackReplyFooter): SlackContextBlock {
   const segments = [escapeSlackControlCharacters(footer.agentName)];
   if (footer.modelLabel) {

@@ -164,6 +164,15 @@ interface HarnessOptions {
   imageModelsFailures?: number;
   deferImageRolePut?: boolean;
   agents?: Array<Record<string, unknown>>;
+  codingRole?: CodingRoleFixture;
+}
+
+interface CodingRoleFixture {
+  workspaceId: string;
+  role: 'coding';
+  modelId: string | null;
+  revision: number;
+  ready: boolean | null;
 }
 
 function runHarness(options: HarnessOptions = {}) {
@@ -183,6 +192,9 @@ function runHarness(options: HarnessOptions = {}) {
   const listeners: Record<string, Listener> = {};
   const windowListeners: Record<string, Listener> = {};
   const imageRolePuts: Array<{ modelId: string | null; expectedRevision: number }> = [];
+  const codingRolePuts: Array<{ modelId: string | null; expectedRevision: number }> = [];
+  let codingRole: CodingRoleFixture = options.codingRole ??
+    { workspaceId: 'T_DESIGN', role: 'coding', modelId: null, revision: 0, ready: null };
   const agentPatchBodies: Array<{ id: string; body: Record<string, unknown> }> = [];
   const fetchCalls: Array<{ path: string; method: string }> = [];
   let imageRolePutResolver: ((response: FakeResponse) => void) | null = null;
@@ -232,7 +244,7 @@ function runHarness(options: HarnessOptions = {}) {
       if (selector === '.main-inner') return app;
       if (selector === '.topbar' || selector === '.body' || selector === '.main') return region;
       const modelPolicyAction = selector.match(
-        /^\[data-action="(workspace-default-model|workspace-image-model|profile-model|profile-image-model)"\]$/,
+        /^\[data-action="(workspace-default-model|workspace-image-model|workspace-coding-model|profile-model|profile-image-model)"\]$/,
       )?.[1];
       if (modelPolicyAction && app.innerHTML.includes(`data-action="${modelPolicyAction}"`)) {
         return focusElement(modelPolicyAction);
@@ -299,6 +311,22 @@ function runHarness(options: HarnessOptions = {}) {
     }
     if (path.startsWith('/admin/api/workspace-model-default')) {
       return Promise.resolve(jsonResponse({ workspaceDefault }));
+    }
+    if (path.startsWith('/admin/api/workspace-model-roles/coding')) {
+      if (method === 'PUT') {
+        const body = JSON.parse(init?.body ?? '{}') as {
+          modelId: string | null;
+          expectedRevision: number;
+        };
+        codingRolePuts.push(body);
+        codingRole = {
+          ...codingRole,
+          modelId: body.modelId,
+          revision: codingRole.revision + 1,
+          ready: body.modelId ? true : null,
+        };
+      }
+      return Promise.resolve(jsonResponse({ workspaceModelRole: { ...codingRole } }));
     }
     if (path.startsWith('/admin/api/workspace-model-roles/image')) {
       if (method === 'PUT') {
@@ -412,6 +440,7 @@ function runHarness(options: HarnessOptions = {}) {
     app,
     listeners,
     imageRolePuts,
+    codingRolePuts,
     agentPatchBodies,
     fetchCalls,
     focusedAction: () => focusedAction,
@@ -707,4 +736,67 @@ test('opening Settings retries the image catalog when the page load failed', asy
   assert.equal(imageCatalogCalls(harness), 2, 'a failed catalog is refetched on Settings open');
   assert.match(harness.app.innerHTML, /data-action="workspace-image-model"/);
   assert.match(harness.app.innerHTML, new RegExp(`<option value="${FLARE.replace('/', '\\/')}"`));
+});
+
+test('Settings offers the default coding model from the chat models, unset by default', async () => {
+  const harness = runHarness({ initialPath: '/admin/settings/providers' });
+  await flushAsync();
+
+  const html = harness.app.innerHTML;
+  assert.match(html, /id="workspace-coding-model-heading">Default coding model<\/h2>/);
+  const section = html.slice(html.indexOf('workspace-coding-model-heading'));
+  assert.match(section, /Used by coding workspaces\. Agents without one use their own model\./);
+  assert.match(section, /<span class="dot"><\/span>Not set/);
+  assert.match(section, /<option value="" selected>Not set<\/option>/);
+  // The picker lists chat models, never the image catalog.
+  assert.match(section, new RegExp(`<option value="${CHAT_MODEL.replace('/', '\\/')}"`));
+  assert.doesNotMatch(section.slice(0, section.indexOf('</section>')), /gpt-image/);
+  assert.match(html, /data-action="workspace-coding-model-save" disabled/);
+  // The section sits beside the image model, after it.
+  assert.ok(html.indexOf('workspace-image-model-heading') < html.indexOf('workspace-coding-model-heading'));
+});
+
+test('saving the default coding model sends the revision and re-renders the readback', async () => {
+  const harness = runHarness({ initialPath: '/admin/settings/providers' });
+  await flushAsync();
+  const change = harness.listeners.change;
+  const click = harness.listeners.click;
+  assert.ok(change && click);
+
+  change({ target: valueTarget({ 'data-action': 'workspace-coding-model' }, CHAT_MODEL) });
+  await flushAsync();
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="workspace-coding-model-save" disabled/);
+  click({ target: actionTarget({ 'data-action': 'workspace-coding-model-save' }) });
+  await flushAsync();
+
+  assert.deepEqual(harness.codingRolePuts, [{ modelId: CHAT_MODEL, expectedRevision: 0 }]);
+  const html = harness.app.innerHTML;
+  const section = html.slice(html.indexOf('workspace-coding-model-heading'));
+  assert.match(section, new RegExp(`<option value="${CHAT_MODEL.replace('/', '\\/')}" selected>`));
+  assert.match(section, /Default coding model saved/);
+  assert.match(section, /<span class="dot"><\/span>Ready/);
+  assert.equal(harness.focusedAction(), 'workspace-coding-model');
+
+  // Clearing sends an explicit null.
+  change({ target: valueTarget({ 'data-action': 'workspace-coding-model' }, '') });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'workspace-coding-model-save' }) });
+  await flushAsync();
+  assert.deepEqual(harness.codingRolePuts[1], { modelId: null, expectedRevision: 1 });
+  assert.match(harness.app.innerHTML, /Default coding model cleared/);
+});
+
+test('a coding model whose provider is not ready shows repair required', async () => {
+  const harness = runHarness({
+    initialPath: '/admin/settings/providers',
+    codingRole: { workspaceId: 'T_DESIGN', role: 'coding', modelId: 'openai/gpt-5.6-sol', revision: 3, ready: false },
+  });
+  await flushAsync();
+  const html = harness.app.innerHTML;
+  const section = html.slice(html.indexOf('workspace-coding-model-heading'));
+  assert.match(section, /Repair required/);
+  assert.match(section, /Review openai provider settings/);
+  assert.match(section, /use each Agent&#39;s own model|use each Agent's own model/);
+  // A stored choice the picker no longer lists stays selectable as itself.
+  assert.match(section, /<option value="openai\/gpt-5\.6-sol" selected>/);
 });
