@@ -12,7 +12,7 @@ import type { RuntimePlanV2 } from '../agents/runtime-plan.ts';
 import { assertArtifactDeliveryAllowed, currentRequestEnvelopeText } from '../memory/tool-policy.ts';
 import {
   ArtifactSizeError, MAX_ARTIFACT_BYTES, readSandboxArtifact, sandboxArtifactPath, workspaceArtifactPath,
-  type ArtifactDestinationBinding, type ArtifactToolResult,
+  type ArtifactDestinationBinding, type ArtifactToolResult, type WorkspaceArtifactSource,
 } from '../sandbox/artifact-tool.ts';
 
 export const COMPLETE_FILE_DELIVERY_TOOL = 'complete_file_delivery';
@@ -26,6 +26,8 @@ const FileOutcomeSchema = v.strictObject({
   attached: v.boolean(), reason: v.optional(v.string()),
   byteLength: v.optional(v.number()), inline: v.optional(v.string()), fileId: v.optional(v.string()),
   maxBytes: v.optional(v.number()),
+  // The coding workspace the file was read from; absent for the Agent's own sandbox.
+  workspace: v.optional(v.string()),
 });
 type FileOutcome = v.InferOutput<typeof FileOutcomeSchema>;
 const CompletionStateSchema = v.strictObject({
@@ -135,6 +137,7 @@ export function createFileDeliveryCompletion(update: StateSetter<FileDeliverySta
         pending: [...new Set([...previous.pending, path])].slice(0, MAX_TRACKED_FILES) }));
       throw error;
     }
+    const source = binding.sourceWorkspace ? { workspace: binding.sourceWorkspace } : {};
     const digest = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes as BufferSource)),
       (byte) => byte.toString(16).padStart(2, '0')).join('');
     const previous = state().outcomes.find((known) => known.path === path && known.digest === digest &&
@@ -151,12 +154,12 @@ export function createFileDeliveryCompletion(update: StateSetter<FileDeliverySta
     noteStagingAttempted();
     try {
       const result = await binding.stageArtifact({ bytes, ...presentation, kind: 'file' });
-      record({ path, filename: presentation.filename, digest, attached: result.attached,
+      record({ path, filename: presentation.filename, digest, ...source, attached: result.attached,
         ...(result.attached ? { byteLength: result.byteLength, ...(result.fileId ? { fileId: result.fileId } : {}) }
           : { reason: result.reason, ...(result.reason === 'too-large' ? { maxBytes: result.maxBytes } : {}), ...inlineOutcome(bytes) }) }, generation);
       return result.attached ? { attached: true, filename: presentation.filename, byteLength: result.byteLength } : result;
     } catch {
-      record({ path, filename: presentation.filename, digest, attached: false,
+      record({ path, filename: presentation.filename, digest, ...source, attached: false,
         reason: 'unavailable', ...inlineOutcome(bytes) }, generation);
       return { attached: false, reason: 'unavailable' };
     }
@@ -166,10 +169,25 @@ export function createFileDeliveryCompletion(update: StateSetter<FileDeliverySta
     deliveryTail = task.then(() => {}, () => {});
     return task;
   }
-  async function complete(env: Sandbox, files: FileDeliveryInput[], binding: ArtifactDestinationBinding, excludedPaths: string[] = []) {
+  async function complete(
+    env: Sandbox,
+    files: FileDeliveryInput[],
+    binding: ArtifactDestinationBinding,
+    excludedPaths: string[] = [],
+    workspaces?: WorkspaceArtifactSource,
+  ) {
     assertArtifactDeliveryAllowed();
     // Validate exclusions before any side effect; absence from files is never removal.
     const before = state();
+    // A file prepared from a coding workspace is re-read from that workspace,
+    // never from the Agent's own sandbox, where the path does not exist.
+    const sourceFor = async (path: string): Promise<{ env: Sandbox; binding: ArtifactDestinationBinding }> => {
+      const workspace = before.outcomes.find((file) => file.path === path && file.workspace)?.workspace;
+      if (!workspace) return { env, binding };
+      const workspaceEnv = await workspaces?.sandbox(workspace);
+      if (!workspaceEnv) throw new Error('The coding workspace for this file is unavailable.');
+      return { env: workspaceEnv, binding: { ...binding, sandboxKind: 'cloudflare', sourceWorkspace: workspace } };
+    };
     const excluded = new Set(excludedPaths.map((path) => {
       try { return resolveFilePath(env, path, binding); }
       catch (error) {
@@ -201,8 +219,9 @@ export function createFileDeliveryCompletion(update: StateSetter<FileDeliverySta
     for (const file of [...files, ...retainedRechecks]) {
       let path = file.path;
       try {
-        path = resolveFilePath(env, file.path, binding);
-        outputs.push(await deliver(env, file, binding));
+        const source = await sourceFor(file.path);
+        path = resolveFilePath(source.env, file.path, source.binding);
+        outputs.push(await deliver(source.env, file, source.binding));
       } catch {
         needsCorrection.push({ path, filename: file.filename, detail: 'source_unavailable' });
         record({ path, filename: file.filename, attached: false, reason: 'source-unavailable' }, generation);
@@ -225,7 +244,7 @@ export function createFileDeliveryCompletion(update: StateSetter<FileDeliverySta
     return { checked, files: outputs, needsCorrection, retained: state().outcomes.filter((file) => file.attached).map((file) => file.filename),
       discarded: removed.map((file) => file.filename) };
   }
-  function tool(binding: ArtifactDestinationBinding) {
+  function tool(binding: ArtifactDestinationBinding, workspaces?: WorkspaceArtifactSource) {
     return defineTool({
       name: COMPLETE_FILE_DELIVERY_TOOL,
       description: 'Finish sandbox file delivery before answering. List final or revised deliverables only. Prepared files are retained even with files=[]. Use excludedPaths to explicitly withdraw a previous deliverable or replace a mistaken source path. Scratch and working files stay private unless requested as final deliverables. Check each returned outcome. needsCorrection lists sources that were not uploaded because they could not be read or named correctly: use read/glob to find the existing file and correct its path or filename. Failed or uncertain uploads are terminal for those bytes; do not retry them.',
@@ -235,7 +254,7 @@ export function createFileDeliveryCompletion(update: StateSetter<FileDeliverySta
       }),
       harness: true,
       async run({ data, harness }) {
-        return { output: await complete(harness.sandbox, data.files, binding, data.excludedPaths) };
+        return { output: await complete(harness.sandbox, data.files, binding, data.excludedPaths, workspaces) };
       },
     });
   }

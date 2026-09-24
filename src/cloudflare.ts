@@ -33,6 +33,7 @@ import {
   getGithubConnection,
 } from './config/github-app.ts';
 import { slackAgentThreadKey } from './slack/thread-key.ts';
+import { sandboxThreadKey } from './sandbox/thread-key.ts';
 import { recordDeliveredSlackAgentMessage } from './slack/public-context.ts';
 import {
   cacheSlackInstallationExecutionContexts,
@@ -1958,12 +1959,14 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
           const binding =
             (this.env as PlatformEnv).SANDBOX ?? (this.env as PlatformEnv).Sandbox;
           if (!binding) return undefined;
-          const conversationKey = slackAgentThreadKey(job.turn, job.assignment);
-          for (const options of cloudflareSandboxOptionVariants(conversationKey)) {
+          // The same Durable Object the workspace uses: the thread key, not
+          // the owner-bound agent key, which names no workspace.
+          const sandboxKey = sandboxThreadKey(slackAgentThreadKey(job.turn, job.assignment));
+          for (const options of cloudflareSandboxOptionVariants(sandboxKey)) {
             try {
               const sandbox = getSandbox(
                 binding as Parameters<typeof getSandbox>[0],
-                conversationKey,
+                sandboxKey,
                 options,
               ) as ReturnType<typeof getSandbox> & {
                 getTurnId(): Promise<string | undefined>;

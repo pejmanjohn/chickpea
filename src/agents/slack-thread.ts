@@ -159,6 +159,7 @@ import {
   POST_ARTIFACT_TOOL_NAME,
   type SlackArtifactStageInput,
   type SlackArtifactStageOutcome,
+  type WorkspaceArtifactSource,
   isStreamedFile,
 } from '../sandbox/artifact-tool.ts';
 import {
@@ -2225,23 +2226,26 @@ export function createRuntimePlanArtifactTools(
         streamMode: isCloudflareTarget() ? 'stream' : 'file',
       })
     : undefined;
+  // Reading a workspace file for delivery is export-only, so it stays
+  // available during a file-delivery repair.
+  const workspaceSource: WorkspaceArtifactSource | undefined = runtimePlanWorkspaceToolsMounted(plan, false)
+    ? {
+        sandbox: async (name) => {
+          const resolve = options.resolveWorkspace ??
+            runtimePlanWorkspaceResolver(plan, { release: false });
+          return (await resolve(name))?.sandbox();
+        },
+      }
+    : undefined;
   return [
     createWorkspaceArtifactTool(
       { ...binding, sandboxKind: plan.sandbox.mode },
       options.fileCompletion?.deliver,
-      // Reading a workspace file for delivery is export-only, so it stays
-      // available during a file-delivery repair.
-      runtimePlanWorkspaceToolsMounted(plan, false)
-        ? {
-            sandbox: async (name) => {
-              const resolve = options.resolveWorkspace ??
-                runtimePlanWorkspaceResolver(plan, { release: false });
-              return (await resolve(name))?.sandbox();
-            },
-          }
-        : undefined,
+      workspaceSource,
     ),
-    ...(options.fileCompletion ? [options.fileCompletion.tool({ ...binding, sandboxKind: plan.sandbox.mode })] : []),
+    ...(options.fileCompletion
+      ? [options.fileCompletion.tool({ ...binding, sandboxKind: plan.sandbox.mode }, workspaceSource)]
+      : []),
     ...(!options.fileCompletion?.repairing && imageOptions
       ? [createImageArtifactTool(imageOptions), createRecoverImageTool(imageOptions)] : []),
     ...browserTools,
