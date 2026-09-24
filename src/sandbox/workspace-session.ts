@@ -51,6 +51,8 @@ export interface WorkspaceSandboxStub extends DestroyableSandbox, SandboxTurnCon
   endTurn(): Promise<void>;
   /** What egress recorded for this turn, such as a pull request it saw created. */
   getTurnProgress?(): Promise<TurnProgress>;
+  /** Preset the workspace's Git author and committer. Starts the container. */
+  applyGitIdentity(): Promise<void>;
 }
 
 /**
@@ -204,6 +206,11 @@ export class WorkspaceSession<TStub extends WorkspaceSandboxStub = WorkspaceSand
       // A cold follow-up resumes from the thread's checkpoint. The restore
       // starts the container, so it happens only once the turn needs it.
       if (restorable) await stub.restoreWorkspace(this.fingerprint);
+      // Commits carry the installation's identity, never one the model
+      // invents. A failure leaves Git unconfigured but the workspace usable.
+      await stub.applyGitIdentity().catch(() => {
+        console.warn('[chickpea] coding workspace Git identity was not applied');
+      });
     });
     return { stub: activatable, state: restorable ? 'restored' : turn.state };
   }

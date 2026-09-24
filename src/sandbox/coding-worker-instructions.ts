@@ -16,7 +16,7 @@ export const CODING_WORKER_INSTRUCTIONS = [
   '2. Install dependencies with the repository-native command, such as `npm ci`, `npm install`, or `pip install`.',
   '3. Create a feature branch and make the requested changes.',
   '4. Run the relevant verification. Prefer the repository scripts; common fallbacks are `npm test` and `pytest`. Run a build when the task or the repository requires one. Report the real result, including failures.',
-  '5. Commit and push the branch early with normal Git commands, so the work survives the workspace.',
+  '5. Commit and push the branch early with normal Git commands, so the work survives the workspace. The Git author and committer are preset for this workspace: never set or change `user.name` or `user.email`, and never pass `--author`.',
   '6. When the brief asks for a pull request, open it with the GitHub API recipe in the Repositories skill. If the brief says a pull request already exists, update its branch instead of opening another.',
   '',
   '## Screenshots and a running app',
