@@ -24,6 +24,7 @@ import type { SlackArtifactReceipt } from './artifact-receipts.ts';
 import {
   WORKSPACE_MILESTONE_LABELS,
   WORKSPACE_MILESTONES,
+  WORKSPACE_PLAN_TITLE,
   workspaceMilestoneDetail,
   type WorkspaceMilestoneRecord,
 } from './coding-worker-run.ts';
@@ -328,7 +329,7 @@ export class SlackAgentViewPresentation {
       to: input.to,
       ...(input.detail === undefined ? {} : { detail: input.detail }),
     });
-    await this.projectMilestonesBestEffort(presentation);
+    await this.projectMilestonesBestEffort(presentation, [input.taskId]);
   }
 
   /**
@@ -342,6 +343,7 @@ export class SlackAgentViewPresentation {
     const activeIndex = presentation.plan.tasks.findIndex((task) => task.status === 'in_progress');
     if (activeIndex < 0) return;
     const active = presentation.plan.tasks[activeIndex]!;
+    const changed = [active.id];
     presentation = await this.transition(presentation, {
       kind: 'transition_task',
       taskId: active.id,
@@ -357,9 +359,10 @@ export class SlackAgentViewPresentation {
         to: 'not_run',
         detail: 'Not run: work stopped after the prior milestone failed.',
       });
+      changed.push(task.id);
       if (presentation.schemaVersion !== 3 || !presentation.plan) return;
     }
-    await this.projectMilestonesBestEffort(presentation);
+    await this.projectMilestonesBestEffort(presentation, changed);
   }
 
   async recordTerminalDeliveryReceipt(
@@ -1114,7 +1117,8 @@ export class SlackAgentViewPresentation {
       await this.startNativePlan(presentation, target.instanceId, target.submissionId);
       return;
     }
-    await this.projectMilestonesBestEffort(presentation);
+    const task = presentation.plan.tasks[WORKSPACE_MILESTONES.indexOf(record.milestone)];
+    await this.projectMilestonesBestEffort(presentation, task ? [task.id] : []);
   }
 
   private async advanceWorkspaceMilestone(
@@ -1714,14 +1718,18 @@ export class SlackAgentViewPresentation {
     }
   }
 
-  private async projectMilestonesBestEffort(presentation: SlackRunPresentation): Promise<void> {
+  /** Appends the rows named by `changed`, the tasks this call just moved. */
+  private async projectMilestonesBestEffort(
+    presentation: SlackRunPresentation,
+    changed: readonly string[],
+  ): Promise<void> {
     if (presentation.schemaVersion !== 3 || presentation.stream.state !== 'streaming' ||
-        !presentation.stream.messageTs || !presentation.plan) return;
+        !presentation.stream.messageTs || !presentation.plan || changed.length === 0) return;
     try {
       await this.options.client.chat.appendStream({
         channel: presentation.root.channelId,
         ts: presentation.stream.messageTs,
-        chunks: taskChunks(presentation),
+        chunks: taskChunks(presentation, { only: new Set(changed) }),
       } as unknown as Parameters<WebClient['chat']['appendStream']>[0]);
     } catch (error) {
       // Execution truth is already durable. A Slack projection failure cannot
@@ -1817,6 +1825,10 @@ function streamStartPayload(
   const taskChunks = input.taskChunks ?? [];
   const chunks: AnyChunk[] = [
     ...(input.markdownText ? [{ type: 'markdown_text' as const, text: input.markdownText }] : []),
+    // Sent once, with the card: later updates would append to it.
+    ...(taskChunks.length > 0 && hasWorkspacePlan(presentation)
+      ? [{ type: 'plan_update' as const, title: WORKSPACE_PLAN_TITLE }]
+      : []),
     ...taskChunks,
   ];
   return {
@@ -1850,14 +1862,28 @@ function hasWorkspacePlan(presentation: SlackRunPresentation): boolean {
     titles.every((title, index) => title === WORKSPACE_MILESTONE_LABELS[index]);
 }
 
-function taskChunks(presentation: SlackRunPresentation): AnyChunk[] {
-  return presentation.plan?.tasks.map((task) => ({
-    type: 'task_update',
-    id: task.id,
-    title: task.title,
-    status: task.status,
-    ...('detail' in task && task.detail ? { details: task.detail } : {}),
-  })) ?? [];
+/**
+ * Slack appends a task's `details` on every update that carries them, so a
+ * settled row's detail is sent once: with the update that settles it, or with
+ * the chunks that open the stream. Later updates name only its status.
+ */
+function taskChunks(
+  presentation: SlackRunPresentation,
+  options: { only?: ReadonlySet<string>; details?: boolean } = {},
+): AnyChunk[] {
+  const details = options.details ?? true;
+  return presentation.plan?.tasks
+    .filter((task) => !options.only || options.only.has(task.id))
+    .map((task): AnyChunk => {
+      const detail = details ? (task as { detail?: string }).detail : undefined;
+      return {
+        type: 'task_update',
+        id: task.id,
+        title: task.title,
+        status: task.status,
+        ...(detail ? { details: detail } : {}),
+      };
+    }) ?? [];
 }
 
 function terminalTaskChunks(
@@ -1865,8 +1891,9 @@ function terminalTaskChunks(
   status: 'complete' | 'error',
 ): AnyChunk[] {
   if (presentation.schemaVersion === 3) {
+    // A streamed card already received each settled row's detail.
     return presentation.plan?.tasks.some((task) => task.status !== 'pending')
-      ? taskChunks(presentation)
+      ? taskChunks(presentation, { details: presentation.stream.state === 'absent' })
       : [];
   }
   return presentation.plan?.tasks.map((task) => ({

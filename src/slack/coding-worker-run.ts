@@ -36,6 +36,9 @@ export const WORKSPACE_MILESTONE_DATA_NAME = 'chickpeaWorkspaceMilestone';
 export const WORKSPACE_MILESTONES = ['workspace', 'changes', 'pull_request'] as const;
 export type WorkspaceMilestone = (typeof WORKSPACE_MILESTONES)[number];
 
+/** The checklist's fixed title; without one Slack titles it by the active row. */
+export const WORKSPACE_PLAN_TITLE = 'Coding task';
+
 /** The checklist rows, in milestone order: result nouns, like the other plans. */
 export const WORKSPACE_MILESTONE_LABELS: readonly string[] = [
   'Coding workspace',

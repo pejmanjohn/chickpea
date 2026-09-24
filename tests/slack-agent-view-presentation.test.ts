@@ -800,7 +800,13 @@ test('V3 milestones stay hidden until an authoritative transition and project on
     ]);
     const projected = h.calls.filter((call) => call.method === 'chat.appendStream').at(-1)
       ?.input.chunks as Array<Record<string, unknown>>;
-    assert.deepEqual(projected.map((task) => task.details), [
+    // Slack appends details on every update that carries them: the failure
+    // update names only the rows it moved.
+    assert.deepEqual(projected.map((task) => [task.id, task.details]), [
+      [updateId, 'Failed: the update could not be prepared'],
+      [publishId, 'Not run: work stopped after the prior milestone failed.'],
+    ]);
+    assert.deepEqual(detailsSent(h), [
       'Completed: customer inspected.',
       'Failed: the update could not be prepared',
       'Not run: work stopped after the prior milestone failed.',
@@ -819,6 +825,15 @@ function milestone(
 }
 
 const WORKSPACE_TARGET = { instanceId: 'instance_workspace', submissionId: 'submission_workspace' };
+
+/** Every task detail this run sent to Slack, in order: each must appear once. */
+function detailsSent(h: { calls: Array<{ method: string; input: Record<string, unknown> }> }): unknown[] {
+  return h.calls
+    .filter((call) => ['chat.startStream', 'chat.appendStream', 'chat.stopStream'].includes(call.method))
+    .flatMap((call) => ((call.input.chunks ?? []) as Array<Record<string, unknown>>)
+      .filter((chunk) => chunk.type === 'task_update' && chunk.details !== undefined)
+      .map((chunk) => chunk.details));
+}
 
 function taskRows(input: Record<string, unknown> | undefined): Array<[unknown, unknown, unknown]> {
   return ((input?.chunks ?? []) as Array<Record<string, unknown>>)
@@ -840,6 +855,9 @@ test('workspace milestones open the native checklist, advance it, and settle wit
     const starts = h.calls.filter((call) => call.method === 'chat.startStream');
     assert.equal(starts.length, 1);
     assert.equal(starts[0]!.input.markdown_text, undefined);
+    assert.deepEqual((starts[0]!.input.chunks as Array<Record<string, unknown>>)[0], {
+      type: 'plan_update', title: 'Coding task',
+    });
     assert.deepEqual(taskRows(starts[0]!.input), [
       ['Coding workspace', 'in_progress', undefined],
       ['Code changes', 'pending', undefined],
@@ -853,11 +871,13 @@ test('workspace milestones open the native checklist, advance it, and settle wit
     await h.presentation.applyWorkspaceMilestone(milestone('workspace', 'started'), WORKSPACE_TARGET);
     await h.presentation.applyWorkspaceMilestone(milestone('changes', 'started'), WORKSPACE_TARGET);
     assert.equal(h.calls.filter((call) => call.method === 'chat.appendStream').length, appendsBefore);
-    assert.deepEqual(taskRows(h.calls.filter((call) => call.method === 'chat.appendStream').at(-1)?.input), [
-      ['Coding workspace', 'complete', 'Completed: the coding workspace is ready.'],
-      ['Code changes', 'in_progress', undefined],
-      ['Pull request', 'pending', undefined],
-    ]);
+    assert.deepEqual(
+      h.calls.filter((call) => call.method === 'chat.appendStream').map((call) => taskRows(call.input)),
+      [
+        [['Coding workspace', 'complete', 'Completed: the coding workspace is ready.']],
+        [['Code changes', 'in_progress', undefined]],
+      ],
+    );
 
     await h.presentation.applyWorkspaceMilestone(
       milestone('changes', 'changed', { branch: 'fix-login-test' }),
@@ -873,10 +893,19 @@ test('workspace milestones open the native checklist, advance it, and settle wit
     const stop = h.calls.find((call) => call.method === 'chat.stopStream')?.input;
     const chunks = stop?.chunks as Array<Record<string, unknown>>;
     assert.equal(chunks[0]?.type, 'markdown_text');
+    const planUpdates = h.calls.flatMap((call) => ((call.input.chunks ?? []) as Array<Record<string, unknown>>)
+      .filter((chunk) => chunk.type === 'plan_update'));
+    assert.equal(planUpdates.length, 1, 'the title is sent once, with the card');
+    // The stop settles every row's status; each detail already reached Slack once.
     assert.deepEqual(taskRows(stop), [
-      ['Coding workspace', 'complete', 'Completed: the coding workspace is ready.'],
-      ['Code changes', 'complete', 'Changed: pushed branch fix-login-test.'],
-      ['Pull request', 'complete', 'Completed: acme/app#12.'],
+      ['Coding workspace', 'complete', undefined],
+      ['Code changes', 'complete', undefined],
+      ['Pull request', 'complete', undefined],
+    ]);
+    assert.deepEqual(detailsSent(h), [
+      'Completed: the coding workspace is ready.',
+      'Changed: pushed branch fix-login-test.',
+      'Completed: acme/app#12.',
     ]);
   } finally {
     h.db.close();
