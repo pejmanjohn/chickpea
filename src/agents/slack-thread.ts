@@ -21,6 +21,7 @@ import {
   useInstruction,
   useMcpConnection,
   useModel,
+  usePersistentState,
   useSandbox,
   useSkill,
   useTool,
@@ -148,20 +149,30 @@ import {
   type SandboxSelection,
 } from '../sandbox/select.ts';
 import { reserveMonthlySandboxSession } from '../sandbox/session-cap.ts';
-import { currentWorkspaceRegistry } from '../sandbox/workspace-registry.ts';
+import { currentWorkspaceRegistry, workspaceRegistryKey } from '../sandbox/workspace-registry.ts';
 import { CODING_WORKSPACE_USE_DATA_NAME } from '../sandbox/workspace-use.ts';
 import {
   DEFAULT_WORKSPACE_NAME,
+  EMPTY_WORKSPACE_ROSTER,
+  createWorkspaceRoster,
+  defaultOnlyWorkspaceRoster,
+  normalizeWorkspaceName,
+  type WorkspaceRoster,
+  type WorkspaceRosterState,
+} from '../sandbox/workspace-limits.ts';
+import {
   WorkspaceSession,
-  defaultWorkspaceId,
+  workspaceIdFor,
+  workspaceReservationId,
   type WorkspaceSandboxStub,
 } from '../sandbox/workspace-session.ts';
-import { createWorkspaceTools } from '../sandbox/workspace-tools.ts';
+import { createWorkspaceTools, type WorkspaceResolver } from '../sandbox/workspace-tools.ts';
 import { SandboxUnavailableError } from '../sandbox/errors.ts';
 import {
   CHICKPEA_SUBMISSION_DURABILITY,
   WORKSPACE_TASK_INSTRUCTION,
   createRuntimePlanWorkspaceTaskTool,
+  workspaceTaskRunning,
 } from './coding-worker-task.ts';
 import {
   buildArtifactToolsInstruction,
@@ -1512,11 +1523,19 @@ export function useRuntimePlanAgent(
   const writeWorkspaceUse = useDataWriter(CODING_WORKSPACE_USE_DATA_NAME, {
     schema: v.object({ opened: v.literal(true) }),
   });
+  const [workspaceRosterState, updateWorkspaceRoster] = usePersistentState<WorkspaceRosterState>(
+    CODING_WORKSPACE_ROSTER_STATE_NAME,
+    EMPTY_WORKSPACE_ROSTER,
+  );
+  const workspaceRoster = plan.sandbox.mode === 'cloudflare'
+    ? defaultOnlyWorkspaceRoster()
+    : createWorkspaceRoster(workspaceRosterState, updateWorkspaceRoster);
   const resolveWorkspace = runtimePlanWorkspaceResolver(plan, {
     ...(options.sandboxConversationKey ? { sandboxConversationKey: options.sandboxConversationKey } : {}),
     release: options.releaseCodingWorkspace === true,
     turnId: runtimePlanWorkspaceTurnId(),
     onOpen: () => writeWorkspaceUse({ opened: true }),
+    roster: workspaceRoster,
   });
   // A connected browser mounts with the artifact tools, whose staging carries
   // its proof: the session, skill, tools, and activity all follow this one
@@ -1634,7 +1653,11 @@ export function useRuntimePlanAgent(
   });
   const workspaceToolsMounted = runtimePlanWorkspaceToolsMounted(plan, fileCompletion.repairing);
   if (workspaceToolsMounted) {
-    for (const tool of createWorkspaceTools({ resolve: resolveWorkspace })) {
+    for (const tool of createWorkspaceTools({
+      resolve: resolveWorkspace,
+      ...(plan.sandbox.mode === 'cloudflare' ? {} : { roster: workspaceRoster }),
+      taskRunning: workspaceTaskRunning,
+    })) {
       useTool(tool);
     }
     useTool(createRuntimePlanWorkspaceTaskTool({
@@ -1756,9 +1779,10 @@ export function runtimePlanWorkspaceToolsMounted(
 }
 
 /** Resolves a workspace name to this submission's session, or undefined. */
-export type RuntimePlanWorkspaceResolver = (
-  name: string,
-) => Promise<WorkspaceSession | undefined> | WorkspaceSession | undefined;
+export type RuntimePlanWorkspaceResolver = WorkspaceResolver;
+
+/** Persistent coordinator state: the thread's workspace names, open set, and retirements. */
+export const CODING_WORKSPACE_ROSTER_STATE_NAME = 'codingWorkspaceRoster';
 
 /**
  * How the workspace tools find a workspace this submission. A plan admitted
@@ -1773,6 +1797,8 @@ interface RuntimePlanWorkspaceInput {
   release: boolean;
   turnId?: string | undefined;
   onOpen?: () => void;
+  /** The thread's workspace names; only the default workspace without one. */
+  roster?: WorkspaceRoster;
 }
 
 export function runtimePlanWorkspaceResolver(
@@ -1780,12 +1806,21 @@ export function runtimePlanWorkspaceResolver(
   input: RuntimePlanWorkspaceInput,
 ): RuntimePlanWorkspaceResolver {
   if (plan.sandbox.mode === 'cloudflare') {
-    return (name) => currentWorkspaceRegistry()?.get(name);
+    // The attached container is the only workspace such a plan has.
+    return (name) => name === DEFAULT_WORKSPACE_NAME ? currentWorkspaceRegistry()?.get(name) : undefined;
   }
-  return async (name) => currentWorkspaceRegistry()?.resolve(
-    name,
-    (requested) => createRuntimePlanWorkspace(plan, requested, input),
-  );
+  const roster = input.roster ?? defaultOnlyWorkspaceRoster();
+  return async (name, access = 'use') => {
+    const registry = currentWorkspaceRegistry();
+    if (!registry) return undefined;
+    // A use opens the name (refused past the open cap); either way the
+    // name's current retirement generation picks its workspace id.
+    const generation = access === 'use' ? roster.admit(name) : roster.generation(name);
+    return registry.resolve(
+      workspaceRegistryKey(name, generation),
+      () => createRuntimePlanWorkspace(plan, name, generation, input),
+    );
+  };
 }
 
 /**
@@ -1810,9 +1845,10 @@ function runtimePlanWorkspaceTurnId(): string | undefined {
 async function createRuntimePlanWorkspace(
   plan: RuntimePlanV2,
   name: string,
+  generation: number,
   input: RuntimePlanWorkspaceInput,
 ): Promise<{ session: WorkspaceSession; end: () => Promise<void> } | undefined> {
-  if (!isCloudflareTarget() || name !== DEFAULT_WORKSPACE_NAME || !plan.codingWorkspace) {
+  if (!isCloudflareTarget() || !plan.codingWorkspace) {
     return undefined;
   }
   try {
@@ -1846,6 +1882,8 @@ async function createRuntimePlanWorkspace(
     const session = await createCloudflareWorkspaceSession({
       binding,
       conversationKey: input.sandboxConversationKey ?? runtimePlanConversationKey(plan),
+      name,
+      generation,
       agentId: plan.agentId,
       grants: access.grants,
       ...(access.credentialMode ? { credentialMode: access.credentialMode } : {}),
@@ -2255,9 +2293,17 @@ export function createRuntimePlanArtifactTools(
   const workspaceSource: WorkspaceArtifactSource | undefined = runtimePlanWorkspaceToolsMounted(plan, false)
     ? {
         sandbox: async (name) => {
+          let normalized: string;
+          try {
+            normalized = normalizeWorkspaceName(name);
+          } catch {
+            return undefined;
+          }
           const resolve = options.resolveWorkspace ??
             runtimePlanWorkspaceResolver(plan, { release: false });
-          return (await resolve(name))?.sandbox();
+          // Reading a file for delivery looks at a workspace the thread
+          // already has; it never opens one.
+          return (await resolve(normalized, 'inspect'))?.sandbox();
         },
       }
     : undefined;
@@ -2566,6 +2612,9 @@ async function resolveAgentSandbox(options: AgentSandboxOptions): Promise<Sandbo
 async function createCloudflareWorkspaceSession(options: {
   binding: unknown;
   conversationKey: string;
+  /** The workspace name and retirement generation; the default workspace when absent. */
+  name?: string;
+  generation?: number;
   agentId: string;
   grants: readonly RepositoryGrant[];
   credentialMode?: SandboxCredentialMode;
@@ -2578,7 +2627,8 @@ async function createCloudflareWorkspaceSession(options: {
     import('@flue/runtime/cloudflare'),
     import('@cloudflare/sandbox'),
   ]);
-  const workspaceId = defaultWorkspaceId(options.conversationKey);
+  const name = options.name ?? DEFAULT_WORKSPACE_NAME;
+  const workspaceId = workspaceIdFor(options.conversationKey, name, options.generation ?? 0);
   const provider = (stub: WorkspaceSandboxStub) =>
     cloudflareSandbox(
       contentFreeSandboxExec(stub as unknown as Parameters<typeof cloudflareSandbox>[0]),
@@ -2595,7 +2645,7 @@ async function createCloudflareWorkspaceSession(options: {
     ) as unknown as WorkspaceSandboxStub;
   const session = new WorkspaceSession({
     id: workspaceId,
-    name: DEFAULT_WORKSPACE_NAME,
+    name,
     agentId: options.agentId,
     grants: options.grants,
     ...(options.credentialMode ? { credentialMode: options.credentialMode } : {}),
@@ -2606,7 +2656,7 @@ async function createCloudflareWorkspaceSession(options: {
       (await reserveMonthlySandboxSession({
         store: options.settingsStore,
         cap: options.monthlySessionCap,
-        reservationId,
+        reservationId: workspaceReservationId(options.conversationKey, workspaceId, reservationId),
       })).allowed,
     toSandbox: (stub) => provider(stub).createSandbox({ id: workspaceId }),
   });

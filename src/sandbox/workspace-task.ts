@@ -21,11 +21,20 @@ import {
 import type { CodingWorkerBindingV1 } from './coding-worker-binding.ts';
 import { SandboxSessionCapError, SandboxUnavailableError } from './errors.ts';
 import { WORKSPACE_DIR } from './workspace-lifecycle.ts';
-import { DEFAULT_WORKSPACE_NAME, type WorkspaceSession } from './workspace-session.ts';
 import {
+  MAX_RUNNING_TASKS_PER_WORKSPACE,
+  MAX_WORKSPACE_NAME_CHARS,
+  WorkspaceLimitError,
+  WorkspaceNameError,
+  normalizeWorkspaceName,
+} from './workspace-limits.ts';
+import type { WorkspaceSession } from './workspace-session.ts';
+import {
+  WORKSPACE_NAME_DESCRIPTION,
   WORKSPACE_SESSION_CAP_MESSAGE,
   WORKSPACE_TASK_TOOL_NAME,
   WORKSPACE_UNAVAILABLE_MESSAGE,
+  type WorkspaceResolver,
 } from './workspace-tools.ts';
 
 /**
@@ -59,7 +68,8 @@ export type WorkspaceTaskFailureReason =
   | 'worker_failed'
   | 'busy'
   | 'task_limit'
-  | 'unknown_workspace';
+  | 'workspace_limit'
+  | 'invalid_input';
 
 export type WorkspaceTaskFailure = {
   ok: false;
@@ -108,15 +118,19 @@ export interface CodingWorkerClient {
   }): Promise<AgentReply>;
 }
 
-/** Per-response bookkeeping: tasks started and workspaces with a task running. */
+/** Per-response bookkeeping: tasks started, and tasks running by workspace id. */
 export interface WorkspaceTaskResponseState {
   started: number;
-  running: Set<string>;
+  running: Map<string, number>;
+}
+
+export function emptyWorkspaceTaskResponseState(): WorkspaceTaskResponseState {
+  return { started: 0, running: new Map() };
 }
 
 export interface WorkspaceTaskToolOptions {
-  /** The session for a workspace name this response, or undefined when it has none. */
-  resolve: (name: string) => WorkspaceSession | undefined | Promise<WorkspaceSession | undefined>;
+  /** The session for a workspace name this response; a `use` that opens it. */
+  resolve: WorkspaceResolver;
   /** The worker binding for a workspace id, frozen from the coordinator's plan. */
   binding: (workspaceId: string) => CodingWorkerBindingV1;
   /** The worker instance id for a binding. */
@@ -157,28 +171,41 @@ export function createWorkspaceTaskTool(options: WorkspaceTaskToolOptions) {
     description:
       `Delegate repository work that needs a real checkout to a coding worker in the coding workspace: cloning, installing dependencies, editing several files, running tests or a build, pushing a branch, and opening a pull request. The worker cannot see this conversation, so the task must be a complete brief: the repository, what to change, how to verify it, the branch name to use, and whether to open a pull request. It returns the worker's answer and any pull requests it opened. One task can run for up to ${taskTimeoutMs / 60_000} minutes; at most ${MAX_WORKSPACE_TASKS_PER_RESPONSE} tasks per response. Use workspace_write and workspace_read to move files in and out, and post_artifact with the workspace to attach a file the worker made.`,
     input: v.object({
-      workspace: v.optional(v.pipe(v.string(), v.minLength(1), v.maxLength(64))),
+      workspace: v.optional(v.pipe(
+        v.string(),
+        v.minLength(1),
+        v.maxLength(MAX_WORKSPACE_NAME_CHARS),
+        v.description(WORKSPACE_NAME_DESCRIPTION),
+      )),
       task: v.pipe(v.string(), v.minLength(1), v.maxLength(MAX_WORKSPACE_TASK_BRIEF_CHARS)),
     }),
     durable: true,
     timeoutMs: taskTimeoutMs + WORKSPACE_TASK_TOOL_GRACE_MS,
     async run({ data, step, signal, toolCallId }) {
-      const name = data.workspace ?? DEFAULT_WORKSPACE_NAME;
-      if (name !== DEFAULT_WORKSPACE_NAME) {
-        return { output: failure('unknown_workspace', `Only the "${DEFAULT_WORKSPACE_NAME}" workspace is available.`) };
+      let session: WorkspaceSession | undefined;
+      try {
+        session = await options.resolve(normalizeWorkspaceName(data.workspace), 'use');
+      } catch (error) {
+        if (error instanceof WorkspaceLimitError) return { output: failure('workspace_limit', error.message) };
+        if (error instanceof WorkspaceNameError) return { output: failure('invalid_input', error.message) };
+        const mapped = workspaceFailure(error);
+        if (mapped) return { output: mapped };
+        throw error;
       }
-      const session = await options.resolve(name);
       if (!session) return { output: failure('workspace_unavailable', WORKSPACE_UNAVAILABLE_MESSAGE) };
 
+      // Checked and claimed with no await between, so parallel calls in one
+      // step cannot both pass.
       const state = options.responseState();
-      if (state.running.has(session.id)) {
-        return { output: failure('busy', 'A coding task is already running in this workspace. Wait for its answer before sending another.') };
+      const running = state.running.get(session.id) ?? 0;
+      if (running >= MAX_RUNNING_TASKS_PER_WORKSPACE) {
+        return { output: failure('busy', `A coding task is already running in the "${session.name}" workspace. Wait for its answer before sending another there, or use another workspace.`) };
       }
       if (state.started >= MAX_WORKSPACE_TASKS_PER_RESPONSE) {
         return { output: failure('task_limit', `This response already delegated ${MAX_WORKSPACE_TASKS_PER_RESPONSE} coding tasks. Report what they returned; the person can ask for more in a follow-up.`) };
       }
       state.started += 1;
-      state.running.add(session.id);
+      state.running.set(session.id, running + 1);
       const milestones = createMilestoneRecorder(toolCallId, options.onMilestone);
       try {
         return { output: await runTask(session, data.task) };
@@ -186,7 +213,9 @@ export function createWorkspaceTaskTool(options: WorkspaceTaskToolOptions) {
         // A throw (or an abandoned call) leaves its step failed and later
         // steps not run, so the checklist never shows work still going.
         milestones.stop('stopped');
-        state.running.delete(session.id);
+        const remaining = (state.running.get(session.id) ?? 1) - 1;
+        if (remaining > 0) state.running.set(session.id, remaining);
+        else state.running.delete(session.id);
       }
 
       async function runTask(
@@ -208,6 +237,16 @@ export function createWorkspaceTaskTool(options: WorkspaceTaskToolOptions) {
           }
           throw error;
         }
+
+        // Egress records only the first pull request a workspace sees in a
+        // turn, so an earlier task's pull request is still recorded when a
+        // later task in the same workspace finishes. Note it before this
+        // task starts (recorded, so a retry compares against the same one)
+        // and report the record only if this task made it.
+        const before = await step.do('pull-request-before', async () => {
+          const recorded = await options.recordedPullRequest?.(target).catch(() => undefined);
+          return { url: recorded?.url ?? null };
+        });
 
         const binding = options.binding(target.id);
         const instanceId = options.instanceId(binding);
@@ -256,7 +295,9 @@ export function createWorkspaceTaskTool(options: WorkspaceTaskToolOptions) {
         // ahead of the links the worker wrote.
         const found = new Map<string, WorkspaceTaskPullRequest>();
         const recorded = await options.recordedPullRequest?.(target).catch(() => undefined);
-        if (recorded) found.set(recorded.url.toLowerCase(), { ...recorded });
+        if (recorded && recorded.url.toLowerCase() !== before.url?.toLowerCase()) {
+          found.set(recorded.url.toLowerCase(), { ...recorded });
+        }
         for (const pullRequest of pullRequestLinks(reply.text, binding)) {
           if (!found.has(pullRequest.url.toLowerCase())) found.set(pullRequest.url.toLowerCase(), pullRequest);
         }

@@ -9,6 +9,7 @@ import {
 import { currentWorkspaceRegistry, type WorkspaceTurnRegistry } from '../sandbox/workspace-registry.ts';
 import {
   createWorkspaceTaskTool,
+  emptyWorkspaceTaskResponseState,
   type CodingWorkerClient,
   type WorkspaceTaskResponseState,
   type WorkspaceTaskToolOptions,
@@ -29,7 +30,7 @@ export const CHICKPEA_SUBMISSION_DURABILITY: DurabilityConfig = {
 
 /** The coordinator's one line on delegating; the tool description carries the rest. */
 export const WORKSPACE_TASK_INSTRUCTION =
-  'For repository work that needs a real checkout (installing dependencies, changing several files, running tests or a build, pushing a branch, opening a pull request), delegate to a coding worker with workspace_task and give it a complete brief; it runs on the workspace\'s coding model. Report the pull request links it returns. If a workspace tool reports the workspace unavailable or the worker failed, say so and use the Repositories API path when it covers the request.';
+  'For repository work that needs a real checkout (installing dependencies, changing several files, running tests or a build, pushing a branch, opening a pull request), delegate to a coding worker with workspace_task and give it a complete brief; it runs on the workspace\'s coding model. Report the pull request links it returns. When a request spans two repositories, give each its own named workspace; tasks in different workspaces can run in parallel. If a workspace tool reports the workspace unavailable or the worker failed, say so and use the Repositories API path when it covers the request.';
 
 /** `workspace_task` for a coordinator running `plan`. */
 export function createRuntimePlanWorkspaceTaskTool(input: {
@@ -60,13 +61,19 @@ const responseStates = new WeakMap<WorkspaceTurnRegistry, WorkspaceTaskResponseS
 
 /** One bookkeeping object per submission, keyed by its workspace registry. */
 function responseState(registry: WorkspaceTurnRegistry | undefined): WorkspaceTaskResponseState {
-  if (!registry) return { started: 0, running: new Set() };
+  if (!registry) return emptyWorkspaceTaskResponseState();
   let state = responseStates.get(registry);
   if (!state) {
-    state = { started: 0, running: new Set() };
+    state = emptyWorkspaceTaskResponseState();
     responseStates.set(registry, state);
   }
   return state;
+}
+
+/** Whether this submission has a coding task running in the workspace with this id. */
+export function workspaceTaskRunning(workspaceId: string): boolean {
+  const registry = currentWorkspaceRegistry();
+  return registry ? (responseStates.get(registry)?.running.get(workspaceId) ?? 0) > 0 : false;
 }
 
 /**

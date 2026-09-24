@@ -16,8 +16,29 @@ import {
   DEFAULT_WORKSPACE_NAME,
   WorkspaceSession,
   defaultWorkspaceId,
+  workspaceIdFor,
+  workspaceReservationId,
   type WorkspaceSandboxStub,
 } from '../src/sandbox/workspace-session.ts';
+import {
+  EMPTY_WORKSPACE_ROSTER,
+  MAX_OPEN_WORKSPACES,
+  WorkspaceLimitError,
+  admitWorkspace,
+  closeWorkspace,
+  createWorkspaceRoster,
+  defaultOnlyWorkspaceRoster,
+  normalizeWorkspaceName,
+  openWorkspaceNames,
+  parseRoster,
+  type WorkspaceRosterState,
+} from '../src/sandbox/workspace-limits.ts';
+import { workspaceRegistryKey } from '../src/sandbox/workspace-registry.ts';
+import { WORKSPACE_CHECKPOINT_TTL_SECONDS } from '../src/sandbox/workspace-lifecycle.ts';
+import {
+  codingWorkerBindingForPlan,
+  codingWorkerInstanceId,
+} from '../src/sandbox/coding-worker-binding.ts';
 import {
   MAX_WORKSPACE_EXEC_OUTPUT_BYTES,
   WORKSPACE_TOOL_NAMES,
@@ -173,8 +194,13 @@ function session(
 }
 
 function toolsFor(target: WorkspaceSession | undefined) {
+  const roster = defaultOnlyWorkspaceRoster();
   const tools = createWorkspaceTools({
-    resolve: (name) => (name === DEFAULT_WORKSPACE_NAME ? target : undefined),
+    // As production: a use admits the name first.
+    resolve: (name, access = 'use') => {
+      if (access === 'use') roster.admit(name);
+      return name === DEFAULT_WORKSPACE_NAME ? target : undefined;
+    },
   });
   return Object.fromEntries(tools.map((tool) => [tool.name, tool]));
 }
@@ -204,7 +230,8 @@ test('opening a workspace prepares Durable Object state without starting the con
   const listed = await run(toolsFor(target).workspace_list!, {});
   assert.deepEqual(listed, {
     ok: true,
-    workspaces: [{ workspace: 'main', open: true, running: false, hasCheckpoint: true }],
+    maxOpen: 2,
+    workspaces: [{ workspace: 'main', open: true, state: 'checkpointed', hasCheckpoint: true, taskRunning: false }],
   });
   assert.deepEqual(log.calls, ['describeWorkspace']);
 });
@@ -269,11 +296,17 @@ test('a refused session cap and an unavailable container become typed results, n
   const missing = await run(toolsFor(undefined).workspace_exec!, { command: 'ls' });
   assert.equal(missing.reason, 'workspace_unavailable');
 
+  // Without a roster only the default workspace exists.
   const other = await run(toolsFor(session({ calls: [] })).workspace_exec!, {
     workspace: 'second',
     command: 'ls',
   });
-  assert.equal(other.reason, 'unknown_workspace');
+  assert.equal(other.reason, 'workspace_limit');
+  const invalid = await run(toolsFor(session({ calls: [] })).workspace_exec!, {
+    workspace: 'not/a name',
+    command: 'ls',
+  });
+  assert.equal(invalid.reason, 'invalid_input');
 });
 
 test('unexpected faults still throw so the model sees an error result', async () => {
@@ -656,4 +689,262 @@ test('a root cwd stays outside the workspace instead of mapping onto it', async 
   assert.equal(workspaceDirectoryPath('/workspace//'), '/workspace');
   const output = await run(toolsFor(session({ calls: [] })).workspace_exec!, { command: 'ls', cwd: '/' });
   assert.equal(output.reason, 'invalid_path');
+});
+
+// --- multiple workspaces -----------------------------------------------------
+
+test('named and retired workspace ids are stable, distinct, and never the legacy key', () => {
+  for (const conversation of ['T1:C1:1783000000.000100', 'sandbox_' + 'c'.repeat(40)]) {
+    const legacy = defaultWorkspaceId(conversation);
+    assert.equal(workspaceIdFor(conversation, DEFAULT_WORKSPACE_NAME), legacy, 'default = legacy key');
+    assert.equal(workspaceIdFor(conversation, DEFAULT_WORKSPACE_NAME, 0), legacy);
+    const ids = [
+      workspaceIdFor(conversation, 'api'),
+      workspaceIdFor(conversation, 'web'),
+      workspaceIdFor(conversation, 'api', 1),
+      workspaceIdFor(conversation, 'api', 2),
+      workspaceIdFor(conversation, DEFAULT_WORKSPACE_NAME, 1),
+    ];
+    assert.equal(new Set([legacy, ...ids]).size, ids.length + 1, 'every name and generation is its own workspace');
+    for (const id of ids) {
+      assert.match(id, /^sandbox_[a-f0-9]{40}$/);
+      assert.ok(id.length <= 63, 'within the Sandbox id limit');
+      // The relay's thread-key mapping leaves a workspace id unchanged.
+      assert.equal(sandboxThreadKey(id), id);
+    }
+    assert.equal(workspaceIdFor(conversation, 'api', 1), ids[2], 'stable across calls');
+  }
+  assert.notEqual(
+    workspaceIdFor('T1:C1:1', 'api'),
+    workspaceIdFor('T1:C1:2', 'api'),
+    'a name is scoped to its thread',
+  );
+});
+
+test('the coding worker id includes the workspace id and the binding', () => {
+  const plan = {
+    agentId: 'agent-1',
+    model: 'anthropic/claude-sonnet-5',
+    runtimeModel: 'anthropic/claude-sonnet-5',
+    repositories: [{ id: 'grant-1', fullName: 'acme/app' }],
+    codingWorkspace: { available: true as const },
+  };
+  const conversation = 'T1:C1:1783000000.000100';
+  const main = codingWorkerInstanceId(codingWorkerBindingForPlan(plan, workspaceIdFor(conversation, 'main')));
+  const api = codingWorkerInstanceId(codingWorkerBindingForPlan(plan, workspaceIdFor(conversation, 'api')));
+  const retired = codingWorkerInstanceId(codingWorkerBindingForPlan(plan, workspaceIdFor(conversation, 'api', 1)));
+  const otherModel = codingWorkerInstanceId(codingWorkerBindingForPlan(
+    { ...plan, model: 'openai/gpt-6', runtimeModel: 'openai/gpt-6' },
+    workspaceIdFor(conversation, 'api'),
+  ));
+  assert.equal(new Set([main, api, retired, otherModel]).size, 4);
+  for (const id of [main, api, retired]) {
+    assert.notEqual(id, workspaceIdFor(conversation, 'main'), 'the worker id is never the workspace id');
+  }
+});
+
+test('each workspace but the default qualifies its session reservation', () => {
+  const conversation = 'T1:C1:1783000000.000100';
+  assert.equal(workspaceReservationId(conversation, defaultWorkspaceId(conversation), 'turn-1'), 'turn-1');
+  const api = workspaceIdFor(conversation, 'api');
+  const web = workspaceIdFor(conversation, 'web');
+  assert.equal(workspaceReservationId(conversation, api, 'turn-1'), `turn-1:${api}`);
+  assert.notEqual(
+    workspaceReservationId(conversation, api, 'turn-1'),
+    workspaceReservationId(conversation, web, 'turn-1'),
+    'two workspaces in one turn are two sessions',
+  );
+});
+
+test('workspace names normalize and reject anything else', () => {
+  assert.equal(normalizeWorkspaceName(undefined), 'main');
+  assert.equal(normalizeWorkspaceName('  API '), 'api');
+  assert.equal(normalizeWorkspaceName('tag-team_2'), 'tag-team_2');
+  for (const bad of ['', ' ', '-x', 'a/b', 'a:b', 'a b', 'x'.repeat(33)]) {
+    assert.throws(() => normalizeWorkspaceName(bad), /workspace name/);
+  }
+});
+
+test('the open cap admits two workspaces, refuses a third, and frees a slot on close', () => {
+  const now = 1_000_000;
+  let state: WorkspaceRosterState = EMPTY_WORKSPACE_ROSTER;
+  const admit = (name: string, at = now) => {
+    const result = admitWorkspace(state, name, at);
+    state = result.state;
+    return result.admission;
+  };
+  assert.equal(MAX_OPEN_WORKSPACES, 2);
+  assert.deepEqual(admit('api'), { ok: true, generation: 0 });
+  assert.deepEqual(admit('web'), { ok: true, generation: 0 });
+  assert.deepEqual(admit('api'), { ok: true, generation: 0 }, 'using an open workspace is always admitted');
+  assert.deepEqual(admit('docs'), { ok: false, open: ['api', 'web'] });
+  assert.deepEqual(openWorkspaceNames(state, now), ['api', 'web'], 'a refusal changes nothing');
+
+  state = closeWorkspace(state, 'web', { discard: false, now });
+  assert.deepEqual(admit('docs'), { ok: true, generation: 0 });
+  assert.deepEqual(admit('web'), { ok: false, open: ['api', 'docs'] });
+
+  // A discard retires the name: its next use is generation 1.
+  state = closeWorkspace(state, 'docs', { discard: true, now });
+  assert.deepEqual(admit('docs'), { ok: true, generation: 1 });
+  // A plain close keeps the generation, so reopening finds the same files.
+  state = closeWorkspace(state, 'docs', { discard: false, now });
+  assert.deepEqual(admit('docs'), { ok: true, generation: 1 });
+
+  // A workspace idle past the checkpoint lifetime holds nothing and stops counting.
+  const later = now + WORKSPACE_CHECKPOINT_TTL_SECONDS * 1000;
+  assert.deepEqual(openWorkspaceNames(state, later), []);
+  assert.deepEqual(admit('web', later), { ok: true, generation: 0 });
+});
+
+test('the roster persists through its updater and keeps its own writes visible', () => {
+  let stored: unknown = { schemaVersion: 1, workspaces: { api: { generation: 2, open: true, lastUsedAt: 5 } } };
+  let writes = 0;
+  const roster = createWorkspaceRoster(parseRoster(stored), (updater) => {
+    writes += 1;
+    stored = updater(stored as WorkspaceRosterState);
+  }, () => 10);
+  assert.equal(roster.generation('api'), 2);
+  assert.equal(roster.admit('web'), 0);
+  assert.throws(() => roster.admit('docs'), (error) => error instanceof WorkspaceLimitError);
+  roster.close('api', { discard: true });
+  assert.equal(roster.generation('api'), 3);
+  assert.equal(roster.knows('api'), true);
+  assert.equal(roster.knows('docs'), false);
+  assert.equal(roster.knows('main'), true, 'the default workspace always exists');
+  assert.equal(roster.admit('docs'), 0);
+  assert.equal(writes, 4);
+  assert.deepEqual(parseRoster(stored), roster.snapshot());
+
+  // Malformed state from an earlier release is dropped, not trusted.
+  assert.deepEqual(parseRoster({ schemaVersion: 2 }), EMPTY_WORKSPACE_ROSTER);
+  assert.deepEqual(parseRoster({
+    schemaVersion: 1,
+    workspaces: { 'Bad Name': { generation: 0, open: true, lastUsedAt: 1 }, ok: { generation: -1, open: true, lastUsedAt: 1 } },
+  }), EMPTY_WORKSPACE_ROSTER);
+});
+
+/**
+ * Tools over a roster and a resolver shaped like the coordinator's: a use
+ * admits the name, and the name's generation picks its workspace.
+ */
+function multiWorkspaceTools(options: { running?: Set<string>; describe?: Record<string, { running: boolean; hasCheckpoint: boolean }> } = {}) {
+  let stored: WorkspaceRosterState = EMPTY_WORKSPACE_ROSTER;
+  const roster = createWorkspaceRoster(stored, (updater) => { stored = updater(stored); });
+  const log: StubLog = { calls: [] };
+  const sessions = new Map<string, WorkspaceSession>();
+  const conversation = 'T1:C1:1783000000.000100';
+  const tools = createWorkspaceTools({
+    roster,
+    taskRunning: (id) => options.running?.has(id) ?? false,
+    resolve: (name, access = 'use') => {
+      const generation = access === 'use' ? roster.admit(name) : roster.generation(name);
+      const key = workspaceRegistryKey(name, generation);
+      let found = sessions.get(key);
+      if (!found) {
+        const id = workspaceIdFor(conversation, name, generation);
+        found = new WorkspaceSession({
+          id,
+          name,
+          agentId: 'agent-1',
+          grants: [GRANT],
+          credentialMode: 'app',
+          mintStub: async (): Promise<WorkspaceSandboxStub> => ({
+            ...fakeStub(log),
+            async describeWorkspace() {
+              log.calls.push(`describe:${name}`);
+              return options.describe?.[name] ?? { running: false, hasCheckpoint: false };
+            },
+            async discardWorkspace() {
+              log.calls.push(`discard:${name}`);
+            },
+          }),
+          reserveSession: async () => true,
+          toSandbox: async () => fakeSandbox(),
+        });
+        sessions.set(key, found);
+      }
+      return found;
+    },
+  });
+  return {
+    tools: Object.fromEntries(tools.map((tool) => [tool.name, tool])),
+    log,
+    sessions,
+    conversation,
+    stored: () => stored,
+  };
+}
+
+test('two named workspaces open, a third is refused without touching its Durable Object, and closing frees a slot', async () => {
+  const { tools, log, sessions, conversation } = multiWorkspaceTools();
+  assert.equal((await run(tools.workspace_open!, { workspace: 'api' })).ok, true);
+  assert.equal((await run(tools.workspace_exec!, { workspace: 'web', command: 'true' })).ok, true);
+  log.calls.length = 0;
+  const refused = await run(tools.workspace_open!, { workspace: 'docs' });
+  assert.equal(refused.reason, 'workspace_limit');
+  assert.match(String(refused.message), /open: api, web/);
+  assert.deepEqual(log.calls, [], 'a refused workspace reaches no Durable Object');
+  assert.equal(sessions.has('docs'), false);
+
+  assert.deepEqual(await run(tools.workspace_close!, { workspace: 'web' }), {
+    ok: true, workspace: 'web', closed: true, discarded: false,
+  });
+  const opened = await run(tools.workspace_open!, { workspace: 'docs' });
+  assert.equal(opened.ok, true);
+  assert.equal(sessions.get('docs')?.id, workspaceIdFor(conversation, 'docs'));
+
+  // Closing a name this thread never used is a typed refusal.
+  const unknown = await run(tools.workspace_close!, { workspace: 'never' });
+  assert.equal(unknown.reason, 'not_found');
+});
+
+test('a discard retires the name so its next use is a new workspace', async () => {
+  const { tools, log, sessions, conversation } = multiWorkspaceTools();
+  await run(tools.workspace_open!, { workspace: 'api' });
+  const closed = await run(tools.workspace_close!, { workspace: 'api', discard: true });
+  assert.equal(closed.discarded, true);
+  assert.ok(log.calls.includes('discard:api'));
+  await run(tools.workspace_open!, { workspace: 'api' });
+  assert.equal(sessions.get('api')?.id, workspaceIdFor(conversation, 'api', 0));
+  assert.equal(sessions.get(workspaceRegistryKey('api', 1))?.id, workspaceIdFor(conversation, 'api', 1));
+  assert.notEqual(workspaceIdFor(conversation, 'api', 1), workspaceIdFor(conversation, 'api', 0));
+});
+
+test('workspace_list reports every workspace with its state, open flag, and running task', async () => {
+  const running = new Set<string>();
+  const { tools, log, conversation } = multiWorkspaceTools({
+    running,
+    describe: {
+      main: { running: false, hasCheckpoint: true },
+      api: { running: true, hasCheckpoint: false },
+      web: { running: false, hasCheckpoint: false },
+    },
+  });
+  await run(tools.workspace_open!, { workspace: 'api' });
+  await run(tools.workspace_open!, { workspace: 'web' });
+  await run(tools.workspace_close!, { workspace: 'web' });
+  running.add(workspaceIdFor(conversation, 'api'));
+  log.calls.length = 0;
+  const listed = await run(tools.workspace_list!, {});
+  assert.equal(listed.ok, true);
+  assert.equal(listed.maxOpen, 2);
+  const byName = Object.fromEntries((listed.workspaces as Array<Record<string, unknown>>).map((entry) => [entry.workspace, entry]));
+  assert.deepEqual(Object.keys(byName), ['main', 'api', 'web'], 'the default first, then the thread\'s names');
+  assert.deepEqual(
+    { open: byName.main!.open, state: byName.main!.state, taskRunning: byName.main!.taskRunning },
+    { open: false, state: 'checkpointed', taskRunning: false },
+  );
+  assert.deepEqual(
+    { open: byName.api!.open, state: byName.api!.state, taskRunning: byName.api!.taskRunning },
+    { open: true, state: 'running', taskRunning: true },
+  );
+  assert.deepEqual(
+    { open: byName.web!.open, state: byName.web!.state, taskRunning: byName.web!.taskRunning },
+    { open: false, state: 'empty', taskRunning: false },
+  );
+  assert.equal(typeof byName.api!.lastUsedAt, 'string');
+  // Listing reads DO records only and admits nothing.
+  assert.deepEqual(log.calls.sort(), ['describe:api', 'describe:main', 'describe:web']);
+  assert.equal((await run(tools.workspace_open!, { workspace: 'docs' })).ok, true, 'list never took a slot');
 });

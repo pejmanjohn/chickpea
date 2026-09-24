@@ -10,7 +10,20 @@ import {
 } from './artifact-tool.ts';
 import { SandboxSessionCapError, SandboxUnavailableError } from './errors.ts';
 import { WORKSPACE_DIR } from './workspace-lifecycle.ts';
-import { DEFAULT_WORKSPACE_NAME, type WorkspaceSession } from './workspace-session.ts';
+import {
+  DEFAULT_WORKSPACE_NAME,
+  MAX_OPEN_WORKSPACES,
+  MAX_WORKSPACE_NAME_CHARS,
+  WorkspaceLimitError,
+  WorkspaceNameError,
+  defaultOnlyWorkspaceRoster,
+  normalizeWorkspaceName,
+  openWorkspaceNames,
+  rosterEntry,
+  rosterWorkspaceNames,
+  type WorkspaceRoster,
+} from './workspace-limits.ts';
+import type { WorkspaceSession } from './workspace-session.ts';
 
 export const WORKSPACE_OPEN_TOOL_NAME = 'workspace_open';
 export const WORKSPACE_LIST_TOOL_NAME = 'workspace_list';
@@ -54,7 +67,7 @@ export type WorkspaceFailureReason =
   | 'workspace_unavailable'
   | 'session_cap'
   | 'timeout'
-  | 'unknown_workspace'
+  | 'workspace_limit'
   | 'invalid_path'
   | 'invalid_input'
   | 'too_large'
@@ -67,15 +80,40 @@ export type WorkspaceFailure = {
   maxBytes?: number;
 };
 
+/**
+ * Why a tool reaches a workspace: `use` opens it (and counts against the open
+ * cap); `inspect` only looks at or closes one the conversation already has.
+ */
+export type WorkspaceAccess = 'use' | 'inspect';
+
+/**
+ * The session for a normalized workspace name this request, or undefined when
+ * it has none. Resolving builds a handle only; it never starts a container.
+ * A `use` past the open cap throws {@link WorkspaceLimitError}.
+ */
+export type WorkspaceResolver = (
+  name: string,
+  access?: WorkspaceAccess,
+) => Promise<WorkspaceSession | undefined> | WorkspaceSession | undefined;
+
 export interface WorkspaceToolsOptions {
-  /**
-   * The session for a workspace name this request, or undefined when it has
-   * none. Resolving builds a handle only; it never starts a container.
-   */
-  resolve: (name: string) => Promise<WorkspaceSession | undefined> | WorkspaceSession | undefined;
+  resolve: WorkspaceResolver;
+  /** The conversation's workspace names; only the default workspace without one. */
+  roster?: WorkspaceRoster;
+  /** Whether a coding task is running in the workspace with this id. */
+  taskRunning?: (workspaceId: string) => boolean;
+  now?: () => number;
 }
 
-const WORKSPACE_NAME = v.optional(v.pipe(v.string(), v.minLength(1), v.maxLength(64)));
+export const WORKSPACE_NAME_DESCRIPTION =
+  `Workspace name (default "${DEFAULT_WORKSPACE_NAME}"). Use one workspace per repository or line of work, for example "api" and "web"; at most ${MAX_OPEN_WORKSPACES} can be open in this thread.`;
+
+const WORKSPACE_NAME = v.optional(v.pipe(
+  v.string(),
+  v.minLength(1),
+  v.maxLength(MAX_WORKSPACE_NAME_CHARS),
+  v.description(WORKSPACE_NAME_DESCRIPTION),
+));
 
 export const WORKSPACE_UNAVAILABLE_MESSAGE =
   'The coding workspace is temporarily unavailable. Say so, and use the Repositories API path if it covers the request; do not retry this call in the same reply.';
@@ -89,40 +127,47 @@ export const WORKSPACE_SESSION_CAP_MESSAGE =
  * `{ ok: false, reason, message }` results; only unexpected faults throw.
  */
 export function createWorkspaceTools(options: WorkspaceToolsOptions) {
-  const session = async (name: string | undefined): Promise<WorkspaceSession | WorkspaceFailure> => {
-    const requested = name ?? DEFAULT_WORKSPACE_NAME;
-    if (requested !== DEFAULT_WORKSPACE_NAME) {
-      return failure('unknown_workspace', `Only the "${DEFAULT_WORKSPACE_NAME}" workspace is available.`);
+  const roster = options.roster ?? defaultOnlyWorkspaceRoster();
+  const now = options.now ?? Date.now;
+  const session = async (
+    name: string,
+    access: WorkspaceAccess,
+  ): Promise<WorkspaceSession | WorkspaceFailure> => {
+    if (access === 'inspect' && !roster.knows(name)) {
+      return failure('not_found', `This thread has no workspace named "${name}".`);
     }
-    return (await options.resolve(requested)) ?? failure('workspace_unavailable', WORKSPACE_UNAVAILABLE_MESSAGE);
+    return (await options.resolve(name, access)) ??
+      failure('workspace_unavailable', WORKSPACE_UNAVAILABLE_MESSAGE);
   };
 
   // Every tool body runs under `guard`, so path normalization inside it
   // surfaces as an `invalid_path` result like any other expected refusal.
   const withWorkspace = async <T>(
     name: string | undefined,
-    work: (target: WorkspaceSession) => Promise<T>,
+    work: (target: WorkspaceSession, name: string) => Promise<T>,
     signal?: AbortSignal,
+    access: WorkspaceAccess = 'use',
   ): Promise<T | WorkspaceFailure> => {
     // Resolving runs under `guard` too: a workspace that cannot be reached is
     // a typed result the model sees, never a failed turn.
     return guard(async () => {
-      const target = await session(name);
-      return 'ok' in target ? target : work(target);
+      const normalized = normalizeWorkspaceName(name);
+      const target = await session(normalized, access);
+      return 'ok' in target ? target : work(target, normalized);
     }, signal);
   };
 
   const open = defineTool({
     name: WORKSPACE_OPEN_TOOL_NAME,
     description:
-      'Open the coding workspace (a real Linux container with the granted repositories reachable) for this request. Prepares it without starting the container; the first command or file operation starts it. A workspace is ephemeral: its files survive only while it is warm or checkpointed, dependencies are never checkpointed, and a pushed branch is the only durable result. Never assume a file from an earlier request exists without checking, and never store secrets in it.',
+      `Open a coding workspace (a real Linux container with the granted repositories reachable). Prepares it without starting the container; the first command or file operation starts it. Each workspace is its own container: at most ${MAX_OPEN_WORKSPACES} can be open in this thread, and each counts as one coding session. A workspace is ephemeral: its files survive only while it is warm or checkpointed, dependencies are never checkpointed, and a pushed branch is the only durable result. Never assume a file from an earlier request exists without checking, and never store secrets in it.`,
     input: v.object({ workspace: WORKSPACE_NAME }),
     timeoutMs: SHORT_TIMEOUT_MS,
     async run({ data }) {
       return {
-        output: await withWorkspace(data.workspace, async (target) => ({
+        output: await withWorkspace(data.workspace, async (target, name) => ({
           ok: true as const,
-          workspace: target.name,
+          workspace: name,
           state: await target.open(),
         })),
       };
@@ -132,16 +177,33 @@ export function createWorkspaceTools(options: WorkspaceToolsOptions) {
   const list = defineTool({
     name: WORKSPACE_LIST_TOOL_NAME,
     description:
-      'List this conversation\'s coding workspaces: whether each is open in this request, running, and has a saved checkpoint. Never starts a container.',
+      `List this thread's coding workspaces. For each: whether it is open (at most ${MAX_OPEN_WORKSPACES} can be), its state (running: the container is up; checkpointed: asleep with its files saved; empty: nothing kept), whether a coding task is running in it, and when it was last used. Never starts a container.`,
     input: v.object({}),
     timeoutMs: SHORT_TIMEOUT_MS,
     annotations: { readOnlyHint: true },
-    async run() {
+    async run({ signal }) {
       return {
-        output: await withWorkspace(undefined, async (target) => ({
-          ok: true as const,
-          workspaces: [{ workspace: target.name, open: target.isOpen, ...(await target.describe()) }],
-        })),
+        output: await guard(async () => {
+          const snapshot = roster.snapshot();
+          const open = openWorkspaceNames(snapshot, now());
+          const workspaces = await Promise.all(rosterWorkspaceNames(snapshot).map(async (name) => {
+            const target = await options.resolve(name, 'inspect');
+            if (!target) return { workspace: name, open: false, state: 'unavailable' as const };
+            const { running, hasCheckpoint } = await target.describe();
+            const lastUsedAt = rosterEntry(snapshot, name)?.lastUsedAt;
+            return {
+              workspace: name,
+              // The roster is the record of what is open; a plan without one
+              // has only the default workspace, open once this request used it.
+              open: options.roster ? open.includes(name) : target.isOpen,
+              state: running ? 'running' as const : hasCheckpoint ? 'checkpointed' as const : 'empty' as const,
+              hasCheckpoint,
+              taskRunning: options.taskRunning?.(target.id) ?? false,
+              ...(lastUsedAt === undefined ? {} : { lastUsedAt: new Date(lastUsedAt).toISOString() }),
+            };
+          }));
+          return { ok: true as const, maxOpen: MAX_OPEN_WORKSPACES, workspaces };
+        }, signal),
       };
     },
   });
@@ -149,16 +211,17 @@ export function createWorkspaceTools(options: WorkspaceToolsOptions) {
   const close = defineTool({
     name: WORKSPACE_CLOSE_TOOL_NAME,
     description:
-      'Close a coding workspace. By default it stays warm for follow-ups and is checkpointed when this request ends. With discard: true the container is destroyed and its checkpoint dropped (use it when the workspace is broken or its contents must not carry over); the next open starts fresh.',
+      'Close a coding workspace so it no longer counts as open. By default its files stay warm for follow-ups and are checkpointed when this request ends; opening it again by name picks them up. With discard: true the container is destroyed and its checkpoint dropped (use it when the workspace is broken or its contents must not carry over); the next open of that name starts fresh with a new coding worker.',
     input: v.object({ workspace: WORKSPACE_NAME, discard: v.optional(v.boolean()) }),
     timeoutMs: SHORT_TIMEOUT_MS,
     async run({ data }) {
       const discarded = data.discard === true;
       return {
-        output: await withWorkspace(data.workspace, async (target) => {
+        output: await withWorkspace(data.workspace, async (target, name) => {
           if (discarded) await target.discard();
-          return { ok: true as const, workspace: target.name, closed: true, discarded };
-        }),
+          roster.close(name, { discard: discarded });
+          return { ok: true as const, workspace: name, closed: true, discarded };
+        }, undefined, 'inspect'),
       };
     },
   });
@@ -376,6 +439,8 @@ function workspaceFailure(error: unknown, signal?: AbortSignal): WorkspaceFailur
   if (error instanceof SandboxUnavailableError || error instanceof SandboxDiedError) {
     return failure('workspace_unavailable', WORKSPACE_UNAVAILABLE_MESSAGE);
   }
+  if (error instanceof WorkspaceLimitError) return failure('workspace_limit', error.message);
+  if (error instanceof WorkspaceNameError) return failure('invalid_input', error.message);
   if (signal?.aborted || (error instanceof Error && error.name === 'AbortError')) {
     return failure('timeout', 'The workspace operation did not finish in time.');
   }
