@@ -26,6 +26,7 @@ const V2_BINDINGS = [
   'FLUE_CHICKPEA_SLACK_V2_AGENT/FlueChickpeaSlackV2Agent',
   'FLUE_CHICKPEA_ROUTINE_INTENT_V2_AGENT/FlueChickpeaRoutineIntentV2Agent',
   'FLUE_CHICKPEA_ROUTINE_EXECUTION_V2_AGENT/FlueChickpeaRoutineExecutionV2Agent',
+  'FLUE_CHICKPEA_CODING_WORKER_V1_AGENT/FlueChickpeaCodingWorkerV1Agent',
 ].sort();
 
 interface DurableObjectMigration {
