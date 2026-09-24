@@ -141,10 +141,11 @@ export class BrowserLoginBinder {
     const logins = await this.mounted();
     const matches = (candidates: readonly BrowserWebsiteLogin[]) =>
       candidates.filter((login) => websiteLoginMatchesUrl(login.host, target));
+    const grantedSite = matches(this.granted).length > 0;
     if (loginId) {
       const login = classifyGrantedLogin(this.granted, logins, loginId);
       if (login === 'unknown') {
-        if (matches(this.granted).length > 0) throw new Error(BROWSER_UNKNOWN_LOGIN_MESSAGE);
+        if (grantedSite) throw new Error(BROWSER_UNKNOWN_LOGIN_MESSAGE);
         return undefined;
       }
       const host = login === 'revoked' ? this.granted.find(({ id }) => id === loginId)!.host : login.host;
@@ -154,7 +155,7 @@ export class BrowserLoginBinder {
     }
     const live = matches(logins);
     if (live.length === 0) {
-      if (matches(this.granted).length > 0) throw new Error(BROWSER_LOGIN_REVOKED_MESSAGE);
+      if (grantedSite) throw new Error(BROWSER_LOGIN_REVOKED_MESSAGE);
       return undefined;
     }
     const specificity = (login: BrowserWebsiteLogin) => login.host.replace(/:\d+$/, '').length;
