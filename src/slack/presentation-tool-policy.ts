@@ -25,8 +25,8 @@ interface PresentationToolPolicyState {
   artifactDeliveryAttempted: boolean;
   /** A tool ran whose result the host may substitute for the model draft. */
   draftReplacementAttempted?: boolean;
-  /** Final-answer mode: non-declaration tools currently executing. */
-  inFlightTools?: number;
+  /** Non-declaration tools currently executing. */
+  inFlightTools: number;
   fileDeliveryPending?: () => boolean;
   fileDeliveryAttempted?: () => boolean;
   fileDeliveryRepairing?: () => boolean;
@@ -93,6 +93,7 @@ export const presentationToolPolicyInterceptor: FlueExecutionInterceptor = async
     return submissionPolicy.run({
       answerOnly: false,
       artifactDeliveryAttempted: false,
+      inFlightTools: 0,
     }, next);
   }
 
@@ -104,11 +105,7 @@ export const presentationToolPolicyInterceptor: FlueExecutionInterceptor = async
 
   if (operation.toolName === SLACK_STREAM_ANSWER_TOOL_NAME) {
     assertFileDeliveryChecked(active);
-    const finalAnswer =
-      currentRequestProgressiveStreamingMode(active.envelope) === 'final_answer';
-    if (!currentRequestOffersProgressiveStreaming(active.envelope) ||
-        artifactDeliveryAttempted(active) || active.draftReplacementAttempted ||
-        (finalAnswer && (active.inFlightTools ?? 0) > 0)) {
+    if (!currentRequestOffersProgressiveStreaming(active.envelope) || declarationRefused(active)) {
       throw new SlackPresentationToolUnavailableError();
     }
     const result = await next();
@@ -117,8 +114,7 @@ export const presentationToolPolicyInterceptor: FlueExecutionInterceptor = async
     // the declaration was awaiting its result. File delivery wins until the
     // answer-only lock is committed; never acknowledge both paths. A final
     // answer likewise cannot be declared beside a tool still running.
-    if (artifactDeliveryAttempted(active) || active.draftReplacementAttempted ||
-        (finalAnswer && (active.inFlightTools ?? 0) > 0)) {
+    if (declarationRefused(active)) {
       throw new SlackPresentationToolUnavailableError();
     }
     active.answerOnly = true;
@@ -143,7 +139,7 @@ export const presentationToolPolicyInterceptor: FlueExecutionInterceptor = async
   if (DRAFT_REPLACING_TOOL_NAMES.has(operation.toolName)) {
     active.draftReplacementAttempted = true;
   }
-  active.inFlightTools = (active.inFlightTools ?? 0) + 1;
+  active.inFlightTools += 1;
   try {
     return await next();
   } finally {
@@ -155,6 +151,16 @@ function isArtifactUploadTool(name: string): boolean {
   // An empty completion is bookkeeping, not an upload attempt. Its actual
   // staging is recorded by the durable callback bound above.
   return ARTIFACT_DELIVERY_TOOL_NAMES.has(name) && name !== 'complete_file_delivery';
+}
+
+/**
+ * A declaration cannot be honored once a file may be staged, the draft may be
+ * replaced, or (final-answer mode) another tool is still running.
+ */
+function declarationRefused(state: PresentationToolPolicyState): boolean {
+  return artifactDeliveryAttempted(state) || state.draftReplacementAttempted === true ||
+    (currentRequestProgressiveStreamingMode(state.envelope) === 'final_answer' &&
+      state.inFlightTools > 0);
 }
 
 function artifactDeliveryAttempted(state: PresentationToolPolicyState): boolean {

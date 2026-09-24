@@ -1084,18 +1084,18 @@ export async function runTurn(
         frozenProgressiveEligibility = candidate;
       }
     }
+    const offeredEligibility =
+      currentRequestPolicyVersion === 2 && frozenProgressiveEligibility?.allowed === true
+        ? frozenProgressiveEligibility
+        : undefined;
     const prompt = assembleSlackPrompt(turn, context, {
       ...(handoffBlock ? { handoffBlock } : {}),
       ...(preparedMemory?.promptBlock ? { memoryBlock: preparedMemory.promptBlock } : {}),
       memorySelected: (preparedMemory?.selection?.entries.length ?? 0) > 0,
       currentRequestPolicyVersion,
-      progressiveStreamingOffered:
-        currentRequestPolicyVersion === 2 && frozenProgressiveEligibility?.allowed === true,
-      ...(currentRequestPolicyVersion === 2 && frozenProgressiveEligibility?.allowed === true
-        ? {
-            progressiveStreamingMode:
-              progressiveStreamingModeForReason(frozenProgressiveEligibility.reason),
-          }
+      progressiveStreamingOffered: offeredEligibility !== undefined,
+      ...(offeredEligibility
+        ? { progressiveStreamingMode: progressiveStreamingModeForReason(offeredEligibility.reason) }
         : {}),
       ...(installationContext
         ? {

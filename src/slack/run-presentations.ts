@@ -6,6 +6,7 @@ import type {
   SemanticActivityPhase,
   SemanticTargetFamily,
 } from '../activity/status.ts';
+import type { ProgressiveStreamingMode } from '../memory/tool-policy.ts';
 import { hasCredentialLikeContent } from '../security/content-validation.ts';
 
 export const SLACK_PRESENTATION_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
@@ -2431,7 +2432,7 @@ function isAllowedProgressiveReason(reason: SlackProgressiveEligibilityReason): 
 /** The relay and prompt mode an allowed frozen reason admits. */
 export function progressiveStreamingModeForReason(
   reason: SlackProgressiveEligibilityReason,
-): 'early' | 'final_answer' {
+): ProgressiveStreamingMode {
   return reason === 'final_answer_release' ? 'final_answer' : 'early';
 }
 

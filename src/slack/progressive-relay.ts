@@ -1,5 +1,6 @@
 import type { ConversationStreamChunk } from '@flue/runtime';
 
+import type { ProgressiveStreamingMode } from '../memory/tool-policy.ts';
 import { FILE_DELIVERY_DATA_NAME } from './file-delivery-completion.ts';
 import { SLACK_STREAM_ANSWER_TOOL_NAME } from './presentation-intent.ts';
 import type {
@@ -68,7 +69,7 @@ type RelayOperation =
  * in its model step after every earlier call has settled. Earlier-step
  * narration is not late, because Slack only receives the final step's text.
  */
-export type ProgressiveRelayMode = 'early' | 'final_answer';
+export type ProgressiveRelayMode = ProgressiveStreamingMode;
 
 /**
  * Active-turn content relay for one exact Flue receipt. The callback is
@@ -108,13 +109,13 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
       // can complete before the answer reopens that same response; completion
       // does not settle the submission or change its incremental identity.
       this.targetMessageCompleted = false;
-      if (this.finalAnswerMode) {
-        this.stepToolCallIds.clear();
-        this.declarationStepOpen = false;
-        this.refusedToolStepOpen = false;
-        // Only the final step's text reaches Slack, so undeclared narration
-        // from an earlier step never makes a later declaration late.
-        if (this.intentStatus === 'unresolved') this.preIntentTextSeen = false;
+      this.stepToolCallIds.clear();
+      this.declarationStepOpen = false;
+      this.refusedToolStepOpen = false;
+      // Only the final step's text reaches Slack, so undeclared narration
+      // from an earlier step never makes a later final-answer declaration late.
+      if (this.finalAnswerMode && this.intentStatus === 'unresolved') {
+        this.preIntentTextSeen = false;
       }
       return;
     }
@@ -200,11 +201,12 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
   private intentToolCallId: string | undefined;
   private preIntentTextSeen = false;
   private readonly targetToolCallIds = new Set<string>();
-  /** Final-answer mode: calls in the current model step. */
+  /** Calls in the current model step. */
   private readonly stepToolCallIds = new Set<string>();
   /** Final-answer mode: non-declaration calls without an outcome yet. */
   private readonly unsettledToolCallIds = new Set<string>();
   private declarationStepOpen = false;
+  /** Final-answer mode: the answer-only lock refused a tool in this step. */
   private refusedToolStepOpen = false;
 
   constructor(
@@ -271,11 +273,13 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
       return;
     }
     this.targetToolCallIds.add(toolCallId);
-    if (this.finalAnswerMode) {
-      this.handleFinalAnswerToolInput(toolName, toolCallId);
-      return;
-    }
+    const sibling = this.stepToolCallIds.size > 0;
+    this.stepToolCallIds.add(toolCallId);
     if (toolName !== SLACK_STREAM_ANSWER_TOOL_NAME) {
+      if (this.finalAnswerMode) {
+        this.handleFinalAnswerEffectTool(toolCallId);
+        return;
+      }
       this.denyAndInvalidate(
         'non_presentation_tool',
         'tool_activity',
@@ -288,8 +292,15 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
       return;
     }
     if (this.intentStatus === 'unresolved') {
+      if (this.finalAnswerMode && (sibling || this.unsettledToolCallIds.size > 0)) {
+        // A final answer is declared alone in its step, after every earlier
+        // call has settled.
+        this.denyAndInvalidate('concurrent_tool', 'tool_activity', false);
+        return;
+      }
       this.intentStatus = 'pending';
       this.intentToolCallId = toolCallId;
+      this.declarationStepOpen = true;
       this.queueIntent({ kind: 'candidate', toolCallId });
       return;
     }
@@ -302,49 +313,25 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
     this.denyAndInvalidate('repeated_declaration', 'tool_activity', this.hasQueuedOrAcceptedText());
   }
 
-  private handleFinalAnswerToolInput(toolName: string, toolCallId: string): void {
-    const sibling = this.stepToolCallIds.size > 0;
-    this.stepToolCallIds.add(toolCallId);
-    if (toolName !== SLACK_STREAM_ANSWER_TOOL_NAME) {
-      if (this.intentStatus === 'unresolved') {
-        // Effect work before the declaration is the point of this mode.
-        this.unsettledToolCallIds.add(toolCallId);
-        return;
-      }
-      if (this.intentStatus === 'pending' || this.declarationStepOpen) {
-        this.denyAndInvalidate('concurrent_tool', 'tool_activity', this.hasQueuedOrAcceptedText());
-        return;
-      }
-      // The answer-only lock refuses this call before it runs, so no effect
-      // can follow released text. Released text cannot be reconciled with a
-      // later step, though, so any text already relayed ends the stream.
-      if (this.hasQueuedOrAcceptedText()) {
-        this.denyAndInvalidate('non_presentation_tool', 'tool_activity', true);
-        return;
-      }
-      this.refusedToolStepOpen = true;
-      return;
-    }
-    if (this.preIntentTextSeen) {
-      this.denyAndInvalidate('late_declaration', 'tool_activity', false);
-      return;
-    }
+  /** Final-answer mode: a non-declaration tool call in the target response. */
+  private handleFinalAnswerEffectTool(toolCallId: string): void {
     if (this.intentStatus === 'unresolved') {
-      if (sibling || this.unsettledToolCallIds.size > 0) {
-        this.denyAndInvalidate('concurrent_tool', 'tool_activity', false);
-        return;
-      }
-      this.intentStatus = 'pending';
-      this.intentToolCallId = toolCallId;
-      this.declarationStepOpen = true;
-      this.queueIntent({ kind: 'candidate', toolCallId });
+      // Effect work before the declaration is the point of this mode.
+      this.unsettledToolCallIds.add(toolCallId);
       return;
     }
-    if ((this.intentStatus === 'pending' || this.intentStatus === 'requested') &&
-        this.intentToolCallId === toolCallId) {
+    if (this.intentStatus === 'pending' || this.declarationStepOpen) {
+      this.denyAndInvalidate('concurrent_tool', 'tool_activity', this.hasQueuedOrAcceptedText());
       return;
     }
-    this.denyAndInvalidate('repeated_declaration', 'tool_activity', this.hasQueuedOrAcceptedText());
+    // The answer-only lock refuses this call before it runs, so no effect
+    // can follow released text. Released text cannot be reconciled with a
+    // later step, though, so any text already relayed ends the stream.
+    if (this.hasQueuedOrAcceptedText()) {
+      this.denyAndInvalidate('non_presentation_tool', 'tool_activity', true);
+      return;
+    }
+    this.refusedToolStepOpen = true;
   }
 
   private handleToolOutcome(toolCallId: string, succeeded: boolean): void {
