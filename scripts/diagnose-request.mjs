@@ -5,6 +5,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import { outsideGit } from './lib/private-evidence.mjs';
+import { isQaLane } from './lib/qa-lanes.mjs';
 import { readEnvironmentRegistry } from './lib/environment-registry.mjs';
 import { cloudflareDiagnosticScript, localDiagnosticQuery, projectDiagnosticSession, resolveDiagnosticRequest } from './lib/request-diagnostics.mjs';
 
@@ -59,7 +60,7 @@ export async function runDiagnosticCli(argv, io = {}) {
       if (flags.record || flags.session || flags['no-session']) throw new Error('Evidence inputs belong to query.');
       let registration;
       if (flags.target) {
-        if (!['amber', 'cobalt', 'violet'].includes(flags.target) || flags.local) throw new Error('Use a registered hosted target, or explicit local coordinates.');
+        if (!isQaLane(flags.target) || flags.local) throw new Error('Use a registered hosted target, or explicit local coordinates.');
         registration = (io.readRegistry ?? readEnvironmentRegistry)().targets[flags.target];
         if ((flags.worker && flags.worker !== registration.workerName) ||
           (flags.workspace && flags.workspace !== registration.workspaceId)) throw new Error('Coordinates disagree with the registered target.');

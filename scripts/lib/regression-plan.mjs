@@ -17,7 +17,7 @@ export const REGRESSION_AREAS = Object.freeze({
   auth: ['slack-install-oauth', 'slack-oidc', 'auth-principal', 'admin-authorization'],
   admin: ['admin-page', 'agent-admin-routes', 'admin-authorization'],
   providers: ['provider-runtime-models', 'cloudflare-provider', 'runtime-model-route-evidence'],
-  verification: ['node-version', 'verification-record', 'verification-regression', 'verification-offline', 'verification-transition', 'verification-host', 'verification-fixtures', 'environment-registry', 'environment-preflight', 'environment-wait', 'qa-candidate', 'live-contract-coordinator', 'live-contract-lock', 'schedule-contract-evaluation', 'deploy-with-epilogue', 'local-worker-lane', 'live-contract-schema', 'live-contract-runner', 'oss-export'],
+  verification: ['node-version', 'verification-record', 'verification-regression', 'verification-offline', 'verification-transition', 'verification-host', 'verification-fixtures', 'environment-registry', 'environment-preflight', 'environment-preflight-2', 'environment-preflight-3', 'environment-wait', 'qa-candidate', 'live-contract-coordinator', 'live-contract-lock', 'schedule-contract-evaluation', 'deploy-with-epilogue', 'deploy-with-epilogue-2', 'local-worker-lane', 'live-contract-schema', 'live-contract-runner', 'oss-export'],
 });
 
 const rules = [
@@ -37,6 +37,24 @@ const rules = [
   [/^src\/(?:cloudflare-provider\.ts|model-compat\/|model-catalog\/)/, ['providers']],
   [/^(?:qa\/live\/|\.(?:agents|claude)\/skills\/chickpea-live-verification\/|scripts\/(?:verify-regression\.mjs|verification-(?:record|fixtures)\.mjs|verify-qa-candidate\.mjs|live-test-resource-ledger\.mjs|deploy-with-epilogue\.mjs|chickpea-(?:environment|local-worker)\.mjs|lib\/(?:verification-[a-z-]+|qa-candidate|private-evidence|regression-plan|environment-[^/]+|local-worker-(?:lane|inspection))\.mjs))/, ['verification']],
 ];
+
+// The checks after the suite use reserved ports and their own temporary state,
+// so they run together as one group. The Node proofs share one Node build
+// instead of each rebuilding dist/. The clean export stays last and alone.
+const SERIAL_STEPS = new Set(['verify:hygiene', 'build', 'test', 'typecheck', 'verify:oss-export']);
+const NODE_BUILD_SCRIPTS = new Set(['verify:node-scheduler-capability', 'verify:providers', 'verify:durability', 'verify:node-scheduler-offline']);
+function groupProofs(steps) {
+  const isProof = (step) => step.kind === 'node' || (step.kind === 'npm' && !SERIAL_STEPS.has(step.script));
+  const proofs = steps.filter(isProof);
+  if (proofs.length === 0) return steps;
+  const first = steps.indexOf(proofs[0]);
+  const nodeBuild = proofs.some((step) => step.kind === 'node' || NODE_BUILD_SCRIPTS.has(step.script))
+    ? [{ kind: 'npm', script: 'flue:build' }] : [];
+  return [...steps.slice(0, first), ...nodeBuild, ...proofs.map((step) => ({ ...step, group: 'proofs' })),
+    ...steps.slice(first).filter((step) => !isProof(step))];
+}
+
+const nodeRuntimeFiles = /^(?:src\/(?:db\.node|node-background)\.ts|vite\.node\.config\.ts|scripts\/(?:start-node|chickpea-node|verify-node-scheduler-[a-z]+)\.mjs|scripts\/lib\/offline-harness\.mjs|package(?:-lock)?\.json|\.nvmrc)$/;
 
 export function createRegressionPlan({ mode = 'changed', areas = [], files = [], testFiles = [] } = {}) {
   if (!['changed', 'regression', 'release'].includes(mode)) throw new Error('mode must be changed, regression, or release');
@@ -61,6 +79,11 @@ export function createRegressionPlan({ mode = 'changed', areas = [], files = [],
     } else if (!/^(?:docs\/.*\.(?:md|txt)$|[^/]+\.(?:md|txt)$|LICENSE$|NOTICE$)/.test(file)) unclassified.push(file);
   }
   const noSelection = areas.length === 0 && files.length === 0;
+  // The Node scheduler proof spends most of its time waiting out a crash
+  // recovery lease, so a changed plan runs it only when the change can reach
+  // the Node runtime or routines, not for every unclassified file.
+  const nodeScheduler = mode !== 'changed' || noSelection || selected.has('routines')
+    || files.some((file) => nodeRuntimeFiles.test(file));
   const fullTests = mode === 'release' || unclassified.length > 0 || broadChanges.length > 0;
   if (mode !== 'changed' || noSelection || fullTests) {
     Object.keys(REGRESSION_AREAS).forEach((area) => selected.add(area));
@@ -98,7 +121,7 @@ export function createRegressionPlan({ mode = 'changed', areas = [], files = [],
   if (broad || includes('providers', 'connections')) npm('verify:providers');
   if (broad || includes('delivery')) steps.push({ kind: 'node', file: 'scripts/verify-flue-offline-turn.mjs' });
   if (broad || includes('delivery', 'memory')) npm('verify:durability');
-  if (broad || includes('routines')) npm('verify:node-scheduler-offline');
+  if (nodeScheduler) npm('verify:node-scheduler-offline', mode === 'release' ? undefined : ['--expire-lease']);
   if (fullTests || includes('auth')) npm('verify:cf-smoke');
   if (mode === 'release') npm('verify:oss-export');
   // Retain hygiene, artifact restoration, workerd, Admin and authoring checks.
@@ -107,7 +130,7 @@ export function createRegressionPlan({ mode = 'changed', areas = [], files = [],
     step.kind === 'npm' ? `npm:${step.script}` : step.file,
   )) : steps;
   return {
-    mode, areas: [...selected].sort(), fullTests, unclassified, broadChanges, steps: selectedSteps,
+    mode, areas: [...selected].sort(), fullTests, unclassified, broadChanges, steps: groupProofs(selectedSteps),
     coverage: 'Deterministic and fake-service checks only. No real-model, Slack, OAuth, or deployed acceptance.',
   };
 }

@@ -171,18 +171,10 @@ export function updateRun(file, callback) {
 // Only the existing offline runner calls this API. The attended event CLI
 // cannot manufacture automated check receipts or release checkpoints.
 export function offlineEvent(run, value, now = Date.now()) {
-  need(['offline_plan', 'offline_begin', 'offline_finish', 'offline_reuse', 'offline_summary', 'checkpoint'].includes(value.type), 'Invalid offline receipt.');
+  need(['offline_plan', 'offline_begin', 'offline_finish', 'offline_summary', 'checkpoint'].includes(value.type), 'Invalid offline receipt.');
   const event = { ...value, id: randomUUID(), runId: run.id, sequence: run.events.length + 1, at: new Date(now).toISOString() };
   run.events.push(event);
   return event;
-}
-
-export function reusableOffline(run, label, fingerprint) {
-  // Builds regenerate ignored artifacts even when the source is identical.
-  if (label === 'npm:build') return undefined;
-  const latest = run.events.findLast((e) => ['offline_begin', 'offline_finish'].includes(e.type) && e.label === label);
-  if (latest?.type === 'offline_finish' && latest.result === 'pass' && latest.fingerprint === fingerprint && intact(latest.evidence)) return latest;
-  return undefined;
 }
 
 export function currentSpec(run) {
@@ -481,7 +473,6 @@ export function status(run, source, now = Date.now()) {
   return {
     runId: run.id, mode: spec.mode, purpose: spec.purpose, source, readiness, cases, groups: groupStatus(spec, cases), optional: [...optionalCases(spec)], resources, ...coordination,
     releasePending, openOffline, offline, offlinePlans, offlineObligations,
-    reused: run.events.filter((e) => e.type === 'offline_reuse'),
     complete: (cases.length > 0 || offlinePlans.some((p) => p.required)) && cases.every((c) => c.result === 'pass' || optionalCases(spec).has(c.id) && !['in_progress', 'observe_overdue', 'ambiguous'].includes(c.result)) && cleanupPending.length === 0 && !releasePending && openOffline.length === 0 && offlinePlans.filter((p) => p.required).every((p) => p.result === 'pass') && coordination.repairs.every((r) => r.state === 'verified'),
     phases: { intervals: phaseIntervals, open: phaseStarts.filter((start) => !phaseFinishes.some((end) => end.phaseId === start.id)),
       measuredIntervalUnionMs: phaseIntervals.length ? unionMs : null,
@@ -522,7 +513,6 @@ export function renderReport(view) {
     ...view.resources.filter((r) => r.correctionId).map((r) => `- Agent cleanup contract corrected by ${r.correctionId}: original ${cell(JSON.stringify(r.originalExpected))}. Original cleanup outcomes remain in the record; a new archival/access readback is required.`), '',
     '## Offline checks and release checkpoint', '',
     ...view.offline.map((e) => `- ${cell(e.label)}: ${e.result}, ${e.durationMs} ms, ${cell(e.node)}. Log: ${cell(e.evidence[0]?.path)}`),
-    ...view.reused.map((e) => `- Reused ${cell(e.label)} from receipt ${e.reusedId}; original measured duration ${e.priorDurationMs} ms. Log: ${cell(e.evidence[0]?.path)}`),
     ...view.offlinePlans.map((e) => `- ${e.required ? 'Required' : 'Historical, unsupported'} ${cell(e.node)} coverage across plans: ${e.result}`),
     ...view.offlineObligations.filter((e) => e.required && e.result !== 'pass').map((e) => `- Outstanding ${cell(e.node)} ${cell(e.id)}: ${cell(e.result)}`),
     `Open offline attempts: ${view.openOffline.length}. Final Node ${NODE_BASELINE} release checkpoint ${view.releasePending ? 'pending' : view.mode === 'release' ? 'present for current source' : 'not requested'}.`, '',

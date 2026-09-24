@@ -146,6 +146,7 @@ const FOCUSED_TESTS = [
   'tests/admin-scheduled-work-routes.test.ts',
   'tests/admin-usage-routes.test.ts',
   'tests/deploy-with-epilogue.test.ts',
+  'tests/deploy-with-epilogue-2.test.ts',
 ];
 
 function run(label, command, args) {

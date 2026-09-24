@@ -22,11 +22,12 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { QA_LANES } from './qa-lanes.mjs';
 import { assertPrivatePath } from './upgrade-receipt.mjs';
 
 export const LANE_SECRETS_FILE_ENV = 'CHICKPEA_LANE_SECRETS_FILE';
 export const LANE_SECRETS_TOGGLE_ENV = 'CHICKPEA_LANE_SECRETS';
-export const LANE_SECRET_TARGETS = ['amber', 'cobalt', 'violet'];
+export const LANE_SECRET_TARGETS = QA_LANES;
 export const LANE_CREDENTIALS_DIR_ENV = 'CHICKPEA_LANE_CREDENTIALS_DIR';
 export const LANE_SEED_TOKEN_BINDING = 'CHICKPEA_ENV_SEED_TOKEN';
 
@@ -107,11 +108,16 @@ export function resolveLaneSecrets(target, { env = process.env, file = defaultLa
       warnings.push(`shared ${name} ignored; set ${own}${name} to this lane's own key`);
     }
   }
+  // Names the file holds for this lane that never become Worker secrets (for
+  // example keys `npm run lane:seed` reads). Another lane's names, and any
+  // name that still carries a `PREFIX__` after this lane's own is removed,
+  // are not this lane's to report.
   const held = [...entries.entries()]
     .filter(([, value]) => value)
     .map(([name]) => name)
     .map((name) => (name.startsWith(own) ? name.slice(own.length) : name))
     .filter((name, index, all) => !prefixes.some((prefix) => name.startsWith(prefix))
+      && !name.includes('__')
       && !LANE_WORKER_SECRET_NAMES.includes(name) && !LANE_ONLY_SECRET_NAMES.includes(name)
       && all.indexOf(name) === index);
   return { file, secrets, report, held, warnings };
@@ -208,7 +214,7 @@ export function describeLaneSecrets(resolved) {
   const uploaded = resolved.report.length === 0
     ? 'no provider keys set'
     : resolved.report.map((entry) => `${entry.name} (${entry.source}, ${entry.fingerprint})`).join(', ');
-  const held = resolved.held.length ? `; not uploaded (for seeding): ${resolved.held.join(', ')}` : '';
+  const held = resolved.held.length ? `; held (not Worker secrets): ${resolved.held.join(', ')}` : '';
   const warnings = resolved.warnings?.length ? `; WARNING: ${resolved.warnings.join('; ')}` : '';
   return `Lane secrets from ${resolved.file}: ${uploaded}${held}${warnings}`;
 }

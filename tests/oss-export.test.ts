@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
-import { dirname, relative, resolve } from 'node:path';
+import { relative, resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 // @ts-expect-error Executable helpers are JavaScript, shared with the verifiers.
-import { liveVerifierExportPolicy, publicSourceManifestFindings } from '../scripts/lib/source-export-policy.mjs';
+import { docsReferenceFindings, liveVerifierExportPolicy, publicSourceManifestFindings, readContents, readIndexManifest } from '../scripts/lib/source-export-policy.mjs';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 
@@ -125,19 +125,9 @@ test('operator skill stays discoverable and separate from contract assertions', 
 });
 
 test('skill relative references resolve from their owning files to the canonical workflow', () => {
-  for (const path of [
-    '.agents/skills/chickpea-live-verification/SKILL.md',
-    '.claude/skills/chickpea-live-verification/SKILL.md',
-    ...filesBelow('qa/live/operator').filter((path) => path.endsWith('.md')),
-  ]) {
-    // Both inline-code references in the discovery wrapper and actual Markdown
-    // links in the operator instructions must survive source publication.
-    const references = [...read(path).matchAll(/(?:`|\]\()([^\s`()]+\.md)(?:#[^\s`()]*)?(?:`|\))/g)];
-    if (path.endsWith('SKILL.md')) assert.ok(references.length > 0, `${path} has no workflow references`);
-    for (const [, reference] of references) {
-      const resolved = resolve(ROOT, dirname(path), reference!);
-      assert.ok(!relative(ROOT, resolved).startsWith('..'), `${path} references outside the repository`);
-      assert.ok(statSync(resolved).isFile(), `${path} has a broken workflow reference`);
-    }
-  }
+  // The same check runs in verify:hygiene; this keeps it in the full suite too.
+  // Both inline-code references in the discovery wrapper and actual Markdown
+  // links in the operator instructions must survive source publication.
+  const { entries } = readIndexManifest(ROOT);
+  assert.deepEqual(docsReferenceFindings(entries, readContents(ROOT, entries, { workingTree: true })), []);
 });

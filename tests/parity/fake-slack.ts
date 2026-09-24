@@ -179,8 +179,8 @@ export interface FakeProviderConfig {
    * reply content, simulating a slow model turn. The stream head + periodic
    * SSE keepalive comments are sent immediately so the connection stays active
    * (an idle stream is reset by workerd/miniflare); only the content is
-   * deferred. Used by the cf-smoke slow-turn case to prove a turn that outlives
-   * the old ~30s waitUntil horizon still delivers via the DO alarm relay. `0`
+   * deferred. Used by the cf-smoke slow-turn case to prove a held turn is
+   * acknowledged first and still delivers via the DO alarm relay. `0`
    * (default) responds immediately. HTTP transport only.
    */
   delayMs?: number;

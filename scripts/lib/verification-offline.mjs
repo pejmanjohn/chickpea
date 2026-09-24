@@ -27,17 +27,6 @@ function planReceipts(run, plan, intact) {
       if (!begin || begin.planId !== plan.id || begin.label !== event.label || begin.sequence >= event.sequence
         || begin.fingerprint !== plan.fingerprint || event.fingerprint !== plan.fingerprint) continue;
       entries.push({ ...event, result: receiptsIntact(event.evidence, intact) ? event.result : 'stale', covers: labels.get(event.label), plan });
-    } else if (event.type === 'offline_reuse') {
-      const reused = run.events.find((e) => e.id === event.reusedId && e.type === 'offline_finish');
-      // Reuse must still be the latest completed execution for these inputs.
-      // A previous success cannot erase an intervening failure/open attempt.
-      const latest = run.events.findLast((e) => e.sequence < event.sequence
-        && ['offline_begin', 'offline_finish'].includes(e.type) && e.label === event.label);
-      const valid = reused?.result === 'pass' && reused === latest && reused.label === event.label
-        && reused.fingerprint === plan.fingerprint && event.fingerprint === plan.fingerprint
-        && digest(event.evidence) === digest(reused.evidence)
-        && receiptsIntact(event.evidence, intact) && receiptsIntact(reused.evidence, intact);
-      entries.push({ ...event, result: valid ? 'pass' : 'stale', covers: labels.get(event.label), plan });
     }
   }
   const end = run.events.findLast((e) => e.type === 'offline_summary' && e.planId === plan.id);
@@ -103,7 +92,7 @@ export function offlineProgress(run, source, intact) {
     const released = allReceipts.get(release.id).filter((e) => e.sequence < end.sequence);
     const complete = release.steps.length > 0 && release.steps.every((step) => {
       const receipt = released.findLast((e) => e.label === offlineStepLabel(step));
-      return receipt?.result === 'pass' && receipt.type === 'offline_finish'; // release never reuses
+      return receipt?.result === 'pass';
     });
     if (!complete) continue;
     const checkpoint = run.events.findLast((e) => e.type === 'checkpoint' && e.planId === release.id

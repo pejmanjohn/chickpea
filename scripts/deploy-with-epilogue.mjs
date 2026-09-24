@@ -32,6 +32,7 @@ import { fileURLToPath } from 'node:url';
 import { hasScheduledComposition } from './worker-artifact.mjs';
 import { builtWorkerConfigPath } from './lib/built-worker-config.mjs';
 import { mergeDeploymentSecrets, OPERATOR_SECRETS_ENV, readOperatorSecretsFile } from './lib/deploy-operator-secrets.mjs';
+import { isQaLane } from './lib/qa-lanes.mjs';
 import { describeLaneSecrets, ensureLaneSeedToken, LANE_SEED_TOKEN_BINDING, resolveLaneSecrets } from './lib/lane-secrets.mjs';
 import { wranglerInspector, deploymentFingerprint } from './lib/inspect-deployment.mjs';
 import { AUTH_SCHEMA_QUERY, expectedAuthSchema, normalizeAuthSchemaRows } from './lib/auth-schema.mjs';
@@ -132,7 +133,7 @@ try {
       throw new Error('QA claim marker is unreadable. Refusing deployment.');
     }
     if (marker?.schemaVersion !== 'chickpea-environment-claim/v1'
-      || !['amber', 'cobalt', 'violet'].includes(marker.target)) {
+      || !isQaLane(marker.target)) {
       throw new Error('QA claim marker is invalid. Refusing deployment.');
     }
     if (requestedDeploymentTarget !== marker.target) {
@@ -162,7 +163,7 @@ try {
   process.exit(1);
 }
 if (
-  ['amber', 'cobalt'].includes(requestedDeploymentTarget) &&
+  isQaLane(requestedDeploymentTarget) &&
   cliVariable('CHICKPEA_TELEMETRY_ENVIRONMENT') !== undefined
 ) {
   console.error(

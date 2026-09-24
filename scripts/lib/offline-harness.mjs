@@ -8,6 +8,7 @@
  */
 import { execFileSync, spawn } from 'node:child_process';
 import { createHmac } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { reserveVerificationPort } from './verification-ports.mjs';
@@ -163,6 +164,13 @@ export async function seedOfflineSlackAuthority({
 /** `vite build --config vite.node.config.ts --outDir <outputDir>`; resolves to the server entry.
  * Defaults to `dist/` (git-ignored, the canonical `flue:build` output). */
 export function buildNodeServer(outputDir = 'dist') {
+  // verify:regression builds dist/ once and then runs these proofs together;
+  // concurrent rebuilds of the same directory would race.
+  if (outputDir === 'dist' && process.env.CHICKPEA_NODE_BUILD_READY === '1') {
+    const entry = join(REPO_ROOT, 'dist', 'server.mjs');
+    return existsSync(entry) ? Promise.resolve(entry)
+      : Promise.reject(new Error('CHICKPEA_NODE_BUILD_READY is set but dist/server.mjs is missing; run npm run flue:build first.'));
+  }
   return new Promise((resolve, reject) => {
     const child = spawn(VITE_BIN, ['build', '--config', 'vite.node.config.ts', '--outDir', outputDir], {
       cwd: REPO_ROOT,
