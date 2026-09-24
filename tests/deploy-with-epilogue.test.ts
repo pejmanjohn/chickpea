@@ -25,6 +25,8 @@ import { validateInstallation } from '../scripts/lib/upgrade-installation.mjs';
 import { writePrivateJson } from '../scripts/lib/upgrade-receipt.mjs';
 // @ts-expect-error Release tooling JavaScript helper.
 import { migrationDigests } from '../scripts/lib/release-manifest.mjs';
+// @ts-expect-error The dependency-free lane list is plain JavaScript.
+import { QA_LANES } from '../scripts/lib/qa-lanes.mjs';
 
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DEPLOY_SCRIPT = path.join(PROJECT_ROOT, 'scripts', 'deploy-with-epilogue.mjs');
@@ -58,7 +60,7 @@ function createHarness() {
   mkdirSync(releaseDir, { recursive: true });
   mkdirSync(authMigrationsDir, { recursive: true });
   mkdirSync(wranglerDir, { recursive: true });
-  for (const name of ['upgrade-source.mjs', 'build-identity.mjs', 'built-worker-config.mjs', 'inspect-deployment.mjs', 'auth-schema.mjs', 'upgrade-installation.mjs', 'upgrade-receipt.mjs', 'release-manifest.mjs', 'sandbox-deploy-preflight.mjs', 'deploy-operator-secrets.mjs', 'lane-secrets.mjs']) {
+  for (const name of ['upgrade-source.mjs', 'build-identity.mjs', 'built-worker-config.mjs', 'inspect-deployment.mjs', 'auth-schema.mjs', 'upgrade-installation.mjs', 'upgrade-receipt.mjs', 'release-manifest.mjs', 'sandbox-deploy-preflight.mjs', 'deploy-operator-secrets.mjs', 'lane-secrets.mjs', 'qa-lanes.mjs']) {
     copyFileSync(path.join(PROJECT_ROOT, 'scripts/lib', name), path.join(scriptsLibDir, name));
   }
   copyFileSync(DEPLOY_SCRIPT, path.join(scriptsDir, 'deploy-with-epilogue.mjs'));
@@ -1366,20 +1368,20 @@ test('target dry-run prints the selected immutable D1 and permanent generation',
   assert.deepEqual(commands(harness.logPath), ['wrangler:["deploy","--dry-run"]']);
 });
 
-test('QA target refuses CLI telemetry environment overrides before Wrangler runs', (context) => {
-  for (const overrideArgs of [
+test('every QA target refuses CLI telemetry environment overrides before Wrangler runs', (context) => {
+  for (const target of QA_LANES) for (const overrideArgs of [
     ['--var', 'CHICKPEA_TELEMETRY_ENVIRONMENT:production'],
     ['--var=CHICKPEA_TELEMETRY_ENVIRONMENT:production'],
   ]) {
     const harness = createHarness();
     context.after(() => rmSync(harness.root, { recursive: true, force: true }));
-    writeCutoverArtifact(harness, { target: 'amber', databaseId: '' });
+    writeCutoverArtifact(harness, { target, databaseId: '' });
 
     const result = runHarness(harness, ['--skip-build', '--dry-run', ...overrideArgs], {
-      CHICKPEA_DEPLOY_TARGET: 'amber',
+      CHICKPEA_DEPLOY_TARGET: target,
     });
 
-    assert.equal(result.status, 1);
+    assert.equal(result.status, 1, `${target} ${overrideArgs.join(' ')}`);
     assert.match(result.stderr, /Do not override CHICKPEA_TELEMETRY_ENVIRONMENT/);
     assert.equal(existsSync(harness.logPath), false);
   }
@@ -1425,7 +1427,7 @@ function writeCutoverArtifact(
     databaseId?: string;
     profile?: 'core' | 'sandbox';
     workerName?: string;
-    target?: 'amber' | 'cobalt';
+    target?: 'amber' | 'cobalt' | 'violet';
     sandboxBinding?: { name: string; class_name: string };
     sandboxContainer?: {
       class_name: string;

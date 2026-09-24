@@ -1747,8 +1747,19 @@ export async function observeProductionEnvironmentAuthority(context, options = {
       && runtimeAuthorities?.[lane]?.[UNOBSERVED_LANE] === true)
     .map((lane) => {
       const registration = registry?.targets[lane];
-      const pinned = registration && readEnvironmentBaseline(registration.evidenceRoot)
-        .credentialFingerprintsByTarget[lane];
+      let pinned;
+      try {
+        pinned = registration && readEnvironmentBaseline(registration.evidenceRoot)
+          .credentialFingerprintsByTarget[lane];
+      } catch (error) {
+        // Name the lane that is down rather than a bare baseline code: the
+        // operator's next step is about that lane, not the deploy target.
+        if (error instanceof EnvironmentPreflightError
+          && (error.code === 'BASELINE_MISSING' || error.code === 'INVALID_BASELINE')) {
+          throw fail('LIVE_AUTHORITY_BRIDGE_UNAVAILABLE', { target: lane });
+        }
+        throw error;
+      }
       if (!validFingerprints(pinned)) throw fail('LIVE_AUTHORITY_BRIDGE_UNAVAILABLE', { target: lane });
       (options.notice ?? ((message) => process.stderr.write(`${message}\n`)))(
         `Lane ${lane} authority is unavailable (it may be deploying); using its recorded credential fingerprints.`,

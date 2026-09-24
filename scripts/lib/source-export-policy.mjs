@@ -546,6 +546,47 @@ export function publicSourceManifestFindings(entries) {
   return findings;
 }
 
+/** The live-verification skill entrypoints; each must reference its workflow. */
+export const skillEntrypointPaths = Object.freeze([
+  '.agents/skills/chickpea-live-verification/SKILL.md',
+  '.claude/skills/chickpea-live-verification/SKILL.md',
+]);
+const OPERATOR_DOCS_ROOT = 'qa/live/operator/';
+// Inline-code references (`x.md`) and Markdown link targets (](x.md)), with an
+// optional #fragment. Private `~/...` paths match too: they cannot resolve to a
+// tracked file, so they must stay out of backticks in these files.
+const MARKDOWN_REFERENCE = /(?:`|\]\()([^\s`()]+\.md)(?:#[^\s`()]*)?(?:`|\))/g;
+
+/**
+ * Every backticked or linked `.md` reference in the skill entrypoints and the
+ * operator docs must name a tracked file, resolved from the referencing file.
+ */
+export function docsReferenceFindings(entries, contents) {
+  const tracked = new Set(entries.filter(({ type }) => type === 'blob').map(({ path }) => path));
+  const findings = [];
+  const sources = [
+    ...skillEntrypointPaths,
+    ...[...tracked].filter((path) => path.startsWith(OPERATOR_DOCS_ROOT) && path.endsWith('.md')).sort(),
+  ];
+  for (const source of sources) {
+    const bytes = contents.get(source);
+    if (!bytes) { findings.push(`${source}: missing skill entrypoint`); continue; }
+    const references = [...bytes.toString('utf8').matchAll(MARKDOWN_REFERENCE)].map(([, reference]) => reference);
+    if (skillEntrypointPaths.includes(source) && references.length === 0) {
+      findings.push(`${source}: has no workflow references`);
+    }
+    for (const reference of new Set(references)) {
+      const resolved = posix.normalize(posix.join(posix.dirname(source), reference));
+      if (reference.startsWith('/') || resolved === '..' || resolved.startsWith('../')) {
+        findings.push(`${source}: reference ${reference} points outside the repository`);
+      } else if (!tracked.has(resolved)) {
+        findings.push(`${source}: reference ${reference} does not resolve to a tracked file`);
+      }
+    }
+  }
+  return findings;
+}
+
 /** Tracked `docs/` files must be deliberately un-ignored, never force-added. */
 export function docsIgnoreFindings(root, entries) {
   const docs = entries.map(({ path }) => path).filter((path) => path.startsWith('docs/'));
@@ -839,6 +880,7 @@ export function inspectSource({ root, revision = 'HEAD', workingTree = false, ke
       if (!archiveOk) return finish(state, checks, keepScratch);
     }
     check('leak scan', () => leakScanFindings(state.entries, state.contents));
+    check('docs references', () => docsReferenceFindings(state.entries, state.contents));
     check('release manifest', () => { validateReleaseManifest(state.treeRoot); });
     check('lockfile integrity', () => lockfileIntegrityReport(join(state.treeRoot, 'package-lock.json')).unverified
       .map((name) => `${name}: package-lock entry has no integrity hash`));

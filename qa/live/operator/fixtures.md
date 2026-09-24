@@ -89,9 +89,12 @@ for revocation. Credential-backed cases use standing QA fixtures:
 - The credential belongs to a test tenant, such as a test workspace, project,
   or account. A case that would write to a real person's or company's tenant
   is blocked until a test tenant exists. Do not run it against real data.
-- A lane secret the product reads from its environment reaches the lane only
-  through `CHICKPEA_DEPLOY_SECRETS_FILE` (see
-  [environments.md](environments.md)). Update the lane capability matrix
+- A standing key the product reads from its environment comes from the
+  maintainer's owner-only lane secrets file, `~/.chickpea/qa-secrets.env`,
+  which every guarded lane deploy uploads (see
+  [environments.md](environments.md)). A one-off credential outside that
+  file goes through `CHICKPEA_DEPLOY_SECRETS_FILE` for one guarded deploy.
+  Verifiers never edit either file. Update the lane capability matrix
   afterward.
 
 If the fixture is missing, ask for it once during the kickoff preflight, keep

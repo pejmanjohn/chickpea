@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 // @ts-expect-error Executable helpers are JavaScript, shared with the verifiers.
-import { archiveFindings, docsIgnoreFindings, extractArchive, leakScanFindings, publicSourceManifestFindings, readContents, readIndexManifest, readTrackedManifest } from '../scripts/lib/source-export-policy.mjs';
+import { archiveFindings, docsIgnoreFindings, docsReferenceFindings, extractArchive, leakScanFindings, publicSourceManifestFindings, readContents, readIndexManifest, readTrackedManifest } from '../scripts/lib/source-export-policy.mjs';
 
 type Entry = { mode: string; type: string; object: string; path: string };
 
@@ -77,6 +77,39 @@ test('a tracked docs file that .gitignore denies is reported; deliberately un-ig
   assert.deepEqual(findings.map((finding) => finding.split(':')[0]), ['docs/runbooks/forced.md']);
   assert.match(findings[0]!, /tracked although \.gitignore denies it/);
   assert.deepEqual(docsIgnoreFindings(root, entries.filter(({ path }) => !path.startsWith('docs/'))), []);
+});
+
+test('docs references in the skill entrypoints and operator docs must name tracked files', () => {
+  const files: Record<string, string> = {
+    '.agents/skills/chickpea-live-verification/SKILL.md': 'Read `../../../qa/live/operator/SKILL.md`.\n',
+    '.claude/skills/chickpea-live-verification/SKILL.md': 'Read `../../../qa/live/operator/SKILL.md`.\n',
+    'qa/live/operator/SKILL.md': 'See [environments](environments.md#lanes) and `fixtures.md`.\n',
+    'qa/live/operator/environments.md': 'Back to [the skill](SKILL.md).\n',
+    'qa/live/operator/fixtures.md': 'See [the runbook](../../../docs/runbooks/public.md).\n',
+    'docs/runbooks/public.md': '# Public\n',
+    'docs/notes.md': 'Outside the checked set: `missing.md` is ignored here.\n',
+  };
+  const build = (overrides: Record<string, string | undefined>) => {
+    const merged = { ...files, ...overrides };
+    const paths = Object.keys(merged).filter((path) => merged[path] !== undefined);
+    const entries = paths.map((path, index) => ({ mode: '100644', type: 'blob', object: String(index).padStart(40, '0'), path }));
+    const contents = new Map(paths.map((path) => [path, Buffer.from(merged[path]!)]));
+    return docsReferenceFindings(entries, contents) as string[];
+  };
+  assert.deepEqual(build({}), []);
+  assert.deepEqual(build({
+    'qa/live/operator/fixtures.md': 'Private matrix: `~/.chickpea/lanes.md`. Broken [link](gone.md). Escape `../../../../outside.md`.\n',
+  }), [
+    'qa/live/operator/fixtures.md: reference ~/.chickpea/lanes.md does not resolve to a tracked file',
+    'qa/live/operator/fixtures.md: reference gone.md does not resolve to a tracked file',
+    'qa/live/operator/fixtures.md: reference ../../../../outside.md points outside the repository',
+  ]);
+  assert.deepEqual(build({ '.claude/skills/chickpea-live-verification/SKILL.md': 'No references.\n' }), [
+    '.claude/skills/chickpea-live-verification/SKILL.md: has no workflow references',
+  ]);
+  assert.deepEqual(build({ '.agents/skills/chickpea-live-verification/SKILL.md': undefined }), [
+    '.agents/skills/chickpea-live-verification/SKILL.md: missing skill entrypoint',
+  ]);
 });
 
 test('the leak scan names the file and the denied term, and refuses unlisted binaries and NUL bytes', (context) => {

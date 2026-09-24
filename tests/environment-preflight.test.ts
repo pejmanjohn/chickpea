@@ -1892,6 +1892,17 @@ for (const transport of ['events', 'gateway']) test(`production ${transport} aut
     assert.deepEqual(withSiblingDown.fleetCredentialFingerprints[sibling], fingerprints(sibling));
     assert.equal(bridgeCalls, TARGETS.length + 1, 'the unavailable lane is retried once');
     assert.match(notices.join('\n'), new RegExp(`Lane ${sibling} authority is unavailable`));
+    // Without a readable baseline the down lane cannot stand in; the refusal
+    // names that lane instead of a bare baseline code.
+    const siblingBaseline = environmentBaselinePath(fleet.records.find((record) => record.target === sibling)!.evidenceRoot);
+    const namesSibling = (error: unknown) => rejects('LIVE_AUTHORITY_BRIDGE_UNAVAILABLE')(error)
+      && (error as { details?: { target?: unknown } }).details?.target === sibling;
+    const savedBaseline = readFileSync(siblingBaseline, 'utf8');
+    rmSync(siblingBaseline);
+    await assert.rejects(observeProductionEnvironmentAuthority(context, realBridgeOptions), namesSibling);
+    writeFileSync(siblingBaseline, '{"schemaVersion":"not-a-baseline"}', { mode: 0o600 });
+    await assert.rejects(observeProductionEnvironmentAuthority(context, realBridgeOptions), namesSibling);
+    writeFileSync(siblingBaseline, savedBaseline, { mode: 0o600 });
     down = new Set(['amber']);
     await assert.rejects(observeProductionEnvironmentAuthority(context, realBridgeOptions), rejects('LIVE_AUTHORITY_BRIDGE_UNAVAILABLE'));
     down = new Set();
