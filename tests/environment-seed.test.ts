@@ -23,7 +23,7 @@ function dependencies(overrides: Partial<EnvironmentSeedDependencies> = {}) {
   const created: Array<{ presetId: string; fields: Record<string, string> }> = [];
   const deps: EnvironmentSeedDependencies = {
     owner: async () => owner,
-    agentExists: async (agentId) => agentId === 'qa-agent',
+    agentState: async (agentId) => agentId === 'qa-agent' ? 'ready' : agentId === 'off-agent' ? 'inactive' : 'missing',
     existingConnection: async () => undefined,
     createConnection: async ({ preset, fields }) => {
       created.push({ presetId: preset.id, fields });
@@ -96,7 +96,17 @@ test('reports failures as codes without echoing provider text or credentials', a
     createConnection: async () => { throw new Error('upstream said: token sk_live_leak is invalid'); },
   });
   const coded = dependencies({ createConnection: async () => { throw new Error('credential_required'); } });
-  const leaked = await seed({ agentId: 'qa-agent', connections: [{ connector: 'asana', credential: 'sk_live_leak' }] }, { deps });
+  const logged: string[] = [];
+  const originalError = console.error;
+  console.error = (...args: unknown[]) => { logged.push(args.map(String).join(' ')); };
+  let leaked: Awaited<ReturnType<typeof seed>>;
+  try {
+    leaked = await seed({ agentId: 'qa-agent', connections: [{ connector: 'asana', credential: 'sk_live_leak' }] }, { deps });
+  } finally {
+    console.error = originalError;
+  }
+  assert.match(logged.join('\n'), /environment seed connection failed.*"presetId":"asana".*token \[credential\] is invalid/);
+  assert.doesNotMatch(logged.join('\n'), /sk_live_leak/);
   assert.equal(leaked.body.connections[0].status, 'failed');
   assert.equal(leaked.body.connections[0].error, 'connection_failed');
   assert.doesNotMatch(JSON.stringify(leaked.body), /sk_live_leak/);
@@ -112,6 +122,9 @@ test('refuses malformed requests, an unknown Agent, and a missing owner', async 
   const unknownAgent = await seed({ agentId: 'other-agent', connections: [{ connector: 'asana', credential: 'x' }] });
   assert.equal(unknownAgent.status, 404);
   assert.equal(unknownAgent.body.error, 'unknown_agent');
+  const inactive = await seed({ agentId: 'off-agent', connections: [{ connector: 'asana', credential: 'x' }] });
+  assert.equal(inactive.status, 409);
+  assert.equal(inactive.body.error, 'agent_inactive');
   const { deps } = dependencies({ owner: async () => undefined });
   assert.equal((await seed({ agentId: 'qa-agent', connections: [{ connector: 'asana', credential: 'x' }] }, { deps })).status, 503);
   assert.equal(parseSeedRequest('x'.repeat(600 * 1024)), undefined);

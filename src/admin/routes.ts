@@ -1950,7 +1950,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           },
         };
       },
-      agentExists: async (agentId) => Boolean(await store(c).getAgent(agentId).catch(() => undefined)),
+      agentState: async (agentId) => {
+        const agent = await store(c).getAgent(agentId).catch(() => undefined);
+        if (!agent) return 'missing';
+        return agent.enabled && agent.lifecycle !== 'archived' ? 'ready' : 'inactive';
+      },
       existingConnection: async ({ agentId, workspaceId, presetId }) => {
         const configStore = store(c);
         const bindings = (await configStore.listAgentConnectionBindings(agentId))

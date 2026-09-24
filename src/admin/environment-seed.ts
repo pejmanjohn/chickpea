@@ -62,7 +62,8 @@ export interface SeedOwner {
 export interface EnvironmentSeedDependencies {
   /** The active workspace owner the seed acts as, when Admin sign-in is configured. */
   owner(): Promise<SeedOwner | undefined>;
-  agentExists(agentId: string): Promise<boolean>;
+  /** `inactive` covers disabled or archived Agents, which cannot own connections. */
+  agentState(agentId: string): Promise<'missing' | 'inactive' | 'ready'>;
   /** An existing, non-revoked connection for this preset on the Agent. */
   existingConnection(input: { agentId: string; workspaceId: string; presetId: string }): Promise<string | undefined>;
   createConnection(input: {
@@ -92,8 +93,12 @@ export async function environmentSeedResponse(input: {
   if (!owner) {
     return Response.json({ error: 'owner_unavailable' }, { status: 503, headers });
   }
-  if (!(await input.dependencies.agentExists(request.agentId))) {
+  const agentState = await input.dependencies.agentState(request.agentId);
+  if (agentState === 'missing') {
     return Response.json({ error: 'unknown_agent' }, { status: 404, headers });
+  }
+  if (agentState === 'inactive') {
+    return Response.json({ error: 'agent_inactive' }, { status: 409, headers });
   }
   const results: SeedConnectionResult[] = [];
   for (const connection of request.connections) {
@@ -149,8 +154,25 @@ async function seedOne(
     });
     return { ...base, status: 'created', connectionId };
   } catch (error) {
+    console.error('[chickpea] environment seed connection failed', JSON.stringify({
+      presetId: preset.id,
+      error: describeError(error, connection.credential),
+    }));
     return { ...base, status: 'failed', error: safeErrorCode(error) };
   }
+}
+
+/** Operator log detail: error names and bounded messages, with the credential removed. */
+function describeError(error: unknown, credential: string | undefined, depth = 0): unknown {
+  if (!(error instanceof Error)) return { type: typeof error };
+  const scrub = (text: string) => (credential ? text.split(credential).join('[credential]') : text).slice(0, 300);
+  return {
+    name: error.name,
+    message: scrub(error.message),
+    ...(error instanceof AggregateError && depth < 2
+      ? { errors: error.errors.slice(0, 3).map((inner) => describeError(inner, credential, depth + 1)) }
+      : {}),
+  };
 }
 
 function authorizedSeed(authorization: string | undefined, env: PlatformEnv): boolean {
