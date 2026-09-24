@@ -16,8 +16,8 @@
  * that belongs in the database) stay in the file for a separate seeding step.
  * Names and short fingerprints are reported; values never are.
  */
-import { createHash } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
+import { createHash, randomBytes as nodeRandomBytes } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -27,6 +27,8 @@ import { assertPrivatePath } from './upgrade-receipt.mjs';
 export const LANE_SECRETS_FILE_ENV = 'CHICKPEA_LANE_SECRETS_FILE';
 export const LANE_SECRETS_TOGGLE_ENV = 'CHICKPEA_LANE_SECRETS';
 export const LANE_SECRET_TARGETS = ['amber', 'cobalt', 'violet'];
+export const LANE_CREDENTIALS_DIR_ENV = 'CHICKPEA_LANE_CREDENTIALS_DIR';
+export const LANE_SEED_TOKEN_BINDING = 'CHICKPEA_ENV_SEED_TOKEN';
 
 // Provider keys the product reads from the Worker environment.
 export const LANE_WORKER_SECRET_NAMES = [
@@ -80,26 +82,10 @@ export function parseLaneSecrets(text) {
  * file is absent or turned off, so lanes without it deploy exactly as before.
  */
 export function resolveLaneSecrets(target, { env = process.env, file = defaultLaneSecretsFile(env) } = {}) {
-  if (!LANE_SECRET_TARGETS.includes(target)) return undefined;
-  if (env[LANE_SECRETS_TOGGLE_ENV]?.trim() === 'off') return undefined;
-  if (!path.isAbsolute(file)) throw new Error(`${LANE_SECRETS_FILE_ENV} must be an absolute path.`);
-  if (!existsSync(file)) {
-    if (env[LANE_SECRETS_FILE_ENV]?.trim()) throw new Error(`${LABEL} named by ${LANE_SECRETS_FILE_ENV} does not exist.`);
-    return undefined;
-  }
-  assertPrivatePath(path.dirname(file), { directory: true, label: LABEL });
-  const stat = assertPrivatePath(file, { label: LABEL });
-  if (stat.size > MAX_FILE_BYTES) throw new Error(`${LABEL} exceeds its size limit.`);
-  const entries = parseLaneSecrets(readFileSync(file, 'utf8'));
-
+  if (!laneSecretsEnabled(target, env)) return undefined;
+  const entries = readLaneSecretEntries({ env, file });
+  if (!entries) return undefined;
   const prefixes = LANE_SECRET_TARGETS.map((lane) => `${lane.toUpperCase()}__`);
-  for (const name of entries.keys()) {
-    const scoped = /^([A-Z0-9]+)__/u.exec(name);
-    if (scoped && !prefixes.includes(`${scoped[1]}__`)) {
-      throw new Error(`${LABEL}: "${name}" uses an unknown lane prefix. Use ${prefixes.join(', ')}.`);
-    }
-  }
-
   const own = `${target.toUpperCase()}__`;
   const secrets = {};
   const report = [];
@@ -129,6 +115,87 @@ export function resolveLaneSecrets(target, { env = process.env, file = defaultLa
       && !LANE_WORKER_SECRET_NAMES.includes(name) && !LANE_ONLY_SECRET_NAMES.includes(name)
       && all.indexOf(name) === index);
   return { file, secrets, report, held, warnings };
+}
+
+export function laneSecretsEnabled(target, env = process.env) {
+  return LANE_SECRET_TARGETS.includes(target) && env[LANE_SECRETS_TOGGLE_ENV]?.trim() !== 'off';
+}
+
+/**
+ * Read and validate the whole file. Returns undefined when the default file
+ * is absent; an explicitly named file must exist.
+ */
+export function readLaneSecretEntries({ env = process.env, file = defaultLaneSecretsFile(env) } = {}) {
+  if (!path.isAbsolute(file)) throw new Error(`${LANE_SECRETS_FILE_ENV} must be an absolute path.`);
+  if (!existsSync(file)) {
+    if (env[LANE_SECRETS_FILE_ENV]?.trim()) throw new Error(`${LABEL} named by ${LANE_SECRETS_FILE_ENV} does not exist.`);
+    return undefined;
+  }
+  assertPrivatePath(path.dirname(file), { directory: true, label: LABEL });
+  const stat = assertPrivatePath(file, { label: LABEL });
+  if (stat.size > MAX_FILE_BYTES) throw new Error(`${LABEL} exceeds its size limit.`);
+  const entries = parseLaneSecrets(readFileSync(file, 'utf8'));
+  const prefixes = LANE_SECRET_TARGETS.map((lane) => `${lane.toUpperCase()}__`);
+  for (const name of entries.keys()) {
+    const scoped = /^([A-Z0-9]+)__/u.exec(name);
+    if (scoped && !prefixes.includes(`${scoped[1]}__`)) {
+      throw new Error(`${LABEL}: "${name}" uses an unknown lane prefix. Use ${prefixes.join(', ')}.`);
+    }
+  }
+  return entries;
+}
+
+/** A lane's value for one name: its `LANE__NAME` override, else the shared value. */
+export function laneSecretValue(entries, target, name) {
+  return entries.get(`${target.toUpperCase()}__${name}`) || entries.get(name) || undefined;
+}
+
+export function laneCredentialsDirectory(env = process.env) {
+  return env[LANE_CREDENTIALS_DIR_ENV]?.trim() || path.join(homedir(), '.chickpea', 'lane-credentials');
+}
+
+function laneSeedTokenFile(target, env) {
+  return path.join(laneCredentialsDirectory(env), `${target}-seed.json`);
+}
+
+const SEED_TOKEN = /^[A-Za-z0-9_-]{43}$/;
+const SEED_LABEL = 'The lane seed token file';
+
+/** The lane's seed token, or undefined before its first guarded deploy. */
+export function readLaneSeedToken(target, { env = process.env } = {}) {
+  if (!LANE_SECRET_TARGETS.includes(target)) throw new Error(`Unknown lane "${target}".`);
+  const file = laneSeedTokenFile(target, env);
+  if (!existsSync(file)) return undefined;
+  assertPrivatePath(path.dirname(file), { directory: true, label: SEED_LABEL });
+  assertPrivatePath(file, { label: SEED_LABEL });
+  let parsed;
+  try { parsed = JSON.parse(readFileSync(file, 'utf8')); } catch { parsed = undefined; }
+  if (parsed?.target !== target || !SEED_TOKEN.test(parsed?.seedToken ?? '')) {
+    throw new Error(`${SEED_LABEL} for ${target} is malformed. Preserve it and investigate before redeploying.`);
+  }
+  return parsed.seedToken;
+}
+
+/**
+ * Keep one seed token per lane in the operator's owner-only lane credential
+ * directory, creating it on the lane's first guarded deploy. The deploy
+ * uploads it as CHICKPEA_ENV_SEED_TOKEN so `npm run lane:seed` can reach the
+ * lane's seed route; the value is never printed.
+ */
+export function ensureLaneSeedToken(target, { env = process.env, randomBytes = nodeRandomBytes } = {}) {
+  if (!laneSecretsEnabled(target, env)) return undefined;
+  const existing = readLaneSeedToken(target, { env });
+  if (existing) return existing;
+  const directory = laneCredentialsDirectory(env);
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  assertPrivatePath(directory, { directory: true, label: SEED_LABEL });
+  const seedToken = Buffer.from(randomBytes(32)).toString('base64url');
+  writeFileSync(laneSeedTokenFile(target, env), `${JSON.stringify({
+    schemaVersion: 'chickpea-lane-seed-token/v1',
+    target,
+    seedToken,
+  }, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
+  return seedToken;
 }
 
 /** A short, non-reversible marker for comparing a key across lanes. */

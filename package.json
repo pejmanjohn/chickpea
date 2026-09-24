@@ -103,6 +103,7 @@
     "deploy": "node scripts/deploy-with-epilogue.mjs",
     "deploy:sandbox": "node scripts/cloudflare-deployment-profile.mjs sandbox deploy",
     "lane:secrets": "node scripts/lib/lane-secrets.mjs",
+    "lane:seed": "node scripts/lane-seed.mjs",
     "setup:link": "node scripts/create-setup-link.mjs",
     "verify:worker-size": "node scripts/verify-worker-size.mjs",
     "verify:cf-smoke": "node scripts/verify-cf-smoke.mjs",

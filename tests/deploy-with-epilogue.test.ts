@@ -497,6 +497,8 @@ function runHarness(
         env.CHICKPEA_ENVIRONMENT_ROOT ?? path.join(harness.root, 'no-lane-registry'),
       // Never read the operator's real lane secrets file from a test.
       CHICKPEA_LANE_SECRETS: env.CHICKPEA_LANE_SECRETS ?? 'off',
+      CHICKPEA_LANE_CREDENTIALS_DIR:
+        env.CHICKPEA_LANE_CREDENTIALS_DIR ?? path.join(harness.root, 'lane-credentials'),
       npm_execpath: harness.npmStub,
     },
   });
@@ -2008,6 +2010,7 @@ test('claimed deploy carries lane secrets file provider keys under operator and 
     CHICKPEA_DEPLOY_SCHEMA_GENERATION: 'd1:0002_mcp_oauth;do:v9',
     CHICKPEA_LANE_SECRETS: '',
     CHICKPEA_LANE_SECRETS_FILE: laneFile,
+    CHICKPEA_LANE_CREDENTIALS_DIR: path.join(privateDirectory, 'lane-credentials'),
     CHICKPEA_DEPLOY_SECRETS_FILE: operatorFile,
     DEPLOY_TEST_WORKER_EXISTS: '1', DEPLOY_TEST_VERSION_VIEWS: JSON.stringify(versionViews),
     DEPLOY_TEST_SECRET_LIST: JSON.stringify([
@@ -2023,6 +2026,11 @@ test('claimed deploy carries lane secrets file provider keys under operator and 
   assert.equal('ANTHROPIC_API_KEY' in values, false, 'another lane override is not applied');
   assert.equal('ASANA_QA_TOKEN' in values, false, 'database credentials are not Worker secrets');
   assert.notEqual(values.CHICKPEA_AUTH_SECRET, 'never-used');
+  const seedFile = JSON.parse(readFileSync(path.join(privateDirectory, 'lane-credentials', 'amber-seed.json'), 'utf8'));
+  assert.equal(seedFile.target, 'amber');
+  assert.equal(values.CHICKPEA_ENV_SEED_TOKEN, seedFile.seedToken, 'the lane seed token rides the same secrets file');
+  assert.match(result.stdout, /Lane seed token: installed \(CHICKPEA_ENV_SEED_TOKEN\)/);
+  assert.equal(result.stdout.includes(seedFile.seedToken), false);
   assert.match(result.stdout, /Lane secrets from .*BROWSERBASE_API_KEY \(amber override, sha256:[0-9a-f]{8}\)/);
   assert.doesNotMatch(result.stdout, /sk-shared|bb-amber|asana-held|sk-operator/);
 });
