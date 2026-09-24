@@ -824,6 +824,18 @@ test('progressive eligibility closes replacement paths and holds effect-capable 
       allowedMethods: ['GET'], headerName: 'Authorization', authMode: 'credential' as const,
     }] },
     { ...basePlan, repositories: [{ id: 'repo_1', fullName: 'acme/example' }] },
+    // A managed connection is the Agent's only connection.
+    { ...basePlan, actorMembershipId: 'membership_1', managedConnections: [{
+      id: 'managed_1', providerId: 'composio', adapterId: 'composio',
+      toolkit: 'googlesheets', allowedCapabilities: ['google_sheets.values.update'],
+    }] },
+    // The workspace tools mount on any Cloudflare sandbox.
+    { ...basePlan, sandbox: { mode: 'cloudflare' as const } },
+    // A browser data change runs only under an `act` login.
+    { ...basePlan, browserCapability: { provider: 'browserbase' as const }, websiteLogins: [{
+      id: 'login_1', host: 'app.example.test', label: 'Example', level: 'act' as const,
+      method: 'credentials' as const,
+    }] },
   ]) {
     assert.deepEqual(decide({ runtimePlan }), { allowed: true, reason: 'final_answer_release' });
     // Every earlier rule still wins over the final-answer release.
@@ -842,6 +854,27 @@ test('progressive eligibility closes replacement paths and holds effect-capable 
     assert.deepEqual(decide({ runtimePlan, concurrentAttributionProven: false }), {
       allowed: false, reason: 'concurrent_join',
     });
+  }
+  // Tools that cannot change anything outside this reply keep early release.
+  for (const runtimePlan of [
+    { ...basePlan, managedConnections: [] },
+    { ...basePlan, browserCapability: { provider: 'browserbase' as const } },
+    { ...basePlan, browserCapability: { provider: 'browserbase' as const }, websiteLogins: [{
+      id: 'login_1', host: 'app.example.test', label: 'Example', level: 'check' as const,
+      method: 'handoff' as const,
+    }] },
+    // A login grant without a connected browser mounts no browser tools.
+    { ...basePlan, websiteLogins: [{
+      id: 'login_1', host: 'app.example.test', label: 'Example', level: 'act' as const,
+      method: 'credentials' as const,
+    }] },
+    { ...basePlan, imageCapability: { role: 'image' as const, filled: true, acceptsImageInput: true } },
+    { ...basePlan, actorMembershipId: 'membership_1', connectionAuthorizations: [{
+      providerId: 'asana', templateAccountId: 'template_1',
+      accounts: [{ id: 'account_1', label: 'Asana', lifecycle: 'ready' as const }],
+    }] },
+  ]) {
+    assert.deepEqual(decide({ runtimePlan }), { allowed: true, reason: 'safe_early_release' });
   }
 });
 
