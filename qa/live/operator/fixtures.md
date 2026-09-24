@@ -100,7 +100,11 @@ for revocation. Credential-backed cases use standing QA fixtures:
   place; do not delete and recreate the connection.
 - The credential belongs to a test tenant, such as a test workspace, project,
   or account. A case that would write to a real person's or company's tenant
-  is blocked until a test tenant exists. Do not run it against real data.
+  is blocked until a test tenant exists, unless the maintainer has recorded a
+  write constraint for that fixture in the private notes (for example, private
+  objects only, never shared projects). Follow that constraint exactly, give
+  every created object the run marker, and delete it at cleanup. Never read,
+  change or delete anything the run did not create.
 - A standing key the product reads from its environment comes from the
   maintainer's owner-only lane secrets file, `~/.chickpea/qa-secrets.env`,
   which every guarded lane deploy uploads (see
