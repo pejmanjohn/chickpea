@@ -198,8 +198,8 @@ function verifyBuildArtifacts(expectedProfile = resolveCloudflareDeploymentProfi
   const migrations = config.migrations ?? [];
   const tags = migrations.map((migration) => migration.tag);
   check(
-    sameArray(tags, ['v1', 'v2', 'v3', 'v4', 'v5', 'v6', 'v7', 'v8', 'v9']),
-    'built wrangler.json migrations use the exact append-only v1 through v9 chain',
+    sameArray(tags, ['v1', 'v2', 'v3', 'v4', 'v5', 'v6', 'v7', 'v8', 'v9', 'v10']),
+    'built wrangler.json migrations use the exact append-only v1 through v10 chain',
     tags.join(','),
   );
   const sandboxMigration = migrations.find((migration) => migration.tag === 'v3');
@@ -229,6 +229,11 @@ function verifyBuildArtifacts(expectedProfile = resolveCloudflareDeploymentProfi
   check(
     sameArray(gatewaySessionMigration?.new_sqlite_classes ?? [], ['SlackGatewaySession']),
     'v9 adds exactly the outbound shared-app gateway session class',
+  );
+  const codingWorkerMigration = migrations.find((migration) => migration.tag === 'v10');
+  check(
+    sameArray(codingWorkerMigration?.new_sqlite_classes ?? [], ['FlueChickpeaCodingWorkerV1Agent']),
+    'v10 adds exactly the coding worker Agent class',
   );
   if (expectedProfile === 'sandbox') {
     const sandboxContainer = (config.containers ?? []).find(
