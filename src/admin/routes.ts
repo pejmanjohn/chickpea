@@ -55,6 +55,8 @@ import { createWorkAdminApi } from './work-api.ts';
 import { createTeamAdminApi } from './team-api.ts';
 import { readProposalApprovalStatus } from './proposal-status.ts';
 import { ENVIRONMENT_AUTHORITY_PATH, environmentAuthorityResponse } from './environment-authority.ts';
+import { ENVIRONMENT_SEED_PATH, environmentSeedResponse } from './environment-seed.ts';
+import { prepareSeededCatalogConnection } from '../management/setup-routes.ts';
 import {
   ConnectionScheduleConflictError,
   ConnectionAccountService,
@@ -1916,6 +1918,74 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     env: (c.env ?? {}) as PlatformEnv,
     gateway: () => createGatewayDeploymentClient(c.env as PlatformEnv | undefined),
     session: () => readGatewaySessionStatus(c.env),
+  }));
+  // QA-lane connection seeding has its own lane token and acts as the
+  // workspace owner; it answers nothing outside a registered QA target.
+  app.post(ENVIRONMENT_SEED_PATH, (c) => environmentSeedResponse({
+    authorization: c.req.header('authorization'),
+    env: (c.env ?? {}) as PlatformEnv,
+    readBody: () => c.req.text(),
+    dependencies: {
+      owner: async () => {
+        const context = await betterAuthContext(c);
+        if (!context) return undefined;
+        const organization = await context.directory.getOrganization();
+        if (!organization?.slackTeamId) return undefined;
+        const owner = (await context.directory.listMemberships())
+          .filter((membership) => membership.role === 'owner' && membership.status === 'active' &&
+            membership.organizationId === organization.id)
+          .sort((left, right) => left.createdAt - right.createdAt)[0];
+        if (!owner) return undefined;
+        return {
+          workspaceId: organization.slackTeamId,
+          principal: {
+            userId: owner.userId,
+            membershipId: owner.id,
+            organizationId: owner.organizationId,
+            role: owner.role,
+            authenticatorKind: 'environment_seed',
+            credentialId: 'environment_seed',
+            correlationId: `seed_${randomUUID().replaceAll('-', '').slice(0, 24)}`,
+            machine: true,
+          },
+        };
+      },
+      agentState: async (agentId) => {
+        const agent = await store(c).getAgent(agentId).catch(() => undefined);
+        if (!agent) return 'missing';
+        return agent.enabled && agent.lifecycle !== 'archived' ? 'ready' : 'inactive';
+      },
+      existingConnection: async ({ agentId, workspaceId, presetId }) => {
+        const configStore = store(c);
+        const bindings = (await configStore.listAgentConnectionBindings(agentId))
+          .filter((binding) => binding.providerId === presetId);
+        if (bindings.length === 0) return undefined;
+        const accounts = await configStore.listConnectionAccounts(workspaceId);
+        return bindings
+          .map((binding) => accounts.find((account) => account.id === binding.connectionAccountId))
+          .find((account) => account && account.lifecycle !== 'revoked')?.id;
+      },
+      createConnection: async ({ owner, agentId, preset, fields }) => {
+        const prepared = await prepareSeededCatalogConnection(preset, fields);
+        const { account } = await connectionAccounts(c).createForAgent({
+          principal: owner.principal,
+          agentId,
+          workspaceId: owner.workspaceId,
+          ownerKind: 'team',
+          providerId: preset.id,
+          label: preset.name,
+          policy: prepared.policy,
+          ...(prepared.credential ? { credential: prepared.credential } : {}),
+          allowedCapabilities: prepared.allowedCapabilities,
+          ...(prepared.identity ? { identity: prepared.identity } : {}),
+        });
+        return account.id;
+      },
+      adminSetupUrl: ({ agentId, presetId }) => new URL(
+        `/admin/agents/${encodeURIComponent(agentId)}/connections/new/${encodeURIComponent(presetId)}/team`,
+        new URL(c.req.url).origin,
+      ).href,
+    },
   }));
   // A deploy is not ready merely because one edge serves the new module. For
   // an installed shared Slack gateway, its long-lived Durable Object must also

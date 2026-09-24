@@ -66,13 +66,64 @@
    `_READ_TOKEN`, or from the owner-only file
    `~/.chickpea/lane-credentials/<color>-live.json` (`origin`,
    `authorityReadToken`). A `LIVE_AUTHORITY_READ_TOKEN_INVALID` on a lane you
-   did not claim means that other lane's credential is missing. Never print
+   did not claim means that other lane's credential is missing. Lanes deploy
+   independently: another lane's authority is briefly unavailable while that
+   lane is itself deploying, so it gets one retry and then its recorded
+   credential fingerprints stand in (the deploy prints a notice naming it).
+   The claimed lane must always answer live; `LIVE_AUTHORITY_BRIDGE_UNAVAILABLE`
+   now names that lane or a lane with no recorded baseline. Never print
    the token. Never use a bare/default deploy to reach a QA lane. Preserve
    source/claim fences. Verification does not imply landing on main.
 
-   A lane that needs a provider credential the product reads from the
-   environment (for example `BROWSERBASE_API_KEY` for the Browser feature)
-   gets it through the same guarded deploy: put the names and values in an
+   Standing provider keys come from the operator's lane secrets file,
+   `~/.chickpea/qa-secrets.env` (override the path with
+   `CHICKPEA_LANE_SECRETS_FILE`). It is an owner-only dotenv file outside
+   Git. A plain name such as `OPENAI_API_KEY` is shared by every lane, and
+   `<LANE>__NAME` (for example `COBALT__OPENAI_API_KEY`) overrides it for one
+   lane. Every guarded deploy to a claimed lane uploads the provider keys the
+   product reads from its environment (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`,
+   `OPENROUTER_API_KEY`, `BROWSERBASE_API_KEY`) in its atomic secrets file.
+   Empty values are skipped. `COMPOSIO_API_KEY` is lane-only: each lane is
+   registered with its own Composio project and auth configs, so only
+   `<LANE>__COMPOSIO_API_KEY` is uploaded (use that lane's current project key
+   so existing managed connections keep working), and a shared value is
+   ignored with a warning. With it set, Admin shows the Composio key as
+   deployment-managed. A rebuilt lane therefore regains its keys on its
+   first deploy, and changing a key means editing the file and redeploying each
+   lane. Other names, such as a connector token that belongs in the database,
+   are reported and left for a seeding step. The deploy log and
+   `npm run lane:secrets -- <lane>` print names, sources, and short
+   fingerprints, never values. Set `CHICKPEA_LANE_SECRETS=off` to deploy
+   without the file. Verifiers never write or read the values; the maintainer
+   edits the file.
+
+   Standing test connections come back the same way after a lane rebuild.
+   Each guarded lane deploy also installs the lane's seed token
+   (`~/.chickpea/lane-credentials/<lane>-seed.json`, created on first use).
+   The private manifest `~/.chickpea/qa-seed.json` has no secrets. It names
+   catalog connectors and the secrets-file name that carries each token:
+
+   ```json
+   { "schemaVersion": "chickpea-lane-seed/v1",
+     "connections": [
+       { "connector": "asana", "secret": "ASANA_QA_TOKEN" },
+       { "connector": "gmail" } ] }
+   ```
+
+   Run `npm run lane:seed -- <lane> --agent <agentId>` (add `--dry-run` to see
+   what would be sent). Token connectors (API keys and MCP bearer or header
+   credentials) are created on that Agent as team connections owned by the
+   workspace owner. A connector the Agent already has is reported `present`
+   and left unchanged. OAuth and managed (Composio) connectors return an Admin
+   setup link; open it in the verifier's browser, signed in to the lane Admin,
+   and complete the consent as a declared QA action. The seed route exists only
+   on QA targets and answers only the lane's seed token. Seeded connections on
+   a run-owned Agent are run-owned resources: register them and disconnect them
+   at cleanup.
+
+   For a one-off credential outside that file, a lane that needs a provider
+   credential the product reads from the environment gets it through the same
+   guarded deploy: put the names and values in an
    owner-only JSON object at a private absolute path and set
    `CHICKPEA_DEPLOY_SECRETS_FILE=<path>` for that `npm run deploy`. The wrapper
    uploads them in its atomic secrets file, so the deploy still yields one
@@ -106,6 +157,24 @@
    check out the claimed revision, run `npm run env -- reconciliation <alias>`
    (it adopts the uploaded version and clears the intent lock), release, and
    only then move HEAD again.
+
+   Claims need a named branch. `claim` and `wait-claim` refuse a detached HEAD
+   with `INVALID_WORKTREE`, so create a branch at the candidate first. To land
+   a fix commit during a claimed run, with no deploy in flight:
+
+   ```sh
+   git branch <fix-tip>                # keep the new commit
+   git reset --hard <claimed-revision>
+   npm run env -- release <alias> --worktree <absolute-worktree>
+   git reset --hard <fix-tip>
+   npm run env -- wait-claim <alias> --timeout-ms 0 --poll-ms 1000 --worktree <absolute-worktree>
+   ```
+
+   Batch fixes between deploys to keep these cycles rare. When `main` has
+   moved, the deploy refuses with `QA_SOURCE_BEHIND_MAIN`. Merge or rebase onto
+   the new `origin/main` just before the deploy, re-run affected offline checks,
+   and re-claim at the new HEAD. For stacked candidates, build a local verify
+   branch from `origin/main` plus the needed commits.
    Only the Slack manifest digest, the required scopes, and
    `src/auth/setup-capability.mjs` are hard-gated against the lane baseline; a
    mismatch refuses with `INSTALL_CONTINUATION_REQUIRED`, and the recovery is to
@@ -126,6 +195,33 @@
    --snapshot <snapshot>`. A doctor `missing_actor` diagnostic is a registry
    gap (no registered actor alias for that lane), not a build failure: report
    it, and continue with the attended checklist as the signed-in test actor.
+
+## Choose a lane by capability
+
+Lanes are not interchangeable. They differ in deploy profile, provider keys,
+model roles, registered fixtures, and registered actors, and the registry
+records only identity and claim state. Before `wait-claim` or `claim`, read the
+private lane capability matrix (lane-capabilities.md in `~/.chickpea/environments/`)
+and pick a lane that covers every selected case. Use `wait-claim <alias>` for
+that lane. Use `wait-claim any` only when all lanes qualify. Keep lane-specific
+values in that private file, not in this repository.
+
+| Column | Read-only readback |
+| --- | --- |
+| Deploy profile (`core` or `sandbox`), sandbox runtime on or off, GitHub App and granted repositories | Admin Settings › Coding sandbox and GitHub. A core deploy over a sandbox Worker is refused, so use `npm run deploy:sandbox` there. |
+| Provider keys by name (for example `OPENAI_API_KEY`, `BROWSERBASE_API_KEY`) | `npx wrangler secret list --name <worker>` lists names only. Admin Settings › Model providers and Browser. |
+| Default chat model and image role | Admin Settings › Model providers, or the model footer of a one-word Agent reply. |
+| Registered connector fixtures and standing QA connections | The private fixture inventory ([fixtures.md](fixtures.md)). |
+| Missing actor aliases | `missingActorAliases` in `env status`. `missing_actor` limits Member-view checks. |
+| Slack workspace display name, and whether Chrome is signed in to Slack and Admin | The browser. A lane's workspace can display under an older name. |
+| Transport | `env status`. A `gateway` lane has no operator Slack token (see [hosts.md](hosts.md#slack-evidence-on-gateway-lanes)). |
+
+Record each row with its observation date. Refresh a row after any deploy,
+profile switch, secret upload, model change, or fixture change on that lane.
+If no lane covers a case, report that as a blocker. Queueing for a capable lane
+beats running the case on a lane that must fail it. A weak default model can
+produce model failures that look like product bugs. Grade them `model`, or pin
+the case's declared model. Do not substitute a model silently.
 
 Use one suitable lane by default. Multiple colors are needed when explicitly
 requested or testing cross-lane isolation, not for every application change.

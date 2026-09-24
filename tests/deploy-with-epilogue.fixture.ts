@@ -41,7 +41,7 @@ export function createHarness() {
   mkdirSync(releaseDir, { recursive: true });
   mkdirSync(authMigrationsDir, { recursive: true });
   mkdirSync(wranglerDir, { recursive: true });
-  for (const name of ['upgrade-source.mjs', 'build-identity.mjs', 'built-worker-config.mjs', 'inspect-deployment.mjs', 'auth-schema.mjs', 'upgrade-installation.mjs', 'upgrade-receipt.mjs', 'release-manifest.mjs', 'sandbox-deploy-preflight.mjs', 'deploy-operator-secrets.mjs']) {
+  for (const name of ['upgrade-source.mjs', 'build-identity.mjs', 'built-worker-config.mjs', 'inspect-deployment.mjs', 'auth-schema.mjs', 'upgrade-installation.mjs', 'upgrade-receipt.mjs', 'release-manifest.mjs', 'sandbox-deploy-preflight.mjs', 'deploy-operator-secrets.mjs', 'lane-secrets.mjs']) {
     copyFileSync(path.join(PROJECT_ROOT, 'scripts/lib', name), path.join(scriptsLibDir, name));
   }
   copyFileSync(DEPLOY_SCRIPT, path.join(scriptsDir, 'deploy-with-epilogue.mjs'));
@@ -430,6 +430,10 @@ export function runHarness(
       // no claimed-lane registry, so an unnamed deploy is the ordinary one.
       CHICKPEA_ENVIRONMENT_ROOT:
         env.CHICKPEA_ENVIRONMENT_ROOT ?? path.join(harness.root, 'no-lane-registry'),
+      // Never read the operator's real lane secrets file from a test.
+      CHICKPEA_LANE_SECRETS: env.CHICKPEA_LANE_SECRETS ?? 'off',
+      CHICKPEA_LANE_CREDENTIALS_DIR:
+        env.CHICKPEA_LANE_CREDENTIALS_DIR ?? path.join(harness.root, 'lane-credentials'),
       npm_execpath: harness.npmStub,
     },
   });

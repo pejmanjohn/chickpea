@@ -1705,6 +1705,7 @@ export async function observeProductionEnvironmentAuthority(context, options = {
       env,
       fetchImpl: options.fetchImpl ?? fetch,
       ...(options.credentialsRoot ? { credentialsRoot: options.credentialsRoot } : {}),
+      ...(options.authorityRetryDelayMs !== undefined ? { retryDelayMs: options.authorityRetryDelayMs } : {}),
     }));
   const registry = options.readFleetRuntimeAuthorities && options.allowTestRuntimeAuthorityReader === true
     ? undefined : readEnvironmentRegistry(options);
@@ -1735,13 +1736,34 @@ export async function observeProductionEnvironmentAuthority(context, options = {
   });
   const fleetTargets = registeredTargets ?? Object.keys(runtimeAuthorities ?? {});
   if (!validQaFleet(fleetTargets) || !fleetTargets.includes(target)) throw fail('RUNTIME_AUTHORITY_INVALID');
-  const validatedRuntimeAuthorities = Object.fromEntries(fleetTargets.filter((lane) => !borrowedFingerprints[lane]).map((lane) => [
-    lane,
-    validateRuntimeAuthority(runtimeAuthorities?.[lane], lane, options.now ? options.now() : Date.now()),
-  ]));
+  // Another lane's live authority is briefly unavailable while that lane is
+  // itself deploying (its gateway session has not reached the new version).
+  // Lanes are independent: that lane's own deploy proves its live credentials
+  // against its pinned baseline, so here its recorded fingerprints stand in.
+  // The target lane is always observed live, and any lane that does answer is
+  // validated in full.
+  const unobservedFingerprints = Object.fromEntries(fleetTargets
+    .filter((lane) => lane !== target && !borrowedFingerprints[lane]
+      && runtimeAuthorities?.[lane]?.[UNOBSERVED_LANE] === true)
+    .map((lane) => {
+      const registration = registry?.targets[lane];
+      const pinned = registration && readEnvironmentBaseline(registration.evidenceRoot)
+        .credentialFingerprintsByTarget[lane];
+      if (!validFingerprints(pinned)) throw fail('LIVE_AUTHORITY_BRIDGE_UNAVAILABLE', { target: lane });
+      (options.notice ?? ((message) => process.stderr.write(`${message}\n`)))(
+        `Lane ${lane} authority is unavailable (it may be deploying); using its recorded credential fingerprints.`,
+      );
+      return [lane, pinned];
+    }));
+  const validatedRuntimeAuthorities = Object.fromEntries(fleetTargets
+    .filter((lane) => !borrowedFingerprints[lane] && !unobservedFingerprints[lane]).map((lane) => [
+      lane,
+      validateRuntimeAuthority(runtimeAuthorities?.[lane], lane, options.now ? options.now() : Date.now()),
+    ]));
   const fleetCredentialFingerprints = Object.fromEntries(fleetTargets.map((lane) => [
     lane,
-    borrowedFingerprints[lane] ?? validatedRuntimeAuthorities[lane].secretFingerprints.fingerprints,
+    borrowedFingerprints[lane] ?? unobservedFingerprints[lane]
+      ?? validatedRuntimeAuthorities[lane].secretFingerprints.fingerprints,
   ]));
   assertUniqueCredentialFingerprints(fleetCredentialFingerprints);
   const credentialFingerprints = fleetCredentialFingerprints[target];
@@ -1986,7 +2008,7 @@ function assertBorrowedWorkerUnchanged(lane, runWrangler, providerContext) {
       !== lane.bindingIdentities.TAG_STATE) throw fail('INSTALLATION_BASELINE_CHANGED');
 }
 
-async function readProductionFleetRuntimeAuthorities(request, { env, fetchImpl, credentialsRoot }) {
+async function readProductionFleetRuntimeAuthorities(request, { env, fetchImpl, credentialsRoot, retryDelayMs = 5_000 }) {
   if (!Array.isArray(request.targets) || !request.targets.includes(request.target)
     || request.targets.some((target) => !activeEnvironmentTargets.includes(target))) throw fail('INVALID_LIVE_AUTHORITY_REQUEST');
   const endpoints = request.targets.map((target) => {
@@ -2008,19 +2030,33 @@ async function readProductionFleetRuntimeAuthorities(request, { env, fetchImpl, 
       throw fail('LIVE_AUTHORITY_BRIDGE_UNAVAILABLE', { target });
     }
   });
-  return Object.fromEntries(await Promise.all(endpoints.map(async ({ target, endpoint, token }) => {
+  const read = async ({ endpoint, token }) => {
+    const response = await fetchImpl(endpoint, {
+      method: 'GET', headers: { Authorization: `Bearer ${token}` }, redirect: 'error',
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (!response.ok) throw new Error('unavailable');
+    return readBoundedAuthorityJson(response);
+  };
+  return Object.fromEntries(await Promise.all(endpoints.map(async (lane) => {
     try {
-      const response = await fetchImpl(endpoint, {
-        method: 'GET', headers: { Authorization: `Bearer ${token}` }, redirect: 'error',
-        signal: AbortSignal.timeout(30_000),
-      });
-      if (!response.ok) throw new Error('unavailable');
-      return [target, await readBoundedAuthorityJson(response)];
+      return [lane.target, await read(lane)];
     } catch {
-      throw fail('LIVE_AUTHORITY_BRIDGE_UNAVAILABLE', { target });
+      // The deploy target must answer. Another lane gets one retry, then is
+      // reported unobserved so the caller can use its recorded fingerprints.
+      if (lane.target === request.target) throw fail('LIVE_AUTHORITY_BRIDGE_UNAVAILABLE', { target: lane.target });
+      await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+      try {
+        return [lane.target, await read(lane)];
+      } catch {
+        return [lane.target, { [UNOBSERVED_LANE]: true }];
+      }
     }
   })));
 }
+
+/** Marks a non-target lane whose live authority did not answer. */
+export const UNOBSERVED_LANE = 'chickpea.unobservedLane';
 
 async function readBoundedAuthorityJson(response) {
   const reader = response.body?.getReader();

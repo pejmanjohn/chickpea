@@ -1,36 +1,9 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { createHarness, runHarness, commands, writeCutoverArtifact, writeRoutineArtifact, writeCanaryArtifact, sandboxHarness, sandboxEnv } from './deploy-with-epilogue.fixture.ts';
-
-test('a claimed QA worktree cannot fall through to production or another lane', (context) => {
-  for (const target of ['', 'cobalt']) {
-    const harness = createHarness();
-    context.after(() => rmSync(harness.root, { recursive: true, force: true }));
-    writeFileSync(path.join(harness.root, '.chickpea-environment'), JSON.stringify({
-      schemaVersion: 'chickpea-environment-claim/v1', target: 'amber',
-    }));
-    const result = runHarness(harness, [], { CHICKPEA_DEPLOY_TARGET: target });
-    assert.equal(result.status, 1);
-    assert.match(result.stderr, /This worktree claims amber/);
-    assert.equal(existsSync(harness.logPath), false, 'no build, inspection, migration, or upload');
-  }
-});
-
-test('unreadable QA ownership and local lane state refuse a default deployment', (context) => {
-  for (const kind of ['malformed', 'symlink', 'local']) {
-    const harness = createHarness();
-    context.after(() => rmSync(harness.root, { recursive: true, force: true }));
-    const marker = path.join(harness.root, '.chickpea-environment');
-    if (kind === 'malformed') writeFileSync(marker, '{');
-    if (kind === 'symlink') symlinkSync(path.join(harness.root, 'absent'), marker);
-    if (kind === 'local') mkdirSync(path.join(harness.root, '.chickpea-local-worker'));
-    const result = runHarness(harness, [], { CHICKPEA_DEPLOY_TARGET: '' });
-    assert.equal(result.status, 1);
-    assert.equal(existsSync(harness.logPath), false, kind);
-  }
-});
 
 test('a machine that operates claimed lanes refuses an unnamed deploy until production is named', (context) => {
   const refused = createHarness();
@@ -370,6 +343,62 @@ test('claimed deploy preserves setup authority and forwards exact provider conte
   assert.ok(providerLogs.length >= 2);
   assert.ok(providerLogs.every((entry) => entry ===
     'environment-provider:["--profile","lane-account","--env","amber"]'));
+});
+
+test('claimed deploy carries lane secrets file provider keys under operator and wrapper secrets', (context) => {
+  const harness = createHarness();
+  const privateDirectory = mkdtempSync(path.join(tmpdir(), 'chickpea-lane-secrets-'));
+  context.after(() => {
+    rmSync(harness.root, { recursive: true, force: true });
+    rmSync(privateDirectory, { recursive: true, force: true });
+  });
+  writeCutoverArtifact(harness, { target: 'amber', databaseId: 'test-database-id' });
+  const laneFile = path.join(privateDirectory, 'qa-secrets.env');
+  writeFileSync(laneFile, [
+    'OPENAI_API_KEY=sk-shared',
+    'AMBER__BROWSERBASE_API_KEY=bb-amber',
+    'COBALT__ANTHROPIC_API_KEY=sk-ant-cobalt',
+    'ASANA_QA_TOKEN=asana-held',
+    'CHICKPEA_AUTH_SECRET=never-used',
+  ].join('\n'), { mode: 0o600 });
+  const operatorFile = path.join(privateDirectory, 'operator.json');
+  writeFileSync(operatorFile, JSON.stringify({ OPENAI_API_KEY: 'sk-operator' }), { mode: 0o600 });
+  const versionViews = {
+    'deployed-version': { resources: { bindings: [
+      { name: 'AUTH_DB', type: 'd1', id: 'test-database-id', database_id: 'test-database-id' },
+      { name: 'CHICKPEA_SETUP_CAPABILITY_DIGEST', type: 'plain_text', text: 'A'.repeat(43) },
+      { name: 'CHICKPEA_SETUP_CAPABILITY_ISSUED_AT', type: 'plain_text', text: '1788289200000' },
+    ] } },
+  };
+  const result = runHarness(harness, ['--skip-build'], {
+    CHICKPEA_DEPLOY_TARGET: 'amber',
+    CHICKPEA_DEPLOY_AUTH_DB_ID: 'test-database-id',
+    CHICKPEA_DEPLOY_SCHEMA_GENERATION: 'd1:0002_mcp_oauth;do:v9',
+    CHICKPEA_LANE_SECRETS: '',
+    CHICKPEA_LANE_SECRETS_FILE: laneFile,
+    CHICKPEA_LANE_CREDENTIALS_DIR: path.join(privateDirectory, 'lane-credentials'),
+    CHICKPEA_DEPLOY_SECRETS_FILE: operatorFile,
+    DEPLOY_TEST_WORKER_EXISTS: '1', DEPLOY_TEST_VERSION_VIEWS: JSON.stringify(versionViews),
+    DEPLOY_TEST_SECRET_LIST: JSON.stringify([
+      { name: 'CHICKPEA_AUTH_SECRET' },
+      { name: 'CHICKPEA_CREDENTIAL_KEY_CURRENT_ID' },
+      { name: 'CHICKPEA_CREDENTIAL_KEY_KEY_V1' },
+    ]),
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const values = JSON.parse(readFileSync(harness.secretCapturePath, 'utf8')).values;
+  assert.equal(values.OPENAI_API_KEY, 'sk-operator', 'an explicit operator secrets file wins');
+  assert.equal(values.BROWSERBASE_API_KEY, 'bb-amber');
+  assert.equal('ANTHROPIC_API_KEY' in values, false, 'another lane override is not applied');
+  assert.equal('ASANA_QA_TOKEN' in values, false, 'database credentials are not Worker secrets');
+  assert.notEqual(values.CHICKPEA_AUTH_SECRET, 'never-used');
+  const seedFile = JSON.parse(readFileSync(path.join(privateDirectory, 'lane-credentials', 'amber-seed.json'), 'utf8'));
+  assert.equal(seedFile.target, 'amber');
+  assert.equal(values.CHICKPEA_ENV_SEED_TOKEN, seedFile.seedToken, 'the lane seed token rides the same secrets file');
+  assert.match(result.stdout, /Lane seed token: installed \(CHICKPEA_ENV_SEED_TOKEN\)/);
+  assert.equal(result.stdout.includes(seedFile.seedToken), false);
+  assert.match(result.stdout, /Lane secrets from .*BROWSERBASE_API_KEY \(amber override, sha256:[0-9a-f]{8}\)/);
+  assert.doesNotMatch(result.stdout, /sk-shared|bb-amber|asana-held|sk-operator/);
 });
 
 test('Worker identity mismatch fails before D1 or deploy mutation', (context) => {

@@ -50,6 +50,16 @@ npm run verify:live:record -- case-add \
   --cleanup-contract "Remove the temporary schedule and verify absence by immutable ID."
 ```
 
+Common builder refusals: capability kinds are `actor`, `fixture`, `tool`, or
+`target`. The case field is `cleanup`; the CLI flag is `--cleanup-contract`.
+`maxWaitMs` is at most 120000. A non-`model` live case must declare `slack`
+proof, so an Admin-only change needs a Slack-visible consequence as its proof.
+Otherwise record the case as blocked and do not drop the record. Register
+fixtures and owned resources before `begin`. A capability refresh while an
+attempt is open invalidates that attempt. Hold working-tree edits outside the
+claimed worktree until the attempt finishes. Use the recorder even when it
+refuses a field. A handwritten report is not a substitute.
+
 These four contract fields become immutable once present. A refresh may add a
 missing field, but cannot change or remove recorded product intent. Resolve the
 new spec's contexts and capabilities, then pass that file to `init`.

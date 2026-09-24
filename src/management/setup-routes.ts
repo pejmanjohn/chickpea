@@ -1809,6 +1809,14 @@ async function catalogOAuthAuthorizationIsCurrent(
   }
 }
 
+/** Expands a token catalog preset outside a setup link, for QA lane seeding. */
+export function prepareSeededCatalogConnection(
+  preset: ConnectorPreset,
+  fields: Record<string, string>,
+): ReturnType<typeof prepareCatalogConnection> {
+  return prepareCatalogConnection(preset, fields, {});
+}
+
 async function prepareCatalogConnection(
   preset: ConnectorPreset,
   fields: Record<string, string>,

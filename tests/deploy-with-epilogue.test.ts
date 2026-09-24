@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { DatabaseSync } from 'node:sqlite';
-import { cpSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { test } from 'node:test';
 import { digestSetupCapability } from '../src/auth/setup-capability.mjs';
@@ -975,4 +975,32 @@ test('sandbox deploy rebuilds by default and keeps the selector internal', (cont
     'npm:["run","build"]',
     'wrangler:["deploy","--dry-run","--containers-rollout=none"]',
   ]);
+});
+
+test('a claimed QA worktree cannot fall through to production or another lane', (context) => {
+  for (const target of ['', 'cobalt']) {
+    const harness = createHarness();
+    context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+    writeFileSync(path.join(harness.root, '.chickpea-environment'), JSON.stringify({
+      schemaVersion: 'chickpea-environment-claim/v1', target: 'amber',
+    }));
+    const result = runHarness(harness, [], { CHICKPEA_DEPLOY_TARGET: target });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /This worktree claims amber/);
+    assert.equal(existsSync(harness.logPath), false, 'no build, inspection, migration, or upload');
+  }
+});
+
+test('unreadable QA ownership and local lane state refuse a default deployment', (context) => {
+  for (const kind of ['malformed', 'symlink', 'local']) {
+    const harness = createHarness();
+    context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+    const marker = path.join(harness.root, '.chickpea-environment');
+    if (kind === 'malformed') writeFileSync(marker, '{');
+    if (kind === 'symlink') symlinkSync(path.join(harness.root, 'absent'), marker);
+    if (kind === 'local') mkdirSync(path.join(harness.root, '.chickpea-local-worker'));
+    const result = runHarness(harness, [], { CHICKPEA_DEPLOY_TARGET: '' });
+    assert.equal(result.status, 1);
+    assert.equal(existsSync(harness.logPath), false, kind);
+  }
 });

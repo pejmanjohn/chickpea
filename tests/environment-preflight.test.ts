@@ -827,3 +827,37 @@ test('a partial schema advancement adopts the exact existing intent and resumes 
   });
   assert.equal(readEnvironmentRegistry(f.options).targets.amber.servingVersion, 'version-schema-resumed');
 });
+
+test('two simultaneous stale resumptions produce exactly one adopted mutation owner', async (context) => {
+  const f = fixture();
+  context.after(() => rmSync(f.parent, { recursive: true, force: true }));
+  claimEnvironment('amber', f.options);
+  const nextContract = { ...localContract(), schemaGeneration: 'd1:0003_reviewed;do:v10' };
+  writeEnvironmentSchemaAdvancementIntent('amber', nextContract.schemaGeneration, {
+    ...f.options, localContract: nextContract,
+  });
+  const preflight = await preflightEnvironmentMutation('amber', {
+    ...f.options, baseline: baseline(), localContract: nextContract,
+    observeAuthority: async () => authority(),
+  });
+  beginEnvironmentDeployment(preflight, {
+    ...f.options, localContract: preflight.localContract,
+  });
+  makeMutationLockStale(f.records[0]!.evidenceRoot);
+  let authorityCalls = 0;
+  const recover = () => resumeEnvironmentDeployment('amber', {
+    ...f.options, localContract: nextContract,
+    observeAuthority: async () => {
+      authorityCalls += 1;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      return authority('amber', {
+        activeVersion: 'version-amber', schemaGeneration: nextContract.schemaGeneration,
+      });
+    },
+  });
+  const results = await Promise.allSettled([recover(), recover()]);
+  assert.equal(results.filter((result) => result.status === 'fulfilled').length, 1);
+  assert.equal(results.filter((result) => result.status === 'rejected'
+    && (result.reason as { code?: unknown })?.code === 'TARGET_LOCK_LIVE').length, 1);
+  assert.equal(authorityCalls, 1);
+});
