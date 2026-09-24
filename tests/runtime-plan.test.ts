@@ -902,25 +902,26 @@ test('plain virtual-sandbox plans do not classify the coding-workspace tools', (
 });
 
 test('current plans keep the Agent in the virtual sandbox and freeze the coding workspace beside it', () => {
-  const plan = compileRuntimePlanV2({
+  const current = (codingWorkspace: boolean) => compileRuntimePlanV2({
     turn: turn(),
     assignment: assignment(),
     instructions: 'Complete instructions.',
     memoryEpoch: 3,
     effectiveConnections: structuredClone(EFFECTIVE_CONNECTIONS),
-    codingWorkspace: true,
+    codingWorkspace,
   });
+  const plan = current(true);
   assert.deepEqual(plan.sandbox, { mode: 'bash' });
   assert.deepEqual(plan.codingWorkspace, { available: true });
   assert.deepEqual(parseRuntimePlanV2(structuredClone(plan)), plan);
   assert.equal(runtimePlanHasCodingWorkspace(plan), true);
 
-  const plain = compile({ sandboxMode: undefined, codingWorkspace: false });
+  const plain = current(false);
   assert.deepEqual(plain.sandbox, { mode: 'bash' });
   assert.equal('codingWorkspace' in plain, false);
   assert.equal(runtimePlanHasCodingWorkspace(plain), false);
   // The capability is part of the frozen harness.
-  assert.notEqual(plan.harnessRevision, compile({ sandboxMode: undefined, instructions: 'Complete instructions.' }).harnessRevision);
+  assert.notEqual(plan.harnessRevision, plain.harnessRevision);
   // A legacy plan admitted with an attached container still reads and reaches its workspace.
   const legacy = compile({ sandboxMode: 'cloudflare' });
   assert.equal(runtimePlanHasCodingWorkspace(parseRuntimePlanV2(structuredClone(legacy))), true);

@@ -496,7 +496,7 @@ test('a workspace that cannot be reached at open is a typed result, not a turn f
     grants: [GRANT],
     credentialMode: 'app',
     turnId: 'turnjob-8',
-    mintStub: async () => ({
+    mintStub: async (): Promise<WorkspaceSandboxStub> => ({
       ...fakeStub(log),
       async prepareTurn() { throw new Error('Durable Object reset because its code was updated'); },
     }),
