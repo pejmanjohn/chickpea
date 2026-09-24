@@ -45,6 +45,7 @@ import { createPlatformProductTelemetry } from './telemetry/platform.ts';
 import { createRequestTelemetryLifecycle } from './telemetry/runtime.ts';
 import { startNodeGatewaySession } from './slack/gateway/node-runtime.ts';
 import { workModelInvocationInterceptor } from './work/model-invocation.ts';
+import { workspaceRegistryInterceptor } from './sandbox/workspace-registry.ts';
 import {
   observeResponseMetadata,
   responseMetadataInterceptor,
@@ -103,6 +104,15 @@ instrument({
   key: Symbol.for('chickpea.memory-tool-policy'),
   interceptor: memoryToolPolicyInterceptor,
   observe: observeMemoryToolPolicy,
+  dispose() {},
+});
+
+// One coding-workspace registry per managed submission, shared by the
+// attached container and the workspace tools.
+instrument({
+  key: Symbol.for('chickpea.workspace-registry'),
+  interceptor: workspaceRegistryInterceptor,
+  observe() {},
   dispose() {},
 });
 

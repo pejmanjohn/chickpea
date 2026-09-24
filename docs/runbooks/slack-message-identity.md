@@ -193,6 +193,12 @@ Decide streaming from actual tool activity. A file-tool attempt excludes a
 later streaming declaration, including after durable resume. If a file tool
 starts while a declaration is pending, the declaration cannot acknowledge
 success. A completed answer-only declaration still prevents later tool work.
+Agents with connections or repositories get the final-answer form: they may
+declare only after their last tool has settled, alone in that model step, and
+only the following step's text streams. A declaration after a memory update or
+workspace change is refused because the host can replace that draft at
+delivery. Container Agents stay terminal-only while the Worker can replace
+their draft.
 When native progress is already visible, retire it before publishing the
 combined file reply; preserve uncertainty if that cleanup cannot be confirmed.
 

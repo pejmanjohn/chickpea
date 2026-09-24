@@ -17,6 +17,7 @@ import {
   ATTACH_FILE_TO_CONNECTION_TOOL_NAME,
   planAllowsConnectionFileUpload,
 } from '../connections/file-upload-tool.ts';
+import { WORKSPACE_TOOL_NAMES } from '../sandbox/workspace-tools.ts';
 import { conversationThreadTs, slackAgentThreadKey } from '../slack/thread-key.ts';
 import type { NormalizedSlackTurn } from '../slack/types.ts';
 import {
@@ -468,6 +469,12 @@ export function buildRuntimePlanActivityContext(
   const sandboxDescriptor = unknownSemanticDescriptor();
   for (const toolName of ['bash', 'read', 'write', 'edit', 'grep', 'glob']) {
     descriptors.push({ toolName, descriptor: sandboxDescriptor });
+  }
+  // The coding-workspace tools are the same primitives on the container.
+  if (plan.sandbox.mode === 'cloudflare') {
+    for (const toolName of WORKSPACE_TOOL_NAMES) {
+      descriptors.push({ toolName, descriptor: sandboxDescriptor });
+    }
   }
   if (plan.repositories.length > 0) families.add('repository');
   if (plan.apiConnections.length > 0) families.add('custom_connection');

@@ -31,15 +31,14 @@ export function decideProgressiveEligibility(
   }
   const plan = input.runtimePlan;
   if (!plan) return { allowed: false, reason: 'other' };
-  if (plan.sandbox.mode === 'cloudflare') {
-    return { allowed: false, reason: 'sandbox' };
-  }
   if (
     plan.mcpConnections.length > 0 ||
     plan.apiConnections.length > 0 ||
     plan.repositories.length > 0
   ) {
-    return { allowed: false, reason: 'effect_capable' };
+    // Text streams only after the model declares its final answer, once its
+    // last tool has settled; the answer-only lock refuses any later tool.
+    return { allowed: true, reason: 'final_answer_release' };
   }
   return { allowed: true, reason: 'safe_early_release' };
 }
