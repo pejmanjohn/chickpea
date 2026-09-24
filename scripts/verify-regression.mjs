@@ -1,24 +1,24 @@
 #!/usr/bin/env node
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { closeSync, existsSync, mkdtempSync, openSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRegressionPlan, REGRESSION_AREAS } from './lib/regression-plan.mjs';
 import { digest, sourceInputs } from './lib/verification-inputs.mjs';
-import { evidenceRefs, offlineEvent, readRun, reusableOffline, updateRun } from './lib/verification-record.mjs';
+import { evidenceRefs, offlineEvent, readRun, updateRun } from './lib/verification-record.mjs';
 import { offlineStepLabel } from './lib/verification-offline.mjs';
 import { assertNodeVersion } from './lib/node-version.mjs';
 import { waitForHostChecks } from './lib/verification-host-wait.mjs';
+import { lockfileDrift } from './lib/installed-dependencies.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 export function parseRegressionArgs(argv) {
-  const options = { mode: 'changed', areas: [], planOnly: false, base: undefined, record: undefined, reuse: false, timeoutMs: 1_200_000, waitMs: 0 };
+  const options = { mode: 'changed', areas: [], planOnly: false, base: undefined, record: undefined, timeoutMs: 1_200_000, waitMs: 0 };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === '--plan') { options.planOnly = true; continue; }
-    if (arg === '--reuse') { options.reuse = true; continue; }
     if (!['--mode', '--area', '--base', '--record', '--timeout-ms', '--wait-ms'].includes(arg)) throw new Error(`Unknown argument: ${arg}`);
     const value = argv[++index];
     if (!value || value.startsWith('-')) throw new Error(`${arg} requires a value`);
@@ -29,7 +29,6 @@ export function parseRegressionArgs(argv) {
     if (arg === '--timeout-ms') options.timeoutMs = Number(value);
     if (arg === '--wait-ms') options.waitMs = Number(value);
   }
-  if (options.reuse && (!options.record || options.mode === 'release')) throw new Error('--reuse needs --record and is unavailable at the full release checkpoint.');
   if (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs < 1_000 || options.timeoutMs > 3_600_000) throw new Error('--timeout-ms must be 1000..3600000.');
   if (!Number.isSafeInteger(options.waitMs) || options.waitMs < 0 || options.waitMs > 7_200_000) throw new Error('--wait-ms must be 0..7200000.');
   return options;
@@ -82,22 +81,47 @@ function changedFiles(base) {
 
 export const isHygieneStep = (step) => step.kind === 'npm' && step.script === 'verify:hygiene';
 
-export function runRegressionSteps(steps, run) {
+/**
+ * Runs steps in plan order. Consecutive steps that share a `group` run
+ * together, and all of them finish: a killed sibling would strand its child
+ * processes and the host reservation. The run stops after the first step or
+ * group with a failure and never reruns to green.
+ */
+export async function runRegressionSteps(steps, run) {
   const results = [];
-  for (const step of steps) {
-    const started = Date.now();
-    const status = run(step);
-    results.push({ ...step, status, durationMs: Date.now() - started });
-    if (status !== 0) break; // Preserve the first failure; never rerun to green.
+  for (let index = 0; index < steps.length;) {
+    let end = index + 1;
+    while (steps[index].group && steps[end]?.group === steps[index].group) end += 1;
+    const batch = steps.slice(index, end);
+    const settled = await Promise.all(batch.map(async (step) => {
+      const started = Date.now();
+      const status = await run(step, batch.length > 1);
+      return { ...step, status, durationMs: Date.now() - started };
+    }));
+    results.push(...settled);
+    if (settled.some(({ status }) => status !== 0)) break;
+    index = end;
   }
   return results;
+}
+
+/** Runs one step to completion; piped output is collected into `output`. */
+function spawnStep(command, args, options, timeoutMs) {
+  return new Promise((done) => {
+    const child = spawn(command, args, options);
+    const timer = setTimeout(() => child.kill('SIGKILL'), timeoutMs);
+    let output = '';
+    for (const stream of [child.stdout, child.stderr]) stream?.on('data', (chunk) => { output += chunk; });
+    child.once('error', (error) => { clearTimeout(timer); done({ status: null, signal: null, error, output }); });
+    child.once('close', (status, signal) => { clearTimeout(timer); done({ status, signal, output }); });
+  });
 }
 
 export async function main(argv) {
   let lease, interrupted = false;
   try {
     if (argv.includes('--help')) {
-      console.log(`Usage: npm run verify:regression -- [--mode changed|regression|release] [--area NAME] [--base REF] [--plan] [--record PRIVATE_RUN] [--reuse] [--timeout-ms MS] [--wait-ms MS]\nAreas: ${Object.keys(REGRESSION_AREAS).join(', ')}\n--area may repeat and selects explicit scope; otherwise changed mode includes branch and uncommitted changes.\nEvery plan starts with verify:hygiene (seconds, no host reservation); the remaining steps run cheapest first.\n--record saves private logs, durations, failures and final release receipts. --reuse accepts only unchanged successful inputs and retained logs; build always runs. Release never reuses steps.`);
+      console.log(`Usage: npm run verify:regression -- [--mode changed|regression|release] [--area NAME] [--base REF] [--plan] [--record PRIVATE_RUN] [--timeout-ms MS] [--wait-ms MS]\nAreas: ${Object.keys(REGRESSION_AREAS).join(', ')}\n--area may repeat and selects explicit scope; otherwise changed mode includes branch and uncommitted changes.\nEvery plan starts with verify:hygiene (seconds, no host reservation); the remaining steps run cheapest first.\n--record saves private logs, durations, failures and final release receipts.`);
       return 0;
     }
     const options = parseRegressionArgs(argv);
@@ -118,6 +142,11 @@ export async function main(argv) {
     // host reservation; everything else does.
     const expensive = plan.steps.some((step) => !isHygieneStep(step));
     if (expensive && !existsSync(path.join(ROOT, 'node_modules', 'tsx'))) throw new Error('Run npm ci first with the repository Node version.');
+    const drift = expensive ? lockfileDrift(ROOT) : [];
+    if (drift.length) {
+      const sample = drift.slice(0, 3).map(({ name, locked, installed }) => `${name} ${installed} (locked ${locked})`).join(', ');
+      throw new Error(`STALE_DEPENDENCIES: node_modules does not match package-lock.json for ${drift.length} package(s): ${sample}. Run npm ci with the repository Node version.`);
+    }
     if (options.record) {
       const run = readRun(options.record); // Validate before executing any checks.
       if (run.events.some((event) => event.type === 'offline_begin' && !run.events.some((end) => end.type === 'offline_finish' && end.attemptId === event.id))) {
@@ -162,14 +191,9 @@ export async function main(argv) {
     const record = (value) => updateRun(options.record, (run) => offlineEvent(run, value));
     const receiptPlan = options.record ? record({ type: 'offline_plan', source: input, node: process.version, mode: options.mode, steps: plan.steps, fingerprint,
       executionFingerprint, sourceExportCoverage: 1, testFiles: testFiles.filter((file) => /^tests\/(?:[^/]+|usage\/[^/]+)\.test\.ts$/.test(file)) }) : undefined;
-    const results = runRegressionSteps(plan.steps, (step) => {
+    const nodeBuilt = plan.steps.some((step) => step.kind === 'npm' && step.script === 'flue:build');
+    const results = await runRegressionSteps(plan.steps, async (step, concurrent) => {
       const label = offlineStepLabel(step);
-      const reusable = options.reuse ? reusableOffline(readRun(options.record), label, fingerprint) : undefined;
-      if (reusable) {
-        record({ type: 'offline_reuse', planId: receiptPlan.id, label, fingerprint, reusedId: reusable.id, priorDurationMs: reusable.durationMs, evidence: reusable.evidence });
-        console.log(`Reusing ${label}: receipt ${reusable.id}, original ${reusable.durationMs} ms.`);
-        return 0;
-      }
       const started = Date.now();
       const attempt = options.record ? record({ type: 'offline_begin', planId: receiptPlan.id, label, fingerprint, node: process.version, source: input, ownerPid: process.pid }) : undefined;
       const log = attempt ? path.join(path.dirname(path.resolve(options.record)), `${attempt.id}.log`) : undefined;
@@ -184,12 +208,16 @@ export async function main(argv) {
       // npm supplies its executable path on every platform. Direct node users
       // can use PATH without enabling a shell for any user input.
       const directNpm = step.kind === 'npm' && !process.env.npm_execpath;
+      const stepEnv = step.group && nodeBuilt ? { ...env, CHICKPEA_NODE_BUILD_READY: '1' } : env;
+      // Concurrent unrecorded steps would interleave on the terminal; their output is printed when they finish.
+      const piped = fd === undefined && concurrent;
+      const stdio = fd !== undefined ? ['ignore', fd, fd] : piped ? ['ignore', 'pipe', 'pipe'] : 'inherit';
       let result;
       try {
-        result = spawnSync(directNpm ? 'npm' : process.execPath,
-          directNpm ? ['run', step.script, ...scriptArgs] : args,
-          { cwd: ROOT, env, timeout: options.timeoutMs, killSignal: 'SIGKILL', stdio: fd === undefined ? 'inherit' : ['ignore', fd, fd] });
+        result = await spawnStep(directNpm ? 'npm' : process.execPath,
+          directNpm ? ['run', step.script, ...scriptArgs] : args, { cwd: ROOT, env: stepEnv, stdio }, options.timeoutMs);
       } finally { if (fd !== undefined) closeSync(fd); }
+      if (piped) console.log(`\n--- ${label} (exit ${result.status ?? result.signal}) ---\n${result.output}`);
       if (result.signal || result.error) interrupted = true;
       const stable = !options.record || sourceInputs(ROOT).tree === input.tree;
       const status = stable ? result.status ?? 1 : 1;

@@ -82,12 +82,14 @@ produces false failures that look pre-existing.
 Before claiming a lane, gather every human-dependent prerequisite in one pass,
 so a run does not stall mid-journey while the maintainer is away:
 
-1. Pick the lane from the [lane capability matrix](environments.md#choose-a-lane-by-capability):
+1. Run `npm run env -- capabilities all` and pick the lane
+   ([choose a lane by capability](environments.md#choose-a-lane-by-capability)):
    deploy profile, provider keys, image role, default model, and registered
    connector fixtures must cover every selected case.
-2. Confirm one connected browser for the Chrome extension, signed in to the
-   lane's Slack workspace and Admin. Request any Slack desktop computer-use
-   grant now if it will be used.
+2. Confirm the lane's browser is signed in to its Slack workspace and Admin:
+   the per-lane browser server when configured, otherwise exactly one browser
+   connected to the Chrome extension (see [hosts.md](hosts.md#lane-browsers)).
+   Request any Slack desktop computer-use grant now if it will be used.
 3. Confirm the required credential fixtures exist on that lane (see
    [fixtures.md](fixtures.md#credentials)). Never ask for a secret in chat.
 4. Name the checks that only a human can do, such as a real-phone view, and
@@ -192,10 +194,9 @@ required; an Agent's success claim, a log, build, or simulated cron is insuffici
 Keep Local, deployed, deterministic, and model-only grades separate. Use the lane's
 actual model without substitution. Missing or sampled telemetry proves no absence.
 
-Offline reuse is explicit with `--reuse` and requires matching working contents,
-Node version, effective environment, check inventory, and retained logs. Builds
-always run to restore generated artifacts. Changes invalidate dependent attended
-cases; workflow-only edits preserve earlier product evidence. Serving build,
+Offline checks always execute; a receipt covers only the working contents, Node
+version, effective environment, and check inventory it ran with. Changes
+invalidate dependent attended cases; workflow-only edits preserve earlier product evidence. Serving build,
 model, actor, connection, fixture, or lane-state changes invalidate dependent live
 proof. Record refreshes truthfully; a source SHA alone is not an input fingerprint.
 

@@ -94,8 +94,8 @@ for revocation. Credential-backed cases use standing QA fixtures:
   which every guarded lane deploy uploads (see
   [environments.md](environments.md)). A one-off credential outside that
   file goes through `CHICKPEA_DEPLOY_SECRETS_FILE` for one guarded deploy.
-  Verifiers never edit either file. Update the lane capability matrix
-  afterward.
+  Verifiers never edit either file. Refresh the lane capability matrix
+  afterward with `npm run env -- capabilities all --write`.
 
 If the fixture is missing, ask for it once during the kickoff preflight, keep
 dependent cases blocked, and finish the rest.

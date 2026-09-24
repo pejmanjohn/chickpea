@@ -159,7 +159,7 @@ async function requestCase(
 }
 
 // Ports come from the shared verification allocator: a fixed range outside
-// the OS ephemeral range, locked per host, so the 4-way suite and the
+// the OS ephemeral range, locked per host, so the parallel suite and the
 // harness's own connections cannot take a probed port back before workerd binds it.
 async function availablePort(): Promise<number> {
   return reserveVerificationPort();

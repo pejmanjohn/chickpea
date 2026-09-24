@@ -202,25 +202,38 @@
 ## Choose a lane by capability
 
 Lanes are not interchangeable. They differ in deploy profile, provider keys,
-model roles, registered fixtures, and registered actors, and the registry
-records only identity and claim state. Before `wait-claim` or `claim`, read the
-private lane capability matrix (lane-capabilities.md in `~/.chickpea/environments/`)
-and pick a lane that covers every selected case. Use `wait-claim <alias>` for
-that lane. Use `wait-claim any` only when all lanes qualify. Keep lane-specific
-values in that private file, not in this repository.
+model roles, registered fixtures, and registered actors. Before `wait-claim` or
+`claim`, run:
 
-| Column | Read-only readback |
+```bash
+npm run env -- capabilities all          # table; add --json for a record
+npm run env -- capabilities all --write  # also refresh the private matrix
+```
+
+It fills one row per lane from read-only readbacks and reports an unreachable
+lane in its own row (`read errors: ...`) without failing the others. Pass
+`--profile`/`--env` the same way as other `env` commands when Wrangler needs
+them. Pick a lane that covers every selected case, then use `wait-claim <alias>`
+for it. Use `wait-claim any` only when all lanes qualify.
+
+`--write` rewrites only the generated section of the private lane capability
+matrix (lane-capabilities.md in `~/.chickpea/environments/`). Keep hand-written
+notes, such as GitHub App grants, fixtures, and Chrome sign-in, outside that
+section, and keep lane-specific values out of this repository.
+
+| Column | Source |
 | --- | --- |
-| Deploy profile (`core` or `sandbox`), sandbox runtime on or off, GitHub App and granted repositories | Admin Settings › Coding sandbox and GitHub. A core deploy over a sandbox Worker is refused, so use `npm run deploy:sandbox` there. |
-| Provider keys by name (for example `OPENAI_API_KEY`, `BROWSERBASE_API_KEY`) | `npx wrangler secret list --name <worker>` lists names only. Admin Settings › Model providers and Browser. |
-| Default chat model and image role | Admin Settings › Model providers, or the model footer of a one-word Agent reply. |
-| Registered connector fixtures and standing QA connections | The private fixture inventory ([fixtures.md](fixtures.md)). |
-| Missing actor aliases | `missingActorAliases` in `env status`. `missing_actor` limits Member-view checks. |
-| Slack workspace display name, and whether Chrome is signed in to Slack and Admin | The browser. A lane's workspace can display under an older name. |
-| Transport | `env status`. A `gateway` lane has no operator Slack token (see [hosts.md](hosts.md#slack-evidence-on-gateway-lanes)). |
+| Deploy profile (`core`, `sandbox`, or `mixed` during a split deployment) and live version | Wrangler: the serving version's `SANDBOX` binding. A core deploy over a sandbox Worker is refused, so use `npm run deploy:sandbox` there. A live version that differs from the registry is shown next to it. |
+| Provider keys by name (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, `BROWSERBASE_API_KEY`, `COMPOSIO_API_KEY`) and `CHICKPEA_ENV_SEED_TOKEN` | Wrangler `secret list`, names only. The seed token column also shows whether the operator holds the lane's seed token file (existence only). |
+| Default chat model and image role | Not generated: no read-only host path exposes them. Read Admin Settings › Model providers, or the model footer of a one-word Agent reply. |
+| Missing actor aliases, Slack workspace label, transport, setup-flow marker, claim | The environment registry, as in `env status`. `missing_actor` limits Member-view checks. A `gateway` lane has no operator Slack token (see [hosts.md](hosts.md#slack-evidence-on-gateway-lanes)). |
+| GitHub App and granted repositories, sandbox runtime on or off | Not generated. Admin Settings › Coding sandbox and GitHub. |
+| Registered connector fixtures and standing QA connections | Not generated. The private fixture inventory ([fixtures.md](fixtures.md)). |
+| Whether Chrome is signed in to Slack and Admin | Not generated. The browser. A lane's workspace can display under an older name. |
 
-Record each row with its observation date. Refresh a row after any deploy,
-profile switch, secret upload, model change, or fixture change on that lane.
+Rerun the command after any deploy, profile switch, or secret upload. Update
+the hand-written notes with their observation date after any model or fixture
+change on that lane.
 If no lane covers a case, report that as a blocker. Queueing for a capable lane
 beats running the case on a lane that must fail it. A weak default model can
 produce model failures that look like product bugs. Grade them `model`, or pin
