@@ -180,16 +180,21 @@ test('Violet can join the existing two-lane registry without changing its identi
   } finally { rmSync(f.parent, { recursive: true, force: true }); }
 });
 
-test('Violet registration refuses an occupied fleet and a stale registry revision', () => {
+test('Violet registration refuses a stale registry revision and keeps a claimed lane intact', () => {
   const f = fixture();
   try {
     const violet = targetRecord('violet', f.first.revision, f.parent);
     mkdirSync(violet.evidenceRoot, { recursive: true, mode: 0o700 });
     claimEnvironment('amber', { ...registryOptions(f.root), worktreePath: f.first.path });
-    assert.throws(() => environmentRegistryModule.registerEnvironment({ expectedRegistryRevision: 1, registration: violet }, registryOptions(f.root)), rejectsCode('FLEET_BUSY'));
-    releaseEnvironment('amber', { ...registryOptions(f.root), worktreePath: f.first.path });
-    assert.throws(() => environmentRegistryModule.registerEnvironment({ expectedRegistryRevision: 0, registration: violet }, registryOptions(f.root)), rejectsCode('REGISTRY_REVISION_MISMATCH'));
+    const claimed = readEnvironmentRegistry(registryOptions(f.root));
+    assert.throws(() => environmentRegistryModule.registerEnvironment({ expectedRegistryRevision: claimed.revision - 1, registration: violet }, registryOptions(f.root)), rejectsCode('REGISTRY_REVISION_MISMATCH'));
     assert.deepEqual(Object.keys(readEnvironmentRegistry(registryOptions(f.root)).targets), ['amber', 'cobalt']);
+    // Another lane's claim does not block admission, and survives it unchanged.
+    environmentRegistryModule.registerEnvironment({ expectedRegistryRevision: claimed.revision, registration: violet }, registryOptions(f.root));
+    const after = readEnvironmentRegistry(registryOptions(f.root));
+    assert.deepEqual(after.targets.amber, claimed.targets.amber);
+    assert.deepEqual(Object.keys(after.targets).sort(), ['amber', 'cobalt', 'violet']);
+    releaseEnvironment('amber', { ...registryOptions(f.root), worktreePath: f.first.path });
   } finally { rmSync(f.parent, { recursive: true, force: true }); }
 });
 
