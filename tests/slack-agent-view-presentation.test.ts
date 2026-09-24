@@ -18,6 +18,7 @@ import type { SlackPresentationFinalizationRecord } from '../src/slack/run-prese
 import { SlackTransportError } from '../src/slack/transport/types.ts';
 import { slackClientMessageId } from '../src/slack/transport/message-id.ts';
 import type { SlackArtifactReceipt } from '../src/slack/artifact-receipts.ts';
+import type { WorkspaceMilestoneRecord } from '../src/slack/coding-worker-run.ts';
 
 const ROOT = {
   workspaceId: 'T_AGENT_VIEW',
@@ -806,6 +807,164 @@ test('V3 milestones stay hidden until an authoritative transition and project on
     ]);
   } finally {
     h.db.close();
+  }
+});
+
+function milestone(
+  name: WorkspaceMilestoneRecord['milestone'],
+  state: WorkspaceMilestoneRecord['state'],
+  extra: Partial<WorkspaceMilestoneRecord> = {},
+): WorkspaceMilestoneRecord {
+  return { schemaVersion: 1, toolCallId: 'call_workspace', milestone: name, state, ...extra };
+}
+
+const WORKSPACE_TARGET = { instanceId: 'instance_workspace', submissionId: 'submission_workspace' };
+
+function taskRows(input: Record<string, unknown> | undefined): Array<[unknown, unknown, unknown]> {
+  return ((input?.chunks ?? []) as Array<Record<string, unknown>>)
+    .filter((chunk) => chunk.type === 'task_update')
+    .map((chunk) => [chunk.title, chunk.status, chunk.details]);
+}
+
+test('workspace milestones open the native checklist, advance it, and settle with the answer', async () => {
+  const h = harness({ schemaVersion: 3 });
+  try {
+    await prepareReceipt(h, {
+      ...WORKSPACE_TARGET,
+      receipt: { submissionId: WORKSPACE_TARGET.submissionId, acceptedAt: 'now', uid: 'uid' },
+      eligibility: { allowed: false, reason: 'effect_capable' },
+    });
+    assert.equal(h.calls.some((call) => call.method === 'chat.startStream'), false);
+
+    await h.presentation.applyWorkspaceMilestone(milestone('workspace', 'started'), WORKSPACE_TARGET);
+    const starts = h.calls.filter((call) => call.method === 'chat.startStream');
+    assert.equal(starts.length, 1);
+    assert.equal(starts[0]!.input.markdown_text, undefined);
+    assert.deepEqual(taskRows(starts[0]!.input), [
+      ['Coding workspace', 'in_progress', undefined],
+      ['Code changes', 'pending', undefined],
+      ['Pull request', 'pending', undefined],
+    ]);
+
+    await h.presentation.applyWorkspaceMilestone(milestone('workspace', 'completed'), WORKSPACE_TARGET);
+    await h.presentation.applyWorkspaceMilestone(milestone('changes', 'started'), WORKSPACE_TARGET);
+    // A replayed record is a no-op: no transition, no Slack write.
+    const appendsBefore = h.calls.filter((call) => call.method === 'chat.appendStream').length;
+    await h.presentation.applyWorkspaceMilestone(milestone('workspace', 'started'), WORKSPACE_TARGET);
+    await h.presentation.applyWorkspaceMilestone(milestone('changes', 'started'), WORKSPACE_TARGET);
+    assert.equal(h.calls.filter((call) => call.method === 'chat.appendStream').length, appendsBefore);
+    assert.deepEqual(taskRows(h.calls.filter((call) => call.method === 'chat.appendStream').at(-1)?.input), [
+      ['Coding workspace', 'complete', 'Completed: the coding workspace is ready.'],
+      ['Code changes', 'in_progress', undefined],
+      ['Pull request', 'pending', undefined],
+    ]);
+
+    await h.presentation.applyWorkspaceMilestone(
+      milestone('changes', 'changed', { branch: 'fix-login-test' }),
+      WORKSPACE_TARGET,
+    );
+    await h.presentation.applyWorkspaceMilestone(
+      milestone('pull_request', 'completed', { pullRequests: [{ repository: 'acme/app', number: 12 }] }),
+      WORKSPACE_TARGET,
+    );
+    assert.equal(h.calls.filter((call) => call.method === 'chat.startStream').length, 1);
+
+    await h.presentation.finalize('Opened acme/app#12.', 'markdown', 'complete', observer([]));
+    const stop = h.calls.find((call) => call.method === 'chat.stopStream')?.input;
+    const chunks = stop?.chunks as Array<Record<string, unknown>>;
+    assert.equal(chunks[0]?.type, 'markdown_text');
+    assert.deepEqual(taskRows(stop), [
+      ['Coding workspace', 'complete', 'Completed: the coding workspace is ready.'],
+      ['Code changes', 'complete', 'Changed: pushed branch fix-login-test.'],
+      ['Pull request', 'complete', 'Completed: acme/app#12.'],
+    ]);
+  } finally {
+    h.db.close();
+  }
+});
+
+test('workspace milestones replace a plan with no started row, but never one already shown', async () => {
+  const pending = harness({ schemaVersion: 3, tasks: ['Requested change', 'Verification result'] });
+  try {
+    await pending.presentation.applyWorkspaceMilestone(milestone('workspace', 'started'), WORKSPACE_TARGET);
+    const stored = pending.store.get(pending.runId);
+    assert.deepEqual(stored?.plan?.tasks.map((task) => [task.title, task.status]), [
+      ['Coding workspace', 'in_progress'],
+      ['Code changes', 'pending'],
+      ['Pull request', 'pending'],
+    ]);
+    assert.equal(pending.calls.filter((call) => call.method === 'chat.startStream').length, 1);
+  } finally {
+    pending.db.close();
+  }
+
+  const shown = harness({ schemaVersion: 3, tasks: ['Requested change', 'Verification result'] });
+  try {
+    const [first] = shown.store.get(shown.runId)!.plan!.tasks;
+    await shown.presentation.transitionMilestone({ taskId: first!.id, to: 'in_progress' });
+    await shown.presentation.applyWorkspaceMilestone(milestone('workspace', 'started'), WORKSPACE_TARGET);
+    assert.deepEqual(shown.store.get(shown.runId)?.plan?.tasks.map((task) => task.title), [
+      'Requested change',
+      'Verification result',
+    ]);
+  } finally {
+    shown.db.close();
+  }
+});
+
+test('workspace milestones settle a failed task, and a lost started record still records the outcome', async () => {
+  const h = harness({ schemaVersion: 3 });
+  try {
+    await h.presentation.applyWorkspaceMilestone(milestone('workspace', 'started'), WORKSPACE_TARGET);
+    await h.presentation.applyWorkspaceMilestone(milestone('workspace', 'completed'), WORKSPACE_TARGET);
+    // No `changes started` record reached the relay.
+    await h.presentation.applyWorkspaceMilestone(milestone('changes', 'failed', { reason: 'timeout' }), WORKSPACE_TARGET);
+    await h.presentation.applyWorkspaceMilestone(milestone('pull_request', 'not_run', { reason: 'prior_failed' }), WORKSPACE_TARGET);
+    const stored = h.store.get(h.runId);
+    assert.equal(stored?.schemaVersion, 3);
+    if (stored?.schemaVersion !== 3) return;
+    assert.deepEqual(stored.plan?.tasks.map((task) => [task.outcome, task.detail]), [
+      ['completed', 'Completed: the coding workspace is ready.'],
+      ['failed', 'Failed: the task did not finish in time and was stopped.'],
+      ['not_run', 'Not run: work stopped after an earlier step failed.'],
+    ]);
+  } finally {
+    h.db.close();
+  }
+});
+
+test('workspace milestones retry a lost compare-and-swap and stop once a terminal is frozen', async () => {
+  const h = harness({ schemaVersion: 3 });
+  try {
+    let stale = 1;
+    const presentation = new SlackAgentViewPresentation({
+      client: h.client,
+      state: {
+        ...h.presentationState,
+        transitionRunPresentation: (value) => {
+          // Another writer (the answer relay) won the first compare-and-swap.
+          if (value.mutation.kind === 'adopt_plan' && stale-- > 0) return { outcome: 'stale' };
+          return h.presentationState.transitionRunPresentation(value);
+        },
+      },
+      runId: h.runId,
+      runFencingToken: 0,
+      footer: { agentName: 'Chickpea', agentId: 'agent_default' },
+    });
+    await presentation.applyWorkspaceMilestone(milestone('workspace', 'started'), WORKSPACE_TARGET);
+    assert.equal(h.store.get(h.runId)?.plan?.tasks[0]?.status, 'in_progress');
+  } finally {
+    h.db.close();
+  }
+
+  const frozen = harness({ schemaVersion: 3 });
+  try {
+    assert.equal(await frozen.presentation.prepareDeferredTerminalDelivery('answer'), true);
+    await frozen.presentation.applyWorkspaceMilestone(milestone('workspace', 'started'), WORKSPACE_TARGET);
+    assert.equal(frozen.store.get(frozen.runId)?.plan, undefined);
+    assert.equal(frozen.calls.some((call) => call.method === 'chat.startStream'), false);
+  } finally {
+    frozen.db.close();
   }
 });
 

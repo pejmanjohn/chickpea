@@ -1210,6 +1210,12 @@ export async function runTurn(
               }
             : {}),
           ...(prepareProgressiveRelay ? { prepareProgressiveRelay } : {}),
+          ...(agentViewPresentation
+            ? {
+                onWorkspaceMilestone: (record, target) =>
+                  agentViewPresentation.applyWorkspaceMilestone(record, target),
+              }
+            : {}),
         });
         text = sandboxUnavailableFallback
           ? `${SANDBOX_UNAVAILABLE_FALLBACK_NOTICE}\n\n${agentResult.text}`

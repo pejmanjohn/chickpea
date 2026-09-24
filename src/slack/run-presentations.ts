@@ -496,7 +496,16 @@ export type SlackPresentationMutation =
   | { kind: 'mark_non_stream_finalized' }
   | { kind: 'mark_unknown'; degradationReason: SlackPresentationDegradationReason }
   | { kind: 'reconcile_unknown_stream' }
-  | { kind: 'adopt_plan'; taskLabels: readonly string[] }
+  | {
+      kind: 'adopt_plan';
+      taskLabels: readonly string[];
+      /**
+       * V3 only: replace a frozen plan whose every task is still pending. V3
+       * never shows an all-pending plan, so before the first Slack effect the
+       * swap is invisible.
+       */
+      replacePending?: true;
+    }
   | { kind: 'set_task_status'; status: 'in_progress' | 'complete' | 'error' }
   | {
       kind: 'transition_task';
@@ -1704,7 +1713,8 @@ function applyMutation(
       // but only before any Slack effect, only when native tasks are on, and
       // only when no plan is already frozen: ambient/obvious-work turns carry
       // their plan from admission and must never be re-attached or reordered.
-      if (current.plan) {
+      if (current.plan && !(mutation.replacePending && current.schemaVersion === 3 &&
+          current.plan.tasks.every((task) => task.status === 'pending'))) {
         throw stateError('terminal_rewrite', 'A native plan is already frozen.');
       }
       if (!presentationUsesNativeTasks(current)) {

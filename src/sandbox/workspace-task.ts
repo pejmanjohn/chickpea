@@ -11,6 +11,13 @@ import * as v from 'valibot';
 
 import { activityStatus, type ActivityStatus } from '../activity/semantic.ts';
 import type { TurnPullRequestProgress } from '../config/state-rpc.ts';
+import {
+  checklistBranchName,
+  WORKSPACE_MILESTONES,
+  type WorkspaceMilestone,
+  type WorkspaceMilestoneOutcome,
+  type WorkspaceMilestoneRecord,
+} from '../slack/coding-worker-run.ts';
 import type { CodingWorkerBindingV1 } from './coding-worker-binding.ts';
 import { SandboxSessionCapError, SandboxUnavailableError } from './errors.ts';
 import { WORKSPACE_DIR } from './workspace-lifecycle.ts';
@@ -119,6 +126,11 @@ export interface WorkspaceTaskToolOptions {
   responseState: () => WorkspaceTaskResponseState;
   /** Called once a worker accepted a task, with the model it runs on. */
   onWorkerStarted?: (model: string) => void;
+  /**
+   * Records the task's steps (workspace, changes, pull request) for the run's
+   * checklist. Every step a task starts is settled before the call returns.
+   */
+  onMilestone?: (record: WorkspaceMilestoneRecord) => void;
   /** Relays the worker's progress to the coordinator's visible status. */
   publishProgress?: (status: ActivityStatus) => void;
   /** Pull requests the workspace's egress recorded for this turn. */
@@ -167,9 +179,13 @@ export function createWorkspaceTaskTool(options: WorkspaceTaskToolOptions) {
       }
       state.started += 1;
       state.running.add(session.id);
+      const milestones = createMilestoneRecorder(toolCallId, options.onMilestone);
       try {
         return { output: await runTask(session, data.task) };
       } finally {
+        // A throw (or an abandoned call) leaves its step failed and later
+        // steps not run, so the checklist never shows work still going.
+        milestones.stop('stopped');
         state.running.delete(session.id);
       }
 
@@ -180,12 +196,16 @@ export function createWorkspaceTaskTool(options: WorkspaceTaskToolOptions) {
         // Activate the workspace here, in the coordinator: the session cap and
         // checkpoint restore belong to this turn's workspace session, and a
         // container that cannot start is answered without involving a worker.
+        milestones.start('workspace');
         try {
           const sandbox = await target.sandbox();
           await sandbox.exists(WORKSPACE_DIR);
         } catch (error) {
           const mapped = workspaceFailure(error);
-          if (mapped) return mapped;
+          if (mapped) {
+            milestones.stop('workspace_unavailable');
+            return mapped;
+          }
           throw error;
         }
 
@@ -200,6 +220,8 @@ export function createWorkspaceTaskTool(options: WorkspaceTaskToolOptions) {
           idempotencyKey: `workspace_task:${toolCallId}`,
         })));
         options.onWorkerStarted?.(binding.codingModel.model);
+        milestones.settle('workspace', 'completed');
+        milestones.start('changes');
 
         const deadline = AbortSignal.timeout(taskTimeoutMs);
         const observation = signal ? AbortSignal.any([signal, deadline]) : deadline;
@@ -217,9 +239,11 @@ export function createWorkspaceTaskTool(options: WorkspaceTaskToolOptions) {
             // Stop the worker durably: a task nobody waits for must not keep
             // running, pushing, or spending.
             await handle.abort().catch(() => undefined);
+            milestones.stop('timeout');
             return failure('timeout', TIMEOUT_MESSAGE);
           }
           if (error instanceof AgentRunError || error instanceof AgentInstanceNotFoundError) {
+            milestones.stop('worker_failed');
             return failure('worker_failed', WORKER_FAILED_MESSAGE);
           }
           // The observation broke, not the worker. Nobody will read this task
@@ -236,13 +260,27 @@ export function createWorkspaceTaskTool(options: WorkspaceTaskToolOptions) {
         for (const pullRequest of pullRequestLinks(reply.text, binding)) {
           if (!found.has(pullRequest.url.toLowerCase())) found.set(pullRequest.url.toLowerCase(), pullRequest);
         }
+        const pullRequests = [...found.values()].slice(0, MAX_REPORTED_PULL_REQUESTS);
+        const branch = workerBranch(reply.text);
+        if (branch || pullRequests.length > 0) {
+          milestones.settle('changes', 'changed', branch ? { branch } : { reason: 'no_branch' });
+        } else {
+          milestones.settle('changes', 'completed', { reason: 'no_branch' });
+        }
+        if (pullRequests.length > 0) {
+          milestones.settle('pull_request', 'completed', {
+            pullRequests: pullRequests.map(({ repository, number }) => ({ repository, number })),
+          });
+        } else {
+          milestones.settle('pull_request', 'skipped', { reason: 'no_pull_request' });
+        }
         const { text, truncated } = keepTail(reply.text.trim(), MAX_WORKSPACE_TASK_REPLY_CHARS);
         return {
           ok: true,
           workspace: target.name,
           reply: text,
           replyTruncated: truncated,
-          pullRequests: [...found.values()].slice(0, MAX_REPORTED_PULL_REQUESTS),
+          pullRequests,
         };
       }
     },
@@ -276,6 +314,67 @@ export function pullRequestLinks(
     links.push({ url, repository, number: Number(digits) });
   }
   return links;
+}
+
+/**
+ * The branch the worker's answer names on its closing line
+ * (`Branch: fix-login · Pull request: …`), or undefined for `none` or a name
+ * that is not a plain branch name.
+ */
+export function workerBranch(text: string): string | undefined {
+  const matches = [...text.matchAll(/^\s*[*_`]*Branch:?[*_`]*\s*:?\s*`?([^\s`·|]+)`?/gim)];
+  const name = matches.at(-1)?.[1]?.replace(/[.,;]+$/, '');
+  if (!name || /^(?:none|n\/a|-)$/i.test(name)) return undefined;
+  return checklistBranchName(name);
+}
+
+type MilestoneDetail = Pick<WorkspaceMilestoneRecord, 'reason' | 'branch' | 'pullRequests'>;
+
+/**
+ * One task's checklist records, in order. It remembers which step is active
+ * so `stop` can fail it and mark the rest not run, and it never lets a failed
+ * write affect the task.
+ */
+function createMilestoneRecorder(
+  toolCallId: string,
+  write: ((record: WorkspaceMilestoneRecord) => void) | undefined,
+) {
+  const settled = new Set<WorkspaceMilestone>();
+  let active: WorkspaceMilestone | undefined;
+  const record = (
+    milestone: WorkspaceMilestone,
+    state: WorkspaceMilestoneRecord['state'],
+    detail: MilestoneDetail = {},
+  ) => {
+    if (!write) return;
+    try {
+      write({ schemaVersion: 1, toolCallId, milestone, state, ...detail });
+    } catch (error) {
+      console.warn(`[chickpea] workspace milestone write failed: ${error instanceof Error ? error.name : 'unknown'}`);
+    }
+  };
+  return {
+    start(milestone: WorkspaceMilestone) {
+      if (settled.has(milestone) || active === milestone) return;
+      active = milestone;
+      record(milestone, 'started');
+    },
+    settle(milestone: WorkspaceMilestone, outcome: WorkspaceMilestoneOutcome, detail: MilestoneDetail = {}) {
+      if (settled.has(milestone)) return;
+      settled.add(milestone);
+      if (active === milestone) active = undefined;
+      record(milestone, outcome, detail);
+    },
+    /** Fail the active step (if any) and mark every unsettled step not run. */
+    stop(reason: NonNullable<WorkspaceMilestoneRecord['reason']>) {
+      if (settled.size === 0 && active === undefined) return;
+      for (const milestone of WORKSPACE_MILESTONES) {
+        if (settled.has(milestone)) continue;
+        if (milestone === active) this.settle(milestone, 'failed', { reason });
+        else this.settle(milestone, 'not_run', { reason: 'prior_failed' });
+      }
+    },
+  };
 }
 
 /**

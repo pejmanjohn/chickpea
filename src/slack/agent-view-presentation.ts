@@ -22,6 +22,12 @@ import {
 } from './table-presentation.ts';
 import type { SlackArtifactReceipt } from './artifact-receipts.ts';
 import {
+  WORKSPACE_MILESTONE_LABELS,
+  WORKSPACE_MILESTONES,
+  workspaceMilestoneDetail,
+  type WorkspaceMilestoneRecord,
+} from './coding-worker-run.ts';
+import {
   ReceiptScopedTextRelay,
   type ProgressiveIntentTransition,
   type ProgressiveRelayInvalidationReason,
@@ -136,6 +142,7 @@ interface PreparedSlackActivityWrite {
   messageTs?: string;
 }
 
+const STALE_WRITER_MESSAGE = 'Slack Agent View presentation writer is stale.';
 const MAX_PROGRESSIVE_BUFFER_BYTES = 128 * 1_024;
 const DEFAULT_APPEND_INTERVAL_MS = 750;
 const CORRECTED_MARKER = '_Corrected_';
@@ -1076,6 +1083,79 @@ export class SlackAgentViewPresentation {
     await this.transition(presentation, { kind: 'adopt_plan', taskLabels });
   }
 
+  /**
+   * Show a delegated coding task's steps as this run's native checklist. The
+   * first record adopts the three workspace rows, replacing a plan none of
+   * whose rows has started (V3 never shows such a plan); a plan with work
+   * already shown is left alone. Transitions are idempotent, so a replayed
+   * record is a no-op. The first transition opens the task card when no
+   * stream exists yet; later ones append to it. Never called after a terminal
+   * delivery was frozen.
+   */
+  async applyWorkspaceMilestone(
+    record: WorkspaceMilestoneRecord,
+    target: { instanceId: string; submissionId: string },
+  ): Promise<void> {
+    let presentation: SlackRunPresentation | undefined;
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        presentation = await this.advanceWorkspaceMilestone(record);
+        break;
+      } catch (error) {
+        // The progressive relay writes the same row; re-read and retry a
+        // lost compare-and-swap instead of dropping the step.
+        if (attempt >= 2 || !(error instanceof Error) ||
+            error.message !== STALE_WRITER_MESSAGE) throw error;
+      }
+    }
+    if (!presentation || presentation.schemaVersion !== 3 || !presentation.plan) return;
+    if (presentation.stream.state === 'absent') {
+      if (!(await this.ownsLatestThreadGeneration(presentation))) return;
+      await this.startNativePlan(presentation, target.instanceId, target.submissionId);
+      return;
+    }
+    await this.projectMilestonesBestEffort(presentation);
+  }
+
+  private async advanceWorkspaceMilestone(
+    record: WorkspaceMilestoneRecord,
+  ): Promise<SlackRunPresentation | undefined> {
+    let presentation = await this.requirePresentation();
+    if (presentation.schemaVersion !== 3 || presentation.terminalDelivery.state !== 'none') {
+      return undefined;
+    }
+    if (!hasWorkspacePlan(presentation)) {
+      if (presentation.stream.state !== 'absent') return undefined;
+      if (presentation.plan?.tasks.some((task) => task.status !== 'pending')) return undefined;
+      presentation = await this.transition(presentation, {
+        kind: 'adopt_plan',
+        taskLabels: WORKSPACE_MILESTONE_LABELS,
+        ...(presentation.plan ? { replacePending: true as const } : {}),
+      });
+      if (presentation.schemaVersion !== 3 || !presentation.plan) return undefined;
+    }
+    const task = presentation.plan!.tasks[WORKSPACE_MILESTONES.indexOf(record.milestone)];
+    if (!task || task.status === 'complete' || task.status === 'error') return undefined;
+    if (record.state === 'started') {
+      if (task.status !== 'pending') return undefined;
+      return this.transition(presentation, {
+        kind: 'transition_task', taskId: task.id, to: 'in_progress',
+      });
+    }
+    const detail = workspaceMilestoneDetail(record);
+    if (!detail) return undefined;
+    // A lost `started` record must not strand a real outcome: only skipped
+    // and not-run rows may settle without starting.
+    if (task.status === 'pending' && record.state !== 'skipped' && record.state !== 'not_run') {
+      presentation = await this.transition(presentation, {
+        kind: 'transition_task', taskId: task.id, to: 'in_progress',
+      });
+    }
+    return this.transition(presentation, {
+      kind: 'transition_task', taskId: task.id, to: record.state, detail,
+    });
+  }
+
   private async appendProgressiveText(
     instanceId: string,
     submissionId: string,
@@ -1548,7 +1628,7 @@ export class SlackAgentViewPresentation {
       mutation,
     });
     if (result.outcome !== 'applied') {
-      throw new Error('Slack Agent View presentation writer is stale.');
+      throw new Error(STALE_WRITER_MESSAGE);
     }
     return result.presentation;
   }
@@ -1762,6 +1842,12 @@ function streamStartPayload(
         ? { username: presentation.persona.name, icon_url: presentation.persona.avatarUrl }
         : {}),
   } as unknown as Parameters<WebClient['chat']['startStream']>[0];
+}
+
+function hasWorkspacePlan(presentation: SlackRunPresentation): boolean {
+  const titles = presentation.plan?.tasks.map((task) => task.title);
+  return titles?.length === WORKSPACE_MILESTONE_LABELS.length &&
+    titles.every((title, index) => title === WORKSPACE_MILESTONE_LABELS[index]);
 }
 
 function taskChunks(presentation: SlackRunPresentation): AnyChunk[] {
