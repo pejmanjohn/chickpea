@@ -72,6 +72,16 @@ test('a newer failed check supersedes earlier success; summaries alone and open 
   assert.equal(f.view().offlinePlans[0].result, 'pass');
 });
 
+test('checks that run together leave interleaved receipts that still cover the plan', (t) => {
+  const f = fixture(t), durability = npm('verify:durability'), providers = npm('verify:providers');
+  const p = f.plan([durability, providers]);
+  const first = f.begin(p, durability), second = f.begin(p, providers);
+  assert.equal(f.view().offlinePlans[0].result, 'in_progress');
+  f.finish(p, second); f.finish(p, first); f.summary(p);
+  assert.equal(f.view().offlinePlans[0].result, 'pass');
+  assert.deepEqual(f.results(), { 'npm:verify:durability': 'pass', 'npm:verify:providers': 'pass' });
+});
+
 test('overlapping and superseding test groups retain every original test obligation', (t) => {
   const f = fixture(t), a = 'tests/one.test.ts', b = 'tests/two.test.ts', c = 'tests/three.test.ts';
   const failed = f.plan([tests(a, b)]); f.check(failed, failed.steps[0], 'fail'); f.summary(failed, 'fail');
@@ -144,19 +154,6 @@ test('evidence integrity and Node runtime identity remain required for offline r
   assert.deepEqual(f.view().offlinePlans.map((p: any) => [p.node, p.result]), [['v24.20.0', 'pass'], ['v22.19.0', 'fail']]);
   const receipt = f.run.events.find((e: any) => e.type === 'offline_finish' && e.planId === node24.id);
   writeFileSync(receipt.evidence[0].path, 'replaced evidence');
-  assert.equal(f.view().offlinePlans[0].result, 'stale');
-});
-
-test('validated reuse satisfies the new plan but cannot reuse past an intervening failure', (t) => {
-  const f = fixture(t), step = npm('typecheck');
-  const first = f.plan([step]), receipt = f.check(first); f.summary(first);
-  const reused = f.plan([step]);
-  const reuse = (p: any) => f.event({ type: 'offline_reuse', planId: p.id, label: receipt.label,
-    fingerprint: p.fingerprint, reusedId: receipt.id, evidence: receipt.evidence });
-  reuse(reused); f.summary(reused);
-  assert.equal(f.view().offlinePlans[0].result, 'pass');
-  const failure = f.plan([step]); f.check(failure, step, 'fail'); f.summary(failure, 'fail');
-  const invalid = f.plan([step]); reuse(invalid); f.summary(invalid);
   assert.equal(f.view().offlinePlans[0].result, 'stale');
 });
 

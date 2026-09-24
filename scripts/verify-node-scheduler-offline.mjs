@@ -26,6 +26,7 @@ import {
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 
 import {
   EVENTS_PATH,
@@ -50,6 +51,11 @@ const AGENT_ID = 'agent_default';
 const RESULT_MARKER = 'node-schedule-process-proof';
 const TERMINAL_STATUSES = new Set(['succeeded', 'no_op', 'failed', 'skipped']);
 const POLL_INTERVAL_MS = 100;
+// Flue reclaims a crashed process's submission only after its 30 s lease
+// expires. --expire-lease ends that lease in the database after the crash, so
+// the replacement's startup reconciliation reclaims it at once. The release
+// checkpoint runs without it and still proves Flue's own expiry.
+const EXPIRE_LEASE = process.argv.includes('--expire-lease');
 
 assertNodeVersion();
 const directory = mkdtempSync(join(tmpdir(), 'chickpea-node-scheduler-offline-'));
@@ -388,6 +394,17 @@ try {
   const admissionsBefore = await store.listAdmissions(inFlight.id);
   assert(admissionsBefore.at(-1)?.flueAgentReceipt, 'Persisted Flue receipt was not observed.');
   await stop(run, 'SIGKILL');
+  if (EXPIRE_LEASE) {
+    const transcripts = new DatabaseSync(transcriptPath);
+    try {
+      const { changes } = transcripts.prepare(
+        "UPDATE flue_agent_submissions SET lease_expires_at = 1 WHERE status = 'running' AND lease_expires_at > 0",
+      ).run();
+      assert.equal(changes, 1, 'the crashed process should leave exactly one leased submission');
+    } finally {
+      transcripts.close();
+    }
+  }
 
   holdProvider = false;
   run = launch(primaryEnvironment.file, primaryEnvironment.origin);

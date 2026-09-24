@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
-import { readdirSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 
+// @ts-expect-error Executable helpers are JavaScript, shared with the CLI.
+import { lockfileDrift } from '../scripts/lib/installed-dependencies.mjs';
 // @ts-expect-error Executable helpers are JavaScript, shared with the CLI.
 import { createRegressionPlan } from '../scripts/lib/regression-plan.mjs';
 // @ts-expect-error Executable helpers are JavaScript, shared with the CLI.
@@ -33,6 +37,29 @@ test('unknown runtime changes and deleted tests broaden verification instead of 
     assert.ok(plan.steps.some((step: { script?: string }) => step.script === 'test'));
     assert.ok(plan.steps.some((step: { script?: string }) => step.script === 'verify:cf-smoke'));
   }
+});
+
+test('the Node scheduler proof runs for routines, Node runtime, and dependency changes only', () => {
+  const scheduler = (plan: { steps: { script?: string }[] }) =>
+    plan.steps.some((step) => step.script === 'verify:node-scheduler-offline');
+  for (const file of ['src/new-runtime.ts', 'src/admin/routes.ts', 'scripts/run-tests.mjs', 'src/slack/thread.ts']) {
+    const plan = createRegressionPlan({ files: [file], testFiles });
+    assert.equal(scheduler(plan), false, file);
+    if (plan.fullTests) assert.ok(plan.steps.some((step: { script?: string }) => step.script === 'test'), file);
+  }
+  for (const file of ['src/routines/scheduler.ts', 'src/db.node.ts', 'src/node-background.ts', 'scripts/start-node.mjs',
+    'vite.node.config.ts', 'scripts/lib/offline-harness.mjs', 'package-lock.json', '.nvmrc']) {
+    assert.equal(scheduler(createRegressionPlan({ files: [file], testFiles })), true, file);
+  }
+  assert.equal(scheduler(createRegressionPlan({ areas: ['routines'], testFiles })), true);
+  assert.equal(scheduler(createRegressionPlan({ testFiles })), true);
+  assert.equal(scheduler(createRegressionPlan({ mode: 'regression', testFiles })), true);
+  assert.equal(scheduler(createRegressionPlan({ mode: 'release', testFiles })), true);
+  // Only the release checkpoint waits out Flue's own 30 s submission lease.
+  const schedulerArgs = (plan: { steps: { script?: string, args?: string[] }[] }) =>
+    plan.steps.find((step) => step.script === 'verify:node-scheduler-offline')?.args;
+  assert.equal(schedulerArgs(createRegressionPlan({ mode: 'release', testFiles })), undefined);
+  assert.deepEqual(schedulerArgs(createRegressionPlan({ mode: 'regression', testFiles })), ['--expire-lease']);
 });
 
 test('documentation changes run only source hygiene while an unspecified scope runs core regression', () => {
@@ -108,14 +135,44 @@ test('every plan starts with source hygiene and orders the rest cheapest first',
   assert.equal(isHygieneStep({ kind: 'npm', script: 'build' }), false);
 });
 
-test('checks run serially and preserve the first failure without replay', () => {
+test('checks run in plan order and preserve the first failure without replay', async () => {
   const calls: string[] = [];
-  const results = runRegressionSteps([{ script: 'build' }, { script: 'test' }, { script: 'later' }], (step: { script: string }) => {
+  const results = await runRegressionSteps([{ script: 'build' }, { script: 'test' }, { script: 'later' }], async (step: { script: string }) => {
     calls.push(step.script);
     return step.script === 'test' ? 1 : 0;
   });
   assert.deepEqual(calls, ['build', 'test']);
   assert.deepEqual(results.map((result: { status: number }) => result.status), [0, 1]);
+});
+
+test('a group runs together, every member finishes, and a failure stops later steps', async () => {
+  let running = 0, peak = 0;
+  const calls: string[] = [];
+  const results = await runRegressionSteps([
+    { script: 'test' }, { script: 'a', group: 'proofs' }, { script: 'b', group: 'proofs' }, { script: 'c', group: 'proofs' }, { script: 'export' },
+  ], async (step: { script: string }, concurrent: boolean) => {
+    calls.push(`${step.script}:${concurrent}`);
+    running += 1; peak = Math.max(peak, running);
+    await new Promise((resolve) => setTimeout(resolve, step.script === 'a' ? 5 : 30));
+    running -= 1;
+    return step.script === 'a' ? 1 : 0;
+  });
+  assert.deepEqual(calls, ['test:false', 'a:true', 'b:true', 'c:true']);
+  assert.equal(peak, 3);
+  assert.deepEqual(results.map((result: { script: string, status: number }) => `${result.script}=${result.status}`), ['test=0', 'a=1', 'b=0', 'c=0']);
+});
+
+test('proofs after the suite form one group behind a single Node build; the export stays last and alone', () => {
+  const full = createRegressionPlan({ files: ['src/new-runtime.ts'], testFiles });
+  const scripts = full.steps.map((step: { script?: string, file?: string }) => step.script ?? step.file ?? 'tests');
+  assert.deepEqual(scripts.slice(0, 4), ['verify:hygiene', 'build', 'test', 'flue:build']);
+  for (const step of full.steps.slice(4)) assert.equal(step.group, 'proofs');
+  for (const step of full.steps.slice(0, 4)) assert.equal(step.group, undefined);
+  const release = createRegressionPlan({ mode: 'release', testFiles });
+  assert.equal(release.steps.at(-1).script, 'verify:oss-export');
+  assert.equal(release.steps.at(-1).group, undefined);
+  const admin = createRegressionPlan({ files: ['assets/admin-ui/app.js'], testFiles });
+  assert.equal(admin.steps.some((step: { script?: string }) => step.script === 'flue:build'), false);
 });
 
 test('argument parsing rejects missing values and supports explicit repeated areas', () => {
@@ -124,7 +181,39 @@ test('argument parsing rejects missing values and supports explicit repeated are
   assert.equal(options.planOnly, true);
   assert.throws(() => parseRegressionArgs(['--base', '--plan']), /requires a value/);
   assert.throws(() => parseRegressionArgs(['--allow-production']), /Unknown argument/);
-  assert.throws(() => parseRegressionArgs(['--reuse']), /needs --record/);
-  assert.throws(() => parseRegressionArgs(['--record', '/private/run.json', '--mode', 'release', '--reuse']), /full release checkpoint/);
+  assert.throws(() => parseRegressionArgs(['--reuse']), /Unknown argument/);
   assert.throws(() => parseRegressionArgs(['--timeout-ms', '0']), /1000/);
+});
+
+test('stale node_modules are reported against package-lock.json before any check runs', () => {
+  const root = mkdtempSync(join(tmpdir(), 'chickpea-lockfile-drift-'));
+  try {
+    const lock = (packages: Record<string, object>) => JSON.stringify({ lockfileVersion: 3, packages });
+    writeFileSync(join(root, 'package-lock.json'), lock({
+      '': { name: 'fixture' },
+      'node_modules/@flue/runtime': { version: '2.1.0' },
+      'node_modules/fsevents': { version: '2.3.3', optional: true },
+      'node_modules/dev-only': { version: '1.0.0', devOptional: true },
+      'node_modules/dev-present': { version: '1.0.0', devOptional: true },
+    }));
+    assert.deepEqual(lockfileDrift(root), [{ name: 'node_modules/.package-lock.json', locked: 'present', installed: 'missing' }]);
+    mkdirSync(join(root, 'node_modules'));
+    // An installed optional package is platform-dependent and never compared;
+    // an installed devOptional package is.
+    writeFileSync(join(root, 'node_modules', '.package-lock.json'), lock({
+      'node_modules/@flue/runtime': { version: '2.0.7' },
+      'node_modules/fsevents': { version: '9.9.9' },
+      'node_modules/dev-present': { version: '0.9.0' },
+    }));
+    assert.deepEqual(lockfileDrift(root), [
+      { name: '@flue/runtime', locked: '2.1.0', installed: '2.0.7' },
+      { name: 'dev-present', locked: '1.0.0', installed: '0.9.0' },
+    ]);
+    writeFileSync(join(root, 'node_modules', '.package-lock.json'), lock({
+      'node_modules/@flue/runtime': { version: '2.1.0' }, 'node_modules/dev-present': { version: '1.0.0' },
+    }));
+    assert.deepEqual(lockfileDrift(root), []);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

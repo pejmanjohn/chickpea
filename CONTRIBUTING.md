@@ -64,14 +64,18 @@ For iteration, `npm run verify:regression -- --plan` selects checks from the
 branch and working changes. Run without `--plan` to execute them, or select
 `--area routines` and other named areas explicitly. `--mode regression` runs
 the fixed core checks; `--mode release` runs the full local sequence on clean
-committed source. Steps run cheapest first: hygiene, build, typecheck and
-tests, the second-scale evaluators, the offline runtime checks, then the
-scheduler and workerd proofs. A documentation-only change runs hygiene alone.
+committed source. Hygiene, build, and the tests run first and in order; the
+evaluators and process-level proofs after them (offline turn, durability,
+Node scheduler, workerd) then run together on one shared Node build, each
+with its own ports, state, and log. The Node scheduler proof is selected for
+routine, Node-runtime, and dependency changes. A documentation-only change
+runs hygiene alone. A checkout whose `node_modules` does not match
+`package-lock.json` stops with `STALE_DEPENDENCIES` before any check runs.
 These commands need no browser, live account, or OAuth.
 Use `$chickpea-live-verification` for the corresponding real QA journeys.
 Its private [run record](qa/live/operator/records.md) can also capture offline
-checks with `verify:regression --record <private-run.json>`. Add `--reuse` only
-for unchanged repeats; release mode always executes its full checkpoint.
+checks with `verify:regression --record <private-run.json>`; every run executes
+its checks, and release mode always executes its full checkpoint.
 
 Run builds and tests **serially**: tests inspect generated artifacts, so a
 concurrent build can make them read a partially written artifact.
@@ -105,8 +109,9 @@ DO_NOT_TRACK=1 npm run verify:providers
 DO_NOT_TRACK=1 npm run verify:cf-smoke
 ```
 
-The root test suite runs through `scripts/run-tests.mjs` under 4-way
-concurrency. A file that fails, or that ends without reporting a single test,
+The root test suite runs through `scripts/run-tests.mjs` under 8-way
+concurrency, known-slow files first, with `tsc --noEmit` alongside; a type
+error stops the pass. A file that fails, or that ends without reporting a single test,
 is rerun once alone; a file that then passes is logged as `RETRIED IN
 ISOLATION`, and a file that fails or stays silent twice fails the run. Local
 verification servers take loopback ports from `scripts/lib/verification-ports.mjs`:

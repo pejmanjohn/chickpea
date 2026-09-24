@@ -13,25 +13,57 @@
  * node:test reports such a file as passing (its only event is a file-level
  * pass with no subtests), which is how a worker that dies quietly with exit 0
  * used to pass the gate.
+ *
+ * Files start longest first: node:test dequeues them in the given order, and a
+ * slow file that starts late sets the tail of the whole pass. `--typecheck`
+ * runs `tsc --noEmit` beside the pass instead of before it; a type error stops
+ * the pass as soon as tsc reports it.
  */
-import { resolve, relative } from 'node:path';
+import { execFile } from 'node:child_process';
+import { createRequire } from 'node:module';
+import { basename, resolve, relative } from 'node:path';
 import { finished } from 'node:stream/promises';
 import { run } from 'node:test';
 import { spec } from 'node:test/reporters';
 
-const CONCURRENCY = 4;
-const MAX_RETRIED_FILES = 5;
+const CONCURRENCY = 8;
+const MAX_RETRIED_FILES = CONCURRENCY;
+// Files measured at 5 s or more inside the 8-way pass, slowest first. Split
+// parts (`name-2`) share their base name's position. A stale entry only costs
+// scheduling time, never coverage.
+const SLOW_FIRST = [
+  'environment-registry', 'upgrade-cli', 'verification-record', 'node-installer-bootstrap',
+  'flue-progressive-characterization', 'environment-preflight', 'deploy-with-epilogue',
+  'live-contract-coordinator', 'environment-wait', 'images-openai-client-workerd', 'admin-visual-fixture',
+];
 
-const files = process.argv.slice(2).map((file) => resolve(file));
+const args = process.argv.slice(2);
+const withTypecheck = args[0] === '--typecheck';
+const files = (withTypecheck ? args.slice(1) : args).map((file) => resolve(file));
 if (files.length === 0) {
-  console.error('Usage: node scripts/run-tests.mjs <test files...>');
+  console.error('Usage: node scripts/run-tests.mjs [--typecheck] <test files...>');
   process.exitCode = 2;
 } else {
-  process.exitCode = await main(files);
+  process.exitCode = await main(longestFirst(files));
+}
+
+function slowRank(file) {
+  const name = basename(file).replace(/\.test\.ts$/, '').replace(/-\d+$/, '');
+  const rank = SLOW_FIRST.indexOf(name);
+  return rank === -1 ? SLOW_FIRST.length : rank;
+}
+
+function longestFirst(list) {
+  return list.map((file, index) => ({ file, index }))
+    .sort((a, b) => slowRank(a.file) - slowRank(b.file) || a.index - b.index)
+    .map(({ file }) => file);
 }
 
 async function main(list) {
-  const failed = await runFiles(list, CONCURRENCY);
+  const controller = new AbortController();
+  const typecheck = withTypecheck ? startTypecheck(controller) : undefined;
+  const failed = await runFiles(list, CONCURRENCY, controller.signal);
+  if (typecheck && (await typecheck) !== 0) return 1;
   if (failed.length === 0) return 0;
   if (failed.length > MAX_RETRIED_FILES) {
     console.error(`\n[run-tests] ${failed.length} test files failed; not retrying.`);
@@ -47,14 +79,27 @@ async function main(list) {
   return 0;
 }
 
-async function runFiles(list, concurrency) {
+/** Resolves to tsc's exit code; a failure prints tsc's output and aborts the pass. */
+function startTypecheck(controller) {
+  // The fixture override lets tests/run-tests.test.ts exercise a failing tsc.
+  const tsc = process.env.RUN_TESTS_FIXTURE_TSC ?? createRequire(import.meta.url).resolve('typescript/bin/tsc');
+  return new Promise((done) => execFile(process.execPath, [tsc, '--noEmit'], (error, stdout, stderr) => {
+    if (error) {
+      console.error(`\n[run-tests] typecheck failed; stopping the test pass:\n${stdout}${stderr}`);
+      controller.abort(new Error('typecheck failed'));
+    }
+    done(error ? 1 : 0);
+  }));
+}
+
+async function runFiles(list, concurrency, signal) {
   const failed = new Set();
   const reported = new Set();
   // A child spawned by node:test inherits this marker and would treat the
   // files here as already-running test children, reporting nothing. Clear it
   // so the runner also works when a test launches it.
   delete process.env.NODE_TEST_CONTEXT;
-  const stream = run({ files: list, concurrency, execArgv: ['--import', 'tsx'] });
+  const stream = run({ files: list, concurrency, execArgv: ['--import', 'tsx'], ...(signal ? { signal } : {}) });
   // Every failure event names its file, including a file whose process exited
   // non-zero before reporting (a killed worker or a crash at load).
   stream.on('test:fail', (event) => {

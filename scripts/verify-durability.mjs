@@ -54,6 +54,11 @@ import {
 const DURABILITY_MARKER = 'DURABILITY_MARKER_ALPHA';
 const EXEC_CHANNEL = 'C_EXEC';
 const ROOT_TS = '1782770400.000100';
+// Negative checks wait until Slack/provider traffic has been idle for
+// quietMs. T1 calibrates it on a cold server: a wrongly admitted turn must be
+// able to reach the fake well inside the window, so a slow host widens it.
+const MIN_QUIET_MS = 1500;
+let quietMs = MIN_QUIET_MS;
 
 function log(line) {
   console.log(line);
@@ -136,6 +141,16 @@ async function runServerTurn({ serverEntry, fakeUrl, dbPath, netGuardLog, payloa
   return { child, eventsUrl, getOutput };
 }
 
+/** Milliseconds from now until the fake sees a call past `index`, or `timeoutMs`. */
+async function firstWireAfter(index, timeoutMs = 15_000) {
+  const startedAt = Date.now();
+  while (backend.wireLog.length <= index) {
+    if (Date.now() - startedAt > timeoutMs) return timeoutMs;
+    await delay(5);
+  }
+  return Date.now() - startedAt;
+}
+
 // Load every TypeScript dependency before the restart probes begin. Registering
 // tsx after repeatedly spawning and SIGKILLing server processes can leave its
 // esbuild loader waiting indefinitely on Linux; module loading is setup, not
@@ -196,8 +211,13 @@ try {
       netGuardLog,
       payload: mention({ eventId: 'Ev_DUR_T1', ts: ROOT_TS }),
     });
+    // No I/O runs between the ack resolving above and this line.
+    const firstWire = firstWireAfter(backend.wireLog.length);
     const finals = await waitForFinals(backend, 1, 15_000);
     const t1Final = finals.at(-1);
+    const firstWireMs = await firstWire;
+    quietMs = Math.max(MIN_QUIET_MS, 3 * firstWireMs);
+    log(`• cold-server ack to first fake call: ${firstWireMs}ms; negative checks wait for ${quietMs}ms of quiet`);
     // This case proves restart after a completed turn. A Slack HTTP effect is
     // visible before its local receipt is committed; killing at that boundary
     // instead tests ambiguous delivery recovery and can strand T2 behind T1.
@@ -291,7 +311,7 @@ try {
       // Byte-identical redelivery of T1's event (same event_id, same ts).
       payload: mention({ eventId: 'Ev_DUR_T1', ts: ROOT_TS }),
     });
-    await delay(4000);
+    await backend.quiesce(quietMs, quietMs + 15_000);
     const afterRedelivery = backend.finals().length;
     record(
       'DURABLE CLAIMS: redelivered event_id after restart posts NO new final',
@@ -301,7 +321,7 @@ try {
 
     // New event_id, same (channel, message-ts): the msg: claim must hold.
     const twin = await postSignedEvent(eventsUrl, mention({ eventId: 'Ev_DUR_TWIN', ts: ROOT_TS }));
-    await delay(4000);
+    await backend.quiesce(quietMs, quietMs + 15_000);
     const afterTwin = backend.finals().length;
     record(
       'DURABLE CLAIMS: new event_id with the same (channel, ts) posts NO new final',
@@ -334,7 +354,7 @@ try {
       netGuardLog,
       payload: threadReply({ eventId: 'Ev_DUR_IMPL_NEG', ts: '1782770800.000100', threadTs: ROOT_TS }),
     });
-    await delay(4000);
+    await backend.quiesce(quietMs, quietMs + 15_000);
     const finals = backend.finals().length;
     await stopChild(child);
     record(

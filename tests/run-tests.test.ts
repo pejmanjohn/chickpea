@@ -37,7 +37,7 @@ test('files that lose a race in the parallel pass are rerun alone once and repor
     assert.match(rerunListing, /flaky\.test\.ts/);
     assert.match(rerunListing, /crash\.test\.ts/);
     assert.doesNotMatch(rerunListing.split('\n').slice(0, 3).join('\n'), /pass\.test\.ts/);
-    assert.match(verdict, /2 file\(s\) failed under 4-way concurrency and passed alone/);
+    assert.match(verdict, /2 file\(s\) failed under 8-way concurrency and passed alone/);
     assert.match(verdict, /flaky\.test\.ts[\s\S]*crash\.test\.ts|crash\.test\.ts[\s\S]*flaky\.test\.ts/);
   } finally {
     rmSync(directory, { recursive: true, force: true });
@@ -79,4 +79,28 @@ test('the runner refuses to start without files', () => {
   const result = runRunner([]);
   assert.equal(result.status, 2);
   assert.match(result.stderr, /Usage/);
+});
+
+function runWithTypecheck(fixtures: string[], tsc: string) {
+  const startedAt = Date.now();
+  const result = spawnSync(process.execPath, [RUNNER, '--typecheck', ...fixtures.map((name) => join(FIXTURES, name))], {
+    encoding: 'utf8',
+    timeout: 120_000,
+    env: { ...process.env, DO_NOT_TRACK: '1', RUN_TESTS_FIXTURE_TSC: join(FIXTURES, tsc) },
+  });
+  assert.ifError(result.error);
+  return { ...result, elapsedMs: Date.now() - startedAt };
+}
+
+test('a concurrent typecheck failure stops the test pass and fails the run', () => {
+  const result = runWithTypecheck(['slow.test.ts'], 'tsc-fail.mjs');
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stderr, /typecheck failed; stopping the test pass[\s\S]*TS2322/);
+  assert.ok(result.elapsedMs < 4_500, `the 5 s fixture should have been stopped, took ${result.elapsedMs} ms`);
+  assert.doesNotMatch(result.stdout, /rerunning each alone/);
+});
+
+test('a clean concurrent typecheck leaves the pass result unchanged', () => {
+  assert.equal(runWithTypecheck(['pass.test.ts'], 'tsc-pass.mjs').status, 0);
+  assert.equal(runWithTypecheck(['fail.test.ts'], 'tsc-pass.mjs').status, 1);
 });

@@ -102,8 +102,7 @@ it. Keep original version provenance. Without that proof, changed context stays
 stale and needs fresh evidence; never leave the serving version artificially old.
 
 Pass `--record <private-run.json>` to the regression command for logs and timing.
-An unchanged repeat may add `--reuse`; a new source/configuration/inventory cannot
-reuse those offline receipts. Reserve the full suite and clean export on the pinned Node 24 baseline for
+Reserve the full suite and clean export on the pinned Node 24 baseline for
 the deliberate stable-candidate release checkpoint, unless a broader failure or
 impact justifies them earlier. For a release run, once the final candidate is
 stable and committed, run the complete release checkpoint and selected live
