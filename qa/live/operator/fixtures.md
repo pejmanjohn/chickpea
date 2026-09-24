@@ -75,3 +75,24 @@ continues. Do not infer those values. Borrow a standing lane only through the
 provider account, disposable Slack installation, cross-account actor, restore
 pair, or local state migration may need separate provisioning work. This helper
 makes those gaps visible; it does not implement that infrastructure.
+
+## Credentials
+
+Verifiers never type, paste, or relay a secret, even when a maintainer offers
+one in chat. If a secret appears in a transcript, stop using it and report it
+for revocation. Credential-backed cases use standing QA fixtures:
+
+- A maintainer enters the test credential once per lane through Admin or a
+  setup handoff, on a standing QA connection that the fixture inventory
+  registers under a `credentialHandle`. Run-owned Agents reuse that
+  connection. Do not create a new connection for each run.
+- The credential belongs to a test tenant, such as a test workspace, project,
+  or account. A case that would write to a real person's or company's tenant
+  is blocked until a test tenant exists. Do not run it against real data.
+- A lane secret the product reads from its environment reaches the lane only
+  through `CHICKPEA_DEPLOY_SECRETS_FILE` (see
+  [environments.md](environments.md)). Update the lane capability matrix
+  afterward.
+
+If the fixture is missing, ask for it once during the kickoff preflight, keep
+dependent cases blocked, and finish the rest.

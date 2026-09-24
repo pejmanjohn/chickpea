@@ -101,6 +101,20 @@ pretty-printed objects, not necessarily JSONL. A repeating rejected delivery-lea
 metric means the run cannot take the thread lease; record the prior owner and
 triggering message. Do not send another request to unstick it.
 
+Arrange a wake before you yield. Nothing re-invokes a session that ends its
+turn with "waiting for logs" or "waiting for a reply". Before ending a turn,
+start one of these:
+
+- the host's monitor tool;
+- a background shell `until` loop with a deadline that exits when the log
+  line, reply, or file appears;
+- `env wait-claim` for a lane;
+- `verify:host --wait-ms` for the host reservation.
+
+Otherwise keep working on independent checks. For a long due-time window, a
+background sleep sized to the window is fine. Do not write ad hoc lane polling
+loops, because `wait-claim` already polls safely.
+
 Track due-time schedule waiting as a resource deadline and occurrence budget.
 Each observation attempt remains bounded. Start independent cases while waiting;
 do not shorten duplicate-observation windows to claim a faster pass. A run that

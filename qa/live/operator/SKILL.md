@@ -72,6 +72,30 @@ Retain old receipts with their actual Node version. They cannot establish
 current Node 24 proof. Workerd, artifact, and real Slack acceptance remain
 separate requirements.
 
+In a new or long-lived worktree, run `npm ci --strict-allow-scripts` before the
+first check and `npm run build` before a full suite. A stale `node_modules` (for
+example a Flue version behind the lockfile) or a stale git-ignored `dist-cf/`
+produces false failures that look pre-existing.
+
+## Kickoff preflight
+
+Before claiming a lane, gather every human-dependent prerequisite in one pass,
+so a run does not stall mid-journey while the maintainer is away:
+
+1. Pick the lane from the [lane capability matrix](environments.md#choose-a-lane-by-capability):
+   deploy profile, provider keys, image role, default model, and registered
+   connector fixtures must cover every selected case.
+2. Confirm one connected browser for the Chrome extension, signed in to the
+   lane's Slack workspace and Admin. Request any Slack desktop computer-use
+   grant now if it will be used.
+3. Confirm the required credential fixtures exist on that lane (see
+   [fixtures.md](fixtures.md#credentials)). Never ask for a secret in chat.
+4. Name the checks that only a human can do, such as a real-phone view, and
+   plan them for the end of the run.
+
+Ask for anything missing in a single message. If nobody answers, continue the
+independent cases and record the rest as blocked.
+
 ## Normal path
 
 1. Inspect the diff with `npm run verify:regression -- --plan`. Select `changed`,
@@ -86,7 +110,8 @@ separate requirements.
    handle its exact refusal using [environments.md](environments.md). This does
    not synchronize a checkout, prove deployment, or grant deployment authority.
    Check [fixtures.md](fixtures.md) for selected operations and missing accounts.
-   Resolve one suitable QA target using [environments.md](environments.md).
+   Resolve one suitable QA target using [environments.md](environments.md);
+   choose it by capability, not by trial and error.
    Reuse its claim. Prefer an owned local workerd/HTTP lane for repair cycles;
    deployed due-time, gateway, bindings, and release proof require a deployed lane.
 3. Resolve that spec and initialize its run record using [records.md](records.md). Run
@@ -122,6 +147,10 @@ separate requirements.
    handwritten status table. Hold the environment claim through cleanup.
    Link a separately scoped follow-up with `--parent-run` and `--original-case`;
    generate `report --family` so earlier coverage and cleanup remain visible.
+
+Never end a turn with a pending lane, reply, log, or schedule observation and
+nothing to wake you. Arrange a bounded wake first; see
+[recovery.md](recovery.md#bounded-waiting).
 
 Ordinary contention should continue automatically with the bounded lane and
 expensive-check host wait commands. No user recheck is needed when the existing
