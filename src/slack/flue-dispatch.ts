@@ -1,5 +1,11 @@
 import { SLACK_MEMORY_UPDATE_DATA_NAME, parseSlackMemoryUpdate, type SlackMemoryUpdate } from './memory-update-terminal.ts';
-import { CODING_WORKER_RUN_DATA_NAME, parseCodingWorkerRunModel } from './coding-worker-run.ts';
+import {
+  CODING_WORKER_RUN_DATA_NAME,
+  parseCodingWorkerRunModel,
+  WORKSPACE_MILESTONE_DATA_NAME,
+  type WorkspaceMilestoneRecord,
+} from './coding-worker-run.ts';
+import { createWorkspaceMilestoneRelay } from './workspace-milestone-relay.ts';
 import { FILE_DELIVERY_DATA_NAME, resolveFileDeliveryText } from './file-delivery-completion.ts';
 import {
   AgentInstanceExistsError,
@@ -183,6 +189,15 @@ interface PromptSlackAgentInput {
     instanceId: string;
     receipt: FlueDispatchReceiptV1;
   }) => Promise<SlackProgressiveReadRelay | undefined>;
+  /**
+   * Applies a delegated coding task's steps to the run's checklist while the
+   * reply is observed. Called in stream order for this submission only; the
+   * reply waits for pending calls, which must not throw.
+   */
+  onWorkspaceMilestone?: (
+    record: WorkspaceMilestoneRecord,
+    target: { instanceId: string; submissionId: string },
+  ) => Promise<void>;
   /** Focused contract seam; production uses the real Flue handle. */
   handle?: ReturnType<typeof init>;
   /**
@@ -314,16 +329,26 @@ export async function promptSlackThreadAgent(
   // Flue's UI reply folds every assistant step (including interrupted drafts)
   // into one text value. Retain the durable step boundary before that fold.
   const terminalText = new TerminalStepText(receipt.submissionId);
+  const milestoneTarget = { instanceId: envelope.instanceId, submissionId: receipt.submissionId };
+  const onWorkspaceMilestone = input.onWorkspaceMilestone;
+  const milestones = onWorkspaceMilestone
+    ? createWorkspaceMilestoneRelay(
+        receipt.submissionId,
+        (record) => onWorkspaceMilestone(record, milestoneTarget),
+      )
+    : undefined;
   let reply: AgentReply;
   const onEvent = (chunk: ConversationStreamChunk) => {
     terminalText.onEvent(chunk);
     progressiveRelay?.onEvent(chunk);
+    milestones?.onEvent(chunk);
   };
   try {
     reply = observeReply
       ? await observeReply({ handle, instanceId: envelope.instanceId, receipt, onEvent })
       : await handle.read(receipt as DispatchReceipt, { onEvent });
   } catch (error) {
+    await milestones?.drain();
     if (!(error instanceof AgentRunError)) {
       await progressiveRelay?.invalidateAndDrain('read_interrupted');
       if (error instanceof AgentInstanceNotFoundError) {
@@ -362,6 +387,9 @@ export async function promptSlackThreadAgent(
     await input.beforeResult?.();
     throw new AgentPromptFailure(kind);
   }
+
+  milestones?.replay(reply.data?.[WORKSPACE_MILESTONE_DATA_NAME]);
+  await milestones?.drain();
 
   let completed: AgentDispatchResult;
   try {

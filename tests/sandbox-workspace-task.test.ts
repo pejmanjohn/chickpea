@@ -37,11 +37,18 @@ import {
   createProgressRelay,
   createWorkspaceTaskTool,
   pullRequestLinks,
+  workerBranch,
   type CodingWorkerClient,
   type WorkspaceTaskResponseState,
 } from '../src/sandbox/workspace-task.ts';
 import { WORKSPACE_TOOL_NAMES } from '../src/sandbox/workspace-tools.ts';
-import { CODING_WORKER_RUN_DATA_NAME, parseCodingWorkerRunModel } from '../src/slack/coding-worker-run.ts';
+import {
+  CODING_WORKER_RUN_DATA_NAME,
+  parseCodingWorkerRunModel,
+  parseWorkspaceMilestone,
+  workspaceMilestoneDetail,
+  type WorkspaceMilestoneRecord,
+} from '../src/slack/coding-worker-run.ts';
 import { resultFromAgentReply } from '../src/slack/flue-dispatch.ts';
 import { replyFooterModelLabel } from '../src/slack/message-format.ts';
 import { ACTIVE_WORK_TTL_MS } from '../src/slack/state-limits.ts';
@@ -167,6 +174,7 @@ interface Harness {
   progress: ActivityStatus[];
   steps: Map<string, unknown>;
   state: WorkspaceTaskResponseState;
+  milestones: WorkspaceMilestoneRecord[];
 }
 
 function stub(calls: string[], options: { broken?: boolean } = {}): WorkspaceSandboxStub {
@@ -228,6 +236,7 @@ function harness(): Harness {
     progress: [],
     steps: new Map(),
     state: { started: 0, running: new Set() },
+    milestones: [],
   };
 }
 
@@ -235,7 +244,7 @@ function taskTool(
   h: Harness,
   target: WorkspaceSession | undefined,
   observe: CodingWorkerClient['observe'],
-  extra: { taskTimeoutMs?: number } = {},
+  extra: { taskTimeoutMs?: number; onMilestone?: (record: WorkspaceMilestoneRecord) => void } = {},
 ) {
   return createWorkspaceTaskTool({
     resolve: async (name) => (name === DEFAULT_WORKSPACE_NAME ? target : undefined),
@@ -257,6 +266,7 @@ function taskTool(
     responseState: () => h.state,
     onWorkerStarted: (model) => h.started.push(model),
     publishProgress: (status) => h.progress.push(status),
+    onMilestone: (record) => h.milestones.push(record),
     recordedPullRequest: async (session) => (await (await session.activatable()).getTurnProgress?.())?.pullRequest,
     ...extra,
   });
@@ -496,4 +506,120 @@ test('the reply names the coding model only when a worker ran on a different mod
     parseCodingWorkerRunModel([{ schemaVersion: 1, model: 'a/one' }, { schemaVersion: 1, model: 'b/two' }]),
     'b/two',
   );
+});
+
+function steps(h: Harness): string[] {
+  return h.milestones.map((record) => [record.milestone, record.state, record.reason].filter(Boolean).join(':'));
+}
+
+test('a task records its checklist steps in order and settles every one', async () => {
+  const h = harness();
+  const tool = taskTool(h, workspace([]), async () =>
+    reply('Fixed it.\nBranch: fix-test · Pull request: https://github.com/acme/app/pull/7'));
+  await run(tool, h, { task: 'fix it and open a PR' });
+  assert.deepEqual(steps(h), [
+    'workspace:started',
+    'workspace:completed',
+    'changes:started',
+    'changes:changed',
+    'pull_request:completed',
+  ]);
+  assert.ok(h.milestones.every((record) => record.toolCallId === 'call-1' && record.schemaVersion === 1));
+  assert.equal(h.milestones[3]!.branch, 'fix-test');
+  assert.deepEqual(h.milestones[4]!.pullRequests, [{ repository: 'acme/app', number: 7 }]);
+  for (const record of h.milestones) assert.deepEqual(parseWorkspaceMilestone(record), record);
+});
+
+test('a task without a branch or pull request settles changes as completed and skips the pull request', async () => {
+  const h = harness();
+  const calls: string[] = [];
+  const target = new WorkspaceSession({
+    id: WORKSPACE_ID,
+    name: DEFAULT_WORKSPACE_NAME,
+    agentId: 'agent-1',
+    grants: [{ id: 'grant-1', installationId: 42, accountLogin: 'acme', fullName: 'acme/app', enabled: true }],
+    credentialMode: 'app',
+    mintStub: async (): Promise<WorkspaceSandboxStub> => ({ ...stub(calls), async getTurnProgress() { return {}; } }),
+    reserveSession: async () => true,
+    toSandbox: async (activatable) => ({
+      async exists(path: string) { return activatable.exists(path); },
+    }) as unknown as Sandbox,
+  });
+  await run(taskTool(h, target, async () => reply('Tests pass already.\nBranch: none · Pull request: none')), h, { task: 'check' });
+  assert.deepEqual(steps(h).slice(2), [
+    'changes:started',
+    'changes:completed:no_branch',
+    'pull_request:skipped:no_pull_request',
+  ]);
+});
+
+test('failures fail the active step and mark later steps not run', async () => {
+  const cases: Array<[string, Harness, () => Promise<unknown>, string[]]> = [];
+  {
+    const h = harness();
+    cases.push(['worker', h, () => run(taskTool(h, workspace([]), async () => {
+      throw new AgentRunError({ outcome: 'failed', submissionId: 'sub-1' });
+    }), h, { task: 'x' }), ['changes:failed:worker_failed', 'pull_request:not_run:prior_failed']]);
+  }
+  {
+    const h = harness();
+    cases.push(['timeout', h, () => run(taskTool(h, workspace([]), ({ signal }) => new Promise((_, reject) => {
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+    }), { taskTimeoutMs: 20 }), h, { task: 'x' }), ['changes:failed:timeout', 'pull_request:not_run:prior_failed']]);
+  }
+  {
+    const h = harness();
+    cases.push(['observation', h, () => run(taskTool(h, workspace([]), async () => {
+      throw new Error('transport');
+    }), h, { task: 'x' }).catch(() => undefined), ['changes:failed:stopped', 'pull_request:not_run:prior_failed']]);
+  }
+  for (const [name, h, go, tail] of cases) {
+    await go();
+    assert.deepEqual(steps(h), ['workspace:started', 'workspace:completed', 'changes:started', ...tail], name);
+  }
+
+  const broken = harness();
+  await run(taskTool(broken, workspace([], { broken: true }), async () => reply('x')), broken, { task: 'x' });
+  assert.deepEqual(steps(broken), [
+    'workspace:started',
+    'workspace:failed:workspace_unavailable',
+    'changes:not_run:prior_failed',
+    'pull_request:not_run:prior_failed',
+  ]);
+});
+
+test('a refused call records no steps, and a failing writer never affects the task', async () => {
+  const refused = harness();
+  await run(taskTool(refused, workspace([]), async () => reply('x')), refused, { task: 'x', workspace: 'other' });
+  assert.deepEqual(refused.milestones, []);
+
+  const h = harness();
+  const output = await run(taskTool(h, workspace([]), async () => reply('done'), {
+    onMilestone: () => { throw new Error('write outside a submission'); },
+  }), h, { task: 'x' });
+  assert.equal(output.ok, true);
+});
+
+test('the worker branch comes from its closing line, and only a plain branch name counts', () => {
+  assert.equal(workerBranch('Did it.\nBranch: fix-login-test · Pull request: https://github.com/a/b/pull/1'), 'fix-login-test');
+  assert.equal(workerBranch('**Branch:** `feat/checklist` · Pull request: none'), 'feat/checklist');
+  assert.equal(workerBranch('Branch: none · Pull request: none'), undefined);
+  assert.equal(workerBranch('No result line.'), undefined);
+  assert.equal(workerBranch('Branch: $(curl evil) · Pull request: none'), undefined);
+  assert.equal(workerBranch('Branch: old\nBranch: new-one'), 'new-one');
+});
+
+test('milestone details name their outcome and only reported facts', () => {
+  const base = { schemaVersion: 1 as const, toolCallId: 'call-1' };
+  assert.equal(workspaceMilestoneDetail({ ...base, milestone: 'workspace', state: 'started' }), undefined);
+  assert.equal(workspaceMilestoneDetail({ ...base, milestone: 'changes', state: 'changed', branch: 'fix-x' }), 'Changed: pushed branch fix-x.');
+  assert.equal(
+    workspaceMilestoneDetail({ ...base, milestone: 'pull_request', state: 'completed', pullRequests: [{ repository: 'acme/app', number: 7 }] }),
+    'Completed: acme/app#7.',
+  );
+  assert.equal(workspaceMilestoneDetail({ ...base, milestone: 'pull_request', state: 'skipped' }), 'Skipped: no pull request was opened.');
+  assert.equal(workspaceMilestoneDetail({ ...base, milestone: 'changes', state: 'failed', reason: 'timeout' }), 'Failed: the task did not finish in time and was stopped.');
+  assert.equal(workspaceMilestoneDetail({ ...base, milestone: 'pull_request', state: 'not_run' }), 'Not run: work stopped after an earlier step failed.');
+  assert.equal(parseWorkspaceMilestone({ ...base, milestone: 'changes', state: 'changed', branch: 'a b' }), undefined);
+  assert.equal(parseWorkspaceMilestone({ ...base, milestone: 'changes', state: 'done' }), undefined);
 });

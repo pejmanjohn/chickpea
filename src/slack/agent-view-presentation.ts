@@ -22,6 +22,13 @@ import {
 } from './table-presentation.ts';
 import type { SlackArtifactReceipt } from './artifact-receipts.ts';
 import {
+  WORKSPACE_MILESTONE_LABELS,
+  WORKSPACE_MILESTONES,
+  WORKSPACE_PLAN_TITLE,
+  workspaceMilestoneDetail,
+  type WorkspaceMilestoneRecord,
+} from './coding-worker-run.ts';
+import {
   ReceiptScopedTextRelay,
   type ProgressiveIntentTransition,
   type ProgressiveRelayInvalidationReason,
@@ -136,6 +143,7 @@ interface PreparedSlackActivityWrite {
   messageTs?: string;
 }
 
+const STALE_WRITER_MESSAGE = 'Slack Agent View presentation writer is stale.';
 const MAX_PROGRESSIVE_BUFFER_BYTES = 128 * 1_024;
 const DEFAULT_APPEND_INTERVAL_MS = 750;
 const CORRECTED_MARKER = '_Corrected_';
@@ -321,7 +329,7 @@ export class SlackAgentViewPresentation {
       to: input.to,
       ...(input.detail === undefined ? {} : { detail: input.detail }),
     });
-    await this.projectMilestonesBestEffort(presentation);
+    await this.projectMilestonesBestEffort(presentation, [input.taskId]);
   }
 
   /**
@@ -335,6 +343,7 @@ export class SlackAgentViewPresentation {
     const activeIndex = presentation.plan.tasks.findIndex((task) => task.status === 'in_progress');
     if (activeIndex < 0) return;
     const active = presentation.plan.tasks[activeIndex]!;
+    const changed = [active.id];
     presentation = await this.transition(presentation, {
       kind: 'transition_task',
       taskId: active.id,
@@ -350,9 +359,10 @@ export class SlackAgentViewPresentation {
         to: 'not_run',
         detail: 'Not run: work stopped after the prior milestone failed.',
       });
+      changed.push(task.id);
       if (presentation.schemaVersion !== 3 || !presentation.plan) return;
     }
-    await this.projectMilestonesBestEffort(presentation);
+    await this.projectMilestonesBestEffort(presentation, changed);
   }
 
   async recordTerminalDeliveryReceipt(
@@ -1076,6 +1086,80 @@ export class SlackAgentViewPresentation {
     await this.transition(presentation, { kind: 'adopt_plan', taskLabels });
   }
 
+  /**
+   * Show a delegated coding task's steps as this run's native checklist. The
+   * first record adopts the three workspace rows, replacing a plan none of
+   * whose rows has started (V3 never shows such a plan); a plan with work
+   * already shown is left alone. Transitions are idempotent, so a replayed
+   * record is a no-op. The first transition opens the task card when no
+   * stream exists yet; later ones append to it. Never called after a terminal
+   * delivery was frozen.
+   */
+  async applyWorkspaceMilestone(
+    record: WorkspaceMilestoneRecord,
+    target: { instanceId: string; submissionId: string },
+  ): Promise<void> {
+    let presentation: SlackRunPresentation | undefined;
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        presentation = await this.advanceWorkspaceMilestone(record);
+        break;
+      } catch (error) {
+        // The progressive relay writes the same row; re-read and retry a
+        // lost compare-and-swap instead of dropping the step.
+        if (attempt >= 2 || !(error instanceof Error) ||
+            error.message !== STALE_WRITER_MESSAGE) throw error;
+      }
+    }
+    if (!presentation || presentation.schemaVersion !== 3 || !presentation.plan) return;
+    if (presentation.stream.state === 'absent') {
+      if (!(await this.ownsLatestThreadGeneration(presentation))) return;
+      await this.startNativePlan(presentation, target.instanceId, target.submissionId);
+      return;
+    }
+    const task = presentation.plan.tasks[WORKSPACE_MILESTONES.indexOf(record.milestone)];
+    await this.projectMilestonesBestEffort(presentation, task ? [task.id] : []);
+  }
+
+  private async advanceWorkspaceMilestone(
+    record: WorkspaceMilestoneRecord,
+  ): Promise<SlackRunPresentation | undefined> {
+    let presentation = await this.requirePresentation();
+    if (presentation.schemaVersion !== 3 || presentation.terminalDelivery.state !== 'none') {
+      return undefined;
+    }
+    if (!hasWorkspacePlan(presentation)) {
+      if (presentation.stream.state !== 'absent') return undefined;
+      if (presentation.plan?.tasks.some((task) => task.status !== 'pending')) return undefined;
+      presentation = await this.transition(presentation, {
+        kind: 'adopt_plan',
+        taskLabels: WORKSPACE_MILESTONE_LABELS,
+        ...(presentation.plan ? { replacePending: true as const } : {}),
+      });
+      if (presentation.schemaVersion !== 3 || !presentation.plan) return undefined;
+    }
+    const task = presentation.plan!.tasks[WORKSPACE_MILESTONES.indexOf(record.milestone)];
+    if (!task || task.status === 'complete' || task.status === 'error') return undefined;
+    if (record.state === 'started') {
+      if (task.status !== 'pending') return undefined;
+      return this.transition(presentation, {
+        kind: 'transition_task', taskId: task.id, to: 'in_progress',
+      });
+    }
+    const detail = workspaceMilestoneDetail(record);
+    if (!detail) return undefined;
+    // A lost `started` record must not strand a real outcome: only skipped
+    // and not-run rows may settle without starting.
+    if (task.status === 'pending' && record.state !== 'skipped' && record.state !== 'not_run') {
+      presentation = await this.transition(presentation, {
+        kind: 'transition_task', taskId: task.id, to: 'in_progress',
+      });
+    }
+    return this.transition(presentation, {
+      kind: 'transition_task', taskId: task.id, to: record.state, detail,
+    });
+  }
+
   private async appendProgressiveText(
     instanceId: string,
     submissionId: string,
@@ -1548,7 +1632,7 @@ export class SlackAgentViewPresentation {
       mutation,
     });
     if (result.outcome !== 'applied') {
-      throw new Error('Slack Agent View presentation writer is stale.');
+      throw new Error(STALE_WRITER_MESSAGE);
     }
     return result.presentation;
   }
@@ -1634,14 +1718,18 @@ export class SlackAgentViewPresentation {
     }
   }
 
-  private async projectMilestonesBestEffort(presentation: SlackRunPresentation): Promise<void> {
+  /** Appends the rows named by `changed`, the tasks this call just moved. */
+  private async projectMilestonesBestEffort(
+    presentation: SlackRunPresentation,
+    changed: readonly string[],
+  ): Promise<void> {
     if (presentation.schemaVersion !== 3 || presentation.stream.state !== 'streaming' ||
-        !presentation.stream.messageTs || !presentation.plan) return;
+        !presentation.stream.messageTs || !presentation.plan || changed.length === 0) return;
     try {
       await this.options.client.chat.appendStream({
         channel: presentation.root.channelId,
         ts: presentation.stream.messageTs,
-        chunks: taskChunks(presentation),
+        chunks: taskChunks(presentation, { only: new Set(changed) }),
       } as unknown as Parameters<WebClient['chat']['appendStream']>[0]);
     } catch (error) {
       // Execution truth is already durable. A Slack projection failure cannot
@@ -1737,6 +1825,10 @@ function streamStartPayload(
   const taskChunks = input.taskChunks ?? [];
   const chunks: AnyChunk[] = [
     ...(input.markdownText ? [{ type: 'markdown_text' as const, text: input.markdownText }] : []),
+    // Sent once, with the card: later updates would append to it.
+    ...(taskChunks.length > 0 && hasWorkspacePlan(presentation)
+      ? [{ type: 'plan_update' as const, title: WORKSPACE_PLAN_TITLE }]
+      : []),
     ...taskChunks,
   ];
   return {
@@ -1764,14 +1856,34 @@ function streamStartPayload(
   } as unknown as Parameters<WebClient['chat']['startStream']>[0];
 }
 
-function taskChunks(presentation: SlackRunPresentation): AnyChunk[] {
-  return presentation.plan?.tasks.map((task) => ({
-    type: 'task_update',
-    id: task.id,
-    title: task.title,
-    status: task.status,
-    ...('detail' in task && task.detail ? { details: task.detail } : {}),
-  })) ?? [];
+function hasWorkspacePlan(presentation: SlackRunPresentation): boolean {
+  const titles = presentation.plan?.tasks.map((task) => task.title);
+  return titles?.length === WORKSPACE_MILESTONE_LABELS.length &&
+    titles.every((title, index) => title === WORKSPACE_MILESTONE_LABELS[index]);
+}
+
+/**
+ * Slack appends a task's `details` on every update that carries them, so a
+ * settled row's detail is sent once: with the update that settles it, or with
+ * the chunks that open the stream. Later updates name only its status.
+ */
+function taskChunks(
+  presentation: SlackRunPresentation,
+  options: { only?: ReadonlySet<string>; details?: boolean } = {},
+): AnyChunk[] {
+  const details = options.details ?? true;
+  return presentation.plan?.tasks
+    .filter((task) => !options.only || options.only.has(task.id))
+    .map((task): AnyChunk => {
+      const detail = details ? (task as { detail?: string }).detail : undefined;
+      return {
+        type: 'task_update',
+        id: task.id,
+        title: task.title,
+        status: task.status,
+        ...(detail ? { details: detail } : {}),
+      };
+    }) ?? [];
 }
 
 function terminalTaskChunks(
@@ -1779,8 +1891,9 @@ function terminalTaskChunks(
   status: 'complete' | 'error',
 ): AnyChunk[] {
   if (presentation.schemaVersion === 3) {
+    // A streamed card already received each settled row's detail.
     return presentation.plan?.tasks.some((task) => task.status !== 'pending')
-      ? taskChunks(presentation)
+      ? taskChunks(presentation, { details: presentation.stream.state === 'absent' })
       : [];
   }
   return presentation.plan?.tasks.map((task) => ({

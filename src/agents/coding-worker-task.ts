@@ -14,7 +14,7 @@ import {
   type WorkspaceTaskToolOptions,
 } from '../sandbox/workspace-task.ts';
 import { CHICKPEA_CODING_WORKER_AGENT_NAME } from './names.ts';
-import type { CodingWorkerRunRecord } from '../slack/coding-worker-run.ts';
+import type { CodingWorkerRunRecord, WorkspaceMilestoneRecord } from '../slack/coding-worker-run.ts';
 import type { RuntimePlanV2 } from './runtime-plan.ts';
 
 /**
@@ -38,6 +38,7 @@ export function createRuntimePlanWorkspaceTaskTool(input: {
   coordinatorId: string;
   resolve: WorkspaceTaskToolOptions['resolve'];
   onWorkerStarted: (record: CodingWorkerRunRecord) => void;
+  onMilestone: (record: WorkspaceMilestoneRecord) => void;
 }) {
   return createWorkspaceTaskTool({
     resolve: input.resolve,
@@ -46,6 +47,7 @@ export function createRuntimePlanWorkspaceTaskTool(input: {
     client: cloudflareCodingWorkerClient(),
     responseState: () => responseState(currentWorkspaceRegistry()),
     onWorkerStarted: (model) => input.onWorkerStarted({ schemaVersion: 1, model }),
+    onMilestone: input.onMilestone,
     publishProgress: (status) => publishActivityStatus(input.coordinatorId, status),
     recordedPullRequest: async (session) => {
       const stub = await session.activatable();

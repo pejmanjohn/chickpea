@@ -2,7 +2,12 @@
 
 import { apiOAuthLifecycleDependencies } from '../connections/api-oauth-lifecycle.ts';
 import { SLACK_MEMORY_UPDATE_DATA_NAME, SlackMemoryUpdateSchema, type SlackMemoryUpdate } from '../slack/memory-update-terminal.ts';
-import { CODING_WORKER_RUN_DATA_NAME, CodingWorkerRunSchema } from '../slack/coding-worker-run.ts';
+import {
+  CODING_WORKER_RUN_DATA_NAME,
+  CodingWorkerRunSchema,
+  WORKSPACE_MILESTONE_DATA_NAME,
+  WorkspaceMilestoneSchema,
+} from '../slack/coding-worker-run.ts';
 
 import {
   bash,
@@ -1624,6 +1629,9 @@ export function useRuntimePlanAgent(
   const sandbox = createRuntimePlanSandbox(plan, options.sandboxConversationKey);
   useSandbox(options.artifactToolsDisabled ? sandbox : fileCompletion.wrapSandbox(sandbox));
   const writeCodingWorkerRun = useDataWriter(CODING_WORKER_RUN_DATA_NAME, { schema: CodingWorkerRunSchema });
+  const writeWorkspaceMilestone = useDataWriter(WORKSPACE_MILESTONE_DATA_NAME, {
+    schema: WorkspaceMilestoneSchema,
+  });
   const workspaceToolsMounted = runtimePlanWorkspaceToolsMounted(plan, fileCompletion.repairing);
   if (workspaceToolsMounted) {
     for (const tool of createWorkspaceTools({ resolve: resolveWorkspace })) {
@@ -1634,6 +1642,7 @@ export function useRuntimePlanAgent(
       coordinatorId: id,
       resolve: resolveWorkspace,
       onWorkerStarted: writeCodingWorkerRun,
+      onMilestone: writeWorkspaceMilestone,
     }));
     useInstruction(WORKSPACE_TASK_INSTRUCTION);
   }

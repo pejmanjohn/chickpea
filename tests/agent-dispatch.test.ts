@@ -28,6 +28,7 @@ import {
 import type { SlackProgressiveReadRelay } from '../src/slack/progressive-relay.ts';
 import { SLACK_TABLE_PRESENTATION_DATA_NAME } from '../src/slack/table-presentation.ts';
 import { CODING_WORKSPACE_USE_DATA_NAME } from '../src/sandbox/workspace-use.ts';
+import { WORKSPACE_MILESTONE_DATA_NAME, type WorkspaceMilestoneRecord } from '../src/slack/coding-worker-run.ts';
 
 function envelope(type: string, message: string): string {
   return JSON.stringify({ error: { type, message, details: 'private detail' } });
@@ -836,4 +837,94 @@ test('only a turn with an attached container fails as a sandbox failure', async 
     () => promptSlackThreadAgent(promptInput(state(), sandboxFailure())),
     (error: unknown) => error instanceof AgentPromptFailure && error.kind === 'agent',
   );
+});
+
+function milestone(
+  name: WorkspaceMilestoneRecord['milestone'],
+  milestoneState: WorkspaceMilestoneRecord['state'],
+  toolCallId = 'call_a',
+): WorkspaceMilestoneRecord {
+  return { schemaVersion: 1, toolCallId, milestone: name, state: milestoneState };
+}
+
+test('workspace milestones of this submission reach the checklist in order, once, before settlement', async () => {
+  const applied: string[] = [];
+  const targets = new Set<string>();
+  let appliedAtSettlement: string[] | undefined;
+  const dispatchState = state({
+    recordSettlement: async (settlement) => {
+      appliedAtSettlement = [...applied];
+      return settlement;
+    },
+  });
+  const part = (messageId: string, data: unknown) => ({
+    type: 'data-part', conversationId: 'c', messageId, name: WORKSPACE_MILESTONE_DATA_NAME, data,
+  });
+  const agent = handle({ read: async (_receipt, options) => {
+    const emit = (chunk: unknown) => options?.onEvent?.(chunk as never);
+    // A re-attached read replays an earlier submission first.
+    emit({ type: 'message-started', conversationId: 'c', messageId: 'earlier', submissionId: 'submission_earlier' });
+    emit(part('earlier', milestone('workspace', 'started', 'call_old')));
+    emit({ type: 'message-started', conversationId: 'c', messageId: 'response', submissionId: RECEIPT.submissionId });
+    emit(part('response', milestone('workspace', 'started')));
+    emit(part('response', { schemaVersion: 1, toolCallId: 'call_a', milestone: 'workspace', state: 'done' }));
+    emit(part('response', milestone('workspace', 'completed')));
+    emit(part('response', milestone('workspace', 'started', 'call_b')));
+    emit(part('response', milestone('changes', 'started')));
+    return {
+      text: 'done',
+      submissionId: RECEIPT.submissionId,
+      data: {
+        // The settled reply carries every record, including one the live
+        // stream missed.
+        [WORKSPACE_MILESTONE_DATA_NAME]: [
+          milestone('workspace', 'started'),
+          milestone('workspace', 'completed'),
+          milestone('changes', 'started'),
+          milestone('changes', 'changed'),
+        ],
+      },
+    };
+  } });
+  const result = await promptSlackThreadAgent({
+    ...promptInput(dispatchState, agent),
+    onWorkspaceMilestone: async (record, target) => {
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      targets.add(`${target.instanceId}/${target.submissionId}`);
+      applied.push(`${record.toolCallId}:${record.milestone}:${record.state}`);
+    },
+  });
+  assert.equal(result.text, 'done');
+  assert.deepEqual(applied, [
+    'call_a:workspace:started',
+    'call_a:workspace:completed',
+    'call_a:changes:started',
+    'call_a:changes:changed',
+  ]);
+  assert.deepEqual(appliedAtSettlement, applied, 'the checklist is applied before the answer settles');
+  assert.deepEqual([...targets], [`${ENVELOPE.instanceId}/${RECEIPT.submissionId}`]);
+});
+
+test('a failing checklist update never fails or delays the answer', async (t) => {
+  t.mock.method(console, 'warn', () => {});
+  const seen: string[] = [];
+  const agent = handle({ read: async (_receipt, options) => {
+    options?.onEvent?.({ type: 'message-started', conversationId: 'c', messageId: 'response',
+      submissionId: RECEIPT.submissionId } as never);
+    options?.onEvent?.({ type: 'data-part', conversationId: 'c', messageId: 'response',
+      name: WORKSPACE_MILESTONE_DATA_NAME, data: milestone('workspace', 'started') } as never);
+    return { text: 'done', submissionId: RECEIPT.submissionId,
+      data: { [WORKSPACE_MILESTONE_DATA_NAME]: [milestone('workspace', 'completed')] } };
+  } });
+  const dispatchState = state();
+  const result = await promptSlackThreadAgent({
+    ...promptInput(dispatchState, agent),
+    onWorkspaceMilestone: async (record) => {
+      seen.push(record.state);
+      throw new Error('Slack Agent View presentation writer is stale.');
+    },
+  });
+  assert.equal(result.text, 'done');
+  assert.equal(dispatchState.flueSettlement?.outcome, 'completed');
+  assert.deepEqual(seen, ['started', 'completed'], 'a failed record does not stop later ones');
 });
