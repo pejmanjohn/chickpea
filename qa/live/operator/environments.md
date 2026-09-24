@@ -70,9 +70,31 @@
    the token. Never use a bare/default deploy to reach a QA lane. Preserve
    source/claim fences. Verification does not imply landing on main.
 
-   A lane that needs a provider credential the product reads from the
-   environment (for example `BROWSERBASE_API_KEY` for the Browser feature)
-   gets it through the same guarded deploy: put the names and values in an
+   Standing provider keys come from the operator's lane secrets file,
+   `~/.chickpea/qa-secrets.env` (override the path with
+   `CHICKPEA_LANE_SECRETS_FILE`). It is an owner-only dotenv file outside
+   Git. A plain name such as `OPENAI_API_KEY` is shared by every lane, and
+   `<LANE>__NAME` (for example `COBALT__OPENAI_API_KEY`) overrides it for one
+   lane. Every guarded deploy to a claimed lane uploads the provider keys the
+   product reads from its environment (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`,
+   `OPENROUTER_API_KEY`, `BROWSERBASE_API_KEY`) in its atomic secrets file.
+   Empty values are skipped. `COMPOSIO_API_KEY` is lane-only: each lane is
+   registered with its own Composio project and auth configs, so only
+   `<LANE>__COMPOSIO_API_KEY` is uploaded (use that lane's current project key
+   so existing managed connections keep working), and a shared value is
+   ignored with a warning. With it set, Admin shows the Composio key as
+   deployment-managed. A rebuilt lane therefore regains its keys on its
+   first deploy, and changing a key means editing the file and redeploying each
+   lane. Other names, such as a connector token that belongs in the database,
+   are reported and left for a seeding step. The deploy log and
+   `npm run lane:secrets -- <lane>` print names, sources, and short
+   fingerprints, never values. Set `CHICKPEA_LANE_SECRETS=off` to deploy
+   without the file. Verifiers never write or read the values; the maintainer
+   edits the file.
+
+   For a one-off credential outside that file, a lane that needs a provider
+   credential the product reads from the environment gets it through the same
+   guarded deploy: put the names and values in an
    owner-only JSON object at a private absolute path and set
    `CHICKPEA_DEPLOY_SECRETS_FILE=<path>` for that `npm run deploy`. The wrapper
    uploads them in its atomic secrets file, so the deploy still yields one

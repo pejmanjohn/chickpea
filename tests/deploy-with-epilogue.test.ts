@@ -58,7 +58,7 @@ function createHarness() {
   mkdirSync(releaseDir, { recursive: true });
   mkdirSync(authMigrationsDir, { recursive: true });
   mkdirSync(wranglerDir, { recursive: true });
-  for (const name of ['upgrade-source.mjs', 'build-identity.mjs', 'built-worker-config.mjs', 'inspect-deployment.mjs', 'auth-schema.mjs', 'upgrade-installation.mjs', 'upgrade-receipt.mjs', 'release-manifest.mjs', 'sandbox-deploy-preflight.mjs', 'deploy-operator-secrets.mjs']) {
+  for (const name of ['upgrade-source.mjs', 'build-identity.mjs', 'built-worker-config.mjs', 'inspect-deployment.mjs', 'auth-schema.mjs', 'upgrade-installation.mjs', 'upgrade-receipt.mjs', 'release-manifest.mjs', 'sandbox-deploy-preflight.mjs', 'deploy-operator-secrets.mjs', 'lane-secrets.mjs']) {
     copyFileSync(path.join(PROJECT_ROOT, 'scripts/lib', name), path.join(scriptsLibDir, name));
   }
   copyFileSync(DEPLOY_SCRIPT, path.join(scriptsDir, 'deploy-with-epilogue.mjs'));
@@ -495,6 +495,8 @@ function runHarness(
       // no claimed-lane registry, so an unnamed deploy is the ordinary one.
       CHICKPEA_ENVIRONMENT_ROOT:
         env.CHICKPEA_ENVIRONMENT_ROOT ?? path.join(harness.root, 'no-lane-registry'),
+      // Never read the operator's real lane secrets file from a test.
+      CHICKPEA_LANE_SECRETS: env.CHICKPEA_LANE_SECRETS ?? 'off',
       npm_execpath: harness.npmStub,
     },
   });
@@ -1973,6 +1975,56 @@ test('claimed deploy preserves setup authority and forwards exact provider conte
   assert.ok(providerLogs.length >= 2);
   assert.ok(providerLogs.every((entry) => entry ===
     'environment-provider:["--profile","lane-account","--env","amber"]'));
+});
+
+test('claimed deploy carries lane secrets file provider keys under operator and wrapper secrets', (context) => {
+  const harness = createHarness();
+  const privateDirectory = mkdtempSync(path.join(tmpdir(), 'chickpea-lane-secrets-'));
+  context.after(() => {
+    rmSync(harness.root, { recursive: true, force: true });
+    rmSync(privateDirectory, { recursive: true, force: true });
+  });
+  writeCutoverArtifact(harness, { target: 'amber', databaseId: 'test-database-id' });
+  const laneFile = path.join(privateDirectory, 'qa-secrets.env');
+  writeFileSync(laneFile, [
+    'OPENAI_API_KEY=sk-shared',
+    'AMBER__BROWSERBASE_API_KEY=bb-amber',
+    'COBALT__ANTHROPIC_API_KEY=sk-ant-cobalt',
+    'ASANA_QA_TOKEN=asana-held',
+    'CHICKPEA_AUTH_SECRET=never-used',
+  ].join('\n'), { mode: 0o600 });
+  const operatorFile = path.join(privateDirectory, 'operator.json');
+  writeFileSync(operatorFile, JSON.stringify({ OPENAI_API_KEY: 'sk-operator' }), { mode: 0o600 });
+  const versionViews = {
+    'deployed-version': { resources: { bindings: [
+      { name: 'AUTH_DB', type: 'd1', id: 'test-database-id', database_id: 'test-database-id' },
+      { name: 'CHICKPEA_SETUP_CAPABILITY_DIGEST', type: 'plain_text', text: 'A'.repeat(43) },
+      { name: 'CHICKPEA_SETUP_CAPABILITY_ISSUED_AT', type: 'plain_text', text: '1788289200000' },
+    ] } },
+  };
+  const result = runHarness(harness, ['--skip-build'], {
+    CHICKPEA_DEPLOY_TARGET: 'amber',
+    CHICKPEA_DEPLOY_AUTH_DB_ID: 'test-database-id',
+    CHICKPEA_DEPLOY_SCHEMA_GENERATION: 'd1:0002_mcp_oauth;do:v9',
+    CHICKPEA_LANE_SECRETS: '',
+    CHICKPEA_LANE_SECRETS_FILE: laneFile,
+    CHICKPEA_DEPLOY_SECRETS_FILE: operatorFile,
+    DEPLOY_TEST_WORKER_EXISTS: '1', DEPLOY_TEST_VERSION_VIEWS: JSON.stringify(versionViews),
+    DEPLOY_TEST_SECRET_LIST: JSON.stringify([
+      { name: 'CHICKPEA_AUTH_SECRET' },
+      { name: 'CHICKPEA_CREDENTIAL_KEY_CURRENT_ID' },
+      { name: 'CHICKPEA_CREDENTIAL_KEY_KEY_V1' },
+    ]),
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const values = JSON.parse(readFileSync(harness.secretCapturePath, 'utf8')).values;
+  assert.equal(values.OPENAI_API_KEY, 'sk-operator', 'an explicit operator secrets file wins');
+  assert.equal(values.BROWSERBASE_API_KEY, 'bb-amber');
+  assert.equal('ANTHROPIC_API_KEY' in values, false, 'another lane override is not applied');
+  assert.equal('ASANA_QA_TOKEN' in values, false, 'database credentials are not Worker secrets');
+  assert.notEqual(values.CHICKPEA_AUTH_SECRET, 'never-used');
+  assert.match(result.stdout, /Lane secrets from .*BROWSERBASE_API_KEY \(amber override, sha256:[0-9a-f]{8}\)/);
+  assert.doesNotMatch(result.stdout, /sk-shared|bb-amber|asana-held|sk-operator/);
 });
 
 test('Worker identity mismatch fails before D1 or deploy mutation', (context) => {
