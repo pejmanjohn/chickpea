@@ -14643,10 +14643,13 @@
   // returning to the roster). Focus and visibility returns pass nothing and
   // refresh everything the surface shows.
   function revalidateCurrentVisibleResources(options) {
-    if (typeof document !== "undefined" && document.visibilityState && document.visibilityState !== "visible") {
+    var navigation = !!(options && options.navigation);
+    // A hidden page skips return refreshes, but a route still loads what it
+    // shows: a deep link opened in a background tab otherwise kept its tab on
+    // "Loading…" until someone clicked the tab again.
+    if (!navigation && typeof document !== "undefined" && document.visibilityState && document.visibilityState !== "visible") {
       return Promise.resolve();
     }
-    var navigation = !!(options && options.navigation);
     var loads = [];
     if (state.view === "profiles" && state.profileScreen === "edit" && state.profileDraft) {
       if (state.profileDraft.canEdit !== false) {
