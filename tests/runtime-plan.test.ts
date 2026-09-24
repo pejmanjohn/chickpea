@@ -1269,14 +1269,14 @@ const CODING_MODEL = {
 };
 
 test('the coding model freezes inside an available coding workspace and rotates the harness', () => {
-  const withCoding = compile({ codingWorkspace: true, codingModel: CODING_MODEL });
+  const withCoding = compile({ sandboxMode: 'bash', codingWorkspace: true, codingModel: CODING_MODEL });
   assert.deepEqual(withCoding.codingWorkspace, { available: true, codingModel: CODING_MODEL });
   const reparsed = parseRuntimePlanV2(structuredClone(withCoding));
   assert.deepEqual(reparsed.codingWorkspace, withCoding.codingWorkspace);
   assert.equal(reparsed.harnessRevision, withCoding.harnessRevision);
 
   // No workspace, no coding model: the model is only frozen with the capability.
-  const noWorkspace = compile({ codingModel: CODING_MODEL });
+  const noWorkspace = compile({ sandboxMode: 'bash', codingModel: CODING_MODEL });
   assert.equal(Object.hasOwn(noWorkspace, 'codingWorkspace'), false);
   // A plan without the field keeps the revision it had before the field existed.
   assert.equal(noWorkspace.harnessRevision, compatibilityHarnessRevision(noWorkspace));
@@ -1284,6 +1284,7 @@ test('the coding model freezes inside an available coding workspace and rotates 
   // The plan is immutable instance data, so a different coding model is a new
   // incarnation rather than a stale record under the same id.
   const other = compile({
+    sandboxMode: 'bash',
     codingWorkspace: true,
     codingModel: {
       ...CODING_MODEL,
@@ -1297,7 +1298,7 @@ test('the coding model freezes inside an available coding workspace and rotates 
 });
 
 test('a malformed coding workspace or coding model is rejected', () => {
-  const plan = compile({ codingWorkspace: true, codingModel: CODING_MODEL });
+  const plan = compile({ sandboxMode: 'bash', codingWorkspace: true, codingModel: CODING_MODEL });
   const withWorkspace = (codingWorkspace: unknown) => ({ ...structuredClone(plan), codingWorkspace });
   assert.throws(
     () => parseRuntimePlanV2(withWorkspace({ available: false })),

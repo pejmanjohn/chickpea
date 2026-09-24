@@ -1131,7 +1131,7 @@ test('an ambiguous dispatch freezes the coding workspace once and never touches 
     const frozen = (await store.getRun(fixture.run.id))?.flueAgentEnvelope;
     const plan = parseRoutineExecutionInitialData(frozen?.initialData).runtimePlan;
     assert.equal(plan.sandbox.mode, 'bash');
-    assert.deepEqual(plan.codingWorkspace, { available: true });
+    assert.equal(plan.codingWorkspace?.available, true);
 
     const second = await executeRoutineOccurrence({
       env: {}, store, occurrenceId: fixture.run.id, attempt: fixture.attempt.attempt,
@@ -1214,9 +1214,9 @@ test('a persisted workspace plan survives a missing binding on resume without re
     });
     assert.equal(first, 'resumable');
     const persisted = (await store.getRun(fixture.run.id))?.flueAgentEnvelope;
-    assert.deepEqual(
-      parseRoutineExecutionInitialData(persisted?.initialData).runtimePlan.codingWorkspace,
-      { available: true },
+    assert.equal(
+      parseRoutineExecutionInitialData(persisted?.initialData).runtimePlan.codingWorkspace?.available,
+      true,
     );
 
     const resumed = await executeRoutineOccurrence({
@@ -1752,7 +1752,7 @@ test('a routine with a coding workspace freezes the coding model its role resolv
           handle: fakeHandle({}),
           modelRoleReader: roleReader(options.modelId),
           sandboxInstalled: () => true,
-          useCloudflareSandbox: async () => options.cloudflare,
+          codingWorkspaceConfigured: async () => options.cloudflare,
           prepareSandbox: async () => undefined,
           releaseSandbox: async () => undefined,
           resolveModel: async (_agentId: string, model: string) => ({ model: `route:${model}` }),
