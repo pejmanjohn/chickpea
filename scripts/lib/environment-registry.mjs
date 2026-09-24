@@ -192,7 +192,12 @@ export function readEnvironmentRegistry(options = {}) {
   return registry;
 }
 
-/** Adopt a prepared target while the fleet is idle; preserve all prior records. */
+/**
+ * Adopt a prepared target; preserve all prior records. Other lanes may stay
+ * claimed: adding a lane changes none of their records, and every holder's
+ * tooling reads the expanded registry. Only an in-flight deployment (a held
+ * mutation lock or pending intent) blocks admission.
+ */
 export function registerEnvironment(input, options = {}) {
   rejectSecretLikeFields(input);
   if (!isRecord(input) || !exactKeys(input, ['expectedRegistryRevision', 'registration'])
@@ -210,7 +215,6 @@ export function registerEnvironment(input, options = {}) {
     if (registry.revision !== input.expectedRegistryRevision) throw fail('REGISTRY_REVISION_MISMATCH');
     if (registry.targets[registration.target]) throw fail('TARGET_ALREADY_REGISTERED');
     for (const lane of Object.values(registry.targets)) {
-      if (lane.claim) throw fail('FLEET_BUSY', { target: lane.target });
       assertTargetMutationUnlocked(lane, options);
     }
     assertTargetMutationUnlocked(registration, options);
