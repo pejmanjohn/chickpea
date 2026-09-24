@@ -726,6 +726,7 @@ function runAdminPageHarness(
   }>;
   setMemoryEntry(body: string, version: number): void;
   focusWindow(): void;
+  focusWindowWithoutRunningTimers(): void;
   setVisibility(state: 'hidden' | 'visible'): void;
   scheduledControlPosts: Array<{ routineId: string; body: Record<string, unknown>; idempotencyKey: string }>;
   clipboardWrites: string[];
@@ -1142,6 +1143,17 @@ function runAdminPageHarness(
   };
   const windowListeners: Record<string, (event: Record<string, unknown>) => void> = {};
   const scheduledTimers = new Map<number, () => void>();
+  // Focus and visibility returns revalidate one task later. Run just the
+  // timers that event scheduled, as the browser would, and leave the others.
+  const runTimersScheduledBy = (dispatch: () => void) => {
+    const before = new Set(scheduledTimers.keys());
+    dispatch();
+    for (const [timerId, callback] of [...scheduledTimers]) {
+      if (before.has(timerId)) continue;
+      scheduledTimers.delete(timerId);
+      callback();
+    }
+  };
   let nextTimerId = 1;
   let documentVisibilityState: 'hidden' | 'visible' = options.initialVisibility ?? 'visible';
   let documentScrollLeft = 0;
@@ -3100,11 +3112,14 @@ function runAdminPageHarness(
       memoryEntry = { ...memoryEntry, body, version };
     },
     focusWindow() {
-      windowListeners.focus?.({});
+      runTimersScheduledBy(() => windowListeners.focus?.({}));
     },
     setVisibility(nextState) {
       documentVisibilityState = nextState;
-      listeners.visibilitychange?.({ target: actionTarget({}) });
+      runTimersScheduledBy(() => listeners.visibilitychange?.({ target: actionTarget({}) }));
+    },
+    focusWindowWithoutRunningTimers() {
+      windowListeners.focus?.({});
     },
     scheduledControlPosts,
     clipboardWrites,
@@ -9302,6 +9317,38 @@ test('a focus revalidation keeps focus and caret in the add-connection credentia
   assert.ok(harness.agentConnectionGets() > connectionGetsBefore, 'expected the connections list to refresh');
   assert.ok(harness.renderHistory.length > rendersBefore, 'expected the refresh to re-render the form');
   assert.match(harness.app.innerHTML, /value="fake-asana-token"[^>]*data-action="connection-account-credential"/);
+  assert.deepEqual(harness.focusedTypingField(), { action: 'connection-account-credential', caret: [4, 4] });
+});
+
+test('a click that returns focus to the window keeps the credential field it focused', async () => {
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    connectionAccounts: { attached: [] },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  const input = harness.listeners.input;
+  assert.ok(click && input);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'connection-account-preset', 'data-preset': 'asana' }) });
+  chooseConnectionOwner(harness);
+  input({ target: inputTarget({ 'data-action': 'connection-account-credential' }, 'fake-asana-token') });
+  const connectionGetsBefore = harness.agentConnectionGets();
+  const rendersBefore = harness.renderHistory.length;
+
+  // The window focus event fires first; the click's focus lands in the same
+  // task. Redrawing inside the event would replace the field being focused.
+  harness.focusWindowWithoutRunningTimers();
+  assert.equal(harness.renderHistory.length, rendersBefore, 'expected no redraw inside the focus event');
+  harness.focusTypingField('connection-account-credential', 4);
+  while (harness.scheduledTimerCount() > 0) harness.runNextTimer();
+  await flushAsync();
+
+  assert.ok(harness.agentConnectionGets() > connectionGetsBefore, 'expected the connections list to refresh');
+  assert.ok(harness.renderHistory.length > rendersBefore, 'expected the refresh to re-render the form');
   assert.deepEqual(harness.focusedTypingField(), { action: 'connection-account-credential', caret: [4, 4] });
 });
 
