@@ -1934,11 +1934,16 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const configStore = store(c);
       const installation = await modelDefaultInstallation(configStore);
       if (!installation) return undefined;
-      const [chat, image] = await Promise.all([
+      const [chat, image, coding] = await Promise.all([
         configStore.getWorkspaceModelDefault(installation.workspaceId),
         configStore.getWorkspaceModelRole(installation.workspaceId, 'image'),
+        configStore.getWorkspaceModelRole(installation.workspaceId, 'coding'),
       ]);
-      return { defaultChatModel: chat?.modelId ?? null, imageModel: image?.modelId ?? null };
+      return {
+        defaultChatModel: chat?.modelId ?? null,
+        imageModel: image?.modelId ?? null,
+        codingModel: coding?.modelId ?? null,
+      };
     },
   }));
   app.post(ENVIRONMENT_SEED_PATH, (c) => environmentSeedResponse({
@@ -6627,6 +6632,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         ...(c.env ? { platformEnv: c.env as PlatformEnv } : {}),
         installation,
         role,
+        runtimeProviders: modelProviders(),
       }),
     });
   });
@@ -6654,13 +6660,20 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     );
     // A clear has no model to validate; only a chosen model meets the catalog.
     if (parsed.output.modelId !== null) {
-      const rejection = await modelRoleChoiceError({
-        settingsStore: settings(c),
-        ...(c.env ? { platformEnv: c.env as PlatformEnv } : {}),
-        role,
-        modelId: parsed.output.modelId,
-        availableModels,
-      });
+      const rejection = role === 'coding'
+        ? await codingModelChoiceError({
+            modelId: parsed.output.modelId,
+            settingsStore: settings(c),
+            ...(c.env ? { platformEnv: c.env as PlatformEnv } : {}),
+            runtimeProviders: modelProviders(),
+          })
+        : await modelRoleChoiceError({
+            settingsStore: settings(c),
+            ...(c.env ? { platformEnv: c.env as PlatformEnv } : {}),
+            role,
+            modelId: parsed.output.modelId,
+            availableModels,
+          });
       if (rejection) return invalidRequest(c, rejection);
     }
     try {
@@ -6680,6 +6693,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           installation,
           role,
           availableModels,
+          runtimeProviders: modelProviders(),
         }),
       });
     } catch (error) {
@@ -6695,6 +6709,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
             installation,
             role,
             availableModels,
+            runtimeProviders: modelProviders(),
           }),
         }, 409);
       }
@@ -11955,11 +11970,30 @@ async function workspaceModelRoleProjection(input: {
   role: NonChatModelRole;
   /** The role's picker list when the caller already built it for this request. */
   availableModels?: readonly RoleModelChoice[];
+  /** Chat providers, for the coding role's readiness. */
+  runtimeProviders: RuntimeModelProvider[];
 }): Promise<object> {
   const stored = await input.configStore.getWorkspaceModelRole(
     input.installation.workspaceId,
     input.role,
   );
+  if (input.role === 'coding') {
+    // The coding role picks from the chat models Admin already lists, so it
+    // carries no catalog of its own; `ready` says whether turns can use it.
+    const modelId = stored?.modelId ?? null;
+    return {
+      workspaceId: input.installation.workspaceId,
+      role: input.role,
+      modelId,
+      revision: stored?.revision ?? 0,
+      ready: modelId === null ? null : await codingModelChoiceError({
+        modelId,
+        settingsStore: input.settingsStore,
+        ...(input.platformEnv ? { platformEnv: input.platformEnv } : {}),
+        runtimeProviders: input.runtimeProviders,
+      }) === undefined,
+    };
+  }
   return {
     workspaceId: input.installation.workspaceId,
     role: input.role,
@@ -12077,6 +12111,69 @@ interface WorkspaceModelDefaultProjection {
   };
 }
 
+/** A chat-model provider can serve a turn now: the chat default's own health rule. */
+function chatModelProviderReady(providerId: string, input: {
+  runtimeProviders: RuntimeModelProvider[];
+  platformEnv: PlatformEnv | undefined;
+  openAiAuthMethod: 'api_key' | 'subscription';
+  workersAiEnabled: boolean;
+  openAiSubscription: Awaited<ReturnType<typeof getOpenAiSubscriptionAuthorizationStatus>>;
+}): boolean {
+  const provider = input.runtimeProviders.find(({ id }) => id === providerId);
+  const workersAiReady = providerId !== 'cloudflare' ||
+    (input.workersAiEnabled && workersAiStatus(input.platformEnv) !== 'missing');
+  const providerReady = providerId === 'openai' && input.openAiAuthMethod === 'subscription'
+    ? openAiSubscriptionAvailable() && openAiSubscriptionIsReady(input.openAiSubscription)
+    : Boolean(provider?.configured);
+  return providerReady && workersAiReady;
+}
+
+/**
+ * Why a chat model cannot fill the coding role right now, if it cannot: the
+ * active catalog must serve it and its provider must be ready, exactly as for
+ * the chat default. The turn still falls back to the Agent's own model if the
+ * provider later disappears.
+ */
+async function codingModelChoiceError(input: {
+  modelId: string;
+  settingsStore: SettingsStore;
+  platformEnv?: PlatformEnv;
+  runtimeProviders: RuntimeModelProvider[];
+}): Promise<string | undefined> {
+  const providerId = chatModelProviderId(input.modelId);
+  if (!providerId) return 'Choose a provider/model value.';
+  await loadModelCatalog(input.settingsStore);
+  const [openAiAuthMethod, workersAiEnabled, openAiSubscription] = await Promise.all([
+    resolveOpenAiAuthMethod(input.settingsStore),
+    getWorkersAiEnabled(input.settingsStore),
+    getOpenAiSubscriptionAuthorizationStatus(input.settingsStore),
+  ]);
+  const incompatible = activeCatalogCompatibilityError(input.modelId, openAiAuthMethod);
+  if (incompatible) return incompatible;
+  const notReady = `Set up ${providerId} in Model providers before choosing ${input.modelId}.`;
+  // A key-lane provider is ready when the turn's own key lookup finds a key,
+  // so Admin never calls ready what a turn would silently replace.
+  if (isProviderKeyId(providerId) &&
+      !(providerId === 'openai' && openAiAuthMethod === 'subscription')) {
+    const key = await resolveProviderApiKey(providerId, input.platformEnv, input.settingsStore);
+    return key.apiKey ? undefined : notReady;
+  }
+  return chatModelProviderReady(providerId, {
+    runtimeProviders: input.runtimeProviders,
+    platformEnv: input.platformEnv,
+    openAiAuthMethod,
+    workersAiEnabled,
+    openAiSubscription,
+  })
+    ? undefined
+    : notReady;
+}
+
+function chatModelProviderId(modelId: string): string | undefined {
+  const separator = modelId.indexOf('/');
+  return separator > 0 && separator < modelId.length - 1 ? modelId.slice(0, separator) : undefined;
+}
+
 async function workspaceModelDefaultProjection(input: {
   installation: WorkspaceInstallation;
   configStore: ConfigStore;
@@ -12116,13 +12213,13 @@ async function workspaceModelDefaultProjection(input: {
       repairPath: '/admin/settings/providers',
     };
   } else {
-    const provider = input.runtimeProviders.find(({ id }) => id === providerId);
-    const workersAiReady = providerId !== 'cloudflare' ||
-      (workersAiEnabled && workersAiStatus(input.platformEnv) !== 'missing');
-    const providerReady = providerId === 'openai' && openAiAuthMethod === 'subscription'
-      ? openAiSubscriptionAvailable() && openAiSubscriptionIsReady(openAiSubscription)
-      : Boolean(provider?.configured);
-    health = providerReady && workersAiReady
+    health = chatModelProviderReady(providerId, {
+      runtimeProviders: input.runtimeProviders,
+      platformEnv: input.platformEnv,
+      openAiAuthMethod,
+      workersAiEnabled,
+      openAiSubscription,
+    })
       ? { status: 'ready', providerId }
       : {
           status: 'repair_required',

@@ -18,6 +18,7 @@ import {
   runtimePlanSandboxConversationKey,
   type RuntimePlanBrowserCapabilityV1,
   type RuntimePlanWebsiteLoginV1,
+  type RuntimePlanCodingModelV1,
   type RuntimePlanImageCapabilityV3,
 } from '../agents/runtime-plan.ts';
 import {
@@ -52,6 +53,7 @@ import {
   releaseCloudflareSandboxTurn,
 } from '../slack/flue-dispatch.ts';
 import {
+  freezeCodingModelForTurn,
   resolveCloudflareSandboxDecision,
   shouldUseCloudflareSandbox,
 } from '../slack/run-turn.ts';
@@ -518,6 +520,22 @@ async function prepareExecution(
       websiteLoginsForTurn(settingsStore, access.config.agent.websiteLogins),
     ]);
     const imageCapability = imageCapabilityForResolution(imageRole);
+    const codingWorkspace = sandboxDecision.selection === 'cloudflare';
+    const codingModel = codingWorkspace
+      ? await freezeCodingModelForTurn({
+          workspaceId: input.routine.workspaceId,
+          agent: access.config.agent,
+          reader,
+          agentRoute: {
+            model: access.config.model,
+            runtimeModel: runtimeModel.model,
+            ...(runtimeModelRoute ? { runtimeModelRoute } : {}),
+          },
+          settings: settingsStore,
+          ...(input.env ? { env: input.env } : {}),
+          resolveModel,
+        })
+      : undefined;
     envelope = createEnvelope({
       routine: input.routine,
       run: input.run,
@@ -528,6 +546,7 @@ async function prepareExecution(
       runtimeModel: runtimeModel.model,
       ...(runtimeModelRoute ? { runtimeModelRoute } : {}),
       imageCapability,
+      ...(codingWorkspace ? { codingWorkspace, ...(codingModel ? { codingModel } : {}) } : {}),
       ...(browserCapability ? { browserCapability, websiteLogins } : {}),
       modelCredential,
       sandboxMode: sandboxDecision.selection,
@@ -664,6 +683,8 @@ function createEnvelope(input: {
   runtimeModel: string;
   runtimeModelRoute?: FrozenRuntimeModelRoute;
   imageCapability?: RuntimePlanImageCapabilityV3;
+  codingWorkspace?: boolean;
+  codingModel?: RuntimePlanCodingModelV1;
   browserCapability?: RuntimePlanBrowserCapabilityV1;
   websiteLogins?: readonly RuntimePlanWebsiteLoginV1[];
   modelCredential: EffectiveSlackConfig['modelCredential'] | null;
@@ -686,6 +707,9 @@ function createEnvelope(input: {
     runtimeModel: input.runtimeModel,
     ...(input.runtimeModelRoute ? { runtimeModelRoute: input.runtimeModelRoute } : {}),
     ...(input.imageCapability ? { imageCapability: input.imageCapability } : {}),
+    ...(input.codingWorkspace
+      ? { codingWorkspace: true, ...(input.codingModel ? { codingModel: input.codingModel } : {}) }
+      : {}),
     ...(input.browserCapability ? { browserCapability: input.browserCapability } : {}),
     ...(input.websiteLogins ? { websiteLogins: input.websiteLogins } : {}),
     instructions: [

@@ -1809,3 +1809,58 @@ test('scheduled envelopes freeze file delivery to the saved destination, never t
     store.close();
   }
 });
+
+test('a routine with a coding workspace freezes the coding model its role resolves', async () => {
+  const roleReader = (modelId?: string) => ({
+    async getWorkspaceModelRole(workspaceId: string, role: NonChatModelRole) {
+      return role === 'coding' && modelId
+        ? { workspaceId, role, modelId, revision: 1, createdAt: NOW, updatedAt: NOW }
+        : undefined;
+    },
+    async getAgentModelRole() {
+      return undefined;
+    },
+  });
+  const freeze = async (suffix: string, options: { cloudflare: boolean; modelId?: string }) => {
+    const store = new SqliteRoutineStore(':memory:', () => NOW);
+    try {
+      const fixture = await admittedFixture(store, suffix);
+      await executeRoutineOccurrence(
+        { env: {}, store, occurrenceId: fixture.run.id, attempt: fixture.attempt.attempt },
+        {
+          ...dependencies([]),
+          handle: fakeHandle({}),
+          modelRoleReader: roleReader(options.modelId),
+          sandboxInstalled: () => true,
+          useCloudflareSandbox: async () => options.cloudflare,
+          prepareSandbox: async () => undefined,
+          releaseSandbox: async () => undefined,
+          resolveModel: async (_agentId: string, model: string) => ({ model: `route:${model}` }),
+        },
+      );
+      const envelope = (await store.getRun(fixture.run.id))?.flueAgentEnvelope;
+      return parseRoutineExecutionInitialData(envelope?.initialData).runtimePlan;
+    } finally { store.close(); }
+  };
+
+  const bash = await freeze('coding_bash', { cloudflare: false, modelId: 'openai/gpt-5.6-sol' });
+  assert.equal(bash.codingWorkspace, undefined);
+
+  const unset = await freeze('coding_unset', { cloudflare: true });
+  assert.deepEqual(unset.codingWorkspace, {
+    available: true,
+    codingModel: {
+      model: config.model,
+      runtimeModel: `route:${config.model}`,
+      attribution: { role: 'coding', source: 'agent_model', providerId: 'anthropic', fallback: false },
+    },
+  });
+
+  const set = await freeze('coding_set', { cloudflare: true, modelId: 'openai/gpt-5.6-sol' });
+  assert.deepEqual(set.codingWorkspace?.codingModel, {
+    model: 'openai/gpt-5.6-sol',
+    runtimeModel: 'route:openai/gpt-5.6-sol',
+    attribution: { role: 'coding', source: 'workspace_default', providerId: 'openai', fallback: false },
+  });
+  assert.notEqual(set.harnessRevision, unset.harnessRevision);
+});

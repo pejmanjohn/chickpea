@@ -344,13 +344,17 @@ export const ENVIRONMENT_MODELS_PATH = '/internal/environment/models';
 
 /**
  * Read-only lane model roles for `npm run env -- capabilities`: the workspace
- * default chat model and the image role. Same QA-only gate and seed token as
+ * default chat model, the image role and the coding role. Same QA-only gate and seed token as
  * the seed route; anything else gets the same empty 404.
  */
 export async function environmentModelsResponse(input: {
   authorization: string | undefined;
   env: PlatformEnv;
-  readModels: () => Promise<{ defaultChatModel: string | null; imageModel: string | null } | undefined>;
+  readModels: () => Promise<{
+    defaultChatModel: string | null;
+    imageModel: string | null;
+    codingModel: string | null;
+  } | undefined>;
 }): Promise<Response> {
   const headers = { 'Cache-Control': 'no-store', 'Content-Type': 'application/json' };
   if (!authorizedSeed(input.authorization, input.env)) {

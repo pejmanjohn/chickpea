@@ -526,3 +526,162 @@ test('an Agent PATCH sets and clears its image override', async () => {
     fixture.close();
   }
 });
+
+const CODING = 'openai/gpt-5.6-sol';
+
+async function putCoding(
+  fixture: ReturnType<typeof harness>,
+  modelId: string | null,
+  expectedRevision: number,
+) {
+  return fixture.app.request('/admin/api/workspace-model-roles/coding', {
+    method: 'PUT',
+    headers: auth(),
+    body: JSON.stringify({ modelId, expectedRevision }),
+  });
+}
+
+test('the coding role starts unset and needs a ready chat provider', async () => {
+  const fixture = harness();
+  try {
+    await installWorkspace(fixture);
+
+    const initial = await fixture.app.request('/admin/api/workspace-model-roles/coding', {
+      headers: auth(),
+    });
+    assert.equal(initial.status, 200);
+    assert.deepEqual(await initial.json(), {
+      workspaceModelRole: {
+        workspaceId: 'T_TEST',
+        role: 'coding',
+        modelId: null,
+        revision: 0,
+        ready: null,
+      },
+    });
+
+    const unconnected = await putCoding(fixture, CODING, 0);
+    assert.equal(unconnected.status, 400);
+    assert.deepEqual(await unconnected.json(), {
+      error: 'invalid_request',
+      message: `Set up openai in Model providers before choosing ${CODING}.`,
+    });
+
+    await connectOpenAi(fixture);
+    // An image model is not a chat model, so the chat catalog refuses it.
+    const imageModel = await putCoding(fixture, FLARE, 0);
+    assert.equal(imageModel.status, 400);
+    assert.match(
+      (await imageModel.json() as { message: string }).message,
+      /active OpenAI API-key catalog does not support this model/,
+    );
+    const shapeless = await putCoding(fixture, 'no-provider', 0);
+    assert.equal(shapeless.status, 400);
+    assert.equal(await fixture.config.getWorkspaceModelRole('T_TEST', 'coding'), undefined);
+  } finally {
+    fixture.close();
+  }
+});
+
+test('the coding role saves, reads back after a reload, and clears', async () => {
+  const fixture = harness();
+  try {
+    await installWorkspace(fixture);
+    await connectOpenAi(fixture);
+
+    const saved = await putCoding(fixture, CODING, 0);
+    assert.equal(saved.status, 200);
+    const expected = {
+      workspaceModelRole: {
+        workspaceId: 'T_TEST',
+        role: 'coding',
+        modelId: CODING,
+        revision: 1,
+        ready: true,
+      },
+    };
+    assert.deepEqual(await saved.json(), expected);
+
+    // A fresh read is the reload: the stored row, not the response, answers.
+    const read = await fixture.app.request('/admin/api/workspace-model-roles/coding', {
+      headers: auth(),
+    });
+    assert.deepEqual(await read.json(), expected);
+    // The coding role is its own row; the image role is untouched.
+    assert.equal(await fixture.config.getWorkspaceModelRole('T_TEST', 'image'), undefined);
+
+    const cleared = await putCoding(fixture, null, 1);
+    assert.equal(cleared.status, 200);
+    assert.deepEqual(await cleared.json(), {
+      workspaceModelRole: {
+        workspaceId: 'T_TEST',
+        role: 'coding',
+        modelId: null,
+        revision: 2,
+        ready: null,
+      },
+    });
+  } finally {
+    fixture.close();
+  }
+});
+
+test('a coding role whose provider loses its key reads back as not ready', async () => {
+  const fixture = harness();
+  try {
+    await installWorkspace(fixture);
+    await connectOpenAi(fixture);
+    assert.equal((await putCoding(fixture, CODING, 0)).status, 200);
+
+    await fixture.settings.deleteSetting(PROVIDER_KEY_SETTING_KEYS.openai);
+    invalidateProviderKeyCache();
+    const read = await fixture.app.request('/admin/api/workspace-model-roles/coding', {
+      headers: auth(),
+    });
+    const body = await read.json() as { workspaceModelRole: { modelId: string; ready: boolean } };
+    assert.equal(body.workspaceModelRole.modelId, CODING);
+    assert.equal(body.workspaceModelRole.ready, false);
+  } finally {
+    fixture.close();
+  }
+});
+
+test('a stale coding role revision conflicts and a member cannot write it', async () => {
+  const fixture = harness();
+  try {
+    await installWorkspace(fixture);
+    await connectOpenAi(fixture);
+    assert.equal((await putCoding(fixture, CODING, 0)).status, 200);
+    const stale = await putCoding(fixture, null, 0);
+    assert.equal(stale.status, 409);
+    const body = await stale.json() as {
+      error: string;
+      workspaceModelRole: { modelId: string; revision: number };
+    };
+    assert.equal(body.error, 'model_role_revision_conflict');
+    assert.equal(body.workspaceModelRole.modelId, CODING);
+    assert.equal(body.workspaceModelRole.revision, 1);
+  } finally {
+    fixture.close();
+  }
+
+  const memberFixture = harness({
+    userId: 'user_member',
+    membershipId: 'membership_member',
+    organizationId: 'org_oss',
+    role: 'member',
+    authenticatorKind: 'test_slack_session',
+    credentialId: 'member_session',
+    correlationId: 'member_request',
+    machine: false,
+  });
+  try {
+    await installWorkspace(memberFixture);
+    await connectOpenAi(memberFixture);
+    const response = await putCoding(memberFixture, CODING, 0);
+    assert.equal(response.status, 403);
+    assert.equal(await memberFixture.config.getWorkspaceModelRole('T_TEST', 'coding'), undefined);
+  } finally {
+    memberFixture.close();
+  }
+});

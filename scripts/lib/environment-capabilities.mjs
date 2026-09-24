@@ -12,7 +12,7 @@
  *   for the SANDBOX binding, `secret list` for secret names; never values);
  * - whether the operator holds the lane's seed token file (existence only).
  *
- * - the lane's default chat model and image role, read from the lane's
+ * - the lane's default chat model, image role and coding role, read from the lane's
  *   QA-only `/internal/environment/models` route with the operator's seed
  *   token (reported as unknown until the lane serves that route).
  *
@@ -136,8 +136,10 @@ async function readLaneRow(lane, { runWrangler, providerContext, env, now, readM
     seedTokenFile: seedTokenFileExists(lane.target, env),
     defaultChatModel: models ? models.defaultChatModel : null,
     imageRole: models ? models.imageModel : null,
+    codingRole: models ? models.codingModel : null,
     modelRoles: models
-      ? `${models.defaultChatModel ?? 'unset'} / image ${models.imageModel ?? 'unset'}`
+      ? `${models.defaultChatModel ?? 'unset'} / image ${models.imageModel ?? 'unset'}` +
+        ` / coding ${models.codingModel ?? 'unset'}`
       : MODEL_ROLES_UNKNOWN,
     transport: lane.transport,
     workspaceLabel: lane.workspaceLabel,
@@ -246,7 +248,12 @@ export async function readLaneModels(lane, env = process.env, fetchImpl = fetch)
   const body = await response.json();
   const pick = (value) => (typeof value === 'string' && MODEL_ID.test(value) ? value : null);
   if (body?.schemaVersion !== 'chickpea-environment-models/v1' || body.target !== lane.target) return undefined;
-  return { defaultChatModel: pick(body.defaultChatModel), imageModel: pick(body.imageModel) };
+  return {
+    defaultChatModel: pick(body.defaultChatModel),
+    imageModel: pick(body.imageModel),
+    // Lanes serving an older build omit the coding role; that reads as unset.
+    codingModel: pick(body.codingModel),
+  };
 }
 
 function seedTokenFileExists(target, env) {
@@ -296,7 +303,7 @@ function defaultWranglerRunner(options) {
 
 const COLUMNS = Object.freeze([
   'Lane', 'Health', 'Profile', 'Live version', 'Provider keys (Worker secrets)', 'Seed token (Worker / file)',
-  'Default chat model / image role', 'Missing actors', 'Slack workspace', 'Transport',
+  'Default chat model / image role / coding role', 'Missing actors', 'Slack workspace', 'Transport',
   'Setup flow unproven', 'Claim', 'Observed',
 ]);
 
@@ -353,8 +360,8 @@ export function renderCapabilitySection(report) {
     '',
     `Generated ${report.generatedAt} from read-only readbacks: the environment registry, Wrangler`,
     '(live deployment, SANDBOX binding, Worker secret names only), and the lane seed token file',
-    '(existence only). The default chat model and image role have no read-only host path yet;',
-    'read them in Admin Settings > Model providers. Keep hand-written notes outside this section.',
+    '(existence only), plus each lane\'s model roles from its QA-only models route (unknown when',
+    'the lane does not serve it). Keep hand-written notes outside this section.',
     '',
     renderCapabilityTable(report).trimEnd(),
     '',

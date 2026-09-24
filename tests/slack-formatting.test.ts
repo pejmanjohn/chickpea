@@ -8,6 +8,7 @@ import {
   canonicalSlackMarkdownText,
   renderChannelOnboarding,
   renderSlackReplyFooterBlock,
+  replyFooterModelLabel,
   renderUnassignedChannelHint,
   markdownFallbackText,
   renderSlackActionLink,
@@ -711,4 +712,29 @@ test('derived loading message is capped to Slack’s 50-character limit', () => 
   assert.ok(loading);
   assert.ok(loading.length <= 50, `expected <= 50 chars, got ${loading.length}`);
   assert.equal(slackStatusText({ text: long }), loading);
+});
+
+test('the footer names the coding model only when a coding worker ran on a different model', () => {
+  const agentModel = 'openai/gpt-5.6-sol';
+  const codingModel = 'anthropic/claude-opus-5-5';
+  // No worker ran: the footer is exactly what it was before the coding role.
+  assert.equal(replyFooterModelLabel({ agentModel, codingModel, codingWorkerRan: false }), agentModel);
+  assert.equal(replyFooterModelLabel({ agentModel, codingWorkerRan: false }), agentModel);
+  // Same model on both sides: nothing to attribute.
+  assert.equal(
+    replyFooterModelLabel({ agentModel, codingModel: agentModel, codingWorkerRan: true }),
+    agentModel,
+  );
+  assert.equal(replyFooterModelLabel({ agentModel: undefined, codingModel, codingWorkerRan: true }), undefined);
+  const label = replyFooterModelLabel({ agentModel, codingModel, codingWorkerRan: true });
+  assert.equal(label, `${agentModel} · coding: ${codingModel}`);
+  assert.equal(
+    renderSlackReplyFooterBlock({
+      agentName: 'Analyst',
+      agentId: 'agent_analyst',
+      modelLabel: label,
+      includeConfigureLink: false,
+    }).elements[0]?.text,
+    `Analyst | ${agentModel} · coding: ${codingModel}`,
+  );
 });

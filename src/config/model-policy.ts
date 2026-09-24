@@ -17,7 +17,11 @@ import type { PlatformEnv } from './state-backend.ts';
 import { resolveActiveCatalogRoute } from '../model-catalog/index.ts';
 import { findImageModel } from '../model-catalog/image-profiles.ts';
 import { imageModelProfileReady } from '../images/provider.ts';
-import type { RuntimePlanImageCapabilityV3 } from '../agents/runtime-plan.ts';
+import type {
+  RuntimePlanCodingModelV1,
+  RuntimePlanImageCapabilityV3,
+} from '../agents/runtime-plan.ts';
+import type { FrozenRuntimeModelRoute } from './runtime-model.ts';
 
 // Accepts `model: null` alongside the stored shape so admin PATCH previews
 // (where null means "clear the pin") can be checked without re-shaping.
@@ -298,6 +302,85 @@ export function imageCapabilityForResolution(
       ? { supportsOutputControls: false }
       : {}),
   };
+}
+
+/** The Agent's own frozen chat route: the coding role's fallback. */
+export interface CodingModelAgentRoute {
+  model: string;
+  runtimeModel: string;
+  runtimeModelRoute?: FrozenRuntimeModelRoute;
+}
+
+/**
+ * Freeze the coding model for one turn. The coding role resolves like the
+ * image role (Agent pin, then Workspace default), but an unset role, or a model
+ * whose provider cannot be used, runs on the Agent's own frozen chat route
+ * instead of disabling coding. Nothing is re-resolved later in the turn: a long
+ * coding run keeps one model, and the footer names a stable fact.
+ */
+export async function resolveCodingModelForPlan(input: {
+  workspaceId: string;
+  agent: Pick<CustomAgentConfig, 'id' | 'kind'>;
+  reader: ModelRoleReader;
+  agentRoute: CodingModelAgentRoute;
+  /** Resolve a canonical model to its Flue route; throws when it cannot be used. */
+  resolveRoute: (canonicalModel: string) => Promise<{
+    runtimeModel: string;
+    runtimeModelRoute?: FrozenRuntimeModelRoute;
+  }>;
+}): Promise<RuntimePlanCodingModelV1> {
+  const agentModel = (fallback: boolean): RuntimePlanCodingModelV1 => ({
+    model: input.agentRoute.model,
+    runtimeModel: input.agentRoute.runtimeModel,
+    ...(input.agentRoute.runtimeModelRoute
+      ? { runtimeModelRoute: input.agentRoute.runtimeModelRoute }
+      : {}),
+    attribution: {
+      role: 'coding',
+      source: 'agent_model',
+      providerId: providerPrefix(input.agentRoute.model),
+      fallback,
+    },
+  });
+  let resolution: ModelRoleResolution;
+  try {
+    resolution = await resolveAgentModelRoleFromStore({
+      role: 'coding',
+      workspaceId: input.workspaceId,
+      agent: input.agent,
+      reader: input.reader,
+      // Route resolution below is the credential check for every provider
+      // lane (keys, bindings, subscriptions), exactly as for the chat model.
+      hasProviderCredential: async () => true,
+    });
+  } catch {
+    // A pin the system Agent may not hold, or an unreadable role row, must
+    // not block the turn: coding runs on the Agent's model.
+    return agentModel(true);
+  }
+  if ('unset' in resolution) return agentModel(resolution.reason === 'credential_missing');
+  const attribution = {
+    role: 'coding' as const,
+    source: resolution.source,
+    providerId: resolution.providerId,
+    fallback: false,
+  };
+  if (resolution.modelId === input.agentRoute.model) {
+    return { ...agentModel(false), attribution };
+  }
+  try {
+    const route = await input.resolveRoute(resolution.modelId);
+    return {
+      model: resolution.modelId,
+      runtimeModel: route.runtimeModel,
+      ...(route.runtimeModelRoute ? { runtimeModelRoute: route.runtimeModelRoute } : {}),
+      attribution,
+    };
+  } catch {
+    // Missing key, removed provider, or a model the active catalog no longer
+    // serves: fall back silently rather than disabling coding.
+    return agentModel(true);
+  }
 }
 
 // Only a provider with a first-class key lane can serve an image role today.

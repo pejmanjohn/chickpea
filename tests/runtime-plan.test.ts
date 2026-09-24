@@ -1213,3 +1213,70 @@ test('website logins compile from grants, freeze only with the browser, and rota
     /level is invalid/,
   );
 });
+
+const CODING_MODEL = {
+  model: 'anthropic/claude-opus-5-5',
+  runtimeModel: 'anthropic/claude-opus-5-5',
+  attribution: {
+    role: 'coding' as const,
+    source: 'workspace_default' as const,
+    providerId: 'anthropic',
+    fallback: false,
+  },
+};
+
+test('the coding model freezes inside an available coding workspace and rotates the harness', () => {
+  const withCoding = compile({ codingWorkspace: true, codingModel: CODING_MODEL });
+  assert.deepEqual(withCoding.codingWorkspace, { available: true, codingModel: CODING_MODEL });
+  const reparsed = parseRuntimePlanV2(structuredClone(withCoding));
+  assert.deepEqual(reparsed.codingWorkspace, withCoding.codingWorkspace);
+  assert.equal(reparsed.harnessRevision, withCoding.harnessRevision);
+
+  // No workspace, no coding model: the model is only frozen with the capability.
+  const noWorkspace = compile({ codingModel: CODING_MODEL });
+  assert.equal(Object.hasOwn(noWorkspace, 'codingWorkspace'), false);
+  // A plan without the field keeps the revision it had before the field existed.
+  assert.equal(noWorkspace.harnessRevision, compatibilityHarnessRevision(noWorkspace));
+
+  // The plan is immutable instance data, so a different coding model is a new
+  // incarnation rather than a stale record under the same id.
+  const other = compile({
+    codingWorkspace: true,
+    codingModel: {
+      ...CODING_MODEL,
+      model: 'openai/gpt-5.4-mini',
+      runtimeModel: 'openai/gpt-5.4-mini',
+      attribution: { role: 'coding', source: 'agent_model', providerId: 'openai', fallback: false },
+    },
+  });
+  assert.notEqual(other.harnessRevision, withCoding.harnessRevision);
+  assert.notEqual(withCoding.harnessRevision, noWorkspace.harnessRevision);
+});
+
+test('a malformed coding workspace or coding model is rejected', () => {
+  const plan = compile({ codingWorkspace: true, codingModel: CODING_MODEL });
+  const withWorkspace = (codingWorkspace: unknown) => ({ ...structuredClone(plan), codingWorkspace });
+  assert.throws(
+    () => parseRuntimePlanV2(withWorkspace({ available: false })),
+    /codingWorkspace\.available must be true/,
+  );
+  assert.throws(
+    () => parseRuntimePlanV2(withWorkspace({ available: true, codingModel: { ...CODING_MODEL, apiKey: 'x' } })),
+    /unknown field apiKey/,
+  );
+  assert.throws(
+    () => parseRuntimePlanV2(withWorkspace({
+      available: true,
+      codingModel: { ...CODING_MODEL, attribution: { ...CODING_MODEL.attribution, role: 'image' } },
+    })),
+    /attribution\.role/,
+  );
+  // Only the Agent's own model may stand in for an unusable role.
+  assert.throws(
+    () => parseRuntimePlanV2(withWorkspace({
+      available: true,
+      codingModel: { ...CODING_MODEL, attribution: { ...CODING_MODEL.attribution, fallback: true } },
+    })),
+    /fallback must use the Agent model/,
+  );
+});

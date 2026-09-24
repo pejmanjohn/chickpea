@@ -273,11 +273,11 @@ export interface WorkspaceModelDefaultInput {
  * other role lives in the additive role tables. Adding a role here is a
  * configuration change plus an adapter, never a new settings concept.
  */
-export const MODEL_ROLES = ['chat', 'image'] as const;
+export const MODEL_ROLES = ['chat', 'image', 'coding'] as const;
 export type ModelRole = (typeof MODEL_ROLES)[number];
 
 /** Roles stored in the additive role tables. `chat` is deliberately excluded. */
-export const NON_CHAT_MODEL_ROLES = ['image'] as const;
+export const NON_CHAT_MODEL_ROLES = ['image', 'coding'] as const;
 export type NonChatModelRole = (typeof NON_CHAT_MODEL_ROLES)[number];
 
 export function isNonChatModelRole(value: string): value is NonChatModelRole {

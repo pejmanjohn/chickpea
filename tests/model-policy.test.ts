@@ -8,6 +8,7 @@ import {
   resolveAgentModelForRole,
   resolveAgentModelPolicy,
   resolveAgentModelRoleFromStore,
+  resolveCodingModelForPlan,
 } from '../src/config/model-policy.ts';
 import { PROVIDER_KEY_SETTING_KEYS } from '../src/config/provider-keys.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
@@ -490,4 +491,103 @@ test('the provider credential seam cannot enable subscription images on Cloudfla
     if (previous) Object.defineProperty(globalThis, 'navigator', previous);
     else Reflect.deleteProperty(globalThis, 'navigator');
   }
+});
+
+function codingReader(workspaceModel?: string, agentModel?: string) {
+  return {
+    async getWorkspaceModelRole(workspaceId: string, role: 'image' | 'coding') {
+      return role === 'coding' && workspaceModel
+        ? { workspaceId, role, modelId: workspaceModel, revision: 1, createdAt: 1, updatedAt: 1 }
+        : undefined;
+    },
+    async getAgentModelRole(agentId: string, role: 'image' | 'coding') {
+      return role === 'coding' && agentModel
+        ? { agentId, role, modelId: agentModel, revision: 1, createdAt: 1, updatedAt: 1 }
+        : undefined;
+    },
+  };
+}
+
+const AGENT_ROUTE = { model: 'openai/gpt-5.6-sol', runtimeModel: 'openai/gpt-5.6-sol' };
+
+test('an unset coding role runs on the Agent model without calling it a fallback', async () => {
+  let resolved = 0;
+  const frozen = await resolveCodingModelForPlan({
+    workspaceId: 'T1',
+    agent: agent(),
+    reader: codingReader(),
+    agentRoute: AGENT_ROUTE,
+    resolveRoute: async () => {
+      resolved += 1;
+      return { runtimeModel: 'unused' };
+    },
+  });
+  assert.equal(resolved, 0);
+  assert.deepEqual(frozen, {
+    ...AGENT_ROUTE,
+    attribution: { role: 'coding', source: 'agent_model', providerId: 'openai', fallback: false },
+  });
+});
+
+test('the coding role resolves pinned, then Workspace default, to its own route', async () => {
+  const resolveRoute = async (model: string) => ({ runtimeModel: `route:${model}` });
+  const workspace = await resolveCodingModelForPlan({
+    workspaceId: 'T1',
+    agent: agent(),
+    reader: codingReader('anthropic/claude-opus-5-5'),
+    agentRoute: AGENT_ROUTE,
+    resolveRoute,
+  });
+  assert.deepEqual(workspace, {
+    model: 'anthropic/claude-opus-5-5',
+    runtimeModel: 'route:anthropic/claude-opus-5-5',
+    attribution: { role: 'coding', source: 'workspace_default', providerId: 'anthropic', fallback: false },
+  });
+  const pinned = await resolveCodingModelForPlan({
+    workspaceId: 'T1',
+    agent: agent(),
+    reader: codingReader('anthropic/claude-opus-5-5', 'anthropic/claude-fable-5-1'),
+    agentRoute: AGENT_ROUTE,
+    resolveRoute,
+  });
+  assert.equal(pinned.model, 'anthropic/claude-fable-5-1');
+  assert.equal(pinned.attribution.source, 'pinned');
+
+  // A role naming the Agent's own model reuses its frozen route.
+  const same = await resolveCodingModelForPlan({
+    workspaceId: 'T1',
+    agent: agent(),
+    reader: codingReader(AGENT_ROUTE.model),
+    agentRoute: { ...AGENT_ROUTE, runtimeModel: 'frozen-agent-route' },
+    resolveRoute: async () => assert.fail('the Agent route is already frozen'),
+  });
+  assert.equal(same.runtimeModel, 'frozen-agent-route');
+  assert.equal(same.attribution.source, 'workspace_default');
+});
+
+test('a coding model that cannot be used falls back silently to the Agent model', async () => {
+  const frozen = await resolveCodingModelForPlan({
+    workspaceId: 'T1',
+    agent: agent(),
+    reader: codingReader('anthropic/claude-opus-5-5'),
+    agentRoute: AGENT_ROUTE,
+    resolveRoute: async () => {
+      throw new ModelResolutionError('No anthropic key.');
+    },
+  });
+  assert.deepEqual(frozen, {
+    ...AGENT_ROUTE,
+    attribution: { role: 'coding', source: 'agent_model', providerId: 'openai', fallback: true },
+  });
+
+  // The system Agent may not hold a pin; its turn still gets the Agent model.
+  const system = await resolveCodingModelForPlan({
+    workspaceId: 'T1',
+    agent: agent({ kind: 'system' }),
+    reader: codingReader(undefined, 'anthropic/claude-opus-5-5'),
+    agentRoute: AGENT_ROUTE,
+    resolveRoute: async () => assert.fail('a refused pin never resolves'),
+  });
+  assert.equal(system.model, AGENT_ROUTE.model);
+  assert.equal(system.attribution.fallback, true);
 });
