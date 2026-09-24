@@ -113,16 +113,36 @@
        { "connector": "gmail" } ] }
    ```
 
-   Run `npm run lane:seed -- <lane> --agent <agentId>` (add `--dry-run` to see
-   what would be sent). Token connectors (API keys and MCP bearer or header
-   credentials) are created on that Agent as team connections owned by the
-   workspace owner. A connector the Agent already has is reported `present`
-   and left unchanged. OAuth and managed (Composio) connectors return an Admin
-   setup link; open it in the verifier's browser, signed in to the lane Admin,
-   and complete the consent as a declared QA action. The seed route exists only
-   on QA targets and answers only the lane's seed token. Seeded connections on
-   a run-owned Agent are run-owned resources: register them and disconnect them
-   at cleanup.
+   Run `npm run lane:seed -- <lane> --fixtures` (add `--dry-run` to see what
+   would be sent). This seeds the lane's standing fixtures Agent, `qa-fixtures`,
+   and creates it when it is missing. The fixtures Agent is enabled, because
+   only an enabled Agent can own connections. It is also unpublished, has no
+   creator and no Channel grants, so nobody reaches it in Slack or in a private
+   DM. Token connectors (API keys and MCP bearer or header credentials) are
+   created there as team connections owned by the workspace owner. OAuth and
+   managed (Composio) connectors return an Admin setup link; open it in the
+   verifier's browser, signed in to the lane Admin, and complete the consent
+   as a declared QA action. The seed route exists only on QA targets and
+   answers only the lane's seed token.
+
+   Each seeded token connection records a short sha256 fingerprint of the
+   credential and fields it was seeded with, never the value. A reseed reports
+   `present` when the fingerprint matches. It reports `stale` when the
+   credential changed, or when the connection has no recorded fingerprint (for
+   example, one entered in Admin), and changes nothing. After a key rotation,
+   rerun with `--replace`: the credential is rewritten in place on the same
+   connection (`replaced`), with the ordinary rollback if a step fails. The
+   command exits non-zero while any connection is `stale`.
+
+   Chickpea binds each connection to exactly one Agent for life, so a fixture
+   connection cannot be attached to a run-owned Agent, and there is no
+   `--bind`. Credential-backed cases run on the fixtures Agent: publish it to
+   the QA Channel once per lane through Admin, as a declared QA action, and
+   leave it published as a standing lane resource. Change its instructions or
+   model for a case only with retained before-values, and restore them at
+   cleanup. A case that needs its own Agent may seed that run-owned Agent with
+   `--agent <agentId>` instead (`--replace` works the same). Those connections
+   are run-owned resources: register them and disconnect them at cleanup.
 
    For a one-off credential outside that file, a lane that needs a provider
    credential the product reads from the environment gets it through the same

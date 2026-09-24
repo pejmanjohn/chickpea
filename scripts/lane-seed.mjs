@@ -2,7 +2,12 @@
 /**
  * Seed standing test connections into a QA lane.
  *
- *   npm run lane:seed -- <amber|cobalt|violet> --agent <agentId> [--manifest <path>] [--dry-run]
+ *   npm run lane:seed -- <amber|cobalt|violet> (--fixtures | --agent <agentId>) [--replace] [--manifest <path>] [--dry-run]
+ *
+ * --fixtures seeds the lane's standing, unpublished `qa-fixtures` Agent (created
+ * when missing). --agent seeds a named Agent instead. A connection already
+ * seeded with the same credential is `present`; a rotated or unrecorded one is
+ * `stale` and left alone unless --replace rewrites it in place.
  *
  * The manifest (default ~/.chickpea/qa-seed.json) holds no secrets. It names
  * catalog connectors and, for token connectors, which name in the lane
@@ -18,6 +23,9 @@
  * straight to the lane's seed route; they are never printed. Token connectors
  * are created on the Agent; OAuth and managed connectors come back as Admin
  * setup links to finish with a consent click in a signed-in browser.
+ *
+ * There is no --bind: Chickpea binds each connection to exactly one Agent for
+ * life, so fixture connections cannot be attached to a run-owned Agent.
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -35,19 +43,38 @@ import {
 const SEED_PATH = '/internal/environment/seed';
 const AGENT_ID = /^[a-z0-9][a-z0-9_-]{0,127}$/;
 const SECRET_NAME = /^[A-Z][A-Z0-9_]*$/;
+export const FIXTURES_AGENT_ID = 'qa-fixtures';
+const BIND_UNSUPPORTED = 'There is no --bind. Chickpea binds each connection to exactly one Agent, so ' +
+  'a fixture connection cannot be shared with a run-owned Agent. Seed with --fixtures and run ' +
+  'credential-backed cases on the qa-fixtures Agent, or seed a run-owned Agent with --agent and ' +
+  'disconnect its connections at cleanup.';
 
 export function parseArguments(argv) {
   const [lane, ...rest] = argv;
-  const options = { lane, manifest: path.join(homedir(), '.chickpea', 'qa-seed.json'), dryRun: false };
+  const options = {
+    lane,
+    manifest: path.join(homedir(), '.chickpea', 'qa-seed.json'),
+    dryRun: false,
+    fixtures: false,
+    replace: false,
+  };
   for (let index = 0; index < rest.length; index += 1) {
     const flag = rest[index];
     if (flag === '--agent') options.agentId = rest[++index];
+    else if (flag === '--fixtures') options.fixtures = true;
+    else if (flag === '--replace') options.replace = true;
     else if (flag === '--manifest') options.manifest = rest[++index];
     else if (flag === '--dry-run') options.dryRun = true;
+    else if (flag === '--bind' || flag.startsWith('--bind=')) throw new Error(BIND_UNSUPPORTED);
     else throw new Error(`Unknown argument "${flag}".`);
   }
   if (!LANE_SECRET_TARGETS.includes(options.lane)) throw new Error(`Choose a lane: ${LANE_SECRET_TARGETS.join(', ')}.`);
-  if (!AGENT_ID.test(options.agentId ?? '')) throw new Error('Pass --agent <agentId> for the Agent that receives the connections.');
+  if (options.fixtures && options.agentId !== undefined) {
+    throw new Error('Pass either --fixtures or --agent <agentId>, not both.');
+  }
+  if (!options.fixtures && !AGENT_ID.test(options.agentId ?? '')) {
+    throw new Error('Pass --fixtures for the standing fixtures Agent, or --agent <agentId> for a named Agent.');
+  }
   if (!path.isAbsolute(options.manifest ?? '')) throw new Error('--manifest must be an absolute path.');
   return options;
 }
@@ -79,10 +106,11 @@ export function parseManifest(text) {
 }
 
 /** Build the request body. Returns names that were declared but empty so they can be reported. */
-export function buildSeedRequest({ lane, agentId, connections, entries }) {
+export function buildSeedRequest({ lane, agentId, fixtures = false, replace = false, connections, entries }) {
   const missing = [];
   const body = {
-    agentId,
+    ...(fixtures ? { fixtures: true } : { agentId }),
+    ...(replace ? { replace: true } : {}),
     connections: connections.map((connection) => {
       const credential = connection.secret && entries ? laneSecretValue(entries, lane, connection.secret) : undefined;
       if (connection.secret && !credential) missing.push(connection.secret);
@@ -110,7 +138,8 @@ export function laneOrigin(lane, env = process.env) {
 
 export function describeResults(response) {
   return (response.connections ?? []).map((result) => {
-    const detail = result.connectionId ?? result.adminUrl ?? result.error ?? '';
+    const detail = [result.connectionId ?? result.adminUrl, result.reason ?? result.error]
+      .filter(Boolean).join(' ');
     return `  ${result.connector.padEnd(24)} ${result.status.padEnd(18)} ${detail}`.trimEnd();
   });
 }
@@ -121,8 +150,14 @@ async function main() {
   const connections = parseManifest(readFileSync(options.manifest, 'utf8'));
   const entries = readLaneSecretEntries();
   const { body, missing } = buildSeedRequest({
-    lane: options.lane, agentId: options.agentId, connections, entries,
+    lane: options.lane,
+    agentId: options.agentId,
+    fixtures: options.fixtures,
+    replace: options.replace,
+    connections,
+    entries,
   });
+  const agentLabel = options.fixtures ? `${FIXTURES_AGENT_ID} (fixtures)` : options.agentId;
   if (missing.length) console.log(`Empty in the lane secrets file (sent without a credential): ${missing.join(', ')}`);
   if (options.dryRun) {
     for (const connection of body.connections) {
@@ -148,17 +183,21 @@ async function main() {
   if (!response.ok) {
     const code = typeof parsed?.error === 'string' ? parsed.error : `http_${response.status}`;
     if (code === 'agent_inactive') {
-      throw new Error(`Agent ${options.agentId} is disabled or archived on ${options.lane}; enable it before seeding connections.`);
+      throw new Error(`Agent ${agentLabel} is disabled or archived on ${options.lane}; enable it before seeding connections.`);
     }
     throw new Error(response.status === 404 && !parsed?.error
       ? `The ${options.lane} lane did not accept its seed token (404). Redeploy the lane so it serves the seed route and token.`
       : `Seeding ${options.lane} failed: ${code}.`);
   }
-  console.log(`Seeded ${options.lane} Agent ${options.agentId}:`);
+  console.log(`Seeded ${options.lane} Agent ${agentLabel}:`);
   for (const line of describeResults(parsed)) console.log(line);
   const consent = (parsed.connections ?? []).filter((result) => result.status === 'needs_consent');
   if (consent.length) console.log('Open each setup link in a browser signed in to the lane Admin to finish consent.');
-  if ((parsed.connections ?? []).some((result) => ['failed', 'unknown_connector', 'missing_credential'].includes(result.status))) {
+  if ((parsed.connections ?? []).some((result) => result.status === 'stale')) {
+    console.log('A stale connection holds a different or unrecorded credential. Rerun with --replace to rewrite it in place.');
+  }
+  if ((parsed.connections ?? []).some((result) =>
+    ['failed', 'unknown_connector', 'missing_credential', 'stale'].includes(result.status))) {
     process.exitCode = 1;
   }
 }

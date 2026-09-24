@@ -1509,94 +1509,14 @@ async function beginCatalogConnectionSetup(
           account.ownerMembershipId !== principal.membershipId) {
       throw new Error('target_changed');
     }
-    const previousAccount = account;
-    const previousBinding = binding;
-    const credentialKey = connectionAccountSecretSettingKey(account.secretRefId);
-    const previousCredential = prepared.credential
-      ? await dependencies.settings.getSetting(credentialKey)
-      : undefined;
-    let updatedAccount: ConnectionAccount | undefined;
-    try {
-      const preserveReviewedAccess = account.policy.kind === 'mcp' &&
-        prepared.policy.kind === 'mcp' && isMcpToolReviewRequired(prepared.policy);
-      let nextPolicy: ConnectionAccountPolicy = prepared.policy;
-      if (account.policy.kind === 'mcp' && prepared.policy.kind === 'mcp' &&
-          preserveReviewedAccess) {
-        const allowedTools = !isMetaAdsMcpConnection(prepared.policy) || prepared.policy.authMode === 'oauth' &&
-          prepared.policy.oauthScope === META_ADS_OAUTH_MANAGEMENT_SCOPE
-          ? account.policy.allowedTools
-          : account.policy.allowedTools.filter((tool) => metaAdsToolEffect(tool) !== 'write');
-        nextPolicy = {
-          ...prepared.policy,
-          discoveredTools: account.policy.discoveredTools,
-          allowedTools,
-          ...(account.policy.toolPolicies
-            ? {
-                toolPolicies: Object.fromEntries(
-                  Object.entries(account.policy.toolPolicies)
-                    .filter(([tool]) => allowedTools.includes(tool)),
-                ),
-              }
-            : {}),
-        };
-      }
-      updatedAccount = await dependencies.config.putConnectionAccount({
-        ...account,
-        policy: nextPolicy,
-        ...(prepared.identity ? { identity: prepared.identity } : {}),
-        lifecycle: prepared.credential ||
-            prepared.policy.kind === 'mcp' && prepared.policy.authMode === 'none'
-          ? 'ready'
-          : account.lifecycle,
-      }, account.revision);
-      await dependencies.config.putAgentConnectionBinding({
-        ...binding,
-        allowedCapabilities: preserveReviewedAccess
-          ? binding.allowedCapabilities
-          : prepared.allowedCapabilities,
-      });
-      if (prepared.credential) {
-        await saveConnectionAccountSecret(
-          account.secretRefId,
-          prepared.credential,
-          dependencies.platformEnv,
-          dependencies.settings,
-        );
-      }
-      account = updatedAccount;
-    } catch (error) {
-      const rollbackErrors: unknown[] = [];
-      if (updatedAccount) {
-        try {
-          await dependencies.config.putConnectionAccount(previousAccount, updatedAccount.revision);
-        } catch (rollbackError) {
-          rollbackErrors.push(rollbackError);
-        }
-        try {
-          await dependencies.config.putAgentConnectionBinding(previousBinding);
-        } catch (rollbackError) {
-          rollbackErrors.push(rollbackError);
-        }
-      }
-      if (prepared.credential) {
-        try {
-          if (previousCredential === undefined) {
-            await dependencies.settings.deleteSetting(credentialKey);
-          } else {
-            await dependencies.settings.setSetting(credentialKey, previousCredential);
-          }
-        } catch (rollbackError) {
-          rollbackErrors.push(rollbackError);
-        }
-      }
-      if (rollbackErrors.length > 0) {
-        throw new AggregateError(
-          [error, ...rollbackErrors],
-          'Connection replacement failed and its previous state could not be fully restored',
-        );
-      }
-      throw error;
-    }
+    account = await replaceCatalogConnection({
+      config: dependencies.config,
+      settings: dependencies.settings,
+      ...(dependencies.platformEnv ? { platformEnv: dependencies.platformEnv } : {}),
+      account,
+      binding,
+      prepared,
+    });
   } else {
     const accountIdSuffix = requestedConnectionId.slice('connection_'.length);
     if (!requestedConnectionId.startsWith('connection_') || !accountIdSuffix) {
@@ -1807,6 +1727,110 @@ async function catalogOAuthAuthorizationIsCurrent(
   } catch {
     return false;
   }
+}
+
+/**
+ * Replace a catalog connection's policy and credential in place, restoring the
+ * previous account, binding, and stored credential if any step fails. Shared
+ * by the Slack setup handoff and the QA-lane environment seed.
+ */
+export async function replaceCatalogConnection(input: {
+  config: ConfigStore;
+  settings: SettingsStore;
+  platformEnv?: PlatformEnv;
+  account: ConnectionAccount;
+  binding: AgentConnectionBinding;
+  prepared: Awaited<ReturnType<typeof prepareCatalogConnection>>;
+}): Promise<ConnectionAccount> {
+  const { account, binding, prepared } = input;
+  const previousAccount = account;
+  const previousBinding = binding;
+  const credentialKey = connectionAccountSecretSettingKey(account.secretRefId);
+  const previousCredential = prepared.credential
+    ? await input.settings.getSetting(credentialKey)
+    : undefined;
+  let updatedAccount: ConnectionAccount | undefined;
+  try {
+    const preserveReviewedAccess = account.policy.kind === 'mcp' &&
+      prepared.policy.kind === 'mcp' && isMcpToolReviewRequired(prepared.policy);
+    let nextPolicy: ConnectionAccountPolicy = prepared.policy;
+    if (account.policy.kind === 'mcp' && prepared.policy.kind === 'mcp' &&
+        preserveReviewedAccess) {
+      const allowedTools = !isMetaAdsMcpConnection(prepared.policy) || prepared.policy.authMode === 'oauth' &&
+        prepared.policy.oauthScope === META_ADS_OAUTH_MANAGEMENT_SCOPE
+        ? account.policy.allowedTools
+        : account.policy.allowedTools.filter((tool) => metaAdsToolEffect(tool) !== 'write');
+      nextPolicy = {
+        ...prepared.policy,
+        discoveredTools: account.policy.discoveredTools,
+        allowedTools,
+        ...(account.policy.toolPolicies
+          ? {
+              toolPolicies: Object.fromEntries(
+                Object.entries(account.policy.toolPolicies)
+                  .filter(([tool]) => allowedTools.includes(tool)),
+              ),
+            }
+          : {}),
+      };
+    }
+    updatedAccount = await input.config.putConnectionAccount({
+      ...account,
+      policy: nextPolicy,
+      ...(prepared.identity ? { identity: prepared.identity } : {}),
+      lifecycle: prepared.credential ||
+          prepared.policy.kind === 'mcp' && prepared.policy.authMode === 'none'
+        ? 'ready'
+        : account.lifecycle,
+    }, account.revision);
+    await input.config.putAgentConnectionBinding({
+      ...binding,
+      allowedCapabilities: preserveReviewedAccess
+        ? binding.allowedCapabilities
+        : prepared.allowedCapabilities,
+    });
+    if (prepared.credential) {
+      await saveConnectionAccountSecret(
+        account.secretRefId,
+        prepared.credential,
+        input.platformEnv,
+        input.settings,
+      );
+    }
+  } catch (error) {
+    const rollbackErrors: unknown[] = [];
+    if (updatedAccount) {
+      try {
+        await input.config.putConnectionAccount(previousAccount, updatedAccount.revision);
+      } catch (rollbackError) {
+        rollbackErrors.push(rollbackError);
+      }
+      try {
+        await input.config.putAgentConnectionBinding(previousBinding);
+      } catch (rollbackError) {
+        rollbackErrors.push(rollbackError);
+      }
+    }
+    if (prepared.credential) {
+      try {
+        if (previousCredential === undefined) {
+          await input.settings.deleteSetting(credentialKey);
+        } else {
+          await input.settings.setSetting(credentialKey, previousCredential);
+        }
+      } catch (rollbackError) {
+        rollbackErrors.push(rollbackError);
+      }
+    }
+    if (rollbackErrors.length > 0) {
+      throw new AggregateError(
+        [error, ...rollbackErrors],
+        'Connection replacement failed and its previous state could not be fully restored',
+      );
+    }
+    throw error;
+  }
+  return updatedAccount;
 }
 
 /** Expands a token catalog preset outside a setup link, for QA lane seeding. */

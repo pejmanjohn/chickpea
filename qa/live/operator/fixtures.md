@@ -82,10 +82,22 @@ Verifiers never type, paste, or relay a secret, even when a maintainer offers
 one in chat. If a secret appears in a transcript, stop using it and report it
 for revocation. Credential-backed cases use standing QA fixtures:
 
-- A maintainer enters the test credential once per lane through Admin or a
-  setup handoff, on a standing QA connection that the fixture inventory
-  registers under a `credentialHandle`. Run-owned Agents reuse that
-  connection. Do not create a new connection for each run.
+- A maintainer enters the test credential once per lane, on a standing QA
+  connection that the fixture inventory registers under a `credentialHandle`.
+  Token credentials come from the lane secrets file through
+  `npm run lane:seed -- <lane> --fixtures`, which puts them on the lane's
+  standing `qa-fixtures` Agent; OAuth and managed connectors are finished there
+  through the Admin setup link it returns. See
+  [environments.md](environments.md).
+- A connection belongs to exactly one Agent and cannot be shared with or moved
+  to another, so run-owned Agents cannot reuse a fixture connection.
+  Credential-backed cases run on the `qa-fixtures` Agent. Do not create a new
+  connection for each run. If a case truly needs its own Agent, seed it with
+  `--agent`, register those connections as run-owned, and disconnect them at
+  cleanup.
+- A reseed reports `stale` when the lane secrets file holds a different
+  credential than the one seeded. Rerun with `--replace` to rotate it in
+  place; do not delete and recreate the connection.
 - The credential belongs to a test tenant, such as a test workspace, project,
   or account. A case that would write to a real person's or company's tenant
   is blocked until a test tenant exists. Do not run it against real data.
