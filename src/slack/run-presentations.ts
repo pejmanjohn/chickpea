@@ -2275,7 +2275,8 @@ export function slackPresentationFinalizationRecord(
 function presentationOffer(presentation: SlackRunPresentation): string {
   const eligibility = presentation.progressiveEligibility;
   if (eligibility.status === 'pending') return 'pending';
-  return eligibility.allowed ? 'offered' : `denied:${eligibility.reason}`;
+  if (!eligibility.allowed) return `denied:${eligibility.reason}`;
+  return eligibility.reason === 'final_answer_release' ? 'offered:final_answer_release' : 'offered';
 }
 
 function presentationIntent(presentation: SlackRunPresentation): string {

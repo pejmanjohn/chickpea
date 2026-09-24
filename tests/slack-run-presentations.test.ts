@@ -559,6 +559,11 @@ test('the freeze validator admits final-answer release and buckets its telemetry
 
     const summary = store.summarize(ROOT.workspaceId);
     // The two rejected freezes leave their rows pending.
+    assert.deepEqual(summary.offers, {
+      pending: 2,
+      'offered:final_answer_release': 2,
+      offered: 1,
+    });
     assert.deepEqual(summary.eligibility, {
       pending: 2,
       'allowed:final_answer_release': 2,

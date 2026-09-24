@@ -2257,6 +2257,7 @@ test('a final-answer declaration streams after an activity message without retir
     assert.equal(h.store.get(h.runId)?.stream.presentationOutcome, 'progressive');
     await h.presentation.markCanonicalFinalized();
     assert.equal(h.finalizationRecords[0]?.policyOutcome, 'requested_final_progressive');
+    assert.equal(h.finalizationRecords[0]?.offer, 'offered:final_answer_release');
 
     const cleanup = await h.presentation.prepareActivityCleanup();
     assert.equal(cleanup.kind, 'prepared');
