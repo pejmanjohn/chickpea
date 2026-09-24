@@ -130,24 +130,28 @@ export class BrowserLoginBinder {
    * The granted login a URL opens with, if any. The most specific host wins;
    * logins sharing it need an explicit loginId. A site whose grant was
    * revoked this turn refuses rather than opening signed out.
+   *
+   * A loginId that names no granted login is ignored on a site no grant
+   * covers: that page opens public and read-only, as it would without one.
+   * On a granted site it is refused, so it never falls back to another login.
    */
   async loginForUrl(url: string, loginId: string | undefined): Promise<BrowserWebsiteLogin | undefined> {
-    if (!this.granted.length) {
-      if (loginId) throw new Error(BROWSER_NO_LOGINS_MESSAGE);
-      return undefined;
-    }
+    if (!this.granted.length) return undefined;
     const target = new URL(url);
     const logins = await this.mounted();
+    const matches = (candidates: readonly BrowserWebsiteLogin[]) =>
+      candidates.filter((login) => websiteLoginMatchesUrl(login.host, target));
     if (loginId) {
       const login = classifyGrantedLogin(this.granted, logins, loginId);
-      if (login === 'unknown') throw new Error(BROWSER_UNKNOWN_LOGIN_MESSAGE);
+      if (login === 'unknown') {
+        if (matches(this.granted).length > 0) throw new Error(BROWSER_UNKNOWN_LOGIN_MESSAGE);
+        return undefined;
+      }
       const host = login === 'revoked' ? this.granted.find(({ id }) => id === loginId)!.host : login.host;
       if (!websiteLoginMatchesUrl(host, target)) throw new Error(`That login is for ${host}. Open a URL on that site.`);
       if (login === 'revoked') throw new Error(BROWSER_LOGIN_REVOKED_MESSAGE);
       return login;
     }
-    const matches = (candidates: readonly BrowserWebsiteLogin[]) =>
-      candidates.filter((login) => websiteLoginMatchesUrl(login.host, target));
     const live = matches(logins);
     if (live.length === 0) {
       if (matches(this.granted).length > 0) throw new Error(BROWSER_LOGIN_REVOKED_MESSAGE);

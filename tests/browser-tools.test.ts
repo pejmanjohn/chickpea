@@ -551,7 +551,27 @@ test('browser_open reuses a stored context, and a loginId must match the site', 
   assert.match(wrong.error, /That login is for github\.com/);
   const unknown = await secondTurn.run('browser_open', { url: 'https://github.com/', loginId: 'wl_nope' });
   assert.match(unknown.error, /no website login with that id/);
+  // A made-up id on a site no grant covers is ignored: the page opens public.
+  const stray = await secondTurn.run('browser_open', { url: 'https://example.com/', loginId: '/' });
+  assert.equal(stray.error, undefined);
+  assert.equal(stray.login, undefined);
+  assert.equal(secondTurn.session.binding, undefined);
   await secondTurn.session.close();
+});
+
+test('browser_open ignores a stray loginId when the Agent has no website logins', async () => {
+  const { run, session, created } = await loginSetup({ withLogins: false });
+  const opened = await run('browser_open', { url: 'https://example.com', loginId: '/' });
+  assert.equal(opened.error, undefined);
+  assert.equal(opened.login, undefined);
+  assert.equal(opened.title, 'Example Pricing');
+  assert.equal(created[0]?.contextId, undefined);
+  assert.equal(session.binding, undefined);
+  // Still read-only: a data-changing step is refused.
+  const act = await run('browser_act', { ref: 'e1', action: 'click', mayChangeData: true });
+  assert.equal(act.refused, true);
+  assert.equal(act.awaitingApproval, undefined);
+  await session.close();
 });
 
 test('a grant revoked mid-turn refuses the site and closes its signed-in browser when it is next bound', async () => {
