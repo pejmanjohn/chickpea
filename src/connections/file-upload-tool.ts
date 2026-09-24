@@ -5,6 +5,7 @@ import type { ConnectionScopedFetch } from '../config/egress.ts';
 import { assertConnectionWriteAllowed } from '../memory/tool-policy.ts';
 import { artifactFilename } from '../sandbox/artifact-tool.ts';
 import { MAX_SLACK_UPLOAD_BYTES } from '../slack/file-transport.ts';
+import type { ConnectionFetch } from './access.ts';
 import {
   UPLOAD_FILE_HANDLE,
   type UploadFileResolution,
@@ -60,11 +61,7 @@ export function planAllowsConnectionFileUpload(plan: {
     plan.apiConnections.some((connection) => allowsConnectionFileUpload(connection.allowedMethods));
 }
 
-export interface ConnectionUploadFetch {
-  fetch: ConnectionScopedFetch;
-  /** The credential values in play, removed from anything the model reads. */
-  secrets: readonly string[];
-}
+export type ConnectionUploadFetch = ConnectionFetch;
 
 export interface AttachFileToConnectionOptions {
   /** This turn's connection-scoped fetch; undefined when no connection resolved. */

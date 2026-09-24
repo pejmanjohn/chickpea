@@ -52,6 +52,14 @@ const ECHOED_RESPONSE_HEADERS = [
   'etag',
 ];
 
+/** The tool mounts for a plan with any API connection and an actor whose credentials can be resolved. */
+export function planAllowsConnectionRequests(plan: {
+  actorMembershipId?: string | undefined;
+  apiConnections: ReadonlyArray<unknown>;
+}): boolean {
+  return Boolean(plan.actorMembershipId) && plan.apiConnections.length > 0;
+}
+
 export interface ConnectionRequestToolOptions {
   /** This turn's live connections; resolved per call. */
   resolveAccess(): Promise<ConnectionAccess>;
@@ -226,11 +234,13 @@ export function createConnectionRequestTool(options: ConnectionRequestToolOption
         });
       } catch (error) {
         const reason = connectionFetchFailureReason(error);
-        return reason === 'method_not_allowed'
-          ? refuse(reason, `The ${connection.displayName} connection does not allow ${method} requests to that URL.`)
-          : reason === 'url_not_allowed'
-            ? refuse(reason, `That URL is not an endpoint the ${connection.displayName} connection allows.`)
-            : refuse('failed', 'The request did not complete (network error or timeout). Nothing is known about whether a write took effect; check before retrying.');
+        if (reason === 'method_not_allowed') {
+          return refuse(reason, `The ${connection.displayName} connection does not allow ${method} requests to that URL.`);
+        }
+        if (reason === 'url_not_allowed') {
+          return refuse(reason, `That URL is not an endpoint the ${connection.displayName} connection allows.`);
+        }
+        return refuse(reason, 'The request did not complete (network error or timeout). Nothing is known about whether a write took effect; check before retrying.');
       }
 
       const response = readConnectionResponse(result.body, result.headers['content-type'], scoped.secrets, {

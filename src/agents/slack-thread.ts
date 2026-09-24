@@ -191,6 +191,7 @@ import { buildConnectionAccess, type ConnectionAccess } from '../connections/acc
 import {
   CONNECTION_REQUEST_TIMEOUT_MS,
   createConnectionRequestTool,
+  planAllowsConnectionRequests,
 } from '../connections/request-tool.ts';
 import {
   allowsConnectionFileUpload,
@@ -2211,11 +2212,7 @@ export async function resolveRuntimePlanConnectionAccess(
     policy,
     connectors: mergeRepositoryAndApiConnectors([], connectors),
   }));
-  return buildConnectionAccess(resolved, {
-    cloudflare: isCloudflareTarget(),
-    timeoutMs: options.timeoutMs,
-    ...(options.filter ? { filter: options.filter } : {}),
-  });
+  return buildConnectionAccess(resolved, { cloudflare: isCloudflareTarget(), ...options });
 }
 
 async function resolveRuntimePlanUploadFetch(plan: RuntimePlanV2): Promise<ConnectionUploadFetch | undefined> {
@@ -2227,17 +2224,16 @@ async function resolveRuntimePlanUploadFetch(plan: RuntimePlanV2): Promise<Conne
 }
 
 /** connection_request for a runtime plan, resolving the plan's connections per call. */
-export function createRuntimePlanConnectionRequestTool(
-  plan: RuntimePlanV2,
-  resolveAccess: () => Promise<ConnectionAccess> = () =>
-    resolveRuntimePlanConnectionAccess(plan, { timeoutMs: CONNECTION_REQUEST_TIMEOUT_MS }),
-) {
-  return createConnectionRequestTool({ agentId: plan.agentId, resolveAccess });
+export function createRuntimePlanConnectionRequestTool(plan: RuntimePlanV2) {
+  return createConnectionRequestTool({
+    agentId: plan.agentId,
+    resolveAccess: () => resolveRuntimePlanConnectionAccess(plan, { timeoutMs: CONNECTION_REQUEST_TIMEOUT_MS }),
+  });
 }
 
 /** Mounted for a plan with any API connection its actor can use. */
 export function runtimePlanAllowsConnectionRequests(plan: RuntimePlanV2): boolean {
-  return Boolean(plan.actorMembershipId) && plan.apiConnections.length > 0;
+  return planAllowsConnectionRequests(plan);
 }
 
 /** Mounted only for a plan with a writable API connection its actor can use. */
