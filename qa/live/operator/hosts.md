@@ -47,25 +47,53 @@ action evidence and measured browser/human wait time in the existing run record.
 
 ## Lane browsers
 
-Prefer a dedicated browser per lane over a shared extension. When the host
-provides per-lane Chrome DevTools servers (`chrome-amber`, `chrome-cobalt`,
-`chrome-violet`), each one drives its own persistent Chrome profile that stays
-signed in to that lane's Slack workspace and Admin. Use the server for the
-claimed lane only. Its pages are real foreground targets, so hidden-tab
-rendering, cross-browser routing and focus problems do not apply, and native
-`confirm()` dialogs can be handled with the server's dialog tool.
+Use a dedicated browser per lane, not a shared extension. Each lane has a
+Chrome DevTools MCP server named `chrome-amber`, `chrome-cobalt` or
+`chrome-violet`, configured for both hosts: Claude calls its tools as
+`mcp__chrome-<lane>__*`, and Codex uses the same server names from its own
+MCP configuration. Each server drives one persistent Chrome profile that stays
+signed in to that lane's Slack workspace and Admin. Use only the claimed lane's
+server. Its pages are real foreground targets, so hidden-tab rendering,
+cross-browser routing and focus problems do not apply, and the server's dialog
+tool handles native `confirm()` dialogs. Different lanes run in parallel
+without contention. Chrome locks a profile to one process, so never drive one
+lane's profile from two sessions at once; the lane claim already prevents that.
 
-The maintainer signs each profile in once. Close that window before the
-server launches the profile, because Chrome locks a profile to one process.
-If a profile is signed out, ask for that one-time sign-in during the kickoff
-preflight. Google may refuse sign-in inside an automated browser, so use Slack's
-email code for Slack. Treat a Google OAuth consent that refuses automation
-as a human-only step.
+Host configuration requirements (outside the repository):
+
+- Launch Chrome without Puppeteer's default mock keychain
+  (`--ignoreDefaultChromeArg=--use-mock-keychain` and
+  `--ignoreDefaultChromeArg=--password-store=basic`). With the mock keychain,
+  Chrome on macOS cannot decrypt the profile's cookies and drops them, which
+  signs the profile out.
+- Pass `--chromeArg=--hide-crash-restore-bubble` so an interrupted run never
+  leaves a "Restore pages?" prompt.
+- The maintainer signs each profile in once with that window closed afterward,
+  because the server cannot open a profile another Chrome window holds. If a
+  profile is signed out, ask for that one-time sign-in during the kickoff
+  preflight. Google may refuse sign-in inside an automated browser, so use
+  Slack's email code; treat a Google OAuth consent that refuses automation as a
+  human-only step.
+
+Proven Slack recipe for these servers:
+
+1. Open `https://app.slack.com/client/<team-id>/<channel-id>` for the lane's QA
+   channel and take a snapshot to confirm the signed-in actor and channel.
+2. To mention an Agent or Chickpea, click the composer, type `@` and the name,
+   wait about 1.5 s for autocomplete, press Enter to insert the mention token,
+   then type the message and press Enter. Confirm the posted message shows a
+   linked mention, not plain text.
+3. Read the reply thread by navigating to
+   `https://app.slack.com/client/<team-id>/<channel-id>/thread/<channel-id>-<message-ts>`
+   instead of clicking the reply counter. Poll the thread every 10 s up to the
+   attempt's observation deadline.
+4. Read Admin in the same profile at the lane origin. Close only the pages the
+   run opened. Never kill the lane Chrome process.
 
 The Claude-in-Chrome extension remains the fallback when lane browsers are not
 configured.
 
-## Browser and Slack practice in Claude
+## Browser and Slack practice with the extension (fallback)
 
 These habits come from repeated live runs with the Claude-in-Chrome extension
 and the Slack web client:
@@ -84,16 +112,19 @@ and the Slack web client:
   It often loads on the second navigation. Before typing, click the thread
   composer and confirm by screenshot that the draft sits in the thread and not
   the channel composer. Then press Return.
-- A new Admin-created Agent is unpublished in Slack until it is attached to a
-  channel. Plain text such as `@handle` then routes to Chickpea. Attach the
-  Agent to the QA channel before mentioning it. Insert mentions with the
-  composer's mention control.
 - The extension cannot press native `confirm()` dialogs. For a declared
   cleanup action in an owned tab, override `window.confirm` to return `true`
   in that tab before clicking. Then verify the result by readback.
 - Computer use grants Slack desktop only through an OS dialog that the human
   must accept at the machine. A chat approval cannot accept it. Request the
   grant during the kickoff preflight, or use the signed-in web client.
+
+## Slack and permission notes for any browser
+
+- A new Admin-created Agent is unpublished in Slack until it is attached to a
+  channel. Plain text such as `@handle` then routes to Chickpea. Attach the
+  Agent to the QA channel before mentioning it. Insert mentions with the
+  composer's mention control.
 - When the auto-mode permission classifier blocks a declared QA action (a
   lane deploy, a `wrangler rollback` to the lane's receipt version, a product
   UI write), name the lane alias and the declared action, and ask once. Never
