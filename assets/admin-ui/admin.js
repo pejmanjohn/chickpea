@@ -991,20 +991,9 @@
     var app = document.getElementById("app");
     if (app.removeAttribute) app.removeAttribute("aria-busy");
     // A background render (a list refresh, a window focus revalidation) must
-    // not pull focus out of the field a person is typing into in the add-login
-    // dialog: remember it and its caret, and put them back below.
-    var websiteLoginTyping = null;
-    if (state.websiteLoginDialog && !state.websiteLoginDialog.focus && document.activeElement &&
-        document.activeElement.id && document.activeElement.closest &&
-        document.activeElement.closest('[data-role="website-login-dialog"]')) {
-      var typingField = document.activeElement;
-      websiteLoginTyping = { id: typingField.id, start: null, end: null, direction: "none" };
-      try {
-        websiteLoginTyping.start = typingField.selectionStart;
-        websiteLoginTyping.end = typingField.selectionEnd == null ? typingField.selectionStart : typingField.selectionEnd;
-        websiteLoginTyping.direction = typingField.selectionDirection || "none";
-      } catch (error) { /* not a text field */ }
-    }
+    // not pull focus out of the field a person is typing into: remember it and
+    // its caret, and put them back below unless the render moves focus itself.
+    var typingFocus = captureTypingFocus(app);
     var overlays = installationDialogHtml() + teamConfirmModalHtml() + composioSetupModalHtml() + managedAuthorizationModalHtml() + connectorSettingsConfirmModalHtml() + leavePromptModalHtml() + connectionRemoveModalHtml() + apiConnectionRemoveModalHtml() + slackDisconnectModalHtml() + githubDisconnectModalHtml() + sandboxConfirmModalHtml() + agentScheduleDeleteModalHtml() + websiteLoginDialogHtml() + scheduledRoutineSummaryModalHtml() + scheduledDeleteModalHtml();
     if (state.view === "onboarding") {
       app.className = "frame onboarding-frame";
@@ -1111,15 +1100,6 @@
       if (!websiteLoginFocusId && state.websiteLoginDialog.error) websiteLoginFocusId = "website-login-error";
       var websiteLoginFocus = websiteLoginFocusId ? document.getElementById(websiteLoginFocusId) : null;
       if (websiteLoginFocus && websiteLoginFocus.focus) websiteLoginFocus.focus();
-      else if (websiteLoginTyping) {
-        var typingAgain = document.getElementById(websiteLoginTyping.id);
-        if (typingAgain && typingAgain.focus) {
-          try { typingAgain.focus({ preventScroll: true }); } catch (error) { typingAgain.focus(); }
-          if (websiteLoginTyping.start != null && typingAgain.setSelectionRange) {
-            try { typingAgain.setSelectionRange(websiteLoginTyping.start, websiteLoginTyping.end, websiteLoginTyping.direction); } catch (error) { /* ignore */ }
-          }
-        }
-      }
     }
     if (state.scheduledSelection && !state.scheduledInspector && !state.scheduledDeleteConfirm) {
       [document.querySelector(".topbar"), document.querySelector(".body")].forEach(function (region) {
@@ -1139,6 +1119,7 @@
       var routineDeleteCancel = document.querySelector('[data-action="scheduled-delete-cancel"]');
       if (routineDeleteCancel && routineDeleteCancel.focus) routineDeleteCancel.focus();
     }
+    restoreTypingFocus(app, typingFocus);
     syncUrl();
     // Replacing the old nested .main scroller used to make every destination
     // start at the top. Document scrolling keeps its offset across innerHTML
@@ -1148,6 +1129,55 @@
       window.scrollTo(0, 0);
     }
     syncOnboardingActivity();
+  }
+
+  var TYPING_INPUT_TYPES = /^(?:text|password|search|url|email|tel|number)$/i;
+
+  function selectionSnapshot(field) {
+    var selection = { start: null, end: null, direction: "none" };
+    try {
+      selection.start = field.selectionStart;
+      selection.end = field.selectionEnd == null ? field.selectionStart : field.selectionEnd;
+      selection.direction = field.selectionDirection || "none";
+    } catch (error) { /* a type without a selection API */ }
+    return selection;
+  }
+
+  function focusField(field, selection) {
+    try { field.focus({ preventScroll: true }); } catch (error) { field.focus(); }
+    if (selection.start != null && field.setSelectionRange) {
+      try { field.setSelectionRange(selection.start, selection.end, selection.direction); } catch (error) { /* ignore */ }
+    }
+  }
+
+  // Rendering replaces #app, so a focused text field becomes a new node. Most
+  // form fields carry no id, so find them again by data-action and position.
+  function captureTypingFocus(app) {
+    var active = document.activeElement;
+    if (!active || !app.contains || !app.contains(active)) return null;
+    var tag = active.tagName;
+    if (tag !== "TEXTAREA" && !(tag === "INPUT" && TYPING_INPUT_TYPES.test(active.type || "text"))) return null;
+    var snapshot = { id: active.id || "", action: "", index: -1, selection: selectionSnapshot(active) };
+    if (!snapshot.id) {
+      var action = active.getAttribute("data-action") || "";
+      if (!/^[a-z0-9-]+$/i.test(action) || !app.querySelectorAll) return null;
+      snapshot.action = action;
+      snapshot.index = Array.prototype.indexOf.call(app.querySelectorAll('[data-action="' + action + '"]'), active);
+      if (snapshot.index < 0) return null;
+    }
+    return snapshot;
+  }
+
+  // Restore only when the render left focus nowhere: a render that opens a
+  // dialog or focuses an error has already chosen where focus belongs.
+  function restoreTypingFocus(app, snapshot) {
+    if (!snapshot) return;
+    var current = document.activeElement;
+    if (current && current !== document.body) return;
+    var next = snapshot.id
+      ? document.getElementById(snapshot.id)
+      : app.querySelectorAll('[data-action="' + snapshot.action + '"]')[snapshot.index];
+    if (next && next.focus && !next.disabled) focusField(next, snapshot.selection);
   }
 
   // Inline Agent controls can re-render the whole shell below the fold.
@@ -1162,19 +1192,7 @@
     var pageY = typeof window !== "undefined" ? (window.scrollY || window.pageYOffset || 0) : 0;
     var active = document.activeElement;
     var activeId = active && active.id ? active.id : "";
-    var selectionStart = null;
-    var selectionEnd = null;
-    var selectionDirection = "none";
-    if (activeId) {
-      try {
-        selectionStart = active.selectionStart;
-        selectionEnd = active.selectionEnd == null ? selectionStart : active.selectionEnd;
-        selectionDirection = active.selectionDirection || "none";
-      } catch (error) {
-        selectionStart = null;
-        selectionEnd = null;
-      }
-    }
+    var selection = activeId ? selectionSnapshot(active) : null;
     render();
     var nextMain = document.querySelector(".main");
     if (nextMain) {
@@ -1183,12 +1201,7 @@
     }
     if (activeId) {
       var nextActive = document.getElementById(activeId);
-      if (nextActive && nextActive.focus) {
-        try { nextActive.focus({ preventScroll: true }); } catch (error) { nextActive.focus(); }
-        if (selectionStart != null && nextActive.setSelectionRange) {
-          try { nextActive.setSelectionRange(selectionStart, selectionEnd, selectionDirection); } catch (error) { /* ignore */ }
-        }
-      }
+      if (nextActive && nextActive.focus) focusField(nextActive, selection);
     }
     // Focus restoration can itself scroll an off-screen input into view in
     // browsers that ignore preventScroll. Make page position the final state.

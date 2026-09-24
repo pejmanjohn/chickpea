@@ -59,6 +59,19 @@ interface FakeResponse {
 interface FakeElement {
   innerHTML: string;
   className?: string;
+  contains?(node: unknown): boolean;
+  querySelectorAll?(selector: string): unknown[];
+}
+
+interface FakeTypingField {
+  tagName: string;
+  type: string;
+  id: string;
+  selectionStart: number;
+  selectionEnd: number;
+  getAttribute(name: string): string | null;
+  focus(): void;
+  setSelectionRange(start: number, end: number): void;
 }
 
 interface FakeRegion {
@@ -727,6 +740,8 @@ function runAdminPageHarness(
   setDocumentScrollTop(value: number): void;
   focusModelInput(caret?: number): void;
   modelSelectionRanges: Array<[number, number]>;
+  focusTypingField(action: string, caret: number): void;
+  focusedTypingField(): { action: string; caret: [number, number] } | null;
   sessionStorageValue(key: string): string | null;
 } {
   const makeRegion = (): FakeRegion => ({
@@ -825,7 +840,42 @@ function runAdminPageHarness(
     }
     return modelInputElement;
   };
+  // An id-less text field (most Admin form inputs) addressed only by its
+  // data-action. Each render replaces it with a new node, like a real browser.
+  let typingField: { action: string; generation: number; element: FakeTypingField } | null = null;
+  const typingFieldFor = (action: string): FakeTypingField => {
+    if (!typingField || typingField.action !== action || typingField.generation !== renderGeneration) {
+      const element: FakeTypingField = {
+        tagName: 'INPUT',
+        type: 'password',
+        id: '',
+        selectionStart: 0,
+        selectionEnd: 0,
+        getAttribute(name: string) {
+          return name === 'data-action' ? action : null;
+        },
+        focus() {
+          focusedAction = action;
+          activeElement = element;
+        },
+        setSelectionRange(start: number, end: number) {
+          element.selectionStart = start;
+          element.selectionEnd = end;
+        },
+      };
+      typingField = { action, generation: renderGeneration, element };
+    }
+    return typingField.element;
+  };
   const app: FakeElement = {
+    contains(node: unknown) {
+      return !!typingField && typingField.generation === renderGeneration && typingField.element === node;
+    },
+    querySelectorAll(selector: string) {
+      const action = selector.match(/^\[data-action="([^"]+)"\]$/)?.[1];
+      if (!action || typingField?.action !== action || !appHtml.includes(`data-action="${action}"`)) return [];
+      return [typingFieldFor(action)];
+    },
     get innerHTML() {
       return appHtml;
     },
@@ -3090,6 +3140,20 @@ function runAdminPageHarness(
       input.focus();
     },
     modelSelectionRanges,
+    focusTypingField(action: string, caret: number) {
+      assert.ok(appHtml.includes(`data-action="${action}"`), `expected a rendered ${action} field`);
+      typingField = null;
+      const field = typingFieldFor(action);
+      field.focus();
+      field.setSelectionRange(caret, caret);
+    },
+    focusedTypingField() {
+      if (!typingField || activeElement !== typingField.element || typingField.generation !== renderGeneration) return null;
+      return {
+        action: typingField.action,
+        caret: [typingField.element.selectionStart, typingField.element.selectionEnd] as [number, number],
+      };
+    },
     sessionStorageValue(key: string) {
       return sessionStorage.getItem(key);
     },
@@ -9208,6 +9272,37 @@ test('Agent-owned Exa accounts support anonymous limits without an API key', asy
   );
   const testedHeaders = harness.mcpTestPosts[0]?.headers as Record<string, string> | undefined;
   assert.equal(testedHeaders?.['x-api-key'], undefined);
+});
+
+test('a focus revalidation keeps focus and caret in the add-connection credential field', async () => {
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    connectionAccounts: { attached: [] },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  const input = harness.listeners.input;
+  assert.ok(click && input);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'connection-account-preset', 'data-preset': 'asana' }) });
+  chooseConnectionOwner(harness);
+  input({ target: inputTarget({ 'data-action': 'connection-account-credential' }, 'fake-asana-token') });
+  harness.focusTypingField('connection-account-credential', 4);
+  const connectionGetsBefore = harness.agentConnectionGets();
+  const rendersBefore = harness.renderHistory.length;
+
+  // Coming back from the tab where the token was copied.
+  harness.setVisibility('visible');
+  harness.focusWindow();
+  await flushAsync();
+
+  assert.ok(harness.agentConnectionGets() > connectionGetsBefore, 'expected the connections list to refresh');
+  assert.ok(harness.renderHistory.length > rendersBefore, 'expected the refresh to re-render the form');
+  assert.match(harness.app.innerHTML, /value="fake-asana-token"[^>]*data-action="connection-account-credential"/);
+  assert.deepEqual(harness.focusedTypingField(), { action: 'connection-account-credential', caret: [4, 4] });
 });
 
 test('Agent-owned Zendesk accounts validate and persist the workspace subdomain', async () => {
