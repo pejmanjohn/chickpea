@@ -92,6 +92,30 @@
    without the file. Verifiers never write or read the values; the maintainer
    edits the file.
 
+   Standing test connections come back the same way after a lane rebuild.
+   Each guarded lane deploy also installs the lane's seed token
+   (`~/.chickpea/lane-credentials/<lane>-seed.json`, created on first use).
+   The private manifest `~/.chickpea/qa-seed.json` has no secrets. It names
+   catalog connectors and the secrets-file name that carries each token:
+
+   ```json
+   { "schemaVersion": "chickpea-lane-seed/v1",
+     "connections": [
+       { "connector": "asana", "secret": "ASANA_QA_TOKEN" },
+       { "connector": "gmail" } ] }
+   ```
+
+   Run `npm run lane:seed -- <lane> --agent <agentId>` (add `--dry-run` to see
+   what would be sent). Token connectors (API keys and MCP bearer or header
+   credentials) are created on that Agent as team connections owned by the
+   workspace owner. A connector the Agent already has is reported `present`
+   and left unchanged. OAuth and managed (Composio) connectors return an Admin
+   setup link; open it in the verifier's browser, signed in to the lane Admin,
+   and complete the consent as a declared QA action. The seed route exists only
+   on QA targets and answers only the lane's seed token. Seeded connections on
+   a run-owned Agent are run-owned resources: register them and disconnect them
+   at cleanup.
+
    For a one-off credential outside that file, a lane that needs a provider
    credential the product reads from the environment gets it through the same
    guarded deploy: put the names and values in an

@@ -32,7 +32,7 @@ import { fileURLToPath } from 'node:url';
 import { hasScheduledComposition } from './worker-artifact.mjs';
 import { builtWorkerConfigPath } from './lib/built-worker-config.mjs';
 import { mergeDeploymentSecrets, OPERATOR_SECRETS_ENV, readOperatorSecretsFile } from './lib/deploy-operator-secrets.mjs';
-import { describeLaneSecrets, resolveLaneSecrets } from './lib/lane-secrets.mjs';
+import { describeLaneSecrets, ensureLaneSeedToken, LANE_SEED_TOKEN_BINDING, resolveLaneSecrets } from './lib/lane-secrets.mjs';
 import { wranglerInspector, deploymentFingerprint } from './lib/inspect-deployment.mjs';
 import { AUTH_SCHEMA_QUERY, expectedAuthSchema, normalizeAuthSchemaRows } from './lib/auth-schema.mjs';
 import { validateInstallation, validateTarget, assertSameInstallation, overlayInstallation, wranglerProfileArgs } from './lib/upgrade-installation.mjs';
@@ -1311,8 +1311,14 @@ try {
   // operator secrets file wins over it, and the wrapper's own names win over both.
   const laneSecrets = resolveLaneSecrets(requestedDeploymentTarget);
   if (laneSecrets) console.log(describeLaneSecrets(laneSecrets));
+  // Each lane also keeps one seed token for `npm run lane:seed`.
+  const laneSeedToken = ensureLaneSeedToken(requestedDeploymentTarget);
+  if (laneSeedToken) console.log(`Lane seed token: installed (${LANE_SEED_TOKEN_BINDING}).`);
   preparedSecrets = createSecretsFile(mergeDeploymentSecrets(
-    deploymentAuthority?.generatedSecrets,
+    {
+      ...(deploymentAuthority?.generatedSecrets ?? {}),
+      ...(laneSeedToken ? { [LANE_SEED_TOKEN_BINDING]: laneSeedToken } : {}),
+    },
     { ...(laneSecrets?.secrets ?? {}), ...(operatorSecrets ?? {}) },
   ));
 } catch (error) {
