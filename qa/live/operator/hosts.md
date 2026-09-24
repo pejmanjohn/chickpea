@@ -57,7 +57,12 @@ server. Its pages are real foreground targets, so hidden-tab rendering,
 cross-browser routing and focus problems do not apply, and the server's dialog
 tool handles native `confirm()` dialogs. Different lanes run in parallel
 without contention. Chrome locks a profile to one process, so never drive one
-lane's profile from two sessions at once; the lane claim already prevents that.
+lane's profile from two sessions at once. The claim does not release the
+browser: the session whose server launched it keeps the profile until it quits
+that Chrome, even after it releases its claim. When `chrome-<lane>` reports the
+browser is already running, find that session and ask it to quit its own lane
+Chrome. Never stop another session's browser yourself. Quit your own lane
+Chrome when your run ends.
 
 Host configuration requirements (outside the repository):
 
@@ -129,6 +134,12 @@ and the Slack web client:
   lane deploy, a `wrangler rollback` to the lane's receipt version, a product
   UI write), name the lane alias and the declared action, and ask once. Never
   route around the block.
+- Run the guarded lane deploy as its own command, exactly
+  `CHICKPEA_DEPLOY_TARGET=<alias> npm run deploy`, so an operator allow rule
+  for that command matches. Chaining it after `cd`, `export PATH=...` or other
+  commands, or redirecting its output, sends it to the classifier instead. The
+  login shell's `node` must already satisfy `.nvmrc`; report a lower version
+  as a host setup gap rather than prefixing the deploy.
 
 ## Slack evidence on gateway lanes
 
