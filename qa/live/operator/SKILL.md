@@ -85,9 +85,10 @@ so a run does not stall mid-journey while the maintainer is away:
 1. Pick the lane from the [lane capability matrix](environments.md#choose-a-lane-by-capability):
    deploy profile, provider keys, image role, default model, and registered
    connector fixtures must cover every selected case.
-2. Confirm one connected browser for the Chrome extension, signed in to the
-   lane's Slack workspace and Admin. Request any Slack desktop computer-use
-   grant now if it will be used.
+2. Confirm the lane's browser is signed in to its Slack workspace and Admin:
+   the per-lane browser server when configured, otherwise exactly one browser
+   connected to the Chrome extension (see [hosts.md](hosts.md#lane-browsers)).
+   Request any Slack desktop computer-use grant now if it will be used.
 3. Confirm the required credential fixtures exist on that lane (see
    [fixtures.md](fixtures.md#credentials)). Never ask for a secret in chat.
 4. Name the checks that only a human can do, such as a real-phone view, and

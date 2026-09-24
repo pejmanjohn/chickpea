@@ -45,6 +45,26 @@ Environment claims, shared fixture ownership, and [expensive-check host
 reservations](host-checks.md) still apply to their respective resources. Keep
 action evidence and measured browser/human wait time in the existing run record.
 
+## Lane browsers
+
+Prefer a dedicated browser per lane over a shared extension. When the host
+provides per-lane Chrome DevTools servers (`chrome-amber`, `chrome-cobalt`,
+`chrome-violet`), each one drives its own persistent Chrome profile that stays
+signed in to that lane's Slack workspace and Admin. Use the server for the
+claimed lane only. Its pages are real foreground targets, so hidden-tab
+rendering, cross-browser routing and focus problems do not apply, and native
+`confirm()` dialogs can be handled with the server's dialog tool.
+
+The maintainer signs each profile in once. Close that window before the
+server launches the profile, because Chrome locks a profile to one process.
+If a profile is signed out, ask for that one-time sign-in during the kickoff
+preflight. Google may refuse sign-in inside an automated browser, so use Slack's
+email code for Slack. Treat a Google OAuth consent that refuses automation
+as a human-only step.
+
+The Claude-in-Chrome extension remains the fallback when lane browsers are not
+configured.
+
 ## Browser and Slack practice in Claude
 
 These habits come from repeated live runs with the Claude-in-Chrome extension
