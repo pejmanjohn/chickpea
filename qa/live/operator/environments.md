@@ -70,8 +70,10 @@
    independently: another lane's authority is briefly unavailable while that
    lane is itself deploying, so it gets one retry and then its recorded
    credential fingerprints stand in (the deploy prints a notice naming it).
-   The claimed lane must always answer live; `LIVE_AUTHORITY_BRIDGE_UNAVAILABLE`
-   now names that lane or a lane with no recorded baseline. Never print
+   The claimed lane must always answer live. `LIVE_AUTHORITY_BRIDGE_UNAVAILABLE`
+   names the lane at fault: the claimed lane when it does not answer, or an
+   unavailable other lane whose recorded baseline is missing or invalid, so
+   its fingerprints cannot stand in. Never print
    the token. Never use a bare/default deploy to reach a QA lane. Preserve
    source/claim fences. Verification does not imply landing on main.
 
@@ -90,8 +92,9 @@
    ignored with a warning. With it set, Admin shows the Composio key as
    deployment-managed. A rebuilt lane therefore regains its keys on its
    first deploy, and changing a key means editing the file and redeploying each
-   lane. Other names, such as a connector token that belongs in the database,
-   are reported and left for a seeding step. The deploy log and
+   lane. Other plain or this-lane names, such as a connector token that
+   belongs in the database, are listed as held (not Worker secrets) and left
+   for a seeding step. The deploy log and
    `npm run lane:secrets -- <lane>` print names, sources, and short
    fingerprints, never values. Set `CHICKPEA_LANE_SECRETS=off` to deploy
    without the file. Verifiers never write or read the values; the maintainer

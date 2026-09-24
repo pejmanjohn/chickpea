@@ -9,6 +9,8 @@ import { digestSetupCapability } from '../src/auth/setup-capability.mjs';
 import { writePrivateJson } from '../scripts/lib/upgrade-receipt.mjs';
 // @ts-expect-error Release tooling JavaScript helper.
 import { migrationDigests } from '../scripts/lib/release-manifest.mjs';
+// @ts-expect-error The dependency-free lane list is plain JavaScript.
+import { QA_LANES } from '../scripts/lib/qa-lanes.mjs';
 import { AUTH_MIGRATIONS, createHarness, runHarness, prepareUpgrade, commands, writeCutoverArtifact } from './deploy-with-epilogue.fixture.ts';
 
 test('missing workers.dev registration stops before the app build and all resource work', (context) => {
@@ -896,20 +898,20 @@ test('target dry-run prints the selected immutable D1 and permanent generation',
   assert.deepEqual(commands(harness.logPath), ['wrangler:["deploy","--dry-run"]']);
 });
 
-test('QA target refuses CLI telemetry environment overrides before Wrangler runs', (context) => {
-  for (const overrideArgs of [
+test('every QA target refuses CLI telemetry environment overrides before Wrangler runs', (context) => {
+  for (const target of QA_LANES) for (const overrideArgs of [
     ['--var', 'CHICKPEA_TELEMETRY_ENVIRONMENT:production'],
     ['--var=CHICKPEA_TELEMETRY_ENVIRONMENT:production'],
   ]) {
     const harness = createHarness();
     context.after(() => rmSync(harness.root, { recursive: true, force: true }));
-    writeCutoverArtifact(harness, { target: 'amber', databaseId: '' });
+    writeCutoverArtifact(harness, { target, databaseId: '' });
 
     const result = runHarness(harness, ['--skip-build', '--dry-run', ...overrideArgs], {
-      CHICKPEA_DEPLOY_TARGET: 'amber',
+      CHICKPEA_DEPLOY_TARGET: target,
     });
 
-    assert.equal(result.status, 1);
+    assert.equal(result.status, 1, `${target} ${overrideArgs.join(' ')}`);
     assert.match(result.stderr, /Do not override CHICKPEA_TELEMETRY_ENVIRONMENT/);
     assert.equal(existsSync(harness.logPath), false);
   }

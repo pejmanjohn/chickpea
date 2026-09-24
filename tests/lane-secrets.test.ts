@@ -64,9 +64,31 @@ test('reports names and fingerprints but never values', () => {
   try {
     const line = describeLaneSecrets(resolveLaneSecrets('violet', { env: noEnv, file: file.path }));
     assert.match(line, /OPENAI_API_KEY \(shared, sha256:[0-9a-f]{8}\)/);
-    assert.match(line, /not uploaded \(for seeding\): ASANA_QA_TOKEN/);
+    assert.match(line, /held \(not Worker secrets\): ASANA_QA_TOKEN$/);
     assert.doesNotMatch(line, /very-secret|asana-secret/);
     assert.equal(fingerprint('sk-very-secret'), fingerprint('sk-very-secret'));
+  } finally {
+    file.cleanup();
+  }
+});
+
+test('the held list names only this lane’s non-Worker keys', () => {
+  const file = withLaneFile([
+    'OPENAI_API_KEY=sk-shared',
+    'COMPOSIO_API_KEY=shared-composio',
+    'AMBER__COMPOSIO_API_KEY=amber-composio',
+    'ASANA_QA_TOKEN=asana-token',
+    'AMBER__SLACK_TEST_TOKEN=amber-slack',
+    'COBALT__SLACK_OTHER_TOKEN=cobalt-slack',
+    'QA_TEAM__TOKEN=unknown-prefix',
+    '',
+  ].join('\n'));
+  try {
+    const amber = resolveLaneSecrets('amber', { env: noEnv, file: file.path });
+    assert.deepEqual(amber.held, ['ASANA_QA_TOKEN', 'SLACK_TEST_TOKEN']);
+    const line = describeLaneSecrets(amber);
+    assert.match(line, /; held \(not Worker secrets\): ASANA_QA_TOKEN, SLACK_TEST_TOKEN$/);
+    assert.doesNotMatch(line.slice(line.indexOf('held (')), /COMPOSIO_API_KEY|SLACK_OTHER_TOKEN|QA_TEAM|OPENAI_API_KEY/);
   } finally {
     file.cleanup();
   }

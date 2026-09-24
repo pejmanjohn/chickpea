@@ -11,7 +11,8 @@
  * Checks: tracked manifest safety, forbidden public-source paths and private
  * docs, tracked docs deliberately un-ignored, archive bytes equal tracked blobs,
  * leak scan (private names, local user paths, binaries, verifier secrets),
- * release manifest and version agreement, lockfile integrity hashes, package
+ * live-verification docs references (every backticked or linked `.md` in the
+ * skill entrypoints and qa/live/operator names a tracked file), release manifest and version agreement, lockfile integrity hashes, package
  * metadata, the authentication export contract, and the npm pack manifest.
  * Exit 1 on any finding, 2 on a usage or structural error.
  */

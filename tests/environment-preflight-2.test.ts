@@ -7,7 +7,7 @@ import test from 'node:test';
 // @ts-expect-error Executable environment modules intentionally have no declarations.
 import { assertLiveEnvironmentClaim, claimEnvironment, migrateEnvironmentProviderAuthConfigs, readEnvironmentRegistry, reclaimEnvironment, releaseEnvironment } from '../scripts/lib/environment-registry.mjs';
 // @ts-expect-error Executable environment modules intentionally have no declarations.
-import { assertEnvironmentReleaseAllowed, beginEnvironmentDeployment, completeEnvironmentDeployment, environmentDeployReceiptPath, observeProductionEnvironmentAuthority, preflightEnvironmentMutation, reconcileEnvironmentDeployment, resumeEnvironmentDeployment, writeEnvironmentBaseline, writeEnvironmentSchemaAdvancementIntent, withEnvironmentReleaseFence } from '../scripts/lib/environment-preflight.mjs';
+import { assertEnvironmentReleaseAllowed, beginEnvironmentDeployment, completeEnvironmentDeployment, environmentBaselinePath, environmentDeployReceiptPath, observeProductionEnvironmentAuthority, preflightEnvironmentMutation, reconcileEnvironmentDeployment, resumeEnvironmentDeployment, writeEnvironmentBaseline, writeEnvironmentSchemaAdvancementIntent, withEnvironmentReleaseFence } from '../scripts/lib/environment-preflight.mjs';
 import { readTargetLock } from '../qa/live/safety/lock.ts';
 import { NOW, DEAD_PID, TARGETS, fixture, fingerprints, baseline, localContract, OTHER_INSTALL_DIGEST, FLOW_DIGEST, OTHER_FLOW_DIGEST, OTHER_COMBINED_DIGEST, splitBaseline, splitLocalContract, optionalListsLocalContract, authority, RUNTIME_SECRET_SOURCE_BINDINGS, runtimeAuthorities, rejects, makeMutationLockStale, runNodeModule } from './environment-preflight.fixture.ts';
 
@@ -778,6 +778,17 @@ for (const transport of ['events', 'gateway']) test(`production ${transport} aut
     assert.deepEqual(withSiblingDown.fleetCredentialFingerprints[sibling], fingerprints(sibling));
     assert.equal(bridgeCalls, TARGETS.length + 1, 'the unavailable lane is retried once');
     assert.match(notices.join('\n'), new RegExp(`Lane ${sibling} authority is unavailable`));
+    // Without a readable baseline the down lane cannot stand in; the refusal
+    // names that lane instead of a bare baseline code.
+    const siblingBaseline = environmentBaselinePath(fleet.records.find((record) => record.target === sibling)!.evidenceRoot);
+    const namesSibling = (error: unknown) => rejects('LIVE_AUTHORITY_BRIDGE_UNAVAILABLE')(error)
+      && (error as { details?: { target?: unknown } }).details?.target === sibling;
+    const savedBaseline = readFileSync(siblingBaseline, 'utf8');
+    rmSync(siblingBaseline);
+    await assert.rejects(observeProductionEnvironmentAuthority(context, realBridgeOptions), namesSibling);
+    writeFileSync(siblingBaseline, '{"schemaVersion":"not-a-baseline"}', { mode: 0o600 });
+    await assert.rejects(observeProductionEnvironmentAuthority(context, realBridgeOptions), namesSibling);
+    writeFileSync(siblingBaseline, savedBaseline, { mode: 0o600 });
     down = new Set(['amber']);
     await assert.rejects(observeProductionEnvironmentAuthority(context, realBridgeOptions), rejects('LIVE_AUTHORITY_BRIDGE_UNAVAILABLE'));
     down = new Set();
