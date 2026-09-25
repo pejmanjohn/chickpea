@@ -130,7 +130,11 @@ import {
   slackSessionGenerationFromTimestamp,
 } from '../slack/claim-store.ts';
 import { createDirectSlackTransport } from '../slack/transport/direct.ts';
-import type { SlackInboundEnvelope, SlackTransport } from '../slack/transport/types.ts';
+import {
+  isRetryableDependencyFailure,
+  type SlackInboundEnvelope,
+  type SlackTransport,
+} from '../slack/transport/types.ts';
 import { createGatewaySlackTransport } from '../slack/transport/gateway.ts';
 import { GatewayDeploymentClient } from '../slack/gateway/client.ts';
 import { createGatewayDeploymentClient } from '../slack/gateway/runtime.ts';
@@ -1391,6 +1395,15 @@ async function processSlackEvent(
     if (err instanceof ModelResolutionError) {
       if (!routedBaseAssignment) return;
       assignment = routedBaseAssignment;
+    } else if (isRetryableDependencyFailure(err)) {
+      // A rate-limited or unreachable Slack/gateway lookup (users.info,
+      // conversations.info, ...) or a transient store disconnect is not a
+      // configuration decision. Nothing was claimed yet, so throwing lets the
+      // durable gateway inbox retry this delivery with backoff instead of
+      // completing it; a Slack retry would otherwise dedupe as a duplicate
+      // and the mention would be lost.
+      console.warn('[chickpea] turn admission deferred:', sanitizeError(err));
+      throw err;
     } else {
       console.error('[chickpea] no assignment for turn:', sanitizeError(err));
       // Fail-closed with feedback: the channel stays silent, but the person

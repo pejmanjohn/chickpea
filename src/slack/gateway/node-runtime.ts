@@ -13,7 +13,7 @@ import {
 } from '../../channels/slack.ts';
 import { createGatewayDeploymentClient } from './runtime.ts';
 import { GATEWAY_BINDING_SETTING, type GatewayDeploymentClient } from './client.ts';
-import { GATEWAY_INBOX_MAX_DRAIN_BATCH } from './inbox.ts';
+import { GATEWAY_INBOX_MAX_DRAIN_BATCH, gatewayDeliveryRetryDelayMs } from './inbox.ts';
 import {
   GATEWAY_DURABLE_ADMISSION_CAPABILITY,
   type GatewayInboundDelivery,
@@ -40,7 +40,11 @@ interface NodeGatewayInboxPort {
     attempts: number;
   }>;
   complete(id: string): boolean;
-  retryOrRecover(id: string, reason: string): 'pending' | 'recovery_required';
+  retryOrRecover(
+    id: string,
+    reason: string,
+    retryDelayMs?: number,
+  ): 'pending' | 'recovery_required';
   markRecoveryRequired(id: string, reason: string): boolean;
   hasPending(): boolean;
 }
@@ -144,7 +148,11 @@ export class NodeGatewayInboxWorker {
           }
         } catch (error) {
           this.#onError(error);
-          const retry = store.retryOrRecover(item.id, 'delivery_processing_failed');
+          const retry = store.retryOrRecover(
+            item.id,
+            'delivery_processing_failed',
+            gatewayDeliveryRetryDelayMs(item.attempts, error),
+          );
           if (retry === 'pending') this.#scheduleRetry();
           return;
         }

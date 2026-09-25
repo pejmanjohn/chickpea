@@ -239,6 +239,7 @@ import {
 } from './routines/scheduler-adapter.ts';
 import {
   GATEWAY_INBOX_MAX_DRAIN_BATCH,
+  gatewayDeliveryRetryDelayMs,
   GatewayInboxStoreLogic,
 } from './slack/gateway/inbox.ts';
 import {
@@ -2799,10 +2800,11 @@ async function drainGatewayInbox(
       } else {
         stores.gatewayInbox.markRecoveryRequired(item.id, 'binding_revalidation_rejected');
       }
-    } catch {
+    } catch (error) {
       needsRetry ||= stores.gatewayInbox.retryOrRecover(
         item.id,
         'delivery_processing_failed',
+        gatewayDeliveryRetryDelayMs(item.attempts, error),
       ) === 'pending';
     } finally {
       releaseReceipt?.();

@@ -7,7 +7,9 @@ import { test } from 'node:test';
 import {
   GatewayInboxCapacityError,
   GatewayInboxStoreLogic,
+  gatewayDeliveryRetryDelayMs,
 } from '../src/slack/gateway/inbox.ts';
+import { SlackTransportError } from '../src/slack/transport/types.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
 import type {
   GatewayEventDelivery,
@@ -240,6 +242,57 @@ test('gateway inbox bounds attempts and scrubs recovery-required bodies', () => 
   } finally {
     db.close();
   }
+});
+
+test('a rate-limited delivery backs off without blocking later deliveries', () => {
+  let now = NOW;
+  const db = openStateDb(':memory:');
+  try {
+    const inbox = new GatewayInboxStoreLogic(db, () => now);
+    assert.equal(inbox.admit(eventDelivery('delivery:Ev_LIMITED', 'first')), 'accepted');
+    now += 1;
+    assert.equal(inbox.admit(eventDelivery('delivery:Ev_NEXT', 'second')), 'accepted');
+    const limited = inbox.claimPending(1)[0]!;
+    assert.equal(limited.id, 'delivery:Ev_LIMITED');
+    const rateLimited = new SlackTransportError('users.info', 'gateway_rate_limited', {
+      retryable: true, effectOutcome: 'failed',
+    });
+    const delay = gatewayDeliveryRetryDelayMs(limited.attempts, rateLimited);
+    assert.equal(delay, 5_000);
+    assert.equal(inbox.retryOrRecover(limited.id, 'delivery_processing_failed', delay), 'pending');
+    assert.equal(inbox.hasPending(), true);
+
+    // The later delivery is claimable; the limited one waits out its delay.
+    assert.deepEqual(inbox.claimPending(16).map((item) => item.id), ['delivery:Ev_NEXT']);
+    now += 4_999;
+    assert.deepEqual(inbox.claimPending(16), []);
+    now += 1;
+    const retried = inbox.claimPending(16);
+    assert.deepEqual(retried.map((item) => item.id), ['delivery:Ev_LIMITED']);
+    assert.equal(retried[0]?.attempts, 2);
+  } finally {
+    db.close();
+  }
+});
+
+test('gateway delivery retry delay backs off only retryable dependency failures', () => {
+  const limited = new SlackTransportError('users.info', 'gateway_rate_limited', { retryable: true });
+  assert.deepEqual([1, 2, 3, 4, 5].map((attempt) => gatewayDeliveryRetryDelayMs(attempt, limited)),
+    [5_000, 10_000, 20_000, 40_000, 60_000]);
+  const hinted = new SlackTransportError('users.info', 'gateway_rate_limited', {
+    retryable: true, retryAfterMs: 30_000,
+  });
+  assert.equal(gatewayDeliveryRetryDelayMs(1, hinted), 30_000);
+  const longHint = new SlackTransportError('users.info', 'ratelimited', {
+    retryable: true, retryAfterMs: 600_000,
+  });
+  assert.equal(gatewayDeliveryRetryDelayMs(1, longHint), 60_000);
+  // A Durable Object disconnect marks itself retryable.
+  assert.equal(gatewayDeliveryRetryDelayMs(1, Object.assign(new Error('reset'), { retryable: true })), 5_000);
+  assert.equal(gatewayDeliveryRetryDelayMs(1, new SlackTransportError('users.info', 'user_not_found', {
+    retryable: false,
+  })), 0);
+  assert.equal(gatewayDeliveryRetryDelayMs(1, new Error('bug')), 0);
 });
 
 test('gateway inbox ages abandoned accepted work into body-free recovery state', () => {
