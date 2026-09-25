@@ -212,24 +212,6 @@ to runners still finish on their runners. Prefer the variable to a code
 rollback: code from before the runner execution path does not know which turns
 runners own.
 
-### Release notes: parallel turns
-
-Chickpea keeps no in-repository changelog; copy this into the GitHub release
-notes of the release that ships the runner default, then delete it here.
-
-- Threads no longer wait on each other. On Cloudflare each Slack thread's
-  turns run in that thread's own `SlackThreadRunner` Durable Object, so a long
-  turn in one thread (a coding task, a large browser job) no longer delays a
-  new message in any other thread. Turns in one thread still run in order.
-- Nothing to configure: the runner is the default executor. It uses the
-  `SLACK_THREAD_RUNNER` binding added by Durable Object migration `v11`.
-- Emergency fallback: `npm run deploy -- --var SLACK_TAG_TURN_EXECUTOR:alarm`
-  returns new turns to the shared state store's alarm (the previous executor)
-  without a rollback. It is a deployment variable, not a setting; remove it to
-  return to the default.
-- Rollback limit: once migration `v11` is applied, neither `wrangler rollback`
-  nor previous-code recovery can return to a version before `v11`.
-
 ## Acceptance and handoff
 
 After success, verify the destination release and full source commit in

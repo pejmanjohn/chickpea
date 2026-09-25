@@ -64,6 +64,13 @@ Cloudflare refuses `wrangler rollback` and dashboard rollbacks to any version
 from before that release. Recovery from a bad update then means deploying a newer or fixed
 release forward. Tell the user this before deploying such a release.
 
+v0.1.27 also makes per-thread runners the default turn executor; nothing to
+configure. If new Slack turns misbehave after the update, redeploy with
+`npm run deploy -- --var SLACK_TAG_TURN_EXECUTOR:alarm` to return new turns to
+the previous executor without a rollback, and remove the variable later to
+return to the default. See the
+[upgrading runbook](docs/runbooks/upgrading.md).
+
 ## 3. Deploy to the same Worker
 
 For the core Cloudflare deployment, run the release's guarded command from the
