@@ -8,6 +8,7 @@ import {
   ALARM_TURN_BUDGET_MS,
   ALARM_TURN_HARD_CAP_MS,
   ALARM_YIELD_REARM_MS,
+  AlarmTurnBudgetYield,
   drainAlarmTurnJobs,
   type AlarmTurnJobControl,
 } from './alarm-turn-drain.ts';
@@ -105,6 +106,11 @@ export interface ThreadRunnerLoopDeps {
   failures: { count: number };
   /** Registers the drain's wake for admissions; returns its release. */
   onWake?: (wake: () => void) => () => void;
+  /**
+   * Registers the running job's yield for a newer Worker version (see
+   * SlackThreadRunner.supersede); returns its release.
+   */
+  onSupersede?: (supersede: () => void) => () => void;
   now?: () => number;
   heartbeatMs?: number;
   budgetMs?: number;
@@ -141,6 +147,8 @@ export async function runThreadRunnerAlarm(
     let followUpsFailed = !(await followUps(deps, now));
     // A turn could not reach the state store: the runner backs off too.
     const outage = { storeUnavailable: false };
+    // A newer Worker version is serving: this alarm returns at once.
+    const superseded = { yielded: false };
     const budgetMs = deps.budgetMs ?? ALARM_TURN_BUDGET_MS;
     let stopped = false;
     // One drain runs the jobs listed when it starts (and any admitted while
@@ -156,7 +164,7 @@ export async function runThreadRunnerAlarm(
         threadKey: () => THREAD,
         runJob: async (job, control) => {
           record.ran += 1;
-          const keepGoing = await runOne(deps, job, control, now, outage);
+          const keepGoing = await runOne(deps, job, control, now, outage, superseded);
           if (!keepGoing) stopped = true;
           return keepGoing;
         },
@@ -174,7 +182,8 @@ export async function runThreadRunnerAlarm(
         now,
         ...(deps.onWake ? { onWake: deps.onWake } : {}),
       });
-      record.yielded = drain.budgetExhausted;
+      record.yielded = drain.budgetExhausted || superseded.yielded;
+      if (superseded.yielded) record.reason = 'superseded';
       record.carried += drain.carried.length;
       for (const carried of drain.carried) {
         deps.carried.set(carried.id, carried.settled);
@@ -239,6 +248,7 @@ async function runOne(
   control: AlarmTurnJobControl,
   now: () => number,
   outage: { storeUnavailable: boolean },
+  superseded: { yielded: boolean } = { yielded: false },
 ): Promise<boolean> {
   const current = deps.jobs.get(local.id);
   if (!current || !OPEN_JOB_STATES.has(current.state)) {
@@ -261,6 +271,17 @@ async function runOne(
     return true;
   }
   deps.jobs.markRunning(local.id);
+  // A newer Worker version is serving (the state store says so after a code
+  // update): yield like the budget does. This object keeps running the old
+  // version until this alarm returns, so observing on would hold the turn
+  // for the rest of its run; the next alarm reattaches on the new version.
+  const newerVersion = new AbortController();
+  const releaseSupersede = deps.onSupersede?.(() => {
+    if (!newerVersion.signal.aborted) newerVersion.abort(new AlarmTurnBudgetYield());
+  });
+  const turnControl: AlarmTurnJobControl = deps.onSupersede
+    ? { signal: AbortSignal.any([control.signal, newerVersion.signal]), observing: control.observing }
+    : control;
   let retryAfterMs: number | undefined;
   let retry = false;
   let storeUnavailable = false;
@@ -270,13 +291,14 @@ async function runOne(
     void deps.armBackstop(now() + THREAD_RUNNER_BACKSTOP_MS).catch(() => undefined);
   }, deps.heartbeatMs ?? THREAD_RUNNER_HEARTBEAT_MS);
   try {
-    settled = await deps.execute(view.job, control, (afterMs, reason) => {
+    settled = await deps.execute(view.job, turnControl, (afterMs, reason) => {
       retry = true;
       if (reason === 'state_store_unavailable') storeUnavailable = true;
       if (afterMs !== undefined) retryAfterMs = Math.max(retryAfterMs ?? 0, afterMs);
     }, local.threadKey, start);
   } finally {
     clearInterval(heartbeat);
+    releaseSupersede?.();
     await deps.afterJob?.(view.job).catch(() => undefined);
   }
   const after = deps.jobs.get(local.id);
@@ -287,10 +309,11 @@ async function runOne(
     settleFromView(deps, local.id, row, now);
     return true;
   }
-  if (control.signal.aborted && !retry) {
-    // The alarm budget ended observation on purpose; the next alarm, a
-    // second from now, reattaches.
+  if (turnControl.signal.aborted && !retry) {
+    // The alarm budget (or a newer version) ended observation on purpose;
+    // the next alarm, a second from now, reattaches.
     deps.jobs.settle(local.id, 'yielded', now(), now() + ALARM_YIELD_REARM_MS);
+    if (newerVersion.signal.aborted) superseded.yielded = true;
     return false;
   }
   if (settled) {

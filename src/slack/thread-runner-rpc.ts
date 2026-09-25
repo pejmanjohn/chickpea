@@ -117,6 +117,12 @@ export interface SlackThreadRunnerRpc {
   presentationTransition(
     input: SlackPresentationTransitionInput,
   ): Promise<StateRpcResult<SlackPresentationTransitionResult>>;
+  /**
+   * `versionId` is serving. A runner on another version yields the turns it
+   * is observing, so its next alarm reattaches them on the serving version;
+   * `superseded` counts them. A runner on that version does nothing.
+   */
+  supersede(versionId: string): Promise<{ superseded: number }>;
 }
 
 interface ThreadRunnerNamespace {

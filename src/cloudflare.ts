@@ -711,6 +711,11 @@ const RELAY_RETRY_BACKOFF_MS = 2_000;
 // the whole burst behind it.
 const RELAY_BATCH_WINDOW_MS = 250;
 
+// Runner threads told at most per version change, and how long one runner
+// may take to answer (see TagStateStore.supersedeRunners).
+const RUNNER_SUPERSEDE_MAX_THREADS = 64;
+const RUNNER_SUPERSEDE_TIMEOUT_MS = 3_000;
+
 // Pages of MAX_TURN_DRAIN_BATCH threads one alarm hands to thread runners.
 // Each hand-off is one short admission RPC; the rest waits for the next alarm.
 const RUNNER_DISPATCH_MAX_PAGES = 16;
@@ -769,10 +774,96 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
   private dispatchWake: (() => void) | undefined;
   /** Slack turns admitted in this isolate (events, deliveries, OAuth resumes). */
   private admissionsSeen = 0;
+  /**
+   * This instance, as the owner of the gateway inbox leases it takes. Exactly
+   * one instance runs at a time, so a lease under any other owner belongs to
+   * a drainer that no longer exists (see GatewayInboxOwnership).
+   */
+  private readonly instanceId = crypto.randomUUID();
+  /** This instance installed the schema: it is the first on this Worker version. */
+  private versionChanged = false;
+  /**
+   * Runner threads with pending turns when this instance started on a new
+   * Worker version; the next alarm tells them (see supersedeRunners).
+   */
+  private runnersToSupersede: string[] | undefined;
 
   constructor(ctx: DurableObjectState, env: unknown) {
     super(ctx, env);
     this.stores = this.tryInit();
+    // Work the previous instance was running stopped with it (a code update,
+    // a reset). Arm the alarm now rather than wait for a wake armed earlier.
+    void ctx.blockConcurrencyWhile(() => this.resumeAfterRestart());
+  }
+
+  /**
+   * On a fresh instance: arm the alarm now when an alarm turn's dispatch was
+   * in flight, a gateway delivery is leased by the previous instance, or (on
+   * a new Worker version) a thread runner may still run the previous version.
+   * Never throws: blockConcurrencyWhile resets the object on a rejection.
+   */
+  private async resumeAfterRestart(): Promise<void> {
+    const stores = this.stores;
+    if (!stores) return;
+    try {
+      const runners = this.versionChanged
+        ? stores.turnJobs.listRunnerThreadKeys(slackAgentThreadKey, RUNNER_SUPERSEDE_MAX_THREADS)
+        : [];
+      const alarmTurn = stores.turnJobs.hasInterruptedAlarmDispatch();
+      const inbox = stores.gatewayInbox.hasOrphanedLease();
+      if (runners.length === 0 && !alarmTurn && !inbox) return;
+      if (runners.length > 0) this.runnersToSupersede = runners;
+      await this.armAlarmNoLaterThan(Date.now());
+      console.info({
+        component: 'runtime',
+        event: 'state_store_resume',
+        versionChanged: this.versionChanged,
+        runnerThreads: runners.length,
+        alarmTurn,
+        inbox,
+      });
+    } catch {
+      console.warn('[chickpea] TagStateStore could not arm its resume alarm');
+    }
+  }
+
+  /**
+   * A thread runner keeps executing on the previous Worker version until its
+   * running alarm returns (the platform replaces an object only between
+   * invocations), and its turn's observation can last minutes. Tell each
+   * runner with a pending turn that this version is serving: a runner still
+   * on an older version yields its observation, so its next alarm, a second
+   * later, reattaches on this version. Best effort and bounded; a runner on
+   * this version ignores it.
+   */
+  private async supersedeRunners(threadKeys: readonly string[]): Promise<void> {
+    const versionId = cloudflareWorkerVersionId(this.env);
+    if (versionId === undefined) return;
+    let superseded = 0;
+    await Promise.all(threadKeys.map(async (threadKey) => {
+      let timer: number | undefined;
+      try {
+        const runner = threadRunnerStub(this.env as PlatformEnv, threadKey);
+        if (!runner) return;
+        const result = await Promise.race([
+          runner.supersede(versionId),
+          new Promise<undefined>((resolve) => {
+            timer = setTimeout(resolve, RUNNER_SUPERSEDE_TIMEOUT_MS) as unknown as number;
+          }),
+        ]);
+        if (result && result.superseded > 0) superseded += 1;
+      } catch {
+        // An older runner without this method, or one being replaced.
+      } finally {
+        if (timer !== undefined) clearTimeout(timer);
+      }
+    }));
+    console.info({
+      component: 'runtime',
+      event: 'runner_supersede',
+      runners: threadKeys.length,
+      superseded,
+    });
   }
 
   /** Execute one requester-bound management tool inside the state owner. The
@@ -899,6 +990,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
         return built;
       });
       if (marker) {
+        this.versionChanged = true;
         console.info('[chickpea] TagStateStore schema installed', JSON.stringify({ fingerprint }));
       }
       this.initError = undefined;
@@ -921,7 +1013,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       slack: new SlackStateLogic(db),
       settings: new SettingsStoreLogic(db),
       turnJobs: new TurnJobStoreLogic(db),
-      gatewayInbox: new GatewayInboxStoreLogic(db),
+      gatewayInbox: new GatewayInboxStoreLogic(db, Date.now, {}, { leaseOwner: this.instanceId }),
       presentations: new SlackRunPresentationStoreLogic(db),
       memory: new MemoryStoreLogic(db),
       routines: new RoutineStoreLogic(db),
@@ -1892,12 +1984,18 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
    */
   async alarm(): Promise<void> {
     const metrics = startRelayAlarmMetrics();
+    // Told beside the drain, so the first alarm on a new version never waits
+    // for a runner's answer before admitting.
+    const runners = this.runnersToSupersede;
+    this.runnersToSupersede = undefined;
+    const superseding = runners ? this.supersedeRunners(runners) : undefined;
     try {
       await this.drainRelayAlarm(metrics);
     } catch (error) {
       metrics.outcome = 'threw';
       throw error;
     } finally {
+      await superseding;
       emitRelayAlarm(metrics);
     }
   }

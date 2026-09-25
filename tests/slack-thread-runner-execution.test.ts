@@ -1239,3 +1239,67 @@ test('a joined alarm never starts a second loop budget after a yield in the same
     }
   }
 });
+
+test('a runner still on the previous version yields its observed turn when the new version says so', async () => {
+  // Amber run 6: after a code update the old version's runner alarm kept
+  // observing its turn for the rest of the run (138 s and 146 s), and the new
+  // version's alarm, armed by the heartbeat, waited behind it: the turn came
+  // back 1 m 46 s / 1 m 49 s after the upload. Here the observation would
+  // last the whole budget (a minute) without the state store's word.
+  const db = openStateDb(':memory:');
+  try {
+    const rows = fakeRows(['long']);
+    let holding = true;
+    const h = runnerHarness(db, rows, { hold: (id) => id === 'long' && holding });
+    h.deps.budgetMs = 60_000;
+    h.deps.hardCapMs = 120_000;
+    const supersedes = new Set<() => void>();
+    h.deps.onSupersede = (yieldTurn) => {
+      supersedes.add(yieldTurn);
+      return () => { supersedes.delete(yieldTurn); };
+    };
+    h.jobs.admit({ id: 'long', threadKey: 'thread', payload: {} }, 1);
+    const started = performance.now();
+    const alarm = runThreadRunnerAlarm(h.deps);
+    while (!h.events.includes('dispatch:long')) await new Promise((resolve) => setTimeout(resolve, 1));
+    assert.equal(supersedes.size, 1, 'the running turn registers its yield');
+    const toldAt = performance.now();
+    for (const yieldTurn of supersedes) yieldTurn();
+    const first = await alarm;
+    const returnedAfterMs = performance.now() - toldAt;
+    assert.ok(returnedAfterMs < 1_000, `the old alarm returns at once (${Math.round(returnedAfterMs)} ms)`);
+    assert.ok(performance.now() - started < 5_000);
+    assert.deepEqual(h.events, ['dispatch:long', 'yield:long']);
+    assert.equal(first.record.yielded, true);
+    assert.equal(first.record.reason, 'superseded');
+    assert.equal(h.jobs.get('long')!.state, 'yielded');
+    assert.equal(rows.rows.get('long')!.attempts, 0, 'a yield for a new version is never an attempt');
+    assert.equal(supersedes.size, 0, 'the yield is released with its job');
+    const ahead = first.nextAlarmAt! - h.deps.now!();
+    assert.ok(ahead > 0 && ahead <= 1_000, `the successor alarm is a second out (${ahead} ms)`);
+    // The next alarm (on the new version) reattaches: one dispatch, one final.
+    holding = false;
+    h.advance(1_000);
+    await runThreadRunnerAlarm(h.deps);
+    assert.deepEqual(h.events.slice(2), ['reattach:long', 'delivered:long']);
+    assert.equal(rows.rows.get('long')!.status, 'done');
+  } finally { db.close(); }
+});
+
+test('a supersede with no turn observing changes nothing', async () => {
+  const db = openStateDb(':memory:');
+  try {
+    const rows = fakeRows(['quick']);
+    const h = runnerHarness(db, rows);
+    const supersedes = new Set<() => void>();
+    h.deps.onSupersede = (yieldTurn) => {
+      supersedes.add(yieldTurn);
+      return () => { supersedes.delete(yieldTurn); };
+    };
+    h.jobs.admit({ id: 'quick', threadKey: 'thread', payload: {} }, 1);
+    const result = await runThreadRunnerAlarm(h.deps);
+    assert.deepEqual(h.events, ['dispatch:quick', 'delivered:quick']);
+    assert.notEqual(result.record.reason, 'superseded');
+    assert.equal(supersedes.size, 0);
+  } finally { db.close(); }
+});
