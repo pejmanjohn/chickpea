@@ -11,7 +11,6 @@ import {
   reclaimEnvironment,
   reconcileEnvironment,
   releaseEnvironment,
-  setEnvironmentOwnership,
   withEnvironmentInstallationClaim,
 } from './lib/environment-registry.mjs';
 import { EnvironmentWaitError, waitForEnvironmentClaim } from './lib/environment-wait.mjs';
@@ -24,12 +23,8 @@ import {
   writeCapabilityMatrix,
 } from './lib/environment-capabilities.mjs';
 import {
-  EnvironmentPreflightError,
   reconcileEnvironmentDeployment,
   adoptEnvironmentFromFile,
-  exportEnvironmentRegistration,
-  initEnvironmentRegistryFromFile,
-  restoreEnvironmentOwnershipFromFile,
   withEnvironmentReleaseFence,
 } from './lib/environment-preflight.mjs';
 
@@ -87,34 +82,6 @@ export async function runEnvironmentCli(argv, io = {}) {
         throw new EnvironmentRegistryError('INVALID_ARGUMENT');
       }
       result = await adoptEnvironmentFromFile(parsed.flags.registration, options);
-    } else if (parsed.command === 'init') {
-      if (parsed.target || !parsed.flags.registration
-        || Object.keys(parsed.flags).some((flag) => !['root', 'registration'].includes(flag))) {
-        throw new EnvironmentRegistryError('INVALID_ARGUMENT');
-      }
-      result = initEnvironmentRegistryFromFile(parsed.flags.registration, options);
-    } else if (parsed.command === 'export-registration') {
-      requireTarget(parsed.target);
-      if (!parsed.flags.output
-        || Object.keys(parsed.flags).some((flag) => !['root', 'output', 'own'].includes(flag))) {
-        throw new EnvironmentRegistryError('INVALID_ARGUMENT');
-      }
-      result = exportEnvironmentRegistration(parsed.target, {
-        ...options,
-        output: parsed.flags.output,
-        ...(parsed.flags.own ? { own: parsed.flags.own.split(',') } : {}),
-      });
-    } else if (parsed.command === 'ownership') {
-      requireTarget(parsed.target);
-      const set = parsed.flags.set;
-      if (!['local', 'remote'].includes(set)
-        || Object.keys(parsed.flags).some((flag) => !['root', 'set', 'registration'].includes(flag))
-        || (set === 'local') !== Boolean(parsed.flags.registration)) {
-        throw new EnvironmentRegistryError('INVALID_ARGUMENT');
-      }
-      result = set === 'remote'
-        ? setEnvironmentOwnership(parsed.target, { ownership: 'remote' }, options)
-        : restoreEnvironmentOwnershipFromFile(parsed.target, parsed.flags.registration, options);
     } else if (parsed.command === 'migrate-provider-auth') {
       if (parsed.target || !parsed.flags.bindings
         || Object.keys(parsed.flags).some((flag) => !['root', 'bindings'].includes(flag))) {
@@ -228,18 +195,18 @@ export async function runEnvironmentCli(argv, io = {}) {
     stdout(`${JSON.stringify(result, null, 2)}\n`);
     return result?.kind === 'timeout' ? 3 : 0;
   } catch (error) {
-    const coded = error instanceof EnvironmentRegistryError || error instanceof EnvironmentWaitError
-      || error instanceof InstallationNodeError || error instanceof EnvironmentPreflightError;
-    const code = coded ? error.code : 'ENVIRONMENT_COMMAND_FAILED';
+    const code = error instanceof EnvironmentRegistryError || error instanceof EnvironmentWaitError || error instanceof InstallationNodeError
+      ? error.code
+      : 'ENVIRONMENT_COMMAND_FAILED';
     // A non-registry failure used to surface as a bare code, which hid the
     // actual cause (a missing host variable, an unreachable Worker, a parse
     // error). Name it, bounded and without any token-shaped content.
-    const message = coded
+    const message = error instanceof EnvironmentRegistryError || error instanceof EnvironmentWaitError || error instanceof InstallationNodeError
       ? undefined
       : redactCommandFailure(error instanceof Error ? error.message : String(error));
     const body = {
       error: code,
-      ...(coded && !(error instanceof InstallationNodeError) && error.details
+      ...((error instanceof EnvironmentRegistryError || error instanceof EnvironmentWaitError) && error.details
         ? { details: error.details }
         : {}),
       ...(message ? { message } : {}),
@@ -284,9 +251,6 @@ function parseArgs(argv) {
       '--observation': 'observation',
       '--bindings': 'bindings',
       '--registration': 'registration',
-      '--output': 'output',
-      '--own': 'own',
-      '--set': 'set',
       '--installation': 'installation',
       '--runtime-env': 'runtimeEnv',
       '--profile': 'profile',
@@ -309,11 +273,7 @@ function parseArgs(argv) {
     throw new EnvironmentRegistryError('INVALID_ARGUMENT');
   }
   if ((flags.json || flags.write) && positional[0] !== 'capabilities') throw new EnvironmentRegistryError('INVALID_ARGUMENT');
-  if (flags.registration && !['register', 'init', 'ownership'].includes(positional[0])) {
-    throw new EnvironmentRegistryError('INVALID_ARGUMENT');
-  }
-  if ((flags.output || flags.own) && positional[0] !== 'export-registration') throw new EnvironmentRegistryError('INVALID_ARGUMENT');
-  if (flags.set && positional[0] !== 'ownership') throw new EnvironmentRegistryError('INVALID_ARGUMENT');
+  if (flags.registration && positional[0] !== 'register') throw new EnvironmentRegistryError('INVALID_ARGUMENT');
   if (flags.installation && !['install-reserve', 'install-restore'].includes(positional[0])) throw new EnvironmentRegistryError('INVALID_ARGUMENT');
   if (positional[0] !== 'wait-claim'
     && (flags.timeoutMs !== undefined || flags.pollMs !== undefined)) {
