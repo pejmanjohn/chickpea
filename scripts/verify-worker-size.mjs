@@ -1,12 +1,16 @@
 #!/usr/bin/env node
 /**
- * Fail the Cloudflare build when the compressed Worker outgrows its budget.
+ * Fail the Cloudflare build when the Worker upload outgrows its budget.
  *
- * Cloudflare enforces the limit on the gzip size of every uploaded module
- * (JavaScript chunks and wasm) — Static Assets are not counted. Workers Free
- * allows 3 MiB. The budget below keeps headroom so an ordinary feature does
- * not silently push a fresh install onto Workers Paid; raise it only with a
- * matching README change.
+ * Cloudflare enforces the limit on the uncompressed ("Total Upload") size of
+ * every uploaded module (JavaScript chunks and wasm) — Static Assets are not
+ * counted. The platform-wide limit is 64 MiB across all plans (raised from
+ * the older 3 MiB Free / 10 MiB Paid gzip limits; see the Cloudflare
+ * changelog, 2026-09-04). The budget below keeps deliberate headroom so an
+ * ordinary feature does not silently push a build toward the platform
+ * ceiling; raise it only with a matching README change. Gzip size is still
+ * printed for information, since it is a useful proxy for download/parse
+ * cost, but it is no longer what Cloudflare gates on.
  */
 import { gzipSync } from 'node:zlib';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
@@ -16,8 +20,9 @@ import { fileURLToPath } from 'node:url';
 import { builtWorkerConfigPath } from './lib/built-worker-config.mjs';
 
 const KIB = 1024;
-export const WORKERS_FREE_LIMIT_BYTES = 3 * KIB * KIB;
-export const WORKER_SIZE_BUDGET_BYTES = 2_800 * KIB;
+const MIB = 1024 * KIB;
+export const WORKER_UPLOAD_LIMIT_BYTES = 64 * MIB;
+export const WORKER_SIZE_BUDGET_BYTES = 32 * MIB;
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export function measureWorkerModules(directory = path.dirname(builtWorkerConfigPath(projectRoot))) {
@@ -57,13 +62,13 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     process.exit(2);
   }
   console.log(`Worker upload: ${modules.length} modules, ${kib(raw)} raw, ${kib(gzip)} gzip`);
-  console.log(`Budget ${kib(WORKER_SIZE_BUDGET_BYTES)} (Workers Free limit ${kib(WORKERS_FREE_LIMIT_BYTES)})`);
+  console.log(`Budget ${kib(WORKER_SIZE_BUDGET_BYTES)} (Cloudflare upload limit ${kib(WORKER_UPLOAD_LIMIT_BYTES)})`);
   for (const module of modules.slice(0, 8)) {
     console.log(`  ${kib(module.gzip).padStart(9)}  ${module.path}`);
   }
-  if (gzip > WORKER_SIZE_BUDGET_BYTES) {
+  if (raw > WORKER_SIZE_BUDGET_BYTES) {
     console.error(
-      `Compressed Worker is ${kib(gzip - WORKER_SIZE_BUDGET_BYTES)} over budget. ` +
+      `Worker upload is ${kib(raw - WORKER_SIZE_BUDGET_BYTES)} over budget. ` +
       'Move browser code to Static Assets, drop the dependency, or raise the budget deliberately.',
     );
     process.exit(1);

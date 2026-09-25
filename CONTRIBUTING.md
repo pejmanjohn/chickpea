@@ -172,9 +172,9 @@ The Admin application's browser code lives in `assets/admin-ui/admin.js` and
 `assets/admin-ui/admin.css`, served the same way. `src/admin/page.ts` renders
 only the shell and a JSON config island the script reads at start-up. Static
 Assets do not count toward the Worker size limit, so browser code must never
-move back into a server template. `npm run build` fails when the compressed
-Worker exceeds the budget in `scripts/verify-worker-size.mjs`; the Workers Free
-plan caps a Worker at 3 MiB compressed.
+move back into a server template. `npm run build` fails when the uncompressed
+Worker upload exceeds the budget in `scripts/verify-worker-size.mjs`; Cloudflare's
+platform-wide limit is 64 MiB uncompressed across all plans.
 
 Contributions are provided under the repository's [Apache-2.0 license](LICENSE).
 Be respectful in issues and reviews; criticize the work, not the person.
