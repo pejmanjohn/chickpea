@@ -2,9 +2,8 @@ import type { RepositoryGrant } from '../config/types.ts';
 import { validEnabledRepositoryGrants } from './egress-handler.ts';
 
 /**
- * The environment a sandbox-reading tool addresses: the virtual sandbox, or a
- * coding workspace container. New plans always give the Agent `bash`;
- * `cloudflare` remains for plans admitted with an attached container.
+ * The environment a sandbox-reading tool addresses: the Agent's virtual
+ * sandbox, or a coding workspace container.
  */
 export type SandboxSelection = 'bash' | 'cloudflare';
 

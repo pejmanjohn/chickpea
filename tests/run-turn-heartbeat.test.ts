@@ -27,16 +27,15 @@ import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import {
   compileRuntimePlanV2,
   deriveRuntimePlanInstanceId,
+  parseRuntimePlanV2,
   type RuntimePlanV2,
 } from '../src/agents/runtime-plan.ts';
+import { attachedContainerPlan } from './helpers/attached-container-plan.ts';
 import { SqliteWorkStore } from '../src/work/store.ts';
 import { SlackTransportError } from '../src/slack/transport/types.ts';
 import { StateStoreDisconnectedError } from '../src/config/cf-state-proxies.ts';
 import { prepareSlackShadowAdmission } from '../src/slack/work-admission.ts';
-import {
-  AGENT_FAILURE_TEXT,
-  SANDBOX_UNAVAILABLE_FALLBACK_NOTICE,
-} from '../src/slack/web-client-presenter.ts';
+import { AGENT_FAILURE_TEXT } from '../src/slack/web-client-presenter.ts';
 import { SLACK_SELF_MENTION_PLACEHOLDER } from '../src/slack/web-client-context.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
 import { SlackRunPresentationStoreLogic } from '../src/slack/run-presentations.ts';
@@ -161,7 +160,7 @@ test('runTurn carries hydrated same-root references and thread images into agent
       },
     } as unknown as WebClient;
     const runtimePlan = compileRuntimePlanV2({ turn, assignment: bound,
-      instructions: agent.instructions, memoryEpoch: 1, sandboxMode: 'bash',
+      instructions: agent.instructions, memoryEpoch: 1,
       imageCapability: { role: 'image', filled: true, acceptsImageInput: true } });
     let dispatched: readonly { fileId: string; conversationKey: string }[] | undefined;
     let admittedListIds: readonly string[] | undefined;
@@ -211,7 +210,7 @@ test('runTurn withholds the thread images when the frozen plan has no image capa
     // No image role resolved, so the tool never mounts and the attribute the
     // previous release's strict envelope parser rejects is never written.
     const runtimePlan = compileRuntimePlanV2({ turn, assignment: bound,
-      instructions: agent.instructions, memoryEpoch: 1, sandboxMode: 'bash',
+      instructions: agent.instructions, memoryEpoch: 1,
       imageCapability: { role: 'image', filled: false, acceptsImageInput: false } });
     let dispatched: readonly { fileId: string }[] | undefined = [];
     await runTurn(turn, bound, undefined, {
@@ -257,7 +256,7 @@ test('runTurn dispatches thread images to a plan that can send files to a writab
     // No image model, but attach_file_to_connection takes a conversation
     // image by its img:N handle, so the plan still needs the inventory.
     const compiled = compileRuntimePlanV2({ turn, assignment: bound,
-      instructions: agent.instructions, memoryEpoch: 1, sandboxMode: 'bash',
+      instructions: agent.instructions, memoryEpoch: 1,
       imageCapability: { role: 'image', filled: false, acceptsImageInput: false } });
     const runtimePlan = {
       ...compiled,
@@ -376,7 +375,7 @@ test('runTurn retains the admitted latest correction across runtime rollover bey
     const prompts: string[] = [];
     for (const epoch of [1, 2]) {
       const runtimePlan = compileRuntimePlanV2({ turn, assignment: bound,
-        instructions: agent.instructions, memoryEpoch: epoch, sandboxMode: 'bash' });
+        instructions: agent.instructions, memoryEpoch: epoch });
       await runTurn({ ...turn, eventId: `${turn.eventId}_${epoch}` }, bound, undefined, {
         client, usageRecordingEnabled: false,
         runtimePlanDecision: { runtimePlan, instanceId: deriveRuntimePlanInstanceId(runtimePlan) },
@@ -2473,7 +2472,6 @@ test('runTurn freezes eligibility before exposing the receipt-scoped relay facto
     assignment,
     instructions: assignment.agent.instructions,
     memoryEpoch: 1,
-    sandboxMode: 'bash',
   });
   const captured: unknown[] = [];
   const admitted = await work.admitShadowRun(prepareSlackShadowAdmission({
@@ -2570,98 +2568,115 @@ test('runTurn freezes eligibility before exposing the receipt-scoped relay facto
   }
 });
 
-test('a frozen Cloudflare plan narrows unsettled dispatches when its live binding disappeared', async () => {
+test('a turn admitted by v0.1.26 with an attached container runs on the workspace tools or fails cleanly', async () => {
+  // Skip-upgrade: v0.1.26 froze this plan (and possibly its dispatch) with an
+  // attached container; the install updated straight past the release that
+  // still ran one.
   const repositoryAssignment: ResolvedAssignment = {
     ...assignment,
     agent: {
       ...assignment.agent,
       repositories: [{
-        id: 'repo-runtime-fallback',
-        installationId: 42,
-        accountLogin: 'Acme',
-        fullName: 'Acme/RuntimeFallback',
-        enabled: true,
+        id: 'repo-legacy', installationId: 42, accountLogin: 'Acme', fullName: 'Acme/Legacy', enabled: true,
       }],
     },
   };
   const turn: NormalizedSlackTurn = {
-    ...workTurn('Ev_SANDBOX_BINDING_REMOVED'),
+    ...workTurn('Ev_LEGACY_ATTACHED'),
     interactionIntent: { disposition: 'reply', reason: 'substantive_request' },
   };
-  const runtimePlan = compileRuntimePlanV2({
+  const admitted = attachedContainerPlan(compileRuntimePlanV2({
     turn,
     assignment: repositoryAssignment,
     instructions: repositoryAssignment.agent.instructions,
     memoryEpoch: 1,
-    sandboxMode: 'cloudflare',
-  });
+  }));
+  assert.equal(admitted.sandbox.mode, 'cloudflare');
+  // What the TurnJob store hands the relay after the update.
+  const runtimePlan = parseRuntimePlanV2(structuredClone(admitted));
+  const instanceId = deriveRuntimePlanInstanceId(admitted);
   const finalPayloads: unknown[] = [];
   const client = {
     assistant: { threads: { setStatus: async () => ({ ok: true }) } },
     conversations: { history: async () => ({ ok: true, messages: [] }) },
     chat: {
-      startStream: async (input: unknown) => {
-        finalPayloads.push(input);
-        return { ok: true, ts: 'final-ts' };
-      },
-      stopStream: async (input: unknown) => {
-        finalPayloads.push(input);
-        return { ok: true };
-      },
+      startStream: async (input: unknown) => { finalPayloads.push(input); return { ok: true, ts: 'final-ts' }; },
+      appendStream: async (input: unknown) => { finalPayloads.push(input); return { ok: true }; },
+      stopStream: async (input: unknown) => { finalPayloads.push(input); return { ok: true }; },
       postMessage: async (input: unknown) => {
         finalPayloads.push(input);
         return { ok: true, channel: assignment.channelId, ts: 'final-ts' };
       },
     },
   } as unknown as WebClient;
+  const dispatchEnvelope: FlueDispatchEnvelopeV1 = {
+    schemaVersion: 1,
+    agentName: 'chickpea-slack-v2',
+    instanceId,
+    uid: null,
+    message: { kind: 'user', body: 'durable legacy message' },
+    initialData: admitted,
+    idempotencyKey: 'legacy-attached',
+  };
+  const dispatchReceipt: FlueDispatchReceiptV1 = {
+    submissionId: 'submission_legacy_attached',
+    acceptedAt: '2026-08-08T18:00:00.000Z',
+    uid: 'uid_legacy_attached',
+  };
+  const state = (overrides: Partial<SlackFlueDispatchState>): SlackFlueDispatchState => ({
+    prepare: async () => { throw new Error('focused agent override owns dispatch'); },
+    recordReceipt: async (receipt) => receipt,
+    recordSettlement: async (settlement) => settlement,
+    reconcileExistingInstance: async () => { throw new Error('not used'); },
+    markRecoveryRequired: async () => {},
+    ...overrides,
+  });
+
+  // Admitted, dispatched, or already running: the Agent reads the plan as the
+  // virtual sandbox with the coding-workspace tools, on the same instance.
   for (const checkpoint of ['unstarted', 'envelope', 'receipt'] as const) {
-      const dispatchEnvelope: FlueDispatchEnvelopeV1 = {
-        schemaVersion: 1,
-        agentName: 'chickpea-slack-v2',
-        instanceId: deriveRuntimePlanInstanceId(runtimePlan),
-        uid: null,
-        message: { kind: 'user', body: `durable ${checkpoint} message` },
-        initialData: runtimePlan,
-        idempotencyKey: `sandbox-binding-removed:${checkpoint}`,
-      };
-      const dispatchReceipt: FlueDispatchReceiptV1 = {
-        submissionId: `submission_sandbox_binding_removed_${checkpoint}`,
-        acceptedAt: '2026-08-08T18:00:00.000Z',
-        uid: `uid_sandbox_binding_removed_${checkpoint}`,
-      };
-      const flueDispatch: SlackFlueDispatchState = {
+    let prompted = false;
+    await runTurn({ ...turn, eventId: `${turn.eventId}_${checkpoint}` }, repositoryAssignment, undefined, {
+      client,
+      runtimePlanDecision: { runtimePlan, instanceId },
+      flueDispatch: state({
         ...(checkpoint === 'unstarted' ? {} : { dispatchEnvelope }),
         ...(checkpoint === 'receipt' ? { dispatchReceipt } : {}),
-        prepare: async () => { throw new Error('focused agent override owns dispatch'); },
-        recordReceipt: async (receipt) => receipt,
-        recordSettlement: async (settlement) => settlement,
-        reconcileExistingInstance: async () => { throw new Error('not used'); },
-        markRecoveryRequired: async () => {},
-      };
-      await runTurn({ ...turn, eventId: `${turn.eventId}_${checkpoint}` }, repositoryAssignment, undefined, {
-        client,
-        runtimePlanDecision: {
-          runtimePlan,
-          instanceId: deriveRuntimePlanInstanceId(runtimePlan),
-        },
-        flueDispatch,
-        usageRecordingEnabled: false,
-        async agentPrompt(input): Promise<AgentDispatchResult> {
-          assert.equal(input.useCloudflareSandbox, false, checkpoint);
-          assert.equal(input.state.dispatchEnvelope, checkpoint === 'unstarted' ? undefined : dispatchEnvelope);
-          assert.equal(input.state.dispatchReceipt, checkpoint === 'receipt' ? dispatchReceipt : undefined);
-          return {
-            text: 'Normal response without repository access.',
-            requestedModel: repositoryAssignment.model ?? null,
-            returnedModel: null,
-            reportedUsage: null,
-            usageCompleteness: 'not_reported',
-          };
-        },
-      });
+      }),
+      usageRecordingEnabled: false,
+      async agentPrompt(input): Promise<AgentDispatchResult> {
+        prompted = true;
+        assert.deepEqual(input.runtimePlan?.sandbox, { mode: 'bash' }, checkpoint);
+        assert.deepEqual(input.runtimePlan?.codingWorkspace, { available: true }, checkpoint);
+        assert.equal(input.runtimePlan?.harnessRevision, admitted.harnessRevision, checkpoint);
+        return {
+          text: `Legacy turn answered (${checkpoint}).`,
+          requestedModel: repositoryAssignment.model ?? null,
+          returnedModel: null,
+          reportedUsage: null,
+          usageCompleteness: 'not_reported',
+        };
+      },
+    });
+    assert.ok(prompted, checkpoint);
+    assert.match(JSON.stringify(finalPayloads), new RegExp(`Legacy turn answered \\(${checkpoint}\\)`));
   }
-  assert.match(JSON.stringify(finalPayloads), new RegExp(SANDBOX_UNAVAILABLE_FALLBACK_NOTICE));
-  assert.doesNotMatch(JSON.stringify(finalPayloads), /control-plane|binding|credential|token/i);
+  assert.doesNotMatch(JSON.stringify(finalPayloads), /Coding Sandbox was unavailable/);
+
+  // A turn the attached container settled as a sandbox failure before the
+  // update replays as the ordinary Agent failure, never a wedged thread.
+  finalPayloads.length = 0;
+  await runTurn({ ...turn, eventId: `${turn.eventId}_settled` }, repositoryAssignment, undefined, {
+    client,
+    runtimePlanDecision: { runtimePlan, instanceId },
+    flueDispatch: state({
+      dispatchEnvelope,
+      dispatchReceipt,
+      flueSettlement: { outcome: 'failed', settledAt: 1, failureKind: 'sandbox' },
+    }),
+    usageRecordingEnabled: false,
+  }).catch(() => undefined);
+  assert.ok(JSON.stringify(finalPayloads).includes(JSON.stringify(AGENT_FAILURE_TEXT).slice(1, -1)));
 });
 
 test('runTurn fails a lease-rejected turn closed instead of returning silently', async () => {
@@ -2889,10 +2904,9 @@ test(`a successful own-turn memory write ${verb} ${scenario.name}`, async () => 
 
 for (const scenario of ['yield', 'store-outage', 'interruption'] as const) {
   const keeps = scenario !== 'interruption';
-  test(`${scenario === 'yield' ? 'a yield keeps' : scenario === 'store-outage' ? 'a runner store outage keeps' : 'an interruption releases'} the work acknowledgment and workspace turn`, async () => {
+  test(`${scenario === 'yield' ? 'a yield keeps' : scenario === 'store-outage' ? 'a runner store outage keeps' : 'an interruption releases'} the work acknowledgment`, async () => {
     let reactionAdds = 0;
     let reactionRemoves = 0;
-    const sandboxTurnsEnded: boolean[] = [];
     const client = {
       assistant: { threads: { setStatus: async () => ({ ok: true }) } },
       reactions: {
@@ -2912,7 +2926,6 @@ for (const scenario of ['yield', 'store-outage', 'interruption'] as const) {
       () => runTurn(workTurn(`Ev_WORK_${scenario.toUpperCase()}`), assignment, undefined, {
         client,
         usageRecordingEnabled: false,
-        endSandboxTurn: async (_env, _key, used) => { sandboxTurnsEnded.push(used); },
         async agentPrompt(): Promise<AgentDispatchResult> {
           throw scenario === 'yield'
             ? new AgentObservationYield()
@@ -2925,13 +2938,11 @@ for (const scenario of ['yield', 'store-outage', 'interruption'] as const) {
     );
     assert.equal(reactionAdds, 1);
     if (keeps) {
-      // The coding worker is still running: it keeps its GitHub egress and
-      // the person keeps seeing that the work is underway.
+      // The coding worker is still running: the person keeps seeing that the
+      // work is underway.
       assert.equal(reactionRemoves, 0);
-      assert.deepEqual(sandboxTurnsEnded, []);
     } else {
       assert.equal(reactionRemoves, 1);
-      assert.deepEqual(sandboxTurnsEnded, [false]);
     }
   });
 }

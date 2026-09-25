@@ -9,7 +9,6 @@ import {
   compileWebsiteLogins,
   deriveRuntimePlanInstanceId,
   parseRuntimePlanV2,
-  runtimePlanHasCodingWorkspace,
   runtimePlanConversationKey,
   runtimePlanSandboxConversationKey,
 } from '../src/agents/runtime-plan.ts';
@@ -17,6 +16,8 @@ import { genericSemanticDescriptor } from '../src/activity/semantic.ts';
 import type { CustomAgentConfig, ResolvedAssignment } from '../src/config/types.ts';
 import type { EffectiveConnectionAccount } from '../src/connections/types.ts';
 import { sandboxThreadKey } from '../src/sandbox/thread-key.ts';
+import { attachedContainerPlan } from './helpers/attached-container-plan.ts';
+import legacyFixture from './fixtures/runtime-plan/v0.1.26-attached-container.json' with { type: 'json' };
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import { revisionedAlias } from '../src/model-catalog/provider-alias.ts';
 import { runtimeRepositoryMatches } from '../src/agents/slack-thread.ts';
@@ -162,16 +163,21 @@ function assignment(overrides: Partial<ResolvedAssignment> = {}): ResolvedAssign
   };
 }
 
-function compile(overrides: Partial<Parameters<typeof compileRuntimePlanV2>[0]> = {}) {
-  return compileRuntimePlanV2({
+function compileInput(
+  overrides: Partial<Parameters<typeof compileRuntimePlanV2>[0]> = {},
+): Parameters<typeof compileRuntimePlanV2>[0] {
+  return {
     turn: turn(),
     assignment: assignment(),
     instructions: 'Complete instructions. A legitimate value is sk-live-looking-but-not-secret.',
     memoryEpoch: 3,
-    sandboxMode: 'cloudflare',
     effectiveConnections: structuredClone(EFFECTIVE_CONNECTIONS),
     ...overrides,
-  });
+  };
+}
+
+function compile(overrides: Partial<Parameters<typeof compileRuntimePlanV2>[0]> = {}) {
+  return compileRuntimePlanV2(compileInput(overrides));
 }
 
 test('runtime plans freeze approved MCP effects and keep legacy declarations readable', () => {
@@ -338,7 +344,7 @@ test('a complete first-turn plan contains policy descriptors but no auth materia
   }]);
   assert.equal(Object.hasOwn(plan, 'managedConnections'), false);
   assert.deepEqual(plan.repositories, [{ id: 'repo_acme', fullName: 'acme/product' }]);
-  assert.equal(plan.sandbox.mode, 'cloudflare');
+  assert.equal(plan.sandbox.mode, 'bash');
   assert.deepEqual(plan.artifactDestination, {
     kind: 'slack_conversation',
     channelId: 'C_RUNTIME',
@@ -590,7 +596,6 @@ test('equivalent key and set ordering produces one revision and instance id', ()
   reorderedAgent.mcpServers[0]!.allowedTools = ['search'];
   reorderedAgent.apiConnections[0]!.allowedHosts = ['api.example.com'];
   const reorderedInput = {
-    sandboxMode: 'cloudflare' as const,
     memoryEpoch: 3,
     instructions: first.instructions,
     assignment: assignment({ agent: reorderedAgent }),
@@ -617,7 +622,7 @@ test('harness policy and frozen credential epochs rotate the runtime incarnation
       }),
     }),
     compile({ effectiveConnections: withMcpPolicy({ allowedTools: ['read'] }) }),
-    compile({ sandboxMode: 'bash' }),
+    compile({ codingWorkspace: true }),
     compile({ memoryEpoch: 4 }),
     compile({ continuityPolicy: 'slack-runtime-v4' }),
     compile({
@@ -882,7 +887,7 @@ function canonicalJson(value: unknown): string {
 }
 
 test('bash-mode plans classify file and image delivery like the container mode', () => {
-  const context = buildRuntimePlanActivityContext(compile({ sandboxMode: 'bash' }));
+  const context = buildRuntimePlanActivityContext(compile());
   const descriptors = new Map(
     context.toolDescriptors?.map(({ toolName, descriptor }) => [toolName, descriptor]),
   );
@@ -893,12 +898,12 @@ test('bash-mode plans classify file and image delivery like the container mode',
 });
 
 test('plain virtual-sandbox plans do not classify the coding-workspace tools', () => {
-  const names = (sandboxMode: 'bash' | 'cloudflare') => new Set(
-    buildRuntimePlanActivityContext(compile({ sandboxMode })).toolDescriptors?.map(({ toolName }) => toolName),
+  const names = (codingWorkspace: boolean) => new Set(
+    buildRuntimePlanActivityContext(compile({ codingWorkspace })).toolDescriptors?.map(({ toolName }) => toolName),
   );
-  assert.equal(names('bash').has('workspace_exec'), false);
-  const container = names('cloudflare');
-  for (const toolName of WORKSPACE_TOOL_NAMES) assert.ok(container.has(toolName), toolName);
+  assert.equal(names(false).has('workspace_exec'), false);
+  const workspace = names(true);
+  for (const toolName of WORKSPACE_TOOL_NAMES) assert.ok(workspace.has(toolName), toolName);
 });
 
 test('current plans keep the Agent in the virtual sandbox and freeze the coding workspace beside it', () => {
@@ -914,17 +919,13 @@ test('current plans keep the Agent in the virtual sandbox and freeze the coding 
   assert.deepEqual(plan.sandbox, { mode: 'bash' });
   assert.deepEqual(plan.codingWorkspace, { available: true });
   assert.deepEqual(parseRuntimePlanV2(structuredClone(plan)), plan);
-  assert.equal(runtimePlanHasCodingWorkspace(plan), true);
 
   const plain = current(false);
   assert.deepEqual(plain.sandbox, { mode: 'bash' });
   assert.equal('codingWorkspace' in plain, false);
-  assert.equal(runtimePlanHasCodingWorkspace(plain), false);
   // The capability is part of the frozen harness.
   assert.notEqual(plan.harnessRevision, plain.harnessRevision);
-  // A legacy plan admitted with an attached container still reads and reaches its workspace.
-  const legacy = compile({ sandboxMode: 'cloudflare' });
-  assert.equal(runtimePlanHasCodingWorkspace(parseRuntimePlanV2(structuredClone(legacy))), true);
+  const legacy = attachedContainerPlan(compile());
 
   // The workspace capability never rides on an attached-container plan.
   assert.throws(
@@ -941,6 +942,64 @@ test('current plans keep the Agent in the virtual sandbox and freeze the coding 
   );
   for (const toolName of WORKSPACE_TOOL_NAMES) assert.ok(names.has(toolName), toolName);
   assert.ok(names.has('activate_skill'));
+});
+
+test('no plan compiles with an attached container', () => {
+  // The compile input no longer names a sandbox mode; a stale caller passing
+  // one still gets the virtual sandbox.
+  for (const plan of [
+    compile(),
+    compile({ codingWorkspace: true }),
+    compileRuntimePlanV2({ ...compileInput(), sandboxMode: 'cloudflare' } as Parameters<typeof compileRuntimePlanV2>[0]),
+  ]) {
+    assert.deepEqual(plan.sandbox, { mode: 'bash' });
+    assert.deepEqual(parseRuntimePlanV2(structuredClone(plan)).sandbox, { mode: 'bash' });
+  }
+});
+
+test('the attached-container test shape reproduces a plan v0.1.26 compiled', () => {
+  const slack = legacyFixture.slackTurnPlan;
+  assert.deepEqual(attachedContainerPlan(parseRuntimePlanV2(structuredClone(slack))), slack);
+  // Routine plans read their absent artifact thread as top-level delivery.
+  const routine = legacyFixture.routineInitialData.runtimePlan;
+  assert.deepEqual(
+    attachedContainerPlan(parseRuntimePlanV2(structuredClone(routine), { legacyArtifactThread: 'none' })),
+    routine,
+  );
+});
+
+test('a V2/V3 plan admitted with an attached container reads as the virtual sandbox with a workspace', () => {
+  const admitted = attachedContainerPlan(compile());
+  const upgraded = parseRuntimePlanV2(structuredClone(admitted));
+  assert.deepEqual(upgraded.sandbox, { mode: 'bash' });
+  // The Agent's own model runs the coding worker; tools re-check live settings.
+  assert.deepEqual(upgraded.codingWorkspace, { available: true });
+  // Same revision, so the Flue instance the admitted plan names is unchanged.
+  assert.equal(upgraded.harnessRevision, admitted.harnessRevision);
+  assert.equal(deriveRuntimePlanInstanceId(upgraded), deriveRuntimePlanInstanceId(admitted));
+  // Re-reading the upgraded plan (a TurnJob row, a routine envelope) is stable.
+  assert.deepEqual(parseRuntimePlanV2(JSON.parse(JSON.stringify(upgraded))), upgraded);
+
+  // The upgrade widens nothing else: a changed field still fails the revision.
+  assert.throws(
+    () => parseRuntimePlanV2({ ...structuredClone(admitted), memoryEpoch: admitted.memoryEpoch + 1 }),
+    /harnessRevision does not match/,
+  );
+  // An upgraded plan with a coding model is not the attached-container shape.
+  assert.throws(
+    () => parseRuntimePlanV2({
+      ...structuredClone(upgraded),
+      codingWorkspace: {
+        available: true,
+        codingModel: {
+          model: upgraded.model,
+          runtimeModel: upgraded.model,
+          attribution: { role: 'coding', source: 'agent_model', providerId: 'anthropic', fallback: false },
+        },
+      },
+    }),
+    /harnessRevision does not match/,
+  );
 });
 
 test('file delivery follows the real turn thread by default and only a trusted override otherwise', () => {
@@ -1155,7 +1214,7 @@ test('the browser capability round-trips, rotates the harness, and never carries
 });
 
 test('a mounted browser registers browsing and proof activity and the skill family', () => {
-  const plan = compile({ sandboxMode: 'bash', browserCapability: { provider: 'browserbase' } });
+  const plan = compile({ browserCapability: { provider: 'browserbase' } });
   const context = buildRuntimePlanActivityContext(plan, { browserMounted: true });
   const descriptors = new Map(
     context.toolDescriptors?.map(({ toolName, descriptor }) => [toolName, descriptor]),
@@ -1170,7 +1229,7 @@ test('a mounted browser registers browsing and proof activity and the skill fami
   // A frozen capability the render did not mount registers nothing.
   for (const off of [
     buildRuntimePlanActivityContext(plan),
-    buildRuntimePlanActivityContext(compile({ sandboxMode: 'bash' })),
+    buildRuntimePlanActivityContext(compile()),
   ]) {
     const offNames = new Set(off.toolDescriptors?.map(({ toolName }) => toolName));
     assert.equal(offNames.has('browser_open'), false);
@@ -1269,14 +1328,14 @@ const CODING_MODEL = {
 };
 
 test('the coding model freezes inside an available coding workspace and rotates the harness', () => {
-  const withCoding = compile({ sandboxMode: 'bash', codingWorkspace: true, codingModel: CODING_MODEL });
+  const withCoding = compile({ codingWorkspace: true, codingModel: CODING_MODEL });
   assert.deepEqual(withCoding.codingWorkspace, { available: true, codingModel: CODING_MODEL });
   const reparsed = parseRuntimePlanV2(structuredClone(withCoding));
   assert.deepEqual(reparsed.codingWorkspace, withCoding.codingWorkspace);
   assert.equal(reparsed.harnessRevision, withCoding.harnessRevision);
 
   // No workspace, no coding model: the model is only frozen with the capability.
-  const noWorkspace = compile({ sandboxMode: 'bash', codingModel: CODING_MODEL });
+  const noWorkspace = compile({ codingModel: CODING_MODEL });
   assert.equal(Object.hasOwn(noWorkspace, 'codingWorkspace'), false);
   // A plan without the field keeps the revision it had before the field existed.
   assert.equal(noWorkspace.harnessRevision, compatibilityHarnessRevision(noWorkspace));
@@ -1284,7 +1343,6 @@ test('the coding model freezes inside an available coding workspace and rotates 
   // The plan is immutable instance data, so a different coding model is a new
   // incarnation rather than a stale record under the same id.
   const other = compile({
-    sandboxMode: 'bash',
     codingWorkspace: true,
     codingModel: {
       ...CODING_MODEL,
@@ -1298,7 +1356,7 @@ test('the coding model freezes inside an available coding workspace and rotates 
 });
 
 test('a malformed coding workspace or coding model is rejected', () => {
-  const plan = compile({ sandboxMode: 'bash', codingWorkspace: true, codingModel: CODING_MODEL });
+  const plan = compile({ codingWorkspace: true, codingModel: CODING_MODEL });
   const withWorkspace = (codingWorkspace: unknown) => ({ ...structuredClone(plan), codingWorkspace });
   assert.throws(
     () => parseRuntimePlanV2(withWorkspace({ available: false })),

@@ -108,7 +108,7 @@ instrument({
 });
 
 // One coding-workspace registry per managed submission, shared by the
-// attached container and the workspace tools.
+// workspace tools.
 instrument({
   key: Symbol.for('chickpea.workspace-registry'),
   interceptor: workspaceRegistryInterceptor,

@@ -63,7 +63,7 @@ const PLAN = compileRuntimePlanV2({
     userId: ACTOR, messageTs: MESSAGE_TS, source: 'app_mention', contextMode: 'thread' },
   assignment: { ...CONVERSATION, agentId: AGENT.id, agent: AGENT, model: MODEL,
     modelAttribution: { source: 'workspace_default', providerId: 'faux', workspaceDefaultRevision: 1 } },
-  instructions: AGENT.instructions, memoryEpoch: 1, sandboxMode: 'bash', effectiveConnections: [],
+  instructions: AGENT.instructions, memoryEpoch: 1, effectiveConnections: [],
 });
 
 interface ProbeState {
@@ -356,7 +356,7 @@ test('native file-delivery completion preserves authority, response state, and b
     const handle = init(SlackProbe, { id });
     const state = dispatchState(slackEnvelope(id));
     const input = { handle, state, message: 'Create an install report.', turnId: `turn-${id}`,
-      conversationKey: id, useCloudflareSandbox: false, requestedModel: MODEL };
+      conversationKey: id, requestedModel: MODEL };
     const result = await promptSlackThreadAgent(input);
     assert.ok(state.dispatchReceipt);
     const reply = await handle.read(state.dispatchReceipt);

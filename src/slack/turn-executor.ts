@@ -1,4 +1,3 @@
-import { runtimePlanHasCodingWorkspace } from '../agents/runtime-plan.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import type { AppStores, PlatformEnv } from '../config/state-backend.ts';
 import type { TurnProgress } from '../config/state-rpc.ts';
@@ -304,10 +303,7 @@ export async function executeTurnJob(
       // Only a turn that could have opened a coding workspace has
       // progress there. A turn whose own reply says it opened none skips
       // the Sandbox Durable Object entirely; an unknown one still checks.
-      if (!frozenPlan || !runtimePlanHasCodingWorkspace(frozenPlan)) return undefined;
-      if (frozenPlan.sandbox.mode !== 'cloudflare' && use?.codingWorkspaceOpened === false) {
-        return undefined;
-      }
+      if (!frozenPlan?.codingWorkspace || use?.codingWorkspaceOpened === false) return undefined;
       // The same Durable Object the workspace uses: the thread key, not
       // the owner-bound agent key, which names no workspace.
       const sandboxKey = sandboxThreadKey(slackAgentThreadKey(job.turn, job.assignment));

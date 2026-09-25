@@ -15,7 +15,6 @@ import {
   bash,
   FlueError,
   type AgentProps,
-  type AgentRuntimeConfig,
   type SandboxFactory,
   useDataWriter,
   useDelivery,
@@ -32,7 +31,6 @@ import { Bash, InMemoryFs } from 'just-bash';
 import * as v from 'valibot';
 
 import {
-  buildSemanticActivityContext,
   connectingActivityStatus,
   registerActivityContext,
   type ActivityToolDescriptor,
@@ -41,11 +39,9 @@ import {
   activityStatus,
   genericSemanticDescriptor,
   semanticDescriptorForCoreTool,
-  unknownSemanticDescriptor,
 } from '../activity/semantic.ts';
 import {
   ApiOAuthError,
-  connectionAccountIdFromOAuthRef,
   connectionAccountOAuthRef,
   resolveApiOAuthAccessToken,
   type ApiOAuthProvider,
@@ -63,13 +59,8 @@ import { connectorSkillsForConnections } from '../config/connector-skills.ts';
 import {
   createConnectorScopedBash,
   matchesEgressPrefix,
-  resolveEgressPolicy,
   type ResolvedApiConnection,
 } from '../config/egress.ts';
-import {
-  resolveEffectiveSlackConfig,
-  type EffectiveSlackConfig,
-} from '../config/effective-config.ts';
 import {
   getCachedInstallationToken,
   getGithubConnection,
@@ -79,26 +70,20 @@ import {
 } from '../config/github-app.ts';
 import {
   resolveRuntimePlanMcpConnections,
-  resolveProfileMcpTools,
 } from '../config/profile-mcp.ts';
 import {
   projectMcpPolicyInstructions,
 } from '../config/mcp-policy-instructions.ts';
 import { isMetaAdsMcpConnection } from '../config/meta-ads-policy.ts';
-import { resolveMcpOAuthAccessToken } from '../config/mcp-oauth.ts';
 import { resolveProfileSkills } from '../config/profile-skills.ts';
 import {
   registerFrozenRuntimeModelRoute,
   resolveRuntimeModel,
-  type ResolvedRuntimeModel,
 } from '../config/runtime-model.ts';
 import { resolveSandboxSettings } from '../config/sandbox-settings.ts';
 import { thinkingLevelForModel } from '../config/workers-ai-models.ts';
-import { surfaceForChannelId } from '../config/resolver.ts';
 import { isCloudflareTarget } from '../config/runtime-target.ts';
-import { getOrCreateSnapshot } from '../config/snapshot-store.ts';
 import {
-  getAgentSnapshotStore,
   getConfigStore,
   getIdentityStore,
   getSettingsStore,
@@ -113,8 +98,6 @@ import {
   type RepositoryGrant,
   type SkillConfig,
 } from '../config/types.ts';
-import { agentAvatarUrlForPresentation } from '../slack/agent-presence/avatar-assets.ts';
-import { resolveSlackPublicUrl } from '../slack/credentials.ts';
 import { SLACK_ACTION_LINK_INSTRUCTION } from '../slack/message-format.ts';
 import {
   isDeniedRepositoryEndpoint,
@@ -126,16 +109,11 @@ import {
 import { githubAuthorizationHeader } from '../sandbox/github-auth.ts';
 import {
   projectEffectiveApiConnections,
-  projectEffectiveManagedConnections,
-  projectEffectiveMcpConnections,
   resolveConnectionSecretForInvocation,
   resolveEffectiveConnectionAccounts,
   isActiveConnectionActor,
 } from '../connections/runtime.ts';
-import { semanticDescriptorForManagedTool } from '../connections/catalog/index.ts';
 import {
-  createManagedConnectionTools,
-  MANAGED_CONNECTION_RESULT_INSTRUCTION,
   useManagedConnectionTools,
 } from '../connections/managed-tools.ts';
 import { usePersonalConnectionAuthorizationSlackTool } from '../connections/slack-authorization.ts';
@@ -149,7 +127,6 @@ import {
   codingWorkspaceCapability,
   resolveCodingWorkspaceCapability,
   sandboxBindingInstalled,
-  type SandboxSelection,
 } from '../sandbox/select.ts';
 import { reserveMonthlySandboxSession } from '../sandbox/session-cap.ts';
 import { currentWorkspaceRegistry, workspaceRegistryKey } from '../sandbox/workspace-registry.ts';
@@ -157,7 +134,6 @@ import { CODING_WORKSPACE_USE_DATA_NAME } from '../sandbox/workspace-use.ts';
 import {
   DEFAULT_WORKSPACE_NAME,
   EMPTY_WORKSPACE_ROSTER,
-  WorkspaceLimitError,
   createWorkspaceRoster,
   defaultOnlyWorkspaceRoster,
   normalizeWorkspaceName,
@@ -181,13 +157,10 @@ import {
 } from './coding-worker-task.ts';
 import {
   buildArtifactToolsInstruction,
-  createWorkspaceArtifactCapability,
   createWorkspaceArtifactTool,
-  POST_ARTIFACT_TOOL_NAME,
   type SlackArtifactStageInput,
   type SlackArtifactStageOutcome,
   type WorkspaceArtifactSource,
-  isStreamedFile,
 } from '../sandbox/artifact-tool.ts';
 import {
   createImageArtifactTool,
@@ -229,7 +202,6 @@ import { resolveModelApiKeyForStatelessCall } from '../config/provider-keys.ts';
 import {
   CODING_WORKSPACE_INSTRUCTION,
   codingWorkspaceSkill,
-  workspaceSkillForSandbox,
 } from '../sandbox/workspace-skill.ts';
 import { publishActivityStatus } from '../slack/activity-publisher.ts';
 import {
@@ -252,8 +224,6 @@ import {
   SlackAgentCreationTerminalIntentSchema,
   type SlackAgentCreationTerminalIntent,
 } from '../slack/agent-creation-terminal.ts';
-import { parseSlackThreadKey } from '../slack/thread-key.ts';
-import { WebClientPresenter, type SlackArtifactInput, type SlackArtifactResult } from '../slack/web-client-presenter.ts';
 import {
   createArtifactReceiptAccumulator,
   useSlackArtifactReceipts,
@@ -293,9 +263,7 @@ import {
   compileWebsiteLogins,
   parseRuntimePlanV2,
   runtimePlanConversationKey,
-  runtimePlanHasCodingWorkspace,
   type RuntimePlanApiConnectionV2,
-  type RuntimePlanModelCredentialV3,
   type RuntimePlanRepositoryV2,
   type RuntimePlanV2,
   type RuntimePlanWebsiteLoginV1,
@@ -374,32 +342,6 @@ export interface ApiConnectionResolutionDependencies {
     workspaceId: string;
     actorMembershipId: string;
   };
-}
-
-/**
- * Preserve a channel thread's frozen repository ceiling while applying live
- * revocations. The frozen row remains authoritative for additions; the live
- * row is authoritative for removals. A matching id is the primary identity,
- * with scope equality required so editing an id onto another repository also
- * revokes the old scope. Legacy/recreated rows can fall back to the immutable
- * repository + installation pair.
- */
-export function intersectFrozenRepositoryGrants(
-  frozen: readonly RepositoryGrant[] | undefined,
-  live: readonly RepositoryGrant[] | undefined,
-): RepositoryGrant[] {
-  const liveEnabled = (live ?? []).filter((grant) => grant.enabled);
-  const sameScope = (left: RepositoryGrant, right: RepositoryGrant): boolean =>
-    left.installationId === right.installationId &&
-    left.fullName.toLowerCase() === right.fullName.toLowerCase() &&
-    left.allRepos === right.allRepos;
-
-  return (frozen ?? []).filter((grant) => {
-    if (!grant.enabled) return false;
-    const idMatch = liveEnabled.find((candidate) => candidate.id === grant.id);
-    if (idMatch) return sameScope(grant, idMatch);
-    return liveEnabled.some((candidate) => sameScope(grant, candidate));
-  });
 }
 
 /**
@@ -773,483 +715,6 @@ async function resolveRuntimePlanApiConnections(plan: RuntimePlanV2, env?: Platf
   return resolveApiConnectionsForTurn(plan.agentId, connections, env, { accountContext });
 }
 
-export interface SlackAgentRuntimeInput {
-  id: string;
-  platformEnv?: PlatformEnv;
-  workspaceId?: string;
-  channelId?: string;
-  liveConfig?: EffectiveSlackConfig;
-  runtimeModel?: ResolvedRuntimeModel;
-  frozenModelCredential?: RuntimePlanModelCredentialV3;
-  freezeChannel?: boolean;
-  artifactThreadTs?: string | null;
-  threadTs?: string;
-  actorMembershipId?: string;
-  declarationsOwnedByHooks?: boolean;
-  forcedSandbox?: SandboxSelection;
-  sandboxConversationKey?: string;
-  /** RuntimePlan hooks already own the exact frozen activity registration. */
-  registerActivityContext?: boolean;
-}
-
-/** Shared interactive/routine agent assembly. Credentials always resolve here, live. */
-export async function createSlackAgentRuntime(
-  input: SlackAgentRuntimeInput,
-): Promise<AgentRuntimeConfig> {
-  const id = input.id;
-  const env = input.platformEnv ?? (await resolveAgentPlatformEnv());
-  const store = getConfigStore(env);
-  const settingsStore = getSettingsStore(env);
-  const stores = { agents: store, grants: store };
-  const adapterContext = await resolveSlackAgentAdapterContext(input, env);
-  const { workspaceId, channelId } = adapterContext;
-  const effectiveConnectionAccounts = input.actorMembershipId
-    ? await resolveEffectiveConnectionAccounts({
-        config: store,
-        workspaceId,
-        agentId: input.liveConfig?.agentId ?? input.id,
-        actorMembershipId: input.actorMembershipId,
-      })
-    : [];
-  const artifactThreadTs = input.artifactThreadTs === null
-    ? undefined
-    : (input.artifactThreadTs ?? adapterContext.threadTs);
-  const resolve = () => resolveEffectiveSlackConfig(
-    workspaceId,
-    channelId,
-    stores,
-    process.env,
-    input.liveConfig?.agentId ?? input.id,
-  );
-
-  // Channel threads are frozen (the channel handler wrote the snapshot at the
-  // first turn; getOrCreateSnapshot serves that row). Direct conversations
-  // Direct messages are one continuous session, not a discrete thread, so they
-  // resolve the current config every turn instead of freezing — admin edits to
-  // the DM Agent reach existing DM users.
-  const isDirect = surfaceForChannelId(channelId) === 'direct';
-  const config = input.liveConfig ?? (
-    isDirect || input.freezeChannel === false
-      ? await resolve()
-      : await getOrCreateSnapshot(
-        getAgentSnapshotStore(env),
-        adapterContext.threadKey,
-        resolve,
-      )
-  );
-  const frozenLiveAgent = !isDirect && input.freezeChannel !== false
-    ? await requireLiveFrozenAgent(store, config.agent.id)
-    : undefined;
-  const frozenModelCredential = input.frozenModelCredential ?? config.modelCredential;
-  if (frozenModelCredential) {
-    await revalidateModelCredentialAttribution(
-      config.model,
-      frozenModelCredential,
-      env,
-      settingsStore,
-      getUsageStore(env),
-    );
-  }
-  const runtimeModel = input.runtimeModel ?? await resolveRuntimeModel(
-    config.agentId,
-    config.model,
-    {
-      settings: settingsStore,
-      ...(env ? { env } : {}),
-    },
-  );
-
-  // A Channel snapshot freezes additions while the live Agent remains the
-  // revocation authority. Disabled or deleted Agents seal the old root; a
-  // reassignment alone keeps that root on its frozen, still-enabled Agent.
-  let repositoryGrants = config.agent.repositories;
-  if (frozenLiveAgent) {
-    repositoryGrants = intersectFrozenRepositoryGrants(
-      config.agent.repositories,
-      frozenLiveAgent.repositories,
-    );
-  }
-
-  // API connection policy inherits the agent snapshot contract, while its
-  // credential resolves live every turn. Missing credentials degrade by
-  // skipping that connection rather than aborting the turn.
-  const [
-    egressPolicy,
-    resolvedApiConnections,
-    sandboxSettings,
-    githubAppConnected,
-  ] =
-    await Promise.all([
-      resolveEgressPolicy(env),
-      resolveApiConnectionsForTurn(
-        config.agent.id,
-        projectEffectiveApiConnections(effectiveConnectionAccounts),
-        env,
-        input.actorMembershipId
-          ? {
-              accountContext: {
-                config: store,
-                settings: settingsStore,
-                workspaceId,
-                actorMembershipId: input.actorMembershipId,
-              },
-            }
-          : {},
-      ),
-      resolveSandboxSettings(settingsStore),
-      getGithubConnection(settingsStore).then(
-        (connection) => connection.mode === 'app',
-        () => false,
-      ),
-    ]);
-  const installed = sandboxBindingInstalled(env);
-  const configuredSandbox = resolveCodingWorkspaceCapability({
-    target: isCloudflareTarget() ? 'cloudflare' : 'node',
-    installed,
-    enabled: sandboxSettings.enabled,
-    appConnected: githubAppConnected,
-    repositoryGrants,
-  });
-  const unavailableFallback =
-    configuredSandbox.unavailableFallback ||
-    (input.forcedSandbox === 'cloudflare' && !installed);
-  const repositoryAccess = await resolveSandboxScopedRepositoryAccess({
-    repositories: repositoryGrants,
-    ...(env ? { env } : {}),
-    unavailableFallback,
-  });
-  // This assembler serves plans admitted with an attached container (forced)
-  // and the legacy entry point, which still attaches the workspace directly.
-  const sandboxSelection: SandboxSelection = input.forcedSandbox
-    ? input.forcedSandbox === 'cloudflare' && installed ? 'cloudflare' : 'bash'
-    : codingWorkspaceCapability({
-        target: isCloudflareTarget() ? 'cloudflare' : 'node',
-        installed,
-        enabled: sandboxSettings.enabled,
-        appConnected: githubAppConnected,
-        repositoryGrants: repositoryAccess.grants,
-      }) === 'available' ? 'cloudflare' : 'bash';
-  const workspaceSkill = workspaceSkillForSandbox(sandboxSelection);
-
-  // Project resolved connectors into credential-free scope before skill
-  // construction. Connector skills come first so the existing last-writer-wins
-  // dedupe lets an Agent-authored skill deliberately override the built-in.
-  const connectorSkills = suppressProfileNamedConnectorSkills(
-    connectorSkillsForConnections(
-      [
-        ...repositoryAccess.connectors.map(({ allowedHosts, pathPrefixes, allowedMethods }) => ({
-          allowedHosts,
-          pathPrefixes,
-          allowedMethods,
-        })),
-        ...resolvedApiConnections.flatMap(({ policy }) => {
-          const allowedHosts = policy.allowedHosts.filter(
-            (host) => !isGithubAppManagedHost(host),
-          );
-          return allowedHosts.length > 0
-            ? [{
-                allowedHosts,
-                pathPrefixes: policy.pathPrefixes,
-                allowedMethods: policy.allowedMethods,
-                ...(policy.presetId ? { presetId: policy.presetId } : {}),
-                ...(policy.oauthScopes ? { oauthScopes: policy.oauthScopes } : {}),
-              }]
-            : [];
-        }),
-      ],
-      repositoryAccess.grants,
-    ),
-    config.agent.skills,
-  );
-  // The install/runtime-derived workspace judge comes last so a stored
-  // same-named Agent row cannot hide the live workspace security contract.
-  const skills = resolveProfileSkills([
-    ...connectorSkills,
-    ...config.agent.skills,
-    ...(workspaceSkill ? [workspaceSkill] : []),
-  ], { reservedNames: [AGENT_AUTHORING_SKILL_NAME] });
-
-  const managedTools = input.actorMembershipId
-    ? createManagedConnectionTools({
-        connections: projectEffectiveManagedConnections(effectiveConnectionAccounts),
-        workspaceId,
-        agentId: config.agent.id,
-        actorMembershipId: input.actorMembershipId,
-        resolvePlatformEnv: async () => env,
-        reservedToolNames: [
-          AGENT_AUTHORING_SKILL_NAME,
-          ...skills.map(({ name }) => name),
-        ],
-      })
-    : [];
-
-  // MCP connection tools join at the same seam and inherit the same freeze
-  // contract (mcpServers frozen in the snapshot for channels, live for DMs;
-  // secrets always resolve live). The resolver degrades gracefully — a dead or
-  // slow server is skipped, never aborting the turn — and drops any tool whose
-  // name collides with a built-in or skill (a duplicate name kills the turn).
-  const mcpTools = input.declarationsOwnedByHooks
-    ? []
-    : await resolveProfileMcpTools(
-        projectEffectiveMcpConnections(effectiveConnectionAccounts),
-      {
-        agentId: config.agent.id,
-        env,
-        existingToolNames: [
-          AGENT_AUTHORING_SKILL_NAME,
-          ...skills.map((skill) => skill.name),
-          ...managedTools.map((tool) => tool.name),
-        ],
-        ...(input.actorMembershipId
-          ? {
-              resolveCurrentConnection: async (connectionAccountId: string) => {
-                if (!(await isActiveConnectionActor({
-                  identity: getIdentityStore(env), workspaceId,
-                  actorMembershipId: input.actorMembershipId!,
-                }))) return undefined;
-                const current = await resolveEffectiveConnectionAccounts({
-                  config: store, workspaceId, agentId: config.agent.id,
-                  actorMembershipId: input.actorMembershipId!,
-                });
-                return projectEffectiveMcpConnections(current).find((server) => server.id === connectionAccountId);
-              },
-              resolveBearerCredential: (connectionAccountId: string) =>
-                resolveConnectionSecretForInvocation({
-                  config: store,
-                  settings: settingsStore,
-                  ...(env ? { env } : {}),
-                  workspaceId,
-                  agentId: config.agent.id,
-                  actorMembershipId: input.actorMembershipId!,
-                  connectionAccountId,
-                }),
-              resolveOAuthAccessToken: async (oauthInput) => {
-                if (!(await isActiveConnectionActor({
-                  identity: getIdentityStore(env),
-                  workspaceId,
-                  actorMembershipId: input.actorMembershipId!,
-                }))) throw new Error('Connection account is not available to this actor');
-                return resolveMcpOAuthAccessToken(
-                  {
-                    ...oauthInput,
-                    ref: connectionAccountOAuthRef(oauthInput.ref.connectionId),
-                  },
-                  {
-                    settings: settingsStore,
-                    validateConnection: async (ref, serverUrl, _accountRevision, oauthAttemptId) => {
-                      const current = await resolveEffectiveConnectionAccounts({
-                        config: store,
-                        workspaceId,
-                        agentId: config.agent.id,
-                        actorMembershipId: input.actorMembershipId!,
-                      });
-                      const accountId = connectionAccountIdFromOAuthRef(ref);
-                      const account = current.find(({ account }) => account.id === accountId)?.account;
-                      return !!accountId && account?.policy.kind === 'mcp' &&
-                        account.policy.authMode === 'oauth' && account.policy.url === serverUrl &&
-                        (oauthAttemptId === undefined ||
-                          account.policy.oauthAttemptId === oauthAttemptId);
-                    },
-                  },
-                );
-              },
-            }
-          : {}),
-        onConnectionStart: () => {
-          publishActivityStatus(id, connectingActivityStatus('a connected service'), env);
-        },
-      });
-
-  // API connections are called through connection_request, never the
-  // shell, so the virtual sandbox mounts only repository scopes.
-  const virtualSandbox = createConnectorScopedBash(egressPolicy, isCloudflareTarget(), repositoryAccess.connectors);
-  let sandbox = await resolveAgentSandbox({
-    selection: sandboxSelection,
-    fallback: virtualSandbox,
-    env,
-    conversationKey: input.sandboxConversationKey ?? adapterContext.threadKey,
-    agentId: config.agent.id,
-    grants: repositoryAccess.grants,
-    ...(repositoryAccess.credentialMode
-      ? { credentialMode: repositoryAccess.credentialMode }
-      : {}),
-    settingsStore,
-    monthlySessionCap: sandboxSettings.monthlySessionCap,
-  });
-  let tools = [...mcpTools, ...managedTools];
-  if (artifactThreadTs) {
-    let presenter: Promise<WebClientPresenter> | undefined;
-    const postArtifact = async (input: SlackArtifactInput): Promise<SlackArtifactResult> => {
-      presenter ??= Promise.all([
-        resolveSlackInstallationExecutionContext(
-          workspaceId,
-          env,
-          {
-            settings: settingsStore,
-            credentialDependencies: getSlackCredentialResolutionDependencies(env),
-          },
-        ),
-        resolveSlackPublicUrl(env, settingsStore).catch(() => undefined),
-      ]).then(([installation, publicUrl]) => {
-        const agentAvatarUrl = agentAvatarUrlForPresentation(config.agent, publicUrl);
-        return new WebClientPresenter(installation.client, {
-          channelId,
-          threadTs: artifactThreadTs,
-          agentName: config.agent.name,
-          ...(agentAvatarUrl
-            ? { agentAvatarUrl }
-            : {}),
-          agentId: config.agent.id,
-          workspaceId,
-        });
-      });
-      return (await presenter).postArtifact(input);
-    };
-    // Legacy assembly has no settled-reply receipt channel, so it keeps the
-    // immediate app-identity upload. Hook-mounted plans stage instead.
-    const stageArtifact = async (input: SlackArtifactStageInput): Promise<SlackArtifactStageOutcome> => {
-      // The immediate upload holds the whole file; a streamed file has no place here.
-      if (isStreamedFile(input.bytes)) return { attached: false, reason: 'unavailable', detail: 'transport_unsupported' };
-      const result = await postArtifact({
-        channel: channelId,
-        threadTs: artifactThreadTs,
-        bytes: input.bytes,
-        filename: input.filename,
-        ...(input.title === undefined ? {} : { title: input.title }),
-      });
-      return result.uploaded
-        ? { attached: true, byteLength: input.bytes.byteLength }
-        : result.reason === 'too-large'
-          ? { attached: false, reason: 'too-large', maxBytes: result.maxBytes }
-          : { attached: false, reason: 'missing-scope' };
-    };
-    // Every sandbox kind delivers files: the container freezes a bounded copy
-    // through the shell and the in-memory sandbox reads its bytes directly,
-    // so file delivery does not depend on the coding tier.
-    const artifactCapability = createWorkspaceArtifactCapability({
-      sandbox,
-      sandboxKind: sandboxSelection,
-      channel: channelId,
-      threadTs: artifactThreadTs,
-      stageArtifact,
-    });
-    sandbox = artifactCapability.sandbox;
-    tools = [
-      ...mcpTools,
-      ...managedTools,
-      artifactCapability.tool,
-    ];
-  }
-
-  if (input.registerActivityContext !== false) {
-    const activityDescriptors: ActivityToolDescriptor[] = [];
-    for (const tool of managedTools) {
-      const descriptor = semanticDescriptorForManagedTool(tool.name);
-      if (descriptor) activityDescriptors.push({ toolName: tool.name, descriptor });
-    }
-    if (skills.length > 0) {
-      const skill = genericSemanticDescriptor('skill');
-      activityDescriptors.push(
-        { toolName: 'activate_skill', descriptor: skill },
-        { toolName: 'read_skill_resource', descriptor: skill },
-      );
-    }
-    const sandboxDescriptor = unknownSemanticDescriptor();
-    for (const toolName of ['bash', 'read', 'write', 'edit', 'grep', 'glob']) {
-      activityDescriptors.push({ toolName, descriptor: sandboxDescriptor });
-    }
-    if (tools.some(({ name }) => name === POST_ARTIFACT_TOOL_NAME)) {
-      const artifact = genericSemanticDescriptor('artifact');
-      activityDescriptors.push(
-        { toolName: POST_ARTIFACT_TOOL_NAME, descriptor: artifact },
-      );
-    }
-    registerActivityContext(id, buildSemanticActivityContext(activityDescriptors, [
-      ...(managedTools.length > 0 ? ['managed_connector' as const] : []),
-      ...(mcpTools.length > 0 || resolvedApiConnections.length > 0
-        ? ['custom_connection' as const]
-        : []),
-      ...(skills.length > 0 ? ['skill' as const] : []),
-      ...(repositoryAccess.grants.length > 0 ? ['repository' as const] : []),
-      ...(tools.some(({ name }) => name === POST_ARTIFACT_TOOL_NAME) ? ['artifact' as const] : []),
-    ]));
-  }
-
-  const thinkingLevel = thinkingLevelForModel(config.model);
-  return {
-    model: runtimeModel.model,
-    // Flue defaults reasoning-capable models to medium effort. The keyless
-    // GLM bindings can reach Workers AI's response deadline before their first
-    // tool call even at low effort, so disable extra reasoning only for the
-    // Workers AI GLM family. Other models keep Flue's policy.
-    ...(thinkingLevel ? { thinkingLevel } : {}),
-    instructions: [
-      config.instructions,
-      ...(managedTools.length > 0 ? [MANAGED_CONNECTION_RESULT_INSTRUCTION] : []),
-      // The legacy assembler never mounts the image tool, so it always renders
-      // the no-image-model variant and its honesty rule.
-      ...(tools.some(({ name }) => name === POST_ARTIFACT_TOOL_NAME)
-        ? [buildArtifactToolsInstruction({ imageTool: false, canEdit: false })]
-        : []),
-    ].join('\n\n'),
-    tools,
-    sandbox,
-    ...(skills.length > 0 ? { skills } : {}),
-  };
-}
-
-/**
- * Transitional access to the existing async assembler for focused policy
- * tests and the U5 routine path. It is not registered with Flue 2 and is
- * removed when RuntimePlanV2 becomes the single pre-dispatch compiler.
- */
-export const legacySlackThreadAgent = {
-  initialize({ id, env }: { id: string; env?: PlatformEnv }) {
-    return createSlackAgentRuntime({ id, ...(env ? { platformEnv: env } : {}) });
-  },
-};
-
-interface SlackAgentAdapterContext {
-  workspaceId: string;
-  channelId: string;
-  threadTs: string;
-  threadKey: string;
-}
-
-async function resolveSlackAgentAdapterContext(
-  input: SlackAgentRuntimeInput,
-  _env: PlatformEnv | undefined,
-): Promise<SlackAgentAdapterContext> {
-  if (input.workspaceId && input.channelId && input.threadTs) {
-    return {
-      workspaceId: input.workspaceId,
-      channelId: input.channelId,
-      threadTs: input.threadTs,
-      threadKey: `${input.workspaceId}:${input.channelId}:${input.threadTs}`,
-    };
-  }
-  let parsed: { workspaceId: string; channelId: string; threadTs: string };
-  try {
-    parsed = parseSlackThreadKey(input.id);
-  } catch {
-    throw new Error('Legacy Slack agent initialization requires a Slack thread key.');
-  }
-  const workspaceId = input.workspaceId ?? parsed.workspaceId;
-  const channelId = input.channelId ?? parsed.channelId;
-  if (
-    (input.workspaceId && input.workspaceId !== parsed.workspaceId) ||
-    (input.channelId && input.channelId !== parsed.channelId)
-  ) {
-    throw new Error('Agent execution context does not match the requested Slack binding.');
-  }
-  return {
-    workspaceId,
-    channelId,
-    threadTs: parsed.threadTs,
-    threadKey: `${workspaceId}:${channelId}:${parsed.threadTs}`,
-  };
-}
-
 /** Flue 2 hook-authored Slack agent. Every declaration comes from validated,
  * secret-free creation data; live credentials stay behind lazy resolvers. */
 export function ChickpeaSlack({ id }: AgentProps) {
@@ -1383,7 +848,7 @@ export function runtimePlanConnectedServicesInstruction(
   plan: Pick<
     RuntimePlanV2,
     'apiConnections' | 'mcpConnections' | 'managedConnections' | 'connectionChoices'
-  > & Partial<Pick<RuntimePlanV2, 'repositories' | 'sandbox' | 'codingWorkspace'>>,
+  > & Partial<Pick<RuntimePlanV2, 'repositories' | 'codingWorkspace'>>,
 ): string {
   const selected = [
     ...plan.apiConnections.map(({ id, displayName }) => ({
@@ -1429,7 +894,7 @@ export function runtimePlanConnectedServicesInstruction(
 
 /** Name frozen repository grants so the model does not guess at their absence. */
 function runtimePlanRepositoriesDeclaration(
-  plan: Partial<Pick<RuntimePlanV2, 'repositories' | 'sandbox' | 'codingWorkspace'>>,
+  plan: Partial<Pick<RuntimePlanV2, 'repositories' | 'codingWorkspace'>>,
 ): string {
   const repositories = plan.repositories ?? [];
   if (repositories.length === 0) return '';
@@ -1439,14 +904,10 @@ function runtimePlanRepositoriesDeclaration(
         ? `all repositories in ${runtimePlanRepositoryOwner(repository)}`
         : repository.fullName))].sort(),
   );
-  const access = plan.sandbox?.mode === 'cloudflare'
-    ? 'The workspace starts empty: clone a granted repository with a plain HTTPS URL such as ' +
-      '`git clone https://github.com/{owner}/{repo}.git`; GitHub credentials are injected automatically, ' +
-      'so never add a credential to the URL. See the workspace and Repositories skills.'
-    : plan.codingWorkspace
-      ? 'Use the GitHub REST recipes in the Repositories skill; GitHub credentials are injected automatically. ' +
-        'Your own shell cannot clone them; for a real checkout, use the coding workspace tools (see the workspace skill).'
-      : 'Use the GitHub REST recipes in the Repositories skill; GitHub credentials are injected automatically.';
+  const access = plan.codingWorkspace
+    ? 'Use the GitHub REST recipes in the Repositories skill; GitHub credentials are injected automatically. ' +
+      'Your own shell cannot clone them; for a real checkout, use the coding workspace tools (see the workspace skill).'
+    : 'Use the GitHub REST recipes in the Repositories skill; GitHub credentials are injected automatically.';
   return ` Granted GitHub repositories for this turn: ${names}. ${access}`;
 }
 
@@ -1503,15 +964,12 @@ function runtimePlanRepositoryOwner(repository: RuntimePlanRepositoryV2): string
  * sandbox-derived workspace skill last so no stored Agent skill can hide it.
  */
 export function runtimePlanSkills(
-  plan: Pick<RuntimePlanV2, 'apiConnections' | 'repositories' | 'skills' | 'sandbox' | 'codingWorkspace' | 'browserCapability' | 'websiteLogins'>,
+  plan: Pick<RuntimePlanV2, 'apiConnections' | 'repositories' | 'skills' | 'codingWorkspace' | 'browserCapability' | 'websiteLogins'>,
   options: { browser?: boolean } = {},
 ): ReturnType<typeof resolveProfileSkills> {
   const agentSkills = plan.skills.map((entry) => ({ ...entry, enabled: true }));
-  // A current plan reaches its workspace through tools; a plan admitted with
-  // an attached container keeps the in-container skill.
-  const workspaceSkill = plan.codingWorkspace
-    ? codingWorkspaceSkill()
-    : workspaceSkillForSandbox(plan.sandbox.mode);
+  // The Agent reaches its coding workspace through tools.
+  const workspaceSkill = plan.codingWorkspace ? codingWorkspaceSkill() : undefined;
   // The browser skill rides with its tools, so it mounts only when the render
   // mounted them; like the workspace skill it comes last so a stored Agent
   // skill cannot hide it.
@@ -1568,16 +1026,13 @@ export function useRuntimePlanAgent(
     CODING_WORKSPACE_ROSTER_STATE_NAME,
     EMPTY_WORKSPACE_ROSTER,
   );
-  // A plan with an attached container has only that one workspace.
-  const workspaceRoster = plan.sandbox.mode === 'cloudflare'
-    ? undefined
-    : createWorkspaceRoster(workspaceRosterState, updateWorkspaceRoster);
+  const workspaceRoster = createWorkspaceRoster(workspaceRosterState, updateWorkspaceRoster);
   const resolveWorkspace = runtimePlanWorkspaceResolver(plan, {
     ...(options.sandboxConversationKey ? { sandboxConversationKey: options.sandboxConversationKey } : {}),
     release: options.releaseCodingWorkspace === true,
     turnId: runtimePlanWorkspaceTurnId(),
     onOpen: () => writeWorkspaceUse({ opened: true }),
-    ...(workspaceRoster ? { roster: workspaceRoster } : {}),
+    roster: workspaceRoster,
     ...(options.turn ? { turn: options.turn } : {}),
   });
   // A connected browser mounts with the artifact tools, whose staging carries
@@ -1621,9 +1076,7 @@ export function useRuntimePlanAgent(
   if (plan.codingWorkspace && isCloudflareTarget() && !fileCompletion.repairing) {
     useInstruction(CODING_WORKSPACE_INSTRUCTION);
   }
-  if (plan.sandbox.mode === 'bash') {
-    useInstruction('This virtual sandbox starts with a fresh filesystem for each new request, including a follow-up in the same Slack thread. Files from an earlier request are gone. When the current user asks to return or revise those files, recreate them from the available contents in this request before attaching them; do not assume an earlier path still exists. The internal file-delivery check continues the current request and may only read and export existing files.');
-  }
+  useInstruction('This virtual sandbox starts with a fresh filesystem for each new request, including a follow-up in the same Slack thread. Files from an earlier request are gone. When the current user asks to return or revise those files, recreate them from the available contents in this request before attaching them; do not assume an earlier path still exists. The internal file-delivery check continues the current request and may only read and export existing files.');
   useInstruction(SLACK_ACTION_LINK_INSTRUCTION);
   useInstruction('The final Slack answer must be self-contained. Earlier assistant steps are working narration. After an interrupted response, write the complete final answer again, not just the remaining words of the partial response.');
   useManagedConnectionTools(
@@ -1688,7 +1141,7 @@ export function useRuntimePlanAgent(
   )) {
     useMcpConnection(connection);
   }
-  const sandbox = createRuntimePlanSandbox(plan, options.sandboxConversationKey, options.turn);
+  const sandbox = createRuntimePlanSandbox(plan, options.turn);
   useSandbox(options.artifactToolsDisabled ? sandbox : fileCompletion.wrapSandbox(sandbox));
   const writeCodingWorkerRun = useDataWriter(CODING_WORKER_RUN_DATA_NAME, { schema: CodingWorkerRunSchema });
   const writeCodingWorkerUsage = useDataWriter(CODING_WORKER_USAGE_DATA_NAME, {
@@ -1701,7 +1154,7 @@ export function useRuntimePlanAgent(
   if (workspaceToolsMounted) {
     for (const tool of createWorkspaceTools({
       resolve: resolveWorkspace,
-      ...(workspaceRoster ? { roster: workspaceRoster } : {}),
+      roster: workspaceRoster,
       taskRunning: workspaceTaskRunning,
     })) {
       useTool(tool);
@@ -1814,27 +1267,25 @@ ChickpeaSlack.initialData = v.custom<RuntimePlanV2>((value) => {
 }, 'RuntimePlanV2 is invalid.');
 
 /**
- * The coding-workspace tools mount when the plan can reach a workspace: a
- * current plan with the coding-workspace capability, or a plan admitted with
- * an attached container. Only the Cloudflare target has one, and an
- * export-only file repair may not change or run anything in it.
+ * The coding-workspace tools mount when the plan has the coding-workspace
+ * capability. Only the Cloudflare target has one, and an export-only file
+ * repair may not change or run anything in it.
  */
 export function runtimePlanWorkspaceToolsMounted(
-  plan: Pick<RuntimePlanV2, 'sandbox' | 'codingWorkspace'>,
+  plan: Pick<RuntimePlanV2, 'codingWorkspace'>,
   repairing: boolean,
 ): boolean {
-  return runtimePlanHasCodingWorkspace(plan) && isCloudflareTarget() && !repairing;
+  return plan.codingWorkspace !== undefined && isCloudflareTarget() && !repairing;
 }
 
 /** Persistent coordinator state: the thread's workspace names, open set, and retirements. */
 export const CODING_WORKSPACE_ROSTER_STATE_NAME = 'codingWorkspaceRoster';
 
 /**
- * How the workspace tools find a workspace this submission. A plan admitted
- * with an attached container shares the session that container opened. A
- * current plan creates the session on the first tool call; it prepares and
- * ends its own workspace turn, so a submission that never calls a workspace
- * tool touches no Sandbox Durable Object at all.
+ * How the workspace tools find a workspace this submission. The session is
+ * created on the first tool call; it prepares and ends its own workspace
+ * turn, so a submission that never calls a workspace tool touches no Sandbox
+ * Durable Object at all.
  */
 interface RuntimePlanWorkspaceInput {
   sandboxConversationKey?: string;
@@ -1852,13 +1303,6 @@ export function runtimePlanWorkspaceResolver(
   plan: RuntimePlanV2,
   input: RuntimePlanWorkspaceInput,
 ): WorkspaceResolver {
-  if (plan.sandbox.mode === 'cloudflare') {
-    // The attached container is the only workspace such a plan has.
-    return (name) => {
-      if (name !== DEFAULT_WORKSPACE_NAME) throw WorkspaceLimitError.defaultOnly();
-      return currentWorkspaceRegistry()?.get(name);
-    };
-  }
   const roster = input.roster ?? defaultOnlyWorkspaceRoster();
   return async (name, access) => {
     const registry = currentWorkspaceRegistry();
@@ -1971,68 +1415,26 @@ async function createRuntimePlanWorkspace(
 
 function createRuntimePlanSandbox(
   plan: RuntimePlanV2,
-  sandboxConversationKey?: string,
   turn?: TurnEnvelopeContext,
 ): SandboxFactory {
-  if (plan.sandbox.mode === 'bash') {
-    return {
-      async createSandbox(options) {
-        const env = await resolveAgentPlatformEnv();
-        await prepareRuntimePlanModel(plan, env, turn);
-        // Native plans grant only their frozen connector scopes. Operator-wide
-        // egress settings belong to the legacy runtime and must not become an
-        // incidental grant when any connection is bound. Empty plans need no
-        // account or egress setting reads.
-        if (!plan.repositories.length) {
-          return bash(() => new Bash({ fs: new InMemoryFs() })).createSandbox(options);
-        }
-        // API connections are called through connection_request, never the
-        // shell; the sandbox mounts only repository scopes.
-        const repositoryAccess = await resolveRuntimePlanBashRepositoryAccess(plan, env, turn);
-        const sandbox = createConnectorScopedBash(
-          { mode: 'allowlist', domains: [] }, isCloudflareTarget(),
-          repositoryAccess.connectors,
-        );
-        return sandbox.createSandbox(options);
-      },
-    };
-  }
   return {
-    async createSandbox({ id }) {
+    async createSandbox(options) {
       const env = await resolveAgentPlatformEnv();
-      const current = await requireLiveFrozenAgent(getConfigStore(env), plan.agentId);
-      const agent = projectRuntimePlanAgent(plan, current);
-      const runtime = await createSlackAgentRuntime({
-        id,
-        ...(env ? { platformEnv: env } : {}),
-        workspaceId: plan.conversation.workspaceId,
-        channelId: plan.conversation.channelId,
-        threadTs: plan.conversation.threadTs,
-        ...(plan.modelCredential ? { frozenModelCredential: plan.modelCredential } : {}),
-        liveConfig: {
-          workspaceId: plan.conversation.workspaceId,
-          channelId: plan.conversation.channelId,
-          agentId: plan.agentId,
-          agent,
-          model: plan.model,
-          provider: plan.model.split('/', 1)[0] ?? plan.model,
-          modelAttribution: plan.modelAttribution ?? {
-            source: 'legacy_environment',
-            providerId: plan.model.split('/', 1)[0] ?? plan.model,
-          },
-          instructions: plan.instructions,
-          instructionLayers: [],
-        },
-        freezeChannel: false,
-        artifactThreadTs: null,
-        registerActivityContext: false,
-        declarationsOwnedByHooks: !plan.actorMembershipId,
-        forcedSandbox: plan.sandbox.mode,
-        ...(plan.actorMembershipId ? { actorMembershipId: plan.actorMembershipId } : {}),
-        ...(sandboxConversationKey ? { sandboxConversationKey } : {}),
-      });
-      if (!runtime.sandbox) throw new Error('RuntimePlanV2 sandbox is unavailable.');
-      return runtime.sandbox.createSandbox({ id });
+      await prepareRuntimePlanModel(plan, env, turn);
+      // Native plans grant only their frozen connector scopes; operator-wide
+      // egress settings never become an incidental grant. Empty plans need no
+      // account or egress setting reads.
+      if (!plan.repositories.length) {
+        return bash(() => new Bash({ fs: new InMemoryFs() })).createSandbox(options);
+      }
+      // API connections are called through connection_request, never the
+      // shell; the sandbox mounts only repository scopes.
+      const repositoryAccess = await resolveRuntimePlanBashRepositoryAccess(plan, env, turn);
+      const sandbox = createConnectorScopedBash(
+        { mode: 'allowlist', domains: [] }, isCloudflareTarget(),
+        repositoryAccess.connectors,
+      );
+      return sandbox.createSandbox(options);
     },
   };
 }
@@ -2119,31 +1521,6 @@ async function prepareRuntimePlanModelOnce(
     throw new Error('Runtime model route changed after this Slack turn was admitted.');
   }
   return resolved;
-}
-
-function projectRuntimePlanAgent(
-  plan: RuntimePlanV2,
-  current: CustomAgentConfig,
-): CustomAgentConfig {
-  if (current.id !== plan.agentId || !current.enabled) {
-    throw new SealedAgentThreadError(plan.agentId);
-  }
-  const apiConnections: CustomAgentConfig['apiConnections'] = [];
-  const repositories = liveRuntimePlanRepositories(plan, current);
-  const mcpServers: CustomAgentConfig['mcpServers'] = [];
-  return {
-    id: current.id,
-    kind: current.kind,
-    revision: current.revision,
-    name: current.name,
-    instructions: plan.instructions,
-    enabled: true,
-    model: plan.model,
-    skills: plan.skills.map((skill) => ({ ...skill, enabled: true })),
-    mcpServers,
-    apiConnections,
-    repositories,
-  };
 }
 
 function liveRuntimePlanRepositories(
@@ -2692,50 +2069,10 @@ async function resolveRuntimePlanImageClient(
   return provider.ok ? { ok: true, client: provider.client } : { ok: false, reason: 'misconfigured' };
 }
 
-interface AgentSandboxOptions {
-  selection: SandboxSelection;
-  fallback: SandboxFactory;
-  env: PlatformEnv | undefined;
-  conversationKey: string;
-  agentId: string;
-  grants: readonly RepositoryGrant[];
-  credentialMode?: SandboxCredentialMode;
-  settingsStore: ReturnType<typeof getSettingsStore>;
-  monthlySessionCap: number;
-}
-
-async function resolveAgentSandbox(options: AgentSandboxOptions): Promise<SandboxFactory> {
-  if (options.selection === 'bash') return options.fallback;
-
-  // Both Workers-only modules stay below the runtime target gate. getSandbox
-  // mints a lazy DO stub; configureEgress persists policy without booting the
-  // container, whose first exec remains the creation boundary.
-  if (!isCloudflareTarget()) return options.fallback;
-  const binding = options.env?.SANDBOX ?? options.env?.Sandbox;
-  if (!binding) {
-    return options.fallback;
-  }
-  const { session, provider } = await createCloudflareWorkspaceSession({
-    binding,
-    conversationKey: options.conversationKey,
-    agentId: options.agentId,
-    grants: options.grants,
-    ...(options.credentialMode ? { credentialMode: options.credentialMode } : {}),
-    settingsStore: options.settingsStore,
-    monthlySessionCap: options.monthlySessionCap,
-  });
-  // Opened here, before the agent's first model call, exactly as the attached
-  // container always was. The relay prepared this turn and ends it, so the
-  // registry only shares the session with the workspace tools.
-  const serialized = await session.activatable();
-  currentWorkspaceRegistry()?.register(session);
-  return provider(serialized);
-}
-
 /**
- * The default coding workspace of a conversation, on the Sandbox Durable
- * Object the attached container has always used, so warm containers and
- * checkpoints carry over.
+ * A coding workspace of a conversation. The default workspace keeps the
+ * conversation's original Sandbox Durable Object, so warm containers and
+ * checkpoints from before workspaces were tools carry over.
  */
 async function createCloudflareWorkspaceSession(options: {
   binding: unknown;
@@ -2746,7 +2083,7 @@ async function createCloudflareWorkspaceSession(options: {
   agentId: string;
   grants: readonly RepositoryGrant[];
   credentialMode?: SandboxCredentialMode;
-  turnId?: string;
+  turnId: string;
   onOpen?: () => void;
   settingsStore: ReturnType<typeof getSettingsStore>;
   monthlySessionCap: number;
@@ -2777,7 +2114,7 @@ async function createCloudflareWorkspaceSession(options: {
     agentId: options.agentId,
     grants: options.grants,
     ...(options.credentialMode ? { credentialMode: options.credentialMode } : {}),
-    ...(options.turnId === undefined ? {} : { turnId: options.turnId }),
+    turnId: options.turnId,
     ...(options.onOpen ? { onOpen: options.onOpen } : {}),
     mintStub,
     reserveSession: async (reservationId) =>

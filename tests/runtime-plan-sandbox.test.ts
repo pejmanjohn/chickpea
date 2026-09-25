@@ -60,7 +60,7 @@ test(`native REST session: ${scenario}`, async (t) => {
       ? new Response(null, { status: 302, headers: { location: 'https://93.184.216.35/v1/data' } })
       : Response.json({ nonce });
   });
-  const plan = compileRuntimePlanV2({ turn: { workspaceId: 'T_TEST', channelId: 'C_TEST', eventId: 'E_TEST', text: 'Read', userId: 'U_TEST', actorMembershipId: 'member', messageTs: '1787000000.000200', threadTs: '1787000000.000100', source: 'app_mention', contextMode: 'thread' }, assignment: { workspaceId: 'T_TEST', channelId: 'C_TEST', agentId: agent.id, agent, model: agent.model, modelAttribution: { source: 'workspace_default', providerId: 'local-stub', workspaceDefaultRevision: 1 } }, instructions: agent.instructions, memoryEpoch: 1, sandboxMode: 'bash', effectiveConnections: scenario === 'empty' ? [] : [{ account, binding, policy, scope: 'team' }], ...(scenario === 'empty' ? { connectionChoices: [{ providerId: 'linear', choices: [{ label: 'Linear workspace', scope: 'team' }] }] } : {}) } as any);
+  const plan = compileRuntimePlanV2({ turn: { workspaceId: 'T_TEST', channelId: 'C_TEST', eventId: 'E_TEST', text: 'Read', userId: 'U_TEST', actorMembershipId: 'member', messageTs: '1787000000.000200', threadTs: '1787000000.000100', source: 'app_mention', contextMode: 'thread' }, assignment: { workspaceId: 'T_TEST', channelId: 'C_TEST', agentId: agent.id, agent, model: agent.model, modelAttribution: { source: 'workspace_default', providerId: 'local-stub', workspaceDefaultRevision: 1 } }, instructions: agent.instructions, memoryEpoch: 1, effectiveConnections: scenario === 'empty' ? [] : [{ account, binding, policy, scope: 'team' }], ...(scenario === 'empty' ? { connectionChoices: [{ providerId: 'linear', choices: [{ label: 'Linear workspace', scope: 'team' }] }] } : {}) } as any);
   if (scenario === 'wider') account.policy = { ...policy, allowedHosts: [...policy.allowedHosts, '93.184.216.35'] };
   const warnings = t.mock.method(console, 'warn', () => {});
   assert.doesNotMatch(JSON.stringify(plan), /fixture-secret/);
@@ -204,7 +204,6 @@ test('native Slack capability declaration follows an actor-less Lists mount', as
     },
     instructions: agent.instructions,
     memoryEpoch: 1,
-    sandboxMode: 'bash',
     effectiveConnections: [],
   } as any);
   t.mock.method(getConfigStore(), 'getAgent', async () => agent);
@@ -316,7 +315,7 @@ test(`native Google session: ${oauthState}`, async (t) => {
     return Response.json({ files: [], nonce });
   });
   const effectiveConnections = await resolveEffectiveConnectionAccounts({ config: store, workspaceId: 'T_TEST', agentId: agent.id, actorMembershipId: 'member' });
-  const plan = compileRuntimePlanV2({ turn: { workspaceId: 'T_TEST', channelId: 'C_TEST', eventId: 'E_GOOGLE', text: 'Read', userId: 'U_TEST', actorMembershipId: 'member', messageTs: '1787000000.000200', threadTs: '1787000000.000100', source: 'app_mention', contextMode: 'thread' }, assignment: { workspaceId: 'T_TEST', channelId: 'C_TEST', agentId: agent.id, agent, model: agent.model, modelAttribution: { source: 'workspace_default', providerId: 'local-stub', workspaceDefaultRevision: 1 } }, instructions: agent.instructions, memoryEpoch: 1, sandboxMode: 'bash', effectiveConnections } as any);
+  const plan = compileRuntimePlanV2({ turn: { workspaceId: 'T_TEST', channelId: 'C_TEST', eventId: 'E_GOOGLE', text: 'Read', userId: 'U_TEST', actorMembershipId: 'member', messageTs: '1787000000.000200', threadTs: '1787000000.000100', source: 'app_mention', contextMode: 'thread' }, assignment: { workspaceId: 'T_TEST', channelId: 'C_TEST', agentId: agent.id, agent, model: agent.model, modelAttribution: { source: 'workspace_default', providerId: 'local-stub', workspaceDefaultRevision: 1 } }, instructions: agent.instructions, memoryEpoch: 1, effectiveConnections } as any);
   assert.deepEqual(plan.apiConnections[0]?.allowedHosts, ['www.googleapis.com']);
   assert.deepEqual(plan.apiConnections[0]?.pathPrefixes, ['/drive/v3']);
   assert.deepEqual(plan.apiConnections[0]?.allowedMethods, ['GET', 'HEAD']);

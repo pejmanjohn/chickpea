@@ -32,14 +32,10 @@ import {
 } from './bounded-agent-observation.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import { isCloudflareTarget } from '../config/runtime-target.ts';
-import { cloudflareSandboxOptionVariants } from '../sandbox/lifecycle.ts';
-import { reconnectingSandboxStub } from '../sandbox/reconnect.ts';
-import { sandboxThreadKey } from '../sandbox/thread-key.ts';
 import {
   CODING_WORKSPACE_USE_DATA_NAME,
   codingWorkspaceOpenedFromReplyData,
 } from '../sandbox/workspace-use.ts';
-import { prepareSandboxTurn, type SandboxTurnContext } from '../sandbox/turn-context.ts';
 import {
   CHICKPEA_RESPONSE_METADATA_KEY,
   parseChickpeaResponseMetadata,
@@ -75,8 +71,6 @@ import {
   OPENAI_SUBSCRIPTION_QUOTA_TEXT,
   OPENAI_SUBSCRIPTION_RECONNECT_TEXT,
   PROVIDER_FAILURE_TEXT,
-  SANDBOX_FAILURE_TEXT,
-  SANDBOX_SESSION_CAP_FAILURE_TEXT,
 } from './web-client-presenter.ts';
 
 type AgentPromptFailureKind =
@@ -85,9 +79,7 @@ type AgentPromptFailureKind =
   | 'invalid-output'
   | 'openai-subscription-reconnect'
   | 'openai-subscription-quota'
-  | 'openai-subscription-policy'
-  | 'sandbox'
-  | 'sandbox-session-cap';
+  | 'openai-subscription-policy';
 
 type AgentUsageCompleteness = 'complete' | 'partial' | 'not_reported';
 
@@ -175,8 +167,6 @@ export function agentFailureText(error: unknown): string {
   if (error.kind === 'openai-subscription-reconnect') return OPENAI_SUBSCRIPTION_RECONNECT_TEXT;
   if (error.kind === 'openai-subscription-quota') return OPENAI_SUBSCRIPTION_QUOTA_TEXT;
   if (error.kind === 'openai-subscription-policy') return OPENAI_SUBSCRIPTION_POLICY_TEXT;
-  if (error.kind === 'sandbox') return SANDBOX_FAILURE_TEXT;
-  if (error.kind === 'sandbox-session-cap') return SANDBOX_SESSION_CAP_FAILURE_TEXT;
   return AGENT_FAILURE_TEXT;
 }
 
@@ -210,7 +200,6 @@ interface PromptSlackAgentInput {
   state: SlackFlueDispatchState;
   turnId: string;
   conversationKey: string;
-  useCloudflareSandbox: boolean;
   requestedModel: string | null;
   /** Frozen, non-secret revision evidence retained by the adapter observation. */
   runtimePlan?: RuntimePlanV2;
@@ -262,8 +251,6 @@ interface PromptSlackAgentInput {
    * in-process `read()`.
    */
   observeReply?: BoundedReplyReader;
-  /** Focused seam; production uses the Cloudflare Sandbox turn preparer. */
-  prepareSandbox?: typeof prepareCloudflareSandboxTurn;
 }
 
 /**
@@ -278,22 +265,6 @@ export async function promptSlackThreadAgent(
   if (input.state.flueSettlement) {
     await input.beforeResult?.();
     return resultFromSettlement(input.state.flueSettlement);
-  }
-
-  // The workspace turn is prepared once, before dispatch. A reattaching
-  // attempt (receipt saved, nothing settled) observes a submission that is
-  // still running in that workspace; preparing again would revoke its egress
-  // under it.
-  if (input.useCloudflareSandbox && !input.state.dispatchReceipt) {
-    try {
-      await (input.prepareSandbox ?? prepareCloudflareSandboxTurn)(
-        input.env,
-        input.conversationKey,
-        input.turnId,
-      );
-    } catch {
-      throw new AgentPromptFailure('sandbox');
-    }
   }
 
   const observation: FlueTurnObservationV1 = {
@@ -476,16 +447,7 @@ export async function promptSlackThreadAgent(
       // possibly completed turn as a permanent failure.
       throw new AgentPromptFailure('agent', 503, false, true, error);
     }
-    const classified = classifyFlueRunFailure(error);
-    // Only an attached container can fail a turn as a sandbox failure. A
-    // workspace tool reports its failures to the model as tool results.
-    const attachedContainer = input.runtimePlan
-      ? input.runtimePlan.sandbox.mode === 'cloudflare'
-      : input.useCloudflareSandbox;
-    const kind = !attachedContainer &&
-        (classified === 'sandbox' || classified === 'sandbox-session-cap')
-      ? 'agent'
-      : classified;
+    const kind = classifyFlueRunFailure(error);
     logDispatchFailure('settlement_failed', receipt.submissionId, undefined, error);
     let checkpoint: FlueSettlementCheckpointV1;
     try {
@@ -923,7 +885,12 @@ function resultFromSettlement(
   settlement: FlueSettlementCheckpointV1,
 ): AgentDispatchResult {
   if (settlement.outcome === 'completed') return settlement.result;
-  throw new AgentPromptFailure(settlement.failureKind);
+  // An attached container (v0.1.26 and earlier) could settle a turn as a
+  // sandbox failure. Such a record replays as an ordinary Agent failure.
+  const kind = settlement.failureKind === 'sandbox' || settlement.failureKind === 'sandbox-session-cap'
+    ? 'agent'
+    : settlement.failureKind;
+  throw new AgentPromptFailure(kind);
 }
 
 function boundedReceipt(receipt: DispatchReceipt): FlueDispatchReceiptV1 {
@@ -1042,18 +1009,13 @@ function classifyFailureText(typeValue: string, messageValue: string): AgentProm
     message.includes('openai subscription operation failed (client_rejected)') ||
     message.includes('openai subscription operation failed (originator_rejected)')
   ) return 'openai-subscription-policy';
+  // A coding workspace never fails the turn: its tools report failures to
+  // the model as tool results. Anything sandbox-shaped here is the Agent's.
   if (
     type.includes('sandbox_session_cap_reached') ||
-    message.includes('coding workspace monthly session limit')
-  ) return 'sandbox-session-cap';
-  if (
     type.includes('sandbox_unavailable') ||
-    type.includes('sandbox_connection_dropped') ||
-    message.includes('coding workspace is temporarily unavailable') ||
-    message.includes('maximum number of running container instances') ||
-    message.includes('container was unavailable') ||
-    message.includes('container unavailable')
-  ) return 'sandbox';
+    type.includes('sandbox_connection_dropped')
+  ) return 'agent';
   if (
     type.includes('cloudflare_ai_binding_error') ||
     type.includes('invalid_provider_registration') ||
@@ -1144,98 +1106,5 @@ async function buildTurnEnvelopeSafely(
   } catch {
     console.warn('[chickpea] turn envelope skipped; the Agent reads settings live this turn');
     return undefined;
-  }
-}
-
-export async function prepareCloudflareSandboxTurn(
-  env: PlatformEnv | undefined,
-  conversationKey: string,
-  turnId: string,
-): Promise<void> {
-  if (!isCloudflareTarget()) return;
-  const binding = env?.SANDBOX ?? env?.Sandbox;
-  if (!binding) throw new Error('SANDBOX Durable Object binding is unavailable');
-  const { getSandbox } = await import('@cloudflare/sandbox');
-  const sandboxKey = sandboxThreadKey(conversationKey);
-  const preparations = await Promise.allSettled(
-    cloudflareSandboxOptionVariants(sandboxKey).map(async (options) => {
-      const sandbox = reconnectingSandboxStub(() => getSandbox(
-        binding as Parameters<typeof getSandbox>[0],
-        sandboxKey,
-        options,
-      )) as ReturnType<typeof getSandbox> & SandboxTurnContext;
-      await prepareSandboxTurn(sandbox, turnId);
-    }),
-  );
-  if (preparations.some((result) => result.status === 'rejected')) {
-    throw new Error('sandbox turn preparation failed');
-  }
-}
-
-/**
- * End a Slack turn without stopping the thread's workspace. The container
- * stays warm for follow-ups until `sleepAfter` idles it out; only the turn's
- * egress grants are revoked, so nothing left running in it keeps GitHub
- * access between turns.
- */
-export async function endCloudflareSandboxTurn(
-  env: PlatformEnv | undefined,
-  conversationKey: string,
-  usedCloudflareSandbox: boolean,
-): Promise<void> {
-  if (!usedCloudflareSandbox || !isCloudflareTarget()) return;
-  const binding = env?.SANDBOX ?? env?.Sandbox;
-  if (!binding) return;
-  try {
-    const { getSandbox } = await import('@cloudflare/sandbox');
-    const sandboxKey = sandboxThreadKey(conversationKey);
-    const revocations = await Promise.allSettled(
-      cloudflareSandboxOptionVariants(sandboxKey).map(async (options) => {
-        const sandbox = reconnectingSandboxStub(() => getSandbox(
-          binding as Parameters<typeof getSandbox>[0],
-          sandboxKey,
-          options,
-        )) as ReturnType<typeof getSandbox> & { endTurn(): Promise<void> };
-        await sandbox.endTurn();
-      }),
-    );
-    if (revocations.some((result) => result.status === 'rejected')) {
-      console.warn('[chickpea] coding workspace egress revocation did not complete');
-    }
-  } catch {
-    console.warn('[chickpea] coding workspace egress revocation did not complete');
-  }
-}
-
-/**
- * Destroy the workspace outright. Routine runs use this at their end: nobody
- * follows up in a scheduled run's workspace, so it never stays warm.
- */
-export async function releaseCloudflareSandboxTurn(
-  env: PlatformEnv | undefined,
-  conversationKey: string,
-  usedCloudflareSandbox: boolean,
-): Promise<void> {
-  if (!usedCloudflareSandbox || !isCloudflareTarget()) return;
-  const binding = env?.SANDBOX ?? env?.Sandbox;
-  if (!binding) return;
-  try {
-    const { getSandbox } = await import('@cloudflare/sandbox');
-    const sandboxKey = sandboxThreadKey(conversationKey);
-    const teardowns = await Promise.allSettled(
-      cloudflareSandboxOptionVariants(sandboxKey).map(async (options) => {
-        const sandbox = reconnectingSandboxStub(() => getSandbox(
-          binding as Parameters<typeof getSandbox>[0],
-          sandboxKey,
-          options,
-        )) as ReturnType<typeof getSandbox> & { destroy(): Promise<void> };
-        await sandbox.destroy();
-      }),
-    );
-    if (teardowns.some((result) => result.status === 'rejected')) {
-      console.warn('[chickpea] coding workspace teardown did not complete');
-    }
-  } catch {
-    console.warn('[chickpea] coding workspace teardown did not complete');
   }
 }

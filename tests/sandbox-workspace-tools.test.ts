@@ -161,6 +161,7 @@ function session(
     id: 'sandbox_' + 'a'.repeat(40),
     name: DEFAULT_WORKSPACE_NAME,
     agentId: 'agent-1',
+    turnId: 'turn-1',
     grants: [GRANT],
     credentialMode: 'app',
     mintStub: async () => fakeStub(log, options.stub),
@@ -463,6 +464,7 @@ test('the registry ends every owned workspace when the submission throws, and sk
     id: 'x',
     name: 'relay',
     agentId: 'agent-1',
+    turnId: 'turn-1',
     grants: [],
     mintStub: async () => fakeStub({ calls: [] }),
     reserveSession: async () => true,
@@ -504,7 +506,6 @@ test('the registry interceptor scopes managed agent submissions only', async () 
 test('workspace tools are absent on bash plans and on the Node target', () => {
   assert.equal(runtimePlanWorkspaceToolsMounted({ sandbox: { mode: 'bash' } } as never, false), false);
   // This suite runs on Node, where no plan mounts them even with a workspace.
-  assert.equal(runtimePlanWorkspaceToolsMounted({ sandbox: { mode: 'cloudflare' } } as never, false), false);
   assert.equal(runtimePlanWorkspaceToolsMounted(
     { sandbox: { mode: 'bash' }, codingWorkspace: { available: true } } as never,
     false,
@@ -519,8 +520,6 @@ test('on Cloudflare the tools mount for a virtual-sandbox plan with a coding wor
     const current = { sandbox: { mode: 'bash' }, codingWorkspace: { available: true } } as never;
     assert.equal(runtimePlanWorkspaceToolsMounted(current, false), true);
     assert.equal(runtimePlanWorkspaceToolsMounted(current, true), false);
-    // A plan admitted with an attached container keeps its tools.
-    assert.equal(runtimePlanWorkspaceToolsMounted({ sandbox: { mode: 'cloudflare' } } as never, false), true);
     assert.equal(runtimePlanWorkspaceToolsMounted({ sandbox: { mode: 'bash' } } as never, false), false);
   } finally {
     if (previous) Object.defineProperty(globalThis, 'navigator', previous);
@@ -852,6 +851,7 @@ function multiWorkspaceTools(options: { running?: Set<string>; describe?: Record
           id,
           name,
           agentId: 'agent-1',
+          turnId: 'turn-1',
           grants: [GRANT],
           credentialMode: 'app',
           mintStub: async (): Promise<WorkspaceSandboxStub> => ({
@@ -985,10 +985,6 @@ test('the coordinator resolver never creates a workspace to inspect, and a use t
     assert.equal(await resolve('never-used', 'inspect'), undefined);
     assert.equal(roster.knows('never-used'), false);
   });
-
-  const legacy = runtimePlanWorkspaceResolver({ sandbox: { mode: 'cloudflare' } } as never, { release: false });
-  assert.throws(() => legacy('api', 'use'), (error) =>
-    error instanceof WorkspaceLimitError && /only the "main" workspace/.test(error.message));
 });
 
 test('a retired name keeps its generation however many other names the thread uses', () => {

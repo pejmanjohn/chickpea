@@ -65,13 +65,6 @@ export const OPENAI_SUBSCRIPTION_QUOTA_TEXT =
 export const OPENAI_SUBSCRIPTION_POLICY_TEXT =
   'The connected ChatGPT subscription did not authorize this request. An administrator can review the Subscription status in Settings; I did not switch to OpenAI API-key billing.';
 
-/** Static workspace failures disclose the affected surface, never SDK details. */
-export const SANDBOX_FAILURE_TEXT =
-  'I reached the Slack thread, but the coding workspace was temporarily unavailable before completion. I did not expose internal error details in Slack. Please retry in a moment.';
-
-export const SANDBOX_SESSION_CAP_FAILURE_TEXT =
-  "I couldn't open a coding workspace because this installation's monthly sandbox session limit has been reached. An administrator can review it in Settings.";
-
 export const SANDBOX_UNAVAILABLE_FALLBACK_NOTICE =
   'Coding Sandbox was unavailable for this turn, so normal behavior was used without repository access.';
 

@@ -43,7 +43,7 @@ export function decideProgressiveEligibility(
  * Whether the frozen plan mounts a tool that can change something outside
  * this Slack reply. Mirrors the mount predicates in `slack-thread.ts`:
  * `connection_request` and `attach_file_to_connection` ride on API
- * connections, the workspace tools on a Cloudflare sandbox, and a browser
+ * connections, the workspace tools on a coding workspace, and a browser
  * data change runs only under an `act` login. Image generation, sign-in
  * links, and pending account choices post to this conversation only.
  */
@@ -52,7 +52,7 @@ function runtimePlanMountsEffectTools(plan: RuntimePlanV2): boolean {
     plan.apiConnections.length > 0 ||
     (plan.managedConnections?.length ?? 0) > 0 ||
     plan.repositories.length > 0 ||
-    plan.sandbox.mode === 'cloudflare' ||
+    plan.codingWorkspace !== undefined ||
     (plan.browserCapability !== undefined &&
       (plan.websiteLogins ?? []).some(({ level }) => level === 'act'));
 }

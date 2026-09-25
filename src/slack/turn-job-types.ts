@@ -1,7 +1,7 @@
 import { type SlackMemoryUpdate } from './memory-update-terminal.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
 import type { RunExecutionAuthority } from '../work/types.ts';
-import type { RuntimePlanV2 } from '../agents/runtime-plan.ts';
+import type { AdmittedRuntimePlanData, RuntimePlanV2 } from '../agents/runtime-plan.ts';
 import type { WorkTraceCorrelation } from '../work/trace-correlation.ts';
 import type { SlackTablePresentation } from './table-presentation.ts';
 import type { SlackArtifactReceipt } from './artifact-receipts.ts';
@@ -14,8 +14,8 @@ interface FlueDispatchEnvelopeBase {
   instanceId: string;
   /** null creates the planned incarnation; a string continues the pinned one. */
   uid: string | null;
-  /** Present only on create-only first contact. */
-  initialData?: RuntimePlanV2;
+  /** Present only on create-only first contact; resent exactly as admitted. */
+  initialData?: AdmittedRuntimePlanData;
   idempotencyKey: string;
   /** CAS guard used when a governed harness revision rotates an incarnation. */
   previousBinding?: SlackAgentBindingExpectation;

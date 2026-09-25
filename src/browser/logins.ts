@@ -390,7 +390,7 @@ export interface FrozenWebsiteLoginEntry {
 
 /**
  * Preserve a turn's frozen website-login ceiling while applying live
- * revocations (clone of intersectFrozenRepositoryGrants). The frozen list caps
+ * revocations. The frozen list caps
  * additions; the live list applies removals and downgrades. An entry survives
  * only while live still grants the same id for the same host and method, and
  * its level is the lower of the frozen and live levels, so `act` granted after

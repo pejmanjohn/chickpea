@@ -102,7 +102,6 @@ function hookRuntimePlan(
     assignment,
     instructions: HOOK_AGENT.instructions,
     memoryEpoch: 1,
-    sandboxMode: 'bash',
     effectiveConnections: customMcp ? [{
       ...managed,
       account: { ...managed.account, id: 'connection_sql', providerId: 'sql', policy: {

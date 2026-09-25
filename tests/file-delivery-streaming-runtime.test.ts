@@ -41,7 +41,7 @@ const PLAN = compileRuntimePlanV2({
     userId: ACTOR, messageTs: MESSAGE_TS, source: 'app_mention', contextMode: 'thread' },
   assignment: { ...CONVERSATION, agentId: AGENT.id, agent: AGENT, model: AGENT.model!,
     modelAttribution: { source: 'workspace_default', providerId: 'faux', workspaceDefaultRevision: 1 } },
-  instructions: AGENT.instructions, memoryEpoch: 1, sandboxMode: 'bash', effectiveConnections: [],
+  instructions: AGENT.instructions, memoryEpoch: 1, effectiveConnections: [],
 });
 const call = (name: string, args: Record<string, unknown> = {}) =>
   fauxAssistantMessage([fauxToolCall(name, args)], { stopReason: 'toolUse' });

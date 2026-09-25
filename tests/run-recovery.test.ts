@@ -42,7 +42,7 @@ test('memory confirmation survives durable settlement storage with legacy receip
       const id = `memory-replay-${index}`;
       turns.enqueue({ id, evtKey: id, msgKey: id, turn: turn(), assignment: assignment() });
       turns.freezeRuntimePlan(id, compileRuntimePlanV2({
-        turn: turn(), assignment: assignment(), instructions: 'Test memory.', memoryEpoch: 1, sandboxMode: 'bash',
+        turn: turn(), assignment: assignment(), instructions: 'Test memory.', memoryEpoch: 1,
       }));
       turns.prepareFlueDispatch(id, 'Test memory.', { generation: id });
       turns.recordFlueReceipt(id, { submissionId: id, acceptedAt: '2026-08-01T12:00:00.000Z', uid: 'inst_01ARZ3NDEKTSV4RRFFQ69G5FAV' });
@@ -69,7 +69,7 @@ test('the coding model a worker ran on and its usage survive durable settlement 
     }];
     turns.enqueue({ id, evtKey: id, msgKey: id, turn: turn(), assignment: assignment() });
     turns.freezeRuntimePlan(id, compileRuntimePlanV2({
-      turn: turn(), assignment: assignment(), instructions: 'Test coding.', memoryEpoch: 1, sandboxMode: 'bash',
+      turn: turn(), assignment: assignment(), instructions: 'Test coding.', memoryEpoch: 1,
     }));
     turns.prepareFlueDispatch(id, 'Test coding.', { generation: id });
     turns.recordFlueReceipt(id, { submissionId: id, acceptedAt: '2026-08-01T12:00:00.000Z', uid: 'inst_01ARZ3NDEKTSV4RRFFQ69G5FAV' });
@@ -124,7 +124,6 @@ test('activated direct-message dispatch preserves DM kind without channel_type',
       assignment: dmAssignment,
       instructions: 'Frozen DM instructions.',
       memoryEpoch: 1,
-      sandboxMode: 'bash',
     }));
 
     const envelope = turns.prepareFlueDispatch(
@@ -166,7 +165,6 @@ test('existing Flue instance reconciliation compares the exact persisted Slack e
       assignment: zonedAssignment,
       instructions: 'Frozen zoned instructions.',
       memoryEpoch: 1,
-      sandboxMode: 'bash',
     }));
     const priorBinding = {
       continuityKey: decision.runtimePlan.conversation.continuityKey,
@@ -233,7 +231,6 @@ test('Flue Slack signals retain trusted attachment file ids without durable byte
       assignment: imageAssignment,
       instructions: 'Frozen image instructions.',
       memoryEpoch: 1,
-      sandboxMode: 'bash',
     }));
 
     const envelope = turns.prepareFlueDispatch(
@@ -276,7 +273,6 @@ test('Flue Slack signals carry the turn thread image inventory, and omit it when
         assignment: imageAssignment,
         instructions: 'Frozen image instructions.',
         memoryEpoch: 1,
-        sandboxMode: 'bash',
       }));
       const envelope = turns.prepareFlueDispatch(id, 'Use the logo.', { generation: id }, images);
       assert.equal(envelope.schemaVersion, 2);
@@ -303,7 +299,7 @@ test('Flue Slack signals checkpoint the admitted List set across replay', () => 
     turns.enqueue({ id, evtKey: `evt_${id}`, msgKey: `msg_${id}`, turn: admittedTurn, assignment: admittedAssignment });
     turns.freezeRuntimePlan(id, compileRuntimePlanV2({
       turn: admittedTurn, assignment: admittedAssignment,
-      instructions: 'Frozen List instructions.', memoryEpoch: 1, sandboxMode: 'bash',
+      instructions: 'Frozen List instructions.', memoryEpoch: 1,
     }));
     const first = turns.prepareFlueDispatch(id, 'Use the admitted List.', { generation: id }, undefined, ['FSECOND', 'FFIRST']);
     const replay = turns.prepareFlueDispatch(id, 'Use the admitted List.', { generation: id }, undefined, ['FCHANGED']);
@@ -337,7 +333,6 @@ test('Flue Slack signals retain explicit attachment intake failures without file
       assignment: failedAssignment,
       instructions: 'Frozen attachment instructions.',
       memoryEpoch: 1,
-      sandboxMode: 'bash',
     }));
 
     const envelope = turns.prepareFlueDispatch(
@@ -1074,7 +1069,6 @@ test('failure classification uses the newest immutable RunExecution', async () =
             assignment: assignment(),
             instructions: 'Frozen recovery instructions.',
             memoryEpoch: 1,
-            sandboxMode: 'bash',
           }),
         );
         instanceIds.push(decision?.instanceId ?? 'missing');

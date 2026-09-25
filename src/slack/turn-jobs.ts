@@ -7,6 +7,7 @@ import type {
 import {
   deriveRuntimePlanInstanceId,
   parseRuntimePlanV2,
+  type AdmittedRuntimePlanData,
   type RuntimePlanV2,
 } from '../agents/runtime-plan.ts';
 import type {
@@ -1535,6 +1536,11 @@ function parseFlueDispatchEnvelope(value: unknown): FlueDispatchEnvelopeV1 {
   if (initialData && deriveRuntimePlanInstanceId(initialData) !== instanceId) {
     throw new Error('Flue dispatch target does not match its RuntimePlanV2.');
   }
+  // Validated above, but kept as admitted: a retried dispatch must resend the
+  // same creation data, and a legacy plan reads differently than it was sent.
+  const admittedData = initialData
+    ? structuredClone(record.initialData) as AdmittedRuntimePlanData
+    : undefined;
   const previousBinding = record.previousBinding === undefined
     ? undefined
     : parseBindingExpectation(record.previousBinding);
@@ -1545,7 +1551,7 @@ function parseFlueDispatchEnvelope(value: unknown): FlueDispatchEnvelopeV1 {
       instanceId,
       uid,
       message: { kind: 'user', body },
-      ...(initialData ? { initialData } : {}),
+      ...(admittedData ? { initialData: admittedData } : {}),
       idempotencyKey,
       ...(previousBinding ? { previousBinding } : {}),
     };
@@ -1557,7 +1563,7 @@ function parseFlueDispatchEnvelope(value: unknown): FlueDispatchEnvelopeV1 {
     instanceId,
     uid,
     message,
-    ...(initialData ? { initialData } : {}),
+    ...(admittedData ? { initialData: admittedData } : {}),
     idempotencyKey,
     ...(previousBinding ? { previousBinding } : {}),
   };

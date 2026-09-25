@@ -64,7 +64,7 @@ test('real Flue overflow compaction resumes after a successful tool without exec
     const receipt = await agent.dispatch('Second synthetic context. '.repeat(2000));
     const reply = await promptSlackThreadAgent({
       handle: agent, message: 'unused saved dispatch', turnId: 'overflow-probe',
-      conversationKey: 'T_FIXTURE:C_FIXTURE:1', useCloudflareSandbox: false,
+      conversationKey: 'T_FIXTURE:C_FIXTURE:1',
       requestedModel: `cloudflare/${modelId}`,
       state: {
         dispatchEnvelope: { instanceId: 'synthetic-overflow' } as FlueDispatchEnvelopeV1,
