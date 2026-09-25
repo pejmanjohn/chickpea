@@ -316,3 +316,40 @@ test('a turn whose preparation fails after its first status releases that status
   const key = `${assignment.workspaceId}:D_FIRST_STATUS:1788000001.000${String(turns).padStart(3, '0')}`;
   assert.equal(registry.owners(key)?.size ?? 0, 0);
 });
+
+test('memory preparation that fails while the plan is still reading fails the turn without an unhandled rejection', async () => {
+  const unhandled: unknown[] = [];
+  const onUnhandled = (reason: unknown) => { unhandled.push(reason); };
+  process.on('unhandledRejection', onUnhandled);
+  const failure = new Error('memory preparation failed');
+  const info = console.info;
+  // Fault injection: this fixture's memory preparation ends on its quarantine
+  // path, so failing that path's metric makes preparation itself reject.
+  console.info = (...args: unknown[]) => {
+    if (String(args[0]).includes('memory_metric')) throw failure;
+    info(...args);
+  };
+  let releasePlanRead!: () => void;
+  const planRead = new Promise<void>((resolve) => { releasePlanRead = resolve; });
+  try {
+    const run = firstStatusTimeline('dm', null, {
+      getBoundRuntimePlan: async () => {
+        await planRead;
+        return undefined;
+      },
+    });
+    const outcome = run.then(() => 'resolved', (error: unknown) => error);
+    // Memory rejects while the plan's read is pending; the plan awaits the
+    // epoch only after this delay.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    console.info = info;
+    releasePlanRead();
+    assert.equal(await outcome, failure);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.deepEqual(unhandled, []);
+  } finally {
+    console.info = info;
+    releasePlanRead();
+    process.off('unhandledRejection', onUnhandled);
+  }
+});

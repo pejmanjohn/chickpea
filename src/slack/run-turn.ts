@@ -851,14 +851,21 @@ async function runTurnAttempt(
             : {}),
         });
     // The plan's reads do not need the memory; only its compilation does.
+    // `Promise.all` below reports a memory failure; the epoch derived from it
+    // is only awaited once the plan's reads finish, so mark it handled here or
+    // an early memory rejection would be unhandled meanwhile. If the freeze
+    // fails first, memory preparation finishes in the background unused:
+    // harmless, because nothing is persisted without the epoch.
+    const memoryEpoch = memory?.then((value) => value.memoryEpoch);
+    memoryEpoch?.catch(() => undefined);
     const [preparedMemory, frozen] = await Promise.all([
       memory,
-      !options.runtimePlanDecision && memory && resolvedModel
+      !options.runtimePlanDecision && memoryEpoch && resolvedModel
         ? freezeRuntimePlanForTurn({
             turn,
             assignment,
             platformEnv,
-            memoryEpoch: memory.then((value) => value.memoryEpoch),
+            memoryEpoch,
             ...(settingsStore ? { settingsStore } : {}),
             ...(options.appStores?.config ? { configStore: options.appStores.config } : {}),
             ...(options.onRuntimePlan ? { persist: options.onRuntimePlan } : {}),
