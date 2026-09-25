@@ -39,6 +39,10 @@ The mapping is conservative, not proof of complete impact analysis.
 - Delivery/routing: DM, channel root, and mention-free thread follow-up. Check
   the intended Agent, context, destination, and one terminal reply. Existing
   offline durability checks exercise duplicate ingress and process restart.
+  For turn execution, the thread runner, first-status latency, streaming,
+  redeploy recovery or gateway rate limits, run the scripted
+  [runner matrix](runner-matrix.md) on a deployed lane instead of hand-driving
+  concurrent threads.
 - Connections: use an existing registered connection for execution/formatting
   changes. Fresh OAuth is required when setup, callback, ownership, or reconnect
   behavior changes. Never count an existing read as fresh authorization proof.

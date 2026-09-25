@@ -157,6 +157,7 @@
     "test:cli": "npm test --workspace packages/cli",
     "build:cli": "npm run build --workspace packages/cli",
     "verify:live:record": "node scripts/verification-record.mjs",
+    "verify:live:runner-matrix": "node --import tsx qa/live/runner-matrix/cli.ts",
     "verify:live:candidate": "node scripts/verify-qa-candidate.mjs",
     "verify:live:fixtures": "node scripts/verification-fixtures.mjs",
     "preinstall": "node scripts/lib/node-version.mjs",

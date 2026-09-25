@@ -160,6 +160,14 @@ owner releases normally. A deadline, unsafe ownership, stale source, orphan mark
 unavailable account, or unreconciled action needs its specific recovery; waiting
 longer does not resolve it. Continue independent work and preserve the blocker.
 
+## Runner matrix mode
+
+The parallel-turns / runner-stack matrix (parity, first status, concurrent long
+turns with an interruption, mid-turn redeploys, a mention burst) is scripted.
+Follow [runner-matrix.md](runner-matrix.md): the verifier arms the page harness in
+the lane browser, starts the driver, collects the export, and records results in
+the same run record. It uses only the actions declared above.
+
 ## Delegation and live ownership
 
 Within the authorized repair scope, delegate substantial, bounded, independent

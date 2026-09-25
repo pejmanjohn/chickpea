@@ -1,0 +1,58 @@
+{
+  "schema": "chickpea-runner-matrix-spec/v1",
+  "description": "Parallel turns / runner stack live matrix. Offsets are milliseconds from the armed T0. Cases overlap by design; only redeploys serialise. Phases are staggered so the first-status measurement and the burst do not share the shared gateway's per-binding window (about 120 Slack operations per 60 s).",
+  "defaults": {
+    "continuationGapMs": 8000,
+    "collectGraceMs": 30000,
+    "minLeadMs": 20000
+  },
+  "bounds": {
+    "firstStatus": { "p95Ms": 5000, "maxMs": 10000 },
+    "redeployProbe": { "maxMs": 10000 },
+    "longTurn": { "minDurationMs": 90000, "minChars": 4000, "continuationThresholdChars": 12000 }
+  },
+  "prompts": {
+    "parityChannel": "Reply with exactly the words PARITY-CHANNEL OK and nothing else.",
+    "parityDm": "Reply with exactly the words PARITY-DM OK and nothing else.",
+    "parityFollowup": "Thanks. Now reply with exactly the words PARITY-THREAD OK and nothing else.",
+    "short": "In two sentences, say what a load balancer does.",
+    "long": "Write a detailed, well-structured guide of about 4,500 words on planning a zero-downtime database migration for a busy web application. Use a title, at least ten numbered sections with headings, checklists, and a closing summary. Do not use tools; write it directly and stream it as you go.",
+    "burst": "In one short sentence, name one benefit of code review."
+  },
+  "cases": {
+    "parity": { "atMs": 0, "dmAtMs": 1000, "followupDelayMs": 5000 },
+    "first-status": {
+      "anchorAtMs": 40000,
+      "warmupAtMs": 45000,
+      "sidesAtMs": 60000,
+      "spacingMs": 3000,
+      "count": 8,
+      "sides": [
+        { "agent": "a", "where": "channel" },
+        { "agent": "a", "where": "channel" },
+        { "agent": "b", "where": "channel" },
+        { "agent": "b", "where": "dm" },
+        { "agent": "a", "where": "channel" },
+        { "agent": "b", "where": "channel" },
+        { "agent": "a", "where": "channel" },
+        { "agent": "b", "where": "channel" }
+      ]
+    },
+    "long-turns": {
+      "atMs": 180000,
+      "spacingMs": 1000,
+      "count": 4,
+      "interruptAfterMs": 40000,
+      "requireInterruption": true
+    },
+    "redeploy-mid-turn": {
+      "atMs": 480000,
+      "roundGapMs": 240000,
+      "count": 2,
+      "deployAfterMs": 40000,
+      "probeAfterMs": 60000
+    },
+    "rate-limit": { "atMs": 420000, "spacingMs": 250, "count": 12 }
+  },
+  "expectedTurnMs": { "short": 30000, "long": 150000, "redeploy": 200000 }
+}
