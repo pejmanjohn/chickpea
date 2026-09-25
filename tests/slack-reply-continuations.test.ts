@@ -159,7 +159,9 @@ const PERSONA = {
 };
 
 function harness(): Harness {
-  const clock = { now: 1_800_000_000_000 };
+  // A minute after the fake stream starts: younger than the Agent View
+  // stream retirement age, so only tests that expire it see a retired stream.
+  const clock = { now: 1_785_800_160_000 };
   const db = openStateDb(':memory:');
   const store = new SlackRunPresentationStoreLogic(db, () => clock.now);
   const runId = 'run_continuations';
