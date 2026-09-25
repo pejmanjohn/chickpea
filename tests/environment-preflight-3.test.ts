@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node
 import { join } from 'node:path';
 import test from 'node:test';
 // @ts-expect-error Executable environment modules intentionally have no declarations.
-import { claimEnvironment, readEnvironmentRegistry, reclaimEnvironment, releaseEnvironment } from '../scripts/lib/environment-registry.mjs';
+import { assertLiveEnvironmentClaim, claimEnvironment, createEnvironmentRegistry, readEnvironmentRegistry, reclaimEnvironment, releaseEnvironment } from '../scripts/lib/environment-registry.mjs';
 // @ts-expect-error Executable environment modules intentionally have no declarations.
 import { beginEnvironmentDeployment, classifySetupContractDrift, completeEnvironmentDeployment, environmentBaselinePath, environmentDeployReceiptPath, readLocalEnvironmentContract, observeProductionEnvironmentAuthority, observeReceiptBackedEnvironment, preflightEnvironmentMutation, readEnvironmentDeployReceipt, authorizeEnvironmentCleanupPlan, reconcileEnvironmentDeployment, recheckEnvironmentMutationAuthority, writeEnvironmentBaseline, writeEnvironmentResourceCreationIntent, writeEnvironmentResourceCreationReceipt, writeEnvironmentSchemaAdvancementIntent, withEnvironmentReleaseFence } from '../scripts/lib/environment-preflight.mjs';
 import { acquireTargetLock } from '../qa/live/safety/lock.ts';
@@ -11,7 +11,7 @@ import { acquireTargetLock } from '../qa/live/safety/lock.ts';
 import { attestEnvironment } from '../scripts/lib/environment-attestation.mjs';
 // @ts-expect-error Executable environment modules intentionally have no declarations.
 import { createPhaseOneBaselinePlan, projectProtectedProductInventory } from '../scripts/lib/environment-baseline.mjs';
-import { NOW, TARGETS, git, fixture, fingerprints, baseline, localContract, INSTALL_DIGEST, OTHER_INSTALL_DIGEST, FLOW_DIGEST, OTHER_FLOW_DIGEST, OTHER_COMBINED_DIGEST, splitBaseline, splitLocalContract, authority, runtimeAuthorities, protectedInventories, rejects, makeMutationLockStale } from './environment-preflight.fixture.ts';
+import { NOW, TARGETS, git, fixture, fingerprints, baseline, localContract, INSTALL_DIGEST, OTHER_INSTALL_DIGEST, FLOW_DIGEST, OTHER_FLOW_DIGEST, OTHER_COMBINED_DIGEST, splitBaseline, splitLocalContract, authority, RUNTIME_SECRET_SOURCE_BINDINGS, runtimeAuthorities, protectedInventories, rejects, makeMutationLockStale } from './environment-preflight.fixture.ts';
 
 test('production authority refuses unmarked test observer seams', async () => {
   await assert.rejects(observeProductionEnvironmentAuthority({
@@ -808,4 +808,94 @@ test('the local contract splits the setup sources into an install contract and a
       localDigest: contract.setupFlowDigest,
     },
   );
+});
+
+test('a second host reads a lane through its recorded authority origin, and another host\'s lane must answer live', async (context) => {
+  const f = fixture({ transport: 'gateway' });
+  context.after(() => rmSync(f.parent, { recursive: true, force: true }));
+  // This host's registry: amber is its own, cobalt belongs to another host.
+  // Neither lane has a URL in the environment or a credential file; the
+  // records carry the origins, the environment carries only the tokens.
+  const cloudRoot = join(f.parent, 'cloud');
+  const remoteEvidence = join(f.parent, 'cloud-cobalt', 'evidence');
+  mkdirSync(remoteEvidence, { recursive: true, mode: 0o700 });
+  createEnvironmentRegistry({
+    root: cloudRoot, hostFingerprint: 'cloud-host',
+    sandbox: { archiveDate: '2027-01-15T00:00:00.000Z', workspaceSlotsTotal: 5, workspaceSlotsUsed: 3, integrationHeadroom: 37 },
+    targets: f.records.map((record) => record.target === 'cobalt'
+      ? { ...record, evidenceRoot: remoteEvidence, ownership: 'remote', authorityOrigin: 'https://cobalt.test' }
+      : { ...record, ownership: 'local', authorityOrigin: 'https://amber.test' }),
+  });
+  const cloud = { root: cloudRoot, hostFingerprint: 'cloud-host', worktreePath: f.worktree, now: () => NOW };
+  claimEnvironment('amber', cloud);
+  const { claim, registration } = assertLiveEnvironmentClaim('amber', cloud);
+  const runtime = runtimeAuthorities();
+  const gatewayRuntime: Record<string, any> = Object.fromEntries(TARGETS.map((target) => [target, {
+    ...runtime[target], schemaVersion: 'chickpea-environment-runtime-authority/v2',
+    secretFingerprints: {
+      ...runtime[target]!.secretFingerprints,
+      schemaVersion: 'chickpea-environment-runtime-secret-fingerprints/v2',
+      sourceBindings: { ...RUNTIME_SECRET_SOURCE_BINDINGS, cookie: 'CHICKPEA_AUTH_SECRET',
+        signing: 'slack.gateway.deploymentIdentity.v1.deploymentId' },
+    },
+    slack: authority(target).slack,
+    transportAuthority: { healthy: true, phase: 'healthy', detail: null, generation: 1, versionId: `version-${target}` },
+  }]));
+  const token = (target: string) => Buffer.alloc(32, target.charCodeAt(0)).toString('base64url');
+  const env: Record<string, string> = Object.fromEntries(TARGETS.map((target) => [
+    `CHICKPEA_ENV_${target.toUpperCase()}_LIVE_AUTHORITY_READ_TOKEN`, token(target),
+  ]));
+  const requested: string[] = [];
+  const notices: string[] = [];
+  let down = new Set<string>();
+  const options = {
+    ...cloud, env, credentialsRoot: join(f.parent, 'absent'), authorityRetryDelayMs: 0,
+    notice: (message: string) => { notices.push(message); },
+    runWrangler: (args: string[]) => {
+      if (args[0] === 'deployments') return { status: 0, stdout: JSON.stringify({ versions: [{ version_id: 'version-amber', percentage: 100 }] }) };
+      if (args[0] === 'd1') return { status: 0, stdout: JSON.stringify([{ success: true, results: [{ name: '0002_mcp_oauth.sql' }] }]) };
+      return { status: 0, stdout: JSON.stringify({ migrations: [{ tag: 'v9' }], resources: { bindings: [
+        { name: 'AUTH_DB', type: 'd1', id: 'd1-amber' },
+        { name: 'TAG_STATE', type: 'durable_object_namespace', class_name: 'TagStateStore', namespace_id: 'tag-amber' },
+        { name: 'CHICKPEA_ENV_TARGET', type: 'plain_text', text: 'amber' },
+      ] } }) };
+    },
+    fetchImpl: async (url: URL, init: RequestInit) => {
+      requested.push(url.href);
+      const target = url.hostname.split('.')[0]!;
+      assert.equal(new Headers(init.headers).get('authorization'), `Bearer ${token(target)}`);
+      if (down.has(target)) return new Response('{}', { status: 503 });
+      return Response.json(gatewayRuntime[target]);
+    },
+  };
+  const request = { target: 'amber', claim, registration, phase: 'before' };
+  const observed = await observeProductionEnvironmentAuthority(request, options);
+  assert.equal(observed.slack.teamId, 'T_AMBER');
+  assert.deepEqual(observed.fleetCredentialFingerprints.cobalt, fingerprints('cobalt'));
+  assert.deepEqual([...requested].sort(), [
+    'https://amber.test/internal/environment/authority',
+    'https://cobalt.test/internal/environment/authority',
+  ]);
+  assert.deepEqual(notices, []);
+  // A host variable still wins over the recorded origin.
+  requested.length = 0;
+  await observeProductionEnvironmentAuthority(request, {
+    ...options, env: { ...env, CHICKPEA_ENV_COBALT_LIVE_AUTHORITY_URL: 'https://cobalt.test/internal/environment/authority?via=env' },
+  });
+  assert.ok(requested.includes('https://cobalt.test/internal/environment/authority?via=env'));
+  // The other host's lane keeps no baseline here, so nothing can stand in for
+  // it while it is unreachable; the refusal names the lane and why.
+  down = new Set(['cobalt']);
+  await assert.rejects(observeProductionEnvironmentAuthority(request, options), (error: unknown) =>
+    rejects('LIVE_AUTHORITY_BRIDGE_UNAVAILABLE')(error)
+    && (error as { details?: { target?: string; ownership?: string } }).details?.target === 'cobalt'
+    && (error as { details?: { ownership?: string } }).details?.ownership === 'remote');
+  assert.deepEqual(notices, []);
+  down = new Set();
+  // The record supplies a URL, never a token.
+  const { CHICKPEA_ENV_COBALT_LIVE_AUTHORITY_READ_TOKEN: _dropped, ...withoutCobaltToken } = env;
+  void _dropped;
+  await assert.rejects(observeProductionEnvironmentAuthority(request, { ...options, env: withoutCobaltToken }), (error: unknown) =>
+    rejects('LIVE_AUTHORITY_READ_TOKEN_INVALID')(error) && (error as { details?: { target?: string } }).details?.target === 'cobalt');
+  releaseEnvironment('amber', cloud);
 });

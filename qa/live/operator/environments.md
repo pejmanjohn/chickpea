@@ -270,6 +270,118 @@ do not set this just to clear a refusal. Both package metadata and the selected
 remote must match that identity. Candidate metadata cannot redefine the default.
 This is an operator error guard, not a sandbox for untrusted deployment code.
 
+## Operate lanes from a second host
+
+The environment registry is host-bound. `~/.chickpea/environments/registry.json`
+carries the fingerprint of the machine that created it, every claim carries
+the same fingerprint, and every read refuses another host's registry with
+`HOST_MISMATCH`. Never copy a registry, its revisions, claim markers, or lock
+files to another machine. A second host (another Mac, or a Claude Code cloud
+session on a fresh VM) gets its own registry from a registration file.
+
+Each lane has exactly one owning host at a time. Every host registers all
+active lanes, so the fleet check is unchanged, but each record is marked
+`local` (this host claims, deploys, and attests the lane) or `remote` (another
+host owns it; this host keeps the lane's identity and authority origin for the
+deploy preflight's fleet credential check and nothing else). A remote lane
+shows `health: remote` in `env status`, is skipped by `wait-claim any` and by
+`claim` without an alias, and refuses `claim`, `reclaim`, `release`, `attest`,
+and every deploy with `TARGET_REMOTE`. Claims therefore never race across
+hosts. `reconciliation` reports only this host's lanes.
+
+### Hand a lane to another host
+
+On the current owner (for example the maintainer's Mac handing Violet to the
+cloud environment):
+
+1. Finish or release any claim on the lane and let its deploys complete. The
+   hand-off refuses while the lane is claimed, mutation-locked, has a pending
+   deploy intent, or holds an installation reservation.
+2. Run `npm run env -- ownership violet --set remote`. This appends a registry
+   revision that marks the lane remote and clears this host's attestation of
+   it; no other record changes.
+3. Run `npm run env -- export-registration all --own violet --output
+   ~/.chickpea/registrations/cloud.json` (create the directory with
+   `mkdir -m 700` first). The output must be an absolute `.json` path outside
+   any Git checkout, in an owner-only directory; the file is created `0600`
+   and never overwritten. It carries, for every lane, the identity and
+   serving-state fields of the registry record plus the lane's
+   `authorityOrigin` (taken from this host's
+   `CHICKPEA_ENV_<COLOR>_LIVE_AUTHORITY_URL` or from `origin` in
+   `~/.chickpea/lane-credentials/<color>-live.json`; the token is never read
+   into it) and, for each `--own` lane, that lane's baseline and latest deploy
+   receipt from its evidence root. It never carries claims, locks, audit
+   history, evidence paths, tokens, or the host fingerprint. A lane named in
+   `--own` must already be remote here (`TARGET_OWNED_LOCALLY` otherwise), so
+   no lane is local on two hosts through this tooling. Lanes not named in
+   `--own` are exported as remote.
+4. Store the file for the second host. For a cloud environment, base64 the
+   file into one environment variable, and keep the three lanes' read tokens
+   in `CHICKPEA_ENV_<COLOR>_LIVE_AUTHORITY_READ_TOKEN` variables; the URLs
+   come from the registration's origins. Wrangler credentials for the lanes'
+   Cloudflare account are still required for a deploy or a capability read.
+
+Once a lane is remote here, `env status` and `capabilities` keep showing its
+exported snapshot, not live state; ask the owning host.
+
+### Bootstrap the second host
+
+On the second host, once per host (a fresh cloud VM is once per session):
+
+```sh
+umask 077
+mkdir -p "$HOME/.chickpea"
+printf '%s' "$CHICKPEA_ENVIRONMENT_REGISTRATION" | base64 -d > "$HOME/.chickpea/cloud.json"
+npm run env -- init --registration "$HOME/.chickpea/cloud.json"
+```
+
+`init` reads the owner-only file, refuses when any registry state already
+exists at the root (`REGISTRY_EXISTS`; there is no merge and no overwrite),
+creates this host's machine identity and registry, and gives every lane an
+evidence root under the registry root (`<root>/<color>/evidence`,
+owner-only). For each owned lane it publishes the baseline and deploy receipt
+from the file into that evidence root before the registry is committed; a
+remote lane gets an empty evidence root. Afterwards `env status --all` lists
+the fleet with the owned lane `ready` and the others `remote`, and
+`wait-claim`, `claim`, `target`, the guarded `npm run deploy`, and `attest`
+work for the owned lane exactly as on the first host. `register` (Violet
+adoption) stays a first-host operation.
+
+Limits on the second host:
+
+- The deploy preflight still reads every active lane's live authority. Remote
+  lanes have no recorded baseline here, so a remote lane that does not answer
+  (for example while its own host is deploying it) fails the deploy with
+  `LIVE_AUTHORITY_BRIDGE_UNAVAILABLE` naming that lane with
+  `ownership: remote`, instead of standing in with recorded fingerprints.
+  Retry when it answers.
+- The owned lane's serving state is a snapshot from the export. If the
+  previous owner deploys the lane after exporting, this host's first
+  preflight refuses with a serving-version or metadata mismatch. Export after
+  the hand-off, never before.
+- `attest` needs the deploy receipt of the serving version. The export
+  carries it when the previous owner deployed through the guarded wrapper;
+  otherwise attest after the first guarded deploy from this host.
+- Verifier locks, journals, and evidence written here stay here. Report them
+  in the run record; they do not travel back with the lane.
+
+### Take a lane back
+
+Reverse the hand-off from the current owner: `ownership <color> --set remote`
+there, then `export-registration <color> --own <color> --output <file>`
+there, bring the file to the returning host, and run
+`npm run env -- ownership <color> --set local --registration <file>`. The
+lane's identity fields must match the record already registered here
+(`REGISTRATION_IDENTITY_MISMATCH` names the field); its serving state,
+authority origin, baseline, and deploy receipt replace the stale copies kept
+while the lane was remote. Superseded evidence files stay beside the new ones
+as `<name>.superseded-<timestamp>.json`. A lane never returns without the
+current owner's export, because the record here is stale by definition.
+
+Every checkout that reads a registry carrying `ownership` must include this
+tooling; older checkouts reject the registry instead of rewriting it, as with
+Violet's admission.
+
 ## Product telemetry isolation
 
 Before synthetic activity on any deployed target, run
