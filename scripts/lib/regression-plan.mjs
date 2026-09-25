@@ -41,7 +41,9 @@ const rules = [
 // The checks after the suite use reserved ports and their own temporary state,
 // so they run together as one group. The Node proofs share one Node build
 // instead of each rebuilding dist/. The clean export stays last and alone.
-const SERIAL_STEPS = new Set(['verify:hygiene', 'build', 'test', 'typecheck', 'verify:oss-export']);
+const SERIAL_STEPS = new Set([
+  'verify:hygiene', 'build', 'test', 'typecheck', 'verify:cf-smoke:alarm', 'verify:oss-export',
+]);
 const NODE_BUILD_SCRIPTS = new Set(['verify:node-scheduler-capability', 'verify:providers', 'verify:durability', 'verify:node-scheduler-offline']);
 function groupProofs(steps) {
   const isProof = (step) => step.kind === 'node' || (step.kind === 'npm' && !SERIAL_STEPS.has(step.script));
@@ -122,7 +124,13 @@ export function createRegressionPlan({ mode = 'changed', areas = [], files = [],
   if (broad || includes('delivery')) steps.push({ kind: 'node', file: 'scripts/verify-flue-offline-turn.mjs' });
   if (broad || includes('delivery', 'memory')) npm('verify:durability');
   if (nodeScheduler) npm('verify:node-scheduler-offline', mode === 'release' ? undefined : ['--expire-lease']);
-  if (fullTests || includes('auth')) npm('verify:cf-smoke');
+  if (fullTests || includes('auth')) {
+    // The default (thread runner) executor, then the SLACK_TAG_TURN_EXECUTOR
+    // =alarm emergency fallback. Both rebuild dist-cf, so the second runs
+    // alone after the proofs group.
+    npm('verify:cf-smoke');
+    npm('verify:cf-smoke:alarm');
+  }
   if (mode === 'release') npm('verify:oss-export');
   // Retain hygiene, artifact restoration, workerd, Admin and authoring checks.
   // The export installs/builds/tests HEAD and runs these offline checks once.

@@ -1912,9 +1912,13 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       config: localGatewayAppStores(stores).config,
     });
     stores.management.cleanupRetention(Date.now(), 250);
-    // With SLACK_TAG_TURN_EXECUTOR=runner, new turns go to their thread's
-    // SlackThreadRunner and this alarm only finishes turns it already
-    // dispatched to Flue. Rows handed to runners stay theirs either way.
+    // New turns go to their thread's SlackThreadRunner (the default executor)
+    // and this alarm only finishes turns it already dispatched to Flue: rows
+    // admitted before the runner became the default. The emergency gate
+    // SLACK_TAG_TURN_EXECUTOR=alarm (or a Worker without the runner binding)
+    // keeps every new turn on this alarm instead. Rows handed to runners stay
+    // theirs either way. The alarm execution path below is kept for those
+    // legacy and fallback rows; delete it once a release has drained them.
     const runnerBinding = Boolean((this.env as PlatformEnv).SLACK_THREAD_RUNNER);
     const runnerMode = runnerBinding &&
       slackTurnExecutor(this.env as PlatformEnv) === 'runner';
@@ -2079,8 +2083,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     // The drain keeps admitting while turns observe, so one long turn never
     // holds new messages until the platform ends this alarm, and it yields
     // every observation before the alarm's wall-time limit (see
-    // src/slack/alarm-turn-drain.ts).
-    const DRAIN_CONCURRENCY = 4;
+    // src/slack/alarm-turn-drain.ts). Only the thread cap bounds it.
     const drainedThreads = new Set<string>();
     const turnsStartedAt = Date.now();
     const turnDrain = await drainAlarmTurnJobs<(typeof pending)[number]>({
@@ -2115,7 +2118,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
         await drainCloudflareScheduleActions(stores, this.env as PlatformEnv);
         await drainCloudflareManagementReceipts(stores, resolveInstallation, this.presentationRunnerOf);
       },
-      startConcurrency: DRAIN_CONCURRENCY,
+      startConcurrency: MAX_TURN_DRAIN_BATCH,
       maxActiveThreads: MAX_TURN_DRAIN_BATCH,
       startedAt: alarmStartedAt,
       budgetMs: ALARM_TURN_BUDGET_MS,
@@ -2211,7 +2214,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
   }
 
   /**
-   * SLACK_TAG_TURN_EXECUTOR=runner: hand every pending turn whose thread is
+   * The default executor: hand every pending turn whose thread is
    * free to its runner, a page at a time, and return without waiting for any
    * turn. Unconfirmed hand-offs are admitted again first, so a hand-off lost
    * to a restart of this object is never overtaken in its thread. A failed
@@ -2993,7 +2996,7 @@ async function runWorkMaintenance(
 }
 
 export { SlackGatewaySession };
-// Per-thread turn executor (migration v11), used with SLACK_TAG_TURN_EXECUTOR=runner.
+// Per-thread turn executor (migration v11), the default for Cloudflare turns.
 export { SlackThreadRunner } from './slack/thread-runner.ts';
 
 async function runRoutineHeartbeat(

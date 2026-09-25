@@ -67,8 +67,9 @@ export function sandboxTurnReaders(env: PlatformEnv): TurnExecutionPorts['sandbo
 
 /**
  * Per-thread Slack turn runner (binding `SLACK_THREAD_RUNNER`, migration v11),
- * addressed by `idFromName(threadKey)`. With `SLACK_TAG_TURN_EXECUTOR=runner`
- * the state store's alarm hands each admitted turn here and returns; this
+ * addressed by `idFromName(threadKey)`. By default (unless the emergency gate
+ * `SLACK_TAG_TURN_EXECUTOR=alarm` is set) the state store's alarm hands each
+ * admitted turn here and returns; this
  * object executes its thread's turns in order (see thread-runner-loop.ts), so
  * a long turn in one thread never delays another thread. It keeps the turn's
  * Slack presentation and live status itself and writes each turn's outcome

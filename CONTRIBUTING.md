@@ -109,6 +109,7 @@ DO_NOT_TRACK=1 node scripts/verify-flue-offline-turn.mjs
 DO_NOT_TRACK=1 npm run verify:durability
 DO_NOT_TRACK=1 npm run verify:providers
 DO_NOT_TRACK=1 npm run verify:cf-smoke
+DO_NOT_TRACK=1 npm run verify:cf-smoke:alarm
 ```
 
 The root test suite runs through `scripts/run-tests.mjs` under 8-way
@@ -124,8 +125,10 @@ take a probed port back before a child binds it. Use it instead of probing
 
 The offline verifiers use fake Slack/provider services and isolated local state.
 They do not require production credentials. `verify:cf-smoke` builds both
-Cloudflare profiles and runs the core profile in local workerd; it takes several
-minutes. Each run uses a free local port and its own disposable temporary state;
+Cloudflare profiles and runs the core profile in local workerd with the default
+per-thread runner executor; it takes several minutes. `verify:cf-smoke:alarm`
+repeats it with the `SLACK_TAG_TURN_EXECUTOR=alarm` emergency fallback so the
+state store's alarm executor stays covered. Each run uses a free local port and its own disposable temporary state;
 it does not reset an operator's local Worker state.
 
 After committing the proposed source, run `npm run verify:oss-export`. It runs

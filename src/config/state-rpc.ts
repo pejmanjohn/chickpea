@@ -619,7 +619,7 @@ export interface TagStateRpc {
     submissionId: string,
     status: TypedActivityStatus,
   ): Promise<StateRpcResult<null>>;
-  // -- thread runner (SLACK_TAG_TURN_EXECUTOR=runner) ----------------------
+  // -- thread runner (the default turn executor) ---------------------------
   /**
    * One per-turn operation from the SlackThreadRunner executing that turn
    * (see src/slack/thread-runner-rpc.ts). Bounded calls per turn, none per poll.
