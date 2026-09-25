@@ -19,7 +19,10 @@ import {
   type SlackInstallationExecutionContext,
 } from './installation-execution.ts';
 import { recordSlackInstallationUnavailable } from './installation-observability.ts';
-import { abandonTerminalSlackPresentationBestEffort } from './presentation-repair.ts';
+import {
+  abandonTerminalSlackPresentationBestEffort,
+  postRecoveryNoticeBestEffort,
+} from './presentation-repair.ts';
 import { recordDeliveredSlackAgentMessage } from './public-context.ts';
 import {
   deliverAgentFailureFinal,
@@ -227,6 +230,15 @@ export async function executeTurnJob(
           requireUnresolvedDelivery: true,
         });
       }
+      // The thread must not end on a truncated prefix with no word.
+      await postRecoveryNoticeBestEffort({
+        client,
+        state: presentationState,
+        ...(job.runId ? { runId: job.runId } : {}),
+        turnId: job.id,
+        channelId: job.turn.channelId,
+        threadTs: job.turn.threadTs,
+      });
       ports.turnJobs.markRecoveryRequired(job.id, reasonCode);
       if (activeWorkKey) ports.slack.setActiveWork(activeWorkKey, job.id, false);
       return false;

@@ -13,7 +13,8 @@ import {
 } from '../src/slack/ledger-turn-driver.ts';
 import { AgentPromptFailure } from '../src/slack/flue-dispatch.ts';
 import { SlackInstallationUnavailableError } from '../src/slack/installation-execution.ts';
-import { replayTextForTurnProgress, TurnJobStoreLogic } from '../src/slack/turn-jobs.ts';
+import { MAX_POST_DISPATCH_ATTEMPTS, replayTextForTurnProgress, TurnJobStoreLogic } from '../src/slack/turn-jobs.ts';
+import { slackClientMessageId } from '../src/slack/transport/message-id.ts';
 import { serializeThreadImageRecords } from '../src/slack/thread-images.ts';
 import { serializeAdmittedSlackListIds } from '../src/slack/lists/admission.ts';
 import {
@@ -985,6 +986,60 @@ test('a delivered recovery notice still quarantines the ambiguous canonical Run'
     assert.match(replayed[0]?.text ?? '', /couldn't finish this request after retrying/i);
     assert.equal(replayed[0]?.result, 'failure');
     assert.equal(turns.getPendingByRunId(admission.run.id), undefined);
+  } finally {
+    db.close();
+  }
+});
+
+test('exhausted ledger reattachment posts the recovery notice fresh when the presentation is stuck', async () => {
+  let clock = NOW;
+  const db = openStateDb(':memory:');
+  try {
+    const work = new WorkStoreLogic(db, { now: () => clock });
+    const turns = new TurnJobStoreLogic(db, () => clock);
+    const admission = work.admitShadowRun(prepareSubmitRun(submission('stuck-notice')));
+    turns.enqueue(turnJob(admission.run.id, 'stuck-notice'));
+    turns.recordAttempt('turn_stuck-notice', MAX_POST_DISPATCH_ATTEMPTS - 1);
+    const claim = work.claimNextInteractiveRun({
+      ownerId: 'worker', authorityEpoch: 1, leaseDurationMs: 30_000, claimedAt: clock,
+    })!;
+    const posted: Array<Record<string, unknown>> = [];
+    const client = {
+      chat: {
+        async postMessage(input: Record<string, unknown>) {
+          posted.push(input);
+          return { ok: true, ts: '100.009' };
+        },
+      },
+    } as unknown as WebClient;
+    let executions = 0;
+    const handler = createLedgerSlackRunHandler({
+      work: work as unknown as WorkStore,
+      turns,
+      client,
+      // The run keeps losing its reattachment, and the recovery notice then
+      // fails through the same stuck presentation.
+      executeTurn: (async () => {
+        executions += 1;
+        if (executions === 1) throw new AgentPromptFailure('agent', 503, false, true);
+        throw new Error('Slack Agent View presentation requires reconciliation.');
+      }) as LedgerSlackTurnExecutor,
+      now: () => ++clock,
+    });
+
+    assert.deepEqual(await handler(claim), {
+      kind: 'recovery_required',
+      reasonCode: 'post_dispatch_attempts_exhausted',
+    });
+    assert.equal(executions, 2);
+    assert.equal(posted.length, 1, 'the notice reaches the thread once');
+    assert.match(String(posted[0]!.text), /couldn't finish this request after retrying/i);
+    assert.equal(posted[0]!.channel, 'C_canary');
+    assert.equal(posted[0]!.thread_ts, '100.001');
+    assert.equal(
+      posted[0]!.client_msg_id,
+      slackClientMessageId(`recovery_notice:${admission.run.id}`),
+    );
   } finally {
     db.close();
   }

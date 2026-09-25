@@ -11,7 +11,9 @@ import {
   type TurnExecutionOptions,
   type TurnExecutionPorts,
 } from '../src/slack/turn-executor.ts';
-import type { PendingTurnJob } from '../src/slack/turn-jobs.ts';
+import { MAX_POST_DISPATCH_ATTEMPTS, type PendingTurnJob } from '../src/slack/turn-jobs.ts';
+import { slackClientMessageId } from '../src/slack/transport/message-id.ts';
+import { DURABLE_RECOVERY_FAILURE_TEXT } from '../src/slack/web-client-presenter.ts';
 
 type RunTurnScript = (options: RunTurnOptions) => Promise<void>;
 
@@ -156,6 +158,36 @@ test('a dispatch that needs reconciliation posts the recovery notice once and se
   assert.equal(h.runs[1]?.replayTerminalResult, 'failure');
   assert.equal(h.runs[1]?.presentationState, h.ports.presentationState);
   assert.deepEqual(h.calls, ['recordAttempt("turn_1",1)', 'markError("turn_1")']);
+});
+
+test('exhausted reattachment posts the recovery notice fresh when the presentation is stuck', async () => {
+  const posted: Array<Record<string, unknown>> = [];
+  const client = {
+    chat: {
+      async postMessage(input: Record<string, unknown>) {
+        posted.push(input);
+        return { ok: true, ts: '1785900000.000900' };
+      },
+    },
+  } as unknown as WebClient;
+  // Every attempt, and the recovery notice replayed through the same
+  // presentation, fails the way a stuck terminal does.
+  const h = fakePorts(async () => { throw new Error('Slack Agent View presentation requires reconciliation.'); },
+    async () => ({ workspaceId: 'T1', client }));
+  const job = pendingJob({
+    runId: 'run_stuck',
+    attempts: MAX_POST_DISPATCH_ATTEMPTS - 1,
+    dispatchEnvelope: { instanceId: 'agent' } as never,
+  });
+  assert.equal(await executeTurnJob(job, h.ports, h.options), false);
+  assert.equal(h.runs.length, 2);
+  assert.equal(h.runs[1]?.replayTerminalResult, 'failure');
+  assert.equal(posted.length, 1, 'the notice reaches the thread once');
+  assert.equal(posted[0]!.text, DURABLE_RECOVERY_FAILURE_TEXT);
+  assert.equal(posted[0]!.channel, 'D1');
+  assert.equal(posted[0]!.thread_ts, '1785900000.000100');
+  assert.equal(posted[0]!.client_msg_id, slackClientMessageId('recovery_notice:run_stuck'));
+  assert.ok(h.calls.some((call) => call.startsWith('markRecoveryRequired("turn_1","post_dispatch_attempts_exhausted")')));
 });
 
 test('a yielded observation restores its attempt count and stays pending without a retry', async () => {

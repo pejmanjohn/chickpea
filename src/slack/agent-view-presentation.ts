@@ -167,6 +167,20 @@ const DEFAULT_APPEND_INTERVAL_MS = 750;
 const CORRECTED_MARKER = '_Corrected_';
 /** Progressive text stays inside the first message, with room to close a fence. */
 const MAX_STREAMED_REPLY_CHARS = slackMarkdownBlockTextLimit - 16;
+/**
+ * The first message of a replacement sent with chat.update. Slack rejected a
+ * ~12,000-character recovery update with `msg_too_long` while accepting the
+ * same size from a stream or a post; its documented chat.update limit is
+ * 4,000 characters of `text`. Stay at that bound; follow-ups carry the rest.
+ */
+const RECOVERY_UPDATE_MAX_CHARS = 4_000;
+/** Room to close a code fence still open at the end of a kept streamed prefix. */
+const RECOVERY_FENCE_ROOM_CHARS = 16;
+/**
+ * A smaller first message plus four 12,000-character follow-ups carries at
+ * least the 48,000 characters a normal reply can.
+ */
+const RECOVERY_MAX_PARTS = 5;
 /** Near the cap, progressive text advances only to line boundaries. */
 const STREAM_EDGE_WINDOW_CHARS = 2_000;
 /** A continuation intent this young may still belong to a live writer. */
@@ -1069,13 +1083,26 @@ export class SlackAgentViewPresentation {
     table?: RenderedSlackTablePresentation,
     files: readonly CompletedSlackArtifactReceipt[] = [],
     split?: SlackReplySplit,
+    replace = false,
   ): Promise<boolean> {
-    if (parts.length < 2) return false;
     const presentation = await this.requirePresentation();
     if (presentation.schemaVersion !== 3) return false;
-    if (!presentation.continuations) {
+    const existing = presentation.continuations;
+    const replaceable = replace && existing?.state === 'active' &&
+      existing.parts.every((part) => !part.operation) &&
+      JSON.stringify(existing.split ?? {}) !== JSON.stringify(split ?? {});
+    if (parts.length < 2) {
+      if (replaceable) {
+        await this.transition(presentation, {
+          kind: 'record_continuation_plan', replace: true, parts: [], closing: existing!.closing,
+        });
+      }
+      return false;
+    }
+    if (!existing || replaceable) {
       await this.transition(presentation, {
         kind: 'record_continuation_plan',
+        ...(existing ? { replace: true as const } : {}),
         ...(split ? { split } : {}),
         parts: parts.slice(1),
         closing: {
@@ -1608,12 +1635,19 @@ export class SlackAgentViewPresentation {
     tablePresentation?: SlackTablePresentation,
   ): Promise<AgentViewFinalResult> {
     const approved = canonicalSlackReplyText(text, format);
-    const parts = this.replyParts(presentation, approved, format);
+    // The replacement goes through chat.update, which refuses a message
+    // Slack accepts from a stream or a post (`msg_too_long`). Keep the first
+    // message within RECOVERY_UPDATE_MAX_CHARS and re-plan the rest as
+    // follow-ups; no follow-up has started before the final is acknowledged.
+    const split = presentation.schemaVersion === 3
+      ? recoveryReplySplit(this.replySplit(presentation, approved), approved)
+      : undefined;
+    const parts = split
+      ? slackReplyParts(approved, format, split)
+      : this.replyParts(presentation, approved, format);
     const first = parts[0]!;
     const table = renderSlackReplyTable(tablePresentation, parts.at(-1)!);
-    const closes = !await this.planContinuations(
-      parts, table, [], this.replySplit(presentation, approved),
-    );
+    const closes = !await this.planContinuations(parts, table, [], split, true);
     presentation = await this.requirePresentation();
     const content = table && closes
       ? appendSlackTableToRenderedMessage(renderSlackMessage(first, 'markdown'), first, table)
@@ -1638,13 +1672,18 @@ export class SlackAgentViewPresentation {
       try {
         await this.options.client.chat.update(update);
       } catch (error) {
-        if (!streamNoLongerOpen(error)) throw error;
+        const rejectedContent = definiteContentRejection(error);
+        if (!streamNoLongerOpen(error) && !rejectedContent) throw error;
         // Slack refuses the saved coordinate outright (no message, a sealed
-        // or conflicting stream, an uneditable message): a retry would fail
-        // the same way until the run is abandoned with no visible answer.
-        // Post the terminal once, fresh.
-        console.warn('[chickpea] Slack Agent View stream is unrecoverable; posting the final fresh');
-        if (safeSlackErrorCode(error) === 'message_not_found') {
+        // or conflicting stream, an uneditable message) or refuses this
+        // content there for good (`msg_too_long`): a retry would fail the
+        // same way until the run is abandoned with no visible answer. Post
+        // the terminal once, fresh.
+        console.warn(
+          '[chickpea] Slack Agent View stream is unrecoverable; posting the final fresh: ' +
+          safeSlackErrorCode(error),
+        );
+        if (safeSlackErrorCode(error) === 'message_not_found' || rejectedContent) {
           try {
             // A sealed stream can still render as an empty shell. Remove it
             // when Slack lets us; a refusal never holds back the fresh final.
@@ -1659,7 +1698,9 @@ export class SlackAgentViewPresentation {
         await observer.after({
           attemptId,
           outcome: 'failed',
-          safeFailureCode: 'slack_stream_message_missing',
+          safeFailureCode: rejectedContent
+            ? 'slack_stream_update_rejected'
+            : 'slack_stream_message_missing',
         });
         await this.transition(presentation, { kind: 'stream_message_lost', messageTs });
         return freshFinalResult(await this.requirePresentation());
@@ -2361,6 +2402,43 @@ function comparePosition(
 }
 
 /** Slack's definitive answers that a stream coordinate is no longer open. */
+/** Slack's final answer that this content can never be written as sent. */
+const DEFINITE_CONTENT_REJECTION_ERRORS = new Set([
+  'msg_too_long',
+  'invalid_blocks',
+  'invalid_blocks_format',
+  'too_many_blocks',
+]);
+
+/** Slack refused the content itself; the same request can never succeed. */
+function definiteContentRejection(error: unknown): boolean {
+  return slackEffectOutcome(error) === 'failed' &&
+    DEFINITE_CONTENT_REJECTION_ERRORS.has(safeSlackErrorCode(error));
+}
+
+/**
+ * The first message a recovery update may carry. The streamed prefix stays
+ * whole in it while it fits the bound, less room for a fence closer when a
+ * code block is still open where the prefix ends. A longer prefix is not
+ * kept as a minimum: the update replaces the message anyway, so the first
+ * message ends at the best boundary within the bound instead of being forced
+ * to the exact bound, mid-word or inside a link. The replacement allows one
+ * extra follow-up, so recovery carries as much as a normal reply.
+ */
+export function recoveryReplySplit(split: SlackReplySplit, approved: string): SlackReplySplit {
+  const limit = Math.min(split.firstPartLimit ?? RECOVERY_UPDATE_MAX_CHARS, RECOVERY_UPDATE_MAX_CHARS);
+  const prefix = split.minFirstPartLength;
+  const fenceOpen = prefix !== undefined &&
+    (approved.slice(0, prefix).match(/^ {0,3}`{3,}/gm) ?? []).length % 2 === 1;
+  const keepsPrefix = prefix !== undefined &&
+    prefix <= limit - (fenceOpen ? RECOVERY_FENCE_ROOM_CHARS : 0);
+  return {
+    ...(keepsPrefix ? { minFirstPartLength: split.minFirstPartLength } : {}),
+    firstPartLimit: limit,
+    maxParts: RECOVERY_MAX_PARTS,
+  };
+}
+
 const STREAM_NO_LONGER_OPEN_ERRORS = new Set([
   'message_not_in_streaming_state',
   'message_not_found',
@@ -2380,10 +2458,12 @@ function slackEffectOutcome(error: unknown): 'failed' | 'unknown' {
   return code === ErrorCode.PlatformError || code === ErrorCode.RateLimitedError ||
       (error instanceof SlackTransportError && error.effectOutcome === 'failed') ||
       // Slack's own answer that the stream's message is not open (or not
-      // there) proves the call wrote nothing, even when it arrives through
-      // the gateway, whose relayed error codes default to an unknown effect.
+      // there), or that the content is too long or malformed, proves the
+      // call wrote nothing, even when it arrives through the gateway, whose
+      // relayed error codes default to an unknown effect.
       (error instanceof SlackTransportError &&
-        STREAM_NO_LONGER_OPEN_ERRORS.has(safeSlackErrorCode(error)))
+        (STREAM_NO_LONGER_OPEN_ERRORS.has(safeSlackErrorCode(error)) ||
+          DEFINITE_CONTENT_REJECTION_ERRORS.has(safeSlackErrorCode(error))))
     ? 'failed'
     : 'unknown';
 }
