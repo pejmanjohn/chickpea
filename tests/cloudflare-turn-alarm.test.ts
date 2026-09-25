@@ -408,7 +408,6 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
     StateStoreUnavailable: class StateStoreUnavailable extends Error {},
     effectiveTurnSlackInstallationId: () => 'workspace',
     verifySlackInstallationTurnAccess: async () => {},
-    runtimePlanHasCodingWorkspace: () => false,
     replayTextForTurnProgress: () => 'Pull request #12 is already open',
     recordDeliveredSlackAgentMessage() {},
     earliestDefined: (...values: Array<number | undefined>) =>

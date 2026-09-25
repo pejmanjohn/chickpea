@@ -1760,7 +1760,7 @@ test('a fresh state store finds an interrupted alarm dispatch to resume', () => 
     turns.enqueue({ id: 'queued', evtKey: 'evt_q', msgKey: 'msg_q', turn: turn(), assignment: assignment() });
     assert.equal(turns.hasInterruptedAlarmDispatch(), false, 'a turn not yet dispatched waits for its own wake');
     turns.freezeRuntimePlan('queued', compileRuntimePlanV2({
-      turn: turn(), assignment: assignment(), instructions: 'Test.', memoryEpoch: 1, sandboxMode: 'bash',
+      turn: turn(), assignment: assignment(), instructions: 'Test.', memoryEpoch: 1,
     }));
     turns.prepareFlueDispatch('queued', 'Test.', { generation: 'queued' });
     assert.equal(turns.hasInterruptedAlarmDispatch(), true, 'a dispatched alarm turn needs an observer');
