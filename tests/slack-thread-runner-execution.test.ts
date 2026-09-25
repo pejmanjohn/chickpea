@@ -11,7 +11,9 @@ import {
 import {
   CfMemoryStateStore,
   CfTurnJobsForRunner,
+  CfUsageStore,
   FreshTagStateStubs,
+  replaySafeStateRpc,
   StateStoreDisconnectedError,
 } from '../src/config/cf-state-proxies.ts';
 import type { TagStateRpc } from '../src/config/state-rpc.ts';
@@ -878,6 +880,48 @@ test('every store built on fresh stubs mints one per call and replays a disconne
   await assert.rejects(store.getAgentMemory('a'), (error: unknown) =>
     error instanceof StateStoreDisconnectedError);
   assert.equal(mints, 6, 'no third call');
+});
+
+test('a write that is not idempotent is never replayed after a disconnect; a read is', async () => {
+  const sent: string[] = [];
+  let mints = 0;
+  const usage = new CfUsageStore(new FreshTagStateStubs(() => {
+    mints += 1;
+    const mint = mints;
+    return {
+      async usageExecute(request: { kind: string }) {
+        sent.push(`${mint}:${request.kind}`);
+        if (mint === 1 || mint === 2) {
+          throw Object.assign(new Error('Durable Object reset because its code was updated.'), { retryable: true });
+        }
+        return { ok: true, value: { kind: 'operation', operation: null } };
+      },
+    } as unknown as TagStateRpc;
+  }));
+  // A usage row written twice would count twice: the caller (a turn) retries
+  // from its own checkpoints instead.
+  await assert.rejects(usage.recordTerminal({} as never), (error: unknown) =>
+    error instanceof StateStoreDisconnectedError);
+  assert.deepEqual(sent, ['1:record_terminal']);
+  // A read is replayed once on a new stub.
+  await usage.getOperation('operation').catch(() => undefined);
+  assert.deepEqual(sent, ['1:record_terminal', '2:get_operation', '3:get_operation']);
+
+  for (const [method, op] of [
+    ['usageExecute', 'record_terminal'], ['usageExecute', 'admit_operation'],
+    ['workExecute', 'create_execution'], ['workExecute', 'admit_shadow_run'],
+    ['routinesExecute', 'claim_delivery'], ['claim', undefined], ['admitSlackTurn', undefined],
+    ['configCreateAgent', undefined], ['slackInteractionProgressRecord', undefined],
+  ] as const) {
+    assert.equal(replaySafeStateRpc(method, op), false, `${method} ${op ?? ''}`);
+  }
+  for (const [method, op] of [
+    ['workExecute', 'get_execution'], ['memoryExecute', 'put_agent_memory'],
+    ['identityExecute', 'find_invitation'], ['configGetAgent', undefined],
+    ['threadActiveWorkSet', undefined], ['slackFlueSettlementRecord', undefined],
+  ] as const) {
+    assert.equal(replaySafeStateRpc(method, op), true, `${method} ${op ?? ''}`);
+  }
 });
 
 /** Stubs for CfTurnJobsForRunner: `fail` decides which minted stub rejects. */

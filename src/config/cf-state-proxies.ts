@@ -300,11 +300,62 @@ export type TagStateStubSource = TagStateRpc | FreshTagStateStubs;
 
 /**
  * Mint a stub for each call. A call that fails with a disconnect is replayed
- * once on a new stub; a second disconnect surfaces as
- * {@link StateStoreDisconnectedError}. The stub itself is never wrapped.
+ * once on a new stub only when replaying it cannot change the outcome (see
+ * {@link replaySafeStateRpc}); any other call, and a second disconnect,
+ * surfaces as {@link StateStoreDisconnectedError}. The stub itself is never
+ * wrapped.
  */
 export class FreshTagStateStubs {
   constructor(readonly mint: () => TagStateRpc) {}
+}
+
+/** Direct RPC methods whose replay is harmless: reads, and writes shown idempotent. */
+const REPLAY_SAFE_STATE_METHODS = new Set([
+  // Reads.
+  'configGetAgent', 'configGetAgentConnectionBindingForAccount', 'configGetAgentModelRole',
+  'configGetAgentReferences', 'configGetAgentScheduleReference', 'configGetAgentThreadRoute',
+  'configGetChannel', 'configGetWorkspaceInstallation', 'configGetWorkspaceModelDefault',
+  'configGetWorkspaceModelRole', 'configListAgentChannelGrants', 'configListAgentConnectionBindings',
+  'configListAgentScheduleReferences', 'configListAgents', 'configListChannels',
+  'configListConnectionAccounts', 'configListRecentSlackPublicContext', 'configListSlackPublicContext',
+  'configListUserAgents', 'configListWorkspaceInstallations', 'configPreflightChickpeaCutover',
+  'configSummarizeAdoptionInventory', 'encryptedCredentialGet', 'runtimeDrainStatus', 'settingGet',
+  'settingGetMany', 'slackAgentBindingGet', 'slackFlueObservationMatch',
+  'slackInstallationPendingDeliveryCount', 'slackPresentationGet',
+  'slackPresentationLatestThreadGeneration', 'slackPresentationRepairList', 'slackPresentationSummary',
+  'slackProposalApprovalTurns', 'slackTurnEnvelopeGet', 'slackTurnRecoveryList', 'snapshotGet',
+  'snapshotListLiveRootsByAgent', 'threadActiveWorkGet', 'threadHas',
+  // Idempotent writes: a keyed set or delete, first-write-wins, or version-gated.
+  'threadActiveWorkSet', // the flag for one generation, set to a value
+  'settingSet', 'settingDelete', // keyed upsert / delete
+  'snapshotPutIfAbsent', // first write wins
+  'slackFlueReceiptRecord', 'slackFlueSettlementRecord', // an equal checkpoint returns the saved one
+  'slackPresentationTransition', // compare-and-swap on the projection version
+  'release', // deletes the thread's claim
+]);
+
+/** Kinds sent through a store's `*Execute` RPC. */
+const EXECUTE_STATE_METHODS = new Set([
+  'identityExecute', 'managementExecute', 'memoryExecute', 'routinesExecute', 'usageExecute',
+  'workExecute',
+]);
+const READ_EXECUTE_KIND = /^(get|list|find|count|has|latest|next)_/;
+const REPLAY_SAFE_EXECUTE_KINDS = new Set([
+  'summarize', 'retention_status', 'export_summary',
+  'put_agent_memory', // gated on the expected revision
+]);
+
+/**
+ * Whether a call that failed on a disconnect may be sent again. Anything not
+ * shown harmless to repeat (usage rows, ledger inserts, claims, admissions)
+ * is not: its caller sees {@link StateStoreDisconnectedError}, which a turn
+ * retries from its checkpoints.
+ */
+export function replaySafeStateRpc(method: string, op?: string): boolean {
+  if (EXECUTE_STATE_METHODS.has(method)) {
+    return op !== undefined && (READ_EXECUTE_KIND.test(op) || REPLAY_SAFE_EXECUTE_KINDS.has(op));
+  }
+  return REPLAY_SAFE_STATE_METHODS.has(method);
 }
 
 async function rpcVia<T>(
@@ -318,6 +369,7 @@ async function rpcVia<T>(
     return await rpc(method, call(source.mint()), op);
   } catch (error) {
     if (!isSandboxDisconnect(error)) throw error;
+    if (!replaySafeStateRpc(method, op)) throw new StateStoreDisconnectedError(error);
   }
   try {
     return await rpc(method, call(source.mint()), op);
