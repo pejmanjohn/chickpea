@@ -357,6 +357,85 @@ test('gateway inbox reclaims expired leases and scrubs the body at the attempt c
   }
 });
 
+test('a lease held by a replaced drainer is reclaimed at once, not after the lease time', () => {
+  // Before: a state store reset left the delivery leased for the full 2 min
+  // (Amber run 3: receipt to admission 121 s). Now the next instance
+  // reclaims it on its first drain.
+  const now = NOW;
+  const db = openStateDb(':memory:');
+  try {
+    const before = new GatewayInboxStoreLogic(db, () => now, {}, { leaseOwner: 'instance-a' });
+    assert.equal(before.admit(eventDelivery('delivery:Ev_RESET', 'body')), 'accepted');
+    assert.equal(before.claimPending(1)[0]?.attempts, 1);
+    // The instance is replaced mid-delivery: its drain never completes.
+    const after = new GatewayInboxStoreLogic(db, () => now, {}, { leaseOwner: 'instance-b' });
+    assert.equal(after.hasOrphanedLease(), true);
+    const reclaimed = after.claimPending(1);
+    assert.equal(reclaimed.length, 1, 'claimable at the same instant, 0 ms after the reset');
+    assert.equal(reclaimed[0]?.attempts, 2, 'the interrupted claim still counts as an attempt');
+    assert.equal(db.get("SELECT recovery_reason AS r FROM gateway_inbox")?.r, 'lease_orphaned');
+    assert.equal(after.hasOrphanedLease(), false);
+    // The legacy time-only store (no owner) would still be waiting.
+    const legacy = openStateDb(':memory:');
+    try {
+      const a = new GatewayInboxStoreLogic(legacy, () => now);
+      a.admit(eventDelivery('delivery:Ev_RESET', 'body'));
+      a.claimPending(1);
+      assert.equal(new GatewayInboxStoreLogic(legacy, () => now + 119_999).claimPending(1).length, 0);
+      assert.equal(new GatewayInboxStoreLogic(legacy, () => now + 120_000).claimPending(1).length, 1);
+    } finally {
+      legacy.close();
+    }
+  } finally {
+    db.close();
+  }
+});
+
+test('a live drainer keeps its own lease: a delivery is never claimed twice', () => {
+  let now = NOW;
+  const db = openStateDb(':memory:');
+  try {
+    const inbox = new GatewayInboxStoreLogic(db, () => now, { leaseMs: 1_000 }, { leaseOwner: 'instance-a' });
+    inbox.admit(eventDelivery('delivery:Ev_LIVE', 'body'));
+    assert.equal(inbox.claimPending(1).length, 1);
+    now += 999;
+    assert.equal(inbox.maintain().orphanedLeasesRecovered, 0);
+    assert.equal(inbox.claimPending(1).length, 0, 'the same instance does not reclaim its live lease');
+    assert.equal(inbox.hasOrphanedLease(), false);
+    assert.equal(inbox.complete('delivery:Ev_LIVE'), true);
+    // A completed delivery stays completed for a later instance too.
+    const next = new GatewayInboxStoreLogic(db, () => now, {}, { leaseOwner: 'instance-b' });
+    assert.equal(next.claimPending(1).length, 0);
+    assert.equal(next.admit(eventDelivery('delivery:Ev_LIVE', 'body')), 'duplicate');
+  } finally {
+    db.close();
+  }
+});
+
+test('a lease from before owners were recorded, or at the attempt cap, follows the same rules', () => {
+  const db = openStateDb(':memory:');
+  try {
+    const old = new GatewayInboxStoreLogic(db, () => NOW, { maxAttempts: 2 });
+    old.admit(eventDelivery('delivery:Ev_OLD', 'first'));
+    old.admit(eventDelivery('delivery:Ev_CAP', 'second'));
+    old.claimPending(2);
+    db.run("UPDATE gateway_inbox SET attempts = 2 WHERE id = 'delivery:Ev_CAP'");
+    const current = new GatewayInboxStoreLogic(db, () => NOW, { maxAttempts: 2 }, { leaseOwner: 'instance-b' });
+    const result = current.maintain();
+    assert.equal(result.orphanedLeasesRecovered, 1, 'an owner-less in-flight lease is orphaned');
+    assert.equal(result.agedToRecovery, 1, 'an orphan at the attempt cap is parked, not retried');
+    const capped = db.get(
+      "SELECT status, payload_json, recovery_reason FROM gateway_inbox WHERE id = 'delivery:Ev_CAP'",
+    );
+    assert.equal(capped?.status, 'recovery_required');
+    assert.equal(capped?.payload_json, null);
+    assert.equal(capped?.recovery_reason, 'attempt_limit_exceeded');
+    assert.deepEqual(current.claimPending(2).map((item) => item.id), ['delivery:Ev_OLD']);
+  } finally {
+    db.close();
+  }
+});
+
 function eventDelivery(deliveryId: string, text: string): GatewayEventDelivery {
   return {
     protocolVersion: 1,

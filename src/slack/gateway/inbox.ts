@@ -1,3 +1,4 @@
+import { addColumnIfMissing } from '../../state/schema-links.ts';
 import { schemaInstallRequired, type StateDb } from '../../state/state-db.ts';
 import type { GatewayInboundDelivery } from './protocol.ts';
 import {
@@ -141,14 +142,29 @@ export class GatewayInboxConflictError extends Error {
  * TurnJob. Both stores live in the same singleton state DO and share its alarm,
  * so this adds no second queue service or gateway-side payload retention.
  */
+export interface GatewayInboxOwnership {
+  /**
+   * Identifies the drainer that claims deliveries: one value per process or
+   * Durable Object instance. A claim records it with its lease, and an
+   * in-flight claim recorded under any other owner (or none) is treated as
+   * expired at once: its drainer no longer exists, since exactly one instance
+   * of the owning object runs at a time. Without an owner, leases only expire
+   * by time.
+   */
+  leaseOwner?: string;
+}
+
 export class GatewayInboxStoreLogic {
   private readonly limits: GatewayInboxLimits;
+  private readonly leaseOwner: string | undefined;
 
   constructor(
     private readonly db: StateDb,
     private readonly now: () => number = Date.now,
     limits: Partial<GatewayInboxLimits> = {},
+    ownership: GatewayInboxOwnership = {},
   ) {
+    this.leaseOwner = ownership.leaseOwner;
     const maxActiveRows = limits.maxActiveRows ?? GATEWAY_INBOX_MAX_ACTIVE_ROWS;
     this.limits = {
       maxTotalRows: GATEWAY_INBOX_MAX_TOTAL_ROWS,
@@ -180,6 +196,8 @@ export class GatewayInboxStoreLogic {
         recovery_reason TEXT
       )`,
     );
+    // The drainer that holds an in-flight lease (see GatewayInboxOwnership).
+    addColumnIfMissing(db, 'gateway_inbox', 'lease_owner', 'TEXT');
     db.exec('CREATE INDEX IF NOT EXISTS gateway_inbox_status_idx ON gateway_inbox(status, accepted_at)');
     db.exec(
       'CREATE INDEX IF NOT EXISTS gateway_inbox_terminal_idx ON gateway_inbox(status, terminal_at)',
@@ -289,10 +307,11 @@ export class GatewayInboxStoreLogic {
         const attempts = Number(row.attempts) + 1;
         const updated = this.db.run(
           `UPDATE gateway_inbox
-           SET status = 'in_flight', attempts = ?, lease_until = ?
+           SET status = 'in_flight', attempts = ?, lease_until = ?, lease_owner = ?
            WHERE id = ? AND status = 'pending'`,
           attempts,
           this.now() + this.limits.leaseMs,
+          this.leaseOwner ?? null,
           row.id,
         );
         if (updated.changes !== 1) continue;
@@ -365,8 +384,32 @@ export class GatewayInboxStoreLogic {
     ).changes === 1;
   }
 
-  maintain(): { agedToRecovery: number; expiredLeasesRecovered: number; tombstonesPurged: number } {
+  maintain(): {
+    agedToRecovery: number;
+    expiredLeasesRecovered: number;
+    orphanedLeasesRecovered: number;
+    tombstonesPurged: number;
+  } {
     const now = this.now();
+    // A lease held by a drainer that no longer exists (a replaced state store
+    // instance) expires now instead of at its lease time. At the attempt cap
+    // it is parked below with the time-expired ones.
+    const orphanedAtAttemptCap = this.leaseOwner === undefined ? 0 : this.db.run(
+      `UPDATE gateway_inbox
+       SET status = 'recovery_required', payload_json = NULL, payload_bytes = 0,
+           lease_until = NULL, terminal_at = ?, recovery_reason = 'attempt_limit_exceeded'
+       WHERE status = 'in_flight' AND (lease_owner IS NULL OR lease_owner != ?) AND attempts >= ?`,
+      now,
+      this.leaseOwner,
+      this.limits.maxAttempts,
+    ).changes;
+    const orphanedLeasesRecovered = this.leaseOwner === undefined ? 0 : this.db.run(
+      `UPDATE gateway_inbox
+       SET status = 'pending', lease_until = NULL, recovery_reason = 'lease_orphaned'
+       WHERE status = 'in_flight' AND (lease_owner IS NULL OR lease_owner != ?) AND attempts < ?`,
+      this.leaseOwner,
+      this.limits.maxAttempts,
+    ).changes;
     const expiredAtAttemptCap = this.db.run(
       `UPDATE gateway_inbox
        SET status = 'recovery_required', payload_json = NULL, payload_bytes = 0,
@@ -390,13 +433,23 @@ export class GatewayInboxStoreLogic {
        WHERE status IN ('pending', 'in_flight') AND accepted_at < ?`,
       now,
       now - this.limits.maxActiveAgeMs,
-    ).changes + expiredAtAttemptCap;
+    ).changes + expiredAtAttemptCap + orphanedAtAttemptCap;
     const tombstonesPurged = this.db.run(
       `DELETE FROM gateway_inbox
        WHERE status IN ('completed', 'recovery_required') AND terminal_at < ?`,
       now - this.limits.dedupRetentionMs,
     ).changes;
-    return { agedToRecovery, expiredLeasesRecovered, tombstonesPurged };
+    return { agedToRecovery, expiredLeasesRecovered, orphanedLeasesRecovered, tombstonesPurged };
+  }
+
+  /** An in-flight delivery claimed by a drainer other than this one. */
+  hasOrphanedLease(): boolean {
+    if (this.leaseOwner === undefined) return false;
+    return this.db.get(
+      `SELECT 1 AS present FROM gateway_inbox
+       WHERE status = 'in_flight' AND (lease_owner IS NULL OR lease_owner != ?) LIMIT 1`,
+      this.leaseOwner,
+    ) !== undefined;
   }
 
   /**
