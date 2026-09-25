@@ -100,6 +100,25 @@
    without the file. Verifiers never write or read the values; the maintainer
    edits the file.
 
+   Claude Code cloud sessions start from a fresh VM that carries only
+   environment variables, so the cloud SessionStart hook
+   (`scripts/cloud-session-start.sh`) runs `scripts/cloud-private-home.mjs` to
+   write the same files there, at the paths the readers already use, from
+   base64 variables in the personal cloud environment: `CHICKPEA_QA_SECRETS_ENV_B64`
+   for `~/.chickpea/qa-secrets.env`, `CHICKPEA_LANE_CREDENTIALS_B64` for the
+   `<lane>-live.json` and `<lane>-seed.json` files under
+   `~/.chickpea/lane-credentials/` (one JSON object keyed by file name, described
+   below), and `CHICKPEA_QA_SEED_JSON_B64` for `~/.chickpea/qa-seed.json`. Run
+   `node scripts/cloud-private-home.mjs encode` on the maintainer's machine to
+   print those lines from the existing files, paste them into the cloud
+   environment's variables, and discard the output: it carries the secrets. The
+   hook writes only when `CLAUDE_CODE_REMOTE=true`, skips an absent variable,
+   fails the session start on a malformed one (naming the variable, never the
+   value), checks each file with its reader before it lands, and writes it
+   owner-only. Live-authority credentials may instead stay as
+   `CHICKPEA_ENV_<COLOR>_LIVE_AUTHORITY_URL` and `_READ_TOKEN`, which need no
+   file. The environment registry is host-bound and is never carried this way.
+
    Standing test connections come back the same way after a lane rebuild.
    Each guarded lane deploy also installs the lane's seed token
    (`~/.chickpea/lane-credentials/<lane>-seed.json`, created on first use).

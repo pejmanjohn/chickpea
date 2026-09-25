@@ -18,7 +18,9 @@ const exact = (value, keys) => value && typeof value === 'object' && !Array.isAr
 function safePrivateData(value, path = '$') {
   if (typeof value === 'string') {
     if (/(?:xox[baprs]-|\bsk-[A-Za-z0-9]{12}|Bearer\s+|-----BEGIN .*PRIVATE KEY-----)/iu.test(value)) throw new Error(`Secret-like fixture value refused at ${path}.`);
-    if (/^(?:\/Users\/|\/home\/|[A-Za-z]:\\|~\/)/u.test(value)) throw new Error(`Absolute fixture value refused at ${path}.`);
+    // Any absolute path is a filesystem coordinate, whatever the home directory
+    // is called (/Users on macOS, /home or /root on Linux).
+    if (/^(?:\/|[A-Za-z]:\\|~\/)/u.test(value)) throw new Error(`Absolute fixture value refused at ${path}.`);
     return;
   }
   if (!value || typeof value !== 'object') return;

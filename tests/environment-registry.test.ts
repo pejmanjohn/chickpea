@@ -991,7 +991,10 @@ test('machine identity is persistent owner-only and refuses symlinks while CLI i
     },
   );
   assert.equal(code, 2);
-  assert.match(stderr, /HOST_MISMATCH/u);
+  // The spoofed fingerprint is ignored either way: a host with a machine
+  // identity mismatches the fixture registry, and a fresh host (no
+  // ~/.chickpea/machine-identity.json yet) has no identity to compare.
+  assert.match(stderr, /HOST_MISMATCH|MACHINE_IDENTITY_MISSING/u);
 });
 
 test('registry rejects duplicate immutable target identities across every independent class', (context) => {
