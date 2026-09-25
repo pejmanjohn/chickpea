@@ -682,7 +682,7 @@ test('worker usage reaches the dispatch result once per task, the latest record 
     data: { [CODING_WORKER_USAGE_DATA_NAME]: [first, second, retried, { ...second, extra: 1 }] },
     submissionId: 's',
   }, 'anthropic/claude-sonnet-5');
-  assert.deepEqual(result.codingWorkerUsage, [second, retried]);
+  assert.deepEqual(result.codingWorkerUsage, [retried, second]);
   assert.equal(resultFromAgentReply({ text: 'ok', data: {}, submissionId: 's' }, null).codingWorkerUsage, undefined);
   assert.deepEqual(parseCodingWorkerUsage('nope'), []);
 });

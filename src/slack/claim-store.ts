@@ -1,4 +1,5 @@
 import { openStateDb, type NodeStateDb } from '../state/node-state-db.ts';
+import { addColumnIfMissing } from '../state/schema-links.ts';
 import { schemaInstallRequired, type StateDb } from '../state/state-db.ts';
 import { WorkStoreLogic } from '../work/store.ts';
 import type { AdmitShadowRunInput, ShadowRunAdmission } from '../work/types.ts';
@@ -270,9 +271,7 @@ export class SlackStateLogic {
       'CREATE TABLE IF NOT EXISTS slack_active_work (key TEXT NOT NULL, generation TEXT NOT NULL, updated_at INTEGER NOT NULL, ttl_ms INTEGER, PRIMARY KEY (key, generation))',
     );
     // A marker without its own TTL keeps the ordinary ACTIVE_WORK_TTL_MS.
-    if (!db.all('PRAGMA table_info(slack_active_work)').some((column) => column.name === 'ttl_ms')) {
-      db.exec('ALTER TABLE slack_active_work ADD COLUMN ttl_ms INTEGER');
-    }
+    addColumnIfMissing(db, 'slack_active_work', 'ttl_ms', 'INTEGER');
   }
 
   claim(key: string): boolean {

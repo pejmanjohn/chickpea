@@ -109,7 +109,7 @@ export class InteractiveUsageRecorder {
       : result.usageCompleteness === 'partial'
         ? 'usage_partial'
         : 'usage_not_reported';
-    this.terminalInput = this.baseTerminal({
+    const terminal = this.baseTerminal({
       status: 'completed',
       providerRoute: returned?.provider ?? this.admission.requestedProvider,
       returnedProvider: returned?.provider ?? null,
@@ -122,8 +122,9 @@ export class InteractiveUsageRecorder {
       totalTokens: usage?.totalTokens ?? null,
       usageUnknownReason: unknownReason,
     });
+    this.terminalInput = terminal;
     this.workerTerminals = (result.codingWorkerUsage ?? []).map((record, index) =>
-      this.codingWorkerTerminal(record, index, this.terminalInput!.finishedAt));
+      this.codingWorkerTerminal(record, index, terminal.finishedAt));
     await this.persistTerminal();
   }
 
@@ -190,12 +191,11 @@ export class InteractiveUsageRecorder {
 
   /**
    * One coding worker's usage as its own measurement on this turn's
-   * operation: the Agent and requester stay the turn's, the model is the
-   * coding model. Its execution id is derived from the turn's, so a
-   * replayed settlement writes the same measurement again, never a second.
-   * It is observed when the task settled, always before the Agent's own
-   * measurement, so a view that shows a turn's latest measurement shows the
-   * Agent's model.
+   * operation, under the coding model. Its execution id derives from the
+   * turn's, so a replayed settlement writes the same measurement, never a
+   * second. It is observed when the task settled, clamped to before the
+   * Agent's own measurement: a view that shows a turn's latest measurement
+   * then names the Agent's model.
    */
   private codingWorkerTerminal(
     record: CodingWorkerUsageRecord,

@@ -33,10 +33,7 @@ export const CHICKPEA_SUBMISSION_DURABILITY: DurabilityConfig = {
   timeoutMs: 155 * 60_000,
 };
 
-/**
- * The coordinator's standing instruction on delegating: the shared rule, then
- * what to do with the answer. The tool description carries the brief.
- */
+/** The coordinator's standing instruction on delegating; the tool description carries the brief. */
 export const WORKSPACE_TASK_INSTRUCTION =
   `${WORKSPACE_DELEGATION_GUIDANCE} The worker runs on the workspace's coding model. Report the pull request links it returns. When a request spans two repositories, give each its own named workspace; tasks in different workspaces can run in parallel. If a workspace tool reports the workspace unavailable or the worker failed, say so and use the Repositories API path when it covers the request.`;
 

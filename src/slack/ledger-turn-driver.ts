@@ -135,6 +135,7 @@ export function createLedgerSlackRunHandler(
 ): (claim: InteractiveRunClaim) => Promise<RunDriverHandlerResult> {
   const now = options.now ?? Date.now;
   const executeTurn = options.executeTurn ?? runTurn;
+  const { markCodingActiveWork } = options;
   const shouldResolveIdentity = Boolean(options.resolveInstallation) ||
     (!options.client && !options.executeTurn);
   const resolveInstallation = options.resolveInstallation ??
@@ -247,12 +248,10 @@ export function createLedgerSlackRunHandler(
             );
           }
         },
-        ...(options.markCodingActiveWork
+        ...(markCodingActiveWork
           ? {
-              onCodingTaskStarted: () => options.markCodingActiveWork!(
-                slackAgentThreadKey(job.turn, job.assignment),
-                job.id,
-              ),
+              onCodingTaskStarted: () =>
+                markCodingActiveWork(slackAgentThreadKey(job.turn, job.assignment), job.id),
             }
           : {}),
         ...(job.progress.slackInteraction

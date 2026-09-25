@@ -49,9 +49,8 @@ const WORKSPACE_INSTRUCTIONS = [
 
 /**
  * When to delegate to a coding worker and when to use the workspace tools
- * directly. The only statement of that rule: the coordinator's standing
- * instruction (`WORKSPACE_TASK_INSTRUCTION`) and the workspace skill quote it,
- * and the `workspace_task` description says only what the tool does.
+ * directly: the one statement of the rule, quoted by the coordinator's
+ * standing instruction and the workspace skill.
  */
 export const WORKSPACE_DELEGATION_GUIDANCE =
   'For repository work with several steps (clone, install dependencies, change several files, run tests or a build, push a branch, open a pull request), ' +
