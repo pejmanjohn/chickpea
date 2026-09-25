@@ -4,6 +4,7 @@
  * See qa/live/operator/runner-matrix.md. Usage: npm run verify:live:runner-matrix -- --help
  */
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:http';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
@@ -15,7 +16,7 @@ import { outsideGit } from '../../../scripts/lib/private-evidence.mjs';
 import { evaluateMatrix, renderMarkdown, type MatrixResults } from './analysis.ts';
 import { fakeScenario } from './fake.ts';
 import { HookRunner } from './hooks.ts';
-import { renderHarness, renderSnippets } from './page.ts';
+import { RECEIVER_PORT, renderHarness, renderSnippets } from './page.ts';
 import { buildPlan, defaultTag, parseCaseList, readSpec } from './plan.ts';
 import { addSpecCases, beginAttempts, finishAttempts } from './record.ts';
 import { extractRuntime, splitJsonObjects, TailCapture } from './tail.ts';
@@ -35,6 +36,8 @@ spec-cases  Append one record case per selected matrix case to a private run spe
 run         Tail the lane Worker, open record attempts, fire deploy hooks at their offsets, wait out the plan.
             --t0 EPOCH_MS (returned by arm.js) [--allow-deploy] [--cwd CANDIDATE_WORKTREE]
             [--run RUN.json] [--prefix rm-] [--hook-command "CMD ARGS"] [--no-tail]
+receive     One-shot 127.0.0.1 receiver for the export: start it, then evaluate send.js in the Slack tab
+            (after collect.js). Writes browser-export.json. [--port 47811] [--timeout-ms 300000]
 report      Join the browser export, tail and hook records; write results.json and results.md.
             [--run RUN.json --finish] [--prefix rm-]
 dry-run     Offline: fake export + tail for a plan with fake coordinates, then report.
@@ -46,7 +49,7 @@ All files stay in the private record directory, outside Git.
 `;
 
 const STRING_FLAGS = ['record', 'lane', 'channel', 'agent-a', 'agent-b', 'dm', 'tag', 'cases', 'fs-n', 'long-k', 'redeploy-r', 'burst-m', 'spec', 'params',
-  'output', 'context', 'prefix', 't0', 'cwd', 'run', 'hook-command', 'workspace', 'worker', 'bot-user', 'lead-ms'] as const;
+  'output', 'context', 'prefix', 't0', 'cwd', 'run', 'hook-command', 'workspace', 'worker', 'bot-user', 'lead-ms', 'port', 'timeout-ms'] as const;
 
 type Flags = Partial<Record<typeof STRING_FLAGS[number], string>> & { require?: string[]; 'allow-deploy'?: boolean; 'no-tail'?: boolean; finish?: boolean; help?: boolean };
 
@@ -182,8 +185,55 @@ async function runCommand(flags: Flags, dir: string): Promise<number> {
   if (tail) { await tail.stop(); record.tail.segments = tail.segments; }
   record.endedAt = Date.now();
   save();
-  log(`next: in the lane Slack tab evaluate ${join(dir, 'collect.js')}, save each chunk(i) result as ${join(dir, 'browser-export.part-000.txt')} (001, 002 ...), then run report.`);
+  log(`next: start \`receive --record ${dir}\`, then in the lane Slack tab evaluate ${join(dir, 'collect.js')} and ${join(dir, 'send.js')} (or save each chunk(i) as browser-export.part-000.txt, 001 ...), then run report.`);
   return interrupted ? 130 : 0;
+}
+
+const SLACK_ORIGIN = 'https://app.slack.com';
+
+/** Page served to the receiver window: relays the opener's postMessage to this origin. */
+function receiverPage(): string {
+  return `<!doctype html><meta charset="utf-8"><title>runner-matrix receiver</title><p>Waiting for the export...</p><script>
+addEventListener('message', async (event) => {
+  if (event.origin !== ${JSON.stringify(SLACK_ORIGIN)} || typeof event.data !== 'string' || window.__sent) return;
+  window.__sent = true;
+  const response = await fetch('/upload', { method: 'POST', body: event.data });
+  document.body.textContent = 'Export ' + (response.ok ? 'saved' : 'refused (' + response.status + ')') + '; this tab can be closed.';
+  event.source.postMessage('ack:' + response.status, event.origin);
+});
+</script>`;
+}
+
+/** Receive one export over loopback and write it privately. Resolves with the written path. */
+export function receiveExport(dir: string, tag: string, options: { port?: number | undefined; timeoutMs?: number | undefined; log?: ((line: string) => void) | undefined } = {}): Promise<string> {
+  const port = options.port ?? RECEIVER_PORT;
+  const target = join(dir, 'browser-export.json');
+  return new Promise((resolvePromise, reject) => {
+    const server = createServer((req, res) => {
+      if (req.method === 'GET' && (req.url === '/' || req.url === '')) {
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+        res.end(receiverPage());
+        return;
+      }
+      if (req.method !== 'POST' || req.url !== '/upload') { res.writeHead(404); res.end(); return; }
+      let body = '';
+      req.setEncoding('utf8');
+      req.on('data', (chunk: string) => { body += chunk; if (body.length > 64 * 1024 * 1024) req.destroy(); });
+      req.on('end', () => {
+        let parsed: BrowserExport;
+        try { parsed = JSON.parse(body) as BrowserExport; } catch { res.writeHead(400); res.end('not json'); return; }
+        if (parsed.tag !== tag) { res.writeHead(409); res.end('tag mismatch'); return; }
+        writePrivate(target, body);
+        res.writeHead(200); res.end('ok');
+        options.log?.(`received export: ${body.length} chars, ${Object.keys(parsed.threads ?? {}).length} thread(s) -> ${target}`);
+        clearTimeout(timer);
+        server.close(() => resolvePromise(target));
+      });
+    });
+    const timer = setTimeout(() => { server.close(); reject(new Error(`no export received within ${Math.round((options.timeoutMs ?? 300_000) / 1000)} s`)); }, options.timeoutMs ?? 300_000);
+    server.on('error', (error) => { clearTimeout(timer); reject(error); });
+    server.listen(port, '127.0.0.1', () => options.log?.(`receiver listening on http://127.0.0.1:${port}/; evaluate ${join(dir, 'send.js')} in the lane Slack tab`));
+  });
 }
 
 export async function main(argv: string[]): Promise<number> {
@@ -210,7 +260,7 @@ export async function main(argv: string[]): Promise<number> {
         `spec-cases (once) then verify:live:record init/preflight`,
         `lane Slack tab: evaluate harness.js, then arm.js (returns t0)`,
         `npm run verify:live:runner-matrix -- run --record ${dir} --t0 <t0> --allow-deploy --run <run.json> --cwd <candidate worktree>`,
-        'after run: collect.js + chunk.js, then report',
+        'after run: receive, then collect.js + send.js in the Slack tab (or chunk.js by hand), then report',
       ],
     }, null, 2)}\n`);
     return 0;
@@ -228,6 +278,13 @@ export async function main(argv: string[]): Promise<number> {
     return 0;
   }
   if (command === 'run') return runCommand(flags, recordDir(flags));
+  if (command === 'receive') {
+    const dir = recordDir(flags);
+    const plan = readJson<MatrixPlan>(join(dir, 'plan.json'));
+    const log = (line: string): void => { process.stdout.write(`${line}\n`); };
+    await receiveExport(dir, plan.tag, { port: int(flags.port), timeoutMs: int(flags['timeout-ms']), log });
+    return 0;
+  }
   if (command === 'report') {
     const dir = recordDir(flags);
     const { results, paths } = reportFromDir(dir);

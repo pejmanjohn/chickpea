@@ -8,6 +8,7 @@ import {
   PROVIDER_FAILURE_TEXT,
   SANDBOX_FAILURE_TEXT,
 } from '../../../src/slack/web-client-presenter.ts';
+import { GATEWAY_OFFLINE_NOTICE } from './analysis.ts';
 import { MATRIX_CASES, type MatrixCaseId, type MatrixParams, type MatrixPlan, type MatrixSpec, type PlanHook, type PlanItem } from './types.ts';
 
 export const DEFAULT_SPEC_PATH = join(dirname(fileURLToPath(import.meta.url)), 'spec.json');
@@ -18,6 +19,7 @@ export const FAILURE_SIGNATURES: ReadonlyArray<{ key: string; prefix: string }> 
   { key: 'durable_recovery_failure', prefix: DURABLE_RECOVERY_FAILURE_TEXT.slice(0, 60) },
   { key: 'provider_failure', prefix: PROVIDER_FAILURE_TEXT.slice(0, 60) },
   { key: 'sandbox_failure', prefix: SANDBOX_FAILURE_TEXT.slice(0, 60) },
+  GATEWAY_OFFLINE_NOTICE,
 ]);
 
 const TAG = /^[A-Za-z0-9][A-Za-z0-9-]{2,31}$/;

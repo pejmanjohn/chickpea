@@ -15,6 +15,13 @@ export function summarize(values: number[]): { n: number; p50: number | null; p9
 
 const tsMs = (ts: string) => Math.round(Number(ts) * 1000);
 
+/**
+ * The shared gateway posts this when Slack's last retry of a mention is not
+ * receipted by the Worker in time. It is never an Agent's final, even though
+ * the gateway's bot posts it in the thread.
+ */
+export const GATEWAY_OFFLINE_NOTICE = Object.freeze({ key: 'gateway_offline', prefix: 'Chickpea is temporarily offline' });
+
 export interface ThreadResult {
   label: string;
   caseId: MatrixCaseId;
@@ -93,14 +100,21 @@ export function analyzeThread(item: PlanItem, sent: SentRecord | undefined, data
     if (!message.bot) break; // the next human message starts another turn
     replies.push(message);
   }
+  const offline = (r: MessageSummary) => r.failure === GATEWAY_OFFLINE_NOTICE.key || r.tail.includes(GATEWAY_OFFLINE_NOTICE.prefix);
+  // A streamed first message is posted when streaming starts and grows by
+  // edits, so its ts can be minutes before its continuations. A final ends at
+  // the part carrying the attribution footer; until then later parts continue
+  // it. Unfootered parts after a footer are grouped by the continuation gap.
   const groups: MessageSummary[][] = [];
   for (const reply of replies) {
+    if (offline(reply)) continue;
     const last = groups.at(-1)?.at(-1);
-    if (last && tsMs(reply.ts) - tsMs(last.ts) <= plan.continuationGapMs) groups.at(-1)!.push(reply);
+    const continues = last && !last.failure && (!last.footer || tsMs(reply.ts) - tsMs(last.ts) <= plan.continuationGapMs);
+    if (continues) groups.at(-1)!.push(reply);
     else groups.push([reply]);
   }
   base.finals = groups.length;
-  base.failureNotice = replies.find((r) => r.failure)?.failure ?? null;
+  base.failureNotice = replies.find((r) => r.failure)?.failure ?? (replies.some(offline) ? GATEWAY_OFFLINE_NOTICE.key : null);
   const final = groups[0];
   if (final) {
     base.parts = final.length;
@@ -318,7 +332,8 @@ export function evaluateMatrix(input: { plan: MatrixPlan; data: BrowserExport | 
         const a = list.find((t) => t.round === round && t.role === 'redeploy-a');
         const b = list.find((t) => t.round === round && t.role === 'redeploy-b');
         const hook = hooks.find((h) => h.id === `redeploy-${round}`);
-        if (!hookRan(hook)) { blocked = `redeploy ${round} hook did not run (${hook?.skipped ?? (hook ? `exit ${hook.exitCode}` : 'no run record')})`; }
+        const deployed = hookRan(hook);
+        if (!deployed) { const reason = `redeploy ${round} hook did not run (${hook?.skipped ?? (hook ? `exit ${hook.exitCode}` : 'no run record')})`; blocked = blocked ? `${blocked}; ${reason}` : reason; }
         if (a) failures.push(...threadFailures(a, { requireComplete: true }));
         if (b) {
           failures.push(...threadFailures(b, { requireComplete: false }));
@@ -327,14 +342,14 @@ export function evaluateMatrix(input: { plan: MatrixPlan; data: BrowserExport | 
         const observed = interruptionObserved(runtime, hook);
         const next = list.find((t) => t.round === (round ?? 0) + 1 && t.role === 'redeploy-a');
         const nextSent = next ? sent.get(next.label) : undefined;
-        if (hook?.endedAt && nextSent && nextSent.t0 < hook.endedAt) {
+        if (deployed && hook?.endedAt && nextSent && nextSent.t0 < hook.endedAt) {
           failures.push(`round ${(round ?? 0) + 1} started before redeploy ${round} finished; rounds overlapped`);
           category = 'tool';
         }
         perRound[`round${round}`] = {
           deployMs: hook?.startedAt && hook.endedAt ? hook.endedAt - hook.startedAt : null,
           ...observed,
-          resumeMs: a?.finalAt && hook?.endedAt ? a.finalAt - hook.endedAt : null,
+          resumeMs: deployed && a?.finalAt && hook?.endedAt ? a.finalAt - hook.endedAt : null,
           interruptToFinalMs: a?.finalAt && observed.interruptedAt ? a.finalAt - observed.interruptedAt : null,
           aFinalMs: a?.finalMs ?? null, aAttempts: a?.stage?.attempts ?? null, aVersions: a?.stage?.versions ?? [],
           probeFirstVisibleMs: b?.firstVisibleMs ?? null,
@@ -354,6 +369,7 @@ export function evaluateMatrix(input: { plan: MatrixPlan; data: BrowserExport | 
         .reduce<Record<string, number>>((acc, d) => { acc[d.outcome ?? '?'] = (acc[d.outcome ?? '?'] ?? 0) + 1; return acc; }, {});
       metrics.slackOps = 'not in the Worker tail (the shared gateway counts operations); rate-limit and rejection lines are counted instead';
       if ((signals.noAssignment ?? 0) > 0) failures.push(`${signals.noAssignment} mention(s) dropped at routing ("no assignment for turn")`);
+      if ((signals.deadLettered ?? 0) > 0) failures.push(`${signals.deadLettered} gateway delivery(ies) dead-lettered`);
       if ((signals.rateLimited ?? 0) + (signals.gatewayRejected ?? 0) > 0) notes.push(`gateway rate-limit/rejection lines: ${(signals.rateLimited ?? 0) + (signals.gatewayRejected ?? 0)} (retried is fine; a drop or failure final is not)`);
     }
 

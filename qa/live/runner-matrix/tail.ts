@@ -69,6 +69,7 @@ export const SIGNALS = {
   stateStoreUnavailable: /state store unavailable/i,
   streamRecovery: /stream recovery unknown/i,
   codeUpdated: /reset because its code was updated/i,
+  deadLettered: /gateway_delivery_dead_lettered/,
 } as const;
 export type SignalKind = keyof typeof SIGNALS;
 
@@ -198,13 +199,17 @@ export class TailCapture {
     this.lastByteAt = Date.now();
     const child = spawn(command[0]!, command.slice(1), { cwd: this.options.cwd, env: this.options.env ?? process.env, stdio: ['ignore', 'pipe', 'pipe'] });
     this.child = child;
-    const markReady = (chunk: Buffer) => {
-      if (!segment.ready && /connected to|waiting for logs|successfully created tail/i.test(chunk.toString('utf8'))) {
-        segment.ready = Date.now();
-        for (const waiter of this.readyWaiters.splice(0)) waiter();
-      }
+    const setReady = () => {
+      if (segment.ready) return;
+      segment.ready = Date.now();
+      for (const waiter of this.readyWaiters.splice(0)) waiter();
     };
-    child.stdout!.on('data', (chunk: Buffer) => { this.lastByteAt = Date.now(); markReady(chunk); this.out.write(chunk); });
+    const markReady = (chunk: Buffer) => {
+      if (/connected to|waiting for logs|successfully created tail/i.test(chunk.toString('utf8'))) setReady();
+    };
+    // With --format json Wrangler prints no connection banner; the first
+    // event on stdout is the proof the tail is attached.
+    child.stdout!.on('data', (chunk: Buffer) => { this.lastByteAt = Date.now(); setReady(); this.out.write(chunk); });
     child.stderr!.on('data', (chunk: Buffer) => { markReady(chunk); this.err.write(chunk); });
     child.on('exit', (code) => {
       segment.end = Date.now();
