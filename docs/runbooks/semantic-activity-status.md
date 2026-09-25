@@ -12,13 +12,19 @@ New Slack turns use only Slack's native under-composer status:
 - When semantic status is enabled, Chickpea writes the same bounded phrase to
   `status` and the one-entry `loading_messages` field of
   `assistant.threads.setStatus`.
-- While a delegated coding task (`workspace_task`) runs, the same fact is
-  rendered with the time since the request and the task's step
-  (`src/slack/coding-task-progress.ts`): `status` is, for example,
-  `Running the test suite · 12 min`, and `loading_messages` rotates that line
-  with `Step 2 of 3 · Code changes`. Each refresh recomputes the time. Coding
-  tasks show no native task card: Slack seals a stream a few minutes after it
-  starts, so a card could not follow a task that runs for most of an hour.
+- While a delegated coding task (`workspace_task`) runs, `status` is the
+  current stage (`Running the test suite…`) and `loading_messages` rotates it
+  with the task's step (`Step 2 of 3 · Code changes`), what the task has
+  already done (`Workspace ready`, `Test suite run`, `Changes committed`,
+  `2 commits so far`, `Branch pushed`), and what comes next (`Next: opening
+  the pull request`), as `src/slack/coding-task-progress.ts` learns them from
+  the workspace milestones and the worker's fixed stage phrases. The rotation
+  grows as the task progresses and shows no clock. Every entry is fixed copy
+  of at most 50 characters (at most 10, deduplicated); no command, path,
+  branch, repository or identifier reaches it. Slack is written only when the
+  stage changes or on the ordinary refresh cadence. Coding tasks show no
+  native task card: Slack seals a stream a few minutes after it starts, so a
+  card could not follow a task that runs for most of an hour.
 - When semantic status is disabled, Chickpea emits no custom semantic
   projection. Slack's generic Agent Session `processing` lifecycle remains the
   only progress surface when it is available.

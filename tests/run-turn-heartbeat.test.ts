@@ -986,7 +986,7 @@ test('runTurn queues an Agent welcome as the pending terminal delivery', async (
         assert.fail('expected deferred terminal delivery intent');
       }
       assert.equal(persisted.terminalDelivery.operation.certainty, 'pending');
-      assert.deepEqual(effects, ['session:processing', 'activity:set']);
+      assert.deepEqual(effects, ['activity:set']);
       assert.equal(persisted.stream.state, 'finalized');
 
       await completeAgentWelcomeDelivery(outbox, {
@@ -1008,7 +1008,6 @@ test('runTurn queues an Agent welcome as the pending terminal delivery', async (
       assert.equal(settled?.schemaVersion, 3);
       if (settled?.schemaVersion !== 3) assert.fail('expected settled V3 presentation');
       assert.deepEqual(effects, [
-        'session:processing',
         'activity:set',
         'session:active',
         'activity:clear',
@@ -1143,12 +1142,7 @@ test('runTurn keeps the persisted V3 owner from first status through final deliv
       assert.deepEqual(
         sessionStatuses.map(({ status, username, icon_url }) => ({ status, username, icon_url })),
         [
-          {
-            status: 'processing',
-            ...(owner.kind === 'selected_agent'
-              ? { username: persona.name, icon_url: persona.avatarUrl }
-              : { username: undefined, icon_url: undefined }),
-          },
+          // The custom status carries the session; no native processing call.
           {
             status: 'active',
             ...(owner.kind === 'selected_agent'
@@ -1530,14 +1524,24 @@ test('a 45-minute coding task shows its progress in the working indicator, opens
     const shown = statuses.map((status) => status.status);
     assert.ok(shown.includes('Setting up the coding workspace…'), JSON.stringify(shown));
     assert.ok(shown.includes('Working on the code changes…'), JSON.stringify(shown));
-    assert.ok(shown.includes('Running the test suite · 1 min'), JSON.stringify(shown));
-    const refreshes = statuses.filter((status) => /^Running the test suite · \d+ min$/.test(status.status));
-    assert.ok(refreshes.length >= 29, `refreshed ${refreshes.length} times`);
+    const refreshes = statuses.filter((status) => status.status === 'Running the test suite…');
+    assert.ok(refreshes.length >= 30, `refreshed ${refreshes.length} times`);
     for (const [index, refresh] of refreshes.entries()) {
       if (index > 0) assert.ok(refresh.at - refreshes[index - 1]!.at <= 90_000);
-      assert.deepEqual(refresh.loading, [refresh.status, 'Step 2 of 3 · Code changes']);
+      assert.deepEqual(refresh.loading, [
+        'Running the test suite…',
+        'Step 2 of 3 · Code changes',
+        'Workspace ready',
+        'Next: opening the pull request',
+      ]);
     }
-    assert.match(refreshes.at(-1)!.status, /· 4[56] min$/);
+    // No clock anywhere in the indicator.
+    for (const status of statuses) {
+      const loading = Array.isArray(status.loading) ? status.loading as string[] : [];
+      for (const line of [status.status, ...loading]) {
+        assert.doesNotMatch(line, /\d+ (min|h)\b/, line);
+      }
+    }
     // Cleared once after the final, and never shown again.
     assert.equal(statuses.at(-1)?.status, '');
     assert.equal(statuses.filter((status) => status.status === '').length, 1);
@@ -1779,7 +1783,7 @@ test('reaction-only delivery settles the V3 session and clears admitted activity
       agentPrompt: async () => { assert.fail('thanks must not invoke the model'); },
       onDelivered: async () => { effects.push('delivered'); },
     });
-    assert.deepEqual(effects, ['session:processing', 'activity:set', 'reaction', 'session:active', 'activity:clear', 'delivered']);
+    assert.deepEqual(effects, ['activity:set', 'reaction', 'session:active', 'activity:clear', 'delivered']);
     const stored = h.store.get(runId);
     assert.equal(stored?.schemaVersion, 3);
     if (stored?.schemaVersion !== 3) assert.fail('expected V3 presentation');
@@ -1788,6 +1792,51 @@ test('reaction-only delivery settles the V3 session and clears admitted activity
     assert.equal(stored.lifecyclePhase, 'settled');
     assert.equal(stored.repairRequired, false);
   } finally { h.db.close(); work.close(); }
+});
+
+test('a rejected custom status falls back to the native processing indicator', async () => {
+  const turn: NormalizedSlackTurn = {
+    ...workTurn('Ev_V3_STATUS_FALLBACK'),
+    interactionIntent: { disposition: 'reply', reason: 'substantive_request' },
+  };
+  const runId = 'run_v3_status_fallback';
+  const h = v3PresentationHarness(turn, runId);
+  const effects: string[] = [];
+  const client = {
+    apiCall: async (_method: string, input: Record<string, unknown>) => {
+      effects.push(`session:${String(input.status)}`);
+      return { ok: true };
+    },
+    assistant: { threads: { setStatus: async (input: Record<string, unknown>) => {
+      effects.push(`activity:${input.status ? 'set' : 'clear'}`);
+      throw Object.assign(new Error('An API error occurred: not_allowed'), {
+        code: 'slack_webapi_platform_error',
+        data: { ok: false, error: 'not_allowed' },
+      });
+    } } },
+    chat: {
+      startStream: async () => ({ ok: true, ts: '1787776100.000200' }),
+      stopStream: async () => ({ ok: true }),
+    },
+  } as unknown as WebClient;
+
+  try {
+    await runTurn(turn, assignment, undefined, {
+      client,
+      runId,
+      presentationState: h.state,
+      replayText: 'The requested work is complete.',
+      executionAuthority: 'ledger',
+      usageRecordingEnabled: false,
+    });
+    assert.deepEqual(effects.filter((effect) => effect !== 'activity:clear'), [
+      'activity:set',
+      'session:processing',
+      'session:active',
+    ]);
+  } finally {
+    h.db.close();
+  }
 });
 
 test('acknowledged final settles the frozen Agent Session before deleting activity', async () => {
@@ -1829,7 +1878,6 @@ test('acknowledged final settles the frozen Agent Session before deleting activi
       usageRecordingEnabled: false,
     });
     assert.deepEqual(effects, [
-      'session:processing:Frozen Support',
       'activity:set:Frozen Support',
       'final:start',
       'final:ack',

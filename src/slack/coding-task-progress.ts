@@ -12,12 +12,14 @@ import type { WorkspaceMilestoneRecord } from './coding-worker-run.ts';
  * - workspace milestones publish a fixed phrase (see `takeStatus`), and the
  *   worker's own steps arrive as ordinary activity (cloning, running tests,
  *   committing, pushing, opening the pull request);
- * - while a task runs, every status write, including each refresh, shows how
- *   long the request has been worked on and which of the task's three steps
- *   it is in (see `display`).
+ * - while a task runs, every status write, including each refresh, shows the
+ *   current stage and rotates it with the step the task is in, what the task
+ *   has already done, and what comes next (see `display`). The rotation
+ *   grows as the task progresses, so a long task keeps telling the person
+ *   something new without a clock.
  *
  * Every phrase is fixed product copy. Nothing the worker or the person wrote,
- * and no identifier, reaches Slack.
+ * and no identifier, path, branch or repository name, reaches Slack.
  */
 export interface CodingTaskProgress {
   /**
@@ -37,7 +39,8 @@ export interface CodingTaskProgress {
   /**
    * The text Slack shows for `update`: the status line and the rotating
    * loading messages. Undefined when no task is running, so the caller keeps
-   * its ordinary rendering.
+   * its ordinary rendering. Called for every write of `update`, so it also
+   * learns which of the worker's stages have passed.
    */
   display(update: ActivityStatus): CodingTaskStatusDisplay | undefined;
 }
@@ -50,8 +53,14 @@ export interface CodingTaskStatusDisplay {
 
 /** Slack rejects a loading message of 51 or more characters. */
 export const SLACK_LOADING_MESSAGE_MAX = 50;
+const SLACK_LOADING_MESSAGES_MAX = 10;
 
 const TASK_STEPS = ['Coding workspace', 'Code changes', 'Pull request'] as const;
+const NEXT_STEP: ReadonlyArray<string | undefined> = [
+  'Next: working on the code changes',
+  'Next: opening the pull request',
+  undefined,
+];
 
 export const CODING_WORKSPACE_SETUP_STATUS = activityStatus(
   'preparing', 'Setting up', 'the coding workspace', 'workspace',
@@ -60,17 +69,43 @@ export const CODING_WORKER_STARTED_STATUS = activityStatus(
   'running', 'Working on', 'the code changes', 'workspace',
 );
 
-export function createCodingTaskProgress(options: {
-  /** When the request was made: elapsed time counts from here. */
-  startedAt: number;
-  now?: () => number;
-}): CodingTaskProgress {
-  const now = options.now ?? Date.now;
+const WORKSPACE_READY = 'workspace';
+
+/**
+ * A worker stage that leaves something done once it has passed, keyed by the
+ * fixed phrase the coordinator receives for it (`bashActivityStatus` in
+ * `src/activity/status.ts`). A repeatable stage shows how often it passed.
+ */
+const STAGE_DONE: Readonly<Record<string, {
+  once: string;
+  times?: (count: number) => string;
+}>> = {
+  'Cloning the repository': { once: 'Repository cloned' },
+  'Installing dependencies': { once: 'Dependencies installed' },
+  'Running the test suite': {
+    once: 'Test suite run',
+    times: (count) => `Test suite run ${count} times`,
+  },
+  'Committing the changes': {
+    once: 'Changes committed',
+    times: (count) => `${count} commits so far`,
+  },
+  'Pushing the branch': {
+    once: 'Branch pushed',
+    times: (count) => `Branch pushed ${count} times`,
+  },
+};
+
+export function createCodingTaskProgress(): CodingTaskProgress {
   // Tasks running now, by tool call, with the step each is in (0-based).
   const running = new Map<string, number>();
   const settled = new Set<string>();
   let latest: string | undefined;
   let published: ActivityStatus | undefined;
+  // What the task has done, in the order it happened: the workspace milestone
+  // and the worker stages that have passed, with how often each passed.
+  const done = new Map<string, number>();
+  let currentStage: string | undefined;
 
   return {
     apply(record) {
@@ -82,6 +117,7 @@ export function createCodingTaskProgress(options: {
         const step = record.milestone === 'workspace' && record.state === 'started' ? 0
           : record.milestone === 'pull_request' ? 2
           : 1;
+        if (step > 0 && !done.has(WORKSPACE_READY)) done.set(WORKSPACE_READY, 1);
         running.set(record.toolCallId, Math.max(step, running.get(record.toolCallId) ?? 0));
         latest = record.toolCallId;
         return;
@@ -105,23 +141,41 @@ export function createCodingTaskProgress(options: {
     display(update) {
       if (running.size === 0) return undefined;
       const stage = stagePhrase(update.text);
-      const elapsed = elapsedLabel(now() - options.startedAt);
+      // A refresh repeats the stage; a different one means the last has passed.
+      if (stage !== currentStage) {
+        if (currentStage && STAGE_DONE[currentStage]) {
+          done.set(currentStage, (done.get(currentStage) ?? 0) + 1);
+        }
+        currentStage = stage;
+      }
       const step = pullRequestStage(update) ? 2 : running.get(latest ?? '') ?? 1;
-      const status = fit(elapsed ? `${stage} · ${elapsed}` : `${stage}…`, `${stage}…`);
-      const stepLine = fit(`Step ${step + 1} of ${TASK_STEPS.length} · ${TASK_STEPS[step]}`);
-      return { status, loadingMessages: [status, stepLine] };
+      const status = fit(`${stage}…`);
+      const next = NEXT_STEP[step];
+      const messages = [
+        status,
+        fit(`Step ${step + 1} of ${TASK_STEPS.length} · ${TASK_STEPS[step]}`),
+        ...doneLines(done),
+        ...(next ? [next] : []),
+      ];
+      return {
+        status,
+        loadingMessages: [...new Set(messages)].slice(0, SLACK_LOADING_MESSAGES_MAX),
+      };
     },
   };
 }
 
-/** Minutes and hours, rounded down; nothing under a minute. */
-export function elapsedLabel(milliseconds: number): string | undefined {
-  const minutes = Math.floor(Math.max(0, milliseconds) / 60_000);
-  if (minutes < 1) return undefined;
-  if (minutes < 60) return `${minutes} min`;
-  const hours = Math.floor(minutes / 60);
-  const rest = minutes % 60;
-  return rest === 0 ? `${hours} h` : `${hours} h ${rest} min`;
+function doneLines(done: ReadonlyMap<string, number>): string[] {
+  const lines: string[] = [];
+  for (const [key, count] of done) {
+    if (key === WORKSPACE_READY) {
+      lines.push('Workspace ready');
+      continue;
+    }
+    const phrase = STAGE_DONE[key];
+    if (phrase) lines.push(fit(count > 1 && phrase.times ? phrase.times(count) : phrase.once));
+  }
+  return lines;
 }
 
 function stagePhrase(text: string): string {

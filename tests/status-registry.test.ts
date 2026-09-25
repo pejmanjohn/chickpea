@@ -115,6 +115,106 @@ test('a still-current phase refreshes and final preparation cancels the refresh'
   await turn.finish(async () => {});
 });
 
+test('a refresh whose reservation failed re-arms instead of letting the status expire', async () => {
+  const calls: string[] = [];
+  let refreshes = 0;
+  let latched = false;
+  const turn = registerSlackStatusTurn('refresh-rearm-thread', {
+    setStatus(update) {
+      calls.push(`set:${update.text}`);
+      return Promise.resolve(true);
+    },
+    refreshStatus(update) {
+      refreshes += 1;
+      calls.push(`refresh:${update.text}`);
+      // First refresh loses its reservation; the second is a latched rejection.
+      if (refreshes === 2) latched = true;
+      return Promise.resolve(false);
+    },
+    refreshRetryable: () => !latched,
+  }, {
+    generation: 'refresh-rearm-generation',
+    observedMinIntervalMs: 1,
+    refreshIntervalMs: 15,
+  });
+
+  assert.equal(await turn.setStatus({ text: 'Running tests…' }), true);
+  await new Promise((resolve) => setTimeout(resolve, 70));
+  assert.deepEqual(calls, [
+    'set:Running tests…',
+    'refresh:Running tests…',
+    'refresh:Running tests…',
+  ], 'a failed reservation re-arms once; the latched rejection stops refreshing');
+  turn.close();
+});
+
+test('a new fact that fails its reservation retries itself while the old fact is shown', async () => {
+  const calls: string[] = [];
+  let failures = 0;
+  const turn = registerSlackStatusTurn('refresh-rearm-shown-thread', {
+    setStatus(update) {
+      calls.push(`set:${update.text}`);
+      // The first write of the new fact loses its reservation.
+      if (update.text === 'Running tests…' && failures++ === 0) return Promise.resolve(false);
+      return Promise.resolve(true);
+    },
+    refreshStatus(update) {
+      // A durable presenter validates a refresh against its current fact,
+      // which is now the failed new one: the old phrase can never refresh.
+      calls.push(`refresh:${update.text}`);
+      return Promise.resolve(update.text === 'Running tests…');
+    },
+    refreshRetryable: () => true,
+  }, {
+    generation: 'refresh-rearm-shown-generation',
+    observedMinIntervalMs: 1,
+    refreshIntervalMs: 20,
+  });
+
+  await turn.setStatus({ text: 'Thinking…' });
+  assert.equal(await turn.setStatus({ text: 'Running tests…' }), false);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.deepEqual(calls.slice(0, 3), [
+    'set:Thinking…',
+    'set:Running tests…',
+    'set:Running tests…',
+  ], 'the failed fact is retried as a write, not refreshed as the old phrase');
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(calls[3], 'refresh:Running tests…', 'the retried fact then refreshes normally');
+  turn.close();
+});
+
+test('a newer fact cancels a pending retry, and an applied fact makes it moot', async () => {
+  const calls: string[] = [];
+  const turn = registerSlackStatusTurn('refresh-retry-cancel-thread', {
+    setStatus(update) {
+      calls.push(`set:${update.text}`);
+      return Promise.resolve(update.text !== 'Running tests…');
+    },
+    refreshStatus(update) {
+      calls.push(`refresh:${update.text}`);
+      return Promise.resolve(true);
+    },
+    refreshRetryable: () => true,
+  }, {
+    generation: 'refresh-retry-cancel-generation',
+    observedMinIntervalMs: 1,
+    refreshIntervalMs: 20,
+  });
+
+  await turn.setStatus({ text: 'Thinking…' });
+  assert.equal(await turn.setStatus({ text: 'Running tests…' }), false);
+  assert.equal(await turn.setStatus({ text: 'Committing…' }), true);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.deepEqual(calls, [
+    'set:Thinking…',
+    'set:Running tests…',
+    'set:Committing…',
+    'refresh:Committing…',
+  ], 'the newer fact replaces the retry and refreshes on the ordinary cadence');
+  turn.close();
+});
+
 test('a rehydrated status refreshes only through the validated native path', async () => {
   const calls: string[] = [];
   const turn = registerSlackStatusTurn('rehydrated-refresh-thread', {

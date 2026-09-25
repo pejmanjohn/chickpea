@@ -9,7 +9,6 @@ import {
   CODING_WORKSPACE_SETUP_STATUS,
   SLACK_LOADING_MESSAGE_MAX,
   createCodingTaskProgress,
-  elapsedLabel,
 } from '../src/slack/coding-task-progress.ts';
 import type { WorkspaceMilestoneRecord } from '../src/slack/coding-worker-run.ts';
 import { registerSlackStatusTurn } from '../src/slack/status-registry.ts';
@@ -25,20 +24,19 @@ function milestone(
   return { schemaVersion: 1, toolCallId, milestone: name, state };
 }
 
+const CLONING = activityStatus('running', 'Cloning', 'the repository', 'workspace');
+const INSTALLING = activityStatus('running', 'Installing', 'dependencies', 'workspace');
+const EDITING = activityStatus('writing', 'Editing files in', 'the coding workspace', 'workspace');
 const RUNNING_TESTS = activityStatus('running', 'Running', 'the test suite', 'workspace');
+const COMMITTING = activityStatus('finishing', 'Committing', 'the changes', 'workspace');
+const PUSHING = activityStatus('finishing', 'Pushing', 'the branch', 'workspace');
 const OPENING_PR = activityStatus('finishing', 'Opening', 'the pull request', 'workspace');
 
-test('elapsed time reads in whole minutes and hours', () => {
-  assert.equal(elapsedLabel(59_999), undefined);
-  assert.equal(elapsedLabel(60_000), '1 min');
-  assert.equal(elapsedLabel(12 * 60_000 + 59_000), '12 min');
-  assert.equal(elapsedLabel(60 * 60_000), '1 h');
-  assert.equal(elapsedLabel(75 * 60_000), '1 h 15 min');
-  assert.equal(elapsedLabel(-5), undefined);
-});
+/** No clock, no command text, path, branch, repository or identifier. */
+const LEAK = /\d+ min\b|\d+ h\b|\/|\.ts\b|\bnpm\b|\bgit\b|feature\/|acme|call_|\bID\b/i;
 
 test('milestones publish a phrase per step, once, and nothing once the task settled', () => {
-  const progress = createCodingTaskProgress({ startedAt: START, now: () => START });
+  const progress = createCodingTaskProgress();
   assert.equal(progress.takeStatus(), undefined);
   progress.apply(milestone('workspace', 'started'));
   assert.equal(progress.active(), true);
@@ -65,7 +63,7 @@ test('milestones publish a phrase per step, once, and nothing once the task sett
 });
 
 test('a reattached turn replaying a finished task publishes nothing for it', () => {
-  const progress = createCodingTaskProgress({ startedAt: START });
+  const progress = createCodingTaskProgress();
   for (const record of [
     milestone('workspace', 'started'),
     milestone('workspace', 'completed'),
@@ -78,7 +76,7 @@ test('a reattached turn replaying a finished task publishes nothing for it', () 
 });
 
 test('a second task in the same response keeps the indicator on until both settle', () => {
-  const progress = createCodingTaskProgress({ startedAt: START });
+  const progress = createCodingTaskProgress();
   progress.apply(milestone('workspace', 'started', 'call_a'));
   progress.apply(milestone('workspace', 'completed', 'call_a'));
   progress.apply(milestone('workspace', 'started', 'call_b'));
@@ -90,39 +88,93 @@ test('a second task in the same response keeps the indicator on until both settl
   assert.equal(progress.active(), false);
 });
 
-test('the working indicator shows the step, the elapsed time, and fits Slack\'s limits', () => {
-  let now = START;
-  const progress = createCodingTaskProgress({ startedAt: START, now: () => now });
+test('the rotation grows with what the task has done and never shows a clock', () => {
+  const progress = createCodingTaskProgress();
   progress.apply(milestone('workspace', 'started'));
+  // Early: only the stage and the step are known.
   assert.deepEqual(progress.display(CODING_WORKSPACE_SETUP_STATUS), {
     status: 'Setting up the coding workspace…',
-    loadingMessages: ['Setting up the coding workspace…', 'Step 1 of 3 · Coding workspace'],
+    loadingMessages: [
+      'Setting up the coding workspace…',
+      'Step 1 of 3 · Coding workspace',
+      'Next: working on the code changes',
+    ],
   });
   progress.apply(milestone('workspace', 'completed'));
   progress.apply(milestone('changes', 'started'));
-  now = START + 12 * 60_000 + 30_000;
-  assert.deepEqual(progress.display(RUNNING_TESTS), {
-    status: 'Running the test suite · 12 min',
-    loadingMessages: ['Running the test suite · 12 min', 'Step 2 of 3 · Code changes'],
+  assert.deepEqual(progress.display(CODING_WORKER_STARTED_STATUS)!.loadingMessages, [
+    'Working on the code changes…',
+    'Step 2 of 3 · Code changes',
+    'Workspace ready',
+    'Next: opening the pull request',
+  ]);
+  // The worker's stages pass one by one; a refresh repeats a stage without
+  // counting it again.
+  progress.display(CLONING);
+  progress.display(INSTALLING);
+  progress.display(EDITING);
+  progress.display(RUNNING_TESTS);
+  progress.display(RUNNING_TESTS);
+  assert.deepEqual(progress.display(COMMITTING), {
+    status: 'Committing the changes…',
+    loadingMessages: [
+      'Committing the changes…',
+      'Step 2 of 3 · Code changes',
+      'Workspace ready',
+      'Repository cloned',
+      'Dependencies installed',
+      'Test suite run',
+      'Next: opening the pull request',
+    ],
   });
-  now = START + 38 * 60_000;
+  // A second round of tests and commits counts.
+  progress.display(EDITING);
+  progress.display(RUNNING_TESTS);
+  progress.display(COMMITTING);
+  progress.display(PUSHING);
+  // Late: opening the pull request is step 3 and has nothing after it.
   assert.deepEqual(progress.display(OPENING_PR), {
-    status: 'Opening the pull request · 38 min',
-    loadingMessages: ['Opening the pull request · 38 min', 'Step 3 of 3 · Pull request'],
+    status: 'Opening the pull request…',
+    loadingMessages: [
+      'Opening the pull request…',
+      'Step 3 of 3 · Pull request',
+      'Workspace ready',
+      'Repository cloned',
+      'Dependencies installed',
+      'Test suite run 2 times',
+      '2 commits so far',
+      'Branch pushed',
+    ],
   });
-  now = START + 72 * 60_000;
-  const long = activityStatus('reading', 'Reading code in', 'the coding workspace', 'workspace');
-  const shown = progress.display(long)!;
-  assert.equal(shown.status, 'Reading code in the coding workspace · 1 h 12 min');
-  const longer = activityStatus('running', 'Running commands in', 'the coding workspace', 'workspace');
-  assert.equal(progress.display(longer)!.status, 'Running commands in the coding workspace…',
-    'a line too long for the elapsed time keeps the step phrase');
-  for (const update of [RUNNING_TESTS, OPENING_PR, long, longer]) {
+  for (const update of [CODING_WORKSPACE_SETUP_STATUS, EDITING, RUNNING_TESTS, OPENING_PR]) {
     const display = progress.display(update)!;
     assert.ok(display.loadingMessages.length >= 1 && display.loadingMessages.length <= 10);
+    assert.equal(new Set(display.loadingMessages).size, display.loadingMessages.length);
     for (const message of [display.status, ...display.loadingMessages]) {
       assert.ok(message.length <= SLACK_LOADING_MESSAGE_MAX, message);
+      assert.doesNotMatch(message, LEAK, message);
     }
+  }
+});
+
+test('a long stage phrase and a full history still fit Slack\'s limits', () => {
+  const progress = createCodingTaskProgress();
+  progress.apply(milestone('workspace', 'started'));
+  progress.apply(milestone('workspace', 'completed'));
+  progress.apply(milestone('changes', 'started'));
+  const stages = [CLONING, INSTALLING, RUNNING_TESTS, COMMITTING, PUSHING];
+  for (let round = 0; round < 12; round += 1) {
+    for (const stage of stages) progress.display(stage);
+  }
+  const longer = activityStatus('running', 'Running commands in', 'the coding workspace', 'workspace');
+  const display = progress.display(longer)!;
+  assert.equal(display.status, 'Running commands in the coding workspace…');
+  assert.equal(display.loadingMessages.length, 9);
+  assert.ok(display.loadingMessages.includes('Test suite run 12 times'));
+  assert.ok(display.loadingMessages.includes('12 commits so far'));
+  assert.ok(display.loadingMessages.includes('Branch pushed 12 times'));
+  for (const message of [display.status, ...display.loadingMessages]) {
+    assert.ok(message.length <= SLACK_LOADING_MESSAGE_MAX, message);
   }
 });
 
@@ -147,9 +199,9 @@ async function settle(): Promise<void> {
   for (let index = 0; index < 5; index += 1) await new Promise((resolve) => setImmediate(resolve));
 }
 
-test('a 45-minute task refreshes its indicator every 90 s with the current time, then clears once', async (t) => {
+test('a 45-minute task refreshes its indicator every 90 s, writes only on a change, then clears once', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: START });
-  const progress = createCodingTaskProgress({ startedAt: START });
+  const progress = createCodingTaskProgress();
   const { client, writes } = statusClient();
   const presenter = new WebClientPresenter(client, {
     channelId: 'D_PROGRESS',
@@ -171,6 +223,8 @@ test('a 45-minute task refreshes its indicator every 90 s with the current time,
   await turn.setStatus(progress.takeStatus()!);
   t.mock.timers.tick(30_000);
   await turn.setStatus(RUNNING_TESTS);
+  // The same fact again is not a change and reaches Slack only as a refresh.
+  await turn.setStatus(RUNNING_TESTS);
   assert.deepEqual(writes.map((write) => write.status), [
     'Setting up the coding workspace…',
     'Working on the code changes…',
@@ -178,7 +232,7 @@ test('a 45-minute task refreshes its indicator every 90 s with the current time,
   ]);
 
   // The same fact is refreshed before Slack's two-minute expiry, with the
-  // current elapsed time, and never more often than every 90 seconds.
+  // same rotation, and never more often than every 90 seconds.
   for (let elapsed = 30_000; elapsed < 45 * 60_000; elapsed += 10_000) {
     t.mock.timers.tick(10_000);
     await settle();
@@ -188,10 +242,14 @@ test('a 45-minute task refreshes its indicator every 90 s with the current time,
   for (const [index, write] of refreshes.entries()) {
     const previous = index === 0 ? writes[2]! : refreshes[index - 1]!;
     assert.equal(write.at - previous.at, 90_000);
-    assert.match(write.status, /^Running the test suite · \d+ min$/);
-    assert.deepEqual(write.loadingMessages, [write.status, 'Step 2 of 3 · Code changes']);
+    assert.equal(write.status, 'Running the test suite…');
+    assert.deepEqual(write.loadingMessages, [
+      'Running the test suite…',
+      'Step 2 of 3 · Code changes',
+      'Workspace ready',
+      'Next: opening the pull request',
+    ]);
   }
-  assert.equal(refreshes.at(-1)!.status, 'Running the test suite · 44 min');
 
   // The final supersedes the indicator: one clear, and no refresh after it.
   await turn.prepareFinal();

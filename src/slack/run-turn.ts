@@ -632,11 +632,8 @@ async function runTurnAttempt(
           : {}),
       })
     : undefined;
-  // A delegated coding task's progress shows in the working indicator, timed
-  // from the request (durable across yields, unlike this isolate's clock).
-  const codingProgress = createCodingTaskProgress({
-    startedAt: frozenPresentation?.createdAt ?? slackTsMillis(turn.messageTs) ?? Date.now(),
-  });
+  // A delegated coding task's progress shows in the working indicator.
+  const codingProgress = createCodingTaskProgress();
   // Once per turn; a failed hint never holds back the task's progress.
   let codingTaskSignalled = false;
   const signalCodingTaskStarted = async () => {
@@ -695,9 +692,6 @@ async function runTurnAttempt(
       ? { onPublicDelivery: options.onPublicMessageDelivered }
       : {}),
   });
-  if (await agentViewPresentation?.beginAgentSessionProcessing()) {
-    options.onSlackWrite?.('agent_session');
-  }
   const statusGeneration = options.turnId ?? `msg:${turn.channelId}:${turn.messageTs}`;
   const statusInstanceId = runtimePlanDecision?.instanceId ?? agentConversationKey;
   const semanticActivityEnabled = frozenPresentation?.schemaVersion === 3
@@ -715,6 +709,30 @@ async function runTurnAttempt(
         frozenPresentation.currentActivity.phase,
       )
     : undefined;
+  // Slack shows a custom assistant status only while the Agent Session is not
+  // in native `processing`; the native indicator otherwise takes precedence.
+  // A non-empty assistant status itself moves the session to processing, so a
+  // turn that writes semantic status skips the native call and falls back to
+  // it only when the custom status cannot be shown. Trade-off: while custom
+  // text shows, Slack's native stop control is absent; Chickpea handles no
+  // native stop event today. Settle below stays on agents.sessions.
+  const semanticStatusCarriesSession = () => semanticActivityEnabled &&
+    presenter.preferredActivitySurface() === 'assistant_status' &&
+    !presenter.activityReceipt().unavailable;
+  let nativeSessionFallbackStarted = false;
+  const beginNativeSessionFallback = async (): Promise<void> => {
+    if (nativeSessionFallbackStarted || !agentViewPresentation) return;
+    nativeSessionFallbackStarted = true;
+    if (await agentViewPresentation.beginAgentSessionProcessing().catch(() => false)) {
+      options.onSlackWrite?.('agent_session');
+    }
+  };
+  if (!semanticStatusCarriesSession()) {
+    nativeSessionFallbackStarted = true;
+    if (await agentViewPresentation?.beginAgentSessionProcessing()) {
+      options.onSlackWrite?.('agent_session');
+    }
+  }
   const activityPresenter = {
     async setStatus(update: SlackStatusUpdate): Promise<boolean> {
       if (!semanticActivityEnabled) return false;
@@ -744,7 +762,17 @@ async function runTurnAttempt(
         // one-message coordinate and let durable repair reconcile the receipt.
         return false;
       }
+      // Nothing custom is (or can be) visible: show Slack's native indicator.
+      if (!succeeded && (!semanticStatusCarriesSession() ||
+          !presenter.assistantStatusVisible())) {
+        await beginNativeSessionFallback();
+      }
       return succeeded;
+    },
+    refreshRetryable(): boolean {
+      // A failed reservation or refresh preparation leaves the shown status
+      // valid; a latched Slack rejection does not.
+      return semanticStatusCarriesSession() && presenter.assistantStatusVisible();
     },
     async refreshStatus(update: SlackStatusUpdate): Promise<boolean> {
       if (!semanticActivityEnabled) return false;
@@ -806,6 +834,10 @@ async function runTurnAttempt(
     // The normal clear is awaited so it reaches Slack before the Worker turn
     // settles. If an active status write lands after it, the registry issues a
     // second best-effort clear without blocking the final response.
+    // A custom status write landing after the session settles would move the
+    // session back to processing (a non-empty assistant status carries it),
+    // so let the one write that may be in flight land first.
+    await statusTurn.drain();
     await agentViewPresentation?.settleAgentSession(result);
     await statusTurn.finish(async (late) => {
       if (frozenPresentation?.schemaVersion !== 3 || !agentViewPresentation) {
@@ -2181,10 +2213,4 @@ function tryResolveAgentModel(agent: Parameters<typeof resolveAgentModel>[0]): s
 export function sanitizeError(err: unknown): string {
   if (err instanceof Error) return err.message;
   return String(err);
-}
-
-/** A Slack message timestamp as epoch milliseconds, or undefined. */
-function slackTsMillis(ts: string | undefined): number | undefined {
-  const millis = Number(ts) * 1_000;
-  return Number.isFinite(millis) && millis > 0 && millis <= Date.now() ? millis : undefined;
 }

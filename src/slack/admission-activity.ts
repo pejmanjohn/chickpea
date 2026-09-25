@@ -64,12 +64,18 @@ export async function presentAdmittedSlackActivity(
         }
       : {}),
   });
-  await agentView.beginAgentSessionProcessing();
-  if (input.semanticActivityEnabled === false) return true;
+  // Slack hides a custom assistant status while the Agent Session is in native
+  // `processing`, and a non-empty assistant status itself moves the session to
+  // processing. Use the native indicator only when no custom status shows.
+  if (input.semanticActivityEnabled === false) {
+    await agentView.beginAgentSessionProcessing();
+    return true;
+  }
   const write = await agentView.beginActivity(
     input.activity,
     presenter.preferredActivitySurface(),
   );
+  // No write: a replay whose status is already resolved, or a fenced run.
   if (!write) return false;
   await presenter.setStatus(input.activity, write);
   const receipt = presenter.activityReceipt();
@@ -79,5 +85,8 @@ export async function presentAdmittedSlackActivity(
     receipt.messageTs,
     receipt.unavailable,
   );
+  if (receipt.certainty === 'failed' || write.surface !== 'assistant_status') {
+    await agentView.beginAgentSessionProcessing();
+  }
   return receipt.certainty === 'acknowledged';
 }

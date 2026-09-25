@@ -126,14 +126,8 @@ test('canonical admission posts one durable owner-authored activity before execu
 
     assert.equal(await presentAdmittedSlackActivity(input), true);
     assert.equal(await presentAdmittedSlackActivity(input), false);
-    assert.deepEqual(sessionStatuses, [{
-      channel_id: 'D_ADMISSION',
-      thread_ts: '1785700100.000100',
-      status: 'processing',
-      initiator_user_id: 'U_ADMISSION',
-      username: 'Sprout',
-      icon_url: owner.persona.avatarUrl,
-    }], 'admission starts one native processing status with the frozen owner');
+    assert.deepEqual(sessionStatuses, [],
+      'a visible custom status carries the session; native processing would hide it');
     assert.deepEqual(nativeStatuses, [{
       channel_id: 'D_ADMISSION',
       thread_ts: '1785700100.000100',
@@ -158,11 +152,7 @@ test('canonical admission posts one durable owner-authored activity before execu
       });
       assert.deepEqual(stored.agentSession, {
         desired: 'processing',
-        acknowledged: 'processing',
-        operation: {
-          operationId: stored.agentSession.operation?.operationId,
-          certainty: 'acknowledged',
-        },
+        acknowledged: 'none',
       });
     }
   } finally {
@@ -245,6 +235,82 @@ test('capability-disabled admission is Agent Session lifecycle-only', async () =
       assert.deepEqual(stored.activityProjection, { surface: 'unselected', state: 'absent' });
       assert.equal(stored.agentSession.acknowledged, 'processing');
     }
+  } finally {
+    db.close();
+  }
+});
+
+test('admission falls back to native processing when the custom status is rejected', async () => {
+  const db = openStateDb(':memory:');
+  try {
+    const store = new SlackRunPresentationStoreLogic(db, () => 1_800_000_000_000);
+    const runId = 'run_admission_status_rejected';
+    const activity = activityStatus('preparing', 'Thinking', '');
+    store.create({
+      schemaVersion: 3,
+      runId,
+      turnJobId: 'turn_admission_status_rejected',
+      bindingId: 'binding_admission_status_rejected',
+      workBindingGeneration: 1,
+      runFencingToken: 0,
+      root: {
+        workspaceId: 'T_ADMISSION',
+        channelId: 'D_ADMISSION',
+        threadTs: '1785700300.000100',
+        requesterUserId: 'U_ADMISSION',
+      },
+      owner: { kind: 'chickpea' },
+      sessionGeneration: 1785700300000100,
+      currentActivity: {
+        kind: activity.kind,
+        action: activity.action,
+        object: activity.object,
+        generation: 1785700300000100,
+        sequence: 1,
+        operation: { operationId: 'activity_admission_rejected_1', certainty: 'pending' },
+      },
+    });
+    const calls: string[] = [];
+    const client = {
+      async apiCall(method: string, input: Record<string, unknown>) {
+        calls.push(`${method}:${String(input.status)}`);
+        return { ok: true };
+      },
+      assistant: { threads: { setStatus: async () => {
+        calls.push('assistant.threads.setStatus');
+        throw Object.assign(new Error('An API error occurred: not_allowed'), {
+          code: 'slack_webapi_platform_error',
+          data: { ok: false, error: 'not_allowed' },
+        });
+      } } },
+    } as unknown as WebClient;
+    const state: SlackPresentationStatePort = {
+      getRunPresentation: (id) => store.get(id),
+      getLatestThreadSessionGeneration: (root) => store.getLatestThreadSessionGeneration(root),
+      transitionRunPresentation: (input) => store.transition(input),
+      reserveSlackAppend: (workspaceId) => store.reserveAppend(workspaceId),
+      applySlackAppendCooldown: (workspaceId, retryAfterMs) =>
+        store.applyAppendCooldown(workspaceId, retryAfterMs),
+      matchFlueObservation: () => undefined,
+    };
+
+    assert.equal(await presentAdmittedSlackActivity({
+      client,
+      state,
+      runId,
+      runFencingToken: 0,
+      workspaceId: 'T_ADMISSION',
+      channelId: 'D_ADMISSION',
+      threadTs: '1785700300.000100',
+      requesterUserId: 'U_ADMISSION',
+      owner: { kind: 'chickpea' },
+      agentId: 'agent_chickpea',
+      activity,
+    }), false);
+    assert.deepEqual(calls, [
+      'assistant.threads.setStatus',
+      'agents.sessions.setStatus:processing',
+    ]);
   } finally {
     db.close();
   }

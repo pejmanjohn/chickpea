@@ -22,6 +22,12 @@ interface StatusPresenter {
   setStatus(update: SlackStatusUpdate): Promise<boolean>;
   /** Native-only same-fact refresh; absent presenters simply stop refreshing. */
   refreshStatus?(update: SlackStatusUpdate): Promise<boolean>;
+  /**
+   * After a failed write: whether the status already shown is still valid
+   * (a failed reservation or refresh preparation, not a latched Slack
+   * rejection), so the refresh must be re-armed before Slack expires it.
+   */
+  refreshRetryable?(): boolean;
 }
 
 interface SlackStatusTurnOptions {
@@ -60,6 +66,7 @@ interface QueuedStatusWrite {
 
 const DEFAULT_OBSERVED_STATUS_MIN_INTERVAL_MS = 1_000;
 const DEFAULT_STATUS_REFRESH_INTERVAL_MS = 90_000;
+const STATUS_REFRESH_RETRY_MS = 15_000;
 
 class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
   private active: QueuedStatusWrite | undefined;
@@ -100,7 +107,7 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
       this.scheduleRefresh(
         initialAppliedStatus,
         refreshInitialStatus ? 0 : this.refreshIntervalMs,
-        true,
+        'validated',
       );
     }
   }
@@ -132,8 +139,9 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
     update: SlackStatusUpdate,
     observed: boolean,
     refresh: false | 'ordinary' | 'validated',
+    retry = false,
   ): Promise<boolean> {
-    if (!refresh && isSafeTypedActivityStatus(update)) {
+    if (!refresh && !retry && isSafeTypedActivityStatus(update)) {
       const produced = semanticTelemetryForStatus(update);
       emitSemanticActivityTelemetry({
         event: 'activity.produced',
@@ -313,6 +321,18 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
           if (!this.pending || this.pending.update.text === queued.update.text) {
             this.scheduleRefresh(queued.update);
           }
+        } else if (!this.pending && this.refreshRetryable()) {
+          // The status shown is still valid, so retry this write well before
+          // Slack's two-minute expiry instead of letting it lapse mid-task. A
+          // failed refresh re-arms the fact it reasserted; a failed new fact
+          // retries itself, since the durable record now names that fact and
+          // a refresh of the older phrase can no longer be validated.
+          if (queued.refresh) this.lastAppliedText = queued.update.text;
+          this.scheduleRefresh(
+            queued.update,
+            Math.min(this.refreshIntervalMs, STATUS_REFRESH_RETRY_MS),
+            queued.refresh,
+          );
         }
         if (this.active === queued) {
           this.active = undefined;
@@ -320,6 +340,14 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
         queued.resolve(succeeded);
         this.scheduleNext();
       });
+  }
+
+  private refreshRetryable(): boolean {
+    try {
+      return this.presenter.refreshRetryable?.() === true;
+    } catch {
+      return false;
+    }
   }
 
   private discardPending(disposition: SemanticActivityQueueDisposition): void {
@@ -334,10 +362,15 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
     }
   }
 
+  /**
+   * Reassert `update` after `delayMs`: a refresh of the fact already shown, or
+   * (`refresh` false) a retry of a write that failed while an older fact stays
+   * shown. Any newer distinct write cancels the timer.
+   */
   private scheduleRefresh(
     update: SlackStatusUpdate,
     delayMs = this.refreshIntervalMs,
-    requireValidation = false,
+    refresh: false | 'ordinary' | 'validated' = 'ordinary',
   ): void {
     this.cancelRefresh();
     if (this.closed || this.terminalizing || !this.ownsVisibleWrites()) return;
@@ -348,8 +381,12 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
     }, this.telemetry);
     this.refreshTimer = setTimeout(() => {
       this.refreshTimer = undefined;
-      if (this.closed || this.terminalizing || !this.ownsVisibleWrites() ||
-          this.lastAppliedText !== update.text) {
+      // A refresh must still be reasserting the shown fact; a retry is moot
+      // once that fact has been applied by another write.
+      const stale = refresh
+        ? this.lastAppliedText !== update.text
+        : this.lastAppliedText === update.text;
+      if (this.closed || this.terminalizing || !this.ownsVisibleWrites() || stale) {
         emitSemanticActivityTelemetry({
           event: 'activity.refresh',
           outcome: 'stale_dropped',
@@ -359,13 +396,13 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
       // The timer belongs to this bounded turn registration. It reuses the
       // normal one-active/one-pending queue, but intentionally bypasses the
       // same-text short circuit so Slack does not expire truthful status.
-      this.lastAppliedText = undefined;
+      if (refresh) this.lastAppliedText = undefined;
       emitSemanticActivityTelemetry({
         event: 'activity.refresh',
         outcome: 'attempted',
         durationMs: this.refreshIntervalMs,
       }, this.telemetry);
-      void this.enqueue(update, true, requireValidation ? 'validated' : 'ordinary');
+      void this.enqueue(update, true, refresh, !refresh);
     }, delayMs);
     this.refreshTimer.unref?.();
   }
