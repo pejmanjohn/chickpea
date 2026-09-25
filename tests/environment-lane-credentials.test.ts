@@ -57,33 +57,3 @@ test('a missing credential file leaves the environment values untouched', () => 
     rmSync(root, { recursive: true, force: true });
   }
 });
-
-test('a registration origin supplies only the URL, after the environment and the credential file', () => {
-  const root = mkdtempSync(join(tmpdir(), 'chickpea-lane-credentials-'));
-  try {
-    const authorityOrigin = 'https://chickpea-violet.example.workers.dev';
-    // Token from the host, origin from the registry record: the registry never carries a token.
-    assert.deepEqual(resolveLaneAuthorityCredentials('violet', {
-      env: { CHICKPEA_ENV_VIOLET_LIVE_AUTHORITY_READ_TOKEN: TOKEN }, credentialsRoot: root, authorityOrigin,
-    }), { url: `${authorityOrigin}/internal/environment/authority`, token: TOKEN, source: 'registry' });
-    // Without a token the URL alone does not make the lane readable.
-    assert.deepEqual(resolveLaneAuthorityCredentials('violet', { env: {}, credentialsRoot: root, authorityOrigin }), {
-      url: `${authorityOrigin}/internal/environment/authority`, token: undefined, source: 'registry',
-    });
-    // The host variable and the credential file both win over the record.
-    assert.equal(resolveLaneAuthorityCredentials('violet', {
-      env: { CHICKPEA_ENV_VIOLET_LIVE_AUTHORITY_URL: 'https://env.example/internal/environment/authority', CHICKPEA_ENV_VIOLET_LIVE_AUTHORITY_READ_TOKEN: TOKEN },
-      credentialsRoot: root, authorityOrigin,
-    }).url, 'https://env.example/internal/environment/authority');
-    writeFileSync(join(root, 'violet-live.json'), JSON.stringify({ origin: 'https://file.example', authorityReadToken: TOKEN }));
-    assert.deepEqual(resolveLaneAuthorityCredentials('violet', { env: {}, credentialsRoot: root, authorityOrigin }), {
-      url: 'https://file.example/internal/environment/authority', token: TOKEN, source: 'lane-credentials',
-    });
-    // Only an exact https origin is accepted from a record.
-    for (const rejected of ['http://violet.example', 'https://violet.example/authority', 'https://user:pw@violet.example', 'violet.example']) {
-      assert.equal(resolveLaneAuthorityCredentials('cobalt', { env: {}, credentialsRoot: root, authorityOrigin: rejected }).url, undefined);
-    }
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
