@@ -660,6 +660,7 @@ test('preflight rejects unexpected or protected destructive class operations', (
 
 test('preflight rejects missing bindings, missing content-free tracing, and stale dates', (context) => {
   const missingState = createHarness();
+  const missingRunner = createHarness();
   const missingVersionMetadata = createHarness();
   const tracingDisabled = createHarness();
   const missingTracer = createHarness();
@@ -668,6 +669,7 @@ test('preflight rejects missing bindings, missing content-free tracing, and stal
   const privateGlobalFetch = createHarness();
   context.after(() => {
     rmSync(missingState.root, { recursive: true, force: true });
+    rmSync(missingRunner.root, { recursive: true, force: true });
     rmSync(missingVersionMetadata.root, { recursive: true, force: true });
     rmSync(tracingDisabled.root, { recursive: true, force: true });
     rmSync(missingTracer.root, { recursive: true, force: true });
@@ -676,6 +678,7 @@ test('preflight rejects missing bindings, missing content-free tracing, and stal
     rmSync(privateGlobalFetch.root, { recursive: true, force: true });
   });
   writeCutoverArtifact(missingState, { missingBinding: 'TAG_STATE' });
+  writeCutoverArtifact(missingRunner, { missingBinding: 'SLACK_THREAD_RUNNER' });
   writeCutoverArtifact(missingVersionMetadata, { versionMetadata: false });
   writeCutoverArtifact(tracingDisabled, { tracing: false });
   writeCutoverArtifact(missingTracer, { cloudflareTracer: false });
@@ -684,6 +687,7 @@ test('preflight rejects missing bindings, missing content-free tracing, and stal
   writeCutoverArtifact(privateGlobalFetch, { publicGlobalFetch: false });
 
   const stateResult = runHarness(missingState, ['--skip-build', '--preflight-only']);
+  const runnerResult = runHarness(missingRunner, ['--skip-build', '--preflight-only']);
   const versionMetadataResult = runHarness(
     missingVersionMetadata,
     ['--skip-build', '--preflight-only'],
@@ -705,6 +709,8 @@ test('preflight rejects missing bindings, missing content-free tracing, and stal
 
   assert.equal(stateResult.status, 1);
   assert.match(stateResult.stderr, /TAG_STATE\/TagStateStore binding/);
+  assert.equal(runnerResult.status, 1);
+  assert.match(runnerResult.stderr, /SLACK_THREAD_RUNNER\/SlackThreadRunner binding/);
   assert.equal(versionMetadataResult.status, 1);
   assert.match(versionMetadataResult.stderr, /CF_VERSION_METADATA Worker version binding/);
   assert.equal(tracingDisabledResult.status, 1);
