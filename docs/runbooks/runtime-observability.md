@@ -312,7 +312,7 @@ channel IDs, settings keys or values, or error text. Emission never throws.
 | `thread_runner_alarm` | Once per `SlackThreadRunner.alarm()` invocation (Cloudflare) | `outcome` (`idle`, `drained`, `threw`), `jobs`, `ran`, `yielded`, `carried`, `durationMs` |
 | `turn_latency` | Once per relay attempt of one turn (both lanes) | `turnRef`, `runRef`, `lane` (`cloudflare`, `node`), `executor` (`alarm`, `runner`, `node`), `attempt`, `outcome` (`returned`, `threw`), `firstWrite`, `final` (`delivered`, `deferred`, `none`), `admissionToStartMs`, `admissionToFirstWriteMs`, `admissionToFinalMs`, `receiptToAdmissionMs`, `receiptToFirstWriteMs`, `attemptMs` |
 | `state_rpc` | Sampled calls from a `Cf*Store` proxy into `TagStateStore` | `method` (RPC name), `op` (request kind for `*Execute` RPCs), `ms`, `slow`, `ok`, `isolateCalls`, `isolateSlowCalls` |
-| `gateway_delivery` | Once per authenticated gateway delivery at Worker admission (Cloudflare) | `transport` (`http`, `socket`), `deliveryKind` (`event`, `agent_selected`, `channel_agent_add`), `outcome` (`accepted`, `duplicate`, `rejected`, `failed`), `lagMs`, `slackLagMs`, `sessionPhase`, `sessionHealth`, `sessionAttempt`, `sessionGeneration`, `sessionAgeMs` |
+| `gateway_delivery` | Once per authenticated gateway delivery at Worker admission (Cloudflare) | `transport` (`http`, `socket`), `deliveryKind` (`event`, `agent_selected`, `channel_agent_add`), `eventType` and `subtype` (Slack's event vocabulary), `outcome` (`accepted`, `duplicate`, `rejected`, `failed`, `filtered`), `lagMs`, `slackLagMs`, socket only: `source` (`store`, `recent`, `filter`), `filterReason`, `queueMs`, `admitMs`, `inFlight`, `sessionPhase`, `sessionHealth`, `sessionAttempt`, `sessionGeneration`, `sessionAgeMs` |
 
 - `relay_alarm.durationMs` is the whole invocation; `turnsMs` is the turn
   drain and `longestJobMs` the slowest single turn attempt in it. `jobsListed`
@@ -375,7 +375,23 @@ channel IDs, settings keys or values, or error text. Emission never throws.
 - `gateway_delivery` is logged when a delivery reaches admission: by
   `TagStateStore.receiveGatewayHttp` for HTTP push (after signature
   verification; challenges and rejected signatures log nothing) and by the
-  `SlackGatewaySession` socket handler before it calls `admitGatewayDelivery`.
+  `SlackGatewaySession` socket intake once the delivery's receipt is settled.
+  The socket intake admits up to 6 deliveries at once, in arrival order within
+  one Slack thread (a whole DM, a channel, or a user for events without a
+  thread), and acknowledges each when its own admission returns. `source` is
+  `store` for an `admitGatewayDelivery` call (`queueMs`: wait for the thread
+  and a slot; `admitMs`: the call itself; `inFlight`: admissions already
+  running), `recent` for a Slack retry of a delivery this session object
+  admitted or was admitting in the last 5 minutes (answered `duplicate`
+  without a store call), and `filter` for this app's own messages, own stream
+  edits (`message_changed` of its own message), and own reactions (own means
+  `user` is the bound bot user, or, with no `user`, `app_id` or
+  `bot_profile.app_id` is the bound app, as on a persona `bot_message`), which are
+  acknowledged without admission (`outcome: filtered`, `filterReason`
+  `own_message`, `own_message_changed`, or `own_reaction`). `eventType` and
+  `subtype` are Slack's fixed event names, never content. The session
+  checkpoint is no longer written per delivery: only on a health or phase
+  change, and for a heartbeat alone at most once a minute.
   `lagMs` (HTTP only) is receipt minus the gateway's signed `issuedAt` for that
   attempt; socket frames carry no gateway timestamp. `slackLagMs` is receipt
   minus the Slack event's `event_ts` (else the whole-second `event_time`), so a

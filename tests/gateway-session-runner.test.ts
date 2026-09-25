@@ -11,6 +11,7 @@ import {
   GatewayDeploymentClient,
 } from '../src/slack/gateway/client.ts';
 import { CHICKPEA_GATEWAY_PROTOCOL_VERSION } from '../src/slack/gateway/protocol.ts';
+import { gatewaySessionCheckpointWriteDue } from '../src/slack/gateway/session.ts';
 import {
   classifyGatewaySessionRunnerHealth,
   GatewaySessionRunner,
@@ -20,6 +21,7 @@ import {
   type GatewaySessionRunnerHealthSnapshot,
   type GatewaySocket,
 } from '../src/slack/gateway/session-runner.ts';
+import { GatewayInboundAdmission } from '../src/slack/gateway/inbound-admission.ts';
 
 const NOW = Date.UTC(2026, 7, 20, 12);
 
@@ -63,6 +65,7 @@ test('durable alarm restores an evicted gateway owner without cron or Admin traf
     GATEWAY_DURABLE_ADMISSION_CAPABILITY: 'durable',
     cloudflareWorkerVersionId: () => 'test-version',
     GatewaySessionRunnerSupervisor,
+    GatewayInboundAdmission,
     GatewaySessionRunner: class extends FakeRunnerControl {
       constructor() { super('healthy'); runners.push(this); }
     },
@@ -140,6 +143,7 @@ test('concurrent Durable Object wakes share one supervisor and leave no orphan s
     cloudflareWorkerVersionId: () => 'test-version',
     reconcileGatewaySessionStatus,
     GatewaySessionRunnerSupervisor,
+    GatewayInboundAdmission,
     GatewaySessionRunner: class extends FakeRunnerControl {
       constructor() { super('healthy'); runners.push(this); }
     },
@@ -268,6 +272,7 @@ test('Durable Object reconnect recreates a client whose state RPC stub has faile
     cloudflareWorkerVersionId: () => 'test-version',
     reconcileGatewaySessionStatus,
     GatewaySessionRunnerSupervisor,
+    GatewayInboundAdmission,
     GatewaySessionRunner: class extends GatewaySessionRunner {
       constructor(options: ConstructorParameters<typeof GatewaySessionRunner>[0]) {
         super({ ...options, now: () => clock,
@@ -1075,6 +1080,166 @@ test('session runner handles and acknowledges deliveries in socket order', async
 });
 
 
+test('session runner admits threads in parallel, keeps each thread in order, and skips per-event checkpoint writes', async () => {
+  const { settings, config } = gatewayStores(() => NOW);
+  const gateway = new FakeGateway();
+  let clock = NOW;
+  const client = new GatewayDeploymentClient({
+    settings,
+    config,
+    keyring: generateCredentialKeyring('key_gateway'),
+    gatewayBaseUrl: 'https://gateway.chickpea.test',
+    fetch: gateway.fetch,
+    now: () => clock,
+  });
+  const socket = new FakeSocket();
+  const started: string[] = [];
+  const releases = new Map<string, () => void>();
+  const lifetimes: Promise<unknown>[] = [];
+  let checkpointWrites = 0;
+  let runner: GatewaySessionRunner | undefined;
+  const event = (deliveryId: string, channel: string, threadTs: string, ts: string) => JSON.stringify({
+    protocolVersion: 1, kind: 'event.deliver', deliveryId, bindingId: 'binding_test', workspaceId: 'TGATEWAY',
+    envelope: { workspaceId: 'TGATEWAY', eventId: deliveryId, eventTime: 1, event: {
+      type: 'message', channel, channel_type: 'channel', user: 'U_MEMBER', text: 'hello', ts, thread_ts: threadTs,
+    } },
+  });
+  try {
+    await client.beginClaim();
+    await client.refreshClaim();
+    const record = client.recordSessionCheckpoint.bind(client);
+    client.recordSessionCheckpoint = async (checkpoint) => { checkpointWrites += 1; await record(checkpoint); };
+    runner = new GatewaySessionRunner({
+      client,
+      onEvent: async (delivery) => {
+        started.push(delivery.deliveryId);
+        await new Promise<void>((resolve) => releases.set(delivery.deliveryId, resolve));
+        return 'accepted';
+      },
+      createSocket: () => socket,
+      now: () => clock,
+      waitUntil: (promise) => lifetimes.push(promise),
+    });
+    assert.equal(await runner.start(), true);
+    socket.open();
+    await waitFor(() => socket.sent.length === 1);
+    ready(socket, 'session_parallel');
+    await waitFor(() => runner?.state()?.health === 'healthy');
+    await waitFor(() => checkpointWrites === 2);
+    socket.message(event('a1', 'C1', '100.1', '100.2'));
+    socket.message(event('a2', 'C1', '100.1', '100.3'));
+    socket.message(event('b1', 'C1', '200.1', '200.1'));
+    socket.message(event('c1', 'C2', '300.1', '300.2'));
+    // Different threads start together; the second event of thread a waits.
+    await waitFor(() => started.length === 3);
+    assert.deepEqual(started, ['a1', 'b1', 'c1']);
+    const acked = () => socket.sent.slice(1).map((raw) => JSON.parse(raw) as { kind: string; deliveryId?: string })
+      .filter((frame) => frame.kind === 'event.ack').map((frame) => frame.deliveryId);
+    // Each delivery is acknowledged when its own admission returns.
+    releases.get('c1')!();
+    await waitFor(() => acked().length === 1);
+    assert.deepEqual(acked(), ['c1']);
+    releases.get('a1')!();
+    await waitFor(() => started.length === 4);
+    assert.deepEqual(started, ['a1', 'b1', 'c1', 'a2']);
+    releases.get('a2')!();
+    releases.get('b1')!();
+    await waitFor(() => acked().length === 4);
+    assert.deepEqual(acked().slice(0, 2), ['c1', 'a1']);
+    await Promise.all(lifetimes);
+    assert.equal(checkpointWrites, 2, 'deliveries never write the session checkpoint');
+
+    // A heartbeat alone is persisted at most once per minute.
+    clock += 30_000;
+    socket.message(JSON.stringify({ protocolVersion: 1, kind: 'session.ping', at: clock }));
+    await waitFor(() => runner?.state()?.lastHeartbeatAt === clock);
+    await spin();
+    assert.equal(checkpointWrites, 2);
+    clock += 30_000;
+    socket.message(JSON.stringify({ protocolVersion: 1, kind: 'session.ping', at: clock }));
+    await waitFor(() => checkpointWrites === 3);
+    const persisted = JSON.parse((await settings.getSetting(GATEWAY_SESSION_SETTING)) ?? '{}');
+    assert.equal(persisted.lastHeartbeatAt, clock);
+  } finally {
+    runner?.stop();
+    settings.close();
+    config.close();
+  }
+});
+
+test('a shared intake receives the bound bot user and acknowledges its own events without admission', async () => {
+  const { settings, config } = gatewayStores(() => NOW);
+  const gateway = new FakeGateway();
+  const client = new GatewayDeploymentClient({
+    settings, config, keyring: generateCredentialKeyring('key_gateway'),
+    gatewayBaseUrl: 'https://gateway.chickpea.test', fetch: gateway.fetch, now: () => NOW,
+  });
+  const socket = new FakeSocket();
+  const admitted: string[] = [];
+  let runner: GatewaySessionRunner | undefined;
+  const frame = (deliveryId: string, user: string) => JSON.stringify({
+    protocolVersion: 1, kind: 'event.deliver', deliveryId, bindingId: 'binding_test', workspaceId: 'TGATEWAY',
+    envelope: { workspaceId: 'TGATEWAY', eventId: deliveryId, eventTime: 1, event: {
+      type: 'message', channel: 'C1', channel_type: 'channel', user, text: 'x', ts: '1.1', thread_ts: '1.0',
+    } },
+  });
+  try {
+    await client.beginClaim();
+    await client.refreshClaim();
+    runner = new GatewaySessionRunner({
+      client,
+      admission: new GatewayInboundAdmission({
+        filterSelfGenerated: true,
+        rememberDeliveries: true,
+        admit: async (delivery) => { admitted.push(delivery.deliveryId); return 'accepted'; },
+      }),
+      createSocket: () => socket,
+      now: () => NOW,
+    });
+    assert.equal(await runner.start(), true);
+    socket.open();
+    await waitFor(() => socket.sent.length === 1);
+    ready(socket, 'session_filter');
+    await waitFor(() => runner?.state()?.health === 'healthy');
+    socket.message(frame('own', 'UBOT'));
+    // A persona reply identified only by the bound app, with no `user`.
+    socket.message(JSON.stringify({
+      protocolVersion: 1, kind: 'event.deliver', deliveryId: 'persona', bindingId: 'binding_test',
+      workspaceId: 'TGATEWAY', envelope: { workspaceId: 'TGATEWAY', eventId: 'persona', eventTime: 1, event: {
+        type: 'message', subtype: 'bot_message', channel: 'C1', bot_id: 'B1', app_id: 'AGATEWAY',
+        username: 'Agent', text: 'x', ts: '1.2', thread_ts: '1.0',
+      } },
+    }));
+    socket.message(frame('person', 'U_MEMBER'));
+    socket.message(frame('person', 'U_MEMBER'));
+    const acks = () => socket.sent.slice(1).map((raw) => JSON.parse(raw) as { deliveryId: string; outcome: string });
+    await waitFor(() => acks().length === 4);
+    assert.deepEqual(admitted, ['person']);
+    assert.deepEqual(acks().map(({ deliveryId, outcome }) => [deliveryId, outcome]).sort(), [
+      ['own', 'accepted'], ['person', 'accepted'], ['person', 'duplicate'], ['persona', 'accepted'],
+    ]);
+  } finally {
+    runner?.stop();
+    settings.close();
+    config.close();
+  }
+});
+
+test('checkpoint writes are due on every state change but heartbeat-only changes are throttled', () => {
+  const healthy = { health: 'healthy' as const, attempt: 0, connectedAt: NOW, lastHeartbeatAt: NOW, rotateAt: NOW + 1 };
+  assert.equal(gatewaySessionCheckpointWriteDue(undefined, healthy, undefined, NOW), true);
+  assert.equal(gatewaySessionCheckpointWriteDue(healthy, { ...healthy }, NOW, NOW + 1), false);
+  assert.equal(gatewaySessionCheckpointWriteDue(healthy, { ...healthy, lastHeartbeatAt: NOW + 30_000 }, NOW, NOW + 30_000), false);
+  assert.equal(gatewaySessionCheckpointWriteDue(healthy, { ...healthy, lastHeartbeatAt: NOW + 60_000 }, NOW, NOW + 60_000), true);
+  for (const change of [
+    { health: 'disconnected' as const }, { attempt: 1 }, { connectedAt: NOW + 5 }, { rotateAt: NOW + 5 },
+    { retryAt: NOW + 5 }, { reason: 'closed' },
+  ]) {
+    assert.equal(gatewaySessionCheckpointWriteDue(healthy, { ...healthy, ...change }, NOW, NOW + 1), true);
+  }
+});
+
+
 class FakeGateway {
   deploymentId = '';
 
@@ -1221,6 +1386,7 @@ test('failed HTTP preparation preserves sockets, but active HTTP never falls bac
       cloudflareWorkerVersionId:()=> 'version',
       createGatewayDeploymentClient:()=>({ensureHttpDelivery:async()=>{throw new Error('private provider response');}}),
       GatewaySessionRunnerSupervisor,
+      GatewayInboundAdmission,
       GatewaySessionRunner:class extends FakeRunnerControl { constructor(){super('healthy');runners.push(this);} },
       console:{info(){},warn(value:unknown){warnings.push(value);}},
     }) as new(context:object,env:object)=>{wake():Promise<void>};

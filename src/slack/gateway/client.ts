@@ -46,6 +46,7 @@ import {
   type GatewaySessionCheckpoint,
 } from './session.ts';
 import { parseGatewayInstallationAuthority, type GatewayInstallationAuthority } from './installation-authority.ts';
+import type { GatewayAdmissionContext } from './inbound-admission.ts';
 
 import { GATEWAY_CLAIM_SETTING, GATEWAY_BINDING_SETTING, GATEWAY_SESSION_SETTING } from './settings.ts';
 export { GATEWAY_CLAIM_SETTING, GATEWAY_BINDING_SETTING, GATEWAY_SESSION_SETTING } from './settings.ts';
@@ -779,7 +780,7 @@ export class GatewayDeploymentClient implements GatewayOperationClient {
 
   async createSession(
     send: (frame: GatewayClientFrame) => void,
-    onEvent: (delivery: GatewayInboundDelivery) => Promise<'accepted' | 'duplicate' | 'rejected'>,
+    onEvent: GatewaySessionEventHandler,
     checkpoint?: GatewaySessionCheckpoint,
     capabilities: readonly GatewaySessionCapability[] = [],
   ): Promise<GatewayLogicalSession> {
@@ -1013,6 +1014,11 @@ export class GatewayDeploymentClient implements GatewayOperationClient {
   }
 }
 
+export type GatewaySessionEventHandler = (
+  delivery: GatewayInboundDelivery,
+  context: GatewayAdmissionContext,
+) => Promise<'accepted' | 'duplicate' | 'rejected'>;
+
 /** One socket incarnation of a renewable logical session. */
 export class GatewayLogicalSession {
   private checkpoint: GatewaySessionCheckpoint;
@@ -1022,7 +1028,7 @@ export class GatewayLogicalSession {
     identity: GatewayDeploymentIdentity;
     binding: GatewayWorkspaceBinding;
     send: (frame: GatewayClientFrame) => void;
-    onEvent: (delivery: GatewayInboundDelivery) => Promise<'accepted' | 'duplicate' | 'rejected'>;
+    onEvent: GatewaySessionEventHandler;
     now: () => number;
     checkpoint: GatewaySessionCheckpoint;
     capabilities?: readonly GatewaySessionCapability[];
@@ -1046,7 +1052,18 @@ export class GatewayLogicalSession {
     this.input.send(await signGatewayRequest(this.input.identity, unsigned));
   }
 
+  /** Handle one frame, awaiting any delivery's admission and acknowledgement. */
   async handle(raw: string): Promise<void> {
+    const delivery = this.accept(raw);
+    if (delivery) await this.acknowledge(delivery);
+  }
+
+  /**
+   * Apply one frame in socket order. Control frames update session state
+   * here; a delivery frame is returned for admission, which the caller may
+   * overlap with later frames (see GatewaySessionRunner).
+   */
+  accept(raw: string): GatewayInboundDelivery | undefined {
     const frame = parseGatewayFrameText(raw);
     this.requireFrameBinding(frame);
     if (frame.kind === 'session.ready') {
@@ -1059,7 +1076,7 @@ export class GatewayLogicalSession {
         lastHeartbeatAt: now,
         rotateAt: Math.min(frame.rotateAt, gatewaySessionRotationAt(now)),
       };
-      return;
+      return undefined;
     }
     if (frame.kind === 'session.ping' || frame.kind === 'session.pong') {
       this.checkpoint = { ...this.checkpoint, lastHeartbeatAt: this.input.now() };
@@ -1070,16 +1087,24 @@ export class GatewayLogicalSession {
           at: frame.at,
         });
       }
-      return;
+      return undefined;
     }
     if (!this.ready) throw new Error('Gateway delivered an event before session authentication.');
     if (frame.kind !== 'event.deliver' && frame.kind !== 'interaction.agent_selected' &&
         frame.kind !== 'interaction.channel_agent_add') {
       throw new Error('Unsupported gateway session frame.');
     }
+    return frame;
+  }
+
+  /** Admit one accepted delivery, then send its receipt. */
+  async acknowledge(frame: GatewayInboundDelivery): Promise<void> {
     let outcome: GatewayEventAck['outcome'];
     try {
-      outcome = await this.input.onEvent(frame);
+      outcome = await this.input.onEvent(frame, {
+        botUserId: this.input.binding.botUserId,
+        appId: this.input.binding.appId,
+      });
     } catch {
       // Admission itself failed, so no durable deployment receipt exists.
       // Reject for gateway/Slack retry without tearing down the socket.

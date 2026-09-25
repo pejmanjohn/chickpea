@@ -65,3 +65,29 @@ export function gatewaySessionFailure(
     retryAt: gatewayReconnectAt(attempt, now, random),
   };
 }
+
+/**
+ * Heartbeat-only checkpoint changes are persisted at most this often. The
+ * persisted checkpoint is read for the reconnect attempt count and, with no
+ * live runner, for `needs_attention`; live health comes from the runner.
+ */
+export const GATEWAY_CHECKPOINT_HEARTBEAT_WRITE_MS = 60_000;
+
+/**
+ * Whether a checkpoint must be written: always on a health, attempt,
+ * connection, rotation, retry, or reason change; a newer heartbeat alone only
+ * once the last write is at least GATEWAY_CHECKPOINT_HEARTBEAT_WRITE_MS old.
+ */
+export function gatewaySessionCheckpointWriteDue(
+  persisted: GatewaySessionCheckpoint | undefined,
+  next: GatewaySessionCheckpoint,
+  persistedAt: number | undefined,
+  now: number,
+): boolean {
+  if (!persisted || persistedAt === undefined) return true;
+  if (persisted.health !== next.health || persisted.attempt !== next.attempt ||
+      persisted.connectedAt !== next.connectedAt || persisted.rotateAt !== next.rotateAt ||
+      persisted.retryAt !== next.retryAt || persisted.reason !== next.reason) return true;
+  if (persisted.lastHeartbeatAt === next.lastHeartbeatAt) return false;
+  return now - persistedAt >= GATEWAY_CHECKPOINT_HEARTBEAT_WRITE_MS;
+}

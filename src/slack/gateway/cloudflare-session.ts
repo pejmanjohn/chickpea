@@ -9,6 +9,7 @@ import { GATEWAY_BINDING_SETTING } from './client.ts';
 import { GATEWAY_DURABLE_ADMISSION_CAPABILITY } from './protocol.ts';
 import { createGatewayDeploymentClient } from './runtime.ts';
 import { emitGatewayDelivery } from '../../observability/runtime-latency.ts';
+import { GatewayInboundAdmission } from './inbound-admission.ts';
 import {
   GatewaySessionRunner,
   GatewaySessionRunnerSupervisor,
@@ -30,6 +31,11 @@ interface SlackGatewaySessionRpc {
  */
 export class SlackGatewaySession extends DurableObject implements SlackGatewaySessionRpc {
   private supervisor: GatewaySessionRunnerSupervisor | undefined;
+  /**
+   * Socket intake shared by every runner this object creates, so its memory
+   * of admitted deliveries survives socket rotation and reconnects.
+   */
+  private intake: GatewayInboundAdmission | undefined;
   private readonly state: DurableObjectState & {
     waitUntil(promise: Promise<unknown>): void;
   };
@@ -89,21 +95,40 @@ export class SlackGatewaySession extends DurableObject implements SlackGatewaySe
         waitUntil: (promise) => this.state.waitUntil(promise),
         onDiagnostic: (diagnostic) => console.warn({ component: 'slack_gateway',
           event: 'session_connection_failure', ...diagnostic }),
-        onEvent: async (delivery) => {
-          const receivedAt = Date.now();
-          const session = this.supervisor?.snapshot();
-          let outcome: 'accepted' | 'duplicate' | 'rejected' | 'failed' = 'failed';
-          try {
-            const result = await tagStateStub(platformEnv).admitGatewayDelivery(delivery);
-            outcome = result.ok ? result.value : 'rejected';
-            return outcome;
-          } finally {
-            emitGatewayDelivery({ transport: 'socket', receivedAt, delivery, session, outcome });
-          }
-        },
+        admission: this.socketIntake(platformEnv),
       }));
     }
     await this.supervisor.ensureHealthy();
+  }
+
+  /**
+   * Parallel across threads, ordered within one; Slack retries of an admitted
+   * or in-flight delivery skip the store; this app's own messages, stream
+   * edits, and reactions never reach it (see inbound-admission.ts).
+   */
+  private socketIntake(platformEnv: PlatformEnv): GatewayInboundAdmission {
+    this.intake ??= new GatewayInboundAdmission({
+      filterSelfGenerated: true,
+      rememberDeliveries: true,
+      now: () => Date.now(),
+      admit: async (delivery) => {
+        const result = await tagStateStub(platformEnv).admitGatewayDelivery(delivery);
+        return result.ok ? result.value : 'rejected';
+      },
+      observe: (observation) => emitGatewayDelivery({
+        transport: 'socket',
+        receivedAt: observation.receivedAt,
+        delivery: observation.delivery,
+        session: this.supervisor?.snapshot(),
+        outcome: observation.outcome,
+        source: observation.source,
+        filterReason: observation.filterReason,
+        queueMs: observation.queueMs,
+        admitMs: observation.admitMs,
+        inFlight: observation.inFlight,
+      }),
+    });
+    return this.intake;
   }
 
   async alarm(): Promise<void> {

@@ -37,6 +37,7 @@ import {
   parseHttpDeliveryState,
 } from '../src/slack/gateway/http-delivery.ts';
 import type { GatewayEventDelivery, GatewayInboundDelivery } from '../src/slack/gateway/protocol.ts';
+import { GatewayInboundAdmission } from '../src/slack/gateway/inbound-admission.ts';
 import {
   GatewaySessionRunnerSupervisor,
   type GatewaySessionRunnerHealthSnapshot,
@@ -648,6 +649,7 @@ test('gateway_delivery reports transport lag, Slack lag, and socket health witho
     event: 'gateway_delivery',
     transport: 'socket',
     deliveryKind: 'event',
+    eventType: 'app_mention',
     outcome: 'accepted',
     slackLagMs: 61_400,
     sessionPhase: 'healthy',
@@ -660,6 +662,7 @@ test('gateway_delivery reports transport lag, Slack lag, and socket health witho
     event: 'gateway_delivery',
     transport: 'http',
     deliveryKind: 'event',
+    eventType: 'app_mention',
     outcome: 'duplicate',
     lagMs: 180,
     slackLagMs: 61_400,
@@ -701,7 +704,8 @@ function extractClass(path: string, name: string) {
 test('the Cloudflare gateway socket logs gateway_delivery for each admitted frame', async () => {
   const { source, declaration } = extractClass('../src/slack/gateway/cloudflare-session.ts', 'SlackGatewaySession');
   const { records, sink } = captureSink();
-  let onEvent: ((delivery: GatewayInboundDelivery) => Promise<string>) | undefined;
+  let admission: GatewayInboundAdmission | undefined;
+  let admissions = 0;
   let admit: () => Promise<unknown> = async () => ({ ok: true, value: 'accepted' });
   const Probe = vm.runInNewContext(
     ts.transpileModule(declaration.getText(source).replace(/^export /u, '') + '\nSlackGatewaySession',
@@ -716,12 +720,13 @@ test('the Cloudflare gateway socket logs gateway_delivery for each admitted fram
       GATEWAY_BINDING_SETTING: 'binding',
       GATEWAY_DURABLE_ADMISSION_CAPABILITY: 'durable',
       cloudflareWorkerVersionId: () => 'test-version',
-      tagStateStub: () => ({ admitGatewayDelivery: () => admit() }),
+      tagStateStub: () => ({ admitGatewayDelivery: () => { admissions += 1; return admit(); } }),
+      GatewayInboundAdmission,
       emitGatewayDelivery: (observation: Parameters<typeof emitGatewayDelivery>[0]) =>
         emitGatewayDelivery(observation, sink),
       GatewaySessionRunnerSupervisor,
       GatewaySessionRunner: class {
-        constructor(options: { onEvent: typeof onEvent }) { onEvent = options.onEvent; }
+        constructor(options: { admission: GatewayInboundAdmission }) { admission = options.admission; }
         async start() { return true; }
         stop() {}
         healthSnapshot() { return healthySession; }
@@ -734,15 +739,35 @@ test('the Cloudflare gateway socket logs gateway_delivery for each admitted fram
     setAlarm: async (at: number) => { alarm = at; },
     deleteAlarm: async () => { alarm = null; },
   } }, {}).wake();
-  assert.ok(onEvent);
-  assert.equal(await onEvent(gatewayEvent()), 'accepted');
+  assert.ok(admission);
+  const context = { botUserId: 'U_BOT' };
+  assert.equal(await admission.deliver(gatewayEvent(), context), 'accepted');
+  // A Slack retry of an admitted delivery is answered from memory.
+  assert.equal(await admission.deliver(gatewayEvent(), context), 'duplicate');
+  assert.equal(admissions, 1);
+  // This app's own stream edit never reaches the store.
+  const edit = gatewayEvent();
+  edit.deliveryId = 'delivery:Ev_EDIT';
+  edit.envelope = { ...edit.envelope, eventId: 'Ev_EDIT', event: {
+    type: 'message', subtype: 'message_changed', channel: 'C_LATENCY', ts: '1785509001.000100',
+    event_ts: '1785509001.000100', message: { type: 'message', user: 'U_BOT', ts: '1785509000.000200', text: 'x' },
+  } as unknown as GatewayEventDelivery['envelope']['event'] };
+  assert.equal(await admission.deliver(edit, context), 'accepted');
+  assert.equal(admissions, 1);
   admit = async () => { throw new Error('singleton reset U_LATENCY'); };
-  await assert.rejects(onEvent(gatewayEvent()), /singleton reset/);
+  const failing = gatewayEvent();
+  failing.deliveryId = 'delivery:Ev_FAIL';
+  await assert.rejects(admission.deliver(failing, context), /singleton reset/);
   assert.deepEqual(records.map((record) =>
-    [record.transport, record.outcome, record.slackLagMs, record.sessionAgeMs]), [
-    ['socket', 'accepted', 61_400, 45_000],
-    ['socket', 'failed', 61_400, 45_000],
+    [record.transport, record.outcome, record.source, record.eventType, record.subtype,
+      record.filterReason, record.slackLagMs, record.sessionAgeMs]), [
+    ['socket', 'accepted', 'store', 'app_mention', undefined, undefined, 61_400, 45_000],
+    ['socket', 'duplicate', 'recent', 'app_mention', undefined, undefined, 61_400, 45_000],
+    ['socket', 'filtered', 'filter', 'message', 'message_changed', 'own_message_changed', 60_500, 45_000],
+    ['socket', 'failed', 'store', 'app_mention', undefined, undefined, 61_400, 45_000],
   ]);
+  assert.equal(typeof records[0]!.admitMs, 'number');
+  assert.equal(typeof records[0]!.queueMs, 'number');
   records.forEach(assertContentFree);
 });
 
@@ -812,7 +837,7 @@ test('HTTP gateway admission logs gateway_delivery with the signed issuedAt lag'
   assert.equal((await probe.receiveGatewayHttp(input)).status, 401);
   assert.deepEqual(records, [{
     component: 'runtime', event: 'gateway_delivery', transport: 'http', deliveryKind: 'event',
-    outcome: 'accepted', lagMs: 240, slackLagMs: 61_400,
+    eventType: 'app_mention', outcome: 'accepted', lagMs: 240, slackLagMs: 61_400,
   }], 'challenges and unauthenticated requests log nothing');
   records.forEach(assertContentFree);
 });
