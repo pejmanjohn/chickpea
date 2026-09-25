@@ -250,6 +250,11 @@ export interface RunTurnOptions {
   onUsagePersistence?: (event: UsagePersistenceEvent) => void;
   /** Persist the first validated explicit-turn decision before Slack effects. */
   onInteractionIntent?: (intent: SlackInteractionIntent) => void | Promise<void>;
+  /**
+   * The Agent delegated its first coding task this response (`workspace_task`).
+   * Such a turn can run far longer than an ordinary one.
+   */
+  onCodingTaskStarted?: () => void | Promise<void>;
   /** Adapter artifacts restored from a prior relay attempt. */
   interactionProgress?: SlackInteractionProgress;
   /** Persist adapter coordinates before any later model or delivery work. */
@@ -546,6 +551,19 @@ export async function runTurn(
         onNativeStarted: () => onNativeStarted(),
       })
     : undefined;
+  // Once per turn; a failed hint never holds back the checklist.
+  let codingTaskSignalled = false;
+  const signalCodingTaskStarted = async () => {
+    if (codingTaskSignalled || !options.onCodingTaskStarted) return;
+    codingTaskSignalled = true;
+    try {
+      await options.onCodingTaskStarted();
+    } catch (error) {
+      console.warn(
+        `[chickpea] coding active-work hint skipped: ${error instanceof Error ? error.name : 'unknown'}`,
+      );
+    }
+  };
   const presenter = new WebClientPresenter(client, {
     channelId: turn.channelId,
     threadTs: turn.threadTs,
@@ -1210,10 +1228,12 @@ export async function runTurn(
               }
             : {}),
           ...(prepareProgressiveRelay ? { prepareProgressiveRelay } : {}),
-          ...(agentViewPresentation
+          ...(agentViewPresentation || options.onCodingTaskStarted
             ? {
-                onWorkspaceMilestone: (record, target) =>
-                  agentViewPresentation.applyWorkspaceMilestone(record, target),
+                onWorkspaceMilestone: async (record, target) => {
+                  await signalCodingTaskStarted();
+                  await agentViewPresentation?.applyWorkspaceMilestone(record, target);
+                },
               }
             : {}),
         });

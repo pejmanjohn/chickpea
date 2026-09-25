@@ -22,6 +22,20 @@ export const WORKERS_AI_GLM_MODEL_IDS = [
 export function isWorkersAiGlmModel(modelId: string): boolean {
   return (WORKERS_AI_GLM_MODEL_IDS as readonly string[]).includes(modelId);
 }
+
+/**
+ * The thinking level for a canonical `provider/model` id: Workers AI GLM
+ * models run with thinking off, every other model keeps its default.
+ */
+export function thinkingLevelForModel(model: string): 'off' | undefined {
+  const slash = model.indexOf('/');
+  const provider = model.slice(0, slash);
+  return slash > 0 &&
+    (provider === 'cloudflare' || provider === 'cloudflare-workers-ai') &&
+    isWorkersAiGlmModel(model.slice(slash + 1))
+    ? 'off'
+    : undefined;
+}
 export const WORKERS_AI_CONTEXT_WINDOW_FLOOR = 32_768;
 
 /**

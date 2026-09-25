@@ -2041,6 +2041,9 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
             activeWorkKey = slackAgentThreadKey(job.turn, job.assignment);
             stores.slack.setActiveWork(activeWorkKey, job.id, true);
           },
+          onCodingTaskStarted: () => {
+            if (activeWorkKey) stores.slack.markCodingActiveWork(activeWorkKey, job.id);
+          },
           ...(job.progress.slackInteraction
             ? { interactionProgress: job.progress.slackInteraction }
             : {}),
@@ -2541,6 +2544,8 @@ async function drainLedgerRuns(
       presentationState: localSlackPresentationState(stores),
       setActiveWork: (key, generation, active) =>
         stores.slack.setActiveWork(key, generation, active),
+      markCodingActiveWork: (key, generation) =>
+        stores.slack.markCodingActiveWork(key, generation),
       onPublicMessageDelivered: (turn, assignment, delivery) =>
         recordDeliveredSlackAgentMessage(stores.config, turn, assignment, delivery),
       productTelemetry,

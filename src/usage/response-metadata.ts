@@ -90,10 +90,45 @@ export function responseUsageMetadata(
   };
 }
 
+/** The envelope `useChickpeaResponseMetadata` wrote, or undefined when absent or malformed. */
+export function parseChickpeaResponseMetadata(value: unknown): ChickpeaResponseMetadata | undefined {
+  const record = asRecord(value);
+  if (!record || record.schemaVersion !== 1) return undefined;
+  const requestedModel = nonEmpty(record.requestedModel);
+  const usage = asRecord(record.usage);
+  if (!requestedModel || !usage) return undefined;
+  if (![usage.input, usage.output, usage.totalTokens].every(isTokenCount)) return undefined;
+  const returned = asRecord(record.returnedModel);
+  const provider = nonEmpty(returned?.provider);
+  const id = nonEmpty(returned?.id);
+  return {
+    schemaVersion: 1,
+    requestedModel,
+    usage: {
+      input: Number(usage.input),
+      output: Number(usage.output),
+      cacheRead: isTokenCount(usage.cacheRead) ? Number(usage.cacheRead) : 0,
+      cacheWrite: isTokenCount(usage.cacheWrite) ? Number(usage.cacheWrite) : 0,
+      totalTokens: Number(usage.totalTokens),
+    },
+    ...(provider && id ? { returnedModel: { provider, id } } : {}),
+  };
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function isTokenCount(value: unknown): value is number {
+  return Number.isSafeInteger(value) && Number(value) >= 0;
+}
+
 function boundedTokenCount(value: number): number {
   return Number.isSafeInteger(value) && value >= 0 ? value : 0;
 }
 
-function nonEmpty(value: string | undefined): string | undefined {
+function nonEmpty(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value : undefined;
 }

@@ -115,6 +115,8 @@ interface LedgerSlackRunHandlerOptions {
   presentationState?: SlackPresentationStatePort;
   executeTurn?: LedgerSlackTurnExecutor;
   setActiveWork?: (key: string, generation: string, active: boolean) => MaybePromise<void>;
+  /** Extends a turn's existing active-work marker once it delegates a coding task. */
+  markCodingActiveWork?: (key: string, generation: string) => MaybePromise<void>;
   onPublicMessageDelivered?: (
     turn: NormalizedSlackTurn,
     assignment: ResolvedAssignment,
@@ -245,6 +247,14 @@ export function createLedgerSlackRunHandler(
             );
           }
         },
+        ...(options.markCodingActiveWork
+          ? {
+              onCodingTaskStarted: () => options.markCodingActiveWork!(
+                slackAgentThreadKey(job.turn, job.assignment),
+                job.id,
+              ),
+            }
+          : {}),
         ...(job.progress.slackInteraction
           ? { interactionProgress: job.progress.slackInteraction }
           : {}),

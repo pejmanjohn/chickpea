@@ -14,10 +14,15 @@ import type { TurnPullRequestProgress } from '../config/state-rpc.ts';
 import {
   checklistBranchName,
   WORKSPACE_MILESTONES,
+  type CodingWorkerUsageRecord,
   type WorkspaceMilestone,
   type WorkspaceMilestoneOutcome,
   type WorkspaceMilestoneRecord,
 } from '../slack/coding-worker-run.ts';
+import {
+  CHICKPEA_RESPONSE_METADATA_KEY,
+  parseChickpeaResponseMetadata,
+} from '../usage/response-metadata.ts';
 import type { CodingWorkerBindingV1 } from './coding-worker-binding.ts';
 import { SandboxSessionCapError, SandboxUnavailableError } from './errors.ts';
 import { WORKSPACE_DIR } from './workspace-lifecycle.ts';
@@ -140,6 +145,12 @@ export interface WorkspaceTaskToolOptions {
   /** Called once a worker accepted a task, with the model it runs on. */
   onWorkerStarted?: (model: string) => void;
   /**
+   * Called once for every task a worker accepted, when it settles, with the
+   * worker's own model usage (absent when unknown). Not called when the
+   * observation itself broke and the tool throws.
+   */
+  onWorkerUsage?: (record: CodingWorkerUsageRecord) => void;
+  /**
    * Records the task's steps (workspace, changes, pull request) for the run's
    * checklist. Every step a task starts is settled before the call returns.
    */
@@ -168,7 +179,7 @@ export function createWorkspaceTaskTool(options: WorkspaceTaskToolOptions) {
   return defineTool({
     name: WORKSPACE_TASK_TOOL_NAME,
     description:
-      `Delegate repository work that needs a real checkout to a coding worker in the coding workspace: cloning, installing dependencies, editing several files, running tests or a build, pushing a branch, and opening a pull request. The worker cannot see this conversation, so the task must be a complete brief: the repository, what to change, how to verify it, the branch name to use, and whether to open a pull request. It returns the worker's answer and any pull requests it opened. One task can run for up to ${taskTimeoutMs / 60_000} minutes; at most ${MAX_WORKSPACE_TASKS_PER_RESPONSE} tasks per response. Use workspace_write and workspace_read to move files in and out, and post_artifact with the workspace to attach a file the worker made.`,
+      `Brief a coding worker that works in the coding workspace with its own shell and file tools: it can clone, install dependencies, edit files, run tests or a build, push a branch, and open a pull request. The worker cannot see this conversation, so the task must be a complete brief: the repository, what to change, how to verify it, the branch name to use, and whether to open a pull request. It returns the worker's answer and any pull requests it opened. One task can run for up to ${taskTimeoutMs / 60_000} minutes; at most ${MAX_WORKSPACE_TASKS_PER_RESPONSE} tasks per response. Use workspace_write and workspace_read to move files in and out, and post_artifact with the workspace to attach a file the worker made.`,
     input: v.object({
       workspace: WORKSPACE_NAME,
       task: v.pipe(v.string(), v.minLength(1), v.maxLength(MAX_WORKSPACE_TASK_BRIEF_CHARS)),
@@ -254,6 +265,27 @@ export function createWorkspaceTaskTool(options: WorkspaceTaskToolOptions) {
         milestones.settle('workspace', 'completed');
         milestones.start('changes');
 
+        const recordUsage = (
+          status: CodingWorkerUsageRecord['status'],
+          reply?: AgentReply,
+        ) => {
+          const metadata = reply
+            ? parseChickpeaResponseMetadata(reply.metadata?.[CHICKPEA_RESPONSE_METADATA_KEY])
+            : undefined;
+          try {
+            options.onWorkerUsage?.({
+              schemaVersion: 1,
+              toolCallId,
+              model: binding.codingModel.model,
+              status,
+              ...(metadata ? { usage: metadata.usage } : {}),
+              ...(metadata?.returnedModel ? { returnedModel: metadata.returnedModel } : {}),
+            });
+          } catch (error) {
+            console.warn(`[chickpea] coding worker usage write failed: ${error instanceof Error ? error.name : 'unknown'}`);
+          }
+        };
+
         const deadline = AbortSignal.timeout(taskTimeoutMs);
         const observation = signal ? AbortSignal.any([signal, deadline]) : deadline;
         const progress = createProgressRelay(receipt.submissionId, options.publishProgress);
@@ -270,10 +302,12 @@ export function createWorkspaceTaskTool(options: WorkspaceTaskToolOptions) {
             // Stop the worker durably: a task nobody waits for must not keep
             // running, pushing, or spending.
             await handle.abort().catch(() => undefined);
+            recordUsage('interrupted');
             milestones.stop('timeout');
             return failure('timeout', TIMEOUT_MESSAGE);
           }
           if (error instanceof AgentRunError || error instanceof AgentInstanceNotFoundError) {
+            recordUsage('failed');
             milestones.stop('worker_failed');
             return failure('worker_failed', WORKER_FAILED_MESSAGE);
           }
@@ -282,6 +316,8 @@ export function createWorkspaceTaskTool(options: WorkspaceTaskToolOptions) {
           await handle.abort().catch(() => undefined);
           throw error;
         }
+
+        recordUsage('completed', reply);
 
         // Egress saw a pull request being created: the authoritative record,
         // ahead of the links the worker wrote.

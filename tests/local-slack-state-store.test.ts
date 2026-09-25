@@ -6,6 +6,8 @@ import test from 'node:test';
 
 import { openStateDb } from '../src/state/node-state-db.ts';
 import {
+  ACTIVE_WORK_TTL_MS,
+  CODING_ACTIVE_WORK_TTL_MS,
   SlackStateLogic,
   SqliteSlackStateStore,
   selectSlackPresentationOwner,
@@ -292,4 +294,60 @@ test('local Slack adapter exposes Promise-shaped turn-job delegation', async () 
   });
   assert.equal(typeof pending.then, 'function');
   assert.equal(await pending, expected);
+});
+
+test('the long active-work hint applies only to a turn that delegated a coding task', () => {
+  const db = openStateDb(':memory:');
+  try {
+    let now = 1_800_000_000_000;
+    const slack = new SlackStateLogic(db, () => now);
+    slack.setActiveWork('thread:ordinary', 'job-ordinary', true);
+    slack.setActiveWork('thread:coding', 'job-coding', true);
+    now += 5 * 60_000;
+    slack.markCodingActiveWork('thread:coding', 'job-coding');
+    // Marking a marker that was never set (or already cleared) revives nothing.
+    slack.markCodingActiveWork('thread:idle', 'job-idle');
+
+    now += ACTIVE_WORK_TTL_MS;
+    assert.equal(slack.isActiveWork('thread:ordinary'), false, 'an ordinary turn keeps the short hint');
+    assert.equal(slack.isActiveWork('thread:coding'), true);
+    assert.equal(slack.isActiveWork('thread:idle'), false);
+
+    now += CODING_ACTIVE_WORK_TTL_MS - ACTIVE_WORK_TTL_MS - 1;
+    assert.equal(slack.isActiveWork('thread:coding'), true, 'held for the coding budget from the task start');
+    now += 2;
+    assert.equal(slack.isActiveWork('thread:coding'), false, 'and still self-heals after it');
+
+    // The turn's own clear still ends the hint at once.
+    slack.setActiveWork('thread:done', 'job-done', true);
+    slack.markCodingActiveWork('thread:done', 'job-done');
+    slack.setActiveWork('thread:done', 'job-done', false);
+    slack.markCodingActiveWork('thread:done', 'job-done');
+    assert.equal(slack.isActiveWork('thread:done'), false);
+
+    // An expired coding marker is purged with the rest; a live one is kept.
+    slack.setActiveWork('thread:live', 'job-live', true);
+    slack.markCodingActiveWork('thread:live', 'job-live');
+    now += ACTIVE_WORK_TTL_MS + 1;
+    slack.claim('evt:purge');
+    const rows = db.all('SELECT key FROM slack_active_work ORDER BY key').map((row) => row.key);
+    assert.deepEqual(rows, ['thread:live']);
+  } finally {
+    db.close();
+  }
+});
+
+test('an active-work table from before the coding hint gains its column in place', () => {
+  const db = openStateDb(':memory:');
+  try {
+    db.exec('CREATE TABLE slack_active_work (key TEXT NOT NULL, generation TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (key, generation))');
+    const now = 1_800_000_000_000;
+    db.run('INSERT INTO slack_active_work (key, generation, updated_at) VALUES (?, ?, ?)', 'thread:old', 'job-old', now);
+    const slack = new SlackStateLogic(db, () => now);
+    assert.equal(slack.isActiveWork('thread:old'), true);
+    slack.markCodingActiveWork('thread:old', 'job-old');
+    assert.equal(db.get('SELECT ttl_ms FROM slack_active_work')?.ttl_ms, CODING_ACTIVE_WORK_TTL_MS);
+  } finally {
+    db.close();
+  }
 });

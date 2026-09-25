@@ -21,6 +21,7 @@ import type {
   TurnJob,
 } from './turn-job-types.ts';
 import { parseSlackTablePresentations } from './table-presentation.ts';
+import { parseCodingWorkerUsage } from './coding-worker-run.ts';
 import { parseSlackArtifactReceipts } from './artifact-receipts.ts';
 import { parseSlackAgentCreationTerminalIntents } from './agent-creation-terminal.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
@@ -1522,6 +1523,7 @@ function parseSettledResult(value: unknown): Extract<FlueSettlementCheckpointV1,
     'agentCreationTerminal',
     'memoryUpdate',
     'codingModel',
+    'codingWorkerUsage',
     'requestedModel',
     'returnedModel',
     'reportedUsage',
@@ -1540,6 +1542,7 @@ function parseSettledResult(value: unknown): Extract<FlueSettlementCheckpointV1,
   const codingModel = record.codingModel === undefined
     ? undefined
     : validateBoundedString(record.codingModel, 'coding model', 240);
+  const codingWorkerUsage = parseCodingWorkerUsage(record.codingWorkerUsage);
   const requestedModel = record.requestedModel === null
     ? null
     : validateBoundedString(record.requestedModel, 'requested model', 240);
@@ -1585,6 +1588,7 @@ function parseSettledResult(value: unknown): Extract<FlueSettlementCheckpointV1,
     ...(agentCreationTerminal ? { agentCreationTerminal } : {}),
     ...(memoryUpdate ? { memoryUpdate } : {}),
     ...(codingModel ? { codingModel } : {}),
+    ...(codingWorkerUsage.length > 0 ? { codingWorkerUsage } : {}),
     requestedModel,
     returnedModel,
     reportedUsage,

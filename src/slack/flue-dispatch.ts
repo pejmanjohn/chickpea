@@ -1,7 +1,10 @@
 import { SLACK_MEMORY_UPDATE_DATA_NAME, parseSlackMemoryUpdate, type SlackMemoryUpdate } from './memory-update-terminal.ts';
 import {
   CODING_WORKER_RUN_DATA_NAME,
+  CODING_WORKER_USAGE_DATA_NAME,
   parseCodingWorkerRunModel,
+  parseCodingWorkerUsage,
+  type CodingWorkerUsageRecord,
   WORKSPACE_MILESTONE_DATA_NAME,
   type WorkspaceMilestoneRecord,
 } from './coding-worker-run.ts';
@@ -35,7 +38,7 @@ import {
 import { prepareSandboxTurn, type SandboxTurnContext } from '../sandbox/turn-context.ts';
 import {
   CHICKPEA_RESPONSE_METADATA_KEY,
-  type ChickpeaResponseMetadata,
+  parseChickpeaResponseMetadata,
 } from '../usage/response-metadata.ts';
 import { opaqueId } from '../work/admission.ts';
 import { settlementFailureFacts } from './agent-failure-diagnostics.ts';
@@ -106,6 +109,8 @@ export interface AgentDispatchResult {
   memoryUpdate?: SlackMemoryUpdate;
   /** The coding model a coding worker ran on this response; names it in the footer. */
   codingModel?: string;
+  /** Each coding worker's own model usage this response, recorded beside the Agent's. */
+  codingWorkerUsage?: CodingWorkerUsageRecord[];
   requestedModel: string | null;
   returnedModel: AgentReturnedModel | null;
   reportedUsage: AgentReportedUsage | null;
@@ -527,7 +532,7 @@ export function resultFromAgentReply(
   // Reject only extreme single-punctuation degeneration, not code, JSON,
   // Markdown separators, short emphatic answers, or mixed punctuation.
   if (/^([!?])\1{1023,}$/.test(text.trim())) throw new AgentPromptFailure('invalid-output');
-  const metadata = parseResponseMetadata(reply.metadata?.[CHICKPEA_RESPONSE_METADATA_KEY]);
+  const metadata = parseChickpeaResponseMetadata(reply.metadata?.[CHICKPEA_RESPONSE_METADATA_KEY]);
   const usage = metadata ? parseReportedUsage(metadata.usage) : {
     reportedUsage: null,
     completeness: 'not_reported' as const,
@@ -537,6 +542,7 @@ export function resultFromAgentReply(
   );
   const memoryUpdate = parseSlackMemoryUpdate(reply.data?.[SLACK_MEMORY_UPDATE_DATA_NAME]);
   const codingModel = parseCodingWorkerRunModel(reply.data?.[CODING_WORKER_RUN_DATA_NAME]);
+  const codingWorkerUsage = parseCodingWorkerUsage(reply.data?.[CODING_WORKER_USAGE_DATA_NAME]);
   const agentCreationTerminal = parseSlackAgentCreationTerminalIntents(
     reply.data?.[SLACK_AGENT_CREATION_TERMINAL_DATA_NAME],
   )[0];
@@ -547,35 +553,12 @@ export function resultFromAgentReply(
     ...(agentCreationTerminal ? { agentCreationTerminal } : {}),
     ...(memoryUpdate ? { memoryUpdate } : {}),
     ...(codingModel ? { codingModel } : {}),
+    ...(codingWorkerUsage.length > 0 ? { codingWorkerUsage } : {}),
     requestedModel: metadata?.requestedModel ?? nonEmptyString(requestedModel),
     returnedModel: metadata?.returnedModel ?? null,
     reportedUsage: usage.reportedUsage,
     usageCompleteness: usage.completeness,
     flueSubmissionRef: opaqueId('fluesubmission', reply.submissionId),
-  };
-}
-
-function parseResponseMetadata(value: unknown): ChickpeaResponseMetadata | undefined {
-  const record = asRecord(value);
-  if (!record || record.schemaVersion !== 1) return undefined;
-  const requestedModel = nonEmptyString(record.requestedModel);
-  const usage = asRecord(record.usage);
-  if (!requestedModel || !usage) return undefined;
-  if (![usage.input, usage.output, usage.totalTokens].every(isTokenCount)) return undefined;
-  const returned = asRecord(record.returnedModel);
-  const provider = nonEmptyString(returned?.provider);
-  const id = nonEmptyString(returned?.id);
-  return {
-    schemaVersion: 1,
-    requestedModel,
-    usage: {
-      input: Number(usage.input),
-      output: Number(usage.output),
-      cacheRead: isTokenCount(usage.cacheRead) ? Number(usage.cacheRead) : 0,
-      cacheWrite: isTokenCount(usage.cacheWrite) ? Number(usage.cacheWrite) : 0,
-      totalTokens: Number(usage.totalTokens),
-    },
-    ...(provider && id ? { returnedModel: { provider, id } } : {}),
   };
 }
 

@@ -1398,6 +1398,37 @@ test('runTurn preserves addressed requests without manufacturing artifact permis
   }
 });
 
+test('only a turn that delegates a coding task asks for the long active-work hint', async () => {
+  const client = {
+    conversations: { history: async () => ({ ok: true, messages: [] }) },
+    chat: {
+      postMessage: async () => ({ ok: true, channel: assignment.channelId, ts: 'final-ts' }),
+      startStream: async () => ({ ok: true, ts: 'final-ts' }),
+      stopStream: async () => ({ ok: true }),
+    },
+  } as unknown as WebClient;
+  const milestone = (state: 'started' | 'completed') => ({
+    schemaVersion: 1 as const, toolCallId: 'call-1', milestone: 'workspace' as const, state,
+  });
+  for (const delegates of [false, true]) {
+    let hints = 0;
+    await runTurn(workTurn(`Ev_CODING_HINT_${delegates}`), assignment, undefined, {
+      client,
+      usageRecordingEnabled: false,
+      onCodingTaskStarted: () => { hints += 1; },
+      agentPrompt: async (input) => {
+        if (delegates) {
+          const target = { instanceId: 'agent-instance', submissionId: 'sub-1' };
+          await input.onWorkspaceMilestone?.(milestone('started'), target);
+          await input.onWorkspaceMilestone?.(milestone('completed'), target);
+        }
+        return { text: 'Done.', requestedModel: null, returnedModel: null, reportedUsage: null, usageCompleteness: 'not_reported' };
+      },
+    });
+    assert.equal(hints, delegates ? 1 : 0, delegates ? 'once per delegating turn' : 'never for an ordinary turn');
+  }
+});
+
 test('runTurn resolves the authenticated self-mention placeholder before Slack delivery', async () => {
   let delivered = '';
   const client = {

@@ -51,14 +51,17 @@ import {
 import { WORKSPACE_TOOL_NAMES } from '../src/sandbox/workspace-tools.ts';
 import {
   CODING_WORKER_RUN_DATA_NAME,
+  CODING_WORKER_USAGE_DATA_NAME,
   parseCodingWorkerRunModel,
+  parseCodingWorkerUsage,
   parseWorkspaceMilestone,
   workspaceMilestoneDetail,
+  type CodingWorkerUsageRecord,
   type WorkspaceMilestoneRecord,
 } from '../src/slack/coding-worker-run.ts';
 import { resultFromAgentReply } from '../src/slack/flue-dispatch.ts';
 import { replyFooterModelLabel } from '../src/slack/message-format.ts';
-import { ACTIVE_WORK_TTL_MS } from '../src/slack/state-limits.ts';
+import { CODING_ACTIVE_WORK_TTL_MS } from '../src/slack/state-limits.ts';
 
 const WORKSPACE_ID = defaultWorkspaceId('sandbox_' + 'a'.repeat(40));
 
@@ -156,7 +159,7 @@ test('agent statics: the worker identity, and submission budgets that fit the ta
   assert.ok(CodingWorker.durability!.timeoutMs! > WORKSPACE_TASK_TIMEOUT_MS);
   assert.ok(CodingWorker.durability!.timeoutMs! < CHICKPEA_SUBMISSION_DURABILITY.timeoutMs!);
   // The active-work hint outlives the longest turn that delegates coding tasks.
-  assert.ok(ACTIVE_WORK_TTL_MS > CHICKPEA_SUBMISSION_DURABILITY.timeoutMs!);
+  assert.ok(CODING_ACTIVE_WORK_TTL_MS > CHICKPEA_SUBMISSION_DURABILITY.timeoutMs!);
 });
 
 test('the worker instructions describe the workspace, not Slack, and end with a result line', () => {
@@ -267,6 +270,7 @@ function taskTool(
     taskTimeoutMs?: number;
     onMilestone?: (record: WorkspaceMilestoneRecord) => void;
     resolve?: WorkspaceTaskToolOptions['resolve'];
+    onWorkerUsage?: (record: CodingWorkerUsageRecord) => void;
   } = {},
 ) {
   return createWorkspaceTaskTool({
@@ -613,6 +617,71 @@ test('the reply names the coding model only when a worker ran on a different mod
     parseCodingWorkerRunModel([{ schemaVersion: 1, model: 'a/one' }, { schemaVersion: 1, model: 'b/two' }]),
     'b/two',
   );
+});
+
+test('each task reports the worker\'s own usage once, under the coding model', async () => {
+  const usage = { input: 900, output: 100, cacheRead: 50, cacheWrite: 0, totalTokens: 1050 };
+  const withMetadata: AgentReply = {
+    ...reply('done\nBranch: none · Pull request: none'),
+    metadata: {
+      chickpea: {
+        schemaVersion: 1,
+        requestedModel: 'openai/gpt-6',
+        usage,
+        returnedModel: { provider: 'openai', id: 'gpt-6-2026-09-01' },
+      },
+    },
+  };
+  const outcomes: Array<[string, CodingWorkerClient['observe'], CodingWorkerUsageRecord | undefined, number?]> = [
+    ['completed', async () => withMetadata, {
+      schemaVersion: 1, toolCallId: 'call-1', model: 'openai/gpt-6', status: 'completed', usage,
+      returnedModel: { provider: 'openai', id: 'gpt-6-2026-09-01' },
+    }],
+    ['no metadata', async () => reply('done'), {
+      schemaVersion: 1, toolCallId: 'call-1', model: 'openai/gpt-6', status: 'completed',
+    }],
+    ['worker failed', async () => { throw new AgentRunError({ outcome: 'failed', submissionId: 'sub-1' }); }, {
+      schemaVersion: 1, toolCallId: 'call-1', model: 'openai/gpt-6', status: 'failed',
+    }],
+    ['timeout', ({ signal }) => new Promise((_, reject) => {
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+    }), { schemaVersion: 1, toolCallId: 'call-1', model: 'openai/gpt-6', status: 'interrupted' }, 20],
+  ];
+  for (const [label, observe, expected, taskTimeoutMs] of outcomes) {
+    const h = harness();
+    const records: CodingWorkerUsageRecord[] = [];
+    await run(taskTool(h, workspace([]), observe, {
+      onWorkerUsage: (record) => records.push(record),
+      ...(taskTimeoutMs ? { taskTimeoutMs } : {}),
+    }), h, { task: 'x' });
+    assert.deepEqual(records, expected ? [expected] : [], label);
+  }
+
+  // No worker, no usage: a refused call and a broken observation record none.
+  const refused = harness();
+  const none: CodingWorkerUsageRecord[] = [];
+  await run(taskTool(refused, workspace([], { broken: true }), async () => withMetadata, {
+    onWorkerUsage: (record) => none.push(record),
+  }), refused, { task: 'x' });
+  const broken = harness();
+  await assert.rejects(run(taskTool(broken, workspace([]), async () => { throw new Error('transport'); }, {
+    onWorkerUsage: (record) => none.push(record),
+  }), broken, { task: 'x' }));
+  assert.deepEqual(none, []);
+});
+
+test('worker usage reaches the dispatch result once per task, the latest record winning', () => {
+  const first = { schemaVersion: 1, toolCallId: 'call-1', model: 'openai/gpt-6', status: 'failed' };
+  const retried = { ...first, status: 'completed', usage: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 3 } };
+  const second = { schemaVersion: 1, toolCallId: 'call-2', model: 'openai/gpt-6', status: 'interrupted' };
+  const result = resultFromAgentReply({
+    text: 'ok',
+    data: { [CODING_WORKER_USAGE_DATA_NAME]: [first, second, retried, { ...second, extra: 1 }] },
+    submissionId: 's',
+  }, 'anthropic/claude-sonnet-5');
+  assert.deepEqual(result.codingWorkerUsage, [second, retried]);
+  assert.equal(resultFromAgentReply({ text: 'ok', data: {}, submissionId: 's' }, null).codingWorkerUsage, undefined);
+  assert.deepEqual(parseCodingWorkerUsage('nope'), []);
 });
 
 function steps(h: Harness): string[] {

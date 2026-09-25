@@ -26,6 +26,57 @@ export function parseCodingWorkerRunModel(value: unknown): string | undefined {
 }
 
 /**
+ * Written by `workspace_task` once per delegated task that reached a worker:
+ * the worker's own model usage, which its coordinator's usage never includes.
+ * The relay records it on the turn's usage operation, under the coding model.
+ */
+export const CODING_WORKER_USAGE_DATA_NAME = 'chickpeaCodingWorkerUsage';
+
+/** More than the tasks one response may delegate; a bound, not a limit. */
+const MAX_CODING_WORKER_USAGE_RECORDS = 8;
+
+const TokenCount = v.pipe(v.number(), v.integer(), v.minValue(0), v.maxValue(Number.MAX_SAFE_INTEGER));
+
+export const CodingWorkerUsageSchema = v.strictObject({
+  schemaVersion: v.literal(1),
+  toolCallId: v.pipe(v.string(), v.minLength(1), v.maxLength(200)),
+  /** The coding model the worker ran on (canonical id). */
+  model: v.pipe(v.string(), v.minLength(3), v.maxLength(240)),
+  /** `interrupted`: the task timed out and was stopped; `failed`: the worker failed. */
+  status: v.picklist(['completed', 'failed', 'interrupted']),
+  /** The worker's reported token usage; absent when it reported none. */
+  usage: v.optional(v.strictObject({
+    input: TokenCount,
+    output: TokenCount,
+    cacheRead: TokenCount,
+    cacheWrite: TokenCount,
+    totalTokens: TokenCount,
+  })),
+  returnedModel: v.optional(v.strictObject({
+    provider: v.pipe(v.string(), v.minLength(1), v.maxLength(120)),
+    id: v.pipe(v.string(), v.minLength(1), v.maxLength(240)),
+  })),
+});
+
+export type CodingWorkerUsageRecord = v.InferOutput<typeof CodingWorkerUsageSchema>;
+
+/**
+ * One record per task, in order. A retried coordinator can write a task's
+ * record again; the latest one for a tool call wins.
+ */
+export function parseCodingWorkerUsage(value: unknown): CodingWorkerUsageRecord[] {
+  if (!Array.isArray(value)) return [];
+  const byToolCall = new Map<string, CodingWorkerUsageRecord>();
+  for (const entry of value) {
+    const parsed = v.safeParse(CodingWorkerUsageSchema, entry);
+    if (!parsed.success) continue;
+    byToolCall.delete(parsed.output.toolCallId);
+    byToolCall.set(parsed.output.toolCallId, parsed.output);
+  }
+  return [...byToolCall.values()].slice(-MAX_CODING_WORKER_USAGE_RECORDS);
+}
+
+/**
  * Written by `workspace_task` as a delegated task moves through its steps, so
  * the relay can show them as the run's native task checklist. Records are
  * durable and ordered in the response stream, and replay when the relay
