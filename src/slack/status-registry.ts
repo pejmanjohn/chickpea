@@ -74,6 +74,7 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
   private ownershipReady: boolean;
 
   constructor(
+    private readonly registry: SlackStatusRegistry,
     private readonly instanceId: string,
     private readonly ownershipKey: string,
     private readonly generation: string,
@@ -223,18 +224,7 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
     // (workspace:channel:thread — and ALL DM turns share workspace:dm-channel:dm),
     // so each key holds a SET of live turns. Closing removes only this turn;
     // an earlier turn finishing never drops a later, still-running turn.
-    const turns = activeSlackStatusTurns.get(this.instanceId);
-    if (turns) {
-      turns.delete(this);
-      if (turns.size === 0) {
-        activeSlackStatusTurns.delete(this.instanceId);
-      }
-    }
-    const owners = activeSlackStatusOwners.get(this.ownershipKey);
-    if (owners) {
-      owners.delete(this);
-      if (owners.size === 0) activeSlackStatusOwners.delete(this.ownershipKey);
-    }
+    this.registry.release(this, this.instanceId, this.ownershipKey);
   }
 
   async finish(clearStatus: (late: boolean) => Promise<void>): Promise<void> {
@@ -415,11 +405,11 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
   ): Promise<void> {
     if (!clearAuthority) return Promise.resolve();
     if (this.sessionGeneration !== undefined) {
-      const latest = latestSlackStatusGenerations.get(this.ownershipKey);
-      if (latest !== undefined && latest.generation > this.sessionGeneration) {
+      const latest = this.registry.latestGeneration(this.ownershipKey);
+      if (latest !== undefined && latest > this.sessionGeneration) {
         return Promise.resolve();
       }
-      const turns = activeSlackStatusOwners.get(this.ownershipKey);
+      const turns = this.registry.owners(this.ownershipKey);
       if (turns && [...turns].some((turn) =>
         turn.admittedGeneration() !== undefined &&
         turn.admittedGeneration()! >= this.sessionGeneration!
@@ -428,7 +418,7 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
     }
     // A later turn owns the shared Slack thread status once registered.
     // Never let cleanup from this generation clear that newer turn.
-    if ((activeSlackStatusTurns.get(this.instanceId)?.size ?? 0) > 0) {
+    if ((this.registry.turns(this.instanceId)?.size ?? 0) > 0) {
       return Promise.resolve();
     }
     return this.clearBestEffort(clearStatus);
@@ -437,7 +427,7 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
   private ownsVisibleWrites(): boolean {
     if (this.closed || !this.acceptsWrites) return false;
     return this.sessionGeneration === undefined ||
-      latestSlackStatusGenerations.get(this.ownershipKey)?.generation === this.sessionGeneration;
+      this.registry.latestGeneration(this.ownershipKey) === this.sessionGeneration;
   }
 }
 
@@ -446,110 +436,171 @@ interface SlackStatusGenerationHistory {
   lastSeenAt: number;
 }
 
-const activeSlackStatusTurns = new Map<string, Set<ActiveSlackStatusTurn>>();
-const activeSlackStatusOwners = new Map<string, Set<ActiveSlackStatusTurn>>();
-const latestSlackStatusGenerations = new Map<string, SlackStatusGenerationHistory>();
+/**
+ * The live status turns of one isolate's presenters. Turns that share a
+ * Slack conversation coordinate through the registry they registered in, so
+ * each owner of presentation (the shared state owner's alarm today, one
+ * thread runner later) holds its own instance. Node and the alarm use
+ * `defaultSlackStatusRegistry`.
+ */
+export class SlackStatusRegistry {
+  private readonly activeTurns = new Map<string, Set<ActiveSlackStatusTurn>>();
+  private readonly activeOwners = new Map<string, Set<ActiveSlackStatusTurn>>();
+  private readonly latestGenerations = new Map<string, SlackStatusGenerationHistory>();
 
-function pruneInactiveSlackStatusGenerationHistory(now: number): void {
-  for (const [ownershipKey, history] of latestSlackStatusGenerations) {
-    if (now - history.lastSeenAt <= THREAD_TTL_MS) continue;
-    if ((activeSlackStatusOwners.get(ownershipKey)?.size ?? 0) > 0) continue;
-    latestSlackStatusGenerations.delete(ownershipKey);
+  registerTurn(
+    instanceId: string,
+    presenter: StatusPresenter,
+    options: SlackStatusTurnOptions,
+  ): SlackStatusTurnRegistration {
+    const now = options.now?.() ?? Date.now();
+    this.pruneInactiveGenerationHistory(now);
+    const turns = this.activeTurns.get(instanceId) ?? new Set<ActiveSlackStatusTurn>();
+    const ownershipKey = options.ownershipKey ?? instanceId;
+    const owners = this.activeOwners.get(ownershipKey) ?? new Set<ActiveSlackStatusTurn>();
+    let acceptsWrites = true;
+    let ownershipBarrier: Promise<void> | undefined;
+    if (options.sessionGeneration !== undefined) {
+      const latest = this.latestGenerations.get(ownershipKey);
+      if (latest === undefined || options.sessionGeneration > latest.generation) {
+        this.latestGenerations.set(ownershipKey, {
+          generation: options.sessionGeneration,
+          lastSeenAt: now,
+        });
+        const barriers = [...owners]
+          .filter((candidate) =>
+            candidate.admittedGeneration() !== undefined &&
+            candidate.admittedGeneration()! < options.sessionGeneration!
+          )
+          .map((candidate) => candidate.fenceByNewerGeneration());
+        if (barriers.length > 0) {
+          ownershipBarrier = Promise.all(barriers).then(() => undefined);
+        }
+      } else if (options.sessionGeneration === latest.generation) {
+        this.latestGenerations.set(ownershipKey, { ...latest, lastSeenAt: now });
+        // A persisted TurnJob retry re-registers the same admitted generation
+        // after its prior in-memory owner closed. It may resume idempotent work
+        // on the stored coordinate, but a concurrent duplicate stays silent.
+        acceptsWrites = ![...owners].some((candidate) =>
+          candidate.admittedGeneration() === options.sessionGeneration
+        );
+      } else {
+        this.latestGenerations.set(ownershipKey, { ...latest, lastSeenAt: now });
+        acceptsWrites = false;
+      }
+    }
+    const turn = new ActiveSlackStatusTurn(
+      this,
+      instanceId,
+      ownershipKey,
+      options.generation,
+      presenter,
+      options.observedMinIntervalMs ?? DEFAULT_OBSERVED_STATUS_MIN_INTERVAL_MS,
+      Math.max(1, Math.floor(options.refreshIntervalMs ?? DEFAULT_STATUS_REFRESH_INTERVAL_MS)),
+      options.telemetry ?? console,
+      options.sessionGeneration,
+      acceptsWrites,
+      ownershipBarrier,
+      options.initialAppliedStatus,
+      options.refreshInitialStatus,
+    );
+    turns.add(turn);
+    this.activeTurns.set(instanceId, turns);
+    owners.add(turn);
+    this.activeOwners.set(ownershipKey, owners);
+    return turn;
+  }
+
+  /**
+   * Route an observed tool status only to the live turn carrying the same opaque
+   * generation. A mismatch is intentionally consumed instead of falling back to
+   * whichever turn happens to be live now: an old cross-isolate RPC can arrive
+   * after its turn closes and a later turn registers under the same conversation
+   * key. Duplicate live registrations for one generation remain ambiguous and
+   * are likewise suppressed.
+   * Returning true for either suppression prevents a pointless cross-isolate
+   * relay; the turn's own generic/model statuses remain visible.
+   * Returns false on a miss so the caller can relay cross-isolate (on Cloudflare
+   * the agent DO and the turn's alarm isolate never share this registry — see
+   * relayObservedStatus).
+   */
+  setObservedStatus(
+    instanceId: string,
+    generation: string,
+    update: SlackStatusUpdate,
+  ): boolean {
+    const turns = this.activeTurns.get(instanceId);
+    if (!turns || turns.size === 0) {
+      return false;
+    }
+
+    let matchingTurn: ActiveSlackStatusTurn | undefined;
+    for (const turn of turns) {
+      if (!turn.belongsTo(generation)) continue;
+      if (matchingTurn) return true;
+      matchingTurn = turn;
+    }
+    if (!matchingTurn) return true;
+    void matchingTurn.setObservedStatus(update);
+    return true;
+  }
+
+  /** @internal Live turns registered under one instance id. */
+  turns(instanceId: string): ReadonlySet<ActiveSlackStatusTurn> | undefined {
+    return this.activeTurns.get(instanceId);
+  }
+
+  /** @internal Live turns sharing one visible Slack status. */
+  owners(ownershipKey: string): ReadonlySet<ActiveSlackStatusTurn> | undefined {
+    return this.activeOwners.get(ownershipKey);
+  }
+
+  /** @internal The newest admitted generation seen for one visible status. */
+  latestGeneration(ownershipKey: string): number | undefined {
+    return this.latestGenerations.get(ownershipKey)?.generation;
+  }
+
+  /** @internal Remove one closed turn; later turns under the same keys stay. */
+  release(turn: ActiveSlackStatusTurn, instanceId: string, ownershipKey: string): void {
+    const turns = this.activeTurns.get(instanceId);
+    if (turns) {
+      turns.delete(turn);
+      if (turns.size === 0) {
+        this.activeTurns.delete(instanceId);
+      }
+    }
+    const owners = this.activeOwners.get(ownershipKey);
+    if (owners) {
+      owners.delete(turn);
+      if (owners.size === 0) this.activeOwners.delete(ownershipKey);
+    }
+  }
+
+  private pruneInactiveGenerationHistory(now: number): void {
+    for (const [ownershipKey, history] of this.latestGenerations) {
+      if (now - history.lastSeenAt <= THREAD_TTL_MS) continue;
+      if ((this.activeOwners.get(ownershipKey)?.size ?? 0) > 0) continue;
+      this.latestGenerations.delete(ownershipKey);
+    }
   }
 }
+
+/** The registry of this isolate's Node relay and Cloudflare alarm turns. */
+export const defaultSlackStatusRegistry = new SlackStatusRegistry();
 
 export function registerSlackStatusTurn(
   instanceId: string,
   presenter: StatusPresenter,
   options: SlackStatusTurnOptions,
 ): SlackStatusTurnRegistration {
-  const now = options.now?.() ?? Date.now();
-  pruneInactiveSlackStatusGenerationHistory(now);
-  const turns = activeSlackStatusTurns.get(instanceId) ?? new Set<ActiveSlackStatusTurn>();
-  const ownershipKey = options.ownershipKey ?? instanceId;
-  const owners = activeSlackStatusOwners.get(ownershipKey) ?? new Set<ActiveSlackStatusTurn>();
-  let acceptsWrites = true;
-  let ownershipBarrier: Promise<void> | undefined;
-  if (options.sessionGeneration !== undefined) {
-    const latest = latestSlackStatusGenerations.get(ownershipKey);
-    if (latest === undefined || options.sessionGeneration > latest.generation) {
-      latestSlackStatusGenerations.set(ownershipKey, {
-        generation: options.sessionGeneration,
-        lastSeenAt: now,
-      });
-      const barriers = [...owners]
-        .filter((candidate) =>
-          candidate.admittedGeneration() !== undefined &&
-          candidate.admittedGeneration()! < options.sessionGeneration!
-        )
-        .map((candidate) => candidate.fenceByNewerGeneration());
-      if (barriers.length > 0) {
-        ownershipBarrier = Promise.all(barriers).then(() => undefined);
-      }
-    } else if (options.sessionGeneration === latest.generation) {
-      latestSlackStatusGenerations.set(ownershipKey, { ...latest, lastSeenAt: now });
-      // A persisted TurnJob retry re-registers the same admitted generation
-      // after its prior in-memory owner closed. It may resume idempotent work
-      // on the stored coordinate, but a concurrent duplicate stays silent.
-      acceptsWrites = ![...owners].some((candidate) =>
-        candidate.admittedGeneration() === options.sessionGeneration
-      );
-    } else {
-      latestSlackStatusGenerations.set(ownershipKey, { ...latest, lastSeenAt: now });
-      acceptsWrites = false;
-    }
-  }
-  const turn = new ActiveSlackStatusTurn(
-    instanceId,
-    ownershipKey,
-    options.generation,
-    presenter,
-    options.observedMinIntervalMs ?? DEFAULT_OBSERVED_STATUS_MIN_INTERVAL_MS,
-    Math.max(1, Math.floor(options.refreshIntervalMs ?? DEFAULT_STATUS_REFRESH_INTERVAL_MS)),
-    options.telemetry ?? console,
-    options.sessionGeneration,
-    acceptsWrites,
-    ownershipBarrier,
-    options.initialAppliedStatus,
-    options.refreshInitialStatus,
-  );
-  turns.add(turn);
-  activeSlackStatusTurns.set(instanceId, turns);
-  owners.add(turn);
-  activeSlackStatusOwners.set(ownershipKey, owners);
-  return turn;
+  return defaultSlackStatusRegistry.registerTurn(instanceId, presenter, options);
 }
 
-/**
- * Route an observed tool status only to the live turn carrying the same opaque
- * generation. A mismatch is intentionally consumed instead of falling back to
- * whichever turn happens to be live now: an old cross-isolate RPC can arrive
- * after its turn closes and a later turn registers under the same conversation
- * key. Duplicate live registrations for one generation remain ambiguous and
- * are likewise suppressed.
- * Returning true for either suppression prevents a pointless cross-isolate
- * relay; the turn's own generic/model statuses remain visible.
- * Returns false on a miss so the caller can relay cross-isolate (on Cloudflare
- * the agent DO and the turn's alarm isolate never share this Map — see
- * relayObservedStatus).
- */
+/** `SlackStatusRegistry.setObservedStatus` on the default registry. */
 export function setObservedSlackStatus(
   instanceId: string,
   generation: string,
   update: SlackStatusUpdate,
 ): boolean {
-  const turns = activeSlackStatusTurns.get(instanceId);
-  if (!turns || turns.size === 0) {
-    return false;
-  }
-
-  let matchingTurn: ActiveSlackStatusTurn | undefined;
-  for (const turn of turns) {
-    if (!turn.belongsTo(generation)) continue;
-    if (matchingTurn) return true;
-    matchingTurn = turn;
-  }
-  if (!matchingTurn) return true;
-  void matchingTurn.setObservedStatus(update);
-  return true;
+  return defaultSlackStatusRegistry.setObservedStatus(instanceId, generation, update);
 }

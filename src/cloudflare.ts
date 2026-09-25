@@ -38,19 +38,15 @@ import {
   getGithubConnection,
 } from './config/github-app.ts';
 import { slackAgentThreadKey } from './slack/thread-key.ts';
-import { sandboxThreadKey } from './sandbox/thread-key.ts';
 import { gitIdentityConfigCommand, resolveWorkspaceGitIdentity } from './sandbox/git-identity.ts';
 import { recordDeliveredSlackAgentMessage } from './slack/public-context.ts';
 import {
   cacheSlackInstallationExecutionContexts,
   effectiveTurnSlackInstallationId,
-  normalizeSlackInstallationExecutionError,
   resolveSlackInstallationExecutionContext,
   verifySlackInstallationTurnAccess,
-  type SlackInstallationExecutionContext,
   type SlackInstallationExecutionResolver,
 } from './slack/installation-execution.ts';
-import { recordSlackInstallationUnavailable } from './slack/installation-observability.ts';
 import {
   parseSandboxAllowedHosts,
   SANDBOX_PACKAGE_REGISTRY_HOSTS,
@@ -64,7 +60,6 @@ import type {
 import { SettingsStoreLogic } from './config/settings-store.ts';
 import { purgeExpiredImageOutputs } from './images/output-store.ts';
 import { SnapshotStoreLogic } from './config/snapshot-store.ts';
-import { settlementFailureFacts } from './slack/agent-failure-diagnostics.ts';
 import type {
   StateRpcResult,
   StateRpcErrorCode,
@@ -178,49 +173,40 @@ import {
 } from './slack/run-presentations.ts';
 import { createLedgerSlackRunHandler } from './slack/ledger-turn-driver.ts';
 import type { SlackPresentationStatePort } from './slack/agent-view-presentation.ts';
-import { setObservedSlackStatus } from './slack/status-registry.ts';
+import { defaultSlackStatusRegistry } from './slack/status-registry.ts';
 import {
   activityStatus,
   isSafeTypedActivityStatus,
   type TypedActivityStatus,
 } from './activity/status.ts';
 import {
-  deliverAgentFailureFinal,
   repairSlackInteractionProgress,
   runTurn,
   sanitizeError,
 } from './slack/run-turn.ts';
-import { AgentObservationYield, AgentPromptFailure } from './slack/flue-dispatch.ts';
 import {
   ALARM_ADMISSION_RECHECK_MS,
   ALARM_PENDING_PER_THREAD,
   ALARM_TURN_BUDGET_MS,
   ALARM_TURN_HARD_CAP_MS,
   ALARM_YIELD_REARM_MS,
-  alarmYieldIsFree,
   drainAlarmTurnJobs,
   type AlarmTurnJobControl,
 } from './slack/alarm-turn-drain.ts';
-import { DURABLE_RECOVERY_FAILURE_TEXT } from './slack/web-client-presenter.ts';
 import {
-  abandonTerminalSlackPresentationBestEffort,
+  executeTurnJob,
+  type SandboxTurnReader,
+  type TurnExecutionPorts,
+} from './slack/turn-executor.ts';
+import { localSlackPresentationStatePort } from './slack/presentation-state-port.ts';
+import {
   drainSlackPresentationRepairs,
   type SlackPresentationRepairDrainResult,
 } from './slack/presentation-repair.ts';
-import type {
-  FlueDispatchReceiptV1,
-  FlueSettlementCheckpointV1,
-  FlueTurnObservationV1,
-} from './slack/turn-job-types.ts';
-import type { ThreadImageRecord } from './slack/thread-images.ts';
 import {
-  MAX_POST_DISPATCH_ATTEMPTS,
-  MAX_TURN_ATTEMPTS,
   MAX_TURN_DRAIN_BATCH,
-  replayTextForTurnProgress,
   TurnJobStoreLogic,
 } from './slack/turn-jobs.ts';
-import { runtimePlanHasCodingWorkspace } from './agents/runtime-plan.ts';
 import { DoSqlStateDb } from './state/do-state-db.ts';
 import { StateSchemaMarker, stateSchemaFingerprint } from './state/schema-lifecycle.ts';
 import { cloudflareWorkerVersionId } from './config/cloudflare-version.ts';
@@ -1776,7 +1762,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       if (!isSafeTypedActivityStatus(status)) return null;
       const target = stores.turnJobs.matchFlueObservation(instanceId, submissionId);
       if (target) {
-        setObservedSlackStatus(
+        defaultSlackStatusRegistry.setObservedStatus(
           instanceId,
           target.generation,
           activityStatus(
@@ -1906,335 +1892,47 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     };
     let needsRetry = gatewayNeedsRetry;
     let identityRetryDelayMs = RELAY_RETRY_BACKOFF_MS;
-    const runJob = async (
+    // The alarm's own stores are this turn's ports; a thread runner passes
+    // its own presentation state (see src/slack/turn-executor.ts).
+    const turnPorts: TurnExecutionPorts = {
+      env: this.env as PlatformEnv,
+      turnJobs: stores.turnJobs,
+      slack: stores.slack,
+      config: stores.config,
+      presentationState: localSlackPresentationState(stores),
+      settingsStore: localSettingsStore(stores),
+      usageStore,
+      workStore: stores.work as unknown as WorkStore,
+      appStores,
+      managementApproval: resolveManagementApproval,
+      telemetry: productTelemetry,
+      resolveInstallation,
+      sandboxes: (sandboxKey) => {
+        const binding =
+          (this.env as PlatformEnv).SANDBOX ?? (this.env as PlatformEnv).Sandbox;
+        if (!binding) return [];
+        return cloudflareSandboxOptionVariants(sandboxKey).map((options) => () =>
+          reconnectingSandboxStub(() => getSandbox(
+            binding as Parameters<typeof getSandbox>[0],
+            sandboxKey,
+            options,
+          )) as ReturnType<typeof getSandbox> & SandboxTurnReader);
+      },
+      runTurn,
+    };
+    const runJob = (
       job: (typeof pending)[number],
       control?: AlarmTurnJobControl,
-    ): Promise<boolean> => {
-      if (!job.turn.interactionIntent && job.progress.interactionIntent) {
-        job.turn.interactionIntent = job.progress.interactionIntent;
-      }
-      let installationContext: SlackInstallationExecutionContext;
-      try {
-        installationContext = await resolveInstallation(effectiveTurnSlackInstallationId(job.turn));
-        await verifySlackInstallationTurnAccess(installationContext, job.turn);
-      } catch (error) {
-        const unavailable = normalizeSlackInstallationExecutionError(
-          error,
-          effectiveTurnSlackInstallationId(job.turn),
-        );
-        recordSlackInstallationUnavailable(unavailable);
-        if (unavailable.retryable) {
-          needsRetry = true;
-          identityRetryDelayMs = Math.max(
-            identityRetryDelayMs,
-            unavailable.retryAfterMs ?? 0,
-          );
-          console.warn(
-            `[chickpea] Slack installation preflight will retry (${unavailable.reasonCode})`,
-          );
-          return false;
+    ): Promise<boolean> => executeTurnJob(job, turnPorts, {
+      latency: { lane: 'cloudflare', executor: 'alarm' },
+      ...(control ? { control } : {}),
+      onRetry: (afterMs) => {
+        needsRetry = true;
+        if (afterMs !== undefined) {
+          identityRetryDelayMs = Math.max(identityRetryDelayMs, afterMs);
         }
-        stores.turnJobs.markRecoveryRequired(job.id, 'slack_installation_unavailable');
-        if (job.turn.interactionIntent?.disposition === 'work') {
-          stores.slack.setActiveWork(
-            slackAgentThreadKey(job.turn, job.assignment),
-            job.id,
-            false,
-          );
-        }
-        return false;
-      }
-      const client = installationContext.client;
-      const attempt = job.attempts + 1;
-      let delivered = false;
-      let deferredTerminal = false;
-      let activeWorkKey = job.turn.interactionIntent?.disposition === 'work'
-        ? slackAgentThreadKey(job.turn, job.assignment)
-        : undefined;
-      // Advance the attempt count before running the turn: a crash mid-turn
-      // then re-fires with the count already committed, bounding retries.
-      stores.turnJobs.recordAttempt(job.id, attempt);
-      const flueDispatch = {
-        ...(job.dispatchEnvelope ? { dispatchEnvelope: job.dispatchEnvelope } : {}),
-        ...(job.dispatchReceipt ? { dispatchReceipt: job.dispatchReceipt } : {}),
-        ...(job.flueSettlement ? { flueSettlement: job.flueSettlement } : {}),
-        prepare: (
-          message: string,
-          observation: FlueTurnObservationV1,
-          threadImages?: readonly ThreadImageRecord[],
-          admittedListIds?: readonly string[],
-        ) => stores.turnJobs.prepareFlueDispatch(job.id, message, observation, threadImages, admittedListIds),
-        reconcileExistingInstance: (uid: string) =>
-          stores.turnJobs.reconcileFlueExistingInstance(job.id, uid),
-        recordReceipt: (receipt: FlueDispatchReceiptV1) =>
-          stores.turnJobs.recordFlueReceipt(job.id, receipt),
-        recordSettlement: (settlement: FlueSettlementCheckpointV1) =>
-          stores.turnJobs.recordFlueSettlement(job.id, settlement),
-        markRecoveryRequired: (reason: string) =>
-          stores.turnJobs.markRecoveryRequired(job.id, reason),
-      };
-      const presentationState = localSlackPresentationState(stores);
-      const turnLatency = {
-        ...(job.enqueuedAt === undefined ? {} : { admittedAt: job.enqueuedAt }),
-        ...(job.receivedAt === undefined ? {} : { receivedAt: job.receivedAt }),
-        lane: 'cloudflare',
-        executor: 'alarm',
-      } as const;
-      const deliverRecoveryFailure = async (reasonCode: string): Promise<boolean> => {
-        try {
-          await runTurn(job.turn, job.assignment, this.env as PlatformEnv, {
-            client,
-            installationContext,
-            turnId: job.id,
-            ...(job.runId ? { runId: job.runId, runAttempt: attempt } : {}),
-            turnLatency,
-            settingsStore: localSettingsStore(stores),
-            presentationState,
-            replayText: DURABLE_RECOVERY_FAILURE_TEXT,
-            replayTerminalResult: 'failure',
-            onPublicMessageDelivered: (delivery) =>
-              recordDeliveredSlackAgentMessage(
-                stores.config, job.turn, job.assignment, delivery,
-              ),
-            onDelivered: () => {
-              stores.turnJobs.markError(job.id);
-              if (activeWorkKey) stores.slack.setActiveWork(activeWorkKey, job.id, false);
-              delivered = true;
-            },
-          });
-          return true;
-        } catch {
-          // The recovery notice shares the run's V3 presentation. When that
-          // presentation already holds an unresolved terminal (the reason the
-          // preceding attempts threw), this replay throws the same way, so
-          // abandon it: that is the only transition which lets durable repair
-          // suspend the Agent Session and clear the visible activity status.
-          console.error('[chickpea] durable recovery final failed:', { reasonCode });
-          if (job.runId) {
-            await abandonTerminalSlackPresentationBestEffort({
-              runId: job.runId,
-              state: presentationState,
-              client,
-              requireUnresolvedDelivery: true,
-            });
-          }
-          stores.turnJobs.markRecoveryRequired(job.id, reasonCode);
-          if (activeWorkKey) stores.slack.setActiveWork(activeWorkKey, job.id, false);
-          return false;
-        }
-      };
-      try {
-        // The plan this job froze, kept current as runTurn freezes it.
-        let frozenPlan = job.runtimePlan;
-        const persistSandboxProgress = async (
-          use?: { codingWorkspaceOpened?: boolean },
-        ): Promise<string | undefined> => {
-          // Only a turn that could have opened a coding workspace has
-          // progress there. A turn whose own reply says it opened none skips
-          // the Sandbox Durable Object entirely; an unknown one still checks.
-          if (!frozenPlan || !runtimePlanHasCodingWorkspace(frozenPlan)) return undefined;
-          if (frozenPlan.sandbox.mode !== 'cloudflare' && use?.codingWorkspaceOpened === false) {
-            return undefined;
-          }
-          const binding =
-            (this.env as PlatformEnv).SANDBOX ?? (this.env as PlatformEnv).Sandbox;
-          if (!binding) return undefined;
-          // The same Durable Object the workspace uses: the thread key, not
-          // the owner-bound agent key, which names no workspace.
-          const sandboxKey = sandboxThreadKey(slackAgentThreadKey(job.turn, job.assignment));
-          for (const options of cloudflareSandboxOptionVariants(sandboxKey)) {
-            try {
-              const sandbox = reconnectingSandboxStub(() => getSandbox(
-                binding as Parameters<typeof getSandbox>[0],
-                sandboxKey,
-                options,
-              )) as ReturnType<typeof getSandbox> & {
-                getTurnId(): Promise<string | undefined>;
-                getTurnProgress(): Promise<TurnProgress>;
-              };
-              if ((await sandbox.getTurnId()) !== job.id) continue;
-              const progress = await sandbox.getTurnProgress();
-              if (progress.pullRequest) {
-                stores.turnJobs.recordPullRequest(job.id, progress.pullRequest);
-              }
-              const replayText = replayTextForTurnProgress(progress);
-              if (replayText !== undefined) return replayText;
-            } catch {
-              // One identity can be unavailable during a rolling deploy. Keep
-              // checking the bridge identity before degrading recovery.
-            }
-          }
-          // Retry protection is best-effort on the read path. Either Sandbox
-          // identity retains its marker, so a later alarm can try again.
-          return undefined;
-        };
-        // A dispatched, unsettled turn reattaches to its own reply, which is
-        // the answer; a PR it opened mid-run must not replace that answer
-        // with a replayed notice while the submission is still running.
-        const reattaching = job.dispatchReceipt !== undefined && job.flueSettlement === undefined;
-        const replayText = reattaching
-          ? undefined
-          : replayTextForTurnProgress(job.progress) ?? (await persistSandboxProgress());
-        const runtimePlanDecision = job.runtimePlan && job.agentInstanceId
-          ? {
-              runtimePlan: job.runtimePlan,
-              instanceId: job.agentInstanceId,
-            }
-          : undefined;
-        await runTurn(job.turn, job.assignment, this.env as PlatformEnv, {
-          client,
-          installationContext,
-          turnId: job.id,
-          usageExecutionId: `exec:${job.id}:flue`,
-          ...(job.runId ? { runId: job.runId, runAttempt: attempt } : {}),
-          ...(control
-            ? { observationSignal: control.signal, onObservationStarted: control.observing }
-            : {}),
-          turnLatency,
-          workStore: stores.work as unknown as WorkStore,
-          settingsStore: localSettingsStore(stores),
-          usageStore,
-          appStores,
-          managementApproval: resolveManagementApproval,
-          ...(runtimePlanDecision ? { runtimePlanDecision } : {}),
-          onRuntimePlan: (candidate) => {
-            const decision = stores.turnJobs.freezeRuntimePlan(job.id, candidate);
-            frozenPlan = decision.runtimePlan;
-            return decision;
-          },
-          getBoundRuntimePlan: (...args) => stores.turnJobs.getBoundRuntimePlan(...args),
-          flueDispatch,
-          presentationState,
-          progressiveAttributionProven: true,
-          onUsagePersistence: (event) => {
-            stores.turnJobs.recordUsagePersistence(job.id, event);
-          },
-          onInteractionIntent: (intent) => {
-            stores.turnJobs.recordInteractionIntent(job.id, intent);
-            if (intent.disposition !== 'work') return;
-            activeWorkKey = slackAgentThreadKey(job.turn, job.assignment);
-            stores.slack.setActiveWork(activeWorkKey, job.id, true);
-          },
-          onCodingTaskStarted: () => {
-            if (activeWorkKey) stores.slack.markCodingActiveWork(activeWorkKey, job.id);
-          },
-          ...(reattaching && activeWorkKey && stores.slack.isCodingActiveWork(activeWorkKey, job.id)
-            ? { codingTaskStarted: true }
-            : {}),
-          ...(job.progress.slackInteraction
-            ? { interactionProgress: job.progress.slackInteraction }
-            : {}),
-          onInteractionProgress: (patch) => {
-            stores.turnJobs.recordSlackInteractionProgress(job.id, patch);
-          },
-          onPublicMessageDelivered: (delivery) =>
-            recordDeliveredSlackAgentMessage(stores.config, job.turn, job.assignment, delivery),
-          ...(replayText === undefined ? {} : { replayText }),
-          beforeDelivery: persistSandboxProgress,
-          // Record terminal delivery before runTurn's post-delivery Sandbox
-          // turn close. A hung control-plane call must never leave an
-          // already-posted Slack final eligible for relay retry.
-          onDelivered: (outcome) => {
-            stores.turnJobs.markDelivered(job.id);
-            if (activeWorkKey) stores.slack.setActiveWork(activeWorkKey, job.id, false);
-            delivered = true;
-            if (outcome) {
-              productTelemetry.capture({
-                event: 'run_completed',
-                workspaceId: job.turn.workspaceId,
-                agentId: job.assignment.agentId,
-                triggerKind: 'interactive',
-                outcome,
-              });
-            }
-          },
-          onDeferredTerminal: () => {
-            deferredTerminal = true;
-            if (activeWorkKey) stores.slack.setActiveWork(activeWorkKey, job.id, false);
-          },
-        });
-        if (deferredTerminal) return true;
-        // Delivery was tombstoned at the exact presentation boundary above.
-        // Claims stay held — a completed turn never re-runs.
-        return true;
-      } catch (err) {
-        if (err instanceof AgentObservationYield) {
-          if (alarmYieldIsFree(flueDispatch.dispatchReceipt?.acceptedAt, Date.now())) {
-            // The alarm stopped observing on purpose; nothing failed. Restore
-            // the attempt count so a long turn never spends its reattachment
-            // budget on yields, and keep its receipt, active work, and claims.
-            stores.turnJobs.recordAttempt(job.id, job.attempts);
-            console.info('[chickpea] Flue turn yielded for reattachment by the next alarm');
-            return false;
-          }
-          // Past its durability the submission should have settled. Spend
-          // attempts from here so the bounded reattachment policy below ends
-          // it with the durable recovery notice.
-          console.warn('[chickpea] Flue turn outlived its submission durability');
-        }
-        if (err instanceof AgentPromptFailure && err.recoveryRequired) {
-          console.error('[chickpea] Flue turn requires operator reconciliation');
-          return deliverRecoveryFailure('flue_dispatch_reconciliation_required');
-        }
-        // Any failure after the terminal presentation boundary is cleanup,
-        // not a failed turn. The durable tombstone prevents a duplicate final;
-        // keep the claims held and let a later thread turn start normally.
-        if (delivered) {
-          console.warn('[chickpea] post-delivery cleanup did not complete');
-          return true;
-        }
-        if (flueDispatch.dispatchEnvelope) {
-          console.error('[chickpea] durable reattachment failed:', {
-            causes: settlementFailureFacts(err),
-          });
-          // A dispatched turn is never discarded or replaced. A later alarm
-          // replays its admission key, receipt read, or terminal settlement.
-          if (attempt >= MAX_POST_DISPATCH_ATTEMPTS) {
-            console.error('[chickpea] Flue turn exhausted durable reattachment attempts');
-            return deliverRecoveryFailure('post_dispatch_attempts_exhausted');
-          } else {
-            needsRetry = true;
-          }
-          if (activeWorkKey) stores.slack.setActiveWork(activeWorkKey, job.id, false);
-          console.warn('[chickpea] Flue turn retained for durable reattachment');
-          return false;
-        }
-        console.error(
-          `[chickpea] relay turn attempt ${attempt} failed:`,
-          sanitizeError(err),
-        );
-        if (attempt >= MAX_TURN_ATTEMPTS) {
-          // Terminal: best-effort sanitized final so the thread is not left
-          // silent, then release the claims (parity with the node .catch's
-          // "failed delivery frees the claim") and tombstone so no further
-          // attempt runs.
-          await deliverAgentFailureFinal(
-            job.turn,
-            job.assignment,
-            client,
-            this.env as PlatformEnv,
-            (delivery) =>
-              recordDeliveredSlackAgentMessage(
-                stores.config,
-                job.turn,
-                job.assignment,
-                delivery,
-              ),
-          ).catch((finalErr) => {
-            console.error('[chickpea] relay terminal final failed:', sanitizeError(finalErr));
-          });
-          stores.slack.release(job.evtKey);
-          stores.slack.release(job.msgKey);
-          stores.slack.release(`decision:${job.msgKey}`);
-          if (activeWorkKey) stores.slack.setActiveWork(activeWorkKey, job.id, false);
-          stores.turnJobs.markError(job.id);
-          return true;
-        } else {
-          needsRetry = true;
-          return false;
-        }
-      }
-    };
+      },
+    });
 
     // Ordering inside a thread is preserved (a thread's second turn never
     // overtakes its first) while unrelated conversations run side by side.
@@ -2831,21 +2529,11 @@ function localManagementRuntime(
 }
 
 function localSlackPresentationState(stores: TagStateStores): SlackPresentationStatePort {
-  return {
-    getRunPresentation: (runId) => stores.presentations.get(runId),
-    getLatestThreadSessionGeneration: (root) =>
-      stores.presentations.getLatestThreadSessionGeneration(root),
-    transitionRunPresentation: (input) => stores.presentations.transition(input),
-    reserveSlackAppend: (workspaceId) => stores.presentations.reserveAppend(workspaceId),
-    applySlackAppendCooldown: (workspaceId, retryAfterMs) =>
-      stores.presentations.applyAppendCooldown(workspaceId, retryAfterMs),
-    reserveSlackActivityStatus: (workspaceId) =>
-      stores.presentations.reserveActivityStatus(workspaceId),
-    applySlackActivityStatusCooldown: (workspaceId, retryAfterMs) =>
-      stores.presentations.applyActivityStatusCooldown(workspaceId, retryAfterMs),
+  return localSlackPresentationStatePort({
+    presentations: stores.presentations,
     matchFlueObservation: (instanceId, submissionId) =>
       stores.turnJobs.matchFlueObservation(instanceId, submissionId),
-  };
+  });
 }
 
 function localUsageStore(stores: TagStateStores): UsageStore {
