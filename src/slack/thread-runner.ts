@@ -250,6 +250,7 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
       slack: runnerSlackPort({
         setActiveWork: (key, generation, active) => rows.setActiveWork(key, generation, active),
         markCodingActiveWork: (key, generation) => rows.markCodingActiveWork(key, generation),
+        isCodingActiveWork: (key, generation) => rows.isCodingActiveWork(key, generation),
         release: (key) => rows.release(key),
       }, jobs),
       config,

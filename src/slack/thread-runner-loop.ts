@@ -403,6 +403,7 @@ export function runnerSlackPort(
       }
     },
     markCodingActiveWork: (...args) => storeCall(() => remote.markCodingActiveWork(...args)),
+    isCodingActiveWork: (...args) => storeCall(() => remote.isCodingActiveWork(...args)),
     release: (...args) => storeCall(() => remote.release(...args)),
   };
 }

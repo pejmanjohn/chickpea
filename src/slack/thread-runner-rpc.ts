@@ -48,6 +48,7 @@ export interface ThreadRunnerTurnOps {
   markDelivered: [{ id: string }, null];
   markError: [{ id: string }, null];
   markCodingActiveWork: [{ key: string; generation: string }, null];
+  isCodingActiveWork: [{ key: string; generation: string }, boolean];
   /** Write the runner's presentation back for the state store's readers. */
   putPresentation: [{ presentation: SlackRunPresentation }, boolean];
 }

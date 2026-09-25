@@ -2518,6 +2518,8 @@ function applyThreadRunnerTurnOp(
     case 'markCodingActiveWork':
       stores.slack.markCodingActiveWork(op.key, op.generation);
       return null;
+    case 'isCodingActiveWork':
+      return stores.slack.isCodingActiveWork(op.key, op.generation);
     case 'putPresentation':
       return stores.presentations.putSnapshot(op.presentation);
     default:

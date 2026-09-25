@@ -2143,6 +2143,10 @@ export class CfTurnJobsForRunner implements RunnerTurnJobsPort {
     await this.op({ kind: 'markCodingActiveWork', key, generation });
   }
 
+  isCodingActiveWork(key: string, generation: string) {
+    return this.op({ kind: 'isCodingActiveWork', key, generation });
+  }
+
   setActiveWork(key: string, generation: string, active: boolean) {
     return this.slack((store) => store.setActiveWork(key, generation, active));
   }
