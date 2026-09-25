@@ -13,6 +13,7 @@ import {
   managementApprovalScopeKey,
 } from '../src/management/contracts.ts';
 import type { ManagementActorContext } from '../src/management/types.ts';
+import { authoringProposalMetadata } from './helpers/agent-authoring.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
 
 test('catalog aliases resolve to one canonical connector', () => {
@@ -572,5 +573,93 @@ test('welcome finalization truthfully reports presence and source-Channel public
     } finally {
       f.close();
     }
+  }
+});
+
+test('a same-turn Agent edit proposal stays current after the welcome publishes the avatar', async () => {
+  const avatarUrl =
+    'https://gateway.chickpea.test/avatars/binding/agent_same_turn_edit/rev_1.png';
+  let publishCalls = 0;
+  const f = await createManagementAdapterFixture('welcome-same-turn-edit', {
+    publishGeneratedAgentAvatar: async () => {
+      publishCalls += 1;
+      return { url: avatarUrl, revision: 1 };
+    },
+  });
+  try {
+    const context: ManagementActorContext = {
+      userId: f.admin.user.id,
+      membershipId: f.admin.membership.id,
+      organizationId: f.admin.membership.organizationId,
+      actingAgentId: CHICKPEA_AGENT_ID,
+      origin: {
+        kind: 'slack',
+        workspaceId: f.admin.binding.slackTeamId,
+        channelId: 'D_SAME_TURN_EDIT',
+        threadTs: '900.3',
+        messageTs: '900.3',
+        requestText: 'Create a coding Agent that works in our app repository.',
+        conversationKind: 'im',
+        agentId: CHICKPEA_AGENT_ID,
+      },
+    };
+    const applied = await f.service.applyWorkspaceChanges({
+      context,
+      idempotencyKey: 'create-then-edit-same-turn',
+      operations: [{
+        itemId: 'create',
+        kind: 'create_agent',
+        agent: {
+          id: 'agent_same_turn_edit',
+          name: 'Builder',
+          requestedHandle: 'builder-same-turn',
+          editPolicy: 'creator_and_admins',
+          instructions: 'Work in the app repository.',
+          enabled: true,
+          skills: [],
+          mcpServers: [],
+          apiConnections: [],
+          repositories: [],
+        },
+      }],
+    });
+    if (!('operationId' in applied)) assert.fail('expected applied creation');
+    const created = await f.config.getAgent('agent_same_turn_edit');
+    assert.equal(created.slackPresence?.avatar.url, avatarUrl);
+
+    const proposed = await f.service.proposeWorkspaceChanges({
+      context,
+      ...authoringProposalMetadata('welcome-same-turn-edit'),
+      operations: [{
+        itemId: 'edit',
+        kind: 'update_agent',
+        agentId: created.id,
+        expectedRevision: created.revision,
+        patch: { description: 'Ships changes in the app repository.' },
+      }],
+    });
+    await f.service.finalizeSlackAgentCreationWelcome({
+      context,
+      operationId: applied.operationId,
+      creationItemId: 'create',
+      agentId: created.id,
+      connectorMentions: [],
+      pendingProposalId: proposed.proposalId,
+      followOnNotices: [{ kind: 'proposal', text: 'Reply `approve` to continue.' }],
+      turnJobId: 'turn_same_turn_edit',
+    });
+    assert.equal(publishCalls, 1);
+
+    const confirmed = await f.service.confirmWorkspaceChange({
+      context,
+      proposalId: proposed.proposalId,
+    });
+    assert.equal(confirmed.outcomes[0]?.disposition, 'applied');
+    assert.equal(
+      (await f.config.getAgent(created.id)).description,
+      'Ships changes in the app repository.',
+    );
+  } finally {
+    f.close();
   }
 });

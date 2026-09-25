@@ -1225,31 +1225,10 @@ export class WorkspaceManagementService {
       throw new ManagementError('invalid_state', 'The creation operation did not create this Agent.');
     }
     let agent = await this.requireEditableAgent(actor, input.agentId);
-    const generatedAvatar = agent.slackPresence?.avatar;
-    if (generatedAvatar?.kind === 'generated' && !generatedAvatar.url &&
-        this.stores.publishGeneratedAgentAvatar) {
-      try {
-        const published = await this.stores.publishGeneratedAgentAvatar({
-          workspaceId: actor.origin.workspaceId,
-          agentId: agent.id,
-          revision: generatedAvatar.revision,
-          seed: generatedAvatar.seed ?? agent.id,
-        });
-        if (published) {
-          agent = await this.stores.config.updateAgent(agent.id, {
-            slackPresence: {
-              ...agent.slackPresence!,
-              avatar: {
-                ...generatedAvatar,
-                revision: published.revision,
-                url: published.url,
-              },
-            },
-          }, agent.revision);
-        }
-      } catch {
-        console.warn('[chickpea] generated Agent avatar publication deferred');
-      }
+    // Creation normally publishes the avatar. Retrying here bumps the Agent
+    // revision, so skip it when a same-turn proposal targets that revision.
+    if (!input.pendingProposalId) {
+      agent = await this.publishGeneratedAvatarForSlackOrigin(actor, agent);
     }
     const incomplete: Array<'slack_presence' | 'source_channel'> = [];
     if (creation.warning || agent.slackPresence?.health !== 'healthy' ||
@@ -4257,7 +4236,7 @@ export class WorkspaceManagementService {
           prepared,
         });
         return mutationForAgent(
-          published.agent,
+          await this.publishGeneratedAvatarForSlackOrigin(actor, published.agent),
           prepared.inverse,
           await this.agentEditorUrl(published.agent.id),
           published.warning,
@@ -4384,7 +4363,7 @@ export class WorkspaceManagementService {
           prepared,
         });
         return mutationForAgent(
-          published.agent,
+          await this.publishGeneratedAvatarForSlackOrigin(actor, published.agent),
           prepared.inverse,
           await this.agentEditorUrl(published.agent.id),
           published.warning,
@@ -4434,6 +4413,42 @@ export class WorkspaceManagementService {
       }
     }
     return undefined;
+  }
+
+  // Publish a generated avatar while the Agent is being created so the
+  // revision bump lands before any proposal made later in the same turn.
+  private async publishGeneratedAvatarForSlackOrigin(
+    actor: LiveManagementActor,
+    agent: CustomAgentConfig,
+  ): Promise<CustomAgentConfig> {
+    if (actor.origin.kind !== 'slack') return agent;
+    const generatedAvatar = agent.slackPresence?.avatar;
+    if (generatedAvatar?.kind === 'generated' && !generatedAvatar.url &&
+        this.stores.publishGeneratedAgentAvatar) {
+      try {
+        const published = await this.stores.publishGeneratedAgentAvatar({
+          workspaceId: actor.origin.workspaceId,
+          agentId: agent.id,
+          revision: generatedAvatar.revision,
+          seed: generatedAvatar.seed ?? agent.id,
+        });
+        if (published) {
+          agent = await this.stores.config.updateAgent(agent.id, {
+            slackPresence: {
+              ...agent.slackPresence!,
+              avatar: {
+                ...generatedAvatar,
+                revision: published.revision,
+                url: published.url,
+              },
+            },
+          }, agent.revision);
+        }
+      } catch {
+        console.warn('[chickpea] generated Agent avatar publication deferred');
+      }
+    }
+    return agent;
   }
 
   private async publishCreatedAgent(
