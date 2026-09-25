@@ -10,6 +10,7 @@ import { extname, join, posix } from 'node:path';
 import { NODE_BASELINE, NODE_ENGINE } from './node-version.mjs';
 import { validateReleaseManifest } from './release-manifest.mjs';
 import { lockfileIntegrityReport } from './lockfile-integrity.mjs';
+import { QA_LANES } from './qa-lanes.mjs';
 
 const term = (...parts) => parts.join('');
 const exportPath = (...parts) => posix.join(...parts);
@@ -546,6 +547,44 @@ export function publicSourceManifestFindings(entries) {
   return findings;
 }
 
+/**
+ * The one tracked MCP client config. It may define only the lane browser
+ * servers of qa/live/operator/hosts.md, each launched through the repository
+ * script with the opt-in root variable, so a cloud session gets the lane
+ * browsers and no other host ever runs something else from this file.
+ */
+export const repositoryMcpConfigPath = exportPath('.mcp.json');
+export const repositoryMcpLauncherPath = exportPath('scripts', 'lane-browser.mjs');
+const REPOSITORY_MCP_ROOT_REFERENCE = '${CHICKPEA_LANE_CHROME_ROOT}';
+
+export function repositoryMcpConfigFindings(entries, contents) {
+  if (!entries.some(({ path }) => path === repositoryMcpConfigPath)) return [`missing repository MCP config: ${repositoryMcpConfigPath}`];
+  const bytes = contents.get(repositoryMcpConfigPath);
+  if (!bytes) return [`${repositoryMcpConfigPath}: no content available for scanning`];
+  let config;
+  try { config = JSON.parse(bytes.toString('utf8')); } catch { return [`${repositoryMcpConfigPath}: not valid JSON`]; }
+  const servers = config?.mcpServers;
+  if (typeof config !== 'object' || config === null || Array.isArray(config) || Object.keys(config).some((key) => key !== 'mcpServers')
+    || typeof servers !== 'object' || servers === null || Array.isArray(servers)) {
+    return [`${repositoryMcpConfigPath}: must hold only an mcpServers object`];
+  }
+  const findings = [];
+  const expected = new Map(QA_LANES.map((lane) => [`chrome-${lane}`, lane]));
+  for (const name of expected.keys()) if (!(name in servers)) findings.push(`${repositoryMcpConfigPath}: missing lane browser server ${name}`);
+  for (const [name, server] of Object.entries(servers)) {
+    const lane = expected.get(name);
+    if (!lane) { findings.push(`${repositoryMcpConfigPath}: server ${name} is not a lane browser`); continue; }
+    const shape = typeof server === 'object' && server !== null && !Array.isArray(server) ? server : {};
+    const args = Array.isArray(shape.args) && shape.args.every((value) => typeof value === 'string') ? shape.args : [];
+    const expectedArgs = [repositoryMcpLauncherPath, 'serve', lane, '--root', REPOSITORY_MCP_ROOT_REFERENCE];
+    if (Object.keys(shape).sort().join(',') !== 'args,command,type' || shape.type !== 'stdio' || shape.command !== 'node'
+      || args.join('\0') !== expectedArgs.join('\0')) {
+      findings.push(`${repositoryMcpConfigPath}: server ${name} must be exactly {type: stdio, command: node, args: [${expectedArgs.join(', ')}]}`);
+    }
+  }
+  return findings;
+}
+
 /** The live-verification skill entrypoints; each must reference its workflow. */
 export const skillEntrypointPaths = Object.freeze([
   '.agents/skills/chickpea-live-verification/SKILL.md',
@@ -881,6 +920,7 @@ export function inspectSource({ root, revision = 'HEAD', workingTree = false, ke
     }
     check('leak scan', () => leakScanFindings(state.entries, state.contents));
     check('docs references', () => docsReferenceFindings(state.entries, state.contents));
+    check('repository MCP config', () => repositoryMcpConfigFindings(state.entries, state.contents));
     check('release manifest', () => { validateReleaseManifest(state.treeRoot); });
     check('lockfile integrity', () => lockfileIntegrityReport(join(state.treeRoot, 'package-lock.json')).unverified
       .map((name) => `${name}: package-lock entry has no integrity hash`));
