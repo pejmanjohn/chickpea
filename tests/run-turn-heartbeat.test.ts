@@ -986,7 +986,8 @@ test('runTurn queues an Agent welcome as the pending terminal delivery', async (
         assert.fail('expected deferred terminal delivery intent');
       }
       assert.equal(persisted.terminalDelivery.operation.certainty, 'pending');
-      assert.deepEqual(effects, ['activity:set']);
+      // Native first, handed to the custom status (which carries the session).
+      assert.deepEqual(effects, ['session:processing', 'session:active', 'activity:set']);
       assert.equal(persisted.stream.state, 'finalized');
 
       await completeAgentWelcomeDelivery(outbox, {
@@ -1008,6 +1009,8 @@ test('runTurn queues an Agent welcome as the pending terminal delivery', async (
       assert.equal(settled?.schemaVersion, 3);
       if (settled?.schemaVersion !== 3) assert.fail('expected settled V3 presentation');
       assert.deepEqual(effects, [
+        'session:processing',
+        'session:active',
         'activity:set',
         'session:active',
         'activity:clear',
@@ -1141,15 +1144,14 @@ test('runTurn keeps the persisted V3 owner from first status through final deliv
       });
       assert.deepEqual(
         sessionStatuses.map(({ status, username, icon_url }) => ({ status, username, icon_url })),
-        [
-          // The custom status carries the session; no native processing call.
-          {
-            status: 'active',
-            ...(owner.kind === 'selected_agent'
-              ? { username: persona.name, icon_url: persona.avatarUrl }
-              : { username: undefined, icon_url: undefined }),
-          },
-        ],
+        // Native first in the frozen owner's persona, handed to the custom
+        // status (which carries the session), then settled.
+        ['processing', 'active', 'active'].map((status) => ({
+          status,
+          ...(owner.kind === 'selected_agent'
+            ? { username: persona.name, icon_url: persona.avatarUrl }
+            : { username: undefined, icon_url: undefined }),
+        })),
       );
       if (owner.kind === 'selected_agent') {
         assert.deepEqual(activities, [], 'selected Agents use only Slack native status while working');
@@ -1783,7 +1785,10 @@ test('reaction-only delivery settles the V3 session and clears admitted activity
       agentPrompt: async () => { assert.fail('thanks must not invoke the model'); },
       onDelivered: async () => { effects.push('delivered'); },
     });
-    assert.deepEqual(effects, ['activity:set', 'reaction', 'session:active', 'activity:clear', 'delivered']);
+    assert.deepEqual(effects, [
+      'session:processing', 'session:active', 'activity:set',
+      'reaction', 'session:active', 'activity:clear', 'delivered',
+    ]);
     const stored = h.store.get(runId);
     assert.equal(stored?.schemaVersion, 3);
     if (stored?.schemaVersion !== 3) assert.fail('expected V3 presentation');
@@ -1829,7 +1834,11 @@ test('a rejected custom status falls back to the native processing indicator', a
       executionAuthority: 'ledger',
       usageRecordingEnabled: false,
     });
+    // Native first, handed over; the custom status is rejected, so native
+    // processing shows again (no second start), then settles.
     assert.deepEqual(effects.filter((effect) => effect !== 'activity:clear'), [
+      'session:processing',
+      'session:active',
       'activity:set',
       'session:processing',
       'session:active',
@@ -1878,6 +1887,8 @@ test('acknowledged final settles the frozen Agent Session before deleting activi
       usageRecordingEnabled: false,
     });
     assert.deepEqual(effects, [
+      'session:processing:Frozen Support',
+      'session:active:Frozen Support',
       'activity:set:Frozen Support',
       'final:start',
       'final:ack',

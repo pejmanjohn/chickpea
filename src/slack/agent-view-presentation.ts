@@ -426,10 +426,18 @@ export class SlackAgentViewPresentation {
    * outcome whose receipt is unknown.
    */
   async beginAgentSessionProcessing(): Promise<boolean> {
+    return (await this.startAgentSessionProcessing()) !== 'none';
+  }
+
+  /**
+   * `beginAgentSessionProcessing`, telling a write made now (`started`) from
+   * one an earlier attempt already acknowledged (`already`).
+   */
+  async startAgentSessionProcessing(): Promise<'started' | 'already' | 'none'> {
     let presentation = await this.requirePresentation();
     if (presentation.schemaVersion !== 3 || presentation.agentSession.disposition ||
-        presentation.agentSession.desired !== 'processing') return false;
-    if (presentation.agentSession.acknowledged === 'processing') return true;
+        presentation.agentSession.desired !== 'processing') return 'none';
+    if (presentation.agentSession.acknowledged === 'processing') return 'already';
     let operationId: string;
     if (!presentation.agentSession.operation) {
       operationId = `session_${hash(`${presentation.runId}:processing:1`).slice(0, 24)}`;
@@ -442,9 +450,9 @@ export class SlackAgentViewPresentation {
         kind: 'retry_agent_session', operationId,
       });
     } else {
-      return false;
+      return 'none';
     }
-    if (presentation.schemaVersion !== 3) return false;
+    if (presentation.schemaVersion !== 3) return 'none';
     try {
       await setAgentSessionStatus(this.options.client, {
         channel_id: presentation.root.channelId,
@@ -454,13 +462,60 @@ export class SlackAgentViewPresentation {
         ...ownerPersonaFields(presentation.owner),
       });
       await this.recordAgentSessionReceipt(operationId, 'acknowledged', 'processing');
-      return true;
+      return 'started';
     } catch (error) {
       const certainty = slackEffectOutcome(error);
       await this.recordAgentSessionReceipt(operationId, certainty);
       if (certainty === 'failed' && isPermanentAgentSessionRejection(error)) {
         await this.markAgentSessionUnavailable(operationId);
       }
+      return 'none';
+    }
+  }
+
+  /**
+   * Move the thread's session out of Slack's native `processing` so the custom
+   * assistant status written next renders. Slack acknowledges a custom status
+   * written while the session is in native processing but does not show it
+   * (seen live on Violet, #198). A non-empty custom status then moves the
+   * session back to processing, carried by the custom text.
+   *
+   * Transport only: the durable session stays `processing` (acknowledged),
+   * which is what the thread shows once the custom status lands. A turn that
+   * stops in between converges when its retry writes the status again or
+   * when it settles. Fenced like any activity write: never for a thread whose
+   * newer message another turn now presents.
+   */
+  async releaseNativeProcessing(): Promise<boolean> {
+    return this.setAcknowledgedProcessingTransport('active');
+  }
+
+  /**
+   * Show Slack's native indicator again after `releaseNativeProcessing` when
+   * the custom status could not be shown. Transport only, like the release.
+   */
+  async reassertNativeProcessing(): Promise<boolean> {
+    return this.setAcknowledgedProcessingTransport('processing');
+  }
+
+  private async setAcknowledgedProcessingTransport(
+    status: 'active' | 'processing',
+  ): Promise<boolean> {
+    const presentation = await this.requirePresentation();
+    if (presentation.schemaVersion !== 3 || presentation.agentSession.disposition ||
+        presentation.agentSession.desired !== 'processing' ||
+        presentation.agentSession.acknowledged !== 'processing') return false;
+    if (!(await this.ownsLatestThreadGeneration(presentation))) return false;
+    try {
+      await setAgentSessionStatus(this.options.client, {
+        channel_id: presentation.root.channelId,
+        thread_ts: presentation.root.threadTs,
+        status,
+        initiator_user_id: presentation.root.requesterUserId,
+        ...ownerPersonaFields(presentation.owner),
+      });
+      return true;
+    } catch {
       return false;
     }
   }
