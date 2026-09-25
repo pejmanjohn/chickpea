@@ -8,6 +8,7 @@ import { cloudflareWorkerVersionId } from '../../config/cloudflare-version.ts';
 import { GATEWAY_BINDING_SETTING } from './client.ts';
 import { GATEWAY_DURABLE_ADMISSION_CAPABILITY } from './protocol.ts';
 import { createGatewayDeploymentClient } from './runtime.ts';
+import { emitGatewayDelivery } from '../../observability/runtime-latency.ts';
 import {
   GatewaySessionRunner,
   GatewaySessionRunnerSupervisor,
@@ -89,8 +90,16 @@ export class SlackGatewaySession extends DurableObject implements SlackGatewaySe
         onDiagnostic: (diagnostic) => console.warn({ component: 'slack_gateway',
           event: 'session_connection_failure', ...diagnostic }),
         onEvent: async (delivery) => {
-          const result = await tagStateStub(platformEnv).admitGatewayDelivery(delivery);
-          return result.ok ? result.value : 'rejected';
+          const receivedAt = Date.now();
+          const session = this.supervisor?.snapshot();
+          let outcome: 'accepted' | 'duplicate' | 'rejected' | 'failed' = 'failed';
+          try {
+            const result = await tagStateStub(platformEnv).admitGatewayDelivery(delivery);
+            outcome = result.ok ? result.value : 'rejected';
+            return outcome;
+          } finally {
+            emitGatewayDelivery({ transport: 'socket', receivedAt, delivery, session, outcome });
+          }
         },
       }));
     }

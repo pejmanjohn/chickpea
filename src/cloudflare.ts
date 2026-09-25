@@ -1,7 +1,7 @@
 import { GatewayInboxConflictError } from './slack/gateway/inbox.ts';
 import { GATEWAY_HTTP_SETTING, parseHttpDeliveryState, verifyHttpDelivery, httpDeliveryReceipt, HttpDeliveryError } from './slack/gateway/http-delivery.ts';
 import { GATEWAY_BINDING_SETTING } from './slack/gateway/client.ts';
-import type { GatewayWorkspaceBinding } from './slack/gateway/protocol.ts';
+import type { GatewayInboundDelivery, GatewayWorkspaceBinding } from './slack/gateway/protocol.ts';
 import { scheduleActionRpcResult } from './management/slack-schedule-rpc.ts';
 import {
   DurableObject,
@@ -14,6 +14,7 @@ import { createCloudflareTracing } from '@flue/runtime/cloudflare';
 import { emitManagementToolFailure } from './management/telemetry.ts';
 import { emitRuntimeCorrelation } from './work/trace-correlation.ts';
 import {
+  emitGatewayDelivery,
   emitRelayAlarm,
   startRelayAlarmMetrics,
   type RelayAlarmMetrics,
@@ -1687,6 +1688,9 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
   }
 
   async receiveGatewayHttp(input: {body: string; signature: string; url: string}): Promise<{status: number; body: unknown}> {
+    const receivedAt = Date.now();
+    let observed: {delivery: GatewayInboundDelivery; issuedAt: number} | undefined;
+    let outcome: 'accepted' | 'duplicate' | 'failed' = 'failed';
     try {
       const snapshot = this.call(stores => ({
         binding: stores.settings.getSetting(GATEWAY_BINDING_SETTING),
@@ -1696,6 +1700,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       const binding = JSON.parse(snapshot.value.binding) as GatewayWorkspaceBinding;
       const state = parseHttpDeliveryState(snapshot.value.delivery)!;
       const value = await verifyHttpDelivery({...input, binding, state, keyring:loadCredentialKeyring(this.env as PlatformEnv)});
+      if (value.kind === 'gateway.delivery') observed = {delivery:value.delivery!, issuedAt:value.issuedAt};
       // Crypto yields. Recheck the exact settings and installation in the owning
       // state turn, with no await between authorization and insertion.
       let admissionError: unknown;
@@ -1724,6 +1729,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
         if (admissionError instanceof GatewayInboxConflictError) throw new HttpDeliveryError(409,'delivery_identity_conflict');
         throw new HttpDeliveryError(503,'delivery_unavailable');
       }
+      if (admitted.value !== 'verified') outcome = admitted.value;
       // A duplicate also arms recovery: a previous insert may have survived an
       // alarm-write failure or loss of the HTTP response.
       if (admitted.value !== 'verified') await this.armAlarmNoLaterThan(Date.now() + RELAY_BATCH_WINDOW_MS);
@@ -1731,6 +1737,9 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     } catch (error) {
       return {status:error instanceof HttpDeliveryError ? error.status : 503,
         body:{error:error instanceof HttpDeliveryError ? error.code : 'delivery_unavailable'}};
+    } finally {
+      // Only authenticated deliveries are measured; a forged request logs nothing.
+      if (observed) emitGatewayDelivery({transport:'http', receivedAt, ...observed, outcome});
     }
   }
 

@@ -1,5 +1,8 @@
 import { createHash } from 'node:crypto';
 
+import type { GatewayInboundDelivery } from '../slack/gateway/protocol.ts';
+import type { GatewaySessionRunnerHealthSnapshot } from '../slack/gateway/session-runner.ts';
+
 /**
  * Content-free latency logs for the turn relay (see
  * docs/runbooks/runtime-observability.md, "Turn latency and relay alarm logs").
@@ -11,7 +14,7 @@ import { createHash } from 'node:crypto';
  * channel IDs, settings keys or values, or error text. Emission never throws.
  */
 
-export type RuntimeLatencyEvent = 'relay_alarm' | 'turn_latency' | 'state_rpc';
+export type RuntimeLatencyEvent = 'relay_alarm' | 'turn_latency' | 'state_rpc' | 'gateway_delivery';
 
 type RuntimeLatencyValue = number | boolean | string;
 
@@ -31,6 +34,10 @@ const STRING_FIELDS: Readonly<Record<string, RegExp>> = {
   final: TOKEN,
   method: TOKEN,
   op: TOKEN,
+  transport: TOKEN,
+  deliveryKind: TOKEN,
+  sessionPhase: TOKEN,
+  sessionHealth: TOKEN,
   runRef: OPAQUE_REF,
   turnRef: OPAQUE_REF,
 };
@@ -274,4 +281,67 @@ export function recordStateRpc(
 export function resetStateRpcCountersForTest(): void {
   stateRpcCounters.calls = 0;
   stateRpcCounters.slow = 0;
+}
+
+// ---------------------------------------------------------------------------
+// gateway_delivery: one record per gateway delivery reaching Worker admission.
+
+export type GatewayDeliveryTransport = 'http' | 'socket';
+
+export interface GatewayDeliveryObservation {
+  transport: GatewayDeliveryTransport;
+  /** When the Worker received the delivery, before admission. */
+  receivedAt: number;
+  delivery: GatewayInboundDelivery;
+  /** HTTP only: the gateway's signed `issuedAt` for this delivery attempt. */
+  issuedAt?: number | undefined;
+  /** Socket only: the delivering runner's health when the frame arrived. */
+  session?: GatewaySessionRunnerHealthSnapshot | undefined;
+  outcome: 'accepted' | 'duplicate' | 'rejected' | 'failed';
+}
+
+const DELIVERY_KIND: Readonly<Record<GatewayInboundDelivery['kind'], string>> = {
+  'event.deliver': 'event',
+  'interaction.agent_selected': 'agent_selected',
+  'interaction.channel_agent_add': 'channel_agent_add',
+};
+
+const SLACK_TS = /^\d{1,12}(?:\.\d{1,6})?$/;
+
+/**
+ * When Slack says the event happened, in epoch ms. Prefers the event's own
+ * `event_ts` (sub-second) and falls back to the envelope's whole-second
+ * `event_time`. Only the difference is logged, never the timestamp itself.
+ */
+function slackEventAt(delivery: GatewayInboundDelivery): number | undefined {
+  if (delivery.kind !== 'event.deliver') return undefined;
+  const eventTs = (delivery.envelope.event as { event_ts?: unknown } | undefined)?.event_ts;
+  if (typeof eventTs === 'string' && SLACK_TS.test(eventTs)) return Number(eventTs) * 1000;
+  const eventTime = delivery.envelope.eventTime;
+  return Number.isSafeInteger(eventTime) && eventTime > 0 ? eventTime * 1000 : undefined;
+}
+
+export function emitGatewayDelivery(
+  observation: GatewayDeliveryObservation,
+  sink?: RuntimeLatencySink,
+): void {
+  try {
+    const { receivedAt, issuedAt, session } = observation;
+    const slackAt = slackEventAt(observation.delivery);
+    const connectedAt = session?.checkpoint?.connectedAt;
+    emitRuntimeLatency('gateway_delivery', {
+      transport: observation.transport,
+      deliveryKind: DELIVERY_KIND[observation.delivery.kind],
+      outcome: observation.outcome,
+      lagMs: issuedAt === undefined ? undefined : receivedAt - issuedAt,
+      slackLagMs: slackAt === undefined ? undefined : receivedAt - slackAt,
+      sessionPhase: session?.phase,
+      sessionHealth: session?.checkpoint?.health,
+      sessionAttempt: session?.checkpoint?.attempt,
+      sessionGeneration: session?.generation,
+      sessionAgeMs: connectedAt === undefined ? undefined : receivedAt - connectedAt,
+    }, sink);
+  } catch {
+    // Observability is best effort and never changes admission.
+  }
 }

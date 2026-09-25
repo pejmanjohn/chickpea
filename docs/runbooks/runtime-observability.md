@@ -300,7 +300,7 @@ from `src/slack/claim-store.ts` rather than resending the request.
 
 ## Turn latency and relay alarm logs
 
-Three content-free events measure turn scheduling. Each is one structured
+Four content-free events measure inbound delivery and turn scheduling. Each is one structured
 console object with `component: "runtime"` and an `event` name, so Workers Logs
 indexes its top-level fields. Values are non-negative integer milliseconds,
 booleans, fixed tokens, or opaque references; no message text, Slack user or
@@ -311,6 +311,7 @@ channel IDs, settings keys or values, or error text. Emission never throws.
 | `relay_alarm` | Once per `TagStateStore.alarm()` invocation (Cloudflare) | `outcome` (`idle`, `drained`, `threw`), `durationMs`, `jobsListed`, `groups`, `jobsRun`, `jobsSettled`, `jobsRetained`, `jobsCarried`, `longestJobMs`, `turnsMs`, `needsRetry`, `rearmed`, `yielded` |
 | `turn_latency` | Once per relay attempt of one turn (both lanes) | `turnRef`, `runRef`, `lane` (`cloudflare`, `node`), `executor` (`alarm`, `node`), `attempt`, `outcome` (`returned`, `threw`), `firstWrite`, `final` (`delivered`, `deferred`, `none`), `admissionToStartMs`, `admissionToFirstWriteMs`, `admissionToFinalMs`, `receiptToAdmissionMs`, `receiptToFirstWriteMs`, `attemptMs` |
 | `state_rpc` | Sampled calls from a `Cf*Store` proxy into `TagStateStore` | `method` (RPC name), `op` (request kind for `*Execute` RPCs), `ms`, `slow`, `ok`, `isolateCalls`, `isolateSlowCalls` |
+| `gateway_delivery` | Once per authenticated gateway delivery at Worker admission (Cloudflare) | `transport` (`http`, `socket`), `deliveryKind` (`event`, `agent_selected`, `channel_agent_add`), `outcome` (`accepted`, `duplicate`, `rejected`, `failed`), `lagMs`, `slackLagMs`, `sessionPhase`, `sessionHealth`, `sessionAttempt`, `sessionGeneration`, `sessionAgeMs` |
 
 - `relay_alarm.durationMs` is the whole invocation; `turnsMs` is the turn
   drain and `longestJobMs` the slowest single turn attempt in it. `jobsListed`
@@ -340,6 +341,21 @@ channel IDs, settings keys or values, or error text. Emission never throws.
   `runRef` equals the `Slack presentation finalized` record's `runRef`, and
   `turnRef` is a hash of the turn job ID. Thread follow-ups admitted without a
   run ID carry neither `runRef` nor `attempt`; group them by `turnRef`.
+- `gateway_delivery` is logged when a delivery reaches admission: by
+  `TagStateStore.receiveGatewayHttp` for HTTP push (after signature
+  verification; challenges and rejected signatures log nothing) and by the
+  `SlackGatewaySession` socket handler before it calls `admitGatewayDelivery`.
+  `lagMs` (HTTP only) is receipt minus the gateway's signed `issuedAt` for that
+  attempt; socket frames carry no gateway timestamp. `slackLagMs` is receipt
+  minus the Slack event's `event_ts` (else the whole-second `event_time`), so a
+  large `slackLagMs` with a small `lagMs` means the gateway itself received the
+  event late (for example a Slack retry), while a large `lagMs` means the
+  gateway held it. The `session*` fields (socket only) are the delivering
+  runner's phase and checkpoint when the frame arrived: `sessionAgeMs` is time
+  since that session became ready, and `sessionAttempt` the reconnect count.
+  A late event on a session younger than its lag was not flushed when the
+  session connected. Clock skew between Slack, the gateway, and Cloudflare is
+  not corrected; a negative lag is logged as 0.
 - `state_rpc` is logged by the calling isolate (a Flue agent Durable Object,
   CodingWorker, or the Worker), not by `TagStateStore`. Every call at or above
   250 ms, and every failed call, is logged with `slow`/`ok`; otherwise one call
@@ -353,7 +369,7 @@ To query a deployed Worker, discover the `event` key with `/telemetry/keys`
 alongside the verified service filter. For a percentile, use a calculations
 query with, for example, `{ operator: 'p95', key: '<verified admissionToFirstWriteMs key>', keyType: 'number' }`
 grouped by `lane`. During a bounded live capture, `wrangler tail --search turn_latency`
-(or `relay_alarm`, `state_rpc`) narrows the stream; `entrypoint` shows which
+(or `relay_alarm`, `state_rpc`, `gateway_delivery`) narrows the stream; `entrypoint` shows which
 Durable Object logged a `state_rpc`. `npm run diagnose` does not project these
 events; join them to a Run through `runRef` and the time window. On a Node
 install the same objects print to the process log, for example

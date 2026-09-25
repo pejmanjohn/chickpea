@@ -8,6 +8,7 @@ import ts from 'typescript';
 
 import type { ResolvedAssignment } from '../src/config/types.ts';
 import {
+  emitGatewayDelivery,
   emitRelayAlarm,
   emitRuntimeLatency,
   opaqueRunRef,
@@ -29,7 +30,16 @@ import {
 } from '../src/slack/run-turn.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import { GatewayInboxStoreLogic } from '../src/slack/gateway/inbox.ts';
-import type { GatewayEventDelivery } from '../src/slack/gateway/protocol.ts';
+import {
+  HttpDeliveryError,
+  httpDeliveryReceipt,
+  parseHttpDeliveryState,
+} from '../src/slack/gateway/http-delivery.ts';
+import type { GatewayEventDelivery, GatewayInboundDelivery } from '../src/slack/gateway/protocol.ts';
+import {
+  GatewaySessionRunnerSupervisor,
+  type GatewaySessionRunnerHealthSnapshot,
+} from '../src/slack/gateway/session-runner.ts';
 import { TurnJobStoreLogic } from '../src/slack/turn-jobs.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
 import type { WorkStore } from '../src/work/types.ts';
@@ -562,4 +572,224 @@ test('a job admitted from a gateway inbox row carries its receipt time into turn
   } finally {
     db.close();
   }
+});
+
+// ---------------------------------------------------------------------------
+// gateway_delivery
+
+const GATEWAY_NOW = 1_785_509_061_500;
+
+function gatewayEvent(eventTs: unknown = '1785509000.100100'): GatewayEventDelivery {
+  return {
+    protocolVersion: 1,
+    kind: 'event.deliver',
+    deliveryId: 'delivery:Ev_LATENCY',
+    bindingId: 'binding_latency',
+    workspaceId: 'T_LATENCY',
+    envelope: {
+      workspaceId: 'T_LATENCY',
+      eventId: 'Ev_LATENCY',
+      eventTime: 1_785_509_000,
+      event: {
+        type: 'app_mention', channel: 'C_LATENCY', user: 'U_LATENCY',
+        ts: '1785509000.000100', event_ts: eventTs as string, text: 'Complete the verification.',
+      },
+    },
+  };
+}
+
+const healthySession: GatewaySessionRunnerHealthSnapshot = {
+  generation: 3,
+  phase: 'healthy',
+  healthy: true,
+  shouldReplace: false,
+  socketState: 1,
+  checkpoint: {
+    health: 'healthy', attempt: 0, connectedAt: GATEWAY_NOW - 45_000,
+    lastHeartbeatAt: GATEWAY_NOW - 5_000, rotateAt: GATEWAY_NOW + 600_000,
+  },
+};
+
+test('gateway_delivery reports transport lag, Slack lag, and socket health without content', () => {
+  const { records, sink } = captureSink();
+  emitGatewayDelivery({
+    transport: 'socket', receivedAt: GATEWAY_NOW, delivery: gatewayEvent(),
+    session: healthySession, outcome: 'accepted',
+  }, sink);
+  emitGatewayDelivery({
+    transport: 'http', receivedAt: GATEWAY_NOW, delivery: gatewayEvent(),
+    issuedAt: GATEWAY_NOW - 180, outcome: 'duplicate',
+  }, sink);
+  assert.deepEqual(records, [{
+    component: 'runtime',
+    event: 'gateway_delivery',
+    transport: 'socket',
+    deliveryKind: 'event',
+    outcome: 'accepted',
+    slackLagMs: 61_400,
+    sessionPhase: 'healthy',
+    sessionHealth: 'healthy',
+    sessionAttempt: 0,
+    sessionGeneration: 3,
+    sessionAgeMs: 45_000,
+  }, {
+    component: 'runtime',
+    event: 'gateway_delivery',
+    transport: 'http',
+    deliveryKind: 'event',
+    outcome: 'duplicate',
+    lagMs: 180,
+    slackLagMs: 61_400,
+  }]);
+  records.forEach(assertContentFree);
+});
+
+test('gateway_delivery falls back to event_time and skips Slack lag for interactions', () => {
+  const { records, sink } = captureSink();
+  emitGatewayDelivery({
+    transport: 'socket', receivedAt: GATEWAY_NOW, delivery: gatewayEvent('not-a-ts U_LATENCY'),
+    outcome: 'rejected',
+  }, sink);
+  const interaction: GatewayInboundDelivery = {
+    protocolVersion: 1, kind: 'interaction.agent_selected', deliveryId: 'delivery:I_LATENCY',
+    bindingId: 'binding_latency', workspaceId: 'T_LATENCY', userId: 'U_LATENCY', agentId: 'agent_latency',
+  };
+  emitGatewayDelivery({ transport: 'socket', receivedAt: GATEWAY_NOW, delivery: interaction, outcome: 'accepted' }, sink);
+  assert.equal(records[0]?.slackLagMs, 61_500, 'whole-second envelope event_time');
+  assert.equal(records[0]?.outcome, 'rejected');
+  assert.equal(records[1]?.deliveryKind, 'agent_selected');
+  assert.equal('slackLagMs' in records[1]!, false);
+  assert.equal('sessionPhase' in records[1]!, false);
+  records.forEach(assertContentFree);
+  assert.doesNotThrow(() => emitGatewayDelivery({
+    transport: 'socket', receivedAt: GATEWAY_NOW, delivery: {} as GatewayInboundDelivery, outcome: 'failed',
+  }, { info() { throw new Error('log pipe closed'); } }));
+});
+
+function extractClass(path: string, name: string) {
+  const source = ts.createSourceFile(path, readFileSync(new URL(path, import.meta.url), 'utf8'),
+    ts.ScriptTarget.Latest, true);
+  const declaration = source.statements.find((node) =>
+    ts.isClassDeclaration(node) && node.name?.text === name);
+  assert.ok(declaration && ts.isClassDeclaration(declaration));
+  return { source, declaration };
+}
+
+test('the Cloudflare gateway socket logs gateway_delivery for each admitted frame', async () => {
+  const { source, declaration } = extractClass('../src/slack/gateway/cloudflare-session.ts', 'SlackGatewaySession');
+  const { records, sink } = captureSink();
+  let onEvent: ((delivery: GatewayInboundDelivery) => Promise<string>) | undefined;
+  let admit: () => Promise<unknown> = async () => ({ ok: true, value: 'accepted' });
+  const Probe = vm.runInNewContext(
+    ts.transpileModule(declaration.getText(source).replace(/^export /u, '') + '\nSlackGatewaySession',
+      { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText,
+    {
+      resolveSlackPublicUrl: async () => undefined,
+      parseHttpDeliveryState: () => undefined,
+      GATEWAY_HTTP_SETTING: 'slack.gateway.httpDelivery.v1',
+      Date: { now: () => GATEWAY_NOW },
+      DurableObject: class { constructor(_context: unknown, public env: unknown) {} },
+      getSettingsStore: () => ({ getSetting: async () => 'configured' }),
+      GATEWAY_BINDING_SETTING: 'binding',
+      GATEWAY_DURABLE_ADMISSION_CAPABILITY: 'durable',
+      cloudflareWorkerVersionId: () => 'test-version',
+      tagStateStub: () => ({ admitGatewayDelivery: () => admit() }),
+      emitGatewayDelivery: (observation: Parameters<typeof emitGatewayDelivery>[0]) =>
+        emitGatewayDelivery(observation, sink),
+      GatewaySessionRunnerSupervisor,
+      GatewaySessionRunner: class {
+        constructor(options: { onEvent: typeof onEvent }) { onEvent = options.onEvent; }
+        async start() { return true; }
+        stop() {}
+        healthSnapshot() { return healthySession; }
+      },
+    },
+  ) as new (context: object, env: object) => { wake(): Promise<void> };
+  let alarm: number | null = null;
+  await new Probe({ waitUntil() {}, storage: {
+    getAlarm: async () => alarm,
+    setAlarm: async (at: number) => { alarm = at; },
+    deleteAlarm: async () => { alarm = null; },
+  } }, {}).wake();
+  assert.ok(onEvent);
+  assert.equal(await onEvent(gatewayEvent()), 'accepted');
+  admit = async () => { throw new Error('singleton reset U_LATENCY'); };
+  await assert.rejects(onEvent(gatewayEvent()), /singleton reset/);
+  assert.deepEqual(records.map((record) =>
+    [record.transport, record.outcome, record.slackLagMs, record.sessionAgeMs]), [
+    ['socket', 'accepted', 61_400, 45_000],
+    ['socket', 'failed', 61_400, 45_000],
+  ]);
+  records.forEach(assertContentFree);
+});
+
+test('HTTP gateway admission logs gateway_delivery with the signed issuedAt lag', async () => {
+  const { source, declaration } = extractClass('../src/cloudflare.ts', 'TagStateStore');
+  const method = declaration.members.find((member) =>
+    ts.isMethodDeclaration(member) && member.name.getText(source) === 'receiveGatewayHttp');
+  assert.ok(method);
+  const { records, sink } = captureSink();
+  const binding = {
+    bindingId: 'binding_latency', deploymentId: 'dep', workspaceId: 'T_LATENCY',
+    appId: 'A', botUserId: 'B', installedAt: 1,
+  };
+  const deliveryState = JSON.stringify({
+    version: 1, bindingId: 'binding_latency', deploymentId: 'dep', installedAt: 1, mode: 'http', revision: 2,
+  });
+  let kind: 'gateway.delivery' | 'gateway.challenge' = 'gateway.delivery';
+  let verifyFails = false;
+  const Probe = vm.runInNewContext(
+    ts.transpileModule(`class Probe { ${method.getText(source)} }\nProbe`,
+      { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText,
+    {
+      JSON,
+      Date: { now: () => GATEWAY_NOW },
+      GATEWAY_BINDING_SETTING: 'binding',
+      GATEWAY_HTTP_SETTING: 'slack.gateway.httpDelivery.v1',
+      RELAY_BATCH_WINDOW_MS: 250,
+      HttpDeliveryError,
+      GatewayInboxConflictError: class extends Error {},
+      parseHttpDeliveryState,
+      httpDeliveryReceipt,
+      loadCredentialKeyring: () => ({}),
+      verifyHttpDelivery: async () => {
+        if (verifyFails) throw new HttpDeliveryError(401, 'delivery_unauthorized');
+        return {
+          protocolVersion: 1, kind, bindingId: 'binding_latency', workspaceId: 'T_LATENCY', appId: 'A',
+          deploymentId: 'dep', routeRevision: 2, keyId: 'k', issuedAt: GATEWAY_NOW - 240,
+          ...(kind === 'gateway.delivery' ? { delivery: gatewayEvent() } : { challengeId: 'c', proof: 'p' }),
+        };
+      },
+      emitGatewayDelivery: (observation: Parameters<typeof emitGatewayDelivery>[0]) =>
+        emitGatewayDelivery(observation, sink),
+    },
+  ) as new () => { receiveGatewayHttp(input: object): Promise<{ status: number }> };
+  const probe = Object.assign(new Probe(), {
+    env: {},
+    armAlarmNoLaterThan: async () => {},
+    call(fn: (stores: object) => unknown) {
+      try {
+        return { ok: true, value: fn({
+          settings: { getSetting: (key: string) => key === 'binding' ? JSON.stringify(binding) : deliveryState },
+          config: { getWorkspaceInstallation: () => ({ transportMode: 'gateway', health: 'healthy',
+            gatewayBindingId: 'binding_latency', appId: 'A', botUserId: 'B' }) },
+          identity: { getAuthControl: () => undefined },
+          gatewayInbox: { admit: () => 'accepted' },
+        }) };
+      } catch {
+        return { ok: false };
+      }
+    },
+  });
+  const input = { body: '{}', signature: 's', url: 'https://example.workers.dev/slack/gateway/delivery' };
+  assert.equal((await probe.receiveGatewayHttp(input)).status, 200);
+  kind = 'gateway.challenge';
+  assert.equal((await probe.receiveGatewayHttp(input)).status, 200);
+  verifyFails = true;
+  assert.equal((await probe.receiveGatewayHttp(input)).status, 401);
+  assert.deepEqual(records, [{
+    component: 'runtime', event: 'gateway_delivery', transport: 'http', deliveryKind: 'event',
+    outcome: 'accepted', lagMs: 240, slackLagMs: 61_400,
+  }], 'challenges and unauthenticated requests log nothing');
+  records.forEach(assertContentFree);
 });
