@@ -28,6 +28,7 @@ import {
   contentFreeSandboxExec,
   serializeSandboxActivation,
 } from '../sandbox/lifecycle.ts';
+import { reconnectingSandboxStub } from '../sandbox/reconnect.ts';
 import { WORKSPACE_DIR } from '../sandbox/workspace-lifecycle.ts';
 import { useChickpeaResponseMetadata } from '../usage/response-metadata.ts';
 
@@ -81,10 +82,15 @@ function codingWorkerSandbox(binding: CodingWorkerBindingV1): SandboxFactory {
       await prepareCodingModel(binding, env);
       const namespace = env.SANDBOX ?? env.Sandbox;
       if (!namespace) throw new Error('The coding workspace binding is unavailable.');
-      const stub = getSandbox(
-        namespace as Parameters<typeof getSandbox>[0],
-        binding.workspaceId,
-        CLOUDFLARE_SANDBOX_OPTIONS,
+      // A task can run for most of an hour, and Cloudflare may replace the
+      // Sandbox Durable Object instance meanwhile (the container survives).
+      // Mint the stub lazily and again after a disconnect, never once per task.
+      const stub = reconnectingSandboxStub(() =>
+        getSandbox(
+          namespace as Parameters<typeof getSandbox>[0],
+          binding.workspaceId,
+          CLOUDFLARE_SANDBOX_OPTIONS,
+        ),
       );
       const guarded = contentFreeSandboxExec(serializeSandboxActivation(stub, WORKSPACE_DIR));
       return cloudflareSandbox(

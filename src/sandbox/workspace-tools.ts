@@ -8,7 +8,12 @@ import {
   readSandboxArtifact,
   workspaceArtifactPath,
 } from './artifact-tool.ts';
-import { SandboxSessionCapError, SandboxUnavailableError } from './errors.ts';
+import {
+  SANDBOX_CONNECTION_DROPPED_MESSAGE,
+  SandboxConnectionDroppedError,
+  SandboxSessionCapError,
+  SandboxUnavailableError,
+} from './errors.ts';
 import { WORKSPACE_DIR } from './workspace-lifecycle.ts';
 import {
   DEFAULT_WORKSPACE_NAME,
@@ -64,6 +69,7 @@ const EXEC_TOOL_TIMEOUT_MS = MAX_WORKSPACE_EXEC_TIMEOUT_MS + 30_000;
 
 export type WorkspaceFailureReason =
   | 'workspace_unavailable'
+  | 'connection_dropped'
   | 'session_cap'
   | 'timeout'
   | 'workspace_limit'
@@ -443,6 +449,11 @@ async function guard<T>(
 
 function workspaceFailure(error: unknown, signal?: AbortSignal): WorkspaceFailure | undefined {
   if (error instanceof SandboxSessionCapError) return failure('session_cap', WORKSPACE_SESSION_CAP_MESSAGE);
+  // The Durable Object connection dropped under a call that is not replayed:
+  // the workspace is intact and the next call reconnects.
+  if (error instanceof SandboxConnectionDroppedError) {
+    return failure('connection_dropped', SANDBOX_CONNECTION_DROPPED_MESSAGE);
+  }
   if (error instanceof SandboxUnavailableError || error instanceof SandboxDiedError) {
     return failure('workspace_unavailable', WORKSPACE_UNAVAILABLE_MESSAGE);
   }

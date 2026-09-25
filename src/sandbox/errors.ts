@@ -20,6 +20,33 @@ export class SandboxUnavailableError extends FlueError {
   }
 }
 
+/**
+ * What the model sees when the connection to the workspace's Sandbox Durable
+ * Object dropped under an operation that is not safe to replay (a command, a
+ * delete, a restore). Cloudflare can replace the Durable Object instance while
+ * the container keeps running, so the workspace survives but the call's
+ * outcome is unknown. The next call reconnects on a fresh stub.
+ */
+export const SANDBOX_CONNECTION_DROPPED_MESSAGE =
+  'The connection to the coding workspace dropped before this operation finished. ' +
+  'The workspace and its files are intact, but the outcome of this operation is unknown: ' +
+  'it may or may not have completed. Check the current state first (for example git status, ' +
+  'git log, the files it should have changed, or whether a long-running command left its output) ' +
+  'and re-run it only if it did not complete. The next workspace call reconnects automatically.';
+
+export class SandboxConnectionDroppedError extends FlueError {
+  constructor(cause?: unknown) {
+    super({
+      type: 'sandbox_connection_dropped',
+      message: SANDBOX_CONNECTION_DROPPED_MESSAGE,
+      details: 'The workspace connection was re-established; the interrupted operation was not replayed.',
+      dev: '',
+      cause,
+    });
+    this.name = 'SandboxConnectionDroppedError';
+  }
+}
+
 /** Public-safe refusal when the operator-configured monthly cap is exhausted. */
 export class SandboxSessionCapError extends FlueError {
   constructor() {

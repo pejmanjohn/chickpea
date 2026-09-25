@@ -10,6 +10,7 @@ import {
   serializeSandboxActivation,
   type DestroyableSandbox,
 } from './lifecycle.ts';
+import { reconnectingSandboxStub } from './reconnect.ts';
 import { opaqueId } from '../work/admission.ts';
 import { sandboxThreadKey } from './thread-key.ts';
 import { requireSandboxTurnId, type SandboxTurnContext } from './turn-context.ts';
@@ -172,8 +173,7 @@ export class WorkspaceSession<TStub extends WorkspaceSandboxStub = WorkspaceSand
 
   /** DO records only: running state and checkpoint presence. Starts nothing. */
   async describe(): Promise<WorkspaceDescription> {
-    const stub = await this.options.mintStub();
-    return stub.describeWorkspace(this.fingerprint);
+    return this.reconnecting().describeWorkspace(this.fingerprint);
   }
 
   /**
@@ -181,10 +181,19 @@ export class WorkspaceSession<TStub extends WorkspaceSandboxStub = WorkspaceSand
    * request starts fresh.
    */
   async discard(): Promise<void> {
-    const stub = await this.options.mintStub();
-    await stub.discardWorkspace();
+    await this.reconnecting().discardWorkspace();
     this.opened = undefined;
     this.flueSandbox = undefined;
+  }
+
+  /**
+   * A stub that re-mints itself after a Durable Object disconnect. Cloudflare
+   * can replace the Sandbox DO instance while the container keeps running,
+   * and a request's session can outlive it (a coding task waits for most of
+   * an hour), so no holder keeps one stub for the whole request.
+   */
+  private reconnecting(): TStub {
+    return reconnectingSandboxStub(this.options.mintStub);
   }
 
   private prepare(): Promise<{ stub: TStub; state: WorkspaceOpenState }> {
@@ -205,7 +214,7 @@ export class WorkspaceSession<TStub extends WorkspaceSandboxStub = WorkspaceSand
   private async acquire(): Promise<{ stub: TStub; state: WorkspaceOpenState }> {
     const options = this.options;
     let turn: { state: WorkspaceTurnState; reservationId: string; restorable: boolean } | undefined;
-    const stub = await acquireSandbox(options.mintStub, async (candidate) => {
+    const stub = await acquireSandbox(async () => this.reconnecting(), async (candidate) => {
       // Preparing the turn revokes whatever egress the previous turn left
       // before this turn's grants are installed.
       if (options.turnId !== undefined) await candidate.prepareTurn(options.turnId);

@@ -143,6 +143,7 @@ import {
   type SandboxPolicyStorage,
 } from './sandbox/cloudflare-policy.ts';
 import { cloudflareSandboxOptionVariants } from './sandbox/lifecycle.ts';
+import { reconnectingSandboxStub } from './sandbox/reconnect.ts';
 import {
   checkpointBucket,
   isCheckpointSweepMinute,
@@ -1979,11 +1980,11 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
           const sandboxKey = sandboxThreadKey(slackAgentThreadKey(job.turn, job.assignment));
           for (const options of cloudflareSandboxOptionVariants(sandboxKey)) {
             try {
-              const sandbox = getSandbox(
+              const sandbox = reconnectingSandboxStub(() => getSandbox(
                 binding as Parameters<typeof getSandbox>[0],
                 sandboxKey,
                 options,
-              ) as ReturnType<typeof getSandbox> & {
+              )) as ReturnType<typeof getSandbox> & {
                 getTurnId(): Promise<string | undefined>;
                 getTurnProgress(): Promise<TurnProgress>;
               };
