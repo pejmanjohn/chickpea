@@ -544,16 +544,7 @@ export type SlackPresentationMutation =
   | { kind: 'stream_coordinate_lost' }
   /** An open stream is closed before Slack can seal it; the final posts fresh. */
   | { kind: 'retire_aged_stream'; messageTs: string }
-  | {
-      kind: 'adopt_plan';
-      taskLabels: readonly string[];
-      /**
-       * V3 only: replace a frozen plan whose every task is still pending. V3
-       * never shows an all-pending plan, so before the first Slack effect the
-       * swap is invisible.
-       */
-      replacePending?: true;
-    }
+  | { kind: 'adopt_plan'; taskLabels: readonly string[] }
   | { kind: 'set_task_status'; status: 'in_progress' | 'complete' | 'error' }
   | {
       kind: 'transition_task';
@@ -1783,9 +1774,9 @@ function applyMutation(
       return abandonStreamForFreshFinal(next);
     case 'retire_aged_stream':
       // Slack seals a native stream a few minutes after it starts. A long
-      // delegated turn closes its card first, while the coordinate still
-      // answers, and its terminal posts once as a fresh message. Later
-      // milestones stay durable but are no longer projected onto the card.
+      // turn closes its stream first, while the coordinate still answers,
+      // and its terminal posts once as a fresh message. Nothing is projected
+      // onto the closed stream afterwards.
       requireState(current, 'streaming');
       if (current.stream.pendingAppend) {
         throw stateError('invalid_transition', 'A pending append must be reconciled before retirement.');
@@ -1817,8 +1808,7 @@ function applyMutation(
       // but only before any Slack effect, only when native tasks are on, and
       // only when no plan is already frozen: ambient/obvious-work turns carry
       // their plan from admission and must never be re-attached or reordered.
-      if (current.plan && !(mutation.replacePending && current.schemaVersion === 3 &&
-          current.plan.tasks.every((task) => task.status === 'pending'))) {
+      if (current.plan) {
         throw stateError('terminal_rewrite', 'A native plan is already frozen.');
       }
       if (!presentationUsesNativeTasks(current)) {

@@ -69,6 +69,7 @@ import { agentAvatarUrlForPresentation } from './agent-presence/avatar-assets.ts
 import type { SlackStatusUpdate } from './replies.ts';
 import { activityStatus, initialActivityStatus } from '../activity/status.ts';
 import { defaultSlackStatusRegistry, type SlackStatusRegistry } from './status-registry.ts';
+import { createCodingTaskProgress } from './coding-task-progress.ts';
 import { currentMessageOnlyContext } from './thread-context.ts';
 import { collectAdmittedSlackListIds } from './lists/admission.ts';
 import { conversationThreadTs, slackAgentThreadKey, slackConversationKind } from './thread-key.ts';
@@ -631,7 +632,12 @@ async function runTurnAttempt(
           : {}),
       })
     : undefined;
-  // Once per turn; a failed hint never holds back the checklist.
+  // A delegated coding task's progress shows in the working indicator, timed
+  // from the request (durable across yields, unlike this isolate's clock).
+  const codingProgress = createCodingTaskProgress({
+    startedAt: frozenPresentation?.createdAt ?? slackTsMillis(turn.messageTs) ?? Date.now(),
+  });
+  // Once per turn; a failed hint never holds back the task's progress.
   let codingTaskSignalled = false;
   const signalCodingTaskStarted = async () => {
     if (codingTaskSignalled || !options.onCodingTaskStarted) return;
@@ -660,6 +666,7 @@ async function runTurnAttempt(
     ...(preparedMemory ? { memoryFooterItems: preparedMemory.footerItems } : {}),
   }, workLifecycle, {
     deliverySafety: ledgerAuthority ? 'ledger' : 'legacy',
+    statusDisplay: (update) => codingProgress.display(update),
     ...(agentViewPresentation ? { agentViewPresentation } : {}),
     ...(frozenPresentation?.schemaVersion === 3
       ? { activityProjection: frozenPresentation.activityProjection }
@@ -740,10 +747,18 @@ async function runTurnAttempt(
       return succeeded;
     },
     async refreshStatus(update: SlackStatusUpdate): Promise<boolean> {
-      if (!semanticActivityEnabled || !agentViewPresentation) return false;
-      const durable = await agentViewPresentation.prepareActivityRefresh(update);
-      if (!durable) return false;
-      const succeeded = await presenter.setStatus(update, durable);
+      if (!semanticActivityEnabled) return false;
+      // Without a V3 activity record there is nothing to validate against:
+      // reassert the phrase exactly as a fresh write would.
+      let succeeded: boolean;
+      if (frozenPresentation?.schemaVersion !== 3) {
+        succeeded = await presenter.setStatus(update);
+      } else {
+        if (!agentViewPresentation) return false;
+        const durable = await agentViewPresentation.prepareActivityRefresh(update);
+        if (!durable) return false;
+        succeeded = await presenter.setStatus(update, durable);
+      }
       if (succeeded) options.onSlackWrite?.('activity_status');
       return succeeded;
     },
@@ -1285,8 +1300,20 @@ async function runTurnAttempt(
               eligibility: frozenProgressiveEligibility,
             });
         }
-        // A long delegated turn closes its Agent View card before Slack can
-        // seal it; its answer then posts as a fresh message.
+        // A burst of milestone records (a reattached read replays them all)
+        // publishes once, after it settles, for the state it left.
+        let codingProgressScheduled = false;
+        const publishCodingProgress = () => {
+          if (codingProgressScheduled) return;
+          codingProgressScheduled = true;
+          setTimeout(() => {
+            codingProgressScheduled = false;
+            const status = codingProgress.takeStatus();
+            if (status) void statusTurn.setStatus(status).catch(() => false);
+          }, 0);
+        };
+        // A stream that outlives Slack's few-minute window is closed before
+        // Slack can seal it; its answer then posts as a fresh message.
         const streamAgeChecks = agentViewPresentation
           ? watchAgentViewStreamAge(agentViewPresentation)
           : undefined;
@@ -1328,14 +1355,11 @@ async function runTurnAttempt(
               ? { onObservationStarted: options.onObservationStarted }
               : {}),
             ...(options.codingTaskStarted ? { codingTaskStarted: true } : {}),
-            ...(agentViewPresentation || options.onCodingTaskStarted
-              ? {
-                  onWorkspaceMilestone: async (record, target) => {
-                    await signalCodingTaskStarted();
-                    await agentViewPresentation?.applyWorkspaceMilestone(record, target);
-                  },
-                }
-              : {}),
+            onWorkspaceMilestone: async (record) => {
+              await signalCodingTaskStarted();
+              codingProgress.apply(record);
+              publishCodingProgress();
+            },
           });
         } finally {
           await streamAgeChecks?.stop();
@@ -2157,4 +2181,10 @@ function tryResolveAgentModel(agent: Parameters<typeof resolveAgentModel>[0]): s
 export function sanitizeError(err: unknown): string {
   if (err instanceof Error) return err.message;
   return String(err);
+}
+
+/** A Slack message timestamp as epoch milliseconds, or undefined. */
+function slackTsMillis(ts: string | undefined): number | undefined {
+  const millis = Number(ts) * 1_000;
+  return Number.isFinite(millis) && millis > 0 && millis <= Date.now() ? millis : undefined;
 }

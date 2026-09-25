@@ -294,7 +294,10 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
 
     let attempt: Promise<boolean>;
     try {
-      attempt = queued.refresh === 'validated' && this.presenter.refreshStatus
+      // A refresh reasserts the fact already shown. A presenter with its own
+      // same-fact path uses it (a durable writer would otherwise treat the
+      // unchanged fact as already written and skip it).
+      attempt = queued.refresh && this.presenter.refreshStatus
         ? this.presenter.refreshStatus(queued.update)
         : queued.refresh === 'validated'
           ? Promise.resolve(false)

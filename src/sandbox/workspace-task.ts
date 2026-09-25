@@ -10,9 +10,10 @@ import {
 import * as v from 'valibot';
 
 import { activityStatus, type ActivityStatus } from '../activity/semantic.ts';
+import { toolActivityStatus } from '../activity/status.ts';
 import type { TurnPullRequestProgress } from '../config/state-rpc.ts';
 import {
-  checklistBranchName,
+  safeBranchName,
   WORKSPACE_MILESTONES,
   type CodingWorkerUsageRecord,
   type WorkspaceMilestone,
@@ -156,7 +157,8 @@ export interface WorkspaceTaskToolOptions {
   onWorkerUsage?: (record: CodingWorkerUsageRecord) => void;
   /**
    * Records the task's steps (workspace, changes, pull request) for the run's
-   * checklist. Every step a task starts is settled before the call returns.
+   * working indicator. Every step a task starts is settled before the call
+   * returns.
    */
   onMilestone?: (record: WorkspaceMilestoneRecord) => void;
   /** Relays the worker's progress to the coordinator's visible status. */
@@ -220,7 +222,7 @@ export function createWorkspaceTaskTool(options: WorkspaceTaskToolOptions) {
         return { output: await runTask(session, data.task) };
       } finally {
         // A throw (or an abandoned call) leaves its step failed and later
-        // steps not run, so the checklist never shows work still going.
+        // steps not run, so the indicator never shows work still going.
         milestones.stop('stopped');
         const remaining = (state.running.get(session.id) ?? 1) - 1;
         if (remaining > 0) state.running.set(session.id, remaining);
@@ -406,13 +408,13 @@ export function workerBranch(text: string): string | undefined {
   const matches = [...text.matchAll(/^\s*[*_`]*Branch:?[*_`]*\s*:?\s*`?([^\s`·|]+)`?/gim)];
   const name = matches.at(-1)?.[1]?.replace(/[.,;]+$/, '');
   if (!name || /^(?:none|n\/a|-)$/i.test(name)) return undefined;
-  return checklistBranchName(name);
+  return safeBranchName(name);
 }
 
 type MilestoneDetail = Pick<WorkspaceMilestoneRecord, 'reason' | 'branch' | 'pullRequests'>;
 
 /**
- * One task's checklist records, in order. It remembers which step is active
+ * One task's milestone records, in order. It remembers which step is active
  * so `stop` can fail it and mark the rest not run, and it never lets a failed
  * write affect the task.
  */
@@ -460,8 +462,10 @@ function createMilestoneRecorder(
 
 /**
  * The worker's tool calls as coordinator status lines. Only this task's
- * events count (a reused worker replays its earlier tasks first), only the
- * tool name is read (never its input or output), and a line is published only
+ * events count (a reused worker replays its earlier tasks first). A shell
+ * command is reduced to one of a fixed set of stages (cloning, installing,
+ * testing, committing, pushing, opening the pull request); nothing from a
+ * tool's input or output reaches the line itself. A line is published only
  * when it changes.
  */
 export function createProgressRelay(
@@ -477,17 +481,28 @@ export function createProgressRelay(
       return;
     }
     if (!current || record.type !== 'tool-input' || !publish) return;
-    const status = workerToolStatus(String(record.toolName ?? ''));
+    const status = workerToolStatus(String(record.toolName ?? ''), record.input);
     if (status.text === last) return;
     last = status.text;
     publish(status);
   };
 }
 
-function workerToolStatus(toolName: string): ActivityStatus {
+function workerToolStatus(toolName: string, input: unknown): ActivityStatus {
   switch (toolName) {
-    case 'bash':
-      return activityStatus('running', 'Running commands in', 'the coding workspace', 'workspace');
+    case 'bash': {
+      const stage = toolActivityStatus('bash', input);
+      // A command with no recognised stage keeps the workspace wording.
+      if (stage.action === 'Running' && stage.object === 'a workspace command') {
+        return activityStatus('running', 'Running commands in', 'the coding workspace', 'workspace');
+      }
+      return activityStatus(
+        stage.kind ?? 'running',
+        stage.action ?? 'Running',
+        stage.object ?? 'commands',
+        'workspace',
+      );
+    }
     case 'edit':
     case 'write':
       return activityStatus('writing', 'Editing files in', 'the coding workspace', 'workspace');

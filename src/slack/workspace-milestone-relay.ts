@@ -23,13 +23,12 @@ export interface WorkspaceMilestoneRelay {
 }
 
 /**
- * The `workspace_task` checklist records of one submission, in stream order.
- * A re-attached read replays the whole conversation from its start, so only
- * records inside this submission's response count. The checklist follows the
- * response's first delegated task; later tasks in the same response keep
- * their progress in the coordinator's reply. Records are applied one at a
- * time and a failure is logged, never thrown: the answer does not wait on
- * the checklist.
+ * The `workspace_task` milestone records of one submission, in stream order,
+ * for the turn's working indicator. A re-attached read replays the whole
+ * conversation from its start, so only records inside this submission's
+ * response count, and each task's record is applied once. Records are applied
+ * one at a time and a failure is logged, never thrown: the answer does not
+ * wait on progress.
  */
 export function createWorkspaceMilestoneRelay(
   submissionId: string,
@@ -37,20 +36,17 @@ export function createWorkspaceMilestoneRelay(
 ): WorkspaceMilestoneRelay {
   const messageIds = new Set<string>();
   const seen = new Set<string>();
-  let pinnedToolCallId: string | undefined;
   let chain: Promise<void> = Promise.resolve();
   let awaitingWorker = false;
 
   const accept = (record: WorkspaceMilestoneRecord | undefined) => {
     if (!record) return;
-    pinnedToolCallId ??= record.toolCallId;
-    if (record.toolCallId !== pinnedToolCallId) return;
-    const key = `${record.milestone}:${record.state}`;
+    const key = `${record.toolCallId}:${record.milestone}:${record.state}`;
     if (seen.has(key)) return;
     seen.add(key);
     chain = chain.then(() => apply(record)).catch((error: unknown) => {
       console.warn(
-        `[chickpea] workspace checklist update skipped: ${error instanceof Error ? error.name : 'unknown'}`,
+        `[chickpea] workspace progress update skipped: ${error instanceof Error ? error.name : 'unknown'}`,
       );
     });
   };

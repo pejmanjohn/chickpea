@@ -218,9 +218,9 @@ interface PromptSlackAgentInput {
     receipt: FlueDispatchReceiptV1;
   }) => Promise<SlackProgressiveReadRelay | undefined>;
   /**
-   * Applies a delegated coding task's steps to the run's checklist while the
-   * reply is observed. Called in stream order for this submission only; the
-   * reply waits for pending calls, which must not throw.
+   * Applies a delegated coding task's steps to the turn's working indicator
+   * while the reply is observed. Called in stream order for this submission
+   * only; the reply waits for pending calls, which must not throw.
    */
   /**
    * An earlier observation of this turn saw a coding task start; the reader

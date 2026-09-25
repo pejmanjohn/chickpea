@@ -41,13 +41,17 @@ export class SandboxPolicyState {
 
   async prepareTurn(turnId: string): Promise<void> {
     const previousTurnId = await this.getTurnId();
-    // Revoke the prior policy before current grants are resolved. The mode is
-    // cleared with the grants so no credential can pair with stale scope.
+    // The same turn preparing again is a replayed activation (a retried
+    // coordinator re-acquiring its workspace while its worker still runs).
+    // The stored policy is that turn's own, and configureEgress replaces it
+    // with freshly resolved grants in one write; clearing it here would only
+    // refuse the running worker's push in between.
+    if (previousTurnId === turnId) return;
+    // Revoke the prior turn's policy before current grants are resolved. The
+    // mode is cleared with the grants so no credential can pair with stale scope.
     await this.storage.put(SANDBOX_EGRESS_POLICY_STORAGE_KEY, EMPTY_EGRESS_POLICY);
     await this.storage.put(SANDBOX_TURN_ID_STORAGE_KEY, turnId);
-    if (previousTurnId !== turnId) {
-      await this.storage.put<TurnProgress>(SANDBOX_TURN_PROGRESS_STORAGE_KEY, {});
-    }
+    await this.storage.put<TurnProgress>(SANDBOX_TURN_PROGRESS_STORAGE_KEY, {});
   }
 
   async configureEgress(
