@@ -51,6 +51,7 @@ import { slackPresentationStatePort } from './presentation-state-port.ts';
 import { recordDeliveredSlackAgentMessage } from './public-context.ts';
 import {
   abandonTerminalSlackPresentationBestEffort,
+  postRecoveryNoticeBestEffort,
   drainSlackPresentationRepairs,
 } from './presentation-repair.ts';
 import type { ProductTelemetryCapture } from '../telemetry/client.ts';
@@ -460,6 +461,17 @@ function createNodeThreadDrain(
               state: presentationState,
               client: recoveryClient,
               requireUnresolvedDelivery: true,
+            });
+          }
+          // The thread must not end on a truncated prefix with no word.
+          if (recoveryClient) {
+            await postRecoveryNoticeBestEffort({
+              client: recoveryClient,
+              state: presentationState,
+              ...(job.runId ? { runId: job.runId } : {}),
+              turnId: job.id,
+              channelId: job.turn.channelId,
+              threadTs: job.turn.threadTs,
             });
           }
           await markTurnRecoveryRequired(job.id, reasonCode);

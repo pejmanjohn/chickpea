@@ -595,6 +595,8 @@ export type SlackPresentationMutation =
   | {
       kind: 'record_continuation_plan';
       split?: SlackReplySplit;
+      /** Recovery re-plans a set none of whose parts has started; no parts drops it. */
+      replace?: true;
       parts: readonly string[];
       closing: SlackReplyClosing;
     }
@@ -1766,7 +1768,9 @@ function applyMutation(
       // (for example after a long-idle stream expired). Nothing at that
       // coordinate can carry the terminal, and nothing there shows it, so the
       // approved terminal posts once as a fresh message through the fallback
-      // route instead of the run ending with no visible answer.
+      // route instead of the run ending with no visible answer. A definite
+      // content rejection of the replacement (`msg_too_long`) takes the same
+      // route: that coordinate can never carry this terminal either.
       requireState(current, 'finalizing');
       if (!current.stream.messageTs || current.stream.messageTs !== mutation.messageTs) {
         throw stateError('coordinate_conflict', 'Lost stream does not match the saved coordinate.');
@@ -2225,13 +2229,22 @@ function applyMutation(
       requireV3(current);
       requireV3(next);
       // The plan decides whether the final carries the footer, so it is frozen
-      // with the terminal intent and before that intent is acknowledged.
-      if (current.continuations) {
+      // with the terminal intent and before that intent is acknowledged. Only
+      // a recovery that must shrink the final may re-plan, and only while no
+      // follow-up has started.
+      if (current.continuations && (!mutation.replace ||
+          current.continuations.state !== 'active' ||
+          current.continuations.parts.some((part) => part.operation))) {
         throw stateError('terminal_rewrite', 'The continuation plan is already frozen.');
       }
       if (current.terminalDelivery.state !== 'intended' ||
           current.terminalDelivery.operation.certainty === 'acknowledged') {
         throw stateError('invalid_transition', 'Continuations are planned with an unsent final.');
+      }
+      if (mutation.replace && mutation.parts.length === 0) {
+        delete next.continuations;
+        next.repairRequired = v3RepairRequired(next);
+        return next;
       }
       if (mutation.parts.length < 1 || mutation.parts.length > MAX_SLACK_CONTINUATION_PARTS) {
         throw stateError('invalid_input', 'A reply has one to three continuation messages.');

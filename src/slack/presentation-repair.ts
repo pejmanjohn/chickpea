@@ -10,7 +10,8 @@ import {
   presentationHasTerminalOutcome,
   type SlackRunPresentationV3,
 } from './run-presentations.ts';
-import { WebClientPresenter } from './web-client-presenter.ts';
+import { slackClientMessageId } from './transport/message-id.ts';
+import { DURABLE_RECOVERY_FAILURE_TEXT, WebClientPresenter } from './web-client-presenter.ts';
 
 interface SlackPresentationRepairDrainOptions {
   presentations: readonly SlackRunPresentationV3[];
@@ -161,6 +162,46 @@ export async function abandonTerminalSlackPresentationBestEffort(input: {
     // Terminal delivery is already ambiguous or exhausted. Do not post a
     // second answer; durable presentation repair owns later idempotent cleanup.
     console.warn('[chickpea] Slack terminal presentation abandonment needs repair');
+  }
+}
+
+/**
+ * Last resort after a run's attempts and its recovery notice both failed:
+ * the notice could not travel through a presentation stuck on an unresolved
+ * terminal, so post it fresh in the Run's thread under its frozen owner.
+ * The client_msg_id is fixed per Run, so a repeat returns the original post.
+ * Never throws.
+ */
+export async function postRecoveryNoticeBestEffort(input: {
+  client: WebClient;
+  state: SlackPresentationStatePort | undefined;
+  runId?: string;
+  turnId: string;
+  channelId: string;
+  threadTs: string;
+}): Promise<boolean> {
+  let presentation: Awaited<ReturnType<SlackPresentationStatePort['getRunPresentation']>>;
+  try {
+    presentation = input.runId ? await input.state?.getRunPresentation(input.runId) : undefined;
+  } catch {
+    // The owner persona is cosmetic; the notice still posts.
+    presentation = undefined;
+  }
+  const v3 = presentation?.schemaVersion === 3 ? presentation : undefined;
+  try {
+    await input.client.chat.postMessage({
+      channel: v3?.root.channelId ?? input.channelId,
+      thread_ts: v3?.root.threadTs ?? input.threadTs,
+      text: DURABLE_RECOVERY_FAILURE_TEXT,
+      client_msg_id: slackClientMessageId(`recovery_notice:${input.runId ?? input.turnId}`),
+      ...(v3?.owner.kind === 'selected_agent'
+        ? { username: v3.owner.persona.name, icon_url: v3.owner.persona.avatarUrl }
+        : {}),
+    } as unknown as Parameters<WebClient['chat']['postMessage']>[0]);
+    return true;
+  } catch {
+    console.warn('[chickpea] Slack recovery notice could not be posted');
+    return false;
   }
 }
 

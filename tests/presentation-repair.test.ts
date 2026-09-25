@@ -195,6 +195,10 @@ function repairClient(input: {
       },
     },
     chat: {
+      postMessage: async (value: Record<string, unknown>) => {
+        calls.push(`message_post:${String(value.text).slice(0, 24)}`);
+        return { ok: true, ts: '1788000000.000900' };
+      },
       delete: async () => {
         calls.push('message_delete');
         return { ok: true };
@@ -479,6 +483,8 @@ test('the relay clears activity when exhausted execution and its recovery notice
       assert.equal(executions, 2, 'execution and its recovery notice both ran');
       assert.deepEqual(quarantined, ['post_dispatch_attempts_exhausted']);
       assert.ok(calls.includes('assistant_status_clear'));
+      assert.equal(calls.filter((call) => call.startsWith('message_post:')).length, 1,
+        'the recovery notice posts fresh once');
       const settled = store.get(runId);
       assert.equal(settled?.schemaVersion, 3);
       if (settled?.schemaVersion !== 3) assert.fail('expected V3');

@@ -25,6 +25,7 @@ import {
   type SlackRunPresentationV3,
 } from '../src/slack/run-presentations.ts';
 import { slackClientMessageId } from '../src/slack/transport/message-id.ts';
+import { SlackTransportError } from '../src/slack/transport/types.ts';
 import { WebClientPresenter } from '../src/slack/web-client-presenter.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
 
@@ -496,6 +497,28 @@ function streamedText(h: Harness): string {
     .join('');
 }
 
+const RECOVERY_UPDATE_CHARS = 4_000;
+
+/** One fresh final (part 1, no footer), then its follow-ups; the last closes the reply. */
+function assertFreshReply(
+  h: Harness,
+  planned: readonly string[],
+  recorded: ReadonlyArray<{ messageTs: string; text: string }>,
+): void {
+  const all = posts(h);
+  assert.equal(all.length, planned.length, 'exactly one final and its follow-ups');
+  all.forEach((post, index) => {
+    assert.equal((post.input.blocks as Array<{ text?: string }>)[0]!.text, planned[index]);
+    assert.equal(post.input.username, PERSONA.name);
+    assert.equal(typeof post.input.client_msg_id, 'string');
+    assert.deepEqual(
+      blockTypes(post.input),
+      index === planned.length - 1 ? ['markdown', 'context'] : ['markdown'],
+    );
+  });
+  assert.deepEqual(recorded.map((delivery) => delivery.text), planned);
+}
+
 test('a long streamed answer whose stream expired posts part 1 fresh and its continuation follows', async () => {
   const h = harness();
   try {
@@ -503,10 +526,13 @@ test('a long streamed answer whose stream expired posts part 1 fresh and its con
     const presenter = planningPresenter(h, recorded);
     const text = longPlan();
     await streamLongAnswer(h, text);
-    const planned = splitSlackMarkdownReply(text, { minFirstPartLength: streamedText(h).length });
-    assert.equal(planned.length, 2);
-    // The streamed prefix moved the first cut, so a fresh split would not line up.
-    assert.notEqual(planned[0], splitSlackMarkdownReply(text)[0]);
+    // Recovery replaces the message through chat.update, so its first
+    // message stays within the update bound and the rest continues.
+    const planned = splitSlackMarkdownReply(text, {
+      minFirstPartLength: Math.min(streamedText(h).length, RECOVERY_UPDATE_CHARS),
+      firstPartLimit: RECOVERY_UPDATE_CHARS,
+    });
+    assert.ok(planned.length >= 2 && planned[0]!.length <= RECOVERY_UPDATE_CHARS);
 
     // The stream expired before its stop: the stop is refused, the recovery
     // update finds no message, and the final posts fresh.
@@ -521,20 +547,97 @@ test('a long streamed answer whose stream expired posts part 1 fresh and its con
     assert.deepEqual(updated.map((block) => block.type), ['markdown'], 'recovery sends part 1 only');
     assert.equal(updated[0]!.text, planned[0]);
 
-    const [fresh, continuation, ...extra] = posts(h);
-    assert.equal(extra.length, 0, 'one final and one continuation');
-    assert.deepEqual(blockTypes(fresh!.input), ['markdown'], 'the fresh final carries no footer');
-    assert.equal((fresh!.input.blocks as Array<{ text?: string }>)[0]!.text, planned[0]);
-    assert.equal(typeof fresh!.input.client_msg_id, 'string');
-    assert.equal(fresh!.input.username, PERSONA.name);
-    assert.deepEqual(blockTypes(continuation!.input), ['markdown', 'context']);
-    assert.equal((continuation!.input.blocks as Array<{ text?: string }>)[0]!.text, planned[1]);
-    assert.equal(continuation!.input.username, PERSONA.name);
-    assert.deepEqual(recorded.map((delivery) => delivery.text), planned);
-
+    assertFreshReply(h, planned, recorded);
     const presentation = v3(h);
     assert.equal(presentation.stream.state, 'artifact_delivered');
     assert.equal(presentation.continuations?.state, 'delivered');
+  } finally {
+    h.close();
+  }
+});
+
+/** Stream past the first message, then lose the stop's outcome, as a crash would. */
+async function interruptLongStream(h: Harness, presenter: WebClientPresenter, text: string) {
+  await streamLongAnswer(h, text);
+  h.stopStreamErrors.push(new Error('socket hang up'));
+  await assert.rejects(presenter.deliverFinal(text, 'markdown'));
+  assert.equal(v3(h).stream.state, 'unknown');
+  return Math.min(streamedText(h).length, RECOVERY_UPDATE_CHARS);
+}
+
+test('a reattached long streamed answer recovers with one update that fits, then its follow-ups', async () => {
+  const h = harness();
+  try {
+    const recorded: Array<{ messageTs: string; text: string }> = [];
+    const presenter = planningPresenter(h, recorded);
+    const text = longPlan(18, 23);
+    assert.ok(text.length > LIMIT + 5_000);
+    const kept = await interruptLongStream(h, presenter, text);
+    // The interrupted attempt froze a first message sized for the stream.
+    assert.equal(v3(h).continuations?.split?.minFirstPartLength, streamedText(h).length);
+
+    await presenter.deliverFinal(text, 'markdown');
+    const planned = splitSlackMarkdownReply(text, {
+      minFirstPartLength: kept, firstPartLimit: RECOVERY_UPDATE_CHARS,
+    });
+    const updates = h.calls.filter((call) => call.method === 'chat.update');
+    assert.equal(updates.length, 1, 'one recovery update');
+    const update = updates[0]!.input;
+    const blocks = update.blocks as Array<{ type: string; text?: string }>;
+    assert.deepEqual(blocks.map((block) => block.type), ['markdown'], 'no footer before the reply ends');
+    assert.equal(blocks[0]!.text, planned[0]);
+    assert.ok(blocks[0]!.text!.length <= RECOVERY_UPDATE_CHARS);
+    assert.ok(String(update.text).length <= RECOVERY_UPDATE_CHARS);
+
+    // The final is the recovered stream message; only follow-ups post.
+    const all = posts(h);
+    assert.equal(all.length, planned.length - 1);
+    all.forEach((post, index) => {
+      assert.equal((post.input.blocks as Array<{ text?: string }>)[0]!.text, planned[index + 1]);
+      assert.equal(post.input.username, PERSONA.name);
+    });
+    assert.deepEqual(blockTypes(all.at(-1)!.input), ['markdown', 'context']);
+    assert.deepEqual(recorded.map((delivery) => delivery.text), planned);
+    const presentation = v3(h);
+    assert.deepEqual(presentation.continuations?.split, {
+      minFirstPartLength: kept, firstPartLimit: RECOVERY_UPDATE_CHARS,
+    });
+    assert.equal(presentation.continuations?.state, 'delivered');
+    assert.equal(presentation.terminalDelivery.state, 'intended');
+    if (presentation.terminalDelivery.state === 'intended') {
+      assert.equal(presentation.terminalDelivery.operation.certainty, 'acknowledged');
+    }
+  } finally {
+    h.close();
+  }
+});
+
+test('msg_too_long on the recovery update is definite: the final posts fresh exactly once', async () => {
+  const h = harness();
+  try {
+    const recorded: Array<{ messageTs: string; text: string }> = [];
+    const presenter = planningPresenter(h, recorded);
+    const text = longPlan(18, 23);
+    const kept = await interruptLongStream(h, presenter, text);
+    // Through the gateway a Slack error arrives with an unknown effect.
+    h.updateErrors.push(new SlackTransportError('chat.update', 'msg_too_long'));
+    await presenter.deliverFinal(text, 'markdown');
+
+    const planned = splitSlackMarkdownReply(text, {
+      minFirstPartLength: kept, firstPartLimit: RECOVERY_UPDATE_CHARS,
+    });
+    assert.equal(h.calls.filter((call) => call.method === 'chat.update').length, 1, 'never retried');
+    const deleted = h.calls.find((call) => call.method === 'chat.delete');
+    assert.equal(deleted?.input.ts, '1785800100.000200', 'the partial stream is removed');
+    assertFreshReply(h, planned, recorded);
+    const presentation = v3(h);
+    assert.equal(presentation.stream.state, 'artifact_delivered');
+    assert.equal(presentation.continuations?.state, 'delivered');
+
+    // A replay of the same final finds it delivered and posts nothing.
+    const before = posts(h).length;
+    await presenter.deliverFinal(text, 'markdown');
+    assert.equal(posts(h).length, before);
   } finally {
     h.close();
   }
