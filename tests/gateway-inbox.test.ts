@@ -436,6 +436,33 @@ test('a lease from before owners were recorded, or at the attempt cap, follows t
   }
 });
 
+test('a retry backoff and an orphaned lease stay distinct states across a reset', () => {
+  let now = NOW;
+  const db = openStateDb(':memory:');
+  try {
+    const before = new GatewayInboxStoreLogic(db, () => now, {}, { leaseOwner: 'instance-a' });
+    before.admit(eventDelivery('delivery:Ev_BACKOFF', 'rate limited'));
+    before.admit(eventDelivery('delivery:Ev_ORPHAN', 'in flight'));
+    assert.equal(before.claimPending(2).length, 2);
+    // One delivery hit a rate limit and backs off 10 s; the other is still
+    // in flight when the instance is replaced.
+    assert.equal(before.retryOrRecover('delivery:Ev_BACKOFF', 'delivery_dependency_retryable', 10_000), 'pending');
+    const after = new GatewayInboxStoreLogic(db, () => now, {}, { leaseOwner: 'instance-b' });
+    assert.equal(after.hasOrphanedLease(), true);
+    assert.deepEqual(after.claimPending(2).map((item) => item.id), ['delivery:Ev_ORPHAN'],
+      'the orphan is claimable at once; the backoff is kept, not cut short by the reset');
+    assert.equal(after.nextPendingDueAt(), NOW + 10_000);
+    const backoff = db.get("SELECT status, lease_until, recovery_reason FROM gateway_inbox WHERE id = 'delivery:Ev_BACKOFF'");
+    assert.equal(backoff?.status, 'pending');
+    assert.equal(backoff?.lease_until, NOW + 10_000);
+    assert.equal(backoff?.recovery_reason, 'delivery_dependency_retryable');
+    now += 10_000;
+    assert.deepEqual(after.claimPending(2).map((item) => item.id), ['delivery:Ev_BACKOFF']);
+  } finally {
+    db.close();
+  }
+});
+
 function eventDelivery(deliveryId: string, text: string): GatewayEventDelivery {
   return {
     protocolVersion: 1,
