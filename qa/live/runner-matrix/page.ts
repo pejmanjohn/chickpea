@@ -125,9 +125,10 @@ function harnessRuntime(PLAN: MatrixPlan, lib: { classifyFrame: typeof classifyF
     const config = JSON.parse(w.localStorage.getItem('localConfig_v2') || '{}');
     const team = config && config.teams ? config.teams[PLAN.workspaceId] : null;
     if (!team || typeof team.token !== 'string') throw new Error('This tab is not signed in to the planned Slack workspace.');
-    let base = '/api/';
-    try { if (typeof team.url === 'string') base = new URL('api/', team.url).href; } catch { /* default base */ }
-    return { base, credential: team.token as string };
+    // Same-origin API path: the workspace host (team.url) refuses the web
+    // client's cross-origin fetch from app.slack.com ("Failed to fetch").
+    const origin = w.location && typeof w.location.origin === 'string' ? w.location.origin : '';
+    return { base: `${origin}/api/`, credential: team.token as string };
   };
   const api = async (method: string, params: Record<string, string | number | undefined>) => {
     const { base, credential } = session();
@@ -329,9 +330,38 @@ export function renderHarness(plan: MatrixPlan): string {
   ].join('\n');
 }
 
-export function renderSnippets(leadMs: number): Record<string, string> {
+export const RECEIVER_PORT = 47811;
+
+/**
+ * Hands the collected export to `receive` on this host. Slack's CSP blocks a
+ * direct fetch to localhost, so the export goes by postMessage to a receiver
+ * page opened from that local server, which uploads it to its own origin.
+ */
+function sendSnippet(g: string, port: number): string {
+  const origin = `http://127.0.0.1:${port}`;
+  return `async () => {
+  const h = ${g};
+  let text = '';
+  for (let i = 0; ; i += 1) { try { text += h.chunk(i); } catch { break; } }
+  if (!text) return { error: 'run collect.js first' };
+  const win = window.open(${JSON.stringify(`${origin}/`)}, 'runner-matrix-receiver');
+  if (!win) return { error: 'receiver window blocked' };
+  const ack = await new Promise((resolve) => {
+    const onMessage = (event) => { if (event.origin === ${JSON.stringify(origin)} && typeof event.data === 'string' && event.data.startsWith('ack:')) { removeEventListener('message', onMessage); resolve(event.data); } };
+    addEventListener('message', onMessage);
+    const timer = setInterval(() => { try { win.postMessage(text, ${JSON.stringify(origin)}); } catch {} }, 1000);
+    setTimeout(() => { clearInterval(timer); resolve('timeout'); }, 30000);
+    addEventListener('message', (event) => { if (event.origin === ${JSON.stringify(origin)}) clearInterval(timer); });
+  });
+  return { ack, chars: text.length };
+}
+`;
+}
+
+export function renderSnippets(leadMs: number, port: number = RECEIVER_PORT): Record<string, string> {
   const g = `globalThis[${JSON.stringify(HARNESS_GLOBAL)}]`;
   return {
+    'send.js': sendSnippet(g, port),
     'arm.js': `async () => ${g}.arm({ leadMs: ${leadMs} })\n`,
     'status.js': `() => ${g}.describe()\n`,
     'collect.js': `async () => ${g}.collect({ chunkChars: 40000 })\n`,

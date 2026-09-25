@@ -36,7 +36,18 @@ The interruption earlier runs relied on is the Flue fiber interruption that a
 same-candidate redeploy causes (`fiber:run:interrupted`, then `Durable Object
 reset because its code was updated`). Both deploy hooks run
 `CHICKPEA_DEPLOY_TARGET=<lane> npm run verify:host -- --wait-ms 300000 npm run deploy`
-from `--cwd` (the claimed candidate worktree), one at a time. Without
+from `--cwd` (the claimed candidate worktree), one at a time. Each rebuilds
+and uploads, about 80 to 110 seconds when the host reservation is free. Two
+things can stop a hook at its offset: another task holding the host
+reservation (the wait is capped at 300 s, after which the hook exits 3), and
+remote main moving during the run, which makes the guarded deploy refuse the
+now stale candidate (`QA_SOURCE_BEHIND_MAIN`). A failed hook records its round
+as blocked with no resume time. Start the run when `verify:host` is free and
+main is quiet, and rerun `--cases redeploy-mid-turn` if a hook was blocked.
+
+Run the driver from a checkout of the driver itself and point `--cwd` at the
+claimed candidate worktree. Keep the candidate clean: the deploy hooks deploy
+whatever is in `--cwd`. Without
 `--allow-deploy` they are skipped and `long-turns` and `redeploy-mid-turn` are
 recorded as blocked. `--hook-command` substitutes another mechanism, such as an
 RPC, when one exists; it receives `CHICKPEA_DEPLOY_TARGET` in its environment.
@@ -77,10 +88,17 @@ mentions route. In the lane browser's signed-in Slack tab (`mcp__chrome-<lane>__
    `disarm.js` and arm again.
 4. Keep the tab open. `status.js` reports progress. Reloading the tab keeps
    sent-message state but loses websocket observations for the remainder.
-5. After `run` exits, evaluate `collect.js`. It reads every thread back with
-   `conversations.replies` and returns the chunk count. Evaluate `chunk.js`
-   with each index from 0, editing the index, and write each returned string
-   unchanged to `browser-export.part-000.txt`, `-001`, and so on.
+5. After `run` exits, start the one-shot loopback receiver in the background:
+   `npm run verify:live:runner-matrix -- receive --record "$rec"`. Evaluate
+   `collect.js`, which reads every thread back with `conversations.replies`,
+   then `send.js`. Slack's content policy blocks a direct request to
+   localhost, so `send.js` opens a small receiver tab served by `receive` and
+   hands it the export by `postMessage`; `receive` writes
+   `browser-export.json` and exits. Close that tab afterward. Without the
+   receiver, evaluate `chunk.js` with each index from 0 and write each
+   returned string unchanged to `browser-export.part-000.txt`, `-001`, and so
+   on. The browser server's `filePath` option cannot write to the private
+   record directory.
 6. Generate and record the results:
 
    ```sh
@@ -102,8 +120,14 @@ grades only what the readback shows.
   to start, start to first write, receipt to first write) and `gateway_delivery`.
   Those records carry only an opaque turn reference, so the driver joins them to
   threads by time; an unmatched thread is reported, not guessed.
-- Bot replies less than 8 s apart form one final (first message plus
-  continuations). A second group in the same turn is a duplicate final.
+- A final runs from the first bot reply to the part carrying the
+  attribution footer. A streamed first message is posted when streaming
+  starts, so its continuations can follow minutes later. After a footered
+  part, replies less than 8 s apart still continue it; a later group in the
+  same turn is a duplicate final.
+- The shared gateway's "Chickpea is temporarily offline" notice (posted when
+  Slack's last retry of a mention is not receipted in time) is reported as the
+  `gateway_offline` failure notice, not as a final.
 - The Worker tail does not carry the shared gateway's per-call Slack operations.
   The rate-limit case counts rate-limit, rejection and routing-drop lines instead.
 - A missing export or tail is a tool gap, not a product verdict. Missing

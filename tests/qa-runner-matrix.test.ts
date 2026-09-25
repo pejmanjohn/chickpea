@@ -5,7 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import vm from 'node:vm';
 
-import { evaluateMatrix, percentile, renderMarkdown, summarize } from '../qa/live/runner-matrix/analysis.ts';
+import { evaluateMatrix, GATEWAY_OFFLINE_NOTICE, percentile, renderMarkdown, summarize } from '../qa/live/runner-matrix/analysis.ts';
+import { receiveExport } from '../qa/live/runner-matrix/cli.ts';
 import { fakeScenario } from '../qa/live/runner-matrix/fake.ts';
 import { classifyFrame, renderHarness, summarizeMessage } from '../qa/live/runner-matrix/page.ts';
 import { buildPlan, FAILURE_SIGNATURES, parseCaseList, readSpec } from '../qa/live/runner-matrix/plan.ts';
@@ -227,7 +228,7 @@ test('the generated harness sends the plan, taps the socket and exports readback
   };
   const context = vm.createContext({
     localStorage: { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => { store.set(k, v); } },
-    fetch, FormData: FakeFormData, WebSocket: FakeWebSocket, MessageEvent: FakeMessageEvent, URL, setTimeout, clearTimeout,
+    location: { origin: 'https://fake.example' }, fetch, FormData: FakeFormData, WebSocket: FakeWebSocket, MessageEvent: FakeMessageEvent, URL, setTimeout, clearTimeout,
   });
   const describe = vm.runInContext(`(${renderHarness(plan)})()`, context);
   assert.equal(describe.planned, 3);
@@ -304,4 +305,46 @@ test('tail capture waits for readiness and keeps the JSON stream', async () => {
   assert.equal(splitJsonObjects(readFileSync(join(dir, 'tail.json'), 'utf8')).length, 1);
   assert.equal(tail.segments.length, 1);
   assert.ok(tail.segments[0]!.ready && tail.segments[0]!.end);
+});
+
+test('a streamed first message posted long before its continuations is one final; a gateway offline notice is a failure, not a final', () => {
+  const plan = buildPlan(readSpec(), params());
+  assert.ok(plan.failureSignatures.some((entry) => entry.key === GATEWAY_OFFLINE_NOTICE.key));
+  const results = evaluate(plan, (fake) => {
+    const key = (label: string) => { const s = fake.data.sent.find((x) => x.label === label)!; return `${s.channel}:${s.thread}`; };
+    const lt1 = fake.data.threads[key('LT-1')]!;
+    const firstBot = lt1.find((m) => m.bot)!;
+    assert.equal(firstBot.footer, false);
+    firstBot.ts = (Number(firstBot.ts) - 90).toFixed(6); // posted when streaming began
+    const fs8 = fake.data.threads[key('FS-8')]!;
+    fs8.push({ ...fs8.at(-1)!, ts: (Number(fs8.at(-1)!.ts) + 300).toFixed(6), who: 'Chickpea', footer: false, blockTypes: ['rich_text'], failure: null, tail: 'Chickpea is temporarily offline. Please try again shortly.' });
+  });
+  const lt = caseOf(results, 'long-turns');
+  assert.ok(!lt.failures.some((f) => f.startsWith('LT-1')), lt.failures.join('; '));
+  const fs = caseOf(results, 'first-status');
+  assert.ok(fs.failures.includes('FS-8: failure notice (gateway_offline)'), fs.failures.join('; '));
+  assert.ok(!fs.failures.some((f) => f === 'FS-8: 2 finals'), fs.failures.join('; '));
+});
+
+test('tail readiness also comes from the first JSON event when Wrangler prints no banner', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'runner-matrix-tail-json-'));
+  const script = "console.log(JSON.stringify({ outcome: 'ok', logs: [] }, null, 2)); setInterval(() => {}, 1000);";
+  const tail = new TailCapture({ worker: 'fake-worker', file: join(dir, 'tail.json'), errFile: join(dir, 'tail.err'), cwd: dir, command: [process.execPath, '-e', script] });
+  tail.start();
+  assert.equal(await tail.waitReady(5000), true);
+  await tail.stop();
+});
+
+test('receive serves the relay page and writes one export with the plan tag', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'runner-matrix-receive-'));
+  const port = 47000 + Math.floor(Math.random() * 800);
+  const pending = receiveExport(dir, 'RM-TEST', { port, timeoutMs: 10_000 });
+  await new Promise((r) => setTimeout(r, 100));
+  const page = await (await fetch(`http://127.0.0.1:${port}/`)).text();
+  assert.match(page, /https:\/\/app\.slack\.com/);
+  assert.equal((await fetch(`http://127.0.0.1:${port}/upload`, { method: 'POST', body: JSON.stringify({ tag: 'OTHER' }) })).status, 409);
+  const body = JSON.stringify({ schema: 'chickpea-runner-matrix-export/v1', tag: 'RM-TEST', threads: {} });
+  assert.equal((await fetch(`http://127.0.0.1:${port}/upload`, { method: 'POST', body })).status, 200);
+  const path = await pending;
+  assert.equal(readFileSync(path, 'utf8'), body);
 });
