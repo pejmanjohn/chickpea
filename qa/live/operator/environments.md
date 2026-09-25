@@ -402,6 +402,21 @@ Limits on the second host:
   otherwise attest after the first guarded deploy from this host.
 - Verifier locks, journals, and evidence written here stay here. Report them
   in the run record; they do not travel back with the lane.
+- A cloud VM is ephemeral, and every fresh VM bootstraps the same
+  registration, so it believes it owns the lane too. The registry fences the
+  first host out; it cannot fence two cloud VMs against each other. Run one
+  cloud session at a time on a handed-off lane, and copy anything the lane
+  needs back (a return export, a run record) out of the session before it
+  ends.
+- A return export from this host needs the lane's authority origin, which a
+  local record does not carry. Provide `CHICKPEA_LANE_CREDENTIALS_B64` or
+  `CHICKPEA_ENV_<COLOR>_LIVE_AUTHORITY_URL`; without one the export refuses
+  with `AUTHORITY_ORIGIN_UNAVAILABLE`.
+- The lane itself never moves. Every lane is a Cloudflare Worker with its own
+  Slack workspace, and each host talks to it directly; no host relays through
+  another. Chrome and Computer Use readback surfaces belong to the maintainer's
+  Mac, so a cloud session verifies through the lane's authority endpoint,
+  Admin, and Slack API readback.
 
 ### Take a lane back
 
