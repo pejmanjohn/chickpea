@@ -6,7 +6,8 @@
 # starts from a fresh VM, so this hook installs the pinned Node from nodejs.org
 # (on the default Trusted allowlist), puts it on the session PATH, and installs
 # the locked dependencies when node_modules does not match package-lock.json.
-# It never reads or prints credentials, and local sessions exit immediately.
+# It writes the operator's private ~/.chickpea files from the environment through
+# scripts/cloud-private-home.mjs without printing a value; local sessions exit at once.
 set -euo pipefail
 
 if [ "${CLAUDE_CODE_REMOTE:-}" != "true" ]; then
@@ -44,6 +45,10 @@ export PATH="${prefix}/bin:${PATH}"
 if [ -n "${CLAUDE_ENV_FILE:-}" ]; then
   echo "export PATH=\"${prefix}/bin:\$PATH\"" >> "$CLAUDE_ENV_FILE"
 fi
+
+# Private operator files (lane secrets, lane credentials, seed manifest) from
+# base64 variables in the cloud environment; a malformed one fails the session.
+node scripts/cloud-private-home.mjs
 
 # Reuse the repository's own drift check so a cached node_modules is kept.
 if ! node --input-type=module -e '
