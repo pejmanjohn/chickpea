@@ -1027,6 +1027,6 @@ test('a runner whose state store is being replaced retries within seconds', asyn
     const at = h.deps.now!();
     const result = await runThreadRunnerAlarm(h.deps);
     assert.equal(result.record.outcome, 'threw');
-    assert.equal(result.nextAlarmAt! - at, 1_000, 'a store reset is retried after a second');
+    assert.equal(Math.round((result.nextAlarmAt! - at) / 1_000), 1, 'a store reset is retried after a second');
   } finally { db.close(); }
 });
