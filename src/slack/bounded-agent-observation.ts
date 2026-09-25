@@ -223,8 +223,16 @@ export function createCloudflareBoundedAgentReplyReader(
   });
 }
 
+/** An abort whose reason was not an Error; the reader never throws a bare value. */
+export class BoundedObservationAbortedError extends Error {
+  constructor() {
+    super('Bounded agent observation aborted.');
+    this.name = 'BoundedObservationAbortedError';
+  }
+}
+
 function throwIfAborted(signal?: AbortSignal): void {
-  if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : new Error('Bounded agent observation aborted.');
+  if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : new BoundedObservationAbortedError();
 }
 
 function abortableSleep(milliseconds: number, signal?: AbortSignal): Promise<void> {

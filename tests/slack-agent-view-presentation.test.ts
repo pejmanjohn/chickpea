@@ -5,6 +5,7 @@ import { ErrorCode, type WebClient } from '@slack/web-api';
 
 import { openStateDb } from '../src/state/node-state-db.ts';
 import {
+  AGENT_VIEW_RETIRED_STREAM_TEXT,
   SlackAgentViewPresentation,
   deriveSlackThreadTitle,
   type SlackPresentationDeliveryObserver,
@@ -16,9 +17,12 @@ import {
 } from '../src/slack/run-presentations.ts';
 import type { SlackPresentationFinalizationRecord } from '../src/slack/run-presentations.ts';
 import { SlackTransportError } from '../src/slack/transport/types.ts';
+import { WebClientPresenter } from '../src/slack/web-client-presenter.ts';
 import { slackClientMessageId } from '../src/slack/transport/message-id.ts';
 import type { SlackArtifactReceipt } from '../src/slack/artifact-receipts.ts';
 import type { WorkspaceMilestoneRecord } from '../src/slack/coding-worker-run.ts';
+
+const HARNESS_START_MS = 1_785_700_100_000;
 
 const ROOT = {
   workspaceId: 'T_AGENT_VIEW',
@@ -35,6 +39,10 @@ function harness(input: {
   failIntentMutation?: boolean;
   startStreamError?: unknown;
   stopStreamError?: unknown;
+  updateError?: unknown;
+  appendStreamError?: unknown;
+  /** Runs while chat.startStream is in flight, e.g. a concurrent row writer. */
+  duringStartStream?: () => void;
   /** Grants this many progressive appends, then reports an exhausted budget. */
   appendReservations?: number;
   deleteError?: unknown;
@@ -46,7 +54,9 @@ function harness(input: {
     | { kind: 'selected_agent'; persona: { name: string; avatarUrl: string; avatarRevision: number } }
     | { kind: 'chickpea' };
 } = {}) {
-  let clock = 1_800_000_000_000;
+  // Slack stream timestamps below are seconds on this clock, so a stream's
+  // age reads as it would in production.
+  let clock = HARNESS_START_MS;
   const db = openStateDb(':memory:');
   const store = new SlackRunPresentationStoreLogic(db, () => clock);
   const runId = input.tasks ? 'run_native_plan' : 'run_progressive';
@@ -106,13 +116,19 @@ function harness(input: {
     chat: {
       async startStream(value: Record<string, unknown>) {
         calls.push({ method: 'chat.startStream', input: value });
+        input.duringStartStream?.();
         if (input.startStreamError) throw input.startStreamError;
         stream += 1;
         return { ok: true, ts: `1785700100.00020${stream}` };
       },
       async appendStream(value: Record<string, unknown>) {
         calls.push({ method: 'chat.appendStream', input: value });
+        if (input.appendStreamError) throw input.appendStreamError;
         return { ok: true };
+      },
+      async postMessage(value: Record<string, unknown>) {
+        calls.push({ method: 'chat.postMessage', input: value });
+        return { ok: true, ts: '1785700100.000950' };
       },
       async stopStream(value: Record<string, unknown>) {
         calls.push({ method: 'chat.stopStream', input: value });
@@ -121,6 +137,7 @@ function harness(input: {
       },
       async update(value: Record<string, unknown>) {
         calls.push({ method: 'chat.update', input: value });
+        if (input.updateError) throw input.updateError;
         return { ok: true };
       },
       async delete(value: Record<string, unknown>) {
@@ -195,6 +212,7 @@ function harness(input: {
     finalizationRecords,
     presentation,
     presentationState: state,
+    advanceClock(milliseconds: number) { clock += milliseconds; },
     setThreadReplies(messages: Array<Record<string, unknown>>, complete = true) {
       threadReplies = structuredClone(messages);
       threadRepliesComplete = complete;
@@ -1513,15 +1531,16 @@ test('new V2 work falls back cleanly when Slack rejects its native task stream',
     const stored = h.store.get(h.runId);
     assert.equal(stored?.schemaVersion, 2);
     assert.equal(stored?.stream.state, 'fallback');
-    assert.deepEqual(
-      await h.presentation.finalize(
-        'The checklist fallback remains authoritative.',
-        'markdown',
-        'complete',
-        observer([]),
-      ),
-      { handled: false, fallbackPresentation: true },
+    const fallback = await h.presentation.finalize(
+      'The checklist fallback remains authoritative.',
+      'markdown',
+      'complete',
+      observer([]),
     );
+    // The fresh post carries the Run's own idempotency key.
+    assert.deepEqual({ ...fallback, operationId: undefined },
+      { handled: false, fallbackPresentation: true, operationId: undefined });
+    assert.match(String((fallback as { operationId?: string }).operationId), /^terminal_[0-9a-f]{24}$/);
     assert.deepEqual(
       h.calls.filter((call) => call.method.startsWith('chat.')).map((call) => call.method),
       ['chat.startStream'],
@@ -1550,15 +1569,15 @@ test('new V2 work falls back when the gateway confirms its native task stream wa
     });
     assert.equal(relay, undefined);
     assert.equal(h.store.get(h.runId)?.stream.state, 'fallback');
-    assert.deepEqual(
-      await h.presentation.finalize(
-        'The ordinary Slack reply remains available.',
-        'markdown',
-        'complete',
-        observer([]),
-      ),
-      { handled: false, fallbackPresentation: true },
+    const fallback = await h.presentation.finalize(
+      'The ordinary Slack reply remains available.',
+      'markdown',
+      'complete',
+      observer([]),
     );
+    assert.deepEqual({ ...fallback, operationId: undefined },
+      { handled: false, fallbackPresentation: true, operationId: undefined });
+    assert.match(String((fallback as { operationId?: string }).operationId), /^terminal_[0-9a-f]{24}$/);
   } finally {
     h.db.close();
   }
@@ -1816,7 +1835,7 @@ test('a V3 late progressive declaration is denied before any answer text is expo
     assert.equal(stored?.schemaVersion, 3);
     if (stored?.schemaVersion === 3) {
       assert.deepEqual(stored.progressiveIntent, {
-        status: 'denied', reason: 'late_declaration', decidedAt: 1_800_000_000_000,
+        status: 'denied', reason: 'late_declaration', decidedAt: HARNESS_START_MS,
       });
     }
   } finally {
@@ -1948,7 +1967,7 @@ test('V3 intent persistence failure emits no answer text and marks presentation 
       assert.deepEqual(stored.progressiveIntent, {
         status: 'denied',
         reason: 'persistence_failure',
-        decidedAt: 1_800_000_000_000,
+        decidedAt: HARNESS_START_MS,
       });
     }
   } finally {
@@ -2176,9 +2195,12 @@ test('V3 reconciles a stream interrupted between close and finalizing', async ()
   } finally { h.db.close(); }
 });
 
-test('V3 still refuses an unknown stream without a coordinate and never overwrites a different frozen terminal', async () => {
+test('V3 still refuses an unknown terminal stream without a coordinate and never overwrites a different frozen terminal', async () => {
   const noCoordinate = harness({ schemaVersion: 3 });
   try {
+    // The terminal was intended before the ambiguous start, so that start may
+    // have carried the answer: posting fresh could duplicate it.
+    applyPresentationMutation(noCoordinate, { kind: 'record_terminal_delivery_intent', operationId: 'terminal_failure_pending', result: 'failure' });
     applyPresentationMutation(noCoordinate, { kind: 'stream_start_intent' });
     applyPresentationMutation(noCoordinate, { kind: 'mark_unknown', degradationReason: 'unknown_effect' });
     await assert.rejects(
@@ -2656,6 +2678,439 @@ test('a resumed final-answer read replays narration and tool work without correc
         .filter((chunk) => chunk.type === 'markdown_text').map((chunk) => chunk.text ?? ''))
       .join('');
     assert.equal(text, 'Streamed final answer.');
+  } finally {
+    h.db.close();
+  }
+});
+
+function slackPlatformError(error: string) {
+  return { code: ErrorCode.PlatformError, data: { ok: false, error } };
+}
+
+test('a coding turn reattached after a yield replays its milestones without resending any detail', async () => {
+  const h = harness({ schemaVersion: 3 });
+  try {
+    const receipt = { submissionId: WORKSPACE_TARGET.submissionId, acceptedAt: 'now', uid: 'uid' };
+    await prepareReceipt(h, {
+      ...WORKSPACE_TARGET, receipt, eligibility: { allowed: false, reason: 'effect_capable' },
+    });
+    const beforeYield = [
+      milestone('workspace', 'started'),
+      milestone('workspace', 'completed'),
+      milestone('changes', 'started'),
+    ];
+    for (const record of beforeYield) {
+      await h.presentation.applyWorkspaceMilestone(record, WORKSPACE_TARGET);
+    }
+    const slackWritesBeforeYield = h.calls.length;
+
+    // The next alarm builds a fresh presentation for the same Run and reads the
+    // receipt from its start: every earlier record arrives again.
+    const reattached = new SlackAgentViewPresentation({
+      client: h.client,
+      state: h.presentationState,
+      runId: h.runId,
+      runFencingToken: 0,
+      footer: { agentName: 'Chickpea', agentId: 'agent_default' },
+      // A yield well inside the stream's lifetime keeps the card open.
+      now: () => HARNESS_START_MS + 60_000,
+    });
+    assert.equal(await reattached.prepareReceipt({
+      ...WORKSPACE_TARGET, receipt, eligibility: { allowed: false, reason: 'effect_capable' },
+    }), undefined);
+    for (const record of beforeYield) {
+      await reattached.applyWorkspaceMilestone(record, WORKSPACE_TARGET);
+    }
+    assert.equal(h.calls.length, slackWritesBeforeYield, 'a replayed record writes nothing to Slack');
+    await reattached.applyWorkspaceMilestone(
+      milestone('changes', 'changed', { branch: 'fix-login-test' }), WORKSPACE_TARGET);
+    await reattached.applyWorkspaceMilestone(
+      milestone('pull_request', 'completed', { pullRequests: [{ repository: 'acme/app', number: 12 }] }),
+      WORKSPACE_TARGET,
+    );
+    await reattached.finalize('Opened acme/app#12.', 'markdown', 'complete', observer([]));
+
+    assert.equal(h.calls.filter((call) => call.method === 'chat.startStream').length, 1);
+    assert.equal(h.calls.filter((call) => call.method === 'chat.stopStream').length, 1);
+    assert.deepEqual(detailsSent(h), [
+      'Completed: the coding workspace is ready.',
+      'Changed: pushed branch fix-login-test.',
+      'Completed: acme/app#12.',
+    ]);
+    assert.equal(h.store.get(h.runId)?.stream.state, 'artifact_delivered');
+  } finally {
+    h.db.close();
+  }
+});
+
+test('a sealed stream after a long gap is finalized in place on its known message', async () => {
+  const h = harness({ schemaVersion: 3, stopStreamError: slackPlatformError('message_not_in_streaming_state') });
+  try {
+    await prepareReceipt(h, {
+      ...WORKSPACE_TARGET,
+      receipt: { submissionId: WORKSPACE_TARGET.submissionId, acceptedAt: 'now', uid: 'uid' },
+      eligibility: { allowed: false, reason: 'effect_capable' },
+    });
+    await h.presentation.applyWorkspaceMilestone(milestone('workspace', 'started'), WORKSPACE_TARGET);
+    const events: Array<Record<string, unknown>> = [];
+    const result = await h.presentation.finalize('Opened acme/app#12.', 'markdown', 'complete', observer(events));
+    assert.equal(result.handled, true);
+    assert.deepEqual(h.calls.slice(-3).map((call) => call.method),
+      ['chat.stopStream', 'chat.stopStream', 'chat.update']);
+    assert.match(String(h.calls.at(-1)?.input.text), /Opened acme\/app#12/);
+    assert.equal(h.calls.some((call) => call.method === 'chat.postMessage'), false);
+    assert.equal(h.store.get(h.runId)?.stream.state, 'artifact_delivered');
+    assert.equal(events.at(-1)?.outcome, 'delivered');
+  } finally {
+    h.db.close();
+  }
+});
+
+test('a stream whose message Slack no longer has posts the final once as a fresh message', async () => {
+  const h = harness({
+    schemaVersion: 3,
+    stopStreamError: slackPlatformError('message_not_found'),
+    updateError: slackPlatformError('message_not_found'),
+  });
+  try {
+    await prepareReceipt(h, {
+      ...WORKSPACE_TARGET,
+      receipt: { submissionId: WORKSPACE_TARGET.submissionId, acceptedAt: 'now', uid: 'uid' },
+      eligibility: { allowed: false, reason: 'effect_capable' },
+    });
+    await h.presentation.applyWorkspaceMilestone(milestone('workspace', 'started'), WORKSPACE_TARGET);
+    const events: Array<Record<string, unknown>> = [];
+    const result = await h.presentation.finalize('Opened acme/app#12.', 'markdown', 'complete', observer(events));
+    assert.equal(result.handled, false, 'the presenter posts the terminal instead');
+    if (result.handled) assert.fail('unreachable');
+    assert.equal(result.fallbackPresentation, true);
+    assert.ok(result.operationId, 'the fresh post carries the frozen terminal operation');
+    assert.equal(events.at(-1)?.safeFailureCode, 'slack_stream_message_missing');
+    let stored = h.store.get(h.runId);
+    assert.equal(stored?.stream.state, 'fallback');
+    assert.equal(stored?.stream.messageTs, undefined);
+
+    // The presenter's fresh post records its coordinate; a replayed final is silent.
+    await h.presentation.markFallbackDelivered('1785700100.000901');
+    stored = h.store.get(h.runId);
+    assert.equal(stored?.stream.state, 'artifact_delivered');
+    assert.equal(stored?.stream.messageTs, '1785700100.000901');
+    if (stored?.schemaVersion !== 3 || stored.terminalDelivery.state !== 'intended') {
+      assert.fail('the answer terminal must stay frozen');
+    }
+    assert.equal(stored.terminalDelivery.operation.certainty, 'acknowledged');
+    const callsAfterPost = h.calls.length;
+    const replay = await h.presentation.finalize('Opened acme/app#12.', 'markdown', 'complete', observer([]));
+    assert.equal(replay.handled, true);
+    assert.equal(h.calls.length, callsAfterPost, 'the delivered terminal is never written again');
+  } finally {
+    h.db.close();
+  }
+});
+
+test('a recovery that finds the stream message missing still delivers the terminal fresh', async () => {
+  const h = harness({ schemaVersion: 3, updateError: slackPlatformError('message_not_found') });
+  try {
+    applyPresentationMutation(h, { kind: 'record_terminal_delivery_intent', operationId: 'terminal_lost_stream', result: 'answer' });
+    applyPresentationMutation(h, { kind: 'stream_start_intent' });
+    applyPresentationMutation(h, { kind: 'stream_started', messageTs: '1785700100.000398',
+      flue: { instanceId: 'instance_lost_stream', submissionId: 'submission_lost_stream' } });
+    applyPresentationMutation(h, { kind: 'mark_unknown', degradationReason: 'unknown_effect' });
+    const result = await h.presentation.finalize('Saved answer.', 'markdown', 'complete', observer([]));
+    assert.equal(result.handled, false);
+    if (result.handled) assert.fail('unreachable');
+    assert.equal(result.operationId, 'terminal_lost_stream');
+    assert.equal(h.store.get(h.runId)?.stream.state, 'fallback');
+  } finally {
+    h.db.close();
+  }
+});
+
+test('a stream Slack forgot during a long gateway turn still delivers exactly one fresh final', async () => {
+  // Through the gateway, Slack's message_not_found arrives as a transport
+  // error whose effect defaults to unknown. That must not spend every
+  // reattachment on a coordinate that will never answer.
+  const gone = (operation: string) => new SlackTransportError(operation, 'message_not_found');
+  const h = harness({
+    schemaVersion: 3,
+    appendStreamError: gone('chat.appendStream'),
+    stopStreamError: gone('chat.stopStream'),
+    updateError: gone('chat.update'),
+    deleteError: gone('chat.delete'),
+  });
+  try {
+    await prepareReceipt(h, {
+      ...WORKSPACE_TARGET,
+      receipt: { submissionId: WORKSPACE_TARGET.submissionId, acceptedAt: 'now', uid: 'uid' },
+      eligibility: { allowed: false, reason: 'effect_capable' },
+    });
+    await h.presentation.applyWorkspaceMilestone(milestone('workspace', 'started'), WORKSPACE_TARGET);
+    // Forty minutes later: the milestone projection finds no stream message.
+    await h.presentation.applyWorkspaceMilestone(milestone('workspace', 'completed'), WORKSPACE_TARGET);
+
+    const presenter = new WebClientPresenter(h.client, {
+      channelId: ROOT.channelId,
+      threadTs: ROOT.threadTs,
+      agentName: 'Chickpea',
+      agentId: 'agent_default',
+      userId: ROOT.requesterUserId,
+      workspaceId: ROOT.workspaceId,
+    }, undefined, { agentViewPresentation: h.presentation });
+    await presenter.deliverFinal('Opened acme/app#12.', 'markdown');
+
+    const posts = h.calls.filter((call) => call.method === 'chat.postMessage');
+    assert.equal(posts.length, 1, 'the final posts once as a fresh message');
+    assert.equal(posts[0]?.input.thread_ts, ROOT.threadTs);
+    assert.match(JSON.stringify(posts[0]?.input), /Opened acme\/app#12/);
+    assert.ok(posts[0]?.input.client_msg_id, 'the fresh post keeps the terminal idempotency key');
+    assert.equal(h.calls.filter((call) => call.method === 'chat.delete').length, 1,
+      'the empty shell is cleaned up best-effort');
+    const stored = h.store.get(h.runId);
+    assert.equal(stored?.stream.state, 'artifact_delivered');
+    assert.equal(stored?.stream.messageTs, '1785700100.000950');
+
+    // A replayed final (another attempt) writes nothing more.
+    const callsAfter = h.calls.length;
+    await presenter.deliverFinal('Opened acme/app#12.', 'markdown');
+    assert.equal(h.calls.length, callsAfter);
+  } finally {
+    h.db.close();
+  }
+});
+
+test('a concurrent row write while Slack opens the checklist card never loses its coordinate', async () => {
+  let h!: ReturnType<typeof harness>;
+  let raced = false;
+  h = harness({
+    schemaVersion: 3,
+    duringStartStream: () => {
+      // The second workspace task's status or milestone lands mid-request.
+      if (raced) return;
+      raced = true;
+      const current = h.store.get(h.runId);
+      assert.ok(current?.plan);
+      applyPresentationMutation(h, {
+        kind: 'transition_task', taskId: current.plan.tasks[0]!.id, to: 'completed',
+        detail: 'Completed: the coding workspace is ready.',
+      });
+    },
+  });
+  try {
+    await prepareReceipt(h, {
+      ...WORKSPACE_TARGET,
+      receipt: { submissionId: WORKSPACE_TARGET.submissionId, acceptedAt: 'now', uid: 'uid' },
+      eligibility: { allowed: false, reason: 'effect_capable' },
+    });
+    await h.presentation.applyWorkspaceMilestone(milestone('workspace', 'started'), WORKSPACE_TARGET);
+    assert.equal(raced, true);
+    const stored = h.store.get(h.runId);
+    assert.equal(stored?.stream.state, 'streaming', 'the card Slack opened is recorded, not unknown');
+    assert.equal(stored?.stream.messageTs, '1785700100.000201');
+    await h.presentation.finalize('Pushed both branches.', 'markdown', 'complete', observer([]));
+    assert.equal(h.calls.filter((call) => call.method === 'chat.startStream').length, 1);
+    assert.equal(h.calls.filter((call) => call.method === 'chat.stopStream').length, 1);
+    assert.equal(h.store.get(h.runId)?.stream.state, 'artifact_delivered');
+  } finally {
+    h.db.close();
+  }
+});
+
+for (const stuck of ['starting', 'unknown'] as const) {
+  test(`${stuck === 'unknown' ? 'an' : 'a'} ${stuck} checklist stream with no coordinate delivers the final fresh instead of looping`, async () => {
+    const h = harness({ schemaVersion: 3 });
+    try {
+      applyPresentationMutation(h, { kind: 'stream_start_intent' });
+      if (stuck === 'unknown') {
+        applyPresentationMutation(h, { kind: 'mark_unknown', degradationReason: 'unknown_effect' });
+      }
+      const presenter = new WebClientPresenter(h.client, {
+        channelId: ROOT.channelId,
+        threadTs: ROOT.threadTs,
+        agentName: 'Chickpea',
+        agentId: 'agent_default',
+        userId: ROOT.requesterUserId,
+        workspaceId: ROOT.workspaceId,
+      }, undefined, { agentViewPresentation: h.presentation });
+      await presenter.deliverFinal('Pushed both branches.', 'markdown');
+      const posts = h.calls.filter((call) => call.method === 'chat.postMessage');
+      assert.equal(posts.length, 1);
+      assert.match(JSON.stringify(posts[0]?.input), /Pushed both branches/);
+      assert.ok(posts[0]?.input.client_msg_id);
+      assert.equal(h.calls.some((call) => call.method === 'chat.startStream'), false);
+      assert.equal(h.store.get(h.runId)?.stream.state, 'artifact_delivered');
+      const callsAfter = h.calls.length;
+      await presenter.deliverFinal('Pushed both branches.', 'markdown');
+      assert.equal(h.calls.length, callsAfter, 'a replayed final writes nothing');
+    } finally {
+      h.db.close();
+    }
+  });
+}
+
+test('a lost stream on a presentation without terminal receipts still posts with an idempotency key', async () => {
+  const h = harness({
+    schemaVersion: 2,
+    stopStreamError: slackPlatformError('message_not_found'),
+    updateError: slackPlatformError('message_not_found'),
+  });
+  try {
+    applyPresentationMutation(h, { kind: 'stream_start_intent' });
+    applyPresentationMutation(h, { kind: 'stream_started', messageTs: '1785700100.000411',
+      flue: { instanceId: 'instance_v2_lost', submissionId: 'submission_v2_lost' } });
+    const result = await h.presentation.finalize('Saved answer.', 'markdown', 'complete', observer([]));
+    assert.equal(result.handled, false);
+    if (result.handled) assert.fail('unreachable');
+    assert.match(String(result.operationId), /^terminal_[0-9a-f]{24}$/);
+    assert.equal(h.store.get(h.runId)?.stream.state, 'fallback');
+  } finally {
+    h.db.close();
+  }
+});
+
+test('a V2 fresh final retried after an unknown post repeats the same idempotency key', async () => {
+  const h = harness({
+    schemaVersion: 2,
+    stopStreamError: slackPlatformError('message_not_found'),
+    updateError: slackPlatformError('message_not_found'),
+  });
+  try {
+    applyPresentationMutation(h, { kind: 'stream_start_intent' });
+    applyPresentationMutation(h, { kind: 'stream_started', messageTs: '1785700100.000412',
+      flue: { instanceId: 'instance_v2_retry', submissionId: 'submission_v2_retry' } });
+    const first = await h.presentation.finalize('Saved answer.', 'markdown', 'complete', observer([]));
+    // The fresh post's outcome was unknown; a later attempt finalizes again.
+    const retry = await h.presentation.finalize('Saved answer.', 'markdown', 'complete', observer([]));
+    if (first.handled || retry.handled) assert.fail('both route to the fresh post');
+    assert.ok(first.operationId);
+    assert.equal(retry.operationId, first.operationId);
+  } finally {
+    h.db.close();
+  }
+});
+
+function freshFinalPresenter(h: ReturnType<typeof harness>) {
+  return new WebClientPresenter(h.client, {
+    channelId: ROOT.channelId,
+    threadTs: ROOT.threadTs,
+    agentName: 'Chickpea',
+    agentId: 'agent_default',
+    userId: ROOT.requesterUserId,
+    workspaceId: ROOT.workspaceId,
+  }, undefined, { agentViewPresentation: h.presentation });
+}
+
+test('a long coding turn closes its card before Slack seals it and posts the final fresh once', async () => {
+  const h = harness({ schemaVersion: 3 });
+  try {
+    await prepareReceipt(h, {
+      ...WORKSPACE_TARGET,
+      receipt: { submissionId: WORKSPACE_TARGET.submissionId, acceptedAt: 'now', uid: 'uid' },
+      eligibility: { allowed: false, reason: 'effect_capable' },
+    });
+    await h.presentation.applyWorkspaceMilestone(milestone('workspace', 'started'), WORKSPACE_TARGET);
+    await h.presentation.applyWorkspaceMilestone(milestone('workspace', 'completed'), WORKSPACE_TARGET);
+    await h.presentation.applyWorkspaceMilestone(milestone('changes', 'started'), WORKSPACE_TARGET);
+
+    h.advanceClock(3 * 60_000);
+    assert.equal(await h.presentation.retireAgedStream(), false, 'a young stream stays open');
+    h.advanceClock(90_000);
+    assert.equal(await h.presentation.retireAgedStream(), true);
+    const stop = h.calls.filter((call) => call.method === 'chat.stopStream');
+    assert.equal(stop.length, 1);
+    assert.deepEqual(stop[0]!.input.chunks, [{ type: 'markdown_text', text: AGENT_VIEW_RETIRED_STREAM_TEXT }],
+      'the card ends with a short note and resends no detail');
+    assert.equal(await h.presentation.retireAgedStream(), false, 'retirement happens once');
+
+    // Forty minutes of work later: milestones stay durable but stay off the card.
+    h.advanceClock(40 * 60_000);
+    const writesBeforeLateMilestones = h.calls.length;
+    await h.presentation.applyWorkspaceMilestone(
+      milestone('changes', 'changed', { branch: 'fix-login-test' }), WORKSPACE_TARGET);
+    await h.presentation.applyWorkspaceMilestone(
+      milestone('pull_request', 'completed', { pullRequests: [{ repository: 'acme/app', number: 12 }] }),
+      WORKSPACE_TARGET,
+    );
+    assert.equal(h.calls.length, writesBeforeLateMilestones, 'no card update after it closed');
+
+    const presenter = freshFinalPresenter(h);
+    await presenter.deliverFinal('Opened acme/app#12.', 'markdown');
+    const posts = h.calls.filter((call) => call.method === 'chat.postMessage');
+    assert.equal(posts.length, 1, 'the final posts once as a fresh thread message');
+    assert.equal(posts[0]?.input.thread_ts, ROOT.threadTs);
+    assert.match(JSON.stringify(posts[0]?.input), /Opened acme\/app#12/);
+    assert.ok(posts[0]?.input.client_msg_id);
+    assert.equal(h.calls.filter((call) => call.method === 'chat.stopStream').length, 1);
+    assert.deepEqual(detailsSent(h), ['Completed: the coding workspace is ready.']);
+    assert.equal(h.store.get(h.runId)?.stream.state, 'artifact_delivered');
+
+    const callsAfter = h.calls.length;
+    await presenter.deliverFinal('Opened acme/app#12.', 'markdown');
+    assert.equal(h.calls.length, callsAfter, 'a replayed final posts nothing');
+  } finally {
+    h.db.close();
+  }
+});
+
+test('a final reaching an aged stream closes it and posts fresh without a failing stop', async () => {
+  const h = harness({ schemaVersion: 3 });
+  try {
+    await prepareReceipt(h, {
+      ...WORKSPACE_TARGET,
+      receipt: { submissionId: WORKSPACE_TARGET.submissionId, acceptedAt: 'now', uid: 'uid' },
+      eligibility: { allowed: false, reason: 'effect_capable' },
+    });
+    await h.presentation.applyWorkspaceMilestone(milestone('workspace', 'started'), WORKSPACE_TARGET);
+    h.advanceClock(45 * 60_000);
+    await freshFinalPresenter(h).deliverFinal('Done.', 'markdown');
+    assert.deepEqual(
+      h.calls.filter((call) => call.method.startsWith('chat.')).map((call) => call.method),
+      ['chat.startStream', 'chat.stopStream', 'chat.postMessage'],
+    );
+  } finally {
+    h.db.close();
+  }
+});
+
+test('a short turn keeps its streamed card and final answer in place', async () => {
+  const h = harness({ schemaVersion: 3 });
+  try {
+    await prepareReceipt(h, {
+      ...WORKSPACE_TARGET,
+      receipt: { submissionId: WORKSPACE_TARGET.submissionId, acceptedAt: 'now', uid: 'uid' },
+      eligibility: { allowed: false, reason: 'effect_capable' },
+    });
+    await h.presentation.applyWorkspaceMilestone(milestone('workspace', 'started'), WORKSPACE_TARGET);
+    h.advanceClock(3 * 60_000);
+    assert.equal(await h.presentation.retireAgedStream(), false);
+    await freshFinalPresenter(h).deliverFinal('Done quickly.', 'markdown');
+    assert.equal(h.calls.some((call) => call.method === 'chat.postMessage'), false);
+    const stops = h.calls.filter((call) => call.method === 'chat.stopStream');
+    assert.equal(stops.length, 1);
+    assert.match(JSON.stringify(stops[0]?.input), /Done quickly/);
+  } finally {
+    h.db.close();
+  }
+});
+
+test('streaming_state_conflict on stop and recovery posts the final fresh instead of exhausting', async () => {
+  const conflict = (operation: string) => new SlackTransportError(operation, 'streaming_state_conflict');
+  const h = harness({
+    schemaVersion: 3,
+    stopStreamError: conflict('chat.stopStream'),
+    updateError: conflict('chat.update'),
+  });
+  try {
+    await prepareReceipt(h, {
+      ...WORKSPACE_TARGET,
+      receipt: { submissionId: WORKSPACE_TARGET.submissionId, acceptedAt: 'now', uid: 'uid' },
+      eligibility: { allowed: false, reason: 'effect_capable' },
+    });
+    await h.presentation.applyWorkspaceMilestone(milestone('workspace', 'started'), WORKSPACE_TARGET);
+    await freshFinalPresenter(h).deliverFinal('Done.', 'markdown');
+    assert.equal(h.calls.filter((call) => call.method === 'chat.postMessage').length, 1);
+    assert.equal(h.calls.some((call) => call.method === 'chat.delete'), false,
+      'a message that still exists is never deleted');
+    assert.equal(h.store.get(h.runId)?.stream.state, 'artifact_delivered');
   } finally {
     h.db.close();
   }

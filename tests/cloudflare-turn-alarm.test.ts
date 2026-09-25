@@ -4,6 +4,8 @@ import test from 'node:test';
 import vm from 'node:vm';
 import ts from 'typescript';
 
+import { drainAlarmTurnJobs } from '../src/slack/alarm-turn-drain.ts';
+
 // Execute the production RPC methods and alarm helper, not a copy of their
 // scheduling logic. The complete Worker is also exercised by verify:cf-smoke;
 // this isolated seam lets us set exact alarm times and inject storage failures.
@@ -161,6 +163,15 @@ for (const withPendingTurn of [false, true]) {
     const { probe: storageProbe, alarm, writes } = fixture(null);
     const AlarmProbe = vm.runInNewContext(alarmCode, {
       Date,
+      setTimeout,
+      clearTimeout,
+      AbortController,
+      drainAlarmTurnJobs,
+      ALARM_TURN_BUDGET_MS: 60_000,
+      ALARM_TURN_HARD_CAP_MS: 120_000,
+      ALARM_PENDING_PER_THREAD: 4,
+      ALARM_ADMISSION_RECHECK_MS: 2_000,
+      ALARM_YIELD_REARM_MS: 1_000,
       MAX_TURN_DRAIN_BATCH: 25,
       RELAY_RETRY_BACKOFF_MS: 1000,
       console: { warn() {} },
@@ -191,11 +202,13 @@ for (const withPendingTurn of [false, true]) {
     };
     const drainingProbe = new AlarmProbe();
     drainingProbe.ctx = storageProbe.ctx;
+    // A class field the method-only probe does not carry.
+    (drainingProbe as unknown as { carriedAlarmTurns: Map<string, string> }).carriedAlarmTurns = new Map();
     drainingProbe.createAlarmIdentityResolver = () => async () => { throw new Error('rate limited'); };
     drainingProbe.stores = {
       management: { cleanupRetention() {}, nextOutboxDueAt: () => NOW + 120_000 },
       turnJobs: {
-        listPending: () => withPendingTurn ? [{ turn: {}, progress: {}, assignment: {} }] : [],
+        listPendingByThread: () => withPendingTurn ? [{ turn: {}, progress: {}, assignment: {} }] : [],
         hasPending: () => withPendingTurn,
         hasPendingSlackInteractionCleanup: () => false,
       },
@@ -206,3 +219,211 @@ for (const withPendingTurn of [false, true]) {
     assert.deepEqual(writes, [NOW + BATCH_MS]);
   });
 }
+
+type AlarmJob = {
+  id: string; attempts: number; turn: Record<string, unknown>; assignment: object;
+  progress: object; dispatchReceipt?: { submissionId: string; acceptedAt?: string };
+  dispatchEnvelope?: object;
+};
+
+/** The production alarm() with in-memory stores and a scripted runTurn. */
+async function alarmHarness(initial: AlarmJob[], hooks: {
+  onInboxDrain?: (count: number, jobs: Map<string, AlarmJob>) => void;
+} = {}) {
+  const { AgentObservationYield, AgentPromptFailure } = await import('../src/slack/flue-dispatch.ts');
+  const { alarmYieldIsFree } = await import('../src/slack/alarm-turn-drain.ts');
+  const alarmMethod = (stateClass as ts.ClassDeclaration).members.find((member) =>
+    ts.isMethodDeclaration(member) && member.name.getText(source) === 'alarm');
+  const armMethod = (stateClass as ts.ClassDeclaration).members.find((member) =>
+    ts.isMethodDeclaration(member) && member.name.getText(source) === 'armAlarmNoLaterThan');
+  assert.ok(alarmMethod && armMethod);
+  const alarmCode = ts.transpileModule(
+    `class AlarmProbe { ${armMethod.getText(source)}\n${alarmMethod.getText(source)} }\nAlarmProbe`,
+    { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
+  ).outputText;
+  const jobs = new Map(initial.map((job) => [job.id, job]));
+  const record = {
+    jobs,
+    attemptWrites: [] as Array<[string, number]>,
+    activeWork: [] as Array<[string, boolean]>,
+    recovery: [] as string[],
+    events: [] as string[],
+    replayTexts: [] as unknown[],
+    alarmAt: null as number | null,
+  };
+  let inboxDrains = 0;
+  const AlarmProbe = vm.runInNewContext(alarmCode, {
+    Date, setTimeout, clearTimeout, AbortController, Promise,
+    MAX_TURN_DRAIN_BATCH: 16,
+    MAX_TURN_ATTEMPTS: 2,
+    MAX_POST_DISPATCH_ATTEMPTS: 8,
+    RELAY_RETRY_BACKOFF_MS: 2_000,
+    ALARM_TURN_BUDGET_MS: 40,
+    ALARM_TURN_HARD_CAP_MS: 400,
+    ALARM_PENDING_PER_THREAD: 4,
+    ALARM_ADMISSION_RECHECK_MS: 2,
+    ALARM_YIELD_REARM_MS: 1_000,
+    DURABLE_RECOVERY_FAILURE_TEXT: 'recovery notice',
+    AgentObservationYield,
+    AgentPromptFailure,
+    alarmYieldIsFree,
+    drainAlarmTurnJobs,
+    console: { warn() {}, error() {}, info() {} },
+    createPlatformProductTelemetry: () => ({ capture() {} }),
+    localSettingsStore: () => ({}),
+    localGatewayAppStores: () => ({ config: {} }),
+    localUsageStore: () => ({}),
+    localSlackPresentationState: () => ({}),
+    settlementFailureFacts: () => [],
+    drainGatewayInbox: async () => {
+      inboxDrains += 1;
+      hooks.onInboxDrain?.(inboxDrains, jobs);
+      return false;
+    },
+    drainLedgerRuns: async () => ({}),
+    drainSlackInteractionCleanups: async () => { record.events.push('tick:cleanups'); },
+    drainTerminalPresentationRepairs: async () => ({}),
+    drainCloudflareScheduleActions: async () => {
+      record.events.push('tick:schedule');
+      return {};
+    },
+    drainCloudflareManagementReceipts: async () => { record.events.push('tick:receipts'); },
+    runDriverRetryDelayMs: (_drain: object, retryDelay: number) => retryDelay,
+    slackAgentThreadKey: (turn: { thread: string }) => turn.thread,
+    effectiveTurnSlackInstallationId: () => 'workspace',
+    verifySlackInstallationTurnAccess: async () => {},
+    runtimePlanHasCodingWorkspace: () => false,
+    replayTextForTurnProgress: () => 'Pull request #12 is already open',
+    recordDeliveredSlackAgentMessage() {},
+    earliestDefined: (...values: Array<number | undefined>) =>
+      values.filter((value): value is number => value !== undefined).sort((a, b) => a - b)[0],
+    runTurn: async (_turn: unknown, _assignment: unknown, _env: unknown, options: {
+      turnId: string; replayText?: string; replayTerminalResult?: string;
+      observationSignal?: AbortSignal; onObservationStarted?: () => void;
+      onDelivered?: () => void;
+      flueDispatch?: { dispatchReceipt?: object };
+    }) => {
+      if (options.replayTerminalResult === 'failure') {
+        record.events.push(`recovery-notice:${options.turnId}`);
+        options.onDelivered?.();
+        return;
+      }
+      record.events.push(`start:${options.turnId}`);
+      if (options.turnId.startsWith('long')) {
+        record.replayTexts.push(options.replayText);
+        options.onObservationStarted?.();
+        const signal = options.observationSignal!;
+        await new Promise((resolve) => signal.addEventListener('abort', resolve, { once: true }));
+        record.events.push(`yield:${options.turnId}`);
+        throw new AgentObservationYield();
+      }
+      options.onDelivered?.();
+      record.events.push(`delivered:${options.turnId}`);
+    },
+  }) as new () => {
+    stores: object; env: object; ctx: object; alarm(): Promise<void>;
+    createAlarmIdentityResolver(): unknown;
+  };
+  const probe = new AlarmProbe();
+  probe.env = {};
+  (probe as unknown as { carriedAlarmTurns: Map<string, string> }).carriedAlarmTurns = new Map();
+  probe.ctx = { storage: {
+    async getAlarm() { return record.alarmAt; },
+    async setAlarm(at: number) { record.alarmAt = at; },
+  } };
+  probe.createAlarmIdentityResolver = () => async () => ({ client: {} });
+  probe.stores = {
+    management: { cleanupRetention() {}, nextOutboxDueAt: () => undefined },
+    turnJobs: {
+      listPendingByThread: () => [...jobs.values()].map((job) => structuredClone(job)),
+      hasPending: (lane = 'legacy') => lane === 'legacy' && jobs.size > 0,
+      hasPendingSlackInteractionCleanup: () => false,
+      recordAttempt(id: string, attempts: number) {
+        record.attemptWrites.push([id, attempts]);
+        jobs.get(id)!.attempts = attempts;
+      },
+      markDelivered(id: string) { jobs.delete(id); },
+      markRecoveryRequired(id: string) { record.recovery.push(id); },
+      markError(id: string) { record.recovery.push(id); jobs.delete(id); },
+      recordInteractionIntent() {},
+    },
+    slack: {
+      setActiveWork(key: string, _id: string, active: boolean) {
+        record.activeWork.push([key, active]);
+      },
+    },
+    gatewayInbox: { hasPending: () => false },
+  };
+  return { probe, record };
+}
+
+function longCodingJob(id: string, attempts: number, acceptedAt: string): AlarmJob {
+  return {
+    id, attempts, turn: { interactionIntent: { disposition: 'work' }, thread: 'coding' },
+    assignment: {}, progress: {}, dispatchEnvelope: { instanceId: 'agent' },
+    dispatchReceipt: { submissionId: `submission_${id}`, acceptedAt },
+  };
+}
+
+test('a long turn yields at the alarm budget without spending attempts while new messages run', async () => {
+  const { probe, record } = await alarmHarness(
+    [longCodingJob('long', 3, new Date().toISOString())],
+    {
+      onInboxDrain: (count, jobs) => {
+        // A channel mention lands while the coding turn is observing.
+        if (count === 2) {
+          jobs.set('new', {
+            id: 'new', attempts: 0, turn: { thread: 'channel' }, assignment: {}, progress: {},
+          });
+        }
+      },
+    },
+  );
+  const before = Date.now();
+  await probe.alarm();
+  const after = Date.now();
+  const turnEvents = record.events.filter((event) => !event.startsWith('tick:'));
+  assert.deepEqual(turnEvents, ['start:long', 'start:new', 'delivered:new', 'yield:long'],
+    'the new message is answered while the long turn is still observing');
+  assert.ok(record.alarmAt !== null && record.alarmAt >= before + 1_000 &&
+    record.alarmAt <= after + 1_000,
+  'a yield re-arms promptly rather than with the error backoff');
+  assert.deepEqual(record.replayTexts, [undefined],
+    'a dispatched, unsettled turn reattaches to its reply instead of replaying progress');
+
+  // A 155-minute coding turn yields many times; none of them spends its budget.
+  for (let index = 0; index < 12; index += 1) {
+    record.alarmAt = null;
+    await probe.alarm();
+  }
+  assert.equal(record.jobs.get('long')?.attempts, 3);
+  assert.deepEqual(record.attemptWrites.filter(([id]) => id === 'long').at(-1), ['long', 3]);
+  assert.deepEqual(record.recovery, []);
+  assert.deepEqual(record.activeWork.filter(([key]) => key === 'coding'), [],
+    'the running turn keeps its active work');
+  assert.equal(record.events.filter((event) => event === 'yield:long').length, 13);
+});
+
+test('due receipts and schedule actions run while a long turn observes, before it yields', async () => {
+  const { probe, record } = await alarmHarness([longCodingJob('long', 0, new Date().toISOString())]);
+  await probe.alarm();
+  const yieldAt = record.events.indexOf('yield:long');
+  const receiptsAt = record.events.indexOf('tick:receipts');
+  const scheduleAt = record.events.indexOf('tick:schedule');
+  assert.ok(receiptsAt > record.events.indexOf('start:long') && receiptsAt < yieldAt,
+    'a management receipt armed mid-drain is delivered without waiting for the budget');
+  assert.ok(scheduleAt >= 0 && scheduleAt < yieldAt);
+});
+
+test('a submission past its durability stops yielding for free and ends with the recovery notice', async () => {
+  const stale = new Date(Date.now() - 4 * 60 * 60_000).toISOString();
+  const { probe, record } = await alarmHarness([longCodingJob('long', 6, stale)]);
+  await probe.alarm();
+  assert.equal(record.jobs.get('long')?.attempts, 7, 'the yield counts as an attempt');
+  assert.deepEqual(record.activeWork, [['coding', false]]);
+  await probe.alarm();
+  assert.deepEqual(record.events.filter((event) => !event.startsWith('tick:')), [
+    'start:long', 'yield:long', 'start:long', 'yield:long', 'recovery-notice:long',
+  ]);
+  assert.equal(record.jobs.has('long'), false, 'the exhausted turn is terminal');
+});

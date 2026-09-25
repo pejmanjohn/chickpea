@@ -184,7 +184,17 @@ import {
   runTurn,
   sanitizeError,
 } from './slack/run-turn.ts';
-import { AgentPromptFailure } from './slack/flue-dispatch.ts';
+import { AgentObservationYield, AgentPromptFailure } from './slack/flue-dispatch.ts';
+import {
+  ALARM_ADMISSION_RECHECK_MS,
+  ALARM_PENDING_PER_THREAD,
+  ALARM_TURN_BUDGET_MS,
+  ALARM_TURN_HARD_CAP_MS,
+  ALARM_YIELD_REARM_MS,
+  alarmYieldIsFree,
+  drainAlarmTurnJobs,
+  type AlarmTurnJobControl,
+} from './slack/alarm-turn-drain.ts';
 import { DURABLE_RECOVERY_FAILURE_TEXT } from './slack/web-client-presenter.ts';
 import {
   abandonTerminalSlackPresentationBestEffort,
@@ -734,6 +744,14 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
    * before a successful re-init see the envelope.
    */
   private initError: string | undefined;
+  /** Set while an alarm drains turns: new admissions start without waiting. */
+  private alarmAdmissionWake: (() => void) | undefined;
+  /**
+   * Turn jobs an alarm returned without at its hard cap (job id to thread
+   * key), still running in this isolate. Their threads stay closed until they
+   * settle so a delivery in flight is never started a second time.
+   */
+  private readonly carriedAlarmTurns = new Map<string, string>();
 
   constructor(ctx: DurableObjectState, env: unknown) {
     super(ctx, env);
@@ -1782,6 +1800,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
    * storage error rather than dropping every job.
    */
   async alarm(): Promise<void> {
+    const alarmStartedAt = Date.now();
     this.stores ??= this.tryInit();
     if (!this.stores) {
       throw new Error(`state store unavailable in alarm: ${this.initError ?? 'unknown'}`);
@@ -1797,7 +1816,17 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       stores,
       this.env as PlatformEnv,
     );
-    const pending = stores.turnJobs.listPending(MAX_TURN_DRAIN_BATCH);
+    const threadKeyOf = (job: {
+      turn: Parameters<typeof slackAgentThreadKey>[0];
+      assignment: Parameters<typeof slackAgentThreadKey>[1];
+    }) => slackAgentThreadKey(job.turn, job.assignment);
+    const listPendingTurns = () => stores.turnJobs.listPendingByThread({
+      maxThreads: MAX_TURN_DRAIN_BATCH,
+      perThread: ALARM_PENDING_PER_THREAD,
+      threadKey: threadKeyOf,
+    });
+    const carriedJobIds = () => new Set(this.carriedAlarmTurns.keys());
+    const pending = listPendingTurns();
     if (pending.length === 0) {
       const cleanupPending = stores.turnJobs.hasPendingSlackInteractionCleanup();
       const resolveInstallation = this.createAlarmIdentityResolver(stores);
@@ -1808,11 +1837,12 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
         productTelemetry,
       );
       if (cleanupPending) {
-        await drainSlackInteractionCleanups(stores, resolveInstallation);
+        await drainSlackInteractionCleanups(stores, resolveInstallation, carriedJobIds());
       }
       const presentationRepairs = await drainTerminalPresentationRepairs(
         stores,
         resolveInstallation,
+        carriedJobIds(),
       );
       const scheduleActions = await drainCloudflareScheduleActions(stores, this.env as PlatformEnv);
       await drainCloudflareManagementReceipts(stores, resolveInstallation);
@@ -1851,7 +1881,10 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     };
     let needsRetry = gatewayNeedsRetry;
     let identityRetryDelayMs = RELAY_RETRY_BACKOFF_MS;
-    const runJob = async (job: (typeof pending)[number]): Promise<boolean> => {
+    const runJob = async (
+      job: (typeof pending)[number],
+      control?: AlarmTurnJobControl,
+    ): Promise<boolean> => {
       if (!job.turn.interactionIntent && job.progress.interactionIntent) {
         job.turn.interactionIntent = job.progress.interactionIntent;
       }
@@ -2003,8 +2036,13 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
           // identity retains its marker, so a later alarm can try again.
           return undefined;
         };
-        const replayText =
-          replayTextForTurnProgress(job.progress) ?? (await persistSandboxProgress());
+        // A dispatched, unsettled turn reattaches to its own reply, which is
+        // the answer; a PR it opened mid-run must not replace that answer
+        // with a replayed notice while the submission is still running.
+        const reattaching = job.dispatchReceipt !== undefined && job.flueSettlement === undefined;
+        const replayText = reattaching
+          ? undefined
+          : replayTextForTurnProgress(job.progress) ?? (await persistSandboxProgress());
         const runtimePlanDecision = job.runtimePlan && job.agentInstanceId
           ? {
               runtimePlan: job.runtimePlan,
@@ -2017,6 +2055,9 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
           turnId: job.id,
           usageExecutionId: `exec:${job.id}:flue`,
           ...(job.runId ? { runId: job.runId, runAttempt: attempt } : {}),
+          ...(control
+            ? { observationSignal: control.signal, onObservationStarted: control.observing }
+            : {}),
           workStore: stores.work as unknown as WorkStore,
           settingsStore: localSettingsStore(stores),
           usageStore,
@@ -2081,6 +2122,20 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
         // Claims stay held — a completed turn never re-runs.
         return true;
       } catch (err) {
+        if (err instanceof AgentObservationYield) {
+          if (alarmYieldIsFree(flueDispatch.dispatchReceipt?.acceptedAt, Date.now())) {
+            // The alarm stopped observing on purpose; nothing failed. Restore
+            // the attempt count so a long turn never spends its reattachment
+            // budget on yields, and keep its receipt, active work, and claims.
+            stores.turnJobs.recordAttempt(job.id, job.attempts);
+            console.info('[chickpea] Flue turn yielded for reattachment by the next alarm');
+            return false;
+          }
+          // Past its durability the submission should have settled. Spend
+          // attempts from here so the bounded reattachment policy below ends
+          // it with the durable recovery notice.
+          console.warn('[chickpea] Flue turn outlived its submission durability');
+        }
         if (err instanceof AgentPromptFailure && err.recoveryRequired) {
           console.error('[chickpea] Flue turn requires operator reconciliation');
           return deliverRecoveryFailure('flue_dispatch_reconciliation_required');
@@ -2145,37 +2200,57 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       }
     };
 
-    // Group by conversation so ordering INSIDE a thread is preserved (a
-    // thread's second turn never overtakes its first), then drain groups with
-    // bounded fan-out: one slow turn no longer head-of-line-blocks every other
-    // conversation in the workspace behind a strictly sequential loop. Turns
-    // are I/O-bound (model + Slack calls), so async interleaving inside this
-    // single-threaded DO is safe; storage writes stay per-job and atomic.
-    const groups = new Map<string, (typeof pending)[number][]>();
-    for (const job of pending) {
-      const key = slackAgentThreadKey(job.turn, job.assignment);
-      const list = groups.get(key);
-      if (list) {
-        list.push(job);
-      } else {
-        groups.set(key, [job]);
-      }
-    }
-    const groupLists = [...groups.values()];
+    // Ordering inside a thread is preserved (a thread's second turn never
+    // overtakes its first) while unrelated conversations run side by side.
+    // The drain keeps admitting while turns observe, so one long turn never
+    // holds new messages until the platform ends this alarm, and it yields
+    // every observation before the alarm's wall-time limit (see
+    // src/slack/alarm-turn-drain.ts).
     const DRAIN_CONCURRENCY = 4;
-    let nextGroup = 0;
-    await Promise.all(
-      Array.from({ length: Math.min(DRAIN_CONCURRENCY, groupLists.length) }, async () => {
-        while (nextGroup < groupLists.length) {
-          const mine = groupLists[nextGroup];
-          nextGroup += 1;
-          if (!mine) break;
-          for (const job of mine) {
-            if (!(await runJob(job))) break;
-          }
-        }
-      }),
-    );
+    const turnDrain = await drainAlarmTurnJobs<(typeof pending)[number]>({
+      initial: pending,
+      jobId: (job) => job.id,
+      threadKey: threadKeyOf,
+      runJob,
+      refresh: async () => {
+        needsRetry = (await drainGatewayInbox(stores, this.env as PlatformEnv)) || needsRetry;
+        return listPendingTurns();
+      },
+      carried: {
+        threadKeys: () => new Set(this.carriedAlarmTurns.values()),
+        jobIds: carriedJobIds,
+      },
+      // Due receipts, schedule actions, repairs, and cleanups keep moving
+      // while a long turn observes. Records owned by a running job are its
+      // own to finish; the tail picks them up once it returns.
+      tick: async (runningJobIds) => {
+        await drainSlackInteractionCleanups(stores, resolveInstallation, runningJobIds);
+        await drainTerminalPresentationRepairs(stores, resolveInstallation, runningJobIds);
+        await drainCloudflareScheduleActions(stores, this.env as PlatformEnv);
+        await drainCloudflareManagementReceipts(stores, resolveInstallation);
+      },
+      startConcurrency: DRAIN_CONCURRENCY,
+      maxActiveThreads: MAX_TURN_DRAIN_BATCH,
+      startedAt: alarmStartedAt,
+      budgetMs: ALARM_TURN_BUDGET_MS,
+      hardCapMs: ALARM_TURN_HARD_CAP_MS,
+      recheckMs: ALARM_ADMISSION_RECHECK_MS,
+      onWake: (wake) => {
+        this.alarmAdmissionWake = wake;
+        return () => {
+          if (this.alarmAdmissionWake === wake) this.alarmAdmissionWake = undefined;
+        };
+      },
+    });
+    for (const carried of turnDrain.carried) {
+      console.warn('[chickpea] Turn job still running at the alarm cap; its thread waits for it');
+      this.carriedAlarmTurns.set(carried.id, carried.threadKey);
+      void carried.settled.finally(() => {
+        this.carriedAlarmTurns.delete(carried.id);
+        // Its thread may continue now; a running drain picks that up at once.
+        this.alarmAdmissionWake?.();
+      });
+    }
     const ledgerDrain = await drainLedgerRuns(
       stores,
       this.env as PlatformEnv,
@@ -2183,10 +2258,11 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       productTelemetry,
     );
     identityRetryDelayMs = runDriverRetryDelayMs(ledgerDrain, identityRetryDelayMs);
-    await drainSlackInteractionCleanups(stores, resolveInstallation);
+    await drainSlackInteractionCleanups(stores, resolveInstallation, carriedJobIds());
     const presentationRepairs = await drainTerminalPresentationRepairs(
       stores,
       resolveInstallation,
+      carriedJobIds(),
     );
     const scheduleActions = await drainCloudflareScheduleActions(stores, this.env as PlatformEnv);
     await drainCloudflareManagementReceipts(stores, resolveInstallation);
@@ -2194,7 +2270,10 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       stores.turnJobs.hasPending('ledger') ||
       stores.turnJobs.hasPendingSlackInteractionCleanup() ||
       stores.gatewayInbox.hasPending();
-    const turnRetry = needsRetry ? Date.now() + identityRetryDelayMs : undefined;
+    // Yielded turns are still running elsewhere; reattach to them promptly.
+    const turnRetry = turnDrain.budgetExhausted
+      ? Date.now() + ALARM_YIELD_REARM_MS
+      : needsRetry ? Date.now() + identityRetryDelayMs : undefined;
     const outboxRetry = stores.management.nextOutboxDueAt();
     const nextWake = earliestDefined(
       turnRetry,
@@ -2212,6 +2291,9 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
   }
 
   private async armAlarmNoLaterThan(at: number): Promise<void> {
+    // Every admission arms the alarm after its durable write. A running alarm
+    // cannot be re-entered, so let its drain pick the new work up directly.
+    this.alarmAdmissionWake?.();
     const existing = await this.ctx.storage.getAlarm();
     if (existing === null || at < existing) await this.ctx.storage.setAlarm(at);
   }
@@ -2391,8 +2473,10 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
 async function drainSlackInteractionCleanups(
   stores: TagStateStores,
   resolveInstallation: SlackInstallationExecutionResolver,
+  excludeTurnJobIds: ReadonlySet<string> = new Set(),
 ): Promise<void> {
   for (const job of stores.turnJobs.listPendingSlackInteractionCleanups(MAX_TURN_DRAIN_BATCH)) {
+    if (excludeTurnJobIds.has(job.id)) continue;
     const progress = job.progress.slackInteraction;
     if (!progress) continue;
     try {
@@ -2416,8 +2500,10 @@ async function drainSlackInteractionCleanups(
 async function drainTerminalPresentationRepairs(
   stores: TagStateStores,
   resolveInstallation: SlackInstallationExecutionResolver,
+  excludeTurnJobIds: ReadonlySet<string> = new Set(),
 ): Promise<SlackPresentationRepairDrainResult> {
-  const presentations = stores.presentations.listAutoRepairableV3(MAX_TURN_DRAIN_BATCH);
+  const presentations = stores.presentations.listAutoRepairableV3(MAX_TURN_DRAIN_BATCH)
+    .filter((presentation) => !excludeTurnJobIds.has(presentation.turnJobId));
   return drainSlackPresentationRepairs({
     presentations,
     state: localSlackPresentationState(stores),

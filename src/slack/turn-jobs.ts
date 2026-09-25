@@ -346,6 +346,49 @@ export class TurnJobStoreLogic {
     return rows.map((row) => this.decodeRow(row));
   }
 
+  /**
+   * The alarm's work list: undelivered jobs in enqueue order, at most
+   * `perThread` per conversation and `maxThreads` conversations. A long queue
+   * of follow-ups in one thread cannot hide a new conversation behind it, and
+   * each thread keeps its own order. Reads the pending index a page at a
+   * time and stops once enough conversations are found.
+   */
+  listPendingByThread(input: {
+    maxThreads: number;
+    perThread: number;
+    threadKey(job: PendingTurnJob): string;
+    executionAuthority?: RunExecutionAuthority;
+    /** Rows read at most, bounding the cost of one very long backlog. */
+    scanLimit?: number;
+  }): PendingTurnJob[] {
+    const pageSize = 100;
+    const scanLimit = input.scanLimit ?? 1_000;
+    const perThread = new Map<string, number>();
+    const jobs: PendingTurnJob[] = [];
+    for (let offset = 0; offset < scanLimit; offset += pageSize) {
+      const rows = this.db.all(
+        `SELECT ${TURN_JOB_SELECT_COLUMNS}
+         FROM turn_jobs
+         WHERE delivered = 0 AND status != 'recovery_required' AND execution_authority = ?
+         ORDER BY enqueued_at LIMIT ? OFFSET ?`,
+        input.executionAuthority ?? 'legacy',
+        pageSize,
+        offset,
+      ) as unknown as TurnJobRow[];
+      for (const row of rows) {
+        const job = this.decodeRow(row);
+        const key = input.threadKey(job);
+        const listed = perThread.get(key) ?? 0;
+        if (listed === 0 && perThread.size >= input.maxThreads) continue;
+        if (listed >= input.perThread) continue;
+        perThread.set(key, listed + 1);
+        jobs.push(job);
+      }
+      if (rows.length < pageSize || perThread.size >= input.maxThreads) break;
+    }
+    return jobs;
+  }
+
   countPendingDeliveriesForWorkspace(workspaceId: string): number {
     const row = this.db.get(
       `SELECT COUNT(*) AS count

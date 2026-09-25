@@ -144,6 +144,23 @@ interface PreparedSlackActivityWrite {
 }
 
 const STALE_WRITER_MESSAGE = 'Slack Agent View presentation writer is stale.';
+
+/**
+ * Close an open Agent View stream once it is this old. Slack does not document
+ * a stream lifetime; other Slack agents observe native streams sealed about
+ * 5 min 20 s after `chat.startStream`, even while appending, after which the
+ * card can no longer be stopped, updated, or found. Four minutes leaves room
+ * for the check interval and for clock skew between Slack's timestamp and
+ * the Worker. Short turns finish well inside it and keep their streamed card.
+ */
+export const AGENT_VIEW_STREAM_RETIRE_AFTER_MS = 4 * 60_000;
+
+/** How often a turn that is waiting on its agent checks the stream's age. */
+export const AGENT_VIEW_STREAM_AGE_CHECK_MS = 20_000;
+
+/** The retired card's last words; the answer follows as its own message. */
+export const AGENT_VIEW_RETIRED_STREAM_TEXT =
+  'Still working on this. I will post the result in this thread.';
 const MAX_PROGRESSIVE_BUFFER_BYTES = 128 * 1_024;
 const DEFAULT_APPEND_INTERVAL_MS = 750;
 const CORRECTED_MARKER = '_Corrected_';
@@ -791,6 +808,11 @@ export class SlackAgentViewPresentation {
     artifacts: readonly SlackArtifactReceipt[] = [],
   ): Promise<AgentViewFinalResult> {
     let presentation = await this.requirePresentation();
+    // A stream old enough for Slack to have sealed it is closed first; the
+    // terminal then takes the fresh-post route instead of a stop that fails.
+    if (this.streamIsAged(presentation) && await this.retireAgedStream()) {
+      presentation = await this.requirePresentation();
+    }
     if (presentation.stream.state === 'finalized' ||
         presentation.stream.state === 'artifact_delivered') {
       if (presentation.schemaVersion === 3 && presentation.stream.messageTs &&
@@ -849,6 +871,15 @@ export class SlackAgentViewPresentation {
         : { kind: 'mark_finalizing' });
       return this.recoverFinalizingStream(presentation, text, format, observer, tablePresentation);
     }
+    if (presentation.schemaVersion === 3 && !presentation.stream.messageTs &&
+        (presentation.stream.state === 'starting' || presentation.stream.state === 'unknown') &&
+        presentation.terminalDelivery.state === 'none') {
+      // Only a checklist card or a streamed prefix can have been started
+      // here, never the answer. Without its coordinate the run could only
+      // retry until it exhausted, so the terminal takes the fresh-post route.
+      console.warn('[chickpea] Slack Agent View stream coordinate missing; posting the final fresh');
+      presentation = await this.transition(presentation, { kind: 'stream_coordinate_lost' });
+    }
     if (presentation.stream.state === 'starting' || presentation.stream.state === 'unknown') {
       throw new Error('Slack Agent View presentation requires reconciliation.');
     }
@@ -868,7 +899,7 @@ export class SlackAgentViewPresentation {
       return {
         handled: false,
         fallbackPresentation: true,
-        ...(terminal.operationId ? { operationId: terminal.operationId } : {}),
+        operationId: terminal.operationId ?? freshFinalOperationId(presentation.runId),
       };
     }
     if (artifacts.length > 0 && presentation.stream.state === 'absent') {
@@ -879,11 +910,13 @@ export class SlackAgentViewPresentation {
       return {
         handled: false,
         fallbackPresentation: true,
-        ...(terminal.operationId ? { operationId: terminal.operationId } : {}),
+        operationId: terminal.operationId ?? freshFinalOperationId(presentation.runId),
       };
     }
 
     const approved = canonicalSlackReplyText(text, format);
+    const recoverStream = (finalizing: SlackRunPresentation) =>
+      this.recoverFinalizingStream(finalizing, text, format, observer, tablePresentation);
     const renderedTable = tablePresentation
       ? renderSlackTablePresentation(tablePresentation, Math.max(0, 12_000 - approved.length - 2))
       : undefined;
@@ -928,10 +961,10 @@ export class SlackAgentViewPresentation {
           return {
             handled: false,
             fallbackPresentation: true,
-            ...(pendingTerminal.schemaVersion === 3 &&
+            operationId: pendingTerminal.schemaVersion === 3 &&
                 pendingTerminal.terminalDelivery.state === 'intended'
-              ? { operationId: pendingTerminal.terminalDelivery.operation.operationId }
-              : {}),
+              ? pendingTerminal.terminalDelivery.operation.operationId
+              : freshFinalOperationId(pendingTerminal.runId),
           };
         }
         await this.markUnknown(presentation, 'unknown_effect');
@@ -944,11 +977,11 @@ export class SlackAgentViewPresentation {
         throw error;
       }
       const messageTs = requireSlackTs(started.ts);
-      presentation = await this.transition(presentation, {
-        kind: 'stream_started',
+      presentation = await this.recordStreamStarted(
+        presentation,
         messageTs,
-        flue: terminalFlueIdentity(presentation),
-      });
+        terminalFlueIdentity(presentation),
+      );
       return this.stopKnownStream(
         presentation,
         attemptId,
@@ -957,6 +990,7 @@ export class SlackAgentViewPresentation {
         footerBlocks,
         terminalTaskStatus,
         utf8Length(approved),
+        recoverStream,
       );
     }
 
@@ -1002,6 +1036,7 @@ export class SlackAgentViewPresentation {
       footerBlocks,
       terminalTaskStatus,
       utf8Length(suffix),
+      recoverStream,
     );
   }
 
@@ -1191,11 +1226,11 @@ export class SlackAgentViewPresentation {
         await this.markUnknown(presentation, 'unknown_effect');
         throw error;
       }
-      presentation = await this.transition(presentation, {
-        kind: 'stream_started',
-        messageTs: requireSlackTs(started.ts),
-        flue: { instanceId, submissionId, messageId: chunk.messageId },
-      });
+      presentation = await this.recordStreamStarted(
+        presentation,
+        requireSlackTs(started.ts),
+        { instanceId, submissionId, messageId: chunk.messageId },
+      );
       await this.recordAcknowledgedPrefix(presentation, chunk.position, safePrefix);
       this.nextAppendAt = this.now() + this.appendIntervalMs();
       return;
@@ -1318,15 +1353,11 @@ export class SlackAgentViewPresentation {
       });
     }
     presentation = await this.transition(presentation, { kind: 'stream_start_intent' });
+    let started: Awaited<ReturnType<WebClient['chat']['startStream']>>;
     try {
-      const started = await this.options.client.chat.startStream(
+      started = await this.options.client.chat.startStream(
         streamStartPayload(presentation, { taskChunks: taskChunks(presentation) }),
       );
-      presentation = await this.transition(presentation, {
-        kind: 'stream_started',
-        messageTs: requireSlackTs(started.ts),
-        flue: { instanceId, submissionId },
-      });
     } catch (error) {
       const outcome = slackEffectOutcome(error);
       console.warn(
@@ -1339,6 +1370,14 @@ export class SlackAgentViewPresentation {
       await this.markUnknown(presentation, 'unknown_effect');
       throw error;
     }
+    // Slack opened the card; its coordinate is proven even if a concurrent
+    // writer moved the row meanwhile, so a local write race is never
+    // mistaken for an ambiguous Slack effect.
+    presentation = await this.recordStreamStarted(
+      presentation,
+      requireSlackTs(started.ts),
+      { instanceId, submissionId },
+    );
     try {
       await this.options.onNativeStarted?.();
     } catch {
@@ -1356,6 +1395,7 @@ export class SlackAgentViewPresentation {
     blocks: KnownBlock[],
     terminalTaskStatus: 'complete' | 'error',
     terminalSuffixBytes: number,
+    recover: (finalizing: SlackRunPresentation) => Promise<AgentViewFinalResult>,
   ): Promise<AgentViewFinalResult> {
     presentation = await this.transition(presentation, {
       kind: 'close_stream',
@@ -1383,6 +1423,19 @@ export class SlackAgentViewPresentation {
         `[chickpea] Slack Agent View stream finalization ${slackEffectOutcome(error)}: ` +
         safeSlackErrorCode(error),
       );
+      if (slackEffectOutcome(error) === 'failed' &&
+          STREAM_NO_LONGER_OPEN_ERRORS.has(safeSlackErrorCode(error))) {
+        // Slack rejected the stop outright: the stream was already sealed
+        // (a long-idle stream expires) or its message is gone. Nothing was
+        // written, so recover in this attempt on the same coordinate instead
+        // of spending a retry that would reach the same answer later.
+        await observer.after({
+          attemptId,
+          outcome: 'failed',
+          safeFailureCode: 'slack_stream_not_open',
+        });
+        return recover(presentation);
+      }
       await this.markUnknown(presentation, 'unknown_effect');
       await this.recordTerminalDeliveryReceipt('unknown');
       await observer.after({
@@ -1435,11 +1488,51 @@ export class SlackAgentViewPresentation {
       try {
         await this.options.client.chat.stopStream({ channel: update.channel, ts: messageTs });
       } catch (error) {
-        // Slack explicitly reports an already-stopped stream. Other failures
+        // Slack explicitly reports an already-stopped stream (or no stream
+        // message at all; the update below then proves which). Other failures
         // do not establish that it is safe to update the terminal artifact.
-        if (safeSlackErrorCode(error) !== 'message_not_in_streaming_state') throw error;
+        if (slackEffectOutcome(error) !== 'failed' ||
+            !STREAM_NO_LONGER_OPEN_ERRORS.has(safeSlackErrorCode(error))) throw error;
       }
-      await this.options.client.chat.update(update);
+      try {
+        await this.options.client.chat.update(update);
+      } catch (error) {
+        if (slackEffectOutcome(error) !== 'failed' ||
+            !STREAM_NO_LONGER_OPEN_ERRORS.has(safeSlackErrorCode(error))) throw error;
+        // Slack refuses the saved coordinate outright (no message, a sealed
+        // or conflicting stream, an uneditable message): a retry would fail
+        // the same way until the run is abandoned with no visible answer.
+        // Post the terminal once, fresh.
+        console.warn('[chickpea] Slack Agent View stream is unrecoverable; posting the final fresh');
+        if (safeSlackErrorCode(error) === 'message_not_found') {
+          try {
+            // A sealed stream can still render as an empty shell. Remove it
+            // when Slack lets us; a refusal never holds back the fresh final.
+            await this.options.client.chat.delete({ channel: update.channel, ts: messageTs });
+          } catch (deleteError) {
+            console.warn(
+              `[chickpea] Slack Agent View lost stream cleanup ${slackEffectOutcome(deleteError)}: ` +
+              safeSlackErrorCode(deleteError),
+            );
+          }
+        }
+        await observer.after({
+          attemptId,
+          outcome: 'failed',
+          safeFailureCode: 'slack_stream_message_missing',
+        });
+        await this.transition(presentation, { kind: 'stream_message_lost', messageTs });
+        const lost = await this.requirePresentation();
+        return {
+          handled: false,
+          fallbackPresentation: true,
+          // The fresh post always carries an idempotency key: the frozen
+          // terminal's, or the run's own for rows without terminal receipts.
+          operationId: lost.schemaVersion === 3 && lost.terminalDelivery.state === 'intended'
+            ? lost.terminalDelivery.operation.operationId
+            : freshFinalOperationId(lost.runId),
+        };
+      }
       presentation = await this.transition(presentation, {
         kind: 'mark_artifact_delivered', outcome: presentation.stream.presentationOutcome ?? 'terminal_only',
       });
@@ -1635,6 +1728,94 @@ export class SlackAgentViewPresentation {
       throw new Error(STALE_WRITER_MESSAGE);
     }
     return result.presentation;
+  }
+
+  /**
+   * Close this Run's open stream before Slack seals it, when the stream is
+   * older than AGENT_VIEW_STREAM_RETIRE_AFTER_MS. The card keeps the rows it
+   * already shows (no detail is sent twice) and ends with a short note; the
+   * terminal then posts once as a fresh thread message. Returns whether the
+   * stream is now retired. Never throws: a failed check repeats later, and a
+   * stop Slack refuses leaves nothing a fresh final would duplicate.
+   */
+  async retireAgedStream(): Promise<boolean> {
+    try {
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const presentation = await this.requirePresentation();
+        const messageTs = presentation.stream.messageTs;
+        if (presentation.stream.state !== 'streaming' || !messageTs ||
+            presentation.stream.pendingAppend) return false;
+        if (presentation.schemaVersion === 3 && presentation.terminalDelivery.state !== 'none') {
+          return false;
+        }
+        if (!this.streamIsAged(presentation)) return false;
+        try {
+          await this.transition(presentation, { kind: 'retire_aged_stream', messageTs });
+        } catch (error) {
+          // A milestone or status write moved the row; look again.
+          if (error instanceof Error && error.message === STALE_WRITER_MESSAGE) continue;
+          throw error;
+        }
+        try {
+          // A card that already streamed answer text ends as it stands; the
+          // note belongs only on a checklist that is still waiting.
+          await this.options.client.chat.stopStream({
+            channel: presentation.root.channelId,
+            ts: messageTs,
+            ...(presentation.stream.acknowledgedByteLength > 0
+              ? {}
+              : { chunks: [{ type: 'markdown_text', text: AGENT_VIEW_RETIRED_STREAM_TEXT }] }),
+          } as unknown as Parameters<WebClient['chat']['stopStream']>[0]);
+        } catch (error) {
+          console.warn(
+            `[chickpea] Slack Agent View stream retirement ${slackEffectOutcome(error)}: ` +
+            safeSlackErrorCode(error),
+          );
+        }
+        console.info('[chickpea] Slack Agent View stream retired before Slack could seal it');
+        return true;
+      }
+    } catch (error) {
+      console.warn('[chickpea] Slack Agent View stream age check failed:', safeSlackErrorCode(error));
+    }
+    return false;
+  }
+
+  /** Slack's stream timestamp is its start time; compare it to the bound. */
+  private streamIsAged(presentation: SlackRunPresentation): boolean {
+    const messageTs = presentation.stream.messageTs;
+    if (presentation.stream.state !== 'streaming' || !messageTs) return false;
+    const startedAt = Number(messageTs) * 1_000;
+    return Number.isFinite(startedAt) &&
+      this.now() - startedAt >= AGENT_VIEW_STREAM_RETIRE_AFTER_MS;
+  }
+
+  /**
+   * Record the coordinate Slack returned for a stream this writer opened.
+   * Activity status, milestones, and the progressive relay write the same
+   * row, and any of them may advance it while `chat.startStream` is in
+   * flight. The stream is still this writer's (the row stays `starting` and
+   * the fence is unchanged), so re-read and record it on the current version.
+   */
+  private async recordStreamStarted(
+    presentation: SlackRunPresentation,
+    messageTs: string,
+    flue: { instanceId: string; submissionId: string; messageId?: string },
+  ): Promise<SlackRunPresentation> {
+    const fence = presentation.runFencingToken;
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        return await this.transition(presentation, { kind: 'stream_started', messageTs, flue }, fence);
+      } catch (error) {
+        if (attempt >= 3 || !(error instanceof Error) || error.message !== STALE_WRITER_MESSAGE) {
+          throw error;
+        }
+        presentation = await this.requirePresentation();
+        if (presentation.stream.state !== 'starting' || presentation.runFencingToken !== fence) {
+          throw error;
+        }
+      }
+    }
   }
 
   private async markUnknown(
@@ -1959,6 +2140,15 @@ function utf8Length(value: string): number {
   return new TextEncoder().encode(value).byteLength;
 }
 
+/**
+ * The idempotency key of a presentation without terminal receipts (V1/V2)
+ * whose final posts as a fresh message. It depends only on the Run, so a
+ * retry after an unknown post repeats the same key.
+ */
+function freshFinalOperationId(runId: string): string {
+  return `terminal_${hash(`${runId}:fresh_final`).slice(0, 24)}`;
+}
+
 function hash(value: string): string {
   return createHash('sha256').update(value).digest('hex');
 }
@@ -1970,10 +2160,24 @@ function comparePosition(
   return left.batch === right.batch ? left.index - right.index : left.batch - right.batch;
 }
 
+/** Slack's definitive answers that a stream coordinate is no longer open. */
+const STREAM_NO_LONGER_OPEN_ERRORS = new Set([
+  'message_not_in_streaming_state',
+  'message_not_found',
+  'streaming_state_conflict',
+  'cant_update_message',
+  'edit_window_closed',
+]);
+
 function slackEffectOutcome(error: unknown): 'failed' | 'unknown' {
   const code = error && typeof error === 'object' ? (error as { code?: unknown }).code : undefined;
   return code === ErrorCode.PlatformError || code === ErrorCode.RateLimitedError ||
-      (error instanceof SlackTransportError && error.effectOutcome === 'failed')
+      (error instanceof SlackTransportError && error.effectOutcome === 'failed') ||
+      // Slack's own answer that the stream's message is not open (or not
+      // there) proves the call wrote nothing, even when it arrives through
+      // the gateway, whose relayed error codes default to an unknown effect.
+      (error instanceof SlackTransportError &&
+        STREAM_NO_LONGER_OPEN_ERRORS.has(safeSlackErrorCode(error)))
     ? 'failed'
     : 'unknown';
 }

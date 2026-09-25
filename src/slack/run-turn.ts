@@ -55,6 +55,7 @@ import { isRoutineSlackTurn } from '../routines/slack-context.ts';
 import { replyFooterModelLabel } from './message-format.ts';
 import {
   agentFailureText,
+  AgentObservationYield,
   AgentPromptFailure,
   endCloudflareSandboxTurn,
   promptSlackThreadAgent,
@@ -126,6 +127,7 @@ import {
   type SlackInteractionIntent,
 } from './interaction-intent.ts';
 import {
+  AGENT_VIEW_STREAM_AGE_CHECK_MS,
   SlackAgentViewPresentation,
   type SlackPresentationStatePort,
 } from './agent-view-presentation.ts';
@@ -212,6 +214,16 @@ export interface RunTurnOptions {
   runId?: string;
   /** Durable relay attempt used as the canonical RunExecution fence. */
   runAttempt?: number;
+  /**
+   * Ends observation of an already-dispatched reply without settling it. The
+   * turn then rejects with AgentObservationYield, leaving its receipt, active
+   * work, acknowledgment, and workspace turn for the reattaching attempt.
+   */
+  observationSignal?: AbortSignal;
+  /** The durable receipt exists and this attempt is now only observing. */
+  onObservationStarted?: () => void;
+  /** Focused seam; production revokes the workspace turn's egress. */
+  endSandboxTurn?: typeof endCloudflareSandboxTurn;
   /** Explicit lease fence for a ledger-authoritative attempt. */
   runFencingToken?: number;
   /** Immutable authority selected at admission. Missing means legacy. */
@@ -696,6 +708,7 @@ export async function runTurn(
     });
   }
   let terminalStatusFinished = false;
+  let yielded = false;
   const finishStatus = async (result: 'answer' | 'failure'): Promise<void> => {
     // Close the sink first. Agent observations are relayed best-effort from a
     // different Cloudflare isolate and may still arrive after settlement
@@ -1197,46 +1210,59 @@ export async function runTurn(
               eligibility: frozenProgressiveEligibility,
             });
         }
-        agentResult = await (options.agentPrompt ?? promptSlackThreadAgent)({
-          message: executionPrompt,
-          state: options.flueDispatch!,
-          turnId: statusGeneration,
-          conversationKey: agentConversationKey,
-          useCloudflareSandbox: usedCloudflareSandbox,
-          requestedModel: resolvedModel ?? null,
-          ...(runtimePlanDecision
-            ? { runtimePlan: runtimePlanDecision.runtimePlan }
-            : {}),
-          // The host fetch is the only place these records exist; the dispatch
-          // envelope is the only channel that reaches the Agent object. Only a
-          // plan that can use them gets them: one whose image role resolved, or
-          // one that can send a conversation image to a connection.
-          ...(context.images?.length && runtimePlanDecision &&
-          (runtimePlanDecision.runtimePlan.imageCapability?.filled === true ||
-            planAllowsConnectionFileUpload(runtimePlanDecision.runtimePlan))
-            ? { threadImages: context.images }
-            : {}),
-          ...(admittedListIds.length ? { admittedListIds } : {}),
-          ...(platformEnv ? { env: platformEnv } : {}),
-          ...(workLifecycle && options.runId
-            ? {
-                workCorrelation: {
-                  runId: options.runId,
-                  runExecutionId: workLifecycle.executionId,
-                  mode: ledgerAuthority ? 'enforce' : 'observe',
-                },
-              }
-            : {}),
-          ...(prepareProgressiveRelay ? { prepareProgressiveRelay } : {}),
-          ...(agentViewPresentation || options.onCodingTaskStarted
-            ? {
-                onWorkspaceMilestone: async (record, target) => {
-                  await signalCodingTaskStarted();
-                  await agentViewPresentation?.applyWorkspaceMilestone(record, target);
-                },
-              }
-            : {}),
-        });
+        // A long delegated turn closes its Agent View card before Slack can
+        // seal it; its answer then posts as a fresh message.
+        const streamAgeChecks = agentViewPresentation
+          ? watchAgentViewStreamAge(agentViewPresentation)
+          : undefined;
+        try {
+          agentResult = await (options.agentPrompt ?? promptSlackThreadAgent)({
+            message: executionPrompt,
+            state: options.flueDispatch!,
+            turnId: statusGeneration,
+            conversationKey: agentConversationKey,
+            useCloudflareSandbox: usedCloudflareSandbox,
+            requestedModel: resolvedModel ?? null,
+            ...(runtimePlanDecision
+              ? { runtimePlan: runtimePlanDecision.runtimePlan }
+              : {}),
+            // The host fetch is the only place these records exist; the dispatch
+            // envelope is the only channel that reaches the Agent object. Only a
+            // plan that can use them gets them: one whose image role resolved, or
+            // one that can send a conversation image to a connection.
+            ...(context.images?.length && runtimePlanDecision &&
+            (runtimePlanDecision.runtimePlan.imageCapability?.filled === true ||
+              planAllowsConnectionFileUpload(runtimePlanDecision.runtimePlan))
+              ? { threadImages: context.images }
+              : {}),
+            ...(admittedListIds.length ? { admittedListIds } : {}),
+            ...(platformEnv ? { env: platformEnv } : {}),
+            ...(workLifecycle && options.runId
+              ? {
+                  workCorrelation: {
+                    runId: options.runId,
+                    runExecutionId: workLifecycle.executionId,
+                    mode: ledgerAuthority ? 'enforce' : 'observe',
+                  },
+                }
+              : {}),
+            ...(prepareProgressiveRelay ? { prepareProgressiveRelay } : {}),
+            ...(options.observationSignal ? { observationSignal: options.observationSignal } : {}),
+            ...(options.onObservationStarted
+              ? { onObservationStarted: options.onObservationStarted }
+              : {}),
+            ...(agentViewPresentation || options.onCodingTaskStarted
+              ? {
+                  onWorkspaceMilestone: async (record, target) => {
+                    await signalCodingTaskStarted();
+                    await agentViewPresentation?.applyWorkspaceMilestone(record, target);
+                  },
+                }
+              : {}),
+          });
+        } finally {
+          await streamAgeChecks?.stop();
+        }
         text = sandboxUnavailableFallback
           ? `${SANDBOX_UNAVAILABLE_FALLBACK_NOTICE}\n\n${agentResult.text}`
           : agentResult.text;
@@ -1492,33 +1518,61 @@ export async function runTurn(
         : undefined,
     );
   } catch (err) {
+    if (err instanceof AgentObservationYield) yielded = true;
     if (!(err instanceof AgentPromptFailure && err.retryable)) {
       await usageRecorder?.recordFailure();
     }
     throw err;
   } finally {
-    // A V3 retry/recovery attempt keeps its acknowledged activity visible.
-    // Legacy presentations retain their prior best-effort finally cleanup.
-    try {
-      if (!terminalStatusFinished) {
-        if (frozenPresentation?.schemaVersion === 3) {
-          statusTurn.close();
-        } else {
-          await statusTurn.finish(async () => { await presenter.clearStatus(); });
+    // A yielded turn is still running: it ends nothing a reattaching attempt
+    // needs (its status, acknowledgment, and workspace turn and egress), the
+    // same as an attempt the platform killed mid-observation.
+    if (yielded) {
+      if (!terminalStatusFinished) statusTurn.close();
+    } else {
+      // A V3 retry/recovery attempt keeps its acknowledged activity visible.
+      // Legacy presentations retain their prior best-effort finally cleanup.
+      try {
+        if (!terminalStatusFinished) {
+          if (frozenPresentation?.schemaVersion === 3) {
+            statusTurn.close();
+          } else {
+            await statusTurn.finish(async () => { await presenter.clearStatus(); });
+          }
         }
+        await removeWorkAcknowledgment();
+      } finally {
+        // The Sandbox DO lives in a different isolate from the agent factory;
+        // close the turn by its durable thread id at the actual end-of-turn
+        // seam. The workspace stays warm for follow-ups in this thread.
+        await (options.endSandboxTurn ?? endCloudflareSandboxTurn)(
+          platformEnv,
+          conversationKey,
+          usedCloudflareSandbox,
+        );
       }
-      await removeWorkAcknowledgment();
-    } finally {
-      // The Sandbox DO lives in a different isolate from the agent factory;
-      // close the turn by its durable thread id at the actual end-of-turn
-      // seam. The workspace stays warm for follow-ups in this thread.
-      await endCloudflareSandboxTurn(
-        platformEnv,
-        conversationKey,
-        usedCloudflareSandbox,
-      );
     }
   }
+}
+
+/**
+ * Check the Agent View stream's age while the turn waits on its agent: at
+ * once (a reattached turn may hold an old stream) and every
+ * AGENT_VIEW_STREAM_AGE_CHECK_MS. Checks never overlap and never throw.
+ */
+function watchAgentViewStreamAge(
+  presentation: Pick<SlackAgentViewPresentation, 'retireAgedStream'>,
+): { stop(): Promise<void> } {
+  let running: Promise<unknown> = presentation.retireAgedStream();
+  const timer = setInterval(() => {
+    running = running.then(() => presentation.retireAgedStream());
+  }, AGENT_VIEW_STREAM_AGE_CHECK_MS);
+  return {
+    async stop() {
+      clearInterval(timer);
+      await running;
+    },
+  };
 }
 
 /** Repair only adapter-owned, already-delivered Slack artifacts. The answer
