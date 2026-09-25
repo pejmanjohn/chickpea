@@ -374,6 +374,50 @@ test('a terminal-only final holds part 1 without a footer; the follow-up closes 
   }
 });
 
+test('a stream whose cap falls inside a code line stops at the line boundary before it', async () => {
+  const h = harness();
+  try {
+    const prose = Array.from({ length: 18 }, (_, index) =>
+      `Paragraph ${index + 1}: ${'the retry policy stays conservative. '.repeat(13).trim()}`
+    ).join('\n\n');
+    const code = Array.from({ length: 60 }, (_, index) =>
+      `    raise_if_retryable(response_${index}, reason="${'failures that must not be retried '.repeat(3).trim()}")`
+    );
+    const text = `${prose}\n\n\`\`\`python\n${code.join('\n')}\n\`\`\`\n\nThat is the whole module.`;
+    const codeStart = text.indexOf('```python');
+    assert.ok(codeStart < LIMIT - 2_500 && text.length > LIMIT + 2_000);
+
+    await streamLongAnswer(h, text);
+    const streamed = h.calls
+      .filter((call) => call.method === 'chat.startStream' || call.method === 'chat.appendStream')
+      .flatMap((call) => (call.input.chunks as Array<{ type: string; text?: string }>)
+        .filter((chunk) => chunk.type === 'markdown_text')
+        .map((chunk) => chunk.text ?? ''))
+      .join('');
+    assert.ok(streamed.length > codeStart && streamed.length <= LIMIT);
+    assert.ok(text.startsWith(streamed));
+    assert.equal(text[streamed.length], '\n', 'the stream stops at the end of a whole line');
+
+    await finalizeLongAnswer(h, text);
+    await h.presentation.deliverContinuations();
+    const [post] = posts(h);
+    const second = (post!.input.blocks as Array<{ text?: string }>)[0]!.text!;
+    const lines = new Set(code);
+    const secondLines = second.split('\n');
+    assert.equal(secondLines[0], '```python');
+    assert.ok(lines.has(secondLines[1]!), 'part 2 begins with a complete code line');
+    const stop = h.calls.find((call) => call.method === 'chat.stopStream')!;
+    const suffix = ((stop.input.chunks ?? []) as Array<{ type: string; text?: string }>)
+      .filter((chunk) => chunk.type === 'markdown_text').map((chunk) => chunk.text ?? '').join('');
+    const first = streamed + suffix;
+    for (const line of [...first.split('\n'), ...secondLines]) {
+      if (line.startsWith('    raise_if_retryable')) assert.ok(lines.has(line), 'no code line is split');
+    }
+  } finally {
+    h.close();
+  }
+});
+
 test('a progressive stream holds part 1 and the continuation follows after stop', async () => {
   const h = harness();
   try {

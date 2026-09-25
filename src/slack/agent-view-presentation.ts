@@ -176,6 +176,8 @@ const DEFAULT_APPEND_INTERVAL_MS = 750;
 const CORRECTED_MARKER = '_Corrected_';
 /** Progressive text stays inside the first message, with room to close a fence. */
 const MAX_STREAMED_REPLY_CHARS = slackMarkdownBlockTextLimit - 16;
+/** Near the cap, progressive text advances only to line boundaries. */
+const STREAM_EDGE_WINDOW_CHARS = 2_000;
 /** A continuation intent this young may still belong to a live writer. */
 const CONTINUATION_INTENT_GRACE_MS = 60_000;
 
@@ -1438,8 +1440,8 @@ export class SlackAgentViewPresentation {
       this.degradedReason = 'unsafe_incomplete_block';
       return;
     }
-    const safePrefix = streamedReplyPrefix(this.rawText);
     let presentation = await this.requirePresentation();
+    const safePrefix = streamedReplyPrefix(this.rawText, presentation.stream.acknowledgedByteLength);
     const priorPosition = presentation.stream.flue?.lastAcceptedPosition;
     if (priorPosition && comparePosition(chunk.position, priorPosition) <= 0) return;
     if (!safePrefix || this.degradedReason) return;
@@ -2349,18 +2351,48 @@ function terminalFlueIdentity(
 /**
  * The safe prefix to stream, capped inside the first message. A longer answer
  * continues in follow-up messages after the stream stops. The canonical form
- * of a raw prefix is a prefix of the final canonical answer, so the cap keeps
- * the stream's monotone prefix guarantee.
+ * of a raw prefix is a prefix of the final canonical answer, and so is any
+ * shorter prefix of it, so the cap keeps the stream's monotone guarantee.
+ *
+ * Within the last `STREAM_EDGE_WINDOW_CHARS` before the cap the stream only
+ * advances to a line boundary, so the first message never ends mid-line (for
+ * example inside a code line) and the next message starts with a whole line.
+ * At the cap it prefers a paragraph or heading boundary. It never falls
+ * below the acknowledged prefix; with no boundary it keeps the plain cap.
  */
-function streamedReplyPrefix(rawText: string): string {
+function streamedReplyPrefix(rawText: string, acknowledgedBytes: number): string {
   const safePrefix = streamableSlackMarkdownPrefix(rawText);
-  if (safePrefix.length <= MAX_STREAMED_REPLY_CHARS) return safePrefix;
-  for (let end = MAX_STREAMED_REPLY_CHARS; end > 0; end -= 512) {
-    const highSurrogate = /[\uD800-\uDBFF]/.test(rawText[end - 1] ?? '');
-    const capped = streamableSlackMarkdownPrefix(rawText.slice(0, highSurrogate ? end - 1 : end));
-    if (capped.length <= MAX_STREAMED_REPLY_CHARS) return capped;
+  let capped = safePrefix;
+  const full = safePrefix.length > MAX_STREAMED_REPLY_CHARS;
+  if (full) {
+    capped = '';
+    for (let end = MAX_STREAMED_REPLY_CHARS; end > 0; end -= 512) {
+      const highSurrogate = /[\uD800-\uDBFF]/.test(rawText[end - 1] ?? '');
+      const candidate = streamableSlackMarkdownPrefix(
+        rawText.slice(0, highSurrogate ? end - 1 : end),
+      );
+      if (candidate.length <= MAX_STREAMED_REPLY_CHARS) {
+        capped = candidate;
+        break;
+      }
+    }
   }
-  return '';
+  if (capped.length <= MAX_STREAMED_REPLY_CHARS - STREAM_EDGE_WINDOW_CHARS) return capped;
+  const acknowledged = prefixAtUtf8Length(capped, acknowledgedBytes)?.length ?? 0;
+  const floor = Math.max(acknowledged, capped.length - STREAM_EDGE_WINDOW_CHARS);
+  const window = capped.slice(floor);
+  const paragraph = full
+    ? Math.max(window.lastIndexOf('\n\n'), lastHeadingBoundary(window))
+    : -1;
+  const line = paragraph >= 0 ? paragraph : window.lastIndexOf('\n');
+  if (line < 0) return capped;
+  return capped.slice(0, floor + line).trimEnd();
+}
+
+function lastHeadingBoundary(text: string): number {
+  let at = -1;
+  for (const match of text.matchAll(/\n#{1,6}\s/g)) at = match.index;
+  return at;
 }
 
 async function notifyContinuation(
