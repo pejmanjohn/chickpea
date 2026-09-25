@@ -220,13 +220,14 @@ export function exportEnvironmentRegistration(selector, options = {}) {
     }
   }
   const exportedAt = canonicalTimestamp(options.now ? options.now() : Date.now());
-  const file = validateRegistrationFile({
+  const file = {
     schemaVersion: ENVIRONMENT_REGISTRATION_SCHEMA,
     exportedAt,
     sandbox: registry.sandbox,
     targets: records,
     ...(Object.keys(evidence).length > 0 ? { evidence } : {}),
-  });
+  };
+  validateRegistrationFile(file);
   writeExclusivePrivateJson(output, file);
   return Object.freeze({
     written: output,
