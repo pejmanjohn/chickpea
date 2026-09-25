@@ -663,3 +663,97 @@ test('a same-turn Agent edit proposal stays current after the welcome publishes 
     f.close();
   }
 });
+
+test('the welcome retries a deferred avatar when the same-turn proposal targets another Agent', async () => {
+  const avatarUrl =
+    'https://gateway.chickpea.test/avatars/binding/agent_other_target/rev_1.png';
+  let publishCalls = 0;
+  const f = await createManagementAdapterFixture('welcome-other-target', {
+    publishGeneratedAgentAvatar: async () => {
+      publishCalls += 1;
+      if (publishCalls === 1) throw new Error('gateway unavailable');
+      return { url: avatarUrl, revision: 1 };
+    },
+  });
+  try {
+    const context: ManagementActorContext = {
+      userId: f.admin.user.id,
+      membershipId: f.admin.membership.id,
+      organizationId: f.admin.membership.organizationId,
+      actingAgentId: CHICKPEA_AGENT_ID,
+      origin: {
+        kind: 'slack',
+        workspaceId: f.admin.binding.slackTeamId,
+        channelId: 'D_OTHER_TARGET',
+        threadTs: '900.4',
+        messageTs: '900.4',
+        requestText: 'Create a research Agent.',
+        conversationKind: 'im',
+        agentId: CHICKPEA_AGENT_ID,
+      },
+    };
+    const applied = await f.service.applyWorkspaceChanges({
+      context,
+      idempotencyKey: 'create-with-other-target',
+      operations: [{
+        itemId: 'create',
+        kind: 'create_agent',
+        agent: {
+          id: 'agent_other_target',
+          name: 'Researcher',
+          requestedHandle: 'researcher-other-target',
+          editPolicy: 'creator_and_admins',
+          instructions: 'Research topics.',
+          enabled: true,
+          skills: [],
+          mcpServers: [],
+          apiConnections: [],
+          repositories: [],
+        },
+      }],
+    });
+    if (!('operationId' in applied)) assert.fail('expected applied creation');
+    const created = await f.config.getAgent('agent_other_target');
+    assert.equal(publishCalls, 1);
+    assert.equal(created.slackPresence?.avatar.url, undefined);
+
+    const pendingProposal = await f.management.putChangeSetProposal({
+      proposalId: 'changeset_other_target',
+      organizationId: context.organizationId,
+      actorUserId: context.userId,
+      actorMembershipId: context.membershipId,
+      originKey: managementActorOriginKey(context),
+      approvalScopeKey: managementApprovalScopeKey(context),
+      idempotencyKey: 'other-target',
+      guideVersion: 'test',
+      authoringReason: 'agent_edit',
+      operations: [{
+        itemId: 'edit',
+        kind: 'update_agent',
+        agentId: 'agent_someone_else',
+        expectedRevision: 3,
+        patch: { description: 'Unrelated.' },
+      }],
+      digest: 'e'.repeat(64),
+      preview: { summary: 'Edit another Agent', changes: [], missingSetup: [] },
+      targetRevisions: { 'agent:agent_someone_else': 3 },
+      at: 1_800_000_000_000,
+    });
+    await f.service.finalizeSlackAgentCreationWelcome({
+      context,
+      operationId: applied.operationId,
+      creationItemId: 'create',
+      agentId: created.id,
+      connectorMentions: [],
+      pendingProposalId: pendingProposal.proposalId,
+      followOnNotices: [],
+      turnJobId: 'turn_other_target',
+    });
+    assert.equal(publishCalls, 2);
+    const published = await f.config.getAgent(created.id);
+    assert.equal(published.slackPresence?.avatar.url, avatarUrl);
+    assert.equal(published.revision, created.revision + 1);
+  } finally {
+    f.close();
+  }
+});
