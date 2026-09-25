@@ -10,6 +10,7 @@ import {
   serializeSandboxActivation,
 } from '../src/sandbox/lifecycle.ts';
 import {
+  SandboxConnectionDroppedError,
   SandboxSessionCapError,
   SandboxUnavailableError,
 } from '../src/sandbox/errors.ts';
@@ -166,6 +167,22 @@ test('failed configuration destroys the handle in the acquiring DO and rethrows'
     /turn context was not prepared/,
   );
   assert.deepEqual(contexts.counts(), { minted: 1, destroyed: 1 });
+});
+
+test('a dropped connection during configuration keeps the container', async () => {
+  const contexts = durableObjectContexts();
+  await assert.rejects(
+    contexts.runIn('agent-do-a', () =>
+      acquireSandbox(
+        async () => contexts.namespace.get('thread-1'),
+        async () => {
+          throw new SandboxConnectionDroppedError(new Error('Network connection lost.'));
+        },
+      ),
+    ),
+    SandboxConnectionDroppedError,
+  );
+  assert.deepEqual(contexts.counts(), { minted: 1, destroyed: 0 });
 });
 
 test('sandbox destroy is best-effort when the provider teardown fails', async () => {

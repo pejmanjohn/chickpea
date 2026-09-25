@@ -174,7 +174,6 @@ export async function drainAlarmTurnJobs<J>(
   const threads = new Map<string, ThreadState<J>>();
   const ready: string[] = [];
   const running = new Map<string, RunningJob>();
-  const runningJobIds = new Set<string>();
   let ticking: Promise<void> | undefined;
   let refreshing: Promise<void> | undefined;
   let freeSlots = Math.max(1, options.startConcurrency);
@@ -255,7 +254,6 @@ export async function drainAlarmTurnJobs<J>(
       wake();
     };
     let keepGoing = false;
-    runningJobIds.add(id);
     try {
       keepGoing = await options.runJob(job, { signal, observing: release });
     } catch (error) {
@@ -263,7 +261,6 @@ export async function drainAlarmTurnJobs<J>(
       // and surface the error once the in-flight turns have unwound.
       fail(error);
     } finally {
-      runningJobIds.delete(id);
       running.delete(id);
       release();
       thread.running = false;
@@ -320,10 +317,7 @@ export async function drainAlarmTurnJobs<J>(
 
   const startTick = () => {
     if (!options.tick || ticking || !admissionOpen) return;
-    const carriedIds = options.carried?.jobIds();
-    const exclude = carriedIds && carriedIds.size > 0
-      ? new Set([...runningJobIds, ...carriedIds])
-      : runningJobIds;
+    const exclude = new Set([...running.keys(), ...(options.carried?.jobIds() ?? [])]);
     ticking = options.tick(exclude).catch((error: unknown) => fail(error)).finally(() => {
       ticking = undefined;
     });

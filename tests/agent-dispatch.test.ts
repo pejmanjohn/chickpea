@@ -337,6 +337,33 @@ test('a create-only collision adopts the returned uid before retrying admission'
   assert.equal(dispatchState.dispatchEnvelope?.uid, existingUid);
 });
 
+test('an attached-container turn prepares its workspace turn once, never on reattachment', async () => {
+  let preparations = 0;
+  let dispatches = 0;
+  const dispatchState = state();
+  const prepareSandbox = async () => { preparations += 1; };
+  const agent = handle({
+    async dispatch() {
+      dispatches += 1;
+      return RECEIPT;
+    },
+  });
+  const first = await promptSlackThreadAgent({
+    ...promptInput(dispatchState, agent), useCloudflareSandbox: true, prepareSandbox,
+  });
+  assert.equal(first.text, 'done');
+  assert.deepEqual({ preparations, dispatches }, { preparations: 1, dispatches: 1 });
+
+  // The receipt survived an interrupted read; the reattaching attempt must not
+  // prepare the turn again, which would revoke the running submission's egress.
+  const reattaching = state({ dispatchEnvelope: ENVELOPE, dispatchReceipt: RECEIPT });
+  const reattached = await promptSlackThreadAgent({
+    ...promptInput(reattaching, agent), useCloudflareSandbox: true, prepareSandbox,
+  });
+  assert.equal(reattached.text, 'done');
+  assert.deepEqual({ preparations, dispatches }, { preparations: 1, dispatches: 1 });
+});
+
 test('a transient read interruption retains the receipt and does not checkpoint failure', async () => {
   let settlements = 0;
   const dispatchState = state({

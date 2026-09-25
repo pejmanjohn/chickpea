@@ -911,22 +911,14 @@ export class SlackAgentViewPresentation {
     }
     presentation = await this.requirePresentation();
     if (presentation.stream.state === 'fallback') {
-      return {
-        handled: false,
-        fallbackPresentation: true,
-        operationId: terminal.operationId ?? freshFinalOperationId(presentation.runId),
-      };
+      return freshFinalResult(presentation, terminal.operationId);
     }
     if (artifacts.length > 0 && presentation.stream.state === 'absent') {
       // Staged files publish with the text in one completion call, which
       // Slack cannot stream. Route the terminal through the fallback state so
       // the presenter's file share owns the coordinate and repair semantics.
       await this.transition(presentation, { kind: 'mark_file_share_intent' });
-      return {
-        handled: false,
-        fallbackPresentation: true,
-        operationId: terminal.operationId ?? freshFinalOperationId(presentation.runId),
-      };
+      return freshFinalResult(presentation, terminal.operationId);
     }
 
     const recoverStream = (finalizing: SlackRunPresentation) =>
@@ -979,15 +971,7 @@ export class SlackAgentViewPresentation {
             safeFailureCode: 'slack_stream_not_started',
           });
           await this.transition(presentation, { kind: 'mark_fallback', outcome: 'fallback' });
-          const pendingTerminal = await this.requirePresentation();
-          return {
-            handled: false,
-            fallbackPresentation: true,
-            operationId: pendingTerminal.schemaVersion === 3 &&
-                pendingTerminal.terminalDelivery.state === 'intended'
-              ? pendingTerminal.terminalDelivery.operation.operationId
-              : freshFinalOperationId(pendingTerminal.runId),
-          };
+          return freshFinalResult(await this.requirePresentation());
         }
         await this.markUnknown(presentation, 'unknown_effect');
         await this.recordTerminalDeliveryReceipt('unknown');
@@ -1663,8 +1647,7 @@ export class SlackAgentViewPresentation {
         `[chickpea] Slack Agent View stream finalization ${slackEffectOutcome(error)}: ` +
         safeSlackErrorCode(error),
       );
-      if (slackEffectOutcome(error) === 'failed' &&
-          STREAM_NO_LONGER_OPEN_ERRORS.has(safeSlackErrorCode(error))) {
+      if (streamNoLongerOpen(error)) {
         // Slack rejected the stop outright: the stream was already sealed
         // (a long-idle stream expires) or its message is gone. Nothing was
         // written, so recover in this attempt on the same coordinate instead
@@ -1735,14 +1718,12 @@ export class SlackAgentViewPresentation {
         // Slack explicitly reports an already-stopped stream (or no stream
         // message at all; the update below then proves which). Other failures
         // do not establish that it is safe to update the terminal artifact.
-        if (slackEffectOutcome(error) !== 'failed' ||
-            !STREAM_NO_LONGER_OPEN_ERRORS.has(safeSlackErrorCode(error))) throw error;
+        if (!streamNoLongerOpen(error)) throw error;
       }
       try {
         await this.options.client.chat.update(update);
       } catch (error) {
-        if (slackEffectOutcome(error) !== 'failed' ||
-            !STREAM_NO_LONGER_OPEN_ERRORS.has(safeSlackErrorCode(error))) throw error;
+        if (!streamNoLongerOpen(error)) throw error;
         // Slack refuses the saved coordinate outright (no message, a sealed
         // or conflicting stream, an uneditable message): a retry would fail
         // the same way until the run is abandoned with no visible answer.
@@ -1766,16 +1747,7 @@ export class SlackAgentViewPresentation {
           safeFailureCode: 'slack_stream_message_missing',
         });
         await this.transition(presentation, { kind: 'stream_message_lost', messageTs });
-        const lost = await this.requirePresentation();
-        return {
-          handled: false,
-          fallbackPresentation: true,
-          // The fresh post always carries an idempotency key: the frozen
-          // terminal's, or the run's own for rows without terminal receipts.
-          operationId: lost.schemaVersion === 3 && lost.terminalDelivery.state === 'intended'
-            ? lost.terminalDelivery.operation.operationId
-            : freshFinalOperationId(lost.runId),
-        };
+        return freshFinalResult(await this.requirePresentation());
       }
       presentation = await this.transition(presentation, {
         kind: 'mark_artifact_delivered', outcome: presentation.stream.presentationOutcome ?? 'terminal_only',
@@ -2455,12 +2427,25 @@ function utf8Length(value: string): number {
 }
 
 /**
- * The idempotency key of a presentation without terminal receipts (V1/V2)
- * whose final posts as a fresh message. It depends only on the Run, so a
- * retry after an unknown post repeats the same key.
+ * The result that sends the terminal down the presenter's fallback route as a
+ * fresh post. The post always carries an idempotency key: the frozen
+ * terminal's when the row intends one, else the run's own, so a retry after
+ * an unknown post repeats the same key.
  */
-function freshFinalOperationId(runId: string): string {
-  return `terminal_${hash(`${runId}:fresh_final`).slice(0, 24)}`;
+function freshFinalResult(
+  presentation: SlackRunPresentation,
+  terminalOperationId?: string,
+): AgentViewFinalResult {
+  const intended = presentation.schemaVersion === 3 &&
+      presentation.terminalDelivery.state === 'intended'
+    ? presentation.terminalDelivery.operation.operationId
+    : undefined;
+  return {
+    handled: false,
+    fallbackPresentation: true,
+    operationId: terminalOperationId ?? intended ??
+      `terminal_${hash(`${presentation.runId}:fresh_final`).slice(0, 24)}`,
+  };
 }
 
 function hash(value: string): string {
@@ -2482,6 +2467,12 @@ const STREAM_NO_LONGER_OPEN_ERRORS = new Set([
   'cant_update_message',
   'edit_window_closed',
 ]);
+
+/** Slack definitively refused the saved stream coordinate: nothing was written there. */
+function streamNoLongerOpen(error: unknown): boolean {
+  return slackEffectOutcome(error) === 'failed' &&
+    STREAM_NO_LONGER_OPEN_ERRORS.has(safeSlackErrorCode(error));
+}
 
 function slackEffectOutcome(error: unknown): 'failed' | 'unknown' {
   const code = error && typeof error === 'object' ? (error as { code?: unknown }).code : undefined;

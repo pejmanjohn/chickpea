@@ -1780,14 +1780,7 @@ function applyMutation(
       if (!current.stream.messageTs || current.stream.messageTs !== mutation.messageTs) {
         throw stateError('coordinate_conflict', 'Lost stream does not match the saved coordinate.');
       }
-      next.stream = {
-        state: 'fallback',
-        acknowledgedByteLength: 0,
-        slackAppendCursor: 0,
-        presentationOutcome: 'terminal_only',
-      };
-      next.repairRequired = true;
-      return next;
+      return abandonStreamForFreshFinal(next);
     case 'retire_aged_stream':
       // Slack seals a native stream a few minutes after it starts. A long
       // delegated turn closes its card first, while the coordinate still
@@ -1803,14 +1796,7 @@ function applyMutation(
       if (current.schemaVersion === 3 && current.terminalDelivery.state !== 'none') {
         throw stateError('terminal_rewrite', 'A stream carrying a terminal cannot be retired.');
       }
-      next.stream = {
-        state: 'fallback',
-        acknowledgedByteLength: 0,
-        slackAppendCursor: 0,
-        presentationOutcome: 'terminal_only',
-      };
-      next.repairRequired = true;
-      return next;
+      return abandonStreamForFreshFinal(next);
     case 'stream_coordinate_lost':
       // A checklist card or streamed prefix was started, but its coordinate
       // never reached the row (an ambiguous start, or a lost write race).
@@ -1823,14 +1809,7 @@ function applyMutation(
           current.stream.messageTs || current.terminalDelivery.state !== 'none') {
         throw stateError('invalid_transition', 'Only an unrecorded non-terminal stream can be abandoned.');
       }
-      next.stream = {
-        state: 'fallback',
-        acknowledgedByteLength: 0,
-        slackAppendCursor: 0,
-        presentationOutcome: 'terminal_only',
-      };
-      next.repairRequired = true;
-      return next;
+      return abandonStreamForFreshFinal(next);
     case 'adopt_plan': {
       // A substantive @-mention is classified AFTER Work admission froze this
       // presentation, so — unlike ambient/obvious-work turns — its work
@@ -3276,6 +3255,23 @@ export function presentationHasTerminalOutcome(
   return presentation.terminalDelivery.state === 'abandoned' ||
     presentation.terminalDelivery.state === 'intended' &&
       presentation.terminalDelivery.operation.certainty === 'acknowledged';
+}
+
+/**
+ * Leave a stream that can no longer carry the terminal (sealed, lost, or
+ * never located) so the approved terminal posts once as a fresh message
+ * through the fallback route. Repair stays visible until that post has an
+ * exact receipt.
+ */
+function abandonStreamForFreshFinal(next: SlackRunPresentation): SlackRunPresentation {
+  next.stream = {
+    state: 'fallback',
+    acknowledgedByteLength: 0,
+    slackAppendCursor: 0,
+    presentationOutcome: 'terminal_only',
+  };
+  next.repairRequired = true;
+  return next;
 }
 
 function requireState(

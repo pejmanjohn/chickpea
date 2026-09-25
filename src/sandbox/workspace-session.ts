@@ -207,9 +207,8 @@ export class WorkspaceSession<TStub extends WorkspaceSandboxStub = WorkspaceSand
     }
     this.opened ??= this.acquire().catch((error: unknown) => {
       this.opened = undefined;
-      // A drop while opening leaves the turn's workspace decision unknown, and
-      // acquisition destroys the container rather than guess its owner; the
-      // model must not be told the files are intact.
+      // A drop while opening ran nothing in the workspace; the model reopens
+      // it rather than checking the outcome of an operation.
       if (error instanceof SandboxConnectionDroppedError) {
         throw new SandboxConnectionDroppedError(error.cause, 'opening');
       }
