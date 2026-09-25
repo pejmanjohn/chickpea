@@ -548,6 +548,19 @@ export class TurnJobStoreLogic {
     );
   }
 
+  /**
+   * A pending alarm row whose Flue dispatch had started. On a fresh state
+   * store instance nothing observes it any more (its alarm ended with the
+   * previous instance), so it is due for reattachment now.
+   */
+  hasInterruptedAlarmDispatch(): boolean {
+    return this.db.get(
+      `SELECT 1 AS pending FROM turn_jobs
+       WHERE ${PENDING_ROW} AND executor = 'alarm' AND dispatch_started_at IS NOT NULL
+       LIMIT 1`,
+    ) !== undefined;
+  }
+
   hasHandoffs(): boolean {
     return this.db.get(
       `SELECT 1 AS pending FROM turn_jobs WHERE ${PENDING_ROW} AND executor = 'handoff' LIMIT 1`,

@@ -203,6 +203,7 @@ import { sandboxTurnReaders } from './slack/thread-runner.ts';
 import {
   RUNNER_PREFETCHED_SETTINGS,
   threadRunnerStub,
+  type RunnerTurnBegin,
   type SlackThreadRunnerRpc,
   type ThreadRunnerJobPayload,
   type ThreadRunnerTurnKind,
@@ -769,10 +770,63 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
   private dispatchWake: (() => void) | undefined;
   /** Slack turns admitted in this isolate (events, deliveries, OAuth resumes). */
   private admissionsSeen = 0;
+  /**
+   * This instance, as the owner of the gateway inbox leases it takes. Only one
+   * instance owns this object's storage at a time; a lease under any other
+   * owner was taken by an instance that has been replaced (see
+   * GatewayInboxOwnership).
+   */
+  private readonly instanceId = crypto.randomUUID();
+  /** This instance installed the schema: it is the first on this Worker version. */
+  private versionChanged = false;
 
   constructor(ctx: DurableObjectState, env: unknown) {
     super(ctx, env);
     this.stores = this.tryInit();
+    // Work the previous instance was running stopped with it (a code update,
+    // a reset). Arm the alarm now rather than wait for the platform's retry.
+    void ctx.blockConcurrencyWhile(() => this.resumeAfterRestart());
+  }
+
+  /**
+   * On a fresh instance, when nothing else will wake it soon: arm the alarm
+   * now if an alarm turn's Flue dispatch was in flight, a gateway delivery is
+   * leased by the previous instance, or (first instance on a new Worker
+   * version) a hand-off to a thread runner is unconfirmed. Each signal is
+   * read on its own, so one failing read never hides the others. An alarm
+   * already set is kept: it is either due or a deliberate backoff (a rate
+   * limit's retry-after), which a restart must not skip. Never throws:
+   * blockConcurrencyWhile resets the object on a rejection.
+   */
+  private async resumeAfterRestart(): Promise<void> {
+    const stores = this.stores;
+    if (!stores) return;
+    const read = (probe: () => boolean): boolean => {
+      try {
+        return probe();
+      } catch {
+        return false;
+      }
+    };
+    const alarmTurn = read(() => stores.turnJobs.hasInterruptedAlarmDispatch());
+    const inbox = read(() => stores.gatewayInbox.hasOrphanedLease());
+    const handoffs = this.versionChanged && read(() => stores.turnJobs.hasHandoffs());
+    if (!alarmTurn && !inbox && !handoffs) return;
+    try {
+      const armed = (await this.ctx.storage.getAlarm()) === null;
+      if (armed) await this.ctx.storage.setAlarm(Date.now());
+      console.info({
+        component: 'runtime',
+        event: 'state_store_resume',
+        versionChanged: this.versionChanged,
+        alarmTurn,
+        inbox,
+        handoffs,
+        armed,
+      });
+    } catch {
+      console.warn('[chickpea] TagStateStore could not arm its resume alarm');
+    }
   }
 
   /** Execute one requester-bound management tool inside the state owner. The
@@ -899,6 +953,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
         return built;
       });
       if (marker) {
+        this.versionChanged = true;
         console.info('[chickpea] TagStateStore schema installed', JSON.stringify({ fingerprint }));
       }
       this.initError = undefined;
@@ -921,7 +976,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       slack: new SlackStateLogic(db),
       settings: new SettingsStoreLogic(db),
       turnJobs: new TurnJobStoreLogic(db),
-      gatewayInbox: new GatewayInboxStoreLogic(db),
+      gatewayInbox: new GatewayInboxStoreLogic(db, Date.now, {}, { leaseOwner: this.instanceId }),
       presentations: new SlackRunPresentationStoreLogic(db),
       memory: new MemoryStoreLogic(db),
       routines: new RoutineStoreLogic(db),
@@ -1870,8 +1925,18 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
   async threadRunnerTurn<K extends ThreadRunnerTurnKind>(
     op: ThreadRunnerTurnOp<K>,
   ): Promise<StateRpcResult<ThreadRunnerTurnResult<K>>> {
-    return this.call((stores) =>
+    // A runner learns from these that a code update replaced its version
+    // (see src/slack/thread-runner-loop.ts); reading it touches no storage.
+    const servingVersion = cloudflareWorkerVersionId(this.env);
+    if (op.kind === 'servingVersion') {
+      return { ok: true, value: (servingVersion ?? null) as ThreadRunnerTurnResult<K> };
+    }
+    const result = this.call((stores) =>
       applyThreadRunnerTurnOp(stores, op as ThreadRunnerTurnOp) as ThreadRunnerTurnResult<K>);
+    if (op.kind === 'begin' && result.ok && servingVersion !== undefined) {
+      return { ok: true, value: { ...(result.value as RunnerTurnBegin), servingVersion } as ThreadRunnerTurnResult<K> };
+    }
+    return result;
   }
 
   /**
@@ -2537,6 +2602,9 @@ function applyThreadRunnerTurnOp(
       return stores.slack.isCodingActiveWork(op.key, op.generation);
     case 'putPresentation':
       return stores.presentations.putSnapshot(op.presentation);
+    case 'servingVersion':
+      // Answered by TagStateStore.threadRunnerTurn without storage.
+      return null;
     default:
       throw new Error('Unknown thread runner operation.');
   }

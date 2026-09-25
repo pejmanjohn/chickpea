@@ -28,6 +28,8 @@ import {
   runnerPresentationState,
   runnerTurnJobsPort,
   runThreadRunnerAlarm,
+  createRunnerSupersedeState,
+  THREAD_RUNNER_SUPERSEDE_COOLDOWN_MS,
   runnerLoopScheduler,
   type ThreadRunnerLoopDeps,
 } from '../src/slack/thread-runner-loop.ts';
@@ -1238,4 +1240,254 @@ test('a joined alarm never starts a second loop budget after a yield in the same
       assert.deepEqual(armed, [undefined, undefined]);
     }
   }
+});
+
+const OLD_VERSION = '11111111-1111-4111-8111-111111111111';
+const NEW_VERSION = '22222222-2222-4222-8222-222222222222';
+
+/**
+ * A runner on OLD_VERSION whose state store serves `serving()` from `begin`
+ * and from the heartbeat's version check.
+ */
+function versionedHarness(
+  db: ReturnType<typeof openStateDb>,
+  rows: ReturnType<typeof fakeRows>,
+  serving: () => string,
+  script: Parameters<typeof runnerHarness>[2] = {},
+) {
+  const h = runnerHarness(db, rows, script);
+  const begin = rows.turns.begin.bind(rows.turns);
+  rows.turns.begin = async (id: string) => ({ ...(await begin(id)), servingVersion: serving() });
+  let checks = 0;
+  (rows.turns as { servingVersion?: () => Promise<string> }).servingVersion = async () => {
+    checks += 1;
+    return serving();
+  };
+  h.deps.versionId = OLD_VERSION;
+  h.deps.supersede = createRunnerSupersedeState();
+  h.deps.budgetMs = 60_000;
+  h.deps.hardCapMs = 120_000;
+  h.deps.heartbeatMs = 2;
+  h.deps.versionCheckMs = 5;
+  return { ...h, checks: () => checks };
+}
+
+test('a runner whose version a code update replaced yields its turn within one version check', async () => {
+  // Amber run 6: the old version's runner alarm observed its turn to the end
+  // (138 s, 146 s) and the new version's alarm waited behind it: the turn
+  // came back 1 m 46 s / 1 m 49 s after the upload. Here it would observe
+  // for the whole 60 s budget.
+  const db = openStateDb(':memory:');
+  try {
+    const rows = fakeRows(['long']);
+    let serving = OLD_VERSION;
+    let holding = true;
+    const h = versionedHarness(db, rows, () => serving, { hold: (id) => id === 'long' && holding });
+    h.jobs.admit({ id: 'long', threadKey: 'thread', payload: {} }, 1);
+    const alarm = runThreadRunnerAlarm(h.deps);
+    while (!h.events.includes('dispatch:long')) await new Promise((resolve) => setTimeout(resolve, 1));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.deepEqual(h.events, ['dispatch:long'], 'the same version keeps observing');
+    const updatedAt = performance.now();
+    serving = NEW_VERSION; // the upload: the state store now answers from the new code
+    const first = await alarm;
+    const tookMs = performance.now() - updatedAt;
+    assert.ok(tookMs < 1_000, `the old alarm returns within a version check (${Math.round(tookMs)} ms)`);
+    assert.deepEqual(h.events, ['dispatch:long', 'yield:long']);
+    assert.equal(first.record.yielded, true);
+    assert.equal(first.record.supersededBy, NEW_VERSION);
+    assert.equal(first.record.versionId, OLD_VERSION);
+    assert.equal(h.jobs.get('long')!.state, 'yielded');
+    assert.equal(rows.rows.get('long')!.attempts, 0, 'a yield for a code update is never an attempt');
+    const ahead = first.nextAlarmAt! - h.deps.now!();
+    assert.ok(ahead > 0 && ahead <= 1_000, `the successor alarm is a second out (${ahead} ms)`);
+    const superseded = h.records.map((line) => JSON.parse(line) as Record<string, unknown>)
+      .filter((record) => record.event === 'thread_runner_superseded');
+    assert.deepEqual(superseded, [{
+      component: 'runtime', event: 'thread_runner_superseded',
+      versionId: OLD_VERSION, supersededBy: NEW_VERSION, running: true,
+    }]);
+    // The successor alarm, on the new version, reattaches: one dispatch, one final.
+    holding = false;
+    h.advance(1_000);
+    h.deps.versionId = NEW_VERSION;
+    h.deps.supersede = createRunnerSupersedeState();
+    await runThreadRunnerAlarm(h.deps);
+    assert.deepEqual(h.events.slice(2), ['reattach:long', 'delivered:long']);
+    assert.equal(rows.rows.get('long')!.status, 'done');
+  } finally { db.close(); }
+});
+
+test('a runner that loses its storage mid-turn yields at once', async () => {
+  const db = openStateDb(':memory:');
+  try {
+    const rows = fakeRows(['long']);
+    const h = versionedHarness(db, rows, () => OLD_VERSION, { hold: (id) => id === 'long' });
+    let storageLost = false;
+    h.deps.armBackstop = async () => {
+      if (storageLost) throw new Error('Durable Object reset because its code was updated.');
+    };
+    h.jobs.admit({ id: 'long', threadKey: 'thread', payload: {} }, 1);
+    const alarm = runThreadRunnerAlarm(h.deps);
+    while (!h.events.includes('dispatch:long')) await new Promise((resolve) => setTimeout(resolve, 1));
+    storageLost = true;
+    const first = await alarm;
+    assert.deepEqual(h.events, ['dispatch:long', 'yield:long']);
+    assert.equal(first.record.supersededBy, 'storage_lost');
+    assert.equal(rows.rows.get('long')!.attempts, 0);
+  } finally { db.close(); }
+});
+
+test('a code update seen between jobs holds the next job for the new version', async () => {
+  const db = openStateDb(':memory:');
+  try {
+    const rows = fakeRows(['first', 'second']);
+    let serving = OLD_VERSION;
+    const h = versionedHarness(db, rows, () => serving);
+    h.jobs.admit({ id: 'first', threadKey: 'thread', payload: {} }, 1);
+    h.jobs.admit({ id: 'second', threadKey: 'thread', payload: {} }, 2);
+    const originalExecute = h.deps.execute;
+    h.deps.execute = async (...args) => {
+      const settled = await originalExecute(...args);
+      serving = NEW_VERSION; // the upload lands as the first job finishes
+      return settled;
+    };
+    const first = await runThreadRunnerAlarm(h.deps);
+    assert.deepEqual(h.events, ['dispatch:first', 'delivered:first'],
+      'the second job never starts on the old version');
+    assert.equal(first.record.supersededBy, NEW_VERSION);
+    assert.equal(h.jobs.get('second')!.state, 'admitted');
+    assert.ok(first.nextAlarmAt! - h.deps.now!() >= 1_000 - 5, 'the successor is a second out, not a spin');
+    // The successor, on the new version, runs it once.
+    h.advance(1_000);
+    h.deps.execute = originalExecute;
+    h.deps.versionId = NEW_VERSION;
+    h.deps.supersede = createRunnerSupersedeState();
+    await runThreadRunnerAlarm(h.deps);
+    assert.deepEqual(h.events.slice(2), ['dispatch:second', 'delivered:second']);
+  } finally { db.close(); }
+});
+
+test('a signal left over from an earlier alarm does not hold the next one', async () => {
+  const db = openStateDb(':memory:');
+  try {
+    const rows = fakeRows(['only']);
+    const h = versionedHarness(db, rows, () => OLD_VERSION);
+    h.deps.supersede!.by = 'storage_lost';
+    h.jobs.admit({ id: 'only', threadKey: 'thread', payload: {} }, 1);
+    const result = await runThreadRunnerAlarm(h.deps);
+    assert.deepEqual(h.events, ['dispatch:only', 'delivered:only']);
+    assert.equal(result.record.supersededBy, undefined);
+  } finally { db.close(); }
+});
+
+test('an instance kept on its version yields once per serving version, then runs', async () => {
+  // A gradual deployment (or rollback) can leave this runner on its version
+  // while the state store serves another: one yield, never a loop.
+  const db = openStateDb(':memory:');
+  try {
+    const rows = fakeRows(['job']);
+    const h = versionedHarness(db, rows, () => NEW_VERSION);
+    h.jobs.admit({ id: 'job', threadKey: 'thread', payload: {} }, 1);
+    const first = await runThreadRunnerAlarm(h.deps);
+    assert.equal(first.record.supersededBy, NEW_VERSION);
+    assert.deepEqual(h.events, []);
+    h.advance(1_000);
+    const second = await runThreadRunnerAlarm(h.deps);
+    assert.equal(second.record.supersededBy, undefined);
+    assert.deepEqual(h.events, ['dispatch:job', 'delivered:job']);
+  } finally { db.close(); }
+});
+
+test('without a version of its own the runner never yields for a version', async () => {
+  const db = openStateDb(':memory:');
+  try {
+    const rows = fakeRows(['job']);
+    const h = versionedHarness(db, rows, () => NEW_VERSION);
+    delete h.deps.versionId;
+    h.jobs.admit({ id: 'job', threadKey: 'thread', payload: {} }, 1);
+    const result = await runThreadRunnerAlarm(h.deps);
+    assert.deepEqual(h.events, ['dispatch:job', 'delivered:job']);
+    assert.equal(result.record.supersededBy, undefined);
+    assert.equal(h.checks(), 0);
+  } finally { db.close(); }
+});
+
+test('a staggered release gets one more yield after the cool-down, at most three per version', async () => {
+  // The state store reached the new version before this runner's host did:
+  // the first yield ran again on the old version. Its next alarm may yield
+  // again once the cool-down passed; a runner kept on its version stops.
+  const db = openStateDb(':memory:');
+  try {
+    const rows = fakeRows(['job']);
+    const h = versionedHarness(db, rows, () => NEW_VERSION);
+    h.jobs.admit({ id: 'job', threadKey: 'thread', payload: {} }, 1);
+    const outcomes: Array<string | undefined> = [];
+    for (const step of [0, 1_000, THREAD_RUNNER_SUPERSEDE_COOLDOWN_MS, THREAD_RUNNER_SUPERSEDE_COOLDOWN_MS]) {
+      h.advance(step);
+      outcomes.push((await runThreadRunnerAlarm(h.deps)).record.supersededBy);
+      if (h.events.length > 0) break;
+    }
+    assert.deepEqual(outcomes, [NEW_VERSION, undefined], 'within the cool-down the job runs');
+    assert.deepEqual(h.events, ['dispatch:job', 'delivered:job']);
+
+    const capped = fakeRows(['long']);
+    const c = versionedHarness(openStateDb(':memory:'), capped, () => NEW_VERSION);
+    c.jobs.admit({ id: 'long', threadKey: 'thread', payload: {} }, 1);
+    const yields: Array<string | undefined> = [];
+    for (let alarm = 0; alarm < 4; alarm += 1) {
+      yields.push((await runThreadRunnerAlarm(c.deps)).record.supersededBy);
+      c.advance(THREAD_RUNNER_SUPERSEDE_COOLDOWN_MS);
+    }
+    assert.deepEqual(yields, [NEW_VERSION, NEW_VERSION, NEW_VERSION, undefined],
+      'three yields for one version, then the runner runs its turn');
+    assert.deepEqual(c.events, ['dispatch:long', 'delivered:long']);
+  } finally { db.close(); }
+});
+
+test('a version check that settles after its alarm ended never holds the next alarm', async () => {
+  const db = openStateDb(':memory:');
+  try {
+    const rows = fakeRows(['first', 'second']);
+    let serving = OLD_VERSION;
+    const h = versionedHarness(db, rows, () => serving, { hold: (id) => id === 'first' });
+    h.deps.budgetMs = 40;
+    let releaseCheck!: (version: string) => void;
+    (rows.turns as { servingVersion?: () => Promise<string> }).servingVersion = () =>
+      new Promise((resolve) => { releaseCheck = resolve; });
+    h.jobs.admit({ id: 'first', threadKey: 'thread', payload: {} }, 1);
+    const first = await runThreadRunnerAlarm(h.deps);
+    assert.equal(first.record.yielded, true, 'the first alarm ends at its budget');
+    assert.ok(releaseCheck, 'a version check was still in flight');
+    serving = OLD_VERSION;
+    releaseCheck(NEW_VERSION); // settles late, after that alarm ended
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.equal(h.deps.supersede!.by, undefined, 'the late signal is ignored');
+    h.jobs.admit({ id: 'second', threadKey: 'thread', payload: {} }, 2);
+    h.advance(1_000);
+    const next = await runThreadRunnerAlarm(h.deps);
+    assert.equal(next.record.supersededBy, undefined);
+  } finally { db.close(); }
+});
+
+test('a heartbeat storage failure after its alarm ended never holds the next alarm', async () => {
+  const db = openStateDb(':memory:');
+  try {
+    const rows = fakeRows(['job']);
+    const h = versionedHarness(db, rows, () => OLD_VERSION);
+    let rejectLate!: () => void;
+    const originalExecute = h.deps.execute;
+    h.deps.execute = async (...args) => {
+      // Heartbeat arms from here on settle only after the alarm ends.
+      h.deps.armBackstop = () => new Promise((_resolve, reject) => { rejectLate = () => reject(new Error('reset')); });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      return originalExecute(...args);
+    };
+    h.jobs.admit({ id: 'job', threadKey: 'thread', payload: {} }, 1);
+    await runThreadRunnerAlarm(h.deps);
+    assert.ok(rejectLate, 'a heartbeat arm was still in flight when the alarm ended');
+    rejectLate();
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.equal(h.deps.supersede!.by, undefined, 'the late storage failure is ignored');
+  } finally { db.close(); }
 });

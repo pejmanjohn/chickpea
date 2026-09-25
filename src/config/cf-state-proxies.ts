@@ -2095,7 +2095,10 @@ export function isStateStoreDisconnect(error: unknown): boolean {
  * operation here is safe to replay (reads, first-write-wins or convergent
  * writes, version-gated snapshots), so a call that fails on a disconnect is
  * replayed once on a new stub; a second disconnect surfaces as
- * {@link StateStoreDisconnectedError}. Bounded calls per turn, none per poll.
+ * {@link StateStoreDisconnectedError}. Bounded calls per turn, plus one
+ * storage-free `servingVersion` call every 5 s while a turn runs (the code
+ * update check in thread-runner-loop.ts); each is timed like any call here
+ * (the sampled `state_rpc` record, op `servingVersion`).
  */
 export class CfTurnJobsForRunner implements RunnerTurnJobsPort {
   constructor(private readonly mintStub: () => TagStateRpc) {}
@@ -2129,6 +2132,11 @@ export class CfTurnJobsForRunner implements RunnerTurnJobsPort {
   /** The row plus what the turn reads before its first Slack status, in one call. */
   begin(id: string) {
     return this.op({ kind: 'begin', id });
+  }
+
+  /** The Worker version the state store serves; reads no storage. */
+  async servingVersion(): Promise<string | undefined> {
+    return (await this.op({ kind: 'servingVersion' })) ?? undefined;
   }
 
   async recordAttempt(id: string, attempts: number) {

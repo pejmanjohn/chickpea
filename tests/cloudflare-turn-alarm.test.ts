@@ -894,3 +894,119 @@ test('the default runner executor hands over a turn admitted during the alarm\'s
   assert.deepEqual(handedOverBeforeChores, ['first', 'second'],
     'both turns reach their runners before the alarm turns to its other work');
 });
+
+// ── resume after a restart or code update ──────────────────────────────────
+
+const restartMethod = stateClass.members.find((member) =>
+  ts.isMethodDeclaration(member) && member.name.getText(source) === 'resumeAfterRestart');
+assert.ok(restartMethod, 'production method resumeAfterRestart exists');
+const RestartProbe = vm.runInNewContext(ts.transpileModule(
+  `class RestartProbe { ${restartMethod.getText(source)} }\nRestartProbe`,
+  { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
+).outputText, { Date, console: { info() {}, warn() {} } }) as new () => {
+  stores: unknown;
+  versionChanged: boolean;
+  ctx: { storage: { getAlarm(): Promise<number | null>; setAlarm(at: number): Promise<void> } };
+  resumeAfterRestart(): Promise<void>;
+};
+
+function restartFixture(state: {
+  alarm: number | null;
+  alarmTurn?: boolean | 'throws';
+  inbox?: boolean | 'throws';
+  handoffs?: boolean;
+  versionChanged?: boolean;
+}) {
+  const probe = new RestartProbe();
+  const read = (value: boolean | 'throws' | undefined) => () => {
+    if (value === 'throws') throw new Error('corrupt row');
+    return value ?? false;
+  };
+  probe.versionChanged = state.versionChanged ?? false;
+  probe.stores = {
+    turnJobs: {
+      hasInterruptedAlarmDispatch: read(state.alarmTurn),
+      hasHandoffs: read(state.handoffs),
+    },
+    gatewayInbox: { hasOrphanedLease: read(state.inbox) },
+  };
+  let alarm = state.alarm;
+  probe.ctx = { storage: {
+    async getAlarm() { return alarm; },
+    async setAlarm(at) { alarm = at; },
+  } };
+  return { probe, alarm: () => alarm };
+}
+
+for (const [label, state] of [
+  ['an alarm turn whose dispatch was in flight', { alarmTurn: true }],
+  ['a gateway delivery leased by the previous instance', { inbox: true }],
+  ['an unconfirmed runner hand-off on a new Worker version', { handoffs: true, versionChanged: true }],
+  ['one signal even when another cannot be read', { alarmTurn: 'throws', inbox: true }],
+] as const) {
+  test(`a fresh state store with no alarm arms it now for ${label}`, async (context) => {
+    context.mock.method(Date, 'now', () => NOW);
+    // Before: nothing re-armed a fresh instance; the turn waited for the
+    // platform's alarm retry or the next admission.
+    const { probe, alarm } = restartFixture({ alarm: null, ...state });
+    await probe.resumeAfterRestart();
+    assert.equal(alarm(), NOW, 'due at once, 0 ms after the new instance starts');
+  });
+}
+
+test('a fresh state store keeps an alarm already set, and does nothing without a signal', async (context) => {
+  context.mock.method(Date, 'now', () => NOW);
+  for (const state of [
+    // A rate limit's retry-after lives in the alarm time: a restart keeps it.
+    { alarm: NOW + 120_000, alarmTurn: true },
+    { alarm: NOW - 5, inbox: true },
+    { alarm: null },
+    // Hand-offs count only on a new version.
+    { alarm: null, handoffs: true, versionChanged: false },
+    { alarm: null, alarmTurn: 'throws' as const, inbox: 'throws' as const },
+  ]) {
+    const { probe, alarm } = restartFixture(state);
+    await probe.resumeAfterRestart();
+    assert.equal(alarm(), state.alarm);
+  }
+});
+
+test('a fresh state store never rejects its constructor gate', async () => {
+  const { probe } = restartFixture({ alarm: null, alarmTurn: true });
+  probe.ctx.storage.getAlarm = async () => { throw new Error('storage unavailable'); };
+  await probe.resumeAfterRestart();
+  probe.stores = undefined;
+  await probe.resumeAfterRestart();
+});
+
+test('the state store tells a runner its serving version without touching storage', async () => {
+  const method = stateClass.members.find((member) =>
+    ts.isMethodDeclaration(member) && member.name.getText(source) === 'threadRunnerTurn');
+  assert.ok(method);
+  const Probe = vm.runInNewContext(ts.transpileModule(
+    `class Probe { ${method.getText(source)} }\nProbe`,
+    { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
+  ).outputText, {
+    cloudflareWorkerVersionId: (env: { version?: string }) => env.version,
+    applyThreadRunnerTurnOp: (_stores: unknown, op: { kind: string }) =>
+      op.kind === 'begin' ? { view: { status: 'missing' }, settings: {} } : null,
+  }) as new () => {
+    env: { version?: string };
+    call(run: (stores: unknown) => unknown): unknown;
+    threadRunnerTurn(op: { kind: string; id?: string }): Promise<{ ok: boolean; value: unknown }>;
+  };
+  const probe = new Probe();
+  let storeCalls = 0;
+  probe.call = (run) => { storeCalls += 1; return { ok: true, value: run({}) }; };
+  probe.env = { version: 'v2' };
+  assert.equal((await probe.threadRunnerTurn({ kind: 'servingVersion' })).value, 'v2');
+  assert.equal(storeCalls, 0, 'no storage read');
+  const begin = await probe.threadRunnerTurn({ kind: 'begin', id: 'job' });
+  assert.equal((begin.value as { servingVersion?: string }).servingVersion, 'v2');
+  probe.env = {};
+  assert.equal((await probe.threadRunnerTurn({ kind: 'servingVersion' })).value, null);
+  assert.equal(
+    ((await probe.threadRunnerTurn({ kind: 'begin', id: 'job' })).value as { servingVersion?: string }).servingVersion,
+    undefined,
+  );
+});

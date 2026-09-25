@@ -1757,3 +1757,26 @@ test('a durable unknown file completion remains fenced outside automatic claims'
     assert.equal(fixture.work.getRun(fixture.admission.run.id)?.status, 'recovery_required');
   } finally { fixture.db.close(); }
 });
+
+test('a fresh state store finds an interrupted alarm dispatch to resume', () => {
+  const db = openStateDb(':memory:');
+  try {
+    const turns = new TurnJobStoreLogic(db, () => NOW);
+    assert.equal(turns.hasInterruptedAlarmDispatch(), false);
+    turns.enqueue({ id: 'queued', evtKey: 'evt_q', msgKey: 'msg_q', turn: turn(), assignment: assignment() });
+    assert.equal(turns.hasInterruptedAlarmDispatch(), false, 'a turn not yet dispatched waits for its own wake');
+    turns.freezeRuntimePlan('queued', compileRuntimePlanV2({
+      turn: turn(), assignment: assignment(), instructions: 'Test.', memoryEpoch: 1, sandboxMode: 'bash',
+    }));
+    turns.prepareFlueDispatch('queued', 'Test.', { generation: 'queued' });
+    assert.equal(turns.hasInterruptedAlarmDispatch(), true, 'a dispatched alarm turn needs an observer');
+    // A retried Slack delivery admits the same message once (the gateway
+    // inbox reclaims orphaned deliveries on that guarantee).
+    assert.equal(
+      turns.enqueue({ id: 'queued', evtKey: 'evt_q', msgKey: 'msg_q', turn: turn(), assignment: assignment() }),
+      false,
+    );
+    turns.markDelivered('queued');
+    assert.equal(turns.hasInterruptedAlarmDispatch(), false);
+  } finally { db.close(); }
+});
