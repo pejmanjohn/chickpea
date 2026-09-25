@@ -405,7 +405,7 @@ function bashActivityStatus(
   if (commands.some(isStartCommand)) {
     return activityStatus('running', 'Starting', 'the app');
   }
-  if (curlRequests.some(isGitHubPullCreation)) {
+  if (curlRequests.some(isGitHubPullCreation) || commands.some(isGhPullCreateCommand)) {
     return activityStatus('finishing', 'Opening', 'the pull request');
   }
   if (commands.some((parsed) => isGitCommand(parsed, 'push'))) {
@@ -483,6 +483,11 @@ function isShellAssignment(word: string | undefined): boolean {
 function isGitCommand(command: ParsedShellCommand, subcommand: string): boolean {
   const words = executableWords(command);
   return words[0] === 'git' && words[1] === subcommand;
+}
+
+function isGhPullCreateCommand(command: ParsedShellCommand): boolean {
+  const words = executableWords(command);
+  return words[0] === 'gh' && words[1] === 'pr' && words[2] === 'create';
 }
 
 function isDependencyInstallCommand(command: ParsedShellCommand): boolean {

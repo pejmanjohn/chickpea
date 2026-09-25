@@ -75,24 +75,14 @@ export function parseCodingWorkerUsage(value: unknown): CodingWorkerUsageRecord[
 
 /**
  * Written by `workspace_task` as a delegated task moves through its steps, so
- * the relay can show them as the run's native task checklist. Records are
- * durable and ordered in the response stream, and replay when the relay
- * re-attaches; applying one twice is harmless.
+ * the turn can show them in its working indicator (./coding-task-progress.ts).
+ * Records are durable and ordered in the response stream, and replay when the
+ * relay re-attaches; applying one twice is harmless.
  */
 export const WORKSPACE_MILESTONE_DATA_NAME = 'chickpeaWorkspaceMilestone';
 
 export const WORKSPACE_MILESTONES = ['workspace', 'changes', 'pull_request'] as const;
 export type WorkspaceMilestone = (typeof WORKSPACE_MILESTONES)[number];
-
-/** The checklist's fixed title; without one Slack titles it by the active row. */
-export const WORKSPACE_PLAN_TITLE = 'Coding task';
-
-/** The checklist rows, in milestone order: result nouns, like the other plans. */
-export const WORKSPACE_MILESTONE_LABELS: readonly string[] = [
-  'Coding workspace',
-  'Code changes',
-  'Pull request',
-];
 
 export const WORKSPACE_MILESTONE_REASONS = [
   'workspace_unavailable',
@@ -133,47 +123,7 @@ export function parseWorkspaceMilestone(value: unknown): WorkspaceMilestoneRecor
   return parsed.success ? parsed.output : undefined;
 }
 
-/** A branch name safe to show in a checklist row, or undefined. */
-export function checklistBranchName(value: string | undefined): string | undefined {
+/** A plain branch name the worker reported, or undefined. */
+export function safeBranchName(value: string | undefined): string | undefined {
   return value && BRANCH_NAME.test(value) ? value : undefined;
-}
-
-/**
- * The row detail for a settled milestone. Always starts with the outcome's
- * own prefix, and names only a branch and pull request numbers the worker
- * reported: never its free text.
- */
-export function workspaceMilestoneDetail(record: WorkspaceMilestoneRecord): string | undefined {
-  switch (record.state) {
-    case 'started':
-      return undefined;
-    case 'not_run':
-      return 'Not run: work stopped after an earlier step failed.';
-    case 'skipped':
-      return record.milestone === 'pull_request'
-        ? 'Skipped: no pull request was opened.'
-        : 'Skipped: not needed for this task.';
-    case 'failed':
-      switch (record.reason) {
-        case 'workspace_unavailable': return 'Failed: the coding workspace could not start.';
-        case 'timeout': return 'Failed: the task did not finish in time and was stopped.';
-        case 'worker_failed': return 'Failed: the coding worker stopped before finishing.';
-        default: return 'Failed: the task stopped unexpectedly.';
-      }
-    case 'changed':
-      return record.branch
-        ? `Changed: pushed branch ${record.branch}.`
-        : 'Changed: the worker pushed its changes.';
-    case 'completed':
-      if (record.milestone === 'workspace') return 'Completed: the coding workspace is ready.';
-      if (record.milestone === 'pull_request' && record.pullRequests?.length) {
-        const [first] = record.pullRequests;
-        return record.pullRequests.length === 1
-          ? `Completed: ${first!.repository}#${first!.number}.`
-          : `Completed: ${record.pullRequests.length} pull requests.`;
-      }
-      return record.milestone === 'changes'
-        ? 'Completed: the worker finished without pushing a branch.'
-        : 'Completed: the pull request step finished.';
-  }
 }

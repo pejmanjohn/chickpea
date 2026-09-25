@@ -42,6 +42,8 @@ import { createManagementAdapterFixture } from './helpers/management-adapter-fix
 import { authoringProposalMetadata } from './helpers/agent-authoring.ts';
 import { CHICKPEA_AGENT_ID } from '../src/config/agent-id.ts';
 import { withEnv } from './helpers/env.ts';
+import { activityStatus } from '../src/activity/semantic.ts';
+import { setObservedSlackStatus } from '../src/slack/status-registry.ts';
 
 interface Deferred<T> {
   promise: Promise<T>;
@@ -1427,6 +1429,124 @@ test('only a turn that delegates a coding task asks for the long active-work hin
       },
     });
     assert.equal(hints, delegates ? 1 : 0, delegates ? 'once per delegating turn' : 'never for an ordinary turn');
+  }
+});
+
+test('a 45-minute coding task shows its progress in the working indicator, opens no card, and posts one final', async (t) => {
+  const turn: NormalizedSlackTurn = {
+    ...workTurn('Ev_CODING_PROGRESS'),
+    messageTs: '1787777000.000100',
+    threadTs: '1787777000.000100',
+    interactionIntent: { disposition: 'reply', reason: 'substantive_request' },
+  };
+  const requestedAt = 1_787_777_000_000;
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval', 'Date'], now: requestedAt });
+  const work = new SqliteWorkStore(':memory:');
+  const admitted = await work.admitShadowRun(prepareSlackShadowAdmission({
+    turn, assignment, sourceVisibility: 'private', admittedAt: Date.now(),
+  }));
+  const runId = admitted.run.id;
+  const h = v3PresentationHarness(turn, runId);
+  const statuses: Array<{ at: number; status: string; loading?: unknown }> = [];
+  const chat: Array<{ method: string; input: Record<string, unknown> }> = [];
+  const record = (method: string) => async (input: Record<string, unknown>) => {
+    chat.push({ method, input });
+    return { ok: true, channel: turn.channelId, ts: `1787777000.00${900 + chat.length}` };
+  };
+  const client = {
+    apiCall: async () => ({ ok: true }),
+    assistant: { threads: { setStatus: async (input: Record<string, unknown>) => {
+      statuses.push({ at: Date.now(), status: String(input.status), loading: input.loading_messages });
+      return { ok: true };
+    } } },
+    conversations: { history: async () => ({ ok: true, messages: [] }) },
+    chat: {
+      startStream: record('chat.startStream'),
+      appendStream: record('chat.appendStream'),
+      stopStream: record('chat.stopStream'),
+      postMessage: record('chat.postMessage'),
+      update: record('chat.update'),
+      delete: record('chat.delete'),
+    },
+  } as unknown as WebClient;
+  const settle = async () => {
+    for (let index = 0; index < 10; index += 1) await new Promise((resolve) => setImmediate(resolve));
+  };
+  const advance = async (milliseconds: number) => {
+    for (let elapsed = 0; elapsed < milliseconds; elapsed += 10_000) {
+      t.mock.timers.tick(Math.min(10_000, milliseconds - elapsed));
+      await settle();
+    }
+  };
+  const milestone = (
+    name: 'workspace' | 'changes' | 'pull_request',
+    state: 'started' | 'completed' | 'changed',
+  ) => ({ schemaVersion: 1 as const, toolCallId: 'call_code', milestone: name, state });
+  try {
+    await runTurn(turn, assignment, undefined, {
+      client,
+      runId,
+      presentationState: h.state,
+      workStore: work,
+      usageRecordingEnabled: false,
+      agentPrompt: async (input) => {
+        const target = { instanceId: 'agent-instance', submissionId: 'sub-coding' };
+        await input.onWorkspaceMilestone?.(milestone('workspace', 'started'), target);
+        await settle();
+        await advance(40_000);
+        await input.onWorkspaceMilestone?.(milestone('workspace', 'completed'), target);
+        await input.onWorkspaceMilestone?.(milestone('changes', 'started'), target);
+        await settle();
+        await advance(60_000);
+        // The worker's own step, relayed from another isolate as observed activity.
+        const instanceId = input.runtimePlan
+          ? deriveRuntimePlanInstanceId(input.runtimePlan)
+          : input.conversationKey;
+        assert.equal(setObservedSlackStatus(instanceId, input.turnId,
+          activityStatus('running', 'Running', 'the test suite', 'workspace')), true);
+        await settle();
+        await advance(45 * 60_000);
+        await input.onWorkspaceMilestone?.(milestone('changes', 'changed'), target);
+        await input.onWorkspaceMilestone?.(milestone('pull_request', 'completed'), target);
+        await settle();
+        return {
+          text: 'Opened acme/app#12.',
+          requestedModel: null,
+          returnedModel: null,
+          reportedUsage: null,
+          usageCompleteness: 'not_reported',
+        };
+      },
+    });
+
+    // No checklist card: no plan title, no task rows, in any Slack write.
+    const chunks = chat.flatMap((call) => (call.input.chunks ?? []) as Array<Record<string, unknown>>);
+    assert.equal(chunks.some((chunk) => chunk.type === 'plan_update' || chunk.type === 'task_update'), false);
+    assert.equal(chat.some((call) => call.input.task_display_mode !== undefined), false);
+    // The final is the normal reply, delivered once.
+    const finals = chat.filter((call) => JSON.stringify(call.input).includes('Opened acme/app#12.'));
+    assert.equal(finals.length, 1, JSON.stringify(chat.map((call) => call.method)));
+
+    const shown = statuses.map((status) => status.status);
+    assert.ok(shown.includes('Setting up the coding workspace…'), JSON.stringify(shown));
+    assert.ok(shown.includes('Working on the code changes…'), JSON.stringify(shown));
+    assert.ok(shown.includes('Running the test suite · 1 min'), JSON.stringify(shown));
+    const refreshes = statuses.filter((status) => /^Running the test suite · \d+ min$/.test(status.status));
+    assert.ok(refreshes.length >= 29, `refreshed ${refreshes.length} times`);
+    for (const [index, refresh] of refreshes.entries()) {
+      if (index > 0) assert.ok(refresh.at - refreshes[index - 1]!.at <= 90_000);
+      assert.deepEqual(refresh.loading, [refresh.status, 'Step 2 of 3 · Code changes']);
+    }
+    assert.match(refreshes.at(-1)!.status, /· 4[56] min$/);
+    // Cleared once after the final, and never shown again.
+    assert.equal(statuses.at(-1)?.status, '');
+    assert.equal(statuses.filter((status) => status.status === '').length, 1);
+    const afterFinal = statuses.length;
+    await advance(10 * 60_000);
+    assert.equal(statuses.length, afterFinal, 'no status after the final');
+  } finally {
+    h.db.close();
+    work.close();
   }
 });
 

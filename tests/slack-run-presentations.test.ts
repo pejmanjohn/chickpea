@@ -1685,46 +1685,6 @@ test('adopt_plan attaches a late plan only when absent, native, and plan-free', 
   }
 });
 
-test('adopt_plan replaces a V3 plan only while every task is still pending', () => {
-  const db = openStateDb(':memory:');
-  try {
-    const store = new SlackRunPresentationStoreLogic(db);
-    const refused = (current: SlackRunPresentation, mutation: SlackPresentationMutation) => assert.throws(
-      () => store.transition({
-        runId: current.runId,
-        workBindingGeneration: current.workBindingGeneration,
-        runFencingToken: current.runFencingToken,
-        expectedProjectionVersion: current.projectionVersion,
-        expectedStreamState: current.stream.state,
-        mutation,
-      }),
-      (error: unknown) =>
-        error instanceof SlackPresentationStateError && error.code === 'terminal_rewrite',
-    );
-    const replacement = ['Coding workspace', 'Code changes', 'Pull request'];
-
-    let current = store.create(createV3Input('run_replace_pending'));
-    refused(current, { kind: 'adopt_plan', taskLabels: replacement });
-    current = advance(store, current, { kind: 'adopt_plan', taskLabels: replacement, replacePending: true });
-    assert.deepEqual(
-      current.plan?.tasks.map(({ title, status }) => ({ title, status })),
-      replacement.map((title) => ({ title, status: 'pending' })),
-    );
-    assert.deepEqual(store.get(current.runId)?.plan, current.plan, 'the replacement survives durable readback');
-
-    current = advance(store, current, {
-      kind: 'transition_task', taskId: current.plan!.tasks[0]!.id, to: 'in_progress',
-    });
-    refused(current, { kind: 'adopt_plan', taskLabels: ['Later plan'], replacePending: true });
-
-    // Legacy presentations show their plan from the start: never replaced.
-    const legacy = store.create(createInput('run_replace_pending_v1'));
-    refused(legacy, { kind: 'adopt_plan', taskLabels: replacement, replacePending: true });
-  } finally {
-    db.close();
-  }
-});
-
 test('adopt_plan is refused when native tasks are disabled', () => {
   const db = openStateDb(':memory:');
   try {

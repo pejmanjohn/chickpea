@@ -155,6 +155,14 @@ export interface SlackPresenterOptions {
   };
   /** Fixed-schema content-free observability; injectable for focused tests. */
   activityTelemetry?: SemanticActivityTelemetrySink;
+  /**
+   * Replaces the native status line and loading messages for one update, for
+   * example a running coding task's elapsed time and step. Read at each
+   * write, so a refresh of the same fact shows current values. Undefined (or
+   * a throw) keeps the ordinary rendering.
+   */
+  statusDisplay?: (update: SlackStatusUpdate) =>
+    { status: string; loadingMessages: string[] } | undefined;
 }
 
 export interface SlackActivityWrite {
@@ -289,12 +297,13 @@ export class WebClientPresenter {
       this.emitTransport('assistant_status', 'rejected', startedAt, update);
       return false;
     }
+    const display = this.statusDisplay(update);
     try {
       await this.client.assistant.threads.setStatus({
         channel_id: this.target.channelId,
         thread_ts: this.target.threadTs,
-        status: slackStatusText(update),
-        loading_messages: slackLoadingMessages(update),
+        status: display?.status ?? slackStatusText(update),
+        loading_messages: display?.loadingMessages ?? slackLoadingMessages(update),
         ...this.persona(),
       });
       this.statusWasSet = true;
@@ -324,6 +333,19 @@ export class WebClientPresenter {
         ).catch(() => undefined);
       }
       return false;
+    }
+  }
+
+  private statusDisplay(
+    update: SlackStatusUpdate,
+  ): { status: string; loadingMessages: string[] } | undefined {
+    try {
+      const display = this.options.statusDisplay?.(update);
+      if (!display || !display.status || display.loadingMessages.length < 1 ||
+          display.loadingMessages.length > 10) return undefined;
+      return display;
+    } catch {
+      return undefined;
     }
   }
 

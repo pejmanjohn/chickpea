@@ -55,7 +55,6 @@ import {
   parseCodingWorkerRunModel,
   parseCodingWorkerUsage,
   parseWorkspaceMilestone,
-  workspaceMilestoneDetail,
   type CodingWorkerUsageRecord,
   type WorkspaceMilestoneRecord,
 } from '../src/slack/coding-worker-run.ts';
@@ -566,7 +565,7 @@ test('pull request links are extracted only for granted repositories', () => {
 
 // --- progress ----------------------------------------------------------------
 
-test('progress relays only this task\'s tool calls, by tool name, without repeats', () => {
+test('progress relays only this task\'s tool calls as fixed stages, without repeats', () => {
   const published: ActivityStatus[] = [];
   const relay = createProgressRelay('sub-2', (status) => published.push(status));
   const chunk = (value: object) => value as unknown as ConversationStreamChunk;
@@ -574,18 +573,32 @@ test('progress relays only this task\'s tool calls, by tool name, without repeat
   relay(chunk({ type: 'message-started', submissionId: 'sub-1', messageId: 'm1' }));
   relay(chunk({ type: 'tool-input', toolName: 'bash', toolCallId: 't0', input: { command: 'secret' } }));
   relay(chunk({ type: 'message-started', submissionId: 'sub-2', messageId: 'm2' }));
-  relay(chunk({ type: 'tool-input', toolName: 'bash', toolCallId: 't1', input: { command: 'npm test' } }));
-  relay(chunk({ type: 'tool-input', toolName: 'bash', toolCallId: 't2', input: {} }));
-  relay(chunk({ type: 'tool-input', toolName: 'edit', toolCallId: 't3', input: {} }));
-  relay(chunk({ type: 'tool-input', toolName: 'grep', toolCallId: 't4', input: {} }));
+  const bash = (toolCallId: string, command?: string) =>
+    relay(chunk({ type: 'tool-input', toolName: 'bash', toolCallId, input: command ? { command } : {} }));
+  bash('t1', 'git clone https://github.com/acme/secret-app.git');
+  bash('t2', 'npm ci');
+  bash('t3', 'npm test -- --grep secret-case');
+  bash('t4', 'npm test');
+  bash('t5');
+  relay(chunk({ type: 'tool-input', toolName: 'edit', toolCallId: 't6', input: {} }));
+  relay(chunk({ type: 'tool-input', toolName: 'grep', toolCallId: 't7', input: {} }));
+  bash('t8', 'git commit -m "fix secret bug"');
+  bash('t9', 'git push origin fix-secret');
+  bash('t10', 'gh pr create --title "Secret"');
   relay(chunk({ type: 'message-delta', kind: 'text', delta: 'hello' }));
   assert.deepEqual(published.map((status) => status.text), [
+    'Cloning the repository…',
+    'Installing dependencies…',
+    'Running the test suite…',
     'Running commands in the coding workspace…',
     'Editing files in the coding workspace…',
     'Reading code in the coding workspace…',
+    'Committing the changes…',
+    'Pushing the branch…',
+    'Opening the pull request…',
   ]);
   assert.ok(published.every((status) => status.family === 'workspace'));
-  assert.equal(JSON.stringify(published).includes('npm test'), false, 'tool input never reaches Slack');
+  assert.equal(/secret/i.test(JSON.stringify(published)), false, 'tool input never reaches Slack');
 });
 
 test('a task relays progress lines while it runs', async () => {
@@ -788,17 +801,8 @@ test('the worker branch comes from its closing line, and only a plain branch nam
   assert.equal(workerBranch('Branch: old\nBranch: new-one'), 'new-one');
 });
 
-test('milestone details name their outcome and only reported facts', () => {
+test('milestone records accept only plain branch names and known states', () => {
   const base = { schemaVersion: 1 as const, toolCallId: 'call-1' };
-  assert.equal(workspaceMilestoneDetail({ ...base, milestone: 'workspace', state: 'started' }), undefined);
-  assert.equal(workspaceMilestoneDetail({ ...base, milestone: 'changes', state: 'changed', branch: 'fix-x' }), 'Changed: pushed branch fix-x.');
-  assert.equal(
-    workspaceMilestoneDetail({ ...base, milestone: 'pull_request', state: 'completed', pullRequests: [{ repository: 'acme/app', number: 7 }] }),
-    'Completed: acme/app#7.',
-  );
-  assert.equal(workspaceMilestoneDetail({ ...base, milestone: 'pull_request', state: 'skipped' }), 'Skipped: no pull request was opened.');
-  assert.equal(workspaceMilestoneDetail({ ...base, milestone: 'changes', state: 'failed', reason: 'timeout' }), 'Failed: the task did not finish in time and was stopped.');
-  assert.equal(workspaceMilestoneDetail({ ...base, milestone: 'pull_request', state: 'not_run' }), 'Not run: work stopped after an earlier step failed.');
   assert.equal(parseWorkspaceMilestone({ ...base, milestone: 'changes', state: 'changed', branch: 'a b' }), undefined);
   assert.equal(parseWorkspaceMilestone({ ...base, milestone: 'changes', state: 'done' }), undefined);
 });

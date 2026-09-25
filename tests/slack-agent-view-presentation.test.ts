@@ -5,7 +5,6 @@ import { ErrorCode, type WebClient } from '@slack/web-api';
 
 import { openStateDb } from '../src/state/node-state-db.ts';
 import {
-  AGENT_VIEW_RETIRED_STREAM_TEXT,
   SlackAgentViewPresentation,
   deriveSlackThreadTitle,
   type SlackPresentationDeliveryObserver,
@@ -20,7 +19,6 @@ import { SlackTransportError } from '../src/slack/transport/types.ts';
 import { WebClientPresenter } from '../src/slack/web-client-presenter.ts';
 import { slackClientMessageId } from '../src/slack/transport/message-id.ts';
 import type { SlackArtifactReceipt } from '../src/slack/artifact-receipts.ts';
-import type { WorkspaceMilestoneRecord } from '../src/slack/coding-worker-run.ts';
 
 const HARNESS_START_MS = 1_785_700_100_000;
 
@@ -834,15 +832,16 @@ test('V3 milestones stay hidden until an authoritative transition and project on
   }
 });
 
-function milestone(
-  name: WorkspaceMilestoneRecord['milestone'],
-  state: WorkspaceMilestoneRecord['state'],
-  extra: Partial<WorkspaceMilestoneRecord> = {},
-): WorkspaceMilestoneRecord {
-  return { schemaVersion: 1, toolCallId: 'call_workspace', milestone: name, state, ...extra };
-}
-
 const WORKSPACE_TARGET = { instanceId: 'instance_workspace', submissionId: 'submission_workspace' };
+
+/**
+ * An open Agent View stream started now on the harness clock, as a long turn
+ * leaves it (an answer that began streaming before a long tool call).
+ */
+function openStream(h: ReturnType<typeof harness>, messageTs = '1785700100.000201'): void {
+  applyPresentationMutation(h, { kind: 'stream_start_intent' });
+  applyPresentationMutation(h, { kind: 'stream_started', messageTs, flue: WORKSPACE_TARGET });
+}
 
 /** Every task detail this run sent to Slack, in order: each must appear once. */
 function detailsSent(h: { calls: Array<{ method: string; input: Record<string, unknown> }> }): unknown[] {
@@ -852,168 +851,6 @@ function detailsSent(h: { calls: Array<{ method: string; input: Record<string, u
       .filter((chunk) => chunk.type === 'task_update' && chunk.details !== undefined)
       .map((chunk) => chunk.details));
 }
-
-function taskRows(input: Record<string, unknown> | undefined): Array<[unknown, unknown, unknown]> {
-  return ((input?.chunks ?? []) as Array<Record<string, unknown>>)
-    .filter((chunk) => chunk.type === 'task_update')
-    .map((chunk) => [chunk.title, chunk.status, chunk.details]);
-}
-
-test('workspace milestones open the native checklist, advance it, and settle with the answer', async () => {
-  const h = harness({ schemaVersion: 3 });
-  try {
-    await prepareReceipt(h, {
-      ...WORKSPACE_TARGET,
-      receipt: { submissionId: WORKSPACE_TARGET.submissionId, acceptedAt: 'now', uid: 'uid' },
-      eligibility: { allowed: false, reason: 'effect_capable' },
-    });
-    assert.equal(h.calls.some((call) => call.method === 'chat.startStream'), false);
-
-    await h.presentation.applyWorkspaceMilestone(milestone('workspace', 'started'), WORKSPACE_TARGET);
-    const starts = h.calls.filter((call) => call.method === 'chat.startStream');
-    assert.equal(starts.length, 1);
-    assert.equal(starts[0]!.input.markdown_text, undefined);
-    assert.deepEqual((starts[0]!.input.chunks as Array<Record<string, unknown>>)[0], {
-      type: 'plan_update', title: 'Coding task',
-    });
-    assert.deepEqual(taskRows(starts[0]!.input), [
-      ['Coding workspace', 'in_progress', undefined],
-      ['Code changes', 'pending', undefined],
-      ['Pull request', 'pending', undefined],
-    ]);
-
-    await h.presentation.applyWorkspaceMilestone(milestone('workspace', 'completed'), WORKSPACE_TARGET);
-    await h.presentation.applyWorkspaceMilestone(milestone('changes', 'started'), WORKSPACE_TARGET);
-    // A replayed record is a no-op: no transition, no Slack write.
-    const appendsBefore = h.calls.filter((call) => call.method === 'chat.appendStream').length;
-    await h.presentation.applyWorkspaceMilestone(milestone('workspace', 'started'), WORKSPACE_TARGET);
-    await h.presentation.applyWorkspaceMilestone(milestone('changes', 'started'), WORKSPACE_TARGET);
-    assert.equal(h.calls.filter((call) => call.method === 'chat.appendStream').length, appendsBefore);
-    assert.deepEqual(
-      h.calls.filter((call) => call.method === 'chat.appendStream').map((call) => taskRows(call.input)),
-      [
-        [['Coding workspace', 'complete', 'Completed: the coding workspace is ready.']],
-        [['Code changes', 'in_progress', undefined]],
-      ],
-    );
-
-    await h.presentation.applyWorkspaceMilestone(
-      milestone('changes', 'changed', { branch: 'fix-login-test' }),
-      WORKSPACE_TARGET,
-    );
-    await h.presentation.applyWorkspaceMilestone(
-      milestone('pull_request', 'completed', { pullRequests: [{ repository: 'acme/app', number: 12 }] }),
-      WORKSPACE_TARGET,
-    );
-    assert.equal(h.calls.filter((call) => call.method === 'chat.startStream').length, 1);
-
-    await h.presentation.finalize('Opened acme/app#12.', 'markdown', 'complete', observer([]));
-    const stop = h.calls.find((call) => call.method === 'chat.stopStream')?.input;
-    const chunks = stop?.chunks as Array<Record<string, unknown>>;
-    assert.equal(chunks[0]?.type, 'markdown_text');
-    const planUpdates = h.calls.flatMap((call) => ((call.input.chunks ?? []) as Array<Record<string, unknown>>)
-      .filter((chunk) => chunk.type === 'plan_update'));
-    assert.equal(planUpdates.length, 1, 'the title is sent once, with the card');
-    // The stop settles every row's status; each detail already reached Slack once.
-    assert.deepEqual(taskRows(stop), [
-      ['Coding workspace', 'complete', undefined],
-      ['Code changes', 'complete', undefined],
-      ['Pull request', 'complete', undefined],
-    ]);
-    assert.deepEqual(detailsSent(h), [
-      'Completed: the coding workspace is ready.',
-      'Changed: pushed branch fix-login-test.',
-      'Completed: acme/app#12.',
-    ]);
-  } finally {
-    h.db.close();
-  }
-});
-
-test('workspace milestones replace a plan with no started row, but never one already shown', async () => {
-  const pending = harness({ schemaVersion: 3, tasks: ['Requested change', 'Verification result'] });
-  try {
-    await pending.presentation.applyWorkspaceMilestone(milestone('workspace', 'started'), WORKSPACE_TARGET);
-    const stored = pending.store.get(pending.runId);
-    assert.deepEqual(stored?.plan?.tasks.map((task) => [task.title, task.status]), [
-      ['Coding workspace', 'in_progress'],
-      ['Code changes', 'pending'],
-      ['Pull request', 'pending'],
-    ]);
-    assert.equal(pending.calls.filter((call) => call.method === 'chat.startStream').length, 1);
-  } finally {
-    pending.db.close();
-  }
-
-  const shown = harness({ schemaVersion: 3, tasks: ['Requested change', 'Verification result'] });
-  try {
-    const [first] = shown.store.get(shown.runId)!.plan!.tasks;
-    await shown.presentation.transitionMilestone({ taskId: first!.id, to: 'in_progress' });
-    await shown.presentation.applyWorkspaceMilestone(milestone('workspace', 'started'), WORKSPACE_TARGET);
-    assert.deepEqual(shown.store.get(shown.runId)?.plan?.tasks.map((task) => task.title), [
-      'Requested change',
-      'Verification result',
-    ]);
-  } finally {
-    shown.db.close();
-  }
-});
-
-test('workspace milestones settle a failed task, and a lost started record still records the outcome', async () => {
-  const h = harness({ schemaVersion: 3 });
-  try {
-    await h.presentation.applyWorkspaceMilestone(milestone('workspace', 'started'), WORKSPACE_TARGET);
-    await h.presentation.applyWorkspaceMilestone(milestone('workspace', 'completed'), WORKSPACE_TARGET);
-    // No `changes started` record reached the relay.
-    await h.presentation.applyWorkspaceMilestone(milestone('changes', 'failed', { reason: 'timeout' }), WORKSPACE_TARGET);
-    await h.presentation.applyWorkspaceMilestone(milestone('pull_request', 'not_run', { reason: 'prior_failed' }), WORKSPACE_TARGET);
-    const stored = h.store.get(h.runId);
-    assert.equal(stored?.schemaVersion, 3);
-    if (stored?.schemaVersion !== 3) return;
-    assert.deepEqual(stored.plan?.tasks.map((task) => [task.outcome, task.detail]), [
-      ['completed', 'Completed: the coding workspace is ready.'],
-      ['failed', 'Failed: the task did not finish in time and was stopped.'],
-      ['not_run', 'Not run: work stopped after an earlier step failed.'],
-    ]);
-  } finally {
-    h.db.close();
-  }
-});
-
-test('workspace milestones retry a lost compare-and-swap and stop once a terminal is frozen', async () => {
-  const h = harness({ schemaVersion: 3 });
-  try {
-    let stale = 1;
-    const presentation = new SlackAgentViewPresentation({
-      client: h.client,
-      state: {
-        ...h.presentationState,
-        transitionRunPresentation: (value) => {
-          // Another writer (the answer relay) won the first compare-and-swap.
-          if (value.mutation.kind === 'adopt_plan' && stale-- > 0) return { outcome: 'stale' };
-          return h.presentationState.transitionRunPresentation(value);
-        },
-      },
-      runId: h.runId,
-      runFencingToken: 0,
-      footer: { agentName: 'Chickpea', agentId: 'agent_default' },
-    });
-    await presentation.applyWorkspaceMilestone(milestone('workspace', 'started'), WORKSPACE_TARGET);
-    assert.equal(h.store.get(h.runId)?.plan?.tasks[0]?.status, 'in_progress');
-  } finally {
-    h.db.close();
-  }
-
-  const frozen = harness({ schemaVersion: 3 });
-  try {
-    assert.equal(await frozen.presentation.prepareDeferredTerminalDelivery('answer'), true);
-    await frozen.presentation.applyWorkspaceMilestone(milestone('workspace', 'started'), WORKSPACE_TARGET);
-    assert.equal(frozen.store.get(frozen.runId)?.plan, undefined);
-    assert.equal(frozen.calls.some((call) => call.method === 'chat.startStream'), false);
-  } finally {
-    frozen.db.close();
-  }
-});
 
 test('a durable artifact coordinate reconciles a crashed terminal receipt without another Slack write', async () => {
   const h = harness({ schemaVersion: 3, owner: { kind: 'chickpea' } });
@@ -2687,62 +2524,6 @@ function slackPlatformError(error: string) {
   return { code: ErrorCode.PlatformError, data: { ok: false, error } };
 }
 
-test('a coding turn reattached after a yield replays its milestones without resending any detail', async () => {
-  const h = harness({ schemaVersion: 3 });
-  try {
-    const receipt = { submissionId: WORKSPACE_TARGET.submissionId, acceptedAt: 'now', uid: 'uid' };
-    await prepareReceipt(h, {
-      ...WORKSPACE_TARGET, receipt, eligibility: { allowed: false, reason: 'effect_capable' },
-    });
-    const beforeYield = [
-      milestone('workspace', 'started'),
-      milestone('workspace', 'completed'),
-      milestone('changes', 'started'),
-    ];
-    for (const record of beforeYield) {
-      await h.presentation.applyWorkspaceMilestone(record, WORKSPACE_TARGET);
-    }
-    const slackWritesBeforeYield = h.calls.length;
-
-    // The next alarm builds a fresh presentation for the same Run and reads the
-    // receipt from its start: every earlier record arrives again.
-    const reattached = new SlackAgentViewPresentation({
-      client: h.client,
-      state: h.presentationState,
-      runId: h.runId,
-      runFencingToken: 0,
-      footer: { agentName: 'Chickpea', agentId: 'agent_default' },
-      // A yield well inside the stream's lifetime keeps the card open.
-      now: () => HARNESS_START_MS + 60_000,
-    });
-    assert.equal(await reattached.prepareReceipt({
-      ...WORKSPACE_TARGET, receipt, eligibility: { allowed: false, reason: 'effect_capable' },
-    }), undefined);
-    for (const record of beforeYield) {
-      await reattached.applyWorkspaceMilestone(record, WORKSPACE_TARGET);
-    }
-    assert.equal(h.calls.length, slackWritesBeforeYield, 'a replayed record writes nothing to Slack');
-    await reattached.applyWorkspaceMilestone(
-      milestone('changes', 'changed', { branch: 'fix-login-test' }), WORKSPACE_TARGET);
-    await reattached.applyWorkspaceMilestone(
-      milestone('pull_request', 'completed', { pullRequests: [{ repository: 'acme/app', number: 12 }] }),
-      WORKSPACE_TARGET,
-    );
-    await reattached.finalize('Opened acme/app#12.', 'markdown', 'complete', observer([]));
-
-    assert.equal(h.calls.filter((call) => call.method === 'chat.startStream').length, 1);
-    assert.equal(h.calls.filter((call) => call.method === 'chat.stopStream').length, 1);
-    assert.deepEqual(detailsSent(h), [
-      'Completed: the coding workspace is ready.',
-      'Changed: pushed branch fix-login-test.',
-      'Completed: acme/app#12.',
-    ]);
-    assert.equal(h.store.get(h.runId)?.stream.state, 'artifact_delivered');
-  } finally {
-    h.db.close();
-  }
-});
-
 test('a sealed stream after a long gap is finalized in place on its known message', async () => {
   const h = harness({ schemaVersion: 3, stopStreamError: slackPlatformError('message_not_in_streaming_state') });
   try {
@@ -2751,7 +2532,7 @@ test('a sealed stream after a long gap is finalized in place on its known messag
       receipt: { submissionId: WORKSPACE_TARGET.submissionId, acceptedAt: 'now', uid: 'uid' },
       eligibility: { allowed: false, reason: 'effect_capable' },
     });
-    await h.presentation.applyWorkspaceMilestone(milestone('workspace', 'started'), WORKSPACE_TARGET);
+    openStream(h);
     const events: Array<Record<string, unknown>> = [];
     const result = await h.presentation.finalize('Opened acme/app#12.', 'markdown', 'complete', observer(events));
     assert.equal(result.handled, true);
@@ -2778,7 +2559,7 @@ test('a stream whose message Slack no longer has posts the final once as a fresh
       receipt: { submissionId: WORKSPACE_TARGET.submissionId, acceptedAt: 'now', uid: 'uid' },
       eligibility: { allowed: false, reason: 'effect_capable' },
     });
-    await h.presentation.applyWorkspaceMilestone(milestone('workspace', 'started'), WORKSPACE_TARGET);
+    openStream(h);
     const events: Array<Record<string, unknown>> = [];
     const result = await h.presentation.finalize('Opened acme/app#12.', 'markdown', 'complete', observer(events));
     assert.equal(result.handled, false, 'the presenter posts the terminal instead');
@@ -2844,9 +2625,8 @@ test('a stream Slack forgot during a long gateway turn still delivers exactly on
       receipt: { submissionId: WORKSPACE_TARGET.submissionId, acceptedAt: 'now', uid: 'uid' },
       eligibility: { allowed: false, reason: 'effect_capable' },
     });
-    await h.presentation.applyWorkspaceMilestone(milestone('workspace', 'started'), WORKSPACE_TARGET);
-    // Forty minutes later: the milestone projection finds no stream message.
-    await h.presentation.applyWorkspaceMilestone(milestone('workspace', 'completed'), WORKSPACE_TARGET);
+    openStream(h);
+    // Slack has forgotten the stream message by the time the answer is ready.
 
     const presenter = new WebClientPresenter(h.client, {
       channelId: ROOT.channelId,
@@ -2878,35 +2658,30 @@ test('a stream Slack forgot during a long gateway turn still delivers exactly on
   }
 });
 
-test('a concurrent row write while Slack opens the checklist card never loses its coordinate', async () => {
+test('a concurrent row write while Slack opens a stream never loses its coordinate', async () => {
   let h!: ReturnType<typeof harness>;
   let raced = false;
   h = harness({
     schemaVersion: 3,
     duringStartStream: () => {
-      // The second workspace task's status or milestone lands mid-request.
+      // The working indicator's status receipt lands mid-request.
       if (raced) return;
       raced = true;
-      const current = h.store.get(h.runId);
-      assert.ok(current?.plan);
+      applyPresentationMutation(h, { kind: 'select_activity_projection', surface: 'assistant_status' });
       applyPresentationMutation(h, {
-        kind: 'transition_task', taskId: current.plan.tasks[0]!.id, to: 'completed',
-        detail: 'Completed: the coding workspace is ready.',
+        kind: 'record_activity_receipt',
+        operationId: `activity_${h.runId}_1`,
+        certainty: 'acknowledged',
       });
     },
   });
   try {
-    await prepareReceipt(h, {
-      ...WORKSPACE_TARGET,
-      receipt: { submissionId: WORKSPACE_TARGET.submissionId, acceptedAt: 'now', uid: 'uid' },
-      eligibility: { allowed: false, reason: 'effect_capable' },
-    });
-    await h.presentation.applyWorkspaceMilestone(milestone('workspace', 'started'), WORKSPACE_TARGET);
+    await streamFirstChunkThenDegrade(h, LONG_TRIAGE_ANSWER);
     assert.equal(raced, true);
     const stored = h.store.get(h.runId);
-    assert.equal(stored?.stream.state, 'streaming', 'the card Slack opened is recorded, not unknown');
+    assert.equal(stored?.stream.state, 'streaming', 'the stream Slack opened is recorded, not unknown');
     assert.equal(stored?.stream.messageTs, '1785700100.000201');
-    await h.presentation.finalize('Pushed both branches.', 'markdown', 'complete', observer([]));
+    await h.presentation.finalize(LONG_TRIAGE_ANSWER, 'markdown', 'complete', observer([]));
     assert.equal(h.calls.filter((call) => call.method === 'chat.startStream').length, 1);
     assert.equal(h.calls.filter((call) => call.method === 'chat.stopStream').length, 1);
     assert.equal(h.store.get(h.runId)?.stream.state, 'artifact_delivered');
@@ -2999,7 +2774,7 @@ function freshFinalPresenter(h: ReturnType<typeof harness>) {
   }, undefined, { agentViewPresentation: h.presentation });
 }
 
-test('a long coding turn closes its card before Slack seals it and posts the final fresh once', async () => {
+test('a long turn closes its stream before Slack seals it, adds no note, and posts the final fresh once', async () => {
   const h = harness({ schemaVersion: 3 });
   try {
     await prepareReceipt(h, {
@@ -3007,9 +2782,7 @@ test('a long coding turn closes its card before Slack seals it and posts the fin
       receipt: { submissionId: WORKSPACE_TARGET.submissionId, acceptedAt: 'now', uid: 'uid' },
       eligibility: { allowed: false, reason: 'effect_capable' },
     });
-    await h.presentation.applyWorkspaceMilestone(milestone('workspace', 'started'), WORKSPACE_TARGET);
-    await h.presentation.applyWorkspaceMilestone(milestone('workspace', 'completed'), WORKSPACE_TARGET);
-    await h.presentation.applyWorkspaceMilestone(milestone('changes', 'started'), WORKSPACE_TARGET);
+    openStream(h);
 
     h.advanceClock(3 * 60_000);
     assert.equal(await h.presentation.retireAgedStream(), false, 'a young stream stays open');
@@ -3017,21 +2790,12 @@ test('a long coding turn closes its card before Slack seals it and posts the fin
     assert.equal(await h.presentation.retireAgedStream(), true);
     const stop = h.calls.filter((call) => call.method === 'chat.stopStream');
     assert.equal(stop.length, 1);
-    assert.deepEqual(stop[0]!.input.chunks, [{ type: 'markdown_text', text: AGENT_VIEW_RETIRED_STREAM_TEXT }],
-      'the card ends with a short note and resends no detail');
+    assert.deepEqual(stop[0]!.input, { channel: ROOT.channelId, ts: '1785700100.000201' },
+      'the stream ends as it stands: the working indicator says the work goes on');
     assert.equal(await h.presentation.retireAgedStream(), false, 'retirement happens once');
 
-    // Forty minutes of work later: milestones stay durable but stay off the card.
+    // A 45-minute task later, the final posts once.
     h.advanceClock(40 * 60_000);
-    const writesBeforeLateMilestones = h.calls.length;
-    await h.presentation.applyWorkspaceMilestone(
-      milestone('changes', 'changed', { branch: 'fix-login-test' }), WORKSPACE_TARGET);
-    await h.presentation.applyWorkspaceMilestone(
-      milestone('pull_request', 'completed', { pullRequests: [{ repository: 'acme/app', number: 12 }] }),
-      WORKSPACE_TARGET,
-    );
-    assert.equal(h.calls.length, writesBeforeLateMilestones, 'no card update after it closed');
-
     const presenter = freshFinalPresenter(h);
     await presenter.deliverFinal('Opened acme/app#12.', 'markdown');
     const posts = h.calls.filter((call) => call.method === 'chat.postMessage');
@@ -3040,7 +2804,6 @@ test('a long coding turn closes its card before Slack seals it and posts the fin
     assert.match(JSON.stringify(posts[0]?.input), /Opened acme\/app#12/);
     assert.ok(posts[0]?.input.client_msg_id);
     assert.equal(h.calls.filter((call) => call.method === 'chat.stopStream').length, 1);
-    assert.deepEqual(detailsSent(h), ['Completed: the coding workspace is ready.']);
     assert.equal(h.store.get(h.runId)?.stream.state, 'artifact_delivered');
 
     const callsAfter = h.calls.length;
@@ -3059,12 +2822,12 @@ test('a final reaching an aged stream closes it and posts fresh without a failin
       receipt: { submissionId: WORKSPACE_TARGET.submissionId, acceptedAt: 'now', uid: 'uid' },
       eligibility: { allowed: false, reason: 'effect_capable' },
     });
-    await h.presentation.applyWorkspaceMilestone(milestone('workspace', 'started'), WORKSPACE_TARGET);
+    openStream(h);
     h.advanceClock(45 * 60_000);
     await freshFinalPresenter(h).deliverFinal('Done.', 'markdown');
     assert.deepEqual(
       h.calls.filter((call) => call.method.startsWith('chat.')).map((call) => call.method),
-      ['chat.startStream', 'chat.stopStream', 'chat.postMessage'],
+      ['chat.stopStream', 'chat.postMessage'],
     );
   } finally {
     h.db.close();
@@ -3079,7 +2842,7 @@ test('a short turn keeps its streamed card and final answer in place', async () 
       receipt: { submissionId: WORKSPACE_TARGET.submissionId, acceptedAt: 'now', uid: 'uid' },
       eligibility: { allowed: false, reason: 'effect_capable' },
     });
-    await h.presentation.applyWorkspaceMilestone(milestone('workspace', 'started'), WORKSPACE_TARGET);
+    openStream(h);
     h.advanceClock(3 * 60_000);
     assert.equal(await h.presentation.retireAgedStream(), false);
     await freshFinalPresenter(h).deliverFinal('Done quickly.', 'markdown');
@@ -3105,7 +2868,7 @@ test('streaming_state_conflict on stop and recovery posts the final fresh instea
       receipt: { submissionId: WORKSPACE_TARGET.submissionId, acceptedAt: 'now', uid: 'uid' },
       eligibility: { allowed: false, reason: 'effect_capable' },
     });
-    await h.presentation.applyWorkspaceMilestone(milestone('workspace', 'started'), WORKSPACE_TARGET);
+    openStream(h);
     await freshFinalPresenter(h).deliverFinal('Done.', 'markdown');
     assert.equal(h.calls.filter((call) => call.method === 'chat.postMessage').length, 1);
     assert.equal(h.calls.some((call) => call.method === 'chat.delete'), false,

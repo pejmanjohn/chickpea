@@ -885,7 +885,7 @@ function milestone(
   return { schemaVersion: 1, toolCallId, milestone: name, state: milestoneState };
 }
 
-test('workspace milestones of this submission reach the checklist in order, once, before settlement', async () => {
+test('workspace milestones of this submission reach the turn in order, once per task, before settlement', async () => {
   const applied: string[] = [];
   const targets = new Set<string>();
   let appliedAtSettlement: string[] | undefined;
@@ -936,14 +936,15 @@ test('workspace milestones of this submission reach the checklist in order, once
   assert.deepEqual(applied, [
     'call_a:workspace:started',
     'call_a:workspace:completed',
+    'call_b:workspace:started',
     'call_a:changes:started',
     'call_a:changes:changed',
   ]);
-  assert.deepEqual(appliedAtSettlement, applied, 'the checklist is applied before the answer settles');
+  assert.deepEqual(appliedAtSettlement, applied, 'progress is applied before the answer settles');
   assert.deepEqual([...targets], [`${ENVELOPE.instanceId}/${RECEIPT.submissionId}`]);
 });
 
-test('a failing checklist update never fails or delays the answer', async (t) => {
+test('a failing progress update never fails or delays the answer', async (t) => {
   t.mock.method(console, 'warn', () => {});
   const seen: string[] = [];
   const agent = handle({ read: async (_receipt, options) => {

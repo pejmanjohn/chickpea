@@ -147,3 +147,45 @@ test('the Cloudflare Sandbox class mediates outbound traffic and disables raw in
   assert.match(classBody.slice(0, 2_000), /^\s*enableInternet = false;/m);
   assert.match(source, /Sandbox\.outbound = denySandboxOutbound;/);
 });
+
+test('preparing the same turn again keeps its egress policy; a new turn revokes it', async () => {
+  const storage = new MemoryPolicyStorage();
+  const writes: Array<{ key: string; value: unknown }> = [];
+  const recording: SandboxPolicyStorage = {
+    get: (key) => storage.get(key),
+    async put(key, value) {
+      writes.push({ key, value });
+      await storage.put(key, value);
+    },
+  };
+  const state = new SandboxPolicyState(recording);
+  await state.configureEgress({ mode: 'app', grants: [grant()] }, 'turn-a');
+  assert.ok(await state.recordPullRequestProgress(PULL_REQUEST, 'turn-a'));
+  writes.length = 0;
+
+  // A replayed activation of the running turn: a worker's push in between
+  // must still see the turn's grants, so no revoking write happens at all.
+  await state.prepareTurn('turn-a');
+  assert.equal(writes.length, 0);
+  assert.deepEqual(sandboxEgressGrantsForMode(await state.getEgressPolicy(), 'app'), [grant()]);
+  assert.deepEqual(await state.getTurnProgress(), { pullRequest: PULL_REQUEST });
+
+  // Reconfiguring the same turn replaces the policy in one write.
+  await state.configureEgress(
+    { mode: 'app', grants: [grant({ id: 'repo-beta', fullName: 'Acme/Beta' })] },
+    'turn-a',
+  );
+  assert.deepEqual(writes.map((write) => write.key), ['chickpea.sandbox.egress-policy.v2']);
+  assert.equal((await state.getEgressPolicy()).grants[0]?.fullName, 'Acme/Beta');
+
+  // A different turn still revokes before anything else.
+  writes.length = 0;
+  await state.prepareTurn('turn-b');
+  assert.deepEqual(writes[0], {
+    key: 'chickpea.sandbox.egress-policy.v2',
+    value: { grants: [], mode: null },
+  });
+  assert.equal(sandboxEgressGrantsForMode(await state.getEgressPolicy(), 'app'), undefined);
+  assert.deepEqual(await state.getTurnProgress(), {});
+  assert.equal(await state.getTurnId(), 'turn-b');
+});

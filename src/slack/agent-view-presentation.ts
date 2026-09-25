@@ -22,13 +22,6 @@ import {
 } from './table-presentation.ts';
 import type { SlackArtifactReceipt } from './artifact-receipts.ts';
 import {
-  WORKSPACE_MILESTONE_LABELS,
-  WORKSPACE_MILESTONES,
-  WORKSPACE_PLAN_TITLE,
-  workspaceMilestoneDetail,
-  type WorkspaceMilestoneRecord,
-} from './coding-worker-run.ts';
-import {
   ReceiptScopedTextRelay,
   type ProgressiveIntentTransition,
   type ProgressiveRelayInvalidationReason,
@@ -149,18 +142,14 @@ const STALE_WRITER_MESSAGE = 'Slack Agent View presentation writer is stale.';
  * Close an open Agent View stream once it is this old. Slack does not document
  * a stream lifetime; other Slack agents observe native streams sealed about
  * 5 min 20 s after `chat.startStream`, even while appending, after which the
- * card can no longer be stopped, updated, or found. Four minutes leaves room
- * for the check interval and for clock skew between Slack's timestamp and
- * the Worker. Short turns finish well inside it and keep their streamed card.
+ * message can no longer be stopped, updated, or found. Four minutes leaves
+ * room for the check interval and for clock skew between Slack's timestamp
+ * and the Worker. Short turns finish well inside it and keep their stream.
  */
 export const AGENT_VIEW_STREAM_RETIRE_AFTER_MS = 4 * 60_000;
 
 /** How often a turn that is waiting on its agent checks the stream's age. */
 export const AGENT_VIEW_STREAM_AGE_CHECK_MS = 20_000;
-
-/** The retired card's last words; the answer follows as its own message. */
-export const AGENT_VIEW_RETIRED_STREAM_TEXT =
-  'Still working on this. I will post the result in this thread.';
 const MAX_PROGRESSIVE_BUFFER_BYTES = 128 * 1_024;
 const DEFAULT_APPEND_INTERVAL_MS = 750;
 const CORRECTED_MARKER = '_Corrected_';
@@ -1105,80 +1094,6 @@ export class SlackAgentViewPresentation {
     await this.transition(presentation, { kind: 'adopt_plan', taskLabels });
   }
 
-  /**
-   * Show a delegated coding task's steps as this run's native checklist. The
-   * first record adopts the three workspace rows, replacing a plan none of
-   * whose rows has started (V3 never shows such a plan); a plan with work
-   * already shown is left alone. Transitions are idempotent, so a replayed
-   * record is a no-op. The first transition opens the task card when no
-   * stream exists yet; later ones append to it. Never called after a terminal
-   * delivery was frozen.
-   */
-  async applyWorkspaceMilestone(
-    record: WorkspaceMilestoneRecord,
-    target: { instanceId: string; submissionId: string },
-  ): Promise<void> {
-    let presentation: SlackRunPresentation | undefined;
-    for (let attempt = 0; ; attempt += 1) {
-      try {
-        presentation = await this.advanceWorkspaceMilestone(record);
-        break;
-      } catch (error) {
-        // The progressive relay writes the same row; re-read and retry a
-        // lost compare-and-swap instead of dropping the step.
-        if (attempt >= 2 || !(error instanceof Error) ||
-            error.message !== STALE_WRITER_MESSAGE) throw error;
-      }
-    }
-    if (!presentation || presentation.schemaVersion !== 3 || !presentation.plan) return;
-    if (presentation.stream.state === 'absent') {
-      if (!(await this.ownsLatestThreadGeneration(presentation))) return;
-      await this.startNativePlan(presentation, target.instanceId, target.submissionId);
-      return;
-    }
-    const task = presentation.plan.tasks[WORKSPACE_MILESTONES.indexOf(record.milestone)];
-    await this.projectMilestonesBestEffort(presentation, task ? [task.id] : []);
-  }
-
-  private async advanceWorkspaceMilestone(
-    record: WorkspaceMilestoneRecord,
-  ): Promise<SlackRunPresentation | undefined> {
-    let presentation = await this.requirePresentation();
-    if (presentation.schemaVersion !== 3 || presentation.terminalDelivery.state !== 'none') {
-      return undefined;
-    }
-    if (!hasWorkspacePlan(presentation)) {
-      if (presentation.stream.state !== 'absent') return undefined;
-      if (presentation.plan?.tasks.some((task) => task.status !== 'pending')) return undefined;
-      presentation = await this.transition(presentation, {
-        kind: 'adopt_plan',
-        taskLabels: WORKSPACE_MILESTONE_LABELS,
-        ...(presentation.plan ? { replacePending: true as const } : {}),
-      });
-      if (presentation.schemaVersion !== 3 || !presentation.plan) return undefined;
-    }
-    const task = presentation.plan!.tasks[WORKSPACE_MILESTONES.indexOf(record.milestone)];
-    if (!task || task.status === 'complete' || task.status === 'error') return undefined;
-    if (record.state === 'started') {
-      if (task.status !== 'pending') return undefined;
-      return this.transition(presentation, {
-        kind: 'transition_task', taskId: task.id, to: 'in_progress',
-      });
-    }
-    const detail = workspaceMilestoneDetail(record);
-    if (!detail) return undefined;
-    // A lost `started` record must not strand a real outcome: only skipped
-    // and not-run rows may settle without starting.
-    if (task.status === 'pending' && record.state !== 'skipped' && record.state !== 'not_run') {
-      presentation = await this.transition(presentation, {
-        kind: 'transition_task', taskId: task.id, to: 'in_progress',
-      });
-    }
-    return this.transition(presentation, {
-      kind: 'transition_task', taskId: task.id, to: record.state, detail,
-    });
-  }
-
   private async appendProgressiveText(
     instanceId: string,
     submissionId: string,
@@ -1704,11 +1619,12 @@ export class SlackAgentViewPresentation {
 
   /**
    * Close this Run's open stream before Slack seals it, when the stream is
-   * older than AGENT_VIEW_STREAM_RETIRE_AFTER_MS. The card keeps the rows it
-   * already shows (no detail is sent twice) and ends with a short note; the
-   * terminal then posts once as a fresh thread message. Returns whether the
-   * stream is now retired. Never throws: a failed check repeats later, and a
-   * stop Slack refuses leaves nothing a fresh final would duplicate.
+   * older than AGENT_VIEW_STREAM_RETIRE_AFTER_MS. The message keeps what it
+   * already shows and gains nothing: the working indicator, not a note in the
+   * thread, says the work goes on. The terminal then posts once as a fresh
+   * thread message. Returns whether the stream is now retired. Never throws:
+   * a failed check repeats later, and a stop Slack refuses leaves nothing a
+   * fresh final would duplicate.
    */
   async retireAgedStream(): Promise<boolean> {
     try {
@@ -1729,15 +1645,10 @@ export class SlackAgentViewPresentation {
           throw error;
         }
         try {
-          // A card that already streamed answer text ends as it stands; the
-          // note belongs only on a checklist that is still waiting.
           await this.options.client.chat.stopStream({
             channel: presentation.root.channelId,
             ts: messageTs,
-            ...(presentation.stream.acknowledgedByteLength > 0
-              ? {}
-              : { chunks: [{ type: 'markdown_text', text: AGENT_VIEW_RETIRED_STREAM_TEXT }] }),
-          } as unknown as Parameters<WebClient['chat']['stopStream']>[0]);
+          });
         } catch (error) {
           console.warn(
             `[chickpea] Slack Agent View stream retirement ${slackEffectOutcome(error)}: ` +
@@ -1978,10 +1889,6 @@ function streamStartPayload(
   const taskChunks = input.taskChunks ?? [];
   const chunks: AnyChunk[] = [
     ...(input.markdownText ? [{ type: 'markdown_text' as const, text: input.markdownText }] : []),
-    // Sent once, with the card: later updates would append to it.
-    ...(taskChunks.length > 0 && hasWorkspacePlan(presentation)
-      ? [{ type: 'plan_update' as const, title: WORKSPACE_PLAN_TITLE }]
-      : []),
     ...taskChunks,
   ];
   return {
@@ -2007,12 +1914,6 @@ function streamStartPayload(
         ? { username: presentation.persona.name, icon_url: presentation.persona.avatarUrl }
         : {}),
   } as unknown as Parameters<WebClient['chat']['startStream']>[0];
-}
-
-function hasWorkspacePlan(presentation: SlackRunPresentation): boolean {
-  const titles = presentation.plan?.tasks.map((task) => task.title);
-  return titles?.length === WORKSPACE_MILESTONE_LABELS.length &&
-    titles.every((title, index) => title === WORKSPACE_MILESTONE_LABELS[index]);
 }
 
 /**
