@@ -22,6 +22,12 @@ interface StatusPresenter {
   setStatus(update: SlackStatusUpdate): Promise<boolean>;
   /** Native-only same-fact refresh; absent presenters simply stop refreshing. */
   refreshStatus?(update: SlackStatusUpdate): Promise<boolean>;
+  /**
+   * After a failed write: whether the status already shown is still valid
+   * (a failed reservation or refresh preparation, not a latched Slack
+   * rejection), so the refresh must be re-armed before Slack expires it.
+   */
+  refreshRetryable?(): boolean;
 }
 
 interface SlackStatusTurnOptions {
@@ -60,6 +66,7 @@ interface QueuedStatusWrite {
 
 const DEFAULT_OBSERVED_STATUS_MIN_INTERVAL_MS = 1_000;
 const DEFAULT_STATUS_REFRESH_INTERVAL_MS = 90_000;
+const STATUS_REFRESH_RETRY_MS = 15_000;
 
 class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
   private active: QueuedStatusWrite | undefined;
@@ -68,6 +75,8 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
   private refreshTimer: ReturnType<typeof setTimeout> | undefined;
   private lastObservedWriteStartedAt: number | undefined;
   private lastAppliedText: string | undefined;
+  /** The fact Slack last acknowledged, kept across a failed refresh. */
+  private shownUpdate: SlackStatusUpdate | undefined;
   private closed = false;
   private finished = false;
   private terminalizing = false;
@@ -96,6 +105,7 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
     }
     if (initialAppliedStatus) {
       this.lastAppliedText = initialAppliedStatus.text;
+      this.shownUpdate = initialAppliedStatus;
       this.scheduleRefresh(
         initialAppliedStatus,
         refreshInitialStatus ? 0 : this.refreshIntervalMs,
@@ -320,9 +330,20 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
       .then((succeeded) => {
         if (succeeded) {
           this.lastAppliedText = queued.update.text;
+          this.shownUpdate = queued.update;
           if (!this.pending || this.pending.update.text === queued.update.text) {
             this.scheduleRefresh(queued.update);
           }
+        } else if (!this.pending && this.shownUpdate && this.refreshRetryable()) {
+          // The shown fact is still valid; retry its refresh well before
+          // Slack's two-minute expiry instead of letting it lapse mid-task.
+          const shown = this.shownUpdate;
+          this.lastAppliedText = shown.text;
+          this.scheduleRefresh(
+            shown,
+            Math.min(this.refreshIntervalMs, STATUS_REFRESH_RETRY_MS),
+            queued.refresh === 'validated',
+          );
         }
         if (this.active === queued) {
           this.active = undefined;
@@ -330,6 +351,14 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
         queued.resolve(succeeded);
         this.scheduleNext();
       });
+  }
+
+  private refreshRetryable(): boolean {
+    try {
+      return this.presenter.refreshRetryable?.() === true;
+    } catch {
+      return false;
+    }
   }
 
   private discardPending(disposition: SemanticActivityQueueDisposition): void {

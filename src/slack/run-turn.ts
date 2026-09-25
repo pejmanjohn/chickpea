@@ -627,7 +627,6 @@ export async function runTurn(
       ? { onPublicDelivery: options.onPublicMessageDelivered }
       : {}),
   });
-  await agentViewPresentation?.beginAgentSessionProcessing();
   const statusGeneration = options.turnId ?? `msg:${turn.channelId}:${turn.messageTs}`;
   const statusInstanceId = runtimePlanDecision?.instanceId ?? agentConversationKey;
   const semanticActivityEnabled = frozenPresentation?.schemaVersion === 3
@@ -645,6 +644,26 @@ export async function runTurn(
         frozenPresentation.currentActivity.phase,
       )
     : undefined;
+  // Slack shows a custom assistant status only while the Agent Session is not
+  // in native `processing`; the native indicator otherwise takes precedence.
+  // A non-empty assistant status itself moves the session to processing, so a
+  // turn that writes semantic status skips the native call and falls back to
+  // it only when the custom status cannot be shown. Trade-off: while custom
+  // text shows, Slack's native stop control is absent; Chickpea handles no
+  // native stop event today. Settle below stays on agents.sessions.
+  const semanticStatusCarriesSession = () => semanticActivityEnabled &&
+    presenter.preferredActivitySurface() === 'assistant_status' &&
+    !presenter.activityReceipt().unavailable;
+  let nativeSessionFallbackStarted = false;
+  const beginNativeSessionFallback = async (): Promise<void> => {
+    if (nativeSessionFallbackStarted || !agentViewPresentation) return;
+    nativeSessionFallbackStarted = true;
+    await agentViewPresentation.beginAgentSessionProcessing().catch(() => false);
+  };
+  if (!semanticStatusCarriesSession()) {
+    nativeSessionFallbackStarted = true;
+    await agentViewPresentation?.beginAgentSessionProcessing();
+  }
   const activityPresenter = {
     async setStatus(update: SlackStatusUpdate): Promise<boolean> {
       if (!semanticActivityEnabled) return false;
@@ -673,7 +692,17 @@ export async function runTurn(
         // one-message coordinate and let durable repair reconcile the receipt.
         return false;
       }
+      // Nothing custom is (or can be) visible: show Slack's native indicator.
+      if (!succeeded && (!semanticStatusCarriesSession() ||
+          !presenter.assistantStatusVisible())) {
+        await beginNativeSessionFallback();
+      }
       return succeeded;
+    },
+    refreshRetryable(): boolean {
+      // A failed reservation or refresh preparation leaves the shown status
+      // valid; a latched Slack rejection does not.
+      return semanticStatusCarriesSession() && presenter.assistantStatusVisible();
     },
     async refreshStatus(update: SlackStatusUpdate): Promise<boolean> {
       if (!semanticActivityEnabled) return false;

@@ -115,6 +115,68 @@ test('a still-current phase refreshes and final preparation cancels the refresh'
   await turn.finish(async () => {});
 });
 
+test('a refresh whose reservation failed re-arms instead of letting the status expire', async () => {
+  const calls: string[] = [];
+  let refreshes = 0;
+  let latched = false;
+  const turn = registerSlackStatusTurn('refresh-rearm-thread', {
+    setStatus(update) {
+      calls.push(`set:${update.text}`);
+      return Promise.resolve(true);
+    },
+    refreshStatus(update) {
+      refreshes += 1;
+      calls.push(`refresh:${update.text}`);
+      // First refresh loses its reservation; the second is a latched rejection.
+      if (refreshes === 2) latched = true;
+      return Promise.resolve(false);
+    },
+    refreshRetryable: () => !latched,
+  }, {
+    generation: 'refresh-rearm-generation',
+    observedMinIntervalMs: 1,
+    refreshIntervalMs: 15,
+  });
+
+  assert.equal(await turn.setStatus({ text: 'Running tests…' }), true);
+  await new Promise((resolve) => setTimeout(resolve, 70));
+  assert.deepEqual(calls, [
+    'set:Running tests…',
+    'refresh:Running tests…',
+    'refresh:Running tests…',
+  ], 'a failed reservation re-arms once; the latched rejection stops refreshing');
+  turn.close();
+});
+
+test('a new fact that fails its reservation keeps refreshing the fact still shown', async () => {
+  const calls: string[] = [];
+  const turn = registerSlackStatusTurn('refresh-rearm-shown-thread', {
+    setStatus(update) {
+      calls.push(`set:${update.text}`);
+      return Promise.resolve(update.text === 'Thinking…');
+    },
+    refreshStatus(update) {
+      calls.push(`refresh:${update.text}`);
+      return Promise.resolve(true);
+    },
+    refreshRetryable: () => true,
+  }, {
+    generation: 'refresh-rearm-shown-generation',
+    observedMinIntervalMs: 1,
+    refreshIntervalMs: 20,
+  });
+
+  await turn.setStatus({ text: 'Thinking…' });
+  assert.equal(await turn.setStatus({ text: 'Running tests…' }), false);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.deepEqual(calls.slice(0, 3), [
+    'set:Thinking…',
+    'set:Running tests…',
+    'refresh:Thinking…',
+  ]);
+  turn.close();
+});
+
 test('a rehydrated status refreshes only through the validated native path', async () => {
   const calls: string[] = [];
   const turn = registerSlackStatusTurn('rehydrated-refresh-thread', {

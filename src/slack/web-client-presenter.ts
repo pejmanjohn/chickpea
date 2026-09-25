@@ -370,6 +370,11 @@ export class WebClientPresenter {
     }
   }
 
+  /** A native assistant status was (or may have been) set and not cleared. */
+  assistantStatusVisible(): boolean {
+    return this.statusWasSet && !this.activityMessageTs;
+  }
+
   activityReceiptCertainty(): SlackActivityReceiptCertainty {
     return this.lastActivityReceiptCertainty;
   }
