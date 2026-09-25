@@ -498,6 +498,8 @@ export type SlackPresentationMutation =
   | { kind: 'reconcile_unknown_stream' }
   /** Slack definitively reports the finalizing stream's message missing. */
   | { kind: 'stream_message_lost'; messageTs: string }
+  /** A non-terminal stream start never recorded its Slack coordinate. */
+  | { kind: 'stream_coordinate_lost' }
   | {
       kind: 'adopt_plan';
       taskLabels: readonly string[];
@@ -1717,6 +1719,26 @@ function applyMutation(
       requireState(current, 'finalizing');
       if (!current.stream.messageTs || current.stream.messageTs !== mutation.messageTs) {
         throw stateError('coordinate_conflict', 'Lost stream does not match the saved coordinate.');
+      }
+      next.stream = {
+        state: 'fallback',
+        acknowledgedByteLength: 0,
+        slackAppendCursor: 0,
+        presentationOutcome: 'terminal_only',
+      };
+      next.repairRequired = true;
+      return next;
+    case 'stream_coordinate_lost':
+      // A checklist card or streamed prefix was started, but its coordinate
+      // never reached the row (an ambiguous start, or a lost write race).
+      // Nothing can be reconciled without it. No terminal was ever intended,
+      // so that start cannot have shown the answer: the terminal posts once,
+      // fresh, rather than the run waiting forever with no reply.
+      requireV3(current);
+      requireV3(next);
+      if ((current.stream.state !== 'starting' && current.stream.state !== 'unknown') ||
+          current.stream.messageTs || current.terminalDelivery.state !== 'none') {
+        throw stateError('invalid_transition', 'Only an unrecorded non-terminal stream can be abandoned.');
       }
       next.stream = {
         state: 'fallback',

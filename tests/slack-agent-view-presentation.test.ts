@@ -38,6 +38,8 @@ function harness(input: {
   stopStreamError?: unknown;
   updateError?: unknown;
   appendStreamError?: unknown;
+  /** Runs while chat.startStream is in flight, e.g. a concurrent row writer. */
+  duringStartStream?: () => void;
   /** Grants this many progressive appends, then reports an exhausted budget. */
   appendReservations?: number;
   deleteError?: unknown;
@@ -109,6 +111,7 @@ function harness(input: {
     chat: {
       async startStream(value: Record<string, unknown>) {
         calls.push({ method: 'chat.startStream', input: value });
+        input.duringStartStream?.();
         if (input.startStreamError) throw input.startStreamError;
         stream += 1;
         return { ok: true, ts: `1785700100.00020${stream}` };
@@ -2185,9 +2188,12 @@ test('V3 reconciles a stream interrupted between close and finalizing', async ()
   } finally { h.db.close(); }
 });
 
-test('V3 still refuses an unknown stream without a coordinate and never overwrites a different frozen terminal', async () => {
+test('V3 still refuses an unknown terminal stream without a coordinate and never overwrites a different frozen terminal', async () => {
   const noCoordinate = harness({ schemaVersion: 3 });
   try {
+    // The terminal was intended before the ambiguous start, so that start may
+    // have carried the answer: posting fresh could duplicate it.
+    applyPresentationMutation(noCoordinate, { kind: 'record_terminal_delivery_intent', operationId: 'terminal_failure_pending', result: 'failure' });
     applyPresentationMutation(noCoordinate, { kind: 'stream_start_intent' });
     applyPresentationMutation(noCoordinate, { kind: 'mark_unknown', degradationReason: 'unknown_effect' });
     await assert.rejects(
@@ -2862,3 +2868,72 @@ test('a stream Slack forgot during a long gateway turn still delivers exactly on
     h.db.close();
   }
 });
+
+test('a concurrent row write while Slack opens the checklist card never loses its coordinate', async () => {
+  let h!: ReturnType<typeof harness>;
+  let raced = false;
+  h = harness({
+    schemaVersion: 3,
+    duringStartStream: () => {
+      // The second workspace task's status or milestone lands mid-request.
+      if (raced) return;
+      raced = true;
+      const current = h.store.get(h.runId);
+      assert.ok(current?.plan);
+      applyPresentationMutation(h, {
+        kind: 'transition_task', taskId: current.plan.tasks[0]!.id, to: 'completed',
+        detail: 'Completed: the coding workspace is ready.',
+      });
+    },
+  });
+  try {
+    await prepareReceipt(h, {
+      ...WORKSPACE_TARGET,
+      receipt: { submissionId: WORKSPACE_TARGET.submissionId, acceptedAt: 'now', uid: 'uid' },
+      eligibility: { allowed: false, reason: 'effect_capable' },
+    });
+    await h.presentation.applyWorkspaceMilestone(milestone('workspace', 'started'), WORKSPACE_TARGET);
+    assert.equal(raced, true);
+    const stored = h.store.get(h.runId);
+    assert.equal(stored?.stream.state, 'streaming', 'the card Slack opened is recorded, not unknown');
+    assert.equal(stored?.stream.messageTs, '1785700100.000201');
+    await h.presentation.finalize('Pushed both branches.', 'markdown', 'complete', observer([]));
+    assert.equal(h.calls.filter((call) => call.method === 'chat.startStream').length, 1);
+    assert.equal(h.calls.filter((call) => call.method === 'chat.stopStream').length, 1);
+    assert.equal(h.store.get(h.runId)?.stream.state, 'artifact_delivered');
+  } finally {
+    h.db.close();
+  }
+});
+
+for (const stuck of ['starting', 'unknown'] as const) {
+  test(`${stuck === 'unknown' ? 'an' : 'a'} ${stuck} checklist stream with no coordinate delivers the final fresh instead of looping`, async () => {
+    const h = harness({ schemaVersion: 3 });
+    try {
+      applyPresentationMutation(h, { kind: 'stream_start_intent' });
+      if (stuck === 'unknown') {
+        applyPresentationMutation(h, { kind: 'mark_unknown', degradationReason: 'unknown_effect' });
+      }
+      const presenter = new WebClientPresenter(h.client, {
+        channelId: ROOT.channelId,
+        threadTs: ROOT.threadTs,
+        agentName: 'Chickpea',
+        agentId: 'agent_default',
+        userId: ROOT.requesterUserId,
+        workspaceId: ROOT.workspaceId,
+      }, undefined, { agentViewPresentation: h.presentation });
+      await presenter.deliverFinal('Pushed both branches.', 'markdown');
+      const posts = h.calls.filter((call) => call.method === 'chat.postMessage');
+      assert.equal(posts.length, 1);
+      assert.match(JSON.stringify(posts[0]?.input), /Pushed both branches/);
+      assert.ok(posts[0]?.input.client_msg_id);
+      assert.equal(h.calls.some((call) => call.method === 'chat.startStream'), false);
+      assert.equal(h.store.get(h.runId)?.stream.state, 'artifact_delivered');
+      const callsAfter = h.calls.length;
+      await presenter.deliverFinal('Pushed both branches.', 'markdown');
+      assert.equal(h.calls.length, callsAfter, 'a replayed final writes nothing');
+    } finally {
+      h.db.close();
+    }
+  });
+}

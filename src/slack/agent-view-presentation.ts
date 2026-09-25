@@ -849,6 +849,15 @@ export class SlackAgentViewPresentation {
         : { kind: 'mark_finalizing' });
       return this.recoverFinalizingStream(presentation, text, format, observer, tablePresentation);
     }
+    if (presentation.schemaVersion === 3 && !presentation.stream.messageTs &&
+        (presentation.stream.state === 'starting' || presentation.stream.state === 'unknown') &&
+        presentation.terminalDelivery.state === 'none') {
+      // Only a checklist card or a streamed prefix can have been started
+      // here, never the answer. Without its coordinate the run could only
+      // retry until it exhausted, so the terminal takes the fresh-post route.
+      console.warn('[chickpea] Slack Agent View stream coordinate missing; posting the final fresh');
+      presentation = await this.transition(presentation, { kind: 'stream_coordinate_lost' });
+    }
     if (presentation.stream.state === 'starting' || presentation.stream.state === 'unknown') {
       throw new Error('Slack Agent View presentation requires reconciliation.');
     }
@@ -946,11 +955,11 @@ export class SlackAgentViewPresentation {
         throw error;
       }
       const messageTs = requireSlackTs(started.ts);
-      presentation = await this.transition(presentation, {
-        kind: 'stream_started',
+      presentation = await this.recordStreamStarted(
+        presentation,
         messageTs,
-        flue: terminalFlueIdentity(presentation),
-      });
+        terminalFlueIdentity(presentation),
+      );
       return this.stopKnownStream(
         presentation,
         attemptId,
@@ -1195,11 +1204,11 @@ export class SlackAgentViewPresentation {
         await this.markUnknown(presentation, 'unknown_effect');
         throw error;
       }
-      presentation = await this.transition(presentation, {
-        kind: 'stream_started',
-        messageTs: requireSlackTs(started.ts),
-        flue: { instanceId, submissionId, messageId: chunk.messageId },
-      });
+      presentation = await this.recordStreamStarted(
+        presentation,
+        requireSlackTs(started.ts),
+        { instanceId, submissionId, messageId: chunk.messageId },
+      );
       await this.recordAcknowledgedPrefix(presentation, chunk.position, safePrefix);
       this.nextAppendAt = this.now() + this.appendIntervalMs();
       return;
@@ -1322,15 +1331,11 @@ export class SlackAgentViewPresentation {
       });
     }
     presentation = await this.transition(presentation, { kind: 'stream_start_intent' });
+    let started: Awaited<ReturnType<WebClient['chat']['startStream']>>;
     try {
-      const started = await this.options.client.chat.startStream(
+      started = await this.options.client.chat.startStream(
         streamStartPayload(presentation, { taskChunks: taskChunks(presentation) }),
       );
-      presentation = await this.transition(presentation, {
-        kind: 'stream_started',
-        messageTs: requireSlackTs(started.ts),
-        flue: { instanceId, submissionId },
-      });
     } catch (error) {
       const outcome = slackEffectOutcome(error);
       console.warn(
@@ -1343,6 +1348,14 @@ export class SlackAgentViewPresentation {
       await this.markUnknown(presentation, 'unknown_effect');
       throw error;
     }
+    // Slack opened the card; its coordinate is proven even if a concurrent
+    // writer moved the row meanwhile, so a local write race is never
+    // mistaken for an ambiguous Slack effect.
+    presentation = await this.recordStreamStarted(
+      presentation,
+      requireSlackTs(started.ts),
+      { instanceId, submissionId },
+    );
     try {
       await this.options.onNativeStarted?.();
     } catch {
@@ -1688,6 +1701,34 @@ export class SlackAgentViewPresentation {
       throw new Error(STALE_WRITER_MESSAGE);
     }
     return result.presentation;
+  }
+
+  /**
+   * Record the coordinate Slack returned for a stream this writer opened.
+   * Activity status, milestones, and the progressive relay write the same
+   * row, and any of them may advance it while `chat.startStream` is in
+   * flight. The stream is still this writer's (the row stays `starting` and
+   * the fence is unchanged), so re-read and record it on the current version.
+   */
+  private async recordStreamStarted(
+    presentation: SlackRunPresentation,
+    messageTs: string,
+    flue: { instanceId: string; submissionId: string; messageId?: string },
+  ): Promise<SlackRunPresentation> {
+    const fence = presentation.runFencingToken;
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        return await this.transition(presentation, { kind: 'stream_started', messageTs, flue }, fence);
+      } catch (error) {
+        if (attempt >= 3 || !(error instanceof Error) || error.message !== STALE_WRITER_MESSAGE) {
+          throw error;
+        }
+        presentation = await this.requirePresentation();
+        if (presentation.stream.state !== 'starting' || presentation.runFencingToken !== fence) {
+          throw error;
+        }
+      }
+    }
   }
 
   private async markUnknown(
