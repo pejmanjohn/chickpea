@@ -351,3 +351,116 @@ test('an active-work table from before the coding hint gains its column in place
     db.close();
   }
 });
+
+test('a frozen Channel thread keeps its pinned config revision when a follow-up resolves changed config', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'chickpea-frozen-binding-'));
+  const work = new SqliteWorkStore(join(directory, 'state.sqlite'));
+  try {
+    const opening = {
+      workspaceId: 'T_FROZEN',
+      channelId: 'C_FROZEN',
+      eventId: 'Ev_FROZEN_OPEN',
+      text: 'Start the investigation.',
+      userId: 'U_FROZEN',
+      messageTs: '1800000000.000100',
+      threadTs: '1800000000.000100',
+      source: 'app_mention' as const,
+      channelType: 'channel' as const,
+      contextMode: 'thread' as const,
+    };
+    const followUp = {
+      ...opening,
+      eventId: 'Ev_FROZEN_FOLLOW',
+      text: 'And the second part?',
+      messageTs: '1800000000.000200',
+      source: 'implicit_thread_reply' as const,
+    };
+    const agent = {
+      id: 'agent_frozen',
+      kind: 'user' as const,
+      revision: 1,
+      name: 'Frozen',
+      instructions: 'Answer directly.',
+      enabled: true,
+      skills: [],
+      mcpServers: [],
+      apiConnections: [],
+      repositories: [],
+    };
+    const assignmentA = {
+      workspaceId: opening.workspaceId,
+      channelId: opening.channelId,
+      agentId: agent.id,
+      model: 'openai/gpt-5.6-terra',
+      modelAttribution: { source: 'pinned' as const, providerId: 'openai' },
+      agent,
+    };
+    // The Agent is edited (or the thread changes owner) between the thread's
+    // first turn and a follow-up, so the follow-up resolves a different thread
+    // snapshot and therefore a different safe-config digest.
+    const assignmentB = {
+      ...assignmentA,
+      agent: { ...agent, revision: 2, instructions: 'Answer in one line.' },
+    };
+    const open = prepareSlackShadowAdmission({
+      turn: opening,
+      assignment: assignmentA,
+      sourceVisibility: 'public',
+      admittedAt: 1_800_000_000_000,
+    });
+    const next = prepareSlackShadowAdmission({
+      turn: followUp,
+      assignment: assignmentB,
+      sourceVisibility: 'public',
+      admittedAt: 1_800_000_060_000,
+    });
+    assert.equal(next.binding.id, open.binding.id);
+    assert.equal(next.binding.configMode, 'frozen_on_open');
+    assert.notDeepEqual(next.safeConfig, open.safeConfig);
+
+    const first = await work.admitShadowRun(open);
+    const second = await work.admitShadowRun(next);
+
+    assert.equal(second.replayed, false);
+    assert.equal(second.binding.id, first.binding.id);
+    assert.equal(second.binding.pinnedConfigRevisionId, first.binding.pinnedConfigRevisionId);
+    assert.equal(second.run.configRevisionId, first.run.configRevisionId);
+    assert.equal(second.run.admissionSequence, 2);
+    assert.equal(
+      (await work.getBinding(open.binding.id))?.pinnedConfigRevisionId,
+      first.binding.pinnedConfigRevisionId,
+    );
+    // A Slack retry of the follow-up replays the same Run.
+    assert.equal((await work.admitShadowRun(next)).replayed, true);
+
+    // Frozen-on-open relaxes only the config pin; every thread-derived
+    // identity field still has to match the open Binding.
+    const identityFields = [
+      ['externalAccountId', 'account_other'],
+      ['externalConversationId', 'conversation_other'],
+      ['orderingKey', 'ordering_other'],
+      ['configMode', 'resolve_each_run'],
+    ] as const;
+    for (const [index, [field, value]] of identityFields.entries()) {
+      const conflicting = prepareSlackShadowAdmission({
+        turn: {
+          ...followUp,
+          eventId: `Ev_FROZEN_${index}`,
+          messageTs: `1800000000.00030${index}`,
+        },
+        assignment: assignmentB,
+        sourceVisibility: 'public',
+        admittedAt: 1_800_000_120_000,
+      });
+      conflicting.binding = { ...conflicting.binding, [field]: value };
+      await assert.rejects(
+        work.admitShadowRun(conflicting),
+        (error: Error & { code?: string }) => error.code === 'work_binding_conflict',
+        field,
+      );
+    }
+  } finally {
+    work.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
