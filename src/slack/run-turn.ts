@@ -564,11 +564,8 @@ export async function runTurn(
         onNativeStarted: () => onNativeStarted(),
       })
     : undefined;
-  // A delegated coding task's progress shows in the working indicator, timed
-  // from the request (durable across yields, unlike this isolate's clock).
-  const codingProgress = createCodingTaskProgress({
-    startedAt: frozenPresentation?.createdAt ?? slackTsMillis(turn.messageTs) ?? Date.now(),
-  });
+  // A delegated coding task's progress shows in the working indicator.
+  const codingProgress = createCodingTaskProgress();
   // Once per turn; a failed hint never holds back the task's progress.
   let codingTaskSignalled = false;
   const signalCodingTaskStarted = async () => {
@@ -2116,10 +2113,4 @@ function tryResolveAgentModel(agent: Parameters<typeof resolveAgentModel>[0]): s
 export function sanitizeError(err: unknown): string {
   if (err instanceof Error) return err.message;
   return String(err);
-}
-
-/** A Slack message timestamp as epoch milliseconds, or undefined. */
-function slackTsMillis(ts: string | undefined): number | undefined {
-  const millis = Number(ts) * 1_000;
-  return Number.isFinite(millis) && millis > 0 && millis <= Date.now() ? millis : undefined;
 }

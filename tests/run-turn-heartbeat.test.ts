@@ -1524,14 +1524,24 @@ test('a 45-minute coding task shows its progress in the working indicator, opens
     const shown = statuses.map((status) => status.status);
     assert.ok(shown.includes('Setting up the coding workspace…'), JSON.stringify(shown));
     assert.ok(shown.includes('Working on the code changes…'), JSON.stringify(shown));
-    assert.ok(shown.includes('Running the test suite · 1 min'), JSON.stringify(shown));
-    const refreshes = statuses.filter((status) => /^Running the test suite · \d+ min$/.test(status.status));
-    assert.ok(refreshes.length >= 29, `refreshed ${refreshes.length} times`);
+    const refreshes = statuses.filter((status) => status.status === 'Running the test suite…');
+    assert.ok(refreshes.length >= 30, `refreshed ${refreshes.length} times`);
     for (const [index, refresh] of refreshes.entries()) {
       if (index > 0) assert.ok(refresh.at - refreshes[index - 1]!.at <= 90_000);
-      assert.deepEqual(refresh.loading, [refresh.status, 'Step 2 of 3 · Code changes']);
+      assert.deepEqual(refresh.loading, [
+        'Running the test suite…',
+        'Step 2 of 3 · Code changes',
+        'Workspace ready',
+        'Next: opening the pull request',
+      ]);
     }
-    assert.match(refreshes.at(-1)!.status, /· 4[56] min$/);
+    // No clock anywhere in the indicator.
+    for (const status of statuses) {
+      const loading = Array.isArray(status.loading) ? status.loading as string[] : [];
+      for (const line of [status.status, ...loading]) {
+        assert.doesNotMatch(line, /\d+ (min|h)\b/, line);
+      }
+    }
     // Cleared once after the final, and never shown again.
     assert.equal(statuses.at(-1)?.status, '');
     assert.equal(statuses.filter((status) => status.status === '').length, 1);
