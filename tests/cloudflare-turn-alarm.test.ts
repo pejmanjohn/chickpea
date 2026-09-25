@@ -897,56 +897,38 @@ test('the default runner executor hands over a turn admitted during the alarm\'s
 
 // ── resume after a restart or code update ──────────────────────────────────
 
-const restartMethods = ['resumeAfterRestart', 'supersedeRunners', 'armAlarmNoLaterThan'].map((name) => {
-  const method = stateClass.members.find((member) =>
-    ts.isMethodDeclaration(member) && member.name.getText(source) === name);
-  assert.ok(method, `production method ${name} exists`);
-  return method.getText(source);
-});
-const restartConstants = source.statements.filter((node) =>
-  ts.isVariableStatement(node) && node.declarationList.declarations.some((declaration) =>
-    /^RUNNER_SUPERSEDE_/.test(declaration.name.getText(source))));
-assert.equal(restartConstants.length, 2);
-const supersedeTimeouts: number[] = [];
+const restartMethod = stateClass.members.find((member) =>
+  ts.isMethodDeclaration(member) && member.name.getText(source) === 'resumeAfterRestart');
+assert.ok(restartMethod, 'production method resumeAfterRestart exists');
 const RestartProbe = vm.runInNewContext(ts.transpileModule(
-  `${restartConstants.map((node) => node.getText(source)).join('\n')}
-  class RestartProbe { ${restartMethods.join('\n')} }\nRestartProbe`,
+  `class RestartProbe { ${restartMethod.getText(source)} }\nRestartProbe`,
   { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
-).outputText, {
-  Date,
-  Promise,
-  // Timers fire at once; the bound each one asked for is recorded.
-  setTimeout: (callback: () => void, ms: number) => { supersedeTimeouts.push(ms); return setTimeout(callback, 0); },
-  clearTimeout,
-  console: { info() {}, warn() {} },
-  slackAgentThreadKey: () => 'unused',
-  cloudflareWorkerVersionId: (env: { version?: string }) => env.version,
-  threadRunnerStub: (env: { runners: Map<string, unknown> }, key: string) => env.runners.get(key),
-}) as new () => {
+).outputText, { Date, console: { info() {}, warn() {} } }) as new () => {
   stores: unknown;
-  env: unknown;
   versionChanged: boolean;
-  runnersToSupersede: string[] | undefined;
   ctx: { storage: { getAlarm(): Promise<number | null>; setAlarm(at: number): Promise<void> } };
   resumeAfterRestart(): Promise<void>;
-  supersedeRunners(keys: readonly string[]): Promise<void>;
 };
 
 function restartFixture(state: {
   alarm: number | null;
-  alarmTurn?: boolean;
-  inbox?: boolean;
-  runners?: readonly string[];
+  alarmTurn?: boolean | 'throws';
+  inbox?: boolean | 'throws';
+  handoffs?: boolean;
   versionChanged?: boolean;
 }) {
   const probe = new RestartProbe();
+  const read = (value: boolean | 'throws' | undefined) => () => {
+    if (value === 'throws') throw new Error('corrupt row');
+    return value ?? false;
+  };
   probe.versionChanged = state.versionChanged ?? false;
   probe.stores = {
     turnJobs: {
-      listRunnerThreadKeys: () => state.runners ?? [],
-      hasInterruptedAlarmDispatch: () => state.alarmTurn ?? false,
+      hasInterruptedAlarmDispatch: read(state.alarmTurn),
+      hasHandoffs: read(state.handoffs),
     },
-    gatewayInbox: { hasOrphanedLease: () => state.inbox ?? false },
+    gatewayInbox: { hasOrphanedLease: read(state.inbox) },
   };
   let alarm = state.alarm;
   probe.ctx = { storage: {
@@ -959,35 +941,34 @@ function restartFixture(state: {
 for (const [label, state] of [
   ['an alarm turn whose dispatch was in flight', { alarmTurn: true }],
   ['a gateway delivery leased by the previous instance', { inbox: true }],
-  ['a runner thread on a new Worker version', { runners: ['thread'], versionChanged: true }],
+  ['an unconfirmed runner hand-off on a new Worker version', { handoffs: true, versionChanged: true }],
+  ['one signal even when another cannot be read', { alarmTurn: 'throws', inbox: true }],
 ] as const) {
-  test(`a fresh state store arms its alarm now for ${label}`, async (context) => {
+  test(`a fresh state store with no alarm arms it now for ${label}`, async (context) => {
     context.mock.method(Date, 'now', () => NOW);
-    // Before: the wake the previous instance armed (a retry or yield) stood;
-    // the platform alarm retry or the next admission brought the turn back.
-    const { probe, alarm } = restartFixture({ alarm: NOW + 120_000, ...state });
+    // Before: nothing re-armed a fresh instance; the turn waited for the
+    // platform's alarm retry or the next admission.
+    const { probe, alarm } = restartFixture({ alarm: null, ...state });
     await probe.resumeAfterRestart();
     assert.equal(alarm(), NOW, 'due at once, 0 ms after the new instance starts');
-    assert.deepEqual(probe.runnersToSupersede, 'runners' in state ? ['thread'] : undefined);
   });
 }
 
-test('a fresh state store leaves its alarm alone with nothing interrupted', async (context) => {
+test('a fresh state store keeps an alarm already set, and does nothing without a signal', async (context) => {
   context.mock.method(Date, 'now', () => NOW);
   for (const state of [
-    { alarm: NOW + 120_000 },
-    // Runners are told only on a version change: a same-version restart
-    // leaves them alone, since they run this code already.
-    { alarm: null, runners: ['thread'], versionChanged: false },
+    // A rate limit's retry-after lives in the alarm time: a restart keeps it.
+    { alarm: NOW + 120_000, alarmTurn: true },
+    { alarm: NOW - 5, inbox: true },
+    { alarm: null },
+    // Hand-offs count only on a new version.
+    { alarm: null, handoffs: true, versionChanged: false },
+    { alarm: null, alarmTurn: 'throws' as const, inbox: 'throws' as const },
   ]) {
     const { probe, alarm } = restartFixture(state);
     await probe.resumeAfterRestart();
     assert.equal(alarm(), state.alarm);
-    assert.equal(probe.runnersToSupersede, undefined);
   }
-  const earlier = restartFixture({ alarm: NOW - 5, alarmTurn: true });
-  await earlier.probe.resumeAfterRestart();
-  assert.equal(earlier.alarm(), NOW - 5, 'an earlier wake is kept');
 });
 
 test('a fresh state store never rejects its constructor gate', async () => {
@@ -998,27 +979,34 @@ test('a fresh state store never rejects its constructor gate', async () => {
   await probe.resumeAfterRestart();
 });
 
-test('runners on another version are told once, bounded, and failures never escape', async () => {
-  const calls: Array<[string, string]> = [];
-  const runner = (key: string, reply: () => Promise<{ superseded: number }>) =>
-    [key, { supersede: (version: string) => { calls.push([key, version]); return reply(); } }] as const;
-  const { probe } = restartFixture({ alarm: null });
-  probe.env = {
-    version: 'v2',
-    runners: new Map([
-      runner('old', async () => ({ superseded: 1 })),
-      runner('current', async () => ({ superseded: 0 })),
-      runner('pre-fix', async () => { throw new Error('The RPC receiver does not implement the method "supersede".'); }),
-      runner('hung', () => new Promise(() => {})),
-    ]),
+test('the state store tells a runner its serving version without touching storage', async () => {
+  const method = stateClass.members.find((member) =>
+    ts.isMethodDeclaration(member) && member.name.getText(source) === 'threadRunnerTurn');
+  assert.ok(method);
+  const Probe = vm.runInNewContext(ts.transpileModule(
+    `class Probe { ${method.getText(source)} }\nProbe`,
+    { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
+  ).outputText, {
+    cloudflareWorkerVersionId: (env: { version?: string }) => env.version,
+    applyThreadRunnerTurnOp: (_stores: unknown, op: { kind: string }) =>
+      op.kind === 'begin' ? { view: { status: 'missing' }, settings: {} } : null,
+  }) as new () => {
+    env: { version?: string };
+    call(run: (stores: unknown) => unknown): unknown;
+    threadRunnerTurn(op: { kind: string; id?: string }): Promise<{ ok: boolean; value: unknown }>;
   };
-  supersedeTimeouts.length = 0;
-  await probe.supersedeRunners(['old', 'current', 'pre-fix', 'hung']);
-  assert.deepEqual(calls, [['old', 'v2'], ['current', 'v2'], ['pre-fix', 'v2'], ['hung', 'v2']]);
-  assert.deepEqual(supersedeTimeouts, [3_000, 3_000, 3_000, 3_000], 'each runner is bounded at 3 s');
-  // Without a version to compare, nothing is sent.
-  calls.length = 0;
-  probe.env = { runners: new Map([runner('old', async () => ({ superseded: 1 }))]) };
-  await probe.supersedeRunners(['old']);
-  assert.deepEqual(calls, []);
+  const probe = new Probe();
+  let storeCalls = 0;
+  probe.call = (run) => { storeCalls += 1; return { ok: true, value: run({}) }; };
+  probe.env = { version: 'v2' };
+  assert.equal((await probe.threadRunnerTurn({ kind: 'servingVersion' })).value, 'v2');
+  assert.equal(storeCalls, 0, 'no storage read');
+  const begin = await probe.threadRunnerTurn({ kind: 'begin', id: 'job' });
+  assert.equal((begin.value as { servingVersion?: string }).servingVersion, 'v2');
+  probe.env = {};
+  assert.equal((await probe.threadRunnerTurn({ kind: 'servingVersion' })).value, null);
+  assert.equal(
+    ((await probe.threadRunnerTurn({ kind: 'begin', id: 'job' })).value as { servingVersion?: string }).servingVersion,
+    undefined,
+  );
 });

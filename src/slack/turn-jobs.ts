@@ -549,30 +549,6 @@ export class TurnJobStoreLogic {
   }
 
   /**
-   * Thread runner keys of pending runner-owned rows, oldest first and
-   * distinct. After a code update these runners may still be executing on the
-   * previous version (see TagStateStore.supersedeRunners).
-   */
-  listRunnerThreadKeys(
-    threadKey: (turn: NormalizedSlackTurn, assignment: ResolvedAssignment) => string,
-    limit: number,
-  ): string[] {
-    const keys = new Set<string>();
-    for (const row of this.db.all(
-      `SELECT turn_json, assignment_json FROM turn_jobs
-       WHERE ${PENDING_ROW} AND executor = 'runner'
-       ORDER BY enqueued_at LIMIT ?`,
-      Math.max(1, Math.min(Math.trunc(limit), 256)),
-    )) {
-      keys.add(threadKey(
-        JSON.parse(String(row.turn_json)) as NormalizedSlackTurn,
-        JSON.parse(String(row.assignment_json)) as ResolvedAssignment,
-      ));
-    }
-    return [...keys];
-  }
-
-  /**
    * A pending alarm row whose Flue dispatch had started. On a fresh state
    * store instance nothing observes it any more (its alarm ended with the
    * previous instance), so it is due for reattachment now.

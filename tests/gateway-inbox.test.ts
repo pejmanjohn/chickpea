@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 
 import {
+  GATEWAY_INBOX_ORPHAN_GRACE_MS,
   GatewayInboxCapacityError,
   GatewayInboxStoreLogic,
   gatewayDeliveryRetryDelayMs,
@@ -357,11 +358,12 @@ test('gateway inbox reclaims expired leases and scrubs the body at the attempt c
   }
 });
 
-test('a lease held by a replaced drainer is reclaimed at once, not after the lease time', () => {
+test('a lease held by a replaced drainer is reclaimed after 10 s, not after the lease time', () => {
   // Before: a state store reset left the delivery leased for the full 2 min
   // (Amber run 3: receipt to admission 121 s). Now the next instance
-  // reclaims it on its first drain.
-  const now = NOW;
+  // reclaims it once the claim is 10 s old (one overlapping network call of
+  // the replaced instance), on its first drain after that.
+  let now = NOW;
   const db = openStateDb(':memory:');
   try {
     const before = new GatewayInboxStoreLogic(db, () => now, {}, { leaseOwner: 'instance-a' });
@@ -369,20 +371,23 @@ test('a lease held by a replaced drainer is reclaimed at once, not after the lea
     assert.equal(before.claimPending(1)[0]?.attempts, 1);
     // The instance is replaced mid-delivery: its drain never completes.
     const after = new GatewayInboxStoreLogic(db, () => now, {}, { leaseOwner: 'instance-b' });
-    assert.equal(after.hasOrphanedLease(), true);
+    assert.equal(after.hasOrphanedLease(), true, 'the fresh instance wakes for it at once');
+    now += GATEWAY_INBOX_ORPHAN_GRACE_MS - 1;
+    assert.equal(after.claimPending(1).length, 0, 'a claim under 10 s old is left to its call');
+    now += 1;
     const reclaimed = after.claimPending(1);
-    assert.equal(reclaimed.length, 1, 'claimable at the same instant, 0 ms after the reset');
+    assert.equal(reclaimed.length, 1, 'claimable 10 000 ms after the claim');
     assert.equal(reclaimed[0]?.attempts, 2, 'the interrupted claim still counts as an attempt');
     assert.equal(db.get("SELECT recovery_reason AS r FROM gateway_inbox")?.r, 'lease_orphaned');
     assert.equal(after.hasOrphanedLease(), false);
     // The legacy time-only store (no owner) would still be waiting.
     const legacy = openStateDb(':memory:');
     try {
-      const a = new GatewayInboxStoreLogic(legacy, () => now);
+      const a = new GatewayInboxStoreLogic(legacy, () => NOW);
       a.admit(eventDelivery('delivery:Ev_RESET', 'body'));
       a.claimPending(1);
-      assert.equal(new GatewayInboxStoreLogic(legacy, () => now + 119_999).claimPending(1).length, 0);
-      assert.equal(new GatewayInboxStoreLogic(legacy, () => now + 120_000).claimPending(1).length, 1);
+      assert.equal(new GatewayInboxStoreLogic(legacy, () => NOW + 119_999).claimPending(1).length, 0);
+      assert.equal(new GatewayInboxStoreLogic(legacy, () => NOW + 120_000).claimPending(1).length, 1);
     } finally {
       legacy.close();
     }
@@ -420,7 +425,9 @@ test('a lease from before owners were recorded, or at the attempt cap, follows t
     old.admit(eventDelivery('delivery:Ev_CAP', 'second'));
     old.claimPending(2);
     db.run("UPDATE gateway_inbox SET attempts = 2 WHERE id = 'delivery:Ev_CAP'");
-    const current = new GatewayInboxStoreLogic(db, () => NOW, { maxAttempts: 2 }, { leaseOwner: 'instance-b' });
+    const current = new GatewayInboxStoreLogic(
+      db, () => NOW + GATEWAY_INBOX_ORPHAN_GRACE_MS, { maxAttempts: 2 }, { leaseOwner: 'instance-b' },
+    );
     const result = current.maintain();
     assert.equal(result.orphanedLeasesRecovered, 1, 'an owner-less in-flight lease is orphaned');
     assert.equal(result.agedToRecovery, 1, 'an orphan at the attempt cap is parked, not retried');
@@ -446,17 +453,18 @@ test('a retry backoff and an orphaned lease stay distinct states across a reset'
     assert.equal(before.claimPending(2).length, 2);
     // One delivery hit a rate limit and backs off 10 s; the other is still
     // in flight when the instance is replaced.
-    assert.equal(before.retryOrRecover('delivery:Ev_BACKOFF', 'delivery_dependency_retryable', 10_000), 'pending');
+    assert.equal(before.retryOrRecover('delivery:Ev_BACKOFF', 'delivery_dependency_retryable', 40_000), 'pending');
     const after = new GatewayInboxStoreLogic(db, () => now, {}, { leaseOwner: 'instance-b' });
     assert.equal(after.hasOrphanedLease(), true);
+    now += GATEWAY_INBOX_ORPHAN_GRACE_MS;
     assert.deepEqual(after.claimPending(2).map((item) => item.id), ['delivery:Ev_ORPHAN'],
-      'the orphan is claimable at once; the backoff is kept, not cut short by the reset');
-    assert.equal(after.nextPendingDueAt(), NOW + 10_000);
+      'the orphan is reclaimed; the backoff is kept, not cut short by the reset');
+    assert.equal(after.nextPendingDueAt(), NOW + 40_000);
     const backoff = db.get("SELECT status, lease_until, recovery_reason FROM gateway_inbox WHERE id = 'delivery:Ev_BACKOFF'");
     assert.equal(backoff?.status, 'pending');
-    assert.equal(backoff?.lease_until, NOW + 10_000);
+    assert.equal(backoff?.lease_until, NOW + 40_000);
     assert.equal(backoff?.recovery_reason, 'delivery_dependency_retryable');
-    now += 10_000;
+    now = NOW + 40_000;
     assert.deepEqual(after.claimPending(2).map((item) => item.id), ['delivery:Ev_BACKOFF']);
   } finally {
     db.close();

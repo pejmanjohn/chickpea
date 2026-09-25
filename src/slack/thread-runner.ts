@@ -37,6 +37,7 @@ import { SlackStatusRegistry } from './status-registry.ts';
 import { ThreadRunnerJobStore, type ThreadRunnerJob, type ThreadRunnerStatus } from './thread-runner-jobs.ts';
 import {
   runnerLoopScheduler,
+  type RunnerSupersedeState,
   type ThreadRunnerAlarmResult,
   runnerPresentationState,
   runnerSlackPort,
@@ -86,12 +87,12 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
   private readonly carried = new Map<string, Promise<void>>();
   /** Wakes a running alarm's drain when a job is admitted. */
   private wake: (() => void) | undefined;
-  /** Yields of the running jobs, for a newer Worker version (see supersede). */
-  private readonly supersedes = new Set<() => void>();
   /** Observation targets of this runner's turns, one lookup per submission. */
   private readonly targets = new Map<string, FlueObservationTarget>();
   /** Consecutive failed alarms, for the retry backoff. */
   private readonly failures = { count: 0 };
+  /** Whether a code update replaced this instance's version (see RunnerSupersedeState). */
+  private readonly supersede: RunnerSupersedeState = { yieldedFor: new Set() };
   /** Runs the loop, one at a time, from the alarm or an admission. */
   private readonly runSoon = runnerLoopScheduler({
     runOnce: () => this.runAlarm(),
@@ -206,26 +207,6 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
     await this.runSoon();
   }
 
-  /**
-   * The state store's first alarm on a new Worker version calls this. After
-   * a code update this object keeps running the previous version for as long
-   * as its current alarm runs (the platform replaces it only between
-   * invocations), and that alarm may observe a turn for minutes while the new
-   * version's alarm waits behind it. Yield the observed turns now: the alarm
-   * returns, and its successor, armed a second out, reattaches on the new
-   * version. Nothing happens on the serving version itself.
-   */
-  async supersede(versionId: string): Promise<{ superseded: number }> {
-    const own = cloudflareWorkerVersionId(this.env);
-    if (typeof versionId !== 'string' || !versionId || own === undefined || own === versionId) {
-      return { superseded: 0 };
-    }
-    const superseded = this.supersedes.size;
-    for (const yieldTurn of [...this.supersedes]) yieldTurn();
-    console.info({ component: 'runtime', event: 'thread_runner_superseded', jobs: superseded });
-    return { superseded };
-  }
-
   /** The state store, over a fresh stub per call (see CfTurnJobsForRunner). */
   private stateStore(): CfTurnJobsForRunner {
     const env = this.env as PlatformEnv;
@@ -326,6 +307,8 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
       // The active-work key is the thread key this runner is addressed by.
       clearActiveWork: (threadKey, jobId) => rows.setActiveWork(threadKey, jobId, false),
       failures: this.failures,
+      supersede: this.supersede,
+      ...(cloudflareWorkerVersionId(env) ? { versionId: cloudflareWorkerVersionId(env)! } : {}),
       afterJob: async (job) => {
         this.targets.clear();
         await presentation.publish(job.runId);
@@ -349,12 +332,6 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
         }
       },
       carried: this.carried,
-      onSupersede: (yieldTurn) => {
-        this.supersedes.add(yieldTurn);
-        return () => {
-          this.supersedes.delete(yieldTurn);
-        };
-      },
       onWake: (wake) => {
         this.wake = wake;
         return () => {

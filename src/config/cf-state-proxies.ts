@@ -2131,6 +2131,11 @@ export class CfTurnJobsForRunner implements RunnerTurnJobsPort {
     return this.op({ kind: 'begin', id });
   }
 
+  /** The Worker version the state store serves; reads no storage. */
+  async servingVersion(): Promise<string | undefined> {
+    return (await this.op({ kind: 'servingVersion' })) ?? undefined;
+  }
+
   async recordAttempt(id: string, attempts: number) {
     await this.op({ kind: 'recordAttempt', id, attempts });
   }

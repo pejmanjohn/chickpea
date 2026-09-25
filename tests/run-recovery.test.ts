@@ -1758,13 +1758,11 @@ test('a durable unknown file completion remains fenced outside automatic claims'
   } finally { fixture.db.close(); }
 });
 
-test('a fresh state store finds interrupted alarm dispatches and runner threads to resume', () => {
+test('a fresh state store finds an interrupted alarm dispatch to resume', () => {
   const db = openStateDb(':memory:');
   try {
     const turns = new TurnJobStoreLogic(db, () => NOW);
-    const threadKey = (t: NormalizedSlackTurn, a: ResolvedAssignment) => `${t.channelId}:${t.threadTs}:${a.agentId}`;
     assert.equal(turns.hasInterruptedAlarmDispatch(), false);
-    assert.deepEqual(turns.listRunnerThreadKeys(threadKey, 64), []);
     turns.enqueue({ id: 'queued', evtKey: 'evt_q', msgKey: 'msg_q', turn: turn(), assignment: assignment() });
     assert.equal(turns.hasInterruptedAlarmDispatch(), false, 'a turn not yet dispatched waits for its own wake');
     turns.freezeRuntimePlan('queued', compileRuntimePlanV2({
@@ -1780,16 +1778,5 @@ test('a fresh state store finds interrupted alarm dispatches and runner threads 
     );
     turns.markDelivered('queued');
     assert.equal(turns.hasInterruptedAlarmDispatch(), false);
-    turns.enqueue({ id: 'runner-1', evtKey: 'evt_r1', msgKey: 'msg_r1', turn: turn(), assignment: assignment() });
-    turns.enqueue({ id: 'runner-2', evtKey: 'evt_r2', msgKey: 'msg_r2', turn: turn(), assignment: assignment() });
-    turns.enqueue({ id: 'handoff', evtKey: 'evt_h', msgKey: 'msg_h', turn: { ...turn(), threadTs: '9.9' }, assignment: assignment() });
-    for (const id of ['runner-1', 'runner-2', 'handoff']) assert.equal(turns.assignRunner(id), true);
-    turns.confirmRunner('runner-1');
-    turns.confirmRunner('runner-2');
-    assert.deepEqual(
-      turns.listRunnerThreadKeys(threadKey, 64),
-      [threadKey(turn(), assignment())],
-      'one key per runner thread; an unconfirmed hand-off is re-admitted by the alarm instead',
-    );
   } finally { db.close(); }
 });

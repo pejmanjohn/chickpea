@@ -19,7 +19,8 @@ export type RuntimeLatencyEvent =
   | 'turn_latency'
   | 'state_rpc'
   | 'gateway_delivery'
-  | 'thread_runner_alarm';
+  | 'thread_runner_alarm'
+  | 'thread_runner_superseded';
 
 type RuntimeLatencyValue = number | boolean | string;
 
@@ -29,6 +30,8 @@ export interface RuntimeLatencySink {
 
 const TOKEN = /^[a-z][a-z0-9_]{0,63}$/i;
 const OPAQUE_REF = /^(run|turn)_[0-9a-f]{24}$/;
+/** A Cloudflare Worker version id (a UUID), or a fixed token instead of one. */
+const VERSION_ID = /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[a-z][a-z0-9_]{0,63})$/i;
 
 /** The only string fields any event may carry, and their allowed shapes. */
 const STRING_FIELDS: Readonly<Record<string, RegExp>> = {
@@ -50,6 +53,8 @@ const STRING_FIELDS: Readonly<Record<string, RegExp>> = {
   reason: TOKEN,
   runRef: OPAQUE_REF,
   turnRef: OPAQUE_REF,
+  versionId: VERSION_ID,
+  supersededBy: VERSION_ID,
 };
 
 export function emitRuntimeLatency(
@@ -172,6 +177,13 @@ export interface ThreadRunnerAlarmRecord {
   outcome: 'idle' | 'drained' | 'threw';
   /** With `threw`: the failure's error class name, a fixed token. */
   reason?: string;
+  /** This runner's Worker version id, when known. */
+  versionId?: string;
+  /**
+   * The alarm yielded its turn for a code update: the serving Worker version
+   * id, or `storage_lost` when this instance lost its storage.
+   */
+  supersededBy?: string;
 }
 
 export function emitThreadRunnerAlarm(
@@ -179,6 +191,17 @@ export function emitThreadRunnerAlarm(
   sink?: RuntimeLatencySink,
 ): void {
   emitRuntimeLatency('thread_runner_alarm', { ...record }, sink);
+}
+
+/**
+ * A runner saw that a code update replaced its version and yields its turn:
+ * `supersededBy` is the serving version id, or `storage_lost`.
+ */
+export function emitThreadRunnerSuperseded(
+  record: { versionId?: string; supersededBy: string; running: boolean },
+  sink?: RuntimeLatencySink,
+): void {
+  emitRuntimeLatency('thread_runner_superseded', { ...record }, sink);
 }
 
 // ---------------------------------------------------------------------------

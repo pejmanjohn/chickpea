@@ -142,14 +142,23 @@ export class GatewayInboxConflictError extends Error {
  * TurnJob. Both stores live in the same singleton state DO and share its alarm,
  * so this adds no second queue service or gateway-side payload retention.
  */
+/**
+ * A lease taken by a replaced drainer is reclaimed once its claim is this
+ * old. A replaced Durable Object instance loses its storage at once, but a
+ * network call it was already awaiting may still complete; this covers one
+ * such call before the delivery is processed again.
+ */
+export const GATEWAY_INBOX_ORPHAN_GRACE_MS = 10_000;
+
 export interface GatewayInboxOwnership {
   /**
    * Identifies the drainer that claims deliveries: one value per process or
-   * Durable Object instance. A claim records it with its lease, and an
-   * in-flight claim recorded under any other owner (or none) is treated as
-   * expired at once: its drainer no longer exists, since exactly one instance
-   * of the owning object runs at a time. Without an owner, leases only expire
-   * by time.
+   * Durable Object instance. A claim records it with its lease. Only one
+   * instance owns the storage at a time, so an in-flight claim under any
+   * other owner (or none, from before owners were recorded) was taken by a
+   * drainer that has been replaced: it is reclaimed once it is
+   * GATEWAY_INBOX_ORPHAN_GRACE_MS old instead of at its lease time. Without
+   * an owner, leases only expire by time.
    */
   leaseOwner?: string;
 }
@@ -391,23 +400,29 @@ export class GatewayInboxStoreLogic {
     tombstonesPurged: number;
   } {
     const now = this.now();
-    // A lease held by a drainer that no longer exists (a replaced state store
-    // instance) expires now instead of at its lease time. At the attempt cap
-    // it is parked below with the time-expired ones.
+    // A lease held by a replaced drainer (another state store instance)
+    // expires once its claim is GATEWAY_INBOX_ORPHAN_GRACE_MS old instead of
+    // at its lease time. At the attempt cap it is parked, like the
+    // time-expired ones below. The claim time is lease_until - leaseMs.
+    const orphanClaimedBy = now - GATEWAY_INBOX_ORPHAN_GRACE_MS + this.limits.leaseMs;
     const orphanedAtAttemptCap = this.leaseOwner === undefined ? 0 : this.db.run(
       `UPDATE gateway_inbox
        SET status = 'recovery_required', payload_json = NULL, payload_bytes = 0,
            lease_until = NULL, terminal_at = ?, recovery_reason = 'attempt_limit_exceeded'
-       WHERE status = 'in_flight' AND (lease_owner IS NULL OR lease_owner != ?) AND attempts >= ?`,
+       WHERE status = 'in_flight' AND (lease_owner IS NULL OR lease_owner != ?)
+         AND lease_until <= ? AND attempts >= ?`,
       now,
       this.leaseOwner,
+      orphanClaimedBy,
       this.limits.maxAttempts,
     ).changes;
     const orphanedLeasesRecovered = this.leaseOwner === undefined ? 0 : this.db.run(
       `UPDATE gateway_inbox
        SET status = 'pending', lease_until = NULL, recovery_reason = 'lease_orphaned'
-       WHERE status = 'in_flight' AND (lease_owner IS NULL OR lease_owner != ?) AND attempts < ?`,
+       WHERE status = 'in_flight' AND (lease_owner IS NULL OR lease_owner != ?)
+         AND lease_until <= ? AND attempts < ?`,
       this.leaseOwner,
+      orphanClaimedBy,
       this.limits.maxAttempts,
     ).changes;
     const expiredAtAttemptCap = this.db.run(

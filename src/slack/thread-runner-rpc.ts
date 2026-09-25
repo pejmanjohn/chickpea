@@ -36,6 +36,12 @@ export interface ThreadRunnerTurnOps {
    * one round trip.
    */
   begin: [{ id: string }, RunnerTurnBegin];
+  /**
+   * The Worker version the state store serves (null: unknown). Reads no
+   * storage; a running turn's runner asks every few seconds to learn that a
+   * code update replaced its own version (see thread-runner-loop.ts).
+   */
+  servingVersion: [object, string | null];
   recordAttempt: [{ id: string; attempts: number }, null];
   recordPullRequest: [{ id: string; pullRequest: TurnPullRequestProgress }, TurnProgress | null];
   freezeRuntimePlan: [{ id: string; candidate: RuntimePlanV2 }, FrozenRuntimePlanDecision];
@@ -67,6 +73,8 @@ export interface RunnerTurnBegin {
    * Absent when the turn has no V3 presentation or the state store predates it.
    */
   latestThreadSessionGeneration?: number | null;
+  /** The Worker version the state store serves (see `servingVersion`). */
+  servingVersion?: string;
 }
 
 /**
@@ -117,12 +125,6 @@ export interface SlackThreadRunnerRpc {
   presentationTransition(
     input: SlackPresentationTransitionInput,
   ): Promise<StateRpcResult<SlackPresentationTransitionResult>>;
-  /**
-   * `versionId` is serving. A runner on another version yields the turns it
-   * is observing, so its next alarm reattaches them on the serving version;
-   * `superseded` counts them. A runner on that version does nothing.
-   */
-  supersede(versionId: string): Promise<{ superseded: number }>;
 }
 
 interface ThreadRunnerNamespace {

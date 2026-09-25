@@ -1,5 +1,6 @@
 import {
   emitThreadRunnerAlarm,
+  emitThreadRunnerSuperseded,
   type RuntimeLatencySink,
   type ThreadRunnerAlarmRecord,
 } from '../observability/runtime-latency.ts';
@@ -52,6 +53,11 @@ import type { PendingTurnJob, RunnerTurnJobView } from './turn-jobs.ts';
  */
 export const THREAD_RUNNER_BACKSTOP_MS = 5_000;
 export const THREAD_RUNNER_HEARTBEAT_MS = 2_500;
+/**
+ * While a job runs, the runner asks the state store which Worker version it
+ * serves at most this often (one RPC that reads no storage).
+ */
+export const THREAD_RUNNER_VERSION_CHECK_MS = 5_000;
 /** A retained (not yet settled) turn is retried after this delay at least. */
 export const THREAD_RUNNER_RETRY_MS = 2_000;
 /** Retry an unrecorded terminal outcome or active-work clear at this interval. */
@@ -73,6 +79,11 @@ export const THREAD_RUNNER_CLEANUP_ATTEMPTS = 8;
 /** The state store's turn rows as a runner reaches them (over RPC in production). */
 export interface ThreadRunnerTurnRows {
   view(id: string): Promise<RunnerTurnJobView>;
+  /**
+   * The Worker version the state store serves now (see RunnerSupersedeState);
+   * optional so a store without it only disables the check.
+   */
+  servingVersion?(): Promise<string | undefined>;
   /** `view` plus what the turn reads before its first Slack status, in one round trip. */
   begin(id: string): Promise<RunnerTurnBegin>;
   markDelivered(id: string): Promise<void>;
@@ -106,13 +117,13 @@ export interface ThreadRunnerLoopDeps {
   failures: { count: number };
   /** Registers the drain's wake for admissions; returns its release. */
   onWake?: (wake: () => void) => () => void;
-  /**
-   * Registers the running job's yield for a newer Worker version (see
-   * SlackThreadRunner.supersede); returns its release.
-   */
-  onSupersede?: (supersede: () => void) => () => void;
+  /** This runner's Worker version; without it the version check is off. */
+  versionId?: string;
+  /** Per instance: whether a code update has replaced this runner's version. */
+  supersede?: RunnerSupersedeState;
   now?: () => number;
   heartbeatMs?: number;
+  versionCheckMs?: number;
   budgetMs?: number;
   hardCapMs?: number;
   recheckMs?: number;
@@ -124,6 +135,35 @@ export interface ThreadRunnerAlarmResult {
   /** When the runner's next alarm should fire; none when it is idle. */
   nextAlarmAt?: number;
 }
+
+/**
+ * After a code update a runner keeps executing the previous version for as
+ * long as its current alarm runs: the platform replaces an object between
+ * invocations, and an in-flight one continues while it avoids storage it no
+ * longer owns. A turn's observation can last minutes, and the new version's
+ * alarm waits behind it (Amber run 6: resumed 1 m 46 s after the upload). So
+ * the runner watches for the change itself and yields its turn the way the
+ * alarm budget does; its next alarm, a second later and on the new version,
+ * reattaches without dispatching again. Two signals, while a job runs and
+ * before each job starts:
+ * - the state store serves a different Worker version (it is reset on the
+ *   update and answers from the new code): checked with `begin` and every
+ *   THREAD_RUNNER_VERSION_CHECK_MS during the turn;
+ * - the heartbeat's own storage write fails (`storage_lost`): this instance
+ *   has been shut down.
+ * "Different", not "newer": a rollback counts too. It stays bounded: an
+ * instance yields at most once per serving version. If its next alarm still
+ * runs here (a gradual deployment kept this object on its version), that
+ * version is not acted on again.
+ */
+export interface RunnerSupersedeState {
+  /** Serving versions this instance already yielded for. */
+  yieldedFor: Set<string>;
+  /** Set during an alarm once a signal fired; cleared when the alarm ends. */
+  by?: string;
+}
+
+const STORAGE_LOST = 'storage_lost';
 
 const THREAD = 'thread';
 const TOKEN = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
@@ -140,6 +180,7 @@ export async function runThreadRunnerAlarm(
     carried: 0,
     durationMs: 0,
     outcome: 'idle',
+    ...(deps.versionId ? { versionId: deps.versionId } : {}),
   };
   try {
     // A follow-up that could not reach the state store counts as a failed
@@ -147,14 +188,13 @@ export async function runThreadRunnerAlarm(
     let followUpsFailed = !(await followUps(deps, now));
     // A turn could not reach the state store: the runner backs off too.
     const outage = { storeUnavailable: false };
-    // A newer Worker version is serving: this alarm returns at once.
-    const superseded = { yielded: false };
     const budgetMs = deps.budgetMs ?? ALARM_TURN_BUDGET_MS;
     let stopped = false;
     // One drain runs the jobs listed when it starts (and any admitted while
     // a job runs); list again after it until the thread stops or the budget
     // ends, so a backlog never waits for another alarm.
-    while (!stopped && !record.yielded && deps.carried.size === 0 && now() < startedAt + budgetMs) {
+    while (!stopped && !record.yielded && !deps.supersede?.by && deps.carried.size === 0 &&
+        now() < startedAt + budgetMs) {
       const initial = deps.jobs.runnable(now());
       if (initial.length === 0) break;
       record.outcome = 'drained';
@@ -164,7 +204,7 @@ export async function runThreadRunnerAlarm(
         threadKey: () => THREAD,
         runJob: async (job, control) => {
           record.ran += 1;
-          const keepGoing = await runOne(deps, job, control, now, outage, superseded);
+          const keepGoing = await runOne(deps, job, control, now, outage);
           if (!keepGoing) stopped = true;
           return keepGoing;
         },
@@ -182,8 +222,7 @@ export async function runThreadRunnerAlarm(
         now,
         ...(deps.onWake ? { onWake: deps.onWake } : {}),
       });
-      record.yielded = drain.budgetExhausted || superseded.yielded;
-      if (superseded.yielded) record.reason = 'superseded';
+      record.yielded = drain.budgetExhausted;
       record.carried += drain.carried.length;
       for (const carried of drain.carried) {
         deps.carried.set(carried.id, carried.settled);
@@ -203,6 +242,15 @@ export async function runThreadRunnerAlarm(
       deps.jobs.nextCleanupAt(),
       repairs.nextRetryAt,
     ].filter((value): value is number => value !== undefined);
+    const supersededBy = deps.supersede?.by;
+    if (supersededBy) {
+      // The successor alarm runs on the new version; never sooner than the
+      // yield re-arm, so an instance that is not replaced cannot spin.
+      record.yielded = true;
+      record.supersededBy = supersededBy;
+      const soonest = wakes.length > 0 ? Math.min(...wakes) : at;
+      return { record, nextAlarmAt: Math.max(at + ALARM_YIELD_REARM_MS, soonest) };
+    }
     if (outage.storeUnavailable) {
       // runOne already counted this failure and set the job's retry.
       record.reason = 'state_store_unavailable';
@@ -226,8 +274,44 @@ export async function runThreadRunnerAlarm(
     return { record, nextAlarmAt: now() + failureBackoff(deps, isSandboxDisconnect(error)) };
   } finally {
     record.durationMs = now() - startedAt;
+    const supersede = deps.supersede;
+    if (supersede?.by) {
+      record.supersededBy = supersede.by;
+      if (supersede.by !== STORAGE_LOST) supersede.yieldedFor.add(supersede.by);
+      delete supersede.by;
+    }
     emitThreadRunnerAlarm(record, deps.sink);
   }
+}
+
+/**
+ * Note the state store's serving version; true when this runner should yield
+ * for it (see RunnerSupersedeState).
+ */
+function supersededBy(
+  deps: ThreadRunnerLoopDeps,
+  serving: string | undefined,
+  running = false,
+): boolean {
+  const state = deps.supersede;
+  if (!state) return false;
+  if (state.by) return true;
+  if (!deps.versionId || !serving || serving === deps.versionId || state.yieldedFor.has(serving)) {
+    return false;
+  }
+  noteSuperseded(deps, serving, running);
+  return true;
+}
+
+function noteSuperseded(deps: ThreadRunnerLoopDeps, by: string, running: boolean): void {
+  const state = deps.supersede;
+  if (!state || state.by) return;
+  state.by = by;
+  emitThreadRunnerSuperseded({
+    ...(deps.versionId ? { versionId: deps.versionId } : {}),
+    supersededBy: by,
+    running,
+  }, deps.sink);
 }
 
 /**
@@ -248,12 +332,14 @@ async function runOne(
   control: AlarmTurnJobControl,
   now: () => number,
   outage: { storeUnavailable: boolean },
-  superseded: { yielded: boolean } = { yielded: false },
 ): Promise<boolean> {
   const current = deps.jobs.get(local.id);
   if (!current || !OPEN_JOB_STATES.has(current.state)) {
     return true;
   }
+  // A code update replaced this version during this alarm: leave the job as
+  // it is for the successor alarm on the new version.
+  if (deps.supersede?.by) return false;
   // The state store's row is authoritative: a settled or reclaimed turn never
   // runs here, and a dispatched one reattaches through its checkpoints. One
   // round trip also brings what the turn's installation context reads.
@@ -270,27 +356,44 @@ async function runOne(
     deps.jobs.settle(local.id, 'released', now());
     return true;
   }
+  if (supersededBy(deps, start.servingVersion)) return false;
   deps.jobs.markRunning(local.id);
-  // A newer Worker version is serving (the state store says so after a code
-  // update): yield like the budget does. This object keeps running the old
-  // version until this alarm returns, so observing on would hold the turn
-  // for the rest of its run; the next alarm reattaches on the new version.
-  const newerVersion = new AbortController();
-  const releaseSupersede = deps.onSupersede?.(() => {
-    if (!newerVersion.signal.aborted) newerVersion.abort(new AlarmTurnBudgetYield());
-  });
-  const turnControl: AlarmTurnJobControl = deps.onSupersede
-    ? { signal: AbortSignal.any([control.signal, newerVersion.signal]), observing: control.observing }
-    : control;
   let retryAfterMs: number | undefined;
   let retry = false;
   let storeUnavailable = false;
   let settled: boolean;
-  // Keep a wake a few seconds ahead for as long as the job runs.
+  // A code update replaced this version (see RunnerSupersedeState): the turn
+  // yields exactly as it does at the alarm budget.
+  const replaced = new AbortController();
+  const yieldForUpdate = () => {
+    if (!replaced.signal.aborted) replaced.abort(new AlarmTurnBudgetYield());
+  };
+  const turnControl: AlarmTurnJobControl = deps.supersede
+    ? { signal: AbortSignal.any([control.signal, replaced.signal]), observing: control.observing }
+    : control;
+  const versionCheckMs = deps.versionCheckMs ?? THREAD_RUNNER_VERSION_CHECK_MS;
+  let lastVersionCheck = now();
+  let checkingVersion = false;
+  // Keep a wake a few seconds ahead for as long as the job runs, and watch
+  // for a code update.
   const heartbeat = setInterval(() => {
-    void deps.armBackstop(now() + THREAD_RUNNER_BACKSTOP_MS).catch(() => undefined);
+    void deps.armBackstop(now() + THREAD_RUNNER_BACKSTOP_MS).catch(() => {
+      // This instance lost its storage: it has been shut down.
+      if (!deps.supersede) return;
+      noteSuperseded(deps, STORAGE_LOST, true);
+      yieldForUpdate();
+    });
+    const serving = deps.turns.servingVersion;
+    if (!deps.supersede || !deps.versionId || !serving || checkingVersion ||
+        now() - lastVersionCheck < versionCheckMs) return;
+    checkingVersion = true;
+    lastVersionCheck = now();
+    void serving.call(deps.turns).then((version) => {
+      if (supersededBy(deps, version, true)) yieldForUpdate();
+    }, () => undefined).finally(() => { checkingVersion = false; });
   }, deps.heartbeatMs ?? THREAD_RUNNER_HEARTBEAT_MS);
   try {
+    if (deps.supersede?.by) yieldForUpdate();
     settled = await deps.execute(view.job, turnControl, (afterMs, reason) => {
       retry = true;
       if (reason === 'state_store_unavailable') storeUnavailable = true;
@@ -298,7 +401,6 @@ async function runOne(
     }, local.threadKey, start);
   } finally {
     clearInterval(heartbeat);
-    releaseSupersede?.();
     await deps.afterJob?.(view.job).catch(() => undefined);
   }
   const after = deps.jobs.get(local.id);
@@ -310,10 +412,9 @@ async function runOne(
     return true;
   }
   if (turnControl.signal.aborted && !retry) {
-    // The alarm budget (or a newer version) ended observation on purpose;
-    // the next alarm, a second from now, reattaches.
+    // The alarm budget (or a code update) ended observation on purpose; the
+    // next alarm, a second from now, reattaches.
     deps.jobs.settle(local.id, 'yielded', now(), now() + ALARM_YIELD_REARM_MS);
-    if (newerVersion.signal.aborted) superseded.yielded = true;
     return false;
   }
   if (settled) {
