@@ -153,6 +153,17 @@ test('an installation that is briefly unavailable asks for a retry no sooner tha
   assert.deepEqual(h.calls, []);
 });
 
+test('an installation retry hint is bounded to one gateway window', async () => {
+  const h = fakePorts(async () => assert.fail('the turn never starts'), async () => {
+    throw new SlackInstallationUnavailableError('T1', 'ratelimited', {
+      retryable: true,
+      retryAfterMs: 3_600_000,
+    });
+  });
+  assert.equal(await executeTurnJob(pendingJob(), h.ports, h.options), false);
+  assert.deepEqual(h.retries, [60_000]);
+});
+
 test('an installation that cannot recover holds the row for operator recovery', async () => {
   const h = fakePorts(async () => assert.fail('the turn never starts'), async () => {
     throw new SlackInstallationUnavailableError('T1', 'installation_unknown', { retryable: false });

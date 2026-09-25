@@ -38,7 +38,10 @@ import {
 } from './run-turn.ts';
 import type { ThreadImageRecord } from './thread-images.ts';
 import { slackAgentThreadKey } from './thread-key.ts';
-import { retryableDependencyRetryAfterMs } from './transport/types.ts';
+import {
+  MAX_DEPENDENCY_RETRY_AFTER_MS,
+  retryableDependencyRetryAfterMs,
+} from './transport/types.ts';
 import type {
   FlueDispatchReceiptV1,
   FlueSettlementCheckpointV1,
@@ -169,7 +172,9 @@ export async function executeTurnJob(
     );
     recordSlackInstallationUnavailable(unavailable);
     if (unavailable.retryable) {
-      options.onRetry(unavailable.retryAfterMs ?? 0);
+      // Bounded like every other hint: an hour-long Retry-After must not park
+      // the whole drain's re-arm.
+      options.onRetry(Math.min(unavailable.retryAfterMs ?? 0, MAX_DEPENDENCY_RETRY_AFTER_MS));
       console.warn(
         `[chickpea] Slack installation preflight will retry (${unavailable.reasonCode})`,
       );
