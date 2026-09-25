@@ -316,14 +316,18 @@ test('a frozen bash plan still rechecks live Agent execution authority', async (
   const modelPreparation = sandboxFactory.slice(
     sandboxFactory.indexOf('async function prepareRuntimePlanModel'),
   );
-  assert.match(bashBranch, /await prepareRuntimePlanModel\(plan, env\)/);
-  assert.match(modelPreparation, /requireLiveFrozenAgent\(getConfigStore\(env\), plan\.agentId\)/);
-  assert.match(modelPreparation, /revalidateModelCredentialAttribution/);
-  assert.match(modelPreparation, /const resolved = await resolveRuntimeModel\(plan\.agentId, plan\.model/);
+  assert.match(bashBranch, /await prepareRuntimePlanModel\(plan, env, turn\)/);
+  const once = modelPreparation.slice(modelPreparation.indexOf('async function prepareRuntimePlanModelOnce'));
+  assert.match(once, /await requireTurnAgent\(plan, env, turn\)/);
+  assert.match(once, /revalidateModelCredentialAttribution/);
+  assert.match(once, /resolveRuntimeModel\(plan\.agentId, plan\.model/);
   assert.ok(
-    modelPreparation.indexOf('requireLiveFrozenAgent') < modelPreparation.indexOf('resolveRuntimeModel'),
+    once.indexOf('requireTurnAgent') < once.indexOf('resolveRuntimeModel'),
     'Agent execution authority must be checked before model credential resolution.',
   );
+  // Without a turn envelope the authority check reads the live Agent.
+  const turnAgent = slackSource.slice(slackSource.indexOf('async function requireTurnAgent'));
+  assert.match(turnAgent, /if \(!envelope\) return requireLiveFrozenAgent\(getConfigStore\(env\), plan\.agentId\)/);
 });
 
 test('conversational schedules cannot enter the exact Routine command lane', async () => {

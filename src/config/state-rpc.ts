@@ -82,6 +82,7 @@ import type {
 } from '../slack/turn-job-types.ts';
 import type { SlackInteractionIntent } from '../slack/interaction-intent.ts';
 import type { ThreadImageRecord } from '../slack/thread-images.ts';
+import type { TurnEnvelopeV1 } from '../agents/turn-envelope.ts';
 import type {
   GatewayInboxAdmissionOutcome,
   GatewayInboxDrainCounts,
@@ -480,7 +481,11 @@ export interface TagStateRpc {
     threadImages?: readonly ThreadImageRecord[],
     /** Additive and optional: host-admitted List ids for this exact turn. */
     admittedListIds?: readonly string[],
+    /** Additive and optional: the per-turn settings envelope to freeze. */
+    turnEnvelope?: TurnEnvelopeV1,
   ): Promise<StateRpcResult<FlueDispatchEnvelopeV1>>;
+  /** The settings envelope frozen with a turn's dispatch; the Agent reads it once per turn. */
+  slackTurnEnvelopeGet(id: string): Promise<StateRpcResult<TurnEnvelopeV1 | null>>;
   slackFlueExistingInstanceReconcile(
     id: string,
     uid: string,

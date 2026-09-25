@@ -407,7 +407,8 @@ function createNodeThreadDrain(
           observation: Parameters<typeof prepareFlueDispatch>[2],
           threadImages: Parameters<typeof prepareFlueDispatch>[3],
           admittedListIds: Parameters<typeof prepareFlueDispatch>[4],
-        ) => prepareFlueDispatch(job.id, message, observation, threadImages, admittedListIds),
+          turnEnvelope: Parameters<typeof prepareFlueDispatch>[5],
+        ) => prepareFlueDispatch(job.id, message, observation, threadImages, admittedListIds, turnEnvelope),
         reconcileExistingInstance: (uid: string) =>
           reconcileFlueExistingInstance(job.id, uid),
         recordReceipt: (receipt: Parameters<typeof recordFlueReceipt>[1]) =>

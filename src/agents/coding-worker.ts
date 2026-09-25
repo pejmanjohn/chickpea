@@ -14,7 +14,13 @@ import { repositoriesSkillForGrants } from '../config/connector-skills.ts';
 import { resolveProfileSkills } from '../config/profile-skills.ts';
 import { registerFrozenRuntimeModelRoute, resolveRuntimeModel } from '../config/runtime-model.ts';
 import { isCloudflareTarget } from '../config/runtime-target.ts';
-import { getConfigStore, getSettingsStore, type PlatformEnv } from '../config/state-backend.ts';
+import type { SettingsStore } from '../config/settings-store.ts';
+import {
+  getConfigStore,
+  getSettingsStore,
+  getSlackStateStore,
+  type PlatformEnv,
+} from '../config/state-backend.ts';
 import { thinkingLevelForModel } from '../config/workers-ai-models.ts';
 import {
   codingWorkerInstanceId,
@@ -29,8 +35,10 @@ import {
   serializeSandboxActivation,
 } from '../sandbox/lifecycle.ts';
 import { reconnectingSandboxStub } from '../sandbox/reconnect.ts';
+import type { SandboxTurnContext } from '../sandbox/turn-context.ts';
 import { WORKSPACE_DIR } from '../sandbox/workspace-lifecycle.ts';
 import { useChickpeaResponseMetadata } from '../usage/response-metadata.ts';
+import { TurnEnvelopeContext } from './turn-envelope.ts';
 
 /**
  * A coding worker: one Flue agent instance per coding workspace and binding,
@@ -79,7 +87,6 @@ function codingWorkerSandbox(binding: CodingWorkerBindingV1): SandboxFactory {
         import('@cloudflare/sandbox'),
       ]);
       const env = getCloudflareContext().env as PlatformEnv & { SANDBOX?: unknown; Sandbox?: unknown };
-      await prepareCodingModel(binding, env);
       const namespace = env.SANDBOX ?? env.Sandbox;
       if (!namespace) throw new Error('The coding workspace binding is unavailable.');
       // A task can run for most of an hour, and Cloudflare may replace the
@@ -92,6 +99,11 @@ function codingWorkerSandbox(binding: CodingWorkerBindingV1): SandboxFactory {
           CLOUDFLARE_SANDBOX_OPTIONS,
         ),
       );
+      await prepareCodingModel(
+        binding,
+        env,
+        await codingWorkerTurn(binding, stub as unknown as SandboxTurnContext, env),
+      );
       const guarded = contentFreeSandboxExec(serializeSandboxActivation(stub, WORKSPACE_DIR));
       return cloudflareSandbox(
         guarded as unknown as Parameters<typeof cloudflareSandbox>[0],
@@ -102,17 +114,45 @@ function codingWorkerSandbox(binding: CodingWorkerBindingV1): SandboxFactory {
 }
 
 /**
+ * The coordinator turn's settings envelope. The coordinator binds the
+ * workspace to its TurnJob before dispatching a task, so the workspace's
+ * current turn id names it; a routine run's turn has no envelope.
+ */
+async function codingWorkerTurn(
+  binding: CodingWorkerBindingV1,
+  workspace: SandboxTurnContext,
+  env: PlatformEnv,
+): Promise<TurnEnvelopeContext | undefined> {
+  const turnId = await workspace.getTurnId().catch(() => undefined);
+  if (!turnId || turnId.length > 200) return undefined;
+  return new TurnEnvelopeContext(
+    turnId,
+    binding.agentId,
+    async (id) => getSlackStateStore(env).getTurnEnvelope?.(id),
+  );
+}
+
+/**
  * Bind the coding model's provider credential for this isolate, exactly as
  * the coordinator binds its own model. A disabled Agent or a route that no
  * longer matches the frozen one fails the task instead of switching models.
+ * With the coordinator's turn envelope, the Agent and the non-secret routing
+ * settings are as of that turn's dispatch; the provider key is read live.
  */
-async function prepareCodingModel(binding: CodingWorkerBindingV1, env: PlatformEnv): Promise<void> {
-  const agent = await getConfigStore(env).getAgent(binding.agentId);
-  if (!agent.enabled) throw new Error('The Agent for this coding workspace is disabled.');
-  const resolved = await resolveRuntimeModel(binding.agentId, binding.codingModel.model, {
-    settings: getSettingsStore(env),
-    env,
-  });
+export async function prepareCodingModel(
+  binding: CodingWorkerBindingV1,
+  env: PlatformEnv,
+  turn?: TurnEnvelopeContext,
+): Promise<void> {
+  const envelope = await turn?.envelope();
+  const enabled = envelope
+    ? envelope.agent?.enabled === true
+    : (await getConfigStore(env).getAgent(binding.agentId)).enabled;
+  if (!enabled) throw new Error('The Agent for this coding workspace is disabled.');
+  const live = getSettingsStore(env);
+  const resolve = (settings: SettingsStore) =>
+    resolveRuntimeModel(binding.agentId, binding.codingModel.model, { settings, env });
+  const resolved = turn ? await turn.withSettings(live, resolve) : await resolve(live);
   if (resolved.model !== binding.codingModel.runtimeModel) {
     throw new Error('The coding model route changed after this workspace task was sent.');
   }
