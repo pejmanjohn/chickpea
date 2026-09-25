@@ -271,7 +271,13 @@ type RunnerAdmission = { id: string; threadKey: string; payload: unknown };
 
 /** The production alarm() with in-memory stores and a scripted runTurn. */
 async function alarmHarness(initial: AlarmJob[], hooks: {
-  onInboxDrain?: (count: number, jobs: Map<string, AlarmJob>) => void;
+  onInboxDrain?: (
+    count: number,
+    jobs: Map<string, AlarmJob>,
+    onAdmitted?: () => void,
+  ) => void | Promise<void>;
+  /** Holds this runner admission until the returned promise settles. */
+  admissionGate?: (admission: RunnerAdmission) => Promise<void> | undefined;
   /** SLACK_TAG_TURN_EXECUTOR=runner with a fake SLACK_THREAD_RUNNER namespace. */
   runnerMode?: boolean;
   /** Rejects this runner admission (the hand-off stays unconfirmed). */
@@ -312,6 +318,8 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
     alarmAt: null as number | null,
     relayAlarms: [] as RelayAlarmMetrics[],
     admissions: [] as RunnerAdmission[],
+    admitting: 0,
+    maxAdmitting: 0,
   };
   const alarmOwned = (job: AlarmJob) => job.executor === undefined;
   let inboxDrains = 0;
@@ -324,6 +332,13 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
     threadRunnerStub: (_env: unknown, threadKey: string) => ({
       async admit(admission: RunnerAdmission) {
         assert.equal(admission.threadKey, threadKey, 'each turn goes to its own thread runner');
+        record.admitting += 1;
+        record.maxAdmitting = Math.max(record.maxAdmitting, record.admitting);
+        try {
+          await hooks.admissionGate?.(admission);
+        } finally {
+          record.admitting -= 1;
+        }
         if (hooks.failAdmission?.(admission)) throw new Error('runner unavailable');
         if (hooks.refuseAdmission?.(admission)) {
           return { admitted: false, refused: 'presentation_import_failed' };
@@ -355,9 +370,9 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
     localUsageStore: () => ({}),
     localSlackPresentationState: () => ({}),
     settlementFailureFacts: () => [],
-    drainGatewayInbox: async () => {
+    drainGatewayInbox: async (_stores: unknown, _env: unknown, onAdmitted?: () => void) => {
       inboxDrains += 1;
-      hooks.onInboxDrain?.(inboxDrains, jobs);
+      await hooks.onInboxDrain?.(inboxDrains, jobs, onAdmitted);
       return false;
     },
     drainLedgerRuns: async () => { hooks.beforeChores?.(); return {}; },
@@ -756,6 +771,41 @@ test('runner mode hands over a turn admitted while the alarm runs its other work
   assert.deepEqual(record.admissions.map(({ id }) => id), ['late'],
     'handed to its runner before this alarm returned');
   assert.equal(record.relayAlarms.at(-1)!.jobsDispatched, 1);
+});
+
+test('runner mode hands each admitted turn over at once, side by side with admissions in flight', async () => {
+  // One slow runner admission (a cold runner) must not hold back the next
+  // conversation's hand-off: each admission starts its own.
+  let releaseSlow!: () => void;
+  const slow = new Promise<void>((resolve) => { releaseSlow = resolve; });
+  const { probe, record } = await alarmHarness([], {
+    runnerMode: true,
+    admissionGate: ({ id }) => (id === 'slow' ? slow : undefined),
+    onInboxDrain: async (count, jobs, onAdmitted) => {
+      if (count !== 1) return;
+      jobs.set('slow', channelJob('slow', 'thread-a'));
+      onAdmitted?.();
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      for (const id of ['b', 'c', 'd']) {
+        jobs.set(id, channelJob(id, `thread-${id}`));
+        onAdmitted?.();
+        await new Promise((resolve) => setTimeout(resolve, 1));
+      }
+      // Released only once the later turns are with their runners (or late).
+      const deadline = Date.now() + 500;
+      while (record.admissions.length < 3 && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 1));
+      }
+      releaseSlow();
+    },
+  });
+  await probe.alarm();
+  assert.deepEqual(record.admissions.map(({ id }) => id), ['b', 'c', 'd', 'slow'],
+    'later conversations reach their runners while the slow admission is in flight');
+  assert.ok(record.maxAdmitting >= 2, `admissions overlap (max ${record.maxAdmitting})`);
+  assert.equal(record.relayAlarms.at(-1)!.jobsDispatched, 4);
+  assert.deepEqual([...record.jobs.values()].map((job) => job.executor),
+    ['runner', 'runner', 'runner', 'runner']);
 });
 
 test('runner mode hands over a turn admitted during the alarm\'s first inbox pass before its other work', async () => {

@@ -49,12 +49,17 @@ test('the job store tells a new instance that a job was running', () => {
   assert.equal(store.hasRunning(), true);
 });
 
-test('a runner instance resumes a running job at once and starts admitted jobs in the admitting request', () => {
+test('a runner instance resumes a running job at once and runs admitted jobs only in its alarm', () => {
   const runner = readFileSync(new URL('../src/slack/thread-runner.ts', import.meta.url), 'utf8');
   // On first load after a replacement: a running job re-arms the alarm now.
   assert.match(runner, /blockConcurrencyWhile\(async \(\) => \{\s*try \{\s*if \(!this\.store\(\)\.hasRunning\(\)\) return;[\s\S]{0,200}setAlarm\(Date\.now\(\)\)/);
-  // admit starts the loop in the same request; the alarm is the backstop.
-  assert.match(runner, /this\.wake\?\.\(\);\s*void this\.runSoon\(\);/);
+  // admit never starts the loop in the admitting request (work left running
+  // after it returns loses its logs and is not resumed after a replacement):
+  // it wakes a running drain and makes the alarm due now, keeping an earlier one.
+  const admit = runner.slice(runner.indexOf('async admit('), runner.indexOf('async status('));
+  assert.doesNotMatch(admit, /runSoon|runAlarm/);
+  assert.match(admit, /this\.wake\?\.\(\);\s*const existing = await this\.ctx\.storage\.getAlarm\(\);\s*if \(existing === null \|\| existing > Date\.now\(\)\) await this\.ctx\.storage\.setAlarm\(Date\.now\(\)\);/);
+  assert.equal(runner.match(/this\.runSoon\(\)/g)?.length, 1, 'only the alarm runs the loop');
   assert.match(runner, /async alarm\(\): Promise<void> \{\s*await this\.runSoon\(\);/);
 });
 

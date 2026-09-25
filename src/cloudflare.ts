@@ -1918,31 +1918,32 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     const runnerBinding = Boolean((this.env as PlatformEnv).SLACK_THREAD_RUNNER);
     const runnerMode = runnerBinding &&
       slackTurnExecutor(this.env as PlatformEnv) === 'runner';
-    let dispatching: Promise<void> | undefined;
-    let dispatchAgain = false;
-    /** Hand free turns to their runners; concurrent requests coalesce. */
-    const dispatchToRunners = (): Promise<void> => {
+    const handingOff = new Set<Promise<void>>();
+    /**
+     * Hand the free turns listed now to their runners. Each admission starts
+     * its own hand-off at once, side by side with any in flight: a row is
+     * assigned before its admission RPC is awaited, so two hand-offs never
+     * take the same row. A failed hand-off stays a hand-off; the alarm
+     * re-arms for it.
+     */
+    const handOff = (readmitHandoffs: boolean): Promise<void> => {
       // Unconfirmed hand-offs are admitted again even after the switch is
-      // turned off: those rows already belong to their runners.
+      // turned off: those rows already belong to their runners. Only when no
+      // hand-off is in flight, so a row mid-admission is not admitted twice.
       if (!runnerMode && !(runnerBinding && stores.turnJobs.hasHandoffs())) return Promise.resolve();
-      if (dispatching) {
-        dispatchAgain = true;
-        return dispatching;
-      }
-      dispatching = (async () => {
-        do {
-          dispatchAgain = false;
-          metrics.jobsDispatched += await this.dispatchToRunners(stores, runnerMode);
-        } while (dispatchAgain);
-      })().finally(() => {
-        dispatching = undefined;
-      });
-      return dispatching;
+      const readmit = readmitHandoffs && handingOff.size === 0;
+      const run: Promise<void> = this.dispatchToRunners(stores, runnerMode, readmit)
+        .then((dispatched) => { metrics.jobsDispatched += dispatched; }, () => undefined)
+        .finally(() => { handingOff.delete(run); });
+      handingOff.add(run);
+      return run;
     };
-    // A failed hand-off stays a hand-off; the alarm re-arms for it.
-    const onAdmitted = runnerMode
-      ? () => void dispatchToRunners().catch(() => undefined)
-      : undefined;
+    /** Hand over every free turn and wait for all hand-offs in flight. */
+    const dispatchToRunners = async (): Promise<void> => {
+      await handOff(true);
+      while (handingOff.size > 0) await Promise.all([...handingOff]);
+    };
+    const onAdmitted = runnerMode ? () => void handOff(false) : undefined;
     /** Admit newly delivered events and hand their turns over at once. */
     const admitAndDispatch = async () => {
       let retry = false;
@@ -2218,13 +2219,17 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
    * (listDispatchable) and re-arms this alarm (hasHandoffs). Returns the
    * turns admitted.
    */
-  private async dispatchToRunners(stores: TagStateStores, newTurns: boolean): Promise<number> {
+  private async dispatchToRunners(
+    stores: TagStateStores,
+    newTurns: boolean,
+    readmitHandoffs = true,
+  ): Promise<number> {
     let dispatched = 0;
     const admitAll = async (jobs: PendingTurnJob[]) => {
       const admitted = await Promise.all(jobs.map((job) => this.admitToRunner(job)));
       dispatched += admitted.filter(Boolean).length;
     };
-    await admitAll(stores.turnJobs.listHandoffs(MAX_TURN_DRAIN_BATCH));
+    if (readmitHandoffs) await admitAll(stores.turnJobs.listHandoffs(MAX_TURN_DRAIN_BATCH));
     for (let page = 0; newTurns && page < RUNNER_DISPATCH_MAX_PAGES; page += 1) {
       const jobs = stores.turnJobs.listDispatchable({
         limit: MAX_TURN_DRAIN_BATCH,

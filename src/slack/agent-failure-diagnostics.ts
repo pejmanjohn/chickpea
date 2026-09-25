@@ -6,6 +6,9 @@ import { opaqueId } from '../work/admission.ts';
 const ERROR_KINDS = new Set([
   'Error', 'TypeError', 'RangeError', 'ReferenceError', 'SyntaxError',
   'AggregateError', 'AbortError', 'TimeoutError', 'FlueError',
+  'AgentPromptFailure', 'AgentObservationYield', 'StateStoreUnavailable',
+  'StateStoreDisconnectedError', 'SlackPresentationStateError',
+  'AgentInstanceNotFoundError',
 ]);
 
 const FINISH_REASONS = new Set([

@@ -7,6 +7,7 @@ import {
   AgentPromptFailure,
   classifyAgentPromptFailure,
   promptSlackThreadAgent,
+  StateStoreUnavailable,
   type SlackFlueDispatchState,
 } from '../src/slack/flue-dispatch.ts';
 import type { AgentInstanceHandle } from '@flue/runtime';
@@ -658,6 +659,42 @@ test('receipt-scoped relay is prepared after durable receipt and drains after se
     'relay:closed',
     'before:result',
   ]);
+});
+
+test('a relay that cannot be set up is logged and the turn is answered without live streaming', async (t) => {
+  // A deterministic setup failure used to be rethrown as an anonymous
+  // retryable failure before Flue was read: every reattachment failed the same
+  // way and the finished answer was replaced by a failure notice.
+  const warnings: unknown[][] = [];
+  t.mock.method(console, 'warn', (...args: unknown[]) => { warnings.push(args); });
+  let reads = 0;
+  const agent = handle({
+    async read() {
+      reads++;
+      return { text: 'done', data: {}, metadata: {}, submissionId: RECEIPT.submissionId };
+    },
+  });
+  const result = await promptSlackThreadAgent({
+    ...promptInput(state(), agent),
+    prepareProgressiveRelay: async () => {
+      throw new Error('Slack Agent View presentation writer is stale.');
+    },
+  });
+  assert.equal(result.text, 'done');
+  assert.equal(reads, 1);
+  assert.equal(warnings.length, 1);
+  assert.match(String(warnings[0]![0]), /progressive relay setup failed/);
+  // Content-free: a fixed kind and a presentation failure code, no message text.
+  assert.deepEqual(warnings[0]![1], {
+    causes: [{ kind: 'Error', presentationFailureKind: 'stale_writer' }],
+  });
+
+  // A state store being replaced is still a retry, never a turn without a relay.
+  await assert.rejects(() => promptSlackThreadAgent({
+    ...promptInput(state(), agent),
+    prepareProgressiveRelay: async () => { throw new StateStoreUnavailable(); },
+  }), (error: unknown) => error instanceof StateStoreUnavailable);
+  assert.equal(reads, 1, 'no read without the relay the reattaching attempt expects');
 });
 
 test('extreme punctuation output settles as terminal failure and never repeats a possibly completed write', async (t) => {

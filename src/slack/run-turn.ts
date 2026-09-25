@@ -55,6 +55,7 @@ import {
 } from '../routines/commands.ts';
 import { isRoutineSlackTurn } from '../routines/slack-context.ts';
 import { replyFooterModelLabel } from './message-format.ts';
+import { isSandboxDisconnect } from '../sandbox/reconnect.ts';
 import {
   agentFailureText,
   AgentObservationYield,
@@ -1455,6 +1456,12 @@ async function runTurnAttempt(
         // emit a Slack final or reach an onDelivered tombstone.
         if (err instanceof AgentPromptFailure && (err.recoveryRequired || err.retryable)) {
           throw err;
+        }
+        // The executing Durable Object (or one it reached) is being replaced:
+        // nothing about the turn is decided. Retry and reattach, never a final.
+        // A settled Flue failure is an AgentPromptFailure and is final as is.
+        if (!(err instanceof AgentPromptFailure) && isSandboxDisconnect(err)) {
+          throw new StateStoreUnavailable();
         }
         await agentViewPresentation?.recordExecutionFailure(
           'agent execution stopped before the active milestone finished.',

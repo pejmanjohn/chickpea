@@ -34,7 +34,6 @@ import { repairSlackInteractionProgress, runTurn, sanitizeError } from './run-tu
 import { SlackStatusRegistry } from './status-registry.ts';
 import { ThreadRunnerJobStore, type ThreadRunnerJob, type ThreadRunnerStatus } from './thread-runner-jobs.ts';
 import {
-  THREAD_RUNNER_BACKSTOP_MS,
   runnerLoopScheduler,
   type ThreadRunnerAlarmResult,
   runnerPresentationState,
@@ -134,13 +133,15 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
       }
     }
     const result = this.store().admit({ ...job, payload: {} }, Date.now());
-    // Start at once in this request instead of waiting for the alarm to fire;
-    // the alarm, armed a few seconds out, is the durable backstop.
-    const backstop = Date.now() + THREAD_RUNNER_BACKSTOP_MS;
-    const existing = await this.ctx.storage.getAlarm();
-    if (existing === null || existing > backstop) await this.ctx.storage.setAlarm(backstop);
+    // The turn runs in this object's alarm, never in the admitting request.
+    // Work left running after that request returns belongs to no invocation:
+    // its logs are dropped, objects it creates are bound to a closed request,
+    // and nothing retries it when the object is replaced. The alarm is due
+    // now (an earlier one is kept); a running alarm's drain takes the job at
+    // once.
     this.wake?.();
-    void this.runSoon();
+    const existing = await this.ctx.storage.getAlarm();
+    if (existing === null || existing > Date.now()) await this.ctx.storage.setAlarm(Date.now());
     return result;
   }
 

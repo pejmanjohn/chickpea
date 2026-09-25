@@ -133,8 +133,10 @@ export class AgentPromptFailure extends Error {
     readonly status = 500,
     readonly recoveryRequired = false,
     readonly retryable = false,
+    /** Only for content-free diagnostics (settlementFailureFacts). */
+    cause?: unknown,
   ) {
-    super(`agent prompt failed (${kind})`);
+    super(`agent prompt failed (${kind})`, cause === undefined ? undefined : { cause });
     this.name = 'AgentPromptFailure';
   }
 }
@@ -354,7 +356,7 @@ export async function promptSlackThreadAgent(
           // The local reconciliation CAS marks its own conflict. A transport
           // interruption from the second keyed dispatch remains retryable.
           if (input.state.dispatchEnvelope?.uid === error.uid) {
-            throw new AgentPromptFailure('agent', 503, false, true);
+            throw new AgentPromptFailure('agent', 503, false, true, reconciliationError);
           }
           await input.state.markRecoveryRequired(
             'flue_existing_instance_reconciliation_conflict',
@@ -367,7 +369,7 @@ export async function promptSlackThreadAgent(
           await input.state.markRecoveryRequired(reason);
           throw new AgentPromptFailure('agent', 409, true);
         }
-        throw new AgentPromptFailure('agent', 503, false, true);
+        throw new AgentPromptFailure('agent', 503, false, true, error);
       }
     }
     receipt = await input.state.recordReceipt(boundedReceipt(admitted));
@@ -381,10 +383,17 @@ export async function promptSlackThreadAgent(
         instanceId: envelope.instanceId,
         receipt,
       });
-    } catch {
-      // The receipt is already durable, so retry reattaches to the same paid
-      // submission. No read callback was registered and no text escaped.
-      throw new AgentPromptFailure('agent', 503, false, true);
+    } catch (error) {
+      // No read callback was registered and no text escaped. A state store
+      // that is being replaced retries the turn like a yield; anything else
+      // is logged and the turn goes on without live streaming, delivering its
+      // answer once it settles: a deterministic setup failure must not spend
+      // every reattachment attempt and replace a finished answer.
+      if (error instanceof StateStoreUnavailable) throw error;
+      console.warn('[chickpea] progressive relay setup failed; the reply is delivered at the end', {
+        causes: settlementFailureFacts(error),
+      });
+      progressiveRelay = undefined;
     }
   }
 
@@ -449,7 +458,7 @@ export async function promptSlackThreadAgent(
       // Transport/isolate interruptions are not settlement evidence. Keep the
       // receipt and let the durable relay reattach instead of freezing a paid,
       // possibly completed turn as a permanent failure.
-      throw new AgentPromptFailure('agent', 503, false, true);
+      throw new AgentPromptFailure('agent', 503, false, true, error);
     }
     const classified = classifyFlueRunFailure(error);
     // Only an attached container can fail a turn as a sandbox failure. A

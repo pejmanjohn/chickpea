@@ -1679,6 +1679,47 @@ test('a retryable Flue interruption emits no Slack final', async () => {
   assert.deepEqual(posts, []);
 });
 
+test('an object replaced by a redeploy mid-run is a retry, never a failure final', async (t) => {
+  t.mock.method(console, 'error', () => {});
+  const posts: Array<Record<string, unknown>> = [];
+  const client = {
+    assistant: { threads: { setStatus: async () => ({ ok: true }) } },
+    conversations: { history: async () => ({ ok: true, messages: [] }) },
+    chat: {
+      startStream: async (input: Record<string, unknown>) => {
+        posts.push(input);
+        return { ok: true, ts: 'unexpected-final' };
+      },
+      stopStream: async () => ({ ok: true }),
+      postMessage: async (input: Record<string, unknown>) => {
+        posts.push(input);
+        return { ok: true, channel: assignment.channelId, ts: 'unexpected-final' };
+      },
+    },
+  } as unknown as WebClient;
+  const run = (error: unknown, id: string) => runTurn({
+    ...workTurn(id),
+    interactionIntent: { disposition: 'reply', reason: 'substantive_request' },
+  }, assignment, undefined, {
+    client,
+    usageRecordingEnabled: false,
+    async agentPrompt(): Promise<AgentDispatchResult> { throw error; },
+  });
+  // As the runtime reports a replaced Durable Object to calls in flight on it.
+  await assert.rejects(
+    () => run(new Error('Durable Object reset because its code was updated.'), 'Ev_RUNTIME_REPLACED'),
+    (error: unknown) => error instanceof StateStoreUnavailable,
+  );
+  await assert.rejects(
+    () => run(Object.assign(new Error('internal error'), { retryable: true }), 'Ev_RUNTIME_RETRYABLE'),
+    (error: unknown) => error instanceof StateStoreUnavailable,
+  );
+  assert.deepEqual(posts, []);
+  // A failure Flue settled stays final, even when its cause reads like one.
+  await run(new AgentPromptFailure('agent'), 'Ev_SETTLED_FAILURE');
+  assert.ok(posts.length > 0, 'the settled failure posts its notice');
+});
+
 test('activity remains visible until final delivery and omits model or context narration', async () => {
   const agentStarted = deferred<void>();
   const finalAttempted = deferred<void>();
