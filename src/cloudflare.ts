@@ -2019,6 +2019,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
         presentationRepairs.nextRetryAt,
         scheduleActions.nextDueAt,
         outboxRetry,
+        stores.gatewayInbox.nextPendingDueAt(),
       );
       metrics.needsRetry = turnRetry !== undefined;
       metrics.rearmed = nextWake !== undefined;
@@ -2178,6 +2179,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       presentationRepairs.nextRetryAt,
       scheduleActions.nextDueAt,
       outboxRetry,
+      stores.gatewayInbox.nextPendingDueAt(),
     );
     metrics.needsRetry = needsRetry;
     metrics.rearmed = nextWake !== undefined;
@@ -2801,11 +2803,15 @@ async function drainGatewayInbox(
         stores.gatewayInbox.markRecoveryRequired(item.id, 'binding_revalidation_rejected');
       }
     } catch (error) {
-      needsRetry ||= stores.gatewayInbox.retryOrRecover(
+      const retryDelayMs = gatewayDeliveryRetryDelayMs(item.attempts, error);
+      const retry = stores.gatewayInbox.retryOrRecover(
         item.id,
         'delivery_processing_failed',
-        gatewayDeliveryRetryDelayMs(item.attempts, error),
-      ) === 'pending';
+        retryDelayMs,
+      );
+      // A row in backoff is not due yet: the alarm arms for its due time
+      // (nextPendingDueAt) instead of re-polling every few seconds.
+      needsRetry ||= retry === 'pending' && retryDelayMs === 0;
     } finally {
       releaseReceipt?.();
     }

@@ -82,6 +82,10 @@ export class SqliteGatewayInboxStore {
     return this.#inbox.hasPending();
   }
 
+  nextPendingDueAt(): number | undefined {
+    return this.#inbox.nextPendingDueAt();
+  }
+
   runtimeDrainCounts(): GatewayInboxDrainCounts {
     return this.#inbox.runtimeDrainCounts();
   }

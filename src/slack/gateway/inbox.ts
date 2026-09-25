@@ -363,10 +363,31 @@ export class GatewayInboxStoreLogic {
     return { agedToRecovery, expiredLeasesRecovered, tombstonesPurged };
   }
 
+  /**
+   * Work to do now: an in-flight row, or a pending row whose retry backoff
+   * (if any) has elapsed. A row still backing off is not "pending now"; its
+   * due time is {@link nextPendingDueAt}, so a drain arms its wake for then
+   * instead of polling every few seconds and claiming nothing.
+   */
   hasPending(): boolean {
     return this.db.get(
-      "SELECT 1 AS present FROM gateway_inbox WHERE status IN ('pending', 'in_flight') LIMIT 1",
+      `SELECT 1 AS present FROM gateway_inbox
+       WHERE status = 'in_flight'
+          OR (status = 'pending' AND (lease_until IS NULL OR lease_until <= ?))
+       LIMIT 1`,
+      this.now(),
     ) !== undefined;
+  }
+
+  /** The earliest time a pending row that is backing off becomes claimable. */
+  nextPendingDueAt(): number | undefined {
+    const row = this.db.get(
+      `SELECT MIN(lease_until) AS due FROM gateway_inbox
+       WHERE status = 'pending' AND lease_until > ?`,
+      this.now(),
+    );
+    const due = row?.due;
+    return due === null || due === undefined ? undefined : Number(due);
   }
 
   runtimeDrainCounts(): GatewayInboxDrainCounts {

@@ -13,7 +13,10 @@ import {
 } from '../../channels/slack.ts';
 import { createGatewayDeploymentClient } from './runtime.ts';
 import { GATEWAY_BINDING_SETTING, type GatewayDeploymentClient } from './client.ts';
-import { GATEWAY_INBOX_MAX_DRAIN_BATCH, gatewayDeliveryRetryDelayMs } from './inbox.ts';
+import {
+  GATEWAY_INBOX_MAX_DRAIN_BATCH,
+  gatewayDeliveryRetryDelayMs,
+} from './inbox.ts';
 import {
   GATEWAY_DURABLE_ADMISSION_CAPABILITY,
   type GatewayInboundDelivery,
@@ -47,6 +50,8 @@ interface NodeGatewayInboxPort {
   ): 'pending' | 'recovery_required';
   markRecoveryRequired(id: string, reason: string): boolean;
   hasPending(): boolean;
+  /** When the earliest pending row still in retry backoff becomes due. */
+  nextPendingDueAt?(): number | undefined;
 }
 
 interface NodeGatewayInboxWorkerOptions {
@@ -129,7 +134,7 @@ export class NodeGatewayInboxWorker {
         const store = this.#getStore();
         const item = store.claimPending(1)[0];
         if (!item) {
-          if (store.hasPending()) this.#scheduleRetry();
+          this.#scheduleNext(store);
           return;
         }
         processed += 1;
@@ -153,23 +158,36 @@ export class NodeGatewayInboxWorker {
             'delivery_processing_failed',
             gatewayDeliveryRetryDelayMs(item.attempts, error),
           );
-          if (retry === 'pending') this.#scheduleRetry();
+          if (retry === 'pending') this.#scheduleNext(store);
           return;
         }
       }
-      if (this.#active && this.#getStore().hasPending()) this.#scheduleRetry();
+      if (this.#active) this.#scheduleNext(this.#getStore());
     } catch (error) {
       this.#onError(error);
       if (this.#active) this.#scheduleRetry();
     }
   }
 
-  #scheduleRetry(): void {
+  /**
+   * Wake again soon when a row is claimable now, or when the earliest row in
+   * retry backoff becomes due, never polling a backoff it cannot claim.
+   */
+  #scheduleNext(store: NodeGatewayInboxPort): void {
+    if (store.hasPending()) {
+      this.#scheduleRetry();
+      return;
+    }
+    const due = store.nextPendingDueAt?.();
+    if (due !== undefined) this.#scheduleRetry(Math.max(this.#retryMs, due - Date.now()));
+  }
+
+  #scheduleRetry(delayMs = this.#retryMs): void {
     if (!this.#active || this.#timer) return;
     this.#timer = this.#setTimer(() => {
       this.#timer = undefined;
       this.wake();
-    }, this.#retryMs);
+    }, delayMs);
     this.#timer.unref?.();
   }
 }

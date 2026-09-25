@@ -260,13 +260,20 @@ test('a rate-limited delivery backs off without blocking later deliveries', () =
     const delay = gatewayDeliveryRetryDelayMs(limited.attempts, rateLimited);
     assert.equal(delay, 5_000);
     assert.equal(inbox.retryOrRecover(limited.id, 'delivery_processing_failed', delay), 'pending');
+    // Ev_NEXT is due now; the limited row reports its due time for the wake.
     assert.equal(inbox.hasPending(), true);
+    assert.equal(inbox.nextPendingDueAt(), now + 5_000);
 
     // The later delivery is claimable; the limited one waits out its delay.
     assert.deepEqual(inbox.claimPending(16).map((item) => item.id), ['delivery:Ev_NEXT']);
+    inbox.complete('delivery:Ev_NEXT');
     now += 4_999;
+    assert.equal(inbox.hasPending(), false, 'only a backing-off row remains: nothing to poll');
+    assert.equal(inbox.nextPendingDueAt(), now + 1);
     assert.deepEqual(inbox.claimPending(16), []);
     now += 1;
+    assert.equal(inbox.hasPending(), true);
+    assert.equal(inbox.nextPendingDueAt(), undefined);
     const retried = inbox.claimPending(16);
     assert.deepEqual(retried.map((item) => item.id), ['delivery:Ev_LIMITED']);
     assert.equal(retried[0]?.attempts, 2);

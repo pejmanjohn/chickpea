@@ -251,7 +251,7 @@ for (const withPendingTurn of [false, true]) {
         hasPendingSlackInteractionCleanup: () => false,
         hasHandoffs: () => false,
       },
-      gatewayInbox: { hasPending: () => false },
+      gatewayInbox: { hasPending: () => false, nextPendingDueAt: () => undefined },
     };
     await drainingProbe.alarm();
     assert.equal(alarm(), NOW + BATCH_MS);
@@ -504,7 +504,7 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
       },
       isCodingActiveWork: (key: string) => key === 'coding',
     },
-    gatewayInbox: { hasPending: () => false },
+    gatewayInbox: { hasPending: () => false, nextPendingDueAt: () => undefined },
     presentations: { get: (runId: string) => ({ runId, projectionVersion: 3 }) },
   };
   return { probe, record };
