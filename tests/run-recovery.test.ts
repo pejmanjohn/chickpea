@@ -57,11 +57,15 @@ test('memory confirmation survives durable settlement storage with legacy receip
   } finally { db.close(); }
 });
 
-test('the coding model a worker ran on survives durable settlement storage', () => {
+test('the coding model a worker ran on and its usage survive durable settlement storage', () => {
   const db = openStateDb(':memory:');
   try {
     const turns = new TurnJobStoreLogic(db, () => NOW);
     const id = 'coding-worker-replay';
+    const codingWorkerUsage = [{
+      schemaVersion: 1 as const, toolCallId: 'call-1', model: 'openai/gpt-6', status: 'completed' as const,
+      usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, totalTokens: 15 }, settledAt: NOW - 1_000,
+    }];
     turns.enqueue({ id, evtKey: id, msgKey: id, turn: turn(), assignment: assignment() });
     turns.freezeRuntimePlan(id, compileRuntimePlanV2({
       turn: turn(), assignment: assignment(), instructions: 'Test coding.', memoryEpoch: 1, sandboxMode: 'bash',
@@ -69,11 +73,13 @@ test('the coding model a worker ran on survives durable settlement storage', () 
     turns.prepareFlueDispatch(id, 'Test coding.', { generation: id });
     turns.recordFlueReceipt(id, { submissionId: id, acceptedAt: '2026-08-01T12:00:00.000Z', uid: 'inst_01ARZ3NDEKTSV4RRFFQ69G5FAV' });
     turns.recordFlueSettlement(id, { outcome: 'completed', settledAt: NOW, result: {
-      text: 'Opened the pull request.', codingModel: 'openai/gpt-6', requestedModel: null, returnedModel: null,
-      reportedUsage: null, usageCompleteness: 'not_reported',
+      text: 'Opened the pull request.', codingModel: 'openai/gpt-6', codingWorkerUsage, requestedModel: null,
+      returnedModel: null, reportedUsage: null, usageCompleteness: 'not_reported',
     } });
     const restored = turns.getFlueSettlement(id);
     assert.equal(restored?.outcome === 'completed' ? restored.result.codingModel : undefined, 'openai/gpt-6');
+    // A replayed delivery records the same worker usage the first one did.
+    assert.deepEqual(restored?.outcome === 'completed' ? restored.result.codingWorkerUsage : undefined, codingWorkerUsage);
   } finally { db.close(); }
 });
 

@@ -48,13 +48,23 @@ const WORKSPACE_INSTRUCTIONS = [
 ].join('\n');
 
 /**
+ * When to delegate to a coding worker and when to use the workspace tools
+ * directly: the one statement of the rule, quoted by the coordinator's
+ * standing instruction and the workspace skill.
+ */
+export const WORKSPACE_DELEGATION_GUIDANCE =
+  'For repository work with several steps (clone, install dependencies, change several files, run tests or a build, push a branch, open a pull request), ' +
+  'delegate to a coding worker with `workspace_task`. Use the workspace tools yourself (`workspace_exec`, `workspace_read`, `workspace_write`) ' +
+  'only for a quick check or a single step, or when the worker fails.';
+
+/**
  * The coordinator's standing instruction when a coding workspace is
  * available. The Agent itself always works in the virtual sandbox.
  */
 export const CODING_WORKSPACE_INSTRUCTION =
   'You work in a private virtual sandbox: its filesystem is fresh for each request and it runs no real processes. ' +
-  'For repository work that needs a real checkout, dependencies, tests, a build, a dev server, or screenshots, ' +
-  'open the coding workspace with workspace_open and work in it with workspace_exec, workspace_write, and workspace_read; ' +
+  'Repository work that needs a real checkout, dependencies, tests, a build, a dev server, or screenshots happens in the coding workspace, ' +
+  'a separate container you reach only through the workspace tools; ' +
   'use workspace_write and workspace_read to move files between your sandbox and the workspace. ' +
   'The workspace is ephemeral: its files survive only while it is warm or checkpointed, installed dependencies are never checkpointed, ' +
   'and a pushed branch is the only durable result. Never assume a file from an earlier request exists without checking, and never store secrets in it. ' +
@@ -81,7 +91,7 @@ const CODING_WORKSPACE_TOOLS_INSTRUCTIONS = [
   '',
   '## Delegate multi-step work',
   '',
-  'For work with several steps (clone, install, change files, test, push, open a pull request), prefer `workspace_task`: a coding worker does the whole loop in the workspace with its own shell and file tools and returns its answer and any pull request links. It cannot see this conversation, so write a complete brief: the repository, what to change, how to verify it, the branch name, and whether to open a pull request. Tell it to push early. Report the pull request links it returns. A follow-up task in the same thread continues the same worker, so "now fix the failing test" can be brief. Use the loop below yourself for a quick check or a single step, or when the worker fails.',
+  `${WORKSPACE_DELEGATION_GUIDANCE} The worker runs the loop below with its own shell and file tools; tell it to push early. A follow-up task in the same thread continues the same worker, so "now fix the failing test" can be brief.`,
   '',
   '## Workspace loop',
   '',

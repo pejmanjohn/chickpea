@@ -15,6 +15,7 @@ import { resolveProfileSkills } from '../config/profile-skills.ts';
 import { registerFrozenRuntimeModelRoute, resolveRuntimeModel } from '../config/runtime-model.ts';
 import { isCloudflareTarget } from '../config/runtime-target.ts';
 import { getConfigStore, getSettingsStore, type PlatformEnv } from '../config/state-backend.ts';
+import { thinkingLevelForModel } from '../config/workers-ai-models.ts';
 import {
   codingWorkerInstanceId,
   codingWorkerRepositoryGrants,
@@ -28,7 +29,7 @@ import {
   serializeSandboxActivation,
 } from '../sandbox/lifecycle.ts';
 import { WORKSPACE_DIR } from '../sandbox/workspace-lifecycle.ts';
-import { thinkingLevelForModel } from './slack-thread.ts';
+import { useChickpeaResponseMetadata } from '../usage/response-metadata.ts';
 
 /**
  * A coding worker: one Flue agent instance per coding workspace and binding,
@@ -50,6 +51,8 @@ export function CodingWorker({ id }: AgentProps) {
   registerFrozenRuntimeModelRoute(model, runtimeModel, runtimeModelRoute);
   const thinkingLevel = thinkingLevelForModel(model);
   useModel(runtimeModel, thinkingLevel ? { thinkingLevel } : {});
+  // The task's usage rides back on the reply; the coordinator's turn records it.
+  useChickpeaResponseMetadata(model);
   useSandbox(codingWorkerSandbox(binding));
   const repositories = repositoriesSkillForGrants(codingWorkerRepositoryGrants(binding));
   for (const skill of resolveProfileSkills(repositories ? [repositories] : [])) {

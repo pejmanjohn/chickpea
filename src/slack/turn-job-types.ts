@@ -7,6 +7,7 @@ import type { SlackTablePresentation } from './table-presentation.ts';
 import type { SlackArtifactReceipt } from './artifact-receipts.ts';
 import type { SlackAgentCreationTerminalIntent } from './agent-creation-terminal.ts';
 import type { NormalizedSlackTurn } from './types.ts';
+import type { CodingWorkerUsageRecord } from './coding-worker-run.ts';
 
 interface FlueDispatchEnvelopeBase {
   agentName: 'chickpea-slack-v2';
@@ -87,6 +88,7 @@ export type FlueSettlementCheckpointV1 =
         agentCreationTerminal?: SlackAgentCreationTerminalIntent;
         memoryUpdate?: SlackMemoryUpdate;
         codingModel?: string;
+        codingWorkerUsage?: CodingWorkerUsageRecord[];
         requestedModel: string | null;
         returnedModel: { provider: string; id: string } | null;
         reportedUsage: {

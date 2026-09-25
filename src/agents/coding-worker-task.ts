@@ -7,6 +7,7 @@ import {
   codingWorkerInstanceId,
 } from '../sandbox/coding-worker-binding.ts';
 import { currentWorkspaceRegistry, type WorkspaceTurnRegistry } from '../sandbox/workspace-registry.ts';
+import { WORKSPACE_DELEGATION_GUIDANCE } from '../sandbox/workspace-skill.ts';
 import {
   createWorkspaceTaskTool,
   emptyWorkspaceTaskResponseState,
@@ -15,7 +16,11 @@ import {
   type WorkspaceTaskToolOptions,
 } from '../sandbox/workspace-task.ts';
 import { CHICKPEA_CODING_WORKER_AGENT_NAME } from './names.ts';
-import type { CodingWorkerRunRecord, WorkspaceMilestoneRecord } from '../slack/coding-worker-run.ts';
+import type {
+  CodingWorkerRunRecord,
+  CodingWorkerUsageRecord,
+  WorkspaceMilestoneRecord,
+} from '../slack/coding-worker-run.ts';
 import type { RuntimePlanV2 } from './runtime-plan.ts';
 
 /**
@@ -28,9 +33,9 @@ export const CHICKPEA_SUBMISSION_DURABILITY: DurabilityConfig = {
   timeoutMs: 155 * 60_000,
 };
 
-/** The coordinator's one line on delegating; the tool description carries the rest. */
+/** The coordinator's standing instruction on delegating; the tool description carries the brief. */
 export const WORKSPACE_TASK_INSTRUCTION =
-  'For repository work that needs a real checkout (installing dependencies, changing several files, running tests or a build, pushing a branch, opening a pull request), delegate to a coding worker with workspace_task and give it a complete brief; it runs on the workspace\'s coding model. Report the pull request links it returns. When a request spans two repositories, give each its own named workspace; tasks in different workspaces can run in parallel. If a workspace tool reports the workspace unavailable or the worker failed, say so and use the Repositories API path when it covers the request.';
+  `${WORKSPACE_DELEGATION_GUIDANCE} The worker runs on the workspace's coding model. Report the pull request links it returns. When a request spans two repositories, give each its own named workspace; tasks in different workspaces can run in parallel. If a workspace tool reports the workspace unavailable or the worker failed, say so and use the Repositories API path when it covers the request.`;
 
 /** `workspace_task` for a coordinator running `plan`. */
 export function createRuntimePlanWorkspaceTaskTool(input: {
@@ -39,6 +44,7 @@ export function createRuntimePlanWorkspaceTaskTool(input: {
   coordinatorId: string;
   resolve: WorkspaceTaskToolOptions['resolve'];
   onWorkerStarted: (record: CodingWorkerRunRecord) => void;
+  onWorkerUsage: (record: CodingWorkerUsageRecord) => void;
   onMilestone: (record: WorkspaceMilestoneRecord) => void;
 }) {
   return createWorkspaceTaskTool({
@@ -48,6 +54,7 @@ export function createRuntimePlanWorkspaceTaskTool(input: {
     client: cloudflareCodingWorkerClient(),
     responseState: () => responseState(currentWorkspaceRegistry()),
     onWorkerStarted: (model) => input.onWorkerStarted({ schemaVersion: 1, model }),
+    onWorkerUsage: input.onWorkerUsage,
     onMilestone: input.onMilestone,
     publishProgress: (status) => publishActivityStatus(input.coordinatorId, status),
     recordedPullRequest: async (session) => {
@@ -78,8 +85,8 @@ export function workspaceTaskRunning(workspaceId: string): boolean {
 
 /**
  * Dispatch through Flue's `init()` and observe through the bounded reader on
- * the worker's Durable Object namespace. The agent module is imported lazily:
- * it imports the Slack agent module, which mounts this tool.
+ * the worker's Durable Object namespace. The agent module is imported lazily,
+ * on the first task.
  */
 function cloudflareCodingWorkerClient(): CodingWorkerClient {
   const workerHandle = async (instanceId: string): Promise<AgentInstanceHandle> => {

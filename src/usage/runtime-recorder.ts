@@ -1,4 +1,5 @@
 import type { AgentDispatchResult } from '../slack/flue-dispatch.ts';
+import type { CodingWorkerUsageRecord } from '../slack/coding-worker-run.ts';
 import { slackTimestampMs } from '../slack/timestamp.ts';
 import type { NormalizedSlackTurn } from '../slack/types.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
@@ -52,6 +53,8 @@ export class InteractiveUsageRecorder {
   private readonly budgetMs: number;
   private readonly now: () => number;
   private terminalInput: RecordUsageTerminalInput | undefined;
+  /** Coding workers' measurements, written before the Agent's own. */
+  private workerTerminals: RecordUsageTerminalInput[] = [];
   private repairAttempted = false;
   private needsRepair = false;
   private runExecutionId: string | undefined;
@@ -106,7 +109,7 @@ export class InteractiveUsageRecorder {
       : result.usageCompleteness === 'partial'
         ? 'usage_partial'
         : 'usage_not_reported';
-    this.terminalInput = this.baseTerminal({
+    const terminal = this.baseTerminal({
       status: 'completed',
       providerRoute: returned?.provider ?? this.admission.requestedProvider,
       returnedProvider: returned?.provider ?? null,
@@ -119,6 +122,9 @@ export class InteractiveUsageRecorder {
       totalTokens: usage?.totalTokens ?? null,
       usageUnknownReason: unknownReason,
     });
+    this.terminalInput = terminal;
+    this.workerTerminals = (result.codingWorkerUsage ?? []).map((record, index) =>
+      this.codingWorkerTerminal(record, index, terminal.finishedAt));
     await this.persistTerminal();
   }
 
@@ -161,19 +167,83 @@ export class InteractiveUsageRecorder {
   private async writeTerminal(): Promise<unknown> {
     if (this.options.replaySettlementAt !== undefined) {
       const detail = await this.options.store.getOperation(this.admission.operationId);
-      const original = detail?.measurements.find((row) => row.executionId === this.options.executionId);
-      if (original) {
-        // Preserve observation identity. The store still rejects changed usage,
-        // model, credential, or explicitly supplied execution linkage.
-        this.terminalInput = {
-          ...this.terminalInput!,
-          observedAt: original.observedAt,
-          finishedAt: original.observedAt,
-          runExecutionId: this.runExecutionId ?? original.runExecutionId ?? null,
-        };
-      }
+      // Preserve observation identity. The store still rejects changed usage,
+      // model, credential, or explicitly supplied execution linkage.
+      const preserve = (terminal: RecordUsageTerminalInput): RecordUsageTerminalInput => {
+        const original = detail?.measurements.find((row) => row.executionId === terminal.executionId);
+        return original
+          ? {
+              ...terminal,
+              observedAt: original.observedAt,
+              finishedAt: original.observedAt,
+              runExecutionId: this.runExecutionId ?? original.runExecutionId ?? null,
+            }
+          : terminal;
+      };
+      this.workerTerminals = this.workerTerminals.map(preserve);
+      this.terminalInput = preserve(this.terminalInput!);
     }
+    // Workers first: the operation takes its status from the last measurement,
+    // and that is the Agent's own outcome.
+    for (const terminal of this.workerTerminals) await this.options.store.recordTerminal(terminal);
     return this.options.store.recordTerminal(this.terminalInput!);
+  }
+
+  /**
+   * One coding worker's usage as its own measurement on this turn's
+   * operation, under the coding model. Its execution id derives from the
+   * turn's, so a replayed settlement writes the same measurement, never a
+   * second. It is observed when the task settled, clamped to before the
+   * Agent's own measurement: a view that shows a turn's latest measurement
+   * then names the Agent's model.
+   */
+  private codingWorkerTerminal(
+    record: CodingWorkerUsageRecord,
+    index: number,
+    agentFinishedAt: number,
+  ): RecordUsageTerminalInput {
+    const finishedAt = Math.max(
+      this.admission.startedAt,
+      Math.min(record.settledAt, agentFinishedAt - 1),
+    );
+    const requested = splitModelSpecifier(record.model);
+    const usage = record.usage && record.usage.totalTokens > 0 ? record.usage : undefined;
+    // The turn's credential is attributed only when it is for the same provider.
+    const credential = this.options.assignment.modelCredential?.providerId === requested.provider
+      ? this.options.assignment.modelCredential
+      : undefined;
+    const terminal = {
+      operationId: this.admission.operationId,
+      executionId: `${this.options.executionId}:coding:${index + 1}`,
+      ...(this.runExecutionId ? { runExecutionId: this.runExecutionId } : {}),
+      status: record.status,
+      finishedAt,
+      observedAt: finishedAt,
+      providerRoute: record.returnedModel?.provider ?? requested.provider,
+      requestedProvider: requested.provider,
+      requestedModel: requested.model,
+      returnedProvider: record.returnedModel?.provider ?? null,
+      returnedModel: record.returnedModel?.id ?? null,
+      credentialRefId: credential?.credentialRefId ?? null,
+      credentialVersion: credential?.version ?? null,
+      usageCompleteness: usage ? 'complete' as const : 'not_reported' as const,
+      inputTokens: usage?.input ?? null,
+      outputTokens: usage?.output ?? null,
+      cacheReadTokens: usage?.cacheRead ?? null,
+      cacheWriteTokens: usage?.cacheWrite ?? null,
+      totalTokens: usage?.totalTokens ?? null,
+      usageUnknownReason: usage
+        ? null
+        : record.status === 'completed'
+          ? 'usage_not_reported' as const
+          : record.status === 'interrupted'
+            ? 'stream_interrupted' as const
+            : 'provider_request_unknown' as const,
+    };
+    return {
+      ...terminal,
+      ...estimateForRuntime(terminal, this.options.platformEnv, this.options.processEnv),
+    };
   }
 
   private async persist(

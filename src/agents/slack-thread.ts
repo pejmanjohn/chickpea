@@ -4,7 +4,9 @@ import { apiOAuthLifecycleDependencies } from '../connections/api-oauth-lifecycl
 import { SLACK_MEMORY_UPDATE_DATA_NAME, SlackMemoryUpdateSchema, type SlackMemoryUpdate } from '../slack/memory-update-terminal.ts';
 import {
   CODING_WORKER_RUN_DATA_NAME,
+  CODING_WORKER_USAGE_DATA_NAME,
   CodingWorkerRunSchema,
+  CodingWorkerUsageSchema,
   WORKSPACE_MILESTONE_DATA_NAME,
   WorkspaceMilestoneSchema,
 } from '../slack/coding-worker-run.ts';
@@ -91,7 +93,7 @@ import {
   type ResolvedRuntimeModel,
 } from '../config/runtime-model.ts';
 import { resolveSandboxSettings } from '../config/sandbox-settings.ts';
-import { isWorkersAiGlmModel } from '../config/workers-ai-models.ts';
+import { thinkingLevelForModel } from '../config/workers-ai-models.ts';
 import { surfaceForChannelId } from '../config/resolver.ts';
 import { isCloudflareTarget } from '../config/runtime-target.ts';
 import { getOrCreateSnapshot } from '../config/snapshot-store.ts';
@@ -1650,6 +1652,9 @@ export function useRuntimePlanAgent(
   const sandbox = createRuntimePlanSandbox(plan, options.sandboxConversationKey);
   useSandbox(options.artifactToolsDisabled ? sandbox : fileCompletion.wrapSandbox(sandbox));
   const writeCodingWorkerRun = useDataWriter(CODING_WORKER_RUN_DATA_NAME, { schema: CodingWorkerRunSchema });
+  const writeCodingWorkerUsage = useDataWriter(CODING_WORKER_USAGE_DATA_NAME, {
+    schema: CodingWorkerUsageSchema,
+  });
   const writeWorkspaceMilestone = useDataWriter(WORKSPACE_MILESTONE_DATA_NAME, {
     schema: WorkspaceMilestoneSchema,
   });
@@ -1667,6 +1672,7 @@ export function useRuntimePlanAgent(
       coordinatorId: id,
       resolve: resolveWorkspace,
       onWorkerStarted: writeCodingWorkerRun,
+      onWorkerUsage: writeCodingWorkerUsage,
       onMilestone: writeWorkspaceMilestone,
     }));
     useInstruction(WORKSPACE_TASK_INSTRUCTION);
@@ -2566,16 +2572,6 @@ async function resolveRuntimePlanImageClient(plan: RuntimePlanV2): Promise<Image
   }
   const provider = await resolveImageProvider(modelId, env, settings);
   return provider.ok ? { ok: true, client: provider.client } : { ok: false, reason: 'misconfigured' };
-}
-
-export function thinkingLevelForModel(model: string): 'off' | undefined {
-  const slash = model.indexOf('/');
-  const provider = model.slice(0, slash);
-  return slash > 0 &&
-    (provider === 'cloudflare' || provider === 'cloudflare-workers-ai') &&
-    isWorkersAiGlmModel(model.slice(slash + 1))
-    ? 'off'
-    : undefined;
 }
 
 interface AgentSandboxOptions {

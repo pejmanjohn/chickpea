@@ -331,3 +331,110 @@ test('slow telemetry cannot hold delivery beyond the budget and one repair recor
     durable.close();
   }
 });
+
+test('coding worker usage is recorded once on the turn, under the coding model', async () => {
+  const store = new SqliteUsageStore(':memory:');
+  const result = success({
+    codingWorkerUsage: [
+      {
+        schemaVersion: 1,
+        toolCallId: 'call-1',
+        model: 'anthropic/claude-opus-5-5',
+        status: 'completed',
+        usage: { input: 4_000, output: 1_000, cacheRead: 500, cacheWrite: 0, totalTokens: 5_500 },
+        returnedModel: { provider: 'anthropic', id: 'claude-opus-5-5' },
+        settledAt: 3_990_000,
+      },
+      // A clock skewed past the Agent's own finish still sorts before it.
+      { schemaVersion: 1, toolCallId: 'call-2', model: 'openai/gpt-6', status: 'failed', settledAt: 4_500_000 },
+    ],
+  });
+  const options = {
+    turn,
+    assignment,
+    requestedModel: assignment.model!,
+    operationId: 'msg_coding',
+    executionId: 'exec:msg_coding:1',
+    runId: 'run_coding',
+    runExecutionId: 'execution_coding_1',
+    store,
+    processEnv: { CHICKPEA_INSTALLATION_ID: 'installation_usage' },
+  };
+  try {
+    const recorder = new InteractiveUsageRecorder({ ...options, now: () => 4_000_000 });
+    await recorder.admit();
+    await recorder.recordSuccess(result);
+    // A repeated terminal write and a replayed settlement add nothing.
+    await recorder.recordSuccess(result);
+    const replay = new InteractiveUsageRecorder({ ...options, replaySettlementAt: 3_999_999, now: () => 5_000_000 });
+    await replay.admit();
+    await replay.recordSuccess(result);
+
+    const detail = await store.getOperation('msg_coding');
+    assert.equal(detail?.operation.agentId, 'agent_usage');
+    assert.equal(detail?.operation.installationId, 'installation_usage');
+    // The Agent's outcome decides the operation's status, not a failed worker.
+    assert.equal(detail?.operation.status, 'completed');
+    // The Agent's own measurement is the turn's latest, so a view that shows
+    // a turn's latest measurement names the Agent's model, not a worker's.
+    assert.deepEqual(detail!.measurements.map((row) => [row.executionId, row.observedAt]), [
+      ['exec:msg_coding:1:coding:1', 3_990_000],
+      ['exec:msg_coding:1:coding:2', 3_999_999],
+      ['exec:msg_coding:1', 4_000_000],
+    ]);
+    const rows = detail!.measurements.map((row) => ({
+      executionId: row.executionId,
+      runExecutionId: row.runExecutionId,
+      status: row.operationStatus,
+      model: `${row.requestedProvider}/${row.requestedModel}`,
+      returnedModel: row.returnedModel,
+      totalTokens: row.totalTokens,
+      credentialRefId: row.credentialRefId,
+    })).sort((a, b) => a.executionId.localeCompare(b.executionId));
+    assert.deepEqual(rows, [
+      {
+        executionId: 'exec:msg_coding:1',
+        runExecutionId: 'execution_coding_1',
+        status: 'completed',
+        model: 'openai/gpt-4.1-mini',
+        returnedModel: 'gpt-4.1-mini-2025-04-14',
+        totalTokens: 180,
+        credentialRefId: 'cred_openai_environment',
+      },
+      {
+        executionId: 'exec:msg_coding:1:coding:1',
+        runExecutionId: 'execution_coding_1',
+        status: 'completed',
+        model: 'anthropic/claude-opus-5-5',
+        returnedModel: 'claude-opus-5-5',
+        totalTokens: 5_500,
+        // The turn's OpenAI credential is not the coding model's.
+        credentialRefId: null,
+      },
+      {
+        executionId: 'exec:msg_coding:1:coding:2',
+        runExecutionId: 'execution_coding_1',
+        status: 'failed',
+        model: 'openai/gpt-6',
+        returnedModel: null,
+        totalTokens: null,
+        credentialRefId: 'cred_openai_environment',
+      },
+    ]);
+
+    // The existing usage views count one turn and split its tokens by model.
+    const range = { from: 0, to: 10_000_000 };
+    const summary = await store.summarize({ ...range, groupBy: 'model' });
+    assert.equal(summary.totals.operationCount, 1);
+    assert.equal(summary.totals.totalTokens, 180 + 5_500);
+    const byModel = Object.fromEntries(summary.groups.map((group) => [group.key, group.totalTokens]));
+    assert.equal(byModel['gpt-4.1-mini-2025-04-14'], 180);
+    assert.equal(byModel['claude-opus-5-5'], 5_500);
+    const byAgent = await store.summarize({ ...range, groupBy: 'agent' });
+    assert.deepEqual(byAgent.groups.map((group) => [group.key, group.operationCount, group.totalTokens]), [
+      ['agent_usage', 1, 5_680],
+    ]);
+  } finally {
+    store.close();
+  }
+});

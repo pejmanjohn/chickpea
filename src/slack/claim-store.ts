@@ -1,4 +1,5 @@
 import { openStateDb, type NodeStateDb } from '../state/node-state-db.ts';
+import { addColumnIfMissing } from '../state/schema-links.ts';
 import { schemaInstallRequired, type StateDb } from '../state/state-db.ts';
 import { WorkStoreLogic } from '../work/store.ts';
 import type { AdmitShadowRunInput, ShadowRunAdmission } from '../work/types.ts';
@@ -33,11 +34,21 @@ import {
   type SlackRunPresentation,
 } from './run-presentations.ts';
 import { localSlackStateStore } from './local-state-store.ts';
-import { ACTIVE_WORK_TTL_MS, CLAIM_TTL_MS, THREAD_TTL_MS } from './state-limits.ts';
+import {
+  ACTIVE_WORK_TTL_MS,
+  CLAIM_TTL_MS,
+  CODING_ACTIVE_WORK_TTL_MS,
+  THREAD_TTL_MS,
+} from './state-limits.ts';
 import { slackTimestampUnits } from './thread-context.ts';
 import { SqliteGatewayInboxStore } from './gateway/node-inbox-store.ts';
 
-export { ACTIVE_WORK_TTL_MS, CLAIM_TTL_MS, THREAD_TTL_MS } from './state-limits.ts';
+export {
+  ACTIVE_WORK_TTL_MS,
+  CLAIM_TTL_MS,
+  CODING_ACTIVE_WORK_TTL_MS,
+  THREAD_TTL_MS,
+} from './state-limits.ts';
 
 export interface SlackCanonicalAdmissionInput {
   evtKey: string;
@@ -257,8 +268,10 @@ export class SlackStateLogic {
       'CREATE TABLE IF NOT EXISTS slack_threads (key TEXT PRIMARY KEY, started_at INTEGER NOT NULL)',
     );
     db.exec(
-      'CREATE TABLE IF NOT EXISTS slack_active_work (key TEXT NOT NULL, generation TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (key, generation))',
+      'CREATE TABLE IF NOT EXISTS slack_active_work (key TEXT NOT NULL, generation TEXT NOT NULL, updated_at INTEGER NOT NULL, ttl_ms INTEGER, PRIMARY KEY (key, generation))',
     );
+    // A marker without its own TTL keeps the ordinary ACTIVE_WORK_TTL_MS.
+    addColumnIfMissing(db, 'slack_active_work', 'ttl_ms', 'INTEGER');
   }
 
   claim(key: string): boolean {
@@ -290,9 +303,10 @@ export class SlackStateLogic {
 
   isActiveWork(key: string): boolean {
     const row = this.db.get(
-      'SELECT updated_at FROM slack_active_work WHERE key = ? AND updated_at >= ?',
+      'SELECT updated_at FROM slack_active_work WHERE key = ? AND updated_at + COALESCE(ttl_ms, ?) >= ?',
       key,
-      this.now() - ACTIVE_WORK_TTL_MS,
+      ACTIVE_WORK_TTL_MS,
+      this.now(),
     );
     return row !== undefined;
   }
@@ -311,6 +325,21 @@ export class SlackStateLogic {
       key,
       generation,
       this.now(),
+    );
+  }
+
+  /**
+   * The turn delegated a coding task: keep its marker for the whole coding
+   * budget from now. Only an existing marker is extended, so a turn that
+   * already finished never becomes active again.
+   */
+  markCodingActiveWork(key: string, generation: string): void {
+    this.db.run(
+      'UPDATE slack_active_work SET updated_at = ?, ttl_ms = ? WHERE key = ? AND generation = ?',
+      this.now(),
+      CODING_ACTIVE_WORK_TTL_MS,
+      key,
+      generation,
     );
   }
 
@@ -396,8 +425,9 @@ export class SlackStateLogic {
     }
     this.db.run('DELETE FROM slack_threads WHERE started_at < ?', this.now() - THREAD_TTL_MS);
     this.db.run(
-      'DELETE FROM slack_active_work WHERE updated_at < ?',
-      this.now() - ACTIVE_WORK_TTL_MS,
+      'DELETE FROM slack_active_work WHERE updated_at + COALESCE(ttl_ms, ?) < ?',
+      ACTIVE_WORK_TTL_MS,
+      this.now(),
     );
   }
 }
