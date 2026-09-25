@@ -273,13 +273,178 @@ export function canonicalSlackReplyText(text: string, format: SlackReplyFormat):
     : redactCredentialLikeContent(normalized);
 }
 
-/** Canonical answer formatter shared by progressive and terminal delivery. */
+/**
+ * Canonical answer formatter shared by progressive and terminal delivery. It
+ * never truncates: `splitSlackMarkdownReply` divides a long answer into
+ * messages that each fit Slack's markdown limit.
+ */
 export function canonicalSlackMarkdownText(text: string): string {
   const normalized = normalizeMessageText(text);
-  return truncateText(
-    redactCredentialLikeContent(sanitizeSlackMarkdownLinks(normalized)),
-    slackMarkdownBlockTextLimit,
-  );
+  return redactCredentialLikeContent(sanitizeSlackMarkdownLinks(normalized));
+}
+
+/** Follow-up messages a long reply may use after its first message. */
+export const slackReplyContinuationLimit = 3;
+
+/** Ends the last message of a reply that did not fit in every allowed message. */
+export const SLACK_REPLY_SHORTENED_NOTE =
+  'This answer was shortened to fit in Slack; ask me for the rest if you need it.';
+
+const SLACK_FENCE_LINE = /^ {0,3}(`{3,})/;
+
+interface SlackReplyCut {
+  /** Characters of the remaining text that belong to this message. */
+  end: number;
+  /** Characters skipped before the next message (a newline or space). */
+  skip: number;
+  /** Opening fence line when the cut falls inside a code block. */
+  fence?: { opener: string; closer: string };
+}
+
+/**
+ * Split a canonical markdown answer into at most 1 + `slackReplyContinuationLimit`
+ * messages of `slackMarkdownBlockTextLimit` characters. Cuts prefer a heading,
+ * then a paragraph or code-fence boundary, then a line, and never fall inside a
+ * link or inline code span. A cut inside a fenced block closes that fence and
+ * reopens it with the same info string in the next message. Text beyond the
+ * last allowed message is dropped and that message ends with the shortened note.
+ *
+ * `minFirstPartLength` keeps an already streamed prefix inside the first
+ * message; `firstPartLimit` reserves room for a marker the caller appends.
+ */
+export function splitSlackMarkdownReply(
+  text: string,
+  options: { minFirstPartLength?: number; firstPartLimit?: number; maxParts?: number } = {},
+): string[] {
+  const maxParts = Math.max(1, options.maxParts ?? 1 + slackReplyContinuationLimit);
+  const parts: string[] = [];
+  let rest = text;
+  while (rest) {
+    const index = parts.length;
+    let limit = index === 0
+      ? Math.min(options.firstPartLimit ?? slackMarkdownBlockTextLimit, slackMarkdownBlockTextLimit)
+      : slackMarkdownBlockTextLimit;
+    if (rest.length <= limit) {
+      parts.push(rest);
+      break;
+    }
+    const last = index === maxParts - 1;
+    if (last) limit -= SLACK_REPLY_SHORTENED_NOTE.length + 2;
+    const cut = chooseSlackReplyCut(
+      rest,
+      limit,
+      index === 0 ? Math.min(options.minFirstPartLength ?? 0, limit) : 0,
+    );
+    let head = rest.slice(0, cut.end);
+    let tail = rest.slice(cut.end + cut.skip);
+    if (cut.fence) {
+      head = `${head}\n${cut.fence.closer}`;
+      tail = `${cut.fence.opener}\n${tail}`;
+    } else {
+      head = head.trimEnd();
+      tail = tail.replace(/^\s*\n/, '');
+    }
+    if (last) {
+      parts.push(`${head}\n\n${SLACK_REPLY_SHORTENED_NOTE}`);
+      break;
+    }
+    parts.push(head);
+    rest = tail;
+  }
+  return parts.length > 0 ? parts : [text];
+}
+
+function chooseSlackReplyCut(text: string, limit: number, min: number): SlackReplyCut {
+  type Tier = 'heading' | 'paragraph' | 'line' | 'fence' | 'table';
+  const boundaries: Array<{ at: number; tier: Tier; fence?: SlackReplyCut['fence'] }> = [];
+  const fences: Array<{ from: number; to: number; opener: string; closer: string }> = [];
+  let open: { from: number; opener: string; closer: string } | undefined;
+  let lineStart = 0;
+  while (lineStart <= text.length) {
+    const newline = text.indexOf('\n', lineStart);
+    const lineEnd = newline < 0 ? text.length : newline;
+    const line = text.slice(lineStart, lineEnd);
+    const marker = SLACK_FENCE_LINE.exec(line)?.[1];
+    let closedHere = false;
+    if (open) {
+      if (marker && marker.length >= open.closer.length && !line.trim().slice(marker.length)) {
+        fences.push({ from: open.from, to: lineStart, opener: open.opener, closer: open.closer });
+        open = undefined;
+        closedHere = true;
+      }
+    } else if (marker) {
+      open = { from: lineEnd + 1, opener: line.trim(), closer: marker };
+    }
+    if (newline < 0) break;
+    const nextEnd = text.indexOf('\n', newline + 1);
+    const next = text.slice(newline + 1, nextEnd < 0 ? text.length : nextEnd);
+    if (open) {
+      // Inside a code block: any line may end a message except right before
+      // the closing fence, which would leave an empty reopened block.
+      const nextMarker = SLACK_FENCE_LINE.exec(next)?.[1];
+      if (!(nextMarker && nextMarker.length >= open.closer.length) && newline >= open.from) {
+        boundaries.push({
+          at: newline,
+          tier: 'fence',
+          fence: { opener: open.opener, closer: open.closer },
+        });
+      }
+    } else if (/^#{1,6}\s/.test(next)) {
+      boundaries.push({ at: newline, tier: 'heading' });
+    } else if (!line.trim() || !next.trim() || closedHere || SLACK_FENCE_LINE.test(next)) {
+      boundaries.push({ at: newline, tier: 'paragraph' });
+    } else if (/^\s*\|/.test(line) && /^\s*\|/.test(next)) {
+      boundaries.push({ at: newline, tier: 'table' });
+    } else {
+      boundaries.push({ at: newline, tier: 'line' });
+    }
+    lineStart = newline + 1;
+  }
+  if (open) fences.push({ from: open.from, to: text.length, opener: open.opener, closer: open.closer });
+
+  const fits = (at: number, fence?: SlackReplyCut['fence']) =>
+    at >= Math.max(1, min) && at + (fence ? fence.closer.length + 1 : 0) <= limit;
+  const pick = (tiers: readonly Tier[], from: number): SlackReplyCut | undefined => {
+    for (let i = boundaries.length - 1; i >= 0; i -= 1) {
+      const boundary = boundaries[i]!;
+      if (boundary.at < from || !tiers.includes(boundary.tier) ||
+          !fits(boundary.at, boundary.fence)) continue;
+      return { end: boundary.at, skip: 1, ...(boundary.fence ? { fence: boundary.fence } : {}) };
+    }
+    return undefined;
+  };
+  const half = Math.max(min, Math.floor(limit / 2));
+  const lineCut = pick(['heading'], Math.max(min, Math.floor(limit * 0.75))) ??
+    pick(['heading', 'paragraph'], half) ??
+    pick(['line'], half) ??
+    pick(['fence', 'table'], half) ??
+    pick(['heading', 'paragraph', 'line', 'fence', 'table'], min);
+  if (lineCut) return lineCut;
+
+  // One line longer than the window: cut at a space, else between characters,
+  // outside links, inline code, bare URLs, and surrogate pairs.
+  const fenceAt = (at: number) => fences.find((fence) => at > fence.from && at < fence.to);
+  const protectedSpans = [...text.matchAll(
+    /\[[^\]\n]*\]\([^)\n]*\)|<[^>\n]*>|`[^`\n]+`|https?:\/\/[^\s<>()[\]]+/g,
+  )].map((match) => ({ from: match.index, to: match.index + match[0].length }));
+  const safe = (at: number) => {
+    const code = text.charCodeAt(at - 1);
+    if (code >= 0xd800 && code <= 0xdbff) return false;
+    if (fenceAt(at)) return true;
+    return !protectedSpans.some((span) => at > span.from && at < span.to);
+  };
+  let hard: number | undefined;
+  for (let at = limit; at >= Math.max(1, min); at -= 1) {
+    const fence = fenceAt(at);
+    const closer = fence ? { opener: fence.opener, closer: fence.closer } : undefined;
+    if (!fits(at, closer) || !safe(at)) continue;
+    if (text[at] === ' ') return { end: at, skip: 1, ...(closer ? { fence: closer } : {}) };
+    hard ??= at;
+    if (at < half) break;
+  }
+  const at = hard ?? Math.max(1, min);
+  const fence = fenceAt(at);
+  return { end: at, skip: 0, ...(fence ? { fence: { opener: fence.opener, closer: fence.closer } } : {}) };
 }
 
 /**

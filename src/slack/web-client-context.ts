@@ -383,6 +383,10 @@ export function assembleSlackPrompt(
   }
   parts.push(
     '',
+    'Slack replies longer than about 10,000 characters continue in follow-up messages, so prefer a concise answer or offer to cover long material in sections.',
+  );
+  parts.push(
+    '',
     'Current Slack request (this is the only current user intent; answer this and let current system truth take precedence):',
     turn.text,
   );

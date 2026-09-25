@@ -208,6 +208,29 @@ type SlackPresentationCleanup =
       operation: SlackPresentationOperationReceipt;
     };
 
+/** One follow-up message of a reply longer than a single Slack message. */
+interface SlackPresentationContinuationPart {
+  /** Canonical answer text this message carries, for thread context. */
+  text: string;
+  /** Exact chat.postMessage body, frozen before the canonical final's effect. */
+  payload: string;
+  operation?: SlackPresentationOperationReceipt;
+  messageTs?: string;
+}
+
+/**
+ * Ordered children of the canonical final. The terminal delivery above stays
+ * the one final; these parts post only after it is acknowledged.
+ */
+interface SlackPresentationContinuations {
+  state: 'active' | 'delivered' | 'abandoned';
+  parts: SlackPresentationContinuationPart[];
+}
+
+const MAX_SLACK_CONTINUATION_PARTS = 3;
+const MAX_SLACK_CONTINUATION_TEXT_CHARS = 12_000;
+const MAX_SLACK_CONTINUATION_PAYLOAD_BYTES = 256 * 1_024;
+
 interface SlackPresentationRepairSchedule {
   attempts: number;
   nextRetryAt: number;
@@ -326,6 +349,8 @@ export interface SlackRunPresentationV3 extends SlackRunPresentationBase {
   agentSession: SlackPresentationAgentSession;
   terminalDelivery: SlackPresentationTerminalDelivery;
   cleanup: SlackPresentationCleanup;
+  /** Follow-up messages of a long answer, absent when it fits in one message. */
+  continuations?: SlackPresentationContinuations;
   /** Durable pacing for background repair, absent until the first drain attempt. */
   repair?: SlackPresentationRepairSchedule;
   plan?: SlackPresentationPlanV3;
@@ -559,6 +584,19 @@ export type SlackPresentationMutation =
       certainty: Exclude<SlackPresentationReceiptCertainty, 'pending'>;
     }
   | { kind: 'abandon_terminal_delivery'; operationId: string }
+  | {
+      kind: 'record_continuation_plan';
+      parts: ReadonlyArray<{ text: string; payload: string }>;
+    }
+  | { kind: 'record_continuation_intent'; index: number; operationId: string }
+  | {
+      kind: 'record_continuation_receipt';
+      index: number;
+      operationId: string;
+      certainty: Exclude<SlackPresentationReceiptCertainty, 'pending'>;
+      messageTs?: string;
+    }
+  | { kind: 'abandon_continuations' }
   | { kind: 'supersede_failed_answer_delivery'; operationId: string }
   | { kind: 'retry_terminal_delivery'; operationId: string }
   | {
@@ -1005,6 +1043,7 @@ export class SlackRunPresentationStoreLogic {
          )
          AND (
            json_extract(presentation_json, '$.lifecyclePhase') <> 'settled'
+           OR json_extract(presentation_json, '$.continuations.state') = 'active'
            OR
            (
              json_type(presentation_json, '$.agentSession.disposition') IS NULL
@@ -2194,6 +2233,91 @@ function applyMutation(
       next.repairRequired = v3RepairRequired(next);
       return next;
     }
+    case 'record_continuation_plan': {
+      requireV3(current);
+      requireV3(next);
+      // The plan decides whether the final carries the footer, so it is frozen
+      // with the terminal intent and before that intent is acknowledged.
+      if (current.continuations) {
+        throw stateError('terminal_rewrite', 'The continuation plan is already frozen.');
+      }
+      if (current.terminalDelivery.state !== 'intended' ||
+          current.terminalDelivery.operation.certainty === 'acknowledged') {
+        throw stateError('invalid_transition', 'Continuations are planned with an unsent final.');
+      }
+      if (mutation.parts.length < 1 || mutation.parts.length > MAX_SLACK_CONTINUATION_PARTS) {
+        throw stateError('invalid_input', 'A reply has one to three continuation messages.');
+      }
+      for (const part of mutation.parts) validateContinuationPart(part);
+      next.continuations = {
+        state: 'active',
+        parts: mutation.parts.map((part) => ({ text: part.text, payload: part.payload })),
+      };
+      next.repairRequired = v3RepairRequired(next);
+      return next;
+    }
+    case 'record_continuation_intent': {
+      requireV3(current);
+      requireV3(next);
+      const plan = current.continuations;
+      if (!plan || plan.state !== 'active' || !next.continuations) {
+        throw stateError('invalid_transition', 'No continuation is owed.');
+      }
+      if (current.terminalDelivery.state !== 'intended' ||
+          current.terminalDelivery.operation.certainty !== 'acknowledged') {
+        throw stateError('invalid_transition', 'Continuations follow an acknowledged final.');
+      }
+      const owed = plan.parts.findIndex((part) => part.operation?.certainty !== 'acknowledged');
+      const part = plan.parts[mutation.index];
+      if (mutation.index !== owed || !part ||
+          (part.operation && part.operation.certainty !== 'failed')) {
+        throw stateError('invalid_transition', 'Only the next unsent continuation may start.');
+      }
+      validateId(mutation.operationId, 'Continuation operation id');
+      // A retry keeps its operation id, so Slack can return the original post.
+      next.continuations.parts[mutation.index]!.operation = {
+        operationId: mutation.operationId,
+        certainty: 'pending',
+      };
+      next.repairRequired = v3RepairRequired(next);
+      return next;
+    }
+    case 'record_continuation_receipt': {
+      requireV3(current);
+      requireV3(next);
+      const part = current.continuations?.parts[mutation.index];
+      const nextPart = next.continuations?.parts[mutation.index];
+      if (current.continuations?.state !== 'active' || !part?.operation || !nextPart) {
+        throw stateError('invalid_transition', 'Continuation intent is missing.');
+      }
+      nextPart.operation = transitionReceipt(
+        part.operation,
+        mutation.operationId,
+        mutation.certainty,
+      );
+      if (mutation.certainty === 'acknowledged') {
+        const messageTs = mutation.messageTs ?? '';
+        validateSlackTimestamp(messageTs, 'Slack continuation coordinate');
+        nextPart.messageTs = messageTs;
+        if (next.continuations!.parts.every((entry) =>
+          entry.operation?.certainty === 'acknowledged'
+        )) next.continuations!.state = 'delivered';
+      } else if (mutation.messageTs !== undefined) {
+        throw stateError('invalid_input', 'Only an acknowledged continuation has a coordinate.');
+      }
+      next.repairRequired = v3RepairRequired(next);
+      return next;
+    }
+    case 'abandon_continuations': {
+      requireV3(current);
+      requireV3(next);
+      if (current.continuations?.state !== 'active' || !next.continuations) {
+        throw stateError('invalid_transition', 'Only owed continuations may be abandoned.');
+      }
+      next.continuations.state = 'abandoned';
+      next.repairRequired = v3RepairRequired(next);
+      return next;
+    }
     case 'supersede_failed_answer_delivery': {
       requireV3(current);
       requireV3(next);
@@ -2214,6 +2338,8 @@ function applyMutation(
         result: 'failure',
         operation: { operationId: mutation.operationId, certainty: 'pending' },
       };
+      // The failure notice replaces the answer, so its follow-ups are not owed.
+      if (next.continuations?.state === 'active') next.continuations.state = 'abandoned';
       next.lifecyclePhase = 'terminal_intended';
       next.repairRequired = v3RepairRequired(next);
       return next;
@@ -2780,6 +2906,7 @@ function isStoredV3Presentation(
       if (presentation.cleanup.disposition !== undefined &&
           presentation.cleanup.disposition !== 'superseded') return false;
     } else return false;
+    if (!isStoredContinuations(presentation.continuations)) return false;
     if (presentation.repair !== undefined && (
       !Number.isSafeInteger(presentation.repair.attempts) ||
       presentation.repair.attempts < 1 ||
@@ -2810,6 +2937,41 @@ function isStoredV3Presentation(
   } catch {
     return false;
   }
+}
+
+function validateContinuationPart(part: { text: string; payload: string }): void {
+  if (typeof part.text !== 'string' || part.text.length < 1 ||
+      part.text.length > MAX_SLACK_CONTINUATION_TEXT_CHARS) {
+    throw stateError('invalid_input', 'Continuation text must fit one Slack message.');
+  }
+  if (typeof part.payload !== 'string' ||
+      new TextEncoder().encode(part.payload).byteLength > MAX_SLACK_CONTINUATION_PAYLOAD_BYTES) {
+    throw stateError('invalid_input', 'Continuation payload must be bounded.');
+  }
+  let payload: unknown;
+  try {
+    payload = JSON.parse(part.payload);
+  } catch {
+    throw stateError('invalid_input', 'Continuation payload must be JSON.');
+  }
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload) ||
+      typeof (payload as { text?: unknown }).text !== 'string') {
+    throw stateError('invalid_input', 'Continuation payload must be a Slack message body.');
+  }
+}
+
+function isStoredContinuations(value: SlackPresentationContinuations | undefined): boolean {
+  if (value === undefined) return true;
+  if ((value.state !== 'active' && value.state !== 'delivered' && value.state !== 'abandoned') ||
+      !Array.isArray(value.parts) || value.parts.length < 1 ||
+      value.parts.length > MAX_SLACK_CONTINUATION_PARTS) return false;
+  return value.parts.every((part) => {
+    validateContinuationPart(part);
+    if (part.operation !== undefined && !isOperationReceipt(part.operation)) return false;
+    if (part.messageTs !== undefined) validateSlackTimestamp(part.messageTs, 'Slack continuation coordinate');
+    return (part.messageTs !== undefined) === (part.operation?.certainty === 'acknowledged');
+  }) && (value.state !== 'delivered' ||
+    value.parts.every((part) => part.operation?.certainty === 'acknowledged'));
 }
 
 function requireV3(
@@ -3013,7 +3175,8 @@ function v3RepairRequired(presentation: SlackRunPresentationV3): boolean {
       presentation.stream.state === 'starting' ||
       presentation.stream.state === 'finalizing' ||
       presentation.stream.state === 'fallback' ||
-      presentation.stream.state === 'unknown') return true;
+      presentation.stream.state === 'unknown' ||
+      presentation.continuations?.state === 'active') return true;
   const activityReceipt = presentation.currentActivity?.operation;
   const terminalSettled = presentationHasTerminalOutcome(presentation);
   const sharedCleanupSuperseded = presentation.activityProjection.surface ===
