@@ -3,6 +3,7 @@ import { test } from 'node:test';
 
 import {
   agentFailureText,
+  AgentObservationYield,
   AgentPromptFailure,
   classifyAgentPromptFailure,
   promptSlackThreadAgent,
@@ -29,6 +30,7 @@ import type { SlackProgressiveReadRelay } from '../src/slack/progressive-relay.t
 import { SLACK_TABLE_PRESENTATION_DATA_NAME } from '../src/slack/table-presentation.ts';
 import { CODING_WORKSPACE_USE_DATA_NAME } from '../src/sandbox/workspace-use.ts';
 import { WORKSPACE_MILESTONE_DATA_NAME, type WorkspaceMilestoneRecord } from '../src/slack/coding-worker-run.ts';
+import { createBoundedAgentReplyReader } from '../src/slack/bounded-agent-observation.ts';
 
 function envelope(type: string, message: string): string {
   return JSON.stringify({ error: { type, message, details: 'private detail' } });
@@ -524,6 +526,15 @@ test('receipt-scoped relay is prepared after durable receipt and drains after se
         invalidated: false,
       };
     },
+    async suspendAndDrain() {
+      operations.push('relay:suspended');
+      return {
+        acceptedChunks: 0,
+        acceptedBytes: 0,
+        targetMessageCompleted: false,
+        invalidated: false,
+      };
+    },
     async invalidateAndDrain(reason) {
       operations.push(`relay:invalid:${reason}`);
       return {
@@ -927,4 +938,101 @@ test('a failing checklist update never fails or delays the answer', async (t) =>
   assert.equal(result.text, 'done');
   assert.equal(dispatchState.flueSettlement?.outcome, 'completed');
   assert.deepEqual(seen, ['started', 'completed'], 'a failed record does not stop later ones');
+});
+
+test('a turn whose reply never settles yields on abort, keeps its receipt, and reattaches once', async () => {
+  let dispatches = 0;
+  let settlements = 0;
+  const relayOperations: string[] = [];
+  const relay: SlackProgressiveReadRelay = {
+    onEvent() {},
+    async closeAndDrain() {
+      relayOperations.push('closed');
+      return { acceptedChunks: 0, acceptedBytes: 0, targetMessageCompleted: true, invalidated: false };
+    },
+    async invalidateAndDrain(reason) {
+      relayOperations.push(`invalid:${reason}`);
+      return { acceptedChunks: 0, acceptedBytes: 0, targetMessageCompleted: false, invalidated: true };
+    },
+    async suspendAndDrain() {
+      relayOperations.push('suspended');
+      return { acceptedChunks: 0, acceptedBytes: 0, targetMessageCompleted: false, invalidated: false };
+    },
+  };
+  const dispatchState = state({
+    recordSettlement: async (settlement) => { settlements += 1; return settlement; },
+  });
+  const agent = handle({
+    dispatch: async () => { dispatches += 1; return RECEIPT; },
+    read: async () => ({ text: 'final answer', data: {}, submissionId: RECEIPT.submissionId }),
+  });
+  // The real bounded reader against an agent whose stream never settles.
+  let polls = 0;
+  const controller = new AbortController();
+  const neverSettles = createBoundedAgentReplyReader({
+    agentName: 'chickpea-slack-v2',
+    resolveRoute: () => async () => {
+      polls += 1;
+      if (polls === 3) controller.abort(new Error('alarm budget'));
+      return Response.json([{ type: 'stream-checkpoint', incarnation: 1 }], {
+        headers: { 'Stream-Next-Offset': '1', 'Stream-Up-To-Date': 'true' },
+      });
+    },
+    pollIntervalMs: 1,
+  });
+  let observing = 0;
+  await assert.rejects(
+    () => promptSlackThreadAgent({
+      ...promptInput(dispatchState, agent),
+      observeReply: neverSettles,
+      observationSignal: controller.signal,
+      onObservationStarted: () => { observing += 1; },
+      prepareProgressiveRelay: async () => relay,
+    }),
+    (error: unknown) => error instanceof AgentObservationYield && error.retryable &&
+      !error.recoveryRequired,
+  );
+  assert.equal(observing, 1);
+  assert.equal(dispatches, 1);
+  assert.equal(settlements, 0, 'a yield settles nothing');
+  assert.deepEqual(dispatchState.dispatchReceipt, RECEIPT, 'the durable receipt survives the yield');
+  assert.equal(dispatchState.flueSettlement, undefined);
+  assert.deepEqual(relayOperations, ['suspended'], 'the stream stays open for reattachment');
+
+  const settled = createBoundedAgentReplyReader({
+    agentName: 'chickpea-slack-v2',
+    resolveRoute: () => async () => Response.json([
+      { type: 'stream-checkpoint', incarnation: 1 },
+      { type: 'submission-settled', submissionId: RECEIPT.submissionId, outcome: 'completed',
+        position: { batch: 1, index: 0 } },
+    ]),
+  });
+  const result = await promptSlackThreadAgent({
+    ...promptInput(dispatchState, agent),
+    observeReply: settled,
+    observationSignal: new AbortController().signal,
+    prepareProgressiveRelay: async () => relay,
+  });
+  assert.equal(result.text, 'final answer');
+  assert.equal(dispatches, 1, 'reattachment never re-dispatches');
+  assert.equal(settlements, 1);
+  assert.deepEqual(relayOperations, ['suspended', 'closed']);
+});
+
+test('a settled failure observed as the budget ends keeps its failure semantics', async () => {
+  const controller = new AbortController();
+  const dispatchState = state();
+  await assert.rejects(() => promptSlackThreadAgent({
+    ...promptInput(dispatchState, handle({
+      async read() {
+        controller.abort();
+        throw new AgentRunError({ outcome: 'failed', submissionId: RECEIPT.submissionId,
+          cause: { type: 'internal_error', message: 'private' } });
+      },
+    })),
+    observeReply: async ({ handle: reader, receipt }) => reader.read(receipt as never),
+    observationSignal: controller.signal,
+  }), (error: unknown) => error instanceof AgentPromptFailure &&
+    !(error instanceof AgentObservationYield) && !error.retryable);
+  assert.equal(dispatchState.flueSettlement?.outcome, 'failed');
 });

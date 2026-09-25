@@ -55,6 +55,7 @@ import { isRoutineSlackTurn } from '../routines/slack-context.ts';
 import { replyFooterModelLabel } from './message-format.ts';
 import {
   agentFailureText,
+  AgentObservationYield,
   AgentPromptFailure,
   endCloudflareSandboxTurn,
   promptSlackThreadAgent,
@@ -212,6 +213,14 @@ export interface RunTurnOptions {
   runId?: string;
   /** Durable relay attempt used as the canonical RunExecution fence. */
   runAttempt?: number;
+  /**
+   * Ends observation of an already-dispatched reply without settling it. The
+   * turn then rejects with AgentObservationYield, leaving its receipt, active
+   * work, acknowledgment, and workspace turn for the reattaching attempt.
+   */
+  observationSignal?: AbortSignal;
+  /** The durable receipt exists and this attempt is now only observing. */
+  onObservationStarted?: () => void;
   /** Explicit lease fence for a ledger-authoritative attempt. */
   runFencingToken?: number;
   /** Immutable authority selected at admission. Missing means legacy. */
@@ -696,6 +705,7 @@ export async function runTurn(
     });
   }
   let terminalStatusFinished = false;
+  let yielded = false;
   const finishStatus = async (result: 'answer' | 'failure'): Promise<void> => {
     // Close the sink first. Agent observations are relayed best-effort from a
     // different Cloudflare isolate and may still arrive after settlement
@@ -1228,6 +1238,10 @@ export async function runTurn(
               }
             : {}),
           ...(prepareProgressiveRelay ? { prepareProgressiveRelay } : {}),
+          ...(options.observationSignal ? { observationSignal: options.observationSignal } : {}),
+          ...(options.onObservationStarted
+            ? { onObservationStarted: options.onObservationStarted }
+            : {}),
           ...(agentViewPresentation || options.onCodingTaskStarted
             ? {
                 onWorkspaceMilestone: async (record, target) => {
@@ -1492,31 +1506,39 @@ export async function runTurn(
         : undefined,
     );
   } catch (err) {
+    if (err instanceof AgentObservationYield) yielded = true;
     if (!(err instanceof AgentPromptFailure && err.retryable)) {
       await usageRecorder?.recordFailure();
     }
     throw err;
   } finally {
-    // A V3 retry/recovery attempt keeps its acknowledged activity visible.
-    // Legacy presentations retain their prior best-effort finally cleanup.
-    try {
-      if (!terminalStatusFinished) {
-        if (frozenPresentation?.schemaVersion === 3) {
-          statusTurn.close();
-        } else {
-          await statusTurn.finish(async () => { await presenter.clearStatus(); });
+    // A yielded turn is still running: it ends nothing a reattaching attempt
+    // needs (its status, acknowledgment, and workspace turn and egress), the
+    // same as an attempt the platform killed mid-observation.
+    if (yielded) {
+      if (!terminalStatusFinished) statusTurn.close();
+    } else {
+      // A V3 retry/recovery attempt keeps its acknowledged activity visible.
+      // Legacy presentations retain their prior best-effort finally cleanup.
+      try {
+        if (!terminalStatusFinished) {
+          if (frozenPresentation?.schemaVersion === 3) {
+            statusTurn.close();
+          } else {
+            await statusTurn.finish(async () => { await presenter.clearStatus(); });
+          }
         }
+        await removeWorkAcknowledgment();
+      } finally {
+        // The Sandbox DO lives in a different isolate from the agent factory;
+        // close the turn by its durable thread id at the actual end-of-turn
+        // seam. The workspace stays warm for follow-ups in this thread.
+        await endCloudflareSandboxTurn(
+          platformEnv,
+          conversationKey,
+          usedCloudflareSandbox,
+        );
       }
-      await removeWorkAcknowledgment();
-    } finally {
-      // The Sandbox DO lives in a different isolate from the agent factory;
-      // close the turn by its durable thread id at the actual end-of-turn
-      // seam. The workspace stays warm for follow-ups in this thread.
-      await endCloudflareSandboxTurn(
-        platformEnv,
-        conversationKey,
-        usedCloudflareSandbox,
-      );
     }
   }
 }

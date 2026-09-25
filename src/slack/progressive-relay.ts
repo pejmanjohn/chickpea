@@ -56,6 +56,12 @@ export interface SlackProgressiveReadRelay {
   invalidateAndDrain(
     reason: ProgressiveRelayInvalidationReason,
   ): Promise<ProgressiveRelaySummary>;
+  /**
+   * Stop reading without deciding anything: queued effects finish, no intent
+   * or invalidation is recorded, and the durable stream stays open for the
+   * next attempt to reattach to the same receipt.
+   */
+  suspendAndDrain(): Promise<ProgressiveRelaySummary>;
 }
 
 type RelayOperation =
@@ -268,6 +274,15 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
     reason: ProgressiveRelayInvalidationReason,
   ): Promise<ProgressiveRelaySummary> {
     this.queueInvalidation(reason);
+    await this.drain();
+    return this.summary();
+  }
+
+  async suspendAndDrain(): Promise<ProgressiveRelaySummary> {
+    // A yielded read ends the same way an isolate kill would, minus the lost
+    // queue: the next read replays the receipt from its start, and the sink's
+    // durable position skips everything this relay already accepted.
+    this.accepting = false;
     await this.drain();
     return this.summary();
   }

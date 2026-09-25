@@ -136,6 +136,19 @@ export class AgentPromptFailure extends Error {
   }
 }
 
+/**
+ * The caller stopped observing an already-dispatched turn on purpose (the
+ * Cloudflare alarm's wall-time budget). Nothing settled and nothing was
+ * decided: the durable receipt stays, no Slack output is written, and a later
+ * attempt reattaches to the same submission exactly as after an isolate kill.
+ */
+export class AgentObservationYield extends AgentPromptFailure {
+  constructor() {
+    super('agent', 503, false, true);
+    this.name = 'AgentObservationYield';
+  }
+}
+
 export function agentFailureText(error: unknown): string {
   if (!(error instanceof AgentPromptFailure)) return AGENT_FAILURE_TEXT;
   if (error.kind === 'provider') return PROVIDER_FAILURE_TEXT;
@@ -203,6 +216,13 @@ interface PromptSlackAgentInput {
     record: WorkspaceMilestoneRecord,
     target: { instanceId: string; submissionId: string },
   ) => Promise<void>;
+  /**
+   * Ends observation of the dispatched reply without settling it. An abort
+   * surfaces as AgentObservationYield; the receipt stays for reattachment.
+   */
+  observationSignal?: AbortSignal;
+  /** Called once the durable receipt exists and observation is about to begin. */
+  onObservationStarted?: () => void;
   /** Focused contract seam; production uses the real Flue handle. */
   handle?: ReturnType<typeof init>;
   /**
@@ -348,12 +368,27 @@ export async function promptSlackThreadAgent(
     progressiveRelay?.onEvent(chunk);
     milestones?.onEvent(chunk);
   };
+  input.onObservationStarted?.();
+  const signal = input.observationSignal;
   try {
     reply = observeReply
-      ? await observeReply({ handle, instanceId: envelope.instanceId, receipt, onEvent })
+      ? await observeReply({
+          handle,
+          instanceId: envelope.instanceId,
+          receipt,
+          onEvent,
+          ...(signal ? { signal } : {}),
+        })
       : await handle.read(receipt as DispatchReceipt, { onEvent });
   } catch (error) {
     await milestones?.drain();
+    if (!(error instanceof AgentRunError) && signal?.aborted) {
+      // A deliberate yield is not an interruption of the relay: leave the
+      // stream and intent exactly as they are so the reattached read resumes
+      // them from the durable position.
+      await progressiveRelay?.suspendAndDrain();
+      throw new AgentObservationYield();
+    }
     if (!(error instanceof AgentRunError)) {
       await progressiveRelay?.invalidateAndDrain('read_interrupted');
       if (error instanceof AgentInstanceNotFoundError) {
