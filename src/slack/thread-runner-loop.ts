@@ -118,7 +118,9 @@ export async function runThreadRunnerAlarm(
     outcome: 'idle',
   };
   try {
-    await followUps(deps, now);
+    // A follow-up that could not reach the state store counts as a failed
+    // alarm: the runner backs off instead of waking again at once.
+    let followUpsFailed = !(await followUps(deps, now));
     const budgetMs = deps.budgetMs ?? ALARM_TURN_BUDGET_MS;
     let stopped = false;
     // One drain runs the jobs listed when it starts (and any admitted while
@@ -159,10 +161,9 @@ export async function runThreadRunnerAlarm(
         void carried.settled.finally(() => deps.carried.delete(carried.id));
       }
     }
-    await followUps(deps, now);
+    followUpsFailed = !(await followUps(deps, now)) || followUpsFailed;
     const repairs = deps.repair ? await deps.repair() : {};
     deps.jobs.purge(now());
-    deps.failures.count = 0;
     const at = now();
     const syncOwed = deps.jobs.unsyncedTerminals(1).length > 0 ||
       deps.jobs.pendingActiveClears(1).length > 0;
@@ -173,6 +174,11 @@ export async function runThreadRunnerAlarm(
       deps.jobs.nextCleanupAt(),
       repairs.nextRetryAt,
     ].filter((value): value is number => value !== undefined);
+    if (followUpsFailed) {
+      record.reason = 'follow_up_failed';
+      return { record, nextAlarmAt: at + failureBackoff(deps) };
+    }
+    deps.failures.count = 0;
     return {
       record,
       ...(wakes.length > 0 ? { nextAlarmAt: Math.max(at, Math.min(...wakes)) } : {}),
@@ -183,16 +189,20 @@ export async function runThreadRunnerAlarm(
     // state; the next alarm reads the turn row again and reattaches.
     record.outcome = 'threw';
     record.reason = error instanceof Error && TOKEN.test(error.name) ? error.name : 'unknown';
-    deps.failures.count += 1;
-    const backoff = Math.min(
-      THREAD_RUNNER_FAILURE_BACKOFF_MS * 2 ** (deps.failures.count - 1),
-      THREAD_RUNNER_FAILURE_BACKOFF_MAX_MS,
-    );
-    return { record, nextAlarmAt: now() + backoff };
+    return { record, nextAlarmAt: now() + failureBackoff(deps) };
   } finally {
     record.durationMs = now() - startedAt;
     emitThreadRunnerAlarm(record, deps.sink);
   }
+}
+
+/** 2 s after the first failed alarm, doubling, at most a minute. */
+function failureBackoff(deps: ThreadRunnerLoopDeps): number {
+  deps.failures.count += 1;
+  return Math.min(
+    THREAD_RUNNER_FAILURE_BACKOFF_MS * 2 ** (deps.failures.count - 1),
+    THREAD_RUNNER_FAILURE_BACKOFF_MAX_MS,
+  );
 }
 
 async function runOne(
@@ -275,9 +285,10 @@ function settleFromView(
  * What a settled turn still owes, each retried until it succeeds: record its
  * outcome in the state store, clear its active-work flag, and finish its
  * Slack interaction cleanup. The runner keeps these for its own turns; the
- * state store never takes them over.
+ * state store never takes them over. False when the state store could not be
+ * reached (a Slack cleanup failure has its own backoff and is not counted).
  */
-async function followUps(deps: ThreadRunnerLoopDeps, now: () => number): Promise<void> {
+async function followUps(deps: ThreadRunnerLoopDeps, now: () => number): Promise<boolean> {
   for (const job of deps.jobs.unsyncedTerminals()) {
     try {
       if (job.terminalSync === 'done') await deps.turns.markDelivered(job.id);
@@ -285,7 +296,7 @@ async function followUps(deps: ThreadRunnerLoopDeps, now: () => number): Promise
       deps.jobs.terminalSynced(job.id);
     } catch {
       console.warn('[chickpea] thread runner could not record a settled turn yet');
-      return;
+      return false;
     }
   }
   for (const job of deps.jobs.pendingActiveClears()) {
@@ -293,7 +304,7 @@ async function followUps(deps: ThreadRunnerLoopDeps, now: () => number): Promise
       await deps.clearActiveWork(job.threadKey, job.id);
       deps.jobs.owesActiveClear(job.id, false);
     } catch {
-      return;
+      return false;
     }
   }
   for (const job of deps.jobs.dueCleanups(now())) {
@@ -301,7 +312,7 @@ async function followUps(deps: ThreadRunnerLoopDeps, now: () => number): Promise
     try {
       view = await deps.turns.view(job.id);
     } catch {
-      return;
+      return false;
     }
     if (!view.cleanupPending || !view.job || !deps.repairInteraction) {
       deps.jobs.scheduleCleanup(job.id, undefined, 0);
@@ -323,6 +334,7 @@ async function followUps(deps: ThreadRunnerLoopDeps, now: () => number): Promise
       THREAD_RUNNER_CLEANUP_BACKOFF_MAX_MS,
     ), attempts);
   }
+  return true;
 }
 
 /**

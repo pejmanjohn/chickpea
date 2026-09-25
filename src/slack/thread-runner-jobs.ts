@@ -216,9 +216,11 @@ export class ThreadRunnerJobStore {
     ).map(decodeJob);
   }
 
-  /** When the next Slack interaction cleanup check falls due. */
+  /** When the next Slack interaction cleanup check falls due (see dueCleanups). */
   nextCleanupAt(): number | undefined {
-    const row = this.db.get('SELECT MIN(cleanup_at) AS due FROM runner_jobs');
+    const row = this.db.get(
+      'SELECT MIN(cleanup_at) AS due FROM runner_jobs WHERE terminal_sync IS NULL',
+    );
     return row?.due === null || row?.due === undefined ? undefined : Number(row.due);
   }
 

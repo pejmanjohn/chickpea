@@ -475,10 +475,16 @@ export async function executeTurnJob(
       // The failure final may be posted: settle the row first, so a failed
       // release below can never let a later attempt post a second final.
       await ports.turnJobs.markError(job.id);
-      await ports.slack.release(job.evtKey);
-      await ports.slack.release(job.msgKey);
-      await ports.slack.release(`decision:${job.msgKey}`);
       if (activeWorkKey) await ports.slack.setActiveWork(activeWorkKey, job.id, false);
+      // The turn is settled; a claim that cannot be released now only keeps
+      // deduplicating until the terminal row ages out.
+      for (const key of [job.evtKey, job.msgKey, `decision:${job.msgKey}`]) {
+        try {
+          await ports.slack.release(key);
+        } catch {
+          console.warn('[chickpea] a settled turn kept one of its claims');
+        }
+      }
       return true;
     } else {
       options.onRetry();

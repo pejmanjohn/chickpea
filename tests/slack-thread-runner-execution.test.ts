@@ -638,7 +638,8 @@ test('a failure final is settled before claims are released, so a failed release
     const h = runnerHarness(db, rows, { fail: (id) => id === 'failing', failRelease: true });
     h.jobs.admit({ id: 'failing', threadKey: 'thread', payload: {} }, 1);
     const first = await runThreadRunnerAlarm(h.deps);
-    assert.equal(first.record.outcome, 'threw', 'the release failure is caught, not thrown');
+    assert.equal(first.record.outcome, 'drained', 'the turn settled; a kept claim is not a failure');
+    assert.equal(first.nextAlarmAt, undefined);
     assert.equal(h.jobs.get('failing')!.state, 'error');
     assert.equal(rows.rows.get('failing')!.status, 'error');
     h.advance(10_000);
@@ -704,4 +705,46 @@ test("a retired aged stream in the runner's copy is published and accepted by th
     runnerDb.close();
     sharedDb.close();
   }
+});
+
+test('an outcome the state store keeps refusing backs the runner off instead of spinning', async () => {
+  const db = openStateDb(':memory:');
+  try {
+    const rows = fakeRows(['unrecorded']);
+    rows.failNextMarkDelivered(100);
+    const h = runnerHarness(db, rows);
+    h.jobs.admit({ id: 'unrecorded', threadKey: 'thread', payload: {} }, 1);
+    const delays: number[] = [];
+    for (let index = 0; index < 4; index += 1) {
+      const at = Date.now();
+      const result = await runThreadRunnerAlarm(h.deps);
+      assert.equal(result.record.reason, 'follow_up_failed');
+      delays.push(Math.round((result.nextAlarmAt! - at) / 1_000));
+    }
+    assert.deepEqual(delays, [2, 4, 8, 16]);
+    assert.deepEqual(h.events, ['dispatch:unrecorded', 'delivered:unrecorded'], 'one final');
+  } finally { db.close(); }
+});
+
+test('a due cleanup check the state store cannot answer backs the runner off', async () => {
+  const db = openStateDb(':memory:');
+  try {
+    const rows = fakeRows(['checked']);
+    const h = runnerHarness(db, rows);
+    h.jobs.admit({ id: 'checked', threadKey: 'thread', payload: {} }, 1);
+    rows.rows.get('checked')!.status = 'done';
+    h.jobs.settle('checked', 'done', Date.now());
+    rows.failNextViews(100);
+    const delays: number[] = [];
+    for (let index = 0; index < 3; index += 1) {
+      const at = Date.now();
+      const result = await runThreadRunnerAlarm(h.deps);
+      delays.push(Math.round((result.nextAlarmAt! - at) / 1_000));
+    }
+    assert.deepEqual(delays, [2, 4, 8]);
+    rows.failNextViews(0);
+    const recovered = await runThreadRunnerAlarm(h.deps);
+    assert.equal(recovered.nextAlarmAt, undefined, 'the check clears once the store answers');
+    assert.equal(h.deps.failures.count, 0);
+  } finally { db.close(); }
 });
