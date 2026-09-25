@@ -254,8 +254,19 @@ export function parseEnvironmentRegistration(text) {
       || !['local', 'remote'].includes(record.ownership))) {
     throw new Error(`${ENVIRONMENT_REGISTRATION_VARIABLE} must list each lane (${QA_LANES.join(', ')}) with an ownership of local or remote.`);
   }
-  const secretLike = findSecretLikeKey(registration);
+  // The lane records never hold secrets, so any secret-shaped key refuses the
+  // whole variable. Evidence (a lane's baseline and deploy receipt) legitimately
+  // names credential fingerprints and a cookie digest; its content is checked
+  // by `npm run env -- init` against exact-key schemas that admit nothing
+  // else, so here it is only held to its shape.
+  const { evidence, ...records } = registration;
+  const secretLike = findSecretLikeKey(records);
   if (secretLike) throw new Error(`${ENVIRONMENT_REGISTRATION_VARIABLE} carries a secret-shaped field (${secretLike}); a registration never holds secrets.`);
+  if (evidence !== undefined && (!isPlainObject(evidence) || Object.entries(evidence).some(([lane, entry]) =>
+    !QA_LANES.includes(lane) || !isPlainObject(entry)
+      || Object.keys(entry).some((key) => !['baseline', 'deployReceipt'].includes(key))))) {
+    throw new Error(`${ENVIRONMENT_REGISTRATION_VARIABLE}: evidence must hold only a baseline and a deployReceipt per lane.`);
+  }
   return registration;
 }
 
