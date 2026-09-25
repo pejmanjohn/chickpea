@@ -33,6 +33,8 @@ interface PendingGatewayDelivery {
   id: string;
   delivery: GatewayInboundDelivery;
   attempts: number;
+  /** When this DO durably accepted the delivery (the turn's receipt time). */
+  acceptedAt: number;
 }
 
 export interface GatewayInboxDrainCounts {
@@ -48,6 +50,7 @@ interface GatewayInboxRow {
   kind: GatewayInboundDelivery['kind'];
   payload_json: string | null;
   attempts: number;
+  accepted_at?: number;
 }
 
 export class GatewayInboxCapacityError extends Error {
@@ -196,7 +199,7 @@ export class GatewayInboxStoreLogic {
       const available = Math.min(limit, Math.max(0, this.limits.maxInFlight - inFlight));
       if (available === 0) return [];
       const rows = this.db.all(
-        `SELECT id, binding_id, workspace_id, kind, payload_json, attempts
+        `SELECT id, binding_id, workspace_id, kind, payload_json, attempts, accepted_at
          FROM gateway_inbox
          WHERE status = 'pending' AND attempts < ?
          ORDER BY accepted_at, id LIMIT ?`,
@@ -223,6 +226,7 @@ export class GatewayInboxStoreLogic {
           id: row.id,
           delivery: parseStoredDelivery(row.payload_json),
           attempts,
+          acceptedAt: Number(row.accepted_at),
         });
       }
       return claimed;

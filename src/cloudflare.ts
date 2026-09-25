@@ -13,6 +13,11 @@ import { instrument } from '@flue/runtime';
 import { createCloudflareTracing } from '@flue/runtime/cloudflare';
 import { emitManagementToolFailure } from './management/telemetry.ts';
 import { emitRuntimeCorrelation } from './work/trace-correlation.ts';
+import {
+  emitRelayAlarm,
+  startRelayAlarmMetrics,
+  type RelayAlarmMetrics,
+} from './observability/runtime-latency.ts';
 
 import {
   AgentRevisionConflictError,
@@ -1799,9 +1804,24 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
    * semantics. It throws ONLY when the store itself is unavailable, so the
    * platform's at-least-once alarm retry re-drives the queue after a transient
    * storage error rather than dropping every job.
+   *
+   * Every invocation emits one content-free `relay_alarm` log (duration, jobs
+   * listed/run, groups, re-arm); emission cannot throw or change the result.
    */
   async alarm(): Promise<void> {
-    const alarmStartedAt = Date.now();
+    const metrics = startRelayAlarmMetrics();
+    try {
+      await this.drainRelayAlarm(metrics);
+    } catch (error) {
+      metrics.outcome = 'threw';
+      throw error;
+    } finally {
+      emitRelayAlarm(metrics);
+    }
+  }
+
+  private async drainRelayAlarm(metrics: RelayAlarmMetrics): Promise<void> {
+    const alarmStartedAt = metrics.startedAt;
     this.stores ??= this.tryInit();
     if (!this.stores) {
       throw new Error(`state store unavailable in alarm: ${this.initError ?? 'unknown'}`);
@@ -1828,6 +1848,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     });
     const carriedJobIds = () => new Set(this.carriedAlarmTurns.keys());
     const pending = listPendingTurns();
+    metrics.jobsListed = pending.length;
     if (pending.length === 0) {
       const cleanupPending = stores.turnJobs.hasPendingSlackInteractionCleanup();
       const resolveInstallation = this.createAlarmIdentityResolver(stores);
@@ -1858,9 +1879,12 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
         scheduleActions.nextDueAt,
         outboxRetry,
       );
+      metrics.needsRetry = turnRetry !== undefined;
+      metrics.rearmed = nextWake !== undefined;
       if (nextWake !== undefined) await this.armAlarmNoLaterThan(nextWake);
       return;
     }
+    metrics.outcome = 'drained';
     // Resolve current credentials once per identity referenced by this bounded
     // batch. The map is discarded after the alarm, so the next retry observes
     // credential rotation without ever falling back to another identity.
@@ -1950,6 +1974,12 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
           stores.turnJobs.markRecoveryRequired(job.id, reason),
       };
       const presentationState = localSlackPresentationState(stores);
+      const turnLatency = {
+        ...(job.enqueuedAt === undefined ? {} : { admittedAt: job.enqueuedAt }),
+        ...(job.receivedAt === undefined ? {} : { receivedAt: job.receivedAt }),
+        lane: 'cloudflare',
+        executor: 'alarm',
+      } as const;
       const deliverRecoveryFailure = async (reasonCode: string): Promise<boolean> => {
         try {
           await runTurn(job.turn, job.assignment, this.env as PlatformEnv, {
@@ -1957,6 +1987,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
             installationContext,
             turnId: job.id,
             ...(job.runId ? { runId: job.runId, runAttempt: attempt } : {}),
+            turnLatency,
             settingsStore: localSettingsStore(stores),
             presentationState,
             replayText: DURABLE_RECOVERY_FAILURE_TEXT,
@@ -2059,6 +2090,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
           ...(control
             ? { observationSignal: control.signal, onObservationStarted: control.observing }
             : {}),
+          turnLatency,
           workStore: stores.work as unknown as WorkStore,
           settingsStore: localSettingsStore(stores),
           usageStore,
@@ -2208,11 +2240,23 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     // every observation before the alarm's wall-time limit (see
     // src/slack/alarm-turn-drain.ts).
     const DRAIN_CONCURRENCY = 4;
+    const drainedThreads = new Set<string>();
+    const turnsStartedAt = Date.now();
     const turnDrain = await drainAlarmTurnJobs<(typeof pending)[number]>({
       initial: pending,
       jobId: (job) => job.id,
       threadKey: threadKeyOf,
-      runJob,
+      runJob: async (job, control) => {
+        const jobStartedAt = Date.now();
+        metrics.jobsRun += 1;
+        drainedThreads.add(threadKeyOf(job));
+        const settled = await runJob(job, control);
+        // One attempt: a yielded turn's next attempt is a later alarm's job.
+        metrics.longestJobMs = Math.max(metrics.longestJobMs, Date.now() - jobStartedAt);
+        if (settled) metrics.jobsSettled += 1;
+        else metrics.jobsRetained += 1;
+        return settled;
+      },
       refresh: async () => {
         needsRetry = (await drainGatewayInbox(stores, this.env as PlatformEnv)) || needsRetry;
         return listPendingTurns();
@@ -2243,6 +2287,10 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
         };
       },
     });
+    metrics.groups = drainedThreads.size;
+    metrics.turnsMs = Date.now() - turnsStartedAt;
+    metrics.yielded = turnDrain.budgetExhausted;
+    metrics.jobsCarried = turnDrain.carried.length;
     for (const carried of turnDrain.carried) {
       console.warn('[chickpea] Turn job still running at the alarm cap; its thread waits for it');
       this.carriedAlarmTurns.set(carried.id, carried.threadKey);
@@ -2282,6 +2330,8 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       scheduleActions.nextDueAt,
       outboxRetry,
     );
+    metrics.needsRetry = needsRetry;
+    metrics.rearmed = nextWake !== undefined;
     if (nextWake !== undefined) {
       // Re-arm (do NOT throw) so this invocation returns normally and its
       // attempt-count writes commit; the next firing re-drives the leftover
@@ -2669,6 +2719,11 @@ async function drainGatewayInbox(
   }
   let needsRetry = false;
   for (const item of pending) {
+    // A turn admitted from this delivery measures its latency from receipt:
+    // the delivery may have waited here while an earlier alarm ran turns.
+    const releaseReceipt = item.delivery.kind === 'event.deliver'
+      ? stores.turnJobs.noteReceipt(item.delivery.envelope.eventId, item.acceptedAt)
+      : undefined;
     try {
       const outcome = item.delivery.kind === 'event.deliver'
         ? await processGatewaySlackEnvelope(
@@ -2706,6 +2761,8 @@ async function drainGatewayInbox(
         item.id,
         'delivery_processing_failed',
       ) === 'pending';
+    } finally {
+      releaseReceipt?.();
     }
   }
   return needsRetry || stores.gatewayInbox.hasPending();

@@ -298,3 +298,64 @@ held by another run or incarnation and will look like "Thinking…" in Slack.
 Record the thread, its route owner, and the triggering message, then diagnose
 from `src/slack/claim-store.ts` rather than resending the request.
 
+## Turn latency and relay alarm logs
+
+Three content-free events measure turn scheduling. Each is one structured
+console object with `component: "runtime"` and an `event` name, so Workers Logs
+indexes its top-level fields. Values are non-negative integer milliseconds,
+booleans, fixed tokens, or opaque references; no message text, Slack user or
+channel IDs, settings keys or values, or error text. Emission never throws.
+
+| `event` | Emitted | Fields |
+| --- | --- | --- |
+| `relay_alarm` | Once per `TagStateStore.alarm()` invocation (Cloudflare) | `outcome` (`idle`, `drained`, `threw`), `durationMs`, `jobsListed`, `groups`, `jobsRun`, `jobsSettled`, `jobsRetained`, `jobsCarried`, `longestJobMs`, `turnsMs`, `needsRetry`, `rearmed`, `yielded` |
+| `turn_latency` | Once per relay attempt of one turn (both lanes) | `turnRef`, `runRef`, `lane` (`cloudflare`, `node`), `executor` (`alarm`, `node`), `attempt`, `outcome` (`returned`, `threw`), `firstWrite`, `final` (`delivered`, `deferred`, `none`), `admissionToStartMs`, `admissionToFirstWriteMs`, `admissionToFinalMs`, `receiptToAdmissionMs`, `receiptToFirstWriteMs`, `attemptMs` |
+| `state_rpc` | Sampled calls from a `Cf*Store` proxy into `TagStateStore` | `method` (RPC name), `op` (request kind for `*Execute` RPCs), `ms`, `slow`, `ok`, `isolateCalls`, `isolateSlowCalls` |
+
+- `relay_alarm.durationMs` is the whole invocation; `turnsMs` is the turn
+  drain and `longestJobMs` the slowest single turn attempt in it. `jobsListed`
+  is the first pending listing: up to 4 rows from each of up to 16 threads.
+  The drain keeps admitting while turns run, so `groups` (distinct threads
+  that ran) and `jobsRun` can exceed it. `jobsRetained` counts attempts left
+  pending for a later alarm (a budget yield included), `jobsCarried` the turns
+  still running at the 12-minute hard cap (they settle after this record), and
+  `yielded` whether the 10-minute observation budget ended with work
+  observing.
+- `turn_latency` measures from `turn_jobs.enqueued_at` (durable admission)
+  and from `turn_jobs.received_at` (receipt). A gateway delivery becomes a turn
+  row only when an alarm drains the gateway inbox, so while a long turn holds
+  the alarm it waits before admission: `receiptToAdmissionMs` is that wait
+  (receipt = the inbox's `accepted_at`) and `receiptToFirstWriteMs` is the
+  user-facing first-status latency. For HTTP and Node admissions receipt equals
+  admission. Rows admitted before this field existed omit the receipt fields.
+  `firstWrite` names the first Slack effect the attempt saw acknowledged:
+  `agent_session` (Agent View processing), `activity_status`, `reaction`,
+  `stream`, or `final`. A durations field is absent when it cannot be measured,
+  for example `admissionToFinalMs` on a `deferred` terminal. A retried turn logs
+  one record per attempt. A durable recovery notice runs a second `runTurn` in
+  the same attempt, so a turn can log two records with the same `attempt`
+  (`outcome: threw`, then `returned`); for first-status latency use the record
+  with the lowest `receiptToFirstWriteMs` (or `admissionToFirstWriteMs` when
+  the receipt fields are absent).
+  `runRef` equals the `Slack presentation finalized` record's `runRef`, and
+  `turnRef` is a hash of the turn job ID. Thread follow-ups admitted without a
+  run ID carry neither `runRef` nor `attempt`; group them by `turnRef`.
+- `state_rpc` is logged by the calling isolate (a Flue agent Durable Object,
+  CodingWorker, or the Worker), not by `TagStateStore`. Every call at or above
+  250 ms, and every failed call, is logged with `slow`/`ok`; otherwise one call
+  in 100 per isolate is logged as a baseline sample. The counters reset when the
+  isolate restarts. Workers clocks advance only across I/O, so `ms` is the
+  awaited RPC round trip including queueing in the singleton, not CPU time.
+
+To query a deployed Worker, discover the `event` key with `/telemetry/keys`
+(`keyNeedle: { value: 'event' }`), then filter the events query on it with
+`{ key: '<verified event key>', type: 'string', operation: 'eq', value: 'turn_latency' }`
+alongside the verified service filter. For a percentile, use a calculations
+query with, for example, `{ operator: 'p95', key: '<verified admissionToFirstWriteMs key>', keyType: 'number' }`
+grouped by `lane`. During a bounded live capture, `wrangler tail --search turn_latency`
+(or `relay_alarm`, `state_rpc`) narrows the stream; `entrypoint` shows which
+Durable Object logged a `state_rpc`. `npm run diagnose` does not project these
+events; join them to a Run through `runRef` and the time window. On a Node
+install the same objects print to the process log, for example
+`{ component: 'runtime', event: 'turn_latency', ... }`; filter with
+`grep "event: 'turn_latency'"`.
