@@ -358,7 +358,10 @@ test('Cf*Store proxies time every stub call without wrapping the stub', () => {
   const source = readFileSync(new URL('../src/config/cf-state-proxies.ts', import.meta.url), 'utf8');
   assert.equal(/\bnew Proxy\b/.test(source), false);
   assert.equal(/unwrap\(\s*await this\.stub\./.test(source), false, 'every stub call goes through rpc()');
-  const calls = [...source.matchAll(/rpc\(\s*'(\w+)',\s*this\.stub\.(\w+)\(/g)];
+  assert.equal(/this\.stub\.\w+\(/.test(source), false, 'no call bypasses the stub source');
+  // Each call names its method and runs on the stub the store's source gives
+  // it (a fresh one per call for FreshTagStateStubs), then through rpc().
+  const calls = [...source.matchAll(/rpcVia\(this\.stub,\s*'(\w+)',\s*\(stub\) => stub\.(\w+)\(/g)];
   assert.ok(calls.length > 100);
   for (const [, label, method] of calls) assert.equal(label, method);
 });
