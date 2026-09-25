@@ -43,6 +43,7 @@ const STRING_FIELDS: Readonly<Record<string, RegExp>> = {
   deliveryKind: TOKEN,
   sessionPhase: TOKEN,
   sessionHealth: TOKEN,
+  reason: TOKEN,
   runRef: OPAQUE_REF,
   turnRef: OPAQUE_REF,
 };
@@ -163,8 +164,10 @@ export interface ThreadRunnerAlarmRecord {
   /** Turns still running at the hard cap; they settle after this record. */
   carried: number;
   durationMs: number;
-  /** `idle`, `drained`, or `threw` (the runner could not reach its state). */
+  /** `idle`, `drained`, or `threw` (the alarm failed and re-armed with a backoff). */
   outcome: 'idle' | 'drained' | 'threw';
+  /** With `threw`: the failure's error class name, a fixed token. */
+  reason?: string;
 }
 
 export function emitThreadRunnerAlarm(

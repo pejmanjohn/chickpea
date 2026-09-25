@@ -218,7 +218,6 @@ import {
   oauthResumeTurnJobId,
   TurnJobStoreLogic,
   type PendingTurnJob,
-  type RunnerTurnJobView,
 } from './slack/turn-jobs.ts';
 import { DoSqlStateDb } from './state/do-state-db.ts';
 import { StateSchemaMarker, stateSchemaFingerprint } from './state/schema-lifecycle.ts';
@@ -1863,16 +1862,8 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
   async threadRunnerTurn<K extends ThreadRunnerTurnKind>(
     op: ThreadRunnerTurnOp<K>,
   ): Promise<StateRpcResult<ThreadRunnerTurnResult<K>>> {
-    let cleanupReturned = false;
-    const result = this.call((stores) => {
-      const value = applyThreadRunnerTurnOp(stores, op as ThreadRunnerTurnOp);
-      cleanupReturned = op.kind === 'finish' &&
-        (value as RunnerTurnJobView).cleanupPending === true;
-      return value as ThreadRunnerTurnResult<K>;
-    });
-    // Pending Slack cleanup came back to this store's sweep.
-    if (cleanupReturned) await this.armAlarmNoLaterThan(Date.now() + RELAY_BATCH_WINDOW_MS);
-    return result;
+    return this.call((stores) =>
+      applyThreadRunnerTurnOp(stores, op as ThreadRunnerTurnOp) as ThreadRunnerTurnResult<K>);
   }
 
   /**
@@ -1926,14 +1917,11 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     const runnerBinding = Boolean((this.env as PlatformEnv).SLACK_THREAD_RUNNER);
     const runnerMode = runnerBinding &&
       slackTurnExecutor(this.env as PlatformEnv) === 'runner';
-    let runnerHandoffFailed = false;
     const dispatchToRunners = async () => {
       // Unconfirmed hand-offs are admitted again even after the switch is
       // turned off: those rows already belong to their runners.
       if (!runnerMode && !(runnerBinding && stores.turnJobs.hasHandoffs())) return;
-      const dispatch = await this.dispatchToRunners(stores, runnerMode);
-      metrics.jobsDispatched += dispatch.dispatched;
-      runnerHandoffFailed ||= dispatch.failed;
+      metrics.jobsDispatched += await this.dispatchToRunners(stores, runnerMode);
     };
     await dispatchToRunners();
     const threadKeyOf = (job: {
@@ -1971,7 +1959,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       await drainCloudflareManagementReceipts(stores, resolveInstallation, this.presentationRunnerOf);
       const turnRetry = gatewayNeedsRetry || stores.gatewayInbox.hasPending() ||
         stores.turnJobs.hasPending('ledger') || stores.turnJobs.hasPendingSlackInteractionCleanup() ||
-        runnerHandoffFailed || stores.turnJobs.hasHandoffs() ||
+        stores.turnJobs.hasHandoffs() ||
         (runnerMode && stores.turnJobs.hasPending('legacy'))
         ? Date.now() + runDriverRetryDelayMs(ledgerDrain, RELAY_RETRY_BACKOFF_MS)
         : undefined;
@@ -2128,7 +2116,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       stores.turnJobs.hasPending('ledger') ||
       stores.turnJobs.hasPendingSlackInteractionCleanup() ||
       stores.gatewayInbox.hasPending() ||
-      runnerHandoffFailed || stores.turnJobs.hasHandoffs();
+      stores.turnJobs.hasHandoffs();
     // Yielded turns are still running elsewhere; reattach to them promptly.
     const turnRetry = turnDrain.budgetExhausted
       ? Date.now() + ALARM_YIELD_REARM_MS
@@ -2165,7 +2153,8 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     const presentation = job.runId ? stores.presentations.get(job.runId) : undefined;
     const payload: ThreadRunnerJobPayload = presentation ? { presentation } : {};
     try {
-      await runner.admit({ id: job.id, threadKey, payload });
+      const result = await runner.admit({ id: job.id, threadKey, payload });
+      if (result.refused) throw new Error(result.refused);
     } catch {
       console.warn('[chickpea] Thread runner admission failed; the hand-off is retried');
       return false;
@@ -2178,21 +2167,19 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
    * SLACK_TAG_TURN_EXECUTOR=runner: hand every pending turn whose thread is
    * free to its runner, a page at a time, and return without waiting for any
    * turn. Unconfirmed hand-offs are admitted again first, so a hand-off lost
-   * to a restart of this object is never overtaken in its thread.
+   * to a restart of this object is never overtaken in its thread. A failed
+   * admission leaves its row a hand-off, which holds only its own thread
+   * (listDispatchable) and re-arms this alarm (hasHandoffs). Returns the
+   * turns admitted.
    */
-  private async dispatchToRunners(
-    stores: TagStateStores,
-    newTurns: boolean,
-  ): Promise<{ dispatched: number; failed: boolean }> {
+  private async dispatchToRunners(stores: TagStateStores, newTurns: boolean): Promise<number> {
     let dispatched = 0;
-    let failed = false;
     const admitAll = async (jobs: PendingTurnJob[]) => {
       const admitted = await Promise.all(jobs.map((job) => this.admitToRunner(job)));
       dispatched += admitted.filter(Boolean).length;
-      failed ||= admitted.includes(false);
     };
     await admitAll(stores.turnJobs.listHandoffs(MAX_TURN_DRAIN_BATCH));
-    for (let page = 0; newTurns && page < RUNNER_DISPATCH_MAX_PAGES && !failed; page += 1) {
+    for (let page = 0; newTurns && page < RUNNER_DISPATCH_MAX_PAGES; page += 1) {
       const jobs = stores.turnJobs.listDispatchable({
         limit: MAX_TURN_DRAIN_BATCH,
         threadKey: (job) => slackAgentThreadKey(job.turn, job.assignment),
@@ -2200,7 +2187,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       if (jobs.length === 0) break;
       await admitAll(jobs);
     }
-    return { dispatched, failed };
+    return dispatched;
   }
 
   private async armAlarmNoLaterThan(at: number): Promise<void> {
@@ -2392,11 +2379,6 @@ function applyThreadRunnerTurnOp(
   switch (op.kind) {
     case 'view':
       return turnJobs.runnerView(op.id);
-    case 'finish': {
-      const view = turnJobs.runnerView(op.id);
-      if (view.cleanupPending && view.executor === 'runner') turnJobs.returnCleanupToAlarm(op.id);
-      return view;
-    }
     case 'recordAttempt':
       turnJobs.recordAttempt(op.id, op.attempts);
       return null;
@@ -2857,7 +2839,7 @@ async function runWorkMaintenance(
 }
 
 export { SlackGatewaySession };
-// Declared for migration v11 only; nothing addresses it at runtime yet.
+// Per-thread turn executor (migration v11), used with SLACK_TAG_TURN_EXECUTOR=runner.
 export { SlackThreadRunner } from './slack/thread-runner.ts';
 
 async function runRoutineHeartbeat(

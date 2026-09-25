@@ -79,6 +79,17 @@ export class ThreadRunnerJobStore {
     if (!columns.some((column) => column.name === 'settled_at')) {
       db.exec('ALTER TABLE runner_jobs ADD COLUMN settled_at INTEGER');
     }
+    // Follow-ups of a settled turn the runner still owes: checking (and
+    // retrying) its Slack interaction cleanup, and clearing its active-work flag.
+    if (!columns.some((column) => column.name === 'cleanup_at')) {
+      db.exec('ALTER TABLE runner_jobs ADD COLUMN cleanup_at INTEGER');
+    }
+    if (!columns.some((column) => column.name === 'cleanup_attempts')) {
+      db.exec('ALTER TABLE runner_jobs ADD COLUMN cleanup_attempts INTEGER NOT NULL DEFAULT 0');
+    }
+    if (!columns.some((column) => column.name === 'active_clear')) {
+      db.exec('ALTER TABLE runner_jobs ADD COLUMN active_clear INTEGER NOT NULL DEFAULT 0');
+    }
   }
 
   /**
@@ -155,13 +166,60 @@ export class ThreadRunnerJobStore {
   /** Record where a run left the job (see ThreadRunnerJobState). */
   settle(id: string, state: ThreadRunnerJobState, now: number, retryAt?: number): void {
     const settled = !OPEN_JOB_STATES.has(state);
+    // A delivered or failed turn may still owe Slack interaction cleanup.
+    const checkCleanup = state === 'done' || state === 'error';
     this.db.run(
-      'UPDATE runner_jobs SET state = ?, retry_at = ?, settled_at = ? WHERE id = ?',
+      `UPDATE runner_jobs SET state = ?, retry_at = ?, settled_at = ?,
+         cleanup_at = CASE WHEN ? THEN COALESCE(cleanup_at, ?) ELSE cleanup_at END
+       WHERE id = ?`,
       state,
       retryAt ?? null,
       settled ? now : null,
+      checkCleanup ? 1 : 0,
+      now,
       id,
     );
+  }
+
+  /** Settled jobs whose Slack interaction cleanup is due for a check or retry. */
+  dueCleanups(now: number, limit = 16): Array<ThreadRunnerJobRecord & { cleanupAttempts: number }> {
+    return this.db.all(
+      `SELECT id, thread_key, job_json, state, retry_at, terminal_sync, cleanup_attempts
+       FROM runner_jobs
+       WHERE cleanup_at IS NOT NULL AND cleanup_at <= ? AND terminal_sync IS NULL
+       ORDER BY admitted_at, rowid LIMIT ?`,
+      now,
+      limit,
+    ).map((row) => ({ ...decodeJob(row), cleanupAttempts: Number(row.cleanup_attempts) }));
+  }
+
+  /** Check the cleanup again at `at`, or stop owing it (`undefined`). */
+  scheduleCleanup(id: string, at: number | undefined, attempts: number): void {
+    this.db.run(
+      'UPDATE runner_jobs SET cleanup_at = ?, cleanup_attempts = ? WHERE id = ?',
+      at ?? null,
+      attempts,
+      id,
+    );
+  }
+
+  /** The turn's active-work flag must still be cleared in the state store. */
+  owesActiveClear(id: string, owed: boolean): void {
+    this.db.run('UPDATE runner_jobs SET active_clear = ? WHERE id = ?', owed ? 1 : 0, id);
+  }
+
+  pendingActiveClears(limit = 16): ThreadRunnerJobRecord[] {
+    return this.db.all(
+      `SELECT id, thread_key, job_json, state, retry_at, terminal_sync FROM runner_jobs
+       WHERE active_clear = 1 ORDER BY admitted_at, rowid LIMIT ?`,
+      limit,
+    ).map(decodeJob);
+  }
+
+  /** When the next Slack interaction cleanup check falls due. */
+  nextCleanupAt(): number | undefined {
+    const row = this.db.get('SELECT MIN(cleanup_at) AS due FROM runner_jobs');
+    return row?.due === null || row?.due === undefined ? undefined : Number(row.due);
   }
 
   /**
@@ -170,10 +228,12 @@ export class ThreadRunnerJobStore {
    */
   settleTerminal(id: string, outcome: 'done' | 'error', now: number): void {
     this.db.run(
-      `UPDATE runner_jobs SET state = ?, terminal_sync = ?, retry_at = NULL, settled_at = ?
+      `UPDATE runner_jobs SET state = ?, terminal_sync = ?, retry_at = NULL, settled_at = ?,
+         cleanup_at = COALESCE(cleanup_at, ?)
        WHERE id = ?`,
       outcome,
       outcome,
+      now,
       now,
       id,
     );
@@ -196,6 +256,7 @@ export class ThreadRunnerJobStore {
     return this.db.run(
       `DELETE FROM runner_jobs
        WHERE state NOT IN ${OPEN_STATES} AND terminal_sync IS NULL
+         AND cleanup_at IS NULL AND active_clear = 0
          AND settled_at IS NOT NULL AND settled_at < ?`,
       now - SETTLED_RETENTION_MS,
     ).changes;

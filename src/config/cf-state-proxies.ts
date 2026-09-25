@@ -1991,10 +1991,6 @@ export class CfTurnJobsForRunner implements RunnerTurnJobsPort {
     return this.op({ kind: 'view', id });
   }
 
-  finish(id: string) {
-    return this.op({ kind: 'finish', id });
-  }
-
   async recordAttempt(id: string, attempts: number) {
     await this.op({ kind: 'recordAttempt', id, attempts });
   }

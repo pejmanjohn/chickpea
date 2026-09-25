@@ -102,7 +102,7 @@ test('dispatch lists the oldest free row per thread and pages past runner rows',
   } finally { db.close(); }
 });
 
-test('runner rows keep their cleanup until the runner returns it, and recovery hands a row back', () => {
+test('runner rows keep their cleanup for their runner, and recovery hands a row back', () => {
   const db = openStateDb(':memory:');
   try {
     const turns = new TurnJobStoreLogic(db, () => NOW);
@@ -114,9 +114,11 @@ test('runner rows keep their cleanup until the runner returns it, and recovery h
     turns.markDelivered('r1');
     assert.deepEqual(turns.listPendingSlackInteractionCleanups(10), [],
       "the state store's sweep leaves a runner's cleanup to it");
-    assert.deepEqual(turns.runnerView('r1'), { status: 'done', executor: 'runner', cleanupPending: true });
-    turns.returnCleanupToAlarm('r1');
-    assert.deepEqual(turns.listPendingSlackInteractionCleanups(10).map((job) => job.id), ['r1']);
+    assert.equal(turns.hasPendingSlackInteractionCleanup(), false);
+    const view = turns.runnerView('r1');
+    assert.equal(view.status, 'done');
+    assert.equal(view.cleanupPending, true);
+    assert.equal(view.job?.id, 'r1', 'the runner repairs from the decoded row');
 
     turns.enqueue(turnJob('r2'));
     turns.assignRunner('r2');
@@ -329,6 +331,7 @@ function fakeRows(ids: string[]) {
   }>(ids.map((id) => [id, { status: 'pending', attempts: 0 }]));
   const calls: string[] = [];
   let failMarkDelivered = 0;
+  let failViews = 0;
   const job = (id: string): PendingTurnJob => {
     const row = rows.get(id)!;
     return {
@@ -346,7 +349,11 @@ function fakeRows(ids: string[]) {
     const row = rows.get(id);
     if (!row) return { status: 'missing' };
     if (row.status !== 'pending') {
-      return { status: row.status, executor: 'runner', ...(row.cleanup ? { cleanupPending: true } : {}) };
+      return {
+        status: row.status,
+        executor: 'runner',
+        ...(row.cleanup ? { cleanupPending: true, job: job(id) } : {}),
+      };
     }
     return { status: 'pending', executor: 'runner', job: job(id) };
   };
@@ -354,9 +361,18 @@ function fakeRows(ids: string[]) {
     rows,
     calls,
     failNextMarkDelivered(times = 1) { failMarkDelivered = times; },
+    failNextViews(times: number) { failViews = times; },
     turns: {
-      async view(id: string) { calls.push(`view:${id}`); return view(id); },
-      async finish(id: string) { calls.push(`finish:${id}`); return view(id); },
+      async view(id: string) {
+        if (failViews > 0) {
+          failViews -= 1;
+          const error = new Error('state store unreachable');
+          error.name = 'StateStoreUnavailable';
+          throw error;
+        }
+        calls.push(`view:${id}`);
+        return view(id);
+      },
       async markDelivered(id: string) {
         if (failMarkDelivered > 0) {
           failMarkDelivered -= 1;
@@ -377,9 +393,17 @@ function fakeRows(ids: string[]) {
  */
 function runnerHarness(db: ReturnType<typeof openStateDb>, rows: ReturnType<typeof fakeRows>, script: {
   hold?: (id: string) => boolean;
+  /** The agent fails every attempt of these turns. */
+  fail?: (id: string) => boolean;
+  /** Claim releases reject (the state store is unreachable after a final). */
+  failRelease?: boolean;
+  /** Slack interaction cleanup attempts reject this many times. */
+  failCleanups?: number;
 } = {}) {
   const jobs = new ThreadRunnerJobStore(db);
   const events: string[] = [];
+  let failCleanups = script.failCleanups ?? 0;
+  const records: string[] = [];
   let backstops = 0;
   let offset = 0;
   const port = runnerTurnJobsPort({
@@ -394,7 +418,13 @@ function runnerHarness(db: ReturnType<typeof openStateDb>, rows: ReturnType<type
   const ports = {
     env: {},
     turnJobs: port,
-    slack: { setActiveWork: async () => {}, release: async () => {}, markCodingActiveWork: async () => {} },
+    slack: {
+      setActiveWork: async () => {},
+      release: async () => {
+        if (script.failRelease) throw new Error('state store unreachable');
+      },
+      markCodingActiveWork: async () => {},
+    },
     config: {},
     presentationState: {},
     telemetry: { capture() {} },
@@ -405,6 +435,10 @@ function runnerHarness(db: ReturnType<typeof openStateDb>, rows: ReturnType<type
     sandboxes: () => [],
     runTurn: async (_turn: unknown, _assignment: unknown, _env: unknown, options: RunTurnOptions) => {
       const id = options.turnId!;
+      if (script.fail?.(id)) {
+        events.push(`failed:${id}`);
+        throw new Error('model unavailable');
+      }
       if (!options.flueDispatch?.dispatchReceipt) {
         events.push(`dispatch:${id}`);
         await options.flueDispatch?.recordReceipt({ submissionId: `submission_${id}` } as never);
@@ -425,20 +459,36 @@ function runnerHarness(db: ReturnType<typeof openStateDb>, rows: ReturnType<type
   const deps: ThreadRunnerLoopDeps = {
     jobs,
     turns: rows.turns,
-    execute: (job, control, onRetry) => executeTurnJob(job, ports, {
+    execute: (job, control, onRetry, threadKey) => executeTurnJob(job, ports, {
       latency: { lane: 'cloudflare', executor: 'runner' },
+      observationRoute: { executor: 'runner', runnerKey: threadKey },
       control,
       onRetry,
     }),
+    repairInteraction: async (job) => {
+      if (failCleanups > 0) {
+        failCleanups -= 1;
+        events.push(`cleanup-failed:${job.id}`);
+        throw new Error('reaction removal failed');
+      }
+      events.push(`cleanup:${job.id}`);
+      rows.rows.get(job.id)!.cleanup = false;
+    },
+    clearActiveWork: async () => {},
     armBackstop: async () => { backstops += 1; },
     carried: new Map(),
+    failures: { count: 0 },
     budgetMs: 40,
     hardCapMs: 400,
     recheckMs: 2,
-    sink: { info() {} },
+    sink: { info(record: Record<string, unknown>) { records.push(JSON.stringify(record)); } },
     now: () => Date.now() + offset,
   };
-  return { jobs, events, deps, backstops: () => backstops, advance: (ms: number) => { offset += ms; } };
+  return {
+    jobs, events, deps, records,
+    backstops: () => backstops,
+    advance: (ms: number) => { offset += ms; },
+  };
 }
 
 test('a runner runs its thread strictly in order and settles each job', async () => {
@@ -550,5 +600,73 @@ test('a deferred terminal is checked again without holding the next turn', () =>
     jobs.settle('next', 'admitted', 10, 500);
     assert.deepEqual(jobs.runnable(10).map((job) => job.id), [], 'a retained turn holds its successors');
     assert.equal(jobs.nextDueAt(10), 500);
+  } finally { db.close(); }
+});
+
+test('a state store outage never throws out of the runner alarm; the job runs once it recovers', async () => {
+  const db = openStateDb(':memory:');
+  try {
+    const rows = fakeRows(['outage']);
+    rows.rows.get('outage')!.receipt = 'submission_outage';
+    const h = runnerHarness(db, rows);
+    h.jobs.admit({ id: 'outage', threadKey: 'thread', payload: {} }, 1);
+    rows.failNextViews(2);
+    const first = await runThreadRunnerAlarm(h.deps);
+    const firstAt = Date.now();
+    assert.equal(first.record.outcome, 'threw');
+    assert.equal(first.record.reason, 'StateStoreUnavailable');
+    assert.ok(first.nextAlarmAt! >= firstAt + 1_900 && first.nextAlarmAt! <= firstAt + 2_100,
+      'the first retry is two seconds out');
+    const second = await runThreadRunnerAlarm(h.deps);
+    const secondAt = Date.now();
+    assert.equal(second.record.outcome, 'threw');
+    assert.ok(second.nextAlarmAt! >= secondAt + 3_900 && second.nextAlarmAt! <= secondAt + 4_100,
+      'the backoff doubles');
+    const third = await runThreadRunnerAlarm(h.deps);
+    assert.equal(third.record.outcome, 'drained');
+    assert.deepEqual(h.events, ['reattach:outage', 'delivered:outage'], 'reattached, never dispatched again');
+    assert.equal(h.deps.failures.count, 0);
+    assert.ok(h.records.some((line) => line.includes('"reason":"StateStoreUnavailable"')));
+  } finally { db.close(); }
+});
+
+test('a failure final is settled before claims are released, so a failed release never re-runs it', async () => {
+  const db = openStateDb(':memory:');
+  try {
+    const rows = fakeRows(['failing']);
+    rows.rows.get('failing')!.attempts = 1;
+    const h = runnerHarness(db, rows, { fail: (id) => id === 'failing', failRelease: true });
+    h.jobs.admit({ id: 'failing', threadKey: 'thread', payload: {} }, 1);
+    const first = await runThreadRunnerAlarm(h.deps);
+    assert.equal(first.record.outcome, 'threw', 'the release failure is caught, not thrown');
+    assert.equal(h.jobs.get('failing')!.state, 'error');
+    assert.equal(rows.rows.get('failing')!.status, 'error');
+    h.advance(10_000);
+    await runThreadRunnerAlarm(h.deps);
+    assert.deepEqual(h.events, ['failed:failing'], 'the terminal attempt ran exactly once');
+  } finally { db.close(); }
+});
+
+test("a runner repairs its own turn's failed Slack interaction cleanup", async () => {
+  const db = openStateDb(':memory:');
+  try {
+    const rows = fakeRows(['cleanup']);
+    const h = runnerHarness(db, rows, { failCleanups: 1 });
+    h.jobs.admit({ id: 'cleanup', threadKey: 'thread', payload: {} }, 1);
+    const original = rows.turns.markDelivered;
+    rows.turns.markDelivered = async (id: string) => {
+      await original(id);
+      rows.rows.get(id)!.cleanup = true; // the reaction removal failed in the turn
+    };
+    const first = await runThreadRunnerAlarm(h.deps);
+    assert.deepEqual(h.events, ['dispatch:cleanup', 'delivered:cleanup', 'cleanup-failed:cleanup']);
+    assert.ok(first.nextAlarmAt !== undefined, 'the runner comes back for the cleanup');
+    h.advance(30_000);
+    await runThreadRunnerAlarm(h.deps);
+    assert.deepEqual(h.events.slice(3), ['cleanup:cleanup']);
+    h.advance(60_000);
+    const settled = await runThreadRunnerAlarm(h.deps);
+    assert.equal(settled.nextAlarmAt, undefined, 'nothing is owed once the cleanup is done');
+    assert.deepEqual(h.events.slice(4), []);
   } finally { db.close(); }
 });

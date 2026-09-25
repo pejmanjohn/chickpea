@@ -25,8 +25,6 @@ import type { ThreadRunnerJob, ThreadRunnerStatus } from './thread-runner-jobs.t
 export interface ThreadRunnerTurnOps {
   /** The authoritative row, read before the runner runs or reattaches. */
   view: [{ id: string }, RunnerTurnJobView];
-  /** The runner is done with a row; pending Slack cleanup returns to the state store. */
-  finish: [{ id: string }, RunnerTurnJobView];
   recordAttempt: [{ id: string; attempts: number }, null];
   recordPullRequest: [{ id: string; pullRequest: TurnPullRequestProgress }, TurnProgress | null];
   freezeRuntimePlan: [{ id: string; candidate: RuntimePlanV2 }, FrozenRuntimePlanDecision];
@@ -63,7 +61,11 @@ export interface ThreadRunnerJobPayload {
 
 /** The RPC surface of one `SlackThreadRunner` (see thread-runner.ts). */
 export interface SlackThreadRunnerRpc {
-  admit(job: ThreadRunnerJob): Promise<{ admitted: boolean }>;
+  /**
+   * Persist a hand-off. `refused` (a reason token) means the runner did not
+   * take the job, so the state store keeps it a hand-off and retries.
+   */
+  admit(job: ThreadRunnerJob): Promise<{ admitted: boolean; refused?: string }>;
   status(): Promise<ThreadRunnerStatus>;
   /** Activity the agent observed for a turn this runner executes. */
   observedStatus(

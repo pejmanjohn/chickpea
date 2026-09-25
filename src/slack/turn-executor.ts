@@ -351,10 +351,12 @@ export async function executeTurnJob(
       presentationState,
       progressiveAttributionProven: true,
       onUsagePersistence: (event) => {
-        // Coverage bookkeeping only: it never fails or delays the turn.
-        void Promise.resolve()
-          .then(() => ports.turnJobs.recordUsagePersistence(job.id, event))
-          .catch(() => console.warn('[chickpea] usage persistence record failed'));
+        // A local store records synchronously, exactly as before. Over RPC it
+        // is coverage bookkeeping only: it never fails or delays the turn.
+        const recorded = ports.turnJobs.recordUsagePersistence(job.id, event);
+        if (recorded instanceof Promise) {
+          void recorded.catch(() => console.warn('[chickpea] usage persistence record failed'));
+        }
       },
       onInteractionIntent: async (intent) => {
         await ports.turnJobs.recordInteractionIntent(job.id, intent);
@@ -470,11 +472,13 @@ export async function executeTurnJob(
       ).catch((finalErr) => {
         console.error('[chickpea] relay terminal final failed:', sanitizeError(finalErr));
       });
+      // The failure final may be posted: settle the row first, so a failed
+      // release below can never let a later attempt post a second final.
+      await ports.turnJobs.markError(job.id);
       await ports.slack.release(job.evtKey);
       await ports.slack.release(job.msgKey);
       await ports.slack.release(`decision:${job.msgKey}`);
       if (activeWorkKey) await ports.slack.setActiveWork(activeWorkKey, job.id, false);
-      await ports.turnJobs.markError(job.id);
       return true;
     } else {
       options.onRetry();

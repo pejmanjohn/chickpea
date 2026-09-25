@@ -32,6 +32,9 @@ test('settled jobs are forgotten after a week unless their outcome is unrecorded
   store.admit({ id: 'open', threadKey: 'k', payload: null }, 3);
   store.settle('done', 'done', 10);
   store.settleTerminal('unsynced', 'done', 10);
+  assert.equal(store.purge(11 + week), 0, 'a settled turn first owes its cleanup check');
+  assert.deepEqual(store.dueCleanups(10).map((job) => job.id), ['done']);
+  store.scheduleCleanup('done', undefined, 1);
   assert.equal(store.purge(10 + week), 0);
   assert.equal(store.purge(11 + week), 1);
   assert.deepEqual(store.unsyncedTerminals().map((job) => job.id), ['unsynced']);

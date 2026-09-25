@@ -276,6 +276,8 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
   runnerMode?: boolean;
   /** Rejects this runner admission (the hand-off stays unconfirmed). */
   failAdmission?: (admission: RunnerAdmission) => boolean;
+  /** The runner refuses this admission (its presentation import failed). */
+  refuseAdmission?: (admission: RunnerAdmission) => boolean;
 } = {}) {
   const { AgentObservationYield, AgentPromptFailure } = await import('../src/slack/flue-dispatch.ts');
   const { alarmYieldIsFree } = await import('../src/slack/alarm-turn-drain.ts');
@@ -316,6 +318,9 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
       async admit(admission: RunnerAdmission) {
         assert.equal(admission.threadKey, threadKey, 'each turn goes to its own thread runner');
         if (hooks.failAdmission?.(admission)) throw new Error('runner unavailable');
+        if (hooks.refuseAdmission?.(admission)) {
+          return { admitted: false, refused: 'presentation_import_failed' };
+        }
         record.admissions.push(admission);
         return { admitted: true };
       },
@@ -688,4 +693,32 @@ test('an OAuth continuation already handed to a thread runner is admitted there 
     }
   }
   assert.deepEqual(confirmed, ['oauthresume:c1']);
+});
+
+test('runner mode: one runner failing its admissions holds only its own thread', async () => {
+  const { probe, record } = await alarmHarness(
+    [channelJob('stuck', 'thread-a'), channelJob('stuck-next', 'thread-a'),
+      channelJob('b1', 'thread-b'), channelJob('c1', 'thread-c')],
+    { runnerMode: true, failAdmission: ({ threadKey }) => threadKey === 'thread-a' },
+  );
+  await probe.alarm();
+  assert.deepEqual(record.admissions.map(({ id }) => id), ['b1', 'c1'],
+    'the other threads are handed over in the same alarm');
+  assert.equal(record.jobs.get('stuck')!.executor, 'handoff');
+  assert.equal(record.jobs.get('stuck-next')!.executor, undefined, "the stuck thread's next row waits");
+  assert.ok(record.alarmAt !== null, 'the alarm comes back for the hand-off');
+});
+
+test('runner mode: a runner that refuses a hand-off keeps it a hand-off', async () => {
+  let refusing = true;
+  const { probe, record } = await alarmHarness([channelJob('refused', 'thread-a')], {
+    runnerMode: true,
+    refuseAdmission: () => refusing,
+  });
+  await probe.alarm();
+  assert.equal(record.jobs.get('refused')!.executor, 'handoff');
+  refusing = false;
+  record.alarmAt = null;
+  await probe.alarm();
+  assert.equal(record.jobs.get('refused')!.executor, 'runner');
 });

@@ -11,7 +11,9 @@ import { DoSqlStateDb } from '../state/do-state-db.ts';
 import { createPlatformProductTelemetry } from '../telemetry/platform.ts';
 import {
   cacheSlackInstallationExecutionContexts,
+  effectiveTurnSlackInstallationId,
   resolveSlackInstallationExecutionContext,
+  verifySlackInstallationTurnAccess,
 } from './installation-execution.ts';
 import { drainSlackPresentationRepairs } from './presentation-repair.ts';
 import {
@@ -21,11 +23,13 @@ import {
   type SlackPresentationTransitionResult,
   type SlackRunPresentation,
 } from './run-presentations.ts';
-import { runTurn, sanitizeError } from './run-turn.ts';
+import { repairSlackInteractionProgress, runTurn, sanitizeError } from './run-turn.ts';
 import { SlackStatusRegistry } from './status-registry.ts';
 import { ThreadRunnerJobStore, type ThreadRunnerJob, type ThreadRunnerStatus } from './thread-runner-jobs.ts';
 import {
+  THREAD_RUNNER_FAILURE_BACKOFF_MAX_MS,
   runnerPresentationState,
+  runnerSlackPort,
   runnerTurnJobsPort,
   runThreadRunnerAlarm,
 } from './thread-runner-loop.ts';
@@ -69,6 +73,8 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
   private wake: (() => void) | undefined;
   /** Observation targets of this runner's turns, one lookup per submission. */
   private readonly targets = new Map<string, FlueObservationTarget>();
+  /** Consecutive failed alarms, for the retry backoff. */
+  private readonly failures = { count: 0 };
 
   private store(): ThreadRunnerJobStore {
     this.jobs ??= new ThreadRunnerJobStore(new DoSqlStateDb(this.ctx.storage));
@@ -80,14 +86,15 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
     return this.presentations;
   }
 
-  async admit(job: ThreadRunnerJob): Promise<{ admitted: boolean }> {
+  async admit(job: ThreadRunnerJob): Promise<{ admitted: boolean; refused?: string }> {
     const payload = (job?.payload ?? {}) as ThreadRunnerJobPayload;
-    // The presentation first, so the job never runs without its copy.
+    // The presentation first: the job never runs here without its copy.
     if (payload.presentation) {
       try {
         this.presentationStore().putSnapshot(payload.presentation);
       } catch {
         console.warn('[chickpea] thread runner could not import a turn presentation');
+        return { admitted: false, refused: 'presentation_import_failed' };
       }
     }
     const result = this.store().admit({ ...job, payload: {} }, Date.now());
@@ -151,6 +158,19 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
   }
 
   async alarm(): Promise<void> {
+    let nextAlarmAt: number | undefined;
+    try {
+      nextAlarmAt = await this.runAlarm();
+    } catch {
+      // Setup failed before the loop could run: never throw, try again soon.
+      console.warn('[chickpea] thread runner alarm could not start');
+      nextAlarmAt = Date.now() + THREAD_RUNNER_FAILURE_BACKOFF_MAX_MS;
+    }
+    if (nextAlarmAt !== undefined) await this.ctx.storage.setAlarm(nextAlarmAt);
+    else await this.ctx.storage.deleteAlarm();
+  }
+
+  private async runAlarm(): Promise<number | undefined> {
     const env = this.env as PlatformEnv;
     const stub = tagStateStub(env);
     const rows = new CfTurnJobsForRunner(stub);
@@ -171,11 +191,11 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
     const ports: TurnExecutionPorts = {
       env,
       turnJobs: runnerTurnJobsPort(rows, jobs),
-      slack: {
+      slack: runnerSlackPort({
         setActiveWork: (key, generation, active) => slack.setActiveWork(key, generation, active),
         markCodingActiveWork: (key, generation) => rows.markCodingActiveWork(key, generation),
         release: (key) => slack.release(key),
-      },
+      }, jobs),
       config,
       presentationState: presentation.state,
       statusRegistry: this.registry,
@@ -187,12 +207,28 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
     const result = await runThreadRunnerAlarm({
       jobs,
       turns: rows,
-      execute: (job, control, onRetry) => executeTurnJob(job, ports, {
+      execute: (job, control, onRetry, threadKey) => executeTurnJob(job, ports, {
         latency: { lane: 'cloudflare', executor: 'runner' },
-        observationRoute: { executor: 'runner', runnerKey: this.threadKeyOf(job.id) },
+        observationRoute: { executor: 'runner', runnerKey: threadKey },
         control,
         onRetry,
       }),
+      repairInteraction: async (job) => {
+        const progress = job.progress.slackInteraction;
+        if (!progress) return;
+        const installation = await resolveInstallation(effectiveTurnSlackInstallationId(job.turn));
+        await verifySlackInstallationTurnAccess(installation, job.turn);
+        await repairSlackInteractionProgress(
+          job.turn,
+          job.assignment,
+          progress,
+          installation.client,
+          (patch) => rows.recordSlackInteractionProgress(job.id, patch),
+        );
+      },
+      // The active-work key is the thread key this runner is addressed by.
+      clearActiveWork: (threadKey, jobId) => slack.setActiveWork(threadKey, jobId, false),
+      failures: this.failures,
       afterJob: async (job) => {
         this.targets.clear();
         await presentation.publish(job.runId);
@@ -219,14 +255,7 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
         };
       },
     });
-    if (result.nextAlarmAt !== undefined) await this.ctx.storage.setAlarm(result.nextAlarmAt);
-    else await this.ctx.storage.deleteAlarm();
-  }
-
-  private threadKeyOf(jobId: string): string {
-    const job = this.store().get(jobId);
-    if (!job) throw new Error('Thread runner job is unavailable.');
-    return job.threadKey;
+    return result.nextAlarmAt;
   }
 }
 

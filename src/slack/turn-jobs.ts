@@ -149,7 +149,7 @@ export interface RunnerTurnJobView {
   executor?: TurnJobExecutor;
   /** The decoded row with its durable checkpoints, while it is pending. */
   job?: PendingTurnJob;
-  /** Delivered, with Slack interaction cleanup still to do. */
+  /** Delivered, with Slack interaction cleanup still to do (`job` is then set). */
   cleanupPending?: boolean;
 }
 
@@ -577,22 +577,13 @@ export class TurnJobStoreLogic {
       return {
         status: row.status === 'error' ? 'error' : 'done',
         executor,
-        ...(row.progress_json.includes('"cleanup":"pending"') ? { cleanupPending: true } : {}),
+        // The runner retries a delivered turn's cleanup from the decoded row.
+        ...(row.progress_json.includes('"cleanup":"pending"')
+          ? { cleanupPending: true, job: this.decodeRow(row) }
+          : {}),
       };
     }
     return { status: 'pending', executor, job: this.decodeRow(row) };
-  }
-
-  /**
-   * A runner is finished with a delivered row whose Slack interaction cleanup
-   * is still pending: the state store's sweep owns the remaining retries.
-   */
-  returnCleanupToAlarm(id: string): void {
-    this.db.run(
-      `UPDATE turn_jobs SET executor = 'alarm'
-       WHERE id = ? AND delivered = 1 AND executor IN ('runner', 'handoff')`,
-      id,
-    );
   }
 
   countPendingDeliveriesForWorkspace(workspaceId: string): number {
@@ -1351,7 +1342,7 @@ export class TurnJobStoreLogic {
 
   /** Delivered rows can still own lightweight Slack cleanup. They are never
    * eligible for answer redelivery, only idempotent checklist/reaction repair.
-   * A thread runner keeps its own rows until it is finished with them. */
+   * A thread runner repairs its own rows; this sweep never takes them over. */
   listPendingSlackInteractionCleanups(limit = 100): PendingTurnJob[] {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
       throw new Error('Slack interaction cleanup limit must be between 1 and 100.');

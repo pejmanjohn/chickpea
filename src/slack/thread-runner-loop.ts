@@ -36,21 +36,28 @@ import type { PendingTurnJob, RunnerTurnJobView } from './turn-jobs.ts';
  * and the next alarm (a second later) reattaches. A yield is never an
  * attempt. A backstop alarm is armed whenever a job starts, so a runner that
  * is evicted mid-turn resumes from the turn row's checkpoints instead of
- * dispatching again.
+ * dispatching again. The alarm never throws: a failure (the state store
+ * unreachable, say) is logged and retried with a bounded backoff, so a
+ * thread recovers without waiting for a new message.
  */
 
 /** Wake again this soon while a job is running, so eviction is recovered. */
 export const THREAD_RUNNER_BACKSTOP_MS = 30_000;
 /** A retained (not yet settled) turn is retried after this delay at least. */
 export const THREAD_RUNNER_RETRY_MS = 2_000;
-/** Retry an unrecorded terminal outcome at this interval. */
+/** Retry an unrecorded terminal outcome or active-work clear at this interval. */
 export const THREAD_RUNNER_SYNC_RETRY_MS = 30_000;
+/** After a failed alarm: 2 s, doubling, at most a minute. */
+export const THREAD_RUNNER_FAILURE_BACKOFF_MS = 2_000;
+export const THREAD_RUNNER_FAILURE_BACKOFF_MAX_MS = 60_000;
+/** Slack interaction cleanup checks: 30 s, doubling to 15 minutes, 8 tries. */
+export const THREAD_RUNNER_CLEANUP_BACKOFF_MS = 30_000;
+const THREAD_RUNNER_CLEANUP_BACKOFF_MAX_MS = 15 * 60_000;
+export const THREAD_RUNNER_CLEANUP_ATTEMPTS = 8;
 
 /** The state store's turn rows as a runner reaches them (over RPC in production). */
 export interface ThreadRunnerTurnRows {
   view(id: string): Promise<RunnerTurnJobView>;
-  /** The runner is done with a row; pending Slack cleanup returns to the state store. */
-  finish(id: string): Promise<RunnerTurnJobView>;
   markDelivered(id: string): Promise<void>;
   markError(id: string): Promise<void>;
 }
@@ -63,15 +70,22 @@ export interface ThreadRunnerLoopDeps {
     job: PendingTurnJob,
     control: AlarmTurnJobControl,
     onRetry: (afterMs?: number) => void,
+    threadKey: string,
   ): Promise<boolean>;
   /** Called once a job settles or stops, e.g. to publish its presentation. */
   afterJob?(job: PendingTurnJob): Promise<void>;
   /** This runner's own presentation repairs; returns when to retry. */
   repair?(): Promise<{ nextRetryAt?: number }>;
+  /** Retry a settled turn's Slack interaction cleanup (reactions, checklists). */
+  repairInteraction?(job: PendingTurnJob): Promise<void>;
+  /** Clear a settled turn's active-work flag in the state store. */
+  clearActiveWork(threadKey: string, jobId: string): Promise<void>;
   /** Keep a wake armed no later than `at` (the backstop while a job runs). */
   armBackstop(at: number): Promise<void>;
   /** Jobs an earlier alarm of this isolate left running at its hard cap. */
   carried: Map<string, Promise<void>>;
+  /** Consecutive failed alarms of this isolate (drives the backoff). */
+  failures: { count: number };
   /** Registers the drain's wake for admissions; returns its release. */
   onWake?: (wake: () => void) => () => void;
   now?: () => number;
@@ -88,6 +102,7 @@ export interface ThreadRunnerAlarmResult {
 }
 
 const THREAD = 'thread';
+const TOKEN = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
 
 export async function runThreadRunnerAlarm(
   deps: ThreadRunnerLoopDeps,
@@ -103,7 +118,7 @@ export async function runThreadRunnerAlarm(
     outcome: 'idle',
   };
   try {
-    await syncTerminals(deps);
+    await followUps(deps, now);
     const budgetMs = deps.budgetMs ?? ALARM_TURN_BUDGET_MS;
     let stopped = false;
     // One drain runs the jobs listed when it starts (and any admitted while
@@ -144,23 +159,36 @@ export async function runThreadRunnerAlarm(
         void carried.settled.finally(() => deps.carried.delete(carried.id));
       }
     }
-    await syncTerminals(deps);
+    await followUps(deps, now);
     const repairs = deps.repair ? await deps.repair() : {};
     deps.jobs.purge(now());
+    deps.failures.count = 0;
     const at = now();
+    const syncOwed = deps.jobs.unsyncedTerminals(1).length > 0 ||
+      deps.jobs.pendingActiveClears(1).length > 0;
     const wakes = [
       // A turn still running here past the cap: look again at the backstop.
       deps.carried.size > 0 ? at + THREAD_RUNNER_BACKSTOP_MS : deps.jobs.nextDueAt(at),
-      deps.jobs.unsyncedTerminals(1).length > 0 ? at + THREAD_RUNNER_SYNC_RETRY_MS : undefined,
+      syncOwed ? at + THREAD_RUNNER_SYNC_RETRY_MS : undefined,
+      deps.jobs.nextCleanupAt(),
       repairs.nextRetryAt,
     ].filter((value): value is number => value !== undefined);
     return {
       record,
-      ...(wakes.length > 0 ? { nextAlarmAt: Math.min(...wakes) } : {}),
+      ...(wakes.length > 0 ? { nextAlarmAt: Math.max(at, Math.min(...wakes)) } : {}),
     };
   } catch (error) {
+    // Never throw: the platform's alarm retries give up after a few minutes,
+    // which would strand this thread until its next message. Jobs keep their
+    // state; the next alarm reads the turn row again and reattaches.
     record.outcome = 'threw';
-    throw error;
+    record.reason = error instanceof Error && TOKEN.test(error.name) ? error.name : 'unknown';
+    deps.failures.count += 1;
+    const backoff = Math.min(
+      THREAD_RUNNER_FAILURE_BACKOFF_MS * 2 ** (deps.failures.count - 1),
+      THREAD_RUNNER_FAILURE_BACKOFF_MAX_MS,
+    );
+    return { record, nextAlarmAt: now() + backoff };
   } finally {
     record.durationMs = now() - startedAt;
     emitThreadRunnerAlarm(record, deps.sink);
@@ -181,7 +209,7 @@ async function runOne(
   // runs here, and a dispatched one reattaches through its checkpoints.
   const view = await deps.turns.view(local.id);
   if (view.status !== 'pending' || !view.job) {
-    await settleFromView(deps, local.id, view, now);
+    settleFromView(deps, local.id, view, now);
     return true;
   }
   if (view.executor !== 'runner') {
@@ -197,19 +225,16 @@ async function runOne(
     settled = await deps.execute(view.job, control, (afterMs) => {
       retry = true;
       if (afterMs !== undefined) retryAfterMs = Math.max(retryAfterMs ?? 0, afterMs);
-    });
+    }, local.threadKey);
   } finally {
     await deps.afterJob?.(view.job).catch(() => undefined);
   }
   const after = deps.jobs.get(local.id);
-  if (after && (after.state === 'done' || after.state === 'error')) {
-    // The terminal was recorded locally first (see the runner's turn port).
-    await finish(deps, local.id);
-    return true;
-  }
+  // The terminal was recorded locally first (see the runner's turn port).
+  if (after && (after.state === 'done' || after.state === 'error')) return true;
   const row = await deps.turns.view(local.id);
   if (row.status !== 'pending') {
-    await settleFromView(deps, local.id, row, now);
+    settleFromView(deps, local.id, row, now);
     return true;
   }
   if (control.signal.aborted && !retry) {
@@ -233,41 +258,95 @@ async function runOne(
   return false;
 }
 
-async function settleFromView(
+function settleFromView(
   deps: ThreadRunnerLoopDeps,
   id: string,
   view: RunnerTurnJobView,
   now: () => number,
-): Promise<void> {
+): void {
   if (view.status === 'recovery_required') {
     deps.jobs.settle(id, 'recovery_required', now());
     return;
   }
   deps.jobs.settle(id, view.status === 'done' ? 'done' : 'error', now());
-  if (view.cleanupPending) await finish(deps, id);
 }
 
-async function finish(deps: ThreadRunnerLoopDeps, id: string): Promise<void> {
-  try {
-    await deps.turns.finish(id);
-  } catch {
-    // Cleanup ownership stays here; the next alarm's sync hands it back.
-  }
-}
-
-/** Record terminal outcomes the state store did not acknowledge in time. */
-async function syncTerminals(deps: ThreadRunnerLoopDeps): Promise<void> {
+/**
+ * What a settled turn still owes, each retried until it succeeds: record its
+ * outcome in the state store, clear its active-work flag, and finish its
+ * Slack interaction cleanup. The runner keeps these for its own turns; the
+ * state store never takes them over.
+ */
+async function followUps(deps: ThreadRunnerLoopDeps, now: () => number): Promise<void> {
   for (const job of deps.jobs.unsyncedTerminals()) {
     try {
       if (job.terminalSync === 'done') await deps.turns.markDelivered(job.id);
       else await deps.turns.markError(job.id);
       deps.jobs.terminalSynced(job.id);
-      await finish(deps, job.id);
     } catch {
       console.warn('[chickpea] thread runner could not record a settled turn yet');
       return;
     }
   }
+  for (const job of deps.jobs.pendingActiveClears()) {
+    try {
+      await deps.clearActiveWork(job.threadKey, job.id);
+      deps.jobs.owesActiveClear(job.id, false);
+    } catch {
+      return;
+    }
+  }
+  for (const job of deps.jobs.dueCleanups(now())) {
+    let view: RunnerTurnJobView;
+    try {
+      view = await deps.turns.view(job.id);
+    } catch {
+      return;
+    }
+    if (!view.cleanupPending || !view.job || !deps.repairInteraction) {
+      deps.jobs.scheduleCleanup(job.id, undefined, 0);
+      continue;
+    }
+    if (job.cleanupAttempts >= THREAD_RUNNER_CLEANUP_ATTEMPTS) {
+      console.warn('[chickpea] thread runner gave up a Slack interaction cleanup');
+      deps.jobs.scheduleCleanup(job.id, undefined, job.cleanupAttempts);
+      continue;
+    }
+    try {
+      await deps.repairInteraction(view.job);
+    } catch {
+      console.warn('[chickpea] thread runner Slack interaction cleanup will retry');
+    }
+    const attempts = job.cleanupAttempts + 1;
+    deps.jobs.scheduleCleanup(job.id, now() + Math.min(
+      THREAD_RUNNER_CLEANUP_BACKOFF_MS * 2 ** (attempts - 1),
+      THREAD_RUNNER_CLEANUP_BACKOFF_MAX_MS,
+    ), attempts);
+  }
+}
+
+/**
+ * The runner's Slack state port: a failure to clear a turn's active-work flag
+ * never fails the turn (its final may already be posted); the runner owes the
+ * clear and retries it.
+ */
+export function runnerSlackPort(
+  remote: TurnExecutionPorts['slack'],
+  jobs: ThreadRunnerJobStore,
+): TurnExecutionPorts['slack'] {
+  return {
+    setActiveWork: async (key, generation, active) => {
+      try {
+        await remote.setActiveWork(key, generation, active);
+        if (!active) jobs.owesActiveClear(generation, false);
+      } catch (error) {
+        if (active) throw error;
+        jobs.owesActiveClear(generation, true);
+      }
+    },
+    markCodingActiveWork: (...args) => remote.markCodingActiveWork(...args),
+    release: (...args) => remote.release(...args),
+  };
 }
 
 /**
