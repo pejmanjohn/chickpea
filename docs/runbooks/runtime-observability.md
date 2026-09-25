@@ -323,16 +323,22 @@ channel IDs, settings keys or values, or error text. Emission never throws.
   still running at the 12-minute hard cap (they settle after this record), and
   `yielded` whether the 10-minute observation budget ended with work
   observing.
-- Who executes a Cloudflare turn is the deploy variable
-  `SLACK_TAG_TURN_EXECUTOR` (not a setting). Unset or `alarm`: the state
-  store's alarm runs turns, as above. `runner` (a lane enables it with
-  `npm run deploy -- --var SLACK_TAG_TURN_EXECUTOR:runner`; the deploy
-  preflight accepts only `runner`, `alarm`, or unset): the alarm hands each
-  new turn to its thread's `SlackThreadRunner` Durable Object and returns;
-  `relay_alarm.jobsDispatched` counts those hand-offs, and the alarm only
-  finishes turns it had already dispatched to Flue. The `turn_jobs.executor`
-  column records the owner (`alarm`, `handoff` until the runner confirms,
-  `runner`); a runner's turns stay with it when the variable changes.
+- Cloudflare turns run in per-thread `SlackThreadRunner` Durable Objects by
+  default: the alarm hands each new turn to its thread's runner and returns,
+  so on a default deployment `relay_alarm.jobsDispatched` counts those
+  hand-offs, `jobsRun` stays 0 except for legacy rows (turns the alarm had
+  already dispatched to Flue before the runner became the default, which it
+  finishes itself), and `turn_latency` reports `executor: runner`. The
+  `turn_jobs.executor` column records the owner (`alarm`, `handoff` until the
+  runner confirms, `runner`); a runner's turns stay with it when the executor
+  changes.
+- Emergency fallback: the deploy variable `SLACK_TAG_TURN_EXECUTOR=alarm`
+  (not a setting; `npm run deploy -- --var SLACK_TAG_TURN_EXECUTOR:alarm`)
+  keeps new turns on the state store's alarm, as described above, with
+  `turn_latency` reporting `executor: alarm` and `jobsDispatched` 0. Unset,
+  `runner`, and unfamiliar values keep the default; the deploy preflight
+  accepts only `runner`, `alarm`, or unset. A Worker without the
+  `SLACK_THREAD_RUNNER` binding also runs turns on the alarm.
 - `thread_runner_alarm` is logged by each thread runner. `jobs` is the
   unsettled jobs it held at the start, `ran` the turn attempts it ran. A
   runner observes a turn for at most 10 minutes per alarm, then `yielded` is

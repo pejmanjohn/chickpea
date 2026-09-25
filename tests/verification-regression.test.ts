@@ -127,6 +127,16 @@ test('every plan starts with source hygiene and orders the rest cheapest first',
   assert.ok(order.indexOf('verify:admin-ui') < order.indexOf('verify:node-scheduler-offline'));
   assert.ok(order.indexOf('verify:node-scheduler-offline') < order.indexOf('verify:cf-smoke'));
   assert.ok(order.indexOf('verify:cf-smoke') < order.indexOf('verify:oss-export'));
+  // Both turn executors: the default thread runner in the proofs group, then
+  // the emergency alarm fallback alone (each smoke rebuilds dist-cf).
+  assert.ok(order.indexOf('verify:cf-smoke') < order.indexOf('verify:cf-smoke:alarm'));
+  assert.ok(order.indexOf('verify:cf-smoke:alarm') < order.indexOf('verify:oss-export'));
+  assert.equal(release.steps.find((step: { script?: string }) =>
+    step.script === 'verify:cf-smoke:alarm').group, undefined);
+  for (const plan of [createRegressionPlan({ mode: 'regression', testFiles }), createRegressionPlan({ areas: ['auth'], testFiles })]) {
+    const scripts = plan.steps.map((step: { script?: string }) => step.script);
+    assert.ok(scripts.includes('verify:cf-smoke') && scripts.includes('verify:cf-smoke:alarm'));
+  }
   for (const plan of [createRegressionPlan({ mode: 'regression', testFiles }), createRegressionPlan({ files: ['src/routines/scheduler.ts'], testFiles })]) {
     assert.deepEqual(plan.steps[0], { kind: 'npm', script: 'verify:hygiene', args: ['--working-tree'] });
     assert.equal(plan.steps.filter((step: { script?: string }) => step.script === 'verify:hygiene').length, 1);
@@ -166,7 +176,10 @@ test('proofs after the suite form one group behind a single Node build; the expo
   const full = createRegressionPlan({ files: ['src/new-runtime.ts'], testFiles });
   const scripts = full.steps.map((step: { script?: string, file?: string }) => step.script ?? step.file ?? 'tests');
   assert.deepEqual(scripts.slice(0, 4), ['verify:hygiene', 'build', 'test', 'flue:build']);
-  for (const step of full.steps.slice(4)) assert.equal(step.group, 'proofs');
+  // The alarm-fallback smoke rebuilds dist-cf, so it runs alone after the group.
+  assert.equal(full.steps.at(-1).script, 'verify:cf-smoke:alarm');
+  assert.equal(full.steps.at(-1).group, undefined);
+  for (const step of full.steps.slice(4, -1)) assert.equal(step.group, 'proofs');
   for (const step of full.steps.slice(0, 4)) assert.equal(step.group, undefined);
   const release = createRegressionPlan({ mode: 'release', testFiles });
   assert.equal(release.steps.at(-1).script, 'verify:oss-export');

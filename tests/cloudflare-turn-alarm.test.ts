@@ -5,6 +5,7 @@ import vm from 'node:vm';
 import ts from 'typescript';
 
 import { drainAlarmTurnJobs } from '../src/slack/alarm-turn-drain.ts';
+import { slackTurnExecutor } from '../src/slack/turn-executor-flag.ts';
 import {
   startRelayAlarmMetrics,
   type RelayAlarmMetrics,
@@ -278,8 +279,13 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
   ) => void | Promise<void>;
   /** Holds this runner admission until the returned promise settles. */
   admissionGate?: (admission: RunnerAdmission) => Promise<void> | undefined;
-  /** SLACK_TAG_TURN_EXECUTOR=runner with a fake SLACK_THREAD_RUNNER namespace. */
-  runnerMode?: boolean;
+  /**
+   * The SLACK_TAG_TURN_EXECUTOR Worker var; unset is the default (runner).
+   * `alarm` is the emergency fallback that keeps new turns on the alarm.
+   */
+  executorVar?: string;
+  /** The Worker has no SLACK_THREAD_RUNNER binding. */
+  noRunnerBinding?: boolean;
   /** Rejects this runner admission (the hand-off stays unconfirmed). */
   failAdmission?: (admission: RunnerAdmission) => boolean;
   /** The runner refuses this admission (its presentation import failed). */
@@ -327,7 +333,7 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
     Date, setTimeout, clearTimeout, AbortController, Promise,
     MAX_TURN_DRAIN_BATCH: 16,
     RUNNER_DISPATCH_MAX_PAGES: 16,
-    slackTurnExecutor: () => (hooks.runnerMode ? 'runner' : 'alarm'),
+    slackTurnExecutor: (env: Record<string, unknown>) => slackTurnExecutor(env, {}),
     sandboxTurnReaders: () => () => [],
     threadRunnerStub: (_env: unknown, threadKey: string) => ({
       async admit(admission: RunnerAdmission) {
@@ -429,7 +435,10 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
     createAlarmIdentityResolver(): unknown;
   };
   const probe = new AlarmProbe();
-  probe.env = hooks.runnerMode ? { SLACK_THREAD_RUNNER: {} } : {};
+  probe.env = {
+    ...(hooks.noRunnerBinding ? {} : { SLACK_THREAD_RUNNER: {} }),
+    ...(hooks.executorVar === undefined ? {} : { SLACK_TAG_TURN_EXECUTOR: hooks.executorVar }),
+  };
   (probe as unknown as { carriedAlarmTurns: Map<string, string> }).carriedAlarmTurns = new Map();
   (probe as unknown as { admissionsSeen: number }).admissionsSeen = 0;
   probe.ctx = { storage: {
@@ -509,6 +518,7 @@ test('a long turn yields at the alarm budget without spending attempts while new
   const { probe, record } = await alarmHarness(
     [longCodingJob('long', 3, new Date().toISOString())],
     {
+      executorVar: 'alarm',
       onInboxDrain: (count, jobs) => {
         // A channel mention lands while the coding turn is observing.
         if (count === 2) {
@@ -557,7 +567,10 @@ test('a long turn yields at the alarm budget without spending attempts while new
 });
 
 test('due receipts and schedule actions run while a long turn observes, before it yields', async () => {
-  const { probe, record } = await alarmHarness([longCodingJob('long', 0, new Date().toISOString())]);
+  const { probe, record } = await alarmHarness(
+    [longCodingJob('long', 0, new Date().toISOString())],
+    { executorVar: 'alarm' },
+  );
   await probe.alarm();
   const yieldAt = record.events.indexOf('yield:long');
   const receiptsAt = record.events.indexOf('tick:receipts');
@@ -569,7 +582,7 @@ test('due receipts and schedule actions run while a long turn observes, before i
 
 test('a submission past its durability stops yielding for free and ends with the recovery notice', async () => {
   const stale = new Date(Date.now() - 4 * 60 * 60_000).toISOString();
-  const { probe, record } = await alarmHarness([longCodingJob('long', 6, stale)]);
+  const { probe, record } = await alarmHarness([longCodingJob('long', 6, stale)], { executorVar: 'alarm' });
   await probe.alarm();
   assert.equal(record.jobs.get('long')?.attempts, 7, 'the yield counts as an attempt');
   assert.deepEqual(record.activeWork, [['coding', false]]);
@@ -580,12 +593,12 @@ test('a submission past its durability stops yielding for free and ends with the
   assert.equal(record.jobs.has('long'), false, 'the exhausted turn is terminal');
 });
 
-test('runner mode hands new turns to their thread runners without running them', async () => {
+test('by default the alarm hands new turns to their thread runners without running them', async () => {
   const { probe, record } = await alarmHarness([
     { ...channelJob('a1', 'thread-a'), runId: 'run-a1' } as AlarmJob,
     channelJob('a2', 'thread-a'),
     channelJob('b1', 'thread-b'),
-  ], { runnerMode: true });
+  ], {});
   await probe.alarm();
   assert.deepEqual(record.events.filter((event) => !event.startsWith('tick:')), [],
     'the alarm executes nothing it handed over');
@@ -600,15 +613,59 @@ test('runner mode hands new turns to their thread runners without running them',
   assert.equal(record.alarmAt, null, 'nothing is left for the alarm to wake for');
 });
 
-test('runner mode pages through more threads than one listing holds', async () => {
+test('SLACK_TAG_TURN_EXECUTOR=alarm keeps new turns on the alarm and hands nothing to runners', async () => {
+  const { probe, record } = await alarmHarness(
+    [channelJob('a1', 'thread-a'), channelJob('b1', 'thread-b')],
+    { executorVar: 'alarm' },
+  );
+  await probe.alarm();
+  assert.deepEqual(record.admissions, [], 'the emergency fallback dispatches nothing');
+  assert.deepEqual(record.events.filter((event) => !event.startsWith('tick:')),
+    ['start:a1', 'delivered:a1', 'start:b1', 'delivered:b1'],
+    'the alarm executes both threads itself');
+  assert.equal(record.jobs.size, 0);
+  assert.equal(record.relayAlarms.at(-1)!.jobsDispatched, 0);
+});
+
+test('a Worker without the runner binding executes new turns on the alarm', async () => {
+  const { probe, record } = await alarmHarness(
+    [channelJob('a1', 'thread-a')],
+    { noRunnerBinding: true },
+  );
+  await probe.alarm();
+  assert.deepEqual(record.admissions, []);
+  assert.deepEqual(record.events.filter((event) => !event.startsWith('tick:')),
+    ['start:a1', 'delivered:a1']);
+});
+
+test('legacy alarm rows admitted before the runner default drain on the alarm; the rest go to runners', async () => {
+  // Rows from before the flip: one the alarm had already dispatched to Flue
+  // (it reattaches and finishes it) and one it had not started (a runner takes it).
+  const legacyDispatched: AlarmJob = {
+    ...channelJob('legacy-dispatched', 'thread-a'),
+    dispatchEnvelope: { instanceId: 'agent' },
+    dispatchReceipt: { submissionId: 'submission_legacy', acceptedAt: new Date().toISOString() },
+  };
+  const { probe, record } = await alarmHarness(
+    [legacyDispatched, channelJob('legacy-pending', 'thread-b'), channelJob('fresh', 'thread-c')],
+  );
+  await probe.alarm();
+  assert.deepEqual(record.events.filter((event) => !event.startsWith('tick:')),
+    ['start:legacy-dispatched', 'delivered:legacy-dispatched']);
+  assert.deepEqual(record.admissions.map(({ id }) => id), ['legacy-pending', 'fresh']);
+  assert.equal(record.jobs.has('legacy-dispatched'), false, 'the legacy turn is settled by the alarm');
+  assert.equal(record.relayAlarms.at(-1)!.jobsDispatched, 2);
+});
+
+test('the default runner executor pages through more threads than one listing holds', async () => {
   const jobs = Array.from({ length: 40 }, (_, index) => channelJob(`t${index}`, `thread-${index}`));
-  const { probe, record } = await alarmHarness(jobs, { runnerMode: true });
+  const { probe, record } = await alarmHarness(jobs, {});
   await probe.alarm();
   assert.equal(record.admissions.length, 40);
   assert.equal(record.relayAlarms.at(-1)!.jobsDispatched, 40);
 });
 
-test('runner mode finishes turns the alarm already dispatched, then hands the thread over', async () => {
+test('the default runner executor finishes turns the alarm already dispatched, then hands the thread over', async () => {
   const dispatched: AlarmJob = {
     ...channelJob('old', 'thread-a'),
     dispatchEnvelope: { instanceId: 'agent' },
@@ -616,7 +673,7 @@ test('runner mode finishes turns the alarm already dispatched, then hands the th
   };
   const { probe, record } = await alarmHarness(
     [dispatched, channelJob('next', 'thread-a'), channelJob('other', 'thread-b')],
-    { runnerMode: true },
+    {},
   );
   await probe.alarm();
   assert.deepEqual(record.admissions.map(({ id }) => id), ['other'],
@@ -628,11 +685,11 @@ test('runner mode finishes turns the alarm already dispatched, then hands the th
   assert.deepEqual(record.admissions.map(({ id }) => id), ['other', 'next']);
 });
 
-test('runner mode keeps an unconfirmed hand-off first in its thread and admits it again', async () => {
+test('the default runner executor keeps an unconfirmed hand-off first in its thread and admits it again', async () => {
   let failing = true;
   const { probe, record } = await alarmHarness(
     [channelJob('first', 'thread-a'), channelJob('second', 'thread-a')],
-    { runnerMode: true, failAdmission: ({ id }) => failing && id === 'first' },
+    { failAdmission: ({ id }) => failing && id === 'first' },
   );
   const before = Date.now();
   await probe.alarm();
@@ -648,11 +705,10 @@ test('runner mode keeps an unconfirmed hand-off first in its thread and admits i
   assert.deepEqual([...record.jobs.values()].map((job) => job.executor), ['runner', 'runner']);
 });
 
-test('runner mode hands a message admitted mid-drain to its runner while an alarm turn observes', async () => {
+test('the default runner executor hands a message admitted mid-drain to its runner while an alarm turn observes', async () => {
   const { probe, record } = await alarmHarness(
     [longCodingJob('long', 0, new Date().toISOString())],
     {
-      runnerMode: true,
       onInboxDrain: (count, jobs) => {
         if (count === 2) jobs.set('new', channelJob('new', 'channel'));
       },
@@ -726,11 +782,11 @@ test('an OAuth continuation already handed to a thread runner is admitted there 
   assert.deepEqual(confirmed, ['oauthresume:c1']);
 });
 
-test('runner mode: one runner failing its admissions holds only its own thread', async () => {
+test('the default runner executor: one runner failing its admissions holds only its own thread', async () => {
   const { probe, record } = await alarmHarness(
     [channelJob('stuck', 'thread-a'), channelJob('stuck-next', 'thread-a'),
       channelJob('b1', 'thread-b'), channelJob('c1', 'thread-c')],
-    { runnerMode: true, failAdmission: ({ threadKey }) => threadKey === 'thread-a' },
+    { failAdmission: ({ threadKey }) => threadKey === 'thread-a' },
   );
   await probe.alarm();
   assert.deepEqual(record.admissions.map(({ id }) => id), ['b1', 'c1'],
@@ -740,10 +796,9 @@ test('runner mode: one runner failing its admissions holds only its own thread',
   assert.ok(record.alarmAt !== null, 'the alarm comes back for the hand-off');
 });
 
-test('runner mode: a runner that refuses a hand-off keeps it a hand-off', async () => {
+test('the default runner executor: a runner that refuses a hand-off keeps it a hand-off', async () => {
   let refusing = true;
   const { probe, record } = await alarmHarness([channelJob('refused', 'thread-a')], {
-    runnerMode: true,
     refuseAdmission: () => refusing,
   });
   await probe.alarm();
@@ -754,10 +809,9 @@ test('runner mode: a runner that refuses a hand-off keeps it a hand-off', async 
   assert.equal(record.jobs.get('refused')!.executor, 'runner');
 });
 
-test('runner mode hands over a turn admitted while the alarm runs its other work, in the same alarm', async () => {
+test('the default runner executor hands over a turn admitted while the alarm runs its other work, in the same alarm', async () => {
   let admitted = false;
   const { probe, record } = await alarmHarness([], {
-    runnerMode: true,
     duringChores: async (jobs, admit) => {
       if (admitted) return;
       admitted = true;
@@ -773,13 +827,12 @@ test('runner mode hands over a turn admitted while the alarm runs its other work
   assert.equal(record.relayAlarms.at(-1)!.jobsDispatched, 1);
 });
 
-test('runner mode hands each admitted turn over at once, side by side with admissions in flight', async () => {
+test('the default runner executor hands each admitted turn over at once, side by side with admissions in flight', async () => {
   // One slow runner admission (a cold runner) must not hold back the next
   // conversation's hand-off: each admission starts its own.
   let releaseSlow!: () => void;
   const slow = new Promise<void>((resolve) => { releaseSlow = resolve; });
   const { probe, record } = await alarmHarness([], {
-    runnerMode: true,
     admissionGate: ({ id }) => (id === 'slow' ? slow : undefined),
     onInboxDrain: async (count, jobs, onAdmitted) => {
       if (count !== 1) return;
@@ -808,11 +861,10 @@ test('runner mode hands each admitted turn over at once, side by side with admis
     ['runner', 'runner', 'runner', 'runner']);
 });
 
-test('runner mode hands over a turn admitted during the alarm\'s first inbox pass before its other work', async () => {
+test('the default runner executor hands over a turn admitted during the alarm\'s first inbox pass before its other work', async () => {
   let deliveryWaiting = false;
   let handedOverBeforeChores: string[] | undefined;
   const { probe, record } = await alarmHarness([channelJob('first', 'thread-a')], {
-    runnerMode: true,
     onRunnerAdmit: (id) => {
       // A new Slack event reaches the gateway inbox while the first hand-off
       // is in flight; it becomes a turn row when the inbox is drained.

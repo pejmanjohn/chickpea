@@ -858,6 +858,15 @@ test('deploy accepts the thread runner executor only on an artifact that carries
   assert.equal(incompleteResult.status, 1);
   assert.match(incompleteResult.stderr, /missing thread runner seams: SLACK_TAG_TURN_EXECUTOR/);
   assert.equal(existsSync(incomplete.logPath), false);
+
+  // Unset is the runner default and the emergency fallback is always allowed:
+  // neither refuses an artifact (a Worker without the runner keeps the alarm).
+  const unsetResult = runHarness(incomplete, ['--skip-build', '--dry-run']);
+  assert.equal(unsetResult.status, 0, unsetResult.stderr);
+  const fallbackResult = runHarness(incomplete, [
+    '--skip-build', '--dry-run', '--var', 'SLACK_TAG_TURN_EXECUTOR:alarm',
+  ]);
+  assert.equal(fallbackResult.status, 0, fallbackResult.stderr);
 });
 
 test('sandbox preflight reports every blocking problem before build, D1, or upload', (context) => {

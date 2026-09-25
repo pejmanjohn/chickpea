@@ -53,14 +53,18 @@ function inThread(id: string, threadTs: string) {
 
 // ── the switch ──────────────────────────────────────────────────────────
 
-test('SLACK_TAG_TURN_EXECUTOR selects the runner only when set to runner', () => {
-  assert.equal(slackTurnExecutor({}, {}), 'alarm');
+test('the thread runner is the default executor; SLACK_TAG_TURN_EXECUTOR=alarm is the emergency fallback', () => {
+  assert.equal(slackTurnExecutor({}, {}), 'runner', 'unset: the runner executes');
+  assert.equal(slackTurnExecutor(undefined, {}), 'runner');
+  assert.equal(slackTurnExecutor({ SLACK_TAG_TURN_EXECUTOR: '' }, {}), 'runner');
   assert.equal(slackTurnExecutor({ SLACK_TAG_TURN_EXECUTOR: 'runner' }, {}), 'runner');
-  assert.equal(slackTurnExecutor({ SLACK_TAG_TURN_EXECUTOR: ' Runner ' }, {}), 'runner');
-  assert.equal(slackTurnExecutor({ SLACK_TAG_TURN_EXECUTOR: 'alarm' }, { SLACK_TAG_TURN_EXECUTOR: 'runner' }),
-    'alarm', 'the platform value wins over the process environment');
-  assert.equal(slackTurnExecutor(undefined, { SLACK_TAG_TURN_EXECUTOR: 'runner' }), 'runner');
-  assert.equal(slackTurnExecutor({ SLACK_TAG_TURN_EXECUTOR: 'runners' }, {}), 'alarm');
+  assert.equal(slackTurnExecutor({ SLACK_TAG_TURN_EXECUTOR: 'alarm' }, {}), 'alarm');
+  assert.equal(slackTurnExecutor({ SLACK_TAG_TURN_EXECUTOR: ' Alarm ' }, {}), 'alarm');
+  assert.equal(slackTurnExecutor({ SLACK_TAG_TURN_EXECUTOR: 'runner' }, { SLACK_TAG_TURN_EXECUTOR: 'alarm' }),
+    'runner', 'the platform value wins over the process environment');
+  assert.equal(slackTurnExecutor(undefined, { SLACK_TAG_TURN_EXECUTOR: 'alarm' }), 'alarm');
+  assert.equal(slackTurnExecutor({ SLACK_TAG_TURN_EXECUTOR: 'alarms' }, {}), 'runner',
+    'an unfamiliar value preserves the default');
 });
 
 // ── turn rows: who owns a row ───────────────────────────────────────────

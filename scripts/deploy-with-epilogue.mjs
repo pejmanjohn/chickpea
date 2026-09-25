@@ -703,15 +703,19 @@ function validateLedgerCanaryArtifact(artifact) {
   }
 }
 
-// SLACK_TAG_TURN_EXECUTOR moves Cloudflare turn execution to per-thread
-// SlackThreadRunner objects. Accept only the two executors (or unset), and
-// `runner` only for an artifact that carries the runner execution path.
+// Cloudflare turns run in per-thread SlackThreadRunner objects by default;
+// SLACK_TAG_TURN_EXECUTOR=alarm is the emergency fallback to the state store's
+// alarm. Accept only the two executors (or unset), and an explicit `runner`
+// only for an artifact that carries the runner execution path. Unset needs no
+// check: a Worker without the runner binding keeps turns on the alarm.
 function validateTurnExecutorArtifact(artifact) {
   const { config, bundle } = artifact;
   const value = cliVariable('SLACK_TAG_TURN_EXECUTOR') ?? config.vars?.SLACK_TAG_TURN_EXECUTOR ?? '';
   if (value === '' || value === 'alarm') return;
   if (value !== 'runner') {
-    throw new Error('SLACK_TAG_TURN_EXECUTOR must be runner or alarm, or unset (alarm).');
+    throw new Error(
+      'SLACK_TAG_TURN_EXECUTOR must be runner or alarm (the emergency fallback), or unset (runner).',
+    );
   }
   const bindings = config.durable_objects?.bindings ?? [];
   const missing = ['SLACK_TAG_TURN_EXECUTOR', 'threadRunnerTurn', 'thread_runner_alarm']

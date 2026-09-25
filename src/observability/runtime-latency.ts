@@ -104,7 +104,7 @@ export interface RelayAlarmMetrics {
   rearmed: boolean;
   /** Set when the drain stops observing a turn before the alarm wall-time limit. */
   yielded: boolean;
-  /** Turns handed to their thread runners (SLACK_TAG_TURN_EXECUTOR=runner). */
+  /** Turns handed to their thread runners (the default executor). */
   jobsDispatched: number;
 }
 

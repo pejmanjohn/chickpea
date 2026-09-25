@@ -51,8 +51,9 @@ security releases, then verify it once; do not retain a second runtime sweep.
 The release command requires clean committed source without private environment
 files. Its steps run cheapest and most likely to fail first, and the first
 failure ends the run. The contract checks, the Node scheduler proof, and
-cf-smoke run together after one shared Node build; the export runs last and
-alone:
+cf-smoke run together after one shared Node build; the alarm-fallback cf-smoke
+follows alone (it rebuilds the same Cloudflare artifact), and the export runs
+last and alone:
 
 | step | proves | typical |
 | --- | --- | --- |
@@ -60,7 +61,8 @@ alone:
 | `build` | the Cloudflare artifact builds within the size budget | 3 s |
 | `verify:node-scheduler-capability`, `evaluate:agent-authoring`, `evaluate:schedule-contract`, `verify:admin-ui` | authoring, schedule, and Admin contracts | 5 s |
 | `verify:node-scheduler-offline` | Node schedules deliver once across restarts and crashes, including Flue's own 30 s crash-lease expiry (other modes expire the lease directly) | 35 s |
-| `verify:cf-smoke` | both Cloudflare profiles build; the core profile runs in local workerd | 55 s |
+| `verify:cf-smoke` | both Cloudflare profiles build; the core profile runs in local workerd with the default thread-runner executor | 55 s |
+| `verify:cf-smoke:alarm` | the same smoke with the `SLACK_TAG_TURN_EXECUTOR=alarm` emergency fallback | 55 s |
 | `verify:oss-export` | the immutable archive installs from the lockfile with an empty npm cache, builds, passes the full root/CLI suite, the offline turn, durability, and provider checks, and a deployment dry run | 215 s |
 
 The full suite runs exactly once per release, inside the export, where a pass is

@@ -111,6 +111,12 @@ const SLOW_MENTION_TS = '1782771000.000100';
 // here. The hold only has to exceed the 10s fast-ack bound so an inline turn
 // would fail that check. Overridable for iteration; keep it above 10s.
 const SLOW_TURN_DELAY_MS = Number(process.env.SMOKE_SLOW_TURN_DELAY_MS ?? 12_000);
+// Which turn executor this run proves: the default (runner, variable unset)
+// or the SLACK_TAG_TURN_EXECUTOR=alarm emergency fallback.
+if (![undefined, '', 'runner', 'alarm'].includes(process.env.SMOKE_TURN_EXECUTOR)) {
+  throw new Error('SMOKE_TURN_EXECUTOR must be runner (the default) or alarm.');
+}
+const SMOKE_TURN_EXECUTOR = process.env.SMOKE_TURN_EXECUTOR === 'alarm' ? 'alarm' : 'runner';
 if (!(SLOW_TURN_DELAY_MS > 10_000)) {
   throw new Error('SMOKE_SLOW_TURN_DELAY_MS must exceed the 10000 ms fast-ack bound.');
 }
@@ -329,11 +335,11 @@ function writeSmokeWranglerConfigs(setup) {
       // Exercise exactly one internal workspace/channel through the enforced
       // ledger lane while the ordinary and slow channels remain legacy.
       SLACK_TAG_LEDGER_CANARY_CHANNELS: `${WORKSPACE}/${AI_CHANNEL}`,
-      // SMOKE_TURN_EXECUTOR=runner runs every journey through per-thread
-      // SlackThreadRunner objects instead of the state store's alarm.
-      ...(process.env.SMOKE_TURN_EXECUTOR
-        ? { SLACK_TAG_TURN_EXECUTOR: process.env.SMOKE_TURN_EXECUTOR }
-        : {}),
+      // Journeys run through per-thread SlackThreadRunner objects, the
+      // default executor. SMOKE_TURN_EXECUTOR=alarm (verify:cf-smoke:alarm)
+      // sets the emergency fallback so the state store's alarm path stays
+      // covered.
+      ...(SMOKE_TURN_EXECUTOR === 'alarm' ? { SLACK_TAG_TURN_EXECUTOR: 'alarm' } : {}),
     }),
     dev: { ...(productionConfig.dev ?? {}), enable_containers: false },
     compatibility_flags: smokeCompatibilityFlags,
@@ -1938,14 +1944,23 @@ async function main() {
       `${backend.finals().length - finalsBeforeSlow} new final(s)`,
     );
 
-    if (process.env.SMOKE_TURN_EXECUTOR === 'runner') {
+    {
       const output = [...previousWorkerOutputs, wrangler.getOutput()].join('\n');
-      check(
-        /thread_runner_alarm[\s\S]{0,300}?ran['"]?:\s*[1-9]/.test(output) &&
-          /turn_latency[\s\S]{0,400}?executor['"]?:\s*['"]runner['"]/.test(output) &&
-          /relay_alarm[\s\S]{0,600}?jobsDispatched['"]?:\s*[1-9]/.test(output),
-        'SLACK_TAG_TURN_EXECUTOR=runner: turns were handed to and run by thread runners',
-      );
+      const runnerRan = /thread_runner_alarm[\s\S]{0,300}?ran['"]?:\s*[1-9]/.test(output);
+      const runnerLatency = /turn_latency[\s\S]{0,400}?executor['"]?:\s*['"]runner['"]/.test(output);
+      const alarmLatency = /turn_latency[\s\S]{0,400}?executor['"]?:\s*['"]alarm['"]/.test(output);
+      const dispatched = /relay_alarm[\s\S]{0,600}?jobsDispatched['"]?:\s*[1-9]/.test(output);
+      if (SMOKE_TURN_EXECUTOR === 'runner') {
+        check(
+          runnerRan && runnerLatency && dispatched,
+          'default executor (variable unset): turns were handed to and run by thread runners',
+        );
+      } else {
+        check(
+          alarmLatency && !runnerLatency && !runnerRan && !dispatched,
+          'SLACK_TAG_TURN_EXECUTOR=alarm: the state store alarm ran every turn and handed none to runners',
+        );
+      }
     }
 
     if (failures.length > 0) {
