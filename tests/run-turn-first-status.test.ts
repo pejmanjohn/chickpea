@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, test } from 'node:test';
 
-import type { WebClient } from '@slack/web-api';
+import { ErrorCode, type WebClient } from '@slack/web-api';
 
 import { closeNodeStateStores, resolveStores, type AppStores } from '../src/config/state-backend.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
@@ -126,6 +126,8 @@ function surfaceTurn(surface: Surface): NormalizedSlackTurn {
 }
 
 let turns = 0;
+/** Slack rejects the custom assistant status (a platform error), when set. */
+let rejectCustomStatus = false;
 
 async function firstStatusTimeline(
   surface: Surface,
@@ -198,6 +200,12 @@ async function firstStatusTimeline(
   } as SlackPresentationStatePort;
   const slack = (method: string) => async () => {
     timeline.push(`slack:${method}`);
+    if (rejectCustomStatus && method === 'assistant.threads.setStatus') {
+      throw Object.assign(new Error('not_allowed'), {
+        code: ErrorCode.PlatformError,
+        data: { ok: false, error: 'not_allowed' },
+      });
+    }
     return { ok: true, ts: '1788000100.000100', channel: turn.channelId, messages: [] };
   };
   const client = {
@@ -252,12 +260,9 @@ async function firstStatusTimeline(
   }
   const first = timeline.findIndex((entry) => entry.startsWith('slack:'));
   assert.ok(first >= 0, 'the turn wrote to Slack');
-  const status = timeline.indexOf('slack:assistant.threads.setStatus');
-  assert.ok(status > first, 'the admitted activity status follows the session status');
   return {
     timeline,
     beforeFirstWrite: timeline.slice(0, first),
-    beforeStatus: timeline.slice(0, status).filter((entry) => !entry.startsWith('slack:')),
     slackWrites: timeline.filter((entry) => entry.startsWith('slack:')),
     firstWrite: first,
   };
@@ -267,23 +272,29 @@ async function firstStatusTimeline(
  * Before this ordering, a channel mention made 18 state-store calls (and the
  * classifier's model call) before its first Slack write, a DM 15, and a
  * thread follow-up 14: public URL, classification, memory, plan freeze, and
- * Work lifecycle, all serial. Now only the public URL precedes it, and a
- * thread runner already read that in its `begin` round trip.
+ * Work lifecycle, all serial. Now the first write is the admitted activity as
+ * the custom assistant status, which carries the Agent Session (no native
+ * `processing` call precedes it). Before it come only the public URL and the
+ * thread's generation fence; a thread runner answers both from its `begin`
+ * round trip.
  */
 for (const surface of ['channel_mention', 'dm', 'thread_follow_up'] as const) {
   test(`${surface}: the first Slack write precedes classification, memory, and the plan`, async () => {
-    const { beforeFirstWrite, beforeStatus, slackWrites, timeline, firstWrite } =
+    const { beforeFirstWrite, slackWrites, timeline, firstWrite } =
       await firstStatusTimeline(surface);
-    assert.deepEqual(beforeFirstWrite, ['settings.getSetting'], 'only the public URL');
     assert.deepEqual(
-      beforeStatus,
+      beforeFirstWrite,
       ['settings.getSetting', 'presentations.getLatestThreadSessionGeneration'],
-      'the admitted activity adds only the thread generation fence',
+      'only the public URL and the thread generation fence',
     );
-    assert.deepEqual(slackWrites.slice(0, 2), [
-      'slack:assistant.threads.setStatus(session)',
-      'slack:assistant.threads.setStatus',
-    ]);
+    assert.equal(slackWrites[0], 'slack:assistant.threads.setStatus',
+      'the admitted custom status is the first write and carries the session');
+    assert.ok(
+      timeline.indexOf('slack:assistant.threads.setStatus(session)') === -1 ||
+        timeline.indexOf('slack:assistant.threads.setStatus(session)') >
+          timeline.indexOf('slack:chat.startStream'),
+      'no native processing call at turn start; the session is only settled after the answer',
+    );
     for (const later of ['turnJobs.freezeRuntimePlan', 'work.getRun']) {
       assert.ok(timeline.indexOf(later) > firstWrite, `${later} runs after the first status`);
     }
@@ -294,10 +305,13 @@ for (const surface of ['channel_mention', 'dm', 'thread_follow_up'] as const) {
   });
 
   test(`${surface}: a runner that read the public URL at begin writes to Slack first`, async () => {
+    // The remaining read is the generation fence, which the runner seeds from
+    // the same `begin` round trip (see slack-thread-runner-execution tests).
     const { beforeFirstWrite } = await firstStatusTimeline(surface, 'https://chickpea.example');
-    assert.deepEqual(beforeFirstWrite, []);
+    assert.deepEqual(beforeFirstWrite, ['presentations.getLatestThreadSessionGeneration']);
     const none = await firstStatusTimeline(surface, null);
-    assert.deepEqual(none.beforeFirstWrite, [], 'a resolved absent URL is not read again');
+    assert.deepEqual(none.beforeFirstWrite, ['presentations.getLatestThreadSessionGeneration'],
+      'a resolved absent URL is not read again');
   });
 }
 
@@ -351,5 +365,22 @@ test('memory preparation that fails while the plan is still reading fails the tu
     console.info = info;
     releasePlanRead();
     process.off('unhandledRejection', onUnhandled);
+  }
+});
+
+test('a rejected custom status falls back to the native indicator, still before classification and the plan', async () => {
+  rejectCustomStatus = true;
+  try {
+    const { slackWrites, timeline } = await firstStatusTimeline('channel_mention', null);
+    assert.deepEqual(slackWrites.slice(0, 2), [
+      'slack:assistant.threads.setStatus',
+      'slack:assistant.threads.setStatus(session)',
+    ], 'the native processing indicator follows the rejected custom status');
+    const fallback = timeline.indexOf('slack:assistant.threads.setStatus(session)');
+    for (const later of ['turnJobs.recordInteractionIntent', 'turnJobs.freezeRuntimePlan', 'work.getRun']) {
+      assert.ok(timeline.indexOf(later) > fallback, `${later} runs after the native fallback`);
+    }
+  } finally {
+    rejectCustomStatus = false;
   }
 });
