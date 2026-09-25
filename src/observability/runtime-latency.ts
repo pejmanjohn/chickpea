@@ -43,6 +43,10 @@ const STRING_FIELDS: Readonly<Record<string, RegExp>> = {
   deliveryKind: TOKEN,
   sessionPhase: TOKEN,
   sessionHealth: TOKEN,
+  eventType: TOKEN,
+  subtype: TOKEN,
+  source: TOKEN,
+  filterReason: TOKEN,
   reason: TOKEN,
   runRef: OPAQUE_REF,
   turnRef: OPAQUE_REF,
@@ -334,7 +338,30 @@ export interface GatewayDeliveryObservation {
   issuedAt?: number | undefined;
   /** Socket only: the delivering runner's health when the frame arrived. */
   session?: GatewaySessionRunnerHealthSnapshot | undefined;
-  outcome: 'accepted' | 'duplicate' | 'rejected' | 'failed';
+  /**
+   * `filtered`: a self-generated event acknowledged without admission.
+   * A thrown admission is `failed`; the gateway still receives `rejected`.
+   */
+  outcome: 'accepted' | 'duplicate' | 'rejected' | 'failed' | 'filtered';
+  /** Socket only: `store` admission, `recent` in-memory retry hit, or `filter`. */
+  source?: 'store' | 'recent' | 'filter' | undefined;
+  filterReason?: 'own_message' | 'own_message_changed' | 'own_reaction' | undefined;
+  /** Socket only: wait for the delivery's thread order and an admission slot. */
+  queueMs?: number | undefined;
+  /** Socket only: the durable admission call itself. */
+  admitMs?: number | undefined;
+  /** Socket only: admissions already running when this delivery arrived. */
+  inFlight?: number | undefined;
+}
+
+/** Slack's fixed event vocabulary (type and subtype), never content. */
+function slackEventTokens(delivery: GatewayInboundDelivery): { eventType?: string; subtype?: string } {
+  if (delivery.kind !== 'event.deliver') return {};
+  const event = delivery.envelope.event as unknown as Record<string, unknown> | undefined;
+  return {
+    ...(typeof event?.type === 'string' ? { eventType: event.type } : {}),
+    ...(typeof event?.subtype === 'string' ? { subtype: event.subtype } : {}),
+  };
 }
 
 const DELIVERY_KIND: Readonly<Record<GatewayInboundDelivery['kind'], string>> = {
@@ -369,7 +396,13 @@ export function emitGatewayDelivery(
     emitRuntimeLatency('gateway_delivery', {
       transport: observation.transport,
       deliveryKind: DELIVERY_KIND[observation.delivery.kind],
+      ...slackEventTokens(observation.delivery),
       outcome: observation.outcome,
+      source: observation.source,
+      filterReason: observation.filterReason,
+      queueMs: observation.queueMs,
+      admitMs: observation.admitMs,
+      inFlight: observation.inFlight,
       lagMs: issuedAt === undefined ? undefined : receivedAt - issuedAt,
       slackLagMs: slackAt === undefined ? undefined : receivedAt - slackAt,
       sessionPhase: session?.phase,

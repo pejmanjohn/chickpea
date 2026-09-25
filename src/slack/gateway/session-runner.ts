@@ -1,8 +1,10 @@
 import type { GatewayDeploymentClient, GatewayLogicalSession } from './client.ts';
 import type { GatewayInboundDelivery } from './protocol.ts';
 import type { GatewaySessionCapability } from './protocol.ts';
+import { GatewayInboundAdmission } from './inbound-admission.ts';
 import {
   GATEWAY_HEARTBEAT_TIMEOUT_MS,
+  gatewaySessionCheckpointWriteDue,
   gatewaySessionHealthy,
   type GatewaySessionCheckpoint,
 } from './session.ts';
@@ -20,7 +22,13 @@ export interface GatewaySocket {
 interface GatewaySessionRunnerOptions {
   // Long-lived Cloudflare sessions need fresh RPC stubs after a failed attempt.
   client: GatewayDeploymentClient | (() => GatewayDeploymentClient);
-  onEvent(delivery: GatewayInboundDelivery): Promise<'accepted' | 'duplicate' | 'rejected'>;
+  /** Durable admission of one delivery; wrapped in a default intake when `admission` is absent. */
+  onEvent?(delivery: GatewayInboundDelivery): Promise<'accepted' | 'duplicate' | 'rejected'>;
+  /**
+   * Shared intake (ordering, concurrency, retry memory, self-event filter).
+   * Pass one that outlives this runner so its memory survives reconnects.
+   */
+  admission?: GatewayInboundAdmission;
   createSocket?: (url: string) => GatewaySocket;
   now?: () => number;
   setTimer?: (callback: () => void, delayMs: number) => ReturnType<typeof setTimeout>;
@@ -251,6 +259,10 @@ export class GatewaySessionRunner implements GatewaySessionRunnerControl {
   private stopped = true;
   private generation = 0;
   private checkpointWrites = Promise.resolve();
+  /** The last checkpoint durably written, and when; drives write throttling. */
+  private persistedCheckpoint: GatewaySessionCheckpoint | undefined;
+  private persistedAt: number | undefined;
+  private readonly admission: GatewayInboundAdmission;
   private readonly now: () => number;
   private readonly setTimer: NonNullable<GatewaySessionRunnerOptions['setTimer']>;
   private readonly clearTimer: NonNullable<GatewaySessionRunnerOptions['clearTimer']>;
@@ -260,6 +272,12 @@ export class GatewaySessionRunner implements GatewaySessionRunnerControl {
     this.now = options.now ?? Date.now;
     this.setTimer = options.setTimer ?? setTimeout;
     this.clearTimer = options.clearTimer ?? clearTimeout;
+    const onEvent = options.onEvent;
+    if (!options.admission && !onEvent) throw new Error('Gateway session runner needs an admission handler.');
+    this.admission = options.admission ?? new GatewayInboundAdmission({
+      admit: (delivery) => onEvent!(delivery),
+      now: this.now,
+    });
   }
 
   async start(): Promise<boolean> {
@@ -404,7 +422,7 @@ export class GatewaySessionRunner implements GatewaySessionRunnerControl {
           endpoint.socket.send(JSON.stringify(frame));
         }
       },
-      this.options.onEvent,
+      (delivery, context) => this.admission.deliver(delivery, context),
       checkpoint,
       this.options.capabilities,
     );
@@ -422,11 +440,22 @@ export class GatewaySessionRunner implements GatewaySessionRunnerControl {
     endpoint.socket.addEventListener('message', (event) => {
       if (!this.current(generation) || !this.endpointCurrent(endpoint)) return;
       const raw = typeof event.data === 'string' ? event.data : '';
-      // WebSocket callbacks are synchronous, while event admission is async.
-      // Keep one chain per socket so delivery and receipt order is preserved.
+      // WebSocket callbacks are synchronous, while admission is async. Frames
+      // are applied in socket order on one chain per socket. A delivery frame
+      // only starts its admission there: the shared intake admits it in
+      // arrival order within its thread (or DM, channel, user) and in
+      // parallel across them, and acknowledges it when its own durable
+      // receipt returns. A delivery never changes session state, so it
+      // writes no checkpoint.
       endpoint.messageChain = endpoint.messageChain.then(async () => {
         if (!this.current(generation) || !this.endpointCurrent(endpoint)) return;
-        await endpoint.session.handle(raw);
+        const delivery = endpoint.session.accept(raw);
+        if (delivery) {
+          const admission = endpoint.session.acknowledge(delivery)
+            .catch(() => this.failEndpoint(endpoint, 'invalid_frame'));
+          this.options.waitUntil?.(admission);
+          return;
+        }
         if (!this.current(generation) || !this.endpointCurrent(endpoint)) return;
         if (this.candidate === endpoint) {
           if (endpoint.session.state().health === 'healthy') await this.promoteCandidate(endpoint);
@@ -434,7 +463,12 @@ export class GatewaySessionRunner implements GatewaySessionRunnerControl {
         }
         const checkpoint = endpoint.session.state();
         this.lastCheckpoint = checkpoint;
-        await this.recordCheckpoint(checkpoint, () => this.active === endpoint);
+        // Heartbeats refresh only lastHeartbeatAt, which no reader of the
+        // persisted checkpoint uses; write those at most once per interval.
+        if (gatewaySessionCheckpointWriteDue(this.persistedCheckpoint, checkpoint,
+          this.persistedAt, this.now())) {
+          await this.recordCheckpoint(checkpoint, () => this.active === endpoint);
+        }
         if (!this.current(generation) || this.active !== endpoint) return;
         const rotateAt = checkpoint.rotateAt;
         if (rotateAt && !this.renewalPending) {
@@ -680,6 +714,8 @@ export class GatewaySessionRunner implements GatewaySessionRunnerControl {
       if (allowed()) {
         try {
           await client.recordSessionCheckpoint(checkpoint);
+          this.persistedCheckpoint = { ...checkpoint };
+          this.persistedAt = this.now();
         } catch (error) {
           this.options.onDiagnostic?.({ reason: 'checkpoint_write_failed', generation: this.generation });
           throw error;
