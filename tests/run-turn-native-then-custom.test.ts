@@ -99,6 +99,12 @@ function harness(turn: NormalizedSlackTurn, options: {
   rejectNativeStart?: boolean;
   /** An admitted canonical Run, for turns that reach the Agent. */
   runId?: string;
+  /** The answer was streamed: its stop is the final. */
+  streamed?: boolean;
+  /** The stream is old enough that Slack may have sealed it (#180). */
+  agedStream?: boolean;
+  /** Slack confirms a rejection of the first final post. */
+  rejectFirstFinal?: boolean;
 } = {}) {
   const db = openStateDb(':memory:');
   const store = new SlackRunPresentationStoreLogic(db);
@@ -161,9 +167,35 @@ function harness(turn: NormalizedSlackTurn, options: {
       history: async () => ({ ok: true, messages: [] }),
     },
     chat: {
-      startStream: async () => { effects.push('final'); return { ok: true, ts: '1790000100.000100' }; },
-      stopStream: async () => ({ ok: true }),
-      postMessage: async () => { effects.push('final'); return { ok: true, ts: '1790000100.000100' }; },
+      startStream: async () => {
+        if (options.rejectFirstFinal) {
+          effects.push('final:rejected');
+          throw Object.assign(new Error('not_allowed'), {
+            code: ErrorCode.PlatformError,
+            data: { ok: false, error: 'not_allowed' },
+          });
+        }
+        effects.push(options.streamed ? 'start' : 'final');
+        return { ok: true, ts: '1790000100.000100' };
+      },
+      stopStream: async () => {
+        if (options.streamed) effects.push('final');
+        return { ok: true };
+      },
+      postMessage: async () => {
+        if (options.rejectFirstFinal) {
+          options.rejectFirstFinal = false;
+          effects.push('final:rejected');
+          throw Object.assign(new Error('not_allowed'), {
+            code: ErrorCode.PlatformError,
+            data: { ok: false, error: 'not_allowed' },
+          });
+        }
+        effects.push(options.streamed ? 'post' : 'final');
+        return { ok: true, ts: '1790000100.000100' };
+      },
+      update: async () => { effects.push('update'); return { ok: true }; },
+      delete: async () => { effects.push('delete'); return { ok: true }; },
     },
   } as unknown as WebClient;
   const state = {
@@ -190,6 +222,27 @@ function harness(turn: NormalizedSlackTurn, options: {
         }
       : {}),
   };
+  if (options.streamed) {
+    // The answer's stream was started while the Agent worked.
+    for (const mutation of [
+      { kind: 'stream_start_intent' } as const,
+      { kind: 'stream_started', messageTs: options.agedStream
+        ? '1790000100.000100'
+        : `${Math.floor(Date.now() / 1_000)}.000100`, flue: {
+        instanceId: 'instance_native_first', submissionId: 'submission_native_first',
+      } } as const,
+    ]) {
+      const current = store.get(runId)!;
+      assert.equal(store.transition({
+        runId,
+        workBindingGeneration: current.workBindingGeneration,
+        runFencingToken: current.runFencingToken,
+        expectedProjectionVersion: current.projectionVersion,
+        expectedStreamState: current.stream.state,
+        mutation,
+      }).outcome, 'applied');
+    }
+  }
   return { db, store, runId, effects, client, state };
 }
 
@@ -214,6 +267,7 @@ for (const surface of ['channel', 'dm'] as const) {
         'session:processing', // the fast first write
         'session:active', // leaves native processing so the custom text renders
         'custom:Preparing your request…',
+        'session:active', // leaves processing so the final does not re-expose it
         'final',
         'session:active', // settled after the final
         'custom:clear',
@@ -309,9 +363,12 @@ test('a retry whose custom status is known visible keeps it, with no handover', 
     h.effects.length = 0;
     await answer(turn, h);
     assert.equal(h.effects.includes('session:processing'), false, 'no native write');
-    assert.deepEqual(h.effects.slice(-2), ['session:active', 'custom:clear'], 'settled, then cleared');
-    assert.equal(h.effects.filter((effect) => effect === 'session:active').length, 1,
-      'the only session write is the settle: no handover');
+    assert.deepEqual(h.effects, [
+      'session:active', // the earlier custom status is released for the final
+      'final',
+      'session:active', // settled
+      'custom:clear',
+    ], 'no handover: only the release for the final, the settle, and the clear');
   } finally { h.db.close(); }
 });
 
@@ -378,6 +435,7 @@ test('after native is shown again, the next custom write hands over again', asyn
       'session:active', // handed over again
       'reserve:reserved',
       `custom:${observed.text}`,
+      'session:active', // released for the final
     ]);
   } finally { h.db.close(); work.close(); }
 });
@@ -404,5 +462,103 @@ test('a retry whose native start failed but whose custom status is visible start
     assert.equal(h.effects.some((effect) => effect.startsWith('session:processing')), false,
       'a native start would hide the visible custom text');
     assert.deepEqual(h.effects.slice(-2), ['session:active', 'custom:clear'], 'settled, then cleared');
+  } finally { h.db.close(); }
+});
+
+/**
+ * Slack drops the custom status when the reply posts, which re-exposes native
+ * processing ("<Agent> is working…") until the settle (seen live on Amber,
+ * #207). While the custom status carries the session, the session leaves
+ * processing just before the final; the durable settle still follows it.
+ */
+for (const surface of ['channel', 'dm'] as const) {
+  for (const streamed of [false, true]) {
+    test(`${surface}, ${streamed ? 'streamed' : 'not streamed'}: the session leaves processing before the final`, async () => {
+      const turn = surfaceTurn(surface, `17900001${surface === 'dm' ? 1 : 2}${streamed ? 1 : 0}.000100`);
+      const h = harness(turn, { streamed });
+      const sessionReceipts: string[] = [];
+      const transition = h.state.transitionRunPresentation;
+      h.state.transitionRunPresentation = (input) => {
+        const result = transition(input);
+        if (result.outcome === 'applied' && result.presentation.schemaVersion === 3) {
+          const session = result.presentation.agentSession;
+          sessionReceipts.push(`${session.desired}/${session.acknowledged}`);
+        }
+        return result;
+      };
+      try {
+        await answer(turn, h);
+        assert.deepEqual(h.effects.slice(h.effects.indexOf('custom:Preparing your request…')), [
+          'custom:Preparing your request…',
+          'session:active', // transport only: nothing re-exposes native processing
+          'final',
+          'session:active', // the durable settle
+          'custom:clear',
+        ]);
+        const final = h.effects.indexOf('final');
+        assert.equal(h.effects.filter((effect, index) => index < final && effect === 'final').length, 0);
+        // The release records nothing: the session leaves processing durably once, after the final.
+        assert.deepEqual(sessionReceipts.filter((entry, index, all) => all.indexOf(entry) === index), [
+          'processing/none',
+          'processing/processing',
+          'active/processing',
+          'active/active',
+        ]);
+      } finally { h.db.close(); }
+    });
+  }
+}
+
+test('native processing that still shows at the final is not released', async () => {
+  const turn = surfaceTurn('channel', '1790000130.000100');
+  const h = harness(turn, { rejectCustom: true });
+  try {
+    await answer(turn, h);
+    const final = h.effects.indexOf('final');
+    assert.equal(h.effects[final - 1], 'session:processing',
+      'the reasserted native indicator carries the turn up to the final');
+  } finally { h.db.close(); }
+});
+
+test('a final that fails after the release keeps the session for one settle on retry', async () => {
+  const turn = surfaceTurn('dm', '1790000140.000100');
+  const h = harness(turn, { rejectFirstFinal: true });
+  try {
+    await assert.rejects(answer(turn, h));
+    assert.equal(h.effects.includes('final'), false);
+    const releasedAt = h.effects.lastIndexOf('session:active');
+    assert.ok(releasedAt > h.effects.indexOf('custom:Preparing your request…'), 'released for the final');
+    assert.equal(h.effects.slice(releasedAt).filter((effect) => effect.startsWith('session:')).length, 1,
+      'no settle without a delivered final');
+    let stored = h.store.get(h.runId);
+    assert.equal(stored?.schemaVersion, 3);
+    if (stored?.schemaVersion !== 3) return;
+    assert.equal(stored.agentSession.desired, 'processing', 'the durable session has not left processing');
+    assert.equal(stored.agentSession.acknowledged, 'processing');
+
+    h.effects.length = 0;
+    await answer(turn, h);
+    assert.equal(h.effects.filter((effect) => effect === 'final').length, 1, 'the retry delivers the final once');
+    assert.equal(h.effects.at(-2), 'session:active', 'then settles');
+    stored = h.store.get(h.runId);
+    if (stored?.schemaVersion !== 3) return;
+    assert.equal(stored.agentSession.desired, 'active');
+    assert.equal(stored.agentSession.acknowledged, 'active');
+  } finally { h.db.close(); }
+});
+
+test('an aged stream is retired and the final posted fresh, both after the release', async () => {
+  const turn = surfaceTurn('channel', '1790000150.000100');
+  const h = harness(turn, { streamed: true, agedStream: true });
+  try {
+    await answer(turn, h);
+    assert.deepEqual(h.effects.slice(h.effects.indexOf('custom:Preparing your request…')), [
+      'custom:Preparing your request…',
+      'session:active', // released before anything posts
+      'final', // the aged stream is stopped (#180)
+      'post', // the final, posted fresh
+      'session:active',
+      'custom:clear',
+    ]);
   } finally { h.db.close(); }
 });

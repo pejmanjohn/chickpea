@@ -1145,8 +1145,9 @@ test('runTurn keeps the persisted V3 owner from first status through final deliv
       assert.deepEqual(
         sessionStatuses.map(({ status, username, icon_url }) => ({ status, username, icon_url })),
         // Native first in the frozen owner's persona, handed to the custom
-        // status (which carries the session), then settled.
-        ['processing', 'active', 'active'].map((status) => ({
+        // status (which carries the session), released for the final, then
+        // settled.
+        ['processing', 'active', 'active', 'active'].map((status) => ({
           status,
           ...(owner.kind === 'selected_agent'
             ? { username: persona.name, icon_url: persona.avatarUrl }
@@ -1890,6 +1891,7 @@ test('acknowledged final settles the frozen Agent Session before deleting activi
       'session:processing:Frozen Support',
       'session:active:Frozen Support',
       'activity:set:Frozen Support',
+      'session:active:Frozen Support', // released for the final
       'final:start',
       'final:ack',
       'session:active:Frozen Support',

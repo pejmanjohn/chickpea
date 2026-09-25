@@ -837,6 +837,23 @@ async function runTurnAttempt(
         }
       : {}),
   });
+  /**
+   * Stop status writes for the final. While the custom status carries the
+   * session, also leave native processing first: Slack drops the custom text
+   * when the reply posts, which would show "<Agent> is working…" again until
+   * the settle after the final (seen live on Amber, #207). Transport only,
+   * like the hand-over: the durable session still settles once, after the
+   * final, and a turn that stops in between converges when its retry writes
+   * the status again or when it settles.
+   */
+  const prepareFinal = async (): Promise<void> => {
+    await statusTurn.prepareFinal();
+    if (nativeHeld || !agentViewPresentation || !semanticStatusCarriesSession()) return;
+    // A custom write landing after the release would re-enter processing.
+    await statusTurn.drain();
+    if (nativeHeld || !presenter.assistantStatusVisible()) return;
+    await agentViewPresentation.releaseNativeProcessing().catch(() => false);
+  };
   let admissionStatusAttempted = false;
   if (frozenPresentation?.schemaVersion === 3 &&
       frozenPresentation.currentActivity?.operation.certainty === 'pending') {
@@ -1013,7 +1030,7 @@ async function runTurnAttempt(
       // pending and the alarm re-armed forever behind a live "Thinking…"
       // status. Mirror the post-run lease fence: one sanitized final, the
       // status cleared, and a terminal delivery outcome.
-      await statusTurn.prepareFinal();
+      await prepareFinal();
       await presenter.deliverFinal(AGENT_FAILURE_TEXT, 'plain_text', 'error');
       await finishStatus('failure');
       await finishDelivery('failed');
@@ -1083,7 +1100,7 @@ async function runTurnAttempt(
         });
       }
       if (approval.kind === 'message') {
-        await statusTurn.prepareFinal();
+        await prepareFinal();
         await presenter.deliverFinal(approval.text, 'markdown');
       }
       await finishStatus('answer');
@@ -1469,7 +1486,7 @@ async function runTurnAttempt(
         const recoveredText = await options.beforeDelivery?.();
         if (recoveredText) {
           await preparedMemory?.confirmInjection();
-          await statusTurn.prepareFinal();
+          await prepareFinal();
           await presenter.deliverFinal(
             installationContext
               ? renderSlackSelfMention(recoveredText, installationContext.botUserId)
@@ -1480,7 +1497,7 @@ async function runTurnAttempt(
           await finishDelivery();
           return;
         }
-        await statusTurn.prepareFinal();
+        await prepareFinal();
         await presenter.deliverFinal(agentFailureText(err), 'plain_text', 'error');
         await finishStatus('failure');
         await finishDelivery('failed');
@@ -1643,7 +1660,7 @@ async function runTurnAttempt(
     await preparedMemory?.confirmInjection();
     const leaseValid = acknowledgeMemoryUpdate || (await preparedMemory?.validateLease() ?? true);
     if (preparedMemory?.ownerBound && !leaseValid && !recoveredText) {
-      await statusTurn.prepareFinal();
+      await prepareFinal();
       await presenter.deliverFinal(AGENT_FAILURE_TEXT, 'plain_text', 'error');
       await finishStatus('failure');
       await finishDelivery('failed');
@@ -1658,7 +1675,7 @@ async function runTurnAttempt(
       text = renderSlackSelfMention(text, installationContext.botUserId);
     }
     const terminalResult = options.replayTerminalResult ?? 'answer';
-    await statusTurn.prepareFinal();
+    await prepareFinal();
     // Files publish only with the model's own lease-valid answer. A recovered
     // or replaced text never adopts staged files.
     const deliverableArtifacts = recoveredText === undefined && leaseValid && terminalResult === 'answer'
