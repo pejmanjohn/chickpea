@@ -205,6 +205,7 @@ test(
       V2_BINDINGS,
     );
     assert.ok(bindings.includes('TAG_STATE/TagStateStore'));
+    assert.ok(bindings.includes('SLACK_THREAD_RUNNER/SlackThreadRunner'));
     assert.equal(
       bindings.includes('SANDBOX/Sandbox'),
       deploymentProfile === 'sandbox',

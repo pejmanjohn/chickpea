@@ -172,6 +172,10 @@ function verifyBuildArtifacts(expectedProfile = resolveCloudflareDeploymentProfi
     doBindings.some((b) => b.name === 'TAG_STATE' && b.class_name === 'TagStateStore'),
     'built wrangler.json carries the TAG_STATE binding',
   );
+  check(
+    doBindings.some((b) => b.name === 'SLACK_THREAD_RUNNER' && b.class_name === 'SlackThreadRunner'),
+    'built wrangler.json carries the SLACK_THREAD_RUNNER binding',
+  );
   for (const [name, className] of V2_AGENT_BINDINGS) {
     check(
       doBindings.some((binding) => binding.name === name && binding.class_name === className),
@@ -198,8 +202,8 @@ function verifyBuildArtifacts(expectedProfile = resolveCloudflareDeploymentProfi
   const migrations = config.migrations ?? [];
   const tags = migrations.map((migration) => migration.tag);
   check(
-    sameArray(tags, ['v1', 'v2', 'v3', 'v4', 'v5', 'v6', 'v7', 'v8', 'v9', 'v10']),
-    'built wrangler.json migrations use the exact append-only v1 through v10 chain',
+    sameArray(tags, ['v1', 'v2', 'v3', 'v4', 'v5', 'v6', 'v7', 'v8', 'v9', 'v10', 'v11']),
+    'built wrangler.json migrations use the exact append-only v1 through v11 chain',
     tags.join(','),
   );
   const sandboxMigration = migrations.find((migration) => migration.tag === 'v3');
@@ -234,6 +238,12 @@ function verifyBuildArtifacts(expectedProfile = resolveCloudflareDeploymentProfi
   check(
     sameArray(codingWorkerMigration?.new_sqlite_classes ?? [], ['FlueChickpeaCodingWorkerV1Agent']),
     'v10 adds exactly the coding worker Agent class',
+  );
+  const threadRunnerMigration = migrations.find((migration) => migration.tag === 'v11');
+  check(
+    sameArray(threadRunnerMigration?.new_sqlite_classes ?? [], ['SlackThreadRunner'])
+      && (threadRunnerMigration?.deleted_classes ?? []).length === 0,
+    'v11 adds exactly the per-thread Slack runner class',
   );
   if (expectedProfile === 'sandbox') {
     const sandboxContainer = (config.containers ?? []).find(
