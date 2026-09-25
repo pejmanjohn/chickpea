@@ -161,6 +161,8 @@ export interface WorkspaceTaskToolOptions {
   recordedPullRequest?: (session: WorkspaceSession) => Promise<TurnPullRequestProgress | undefined>;
   /** Test seam for the task deadline. */
   taskTimeoutMs?: number;
+  /** Test seam for when a task settled. */
+  now?: () => number;
 }
 
 const WORKER_FAILED_MESSAGE =
@@ -280,6 +282,7 @@ export function createWorkspaceTaskTool(options: WorkspaceTaskToolOptions) {
               status,
               ...(metadata ? { usage: metadata.usage } : {}),
               ...(metadata?.returnedModel ? { returnedModel: metadata.returnedModel } : {}),
+              settledAt: (options.now ?? Date.now)(),
             });
           } catch (error) {
             console.warn(`[chickpea] coding worker usage write failed: ${error instanceof Error ? error.name : 'unknown'}`);

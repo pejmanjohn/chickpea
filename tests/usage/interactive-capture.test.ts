@@ -343,8 +343,10 @@ test('coding worker usage is recorded once on the turn, under the coding model',
         status: 'completed',
         usage: { input: 4_000, output: 1_000, cacheRead: 500, cacheWrite: 0, totalTokens: 5_500 },
         returnedModel: { provider: 'anthropic', id: 'claude-opus-5-5' },
+        settledAt: 3_990_000,
       },
-      { schemaVersion: 1, toolCallId: 'call-2', model: 'openai/gpt-6', status: 'failed' },
+      // A clock skewed past the Agent's own finish still sorts before it.
+      { schemaVersion: 1, toolCallId: 'call-2', model: 'openai/gpt-6', status: 'failed', settledAt: 4_500_000 },
     ],
   });
   const options = {
@@ -373,6 +375,13 @@ test('coding worker usage is recorded once on the turn, under the coding model',
     assert.equal(detail?.operation.installationId, 'installation_usage');
     // The Agent's outcome decides the operation's status, not a failed worker.
     assert.equal(detail?.operation.status, 'completed');
+    // The Agent's own measurement is the turn's latest, so a view that shows
+    // a turn's latest measurement names the Agent's model, not a worker's.
+    assert.deepEqual(detail!.measurements.map((row) => [row.executionId, row.observedAt]), [
+      ['exec:msg_coding:1:coding:1', 3_990_000],
+      ['exec:msg_coding:1:coding:2', 3_999_999],
+      ['exec:msg_coding:1', 4_000_000],
+    ]);
     const rows = detail!.measurements.map((row) => ({
       executionId: row.executionId,
       runExecutionId: row.runExecutionId,

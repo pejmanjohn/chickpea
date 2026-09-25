@@ -64,7 +64,7 @@ test('the coding model a worker ran on and its usage survive durable settlement 
     const id = 'coding-worker-replay';
     const codingWorkerUsage = [{
       schemaVersion: 1 as const, toolCallId: 'call-1', model: 'openai/gpt-6', status: 'completed' as const,
-      usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, totalTokens: 15 },
+      usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, totalTokens: 15 }, settledAt: NOW - 1_000,
     }];
     turns.enqueue({ id, evtKey: id, msgKey: id, turn: turn(), assignment: assignment() });
     turns.freezeRuntimePlan(id, compileRuntimePlanV2({

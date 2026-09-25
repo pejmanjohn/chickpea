@@ -193,12 +193,19 @@ export class InteractiveUsageRecorder {
    * operation: the Agent and requester stay the turn's, the model is the
    * coding model. Its execution id is derived from the turn's, so a
    * replayed settlement writes the same measurement again, never a second.
+   * It is observed when the task settled, always before the Agent's own
+   * measurement, so a view that shows a turn's latest measurement shows the
+   * Agent's model.
    */
   private codingWorkerTerminal(
     record: CodingWorkerUsageRecord,
     index: number,
-    finishedAt: number,
+    agentFinishedAt: number,
   ): RecordUsageTerminalInput {
+    const finishedAt = Math.max(
+      this.admission.startedAt,
+      Math.min(record.settledAt, agentFinishedAt - 1),
+    );
     const requested = splitModelSpecifier(record.model);
     const usage = record.usage && record.usage.totalTokens > 0 ? record.usage : undefined;
     // The turn's credential is attributed only when it is for the same provider.

@@ -56,6 +56,8 @@ export const CodingWorkerUsageSchema = v.strictObject({
     provider: v.pipe(v.string(), v.minLength(1), v.maxLength(120)),
     id: v.pipe(v.string(), v.minLength(1), v.maxLength(240)),
   })),
+  /** When the task settled (epoch ms): before the Agent's own reply, which it fed. */
+  settledAt: TokenCount,
 });
 
 export type CodingWorkerUsageRecord = v.InferOutput<typeof CodingWorkerUsageSchema>;

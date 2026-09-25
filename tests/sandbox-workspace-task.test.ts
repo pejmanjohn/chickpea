@@ -271,6 +271,7 @@ function taskTool(
     onMilestone?: (record: WorkspaceMilestoneRecord) => void;
     resolve?: WorkspaceTaskToolOptions['resolve'];
     onWorkerUsage?: (record: CodingWorkerUsageRecord) => void;
+    now?: () => number;
   } = {},
 ) {
   return createWorkspaceTaskTool({
@@ -620,6 +621,7 @@ test('the reply names the coding model only when a worker ran on a different mod
 });
 
 test('each task reports the worker\'s own usage once, under the coding model', async () => {
+  const SETTLED_AT = 1_790_000_000_000;
   const usage = { input: 900, output: 100, cacheRead: 50, cacheWrite: 0, totalTokens: 1050 };
   const withMetadata: AgentReply = {
     ...reply('done\nBranch: none · Pull request: none'),
@@ -635,23 +637,24 @@ test('each task reports the worker\'s own usage once, under the coding model', a
   const outcomes: Array<[string, CodingWorkerClient['observe'], CodingWorkerUsageRecord | undefined, number?]> = [
     ['completed', async () => withMetadata, {
       schemaVersion: 1, toolCallId: 'call-1', model: 'openai/gpt-6', status: 'completed', usage,
-      returnedModel: { provider: 'openai', id: 'gpt-6-2026-09-01' },
+      returnedModel: { provider: 'openai', id: 'gpt-6-2026-09-01' }, settledAt: SETTLED_AT,
     }],
     ['no metadata', async () => reply('done'), {
-      schemaVersion: 1, toolCallId: 'call-1', model: 'openai/gpt-6', status: 'completed',
+      schemaVersion: 1, toolCallId: 'call-1', model: 'openai/gpt-6', status: 'completed', settledAt: SETTLED_AT,
     }],
     ['worker failed', async () => { throw new AgentRunError({ outcome: 'failed', submissionId: 'sub-1' }); }, {
-      schemaVersion: 1, toolCallId: 'call-1', model: 'openai/gpt-6', status: 'failed',
+      schemaVersion: 1, toolCallId: 'call-1', model: 'openai/gpt-6', status: 'failed', settledAt: SETTLED_AT,
     }],
     ['timeout', ({ signal }) => new Promise((_, reject) => {
       signal.addEventListener('abort', () => reject(signal.reason), { once: true });
-    }), { schemaVersion: 1, toolCallId: 'call-1', model: 'openai/gpt-6', status: 'interrupted' }, 20],
+    }), { schemaVersion: 1, toolCallId: 'call-1', model: 'openai/gpt-6', status: 'interrupted', settledAt: SETTLED_AT }, 20],
   ];
   for (const [label, observe, expected, taskTimeoutMs] of outcomes) {
     const h = harness();
     const records: CodingWorkerUsageRecord[] = [];
     await run(taskTool(h, workspace([]), observe, {
       onWorkerUsage: (record) => records.push(record),
+      now: () => SETTLED_AT,
       ...(taskTimeoutMs ? { taskTimeoutMs } : {}),
     }), h, { task: 'x' });
     assert.deepEqual(records, expected ? [expected] : [], label);
@@ -671,9 +674,9 @@ test('each task reports the worker\'s own usage once, under the coding model', a
 });
 
 test('worker usage reaches the dispatch result once per task, the latest record winning', () => {
-  const first = { schemaVersion: 1, toolCallId: 'call-1', model: 'openai/gpt-6', status: 'failed' };
+  const first = { schemaVersion: 1, toolCallId: 'call-1', model: 'openai/gpt-6', status: 'failed', settledAt: 1 };
   const retried = { ...first, status: 'completed', usage: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 3 } };
-  const second = { schemaVersion: 1, toolCallId: 'call-2', model: 'openai/gpt-6', status: 'interrupted' };
+  const second = { schemaVersion: 1, toolCallId: 'call-2', model: 'openai/gpt-6', status: 'interrupted', settledAt: 2 };
   const result = resultFromAgentReply({
     text: 'ok',
     data: { [CODING_WORKER_USAGE_DATA_NAME]: [first, second, retried, { ...second, extra: 1 }] },
