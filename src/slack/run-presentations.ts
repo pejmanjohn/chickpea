@@ -496,6 +496,8 @@ export type SlackPresentationMutation =
   | { kind: 'mark_non_stream_finalized' }
   | { kind: 'mark_unknown'; degradationReason: SlackPresentationDegradationReason }
   | { kind: 'reconcile_unknown_stream' }
+  /** Slack definitively reports the finalizing stream's message missing. */
+  | { kind: 'stream_message_lost'; messageTs: string }
   | {
       kind: 'adopt_plan';
       taskLabels: readonly string[];
@@ -1704,6 +1706,24 @@ function applyMutation(
       delete next.stream.pendingAppend;
       next.stream.presentationOutcome =
         current.stream.acknowledgedByteLength > 0 ? 'progressive' : 'terminal_only';
+      next.repairRequired = true;
+      return next;
+    case 'stream_message_lost':
+      // Slack answered `message_not_found` for the exact saved coordinate
+      // (for example after a long-idle stream expired). Nothing at that
+      // coordinate can carry the terminal, and nothing there shows it, so the
+      // approved terminal posts once as a fresh message through the fallback
+      // route instead of the run ending with no visible answer.
+      requireState(current, 'finalizing');
+      if (!current.stream.messageTs || current.stream.messageTs !== mutation.messageTs) {
+        throw stateError('coordinate_conflict', 'Lost stream does not match the saved coordinate.');
+      }
+      next.stream = {
+        state: 'fallback',
+        acknowledgedByteLength: 0,
+        slackAppendCursor: 0,
+        presentationOutcome: 'terminal_only',
+      };
       next.repairRequired = true;
       return next;
     case 'adopt_plan': {
