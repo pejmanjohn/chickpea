@@ -6,6 +6,9 @@ import type {
   TurnPullRequestProgress,
 } from '../config/state-rpc.ts';
 import type { UsagePersistenceEvent } from '../usage/runtime-recorder.ts';
+import type { WorkspaceInstallation } from '../config/types.ts';
+import { GATEWAY_DEPLOYMENT_IDENTITY_SETTING } from './gateway/identity.ts';
+import { GATEWAY_BINDING_SETTING } from './gateway/settings.ts';
 import type { SlackInteractionIntent } from './interaction-intent.ts';
 import type {
   SlackPresentationTransitionInput,
@@ -25,6 +28,12 @@ import type { ThreadRunnerJob, ThreadRunnerStatus } from './thread-runner-jobs.t
 export interface ThreadRunnerTurnOps {
   /** The authoritative row, read before the runner runs or reattaches. */
   view: [{ id: string }, RunnerTurnJobView];
+  /**
+   * `view` plus what resolving the turn's Slack installation reads from the
+   * state store (the installation record and the gateway settings), so a
+   * runner starts a turn with one round trip.
+   */
+  begin: [{ id: string }, RunnerTurnBegin];
   recordAttempt: [{ id: string; attempts: number }, null];
   recordPullRequest: [{ id: string; pullRequest: TurnPullRequestProgress }, TurnProgress | null];
   freezeRuntimePlan: [{ id: string; candidate: RuntimePlanV2 }, FrozenRuntimePlanDecision];
@@ -42,6 +51,20 @@ export interface ThreadRunnerTurnOps {
   /** Write the runner's presentation back for the state store's readers. */
   putPresentation: [{ presentation: SlackRunPresentation }, boolean];
 }
+
+export interface RunnerTurnBegin {
+  view: RunnerTurnJobView;
+  /** The pending turn's workspace installation, when there is one. */
+  installation?: WorkspaceInstallation;
+  /** RUNNER_PREFETCHED_SETTINGS values; null when unset. */
+  settings: Record<string, string | null>;
+}
+
+/** Settings a gateway installation's execution context reads on every turn. */
+export const RUNNER_PREFETCHED_SETTINGS: readonly string[] = [
+  GATEWAY_BINDING_SETTING,
+  GATEWAY_DEPLOYMENT_IDENTITY_SETTING,
+];
 
 export type ThreadRunnerTurnKind = keyof ThreadRunnerTurnOps;
 

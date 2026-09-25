@@ -152,6 +152,18 @@ export class AgentObservationYield extends AgentPromptFailure {
   }
 }
 
+/**
+ * A thread runner could not reach the state store (it is being replaced).
+ * Nothing about the turn is decided: no Slack output is written for it, and
+ * the runner retries the turn, reattaching to a dispatched submission.
+ */
+export class StateStoreUnavailable extends AgentPromptFailure {
+  constructor() {
+    super('agent', 503, false, true);
+    this.name = 'StateStoreUnavailable';
+  }
+}
+
 export function agentFailureText(error: unknown): string {
   if (!(error instanceof AgentPromptFailure)) return AGENT_FAILURE_TEXT;
   if (error.kind === 'provider') return PROVIDER_FAILURE_TEXT;

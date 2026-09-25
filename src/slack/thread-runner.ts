@@ -2,8 +2,15 @@ import { getSandbox } from '@cloudflare/sandbox';
 import { DurableObject } from 'cloudflare:workers';
 
 import { activityStatus, isSafeTypedActivityStatus, type TypedActivityStatus } from '../activity/status.ts';
-import { CfSlackStateStore, CfTurnJobsForRunner } from '../config/cf-state-proxies.ts';
-import { getConfigStore, getSettingsStore, type PlatformEnv } from '../config/state-backend.ts';
+import { CfTurnJobsForRunner } from '../config/cf-state-proxies.ts';
+import type { SettingsStore } from '../config/settings-store.ts';
+import {
+  getConfigStore,
+  getIdentityStore,
+  getSettingsStore,
+  type PlatformEnv,
+} from '../config/state-backend.ts';
+import type { SlackPublicContextEntryInput } from '../config/types.ts';
 import { tagStateStub, type StateRpcResult } from '../config/state-rpc.ts';
 import { cloudflareSandboxOptionVariants } from '../sandbox/lifecycle.ts';
 import { reconnectingSandboxStub } from '../sandbox/reconnect.ts';
@@ -33,7 +40,11 @@ import {
   runnerTurnJobsPort,
   runThreadRunnerAlarm,
 } from './thread-runner-loop.ts';
-import type { SlackThreadRunnerRpc, ThreadRunnerJobPayload } from './thread-runner-rpc.ts';
+import type {
+  RunnerTurnBegin,
+  SlackThreadRunnerRpc,
+  ThreadRunnerJobPayload,
+} from './thread-runner-rpc.ts';
 import { executeTurnJob, type SandboxTurnReader, type TurnExecutionPorts } from './turn-executor.ts';
 import type { FlueObservationTarget } from './turn-job-types.ts';
 import { MAX_TURN_DRAIN_BATCH } from './turn-jobs.ts';
@@ -123,8 +134,7 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
       const key = `${instanceId}\n${submissionId}`;
       let target = this.targets.get(key);
       if (!target) {
-        target = await new CfSlackStateStore(tagStateStub(this.env as PlatformEnv))
-          .matchFlueObservation(instanceId, submissionId);
+        target = await this.stateStore().matchFlueObservation(instanceId, submissionId);
         if (!target) return { ok: true, value: null };
         if (this.targets.size >= 32) this.targets.clear();
         this.targets.set(key, target);
@@ -150,7 +160,7 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
     const result = presentationResult(() => this.presentationStore().transition(input));
     if (result.ok && result.value.outcome === 'applied') {
       // Keep the state store's readers current; best-effort like any publish.
-      await new CfTurnJobsForRunner(tagStateStub(this.env as PlatformEnv))
+      await this.stateStore()
         .putPresentation(result.value.presentation)
         .catch(() => console.warn('[chickpea] thread runner presentation publish failed'));
     }
@@ -170,36 +180,65 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
     else await this.ctx.storage.deleteAlarm();
   }
 
+  /** The state store, over a fresh stub per call (see CfTurnJobsForRunner). */
+  private stateStore(): CfTurnJobsForRunner {
+    const env = this.env as PlatformEnv;
+    return new CfTurnJobsForRunner(() => tagStateStub(env));
+  }
+
   private async runAlarm(): Promise<number | undefined> {
     const env = this.env as PlatformEnv;
-    const stub = tagStateStub(env);
-    const rows = new CfTurnJobsForRunner(stub);
-    const slack = new CfSlackStateStore(stub);
+    const rows = this.stateStore();
     const jobs = this.store();
     const local = this.presentationStore();
     const presentation = runnerPresentationState({
       local,
-      remote: slack as Required<Pick<CfSlackStateStore, 'matchFlueObservation' | 'getLatestThreadSessionGeneration'>>,
+      remote: rows,
       putRemote: (value) => rows.putPresentation(value),
     });
     // Resolved at most once per identity per alarm, so credential rotation
-    // is observed by the next alarm.
-    const resolveInstallation = cacheSlackInstallationExecutionContexts(
-      (workspaceId) => resolveSlackInstallationExecutionContext(workspaceId, env),
-    );
-    const config = getConfigStore(env);
+    // is observed by the next alarm. A turn's own resolution reuses what its
+    // `begin` round trip already read (the installation, gateway settings).
+    const installations = new Map<string, RunnerTurnBegin>();
+    const resolveInstallation = cacheSlackInstallationExecutionContexts((workspaceId) => {
+      const start = installations.get(workspaceId);
+      const settings = getSettingsStore(env);
+      return resolveSlackInstallationExecutionContext(workspaceId, env, {
+        config: {
+          getWorkspaceInstallation: async (id) =>
+            start?.installation?.workspaceId === id
+              ? start.installation
+              : getConfigStore(env).getWorkspaceInstallation(id),
+        },
+        settings: start ? prefetchedSettings(settings, start.settings) : settings,
+        credentialDependencies: { state: getIdentityStore(env), env },
+      });
+    });
+    const config = {
+      // Thread context for a delivered message; the answer is already out,
+      // so a store that cannot be reached only loses this context entry.
+      putSlackPublicContext: async (input: SlackPublicContextEntryInput) =>
+        rows.putSlackPublicContext(input).catch(() => {
+          console.warn('[chickpea] thread runner could not record thread context');
+          return undefined as never;
+        }),
+    };
     const ports: TurnExecutionPorts = {
       env,
       turnJobs: runnerTurnJobsPort(rows, jobs),
       slack: runnerSlackPort({
-        setActiveWork: (key, generation, active) => slack.setActiveWork(key, generation, active),
+        setActiveWork: (key, generation, active) => rows.setActiveWork(key, generation, active),
         markCodingActiveWork: (key, generation) => rows.markCodingActiveWork(key, generation),
-        release: (key) => slack.release(key),
+        release: (key) => rows.release(key),
       }, jobs),
       config,
       presentationState: presentation.state,
       statusRegistry: this.registry,
-      telemetry: createPlatformProductTelemetry({ env, settings: getSettingsStore(env), config }),
+      telemetry: createPlatformProductTelemetry({
+        env,
+        settings: getSettingsStore(env),
+        config: getConfigStore(env),
+      }),
       resolveInstallation,
       sandboxes: sandboxTurnReaders(env),
       runTurn,
@@ -207,12 +246,15 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
     const result = await runThreadRunnerAlarm({
       jobs,
       turns: rows,
-      execute: (job, control, onRetry, threadKey) => executeTurnJob(job, ports, {
-        latency: { lane: 'cloudflare', executor: 'runner' },
-        observationRoute: { executor: 'runner', runnerKey: threadKey },
-        control,
-        onRetry,
-      }),
+      execute: (job, control, onRetry, threadKey, start) => {
+        installations.set(job.turn.workspaceId, start);
+        return executeTurnJob(job, ports, {
+          latency: { lane: 'cloudflare', executor: 'runner' },
+          observationRoute: { executor: 'runner', runnerKey: threadKey },
+          control,
+          onRetry,
+        });
+      },
       repairInteraction: async (job) => {
         const progress = job.progress.slackInteraction;
         if (!progress) return;
@@ -227,7 +269,7 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
         );
       },
       // The active-work key is the thread key this runner is addressed by.
-      clearActiveWork: (threadKey, jobId) => slack.setActiveWork(threadKey, jobId, false),
+      clearActiveWork: (threadKey, jobId) => rows.setActiveWork(threadKey, jobId, false),
       failures: this.failures,
       afterJob: async (job) => {
         this.targets.clear();
@@ -279,4 +321,21 @@ function presentationResult<T>(fn: () => T): StateRpcResult<T> {
       error: { code: 'internal', message: error instanceof Error ? error.message : String(error) },
     };
   }
+}
+
+/** A settings store that answers the given keys from a read already made. */
+function prefetchedSettings(
+  store: SettingsStore,
+  values: Record<string, string | null>,
+): SettingsStore {
+  const has = (key: string) => Object.hasOwn(values, key);
+  return {
+    getSetting: async (key) => (has(key) ? values[key] ?? undefined : store.getSetting(key)),
+    getSettings: async (keys) =>
+      keys.every(has) ? keys.map((key) => values[key] ?? undefined) : store.getSettings(keys),
+    setSetting: (key, value) => store.setSetting(key, value),
+    deleteSetting: (key) => store.deleteSetting(key),
+    applySettingsPatch: (patch) => store.applySettingsPatch(patch),
+    mergeSettingStringSet: (key, merged) => store.mergeSettingStringSet(key, merged),
+  };
 }

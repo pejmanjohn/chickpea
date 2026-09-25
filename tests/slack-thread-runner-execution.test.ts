@@ -3,7 +3,13 @@ import { test } from 'node:test';
 
 import { activityStatus, type TypedActivityStatus } from '../src/activity/status.ts';
 import { publishActivityStatus } from '../src/slack/activity-publisher.ts';
-import { AgentObservationYield } from '../src/slack/flue-dispatch.ts';
+import {
+  AgentObservationYield,
+  AgentPromptFailure,
+  StateStoreUnavailable,
+} from '../src/slack/flue-dispatch.ts';
+import { CfTurnJobsForRunner, StateStoreDisconnectedError } from '../src/config/cf-state-proxies.ts';
+import type { TagStateRpc } from '../src/config/state-rpc.ts';
 import {
   SlackRunPresentationStoreLogic,
   type SlackPresentationMutation,
@@ -233,13 +239,19 @@ test('runner presentation state writes locally and publishes lifecycle changes o
     const local = new SlackRunPresentationStoreLogic(db, () => NOW);
     const published: number[] = [];
     let remoteGeneration: number | undefined = 9;
+    let generationReads = 0;
     const presentation = runnerPresentationState({
       local,
       remote: {
         matchFlueObservation: async () => undefined,
-        getLatestThreadSessionGeneration: async () => remoteGeneration,
+        getLatestThreadSessionGeneration: async () => {
+          generationReads += 1;
+          return remoteGeneration;
+        },
       },
       putRemote: async (value) => { published.push(value.projectionVersion); },
+      publishIntervalMs: 0,
+      generationCacheMs: 0,
     });
     let current = local.create(v3Input('run_pub', 'turn_pub'));
     const transition = async (mutation: SlackPresentationMutation) => {
@@ -255,7 +267,7 @@ test('runner presentation state writes locally and publishes lifecycle changes o
     await transition({ kind: 'record_terminal_delivery_receipt', operationId: 'terminal_pub', certainty: 'acknowledged' });
     assert.deepEqual(published, [2, 3]);
     await presentation.publish('run_pub');
-    assert.deepEqual(published, [2, 3], 'an unchanged lifecycle is not published again');
+    assert.deepEqual(published, [2, 3, 3], 'the job end publishes once more (version-gated)');
     assert.equal(await presentation.state.getLatestThreadSessionGeneration(ROOT), 9,
       "the shared store's newer generation fences this runner's shared effects");
     remoteGeneration = undefined;
@@ -367,11 +379,21 @@ function fakeRows(ids: string[]) {
         if (failViews > 0) {
           failViews -= 1;
           const error = new Error('state store unreachable');
-          error.name = 'StateStoreUnavailable';
+          error.name = 'StateStoreDisconnectedError';
           throw error;
         }
         calls.push(`view:${id}`);
         return view(id);
+      },
+      async begin(id: string) {
+        if (failViews > 0) {
+          failViews -= 1;
+          const error = new Error('state store unreachable');
+          error.name = 'StateStoreDisconnectedError';
+          throw error;
+        }
+        calls.push(`begin:${id}`);
+        return { view: view(id), settings: {} };
       },
       async markDelivered(id: string) {
         if (failMarkDelivered > 0) {
@@ -614,7 +636,7 @@ test('a state store outage never throws out of the runner alarm; the job runs on
     const first = await runThreadRunnerAlarm(h.deps);
     const firstAt = Date.now();
     assert.equal(first.record.outcome, 'threw');
-    assert.equal(first.record.reason, 'StateStoreUnavailable');
+    assert.equal(first.record.reason, 'StateStoreDisconnectedError');
     assert.ok(first.nextAlarmAt! >= firstAt + 1_900 && first.nextAlarmAt! <= firstAt + 2_100,
       'the first retry is two seconds out');
     const second = await runThreadRunnerAlarm(h.deps);
@@ -626,7 +648,7 @@ test('a state store outage never throws out of the runner alarm; the job runs on
     assert.equal(third.record.outcome, 'drained');
     assert.deepEqual(h.events, ['reattach:outage', 'delivered:outage'], 'reattached, never dispatched again');
     assert.equal(h.deps.failures.count, 0);
-    assert.ok(h.records.some((line) => line.includes('"reason":"StateStoreUnavailable"')));
+    assert.ok(h.records.some((line) => line.includes('"reason":"StateStoreDisconnectedError"')));
   } finally { db.close(); }
 });
 
@@ -746,5 +768,174 @@ test('a due cleanup check the state store cannot answer backs the runner off', a
     const recovered = await runThreadRunnerAlarm(h.deps);
     assert.equal(recovered.nextAlarmAt, undefined, 'the check clears once the store answers');
     assert.equal(h.deps.failures.count, 0);
+  } finally { db.close(); }
+});
+
+test('activity changes make no state-store calls; the generation is read once per window', async () => {
+  const db = openStateDb(':memory:');
+  try {
+    const local = new SlackRunPresentationStoreLogic(db, () => NOW);
+    let clock = NOW;
+    const published: number[] = [];
+    let generationReads = 0;
+    const presentation = runnerPresentationState({
+      local,
+      remote: {
+        matchFlueObservation: async () => undefined,
+        getLatestThreadSessionGeneration: async () => {
+          generationReads += 1;
+          return 5;
+        },
+      },
+      putRemote: async (value) => { published.push(value.projectionVersion); },
+      now: () => clock,
+    });
+    let current = local.create(v3Input('run_busy', 'turn_busy'));
+    const transition = async (mutation: SlackPresentationMutation) => {
+      const result = await presentation.state.transitionRunPresentation({
+        runId: current.runId, workBindingGeneration: current.workBindingGeneration,
+        runFencingToken: current.runFencingToken, expectedProjectionVersion: current.projectionVersion,
+        expectedStreamState: current.stream.state, mutation,
+      });
+      assert.equal(result.outcome, 'applied');
+      current = (result as { presentation: SlackRunPresentation }).presentation;
+    };
+    for (let sequence = 1; sequence <= 6; sequence += 1) {
+      // What one activity change does: the generation fence, the intent, the receipt.
+      await presentation.state.getLatestThreadSessionGeneration(ROOT);
+      const operationId = `activity_busy_${sequence}`;
+      await transition({
+        kind: 'set_current_activity',
+        activity: {
+          kind: 'checking', action: 'Checking', object: `page ${sequence}`, generation: 5, sequence,
+          operation: { operationId, certainty: 'pending' },
+        },
+      });
+      if (sequence === 1) {
+        await transition({ kind: 'select_activity_projection', surface: 'assistant_status' });
+      }
+      await transition({ kind: 'record_activity_receipt', operationId, certainty: 'acknowledged' });
+      clock += 1_000;
+    }
+    assert.deepEqual(published, [2],
+      'the first activity starts the turn (a lifecycle change); later ones publish nothing');
+    assert.equal(generationReads, 1, 'one generation read within the cache window');
+    clock += 15_000;
+    await presentation.state.getLatestThreadSessionGeneration(ROOT);
+    assert.equal(generationReads, 2);
+  } finally { db.close(); }
+});
+
+/** Stubs for CfTurnJobsForRunner: `fail` decides which minted stub rejects. */
+function mintingStubs(fail: (mint: number, kind: string) => boolean) {
+  let mints = 0;
+  const kinds: string[] = [];
+  const mint = () => {
+    mints += 1;
+    const mint = mints;
+    return {
+      async threadRunnerTurn(op: { kind: string }) {
+        kinds.push(`${mint}:${op.kind}`);
+        if (fail(mint, op.kind)) throw new Error('Durable Object reset because its code was updated.');
+        return { ok: true, value: null };
+      },
+    } as unknown as TagStateRpc;
+  };
+  return { mint, kinds, mints: () => mints };
+}
+
+test('every runner store call mints a fresh stub and replays once after a reset', async () => {
+  const stubs = mintingStubs((mint) => mint === 1);
+  const store = new CfTurnJobsForRunner(stubs.mint);
+  await store.markDelivered('turn_reset');
+  assert.deepEqual(stubs.kinds, ['1:markDelivered', '2:markDelivered'], 'replayed on a new stub');
+  await store.markError('turn_other');
+  assert.equal(stubs.mints(), 3, 'no stub is reused across calls');
+
+  const down = mintingStubs(() => true);
+  await assert.rejects(new CfTurnJobsForRunner(down.mint).markDelivered('turn_down'),
+    (error: unknown) => error instanceof StateStoreDisconnectedError);
+  assert.equal(down.mints(), 2, 'one replay only');
+
+  const plain = new CfTurnJobsForRunner(() => ({
+    async threadRunnerTurn() { return { ok: false, error: { code: 'internal', message: 'boom' } }; },
+  }) as unknown as TagStateRpc);
+  await assert.rejects(plain.markDelivered('turn_boom'), /boom/, 'a store error is never replayed');
+});
+
+test('a final whose outcome record hits a store reset is recorded once, with no failure notice', async () => {
+  const db = openStateDb(':memory:');
+  try {
+    const jobs = new ThreadRunnerJobStore(db);
+    jobs.admit({ id: 'reset', threadKey: 'thread', payload: {} }, 1);
+    const stubs = mintingStubs((mint, kind) => mint === 1 && kind === 'markDelivered');
+    const port = runnerTurnJobsPort(new CfTurnJobsForRunner(stubs.mint), jobs);
+    await port.markDelivered('reset');
+    assert.deepEqual(stubs.kinds, ['1:markDelivered', '2:markDelivered']);
+    assert.equal(jobs.get('reset')!.state, 'done');
+    assert.equal(jobs.get('reset')!.terminalSync, undefined, 'recorded; nothing owed');
+  } finally { db.close(); }
+});
+
+test('a store that stays unreachable mid-turn is retried, never answered with a failure notice', async () => {
+  const db = openStateDb(':memory:');
+  try {
+    const jobs = new ThreadRunnerJobStore(db);
+    const failure = new StateStoreUnavailable();
+    assert.ok(failure instanceof AgentPromptFailure && failure.retryable,
+      'run-turn passes retryable prompt failures through without a final');
+    const attempts: number[] = [];
+    const port = runnerTurnJobsPort({
+      recordAttempt: async (_id: string, value: number) => { attempts.push(value); },
+      recordFlueSettlement: async () => { throw new StateStoreDisconnectedError(new Error('reset')); },
+    } as unknown as TurnExecutionPorts['turnJobs'], jobs);
+    const finals: string[] = [];
+    const retries: Array<number | undefined> = [];
+    const settled = await executeTurnJob({
+      ...turnJob('mid'), executionAuthority: 'legacy', attempts: 2, progress: {},
+      dispatchEnvelope: { instanceId: 'agent' } as never,
+      dispatchReceipt: { submissionId: 'submission_mid', acceptedAt: new Date().toISOString() } as never,
+    } as PendingTurnJob, {
+      env: {},
+      turnJobs: port,
+      slack: { setActiveWork: async () => {}, release: async () => {}, markCodingActiveWork: async () => {} },
+      config: {},
+      presentationState: {},
+      telemetry: { capture() {} },
+      resolveInstallation: async () => ({
+        workspaceId: 'T_TEST',
+        client: { conversations: { info: async () => ({ ok: true, channel: { id: 'C_TEST', is_member: true } }) } },
+      }),
+      sandboxes: () => [],
+      runTurn: async (_turn: unknown, _assignment: unknown, _env: unknown, options: RunTurnOptions) => {
+        if (options.replayTerminalResult === 'failure') finals.push('recovery');
+        await options.flueDispatch!.recordSettlement({ outcome: 'completed' } as never);
+        finals.push('answer');
+      },
+    } as unknown as TurnExecutionPorts, {
+      latency: { lane: 'cloudflare', executor: 'runner' },
+      onRetry: (afterMs) => { retries.push(afterMs); },
+    });
+    assert.equal(settled, false, 'the turn stays pending for its next attempt');
+    assert.deepEqual(finals, [], 'no final of any kind');
+    assert.deepEqual(retries, [undefined]);
+    assert.deepEqual(attempts, [3, 2], 'the attempt is given back');
+  } finally { db.close(); }
+});
+
+test('a runner starts a turn with one state-store round trip before running it', async () => {
+  const db = openStateDb(':memory:');
+  try {
+    const rows = fakeRows(['first']);
+    const h = runnerHarness(db, rows);
+    h.jobs.admit({ id: 'first', threadKey: 'thread', payload: {} }, 1);
+    const execute = h.deps.execute;
+    let callsBeforeExecute: string[] = [];
+    h.deps.execute = (...args) => {
+      callsBeforeExecute = [...rows.calls];
+      return execute(...args);
+    };
+    await runThreadRunnerAlarm(h.deps);
+    assert.deepEqual(callsBeforeExecute, ['begin:first']);
   } finally { db.close(); }
 });

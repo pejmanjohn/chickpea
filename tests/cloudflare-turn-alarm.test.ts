@@ -278,11 +278,14 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
   failAdmission?: (admission: RunnerAdmission) => boolean;
   /** The runner refuses this admission (its presentation import failed). */
   refuseAdmission?: (admission: RunnerAdmission) => boolean;
+  /** Runs inside the alarm's receipt delivery (its other due work). */
+  duringChores?: (jobs: Map<string, AlarmJob>, admit: () => Promise<void>) => Promise<void>;
 } = {}) {
   const { AgentObservationYield, AgentPromptFailure } = await import('../src/slack/flue-dispatch.ts');
   const { alarmYieldIsFree } = await import('../src/slack/alarm-turn-drain.ts');
   const alarmMethods = [
     'armAlarmNoLaterThan', 'alarm', 'drainRelayAlarm', 'dispatchToRunners', 'admitToRunner',
+    'dispatchingWhile',
   ].map((name) => {
     const method = (stateClass as ts.ClassDeclaration).members.find((member) =>
       ts.isMethodDeclaration(member) && member.name.getText(source) === name);
@@ -359,9 +362,16 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
       record.events.push('tick:schedule');
       return {};
     },
-    drainCloudflareManagementReceipts: async () => { record.events.push('tick:receipts'); },
+    drainCloudflareManagementReceipts: async () => {
+      record.events.push('tick:receipts');
+      await hooks.duringChores?.(jobs, async () => {
+        await (probe as unknown as { armAlarmNoLaterThan(at: number): Promise<void> })
+          .armAlarmNoLaterThan(Date.now() + 250);
+      });
+    },
     runDriverRetryDelayMs: (_drain: object, retryDelay: number) => retryDelay,
     slackAgentThreadKey: (turn: { thread: string }) => turn.thread,
+    StateStoreUnavailable: class StateStoreUnavailable extends Error {},
     effectiveTurnSlackInstallationId: () => 'workspace',
     verifySlackInstallationTurnAccess: async () => {},
     runtimePlanHasCodingWorkspace: () => false,
@@ -721,4 +731,23 @@ test('runner mode: a runner that refuses a hand-off keeps it a hand-off', async 
   record.alarmAt = null;
   await probe.alarm();
   assert.equal(record.jobs.get('refused')!.executor, 'runner');
+});
+
+test('runner mode hands over a turn admitted while the alarm runs its other work, in the same alarm', async () => {
+  let admitted = false;
+  const { probe, record } = await alarmHarness([], {
+    runnerMode: true,
+    duringChores: async (jobs, admit) => {
+      if (admitted) return;
+      admitted = true;
+      jobs.set('late', channelJob('late', 'thread-late'));
+      await admit();
+      // The receipt drain keeps working for a while after the admission.
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    },
+  });
+  await probe.alarm();
+  assert.deepEqual(record.admissions.map(({ id }) => id), ['late'],
+    'handed to its runner before this alarm returned');
+  assert.equal(record.relayAlarms.at(-1)!.jobsDispatched, 1);
 });

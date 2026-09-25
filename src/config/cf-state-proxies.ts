@@ -85,6 +85,7 @@ import type {
 } from './types.ts';
 import { IdentityStateError } from '../identity/errors.ts';
 import { timedStateRpc } from '../observability/runtime-latency.ts';
+import { isSandboxDisconnect } from '../sandbox/reconnect.ts';
 import { ManagementError, type ManagementRpcRequest, type ManagementRpcResponse } from '../management/types.ts';
 import type { ManagementStore } from '../management/store.ts';
 import type {
@@ -1972,23 +1973,60 @@ export class CfSlackStateStore implements SlackStateStore {
 }
 
 /**
- * The turn-row port a SlackThreadRunner executes turns with: every write goes
- * to the state store that owns `turn_jobs`, through the existing Slack state
- * RPCs or one `threadRunnerTurn` operation. Bounded calls per turn.
+ * The state store unreachable from a thread runner even on a fresh stub: the
+ * instance was replaced (a code update, a platform restart) and its successor
+ * did not answer yet. Nothing about the turn is decided; the runner retries.
+ */
+export class StateStoreDisconnectedError extends Error {
+  readonly retryable = true;
+
+  constructor(cause: unknown) {
+    super('The state store is restarting; the call will be retried.', { cause });
+    this.name = 'StateStoreDisconnectedError';
+  }
+}
+
+/**
+ * The state store a SlackThreadRunner talks to. Every call goes to a freshly
+ * minted stub: a stub whose Durable Object instance was replaced fails every
+ * later call, and the singleton is replaced on each code update. Every
+ * operation here is safe to replay (reads, first-write-wins or convergent
+ * writes, version-gated snapshots), so a call that fails on a disconnect is
+ * replayed once on a new stub; a second disconnect surfaces as
+ * {@link StateStoreDisconnectedError}. Bounded calls per turn, none per poll.
  */
 export class CfTurnJobsForRunner implements RunnerTurnJobsPort {
-  private readonly slack: CfSlackStateStore;
+  constructor(private readonly mintStub: () => TagStateRpc) {}
 
-  constructor(private readonly stub: TagStateRpc) {
-    this.slack = new CfSlackStateStore(stub);
+  private async call<T>(run: (stub: TagStateRpc) => Promise<T>): Promise<T> {
+    try {
+      return await run(this.mintStub());
+    } catch (error) {
+      if (!isSandboxDisconnect(error)) throw error;
+    }
+    try {
+      return await run(this.mintStub());
+    } catch (error) {
+      if (isSandboxDisconnect(error)) throw new StateStoreDisconnectedError(error);
+      throw error;
+    }
+  }
+
+  private slack<T>(run: (store: CfSlackStateStore) => Promise<T>): Promise<T> {
+    return this.call((stub) => run(new CfSlackStateStore(stub)));
   }
 
   op<K extends ThreadRunnerTurnKind>(input: ThreadRunnerTurnOp<K>): Promise<ThreadRunnerTurnResult<K>> {
-    return rpc('threadRunnerTurn', this.stub.threadRunnerTurn(input), input.kind);
+    return this.call((stub) => rpc('threadRunnerTurn', stub.threadRunnerTurn(input), input.kind));
   }
 
   view(id: string) {
     return this.op({ kind: 'view', id });
+  }
+
+  /** The row plus what resolving its Slack installation reads, in one call. */
+  begin(id: string) {
+    return this.op({ kind: 'begin', id });
   }
 
   async recordAttempt(id: string, attempts: number) {
@@ -1996,25 +2034,25 @@ export class CfTurnJobsForRunner implements RunnerTurnJobsPort {
   }
 
   markRecoveryRequired(id: string, reason: string) {
-    return this.slack.markTurnRecoveryRequired(id, reason);
+    return this.slack((store) => store.markTurnRecoveryRequired(id, reason));
   }
 
   prepareFlueDispatch(
     ...args: Parameters<CfSlackStateStore['prepareFlueDispatch']>
   ) {
-    return this.slack.prepareFlueDispatch(...args);
+    return this.slack((store) => store.prepareFlueDispatch(...args));
   }
 
   reconcileFlueExistingInstance(id: string, uid: string) {
-    return this.slack.reconcileFlueExistingInstance(id, uid);
+    return this.slack((store) => store.reconcileFlueExistingInstance(id, uid));
   }
 
   recordFlueReceipt(...args: Parameters<CfSlackStateStore['recordFlueReceipt']>) {
-    return this.slack.recordFlueReceipt(...args);
+    return this.slack((store) => store.recordFlueReceipt(...args));
   }
 
   recordFlueSettlement(...args: Parameters<CfSlackStateStore['recordFlueSettlement']>) {
-    return this.slack.recordFlueSettlement(...args);
+    return this.slack((store) => store.recordFlueSettlement(...args));
   }
 
   async recordPullRequest(id: string, pullRequest: TurnPullRequestProgress) {
@@ -2052,7 +2090,7 @@ export class CfTurnJobsForRunner implements RunnerTurnJobsPort {
     id: string,
     patch: Parameters<TagStateRpc['slackInteractionProgressRecord']>[1],
   ) {
-    await this.slack.recordSlackInteractionProgress(id, patch);
+    await this.slack((store) => store.recordSlackInteractionProgress(id, patch));
     return undefined;
   }
 
@@ -2066,6 +2104,28 @@ export class CfTurnJobsForRunner implements RunnerTurnJobsPort {
 
   async markCodingActiveWork(key: string, generation: string) {
     await this.op({ kind: 'markCodingActiveWork', key, generation });
+  }
+
+  setActiveWork(key: string, generation: string, active: boolean) {
+    return this.slack((store) => store.setActiveWork(key, generation, active));
+  }
+
+  release(key: string) {
+    return this.slack((store) => store.release(key));
+  }
+
+  matchFlueObservation(instanceId: string, submissionId?: string) {
+    return this.slack((store) => store.matchFlueObservation(instanceId, submissionId));
+  }
+
+  getLatestThreadSessionGeneration(
+    root: Parameters<CfSlackStateStore['getLatestThreadSessionGeneration']>[0],
+  ) {
+    return this.slack((store) => store.getLatestThreadSessionGeneration(root));
+  }
+
+  putSlackPublicContext(input: SlackPublicContextEntryInput) {
+    return this.call((stub) => new CfConfigStore(stub).putSlackPublicContext(input));
   }
 
   putPresentation(presentation: SlackRunPresentation) {

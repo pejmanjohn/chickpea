@@ -12,7 +12,11 @@ import type { SlackPresentationStatePort } from './agent-view-presentation.ts';
 import { alarmYieldIsFree, type AlarmTurnJobControl } from './alarm-turn-drain.ts';
 import type { SlackStateLogic } from './claim-store.ts';
 import type { SlackStatusRegistry } from './status-registry.ts';
-import { AgentObservationYield, AgentPromptFailure } from './flue-dispatch.ts';
+import {
+  AgentObservationYield,
+  AgentPromptFailure,
+  StateStoreUnavailable,
+} from './flue-dispatch.ts';
 import {
   effectiveTurnSlackInstallationId,
   normalizeSlackInstallationExecutionError,
@@ -407,6 +411,22 @@ export async function executeTurnJob(
     // Claims stay held — a completed turn never re-runs.
     return true;
   } catch (err) {
+    // Any failure after the terminal presentation boundary is cleanup, not a
+    // failed turn. The durable tombstone prevents a duplicate final; keep the
+    // claims held and let a later thread turn start normally. Checked first:
+    // nothing below may post a second final once one is out.
+    if (delivered) {
+      console.warn('[chickpea] post-delivery cleanup did not complete');
+      return true;
+    }
+    if (err instanceof StateStoreUnavailable) {
+      // A runner's state store is being replaced. Retry soon without spending
+      // an attempt; a dispatched turn reattaches to its submission.
+      options.onRetry();
+      await Promise.resolve(ports.turnJobs.recordAttempt(job.id, job.attempts)).catch(() => undefined);
+      console.warn('[chickpea] state store unavailable; the turn will be retried');
+      return false;
+    }
     if (err instanceof AgentObservationYield) {
       if (alarmYieldIsFree(flueDispatch.dispatchReceipt?.acceptedAt, Date.now())) {
         // The alarm stopped observing on purpose; nothing failed. Restore
@@ -424,13 +444,6 @@ export async function executeTurnJob(
     if (err instanceof AgentPromptFailure && err.recoveryRequired) {
       console.error('[chickpea] Flue turn requires operator reconciliation');
       return deliverRecoveryFailure('flue_dispatch_reconciliation_required');
-    }
-    // Any failure after the terminal presentation boundary is cleanup,
-    // not a failed turn. The durable tombstone prevents a duplicate final;
-    // keep the claims held and let a later thread turn start normally.
-    if (delivered) {
-      console.warn('[chickpea] post-delivery cleanup did not complete');
-      return true;
     }
     if (flueDispatch.dispatchEnvelope) {
       console.error('[chickpea] durable reattachment failed:', {

@@ -22,6 +22,8 @@ import {
   type ThreadRunnerJobRecord,
   type ThreadRunnerJobStore,
 } from './thread-runner-jobs.ts';
+import { StateStoreUnavailable } from './flue-dispatch.ts';
+import type { RunnerTurnBegin } from './thread-runner-rpc.ts';
 import type { TurnExecutionPorts } from './turn-executor.ts';
 import type { PendingTurnJob, RunnerTurnJobView } from './turn-jobs.ts';
 
@@ -58,6 +60,8 @@ export const THREAD_RUNNER_CLEANUP_ATTEMPTS = 8;
 /** The state store's turn rows as a runner reaches them (over RPC in production). */
 export interface ThreadRunnerTurnRows {
   view(id: string): Promise<RunnerTurnJobView>;
+  /** `view` plus the turn's installation reads, in one round trip. */
+  begin(id: string): Promise<RunnerTurnBegin>;
   markDelivered(id: string): Promise<void>;
   markError(id: string): Promise<void>;
 }
@@ -71,6 +75,7 @@ export interface ThreadRunnerLoopDeps {
     control: AlarmTurnJobControl,
     onRetry: (afterMs?: number) => void,
     threadKey: string,
+    start: RunnerTurnBegin,
   ): Promise<boolean>;
   /** Called once a job settles or stops, e.g. to publish its presentation. */
   afterJob?(job: PendingTurnJob): Promise<void>;
@@ -216,8 +221,13 @@ async function runOne(
     return true;
   }
   // The state store's row is authoritative: a settled or reclaimed turn never
-  // runs here, and a dispatched one reattaches through its checkpoints.
-  const view = await deps.turns.view(local.id);
+  // runs here, and a dispatched one reattaches through its checkpoints. One
+  // round trip also brings what the turn's installation context reads.
+  const [start] = await Promise.all([
+    deps.turns.begin(local.id),
+    deps.armBackstop(now() + THREAD_RUNNER_BACKSTOP_MS),
+  ]);
+  const view = start.view;
   if (view.status !== 'pending' || !view.job) {
     settleFromView(deps, local.id, view, now);
     return true;
@@ -227,7 +237,6 @@ async function runOne(
     return true;
   }
   deps.jobs.markRunning(local.id);
-  await deps.armBackstop(now() + THREAD_RUNNER_BACKSTOP_MS);
   let retryAfterMs: number | undefined;
   let retry = false;
   let settled: boolean;
@@ -235,7 +244,7 @@ async function runOne(
     settled = await deps.execute(view.job, control, (afterMs) => {
       retry = true;
       if (afterMs !== undefined) retryAfterMs = Math.max(retryAfterMs ?? 0, afterMs);
-    }, local.threadKey);
+    }, local.threadKey, start);
   } finally {
     await deps.afterJob?.(view.job).catch(() => undefined);
   }
@@ -352,13 +361,33 @@ export function runnerSlackPort(
         await remote.setActiveWork(key, generation, active);
         if (!active) jobs.owesActiveClear(generation, false);
       } catch (error) {
-        if (active) throw error;
+        if (active) throw unavailable(error);
         jobs.owesActiveClear(generation, true);
       }
     },
-    markCodingActiveWork: (...args) => remote.markCodingActiveWork(...args),
-    release: (...args) => remote.release(...args),
+    markCodingActiveWork: (...args) => storeCall(() => remote.markCodingActiveWork(...args)),
+    release: (...args) => storeCall(() => remote.release(...args)),
   };
+}
+
+/**
+ * A state-store call from inside a turn. A store that stays unreachable
+ * (it is being replaced) becomes {@link StateStoreUnavailable}: a retryable
+ * failure the turn body passes through untouched, so it never posts a
+ * failure notice for it, and the executor keeps the turn for its next attempt.
+ */
+async function storeCall<T>(call: () => T | Promise<T>): Promise<T> {
+  try {
+    return await call();
+  } catch (error) {
+    throw unavailable(error);
+  }
+}
+
+function unavailable(error: unknown): unknown {
+  return error instanceof Error && error.name === 'StateStoreDisconnectedError'
+    ? new StateStoreUnavailable()
+    : error;
 }
 
 /**
@@ -384,48 +413,82 @@ export function runnerTurnJobsPort<P extends TurnExecutionPorts['turnJobs']>(
     }
   };
   return {
-    recordAttempt: (...args) => remote.recordAttempt(...args),
-    markRecoveryRequired: (...args) => remote.markRecoveryRequired(...args),
-    prepareFlueDispatch: (...args) => remote.prepareFlueDispatch(...args),
-    reconcileFlueExistingInstance: (...args) => remote.reconcileFlueExistingInstance(...args),
-    recordFlueReceipt: (...args) => remote.recordFlueReceipt(...args),
-    recordFlueSettlement: (...args) => remote.recordFlueSettlement(...args),
-    recordPullRequest: (...args) => remote.recordPullRequest(...args),
-    freezeRuntimePlan: (...args) => remote.freezeRuntimePlan(...args),
-    getBoundRuntimePlan: (...args) => remote.getBoundRuntimePlan(...args),
-    recordUsagePersistence: (...args) => remote.recordUsagePersistence(...args),
-    recordInteractionIntent: (...args) => remote.recordInteractionIntent(...args),
-    recordSlackInteractionProgress: (...args) => remote.recordSlackInteractionProgress(...args),
+    recordAttempt: (...args) => storeCall(() => remote.recordAttempt(...args)),
+    markRecoveryRequired: (...args) => storeCall(() => remote.markRecoveryRequired(...args)),
+    prepareFlueDispatch: (...args) => storeCall(() => remote.prepareFlueDispatch(...args)),
+    reconcileFlueExistingInstance: (...args) =>
+      storeCall(() => remote.reconcileFlueExistingInstance(...args)),
+    recordFlueReceipt: (...args) => storeCall(() => remote.recordFlueReceipt(...args)),
+    recordFlueSettlement: (...args) => storeCall(() => remote.recordFlueSettlement(...args)),
+    recordPullRequest: (...args) => storeCall(() => remote.recordPullRequest(...args)),
+    freezeRuntimePlan: (...args) => storeCall(() => remote.freezeRuntimePlan(...args)),
+    getBoundRuntimePlan: (...args) => storeCall(() => remote.getBoundRuntimePlan(...args)),
+    recordUsagePersistence: (...args) => storeCall(() => remote.recordUsagePersistence(...args)),
+    recordInteractionIntent: (...args) => storeCall(() => remote.recordInteractionIntent(...args)),
+    recordSlackInteractionProgress: (...args) =>
+      storeCall(() => remote.recordSlackInteractionProgress(...args)),
     markDelivered: (id) => settle(id, 'done'),
     markError: (id) => settle(id, 'error'),
   };
 }
 
+/** Presentation copies are published at most this often, trailing the latest. */
+export const RUNNER_PRESENTATION_PUBLISH_INTERVAL_MS = 3_000;
+/** The thread's latest session generation is read from the state store at most this often. */
+export const RUNNER_GENERATION_CACHE_MS = 15_000;
+
 /**
  * The runner's presentation state: its own SQLite copy is authoritative for
- * every write, per stream chunk included. What other readers of the shared
- * state store need (Admin views, the thread's session-generation fence) is
- * published back when the presentation's lifecycle changes, a few times per
- * turn, and once more when the job stops (`publish`).
+ * every write, per stream chunk and activity change included. What readers of
+ * the shared state store need (Admin views, the thread's session-generation
+ * fence) is published back on lifecycle changes only (stream start and end,
+ * terminal delivery, session and cleanup settlement), at most one publish per
+ * interval with the latest copy trailing, and once more when the job stops
+ * (`publish`). The state store's generation for the thread is cached briefly,
+ * so activity changes make no state-store calls.
  */
 export function runnerPresentationState(input: {
   local: SlackRunPresentationStoreLogic;
   remote: Pick<SlackPresentationStatePort, 'matchFlueObservation' | 'getLatestThreadSessionGeneration'>;
   putRemote(presentation: SlackRunPresentation): Promise<unknown>;
+  now?: () => number;
+  publishIntervalMs?: number;
+  generationCacheMs?: number;
 }): { state: SlackPresentationStatePort; publish(runId: string | undefined): Promise<void> } {
+  const now = input.now ?? Date.now;
+  const interval = input.publishIntervalMs ?? RUNNER_PRESENTATION_PUBLISH_INTERVAL_MS;
   const published = new Map<string, string>();
-  const publish = async (presentation: SlackRunPresentation, force = false) => {
+  const trailing = new Map<string, ReturnType<typeof setTimeout>>();
+  let lastPublishAt = Number.NEGATIVE_INFINITY;
+  const put = async (runId: string, always = false) => {
+    const presentation = input.local.get(runId);
+    if (!presentation) return;
     const fingerprint = lifecycleFingerprint(presentation);
-    if (!force && published.get(presentation.runId) === fingerprint) return;
+    if (!always && published.get(runId) === fingerprint) return;
+    lastPublishAt = now();
     try {
       await input.putRemote(presentation);
-      published.set(presentation.runId, fingerprint);
+      published.set(runId, fingerprint);
       if (published.size > 64) published.delete(published.keys().next().value!);
     } catch {
       // Readers see the earlier copy until the next lifecycle change or job end.
       console.warn('[chickpea] thread runner presentation publish failed');
     }
   };
+  const lifecycleChanged = async (presentation: SlackRunPresentation) => {
+    const runId = presentation.runId;
+    if (published.get(runId) === lifecycleFingerprint(presentation) || trailing.has(runId)) return;
+    const wait = lastPublishAt + interval - now();
+    if (wait <= 0) {
+      await put(runId);
+      return;
+    }
+    trailing.set(runId, setTimeout(() => {
+      trailing.delete(runId);
+      void put(runId);
+    }, wait));
+  };
+  const generations = new Map<string, { value: number | undefined; at: number }>();
   const base = localSlackPresentationStatePort({
     presentations: input.local,
     matchFlueObservation: (instanceId, submissionId) =>
@@ -435,39 +498,61 @@ export function runnerPresentationState(input: {
     state: {
       ...base,
       // The shared store sees every presentation of this Slack thread,
-      // including ones other executors own; generations never change.
+      // including ones other executors own; generations never change, and a
+      // newer one appears only with a new message, so a brief cache is safe.
       getLatestThreadSessionGeneration: async (root) => {
-        const [local, remote] = await Promise.all([
-          input.local.getLatestThreadSessionGeneration(root),
-          input.remote.getLatestThreadSessionGeneration(root),
-        ]);
-        if (local === undefined) return remote;
-        return remote === undefined ? local : Math.max(local, remote);
+        const key = `${root.workspaceId}:${root.channelId}:${root.threadTs}`;
+        let cached = generations.get(key);
+        if (!cached || now() - cached.at >= (input.generationCacheMs ?? RUNNER_GENERATION_CACHE_MS)) {
+          cached = { value: await input.remote.getLatestThreadSessionGeneration(root), at: now() };
+          generations.set(key, cached);
+        }
+        const local = input.local.getLatestThreadSessionGeneration(root);
+        if (local === undefined) return cached.value;
+        return cached.value === undefined ? local : Math.max(local, cached.value);
       },
       transitionRunPresentation: async (transition) => {
+        if (!published.has(transition.runId)) {
+          // The state store's copy matched this one when this alarm began
+          // (hand-off or an earlier publish); the job-end publish corrects it.
+          const before = input.local.get(transition.runId);
+          if (before) published.set(transition.runId, lifecycleFingerprint(before));
+        }
         const result = input.local.transition(transition);
-        if (result.outcome === 'applied') await publish(result.presentation);
+        if (result.outcome === 'applied') await lifecycleChanged(result.presentation);
         return result;
       },
     },
     publish: async (runId) => {
-      const presentation = runId ? input.local.get(runId) : undefined;
-      if (presentation) await publish(presentation, false);
+      if (!runId) return;
+      const timer = trailing.get(runId);
+      if (timer !== undefined) {
+        clearTimeout(timer);
+        trailing.delete(runId);
+      }
+      // Always, once per job: version-gated, so an unchanged copy is a no-op.
+      await put(runId, true);
     },
   };
 }
 
+/** What readers of the state store's copy look at; activity changes are not in it. */
 function lifecycleFingerprint(presentation: SlackRunPresentation): string {
   const v3 = presentation.schemaVersion === 3 ? presentation : undefined;
+  const terminal = v3?.terminalDelivery as { state?: string; operation?: { certainty?: string } } | undefined;
+  const cleanup = v3?.cleanup as { state?: string; operation?: { certainty?: string } } | undefined;
   return JSON.stringify([
     presentation.stream.state,
     presentation.stream.messageTs ?? null,
-    presentation.repairRequired,
+    // repairRequired follows each activity receipt; the state store's repair
+    // sweep skips runner-owned turns, so it is published with the rest only.
     v3?.lifecyclePhase,
-    v3?.activityProjection,
-    v3?.agentSession,
-    v3?.terminalDelivery,
-    v3?.cleanup,
+    v3?.agentSession.desired,
+    v3?.agentSession.acknowledged,
+    terminal?.state,
+    terminal?.operation?.certainty,
+    cleanup?.state,
+    cleanup?.operation?.certainty,
     v3?.continuations?.state,
   ]);
 }

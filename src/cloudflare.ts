@@ -201,6 +201,7 @@ import {
 import { slackTurnExecutor } from './slack/turn-executor-flag.ts';
 import { sandboxTurnReaders } from './slack/thread-runner.ts';
 import {
+  RUNNER_PREFETCHED_SETTINGS,
   threadRunnerStub,
   type SlackThreadRunnerRpc,
   type ThreadRunnerJobPayload,
@@ -761,6 +762,8 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
    */
   private readonly carriedAlarmTurns = new Map<string, string>();
   private readonly presentationRunnerOf = (runId: string) => this.presentationRunner(runId);
+  /** Set while runner-mode alarm work runs: admission hands new turns over at once. */
+  private dispatchWake: (() => void) | undefined;
 
   constructor(ctx: DurableObjectState, env: unknown) {
     super(ctx, env);
@@ -1907,23 +1910,49 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       config: localGatewayAppStores(stores).config,
     });
     stores.management.cleanupRetention(Date.now(), 250);
-    const gatewayNeedsRetry = await drainGatewayInbox(
-      stores,
-      this.env as PlatformEnv,
-    );
     // With SLACK_TAG_TURN_EXECUTOR=runner, new turns go to their thread's
     // SlackThreadRunner and this alarm only finishes turns it already
     // dispatched to Flue. Rows handed to runners stay theirs either way.
     const runnerBinding = Boolean((this.env as PlatformEnv).SLACK_THREAD_RUNNER);
     const runnerMode = runnerBinding &&
       slackTurnExecutor(this.env as PlatformEnv) === 'runner';
-    const dispatchToRunners = async () => {
+    let dispatching: Promise<void> | undefined;
+    let dispatchAgain = false;
+    /** Hand free turns to their runners; concurrent requests coalesce. */
+    const dispatchToRunners = (): Promise<void> => {
       // Unconfirmed hand-offs are admitted again even after the switch is
       // turned off: those rows already belong to their runners.
-      if (!runnerMode && !(runnerBinding && stores.turnJobs.hasHandoffs())) return;
-      metrics.jobsDispatched += await this.dispatchToRunners(stores, runnerMode);
+      if (!runnerMode && !(runnerBinding && stores.turnJobs.hasHandoffs())) return Promise.resolve();
+      if (dispatching) {
+        dispatchAgain = true;
+        return dispatching;
+      }
+      dispatching = (async () => {
+        do {
+          dispatchAgain = false;
+          metrics.jobsDispatched += await this.dispatchToRunners(stores, runnerMode);
+        } while (dispatchAgain);
+      })().finally(() => {
+        dispatching = undefined;
+      });
+      return dispatching;
     };
-    await dispatchToRunners();
+    const onAdmitted = runnerMode ? () => void dispatchToRunners() : undefined;
+    /** Admit newly delivered events and hand their turns over at once. */
+    const admitAndDispatch = async () => {
+      const retry = await drainGatewayInbox(stores, this.env as PlatformEnv, onAdmitted);
+      await dispatchToRunners();
+      return retry;
+    };
+    /**
+     * Runner mode: the alarm's other due work (ledger runs, cleanups,
+     * repairs, schedule actions, receipts) can take seconds. Keep admitting
+     * and handing over turns that arrive meanwhile, on every admission wake
+     * and at the admission re-check interval, instead of after it.
+     */
+    const whileDispatching = <T>(work: () => Promise<T>): Promise<T> =>
+      runnerMode ? this.dispatchingWhile(work, admitAndDispatch) : work();
+    const gatewayNeedsRetry = await admitAndDispatch();
     const threadKeyOf = (job: {
       turn: Parameters<typeof slackAgentThreadKey>[0];
       assignment: Parameters<typeof slackAgentThreadKey>[1];
@@ -1941,22 +1970,25 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     if (pending.length === 0) {
       const cleanupPending = stores.turnJobs.hasPendingSlackInteractionCleanup();
       const resolveInstallation = this.createAlarmIdentityResolver(stores);
-      const ledgerDrain = await drainLedgerRuns(
-        stores,
-        this.env as PlatformEnv,
-        resolveInstallation,
-        productTelemetry,
-      );
-      if (cleanupPending) {
-        await drainSlackInteractionCleanups(stores, resolveInstallation, carriedJobIds());
-      }
-      const presentationRepairs = await drainTerminalPresentationRepairs(
-        stores,
-        resolveInstallation,
-        carriedJobIds(),
-      );
-      const scheduleActions = await drainCloudflareScheduleActions(stores, this.env as PlatformEnv);
-      await drainCloudflareManagementReceipts(stores, resolveInstallation, this.presentationRunnerOf);
+      const { ledgerDrain, presentationRepairs, scheduleActions } = await whileDispatching(async () => {
+        const ledgerDrain = await drainLedgerRuns(
+          stores,
+          this.env as PlatformEnv,
+          resolveInstallation,
+          productTelemetry,
+        );
+        if (cleanupPending) {
+          await drainSlackInteractionCleanups(stores, resolveInstallation, carriedJobIds());
+        }
+        const presentationRepairs = await drainTerminalPresentationRepairs(
+          stores,
+          resolveInstallation,
+          carriedJobIds(),
+        );
+        const scheduleActions = await drainCloudflareScheduleActions(stores, this.env as PlatformEnv);
+        await drainCloudflareManagementReceipts(stores, resolveInstallation, this.presentationRunnerOf);
+        return { ledgerDrain, presentationRepairs, scheduleActions };
+      });
       const turnRetry = gatewayNeedsRetry || stores.gatewayInbox.hasPending() ||
         stores.turnJobs.hasPending('ledger') || stores.turnJobs.hasPendingSlackInteractionCleanup() ||
         stores.turnJobs.hasHandoffs() ||
@@ -2054,8 +2086,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
         return settled;
       },
       refresh: async () => {
-        needsRetry = (await drainGatewayInbox(stores, this.env as PlatformEnv)) || needsRetry;
-        await dispatchToRunners();
+        needsRetry = (await admitAndDispatch()) || needsRetry;
         return listPendingTurns();
       },
       carried: {
@@ -2097,21 +2128,24 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
         this.alarmAdmissionWake?.();
       });
     }
-    const ledgerDrain = await drainLedgerRuns(
-      stores,
-      this.env as PlatformEnv,
-      resolveInstallation,
-      productTelemetry,
-    );
-    identityRetryDelayMs = runDriverRetryDelayMs(ledgerDrain, identityRetryDelayMs);
-    await drainSlackInteractionCleanups(stores, resolveInstallation, carriedJobIds());
-    const presentationRepairs = await drainTerminalPresentationRepairs(
-      stores,
-      resolveInstallation,
-      carriedJobIds(),
-    );
-    const scheduleActions = await drainCloudflareScheduleActions(stores, this.env as PlatformEnv);
-    await drainCloudflareManagementReceipts(stores, resolveInstallation, this.presentationRunnerOf);
+    const { presentationRepairs, scheduleActions } = await whileDispatching(async () => {
+      const ledgerDrain = await drainLedgerRuns(
+        stores,
+        this.env as PlatformEnv,
+        resolveInstallation,
+        productTelemetry,
+      );
+      identityRetryDelayMs = runDriverRetryDelayMs(ledgerDrain, identityRetryDelayMs);
+      await drainSlackInteractionCleanups(stores, resolveInstallation, carriedJobIds());
+      const presentationRepairs = await drainTerminalPresentationRepairs(
+        stores,
+        resolveInstallation,
+        carriedJobIds(),
+      );
+      const scheduleActions = await drainCloudflareScheduleActions(stores, this.env as PlatformEnv);
+      await drainCloudflareManagementReceipts(stores, resolveInstallation, this.presentationRunnerOf);
+      return { presentationRepairs, scheduleActions };
+    });
     needsRetry ||= stores.turnJobs.hasPending('legacy') ||
       stores.turnJobs.hasPending('ledger') ||
       stores.turnJobs.hasPendingSlackInteractionCleanup() ||
@@ -2190,10 +2224,56 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     return dispatched;
   }
 
+  /**
+   * Run the alarm's other work while admitting and handing over turns that
+   * arrive meanwhile: on every admission wake, at the admission re-check
+   * interval, and once more after the work if anything was admitted during
+   * the last pass.
+   */
+  private async dispatchingWhile<T>(
+    work: () => Promise<T>,
+    admitAndDispatch: () => Promise<unknown>,
+  ): Promise<T> {
+    let done = false;
+    let wake: (() => void) | undefined;
+    let admittedMeanwhile = false;
+    this.dispatchWake = () => {
+      admittedMeanwhile = true;
+      wake?.();
+    };
+    const result = work().finally(() => {
+      done = true;
+      wake?.();
+    });
+    const loop = (async () => {
+      while (!done) {
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, ALARM_ADMISSION_RECHECK_MS);
+          wake = () => {
+            clearTimeout(timer);
+            resolve();
+          };
+        });
+        wake = undefined;
+        if (done) break;
+        admittedMeanwhile = false;
+        await admitAndDispatch();
+      }
+      if (admittedMeanwhile) await admitAndDispatch();
+    })();
+    try {
+      return await result;
+    } finally {
+      await loop.catch(() => undefined);
+      this.dispatchWake = undefined;
+    }
+  }
+
   private async armAlarmNoLaterThan(at: number): Promise<void> {
     // Every admission arms the alarm after its durable write. A running alarm
     // cannot be re-entered, so let its drain pick the new work up directly.
     this.alarmAdmissionWake?.();
+    this.dispatchWake?.();
     const existing = await this.ctx.storage.getAlarm();
     if (existing === null || at < existing) await this.ctx.storage.setAlarm(at);
   }
@@ -2379,6 +2459,20 @@ function applyThreadRunnerTurnOp(
   switch (op.kind) {
     case 'view':
       return turnJobs.runnerView(op.id);
+    case 'begin': {
+      const view = turnJobs.runnerView(op.id);
+      const installation = view.job
+        ? stores.config.getWorkspaceInstallation(view.job.turn.workspaceId)
+        : undefined;
+      const values = stores.settings.getSettings(RUNNER_PREFETCHED_SETTINGS);
+      return {
+        view,
+        ...(installation ? { installation } : {}),
+        settings: Object.fromEntries(
+          RUNNER_PREFETCHED_SETTINGS.map((key, index) => [key, values[index] ?? null]),
+        ),
+      };
+    }
     case 'recordAttempt':
       turnJobs.recordAttempt(op.id, op.attempts);
       return null;
@@ -2606,6 +2700,11 @@ async function drainLedgerRuns(
 async function drainGatewayInbox(
   stores: TagStateStores,
   platformEnv: PlatformEnv,
+  /**
+   * Called after each admitted delivery (runner mode: hand its turn over at
+   * once). With it, different conversations are admitted side by side.
+   */
+  onAdmitted?: () => void,
 ): Promise<boolean> {
   const pending = stores.gatewayInbox.claimPending(GATEWAY_INBOX_MAX_DRAIN_BATCH);
   if (pending.length === 0) return stores.gatewayInbox.hasPending();
@@ -2631,7 +2730,7 @@ async function drainGatewayInbox(
     return stores.gatewayInbox.hasPending();
   }
   let needsRetry = false;
-  for (const item of pending) {
+  const admit = async (item: (typeof pending)[number]) => {
     // A turn admitted from this delivery measures its latency from receipt:
     // the delivery may have waited here while an earlier alarm ran turns.
     const releaseReceipt = item.delivery.kind === 'event.deliver'
@@ -2666,6 +2765,7 @@ async function drainGatewayInbox(
           );
       if (outcome === 'accepted') {
         stores.gatewayInbox.complete(item.id);
+        onAdmitted?.();
       } else {
         stores.gatewayInbox.markRecoveryRequired(item.id, 'binding_revalidation_rejected');
       }
@@ -2677,8 +2777,42 @@ async function drainGatewayInbox(
     } finally {
       releaseReceipt?.();
     }
+  };
+  // Deliveries of one conversation keep their order; different conversations
+  // are admitted side by side, so one slow delivery never holds another
+  // thread's first status.
+  const groups = new Map<string, Array<(typeof pending)[number]>>();
+  for (const item of pending) {
+    const key = gatewayConversationKey(item.delivery);
+    groups.set(key, [...(groups.get(key) ?? []), item]);
   }
+  const queue = [...groups.values()];
+  await Promise.all(Array.from(
+    { length: Math.min(onAdmitted ? GATEWAY_INBOX_CONVERSATION_CONCURRENCY : 1, queue.length) },
+    async () => {
+      for (let group = queue.shift(); group; group = queue.shift()) {
+        for (const item of group) await admit(item);
+      }
+    },
+  ));
   return needsRetry || stores.gatewayInbox.hasPending();
+}
+
+/** Conversations admitted side by side by one inbox drain. */
+const GATEWAY_INBOX_CONVERSATION_CONCURRENCY = 4;
+
+/**
+ * The Slack conversation a delivery belongs to: its channel and thread root.
+ * Anything without one (installation, profile and interaction events) shares
+ * one ordered group.
+ */
+function gatewayConversationKey(delivery: GatewayInboundDelivery): string {
+  if (delivery.kind !== 'event.deliver') return 'other';
+  const event = delivery.envelope.event as { channel?: unknown; thread_ts?: unknown; ts?: unknown };
+  const root = typeof event.thread_ts === 'string' ? event.thread_ts : event.ts;
+  return typeof event.channel === 'string' && typeof root === 'string'
+    ? `${event.channel}:${root}`
+    : 'other';
 }
 
 function localGatewayAppStores(stores: TagStateStores): AppStores {
