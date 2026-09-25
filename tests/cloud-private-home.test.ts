@@ -250,3 +250,60 @@ test('encode prints the variables from the files on this machine and round-trips
     target.cleanup();
   }
 });
+
+const REGISTRATION = `${JSON.stringify({
+  schemaVersion: 'chickpea-environment-registration/v1',
+  exportedAt: '2026-09-25T18:00:00.000Z',
+  sandbox: null,
+  targets: [
+    { target: 'amber', ownership: 'remote', authorityOrigin: 'https://amber.example.test' },
+    { target: 'violet', ownership: 'local', authorityOrigin: 'https://violet.example.test' },
+  ],
+}, null, 2)}\n`;
+
+test('writes the environment registration owner-only, refuses one that carries secrets, and encode carries it', () => {
+  const home = temporaryHome();
+  try {
+    const result = run(home.path, { CHICKPEA_ENVIRONMENT_REGISTRATION_B64: wrapped(REGISTRATION) });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /^cloud-private-home: wrote .*registrations\/cloud\.json \(2 lanes: amber remote, violet local\)\n$/u);
+    const file = join(chickpea(home.path), 'registrations', 'cloud.json');
+    assert.equal(mode(join(chickpea(home.path), 'registrations')), 0o700);
+    assert.equal(mode(file), 0o600);
+    assert.equal(readFileSync(file, 'utf8'), REGISTRATION);
+
+    // The session-start hook creates the registry from exactly this file, once.
+    const hook = readFileSync(fileURLToPath(new URL('../scripts/cloud-session-start.sh', import.meta.url)), 'utf8');
+    assert.match(hook, /registration="\$HOME\/\.chickpea\/registrations\/cloud\.json"/u);
+    assert.match(hook, /chickpea-environment\.mjs init --registration "\$registration"/u);
+    assert.match(hook, /registry\.json" \]; then\n\s+echo "cloud-session-start: environment registry already present/u);
+
+    const encoded = run(home.path, {}, { args: ['encode'], remote: null });
+    assert.equal(encoded.status, 0, encoded.stderr);
+    const lines = encoded.stdout.trimEnd().split('\n');
+    assert.deepEqual(lines.map((line) => line.slice(0, line.indexOf('='))), ['CHICKPEA_ENVIRONMENT_REGISTRATION_B64']);
+    assert.equal(Buffer.from(lines[0]!.slice(lines[0]!.indexOf('=') + 1), 'base64').toString('utf8'), REGISTRATION);
+
+    for (const [value, expected, needle] of [
+      [b64('[]'), /must be a chickpea-environment-registration\/v1 document/u, '[]'],
+      [b64('{"schemaVersion":"chickpea-environment-registry/v2","targets":[]}'), /must be a chickpea-environment-registration\/v1 document/u, 'registry/v2'],
+      [b64(REGISTRATION.replace('"ownership": "local"', '"ownership": "mine"')), /ownership of local or remote/u, 'mine'],
+      [b64(REGISTRATION.replace('"target": "amber"', '"target": "fern"')), /ownership of local or remote/u, 'fern'],
+      [b64(REGISTRATION.replace('"sandbox": null', '"sandbox": null, "evidence": {"violet": {"authorityReadToken": "fixture-registration-value-13"}}')), /secret-shaped field \(evidence\.violet\.authorityReadToken\)/u, 'fixture-registration-value-13'],
+    ] as const) {
+      const other = temporaryHome();
+      try {
+        const refused = run(other.path, { CHICKPEA_ENVIRONMENT_REGISTRATION_B64: value });
+        assert.equal(refused.status, 1, refused.stderr);
+        assert.match(refused.stderr, /^cloud-private-home: CHICKPEA_ENVIRONMENT_REGISTRATION_B64/u);
+        assert.match(refused.stderr, expected);
+        assert.equal(refused.stderr.includes(needle), false, `stderr must not echo the value: ${refused.stderr}`);
+        assert.equal(existsSync(join(chickpea(other.path), 'registrations')), false);
+      } finally {
+        other.cleanup();
+      }
+    }
+  } finally {
+    home.cleanup();
+  }
+});

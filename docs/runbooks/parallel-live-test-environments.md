@@ -41,6 +41,24 @@ A workspace rename, successful bootstrap, or merged lane-support PR alone does
 not activate the private registry. Keep any unfinished activation steps explicit
 in the handoff.
 
+### Lane ownership across hosts
+
+The registry is host-bound and is never copied. A second host, such as a
+Claude Code cloud session, bootstraps its own registry from a registration
+file the current owner exports: `npm run env -- ownership <color> --set remote`
+hands a lane off, `npm run env -- export-registration all --own <color>
+--output <owner-only file>` describes the fleet for the other host, and
+`npm run env -- init --registration <file>` creates that host's registry.
+Every host registers all active lanes, so the fleet checks are unchanged;
+each lane is `local` on exactly one host and `remote` everywhere else, where
+it cannot be claimed, deployed, or attested (`TARGET_REMOTE`). The file is
+secret-free: identities, serving state, each lane's authority origin, and the
+owned lane's baseline and deploy receipt. Read tokens stay in host variables
+or credential files. A lane comes back only through the owner's export and
+`npm run env -- ownership <color> --set local --registration <file>`. The full
+procedure and its limits are in the
+[operator runbook](../../qa/live/operator/environments.md#operate-lanes-from-a-second-host).
+
 Confirm one paid human seat per workspace and monthly billing at checkout.
 Disable automatic email-domain membership and avoid invitations to unrelated
 people. Record each workspace-local actor, bot, DM, and installation identity.

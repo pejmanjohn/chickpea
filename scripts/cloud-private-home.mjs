@@ -14,6 +14,15 @@
  *                                  and <lane>-seed.json, from one JSON object
  *                                  keyed by file name
  *   CHICKPEA_QA_SEED_JSON_B64      ~/.chickpea/qa-seed.json
+ *   CHICKPEA_ENVIRONMENT_REGISTRATION_B64
+ *                                  ~/.chickpea/registrations/cloud.json, the
+ *                                  secret-free registration that
+ *                                  `npm run env -- export-registration` wrote
+ *                                  on the owning host; the session-start hook
+ *                                  then creates this VM's own environment
+ *                                  registry from it (`npm run env -- init`).
+ *                                  The registry itself is host-bound and is
+ *                                  never carried.
  *
  * It writes only when CLAUDE_CODE_REMOTE=true. An absent or empty variable is
  * skipped without a word. A present but malformed one fails the session
@@ -56,6 +65,8 @@ export const REMOTE_SESSION_ENV = 'CLAUDE_CODE_REMOTE';
 export const QA_SECRETS_ENV_VARIABLE = 'CHICKPEA_QA_SECRETS_ENV_B64';
 export const LANE_CREDENTIALS_VARIABLE = 'CHICKPEA_LANE_CREDENTIALS_B64';
 export const QA_SEED_JSON_VARIABLE = 'CHICKPEA_QA_SEED_JSON_B64';
+export const ENVIRONMENT_REGISTRATION_VARIABLE = 'CHICKPEA_ENVIRONMENT_REGISTRATION_B64';
+export const ENVIRONMENT_REGISTRATION_SCHEMA = 'chickpea-environment-registration/v1';
 export const LANE_CREDENTIAL_FILE = new RegExp(`^(${QA_LANES.join('|')})-(live|seed)\\.json$`, 'u');
 
 const PREFIX = 'cloud-private-home';
@@ -63,11 +74,14 @@ const MAX_ENCODED_LENGTH = 1024 * 1024;
 const SECRETS_LABEL = 'The lane secrets file';
 const CREDENTIALS_LABEL = 'The lane credentials directory';
 const MANIFEST_LABEL = 'The seed manifest';
+const REGISTRATION_LABEL = 'The environment registration';
+const SECRET_LIKE_KEY = /(?:^|_)(?:secret|token|password|credential|cookie|private[_-]?key)(?:$|_)/iu;
 const USAGE = [
   'Usage: node scripts/cloud-private-home.mjs [encode]',
   '  (no argument)  In a Claude Code cloud session (CLAUDE_CODE_REMOTE=true), write the',
   `                 operator's private ~/.chickpea files from ${QA_SECRETS_ENV_VARIABLE},`,
-  `                 ${LANE_CREDENTIALS_VARIABLE}, and ${QA_SEED_JSON_VARIABLE}.`,
+  `                 ${LANE_CREDENTIALS_VARIABLE}, ${QA_SEED_JSON_VARIABLE}, and`,
+  `                 ${ENVIRONMENT_REGISTRATION_VARIABLE}.`,
   '  encode         Print those variables from the files on this machine (carries secrets).',
 ].join('\n');
 
@@ -219,6 +233,56 @@ function stageSeedManifest(text) {
   return stagePrivateText(defaultSeedManifest(), text, { label: MANIFEST_LABEL, report: `${connections.length} connections` });
 }
 
+/** Where a cloud session keeps the registration it was given; `npm run env -- init` reads it. */
+export function defaultCloudRegistrationFile() {
+  return path.join(homedir(), '.chickpea', 'registrations', 'cloud.json');
+}
+
+/**
+ * The shape check a session start can afford before dependencies exist: the
+ * registration schema, one record per active lane with an ownership, and no
+ * secret-shaped key anywhere. `npm run env -- init` validates the rest.
+ */
+export function parseEnvironmentRegistration(text) {
+  let registration;
+  try { registration = JSON.parse(text); } catch { throw new Error(`${ENVIRONMENT_REGISTRATION_VARIABLE} is not readable JSON.`); }
+  if (!isPlainObject(registration) || registration.schemaVersion !== ENVIRONMENT_REGISTRATION_SCHEMA) {
+    throw new Error(`${ENVIRONMENT_REGISTRATION_VARIABLE} must be a ${ENVIRONMENT_REGISTRATION_SCHEMA} document from npm run env -- export-registration.`);
+  }
+  if (!Array.isArray(registration.targets) || registration.targets.length === 0
+    || registration.targets.some((record) => !isPlainObject(record) || !QA_LANES.includes(record.target)
+      || !['local', 'remote'].includes(record.ownership))) {
+    throw new Error(`${ENVIRONMENT_REGISTRATION_VARIABLE} must list each lane (${QA_LANES.join(', ')}) with an ownership of local or remote.`);
+  }
+  const secretLike = findSecretLikeKey(registration);
+  if (secretLike) throw new Error(`${ENVIRONMENT_REGISTRATION_VARIABLE} carries a secret-shaped field (${secretLike}); a registration never holds secrets.`);
+  return registration;
+}
+
+function findSecretLikeKey(value, trail = []) {
+  if (Array.isArray(value)) {
+    for (const [index, entry] of value.entries()) {
+      const found = findSecretLikeKey(entry, [...trail, String(index)]);
+      if (found) return found;
+    }
+    return undefined;
+  }
+  if (!isPlainObject(value)) return undefined;
+  for (const [key, entry] of Object.entries(value)) {
+    const normalized = key.replace(/([a-z0-9])([A-Z])/gu, '$1_$2').toLowerCase();
+    if (SECRET_LIKE_KEY.test(normalized)) return [...trail, key].join('.');
+    const found = findSecretLikeKey(entry, [...trail, key]);
+    if (found) return found;
+  }
+  return undefined;
+}
+
+function stageEnvironmentRegistration(text) {
+  const registration = parseEnvironmentRegistration(text);
+  const lanes = registration.targets.map((record) => `${record.target} ${record.ownership}`).join(', ');
+  return stagePrivateText(defaultCloudRegistrationFile(), text, { label: REGISTRATION_LABEL, report: `${registration.targets.length} lanes: ${lanes}` });
+}
+
 /**
  * Write the private files a cloud session's environment carries. Every
  * variable is decoded, parsed, and staged past its reader before any file
@@ -242,6 +306,11 @@ export function materializePrivateHome(env = process.env) {
     if (text !== undefined) parseManifest(text);
     return text;
   });
+  const registrationText = withVariable(ENVIRONMENT_REGISTRATION_VARIABLE, () => {
+    const text = decodeVariable(env, ENVIRONMENT_REGISTRATION_VARIABLE);
+    if (text !== undefined) parseEnvironmentRegistration(text);
+    return text;
+  });
   const staged = [];
   try {
     if (secretsText !== undefined) staged.push(withVariable(QA_SECRETS_ENV_VARIABLE, () => stageSecretsEnv(env, secretsText)));
@@ -249,6 +318,9 @@ export function materializePrivateHome(env = process.env) {
       staged.push(withVariable(LANE_CREDENTIALS_VARIABLE, () => stageLaneCredentials(env, bundle)));
     }
     if (manifestText !== undefined) staged.push(withVariable(QA_SEED_JSON_VARIABLE, () => stageSeedManifest(manifestText)));
+    if (registrationText !== undefined) {
+      staged.push(withVariable(ENVIRONMENT_REGISTRATION_VARIABLE, () => stageEnvironmentRegistration(registrationText)));
+    }
     for (const stage of staged) written.push(stage.commit());
   } finally {
     for (const stage of staged) stage.discard();
@@ -283,6 +355,16 @@ export function encodePrivateHome(env = process.env) {
     const text = readFileSync(manifest, 'utf8');
     parseManifest(text);
     lines.push(`${QA_SEED_JSON_VARIABLE}=${encode(text)}`);
+  }
+  // The registration is secret-free, but it travels with the same lines so
+  // one paste configures the environment.
+  const registration = defaultCloudRegistrationFile();
+  if (existsSync(registration)) {
+    assertPrivatePath(path.dirname(registration), { directory: true, label: REGISTRATION_LABEL });
+    assertPrivatePath(registration, { label: REGISTRATION_LABEL });
+    const text = readFileSync(registration, 'utf8');
+    parseEnvironmentRegistration(text);
+    lines.push(`${ENVIRONMENT_REGISTRATION_VARIABLE}=${encode(text)}`);
   }
   return lines;
 }
