@@ -251,7 +251,11 @@ export async function promptSlackThreadAgent(
     return resultFromSettlement(input.state.flueSettlement);
   }
 
-  if (input.useCloudflareSandbox) {
+  // The workspace turn is prepared once, before dispatch. A reattaching
+  // attempt (receipt saved, nothing settled) observes a submission that is
+  // still running in that workspace; preparing again would revoke its egress
+  // under it.
+  if (input.useCloudflareSandbox && !input.state.dispatchReceipt) {
     try {
       await (input.prepareSandbox ?? prepareCloudflareSandboxTurn)(
         input.env,

@@ -1,6 +1,6 @@
 import { FlueError } from '@flue/runtime';
 
-import { SandboxUnavailableError } from './errors.ts';
+import { SandboxConnectionDroppedError, SandboxUnavailableError } from './errors.ts';
 
 export const CLOUDFLARE_SANDBOX_OPTIONS = {
   transport: 'rpc',
@@ -180,6 +180,12 @@ function isSandboxInfrastructureFailure(err: unknown): boolean {
  * policy must never be treated as create-only state. If configuration fails,
  * the handle minted for this acquisition is torn down in the same context;
  * keepAlive:false + sleepAfter remains the bound for everything else.
+ *
+ * A dropped Durable Object connection is the one failure that must not tear
+ * the container down: the call's outcome is unknown, the Durable Object's own
+ * records still decide who owns the workspace, and a retried coordinator
+ * re-acquires the workspace while its coding worker is still using it, so a
+ * destroy here would end that worker's task.
  */
 export async function acquireSandbox<T extends DestroyableSandbox>(
   factory: () => Promise<T>,
@@ -190,7 +196,7 @@ export async function acquireSandbox<T extends DestroyableSandbox>(
     await configure(sandbox);
     return sandbox;
   } catch (err) {
-    await destroySandbox(sandbox);
+    if (!(err instanceof SandboxConnectionDroppedError)) await destroySandbox(sandbox);
     throw err;
   }
 }

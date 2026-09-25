@@ -409,7 +409,7 @@ test('workspace_exec returns a connection_dropped result and the next call reach
   assert.equal(log.at(-1), 'endTurn');
 });
 
-test('a drop while opening the workspace says it was reset, never that the files are intact', async () => {
+test('a drop while opening the workspace keeps the container and tells the model to reopen it', async () => {
   const log: string[] = [];
   let dropNextBegin = true;
   const mintStub = async (): Promise<WorkspaceSandboxStub> => ({
@@ -445,11 +445,13 @@ test('a drop while opening the workspace says it was reset, never that the files
   await assert.rejects(target.open(), (error: unknown) => {
     assert.ok(error instanceof SandboxConnectionDroppedError);
     assert.equal(error.message, SANDBOX_CONNECTION_DROPPED_WHILE_OPENING_MESSAGE);
-    assert.doesNotMatch(error.message, /intact/);
+    assert.doesNotMatch(error.message, /intact|reset/);
     return true;
   });
-  // Opening fails closed: the container whose owner decision is unknown goes.
-  assert.ok(log.includes('destroy'));
+  // A retried coordinator reopens the workspace its coding worker is still
+  // using; the drop must not destroy that container under the worker.
+  assert.ok(!log.includes('destroy'), 'a dropped connection never destroys the container');
   // The next open reconnects and succeeds.
   assert.equal(await target.open(), 'warm');
+  assert.deepEqual(log, ['beginWorkspaceTurn', 'beginWorkspaceTurn', 'configureEgress']);
 });
