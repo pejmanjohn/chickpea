@@ -33,7 +33,9 @@ import { createGatewaySlackTransport } from '../src/slack/transport/gateway.ts';
 import { SlackTransportError } from '../src/slack/transport/types.ts';
 import type { ProductTelemetryEventInput } from '../src/telemetry/events.ts';
 import {
+  resetGatewayIdentityVerificationsForTests,
   resolveSlackInstallationExecutionContext,
+  SlackInstallationUnavailableError,
   verifySlackInstallationTurnAccess,
 } from '../src/slack/installation-execution.ts';
 import {
@@ -1232,6 +1234,7 @@ test('gateway execution uses the shared app without resolving or storing a bot t
     fetch: fake.fetch,
     now: () => NOW,
   });
+  resetGatewayIdentityVerificationsForTests();
   try {
     await client.beginClaim();
     await client.refreshClaim();
@@ -1254,6 +1257,56 @@ test('gateway execution uses the shared app without resolving or storing a bot t
       'auth.test', 'conversations.info',
     ]);
   } finally {
+    settings.close();
+    config.close();
+  }
+});
+
+test('gateway execution verifies an unchanged binding identity once per window, never caching a failure', async () => {
+  const { settings, config } = gatewayStores(() => NOW);
+  const fake = new FakeGateway();
+  let rateLimitAuthTests = 1;
+  const client = new GatewayDeploymentClient({
+    settings,
+    config,
+    keyring: generateCredentialKeyring('key_gateway'),
+    gatewayBaseUrl: 'https://gateway.chickpea.test',
+    fetch: async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : input.toString());
+      if (url.pathname === '/v1/workspaces/TGATEWAY/operations' && rateLimitAuthTests > 0) {
+        const request = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        if (request.operation === 'auth.test') {
+          rateLimitAuthTests -= 1;
+          return new Response(JSON.stringify({
+            protocolVersion: CHICKPEA_GATEWAY_PROTOCOL_VERSION,
+            requestId: request.requestId,
+            ok: false,
+            error: { code: 'gateway_rate_limited', retryable: true },
+          }), { status: 429, headers: { 'content-type': 'application/json', 'retry-after': '9' } });
+        }
+      }
+      return fake.fetch(input, init);
+    },
+    now: () => NOW,
+  });
+  resetGatewayIdentityVerificationsForTests();
+  try {
+    await client.beginClaim();
+    await client.refreshClaim();
+    const resolve = () => resolveSlackInstallationExecutionContext(
+      'TGATEWAY', undefined, { config, settings, gatewayClient: client },
+    );
+    await assert.rejects(resolve(), (error: unknown) =>
+      error instanceof SlackInstallationUnavailableError &&
+      error.reasonCode === 'gateway_rate_limited' && error.retryable && error.retryAfterMs === 9_000);
+    // The failure was not cached: the next resolution verifies again, and
+    // later resolutions (other turns, runner alarms) reuse that verification.
+    const [first, second] = await Promise.all([resolve(), resolve()]);
+    const third = await resolve();
+    for (const execution of [first, second, third]) assert.equal(execution.transportMode, 'gateway');
+    assert.deepEqual(fake.operations.map(({ operation }) => operation), ['auth.test']);
+  } finally {
+    resetGatewayIdentityVerificationsForTests();
     settings.close();
     config.close();
   }
