@@ -1225,31 +1225,13 @@ export class WorkspaceManagementService {
       throw new ManagementError('invalid_state', 'The creation operation did not create this Agent.');
     }
     let agent = await this.requireEditableAgent(actor, input.agentId);
-    const generatedAvatar = agent.slackPresence?.avatar;
-    if (generatedAvatar?.kind === 'generated' && !generatedAvatar.url &&
-        this.stores.publishGeneratedAgentAvatar) {
-      try {
-        const published = await this.stores.publishGeneratedAgentAvatar({
-          workspaceId: actor.origin.workspaceId,
-          agentId: agent.id,
-          revision: generatedAvatar.revision,
-          seed: generatedAvatar.seed ?? agent.id,
-        });
-        if (published) {
-          agent = await this.stores.config.updateAgent(agent.id, {
-            slackPresence: {
-              ...agent.slackPresence!,
-              avatar: {
-                ...generatedAvatar,
-                revision: published.revision,
-                url: published.url,
-              },
-            },
-          }, agent.revision);
-        }
-      } catch {
-        console.warn('[chickpea] generated Agent avatar publication deferred');
-      }
+    const deferredHandoffProposal = input.pendingProposalId
+      ? await this.stores.management.getChangeSetProposal(input.pendingProposalId)
+      : undefined;
+    // Creation normally publishes the avatar. Retrying here bumps the Agent
+    // revision, so skip it while a same-turn proposal targets that revision.
+    if (deferredHandoffProposal?.targetRevisions[`agent:${agent.id}`] === undefined) {
+      agent = await this.publishGeneratedAvatarForSlackOrigin(actor, agent);
     }
     const incomplete: Array<'slack_presence' | 'source_channel'> = [];
     if (creation.warning || agent.slackPresence?.health !== 'healthy' ||
@@ -1311,9 +1293,6 @@ export class WorkspaceManagementService {
       ? new URL(`/admin/agents/${encodeURIComponent(agent.id)}`, baseUrl).href
       : undefined);
     const at = this.now();
-    const deferredHandoffProposal = input.pendingProposalId
-      ? await this.stores.management.getChangeSetProposal(input.pendingProposalId)
-      : undefined;
     const deferredHandoffProposalId = deferredHandoffProposal?.status === 'pending' &&
         deferredHandoffProposal.organizationId === actor.organizationId &&
         deferredHandoffProposal.actorUserId === actor.userId &&
@@ -4257,7 +4236,7 @@ export class WorkspaceManagementService {
           prepared,
         });
         return mutationForAgent(
-          published.agent,
+          await this.publishGeneratedAvatarForSlackOrigin(actor, published.agent),
           prepared.inverse,
           await this.agentEditorUrl(published.agent.id),
           published.warning,
@@ -4384,7 +4363,7 @@ export class WorkspaceManagementService {
           prepared,
         });
         return mutationForAgent(
-          published.agent,
+          await this.publishGeneratedAvatarForSlackOrigin(actor, published.agent),
           prepared.inverse,
           await this.agentEditorUrl(published.agent.id),
           published.warning,
@@ -4434,6 +4413,37 @@ export class WorkspaceManagementService {
       }
     }
     return undefined;
+  }
+
+  // Publish a generated avatar while the Agent is being created so the
+  // revision bump lands before any proposal made later in the same turn.
+  private async publishGeneratedAvatarForSlackOrigin(
+    actor: LiveManagementActor,
+    agent: CustomAgentConfig,
+  ): Promise<CustomAgentConfig> {
+    const generatedAvatar = agent.slackPresence?.avatar;
+    if (actor.origin.kind !== 'slack' || !this.stores.publishGeneratedAgentAvatar ||
+        generatedAvatar?.kind !== 'generated' || generatedAvatar.url) {
+      return agent;
+    }
+    try {
+      const published = await this.stores.publishGeneratedAgentAvatar({
+        workspaceId: actor.origin.workspaceId,
+        agentId: agent.id,
+        revision: generatedAvatar.revision,
+        seed: generatedAvatar.seed ?? agent.id,
+      });
+      if (!published) return agent;
+      return await this.stores.config.updateAgent(agent.id, {
+        slackPresence: {
+          ...agent.slackPresence!,
+          avatar: { ...generatedAvatar, revision: published.revision, url: published.url },
+        },
+      }, agent.revision);
+    } catch {
+      console.warn('[chickpea] generated Agent avatar publication deferred');
+      return agent;
+    }
   }
 
   private async publishCreatedAgent(
