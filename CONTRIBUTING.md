@@ -47,11 +47,13 @@ Every plan starts with `npm run verify:hygiene`: source hygiene in about two
 seconds with no install, build, or network. It checks the tracked manifest
 against the public-source policy (forbidden roots, private `docs/` shapes,
 the live-verifier inventory), that every tracked `docs/` file is deliberately
-un-ignored in `.gitignore`, the private-name leak scan, that a `git archive`
-of the commit reproduces every tracked byte, the release manifest and version
-agreement, lockfile integrity hashes, package metadata, the authentication
-export contract, and the npm pack manifest. Run it before every merge; install
-the tracked pre-push hook once so it runs for each pushed commit:
+un-ignored in `.gitignore`, that the tracked `.mcp.json` defines only the lane
+browser servers through `scripts/lane-browser.mjs`, the private-name leak
+scan, that a `git archive` of the commit reproduces every tracked byte, the
+release manifest and version agreement, lockfile integrity hashes, package
+metadata, the authentication export contract, and the npm pack manifest. Run
+it before every merge; install the tracked pre-push hook once so it runs for
+each pushed commit:
 
 ```sh
 npm run hooks:install

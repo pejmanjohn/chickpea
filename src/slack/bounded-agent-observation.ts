@@ -39,13 +39,41 @@ export interface BoundedObservationTarget {
   submissionId: string;
   onEvent?: (chunk: ConversationStreamChunk) => void;
   signal?: AbortSignal;
+  /**
+   * True while the last delivered chunk says a long quiet wait is expected
+   * (a coding worker step has started). Only consulted when `adaptive` is on.
+   */
+  isIdleCandidate?: () => boolean;
+  /**
+   * Seeds the hint for a reattached observation, whose replay may not end on
+   * the milestone start: it holds until the first chunk delivered after the
+   * first caught-up page.
+   */
+  initialIdleCandidate?: boolean;
 }
+
+/**
+ * Backs the caught-up poll off geometrically once the stream has been quiet
+ * for `idleAfterMs` and the target reports an idle candidate; any delivered
+ * chunk returns it to the base interval.
+ */
+export interface AdaptivePollPolicy {
+  idleAfterMs: number;
+  maxIntervalMs: number;
+  factor: number;
+}
+
+const DEFAULT_ADAPTIVE_POLICY: AdaptivePollPolicy = { idleAfterMs: 10_000, maxIntervalMs: 5_000, factor: 2 };
 
 export interface BoundedObservationOptions {
   /** Delay before the next read once a read reports the stream caught up. */
   pollIntervalMs?: number;
   /** Test seam; production sleeps with a real timer. */
   sleep?: (milliseconds: number, signal?: AbortSignal) => Promise<void>;
+  /** Enables the adaptive backoff; omitted fields take the defaults. */
+  adaptive?: Partial<AdaptivePollPolicy>;
+  /** Test seam for the idle clock; production uses `Date.now`. */
+  now?: () => number;
 }
 
 export interface ObservedSettlement {
@@ -74,6 +102,12 @@ export async function observeAgentSettlementBounded(
 ): Promise<ObservedSettlement> {
   const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
   const sleep = options.sleep ?? abortableSleep;
+  const now = options.now ?? Date.now;
+  const adaptive = options.adaptive ? { ...DEFAULT_ADAPTIVE_POLICY, ...options.adaptive } : undefined;
+  let interval = pollIntervalMs;
+  let lastChunkAt = now();
+  let seeded = target.initialIdleCandidate === true;
+  let caughtUpOnce = false;
   const base = `https://flue.invalid/agents/${encodeURIComponent(target.agentName)}/${encodeURIComponent(target.instanceId)}`;
   let offset = '-1';
   for (;;) {
@@ -98,6 +132,10 @@ export async function observeAgentSettlementBounded(
       settlement ??= settlementFromChunk(chunk, target.submissionId);
     }
     if (settlement) return settlement;
+    if (delivered > 0) {
+      lastChunkAt = now();
+      if (caughtUpOnce) seeded = false;
+    }
     const next = response.headers.get(NEXT_OFFSET_HEADER);
     const advanced = next !== null && next !== offset;
     if (next !== null) offset = next;
@@ -107,7 +145,12 @@ export async function observeAgentSettlementBounded(
     // again at once.
     const caughtUp = response.headers.get(UP_TO_DATE_HEADER) === 'true' ||
       (delivered === 0 && !advanced);
-    if (caughtUp) await sleep(pollIntervalMs, target.signal);
+    if (!caughtUp) continue;
+    caughtUpOnce = true;
+    const idle = adaptive && (seeded || target.isIdleCandidate?.() === true) &&
+      now() - lastChunkAt >= adaptive.idleAfterMs;
+    interval = idle ? Math.min(adaptive.maxIntervalMs, interval * adaptive.factor) : pollIntervalMs;
+    await sleep(interval, target.signal);
   }
 }
 
@@ -139,6 +182,8 @@ export interface BoundedReplyReaderInput {
   receipt: FlueDispatchReceiptV1;
   onEvent: (chunk: ConversationStreamChunk) => void;
   signal?: AbortSignal;
+  isIdleCandidate?: () => boolean;
+  initialIdleCandidate?: boolean;
 }
 
 export type BoundedReplyReader = (input: BoundedReplyReaderInput) => Promise<AgentReply>;
@@ -153,8 +198,10 @@ export function createBoundedAgentReplyReader(input: {
   resolveRoute: (instanceId: string) => AgentUpdatesRoute | Promise<AgentUpdatesRoute>;
   pollIntervalMs?: number;
   sleep?: BoundedObservationOptions['sleep'];
+  adaptive?: BoundedObservationOptions['adaptive'];
+  now?: BoundedObservationOptions['now'];
 }): BoundedReplyReader {
-  return async ({ handle, instanceId, receipt, onEvent, signal }) => {
+  return async ({ handle, instanceId, receipt, onEvent, signal, isIdleCandidate, initialIdleCandidate }) => {
     const route = await input.resolveRoute(instanceId);
     await observeAgentSettlementBounded(route, {
       agentName: input.agentName,
@@ -162,9 +209,13 @@ export function createBoundedAgentReplyReader(input: {
       submissionId: receipt.submissionId,
       onEvent,
       ...(signal ? { signal } : {}),
+      ...(isIdleCandidate ? { isIdleCandidate } : {}),
+      ...(initialIdleCandidate ? { initialIdleCandidate } : {}),
     }, {
       ...(input.pollIntervalMs !== undefined ? { pollIntervalMs: input.pollIntervalMs } : {}),
       ...(input.sleep ? { sleep: input.sleep } : {}),
+      ...(input.adaptive ? { adaptive: input.adaptive } : {}),
+      ...(input.now ? { now: input.now } : {}),
     });
     // Settled: Flue's read now completes in immediate bounded requests and
     // keeps its settled-failure semantics (AgentRunError) for the caller.
@@ -216,6 +267,7 @@ export function createCloudflareBoundedAgentReplyReader(
   }
   return createBoundedAgentReplyReader({
     agentName,
+    adaptive: {},
     resolveRoute: (instanceId) => {
       const stub = binding.get(binding.idFromName(instanceId));
       return (request) => stub.fetch(request);

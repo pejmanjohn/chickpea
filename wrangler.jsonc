@@ -50,6 +50,10 @@
 			{
 				"name": "SLACK_GATEWAY_SESSION",
 				"class_name": "SlackGatewaySession"
+			},
+			{
+				"name": "SLACK_THREAD_RUNNER",
+				"class_name": "SlackThreadRunner"
 			}
 		]
 	},
@@ -137,6 +141,16 @@
 			"tag": "v10",
 			"new_sqlite_classes": [
 				"FlueChickpeaCodingWorkerV1Agent"
+			]
+		},
+		{
+			// Per-thread Slack turn runners (src/slack/thread-runner.ts): one
+			// instance per Slack thread key. Ships inactive; nothing addresses the
+			// class until a later release moves turn execution onto it. Cloudflare
+			// cannot roll a Worker back across this class lifecycle change.
+			"tag": "v11",
+			"new_sqlite_classes": [
+				"SlackThreadRunner"
 			]
 		}
 	]

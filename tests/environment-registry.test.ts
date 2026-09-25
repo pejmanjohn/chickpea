@@ -27,6 +27,8 @@ import * as environmentRegistryModule from '../scripts/lib/environment-registry.
 import * as environmentTargetModule from '../scripts/lib/environment-target.mjs';
 // @ts-expect-error The executable attestation module intentionally has no declaration file.
 import * as environmentAttestationModule from '../scripts/lib/environment-attestation.mjs';
+// @ts-expect-error The executable preflight module intentionally has no declaration file.
+import * as environmentPreflightModule from '../scripts/lib/environment-preflight.mjs';
 import { validatePrivateConfig } from '../qa/live/private-config.ts';
 import { resolveTargetSuiteVariants } from '../qa/live/manifest.ts';
 import { PHASE_ONE_SMOKE_VARIANTS } from '../qa/live/schema.ts';
@@ -989,7 +991,10 @@ test('machine identity is persistent owner-only and refuses symlinks while CLI i
     },
   );
   assert.equal(code, 2);
-  assert.match(stderr, /HOST_MISMATCH/u);
+  // The spoofed fingerprint is ignored either way: a host with a machine
+  // identity mismatches the fixture registry, and a fresh host (no
+  // ~/.chickpea/machine-identity.json yet) has no identity to compare.
+  assert.match(stderr, /HOST_MISMATCH|MACHINE_IDENTITY_MISSING/u);
 });
 
 test('registry rejects duplicate immutable target identities across every independent class', (context) => {
@@ -1792,3 +1797,377 @@ test('a legacy receipt without split digests is accepted only when it declares s
     f.claim.claimedRevision,
   );
 });
+
+// --- Second-host bootstrap: ownership, export-registration, init ----------
+
+const REGISTRATION_TOKEN = 'k'.repeat(43);
+
+function laneBaseline(target: string, targets: readonly string[], overrides: Record<string, unknown> = {}) {
+  return {
+    schemaVersion: 'chickpea-environment-baseline/v1',
+    target,
+    manifestDigest: SETUP_MANIFEST_DIGEST,
+    requiredScopes: ['chat:write'],
+    setupContractDigest: SETUP_COMBINED_DIGEST,
+    schemaGeneration: 'd1:0002_mcp_oauth;do:v9',
+    credentialFingerprintsByTarget: Object.fromEntries(targets.map((name) => [
+      name,
+      Object.fromEntries(['auth', 'cookie', 'signing', 'recovery', 'setup', 'encryption']
+        .map((className, index) => [className, `sha256:${name.charCodeAt(0).toString(16)}${index}`.padEnd(71, '0')])),
+    ])),
+    ...overrides,
+  };
+}
+
+function laneDeployReceipt(registration: Record<string, any>, baseline: Record<string, unknown>) {
+  const unsigned = {
+    schemaVersion: 'chickpea-environment-deploy-receipt/v1',
+    target: registration.target,
+    sourceRevision: registration.sourceRevision,
+    sourceDirty: false,
+    claimNonce: '00000000-0000-4000-8000-000000000000',
+    registryRevision: 1,
+    schemaGeneration: registration.schemaGeneration,
+    workerName: registration.workerName,
+    authDatabaseBinding: 'AUTH_DB',
+    authDatabaseId: registration.authDatabaseId,
+    tagStateId: registration.bindingIdentities.TAG_STATE,
+    slackTeamId: registration.workspaceId,
+    slackAppId: registration.slackAppId,
+    slackBotUserId: registration.botUserId,
+    transport: registration.transport,
+    activeVersion: registration.servingVersion,
+    manifestDigest: baseline.manifestDigest,
+    setupContractDigest: baseline.setupContractDigest,
+    baselineDigest: sha256Of(baseline),
+    issuedAt: new Date(NOW).toISOString(),
+  };
+  return { ...unsigned, receiptDigest: sha256Of(unsigned) };
+}
+
+function privateDirectory(parent: string, name: string) {
+  const directory = join(parent, name);
+  mkdirSync(directory, { mode: 0o700 });
+  return directory;
+}
+
+/** A two-lane host whose lane credential files and evidence are ready to export. */
+function exportFixture() {
+  const f = fixture();
+  const credentialsRoot = privateDirectory(f.parent, 'lane-credentials');
+  for (const target of TARGETS) {
+    writeFileSync(join(credentialsRoot, `${target}-live.json`), JSON.stringify({
+      origin: `https://chickpea-${target}.example.workers.dev/`, authorityReadToken: REGISTRATION_TOKEN,
+    }), { mode: 0o600 });
+  }
+  const registry = readEnvironmentRegistry(registryOptions(f.root));
+  const baseline = laneBaseline('cobalt', TARGETS);
+  const receipt = laneDeployReceipt(registry.targets.cobalt, baseline);
+  writeFileSync(join(registry.targets.cobalt.evidenceRoot, 'environment-baseline.json'), `${JSON.stringify(baseline)}\n`, { mode: 0o600 });
+  writeFileSync(join(registry.targets.cobalt.evidenceRoot, 'deploy-receipt.json'), `${JSON.stringify(receipt)}\n`, { mode: 0o600 });
+  const output = privateDirectory(f.parent, 'registrations');
+  const options = { ...registryOptions(f.root), credentialsRoot, env: {} };
+  return { ...f, credentialsRoot, baseline, receipt, output, options };
+}
+
+test('ownership hand-off needs a free, unlocked lane; a remote lane cannot be claimed, reclaimed, released, or attested here', async (context) => {
+  const f = fixture();
+  context.after(() => rmSync(f.parent, { recursive: true, force: true }));
+  const { setEnvironmentOwnership } = environmentRegistryModule;
+  const options = { ...registryOptions(f.root), worktreePath: f.first.path };
+  const before = readFileSync(join(f.root, 'registry.json'), 'utf8');
+  claimEnvironment('amber', options);
+  assert.throws(() => setEnvironmentOwnership('amber', { ownership: 'remote' }, options), rejectsCode('TARGET_CLAIMED'));
+  releaseEnvironment('amber', options);
+  const evidenceRoot = readEnvironmentRegistry(options).targets.amber.evidenceRoot;
+  const owner = { runId: 'test-run', pid: process.pid, host: hostname(), startedAt: new Date(NOW).toISOString() };
+  writeFileSync(join(evidenceRoot, 'target.lock'), JSON.stringify(owner), { mode: 0o600 });
+  assert.throws(() => setEnvironmentOwnership('amber', { ownership: 'remote' }, options), rejectsCode('TARGET_MUTATION_LOCKED'));
+  rmSync(join(evidenceRoot, 'target.lock'));
+  for (const input of [
+    { ownership: 'elsewhere' }, { ownership: 'local' }, { ownership: 'remote', registration: {} }, {},
+  ]) {
+    assert.throws(() => setEnvironmentOwnership('amber', input, options), rejectsCode('INVALID_OWNERSHIP_CHANGE'));
+  }
+  assert.throws(() => setEnvironmentOwnership('violet', { ownership: 'remote' }, options), rejectsCode('TARGET_NOT_REGISTERED'));
+
+  const handedOff = setEnvironmentOwnership('amber', { ownership: 'remote' }, options);
+  assert.equal(handedOff.ownership, 'remote');
+  const registry = readEnvironmentRegistry(options);
+  assert.equal(registry.revision, handedOff.registryRevision);
+  assert.equal(registry.targets.amber.ownership, 'remote');
+  assert.equal(registry.targets.amber.lastAttestation, null);
+  assert.equal(registry.targets.cobalt.ownership, undefined);
+  assert.equal(registry.audit.at(-1).event, 'ownership_changed');
+  assert.throws(() => setEnvironmentOwnership('amber', { ownership: 'remote' }, options), rejectsCode('OWNERSHIP_UNCHANGED'));
+
+  const status = readEnvironmentStatus(options);
+  const amber = status.targets.find((lane: { target: string }) => lane.target === 'amber');
+  assert.equal(amber.health, 'remote');
+  assert.equal(amber.ownership, 'remote');
+  assert.equal(amber.claim, null);
+  assert.match(amber.recoveryAction, /owned by another host/u);
+  assert.equal(status.targets.find((lane: { target: string }) => lane.target === 'cobalt').ownership, 'local');
+  // Nothing on this host can act on the lane, and automatic selection skips it.
+  assert.throws(() => claimEnvironment('amber', options), rejectsCode('TARGET_REMOTE'));
+  assert.throws(() => reclaimEnvironment('amber', options), rejectsCode('TARGET_REMOTE'));
+  assert.throws(() => releaseEnvironment('amber', options), rejectsCode('TARGET_REMOTE'));
+  await assert.rejects(attestEnvironment('amber', undefined, options), rejectsCode('TARGET_REMOTE'));
+  assert.equal(claimEnvironment(undefined, options).target, 'cobalt');
+  releaseEnvironment('cobalt', options);
+  let stdout = '';
+  const code = await runEnvironmentCli(['wait-claim', 'any', '--timeout-ms', '0', '--poll-ms', '250', '--root', f.root, '--worktree', f.first.path], {
+    hostFingerprint: 'host-fixture', stdout: (value: string) => { stdout += value; }, stderr: () => undefined,
+  });
+  assert.equal(code, 0, stdout);
+  assert.equal(JSON.parse(stdout).target, 'cobalt');
+  releaseEnvironment('cobalt', options);
+  let waitError = '';
+  assert.equal(await runEnvironmentCli(['wait-claim', 'amber', '--timeout-ms', '0', '--poll-ms', '250', '--root', f.root, '--worktree', f.first.path], {
+    hostFingerprint: 'host-fixture', stdout: () => undefined, stderr: (value: string) => { waitError += value; },
+  }), 2);
+  assert.match(waitError, /WAIT_ENVIRONMENT_NOT_RETRYABLE/u);
+  assert.match(waitError, /"health":"remote"/u);
+  // Reconciliation reports only this host's lanes.
+  const reconciliation = reconcileEnvironment(undefined, options);
+  assert.equal(reconciliation.ready, true);
+  assert.deepEqual(reconciliation.issues, []);
+  // The hand-off appended a revision; nothing rewrote history.
+  assert.notEqual(readFileSync(join(f.root, 'registry.json'), 'utf8'), before);
+  assert.equal(JSON.parse(readFileSync(join(f.root, 'revisions', 'revision-0000000000000000.json'), 'utf8')).targets.amber.ownership, undefined);
+});
+
+test('export-registration writes a secret-free owner-only file that names only handed-off lanes as the other host\'s own', (context) => {
+  const f = exportFixture();
+  context.after(() => rmSync(f.parent, { recursive: true, force: true }));
+  const { exportEnvironmentRegistration } = environmentPreflightModule;
+  const { setEnvironmentOwnership } = environmentRegistryModule;
+  const output = join(f.output, 'cloud.json');
+  const rejectsPreflight = (code: string) => (error: unknown) => (error as { code?: unknown })?.code === code;
+  // A lane this host still operates cannot be granted to another host.
+  assert.throws(() => exportEnvironmentRegistration('all', { ...f.options, output, own: ['cobalt'] }), rejectsPreflight('TARGET_OWNED_LOCALLY'));
+  assert.throws(() => exportEnvironmentRegistration('amber', { ...f.options, output, own: ['cobalt'] }), rejectsPreflight('INVALID_OWNED_TARGET'));
+  assert.throws(() => exportEnvironmentRegistration('violet', { ...f.options, output }), rejectsPreflight('INVALID_TARGET'));
+  assert.throws(() => exportEnvironmentRegistration('all', { ...f.options, output: join(f.first.path, 'cloud.json') }), rejectsCode('REGISTRY_INSIDE_REPOSITORY'));
+  assert.throws(() => exportEnvironmentRegistration('all', { ...f.options, output: 'relative.json' }), rejectsPreflight('INVALID_REGISTRATION_OUTPUT'));
+  assert.equal(existsSync(output), false);
+  setEnvironmentOwnership('cobalt', { ownership: 'remote' }, f.options);
+  const written = exportEnvironmentRegistration('all', { ...f.options, output, own: ['cobalt'], now: () => NOW });
+  assert.deepEqual(written, {
+    written: output,
+    exportedAt: new Date(NOW).toISOString(),
+    targets: [
+      { target: 'amber', ownership: 'remote', evidence: [] },
+      { target: 'cobalt', ownership: 'local', evidence: ['baseline', 'deployReceipt'] },
+    ],
+  });
+  assert.equal(lstatSync(output).mode & 0o777, 0o600);
+  const text = readFileSync(output, 'utf8');
+  assert.doesNotMatch(text, new RegExp(REGISTRATION_TOKEN), 'the read token never leaves the credential file');
+  assert.doesNotMatch(text, /host-fixture|hostFingerprint|"claim"|lastAttestation|evidenceRoot|installation|"audit"/u);
+  const file = JSON.parse(text);
+  assert.equal(file.schemaVersion, 'chickpea-environment-registration/v1');
+  assert.equal(file.sandbox.workspaceSlotsUsed, 3);
+  assert.deepEqual(file.targets.map((record: { target: string; ownership: string; authorityOrigin: string }) =>
+    [record.target, record.ownership, record.authorityOrigin]), [
+    ['amber', 'remote', 'https://chickpea-amber.example.workers.dev'],
+    ['cobalt', 'local', 'https://chickpea-cobalt.example.workers.dev'],
+  ]);
+  assert.deepEqual(file.evidence, { cobalt: { baseline: f.baseline, deployReceipt: f.receipt } });
+  assert.throws(() => exportEnvironmentRegistration('all', { ...f.options, output, own: ['cobalt'] }), rejectsPreflight('REGISTRATION_OUTPUT_EXISTS'));
+  // A lane whose authority origin this host does not know cannot be described.
+  rmSync(join(f.credentialsRoot, 'amber-live.json'));
+  assert.throws(() => exportEnvironmentRegistration('amber', { ...f.options, output: join(f.output, 'amber.json') }), rejectsPreflight('AUTHORITY_ORIGIN_UNAVAILABLE'));
+  // The host variable names it just as well; only its origin is recorded.
+  const fromEnvironment = exportEnvironmentRegistration('amber', {
+    ...f.options, output: join(f.output, 'amber.json'),
+    env: { CHICKPEA_ENV_AMBER_LIVE_AUTHORITY_URL: 'https://amber-env.example/internal/environment/authority', CHICKPEA_ENV_AMBER_LIVE_AUTHORITY_READ_TOKEN: REGISTRATION_TOKEN },
+  });
+  assert.equal(JSON.parse(readFileSync(fromEnvironment.written, 'utf8')).targets[0].authorityOrigin, 'https://amber-env.example');
+});
+
+test('init materializes a second host from the export, owning only the granted lane, and the lane can come back', async (context) => {
+  const f = exportFixture();
+  context.after(() => rmSync(f.parent, { recursive: true, force: true }));
+  const { exportEnvironmentRegistration, initEnvironmentRegistryFromFile, restoreEnvironmentOwnershipFromFile } = environmentPreflightModule;
+  const { setEnvironmentOwnership } = environmentRegistryModule;
+  const rejectsPreflight = (code: string) => (error: unknown) => (error as { code?: unknown })?.code === code;
+  setEnvironmentOwnership('cobalt', { ownership: 'remote' }, f.options);
+  const exported = join(f.output, 'cloud.json');
+  exportEnvironmentRegistration('all', { ...f.options, output: exported, own: ['cobalt'] });
+  const cloudRoot = join(f.parent, 'cloud', 'environments');
+  const cloud = { root: cloudRoot, hostFingerprint: 'cloud-host', now: () => NOW, worktreePath: f.first.path };
+
+  // The file must be owner-only and free of host-local state or secrets.
+  const variant = (mutate: (file: Record<string, any>) => void, mode = 0o600) => {
+    const file = JSON.parse(readFileSync(exported, 'utf8'));
+    mutate(file);
+    const path = join(f.output, `variant-${randomSuffix()}.json`);
+    writeFileSync(path, JSON.stringify(file), { mode });
+    return path;
+  };
+  chmodSync(exported, 0o644);
+  assert.throws(() => initEnvironmentRegistryFromFile(exported, cloud), rejectsPreflight('UNSAFE_PERMISSIONS'));
+  chmodSync(exported, 0o600);
+  for (const [code, mutate] of [
+    ['INVALID_REGISTRATION', (file: Record<string, any>) => { file.targets[0].evidenceRoot = '/elsewhere'; }],
+    ['INVALID_REGISTRATION', (file: Record<string, any>) => { file.targets[0].claim = null; }],
+    ['INVALID_REGISTRATION', (file: Record<string, any>) => { file.targets[1].ownership = 'mine'; }],
+    ['INVALID_REGISTRATION', (file: Record<string, any>) => { file.targets[0].authorityOrigin = 'http://amber.example'; }],
+    ['INVALID_REGISTRATION', (file: Record<string, any>) => { delete file.evidence; }],
+    ['INVALID_REGISTRATION', (file: Record<string, any>) => { file.evidence.amber = file.evidence.cobalt; }],
+    ['INVALID_REGISTRATION', (file: Record<string, any>) => { file.schemaVersion = 'chickpea-environment-registry/v2'; }],
+    ['DEPLOY_RECEIPT_STALE', (file: Record<string, any>) => { file.targets[1].servingVersion = 'version-newer'; }],
+    ['SECRET_LIKE_FIELD', (file: Record<string, any>) => { file.targets[1].botToken = 'xoxb-not-really'; }],
+    ['INVALID_TARGET_INVENTORY', (file: Record<string, any>) => { file.targets.splice(0, 1); }],
+  ] as const) {
+    assert.throws(() => initEnvironmentRegistryFromFile(variant(mutate), cloud), rejectsPreflight(code), code);
+    assert.equal(existsSync(join(cloudRoot, 'registry.json')), false, code);
+  }
+
+  const initialized = initEnvironmentRegistryFromFile(exported, cloud);
+  assert.equal(initialized.registryRevision, 0);
+  assert.deepEqual(initialized.targets, [
+    { target: 'amber', ownership: 'remote', evidenceRoot: join(cloudRoot, 'amber', 'evidence') },
+    { target: 'cobalt', ownership: 'local', evidenceRoot: join(cloudRoot, 'cobalt', 'evidence') },
+  ]);
+  for (const directory of [cloudRoot, join(cloudRoot, 'cobalt'), join(cloudRoot, 'cobalt', 'evidence'), join(cloudRoot, 'amber', 'evidence')]) {
+    assert.equal(lstatSync(directory).mode & 0o777, 0o700, directory);
+  }
+  for (const name of ['environment-baseline.json', 'deploy-receipt.json']) {
+    assert.equal(lstatSync(join(cloudRoot, 'cobalt', 'evidence', name)).mode & 0o777, 0o600);
+    assert.equal(existsSync(join(cloudRoot, 'amber', 'evidence', name)), false, 'a remote lane keeps no evidence here');
+  }
+  assert.deepEqual(JSON.parse(readFileSync(join(cloudRoot, 'cobalt', 'evidence', 'deploy-receipt.json'), 'utf8')), f.receipt);
+  // Registries stay host-bound in both directions; nothing was copied.
+  assert.throws(() => readEnvironmentRegistry({ ...cloud, hostFingerprint: 'host-fixture' }), rejectsCode('HOST_MISMATCH'));
+  const registry = readEnvironmentRegistry(cloud);
+  assert.equal(registry.hostFingerprint, 'cloud-host');
+  assert.equal(registry.targets.amber.ownership, 'remote');
+  assert.equal(registry.targets.amber.authorityOrigin, 'https://chickpea-amber.example.workers.dev');
+  // An owned lane is recorded in the shape tooling without ownership reads.
+  assert.equal(registry.targets.cobalt.ownership, undefined);
+  assert.equal(registry.targets.cobalt.authorityOrigin, undefined);
+  assert.deepEqual(registry.audit, []);
+  assert.equal(registry.targets.cobalt.workerName, f.targets[1]!.workerName);
+  assert.throws(() => initEnvironmentRegistryFromFile(exported, cloud), rejectsPreflight('REGISTRY_EXISTS'));
+  // Only the granted lane is usable on the second host; the fleet check still sees every lane.
+  assert.throws(() => claimEnvironment('amber', cloud), rejectsCode('TARGET_REMOTE'));
+  const claim = claimEnvironment('cobalt', cloud);
+  assert.equal(claim.hostFingerprint, 'cloud-host');
+  assert.equal(readEnvironmentStatus(cloud).selectedTarget, 'cobalt');
+  assert.equal(targetEnvironment('cobalt', cloud).targetOverlay.targetAlias, 'cobalt');
+  releaseEnvironment('cobalt', cloud);
+  // Meanwhile the first host cannot touch the lane it handed off.
+  assert.throws(() => claimEnvironment('cobalt', { ...f.options, worktreePath: f.first.path }), rejectsCode('TARGET_REMOTE'));
+
+  // Taking the lane back needs the second host's export; identity cannot change.
+  setEnvironmentOwnership('cobalt', { ownership: 'remote' }, cloud);
+  const revised = laneBaseline('cobalt', TARGETS, { manifestDigest: `sha256:${'7'.repeat(64)}` });
+  const revisedReceipt = laneDeployReceipt(registry.targets.cobalt, revised);
+  writeFileSync(join(cloudRoot, 'cobalt', 'evidence', 'environment-baseline.json'), JSON.stringify(revised), { mode: 0o600 });
+  writeFileSync(join(cloudRoot, 'cobalt', 'evidence', 'deploy-receipt.json'), JSON.stringify(revisedReceipt), { mode: 0o600 });
+  const returned = join(f.output, 'returned.json');
+  // A local record carries no origin, so the second host resolves it as any
+  // host does: from its own variables or credential file.
+  assert.throws(() => exportEnvironmentRegistration('cobalt', { ...cloud, output: returned, own: ['cobalt'], env: {}, credentialsRoot: join(f.parent, 'absent') }), rejectsPreflight('AUTHORITY_ORIGIN_UNAVAILABLE'));
+  exportEnvironmentRegistration('cobalt', { ...cloud, output: returned, own: ['cobalt'], credentialsRoot: join(f.parent, 'absent'),
+    env: { CHICKPEA_ENV_COBALT_LIVE_AUTHORITY_URL: 'https://chickpea-cobalt.example.workers.dev/internal/environment/authority' } });
+  const macOptions = { ...f.options, worktreePath: f.first.path };
+  assert.throws(() => restoreEnvironmentOwnershipFromFile('cobalt', variant((file) => { file.targets[1].ownership = 'remote'; }), macOptions), rejectsPreflight('INVALID_REGISTRATION'));
+  assert.throws(() => restoreEnvironmentOwnershipFromFile('amber', returned, macOptions), rejectsPreflight('INVALID_REGISTRATION'));
+  const returnedFile = JSON.parse(readFileSync(returned, 'utf8'));
+  const tampered = join(f.output, 'tampered.json');
+  returnedFile.targets[0].timezone = 'Europe/Berlin';
+  writeFileSync(tampered, JSON.stringify(returnedFile), { mode: 0o600 });
+  assert.throws(() => restoreEnvironmentOwnershipFromFile('cobalt', tampered, macOptions), (error: unknown) =>
+    rejectsCode('REGISTRATION_IDENTITY_MISMATCH')(error) && (error as { details: { field: string } }).details.field === 'timezone');
+  assert.equal(readEnvironmentRegistry(macOptions).targets.cobalt.ownership, 'remote');
+  const restored = restoreEnvironmentOwnershipFromFile('cobalt', returned, { ...macOptions, now: () => NOW + 1_000 });
+  assert.equal(restored.ownership, 'local');
+  const back = readEnvironmentRegistry(macOptions);
+  assert.equal(back.targets.cobalt.ownership, undefined);
+  assert.equal(back.targets.cobalt.authorityOrigin, undefined);
+  assert.deepEqual(Object.keys(back.targets.cobalt).sort(), Object.keys(readEnvironmentRegistry(macOptions).targets.amber).sort());
+  assert.equal(back.targets.cobalt.evidenceRoot, f.targets[1]!.evidenceRoot);
+  assert.equal(back.audit.at(-1).event, 'ownership_changed');
+  const evidenceRoot = back.targets.cobalt.evidenceRoot;
+  assert.deepEqual(JSON.parse(readFileSync(join(evidenceRoot, 'environment-baseline.json'), 'utf8')), revised);
+  assert.deepEqual(JSON.parse(readFileSync(join(evidenceRoot, 'deploy-receipt.json'), 'utf8')), revisedReceipt);
+  const superseded = readdirSync(evidenceRoot).filter((name) => name.includes('.superseded-')).sort();
+  assert.deepEqual(superseded.map((name) => name.replace(/superseded-[0-9TZ-]+/u, 'superseded-AT')),
+    ['deploy-receipt.superseded-AT.json', 'environment-baseline.superseded-AT.json']);
+  assert.deepEqual(JSON.parse(readFileSync(join(evidenceRoot, superseded[1]!), 'utf8')), f.baseline);
+  assert.equal(claimEnvironment('cobalt', macOptions).target, 'cobalt');
+  releaseEnvironment('cobalt', macOptions);
+});
+
+test('CLI dispatches ownership, export-registration, and init with the host identity it derives itself', async (context) => {
+  const f = exportFixture();
+  context.after(() => rmSync(f.parent, { recursive: true, force: true }));
+  const invoke = async (args: string[], hostFingerprint = 'host-fixture') => {
+    let stdout = '';
+    let stderr = '';
+    const code = await runEnvironmentCli(args, {
+      stdout: (value: string) => { stdout += value; }, stderr: (value: string) => { stderr += value; }, hostFingerprint,
+    });
+    return { code, stdout, stderr };
+  };
+  const previous = { ...process.env };
+  for (const target of TARGETS) {
+    process.env[`CHICKPEA_ENV_${target.toUpperCase()}_LIVE_AUTHORITY_URL`] = `https://chickpea-${target}.example.workers.dev/internal/environment/authority`;
+    process.env[`CHICKPEA_ENV_${target.toUpperCase()}_LIVE_AUTHORITY_READ_TOKEN`] = REGISTRATION_TOKEN;
+  }
+  context.after(() => {
+    for (const key of Object.keys(process.env)) if (!(key in previous)) delete process.env[key];
+    Object.assign(process.env, previous);
+  });
+  const output = join(f.output, 'cloud.json');
+  for (const args of [
+    ['ownership', 'cobalt', '--root', f.root],
+    ['ownership', 'cobalt', '--set', 'elsewhere', '--root', f.root],
+    ['ownership', 'cobalt', '--set', 'local', '--root', f.root],
+    ['ownership', 'cobalt', '--set', 'remote', '--registration', output, '--root', f.root],
+    ['export-registration', 'all', '--root', f.root],
+    ['export-registration', '--output', output, '--root', f.root],
+    ['init', '--root', f.root],
+    ['init', 'cobalt', '--registration', output, '--root', f.root],
+    ['status', '--own', 'cobalt', '--root', f.root],
+    ['claim', 'cobalt', '--set', 'remote', '--root', f.root],
+  ]) {
+    const refused = await invoke(args);
+    assert.equal(refused.code, 2, args.join(' '));
+    assert.match(refused.stderr, /INVALID_ARGUMENT|TARGET_REQUIRED|INVALID_COMMAND/u, args.join(' '));
+  }
+  const handedOff = await invoke(['ownership', 'cobalt', '--set', 'remote', '--root', f.root]);
+  assert.equal(handedOff.code, 0, handedOff.stderr);
+  assert.equal(JSON.parse(handedOff.stdout).ownership, 'remote');
+  const repeated = await invoke(['ownership', 'cobalt', '--set', 'remote', '--root', f.root]);
+  assert.equal(repeated.code, 2);
+  assert.match(repeated.stderr, /OWNERSHIP_UNCHANGED/u);
+  const exported = await invoke(['export-registration', 'all', '--own', 'cobalt', '--output', output, '--root', f.root]);
+  assert.equal(exported.code, 0, exported.stderr);
+  assert.deepEqual(JSON.parse(exported.stdout).targets.map((lane: { target: string; ownership: string }) => `${lane.target}:${lane.ownership}`), ['amber:remote', 'cobalt:local']);
+  assert.doesNotMatch(exported.stdout, new RegExp(REGISTRATION_TOKEN));
+  const cloudRoot = join(f.parent, 'cloud-environments');
+  const initialized = await invoke(['init', '--registration', output, '--root', cloudRoot], 'cloud-host');
+  assert.equal(initialized.code, 0, initialized.stderr);
+  assert.equal(JSON.parse(initialized.stdout).targets.find((lane: { target: string }) => lane.target === 'cobalt').ownership, 'local');
+  const again = await invoke(['init', '--registration', output, '--root', cloudRoot], 'cloud-host');
+  assert.equal(again.code, 2);
+  assert.match(again.stderr, /REGISTRY_EXISTS/u);
+  const remoteClaim = await invoke(['claim', 'amber', '--root', cloudRoot, '--worktree', f.first.path], 'cloud-host');
+  assert.equal(remoteClaim.code, 2);
+  assert.match(remoteClaim.stderr, /TARGET_REMOTE/u);
+  const cloudStatus = await invoke(['status', '--all', '--root', cloudRoot, '--worktree', f.first.path], 'cloud-host');
+  assert.equal(cloudStatus.code, 0, cloudStatus.stderr);
+  assert.deepEqual(JSON.parse(cloudStatus.stdout).targets.map((lane: { target: string; health: string }) => `${lane.target}:${lane.health}`), ['amber:remote', 'cobalt:ready']);
+  // Preflight-coded refusals name their code, not a generic command failure.
+  const missing = await invoke(['init', '--registration', join(f.output, 'absent.json'), '--root', join(f.parent, 'another')], 'cloud-host');
+  assert.equal(missing.code, 2);
+  assert.match(missing.stderr, /"error":"REGISTRATION_MISSING"/u);
+});
+
+function randomSuffix() {
+  return createHash('sha256').update(String(Math.random())).digest('hex').slice(0, 8);
+}

@@ -192,6 +192,16 @@ remains undeclared. Use the normal [Cloudflare update guide](../../UPDATE_CHICKP
 for an owner-requested update instead of treating this tool's refusal as a ban
 on updating.
 
+Durable Object migration `v11` adds one class, `SlackThreadRunner` (binding
+`SLACK_THREAD_RUNNER`), and changes no existing class or stored state. It ships
+inactive: nothing addresses the class until a later release moves turn
+execution onto it. Cloudflare cannot roll a Worker back across a Durable Object
+class lifecycle change, so once `v11` is applied neither `wrangler rollback`
+nor previous-code recovery can return to a pre-`v11` version. Ship the release
+that introduces `v11` without other lifecycle or behaviour changes. Because the
+Worker configuration digest and binding set change, this updater refuses the
+transition; `npm run deploy` from the normal update guide applies it.
+
 ## Acceptance and handoff
 
 After success, verify the destination release and full source commit in

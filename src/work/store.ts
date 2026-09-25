@@ -445,10 +445,19 @@ export class WorkStoreLogic {
     const revision = this.putConfigRevisionInTransaction(input.safeConfig, input.run.createdAt);
     let work = this.getWork(input.work.id);
     let binding = this.getBinding(input.binding.id);
+    // A frozen Binding pins the revision admitted when it opened. Later Runs
+    // on the same open Binding inherit that pin: the configuration each later
+    // trigger resolves (an Agent edit, a thread handoff) is not a new
+    // identity, so it must neither re-pin nor conflict with the Binding.
+    const inheritsFrozenPin =
+      binding?.configMode === 'frozen_on_open' &&
+      input.binding.configMode === 'frozen_on_open' &&
+      binding.pinnedConfigRevisionId !== null;
     const reusableBinding = {
       ...input.binding,
-      pinnedConfigRevisionId:
-        input.binding.configMode === 'frozen_on_open'
+      pinnedConfigRevisionId: inheritsFrozenPin
+        ? binding!.pinnedConfigRevisionId
+        : input.binding.configMode === 'frozen_on_open'
           ? revision.id
           : (input.binding.pinnedConfigRevisionId ?? null),
     };

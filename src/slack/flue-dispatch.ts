@@ -214,6 +214,11 @@ interface PromptSlackAgentInput {
    * while the reply is observed. Called in stream order for this submission
    * only; the reply waits for pending calls, which must not throw.
    */
+  /**
+   * An earlier observation of this turn saw a coding task start; the reader
+   * treats the worker as busy until the first chunk after it catches up.
+   */
+  codingTaskStarted?: boolean;
   onWorkspaceMilestone?: (
     record: WorkspaceMilestoneRecord,
     target: { instanceId: string; submissionId: string },
@@ -384,6 +389,8 @@ export async function promptSlackThreadAgent(
           receipt,
           onEvent,
           ...(signal ? { signal } : {}),
+          ...(milestones ? { isIdleCandidate: milestones.isIdleCandidate } : {}),
+          ...(input.codingTaskStarted ? { initialIdleCandidate: true } : {}),
         })
       : await handle.read(receipt as DispatchReceipt, { onEvent });
   } catch (error) {
