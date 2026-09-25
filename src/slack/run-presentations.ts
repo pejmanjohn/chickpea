@@ -82,7 +82,9 @@ type SlackPresentationDegradationReason =
   | 'effect_capable'
   | 'legacy_no_run'
   | 'unsupported_contract'
-  | 'unknown_effect';
+  | 'unknown_effect'
+  // The attempt's progressive relay could not be set up; it answered at the end.
+  | 'relay_setup_failed';
 
 export type SlackProgressiveIntentDenialReason =
   | 'late_declaration'

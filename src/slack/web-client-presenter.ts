@@ -148,7 +148,7 @@ export type SlackPresenterAgentView = Pick<
   | 'frozenReplyParts'
   | 'planContinuations'
   | 'deliverContinuations'
->;
+> & Partial<Pick<SlackAgentViewPresentation, 'hasPresentation'>>;
 
 export interface SlackPresenterOptions {
   deliverySafety?: 'legacy' | 'ledger';
@@ -698,7 +698,12 @@ export class WebClientPresenter {
 
     let forcePostFallback = files.length > 0;
     let fallbackOperationId: string | undefined;
-    const agentView = this.options.agentViewPresentation;
+    // A Run whose durable presentation is gone cannot own its final; the
+    // answer is delivered once without it instead of failing every attempt.
+    const configured = this.options.agentViewPresentation;
+    const agentView = configured && await configured.hasPresentation?.() === false
+      ? undefined
+      : configured;
     if (agentView) {
       const result = await agentView.finalize(
         text,
@@ -906,7 +911,9 @@ export class WebClientPresenter {
   }
 
   async markCanonicalPresentationFinalized(): Promise<void> {
-    await this.options.agentViewPresentation?.markCanonicalFinalized();
+    const agentView = this.options.agentViewPresentation;
+    if (!agentView || await agentView.hasPresentation?.() === false) return;
+    await agentView.markCanonicalFinalized();
   }
 
   /** Deliver channel-contextual information only to the requesting member. */
