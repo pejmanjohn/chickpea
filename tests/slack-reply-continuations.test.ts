@@ -531,7 +531,7 @@ test('a long streamed answer whose stream expired posts part 1 fresh and its con
     // message stays within the update bound and the rest continues.
     const planned = splitSlackMarkdownReply(
       text,
-      recoveryReplySplit({ minFirstPartLength: streamedText(h).length }),
+      recoveryReplySplit({ minFirstPartLength: streamedText(h).length }, text),
     );
     assert.ok(planned.length >= 2 && planned[0]!.length <= RECOVERY_UPDATE_CHARS);
 
@@ -560,10 +560,41 @@ test('a long streamed answer whose stream expired posts part 1 fresh and its con
 test('a recovery split keeps a short streamed prefix whole in the first message', () => {
   const text = longPlan(18, 23);
   const prefix = text.slice(0, 3_000).trimEnd();
-  const parts = splitSlackMarkdownReply(text, recoveryReplySplit({ minFirstPartLength: prefix.length }));
+  const parts = splitSlackMarkdownReply(text, recoveryReplySplit({ minFirstPartLength: prefix.length }, text));
   assert.ok(parts[0]!.startsWith(prefix));
   assert.ok(parts[0]!.length <= RECOVERY_UPDATE_CHARS);
   assert.equal(parts.join('\n\n'), text);
+});
+
+test('a recovery split keeps a plain prefix up to the full bound whole', () => {
+  const text = longPlan(18, 23);
+  const prefix = text.slice(0, 3_995).trimEnd();
+  assert.ok(prefix.length > 3_985 && !prefix.includes('```'));
+  const parts = splitSlackMarkdownReply(text, recoveryReplySplit({ minFirstPartLength: prefix.length }, text));
+  assert.ok(parts[0]!.startsWith(prefix), 'the visible prefix is not rewritten');
+  assert.ok(parts[0]!.length <= RECOVERY_UPDATE_CHARS);
+});
+
+test('a four-part continuation plan needs a recovery split that allows it', () => {
+  const h = harness();
+  try {
+    mutate(h, { kind: 'record_terminal_delivery_intent', operationId: 'terminal_answer', result: 'answer' });
+    const four = ['Part two.', 'Part three.', 'Part four.', 'Part five.'];
+    assert.throws(() => mutate(h, {
+      kind: 'record_continuation_plan', parts: four, closing: CLOSING,
+    }), /up to four on a recovery split/);
+    assert.throws(() => mutate(h, {
+      kind: 'record_continuation_plan', parts: four, closing: CLOSING,
+      split: { firstPartLimit: 4_000 },
+    }), /up to four on a recovery split/);
+    const planned = mutate(h, {
+      kind: 'record_continuation_plan', parts: four, closing: CLOSING,
+      split: { firstPartLimit: 4_000, maxParts: 5 },
+    });
+    assert.equal(planned.continuations?.parts.length, 4);
+  } finally {
+    h.close();
+  }
 });
 
 test('a recovery split over a longer streamed prefix cuts at a boundary, never mid-word or in a link', () => {
@@ -571,7 +602,7 @@ test('a recovery split over a longer streamed prefix cuts at a boundary, never m
     `- bullet item ${index} with several words and [a link](https://example.com/items/${index})`
   ).join('\n');
   const text = `${bullets}\n\nClosing paragraph.`;
-  const parts = splitSlackMarkdownReply(text, recoveryReplySplit({ minFirstPartLength: 7_000 }));
+  const parts = splitSlackMarkdownReply(text, recoveryReplySplit({ minFirstPartLength: 7_000 }, text));
   const first = parts[0]!;
   assert.ok(first.length <= RECOVERY_UPDATE_CHARS);
   assert.equal(text[first.length], '\n', 'the first message ends at a line boundary');
@@ -585,7 +616,7 @@ test('a recovery split over a longer streamed prefix cuts at a boundary, never m
 test('a recovery split over a long fenced prefix stays within the update bound', () => {
   const code = Array.from({ length: 400 }, (_, index) => `const value${index} = compute(${index});`);
   const text = `Here is the module:\n\n\`\`\`ts\n${code.join('\n')}\n\`\`\`\n\nDone.`;
-  const parts = splitSlackMarkdownReply(text, recoveryReplySplit({ minFirstPartLength: 7_000 }));
+  const parts = splitSlackMarkdownReply(text, recoveryReplySplit({ minFirstPartLength: 7_000 }, text));
   assert.ok(parts[0]!.length <= RECOVERY_UPDATE_CHARS);
   assert.match(parts[0]!, /\n```$/);
   assert.match(parts[1]!, /^```ts\n/);
@@ -599,7 +630,7 @@ test('recovery carries as much as a normal reply: a 47,000-character answer is n
   assert.ok(text.length > 44_000 && text.length < 48_000);
   const normal = splitSlackMarkdownReply(text);
   assert.ok(!normal.at(-1)!.includes(SLACK_REPLY_SHORTENED_NOTE));
-  const recovered = splitSlackMarkdownReply(text, recoveryReplySplit({ minFirstPartLength: 11_000 }));
+  const recovered = splitSlackMarkdownReply(text, recoveryReplySplit({ minFirstPartLength: 11_000 }, text));
   assert.ok(recovered.length <= 5);
   assert.ok(!recovered.at(-1)!.includes(SLACK_REPLY_SHORTENED_NOTE));
   assert.equal(recovered.join('\n\n'), text);
@@ -611,7 +642,7 @@ async function interruptLongStream(h: Harness, presenter: WebClientPresenter, te
   h.stopStreamErrors.push(new Error('socket hang up'));
   await assert.rejects(presenter.deliverFinal(text, 'markdown'));
   assert.equal(v3(h).stream.state, 'unknown');
-  return recoveryReplySplit({ minFirstPartLength: streamedText(h).length });
+  return recoveryReplySplit({ minFirstPartLength: streamedText(h).length }, text);
 }
 
 test('a reattached long streamed answer recovers with one update that fits, then its follow-ups', async () => {

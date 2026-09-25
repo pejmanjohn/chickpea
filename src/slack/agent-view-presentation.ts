@@ -174,7 +174,7 @@ const MAX_STREAMED_REPLY_CHARS = slackMarkdownBlockTextLimit - 16;
  * 4,000 characters of `text`. Stay at that bound; follow-ups carry the rest.
  */
 const RECOVERY_UPDATE_MAX_CHARS = 4_000;
-/** Room to close a code fence after a kept streamed prefix. */
+/** Room to close a code fence still open at the end of a kept streamed prefix. */
 const RECOVERY_FENCE_ROOM_CHARS = 16;
 /**
  * A smaller first message plus four 12,000-character follow-ups carries at
@@ -1640,7 +1640,7 @@ export class SlackAgentViewPresentation {
     // message within RECOVERY_UPDATE_MAX_CHARS and re-plan the rest as
     // follow-ups; no follow-up has started before the final is acknowledged.
     const split = presentation.schemaVersion === 3
-      ? recoveryReplySplit(this.replySplit(presentation, approved))
+      ? recoveryReplySplit(this.replySplit(presentation, approved), approved)
       : undefined;
     const parts = split
       ? slackReplyParts(approved, format, split)
@@ -2418,16 +2418,20 @@ function definiteContentRejection(error: unknown): boolean {
 
 /**
  * The first message a recovery update may carry. The streamed prefix stays
- * whole in it while the prefix and a fence closer fit. A longer prefix is
- * not kept as a minimum: the update replaces the message anyway, so the
- * first message ends at the best boundary within the bound instead of being
- * forced to the exact bound, mid-word or inside a link. The replacement
- * allows one extra follow-up, so recovery carries as much as a normal reply.
+ * whole in it while it fits the bound, less room for a fence closer when a
+ * code block is still open where the prefix ends. A longer prefix is not
+ * kept as a minimum: the update replaces the message anyway, so the first
+ * message ends at the best boundary within the bound instead of being forced
+ * to the exact bound, mid-word or inside a link. The replacement allows one
+ * extra follow-up, so recovery carries as much as a normal reply.
  */
-export function recoveryReplySplit(split: SlackReplySplit): SlackReplySplit {
+export function recoveryReplySplit(split: SlackReplySplit, approved: string): SlackReplySplit {
   const limit = Math.min(split.firstPartLimit ?? RECOVERY_UPDATE_MAX_CHARS, RECOVERY_UPDATE_MAX_CHARS);
-  const keepsPrefix = split.minFirstPartLength !== undefined &&
-    split.minFirstPartLength <= limit - RECOVERY_FENCE_ROOM_CHARS;
+  const prefix = split.minFirstPartLength;
+  const fenceOpen = prefix !== undefined &&
+    (approved.slice(0, prefix).match(/^ {0,3}`{3,}/gm) ?? []).length % 2 === 1;
+  const keepsPrefix = prefix !== undefined &&
+    prefix <= limit - (fenceOpen ? RECOVERY_FENCE_ROOM_CHARS : 0);
   return {
     ...(keepsPrefix ? { minFirstPartLength: split.minFirstPartLength } : {}),
     firstPartLimit: limit,

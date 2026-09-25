@@ -2256,7 +2256,10 @@ function applyMutation(
         (mutation.split?.maxParts ?? MAX_SLACK_CONTINUATION_PARTS) - 1,
       );
       if (mutation.parts.length < 1 || mutation.parts.length > allowed) {
-        throw stateError('invalid_input', 'A reply has one to three continuation messages.');
+        throw stateError(
+          'invalid_input',
+          'A reply has one to three continuation messages, or up to four on a recovery split.',
+        );
       }
       for (const text of mutation.parts) validateContinuationText(text);
       validateReplySplit(mutation.split);
