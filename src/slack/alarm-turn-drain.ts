@@ -1,3 +1,5 @@
+import { CHICKPEA_SUBMISSION_DURABILITY } from '../agents/submission-durability.ts';
+
 /**
  * Turn scheduling for one Cloudflare TagStateStore alarm invocation.
  *
@@ -40,6 +42,22 @@ export const ALARM_TURN_BUDGET_MS = 10 * 60_000;
  */
 export const ALARM_ADMISSION_RECHECK_MS = 2_000;
 
+/**
+ * Yields are free only while the submission can still be running. Flue ends a
+ * coordinator submission within its durability timeout; past that plus this
+ * margin, a reply that still has not settled is treated like any other failed
+ * reattachment, so it cannot hold its thread and active work forever.
+ */
+export const ALARM_YIELD_BACKSTOP_MS =
+  (CHICKPEA_SUBMISSION_DURABILITY.timeoutMs ?? 60 * 60_000) + 30 * 60_000;
+
+/** Whether yields for a submission accepted at `acceptedAt` still cost nothing. */
+export function alarmYieldIsFree(acceptedAt: string | undefined, now: number): boolean {
+  const accepted = acceptedAt === undefined ? Number.NaN : Date.parse(acceptedAt);
+  // An unreadable receipt time cannot prove the submission outlived its budget.
+  return !Number.isFinite(accepted) || now - accepted <= ALARM_YIELD_BACKSTOP_MS;
+}
+
 /** Re-arm delay after a budget yield: prompt, but not the error backoff. */
 export const ALARM_YIELD_REARM_MS = 1_000;
 
@@ -65,6 +83,13 @@ export interface AlarmTurnDrainOptions<J> {
   runJob(job: J, control: AlarmTurnJobControl): Promise<boolean>;
   /** Admit newly delivered work, then list the pending jobs. */
   refresh(): Promise<readonly J[]>;
+  /**
+   * The alarm's other due work (receipts, schedule actions, repairs), run on
+   * each wake and re-check while turns observe so it never waits for the
+   * budget. Never overlaps itself; it receives the ids of jobs running now so
+   * it can leave their records to them.
+   */
+  tick?(runningJobIds: ReadonlySet<string>): Promise<void>;
   /** Jobs that may be starting at once (not yet only observing). */
   startConcurrency: number;
   /** Threads that may run at once, observing ones included. */
@@ -97,6 +122,8 @@ export async function drainAlarmTurnJobs<J>(
   const threads = new Map<string, ThreadState<J>>();
   const ready: string[] = [];
   const running = new Set<Promise<void>>();
+  const runningJobIds = new Set<string>();
+  let ticking: Promise<void> | undefined;
   let freeSlots = Math.max(1, options.startConcurrency);
   let activeThreads = 0;
   let budgetExhausted = false;
@@ -153,6 +180,8 @@ export async function drainAlarmTurnJobs<J>(
       wake();
     };
     let keepGoing = false;
+    const id = options.jobId(job);
+    runningJobIds.add(id);
     try {
       keepGoing = await options.runJob(job, { signal: controller.signal, observing: release });
     } catch (error) {
@@ -161,6 +190,7 @@ export async function drainAlarmTurnJobs<J>(
       failure ??= { error };
       if (!controller.signal.aborted) controller.abort(error);
     } finally {
+      runningJobIds.delete(id);
       release();
       thread.running = false;
       activeThreads -= 1;
@@ -168,6 +198,16 @@ export async function drainAlarmTurnJobs<J>(
       else if (thread.queue.length > 0) ready.push(key);
       wake();
     }
+  };
+
+  const startTick = () => {
+    if (!options.tick || ticking || controller.signal.aborted) return;
+    ticking = options.tick(runningJobIds).catch((error: unknown) => {
+      failure ??= { error };
+      if (!controller.signal.aborted) controller.abort(error);
+    }).finally(() => {
+      ticking = undefined;
+    });
   };
 
   const pump = () => {
@@ -210,7 +250,10 @@ export async function drainAlarmTurnJobs<J>(
         continue;
       }
       pump();
+      startTick();
     }
+    // The alarm's own tail runs these drains next; never overlap it.
+    await ticking;
   } finally {
     release?.();
   }

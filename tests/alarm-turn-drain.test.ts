@@ -214,3 +214,36 @@ test('a store failure yields in-flight observations and then surfaces', async ()
   }), /store unavailable/);
   assert.equal(yielded, true);
 });
+
+test('other due work runs on each re-check while a turn observes, never overlapping itself', async () => {
+  const pending: Job[] = [{ id: 'long', thread: 'a' }];
+  let ticks = 0;
+  let concurrent = 0;
+  let maxConcurrent = 0;
+  const seenRunning: string[][] = [];
+  const releaseLong = deferred();
+  await drainAlarmTurnJobs({
+    ...baseOptions(pending),
+    recheckMs: 1,
+    initial: [...pending],
+    tick: async (runningJobIds) => {
+      ticks += 1;
+      concurrent += 1;
+      maxConcurrent = Math.max(maxConcurrent, concurrent);
+      seenRunning.push([...runningJobIds]);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      concurrent -= 1;
+      if (ticks === 3) releaseLong.resolve();
+    },
+    runJob: async (_job, control) => {
+      control.observing();
+      await releaseLong.promise;
+      pending.splice(0, pending.length);
+      return true;
+    },
+  });
+  assert.ok(ticks >= 3, 'receipts and schedule actions do not wait for the long turn');
+  assert.equal(maxConcurrent, 1);
+  assert.deepEqual(seenRunning[0], ['long'], 'records owned by a running job are identifiable');
+  assert.equal(concurrent, 0, 'the drain returns only after its last tick settled');
+});

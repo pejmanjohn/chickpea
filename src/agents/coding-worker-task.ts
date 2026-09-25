@@ -1,4 +1,4 @@
-import { init, type AgentInstanceHandle, type DurabilityConfig } from '@flue/runtime';
+import { init, type AgentInstanceHandle } from '@flue/runtime';
 
 import { createCloudflareBoundedAgentReplyReader } from '../slack/bounded-agent-observation.ts';
 import { publishActivityStatus } from '../slack/activity-publisher.ts';
@@ -23,15 +23,7 @@ import type {
 } from '../slack/coding-worker-run.ts';
 import type { RuntimePlanV2 } from './runtime-plan.ts';
 
-/**
- * The budget of one coordinator submission (Flue's default is one hour and 10
- * attempts). It covers `MAX_WORKSPACE_TASKS_PER_RESPONSE` full-length coding
- * tasks plus the coordinator's own model time.
- */
-export const CHICKPEA_SUBMISSION_DURABILITY: DurabilityConfig = {
-  maxAttempts: 10,
-  timeoutMs: 155 * 60_000,
-};
+export { CHICKPEA_SUBMISSION_DURABILITY } from './submission-durability.ts';
 
 /** The coordinator's standing instruction on delegating; the tool description carries the brief. */
 export const WORKSPACE_TASK_INSTRUCTION =

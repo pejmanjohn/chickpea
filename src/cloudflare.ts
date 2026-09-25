@@ -189,6 +189,7 @@ import {
   ALARM_ADMISSION_RECHECK_MS,
   ALARM_TURN_BUDGET_MS,
   ALARM_YIELD_REARM_MS,
+  alarmYieldIsFree,
   drainAlarmTurnJobs,
   type AlarmTurnJobControl,
 } from './slack/alarm-turn-drain.ts';
@@ -2102,12 +2103,18 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
         return true;
       } catch (err) {
         if (err instanceof AgentObservationYield) {
-          // The alarm stopped observing on purpose; nothing failed. Restore
-          // the attempt count so a long turn never spends its reattachment
-          // budget on yields, and keep its receipt, active work, and claims.
-          stores.turnJobs.recordAttempt(job.id, job.attempts);
-          console.info('[chickpea] Flue turn yielded for reattachment by the next alarm');
-          return false;
+          if (alarmYieldIsFree(flueDispatch.dispatchReceipt?.acceptedAt, Date.now())) {
+            // The alarm stopped observing on purpose; nothing failed. Restore
+            // the attempt count so a long turn never spends its reattachment
+            // budget on yields, and keep its receipt, active work, and claims.
+            stores.turnJobs.recordAttempt(job.id, job.attempts);
+            console.info('[chickpea] Flue turn yielded for reattachment by the next alarm');
+            return false;
+          }
+          // Past its durability the submission should have settled. Spend
+          // attempts from here so the bounded reattachment policy below ends
+          // it with the durable recovery notice.
+          console.warn('[chickpea] Flue turn outlived its submission durability');
         }
         if (err instanceof AgentPromptFailure && err.recoveryRequired) {
           console.error('[chickpea] Flue turn requires operator reconciliation');
@@ -2188,6 +2195,15 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       refresh: async () => {
         needsRetry = (await drainGatewayInbox(stores, this.env as PlatformEnv)) || needsRetry;
         return stores.turnJobs.listPending(MAX_TURN_DRAIN_BATCH);
+      },
+      // Due receipts, schedule actions, repairs, and cleanups keep moving
+      // while a long turn observes. Records owned by a running job are its
+      // own to finish; the tail picks them up once it returns.
+      tick: async (runningJobIds) => {
+        await drainSlackInteractionCleanups(stores, resolveInstallation, runningJobIds);
+        await drainTerminalPresentationRepairs(stores, resolveInstallation, runningJobIds);
+        await drainCloudflareScheduleActions(stores, this.env as PlatformEnv);
+        await drainCloudflareManagementReceipts(stores, resolveInstallation);
       },
       startConcurrency: DRAIN_CONCURRENCY,
       maxActiveThreads: MAX_TURN_DRAIN_BATCH,
@@ -2421,8 +2437,10 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
 async function drainSlackInteractionCleanups(
   stores: TagStateStores,
   resolveInstallation: SlackInstallationExecutionResolver,
+  excludeTurnJobIds: ReadonlySet<string> = new Set(),
 ): Promise<void> {
   for (const job of stores.turnJobs.listPendingSlackInteractionCleanups(MAX_TURN_DRAIN_BATCH)) {
+    if (excludeTurnJobIds.has(job.id)) continue;
     const progress = job.progress.slackInteraction;
     if (!progress) continue;
     try {
@@ -2446,8 +2464,10 @@ async function drainSlackInteractionCleanups(
 async function drainTerminalPresentationRepairs(
   stores: TagStateStores,
   resolveInstallation: SlackInstallationExecutionResolver,
+  excludeTurnJobIds: ReadonlySet<string> = new Set(),
 ): Promise<SlackPresentationRepairDrainResult> {
-  const presentations = stores.presentations.listAutoRepairableV3(MAX_TURN_DRAIN_BATCH);
+  const presentations = stores.presentations.listAutoRepairableV3(MAX_TURN_DRAIN_BATCH)
+    .filter((presentation) => !excludeTurnJobIds.has(presentation.turnJobId));
   return drainSlackPresentationRepairs({
     presentations,
     state: localSlackPresentationState(stores),
