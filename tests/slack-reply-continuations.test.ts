@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import { ErrorCode, type WebClient } from '@slack/web-api';
 
 import {
+  AGENT_VIEW_STREAM_RETIRE_AFTER_MS,
   SlackAgentViewPresentation,
   type SlackPresentationDeliveryObserver,
   type SlackPresentationStatePort,
@@ -140,6 +141,8 @@ interface Harness {
   clock: { now: number };
   replies: { messages: Array<Record<string, unknown>>; complete: boolean };
   postErrors: unknown[];
+  stopStreamErrors: unknown[];
+  updateErrors: unknown[];
   close(): void;
 }
 
@@ -179,6 +182,8 @@ function harness(): Harness {
   const calls: Harness['calls'] = [];
   const replies: Harness['replies'] = { messages: [], complete: true };
   const postErrors: unknown[] = [];
+  const stopStreamErrors: unknown[] = [];
+  const updateErrors: unknown[] = [];
   let posted = 0;
   const client = {
     async apiCall(method: string, input: Record<string, unknown>) {
@@ -197,6 +202,8 @@ function harness(): Harness {
       },
       async stopStream(input: Record<string, unknown>) {
         calls.push({ method: 'chat.stopStream', input });
+        const error = stopStreamErrors.shift();
+        if (error) throw error;
         return { ok: true };
       },
       async postMessage(input: Record<string, unknown>) {
@@ -208,6 +215,8 @@ function harness(): Harness {
       },
       async update(input: Record<string, unknown>) {
         calls.push({ method: 'chat.update', input });
+        const error = updateErrors.shift();
+        if (error) throw error;
         return { ok: true };
       },
       async delete(input: Record<string, unknown>) {
@@ -249,6 +258,7 @@ function harness(): Harness {
   });
   return {
     store, state, client, calls, presentation, runId, clock, replies, postErrors,
+    stopStreamErrors, updateErrors,
     close: () => db.close(),
   };
 }
@@ -454,6 +464,107 @@ test('a progressive stream holds part 1 and the continuation follows after stop'
     assert.equal(`${first}\n\n${continuation}`.replace(/\s/g, ''), text.replace(/\s/g, ''));
     assert.ok(parts.length >= 2);
     assert.deepEqual(blockTypes(post!.input), ['markdown', 'context']);
+  } finally {
+    h.close();
+  }
+});
+
+function planningPresenter(
+  h: Harness,
+  recorded: Array<{ messageTs: string; text: string }>,
+): WebClientPresenter {
+  return new WebClientPresenter(h.client, {
+    channelId: ROOT.channelId,
+    threadTs: ROOT.threadTs,
+    agentName: PERSONA.name,
+    visibleOwner: { kind: 'selected_agent', persona: PERSONA },
+    agentId: 'agent_planning',
+    userId: ROOT.requesterUserId,
+    workspaceId: ROOT.workspaceId,
+  }, undefined, {
+    agentViewPresentation: h.presentation,
+    onPublicDelivery: (delivery) => { recorded.push(delivery); },
+  });
+}
+
+function streamedText(h: Harness): string {
+  return h.calls
+    .filter((call) => call.method === 'chat.startStream' || call.method === 'chat.appendStream')
+    .flatMap((call) => (call.input.chunks as Array<{ type: string; text?: string }>)
+      .filter((chunk) => chunk.type === 'markdown_text')
+      .map((chunk) => chunk.text ?? ''))
+    .join('');
+}
+
+test('a long streamed answer whose stream expired posts part 1 fresh and its continuation follows', async () => {
+  const h = harness();
+  try {
+    const recorded: Array<{ messageTs: string; text: string }> = [];
+    const presenter = planningPresenter(h, recorded);
+    const text = longPlan();
+    await streamLongAnswer(h, text);
+    const planned = splitSlackMarkdownReply(text, { minFirstPartLength: streamedText(h).length });
+    assert.equal(planned.length, 2);
+    // The streamed prefix moved the first cut, so a fresh split would not line up.
+    assert.notEqual(planned[0], splitSlackMarkdownReply(text)[0]);
+
+    // The stream expired before its stop: the stop is refused, the recovery
+    // update finds no message, and the final posts fresh.
+    const expired = { code: ErrorCode.PlatformError, data: { ok: false, error: 'message_not_in_streaming_state' } };
+    const missing = { code: ErrorCode.PlatformError, data: { ok: false, error: 'message_not_found' } };
+    h.stopStreamErrors.push(expired, expired);
+    h.updateErrors.push(missing);
+    await presenter.deliverFinal(text, 'markdown');
+
+    const update = h.calls.find((call) => call.method === 'chat.update')!;
+    const updated = update.input.blocks as Array<{ type: string; text?: string }>;
+    assert.deepEqual(updated.map((block) => block.type), ['markdown'], 'recovery sends part 1 only');
+    assert.equal(updated[0]!.text, planned[0]);
+
+    const [fresh, continuation, ...extra] = posts(h);
+    assert.equal(extra.length, 0, 'one final and one continuation');
+    assert.deepEqual(blockTypes(fresh!.input), ['markdown'], 'the fresh final carries no footer');
+    assert.equal((fresh!.input.blocks as Array<{ text?: string }>)[0]!.text, planned[0]);
+    assert.equal(typeof fresh!.input.client_msg_id, 'string');
+    assert.equal(fresh!.input.username, PERSONA.name);
+    assert.deepEqual(blockTypes(continuation!.input), ['markdown', 'context']);
+    assert.equal((continuation!.input.blocks as Array<{ text?: string }>)[0]!.text, planned[1]);
+    assert.equal(continuation!.input.username, PERSONA.name);
+    assert.deepEqual(recorded.map((delivery) => delivery.text), planned);
+
+    const presentation = v3(h);
+    assert.equal(presentation.stream.state, 'artifact_delivered');
+    assert.equal(presentation.continuations?.state, 'delivered');
+  } finally {
+    h.close();
+  }
+});
+
+test('a long streamed answer whose stream aged out is retired and posts fresh in two messages', async () => {
+  const h = harness();
+  try {
+    const recorded: Array<{ messageTs: string; text: string }> = [];
+    const presenter = planningPresenter(h, recorded);
+    const text = longPlan();
+    await streamLongAnswer(h, text);
+    assert.ok(streamedText(h).length > 0);
+
+    // Past the retirement age the stream is closed before the final, which
+    // then takes the fresh-post route with its own plan.
+    h.clock.now += AGENT_VIEW_STREAM_RETIRE_AFTER_MS;
+    await presenter.deliverFinal(text, 'markdown');
+
+    const stops = h.calls.filter((call) => call.method === 'chat.stopStream');
+    assert.equal(stops.length, 1, 'only the retirement stops the stream');
+    const planned = splitSlackMarkdownReply(text);
+    const [fresh, continuation, ...extra] = posts(h);
+    assert.equal(extra.length, 0, 'one final and one continuation');
+    assert.deepEqual(blockTypes(fresh!.input), ['markdown'], 'the fresh final carries no footer');
+    assert.equal((fresh!.input.blocks as Array<{ text?: string }>)[0]!.text, planned[0]);
+    assert.deepEqual(blockTypes(continuation!.input), ['markdown', 'context']);
+    assert.equal((continuation!.input.blocks as Array<{ text?: string }>)[0]!.text, planned[1]);
+    assert.deepEqual(recorded.map((delivery) => delivery.text), planned);
+    assert.equal(v3(h).continuations?.state, 'delivered');
   } finally {
     h.close();
   }
