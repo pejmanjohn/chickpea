@@ -108,7 +108,15 @@ export interface TurnExecutionPorts {
   usageStore?: UsageStore;
   workStore?: WorkStore;
   appStores?: AppStores;
+  /**
+   * How an approval turn applies its proposal. The shared state store's alarm
+   * resolves its local management runtime (`managementApproval`); a thread
+   * runner applies it in the state store over one RPC
+   * (`invokeManagementApproval`). Each executor must supply one: without
+   * either, a Cloudflare approval turn fails before it replies.
+   */
   managementApproval?: RunTurnOptions['managementApproval'];
+  invokeManagementApproval?: RunTurnOptions['invokeManagementApproval'];
   /** Where observed activity for this turn lands; the module default otherwise. */
   statusRegistry?: SlackStatusRegistry;
   telemetry: ProductTelemetryCapture;
@@ -354,6 +362,9 @@ export async function executeTurnJob(
       ...(ports.usageStore ? { usageStore: ports.usageStore } : {}),
       ...(ports.appStores ? { appStores: ports.appStores } : {}),
       ...(ports.managementApproval ? { managementApproval: ports.managementApproval } : {}),
+      ...(ports.invokeManagementApproval
+        ? { invokeManagementApproval: ports.invokeManagementApproval }
+        : {}),
       ...(ports.statusRegistry ? { statusRegistry: ports.statusRegistry } : {}),
       ...(runtimePlanDecision ? { runtimePlanDecision } : {}),
       onRuntimePlan: async (candidate) => {

@@ -56,6 +56,10 @@ import type { WorkRpcRequest, WorkRpcResponse } from '../work/types.ts';
 import type { IdentityRpcRequest, IdentityRpcResponse } from '../identity/types.ts';
 import type { ManagementRpcRequest, ManagementRpcResponse } from '../management/types.ts';
 import type { SlackManagementSignal } from '../management/slack-tools.ts';
+import type {
+  HostSlackManagementApprovalResult,
+  SlackManagementApprovalRpcRequest,
+} from '../management/slack-approval.ts';
 import type { SlackProposalApprovalQuery, SlackProposalApprovalTurn } from '../slack/turn-jobs.ts';
 import type {
   ThreadRunnerTurnKind,
@@ -263,6 +267,10 @@ export interface TagStateRpc {
   slackScheduleActionInvoke(
     request: SlackScheduleActionRpcRequest,
   ): Promise<SlackScheduleActionOutcome>;
+  /** Apply one approved management proposal from a Slack turn. Never replayed. */
+  slackManagementApprovalInvoke(
+    request: SlackManagementApprovalRpcRequest,
+  ): Promise<HostSlackManagementApprovalResult>;
   // -- identity and organization authorization ----------------------------
   identityExecute(request: IdentityRpcRequest): Promise<StateRpcResult<IdentityRpcResponse>>;
   // -- requester-bound workspace management ledger -----------------------

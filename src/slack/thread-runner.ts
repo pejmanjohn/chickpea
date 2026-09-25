@@ -263,6 +263,9 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
         settings: getSettingsStore(env),
         config: getConfigStore(env),
       }),
+      // The state store applies an approval against its own management
+      // stores; this runner holds none. One RPC per approval, never replayed.
+      invokeManagementApproval: (request) => tagStateStub(env).slackManagementApprovalInvoke(request),
       resolveInstallation,
       sandboxes: sandboxTurnReaders(env),
       runTurn,

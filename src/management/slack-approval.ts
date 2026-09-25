@@ -39,9 +39,29 @@ export interface SlackManagementApprovalDependencies {
   publicUrl?: string;
 }
 
-type HostSlackManagementApprovalResult =
+export type HostSlackManagementApprovalResult =
   | { kind: 'message'; text: string }
   | { kind: 'agent_welcome_queued'; outboxId: string };
+
+/**
+ * One Slack approval, applied by the state owner. A thread runner holds no
+ * management state, so it sends the approved turn across once and the state
+ * store runs `executeHostSlackManagementApproval` against its local stores.
+ * An approval is a non-idempotent write: callers never replay this request.
+ */
+export interface SlackManagementApprovalRpcRequest {
+  turn: NormalizedSlackTurn;
+  assignment: ResolvedAssignment;
+  turnJobId: string;
+  proposalId: string;
+  presentationRunId?: string;
+  publicUrl?: string;
+}
+
+/** Applies one approval in the state owner (see SlackManagementApprovalRpcRequest). */
+export type SlackManagementApprovalInvoke = (
+  request: SlackManagementApprovalRpcRequest,
+) => Promise<HostSlackManagementApprovalResult>;
 
 export async function resolveHostSlackManagementApproval(input: {
   turn: NormalizedSlackTurn;
