@@ -77,10 +77,11 @@ export function createCodingTaskProgress(options: {
       if (settled.has(record.toolCallId)) return;
       if (record.state === 'started' ||
           record.milestone === 'workspace' && record.state === 'completed') {
-        // The workspace step completes as the worker starts on the changes.
-        const step = record.state === 'completed' || record.milestone === 'changes'
-          ? 1
-          : record.milestone === 'workspace' ? 0 : 2;
+        // The workspace step is being set up only until it completes; the
+        // worker is then on the changes until the pull request step starts.
+        const step = record.milestone === 'workspace' && record.state === 'started' ? 0
+          : record.milestone === 'pull_request' ? 2
+          : 1;
         running.set(record.toolCallId, Math.max(step, running.get(record.toolCallId) ?? 0));
         latest = record.toolCallId;
         return;
