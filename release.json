@@ -6,7 +6,7 @@
   "recovery": "gateway-transport-then-previous-code",
   "migrations": {
     "d1": "a22d9e323396cf1c464c3f87a4c89fa435e0cc56e16119d9ed6570aecf32155a",
-    "workerConfiguration": "152422981bd9b100e25642949880c333bfbb0c62feaab57a132e224cac28f4cf",
+    "workerConfiguration": "70f010e8a324e1809d68ce796ee16f8bdfef3262ebdeafc8e8c3f07b5869dd54",
     "identity": "33261b08e8876e2bcfac3f9aa93182e7fdc20fe95f05d3c629d818cf2bdde9c7",
     "configuration": "57dc15da1fc60ed1a3d449c6ca6c8c3589af44e2e9864ad8e22bdd78ea31aaa5",
     "work": "f4720ea5b23c3552deae2be1a5ad04940fc90d215b2ada81d17c1110ab068eb9"
