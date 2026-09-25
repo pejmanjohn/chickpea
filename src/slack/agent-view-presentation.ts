@@ -426,18 +426,10 @@ export class SlackAgentViewPresentation {
    * outcome whose receipt is unknown.
    */
   async beginAgentSessionProcessing(): Promise<boolean> {
-    return (await this.startAgentSessionProcessing()) !== 'none';
-  }
-
-  /**
-   * `beginAgentSessionProcessing`, telling a write made now (`started`) from
-   * one an earlier attempt already acknowledged (`already`).
-   */
-  async startAgentSessionProcessing(): Promise<'started' | 'already' | 'none'> {
     let presentation = await this.requirePresentation();
     if (presentation.schemaVersion !== 3 || presentation.agentSession.disposition ||
-        presentation.agentSession.desired !== 'processing') return 'none';
-    if (presentation.agentSession.acknowledged === 'processing') return 'already';
+        presentation.agentSession.desired !== 'processing') return false;
+    if (presentation.agentSession.acknowledged === 'processing') return true;
     let operationId: string;
     if (!presentation.agentSession.operation) {
       operationId = `session_${hash(`${presentation.runId}:processing:1`).slice(0, 24)}`;
@@ -450,9 +442,9 @@ export class SlackAgentViewPresentation {
         kind: 'retry_agent_session', operationId,
       });
     } else {
-      return 'none';
+      return false;
     }
-    if (presentation.schemaVersion !== 3) return 'none';
+    if (presentation.schemaVersion !== 3) return false;
     try {
       await setAgentSessionStatus(this.options.client, {
         channel_id: presentation.root.channelId,
@@ -462,14 +454,14 @@ export class SlackAgentViewPresentation {
         ...ownerPersonaFields(presentation.owner),
       });
       await this.recordAgentSessionReceipt(operationId, 'acknowledged', 'processing');
-      return 'started';
+      return true;
     } catch (error) {
       const certainty = slackEffectOutcome(error);
       await this.recordAgentSessionReceipt(operationId, certainty);
       if (certainty === 'failed' && isPermanentAgentSessionRejection(error)) {
         await this.markAgentSessionUnavailable(operationId);
       }
-      return 'none';
+      return false;
     }
   }
 

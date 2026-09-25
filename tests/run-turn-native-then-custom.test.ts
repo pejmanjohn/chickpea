@@ -1,14 +1,23 @@
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { after, before, test } from 'node:test';
 
 import { ErrorCode, type WebClient } from '@slack/web-api';
 
+import { SqliteConfigStore } from '../src/config/store.ts';
 import type { ResolvedAssignment } from '../src/config/types.ts';
+import { activityStatus } from '../src/activity/status.ts';
+import { deriveRuntimePlanInstanceId } from '../src/agents/runtime-plan.ts';
 import { SlackAgentViewPresentation } from '../src/slack/agent-view-presentation.ts';
 import { SlackRunPresentationStoreLogic } from '../src/slack/run-presentations.ts';
 import { runTurn } from '../src/slack/run-turn.ts';
+import { SlackStatusRegistry } from '../src/slack/status-registry.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
+import { prepareSlackShadowAdmission } from '../src/slack/work-admission.ts';
+import { SqliteWorkStore } from '../src/work/store.ts';
 
 /**
  * Maintainer ruling: "send native first and then replace with custom". A V3
@@ -39,6 +48,33 @@ const assignment: ResolvedAssignment = {
   },
 };
 
+// A turn that reaches the Agent prepares memory from the local state store.
+const stateDirectory = mkdtempSync(join(tmpdir(), 'chickpea-native-first-'));
+const statePath = join(stateDirectory, 'state.sqlite');
+let previousStatePath: string | undefined;
+
+before(async () => {
+  previousStatePath = process.env.SLACK_STATE_DB_PATH;
+  process.env.SLACK_STATE_DB_PATH = statePath;
+  const store = new SqliteConfigStore(statePath, { agents: [] });
+  await store.createAgent(assignment.agent);
+  const installation = await store.ensureWorkspaceInstallation({
+    workspaceId: assignment.workspaceId,
+    transportMode: 'direct',
+    defaultAgentId: assignment.agentId,
+    teamId: assignment.workspaceId,
+    botUserId: 'U_CHICKPEA',
+  });
+  await store.updateWorkspaceInstallation(assignment.workspaceId, { health: 'healthy' }, installation.revision);
+  store.close();
+});
+
+after(() => {
+  if (previousStatePath === undefined) delete process.env.SLACK_STATE_DB_PATH;
+  else process.env.SLACK_STATE_DB_PATH = previousStatePath;
+  rmSync(stateDirectory, { recursive: true, force: true });
+});
+
 function surfaceTurn(surface: 'channel' | 'dm', messageTs: string): NormalizedSlackTurn {
   return {
     workspaceId: assignment.workspaceId,
@@ -55,10 +91,18 @@ function surfaceTurn(surface: 'channel' | 'dm', messageTs: string): NormalizedSl
   };
 }
 
-function harness(turn: NormalizedSlackTurn, options: { rejectCustom?: boolean } = {}) {
+function harness(turn: NormalizedSlackTurn, options: {
+  rejectCustom?: boolean;
+  /** Per-workspace activity reservations, in order; reserved once they run out. */
+  reservations?: Array<'reserved' | 'cooldown'>;
+  /** Slack rejects the native session start. */
+  rejectNativeStart?: boolean;
+  /** An admitted canonical Run, for turns that reach the Agent. */
+  runId?: string;
+} = {}) {
   const db = openStateDb(':memory:');
   const store = new SlackRunPresentationStoreLogic(db);
-  const runId = `run_native_first_${turn.messageTs.replace('.', '_')}`;
+  const runId = options.runId ?? `run_native_first_${turn.messageTs.replace('.', '_')}`;
   const sessionGeneration = Number(turn.messageTs.replace('.', ''));
   store.create({
     schemaVersion: 3,
@@ -91,6 +135,13 @@ function harness(turn: NormalizedSlackTurn, options: { rejectCustom?: boolean } 
   const effects: string[] = [];
   const client = {
     apiCall: async (_method: string, input: Record<string, unknown>) => {
+      if (options.rejectNativeStart && input.status === 'processing') {
+        effects.push('session:processing:rejected');
+        throw Object.assign(new Error('not_allowed'), {
+          code: ErrorCode.PlatformError,
+          data: { ok: false, error: 'not_allowed' },
+        });
+      }
       effects.push(`session:${String(input.status)}`);
       return { ok: true };
     },
@@ -124,6 +175,20 @@ function harness(turn: NormalizedSlackTurn, options: { rejectCustom?: boolean } 
     applySlackAppendCooldown: (workspaceId: string, retryAfterMs: number) =>
       store.applyAppendCooldown(workspaceId, retryAfterMs),
     matchFlueObservation: () => undefined,
+    ...(options.reservations
+      ? {
+          // A refused reservation (a workspace cooldown) makes no Slack call
+          // and does not latch the status off, unlike a Slack rejection.
+          reserveSlackActivityStatus: () => {
+            const outcome = options.reservations!.shift() ?? 'reserved';
+            effects.push(`reserve:${outcome}`);
+            return outcome === 'reserved'
+              ? { outcome: 'reserved' as const, budgetVersion: 1 }
+              : { outcome: 'cooldown' as const, retryAt: Date.now() + 1_000, budgetVersion: 1 };
+          },
+          applySlackActivityStatusCooldown: () => ({ cooldownUntil: Date.now() + 1_000, budgetVersion: 1 }),
+        }
+      : {}),
   };
   return { db, store, runId, effects, client, state };
 }
@@ -216,7 +281,7 @@ test('a retry that stopped after the native start hands over before its custom w
       client: h.client, state: h.state, runId: h.runId, runFencingToken: 0,
       footer: { agentName: 'Native First', agentId: assignment.agentId },
     });
-    assert.equal(await view.startAgentSessionProcessing(), 'started');
+    assert.equal(await view.beginAgentSessionProcessing(), true);
     h.effects.length = 0;
     await answer(turn, h);
     assert.deepEqual(h.effects.slice(0, 2), ['session:active', 'custom:Preparing your request…'],
@@ -234,7 +299,7 @@ test('a retry whose custom status is known visible keeps it, with no handover', 
       client: h.client, state: h.state, runId: h.runId, runFencingToken: 0,
       footer: { agentName: 'Native First', agentId: assignment.agentId },
     });
-    assert.equal(await view.startAgentSessionProcessing(), 'started');
+    assert.equal(await view.beginAgentSessionProcessing(), true);
     const write = await view.beginActivity(
       { kind: 'preparing', action: 'Preparing', object: 'your request', text: 'Preparing your request…' },
       'assistant_status',
@@ -259,11 +324,85 @@ test('the handover never touches a thread whose newer message another turn prese
       footer: { agentName: 'Native First', agentId: assignment.agentId },
     });
     assert.equal(await view.releaseNativeProcessing(), false, 'nothing to release before a native start');
-    assert.equal(await view.startAgentSessionProcessing(), 'started');
+    assert.equal(await view.beginAgentSessionProcessing(), true);
     h.state.getLatestThreadSessionGeneration = () => Number.MAX_SAFE_INTEGER;
     h.effects.length = 0;
     assert.equal(await view.releaseNativeProcessing(), false);
     assert.equal(await view.reassertNativeProcessing(), false);
     assert.deepEqual(h.effects, []);
+  } finally { h.db.close(); }
+});
+
+test('after native is shown again, the next custom write hands over again', async () => {
+  // A DM: its Agent memory has an owner in this fixture, so the turn reaches the Agent.
+  const turn = surfaceTurn('dm', '1790000009.000100');
+  const dmAssignment: ResolvedAssignment = { ...assignment, channelId: turn.channelId };
+  const work = new SqliteWorkStore(':memory:');
+  const admitted = await work.admitShadowRun(prepareSlackShadowAdmission({
+    turn, assignment: dmAssignment, sourceVisibility: 'private', admittedAt: Date.now(),
+  }));
+  const h = harness(turn, { reservations: ['cooldown'], runId: admitted.run.id });
+  const registry = new SlackStatusRegistry();
+  const observed = activityStatus('reading', 'Reading', 'the thread');
+  try {
+    await runTurn(turn, dmAssignment, undefined, {
+      client: h.client,
+      runId: h.runId,
+      turnId: `turn_${h.runId}`,
+      presentationState: h.state,
+      statusRegistry: registry,
+      workStore: work,
+      usageRecordingEnabled: false,
+      agentPrompt: async ({ runtimePlan, conversationKey }) => {
+        // Activity the Agent reports while it works: a later custom write.
+        const instanceId = runtimePlan ? deriveRuntimePlanInstanceId(runtimePlan) : conversationKey;
+        assert.equal(registry.setObservedStatus(instanceId, `turn_${h.runId}`, observed), true);
+        for (let tries = 0; tries < 50 && !h.effects.includes(`custom:${observed.text}`); tries += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        return {
+          text: 'Done.',
+          requestedModel: assignment.model ?? null,
+          returnedModel: null,
+          reportedUsage: null,
+          usageCompleteness: 'not_reported',
+        };
+      },
+    });
+    const start = h.effects.slice(0, h.effects.indexOf('final'));
+    assert.deepEqual(start, [
+      'session:processing',
+      'session:active', // handed over
+      'reserve:cooldown', // the first custom write is refused; nothing custom shows
+      'session:processing', // native shown again
+      'session:active', // handed over again
+      'reserve:reserved',
+      `custom:${observed.text}`,
+    ]);
+  } finally { h.db.close(); work.close(); }
+});
+
+test('a retry whose native start failed but whose custom status is visible starts no native', async () => {
+  const turn = surfaceTurn('dm', '1790000010.000100');
+  const h = harness(turn, { rejectNativeStart: true });
+  try {
+    // The earlier attempt's native start was rejected; its custom status was
+    // then shown and acknowledged before it stopped.
+    const view = new SlackAgentViewPresentation({
+      client: h.client, state: h.state, runId: h.runId, runFencingToken: 0,
+      footer: { agentName: 'Native First', agentId: assignment.agentId },
+    });
+    assert.equal(await view.beginAgentSessionProcessing(), false);
+    const write = await view.beginActivity(
+      { kind: 'preparing', action: 'Preparing', object: 'your request', text: 'Preparing your request…' },
+      'assistant_status',
+    );
+    assert.ok(write);
+    await view.recordActivityReceipt(write.operationId, 'acknowledged');
+    h.effects.length = 0;
+    await answer(turn, h);
+    assert.equal(h.effects.some((effect) => effect.startsWith('session:processing')), false,
+      'a native start would hide the visible custom text');
+    assert.deepEqual(h.effects.slice(-2), ['session:active', 'custom:clear'], 'settled, then cleared');
   } finally { h.db.close(); }
 });

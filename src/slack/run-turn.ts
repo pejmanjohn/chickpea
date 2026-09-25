@@ -720,47 +720,43 @@ async function runTurnAttempt(
     !presenter.activityReceipt().unavailable;
   // Turn start: Slack's native indicator first, the fast write (about 0.4 s,
   // against about 2 s for the custom status and its bookkeeping); the custom
-  // status then replaces it (see `handOverToCustomStatus`). Every V3 turn
-  // starts the native indicator exactly once.
-  let nativeSessionFallbackStarted = true;
-  /** Native processing this attempt started and has not yet handed over. */
+  // status then replaces it (see `handOverToCustomStatus`). A retry whose
+  // custom status is known visible already carries the session and starts
+  // nothing: a native start would hide that text. Otherwise the native start
+  // is made at most once per attempt: one that fails is not retried, and the
+  // custom status (or its settle) is what the turn shows instead.
+  /** Native processing shows and has not yet been handed to the custom status. */
   let nativeHeld = false;
   /** Native processing was handed to the custom status. */
   let nativeReleased = false;
-  const nativeStart = await agentViewPresentation?.startAgentSessionProcessing() ?? 'none';
-  if (nativeStart !== 'none') options.onSlackWrite?.('agent_session');
-  // A retry whose earlier attempt stopped between the native start and its
-  // custom write hands over too; one whose custom status is known visible
-  // already carries the session.
-  nativeHeld = nativeStart === 'started' ||
-    (nativeStart === 'already' && admittedVisibleStatus === undefined);
+  if (admittedVisibleStatus === undefined && agentViewPresentation) {
+    // True also for a retry whose earlier attempt started native processing
+    // and stopped before its custom write, so that write hands over too. A
+    // start whose outcome is unknown returns false: its custom writes do not
+    // hand over, and may stay hidden until the turn settles (cosmetic).
+    nativeHeld = await agentViewPresentation.beginAgentSessionProcessing();
+    if (nativeHeld) options.onSlackWrite?.('agent_session');
+  }
   /**
    * Hand the working indicator from native `processing` to the custom status
    * about to be written. Slack acknowledges a custom status written while the
    * session is in native processing but does not render it (seen live on
    * Violet, #198), so the session leaves native processing first; the custom
    * status then moves it back to processing, carried by the custom text.
-   * Once per attempt, and only before a native-surface custom write.
+   * Runs before each native-surface custom write made while native shows.
    */
   const handOverToCustomStatus = async (): Promise<void> => {
     if (!nativeHeld || !agentViewPresentation) return;
     nativeHeld = false;
     nativeReleased = await agentViewPresentation.releaseNativeProcessing();
   };
-  // Nothing custom is (or can be) visible: show Slack's native indicator
-  // again when it was handed over, or start it when this attempt never did.
+  // Nothing custom is (or can be) visible after a hand-over: show Slack's
+  // native indicator again. The next custom write hands over again.
   const beginNativeSessionFallback = async (): Promise<void> => {
-    if (!agentViewPresentation) return;
-    if (nativeReleased) {
-      nativeReleased = false;
-      if (await agentViewPresentation.reassertNativeProcessing()) {
-        options.onSlackWrite?.('agent_session');
-      }
-      return;
-    }
-    if (nativeSessionFallbackStarted) return;
-    nativeSessionFallbackStarted = true;
-    if (await agentViewPresentation.beginAgentSessionProcessing().catch(() => false)) {
+    if (!nativeReleased || !agentViewPresentation) return;
+    nativeReleased = false;
+    if (await agentViewPresentation.reassertNativeProcessing()) {
+      nativeHeld = true;
       options.onSlackWrite?.('agent_session');
     }
   };
