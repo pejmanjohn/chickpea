@@ -346,6 +346,18 @@ channel IDs, settings keys or values, or error text. Emission never throws.
   in 100 per isolate is logged as a baseline sample. The counters reset when the
   isolate restarts. Workers clocks advance only across I/O, so `ms` is the
   awaited RPC round trip including queueing in the singleton, not CPU time.
+- A Slack turn on Cloudflare freezes a turn envelope when its dispatch is
+  prepared: the Agent's liveness and repository grants, sandbox settings,
+  OpenAI auth method, model catalog, GitHub App presence, and image model.
+  The Agent and its coding workers fetch it once per turn
+  (`method: 'slackTurnEnvelopeGet'`), so `configGetAgent` and reads of those
+  settings should not appear from an agent isolate during such a turn.
+  Secrets (provider keys, the GitHub App key, connector and OAuth tokens, the
+  Browserbase key) and live authority checks are still read at use, and
+  writes (usage, memory, reservations) still go to the singleton. A settings
+  change or Agent disable made mid-turn applies from the next turn; a tool
+  that fails on a frozen setting re-resolves it live once. Routine runs, Node
+  installs, and turns dispatched before this existed read live throughout.
 
 To query a deployed Worker, discover the `event` key with `/telemetry/keys`
 (`keyNeedle: { value: 'event' }`), then filter the events query on it with
