@@ -2118,6 +2118,9 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
           onCodingTaskStarted: () => {
             if (activeWorkKey) stores.slack.markCodingActiveWork(activeWorkKey, job.id);
           },
+          ...(reattaching && activeWorkKey && stores.slack.isCodingActiveWork(activeWorkKey, job.id)
+            ? { codingTaskStarted: true }
+            : {}),
           ...(job.progress.slackInteraction
             ? { interactionProgress: job.progress.slackInteraction }
             : {}),

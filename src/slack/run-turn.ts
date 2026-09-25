@@ -272,6 +272,11 @@ export interface RunTurnOptions {
    * Such a turn can run far longer than an ordinary one.
    */
   onCodingTaskStarted?: () => void | Promise<void>;
+  /**
+   * An earlier attempt of this turn already delegated a coding task, so a
+   * reattached observation may start from the quiet-worker poll cadence.
+   */
+  codingTaskStarted?: boolean;
   /** Adapter artifacts restored from a prior relay attempt. */
   interactionProgress?: SlackInteractionProgress;
   /** Persist adapter coordinates before any later model or delivery work. */
@@ -1313,6 +1318,7 @@ async function runTurnAttempt(
             ...(options.onObservationStarted
               ? { onObservationStarted: options.onObservationStarted }
               : {}),
+            ...(options.codingTaskStarted ? { codingTaskStarted: true } : {}),
             ...(agentViewPresentation || options.onCodingTaskStarted
               ? {
                   onWorkspaceMilestone: async (record, target) => {

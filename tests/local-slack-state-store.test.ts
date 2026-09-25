@@ -324,10 +324,16 @@ test('the long active-work hint applies only to a turn that delegated a coding t
     slack.setActiveWork('thread:done', 'job-done', false);
     slack.markCodingActiveWork('thread:done', 'job-done');
     assert.equal(slack.isActiveWork('thread:done'), false);
+    assert.equal(slack.isCodingActiveWork('thread:done', 'job-done'), false);
+    assert.equal(slack.isCodingActiveWork('thread:coding', 'job-coding'), false, 'an expired coding marker no longer counts');
+    slack.setActiveWork('thread:plain', 'job-plain', true);
+    assert.equal(slack.isCodingActiveWork('thread:plain', 'job-plain'), false, 'a plain work marker is not coding');
 
     // An expired coding marker is purged with the rest; a live one is kept.
     slack.setActiveWork('thread:live', 'job-live', true);
     slack.markCodingActiveWork('thread:live', 'job-live');
+    assert.equal(slack.isCodingActiveWork('thread:live', 'job-live'), true);
+    assert.equal(slack.isCodingActiveWork('thread:live', 'job-other'), false, 'only this turn\'s marker counts');
     now += ACTIVE_WORK_TTL_MS + 1;
     slack.claim('evt:purge');
     const rows = db.all('SELECT key FROM slack_active_work ORDER BY key').map((row) => row.key);

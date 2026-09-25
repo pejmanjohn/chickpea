@@ -267,6 +267,7 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
     recovery: [] as string[],
     events: [] as string[],
     replayTexts: [] as unknown[],
+    codingSeeds: [] as unknown[],
     alarmAt: null as number | null,
     relayAlarms: [] as RelayAlarmMetrics[],
   };
@@ -323,6 +324,7 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
       observationSignal?: AbortSignal; onObservationStarted?: () => void;
       onDelivered?: () => void;
       flueDispatch?: { dispatchReceipt?: object };
+      codingTaskStarted?: boolean;
     }) => {
       if (options.replayTerminalResult === 'failure') {
         record.events.push(`recovery-notice:${options.turnId}`);
@@ -332,6 +334,7 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
       record.events.push(`start:${options.turnId}`);
       if (options.turnId.startsWith('long')) {
         record.replayTexts.push(options.replayText);
+        record.codingSeeds.push(options.codingTaskStarted);
         options.onObservationStarted?.();
         const signal = options.observationSignal!;
         await new Promise((resolve) => signal.addEventListener('abort', resolve, { once: true }));
@@ -372,6 +375,7 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
       setActiveWork(key: string, _id: string, active: boolean) {
         record.activeWork.push([key, active]);
       },
+      isCodingActiveWork: (key: string) => key === 'coding',
     },
     gatewayInbox: { hasPending: () => false },
   };
@@ -421,6 +425,8 @@ test('a long turn yields at the alarm budget without spending attempts while new
   assert.equal(yieldedAlarm!.jobsRetained, 1, 'the yielded turn stays pending for reattachment');
   assert.ok(yieldedAlarm!.longestJobMs <= yieldedAlarm!.turnsMs);
   assert.equal(yieldedAlarm!.jobsCarried, 0);
+  assert.deepEqual(record.codingSeeds, [true],
+    'a reattached coding turn starts its observation from the quiet-worker cadence');
 
   // A 155-minute coding turn yields many times; none of them spends its budget.
   for (let index = 0; index < 12; index += 1) {
