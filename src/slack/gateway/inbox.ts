@@ -40,6 +40,42 @@ export function gatewayInboxRetryDelayMs(attempts: number, retryAfterMs?: number
   return Math.max(backoff, hint);
 }
 
+/** Stored recovery reason for a delivery that failed on a retryable dependency. */
+export const GATEWAY_DELIVERY_DEPENDENCY_REASON = 'delivery_dependency_retryable';
+
+/**
+ * The recovery reason to record for a delivery whose processing threw. A
+ * retryable dependency failure (a rate-limited or unreachable Slack/gateway)
+ * gets its own reason, so a row dead-lettered after the last attempt is
+ * countable apart from ordinary processing failures.
+ */
+export function gatewayDeliveryFailureReason(error: unknown): string {
+  return isRetryableDependencyFailure(error)
+    ? GATEWAY_DELIVERY_DEPENDENCY_REASON
+    : 'delivery_processing_failed';
+}
+
+/**
+ * Record, without any event content, that a delivery was dead-lettered: its
+ * attempts are spent and the mention it carried will not be admitted.
+ */
+export function recordGatewayDeliveryDeadLetter(
+  delivery: Pick<GatewayInboundDelivery, 'kind'>,
+  attempts: number,
+  error: unknown,
+): void {
+  const code = error && typeof error === 'object' && typeof (error as { code?: unknown }).code === 'string'
+    ? (error as { code: string }).code
+    : error instanceof Error ? error.name : 'unknown';
+  console.error('[chickpea] gateway_delivery_dead_lettered', JSON.stringify({
+    kind: delivery.kind,
+    attempts,
+    reason: gatewayDeliveryFailureReason(error),
+    retryable: isRetryableDependencyFailure(error),
+    code: /^[A-Za-z0-9_.-]{1,64}$/.test(code) ? code : 'other',
+  }));
+}
+
 /**
  * Retry delay for a delivery whose processing threw. Only a retryable
  * dependency failure backs off; any other failure keeps the immediate retry

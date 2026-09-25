@@ -367,6 +367,43 @@ test('a rate-limited delivery arms the Node drain for its backoff due time, not 
   }
 });
 
+test('a retryable admission failure that spends its attempts is dead-lettered with a content-free record', async (t) => {
+  const h = backoffHarness(t, 1);
+  const logged: unknown[][] = [];
+  t.mock.method(console, 'error', (...args: unknown[]) => { logged.push(args); });
+  const worker = new NodeGatewayInboxWorker({
+    getStore: () => h.store,
+    processDelivery: async () => {
+      throw new SlackTransportError('users.info', 'gateway_rate_limited', { retryable: true });
+    },
+    setTimer: h.setTimer,
+    clearTimer: (() => {}) as typeof clearTimeout,
+    onError: () => {},
+  });
+  try {
+    h.store.admit(eventDelivery('delivery:Ev_DEAD'));
+    worker.start();
+    await spin();
+    const row = h.db.get(
+      'SELECT status, recovery_reason, payload_json FROM gateway_inbox WHERE id = ?',
+      'delivery:Ev_DEAD',
+    );
+    assert.equal(row?.status, 'recovery_required');
+    assert.equal(row?.recovery_reason, 'delivery_dependency_retryable');
+    assert.equal(row?.payload_json, null);
+    const record = logged.find((args) => args[0] === '[chickpea] gateway_delivery_dead_lettered');
+    assert.ok(record, 'the dead letter is logged');
+    assert.deepEqual(JSON.parse(String(record[1])), {
+      kind: 'event.deliver', attempts: 1, reason: 'delivery_dependency_retryable',
+      retryable: true, code: 'gateway_rate_limited',
+    });
+    assert.doesNotMatch(String(record[1]), /hello|U_TEST|C_TEST|Ev_DEAD/);
+  } finally {
+    await worker.stop();
+    h.db.close();
+  }
+});
+
 const emptyInbox = {
   admit: () => 'accepted' as const,
   deliveryIsCurrent: () => true,

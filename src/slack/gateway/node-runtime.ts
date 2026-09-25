@@ -15,7 +15,9 @@ import { createGatewayDeploymentClient } from './runtime.ts';
 import { GATEWAY_BINDING_SETTING, type GatewayDeploymentClient } from './client.ts';
 import {
   GATEWAY_INBOX_MAX_DRAIN_BATCH,
+  gatewayDeliveryFailureReason,
   gatewayDeliveryRetryDelayMs,
+  recordGatewayDeliveryDeadLetter,
 } from './inbox.ts';
 import {
   GATEWAY_DURABLE_ADMISSION_CAPABILITY,
@@ -155,10 +157,13 @@ export class NodeGatewayInboxWorker {
           this.#onError(error);
           const retry = store.retryOrRecover(
             item.id,
-            'delivery_processing_failed',
+            gatewayDeliveryFailureReason(error),
             gatewayDeliveryRetryDelayMs(item.attempts, error),
           );
-          if (retry === 'pending') this.#scheduleNext(store);
+          if (retry === 'recovery_required') {
+            recordGatewayDeliveryDeadLetter(item.delivery, item.attempts, error);
+          }
+          this.#scheduleNext(store);
           return;
         }
       }

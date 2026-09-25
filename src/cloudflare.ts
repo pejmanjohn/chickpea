@@ -239,7 +239,9 @@ import {
 } from './routines/scheduler-adapter.ts';
 import {
   GATEWAY_INBOX_MAX_DRAIN_BATCH,
+  gatewayDeliveryFailureReason,
   gatewayDeliveryRetryDelayMs,
+  recordGatewayDeliveryDeadLetter,
   GatewayInboxStoreLogic,
 } from './slack/gateway/inbox.ts';
 import {
@@ -2806,9 +2808,12 @@ async function drainGatewayInbox(
       const retryDelayMs = gatewayDeliveryRetryDelayMs(item.attempts, error);
       const retry = stores.gatewayInbox.retryOrRecover(
         item.id,
-        'delivery_processing_failed',
+        gatewayDeliveryFailureReason(error),
         retryDelayMs,
       );
+      if (retry === 'recovery_required') {
+        recordGatewayDeliveryDeadLetter(item.delivery, item.attempts, error);
+      }
       // A row in backoff is not due yet: the alarm arms for its due time
       // (nextPendingDueAt) instead of re-polling every few seconds.
       needsRetry ||= retry === 'pending' && retryDelayMs === 0;
