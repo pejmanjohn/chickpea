@@ -201,6 +201,7 @@ export class SlackAgentViewPresentation {
     | 'runtime_gate_disabled'
     | 'policy_ineligible'
     | 'effect_capable'
+    | 'relay_setup_failed'
     | undefined;
 
   constructor(private readonly options: AgentViewPresentationOptions) {}
@@ -800,6 +801,21 @@ export class SlackAgentViewPresentation {
     receipt: FlueDispatchReceiptV1;
     eligibility: ProgressiveEligibilityDecision;
   }): Promise<SlackProgressiveReadRelay | undefined> {
+    try {
+      return await this.openReceiptRelay(input);
+    } catch (error) {
+      // The dispatch goes on without a relay; the final's record says why
+      // this answer was not streamed.
+      this.degradedReason ??= 'relay_setup_failed';
+      throw error;
+    }
+  }
+
+  private async openReceiptRelay(input: {
+    instanceId: string;
+    receipt: FlueDispatchReceiptV1;
+    eligibility: ProgressiveEligibilityDecision;
+  }): Promise<SlackProgressiveReadRelay | undefined> {
     const target = await this.options.state.matchFlueObservation(
       input.instanceId,
       input.receipt.submissionId,
@@ -1366,6 +1382,11 @@ export class SlackAgentViewPresentation {
     // A crash before this receipt repeats only stop/delete at this coordinate.
     // It cannot repeat completion because terminal intent has not begun.
     return this.transition(presentation, { kind: 'file_share_stream_retired', messageTs });
+  }
+
+  /** Whether this Run still has its durable presentation to drive. */
+  async hasPresentation(): Promise<boolean> {
+    return await this.options.state.getRunPresentation(this.options.runId) !== undefined;
   }
 
   async markCanonicalFinalized(): Promise<void> {

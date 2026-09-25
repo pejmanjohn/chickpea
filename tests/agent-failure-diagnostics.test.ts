@@ -5,6 +5,8 @@ import type { FlueObservation } from '@flue/runtime';
 import { agentFailureDiagnosticsInterceptor, observeAgentResultDiagnostics, settlementFailureFacts } from '../src/slack/agent-failure-diagnostics.ts';
 import { CHICKPEA_SLACK_AGENT_NAME } from '../src/agents/names.ts';
 import { opaqueId } from '../src/work/admission.ts';
+import { AgentPromptFailure, StateStoreUnavailable } from '../src/slack/flue-dispatch.ts';
+import { WorkStateError } from '../src/work/types.ts';
 
 const operation = { type: 'agent', operationId: 'private-submission', operationKind: 'prompt' } as const;
 const context = { agentName: CHICKPEA_SLACK_AGENT_NAME, submissionId: 'private-submission' };
@@ -46,6 +48,19 @@ function terminalEvent(overrides: Partial<ModelTurn> = {}): ModelTurn {
     ...overrides,
   };
 }
+
+test('a retried turn names the failure it retries and its cause, never the text', () => {
+  // "durable reattachment failed" used to log kind "unknown" with no cause.
+  const cause = new TypeError('private detail https://example.test/secret');
+  assert.deepEqual(settlementFailureFacts(new AgentPromptFailure('agent', 503, false, true, cause)), [
+    { kind: 'AgentPromptFailure' },
+    { kind: 'TypeError' },
+  ]);
+  assert.deepEqual(settlementFailureFacts(new StateStoreUnavailable()), [{ kind: 'StateStoreUnavailable' }]);
+  assert.deepEqual(settlementFailureFacts(new WorkStateError(
+    'work_execution_conflict', 'private detail', { runId: 'run_private' },
+  )), [{ kind: 'WorkStateError', workStateCode: 'work_execution_conflict' }]);
+});
 
 test('empty model completion diagnostics retain finish and token facts but no content', (t) => {
   const logs: unknown[][] = [];

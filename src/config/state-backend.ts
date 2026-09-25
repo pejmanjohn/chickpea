@@ -9,6 +9,7 @@ import {
   CfSlackStateStore,
   CfUsageStore,
   CfWorkStore,
+  FreshTagStateStubs,
 } from './cf-state-proxies.ts';
 import { isCloudflareTarget } from './runtime-target.ts';
 import {
@@ -130,6 +131,12 @@ function nodeCached<T extends { close(): void }>(
   return { path, store: create(path) };
 }
 
+/** A stub per call (validated now, so a wiring bug still fails at construction). */
+function freshTagStateStubs(env: PlatformEnv | undefined): FreshTagStateStubs {
+  tagStateStub(env);
+  return new FreshTagStateStubs(() => tagStateStub(env));
+}
+
 // On Cloudflare the factories return fresh Durable Object RPC proxies instead
 // of process singletons: the stub is per-env (bindings are request-scoped on
 // the worker side) and cheap to mint, while the DO behind it is the real
@@ -138,7 +145,7 @@ function nodeCached<T extends { close(): void }>(
 
 export function getConfigStore(env?: PlatformEnv): ConfigStore {
   if (isCloudflareTarget()) {
-    return new CfConfigStore(tagStateStub(env));
+    return new CfConfigStore(freshTagStateStubs(env));
   }
   cachedConfigStore = nodeCached(cachedConfigStore, (path) => new SqliteConfigStore(path));
   return cachedConfigStore.store;
@@ -146,7 +153,7 @@ export function getConfigStore(env?: PlatformEnv): ConfigStore {
 
 export function getIdentityStore(env?: PlatformEnv): IdentityStore {
   if (isCloudflareTarget()) {
-    return new CfIdentityStore(tagStateStub(env));
+    return new CfIdentityStore(freshTagStateStubs(env));
   }
   cachedIdentityStore = nodeCached(
     cachedIdentityStore,
@@ -177,7 +184,7 @@ export function getSlackCredentialResolutionDependencies(
 
 export function getAgentSnapshotStore(env?: PlatformEnv): AgentSnapshotStore {
   if (isCloudflareTarget()) {
-    return new CfAgentSnapshotStore(tagStateStub(env));
+    return new CfAgentSnapshotStore(freshTagStateStubs(env));
   }
   cachedSnapshotStore = nodeCached(
     cachedSnapshotStore,
@@ -188,7 +195,7 @@ export function getAgentSnapshotStore(env?: PlatformEnv): AgentSnapshotStore {
 
 export function getSlackStateStore(env?: PlatformEnv): SlackStateStore {
   if (isCloudflareTarget()) {
-    return new CfSlackStateStore(tagStateStub(env));
+    return new CfSlackStateStore(freshTagStateStubs(env));
   }
   cachedSlackStateStore = nodeCached(
     cachedSlackStateStore,
@@ -199,7 +206,7 @@ export function getSlackStateStore(env?: PlatformEnv): SlackStateStore {
 
 export function getSettingsStore(env?: PlatformEnv): SettingsStore & EncryptedCredentialStore {
   if (isCloudflareTarget()) {
-    return new CfSettingsStore(tagStateStub(env));
+    return new CfSettingsStore(freshTagStateStubs(env));
   }
   cachedSettingsStore = nodeCached(cachedSettingsStore, (path) => new SqliteSettingsStore(path));
   return cachedSettingsStore.store;
@@ -207,7 +214,7 @@ export function getSettingsStore(env?: PlatformEnv): SettingsStore & EncryptedCr
 
 export function getMemoryStateStore(env?: PlatformEnv): MemoryStateStore {
   if (isCloudflareTarget()) {
-    return new CfMemoryStateStore(tagStateStub(env));
+    return new CfMemoryStateStore(freshTagStateStubs(env));
   }
   cachedMemoryStore = nodeCached(
     cachedMemoryStore,
@@ -218,7 +225,7 @@ export function getMemoryStateStore(env?: PlatformEnv): MemoryStateStore {
 
 export function getRoutineStore(env?: PlatformEnv): RoutineStore {
   if (isCloudflareTarget()) {
-    return new CfRoutineStore(tagStateStub(env));
+    return new CfRoutineStore(freshTagStateStubs(env));
   }
   cachedRoutineStore = nodeCached(
     cachedRoutineStore,
@@ -229,7 +236,7 @@ export function getRoutineStore(env?: PlatformEnv): RoutineStore {
 
 export function getUsageStore(env?: PlatformEnv): UsageStore {
   if (isCloudflareTarget()) {
-    return new CfUsageStore(tagStateStub(env));
+    return new CfUsageStore(freshTagStateStubs(env));
   }
   cachedUsageStore = nodeCached(
     cachedUsageStore,
@@ -240,7 +247,7 @@ export function getUsageStore(env?: PlatformEnv): UsageStore {
 
 export function getWorkStore(env?: PlatformEnv): WorkStore {
   if (isCloudflareTarget()) {
-    return new CfWorkStore(tagStateStub(env));
+    return new CfWorkStore(freshTagStateStubs(env));
   }
   cachedWorkStore = nodeCached(
     cachedWorkStore,
@@ -251,7 +258,7 @@ export function getWorkStore(env?: PlatformEnv): WorkStore {
 
 export function getManagementStore(env?: PlatformEnv): ManagementStore {
   if (isCloudflareTarget()) {
-    return new CfManagementStore(tagStateStub(env));
+    return new CfManagementStore(freshTagStateStubs(env));
   }
   cachedManagementStore = nodeCached(
     cachedManagementStore,

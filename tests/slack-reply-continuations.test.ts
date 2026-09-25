@@ -747,6 +747,233 @@ test('a long streamed answer whose stream aged out is retired and posts fresh in
   }
 });
 
+/** A later attempt's own presenter over the same durable presentation. */
+function attemptPresenter(h: Harness, runFencingToken = 0): SlackAgentViewPresentation {
+  return new SlackAgentViewPresentation({
+    client: h.client,
+    state: h.state,
+    runId: h.runId,
+    runFencingToken,
+    footer: { agentName: PERSONA.name, modelLabel: 'model-a', agentId: 'agent_planning' },
+    minAppendIntervalMs: 0,
+    now: () => h.clock.now,
+    wait: async (milliseconds) => { h.clock.now += milliseconds; },
+    onFinalized: () => undefined,
+  });
+}
+
+const RESTART_RECEIPT = { submissionId: 'submission_restart', acceptedAt: 'now', uid: 'uid' } as const;
+const RESTART_INPUT = {
+  instanceId: 'instance_restart',
+  receipt: RESTART_RECEIPT,
+  eligibility: { allowed: true, reason: 'safe_early_release' } as const,
+};
+
+/** One streamed assistant message: its start, the stream declaration, and its text. */
+function streamMessage(
+  relay: NonNullable<Awaited<ReturnType<SlackAgentViewPresentation['prepareReceipt']>>>,
+  messageId: string,
+  text: string,
+  batch: number,
+  completed: boolean,
+): number {
+  relay.onEvent({
+    type: 'message-started', conversationId: 'conversation',
+    submissionId: RESTART_RECEIPT.submissionId, messageId, position: { batch, index: 0 },
+  });
+  relay.onEvent({
+    type: 'tool-input', conversationId: 'conversation', messageId,
+    toolCallId: `stream_${messageId}`, toolName: 'stream_answer', input: {},
+    position: { batch: batch + 1, index: 0 },
+  });
+  relay.onEvent({
+    type: 'tool-output', conversationId: 'conversation', toolCallId: `stream_${messageId}`,
+    output: 'Delivery preference noted. Continue with the answer.',
+    position: { batch: batch + 2, index: 0 },
+  });
+  let next = batch + 3;
+  for (const delta of text.match(/[\s\S]{1,1500}/g) ?? []) {
+    relay.onEvent({
+      type: 'message-delta', conversationId: 'conversation', messageId,
+      kind: 'text', delta, position: { batch: next, index: 0 },
+    });
+    next += 1;
+  }
+  if (completed) {
+    relay.onEvent({
+      type: 'message-completed', conversationId: 'conversation', messageId,
+      position: { batch: next, index: 0 },
+    });
+    next += 1;
+  }
+  return next;
+}
+
+function presenterFor(h: Harness, agentView: SlackAgentViewPresentation): WebClientPresenter {
+  return new WebClientPresenter(h.client, {
+    channelId: ROOT.channelId,
+    threadTs: ROOT.threadTs,
+    agentName: PERSONA.name,
+    visibleOwner: { kind: 'selected_agent', persona: PERSONA },
+    agentId: 'agent_planning',
+    userId: ROOT.requesterUserId,
+    workspaceId: ROOT.workspaceId,
+  }, undefined, { agentViewPresentation: agentView });
+}
+
+/** Attempt 1 streams a draft, then Flue's fiber is interrupted and the attempt ends. */
+async function interruptedDraft(h: Harness, owner: SlackAgentViewPresentation, draft: string) {
+  await owner.freezeProgressiveEligibility(RESTART_INPUT.eligibility);
+  const relay = await owner.prepareReceipt(RESTART_INPUT);
+  assert.ok(relay);
+  streamMessage(relay, 'message_interrupted', draft, 1, false);
+  await relay.suspendAndDrain();
+  assert.equal(v3(h).stream.state, 'streaming');
+  assert.ok(v3(h).stream.acknowledgedByteLength > 0);
+}
+
+function methods(h: Harness, method: string) {
+  return h.calls.filter((call) => call.method === method);
+}
+
+/** The visible reply: the stream's first message and every follow-up, in order. */
+function assertDeliveredOnce(h: Harness, text: string): void {
+  const streamed = methods(h, 'chat.startStream').concat(methods(h, 'chat.appendStream'))
+    .flatMap((call) => ((call.input.chunks ?? []) as Array<{ type: string; text?: string }>)
+      .filter((chunk) => chunk.type === 'markdown_text').map((chunk) => chunk.text ?? ''))
+    .join('');
+  const [stop] = methods(h, 'chat.stopStream');
+  const suffix = ((stop!.input.chunks ?? []) as Array<{ type: string; text?: string }>)
+    .filter((chunk) => chunk.type === 'markdown_text').map((chunk) => chunk.text ?? '').join('');
+  const first = streamed + suffix;
+  assert.ok(first.length <= LIMIT, 'the stream holds only the first part');
+  assert.equal(first, splitSlackMarkdownReply(text, { minFirstPartLength: streamed.length })[0],
+    'X1: the first message ends where its follow-ups begin');
+  const followUps = posts(h).map((post) => (post.input.blocks as Array<{ text?: string }>)[0]!.text!);
+  assert.ok(followUps.length >= 1);
+  assert.equal([first, ...followUps].join('\n\n').replace(/\s/g, ''), text.replace(/\s/g, ''),
+    'every part once, nothing repeated');
+}
+
+test('a run Flue restarted mid-answer streams on and stops its stream once with the split intact', async () => {
+  const h = harness();
+  try {
+    const text = longPlan();
+    const draft = text.slice(0, 1_200);
+    await interruptedDraft(h, h.presentation, draft);
+
+    // Attempt 2 reads the same receipt from its start: the interrupted draft
+    // again, then the recovered run's answer under a new message id.
+    const second = attemptPresenter(h);
+    const relay = await second.prepareReceipt(RESTART_INPUT);
+    assert.ok(relay, 'the reattaching attempt gets a relay for the existing stream');
+    const next = streamMessage(relay, 'message_interrupted', draft, 1, false);
+    streamMessage(relay, 'message_recovered', text, next, true);
+    // The recovered message is not the one the stream carries: the relay
+    // stops streaming (it never throws) and the final resumes the stream.
+    const summary = await relay.closeAndDrain();
+    assert.equal(summary.invalidated, true);
+    assert.equal(summary.invalidationReason, 'message_identity_conflict');
+
+    await presenterFor(h, second).deliverFinal(text, 'markdown');
+    assert.equal(methods(h, 'chat.startStream').length, 1, 'one stream for the Run');
+    assert.equal(methods(h, 'chat.stopStream').length, 1, 'stopped exactly once');
+    assert.equal(methods(h, 'chat.update').length, 0, 'resumed, not corrected');
+    assert.equal(v3(h).stream.presentationOutcome, 'progressive');
+    assertDeliveredOnce(h, text);
+  } finally {
+    h.close();
+  }
+});
+
+test('an attempt whose relay setup fails answers on the existing stream and records why it did not stream', async () => {
+  const h = harness();
+  try {
+    const text = longPlan();
+    await interruptedDraft(h, h.presentation, text.slice(0, 1_200));
+    const second = new SlackAgentViewPresentation({
+      client: h.client,
+      state: {
+        ...h.state,
+        matchFlueObservation: () => { throw new Error('synthetic observation lookup failure'); },
+      },
+      runId: h.runId,
+      runFencingToken: 0,
+      footer: { agentName: PERSONA.name, modelLabel: 'model-a', agentId: 'agent_planning' },
+      minAppendIntervalMs: 0,
+      now: () => h.clock.now,
+      wait: async (milliseconds) => { h.clock.now += milliseconds; },
+      onFinalized: () => undefined,
+    });
+    await assert.rejects(second.prepareReceipt(RESTART_INPUT), /synthetic observation lookup failure/);
+    // flue-dispatch goes on without a relay; the final still closes the stream once.
+    await presenterFor(h, second).deliverFinal(text, 'markdown');
+    assert.equal(methods(h, 'chat.startStream').length, 1);
+    assert.equal(methods(h, 'chat.stopStream').length, 1);
+    assert.equal(v3(h).stream.degradationReason, 'relay_setup_failed');
+    assertDeliveredOnce(h, text);
+  } finally {
+    h.close();
+  }
+});
+
+test('a stale-fenced attempt gets no relay, and its final and the owner\'s together answer once', async () => {
+  const h = harness();
+  try {
+    const text = longPlan();
+    // The owner took the Run at fence 1 before streaming (an open stream
+    // blocks any later fence advancement), so only an older attempt is stale.
+    const owner = attemptPresenter(h, 1);
+    await interruptedDraft(h, owner, text.slice(0, 1_200));
+
+    const stale = attemptPresenter(h, 0);
+    await assert.rejects(stale.prepareReceipt(RESTART_INPUT), /fence is stale/);
+    // Terminal transitions are fenced by the Run's own token, so the stale
+    // attempt's final closes the existing stream once, like any attempt's.
+    await presenterFor(h, stale).deliverFinal(text, 'markdown');
+    assertDeliveredOnce(h, text);
+    const callsAfterFinal = h.calls.length;
+
+    // The owner reattaching later finds the answer delivered and writes nothing.
+    const resumed = attemptPresenter(h, 1);
+    await (await resumed.prepareReceipt(RESTART_INPUT))?.closeAndDrain();
+    await presenterFor(h, resumed).deliverFinal(text, 'markdown');
+    assert.equal(h.calls.length, callsAfterFinal, 'no second stop, post, or follow-up');
+    assert.equal(methods(h, 'chat.stopStream').length, 1);
+  } finally {
+    h.close();
+  }
+});
+
+test('an attempt whose presentation is gone still delivers the answer once', async () => {
+  const h = harness();
+  try {
+    const text = longPlan();
+    const parts = splitSlackMarkdownReply(canonicalSlackMarkdownText(text));
+    const missing = new SlackAgentViewPresentation({
+      client: h.client,
+      state: { ...h.state, getRunPresentation: () => undefined },
+      runId: h.runId,
+      runFencingToken: 0,
+      footer: { agentName: PERSONA.name, modelLabel: 'model-a', agentId: 'agent_planning' },
+    });
+    await assert.rejects(missing.prepareReceipt(RESTART_INPUT), /presentation is missing/);
+    const presenter = presenterFor(h, missing);
+    // Before: finalize threw "presentation is missing" on every attempt.
+    await presenter.deliverFinal(text, 'markdown');
+    await presenter.markCanonicalPresentationFinalized();
+    const [start] = methods(h, 'chat.startStream');
+    assert.equal(methods(h, 'chat.startStream').length, 1);
+    assert.equal(methods(h, 'chat.stopStream').length, 1);
+    assert.equal(start!.input.markdown_text, parts[0]);
+    const followUps = posts(h).map((post) => (post.input.blocks as Array<{ text?: string }>)[0]!.text!);
+    assert.deepEqual(followUps.map((part) => part.replace(/\s/g, '')),
+      parts.slice(1).map((part) => part.replace(/\s/g, '')));
+  } finally {
+    h.close();
+  }
+});
+
 test('a final posted fresh after its plan froze for a stream reuses the frozen split', async () => {
   const h = harness();
   try {

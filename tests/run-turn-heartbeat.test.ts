@@ -12,6 +12,7 @@ import { SqliteMemoryStateStore } from '../src/memory/store.ts';
 import { parseCurrentRequestEnvelope } from '../src/memory/tool-policy.ts';
 import {
   AgentObservationYield,
+  StateStoreUnavailable,
   AgentPromptFailure,
   type AgentDispatchResult,
   type SlackFlueDispatchState,
@@ -28,6 +29,8 @@ import {
   type RuntimePlanV2,
 } from '../src/agents/runtime-plan.ts';
 import { SqliteWorkStore } from '../src/work/store.ts';
+import { SlackTransportError } from '../src/slack/transport/types.ts';
+import { StateStoreDisconnectedError } from '../src/config/cf-state-proxies.ts';
 import { prepareSlackShadowAdmission } from '../src/slack/work-admission.ts';
 import {
   AGENT_FAILURE_TEXT,
@@ -1678,6 +1681,47 @@ test('a retryable Flue interruption emits no Slack final', async () => {
   assert.deepEqual(posts, []);
 });
 
+test('an object replaced by a redeploy mid-run is a retry, never a failure final', async (t) => {
+  t.mock.method(console, 'error', () => {});
+  const posts: Array<Record<string, unknown>> = [];
+  const client = {
+    assistant: { threads: { setStatus: async () => ({ ok: true }) } },
+    conversations: { history: async () => ({ ok: true, messages: [] }) },
+    chat: {
+      startStream: async (input: Record<string, unknown>) => {
+        posts.push(input);
+        return { ok: true, ts: 'unexpected-final' };
+      },
+      stopStream: async () => ({ ok: true }),
+      postMessage: async (input: Record<string, unknown>) => {
+        posts.push(input);
+        return { ok: true, channel: assignment.channelId, ts: 'unexpected-final' };
+      },
+    },
+  } as unknown as WebClient;
+  const run = (error: unknown, id: string) => runTurn({
+    ...workTurn(id),
+    interactionIntent: { disposition: 'reply', reason: 'substantive_request' },
+  }, assignment, undefined, {
+    client,
+    usageRecordingEnabled: false,
+    async agentPrompt(): Promise<AgentDispatchResult> { throw error; },
+  });
+  // As the runtime reports a replaced Durable Object to calls in flight on it.
+  await assert.rejects(
+    () => run(new Error('Durable Object reset because its code was updated.'), 'Ev_RUNTIME_REPLACED'),
+    (error: unknown) => error instanceof StateStoreUnavailable,
+  );
+  await assert.rejects(
+    () => run(Object.assign(new Error('internal error'), { retryable: true }), 'Ev_RUNTIME_RETRYABLE'),
+    (error: unknown) => error instanceof StateStoreUnavailable,
+  );
+  assert.deepEqual(posts, []);
+  // A failure Flue settled stays final, even when its cause reads like one.
+  await run(new AgentPromptFailure('agent'), 'Ev_SETTLED_FAILURE');
+  assert.ok(posts.length > 0, 'the settled failure posts its notice');
+});
+
 test('activity remains visible until final delivery and omits model or context narration', async () => {
   const agentStarted = deferred<void>();
   const finalAttempted = deferred<void>();
@@ -2236,6 +2280,172 @@ test('failed activity cleanup retries the same coordinate without replaying the 
   }
 });
 
+test('a resumed settled turn whose shadow execution was never created still delivers its answer once', async (t) => {
+  // Amber RD2: attempt 1 saved its settlement but never created its Work
+  // execution (a slow store); every resume rejected work_execution_conflict
+  // before delivery until the attempt cap posted a recovery notice.
+  t.mock.method(console, 'warn', () => {});
+  const work = new SqliteWorkStore(':memory:', { now: () => 1_800_000_000_000 });
+  try {
+    const delivered: string[] = [];
+    const text = (input: Record<string, unknown>) =>
+      String(input.markdown_text ?? input.text ?? JSON.stringify(input.chunks ?? input.blocks ?? ''));
+    const client = {
+      assistant: { threads: { setStatus: async () => ({ ok: true }) } },
+      conversations: { history: async () => ({ ok: true, messages: [] }) },
+      chat: {
+        startStream: async (input: Record<string, unknown>) => {
+          delivered.push(text(input));
+          return { ok: true, ts: '1785700300.000100' };
+        },
+        stopStream: async () => ({ ok: true }),
+        postMessage: async (input: Record<string, unknown>) => {
+          delivered.push(text(input));
+          return { ok: true, channel: assignment.channelId, ts: '1785700300.000100' };
+        },
+      },
+    } as unknown as WebClient;
+    const turn: NormalizedSlackTurn = {
+      ...workTurn('Ev_RESUMED_WITHOUT_EXECUTION'),
+      interactionIntent: { disposition: 'reply', reason: 'substantive_request' },
+    };
+    const admitted = await work.admitShadowRun(prepareSlackShadowAdmission({
+      turn,
+      assignment,
+      sourceVisibility: 'private',
+      admittedAt: 1_800_000_000_000,
+    }));
+    assert.deepEqual(await work.listRunExecutions(admitted.run.id), []);
+    let prompts = 0;
+    await runTurn(turn, assignment, undefined, {
+      client,
+      runId: admitted.run.id,
+      runAttempt: 2,
+      workStore: work,
+      usageRecordingEnabled: false,
+      // The saved settlement marks this attempt a resume of a settled turn.
+      flueDispatch: {
+        flueSettlement: {
+          outcome: 'completed',
+          settledAt: 1_800_000_000_500,
+          result: { text: 'Recovered answer.' },
+        },
+      } as unknown as SlackFlueDispatchState,
+      async agentPrompt(): Promise<AgentDispatchResult> {
+        prompts += 1;
+        return {
+          text: 'Recovered answer.',
+          requestedModel: assignment.model ?? null,
+          returnedModel: null,
+          reportedUsage: null,
+          usageCompleteness: 'not_reported',
+        };
+      },
+    });
+    assert.equal(prompts, 1);
+    assert.equal(delivered.filter((value) => value.includes('Recovered answer.')).length, 1);
+    assert.equal(delivered.some((value) => /failed before completion/.test(value)), false);
+  } finally {
+    work.close();
+  }
+});
+
+test('a state-store reset after the answer is a retry, never a failure notice', async () => {
+  // Amber LT3/LT4: after the answer was in hand, store calls on a replaced
+  // state store failed; the turn must retry (and replay its settlement), not
+  // post "the agent run failed before completion".
+  const work = new SqliteWorkStore(':memory:', { now: () => 1_800_000_000_000 });
+  const presentationDb = openStateDb(':memory:');
+  try {
+    const delivered: string[] = [];
+    const client = {
+      assistant: { threads: { setStatus: async () => ({ ok: true }) } },
+      conversations: { history: async () => ({ ok: true, messages: [] }) },
+      chat: {
+        startStream: async (input: Record<string, unknown>) => {
+          delivered.push(JSON.stringify(input));
+          return { ok: true, ts: '1785700400.000100' };
+        },
+        stopStream: async () => ({ ok: true }),
+        postMessage: async (input: Record<string, unknown>) => {
+          delivered.push(JSON.stringify(input));
+          return { ok: true, channel: assignment.channelId, ts: '1785700400.000100' };
+        },
+      },
+    } as unknown as WebClient;
+    const turn: NormalizedSlackTurn = {
+      ...workTurn('Ev_RESET_AFTER_ANSWER'),
+      interactionIntent: { disposition: 'reply', reason: 'substantive_request' },
+    };
+    const admitted = await work.admitShadowRun(prepareSlackShadowAdmission({
+      turn, assignment, sourceVisibility: 'private', admittedAt: 1_800_000_000_000,
+    }));
+    const presentations = new SlackRunPresentationStoreLogic(presentationDb, () => 1_800_000_000_000);
+    presentations.create({
+      runId: admitted.run.id,
+      turnJobId: 'turn_reset_after_answer',
+      bindingId: admitted.binding.id,
+      workBindingGeneration: admitted.binding.generation,
+      runFencingToken: 0,
+      root: {
+        workspaceId: turn.workspaceId,
+        channelId: turn.channelId,
+        threadTs: turn.threadTs,
+        requesterUserId: turn.userId,
+      },
+    });
+    let answered = false;
+    let failure: () => Error = () => new StateStoreDisconnectedError(Object.assign(
+      new Error('Durable Object reset because its code was updated.'), { retryable: true },
+    ));
+    const reset = () => failure();
+    const run = () => runTurn(turn, assignment, undefined, {
+      client,
+      runId: admitted.run.id,
+      runAttempt: 1,
+      workStore: work,
+      usageRecordingEnabled: false,
+      presentationState: {
+        getRunPresentation: (runId) => {
+          if (answered) throw reset();
+          return presentations.get(runId);
+        },
+        getLatestThreadSessionGeneration: (root) => presentations.getLatestThreadSessionGeneration(root),
+        transitionRunPresentation: (input) => {
+          if (answered) throw reset();
+          return presentations.transition(input);
+        },
+        reserveSlackAppend: (workspaceId) => presentations.reserveAppend(workspaceId),
+        applySlackAppendCooldown: (workspaceId, retryAfterMs) =>
+          presentations.applyAppendCooldown(workspaceId, retryAfterMs),
+        matchFlueObservation: () => undefined,
+      },
+      async agentPrompt(): Promise<AgentDispatchResult> {
+        answered = true;
+        return {
+          text: 'Answer before the reset.',
+          requestedModel: assignment.model ?? null,
+          returnedModel: null,
+          reportedUsage: null,
+          usageCompleteness: 'not_reported',
+        };
+      },
+    });
+    await assert.rejects(run(), (error: unknown) => error instanceof StateStoreUnavailable);
+    assert.equal(delivered.some((value) => /failed before completion/.test(value)), false,
+      'no failure notice');
+    // A retryable Slack or gateway error is not a store restart: it escapes
+    // as itself, so the executor's bounded, counted retries still apply.
+    answered = false;
+    failure = () => new SlackTransportError('chat.postMessage', 'gateway_unreachable', { retryable: true });
+    await assert.rejects(run(), (error: unknown) =>
+      error instanceof SlackTransportError && !(error instanceof StateStoreUnavailable));
+  } finally {
+    presentationDb.close();
+    work.close();
+  }
+});
+
 test('runTurn freezes eligibility before exposing the receipt-scoped relay factory', async () => {
   const work = new SqliteWorkStore(':memory:', { now: () => 1_800_000_000_000 });
   const presentationDb = openStateDb(':memory:');
@@ -2676,8 +2886,9 @@ test(`a successful own-turn memory write ${verb} ${scenario.name}`, async () => 
 });
 }
 
-for (const scenario of ['yield', 'interruption'] as const) {
-  test(`${scenario === 'yield' ? 'a yield keeps' : 'an interruption releases'} the work acknowledgment and workspace turn`, async () => {
+for (const scenario of ['yield', 'store-outage', 'interruption'] as const) {
+  const keeps = scenario !== 'interruption';
+  test(`${scenario === 'yield' ? 'a yield keeps' : scenario === 'store-outage' ? 'a runner store outage keeps' : 'an interruption releases'} the work acknowledgment and workspace turn`, async () => {
     let reactionAdds = 0;
     let reactionRemoves = 0;
     const sandboxTurnsEnded: boolean[] = [];
@@ -2704,13 +2915,15 @@ for (const scenario of ['yield', 'interruption'] as const) {
         async agentPrompt(): Promise<AgentDispatchResult> {
           throw scenario === 'yield'
             ? new AgentObservationYield()
+            : scenario === 'store-outage'
+            ? new StateStoreUnavailable()
             : new AgentPromptFailure('agent', 503, false, true);
         },
       }),
       (error: unknown) => error instanceof AgentPromptFailure && error.retryable,
     );
     assert.equal(reactionAdds, 1);
-    if (scenario === 'yield') {
+    if (keeps) {
       // The coding worker is still running: it keeps its GitHub egress and
       // the person keeps seeing that the work is underway.
       assert.equal(reactionRemoves, 0);

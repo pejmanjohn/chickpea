@@ -475,6 +475,10 @@ export function writeCutoverArtifact(
     routineAgents?: boolean;
     selector?: string;
     completeCanary?: boolean;
+    /** SLACK_TAG_TURN_EXECUTOR in the artifact's vars. */
+    turnExecutor?: string;
+    /** Omit the thread runner execution path from the bundle. */
+    runnerSeams?: boolean;
     missingBinding?: string;
     deletedClasses?: string[];
     compatibilityDate?: string;
@@ -526,6 +530,7 @@ export function writeCutoverArtifact(
       : { version_metadata: { binding: 'CF_VERSION_METADATA' } }),
     vars: {
       SLACK_TAG_LEDGER_CANARY_CHANNELS: options.selector ?? '',
+      ...(options.turnExecutor === undefined ? {} : { SLACK_TAG_TURN_EXECUTOR: options.turnExecutor }),
       ...(target ? {
         CHICKPEA_DEPLOY_TARGET: target,
         CHICKPEA_TELEMETRY_ENVIRONMENT: 'test',
@@ -610,6 +615,7 @@ export function writeCutoverArtifact(
       `${options.sandboxCommandRedaction === false ? '' : 'FLUE_PRIVATE_SANDBOX_COMMAND_V1 '} ` +
       `${options.routineAgents === false ? '' : 'chickpea-routine-intent-v2 chickpea-routine-execution-v2 '} ` +
       `${options.agentViewArtifact === false ? '' : 'agent_view agent_description '} ` +
+      `${options.runnerSeams === false ? '' : 'SLACK_TAG_TURN_EXECUTOR threadRunnerTurn thread_runner_alarm '} ` +
       canarySeams,
   );
 }

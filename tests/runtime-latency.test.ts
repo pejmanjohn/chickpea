@@ -10,6 +10,7 @@ import type { ResolvedAssignment } from '../src/config/types.ts';
 import {
   emitGatewayDelivery,
   emitRelayAlarm,
+  emitThreadRunnerAlarm,
   emitRuntimeLatency,
   opaqueRunRef,
   opaqueTurnRef,
@@ -144,6 +145,7 @@ test('relay_alarm reports the documented fields for one invocation', () => {
   metrics.turnsMs = 900;
   metrics.needsRetry = true;
   metrics.rearmed = true;
+  metrics.jobsDispatched = 2;
   time.advance(1_250);
   const { records, sink } = captureSink();
   emitRelayAlarm(metrics, time.now, sink);
@@ -163,6 +165,24 @@ test('relay_alarm reports the documented fields for one invocation', () => {
     needsRetry: true,
     rearmed: true,
     yielded: false,
+    jobsDispatched: 2,
+  }]);
+});
+
+test('thread_runner_alarm reports one runner alarm with fixed fields only', () => {
+  const { records, sink } = captureSink();
+  emitThreadRunnerAlarm({
+    jobs: 2, ran: 1, yielded: true, carried: 0, durationMs: 600_010.4, outcome: 'drained',
+  }, sink);
+  assert.deepEqual(records, [{
+    component: 'runtime',
+    event: 'thread_runner_alarm',
+    jobs: 2,
+    ran: 1,
+    yielded: true,
+    carried: 0,
+    durationMs: 600_010,
+    outcome: 'drained',
   }]);
 });
 
@@ -338,7 +358,10 @@ test('Cf*Store proxies time every stub call without wrapping the stub', () => {
   const source = readFileSync(new URL('../src/config/cf-state-proxies.ts', import.meta.url), 'utf8');
   assert.equal(/\bnew Proxy\b/.test(source), false);
   assert.equal(/unwrap\(\s*await this\.stub\./.test(source), false, 'every stub call goes through rpc()');
-  const calls = [...source.matchAll(/rpc\(\s*'(\w+)',\s*this\.stub\.(\w+)\(/g)];
+  assert.equal(/this\.stub\.\w+\(/.test(source), false, 'no call bypasses the stub source');
+  // Each call names its method and runs on the stub the store's source gives
+  // it (a fresh one per call for FreshTagStateStubs), then through rpc().
+  const calls = [...source.matchAll(/rpcVia\(this\.stub,\s*'(\w+)',\s*\(stub\) => stub\.(\w+)\(/g)];
   assert.ok(calls.length > 100);
   for (const [, label, method] of calls) assert.equal(label, method);
 });

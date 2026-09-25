@@ -8,7 +8,7 @@ import {
   env,
   type DurableObjectState,
 } from 'cloudflare:workers';
-import { getSandbox, Sandbox as CloudflareSandbox } from '@cloudflare/sandbox';
+import { Sandbox as CloudflareSandbox } from '@cloudflare/sandbox';
 import { instrument } from '@flue/runtime';
 import { createCloudflareTracing } from '@flue/runtime/cloudflare';
 import { emitManagementToolFailure } from './management/telemetry.ts';
@@ -143,8 +143,6 @@ import {
   type SandboxEgressPolicyInput,
   type SandboxPolicyStorage,
 } from './sandbox/cloudflare-policy.ts';
-import { cloudflareSandboxOptionVariants } from './sandbox/lifecycle.ts';
-import { reconnectingSandboxStub } from './sandbox/reconnect.ts';
 import {
   checkpointBucket,
   isCheckpointSweepMinute,
@@ -174,6 +172,8 @@ import {
 } from './slack/run-presentations.ts';
 import { createLedgerSlackRunHandler } from './slack/ledger-turn-driver.ts';
 import type { SlackPresentationStatePort } from './slack/agent-view-presentation.ts';
+import { CfSlackStateStore } from './config/cf-state-proxies.ts';
+import type { SlackPresentationTransitionInput } from './slack/run-presentations.ts';
 import { defaultSlackStatusRegistry } from './slack/status-registry.ts';
 import {
   activityStatus,
@@ -196,9 +196,19 @@ import {
 } from './slack/alarm-turn-drain.ts';
 import {
   executeTurnJob,
-  type SandboxTurnReader,
   type TurnExecutionPorts,
 } from './slack/turn-executor.ts';
+import { slackTurnExecutor } from './slack/turn-executor-flag.ts';
+import { sandboxTurnReaders } from './slack/thread-runner.ts';
+import {
+  RUNNER_PREFETCHED_SETTINGS,
+  threadRunnerStub,
+  type SlackThreadRunnerRpc,
+  type ThreadRunnerJobPayload,
+  type ThreadRunnerTurnKind,
+  type ThreadRunnerTurnOp,
+  type ThreadRunnerTurnResult,
+} from './slack/thread-runner-rpc.ts';
 import { localSlackPresentationStatePort } from './slack/presentation-state-port.ts';
 import {
   drainSlackPresentationRepairs,
@@ -206,7 +216,9 @@ import {
 } from './slack/presentation-repair.ts';
 import {
   MAX_TURN_DRAIN_BATCH,
+  oauthResumeTurnJobId,
   TurnJobStoreLogic,
+  type PendingTurnJob,
 } from './slack/turn-jobs.ts';
 import { DoSqlStateDb } from './state/do-state-db.ts';
 import { StateSchemaMarker, stateSchemaFingerprint } from './state/schema-lifecycle.ts';
@@ -696,6 +708,10 @@ const RELAY_RETRY_BACKOFF_MS = 2_000;
 // the whole burst behind it.
 const RELAY_BATCH_WINDOW_MS = 250;
 
+// Pages of MAX_TURN_DRAIN_BATCH threads one alarm hands to thread runners.
+// Each hand-off is one short admission RPC; the rest waits for the next alarm.
+const RUNNER_DISPATCH_MAX_PAGES = 16;
+
 /**
  * Cloudflare entrypoint. Named exports of this file become top-level Worker
  * exports on the CF target (the node target never imports it), so this is the
@@ -745,6 +761,11 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
    * settle so a delivery in flight is never started a second time.
    */
   private readonly carriedAlarmTurns = new Map<string, string>();
+  private readonly presentationRunnerOf = (runId: string) => this.presentationRunner(runId);
+  /** Set while runner-mode alarm work runs: admission hands new turns over at once. */
+  private dispatchWake: (() => void) | undefined;
+  /** Slack turns admitted in this isolate (events, deliveries, OAuth resumes). */
+  private admissionsSeen = 0;
 
   constructor(ctx: DurableObjectState, env: unknown) {
     super(ctx, env);
@@ -1496,6 +1517,8 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
   }
 
   async slackPresentationGet(runId: string) {
+    const runner = this.presentationRunner(runId);
+    if (runner) return runner.presentationGet(runId);
     return this.call((stores) => stores.presentations.get(runId) ?? null);
   }
 
@@ -1514,7 +1537,29 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
   async slackPresentationTransition(
     input: Parameters<TagStateRpc['slackPresentationTransition']>[0],
   ) {
+    const runner = this.presentationRunner(input.runId);
+    if (runner) return runner.presentationTransition(input);
     return this.call((stores) => stores.presentations.transition(input));
+  }
+
+  /**
+   * The thread runner holding the authoritative copy of a run's presentation,
+   * when a runner executes its turn. Presentation effects from outside the
+   * turn (an Agent welcome settling a deferred terminal) go there, so the
+   * runner and this store never advance two copies.
+   */
+  private presentationRunner(runId: string): SlackThreadRunnerRpc | undefined {
+    try {
+      this.stores ??= this.tryInit();
+      const presentation = this.stores?.presentations.get(runId);
+      const threadKey = presentation && this.stores!.turnJobs.runnerThreadKey(
+        presentation.turnJobId,
+        slackAgentThreadKey,
+      );
+      return threadKey ? threadRunnerStub(this.env as PlatformEnv, threadKey) : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   async slackPresentationReserveAppend(workspaceId: string) {
@@ -1675,7 +1720,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     // bounded fan-out. Bring a later receipt/retry alarm forward for new work,
     // but never move an already-armed alarm later.
     if (result.ok) {
-      await this.armAlarmNoLaterThan(Date.now() + RELAY_BATCH_WINDOW_MS);
+      await this.armAlarmNoLaterThan(Date.now() + RELAY_BATCH_WINDOW_MS, true);
     }
     return result;
   }
@@ -1725,7 +1770,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       if (admitted.value !== 'verified') outcome = admitted.value;
       // A duplicate also arms recovery: a previous insert may have survived an
       // alarm-write failure or loss of the HTTP response.
-      if (admitted.value !== 'verified') await this.armAlarmNoLaterThan(Date.now() + RELAY_BATCH_WINDOW_MS);
+      if (admitted.value !== 'verified') await this.armAlarmNoLaterThan(Date.now() + RELAY_BATCH_WINDOW_MS, true);
       return {status:200, body:httpDeliveryReceipt(value, admitted.value)};
     } catch (error) {
       return {status:error instanceof HttpDeliveryError ? error.status : 503,
@@ -1744,7 +1789,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       return stores.gatewayInbox.admit(delivery);
     });
     if (result.ok) {
-      await this.armAlarmNoLaterThan(Date.now() + RELAY_BATCH_WINDOW_MS);
+      await this.armAlarmNoLaterThan(Date.now() + RELAY_BATCH_WINDOW_MS, true);
     }
     return result;
   }
@@ -1753,13 +1798,26 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     originalTaskId: string,
     continuationId: string,
   ): Promise<StateRpcResult<boolean>> {
-    const result = this.call((stores) =>
-      stores.turnJobs.resumeAfterOAuth(originalTaskId, continuationId)
-    );
-    if (result.ok && result.value) {
-      await this.armAlarmNoLaterThan(Date.now() + RELAY_BATCH_WINDOW_MS);
+    const result = this.call((stores) => {
+      const resumed = stores.turnJobs.resumeAfterOAuth(originalTaskId, continuationId);
+      const id = oauthResumeTurnJobId(continuationId);
+      const view = resumed ? stores.turnJobs.runnerView(id) : undefined;
+      return {
+        resumed,
+        // A replayed callback for a continuation already handed to its
+        // thread runner re-admits it there (idempotent) rather than waiting
+        // for a sweep; a new continuation is dispatched like any turn.
+        runnerJob: view?.status === 'pending' && view.executor === 'runner' ? view.job : undefined,
+      };
+    });
+    if (!result.ok) return result;
+    const readmitted = result.value.runnerJob
+      ? await this.admitToRunner(result.value.runnerJob)
+      : false;
+    if (result.value.resumed && !readmitted) {
+      await this.armAlarmNoLaterThan(Date.now() + RELAY_BATCH_WINDOW_MS, true);
     }
-    return result;
+    return { ok: true, value: result.value.resumed };
   }
 
   /**
@@ -1774,10 +1832,15 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     submissionId: string,
     status: TypedActivityStatus,
   ): Promise<StateRpcResult<null>> {
-    return this.call((stores) => {
+    let runnerKey: string | undefined;
+    const result = this.call((stores) => {
       if (!isSafeTypedActivityStatus(status)) return null;
       const target = stores.turnJobs.matchFlueObservation(instanceId, submissionId);
-      if (target) {
+      if (target?.executor === 'runner') {
+        // A thread runner registered this turn's status; an agent without
+        // the dispatch's route in context still reaches it through here.
+        runnerKey = target.runnerKey;
+      } else if (target) {
         defaultSlackStatusRegistry.setObservedStatus(
           instanceId,
           target.generation,
@@ -1792,6 +1855,20 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       }
       return null;
     });
+    if (runnerKey) {
+      await threadRunnerStub(this.env as PlatformEnv, runnerKey)
+        ?.observedStatus(instanceId, submissionId, status)
+        .catch(() => undefined);
+    }
+    return result;
+  }
+
+  /** Per-turn writes from the SlackThreadRunner executing that turn. */
+  async threadRunnerTurn<K extends ThreadRunnerTurnKind>(
+    op: ThreadRunnerTurnOp<K>,
+  ): Promise<StateRpcResult<ThreadRunnerTurnResult<K>>> {
+    return this.call((stores) =>
+      applyThreadRunnerTurnOp(stores, op as ThreadRunnerTurnOp) as ThreadRunnerTurnResult<K>);
   }
 
   /**
@@ -1835,10 +1912,60 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       config: localGatewayAppStores(stores).config,
     });
     stores.management.cleanupRetention(Date.now(), 250);
-    const gatewayNeedsRetry = await drainGatewayInbox(
-      stores,
-      this.env as PlatformEnv,
-    );
+    // With SLACK_TAG_TURN_EXECUTOR=runner, new turns go to their thread's
+    // SlackThreadRunner and this alarm only finishes turns it already
+    // dispatched to Flue. Rows handed to runners stay theirs either way.
+    const runnerBinding = Boolean((this.env as PlatformEnv).SLACK_THREAD_RUNNER);
+    const runnerMode = runnerBinding &&
+      slackTurnExecutor(this.env as PlatformEnv) === 'runner';
+    const handingOff = new Set<Promise<void>>();
+    /**
+     * Hand the free turns listed now to their runners. Each admission starts
+     * its own hand-off at once, side by side with any in flight: a row is
+     * assigned before its admission RPC is awaited, so two hand-offs never
+     * take the same row. A failed hand-off stays a hand-off; the alarm
+     * re-arms for it.
+     */
+    const handOff = (readmitHandoffs: boolean): Promise<void> => {
+      // Unconfirmed hand-offs are admitted again even after the switch is
+      // turned off: those rows already belong to their runners. Only when no
+      // hand-off is in flight, so a row mid-admission is not admitted twice.
+      if (!runnerMode && !(runnerBinding && stores.turnJobs.hasHandoffs())) return Promise.resolve();
+      const readmit = readmitHandoffs && handingOff.size === 0;
+      const run: Promise<void> = this.dispatchToRunners(stores, runnerMode, readmit)
+        .then((dispatched) => { metrics.jobsDispatched += dispatched; }, () => undefined)
+        .finally(() => { handingOff.delete(run); });
+      handingOff.add(run);
+      return run;
+    };
+    /** Hand over every free turn and wait for all hand-offs in flight. */
+    const dispatchToRunners = async (): Promise<void> => {
+      await handOff(true);
+      while (handingOff.size > 0) await Promise.all([...handingOff]);
+    };
+    const onAdmitted = runnerMode ? () => void handOff(false) : undefined;
+    /** Admit newly delivered events and hand their turns over at once. */
+    const admitAndDispatch = async () => {
+      let retry = false;
+      // Runner mode: an admission that lands while this pass runs (before any
+      // wake is listening) is picked up by another pass, not the next alarm.
+      for (let pass = 0; pass < 8; pass += 1) {
+        const admissions = this.admissionsSeen;
+        retry = (await drainGatewayInbox(stores, this.env as PlatformEnv, onAdmitted)) || retry;
+        await dispatchToRunners();
+        if (!runnerMode || this.admissionsSeen === admissions) break;
+      }
+      return retry;
+    };
+    /**
+     * Runner mode: the alarm's other due work (ledger runs, cleanups,
+     * repairs, schedule actions, receipts) can take seconds. Keep admitting
+     * and handing over turns that arrive meanwhile, on every admission wake
+     * and at the admission re-check interval, instead of after it.
+     */
+    const whileDispatching = <T>(work: () => Promise<T>): Promise<T> =>
+      runnerMode ? this.dispatchingWhile(work, admitAndDispatch) : work();
+    const gatewayNeedsRetry = await admitAndDispatch();
     const threadKeyOf = (job: {
       turn: Parameters<typeof slackAgentThreadKey>[0];
       assignment: Parameters<typeof slackAgentThreadKey>[1];
@@ -1847,6 +1974,8 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       maxThreads: MAX_TURN_DRAIN_BATCH,
       perThread: ALARM_PENDING_PER_THREAD,
       threadKey: threadKeyOf,
+      executor: 'alarm',
+      dispatchedOnly: runnerMode,
     });
     const carriedJobIds = () => new Set(this.carriedAlarmTurns.keys());
     const pending = listPendingTurns();
@@ -1854,24 +1983,29 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     if (pending.length === 0) {
       const cleanupPending = stores.turnJobs.hasPendingSlackInteractionCleanup();
       const resolveInstallation = this.createAlarmIdentityResolver(stores);
-      const ledgerDrain = await drainLedgerRuns(
-        stores,
-        this.env as PlatformEnv,
-        resolveInstallation,
-        productTelemetry,
-      );
-      if (cleanupPending) {
-        await drainSlackInteractionCleanups(stores, resolveInstallation, carriedJobIds());
-      }
-      const presentationRepairs = await drainTerminalPresentationRepairs(
-        stores,
-        resolveInstallation,
-        carriedJobIds(),
-      );
-      const scheduleActions = await drainCloudflareScheduleActions(stores, this.env as PlatformEnv);
-      await drainCloudflareManagementReceipts(stores, resolveInstallation);
+      const { ledgerDrain, presentationRepairs, scheduleActions } = await whileDispatching(async () => {
+        const ledgerDrain = await drainLedgerRuns(
+          stores,
+          this.env as PlatformEnv,
+          resolveInstallation,
+          productTelemetry,
+        );
+        if (cleanupPending) {
+          await drainSlackInteractionCleanups(stores, resolveInstallation, carriedJobIds());
+        }
+        const presentationRepairs = await drainTerminalPresentationRepairs(
+          stores,
+          resolveInstallation,
+          carriedJobIds(),
+        );
+        const scheduleActions = await drainCloudflareScheduleActions(stores, this.env as PlatformEnv);
+        await drainCloudflareManagementReceipts(stores, resolveInstallation, this.presentationRunnerOf);
+        return { ledgerDrain, presentationRepairs, scheduleActions };
+      });
       const turnRetry = gatewayNeedsRetry || stores.gatewayInbox.hasPending() ||
-        stores.turnJobs.hasPending('ledger') || stores.turnJobs.hasPendingSlackInteractionCleanup()
+        stores.turnJobs.hasPending('ledger') || stores.turnJobs.hasPendingSlackInteractionCleanup() ||
+        stores.turnJobs.hasHandoffs() ||
+        (runnerMode && stores.turnJobs.hasPending('legacy'))
         ? Date.now() + runDriverRetryDelayMs(ledgerDrain, RELAY_RETRY_BACKOFF_MS)
         : undefined;
       const outboxRetry = stores.management.nextOutboxDueAt();
@@ -1923,17 +2057,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       managementApproval: resolveManagementApproval,
       telemetry: productTelemetry,
       resolveInstallation,
-      sandboxes: (sandboxKey) => {
-        const binding =
-          (this.env as PlatformEnv).SANDBOX ?? (this.env as PlatformEnv).Sandbox;
-        if (!binding) return [];
-        return cloudflareSandboxOptionVariants(sandboxKey).map((options) => () =>
-          reconnectingSandboxStub(() => getSandbox(
-            binding as Parameters<typeof getSandbox>[0],
-            sandboxKey,
-            options,
-          )) as ReturnType<typeof getSandbox> & SandboxTurnReader);
-      },
+      sandboxes: sandboxTurnReaders(this.env as PlatformEnv),
       runTurn,
     };
     const runJob = (
@@ -1975,7 +2099,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
         return settled;
       },
       refresh: async () => {
-        needsRetry = (await drainGatewayInbox(stores, this.env as PlatformEnv)) || needsRetry;
+        needsRetry = (await admitAndDispatch()) || needsRetry;
         return listPendingTurns();
       },
       carried: {
@@ -1989,7 +2113,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
         await drainSlackInteractionCleanups(stores, resolveInstallation, runningJobIds);
         await drainTerminalPresentationRepairs(stores, resolveInstallation, runningJobIds);
         await drainCloudflareScheduleActions(stores, this.env as PlatformEnv);
-        await drainCloudflareManagementReceipts(stores, resolveInstallation);
+        await drainCloudflareManagementReceipts(stores, resolveInstallation, this.presentationRunnerOf);
       },
       startConcurrency: DRAIN_CONCURRENCY,
       maxActiveThreads: MAX_TURN_DRAIN_BATCH,
@@ -2017,25 +2141,29 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
         this.alarmAdmissionWake?.();
       });
     }
-    const ledgerDrain = await drainLedgerRuns(
-      stores,
-      this.env as PlatformEnv,
-      resolveInstallation,
-      productTelemetry,
-    );
-    identityRetryDelayMs = runDriverRetryDelayMs(ledgerDrain, identityRetryDelayMs);
-    await drainSlackInteractionCleanups(stores, resolveInstallation, carriedJobIds());
-    const presentationRepairs = await drainTerminalPresentationRepairs(
-      stores,
-      resolveInstallation,
-      carriedJobIds(),
-    );
-    const scheduleActions = await drainCloudflareScheduleActions(stores, this.env as PlatformEnv);
-    await drainCloudflareManagementReceipts(stores, resolveInstallation);
+    const { presentationRepairs, scheduleActions } = await whileDispatching(async () => {
+      const ledgerDrain = await drainLedgerRuns(
+        stores,
+        this.env as PlatformEnv,
+        resolveInstallation,
+        productTelemetry,
+      );
+      identityRetryDelayMs = runDriverRetryDelayMs(ledgerDrain, identityRetryDelayMs);
+      await drainSlackInteractionCleanups(stores, resolveInstallation, carriedJobIds());
+      const presentationRepairs = await drainTerminalPresentationRepairs(
+        stores,
+        resolveInstallation,
+        carriedJobIds(),
+      );
+      const scheduleActions = await drainCloudflareScheduleActions(stores, this.env as PlatformEnv);
+      await drainCloudflareManagementReceipts(stores, resolveInstallation, this.presentationRunnerOf);
+      return { presentationRepairs, scheduleActions };
+    });
     needsRetry ||= stores.turnJobs.hasPending('legacy') ||
       stores.turnJobs.hasPending('ledger') ||
       stores.turnJobs.hasPendingSlackInteractionCleanup() ||
-      stores.gatewayInbox.hasPending();
+      stores.gatewayInbox.hasPending() ||
+      stores.turnJobs.hasHandoffs();
     // Yielded turns are still running elsewhere; reattach to them promptly.
     const turnRetry = turnDrain.budgetExhausted
       ? Date.now() + ALARM_YIELD_REARM_MS
@@ -2058,10 +2186,112 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     }
   }
 
-  private async armAlarmNoLaterThan(at: number): Promise<void> {
+  /**
+   * Admit one runner-owned turn to its thread's SlackThreadRunner, with the
+   * presentation as this store holds it, and confirm the hand-off. Idempotent:
+   * a runner keeps a job it already holds. False leaves the row a hand-off for
+   * the next alarm to admit again.
+   */
+  private async admitToRunner(job: PendingTurnJob): Promise<boolean> {
+    const stores = this.stores;
+    const threadKey = slackAgentThreadKey(job.turn, job.assignment);
+    const runner = threadRunnerStub(this.env as PlatformEnv, threadKey);
+    if (!stores || !runner) return false;
+    const presentation = job.runId ? stores.presentations.get(job.runId) : undefined;
+    const payload: ThreadRunnerJobPayload = presentation ? { presentation } : {};
+    try {
+      const result = await runner.admit({ id: job.id, threadKey, payload });
+      if (result.refused) throw new Error(result.refused);
+    } catch {
+      console.warn('[chickpea] Thread runner admission failed; the hand-off is retried');
+      return false;
+    }
+    stores.turnJobs.confirmRunner(job.id);
+    return true;
+  }
+
+  /**
+   * SLACK_TAG_TURN_EXECUTOR=runner: hand every pending turn whose thread is
+   * free to its runner, a page at a time, and return without waiting for any
+   * turn. Unconfirmed hand-offs are admitted again first, so a hand-off lost
+   * to a restart of this object is never overtaken in its thread. A failed
+   * admission leaves its row a hand-off, which holds only its own thread
+   * (listDispatchable) and re-arms this alarm (hasHandoffs). Returns the
+   * turns admitted.
+   */
+  private async dispatchToRunners(
+    stores: TagStateStores,
+    newTurns: boolean,
+    readmitHandoffs = true,
+  ): Promise<number> {
+    let dispatched = 0;
+    const admitAll = async (jobs: PendingTurnJob[]) => {
+      const admitted = await Promise.all(jobs.map((job) => this.admitToRunner(job)));
+      dispatched += admitted.filter(Boolean).length;
+    };
+    if (readmitHandoffs) await admitAll(stores.turnJobs.listHandoffs(MAX_TURN_DRAIN_BATCH));
+    for (let page = 0; newTurns && page < RUNNER_DISPATCH_MAX_PAGES; page += 1) {
+      const jobs = stores.turnJobs.listDispatchable({
+        limit: MAX_TURN_DRAIN_BATCH,
+        threadKey: (job) => slackAgentThreadKey(job.turn, job.assignment),
+      }).filter((job) => stores.turnJobs.assignRunner(job.id));
+      if (jobs.length === 0) break;
+      await admitAll(jobs);
+    }
+    return dispatched;
+  }
+
+  /**
+   * Run the alarm's other work while admitting and handing over turns that
+   * arrive meanwhile: on every admission wake, at the admission re-check
+   * interval, and once more after the work if anything was admitted during
+   * the last pass.
+   */
+  private async dispatchingWhile<T>(
+    work: () => Promise<T>,
+    admitAndDispatch: () => Promise<unknown>,
+  ): Promise<T> {
+    let done = false;
+    let wake: (() => void) | undefined;
+    let admittedMeanwhile = false;
+    this.dispatchWake = () => {
+      admittedMeanwhile = true;
+      wake?.();
+    };
+    const result = work().finally(() => {
+      done = true;
+      wake?.();
+    });
+    const loop = (async () => {
+      while (!done) {
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, ALARM_ADMISSION_RECHECK_MS);
+          wake = () => {
+            clearTimeout(timer);
+            resolve();
+          };
+        });
+        wake = undefined;
+        if (done) break;
+        admittedMeanwhile = false;
+        await admitAndDispatch();
+      }
+      if (admittedMeanwhile) await admitAndDispatch();
+    })();
+    try {
+      return await result;
+    } finally {
+      await loop.catch(() => undefined);
+      this.dispatchWake = undefined;
+    }
+  }
+
+  private async armAlarmNoLaterThan(at: number, admission = false): Promise<void> {
     // Every admission arms the alarm after its durable write. A running alarm
     // cannot be re-entered, so let its drain pick the new work up directly.
     this.alarmAdmissionWake?.();
+    if (admission) this.admissionsSeen += 1;
+    this.dispatchWake?.();
     const existing = await this.ctx.storage.getAlarm();
     if (existing === null || at < existing) await this.ctx.storage.setAlarm(at);
   }
@@ -2238,6 +2468,65 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
   }
 }
 
+/** One per-turn operation of a SlackThreadRunner (see thread-runner-rpc.ts). */
+function applyThreadRunnerTurnOp(
+  stores: TagStateStores,
+  op: ThreadRunnerTurnOp,
+): ThreadRunnerTurnResult<ThreadRunnerTurnKind> {
+  const turnJobs = stores.turnJobs;
+  switch (op.kind) {
+    case 'view':
+      return turnJobs.runnerView(op.id);
+    case 'begin': {
+      const view = turnJobs.runnerView(op.id);
+      const installation = view.job
+        ? stores.config.getWorkspaceInstallation(view.job.turn.workspaceId)
+        : undefined;
+      const values = stores.settings.getSettings(RUNNER_PREFETCHED_SETTINGS);
+      return {
+        view,
+        ...(installation ? { installation } : {}),
+        settings: Object.fromEntries(
+          RUNNER_PREFETCHED_SETTINGS.map((key, index) => [key, values[index] ?? null]),
+        ),
+      };
+    }
+    case 'recordAttempt':
+      turnJobs.recordAttempt(op.id, op.attempts);
+      return null;
+    case 'recordPullRequest':
+      return turnJobs.recordPullRequest(op.id, op.pullRequest) ?? null;
+    case 'freezeRuntimePlan':
+      return turnJobs.freezeRuntimePlan(op.id, op.candidate);
+    case 'getBoundRuntimePlan':
+      return turnJobs.getBoundRuntimePlan(
+        op.continuityKey,
+        op.beforeMessageTs,
+        op.actorMembershipId,
+        op.agentId,
+      ) ?? null;
+    case 'recordUsagePersistence':
+      return turnJobs.recordUsagePersistence(op.id, op.event) ?? null;
+    case 'recordInteractionIntent':
+      return turnJobs.recordInteractionIntent(op.id, op.intent) ?? null;
+    case 'markDelivered':
+      turnJobs.markDelivered(op.id);
+      return null;
+    case 'markError':
+      turnJobs.markError(op.id);
+      return null;
+    case 'markCodingActiveWork':
+      stores.slack.markCodingActiveWork(op.key, op.generation);
+      return null;
+    case 'isCodingActiveWork':
+      return stores.slack.isCodingActiveWork(op.key, op.generation);
+    case 'putPresentation':
+      return stores.presentations.putSnapshot(op.presentation);
+    default:
+      throw new Error('Unknown thread runner operation.');
+  }
+}
+
 async function drainSlackInteractionCleanups(
   stores: TagStateStores,
   resolveInstallation: SlackInstallationExecutionResolver,
@@ -2270,7 +2559,9 @@ async function drainTerminalPresentationRepairs(
   resolveInstallation: SlackInstallationExecutionResolver,
   excludeTurnJobIds: ReadonlySet<string> = new Set(),
 ): Promise<SlackPresentationRepairDrainResult> {
-  const presentations = stores.presentations.listAutoRepairableV3(MAX_TURN_DRAIN_BATCH)
+  // A thread runner repairs the presentations of turns it executes.
+  const presentations = stores.presentations
+    .listAutoRepairableV3(MAX_TURN_DRAIN_BATCH, { skipRunnerOwned: true })
     .filter((presentation) => !excludeTurnJobIds.has(presentation.turnJobId));
   return drainSlackPresentationRepairs({
     presentations,
@@ -2285,12 +2576,31 @@ async function drainTerminalPresentationRepairs(
 async function drainCloudflareManagementReceipts(
   stores: TagStateStores,
   resolveInstallation: SlackInstallationExecutionResolver,
+  presentationRunner: (runId: string) => SlackThreadRunnerRpc | undefined = () => undefined,
 ): Promise<void> {
   // ManagementStoreLogic is the in-DO synchronous implementation of every
   // ManagementStore operation; the shared drain awaits its return values, so
   // one implementation owns claim, backoff, terminal settling, and logging.
+  const local = localSlackPresentationState(stores);
+  // A runner-executed turn's presentation lives in its thread runner.
+  const runnerCopy = (runId: string) => {
+    const runner = presentationRunner(runId);
+    return runner
+      ? new CfSlackStateStore({
+          slackPresentationGet: (id: string) => runner.presentationGet(id),
+          slackPresentationTransition: (input: SlackPresentationTransitionInput) =>
+            runner.presentationTransition(input),
+        } as unknown as TagStateRpc)
+      : undefined;
+  };
   const presentation = {
-    state: localSlackPresentationState(stores),
+    state: {
+      ...local,
+      getRunPresentation: (runId: string) =>
+        (runnerCopy(runId) ?? local).getRunPresentation!(runId),
+      transitionRunPresentation: (input: SlackPresentationTransitionInput) =>
+        (runnerCopy(input.runId) ?? local).transitionRunPresentation!(input),
+    } satisfies SlackPresentationStatePort,
     resolveClient: async (workspaceId: string) =>
       (await resolveInstallation(workspaceId)).client,
   };
@@ -2410,6 +2720,11 @@ async function drainLedgerRuns(
 async function drainGatewayInbox(
   stores: TagStateStores,
   platformEnv: PlatformEnv,
+  /**
+   * Called after each admitted delivery (runner mode: hand its turn over at
+   * once). With it, different conversations are admitted side by side.
+   */
+  onAdmitted?: () => void,
 ): Promise<boolean> {
   const pending = stores.gatewayInbox.claimPending(GATEWAY_INBOX_MAX_DRAIN_BATCH);
   if (pending.length === 0) return stores.gatewayInbox.hasPending();
@@ -2435,7 +2750,7 @@ async function drainGatewayInbox(
     return stores.gatewayInbox.hasPending();
   }
   let needsRetry = false;
-  for (const item of pending) {
+  const admit = async (item: (typeof pending)[number]) => {
     // A turn admitted from this delivery measures its latency from receipt:
     // the delivery may have waited here while an earlier alarm ran turns.
     const releaseReceipt = item.delivery.kind === 'event.deliver'
@@ -2470,6 +2785,7 @@ async function drainGatewayInbox(
           );
       if (outcome === 'accepted') {
         stores.gatewayInbox.complete(item.id);
+        onAdmitted?.();
       } else {
         stores.gatewayInbox.markRecoveryRequired(item.id, 'binding_revalidation_rejected');
       }
@@ -2481,8 +2797,42 @@ async function drainGatewayInbox(
     } finally {
       releaseReceipt?.();
     }
+  };
+  // Deliveries of one conversation keep their order; different conversations
+  // are admitted side by side, so one slow delivery never holds another
+  // thread's first status.
+  const groups = new Map<string, Array<(typeof pending)[number]>>();
+  for (const item of pending) {
+    const key = gatewayConversationKey(item.delivery);
+    groups.set(key, [...(groups.get(key) ?? []), item]);
   }
+  const queue = [...groups.values()];
+  await Promise.all(Array.from(
+    { length: Math.min(onAdmitted ? GATEWAY_INBOX_CONVERSATION_CONCURRENCY : 1, queue.length) },
+    async () => {
+      for (let group = queue.shift(); group; group = queue.shift()) {
+        for (const item of group) await admit(item);
+      }
+    },
+  ));
   return needsRetry || stores.gatewayInbox.hasPending();
+}
+
+/** Conversations admitted side by side by one inbox drain. */
+const GATEWAY_INBOX_CONVERSATION_CONCURRENCY = 4;
+
+/**
+ * The Slack conversation a delivery belongs to: its channel and thread root.
+ * Anything without one (installation, profile and interaction events) shares
+ * one ordered group.
+ */
+function gatewayConversationKey(delivery: GatewayInboundDelivery): string {
+  if (delivery.kind !== 'event.deliver') return 'other';
+  const event = delivery.envelope.event as { channel?: unknown; thread_ts?: unknown; ts?: unknown };
+  const root = typeof event.thread_ts === 'string' ? event.thread_ts : event.ts;
+  return typeof event.channel === 'string' && typeof root === 'string'
+    ? `${event.channel}:${root}`
+    : 'other';
 }
 
 function localGatewayAppStores(stores: TagStateStores): AppStores {
@@ -2643,7 +2993,7 @@ async function runWorkMaintenance(
 }
 
 export { SlackGatewaySession };
-// Declared for migration v11 only; nothing addresses it at runtime yet.
+// Per-thread turn executor (migration v11), used with SLACK_TAG_TURN_EXECUTOR=runner.
 export { SlackThreadRunner } from './slack/thread-runner.ts';
 
 async function runRoutineHeartbeat(

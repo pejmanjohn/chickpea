@@ -133,8 +133,10 @@ export class AgentPromptFailure extends Error {
     readonly status = 500,
     readonly recoveryRequired = false,
     readonly retryable = false,
+    /** Only for content-free diagnostics (settlementFailureFacts). */
+    cause?: unknown,
   ) {
-    super(`agent prompt failed (${kind})`);
+    super(`agent prompt failed (${kind})`, cause === undefined ? undefined : { cause });
     this.name = 'AgentPromptFailure';
   }
 }
@@ -149,6 +151,18 @@ export class AgentObservationYield extends AgentPromptFailure {
   constructor() {
     super('agent', 503, false, true);
     this.name = 'AgentObservationYield';
+  }
+}
+
+/**
+ * A thread runner could not reach the state store (it is being replaced).
+ * Nothing about the turn is decided: no Slack output is written for it, and
+ * the runner retries the turn, reattaching to a dispatched submission.
+ */
+export class StateStoreUnavailable extends AgentPromptFailure {
+  constructor() {
+    super('agent', 503, false, true);
+    this.name = 'StateStoreUnavailable';
   }
 }
 
@@ -342,7 +356,7 @@ export async function promptSlackThreadAgent(
           // The local reconciliation CAS marks its own conflict. A transport
           // interruption from the second keyed dispatch remains retryable.
           if (input.state.dispatchEnvelope?.uid === error.uid) {
-            throw new AgentPromptFailure('agent', 503, false, true);
+            throw new AgentPromptFailure('agent', 503, false, true, reconciliationError);
           }
           await input.state.markRecoveryRequired(
             'flue_existing_instance_reconciliation_conflict',
@@ -355,7 +369,7 @@ export async function promptSlackThreadAgent(
           await input.state.markRecoveryRequired(reason);
           throw new AgentPromptFailure('agent', 409, true);
         }
-        throw new AgentPromptFailure('agent', 503, false, true);
+        throw new AgentPromptFailure('agent', 503, false, true, error);
       }
     }
     receipt = await input.state.recordReceipt(boundedReceipt(admitted));
@@ -369,10 +383,17 @@ export async function promptSlackThreadAgent(
         instanceId: envelope.instanceId,
         receipt,
       });
-    } catch {
-      // The receipt is already durable, so retry reattaches to the same paid
-      // submission. No read callback was registered and no text escaped.
-      throw new AgentPromptFailure('agent', 503, false, true);
+    } catch (error) {
+      // No read callback was registered and no text escaped. A state store
+      // that is being replaced retries the turn like a yield; anything else
+      // is logged and the turn goes on without live streaming, delivering its
+      // answer once it settles: a deterministic setup failure must not spend
+      // every reattachment attempt and replace a finished answer.
+      if (error instanceof StateStoreUnavailable) throw error;
+      console.warn('[chickpea] progressive relay setup failed; the reply is delivered at the end', {
+        causes: settlementFailureFacts(error),
+      });
+      progressiveRelay = undefined;
     }
   }
 
@@ -395,6 +416,12 @@ export async function promptSlackThreadAgent(
   };
   input.onObservationStarted?.();
   const signal = input.observationSignal;
+  // A settlement the state store could not save leaves the relay suspended
+  // for the reattaching attempt when the store is only being replaced.
+  const settlementNotSaved = async (error: unknown): Promise<void> => {
+    if (error instanceof StateStoreUnavailable) await progressiveRelay?.suspendAndDrain();
+    else await progressiveRelay?.invalidateAndDrain('settlement_persist_failed');
+  };
   try {
     reply = observeReply
       ? await observeReply({
@@ -416,6 +443,12 @@ export async function promptSlackThreadAgent(
       await progressiveRelay?.suspendAndDrain();
       throw new AgentObservationYield();
     }
+    if (error instanceof StateStoreUnavailable) {
+      // The runner's state store is being replaced: like a yield, the stream
+      // and intent stay as they are for the reattaching attempt.
+      await progressiveRelay?.suspendAndDrain();
+      throw error;
+    }
     if (!(error instanceof AgentRunError)) {
       await progressiveRelay?.invalidateAndDrain('read_interrupted');
       if (error instanceof AgentInstanceNotFoundError) {
@@ -425,7 +458,7 @@ export async function promptSlackThreadAgent(
       // Transport/isolate interruptions are not settlement evidence. Keep the
       // receipt and let the durable relay reattach instead of freezing a paid,
       // possibly completed turn as a permanent failure.
-      throw new AgentPromptFailure('agent', 503, false, true);
+      throw new AgentPromptFailure('agent', 503, false, true, error);
     }
     const classified = classifyFlueRunFailure(error);
     // Only an attached container can fail a turn as a sandbox failure. A
@@ -446,7 +479,7 @@ export async function promptSlackThreadAgent(
         failureKind: kind,
       });
     } catch (settlementError) {
-      await progressiveRelay?.invalidateAndDrain('settlement_persist_failed');
+      await settlementNotSaved(settlementError);
       throw settlementError;
     }
     input.state.flueSettlement = checkpoint;
@@ -473,7 +506,7 @@ export async function promptSlackThreadAgent(
         failureKind,
       });
     } catch (settlementError) {
-      await progressiveRelay?.invalidateAndDrain('settlement_persist_failed');
+      await settlementNotSaved(settlementError);
       throw settlementError;
     }
     input.state.flueSettlement = checkpoint;
@@ -490,7 +523,7 @@ export async function promptSlackThreadAgent(
       result: completed,
     });
   } catch (settlementError) {
-    await progressiveRelay?.invalidateAndDrain('settlement_persist_failed');
+    await settlementNotSaved(settlementError);
     throw settlementError;
   }
   input.state.flueSettlement = checkpoint;

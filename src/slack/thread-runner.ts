@@ -1,39 +1,147 @@
+import { getSandbox } from '@cloudflare/sandbox';
 import { DurableObject } from 'cloudflare:workers';
 
-import { DoSqlStateDb } from '../state/do-state-db.ts';
+import { activityStatus, isSafeTypedActivityStatus, type TypedActivityStatus } from '../activity/status.ts';
+import { CfTurnJobsForRunner } from '../config/cf-state-proxies.ts';
+import type { SettingsStore } from '../config/settings-store.ts';
 import {
-  ThreadRunnerJobStore,
-  type ThreadRunnerJob,
-  type ThreadRunnerStatus,
-} from './thread-runner-jobs.ts';
+  getConfigStore,
+  getIdentityStore,
+  getSettingsStore,
+  type PlatformEnv,
+} from '../config/state-backend.ts';
+import type { SlackPublicContextEntryInput } from '../config/types.ts';
+import { tagStateStub, type StateRpcResult } from '../config/state-rpc.ts';
+import { cloudflareSandboxOptionVariants } from '../sandbox/lifecycle.ts';
+import { reconnectingSandboxStub } from '../sandbox/reconnect.ts';
+import { DoSqlStateDb } from '../state/do-state-db.ts';
+import { createPlatformProductTelemetry } from '../telemetry/platform.ts';
+import {
+  cacheSlackInstallationExecutionContexts,
+  effectiveTurnSlackInstallationId,
+  resolveSlackInstallationExecutionContext,
+  verifySlackInstallationTurnAccess,
+} from './installation-execution.ts';
+import { drainSlackPresentationRepairs } from './presentation-repair.ts';
+import {
+  SlackPresentationStateError,
+  SlackRunPresentationStoreLogic,
+  type SlackPresentationTransitionInput,
+  type SlackPresentationTransitionResult,
+  type SlackRunPresentation,
+} from './run-presentations.ts';
+import { repairSlackInteractionProgress, runTurn, sanitizeError } from './run-turn.ts';
+import { SlackStatusRegistry } from './status-registry.ts';
+import { ThreadRunnerJobStore, type ThreadRunnerJob, type ThreadRunnerStatus } from './thread-runner-jobs.ts';
+import {
+  runnerLoopScheduler,
+  type ThreadRunnerAlarmResult,
+  runnerPresentationState,
+  runnerSlackPort,
+  runnerTurnJobsPort,
+  runThreadRunnerAlarm,
+} from './thread-runner-loop.ts';
+import type {
+  RunnerTurnBegin,
+  SlackThreadRunnerRpc,
+  ThreadRunnerJobPayload,
+} from './thread-runner-rpc.ts';
+import { executeTurnJob, type SandboxTurnReader, type TurnExecutionPorts } from './turn-executor.ts';
+import type { FlueObservationTarget } from './turn-job-types.ts';
+import { MAX_TURN_DRAIN_BATCH } from './turn-jobs.ts';
 
-export interface SlackThreadRunnerRpc {
-  admit(job: ThreadRunnerJob): Promise<{ admitted: boolean }>;
-  status(): Promise<ThreadRunnerStatus>;
+/** The coding Sandbox readers of one thread (identical for both executors). */
+export function sandboxTurnReaders(env: PlatformEnv): TurnExecutionPorts['sandboxes'] {
+  return (sandboxKey) => {
+    const binding = env.SANDBOX ?? env.Sandbox;
+    if (!binding) return [];
+    // A replaced Sandbox instance leaves a dead stub; reconnect instead.
+    return cloudflareSandboxOptionVariants(sandboxKey).map((options) => () =>
+      reconnectingSandboxStub(() => getSandbox(
+        binding as Parameters<typeof getSandbox>[0],
+        sandboxKey,
+        options,
+      )) as ReturnType<typeof getSandbox> & SandboxTurnReader);
+  };
 }
 
 /**
  * Per-thread Slack turn runner (binding `SLACK_THREAD_RUNNER`, migration v11),
- * addressed by `idFromName(threadKey)`. This release ships the class inactive:
- * nothing addresses it at runtime, and its alarm only logs because no executor
- * is enabled. Declaring the class on its own isolates the Durable Object
- * lifecycle change, which Cloudflare cannot roll back across, from the later
- * release that moves turn execution here.
+ * addressed by `idFromName(threadKey)`. With `SLACK_TAG_TURN_EXECUTOR=runner`
+ * the state store's alarm hands each admitted turn here and returns; this
+ * object executes its thread's turns in order (see thread-runner-loop.ts), so
+ * a long turn in one thread never delays another thread. It keeps the turn's
+ * Slack presentation and live status itself and writes each turn's outcome
+ * back to the state store, which stays the record of truth for turn rows.
+ * Jobs already handed here always finish here, whatever the switch says.
  */
 export class SlackThreadRunner extends DurableObject implements SlackThreadRunnerRpc {
   private jobs: ThreadRunnerJobStore | undefined;
+  private presentations: SlackRunPresentationStoreLogic | undefined;
+  private readonly registry = new SlackStatusRegistry();
+  /** Jobs an alarm returned without at its hard cap, still running here. */
+  private readonly carried = new Map<string, Promise<void>>();
+  /** Wakes a running alarm's drain when a job is admitted. */
+  private wake: (() => void) | undefined;
+  /** Observation targets of this runner's turns, one lookup per submission. */
+  private readonly targets = new Map<string, FlueObservationTarget>();
+  /** Consecutive failed alarms, for the retry backoff. */
+  private readonly failures = { count: 0 };
+  /** Runs the loop, one at a time, from the alarm or an admission. */
+  private readonly runSoon = runnerLoopScheduler({
+    runOnce: () => this.runAlarm(),
+    arm: async (nextAlarmAt) => {
+      if (nextAlarmAt !== undefined) await this.ctx.storage.setAlarm(nextAlarmAt);
+      else await this.ctx.storage.deleteAlarm();
+    },
+  });
+
+  constructor(...args: ConstructorParameters<typeof DurableObject>) {
+    super(...args);
+    // A job still marked running means the previous instance stopped mid-turn
+    // (a code update, an eviction): resume now, not at the next backstop.
+    void this.ctx.blockConcurrencyWhile(async () => {
+      try {
+        if (!this.store().hasRunning()) return;
+        const existing = await this.ctx.storage.getAlarm();
+        if (existing === null || existing > Date.now()) await this.ctx.storage.setAlarm(Date.now());
+      } catch {
+        // The 5 s backstop armed while the job ran still brings it back.
+      }
+    });
+  }
 
   private store(): ThreadRunnerJobStore {
     this.jobs ??= new ThreadRunnerJobStore(new DoSqlStateDb(this.ctx.storage));
     return this.jobs;
   }
 
-  async admit(job: ThreadRunnerJob): Promise<{ admitted: boolean }> {
-    const result = this.store().admit(job, Date.now());
-    // Never postpone an alarm that is already armed.
-    if (await this.ctx.storage.getAlarm() === null) {
-      await this.ctx.storage.setAlarm(Date.now());
+  private presentationStore(): SlackRunPresentationStoreLogic {
+    this.presentations ??= new SlackRunPresentationStoreLogic(new DoSqlStateDb(this.ctx.storage));
+    return this.presentations;
+  }
+
+  async admit(job: ThreadRunnerJob): Promise<{ admitted: boolean; refused?: string }> {
+    const payload = (job?.payload ?? {}) as ThreadRunnerJobPayload;
+    // The presentation first: the job never runs here without its copy.
+    if (payload.presentation) {
+      try {
+        this.presentationStore().putSnapshot(payload.presentation);
+      } catch {
+        console.warn('[chickpea] thread runner could not import a turn presentation');
+        return { admitted: false, refused: 'presentation_import_failed' };
+      }
     }
+    const result = this.store().admit({ ...job, payload: {} }, Date.now());
+    // The turn runs in this object's alarm, never in the admitting request.
+    // Work left running after that request returns belongs to no invocation:
+    // its logs are dropped, objects it creates are bound to a closed request,
+    // and nothing retries it when the object is replaced. The alarm is due
+    // now (an earlier one is kept); a running alarm's drain takes the job at
+    // once.
+    this.wake?.();
+    const existing = await this.ctx.storage.getAlarm();
+    if (existing === null || existing > Date.now()) await this.ctx.storage.setAlarm(Date.now());
     return result;
   }
 
@@ -41,8 +149,219 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
     return this.store().status();
   }
 
-  async alarm(): Promise<void> {
-    const { total } = this.store().status();
-    console.info({ component: 'runtime', event: 'thread_runner_alarm', jobs: total, executor: 'none' });
+  /**
+   * Activity the agent observed for one of this runner's turns, landing in
+   * the registry where the running turn registered its status presenter.
+   * Best-effort like the state store's: a miss is a success.
+   */
+  async observedStatus(
+    instanceId: string,
+    submissionId: string,
+    status: TypedActivityStatus,
+  ): Promise<StateRpcResult<null>> {
+    try {
+      if (!isSafeTypedActivityStatus(status)) return { ok: true, value: null };
+      const key = `${instanceId}\n${submissionId}`;
+      let target = this.targets.get(key);
+      if (!target) {
+        target = await this.stateStore().matchFlueObservation(instanceId, submissionId);
+        if (!target) return { ok: true, value: null };
+        if (this.targets.size >= 32) this.targets.clear();
+        this.targets.set(key, target);
+      }
+      this.registry.setObservedStatus(
+        instanceId,
+        target.generation,
+        activityStatus(status.kind, status.action, status.object, status.family, status.phase),
+      );
+    } catch {
+      // A dropped status update never fails a turn.
+    }
+    return { ok: true, value: null };
   }
+
+  async presentationGet(runId: string): Promise<StateRpcResult<SlackRunPresentation | null>> {
+    return presentationResult(() => this.presentationStore().get(runId) ?? null);
+  }
+
+  async presentationTransition(
+    input: SlackPresentationTransitionInput,
+  ): Promise<StateRpcResult<SlackPresentationTransitionResult>> {
+    const result = presentationResult(() => this.presentationStore().transition(input));
+    if (result.ok && result.value.outcome === 'applied') {
+      // Keep the state store's readers current; best-effort like any publish.
+      await this.stateStore()
+        .putPresentation(result.value.presentation)
+        .catch(() => console.warn('[chickpea] thread runner presentation publish failed'));
+    }
+    return result;
+  }
+
+  async alarm(): Promise<void> {
+    await this.runSoon();
+  }
+
+  /** The state store, over a fresh stub per call (see CfTurnJobsForRunner). */
+  private stateStore(): CfTurnJobsForRunner {
+    const env = this.env as PlatformEnv;
+    return new CfTurnJobsForRunner(() => tagStateStub(env));
+  }
+
+  private async runAlarm(): Promise<ThreadRunnerAlarmResult> {
+    const env = this.env as PlatformEnv;
+    const rows = this.stateStore();
+    const jobs = this.store();
+    const local = this.presentationStore();
+    const presentation = runnerPresentationState({
+      local,
+      remote: rows,
+      putRemote: (value) => rows.putPresentation(value),
+    });
+    // Resolved at most once per identity per alarm, so credential rotation
+    // is observed by the next alarm. A turn's own resolution reuses what its
+    // `begin` round trip already read (the installation, gateway settings).
+    const installations = new Map<string, RunnerTurnBegin>();
+    const resolveInstallation = cacheSlackInstallationExecutionContexts((workspaceId) => {
+      const start = installations.get(workspaceId);
+      const settings = getSettingsStore(env);
+      return resolveSlackInstallationExecutionContext(workspaceId, env, {
+        config: {
+          getWorkspaceInstallation: async (id) =>
+            start?.installation?.workspaceId === id
+              ? start.installation
+              : getConfigStore(env).getWorkspaceInstallation(id),
+        },
+        settings: start ? prefetchedSettings(settings, start.settings) : settings,
+        credentialDependencies: { state: getIdentityStore(env), env },
+      });
+    });
+    const config = {
+      // Thread context for a delivered message; the answer is already out,
+      // so a store that cannot be reached only loses this context entry.
+      putSlackPublicContext: async (input: SlackPublicContextEntryInput) =>
+        rows.putSlackPublicContext(input).catch(() => {
+          console.warn('[chickpea] thread runner could not record thread context');
+          return undefined as never;
+        }),
+    };
+    const ports: TurnExecutionPorts = {
+      env,
+      turnJobs: runnerTurnJobsPort(rows, jobs),
+      slack: runnerSlackPort({
+        setActiveWork: (key, generation, active) => rows.setActiveWork(key, generation, active),
+        markCodingActiveWork: (key, generation) => rows.markCodingActiveWork(key, generation),
+        isCodingActiveWork: (key, generation) => rows.isCodingActiveWork(key, generation),
+        release: (key) => rows.release(key),
+      }, jobs),
+      config,
+      presentationState: presentation.state,
+      statusRegistry: this.registry,
+      telemetry: createPlatformProductTelemetry({
+        env,
+        settings: getSettingsStore(env),
+        config: getConfigStore(env),
+      }),
+      resolveInstallation,
+      sandboxes: sandboxTurnReaders(env),
+      runTurn,
+    };
+    const result = await runThreadRunnerAlarm({
+      jobs,
+      turns: rows,
+      execute: (job, control, onRetry, threadKey, start) => {
+        installations.set(job.turn.workspaceId, start);
+        return executeTurnJob(job, ports, {
+          latency: { lane: 'cloudflare', executor: 'runner' },
+          observationRoute: { executor: 'runner', runnerKey: threadKey },
+          control,
+          onRetry,
+        });
+      },
+      repairInteraction: async (job) => {
+        const progress = job.progress.slackInteraction;
+        if (!progress) return;
+        const installation = await resolveInstallation(effectiveTurnSlackInstallationId(job.turn));
+        await verifySlackInstallationTurnAccess(installation, job.turn);
+        await repairSlackInteractionProgress(
+          job.turn,
+          job.assignment,
+          progress,
+          installation.client,
+          (patch) => rows.recordSlackInteractionProgress(job.id, patch),
+        );
+      },
+      // The active-work key is the thread key this runner is addressed by.
+      clearActiveWork: (threadKey, jobId) => rows.setActiveWork(threadKey, jobId, false),
+      failures: this.failures,
+      afterJob: async (job) => {
+        this.targets.clear();
+        await presentation.publish(job.runId);
+      },
+      repair: () => drainSlackPresentationRepairs({
+        presentations: local.listAutoRepairableV3(MAX_TURN_DRAIN_BATCH),
+        state: presentation.state,
+        resolveClient: async (workspaceId) => (await resolveInstallation(workspaceId)).client,
+        onFailure: (_presentation, error) => {
+          console.warn('[chickpea] Slack presentation repair failed:', sanitizeError(error));
+        },
+      }).finally(() => {
+        local.maintain(100);
+      }),
+      // Keep a wake `at` or sooner in the future; a wake already due is
+      // pushed forward, since this run is the one it would start.
+      armBackstop: async (at) => {
+        const existing = await this.ctx.storage.getAlarm();
+        if (existing === null || existing <= Date.now() || existing > at) {
+          await this.ctx.storage.setAlarm(at);
+        }
+      },
+      carried: this.carried,
+      onWake: (wake) => {
+        this.wake = wake;
+        return () => {
+          if (this.wake === wake) this.wake = undefined;
+        };
+      },
+    });
+    return result;
+  }
+}
+
+/** Run one presentation store call as an RPC result, typed like the state store's. */
+function presentationResult<T>(fn: () => T): StateRpcResult<T> {
+  try {
+    return { ok: true, value: fn() };
+  } catch (error) {
+    if (error instanceof SlackPresentationStateError) {
+      return {
+        ok: false,
+        error: {
+          code: 'slack_presentation',
+          message: error.message,
+          details: { presentationCode: error.code },
+        },
+      };
+    }
+    return {
+      ok: false,
+      error: { code: 'internal', message: error instanceof Error ? error.message : String(error) },
+    };
+  }
+}
+
+/** A settings store that answers the given keys from a read already made. */
+function prefetchedSettings(
+  store: SettingsStore,
+  values: Record<string, string | null>,
+): SettingsStore {
+  const has = (key: string) => Object.hasOwn(values, key);
+  return {
+    getSetting: async (key) => (has(key) ? values[key] ?? undefined : store.getSetting(key)),
+    getSettings: async (keys) =>
+      keys.every(has) ? keys.map((key) => values[key] ?? undefined) : store.getSettings(keys),
+    setSetting: (key, value) => store.setSetting(key, value),
+    deleteSetting: (key) => store.deleteSetting(key),
+    applySettingsPatch: (patch) => store.applySettingsPatch(patch),
+    mergeSettingStringSet: (key, merged) => store.mergeSettingStringSet(key, merged),
+  };
 }

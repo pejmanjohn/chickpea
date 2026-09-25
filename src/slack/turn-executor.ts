@@ -3,6 +3,7 @@ import type { SettingsStore } from '../config/settings-store.ts';
 import type { AppStores, PlatformEnv } from '../config/state-backend.ts';
 import type { TurnProgress } from '../config/state-rpc.ts';
 import type { TurnLatencyContext } from '../observability/runtime-latency.ts';
+import { isStateStoreDisconnect } from '../config/cf-state-proxies.ts';
 import { sandboxThreadKey } from '../sandbox/thread-key.ts';
 import type { ProductTelemetryCapture } from '../telemetry/client.ts';
 import type { UsageStore } from '../usage/types.ts';
@@ -11,7 +12,12 @@ import { settlementFailureFacts } from './agent-failure-diagnostics.ts';
 import type { SlackPresentationStatePort } from './agent-view-presentation.ts';
 import { alarmYieldIsFree, type AlarmTurnJobControl } from './alarm-turn-drain.ts';
 import type { SlackStateLogic } from './claim-store.ts';
-import { AgentObservationYield, AgentPromptFailure } from './flue-dispatch.ts';
+import type { SlackStatusRegistry } from './status-registry.ts';
+import {
+  AgentObservationYield,
+  AgentPromptFailure,
+  StateStoreUnavailable,
+} from './flue-dispatch.ts';
 import {
   effectiveTurnSlackInstallationId,
   normalizeSlackInstallationExecutionError,
@@ -47,14 +53,24 @@ import {
 import { DURABLE_RECOVERY_FAILURE_TEXT } from './web-client-presenter.ts';
 import type { TurnEnvelopeV1 } from '../agents/turn-envelope.ts';
 
+type MaybePromise<T> = T | Promise<T>;
+
+/** Each method of `T`, which may also answer asynchronously (over RPC). */
+type AsyncCapable<T> = {
+  [K in keyof T]: T[K] extends (...args: infer A) => infer R
+    ? (...args: A) => MaybePromise<R>
+    : T[K];
+};
+
 /**
- * Everything one durable turn job touches while it runs, as ports. The
- * shared state owner's alarm passes its own stores today; a per-thread runner
- * can pass its own presentation state and forward the rest to the owner.
+ * Everything one durable turn job touches while it runs, as ports. The shared
+ * state store's alarm passes its own stores; a per-thread runner passes its
+ * own presentation state and status registry and forwards the per-turn
+ * writes to the state store over RPC.
  */
 export interface TurnExecutionPorts {
   env: PlatformEnv;
-  turnJobs: Pick<
+  turnJobs: AsyncCapable<Pick<
     TurnJobStoreLogic,
     | 'recordAttempt'
     | 'markRecoveryRequired'
@@ -70,20 +86,27 @@ export interface TurnExecutionPorts {
     | 'recordSlackInteractionProgress'
     | 'markDelivered'
     | 'markError'
-  >;
+  >>;
   /** Slack claims and the per-thread active-work flag. */
-  slack: Pick<
+  slack: AsyncCapable<Pick<
     SlackStateLogic,
     'setActiveWork' | 'markCodingActiveWork' | 'isCodingActiveWork' | 'release'
-  >;
+  >>;
   /** Thread context for every Agent message the turn delivers. */
   config: Parameters<typeof recordDeliveredSlackAgentMessage>[0];
   presentationState: SlackPresentationStatePort;
-  settingsStore: SettingsStore;
-  usageStore: UsageStore;
-  workStore: WorkStore;
-  appStores: AppStores;
-  managementApproval: NonNullable<RunTurnOptions['managementApproval']>;
+  /**
+   * Local stores when the turn runs inside the shared state store. A thread
+   * runner omits them, so the turn reaches them over RPC like any other
+   * Durable Object.
+   */
+  settingsStore?: SettingsStore;
+  usageStore?: UsageStore;
+  workStore?: WorkStore;
+  appStores?: AppStores;
+  managementApproval?: RunTurnOptions['managementApproval'];
+  /** Where observed activity for this turn lands; the module default otherwise. */
+  statusRegistry?: SlackStatusRegistry;
   telemetry: ProductTelemetryCapture;
   /** Current credentials for one Slack installation. */
   resolveInstallation(workspaceId: string): Promise<SlackInstallationExecutionContext>;
@@ -104,13 +127,18 @@ export interface SandboxTurnReader {
 export interface TurnExecutionOptions {
   /** Which lane and executor the turn_latency record names. */
   latency: Pick<TurnLatencyContext, 'lane' | 'executor'>;
+  /**
+   * Recorded with the dispatch so the agent relays observed activity to the
+   * executor that registered this turn's status (see status-relay.ts).
+   */
+  observationRoute?: Pick<FlueTurnObservationV1, 'executor' | 'runnerKey'>;
   /** Present when the caller can stop observation (a yield, not a failure). */
   control?: AlarmTurnJobControl;
   /**
    * The job stays pending and should be driven again soon; `afterMs` is the
    * least delay an unavailable installation asked for.
    */
-  onRetry(afterMs?: number): void;
+  onRetry(afterMs?: number, reason?: 'state_store_unavailable'): void;
 }
 
 /**
@@ -144,9 +172,9 @@ export async function executeTurnJob(
       );
       return false;
     }
-    ports.turnJobs.markRecoveryRequired(job.id, 'slack_installation_unavailable');
+    await ports.turnJobs.markRecoveryRequired(job.id, 'slack_installation_unavailable');
     if (job.turn.interactionIntent?.disposition === 'work') {
-      ports.slack.setActiveWork(
+      await ports.slack.setActiveWork(
         slackAgentThreadKey(job.turn, job.assignment),
         job.id,
         false,
@@ -163,7 +191,7 @@ export async function executeTurnJob(
     : undefined;
   // Advance the attempt count before running the turn: a crash mid-turn
   // then re-fires with the count already committed, bounding retries.
-  ports.turnJobs.recordAttempt(job.id, attempt);
+  await ports.turnJobs.recordAttempt(job.id, attempt);
   const flueDispatch = {
     ...(job.dispatchEnvelope ? { dispatchEnvelope: job.dispatchEnvelope } : {}),
     ...(job.dispatchReceipt ? { dispatchReceipt: job.dispatchReceipt } : {}),
@@ -175,7 +203,12 @@ export async function executeTurnJob(
       admittedListIds?: readonly string[],
       turnEnvelope?: TurnEnvelopeV1,
     ) => ports.turnJobs.prepareFlueDispatch(
-      job.id, message, observation, threadImages, admittedListIds, turnEnvelope,
+      job.id,
+      message,
+      options.observationRoute ? { ...observation, ...options.observationRoute } : observation,
+      threadImages,
+      admittedListIds,
+      turnEnvelope,
     ),
     reconcileExistingInstance: (uid: string) =>
       ports.turnJobs.reconcileFlueExistingInstance(job.id, uid),
@@ -200,7 +233,8 @@ export async function executeTurnJob(
         turnId: job.id,
         ...(job.runId ? { runId: job.runId, runAttempt: attempt } : {}),
         turnLatency,
-        settingsStore: ports.settingsStore,
+        ...(ports.settingsStore ? { settingsStore: ports.settingsStore } : {}),
+        ...(ports.statusRegistry ? { statusRegistry: ports.statusRegistry } : {}),
         presentationState,
         replayText: DURABLE_RECOVERY_FAILURE_TEXT,
         replayTerminalResult: 'failure',
@@ -208,10 +242,10 @@ export async function executeTurnJob(
           recordDeliveredSlackAgentMessage(
             ports.config, job.turn, job.assignment, delivery,
           ),
-        onDelivered: () => {
-          ports.turnJobs.markError(job.id);
-          if (activeWorkKey) ports.slack.setActiveWork(activeWorkKey, job.id, false);
+        onDelivered: async () => {
           delivered = true;
+          await ports.turnJobs.markError(job.id);
+          if (activeWorkKey) await ports.slack.setActiveWork(activeWorkKey, job.id, false);
         },
       });
       return true;
@@ -239,8 +273,8 @@ export async function executeTurnJob(
         channelId: job.turn.channelId,
         threadTs: job.turn.threadTs,
       });
-      ports.turnJobs.markRecoveryRequired(job.id, reasonCode);
-      if (activeWorkKey) ports.slack.setActiveWork(activeWorkKey, job.id, false);
+      await ports.turnJobs.markRecoveryRequired(job.id, reasonCode);
+      if (activeWorkKey) await ports.slack.setActiveWork(activeWorkKey, job.id, false);
       return false;
     }
   };
@@ -266,7 +300,7 @@ export async function executeTurnJob(
           if ((await sandbox.getTurnId()) !== job.id) continue;
           const progress = await sandbox.getTurnProgress();
           if (progress.pullRequest) {
-            ports.turnJobs.recordPullRequest(job.id, progress.pullRequest);
+            await ports.turnJobs.recordPullRequest(job.id, progress.pullRequest);
           }
           const replayText = replayTextForTurnProgress(progress);
           if (replayText !== undefined) return replayText;
@@ -292,6 +326,9 @@ export async function executeTurnJob(
           instanceId: job.agentInstanceId,
         }
       : undefined;
+    // A reattached coding turn keeps the coding backoff it already earned.
+    const codingTaskStarted = reattaching && activeWorkKey !== undefined &&
+      await ports.slack.isCodingActiveWork(activeWorkKey, job.id);
     await ports.runTurn(job.turn, job.assignment, ports.env, {
       client,
       installationContext,
@@ -302,14 +339,15 @@ export async function executeTurnJob(
         ? { observationSignal: options.control.signal, onObservationStarted: options.control.observing }
         : {}),
       turnLatency,
-      workStore: ports.workStore,
-      settingsStore: ports.settingsStore,
-      usageStore: ports.usageStore,
-      appStores: ports.appStores,
-      managementApproval: ports.managementApproval,
+      ...(ports.workStore ? { workStore: ports.workStore } : {}),
+      ...(ports.settingsStore ? { settingsStore: ports.settingsStore } : {}),
+      ...(ports.usageStore ? { usageStore: ports.usageStore } : {}),
+      ...(ports.appStores ? { appStores: ports.appStores } : {}),
+      ...(ports.managementApproval ? { managementApproval: ports.managementApproval } : {}),
+      ...(ports.statusRegistry ? { statusRegistry: ports.statusRegistry } : {}),
       ...(runtimePlanDecision ? { runtimePlanDecision } : {}),
-      onRuntimePlan: (candidate) => {
-        const decision = ports.turnJobs.freezeRuntimePlan(job.id, candidate);
+      onRuntimePlan: async (candidate) => {
+        const decision = await ports.turnJobs.freezeRuntimePlan(job.id, candidate);
         frozenPlan = decision.runtimePlan;
         return decision;
       },
@@ -318,25 +356,28 @@ export async function executeTurnJob(
       presentationState,
       progressiveAttributionProven: true,
       onUsagePersistence: (event) => {
-        ports.turnJobs.recordUsagePersistence(job.id, event);
+        // A local store records synchronously, exactly as before. Over RPC it
+        // is coverage bookkeeping only: it never fails or delays the turn.
+        const recorded = ports.turnJobs.recordUsagePersistence(job.id, event);
+        if (recorded instanceof Promise) {
+          void recorded.catch(() => console.warn('[chickpea] usage persistence record failed'));
+        }
       },
-      onInteractionIntent: (intent) => {
-        ports.turnJobs.recordInteractionIntent(job.id, intent);
+      onInteractionIntent: async (intent) => {
+        await ports.turnJobs.recordInteractionIntent(job.id, intent);
         if (intent.disposition !== 'work') return;
         activeWorkKey = slackAgentThreadKey(job.turn, job.assignment);
-        ports.slack.setActiveWork(activeWorkKey, job.id, true);
+        await ports.slack.setActiveWork(activeWorkKey, job.id, true);
       },
-      onCodingTaskStarted: () => {
-        if (activeWorkKey) ports.slack.markCodingActiveWork(activeWorkKey, job.id);
+      onCodingTaskStarted: async () => {
+        if (activeWorkKey) await ports.slack.markCodingActiveWork(activeWorkKey, job.id);
       },
-      ...(reattaching && activeWorkKey && ports.slack.isCodingActiveWork(activeWorkKey, job.id)
-        ? { codingTaskStarted: true }
-        : {}),
+      ...(codingTaskStarted ? { codingTaskStarted: true } : {}),
       ...(job.progress.slackInteraction
         ? { interactionProgress: job.progress.slackInteraction }
         : {}),
-      onInteractionProgress: (patch) => {
-        ports.turnJobs.recordSlackInteractionProgress(job.id, patch);
+      onInteractionProgress: async (patch) => {
+        await ports.turnJobs.recordSlackInteractionProgress(job.id, patch);
       },
       onPublicMessageDelivered: (delivery) =>
         recordDeliveredSlackAgentMessage(ports.config, job.turn, job.assignment, delivery),
@@ -345,10 +386,12 @@ export async function executeTurnJob(
       // Record terminal delivery before runTurn's post-delivery Sandbox
       // turn close. A hung control-plane call must never leave an
       // already-posted Slack final eligible for relay retry.
-      onDelivered: (outcome) => {
-        ports.turnJobs.markDelivered(job.id);
-        if (activeWorkKey) ports.slack.setActiveWork(activeWorkKey, job.id, false);
+      onDelivered: async (outcome) => {
+        // The Slack final is posted: nothing may re-run the turn from here,
+        // even when recording it below fails.
         delivered = true;
+        await ports.turnJobs.markDelivered(job.id);
+        if (activeWorkKey) await ports.slack.setActiveWork(activeWorkKey, job.id, false);
         if (outcome) {
           ports.telemetry.capture({
             event: 'run_completed',
@@ -359,9 +402,9 @@ export async function executeTurnJob(
           });
         }
       },
-      onDeferredTerminal: () => {
+      onDeferredTerminal: async () => {
         deferredTerminal = true;
-        if (activeWorkKey) ports.slack.setActiveWork(activeWorkKey, job.id, false);
+        if (activeWorkKey) await ports.slack.setActiveWork(activeWorkKey, job.id, false);
       },
     });
     if (deferredTerminal) return true;
@@ -369,12 +412,38 @@ export async function executeTurnJob(
     // Claims stay held — a completed turn never re-runs.
     return true;
   } catch (err) {
+    // Any failure after the terminal presentation boundary is cleanup, not a
+    // failed turn. The durable tombstone prevents a duplicate final; keep the
+    // claims held and let a later thread turn start normally. Checked first:
+    // nothing below may post a second final once one is out.
+    if (delivered) {
+      console.warn('[chickpea] post-delivery cleanup did not complete');
+      return true;
+    }
+    // A disconnect that escaped the turn unmapped (thrown before it began)
+    // is the same outage.
+    if (err instanceof StateStoreUnavailable ||
+        (!(err instanceof AgentPromptFailure) && isStateStoreDisconnect(err))) {
+      const since = flueDispatch.dispatchReceipt?.acceptedAt ??
+        (job.enqueuedAt === undefined ? undefined : new Date(job.enqueuedAt).toISOString());
+      if (alarmYieldIsFree(since, Date.now())) {
+        // A runner's state store is being replaced. Retry without spending
+        // an attempt; a dispatched turn reattaches to its submission.
+        options.onRetry(undefined, 'state_store_unavailable');
+        await Promise.resolve(ports.turnJobs.recordAttempt(job.id, job.attempts)).catch(() => undefined);
+        console.warn('[chickpea] state store unavailable; the turn will be retried');
+        return false;
+      }
+      // Past the submission's durability, retries spend attempts, so the
+      // existing caps end the turn with the recovery notice.
+      console.warn('[chickpea] state store still unavailable past the turn durability');
+    }
     if (err instanceof AgentObservationYield) {
       if (alarmYieldIsFree(flueDispatch.dispatchReceipt?.acceptedAt, Date.now())) {
         // The alarm stopped observing on purpose; nothing failed. Restore
         // the attempt count so a long turn never spends its reattachment
         // budget on yields, and keep its receipt, active work, and claims.
-        ports.turnJobs.recordAttempt(job.id, job.attempts);
+        await ports.turnJobs.recordAttempt(job.id, job.attempts);
         console.info('[chickpea] Flue turn yielded for reattachment by the next alarm');
         return false;
       }
@@ -386,13 +455,6 @@ export async function executeTurnJob(
     if (err instanceof AgentPromptFailure && err.recoveryRequired) {
       console.error('[chickpea] Flue turn requires operator reconciliation');
       return deliverRecoveryFailure('flue_dispatch_reconciliation_required');
-    }
-    // Any failure after the terminal presentation boundary is cleanup,
-    // not a failed turn. The durable tombstone prevents a duplicate final;
-    // keep the claims held and let a later thread turn start normally.
-    if (delivered) {
-      console.warn('[chickpea] post-delivery cleanup did not complete');
-      return true;
     }
     if (flueDispatch.dispatchEnvelope) {
       console.error('[chickpea] durable reattachment failed:', {
@@ -406,7 +468,7 @@ export async function executeTurnJob(
       } else {
         options.onRetry();
       }
-      if (activeWorkKey) ports.slack.setActiveWork(activeWorkKey, job.id, false);
+      if (activeWorkKey) await ports.slack.setActiveWork(activeWorkKey, job.id, false);
       console.warn('[chickpea] Flue turn retained for durable reattachment');
       return false;
     }
@@ -434,11 +496,19 @@ export async function executeTurnJob(
       ).catch((finalErr) => {
         console.error('[chickpea] relay terminal final failed:', sanitizeError(finalErr));
       });
-      ports.slack.release(job.evtKey);
-      ports.slack.release(job.msgKey);
-      ports.slack.release(`decision:${job.msgKey}`);
-      if (activeWorkKey) ports.slack.setActiveWork(activeWorkKey, job.id, false);
-      ports.turnJobs.markError(job.id);
+      // The failure final may be posted: settle the row first, so a failed
+      // release below can never let a later attempt post a second final.
+      await ports.turnJobs.markError(job.id);
+      if (activeWorkKey) await ports.slack.setActiveWork(activeWorkKey, job.id, false);
+      // The turn is settled; a claim that cannot be released now only keeps
+      // deduplicating until the terminal row ages out.
+      for (const key of [job.evtKey, job.msgKey, `decision:${job.msgKey}`]) {
+        try {
+          await ports.slack.release(key);
+        } catch {
+          console.warn('[chickpea] a settled turn kept one of its claims');
+        }
+      }
       return true;
     } else {
       options.onRetry();

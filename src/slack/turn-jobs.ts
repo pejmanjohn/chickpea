@@ -72,6 +72,11 @@ export const MAX_TURN_ATTEMPTS = 2;
 export const MAX_POST_DISPATCH_ATTEMPTS = 8;
 export const MAX_TURN_DRAIN_BATCH = 16;
 
+/** The turn row an OAuth continuation resumes as (idempotent per continuation). */
+export function oauthResumeTurnJobId(continuationId: string): string {
+  return `oauthresume:${continuationId}`;
+}
+
 // Terminal rows need only outlive Slack's redelivery horizon. Nonterminal rows
 // and their claims are retained until explicitly resolved and terminalized.
 export const TURN_JOB_TTL_MS = CLAIM_TTL_MS;
@@ -123,6 +128,29 @@ export interface PendingTurnJob {
    * for a gateway delivery, otherwise the admission time. Null on older rows.
    */
   receivedAt?: number;
+  /** Present only when a per-thread runner owns the row (see TurnJobExecutor). */
+  executor?: 'runner';
+  /** The runner has not yet confirmed admitting this row. */
+  handoff?: true;
+}
+
+/**
+ * Which Cloudflare component executes a pending row: the shared state
+ * store's alarm, or the thread's SlackThreadRunner once dispatched there.
+ * Rows are admitted as `alarm`; only the alarm's dispatch changes it. In the
+ * `executor` column a runner row is `handoff` until its runner confirms the
+ * admission, then `runner`.
+ */
+export type TurnJobExecutor = 'alarm' | 'runner';
+
+/** A turn row as its runner reads it before (re)attaching. */
+export interface RunnerTurnJobView {
+  status: 'pending' | 'done' | 'error' | 'recovery_required' | 'missing';
+  executor?: TurnJobExecutor;
+  /** The decoded row with its durable checkpoints, while it is pending. */
+  job?: PendingTurnJob;
+  /** Delivered, with Slack interaction cleanup still to do (`job` is then set). */
+  cleanupPending?: boolean;
 }
 
 export interface SlackProposalApprovalQuery {
@@ -165,13 +193,16 @@ interface TurnJobRow {
   recovery_reason?: string | null;
   enqueued_at?: number | null;
   received_at?: number | null;
+  executor?: string | null;
 }
 
 const TURN_JOB_SELECT_COLUMNS = `id, evt_key, msg_key, turn_json, assignment_json, run_id,
   execution_authority, attempts, progress_json, runtime_plan_json,
   agent_instance_id, dispatch_envelope_json,
   dispatch_receipt_json, flue_settlement_json, dispatch_started_at,
-  submission_id, observation_json, recovery_reason, enqueued_at, received_at`;
+  submission_id, observation_json, recovery_reason, enqueued_at, received_at, executor`;
+
+const PENDING_ROW = "delivered = 0 AND status != 'recovery_required'";
 
 export class TurnJobStoreLogic {
   /** Receipt times of gateway deliveries being turned into jobs, by event ID. */
@@ -206,7 +237,8 @@ export class TurnJobStoreLogic {
         observation_json TEXT,
         recovery_reason TEXT,
         enqueued_at INTEGER NOT NULL,
-        received_at INTEGER
+        received_at INTEGER,
+        executor TEXT NOT NULL DEFAULT 'alarm'
       )`,
     );
     const columns = db.all('PRAGMA table_info(turn_jobs)');
@@ -251,6 +283,9 @@ export class TurnJobStoreLogic {
     }
     if (!columns.some((column) => column.name === 'received_at')) {
       db.exec('ALTER TABLE turn_jobs ADD COLUMN received_at INTEGER');
+    }
+    if (!columns.some((column) => column.name === 'executor')) {
+      db.exec("ALTER TABLE turn_jobs ADD COLUMN executor TEXT NOT NULL DEFAULT 'alarm'");
     }
     db.exec('CREATE INDEX IF NOT EXISTS turn_jobs_instance_id_idx ON turn_jobs(agent_instance_id)');
     db.exec('CREATE INDEX IF NOT EXISTS turn_jobs_submission_id_idx ON turn_jobs(submission_id)');
@@ -336,7 +371,7 @@ export class TurnJobStoreLogic {
    * idempotent while the new plan resolves the newly-ready account live.
    */
   resumeAfterOAuth(originalTaskId: string, continuationId: string): boolean {
-    const id = `oauthresume:${continuationId}`;
+    const id = oauthResumeTurnJobId(continuationId);
     const existing = this.db.get(
       'SELECT id FROM turn_jobs WHERE id = ? LIMIT 1',
       id,
@@ -387,41 +422,168 @@ export class TurnJobStoreLogic {
    * of follow-ups in one thread cannot hide a new conversation behind it, and
    * each thread keeps its own order. Reads the pending index a page at a
    * time and stops once enough conversations are found.
+   *
+   * Only rows `executor` owns (default `alarm`) are listed, and a thread stops
+   * at its first row the other executor owns, so the two never run one
+   * conversation out of order. `dispatchedOnly` also stops a thread at its
+   * first row whose Flue dispatch has not started: while thread runners
+   * execute new turns, the alarm only finishes the turns it already dispatched.
    */
   listPendingByThread(input: {
     maxThreads: number;
     perThread: number;
     threadKey(job: PendingTurnJob): string;
     executionAuthority?: RunExecutionAuthority;
+    executor?: TurnJobExecutor;
+    dispatchedOnly?: boolean;
     /** Rows read at most, bounding the cost of one very long backlog. */
     scanLimit?: number;
   }): PendingTurnJob[] {
-    const pageSize = 100;
-    const scanLimit = input.scanLimit ?? 1_000;
+    const executor = input.executor ?? 'alarm';
     const perThread = new Map<string, number>();
+    const closed = new Set<string>();
     const jobs: PendingTurnJob[] = [];
+    this.scanPending(input.executionAuthority ?? 'legacy', input.scanLimit, (job) => {
+      const key = input.threadKey(job);
+      if (closed.has(key)) return;
+      if ((job.executor ?? 'alarm') !== executor ||
+          (input.dispatchedOnly && job.dispatchStartedAt === undefined)) {
+        closed.add(key);
+        return;
+      }
+      const listed = perThread.get(key) ?? 0;
+      if (listed === 0 && perThread.size >= input.maxThreads) return;
+      if (listed >= input.perThread) return;
+      perThread.set(key, listed + 1);
+      jobs.push(job);
+    }, () => perThread.size >= input.maxThreads);
+    return jobs;
+  }
+
+  /**
+   * The next alarm-owned row of each conversation that may move to its thread
+   * runner, oldest first, past rows its runner already owns. A thread stops at
+   * a hand-off its runner has not confirmed (so a lost admission can never be
+   * overtaken) and at an alarm row whose Flue dispatch started (the alarm
+   * finishes that turn first), so no conversation runs two turns at once or
+   * out of order. At most `limit` threads; hand a page over and list again.
+   */
+  listDispatchable(input: {
+    limit: number;
+    threadKey(job: PendingTurnJob): string;
+    scanLimit?: number;
+  }): PendingTurnJob[] {
+    const seen = new Set<string>();
+    const jobs: PendingTurnJob[] = [];
+    this.scanPending('legacy', input.scanLimit, (job) => {
+      if (jobs.length >= input.limit) return;
+      const key = input.threadKey(job);
+      if (seen.has(key)) return;
+      if (job.executor === 'runner' && !job.handoff) return;
+      seen.add(key);
+      if (!job.handoff && job.dispatchStartedAt === undefined) jobs.push(job);
+    }, () => jobs.length >= input.limit);
+    return jobs;
+  }
+
+  /** Visit pending rows in enqueue order, a page at a time, until `done()`. */
+  private scanPending(
+    executionAuthority: RunExecutionAuthority,
+    scanLimit = 1_000,
+    visit: (job: PendingTurnJob) => void,
+    done: () => boolean,
+  ): void {
+    const pageSize = 100;
     for (let offset = 0; offset < scanLimit; offset += pageSize) {
       const rows = this.db.all(
         `SELECT ${TURN_JOB_SELECT_COLUMNS}
          FROM turn_jobs
-         WHERE delivered = 0 AND status != 'recovery_required' AND execution_authority = ?
+         WHERE ${PENDING_ROW} AND execution_authority = ?
          ORDER BY enqueued_at LIMIT ? OFFSET ?`,
-        input.executionAuthority ?? 'legacy',
+        executionAuthority,
         pageSize,
         offset,
       ) as unknown as TurnJobRow[];
-      for (const row of rows) {
-        const job = this.decodeRow(row);
-        const key = input.threadKey(job);
-        const listed = perThread.get(key) ?? 0;
-        if (listed === 0 && perThread.size >= input.maxThreads) continue;
-        if (listed >= input.perThread) continue;
-        perThread.set(key, listed + 1);
-        jobs.push(job);
-      }
-      if (rows.length < pageSize || perThread.size >= input.maxThreads) break;
+      for (const row of rows) visit(this.decodeRow(row));
+      if (rows.length < pageSize || done()) return;
     }
-    return jobs;
+  }
+
+  /**
+   * Start handing a pending alarm row to its thread runner. The row is the
+   * runner's from here on (the alarm never runs it again); it stays a
+   * hand-off until the runner confirms its admission. False when it is no
+   * longer a pending alarm row.
+   */
+  assignRunner(id: string): boolean {
+    return this.db.run(
+      `UPDATE turn_jobs SET executor = 'handoff'
+       WHERE id = ? AND executor = 'alarm' AND ${PENDING_ROW}`,
+      id,
+    ).changes === 1;
+  }
+
+  /** The runner admitted the row durably. */
+  confirmRunner(id: string): void {
+    this.db.run(
+      "UPDATE turn_jobs SET executor = 'runner' WHERE id = ? AND executor = 'handoff'",
+      id,
+    );
+  }
+
+  /** The thread runner key of a runner-owned row, whatever its status. */
+  runnerThreadKey(
+    id: string,
+    threadKey: (turn: NormalizedSlackTurn, assignment: ResolvedAssignment) => string,
+  ): string | undefined {
+    const row = this.db.get(
+      `SELECT turn_json, assignment_json FROM turn_jobs
+       WHERE id = ? AND executor IN ('runner', 'handoff')`,
+      id,
+    );
+    if (!row) return undefined;
+    return threadKey(
+      JSON.parse(String(row.turn_json)) as NormalizedSlackTurn,
+      JSON.parse(String(row.assignment_json)) as ResolvedAssignment,
+    );
+  }
+
+  hasHandoffs(): boolean {
+    return this.db.get(
+      `SELECT 1 AS pending FROM turn_jobs WHERE ${PENDING_ROW} AND executor = 'handoff' LIMIT 1`,
+    ) !== undefined;
+  }
+
+  /** Hand-offs whose runner admission is unconfirmed; re-admission is idempotent. */
+  listHandoffs(limit: number): PendingTurnJob[] {
+    return (this.db.all(
+      `SELECT ${TURN_JOB_SELECT_COLUMNS} FROM turn_jobs
+       WHERE ${PENDING_ROW} AND executor = 'handoff'
+       ORDER BY enqueued_at LIMIT ?`,
+      limit,
+    ) as unknown as TurnJobRow[]).map((row) => this.decodeRow(row));
+  }
+
+  /** The authoritative row a thread runner reads before it runs or reattaches. */
+  runnerView(id: string): RunnerTurnJobView {
+    const row = this.db.get(
+      `SELECT ${TURN_JOB_SELECT_COLUMNS}, delivered, status FROM turn_jobs WHERE id = ?`,
+      id,
+    ) as unknown as (TurnJobRow & { delivered: number; status: string }) | undefined;
+    if (!row) return { status: 'missing' };
+    const executor = rowExecutor(row);
+    if (row.status === 'recovery_required') return { status: 'recovery_required', executor };
+    if (Number(row.delivered) === 1) {
+      return {
+        status: row.status === 'error' ? 'error' : 'done',
+        executor,
+        // The runner retries a delivered turn's cleanup from the decoded row.
+        ...(row.progress_json.includes('"cleanup":"pending"')
+          ? { cleanupPending: true, job: this.decodeRow(row) }
+          : {}),
+      };
+    }
+    return { status: 'pending', executor, job: this.decodeRow(row) };
   }
 
   countPendingDeliveriesForWorkspace(workspaceId: string): number {
@@ -972,10 +1134,11 @@ export class TurnJobStoreLogic {
     );
   }
 
+  /** Pending rows the state store's alarm owns; runner rows wake their runner. */
   hasPending(executionAuthority: RunExecutionAuthority = 'legacy'): boolean {
     return this.db.get(
       `SELECT 1 AS pending FROM turn_jobs
-       WHERE delivered = 0 AND status != 'recovery_required' AND execution_authority = ? LIMIT 1`,
+       WHERE ${PENDING_ROW} AND execution_authority = ? AND executor = 'alarm' LIMIT 1`,
       executionAuthority,
     ) !== undefined;
   }
@@ -1036,7 +1199,7 @@ export class TurnJobStoreLogic {
     validateBoundedString(workspaceId, 'Slack workspace id', 160);
     return this.db.run(
       `UPDATE turn_jobs
-       SET status = 'pending', recovery_reason = NULL
+       SET status = 'pending', recovery_reason = NULL, executor = 'alarm'
        WHERE delivered = 0
          AND status = 'recovery_required'
          AND recovery_reason = 'slack_installation_unavailable'
@@ -1178,7 +1341,8 @@ export class TurnJobStoreLogic {
   }
 
   /** Delivered rows can still own lightweight Slack cleanup. They are never
-   * eligible for answer redelivery, only idempotent checklist/reaction repair. */
+   * eligible for answer redelivery, only idempotent checklist/reaction repair.
+   * A thread runner repairs its own rows; this sweep never takes them over. */
   listPendingSlackInteractionCleanups(limit = 100): PendingTurnJob[] {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
       throw new Error('Slack interaction cleanup limit must be between 1 and 100.');
@@ -1187,6 +1351,7 @@ export class TurnJobStoreLogic {
       `SELECT ${TURN_JOB_SELECT_COLUMNS}
        FROM turn_jobs
        WHERE delivered = 1 AND progress_json LIKE '%\"cleanup\":\"pending\"%'
+         AND executor = 'alarm'
        ORDER BY enqueued_at LIMIT ?`,
       limit,
     ) as unknown as TurnJobRow[];
@@ -1197,6 +1362,7 @@ export class TurnJobStoreLogic {
     return this.db.get(
       `SELECT 1 AS pending FROM turn_jobs
        WHERE delivered = 1 AND progress_json LIKE '%\"cleanup\":\"pending\"%'
+         AND executor = 'alarm'
        LIMIT 1`,
     ) !== undefined;
   }
@@ -1319,6 +1485,8 @@ export class TurnJobStoreLogic {
       ...(row.received_at === null || row.received_at === undefined
         ? {}
         : { receivedAt: Number(row.received_at) }),
+      ...(rowExecutor(row) === 'runner' ? { executor: 'runner' as const } : {}),
+      ...(row.executor === 'handoff' ? { handoff: true as const } : {}),
     };
   }
 }
@@ -1695,10 +1863,25 @@ function parseSettledResult(value: unknown): Extract<FlueSettlementCheckpointV1,
   };
 }
 
+/** `handoff` rows already belong to their runner. */
+function rowExecutor(row: Pick<TurnJobRow, 'executor'>): TurnJobExecutor {
+  return row.executor === 'runner' || row.executor === 'handoff' ? 'runner' : 'alarm';
+}
+
 function parseFlueObservation(value: unknown): FlueTurnObservationV1 {
   const record = exactObject(value, 'Flue observation target', [
     'generation', 'workCorrelation', 'harnessRevision', 'configurationRevision',
+    'executor', 'runnerKey',
   ]);
+  if (record.executor !== undefined && record.executor !== 'runner') {
+    throw new Error('Observation executor is invalid.');
+  }
+  const runnerKey = record.runnerKey === undefined
+    ? undefined
+    : validateBoundedString(record.runnerKey, 'observation runner key', 512);
+  if ((record.executor === undefined) !== (runnerKey === undefined)) {
+    throw new Error('Observation runner route is incomplete.');
+  }
   const generation = validateBoundedString(record.generation, 'observation generation', 256);
   const workCorrelation = record.workCorrelation === undefined
     ? undefined
@@ -1734,6 +1917,7 @@ function parseFlueObservation(value: unknown): FlueTurnObservationV1 {
     ...(workCorrelation ? { workCorrelation } : {}),
     ...(harnessRevision ? { harnessRevision } : {}),
     ...(configurationRevision ? { configurationRevision } : {}),
+    ...(runnerKey ? { executor: 'runner' as const, runnerKey } : {}),
   };
 }
 

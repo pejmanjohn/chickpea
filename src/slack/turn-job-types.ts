@@ -126,6 +126,13 @@ export interface FlueTurnObservationV1 {
     agent: number;
     channel?: number;
   };
+  /**
+   * Set when a per-thread SlackThreadRunner executes the turn: the agent
+   * relays observed activity to that runner (addressed by `runnerKey`, the
+   * thread key) instead of the shared state store.
+   */
+  executor?: 'runner';
+  runnerKey?: string;
 }
 
 export interface FlueObservationTarget extends FlueTurnObservationV1 {
