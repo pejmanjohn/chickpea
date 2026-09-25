@@ -628,25 +628,27 @@ async function runTurnAttempt(
   const semanticStatusCarriesSession = () => semanticActivityEnabled &&
     presenter.preferredActivitySurface() === 'assistant_status' &&
     !presenter.activityReceipt().unavailable;
-  // Turn start: Slack's native indicator first, the fast write (about 0.4 s,
-  // against about 2 s for the custom status and its bookkeeping); the custom
-  // status then replaces it (see `handOverToCustomStatus`). A retry whose
-  // custom status is known visible already carries the session and starts
-  // nothing: a native start would hide that text. Otherwise the native start
-  // is made at most once per attempt: one that fails is not retried, and the
-  // custom status (or its settle) is what the turn shows instead.
   /** Native processing shows and has not yet been handed to the custom status. */
   let nativeHeld = false;
   /** Native processing was handed to the custom status. */
   let nativeReleased = false;
-  if (admittedVisibleStatus === undefined && agentViewPresentation) {
+  // Turn start (in `beginVisibleWork`): Slack's native indicator first, the
+  // fast write (about 0.4 s, against about 2 s for the custom status and its
+  // bookkeeping); the custom status then replaces it (see
+  // `handOverToCustomStatus`). A retry whose custom status is known visible
+  // already carries the session and starts nothing: a native start would hide
+  // that text. Otherwise the native start is made at most once per attempt:
+  // one that fails is not retried, and the custom status (or its settle) is
+  // what the turn shows instead.
+  const startNativeIndicator = async (): Promise<void> => {
+    if (admittedVisibleStatus !== undefined || !agentViewPresentation) return;
     // True also for a retry whose earlier attempt started native processing
     // and stopped before its custom write, so that write hands over too. A
     // start whose outcome is unknown returns false: its custom writes do not
     // hand over, and may stay hidden until the turn settles (cosmetic).
     nativeHeld = await agentViewPresentation.beginAgentSessionProcessing();
     if (nativeHeld) options.onSlackWrite?.('agent_session');
-  }
+  };
   /**
    * Hand the working indicator from native `processing` to the custom status
    * about to be written. Slack acknowledges a custom status written while the
@@ -734,20 +736,13 @@ async function runTurnAttempt(
   const statusRegistry = options.statusRegistry ?? defaultSlackStatusRegistry;
   let admissionStatusAttempted = false;
   /**
-   * The turn's first Slack write, which needs only the client and the frozen
-   * presentation. A turn whose semantic status carries the Agent Session
-   * writes the admitted pending activity as its custom status (a non-empty
-   * assistant status moves the session to processing), and starts the native
-   * indicator only if that status cannot be shown. Any other turn starts the
-   * native indicator here.
+   * The turn's first Slack writes, which need only the client and the frozen
+   * presentation: the native indicator, then the admitted pending activity as
+   * the custom status, which takes over from it (the hand-over runs inside
+   * that custom write).
    */
   const beginVisibleWork = async (statusInstanceId: string) => {
-    if (!semanticStatusCarriesSession()) {
-      nativeSessionFallbackStarted = true;
-      if (await agentViewPresentation?.beginAgentSessionProcessing()) {
-        options.onSlackWrite?.('agent_session');
-      }
-    }
+    await startNativeIndicator();
     const registered = statusRegistry.registerTurn(statusInstanceId, activityPresenter, {
       generation: statusGeneration,
       ...(frozenPresentation?.schemaVersion === 3

@@ -209,7 +209,11 @@ async function firstStatusTimeline(
     return { ok: true, ts: '1788000100.000100', channel: turn.channelId, messages: [] };
   };
   const client = {
-    apiCall: slack('assistant.threads.setStatus(session)'),
+    // agents.sessions.setStatus, labelled by the session status it sets.
+    apiCall: async (_method: string, input: Record<string, unknown>) => {
+      timeline.push(`slack:session:${String(input.status)}`);
+      return { ok: true };
+    },
     assistant: { threads: { setStatus: slack('assistant.threads.setStatus') } },
     reactions: { add: slack('reactions.add'), remove: slack('reactions.remove') },
     conversations: { replies: slack('conversations.replies'), history: slack('conversations.history') },
@@ -272,46 +276,60 @@ async function firstStatusTimeline(
  * Before this ordering, a channel mention made 18 state-store calls (and the
  * classifier's model call) before its first Slack write, a DM 15, and a
  * thread follow-up 14: public URL, classification, memory, plan freeze, and
- * Work lifecycle, all serial. Now the first write is the admitted activity as
- * the custom assistant status, which carries the Agent Session (no native
- * `processing` call precedes it). Before it come only the public URL and the
- * thread's generation fence; a thread runner answers both from its `begin`
- * round trip.
+ * Work lifecycle, all serial. Now the first write is Slack's native
+ * `processing` indicator (the fast write); the session is then handed over and
+ * the admitted activity is written as the custom status, which replaces it
+ * (#207). Only the public URL precedes the native start, and the thread's
+ * generation fence (checked by the hand-over and by the custom write)
+ * precedes the custom write; a thread runner answers both from its `begin`
+ * round trip. Classification, memory, the plan, and the Work
+ * lifecycle all follow.
  */
 for (const surface of ['channel_mention', 'dm', 'thread_follow_up'] as const) {
-  test(`${surface}: the first Slack write precedes classification, memory, and the plan`, async () => {
-    const { beforeFirstWrite, slackWrites, timeline, firstWrite } =
-      await firstStatusTimeline(surface);
+  test(`${surface}: native first, then the custom status, before classification, memory, and the plan`, async () => {
+    const { beforeFirstWrite, slackWrites, timeline } = await firstStatusTimeline(surface);
+    assert.deepEqual(beforeFirstWrite, ['settings.getSetting'], 'only the public URL');
+    assert.deepEqual(slackWrites.slice(0, 3), [
+      'slack:session:processing', // the fast first write
+      'slack:session:active', // hand-over, so the custom text renders
+      'slack:assistant.threads.setStatus', // the admitted activity replaces it
+    ]);
+    const custom = timeline.indexOf('slack:assistant.threads.setStatus');
+    // The hand-over and the custom write each check the thread's generation
+    // fence; a runner answers both from the cache its `begin` round trip seeds.
     assert.deepEqual(
-      beforeFirstWrite,
-      ['settings.getSetting', 'presentations.getLatestThreadSessionGeneration'],
-      'only the public URL and the thread generation fence',
+      timeline.slice(0, custom).filter((entry) => !entry.startsWith('slack:')),
+      [
+        'settings.getSetting',
+        'presentations.getLatestThreadSessionGeneration',
+        'presentations.getLatestThreadSessionGeneration',
+      ],
+      'the hand-over and the custom write add only the thread generation fence',
     );
-    assert.equal(slackWrites[0], 'slack:assistant.threads.setStatus',
-      'the admitted custom status is the first write and carries the session');
-    assert.ok(
-      timeline.indexOf('slack:assistant.threads.setStatus(session)') === -1 ||
-        timeline.indexOf('slack:assistant.threads.setStatus(session)') >
-          timeline.indexOf('slack:chat.startStream'),
-      'no native processing call at turn start; the session is only settled after the answer',
-    );
+    assert.equal(timeline.filter((entry) => entry === 'slack:session:processing').length, 1,
+      'one native start');
     for (const later of ['turnJobs.freezeRuntimePlan', 'work.getRun']) {
-      assert.ok(timeline.indexOf(later) > firstWrite, `${later} runs after the first status`);
+      assert.ok(timeline.indexOf(later) > custom, `${later} runs after the custom status`);
     }
     if (surface !== 'thread_follow_up') {
       // Classified late: the admitted activity shows before the disposition.
-      assert.ok(timeline.indexOf('turnJobs.recordInteractionIntent') > firstWrite);
+      assert.ok(timeline.indexOf('turnJobs.recordInteractionIntent') > custom);
     }
   });
 
   test(`${surface}: a runner that read the public URL at begin writes to Slack first`, async () => {
-    // The remaining read is the generation fence, which the runner seeds from
+    const { beforeFirstWrite, timeline } =
+      await firstStatusTimeline(surface, 'https://chickpea.example');
+    assert.deepEqual(beforeFirstWrite, [], 'the native start is the first thing the turn does');
+    // The generation fence before the custom write: the runner seeds it from
     // the same `begin` round trip (see slack-thread-runner-execution tests).
-    const { beforeFirstWrite } = await firstStatusTimeline(surface, 'https://chickpea.example');
-    assert.deepEqual(beforeFirstWrite, ['presentations.getLatestThreadSessionGeneration']);
+    const custom = timeline.indexOf('slack:assistant.threads.setStatus');
+    assert.deepEqual(timeline.slice(0, custom).filter((entry) => !entry.startsWith('slack:')), [
+      'presentations.getLatestThreadSessionGeneration',
+      'presentations.getLatestThreadSessionGeneration',
+    ]);
     const none = await firstStatusTimeline(surface, null);
-    assert.deepEqual(none.beforeFirstWrite, ['presentations.getLatestThreadSessionGeneration'],
-      'a resolved absent URL is not read again');
+    assert.deepEqual(none.beforeFirstWrite, [], 'a resolved absent URL is not read again');
   });
 }
 
@@ -368,15 +386,17 @@ test('memory preparation that fails while the plan is still reading fails the tu
   }
 });
 
-test('a rejected custom status falls back to the native indicator, still before classification and the plan', async () => {
+test('a rejected custom status shows native again, still before classification and the plan', async () => {
   rejectCustomStatus = true;
   try {
     const { slackWrites, timeline } = await firstStatusTimeline('channel_mention', null);
-    assert.deepEqual(slackWrites.slice(0, 2), [
-      'slack:assistant.threads.setStatus',
-      'slack:assistant.threads.setStatus(session)',
-    ], 'the native processing indicator follows the rejected custom status');
-    const fallback = timeline.indexOf('slack:assistant.threads.setStatus(session)');
+    assert.deepEqual(slackWrites.slice(0, 4), [
+      'slack:session:processing',
+      'slack:session:active',
+      'slack:assistant.threads.setStatus', // rejected
+      'slack:session:processing', // native shown again, not a second start
+    ]);
+    const fallback = timeline.lastIndexOf('slack:session:processing');
     for (const later of ['turnJobs.recordInteractionIntent', 'turnJobs.freezeRuntimePlan', 'work.getRun']) {
       assert.ok(timeline.indexOf(later) > fallback, `${later} runs after the native fallback`);
     }
