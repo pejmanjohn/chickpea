@@ -37,6 +37,7 @@ import { SlackStatusRegistry } from './status-registry.ts';
 import { ThreadRunnerJobStore, type ThreadRunnerJob, type ThreadRunnerStatus } from './thread-runner-jobs.ts';
 import {
   runnerLoopScheduler,
+  createRunnerSupersedeState,
   type RunnerSupersedeState,
   type ThreadRunnerAlarmResult,
   runnerPresentationState,
@@ -92,7 +93,7 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
   /** Consecutive failed alarms, for the retry backoff. */
   private readonly failures = { count: 0 };
   /** Whether a code update replaced this instance's version (see RunnerSupersedeState). */
-  private readonly supersede: RunnerSupersedeState = { yieldedFor: new Set() };
+  private readonly supersede: RunnerSupersedeState = createRunnerSupersedeState();
   /** Runs the loop, one at a time, from the alarm or an admission. */
   private readonly runSoon = runnerLoopScheduler({
     runOnce: () => this.runAlarm(),
@@ -215,6 +216,7 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
 
   private async runAlarm(): Promise<ThreadRunnerAlarmResult> {
     const env = this.env as PlatformEnv;
+    const versionId = cloudflareWorkerVersionId(env);
     const rows = this.stateStore();
     const jobs = this.store();
     const local = this.presentationStore();
@@ -308,7 +310,7 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
       clearActiveWork: (threadKey, jobId) => rows.setActiveWork(threadKey, jobId, false),
       failures: this.failures,
       supersede: this.supersede,
-      ...(cloudflareWorkerVersionId(env) ? { versionId: cloudflareWorkerVersionId(env)! } : {}),
+      ...(versionId ? { versionId } : {}),
       afterJob: async (job) => {
         this.targets.clear();
         await presentation.publish(job.runId);

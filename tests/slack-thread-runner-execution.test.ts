@@ -28,6 +28,8 @@ import {
   runnerPresentationState,
   runnerTurnJobsPort,
   runThreadRunnerAlarm,
+  createRunnerSupersedeState,
+  THREAD_RUNNER_SUPERSEDE_COOLDOWN_MS,
   runnerLoopScheduler,
   type ThreadRunnerLoopDeps,
 } from '../src/slack/thread-runner-loop.ts';
@@ -1262,7 +1264,7 @@ function versionedHarness(
     return serving();
   };
   h.deps.versionId = OLD_VERSION;
-  h.deps.supersede = { yieldedFor: new Set() };
+  h.deps.supersede = createRunnerSupersedeState();
   h.deps.budgetMs = 60_000;
   h.deps.hardCapMs = 120_000;
   h.deps.heartbeatMs = 2;
@@ -1309,7 +1311,7 @@ test('a runner whose version a code update replaced yields its turn within one v
     holding = false;
     h.advance(1_000);
     h.deps.versionId = NEW_VERSION;
-    h.deps.supersede = { yieldedFor: new Set() };
+    h.deps.supersede = createRunnerSupersedeState();
     await runThreadRunnerAlarm(h.deps);
     assert.deepEqual(h.events.slice(2), ['reattach:long', 'delivered:long']);
     assert.equal(rows.rows.get('long')!.status, 'done');
@@ -1360,13 +1362,13 @@ test('a code update seen between jobs holds the next job for the new version', a
     h.advance(1_000);
     h.deps.execute = originalExecute;
     h.deps.versionId = NEW_VERSION;
-    h.deps.supersede = { yieldedFor: new Set() };
+    h.deps.supersede = createRunnerSupersedeState();
     await runThreadRunnerAlarm(h.deps);
     assert.deepEqual(h.events.slice(2), ['dispatch:second', 'delivered:second']);
   } finally { db.close(); }
 });
 
-test('a code update seen before the alarm reaches a job leaves every job for the new version', async () => {
+test('a signal left over from an earlier alarm does not hold the next one', async () => {
   const db = openStateDb(':memory:');
   try {
     const rows = fakeRows(['only']);
@@ -1374,10 +1376,8 @@ test('a code update seen before the alarm reaches a job leaves every job for the
     h.deps.supersede!.by = 'storage_lost';
     h.jobs.admit({ id: 'only', threadKey: 'thread', payload: {} }, 1);
     const result = await runThreadRunnerAlarm(h.deps);
-    assert.deepEqual(h.events, []);
-    assert.equal(h.jobs.get('only')!.state, 'admitted');
-    assert.equal(result.record.supersededBy, 'storage_lost');
-    assert.equal(h.deps.supersede!.by, undefined, 'the signal lasts one alarm');
+    assert.deepEqual(h.events, ['dispatch:only', 'delivered:only']);
+    assert.equal(result.record.supersededBy, undefined);
   } finally { db.close(); }
 });
 
@@ -1410,5 +1410,84 @@ test('without a version of its own the runner never yields for a version', async
     assert.deepEqual(h.events, ['dispatch:job', 'delivered:job']);
     assert.equal(result.record.supersededBy, undefined);
     assert.equal(h.checks(), 0);
+  } finally { db.close(); }
+});
+
+test('a staggered release gets one more yield after the cool-down, at most three per version', async () => {
+  // The state store reached the new version before this runner's host did:
+  // the first yield ran again on the old version. Its next alarm may yield
+  // again once the cool-down passed; a runner kept on its version stops.
+  const db = openStateDb(':memory:');
+  try {
+    const rows = fakeRows(['job']);
+    const h = versionedHarness(db, rows, () => NEW_VERSION);
+    h.jobs.admit({ id: 'job', threadKey: 'thread', payload: {} }, 1);
+    const outcomes: Array<string | undefined> = [];
+    for (const step of [0, 1_000, THREAD_RUNNER_SUPERSEDE_COOLDOWN_MS, THREAD_RUNNER_SUPERSEDE_COOLDOWN_MS]) {
+      h.advance(step);
+      outcomes.push((await runThreadRunnerAlarm(h.deps)).record.supersededBy);
+      if (h.events.length > 0) break;
+    }
+    assert.deepEqual(outcomes, [NEW_VERSION, undefined], 'within the cool-down the job runs');
+    assert.deepEqual(h.events, ['dispatch:job', 'delivered:job']);
+
+    const capped = fakeRows(['long']);
+    const c = versionedHarness(openStateDb(':memory:'), capped, () => NEW_VERSION);
+    c.jobs.admit({ id: 'long', threadKey: 'thread', payload: {} }, 1);
+    const yields: Array<string | undefined> = [];
+    for (let alarm = 0; alarm < 4; alarm += 1) {
+      yields.push((await runThreadRunnerAlarm(c.deps)).record.supersededBy);
+      c.advance(THREAD_RUNNER_SUPERSEDE_COOLDOWN_MS);
+    }
+    assert.deepEqual(yields, [NEW_VERSION, NEW_VERSION, NEW_VERSION, undefined],
+      'three yields for one version, then the runner runs its turn');
+    assert.deepEqual(c.events, ['dispatch:long', 'delivered:long']);
+  } finally { db.close(); }
+});
+
+test('a version check that settles after its alarm ended never holds the next alarm', async () => {
+  const db = openStateDb(':memory:');
+  try {
+    const rows = fakeRows(['first', 'second']);
+    let serving = OLD_VERSION;
+    const h = versionedHarness(db, rows, () => serving, { hold: (id) => id === 'first' });
+    h.deps.budgetMs = 40;
+    let releaseCheck!: (version: string) => void;
+    (rows.turns as { servingVersion?: () => Promise<string> }).servingVersion = () =>
+      new Promise((resolve) => { releaseCheck = resolve; });
+    h.jobs.admit({ id: 'first', threadKey: 'thread', payload: {} }, 1);
+    const first = await runThreadRunnerAlarm(h.deps);
+    assert.equal(first.record.yielded, true, 'the first alarm ends at its budget');
+    assert.ok(releaseCheck, 'a version check was still in flight');
+    serving = OLD_VERSION;
+    releaseCheck(NEW_VERSION); // settles late, after that alarm ended
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.equal(h.deps.supersede!.by, undefined, 'the late signal is ignored');
+    h.jobs.admit({ id: 'second', threadKey: 'thread', payload: {} }, 2);
+    h.advance(1_000);
+    const next = await runThreadRunnerAlarm(h.deps);
+    assert.equal(next.record.supersededBy, undefined);
+  } finally { db.close(); }
+});
+
+test('a heartbeat storage failure after its alarm ended never holds the next alarm', async () => {
+  const db = openStateDb(':memory:');
+  try {
+    const rows = fakeRows(['job']);
+    const h = versionedHarness(db, rows, () => OLD_VERSION);
+    let rejectLate!: () => void;
+    const originalExecute = h.deps.execute;
+    h.deps.execute = async (...args) => {
+      // Heartbeat arms from here on settle only after the alarm ends.
+      h.deps.armBackstop = () => new Promise((_resolve, reject) => { rejectLate = () => reject(new Error('reset')); });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      return originalExecute(...args);
+    };
+    h.jobs.admit({ id: 'job', threadKey: 'thread', payload: {} }, 1);
+    await runThreadRunnerAlarm(h.deps);
+    assert.ok(rejectLate, 'a heartbeat arm was still in flight when the alarm ended');
+    rejectLate();
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.equal(h.deps.supersede!.by, undefined, 'the late storage failure is ignored');
   } finally { db.close(); }
 });

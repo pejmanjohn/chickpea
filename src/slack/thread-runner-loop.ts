@@ -150,18 +150,38 @@ export interface ThreadRunnerAlarmResult {
  *   update and answers from the new code): checked with `begin` and every
  *   THREAD_RUNNER_VERSION_CHECK_MS during the turn;
  * - the heartbeat's own storage write fails (`storage_lost`): this instance
- *   has been shut down.
+ *   has been shut down. This signal needs no version id, so it also works
+ *   where none is bound (local workerd), where the version check is off. A
+ *   transient storage error can fire it too; that costs one yield and a
+ *   reattach a second later, never a failed turn.
  * "Different", not "newer": a rollback counts too. It stays bounded: an
- * instance yields at most once per serving version. If its next alarm still
- * runs here (a gradual deployment kept this object on its version), that
- * version is not acted on again.
+ * instance yields for one serving version at most
+ * THREAD_RUNNER_SUPERSEDE_MAX_YIELDS times, the repeats at least
+ * THREAD_RUNNER_SUPERSEDE_COOLDOWN_MS apart. A repeat covers a staggered
+ * release (the state store reached version B before this runner's host, so
+ * the first yield ran again on A); a runner the platform keeps on its version
+ * (a gradual deployment) stops yielding after the cap.
  */
 export interface RunnerSupersedeState {
-  /** Serving versions this instance already yielded for. */
-  yieldedFor: Set<string>;
+  /** Per serving version: how often this instance yielded for it, and when last. */
+  yieldedFor: Map<string, { count: number; at: number }>;
   /** Set during an alarm once a signal fired; cleared when the alarm ends. */
   by?: string;
+  /**
+   * The alarm a signal belongs to: counts alarms of this instance. A version
+   * check or heartbeat that settles after its alarm ended is ignored.
+   */
+  alarm: number;
 }
+
+export function createRunnerSupersedeState(): RunnerSupersedeState {
+  return { yieldedFor: new Map(), alarm: 0 };
+}
+
+/** Yields for one serving version, at most. */
+export const THREAD_RUNNER_SUPERSEDE_MAX_YIELDS = 3;
+/** A repeat yield for the same serving version waits at least this long. */
+export const THREAD_RUNNER_SUPERSEDE_COOLDOWN_MS = 30_000;
 
 const STORAGE_LOST = 'storage_lost';
 
@@ -182,6 +202,13 @@ export async function runThreadRunnerAlarm(
     outcome: 'idle',
     ...(deps.versionId ? { versionId: deps.versionId } : {}),
   };
+  // A new alarm: a signal left over from an earlier one no longer applies.
+  const supersedeState = deps.supersede;
+  if (supersedeState) {
+    supersedeState.alarm += 1;
+    delete supersedeState.by;
+  }
+  const alarmGeneration = supersedeState?.alarm ?? 0;
   try {
     // A follow-up that could not reach the state store counts as a failed
     // alarm: the runner backs off instead of waking again at once.
@@ -204,7 +231,7 @@ export async function runThreadRunnerAlarm(
         threadKey: () => THREAD,
         runJob: async (job, control) => {
           record.ran += 1;
-          const keepGoing = await runOne(deps, job, control, now, outage);
+          const keepGoing = await runOne(deps, job, control, now, outage, alarmGeneration);
           if (!keepGoing) stopped = true;
           return keepGoing;
         },
@@ -277,9 +304,14 @@ export async function runThreadRunnerAlarm(
     const supersede = deps.supersede;
     if (supersede?.by) {
       record.supersededBy = supersede.by;
-      if (supersede.by !== STORAGE_LOST) supersede.yieldedFor.add(supersede.by);
+      if (supersede.by !== STORAGE_LOST) {
+        const previous = supersede.yieldedFor.get(supersede.by);
+        supersede.yieldedFor.set(supersede.by, { count: (previous?.count ?? 0) + 1, at: now() });
+      }
       delete supersede.by;
     }
+    // Anything that settles after this point belongs to a finished alarm.
+    if (supersede) supersede.alarm += 1;
     emitThreadRunnerAlarm(record, deps.sink);
   }
 }
@@ -291,21 +323,31 @@ export async function runThreadRunnerAlarm(
 function supersededBy(
   deps: ThreadRunnerLoopDeps,
   serving: string | undefined,
+  generation: number,
+  now: () => number,
   running = false,
 ): boolean {
   const state = deps.supersede;
-  if (!state) return false;
+  if (!state || state.alarm !== generation) return false;
   if (state.by) return true;
-  if (!deps.versionId || !serving || serving === deps.versionId || state.yieldedFor.has(serving)) {
+  if (!deps.versionId || !serving || serving === deps.versionId) return false;
+  const earlier = state.yieldedFor.get(serving);
+  if (earlier && (earlier.count >= THREAD_RUNNER_SUPERSEDE_MAX_YIELDS ||
+      now() - earlier.at < THREAD_RUNNER_SUPERSEDE_COOLDOWN_MS)) {
     return false;
   }
-  noteSuperseded(deps, serving, running);
+  noteSuperseded(deps, serving, generation, running);
   return true;
 }
 
-function noteSuperseded(deps: ThreadRunnerLoopDeps, by: string, running: boolean): void {
+function noteSuperseded(
+  deps: ThreadRunnerLoopDeps,
+  by: string,
+  generation: number,
+  running: boolean,
+): void {
   const state = deps.supersede;
-  if (!state || state.by) return;
+  if (!state || state.by || state.alarm !== generation) return;
   state.by = by;
   emitThreadRunnerSuperseded({
     ...(deps.versionId ? { versionId: deps.versionId } : {}),
@@ -332,6 +374,7 @@ async function runOne(
   control: AlarmTurnJobControl,
   now: () => number,
   outage: { storeUnavailable: boolean },
+  generation = 0,
 ): Promise<boolean> {
   const current = deps.jobs.get(local.id);
   if (!current || !OPEN_JOB_STATES.has(current.state)) {
@@ -356,7 +399,7 @@ async function runOne(
     deps.jobs.settle(local.id, 'released', now());
     return true;
   }
-  if (supersededBy(deps, start.servingVersion)) return false;
+  if (supersededBy(deps, start.servingVersion, generation, now)) return false;
   deps.jobs.markRunning(local.id);
   let retryAfterMs: number | undefined;
   let retry = false;
@@ -379,8 +422,8 @@ async function runOne(
   const heartbeat = setInterval(() => {
     void deps.armBackstop(now() + THREAD_RUNNER_BACKSTOP_MS).catch(() => {
       // This instance lost its storage: it has been shut down.
-      if (!deps.supersede) return;
-      noteSuperseded(deps, STORAGE_LOST, true);
+      if (!deps.supersede || deps.supersede.alarm !== generation) return;
+      noteSuperseded(deps, STORAGE_LOST, generation, true);
       yieldForUpdate();
     });
     const serving = deps.turns.servingVersion;
@@ -389,7 +432,7 @@ async function runOne(
     checkingVersion = true;
     lastVersionCheck = now();
     void serving.call(deps.turns).then((version) => {
-      if (supersededBy(deps, version, true)) yieldForUpdate();
+      if (supersededBy(deps, version, generation, now, true)) yieldForUpdate();
     }, () => undefined).finally(() => { checkingVersion = false; });
   }, deps.heartbeatMs ?? THREAD_RUNNER_HEARTBEAT_MS);
   try {
