@@ -1012,6 +1012,11 @@ export class WebClientPresenter {
     this.target.modelLabel = modelLabel;
   }
 
+  /** Set the footer's memory items, known only once the turn's memory is prepared. */
+  setMemoryFooterItems(memoryItems: readonly string[]): void {
+    this.target.memoryFooterItems = memoryItems;
+  }
+
   private replyFooter(): SlackReplyFooter {
     return {
       agentName: this.target.agentName,

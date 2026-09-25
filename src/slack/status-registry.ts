@@ -16,6 +16,12 @@ interface SlackStatusTurnRegistration {
   close(): void;
   /** Fence new writes, clear now, and clear once more if an in-flight write lands late. */
   finish(clearStatus: (late: boolean) => Promise<void>): Promise<void>;
+  /**
+   * Route observed activity for this turn under another instance id. A turn
+   * registers before its agent instance is known so it can show its admitted
+   * status at once; observations only arrive after dispatch.
+   */
+  rebind(instanceId: string): void;
 }
 
 interface StatusPresenter {
@@ -82,7 +88,7 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
 
   constructor(
     private readonly registry: SlackStatusRegistry,
-    private readonly instanceId: string,
+    private instanceId: string,
     private readonly ownershipKey: string,
     private readonly generation: string,
     private readonly presenter: StatusPresenter,
@@ -118,6 +124,12 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
 
   setObservedStatus(update: SlackStatusUpdate): Promise<boolean> {
     return this.enqueue(update, true, false);
+  }
+
+  rebind(instanceId: string): void {
+    if (this.closed || instanceId === this.instanceId) return;
+    this.registry.rekey(this, this.instanceId, instanceId);
+    this.instanceId = instanceId;
   }
 
   belongsTo(generation: string): boolean {
@@ -598,6 +610,18 @@ export class SlackStatusRegistry {
   /** @internal The newest admitted generation seen for one visible status. */
   latestGeneration(ownershipKey: string): number | undefined {
     return this.latestGenerations.get(ownershipKey)?.generation;
+  }
+
+  /** @internal Move one live turn to another instance id. */
+  rekey(turn: ActiveSlackStatusTurn, from: string, to: string): void {
+    const previous = this.activeTurns.get(from);
+    if (previous) {
+      previous.delete(turn);
+      if (previous.size === 0) this.activeTurns.delete(from);
+    }
+    const turns = this.activeTurns.get(to) ?? new Set<ActiveSlackStatusTurn>();
+    turns.add(turn);
+    this.activeTurns.set(to, turns);
   }
 
   /** @internal Remove one closed turn; later turns under the same keys stay. */
