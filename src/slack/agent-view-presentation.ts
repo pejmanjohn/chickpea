@@ -211,6 +211,11 @@ export class SlackAgentViewPresentation {
     this.options.footer = { ...this.options.footer, modelLabel };
   }
 
+  /** Set the footer's memory items, known only once the turn's memory is prepared. */
+  setFooterMemoryItems(memoryItems: readonly string[] | undefined): void {
+    this.options.footer = { ...this.options.footer, memoryItems };
+  }
+
   /**
    * Persist the activity intent before its Slack write. The admission activity
    * already owns a pending receipt, so the first call reuses it; later facts

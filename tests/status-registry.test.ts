@@ -636,3 +636,33 @@ test('a rejected status write can retry the same text', async () => {
   assert.equal(calls, 2);
   turn.close();
 });
+
+test('a turn registered before its agent instance is known routes observations once rebound', async () => {
+  const presenter = recordingPresenter();
+  const turn = registerSlackStatusTurn('provisional-thread-key', presenter, {
+    generation: 'rebound-generation',
+    sessionGeneration: 1,
+    ownershipKey: 'T_WS:C_REBIND:1782770400.000100',
+  });
+  await turn.setStatus({ text: 'Thinking…' });
+
+  turn.rebind('agent-instance-after-plan');
+  assert.equal(
+    setObservedSlackStatus('provisional-thread-key', 'rebound-generation', { text: 'Reading the thread…' }),
+    false,
+    'the provisional id no longer names a live turn',
+  );
+  assert.equal(
+    setObservedSlackStatus('agent-instance-after-plan', 'rebound-generation', { text: 'Reading the thread…' }),
+    true,
+  );
+  await turn.drain();
+  assert.deepEqual(presenter.statuses, ['Thinking…', 'Reading the thread…']);
+
+  turn.close();
+  assert.equal(
+    setObservedSlackStatus('agent-instance-after-plan', 'rebound-generation', { text: 'Late' }),
+    false,
+    'closing releases the rebound id',
+  );
+});

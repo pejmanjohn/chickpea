@@ -22,6 +22,7 @@ import {
   resolveSlackInstallationExecutionContext,
   verifySlackInstallationTurnAccess,
 } from './installation-execution.ts';
+import { resolveSlackPublicUrl } from './credentials.ts';
 import { drainSlackPresentationRepairs } from './presentation-repair.ts';
 import {
   SlackPresentationStateError,
@@ -269,13 +270,21 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
     const result = await runThreadRunnerAlarm({
       jobs,
       turns: rows,
-      execute: (job, control, onRetry, threadKey, start) => {
+      execute: async (job, control, onRetry, threadKey, start) => {
         installations.set(job.turn.workspaceId, start);
+        // What the turn reads before its first Slack status, answered from
+        // the same `begin` round trip where it could be.
+        presentation.seedLatestThreadSessionGeneration(job.runId, start.latestThreadSessionGeneration);
+        const publicUrl = await resolveSlackPublicUrl(
+          env,
+          prefetchedSettings(getSettingsStore(env), start.settings),
+        ).then((value) => value ?? null, () => undefined);
         return executeTurnJob(job, ports, {
           latency: { lane: 'cloudflare', executor: 'runner' },
           observationRoute: { executor: 'runner', runnerKey: threadKey },
           control,
           onRetry,
+          ...(publicUrl === undefined ? {} : { publicUrl }),
         });
       },
       repairInteraction: async (job) => {

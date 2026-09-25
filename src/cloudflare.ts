@@ -2486,9 +2486,16 @@ function applyThreadRunnerTurnOp(
         ? stores.config.getWorkspaceInstallation(view.job.turn.workspaceId)
         : undefined;
       const values = stores.settings.getSettings(RUNNER_PREFETCHED_SETTINGS);
+      const presentation = view.job?.runId ? stores.presentations.get(view.job.runId) : undefined;
       return {
         view,
         ...(installation ? { installation } : {}),
+        ...(presentation?.schemaVersion === 3
+          ? {
+              latestThreadSessionGeneration:
+                stores.presentations.getLatestThreadSessionGeneration(presentation.root) ?? null,
+            }
+          : {}),
         settings: Object.fromEntries(
           RUNNER_PREFETCHED_SETTINGS.map((key, index) => [key, values[index] ?? null]),
         ),

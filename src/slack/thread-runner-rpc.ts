@@ -7,6 +7,7 @@ import type {
 } from '../config/state-rpc.ts';
 import type { UsagePersistenceEvent } from '../usage/runtime-recorder.ts';
 import type { WorkspaceInstallation } from '../config/types.ts';
+import { SLACK_SETTING_KEYS } from './credentials.ts';
 import { GATEWAY_DEPLOYMENT_IDENTITY_SETTING } from './gateway/identity.ts';
 import { GATEWAY_BINDING_SETTING } from './gateway/settings.ts';
 import type { SlackInteractionIntent } from './interaction-intent.ts';
@@ -29,9 +30,10 @@ export interface ThreadRunnerTurnOps {
   /** The authoritative row, read before the runner runs or reattaches. */
   view: [{ id: string }, RunnerTurnJobView];
   /**
-   * `view` plus what resolving the turn's Slack installation reads from the
-   * state store (the installation record and the gateway settings), so a
-   * runner starts a turn with one round trip.
+   * `view` plus what the turn reads from the state store before its first
+   * Slack status (the installation record, the gateway settings, the public
+   * URL, the thread's session generation), so a runner starts a turn with
+   * one round trip.
    */
   begin: [{ id: string }, RunnerTurnBegin];
   recordAttempt: [{ id: string; attempts: number }, null];
@@ -59,12 +61,22 @@ export interface RunnerTurnBegin {
   installation?: WorkspaceInstallation;
   /** RUNNER_PREFETCHED_SETTINGS values; null when unset. */
   settings: Record<string, string | null>;
+  /**
+   * The newest session generation the state store holds for the turn's Slack
+   * thread (null when none), which the turn's first activity status checks.
+   * Absent when the turn has no V3 presentation or the state store predates it.
+   */
+  latestThreadSessionGeneration?: number | null;
 }
 
-/** Settings a gateway installation's execution context reads on every turn. */
+/**
+ * Settings a turn reads before its first Slack status: those a gateway
+ * installation's execution context reads, and the stored public URL.
+ */
 export const RUNNER_PREFETCHED_SETTINGS: readonly string[] = [
   GATEWAY_BINDING_SETTING,
   GATEWAY_DEPLOYMENT_IDENTITY_SETTING,
+  SLACK_SETTING_KEYS.publicUrl,
 ];
 
 export type ThreadRunnerTurnKind = keyof ThreadRunnerTurnOps;

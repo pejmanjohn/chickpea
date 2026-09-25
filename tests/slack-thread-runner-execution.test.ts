@@ -937,6 +937,50 @@ test('a write that is not idempotent is never replayed after a disconnect; a rea
   }
 });
 
+test("a turn's first generation check uses the value its begin round trip read", async () => {
+  const db = openStateDb(':memory:');
+  try {
+    const local = new SlackRunPresentationStoreLogic(db, () => NOW);
+    let clock = NOW;
+    let generationReads = 0;
+    const presentation = runnerPresentationState({
+      local,
+      remote: {
+        matchFlueObservation: async () => undefined,
+        getLatestThreadSessionGeneration: async () => {
+          generationReads += 1;
+          return 7;
+        },
+      },
+      putRemote: async () => undefined,
+      now: () => clock,
+    });
+    local.create(v3Input('run_seeded', 'turn_seeded'));
+    presentation.seedLatestThreadSessionGeneration('run_seeded', 6);
+    assert.equal(await presentation.state.getLatestThreadSessionGeneration(ROOT), 6);
+    assert.equal(generationReads, 0, 'no state-store read before the first activity status');
+    clock += 15_000;
+    assert.equal(await presentation.state.getLatestThreadSessionGeneration(ROOT), 7,
+      'the seeded value ages out like any cached read');
+    assert.equal(generationReads, 1);
+
+    // A state store that did not send one (an older version) leaves the read to the turn.
+    local.create({ ...v3Input('run_unseeded', 'turn_unseeded'), root: { ...ROOT, threadTs: '1800000000.000002' } });
+    presentation.seedLatestThreadSessionGeneration('run_unseeded', undefined);
+    await presentation.state.getLatestThreadSessionGeneration({ ...ROOT, threadTs: '1800000000.000002' });
+    assert.equal(generationReads, 2);
+    // A thread with no V3 generation yet is cached as none.
+    local.create({ ...v3Input('run_none', 'turn_none'), root: { ...ROOT, threadTs: '1800000000.000003' } });
+    presentation.seedLatestThreadSessionGeneration('run_none', null);
+    assert.equal(
+      await presentation.state.getLatestThreadSessionGeneration({ ...ROOT, threadTs: '1800000000.000003' }),
+      5,
+      'only the local copy remains',
+    );
+    assert.equal(generationReads, 2);
+  } finally { db.close(); }
+});
+
 /** Stubs for CfTurnJobsForRunner: `fail` decides which minted stub rejects. */
 function mintingStubs(fail: (mint: number, kind: string) => boolean) {
   let mints = 0;

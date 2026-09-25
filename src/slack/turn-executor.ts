@@ -134,6 +134,8 @@ export interface TurnExecutionOptions {
   observationRoute?: Pick<FlueTurnObservationV1, 'executor' | 'runnerKey'>;
   /** Present when the caller can stop observation (a yield, not a failure). */
   control?: AlarmTurnJobControl;
+  /** The public URL the caller already resolved (null: none); see RunTurnOptions. */
+  publicUrl?: string | null;
   /**
    * The job stays pending and should be driven again soon; `afterMs` is the
    * least delay an unavailable installation asked for.
@@ -234,6 +236,7 @@ export async function executeTurnJob(
         ...(job.runId ? { runId: job.runId, runAttempt: attempt } : {}),
         turnLatency,
         ...(ports.settingsStore ? { settingsStore: ports.settingsStore } : {}),
+        ...(options.publicUrl !== undefined ? { publicUrl: options.publicUrl } : {}),
         ...(ports.statusRegistry ? { statusRegistry: ports.statusRegistry } : {}),
         presentationState,
         replayText: DURABLE_RECOVERY_FAILURE_TEXT,
@@ -341,6 +344,7 @@ export async function executeTurnJob(
       turnLatency,
       ...(ports.workStore ? { workStore: ports.workStore } : {}),
       ...(ports.settingsStore ? { settingsStore: ports.settingsStore } : {}),
+      ...(options.publicUrl !== undefined ? { publicUrl: options.publicUrl } : {}),
       ...(ports.usageStore ? { usageStore: ports.usageStore } : {}),
       ...(ports.appStores ? { appStores: ports.appStores } : {}),
       ...(ports.managementApproval ? { managementApproval: ports.managementApproval } : {}),
