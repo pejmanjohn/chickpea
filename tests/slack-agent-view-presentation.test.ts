@@ -2937,3 +2937,23 @@ for (const stuck of ['starting', 'unknown'] as const) {
     }
   });
 }
+
+test('a lost stream on a presentation without terminal receipts still posts with an idempotency key', async () => {
+  const h = harness({
+    schemaVersion: 2,
+    stopStreamError: slackPlatformError('message_not_found'),
+    updateError: slackPlatformError('message_not_found'),
+  });
+  try {
+    applyPresentationMutation(h, { kind: 'stream_start_intent' });
+    applyPresentationMutation(h, { kind: 'stream_started', messageTs: '1785700100.000411',
+      flue: { instanceId: 'instance_v2_lost', submissionId: 'submission_v2_lost' } });
+    const result = await h.presentation.finalize('Saved answer.', 'markdown', 'complete', observer([]));
+    assert.equal(result.handled, false);
+    if (result.handled) assert.fail('unreachable');
+    assert.match(String(result.operationId), /^terminal_[0-9a-f]{24}$/);
+    assert.equal(h.store.get(h.runId)?.stream.state, 'fallback');
+  } finally {
+    h.db.close();
+  }
+});

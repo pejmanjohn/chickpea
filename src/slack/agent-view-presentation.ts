@@ -1501,9 +1501,12 @@ export class SlackAgentViewPresentation {
         return {
           handled: false,
           fallbackPresentation: true,
-          ...(lost.schemaVersion === 3 && lost.terminalDelivery.state === 'intended'
-            ? { operationId: lost.terminalDelivery.operation.operationId }
-            : {}),
+          // The fresh post always carries an idempotency key: the frozen
+          // terminal's, or one derived from the lost coordinate for rows
+          // without a terminal receipt.
+          operationId: lost.schemaVersion === 3 && lost.terminalDelivery.state === 'intended'
+            ? lost.terminalDelivery.operation.operationId
+            : `terminal_${hash(`${lost.runId}:lost_stream:${messageTs}`).slice(0, 24)}`,
         };
       }
       presentation = await this.transition(presentation, {
