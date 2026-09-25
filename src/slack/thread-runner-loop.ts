@@ -73,7 +73,7 @@ export interface ThreadRunnerLoopDeps {
   execute(
     job: PendingTurnJob,
     control: AlarmTurnJobControl,
-    onRetry: (afterMs?: number) => void,
+    onRetry: (afterMs?: number, reason?: 'state_store_unavailable') => void,
     threadKey: string,
     start: RunnerTurnBegin,
   ): Promise<boolean>;
@@ -126,6 +126,8 @@ export async function runThreadRunnerAlarm(
     // A follow-up that could not reach the state store counts as a failed
     // alarm: the runner backs off instead of waking again at once.
     let followUpsFailed = !(await followUps(deps, now));
+    // A turn could not reach the state store: the runner backs off too.
+    const outage = { storeUnavailable: false };
     const budgetMs = deps.budgetMs ?? ALARM_TURN_BUDGET_MS;
     let stopped = false;
     // One drain runs the jobs listed when it starts (and any admitted while
@@ -141,7 +143,7 @@ export async function runThreadRunnerAlarm(
         threadKey: () => THREAD,
         runJob: async (job, control) => {
           record.ran += 1;
-          const keepGoing = await runOne(deps, job, control, now);
+          const keepGoing = await runOne(deps, job, control, now, outage);
           if (!keepGoing) stopped = true;
           return keepGoing;
         },
@@ -179,6 +181,11 @@ export async function runThreadRunnerAlarm(
       deps.jobs.nextCleanupAt(),
       repairs.nextRetryAt,
     ].filter((value): value is number => value !== undefined);
+    if (outage.storeUnavailable) {
+      // runOne already counted this failure and set the job's retry.
+      record.reason = 'state_store_unavailable';
+      return { record, ...(wakes.length > 0 ? { nextAlarmAt: Math.max(at, Math.min(...wakes)) } : {}) };
+    }
     if (followUpsFailed) {
       record.reason = 'follow_up_failed';
       return { record, nextAlarmAt: at + failureBackoff(deps) };
@@ -215,6 +222,7 @@ async function runOne(
   local: ThreadRunnerJobRecord,
   control: AlarmTurnJobControl,
   now: () => number,
+  outage: { storeUnavailable: boolean },
 ): Promise<boolean> {
   const current = deps.jobs.get(local.id);
   if (!current || !OPEN_JOB_STATES.has(current.state)) {
@@ -239,10 +247,12 @@ async function runOne(
   deps.jobs.markRunning(local.id);
   let retryAfterMs: number | undefined;
   let retry = false;
+  let storeUnavailable = false;
   let settled: boolean;
   try {
-    settled = await deps.execute(view.job, control, (afterMs) => {
+    settled = await deps.execute(view.job, control, (afterMs, reason) => {
       retry = true;
+      if (reason === 'state_store_unavailable') storeUnavailable = true;
       if (afterMs !== undefined) retryAfterMs = Math.max(retryAfterMs ?? 0, afterMs);
     }, local.threadKey, start);
   } finally {
@@ -267,6 +277,12 @@ async function runOne(
     // it again shortly without holding the thread's next turn.
     deps.jobs.settle(local.id, 'deferred', now(), now() + THREAD_RUNNER_RETRY_MS);
     return true;
+  }
+  if (storeUnavailable) {
+    // 2 s after the first outage, doubling to a minute.
+    outage.storeUnavailable = true;
+    deps.jobs.settle(local.id, 'admitted', now(), now() + failureBackoff(deps));
+    return false;
   }
   deps.jobs.settle(
     local.id,
@@ -492,7 +508,7 @@ export function runnerPresentationState(input: {
   const base = localSlackPresentationStatePort({
     presentations: input.local,
     matchFlueObservation: (instanceId, submissionId) =>
-      input.remote.matchFlueObservation(instanceId, submissionId),
+      storeCall(() => input.remote.matchFlueObservation(instanceId, submissionId)),
   });
   return {
     state: {
@@ -504,7 +520,10 @@ export function runnerPresentationState(input: {
         const key = `${root.workspaceId}:${root.channelId}:${root.threadTs}`;
         let cached = generations.get(key);
         if (!cached || now() - cached.at >= (input.generationCacheMs ?? RUNNER_GENERATION_CACHE_MS)) {
-          cached = { value: await input.remote.getLatestThreadSessionGeneration(root), at: now() };
+          cached = {
+            value: await storeCall(() => input.remote.getLatestThreadSessionGeneration(root)),
+            at: now(),
+          };
           generations.set(key, cached);
         }
         const local = input.local.getLatestThreadSessionGeneration(root);

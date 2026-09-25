@@ -58,6 +58,7 @@ import { replyFooterModelLabel } from './message-format.ts';
 import {
   agentFailureText,
   AgentObservationYield,
+  StateStoreUnavailable,
   AgentPromptFailure,
   endCloudflareSandboxTurn,
   promptSlackThreadAgent,
@@ -1681,7 +1682,9 @@ async function runTurnAttempt(
         : undefined,
     );
   } catch (err) {
-    if (err instanceof AgentObservationYield) yielded = true;
+    // A runner whose state store is being replaced retries the turn the same
+    // way it reattaches after a yield: the Agent is still working.
+    if (err instanceof AgentObservationYield || err instanceof StateStoreUnavailable) yielded = true;
     if (!(err instanceof AgentPromptFailure && err.retryable)) {
       await usageRecorder?.recordFailure();
     }

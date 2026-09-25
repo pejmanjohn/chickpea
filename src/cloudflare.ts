@@ -1937,7 +1937,10 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       });
       return dispatching;
     };
-    const onAdmitted = runnerMode ? () => void dispatchToRunners() : undefined;
+    // A failed hand-off stays a hand-off; the alarm re-arms for it.
+    const onAdmitted = runnerMode
+      ? () => void dispatchToRunners().catch(() => undefined)
+      : undefined;
     /** Admit newly delivered events and hand their turns over at once. */
     const admitAndDispatch = async () => {
       const retry = await drainGatewayInbox(stores, this.env as PlatformEnv, onAdmitted);

@@ -421,6 +421,8 @@ function runnerHarness(db: ReturnType<typeof openStateDb>, rows: ReturnType<type
   failRelease?: boolean;
   /** Slack interaction cleanup attempts reject this many times. */
   failCleanups?: number;
+  /** The state store is unreachable from inside these turns. */
+  storeOutage?: (id: string) => boolean;
 } = {}) {
   const jobs = new ThreadRunnerJobStore(db);
   const events: string[] = [];
@@ -460,6 +462,10 @@ function runnerHarness(db: ReturnType<typeof openStateDb>, rows: ReturnType<type
       if (script.fail?.(id)) {
         events.push(`failed:${id}`);
         throw new Error('model unavailable');
+      }
+      if (script.storeOutage?.(id)) {
+        events.push(`outage:${id}`);
+        throw new StateStoreUnavailable();
       }
       if (!options.flueDispatch?.dispatchReceipt) {
         events.push(`dispatch:${id}`);
@@ -920,6 +926,41 @@ test('a store that stays unreachable mid-turn is retried, never answered with a 
     assert.deepEqual(finals, [], 'no final of any kind');
     assert.deepEqual(retries, [undefined]);
     assert.deepEqual(attempts, [3, 2], 'the attempt is given back');
+
+    // Past the submission's durability the retry is no longer free: it spends
+    // the attempt, so the post-dispatch cap ends the turn with the notice.
+    const lateAttempts: number[] = [];
+    const late = await executeTurnJob({
+      ...turnJob('late'), executionAuthority: 'legacy', attempts: 2, progress: {},
+      dispatchEnvelope: { instanceId: 'agent' } as never,
+      dispatchReceipt: {
+        submissionId: 'submission_late',
+        acceptedAt: new Date(Date.now() - 4 * 60 * 60_000).toISOString(),
+      } as never,
+    } as PendingTurnJob, {
+      env: {},
+      turnJobs: runnerTurnJobsPort({
+        recordAttempt: async (_id: string, value: number) => { lateAttempts.push(value); },
+        recordFlueSettlement: async () => { throw new StateStoreDisconnectedError(new Error('reset')); },
+      } as unknown as TurnExecutionPorts['turnJobs'], jobs),
+      slack: { setActiveWork: async () => {}, release: async () => {}, markCodingActiveWork: async () => {} },
+      config: {},
+      presentationState: {},
+      telemetry: { capture() {} },
+      resolveInstallation: async () => ({
+        workspaceId: 'T_TEST',
+        client: { conversations: { info: async () => ({ ok: true, channel: { id: 'C_TEST', is_member: true } }) } },
+      }),
+      sandboxes: () => [],
+      runTurn: async (_turn: unknown, _assignment: unknown, _env: unknown, options: RunTurnOptions) => {
+        await options.flueDispatch!.recordSettlement({ outcome: 'completed' } as never);
+      },
+    } as unknown as TurnExecutionPorts, {
+      latency: { lane: 'cloudflare', executor: 'runner' },
+      onRetry: () => {},
+    });
+    assert.equal(late, false);
+    assert.deepEqual(lateAttempts, [3], 'the attempt is spent');
   } finally { db.close(); }
 });
 
@@ -937,5 +978,24 @@ test('a runner starts a turn with one state-store round trip before running it',
     };
     await runThreadRunnerAlarm(h.deps);
     assert.deepEqual(callsBeforeExecute, ['begin:first']);
+  } finally { db.close(); }
+});
+
+test('a runner backs off a turn whose state store stays unreachable (2 s, then 4 s)', async () => {
+  const db = openStateDb(':memory:');
+  try {
+    const rows = fakeRows(['outage']);
+    const h = runnerHarness(db, rows, { storeOutage: () => true });
+    h.jobs.admit({ id: 'outage', threadKey: 'thread', payload: {} }, 1);
+    const delays: number[] = [];
+    for (let index = 0; index < 2; index += 1) {
+      const at = h.deps.now!();
+      const result = await runThreadRunnerAlarm(h.deps);
+      assert.equal(result.record.reason, 'state_store_unavailable');
+      delays.push(Math.round((result.nextAlarmAt! - at) / 1_000));
+      h.advance(10_000);
+    }
+    assert.deepEqual(delays, [2, 4]);
+    assert.equal(rows.rows.get('outage')!.attempts, 0, 'no attempt spent inside the durability window');
   } finally { db.close(); }
 });

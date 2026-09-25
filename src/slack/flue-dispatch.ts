@@ -407,6 +407,12 @@ export async function promptSlackThreadAgent(
   };
   input.onObservationStarted?.();
   const signal = input.observationSignal;
+  // A settlement the state store could not save leaves the relay suspended
+  // for the reattaching attempt when the store is only being replaced.
+  const settlementNotSaved = async (error: unknown): Promise<void> => {
+    if (error instanceof StateStoreUnavailable) await progressiveRelay?.suspendAndDrain();
+    else await progressiveRelay?.invalidateAndDrain('settlement_persist_failed');
+  };
   try {
     reply = observeReply
       ? await observeReply({
@@ -427,6 +433,12 @@ export async function promptSlackThreadAgent(
       // them from the durable position.
       await progressiveRelay?.suspendAndDrain();
       throw new AgentObservationYield();
+    }
+    if (error instanceof StateStoreUnavailable) {
+      // The runner's state store is being replaced: like a yield, the stream
+      // and intent stay as they are for the reattaching attempt.
+      await progressiveRelay?.suspendAndDrain();
+      throw error;
     }
     if (!(error instanceof AgentRunError)) {
       await progressiveRelay?.invalidateAndDrain('read_interrupted');
@@ -458,7 +470,7 @@ export async function promptSlackThreadAgent(
         failureKind: kind,
       });
     } catch (settlementError) {
-      await progressiveRelay?.invalidateAndDrain('settlement_persist_failed');
+      await settlementNotSaved(settlementError);
       throw settlementError;
     }
     input.state.flueSettlement = checkpoint;
@@ -485,7 +497,7 @@ export async function promptSlackThreadAgent(
         failureKind,
       });
     } catch (settlementError) {
-      await progressiveRelay?.invalidateAndDrain('settlement_persist_failed');
+      await settlementNotSaved(settlementError);
       throw settlementError;
     }
     input.state.flueSettlement = checkpoint;
@@ -502,7 +514,7 @@ export async function promptSlackThreadAgent(
       result: completed,
     });
   } catch (settlementError) {
-    await progressiveRelay?.invalidateAndDrain('settlement_persist_failed');
+    await settlementNotSaved(settlementError);
     throw settlementError;
   }
   input.state.flueSettlement = checkpoint;

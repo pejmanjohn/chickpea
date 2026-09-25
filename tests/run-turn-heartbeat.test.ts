@@ -12,6 +12,7 @@ import { SqliteMemoryStateStore } from '../src/memory/store.ts';
 import { parseCurrentRequestEnvelope } from '../src/memory/tool-policy.ts';
 import {
   AgentObservationYield,
+  StateStoreUnavailable,
   AgentPromptFailure,
   type AgentDispatchResult,
   type SlackFlueDispatchState,
@@ -2676,8 +2677,9 @@ test(`a successful own-turn memory write ${verb} ${scenario.name}`, async () => 
 });
 }
 
-for (const scenario of ['yield', 'interruption'] as const) {
-  test(`${scenario === 'yield' ? 'a yield keeps' : 'an interruption releases'} the work acknowledgment and workspace turn`, async () => {
+for (const scenario of ['yield', 'store-outage', 'interruption'] as const) {
+  const keeps = scenario !== 'interruption';
+  test(`${scenario === 'yield' ? 'a yield keeps' : scenario === 'store-outage' ? 'a runner store outage keeps' : 'an interruption releases'} the work acknowledgment and workspace turn`, async () => {
     let reactionAdds = 0;
     let reactionRemoves = 0;
     const sandboxTurnsEnded: boolean[] = [];
@@ -2704,13 +2706,15 @@ for (const scenario of ['yield', 'interruption'] as const) {
         async agentPrompt(): Promise<AgentDispatchResult> {
           throw scenario === 'yield'
             ? new AgentObservationYield()
+            : scenario === 'store-outage'
+            ? new StateStoreUnavailable()
             : new AgentPromptFailure('agent', 503, false, true);
         },
       }),
       (error: unknown) => error instanceof AgentPromptFailure && error.retryable,
     );
     assert.equal(reactionAdds, 1);
-    if (scenario === 'yield') {
+    if (keeps) {
       // The coding worker is still running: it keeps its GitHub egress and
       // the person keeps seeing that the work is underway.
       assert.equal(reactionRemoves, 0);

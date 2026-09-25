@@ -137,7 +137,7 @@ export interface TurnExecutionOptions {
    * The job stays pending and should be driven again soon; `afterMs` is the
    * least delay an unavailable installation asked for.
    */
-  onRetry(afterMs?: number): void;
+  onRetry(afterMs?: number, reason?: 'state_store_unavailable'): void;
 }
 
 /**
@@ -420,12 +420,19 @@ export async function executeTurnJob(
       return true;
     }
     if (err instanceof StateStoreUnavailable) {
-      // A runner's state store is being replaced. Retry soon without spending
-      // an attempt; a dispatched turn reattaches to its submission.
-      options.onRetry();
-      await Promise.resolve(ports.turnJobs.recordAttempt(job.id, job.attempts)).catch(() => undefined);
-      console.warn('[chickpea] state store unavailable; the turn will be retried');
-      return false;
+      const since = flueDispatch.dispatchReceipt?.acceptedAt ??
+        (job.enqueuedAt === undefined ? undefined : new Date(job.enqueuedAt).toISOString());
+      if (alarmYieldIsFree(since, Date.now())) {
+        // A runner's state store is being replaced. Retry without spending
+        // an attempt; a dispatched turn reattaches to its submission.
+        options.onRetry(undefined, 'state_store_unavailable');
+        await Promise.resolve(ports.turnJobs.recordAttempt(job.id, job.attempts)).catch(() => undefined);
+        console.warn('[chickpea] state store unavailable; the turn will be retried');
+        return false;
+      }
+      // Past the submission's durability, retries spend attempts, so the
+      // existing caps end the turn with the recovery notice.
+      console.warn('[chickpea] state store still unavailable past the turn durability');
     }
     if (err instanceof AgentObservationYield) {
       if (alarmYieldIsFree(flueDispatch.dispatchReceipt?.acceptedAt, Date.now())) {
