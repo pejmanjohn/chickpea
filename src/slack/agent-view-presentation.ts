@@ -1468,6 +1468,16 @@ export class SlackAgentViewPresentation {
         // there, and a retry would fail the same way until the run is
         // abandoned with no visible answer. Post the terminal once, fresh.
         console.warn('[chickpea] Slack Agent View stream message missing; posting the final fresh');
+        try {
+          // A sealed stream can still render as an empty shell. Remove it when
+          // Slack lets us; a refusal never holds back the fresh final.
+          await this.options.client.chat.delete({ channel: update.channel, ts: messageTs });
+        } catch (deleteError) {
+          console.warn(
+            `[chickpea] Slack Agent View lost stream cleanup ${slackEffectOutcome(deleteError)}: ` +
+            safeSlackErrorCode(deleteError),
+          );
+        }
         await observer.after({
           attemptId,
           outcome: 'failed',
@@ -2022,7 +2032,12 @@ const STREAM_NO_LONGER_OPEN_ERRORS = new Set([
 function slackEffectOutcome(error: unknown): 'failed' | 'unknown' {
   const code = error && typeof error === 'object' ? (error as { code?: unknown }).code : undefined;
   return code === ErrorCode.PlatformError || code === ErrorCode.RateLimitedError ||
-      (error instanceof SlackTransportError && error.effectOutcome === 'failed')
+      (error instanceof SlackTransportError && error.effectOutcome === 'failed') ||
+      // Slack's own answer that the stream's message is not open (or not
+      // there) proves the call wrote nothing, even when it arrives through
+      // the gateway, whose relayed error codes default to an unknown effect.
+      (error instanceof SlackTransportError &&
+        STREAM_NO_LONGER_OPEN_ERRORS.has(safeSlackErrorCode(error)))
     ? 'failed'
     : 'unknown';
 }

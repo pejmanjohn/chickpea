@@ -16,6 +16,7 @@ import {
 } from '../src/slack/run-presentations.ts';
 import type { SlackPresentationFinalizationRecord } from '../src/slack/run-presentations.ts';
 import { SlackTransportError } from '../src/slack/transport/types.ts';
+import { WebClientPresenter } from '../src/slack/web-client-presenter.ts';
 import { slackClientMessageId } from '../src/slack/transport/message-id.ts';
 import type { SlackArtifactReceipt } from '../src/slack/artifact-receipts.ts';
 import type { WorkspaceMilestoneRecord } from '../src/slack/coding-worker-run.ts';
@@ -36,6 +37,7 @@ function harness(input: {
   startStreamError?: unknown;
   stopStreamError?: unknown;
   updateError?: unknown;
+  appendStreamError?: unknown;
   /** Grants this many progressive appends, then reports an exhausted budget. */
   appendReservations?: number;
   deleteError?: unknown;
@@ -113,7 +115,12 @@ function harness(input: {
       },
       async appendStream(value: Record<string, unknown>) {
         calls.push({ method: 'chat.appendStream', input: value });
+        if (input.appendStreamError) throw input.appendStreamError;
         return { ok: true };
+      },
+      async postMessage(value: Record<string, unknown>) {
+        calls.push({ method: 'chat.postMessage', input: value });
+        return { ok: true, ts: '1785700100.000950' };
       },
       async stopStream(value: Record<string, unknown>) {
         calls.push({ method: 'chat.stopStream', input: value });
@@ -2799,6 +2806,58 @@ test('a recovery that finds the stream message missing still delivers the termin
     if (result.handled) assert.fail('unreachable');
     assert.equal(result.operationId, 'terminal_lost_stream');
     assert.equal(h.store.get(h.runId)?.stream.state, 'fallback');
+  } finally {
+    h.db.close();
+  }
+});
+
+test('a stream Slack forgot during a long gateway turn still delivers exactly one fresh final', async () => {
+  // Through the gateway, Slack's message_not_found arrives as a transport
+  // error whose effect defaults to unknown. That must not spend every
+  // reattachment on a coordinate that will never answer.
+  const gone = (operation: string) => new SlackTransportError(operation, 'message_not_found');
+  const h = harness({
+    schemaVersion: 3,
+    appendStreamError: gone('chat.appendStream'),
+    stopStreamError: gone('chat.stopStream'),
+    updateError: gone('chat.update'),
+    deleteError: gone('chat.delete'),
+  });
+  try {
+    await prepareReceipt(h, {
+      ...WORKSPACE_TARGET,
+      receipt: { submissionId: WORKSPACE_TARGET.submissionId, acceptedAt: 'now', uid: 'uid' },
+      eligibility: { allowed: false, reason: 'effect_capable' },
+    });
+    await h.presentation.applyWorkspaceMilestone(milestone('workspace', 'started'), WORKSPACE_TARGET);
+    // Forty minutes later: the milestone projection finds no stream message.
+    await h.presentation.applyWorkspaceMilestone(milestone('workspace', 'completed'), WORKSPACE_TARGET);
+
+    const presenter = new WebClientPresenter(h.client, {
+      channelId: ROOT.channelId,
+      threadTs: ROOT.threadTs,
+      agentName: 'Chickpea',
+      agentId: 'agent_default',
+      userId: ROOT.requesterUserId,
+      workspaceId: ROOT.workspaceId,
+    }, undefined, { agentViewPresentation: h.presentation });
+    await presenter.deliverFinal('Opened acme/app#12.', 'markdown');
+
+    const posts = h.calls.filter((call) => call.method === 'chat.postMessage');
+    assert.equal(posts.length, 1, 'the final posts once as a fresh message');
+    assert.equal(posts[0]?.input.thread_ts, ROOT.threadTs);
+    assert.match(JSON.stringify(posts[0]?.input), /Opened acme\/app#12/);
+    assert.ok(posts[0]?.input.client_msg_id, 'the fresh post keeps the terminal idempotency key');
+    assert.equal(h.calls.filter((call) => call.method === 'chat.delete').length, 1,
+      'the empty shell is cleaned up best-effort');
+    const stored = h.store.get(h.runId);
+    assert.equal(stored?.stream.state, 'artifact_delivered');
+    assert.equal(stored?.stream.messageTs, '1785700100.000950');
+
+    // A replayed final (another attempt) writes nothing more.
+    const callsAfter = h.calls.length;
+    await presenter.deliverFinal('Opened acme/app#12.', 'markdown');
+    assert.equal(h.calls.length, callsAfter);
   } finally {
     h.db.close();
   }
