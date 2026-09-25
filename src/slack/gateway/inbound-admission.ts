@@ -23,14 +23,25 @@ export type GatewayAdmissionOutcome = 'accepted' | 'duplicate' | 'rejected';
 export interface GatewayAdmissionContext {
   /** The bound installation's bot user; events it authored are self-generated. */
   botUserId?: string | undefined;
+  /**
+   * The bound Slack app. A persona-shaped post (`username`/`icon_url`) or its
+   * stream edit can arrive as `bot_message` with no `user`, identified only by
+   * `app_id` or `bot_profile.app_id`.
+   */
+  appId?: string | undefined;
 }
 
 /**
  * Self-generated events that no Worker consumer acts on:
  *
- * - `own_message`: a `message` whose top-level author is this bot user (any
- *   subtype except the `message_changed`/`message_deleted` wrappers, which
- *   carry no top-level author). Turn normalization always ignores it
+ * Authorship: `user` equal to the bound bot user, or, only when the message
+ * carries no `user` at all, `app_id` or `bot_profile.app_id` equal to the
+ * bound app (Slack may omit `user` on a persona `bot_message`). A message with
+ * any other `user` is never ours, whatever its app fields say.
+ *
+ * - `own_message`: a `message` this app authored (any subtype except the
+ *   `message_changed`/`message_deleted` wrappers, which carry no top-level
+ *   author). Turn normalization always ignores it
  *   (`self_message`, `bot_message`, or `message_subtype`), and public-context
  *   reconciliation reads only the two wrappers.
  * - `own_message_changed`: an edit of a message this bot user authored. Only
@@ -51,19 +62,29 @@ export type GatewaySelfGeneratedEvent = 'own_message' | 'own_message_changed' | 
 
 export function gatewaySelfGeneratedEvent(
   delivery: GatewayInboundDelivery,
-  botUserId: string | undefined,
+  self: GatewayAdmissionContext,
 ): GatewaySelfGeneratedEvent | undefined {
-  if (!botUserId || delivery.kind !== 'event.deliver') return undefined;
+  if (delivery.kind !== 'event.deliver') return undefined;
   const event = delivery.envelope.event as unknown as Record<string, unknown>;
   if (event.type === 'reaction_added') {
-    return event.user === botUserId ? 'own_reaction' : undefined;
+    return self.botUserId && event.user === self.botUserId ? 'own_reaction' : undefined;
   }
   if (event.type !== 'message') return undefined;
   if (event.subtype === 'message_deleted') return undefined;
   if (event.subtype === 'message_changed') {
-    return record(event.message)?.user === botUserId ? 'own_message_changed' : undefined;
+    return authoredBySelf(record(event.message), self) ? 'own_message_changed' : undefined;
   }
-  return event.user === botUserId ? 'own_message' : undefined;
+  return authoredBySelf(event, self) ? 'own_message' : undefined;
+}
+
+function authoredBySelf(
+  message: Record<string, unknown> | undefined,
+  self: GatewayAdmissionContext,
+): boolean {
+  if (!message) return false;
+  if (message.user !== undefined) return Boolean(self.botUserId) && message.user === self.botUserId;
+  if (!self.appId) return false;
+  return message.app_id === self.appId || record(message.bot_profile)?.app_id === self.appId;
 }
 
 /**
@@ -71,6 +92,12 @@ export function gatewaySelfGeneratedEvent(
  * admitted in socket arrival order; different keys may be admitted in
  * parallel. Slack itself does not order separate Events API requests, so
  * arrival order within a thread is the strongest order that ever existed.
+ *
+ * Accepted gaps: an event without a thread (`member_joined_channel`,
+ * `interaction.agent_selected`, `interaction.channel_agent_add`) is keyed by
+ * channel or user, so a mention or DM arriving right after it may be admitted
+ * first. Every consumer re-reads installation and grant state when the inbox
+ * drains, and a person rarely acts within one admission round trip.
  */
 export function gatewayDeliveryOrderKey(delivery: GatewayInboundDelivery): string {
   if (delivery.kind === 'interaction.agent_selected') return `user:${delivery.userId}`;
@@ -78,6 +105,9 @@ export function gatewayDeliveryOrderKey(delivery: GatewayInboundDelivery): strin
   const event = delivery.envelope.event as unknown as Record<string, unknown>;
   const channel = str(event.channel);
   if (event.type === 'reaction_added') {
+    // The event names only the reacted-to message, which may be a thread
+    // reply; its root is unknown without a Slack call (normalization resolves
+    // it later). The reply's own key is the best available scope.
     const item = record(event.item);
     const itemChannel = str(item?.channel);
     const itemTs = str(item?.ts);
@@ -300,7 +330,7 @@ export class GatewayInboundAdmission {
       return 'duplicate';
     }
     const filterReason = this.options.filterSelfGenerated
-      ? gatewaySelfGeneratedEvent(delivery, context.botUserId)
+      ? gatewaySelfGeneratedEvent(delivery, context)
       : undefined;
     if (filterReason) {
       this.observe({ delivery, receivedAt, outcome: 'filtered', source: 'filter', filterReason, inFlight });

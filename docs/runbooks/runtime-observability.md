@@ -384,7 +384,9 @@ channel IDs, settings keys or values, or error text. Emission never throws.
   running), `recent` for a Slack retry of a delivery this session object
   admitted or was admitting in the last 5 minutes (answered `duplicate`
   without a store call), and `filter` for this app's own messages, own stream
-  edits (`message_changed` of its own message), and own reactions, which are
+  edits (`message_changed` of its own message), and own reactions (own means
+  `user` is the bound bot user, or, with no `user`, `app_id` or
+  `bot_profile.app_id` is the bound app, as on a persona `bot_message`), which are
   acknowledged without admission (`outcome: filtered`, `filterReason`
   `own_message`, `own_message_changed`, or `own_reaction`). `eventType` and
   `subtype` are Slack's fixed event names, never content. The session

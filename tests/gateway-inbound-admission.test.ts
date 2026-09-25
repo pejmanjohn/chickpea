@@ -12,6 +12,8 @@ import {
 import type { GatewayEventDelivery, GatewayInboundDelivery } from '../src/slack/gateway/protocol.ts';
 
 const BOT = 'U_BOT';
+const APP = 'A_SELF';
+const SELF = { botUserId: BOT, appId: APP };
 
 function deliver(event: Record<string, unknown>, deliveryId = `event:Ev${Math.random()}`): GatewayEventDelivery {
   return {
@@ -48,9 +50,19 @@ test('only this bot user\'s own messages, stream edits, and reactions are self-g
       message: { type: 'message', user: BOT, bot_id: 'B1', ts: '1.1', text: 'streamed' } }, 'own_message_changed'],
     [{ type: 'reaction_added', user: BOT, reaction: 'eyes', item: { type: 'message', channel: 'C1', ts: '1.1' } },
       'own_reaction'],
+    // Persona-shaped posts and their stream edits may carry no `user`.
+    [{ type: 'message', subtype: 'bot_message', channel: 'C1', bot_id: 'B1', app_id: APP, username: 'Agent',
+      ts: '1.3', thread_ts: '1.1' }, 'own_message'],
+    [{ type: 'message', subtype: 'bot_message', channel: 'C1', bot_id: 'B1', bot_profile: { app_id: APP },
+      username: 'Agent', ts: '1.4' }, 'own_message'],
+    [{ type: 'message', subtype: 'message_changed', channel: 'C1', ts: '2.1',
+      message: { type: 'message', subtype: 'bot_message', bot_id: 'B1', app_id: APP, username: 'Agent', ts: '1.3' } },
+      'own_message_changed'],
+    [{ type: 'message', subtype: 'message_changed', channel: 'C1', ts: '2.2',
+      message: { type: 'message', bot_id: 'B1', bot_profile: { app_id: APP }, ts: '1.4' } }, 'own_message_changed'],
   ];
   for (const [event, reason] of dropped) {
-    assert.equal(gatewaySelfGeneratedEvent(deliver(event), BOT), reason, JSON.stringify(event));
+    assert.equal(gatewaySelfGeneratedEvent(deliver(event), SELF), reason, JSON.stringify(event));
   }
   const kept: Array<Record<string, unknown>> = [
     { type: 'app_mention', channel: 'C1', user: 'U_PERSON', ts: '1.1', text: `<@${BOT}> hi` },
@@ -68,16 +80,28 @@ test('only this bot user\'s own messages, stream edits, and reactions are self-g
     { type: 'member_joined_channel', channel: 'C1', user: BOT, inviter: 'U_PERSON' },
     { type: 'reaction_added', user: 'U_PERSON', reaction: 'eyes', item: { type: 'message', channel: 'C1', ts: '1.1' } },
     { type: 'user_change', user: { id: BOT } },
+    // A human `user` is never ours, whatever the app fields say.
+    { type: 'message', channel: 'C1', user: 'U_PERSON', app_id: APP, ts: '1.5', text: 'shortcut post' },
+    { type: 'message', subtype: 'message_changed', channel: 'C1', ts: '2.3',
+      message: { type: 'message', user: 'U_PERSON', app_id: APP, ts: '1.5', text: 'edited' } },
+    // Another app's persona post.
+    { type: 'message', subtype: 'bot_message', channel: 'C1', bot_id: 'B9', app_id: 'A_OTHER', username: 'X', ts: '1.6' },
+    { type: 'message', subtype: 'message_changed', channel: 'C1', ts: '2.4',
+      message: { type: 'message', bot_id: 'B9', bot_profile: { app_id: 'A_OTHER' }, ts: '1.6' } },
+    // Deletes stay unfiltered even for a persona post.
+    { type: 'message', subtype: 'message_deleted', channel: 'C1', ts: '2.5', deleted_ts: '1.3',
+      previous_message: { type: 'message', subtype: 'bot_message', app_id: APP, ts: '1.3' } },
   ];
   for (const event of kept) {
-    assert.equal(gatewaySelfGeneratedEvent(deliver(event), BOT), undefined, JSON.stringify(event));
+    assert.equal(gatewaySelfGeneratedEvent(deliver(event), SELF), undefined, JSON.stringify(event));
   }
-  // Without a known bot user nothing can be classified as self-generated.
-  assert.equal(gatewaySelfGeneratedEvent(deliver(dropped[0]![0]), undefined), undefined);
+  // Without the bound identity nothing can be classified as self-generated.
+  for (const [event] of dropped) assert.equal(gatewaySelfGeneratedEvent(deliver(event), {}), undefined);
+  assert.equal(gatewaySelfGeneratedEvent(deliver(dropped[0]![0]), { appId: APP }), undefined);
   assert.equal(gatewaySelfGeneratedEvent({
     protocolVersion: 1, kind: 'interaction.agent_selected', deliveryId: 'i1', bindingId: 'b', workspaceId: 'T1',
     userId: BOT, agentId: 'agent',
-  }, BOT), undefined);
+  }, SELF), undefined);
 });
 
 test('ordering keys group a thread, its edits, and a whole DM, and separate unrelated threads', () => {
@@ -93,6 +117,10 @@ test('ordering keys group a thread, its edits, and a whole DM, and separate unre
   assert.equal(key({ type: 'message', channel: 'D1', channel_type: 'im', user: 'U', ts: '1.1' }), 'channel:D1');
   assert.equal(key({ type: 'message', channel: 'D1', channel_type: 'im', user: 'U', ts: '2.1' }), 'channel:D1');
   assert.equal(key({ type: 'reaction_added', user: 'U', item: { type: 'message', channel: 'C1', ts: '100.1' } }), root);
+  // A reaction on a thread reply names only the reply; its root is unknown
+  // until normalization resolves it, so it orders with that reply's key.
+  assert.equal(key({ type: 'reaction_added', user: 'U', item: { type: 'message', channel: 'C1', ts: '100.5' } }),
+    'thread:C1:100.5');
   assert.equal(key({ type: 'member_joined_channel', channel: 'C1', user: 'U' }), 'channel:C1');
   assert.equal(key({ type: 'user_change', user: { id: 'U' } }), 'workspace');
   assert.equal(gatewayDeliveryOrderKey({

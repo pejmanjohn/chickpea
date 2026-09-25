@@ -1101,7 +1101,10 @@ export class GatewayLogicalSession {
   async acknowledge(frame: GatewayInboundDelivery): Promise<void> {
     let outcome: GatewayEventAck['outcome'];
     try {
-      outcome = await this.input.onEvent(frame, { botUserId: this.input.binding.botUserId });
+      outcome = await this.input.onEvent(frame, {
+        botUserId: this.input.binding.botUserId,
+        appId: this.input.binding.appId,
+      });
     } catch {
       // Admission itself failed, so no durable deployment receipt exists.
       // Reject for gateway/Slack retry without tearing down the socket.

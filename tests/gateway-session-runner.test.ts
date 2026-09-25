@@ -1202,13 +1202,21 @@ test('a shared intake receives the bound bot user and acknowledges its own event
     ready(socket, 'session_filter');
     await waitFor(() => runner?.state()?.health === 'healthy');
     socket.message(frame('own', 'UBOT'));
+    // A persona reply identified only by the bound app, with no `user`.
+    socket.message(JSON.stringify({
+      protocolVersion: 1, kind: 'event.deliver', deliveryId: 'persona', bindingId: 'binding_test',
+      workspaceId: 'TGATEWAY', envelope: { workspaceId: 'TGATEWAY', eventId: 'persona', eventTime: 1, event: {
+        type: 'message', subtype: 'bot_message', channel: 'C1', bot_id: 'B1', app_id: 'AGATEWAY',
+        username: 'Agent', text: 'x', ts: '1.2', thread_ts: '1.0',
+      } },
+    }));
     socket.message(frame('person', 'U_MEMBER'));
     socket.message(frame('person', 'U_MEMBER'));
     const acks = () => socket.sent.slice(1).map((raw) => JSON.parse(raw) as { deliveryId: string; outcome: string });
-    await waitFor(() => acks().length === 3);
+    await waitFor(() => acks().length === 4);
     assert.deepEqual(admitted, ['person']);
     assert.deepEqual(acks().map(({ deliveryId, outcome }) => [deliveryId, outcome]).sort(), [
-      ['own', 'accepted'], ['person', 'accepted'], ['person', 'duplicate'],
+      ['own', 'accepted'], ['person', 'accepted'], ['person', 'duplicate'], ['persona', 'accepted'],
     ]);
   } finally {
     runner?.stop();
