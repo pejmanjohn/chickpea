@@ -711,28 +711,55 @@ async function runTurnAttempt(
     : undefined;
   // Slack shows a custom assistant status only while the Agent Session is not
   // in native `processing`; the native indicator otherwise takes precedence.
-  // A non-empty assistant status itself moves the session to processing, so a
-  // turn that writes semantic status skips the native call and falls back to
-  // it only when the custom status cannot be shown. Trade-off: while custom
-  // text shows, Slack's native stop control is absent; Chickpea handles no
-  // native stop event today. Settle below stays on agents.sessions.
+  // A non-empty assistant status itself moves the session to processing, so
+  // the custom status carries the session once it shows. Trade-off: while
+  // custom text shows, Slack's native stop control is absent; Chickpea handles
+  // no native stop event today. Settle below stays on agents.sessions.
   const semanticStatusCarriesSession = () => semanticActivityEnabled &&
     presenter.preferredActivitySurface() === 'assistant_status' &&
     !presenter.activityReceipt().unavailable;
-  let nativeSessionFallbackStarted = false;
+  // Turn start: Slack's native indicator first, the fast write (about 0.4 s,
+  // against about 2 s for the custom status and its bookkeeping); the custom
+  // status then replaces it (see `handOverToCustomStatus`). A retry whose
+  // custom status is known visible already carries the session and starts
+  // nothing: a native start would hide that text. Otherwise the native start
+  // is made at most once per attempt: one that fails is not retried, and the
+  // custom status (or its settle) is what the turn shows instead.
+  /** Native processing shows and has not yet been handed to the custom status. */
+  let nativeHeld = false;
+  /** Native processing was handed to the custom status. */
+  let nativeReleased = false;
+  if (admittedVisibleStatus === undefined && agentViewPresentation) {
+    // True also for a retry whose earlier attempt started native processing
+    // and stopped before its custom write, so that write hands over too. A
+    // start whose outcome is unknown returns false: its custom writes do not
+    // hand over, and may stay hidden until the turn settles (cosmetic).
+    nativeHeld = await agentViewPresentation.beginAgentSessionProcessing();
+    if (nativeHeld) options.onSlackWrite?.('agent_session');
+  }
+  /**
+   * Hand the working indicator from native `processing` to the custom status
+   * about to be written. Slack acknowledges a custom status written while the
+   * session is in native processing but does not render it (seen live on
+   * Violet, #198), so the session leaves native processing first; the custom
+   * status then moves it back to processing, carried by the custom text.
+   * Runs before each native-surface custom write made while native shows.
+   */
+  const handOverToCustomStatus = async (): Promise<void> => {
+    if (!nativeHeld || !agentViewPresentation) return;
+    nativeHeld = false;
+    nativeReleased = await agentViewPresentation.releaseNativeProcessing();
+  };
+  // Nothing custom is (or can be) visible after a hand-over: show Slack's
+  // native indicator again. The next custom write hands over again.
   const beginNativeSessionFallback = async (): Promise<void> => {
-    if (nativeSessionFallbackStarted || !agentViewPresentation) return;
-    nativeSessionFallbackStarted = true;
-    if (await agentViewPresentation.beginAgentSessionProcessing().catch(() => false)) {
+    if (!nativeReleased || !agentViewPresentation) return;
+    nativeReleased = false;
+    if (await agentViewPresentation.reassertNativeProcessing()) {
+      nativeHeld = true;
       options.onSlackWrite?.('agent_session');
     }
   };
-  if (!semanticStatusCarriesSession()) {
-    nativeSessionFallbackStarted = true;
-    if (await agentViewPresentation?.beginAgentSessionProcessing()) {
-      options.onSlackWrite?.('agent_session');
-    }
-  }
   const activityPresenter = {
     async setStatus(update: SlackStatusUpdate): Promise<boolean> {
       if (!semanticActivityEnabled) return false;
@@ -747,6 +774,9 @@ async function runTurnAttempt(
         return false;
       }
       if (frozenPresentation?.schemaVersion === 3 && !activityWrite) return false;
+      if (activityWrite?.surface === 'assistant_status' && semanticStatusCarriesSession()) {
+        await handOverToCustomStatus();
+      }
       const succeeded = await presenter.setStatus(update, activityWrite);
       if (succeeded) options.onSlackWrite?.('activity_status');
       try {
