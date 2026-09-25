@@ -150,6 +150,8 @@ const ROOT = {
   requesterUserId: 'U_CONTINUE',
 };
 
+const CLOSING = { footer: { agentName: 'Planning Agent', agentId: 'agent_planning' } };
+
 const PERSONA = {
   name: 'Planning Agent',
   avatarUrl: 'https://chickpea.example/assets/agents/planning/avatar/1',
@@ -302,6 +304,9 @@ test('a terminal-only final holds part 1 without a footer; the follow-up closes 
     let presentation = v3(h);
     assert.equal(presentation.continuations?.state, 'active');
     assert.equal(presentation.continuations?.parts.length, 1);
+    // Each part is stored once, as canonical text; rendering happens at post time.
+    assert.deepEqual(Object.keys(presentation.continuations!.parts[0]!), ['text']);
+    assert.ok(JSON.stringify(presentation.continuations).length < parts[1]!.length + 1_000);
     assert.equal(presentation.repairRequired, true);
 
     const delivered: Array<[string, string]> = [];
@@ -524,10 +529,7 @@ test('a failure notice that supersedes the answer abandons its follow-ups', () =
   const h = harness();
   try {
     mutate(h, { kind: 'record_terminal_delivery_intent', operationId: 'terminal_answer', result: 'answer' });
-    mutate(h, {
-      kind: 'record_continuation_plan',
-      parts: [{ text: 'Part two.', payload: JSON.stringify({ text: 'Part two.' }) }],
-    });
+    mutate(h, { kind: 'record_continuation_plan', parts: ['Part two.'], closing: CLOSING });
     mutate(h, {
       kind: 'record_terminal_delivery_receipt', operationId: 'terminal_answer', certainty: 'failed',
     });
@@ -547,12 +549,22 @@ test('continuation transitions keep order and reject a plan after the final is a
   const h = harness();
   try {
     mutate(h, { kind: 'record_terminal_delivery_intent', operationId: 'terminal_answer', result: 'answer' });
-    mutate(h, {
+    // The stored closing is validated like other durable V3 facts.
+    assert.throws(() => mutate(h, {
       kind: 'record_continuation_plan',
-      parts: [
-        { text: 'Part two.', payload: JSON.stringify({ text: 'Part two.' }) },
-        { text: 'Part three.', payload: JSON.stringify({ text: 'Part three.' }) },
-      ],
+      parts: ['Part two.'],
+      closing: { footer: { agentName: 'Planning Agent', agentId: '' } },
+    }), /Footer Agent id/);
+    assert.throws(() => mutate(h, {
+      kind: 'record_continuation_plan',
+      parts: ['Part two.'],
+      closing: { ...CLOSING, files: [{ fileId: 'not-a-file' }] as never },
+    }), /completed receipts/);
+    assert.throws(() => mutate(h, {
+      kind: 'record_continuation_plan', parts: ['x'.repeat(LIMIT + 1)], closing: CLOSING,
+    }), /fit one Slack message/);
+    mutate(h, {
+      kind: 'record_continuation_plan', parts: ['Part two.', 'Part three.'], closing: CLOSING,
     });
     // Nothing posts before the canonical final is acknowledged.
     assert.throws(() => mutate(h, {

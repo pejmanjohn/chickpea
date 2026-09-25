@@ -21,7 +21,7 @@ import {
   type SlackTablePresentation,
 } from './table-presentation.ts';
 import {
-  renderSlackReplyContinuations,
+  renderSlackReplyPart,
   renderSlackReplyTable,
   slackReplyParts,
 } from './reply-continuations.ts';
@@ -931,7 +931,7 @@ export class SlackAgentViewPresentation {
     const parts = this.replyParts(presentation, approved, format);
     const first = parts[0]!;
     const renderedTable = renderSlackReplyTable(tablePresentation, parts.at(-1)!);
-    const closes = !await this.planContinuations(parts, format, renderedTable);
+    const closes = !await this.planContinuations(parts, renderedTable);
     presentation = await this.requirePresentation();
     const footerBlocks = closes
       ? [
@@ -1085,7 +1085,6 @@ export class SlackAgentViewPresentation {
    */
   async planContinuations(
     parts: readonly string[],
-    format: SlackReplyFormat,
     table?: RenderedSlackTablePresentation,
     files: readonly CompletedSlackArtifactReceipt[] = [],
   ): Promise<boolean> {
@@ -1095,11 +1094,12 @@ export class SlackAgentViewPresentation {
     if (!presentation.continuations) {
       await this.transition(presentation, {
         kind: 'record_continuation_plan',
-        parts: renderSlackReplyContinuations(parts.slice(1), format, {
+        parts: parts.slice(1),
+        closing: {
           footer: this.options.footer,
-          ...(table ? { table } : {}),
+          ...(table ? { table: { block: table.block, fallbackText: table.fallbackText } } : {}),
           ...(files.length > 0 ? { files } : {}),
-        }),
+        },
       });
     }
     return true;
@@ -1151,7 +1151,14 @@ export class SlackAgentViewPresentation {
     index: number,
     onDelivered: ((messageTs: string, text: string) => Promise<void>) | undefined,
   ): Promise<boolean> {
-    const part = presentation.continuations!.parts[index]!;
+    const plan = presentation.continuations!;
+    const part = plan.parts[index]!;
+    // Only markdown answers continue. The last part closes the reply.
+    const rendered = renderSlackReplyPart(
+      part.text,
+      'markdown',
+      index === plan.parts.length - 1 ? plan.closing : undefined,
+    );
     const operationId = part.operation?.operationId ??
       `continuation_${hash(`${presentation.runId}:${index + 1}`).slice(0, 24)}`;
     const intended = await this.transition(presentation, {
@@ -1160,7 +1167,7 @@ export class SlackAgentViewPresentation {
     let messageTs: string;
     try {
       const posted = await this.options.client.chat.postMessage({
-        ...JSON.parse(part.payload) as Record<string, unknown>,
+        ...rendered,
         channel: presentation.root.channelId,
         thread_ts: presentation.root.threadTs,
         client_msg_id: slackClientMessageId(operationId),
@@ -1671,7 +1678,7 @@ export class SlackAgentViewPresentation {
     const parts = this.replyParts(presentation, approved, format);
     const first = parts[0]!;
     const table = renderSlackReplyTable(tablePresentation, parts.at(-1)!);
-    const closes = !await this.planContinuations(parts, format, table);
+    const closes = !await this.planContinuations(parts, table);
     presentation = await this.requirePresentation();
     const content = table && closes
       ? appendSlackTableToRenderedMessage(renderSlackMessage(first, 'markdown'), first, table)

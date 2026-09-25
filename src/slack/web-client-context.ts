@@ -383,7 +383,7 @@ export function assembleSlackPrompt(
   }
   parts.push(
     '',
-    'Slack replies longer than about 10,000 characters continue in follow-up messages, so prefer a concise answer or offer to cover long material in sections.',
+    'Slack shows replies longer than about 10,000 characters as a first message plus up to three follow-ups; long answers are fine, and for very long material offer to cover it in sections.',
   );
   parts.push(
     '',

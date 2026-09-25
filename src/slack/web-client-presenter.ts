@@ -16,10 +16,10 @@ import {
 } from './message-format.ts';
 import type { SlackTablePresentation } from './table-presentation.ts';
 import {
-  renderSlackReplyContinuations,
   renderSlackReplyPart,
   renderSlackReplyTable,
   slackReplyParts,
+  type SlackReplyClosing,
 } from './reply-continuations.ts';
 import {
   slackLoadingMessages,
@@ -698,11 +698,9 @@ export class WebClientPresenter {
       ...(renderedTable ? { table: renderedTable } : {}),
       ...(completedFiles.length > 0 ? { files: completedFiles } : {}),
     };
-    const continuations = parts.length > 1
-      ? renderSlackReplyContinuations(parts.slice(1), format, closing)
-      : [];
+    const continuations = parts.slice(1);
     const durable = agentView
-      ? await agentView.planContinuations(parts, format, renderedTable, completedFiles)
+      ? await agentView.planContinuations(parts, renderedTable, completedFiles)
       : false;
 
     if (!forcePostFallback && this.target.userId && this.target.workspaceId) {
@@ -769,7 +767,7 @@ export class WebClientPresenter {
           deliveryRef: slackDeliveryRef(this.target.channelId, started.ts),
         });
         await this.notifyPublicDelivery(String(started.ts), first);
-        await this.postContinuationsDirectly(continuations);
+        await this.postContinuationsDirectly(continuations, format, closing);
         return;
       }
     }
@@ -821,7 +819,7 @@ export class WebClientPresenter {
       throw error;
     }
     if (durable) await this.deliverDurableContinuations(agentView!);
-    else await this.postContinuationsDirectly(continuations);
+    else await this.postContinuationsDirectly(continuations, format, closing);
   }
 
   /** Follow-ups of a durable plan; a failure leaves them to presentation repair. */
@@ -839,18 +837,24 @@ export class WebClientPresenter {
 
   /** Surfaces without a durable presentation post follow-ups best effort, in order. */
   private async postContinuationsDirectly(
-    continuations: ReadonlyArray<{ text: string; payload: string }>,
+    continuations: readonly string[],
+    format: SlackReplyFormat,
+    closing: SlackReplyClosing,
   ): Promise<void> {
-    for (const part of continuations) {
+    for (const [index, text] of continuations.entries()) {
       try {
         const posted = await this.client.chat.postMessage({
-          ...JSON.parse(part.payload) as Record<string, unknown>,
+          ...renderSlackReplyPart(
+            text,
+            format,
+            index === continuations.length - 1 ? closing : undefined,
+          ),
           channel: this.target.channelId,
           thread_ts: this.target.threadTs,
           ...this.persona(),
         } as unknown as Parameters<WebClient['chat']['postMessage']>[0]);
         if (typeof posted.ts === 'string' && posted.ts) {
-          await this.notifyPublicDelivery(posted.ts, part.text);
+          await this.notifyPublicDelivery(posted.ts, text);
         }
       } catch {
         // The final is already delivered; never retry it for a follow-up.

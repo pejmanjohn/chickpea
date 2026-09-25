@@ -231,7 +231,7 @@ export function renderSlackTablePresentation(
 export function appendSlackTableToRenderedMessage(
   rendered: RenderedSlackMessage,
   sourceText: string,
-  table: RenderedSlackTablePresentation,
+  table: Pick<RenderedSlackTablePresentation, 'block' | 'fallbackText'>,
 ): RenderedSlackMessage {
   return {
     ...rendered,

@@ -8,6 +8,9 @@ import type {
 } from '../activity/status.ts';
 import type { ProgressiveStreamingMode } from '../memory/tool-policy.ts';
 import { hasCredentialLikeContent } from '../security/content-validation.ts';
+import { SlackArtifactReceiptSchema } from './artifact-receipts.ts';
+import type { SlackReplyClosing } from './reply-continuations.ts';
+import * as v from 'valibot';
 
 export const SLACK_PRESENTATION_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
 export const SLACK_PRESENTATION_FINALIZED_TTL_MS = 7 * 24 * 60 * 60 * 1_000;
@@ -210,26 +213,28 @@ type SlackPresentationCleanup =
 
 /** One follow-up message of a reply longer than a single Slack message. */
 interface SlackPresentationContinuationPart {
-  /** Canonical answer text this message carries, for thread context. */
+  /** Canonical markdown this message carries; rendered when it posts. */
   text: string;
-  /** Exact chat.postMessage body, frozen before the canonical final's effect. */
-  payload: string;
   operation?: SlackPresentationOperationReceipt;
   messageTs?: string;
 }
 
 /**
  * Ordered children of the canonical final. The terminal delivery above stays
- * the one final; these parts post only after it is acknowledged.
+ * the one final; these parts post only after it is acknowledged. `closing`
+ * is frozen with the plan, so repair renders the last part without the turn.
  */
 interface SlackPresentationContinuations {
   state: 'active' | 'delivered' | 'abandoned';
   parts: SlackPresentationContinuationPart[];
+  closing: SlackReplyClosing;
 }
 
 const MAX_SLACK_CONTINUATION_PARTS = 3;
 const MAX_SLACK_CONTINUATION_TEXT_CHARS = 12_000;
-const MAX_SLACK_CONTINUATION_PAYLOAD_BYTES = 256 * 1_024;
+const MAX_SLACK_CLOSING_FACT_BYTES = 2_048;
+const MAX_SLACK_CLOSING_TABLE_BYTES = 128 * 1_024;
+const MAX_SLACK_CLOSING_FILES = 10;
 
 interface SlackPresentationRepairSchedule {
   attempts: number;
@@ -586,7 +591,8 @@ export type SlackPresentationMutation =
   | { kind: 'abandon_terminal_delivery'; operationId: string }
   | {
       kind: 'record_continuation_plan';
-      parts: ReadonlyArray<{ text: string; payload: string }>;
+      parts: readonly string[];
+      closing: SlackReplyClosing;
     }
   | { kind: 'record_continuation_intent'; index: number; operationId: string }
   | {
@@ -2248,10 +2254,12 @@ function applyMutation(
       if (mutation.parts.length < 1 || mutation.parts.length > MAX_SLACK_CONTINUATION_PARTS) {
         throw stateError('invalid_input', 'A reply has one to three continuation messages.');
       }
-      for (const part of mutation.parts) validateContinuationPart(part);
+      for (const text of mutation.parts) validateContinuationText(text);
+      validateReplyClosing(mutation.closing);
       next.continuations = {
         state: 'active',
-        parts: mutation.parts.map((part) => ({ text: part.text, payload: part.payload })),
+        parts: mutation.parts.map((text) => ({ text })),
+        closing: structuredClone(mutation.closing),
       };
       next.repairRequired = v3RepairRequired(next);
       return next;
@@ -2939,24 +2947,58 @@ function isStoredV3Presentation(
   }
 }
 
-function validateContinuationPart(part: { text: string; payload: string }): void {
-  if (typeof part.text !== 'string' || part.text.length < 1 ||
-      part.text.length > MAX_SLACK_CONTINUATION_TEXT_CHARS) {
+function validateContinuationText(text: string): void {
+  if (typeof text !== 'string' || text.length < 1 ||
+      text.length > MAX_SLACK_CONTINUATION_TEXT_CHARS) {
     throw stateError('invalid_input', 'Continuation text must fit one Slack message.');
   }
-  if (typeof part.payload !== 'string' ||
-      new TextEncoder().encode(part.payload).byteLength > MAX_SLACK_CONTINUATION_PAYLOAD_BYTES) {
-    throw stateError('invalid_input', 'Continuation payload must be bounded.');
+}
+
+function validateClosingFact(value: unknown, label: string, optional = true): void {
+  if (value === undefined && optional) return;
+  if (typeof value !== 'string' ||
+      new TextEncoder().encode(value).byteLength > MAX_SLACK_CLOSING_FACT_BYTES) {
+    throw stateError('invalid_input', `${label} must be a bounded string.`);
   }
-  let payload: unknown;
-  try {
-    payload = JSON.parse(part.payload);
-  } catch {
-    throw stateError('invalid_input', 'Continuation payload must be JSON.');
+}
+
+/** The footer, native table and completed files the reply's last message carries. */
+function validateReplyClosing(closing: SlackReplyClosing): void {
+  const footer = closing?.footer;
+  if (!footer || typeof footer !== 'object') {
+    throw stateError('invalid_input', 'Continuation footer is missing.');
   }
-  if (!payload || typeof payload !== 'object' || Array.isArray(payload) ||
-      typeof (payload as { text?: unknown }).text !== 'string') {
-    throw stateError('invalid_input', 'Continuation payload must be a Slack message body.');
+  validateClosingFact(footer.agentName, 'Footer Agent name', false);
+  validateId(footer.agentId, 'Footer Agent id');
+  validateClosingFact(footer.modelLabel, 'Footer model label');
+  validateClosingFact(footer.publicUrl, 'Footer public URL');
+  for (const flag of [footer.includeConfigureLink, footer.scheduled]) {
+    if (flag !== undefined && typeof flag !== 'boolean') {
+      throw stateError('invalid_input', 'Footer flags must be boolean.');
+    }
+  }
+  if (footer.memoryItems !== undefined) {
+    if (!Array.isArray(footer.memoryItems) || footer.memoryItems.length > 20) {
+      throw stateError('invalid_input', 'Footer memory items must be a bounded list.');
+    }
+    for (const item of footer.memoryItems) validateClosingFact(item, 'Footer memory item', false);
+  }
+  if (closing.table !== undefined) {
+    const block = closing.table.block as { type?: unknown } | undefined;
+    if (!block || (block.type !== 'table' && block.type !== 'data_table') ||
+        new TextEncoder().encode(JSON.stringify(closing.table)).byteLength >
+          MAX_SLACK_CLOSING_TABLE_BYTES ||
+        typeof closing.table.fallbackText !== 'string') {
+      throw stateError('invalid_input', 'Continuation table must be a bounded native table.');
+    }
+  }
+  if (closing.files !== undefined) {
+    if (!Array.isArray(closing.files) || closing.files.length < 1 ||
+        closing.files.length > MAX_SLACK_CLOSING_FILES ||
+        !closing.files.every((file) =>
+          v.is(SlackArtifactReceiptSchema, file) && file.schemaVersion === 2)) {
+      throw stateError('invalid_input', 'Continuation files must be completed receipts.');
+    }
   }
 }
 
@@ -2965,8 +3007,9 @@ function isStoredContinuations(value: SlackPresentationContinuations | undefined
   if ((value.state !== 'active' && value.state !== 'delivered' && value.state !== 'abandoned') ||
       !Array.isArray(value.parts) || value.parts.length < 1 ||
       value.parts.length > MAX_SLACK_CONTINUATION_PARTS) return false;
+  validateReplyClosing(value.closing);
   return value.parts.every((part) => {
-    validateContinuationPart(part);
+    validateContinuationText(part.text);
     if (part.operation !== undefined && !isOperationReceipt(part.operation)) return false;
     if (part.messageTs !== undefined) validateSlackTimestamp(part.messageTs, 'Slack continuation coordinate');
     return (part.messageTs !== undefined) === (part.operation?.certainty === 'acknowledged');

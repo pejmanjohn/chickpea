@@ -18,7 +18,7 @@ import {
 /** What only the last message of a reply carries. */
 export interface SlackReplyClosing {
   footer: SlackReplyFooter;
-  table?: RenderedSlackTablePresentation;
+  table?: Pick<RenderedSlackTablePresentation, 'block' | 'fallbackText'>;
   files?: readonly CompletedSlackArtifactReceipt[];
 }
 
@@ -73,20 +73,4 @@ export function renderSlackReplyPart(
     closing.table ? appendSlackTableToRenderedMessage(content, text, closing.table) : content,
     closing.footer,
   );
-}
-
-/** Rendered follow-up messages; the last one closes the reply. */
-export function renderSlackReplyContinuations(
-  continuations: readonly string[],
-  format: SlackReplyFormat,
-  closing: SlackReplyClosing,
-): Array<{ text: string; payload: string }> {
-  return continuations.map((text, index) => ({
-    text,
-    payload: JSON.stringify(renderSlackReplyPart(
-      text,
-      format,
-      index === continuations.length - 1 ? closing : undefined,
-    )),
-  }));
 }
