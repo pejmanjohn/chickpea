@@ -1,6 +1,6 @@
 {
   "formatVersion": 1,
-  "version": "0.1.26",
+  "version": "0.1.27",
   "storageGeneration": 1,
   "supportedOrigins": [],
   "recovery": "gateway-transport-then-previous-code",

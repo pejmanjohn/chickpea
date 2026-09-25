@@ -57,6 +57,12 @@ changed source-file digest alone is not an incompatibility. Stop for a concrete
 problem such as an unresolved target mismatch or a migration that would lose
 data, and explain that problem rather than telling the user to wait indefinitely.
 
+Some releases add a Durable Object migration; v0.1.27 adds one (`v10`) for
+coding workers, on every installation. Once the deploy applies it, Cloudflare
+refuses `wrangler rollback` and dashboard rollbacks to any version from before
+that release. Recovery from a bad update then means deploying a newer or fixed
+release forward. Tell the user this before deploying such a release.
+
 ## 3. Deploy to the same Worker
 
 For the core Cloudflare deployment, run the release's guarded command from the
