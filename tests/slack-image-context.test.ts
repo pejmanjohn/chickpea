@@ -496,7 +496,7 @@ test('the Slack Agent mounts every tool registration seam on an attachment turn'
   assert.doesNotMatch(source, /options\.toolsDisabled/);
   assert.match(source, /const sandbox = createRuntimePlanSandbox[\s\S]*useSandbox\(options\.artifactToolsDisabled \? sandbox : fileCompletion\.wrapSandbox\(sandbox\)\)[\s\S]*createRuntimePlanArtifactTool/);
   assert.match(source, /useModel\(plan\.runtimeModel \?\? plan\.model/);
-  assert.match(source, /plan\.runtimeModel \?\? \(await prepareRuntimePlanModel\(plan, env\)\)\.model/);
+  assert.match(source, /plan\.runtimeModel \?\? \(await prepareRuntimePlanModel\(plan, env, turn\)\)\.model/);
 });
 
 test('attachment startup prepares the provider outside failure degradation and forwards it on retries', async () => {
