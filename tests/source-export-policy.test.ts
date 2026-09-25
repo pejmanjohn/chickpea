@@ -221,6 +221,6 @@ test('the tracked .claude/settings.json is allowlisted deliberately: only the cl
   // The tracked file itself is the allowlist's subject.
   assert.deepEqual(build(readFileSync(join(REPOSITORY_ROOT, '.claude/settings.json'), 'utf8')), []);
   // It is the one `.claude/` path the public-source manifest admits beyond the skill entrypoint.
-  assert.equal(publicSourceManifestFindings([{ path: '.claude/settings.json' }]).some((finding) => finding.startsWith('.claude/settings.json')), false);
+  assert.equal(publicSourceManifestFindings([{ path: '.claude/settings.json' }]).some((finding: string) => finding.startsWith('.claude/settings.json')), false);
   assert.ok(publicSourceManifestFindings([{ path: '.claude/settings.local.json' }]).includes('.claude/settings.local.json: forbidden public-source path'));
 });
