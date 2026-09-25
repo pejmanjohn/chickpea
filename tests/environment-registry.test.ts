@@ -2044,8 +2044,10 @@ test('init materializes a second host from the export, owning only the granted l
   const registry = readEnvironmentRegistry(cloud);
   assert.equal(registry.hostFingerprint, 'cloud-host');
   assert.equal(registry.targets.amber.ownership, 'remote');
-  assert.equal(registry.targets.cobalt.ownership, 'local');
-  assert.equal(registry.targets.cobalt.authorityOrigin, 'https://chickpea-cobalt.example.workers.dev');
+  assert.equal(registry.targets.amber.authorityOrigin, 'https://chickpea-amber.example.workers.dev');
+  // An owned lane is recorded in the shape tooling without ownership reads.
+  assert.equal(registry.targets.cobalt.ownership, undefined);
+  assert.equal(registry.targets.cobalt.authorityOrigin, undefined);
   assert.deepEqual(registry.audit, []);
   assert.equal(registry.targets.cobalt.workerName, f.targets[1]!.workerName);
   assert.throws(() => initEnvironmentRegistryFromFile(exported, cloud), rejectsPreflight('REGISTRY_EXISTS'));
@@ -2066,7 +2068,11 @@ test('init materializes a second host from the export, owning only the granted l
   writeFileSync(join(cloudRoot, 'cobalt', 'evidence', 'environment-baseline.json'), JSON.stringify(revised), { mode: 0o600 });
   writeFileSync(join(cloudRoot, 'cobalt', 'evidence', 'deploy-receipt.json'), JSON.stringify(revisedReceipt), { mode: 0o600 });
   const returned = join(f.output, 'returned.json');
-  exportEnvironmentRegistration('cobalt', { ...cloud, output: returned, own: ['cobalt'], credentialsRoot: join(f.parent, 'absent') });
+  // A local record carries no origin, so the second host resolves it as any
+  // host does: from its own variables or credential file.
+  assert.throws(() => exportEnvironmentRegistration('cobalt', { ...cloud, output: returned, own: ['cobalt'], env: {}, credentialsRoot: join(f.parent, 'absent') }), rejectsPreflight('AUTHORITY_ORIGIN_UNAVAILABLE'));
+  exportEnvironmentRegistration('cobalt', { ...cloud, output: returned, own: ['cobalt'], credentialsRoot: join(f.parent, 'absent'),
+    env: { CHICKPEA_ENV_COBALT_LIVE_AUTHORITY_URL: 'https://chickpea-cobalt.example.workers.dev/internal/environment/authority' } });
   const macOptions = { ...f.options, worktreePath: f.first.path };
   assert.throws(() => restoreEnvironmentOwnershipFromFile('cobalt', variant((file) => { file.targets[1].ownership = 'remote'; }), macOptions), rejectsPreflight('INVALID_REGISTRATION'));
   assert.throws(() => restoreEnvironmentOwnershipFromFile('amber', returned, macOptions), rejectsPreflight('INVALID_REGISTRATION'));
@@ -2080,8 +2086,9 @@ test('init materializes a second host from the export, owning only the granted l
   const restored = restoreEnvironmentOwnershipFromFile('cobalt', returned, { ...macOptions, now: () => NOW + 1_000 });
   assert.equal(restored.ownership, 'local');
   const back = readEnvironmentRegistry(macOptions);
-  assert.equal(back.targets.cobalt.ownership, 'local');
-  assert.equal(back.targets.cobalt.authorityOrigin, 'https://chickpea-cobalt.example.workers.dev');
+  assert.equal(back.targets.cobalt.ownership, undefined);
+  assert.equal(back.targets.cobalt.authorityOrigin, undefined);
+  assert.deepEqual(Object.keys(back.targets.cobalt).sort(), Object.keys(readEnvironmentRegistry(macOptions).targets.amber).sort());
   assert.equal(back.targets.cobalt.evidenceRoot, f.targets[1]!.evidenceRoot);
   assert.equal(back.audit.at(-1).event, 'ownership_changed');
   const evidenceRoot = back.targets.cobalt.evidenceRoot;

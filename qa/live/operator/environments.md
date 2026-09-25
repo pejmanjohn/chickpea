@@ -416,9 +416,15 @@ while the lane was remote. Superseded evidence files stay beside the new ones
 as `<name>.superseded-<timestamp>.json`. A lane never returns without the
 current owner's export, because the record here is stale by definition.
 
-Every checkout that reads a registry carrying `ownership` must include this
-tooling; older checkouts reject the registry instead of rewriting it, as with
-Violet's admission.
+A local lane is recorded without any ownership field, but every hand-off and
+take-back appends an `ownership_changed` audit event to the registry's
+immutable history, and history is never rewritten. From the first hand-off
+on, every checkout that reads this host's registry must include this tooling;
+older checkouts reject it instead of rewriting it, as with Violet's admission,
+and there is no way back. Hand a lane off only after this tooling is on
+`main` and no session on an older checkout is mid-deploy on this host; an
+older checkout that is caught out can still operate its claim through a
+newer checkout's `npm run env -- <command> <alias> --worktree <its path>`.
 
 ## Product telemetry isolation
 

@@ -58,8 +58,8 @@ const TARGET_KEYS = Object.freeze([
   'reachable', 'identityMatches', 'computerUseSurfaces', 'missingActorAliases',
   'claim', 'lastAttestation',
 ]);
-// Present only on records written after the fields were introduced, so every
-// earlier registry stays readable. A missing `ownership` means local.
+// Present only on remote records. A missing `ownership` means local, and a
+// local record never carries these fields.
 const OPTIONAL_TARGET_KEYS = Object.freeze([
   'setupFlowUnprovenSince', 'installation', 'ownership', 'authorityOrigin',
 ]);
@@ -317,10 +317,12 @@ export function setEnvironmentOwnership(target, input, options = {}) {
           throw fail('REGISTRATION_IDENTITY_MISMATCH', { target, field: key });
         }
       }
+      // Local is the absence of the field, and a local lane needs no recorded
+      // origin: this host holds its own credentials.
+      const { ownership: _ownership, authorityOrigin: _authorityOrigin, ...portable } = replacement;
       next.targets[target] = normalizeTarget({
-        ...replacement,
+        ...portable,
         evidenceRoot: registration.evidenceRoot,
-        ownership: 'local',
         claim: null,
         lastAttestation: null,
       });

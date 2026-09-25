@@ -265,7 +265,12 @@ export function initEnvironmentRegistryFromFile(file, options = {}) {
     }
     assertSafeEvidenceRoot(evidenceRoots[target], options);
   }
-  const targets = registration.targets.map((record) => ({ ...record, evidenceRoot: evidenceRoots[record.target] }));
+  // An owned lane is recorded without the ownership fields (absence is local).
+  const targets = registration.targets.map(({ ownership, authorityOrigin, ...record }) => ({
+    ...record,
+    evidenceRoot: evidenceRoots[record.target],
+    ...(ownership === 'remote' ? { ownership, authorityOrigin } : {}),
+  }));
   const registry = createEnvironmentRegistry({
     root,
     targets,
