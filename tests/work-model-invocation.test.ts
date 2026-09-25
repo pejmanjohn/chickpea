@@ -112,3 +112,34 @@ test('non-Slack Flue agents bypass Slack TurnJob correlation', async () => {
   assert.equal(targetResolutions, 0);
   assert.equal(agentCalls, 2);
 });
+
+test('an observe-mode invocation whose marker fails is not marked again by later model operations', async () => {
+  let marks = 0;
+  let providerCalls = 0;
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    const interceptor = createWorkModelInvocationInterceptor({
+      resolveTarget: async () => ({ ...target, workCorrelation: { ...correlation, mode: 'observe' as const } }),
+      markInvocation: async () => {
+        marks += 1;
+        throw new Error('Canonical RunExecution correlation is unavailable.');
+      },
+    });
+    await interceptor(
+      { type: 'agent', operationId: 'operation', operationKind: 'prompt' },
+      context,
+      async () => {
+        for (let turn = 0; turn < 50; turn += 1) {
+          await interceptor({ type: 'model', turnId: `turn-${turn}` }, {}, async () => {
+            providerCalls += 1;
+          });
+        }
+      },
+    );
+  } finally {
+    console.warn = warn;
+  }
+  assert.equal(providerCalls, 50, 'the legacy execution continues');
+  assert.equal(marks, 1, 'one store attempt for the invocation, not one per model operation');
+});

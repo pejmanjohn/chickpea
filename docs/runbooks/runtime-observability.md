@@ -337,8 +337,11 @@ channel IDs, settings keys or values, or error text. Emission never throws.
   unsettled jobs it held at the start, `ran` the turn attempts it ran. A
   runner observes a turn for at most 10 minutes per alarm, then `yielded` is
   true and it reattaches a second later; a yield is never an attempt. While a
-  job runs a backstop alarm is armed 30 seconds out, so an evicted runner
-  resumes from the turn row's receipt instead of dispatching again. `carried`
+  job runs its wake is kept 5 seconds ahead, so an evicted runner resumes
+  from the turn row's receipt instead of dispatching again. After a deploy,
+  a runner whose alarm handler was running on the old version resumes only
+  when that handler returns (alarms never overlap per object): on Amber this
+  took about 3 minutes, during which the turn shows its last status. `carried`
   counts turns still running at the 12-minute cap. Runner turns log
   `turn_latency` with `executor: runner`. The runner keeps the turn's Slack
   presentation in its own storage and repairs it itself; the state store's

@@ -1688,9 +1688,14 @@ async function runTurnAttempt(
         ? terminalResult === 'failure' ? 'failed' : 'succeeded'
         : undefined,
     );
-  } catch (err) {
+  } catch (caught) {
     // A runner whose state store is being replaced retries the turn the same
-    // way it reattaches after a yield: the Agent is still working.
+    // way it reattaches after a yield: the Agent is still working. That
+    // includes a store call anywhere in the turn (a memory lease check after
+    // the answer, say) failing because its Durable Object is being replaced.
+    const err = !(caught instanceof AgentPromptFailure) && isSandboxDisconnect(caught)
+      ? new StateStoreUnavailable()
+      : caught;
     if (err instanceof AgentObservationYield || err instanceof StateStoreUnavailable) yielded = true;
     if (!(err instanceof AgentPromptFailure && err.retryable)) {
       await usageRecorder?.recordFailure();
@@ -1905,7 +1910,10 @@ async function createSlackShadowLifecycle(input: {
       input.canonicalModel,
       input.settingsStore ?? getSettingsStore(input.platformEnv),
     );
-    return createWorkExecutionLifecycle(store, {
+    // Awaited here so a rejection reaches the catch: in observe mode a resume
+    // whose execution was never created (its first attempt hit a slow store)
+    // continues without the shadow lifecycle instead of failing every attempt.
+    return await createWorkExecutionLifecycle(store, {
       runId: input.runId,
       attemptNumber: input.attemptNumber,
       ...(input.fencingToken === undefined ? {} : { fencingToken: input.fencingToken }),

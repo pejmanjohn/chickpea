@@ -8,8 +8,10 @@ const ERROR_KINDS = new Set([
   'AggregateError', 'AbortError', 'TimeoutError', 'FlueError',
   'AgentPromptFailure', 'AgentObservationYield', 'StateStoreUnavailable',
   'StateStoreDisconnectedError', 'SlackPresentationStateError',
-  'AgentInstanceNotFoundError',
+  'AgentInstanceNotFoundError', 'WorkStateError',
 ]);
+
+const WORK_STATE_CODE = /^[a-z][a-z0-9_]{0,47}$/;
 
 const FINISH_REASONS = new Set([
   'stop', 'length', 'toolUse', 'error', 'aborted', 'tool_calls', 'function_call', 'eos',
@@ -60,6 +62,10 @@ export function settlementFailureFacts(error: unknown): Record<string, unknown>[
       ...serializedProviderFailure(meta?.reason),
       ...(typeof value.message === 'string' && Object.hasOwn(PRESENTATION_FAILURES, value.message)
         ? { presentationFailureKind: PRESENTATION_FAILURES[value.message] } : {}),
+      // A fixed-vocabulary code such as work_execution_conflict, never prose.
+      ...(value.name === 'WorkStateError' && typeof value.code === 'string' &&
+          WORK_STATE_CODE.test(value.code)
+        ? { workStateCode: value.code } : {}),
     });
     current = value.cause;
   }

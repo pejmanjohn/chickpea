@@ -10,6 +10,7 @@ import type { ConfigStore } from '../config/store.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
 import { currentHumanIdentityDirectory } from '../identity/current-directory.ts';
 import type { IdentityStore } from '../identity/types.ts';
+import { isSandboxDisconnect } from '../sandbox/reconnect.ts';
 import { resolveSlackCredentials } from '../slack/credentials.ts';
 import {
   hasLeadingSlackCommandAddress,
@@ -194,6 +195,8 @@ export async function prepareMemoryTurn(input: {
       },
     };
   } catch (error) {
+    // Nor does an outage while preparing: quarantine would fail the turn.
+    if (isSandboxDisconnect(error)) throw error;
     emitMemoryMetric('quarantine', { reason: memoryErrorCode(error) });
     const conversationKey = memoryQuarantineThreadKey(baseKey, input.turn.eventId);
     return {
@@ -347,7 +350,10 @@ async function validateWorkspaceManagementLease(
       members.ok && !members.incomplete &&
       members.ids.includes(turn.userId) && members.ids.includes(botUserId)
     );
-  } catch {
+  } catch (error) {
+    // An unreachable state store decides nothing about the lease: the turn
+    // retries instead of replacing its answer with a failure notice.
+    if (isSandboxDisconnect(error)) throw error;
     return false;
   }
 }
@@ -473,7 +479,10 @@ async function validateAgentMemoryLease(
       !facts.im && !facts.mpim && facts.member && actor.ok && actor.user &&
       members.ok && members.ids.includes(turn.userId) && members.ids.includes(runtime.botUserId),
     );
-  } catch {
+  } catch (error) {
+    // An unreachable state store decides nothing about the lease: the turn
+    // retries instead of replacing its answer with a failure notice.
+    if (isSandboxDisconnect(error)) throw error;
     return false;
   }
 }

@@ -3,6 +3,7 @@ import type { SettingsStore } from '../config/settings-store.ts';
 import type { AppStores, PlatformEnv } from '../config/state-backend.ts';
 import type { TurnProgress } from '../config/state-rpc.ts';
 import type { TurnLatencyContext } from '../observability/runtime-latency.ts';
+import { isSandboxDisconnect } from '../sandbox/reconnect.ts';
 import { sandboxThreadKey } from '../sandbox/thread-key.ts';
 import type { ProductTelemetryCapture } from '../telemetry/client.ts';
 import type { UsageStore } from '../usage/types.ts';
@@ -419,7 +420,10 @@ export async function executeTurnJob(
       console.warn('[chickpea] post-delivery cleanup did not complete');
       return true;
     }
-    if (err instanceof StateStoreUnavailable) {
+    // A disconnect that escaped the turn unmapped (thrown before it began)
+    // is the same outage.
+    if (err instanceof StateStoreUnavailable ||
+        (!(err instanceof AgentPromptFailure) && isSandboxDisconnect(err))) {
       const since = flueDispatch.dispatchReceipt?.acceptedAt ??
         (job.enqueuedAt === undefined ? undefined : new Date(job.enqueuedAt).toISOString());
       if (alarmYieldIsFree(since, Date.now())) {

@@ -18,6 +18,8 @@ interface InvocationState {
   target?: FlueObservationTarget;
   marked: boolean;
   marking?: Promise<void>;
+  /** An observe-mode mark failed: this invocation is not marked again. */
+  markUnavailable?: boolean;
 }
 
 interface ActiveFlueObservationContext {
@@ -83,10 +85,15 @@ export function createWorkModelInvocationInterceptor(options: {
     const active = invocationState.getStore();
     const correlation = active?.target?.workCorrelation;
     if (!active || !correlation) return next();
+    // Observe mode marks at most once per invocation: a failed mark (its
+    // execution missing, or the store unreachable) is not retried by every
+    // later model operation, which sent one store read per operation.
+    if (active.markUnavailable && correlation.mode !== 'enforce') return next();
     try {
       await ensureInvocationMarked(active, correlation, markInvocation);
     } catch (error) {
       if (correlation.mode === 'enforce') throw error;
+      active.markUnavailable = true;
       console.warn('[work] model invocation marker unavailable; legacy execution will continue');
     }
     return next();

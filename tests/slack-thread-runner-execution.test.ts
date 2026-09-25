@@ -8,7 +8,12 @@ import {
   AgentPromptFailure,
   StateStoreUnavailable,
 } from '../src/slack/flue-dispatch.ts';
-import { CfTurnJobsForRunner, StateStoreDisconnectedError } from '../src/config/cf-state-proxies.ts';
+import {
+  CfMemoryStateStore,
+  CfTurnJobsForRunner,
+  FreshTagStateStubs,
+  StateStoreDisconnectedError,
+} from '../src/config/cf-state-proxies.ts';
 import type { TagStateRpc } from '../src/config/state-rpc.ts';
 import {
   SlackRunPresentationStoreLogic,
@@ -424,6 +429,8 @@ function runnerHarness(db: ReturnType<typeof openStateDb>, rows: ReturnType<type
   failCleanups?: number;
   /** The state store is unreachable from inside these turns. */
   storeOutage?: (id: string) => boolean;
+  /** runTurn rejects with the runtime's raw reset error (no mapping). */
+  storeReset?: (id: string) => boolean;
 } = {}) {
   const jobs = new ThreadRunnerJobStore(db);
   const events: string[] = [];
@@ -467,6 +474,10 @@ function runnerHarness(db: ReturnType<typeof openStateDb>, rows: ReturnType<type
       if (script.storeOutage?.(id)) {
         events.push(`outage:${id}`);
         throw new StateStoreUnavailable();
+      }
+      if (script.storeReset?.(id)) {
+        events.push(`reset:${id}`);
+        throw Object.assign(new Error('Durable Object reset because its code was updated.'), { retryable: true });
       }
       if (!options.flueDispatch?.dispatchReceipt) {
         events.push(`dispatch:${id}`);
@@ -833,6 +844,42 @@ test('activity changes make no state-store calls; the generation is read once pe
   } finally { db.close(); }
 });
 
+test('every store built on fresh stubs mints one per call and replays a disconnect once', async () => {
+  // Amber LT4: the memory, config, usage, and work stores a turn built kept
+  // one stub for the whole attempt; after a state-store reset every call on
+  // it failed at once and the memory lease read as invalid.
+  let mints = 0;
+  const failing = new Set<number>();
+  const calls: string[] = [];
+  const store = new CfMemoryStateStore(new FreshTagStateStubs(() => {
+    mints += 1;
+    const mint = mints;
+    return {
+      async memoryExecute(request: { kind: string }) {
+        calls.push(`${mint}:${request.kind}`);
+        if (failing.has(mint)) {
+          throw Object.assign(new Error('Durable Object reset because its code was updated.'), { retryable: true });
+        }
+        if (mint === 99) return { ok: false, error: { code: 'memory_owner_invalid', message: 'x' } };
+        return { ok: true, value: { kind: 'agent_memory', memory: { agentId: 'a', revision: 1, body: '' } } };
+      },
+    } as unknown as TagStateRpc;
+  }));
+  await store.getAgentMemory('a');
+  await store.getAgentMemory('a');
+  assert.deepEqual(calls, ['1:get_agent_memory', '2:get_agent_memory'], 'a new stub for every call');
+
+  failing.add(3);
+  await store.getAgentMemory('a');
+  assert.deepEqual(calls.slice(2), ['3:get_agent_memory', '4:get_agent_memory'], 'replayed once on a new stub');
+
+  failing.add(5);
+  failing.add(6);
+  await assert.rejects(store.getAgentMemory('a'), (error: unknown) =>
+    error instanceof StateStoreDisconnectedError);
+  assert.equal(mints, 6, 'no third call');
+});
+
 /** Stubs for CfTurnJobsForRunner: `fail` decides which minted stub rejects. */
 function mintingStubs(fail: (mint: number, kind: string) => boolean) {
   let mints = 0;
@@ -998,6 +1045,20 @@ test('a runner backs off a turn whose state store stays unreachable (1 s, then 2
     }
     assert.deepEqual(delays, [1, 2], 'a store being replaced is retried quickly (1 s doubling to 8 s)');
     assert.equal(rows.rows.get('outage')!.attempts, 0, 'no attempt spent inside the durability window');
+  } finally { db.close(); }
+});
+
+test('a raw state-store reset escaping the turn is retried like an outage, never failed', async () => {
+  const db = openStateDb(':memory:');
+  try {
+    const rows = fakeRows(['reset']);
+    const h = runnerHarness(db, rows, { storeReset: () => true });
+    h.jobs.admit({ id: 'reset', threadKey: 'thread', payload: {} }, 1);
+    const result = await runThreadRunnerAlarm(h.deps);
+    assert.equal(result.record.reason, 'state_store_unavailable');
+    assert.equal(rows.rows.get('reset')!.attempts, 0, 'no attempt spent inside the durability window');
+    assert.equal(h.events.some((event) => event.startsWith('failed:')), false);
+    assert.equal(rows.rows.get('reset')!.status, 'pending', 'the turn is kept for its retry');
   } finally { db.close(); }
 });
 

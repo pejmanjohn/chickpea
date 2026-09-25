@@ -6,6 +6,7 @@ import { agentFailureDiagnosticsInterceptor, observeAgentResultDiagnostics, sett
 import { CHICKPEA_SLACK_AGENT_NAME } from '../src/agents/names.ts';
 import { opaqueId } from '../src/work/admission.ts';
 import { AgentPromptFailure, StateStoreUnavailable } from '../src/slack/flue-dispatch.ts';
+import { WorkStateError } from '../src/work/types.ts';
 
 const operation = { type: 'agent', operationId: 'private-submission', operationKind: 'prompt' } as const;
 const context = { agentName: CHICKPEA_SLACK_AGENT_NAME, submissionId: 'private-submission' };
@@ -56,6 +57,9 @@ test('a retried turn names the failure it retries and its cause, never the text'
     { kind: 'TypeError' },
   ]);
   assert.deepEqual(settlementFailureFacts(new StateStoreUnavailable()), [{ kind: 'StateStoreUnavailable' }]);
+  assert.deepEqual(settlementFailureFacts(new WorkStateError(
+    'work_execution_conflict', 'private detail', { runId: 'run_private' },
+  )), [{ kind: 'WorkStateError', workStateCode: 'work_execution_conflict' }]);
 });
 
 test('empty model completion diagnostics retain finish and token facts but no content', (t) => {
