@@ -442,6 +442,8 @@ function runnerHarness(db: ReturnType<typeof openStateDb>, rows: ReturnType<type
   storeReset?: (id: string) => boolean;
   /** runTurn rejects with a retryable Slack/gateway transport error. */
   slackOutage?: (id: string) => boolean;
+  /** The turn ends on a deferred terminal (an Agent welcome the outbox posts). */
+  deferred?: (id: string) => boolean;
 } = {}) {
   const jobs = new ThreadRunnerJobStore(db);
   const events: string[] = [];
@@ -501,6 +503,11 @@ function runnerHarness(db: ReturnType<typeof openStateDb>, rows: ReturnType<type
         await options.flueDispatch?.recordReceipt({ submissionId: `submission_${id}` } as never);
       } else {
         events.push(`reattach:${id}`);
+      }
+      if (script.deferred?.(id)) {
+        await options.onDeferredTerminal?.();
+        events.push(`deferred:${id}`);
+        return;
       }
       if (script.hold?.(id)) {
         options.onObservationStarted?.();
@@ -657,6 +664,60 @@ test('a deferred terminal is checked again without holding the next turn', () =>
     jobs.settle('next', 'admitted', 10, 500);
     assert.deepEqual(jobs.runnable(10).map((job) => job.id), [], 'a retained turn holds its successors');
     assert.equal(jobs.nextDueAt(10), 500);
+  } finally { db.close(); }
+});
+
+test('a deferred terminal runs its turn once, then only reads its row with backoff until the outbox settles it', async () => {
+  const db = openStateDb(':memory:');
+  try {
+    const rows = fakeRows(['welcome', 'next']);
+    const h = runnerHarness(db, rows, { deferred: (id) => id === 'welcome' });
+    h.jobs.admit({ id: 'welcome', threadKey: 'thread', payload: {} }, 1);
+    h.jobs.admit({ id: 'next', threadKey: 'thread', payload: {} }, 2);
+    let at = h.deps.now!();
+    const first = await runThreadRunnerAlarm(h.deps);
+    assert.deepEqual(h.events, ['dispatch:welcome', 'deferred:welcome', 'dispatch:next', 'delivered:next'],
+      'a deferred terminal never holds the next turn');
+    assert.equal(h.jobs.get('welcome')!.state, 'deferred');
+    const due = () => h.jobs.get('welcome')!.retryAt! - at;
+    assert.ok(due() >= 2_000 && due() < 2_100, `first check 2 s after the deferral, not ${due()}`);
+    assert.equal(first.nextAlarmAt, h.jobs.get('welcome')!.retryAt);
+    // The welcome is still pending in the outbox: each wake reads the row
+    // and backs off; it never runs the turn (or refreshes its status) again.
+    for (const delay of [4_000, 8_000, 16_000, 30_000, 30_000]) {
+      h.advance(h.jobs.get('welcome')!.retryAt! - h.deps.now!());
+      const calls = rows.calls.length;
+      at = h.deps.now!();
+      const result = await runThreadRunnerAlarm(h.deps);
+      assert.deepEqual(rows.calls.slice(calls), ['view:welcome'], 'a check is one row read');
+      assert.ok(due() >= delay && due() < delay + 100, `next check after ${delay} ms, not ${due()}`);
+      assert.equal(result.nextAlarmAt, h.jobs.get('welcome')!.retryAt);
+    }
+    assert.equal(h.events.length, 4, 'the turn ran exactly once');
+    assert.equal(rows.rows.get('welcome')!.attempts, 1, 'checks are never attempts');
+    // The state store delivers the welcome and settles the turn row.
+    rows.rows.get('welcome')!.status = 'done';
+    h.advance(h.jobs.get('welcome')!.retryAt! - h.deps.now!());
+    await runThreadRunnerAlarm(h.deps);
+    assert.equal(h.jobs.get('welcome')!.state, 'done');
+    assert.equal(h.events.length, 4);
+    assert.deepEqual(h.jobs.runnable(h.deps.now!() + 60_000), []);
+  } finally { db.close(); }
+});
+
+test('a deferred terminal the state store failed or took back settles on its next check', async () => {
+  const db = openStateDb(':memory:');
+  try {
+    const rows = fakeRows(['failed']);
+    const h = runnerHarness(db, rows, { deferred: () => true });
+    h.jobs.admit({ id: 'failed', threadKey: 'thread', payload: {} }, 1);
+    await runThreadRunnerAlarm(h.deps);
+    assert.equal(h.jobs.get('failed')!.state, 'deferred');
+    rows.rows.get('failed')!.status = 'error';
+    h.advance(2_000);
+    await runThreadRunnerAlarm(h.deps);
+    assert.equal(h.jobs.get('failed')!.state, 'error');
+    assert.deepEqual(h.events, ['dispatch:failed', 'deferred:failed']);
   } finally { db.close(); }
 });
 
@@ -1366,6 +1427,50 @@ test('a code update seen between jobs holds the next job for the new version', a
     await runThreadRunnerAlarm(h.deps);
     assert.deepEqual(h.events.slice(2), ['dispatch:second', 'delivered:second']);
   } finally { db.close(); }
+});
+
+test('a deferred check on a superseded alarm settles or backs off without holding; the next turn waits for the new version', async () => {
+  for (const outcome of ['done', 'pending'] as const) {
+    const db = openStateDb(':memory:');
+    try {
+      const rows = fakeRows(['first', 'welcome', 'next']);
+      const h = versionedHarness(db, rows, () => OLD_VERSION);
+      h.jobs.admit({ id: 'first', threadKey: 'thread', payload: {} }, 1);
+      h.jobs.admit({ id: 'welcome', threadKey: 'thread', payload: {} }, 2);
+      h.jobs.admit({ id: 'next', threadKey: 'thread', payload: {} }, 3);
+      // The welcome turn already ran and deferred its terminal; its check is due.
+      h.jobs.settle('welcome', 'deferred', 0, 0);
+      rows.rows.get('welcome')!.attempts = 1;
+      if (outcome === 'done') rows.rows.get('welcome')!.status = 'done';
+      const originalExecute = h.deps.execute;
+      h.deps.execute = async (...args) => {
+        const settled = await originalExecute(...args);
+        // A code update is noticed as the first job finishes.
+        h.deps.supersede!.by = NEW_VERSION;
+        return settled;
+      };
+      const calls = () => rows.calls.filter((call) => call.endsWith(':welcome'));
+      const at = h.deps.now!();
+      const result = await runThreadRunnerAlarm(h.deps);
+      assert.deepEqual(h.events, ['dispatch:first', 'delivered:first'], `${outcome}: nothing else runs`);
+      // A settled row also gets the usual interaction-cleanup check (a second read).
+      assert.deepEqual(calls(), outcome === 'done' ? ['view:welcome', 'view:welcome'] : ['view:welcome'],
+        `${outcome}: the deferred check only reads the row, never begins the turn`);
+      assert.equal(result.record.supersededBy, NEW_VERSION);
+      assert.equal(h.jobs.get('next')!.state, 'admitted', 'the next turn waits for the new version');
+      if (outcome === 'done') {
+        assert.equal(h.jobs.get('welcome')!.state, 'done');
+      } else {
+        const welcome = h.jobs.get('welcome')!;
+        assert.equal(welcome.state, 'deferred');
+        assert.ok(welcome.retryAt! - at >= 4_000 && welcome.retryAt! - at < 4_100,
+          'a pending row backs off as on any alarm');
+        assert.deepEqual(h.jobs.runnable(h.deps.now!()).map((job) => job.id), ['next'],
+          'the deferred job never holds the thread');
+      }
+      assert.equal(rows.rows.get('welcome')!.attempts, 1, 'a check is never an attempt');
+    } finally { db.close(); }
+  }
 });
 
 test('a signal left over from an earlier alarm does not hold the next one', async () => {
