@@ -500,6 +500,8 @@ export type SlackPresentationMutation =
   | { kind: 'stream_message_lost'; messageTs: string }
   /** A non-terminal stream start never recorded its Slack coordinate. */
   | { kind: 'stream_coordinate_lost' }
+  /** An open stream is closed before Slack can seal it; the final posts fresh. */
+  | { kind: 'retire_aged_stream'; messageTs: string }
   | {
       kind: 'adopt_plan';
       taskLabels: readonly string[];
@@ -1719,6 +1721,29 @@ function applyMutation(
       requireState(current, 'finalizing');
       if (!current.stream.messageTs || current.stream.messageTs !== mutation.messageTs) {
         throw stateError('coordinate_conflict', 'Lost stream does not match the saved coordinate.');
+      }
+      next.stream = {
+        state: 'fallback',
+        acknowledgedByteLength: 0,
+        slackAppendCursor: 0,
+        presentationOutcome: 'terminal_only',
+      };
+      next.repairRequired = true;
+      return next;
+    case 'retire_aged_stream':
+      // Slack seals a native stream a few minutes after it starts. A long
+      // delegated turn closes its card first, while the coordinate still
+      // answers, and its terminal posts once as a fresh message. Later
+      // milestones stay durable but are no longer projected onto the card.
+      requireState(current, 'streaming');
+      if (current.stream.pendingAppend) {
+        throw stateError('invalid_transition', 'A pending append must be reconciled before retirement.');
+      }
+      if (current.stream.messageTs !== mutation.messageTs) {
+        throw stateError('coordinate_conflict', 'Retired stream does not match the saved coordinate.');
+      }
+      if (current.schemaVersion === 3 && current.terminalDelivery.state !== 'none') {
+        throw stateError('terminal_rewrite', 'A stream carrying a terminal cannot be retired.');
       }
       next.stream = {
         state: 'fallback',

@@ -127,6 +127,7 @@ import {
   type SlackInteractionIntent,
 } from './interaction-intent.ts';
 import {
+  AGENT_VIEW_STREAM_AGE_CHECK_MS,
   SlackAgentViewPresentation,
   type SlackPresentationStatePort,
 } from './agent-view-presentation.ts';
@@ -1209,50 +1210,59 @@ export async function runTurn(
               eligibility: frozenProgressiveEligibility,
             });
         }
-        agentResult = await (options.agentPrompt ?? promptSlackThreadAgent)({
-          message: executionPrompt,
-          state: options.flueDispatch!,
-          turnId: statusGeneration,
-          conversationKey: agentConversationKey,
-          useCloudflareSandbox: usedCloudflareSandbox,
-          requestedModel: resolvedModel ?? null,
-          ...(runtimePlanDecision
-            ? { runtimePlan: runtimePlanDecision.runtimePlan }
-            : {}),
-          // The host fetch is the only place these records exist; the dispatch
-          // envelope is the only channel that reaches the Agent object. Only a
-          // plan that can use them gets them: one whose image role resolved, or
-          // one that can send a conversation image to a connection.
-          ...(context.images?.length && runtimePlanDecision &&
-          (runtimePlanDecision.runtimePlan.imageCapability?.filled === true ||
-            planAllowsConnectionFileUpload(runtimePlanDecision.runtimePlan))
-            ? { threadImages: context.images }
-            : {}),
-          ...(admittedListIds.length ? { admittedListIds } : {}),
-          ...(platformEnv ? { env: platformEnv } : {}),
-          ...(workLifecycle && options.runId
-            ? {
-                workCorrelation: {
-                  runId: options.runId,
-                  runExecutionId: workLifecycle.executionId,
-                  mode: ledgerAuthority ? 'enforce' : 'observe',
-                },
-              }
-            : {}),
-          ...(prepareProgressiveRelay ? { prepareProgressiveRelay } : {}),
-          ...(options.observationSignal ? { observationSignal: options.observationSignal } : {}),
-          ...(options.onObservationStarted
-            ? { onObservationStarted: options.onObservationStarted }
-            : {}),
-          ...(agentViewPresentation || options.onCodingTaskStarted
-            ? {
-                onWorkspaceMilestone: async (record, target) => {
-                  await signalCodingTaskStarted();
-                  await agentViewPresentation?.applyWorkspaceMilestone(record, target);
-                },
-              }
-            : {}),
-        });
+        // A long delegated turn closes its Agent View card before Slack can
+        // seal it; its answer then posts as a fresh message.
+        const streamAgeChecks = agentViewPresentation
+          ? watchAgentViewStreamAge(agentViewPresentation)
+          : undefined;
+        try {
+          agentResult = await (options.agentPrompt ?? promptSlackThreadAgent)({
+            message: executionPrompt,
+            state: options.flueDispatch!,
+            turnId: statusGeneration,
+            conversationKey: agentConversationKey,
+            useCloudflareSandbox: usedCloudflareSandbox,
+            requestedModel: resolvedModel ?? null,
+            ...(runtimePlanDecision
+              ? { runtimePlan: runtimePlanDecision.runtimePlan }
+              : {}),
+            // The host fetch is the only place these records exist; the dispatch
+            // envelope is the only channel that reaches the Agent object. Only a
+            // plan that can use them gets them: one whose image role resolved, or
+            // one that can send a conversation image to a connection.
+            ...(context.images?.length && runtimePlanDecision &&
+            (runtimePlanDecision.runtimePlan.imageCapability?.filled === true ||
+              planAllowsConnectionFileUpload(runtimePlanDecision.runtimePlan))
+              ? { threadImages: context.images }
+              : {}),
+            ...(admittedListIds.length ? { admittedListIds } : {}),
+            ...(platformEnv ? { env: platformEnv } : {}),
+            ...(workLifecycle && options.runId
+              ? {
+                  workCorrelation: {
+                    runId: options.runId,
+                    runExecutionId: workLifecycle.executionId,
+                    mode: ledgerAuthority ? 'enforce' : 'observe',
+                  },
+                }
+              : {}),
+            ...(prepareProgressiveRelay ? { prepareProgressiveRelay } : {}),
+            ...(options.observationSignal ? { observationSignal: options.observationSignal } : {}),
+            ...(options.onObservationStarted
+              ? { onObservationStarted: options.onObservationStarted }
+              : {}),
+            ...(agentViewPresentation || options.onCodingTaskStarted
+              ? {
+                  onWorkspaceMilestone: async (record, target) => {
+                    await signalCodingTaskStarted();
+                    await agentViewPresentation?.applyWorkspaceMilestone(record, target);
+                  },
+                }
+              : {}),
+          });
+        } finally {
+          await streamAgeChecks?.stop();
+        }
         text = sandboxUnavailableFallback
           ? `${SANDBOX_UNAVAILABLE_FALLBACK_NOTICE}\n\n${agentResult.text}`
           : agentResult.text;
@@ -1543,6 +1553,26 @@ export async function runTurn(
       }
     }
   }
+}
+
+/**
+ * Check the Agent View stream's age while the turn waits on its agent: at
+ * once (a reattached turn may hold an old stream) and every
+ * AGENT_VIEW_STREAM_AGE_CHECK_MS. Checks never overlap and never throw.
+ */
+function watchAgentViewStreamAge(
+  presentation: Pick<SlackAgentViewPresentation, 'retireAgedStream'>,
+): { stop(): Promise<void> } {
+  let running: Promise<unknown> = presentation.retireAgedStream();
+  const timer = setInterval(() => {
+    running = running.then(() => presentation.retireAgedStream());
+  }, AGENT_VIEW_STREAM_AGE_CHECK_MS);
+  return {
+    async stop() {
+      clearInterval(timer);
+      await running;
+    },
+  };
 }
 
 /** Repair only adapter-owned, already-delivered Slack artifacts. The answer

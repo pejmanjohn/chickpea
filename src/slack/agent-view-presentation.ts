@@ -144,6 +144,23 @@ interface PreparedSlackActivityWrite {
 }
 
 const STALE_WRITER_MESSAGE = 'Slack Agent View presentation writer is stale.';
+
+/**
+ * Close an open Agent View stream once it is this old. Slack does not document
+ * a stream lifetime; other Slack agents observe native streams sealed about
+ * 5 min 20 s after `chat.startStream`, even while appending, after which the
+ * card can no longer be stopped, updated, or found. Four minutes leaves room
+ * for the check interval and for clock skew between Slack's timestamp and
+ * the Worker. Short turns finish well inside it and keep their streamed card.
+ */
+export const AGENT_VIEW_STREAM_RETIRE_AFTER_MS = 4 * 60_000;
+
+/** How often a turn that is waiting on its agent checks the stream's age. */
+export const AGENT_VIEW_STREAM_AGE_CHECK_MS = 20_000;
+
+/** The retired card's last words; the answer follows as its own message. */
+export const AGENT_VIEW_RETIRED_STREAM_TEXT =
+  'Still working on this. I will post the result in this thread.';
 const MAX_PROGRESSIVE_BUFFER_BYTES = 128 * 1_024;
 const DEFAULT_APPEND_INTERVAL_MS = 750;
 const CORRECTED_MARKER = '_Corrected_';
@@ -791,6 +808,11 @@ export class SlackAgentViewPresentation {
     artifacts: readonly SlackArtifactReceipt[] = [],
   ): Promise<AgentViewFinalResult> {
     let presentation = await this.requirePresentation();
+    // A stream old enough for Slack to have sealed it is closed first; the
+    // terminal then takes the fresh-post route instead of a stop that fails.
+    if (this.streamIsAged(presentation) && await this.retireAgedStream()) {
+      presentation = await this.requirePresentation();
+    }
     if (presentation.stream.state === 'finalized' ||
         presentation.stream.state === 'artifact_delivered') {
       if (presentation.schemaVersion === 3 && presentation.stream.messageTs &&
@@ -1476,20 +1498,23 @@ export class SlackAgentViewPresentation {
         await this.options.client.chat.update(update);
       } catch (error) {
         if (slackEffectOutcome(error) !== 'failed' ||
-            safeSlackErrorCode(error) !== 'message_not_found') throw error;
-        // The saved coordinate names no message: Slack cannot show anything
-        // there, and a retry would fail the same way until the run is
-        // abandoned with no visible answer. Post the terminal once, fresh.
-        console.warn('[chickpea] Slack Agent View stream message missing; posting the final fresh');
-        try {
-          // A sealed stream can still render as an empty shell. Remove it when
-          // Slack lets us; a refusal never holds back the fresh final.
-          await this.options.client.chat.delete({ channel: update.channel, ts: messageTs });
-        } catch (deleteError) {
-          console.warn(
-            `[chickpea] Slack Agent View lost stream cleanup ${slackEffectOutcome(deleteError)}: ` +
-            safeSlackErrorCode(deleteError),
-          );
+            !STREAM_NO_LONGER_OPEN_ERRORS.has(safeSlackErrorCode(error))) throw error;
+        // Slack refuses the saved coordinate outright (no message, a sealed
+        // or conflicting stream, an uneditable message): a retry would fail
+        // the same way until the run is abandoned with no visible answer.
+        // Post the terminal once, fresh.
+        console.warn('[chickpea] Slack Agent View stream is unrecoverable; posting the final fresh');
+        if (safeSlackErrorCode(error) === 'message_not_found') {
+          try {
+            // A sealed stream can still render as an empty shell. Remove it
+            // when Slack lets us; a refusal never holds back the fresh final.
+            await this.options.client.chat.delete({ channel: update.channel, ts: messageTs });
+          } catch (deleteError) {
+            console.warn(
+              `[chickpea] Slack Agent View lost stream cleanup ${slackEffectOutcome(deleteError)}: ` +
+              safeSlackErrorCode(deleteError),
+            );
+          }
         }
         await observer.after({
           attemptId,
@@ -1703,6 +1728,66 @@ export class SlackAgentViewPresentation {
       throw new Error(STALE_WRITER_MESSAGE);
     }
     return result.presentation;
+  }
+
+  /**
+   * Close this Run's open stream before Slack seals it, when the stream is
+   * older than AGENT_VIEW_STREAM_RETIRE_AFTER_MS. The card keeps the rows it
+   * already shows (no detail is sent twice) and ends with a short note; the
+   * terminal then posts once as a fresh thread message. Returns whether the
+   * stream is now retired. Never throws: a failed check repeats later, and a
+   * stop Slack refuses leaves nothing a fresh final would duplicate.
+   */
+  async retireAgedStream(): Promise<boolean> {
+    try {
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const presentation = await this.requirePresentation();
+        const messageTs = presentation.stream.messageTs;
+        if (presentation.stream.state !== 'streaming' || !messageTs ||
+            presentation.stream.pendingAppend) return false;
+        if (presentation.schemaVersion === 3 && presentation.terminalDelivery.state !== 'none') {
+          return false;
+        }
+        if (!this.streamIsAged(presentation)) return false;
+        try {
+          await this.transition(presentation, { kind: 'retire_aged_stream', messageTs });
+        } catch (error) {
+          // A milestone or status write moved the row; look again.
+          if (error instanceof Error && error.message === STALE_WRITER_MESSAGE) continue;
+          throw error;
+        }
+        try {
+          // A card that already streamed answer text ends as it stands; the
+          // note belongs only on a checklist that is still waiting.
+          await this.options.client.chat.stopStream({
+            channel: presentation.root.channelId,
+            ts: messageTs,
+            ...(presentation.stream.acknowledgedByteLength > 0
+              ? {}
+              : { chunks: [{ type: 'markdown_text', text: AGENT_VIEW_RETIRED_STREAM_TEXT }] }),
+          } as unknown as Parameters<WebClient['chat']['stopStream']>[0]);
+        } catch (error) {
+          console.warn(
+            `[chickpea] Slack Agent View stream retirement ${slackEffectOutcome(error)}: ` +
+            safeSlackErrorCode(error),
+          );
+        }
+        console.info('[chickpea] Slack Agent View stream retired before Slack could seal it');
+        return true;
+      }
+    } catch (error) {
+      console.warn('[chickpea] Slack Agent View stream age check failed:', safeSlackErrorCode(error));
+    }
+    return false;
+  }
+
+  /** Slack's stream timestamp is its start time; compare it to the bound. */
+  private streamIsAged(presentation: SlackRunPresentation): boolean {
+    const messageTs = presentation.stream.messageTs;
+    if (presentation.stream.state !== 'streaming' || !messageTs) return false;
+    const startedAt = Number(messageTs) * 1_000;
+    return Number.isFinite(startedAt) &&
+      this.now() - startedAt >= AGENT_VIEW_STREAM_RETIRE_AFTER_MS;
   }
 
   /**
@@ -2079,6 +2164,9 @@ function comparePosition(
 const STREAM_NO_LONGER_OPEN_ERRORS = new Set([
   'message_not_in_streaming_state',
   'message_not_found',
+  'streaming_state_conflict',
+  'cant_update_message',
+  'edit_window_closed',
 ]);
 
 function slackEffectOutcome(error: unknown): 'failed' | 'unknown' {
