@@ -1036,3 +1036,19 @@ test('a settled failure observed as the budget ends keeps its failure semantics'
     !(error instanceof AgentObservationYield) && !error.retryable);
   assert.equal(dispatchState.flueSettlement?.outcome, 'failed');
 });
+
+test('a missing agent instance found after the budget abort still requires recovery', async () => {
+  const controller = new AbortController();
+  const reasons: string[] = [];
+  const dispatchState = state({ markRecoveryRequired: async (reason) => { reasons.push(reason); } });
+  await assert.rejects(() => promptSlackThreadAgent({
+    ...promptInput(dispatchState, handle({})),
+    observeReply: async () => {
+      controller.abort(new Error('alarm budget'));
+      throw new AgentInstanceNotFoundError({ id: ENVELOPE.instanceId });
+    },
+    observationSignal: controller.signal,
+  }), (error: unknown) => error instanceof AgentPromptFailure &&
+    !(error instanceof AgentObservationYield) && error.recoveryRequired);
+  assert.deepEqual(reasons, ['flue_expected_instance_missing']);
+});

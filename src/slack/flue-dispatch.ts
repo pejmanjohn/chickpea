@@ -24,6 +24,7 @@ import {
 import type { RuntimePlanV2 } from '../agents/runtime-plan.ts';
 import type { ThreadImageRecord } from './thread-images.ts';
 import {
+  BoundedObservationAbortedError,
   createCloudflareBoundedAgentReplyReader,
   type BoundedReplyReader,
 } from './bounded-agent-observation.ts';
@@ -382,7 +383,7 @@ export async function promptSlackThreadAgent(
       : await handle.read(receipt as DispatchReceipt, { onEvent });
   } catch (error) {
     await milestones?.drain();
-    if (!(error instanceof AgentRunError) && signal?.aborted) {
+    if (signal?.aborted && isObservationAbort(error, signal)) {
       // A deliberate yield is not an interruption of the relay: leave the
       // stream and intent exactly as they are so the reattached read resumes
       // them from the durable position.
@@ -475,6 +476,16 @@ export async function promptSlackThreadAgent(
       reply.data?.[CODING_WORKSPACE_USE_DATA_NAME],
     ),
   };
+}
+
+/**
+ * Only the abort itself is a yield. Any other error the read produced (a
+ * settled failure, a missing agent instance) keeps its own meaning even when
+ * it surfaces after the signal fired.
+ */
+function isObservationAbort(error: unknown, signal: AbortSignal): boolean {
+  return error === signal.reason ||
+    error instanceof BoundedObservationAbortedError;
 }
 
 /** Slack presents the final self-contained assistant step, not working narration. */

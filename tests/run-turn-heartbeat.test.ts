@@ -11,6 +11,7 @@ import { SqliteConfigStore } from '../src/config/store.ts';
 import { SqliteMemoryStateStore } from '../src/memory/store.ts';
 import { parseCurrentRequestEnvelope } from '../src/memory/tool-policy.ts';
 import {
+  AgentObservationYield,
   AgentPromptFailure,
   type AgentDispatchResult,
   type SlackFlueDispatchState,
@@ -2494,4 +2495,50 @@ test(`a successful own-turn memory write ${verb} ${scenario.name}`, async () => 
     }
   } finally { f.close(); }
 });
+}
+
+for (const scenario of ['yield', 'interruption'] as const) {
+  test(`${scenario === 'yield' ? 'a yield keeps' : 'an interruption releases'} the work acknowledgment and workspace turn`, async () => {
+    let reactionAdds = 0;
+    let reactionRemoves = 0;
+    const sandboxTurnsEnded: boolean[] = [];
+    const client = {
+      assistant: { threads: { setStatus: async () => ({ ok: true }) } },
+      reactions: {
+        add: async () => { reactionAdds += 1; return { ok: true }; },
+        remove: async () => { reactionRemoves += 1; return { ok: true }; },
+      },
+      conversations: { history: async () => ({ ok: true, messages: [] }) },
+      chat: {
+        postMessage: async () => ({ ok: true, channel: assignment.channelId, ts: 'checklist-ts' }),
+        update: async () => ({ ok: true }),
+        startStream: async () => ({ ok: true, ts: 'unexpected-final' }),
+        stopStream: async () => ({ ok: true }),
+      },
+    } as unknown as WebClient;
+
+    await assert.rejects(
+      () => runTurn(workTurn(`Ev_WORK_${scenario.toUpperCase()}`), assignment, undefined, {
+        client,
+        usageRecordingEnabled: false,
+        endSandboxTurn: async (_env, _key, used) => { sandboxTurnsEnded.push(used); },
+        async agentPrompt(): Promise<AgentDispatchResult> {
+          throw scenario === 'yield'
+            ? new AgentObservationYield()
+            : new AgentPromptFailure('agent', 503, false, true);
+        },
+      }),
+      (error: unknown) => error instanceof AgentPromptFailure && error.retryable,
+    );
+    assert.equal(reactionAdds, 1);
+    if (scenario === 'yield') {
+      // The coding worker is still running: it keeps its GitHub egress and
+      // the person keeps seeing that the work is underway.
+      assert.equal(reactionRemoves, 0);
+      assert.deepEqual(sandboxTurnsEnded, []);
+    } else {
+      assert.equal(reactionRemoves, 1);
+      assert.deepEqual(sandboxTurnsEnded, [false]);
+    }
+  });
 }

@@ -221,6 +221,8 @@ export interface RunTurnOptions {
   observationSignal?: AbortSignal;
   /** The durable receipt exists and this attempt is now only observing. */
   onObservationStarted?: () => void;
+  /** Focused seam; production revokes the workspace turn's egress. */
+  endSandboxTurn?: typeof endCloudflareSandboxTurn;
   /** Explicit lease fence for a ledger-authoritative attempt. */
   runFencingToken?: number;
   /** Immutable authority selected at admission. Missing means legacy. */
@@ -1533,7 +1535,7 @@ export async function runTurn(
         // The Sandbox DO lives in a different isolate from the agent factory;
         // close the turn by its durable thread id at the actual end-of-turn
         // seam. The workspace stays warm for follow-ups in this thread.
-        await endCloudflareSandboxTurn(
+        await (options.endSandboxTurn ?? endCloudflareSandboxTurn)(
           platformEnv,
           conversationKey,
           usedCloudflareSandbox,
