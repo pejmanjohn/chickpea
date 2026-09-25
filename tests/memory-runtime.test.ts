@@ -347,11 +347,12 @@ test('an ordinary stale Slack group mapping repairs into the Agent memory path',
       );
       config.getAgent = async () => { throw new Error('unknown agent'); };
       assert.equal(await prepared.validateLease(), false, 'a real lookup failure still rejects the lease');
-      // Only a store disconnect retries; a merely retryable error does not.
-      config.getAgent = async () => {
-        throw Object.assign(new Error('Network connection lost.'), { retryable: true });
-      };
-      assert.equal(await prepared.validateLease(), false);
+      // A merely retryable error is not a free store-disconnect retry, but it
+      // still decides nothing about the lease: it throws into the executor's
+      // bounded retries instead of rejecting the lease (a failure notice).
+      const transient = Object.assign(new Error('Network connection lost.'), { retryable: true });
+      config.getAgent = async () => { throw transient; };
+      await assert.rejects(prepared.validateLease(), (error: unknown) => error === transient);
     } finally {
       Reflect.deleteProperty(config, 'getAgent');
     }
@@ -551,6 +552,27 @@ test('a rate-limited Slack lease check retries the attempt instead of rejecting 
 
     failure = 'none';
     assert.equal(await prepared.validateLease(), true, 'the retried attempt delivers its answer');
+
+    // Preparing memory: a transient outage retries the attempt, while a real
+    // error still quarantines (whose lease check then fails closed).
+    const failingState = (error: Error) => new Proxy({}, {
+      get: () => async () => { throw error; },
+    }) as never;
+    const prepareWith = (error: Error) => prepareMemoryTurn({
+      turn,
+      assignment: { workspaceId: turn.workspaceId, channelId: turn.channelId, agentId: agent.id, agent },
+      client,
+      botUserId: 'U_CHICKPEA',
+      platformEnv: undefined,
+      dependencies: { state: failingState(error) },
+    });
+    const rateLimited = new SlackTransportError('users.info', 'gateway_rate_limited', { retryable: true });
+    await assert.rejects(prepareWith(rateLimited), (error: unknown) => error === rateLimited);
+    const disconnected = Object.assign(new Error('Durable Object reset'), { retryable: true });
+    await assert.rejects(prepareWith(disconnected), (error: unknown) => error === disconnected);
+    const quarantined = await prepareWith(new Error('corrupt memory row'));
+    assert.match(quarantined.conversationKey, /:memory-q-/);
+    assert.equal(await quarantined.validateLease(), false);
   } finally {
     closeNodeStateStores();
     if (previousStatePath === undefined) delete process.env.SLACK_STATE_DB_PATH;

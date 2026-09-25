@@ -199,8 +199,10 @@ export async function prepareMemoryTurn(input: {
       },
     };
   } catch (error) {
-    // Nor does an outage while preparing: quarantine would fail the turn.
-    if (isStateStoreDisconnect(error)) throw error;
+    // Nor does an outage while preparing: a quarantine's lease check always
+    // fails, so a rate-limited Slack or an unreachable store would deliver
+    // the failure notice. Throw so the attempt retries instead.
+    if (isStateStoreDisconnect(error) || isRetryableDependencyFailure(error)) throw error;
     emitMemoryMetric('quarantine', { reason: memoryErrorCode(error) });
     const conversationKey = memoryQuarantineThreadKey(baseKey, input.turn.eventId);
     return {
