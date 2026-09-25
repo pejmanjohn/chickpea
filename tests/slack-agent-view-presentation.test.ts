@@ -953,6 +953,68 @@ test('V3 supersedes a failed answer delivery with failure, but never pending, un
   }
 });
 
+test('V3 lets an answer supersede a failed failure delivery, but never pending, unknown, or acknowledged failure', async () => {
+  // A retried attempt that has an answer after an earlier attempt's failure
+  // notice never reached Slack delivers the answer, not a recovery notice.
+  const h = harness({ schemaVersion: 3, owner: { kind: 'chickpea' } });
+  try {
+    applyPresentationMutation(h, {
+      kind: 'record_terminal_delivery_intent',
+      operationId: 'terminal_failure_failed',
+      result: 'failure',
+    });
+    applyPresentationMutation(h, {
+      kind: 'record_terminal_delivery_receipt',
+      operationId: 'terminal_failure_failed',
+      certainty: 'failed',
+    });
+    const result = await h.presentation.finalize('The answer.', 'markdown', 'complete', observer([]));
+    assert.equal(result.handled, true);
+    const superseded = h.store.get(h.runId);
+    assert.equal(superseded?.schemaVersion, 3);
+    if (superseded?.schemaVersion === 3 && superseded.terminalDelivery.state === 'intended') {
+      assert.equal(superseded.terminalDelivery.result, 'answer');
+      assert.equal(superseded.terminalDelivery.operation.certainty, 'acknowledged');
+      assert.notEqual(superseded.terminalDelivery.operation.operationId, 'terminal_failure_failed');
+    } else {
+      assert.fail('the failed failure delivery was not superseded');
+    }
+
+    for (const certainty of ['pending', 'unknown', 'acknowledged'] as const) {
+      const blocked = harness({ schemaVersion: 3, owner: { kind: 'chickpea' } });
+      try {
+        applyPresentationMutation(blocked, {
+          kind: 'record_terminal_delivery_intent',
+          operationId: `terminal_failure_${certainty}`,
+          result: 'failure',
+        });
+        if (certainty !== 'pending') {
+          applyPresentationMutation(blocked, {
+            kind: 'record_terminal_delivery_receipt',
+            operationId: `terminal_failure_${certainty}`,
+            certainty,
+          });
+        }
+        await assert.rejects(
+          blocked.presentation.finalize('The answer.', 'markdown', 'complete', observer([])),
+          /requires reconciliation/,
+        );
+        const stored = blocked.store.get(blocked.runId);
+        assert.equal(stored?.schemaVersion, 3);
+        if (stored?.schemaVersion === 3 && stored.terminalDelivery.state === 'intended') {
+          assert.equal(stored.terminalDelivery.result, 'failure');
+          assert.equal(stored.terminalDelivery.operation.certainty, certainty);
+        }
+        assert.equal(blocked.calls.some((call) => call.method.startsWith('chat.')), false);
+      } finally {
+        blocked.db.close();
+      }
+    }
+  } finally {
+    h.db.close();
+  }
+});
+
 test('V3 reconciles unknown activity posts and cleanup receipts without replaying incomplete reads', async () => {
   const h = harness({ schemaVersion: 3, owner: { kind: 'chickpea' } });
   try {

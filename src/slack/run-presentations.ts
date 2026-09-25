@@ -615,6 +615,7 @@ export type SlackPresentationMutation =
     }
   | { kind: 'abandon_continuations' }
   | { kind: 'supersede_failed_answer_delivery'; operationId: string }
+  | { kind: 'supersede_failed_failure_delivery'; operationId: string }
   | { kind: 'retry_terminal_delivery'; operationId: string }
   | {
       kind: 'record_cleanup_intent';
@@ -2433,6 +2434,41 @@ function applyMutation(
       };
       // The failure notice replaces the answer, so its follow-ups are not owed.
       if (next.continuations?.state === 'active') next.continuations.state = 'abandoned';
+      next.lifecyclePhase = 'terminal_intended';
+      next.repairRequired = v3RepairRequired(next);
+      return next;
+    }
+    case 'supersede_failed_failure_delivery': {
+      // The reverse of the case above. A failure notice whose write
+      // conclusively failed never reached Slack, so a later attempt that has a
+      // deliverable answer may replace it; the person then gets the answer
+      // instead of a recovery notice. Pending, unknown or acknowledged
+      // failures stay frozen: Slack may already show them.
+      requireV3(current);
+      requireV3(next);
+      if (current.terminalDelivery.state !== 'intended' ||
+          current.terminalDelivery.result !== 'failure' ||
+          current.terminalDelivery.operation.certainty !== 'failed') {
+        throw stateError(
+          'invalid_transition',
+          'Only a confirmed failed failure delivery may be superseded by an answer.',
+        );
+      }
+      if (current.continuations?.parts.some((part) => part.operation)) {
+        throw stateError('terminal_rewrite', 'A started continuation cannot be replanned.');
+      }
+      validateId(mutation.operationId, 'Terminal delivery operation id');
+      if (mutation.operationId === current.terminalDelivery.operation.operationId) {
+        throw stateError('identity_conflict', 'Terminal delivery supersession requires a new operation id.');
+      }
+      next.terminalDelivery = {
+        state: 'intended',
+        result: 'answer',
+        operation: { operationId: mutation.operationId, certainty: 'pending' },
+      };
+      // A plan abandoned when an earlier failure replaced an answer never
+      // started; the answer plans its own follow-ups again.
+      delete next.continuations;
       next.lifecyclePhase = 'terminal_intended';
       next.repairRequired = v3RepairRequired(next);
       return next;

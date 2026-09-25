@@ -2220,6 +2220,14 @@ export class SlackAgentViewPresentation {
         });
         return { mayWrite: true, acknowledged: false, operationId };
       }
+      if (result === 'answer' && presentation.terminalDelivery.result === 'failure' &&
+          presentation.terminalDelivery.operation.certainty === 'failed') {
+        const operationId = `terminal_${hash(`${presentation.runId}:answer:supersede:${presentation.projectionVersion}`).slice(0, 24)}`;
+        await this.transition(presentation, {
+          kind: 'supersede_failed_failure_delivery', operationId,
+        });
+        return { mayWrite: true, acknowledged: false, operationId };
+      }
       return { mayWrite: false, acknowledged: false };
     }
     const receipt = presentation.terminalDelivery.operation;
