@@ -159,10 +159,14 @@ export async function wakeNodeTurnRelay(
 async function startNodeThreadLoops(
   options: NodeTurnRelayDrainOptions,
 ): Promise<Promise<void>[]> {
-  const drain = createNodeThreadDrain(options);
-  if (!drain) return [];
+  let drain: NodeThreadDrain;
   let pending: NodePendingTurn[];
   try {
+    // Opening the stores can throw on a failed SQLite open; that must reach
+    // the retry timer, not reject a `void`-called wake.
+    const created = createNodeThreadDrain(options);
+    if (!created) return [];
+    drain = created;
     pending = await drain.listPendingTurns();
   } catch (error) {
     reportNodeTurnRelayFailure(error, options);

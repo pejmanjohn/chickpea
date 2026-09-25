@@ -68,6 +68,34 @@ test('a failing drain resolves the wake and leaves the relay drainable', async (
 });
 
 /**
+ * A store that fails while the drain is being built (a failed SQLite open)
+ * must resolve the wake too: the heartbeat and retry timers call it with `void`.
+ */
+test('a failure building the thread drain resolves the wake', async () => {
+  const state = {
+    get listPendingTurns(): never {
+      throw new Error('unable to open database file');
+    },
+  } as unknown as SlackStateStore;
+  const errors = mock.method(console, 'error', () => undefined);
+  const timers = mock.method(globalThis, 'setTimeout');
+  try {
+    await assert.doesNotReject(() => wakeNodeTurnRelay(undefined, {
+      state,
+      work: {} as unknown as WorkStore,
+      executeTurn: noop as never,
+    }));
+    assert.equal(timers.mock.callCount(), 0);
+    assert.match(
+      String(errors.mock.calls[0]?.arguments[0]),
+      /node turn relay drain failed/,
+    );
+  } finally {
+    mock.restoreAll();
+  }
+});
+
+/**
  * A store failure inside one thread loop resolves that wake, releases the
  * thread, and does not stop the next wake from running the thread again.
  */
