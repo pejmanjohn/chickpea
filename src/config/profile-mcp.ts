@@ -1,11 +1,7 @@
 import { connectionAccountOAuthRef } from './api-oauth.ts';
 import { isActiveConnectionActor, projectEffectiveMcpConnections, resolveEffectiveConnectionAccounts, resolveConnectionSecretForInvocation } from '../connections/runtime.ts';
-import type {
-  McpConnectionDefinition,
-  ToolDefinition,
-} from '@flue/runtime';
+import type { McpConnectionDefinition } from '@flue/runtime';
 
-import { mcpDebugText } from './mcp-errors.ts';
 import { withMcpHttpTelemetry } from './mcp-telemetry.ts';
 import { assertMcpToolArgumentKeys, assertMcpToolArguments } from './mcp-tool-policy.ts';
 import {
@@ -38,7 +34,6 @@ import {
   resolveMcpHeaders,
   resolveMcpSecrets,
 } from './mcp-secrets.ts';
-import { connectMcp, type McpConnector } from './mcp-test.ts';
 import { createMcpGuardedFetch, validateMcpUrl } from './mcp-url.ts';
 import { isCloudflareTarget } from './runtime-target.ts';
 import {
@@ -52,55 +47,12 @@ import type { RuntimePlanMcpConnectionV2 } from '../agents/runtime-plan.ts';
 import { ConnectionCredentialUnavailableError } from '../connections/errors.ts';
 
 /**
- * Turn-time assembly of a profile's remote MCP tools, called from the
- * `slack-thread.ts` factory alongside `resolveProfileSkills`. `mcpServers` rides
- * inside the resolved agent, so it inherits the same freeze contract as skills
- * and instructions (frozen in the snapshot for channel threads, live-resolved
- * for DMs); secrets always resolve live from env/settings.
- *
- * GRACEFUL DEGRADE is the load-bearing contract here: a dead or slow
- * third-party server must never abort a Slack reply. Every connection runs in
- * parallel inside a closure that catches its own errors and yields `[]`, so one
- * failure never rejects the batch.
- *
- * SECURITY INVARIANT: only `approved ∩ currently-discovered` tools are exposed.
- * Flue adapts tool names to `mcp__<id>__<tool>`; we intersect on the STRIPPED
- * name against `allowedTools`, and return the tool with its full prefixed name
- * (so it stays namespaced). A tool approved but no longer discovered is simply
- * absent. Duplicate full names — against built-ins, skills, or an earlier
- * server — are dropped (first wins), because duplicate tool names are an
- * uncatchable turn-killer once the factory returns.
+ * Turn-time MCP connection declarations for Flue. Definitions carry policy
+ * only (URL, transport, the approved tool list); Flue owns discovery,
+ * namespacing, and the strict tool allowlist. Every request re-reads the live
+ * connection policy, and secrets always resolve live from env/settings, so a
+ * revoked connection or rotated credential takes effect on the next call.
  */
-
-const NODE_CLOSE_DELAY_MS = 600_000; // 10 minutes — bounded leak on the node lane.
-const TOOL_NAME_PREFIX = /^mcp__[^_]+(?:_[^_]+)*__/;
-
-interface ResolveProfileMcpToolsOptions {
-  /** Immutable profile id used to scope connection secrets. */
-  agentId: string;
-  // `undefined` is explicit: the slack-thread seam passes a possibly-undefined
-  // env (node lane ignores it; CF supplies the binding), so the key is always
-  // present but may hold undefined under exactOptionalPropertyTypes.
-  env?: PlatformEnv | undefined;
-  /** Tool + skill names already claimed by the agent; MCP collisions are dropped. */
-  existingToolNames: string[];
-  /** Test seam — defaults to Flue's `createMcpConnection`. */
-  connect?: McpConnector;
-  /** Test seam — shortens the per-connect deadline; defaults to mcp-test's 8s. */
-  connectTimeoutMs?: number;
-  /** Test seam for OAuth token resolution; production resolves from settings. */
-  resolveOAuthAccessToken?: (
-    input: ResolveMcpOAuthAccessInput,
-  ) => Promise<string>;
-  /** U6 account seam; rechecks binding/actor before returning a bearer. */
-  resolveBearerCredential?: (connectionId: string) => Promise<string>;
-  /** Live account/profile projection used to fence every legacy invocation. */
-  resolveCurrentConnection?: (connectionId: string) => Promise<McpConnectionConfig | undefined>;
-  /** Test seam; production uses the SSRF-guarded fetch implementation. */
-  createGuardedFetch?: typeof createMcpGuardedFetch;
-  /** Best-effort policy-only lifecycle hook; never receives headers or secrets. */
-  onConnectionStart?: (connection: { id: string; displayName: string }) => void;
-}
 
 interface ResolveProfileMcpConnectionsOptions {
   /** Durable profile id; definitions close over this id, never a token. */
@@ -394,39 +346,6 @@ async function resolveCurrentMcpEnv(): Promise<PlatformEnv | undefined> {
   return getCloudflareContext().env as PlatformEnv;
 }
 
-export async function resolveProfileMcpTools(
-  servers: McpConnectionConfig[],
-  opts: ResolveProfileMcpToolsOptions,
-): Promise<ToolDefinition[]> {
-  // A channel snapshot frozen before this field existed deserializes with
-  // `servers` undefined (the raw JSON.parse in snapshot-store does no coercion,
-  // unlike rowToAgent). Guard it exactly as resolveProfileSkills does — the
-  // factory must never throw.
-  if (!servers || servers.length === 0) {
-    return [];
-  }
-  const eligible = servers.filter(isProfileMcpServerEligible);
-  if (eligible.length === 0) {
-    return [];
-  }
-
-  // All connections in parallel; each closure catches internally so a rejection
-  // never propagates and one dead server never aborts the turn.
-  const perServer = await Promise.all(eligible.map((server) => resolveOneServer(server, opts)));
-
-  // Merge with first-wins dedupe against existing names AND earlier MCP tools.
-  const seen = new Set(opts.existingToolNames);
-  const merged: ToolDefinition[] = [];
-  for (const tools of perServer) {
-    for (const tool of tools) {
-      if (seen.has(tool.name)) continue;
-      seen.add(tool.name);
-      merged.push(tool);
-    }
-  }
-  return merged;
-}
-
 async function resolveLiveMcpBearer(
   server: McpConnectionConfig,
   opts: ResolveProfileMcpConnectionsOptions,
@@ -474,130 +393,6 @@ async function resolveLiveMcpBearer(
   );
   if (!secrets.bearer) throw new Error('MCP bearer credential is unavailable.');
   return secrets.bearer;
-}
-
-async function resolveOneServer(
-  server: McpConnectionConfig,
-  opts: ResolveProfileMcpToolsOptions,
-): Promise<ToolDefinition[]> {
-  let debugHeaders: Readonly<Record<string, string>> = {};
-  try {
-    const runtimeAllowed = new Set(runtimeAllowedToolsForServer(server));
-    if (runtimeAllowed.size === 0) return [];
-    const liveMetaPolicy = isMetaAdsMcpConnection(server);
-    const headers = liveMetaPolicy ? {} : await resolveLegacyMcpHeaders(server, opts);
-    debugHeaders = headers;
-    try {
-      opts.onConnectionStart?.({ id: server.id, displayName: server.displayName });
-    } catch {
-      // Status narration is cosmetic and must never block a connection.
-    }
-    const connection = await connectMcp(
-      {
-        id: server.id,
-        url: server.url,
-        transport: server.transport,
-        headers,
-        ...(liveMetaPolicy ? {
-          resolveHeaders: async () => {
-            const current = await requireCurrentLegacyMcpServer(server, opts);
-            return resolveLegacyMcpHeaders(current, opts);
-          },
-          transformResponse: async (request: Request, response: Response) => {
-            const advertised = usesMetaAdsOutputAdapter(server)
-              ? await advertiseMetaAdsAccountHelperOutput(request, response)
-              : response;
-            const invocation = await mcpToolInvocation(request);
-            if (invocation?.name !== META_ADS_ACCOUNT_HELPER) return advertised;
-            const current = await requireCurrentLegacyMcpServer(server, opts);
-            assertServerMcpToolInvocation(current, runtimeAllowedToolsForServer(server), invocation);
-            const sanitized = await sanitizeAccountHelperResponse(current, advertised);
-            await requireCurrentLegacyMcpServer(server, opts);
-            return sanitized;
-          },
-        } : {}),
-        ...(opts.connectTimeoutMs !== undefined ? { connectTimeoutMs: opts.connectTimeoutMs } : {}),
-      },
-      opts.connect,
-      opts.createGuardedFetch,
-    );
-
-    const approved = new Set(server.allowedTools);
-    const kept = connection.tools
-      .filter((tool) => approved.has(stripPrefix(server.id, tool.name)) &&
-        runtimeAllowed.has(stripPrefix(server.id, tool.name)))
-      .map((tool) => wrapLegacyMcpTool(server, tool, opts));
-
-    if (kept.length === 0) {
-      // Nothing survived the intersection — no reason to hold the connection.
-      scheduleClose(connection, true);
-      return [];
-    }
-    scheduleClose(connection, false);
-    return kept;
-  } catch (err) {
-    // Graceful degrade: skip this server, never abort the turn. The DB and UI
-    // only ever see the safe sentence; the log line carries the bounded debug
-    // text so a live connect failure is actually diagnosable in observability.
-    console.warn(
-      '[chickpea] MCP connection ' +
-        server.id +
-        ' skipped: ' +
-        mcpDebugText(err, { url: server.url, headers: debugHeaders }),
-    );
-    return [];
-  }
-}
-
-async function resolveLegacyMcpHeaders(
-  server: McpConnectionConfig,
-  opts: ResolveProfileMcpToolsOptions,
-): Promise<Record<string, string>> {
-  const secrets = opts.resolveBearerCredential
-    ? await resolveConnectionAccountMcpSecrets(server, opts.resolveBearerCredential)
-    : await resolveMcpSecrets(
-        { agentId: opts.agentId, connectionId: server.id },
-        server.headerNames,
-        opts.env,
-      );
-  if (server.authMode === 'oauth') {
-    secrets.bearer = await (
-      opts.resolveOAuthAccessToken ??
-      ((input) => {
-        const configStore = getConfigStore(opts.env);
-        return resolveMcpOAuthAccessToken(input, {
-          settings: getSettingsStore(opts.env),
-          validateConnection: (ref, serverUrl) =>
-            isCurrentMcpOAuthConnection(configStore, ref, serverUrl),
-          onReauthorizationRequired: async (ref, serverUrl) => {
-            await configStore.markOAuthReauthorizationRequired({
-              lane: 'mcp',
-              ...ref,
-              serverUrl,
-            });
-          },
-        });
-      })
-    )({
-      ref: { agentId: opts.agentId, connectionId: server.id },
-      serverUrl: server.url,
-    });
-  }
-  return buildMcpRequestHeaders(server.authMode, secrets);
-}
-
-async function requireCurrentLegacyMcpServer(
-  frozen: McpConnectionConfig,
-  opts: ResolveProfileMcpToolsOptions,
-): Promise<McpConnectionConfig> {
-  const current = opts.resolveCurrentConnection
-    ? await opts.resolveCurrentConnection(frozen.id)
-    : (await getConfigStore(opts.env).getAgent(opts.agentId)).mcpServers
-        .find((candidate) => candidate.id === frozen.id);
-  if (!current || !legacyMcpServerStillAllowed(current, frozen)) {
-    throw new Error('MCP connection policy changed; a new agent instance is required.');
-  }
-  return current;
 }
 
 function legacyMcpServerStillAllowed(
@@ -769,42 +564,6 @@ async function requireCurrentProfileMcpServer(
   return current;
 }
 
-function wrapLegacyMcpTool(
-  server: McpConnectionConfig,
-  tool: ToolDefinition,
-  opts: ResolveProfileMcpToolsOptions,
-): ToolDefinition {
-  const name = stripPrefix(server.id, tool.name);
-  if (!isMetaAdsMcpConnection(server) && !server.toolPolicies?.[name]?.argumentConstraints) return tool;
-  const wrapped: ToolDefinition = {
-    ...tool,
-    async run(context) {
-      const argumentsValue = 'data' in context ? context.data : undefined;
-      const current = isMetaAdsMcpConnection(server)
-        ? await requireCurrentLegacyMcpServer(server, opts)
-        : server;
-      assertServerMcpToolInvocation(current, runtimeAllowedToolsForServer(server), {
-        name,
-        arguments: argumentsValue,
-      });
-      if (isMetaAdsMcpConnection(current) && isMetaAdsWriteTool(name)) {
-        const headers = new Headers(await resolveLegacyMcpHeaders(current, opts));
-        await assertMetaWriteOwnership(current, { name, arguments: argumentsValue }, headers, opts.createGuardedFetch);
-        const latest = await requireCurrentLegacyMcpServer(server, opts);
-        assertServerMcpToolInvocation(latest, runtimeAllowedToolsForServer(server), {
-          name, arguments: argumentsValue,
-        });
-      }
-      const result = await tool.run(context);
-      if (isMetaAdsMcpConnection(server)) await requireCurrentLegacyMcpServer(server, opts);
-      // Flue records an omitted output as null; an empty envelope preserves
-      // that behavior while keeping this async wrapper's return union sound.
-      return result === undefined ? {} : result;
-    },
-  };
-  return wrapped;
-}
-
 async function resolveConnectionAccountMcpSecrets(
   server: McpConnectionConfig,
   resolveCredential: (connectionId: string) => Promise<string>,
@@ -830,38 +589,4 @@ async function resolveConnectionAccountMcpSecrets(
         }
       : {},
   };
-}
-
-/**
- * Flue 2 has no connection-specific turn-end hook. On Cloudflare, connection
- * I/O is request-pinned and dies with
- * the request, so there is nothing to schedule. On node, close via an unref'd
- * setTimeout so a bounded leak is reclaimed 10 minutes after connect (or
- * immediately when the connection yielded no usable tools).
- */
-function scheduleClose(connection: { close(): Promise<void> }, immediate: boolean): void {
-  if (immediate) {
-    void connection.close().catch(() => undefined);
-    return;
-  }
-  if (isCloudflareTarget()) {
-    return;
-  }
-  const timer = setTimeout(() => {
-    void connection.close().catch(() => undefined);
-  }, NODE_CLOSE_DELAY_MS);
-  timer.unref?.();
-}
-
-/**
- * Strip Flue's `mcp__<id>__` prefix so the intersection matches the bare tool
- * name stored in `allowedTools`. Falls back to a generic strip if the
- * id-specific prefix does not match (mirrors mcp-test.ts).
- */
-function stripPrefix(id: string, name: string): string {
-  const specific = 'mcp__' + id + '__';
-  if (name.startsWith(specific)) {
-    return name.slice(specific.length);
-  }
-  return name.replace(TOOL_NAME_PREFIX, '');
 }

@@ -1,8 +1,6 @@
 import type { NetworkConfig, SecureFetch } from 'just-bash';
 import { bash, type SandboxFactory } from '@flue/runtime';
 
-import { getSettingsStore, type PlatformEnv } from './state-backend.ts';
-
 type EgressMode = 'allowlist' | 'open' | 'off';
 
 export interface EgressPolicy {
@@ -102,10 +100,6 @@ export function parseEgressPolicy(raw: string | undefined): EgressPolicy {
     mode: parsed.mode,
     domains: [...new Set(parsed.domains.map((domain) => domain.trim()).filter(Boolean))],
   };
-}
-
-export async function resolveEgressPolicy(env?: PlatformEnv): Promise<EgressPolicy> {
-  return parseEgressPolicy(await getSettingsStore(env).getSetting(EGRESS_SETTING_KEY));
 }
 
 // The combined network: every allow-listed prefix (domains + all connector
