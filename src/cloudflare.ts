@@ -293,7 +293,7 @@ import {
   completeSettledAgentWelcomeHandoff,
   deliverManagementReceiptToSlack,
   drainManagementReceiptOutbox,
-  failAgentWelcomeDelivery,
+  failAgentWelcomeTurn,
   isAgentCreatedWelcome,
   reconcileScheduleActionReceipts,
 } from './management/receipts.ts';
@@ -2745,12 +2745,11 @@ async function drainCloudflareManagementReceipts(
       stores.config,
       stores.management as unknown as ManagementStore,
     ),
-    onTerminalFailure: async (record) => {
-      await failAgentWelcomeDelivery(record, presentation);
-      if (isAgentCreatedWelcome(record.receipt) && record.receipt.turnJobId) {
-        stores.turnJobs.markError(record.receipt.turnJobId);
-      }
-    },
+    onTerminalFailure: (record) => failAgentWelcomeTurn(
+      record,
+      presentation,
+      (turnJobId) => stores.turnJobs.markError(turnJobId),
+    ),
     deliver: (record) => deliverManagementReceiptToSlack(record, {
       identity: stores.identity as unknown as IdentityStore,
       resolveInstallation,

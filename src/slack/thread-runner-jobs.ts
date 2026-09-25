@@ -189,12 +189,13 @@ export class ThreadRunnerJobStore {
 
   /**
    * A deferred job's turn row was still pending: read it again after
-   * `baseMs`, doubling with each read, at most `maxMs`. Returns when.
+   * `delayMs(checks)`, where `checks` counts the reads that found it pending
+   * (this one included). Returns when.
    */
-  recheckDeferred(id: string, now: number, baseMs: number, maxMs: number): number {
+  recheckDeferred(id: string, now: number, delayMs: (checks: number) => number): number {
     const row = this.db.get('SELECT deferred_checks FROM runner_jobs WHERE id = ?', id);
     const checks = Number(row?.deferred_checks ?? 0) + 1;
-    const retryAt = now + Math.min(baseMs * 2 ** Math.min(checks, 16), maxMs);
+    const retryAt = now + delayMs(checks);
     this.db.run(
       "UPDATE runner_jobs SET state = 'deferred', retry_at = ?, deferred_checks = ? WHERE id = ?",
       retryAt,

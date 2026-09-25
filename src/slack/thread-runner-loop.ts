@@ -65,6 +65,13 @@ export const THREAD_RUNNER_RETRY_MS = 2_000;
  * read again 2 s after the turn deferred it, then 4, 8, 16, and every 30 s.
  */
 export const THREAD_RUNNER_DEFERRED_MAX_MS = 30_000;
+/**
+ * After this many pending reads (about 25 minutes), the outbox's own retries
+ * (about 21 minutes) are over and it has settled the row or cannot reach it:
+ * read it every THREAD_RUNNER_DEFERRED_LATE_MS instead.
+ */
+export const THREAD_RUNNER_DEFERRED_LATE_CHECKS = 50;
+export const THREAD_RUNNER_DEFERRED_LATE_MS = 5 * 60_000;
 /** Retry an unrecorded terminal outcome or active-work clear at this interval. */
 export const THREAD_RUNNER_SYNC_RETRY_MS = 30_000;
 /** After a failed alarm: 2 s, doubling, at most a minute. */
@@ -511,7 +518,9 @@ async function checkDeferred(
     deps.jobs.settle(id, 'released', now());
     return true;
   }
-  deps.jobs.recheckDeferred(id, now(), THREAD_RUNNER_RETRY_MS, THREAD_RUNNER_DEFERRED_MAX_MS);
+  deps.jobs.recheckDeferred(id, now(), (checks) => checks >= THREAD_RUNNER_DEFERRED_LATE_CHECKS
+    ? THREAD_RUNNER_DEFERRED_LATE_MS
+    : Math.min(THREAD_RUNNER_RETRY_MS * 2 ** Math.min(checks, 16), THREAD_RUNNER_DEFERRED_MAX_MS));
   return true;
 }
 

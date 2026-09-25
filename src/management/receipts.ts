@@ -288,6 +288,27 @@ export async function failAgentWelcomeDelivery(
   });
 }
 
+/**
+ * An Agent welcome the outbox gave up on: close its Slack lifecycle, and
+ * settle its held turn whatever that cleanup does. The cleanup throws on the
+ * very rejections that end delivery (an archived or missing channel, a
+ * missing scope); the turn must still settle, or its executor keeps waiting
+ * on a receipt that will never be posted.
+ */
+export async function failAgentWelcomeTurn(
+  record: ManagementReceiptOutboxRecord,
+  presentation: AgentWelcomePresentationRuntime | undefined,
+  markTurnError: (turnJobId: string) => unknown,
+): Promise<void> {
+  try {
+    await failAgentWelcomeDelivery(record, presentation);
+  } finally {
+    if (isAgentCreatedWelcome(record.receipt) && record.receipt.turnJobId) {
+      await markTurnError(record.receipt.turnJobId);
+    }
+  }
+}
+
 export async function drainManagementReceiptOutbox(input: {
   management: ManagementStore;
   deliver(record: ManagementReceiptOutboxRecord): Promise<ManagementReceiptDeliveryResult>;

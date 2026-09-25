@@ -42,6 +42,11 @@ import {
 } from '../src/slack/turn-jobs.ts';
 import type { RunTurnOptions } from '../src/slack/run-turn.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
+import {
+  drainManagementReceiptOutbox,
+  failAgentWelcomeTurn,
+} from '../src/management/receipts.ts';
+import { ManagementStoreLogic } from '../src/management/store.ts';
 import { SlackTransportError } from '../src/slack/transport/types.ts';
 import { createWorkModelInvocationInterceptor } from '../src/work/model-invocation.ts';
 import { NOW, turnJob } from './fixtures/state-db/maintenance.ts';
@@ -718,6 +723,91 @@ test('a deferred terminal the state store failed or took back settles on its nex
     await runThreadRunnerAlarm(h.deps);
     assert.equal(h.jobs.get('failed')!.state, 'error');
     assert.deepEqual(h.events, ['dispatch:failed', 'deferred:failed']);
+  } finally { db.close(); }
+});
+
+test('a deferred terminal whose row is no longer the runner\'s is released on its next check', async () => {
+  const db = openStateDb(':memory:');
+  try {
+    const rows = fakeRows(['taken']);
+    const h = runnerHarness(db, rows, { deferred: () => true });
+    h.jobs.admit({ id: 'taken', threadKey: 'thread', payload: {} }, 1);
+    await runThreadRunnerAlarm(h.deps);
+    assert.equal(h.jobs.get('taken')!.state, 'deferred');
+    // The state store took the row back (recovery reopened it for the alarm).
+    const view = rows.turns.view.bind(rows.turns);
+    rows.turns.view = async (id: string) => ({ ...(await view(id)), executor: 'alarm' });
+    h.advance(2_000);
+    const result = await runThreadRunnerAlarm(h.deps);
+    assert.equal(h.jobs.get('taken')!.state, 'released');
+    assert.deepEqual(h.events, ['dispatch:taken', 'deferred:taken'], 'a released job never runs here');
+    assert.equal(result.nextAlarmAt, undefined, 'nothing is left to check');
+  } finally { db.close(); }
+});
+
+test('a deferred terminal is read every 5 minutes once the outbox\'s own retries are long over', async () => {
+  const db = openStateDb(':memory:');
+  try {
+    const rows = fakeRows(['stuck']);
+    const h = runnerHarness(db, rows, { deferred: () => true });
+    h.jobs.admit({ id: 'stuck', threadKey: 'thread', payload: {} }, 1);
+    await runThreadRunnerAlarm(h.deps);
+    const delays: number[] = [];
+    for (let check = 0; check < 52; check += 1) {
+      h.advance(h.jobs.get('stuck')!.retryAt! - h.deps.now!());
+      const at = h.deps.now!();
+      await runThreadRunnerAlarm(h.deps);
+      delays.push(Math.round((h.jobs.get('stuck')!.retryAt! - at) / 1_000));
+    }
+    assert.deepEqual(delays.slice(0, 5), [4, 8, 16, 30, 30]);
+    const elapsedS = 2 + delays.slice(0, 48).reduce((sum, delay) => sum + delay, 0);
+    assert.ok(elapsedS > 21 * 60, `30 s reads cover the outbox's retry window (${elapsedS} s)`);
+    assert.deepEqual(delays.slice(48), [30, 300, 300, 300]);
+  } finally { db.close(); }
+});
+
+test('a welcome the outbox gives up on settles its turn even when closing its lifecycle throws; the runner then settles error', async () => {
+  const db = openStateDb(':memory:');
+  try {
+    const rows = fakeRows(['welcome']);
+    const h = runnerHarness(db, rows, { deferred: () => true });
+    h.jobs.admit({ id: 'welcome', threadKey: 'thread', payload: {} }, 1);
+    await runThreadRunnerAlarm(h.deps);
+    assert.equal(h.jobs.get('welcome')!.state, 'deferred');
+
+    const management = new ManagementStoreLogic(db);
+    const at = Date.now();
+    management.putOutbox({
+      outboxId: 'agent_welcome_op', operationId: 'op',
+      destination: { kind: 'thread', workspaceId: 'T_TEST', channelId: 'C_TEST', threadTs: '1800000000.000001' },
+      receipt: {
+        kind: 'agent_created_welcome', creationOperationId: 'op', presentationRunId: 'run_welcome',
+        turnJobId: 'welcome', agentId: 'agent_new', agentName: 'New Agent',
+        requesterMembershipId: 'member_1', surface: 'channel', persona: { name: 'New Agent' },
+      },
+      status: 'pending', attempts: 0, nextAttemptAt: at, createdAt: at, updatedAt: at,
+    });
+    const cleanupFailed = new Error('presentation unavailable');
+    const marked: string[] = [];
+    const result = await drainManagementReceiptOutbox({
+      management: management as never,
+      // The channel was archived: delivery ends for good.
+      deliver: async () => { throw Object.assign(new Error('archived'), { data: { error: 'is_archived' } }); },
+      onTerminalFailure: (record) => failAgentWelcomeTurn(record, {
+        state: { getRunPresentation: async () => { throw cleanupFailed; } } as never,
+        resolveClient: async () => { throw cleanupFailed; },
+      }, async (turnJobId) => {
+        marked.push(turnJobId);
+        await rows.turns.markError(turnJobId);
+      }),
+    });
+    assert.equal(result.failed, 1);
+    assert.deepEqual(marked, ['welcome'], 'the turn is settled although the lifecycle cleanup threw');
+    assert.equal(management.getOutboxForOperation('op')!.status, 'failed');
+    h.advance(2_000);
+    await runThreadRunnerAlarm(h.deps);
+    assert.equal(h.jobs.get('welcome')!.state, 'error');
+    assert.deepEqual(h.events, ['dispatch:welcome', 'deferred:welcome']);
   } finally { db.close(); }
 });
 
