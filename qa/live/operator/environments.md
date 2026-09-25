@@ -117,7 +117,10 @@
    value), checks each file with its reader before it lands, and writes it
    owner-only. Live-authority credentials may instead stay as
    `CHICKPEA_ENV_<COLOR>_LIVE_AUTHORITY_URL` and `_READ_TOKEN`, which need no
-   file. The environment registry is host-bound and is never carried this way.
+   file. The environment registry itself is host-bound and is never carried;
+   a cloud session gets its own registry from a secret-free registration in
+   `CHICKPEA_ENVIRONMENT_REGISTRATION_B64` (see
+   [operate lanes from a second host](#operate-lanes-from-a-second-host)).
 
    Standing test connections come back the same way after a lane rebuild.
    Each guarded lane deploy also installs the lane's seed token
@@ -334,24 +337,40 @@ cloud environment):
    `--own` must already be remote here (`TARGET_OWNED_LOCALLY` otherwise), so
    no lane is local on two hosts through this tooling. Lanes not named in
    `--own` are exported as remote.
-4. Store the file for the second host. For a cloud environment, base64 the
-   file into one environment variable, and keep the three lanes' read tokens
-   in `CHICKPEA_ENV_<COLOR>_LIVE_AUTHORITY_READ_TOKEN` variables; the URLs
-   come from the registration's origins. Wrangler credentials for the lanes'
-   Cloudflare account are still required for a deploy or a capability read.
+4. Store the file for the second host. For a Claude Code cloud environment,
+   write the export to `~/.chickpea/registrations/cloud.json` (remove an
+   earlier one first; the export never overwrites) and run
+   `node scripts/cloud-private-home.mjs encode`: its output now ends with a
+   `CHICKPEA_ENVIRONMENT_REGISTRATION_B64=` line beside the credential lines.
+   Paste the variables into the cloud environment. The lanes' read tokens
+   travel in `CHICKPEA_LANE_CREDENTIALS_B64` (or the
+   `CHICKPEA_ENV_<COLOR>_LIVE_AUTHORITY_READ_TOKEN` variables); the URLs come
+   from the registration's origins when no file or variable names them.
+   Wrangler credentials for the lanes' Cloudflare account are still required
+   for a deploy or a capability read.
 
 Once a lane is remote here, `env status` and `capabilities` keep showing its
 exported snapshot, not live state; ask the owning host.
 
 ### Bootstrap the second host
 
-On the second host, once per host (a fresh cloud VM is once per session):
+A cloud session bootstraps itself: the SessionStart hook
+(`scripts/cloud-session-start.sh`) writes `~/.chickpea/registrations/cloud.json`
+from `CHICKPEA_ENVIRONMENT_REGISTRATION_B64` through
+`scripts/cloud-private-home.mjs` (which checks the schema, one record per lane
+with an ownership, and that no field is secret-shaped), and after the
+dependencies are in sync runs `npm run env -- init --registration` on that
+file when the VM has no registry yet. Its output names the lanes, their
+ownership, and the evidence roots. A malformed variable or a refused
+registration fails the session start with the variable name or the `init`
+error code, never a value. Any other second host runs the same two steps by
+hand, once per host:
 
 ```sh
 umask 077
-mkdir -p "$HOME/.chickpea"
-printf '%s' "$CHICKPEA_ENVIRONMENT_REGISTRATION" | base64 -d > "$HOME/.chickpea/cloud.json"
-npm run env -- init --registration "$HOME/.chickpea/cloud.json"
+mkdir -p "$HOME/.chickpea/registrations"
+cp /path/to/export.json "$HOME/.chickpea/registrations/cloud.json"
+npm run env -- init --registration "$HOME/.chickpea/registrations/cloud.json"
 ```
 
 `init` reads the owner-only file, refuses when any registry state already

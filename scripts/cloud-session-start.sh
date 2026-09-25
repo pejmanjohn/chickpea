@@ -7,7 +7,8 @@
 # (on the default Trusted allowlist), puts it on the session PATH, and installs
 # the locked dependencies when node_modules does not match package-lock.json.
 # It writes the operator's private ~/.chickpea files from the environment through
-# scripts/cloud-private-home.mjs without printing a value; local sessions exit at once.
+# scripts/cloud-private-home.mjs without printing a value, and creates this VM's
+# environment registry from a carried registration; local sessions exit at once.
 set -euo pipefail
 
 if [ "${CLAUDE_CODE_REMOTE:-}" != "true" ]; then
@@ -60,3 +61,17 @@ if ! node --input-type=module -e '
 fi
 
 echo "cloud-session-start: node $(node --version), npm $(npm --version), dependencies in sync"
+
+# The environment registry is host-bound and never copied between machines.
+# When the environment carries a registration (written above from
+# CHICKPEA_ENVIRONMENT_REGISTRATION_B64), create this VM's own registry from
+# it once; the lanes it marks local are this session's to claim and deploy.
+registration="$HOME/.chickpea/registrations/cloud.json"
+if [ -f "$registration" ]; then
+  if [ -e "$HOME/.chickpea/environments/registry.json" ]; then
+    echo "cloud-session-start: environment registry already present; registration not re-applied"
+  else
+    echo "cloud-session-start: initializing the environment registry from ${registration}"
+    node --import tsx scripts/chickpea-environment.mjs init --registration "$registration"
+  fi
+fi
