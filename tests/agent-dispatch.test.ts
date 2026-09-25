@@ -36,31 +36,15 @@ function envelope(type: string, message: string): string {
   return JSON.stringify({ error: { type, message, details: 'private detail' } });
 }
 
-test('agent prompt failure classification distinguishes provider, sandbox, and unknown errors', () => {
-  assert.equal(
-    classifyAgentPromptFailure(
-      500,
-      envelope('sandbox_unavailable', 'The coding workspace is temporarily unavailable.'),
-    ),
-    'sandbox',
-  );
-  assert.equal(
-    classifyAgentPromptFailure(
-      500,
-      envelope(
-        'operation_failed',
-        'Agent turn failed: Maximum number of running container instances exceeded.',
-      ),
-    ),
-    'sandbox',
-  );
-  assert.equal(
-    classifyAgentPromptFailure(
-      500,
-      envelope('sandbox_session_cap_reached', 'Monthly limit reached.'),
-    ),
-    'sandbox-session-cap',
-  );
+test('agent prompt failure classification distinguishes provider and unknown errors', () => {
+  // A coding workspace never fails the turn; container-shaped errors are the Agent's.
+  for (const [type, message] of [
+    ['sandbox_unavailable', 'The coding workspace is temporarily unavailable.'],
+    ['operation_failed', 'Agent turn failed: Maximum number of running container instances exceeded.'],
+    ['sandbox_session_cap_reached', 'Monthly limit reached.'],
+  ] as const) {
+    assert.equal(classifyAgentPromptFailure(500, envelope(type, message)), 'agent', type);
+  }
   assert.equal(
     classifyAgentPromptFailure(
       500,
