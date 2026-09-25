@@ -371,3 +371,69 @@ test('the budget counts from the alarm start, not the drain start', async () => 
   assert.equal(result.budgetExhausted, true);
   assert.ok(reason instanceof AlarmTurnBudgetYield);
 });
+
+test('a refresh that admits after the last job finishes is awaited, never orphaned', async () => {
+  // Round-2 review repro: the refresh fired as the last job ends lists a new
+  // job (a fifth queued follow-up, or a message landing just then).
+  const events: string[] = [];
+  let refreshes = 0;
+  const result = await drainAlarmTurnJobs<Job>({
+    ...baseOptions([]),
+    recheckMs: 2_000,
+    initial: [{ id: 'a', thread: 'T1' }],
+    refresh: async () => {
+      refreshes += 1;
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      return refreshes === 1 ? [{ id: 'b', thread: 'T2' }] : [];
+    },
+    tick: async () => {},
+    runJob: async (job) => {
+      events.push(`start:${job.id}`);
+      if (job.id === 'a') {
+        // Let the loop start a refresh while this job still runs.
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      } else {
+        await new Promise((resolve) => setTimeout(resolve, 60));
+      }
+      events.push(`end:${job.id}`);
+      return true;
+    },
+    onWake: (wake) => {
+      // Admission lands right away, so a refresh is in flight when `a` ends.
+      queueMicrotask(wake);
+      return () => {};
+    },
+  });
+  events.push('returned');
+  assert.equal(result.carried.length, 0);
+  assert.deepEqual(events, ['start:a', 'end:a', 'start:b', 'end:b', 'returned'],
+    'the job the late refresh started finished before the drain returned');
+});
+
+test('nothing starts once the drain has decided to return', async () => {
+  let started = 0;
+  let resolveRefresh!: (jobs: Job[]) => void;
+  const result = await drainAlarmTurnJobs<Job>({
+    ...baseOptions([]),
+    startedAt: Date.now(),
+    budgetMs: 10,
+    hardCapMs: 40,
+    recheckMs: 1,
+    initial: [{ id: 'a', thread: 'T1' }],
+    // This refresh only answers after the cap.
+    refresh: () => new Promise<Job[]>((resolve) => { resolveRefresh = resolve; }),
+    runJob: async (job, control) => {
+      started += 1;
+      if (job.id === 'a') {
+        control.observing();
+        await new Promise((resolve) => control.signal.addEventListener('abort', resolve, { once: true }));
+        return false;
+      }
+      return true;
+    },
+  });
+  resolveRefresh([{ id: 'late', thread: 'T2' }]);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(started, 1, 'a refresh answering after the return starts nothing');
+  assert.equal(result.carried.length, 0);
+});

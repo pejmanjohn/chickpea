@@ -1525,15 +1525,16 @@ test('new V2 work falls back cleanly when Slack rejects its native task stream',
     const stored = h.store.get(h.runId);
     assert.equal(stored?.schemaVersion, 2);
     assert.equal(stored?.stream.state, 'fallback');
-    assert.deepEqual(
-      await h.presentation.finalize(
-        'The checklist fallback remains authoritative.',
-        'markdown',
-        'complete',
-        observer([]),
-      ),
-      { handled: false, fallbackPresentation: true },
+    const fallback = await h.presentation.finalize(
+      'The checklist fallback remains authoritative.',
+      'markdown',
+      'complete',
+      observer([]),
     );
+    // The fresh post carries the Run's own idempotency key.
+    assert.deepEqual({ ...fallback, operationId: undefined },
+      { handled: false, fallbackPresentation: true, operationId: undefined });
+    assert.match(String((fallback as { operationId?: string }).operationId), /^terminal_[0-9a-f]{24}$/);
     assert.deepEqual(
       h.calls.filter((call) => call.method.startsWith('chat.')).map((call) => call.method),
       ['chat.startStream'],
@@ -1562,15 +1563,15 @@ test('new V2 work falls back when the gateway confirms its native task stream wa
     });
     assert.equal(relay, undefined);
     assert.equal(h.store.get(h.runId)?.stream.state, 'fallback');
-    assert.deepEqual(
-      await h.presentation.finalize(
-        'The ordinary Slack reply remains available.',
-        'markdown',
-        'complete',
-        observer([]),
-      ),
-      { handled: false, fallbackPresentation: true },
+    const fallback = await h.presentation.finalize(
+      'The ordinary Slack reply remains available.',
+      'markdown',
+      'complete',
+      observer([]),
     );
+    assert.deepEqual({ ...fallback, operationId: undefined },
+      { handled: false, fallbackPresentation: true, operationId: undefined });
+    assert.match(String((fallback as { operationId?: string }).operationId), /^terminal_[0-9a-f]{24}$/);
   } finally {
     h.db.close();
   }
@@ -2953,6 +2954,27 @@ test('a lost stream on a presentation without terminal receipts still posts with
     if (result.handled) assert.fail('unreachable');
     assert.match(String(result.operationId), /^terminal_[0-9a-f]{24}$/);
     assert.equal(h.store.get(h.runId)?.stream.state, 'fallback');
+  } finally {
+    h.db.close();
+  }
+});
+
+test('a V2 fresh final retried after an unknown post repeats the same idempotency key', async () => {
+  const h = harness({
+    schemaVersion: 2,
+    stopStreamError: slackPlatformError('message_not_found'),
+    updateError: slackPlatformError('message_not_found'),
+  });
+  try {
+    applyPresentationMutation(h, { kind: 'stream_start_intent' });
+    applyPresentationMutation(h, { kind: 'stream_started', messageTs: '1785700100.000412',
+      flue: { instanceId: 'instance_v2_retry', submissionId: 'submission_v2_retry' } });
+    const first = await h.presentation.finalize('Saved answer.', 'markdown', 'complete', observer([]));
+    // The fresh post's outcome was unknown; a later attempt finalizes again.
+    const retry = await h.presentation.finalize('Saved answer.', 'markdown', 'complete', observer([]));
+    if (first.handled || retry.handled) assert.fail('both route to the fresh post');
+    assert.ok(first.operationId);
+    assert.equal(retry.operationId, first.operationId);
   } finally {
     h.db.close();
   }

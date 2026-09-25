@@ -877,7 +877,7 @@ export class SlackAgentViewPresentation {
       return {
         handled: false,
         fallbackPresentation: true,
-        ...(terminal.operationId ? { operationId: terminal.operationId } : {}),
+        operationId: terminal.operationId ?? freshFinalOperationId(presentation.runId),
       };
     }
     if (artifacts.length > 0 && presentation.stream.state === 'absent') {
@@ -888,7 +888,7 @@ export class SlackAgentViewPresentation {
       return {
         handled: false,
         fallbackPresentation: true,
-        ...(terminal.operationId ? { operationId: terminal.operationId } : {}),
+        operationId: terminal.operationId ?? freshFinalOperationId(presentation.runId),
       };
     }
 
@@ -939,10 +939,10 @@ export class SlackAgentViewPresentation {
           return {
             handled: false,
             fallbackPresentation: true,
-            ...(pendingTerminal.schemaVersion === 3 &&
+            operationId: pendingTerminal.schemaVersion === 3 &&
                 pendingTerminal.terminalDelivery.state === 'intended'
-              ? { operationId: pendingTerminal.terminalDelivery.operation.operationId }
-              : {}),
+              ? pendingTerminal.terminalDelivery.operation.operationId
+              : freshFinalOperationId(pendingTerminal.runId),
           };
         }
         await this.markUnknown(presentation, 'unknown_effect');
@@ -1502,11 +1502,10 @@ export class SlackAgentViewPresentation {
           handled: false,
           fallbackPresentation: true,
           // The fresh post always carries an idempotency key: the frozen
-          // terminal's, or one derived from the lost coordinate for rows
-          // without a terminal receipt.
+          // terminal's, or the run's own for rows without terminal receipts.
           operationId: lost.schemaVersion === 3 && lost.terminalDelivery.state === 'intended'
             ? lost.terminalDelivery.operation.operationId
-            : `terminal_${hash(`${lost.runId}:lost_stream:${messageTs}`).slice(0, 24)}`,
+            : freshFinalOperationId(lost.runId),
         };
       }
       presentation = await this.transition(presentation, {
@@ -2054,6 +2053,15 @@ function prefixAtUtf8Length(value: string, byteLength: number): string | undefin
 
 function utf8Length(value: string): number {
   return new TextEncoder().encode(value).byteLength;
+}
+
+/**
+ * The idempotency key of a presentation without terminal receipts (V1/V2)
+ * whose final posts as a fresh message. It depends only on the Run, so a
+ * retry after an unknown post repeats the same key.
+ */
+function freshFinalOperationId(runId: string): string {
+  return `terminal_${hash(`${runId}:fresh_final`).slice(0, 24)}`;
 }
 
 function hash(value: string): string {

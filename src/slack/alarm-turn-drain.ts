@@ -312,6 +312,9 @@ export async function drainAlarmTurnJobs<J>(
         refreshAgain = false;
         startRefresh();
       }
+      // With nothing running, the loop only waits for this refresh; let it
+      // see the jobs this refresh started (or leave) without a full re-check.
+      if (running.size === 0) wake();
     });
   };
 
@@ -331,7 +334,9 @@ export async function drainAlarmTurnJobs<J>(
   try {
     admit(options.initial);
     pump();
-    while (running.size > 0) {
+    // A refresh in flight can still admit and start jobs, so the drain never
+    // returns while one runs: every started job is awaited or carried.
+    while (running.size > 0 || refreshing) {
       const at = now();
       if (!budgetExhausted && at >= budgetAt) {
         budgetExhausted = true;
@@ -354,12 +359,15 @@ export async function drainAlarmTurnJobs<J>(
       }
       const nextAt = budgetExhausted ? hardCapAt : budgetAt;
       await sleepOrWake(Math.min(options.recheckMs, nextAt - now()));
-      if (admissionOpen) {
+      if (admissionOpen && running.size > 0) {
         startRefresh();
         pump();
         startTick();
       }
     }
+    // Nothing may start once the loop has decided to return: a job a late
+    // refresh admitted now would be neither awaited nor carried.
+    admissionOpen = false;
     // The alarm's own tail runs these drains next; never overlap it. Neither
     // may hold the alarm past its cap.
     await settleBy(ticking, hardCapAt);
