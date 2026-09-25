@@ -596,3 +596,52 @@ function lifecycleFingerprint(presentation: SlackRunPresentation): string {
     v3?.continuations?.state,
   ]);
 }
+
+/**
+ * One runner loop at a time, whether the alarm or an admission started it.
+ * A request that arrives while a loop runs joins it; the loop then runs once
+ * more, since work may have arrived after its last listing, unless it yielded
+ * at its budget or left a job carried: a second loop in the same invocation
+ * would get a fresh observation budget and head for the platform's 15-minute
+ * alarm limit, so the re-armed alarm (a second out) reattaches instead.
+ * Never throws.
+ */
+export function runnerLoopScheduler(input: {
+  runOnce(): Promise<ThreadRunnerAlarmResult>;
+  arm(nextAlarmAt: number | undefined): Promise<void>;
+  now?: () => number;
+}): () => Promise<void> {
+  const now = input.now ?? Date.now;
+  let running: Promise<void> | undefined;
+  let again = false;
+  return () => {
+    if (running) {
+      again = true;
+      return running;
+    }
+    running = (async () => {
+      // Publish `running` before the loop starts, so a call from inside it joins.
+      await Promise.resolve();
+      let repeat: boolean;
+      do {
+        again = false;
+        let result: ThreadRunnerAlarmResult | undefined;
+        try {
+          result = await input.runOnce();
+        } catch {
+          // Setup failed before the loop could run: try again soon.
+          console.warn('[chickpea] thread runner alarm could not start');
+        }
+        try {
+          await input.arm(result ? result.nextAlarmAt : now() + THREAD_RUNNER_FAILURE_BACKOFF_MAX_MS);
+        } catch {
+          // The instance is being replaced; its successor resumes the job.
+        }
+        repeat = again && result !== undefined && !result.record.yielded && result.record.carried === 0;
+      } while (repeat);
+    })().finally(() => {
+      running = undefined;
+    });
+    return running;
+  };
+}

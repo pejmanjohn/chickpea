@@ -764,8 +764,8 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
   private readonly presentationRunnerOf = (runId: string) => this.presentationRunner(runId);
   /** Set while runner-mode alarm work runs: admission hands new turns over at once. */
   private dispatchWake: (() => void) | undefined;
-  /** Admissions seen by this isolate (each arms the alarm). */
-  private admissions = 0;
+  /** Slack turns admitted in this isolate (events, deliveries, OAuth resumes). */
+  private admissionsSeen = 0;
 
   constructor(ctx: DurableObjectState, env: unknown) {
     super(ctx, env);
@@ -1720,7 +1720,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     // bounded fan-out. Bring a later receipt/retry alarm forward for new work,
     // but never move an already-armed alarm later.
     if (result.ok) {
-      await this.armAlarmNoLaterThan(Date.now() + RELAY_BATCH_WINDOW_MS);
+      await this.armAlarmNoLaterThan(Date.now() + RELAY_BATCH_WINDOW_MS, true);
     }
     return result;
   }
@@ -1770,7 +1770,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       if (admitted.value !== 'verified') outcome = admitted.value;
       // A duplicate also arms recovery: a previous insert may have survived an
       // alarm-write failure or loss of the HTTP response.
-      if (admitted.value !== 'verified') await this.armAlarmNoLaterThan(Date.now() + RELAY_BATCH_WINDOW_MS);
+      if (admitted.value !== 'verified') await this.armAlarmNoLaterThan(Date.now() + RELAY_BATCH_WINDOW_MS, true);
       return {status:200, body:httpDeliveryReceipt(value, admitted.value)};
     } catch (error) {
       return {status:error instanceof HttpDeliveryError ? error.status : 503,
@@ -1789,7 +1789,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       return stores.gatewayInbox.admit(delivery);
     });
     if (result.ok) {
-      await this.armAlarmNoLaterThan(Date.now() + RELAY_BATCH_WINDOW_MS);
+      await this.armAlarmNoLaterThan(Date.now() + RELAY_BATCH_WINDOW_MS, true);
     }
     return result;
   }
@@ -1815,7 +1815,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       ? await this.admitToRunner(result.value.runnerJob)
       : false;
     if (result.value.resumed && !readmitted) {
-      await this.armAlarmNoLaterThan(Date.now() + RELAY_BATCH_WINDOW_MS);
+      await this.armAlarmNoLaterThan(Date.now() + RELAY_BATCH_WINDOW_MS, true);
     }
     return { ok: true, value: result.value.resumed };
   }
@@ -1949,10 +1949,10 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       // Runner mode: an admission that lands while this pass runs (before any
       // wake is listening) is picked up by another pass, not the next alarm.
       for (let pass = 0; pass < 8; pass += 1) {
-        const admissions = this.admissions;
+        const admissions = this.admissionsSeen;
         retry = (await drainGatewayInbox(stores, this.env as PlatformEnv, onAdmitted)) || retry;
         await dispatchToRunners();
-        if (!runnerMode || this.admissions === admissions) break;
+        if (!runnerMode || this.admissionsSeen === admissions) break;
       }
       return retry;
     };
@@ -2281,11 +2281,11 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     }
   }
 
-  private async armAlarmNoLaterThan(at: number): Promise<void> {
+  private async armAlarmNoLaterThan(at: number, admission = false): Promise<void> {
     // Every admission arms the alarm after its durable write. A running alarm
     // cannot be re-entered, so let its drain pick the new work up directly.
     this.alarmAdmissionWake?.();
-    this.admissions += 1;
+    if (admission) this.admissionsSeen += 1;
     this.dispatchWake?.();
     const existing = await this.ctx.storage.getAlarm();
     if (existing === null || at < existing) await this.ctx.storage.setAlarm(at);

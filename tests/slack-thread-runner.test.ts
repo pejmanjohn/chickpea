@@ -52,7 +52,7 @@ test('the job store tells a new instance that a job was running', () => {
 test('a runner instance resumes a running job at once and starts admitted jobs in the admitting request', () => {
   const runner = readFileSync(new URL('../src/slack/thread-runner.ts', import.meta.url), 'utf8');
   // On first load after a replacement: a running job re-arms the alarm now.
-  assert.match(runner, /blockConcurrencyWhile\(async \(\) => \{\s*if \(!this\.store\(\)\.hasRunning\(\)\) return;[\s\S]{0,200}setAlarm\(Date\.now\(\)\)/);
+  assert.match(runner, /blockConcurrencyWhile\(async \(\) => \{\s*try \{\s*if \(!this\.store\(\)\.hasRunning\(\)\) return;[\s\S]{0,200}setAlarm\(Date\.now\(\)\)/);
   // admit starts the loop in the same request; the alarm is the backstop.
   assert.match(runner, /this\.wake\?\.\(\);\s*void this\.runSoon\(\);/);
   assert.match(runner, /async alarm\(\): Promise<void> \{\s*await this\.runSoon\(\);/);

@@ -416,7 +416,7 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
   const probe = new AlarmProbe();
   probe.env = hooks.runnerMode ? { SLACK_THREAD_RUNNER: {} } : {};
   (probe as unknown as { carriedAlarmTurns: Map<string, string> }).carriedAlarmTurns = new Map();
-  (probe as unknown as { admissions: number }).admissions = 0;
+  (probe as unknown as { admissionsSeen: number }).admissionsSeen = 0;
   probe.ctx = { storage: {
     async getAlarm() { return record.alarmAt; },
     async setAlarm(at: number) { record.alarmAt = at; },
@@ -768,8 +768,8 @@ test('runner mode hands over a turn admitted during the alarm\'s first inbox pas
       // is in flight; it becomes a turn row when the inbox is drained.
       if (id !== 'first') return;
       deliveryWaiting = true;
-      void (probe as unknown as { armAlarmNoLaterThan(at: number): Promise<void> })
-        .armAlarmNoLaterThan(Date.now() + 250);
+      void (probe as unknown as { armAlarmNoLaterThan(at: number, admission: boolean): Promise<void> })
+        .armAlarmNoLaterThan(Date.now() + 250, true);
     },
     onInboxDrain: (_count, jobs) => {
       if (!deliveryWaiting) return;

@@ -21,6 +21,7 @@ import {
   runnerPresentationState,
   runnerTurnJobsPort,
   runThreadRunnerAlarm,
+  runnerLoopScheduler,
   type ThreadRunnerLoopDeps,
 } from '../src/slack/thread-runner-loop.ts';
 import { executeTurnJob, type TurnExecutionPorts } from '../src/slack/turn-executor.ts';
@@ -1029,4 +1030,38 @@ test('a runner whose state store is being replaced retries within seconds', asyn
     assert.equal(result.record.outcome, 'threw');
     assert.equal(Math.round((result.nextAlarmAt! - at) / 1_000), 1, 'a store reset is retried after a second');
   } finally { db.close(); }
+});
+
+test('a joined alarm never starts a second loop budget after a yield in the same call', async () => {
+  const record = (yielded: boolean) => ({
+    record: { jobs: 1, ran: 1, yielded, carried: 0, durationMs: 0, outcome: 'drained' as const },
+    ...(yielded ? { nextAlarmAt: 1_000 } : {}),
+  });
+  for (const yielded of [true, false]) {
+    let runs = 0;
+    const armed: Array<number | undefined> = [];
+    let joined: Promise<void> | undefined;
+    const runSoon = runnerLoopScheduler({
+      runOnce: async () => {
+        runs += 1;
+        if (runs === 1) {
+          // The 5 s backstop alarm fires while the admit-started loop runs.
+          joined = runSoon();
+          // Slow post-job work (publish, repair, purge) after the budget.
+          await new Promise((resolve) => setTimeout(resolve, 5));
+        }
+        return record(runs === 1 && yielded);
+      },
+      arm: async (at) => { armed.push(at); },
+    });
+    await runSoon();
+    await joined;
+    if (yielded) {
+      assert.equal(runs, 1, 'the re-armed alarm reattaches; no second budget in this call');
+      assert.deepEqual(armed, [1_000]);
+    } else {
+      assert.equal(runs, 2, 'work that arrived after the last listing runs once more');
+      assert.deepEqual(armed, [undefined, undefined]);
+    }
+  }
 });
