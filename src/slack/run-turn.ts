@@ -153,6 +153,7 @@ import { createLiveWorkspaceManagementService } from '../management/live-service
 import {
   executeHostSlackManagementApproval,
   type SlackManagementApprovalDependencies,
+  type SlackManagementApprovalInvoke,
 } from '../management/slack-approval.ts';
 import { resolveSlackManagementActor } from '../management/slack-tools.ts';
 
@@ -271,6 +272,12 @@ export interface RunTurnOptions {
   /** Lazily resolved local management runtime when the turn runs inside its owning DO. */
   managementApproval?: SlackManagementApprovalDependencies |
     (() => SlackManagementApprovalDependencies);
+  /**
+   * Applies an approved proposal in the state owner over one RPC. A thread
+   * runner supplies this instead of `managementApproval`: it holds no local
+   * management runtime, and the state store stays the only management writer.
+   */
+  invokeManagementApproval?: SlackManagementApprovalInvoke;
   /** Test/rollout override; otherwise USAGE_RUNTIME_RECORDING controls capture. */
   usageRecordingEnabled?: boolean;
   /** Test override, bounded to the product's 250 ms maximum. */
@@ -1121,6 +1128,40 @@ async function runTurnAttempt(
     await agentViewPresentation?.setTitle(turn.text).catch(() => {
       console.warn('[chickpea] Slack Agent View title could not be recorded');
     });
+    if (turn.managementApprovalProposalId && options.replayText === undefined &&
+        options.invokeManagementApproval && !options.managementApproval) {
+      const persisted = await workLifecycle?.prepareExecution('Slack management approval');
+      void persisted;
+      const approval = await options.invokeManagementApproval({
+        turn,
+        assignment,
+        turnJobId: options.turnId ?? `msg:${turn.channelId}:${turn.messageTs}`,
+        proposalId: turn.managementApprovalProposalId,
+        ...(agentViewPresentation && options.runId ? { presentationRunId: options.runId } : {}),
+        ...(publicUrl ? { publicUrl } : {}),
+      });
+      if (approval.kind === 'agent_welcome_queued' && agentViewPresentation && options.runId) {
+        // The state owner queued the welcome; this executor owns the run's
+        // presentation, so it records the deferred terminal intent here.
+        await agentViewPresentation.prepareDeferredTerminalDelivery('answer').catch(() => {
+          console.warn('[chickpea:management] deferred terminal intent will be recovered on delivery');
+        });
+      }
+      if (workLifecycle?.hasExecution) {
+        await workLifecycle.settleExecution({
+          outcome: 'succeeded',
+          rawStatus: 'host_management_approval_succeeded',
+          modelInvoked: false,
+        });
+      }
+      if (approval.kind === 'message') {
+        await statusTurn.prepareFinal();
+        await presenter.deliverFinal(approval.text, 'markdown');
+      }
+      await finishStatus('answer');
+      await finishDelivery();
+      return;
+    }
     if (turn.managementApprovalProposalId && options.replayText === undefined) {
       const dependencies = resolveManagementApprovalDependencies(options.managementApproval, () => {
         if (isCloudflareTarget()) {

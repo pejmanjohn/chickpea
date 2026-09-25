@@ -277,6 +277,11 @@ import {
   resolveSlackManagementActor,
 } from './management/slack-tools.ts';
 import {
+  executeHostSlackManagementApproval,
+  type HostSlackManagementApprovalResult,
+  type SlackManagementApprovalRpcRequest,
+} from './management/slack-approval.ts';
+import {
   invokeSlackScheduleAction,
   retryDueSlackScheduleActions,
   type SlackScheduleActionOutcome,
@@ -884,6 +889,47 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       }));
       return workspaceManagementRpcFailure();
     }
+  }
+
+  /**
+   * Apply one approved management proposal for a Slack turn a thread runner
+   * executes. The runner holds no management state, so the approval crosses
+   * into the state owner once and runs against its local stores, exactly as
+   * the alarm executor's turns do. Non-idempotent: the caller never replays
+   * it, and the service's proposal state answers a re-run approval turn.
+   */
+  async slackManagementApprovalInvoke(
+    request: SlackManagementApprovalRpcRequest,
+  ): Promise<HostSlackManagementApprovalResult> {
+    this.stores ??= this.tryInit();
+    const stores = this.stores;
+    if (!stores) throw new Error('Management approval state is unavailable.');
+    const appStores = localGatewayAppStores(stores);
+    const { service } = localManagementRuntime(stores, this.env as PlatformEnv, appStores);
+    const result = await executeHostSlackManagementApproval({
+      turn: request.turn,
+      assignment: request.assignment,
+      turnJobId: request.turnJobId,
+      proposalId: request.proposalId,
+      dependencies: {
+        identity: appStores.identity,
+        config: appStores.config,
+        management: appStores.management,
+        service,
+        ...(request.publicUrl ? { publicUrl: request.publicUrl } : {}),
+      },
+      ...(request.presentationRunId ? { presentationRunId: request.presentationRunId } : {}),
+    });
+    try {
+      const outboxDueAt = stores.management.nextOutboxDueAt();
+      if (outboxDueAt !== undefined) {
+        await this.armAlarmNoLaterThan(Math.max(Date.now(), outboxDueAt));
+      }
+    } catch {
+      // The approval is applied; its receipt delivery is retryable follow-up.
+      console.error('[chickpea] Slack management approval receipt alarm failed');
+    }
+    return result;
   }
 
   async slackScheduleActionInvoke(

@@ -332,3 +332,20 @@ test('runner ports: a yield restores the attempt count exactly as the alarm does
   assert.deepEqual(h.calls, ['recordAttempt("turn_1",3)', 'recordAttempt("turn_1",2)']);
   assert.deepEqual(h.retries, []);
 });
+
+test('runner ports: an approval turn gets the state-store approval RPC, not a local runtime', async () => {
+  const h = runnerPorts(async (options) => {
+    await options.onDelivered?.('completed' as never);
+  });
+  const requests: unknown[] = [];
+  const invoke: NonNullable<TurnExecutionPorts['invokeManagementApproval']> = async (request) => {
+    requests.push(request);
+    return { kind: 'message', text: 'Applied the approved changes.' };
+  };
+  (h.ports as unknown as Record<string, unknown>).invokeManagementApproval = invoke;
+  assert.equal(await executeTurnJob(pendingJob(), h.ports, h.options), true);
+  const [run] = h.runs;
+  assert.equal(run?.invokeManagementApproval, invoke, 'the executor forwards the runner approval port');
+  assert.equal(run?.managementApproval, undefined, 'a runner has no local management runtime');
+  assert.deepEqual(requests, [], 'forwarding alone never applies anything');
+});
