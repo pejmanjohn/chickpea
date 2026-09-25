@@ -90,6 +90,10 @@ export const allowedAgentSkillPaths = new Set([
   exportPath('.claude', 'skills', 'chickpea-live-verification', 'SKILL.md'),
 ]);
 
+// The one tracked Claude Code settings file, admitted under the forbidden
+// `.claude/` root only in the exact shape repositoryClaudeSettingsFindings checks.
+export const repositoryClaudeSettingsPath = exportPath('.claude', 'settings.json');
+
 export const liveVerifierExportPolicy = Object.freeze({
   requiredPaths: new Set([
     exportPath('.claude', 'skills', 'chickpea-live-verification', 'SKILL.md'),
@@ -534,7 +538,8 @@ export function publicSourceManifestFindings(entries) {
     if (forbiddenSourcePaths.has(normalizedPath)) findings.push(`${path}: forbidden public-source path`);
     const privateDoc = privateDocReason(normalizedPath);
     if (privateDoc) findings.push(`${path}: ${privateDoc} under docs/ is not public`);
-    if (forbiddenSourcePathRoots.some((root) => (normalizedPath === root || normalizedPath.startsWith(`${root}/`)) && !allowedAgentSkillPaths.has(path))) {
+    if (forbiddenSourcePathRoots.some((root) => (normalizedPath === root || normalizedPath.startsWith(`${root}/`))
+      && !allowedAgentSkillPaths.has(path) && path !== repositoryClaudeSettingsPath)) {
       findings.push(`${path}: forbidden public-source path`);
     }
   }
@@ -583,6 +588,40 @@ export function repositoryMcpConfigFindings(entries, contents) {
     }
   }
   return findings;
+}
+
+/**
+ * The one tracked Claude Code settings file. It may register only the cloud
+ * SessionStart hook, scripts/cloud-session-start.sh for startup and resume, so
+ * a cloud session bootstraps itself (Node, dependencies, private operator
+ * files, environment registry) and no host runs anything else from this file:
+ * no other hooks, permissions, environment, or plugins.
+ */
+export const repositoryCloudSessionHookPath = exportPath('scripts', 'cloud-session-start.sh');
+const REPOSITORY_HOOK_MATCHER = 'startup|resume';
+const REPOSITORY_HOOK_COMMAND = `bash "$CLAUDE_PROJECT_DIR"/${repositoryCloudSessionHookPath}`;
+
+export function repositoryClaudeSettingsFindings(entries, contents) {
+  const file = repositoryClaudeSettingsPath;
+  if (!entries.some(({ path }) => path === file)) return [`missing repository Claude settings: ${file}`];
+  const bytes = contents.get(file);
+  if (!bytes) return [`${file}: no content available for scanning`];
+  let settings;
+  try { settings = JSON.parse(bytes.toString('utf8')); } catch { return [`${file}: not valid JSON`]; }
+  const record = (value) => (typeof value === 'object' && value !== null && !Array.isArray(value) ? value : undefined);
+  const hooks = record(record(settings)?.hooks);
+  const starts = Array.isArray(hooks?.SessionStart) && hooks.SessionStart.length === 1 ? hooks.SessionStart : undefined;
+  const entry = record(starts?.[0]);
+  const commands = Array.isArray(entry?.hooks) && entry.hooks.length === 1 ? entry.hooks : undefined;
+  const command = record(commands?.[0]);
+  if (!record(settings) || Object.keys(settings).join(',') !== 'hooks'
+    || !hooks || Object.keys(hooks).join(',') !== 'SessionStart'
+    || !entry || Object.keys(entry).sort().join(',') !== 'hooks,matcher' || entry.matcher !== REPOSITORY_HOOK_MATCHER
+    || !command || Object.keys(command).sort().join(',') !== 'command,type' || command.type !== 'command'
+    || command.command !== REPOSITORY_HOOK_COMMAND) {
+    return [`${file}: must be exactly {hooks: {SessionStart: [{matcher: ${REPOSITORY_HOOK_MATCHER}, hooks: [{type: command, command: ${REPOSITORY_HOOK_COMMAND}}]}]}}`];
+  }
+  return [];
 }
 
 /** The live-verification skill entrypoints; each must reference its workflow. */
@@ -921,6 +960,7 @@ export function inspectSource({ root, revision = 'HEAD', workingTree = false, ke
     check('leak scan', () => leakScanFindings(state.entries, state.contents));
     check('docs references', () => docsReferenceFindings(state.entries, state.contents));
     check('repository MCP config', () => repositoryMcpConfigFindings(state.entries, state.contents));
+    check('repository Claude settings', () => repositoryClaudeSettingsFindings(state.entries, state.contents));
     check('release manifest', () => { validateReleaseManifest(state.treeRoot); });
     check('lockfile integrity', () => lockfileIntegrityReport(join(state.treeRoot, 'package-lock.json')).unverified
       .map((name) => `${name}: package-lock entry has no integrity hash`));

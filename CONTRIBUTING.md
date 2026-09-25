@@ -48,7 +48,9 @@ seconds with no install, build, or network. It checks the tracked manifest
 against the public-source policy (forbidden roots, private `docs/` shapes,
 the live-verifier inventory), that every tracked `docs/` file is deliberately
 un-ignored in `.gitignore`, that the tracked `.mcp.json` defines only the lane
-browser servers through `scripts/lane-browser.mjs`, the private-name leak
+browser servers through `scripts/lane-browser.mjs`, that the tracked
+`.claude/settings.json` registers only the cloud SessionStart hook
+(`scripts/cloud-session-start.sh`), the private-name leak
 scan, that a `git archive` of the commit reproduces every tracked byte, the
 release manifest and version agreement, lockfile integrity hashes, package
 metadata, the authentication export contract, and the npm pack manifest. Run

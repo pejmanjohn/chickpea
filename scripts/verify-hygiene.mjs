@@ -14,7 +14,8 @@
  * live-verification docs references (every backticked or linked `.md` in the
  * skill entrypoints and qa/live/operator names a tracked file), the tracked
  * .mcp.json allowlist (only the lane browser servers through
- * scripts/lane-browser.mjs), release manifest and version agreement, lockfile
+ * scripts/lane-browser.mjs), the tracked .claude/settings.json allowlist (only
+ * the cloud SessionStart hook), release manifest and version agreement, lockfile
  * integrity hashes, package metadata, the authentication export contract, and
  * the npm pack manifest.
  * Exit 1 on any finding, 2 on a usage or structural error.
