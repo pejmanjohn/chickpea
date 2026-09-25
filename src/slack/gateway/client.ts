@@ -877,14 +877,7 @@ export class GatewayDeploymentClient implements GatewayOperationClient {
       const record = payload && typeof payload === 'object' && !Array.isArray(payload)
         ? payload as Record<string, unknown>
         : {};
-      throw new SlackTransportError(
-        operation,
-        typeof record.error === 'string' ? record.error : 'gateway_rejected',
-        {
-          retryable: response.status >= 500 || response.status === 429,
-          effectOutcome: response.status < 500 ? 'failed' : 'unknown',
-        },
-      );
+      throw gatewayHttpFailure(operation, response, record.error);
     }
     return payload;
   }
@@ -1118,6 +1111,47 @@ export class GatewayLogicalSession {
       throw new Error('Gateway frame workspace mismatch.');
     }
   }
+}
+
+/**
+ * Map a non-2xx gateway response to a transport error. Control-plane routes
+ * answer `{ error: "<code>" }`; the operation route answers the signed
+ * envelope `{ ok: false, error: { code, retryable } }` even on 429/5xx, so the
+ * object shape must be read too or a per-binding rate limit looks like a
+ * generic rejection. A 429 is always a gateway refusal before any Slack call,
+ * so its effect is a confirmed failure that is safe to retry.
+ */
+export function gatewayHttpFailure(
+  operation: string,
+  response: Pick<Response, 'status' | 'headers'>,
+  error: unknown,
+): SlackTransportError {
+  const status = response.status;
+  const detail = error && typeof error === 'object' && !Array.isArray(error)
+    ? error as Record<string, unknown>
+    : undefined;
+  const namedCode = typeof error === 'string' ? error
+    : typeof detail?.code === 'string' ? detail.code
+    : undefined;
+  const code = namedCode && /^[a-z0-9_.-]{1,80}$/i.test(namedCode) ? namedCode
+    : status === 429 ? 'gateway_rate_limited'
+    : 'gateway_rejected';
+  const retryable = status === 429 || status >= 500 ||
+    (typeof detail?.retryable === 'boolean' ? detail.retryable : false);
+  const retryAfterMs = typeof detail?.retryAfterMs === 'number'
+    ? detail.retryAfterMs
+    : retryAfterHeaderMs(response.headers.get('retry-after'));
+  return new SlackTransportError(operation, code, {
+    retryable,
+    effectOutcome: status < 500 ? 'failed' : 'unknown',
+    ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
+  });
+}
+
+function retryAfterHeaderMs(value: string | null): number | undefined {
+  if (!value || !/^\d{1,5}$/.test(value.trim())) return undefined;
+  const seconds = Number(value.trim());
+  return seconds >= 1 ? seconds * 1_000 : undefined;
 }
 
 function parseStoredBinding(raw: string): GatewayWorkspaceBinding {

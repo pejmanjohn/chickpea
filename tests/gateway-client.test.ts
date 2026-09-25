@@ -14,6 +14,7 @@ import {
   GATEWAY_CLAIM_SETTING,
   GATEWAY_SESSION_SETTING,
   GatewayDeploymentClient,
+  gatewayHttpFailure,
 } from '../src/slack/gateway/client.ts';
 import {
   GATEWAY_DEPLOYMENT_IDENTITY_SETTING,
@@ -854,6 +855,66 @@ test('gateway client marks an explicit operation rejection as a confirmed failed
     settings.close();
     config.close();
   }
+});
+
+test('a gateway per-binding rate limit surfaces as a named, retryable, confirmed-failed outcome', async () => {
+  const { settings, config } = gatewayStores(() => NOW);
+  const gateway = new FakeGateway();
+  let requests = 0;
+  const client = new GatewayDeploymentClient({
+    settings,
+    config,
+    keyring: generateCredentialKeyring('key_gateway'),
+    gatewayBaseUrl: 'https://gateway.chickpea.test',
+    fetch: async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : input.toString());
+      if (url.pathname === '/v1/workspaces/TGATEWAY/operations') {
+        requests += 1;
+        const request = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        // Exact body the shared gateway returns from consumeRateLimit.
+        return json({
+          protocolVersion: CHICKPEA_GATEWAY_PROTOCOL_VERSION,
+          requestId: request.requestId,
+          ok: false,
+          error: { code: 'gateway_rate_limited', retryable: true },
+        }, 429);
+      }
+      return gateway.fetch(input, init);
+    },
+    now: () => NOW,
+  });
+  try {
+    await client.beginClaim();
+    await client.refreshClaim();
+    await assert.rejects(
+      client.call('users.info', { user: 'U_ALICE' }),
+      (error: unknown) => error instanceof SlackTransportError &&
+        error.operation === 'users.info' &&
+        error.code === 'gateway_rate_limited' &&
+        error.retryable === true &&
+        error.effectOutcome === 'failed',
+    );
+    assert.equal(requests, 1);
+  } finally {
+    settings.close();
+    config.close();
+  }
+});
+
+test('gateway HTTP failures keep string codes, name a bare 429 and honor Retry-After', () => {
+  const headers = (value?: string) => new Headers(value ? { 'retry-after': value } : {});
+  const named = gatewayHttpFailure('auth.test', { status: 403, headers: headers() }, 'binding_revoked');
+  assert.equal(named.code, 'binding_revoked');
+  assert.equal(named.retryable, false);
+  assert.equal(named.effectOutcome, 'failed');
+  const bare = gatewayHttpFailure('auth.test', { status: 429, headers: headers('7') }, undefined);
+  assert.equal(bare.code, 'gateway_rate_limited');
+  assert.equal(bare.retryable, true);
+  assert.equal(bare.retryAfterMs, 7_000);
+  const upstream = gatewayHttpFailure('auth.test', { status: 503, headers: headers() }, { code: 42 });
+  assert.equal(upstream.code, 'gateway_rejected');
+  assert.equal(upstream.retryable, true);
+  assert.equal(upstream.effectOutcome, 'unknown');
 });
 
 test('gateway attachment read signs the exact binary contract and returns only validated metadata and bytes', async () => {
