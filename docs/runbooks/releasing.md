@@ -87,11 +87,13 @@ Use `--record <private-run.json>` for the existing skill's evidence notebook.
 Passing an earlier commit does not validate new changes. Verify the actual merge
 result before landing. The command never tags, publishes, or deploys a release.
 
-Record the compressed upload size from the deployment dry run, not the size of
-the repository or `node_modules`. Keep headroom below the advertised plan's
-Worker limit. A dynamic import still contributes its uploaded chunk to that
-limit. Do not advertise Free compatibility unless the actual release artifact
-fits its limits and the relevant runtime checks pass.
+Record the uncompressed ("Total Upload") size from the deployment dry run, not
+the size of the repository or `node_modules`. Keep headroom below Cloudflare's
+platform-wide 64 MiB Worker upload limit, per the budget in
+`scripts/verify-worker-size.mjs`. A dynamic import still contributes its
+uploaded chunk to that limit. Do not advertise a specific plan's compatibility
+unless the actual release artifact fits its other limits (CPU time, request
+volume, containers) and the relevant runtime checks pass.
 
 ## Dependency install policy
 
