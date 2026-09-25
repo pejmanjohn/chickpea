@@ -14,6 +14,12 @@ export interface WorkspaceMilestoneRelay {
   replay(values: unknown): void;
   /** Resolves once every accepted record was applied (or failed and was logged). */
   drain(): Promise<void>;
+  /**
+   * True when the last observed chunk was this submission's milestone start:
+   * the coordinator is waiting on the coding worker and the stream will be
+   * quiet until the step settles.
+   */
+  isIdleCandidate(): boolean;
 }
 
 /**
@@ -31,9 +37,9 @@ export function createWorkspaceMilestoneRelay(
   const messageIds = new Set<string>();
   const seen = new Set<string>();
   let chain: Promise<void> = Promise.resolve();
+  let awaitingWorker = false;
 
-  const accept = (value: unknown) => {
-    const record = parseWorkspaceMilestone(value);
+  const accept = (record: WorkspaceMilestoneRecord | undefined) => {
     if (!record) return;
     const key = `${record.toolCallId}:${record.milestone}:${record.state}`;
     if (seen.has(key)) return;
@@ -47,6 +53,7 @@ export function createWorkspaceMilestoneRelay(
 
   return {
     onEvent(chunk) {
+      awaitingWorker = false;
       const record = chunk as unknown as Record<string, unknown>;
       if (record.type === 'message-started') {
         if (record.submissionId === submissionId && typeof record.messageId === 'string') {
@@ -56,12 +63,15 @@ export function createWorkspaceMilestoneRelay(
       }
       if (record.type !== 'data-part' || record.name !== WORKSPACE_MILESTONE_DATA_NAME) return;
       if (typeof record.messageId !== 'string' || !messageIds.has(record.messageId)) return;
-      accept(record.data);
+      const milestone = parseWorkspaceMilestone(record.data);
+      awaitingWorker = milestone?.state === 'started';
+      accept(milestone);
     },
     replay(values) {
       if (!Array.isArray(values)) return;
-      for (const value of values) accept(value);
+      for (const value of values) accept(parseWorkspaceMilestone(value));
     },
     drain: () => chain,
+    isIdleCandidate: () => awaitingWorker,
   };
 }

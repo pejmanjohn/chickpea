@@ -84,6 +84,11 @@ import type { FrozenRuntimePlanDecision } from './turn-job-types.ts';
 import type { FlueDispatchReceiptV1 } from './turn-job-types.ts';
 import type { SlackProgressiveReadRelay } from './progressive-relay.ts';
 import {
+  TurnLatencyTracker,
+  type TurnFirstWrite,
+  type TurnLatencyContext,
+} from '../observability/runtime-latency.ts';
+import {
   decideProgressiveEligibility,
   type ProgressiveEligibilityDecision,
 } from './progressive-eligibility.ts';
@@ -268,6 +273,11 @@ export interface RunTurnOptions {
    * Such a turn can run far longer than an ordinary one.
    */
   onCodingTaskStarted?: () => void | Promise<void>;
+  /**
+   * An earlier attempt of this turn already delegated a coding task, so a
+   * reattached observation may start from the quiet-worker poll cadence.
+   */
+  codingTaskStarted?: boolean;
   /** Adapter artifacts restored from a prior relay attempt. */
   interactionProgress?: SlackInteractionProgress;
   /** Persist adapter coordinates before any later model or delivery work. */
@@ -286,6 +296,13 @@ export interface RunTurnOptions {
   progressiveAttributionProven?: boolean;
   /** Canonical presentation writer; absent keeps the legacy terminal path. */
   presentationState?: SlackPresentationStatePort;
+  /**
+   * Relay context for the content-free `turn_latency` log. Present only when a
+   * durable relay runs the turn; absent emits nothing.
+   */
+  turnLatency?: TurnLatencyContext;
+  /** Set by `runTurn` itself when `turnLatency` is present. */
+  onSlackWrite?: (surface: TurnFirstWrite) => void;
 }
 
 export const WORKSPACE_DEFAULT_MODEL_REPAIR_TEXT =
@@ -313,12 +330,53 @@ function resolveManagementApprovalDependencies(
  * completes. `runTurn` throws only on a genuine delivery failure or when
  * reconciliation explicitly requires recovery. Callers release claims for a
  * retryable delivery failure and retain them for recovery-required Runs.
+ *
+ * With `options.turnLatency`, each attempt also emits one `turn_latency` log
+ * (admission to first acknowledged Slack write and to final) when it returns
+ * or throws. Logging never changes the outcome.
  */
 export async function runTurn(
   turn: NormalizedSlackTurn,
   assignment: ResolvedAssignment,
   platformEnv: PlatformEnv | undefined,
   options: RunTurnOptions = {},
+): Promise<void> {
+  if (!options.turnLatency) return runTurnAttempt(turn, assignment, platformEnv, options);
+  const tracker = new TurnLatencyTracker(options.turnLatency, {
+    ...(options.turnId ? { turnJobId: options.turnId } : {}),
+    ...(options.runId ? { runId: options.runId } : {}),
+    ...(options.runAttempt === undefined ? {} : { attempt: options.runAttempt }),
+  });
+  const { onDelivered, onDeferredTerminal } = options;
+  try {
+    await runTurnAttempt(turn, assignment, platformEnv, {
+      ...options,
+      onSlackWrite: (surface) => tracker.markSlackWrite(surface),
+      onDelivered: async (outcome) => {
+        tracker.markFinal('delivered');
+        await onDelivered?.(outcome);
+      },
+      ...(onDeferredTerminal
+        ? {
+            onDeferredTerminal: async () => {
+              tracker.markFinal('deferred');
+              await onDeferredTerminal();
+            },
+          }
+        : {}),
+    });
+    tracker.emit('returned');
+  } catch (error) {
+    tracker.emit('threw');
+    throw error;
+  }
+}
+
+async function runTurnAttempt(
+  turn: NormalizedSlackTurn,
+  assignment: ResolvedAssignment,
+  platformEnv: PlatformEnv | undefined,
+  options: RunTurnOptions,
 ): Promise<void> {
   const turnWorkspaceId = effectiveTurnSlackInstallationId(turn);
   const installationContext = options.installationContext ?? (
@@ -562,6 +620,9 @@ export async function runTurn(
           memoryItems: preparedMemory?.footerItems,
         },
         onNativeStarted: () => onNativeStarted(),
+        ...(options.onSlackWrite
+          ? { onStreamStarted: () => options.onSlackWrite?.('stream') }
+          : {}),
       })
     : undefined;
   // A delegated coding task's progress shows in the working indicator.
@@ -655,11 +716,15 @@ export async function runTurn(
   const beginNativeSessionFallback = async (): Promise<void> => {
     if (nativeSessionFallbackStarted || !agentViewPresentation) return;
     nativeSessionFallbackStarted = true;
-    await agentViewPresentation.beginAgentSessionProcessing().catch(() => false);
+    if (await agentViewPresentation.beginAgentSessionProcessing().catch(() => false)) {
+      options.onSlackWrite?.('agent_session');
+    }
   };
   if (!semanticStatusCarriesSession()) {
     nativeSessionFallbackStarted = true;
-    await agentViewPresentation?.beginAgentSessionProcessing();
+    if (await agentViewPresentation?.beginAgentSessionProcessing()) {
+      options.onSlackWrite?.('agent_session');
+    }
   }
   const activityPresenter = {
     async setStatus(update: SlackStatusUpdate): Promise<boolean> {
@@ -676,6 +741,7 @@ export async function runTurn(
       }
       if (frozenPresentation?.schemaVersion === 3 && !activityWrite) return false;
       const succeeded = await presenter.setStatus(update, activityWrite);
+      if (succeeded) options.onSlackWrite?.('activity_status');
       try {
         const receipt = presenter.activityReceipt();
         await agentViewPresentation?.recordActivityReceipt(
@@ -705,11 +771,17 @@ export async function runTurn(
       if (!semanticActivityEnabled) return false;
       // Without a V3 activity record there is nothing to validate against:
       // reassert the phrase exactly as a fresh write would.
-      if (frozenPresentation?.schemaVersion !== 3) return presenter.setStatus(update);
-      if (!agentViewPresentation) return false;
-      const durable = await agentViewPresentation.prepareActivityRefresh(update);
-      if (!durable) return false;
-      return presenter.setStatus(update, durable);
+      let succeeded: boolean;
+      if (frozenPresentation?.schemaVersion !== 3) {
+        succeeded = await presenter.setStatus(update);
+      } else {
+        if (!agentViewPresentation) return false;
+        const durable = await agentViewPresentation.prepareActivityRefresh(update);
+        if (!durable) return false;
+        succeeded = await presenter.setStatus(update, durable);
+      }
+      if (succeeded) options.onSlackWrite?.('activity_status');
+      return succeeded;
     },
   };
   const statusTurn = registerSlackStatusTurn(statusInstanceId, activityPresenter, {
@@ -1087,6 +1159,7 @@ export async function runTurn(
       } catch {
         console.warn('[chickpea] Slack work acknowledgment failed');
       }
+      if (workAcknowledgment?.created) options.onSlackWrite?.('reaction');
       if (workAcknowledgment) {
         await recordInteractionProgress({
           acknowledgment: {
@@ -1304,6 +1377,7 @@ export async function runTurn(
             ...(options.onObservationStarted
               ? { onObservationStarted: options.onObservationStarted }
               : {}),
+            ...(options.codingTaskStarted ? { codingTaskStarted: true } : {}),
             onWorkspaceMilestone: async (record) => {
               await signalCodingTaskStarted();
               codingProgress.apply(record);

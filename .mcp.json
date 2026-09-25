@@ -1,0 +1,19 @@
+{
+  "mcpServers": {
+    "chrome-amber": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["scripts/lane-browser.mjs", "serve", "amber", "--root", "${CHICKPEA_LANE_CHROME_ROOT}"]
+    },
+    "chrome-cobalt": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["scripts/lane-browser.mjs", "serve", "cobalt", "--root", "${CHICKPEA_LANE_CHROME_ROOT}"]
+    },
+    "chrome-violet": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["scripts/lane-browser.mjs", "serve", "violet", "--root", "${CHICKPEA_LANE_CHROME_ROOT}"]
+    }
+  }
+}

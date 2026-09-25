@@ -22,6 +22,8 @@ interface SlackPresentationRepairDrainOptions {
 
 const SLACK_PRESENTATION_REPAIR_MIN_BACKOFF_MS = 30_000;
 const SLACK_PRESENTATION_REPAIR_MAX_BACKOFF_MS = 15 * 60_000;
+/** Repair attempts (about 30 minutes of backoff) before owed follow-ups are abandoned. */
+const SLACK_CONTINUATION_REPAIR_ATTEMPTS = 6;
 
 export interface SlackPresentationRepairDrainResult {
   attempted: number;
@@ -35,6 +37,7 @@ type SlackPresentationRepairStage =
   | 'terminal_intent_reload'
   | 'terminal_delivery_receipt'
   | 'terminal_delivery_reload'
+  | 'continuation_delivery'
   | 'thread_generation_lookup'
   | 'latest_generation_unproven'
   | 'agent_session_settlement'
@@ -250,6 +253,13 @@ export async function repairTerminalSlackPresentation(
       : {}),
   });
 
+  if (presentation.continuations?.state === 'active') {
+    // Finish or abandon a half-posted long reply before settling lifecycle.
+    // Pending and unknown parts reconcile by readback; none posts twice.
+    await repairStage('continuation_delivery', () => agentView.deliverContinuations({
+      abandonUnresolved: (presentation.repair?.attempts ?? 0) >= SLACK_CONTINUATION_REPAIR_ATTEMPTS,
+    }));
+  }
   const latestGeneration = await repairStage(
     'thread_generation_lookup',
     () => state.getLatestThreadSessionGeneration(presentation.root),
@@ -321,7 +331,8 @@ export function hasRetryableTerminalRepair(
     (presentation.cleanup.state === 'not_required'
       ? presentation.cleanup.disposition === undefined
       : presentation.cleanup.operation.certainty === 'failed');
-  return lifecycleRepairable || sessionRepairable || cleanupRepairable;
+  const continuationsOwed = presentation.continuations?.state === 'active';
+  return lifecycleRepairable || sessionRepairable || cleanupRepairable || continuationsOwed;
 }
 
 function presentationRepairBackoffMs(attempt: number): number {

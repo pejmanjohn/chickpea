@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import {
+  chmodSync,
   closeSync,
   constants,
   existsSync,
@@ -33,21 +34,42 @@ import {
   adoptEnvironmentMutationLock,
   abortEnvironmentDeploymentIntent,
   EnvironmentRegistryError,
+  ENVIRONMENT_TARGET_OWNERSHIPS,
   assertEnvironmentMutationClaim,
+  assertEnvironmentPathOutsideRepository,
   assertLiveEnvironmentClaim,
   assertSafeEvidenceRoot,
   clearEnvironmentSetupFlowUnproven,
+  createEnvironmentRegistry,
+  defaultEnvironmentRoot,
+  environmentRegistryExists,
+  exportableEnvironmentTarget,
   isEnvironmentDeploymentAbortState,
+  isRemoteEnvironmentTarget,
   recordEnvironmentDeploymentIntent,
   recordEnvironmentDeployment,
   readEnvironmentRegistry,
   normalizeTarget,
   registerEnvironment,
   readEnvironmentTargetLockStatus,
+  setEnvironmentOwnership,
   stableEnvironmentJson,
+  validateExportedEnvironmentTarget,
+  validAuthorityOrigin,
 } from './environment-registry.mjs';
 
 export const ENVIRONMENT_BASELINE_SCHEMA = 'chickpea-environment-baseline/v1';
+/**
+ * A registration file: the secret-free description of a fleet that a second
+ * host materializes with `env init`, or that returns one lane to its previous
+ * owner with `env ownership --set local`. It carries each lane's identity,
+ * serving state, and authority origin, the fleet's `sandbox` value, and, for
+ * the lanes the receiving host will own, that lane's baseline and latest
+ * deploy receipt. It never carries claims, locks, audit history, evidence
+ * paths, tokens, or the exporting host's identity.
+ */
+export const ENVIRONMENT_REGISTRATION_SCHEMA = 'chickpea-environment-registration/v1';
+const AUTHORITY_PATH = '/internal/environment/authority';
 /**
  * Sources that change what an already-installed lane relies on. A difference
  * here can invalidate an installation that already happened, so it stays a
@@ -148,6 +170,281 @@ export async function adoptEnvironmentFromFile(file, options = {}) {
     expectedVersion: registration.servingVersion, expectedSchema: registration.schemaGeneration,
   });
   return registerEnvironment(input, options);
+}
+
+/**
+ * Export this host's registry as a registration file for another host.
+ * `selector` is one lane or `all`. Lanes named in `own` are exported as that
+ * host's own (`ownership: local`) and must already be remote here, so a lane
+ * is never local on two hosts through this tooling; every other lane is
+ * exported as remote. Owned lanes carry their baseline and, when one exists,
+ * their latest deploy receipt, so the receiving host can deploy and attest
+ * without copying evidence by hand. The file is created owner-only at an
+ * absolute path outside any Git checkout, and is never overwritten.
+ */
+export function exportEnvironmentRegistration(selector, options = {}) {
+  const output = validateRegistrationOutputPath(options.output);
+  const own = validateOwnedTargets(options.own);
+  const registry = readEnvironmentRegistry(options);
+  const targets = selector === 'all'
+    ? Object.keys(registry.targets)
+    : activeEnvironmentTargets.includes(selector) ? [selector] : undefined;
+  if (!targets) throw fail('INVALID_TARGET');
+  for (const target of targets) if (!registry.targets[target]) throw fail('INVALID_TARGET', { target });
+  for (const target of own) if (!targets.includes(target)) throw fail('INVALID_OWNED_TARGET', { target });
+  const records = [];
+  const evidence = {};
+  for (const target of targets) {
+    const registration = registry.targets[target];
+    const ownership = own.includes(target) ? 'local' : 'remote';
+    if (ownership === 'local' && !isRemoteEnvironmentTarget(registration)) {
+      throw fail('TARGET_OWNED_LOCALLY', { target });
+    }
+    const authorityOrigin = resolveLaneAuthorityOrigin(registration, options);
+    if (authorityOrigin === undefined) throw fail('AUTHORITY_ORIGIN_UNAVAILABLE', { target });
+    records.push(exportableEnvironmentTarget(registration, ownership, authorityOrigin));
+    if (ownership === 'local') {
+      const baseline = readEnvironmentBaseline(registration.evidenceRoot);
+      if (baseline.target !== target) throw fail('BASELINE_TARGET_MISMATCH');
+      let deployReceipt;
+      try {
+        deployReceipt = readEnvironmentDeployReceipt(registration.evidenceRoot);
+      } catch (error) {
+        if (!(error instanceof EnvironmentPreflightError && error.code === 'DEPLOY_RECEIPT_MISSING')) throw error;
+      }
+      if (deployReceipt && (deployReceipt.target !== target
+        || deployReceipt.activeVersion !== registration.servingVersion)) {
+        throw fail('DEPLOY_RECEIPT_STALE', { target });
+      }
+      evidence[target] = { baseline, ...(deployReceipt ? { deployReceipt } : {}) };
+    }
+  }
+  const exportedAt = canonicalTimestamp(options.now ? options.now() : Date.now());
+  const file = {
+    schemaVersion: ENVIRONMENT_REGISTRATION_SCHEMA,
+    exportedAt,
+    sandbox: registry.sandbox,
+    targets: records,
+    ...(Object.keys(evidence).length > 0 ? { evidence } : {}),
+  };
+  validateRegistrationFile(file);
+  writeExclusivePrivateJson(output, file);
+  return Object.freeze({
+    written: output,
+    exportedAt,
+    targets: Object.freeze(records.map((record) => Object.freeze({
+      target: record.target,
+      ownership: record.ownership,
+      evidence: Object.freeze(Object.keys(evidence[record.target] ?? {})),
+    }))),
+  });
+}
+
+/**
+ * Create this host's registry from a registration file. Every lane in the
+ * file is registered with the ownership the file states; evidence roots are
+ * this host's own (`<root>/<lane>/evidence`, created owner-only), and an owned
+ * lane's baseline and deploy receipt are published there before the registry
+ * is committed. Refuses when any registry state already exists here: a second
+ * host is bootstrapped once, never by copying another host's registry.
+ */
+export function initEnvironmentRegistryFromFile(file, options = {}) {
+  const registration = readRegistrationFile(file);
+  const root = options.root ?? defaultEnvironmentRoot();
+  if (environmentRegistryExists({ ...options, root })) throw fail('REGISTRY_EXISTS');
+  const evidenceRoots = Object.fromEntries(registration.targets.map((record) => [
+    record.target, join(root, record.target, 'evidence'),
+  ]));
+  for (const target of Object.keys(evidenceRoots)) {
+    // Owner-only at every level this host creates; an existing directory
+    // must already satisfy the evidence-root checks.
+    for (const directory of [root, join(root, target), evidenceRoots[target]]) {
+      if (existsSync(directory)) continue;
+      mkdirSync(directory, { recursive: directory === root, mode: 0o700 });
+      chmodSync(directory, 0o700);
+    }
+    assertSafeEvidenceRoot(evidenceRoots[target], options);
+  }
+  // An owned lane is recorded without the ownership fields (absence is local).
+  const targets = registration.targets.map(({ ownership, authorityOrigin, ...record }) => ({
+    ...record,
+    evidenceRoot: evidenceRoots[record.target],
+    ...(ownership === 'remote' ? { ownership, authorityOrigin } : {}),
+  }));
+  const registry = createEnvironmentRegistry({
+    root,
+    targets,
+    sandbox: registration.sandbox,
+    ...(options.hostFingerprint ? { hostFingerprint: options.hostFingerprint } : {}),
+    ...(options.identityPath ? { identityPath: options.identityPath } : {}),
+    ...(options.expectedUid !== undefined ? { expectedUid: options.expectedUid } : {}),
+    beforeInitializeCommit: () => {
+      for (const record of registration.targets) {
+        if (record.ownership !== 'local') continue;
+        publishRegistrationEvidence(evidenceRoots[record.target], registration.evidence[record.target]);
+      }
+    },
+  });
+  return Object.freeze({
+    initialized: true,
+    root,
+    registryRevision: registry.revision,
+    targets: Object.freeze(registration.targets.map((record) => Object.freeze({
+      target: record.target,
+      ownership: record.ownership,
+      evidenceRoot: evidenceRoots[record.target],
+    }))),
+  });
+}
+
+/**
+ * Take a lane back from its current owner using that host's export. The
+ * record must name this lane as the receiving host's own; its serving state
+ * replaces the stale copy here, and its baseline and deploy receipt replace
+ * this host's evidence files, which are kept beside them as superseded.
+ */
+export function restoreEnvironmentOwnershipFromFile(target, file, options = {}) {
+  if (!activeEnvironmentTargets.includes(target)) throw fail('INVALID_TARGET');
+  const registration = readRegistrationFile(file);
+  const record = registration.targets.find((entry) => entry.target === target);
+  if (!record || record.ownership !== 'local') throw fail('INVALID_REGISTRATION', { target });
+  const evidence = registration.evidence[target];
+  const registry = readEnvironmentRegistry(options);
+  const current = registry.targets[target];
+  if (!current) throw fail('INVALID_TARGET', { target });
+  const evidenceRoot = assertSafeEvidenceRoot(current.evidenceRoot);
+  const supersededAt = canonicalTimestamp(options.now ? options.now() : Date.now()).replace(/[:.]/gu, '-');
+  return setEnvironmentOwnership(target, { ownership: 'local', registration: record }, {
+    ...options,
+    beforeOwnershipCommit: () => {
+      supersedeOwnerOnlyJson(environmentBaselinePath(evidenceRoot), evidence.baseline, supersededAt);
+      if (evidence.deployReceipt) {
+        supersedeOwnerOnlyJson(environmentDeployReceiptPath(evidenceRoot), evidence.deployReceipt, supersededAt);
+      }
+    },
+  });
+}
+
+function readRegistrationFile(file) {
+  if (typeof file !== 'string' || !path.isAbsolute(file) || resolve(file) !== file) {
+    throw fail('INVALID_REGISTRATION');
+  }
+  return validateRegistrationFile(readOwnerOnlyJson(file, 'REGISTRATION_MISSING'));
+}
+
+function validateRegistrationFile(input) {
+  if (!isRecord(input)
+    || !exactKeys(input, ['schemaVersion', 'exportedAt', 'sandbox', 'targets'], ['evidence'])
+    || input.schemaVersion !== ENVIRONMENT_REGISTRATION_SCHEMA
+    || !(input.sandbox === null || isRecord(input.sandbox))
+    || !Array.isArray(input.targets) || input.targets.length === 0
+    || input.targets.length > activeEnvironmentTargets.length
+    || (input.evidence !== undefined && !isRecord(input.evidence))) {
+    throw fail('INVALID_REGISTRATION');
+  }
+  try { canonicalTimestamp(input.exportedAt); } catch { throw fail('INVALID_REGISTRATION'); }
+  const evidence = input.evidence ?? {};
+  const seen = new Set();
+  for (const record of input.targets) {
+    try {
+      validateExportedEnvironmentTarget(record);
+    } catch (error) {
+      throw error instanceof EnvironmentRegistryError && error.code === 'SECRET_LIKE_FIELD'
+        ? error : fail('INVALID_REGISTRATION');
+    }
+    if (!activeEnvironmentTargets.includes(record.target) || seen.has(record.target)) throw fail('INVALID_REGISTRATION');
+    seen.add(record.target);
+    if (!validAuthorityOrigin(record.authorityOrigin)) throw fail('INVALID_REGISTRATION', { target: record.target });
+    const laneEvidence = evidence[record.target];
+    if (record.ownership === 'remote') {
+      if (laneEvidence !== undefined) throw fail('INVALID_REGISTRATION', { target: record.target });
+      continue;
+    }
+    if (!isRecord(laneEvidence) || !exactKeys(laneEvidence, ['baseline'], ['deployReceipt'])) {
+      throw fail('INVALID_REGISTRATION', { target: record.target });
+    }
+    const baseline = validateBaseline(laneEvidence.baseline);
+    if (baseline.target !== record.target) throw fail('BASELINE_TARGET_MISMATCH');
+    if (laneEvidence.deployReceipt !== undefined) {
+      const receipt = validateDeployReceipt(laneEvidence.deployReceipt);
+      if (receipt.target !== record.target || receipt.activeVersion !== record.servingVersion) {
+        throw fail('DEPLOY_RECEIPT_STALE', { target: record.target });
+      }
+    }
+  }
+  if (Object.keys(evidence).some((target) => !seen.has(target))) throw fail('INVALID_REGISTRATION');
+  return { ...input, evidence };
+}
+
+function validateOwnedTargets(input) {
+  if (input === undefined) return [];
+  if (!Array.isArray(input) || input.some((target) => !activeEnvironmentTargets.includes(target))
+    || new Set(input).size !== input.length) {
+    throw fail('INVALID_OWNED_TARGET');
+  }
+  return input;
+}
+
+function validateRegistrationOutputPath(output) {
+  if (typeof output !== 'string' || !path.isAbsolute(output) || resolve(output) !== output
+    || !output.endsWith('.json')) {
+    throw fail('INVALID_REGISTRATION_OUTPUT');
+  }
+  assertEnvironmentPathOutsideRepository(output);
+  const parent = lstatIfPresent(dirname(output));
+  if (!parent || parent.isSymbolicLink() || !parent.isDirectory()
+    || (typeof process.getuid === 'function' && parent.uid !== process.getuid())
+    || (parent.mode & 0o077) !== 0) {
+    throw fail('INVALID_REGISTRATION_OUTPUT');
+  }
+  if (lstatIfPresent(output)) throw fail('REGISTRATION_OUTPUT_EXISTS');
+  return output;
+}
+
+/** Owner-only, exclusive, and readable by a person: a bootstrap file is pasted by hand. */
+function writeExclusivePrivateJson(filePath, value) {
+  let descriptor;
+  try {
+    descriptor = openSync(filePath, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | (constants.O_NOFOLLOW ?? 0), 0o600);
+    writeSync(descriptor, `${JSON.stringify(value, null, 2)}\n`);
+    fsyncSync(descriptor);
+  } catch (error) {
+    if (isNodeError(error, 'EEXIST')) throw fail('REGISTRATION_OUTPUT_EXISTS');
+    throw error;
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+  }
+  fsyncAuthorityDirectory(dirname(filePath));
+}
+
+/** Publish an owned lane's evidence on a fresh host; an identical file already there is fine. */
+function publishRegistrationEvidence(evidenceRoot, evidence) {
+  ensureOwnerOnlyJson(environmentBaselinePath(evidenceRoot), evidence.baseline);
+  if (evidence.deployReceipt) ensureOwnerOnlyJson(environmentDeployReceiptPath(evidenceRoot), evidence.deployReceipt);
+}
+
+function ensureOwnerOnlyJson(filePath, value) {
+  const existing = lstatIfPresent(filePath);
+  if (existing) {
+    if (existing.isSymbolicLink()) throw fail('SYMLINK_REFUSED');
+    const current = readOwnerOnlyJson(filePath, 'AUTHORITY_FILE_EXISTS');
+    if (stableEnvironmentJson(current) !== stableEnvironmentJson(value)) throw fail('AUTHORITY_FILE_EXISTS');
+    return;
+  }
+  exclusiveOwnerOnlyJson(filePath, value);
+}
+
+function supersedeOwnerOnlyJson(filePath, value, supersededAt) {
+  const existing = lstatIfPresent(filePath);
+  if (existing) {
+    if (existing.isSymbolicLink()) throw fail('SYMLINK_REFUSED');
+    const current = readOwnerOnlyJson(filePath, 'UNSAFE_AUTHORITY_FILE');
+    if (stableEnvironmentJson(current) === stableEnvironmentJson(value)) return;
+    const superseded = `${filePath.slice(0, -'.json'.length)}.superseded-${supersededAt}.json`;
+    if (lstatIfPresent(superseded)) throw fail('AUTHORITY_FILE_EXISTS');
+    renameSync(filePath, superseded);
+  }
+  exclusiveOwnerOnlyJson(filePath, value);
 }
 
 /**
@@ -1716,6 +2013,12 @@ export async function observeProductionEnvironmentAuthority(context, options = {
     registry.targets.violet = pending;
   }
   const registeredTargets = registry && Object.keys(registry.targets);
+  // A lane registered from another host's export names its authority origin
+  // in the record; the read token still comes from this host's environment or
+  // credential file, never from the registry.
+  const authorityOrigins = Object.fromEntries(Object.values(registry?.targets ?? {})
+    .filter((lane) => typeof lane.authorityOrigin === 'string')
+    .map((lane) => [lane.target, lane.authorityOrigin]));
   const borrowed = Object.values(registry?.targets ?? {}).filter((lane) => lane.target !== target && lane.installation);
   // A borrowed workspace may be disconnected, but its standing Worker and
   // bindings must still be intact. Keep its pinned fingerprints in isolation
@@ -1733,6 +2036,7 @@ export async function observeProductionEnvironmentAuthority(context, options = {
     activeVersion,
     transport: context.registration.transport,
     targets: registeredTargets?.filter((lane) => !borrowedFingerprints[lane]),
+    authorityOrigins,
   });
   const fleetTargets = registeredTargets ?? Object.keys(runtimeAuthorities ?? {});
   if (!validQaFleet(fleetTargets) || !fleetTargets.includes(target)) throw fail('RUNTIME_AUTHORITY_INVALID');
@@ -1747,6 +2051,11 @@ export async function observeProductionEnvironmentAuthority(context, options = {
       && runtimeAuthorities?.[lane]?.[UNOBSERVED_LANE] === true)
     .map((lane) => {
       const registration = registry?.targets[lane];
+      // Another host's lane keeps no baseline here, so nothing can stand in
+      // for it: it has to answer live when this host deploys.
+      if (isRemoteEnvironmentTarget(registration)) {
+        throw fail('LIVE_AUTHORITY_BRIDGE_UNAVAILABLE', { target: lane, ownership: 'remote' });
+      }
       let pinned;
       try {
         pinned = registration && readEnvironmentBaseline(registration.evidenceRoot)
@@ -1974,7 +2283,9 @@ function validateProviderContext(input) {
  * variables win; otherwise the owner-only lane credential file
  * `<credentialsRoot>/<target>-live.json` (`~/.chickpea/lane-credentials` by
  * default) supplies `authorityReadToken` and `origin`, with the authority path
- * appended. The token never leaves this process and is never logged.
+ * appended. When neither names the URL, `authorityOrigin` (the origin a
+ * registration recorded for the lane) supplies it; the token is never taken
+ * from the registry. The token never leaves this process and is never logged.
  */
 export function resolveLaneAuthorityCredentials(target, options = {}) {
   const env = options.env ?? process.env;
@@ -1986,18 +2297,41 @@ export function resolveLaneAuthorityCredentials(target, options = {}) {
   }
   const root = options.credentialsRoot ?? join(homedir(), '.chickpea', 'lane-credentials');
   let file;
+  let source = 'environment';
   try {
     file = JSON.parse(readFileSync(join(root, `${target}-live.json`), 'utf8'));
+    source = 'lane-credentials';
   } catch {
-    return { url, token, source: 'environment' };
+    file = undefined;
   }
   const fileToken = typeof file?.authorityReadToken === 'string' ? file.authorityReadToken : undefined;
   const fileOrigin = typeof file?.origin === 'string' ? file.origin.replace(/\/+$/u, '') : undefined;
   if (typeof token !== 'string' || !token.trim()) token = fileToken;
   if (typeof url !== 'string' || !url.trim()) {
-    url = fileOrigin ? `${fileOrigin}/internal/environment/authority` : undefined;
+    url = fileOrigin ? `${fileOrigin}${AUTHORITY_PATH}` : undefined;
   }
-  return { url, token, source: 'lane-credentials' };
+  if (url === undefined && validAuthorityOrigin(options.authorityOrigin)) {
+    url = `${options.authorityOrigin}${AUTHORITY_PATH}`;
+    source = 'registry';
+  }
+  return { url, token, source };
+}
+
+/**
+ * The origin this host knows for a lane's authority endpoint, without its
+ * token: the registration's own value, else the host variable's origin, else
+ * the credential file's `origin`. Undefined when none names it.
+ */
+export function resolveLaneAuthorityOrigin(registration, options = {}) {
+  if (validAuthorityOrigin(registration?.authorityOrigin)) return registration.authorityOrigin;
+  const { url } = resolveLaneAuthorityCredentials(registration.target, options);
+  if (typeof url !== 'string') return undefined;
+  try {
+    const parsed = new URL(url);
+    return validAuthorityOrigin(parsed.origin) ? parsed.origin : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function assertBorrowedWorkerUnchanged(lane, runWrangler, providerContext) {
@@ -2026,6 +2360,8 @@ async function readProductionFleetRuntimeAuthorities(request, { env, fetchImpl, 
     const { url, token } = resolveLaneAuthorityCredentials(target, {
       env,
       ...(credentialsRoot ? { credentialsRoot } : {}),
+      ...(typeof request.authorityOrigins?.[target] === 'string'
+        ? { authorityOrigin: request.authorityOrigins[target] } : {}),
     });
     if (typeof token !== 'string' || !/^[A-Za-z0-9_-]{43}$/u.test(token)) {
       throw fail('LIVE_AUTHORITY_READ_TOKEN_INVALID', { target });

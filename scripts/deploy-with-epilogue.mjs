@@ -574,12 +574,19 @@ function validateFlue2CutoverArtifact(artifact) {
   if (!gatewaySessionMigration || !sameMembers(gatewaySessionMigration.new_sqlite_classes ?? [], ['SlackGatewaySession'])) {
     failures.push('v9 SlackGatewaySession SQLite class');
   }
+  const threadRunnerMigration = migrations.find((migration) => migration.tag === 'v11');
+  if (!threadRunnerMigration || !sameMembers(threadRunnerMigration.new_sqlite_classes ?? [], ['SlackThreadRunner'])) {
+    failures.push('v11 SlackThreadRunner SQLite class');
+  }
 
   const bindings = config.durable_objects?.bindings ?? [];
   const hasBinding = (name, className) => bindings.some(
     (binding) => binding.name === name && binding.class_name === className,
   );
   if (!hasBinding('TAG_STATE', 'TagStateStore')) failures.push('TAG_STATE/TagStateStore binding');
+  if (!hasBinding('SLACK_THREAD_RUNNER', 'SlackThreadRunner')) {
+    failures.push('SLACK_THREAD_RUNNER/SlackThreadRunner binding');
+  }
   for (const [name, className] of V2_AGENT_BINDINGS) {
     if (!hasBinding(name, className)) failures.push(`${name}/${className} binding`);
   }

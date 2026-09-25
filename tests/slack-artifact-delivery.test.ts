@@ -1,10 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { WebClient } from '@slack/web-api';
-import { ARTIFACT_UNDELIVERED_NOTE, WebClientPresenter, deliverPersistedSlackPayload, rejectedFileFallbackPayload } from '../src/slack/web-client-presenter.ts';
+import { ARTIFACT_UNDELIVERED_NOTE, WebClientPresenter, deliverPersistedSlackPayload, rejectedFileFallbackPayload, type SlackPresenterAgentView } from '../src/slack/web-client-presenter.ts';
 import type { CompletedSlackArtifactReceipt, SlackArtifactReceipt } from '../src/slack/artifact-receipts.ts';
 import type { SlackFileCompletionInput } from '../src/slack/file-transport.ts';
-import type { SlackAgentViewPresentation } from '../src/slack/agent-view-presentation.ts';
 import { slackClientMessageId } from '../src/slack/transport/message-id.ts';
 import { SlackTransportError } from '../src/slack/transport/types.ts';
 import { resultFromAgentReply } from '../src/slack/flue-dispatch.ts';
@@ -30,7 +29,7 @@ function messageBody(input: Record<string, unknown>): string {
     .filter((block) => block.type === 'section').map((block) => block.text!.text).join('');
 }
 
-function setup(options: { error?: unknown; ledger?: boolean; presentation?: SlackAgentViewPresentation } = {}) {
+function setup(options: { error?: unknown; ledger?: boolean; presentation?: SlackPresenterAgentView } = {}) {
   const completions: SlackFileCompletionInput[] = [];
   const posts: Record<string, unknown>[] = [];
   const streams: string[] = [];
@@ -106,7 +105,11 @@ test('artifact final retains the existing presentation fallback coordinate and o
     async finalize(...args: unknown[]) { state.push(['finalize', args[5]]); return { handled: false, fallbackPresentation: true, operationId: 'file-final-operation' }; },
     async markFallbackDelivered(messageTs: string) { state.push(['delivered', messageTs]); },
     async markFallbackDeliveryFailed(outcome: string) { state.push(['failed', outcome]); },
-  } as unknown as SlackAgentViewPresentation;
+    async markCanonicalFinalized() {},
+    async frozenReplyParts() { return undefined; },
+    async planContinuations() { return false; },
+    async deliverContinuations() {},
+  } as unknown as SlackPresenterAgentView;
   const h = setup({ ledger: true, presentation });
   await h.presenter.deliverFinal('GRE: $2,400', 'markdown', 'complete', undefined, [receipt]);
   assert.deepEqual(state, [['finalize', [receipt]], ['delivered', ts]]);
@@ -188,13 +191,36 @@ for (const mixed of [false, true]) {
   });
 }
 
-test('legacy attachment notice survives a bounded long answer', async () => {
+test('legacy attachment notice costs no answer text: a full-length answer continues', async () => {
   const h = setup({ ledger: true });
   const answer = 'x'.repeat(12_000);
   await h.presenter.deliverFinal(answer, 'markdown', 'complete', undefined, [legacyReceipt]);
-  assert.ok(String(h.posts[0]!.text).startsWith(ARTIFACT_UNDELIVERED_NOTE));
   assert.equal(h.observations[0]!.approvedOutput, answer);
-  assert.equal(h.posts.length, 1);
+  // The notice and the answer no longer fit one message, so the answer
+  // continues rather than losing text to the notice.
+  assert.equal(h.posts.length, 2);
+  const [first, last] = h.posts as [Record<string, unknown>, Record<string, unknown>];
+  const blockTypes = (post: Record<string, unknown>) =>
+    (post.blocks as Array<{ type: string }>).map((block) => block.type);
+  const markdown = (post: Record<string, unknown>) =>
+    (post.blocks as Array<{ type: string; text?: string }>)[0]!.text!;
+  assert.ok(String(first.text).startsWith(ARTIFACT_UNDELIVERED_NOTE));
+  // The only paragraph boundary is after the notice, so the answer moves
+  // whole into the closing message.
+  assert.equal(markdown(first), ARTIFACT_UNDELIVERED_NOTE);
+  assert.deepEqual(blockTypes(first), ['markdown'], 'no footer before the reply ends');
+  // A legacy staged receipt has no permalink, so the closing carries no
+  // file link; the notice already says the file was not attached.
+  assert.deepEqual(blockTypes(last), ['markdown', 'context']);
+  assert.ok(!JSON.stringify(last).includes('bookings.png'));
+  assert.equal(last.username, 'Smoke Amber');
+  assert.equal(markdown(last), answer);
+  // The 4,000-character notification text keeps its own preview limit.
+  assert.ok(h.posts.every((post) => !JSON.stringify(post.blocks).includes('[truncated]')));
+  assert.deepEqual(
+    (h.handoffs as Array<{ text: string }>).map((entry) => entry.text),
+    [markdown(first), markdown(last)],
+  );
 });
 
 test('mismatched destinations fail before any publication or presentation effect', async () => {

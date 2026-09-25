@@ -43,6 +43,12 @@ import {
 const SEED_PATH = '/internal/environment/seed';
 const AGENT_ID = /^[a-z0-9][a-z0-9_-]{0,127}$/;
 const SECRET_NAME = /^[A-Z][A-Z0-9_]*$/;
+
+/** The default manifest path; shared with scripts/cloud-private-home.mjs. */
+export function defaultSeedManifest() {
+  return path.join(homedir(), '.chickpea', 'qa-seed.json');
+}
+
 export const FIXTURES_AGENT_ID = 'qa-fixtures';
 const BIND_UNSUPPORTED = 'There is no --bind. Chickpea binds each connection to exactly one Agent, so ' +
   'a fixture connection cannot be shared with a run-owned Agent. Seed with --fixtures and run ' +
@@ -53,7 +59,7 @@ export function parseArguments(argv) {
   const [lane, ...rest] = argv;
   const options = {
     lane,
-    manifest: path.join(homedir(), '.chickpea', 'qa-seed.json'),
+    manifest: defaultSeedManifest(),
     dryRun: false,
     fixtures: false,
     replace: false,

@@ -58,6 +58,36 @@ const TARGET_KEYS = Object.freeze([
   'reachable', 'identityMatches', 'computerUseSurfaces', 'missingActorAliases',
   'claim', 'lastAttestation',
 ]);
+// Present only on remote records. A missing `ownership` means local, and a
+// local record never carries these fields.
+const OPTIONAL_TARGET_KEYS = Object.freeze([
+  'setupFlowUnprovenSince', 'installation', 'ownership', 'authorityOrigin',
+]);
+export const ENVIRONMENT_TARGET_OWNERSHIPS = Object.freeze(['local', 'remote']);
+/**
+ * Fields that identify a lane's physical resources. They are the same on
+ * every host that registers the lane and never change through a hand-off.
+ */
+export const ENVIRONMENT_TARGET_IDENTITY_KEYS = Object.freeze([
+  'target', 'role', 'transport', 'workerName', 'authDatabaseBinding',
+  'authDatabaseName', 'authDatabaseId', 'workspaceId', 'slackAppId', 'botUserId',
+  'providerProjectId', 'providerAuthConfigId', 'timezone', 'bindingIdentities',
+]);
+/**
+ * Fields that describe what the lane currently serves and how it presents.
+ * The owning host updates them through deploys; another host receives them
+ * through an exported registration.
+ */
+export const ENVIRONMENT_TARGET_STATE_KEYS = Object.freeze([
+  'workspaceLabel', 'slackAppLabel', 'schemaGeneration', 'servingVersion',
+  'sourceRevision', 'sourceDirty', 'reachable', 'identityMatches',
+  'computerUseSurfaces', 'missingActorAliases', 'setupFlowUnprovenSince',
+  'authorityOrigin',
+]);
+/** Never leaves the host: claims, locks, attestations, reservations, paths. */
+export const ENVIRONMENT_TARGET_HOST_KEYS = Object.freeze([
+  'evidenceRoot', 'claim', 'lastAttestation', 'installation',
+]);
 const CLAIM_KEYS = Object.freeze([
   'schemaVersion', 'target', 'canonicalWorktreePath', 'branch', 'leaseNonce',
   'claimedRevision', 'registryRevision', 'hostFingerprint', 'claimedAt', 'expiresAt',
@@ -193,6 +223,120 @@ export function readEnvironmentRegistry(options = {}) {
 }
 
 /**
+ * Whether this root already holds registry state. Used by a bootstrap to
+ * refuse before it touches anything; creation rechecks under the lock.
+ */
+export function environmentRegistryExists(options = {}) {
+  const root = canonicalRoot(options.root ?? defaultEnvironmentRoot());
+  assertCreationPathNoSymlinks(root);
+  assertRegistryOutsideRepository(root);
+  if (!existsSync(root)) return false;
+  assertSafeDirectory(root);
+  return registryStateExists(root);
+}
+
+/** A remote lane is registered here for fleet checks only; another host owns it. */
+export function isRemoteEnvironmentTarget(registration) {
+  return registration?.ownership === 'remote';
+}
+
+/**
+ * The host-independent projection of one registration: identity and serving
+ * state, never a claim, attestation, reservation, or evidence path. The
+ * receiving host decides `ownership`; the exporter states it for that host.
+ */
+export function exportableEnvironmentTarget(registration, ownership, authorityOrigin = undefined) {
+  if (!ENVIRONMENT_TARGET_OWNERSHIPS.includes(ownership)) throw fail('INVALID_OWNERSHIP');
+  const record = {};
+  for (const key of [...ENVIRONMENT_TARGET_IDENTITY_KEYS, ...ENVIRONMENT_TARGET_STATE_KEYS]) {
+    if (registration[key] !== undefined) record[key] = structuredClone(registration[key]);
+  }
+  if (authorityOrigin !== undefined) record.authorityOrigin = authorityOrigin;
+  if (record.authorityOrigin !== undefined && !validAuthorityOrigin(record.authorityOrigin)) {
+    throw fail('INVALID_AUTHORITY_ORIGIN');
+  }
+  record.ownership = ownership;
+  return record;
+}
+
+/**
+ * Validate an exported registration record for `target`: the projection above
+ * plus `ownership`, with no host-local field. Returns it unchanged.
+ */
+export function validateExportedEnvironmentTarget(input, target = undefined) {
+  rejectSecretLikeFields(input);
+  if (!isRecord(input)
+    || !ENVIRONMENT_TARGET_OWNERSHIPS.includes(input.ownership)
+    || ENVIRONMENT_TARGET_HOST_KEYS.some((key) => key in input)
+    || Object.keys(input).some((key) => ![...ENVIRONMENT_TARGET_IDENTITY_KEYS, ...ENVIRONMENT_TARGET_STATE_KEYS, 'ownership'].includes(key))
+    || (target !== undefined && input.target !== target)) {
+    throw fail('INVALID_REGISTRATION', { ...(target ? { target } : {}) });
+  }
+  return input;
+}
+
+/**
+ * Hand a lane to another host, or take it back. Both directions need the lane
+ * unclaimed, unlocked, and without a reservation, so no work is in flight
+ * here. Handing off clears this host's attestation. Taking back requires the
+ * current owner's exported record for the lane: identity must match, and the
+ * serving state it carries replaces the stale copy kept here while the lane
+ * was remote. `beforeOwnershipCommit` runs under the registry lock so a caller
+ * can publish the lane's evidence files before the record changes.
+ */
+export function setEnvironmentOwnership(target, input, options = {}) {
+  assertActiveTarget(target);
+  if (!isRecord(input) || !exactKeys(input, ['ownership'], ['registration'])
+    || !ENVIRONMENT_TARGET_OWNERSHIPS.includes(input.ownership)
+    || (input.ownership === 'local') !== (input.registration !== undefined)) {
+    throw fail('INVALID_OWNERSHIP_CHANGE');
+  }
+  const replacement = input.registration === undefined
+    ? undefined
+    : validateExportedEnvironmentTarget(input.registration, target);
+  if (replacement && replacement.ownership !== 'local') throw fail('INVALID_REGISTRATION', { target });
+  const root = canonicalRoot(options.root ?? defaultEnvironmentRoot());
+  return withRegistryLock(root, () => {
+    const registry = readRegistryAt(root, false);
+    assertRegistryHost(registry, options.hostFingerprint ?? currentHostFingerprint(options));
+    const registration = registry.targets[target];
+    if (!registration) throw fail('TARGET_NOT_REGISTERED', { target });
+    const now = nowMs(options);
+    if (registration.claim) throw fail('TARGET_CLAIMED', publicClaim(registration.claim, now));
+    if (registration.installation) throw fail('INSTALLATION_RESTORATION_REQUIRED');
+    assertTargetMutationUnlocked(registration, options);
+    const current = registration.ownership ?? 'local';
+    if (current === input.ownership) throw fail('OWNERSHIP_UNCHANGED', { target, ownership: current });
+    let next = structuredClone(registry);
+    next.revision += 1;
+    if (input.ownership === 'remote') {
+      next.targets[target] = { ...registration, ownership: 'remote', lastAttestation: null };
+    } else {
+      for (const key of ENVIRONMENT_TARGET_IDENTITY_KEYS) {
+        if (stableEnvironmentJson(replacement[key]) !== stableEnvironmentJson(registration[key])) {
+          throw fail('REGISTRATION_IDENTITY_MISMATCH', { target, field: key });
+        }
+      }
+      // Local is the absence of the field, and a local lane needs no recorded
+      // origin: this host holds its own credentials.
+      const { ownership: _ownership, authorityOrigin: _authorityOrigin, ...portable } = replacement;
+      next.targets[target] = normalizeTarget({
+        ...portable,
+        evidenceRoot: registration.evidenceRoot,
+        claim: null,
+        lastAttestation: null,
+      });
+    }
+    next.audit.push(auditEvent('ownership_changed', target, now, next.revision));
+    trimAudit(next.audit);
+    next = validateRegistry(next);
+    optionsHook(options.beforeOwnershipCommit);
+    writeRegistryRevision(root, next, options);
+    return Object.freeze({ target, ownership: input.ownership, registryRevision: next.revision });
+  }, options);
+}
+
+/**
  * Adopt a prepared target; preserve all prior records. Other lanes may stay
  * claimed: adding a lane changes none of their records, and every holder's
  * tooling reads the expanded registry. Only an in-flight deployment (a held
@@ -203,8 +347,11 @@ export function registerEnvironment(input, options = {}) {
   if (!isRecord(input) || !exactKeys(input, ['expectedRegistryRevision', 'registration'])
     || !Number.isSafeInteger(input.expectedRegistryRevision)) throw fail('INVALID_REGISTRATION');
   const registration = normalizeTarget(input.registration);
+  // Adoption is for a lane this host will operate; a remote record arrives
+  // only through a bootstrap registration.
   if (registration.target !== 'violet' || registration.claim || registration.lastAttestation
-    || !registration.reachable || !registration.identityMatches) {
+    || !registration.reachable || !registration.identityMatches
+    || isRemoteEnvironmentTarget(registration)) {
     throw fail('INVALID_REGISTRATION');
   }
   assertSafeEvidenceRoot(registration.evidenceRoot, options);
@@ -300,11 +447,13 @@ export function claimEnvironment(target, options = {}) {
     const now = nowMs(options);
     repairOrphanMarker(registry, worktree, target);
     assertWorktreeClaimAvailable(registry, worktree, undefined, now);
-    const selected = target ?? Object.keys(registry.targets).find((candidate) => !registry.targets[candidate].claim);
+    const selected = target ?? Object.keys(registry.targets).find((candidate) =>
+      !registry.targets[candidate].claim && !isRemoteEnvironmentTarget(registry.targets[candidate]));
     if (!selected) throw fail('NO_TARGET_AVAILABLE');
     assertActiveTarget(selected);
     const registration = registry.targets[selected];
     if (!registration) throw fail('TARGET_NOT_REGISTERED', { target: selected });
+    if (isRemoteEnvironmentTarget(registration)) throw fail('TARGET_REMOTE', { target: selected });
     if (registration.claim) {
       const code = Date.parse(registration.claim.expiresAt) <= now
         ? 'CLAIM_EXPIRED_RECLAIM_REQUIRED'
@@ -336,6 +485,7 @@ export function reclaimEnvironment(target, options = {}) {
     const registry = readRegistryAt(root, false, options.allowLegacyRegistryRecovery === true);
     assertRegistryHost(registry, options.hostFingerprint ?? currentHostFingerprint(options));
     if (!registry.targets[target]) throw fail('TARGET_NOT_REGISTERED', { target });
+    if (isRemoteEnvironmentTarget(registry.targets[target])) throw fail('TARGET_REMOTE', { target });
     assertTargetMutationUnlocked(registry.targets[target], options);
     const now = nowMs(options);
     assertWorktreeClaimAvailable(registry, worktree, target, now);
@@ -1141,12 +1291,14 @@ export function reconcileEnvironment(target, options = {}) {
     }, options);
   }
   const status = readEnvironmentStatus({ ...options, ...(target ? { target } : {}) });
+  // Another host's lanes are not this host's to repair or to wait for.
+  const local = status.targets.filter(({ health }) => health !== 'remote');
   return {
     kind: 'reconciliation',
     repairedOrphanMarker,
-    ready: status.registryMigrationRequired !== true && status.targets.every(({ health }) => health === 'ready'),
+    ready: status.registryMigrationRequired !== true && local.every(({ health }) => health === 'ready'),
     status,
-    issues: status.targets
+    issues: local
       .filter(({ health }) => health !== 'ready')
       .map(({ target: name, health, recoveryAction }) => ({ target: name, health, recoveryAction })),
   };
@@ -1163,7 +1315,7 @@ function normalizeInitialTargets(input) {
 export function normalizeTarget(input) {
   rejectSecretLikeFields(input);
   if (!isRecord(input)) throw fail('INVALID_TARGET_RECORD');
-  if (Object.keys(input).some((key) => ![...TARGET_KEYS, 'setupFlowUnprovenSince', 'installation'].includes(key))) {
+  if (Object.keys(input).some((key) => ![...TARGET_KEYS, ...OPTIONAL_TARGET_KEYS].includes(key))) {
     throw fail('INVALID_TARGET_RECORD');
   }
   assertActiveTarget(input.target);
@@ -1250,9 +1402,14 @@ function validateTarget(input, target, legacy = false) {
   const authConfigField = legacy ? 'providerReadOnlyAuthConfigId' : 'providerAuthConfigId';
   const keys = legacy ? TARGET_KEYS.map((key) => key === 'providerAuthConfigId' ? authConfigField : key) : TARGET_KEYS;
   // Optional so registries written before the setup-contract split stay valid.
-  if (!isRecord(input) || !exactKeys(input, keys, ['setupFlowUnprovenSince', 'installation'])
+  if (!isRecord(input) || !exactKeys(input, keys, OPTIONAL_TARGET_KEYS)
     || !validSetupFlowUnprovenSince(input.setupFlowUnprovenSince)
     || (input.installation !== undefined && (!validInstallation(input.installation) || !input.claim))
+    || (input.ownership !== undefined && !ENVIRONMENT_TARGET_OWNERSHIPS.includes(input.ownership))
+    || (input.authorityOrigin !== undefined && !validAuthorityOrigin(input.authorityOrigin))
+    // A remote lane carries no state that only its owning host can honor.
+    || (input.ownership === 'remote'
+      && (input.claim !== null || input.lastAttestation !== null || input.installation !== undefined))
     || input.target !== target
     || input.role !== 'branch'
     || (input.transport !== 'gateway' && input.transport !== 'events')
@@ -1288,6 +1445,15 @@ function validateTarget(input, target, legacy = false) {
 function validSetupFlowUnprovenSince(value) {
   return value === undefined || value === null
     || (typeof value === 'string' && /^[0-9a-f]{7,64}$/u.test(value));
+}
+
+/** An exact https origin: the Worker's public origin, no path, query, or credentials. */
+export function validAuthorityOrigin(value) {
+  if (!safeBounded(value)) return false;
+  let url;
+  try { url = new URL(value); } catch { return false; }
+  return url.protocol === 'https:' && !url.username && !url.password
+    && url.pathname === '/' && !url.search && !url.hash && url.origin === value;
 }
 
 function validInstallation(value) {
@@ -1372,6 +1538,7 @@ function validateSandbox(input) {
 
 function assertMatchingClaim(registry, target, worktree, options) {
   if (!registry.targets[target]) throw fail('TARGET_NOT_REGISTERED', { target });
+  if (isRemoteEnvironmentTarget(registry.targets[target])) throw fail('TARGET_REMOTE', { target });
   const claim = registry.targets[target].claim;
   if (!claim) throw fail('CLAIM_REQUIRED');
   if (claim.hostFingerprint !== registry.hostFingerprint) throw fail('HOST_MISMATCH');
@@ -1866,6 +2033,7 @@ function optionsHook(hook) {
 }
 
 function statusForTarget(registration, now, options) {
+  if (isRemoteEnvironmentTarget(registration)) return remoteStatusForTarget(registration);
   let health = 'ready';
   let markerMatches = true;
   let claimIdentitySafe = true;
@@ -1904,6 +2072,7 @@ function statusForTarget(registration, now, options) {
   return Object.freeze({
     target: registration.target,
     health,
+    ownership: 'local',
     sourceSha: registration.sourceRevision,
     dirty: registration.sourceDirty,
     servingVersion: registration.servingVersion,
@@ -1924,6 +2093,33 @@ function statusForTarget(registration, now, options) {
     ...(registration.installation ? { installationRun: registration.installation.runId } : {}),
     lastAttestedRevision: registration.lastAttestation?.sourceRevision ?? null,
     recoveryAction: recoveryAction(health, registration.target),
+  });
+}
+
+/**
+ * Another host's lane: the record is the state that host exported, not a live
+ * view. Nothing here can be claimed, locked, or attested, so the lock file
+ * under its (empty) evidence root is not consulted.
+ */
+function remoteStatusForTarget(registration) {
+  return Object.freeze({
+    target: registration.target,
+    health: 'remote',
+    ownership: 'remote',
+    sourceSha: registration.sourceRevision,
+    dirty: registration.sourceDirty,
+    servingVersion: registration.servingVersion,
+    transport: registration.transport,
+    workspaceAlias: `env-${registration.target}-workspace`,
+    workspaceLabel: registration.workspaceLabel,
+    appAlias: `env-${registration.target}-slack-app`,
+    appLabel: registration.slackAppLabel,
+    claim: null,
+    verifierLock: Object.freeze({ status: 'clear' }),
+    schemaGeneration: registration.schemaGeneration,
+    setupFlowUnprovenSince: registration.setupFlowUnprovenSince ?? null,
+    lastAttestedRevision: null,
+    recoveryAction: recoveryAction('remote', registration.target),
   });
 }
 
@@ -2067,6 +2263,10 @@ function assertSafeOptionalOwnerFile(filePath) {
 
 function recoveryAction(health, target) {
   if (health === 'ready') return 'No recovery needed.';
+  if (health === 'remote') {
+    return `${target} is owned by another host. Claim it there, or take it back with `
+      + `npm run env -- ownership ${target} --set local --registration <that host's export>.`;
+  }
   if (health === 'unreachable') return `Check ${target} Worker and Slack transport reachability.`;
   if (health === 'stale_claim') return `Run npm run env -- reclaim ${target} from the intended worktree.`;
   if (health === 'expired_claim') return `Run npm run env -- reclaim ${target}.`;
@@ -2181,7 +2381,7 @@ function validDeploymentMetadata(input, intent, registration) {
 function validateAudit(input) {
   if (!isRecord(input)
     || !exactKeys(input, ['event', 'target', 'at', 'registryRevision'])
-    || !['installation_reserved', 'installation_restored', 'target_registered', 'claim_created', 'claim_reclaimed', 'claim_adopted_orphan', 'claim_released', 'target_attested', 'target_deploy_intent', 'target_deploy_aborted', 'target_deploy_pending', 'target_deployed', 'provider_auth_config_migrated', 'target_setup_flow_proven'].includes(input.event)
+    || !['installation_reserved', 'installation_restored', 'target_registered', 'claim_created', 'claim_reclaimed', 'claim_adopted_orphan', 'claim_released', 'target_attested', 'target_deploy_intent', 'target_deploy_aborted', 'target_deploy_pending', 'target_deployed', 'provider_auth_config_migrated', 'target_setup_flow_proven', 'ownership_changed'].includes(input.event)
     || !activeEnvironmentTargets.includes(input.target)
     || !timestamp(input.at)
     || !Number.isSafeInteger(input.registryRevision) || input.registryRevision < 1) {
@@ -2274,6 +2474,15 @@ function rejectSecretLikeFields(input, pathParts = []) {
     }
     rejectSecretLikeFields(value, [...pathParts, key]);
   }
+}
+
+/** Private files that describe lanes never belong in a checkout. */
+export function assertEnvironmentPathOutsideRepository(filePath) {
+  if (typeof filePath !== 'string' || !path.isAbsolute(filePath) || resolve(filePath) !== filePath) {
+    throw fail('NON_CANONICAL_PATH');
+  }
+  assertRegistryOutsideRepository(filePath);
+  return filePath;
 }
 
 function assertRegistryOutsideRepository(root) {

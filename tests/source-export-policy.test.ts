@@ -1,12 +1,15 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 // @ts-expect-error Executable helpers are JavaScript, shared with the verifiers.
-import { archiveFindings, docsIgnoreFindings, docsReferenceFindings, extractArchive, leakScanFindings, publicSourceManifestFindings, readContents, readIndexManifest, readTrackedManifest } from '../scripts/lib/source-export-policy.mjs';
+import { archiveFindings, docsIgnoreFindings, docsReferenceFindings, extractArchive, leakScanFindings, publicSourceManifestFindings, readContents, readIndexManifest, readTrackedManifest, repositoryMcpConfigFindings } from '../scripts/lib/source-export-policy.mjs';
+
+const REPOSITORY_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 type Entry = { mode: string; type: string; object: string; path: string };
 
@@ -170,4 +173,28 @@ test('the public manifest policy reports private docs, forbidden roots, and veri
   assert.ok(findings.includes('unreviewed verifier file: qa/live/new-case.ts'));
   assert.ok(findings.some((finding) => finding.startsWith('missing public verifier file: qa/live/manifest.ts')));
   assert.equal(findings.some((finding) => finding.startsWith('docs/runbooks/releasing.md')), false);
+});
+
+test('the tracked .mcp.json is allowlisted deliberately: only the lane browser servers, each through the launcher', () => {
+  const server = (lane: string) => ({ type: 'stdio', command: 'node', args: ['scripts/lane-browser.mjs', 'serve', lane, '--root', '${CHICKPEA_LANE_CHROME_ROOT}'] });
+  const exact = (lane: string) => `.mcp.json: server chrome-${lane} must be exactly {type: stdio, command: node, args: [scripts/lane-browser.mjs, serve, ${lane}, --root, \${CHICKPEA_LANE_CHROME_ROOT}]}`;
+  const build = (config: unknown, tracked = true) => repositoryMcpConfigFindings(
+    tracked ? [{ path: '.mcp.json' }] : [],
+    new Map(tracked ? [['.mcp.json', Buffer.from(typeof config === 'string' ? config : JSON.stringify(config))]] : []),
+  ) as string[];
+  const good = { mcpServers: { 'chrome-amber': server('amber'), 'chrome-cobalt': server('cobalt'), 'chrome-violet': server('violet') } };
+  assert.deepEqual(build(good), []);
+  assert.deepEqual(build(good, false), ['missing repository MCP config: .mcp.json']);
+  assert.deepEqual(build('{'), ['.mcp.json: not valid JSON']);
+  assert.deepEqual(build({ mcpServers: good.mcpServers, other: 1 }), ['.mcp.json: must hold only an mcpServers object']);
+  assert.deepEqual(build({ mcpServers: { 'chrome-amber': server('amber'), 'chrome-cobalt': server('cobalt') } }), ['.mcp.json: missing lane browser server chrome-violet']);
+  assert.deepEqual(build({ mcpServers: {
+    'chrome-amber': { ...server('amber'), env: { SECRET: 'no' } },
+    'chrome-cobalt': { type: 'stdio', command: 'npx', args: ['-y', 'chrome-devtools-mcp@latest'] },
+    'chrome-violet': { ...server('violet'), args: ['/home/someone/scripts/lane-browser.mjs', 'serve', 'violet', '--root', '${CHICKPEA_LANE_CHROME_ROOT}'] },
+    extra: server('amber'),
+  } }), [exact('amber'), exact('cobalt'), exact('violet'), '.mcp.json: server extra is not a lane browser']);
+  assert.deepEqual(build({ mcpServers: { ...good.mcpServers, 'chrome-amber': { ...server('amber'), args: ['scripts/lane-browser.mjs', 'serve', 'amber'] } } }), [exact('amber')]);
+  // The tracked file itself is the allowlist's subject.
+  assert.deepEqual(build(readFileSync(join(REPOSITORY_ROOT, '.mcp.json'), 'utf8')), []);
 });

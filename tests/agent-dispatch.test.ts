@@ -944,6 +944,43 @@ test('workspace milestones of this submission reach the turn in order, once per 
   assert.deepEqual([...targets], [`${ENVELOPE.instanceId}/${RECEIPT.submissionId}`]);
 });
 
+test('the bounded reader sees an idle hint only while a milestone start is the last chunk', async () => {
+  const hints: boolean[] = [];
+  const part = (data: unknown) => ({
+    type: 'data-part', conversationId: 'c', messageId: 'response', name: WORKSPACE_MILESTONE_DATA_NAME, data,
+  });
+  await promptSlackThreadAgent({
+    ...promptInput(state(), handle({})),
+    onWorkspaceMilestone: async () => {},
+    observeReply: async ({ handle: reader, receipt, onEvent, isIdleCandidate }) => {
+      assert.ok(isIdleCandidate, 'the dispatch passes the milestone relay hint');
+      onEvent({ type: 'message-started', conversationId: 'c', messageId: 'response', submissionId: RECEIPT.submissionId } as never);
+      hints.push(isIdleCandidate());
+      onEvent(part(milestone('changes', 'started')) as never);
+      hints.push(isIdleCandidate());
+      onEvent(part(milestone('changes', 'changed')) as never);
+      hints.push(isIdleCandidate());
+      return reader.read(receipt as never);
+    },
+  });
+  assert.deepEqual(hints, [false, true, false]);
+});
+
+test('a turn that already delegated a coding task seeds the reattached reader as idle', async () => {
+  const seeds: unknown[] = [];
+  for (const codingTaskStarted of [true, false]) {
+    await promptSlackThreadAgent({
+      ...promptInput(state(), handle({})),
+      codingTaskStarted,
+      observeReply: async ({ handle: reader, receipt, initialIdleCandidate }) => {
+        seeds.push(initialIdleCandidate);
+        return reader.read(receipt as never);
+      },
+    });
+  }
+  assert.deepEqual(seeds, [true, undefined]);
+});
+
 test('a failing progress update never fails or delays the answer', async (t) => {
   t.mock.method(console, 'warn', () => {});
   const seen: string[] = [];

@@ -538,6 +538,7 @@ export function writeCutoverArtifact(
     triggers: { crons: options.cron === false ? [] : ['* * * * *'] },
     durable_objects: { bindings: [
       { name: 'TAG_STATE', class_name: 'TagStateStore' },
+      { name: 'SLACK_THREAD_RUNNER', class_name: 'SlackThreadRunner' },
       ...(profile === 'sandbox' ? [sandboxBinding] : []),
       { name: 'FLUE_CHICKPEA_SLACK_V2_AGENT', class_name: 'FlueChickpeaSlackV2Agent' },
       ...(options.routineAgents === false ? [] : [
@@ -580,6 +581,8 @@ export function writeCutoverArtifact(
       { tag: 'v7', new_sqlite_classes: ['AuthGuard'] },
       { tag: 'v8', deleted_classes: ['AuthGuard'] },
       { tag: 'v9', new_sqlite_classes: ['SlackGatewaySession'] },
+      { tag: 'v10', new_sqlite_classes: ['FlueChickpeaCodingWorkerV1Agent'] },
+      { tag: 'v11', new_sqlite_classes: ['SlackThreadRunner'] },
     ],
   };
   writeFileSync(path.join(builtDir, 'wrangler.json'), JSON.stringify(config));
