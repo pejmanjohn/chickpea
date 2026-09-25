@@ -68,6 +68,7 @@ import type {
   WorkspaceInstallationPatch,
 } from './types.ts';
 import { IdentityStateError } from '../identity/errors.ts';
+import { timedStateRpc } from '../observability/runtime-latency.ts';
 import { ManagementError, type ManagementRpcRequest, type ManagementRpcResponse } from '../management/types.ts';
 import type { ManagementStore } from '../management/store.ts';
 import type {
@@ -257,6 +258,20 @@ import {
  * No Cloudflare imports here: the stub is purely structural (state-rpc.ts), so
  * this module compiles and bundles inert on the node lane.
  */
+
+/**
+ * Await one TagStateStore RPC and unwrap its envelope, timing it at this class
+ * boundary (sampled `state_rpc` log). Callers pass the promise from a direct
+ * `this.stub.<method>(...)` call: the stub itself is never wrapped or proxied,
+ * because workerd RPC stubs and D1 handles are host objects.
+ */
+async function rpc<T>(
+  method: string,
+  pending: Promise<StateRpcResult<T>>,
+  op?: string,
+): Promise<T> {
+  return unwrap(await timedStateRpc(method, pending, op));
+}
 
 /**
  * Unwrap an RPC envelope: return the value or re-throw the domain error the DO
@@ -914,7 +929,7 @@ export class CfIdentityStore implements IdentityStore {
     return response.events;
   }
   private async execute(request: IdentityRpcRequest): Promise<IdentityRpcResponse> {
-    return unwrap(await this.stub.identityExecute(request));
+    return rpc('identityExecute', this.stub.identityExecute(request), request.kind);
   }
 }
 
@@ -927,7 +942,7 @@ export class CfManagementStore implements ManagementStore {
   constructor(private readonly stub: TagStateRpc) {}
 
   async execute(request: ManagementRpcRequest): Promise<ManagementRpcResponse> {
-    return unwrap(await this.stub.managementExecute(request));
+    return rpc('managementExecute', this.stub.managementExecute(request), request.kind);
   }
 
   async reserveRequest(input: Parameters<ManagementStore['reserveRequest']>[0]) {
@@ -1258,75 +1273,99 @@ export class CfConfigStore implements ConfigStore {
   constructor(private readonly stub: TagStateRpc) {}
 
   async listAgents(): Promise<CustomAgentConfig[]> {
-    return unwrap(await this.stub.configListAgents());
+    return rpc('configListAgents', this.stub.configListAgents());
   }
 
   async listUserAgents(): Promise<CustomAgentConfig[]> {
-    return unwrap(await this.stub.configListUserAgents());
+    return rpc('configListUserAgents', this.stub.configListUserAgents());
   }
 
   async getAgent(agentId: string): Promise<CustomAgentConfig> {
-    return unwrap(await this.stub.configGetAgent(agentId));
+    return rpc('configGetAgent', this.stub.configGetAgent(agentId));
   }
 
   async materializeChickpeaAgent(): Promise<CustomAgentConfig> {
-    return unwrap(await this.stub.configMaterializeChickpeaAgent());
+    return rpc('configMaterializeChickpeaAgent', this.stub.configMaterializeChickpeaAgent());
   }
 
   async createAgent(agent: AgentCreateInput): Promise<CustomAgentConfig> {
-    return unwrap(await this.stub.configCreateAgent(agent));
+    return rpc('configCreateAgent', this.stub.configCreateAgent(agent));
   }
 
   async updateAgent(agentId: string, patch: ConfigAgentPatch, expectedRevision?: number): Promise<CustomAgentConfig> {
-    return unwrap(await this.stub.configUpdateAgent(agentId, patch, expectedRevision));
+    return rpc(
+      'configUpdateAgent',
+      this.stub.configUpdateAgent(agentId, patch, expectedRevision),
+    );
   }
 
   async markOAuthReauthorizationRequired(target: OAuthReauthorizationTarget): Promise<boolean> {
-    return unwrap(await this.stub.configMarkOAuthReauthorizationRequired(target));
+    return rpc(
+      'configMarkOAuthReauthorizationRequired',
+      this.stub.configMarkOAuthReauthorizationRequired(target),
+    );
   }
 
   async deleteAgent(agentId: string, expectedRevision?: number): Promise<boolean> {
-    return unwrap(await this.stub.configDeleteAgent(agentId, expectedRevision));
+    return rpc('configDeleteAgent', this.stub.configDeleteAgent(agentId, expectedRevision));
   }
 
   async deleteAgentWithMemory(
     agentId: string,
     idempotencyKey: string,
   ): Promise<boolean> {
-    return unwrap(await this.stub.configDeleteAgentWithMemory(agentId, idempotencyKey));
+    return rpc(
+      'configDeleteAgentWithMemory',
+      this.stub.configDeleteAgentWithMemory(agentId, idempotencyKey),
+    );
   }
 
   async archiveAgent(
     agentId: string,
     options?: { replacementDefaultAgentId?: string; expectedRevision?: number },
   ): Promise<CustomAgentConfig> {
-    return unwrap(await this.stub.configArchiveAgent(agentId, options));
+    return rpc('configArchiveAgent', this.stub.configArchiveAgent(agentId, options));
   }
 
   async restoreAgent(agentId: string, expectedRevision?: number): Promise<CustomAgentConfig> {
-    return unwrap(await this.stub.configRestoreAgent(agentId, expectedRevision));
+    return rpc('configRestoreAgent', this.stub.configRestoreAgent(agentId, expectedRevision));
   }
 
   async ensureWorkspaceInstallation(
     input: EnsureWorkspaceInstallationInput,
   ): Promise<WorkspaceInstallation> {
-    return unwrap(await this.stub.configEnsureWorkspaceInstallation(input));
+    return rpc(
+      'configEnsureWorkspaceInstallation',
+      this.stub.configEnsureWorkspaceInstallation(input),
+    );
   }
 
   async retainGatewayInstallation(input: import('./store.ts').RetainGatewayInstallationInput): Promise<boolean> {
-    return unwrap(await this.stub.configRetainGatewayInstallation(input));
+    return rpc(
+      'configRetainGatewayInstallation',
+      this.stub.configRetainGatewayInstallation(input),
+    );
   }
 
   async refreshGatewayClaimSetup(input: import('./store.ts').RefreshGatewayClaimSetupInput): Promise<boolean> {
-    return unwrap(await this.stub.configRefreshGatewayClaimSetup(input));
+    return rpc(
+      'configRefreshGatewayClaimSetup',
+      this.stub.configRefreshGatewayClaimSetup(input),
+    );
   }
 
   async getWorkspaceInstallation(workspaceId: string): Promise<WorkspaceInstallation | undefined> {
-    return orUndefined(unwrap(await this.stub.configGetWorkspaceInstallation(workspaceId)));
+    return orUndefined(await rpc(
+      'configGetWorkspaceInstallation',
+      this.stub.configGetWorkspaceInstallation(workspaceId),
+    ));
   }
 
   async listWorkspaceInstallations(): Promise<WorkspaceInstallation[]> {
-    return unwrap(await this.stub.configListWorkspaceInstallations());
+    return rpc(
+      'configListWorkspaceInstallations',
+      this.stub.configListWorkspaceInstallations(),
+    );
   }
 
   async updateWorkspaceInstallation(
@@ -1334,8 +1373,9 @@ export class CfConfigStore implements ConfigStore {
     patch: WorkspaceInstallationPatch,
     expectedRevision?: number,
   ): Promise<WorkspaceInstallation> {
-    return unwrap(
-      await this.stub.configUpdateWorkspaceInstallation(workspaceId, patch, expectedRevision),
+    return rpc(
+      'configUpdateWorkspaceInstallation',
+      this.stub.configUpdateWorkspaceInstallation(workspaceId, patch, expectedRevision),
     );
   }
 
@@ -1344,50 +1384,69 @@ export class CfConfigStore implements ConfigStore {
     agentId: string,
     expectedRevision?: number,
   ): Promise<WorkspaceInstallation> {
-    return unwrap(
-      await this.stub.configSetWorkspaceDefaultAgent(workspaceId, agentId, expectedRevision),
+    return rpc(
+      'configSetWorkspaceDefaultAgent',
+      this.stub.configSetWorkspaceDefaultAgent(workspaceId, agentId, expectedRevision),
     );
   }
 
   async getWorkspaceModelDefault(
     workspaceId: string,
   ): Promise<WorkspaceModelDefault | undefined> {
-    return orUndefined(unwrap(await this.stub.configGetWorkspaceModelDefault(workspaceId)));
+    return orUndefined(await rpc(
+      'configGetWorkspaceModelDefault',
+      this.stub.configGetWorkspaceModelDefault(workspaceId),
+    ));
   }
 
   async putWorkspaceModelDefault(
     input: WorkspaceModelDefaultInput,
     expectedRevision?: number,
   ): Promise<WorkspaceModelDefault> {
-    return unwrap(await this.stub.configPutWorkspaceModelDefault(input, expectedRevision));
+    return rpc(
+      'configPutWorkspaceModelDefault',
+      this.stub.configPutWorkspaceModelDefault(input, expectedRevision),
+    );
   }
 
   async getWorkspaceModelRole(
     workspaceId: string,
     role: NonChatModelRole,
   ): Promise<WorkspaceModelRole | undefined> {
-    return orUndefined(unwrap(await this.stub.configGetWorkspaceModelRole(workspaceId, role)));
+    return orUndefined(await rpc(
+      'configGetWorkspaceModelRole',
+      this.stub.configGetWorkspaceModelRole(workspaceId, role),
+    ));
   }
 
   async putWorkspaceModelRole(
     input: WorkspaceModelRoleInput,
     expectedRevision?: number,
   ): Promise<WorkspaceModelRole> {
-    return unwrap(await this.stub.configPutWorkspaceModelRole(input, expectedRevision));
+    return rpc(
+      'configPutWorkspaceModelRole',
+      this.stub.configPutWorkspaceModelRole(input, expectedRevision),
+    );
   }
 
   async getAgentModelRole(
     agentId: string,
     role: NonChatModelRole,
   ): Promise<AgentModelRole | undefined> {
-    return orUndefined(unwrap(await this.stub.configGetAgentModelRole(agentId, role)));
+    return orUndefined(await rpc(
+      'configGetAgentModelRole',
+      this.stub.configGetAgentModelRole(agentId, role),
+    ));
   }
 
   async putAgentModelRole(
     input: AgentModelRoleInput,
     expectedRevision?: number,
   ): Promise<AgentModelRole> {
-    return unwrap(await this.stub.configPutAgentModelRole(input, expectedRevision));
+    return rpc(
+      'configPutAgentModelRole',
+      this.stub.configPutAgentModelRole(input, expectedRevision),
+    );
   }
 
   async updateAgentWithModelRoles(
@@ -1396,45 +1455,61 @@ export class CfConfigStore implements ConfigStore {
     roles: readonly AgentModelRolePatch[],
     expectedRevision?: number,
   ): Promise<CustomAgentConfig> {
-    return unwrap(
-      await this.stub.configUpdateAgentWithModelRoles(agentId, patch, roles, expectedRevision),
+    return rpc(
+      'configUpdateAgentWithModelRoles',
+      this.stub.configUpdateAgentWithModelRoles(agentId, patch, roles, expectedRevision),
     );
   }
 
   async prepareChickpeaCutover(
     input: PrepareChickpeaCutoverInput,
   ): Promise<ChickpeaCutoverPreflight> {
-    return unwrap(await this.stub.configPrepareChickpeaCutover(input));
+    return rpc('configPrepareChickpeaCutover', this.stub.configPrepareChickpeaCutover(input));
   }
 
   async preflightChickpeaCutover(workspaceId: string): Promise<ChickpeaCutoverPreflight> {
-    return unwrap(await this.stub.configPreflightChickpeaCutover(workspaceId));
+    return rpc(
+      'configPreflightChickpeaCutover',
+      this.stub.configPreflightChickpeaCutover(workspaceId),
+    );
   }
 
   async activateChickpeaCutover(
     input: ActivateChickpeaCutoverInput,
   ): Promise<ChickpeaCutoverActivation> {
-    return unwrap(await this.stub.configActivateChickpeaCutover(input));
+    return rpc(
+      'configActivateChickpeaCutover',
+      this.stub.configActivateChickpeaCutover(input),
+    );
   }
 
   async rollbackChickpeaCutover(
     input: RollbackChickpeaCutoverInput,
   ): Promise<ChickpeaCutoverPreflight> {
-    return unwrap(await this.stub.configRollbackChickpeaCutover(input));
+    return rpc(
+      'configRollbackChickpeaCutover',
+      this.stub.configRollbackChickpeaCutover(input),
+    );
   }
 
   async listAgentChannelGrants(
     workspaceId?: string,
     channelId?: string,
   ): Promise<AgentChannelGrant[]> {
-    return unwrap(await this.stub.configListAgentChannelGrants(workspaceId, channelId));
+    return rpc(
+      'configListAgentChannelGrants',
+      this.stub.configListAgentChannelGrants(workspaceId, channelId),
+    );
   }
 
   async putAgentChannelGrant(
     input: AgentChannelGrantInput,
     expectedRevision?: number,
   ): Promise<AgentChannelGrant> {
-    return unwrap(await this.stub.configPutAgentChannelGrant(input, expectedRevision));
+    return rpc(
+      'configPutAgentChannelGrant',
+      this.stub.configPutAgentChannelGrant(input, expectedRevision),
+    );
   }
 
   async deleteAgentChannelGrant(
@@ -1442,7 +1517,10 @@ export class CfConfigStore implements ConfigStore {
     channelId: string,
     agentId: string,
   ): Promise<boolean> {
-    return unwrap(await this.stub.configDeleteAgentChannelGrant(workspaceId, channelId, agentId));
+    return rpc(
+      'configDeleteAgentChannelGrant',
+      this.stub.configDeleteAgentChannelGrant(workspaceId, channelId, agentId),
+    );
   }
 
   async getAgentThreadRoute(
@@ -1451,7 +1529,10 @@ export class CfConfigStore implements ConfigStore {
     threadTs: string,
   ): Promise<AgentThreadRoute | undefined> {
     return orUndefined(
-      unwrap(await this.stub.configGetAgentThreadRoute(workspaceId, channelId, threadTs)),
+      await rpc(
+        'configGetAgentThreadRoute',
+        this.stub.configGetAgentThreadRoute(workspaceId, channelId, threadTs),
+      ),
     );
   }
 
@@ -1459,7 +1540,10 @@ export class CfConfigStore implements ConfigStore {
     input: AgentThreadRouteInput,
     expectedRevision?: number,
   ): Promise<AgentThreadRoute> {
-    return unwrap(await this.stub.configPutAgentThreadRoute(input, expectedRevision));
+    return rpc(
+      'configPutAgentThreadRoute',
+      this.stub.configPutAgentThreadRoute(input, expectedRevision),
+    );
   }
 
   async deleteAgentThreadRoute(
@@ -1467,11 +1551,10 @@ export class CfConfigStore implements ConfigStore {
     channelId: string,
     threadTs: string,
   ): Promise<boolean> {
-    return unwrap(await this.stub.configDeleteAgentThreadRoute(
-      workspaceId,
-      channelId,
-      threadTs,
-    ));
+    return rpc(
+      'configDeleteAgentThreadRoute',
+      this.stub.configDeleteAgentThreadRoute(workspaceId, channelId, threadTs),
+    );
   }
 
   async listSlackPublicContext(
@@ -1479,19 +1562,25 @@ export class CfConfigStore implements ConfigStore {
     channelId: string,
     rootTs: string,
   ): Promise<SlackPublicContextEntry[]> {
-    return unwrap(await this.stub.configListSlackPublicContext(workspaceId, channelId, rootTs));
+    return rpc(
+      'configListSlackPublicContext',
+      this.stub.configListSlackPublicContext(workspaceId, channelId, rootTs),
+    );
   }
 
   async listRecentSlackPublicContext(
     input: RecentSlackPublicContextInput,
   ): Promise<SlackPublicContextEntry[]> {
-    return unwrap(await this.stub.configListRecentSlackPublicContext(input));
+    return rpc(
+      'configListRecentSlackPublicContext',
+      this.stub.configListRecentSlackPublicContext(input),
+    );
   }
 
   async putSlackPublicContext(
     input: SlackPublicContextEntryInput,
   ): Promise<SlackPublicContextEntry> {
-    return unwrap(await this.stub.configPutSlackPublicContext(input));
+    return rpc('configPutSlackPublicContext', this.stub.configPutSlackPublicContext(input));
   }
 
   async deleteSlackPublicContextMessage(
@@ -1500,12 +1589,10 @@ export class CfConfigStore implements ConfigStore {
     rootTs: string,
     messageTs: string,
   ): Promise<boolean> {
-    return unwrap(await this.stub.configDeleteSlackPublicContextMessage(
-      workspaceId,
-      channelId,
-      rootTs,
-      messageTs,
-    ));
+    return rpc(
+      'configDeleteSlackPublicContextMessage',
+      this.stub.configDeleteSlackPublicContextMessage(workspaceId, channelId, rootTs, messageTs),
+    );
   }
 
   async deleteSlackPublicContextRoot(
@@ -1513,59 +1600,83 @@ export class CfConfigStore implements ConfigStore {
     channelId: string,
     rootTs: string,
   ): Promise<number> {
-    return unwrap(await this.stub.configDeleteSlackPublicContextRoot(
-      workspaceId,
-      channelId,
-      rootTs,
-    ));
+    return rpc(
+      'configDeleteSlackPublicContextRoot',
+      this.stub.configDeleteSlackPublicContextRoot(workspaceId, channelId, rootTs),
+    );
   }
 
   async listConnectionAccounts(workspaceId: string): Promise<ConnectionAccount[]> {
-    return unwrap(await this.stub.configListConnectionAccounts(workspaceId));
+    return rpc(
+      'configListConnectionAccounts',
+      this.stub.configListConnectionAccounts(workspaceId),
+    );
   }
 
   async putConnectionAccount(
     input: ConnectionAccountInput,
     expectedRevision?: number,
   ): Promise<ConnectionAccount> {
-    return unwrap(await this.stub.configPutConnectionAccount(input, expectedRevision));
+    return rpc(
+      'configPutConnectionAccount',
+      this.stub.configPutConnectionAccount(input, expectedRevision),
+    );
   }
 
   async createAgentOwnedConnection(
     input: AgentOwnedConnectionInput,
   ): Promise<AgentOwnedConnection> {
-    return unwrap(await this.stub.configCreateAgentOwnedConnection(input));
+    return rpc(
+      'configCreateAgentOwnedConnection',
+      this.stub.configCreateAgentOwnedConnection(input),
+    );
   }
 
   async listAgentConnectionBindings(agentId: string): Promise<AgentConnectionBinding[]> {
-    return unwrap(await this.stub.configListAgentConnectionBindings(agentId));
+    return rpc(
+      'configListAgentConnectionBindings',
+      this.stub.configListAgentConnectionBindings(agentId),
+    );
   }
 
   async getAgentConnectionBindingForAccount(
     connectionAccountId: string,
   ): Promise<AgentConnectionBinding | undefined> {
-    return orUndefined(unwrap(
-      await this.stub.configGetAgentConnectionBindingForAccount(connectionAccountId),
+    return orUndefined(await rpc(
+      'configGetAgentConnectionBindingForAccount',
+      this.stub.configGetAgentConnectionBindingForAccount(connectionAccountId),
     ));
   }
 
   async putAgentConnectionBinding(
     input: AgentConnectionBindingInput,
   ): Promise<AgentConnectionBinding> {
-    return unwrap(await this.stub.configPutAgentConnectionBinding(input));
+    return rpc(
+      'configPutAgentConnectionBinding',
+      this.stub.configPutAgentConnectionBinding(input),
+    );
   }
 
   async listAgentScheduleReferences(agentId: string): Promise<AgentScheduleReference[]> {
-    return unwrap(await this.stub.configListAgentScheduleReferences(agentId))
+    return (await rpc(
+      'configListAgentScheduleReferences',
+      this.stub.configListAgentScheduleReferences(agentId),
+    ))
       .map(withScheduleReferenceDestination);
   }
 
   async summarizeAdoptionInventory(): Promise<AdoptionInventorySummary> {
-    return unwrap(await this.stub.configSummarizeAdoptionInventory());
+    return rpc(
+      'configSummarizeAdoptionInventory',
+      this.stub.configSummarizeAdoptionInventory(),
+    );
   }
 
   async getAgentScheduleReference(scheduleId: string): Promise<AgentScheduleReference | undefined> {
-    const reference = orUndefined(unwrap(await this.stub.configGetAgentScheduleReference(scheduleId)));
+    const reference = orUndefined(await rpc(
+      'configGetAgentScheduleReference',
+      this.stub.configGetAgentScheduleReference(scheduleId),
+    ));
     return reference ? withScheduleReferenceDestination(reference) : undefined;
   }
 
@@ -1574,28 +1685,37 @@ export class CfConfigStore implements ConfigStore {
     expectedRevision?: number,
   ): Promise<AgentScheduleReference> {
     return withScheduleReferenceDestination(
-      unwrap(await this.stub.configPutAgentScheduleReference(input, expectedRevision)),
+      await rpc(
+        'configPutAgentScheduleReference',
+        this.stub.configPutAgentScheduleReference(input, expectedRevision),
+      ),
     );
   }
 
   async retireAgentScheduleReference(scheduleId: string): Promise<boolean> {
-    return unwrap(await this.stub.configRetireAgentScheduleReference(scheduleId));
+    return rpc(
+      'configRetireAgentScheduleReference',
+      this.stub.configRetireAgentScheduleReference(scheduleId),
+    );
   }
 
   async listChannels(): Promise<ChannelConfig[]> {
-    return unwrap(await this.stub.configListChannels());
+    return rpc('configListChannels', this.stub.configListChannels());
   }
 
   async getChannel(workspaceId: string, channelId: string): Promise<ChannelConfig | undefined> {
-    return orUndefined(unwrap(await this.stub.configGetChannel(workspaceId, channelId)));
+    return orUndefined(await rpc(
+      'configGetChannel',
+      this.stub.configGetChannel(workspaceId, channelId),
+    ));
   }
 
   async putChannel(channel: ChannelConfig, expectedRevision?: number): Promise<ChannelConfig> {
-    return unwrap(await this.stub.configPutChannel(channel, expectedRevision));
+    return rpc('configPutChannel', this.stub.configPutChannel(channel, expectedRevision));
   }
 
   async getAgentReferences(agentId: string): Promise<AgentReferenceSummary> {
-    return unwrap(await this.stub.configGetAgentReferences(agentId));
+    return rpc('configGetAgentReferences', this.stub.configGetAgentReferences(agentId));
   }
 }
 
@@ -1603,19 +1723,22 @@ export class CfAgentSnapshotStore implements AgentSnapshotStore {
   constructor(private readonly stub: TagStateRpc) {}
 
   async get(threadKey: string): Promise<AgentSnapshot | undefined> {
-    return orUndefined(unwrap(await this.stub.snapshotGet(threadKey)));
+    return orUndefined(await rpc('snapshotGet', this.stub.snapshotGet(threadKey)));
   }
 
   async putIfAbsent(threadKey: string, snapshot: AgentSnapshot): Promise<AgentSnapshot> {
-    return unwrap(await this.stub.snapshotPutIfAbsent(threadKey, snapshot));
+    return rpc('snapshotPutIfAbsent', this.stub.snapshotPutIfAbsent(threadKey, snapshot));
   }
 
   async replace(threadKey: string, snapshot: AgentSnapshot): Promise<AgentSnapshot> {
-    return unwrap(await this.stub.snapshotReplace(threadKey, snapshot));
+    return rpc('snapshotReplace', this.stub.snapshotReplace(threadKey, snapshot));
   }
 
   async listLiveRootsByAgent(agentId: string): Promise<AgentSnapshotRootReference[]> {
-    return unwrap(await this.stub.snapshotListLiveRootsByAgent(agentId));
+    return rpc(
+      'snapshotListLiveRootsByAgent',
+      this.stub.snapshotListLiveRootsByAgent(agentId),
+    );
   }
 }
 
@@ -1623,46 +1746,52 @@ export class CfSlackStateStore implements SlackStateStore {
   constructor(private readonly stub: TagStateRpc) {}
 
   async claim(key: string): Promise<boolean> {
-    return unwrap(await this.stub.claim(key));
+    return rpc('claim', this.stub.claim(key));
   }
 
   async release(key: string): Promise<void> {
-    unwrap(await this.stub.release(key));
+    await rpc('release', this.stub.release(key));
   }
 
   async start(key: string): Promise<void> {
-    unwrap(await this.stub.threadStart(key));
+    await rpc('threadStart', this.stub.threadStart(key));
   }
 
   async has(key: string): Promise<boolean> {
-    return unwrap(await this.stub.threadHas(key));
+    return rpc('threadHas', this.stub.threadHas(key));
   }
 
   async isActiveWork(key: string) {
-    return unwrap(await this.stub.threadActiveWorkGet(key));
+    return rpc('threadActiveWorkGet', this.stub.threadActiveWorkGet(key));
   }
 
   async setActiveWork(key: string, generation: string, active: boolean) {
-    unwrap(await this.stub.threadActiveWorkSet(key, generation, active));
+    await rpc('threadActiveWorkSet', this.stub.threadActiveWorkSet(key, generation, active));
   }
 
   async admitCanonical(input: SlackCanonicalAdmissionInput) {
-    return unwrap(await this.stub.admitSlackTurn(input));
+    return rpc('admitSlackTurn', this.stub.admitSlackTurn(input));
   }
 
   async resumeTurnAfterOAuth(originalTaskId: string, continuationId: string) {
-    return unwrap(await this.stub.resumeTurnAfterOAuth(originalTaskId, continuationId));
+    return rpc(
+      'resumeTurnAfterOAuth',
+      this.stub.resumeTurnAfterOAuth(originalTaskId, continuationId),
+    );
   }
 
   async pinAgentBinding(
     input: Parameters<SlackStateStore['pinAgentBinding']>[0],
     expected?: Parameters<SlackStateStore['pinAgentBinding']>[1],
   ) {
-    return unwrap(await this.stub.slackAgentBindingPin(input, expected));
+    return rpc('slackAgentBindingPin', this.stub.slackAgentBindingPin(input, expected));
   }
 
   async getAgentBinding(continuityKey: string) {
-    return orUndefined(unwrap(await this.stub.slackAgentBindingGet(continuityKey)));
+    return orUndefined(await rpc(
+      'slackAgentBindingGet',
+      this.stub.slackAgentBindingGet(continuityKey),
+    ));
   }
 
   async prepareFlueDispatch(
@@ -1672,53 +1801,66 @@ export class CfSlackStateStore implements SlackStateStore {
     threadImages?: Parameters<TagStateRpc['slackFlueDispatchPrepare']>[3],
     admittedListIds?: Parameters<TagStateRpc['slackFlueDispatchPrepare']>[4],
   ) {
-    return unwrap(
-      await this.stub.slackFlueDispatchPrepare(id, message, observation, threadImages, admittedListIds),
+    return rpc(
+      'slackFlueDispatchPrepare',
+      this.stub.slackFlueDispatchPrepare(id, message, observation, threadImages, admittedListIds),
     );
   }
 
   async reconcileFlueExistingInstance(id: string, uid: string) {
-    return unwrap(await this.stub.slackFlueExistingInstanceReconcile(id, uid));
+    return rpc(
+      'slackFlueExistingInstanceReconcile',
+      this.stub.slackFlueExistingInstanceReconcile(id, uid),
+    );
   }
 
   async recordFlueReceipt(
     id: string,
     receipt: Parameters<TagStateRpc['slackFlueReceiptRecord']>[1],
   ) {
-    return unwrap(await this.stub.slackFlueReceiptRecord(id, receipt));
+    return rpc('slackFlueReceiptRecord', this.stub.slackFlueReceiptRecord(id, receipt));
   }
 
   async recordFlueSettlement(
     id: string,
     settlement: Parameters<TagStateRpc['slackFlueSettlementRecord']>[1],
   ) {
-    return unwrap(await this.stub.slackFlueSettlementRecord(id, settlement));
+    return rpc(
+      'slackFlueSettlementRecord',
+      this.stub.slackFlueSettlementRecord(id, settlement),
+    );
   }
 
   async matchFlueObservation(instanceId: string, submissionId?: string) {
     return orUndefined(
-      unwrap(await this.stub.slackFlueObservationMatch(instanceId, submissionId)),
+      await rpc(
+        'slackFlueObservationMatch',
+        this.stub.slackFlueObservationMatch(instanceId, submissionId),
+      ),
     );
   }
 
   async markTurnRecoveryRequired(id: string, reason: string): Promise<void> {
-    unwrap(await this.stub.slackTurnRecoveryRequired(id, reason));
+    await rpc('slackTurnRecoveryRequired', this.stub.slackTurnRecoveryRequired(id, reason));
   }
 
   async listTurnRecoveryRequired(limit = 50) {
-    return unwrap(await this.stub.slackTurnRecoveryList(limit));
+    return rpc('slackTurnRecoveryList', this.stub.slackTurnRecoveryList(limit));
   }
 
   async retrySlackInstallationRecovery(workspaceId: string) {
-    return unwrap(await this.stub.slackInstallationRecoveryRetry(workspaceId));
+    return rpc(
+      'slackInstallationRecoveryRetry',
+      this.stub.slackInstallationRecoveryRetry(workspaceId),
+    );
   }
 
   async resolveTurnRecoveryRequired(id: string) {
-    return unwrap(await this.stub.slackTurnRecoveryResolve(id));
+    return rpc('slackTurnRecoveryResolve', this.stub.slackTurnRecoveryResolve(id));
   }
 
   async runtimeDrainCounts() {
-    const status = unwrap(await this.stub.runtimeDrainStatus());
+    const status = await rpc('runtimeDrainStatus', this.stub.runtimeDrainStatus());
     return {
       pendingLegacyTurnJobs: status.categories.pendingLegacyTurnJobs,
       pendingLedgerTurnJobs: status.categories.pendingLedgerTurnJobs,
@@ -1728,63 +1870,81 @@ export class CfSlackStateStore implements SlackStateStore {
   }
 
   async countPendingDeliveriesForWorkspace(workspaceId: string) {
-    return unwrap(await this.stub.slackInstallationPendingDeliveryCount(workspaceId));
+    return rpc(
+      'slackInstallationPendingDeliveryCount',
+      this.stub.slackInstallationPendingDeliveryCount(workspaceId),
+    );
   }
 
   async recordSlackInteractionProgress(
     id: string,
     patch: Parameters<TagStateRpc['slackInteractionProgressRecord']>[1],
   ): Promise<void> {
-    unwrap(await this.stub.slackInteractionProgressRecord(id, patch));
+    await rpc(
+      'slackInteractionProgressRecord',
+      this.stub.slackInteractionProgressRecord(id, patch),
+    );
   }
 
   async getRunPresentation(runId: string) {
-    return orUndefined(unwrap(await this.stub.slackPresentationGet(runId)));
+    return orUndefined(await rpc('slackPresentationGet', this.stub.slackPresentationGet(runId)));
   }
 
   async listProposalApprovalTurns(input: Parameters<TagStateRpc['slackProposalApprovalTurns']>[0]) {
-    return unwrap(await this.stub.slackProposalApprovalTurns(input));
+    return rpc('slackProposalApprovalTurns', this.stub.slackProposalApprovalTurns(input));
   }
 
   async getLatestThreadSessionGeneration(
     root: Parameters<TagStateRpc['slackPresentationLatestThreadGeneration']>[0],
   ) {
-    return orUndefined(unwrap(await this.stub.slackPresentationLatestThreadGeneration(root)));
-  }
-
-  async transitionRunPresentation(input: SlackPresentationTransitionInput) {
-    return unwrap(await this.stub.slackPresentationTransition(input));
-  }
-
-  async reserveSlackAppend(workspaceId: string) {
-    return unwrap(await this.stub.slackPresentationReserveAppend(workspaceId));
-  }
-
-  async applySlackAppendCooldown(workspaceId: string, retryAfterMs: number) {
-    return unwrap(await this.stub.slackPresentationApplyCooldown(workspaceId, retryAfterMs));
-  }
-
-  async reserveSlackActivityStatus(workspaceId: string) {
-    return unwrap(await this.stub.slackPresentationReserveActivityStatus(workspaceId));
-  }
-
-  async applySlackActivityStatusCooldown(workspaceId: string, retryAfterMs: number) {
-    return unwrap(await this.stub.slackPresentationApplyActivityStatusCooldown(
-      workspaceId,
-      retryAfterMs,
+    return orUndefined(await rpc(
+      'slackPresentationLatestThreadGeneration',
+      this.stub.slackPresentationLatestThreadGeneration(root),
     ));
   }
 
+  async transitionRunPresentation(input: SlackPresentationTransitionInput) {
+    return rpc('slackPresentationTransition', this.stub.slackPresentationTransition(input));
+  }
+
+  async reserveSlackAppend(workspaceId: string) {
+    return rpc(
+      'slackPresentationReserveAppend',
+      this.stub.slackPresentationReserveAppend(workspaceId),
+    );
+  }
+
+  async applySlackAppendCooldown(workspaceId: string, retryAfterMs: number) {
+    return rpc(
+      'slackPresentationApplyCooldown',
+      this.stub.slackPresentationApplyCooldown(workspaceId, retryAfterMs),
+    );
+  }
+
+  async reserveSlackActivityStatus(workspaceId: string) {
+    return rpc(
+      'slackPresentationReserveActivityStatus',
+      this.stub.slackPresentationReserveActivityStatus(workspaceId),
+    );
+  }
+
+  async applySlackActivityStatusCooldown(workspaceId: string, retryAfterMs: number) {
+    return rpc(
+      'slackPresentationApplyActivityStatusCooldown',
+      this.stub.slackPresentationApplyActivityStatusCooldown(workspaceId, retryAfterMs),
+    );
+  }
+
   async listRunPresentationsForRepair(limit = 50) {
-    return unwrap(await this.stub.slackPresentationRepairList(limit));
+    return rpc('slackPresentationRepairList', this.stub.slackPresentationRepairList(limit));
   }
 
   async maintainRunPresentations(limit = 100) {
-    return unwrap(await this.stub.slackPresentationMaintain(limit));
+    return rpc('slackPresentationMaintain', this.stub.slackPresentationMaintain(limit));
   }
 
   async summarizeRunPresentations(workspaceId: string) {
-    return unwrap(await this.stub.slackPresentationSummary(workspaceId));
+    return rpc('slackPresentationSummary', this.stub.slackPresentationSummary(workspaceId));
   }
 }
 
@@ -1792,39 +1952,45 @@ export class CfSettingsStore implements SettingsStore, EncryptedCredentialStore 
   constructor(private readonly stub: TagStateRpc) {}
 
   async getSetting(key: string): Promise<string | undefined> {
-    return orUndefined(unwrap(await this.stub.settingGet(key)));
+    return orUndefined(await rpc('settingGet', this.stub.settingGet(key)));
   }
 
   async getSettings(keys: readonly string[]): Promise<(string | undefined)[]> {
-    return unwrap(await this.stub.settingGetMany(keys)).map(orUndefined);
+    return (await rpc('settingGetMany', this.stub.settingGetMany(keys))).map(orUndefined);
   }
 
   async setSetting(key: string, value: string): Promise<void> {
-    unwrap(await this.stub.settingSet(key, value));
+    await rpc('settingSet', this.stub.settingSet(key, value));
   }
 
   async deleteSetting(key: string): Promise<void> {
-    unwrap(await this.stub.settingDelete(key));
+    await rpc('settingDelete', this.stub.settingDelete(key));
   }
 
   async applySettingsPatch(patch: SettingsPatch): Promise<boolean> {
-    return unwrap(await this.stub.settingApplyPatch(patch));
+    return rpc('settingApplyPatch', this.stub.settingApplyPatch(patch));
   }
 
   async mergeSettingStringSet(key: string, values: readonly string[]): Promise<string[]> {
-    return unwrap(await this.stub.settingMergeStringSet(key, values));
+    return rpc('settingMergeStringSet', this.stub.settingMergeStringSet(key, values));
   }
 
   async getEncryptedCredentialRevision(key: string) {
-    return orUndefined(unwrap(await this.stub.encryptedCredentialGet(key)));
+    return orUndefined(await rpc('encryptedCredentialGet', this.stub.encryptedCredentialGet(key)));
   }
 
   async replaceEncryptedCredentialRevision(input: ReplaceEncryptedCredentialRevisionInput) {
-    return orUndefined(unwrap(await this.stub.encryptedCredentialReplace(input)));
+    return orUndefined(await rpc(
+      'encryptedCredentialReplace',
+      this.stub.encryptedCredentialReplace(input),
+    ));
   }
 
   async deleteEncryptedCredentialRevision(key: string, expectedRevision: string) {
-    return unwrap(await this.stub.encryptedCredentialDelete(key, expectedRevision));
+    return rpc(
+      'encryptedCredentialDelete',
+      this.stub.encryptedCredentialDelete(key, expectedRevision),
+    );
   }
 }
 
@@ -1842,7 +2008,7 @@ export class CfMemoryStateStore implements MemoryStateStore {
   }
 
   private async execute(request: MemoryRpcRequest): Promise<MemoryRpcResponse> {
-    return unwrap(await this.stub.memoryExecute(request));
+    return rpc('memoryExecute', this.stub.memoryExecute(request), request.kind);
   }
 }
 
@@ -2107,7 +2273,7 @@ export class CfRoutineStore implements RoutineStore {
   }
 
   private async execute(request: RoutineRpcRequest): Promise<RoutineRpcResponse> {
-    return unwrap(await this.stub.routinesExecute(request));
+    return rpc('routinesExecute', this.stub.routinesExecute(request), request.kind);
   }
   private requiredRoutine(response: RoutineRpcResponse): RoutineDefinition {
     if (response.kind !== 'routine' || !response.routine) throw unexpectedRoutineResponse();
@@ -2241,7 +2407,7 @@ export class CfUsageStore implements UsageStore {
   }
 
   private async execute(request: UsageRpcRequest): Promise<UsageRpcResponse> {
-    return unwrap(await this.stub.usageExecute(request));
+    return rpc('usageExecute', this.stub.usageExecute(request), request.kind);
   }
 }
 
@@ -2479,7 +2645,7 @@ export class CfWorkStore implements WorkStore {
   }
 
   private async execute(request: WorkRpcRequest): Promise<WorkRpcResponse> {
-    return unwrap(await this.stub.workExecute(request));
+    return rpc('workExecute', this.stub.workExecute(request), request.kind);
   }
 }
 

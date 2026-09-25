@@ -417,6 +417,12 @@ function createNodeThreadDrain(
         markRecoveryRequired: (reason: string) =>
           markTurnRecoveryRequired(job.id, reason),
       };
+      const turnLatency = {
+        ...(job.enqueuedAt === undefined ? {} : { admittedAt: job.enqueuedAt }),
+        ...(job.receivedAt === undefined ? {} : { receivedAt: job.receivedAt }),
+        lane: 'node',
+        executor: 'node',
+      } as const;
       const deliverRecoveryFailure = async (reasonCode: string): Promise<boolean> => {
         try {
           await executeTurn(job.turn, job.assignment, env, {
@@ -427,6 +433,7 @@ function createNodeThreadDrain(
                 : {}),
             turnId: job.id,
             ...(job.runId ? { runId: job.runId, runAttempt: attempt } : {}),
+            turnLatency,
             ...(presentationState ? { presentationState } : {}),
             replayText: DURABLE_RECOVERY_FAILURE_TEXT,
             replayTerminalResult: 'failure',
@@ -475,6 +482,7 @@ function createNodeThreadDrain(
           turnId: job.id,
           usageExecutionId: `exec:${job.id}:flue`,
           ...(job.runId ? { runId: job.runId, runAttempt: attempt } : {}),
+          turnLatency,
           ...(runtimePlanDecision ? { runtimePlanDecision } : {}),
           onRuntimePlan: (candidate) => freezeRuntimePlan(job.id, candidate),
           ...(state.getBoundRuntimePlan ? { getBoundRuntimePlan: state.getBoundRuntimePlan.bind(state) } : {}),

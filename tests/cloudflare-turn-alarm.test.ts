@@ -5,6 +5,10 @@ import vm from 'node:vm';
 import ts from 'typescript';
 
 import { drainAlarmTurnJobs } from '../src/slack/alarm-turn-drain.ts';
+import {
+  startRelayAlarmMetrics,
+  type RelayAlarmMetrics,
+} from '../src/observability/runtime-latency.ts';
 
 // Execute the production RPC methods and alarm helper, not a copy of their
 // scheduling logic. The complete Worker is also exercised by verify:cf-smoke;
@@ -153,14 +157,18 @@ for (const entry of entryPoints) {
 for (const withPendingTurn of [false, true]) {
   test(`the ${withPendingTurn ? 'pending-turn' : 'empty-turn'} drain ending preserves a concurrent new turn's alarm`, async (context) => {
     context.mock.method(Date, 'now', () => NOW);
-    const alarmMethod = stateClass.members.find((member) =>
-      ts.isMethodDeclaration(member) && member.name.getText(source) === 'alarm');
-    assert.ok(alarmMethod);
+    const alarmMethods = ['alarm', 'drainRelayAlarm'].map((name) => {
+      const method = stateClass.members.find((member) =>
+        ts.isMethodDeclaration(member) && member.name.getText(source) === name);
+      assert.ok(method, `production method ${name} exists`);
+      return method.getText(source);
+    });
     const alarmCode = ts.transpileModule(
-      `${batchDeclaration.getText(source)}\nclass AlarmProbe { ${methods.join('\n')}\n${alarmMethod.getText(source)} }\nAlarmProbe`,
+      `${batchDeclaration.getText(source)}\nclass AlarmProbe { ${methods.join('\n')}\n${alarmMethods.join('\n')} }\nAlarmProbe`,
       { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
     ).outputText;
     const { probe: storageProbe, alarm, writes } = fixture(null);
+    const relayAlarmRecords: object[] = [];
     const AlarmProbe = vm.runInNewContext(alarmCode, {
       Date,
       setTimeout,
@@ -175,6 +183,8 @@ for (const withPendingTurn of [false, true]) {
       MAX_TURN_DRAIN_BATCH: 25,
       RELAY_RETRY_BACKOFF_MS: 1000,
       console: { warn() {} },
+      startRelayAlarmMetrics: () => ({ outcome: 'idle', jobsRun: 0, jobsSettled: 0, jobsRetained: 0, longestJobMs: 0 }),
+      emitRelayAlarm: (metrics: object) => relayAlarmRecords.push(metrics),
       createPlatformProductTelemetry: () => ({}),
       localSettingsStore: () => ({}),
       localGatewayAppStores: () => ({ config: {} }),
@@ -217,6 +227,13 @@ for (const withPendingTurn of [false, true]) {
     await drainingProbe.alarm();
     assert.equal(alarm(), NOW + BATCH_MS);
     assert.deepEqual(writes, [NOW + BATCH_MS]);
+    assert.equal(relayAlarmRecords.length, 1);
+    assert.equal(
+      (relayAlarmRecords[0] as { outcome?: string }).outcome,
+      withPendingTurn ? 'drained' : 'idle',
+    );
+    assert.equal((relayAlarmRecords[0] as { jobsListed?: number }).jobsListed, withPendingTurn ? 1 : 0);
+    assert.equal((relayAlarmRecords[0] as { rearmed?: boolean }).rearmed, true);
   });
 }
 
@@ -232,13 +249,14 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
 } = {}) {
   const { AgentObservationYield, AgentPromptFailure } = await import('../src/slack/flue-dispatch.ts');
   const { alarmYieldIsFree } = await import('../src/slack/alarm-turn-drain.ts');
-  const alarmMethod = (stateClass as ts.ClassDeclaration).members.find((member) =>
-    ts.isMethodDeclaration(member) && member.name.getText(source) === 'alarm');
-  const armMethod = (stateClass as ts.ClassDeclaration).members.find((member) =>
-    ts.isMethodDeclaration(member) && member.name.getText(source) === 'armAlarmNoLaterThan');
-  assert.ok(alarmMethod && armMethod);
+  const alarmMethods = ['armAlarmNoLaterThan', 'alarm', 'drainRelayAlarm'].map((name) => {
+    const method = (stateClass as ts.ClassDeclaration).members.find((member) =>
+      ts.isMethodDeclaration(member) && member.name.getText(source) === name);
+    assert.ok(method, `production method ${name} exists`);
+    return method.getText(source);
+  });
   const alarmCode = ts.transpileModule(
-    `class AlarmProbe { ${armMethod.getText(source)}\n${alarmMethod.getText(source)} }\nAlarmProbe`,
+    `class AlarmProbe { ${alarmMethods.join('\n')} }\nAlarmProbe`,
     { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
   ).outputText;
   const jobs = new Map(initial.map((job) => [job.id, job]));
@@ -250,6 +268,7 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
     events: [] as string[],
     replayTexts: [] as unknown[],
     alarmAt: null as number | null,
+    relayAlarms: [] as RelayAlarmMetrics[],
   };
   let inboxDrains = 0;
   const AlarmProbe = vm.runInNewContext(alarmCode, {
@@ -268,6 +287,8 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
     AgentPromptFailure,
     alarmYieldIsFree,
     drainAlarmTurnJobs,
+    startRelayAlarmMetrics,
+    emitRelayAlarm: (metrics: RelayAlarmMetrics) => record.relayAlarms.push({ ...metrics }),
     console: { warn() {}, error() {}, info() {} },
     createPlatformProductTelemetry: () => ({ capture() {} }),
     localSettingsStore: () => ({}),
@@ -390,6 +411,16 @@ test('a long turn yields at the alarm budget without spending attempts while new
   'a yield re-arms promptly rather than with the error backoff');
   assert.deepEqual(record.replayTexts, [undefined],
     'a dispatched, unsettled turn reattaches to its reply instead of replaying progress');
+  const [yieldedAlarm] = record.relayAlarms;
+  assert.equal(record.relayAlarms.length, 1);
+  assert.equal(yieldedAlarm!.yielded, true, 'relay_alarm reports the budget yield');
+  assert.equal(yieldedAlarm!.jobsListed, 1);
+  assert.equal(yieldedAlarm!.groups, 2, 'the thread admitted mid-drain counts');
+  assert.equal(yieldedAlarm!.jobsRun, 2);
+  assert.equal(yieldedAlarm!.jobsSettled, 1);
+  assert.equal(yieldedAlarm!.jobsRetained, 1, 'the yielded turn stays pending for reattachment');
+  assert.ok(yieldedAlarm!.longestJobMs <= yieldedAlarm!.turnsMs);
+  assert.equal(yieldedAlarm!.jobsCarried, 0);
 
   // A 155-minute coding turn yields many times; none of them spends its budget.
   for (let index = 0; index < 12; index += 1) {
