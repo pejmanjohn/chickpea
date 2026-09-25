@@ -626,7 +626,7 @@ test('ordinary eligible answers start once, append ordered suffixes, and stop on
         'complete',
         observer(events),
       ),
-      { handled: true, messageTs: '1785700100.000201' },
+      { handled: true, messageTs: '1785700100.000201', text: 'Hello progressive world.' },
     );
     await h.presentation.markCanonicalFinalized();
     await h.presentation.markCanonicalFinalized();
@@ -1726,7 +1726,7 @@ test('a V1 progressive-off presentation stays terminal-only after the V2 deploy'
 
     assert.deepEqual(
       await h.presentation.finalize('Legacy terminal answer.', 'markdown', 'complete', observer([])),
-      { handled: true, messageTs: '1785700100.000201' },
+      { handled: true, messageTs: '1785700100.000201', text: 'Legacy terminal answer.' },
     );
     const stored = h.store.get(h.runId);
     assert.equal(stored?.schemaVersion, 1);

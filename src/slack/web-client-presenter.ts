@@ -9,19 +9,18 @@ import {
 } from '../activity/telemetry.ts';
 import { isSafeTypedActivityStatus } from '../activity/status.ts';
 import {
-  appendSlackReplyFooter,
   canonicalSlackReplyText,
-  renderSlackArtifactMessage,
-  renderSlackMessage,
   renderSlackReplyFooterBlock,
   type SlackReplyFormat,
   type SlackReplyFooter,
 } from './message-format.ts';
+import type { SlackTablePresentation } from './table-presentation.ts';
 import {
-  appendSlackTableToRenderedMessage,
-  renderSlackTablePresentation,
-  type SlackTablePresentation,
-} from './table-presentation.ts';
+  renderSlackReplyPart,
+  renderSlackReplyTable,
+  slackReplyParts,
+  type SlackReplyClosing,
+} from './reply-continuations.ts';
 import {
   slackLoadingMessages,
   slackStatusText,
@@ -139,9 +138,21 @@ export interface SlackDeliveryObserver {
   }): Promise<void>;
 }
 
+/** The part of the Agent View presentation that final delivery drives. */
+export type SlackPresenterAgentView = Pick<
+  SlackAgentViewPresentation,
+  | 'finalize'
+  | 'markFallbackDelivered'
+  | 'markFallbackDeliveryFailed'
+  | 'markCanonicalFinalized'
+  | 'frozenReplyParts'
+  | 'planContinuations'
+  | 'deliverContinuations'
+>;
+
 export interface SlackPresenterOptions {
   deliverySafety?: 'legacy' | 'ledger';
-  agentViewPresentation?: SlackAgentViewPresentation;
+  agentViewPresentation?: SlackPresenterAgentView;
   /** Successful non-ephemeral final, for the ownership handoff ledger. */
   onPublicDelivery?: (input: { messageTs: string; text: string }) => void | Promise<void>;
   /** Rehydrates the one V3 activity artifact after an isolate restart. */
@@ -632,6 +643,11 @@ export class WebClientPresenter {
    * Agent-authored post with their Slack permalinks and explicit unfurls. Legacy
    * staged receipts add one undelivered note; final delivery never completes an
    * upload. Posting uses the same durable envelope and failure handling as text.
+   *
+   * An answer longer than one Slack message continues in up to three follow-up
+   * messages. The final holds the first part without a footer; the last
+   * follow-up carries the table, files, and footer. Follow-ups never make an
+   * acknowledged final retry: they post after it and durable repair owns them.
    */
   async deliverFinal(
     text: string,
@@ -643,9 +659,6 @@ export class WebClientPresenter {
     const footer = this.replyFooter();
     const approvedText = canonicalSlackReplyText(text, format);
     let displayText = approvedText;
-    const renderedTable = tablePresentation
-      ? renderSlackTablePresentation(tablePresentation, Math.max(0, 12_000 - displayText.length - 2))
-      : undefined;
     const files = selectDeliverableArtifacts(artifacts, {
       workspaceId: this.target.workspaceId,
       agentId: this.target.agentId,
@@ -658,8 +671,9 @@ export class WebClientPresenter {
 
     let forcePostFallback = files.length > 0;
     let fallbackOperationId: string | undefined;
-    if (this.options.agentViewPresentation) {
-      const result = await this.options.agentViewPresentation.finalize(
+    const agentView = this.options.agentViewPresentation;
+    if (agentView) {
+      const result = await agentView.finalize(
         text,
         format,
         terminalTaskStatus,
@@ -671,7 +685,10 @@ export class WebClientPresenter {
         files,
       );
       if (result.handled) {
-        if (result.messageTs) await this.notifyPublicDelivery(result.messageTs, displayText);
+        if (result.messageTs) {
+          await this.notifyPublicDelivery(result.messageTs, result.text ?? displayText);
+        }
+        await this.deliverDurableContinuations(agentView);
         return;
       }
       forcePostFallback ||= result.fallbackPresentation;
@@ -682,6 +699,23 @@ export class WebClientPresenter {
     if (completedFiles.length < files.length) {
       displayText = `${ARTIFACT_UNDELIVERED_NOTE}\n\n${displayText}`;
     }
+    // The last part closes the reply. A V3 presentation freezes the follow-ups
+    // before the final so repair can finish them; other surfaces post them
+    // directly after the final. A plan frozen for a stream keeps its own
+    // split, so a final posted fresh instead ends where its follow-ups begin.
+    const parts = await agentView?.frozenReplyParts(displayText, format) ??
+      slackReplyParts(displayText, format);
+    const first = parts[0]!;
+    const renderedTable = renderSlackReplyTable(tablePresentation, parts.at(-1)!);
+    const closing = {
+      footer,
+      ...(renderedTable ? { table: renderedTable } : {}),
+      ...(completedFiles.length > 0 ? { files: completedFiles } : {}),
+    };
+    const continuations = parts.slice(1);
+    const durable = agentView
+      ? await agentView.planContinuations(parts, renderedTable, completedFiles)
+      : false;
 
     if (!forcePostFallback && this.target.userId && this.target.workspaceId) {
       const startPayload = {
@@ -689,20 +723,23 @@ export class WebClientPresenter {
         thread_ts: this.target.threadTs,
         recipient_user_id: this.target.userId,
         recipient_team_id: this.target.workspaceId,
-        markdown_text: displayText,
+        markdown_text: first,
         ...this.persona(),
       } as unknown as Parameters<WebClient['chat']['startStream']>[0];
-      const stopBlocks = [
-        ...(renderedTable ? [renderedTable.block] : []),
-        renderSlackReplyFooterBlock(footer),
-      ];
+      const stopBlocks = continuations.length > 0
+        ? []
+        : [
+            ...(renderedTable ? [renderedTable.block] : []),
+            renderSlackReplyFooterBlock(footer),
+          ];
+      const stop = stopBlocks.length > 0 ? { blocks: stopBlocks } : {};
       const attemptId = await this.observeBeforeDelivery({
         method: 'slack_chat_stream',
         approvedOutput: approvedText,
         renderedPayload: JSON.stringify({
           method: 'slack_chat_stream',
           start: startPayload,
-          stop: { blocks: stopBlocks },
+          stop,
         }),
       });
       let started: Awaited<ReturnType<WebClient['chat']['startStream']>>;
@@ -726,7 +763,7 @@ export class WebClientPresenter {
           await this.client.chat.stopStream({
             channel: this.target.channelId,
             ts: started.ts as string,
-            blocks: stopBlocks,
+            ...stop,
           });
         } catch (error) {
           // A stopStream failure must not trigger a duplicate final (S18).
@@ -743,25 +780,21 @@ export class WebClientPresenter {
           outcome: 'delivered',
           deliveryRef: slackDeliveryRef(this.target.channelId, started.ts),
         });
-        await this.notifyPublicDelivery(String(started.ts), displayText);
+        await this.notifyPublicDelivery(String(started.ts), first);
+        await this.postContinuationsDirectly(continuations, format, closing);
         return;
       }
     }
 
-    const rendered = completedFiles.length > 0
-      ? renderSlackArtifactMessage(displayText, format, footer, completedFiles, renderedTable?.fallbackText)
-      : appendSlackReplyFooter(renderedTable
-          ? appendSlackTableToRenderedMessage(
-              renderSlackMessage(displayText, format),
-              displayText,
-              renderedTable,
-            )
-          : renderSlackMessage(displayText, format), footer);
+    const rendered = renderSlackReplyPart(
+      first,
+      format,
+      continuations.length > 0 ? undefined : closing,
+    );
     const postPayload = {
       channel: this.target.channelId,
       thread_ts: this.target.threadTs,
       ...rendered,
-      ...(completedFiles.length > 0 ? { unfurl_links: true, unfurl_media: true } : {}),
       ...(forcePostFallback && fallbackOperationId
         ? { client_msg_id: slackClientMessageId(fallbackOperationId) }
         : {}),
@@ -777,7 +810,7 @@ export class WebClientPresenter {
       if (forcePostFallback) {
         // Persist the exact replacement coordinate before the Work delivery
         // receipt. A restart can then settle Work without posting again.
-        await this.options.agentViewPresentation?.markFallbackDelivered(posted.ts);
+        await agentView?.markFallbackDelivered(posted.ts);
       }
       await this.observeAfterDelivery({
         attemptId,
@@ -785,12 +818,12 @@ export class WebClientPresenter {
         deliveryRef: slackDeliveryRef(this.target.channelId, posted.ts),
       });
       if (typeof posted.ts === 'string' && posted.ts) {
-        await this.notifyPublicDelivery(posted.ts, displayText);
+        await this.notifyPublicDelivery(posted.ts, first);
       }
     } catch (error) {
       const outcome = this.deliveryOutcome(error);
       if (forcePostFallback) {
-        await this.options.agentViewPresentation?.markFallbackDeliveryFailed(outcome);
+        await agentView?.markFallbackDeliveryFailed(outcome);
       }
       await this.observeAfterDelivery({
         attemptId,
@@ -798,6 +831,50 @@ export class WebClientPresenter {
         safeFailureCode: outcome === 'failed' ? 'slack_post_failed' : 'slack_post_unknown',
       });
       throw error;
+    }
+    if (durable) await this.deliverDurableContinuations(agentView!);
+    else await this.postContinuationsDirectly(continuations, format, closing);
+  }
+
+  /** Follow-ups of a durable plan; a failure leaves them to presentation repair. */
+  private async deliverDurableContinuations(
+    agentView: SlackPresenterAgentView,
+  ): Promise<void> {
+    try {
+      await agentView.deliverContinuations({
+        onDelivered: (messageTs, text) => this.notifyPublicDelivery(messageTs, text),
+      });
+    } catch {
+      console.warn('[chickpea] Slack reply continuations deferred to presentation repair');
+    }
+  }
+
+  /** Surfaces without a durable presentation post follow-ups best effort, in order. */
+  private async postContinuationsDirectly(
+    continuations: readonly string[],
+    format: SlackReplyFormat,
+    closing: SlackReplyClosing,
+  ): Promise<void> {
+    for (const [index, text] of continuations.entries()) {
+      try {
+        const posted = await this.client.chat.postMessage({
+          ...renderSlackReplyPart(
+            text,
+            format,
+            index === continuations.length - 1 ? closing : undefined,
+          ),
+          channel: this.target.channelId,
+          thread_ts: this.target.threadTs,
+          ...this.persona(),
+        } as unknown as Parameters<WebClient['chat']['postMessage']>[0]);
+        if (typeof posted.ts === 'string' && posted.ts) {
+          await this.notifyPublicDelivery(posted.ts, text);
+        }
+      } catch {
+        // The final is already delivered; never retry it for a follow-up.
+        console.warn('[chickpea] Slack reply continuation failed');
+        return;
+      }
     }
   }
 
@@ -814,18 +891,18 @@ export class WebClientPresenter {
     if (!this.target.userId) {
       throw new Error('Requester-only Slack delivery requires a target user.');
     }
-    const displayText = canonicalSlackReplyText(text, format);
-    const renderedTable = tablePresentation
-      ? renderSlackTablePresentation(tablePresentation, Math.max(0, 12_000 - displayText.length - 2))
-      : undefined;
-    const content = renderedTable
-      ? appendSlackTableToRenderedMessage(
-          renderSlackMessage(displayText, format),
-          displayText,
-          renderedTable,
-        )
-      : renderSlackMessage(displayText, format);
-    const rendered = appendSlackReplyFooter(content, this.replyFooter());
+    // An ephemeral reply cannot continue in a thread; it ends with the
+    // shortened note instead.
+    const displayText = slackReplyParts(
+      canonicalSlackReplyText(text, format),
+      format,
+      { maxParts: 1 },
+    )[0]!;
+    const renderedTable = renderSlackReplyTable(tablePresentation, displayText);
+    const rendered = renderSlackReplyPart(displayText, format, {
+      footer: this.replyFooter(),
+      ...(renderedTable ? { table: renderedTable } : {}),
+    });
     const payload = {
       channel: this.target.channelId,
       user: this.target.userId,

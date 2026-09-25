@@ -10,17 +10,25 @@ import {
   appendSlackReplyFooter,
   canonicalSlackReplyText,
   renderSlackMessage,
+  slackMarkdownBlockTextLimit,
   streamableSlackMarkdownPrefix,
   type SlackReplyFooter,
   type SlackReplyFormat,
 } from './message-format.ts';
 import {
   appendSlackTableToRenderedMessage,
-  renderSlackTablePresentation,
   type RenderedSlackTablePresentation,
   type SlackTablePresentation,
 } from './table-presentation.ts';
-import type { SlackArtifactReceipt } from './artifact-receipts.ts';
+import {
+  renderSlackReplyPart,
+  renderSlackReplyTable,
+  slackReplyParts,
+} from './reply-continuations.ts';
+import type {
+  CompletedSlackArtifactReceipt,
+  SlackArtifactReceipt,
+} from './artifact-receipts.ts';
 import {
   WORKSPACE_MILESTONE_LABELS,
   WORKSPACE_MILESTONES,
@@ -57,6 +65,7 @@ import {
   type SlackPresentationReceiptCertainty,
   type SlackPresentationTransitionInput,
   type SlackPresentationTransitionResult,
+  type SlackReplySplit,
   type SlackRunPresentation,
 } from './run-presentations.ts';
 
@@ -115,7 +124,8 @@ interface FrozenProgressiveEligibilityDecision extends ProgressiveEligibilityDec
 }
 
 type AgentViewFinalResult =
-  | { handled: true; messageTs?: string }
+  /** `text` is the part of the answer the final message itself carries. */
+  | { handled: true; messageTs?: string; text?: string }
   | { handled: false; fallbackPresentation: boolean; operationId?: string };
 
 interface AgentViewPresentationOptions {
@@ -166,6 +176,12 @@ export const AGENT_VIEW_RETIRED_STREAM_TEXT =
 const MAX_PROGRESSIVE_BUFFER_BYTES = 128 * 1_024;
 const DEFAULT_APPEND_INTERVAL_MS = 750;
 const CORRECTED_MARKER = '_Corrected_';
+/** Progressive text stays inside the first message, with room to close a fence. */
+const MAX_STREAMED_REPLY_CHARS = slackMarkdownBlockTextLimit - 16;
+/** Near the cap, progressive text advances only to line boundaries. */
+const STREAM_EDGE_WINDOW_CHARS = 2_000;
+/** A continuation intent this young may still belong to a live writer. */
+const CONTINUATION_INTENT_GRACE_MS = 60_000;
 
 /**
  * One recoverable Agent View artifact for a canonical Slack Run. Flue owns
@@ -809,6 +825,7 @@ export class SlackAgentViewPresentation {
     tablePresentation?: SlackTablePresentation,
     artifacts: readonly SlackArtifactReceipt[] = [],
   ): Promise<AgentViewFinalResult> {
+    const approved = canonicalSlackReplyText(text, format);
     let presentation = await this.requirePresentation();
     // A stream old enough for Slack to have sealed it is closed first; the
     // terminal then takes the fresh-post route instead of a stop that fails.
@@ -824,9 +841,7 @@ export class SlackAgentViewPresentation {
         await this.recordTerminalDeliveryReceipt('acknowledged');
         presentation = await this.requirePresentation();
       }
-      return { handled: true, ...(presentation.stream.messageTs
-        ? { messageTs: presentation.stream.messageTs }
-        : {}) };
+      return this.handledResult(presentation, approved, format);
     }
     if (presentation.stream.priorStreamMessageTs ||
         artifacts.length > 0 && presentation.stream.state === 'streaming') {
@@ -856,7 +871,7 @@ export class SlackAgentViewPresentation {
         terminalTaskStatus === 'error' ? 'failure' : 'answer',
       );
       if (terminal.acknowledged) {
-        return { handled: true, messageTs: presentation.stream.messageTs };
+        return this.handledResult(presentation, approved, format);
       }
       // Another actor may have frozen, acknowledged, or abandoned a terminal
       // between the first read and this one. Re-validate on the state the
@@ -890,9 +905,7 @@ export class SlackAgentViewPresentation {
     );
     if (!terminal.mayWrite) {
       if (terminal.acknowledged) {
-        return { handled: true, ...(presentation.stream.messageTs
-          ? { messageTs: presentation.stream.messageTs }
-          : {}) };
+        return this.handledResult(presentation, approved, format);
       }
       throw new Error('Slack terminal delivery requires reconciliation.');
     }
@@ -916,16 +929,23 @@ export class SlackAgentViewPresentation {
       };
     }
 
-    const approved = canonicalSlackReplyText(text, format);
     const recoverStream = (finalizing: SlackRunPresentation) =>
       this.recoverFinalizingStream(finalizing, text, format, observer, tablePresentation);
-    const renderedTable = tablePresentation
-      ? renderSlackTablePresentation(tablePresentation, Math.max(0, 12_000 - approved.length - 2))
-      : undefined;
-    const footerBlocks = [
-      ...(renderedTable ? [renderedTable.block as unknown as KnownBlock] : []),
-      this.footerBlock(),
-    ];
+    // The stream carries the first message. Its table and footer move to the
+    // last follow-up when the answer continues.
+    const parts = this.replyParts(presentation, approved, format);
+    const first = parts[0]!;
+    const renderedTable = renderSlackReplyTable(tablePresentation, parts.at(-1)!);
+    const closes = !await this.planContinuations(
+      parts, renderedTable, [], this.replySplit(presentation, approved),
+    );
+    presentation = await this.requirePresentation();
+    const footerBlocks = closes
+      ? [
+          ...(renderedTable ? [renderedTable.block as unknown as KnownBlock] : []),
+          this.footerBlock(),
+        ]
+      : [];
     const taskChunks = presentationUsesNativeTasks(presentation)
       ? terminalTaskChunks(presentation, terminalTaskStatus)
       : [];
@@ -933,10 +953,10 @@ export class SlackAgentViewPresentation {
     if (presentation.stream.state === 'absent') {
       presentation = await this.transition(presentation, { kind: 'stream_start_intent' });
       const startPayload = streamStartPayload(presentation, {
-        markdownText: approved,
+        markdownText: first,
         taskChunks,
       });
-      const stop = { blocks: footerBlocks };
+      const stop = footerBlocks.length > 0 ? { blocks: footerBlocks } : {};
       const attemptId = await observer.before({
         method: 'slack_chat_stream',
         approvedOutput: approved,
@@ -991,7 +1011,8 @@ export class SlackAgentViewPresentation {
         [],
         footerBlocks,
         terminalTaskStatus,
-        utf8Length(approved),
+        first,
+        utf8Length(first),
         recoverStream,
       );
     }
@@ -1005,20 +1026,23 @@ export class SlackAgentViewPresentation {
     if (!prefixMatches) {
       return this.correctDivergentStream(
         presentation,
+        first,
         approved,
         terminalTaskStatus,
         observer,
-        renderedTable,
+        closes ? renderedTable : undefined,
+        closes,
       );
     }
-    const suffix = approved.slice(acknowledged.length);
+    const suffix = first.slice(acknowledged.length);
     const stopChunks: AnyChunk[] = [
       ...(suffix ? [{ type: 'markdown_text' as const, text: suffix }] : []),
       ...taskChunks,
     ];
-    const stop = stopChunks.length > 0
-      ? { chunks: stopChunks, blocks: footerBlocks }
-      : { blocks: footerBlocks };
+    const stop = {
+      ...(stopChunks.length > 0 ? { chunks: stopChunks } : {}),
+      ...(footerBlocks.length > 0 ? { blocks: footerBlocks } : {}),
+    };
     const attemptId = await observer.before({
       method: 'slack_chat_stream_resume',
       approvedOutput: approved,
@@ -1037,6 +1061,7 @@ export class SlackAgentViewPresentation {
       stopChunks,
       footerBlocks,
       terminalTaskStatus,
+      first,
       utf8Length(suffix),
       recoverStream,
     );
@@ -1057,6 +1082,216 @@ export class SlackAgentViewPresentation {
     certainty: Exclude<SlackPresentationReceiptCertainty, 'pending' | 'acknowledged'>,
   ): Promise<void> {
     await this.recordTerminalDeliveryReceipt(certainty);
+  }
+
+  /**
+   * Freeze a long answer's follow-up messages before the final's first effect,
+   * because the plan decides whether the final itself carries the footer.
+   * Returns whether a durable plan owns the follow-ups; only V3 has one. A
+   * replay keeps the stored plan. `split` records how the first message was
+   * cut, so a final posted fresh instead cuts it the same way.
+   */
+  async planContinuations(
+    parts: readonly string[],
+    table?: RenderedSlackTablePresentation,
+    files: readonly CompletedSlackArtifactReceipt[] = [],
+    split?: SlackReplySplit,
+  ): Promise<boolean> {
+    if (parts.length < 2) return false;
+    const presentation = await this.requirePresentation();
+    if (presentation.schemaVersion !== 3) return false;
+    if (!presentation.continuations) {
+      await this.transition(presentation, {
+        kind: 'record_continuation_plan',
+        ...(split ? { split } : {}),
+        parts: parts.slice(1),
+        closing: {
+          footer: this.options.footer,
+          ...(table ? { table: { block: table.block, fallbackText: table.fallbackText } } : {}),
+          ...(files.length > 0 ? { files } : {}),
+        },
+      });
+    }
+    return true;
+  }
+
+  /**
+   * The messages of an answer whose plan froze while a stream was to carry
+   * it. A final posted fresh instead splits the same way, so the planned
+   * follow-ups continue exactly where it ends.
+   */
+  async frozenReplyParts(approved: string, format: SlackReplyFormat): Promise<string[] | undefined> {
+    const presentation = await this.requirePresentation();
+    if (presentation.schemaVersion !== 3 || !presentation.continuations?.split) return undefined;
+    return slackReplyParts(approved, format, presentation.continuations.split);
+  }
+
+  /**
+   * Post the owed follow-up messages in order once the canonical final is
+   * acknowledged. Each post persists its intent first and sends a
+   * client_msg_id derived from its operation, so an ambiguous attempt is
+   * settled by thread readback rather than a second post. A Slack failure
+   * stops here without throwing; durable repair resumes the set later.
+   */
+  async deliverContinuations(options: {
+    onDelivered?: (messageTs: string, text: string) => Promise<void>;
+    /** Repair gave up: stop owing whatever is still unsent. */
+    abandonUnresolved?: boolean;
+  } = {}): Promise<void> {
+    for (let step = 0; step < 12; step += 1) {
+      const presentation = await this.requirePresentation();
+      if (presentation.schemaVersion !== 3 ||
+          presentation.continuations?.state !== 'active') return;
+      if (presentation.terminalDelivery.state === 'abandoned') {
+        await this.transition(presentation, { kind: 'abandon_continuations' });
+        return;
+      }
+      if (!presentationHasTerminalOutcome(presentation)) return;
+      const index = presentation.continuations.parts.findIndex((part) =>
+        part.operation?.certainty !== 'acknowledged'
+      );
+      const part = presentation.continuations.parts[index];
+      if (!part) return;
+      let settled: boolean;
+      if (part.operation && part.operation.certainty !== 'failed') {
+        settled = await this.reconcileContinuation(presentation, index, options.onDelivered);
+      } else {
+        settled = await this.postContinuation(presentation, index, options.onDelivered);
+      }
+      if (!settled) {
+        if (options.abandonUnresolved) {
+          await this.transition(await this.requirePresentation(), { kind: 'abandon_continuations' });
+        }
+        return;
+      }
+    }
+  }
+
+  private async postContinuation(
+    presentation: Extract<SlackRunPresentation, { schemaVersion: 3 }>,
+    index: number,
+    onDelivered: ((messageTs: string, text: string) => Promise<void>) | undefined,
+  ): Promise<boolean> {
+    const plan = presentation.continuations!;
+    const part = plan.parts[index]!;
+    // Only markdown answers continue. The last part closes the reply.
+    const rendered = renderSlackReplyPart(
+      part.text,
+      'markdown',
+      index === plan.parts.length - 1 ? plan.closing : undefined,
+    );
+    const operationId = part.operation?.operationId ??
+      `continuation_${hash(`${presentation.runId}:${index + 1}`).slice(0, 24)}`;
+    const intended = await this.transition(presentation, {
+      kind: 'record_continuation_intent', index, operationId,
+    });
+    let messageTs: string;
+    try {
+      const posted = await this.options.client.chat.postMessage({
+        ...rendered,
+        channel: presentation.root.channelId,
+        thread_ts: presentation.root.threadTs,
+        client_msg_id: slackClientMessageId(operationId),
+        ...ownerPersonaFields(presentation.owner),
+      } as unknown as Parameters<WebClient['chat']['postMessage']>[0]);
+      messageTs = requireSlackTs(posted.ts);
+    } catch (error) {
+      await this.transition(intended, {
+        kind: 'record_continuation_receipt',
+        index,
+        operationId,
+        certainty: slackEffectOutcome(error),
+      });
+      console.warn(
+        `[chickpea] Slack reply continuation ${slackEffectOutcome(error)}: ` +
+        safeSlackErrorCode(error),
+      );
+      return false;
+    }
+    await this.transition(intended, {
+      kind: 'record_continuation_receipt', index, operationId, certainty: 'acknowledged', messageTs,
+    });
+    await notifyContinuation(onDelivered, messageTs, part.text);
+    return true;
+  }
+
+  /**
+   * An intent without a receipt may or may not be visible. Read the thread
+   * after the final for its client_msg_id; only a complete read without it
+   * proves the post never landed. A young intent may still be in flight.
+   */
+  private async reconcileContinuation(
+    presentation: Extract<SlackRunPresentation, { schemaVersion: 3 }>,
+    index: number,
+    onDelivered: ((messageTs: string, text: string) => Promise<void>) | undefined,
+  ): Promise<boolean> {
+    const part = presentation.continuations!.parts[index]!;
+    const operation = part.operation!;
+    if (operation.certainty === 'pending' &&
+        this.now() - presentation.updatedAt < CONTINUATION_INTENT_GRACE_MS) return false;
+    const thread = await this.readThreadReplies(presentation, presentation.stream.messageTs);
+    if (!thread) return false;
+    const found = thread.messages.find((message) =>
+      message.clientMsgId === slackClientMessageId(operation.operationId)
+    );
+    if (!found?.ts && !thread.complete) return false;
+    await this.transition(presentation, {
+      kind: 'record_continuation_receipt',
+      index,
+      operationId: operation.operationId,
+      ...(found?.ts
+        ? { certainty: 'acknowledged' as const, messageTs: found.ts }
+        : { certainty: 'failed' as const }),
+    });
+    if (found?.ts) await notifyContinuation(onDelivered, found.ts, part.text);
+    return true;
+  }
+
+  private handledResult(
+    presentation: SlackRunPresentation,
+    approved: string,
+    format: SlackReplyFormat,
+  ): AgentViewFinalResult {
+    if (!presentation.stream.messageTs) return { handled: true };
+    return {
+      handled: true,
+      messageTs: presentation.stream.messageTs,
+      text: this.replyParts(presentation, approved, format)[0]!,
+    };
+  }
+
+  /**
+   * The messages this answer occupies. An acknowledged stream prefix stays in
+   * the first; a stream that must be corrected leaves room for its marker.
+   * Presentations older than V3 have no durable plan and use one message.
+   */
+  private replyParts(
+    presentation: SlackRunPresentation,
+    approved: string,
+    format: SlackReplyFormat,
+  ): string[] {
+    if (presentation.schemaVersion !== 3) {
+      return slackReplyParts(approved, format, {
+        ...this.replySplit(presentation, approved),
+        maxParts: 1,
+      });
+    }
+    return slackReplyParts(
+      approved,
+      format,
+      presentation.continuations?.split ?? this.replySplit(presentation, approved),
+    );
+  }
+
+  /** How the first message is cut: after the streamed prefix, or with room for a marker. */
+  private replySplit(presentation: SlackRunPresentation, approved: string): SlackReplySplit {
+    const acknowledged = prefixAtUtf8Length(approved, presentation.stream.acknowledgedByteLength);
+    const streamed = presentation.stream.presentationOutcome !== 'corrected' &&
+      acknowledged !== undefined &&
+      hash(acknowledged) === (presentation.stream.acknowledgedPrefixHash ?? hash(''));
+    return streamed
+      ? { minFirstPartLength: acknowledged.length }
+      : { firstPartLimit: slackMarkdownBlockTextLimit - CORRECTED_MARKER.length - 2 };
   }
 
   /** Retire only the exact saved interim stream, before any terminal write. */
@@ -1207,8 +1442,8 @@ export class SlackAgentViewPresentation {
       this.degradedReason = 'unsafe_incomplete_block';
       return;
     }
-    const safePrefix = streamableSlackMarkdownPrefix(this.rawText);
     let presentation = await this.requirePresentation();
+    const safePrefix = streamedReplyPrefix(this.rawText, presentation.stream.acknowledgedByteLength);
     const priorPosition = presentation.stream.flue?.lastAcceptedPosition;
     if (priorPosition && comparePosition(chunk.position, priorPosition) <= 0) return;
     if (!safePrefix || this.degradedReason) return;
@@ -1398,6 +1633,7 @@ export class SlackAgentViewPresentation {
     chunks: AnyChunk[],
     blocks: KnownBlock[],
     terminalTaskStatus: 'complete' | 'error',
+    text: string,
     terminalSuffixBytes: number,
     recover: (finalizing: SlackRunPresentation) => Promise<AgentViewFinalResult>,
   ): Promise<AgentViewFinalResult> {
@@ -1420,7 +1656,7 @@ export class SlackAgentViewPresentation {
         channel: presentation.root.channelId,
         ts: presentation.stream.messageTs!,
         ...(chunks.length > 0 ? { chunks } : {}),
-        blocks,
+        ...(blocks.length > 0 ? { blocks } : {}),
       });
     } catch (error) {
       console.warn(
@@ -1459,7 +1695,7 @@ export class SlackAgentViewPresentation {
       outcome: 'delivered',
       deliveryRef: deliveryRef(presentation),
     });
-    return { handled: true, messageTs: presentation.stream.messageTs! };
+    return { handled: true, messageTs: presentation.stream.messageTs!, text };
   }
 
   /** Reconcile a crash after stop intent using only the saved message coordinate.
@@ -1474,13 +1710,17 @@ export class SlackAgentViewPresentation {
     tablePresentation?: SlackTablePresentation,
   ): Promise<AgentViewFinalResult> {
     const approved = canonicalSlackReplyText(text, format);
-    const table = tablePresentation
-      ? renderSlackTablePresentation(tablePresentation, Math.max(0, 12_000 - approved.length - 2))
-      : undefined;
-    const content = table
-      ? appendSlackTableToRenderedMessage(renderSlackMessage(approved, 'markdown'), approved, table)
-      : renderSlackMessage(approved, 'markdown');
-    const rendered = appendSlackReplyFooter(content, this.options.footer);
+    const parts = this.replyParts(presentation, approved, format);
+    const first = parts[0]!;
+    const table = renderSlackReplyTable(tablePresentation, parts.at(-1)!);
+    const closes = !await this.planContinuations(
+      parts, table, [], this.replySplit(presentation, approved),
+    );
+    presentation = await this.requirePresentation();
+    const content = table && closes
+      ? appendSlackTableToRenderedMessage(renderSlackMessage(first, 'markdown'), first, table)
+      : renderSlackMessage(first, 'markdown');
+    const rendered = closes ? appendSlackReplyFooter(content, this.options.footer) : content;
     const messageTs = presentation.stream.messageTs!;
     const update = { channel: presentation.root.channelId, ts: messageTs,
       text: rendered.text, blocks: rendered.blocks! };
@@ -1552,17 +1792,19 @@ export class SlackAgentViewPresentation {
       throw error;
     }
     await observer.after({ attemptId, outcome: 'delivered', deliveryRef: deliveryRef(presentation) });
-    return { handled: true, messageTs };
+    return { handled: true, messageTs, text: first };
   }
 
   private async correctDivergentStream(
     presentation: SlackRunPresentation,
+    first: string,
     approved: string,
     terminalTaskStatus: 'complete' | 'error',
     observer: SlackPresentationDeliveryObserver,
-    table?: RenderedSlackTablePresentation,
+    table: RenderedSlackTablePresentation | undefined,
+    closes: boolean,
   ): Promise<AgentViewFinalResult> {
-    const corrected = `${approved}\n\n${CORRECTED_MARKER}`;
+    const corrected = `${first}\n\n${CORRECTED_MARKER}`;
     const content = table
       ? appendSlackTableToRenderedMessage(
           renderSlackMessage(corrected, 'markdown'),
@@ -1570,10 +1812,7 @@ export class SlackAgentViewPresentation {
           table,
         )
       : renderSlackMessage(corrected, 'markdown');
-    const rendered = appendSlackReplyFooter(
-      content,
-      this.options.footer,
-    );
+    const rendered = closes ? appendSlackReplyFooter(content, this.options.footer) : content;
     const messageTs = presentation.stream.messageTs!;
     const update = {
       channel: presentation.root.channelId,
@@ -1633,7 +1872,7 @@ export class SlackAgentViewPresentation {
       outcome: 'delivered',
       deliveryRef: deliveryRef(presentation),
     });
-    return { handled: true, messageTs };
+    return { handled: true, messageTs, text: first };
   }
 
   private async invalidate(reason: ProgressiveRelayInvalidationReason): Promise<void> {
@@ -1876,13 +2115,16 @@ export class SlackAgentViewPresentation {
     );
   }
 
-  private async readThreadReplies(presentation: Extract<SlackRunPresentation, { schemaVersion: 3 }>):
-    Promise<{ messages: Array<{ ts?: string; clientMsgId?: string }>; complete: boolean } | undefined> {
+  private async readThreadReplies(
+    presentation: Extract<SlackRunPresentation, { schemaVersion: 3 }>,
+    oldest?: string,
+  ): Promise<{ messages: Array<{ ts?: string; clientMsgId?: string }>; complete: boolean } | undefined> {
     try {
       const response = await this.options.client.conversations.replies({
         channel: presentation.root.channelId,
         ts: presentation.root.threadTs,
         limit: 100,
+        ...(oldest ? { oldest } : {}),
       });
       const raw = response as unknown as {
         messages?: unknown;
@@ -2116,6 +2358,66 @@ function terminalFlueIdentity(
     instanceId: `terminal_${hash(presentation.runId).slice(0, 24)}`,
     submissionId: `terminal_${hash(presentation.turnJobId).slice(0, 24)}`,
   };
+}
+
+/**
+ * The safe prefix to stream, capped inside the first message. A longer answer
+ * continues in follow-up messages after the stream stops. The canonical form
+ * of a raw prefix is a prefix of the final canonical answer, and so is any
+ * shorter prefix of it, so the cap keeps the stream's monotone guarantee.
+ *
+ * Within the last `STREAM_EDGE_WINDOW_CHARS` before the cap the stream only
+ * advances to a line boundary, so the first message never ends mid-line (for
+ * example inside a code line) and the next message starts with a whole line.
+ * At the cap it prefers a paragraph or heading boundary. It never falls
+ * below the acknowledged prefix; with no boundary it keeps the plain cap.
+ */
+function streamedReplyPrefix(rawText: string, acknowledgedBytes: number): string {
+  const safePrefix = streamableSlackMarkdownPrefix(rawText);
+  let capped = safePrefix;
+  const full = safePrefix.length > MAX_STREAMED_REPLY_CHARS;
+  if (full) {
+    capped = '';
+    for (let end = MAX_STREAMED_REPLY_CHARS; end > 0; end -= 512) {
+      const highSurrogate = /[\uD800-\uDBFF]/.test(rawText[end - 1] ?? '');
+      const candidate = streamableSlackMarkdownPrefix(
+        rawText.slice(0, highSurrogate ? end - 1 : end),
+      );
+      if (candidate.length <= MAX_STREAMED_REPLY_CHARS) {
+        capped = candidate;
+        break;
+      }
+    }
+  }
+  if (capped.length <= MAX_STREAMED_REPLY_CHARS - STREAM_EDGE_WINDOW_CHARS) return capped;
+  const acknowledged = prefixAtUtf8Length(capped, acknowledgedBytes)?.length ?? 0;
+  const floor = Math.max(acknowledged, capped.length - STREAM_EDGE_WINDOW_CHARS);
+  const window = capped.slice(floor);
+  const paragraph = full
+    ? Math.max(window.lastIndexOf('\n\n'), lastHeadingBoundary(window))
+    : -1;
+  const line = paragraph >= 0 ? paragraph : window.lastIndexOf('\n');
+  if (line < 0) return capped;
+  return capped.slice(0, floor + line).trimEnd();
+}
+
+function lastHeadingBoundary(text: string): number {
+  let at = -1;
+  for (const match of text.matchAll(/\n#{1,6}\s/g)) at = match.index;
+  return at;
+}
+
+async function notifyContinuation(
+  onDelivered: ((messageTs: string, text: string) => Promise<void>) | undefined,
+  messageTs: string,
+  text: string,
+): Promise<void> {
+  try {
+    await onDelivered?.(messageTs, text);
+  } catch {
+    // The Slack post is the commit point; thread context is best effort.
+    console.warn('[chickpea] Slack reply continuation context was not recorded');
+  }
 }
 
 function ownerPersonaFields(owner: SlackPresentationOwner): {

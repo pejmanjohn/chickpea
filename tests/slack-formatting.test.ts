@@ -19,6 +19,7 @@ import {
   sanitizeSlackMarkdownLinks,
   slackActionLink,
   slackMarkdownBlockTextLimit,
+  splitSlackMarkdownReply,
   streamableSlackMarkdownPrefix,
 } from '../src/slack/message-format.ts';
 import {
@@ -222,13 +223,20 @@ test('Markdown and plain Slack replies remove complete PEM armor', () => {
   }
 });
 
-test('markdown blocks are capped at Slack markdown block limits', () => {
-  const rendered = renderSlackMessage('x'.repeat(slackMarkdownBlockTextLimit + 50), 'markdown');
-  const block = rendered.blocks?.[0];
+test('markdown finals continue in another message instead of ending in [truncated]', () => {
+  const answer = 'x'.repeat(slackMarkdownBlockTextLimit + 50);
+  const canonical = canonicalSlackMarkdownText(answer);
+  assert.equal(canonical, answer);
 
-  assert.equal(block?.type, 'markdown');
-  assert.equal(block?.text.length, slackMarkdownBlockTextLimit);
-  assert.match(block?.text ?? '', /\[truncated]$/);
+  const parts = splitSlackMarkdownReply(canonical);
+  assert.equal(parts.length, 2);
+  assert.equal(parts.join(''), answer);
+  for (const part of parts) {
+    const block = renderSlackMessage(part, 'markdown').blocks?.[0];
+    assert.equal(block?.type, 'markdown');
+    assert.equal(block?.text, part);
+    assert.doesNotMatch(block?.text ?? '', /\[truncated]/);
+  }
 });
 
 test('fallback text is plain enough for notifications and accessibility', () => {
