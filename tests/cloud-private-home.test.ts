@@ -251,6 +251,8 @@ test('encode prints the variables from the files on this machine and round-trips
   }
 });
 
+// The owned lane's evidence names credential fingerprints and a cookie digest,
+// which look secret-shaped but are digests; a registration must carry them.
 const REGISTRATION = `${JSON.stringify({
   schemaVersion: 'chickpea-environment-registration/v1',
   exportedAt: '2026-09-25T18:00:00.000Z',
@@ -259,6 +261,16 @@ const REGISTRATION = `${JSON.stringify({
     { target: 'amber', ownership: 'remote', authorityOrigin: 'https://amber.example.test' },
     { target: 'violet', ownership: 'local', authorityOrigin: 'https://violet.example.test' },
   ],
+  evidence: {
+    violet: {
+      baseline: {
+        schemaVersion: 'chickpea-environment-baseline/v1',
+        target: 'violet',
+        credentialFingerprintsByTarget: { violet: { auth: `sha256:${'a'.repeat(64)}`, cookie: `sha256:${'b'.repeat(64)}` } },
+      },
+      deployReceipt: { schemaVersion: 'chickpea-environment-deploy-receipt/v1', target: 'violet', claimNonce: '00000000-0000-4000-8000-000000000000' },
+    },
+  },
 }, null, 2)}\n`;
 
 test('writes the environment registration owner-only, refuses one that carries secrets, and encode carries it', () => {
@@ -289,7 +301,8 @@ test('writes the environment registration owner-only, refuses one that carries s
       [b64('{"schemaVersion":"chickpea-environment-registry/v2","targets":[]}'), /must be a chickpea-environment-registration\/v1 document/u, 'registry/v2'],
       [b64(REGISTRATION.replace('"ownership": "local"', '"ownership": "mine"')), /ownership of local or remote/u, 'mine'],
       [b64(REGISTRATION.replace('"target": "amber"', '"target": "fern"')), /ownership of local or remote/u, 'fern'],
-      [b64(REGISTRATION.replace('"sandbox": null', '"sandbox": null, "evidence": {"violet": {"authorityReadToken": "fixture-registration-value-13"}}')), /secret-shaped field \(evidence\.violet\.authorityReadToken\)/u, 'fixture-registration-value-13'],
+      [b64(REGISTRATION.replace('"target": "amber",', '"target": "amber", "authorityReadToken": "fixture-registration-value-13",')), /secret-shaped field \(targets\.0\.authorityReadToken\)/u, 'fixture-registration-value-13'],
+      [b64(REGISTRATION.replace('"deployReceipt": {', '"laneSecrets": {"value": "fixture-registration-value-14"}, "deployReceipt": {')), /evidence must hold only a baseline and a deployReceipt per lane/u, 'fixture-registration-value-14'],
     ] as const) {
       const other = temporaryHome();
       try {
