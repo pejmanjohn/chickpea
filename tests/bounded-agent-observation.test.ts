@@ -11,6 +11,8 @@ import {
   observeAgentSettlementBounded,
   type AgentUpdatesRoute,
 } from '../src/slack/bounded-agent-observation.ts';
+import { WORKSPACE_MILESTONE_DATA_NAME } from '../src/slack/coding-worker-run.ts';
+import { createWorkspaceMilestoneRelay } from '../src/slack/workspace-milestone-relay.ts';
 
 /**
  * Pages use the real updates-view protocol: Flue prepends a
@@ -205,4 +207,114 @@ test('the Cloudflare reader reaches the agent namespace binding and fails clearl
   assert.equal(reply.text, 'ok');
   assert.deepEqual(calls, ['idFromName:agent_c', 'get:agent_c']);
   assert.equal(requests[0]?.searchParams.has('live'), false);
+});
+
+/** A fake clock the fake sleep advances, so idle time is measured in sleeps. */
+function fakeClock() {
+  let time = 0;
+  const sleeps: number[] = [];
+  return {
+    sleeps,
+    now: () => time,
+    sleep: async (ms: number) => { sleeps.push(ms); time += ms; },
+  };
+}
+
+function idlePages(count: number, next = '0_2'): Page[] {
+  return Array.from({ length: count }, () => ({ next, upToDate: true }));
+}
+
+function milestoneStart(messageId = 'msg_1') {
+  return {
+    type: 'data-part',
+    messageId,
+    name: WORKSPACE_MILESTONE_DATA_NAME,
+    data: { schemaVersion: 1, toolCallId: 'call_1', milestone: 'changes', state: 'started' },
+  };
+}
+
+test('adaptive polling backs off after 10 s of quiet following a milestone start, and caps', async () => {
+  const relay = createWorkspaceMilestoneRelay('sub_1', async () => {});
+  const { route, requests } = fakeRoute([
+    { items: [{ type: 'message-started', submissionId: 'sub_1', messageId: 'msg_1' }, milestoneStart()], next: '0_2', upToDate: true },
+    ...idlePages(17),
+    { items: [settled()], next: '0_3' },
+  ]);
+  const clock = fakeClock();
+  const settlement = await observeAgentSettlementBounded(route, {
+    ...TARGET, onEvent: relay.onEvent, isIdleCandidate: relay.isIdleCandidate,
+  }, { adaptive: {}, sleep: clock.sleep, now: clock.now });
+  assert.deepEqual(settlement, { outcome: 'completed' });
+  assert.equal(requests.length, 19);
+  // Quiet since t=0: reads at t < 10 s keep the 750 ms cadence, then it doubles to the 5 s ceiling.
+  assert.deepEqual(clock.sleeps, [...Array(14).fill(750), 1500, 3000, 5000, 5000]);
+  await relay.drain();
+});
+
+test('a delivered chunk returns the adaptive poll to the base interval', async () => {
+  let hint = true;
+  const delta = { type: 'message-delta', kind: 'text', delta: 'x' };
+  const { route } = fakeRoute([
+    { next: '0_1', upToDate: true },
+    ...idlePages(15, '0_1'),
+    { items: [delta], next: '0_2', upToDate: true },
+    ...idlePages(2),
+    { items: [settled()], next: '0_3' },
+  ]);
+  const clock = fakeClock();
+  await observeAgentSettlementBounded(route, {
+    ...TARGET,
+    // The hint stays true across the chunk: the reset comes from the arrival itself.
+    onEvent: () => { hint = true; },
+    isIdleCandidate: () => hint,
+  }, { adaptive: {}, sleep: clock.sleep, now: clock.now });
+  assert.deepEqual(clock.sleeps, [...Array(14).fill(750), 1500, 3000, 750, 750, 750]);
+});
+
+test('without an idle hint, or with adaptive off, the cadence stays at the base interval', async () => {
+  for (const variant of [
+    { hint: undefined, adaptive: {} },
+    { hint: () => false, adaptive: {} },
+    { hint: () => true, adaptive: undefined },
+  ]) {
+    const { route } = fakeRoute([...idlePages(20), { items: [settled()], next: '0_3' }]);
+    const clock = fakeClock();
+    await observeAgentSettlementBounded(route, {
+      ...TARGET, ...(variant.hint ? { isIdleCandidate: variant.hint } : {}),
+    }, { ...(variant.adaptive ? { adaptive: variant.adaptive } : {}), sleep: clock.sleep, now: clock.now });
+    assert.deepEqual(clock.sleeps, Array(20).fill(750));
+  }
+});
+
+test('the milestone relay marks only a milestone start as the last chunk as an idle candidate', () => {
+  const relay = createWorkspaceMilestoneRelay('sub_1', async () => {});
+  assert.equal(relay.isIdleCandidate(), false);
+  relay.onEvent({ type: 'message-started', submissionId: 'sub_1', messageId: 'msg_1' } as never);
+  relay.onEvent(milestoneStart('msg_other') as never);
+  assert.equal(relay.isIdleCandidate(), false, 'another submission\'s milestone is not ours');
+  relay.onEvent(milestoneStart() as never);
+  assert.equal(relay.isIdleCandidate(), true);
+  relay.onEvent({ type: 'message-delta', kind: 'text', delta: 'x' } as never);
+  assert.equal(relay.isIdleCandidate(), false);
+  relay.onEvent({ ...milestoneStart(), data: { ...milestoneStart().data, state: 'completed' } } as never);
+  assert.equal(relay.isIdleCandidate(), false);
+});
+
+test('an abort during a backed-off 5 s sleep throws its reason promptly', async () => {
+  const controller = new AbortController();
+  const yieldReason = new Error('yield');
+  const { route, requests } = fakeRoute([{ next: '0_1', upToDate: true }]);
+  let time = 0;
+  const started = Date.now();
+  setTimeout(() => controller.abort(yieldReason), 20);
+  await assert.rejects(
+    observeAgentSettlementBounded(route, { ...TARGET, signal: controller.signal, isIdleCandidate: () => true }, {
+      // Quiet for long already and a steep factor: the first sleep is the 5 s ceiling, on a real timer.
+      adaptive: { factor: 100 },
+      now: () => (time += 60_000),
+    }),
+    (error: unknown) => error === yieldReason,
+  );
+  assert.ok(Date.now() - started < 1_000, 'the long sleep is abortable');
+  assert.equal(requests.length, 1);
 });

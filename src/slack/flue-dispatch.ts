@@ -380,6 +380,7 @@ export async function promptSlackThreadAgent(
           receipt,
           onEvent,
           ...(signal ? { signal } : {}),
+          ...(milestones ? { isIdleCandidate: milestones.isIdleCandidate } : {}),
         })
       : await handle.read(receipt as DispatchReceipt, { onEvent });
   } catch (error) {
