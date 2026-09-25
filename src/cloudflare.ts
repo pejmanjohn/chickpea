@@ -764,6 +764,8 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
   private readonly presentationRunnerOf = (runId: string) => this.presentationRunner(runId);
   /** Set while runner-mode alarm work runs: admission hands new turns over at once. */
   private dispatchWake: (() => void) | undefined;
+  /** Admissions seen by this isolate (each arms the alarm). */
+  private admissions = 0;
 
   constructor(ctx: DurableObjectState, env: unknown) {
     super(ctx, env);
@@ -1943,8 +1945,15 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       : undefined;
     /** Admit newly delivered events and hand their turns over at once. */
     const admitAndDispatch = async () => {
-      const retry = await drainGatewayInbox(stores, this.env as PlatformEnv, onAdmitted);
-      await dispatchToRunners();
+      let retry = false;
+      // Runner mode: an admission that lands while this pass runs (before any
+      // wake is listening) is picked up by another pass, not the next alarm.
+      for (let pass = 0; pass < 8; pass += 1) {
+        const admissions = this.admissions;
+        retry = (await drainGatewayInbox(stores, this.env as PlatformEnv, onAdmitted)) || retry;
+        await dispatchToRunners();
+        if (!runnerMode || this.admissions === admissions) break;
+      }
       return retry;
     };
     /**
@@ -2276,6 +2285,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     // Every admission arms the alarm after its durable write. A running alarm
     // cannot be re-entered, so let its drain pick the new work up directly.
     this.alarmAdmissionWake?.();
+    this.admissions += 1;
     this.dispatchWake?.();
     const existing = await this.ctx.storage.getAlarm();
     if (existing === null || at < existing) await this.ctx.storage.setAlarm(at);

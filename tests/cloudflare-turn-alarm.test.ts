@@ -278,6 +278,10 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
   failAdmission?: (admission: RunnerAdmission) => boolean;
   /** The runner refuses this admission (its presentation import failed). */
   refuseAdmission?: (admission: RunnerAdmission) => boolean;
+  /** Runs while a turn is being admitted to its runner. */
+  onRunnerAdmit?: (id: string, jobs: Map<string, AlarmJob>) => void;
+  /** Runs as the alarm starts its other due work (the ledger drain). */
+  beforeChores?: () => void;
   /** Runs inside the alarm's receipt delivery (its other due work). */
   duringChores?: (jobs: Map<string, AlarmJob>, admit: () => Promise<void>) => Promise<void>;
 } = {}) {
@@ -325,6 +329,7 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
           return { admitted: false, refused: 'presentation_import_failed' };
         }
         record.admissions.push(admission);
+        hooks.onRunnerAdmit?.(admission.id, jobs);
         return { admitted: true };
       },
     }),
@@ -355,7 +360,7 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
       hooks.onInboxDrain?.(inboxDrains, jobs);
       return false;
     },
-    drainLedgerRuns: async () => ({}),
+    drainLedgerRuns: async () => { hooks.beforeChores?.(); return {}; },
     drainSlackInteractionCleanups: async () => { record.events.push('tick:cleanups'); },
     drainTerminalPresentationRepairs: async () => ({}),
     drainCloudflareScheduleActions: async () => {
@@ -411,6 +416,7 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
   const probe = new AlarmProbe();
   probe.env = hooks.runnerMode ? { SLACK_THREAD_RUNNER: {} } : {};
   (probe as unknown as { carriedAlarmTurns: Map<string, string> }).carriedAlarmTurns = new Map();
+  (probe as unknown as { admissions: number }).admissions = 0;
   probe.ctx = { storage: {
     async getAlarm() { return record.alarmAt; },
     async setAlarm(at: number) { record.alarmAt = at; },
@@ -750,4 +756,31 @@ test('runner mode hands over a turn admitted while the alarm runs its other work
   assert.deepEqual(record.admissions.map(({ id }) => id), ['late'],
     'handed to its runner before this alarm returned');
   assert.equal(record.relayAlarms.at(-1)!.jobsDispatched, 1);
+});
+
+test('runner mode hands over a turn admitted during the alarm\'s first inbox pass before its other work', async () => {
+  let deliveryWaiting = false;
+  let handedOverBeforeChores: string[] | undefined;
+  const { probe, record } = await alarmHarness([channelJob('first', 'thread-a')], {
+    runnerMode: true,
+    onRunnerAdmit: (id) => {
+      // A new Slack event reaches the gateway inbox while the first hand-off
+      // is in flight; it becomes a turn row when the inbox is drained.
+      if (id !== 'first') return;
+      deliveryWaiting = true;
+      void (probe as unknown as { armAlarmNoLaterThan(at: number): Promise<void> })
+        .armAlarmNoLaterThan(Date.now() + 250);
+    },
+    onInboxDrain: (_count, jobs) => {
+      if (!deliveryWaiting) return;
+      deliveryWaiting = false;
+      jobs.set('second', channelJob('second', 'thread-b'));
+    },
+    beforeChores: () => {
+      handedOverBeforeChores ??= record.admissions.map(({ id }) => id);
+    },
+  });
+  await probe.alarm();
+  assert.deepEqual(handedOverBeforeChores, ['first', 'second'],
+    'both turns reach their runners before the alarm turns to its other work');
 });

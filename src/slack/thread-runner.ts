@@ -34,6 +34,7 @@ import { repairSlackInteractionProgress, runTurn, sanitizeError } from './run-tu
 import { SlackStatusRegistry } from './status-registry.ts';
 import { ThreadRunnerJobStore, type ThreadRunnerJob, type ThreadRunnerStatus } from './thread-runner-jobs.ts';
 import {
+  THREAD_RUNNER_BACKSTOP_MS,
   THREAD_RUNNER_FAILURE_BACKOFF_MAX_MS,
   runnerPresentationState,
   runnerSlackPort,
@@ -86,6 +87,21 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
   private readonly targets = new Map<string, FlueObservationTarget>();
   /** Consecutive failed alarms, for the retry backoff. */
   private readonly failures = { count: 0 };
+  /** The loop running now (from the alarm or an admission), single-flight. */
+  private running: Promise<void> | undefined;
+  /** Work arrived while the loop was finishing: run it once more. */
+  private runAgain = false;
+
+  constructor(...args: ConstructorParameters<typeof DurableObject>) {
+    super(...args);
+    // A job still marked running means the previous instance stopped mid-turn
+    // (a code update, an eviction): resume now, not at the next backstop.
+    void this.ctx.blockConcurrencyWhile(async () => {
+      if (!this.store().hasRunning()) return;
+      const existing = await this.ctx.storage.getAlarm();
+      if (existing === null || existing > Date.now()) await this.ctx.storage.setAlarm(Date.now());
+    });
+  }
 
   private store(): ThreadRunnerJobStore {
     this.jobs ??= new ThreadRunnerJobStore(new DoSqlStateDb(this.ctx.storage));
@@ -109,9 +125,13 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
       }
     }
     const result = this.store().admit({ ...job, payload: {} }, Date.now());
-    this.wake?.();
+    // Start at once in this request instead of waiting for the alarm to fire;
+    // the alarm, armed a few seconds out, is the durable backstop.
+    const backstop = Date.now() + THREAD_RUNNER_BACKSTOP_MS;
     const existing = await this.ctx.storage.getAlarm();
-    if (existing === null || existing > Date.now()) await this.ctx.storage.setAlarm(Date.now());
+    if (existing === null || existing > backstop) await this.ctx.storage.setAlarm(backstop);
+    this.wake?.();
+    void this.runSoon();
     return result;
   }
 
@@ -168,16 +188,40 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
   }
 
   async alarm(): Promise<void> {
-    let nextAlarmAt: number | undefined;
-    try {
-      nextAlarmAt = await this.runAlarm();
-    } catch {
-      // Setup failed before the loop could run: never throw, try again soon.
-      console.warn('[chickpea] thread runner alarm could not start');
-      nextAlarmAt = Date.now() + THREAD_RUNNER_FAILURE_BACKOFF_MAX_MS;
+    await this.runSoon();
+  }
+
+  /**
+   * Run the loop once, or join the run in progress and run once more after
+   * it (work may have arrived after its last listing). Never throws.
+   */
+  private runSoon(): Promise<void> {
+    if (this.running) {
+      this.runAgain = true;
+      return this.running;
     }
-    if (nextAlarmAt !== undefined) await this.ctx.storage.setAlarm(nextAlarmAt);
-    else await this.ctx.storage.deleteAlarm();
+    this.running = (async () => {
+      do {
+        this.runAgain = false;
+        let nextAlarmAt: number | undefined;
+        try {
+          nextAlarmAt = await this.runAlarm();
+        } catch {
+          // Setup failed before the loop could run: try again soon.
+          console.warn('[chickpea] thread runner alarm could not start');
+          nextAlarmAt = Date.now() + THREAD_RUNNER_FAILURE_BACKOFF_MAX_MS;
+        }
+        try {
+          if (nextAlarmAt !== undefined) await this.ctx.storage.setAlarm(nextAlarmAt);
+          else await this.ctx.storage.deleteAlarm();
+        } catch {
+          // The instance is being replaced; its successor resumes the job.
+        }
+      } while (this.runAgain);
+    })().finally(() => {
+      this.running = undefined;
+    });
+    return this.running;
   }
 
   /** The state store, over a fresh stub per call (see CfTurnJobsForRunner). */
@@ -285,9 +329,13 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
       }).finally(() => {
         local.maintain(100);
       }),
+      // Keep a wake `at` or sooner in the future; a wake already due is
+      // pushed forward, since this run is the one it would start.
       armBackstop: async (at) => {
         const existing = await this.ctx.storage.getAlarm();
-        if (existing === null || existing > at) await this.ctx.storage.setAlarm(at);
+        if (existing === null || existing <= Date.now() || existing > at) {
+          await this.ctx.storage.setAlarm(at);
+        }
       },
       carried: this.carried,
       onWake: (wake) => {

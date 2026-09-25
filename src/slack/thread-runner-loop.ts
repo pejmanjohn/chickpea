@@ -22,6 +22,7 @@ import {
   type ThreadRunnerJobRecord,
   type ThreadRunnerJobStore,
 } from './thread-runner-jobs.ts';
+import { isSandboxDisconnect } from '../sandbox/reconnect.ts';
 import { StateStoreUnavailable } from './flue-dispatch.ts';
 import type { RunnerTurnBegin } from './thread-runner-rpc.ts';
 import type { TurnExecutionPorts } from './turn-executor.ts';
@@ -43,8 +44,13 @@ import type { PendingTurnJob, RunnerTurnJobView } from './turn-jobs.ts';
  * thread recovers without waiting for a new message.
  */
 
-/** Wake again this soon while a job is running, so eviction is recovered. */
-export const THREAD_RUNNER_BACKSTOP_MS = 30_000;
+/**
+ * While a job runs, a wake stays armed this far ahead (refreshed every
+ * THREAD_RUNNER_HEARTBEAT_MS), so an instance replaced mid-turn (a code
+ * update, eviction) resumes within seconds.
+ */
+export const THREAD_RUNNER_BACKSTOP_MS = 5_000;
+export const THREAD_RUNNER_HEARTBEAT_MS = 2_500;
 /** A retained (not yet settled) turn is retried after this delay at least. */
 export const THREAD_RUNNER_RETRY_MS = 2_000;
 /** Retry an unrecorded terminal outcome or active-work clear at this interval. */
@@ -52,6 +58,12 @@ export const THREAD_RUNNER_SYNC_RETRY_MS = 30_000;
 /** After a failed alarm: 2 s, doubling, at most a minute. */
 export const THREAD_RUNNER_FAILURE_BACKOFF_MS = 2_000;
 export const THREAD_RUNNER_FAILURE_BACKOFF_MAX_MS = 60_000;
+/**
+ * After the state store was unreachable (it is being replaced, usually for a
+ * few seconds on a code update): 1 s, doubling, at most 8 s.
+ */
+const THREAD_RUNNER_STORE_BACKOFF_MS = 1_000;
+const THREAD_RUNNER_STORE_BACKOFF_MAX_MS = 8_000;
 /** Slack interaction cleanup checks: 30 s, doubling to 15 minutes, 8 tries. */
 export const THREAD_RUNNER_CLEANUP_BACKOFF_MS = 30_000;
 const THREAD_RUNNER_CLEANUP_BACKOFF_MAX_MS = 15 * 60_000;
@@ -94,6 +106,7 @@ export interface ThreadRunnerLoopDeps {
   /** Registers the drain's wake for admissions; returns its release. */
   onWake?: (wake: () => void) => () => void;
   now?: () => number;
+  heartbeatMs?: number;
   budgetMs?: number;
   hardCapMs?: number;
   recheckMs?: number;
@@ -201,20 +214,23 @@ export async function runThreadRunnerAlarm(
     // state; the next alarm reads the turn row again and reattaches.
     record.outcome = 'threw';
     record.reason = error instanceof Error && TOKEN.test(error.name) ? error.name : 'unknown';
-    return { record, nextAlarmAt: now() + failureBackoff(deps) };
+    return { record, nextAlarmAt: now() + failureBackoff(deps, isSandboxDisconnect(error)) };
   } finally {
     record.durationMs = now() - startedAt;
     emitThreadRunnerAlarm(record, deps.sink);
   }
 }
 
-/** 2 s after the first failed alarm, doubling, at most a minute. */
-function failureBackoff(deps: ThreadRunnerLoopDeps): number {
+/**
+ * 2 s after the first failed alarm, doubling, at most a minute; 1 s to 8 s
+ * when the state store could not be reached (a replacement in progress).
+ */
+function failureBackoff(deps: ThreadRunnerLoopDeps, storeUnreachable = false): number {
   deps.failures.count += 1;
-  return Math.min(
-    THREAD_RUNNER_FAILURE_BACKOFF_MS * 2 ** (deps.failures.count - 1),
-    THREAD_RUNNER_FAILURE_BACKOFF_MAX_MS,
-  );
+  const [base, max] = storeUnreachable
+    ? [THREAD_RUNNER_STORE_BACKOFF_MS, THREAD_RUNNER_STORE_BACKOFF_MAX_MS]
+    : [THREAD_RUNNER_FAILURE_BACKOFF_MS, THREAD_RUNNER_FAILURE_BACKOFF_MAX_MS];
+  return Math.min(base * 2 ** (deps.failures.count - 1), max);
 }
 
 async function runOne(
@@ -249,6 +265,10 @@ async function runOne(
   let retry = false;
   let storeUnavailable = false;
   let settled: boolean;
+  // Keep a wake a few seconds ahead for as long as the job runs.
+  const heartbeat = setInterval(() => {
+    void deps.armBackstop(now() + THREAD_RUNNER_BACKSTOP_MS).catch(() => undefined);
+  }, deps.heartbeatMs ?? THREAD_RUNNER_HEARTBEAT_MS);
   try {
     settled = await deps.execute(view.job, control, (afterMs, reason) => {
       retry = true;
@@ -256,6 +276,7 @@ async function runOne(
       if (afterMs !== undefined) retryAfterMs = Math.max(retryAfterMs ?? 0, afterMs);
     }, local.threadKey, start);
   } finally {
+    clearInterval(heartbeat);
     await deps.afterJob?.(view.job).catch(() => undefined);
   }
   const after = deps.jobs.get(local.id);
@@ -279,9 +300,9 @@ async function runOne(
     return true;
   }
   if (storeUnavailable) {
-    // 2 s after the first outage, doubling to a minute.
+    // 1 s after the first outage, doubling to 8 s.
     outage.storeUnavailable = true;
-    deps.jobs.settle(local.id, 'admitted', now(), now() + failureBackoff(deps));
+    deps.jobs.settle(local.id, 'admitted', now(), now() + failureBackoff(deps, true));
     return false;
   }
   deps.jobs.settle(

@@ -41,6 +41,23 @@ test('settled jobs are forgotten after a week unless their outcome is unrecorded
   assert.deepEqual(store.status().jobs, { admitted: 1, done: 1 });
 });
 
+test('the job store tells a new instance that a job was running', () => {
+  const store = new ThreadRunnerJobStore(new NodeStateDb(new DatabaseSync(':memory:')));
+  store.admit({ id: 'job', threadKey: 'k', payload: null }, 1);
+  assert.equal(store.hasRunning(), false);
+  store.markRunning('job');
+  assert.equal(store.hasRunning(), true);
+});
+
+test('a runner instance resumes a running job at once and starts admitted jobs in the admitting request', () => {
+  const runner = readFileSync(new URL('../src/slack/thread-runner.ts', import.meta.url), 'utf8');
+  // On first load after a replacement: a running job re-arms the alarm now.
+  assert.match(runner, /blockConcurrencyWhile\(async \(\) => \{\s*if \(!this\.store\(\)\.hasRunning\(\)\) return;[\s\S]{0,200}setAlarm\(Date\.now\(\)\)/);
+  // admit starts the loop in the same request; the alarm is the backstop.
+  assert.match(runner, /this\.wake\?\.\(\);\s*void this\.runSoon\(\);/);
+  assert.match(runner, /async alarm\(\): Promise<void> \{\s*await this\.runSoon\(\);/);
+});
+
 test('the Worker entry exports SlackThreadRunner for its v11 binding', () => {
   const entry = readFileSync(new URL('../src/cloudflare.ts', import.meta.url), 'utf8');
   assert.match(entry, /export \{ SlackThreadRunner \} from '\.\/slack\/thread-runner\.ts';/);

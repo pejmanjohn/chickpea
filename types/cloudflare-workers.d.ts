@@ -66,6 +66,8 @@ declare module 'cloudflare:workers' {
   interface DurableObjectState {
     storage: DurableObjectStorage;
     id: { toString(): string };
+    /** Runs `fn` before the object handles any other event. */
+    blockConcurrencyWhile<T>(fn: () => Promise<T>): Promise<T>;
   }
 
   /** Metadata the platform passes to `alarm()` about the current invocation. */

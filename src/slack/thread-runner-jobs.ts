@@ -276,6 +276,11 @@ export class ThreadRunnerJobStore {
     return { jobs, total };
   }
 
+  /** A job was running when this object's previous instance stopped. */
+  hasRunning(): boolean {
+    return this.db.get("SELECT 1 AS running FROM runner_jobs WHERE state = 'running' LIMIT 1") !== undefined;
+  }
+
   /** Jobs not yet settled. */
   openCount(): number {
     return Number(this.db.get(

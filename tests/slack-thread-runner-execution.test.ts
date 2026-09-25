@@ -981,7 +981,7 @@ test('a runner starts a turn with one state-store round trip before running it',
   } finally { db.close(); }
 });
 
-test('a runner backs off a turn whose state store stays unreachable (2 s, then 4 s)', async () => {
+test('a runner backs off a turn whose state store stays unreachable (1 s, then 2 s)', async () => {
   const db = openStateDb(':memory:');
   try {
     const rows = fakeRows(['outage']);
@@ -995,7 +995,38 @@ test('a runner backs off a turn whose state store stays unreachable (2 s, then 4
       delays.push(Math.round((result.nextAlarmAt! - at) / 1_000));
       h.advance(10_000);
     }
-    assert.deepEqual(delays, [2, 4]);
+    assert.deepEqual(delays, [1, 2], 'a store being replaced is retried quickly (1 s doubling to 8 s)');
     assert.equal(rows.rows.get('outage')!.attempts, 0, 'no attempt spent inside the durability window');
+  } finally { db.close(); }
+});
+
+test('a running job keeps a wake a few seconds ahead, so a replaced runner resumes promptly', async () => {
+  const db = openStateDb(':memory:');
+  try {
+    const rows = fakeRows(['long']);
+    const h = runnerHarness(db, rows, { hold: () => true });
+    const armed: number[] = [];
+    h.deps.armBackstop = async (at) => { armed.push(at - (h.deps.now!())); };
+    h.deps.heartbeatMs = 5;
+    h.jobs.admit({ id: 'long', threadKey: 'thread', payload: {} }, 1);
+    await runThreadRunnerAlarm(h.deps);
+    assert.ok(armed.length >= 3, `the wake is refreshed while the job runs (${armed.length})`);
+    assert.ok(armed.every((ahead) => ahead > 0 && ahead <= 5_000), 'always at most 5 s ahead');
+  } finally { db.close(); }
+});
+
+test('a runner whose state store is being replaced retries within seconds', async () => {
+  const db = openStateDb(':memory:');
+  try {
+    const rows = fakeRows(['reset']);
+    const h = runnerHarness(db, rows);
+    h.jobs.admit({ id: 'reset', threadKey: 'thread', payload: {} }, 1);
+    rows.turns.begin = async () => {
+      throw new Error('Durable Object reset because its code was updated.');
+    };
+    const at = h.deps.now!();
+    const result = await runThreadRunnerAlarm(h.deps);
+    assert.equal(result.record.outcome, 'threw');
+    assert.equal(result.nextAlarmAt! - at, 1_000, 'a store reset is retried after a second');
   } finally { db.close(); }
 });
