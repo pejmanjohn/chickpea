@@ -59,9 +59,20 @@ import { createPlatformProductTelemetry } from '../telemetry/platform.ts';
 const NODE_RECONCILE_INTERVAL_MS = 30_000;
 const NODE_RETRY_BACKOFF_MS = 2_000;
 
+type NodePendingTurn = Awaited<
+  ReturnType<NonNullable<SlackStateStore['listPendingTurns']>>
+>[number];
+
 let started = false;
-let draining: Promise<void> | undefined;
-let wakeRequested = false;
+// One ordered loop per Slack Agent thread (`slackAgentThreadKey`). A slow turn
+// holds only its own thread; unrelated threads start their own loops.
+const threadLoops = new Map<string, Promise<void>>();
+// Threads whose active loop must list pending turns again before it exits.
+const threadRelistRequested = new Set<string>();
+// Ledger runs, cleanups, repairs, and receipts run in one single-flight
+// wake-level pass that never waits on thread loops.
+let wakePass: Promise<void> | undefined;
+let wakePassRequested = false;
 let retryTimer: ReturnType<typeof setTimeout> | undefined;
 let reconcileTimer: ReturnType<typeof setInterval> | undefined;
 let autoWakeSuspended = false;
@@ -81,6 +92,18 @@ function scheduleNodeTurnRelayRetry(
   retryTimer.unref();
 }
 
+/** A store failure must never reject a wake: every caller wakes the relay with
+ * `void wakeNodeTurnRelay(...)`, so a rejection would take the Node process
+ * down as an unhandled rejection. Log it and hand production drains to the
+ * bounded retry timer; injected test/store drains stay caller-owned. */
+function reportNodeTurnRelayFailure(
+  error: unknown,
+  options: NodeTurnRelayDrainOptions,
+): void {
+  console.error('[chickpea] node turn relay drain failed:', sanitizeError(error));
+  if (!options.state) scheduleNodeTurnRelayRetry(options.env);
+}
+
 /** Start the independent, unref'ed recovery heartbeat for compatibility jobs
  * and the channel-neutral ledger driver. Ledger execution remains default-off
  * until an exact workspace/channel canary assigns future admissions. */
@@ -97,19 +120,28 @@ export function startNodeTurnRelay(): void {
   reconcileTimer.unref();
 }
 
-/** Stop new wakes and wait for the active durable turn drain before ownership release. */
+/** Stop new wakes and wait for every thread loop and the wake-level pass
+ * before ownership release. Loops finish the turns they already listed. */
 export async function stopNodeTurnRelay(): Promise<void> {
   shuttingDown = true;
   started = false;
-  wakeRequested = false;
+  wakePassRequested = false;
   if (retryTimer) clearTimeout(retryTimer);
   retryTimer = undefined;
   if (reconcileTimer) clearInterval(reconcileTimer);
   reconcileTimer = undefined;
-  await draining;
+  await Promise.all([...threadLoops.values(), wakePass]);
 }
 
-/** Wake once after admission; concurrent wakes join the same bounded drain. */
+/**
+ * Wake after admission, on the reconcile heartbeat, and on bounded retry.
+ * Lists pending turns, starts a loop for every thread that has none, and
+ * requests the wake-level pass. The returned promise settles once the loops
+ * this wake started (plus the pass each requests on exit) and the pass this
+ * wake started or joined have finished. It never waits for a loop an earlier
+ * wake started: that loop re-lists its thread before exiting, so a message
+ * admitted mid-turn runs after it without holding other threads. Never rejects.
+ */
 export async function wakeNodeTurnRelay(
   env?: PlatformEnv,
   overrides: Omit<NodeTurnRelayDrainOptions, 'env'> = {},
@@ -119,34 +151,118 @@ export async function wakeNodeTurnRelay(
   // A test may suspend the admission-triggered wake to drive execution itself.
   // The durable turn is already admitted; it stays pending until the next drain.
   if (autoWakeSuspended) return;
-  if (draining) {
-    wakeRequested = true;
-    return draining;
+  const options: NodeTurnRelayDrainOptions = { ...overrides, ...(env ? { env } : {}) };
+  const loops = await startNodeThreadLoops(options);
+  await Promise.all([...loops, requestNodeWakePass(options)]);
+}
+
+async function startNodeThreadLoops(
+  options: NodeTurnRelayDrainOptions,
+): Promise<Promise<void>[]> {
+  const drain = createNodeThreadDrain(options);
+  if (!drain) return [];
+  let pending: NodePendingTurn[];
+  try {
+    pending = await drain.listPendingTurns();
+  } catch (error) {
+    reportNodeTurnRelayFailure(error, options);
+    return [];
   }
-  draining = (async () => {
-    do {
-      wakeRequested = false;
-      try {
-        await drainNodeTurnRelayOnce({ ...overrides, ...(env ? { env } : {}) });
-      } catch (error) {
-        // A store failure must never reject this promise: every caller wakes the
-        // relay with `void wakeNodeTurnRelay(...)`, so a rejection here would take
-        // the Node process down as an unhandled rejection. Log it, hand production
-        // drains to the bounded retry timer, and leave the loop rather than
-        // spinning on the same failure.
-        console.error('[chickpea] node turn relay drain failed:', sanitizeError(error));
-        wakeRequested = false;
-        if (!overrides.state) scheduleNodeTurnRelayRetry(env);
-        return;
+  // stopNodeTurnRelay awaits only loops that exist when it runs.
+  if (shuttingDown) return [];
+  const groups = new Map<string, NodePendingTurn[]>();
+  for (const job of pending) {
+    const key = slackAgentThreadKey(job.turn, job.assignment);
+    const jobs = groups.get(key);
+    if (jobs) jobs.push(job);
+    else groups.set(key, [job]);
+  }
+  const startedLoops: Promise<void>[] = [];
+  for (const [key, jobs] of groups) {
+    if (threadLoops.has(key)) {
+      threadRelistRequested.add(key);
+      continue;
+    }
+    const loop = runNodeThreadLoop(key, jobs, drain, options);
+    threadLoops.set(key, loop);
+    // The combined drain ran cleanups and repairs right after its turns; keep
+    // that promptness without making the thread wait for them.
+    startedLoops.push(loop.then(() => requestNodeWakePass(options)));
+  }
+  return startedLoops;
+}
+
+/** Run one thread's turns in admission order. A thread never has two loops,
+ * and the loop re-lists its thread before exiting so a message admitted
+ * during the last turn is not stranded until the reconcile heartbeat. */
+async function runNodeThreadLoop(
+  key: string,
+  initialJobs: NodePendingTurn[],
+  initialDrain: NodeThreadDrain,
+  options: NodeTurnRelayDrainOptions,
+): Promise<void> {
+  // A turn that stays pending after running (a deferred terminal) is left to
+  // the next wake rather than rerun by this loop.
+  const attempted = new Set<string>();
+  let drain = initialDrain;
+  let jobs = initialJobs;
+  try {
+    for (;;) {
+      for (const job of jobs) {
+        attempted.add(job.id);
+        // A retained turn holds its thread until a later wake redrives it.
+        if (!(await drain.runJob(job))) return;
       }
-    } while (wakeRequested);
-  })().finally(async () => {
-    draining = undefined;
-    // A wake can arrive after the loop reads wakeRequested=false but before
-    // this completion callback clears `draining`. Do not lose that edge wake.
-    if (wakeRequested && !shuttingDown) await wakeNodeTurnRelay(env, overrides);
-  });
-  return draining;
+      if (shuttingDown) return;
+      threadRelistRequested.delete(key);
+      // A fresh context per cycle, as each combined drain had: installation
+      // resolutions are cached for the life of one context.
+      const next = createNodeThreadDrain(options);
+      if (!next) return;
+      drain = next;
+      jobs = (await drain.listPendingTurns()).filter((job) =>
+        !attempted.has(job.id) && slackAgentThreadKey(job.turn, job.assignment) === key
+      );
+      if (shuttingDown) return;
+      if (jobs.length === 0 && !threadRelistRequested.has(key)) return;
+    }
+  } catch (error) {
+    reportNodeTurnRelayFailure(error, options);
+  } finally {
+    // Runs in the same tick as the exit decision, so a wake either sees this
+    // loop (and requests a re-list) or sees none and starts a new one.
+    threadLoops.delete(key);
+    threadRelistRequested.delete(key);
+  }
+}
+
+/** Single-flight wake-level pass; a wake arriving mid-pass joins it and
+ * requests one more round, as the combined drain did. */
+function requestNodeWakePass(options: NodeTurnRelayDrainOptions): Promise<void> {
+  if (wakePass) {
+    wakePassRequested = true;
+    return wakePass;
+  }
+  if (shuttingDown) return Promise.resolve();
+  wakePass = (async () => {
+    try {
+      do {
+        wakePassRequested = false;
+        try {
+          await drainNodeWakePassOnce(options);
+        } catch (error) {
+          // Leave rather than spin on the same failure.
+          reportNodeTurnRelayFailure(error, options);
+          wakePassRequested = false;
+          return;
+        }
+      } while (wakePassRequested && !shuttingDown);
+    } finally {
+      // Cleared in the same tick as the exit check, so no edge wake is lost.
+      wakePass = undefined;
+    }
+  })();
+  return wakePass;
 }
 
 interface NodeTurnRelayDrainOptions {
@@ -162,9 +278,7 @@ interface NodeTurnRelayDrainOptions {
   productTelemetry?: ProductTelemetryCapture;
 }
 
-async function drainNodeTurnRelayOnce(
-  options: NodeTurnRelayDrainOptions = {},
-): Promise<void> {
+function createNodeTurnRelayContext(options: NodeTurnRelayDrainOptions) {
   const env = options.env;
   const state = options.state ?? getSlackStateStore(env);
   const config = getConfigStore(env);
@@ -182,6 +296,37 @@ async function drainNodeTurnRelayOnce(
     ((workspaceId: string) => resolveSlackInstallationExecutionContext(workspaceId, env));
   const verifyInstallationAccess = options.verifyInstallationAccess ?? verifySlackInstallationTurnAccess;
   const installationFor = cacheSlackInstallationExecutionContexts(resolveInstallation);
+  return {
+    env,
+    state,
+    config,
+    executeTurn,
+    productTelemetry,
+    shouldResolveIdentity,
+    verifyInstallationAccess,
+    installationFor,
+  };
+}
+
+interface NodeThreadDrain {
+  listPendingTurns(): Promise<NodePendingTurn[]>;
+  /** False when the turn stays pending and its thread must stop here. */
+  runJob(job: NodePendingTurn): Promise<boolean>;
+}
+
+function createNodeThreadDrain(
+  options: NodeTurnRelayDrainOptions,
+): NodeThreadDrain | undefined {
+  const {
+    env,
+    state,
+    config,
+    executeTurn,
+    productTelemetry,
+    shouldResolveIdentity,
+    verifyInstallationAccess,
+    installationFor,
+  } = createNodeTurnRelayContext(options);
   if (
     state.listPendingTurns &&
     state.freezeRuntimePlan &&
@@ -211,8 +356,7 @@ async function drainNodeTurnRelayOnce(
     const markTurnError = state.markTurnError?.bind(state);
     const discardTurn = state.discardTurn.bind(state);
     const presentationState = slackPresentationStatePort(state);
-    const pending = await listPendingTurns();
-    const runJob = async (job: (typeof pending)[number]): Promise<boolean> => {
+    const runJob = async (job: NodePendingTurn): Promise<boolean> => {
       if (!job.turn.interactionIntent && job.progress.interactionIntent) {
         job.turn.interactionIntent = job.progress.interactionIntent;
       }
@@ -403,21 +547,23 @@ async function drainNodeTurnRelayOnce(
         return true;
       }
     };
-    const groups = new Map<string, typeof pending>();
-    for (const job of pending) {
-      const key = slackAgentThreadKey(job.turn, job.assignment);
-      const jobs = groups.get(key);
-      if (jobs) jobs.push(job);
-      else groups.set(key, [job]);
-    }
-    // Preserve ordering within one conversation while allowing unrelated
-    // conversations to make progress independently, matching the CF relay.
-    await Promise.all([...groups.values()].map(async (jobs) => {
-      for (const job of jobs) {
-        if (!(await runJob(job))) break;
-      }
-    }));
+    return { listPendingTurns, runJob };
   }
+  return undefined;
+}
+
+/** Ledger runs, interaction cleanups, presentation repairs, and management
+ * receipts. Runs once per wake request and never waits on thread loops. */
+async function drainNodeWakePassOnce(options: NodeTurnRelayDrainOptions): Promise<void> {
+  const {
+    env,
+    state,
+    executeTurn,
+    productTelemetry,
+    shouldResolveIdentity,
+    verifyInstallationAccess,
+    installationFor,
+  } = createNodeTurnRelayContext(options);
   await drainLedgerRuns({
     state,
     work: options.work ?? getWorkStore(env),
