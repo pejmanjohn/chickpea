@@ -938,6 +938,21 @@ test('the bounded reader sees an idle hint only while a milestone start is the l
   assert.deepEqual(hints, [false, true, false]);
 });
 
+test('a turn that already delegated a coding task seeds the reattached reader as idle', async () => {
+  const seeds: unknown[] = [];
+  for (const codingTaskStarted of [true, false]) {
+    await promptSlackThreadAgent({
+      ...promptInput(state(), handle({})),
+      codingTaskStarted,
+      observeReply: async ({ handle: reader, receipt, initialIdleCandidate }) => {
+        seeds.push(initialIdleCandidate);
+        return reader.read(receipt as never);
+      },
+    });
+  }
+  assert.deepEqual(seeds, [true, undefined]);
+});
+
 test('a failing checklist update never fails or delays the answer', async (t) => {
   t.mock.method(console, 'warn', () => {});
   const seen: string[] = [];

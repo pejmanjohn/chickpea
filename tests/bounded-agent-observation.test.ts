@@ -318,3 +318,25 @@ test('an abort during a backed-off 5 s sleep throws its reason promptly', async 
   assert.ok(Date.now() - started < 1_000, 'the long sleep is abortable');
   assert.equal(requests.length, 1);
 });
+
+test('a reattached observation seeded as coding backs off after 10 s idle, then drops the seed on live output', async () => {
+  const delta = (text: string) => ({ type: 'message-delta', kind: 'text', delta: text });
+  const { route } = fakeRoute([
+    // The replay catches up and ends on something other than the milestone start.
+    { items: [delta('replayed')], next: '0_5' },
+    { items: [delta('tail')], next: '0_6', upToDate: true },
+    ...idlePages(16, '0_6'),
+    // Live output after catching up: the cadence resets and the seed ends.
+    { items: [delta('live')], next: '0_7', upToDate: true },
+    ...idlePages(15, '0_7'),
+    { items: [settled()], next: '0_8' },
+  ]);
+  const clock = fakeClock();
+  await observeAgentSettlementBounded(route, {
+    ...TARGET, isIdleCandidate: () => false, initialIdleCandidate: true,
+  }, { adaptive: {}, sleep: clock.sleep, now: clock.now });
+  assert.deepEqual(clock.sleeps, [
+    ...Array(14).fill(750), 1500, 3000, 5000,
+    ...Array(16).fill(750),
+  ]);
+});

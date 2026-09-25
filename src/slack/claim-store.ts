@@ -343,6 +343,17 @@ export class SlackStateLogic {
     );
   }
 
+  /** Whether this turn's live marker records a delegated coding task (see above). */
+  isCodingActiveWork(key: string, generation: string): boolean {
+    return this.db.get(
+      'SELECT 1 AS found FROM slack_active_work WHERE key = ? AND generation = ? AND ttl_ms = ? AND updated_at + ttl_ms >= ?',
+      key,
+      generation,
+      CODING_ACTIVE_WORK_TTL_MS,
+      this.now(),
+    ) !== undefined;
+  }
+
   admitCanonical(
     input: SlackCanonicalAdmissionInput,
     work: WorkStoreLogic,
