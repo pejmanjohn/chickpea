@@ -207,7 +207,7 @@ exact choices:
 
    Cloudflare refuses this rollback when the deploy applied a Durable Object
    migration, for example the first v0.1.27 or later deploy over an earlier
-   release (migration `v10`). Use choice 1 in that case.
+   release (migrations `v10` and `v11`). Use choice 1 in that case.
 
 The same message appears if the deploy finishes but no Container application
 named `<worker>-sandbox` exists.
