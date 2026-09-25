@@ -171,6 +171,7 @@ import {
 } from '../sandbox/workspace-session.ts';
 import { createWorkspaceTools, type WorkspaceResolver } from '../sandbox/workspace-tools.ts';
 import { SandboxUnavailableError } from '../sandbox/errors.ts';
+import { reconnectingSandboxStub } from '../sandbox/reconnect.ts';
 import {
   CHICKPEA_SUBMISSION_DURABILITY,
   WORKSPACE_TASK_INSTRUCTION,
@@ -1917,7 +1918,9 @@ async function createRuntimePlanWorkspace(
       // Only a workspace this submission bound to its turn has a turn to end.
       end: async () => {
         if (!session.session.wasOpened) return;
-        const stub = await session.mintStub();
+        // Retried on a fresh stub if the Sandbox DO instance was replaced
+        // during the turn: both calls are safe to repeat.
+        const stub = reconnectingSandboxStub(session.mintStub);
         if (input.release) await stub.destroy();
         else await stub.endTurn();
       },

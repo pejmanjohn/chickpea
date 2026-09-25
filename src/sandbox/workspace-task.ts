@@ -24,7 +24,11 @@ import {
   parseChickpeaResponseMetadata,
 } from '../usage/response-metadata.ts';
 import type { CodingWorkerBindingV1 } from './coding-worker-binding.ts';
-import { SandboxSessionCapError, SandboxUnavailableError } from './errors.ts';
+import {
+  SandboxConnectionDroppedError,
+  SandboxSessionCapError,
+  SandboxUnavailableError,
+} from './errors.ts';
 import { WORKSPACE_DIR } from './workspace-lifecycle.ts';
 import {
   MAX_RUNNING_TASKS_PER_WORKSPACE,
@@ -233,7 +237,12 @@ export function createWorkspaceTaskTool(options: WorkspaceTaskToolOptions) {
         milestones.start('workspace');
         try {
           const sandbox = await target.sandbox();
-          await sandbox.exists(WORKSPACE_DIR);
+          await sandbox.exists(WORKSPACE_DIR).catch(async (error: unknown) => {
+            // Activation can lose the Durable Object connection mid-way; the
+            // next call reconnects, so probe once more before failing.
+            if (!(error instanceof SandboxConnectionDroppedError)) throw error;
+            await sandbox.exists(WORKSPACE_DIR);
+          });
         } catch (error) {
           const mapped = workspaceFailure(error);
           if (mapped) {
@@ -495,7 +504,11 @@ function workspaceFailure(error: unknown): WorkspaceTaskFailure | undefined {
   if (error instanceof WorkspaceLimitError) return failure('workspace_limit', error.message);
   if (error instanceof WorkspaceNameError) return failure('invalid_input', error.message);
   if (error instanceof SandboxSessionCapError) return failure('session_cap', WORKSPACE_SESSION_CAP_MESSAGE);
-  if (error instanceof SandboxUnavailableError || error instanceof SandboxDiedError) {
+  if (
+    error instanceof SandboxUnavailableError ||
+    error instanceof SandboxConnectionDroppedError ||
+    error instanceof SandboxDiedError
+  ) {
     return failure('workspace_unavailable', WORKSPACE_UNAVAILABLE_MESSAGE);
   }
   return undefined;

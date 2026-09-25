@@ -31,6 +31,7 @@ import {
 import type { PlatformEnv } from '../config/state-backend.ts';
 import { isCloudflareTarget } from '../config/runtime-target.ts';
 import { cloudflareSandboxOptionVariants } from '../sandbox/lifecycle.ts';
+import { reconnectingSandboxStub } from '../sandbox/reconnect.ts';
 import { sandboxThreadKey } from '../sandbox/thread-key.ts';
 import {
   CODING_WORKSPACE_USE_DATA_NAME,
@@ -678,6 +679,7 @@ function classifyFailureText(typeValue: string, messageValue: string): AgentProm
   ) return 'sandbox-session-cap';
   if (
     type.includes('sandbox_unavailable') ||
+    type.includes('sandbox_connection_dropped') ||
     message.includes('coding workspace is temporarily unavailable') ||
     message.includes('maximum number of running container instances') ||
     message.includes('container was unavailable') ||
@@ -776,11 +778,11 @@ export async function prepareCloudflareSandboxTurn(
   const sandboxKey = sandboxThreadKey(conversationKey);
   const preparations = await Promise.allSettled(
     cloudflareSandboxOptionVariants(sandboxKey).map(async (options) => {
-      const sandbox = getSandbox(
+      const sandbox = reconnectingSandboxStub(() => getSandbox(
         binding as Parameters<typeof getSandbox>[0],
         sandboxKey,
         options,
-      ) as ReturnType<typeof getSandbox> & SandboxTurnContext;
+      )) as ReturnType<typeof getSandbox> & SandboxTurnContext;
       await prepareSandboxTurn(sandbox, turnId);
     }),
   );
@@ -808,11 +810,11 @@ export async function endCloudflareSandboxTurn(
     const sandboxKey = sandboxThreadKey(conversationKey);
     const revocations = await Promise.allSettled(
       cloudflareSandboxOptionVariants(sandboxKey).map(async (options) => {
-        const sandbox = getSandbox(
+        const sandbox = reconnectingSandboxStub(() => getSandbox(
           binding as Parameters<typeof getSandbox>[0],
           sandboxKey,
           options,
-        ) as ReturnType<typeof getSandbox> & { endTurn(): Promise<void> };
+        )) as ReturnType<typeof getSandbox> & { endTurn(): Promise<void> };
         await sandbox.endTurn();
       }),
     );
@@ -841,11 +843,11 @@ export async function releaseCloudflareSandboxTurn(
     const sandboxKey = sandboxThreadKey(conversationKey);
     const teardowns = await Promise.allSettled(
       cloudflareSandboxOptionVariants(sandboxKey).map(async (options) => {
-        const sandbox = getSandbox(
+        const sandbox = reconnectingSandboxStub(() => getSandbox(
           binding as Parameters<typeof getSandbox>[0],
           sandboxKey,
           options,
-        ) as ReturnType<typeof getSandbox> & { destroy(): Promise<void> };
+        )) as ReturnType<typeof getSandbox> & { destroy(): Promise<void> };
         await sandbox.destroy();
       }),
     );
