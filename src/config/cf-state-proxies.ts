@@ -2126,7 +2126,7 @@ export class CfTurnJobsForRunner implements RunnerTurnJobsPort {
     return this.op({ kind: 'view', id });
   }
 
-  /** The row plus what resolving its Slack installation reads, in one call. */
+  /** The row plus what the turn reads before its first Slack status, in one call. */
   begin(id: string) {
     return this.op({ kind: 'begin', id });
   }

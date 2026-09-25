@@ -72,7 +72,7 @@ export const THREAD_RUNNER_CLEANUP_ATTEMPTS = 8;
 /** The state store's turn rows as a runner reaches them (over RPC in production). */
 export interface ThreadRunnerTurnRows {
   view(id: string): Promise<RunnerTurnJobView>;
-  /** `view` plus the turn's installation reads, in one round trip. */
+  /** `view` plus what the turn reads before its first Slack status, in one round trip. */
   begin(id: string): Promise<RunnerTurnBegin>;
   markDelivered(id: string): Promise<void>;
   markError(id: string): Promise<void>;
@@ -492,7 +492,15 @@ export function runnerPresentationState(input: {
   now?: () => number;
   publishIntervalMs?: number;
   generationCacheMs?: number;
-}): { state: SlackPresentationStatePort; publish(runId: string | undefined): Promise<void> } {
+}): {
+  state: SlackPresentationStatePort;
+  publish(runId: string | undefined): Promise<void>;
+  /**
+   * Start a turn's generation cache from the value its `begin` round trip
+   * read (undefined: not read), so its first activity status reads nothing.
+   */
+  seedLatestThreadSessionGeneration(runId: string | undefined, value: number | null | undefined): void;
+} {
   const now = input.now ?? Date.now;
   const interval = input.publishIntervalMs ?? RUNNER_PRESENTATION_PUBLISH_INTERVAL_MS;
   const published = new Map<string, string>();
@@ -573,6 +581,16 @@ export function runnerPresentationState(input: {
       }
       // Always, once per job: version-gated, so an unchanged copy is a no-op.
       await put(runId, true);
+    },
+    seedLatestThreadSessionGeneration: (runId, value) => {
+      if (!runId || value === undefined) return;
+      const presentation = input.local.get(runId);
+      if (presentation?.schemaVersion !== 3) return;
+      const { root } = presentation;
+      generations.set(`${root.workspaceId}:${root.channelId}:${root.threadTs}`, {
+        value: value ?? undefined,
+        at: now(),
+      });
     },
   };
 }
