@@ -138,9 +138,21 @@ export interface SlackDeliveryObserver {
   }): Promise<void>;
 }
 
+/** The part of the Agent View presentation that final delivery drives. */
+export type SlackPresenterAgentView = Pick<
+  SlackAgentViewPresentation,
+  | 'finalize'
+  | 'markFallbackDelivered'
+  | 'markFallbackDeliveryFailed'
+  | 'markCanonicalFinalized'
+  | 'frozenReplyParts'
+  | 'planContinuations'
+  | 'deliverContinuations'
+>;
+
 export interface SlackPresenterOptions {
   deliverySafety?: 'legacy' | 'ledger';
-  agentViewPresentation?: SlackAgentViewPresentation;
+  agentViewPresentation?: SlackPresenterAgentView;
   /** Successful non-ephemeral final, for the ownership handoff ledger. */
   onPublicDelivery?: (input: { messageTs: string; text: string }) => void | Promise<void>;
   /** Rehydrates the one V3 activity artifact after an isolate restart. */
@@ -826,7 +838,7 @@ export class WebClientPresenter {
 
   /** Follow-ups of a durable plan; a failure leaves them to presentation repair. */
   private async deliverDurableContinuations(
-    agentView: SlackAgentViewPresentation,
+    agentView: SlackPresenterAgentView,
   ): Promise<void> {
     try {
       await agentView.deliverContinuations({
