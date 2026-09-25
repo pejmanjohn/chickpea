@@ -17,6 +17,7 @@ import {
   hasLeadingSlackUserAddress,
 } from '../slack/command-address.ts';
 import { escapeSlackControlCharacters } from '../slack/message-format.ts';
+import { isRetryableDependencyFailure } from '../slack/transport/types.ts';
 import {
   memoryEpochThreadKey,
   memoryQuarantineThreadKey,
@@ -30,6 +31,7 @@ import { parseMemoryCommand, type MemoryCommand } from './commands.ts';
 import {
   createMemoryScopeSlack,
   createMemoryScopeSlackFromWebClient,
+  throwIfMemoryScopeRetryable,
   verifyMemoryMutationMembership,
   type MemoryScopeSlack,
 } from './scope.ts';
@@ -189,14 +191,18 @@ export async function prepareMemoryTurn(input: {
       confirmInjection: async () => true,
       validateReceiptLease: (revision) => validateAgentMemoryLease(input.turn, runtime, memory, revision),
       validateLease: async () => {
-        const valid = await validateAgentMemoryLease(input.turn, runtime, memory);
+        const valid = await deferredLeaseMetric(
+          () => validateAgentMemoryLease(input.turn, runtime, memory),
+        );
         emitMemoryMetric('delivery_lease', { outcome: valid ? 'valid' : 'rejected' });
         return valid;
       },
     };
   } catch (error) {
-    // Nor does an outage while preparing: quarantine would fail the turn.
-    if (isStateStoreDisconnect(error)) throw error;
+    // Nor does an outage while preparing: a quarantine's lease check always
+    // fails, so a rate-limited Slack or an unreachable store would deliver
+    // the failure notice. Throw so the attempt retries instead.
+    if (isStateStoreDisconnect(error) || isRetryableDependencyFailure(error)) throw error;
     emitMemoryMetric('quarantine', { reason: memoryErrorCode(error) });
     const conversationKey = memoryQuarantineThreadKey(baseKey, input.turn.eventId);
     return {
@@ -304,14 +310,14 @@ async function prepareWorkspaceManagementTurn(
     ownerBound: true,
     confirmInjection: async () => true,
     validateLease: async () => {
-      const valid = await validateWorkspaceManagementLease(
+      const valid = await deferredLeaseMetric(() => validateWorkspaceManagementLease(
         turn,
         assignment,
         input.platformEnv,
         slack,
         botUserId,
         config,
-      );
+      ));
       emitMemoryMetric('delivery_lease', { outcome: valid ? 'valid' : 'rejected' });
       return valid;
     },
@@ -334,6 +340,7 @@ async function validateWorkspaceManagementLease(
       slack.user(turn.userId),
       slack.members(turn.channelId),
     ]);
+    throwIfMemoryScopeRetryable([conversation, actor, members]);
     const facts = conversation.facts;
     return Boolean(
       isWorkspaceManagementTurnSource(turn.source) &&
@@ -351,9 +358,10 @@ async function validateWorkspaceManagementLease(
       members.ids.includes(turn.userId) && members.ids.includes(botUserId)
     );
   } catch (error) {
-    // An unreachable state store decides nothing about the lease: the turn
-    // retries instead of replacing its answer with a failure notice.
-    if (isStateStoreDisconnect(error)) throw error;
+    // A rate-limited Slack or an unreachable state store cannot prove the
+    // lease invalid. Throwing retries the attempt; returning false would
+    // deliver a terminal failure for an answer that may be fully deliverable.
+    if (isStateStoreDisconnect(error) || isRetryableDependencyFailure(error)) throw error;
     return false;
   }
 }
@@ -439,6 +447,16 @@ async function resolveAgentMemoryRuntime(
   };
 }
 
+/** Record a lease check that could not decide before its error retries the attempt. */
+async function deferredLeaseMetric(check: () => Promise<boolean>): Promise<boolean> {
+  try {
+    return await check();
+  } catch (error) {
+    emitMemoryMetric('delivery_lease', { outcome: 'deferred' });
+    throw error;
+  }
+}
+
 async function validateAgentMemoryLease(
   turn: NormalizedSlackTurn,
   runtime: AgentMemoryRuntime,
@@ -472,6 +490,7 @@ async function validateAgentMemoryLease(
       runtime.slack.user(turn.userId),
       runtime.slack.members(turn.channelId),
     ]);
+    throwIfMemoryScopeRetryable([conversation, actor, members]);
     const facts = conversation.facts;
     return Boolean(
       conversation.ok && facts && facts.id === turn.channelId &&
@@ -480,9 +499,10 @@ async function validateAgentMemoryLease(
       members.ok && members.ids.includes(turn.userId) && members.ids.includes(runtime.botUserId),
     );
   } catch (error) {
-    // An unreachable state store decides nothing about the lease: the turn
-    // retries instead of replacing its answer with a failure notice.
-    if (isStateStoreDisconnect(error)) throw error;
+    // A rate-limited Slack or an unreachable state store cannot prove the
+    // lease invalid. Throwing retries the attempt; returning false would
+    // deliver a terminal failure for an answer that may be fully deliverable.
+    if (isStateStoreDisconnect(error) || isRetryableDependencyFailure(error)) throw error;
     return false;
   }
 }

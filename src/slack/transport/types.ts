@@ -159,6 +159,46 @@ export class SlackTransportError extends Error {
   }
 }
 
+/**
+ * True for a failure that says "try again later" rather than "no": a
+ * retryable Slack/gateway transport error (rate limit, 5xx, unreachable), a
+ * Slack SDK rate-limit rejection or transient platform error, or a platform
+ * error that marks itself retryable (Cloudflare Durable Object stubs set
+ * `retryable` on disconnects and resets). Callers use it to keep a transient
+ * dependency outage from being recorded as a permanent decision, such as a
+ * missing assignment or an invalid lease.
+ */
+export function isRetryableDependencyFailure(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  if (error instanceof SlackTransportError) return error.retryable;
+  const record = error as { retryable?: unknown; code?: unknown; data?: unknown };
+  if (record.retryable === true) return true;
+  if (record.code === 'slack_webapi_rate_limited_error') return true;
+  if (record.code === 'slack_webapi_request_error') return true;
+  if (record.code === 'slack_webapi_http_error') {
+    const status = Number((error as { statusCode?: unknown }).statusCode);
+    return status === 429 || status >= 500;
+  }
+  const data = record.data;
+  return record.code === 'slack_webapi_platform_error' && !!data && typeof data === 'object' &&
+    RETRYABLE_SLACK_ERRORS.has(String((data as { error?: unknown }).error));
+}
+
+/** Longest server-requested pause a retry honors (the gateway window is 60 s). */
+export const MAX_DEPENDENCY_RETRY_AFTER_MS = 60_000;
+
+/**
+ * The server's own retry hint (Retry-After) for a retryable dependency
+ * failure, bounded to one gateway window; undefined when there is none.
+ */
+export function retryableDependencyRetryAfterMs(error: unknown): number | undefined {
+  if (!isRetryableDependencyFailure(error)) return undefined;
+  const hint = (error as { retryAfterMs?: unknown }).retryAfterMs;
+  return typeof hint === 'number' && Number.isFinite(hint) && hint > 0
+    ? Math.min(hint, MAX_DEPENDENCY_RETRY_AFTER_MS)
+    : undefined;
+}
+
 export type SlackInstallationHealthStatus =
   | 'healthy'
   | 'needs_reauthorization'

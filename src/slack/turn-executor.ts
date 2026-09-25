@@ -38,6 +38,10 @@ import {
 } from './run-turn.ts';
 import type { ThreadImageRecord } from './thread-images.ts';
 import { slackAgentThreadKey } from './thread-key.ts';
+import {
+  MAX_DEPENDENCY_RETRY_AFTER_MS,
+  retryableDependencyRetryAfterMs,
+} from './transport/types.ts';
 import type {
   FlueDispatchReceiptV1,
   FlueSettlementCheckpointV1,
@@ -168,7 +172,9 @@ export async function executeTurnJob(
     );
     recordSlackInstallationUnavailable(unavailable);
     if (unavailable.retryable) {
-      options.onRetry(unavailable.retryAfterMs ?? 0);
+      // Bounded like every other hint: an hour-long Retry-After must not park
+      // the whole drain's re-arm.
+      options.onRetry(Math.min(unavailable.retryAfterMs ?? 0, MAX_DEPENDENCY_RETRY_AFTER_MS));
       console.warn(
         `[chickpea] Slack installation preflight will retry (${unavailable.reasonCode})`,
       );
@@ -470,7 +476,8 @@ export async function executeTurnJob(
         console.error('[chickpea] Flue turn exhausted durable reattachment attempts');
         return deliverRecoveryFailure('post_dispatch_attempts_exhausted');
       } else {
-        options.onRetry();
+        // A rate-limited Slack/gateway call carries its own Retry-After.
+        options.onRetry(retryableDependencyRetryAfterMs(err));
       }
       if (activeWorkKey) await ports.slack.setActiveWork(activeWorkKey, job.id, false);
       console.warn('[chickpea] Flue turn retained for durable reattachment');
@@ -515,7 +522,7 @@ export async function executeTurnJob(
       }
       return true;
     } else {
-      options.onRetry();
+      options.onRetry(retryableDependencyRetryAfterMs(err));
       return false;
     }
   }

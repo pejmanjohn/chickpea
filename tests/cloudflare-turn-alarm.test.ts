@@ -4,6 +4,10 @@ import test from 'node:test';
 import vm from 'node:vm';
 import ts from 'typescript';
 
+import {
+  MAX_DEPENDENCY_RETRY_AFTER_MS,
+  retryableDependencyRetryAfterMs,
+} from '../src/slack/transport/types.ts';
 import { drainAlarmTurnJobs } from '../src/slack/alarm-turn-drain.ts';
 import { slackTurnExecutor } from '../src/slack/turn-executor-flag.ts';
 import {
@@ -197,6 +201,8 @@ for (const withPendingTurn of [false, true]) {
       ALARM_PENDING_PER_THREAD: 4,
       ALARM_ADMISSION_RECHECK_MS: 2_000,
       ALARM_YIELD_REARM_MS: 1_000,
+      retryableDependencyRetryAfterMs,
+      MAX_DEPENDENCY_RETRY_AFTER_MS,
       MAX_TURN_DRAIN_BATCH: 25,
       RELAY_RETRY_BACKOFF_MS: 1000,
       console: { warn() {} },
@@ -245,7 +251,7 @@ for (const withPendingTurn of [false, true]) {
         hasPendingSlackInteractionCleanup: () => false,
         hasHandoffs: () => false,
       },
-      gatewayInbox: { hasPending: () => false },
+      gatewayInbox: { hasPending: () => false, nextPendingDueAt: () => undefined },
     };
     await drainingProbe.alarm();
     assert.equal(alarm(), NOW + BATCH_MS);
@@ -362,6 +368,8 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
     ALARM_PENDING_PER_THREAD: 4,
     ALARM_ADMISSION_RECHECK_MS: 2,
     ALARM_YIELD_REARM_MS: 1_000,
+    retryableDependencyRetryAfterMs,
+    MAX_DEPENDENCY_RETRY_AFTER_MS,
     DURABLE_RECOVERY_FAILURE_TEXT: 'recovery notice',
     AgentObservationYield,
     AgentPromptFailure,
@@ -496,7 +504,7 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
       },
       isCodingActiveWork: (key: string) => key === 'coding',
     },
-    gatewayInbox: { hasPending: () => false },
+    gatewayInbox: { hasPending: () => false, nextPendingDueAt: () => undefined },
     presentations: { get: (runId: string) => ({ runId, projectionVersion: 3 }) },
   };
   return { probe, record };

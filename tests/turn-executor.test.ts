@@ -13,6 +13,7 @@ import {
 } from '../src/slack/turn-executor.ts';
 import { MAX_POST_DISPATCH_ATTEMPTS, type PendingTurnJob } from '../src/slack/turn-jobs.ts';
 import { slackClientMessageId } from '../src/slack/transport/message-id.ts';
+import { SlackTransportError } from '../src/slack/transport/types.ts';
 import { DURABLE_RECOVERY_FAILURE_TEXT } from '../src/slack/web-client-presenter.ts';
 
 type RunTurnScript = (options: RunTurnOptions) => Promise<void>;
@@ -123,6 +124,23 @@ test('a failed first attempt is retained for a retry and ends its thread for thi
   assert.deepEqual(h.retries, [undefined]);
 });
 
+test('a rate-limited attempt asks for a retry no sooner than the gateway allows, bounded to one window', async () => {
+  const h = fakePorts(async () => {
+    throw new SlackTransportError('conversations.info', 'gateway_rate_limited', {
+      retryable: true, effectOutcome: 'failed', retryAfterMs: 12_000,
+    });
+  });
+  assert.equal(await executeTurnJob(pendingJob(), h.ports, h.options), false);
+  assert.deepEqual(h.retries, [12_000]);
+  const long = fakePorts(async () => {
+    throw new SlackTransportError('conversations.info', 'ratelimited', {
+      retryable: true, retryAfterMs: 600_000,
+    });
+  });
+  assert.equal(await executeTurnJob(pendingJob(), long.ports, long.options), false);
+  assert.deepEqual(long.retries, [60_000]);
+});
+
 test('an installation that is briefly unavailable asks for a retry no sooner than it allows', async () => {
   const h = fakePorts(async () => assert.fail('the turn never starts'), async () => {
     throw new SlackInstallationUnavailableError('T1', 'ratelimited', {
@@ -133,6 +151,17 @@ test('an installation that is briefly unavailable asks for a retry no sooner tha
   assert.equal(await executeTurnJob(pendingJob(), h.ports, h.options), false);
   assert.deepEqual(h.retries, [30_000]);
   assert.deepEqual(h.calls, []);
+});
+
+test('an installation retry hint is bounded to one gateway window', async () => {
+  const h = fakePorts(async () => assert.fail('the turn never starts'), async () => {
+    throw new SlackInstallationUnavailableError('T1', 'ratelimited', {
+      retryable: true,
+      retryAfterMs: 3_600_000,
+    });
+  });
+  assert.equal(await executeTurnJob(pendingJob(), h.ports, h.options), false);
+  assert.deepEqual(h.retries, [60_000]);
 });
 
 test('an installation that cannot recover holds the row for operator recovery', async () => {

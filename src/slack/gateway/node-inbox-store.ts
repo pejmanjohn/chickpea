@@ -66,8 +66,12 @@ export class SqliteGatewayInboxStore {
     return this.#inbox.complete(id);
   }
 
-  retryOrRecover(id: string, reason: string): 'pending' | 'recovery_required' {
-    return this.#inbox.retryOrRecover(id, reason);
+  retryOrRecover(
+    id: string,
+    reason: string,
+    retryDelayMs?: number,
+  ): 'pending' | 'recovery_required' {
+    return this.#inbox.retryOrRecover(id, reason, retryDelayMs);
   }
 
   markRecoveryRequired(id: string, reason: string): boolean {
@@ -76,6 +80,10 @@ export class SqliteGatewayInboxStore {
 
   hasPending(): boolean {
     return this.#inbox.hasPending();
+  }
+
+  nextPendingDueAt(): number | undefined {
+    return this.#inbox.nextPendingDueAt();
   }
 
   runtimeDrainCounts(): GatewayInboxDrainCounts {

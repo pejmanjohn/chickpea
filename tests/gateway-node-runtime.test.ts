@@ -10,6 +10,9 @@ import {
   stopNodeGatewaySession,
 } from '../src/slack/gateway/node-runtime.ts';
 import type { GatewayEventDelivery } from '../src/slack/gateway/protocol.ts';
+import { GatewayInboxStoreLogic } from '../src/slack/gateway/inbox.ts';
+import { SlackTransportError } from '../src/slack/transport/types.ts';
+import { openStateDb } from '../src/state/node-state-db.ts';
 
 test.afterEach(async () => {
   await stopNodeGatewayRuntime();
@@ -300,6 +303,105 @@ test('startup drains stale accepted rows even when no binding remains', async ()
   await spin();
   assert.equal(recoveryRequired, 1);
   assert.equal(runners, 0);
+});
+
+function backoffHarness(t: { mock: { method: typeof test.mock.method } }, maxAttempts?: number) {
+  let clock = 1_777_000_000_000;
+  t.mock.method(Date, 'now', () => clock);
+  const db = openStateDb(':memory:');
+  const logic = new GatewayInboxStoreLogic(db, () => clock, maxAttempts ? { maxAttempts } : {});
+  const store = {
+    admit: (delivery: GatewayEventDelivery) => logic.admit(delivery),
+    deliveryIsCurrent: () => true,
+    claimPending: (limit?: number) => logic.claimPending(limit),
+    complete: (id: string) => logic.complete(id),
+    retryOrRecover: (id: string, reason: string, delay?: number) => logic.retryOrRecover(id, reason, delay),
+    markRecoveryRequired: (id: string, reason: string) => logic.markRecoveryRequired(id, reason),
+    hasPending: () => logic.hasPending(),
+    nextPendingDueAt: () => logic.nextPendingDueAt(),
+  };
+  const timers: Array<{ callback: () => void; delay: number }> = [];
+  const setTimer = ((callback: () => void, delay: number) => {
+    timers.push({ callback, delay });
+    return timers.length as unknown as ReturnType<typeof setTimeout>;
+  }) as typeof setTimeout;
+  return {
+    db, logic, store, timers, setTimer,
+    advance: (ms: number) => { clock += ms; },
+  };
+}
+
+test('a rate-limited delivery arms the Node drain for its backoff due time, not a 2 s poll', async (t) => {
+  const h = backoffHarness(t);
+  let calls = 0;
+  const worker = new NodeGatewayInboxWorker({
+    getStore: () => h.store,
+    processDelivery: async () => {
+      calls += 1;
+      if (calls === 1) {
+        throw new SlackTransportError('users.info', 'gateway_rate_limited', { retryable: true });
+      }
+      return 'accepted';
+    },
+    setTimer: h.setTimer,
+    clearTimer: (() => {}) as typeof clearTimeout,
+    onError: () => {},
+  });
+  try {
+    h.store.admit(eventDelivery('delivery:Ev_BACKOFF'));
+    worker.start();
+    await spin();
+    assert.equal(calls, 1);
+    assert.equal(h.logic.hasPending(), false, 'a row still backing off is not due');
+    assert.deepEqual(h.timers.map((timer) => timer.delay), [5_000]);
+    h.advance(5_000);
+    h.timers[0]!.callback();
+    await spin();
+    assert.equal(calls, 2);
+    assert.equal(h.logic.hasPending(), false);
+    assert.equal(h.logic.nextPendingDueAt(), undefined);
+    assert.equal(h.timers.length, 1, 'nothing left to wake for');
+  } finally {
+    await worker.stop();
+    h.db.close();
+  }
+});
+
+test('a retryable admission failure that spends its attempts is dead-lettered with a content-free record', async (t) => {
+  const h = backoffHarness(t, 1);
+  const logged: unknown[][] = [];
+  t.mock.method(console, 'error', (...args: unknown[]) => { logged.push(args); });
+  const worker = new NodeGatewayInboxWorker({
+    getStore: () => h.store,
+    processDelivery: async () => {
+      throw new SlackTransportError('users.info', 'gateway_rate_limited', { retryable: true });
+    },
+    setTimer: h.setTimer,
+    clearTimer: (() => {}) as typeof clearTimeout,
+    onError: () => {},
+  });
+  try {
+    h.store.admit(eventDelivery('delivery:Ev_DEAD'));
+    worker.start();
+    await spin();
+    const row = h.db.get(
+      'SELECT status, recovery_reason, payload_json FROM gateway_inbox WHERE id = ?',
+      'delivery:Ev_DEAD',
+    );
+    assert.equal(row?.status, 'recovery_required');
+    assert.equal(row?.recovery_reason, 'delivery_dependency_retryable');
+    assert.equal(row?.payload_json, null);
+    const record = logged.find((args) => args[0] === '[chickpea] gateway_delivery_dead_lettered');
+    assert.ok(record, 'the dead letter is logged');
+    assert.deepEqual(JSON.parse(String(record[1])), {
+      kind: 'event.deliver', attempts: 1, reason: 'delivery_dependency_retryable',
+      retryable: true, code: 'gateway_rate_limited',
+    });
+    assert.doesNotMatch(String(record[1]), /hello|U_TEST|C_TEST|Ev_DEAD/);
+  } finally {
+    await worker.stop();
+    h.db.close();
+  }
 });
 
 const emptyInbox = {

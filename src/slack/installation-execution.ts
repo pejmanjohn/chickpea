@@ -224,22 +224,34 @@ async function resolveGatewayExecutionContext(
     );
   }
   const client = createGatewaySlackWebClient(gateway);
-  let auth: Awaited<ReturnType<typeof client.auth.test>>;
-  try {
-    auth = await client.auth.test();
-  } catch (error) {
-    const reasonCode = error instanceof SlackTransportError
-      ? error.code
-      : 'gateway_unreachable';
-    console.error('[chickpea] shared Slack auth.test failed:', reasonCode);
-    throw new SlackInstallationUnavailableError(
-      installation.workspaceId,
-      reasonCode,
-      { retryable: true },
-    );
-  }
-  const botUserId = typeof auth.user_id === 'string' ? auth.user_id : binding.botUserId;
-  const teamId = typeof auth.team_id === 'string' ? auth.team_id : binding.workspaceId;
+  const { botUserId, teamId } = await verifiedGatewayIdentity(
+    `${installation.workspaceId}:${binding.bindingId}:${installation.botUserId ?? ''}`,
+    async () => {
+      let auth: Awaited<ReturnType<typeof client.auth.test>>;
+      try {
+        auth = await client.auth.test();
+      } catch (error) {
+        const reasonCode = error instanceof SlackTransportError
+          ? error.code
+          : 'gateway_unreachable';
+        console.error('[chickpea] shared Slack auth.test failed:', reasonCode);
+        throw new SlackInstallationUnavailableError(
+          installation.workspaceId,
+          reasonCode,
+          {
+            retryable: true,
+            ...(error instanceof SlackTransportError && error.retryAfterMs !== undefined
+              ? { retryAfterMs: error.retryAfterMs }
+              : {}),
+          },
+        );
+      }
+      return {
+        botUserId: typeof auth.user_id === 'string' ? auth.user_id : binding.botUserId,
+        teamId: typeof auth.team_id === 'string' ? auth.team_id : binding.workspaceId,
+      };
+    },
+  );
   if (teamId !== installation.workspaceId || botUserId !== installation.botUserId) {
     throw new SlackInstallationUnavailableError(
       installation.workspaceId,
@@ -252,4 +264,57 @@ async function resolveGatewayExecutionContext(
     botUserId,
     client,
   };
+}
+
+/**
+ * How long one gateway auth.test vouches for a binding's identity. Every turn
+ * attempt resolves its installation (once per TagStateStore drain, once per
+ * thread-runner alarm), and each auth.test spends one operation of the shared
+ * gateway's per-binding window, so a burst of threads verified the same
+ * unchanged identity once per turn. The key carries the workspace, binding and
+ * expected bot user, so a reinstall or rebinding is verified afresh; a revoked
+ * token still fails the turn's first real Slack call. Only a successful,
+ * matching verification is reused; a failure is never cached.
+ */
+export const GATEWAY_IDENTITY_VERIFICATION_TTL_MS = 60_000;
+
+interface GatewayIdentity {
+  botUserId: string;
+  teamId: string;
+}
+
+const gatewayIdentityVerifications = new Map<
+  string,
+  { expiresAt: number; identity: Promise<GatewayIdentity> }
+>();
+
+async function verifiedGatewayIdentity(
+  key: string,
+  verify: () => Promise<GatewayIdentity>,
+  now: () => number = Date.now,
+): Promise<GatewayIdentity> {
+  const cached = gatewayIdentityVerifications.get(key);
+  if (cached && cached.expiresAt > now()) return cached.identity;
+  // Concurrent resolutions share one in-flight auth.test.
+  const identity = verify();
+  const entry = { expiresAt: now() + GATEWAY_IDENTITY_VERIFICATION_TTL_MS, identity };
+  gatewayIdentityVerifications.set(key, entry);
+  try {
+    return await identity;
+  } catch (error) {
+    if (gatewayIdentityVerifications.get(key) === entry) gatewayIdentityVerifications.delete(key);
+    throw error;
+  } finally {
+    if (gatewayIdentityVerifications.size > 64) {
+      const at = now();
+      for (const [candidate, value] of gatewayIdentityVerifications) {
+        if (value.expiresAt <= at) gatewayIdentityVerifications.delete(candidate);
+      }
+    }
+  }
+}
+
+/** Test seam: forget every cached gateway identity verification. */
+export function resetGatewayIdentityVerificationsForTests(): void {
+  gatewayIdentityVerifications.clear();
 }

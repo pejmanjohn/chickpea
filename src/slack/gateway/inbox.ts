@@ -1,5 +1,10 @@
 import { schemaInstallRequired, type StateDb } from '../../state/state-db.ts';
 import type { GatewayInboundDelivery } from './protocol.ts';
+import {
+  isRetryableDependencyFailure,
+  MAX_DEPENDENCY_RETRY_AFTER_MS,
+  retryableDependencyRetryAfterMs,
+} from '../transport/types.ts';
 
 const GATEWAY_INBOX_MAX_TOTAL_ROWS = 1_000_000;
 const GATEWAY_INBOX_MAX_ACTIVE_ROWS = 512;
@@ -13,6 +18,73 @@ const GATEWAY_INBOX_MAX_ATTEMPTS = 5;
 const GATEWAY_INBOX_MAX_IN_FLIGHT = 16;
 const GATEWAY_INBOX_LEASE_MS = 2 * 60_000;
 export const GATEWAY_INBOX_MAX_DRAIN_BATCH = 16;
+// The shared gateway limits each binding with a fixed 60 s window. Backoff for
+// a retryable dependency failure spans more than one window across the
+// attempt budget (5 + 10 + 20 + 40 s) so a burst cannot spend every attempt
+// inside the window that rejected it.
+const GATEWAY_INBOX_RETRY_BASE_MS = 5_000;
+const GATEWAY_INBOX_MAX_RETRY_DELAY_MS = MAX_DEPENDENCY_RETRY_AFTER_MS;
+
+/**
+ * Delay before a delivery that failed on a retryable dependency (rate limit,
+ * unreachable gateway, store disconnect) is claimed again. `attempts` is the
+ * attempt that just failed (1-based); a server `retryAfterMs` hint wins when
+ * it is longer.
+ */
+export function gatewayInboxRetryDelayMs(attempts: number, retryAfterMs?: number): number {
+  const exponent = Math.max(0, Math.min(10, Math.trunc(attempts) - 1));
+  const backoff = Math.min(GATEWAY_INBOX_RETRY_BASE_MS * 2 ** exponent, GATEWAY_INBOX_MAX_RETRY_DELAY_MS);
+  const hint = retryAfterMs !== undefined && Number.isFinite(retryAfterMs)
+    ? Math.min(Math.max(0, retryAfterMs), GATEWAY_INBOX_MAX_RETRY_DELAY_MS)
+    : 0;
+  return Math.max(backoff, hint);
+}
+
+/** Stored recovery reason for a delivery that failed on a retryable dependency. */
+export const GATEWAY_DELIVERY_DEPENDENCY_REASON = 'delivery_dependency_retryable';
+
+/**
+ * The recovery reason to record for a delivery whose processing threw. A
+ * retryable dependency failure (a rate-limited or unreachable Slack/gateway)
+ * gets its own reason, so a row dead-lettered after the last attempt is
+ * countable apart from ordinary processing failures.
+ */
+export function gatewayDeliveryFailureReason(error: unknown): string {
+  return isRetryableDependencyFailure(error)
+    ? GATEWAY_DELIVERY_DEPENDENCY_REASON
+    : 'delivery_processing_failed';
+}
+
+/**
+ * Record, without any event content, that a delivery was dead-lettered: its
+ * attempts are spent and the mention it carried will not be admitted.
+ */
+export function recordGatewayDeliveryDeadLetter(
+  delivery: Pick<GatewayInboundDelivery, 'kind'>,
+  attempts: number,
+  error: unknown,
+): void {
+  const code = error && typeof error === 'object' && typeof (error as { code?: unknown }).code === 'string'
+    ? (error as { code: string }).code
+    : error instanceof Error ? error.name : 'unknown';
+  console.error('[chickpea] gateway_delivery_dead_lettered', JSON.stringify({
+    kind: delivery.kind,
+    attempts,
+    reason: gatewayDeliveryFailureReason(error),
+    retryable: isRetryableDependencyFailure(error),
+    code: /^[A-Za-z0-9_.-]{1,64}$/.test(code) ? code : 'other',
+  }));
+}
+
+/**
+ * Retry delay for a delivery whose processing threw. Only a retryable
+ * dependency failure backs off; any other failure keeps the immediate retry
+ * (its attempt budget still parks it for recovery).
+ */
+export function gatewayDeliveryRetryDelayMs(attempts: number, error: unknown): number {
+  if (!isRetryableDependencyFailure(error)) return 0;
+  return gatewayInboxRetryDelayMs(attempts, retryableDependencyRetryAfterMs(error));
+}
 
 export type GatewayInboxAdmissionOutcome = 'accepted' | 'duplicate';
 export type GatewayInboxValidatedAdmissionOutcome = GatewayInboxAdmissionOutcome | 'rejected';
@@ -202,8 +274,10 @@ export class GatewayInboxStoreLogic {
         `SELECT id, binding_id, workspace_id, kind, payload_json, attempts, accepted_at
          FROM gateway_inbox
          WHERE status = 'pending' AND attempts < ?
+           AND (lease_until IS NULL OR lease_until <= ?)
          ORDER BY accepted_at, id LIMIT ?`,
         this.limits.maxAttempts,
+        this.now(),
         available,
       ) as unknown as GatewayInboxRow[];
       const claimed: PendingGatewayDelivery[] = [];
@@ -244,7 +318,18 @@ export class GatewayInboxStoreLogic {
     ).changes === 1;
   }
 
-  retryOrRecover(id: string, reason: string): 'pending' | 'recovery_required' {
+  /**
+   * Return an in-flight delivery to pending, or park it for recovery once its
+   * attempts are spent. A positive `retryDelayMs` keeps the pending row
+   * unclaimable until then (stored in `lease_until`, which a pending row does
+   * not otherwise use), so a rate-limited dependency is not retried into the
+   * same exhausted window. Other pending rows stay claimable meanwhile.
+   */
+  retryOrRecover(
+    id: string,
+    reason: string,
+    retryDelayMs = 0,
+  ): 'pending' | 'recovery_required' {
     const row = this.db.get(
       "SELECT attempts FROM gateway_inbox WHERE id = ? AND status = 'in_flight'",
       id,
@@ -254,10 +339,14 @@ export class GatewayInboxStoreLogic {
       this.markRecoveryRequired(id, reason);
       return 'recovery_required';
     }
+    const delay = Number.isFinite(retryDelayMs)
+      ? Math.min(Math.max(0, Math.trunc(retryDelayMs)), GATEWAY_INBOX_MAX_RETRY_DELAY_MS)
+      : 0;
     this.db.run(
       `UPDATE gateway_inbox
-       SET status = 'pending', lease_until = NULL, recovery_reason = ?
+       SET status = 'pending', lease_until = ?, recovery_reason = ?
        WHERE id = ? AND status = 'in_flight'`,
+      delay > 0 ? this.now() + delay : null,
       boundedReason(reason),
       id,
     );
@@ -310,10 +399,31 @@ export class GatewayInboxStoreLogic {
     return { agedToRecovery, expiredLeasesRecovered, tombstonesPurged };
   }
 
+  /**
+   * Work to do now: an in-flight row, or a pending row whose retry backoff
+   * (if any) has elapsed. A row still backing off is not "pending now"; its
+   * due time is {@link nextPendingDueAt}, so a drain arms its wake for then
+   * instead of polling every few seconds and claiming nothing.
+   */
   hasPending(): boolean {
     return this.db.get(
-      "SELECT 1 AS present FROM gateway_inbox WHERE status IN ('pending', 'in_flight') LIMIT 1",
+      `SELECT 1 AS present FROM gateway_inbox
+       WHERE status = 'in_flight'
+          OR (status = 'pending' AND (lease_until IS NULL OR lease_until <= ?))
+       LIMIT 1`,
+      this.now(),
     ) !== undefined;
+  }
+
+  /** The earliest time a pending row that is backing off becomes claimable. */
+  nextPendingDueAt(): number | undefined {
+    const row = this.db.get(
+      `SELECT MIN(lease_until) AS due FROM gateway_inbox
+       WHERE status = 'pending' AND lease_until > ?`,
+      this.now(),
+    );
+    const due = row?.due;
+    return due === null || due === undefined ? undefined : Number(due);
   }
 
   runtimeDrainCounts(): GatewayInboxDrainCounts {

@@ -14,6 +14,7 @@ import {
   GATEWAY_CLAIM_SETTING,
   GATEWAY_SESSION_SETTING,
   GatewayDeploymentClient,
+  gatewayHttpFailure,
 } from '../src/slack/gateway/client.ts';
 import {
   GATEWAY_DEPLOYMENT_IDENTITY_SETTING,
@@ -32,7 +33,9 @@ import { createGatewaySlackTransport } from '../src/slack/transport/gateway.ts';
 import { SlackTransportError } from '../src/slack/transport/types.ts';
 import type { ProductTelemetryEventInput } from '../src/telemetry/events.ts';
 import {
+  resetGatewayIdentityVerificationsForTests,
   resolveSlackInstallationExecutionContext,
+  SlackInstallationUnavailableError,
   verifySlackInstallationTurnAccess,
 } from '../src/slack/installation-execution.ts';
 import {
@@ -856,6 +859,66 @@ test('gateway client marks an explicit operation rejection as a confirmed failed
   }
 });
 
+test('a gateway per-binding rate limit surfaces as a named, retryable, confirmed-failed outcome', async () => {
+  const { settings, config } = gatewayStores(() => NOW);
+  const gateway = new FakeGateway();
+  let requests = 0;
+  const client = new GatewayDeploymentClient({
+    settings,
+    config,
+    keyring: generateCredentialKeyring('key_gateway'),
+    gatewayBaseUrl: 'https://gateway.chickpea.test',
+    fetch: async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : input.toString());
+      if (url.pathname === '/v1/workspaces/TGATEWAY/operations') {
+        requests += 1;
+        const request = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        // Exact body the shared gateway returns from consumeRateLimit.
+        return json({
+          protocolVersion: CHICKPEA_GATEWAY_PROTOCOL_VERSION,
+          requestId: request.requestId,
+          ok: false,
+          error: { code: 'gateway_rate_limited', retryable: true },
+        }, 429);
+      }
+      return gateway.fetch(input, init);
+    },
+    now: () => NOW,
+  });
+  try {
+    await client.beginClaim();
+    await client.refreshClaim();
+    await assert.rejects(
+      client.call('users.info', { user: 'U_ALICE' }),
+      (error: unknown) => error instanceof SlackTransportError &&
+        error.operation === 'users.info' &&
+        error.code === 'gateway_rate_limited' &&
+        error.retryable === true &&
+        error.effectOutcome === 'failed',
+    );
+    assert.equal(requests, 1);
+  } finally {
+    settings.close();
+    config.close();
+  }
+});
+
+test('gateway HTTP failures keep string codes, name a bare 429 and honor Retry-After', () => {
+  const headers = (value?: string) => new Headers(value ? { 'retry-after': value } : {});
+  const named = gatewayHttpFailure('auth.test', { status: 403, headers: headers() }, 'binding_revoked');
+  assert.equal(named.code, 'binding_revoked');
+  assert.equal(named.retryable, false);
+  assert.equal(named.effectOutcome, 'failed');
+  const bare = gatewayHttpFailure('auth.test', { status: 429, headers: headers('7') }, undefined);
+  assert.equal(bare.code, 'gateway_rate_limited');
+  assert.equal(bare.retryable, true);
+  assert.equal(bare.retryAfterMs, 7_000);
+  const upstream = gatewayHttpFailure('auth.test', { status: 503, headers: headers() }, { code: 42 });
+  assert.equal(upstream.code, 'gateway_rejected');
+  assert.equal(upstream.retryable, true);
+  assert.equal(upstream.effectOutcome, 'unknown');
+});
+
 test('gateway attachment read signs the exact binary contract and returns only validated metadata and bytes', async () => {
   const { settings, config } = gatewayStores(() => NOW);
   const gateway = new FakeGateway();
@@ -1171,6 +1234,7 @@ test('gateway execution uses the shared app without resolving or storing a bot t
     fetch: fake.fetch,
     now: () => NOW,
   });
+  resetGatewayIdentityVerificationsForTests();
   try {
     await client.beginClaim();
     await client.refreshClaim();
@@ -1193,6 +1257,56 @@ test('gateway execution uses the shared app without resolving or storing a bot t
       'auth.test', 'conversations.info',
     ]);
   } finally {
+    settings.close();
+    config.close();
+  }
+});
+
+test('gateway execution verifies an unchanged binding identity once per window, never caching a failure', async () => {
+  const { settings, config } = gatewayStores(() => NOW);
+  const fake = new FakeGateway();
+  let rateLimitAuthTests = 1;
+  const client = new GatewayDeploymentClient({
+    settings,
+    config,
+    keyring: generateCredentialKeyring('key_gateway'),
+    gatewayBaseUrl: 'https://gateway.chickpea.test',
+    fetch: async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : input.toString());
+      if (url.pathname === '/v1/workspaces/TGATEWAY/operations' && rateLimitAuthTests > 0) {
+        const request = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        if (request.operation === 'auth.test') {
+          rateLimitAuthTests -= 1;
+          return new Response(JSON.stringify({
+            protocolVersion: CHICKPEA_GATEWAY_PROTOCOL_VERSION,
+            requestId: request.requestId,
+            ok: false,
+            error: { code: 'gateway_rate_limited', retryable: true },
+          }), { status: 429, headers: { 'content-type': 'application/json', 'retry-after': '9' } });
+        }
+      }
+      return fake.fetch(input, init);
+    },
+    now: () => NOW,
+  });
+  resetGatewayIdentityVerificationsForTests();
+  try {
+    await client.beginClaim();
+    await client.refreshClaim();
+    const resolve = () => resolveSlackInstallationExecutionContext(
+      'TGATEWAY', undefined, { config, settings, gatewayClient: client },
+    );
+    await assert.rejects(resolve(), (error: unknown) =>
+      error instanceof SlackInstallationUnavailableError &&
+      error.reasonCode === 'gateway_rate_limited' && error.retryable && error.retryAfterMs === 9_000);
+    // The failure was not cached: the next resolution verifies again, and
+    // later resolutions (other turns, runner alarms) reuse that verification.
+    const [first, second] = await Promise.all([resolve(), resolve()]);
+    const third = await resolve();
+    for (const execution of [first, second, third]) assert.equal(execution.transportMode, 'gateway');
+    assert.deepEqual(fake.operations.map(({ operation }) => operation), ['auth.test']);
+  } finally {
+    resetGatewayIdentityVerificationsForTests();
     settings.close();
     config.close();
   }

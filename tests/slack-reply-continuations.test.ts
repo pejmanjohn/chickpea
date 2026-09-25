@@ -1159,6 +1159,43 @@ test('a failure notice that supersedes the answer abandons its follow-ups', () =
   }
 });
 
+test('an answer that supersedes a failed failure notice plans its own follow-ups again', () => {
+  const h = harness();
+  try {
+    mutate(h, { kind: 'record_terminal_delivery_intent', operationId: 'terminal_answer', result: 'answer' });
+    mutate(h, { kind: 'record_continuation_plan', parts: ['Part two.'], closing: CLOSING });
+    mutate(h, {
+      kind: 'record_terminal_delivery_receipt', operationId: 'terminal_answer', certainty: 'failed',
+    });
+    mutate(h, { kind: 'supersede_failed_answer_delivery', operationId: 'terminal_failure' });
+    // The failure notice itself must have conclusively failed first.
+    assert.throws(() => mutate(h, {
+      kind: 'supersede_failed_failure_delivery', operationId: 'terminal_answer_again',
+    }), /Only a confirmed failed failure delivery/);
+    mutate(h, {
+      kind: 'record_terminal_delivery_receipt', operationId: 'terminal_failure', certainty: 'failed',
+    });
+    assert.throws(() => mutate(h, {
+      kind: 'supersede_failed_failure_delivery', operationId: 'terminal_failure',
+    }), /new operation id/);
+    const answered = mutate(h, {
+      kind: 'supersede_failed_failure_delivery', operationId: 'terminal_answer_again',
+    });
+    assert.equal(answered.continuations, undefined);
+    assert.deepEqual(answered.terminalDelivery, {
+      state: 'intended',
+      result: 'answer',
+      operation: { operationId: 'terminal_answer_again', certainty: 'pending' },
+    });
+    const planned = mutate(h, {
+      kind: 'record_continuation_plan', parts: ['Part two.'], closing: CLOSING,
+    });
+    assert.equal(planned.continuations?.state, 'active');
+  } finally {
+    h.close();
+  }
+});
+
 test('continuation transitions keep order and reject a plan after the final is acknowledged', () => {
   const h = harness();
   try {

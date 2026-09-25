@@ -239,6 +239,9 @@ import {
 } from './routines/scheduler-adapter.ts';
 import {
   GATEWAY_INBOX_MAX_DRAIN_BATCH,
+  gatewayDeliveryFailureReason,
+  gatewayDeliveryRetryDelayMs,
+  recordGatewayDeliveryDeadLetter,
   GatewayInboxStoreLogic,
 } from './slack/gateway/inbox.ts';
 import {
@@ -2018,6 +2021,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
         presentationRepairs.nextRetryAt,
         scheduleActions.nextDueAt,
         outboxRetry,
+        stores.gatewayInbox.nextPendingDueAt(),
       );
       metrics.needsRetry = turnRetry !== undefined;
       metrics.rearmed = nextWake !== undefined;
@@ -2177,6 +2181,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       presentationRepairs.nextRetryAt,
       scheduleActions.nextDueAt,
       outboxRetry,
+      stores.gatewayInbox.nextPendingDueAt(),
     );
     metrics.needsRetry = needsRetry;
     metrics.rearmed = nextWake !== undefined;
@@ -2799,11 +2804,19 @@ async function drainGatewayInbox(
       } else {
         stores.gatewayInbox.markRecoveryRequired(item.id, 'binding_revalidation_rejected');
       }
-    } catch {
-      needsRetry ||= stores.gatewayInbox.retryOrRecover(
+    } catch (error) {
+      const retryDelayMs = gatewayDeliveryRetryDelayMs(item.attempts, error);
+      const retry = stores.gatewayInbox.retryOrRecover(
         item.id,
-        'delivery_processing_failed',
-      ) === 'pending';
+        gatewayDeliveryFailureReason(error),
+        retryDelayMs,
+      );
+      if (retry === 'recovery_required') {
+        recordGatewayDeliveryDeadLetter(item.delivery, item.attempts, error);
+      }
+      // A row in backoff is not due yet: the alarm arms for its due time
+      // (nextPendingDueAt) instead of re-polling every few seconds.
+      needsRetry ||= retry === 'pending' && retryDelayMs === 0;
     } finally {
       releaseReceipt?.();
     }
