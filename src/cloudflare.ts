@@ -293,7 +293,7 @@ import {
   completeSettledAgentWelcomeHandoff,
   deliverManagementReceiptToSlack,
   drainManagementReceiptOutbox,
-  failAgentWelcomeDelivery,
+  failAgentWelcomeTurn,
   isAgentCreatedWelcome,
   reconcileScheduleActionReceipts,
 } from './management/receipts.ts';
@@ -1055,10 +1055,15 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     request: ManagementRpcRequest,
   ): Promise<StateRpcResult<ManagementRpcResponse>> {
     const result = this.call((stores) => stores.management.execute(request));
+    // Every request that can write a receipt outbox row arms the drain. The
+    // Agent welcome is claimed from inside the turn, which under the thread
+    // runner executes in its SlackThreadRunner, not in this object's alarm:
+    // nothing else would drain it until an unrelated wake.
     if (result.ok && (
       request.kind === 'complete_setup' ||
       request.kind === 'put_outbox' ||
-      request.kind === 'claim_introduction'
+      request.kind === 'claim_introduction' ||
+      request.kind === 'claim_agent_creation_welcome'
     )) {
       const due = this.call((stores) => stores.management.nextOutboxDueAt() ?? null);
       if (due.ok && due.value !== null) {
@@ -2740,12 +2745,11 @@ async function drainCloudflareManagementReceipts(
       stores.config,
       stores.management as unknown as ManagementStore,
     ),
-    onTerminalFailure: async (record) => {
-      await failAgentWelcomeDelivery(record, presentation);
-      if (isAgentCreatedWelcome(record.receipt) && record.receipt.turnJobId) {
-        stores.turnJobs.markError(record.receipt.turnJobId);
-      }
-    },
+    onTerminalFailure: (record) => failAgentWelcomeTurn(
+      record,
+      presentation,
+      (turnJobId) => stores.turnJobs.markError(turnJobId),
+    ),
     deliver: (record) => deliverManagementReceiptToSlack(record, {
       identity: stores.identity as unknown as IdentityStore,
       resolveInstallation,

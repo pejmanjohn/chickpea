@@ -60,6 +60,18 @@ export const THREAD_RUNNER_HEARTBEAT_MS = 2_500;
 export const THREAD_RUNNER_VERSION_CHECK_MS = 5_000;
 /** A retained (not yet settled) turn is retried after this delay at least. */
 export const THREAD_RUNNER_RETRY_MS = 2_000;
+/**
+ * A deferred terminal (an Agent welcome the state store's outbox posts) is
+ * read again 2 s after the turn deferred it, then 4, 8, 16, and every 30 s.
+ */
+export const THREAD_RUNNER_DEFERRED_MAX_MS = 30_000;
+/**
+ * After this many pending reads (about 25 minutes), the outbox's own retries
+ * (about 21 minutes) are over and it has settled the row or cannot reach it:
+ * read it every THREAD_RUNNER_DEFERRED_LATE_MS instead.
+ */
+export const THREAD_RUNNER_DEFERRED_LATE_CHECKS = 50;
+export const THREAD_RUNNER_DEFERRED_LATE_MS = 5 * 60_000;
 /** Retry an unrecorded terminal outcome or active-work clear at this interval. */
 export const THREAD_RUNNER_SYNC_RETRY_MS = 30_000;
 /** After a failed alarm: 2 s, doubling, at most a minute. */
@@ -380,6 +392,10 @@ async function runOne(
   if (!current || !OPEN_JOB_STATES.has(current.state)) {
     return true;
   }
+  // A deferred turn already ran to its end; checking its row is the same on
+  // any version, so it settles (or backs off) even when a code update
+  // replaced this one, and never holds the thread for the successor.
+  if (current.state === 'deferred') return checkDeferred(deps, local.id, now);
   // A code update replaced this version during this alarm: leave the job as
   // it is for the successor alarm on the new version.
   if (deps.supersede?.by) return false;
@@ -479,6 +495,33 @@ async function runOne(
     now() + Math.max(THREAD_RUNNER_RETRY_MS, retryAfterMs ?? 0),
   );
   return false;
+}
+
+/**
+ * A deferred turn already ran to its end: the state store's receipt outbox
+ * owns its terminal and settles the turn row when it delivers or gives up.
+ * Running the turn again would only replay the same claim (and refresh its
+ * Slack status) at every check, so read the row alone, backing off while it
+ * is pending.
+ */
+async function checkDeferred(
+  deps: ThreadRunnerLoopDeps,
+  id: string,
+  now: () => number,
+): Promise<boolean> {
+  const row = await deps.turns.view(id);
+  if (row.status !== 'pending') {
+    settleFromView(deps, id, row, now);
+    return true;
+  }
+  if (row.executor !== 'runner') {
+    deps.jobs.settle(id, 'released', now());
+    return true;
+  }
+  deps.jobs.recheckDeferred(id, now(), (checks) => checks >= THREAD_RUNNER_DEFERRED_LATE_CHECKS
+    ? THREAD_RUNNER_DEFERRED_LATE_MS
+    : Math.min(THREAD_RUNNER_RETRY_MS * 2 ** Math.min(checks, 16), THREAD_RUNNER_DEFERRED_MAX_MS));
+  return true;
 }
 
 function settleFromView(

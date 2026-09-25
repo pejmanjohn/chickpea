@@ -16,7 +16,7 @@ import {
   completeSettledAgentWelcomeHandoff,
   deliverManagementReceiptToSlack,
   drainManagementReceiptOutbox,
-  failAgentWelcomeDelivery,
+  failAgentWelcomeTurn,
   isAgentCreatedWelcome,
 } from '../management/receipts.ts';
 import type { SlackStateStore } from './claim-store.ts';
@@ -630,13 +630,13 @@ async function drainNodeWakePassOnce(options: NodeTurnRelayDrainOptions): Promis
         config,
         getManagementStore(env),
       ),
-      onTerminalFailure: async (record) => {
-        await failAgentWelcomeDelivery(record, presentation);
-        if (isAgentCreatedWelcome(record.receipt) && record.receipt.turnJobId) {
-          if (state.markTurnError) await state.markTurnError(record.receipt.turnJobId);
-          else await state.markTurnDelivered?.(record.receipt.turnJobId);
-        }
-      },
+      onTerminalFailure: (record) => failAgentWelcomeTurn(
+        record,
+        presentation,
+        (turnJobId) => state.markTurnError
+          ? state.markTurnError(turnJobId)
+          : state.markTurnDelivered?.(turnJobId),
+      ),
       deliver: (record) => deliverManagementReceiptToSlack(record, {
         identity,
         ...(env ? { env } : {}),

@@ -21,8 +21,10 @@ export interface ThreadRunnerStatus {
  * - `running`: an alarm started it; after an eviction the next alarm
  *   reattaches through the turn row's durable checkpoints.
  * - `yielded`: observation stopped at the alarm budget; reattach next alarm.
- * - `deferred`: a durable outbox owns the terminal; re-run after `retry_at`
- *   without holding later turns (the state store alarm's behaviour).
+ * - `deferred`: a durable outbox owns the terminal (an Agent welcome). The
+ *   turn ran to the end; after `retry_at` the runner only reads the turn row,
+ *   which the state store settles when it delivers or fails the outbox,
+ *   backing off between reads. It never holds later turns.
  * - `done`, `error`, `recovery_required`: settled.
  * - `released`: the state store took the row back before it ran here.
  */
@@ -89,6 +91,10 @@ export class ThreadRunnerJobStore {
     }
     if (!columns.some((column) => column.name === 'active_clear')) {
       db.exec('ALTER TABLE runner_jobs ADD COLUMN active_clear INTEGER NOT NULL DEFAULT 0');
+    }
+    // Reads of a deferred turn's row that found it still pending (the backoff).
+    if (!columns.some((column) => column.name === 'deferred_checks')) {
+      db.exec('ALTER TABLE runner_jobs ADD COLUMN deferred_checks INTEGER NOT NULL DEFAULT 0');
     }
   }
 
@@ -169,7 +175,7 @@ export class ThreadRunnerJobStore {
     // A delivered or failed turn may still owe Slack interaction cleanup.
     const checkCleanup = state === 'done' || state === 'error';
     this.db.run(
-      `UPDATE runner_jobs SET state = ?, retry_at = ?, settled_at = ?,
+      `UPDATE runner_jobs SET state = ?, retry_at = ?, settled_at = ?, deferred_checks = 0,
          cleanup_at = CASE WHEN ? THEN COALESCE(cleanup_at, ?) ELSE cleanup_at END
        WHERE id = ?`,
       state,
@@ -179,6 +185,24 @@ export class ThreadRunnerJobStore {
       now,
       id,
     );
+  }
+
+  /**
+   * A deferred job's turn row was still pending: read it again after
+   * `delayMs(checks)`, where `checks` counts the reads that found it pending
+   * (this one included). Returns when.
+   */
+  recheckDeferred(id: string, now: number, delayMs: (checks: number) => number): number {
+    const row = this.db.get('SELECT deferred_checks FROM runner_jobs WHERE id = ?', id);
+    const checks = Number(row?.deferred_checks ?? 0) + 1;
+    const retryAt = now + delayMs(checks);
+    this.db.run(
+      "UPDATE runner_jobs SET state = 'deferred', retry_at = ?, deferred_checks = ? WHERE id = ?",
+      retryAt,
+      checks,
+      id,
+    );
+    return retryAt;
   }
 
   /** Settled jobs whose Slack interaction cleanup is due for a check or retry. */
