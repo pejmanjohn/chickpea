@@ -4,7 +4,11 @@ import type { TurnProgress } from '../config/state-rpc.ts';
 import type { RepositoryGrant } from '../config/types.ts';
 import type { SandboxCredentialMode, SandboxEgressPolicyInput } from './cloudflare-policy.ts';
 import { validEnabledRepositoryGrants } from './egress-handler.ts';
-import { SandboxSessionCapError, SandboxUnavailableError } from './errors.ts';
+import {
+  SandboxConnectionDroppedError,
+  SandboxSessionCapError,
+  SandboxUnavailableError,
+} from './errors.ts';
 import {
   acquireSandbox,
   serializeSandboxActivation,
@@ -203,6 +207,12 @@ export class WorkspaceSession<TStub extends WorkspaceSandboxStub = WorkspaceSand
     }
     this.opened ??= this.acquire().catch((error: unknown) => {
       this.opened = undefined;
+      // A drop while opening leaves the turn's workspace decision unknown, and
+      // acquisition destroys the container rather than guess its owner; the
+      // model must not be told the files are intact.
+      if (error instanceof SandboxConnectionDroppedError) {
+        throw new SandboxConnectionDroppedError(error.cause, 'opening');
+      }
       // Deliberate refusals keep their public-safe type; any other failure to
       // reach or configure the workspace is infrastructure.
       if (error instanceof FlueError) throw error;

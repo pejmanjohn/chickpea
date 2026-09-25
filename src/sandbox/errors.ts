@@ -34,11 +34,23 @@ export const SANDBOX_CONNECTION_DROPPED_MESSAGE =
   'git log, the files it should have changed, or whether a long-running command left its output) ' +
   'and re-run it only if it did not complete. The next workspace call reconnects automatically.';
 
+/**
+ * The same drop while the workspace was being opened for this turn. Opening
+ * fails closed: the half-prepared container is destroyed so a changed owner
+ * can never inherit it, so its unsaved files may be gone.
+ */
+export const SANDBOX_CONNECTION_DROPPED_WHILE_OPENING_MESSAGE =
+  'The connection to the coding workspace dropped while it was being opened, so the workspace was reset ' +
+  'to keep it safe: files that were not pushed or checkpointed may be gone. Call it again to reopen it; ' +
+  'the next workspace call reconnects automatically. Check what is there before relying on earlier work.';
+
 export class SandboxConnectionDroppedError extends FlueError {
-  constructor(cause?: unknown) {
+  constructor(cause?: unknown, phase: 'operation' | 'opening' = 'operation') {
     super({
       type: 'sandbox_connection_dropped',
-      message: SANDBOX_CONNECTION_DROPPED_MESSAGE,
+      message: phase === 'opening'
+        ? SANDBOX_CONNECTION_DROPPED_WHILE_OPENING_MESSAGE
+        : SANDBOX_CONNECTION_DROPPED_MESSAGE,
       details: 'The workspace connection was re-established; the interrupted operation was not replayed.',
       dev: '',
       cause,

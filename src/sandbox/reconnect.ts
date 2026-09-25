@@ -21,7 +21,9 @@ export const RETRY_SAFE_SANDBOX_METHODS: ReadonlySet<string> = new Set([
   'listProcesses',
   'getProcess',
   'getProcessLogs',
-  // Convergent writes.
+  // Convergent writes. A replayed whole-file write could land after a later
+  // parallel write to the same path; nothing in Chickpea writes one path
+  // concurrently, and the SDK offers no conditional write to guard it.
   'writeFile',
   'prepareTurn',
   'configureEgress',
@@ -42,29 +44,55 @@ export interface ReconnectingSandboxOptions {
   sleep?: (ms: number) => Promise<void>;
 }
 
+const DISCONNECT_MESSAGES = [
+  'durable object instance is no longer active',
+  'durable object reset',
+  'reset because its code was updated',
+  'this script has been upgraded',
+  'caused object to be reset',
+  'network connection lost',
+  'broken.outputgatebroken',
+  'broken.inputgatebroken',
+];
+
+/** Bounded, like the SDK's own cause walk. */
+const MAX_CAUSE_DEPTH = 8;
+
 /**
  * Whether an error means the connection to the Durable Object instance was
  * lost, not that the operation itself failed. Cloudflare can replace a live
  * Durable Object instance (the container keeps running); calls in flight on the
  * old stub then reject, and so does every later call on that stub. The runtime
  * marks such transient failures `retryable`, and `overloaded` ones must not be
- * retried. Anything thrown by the Sandbox's own code (a failed command, a
- * missing file) carries neither flag nor these messages and is never matched.
+ * retried. `@cloudflare/sandbox` wraps most stub methods and turns these into
+ * an `OperationInterruptedError` (code `OPERATION_INTERRUPTED`, reason
+ * `runtime_replaced`) with the platform error only as its `cause`, so the
+ * cause chain is walked. Anything thrown by the Sandbox's own code (a failed
+ * command, a missing file) matches none of this and is never reclassified.
  */
 export function isSandboxDisconnect(err: unknown): boolean {
-  if (!err || typeof err !== 'object') return false;
-  const record = err as { retryable?: unknown; overloaded?: unknown; message?: unknown; name?: unknown };
-  if (record.overloaded === true) return false;
-  if (record.name === 'AbortError') return false;
-  if (record.retryable === true) return true;
-  const message = typeof record.message === 'string' ? record.message.toLowerCase() : '';
-  return (
-    message.includes('durable object instance is no longer active') ||
-    message.includes('durable object reset') ||
-    message.includes('network connection lost') ||
-    message.includes('broken.outputgatebroken') ||
-    message.includes('broken.inputgatebroken')
-  );
+  let current: unknown = err;
+  for (let depth = 0; depth < MAX_CAUSE_DEPTH && current && typeof current === 'object'; depth += 1) {
+    const record = current as {
+      retryable?: unknown;
+      overloaded?: unknown;
+      message?: unknown;
+      name?: unknown;
+      code?: unknown;
+      context?: { reason?: unknown };
+      errorResponse?: { context?: { reason?: unknown } };
+      cause?: unknown;
+    };
+    if (record.overloaded === true || record.name === 'AbortError') return false;
+    if (record.retryable === true) return true;
+    const interrupted = record.code === 'OPERATION_INTERRUPTED' || record.name === 'OperationInterruptedError';
+    const reason = record.context?.reason ?? record.errorResponse?.context?.reason;
+    if (interrupted && reason === 'runtime_replaced') return true;
+    const message = typeof record.message === 'string' ? record.message.toLowerCase() : '';
+    if (DISCONNECT_MESSAGES.some((pattern) => message.includes(pattern))) return true;
+    current = record.cause;
+  }
+  return false;
 }
 
 /**

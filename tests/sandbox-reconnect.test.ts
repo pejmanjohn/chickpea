@@ -5,6 +5,7 @@ import { createBashTool, sandboxFromDriver, type Sandbox } from '@flue/runtime';
 
 import {
   SANDBOX_CONNECTION_DROPPED_MESSAGE,
+  SANDBOX_CONNECTION_DROPPED_WHILE_OPENING_MESSAGE,
   SandboxConnectionDroppedError,
   SandboxUnavailableError,
 } from '../src/sandbox/errors.ts';
@@ -22,6 +23,43 @@ function instanceReplaced(): Error {
   );
 }
 
+/**
+ * The shape `@cloudflare/sandbox` 0.12.4 actually throws for exec, exists,
+ * readFile, writeFile and the other methods its `getSandbox` proxy wraps
+ * (`createPlatformInterruptedError`): the platform error survives only as
+ * `cause`, and the wrapper carries no `retryable` flag. The SDK cannot load
+ * under Node (it imports `cloudflare:workers`), so this mirrors its class.
+ */
+class OperationInterruptedError extends Error {
+  constructor(
+    readonly errorResponse: { code: string; message: string; context: Record<string, unknown> },
+    options: { cause: unknown },
+  ) {
+    super(errorResponse.message, options);
+    this.name = 'OperationInterruptedError';
+  }
+  get code() {
+    return this.errorResponse.code;
+  }
+  get context() {
+    return this.errorResponse.context;
+  }
+}
+
+function sdkWrapped(platformError: Error, operation: string): Error {
+  return new OperationInterruptedError({
+    code: 'OPERATION_INTERRUPTED',
+    message: `Sandbox operation ${operation} was interrupted while the platform was updating the sandbox runtime`,
+    context: {
+      reason: 'runtime_replaced',
+      operation,
+      phase: 'durable_object_call',
+      admitted: 'unknown',
+      retryable: false,
+    },
+  }, { cause: platformError });
+}
+
 type ExecResult = { success: boolean; exitCode: number; stdout: string; stderr: string };
 
 interface FakeStub {
@@ -36,6 +74,8 @@ interface FakeStub {
  */
 function replaceableNamespace(behavior: {
   exec?: (command: string, stub: number) => Promise<ExecResult>;
+  /** Throw what the SDK's wrapped methods throw instead of the raw platform error. */
+  sdkWrapped?: boolean;
 } = {}) {
   let instance = 0;
   const log: string[] = [];
@@ -43,18 +83,22 @@ function replaceableNamespace(behavior: {
   const mint = (): FakeStub => {
     const stubNumber = ++minted;
     const boundInstance = instance;
-    const alive = () => {
-      if (boundInstance !== instance) throw instanceReplaced();
+    const alive = (operation = 'sandbox.getState') => {
+      if (boundInstance === instance) return;
+      if (behavior.sdkWrapped && operation !== 'sandbox.getState') {
+        throw sdkWrapped(new Error('Durable Object reset because its code was updated.'), operation);
+      }
+      throw instanceReplaced();
     };
     return {
       async exists(path) {
         log.push(`exists#${stubNumber}`);
-        alive();
+        alive('sandbox.exists');
         return { exists: path.length > 0 };
       },
       async exec(command) {
         log.push(`exec#${stubNumber}:${command}`);
-        alive();
+        alive('sandbox.exec');
         if (behavior.exec) return behavior.exec(command, stubNumber);
         return { success: true, exitCode: 0, stdout: 'ok', stderr: '' };
       },
@@ -94,6 +138,52 @@ test('disconnect classification matches instance replacement and resets, never c
   assert.equal(isSandboxDisconnect(new Error('ENOENT: no such file or directory')), false);
   assert.equal(isSandboxDisconnect(Object.assign(new Error('aborted'), { name: 'AbortError' })), false);
   assert.equal(isSandboxDisconnect(undefined), false);
+
+  // The SDK's wrapped shape: the platform error only as the cause.
+  assert.equal(isSandboxDisconnect(sdkWrapped(new Error('Network connection lost.'), 'sandbox.exec')), true);
+  assert.equal(
+    isSandboxDisconnect(sdkWrapped(Object.assign(new Error('x'), { retryable: true }), 'sandbox.readFile')),
+    true,
+  );
+  assert.equal(isSandboxDisconnect(new Error('Durable Object reset because its code was updated.')), true);
+  // An interruption from a container lifetime change is not a stub disconnect.
+  const lifetime = new OperationInterruptedError(
+    { code: 'OPERATION_INTERRUPTED', message: 'interrupted', context: { reason: 'sandbox_lifetime_changed' } },
+    { cause: new Error('sandbox destroyed') },
+  );
+  assert.equal(isSandboxDisconnect(lifetime), false);
+  // A cause chain that loops never hangs the walk.
+  const looped = new Error('outer') as Error & { cause?: unknown };
+  looped.cause = looped;
+  assert.equal(isSandboxDisconnect(looped), false);
+});
+
+test("the SDK's wrapped interruption is retried on a fresh stub for an idempotent call", async () => {
+  const namespace = replaceableNamespace({ sdkWrapped: true });
+  const stub = reconnectingSandboxStub(namespace.mint, { sleep: noSleep });
+  await stub.exists('/workspace');
+  namespace.replace();
+  assert.deepEqual(await stub.exists('/workspace'), { exists: true });
+  assert.deepEqual(namespace.log, ['exists#1', 'exists#1', 'exists#2']);
+});
+
+test("the SDK's wrapped interruption under exec reports connection_dropped and the next call works", async () => {
+  const namespace = replaceableNamespace({ sdkWrapped: true });
+  const stub = contentFreeSandboxExec(
+    serializeSandboxActivation(reconnectingSandboxStub(namespace.mint, { sleep: noSleep }), '/workspace'),
+  );
+  await stub.exec('true');
+  namespace.replace();
+  await assert.rejects(stub.exec('npm test'), (error: unknown) => {
+    assert.ok(error instanceof SandboxConnectionDroppedError);
+    assert.equal(error.message, SANDBOX_CONNECTION_DROPPED_MESSAGE);
+    return true;
+  });
+  assert.equal((await stub.exec('ls')).exitCode, 0);
+  // The wrapper hides the command text; the dropped exec ran once, on stub 1.
+  assert.equal(namespace.log.filter((entry) => entry.startsWith('exec#1')).length, 2, 'never replayed');
+  assert.equal(namespace.log.filter((entry) => entry.startsWith('exec#2')).length, 1);
+  assert.equal(namespace.minted, 2);
 });
 
 test('an idempotent call is retried transparently on a fresh stub', async () => {
@@ -317,4 +407,49 @@ test('workspace_exec returns a connection_dropped result and the next call reach
   const ender = reconnectingSandboxStub(mintStub, { sleep: noSleep });
   await ender.endTurn();
   assert.equal(log.at(-1), 'endTurn');
+});
+
+test('a drop while opening the workspace says it was reset, never that the files are intact', async () => {
+  const log: string[] = [];
+  let dropNextBegin = true;
+  const mintStub = async (): Promise<WorkspaceSandboxStub> => ({
+    getTurnId: async () => 'turn-1',
+    prepareTurn: async () => void log.push('prepareTurn'),
+    endTurn: async () => void log.push('endTurn'),
+    beginWorkspaceTurn: async () => {
+      log.push('beginWorkspaceTurn');
+      if (dropNextBegin) {
+        dropNextBegin = false;
+        throw sdkWrapped(new Error('Network connection lost.'), 'sandbox.beginWorkspaceTurn');
+      }
+      return { state: 'warm', reservationId: 'turn-1', restorable: false };
+    },
+    configureEgress: async () => void log.push('configureEgress'),
+    restoreWorkspace: async () => 'restored',
+    exists: async () => true,
+    describeWorkspace: async () => ({ running: true, hasCheckpoint: false }),
+    discardWorkspace: async () => void log.push('discardWorkspace'),
+    destroy: async () => void log.push('destroy'),
+    applyGitIdentity: async () => undefined,
+  });
+  const target: WorkspaceSession = new WorkspaceSession({
+    id: 'sandbox_' + 'd'.repeat(40),
+    name: DEFAULT_WORKSPACE_NAME,
+    agentId: 'agent-1',
+    grants: [],
+    credentialMode: 'app',
+    mintStub,
+    reserveSession: async () => true,
+    toSandbox: async () => ({}) as Sandbox,
+  });
+  await assert.rejects(target.open(), (error: unknown) => {
+    assert.ok(error instanceof SandboxConnectionDroppedError);
+    assert.equal(error.message, SANDBOX_CONNECTION_DROPPED_WHILE_OPENING_MESSAGE);
+    assert.doesNotMatch(error.message, /intact/);
+    return true;
+  });
+  // Opening fails closed: the container whose owner decision is unknown goes.
+  assert.ok(log.includes('destroy'));
+  // The next open reconnects and succeeds.
+  assert.equal(await target.open(), 'warm');
 });

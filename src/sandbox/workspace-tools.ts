@@ -9,7 +9,6 @@ import {
   workspaceArtifactPath,
 } from './artifact-tool.ts';
 import {
-  SANDBOX_CONNECTION_DROPPED_MESSAGE,
   SandboxConnectionDroppedError,
   SandboxSessionCapError,
   SandboxUnavailableError,
@@ -452,7 +451,7 @@ function workspaceFailure(error: unknown, signal?: AbortSignal): WorkspaceFailur
   // The Durable Object connection dropped under a call that is not replayed:
   // the workspace is intact and the next call reconnects.
   if (error instanceof SandboxConnectionDroppedError) {
-    return failure('connection_dropped', SANDBOX_CONNECTION_DROPPED_MESSAGE);
+    return failure('connection_dropped', error.message);
   }
   if (error instanceof SandboxUnavailableError || error instanceof SandboxDiedError) {
     return failure('workspace_unavailable', WORKSPACE_UNAVAILABLE_MESSAGE);
