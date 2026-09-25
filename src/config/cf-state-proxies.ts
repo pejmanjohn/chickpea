@@ -331,7 +331,6 @@ const REPLAY_SAFE_STATE_METHODS = new Set([
   'snapshotPutIfAbsent', // first write wins
   'slackFlueReceiptRecord', 'slackFlueSettlementRecord', // an equal checkpoint returns the saved one
   'slackPresentationTransition', // compare-and-swap on the projection version
-  'release', // deletes the thread's claim
 ]);
 
 /** Kinds sent through a store's `*Execute` RPC. */
@@ -2070,9 +2069,23 @@ export class StateStoreDisconnectedError extends Error {
   readonly retryable = true;
 
   constructor(cause: unknown) {
-    super('The state store is restarting; the call will be retried.', { cause });
+    super('The state store was unreachable while it restarted.', { cause });
     this.name = 'StateStoreDisconnectedError';
   }
+}
+
+/**
+ * Whether `error` (or a cause of it) is a store call lost to a state-store
+ * restart. Narrower than `isSandboxDisconnect`: a Slack, gateway, or Sandbox
+ * error that is merely `retryable` is not one, and keeps its bounded retries.
+ */
+export function isStateStoreDisconnect(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 8 && current && typeof current === 'object'; depth += 1) {
+    if (current instanceof StateStoreDisconnectedError) return true;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
 }
 
 /**

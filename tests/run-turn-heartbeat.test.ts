@@ -29,6 +29,8 @@ import {
   type RuntimePlanV2,
 } from '../src/agents/runtime-plan.ts';
 import { SqliteWorkStore } from '../src/work/store.ts';
+import { SlackTransportError } from '../src/slack/transport/types.ts';
+import { StateStoreDisconnectedError } from '../src/config/cf-state-proxies.ts';
 import { prepareSlackShadowAdmission } from '../src/slack/work-admission.ts';
 import {
   AGENT_FAILURE_TEXT,
@@ -2393,10 +2395,11 @@ test('a state-store reset after the answer is a retry, never a failure notice', 
       },
     });
     let answered = false;
-    const reset = () => Object.assign(
+    let failure: () => Error = () => new StateStoreDisconnectedError(Object.assign(
       new Error('Durable Object reset because its code was updated.'), { retryable: true },
-    );
-    await assert.rejects(runTurn(turn, assignment, undefined, {
+    ));
+    const reset = () => failure();
+    const run = () => runTurn(turn, assignment, undefined, {
       client,
       runId: admitted.run.id,
       runAttempt: 1,
@@ -2427,9 +2430,16 @@ test('a state-store reset after the answer is a retry, never a failure notice', 
           usageCompleteness: 'not_reported',
         };
       },
-    }), (error: unknown) => error instanceof StateStoreUnavailable);
+    });
+    await assert.rejects(run(), (error: unknown) => error instanceof StateStoreUnavailable);
     assert.equal(delivered.some((value) => /failed before completion/.test(value)), false,
       'no failure notice');
+    // A retryable Slack or gateway error is not a store restart: it escapes
+    // as itself, so the executor's bounded, counted retries still apply.
+    answered = false;
+    failure = () => new SlackTransportError('chat.postMessage', 'gateway_unreachable', { retryable: true });
+    await assert.rejects(run(), (error: unknown) =>
+      error instanceof SlackTransportError && !(error instanceof StateStoreUnavailable));
   } finally {
     presentationDb.close();
     work.close();

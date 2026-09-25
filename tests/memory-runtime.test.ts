@@ -15,6 +15,7 @@ import { CHICKPEA_AGENT_ID } from '../src/config/agent-id.ts';
 import type { ResolvedAssignment } from '../src/config/types.ts';
 import { createDemoStarterAgent } from '../src/config/seed.ts';
 import { prepareMemoryTurn } from '../src/memory/runtime.ts';
+import { StateStoreDisconnectedError } from '../src/config/cf-state-proxies.ts';
 import { resolveAgentRoute } from '../src/slack/agent-routing.ts';
 import { AgentUserGroupLookupLimiter } from '../src/slack/agent-presence/reconciler.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
@@ -333,7 +334,9 @@ test('an ordinary stale Slack group mapping repairs into the Agent memory path',
     // Amber LT4: a state store being replaced is not an invalid lease. It
     // throws so the turn retries; it never becomes a failure notice.
     // The Node facade forwards writes to its store: shadow getAgent, then delete it.
-    const reset = Object.assign(new Error('Durable Object reset because its code was updated.'), { retryable: true });
+    const reset = new StateStoreDisconnectedError(
+      Object.assign(new Error('Durable Object reset because its code was updated.'), { retryable: true }),
+    );
     config.getAgent = async () => { throw reset; };
     try {
       await assert.rejects(prepared.validateLease(), (error: unknown) => error === reset);
@@ -343,6 +346,11 @@ test('an ordinary stale Slack group mapping repairs into the Agent memory path',
       );
       config.getAgent = async () => { throw new Error('unknown agent'); };
       assert.equal(await prepared.validateLease(), false, 'a real lookup failure still rejects the lease');
+      // Only a store disconnect retries; a merely retryable error does not.
+      config.getAgent = async () => {
+        throw Object.assign(new Error('Network connection lost.'), { retryable: true });
+      };
+      assert.equal(await prepared.validateLease(), false);
     } finally {
       Reflect.deleteProperty(config, 'getAgent');
     }

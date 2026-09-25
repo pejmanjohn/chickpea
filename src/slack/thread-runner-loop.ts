@@ -93,7 +93,7 @@ export interface ThreadRunnerLoopDeps {
   afterJob?(job: PendingTurnJob): Promise<void>;
   /** This runner's own presentation repairs; returns when to retry. */
   repair?(): Promise<{ nextRetryAt?: number }>;
-  /** Retry a settled turn's Slack interaction cleanup (reactions, checklists). */
+  /** Retry a settled turn's Slack interaction cleanup (its acknowledgment reaction). */
   repairInteraction?(job: PendingTurnJob): Promise<void>;
   /** Clear a settled turn's active-work flag in the state store. */
   clearActiveWork(threadKey: string, jobId: string): Promise<void>;

@@ -40,6 +40,7 @@ import {
 } from '../src/slack/turn-jobs.ts';
 import type { RunTurnOptions } from '../src/slack/run-turn.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
+import { SlackTransportError } from '../src/slack/transport/types.ts';
 import { createWorkModelInvocationInterceptor } from '../src/work/model-invocation.ts';
 import { NOW, turnJob } from './fixtures/state-db/maintenance.ts';
 
@@ -431,8 +432,10 @@ function runnerHarness(db: ReturnType<typeof openStateDb>, rows: ReturnType<type
   failCleanups?: number;
   /** The state store is unreachable from inside these turns. */
   storeOutage?: (id: string) => boolean;
-  /** runTurn rejects with the runtime's raw reset error (no mapping). */
+  /** runTurn rejects with a factory store's disconnect error (no mapping). */
   storeReset?: (id: string) => boolean;
+  /** runTurn rejects with a retryable Slack/gateway transport error. */
+  slackOutage?: (id: string) => boolean;
 } = {}) {
   const jobs = new ThreadRunnerJobStore(db);
   const events: string[] = [];
@@ -479,7 +482,13 @@ function runnerHarness(db: ReturnType<typeof openStateDb>, rows: ReturnType<type
       }
       if (script.storeReset?.(id)) {
         events.push(`reset:${id}`);
-        throw Object.assign(new Error('Durable Object reset because its code was updated.'), { retryable: true });
+        throw new StateStoreDisconnectedError(
+          Object.assign(new Error('Durable Object reset because its code was updated.'), { retryable: true }),
+        );
+      }
+      if (script.slackOutage?.(id)) {
+        events.push(`slack-outage:${id}`);
+        throw new SlackTransportError('chat.postMessage', 'gateway_unreachable', { retryable: true });
       }
       if (!options.flueDispatch?.dispatchReceipt) {
         events.push(`dispatch:${id}`);
@@ -1092,7 +1101,7 @@ test('a runner backs off a turn whose state store stays unreachable (1 s, then 2
   } finally { db.close(); }
 });
 
-test('a raw state-store reset escaping the turn is retried like an outage, never failed', async () => {
+test('a state-store disconnect escaping the turn is retried like an outage, never failed', async () => {
   const db = openStateDb(':memory:');
   try {
     const rows = fakeRows(['reset']);
@@ -1103,6 +1112,18 @@ test('a raw state-store reset escaping the turn is retried like an outage, never
     assert.equal(rows.rows.get('reset')!.attempts, 0, 'no attempt spent inside the durability window');
     assert.equal(h.events.some((event) => event.startsWith('failed:')), false);
     assert.equal(rows.rows.get('reset')!.status, 'pending', 'the turn is kept for its retry');
+  } finally { db.close(); }
+});
+
+test('a retryable Slack or gateway outage escaping the turn keeps its bounded, counted retries', async () => {
+  const db = openStateDb(':memory:');
+  try {
+    const rows = fakeRows(['slack']);
+    const h = runnerHarness(db, rows, { slackOutage: () => true });
+    h.jobs.admit({ id: 'slack', threadKey: 'thread', payload: {} }, 1);
+    const result = await runThreadRunnerAlarm(h.deps);
+    assert.notEqual(result.record.reason, 'state_store_unavailable');
+    assert.equal(rows.rows.get('slack')!.attempts, 1, 'the attempt is spent, so the caps still end it');
   } finally { db.close(); }
 });
 

@@ -56,6 +56,7 @@ import {
 import { isRoutineSlackTurn } from '../routines/slack-context.ts';
 import { replyFooterModelLabel } from './message-format.ts';
 import { isSandboxDisconnect } from '../sandbox/reconnect.ts';
+import { isStateStoreDisconnect } from '../config/cf-state-proxies.ts';
 import {
   agentFailureText,
   AgentObservationYield,
@@ -1693,7 +1694,7 @@ async function runTurnAttempt(
     // way it reattaches after a yield: the Agent is still working. That
     // includes a store call anywhere in the turn (a memory lease check after
     // the answer, say) failing because its Durable Object is being replaced.
-    const err = !(caught instanceof AgentPromptFailure) && isSandboxDisconnect(caught)
+    const err = !(caught instanceof AgentPromptFailure) && isStateStoreDisconnect(caught)
       ? new StateStoreUnavailable()
       : caught;
     if (err instanceof AgentObservationYield || err instanceof StateStoreUnavailable) yielded = true;
