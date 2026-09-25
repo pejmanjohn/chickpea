@@ -65,6 +65,7 @@ import {
   type SlackPresentationReceiptCertainty,
   type SlackPresentationTransitionInput,
   type SlackPresentationTransitionResult,
+  type SlackReplySplit,
   type SlackRunPresentation,
 } from './run-presentations.ts';
 
@@ -931,7 +932,9 @@ export class SlackAgentViewPresentation {
     const parts = this.replyParts(presentation, approved, format);
     const first = parts[0]!;
     const renderedTable = renderSlackReplyTable(tablePresentation, parts.at(-1)!);
-    const closes = !await this.planContinuations(parts, renderedTable);
+    const closes = !await this.planContinuations(
+      parts, renderedTable, [], this.replySplit(presentation, approved),
+    );
     presentation = await this.requirePresentation();
     const footerBlocks = closes
       ? [
@@ -1081,12 +1084,14 @@ export class SlackAgentViewPresentation {
    * Freeze a long answer's follow-up messages before the final's first effect,
    * because the plan decides whether the final itself carries the footer.
    * Returns whether a durable plan owns the follow-ups; only V3 has one. A
-   * replay keeps the stored plan.
+   * replay keeps the stored plan. `split` records how the first message was
+   * cut, so a final posted fresh instead cuts it the same way.
    */
   async planContinuations(
     parts: readonly string[],
     table?: RenderedSlackTablePresentation,
     files: readonly CompletedSlackArtifactReceipt[] = [],
+    split?: SlackReplySplit,
   ): Promise<boolean> {
     if (parts.length < 2) return false;
     const presentation = await this.requirePresentation();
@@ -1094,6 +1099,7 @@ export class SlackAgentViewPresentation {
     if (!presentation.continuations) {
       await this.transition(presentation, {
         kind: 'record_continuation_plan',
+        ...(split ? { split } : {}),
         parts: parts.slice(1),
         closing: {
           footer: this.options.footer,
@@ -1103,6 +1109,17 @@ export class SlackAgentViewPresentation {
       });
     }
     return true;
+  }
+
+  /**
+   * The messages of an answer whose plan froze while a stream was to carry
+   * it. A final posted fresh instead splits the same way, so the planned
+   * follow-ups continue exactly where it ends.
+   */
+  async frozenReplyParts(approved: string, format: SlackReplyFormat): Promise<string[] | undefined> {
+    const presentation = await this.requirePresentation();
+    if (presentation.schemaVersion !== 3 || !presentation.continuations?.split) return undefined;
+    return slackReplyParts(approved, format, presentation.continuations.split);
   }
 
   /**
@@ -1249,16 +1266,28 @@ export class SlackAgentViewPresentation {
     approved: string,
     format: SlackReplyFormat,
   ): string[] {
+    if (presentation.schemaVersion !== 3) {
+      return slackReplyParts(approved, format, {
+        ...this.replySplit(presentation, approved),
+        maxParts: 1,
+      });
+    }
+    return slackReplyParts(
+      approved,
+      format,
+      presentation.continuations?.split ?? this.replySplit(presentation, approved),
+    );
+  }
+
+  /** How the first message is cut: after the streamed prefix, or with room for a marker. */
+  private replySplit(presentation: SlackRunPresentation, approved: string): SlackReplySplit {
     const acknowledged = prefixAtUtf8Length(approved, presentation.stream.acknowledgedByteLength);
     const streamed = presentation.stream.presentationOutcome !== 'corrected' &&
       acknowledged !== undefined &&
       hash(acknowledged) === (presentation.stream.acknowledgedPrefixHash ?? hash(''));
-    return slackReplyParts(approved, format, {
-      ...(presentation.schemaVersion === 3 ? {} : { maxParts: 1 }),
-      ...(streamed
-        ? { minFirstPartLength: acknowledged.length }
-        : { firstPartLimit: slackMarkdownBlockTextLimit - CORRECTED_MARKER.length - 2 }),
-    });
+    return streamed
+      ? { minFirstPartLength: acknowledged.length }
+      : { firstPartLimit: slackMarkdownBlockTextLimit - CORRECTED_MARKER.length - 2 };
   }
 
   /** Retire only the exact saved interim stream, before any terminal write. */
@@ -1678,7 +1707,9 @@ export class SlackAgentViewPresentation {
     const parts = this.replyParts(presentation, approved, format);
     const first = parts[0]!;
     const table = renderSlackReplyTable(tablePresentation, parts.at(-1)!);
-    const closes = !await this.planContinuations(parts, table);
+    const closes = !await this.planContinuations(
+      parts, table, [], this.replySplit(presentation, approved),
+    );
     presentation = await this.requirePresentation();
     const content = table && closes
       ? appendSlackTableToRenderedMessage(renderSlackMessage(first, 'markdown'), first, table)

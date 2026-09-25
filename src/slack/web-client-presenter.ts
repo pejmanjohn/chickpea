@@ -689,8 +689,10 @@ export class WebClientPresenter {
     }
     // The last part closes the reply. A V3 presentation freezes the follow-ups
     // before the final so repair can finish them; other surfaces post them
-    // directly after the final.
-    const parts = slackReplyParts(displayText, format);
+    // directly after the final. A plan frozen for a stream keeps its own
+    // split, so a final posted fresh instead ends where its follow-ups begin.
+    const parts = await agentView?.frozenReplyParts(displayText, format) ??
+      slackReplyParts(displayText, format);
     const first = parts[0]!;
     const renderedTable = renderSlackReplyTable(tablePresentation, parts.at(-1)!);
     const closing = {

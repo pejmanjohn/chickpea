@@ -288,6 +288,42 @@ async function finalizeLongAnswer(h: Harness, text: string): Promise<void> {
   assert.equal(result.handled, true);
 }
 
+/** Stream a long answer progressively; the stream holds at most one message. */
+async function streamLongAnswer(h: Harness, text: string): Promise<void> {
+  await h.presentation.freezeProgressiveEligibility({ allowed: true, reason: 'safe_early_release' });
+  const relay = await h.presentation.prepareReceipt({
+    instanceId: 'instance_stream',
+    receipt: { submissionId: 'submission_stream', acceptedAt: 'now', uid: 'uid' },
+    eligibility: { allowed: true, reason: 'safe_early_release' },
+  });
+  assert.ok(relay);
+  relay.onEvent({
+    type: 'message-started', conversationId: 'conversation',
+    submissionId: 'submission_stream', messageId: 'message_stream',
+    position: { batch: 1, index: 0 },
+  });
+  relay.onEvent({
+    type: 'tool-input', conversationId: 'conversation', messageId: 'message_stream',
+    toolCallId: 'stream_call_1', toolName: 'stream_answer', input: {},
+    position: { batch: 2, index: 0 },
+  });
+  relay.onEvent({
+    type: 'tool-output', conversationId: 'conversation', toolCallId: 'stream_call_1',
+    output: 'Delivery preference noted. Continue with the answer.',
+    position: { batch: 3, index: 0 },
+  });
+  const pieces = text.match(/[\s\S]{1,1500}/g)!;
+  pieces.forEach((delta, index) => relay.onEvent({
+    type: 'message-delta', conversationId: 'conversation', messageId: 'message_stream',
+    kind: 'text', delta, position: { batch: 4 + index, index: 0 },
+  }));
+  relay.onEvent({
+    type: 'message-completed', conversationId: 'conversation', messageId: 'message_stream',
+    position: { batch: 4 + pieces.length, index: 0 },
+  });
+  await relay.closeAndDrain();
+}
+
 test('a terminal-only final holds part 1 without a footer; the follow-up closes the reply', async () => {
   const h = harness();
   try {
@@ -343,38 +379,7 @@ test('a progressive stream holds part 1 and the continuation follows after stop'
   try {
     const text = longPlan();
     const parts = splitSlackMarkdownReply(text);
-    await h.presentation.freezeProgressiveEligibility({ allowed: true, reason: 'safe_early_release' });
-    const relay = await h.presentation.prepareReceipt({
-      instanceId: 'instance_stream',
-      receipt: { submissionId: 'submission_stream', acceptedAt: 'now', uid: 'uid' },
-      eligibility: { allowed: true, reason: 'safe_early_release' },
-    });
-    assert.ok(relay);
-    relay.onEvent({
-      type: 'message-started', conversationId: 'conversation',
-      submissionId: 'submission_stream', messageId: 'message_stream',
-      position: { batch: 1, index: 0 },
-    });
-    relay.onEvent({
-      type: 'tool-input', conversationId: 'conversation', messageId: 'message_stream',
-      toolCallId: 'stream_call_1', toolName: 'stream_answer', input: {},
-      position: { batch: 2, index: 0 },
-    });
-    relay.onEvent({
-      type: 'tool-output', conversationId: 'conversation', toolCallId: 'stream_call_1',
-      output: 'Delivery preference noted. Continue with the answer.',
-      position: { batch: 3, index: 0 },
-    });
-    const pieces = text.match(/[\s\S]{1,1500}/g)!;
-    pieces.forEach((delta, index) => relay.onEvent({
-      type: 'message-delta', conversationId: 'conversation', messageId: 'message_stream',
-      kind: 'text', delta, position: { batch: 4 + index, index: 0 },
-    }));
-    relay.onEvent({
-      type: 'message-completed', conversationId: 'conversation', messageId: 'message_stream',
-      position: { batch: 4 + pieces.length, index: 0 },
-    });
-    await relay.closeAndDrain();
+    await streamLongAnswer(h, text);
 
     const streamed = h.calls
       .filter((call) => call.method === 'chat.startStream' || call.method === 'chat.appendStream')
@@ -403,6 +408,54 @@ test('a progressive stream holds part 1 and the continuation follows after stop'
     assert.equal(`${first}\n\n${continuation}`.replace(/\s/g, ''), text.replace(/\s/g, ''));
     assert.ok(parts.length >= 2);
     assert.deepEqual(blockTypes(post!.input), ['markdown', 'context']);
+  } finally {
+    h.close();
+  }
+});
+
+test('a final posted fresh after its plan froze for a stream reuses the frozen split', async () => {
+  const h = harness();
+  try {
+    const recorded: Array<{ messageTs: string; text: string }> = [];
+    const presenter = new WebClientPresenter(h.client, {
+      channelId: ROOT.channelId,
+      threadTs: ROOT.threadTs,
+      agentName: PERSONA.name,
+      visibleOwner: { kind: 'selected_agent', persona: PERSONA },
+      agentId: 'agent_planning',
+      userId: ROOT.requesterUserId,
+      workspaceId: ROOT.workspaceId,
+    }, undefined, {
+      agentViewPresentation: h.presentation,
+      onPublicDelivery: (delivery) => { recorded.push(delivery); },
+    });
+    const text = longPlan();
+    await streamLongAnswer(h, text);
+    const streamedChars = v3(h).stream.acknowledgedByteLength;
+    assert.ok(streamedChars > 0);
+    const split = { minFirstPartLength: streamedChars };
+    const frozen = splitSlackMarkdownReply(text, split);
+    assert.notEqual(frozen[0], splitSlackMarkdownReply(text)[0], 'the default split differs');
+
+    // The plan froze for the stream; then the final must post fresh on the
+    // fallback route, where the stream's prefix no longer shapes the split.
+    mutate(h, { kind: 'retire_stream_for_file_share' });
+    mutate(h, { kind: 'file_share_stream_retired', messageTs: '1785800100.000200' });
+    mutate(h, { kind: 'record_terminal_delivery_intent', operationId: 'terminal_first', result: 'answer' });
+    assert.equal(await h.presentation.planContinuations(frozen, undefined, [], split), true);
+    mutate(h, {
+      kind: 'record_terminal_delivery_receipt', operationId: 'terminal_first', certainty: 'failed',
+    });
+
+    await presenter.deliverFinal(text, 'markdown');
+    const [final, continuation] = posts(h);
+    assert.ok(final && continuation);
+    assert.equal((final.input.blocks as Array<{ text?: string }>)[0]!.text, frozen[0]);
+    assert.deepEqual(blockTypes(final.input), ['markdown']);
+    assert.equal((continuation.input.blocks as Array<{ text?: string }>)[0]!.text, frozen[1]);
+    assert.deepEqual(blockTypes(continuation.input), ['markdown', 'context']);
+    assert.deepEqual(recorded.map((entry) => entry.text), frozen);
+    assert.equal(v3(h).continuations?.state, 'delivered');
   } finally {
     h.close();
   }

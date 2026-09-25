@@ -226,8 +226,20 @@ interface SlackPresentationContinuationPart {
  */
 interface SlackPresentationContinuations {
   state: 'active' | 'delivered' | 'abandoned';
+  /**
+   * How the answer was split when the plan froze. A final that posts fresh
+   * instead of on its stream splits the same way, so it ends exactly where
+   * these follow-ups begin.
+   */
+  split?: SlackReplySplit;
   parts: SlackPresentationContinuationPart[];
   closing: SlackReplyClosing;
+}
+
+/** Options of `splitSlackMarkdownReply` that shape the first message. */
+export interface SlackReplySplit {
+  minFirstPartLength?: number;
+  firstPartLimit?: number;
 }
 
 const MAX_SLACK_CONTINUATION_PARTS = 3;
@@ -591,6 +603,7 @@ export type SlackPresentationMutation =
   | { kind: 'abandon_terminal_delivery'; operationId: string }
   | {
       kind: 'record_continuation_plan';
+      split?: SlackReplySplit;
       parts: readonly string[];
       closing: SlackReplyClosing;
     }
@@ -2255,9 +2268,11 @@ function applyMutation(
         throw stateError('invalid_input', 'A reply has one to three continuation messages.');
       }
       for (const text of mutation.parts) validateContinuationText(text);
+      validateReplySplit(mutation.split);
       validateReplyClosing(mutation.closing);
       next.continuations = {
         state: 'active',
+        ...(mutation.split ? { split: structuredClone(mutation.split) } : {}),
         parts: mutation.parts.map((text) => ({ text })),
         closing: structuredClone(mutation.closing),
       };
@@ -2947,6 +2962,16 @@ function isStoredV3Presentation(
   }
 }
 
+function validateReplySplit(split: SlackReplySplit | undefined): void {
+  if (split === undefined) return;
+  for (const value of [split.minFirstPartLength, split.firstPartLimit]) {
+    if (value !== undefined && (!Number.isSafeInteger(value) || value < 0 ||
+        value > MAX_SLACK_CONTINUATION_TEXT_CHARS)) {
+      throw stateError('invalid_input', 'Continuation split must be bounded character counts.');
+    }
+  }
+}
+
 function validateContinuationText(text: string): void {
   if (typeof text !== 'string' || text.length < 1 ||
       text.length > MAX_SLACK_CONTINUATION_TEXT_CHARS) {
@@ -3007,6 +3032,7 @@ function isStoredContinuations(value: SlackPresentationContinuations | undefined
   if ((value.state !== 'active' && value.state !== 'delivered' && value.state !== 'abandoned') ||
       !Array.isArray(value.parts) || value.parts.length < 1 ||
       value.parts.length > MAX_SLACK_CONTINUATION_PARTS) return false;
+  validateReplySplit(value.split);
   validateReplyClosing(value.closing);
   return value.parts.every((part) => {
     validateContinuationText(part.text);
