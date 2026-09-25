@@ -670,3 +670,38 @@ test("a runner repairs its own turn's failed Slack interaction cleanup", async (
     assert.deepEqual(h.events.slice(4), []);
   } finally { db.close(); }
 });
+
+test("a retired aged stream in the runner's copy is published and accepted by the state store", async () => {
+  const runnerDb = openStateDb(':memory:');
+  const sharedDb = openStateDb(':memory:');
+  try {
+    const local = new SlackRunPresentationStoreLogic(runnerDb, () => NOW);
+    const shared = new SlackRunPresentationStoreLogic(sharedDb, () => NOW);
+    const published: SlackRunPresentation[] = [];
+    const presentation = runnerPresentationState({
+      local,
+      remote: { matchFlueObservation: async () => undefined, getLatestThreadSessionGeneration: async () => 5 },
+      putRemote: async (value) => { published.push(value); shared.putSnapshot(value); },
+    });
+    let current = local.create(v3Input('run_aged', 'turn_aged'));
+    shared.putSnapshot(current);
+    current = advance(local, current, { kind: 'stream_start_intent' });
+    current = advance(local, current, {
+      kind: 'stream_started', messageTs: '1800000000.000200',
+      flue: { instanceId: 'instance_aged', submissionId: 'submission_aged' },
+    });
+    const result = await presentation.state.transitionRunPresentation({
+      runId: current.runId, workBindingGeneration: current.workBindingGeneration,
+      runFencingToken: current.runFencingToken, expectedProjectionVersion: current.projectionVersion,
+      expectedStreamState: 'streaming', mutation: { kind: 'retire_aged_stream', messageTs: '1800000000.000200' },
+    });
+    assert.equal(result.outcome, 'applied');
+    const retired = shared.get('run_aged')!;
+    assert.equal(retired.stream.state, 'fallback');
+    assert.equal(retired.repairRequired, true);
+    assert.equal(published.at(-1)!.projectionVersion, retired.projectionVersion);
+  } finally {
+    runnerDb.close();
+    sharedDb.close();
+  }
+});
