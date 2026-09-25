@@ -83,6 +83,11 @@ import type { FrozenRuntimePlanDecision } from './turn-job-types.ts';
 import type { FlueDispatchReceiptV1 } from './turn-job-types.ts';
 import type { SlackProgressiveReadRelay } from './progressive-relay.ts';
 import {
+  TurnLatencyTracker,
+  type TurnFirstWrite,
+  type TurnLatencyContext,
+} from '../observability/runtime-latency.ts';
+import {
   decideProgressiveEligibility,
   type ProgressiveEligibilityDecision,
 } from './progressive-eligibility.ts';
@@ -285,6 +290,13 @@ export interface RunTurnOptions {
   progressiveAttributionProven?: boolean;
   /** Canonical presentation writer; absent keeps the legacy terminal path. */
   presentationState?: SlackPresentationStatePort;
+  /**
+   * Relay context for the content-free `turn_latency` log. Present only when a
+   * durable relay runs the turn; absent emits nothing.
+   */
+  turnLatency?: TurnLatencyContext;
+  /** Set by `runTurn` itself when `turnLatency` is present. */
+  onSlackWrite?: (surface: TurnFirstWrite) => void;
 }
 
 export const WORKSPACE_DEFAULT_MODEL_REPAIR_TEXT =
@@ -312,12 +324,53 @@ function resolveManagementApprovalDependencies(
  * completes. `runTurn` throws only on a genuine delivery failure or when
  * reconciliation explicitly requires recovery. Callers release claims for a
  * retryable delivery failure and retain them for recovery-required Runs.
+ *
+ * With `options.turnLatency`, each attempt also emits one `turn_latency` log
+ * (admission to first acknowledged Slack write and to final) when it returns
+ * or throws. Logging never changes the outcome.
  */
 export async function runTurn(
   turn: NormalizedSlackTurn,
   assignment: ResolvedAssignment,
   platformEnv: PlatformEnv | undefined,
   options: RunTurnOptions = {},
+): Promise<void> {
+  if (!options.turnLatency) return runTurnAttempt(turn, assignment, platformEnv, options);
+  const tracker = new TurnLatencyTracker(options.turnLatency, {
+    ...(options.turnId ? { turnJobId: options.turnId } : {}),
+    ...(options.runId ? { runId: options.runId } : {}),
+    ...(options.runAttempt === undefined ? {} : { attempt: options.runAttempt }),
+  });
+  const { onDelivered, onDeferredTerminal } = options;
+  try {
+    await runTurnAttempt(turn, assignment, platformEnv, {
+      ...options,
+      onSlackWrite: (surface) => tracker.markSlackWrite(surface),
+      onDelivered: async (outcome) => {
+        tracker.markFinal('delivered');
+        await onDelivered?.(outcome);
+      },
+      ...(onDeferredTerminal
+        ? {
+            onDeferredTerminal: async () => {
+              tracker.markFinal('deferred');
+              await onDeferredTerminal();
+            },
+          }
+        : {}),
+    });
+    tracker.emit('returned');
+  } catch (error) {
+    tracker.emit('threw');
+    throw error;
+  }
+}
+
+async function runTurnAttempt(
+  turn: NormalizedSlackTurn,
+  assignment: ResolvedAssignment,
+  platformEnv: PlatformEnv | undefined,
+  options: RunTurnOptions,
 ): Promise<void> {
   const turnWorkspaceId = effectiveTurnSlackInstallationId(turn);
   const installationContext = options.installationContext ?? (
@@ -561,6 +614,9 @@ export async function runTurn(
           memoryItems: preparedMemory?.footerItems,
         },
         onNativeStarted: () => onNativeStarted(),
+        ...(options.onSlackWrite
+          ? { onStreamStarted: () => options.onSlackWrite?.('stream') }
+          : {}),
       })
     : undefined;
   // Once per turn; a failed hint never holds back the checklist.
@@ -620,7 +676,9 @@ export async function runTurn(
       ? { onPublicDelivery: options.onPublicMessageDelivered }
       : {}),
   });
-  await agentViewPresentation?.beginAgentSessionProcessing();
+  if (await agentViewPresentation?.beginAgentSessionProcessing()) {
+    options.onSlackWrite?.('agent_session');
+  }
   const statusGeneration = options.turnId ?? `msg:${turn.channelId}:${turn.messageTs}`;
   const statusInstanceId = runtimePlanDecision?.instanceId ?? agentConversationKey;
   const semanticActivityEnabled = frozenPresentation?.schemaVersion === 3
@@ -653,6 +711,7 @@ export async function runTurn(
       }
       if (frozenPresentation?.schemaVersion === 3 && !activityWrite) return false;
       const succeeded = await presenter.setStatus(update, activityWrite);
+      if (succeeded) options.onSlackWrite?.('activity_status');
       try {
         const receipt = presenter.activityReceipt();
         await agentViewPresentation?.recordActivityReceipt(
@@ -672,7 +731,9 @@ export async function runTurn(
       if (!semanticActivityEnabled || !agentViewPresentation) return false;
       const durable = await agentViewPresentation.prepareActivityRefresh(update);
       if (!durable) return false;
-      return presenter.setStatus(update, durable);
+      const succeeded = await presenter.setStatus(update, durable);
+      if (succeeded) options.onSlackWrite?.('activity_status');
+      return succeeded;
     },
   };
   const statusTurn = registerSlackStatusTurn(statusInstanceId, activityPresenter, {
@@ -1046,6 +1107,7 @@ export async function runTurn(
       } catch {
         console.warn('[chickpea] Slack work acknowledgment failed');
       }
+      if (workAcknowledgment?.created) options.onSlackWrite?.('reaction');
       if (workAcknowledgment) {
         await recordInteractionProgress({
           acknowledgment: {

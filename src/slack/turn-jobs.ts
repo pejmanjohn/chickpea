@@ -115,6 +115,13 @@ export interface PendingTurnJob {
   flueSettlement?: FlueSettlementCheckpointV1;
   dispatchStartedAt?: number;
   recoveryReason?: string;
+  /** Durable admission time; the turn latency log measures from here. */
+  enqueuedAt?: number;
+  /**
+   * When the event reached this deployment: the gateway inbox acceptance time
+   * for a gateway delivery, otherwise the admission time. Null on older rows.
+   */
+  receivedAt?: number;
 }
 
 export interface SlackProposalApprovalQuery {
@@ -155,15 +162,20 @@ interface TurnJobRow {
   submission_id?: string | null;
   observation_json?: string | null;
   recovery_reason?: string | null;
+  enqueued_at?: number | null;
+  received_at?: number | null;
 }
 
 const TURN_JOB_SELECT_COLUMNS = `id, evt_key, msg_key, turn_json, assignment_json, run_id,
   execution_authority, attempts, progress_json, runtime_plan_json,
   agent_instance_id, dispatch_envelope_json,
   dispatch_receipt_json, flue_settlement_json, dispatch_started_at,
-  submission_id, observation_json, recovery_reason`;
+  submission_id, observation_json, recovery_reason, enqueued_at, received_at`;
 
 export class TurnJobStoreLogic {
+  /** Receipt times of gateway deliveries being turned into jobs, by event ID. */
+  private readonly receiptTimes = new Map<string, number>();
+
   constructor(
     private readonly db: StateDb,
     private readonly now: () => number = Date.now,
@@ -191,7 +203,8 @@ export class TurnJobStoreLogic {
         submission_id TEXT,
         observation_json TEXT,
         recovery_reason TEXT,
-        enqueued_at INTEGER NOT NULL
+        enqueued_at INTEGER NOT NULL,
+        received_at INTEGER
       )`,
     );
     const columns = db.all('PRAGMA table_info(turn_jobs)');
@@ -230,6 +243,9 @@ export class TurnJobStoreLogic {
     }
     if (!columns.some((column) => column.name === 'recovery_reason')) {
       db.exec('ALTER TABLE turn_jobs ADD COLUMN recovery_reason TEXT');
+    }
+    if (!columns.some((column) => column.name === 'received_at')) {
+      db.exec('ALTER TABLE turn_jobs ADD COLUMN received_at INTEGER');
     }
     db.exec('CREATE INDEX IF NOT EXISTS turn_jobs_instance_id_idx ON turn_jobs(agent_instance_id)');
     db.exec('CREATE INDEX IF NOT EXISTS turn_jobs_submission_id_idx ON turn_jobs(submission_id)');
@@ -276,12 +292,25 @@ export class TurnJobStoreLogic {
     return this.insert(job);
   }
 
+  /**
+   * While a queued delivery is processed, jobs admitted for its Slack event
+   * record when the delivery was received rather than when it was admitted.
+   * Returns the release function; call it once processing ends.
+   */
+  noteReceipt(eventId: string, receivedAt: number): () => void {
+    this.receiptTimes.set(eventId, receivedAt);
+    return () => {
+      if (this.receiptTimes.get(eventId) === receivedAt) this.receiptTimes.delete(eventId);
+    };
+  }
+
   private insert(job: TurnJob): boolean {
+    const enqueuedAt = this.now();
     const inserted = this.db.run(
       `INSERT OR IGNORE INTO turn_jobs (
         id, evt_key, msg_key, turn_json, assignment_json, run_id, execution_authority,
-        attempts, delivered, status, enqueued_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, 'pending', ?)`,
+        attempts, delivered, status, enqueued_at, received_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, 'pending', ?, ?)`,
       job.id,
       job.evtKey,
       job.msgKey,
@@ -289,7 +318,8 @@ export class TurnJobStoreLogic {
       JSON.stringify(job.assignment),
       job.runId ?? null,
       job.executionAuthority ?? 'legacy',
-      this.now(),
+      enqueuedAt,
+      Math.min(this.receiptTimes.get(job.turn.eventId) ?? enqueuedAt, enqueuedAt),
     );
     return inserted.changes === 1;
   }
@@ -1264,6 +1294,12 @@ export class TurnJobStoreLogic {
         ? {}
         : { dispatchStartedAt: Number(row.dispatch_started_at) }),
       ...(row.recovery_reason ? { recoveryReason: row.recovery_reason } : {}),
+      ...(row.enqueued_at === null || row.enqueued_at === undefined
+        ? {}
+        : { enqueuedAt: Number(row.enqueued_at) }),
+      ...(row.received_at === null || row.received_at === undefined
+        ? {}
+        : { receivedAt: Number(row.received_at) }),
     };
   }
 }

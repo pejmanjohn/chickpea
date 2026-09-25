@@ -128,6 +128,8 @@ interface AgentViewPresentationOptions {
   now?: () => number;
   wait?: (milliseconds: number) => Promise<void>;
   onNativeStarted?: () => Promise<void>;
+  /** Observability only: Slack acknowledged a progressive or native stream start. */
+  onStreamStarted?: () => void;
   onFinalized?: (record: SlackPresentationFinalizationRecord) => MaybePromise<void>;
 }
 
@@ -1231,6 +1233,7 @@ export class SlackAgentViewPresentation {
         requireSlackTs(started.ts),
         { instanceId, submissionId, messageId: chunk.messageId },
       );
+      this.observeStreamStarted();
       await this.recordAcknowledgedPrefix(presentation, chunk.position, safePrefix);
       this.nextAppendAt = this.now() + this.appendIntervalMs();
       return;
@@ -1378,6 +1381,7 @@ export class SlackAgentViewPresentation {
       requireSlackTs(started.ts),
       { instanceId, submissionId },
     );
+    this.observeStreamStarted();
     try {
       await this.options.onNativeStarted?.();
     } catch {
@@ -1826,6 +1830,14 @@ export class SlackAgentViewPresentation {
       await this.transition(presentation, { kind: 'mark_unknown', degradationReason });
     } catch {
       // The original uncertain Slack effect is the primary recovery signal.
+    }
+  }
+
+  private observeStreamStarted(): void {
+    try {
+      this.options.onStreamStarted?.();
+    } catch {
+      // Latency observation cannot affect a stream Slack already accepted.
     }
   }
 
