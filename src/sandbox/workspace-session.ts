@@ -10,16 +10,15 @@ import {
   serializeSandboxActivation,
   type DestroyableSandbox,
 } from './lifecycle.ts';
+import { opaqueId } from '../work/admission.ts';
 import { sandboxThreadKey } from './thread-key.ts';
 import { requireSandboxTurnId, type SandboxTurnContext } from './turn-context.ts';
+import { DEFAULT_WORKSPACE_NAME } from './workspace-limits.ts';
 import {
   WORKSPACE_DIR,
   workspaceFingerprint,
   type WorkspaceTurnState,
 } from './workspace-lifecycle.ts';
-
-/** The one workspace a conversation has until named workspaces exist. */
-export const DEFAULT_WORKSPACE_NAME = 'main';
 
 /**
  * The Sandbox Durable Object id of a conversation's default workspace. It is
@@ -28,6 +27,34 @@ export const DEFAULT_WORKSPACE_NAME = 'main';
  */
 export function defaultWorkspaceId(conversationKey: string): string {
   return sandboxThreadKey(conversationKey);
+}
+
+/**
+ * The Sandbox Durable Object id of a named workspace at a retirement
+ * generation. The default workspace at generation 0 keeps the legacy key;
+ * any other name appends `:name` to that key's hash input, and a retired
+ * generation appends `:n`, so each is its own container and checkpoint. The
+ * coding worker's instance id derives from this id plus its binding
+ * (./coding-worker-binding.ts), so a new id always means a new worker.
+ */
+export function workspaceIdFor(conversationKey: string, name: string, generation = 0): string {
+  const base = defaultWorkspaceId(conversationKey);
+  if (name === DEFAULT_WORKSPACE_NAME && generation === 0) return base;
+  return opaqueId('sandbox', generation === 0 ? `${base}:${name}` : `${base}:${name}:${generation}`);
+}
+
+/**
+ * The monthly-cap reservation for a workspace's container start. The Durable
+ * Object reserves under its turn id; every workspace but the default one
+ * qualifies that with its own id, so two workspaces started in one turn count
+ * as two sessions while a retried turn still reuses its reservation.
+ */
+export function workspaceReservationId(
+  conversationKey: string,
+  workspaceId: string,
+  reservationId: string,
+): string {
+  return workspaceId === defaultWorkspaceId(conversationKey) ? reservationId : `${reservationId}:${workspaceId}`;
 }
 
 /** What the Sandbox DO reports about a workspace without starting a container. */

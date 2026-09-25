@@ -26,11 +26,16 @@ import {
 } from '../src/sandbox/coding-worker-binding.ts';
 import { CODING_WORKER_INSTRUCTIONS } from '../src/sandbox/coding-worker-instructions.ts';
 import {
-  DEFAULT_WORKSPACE_NAME,
   WorkspaceSession,
   defaultWorkspaceId,
+  workspaceIdFor,
   type WorkspaceSandboxStub,
 } from '../src/sandbox/workspace-session.ts';
+import {
+  DEFAULT_WORKSPACE_NAME,
+  MAX_RUNNING_TASKS_PER_WORKSPACE,
+  WorkspaceLimitError,
+} from '../src/sandbox/workspace-limits.ts';
 import {
   MAX_WORKSPACE_TASKS_PER_RESPONSE,
   WORKSPACE_TASK_TIMEOUT_MS,
@@ -38,8 +43,10 @@ import {
   createWorkspaceTaskTool,
   pullRequestLinks,
   workerBranch,
+  emptyWorkspaceTaskResponseState,
   type CodingWorkerClient,
   type WorkspaceTaskResponseState,
+  type WorkspaceTaskToolOptions,
 } from '../src/sandbox/workspace-task.ts';
 import { WORKSPACE_TOOL_NAMES } from '../src/sandbox/workspace-tools.ts';
 import {
@@ -177,6 +184,12 @@ interface Harness {
   milestones: WorkspaceMilestoneRecord[];
 }
 
+const PR_7 = { number: 7, url: 'https://github.com/acme/app/pull/7', repository: 'acme/app', branch: 'fix-test' };
+/** The pull request the fake workspace egress has recorded this turn: the first one dispatched. */
+let egressRecorded: typeof PR_7 | undefined;
+/** What the next dispatched task makes egress record; undefined when it opens none. */
+let nextDispatchOpens: typeof PR_7 | undefined;
+
 function stub(calls: string[], options: { broken?: boolean } = {}): WorkspaceSandboxStub {
   return {
     async getTurnId() { return 'turn-1'; },
@@ -198,7 +211,7 @@ function stub(calls: string[], options: { broken?: boolean } = {}): WorkspaceSan
     async endTurn() {},
     async applyGitIdentity() {},
     async getTurnProgress() {
-      return { pullRequest: { number: 7, url: 'https://github.com/acme/app/pull/7', repository: 'acme/app', branch: 'fix-test' } };
+      return egressRecorded ? { pullRequest: egressRecorded } : {};
     },
   };
 }
@@ -228,6 +241,7 @@ function receipt(submissionId = 'sub-1'): DispatchReceipt {
 }
 
 function harness(): Harness {
+  resetEgress();
   return {
     calls: [],
     dispatched: [],
@@ -235,16 +249,25 @@ function harness(): Harness {
     started: [],
     progress: [],
     steps: new Map(),
-    state: { started: 0, running: new Set() },
+    state: emptyWorkspaceTaskResponseState(),
     milestones: [],
   };
+}
+
+function resetEgress(opens: typeof PR_7 | undefined = PR_7) {
+  egressRecorded = undefined;
+  nextDispatchOpens = opens;
 }
 
 function taskTool(
   h: Harness,
   target: WorkspaceSession | undefined,
   observe: CodingWorkerClient['observe'],
-  extra: { taskTimeoutMs?: number; onMilestone?: (record: WorkspaceMilestoneRecord) => void } = {},
+  extra: {
+    taskTimeoutMs?: number;
+    onMilestone?: (record: WorkspaceMilestoneRecord) => void;
+    resolve?: WorkspaceTaskToolOptions['resolve'];
+  } = {},
 ) {
   return createWorkspaceTaskTool({
     resolve: async (name) => (name === DEFAULT_WORKSPACE_NAME ? target : undefined),
@@ -255,6 +278,8 @@ function taskTool(
         async dispatch(request) {
           h.calls.push('dispatch');
           h.dispatched.push({ instanceId, ...request });
+          // Egress keeps only the first pull request a workspace sees in a turn.
+          egressRecorded ??= nextDispatchOpens;
           return receipt();
         },
         async abort() {
@@ -274,10 +299,12 @@ function taskTool(
 
 async function run(tool: ReturnType<typeof taskTool>, h: Harness, data: object, toolCallId = 'call-1', signal?: AbortSignal) {
   const step = {
+    // Steps are recorded per tool call, as Flue records them.
     async do<T>(name: string, fn: () => T | Promise<T>): Promise<T> {
-      if (h.steps.has(name)) return h.steps.get(name) as T;
+      const key = `${toolCallId}:${name}`;
+      if (h.steps.has(key)) return h.steps.get(key) as T;
       const value = await fn();
-      h.steps.set(name, value);
+      h.steps.set(key, value);
       return value;
     },
   };
@@ -326,12 +353,12 @@ test('workspace_task activates the workspace, dispatches once with the binding, 
   assert.equal('uid' in sent, false, 'initialData is never combined with a uid condition');
   assert.deepEqual(h.started, ['openai/gpt-6']);
   assert.deepEqual(h.aborted, []);
-  assert.deepEqual(h.state, { started: 1, running: new Set() });
+  assert.deepEqual(h.state, { started: 1, running: new Map() });
 });
 
 test('a retried coordinator replays the recorded dispatch instead of starting a second task', async () => {
   const h = harness();
-  h.steps.set('dispatch', receipt('sub-earlier'));
+  h.steps.set('call-1:dispatch', receipt('sub-earlier'));
   const tool = taskTool(h, workspace([]), async ({ receipt: observed }) => {
     assert.equal(observed.submissionId, 'sub-earlier');
     return reply('done');
@@ -402,7 +429,10 @@ test('a broken container or a spent session cap is answered before any worker is
   const none = await run(taskTool(missing, undefined, async () => reply('x')), missing, { task: 'x' });
   assert.equal(none.reason, 'workspace_unavailable');
   const named = await run(taskTool(missing, workspace([]), async () => reply('x')), missing, { task: 'x', workspace: 'other' });
-  assert.equal(named.reason, 'unknown_workspace');
+  assert.equal(named.reason, 'workspace_unavailable');
+  const invalid = await run(taskTool(missing, workspace([]), async () => reply('x')), missing, { task: 'x', workspace: 'no spaces' });
+  assert.equal(invalid.reason, 'invalid_input');
+  assert.equal(missing.dispatched.length, 0);
 });
 
 test('one task runs per workspace at a time, and a response delegates at most the task limit', async () => {
@@ -417,7 +447,9 @@ test('one task runs per workspace at a time, and a response delegates at most th
   const first = run(tool, h, { task: 'one' }, 'call-1');
   await new Promise((resolve) => setTimeout(resolve, 5));
   const busy = await run(tool, h, { task: 'two' }, 'call-2');
+  assert.equal(MAX_RUNNING_TASKS_PER_WORKSPACE, 1);
   assert.equal(busy.reason, 'busy');
+  assert.equal(h.dispatched.length, 1, 'the busy task never reaches Flue\'s queue');
   release();
   assert.equal((await first).ok, true);
 
@@ -427,6 +459,81 @@ test('one task runs per workspace at a time, and a response delegates at most th
   const limited = await run(tool, h, { task: 'three' }, 'call-4');
   assert.equal(limited.reason, 'task_limit');
   assert.equal(h.dispatched.length, MAX_WORKSPACE_TASKS_PER_RESPONSE);
+});
+
+test('a later task in the same response never reports a pull request an earlier task opened', async () => {
+  const h = harness();
+  const target = workspace([]);
+  const replies = [
+    'Fixed it. Pull request: https://github.com/acme/app/pull/7',
+    'Updated the README on the same branch; no new pull request.',
+  ];
+  const tool = taskTool(h, target, async () => reply(replies.shift()!));
+  const first = await run(tool, h, { task: 'fix and open a PR' }, 'call-1');
+  assert.deepEqual(first.pullRequests, [PR_7]);
+  // The second task opens nothing; egress still holds the first task's record.
+  nextDispatchOpens = undefined;
+  const second = await run(tool, h, { task: 'update the README' }, 'call-2');
+  assert.equal(second.ok, true);
+  assert.deepEqual(second.pullRequests, []);
+});
+
+test('a retried task keeps the pull request it opened even though egress recorded it before the retry', async () => {
+  const h = harness();
+  const tool = taskTool(h, workspace([]), async () => reply('done'));
+  // The first attempt noted "no pull request yet" and dispatched; the worker
+  // opened one before the coordinator restarted.
+  h.steps.set('call-1:pull-request-before', { url: null });
+  h.steps.set('call-1:dispatch', receipt());
+  egressRecorded = PR_7;
+  const output = await run(tool, h, { task: 'x' }, 'call-1');
+  assert.deepEqual(output.pullRequests, [PR_7]);
+});
+
+test('tasks in two workspaces run in parallel on separate workers; the open cap refuses a third', async () => {
+  const h = harness();
+  const conversation = 'T1:C1:1700000000.000100';
+  const sessions = new Map(['api', 'web'].map((name) => [name, new WorkspaceSession({
+    id: workspaceIdFor(conversation, name),
+    name,
+    agentId: 'agent-1',
+    grants: [{ id: 'grant-1', installationId: 42, accountLogin: 'acme', fullName: 'acme/app', enabled: true }],
+    credentialMode: 'app',
+    mintStub: async () => stub([]),
+    reserveSession: async () => true,
+    toSandbox: async (activatable) => ({
+      async exists(path: string) { return activatable.exists(path); },
+    }) as unknown as Sandbox,
+  })]));
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const tool = taskTool(h, undefined, async () => {
+    await gate;
+    return reply('done');
+  }, {
+    resolve: async (name) => {
+      const found = sessions.get(name);
+      if (!found) throw new WorkspaceLimitError(['api', 'web']);
+      return found;
+    },
+  });
+  const api = run(tool, h, { task: 'api work', workspace: 'api' }, 'call-api');
+  const web = run(tool, h, { task: 'web work', workspace: 'Web' }, 'call-web');
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(h.state.running.size, 2, 'both workspaces have a task running');
+  const third = await run(tool, h, { task: 'docs work', workspace: 'docs' }, 'call-docs');
+  assert.equal(third.reason, 'workspace_limit');
+  assert.match(String(third.message), /At most 2 coding workspaces/);
+  release();
+  assert.equal((await api).workspace, 'api');
+  assert.equal((await web).workspace, 'web', 'names are normalized');
+  const [first, second] = h.dispatched;
+  assert.notEqual(first!.instanceId, second!.instanceId);
+  assert.deepEqual(
+    h.dispatched.map((sent) => sent.initialData.workspaceId).sort(),
+    [workspaceIdFor(conversation, 'api'), workspaceIdFor(conversation, 'web')].sort(),
+  );
+  assert.equal(h.state.running.size, 0);
 });
 
 test('long replies keep their end, where the result line is', async () => {
