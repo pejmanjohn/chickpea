@@ -8,6 +8,9 @@ import type {
 } from '../activity/status.ts';
 import type { ProgressiveStreamingMode } from '../memory/tool-policy.ts';
 import { hasCredentialLikeContent } from '../security/content-validation.ts';
+import { SlackArtifactReceiptSchema } from './artifact-receipts.ts';
+import type { SlackReplyClosing } from './reply-continuations.ts';
+import * as v from 'valibot';
 
 export const SLACK_PRESENTATION_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
 export const SLACK_PRESENTATION_FINALIZED_TTL_MS = 7 * 24 * 60 * 60 * 1_000;
@@ -208,6 +211,43 @@ type SlackPresentationCleanup =
       operation: SlackPresentationOperationReceipt;
     };
 
+/** One follow-up message of a reply longer than a single Slack message. */
+interface SlackPresentationContinuationPart {
+  /** Canonical markdown this message carries; rendered when it posts. */
+  text: string;
+  operation?: SlackPresentationOperationReceipt;
+  messageTs?: string;
+}
+
+/**
+ * Ordered children of the canonical final. The terminal delivery above stays
+ * the one final; these parts post only after it is acknowledged. `closing`
+ * is frozen with the plan, so repair renders the last part without the turn.
+ */
+interface SlackPresentationContinuations {
+  state: 'active' | 'delivered' | 'abandoned';
+  /**
+   * How the answer was split when the plan froze. A final that posts fresh
+   * instead of on its stream splits the same way, so it ends exactly where
+   * these follow-ups begin.
+   */
+  split?: SlackReplySplit;
+  parts: SlackPresentationContinuationPart[];
+  closing: SlackReplyClosing;
+}
+
+/** Options of `splitSlackMarkdownReply` that shape the first message. */
+export interface SlackReplySplit {
+  minFirstPartLength?: number;
+  firstPartLimit?: number;
+}
+
+const MAX_SLACK_CONTINUATION_PARTS = 3;
+const MAX_SLACK_CONTINUATION_TEXT_CHARS = 12_000;
+const MAX_SLACK_CLOSING_FACT_BYTES = 2_048;
+const MAX_SLACK_CLOSING_TABLE_BYTES = 128 * 1_024;
+const MAX_SLACK_CLOSING_FILES = 10;
+
 interface SlackPresentationRepairSchedule {
   attempts: number;
   nextRetryAt: number;
@@ -326,6 +366,8 @@ export interface SlackRunPresentationV3 extends SlackRunPresentationBase {
   agentSession: SlackPresentationAgentSession;
   terminalDelivery: SlackPresentationTerminalDelivery;
   cleanup: SlackPresentationCleanup;
+  /** Follow-up messages of a long answer, absent when it fits in one message. */
+  continuations?: SlackPresentationContinuations;
   /** Durable pacing for background repair, absent until the first drain attempt. */
   repair?: SlackPresentationRepairSchedule;
   plan?: SlackPresentationPlanV3;
@@ -559,6 +601,21 @@ export type SlackPresentationMutation =
       certainty: Exclude<SlackPresentationReceiptCertainty, 'pending'>;
     }
   | { kind: 'abandon_terminal_delivery'; operationId: string }
+  | {
+      kind: 'record_continuation_plan';
+      split?: SlackReplySplit;
+      parts: readonly string[];
+      closing: SlackReplyClosing;
+    }
+  | { kind: 'record_continuation_intent'; index: number; operationId: string }
+  | {
+      kind: 'record_continuation_receipt';
+      index: number;
+      operationId: string;
+      certainty: Exclude<SlackPresentationReceiptCertainty, 'pending'>;
+      messageTs?: string;
+    }
+  | { kind: 'abandon_continuations' }
   | { kind: 'supersede_failed_answer_delivery'; operationId: string }
   | { kind: 'retry_terminal_delivery'; operationId: string }
   | {
@@ -1005,6 +1062,7 @@ export class SlackRunPresentationStoreLogic {
          )
          AND (
            json_extract(presentation_json, '$.lifecyclePhase') <> 'settled'
+           OR json_extract(presentation_json, '$.continuations.state') = 'active'
            OR
            (
              json_type(presentation_json, '$.agentSession.disposition') IS NULL
@@ -2194,6 +2252,95 @@ function applyMutation(
       next.repairRequired = v3RepairRequired(next);
       return next;
     }
+    case 'record_continuation_plan': {
+      requireV3(current);
+      requireV3(next);
+      // The plan decides whether the final carries the footer, so it is frozen
+      // with the terminal intent and before that intent is acknowledged.
+      if (current.continuations) {
+        throw stateError('terminal_rewrite', 'The continuation plan is already frozen.');
+      }
+      if (current.terminalDelivery.state !== 'intended' ||
+          current.terminalDelivery.operation.certainty === 'acknowledged') {
+        throw stateError('invalid_transition', 'Continuations are planned with an unsent final.');
+      }
+      if (mutation.parts.length < 1 || mutation.parts.length > MAX_SLACK_CONTINUATION_PARTS) {
+        throw stateError('invalid_input', 'A reply has one to three continuation messages.');
+      }
+      for (const text of mutation.parts) validateContinuationText(text);
+      validateReplySplit(mutation.split);
+      validateReplyClosing(mutation.closing);
+      next.continuations = {
+        state: 'active',
+        ...(mutation.split ? { split: structuredClone(mutation.split) } : {}),
+        parts: mutation.parts.map((text) => ({ text })),
+        closing: structuredClone(mutation.closing),
+      };
+      next.repairRequired = v3RepairRequired(next);
+      return next;
+    }
+    case 'record_continuation_intent': {
+      requireV3(current);
+      requireV3(next);
+      const plan = current.continuations;
+      if (!plan || plan.state !== 'active' || !next.continuations) {
+        throw stateError('invalid_transition', 'No continuation is owed.');
+      }
+      if (current.terminalDelivery.state !== 'intended' ||
+          current.terminalDelivery.operation.certainty !== 'acknowledged') {
+        throw stateError('invalid_transition', 'Continuations follow an acknowledged final.');
+      }
+      const owed = plan.parts.findIndex((part) => part.operation?.certainty !== 'acknowledged');
+      const part = plan.parts[mutation.index];
+      if (mutation.index !== owed || !part ||
+          (part.operation && part.operation.certainty !== 'failed')) {
+        throw stateError('invalid_transition', 'Only the next unsent continuation may start.');
+      }
+      validateId(mutation.operationId, 'Continuation operation id');
+      // A retry keeps its operation id, so Slack can return the original post.
+      next.continuations.parts[mutation.index]!.operation = {
+        operationId: mutation.operationId,
+        certainty: 'pending',
+      };
+      next.repairRequired = v3RepairRequired(next);
+      return next;
+    }
+    case 'record_continuation_receipt': {
+      requireV3(current);
+      requireV3(next);
+      const part = current.continuations?.parts[mutation.index];
+      const nextPart = next.continuations?.parts[mutation.index];
+      if (current.continuations?.state !== 'active' || !part?.operation || !nextPart) {
+        throw stateError('invalid_transition', 'Continuation intent is missing.');
+      }
+      nextPart.operation = transitionReceipt(
+        part.operation,
+        mutation.operationId,
+        mutation.certainty,
+      );
+      if (mutation.certainty === 'acknowledged') {
+        const messageTs = mutation.messageTs ?? '';
+        validateSlackTimestamp(messageTs, 'Slack continuation coordinate');
+        nextPart.messageTs = messageTs;
+        if (next.continuations!.parts.every((entry) =>
+          entry.operation?.certainty === 'acknowledged'
+        )) next.continuations!.state = 'delivered';
+      } else if (mutation.messageTs !== undefined) {
+        throw stateError('invalid_input', 'Only an acknowledged continuation has a coordinate.');
+      }
+      next.repairRequired = v3RepairRequired(next);
+      return next;
+    }
+    case 'abandon_continuations': {
+      requireV3(current);
+      requireV3(next);
+      if (current.continuations?.state !== 'active' || !next.continuations) {
+        throw stateError('invalid_transition', 'Only owed continuations may be abandoned.');
+      }
+      next.continuations.state = 'abandoned';
+      next.repairRequired = v3RepairRequired(next);
+      return next;
+    }
     case 'supersede_failed_answer_delivery': {
       requireV3(current);
       requireV3(next);
@@ -2214,6 +2361,8 @@ function applyMutation(
         result: 'failure',
         operation: { operationId: mutation.operationId, certainty: 'pending' },
       };
+      // The failure notice replaces the answer, so its follow-ups are not owed.
+      if (next.continuations?.state === 'active') next.continuations.state = 'abandoned';
       next.lifecyclePhase = 'terminal_intended';
       next.repairRequired = v3RepairRequired(next);
       return next;
@@ -2780,6 +2929,7 @@ function isStoredV3Presentation(
       if (presentation.cleanup.disposition !== undefined &&
           presentation.cleanup.disposition !== 'superseded') return false;
     } else return false;
+    if (!isStoredContinuations(presentation.continuations)) return false;
     if (presentation.repair !== undefined && (
       !Number.isSafeInteger(presentation.repair.attempts) ||
       presentation.repair.attempts < 1 ||
@@ -2810,6 +2960,87 @@ function isStoredV3Presentation(
   } catch {
     return false;
   }
+}
+
+function validateReplySplit(split: SlackReplySplit | undefined): void {
+  if (split === undefined) return;
+  for (const value of [split.minFirstPartLength, split.firstPartLimit]) {
+    if (value !== undefined && (!Number.isSafeInteger(value) || value < 0 ||
+        value > MAX_SLACK_CONTINUATION_TEXT_CHARS)) {
+      throw stateError('invalid_input', 'Continuation split must be bounded character counts.');
+    }
+  }
+}
+
+function validateContinuationText(text: string): void {
+  if (typeof text !== 'string' || text.length < 1 ||
+      text.length > MAX_SLACK_CONTINUATION_TEXT_CHARS) {
+    throw stateError('invalid_input', 'Continuation text must fit one Slack message.');
+  }
+}
+
+function validateClosingFact(value: unknown, label: string, optional = true): void {
+  if (value === undefined && optional) return;
+  if (typeof value !== 'string' ||
+      new TextEncoder().encode(value).byteLength > MAX_SLACK_CLOSING_FACT_BYTES) {
+    throw stateError('invalid_input', `${label} must be a bounded string.`);
+  }
+}
+
+/** The footer, native table and completed files the reply's last message carries. */
+function validateReplyClosing(closing: SlackReplyClosing): void {
+  const footer = closing?.footer;
+  if (!footer || typeof footer !== 'object') {
+    throw stateError('invalid_input', 'Continuation footer is missing.');
+  }
+  validateClosingFact(footer.agentName, 'Footer Agent name', false);
+  validateId(footer.agentId, 'Footer Agent id');
+  validateClosingFact(footer.modelLabel, 'Footer model label');
+  validateClosingFact(footer.publicUrl, 'Footer public URL');
+  for (const flag of [footer.includeConfigureLink, footer.scheduled]) {
+    if (flag !== undefined && typeof flag !== 'boolean') {
+      throw stateError('invalid_input', 'Footer flags must be boolean.');
+    }
+  }
+  if (footer.memoryItems !== undefined) {
+    if (!Array.isArray(footer.memoryItems) || footer.memoryItems.length > 20) {
+      throw stateError('invalid_input', 'Footer memory items must be a bounded list.');
+    }
+    for (const item of footer.memoryItems) validateClosingFact(item, 'Footer memory item', false);
+  }
+  if (closing.table !== undefined) {
+    const block = closing.table.block as { type?: unknown } | undefined;
+    if (!block || (block.type !== 'table' && block.type !== 'data_table') ||
+        new TextEncoder().encode(JSON.stringify(closing.table)).byteLength >
+          MAX_SLACK_CLOSING_TABLE_BYTES ||
+        typeof closing.table.fallbackText !== 'string') {
+      throw stateError('invalid_input', 'Continuation table must be a bounded native table.');
+    }
+  }
+  if (closing.files !== undefined) {
+    if (!Array.isArray(closing.files) || closing.files.length < 1 ||
+        closing.files.length > MAX_SLACK_CLOSING_FILES ||
+        !closing.files.every((file) =>
+          v.is(SlackArtifactReceiptSchema, file) && file.schemaVersion === 2)) {
+      throw stateError('invalid_input', 'Continuation files must be completed receipts.');
+    }
+  }
+}
+
+function isStoredContinuations(value: SlackPresentationContinuations | undefined): boolean {
+  if (value === undefined) return true;
+  if ((value.state !== 'active' && value.state !== 'delivered' && value.state !== 'abandoned') ||
+      !Array.isArray(value.parts) || value.parts.length < 1 ||
+      value.parts.length > MAX_SLACK_CONTINUATION_PARTS) return false;
+  validateReplySplit(value.split);
+  validateReplyClosing(value.closing);
+  return value.parts.every((part) => {
+    validateContinuationText(part.text);
+    if (part.operation !== undefined && !isOperationReceipt(part.operation)) return false;
+    if (part.messageTs !== undefined) validateSlackTimestamp(part.messageTs, 'Slack continuation coordinate');
+    return (part.messageTs !== undefined) === (part.operation?.certainty === 'acknowledged');
+  }) && (value.state !== 'delivered' ||
+    value.parts.every((part) => part.operation?.certainty === 'acknowledged'));
 }
 
 function requireV3(
@@ -3013,7 +3244,8 @@ function v3RepairRequired(presentation: SlackRunPresentationV3): boolean {
       presentation.stream.state === 'starting' ||
       presentation.stream.state === 'finalizing' ||
       presentation.stream.state === 'fallback' ||
-      presentation.stream.state === 'unknown') return true;
+      presentation.stream.state === 'unknown' ||
+      presentation.continuations?.state === 'active') return true;
   const activityReceipt = presentation.currentActivity?.operation;
   const terminalSettled = presentationHasTerminalOutcome(presentation);
   const sharedCleanupSuperseded = presentation.activityProjection.surface ===
