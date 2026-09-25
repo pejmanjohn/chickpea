@@ -168,6 +168,8 @@ for (const withPendingTurn of [false, true]) {
       AbortController,
       drainAlarmTurnJobs,
       ALARM_TURN_BUDGET_MS: 60_000,
+      ALARM_TURN_HARD_CAP_MS: 120_000,
+      ALARM_PENDING_PER_THREAD: 4,
       ALARM_ADMISSION_RECHECK_MS: 2_000,
       ALARM_YIELD_REARM_MS: 1_000,
       MAX_TURN_DRAIN_BATCH: 25,
@@ -200,11 +202,13 @@ for (const withPendingTurn of [false, true]) {
     };
     const drainingProbe = new AlarmProbe();
     drainingProbe.ctx = storageProbe.ctx;
+    // A class field the method-only probe does not carry.
+    (drainingProbe as unknown as { carriedAlarmTurns: Map<string, string> }).carriedAlarmTurns = new Map();
     drainingProbe.createAlarmIdentityResolver = () => async () => { throw new Error('rate limited'); };
     drainingProbe.stores = {
       management: { cleanupRetention() {}, nextOutboxDueAt: () => NOW + 120_000 },
       turnJobs: {
-        listPending: () => withPendingTurn ? [{ turn: {}, progress: {}, assignment: {} }] : [],
+        listPendingByThread: () => withPendingTurn ? [{ turn: {}, progress: {}, assignment: {} }] : [],
         hasPending: () => withPendingTurn,
         hasPendingSlackInteractionCleanup: () => false,
       },
@@ -255,6 +259,8 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
     MAX_POST_DISPATCH_ATTEMPTS: 8,
     RELAY_RETRY_BACKOFF_MS: 2_000,
     ALARM_TURN_BUDGET_MS: 40,
+    ALARM_TURN_HARD_CAP_MS: 400,
+    ALARM_PENDING_PER_THREAD: 4,
     ALARM_ADMISSION_RECHECK_MS: 2,
     ALARM_YIELD_REARM_MS: 1_000,
     DURABLE_RECOVERY_FAILURE_TEXT: 'recovery notice',
@@ -320,6 +326,7 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
   };
   const probe = new AlarmProbe();
   probe.env = {};
+  (probe as unknown as { carriedAlarmTurns: Map<string, string> }).carriedAlarmTurns = new Map();
   probe.ctx = { storage: {
     async getAlarm() { return record.alarmAt; },
     async setAlarm(at: number) { record.alarmAt = at; },
@@ -328,7 +335,7 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
   probe.stores = {
     management: { cleanupRetention() {}, nextOutboxDueAt: () => undefined },
     turnJobs: {
-      listPending: () => [...jobs.values()].map((job) => structuredClone(job)),
+      listPendingByThread: () => [...jobs.values()].map((job) => structuredClone(job)),
       hasPending: (lane = 'legacy') => lane === 'legacy' && jobs.size > 0,
       hasPendingSlackInteractionCleanup: () => false,
       recordAttempt(id: string, attempts: number) {

@@ -31,6 +31,7 @@ function baseOptions(pending: Job[]) {
     startConcurrency: 4,
     maxActiveThreads: 16,
     budgetMs: 60_000,
+    hardCapMs: 120_000,
     recheckMs: 60_000,
   };
 }
@@ -195,7 +196,7 @@ test('the alarm budget yields every observing turn and reports a prompt re-arm',
   assert.equal(result.budgetExhausted, true);
   assert.equal(reasons.length, 2);
   assert.ok(reasons.every((reason) => reason instanceof AlarmTurnBudgetYield));
-  assert.ok(refreshes >= 2 && refreshes <= 3, 'admission stops at the budget');
+  assert.ok(refreshes >= 2, 'the drain kept admitting until the cut work unwound');
 });
 
 test('a store failure yields in-flight observations and then surfaces', async () => {
@@ -246,4 +247,127 @@ test('other due work runs on each re-check while a turn observes, never overlapp
   assert.equal(maxConcurrent, 1);
   assert.deepEqual(seenRunning[0], ['long'], 'records owned by a running job are identifiable');
   assert.equal(concurrent, 0, 'the drain returns only after its last tick settled');
+});
+
+test('after the budget, new messages still start while a delivery ignores the abort, and the cap returns', async () => {
+  const pending: Job[] = [{ id: 'delivering', thread: 'a' }];
+  const started: string[] = [];
+  const lateReasons: unknown[] = [];
+  const releaseDelivery = deferred();
+  const begin = Date.now();
+  const result = await drainAlarmTurnJobs({
+    ...baseOptions(pending),
+    startedAt: begin,
+    budgetMs: 30,
+    hardCapMs: 150,
+    recheckMs: 2,
+    initial: [...pending],
+    refresh: async () => {
+      // A DM lands after the budget ended, while the upload is still going.
+      if (Date.now() - begin > 40 && !pending.some((job) => job.id === 'dm')) {
+        pending.push({ id: 'dm', thread: 'b' });
+      }
+      return [...pending];
+    },
+    runJob: async (job, control) => {
+      started.push(job.id);
+      if (job.id === 'delivering') {
+        // Already past observation: a large upload does not react to aborts.
+        await releaseDelivery.promise;
+        return true;
+      }
+      control.observing();
+      await new Promise((resolve) => control.signal.addEventListener('abort', resolve, { once: true }));
+      lateReasons.push(control.signal.reason);
+      return false;
+    },
+  });
+  const elapsed = Date.now() - begin;
+  assert.deepEqual(started, ['delivering', 'dm'], 'the DM was admitted during the post-budget wait');
+  assert.equal(result.budgetExhausted, true);
+  assert.deepEqual(result.carried.map((job) => [job.id, job.threadKey]), [['delivering', 'a']]);
+  assert.ok(lateReasons[0] instanceof AlarmTurnBudgetYield, 'the late turn yields at the cap');
+  assert.ok(elapsed < 1_000, `the drain returned at its cap (${elapsed} ms)`);
+  releaseDelivery.resolve();
+  await result.carried[0]!.settled;
+});
+
+test('a carried job keeps its thread closed until it settles', async () => {
+  const pending: Job[] = [{ id: 'next', thread: 'a' }, { id: 'other', thread: 'b' }];
+  const carriedThreads = new Set(['a']);
+  const started: string[] = [];
+  await drainAlarmTurnJobs({
+    ...baseOptions(pending),
+    recheckMs: 1,
+    initial: [...pending],
+    carried: { threadKeys: () => carriedThreads, jobIds: () => new Set(['earlier']) },
+    runJob: async (job) => {
+      started.push(job.id);
+      pending.splice(pending.findIndex((entry) => entry.id === job.id), 1);
+      return true;
+    },
+  });
+  assert.deepEqual(started, ['other'], 'a delivery in flight is never started twice');
+});
+
+test('a slow inbox refresh cannot hold the budget or a thread successor', async () => {
+  const pending: Job[] = [
+    { id: 'first', thread: 'a' }, { id: 'second', thread: 'a' }, { id: 'long', thread: 'b' },
+  ];
+  const events: string[] = [];
+  const begin = Date.now();
+  const result = await drainAlarmTurnJobs({
+    ...baseOptions(pending),
+    startedAt: begin,
+    budgetMs: 40,
+    hardCapMs: 150,
+    recheckMs: 2,
+    initial: [...pending],
+    // One inbox item waits on a gateway that never answers.
+    refresh: () => new Promise<Job[]>(() => {}),
+    runJob: async (job, control) => {
+      events.push(`start:${job.id}`);
+      if (job.id === 'first') {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        return true;
+      }
+      if (job.id === 'long') {
+        control.observing();
+        await new Promise((resolve) => control.signal.addEventListener('abort', resolve, { once: true }));
+        events.push('yield:long');
+        return false;
+      }
+      return true;
+    },
+  });
+  const elapsed = Date.now() - begin;
+  assert.ok(events.indexOf('start:second') > events.indexOf('start:first'),
+    'a finished job starts its successor without waiting for the refresh');
+  assert.ok(events.includes('yield:long'));
+  assert.equal(result.budgetExhausted, true);
+  assert.ok(elapsed < 1_000, `the hung refresh did not hold the alarm (${elapsed} ms)`);
+});
+
+test('the budget counts from the alarm start, not the drain start', async () => {
+  const pending: Job[] = [{ id: 'long', thread: 'a' }];
+  let reason: unknown;
+  const result = await drainAlarmTurnJobs({
+    ...baseOptions(pending),
+    // The alarm already spent its budget draining the inbox before this.
+    startedAt: Date.now() - 1_000,
+    budgetMs: 500,
+    hardCapMs: 2_000,
+    recheckMs: 2,
+    initial: [...pending],
+    runJob: async (_job, control) => {
+      control.observing();
+      if (!control.signal.aborted) {
+        await new Promise((resolve) => control.signal.addEventListener('abort', resolve, { once: true }));
+      }
+      reason = control.signal.reason;
+      return false;
+    },
+  });
+  assert.equal(result.budgetExhausted, true);
+  assert.ok(reason instanceof AlarmTurnBudgetYield);
 });

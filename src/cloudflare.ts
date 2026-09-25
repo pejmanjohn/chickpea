@@ -187,7 +187,9 @@ import {
 import { AgentObservationYield, AgentPromptFailure } from './slack/flue-dispatch.ts';
 import {
   ALARM_ADMISSION_RECHECK_MS,
+  ALARM_PENDING_PER_THREAD,
   ALARM_TURN_BUDGET_MS,
+  ALARM_TURN_HARD_CAP_MS,
   ALARM_YIELD_REARM_MS,
   alarmYieldIsFree,
   drainAlarmTurnJobs,
@@ -744,6 +746,12 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
   private initError: string | undefined;
   /** Set while an alarm drains turns: new admissions start without waiting. */
   private alarmAdmissionWake: (() => void) | undefined;
+  /**
+   * Turn jobs an alarm returned without at its hard cap (job id to thread
+   * key), still running in this isolate. Their threads stay closed until they
+   * settle so a delivery in flight is never started a second time.
+   */
+  private readonly carriedAlarmTurns = new Map<string, string>();
 
   constructor(ctx: DurableObjectState, env: unknown) {
     super(ctx, env);
@@ -1792,6 +1800,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
    * storage error rather than dropping every job.
    */
   async alarm(): Promise<void> {
+    const alarmStartedAt = Date.now();
     this.stores ??= this.tryInit();
     if (!this.stores) {
       throw new Error(`state store unavailable in alarm: ${this.initError ?? 'unknown'}`);
@@ -1807,7 +1816,17 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       stores,
       this.env as PlatformEnv,
     );
-    const pending = stores.turnJobs.listPending(MAX_TURN_DRAIN_BATCH);
+    const threadKeyOf = (job: {
+      turn: Parameters<typeof slackAgentThreadKey>[0];
+      assignment: Parameters<typeof slackAgentThreadKey>[1];
+    }) => slackAgentThreadKey(job.turn, job.assignment);
+    const listPendingTurns = () => stores.turnJobs.listPendingByThread({
+      maxThreads: MAX_TURN_DRAIN_BATCH,
+      perThread: ALARM_PENDING_PER_THREAD,
+      threadKey: threadKeyOf,
+    });
+    const carriedJobIds = () => new Set(this.carriedAlarmTurns.keys());
+    const pending = listPendingTurns();
     if (pending.length === 0) {
       const cleanupPending = stores.turnJobs.hasPendingSlackInteractionCleanup();
       const resolveInstallation = this.createAlarmIdentityResolver(stores);
@@ -1818,11 +1837,12 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
         productTelemetry,
       );
       if (cleanupPending) {
-        await drainSlackInteractionCleanups(stores, resolveInstallation);
+        await drainSlackInteractionCleanups(stores, resolveInstallation, carriedJobIds());
       }
       const presentationRepairs = await drainTerminalPresentationRepairs(
         stores,
         resolveInstallation,
+        carriedJobIds(),
       );
       const scheduleActions = await drainCloudflareScheduleActions(stores, this.env as PlatformEnv);
       await drainCloudflareManagementReceipts(stores, resolveInstallation);
@@ -2187,14 +2207,18 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     // every observation before the alarm's wall-time limit (see
     // src/slack/alarm-turn-drain.ts).
     const DRAIN_CONCURRENCY = 4;
-    const turnDrain = await drainAlarmTurnJobs({
+    const turnDrain = await drainAlarmTurnJobs<(typeof pending)[number]>({
       initial: pending,
       jobId: (job) => job.id,
-      threadKey: (job) => slackAgentThreadKey(job.turn, job.assignment),
+      threadKey: threadKeyOf,
       runJob,
       refresh: async () => {
         needsRetry = (await drainGatewayInbox(stores, this.env as PlatformEnv)) || needsRetry;
-        return stores.turnJobs.listPending(MAX_TURN_DRAIN_BATCH);
+        return listPendingTurns();
+      },
+      carried: {
+        threadKeys: () => new Set(this.carriedAlarmTurns.values()),
+        jobIds: carriedJobIds,
       },
       // Due receipts, schedule actions, repairs, and cleanups keep moving
       // while a long turn observes. Records owned by a running job are its
@@ -2207,7 +2231,9 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       },
       startConcurrency: DRAIN_CONCURRENCY,
       maxActiveThreads: MAX_TURN_DRAIN_BATCH,
+      startedAt: alarmStartedAt,
       budgetMs: ALARM_TURN_BUDGET_MS,
+      hardCapMs: ALARM_TURN_HARD_CAP_MS,
       recheckMs: ALARM_ADMISSION_RECHECK_MS,
       onWake: (wake) => {
         this.alarmAdmissionWake = wake;
@@ -2216,6 +2242,15 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
         };
       },
     });
+    for (const carried of turnDrain.carried) {
+      console.warn('[chickpea] Turn job still running at the alarm cap; its thread waits for it');
+      this.carriedAlarmTurns.set(carried.id, carried.threadKey);
+      void carried.settled.finally(() => {
+        this.carriedAlarmTurns.delete(carried.id);
+        // Its thread may continue now; a running drain picks that up at once.
+        this.alarmAdmissionWake?.();
+      });
+    }
     const ledgerDrain = await drainLedgerRuns(
       stores,
       this.env as PlatformEnv,
@@ -2223,10 +2258,11 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       productTelemetry,
     );
     identityRetryDelayMs = runDriverRetryDelayMs(ledgerDrain, identityRetryDelayMs);
-    await drainSlackInteractionCleanups(stores, resolveInstallation);
+    await drainSlackInteractionCleanups(stores, resolveInstallation, carriedJobIds());
     const presentationRepairs = await drainTerminalPresentationRepairs(
       stores,
       resolveInstallation,
+      carriedJobIds(),
     );
     const scheduleActions = await drainCloudflareScheduleActions(stores, this.env as PlatformEnv);
     await drainCloudflareManagementReceipts(stores, resolveInstallation);

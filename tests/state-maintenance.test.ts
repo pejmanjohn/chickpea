@@ -219,3 +219,38 @@ test('maintenance indexes preserve the one-active-occurrence constraint and reje
     assert.deepEqual(db.all('PRAGMA foreign_key_check'), []);
   } finally { db.close(); }
 });
+
+test('the alarm lists conversations, not rows: a long queue in one thread never hides another', () => {
+  const db = openStateDb(':memory:');
+  let clock = NOW;
+  try {
+    const turns = new TurnJobStoreLogic(db, () => clock);
+    const inThread = (id: string, threadTs: string) => {
+      const job = turnJob(id);
+      return { ...job, turn: { ...job.turn, threadTs, messageTs: threadTs } };
+    };
+    // A coding turn and twenty follow-ups queued behind it in one thread.
+    turns.enqueue(inThread('long', '1800000000.000001')); clock += 1;
+    for (let index = 0; index < 20; index += 1) {
+      turns.enqueue(inThread(`follow_${index}`, '1800000000.000001')); clock += 1;
+    }
+    turns.enqueue(inThread('new_conversation', '1800000000.000999')); clock += 1;
+
+    assert.equal(turns.listPending(16).some((job) => job.id === 'new_conversation'), false,
+      'sixteen rows are all from the busy thread');
+    const listed = turns.listPendingByThread({
+      maxThreads: 16,
+      perThread: 4,
+      threadKey: (job) => job.turn.threadTs ?? job.turn.messageTs,
+    });
+    assert.deepEqual(listed.map((job) => job.id),
+      ['long', 'follow_0', 'follow_1', 'follow_2', 'new_conversation'],
+      'each thread keeps its order; the new conversation is listed');
+    const capped = turns.listPendingByThread({
+      maxThreads: 1,
+      perThread: 2,
+      threadKey: (job) => job.turn.threadTs ?? job.turn.messageTs,
+    });
+    assert.deepEqual(capped.map((job) => job.id), ['long', 'follow_0']);
+  } finally { db.close(); }
+});
