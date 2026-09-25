@@ -2792,6 +2792,8 @@ async function runWorkMaintenance(
 }
 
 export { SlackGatewaySession };
+// Declared for migration v11 only; nothing addresses it at runtime yet.
+export { SlackThreadRunner } from './slack/thread-runner.ts';
 
 async function runRoutineHeartbeat(
   scheduledTime: number,
