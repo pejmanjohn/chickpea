@@ -1413,10 +1413,17 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     observation: Parameters<TagStateRpc['slackFlueDispatchPrepare']>[2],
     threadImages?: Parameters<TagStateRpc['slackFlueDispatchPrepare']>[3],
     admittedListIds?: Parameters<TagStateRpc['slackFlueDispatchPrepare']>[4],
+    turnEnvelope?: Parameters<TagStateRpc['slackFlueDispatchPrepare']>[5],
   ) {
     return this.call((stores) =>
-      stores.turnJobs.prepareFlueDispatch(id, message, observation, threadImages, admittedListIds),
+      stores.turnJobs.prepareFlueDispatch(
+        id, message, observation, threadImages, admittedListIds, turnEnvelope,
+      ),
     );
+  }
+
+  async slackTurnEnvelopeGet(id: string) {
+    return this.call((stores) => stores.turnJobs.getTurnEnvelope(id) ?? null);
   }
 
   async slackFlueExistingInstanceReconcile(id: string, uid: string) {

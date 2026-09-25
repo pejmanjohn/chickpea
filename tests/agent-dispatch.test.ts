@@ -219,6 +219,41 @@ test('the host turn hands its thread images to the durable dispatch preparation'
   assert.deepEqual(prepared, [[records, ['FEXISTING']], [undefined, undefined]]);
 });
 
+test('the turn envelope is built before the first dispatch only, and a failed build still dispatches', async () => {
+  const frozen = { schemaVersion: 1 } as unknown as NonNullable<
+    Parameters<SlackFlueDispatchState['prepare']>[4]
+  >;
+  const prepared: unknown[] = [];
+  let builds = 0;
+  const prepare: SlackFlueDispatchState['prepare'] = async (...args) => {
+    prepared.push(args[4]);
+    return ENVELOPE;
+  };
+  await promptSlackThreadAgent({
+    ...promptInput(state({ prepare }), handle({})),
+    buildTurnEnvelope: async () => {
+      builds += 1;
+      return frozen;
+    },
+  });
+  // A retry that already holds its dispatch envelope never rebuilds.
+  await promptSlackThreadAgent({
+    ...promptInput(state({ prepare, dispatchEnvelope: ENVELOPE }), handle({})),
+    buildTurnEnvelope: async () => {
+      builds += 1;
+      return frozen;
+    },
+  });
+  await promptSlackThreadAgent({
+    ...promptInput(state({ prepare }), handle({})),
+    buildTurnEnvelope: async () => {
+      throw new Error('settings unavailable');
+    },
+  });
+  assert.equal(builds, 1);
+  assert.deepEqual(prepared, [frozen, undefined]);
+});
+
 test('dispatch persists only the completed assistant step after an interrupted prefix', async () => {
   const dispatchState = state();
   const agent = handle({ read: async (_receipt, options) => {

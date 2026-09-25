@@ -42,6 +42,7 @@ import {
   type TurnJobStoreLogic,
 } from './turn-jobs.ts';
 import { DURABLE_RECOVERY_FAILURE_TEXT } from './web-client-presenter.ts';
+import type { TurnEnvelopeV1 } from '../agents/turn-envelope.ts';
 
 /**
  * Everything one durable turn job touches while it runs, as ports. The
@@ -169,7 +170,10 @@ export async function executeTurnJob(
       observation: FlueTurnObservationV1,
       threadImages?: readonly ThreadImageRecord[],
       admittedListIds?: readonly string[],
-    ) => ports.turnJobs.prepareFlueDispatch(job.id, message, observation, threadImages, admittedListIds),
+      turnEnvelope?: TurnEnvelopeV1,
+    ) => ports.turnJobs.prepareFlueDispatch(
+      job.id, message, observation, threadImages, admittedListIds, turnEnvelope,
+    ),
     reconcileExistingInstance: (uid: string) =>
       ports.turnJobs.reconcileFlueExistingInstance(job.id, uid),
     recordReceipt: (receipt: FlueDispatchReceiptV1) =>

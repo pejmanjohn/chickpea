@@ -42,6 +42,7 @@ import {
 } from './thread-images.ts';
 import { parseAdmittedSlackListIds, serializeAdmittedSlackListIds } from './lists/admission.ts';
 import { renderSlackMarkdownActionLink, slackActionLink } from './message-format.ts';
+import { parseTurnEnvelope, type TurnEnvelopeV1 } from '../agents/turn-envelope.ts';
 
 /**
  * Durable queue of Slack turns for the Cloudflare turn-relay (see state-rpc.ts
@@ -197,6 +198,7 @@ export class TurnJobStoreLogic {
         runtime_plan_json TEXT,
         agent_instance_id TEXT,
         dispatch_envelope_json TEXT,
+        turn_envelope_json TEXT,
         dispatch_receipt_json TEXT,
         flue_settlement_json TEXT,
         dispatch_started_at INTEGER,
@@ -225,6 +227,9 @@ export class TurnJobStoreLogic {
     }
     if (!columns.some((column) => column.name === 'dispatch_envelope_json')) {
       db.exec('ALTER TABLE turn_jobs ADD COLUMN dispatch_envelope_json TEXT');
+    }
+    if (!columns.some((column) => column.name === 'turn_envelope_json')) {
+      db.exec('ALTER TABLE turn_jobs ADD COLUMN turn_envelope_json TEXT');
     }
     if (!columns.some((column) => column.name === 'dispatch_receipt_json')) {
       db.exec('ALTER TABLE turn_jobs ADD COLUMN dispatch_receipt_json TEXT');
@@ -556,6 +561,7 @@ export class TurnJobStoreLogic {
     observation: FlueTurnObservationV1,
     threadImages?: readonly ThreadImageRecord[],
     admittedListIds?: readonly string[],
+    turnEnvelope?: TurnEnvelopeV1,
   ): FlueDispatchEnvelopeV1 {
     if (typeof message !== 'string' || message.length === 0) {
       throw new Error('Flue dispatch message must be non-empty.');
@@ -635,14 +641,19 @@ export class TurnJobStoreLogic {
           : {}),
       };
       parseFlueDispatchEnvelope(envelope);
+      // Frozen with the first dispatch, like the envelope itself: a retry
+      // reuses both, so the Agent sees the same settings on every attempt.
+      const frozenTurnEnvelope = turnEnvelope ? parseTurnEnvelope(turnEnvelope) : undefined;
       const startedAt = this.now();
       const updated = this.db.run(
         `UPDATE turn_jobs
-         SET dispatch_envelope_json = ?, dispatch_started_at = ?, observation_json = ?
+         SET dispatch_envelope_json = ?, dispatch_started_at = ?, observation_json = ?,
+           turn_envelope_json = ?
          WHERE id = ? AND dispatch_envelope_json IS NULL`,
         JSON.stringify(envelope),
         startedAt,
         JSON.stringify(observation),
+        frozenTurnEnvelope ? JSON.stringify(frozenTurnEnvelope) : null,
         id,
       );
       if (updated.changes !== 1) {
@@ -652,6 +663,14 @@ export class TurnJobStoreLogic {
       }
       return envelope;
     });
+  }
+
+  /** The settings envelope frozen with this turn's dispatch, if one was. */
+  getTurnEnvelope(id: string): TurnEnvelopeV1 | undefined {
+    const row = this.db.get('SELECT turn_envelope_json FROM turn_jobs WHERE id = ?', id);
+    return row?.turn_envelope_json
+      ? parseTurnEnvelope(JSON.parse(String(row.turn_envelope_json)))
+      : undefined;
   }
 
   getDispatchEnvelope(id: string): FlueDispatchEnvelopeV1 | undefined {

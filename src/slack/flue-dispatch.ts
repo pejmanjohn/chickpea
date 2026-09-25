@@ -23,6 +23,7 @@ import {
 
 import type { RuntimePlanV2 } from '../agents/runtime-plan.ts';
 import type { ThreadImageRecord } from './thread-images.ts';
+import type { TurnEnvelopeV1 } from '../agents/turn-envelope.ts';
 import {
   BoundedObservationAbortedError,
   createCloudflareBoundedAgentReplyReader,
@@ -173,6 +174,8 @@ export interface SlackFlueDispatchState {
     /** This turn's thread images; the envelope carries them as one attribute. */
     threadImages?: readonly ThreadImageRecord[],
     admittedListIds?: readonly string[],
+    /** Per-turn settings the Agent's tools read; frozen with the first dispatch. */
+    turnEnvelope?: TurnEnvelopeV1,
   ): FlueDispatchEnvelopeV1 | Promise<FlueDispatchEnvelopeV1>;
   recordReceipt(
     receipt: FlueDispatchReceiptV1,
@@ -199,6 +202,11 @@ interface PromptSlackAgentInput {
   threadImages?: readonly ThreadImageRecord[];
   /** Host-admitted List references for this exact turn. */
   admittedListIds?: readonly string[];
+  /**
+   * Freezes the per-turn settings envelope. Runs only before the first
+   * dispatch; a failure leaves the turn without one (tools read live).
+   */
+  buildTurnEnvelope?: () => Promise<TurnEnvelopeV1 | undefined>;
   workCorrelation?: WorkTraceCorrelation;
   env?: PlatformEnv;
   now?: () => number;
@@ -291,7 +299,13 @@ export async function promptSlackThreadAgent(
   const observeReply = input.observeReply ??
     (isCloudflareTarget() ? createCloudflareBoundedAgentReplyReader(input.env) : undefined);
   let envelope = input.state.dispatchEnvelope ??
-    await input.state.prepare(input.message, observation, input.threadImages, input.admittedListIds);
+    await input.state.prepare(
+      input.message,
+      observation,
+      input.threadImages,
+      input.admittedListIds,
+      await buildTurnEnvelopeSafely(input.buildTurnEnvelope),
+    );
   input.state.dispatchEnvelope = envelope;
   const agent = input.handle ? undefined : (await import('../agents/slack-thread.ts')).ChickpeaSlack;
   let handle = input.handle ?? init(agent!, { id: envelope.instanceId, uid: envelope.uid });
@@ -775,6 +789,18 @@ function nonEmptyString(value: unknown): string | null {
 
 function isTokenCount(value: unknown): value is number {
   return Number.isSafeInteger(value) && Number(value) >= 0;
+}
+
+async function buildTurnEnvelopeSafely(
+  build: PromptSlackAgentInput['buildTurnEnvelope'],
+): Promise<TurnEnvelopeV1 | undefined> {
+  if (!build) return undefined;
+  try {
+    return await build();
+  } catch {
+    console.warn('[chickpea] turn envelope skipped; the Agent reads settings live this turn');
+    return undefined;
+  }
 }
 
 export async function prepareCloudflareSandboxTurn(

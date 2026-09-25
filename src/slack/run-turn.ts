@@ -31,6 +31,8 @@ import {
 } from '../config/state-backend.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
+import type { TurnEnvelopeV1 } from '../agents/turn-envelope.ts';
+import { buildTurnEnvelope } from './turn-envelope-builder.ts';
 import { browserCapabilityForTurn, websiteLoginsForTurn } from '../browser/capability.ts';
 import type {
   SlackInteractionProgress,
@@ -1368,6 +1370,7 @@ async function runTurnAttempt(
               ? { threadImages: context.images }
               : {}),
             ...(admittedListIds.length ? { admittedListIds } : {}),
+            ...turnEnvelopeBuilder(runtimePlanDecision?.runtimePlan, settingsStore, options.appStores?.config, platformEnv),
             ...(platformEnv ? { env: platformEnv } : {}),
             ...(workLifecycle && options.runId
               ? {
@@ -1942,6 +1945,23 @@ export async function resolveCodingWorkspaceDecision(
     // Without its policy the workspace is simply not offered this turn.
     return { capability: 'unavailable', unavailableFallback: false };
   }
+}
+
+/**
+ * On Cloudflare the Agent runs in its own Durable Object, where every settings
+ * read is an RPC back into this state object. Freeze what its tools read
+ * (host-local reads here) so they do not call back per tool.
+ */
+function turnEnvelopeBuilder(
+  plan: RuntimePlanV2 | undefined,
+  settings: SettingsStore | undefined,
+  config: AppStores['config'] | undefined,
+  env: PlatformEnv | undefined,
+): { buildTurnEnvelope?: () => Promise<TurnEnvelopeV1 | undefined> } {
+  if (!plan || !settings || !config || !isCloudflareTarget()) return {};
+  return {
+    buildTurnEnvelope: () => buildTurnEnvelope({ plan, settings, config, ...(env ? { env } : {}) }),
+  };
 }
 
 async function freezeRuntimePlanForTurn(input: {

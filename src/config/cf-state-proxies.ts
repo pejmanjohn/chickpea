@@ -1800,11 +1800,18 @@ export class CfSlackStateStore implements SlackStateStore {
     observation: Parameters<TagStateRpc['slackFlueDispatchPrepare']>[2],
     threadImages?: Parameters<TagStateRpc['slackFlueDispatchPrepare']>[3],
     admittedListIds?: Parameters<TagStateRpc['slackFlueDispatchPrepare']>[4],
+    turnEnvelope?: Parameters<TagStateRpc['slackFlueDispatchPrepare']>[5],
   ) {
     return rpc(
       'slackFlueDispatchPrepare',
-      this.stub.slackFlueDispatchPrepare(id, message, observation, threadImages, admittedListIds),
+      this.stub.slackFlueDispatchPrepare(
+        id, message, observation, threadImages, admittedListIds, turnEnvelope,
+      ),
     );
+  }
+
+  async getTurnEnvelope(id: string) {
+    return orUndefined(await rpc('slackTurnEnvelopeGet', this.stub.slackTurnEnvelopeGet(id)));
   }
 
   async reconcileFlueExistingInstance(id: string, uid: string) {

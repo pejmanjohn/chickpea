@@ -103,6 +103,7 @@ import {
   getIdentityStore,
   getSettingsStore,
   getSlackCredentialResolutionDependencies,
+  getSlackStateStore,
   getUsageStore,
   type PlatformEnv,
 } from '../config/state-backend.ts';
@@ -299,6 +300,11 @@ import {
   type RuntimePlanV2,
   type RuntimePlanWebsiteLoginV1,
 } from './runtime-plan.ts';
+import {
+  TurnEnvelopeContext,
+  TurnSettingsView,
+  type TurnEnvelopeAgentFacts,
+} from './turn-envelope.ts';
 
 bootstrapRuntimeProviders();
 
@@ -1261,6 +1267,7 @@ export function ChickpeaSlack({ id }: AgentProps) {
   });
   const writeMemoryUpdate = useDataWriter(SLACK_MEMORY_UPDATE_DATA_NAME, { schema: SlackMemoryUpdateSchema });
   const managementEnabled = !!parseSlackManagementSignal(delivery, plan);
+  const turn = runtimePlanTurnContext(plan, delivery);
   useChickpeaSlackRuntimeCapabilities(
     plan,
     id,
@@ -1270,11 +1277,12 @@ export function ChickpeaSlack({ id }: AgentProps) {
     managementEnabled,
     writeMemoryUpdate,
     slackDeliveryThreadImages(plan, delivery),
+    turn,
   );
   useSlackAttachmentContext(
     plan,
     resolveAgentPlatformEnv,
-    async (env) => plan.runtimeModel ?? (await prepareRuntimePlanModel(plan, env)).model,
+    async (env) => plan.runtimeModel ?? (await prepareRuntimePlanModel(plan, env, turn)).model,
   );
   return plan.instructions;
 }
@@ -1293,9 +1301,11 @@ export function useChickpeaSlackRuntimeCapabilities(
   managementEnabled: boolean,
   writeMemoryUpdate?: (receipt: SlackMemoryUpdate) => void,
   threadImages?: readonly ThreadImageRecord[],
+  turn?: TurnEnvelopeContext,
 ): void {
   useRuntimePlanAgent(plan, id, {
     responseMetadataModel: plan.model,
+    ...(turn ? { turn } : {}),
     ...(threadImages?.length ? { threadImages } : {}),
     includeAgentAuthoringSkill: true,
     slackCapabilities: {
@@ -1341,6 +1351,31 @@ export function slackDeliveryThreadImages(
       threadTs: plan.conversation.threadTs,
     }),
   );
+}
+
+/**
+ * This Slack turn's settings envelope, frozen by the host when it prepared
+ * the dispatch and fetched on first use. Only a Cloudflare Slack turn has
+ * one: on Node the tools' stores are local, and a routine run has no TurnJob.
+ */
+export function runtimePlanTurnContext(
+  plan: RuntimePlanV2,
+  delivery: ReturnType<typeof useDelivery>,
+): TurnEnvelopeContext | undefined {
+  if (!isCloudflareTarget() || delivery.kind !== 'signal') return undefined;
+  const turnJobId = delivery.attributes?.turnJobId;
+  if (typeof turnJobId !== 'string' || turnJobId.length === 0 || turnJobId.length > 200) {
+    return undefined;
+  }
+  return createTurnEnvelopeContext(turnJobId, plan.agentId);
+}
+
+/** A turn's envelope, fetched from the host by its TurnJob id (one read per turn). */
+function createTurnEnvelopeContext(turnJobId: string, agentId: string): TurnEnvelopeContext {
+  return new TurnEnvelopeContext(turnJobId, agentId, async (id) => {
+    const env = await resolveAgentPlatformEnv();
+    return getSlackStateStore(env).getTurnEnvelope?.(id);
+  });
 }
 
 /** Declare only the connected-service accounts frozen into this execution plan. */
@@ -1517,6 +1552,8 @@ export function useRuntimePlanAgent(
      * keeping it warm and checkpointed. Scheduled runs have no follow-up.
      */
     releaseCodingWorkspace?: boolean;
+    /** This turn's frozen settings envelope; absent, tools read settings live. */
+    turn?: TurnEnvelopeContext;
   } = {},
 ): void {
   const { accumulator: artifactAccumulator, writeReceipts: writeArtifactReceipts } = useSlackArtifactReceipts();
@@ -1541,6 +1578,7 @@ export function useRuntimePlanAgent(
     turnId: runtimePlanWorkspaceTurnId(),
     onOpen: () => writeWorkspaceUse({ opened: true }),
     ...(workspaceRoster ? { roster: workspaceRoster } : {}),
+    ...(options.turn ? { turn: options.turn } : {}),
   });
   // A connected browser mounts with the artifact tools, whose staging carries
   // its proof: the session, skill, tools, and activity all follow this one
@@ -1650,7 +1688,7 @@ export function useRuntimePlanAgent(
   )) {
     useMcpConnection(connection);
   }
-  const sandbox = createRuntimePlanSandbox(plan, options.sandboxConversationKey);
+  const sandbox = createRuntimePlanSandbox(plan, options.sandboxConversationKey, options.turn);
   useSandbox(options.artifactToolsDisabled ? sandbox : fileCompletion.wrapSandbox(sandbox));
   const writeCodingWorkerRun = useDataWriter(CODING_WORKER_RUN_DATA_NAME, { schema: CodingWorkerRunSchema });
   const writeCodingWorkerUsage = useDataWriter(CODING_WORKER_USAGE_DATA_NAME, {
@@ -1695,6 +1733,7 @@ export function useRuntimePlanAgent(
         ...(browserSession ? { browserSession } : {}),
         ...(browserRequester ? { browserRequester } : {}),
         ...(browserApprovals ? { browserApprovals } : {}),
+        ...(options.turn ? { turn: options.turn } : {}),
       },
     )) {
       useTool(tool);
@@ -1805,6 +1844,8 @@ interface RuntimePlanWorkspaceInput {
   onOpen?: () => void;
   /** The thread's workspace names; only the default workspace without one. */
   roster?: WorkspaceRoster;
+  /** This turn's frozen settings envelope. */
+  turn?: TurnEnvelopeContext;
 }
 
 export function runtimePlanWorkspaceResolver(
@@ -1877,17 +1918,14 @@ async function createRuntimePlanWorkspace(
     const binding = env?.SANDBOX ?? env?.Sandbox;
     if (!binding) return undefined;
     const settingsStore = getSettingsStore(env);
-    const current = await requireLiveFrozenAgent(getConfigStore(env), plan.agentId);
+    const current = await requireTurnAgent(plan, env, input.turn);
     const repositories = liveRuntimePlanRepositories(plan, current);
-    const [sandboxSettings, githubAppConnected] = await Promise.all([
-      resolveSandboxSettings(settingsStore),
-      getGithubConnection(settingsStore).then(
-        (connection) => connection.mode === 'app',
-        () => false,
-      ),
-    ]);
-    // Live settings win over the frozen capability: a workspace disabled or
-    // disconnected since admission is simply unavailable.
+    const { sandboxSettings, githubAppConnected } = await runtimePlanWorkspaceFacts(
+      settingsStore,
+      input.turn,
+    );
+    // Settings as of this turn's dispatch win over the capability frozen at
+    // admission: a workspace disabled or disconnected since is unavailable.
     if (codingWorkspaceCapability({
       target: 'cloudflare',
       installed: true,
@@ -1934,12 +1972,13 @@ async function createRuntimePlanWorkspace(
 function createRuntimePlanSandbox(
   plan: RuntimePlanV2,
   sandboxConversationKey?: string,
+  turn?: TurnEnvelopeContext,
 ): SandboxFactory {
   if (plan.sandbox.mode === 'bash') {
     return {
       async createSandbox(options) {
         const env = await resolveAgentPlatformEnv();
-        await prepareRuntimePlanModel(plan, env);
+        await prepareRuntimePlanModel(plan, env, turn);
         // Native plans grant only their frozen connector scopes. Operator-wide
         // egress settings belong to the legacy runtime and must not become an
         // incidental grant when any connection is bound. Empty plans need no
@@ -1949,7 +1988,7 @@ function createRuntimePlanSandbox(
         }
         // API connections are called through connection_request, never the
         // shell; the sandbox mounts only repository scopes.
-        const repositoryAccess = await resolveRuntimePlanBashRepositoryAccess(plan, env);
+        const repositoryAccess = await resolveRuntimePlanBashRepositoryAccess(plan, env, turn);
         const sandbox = createConnectorScopedBash(
           { mode: 'allowlist', domains: [] }, isCloudflareTarget(),
           repositoryAccess.connectors,
@@ -2003,25 +2042,22 @@ function createRuntimePlanSandbox(
  * grants, as the legacy runtime does for bash turns. Live revocations win, and
  * a configured Cloudflare workspace whose binding is missing fails closed.
  */
-async function resolveRuntimePlanBashRepositoryAccess(
+export async function resolveRuntimePlanBashRepositoryAccess(
   plan: RuntimePlanV2,
   env: PlatformEnv | undefined,
+  turn?: TurnEnvelopeContext,
 ): Promise<ResolvedRepositoryAccess> {
   if (!plan.repositories.length) {
     return { grants: [], connectors: [], governsGithubHosts: false };
   }
-  const current = await requireLiveFrozenAgent(getConfigStore(env), plan.agentId);
+  const current = await requireTurnAgent(plan, env, turn);
   const repositories = liveRuntimePlanRepositories(plan, current);
   let unavailableFallback = false;
   if (isCloudflareTarget()) {
-    const settingsStore = getSettingsStore(env);
-    const [sandboxSettings, githubAppConnected] = await Promise.all([
-      resolveSandboxSettings(settingsStore),
-      getGithubConnection(settingsStore).then(
-        (connection) => connection.mode === 'app',
-        () => false,
-      ),
-    ]);
+    const { sandboxSettings, githubAppConnected } = await runtimePlanWorkspaceFacts(
+      getSettingsStore(env),
+      turn,
+    );
     unavailableFallback = resolveCodingWorkspaceCapability({
       target: 'cloudflare',
       installed: sandboxBindingInstalled(env),
@@ -2037,14 +2073,28 @@ async function resolveRuntimePlanBashRepositoryAccess(
   });
 }
 
-/** Bind the frozen model lane before any model call. */
-async function prepareRuntimePlanModel(
+/**
+ * Bind the frozen model lane before any model call. With a turn envelope the
+ * work runs once per turn render and later callers (image and screenshot
+ * checks, attachment analysis) share it.
+ */
+export async function prepareRuntimePlanModel(
   plan: RuntimePlanV2,
   env: PlatformEnv | undefined,
+  turn?: TurnEnvelopeContext,
+) {
+  if (!turn) return prepareRuntimePlanModelOnce(plan, env);
+  return turn.memo('runtime-model', () => prepareRuntimePlanModelOnce(plan, env, turn));
+}
+
+async function prepareRuntimePlanModelOnce(
+  plan: RuntimePlanV2,
+  env: PlatformEnv | undefined,
+  turn?: TurnEnvelopeContext,
 ) {
   // Runtime plans freeze behavior, but they do not preserve execution
   // authority after an Agent is disabled or archived.
-  await requireLiveFrozenAgent(getConfigStore(env), plan.agentId);
+  await requireTurnAgent(plan, env, turn);
   const settings = getSettingsStore(env);
   if (plan.modelCredential) {
     await revalidateModelCredentialAttribution(
@@ -2058,10 +2108,13 @@ async function prepareRuntimePlanModel(
   // Keep the canonical model as the public/audit identity. Resolve and bind its
   // live billing lane immediately before the call, then verify that it still
   // matches the secret-free internal route frozen when the turn was admitted.
-  const resolved = await resolveRuntimeModel(plan.agentId, plan.model, {
-    settings,
-    ...(env ? { env } : {}),
-  });
+  // The provider key itself is always read live; only non-secret routing
+  // settings come from the turn envelope.
+  const resolved = await withTurnSettings(turn, settings, (turnSettings) =>
+    resolveRuntimeModel(plan.agentId, plan.model, {
+      settings: turnSettings,
+      ...(env ? { env } : {}),
+    }));
   if (plan.runtimeModel && resolved.model !== plan.runtimeModel) {
     throw new Error('Runtime model route changed after this Slack turn was admitted.');
   }
@@ -2095,7 +2148,7 @@ function projectRuntimePlanAgent(
 
 function liveRuntimePlanRepositories(
   plan: RuntimePlanV2,
-  current: CustomAgentConfig,
+  current: Pick<CustomAgentConfig, 'repositories'>,
 ): RepositoryGrant[] {
   return plan.repositories.map((declaration) => {
     const live = current.repositories.find((candidate) =>
@@ -2104,6 +2157,52 @@ function liveRuntimePlanRepositories(
     if (!live) throw new Error('RuntimePlanV2 repository policy changed.');
     return live;
   });
+}
+
+/**
+ * The Agent's execution authority for this turn: as of dispatch when the
+ * turn has an envelope (a disable or archive takes effect at the next
+ * dispatch), otherwise read live.
+ */
+async function requireTurnAgent(
+  plan: Pick<RuntimePlanV2, 'agentId'>,
+  env: PlatformEnv | undefined,
+  turn?: TurnEnvelopeContext,
+): Promise<TurnEnvelopeAgentFacts> {
+  const envelope = await turn?.envelope();
+  if (!envelope) return requireLiveFrozenAgent(getConfigStore(env), plan.agentId);
+  if (!envelope.agent?.enabled) throw new SealedAgentThreadError(plan.agentId);
+  return envelope.agent;
+}
+
+/** Run a settings read against this turn's envelope view, or live without one. */
+function withTurnSettings<T>(
+  turn: TurnEnvelopeContext | undefined,
+  live: SettingsStore,
+  operation: (settings: SettingsStore) => Promise<T>,
+): Promise<T> {
+  return turn ? turn.withSettings(live, operation) : operation(live);
+}
+
+/** Sandbox settings and GitHub App presence for opening a coding workspace. */
+async function runtimePlanWorkspaceFacts(
+  live: SettingsStore,
+  turn: TurnEnvelopeContext | undefined,
+): Promise<{
+  sandboxSettings: Awaited<ReturnType<typeof resolveSandboxSettings>>;
+  githubAppConnected: boolean;
+}> {
+  const envelope = await turn?.envelope();
+  const [sandboxSettings, githubAppConnected] = await Promise.all([
+    resolveSandboxSettings(envelope ? new TurnSettingsView(live, envelope) : live),
+    envelope
+      ? envelope.githubAppConnected
+      : getGithubConnection(live).then(
+          (connection) => connection.mode === 'app',
+          () => false,
+        ),
+  ]);
+  return { sandboxSettings, githubAppConnected };
 }
 
 async function requireLiveFrozenAgent(
@@ -2228,11 +2327,11 @@ export function createRuntimePlanArtifactTools(
     inventory: imageInventory,
     reserveImageCall,
     resolveTransport: binding.resolveTransport,
-    resolveClient: options.resolveImageClient ?? (() => resolveRuntimePlanImageClient(plan)),
+    resolveClient: options.resolveImageClient ?? (() => resolveRuntimePlanImageClient(plan, options.turn)),
     inspectOutput: async (input: ImageInspectionInput) => {
       try {
         const env = await resolveAgentPlatformEnv();
-        const model = await prepareRuntimePlanModel(plan, env);
+        const model = await prepareRuntimePlanModel(plan, env, options.turn);
         const apiKey = await resolveModelApiKeyForStatelessCall(plan.model, env, getSettingsStore(env));
         return await inspectImageOutput(model.model, input, apiKey);
       } catch {
@@ -2289,7 +2388,7 @@ export function createRuntimePlanArtifactTools(
         // with the provider key read at call time.
         inspectScreenshot: async (input) => {
           const env = await resolveAgentPlatformEnv();
-          const model = await prepareRuntimePlanModel(plan, env);
+          const model = await prepareRuntimePlanModel(plan, env, options.turn);
           const apiKey = await resolveModelApiKeyForStatelessCall(plan.model, env, getSettingsStore(env));
           return answerScreenshotQuestion(model.model, input, apiKey);
         },
@@ -2522,6 +2621,8 @@ export interface RuntimePlanArtifactToolOptions {
   resolveUploadFetch?: (() => Promise<ConnectionUploadFetch | undefined>) | undefined;
   /** This submission's coding-workspace lookup, shared with the workspace tools. */
   resolveWorkspace?: WorkspaceResolver | undefined;
+  /** This turn's frozen settings envelope; absent, tools read settings live. */
+  turn?: TurnEnvelopeContext | undefined;
 }
 
 /**
@@ -2550,10 +2651,24 @@ export function runtimePlanThreadImageInventory(
  * Any unresolved role, missing credential, or unsupported provider is one
  * `misconfigured` outcome: the tool never reports a model it did not call.
  */
-async function resolveRuntimePlanImageClient(plan: RuntimePlanV2): Promise<ImageClientResolution> {
+async function resolveRuntimePlanImageClient(
+  plan: RuntimePlanV2,
+  turn?: TurnEnvelopeContext,
+): Promise<ImageClientResolution> {
   const env = await resolveAgentPlatformEnv();
-  const config = getConfigStore(env);
   const settings = getSettingsStore(env);
+  // The role as of this turn's dispatch. If its model no longer resolves
+  // (the frozen role went stale mid-turn), re-resolve the role live once.
+  const envelope = await turn?.envelope();
+  if (envelope?.imageModelId) {
+    const frozen = await resolveImageProvider(
+      envelope.imageModelId,
+      env,
+      new TurnSettingsView(settings, envelope),
+    );
+    if (frozen.ok) return { ok: true, client: frozen.client };
+  }
+  const config = getConfigStore(env);
   let modelId: string;
   try {
     const agent = await config.getAgent(plan.agentId);
