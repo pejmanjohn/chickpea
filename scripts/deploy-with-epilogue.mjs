@@ -703,6 +703,31 @@ function validateLedgerCanaryArtifact(artifact) {
   }
 }
 
+// SLACK_TAG_TURN_EXECUTOR moves Cloudflare turn execution to per-thread
+// SlackThreadRunner objects. Accept only the two executors (or unset), and
+// `runner` only for an artifact that carries the runner execution path.
+function validateTurnExecutorArtifact(artifact) {
+  const { config, bundle } = artifact;
+  const value = cliVariable('SLACK_TAG_TURN_EXECUTOR') ?? config.vars?.SLACK_TAG_TURN_EXECUTOR ?? '';
+  if (value === '' || value === 'alarm') return;
+  if (value !== 'runner') {
+    throw new Error('SLACK_TAG_TURN_EXECUTOR must be runner or alarm, or unset (alarm).');
+  }
+  const bindings = config.durable_objects?.bindings ?? [];
+  const missing = ['SLACK_TAG_TURN_EXECUTOR', 'threadRunnerTurn', 'thread_runner_alarm']
+    .filter((seam) => !bundle.includes(seam));
+  if (!bindings.some((binding) =>
+    binding.name === 'SLACK_THREAD_RUNNER' && binding.class_name === 'SlackThreadRunner')) {
+    missing.push('SLACK_THREAD_RUNNER/SlackThreadRunner binding');
+  }
+  if (missing.length) {
+    throw new Error(
+      'SLACK_TAG_TURN_EXECUTOR=runner is unsafe for this artifact; missing thread runner seams: ' +
+      missing.join(', ') + '. Deploy with the variable unset and repair the artifact.',
+    );
+  }
+}
+
 function validateAgentViewArtifact(artifact) {
   if (!artifact.bundle.includes('agent_view') || !artifact.bundle.includes('agent_description')) {
     throw new Error(
@@ -718,6 +743,7 @@ function validateDeploymentArtifact(artifact, options = {}) {
   validateFlue2CutoverArtifact(artifact);
   validateRoutineArtifact(artifact);
   validateLedgerCanaryArtifact(artifact);
+  validateTurnExecutorArtifact(artifact);
   return artifact;
 }
 

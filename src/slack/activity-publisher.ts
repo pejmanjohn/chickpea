@@ -7,11 +7,14 @@ import {
 import { emitSemanticActivityTelemetry } from '../activity/telemetry.ts';
 import { currentFlueObservationContext } from '../work/model-invocation.ts';
 import { setObservedSlackStatus } from './status-registry.ts';
-import { relayObservedStatus } from './status-relay.ts';
+import { observedStatusTargetFor, relayObservedStatus } from './status-relay.ts';
+import type { FlueTurnObservationV1 } from './turn-job-types.ts';
 
 interface PendingRelay {
   status: TypedActivityStatus;
   env?: Record<string, unknown>;
+  /** The executor the turn's dispatch recorded (runner or state store). */
+  route?: Pick<FlueTurnObservationV1, 'executor' | 'runnerKey'>;
 }
 
 interface RelayQueue {
@@ -49,9 +52,10 @@ export function publishActivityStatus(
   const matchingContext = context?.instanceId === instanceId ? context : undefined;
   const submissionId = observedSubmissionId ?? matchingContext?.submissionId;
   if (!submissionId) return;
-  const generation = matchingContext?.submissionId === submissionId
-    ? matchingContext.target?.generation
+  const target = matchingContext?.submissionId === submissionId
+    ? matchingContext.target
     : undefined;
+  const generation = target?.generation;
   if (generation && setObservedSlackStatus(instanceId, generation, canonicalStatus)) {
     return;
   }
@@ -77,7 +81,13 @@ export function publishActivityStatus(
     return;
   }
   if (queue.pending) emitRelayQueue('superseded');
-  queue.pending = { status: canonicalStatus, ...(env ? { env } : {}) };
+  queue.pending = {
+    status: canonicalStatus,
+    ...(env ? { env } : {}),
+    ...(target?.executor && target.runnerKey
+      ? { route: { executor: target.executor, runnerKey: target.runnerKey } }
+      : {}),
+  };
   emitRelayQueue('enqueued');
   startNextRelay(instanceId, submissionId, queue);
 }
@@ -87,7 +97,13 @@ function startNextRelay(instanceId: string, submissionId: string, queue: RelayQu
 
   const next = queue.pending;
   queue.pending = undefined;
-  const result = relayObservedStatus(instanceId, submissionId, next.status, next.env).catch(() => {
+  const result = relayObservedStatus(
+    instanceId,
+    submissionId,
+    next.status,
+    next.env,
+    observedStatusTargetFor(next.route),
+  ).catch(() => {
     emitRelayQueue('relay_failed');
   });
   const active = { status: next.status };

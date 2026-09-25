@@ -329,6 +329,11 @@ function writeSmokeWranglerConfigs(setup) {
       // Exercise exactly one internal workspace/channel through the enforced
       // ledger lane while the ordinary and slow channels remain legacy.
       SLACK_TAG_LEDGER_CANARY_CHANNELS: `${WORKSPACE}/${AI_CHANNEL}`,
+      // SMOKE_TURN_EXECUTOR=runner runs every journey through per-thread
+      // SlackThreadRunner objects instead of the state store's alarm.
+      ...(process.env.SMOKE_TURN_EXECUTOR
+        ? { SLACK_TAG_TURN_EXECUTOR: process.env.SMOKE_TURN_EXECUTOR }
+        : {}),
     }),
     dev: { ...(productionConfig.dev ?? {}), enable_containers: false },
     compatibility_flags: smokeCompatibilityFlags,
@@ -1932,6 +1937,16 @@ async function main() {
       'slow-turn redelivery deduped (claims settled after the alarm ran)',
       `${backend.finals().length - finalsBeforeSlow} new final(s)`,
     );
+
+    if (process.env.SMOKE_TURN_EXECUTOR === 'runner') {
+      const output = [...previousWorkerOutputs, wrangler.getOutput()].join('\n');
+      check(
+        /thread_runner_alarm[\s\S]{0,300}?ran['"]?:\s*[1-9]/.test(output) &&
+          /turn_latency[\s\S]{0,400}?executor['"]?:\s*['"]runner['"]/.test(output) &&
+          /relay_alarm[\s\S]{0,600}?jobsDispatched['"]?:\s*[1-9]/.test(output),
+        'SLACK_TAG_TURN_EXECUTOR=runner: turns were handed to and run by thread runners',
+      );
+    }
 
     if (failures.length > 0) {
       throw new Error(`assertions failed: ${failures.join('; ')}`);

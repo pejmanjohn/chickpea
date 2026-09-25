@@ -938,6 +938,67 @@ export class SlackRunPresentationStoreLogic {
     return row ? decodePresentation(row) : undefined;
   }
 
+  /**
+   * Store another owner's copy of a presentation verbatim, unless this store
+   * already holds the same or a later projection. A thread runner imports the
+   * state store's row when it takes a turn over and keeps the authoritative
+   * copy from then on; it writes lifecycle changes back here so readers of the
+   * shared store (Admin views, the thread generation fence) stay current.
+   * Returns whether the row was written.
+   */
+  putSnapshot(snapshot: SlackRunPresentation): boolean {
+    validateId(snapshot?.runId, 'Run id');
+    const current = this.getRow(snapshot.runId);
+    if (current && current.projection_version >= snapshot.projectionVersion) return false;
+    const finalizedAt = snapshot.stream?.state === 'finalized'
+      ? current?.finalized_at ?? snapshot.updatedAt
+      : null;
+    // Validate exactly as a stored row is read back.
+    const presentation = decodePresentation({
+      run_id: snapshot.runId,
+      binding_generation: snapshot.workBindingGeneration,
+      run_fencing_token: snapshot.runFencingToken,
+      projection_version: snapshot.projectionVersion,
+      stream_state: snapshot.stream?.state,
+      workspace_id: snapshot.root?.workspaceId,
+      channel_id: snapshot.root?.channelId,
+      message_ts: snapshot.stream?.messageTs ?? null,
+      repair_required: snapshot.repairRequired ? 1 : 0,
+      presentation_json: JSON.stringify(snapshot),
+    } as PresentationRow);
+    this.db.run(
+      `INSERT INTO slack_run_presentations (
+        run_id, binding_generation, run_fencing_token, projection_version,
+        stream_state, workspace_id, channel_id, message_ts, repair_required,
+        presentation_json, created_at, updated_at, finalized_at, hard_expires_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(run_id) DO UPDATE SET
+        run_fencing_token = excluded.run_fencing_token,
+        projection_version = excluded.projection_version,
+        stream_state = excluded.stream_state,
+        message_ts = excluded.message_ts,
+        repair_required = excluded.repair_required,
+        presentation_json = excluded.presentation_json,
+        updated_at = excluded.updated_at,
+        finalized_at = excluded.finalized_at`,
+      presentation.runId,
+      presentation.workBindingGeneration,
+      presentation.runFencingToken,
+      presentation.projectionVersion,
+      presentation.stream.state,
+      presentation.root.workspaceId,
+      presentation.root.channelId,
+      presentation.stream.messageTs ?? null,
+      presentation.repairRequired ? 1 : 0,
+      JSON.stringify(presentation),
+      presentation.createdAt,
+      presentation.updatedAt,
+      finalizedAt,
+      presentation.createdAt + SLACK_PRESENTATION_RETENTION_MS,
+    );
+    return true;
+  }
+
   /** Deterministic compatibility read. It never rewrites the stored row. */
   getV3(runId: string): SlackRunPresentationV3 | undefined {
     const presentation = this.get(runId);
@@ -1042,13 +1103,26 @@ export class SlackRunPresentationStoreLogic {
     ) as PresentationRow[]).map(decodePresentation);
   }
 
-  /** Rows whose acknowledged V3 terminal can be repaired without replaying it. */
-  listAutoRepairableV3(limit = 50): SlackRunPresentationV3[] {
+  /**
+   * Rows whose acknowledged V3 terminal can be repaired without replaying it.
+   * `skipRunnerOwned` (the shared state store, whose database also holds
+   * `turn_jobs`) leaves rows of turns a thread runner executes to that runner,
+   * which repairs its own authoritative copy.
+   */
+  listAutoRepairableV3(
+    limit = 50,
+    options: { skipRunnerOwned?: boolean } = {},
+  ): SlackRunPresentationV3[] {
     const boundedLimit = boundedLimitValue(limit);
     return (this.db.all(
       `SELECT ${PRESENTATION_COLUMNS} FROM slack_run_presentations
        WHERE repair_required = 1
          AND json_extract(presentation_json, '$.schemaVersion') = 3
+         ${options.skipRunnerOwned ? `AND NOT EXISTS (
+           SELECT 1 FROM turn_jobs
+           WHERE turn_jobs.id = json_extract(presentation_json, '$.turnJobId')
+             AND turn_jobs.executor IN ('runner', 'handoff')
+         )` : ''}
          AND (
            (
              json_extract(presentation_json, '$.terminalDelivery.state') = 'intended'

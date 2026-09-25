@@ -824,6 +824,42 @@ test('deploy refuses a ledger canary override on an artifact without driver seam
   assert.equal(existsSync(harness.logPath), false);
 });
 
+test('deploy accepts the thread runner executor only on an artifact that carries it', (context) => {
+  const accepted = createHarness();
+  const configured = createHarness();
+  const malformed = createHarness();
+  const incomplete = createHarness();
+  context.after(() => {
+    for (const harness of [accepted, configured, malformed, incomplete]) {
+      rmSync(harness.root, { recursive: true, force: true });
+    }
+  });
+  writeCutoverArtifact(accepted);
+  writeCutoverArtifact(configured, { turnExecutor: 'alarm' });
+  writeCutoverArtifact(malformed);
+  writeCutoverArtifact(incomplete, { runnerSeams: false });
+
+  const acceptedResult = runHarness(accepted, [
+    '--skip-build', '--dry-run', '--var', 'SLACK_TAG_TURN_EXECUTOR:runner',
+  ]);
+  const configuredResult = runHarness(configured, ['--skip-build', '--dry-run']);
+  const malformedResult = runHarness(malformed, [
+    '--skip-build', '--dry-run', '--var=SLACK_TAG_TURN_EXECUTOR:thread',
+  ]);
+  const incompleteResult = runHarness(incomplete, [
+    '--skip-build', '--dry-run', '--var', 'SLACK_TAG_TURN_EXECUTOR:runner',
+  ]);
+
+  assert.equal(acceptedResult.status, 0, acceptedResult.stderr);
+  assert.equal(configuredResult.status, 0, configuredResult.stderr);
+  assert.equal(malformedResult.status, 1);
+  assert.match(malformedResult.stderr, /must be runner or alarm/);
+  assert.equal(existsSync(malformed.logPath), false);
+  assert.equal(incompleteResult.status, 1);
+  assert.match(incompleteResult.stderr, /missing thread runner seams: SLACK_TAG_TURN_EXECUTOR/);
+  assert.equal(existsSync(incomplete.logPath), false);
+});
+
 test('sandbox preflight reports every blocking problem before build, D1, or upload', (context) => {
   const harness = sandboxHarness(context);
   const result = runHarness(harness, ['--profile', 'acme'], sandboxEnv(harness, {

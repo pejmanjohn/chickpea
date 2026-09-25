@@ -212,3 +212,87 @@ test('a yielded observation restores its attempt count and stays pending without
   assert.deepEqual(h.calls, ['recordAttempt("turn_1",4)', 'recordAttempt("turn_1",3)']);
   assert.deepEqual(h.retries, [], 'a yield is not a failed attempt');
 });
+
+/**
+ * The same contract against a thread runner's port set: every write answers
+ * asynchronously (an RPC to the state store), the local stores are omitted,
+ * and the runner's registry and dispatch route are passed through.
+ */
+function runnerPorts(script: RunTurnScript) {
+  const h = fakePorts(script);
+  const asyncOf = <T extends Record<string, unknown>>(port: T) => Object.fromEntries(
+    Object.entries(port).map(([name, method]) => [name, async (...args: unknown[]) => {
+      await Promise.resolve();
+      return (method as (...values: unknown[]) => unknown)(...args);
+    }]),
+  );
+  const ports = h.ports as unknown as Record<string, unknown>;
+  const prepared: unknown[] = [];
+  ports.turnJobs = {
+    ...asyncOf(ports.turnJobs as Record<string, unknown>),
+    prepareFlueDispatch: async (_id: string, _message: string, observation: unknown) => {
+      prepared.push(observation);
+      return { instanceId: 'agent' };
+    },
+  };
+  ports.slack = asyncOf(ports.slack as Record<string, unknown>);
+  for (const local of ['settingsStore', 'usageStore', 'workStore', 'appStores', 'managementApproval']) {
+    delete ports[local];
+  }
+  const statusRegistry = { runner: true };
+  ports.statusRegistry = statusRegistry;
+  const options: TurnExecutionOptions = {
+    ...h.options,
+    latency: { lane: 'cloudflare', executor: 'runner' },
+    observationRoute: { executor: 'runner', runnerKey: 'T1:D1:1785900000.000100' },
+  };
+  return { ...h, options, prepared, statusRegistry };
+}
+
+test('runner ports: a delivered turn records the same writes and passes its registry and route', async () => {
+  const h = runnerPorts(async (options) => {
+    await options.flueDispatch?.prepare('hello', { generation: 'g1' });
+    await options.onInteractionIntent?.({ disposition: 'work' } as never);
+    await options.onDelivered?.('completed' as never);
+  });
+  assert.equal(await executeTurnJob(pendingJob(), h.ports, h.options), true);
+  assert.deepEqual(h.calls.map((call) => call.replace(/\(.*/, '')), [
+    'recordAttempt', 'recordInteractionIntent', 'setActiveWork', 'markDelivered', 'setActiveWork',
+    'telemetry',
+  ]);
+  const [run] = h.runs;
+  assert.equal(run?.statusRegistry, h.statusRegistry);
+  assert.equal(run?.settingsStore, undefined, 'the runner reaches settings over RPC');
+  assert.equal(run?.turnLatency?.executor, 'runner');
+  assert.deepEqual(h.prepared, [{
+    generation: 'g1', executor: 'runner', runnerKey: 'T1:D1:1785900000.000100',
+  }], 'the dispatch records where observed activity must go');
+});
+
+test('runner ports: a failure after the final is posted never re-runs the turn', async () => {
+  const h = runnerPorts(async (options) => {
+    await options.onDelivered?.('completed' as never);
+    throw new Error('post-delivery cleanup failed');
+  });
+  assert.equal(await executeTurnJob(pendingJob(), h.ports, h.options), true);
+  assert.deepEqual(h.retries, []);
+  assert.deepEqual(h.calls.filter((call) => !call.startsWith('telemetry')),
+    ['recordAttempt("turn_1",1)', 'markDelivered("turn_1")']);
+});
+
+test('runner ports: a yield restores the attempt count exactly as the alarm does', async () => {
+  const controller = new AbortController();
+  const h = runnerPorts(async () => { throw new AgentObservationYield(); });
+  const job = pendingJob({
+    attempts: 2,
+    dispatchEnvelope: { instanceId: 'agent' } as never,
+    dispatchReceipt: { submissionId: 'submission_1', acceptedAt: new Date().toISOString() } as never,
+  });
+  const settled = await executeTurnJob(job, h.ports, {
+    ...h.options,
+    control: { signal: controller.signal, observing: () => {} },
+  });
+  assert.equal(settled, false);
+  assert.deepEqual(h.calls, ['recordAttempt("turn_1",3)', 'recordAttempt("turn_1",2)']);
+  assert.deepEqual(h.retries, []);
+});

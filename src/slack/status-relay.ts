@@ -1,6 +1,8 @@
 import { isCloudflareTarget } from '../config/runtime-target.ts';
 import { tagStateStub, type TagStateRpc } from '../config/state-rpc.ts';
 import { activityStatus, type TypedActivityStatus } from '../activity/status.ts';
+import { threadRunnerStub } from './thread-runner-rpc.ts';
+import type { FlueTurnObservationV1 } from './turn-job-types.ts';
 
 /** The Durable Object whose registry holds the turn's live status. */
 export type ObservedStatusTarget = Pick<TagStateRpc, 'observedStatus'>;
@@ -18,6 +20,19 @@ export type ObservedStatusTargetResolver = (
 /** The singleton state store, where the alarm registers every turn. */
 export const singletonObservedStatusTarget: ObservedStatusTargetResolver = (env) =>
   tagStateStub(env);
+
+/**
+ * The executor recorded with the turn's dispatch: its thread runner when one
+ * executes the turn, else the singleton state store.
+ */
+export function observedStatusTargetFor(
+  route: Pick<FlueTurnObservationV1, 'executor' | 'runnerKey'> | undefined,
+): ObservedStatusTargetResolver {
+  if (route?.executor !== 'runner' || !route.runnerKey) return singletonObservedStatusTarget;
+  const runnerKey = route.runnerKey;
+  return (env, instanceId, submissionId) =>
+    threadRunnerStub(env, runnerKey) ?? singletonObservedStatusTarget(env, instanceId, submissionId);
+}
 
 /**
  * Cloudflare only: the durable agent runs in its own DO isolate, while the

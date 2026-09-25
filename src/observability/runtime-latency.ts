@@ -14,7 +14,12 @@ import type { GatewaySessionRunnerHealthSnapshot } from '../slack/gateway/sessio
  * channel IDs, settings keys or values, or error text. Emission never throws.
  */
 
-export type RuntimeLatencyEvent = 'relay_alarm' | 'turn_latency' | 'state_rpc' | 'gateway_delivery';
+export type RuntimeLatencyEvent =
+  | 'relay_alarm'
+  | 'turn_latency'
+  | 'state_rpc'
+  | 'gateway_delivery'
+  | 'thread_runner_alarm';
 
 type RuntimeLatencyValue = number | boolean | string;
 
@@ -98,6 +103,8 @@ export interface RelayAlarmMetrics {
   rearmed: boolean;
   /** Set when the drain stops observing a turn before the alarm wall-time limit. */
   yielded: boolean;
+  /** Turns handed to their thread runners (SLACK_TAG_TURN_EXECUTOR=runner). */
+  jobsDispatched: number;
 }
 
 export function startRelayAlarmMetrics(now: () => number = Date.now): RelayAlarmMetrics {
@@ -115,6 +122,7 @@ export function startRelayAlarmMetrics(now: () => number = Date.now): RelayAlarm
     needsRetry: false,
     rearmed: false,
     yielded: false,
+    jobsDispatched: 0,
   };
 }
 
@@ -137,14 +145,40 @@ export function emitRelayAlarm(
     needsRetry: metrics.needsRetry,
     rearmed: metrics.rearmed,
     yielded: metrics.yielded,
+    jobsDispatched: metrics.jobsDispatched,
   }, sink);
+}
+
+// ---------------------------------------------------------------------------
+// thread_runner_alarm: one record per SlackThreadRunner alarm invocation.
+
+/** One SlackThreadRunner alarm invocation (the per-thread turn executor). */
+export interface ThreadRunnerAlarmRecord {
+  /** Unsettled jobs the runner held when the alarm started. */
+  jobs: number;
+  /** Turn attempts this alarm ran. */
+  ran: number;
+  /** The observation budget ended with a turn still observing. */
+  yielded: boolean;
+  /** Turns still running at the hard cap; they settle after this record. */
+  carried: number;
+  durationMs: number;
+  /** `idle`, `drained`, or `threw` (the runner could not reach its state). */
+  outcome: 'idle' | 'drained' | 'threw';
+}
+
+export function emitThreadRunnerAlarm(
+  record: ThreadRunnerAlarmRecord,
+  sink?: RuntimeLatencySink,
+): void {
+  emitRuntimeLatency('thread_runner_alarm', { ...record }, sink);
 }
 
 // ---------------------------------------------------------------------------
 // turn_latency: one record per relay attempt of one turn.
 
 export type TurnLatencyLane = 'cloudflare' | 'node';
-export type TurnLatencyExecutor = 'alarm' | 'node';
+export type TurnLatencyExecutor = 'alarm' | 'runner' | 'node';
 
 /** The first Slack-visible effect this attempt had acknowledged. */
 export type TurnFirstWrite =

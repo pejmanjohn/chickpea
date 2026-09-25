@@ -58,6 +58,11 @@ import type { ManagementRpcRequest, ManagementRpcResponse } from '../management/
 import type { SlackManagementSignal } from '../management/slack-tools.ts';
 import type { SlackProposalApprovalQuery, SlackProposalApprovalTurn } from '../slack/turn-jobs.ts';
 import type {
+  ThreadRunnerTurnKind,
+  ThreadRunnerTurnOp,
+  ThreadRunnerTurnResult,
+} from '../slack/thread-runner-rpc.ts';
+import type {
   SlackScheduleActionOutcome,
   SlackScheduleActionRpcRequest,
 } from '../management/slack-schedule-actions.ts';
@@ -614,6 +619,14 @@ export interface TagStateRpc {
     submissionId: string,
     status: TypedActivityStatus,
   ): Promise<StateRpcResult<null>>;
+  // -- thread runner (SLACK_TAG_TURN_EXECUTOR=runner) ----------------------
+  /**
+   * One per-turn operation from the SlackThreadRunner executing that turn
+   * (see src/slack/thread-runner-rpc.ts). Bounded calls per turn, none per poll.
+   */
+  threadRunnerTurn<K extends ThreadRunnerTurnKind>(
+    op: ThreadRunnerTurnOp<K>,
+  ): Promise<StateRpcResult<ThreadRunnerTurnResult<K>>>;
 }
 
 /**

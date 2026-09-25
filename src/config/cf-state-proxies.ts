@@ -21,7 +21,23 @@ import type {
 import type { AgentSnapshotStore } from './snapshot-store.ts';
 import type { AgentIdentityField } from './agent-id.ts';
 import type { AuditEvent, AuditEventFilter } from '../audit/types.ts';
-import type { StateRpcResult, TagStateRpc } from './state-rpc.ts';
+import type {
+  StateRpcResult,
+  TagStateRpc,
+  TurnPullRequestProgress,
+} from './state-rpc.ts';
+import type { RuntimePlanV2 } from '../agents/runtime-plan.ts';
+import type { UsagePersistenceEvent } from '../usage/runtime-recorder.ts';
+import type { SlackInteractionIntent } from '../slack/interaction-intent.ts';
+import type { SlackRunPresentation } from '../slack/run-presentations.ts';
+import type {
+  ThreadRunnerTurnKind,
+  ThreadRunnerTurnOp,
+  ThreadRunnerTurnResult,
+} from '../slack/thread-runner-rpc.ts';
+import type { TurnExecutionPorts } from '../slack/turn-executor.ts';
+
+type RunnerTurnJobsPort = TurnExecutionPorts['turnJobs'];
 import type {
   AdoptionInventorySummary,
   AgentModelRolePatch,
@@ -1952,6 +1968,112 @@ export class CfSlackStateStore implements SlackStateStore {
 
   async summarizeRunPresentations(workspaceId: string) {
     return rpc('slackPresentationSummary', this.stub.slackPresentationSummary(workspaceId));
+  }
+}
+
+/**
+ * The turn-row port a SlackThreadRunner executes turns with: every write goes
+ * to the state store that owns `turn_jobs`, through the existing Slack state
+ * RPCs or one `threadRunnerTurn` operation. Bounded calls per turn.
+ */
+export class CfTurnJobsForRunner implements RunnerTurnJobsPort {
+  private readonly slack: CfSlackStateStore;
+
+  constructor(private readonly stub: TagStateRpc) {
+    this.slack = new CfSlackStateStore(stub);
+  }
+
+  op<K extends ThreadRunnerTurnKind>(input: ThreadRunnerTurnOp<K>): Promise<ThreadRunnerTurnResult<K>> {
+    return rpc('threadRunnerTurn', this.stub.threadRunnerTurn(input), input.kind);
+  }
+
+  view(id: string) {
+    return this.op({ kind: 'view', id });
+  }
+
+  finish(id: string) {
+    return this.op({ kind: 'finish', id });
+  }
+
+  async recordAttempt(id: string, attempts: number) {
+    await this.op({ kind: 'recordAttempt', id, attempts });
+  }
+
+  markRecoveryRequired(id: string, reason: string) {
+    return this.slack.markTurnRecoveryRequired(id, reason);
+  }
+
+  prepareFlueDispatch(
+    ...args: Parameters<CfSlackStateStore['prepareFlueDispatch']>
+  ) {
+    return this.slack.prepareFlueDispatch(...args);
+  }
+
+  reconcileFlueExistingInstance(id: string, uid: string) {
+    return this.slack.reconcileFlueExistingInstance(id, uid);
+  }
+
+  recordFlueReceipt(...args: Parameters<CfSlackStateStore['recordFlueReceipt']>) {
+    return this.slack.recordFlueReceipt(...args);
+  }
+
+  recordFlueSettlement(...args: Parameters<CfSlackStateStore['recordFlueSettlement']>) {
+    return this.slack.recordFlueSettlement(...args);
+  }
+
+  async recordPullRequest(id: string, pullRequest: TurnPullRequestProgress) {
+    return orUndefined(await this.op({ kind: 'recordPullRequest', id, pullRequest }));
+  }
+
+  freezeRuntimePlan(id: string, candidate: RuntimePlanV2) {
+    return this.op({ kind: 'freezeRuntimePlan', id, candidate });
+  }
+
+  async getBoundRuntimePlan(
+    continuityKey: string,
+    beforeMessageTs: string,
+    actorMembershipId: string,
+    agentId: string,
+  ) {
+    return orUndefined(await this.op({
+      kind: 'getBoundRuntimePlan',
+      continuityKey,
+      beforeMessageTs,
+      actorMembershipId,
+      agentId,
+    }));
+  }
+
+  async recordUsagePersistence(id: string, event: UsagePersistenceEvent) {
+    return orUndefined(await this.op({ kind: 'recordUsagePersistence', id, event }));
+  }
+
+  async recordInteractionIntent(id: string, intent: SlackInteractionIntent) {
+    return orUndefined(await this.op({ kind: 'recordInteractionIntent', id, intent }));
+  }
+
+  async recordSlackInteractionProgress(
+    id: string,
+    patch: Parameters<TagStateRpc['slackInteractionProgressRecord']>[1],
+  ) {
+    await this.slack.recordSlackInteractionProgress(id, patch);
+    return undefined;
+  }
+
+  async markDelivered(id: string) {
+    await this.op({ kind: 'markDelivered', id });
+  }
+
+  async markError(id: string) {
+    await this.op({ kind: 'markError', id });
+  }
+
+  async markCodingActiveWork(key: string, generation: string) {
+    await this.op({ kind: 'markCodingActiveWork', key, generation });
+  }
+
+  putPresentation(presentation: SlackRunPresentation) {
+    return this.op({ kind: 'putPresentation', presentation });
   }
 }
 

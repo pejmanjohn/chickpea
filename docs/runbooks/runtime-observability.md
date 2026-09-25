@@ -300,7 +300,7 @@ from `src/slack/claim-store.ts` rather than resending the request.
 
 ## Turn latency and relay alarm logs
 
-Four content-free events measure inbound delivery and turn scheduling. Each is one structured
+Five content-free events measure inbound delivery and turn scheduling. Each is one structured
 console object with `component: "runtime"` and an `event` name, so Workers Logs
 indexes its top-level fields. Values are non-negative integer milliseconds,
 booleans, fixed tokens, or opaque references; no message text, Slack user or
@@ -308,8 +308,9 @@ channel IDs, settings keys or values, or error text. Emission never throws.
 
 | `event` | Emitted | Fields |
 | --- | --- | --- |
-| `relay_alarm` | Once per `TagStateStore.alarm()` invocation (Cloudflare) | `outcome` (`idle`, `drained`, `threw`), `durationMs`, `jobsListed`, `groups`, `jobsRun`, `jobsSettled`, `jobsRetained`, `jobsCarried`, `longestJobMs`, `turnsMs`, `needsRetry`, `rearmed`, `yielded` |
-| `turn_latency` | Once per relay attempt of one turn (both lanes) | `turnRef`, `runRef`, `lane` (`cloudflare`, `node`), `executor` (`alarm`, `node`), `attempt`, `outcome` (`returned`, `threw`), `firstWrite`, `final` (`delivered`, `deferred`, `none`), `admissionToStartMs`, `admissionToFirstWriteMs`, `admissionToFinalMs`, `receiptToAdmissionMs`, `receiptToFirstWriteMs`, `attemptMs` |
+| `relay_alarm` | Once per `TagStateStore.alarm()` invocation (Cloudflare) | `outcome` (`idle`, `drained`, `threw`), `durationMs`, `jobsListed`, `groups`, `jobsRun`, `jobsSettled`, `jobsRetained`, `jobsCarried`, `longestJobMs`, `turnsMs`, `needsRetry`, `rearmed`, `yielded`, `jobsDispatched` |
+| `thread_runner_alarm` | Once per `SlackThreadRunner.alarm()` invocation (Cloudflare) | `outcome` (`idle`, `drained`, `threw`), `jobs`, `ran`, `yielded`, `carried`, `durationMs` |
+| `turn_latency` | Once per relay attempt of one turn (both lanes) | `turnRef`, `runRef`, `lane` (`cloudflare`, `node`), `executor` (`alarm`, `runner`, `node`), `attempt`, `outcome` (`returned`, `threw`), `firstWrite`, `final` (`delivered`, `deferred`, `none`), `admissionToStartMs`, `admissionToFirstWriteMs`, `admissionToFinalMs`, `receiptToAdmissionMs`, `receiptToFirstWriteMs`, `attemptMs` |
 | `state_rpc` | Sampled calls from a `Cf*Store` proxy into `TagStateStore` | `method` (RPC name), `op` (request kind for `*Execute` RPCs), `ms`, `slow`, `ok`, `isolateCalls`, `isolateSlowCalls` |
 | `gateway_delivery` | Once per authenticated gateway delivery at Worker admission (Cloudflare) | `transport` (`http`, `socket`), `deliveryKind` (`event`, `agent_selected`, `channel_agent_add`), `outcome` (`accepted`, `duplicate`, `rejected`, `failed`), `lagMs`, `slackLagMs`, `sessionPhase`, `sessionHealth`, `sessionAttempt`, `sessionGeneration`, `sessionAgeMs` |
 
@@ -322,6 +323,27 @@ channel IDs, settings keys or values, or error text. Emission never throws.
   still running at the 12-minute hard cap (they settle after this record), and
   `yielded` whether the 10-minute observation budget ended with work
   observing.
+- Who executes a Cloudflare turn is the deploy variable
+  `SLACK_TAG_TURN_EXECUTOR` (not a setting). Unset or `alarm`: the state
+  store's alarm runs turns, as above. `runner` (a lane enables it with
+  `npm run deploy -- --var SLACK_TAG_TURN_EXECUTOR:runner`; the deploy
+  preflight accepts only `runner`, `alarm`, or unset): the alarm hands each
+  new turn to its thread's `SlackThreadRunner` Durable Object and returns;
+  `relay_alarm.jobsDispatched` counts those hand-offs, and the alarm only
+  finishes turns it had already dispatched to Flue. The `turn_jobs.executor`
+  column records the owner (`alarm`, `handoff` until the runner confirms,
+  `runner`); a runner's turns stay with it when the variable changes.
+- `thread_runner_alarm` is logged by each thread runner. `jobs` is the
+  unsettled jobs it held at the start, `ran` the turn attempts it ran. A
+  runner observes a turn for at most 10 minutes per alarm, then `yielded` is
+  true and it reattaches a second later; a yield is never an attempt. While a
+  job runs a backstop alarm is armed 30 seconds out, so an evicted runner
+  resumes from the turn row's receipt instead of dispatching again. `carried`
+  counts turns still running at the 12-minute cap. Runner turns log
+  `turn_latency` with `executor: runner`. The runner keeps the turn's Slack
+  presentation in its own storage and repairs it itself; the state store's
+  presentation copy is refreshed at lifecycle changes, and its repair sweep
+  skips runner-owned turns.
 - `turn_latency` measures from `turn_jobs.enqueued_at` (durable admission)
   and from `turn_jobs.received_at` (receipt). A gateway delivery becomes a turn
   row only when an alarm drains the gateway inbox, so while a long turn holds
@@ -381,7 +403,7 @@ To query a deployed Worker, discover the `event` key with `/telemetry/keys`
 alongside the verified service filter. For a percentile, use a calculations
 query with, for example, `{ operator: 'p95', key: '<verified admissionToFirstWriteMs key>', keyType: 'number' }`
 grouped by `lane`. During a bounded live capture, `wrangler tail --search turn_latency`
-(or `relay_alarm`, `state_rpc`, `gateway_delivery`) narrows the stream; `entrypoint` shows which
+(or `relay_alarm`, `thread_runner_alarm`, `state_rpc`, `gateway_delivery`) narrows the stream; `entrypoint` shows which
 Durable Object logged a `state_rpc`. `npm run diagnose` does not project these
 events; join them to a Run through `runRef` and the time window. On a Node
 install the same objects print to the process log, for example
