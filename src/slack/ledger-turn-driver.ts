@@ -51,6 +51,7 @@ import { AgentPromptFailure } from './flue-dispatch.ts';
 import {
   abandonTerminalSlackPresentationBestEffort,
   hasRetryableTerminalRepair,
+  postRecoveryNoticeBestEffort,
   repairTerminalSlackPresentation,
 } from './presentation-repair.ts';
 import { SlackAgentViewPresentation, type SlackPresentationStatePort } from './agent-view-presentation.ts';
@@ -356,6 +357,15 @@ async function deliverDurableRecoveryFailure(
     return { kind: 'recovery_required', reasonCode };
   } catch {
     await abandonTerminalPresentationBestEffort(options, claim.run.id, client);
+    // The thread must not end on a truncated prefix with no word.
+    await postRecoveryNoticeBestEffort({
+      client,
+      state: options.presentationState,
+      runId: claim.run.id,
+      turnId: job.id,
+      channelId: job.turn.channelId,
+      threadTs: job.turn.threadTs,
+    });
     await options.turns.markRecoveryRequired(job.id, reasonCode);
     await clearActiveWork(options, job);
     return { kind: 'recovery_required', reasonCode };

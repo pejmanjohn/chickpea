@@ -174,6 +174,13 @@ const MAX_STREAMED_REPLY_CHARS = slackMarkdownBlockTextLimit - 16;
  * 4,000 characters of `text`. Stay at that bound; follow-ups carry the rest.
  */
 const RECOVERY_UPDATE_MAX_CHARS = 4_000;
+/** Room to close a code fence after a kept streamed prefix. */
+const RECOVERY_FENCE_ROOM_CHARS = 16;
+/**
+ * A smaller first message plus four 12,000-character follow-ups carries at
+ * least the 48,000 characters a normal reply can.
+ */
+const RECOVERY_MAX_PARTS = 5;
 /** Near the cap, progressive text advances only to line boundaries. */
 const STREAM_EDGE_WINDOW_CHARS = 2_000;
 /** A continuation intent this young may still belong to a live writer. */
@@ -2411,15 +2418,20 @@ function definiteContentRejection(error: unknown): boolean {
 
 /**
  * The first message a recovery update may carry. The streamed prefix stays
- * in it while that fits; the remainder moves to follow-ups.
+ * whole in it while the prefix and a fence closer fit. A longer prefix is
+ * not kept as a minimum: the update replaces the message anyway, so the
+ * first message ends at the best boundary within the bound instead of being
+ * forced to the exact bound, mid-word or inside a link. The replacement
+ * allows one extra follow-up, so recovery carries as much as a normal reply.
  */
-function recoveryReplySplit(split: SlackReplySplit): SlackReplySplit {
+export function recoveryReplySplit(split: SlackReplySplit): SlackReplySplit {
   const limit = Math.min(split.firstPartLimit ?? RECOVERY_UPDATE_MAX_CHARS, RECOVERY_UPDATE_MAX_CHARS);
+  const keepsPrefix = split.minFirstPartLength !== undefined &&
+    split.minFirstPartLength <= limit - RECOVERY_FENCE_ROOM_CHARS;
   return {
-    ...(split.minFirstPartLength !== undefined
-      ? { minFirstPartLength: Math.min(split.minFirstPartLength, limit) }
-      : {}),
+    ...(keepsPrefix ? { minFirstPartLength: split.minFirstPartLength } : {}),
     firstPartLimit: limit,
+    maxParts: RECOVERY_MAX_PARTS,
   };
 }
 

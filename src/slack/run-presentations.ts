@@ -240,9 +240,12 @@ interface SlackPresentationContinuations {
 export interface SlackReplySplit {
   minFirstPartLength?: number;
   firstPartLimit?: number;
+  /** Recovery only: one more follow-up after a smaller first message. */
+  maxParts?: number;
 }
 
-const MAX_SLACK_CONTINUATION_PARTS = 3;
+/** Three follow-ups, or four after a recovery's smaller first message. */
+const MAX_SLACK_CONTINUATION_PARTS = 4;
 const MAX_SLACK_CONTINUATION_TEXT_CHARS = 12_000;
 const MAX_SLACK_CLOSING_FACT_BYTES = 2_048;
 const MAX_SLACK_CLOSING_TABLE_BYTES = 128 * 1_024;
@@ -2246,7 +2249,13 @@ function applyMutation(
         next.repairRequired = v3RepairRequired(next);
         return next;
       }
-      if (mutation.parts.length < 1 || mutation.parts.length > MAX_SLACK_CONTINUATION_PARTS) {
+      // Three follow-ups; a recovery split with a smaller first message may
+      // allow one more.
+      const allowed = Math.min(
+        MAX_SLACK_CONTINUATION_PARTS,
+        (mutation.split?.maxParts ?? MAX_SLACK_CONTINUATION_PARTS) - 1,
+      );
+      if (mutation.parts.length < 1 || mutation.parts.length > allowed) {
         throw stateError('invalid_input', 'A reply has one to three continuation messages.');
       }
       for (const text of mutation.parts) validateContinuationText(text);
@@ -2951,6 +2960,10 @@ function validateReplySplit(split: SlackReplySplit | undefined): void {
         value > MAX_SLACK_CONTINUATION_TEXT_CHARS)) {
       throw stateError('invalid_input', 'Continuation split must be bounded character counts.');
     }
+  }
+  if (split.maxParts !== undefined && (!Number.isSafeInteger(split.maxParts) ||
+      split.maxParts < 1 || split.maxParts > MAX_SLACK_CONTINUATION_PARTS + 1)) {
+    throw stateError('invalid_input', 'Continuation split must bound its message count.');
   }
 }
 

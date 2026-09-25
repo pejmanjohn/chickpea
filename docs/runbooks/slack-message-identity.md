@@ -80,6 +80,19 @@ with `chat.update`. That replacement renders a bold title as plain text, and
 it failed on retry for a 12,000-character answer. Treat it as recovery, not
 the normal terminal path.
 
+`chat.update` refused a first message of about 12,000 characters with
+`msg_too_long` (Amber, September 25, 2026), although the same size posts or
+streams. Its documented limit is 4,000 characters of `text`. Recovery
+therefore keeps the replacement's first message within 4,000 characters,
+ending at a boundary, and moves the rest of the answer to follow-up messages
+(up to four after a recovery). The streamed prefix stays whole in it when it
+fits. If Slack still refuses the replacement with a definite content error
+(`msg_too_long`, `invalid_blocks`), recovery deletes the partial stream
+message and posts the final fresh once. When a run's attempts are exhausted
+and its failure notice cannot finish through the stuck presentation, the
+notice posts fresh with a `client_msg_id` fixed per Run. The exact
+`chat.update` threshold (text versus blocks) has not been measured.
+
 ### Public message readback is a projection
 
 In the tested permalink replies, `conversations.replies` omitted `username`,
