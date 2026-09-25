@@ -66,7 +66,7 @@ import { resolveSlackCredentials, resolveSlackPublicUrl } from './credentials.ts
 import { agentAvatarUrlForPresentation } from './agent-presence/avatar-assets.ts';
 import type { SlackStatusUpdate } from './replies.ts';
 import { activityStatus, initialActivityStatus } from '../activity/status.ts';
-import { registerSlackStatusTurn } from './status-registry.ts';
+import { defaultSlackStatusRegistry, type SlackStatusRegistry } from './status-registry.ts';
 import { createCodingTaskProgress } from './coding-task-progress.ts';
 import { currentMessageOnlyContext } from './thread-context.ts';
 import { collectAdmittedSlackListIds } from './lists/admission.ts';
@@ -296,6 +296,11 @@ export interface RunTurnOptions {
   progressiveAttributionProven?: boolean;
   /** Canonical presentation writer; absent keeps the legacy terminal path. */
   presentationState?: SlackPresentationStatePort;
+  /**
+   * Where the turn registers its live Slack status, so observed activity for
+   * it can be routed there. Defaults to this isolate's registry.
+   */
+  statusRegistry?: SlackStatusRegistry;
   /**
    * Relay context for the content-free `turn_latency` log. Present only when a
    * durable relay runs the turn; absent emits nothing.
@@ -756,7 +761,8 @@ async function runTurnAttempt(
       return succeeded;
     },
   };
-  const statusTurn = registerSlackStatusTurn(statusInstanceId, activityPresenter, {
+  const statusRegistry = options.statusRegistry ?? defaultSlackStatusRegistry;
+  const statusTurn = statusRegistry.registerTurn(statusInstanceId, activityPresenter, {
     generation: statusGeneration,
     ...(frozenPresentation?.schemaVersion === 3
       ? {

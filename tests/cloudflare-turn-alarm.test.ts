@@ -36,6 +36,18 @@ const batchDeclaration = source.statements.find((node) =>
   ts.isVariableStatement(node) && node.declarationList.declarations.some((declaration) =>
     declaration.name.getText(source) === 'RELAY_BATCH_WINDOW_MS'));
 assert.ok(batchDeclaration);
+// The alarm runs each job through the shared turn executor; evaluate that
+// production function beside it so the same injected collaborators apply.
+const executorSource = ts.createSourceFile(
+  'turn-executor.ts',
+  readFileSync(new URL('../src/slack/turn-executor.ts', import.meta.url), 'utf8'),
+  ts.ScriptTarget.Latest,
+  true,
+);
+const executorFunction = executorSource.statements.find((node) =>
+  ts.isFunctionDeclaration(node) && node.name?.text === 'executeTurnJob');
+assert.ok(executorFunction);
+const executorCode = executorFunction.getText(executorSource).replace(/^export /, '');
 const compiled = ts.transpileModule(
   `${batchDeclaration.getText(source)}\nclass AlarmProbe { ${methods.join('\n')} }\nAlarmProbe`,
   { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
@@ -164,7 +176,7 @@ for (const withPendingTurn of [false, true]) {
       return method.getText(source);
     });
     const alarmCode = ts.transpileModule(
-      `${batchDeclaration.getText(source)}\nclass AlarmProbe { ${methods.join('\n')}\n${alarmMethods.join('\n')} }\nAlarmProbe`,
+      `${batchDeclaration.getText(source)}\n${executorCode}\nclass AlarmProbe { ${methods.join('\n')}\n${alarmMethods.join('\n')} }\nAlarmProbe`,
       { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
     ).outputText;
     const { probe: storageProbe, alarm, writes } = fixture(null);
@@ -189,6 +201,8 @@ for (const withPendingTurn of [false, true]) {
       localSettingsStore: () => ({}),
       localGatewayAppStores: () => ({ config: {} }),
       localUsageStore: () => ({}),
+      localSlackPresentationState: () => ({}),
+      runTurn: async () => { throw new Error('the preflight fails first'); },
       drainGatewayInbox: async () => false,
       drainLedgerRuns: async () => ({}),
       drainSlackInteractionCleanups: async () => {},
@@ -256,7 +270,7 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
     return method.getText(source);
   });
   const alarmCode = ts.transpileModule(
-    `class AlarmProbe { ${alarmMethods.join('\n')} }\nAlarmProbe`,
+    `${executorCode}\nclass AlarmProbe { ${alarmMethods.join('\n')} }\nAlarmProbe`,
     { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
   ).outputText;
   const jobs = new Map(initial.map((job) => [job.id, job]));

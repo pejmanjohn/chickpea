@@ -1,6 +1,23 @@
 import { isCloudflareTarget } from '../config/runtime-target.ts';
-import { tagStateStub } from '../config/state-rpc.ts';
+import { tagStateStub, type TagStateRpc } from '../config/state-rpc.ts';
 import { activityStatus, type TypedActivityStatus } from '../activity/status.ts';
+
+/** The Durable Object whose registry holds the turn's live status. */
+export type ObservedStatusTarget = Pick<TagStateRpc, 'observedStatus'>;
+
+/**
+ * Finds the owner of a turn's live status registry. Today every turn runs in
+ * the singleton state store's alarm; a per-thread runner resolves itself.
+ */
+export type ObservedStatusTargetResolver = (
+  env: Record<string, unknown> | undefined,
+  instanceId: string,
+  submissionId: string,
+) => ObservedStatusTarget;
+
+/** The singleton state store, where the alarm registers every turn. */
+export const singletonObservedStatusTarget: ObservedStatusTargetResolver = (env) =>
+  tagStateStub(env);
 
 /**
  * Cloudflare only: the durable agent runs in its own DO isolate, while the
@@ -21,6 +38,7 @@ export async function relayObservedStatus(
   submissionId: string,
   status: TypedActivityStatus,
   providedEnv?: Record<string, unknown>,
+  resolveTarget: ObservedStatusTargetResolver = singletonObservedStatusTarget,
 ): Promise<void> {
   if (!isCloudflareTarget()) {
     return;
@@ -31,7 +49,7 @@ export async function relayObservedStatus(
       const { getCloudflareContext } = await import('@flue/runtime/cloudflare');
       env = getCloudflareContext().env as Record<string, unknown> | undefined;
     }
-    await tagStateStub(env).observedStatus(
+    await resolveTarget(env, instanceId, submissionId).observedStatus(
       instanceId,
       submissionId,
       activityStatus(
