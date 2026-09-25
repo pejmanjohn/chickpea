@@ -1,12 +1,14 @@
 import type { WebClient } from '@slack/web-api';
 
 import {
+  isTransientSlackApiError,
   slackConversationsInfo,
   slackConversationsMembers,
   slackUsersInfo,
   type SlackConversationFacts,
   type SlackUserFacts,
 } from '../slack/credentials.ts';
+import { isRetryableDependencyFailure, SlackTransportError } from '../slack/transport/types.ts';
 import { slackWebClientUserFacts } from '../slack/user-classification.ts';
 
 const PAGE_LIMIT = 200;
@@ -16,6 +18,8 @@ interface MemoryScopeSlackResult<T> {
   ok: boolean;
   error?: string;
   retryAfterMs?: number;
+  /** The lookup failed on a transient dependency (rate limit, outage), not a Slack "no". */
+  retryable?: boolean;
   incomplete?: boolean;
   facts?: T;
 }
@@ -42,6 +46,7 @@ export function createMemoryScopeSlack(botToken: string, _workspaceId?: string):
       return {
         ok: result.ok,
         ...(result.error ? { error: result.error } : {}),
+        ...(!result.ok && isTransientSlackApiError(result.error) ? { retryable: true } : {}),
         ...(result.retryAfterMs !== undefined ? { retryAfterMs: result.retryAfterMs } : {}),
         ...(result.facts ? { facts: result.facts } : {}),
       };
@@ -51,6 +56,7 @@ export function createMemoryScopeSlack(botToken: string, _workspaceId?: string):
       return {
         ok: result.ok,
         ...(result.error ? { error: result.error } : {}),
+        ...(!result.ok && isTransientSlackApiError(result.error) ? { retryable: true } : {}),
         ...(result.retryAfterMs !== undefined ? { retryAfterMs: result.retryAfterMs } : {}),
         ...(result.user ? { user: result.user } : {}),
       };
@@ -68,6 +74,7 @@ export function createMemoryScopeSlack(botToken: string, _workspaceId?: string):
             ok: false,
             ids: [],
             ...(result.error ? { error: result.error } : {}),
+            ...(isTransientSlackApiError(result.error) ? { retryable: true } : {}),
             ...(result.retryAfterMs !== undefined ? { retryAfterMs: result.retryAfterMs } : {}),
           };
         }
@@ -92,7 +99,7 @@ export function createMemoryScopeSlackFromWebClient(
         const facts = webClientConversationFacts(result.channel);
         return facts ? { ok: true, facts } : { ok: false, error: 'invalid_response' };
       } catch (error) {
-        return { ok: false, error: webClientError(error) };
+        return { ok: false, ...webClientFailure(error) };
       }
     },
     async user(userId) {
@@ -101,7 +108,7 @@ export function createMemoryScopeSlackFromWebClient(
         const user = slackWebClientUserFacts(result.user);
         return user ? { ok: true, user } : { ok: false, error: 'invalid_response' };
       } catch (error) {
-        return { ok: false, error: webClientError(error) };
+        return { ok: false, ...webClientFailure(error) };
       }
     },
     async members(channelId) {
@@ -120,7 +127,7 @@ export function createMemoryScopeSlackFromWebClient(
         }
         return { ok: true, ids, incomplete: Boolean(cursor) };
       } catch (error) {
-        return { ok: false, ids: [], error: webClientError(error) };
+        return { ok: false, ids: [], ...webClientFailure(error) };
       }
     },
   };
@@ -147,6 +154,34 @@ function webClientConversationFacts(raw: unknown): SlackConversationFacts | unde
       ? channel.context_team_id
       : typeof channel.team_id === 'string' ? channel.team_id : undefined,
   };
+}
+
+/**
+ * Throw when any lookup failed on a transient dependency. A rate-limited or
+ * unreachable Slack is not evidence that access was revoked, so a lease check
+ * must retry rather than decide.
+ */
+export function throwIfMemoryScopeRetryable(
+  results: ReadonlyArray<Pick<MemoryScopeSlackResult<unknown>, 'ok' | 'error' | 'retryable' | 'retryAfterMs'>>,
+): void {
+  const failure = results.find((result) => !result.ok && result.retryable);
+  if (!failure) return;
+  throw new SlackTransportError('memory.scope', failure.error ?? 'slack_unavailable', {
+    retryable: true,
+    effectOutcome: 'failed',
+    ...(failure.retryAfterMs === undefined ? {} : { retryAfterMs: failure.retryAfterMs }),
+  });
+}
+
+function webClientFailure(error: unknown): { error: string; retryable?: true; retryAfterMs?: number } {
+  if (!isRetryableDependencyFailure(error)) return { error: webClientError(error) };
+  const code = error instanceof SlackTransportError ? error.code : webClientError(error);
+  const hint = error instanceof SlackTransportError
+    ? error.retryAfterMs
+    : typeof (error as { retryAfter?: unknown }).retryAfter === 'number'
+    ? (error as { retryAfter: number }).retryAfter * 1_000
+    : undefined;
+  return { error: code, retryable: true, ...(hint === undefined ? {} : { retryAfterMs: hint }) };
 }
 
 function webClientError(error: unknown): string {

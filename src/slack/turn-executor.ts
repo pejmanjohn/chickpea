@@ -38,6 +38,7 @@ import {
 } from './run-turn.ts';
 import type { ThreadImageRecord } from './thread-images.ts';
 import { slackAgentThreadKey } from './thread-key.ts';
+import { retryableDependencyRetryAfterMs } from './transport/types.ts';
 import type {
   FlueDispatchReceiptV1,
   FlueSettlementCheckpointV1,
@@ -470,7 +471,8 @@ export async function executeTurnJob(
         console.error('[chickpea] Flue turn exhausted durable reattachment attempts');
         return deliverRecoveryFailure('post_dispatch_attempts_exhausted');
       } else {
-        options.onRetry();
+        // A rate-limited Slack/gateway call carries its own Retry-After.
+        options.onRetry(retryableDependencyRetryAfterMs(err));
       }
       if (activeWorkKey) await ports.slack.setActiveWork(activeWorkKey, job.id, false);
       console.warn('[chickpea] Flue turn retained for durable reattachment');
@@ -515,7 +517,7 @@ export async function executeTurnJob(
       }
       return true;
     } else {
-      options.onRetry();
+      options.onRetry(retryableDependencyRetryAfterMs(err));
       return false;
     }
   }

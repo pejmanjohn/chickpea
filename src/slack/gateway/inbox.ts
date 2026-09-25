@@ -1,6 +1,10 @@
 import { schemaInstallRequired, type StateDb } from '../../state/state-db.ts';
 import type { GatewayInboundDelivery } from './protocol.ts';
-import { isRetryableDependencyFailure } from '../transport/types.ts';
+import {
+  isRetryableDependencyFailure,
+  MAX_DEPENDENCY_RETRY_AFTER_MS,
+  retryableDependencyRetryAfterMs,
+} from '../transport/types.ts';
 
 const GATEWAY_INBOX_MAX_TOTAL_ROWS = 1_000_000;
 const GATEWAY_INBOX_MAX_ACTIVE_ROWS = 512;
@@ -19,7 +23,7 @@ export const GATEWAY_INBOX_MAX_DRAIN_BATCH = 16;
 // attempt budget (5 + 10 + 20 + 40 s) so a burst cannot spend every attempt
 // inside the window that rejected it.
 const GATEWAY_INBOX_RETRY_BASE_MS = 5_000;
-const GATEWAY_INBOX_MAX_RETRY_DELAY_MS = 60_000;
+const GATEWAY_INBOX_MAX_RETRY_DELAY_MS = MAX_DEPENDENCY_RETRY_AFTER_MS;
 
 /**
  * Delay before a delivery that failed on a retryable dependency (rate limit,
@@ -43,8 +47,7 @@ export function gatewayInboxRetryDelayMs(attempts: number, retryAfterMs?: number
  */
 export function gatewayDeliveryRetryDelayMs(attempts: number, error: unknown): number {
   if (!isRetryableDependencyFailure(error)) return 0;
-  const hint = (error as { retryAfterMs?: unknown }).retryAfterMs;
-  return gatewayInboxRetryDelayMs(attempts, typeof hint === 'number' ? hint : undefined);
+  return gatewayInboxRetryDelayMs(attempts, retryableDependencyRetryAfterMs(error));
 }
 
 export type GatewayInboxAdmissionOutcome = 'accepted' | 'duplicate';

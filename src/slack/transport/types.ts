@@ -184,6 +184,21 @@ export function isRetryableDependencyFailure(error: unknown): boolean {
     RETRYABLE_SLACK_ERRORS.has(String((data as { error?: unknown }).error));
 }
 
+/** Longest server-requested pause a retry honors (the gateway window is 60 s). */
+export const MAX_DEPENDENCY_RETRY_AFTER_MS = 60_000;
+
+/**
+ * The server's own retry hint (Retry-After) for a retryable dependency
+ * failure, bounded to one gateway window; undefined when there is none.
+ */
+export function retryableDependencyRetryAfterMs(error: unknown): number | undefined {
+  if (!isRetryableDependencyFailure(error)) return undefined;
+  const hint = (error as { retryAfterMs?: unknown }).retryAfterMs;
+  return typeof hint === 'number' && Number.isFinite(hint) && hint > 0
+    ? Math.min(hint, MAX_DEPENDENCY_RETRY_AFTER_MS)
+    : undefined;
+}
+
 export type SlackInstallationHealthStatus =
   | 'healthy'
   | 'needs_reauthorization'

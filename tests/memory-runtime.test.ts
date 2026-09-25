@@ -18,6 +18,7 @@ import { prepareMemoryTurn } from '../src/memory/runtime.ts';
 import { StateStoreDisconnectedError } from '../src/config/cf-state-proxies.ts';
 import { resolveAgentRoute } from '../src/slack/agent-routing.ts';
 import { AgentUserGroupLookupLimiter } from '../src/slack/agent-presence/reconciler.ts';
+import { SlackTransportError } from '../src/slack/transport/types.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 
 test('an explicit base-app management mention stays memoryless without a default-Agent Channel grant', async () => {
@@ -462,6 +463,94 @@ test('an explicit Chickpea mention inside a DM keeps a valid delivery lease', as
     });
     assert.doesNotMatch(prepared.conversationKey, /:workspace-management$/);
     assert.equal(await prepared.validateLease(), true);
+  } finally {
+    closeNodeStateStores();
+    if (previousStatePath === undefined) delete process.env.SLACK_STATE_DB_PATH;
+    else process.env.SLACK_STATE_DB_PATH = previousStatePath;
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('a rate-limited Slack lease check retries the attempt instead of rejecting the lease', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'chickpea-agent-memory-rate-limit-'));
+  const previousStatePath = process.env.SLACK_STATE_DB_PATH;
+  process.env.SLACK_STATE_DB_PATH = join(directory, 'state.sqlite');
+  closeNodeStateStores();
+  try {
+    const config = getConfigStore();
+    const agent = await config.createAgent({
+      id: 'agent_support', name: 'Support', description: 'Answers support questions',
+      instructions: 'Help customers.', enabled: true, lifecycle: 'active',
+      creatorMembershipId: 'membership_owner', editPolicy: 'creator_and_admins',
+      model: 'local-stub/support', skills: [], mcpServers: [], apiConnections: [], repositories: [],
+      slackPresence: {
+        requestedHandle: 'support', normalizedHandle: 'support', desiredState: 'active',
+        health: 'healthy', userGroupId: 'SSUPPORT',
+        avatar: { kind: 'generated', revision: 1, seed: 'support' },
+      },
+    });
+    const installation = await config.ensureWorkspaceInstallation({
+      workspaceId: 'T_LIMIT', teamId: 'T_LIMIT', transportMode: 'direct', runtimeContract: 'legacy',
+      defaultAgentId: agent.id, botUserId: 'U_CHICKPEA',
+    });
+    await config.updateWorkspaceInstallation('T_LIMIT', { health: 'healthy' }, installation.revision);
+    await config.putAgentChannelGrant({
+      workspaceId: 'T_LIMIT', channelId: 'C_SUPPORT', agentId: agent.id,
+      status: 'active', createdByMembershipId: 'membership_owner',
+      channelLabel: 'support', channelIsPrivate: false,
+    });
+    const turn: NormalizedSlackTurn = {
+      workspaceId: 'T_LIMIT', channelId: 'C_SUPPORT', eventId: 'Ev-limit',
+      text: '<!subteam^SSUPPORT|@support> answer', userId: 'U_MEMBER',
+      messageTs: '100.1', threadTs: '100.1', source: 'agent_mention',
+      channelType: 'channel', contextMode: 'channel_history',
+    };
+    let failure: 'none' | 'rate_limited' | 'not_found' = 'none';
+    const client = {
+      auth: { test: async () => ({ user_id: 'U_CHICKPEA' }) },
+      conversations: {
+        info: async () => {
+          if (failure === 'rate_limited') {
+            throw new SlackTransportError('conversations.info', 'gateway_rate_limited', {
+              retryable: true, effectOutcome: 'failed', retryAfterMs: 7_000,
+            });
+          }
+          if (failure === 'not_found') {
+            throw Object.assign(new Error('An API error occurred: channel_not_found'), {
+              code: 'slack_webapi_platform_error', data: { ok: false, error: 'channel_not_found' },
+            });
+          }
+          return { channel: { id: turn.channelId, context_team_id: turn.workspaceId, is_member: true } };
+        },
+        members: async () => ({ members: [turn.userId, 'U_CHICKPEA'] }),
+      },
+      users: {
+        info: async () => ({ user: { id: turn.userId, team_id: turn.workspaceId } }),
+      },
+    } as unknown as WebClient;
+    const prepared = await prepareMemoryTurn({
+      turn,
+      assignment: { workspaceId: turn.workspaceId, channelId: turn.channelId, agentId: agent.id, agent },
+      client,
+      botUserId: 'U_CHICKPEA',
+      platformEnv: undefined,
+    });
+    assert.equal(prepared.ownerBound, true);
+    assert.equal(await prepared.validateLease(), true);
+
+    failure = 'rate_limited';
+    await assert.rejects(
+      prepared.validateLease(),
+      (error: unknown) => error instanceof SlackTransportError && error.retryable &&
+        error.code === 'gateway_rate_limited' && error.retryAfterMs === 7_000,
+      'a rate limit is not evidence that the lease was revoked',
+    );
+
+    failure = 'not_found';
+    assert.equal(await prepared.validateLease(), false, 'a Slack "no" still rejects the lease');
+
+    failure = 'none';
+    assert.equal(await prepared.validateLease(), true, 'the retried attempt delivers its answer');
   } finally {
     closeNodeStateStores();
     if (previousStatePath === undefined) delete process.env.SLACK_STATE_DB_PATH;
