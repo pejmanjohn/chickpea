@@ -757,6 +757,10 @@ export async function runTurn(
     // The normal clear is awaited so it reaches Slack before the Worker turn
     // settles. If an active status write lands after it, the registry issues a
     // second best-effort clear without blocking the final response.
+    // A custom status write landing after the session settles would move the
+    // session back to processing (a non-empty assistant status carries it),
+    // so let the one write that may be in flight land first.
+    await statusTurn.drain();
     await agentViewPresentation?.settleAgentSession(result);
     await statusTurn.finish(async (late) => {
       if (frozenPresentation?.schemaVersion !== 3 || !agentViewPresentation) {

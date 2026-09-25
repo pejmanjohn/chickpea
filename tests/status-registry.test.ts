@@ -148,16 +148,21 @@ test('a refresh whose reservation failed re-arms instead of letting the status e
   turn.close();
 });
 
-test('a new fact that fails its reservation keeps refreshing the fact still shown', async () => {
+test('a new fact that fails its reservation retries itself while the old fact is shown', async () => {
   const calls: string[] = [];
+  let failures = 0;
   const turn = registerSlackStatusTurn('refresh-rearm-shown-thread', {
     setStatus(update) {
       calls.push(`set:${update.text}`);
-      return Promise.resolve(update.text === 'Thinking…');
+      // The first write of the new fact loses its reservation.
+      if (update.text === 'Running tests…' && failures++ === 0) return Promise.resolve(false);
+      return Promise.resolve(true);
     },
     refreshStatus(update) {
+      // A durable presenter validates a refresh against its current fact,
+      // which is now the failed new one: the old phrase can never refresh.
       calls.push(`refresh:${update.text}`);
-      return Promise.resolve(true);
+      return Promise.resolve(update.text === 'Running tests…');
     },
     refreshRetryable: () => true,
   }, {
@@ -172,8 +177,41 @@ test('a new fact that fails its reservation keeps refreshing the fact still show
   assert.deepEqual(calls.slice(0, 3), [
     'set:Thinking…',
     'set:Running tests…',
-    'refresh:Thinking…',
-  ]);
+    'set:Running tests…',
+  ], 'the failed fact is retried as a write, not refreshed as the old phrase');
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(calls[3], 'refresh:Running tests…', 'the retried fact then refreshes normally');
+  turn.close();
+});
+
+test('a newer fact cancels a pending retry, and an applied fact makes it moot', async () => {
+  const calls: string[] = [];
+  const turn = registerSlackStatusTurn('refresh-retry-cancel-thread', {
+    setStatus(update) {
+      calls.push(`set:${update.text}`);
+      return Promise.resolve(update.text !== 'Running tests…');
+    },
+    refreshStatus(update) {
+      calls.push(`refresh:${update.text}`);
+      return Promise.resolve(true);
+    },
+    refreshRetryable: () => true,
+  }, {
+    generation: 'refresh-retry-cancel-generation',
+    observedMinIntervalMs: 1,
+    refreshIntervalMs: 20,
+  });
+
+  await turn.setStatus({ text: 'Thinking…' });
+  assert.equal(await turn.setStatus({ text: 'Running tests…' }), false);
+  assert.equal(await turn.setStatus({ text: 'Committing…' }), true);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.deepEqual(calls, [
+    'set:Thinking…',
+    'set:Running tests…',
+    'set:Committing…',
+    'refresh:Committing…',
+  ], 'the newer fact replaces the retry and refreshes on the ordinary cadence');
   turn.close();
 });
 
