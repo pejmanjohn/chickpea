@@ -9,6 +9,7 @@ import { isCloudflareTarget } from '../../config/runtime-target.ts';
 import {
   processGatewayAgentSelection,
   processGatewayPrivateChannelSetup,
+  processGatewayUiAction,
   processGatewaySlackEnvelope,
 } from '../../channels/slack.ts';
 import { createGatewayDeploymentClient } from './runtime.ts';
@@ -21,7 +22,9 @@ import {
 } from './inbox.ts';
 import {
   GATEWAY_DURABLE_ADMISSION_CAPABILITY,
+  GATEWAY_UI_INTERACTIONS_CAPABILITY,
   type GatewayInboundDelivery,
+  type GatewaySessionCapability,
 } from './protocol.ts';
 import {
   GatewaySessionRunner,
@@ -72,6 +75,7 @@ interface NodeGatewayDeliveryDependencies {
   processSlackEnvelope?: typeof processGatewaySlackEnvelope;
   processAgentSelection?: typeof processGatewayAgentSelection;
   processPrivateChannelSetup?: typeof processGatewayPrivateChannelSetup;
+  processUiAction?: typeof processGatewayUiAction;
 }
 
 const NODE_GATEWAY_RETRY_MS = 5_000;
@@ -212,7 +216,7 @@ interface NodeGatewayRuntimeDependencies {
   createRunner?: (
     env: PlatformEnv | undefined,
     input: {
-      capabilities: readonly [typeof GATEWAY_DURABLE_ADMISSION_CAPABILITY];
+      capabilities: readonly GatewaySessionCapability[];
       onEvent(delivery: GatewayInboundDelivery): Promise<'accepted' | 'duplicate' | 'rejected'>;
     },
   ) => NodeGatewayRunner;
@@ -262,7 +266,10 @@ export function startNodeGatewaySession(
   );
   void readBinding(env).then(async (binding) => {
     if (generation !== lifecycleGeneration || !binding || runner) return;
-    const capabilities = [GATEWAY_DURABLE_ADMISSION_CAPABILITY] as const;
+    const capabilities = [
+      GATEWAY_DURABLE_ADMISSION_CAPABILITY,
+      GATEWAY_UI_INTERACTIONS_CAPABILITY,
+    ] as const;
     const onEvent = async (delivery: GatewayInboundDelivery) => {
       if (runtimeQuiescing || generation !== lifecycleGeneration) return 'rejected';
       const outcome = getInbox().admit(delivery, binding);
@@ -363,6 +370,7 @@ export function createNodeGatewayInboxWorker(
   const processAgentSelection = dependencies.processAgentSelection ?? processGatewayAgentSelection;
   const processPrivateChannelSetup =
     dependencies.processPrivateChannelSetup ?? processGatewayPrivateChannelSetup;
+  const processUiAction = dependencies.processUiAction ?? processGatewayUiAction;
   return new NodeGatewayInboxWorker({
     getStore: dependencies.getStore ?? getNodeGatewayInboxStore,
     processDelivery: async (delivery) => {
@@ -375,6 +383,8 @@ export function createNodeGatewayInboxWorker(
           })
         : delivery.kind === 'interaction.agent_selected'
         ? processAgentSelection(delivery, env, client, appStores)
+        : delivery.kind === 'interaction.ui_action'
+        ? processUiAction(delivery, env, client, { stores: appStores, durableIngress: true })
         : processPrivateChannelSetup(delivery, env, client, appStores);
     },
   });

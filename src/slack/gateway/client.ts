@@ -1095,8 +1095,19 @@ export class GatewayLogicalSession {
       return undefined;
     }
     if (!this.ready) throw new Error('Gateway delivered an event before session authentication.');
+    if (frame.kind === 'interaction.view_submission') {
+      // Modal forms are not served yet: answer at once so the gateway shows
+      // its reply-in-thread notice, and keep the session.
+      this.input.send({
+        protocolVersion: CHICKPEA_GATEWAY_PROTOCOL_VERSION,
+        kind: 'event.ack',
+        deliveryId: frame.deliveryId,
+        outcome: 'rejected',
+      });
+      return undefined;
+    }
     if (frame.kind !== 'event.deliver' && frame.kind !== 'interaction.agent_selected' &&
-        frame.kind !== 'interaction.channel_agent_add') {
+        frame.kind !== 'interaction.channel_agent_add' && frame.kind !== 'interaction.ui_action') {
       throw new Error('Unsupported gateway session frame.');
     }
     return frame;

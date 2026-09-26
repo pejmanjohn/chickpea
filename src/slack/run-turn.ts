@@ -25,11 +25,13 @@ import {
   getIdentityStore,
   getManagementStore,
   getSettingsStore,
+  getSlackStateStore,
   getUsageStore,
   getWorkStore,
   type AppStores,
 } from '../config/state-backend.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
+import { deliverHostApprovalSurfaces } from './ui/host-surfaces.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import type { TurnEnvelopeV1 } from '../agents/turn-envelope.ts';
 import { buildTurnEnvelope } from './turn-envelope-builder.ts';
@@ -1792,6 +1794,25 @@ async function runTurnAttempt(
       tablePresentation,
       deliverableArtifacts,
     );
+    if (terminalResult === 'answer') {
+      // An approval this turn is holding gets host buttons under the reply.
+      // A failure here never undoes the delivered answer; typed approval works.
+      await deliverHostApprovalSurfaces({
+        turn,
+        assignment,
+        turnJobId: options.turnId ?? `msg:${turn.channelId}:${turn.messageTs}`,
+        state: options.appStores?.slackState ?? getSlackStateStore(platformEnv),
+        ...(settingsStore ? { settings: settingsStore } : {}),
+        identity: options.appStores?.identity ?? getIdentityStore(platformEnv),
+        management: options.appStores?.management ?? getManagementStore(platformEnv),
+        messenger: {
+          post: (rendered) => presenter.postSurfaceMessage(rendered),
+          update: (messageTs, rendered) => presenter.updateSurfaceMessage(messageTs, rendered),
+        },
+      }).catch(() => {
+        console.warn('[chickpea] Slack approval buttons were not posted');
+      });
+    }
     // Clear after the final reaches Slack. A custom Agent persona does not
     // reliably trigger Slack's automatic app-status cleanup, and clearing
     // before delivery can leave the custom status visible after the reply.

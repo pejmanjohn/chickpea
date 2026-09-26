@@ -14,7 +14,7 @@ export function browserCheckOnlyRefusal(host: string): string {
 export const BROWSER_NO_APPROVER_MESSAGE =
   'There is no person in this conversation to approve this step, so it cannot be taken. Tell the person what you would do, and that they can ask again in Slack.';
 export const BROWSER_APPROVAL_INSTRUCTION =
-  'Ask the person to reply exactly "approve" in this thread to let you take this step, or "stop". End your reply after asking.';
+  'Ask the person to approve this step with the Approve step button under your reply, or by replying "approve" in this thread ("stop" cancels it). Describe the step in one sentence and end your reply after asking.';
 export const BROWSER_PAGE_CHANGED_MESSAGE =
   'The page changed since approval; take a new snapshot and ask again if the step is still right.';
 /** Slack status while a data-changing step waits for the person. */

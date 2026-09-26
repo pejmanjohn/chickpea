@@ -515,7 +515,7 @@ function parseStoredDelivery(payload: string): GatewayInboundDelivery {
   if (
     !value || typeof value !== 'object' ||
     (value.kind !== 'event.deliver' && value.kind !== 'interaction.agent_selected' &&
-      value.kind !== 'interaction.channel_agent_add')
+      value.kind !== 'interaction.channel_agent_add' && value.kind !== 'interaction.ui_action')
   ) {
     throw new Error('Stored gateway delivery is invalid.');
   }

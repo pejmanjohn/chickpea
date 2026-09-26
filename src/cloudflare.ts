@@ -74,6 +74,7 @@ import type {
 import { buildRuntimeDrainStatus, tagStateStub } from './config/state-rpc.ts';
 import { promiseBackedStatePort } from './config/local-state-port.ts';
 import { localSlackStateStore } from './slack/local-state-store.ts';
+import { UiSurfaceStoreLogic, type UiSurfaceRpcRequest } from './slack/ui/surface-store.ts';
 import {
   getConfigStore,
   getIdentityStore,
@@ -258,6 +259,7 @@ import { loadCredentialKeyring } from './slack/credential-keyring.ts';
 import {
   processGatewayAgentSelection,
   processGatewayPrivateChannelSetup,
+  processGatewayUiAction,
   processGatewaySlackEnvelope,
 } from './channels/slack.ts';
 import {
@@ -757,6 +759,7 @@ interface TagStateStores {
   turnJobs: TurnJobStoreLogic;
   gatewayInbox: GatewayInboxStoreLogic;
   presentations: SlackRunPresentationStoreLogic;
+  uiSurfaces: UiSurfaceStoreLogic;
   memory: MemoryStoreLogic;
   routines: RoutineStoreLogic;
   usage: UsageStoreLogic;
@@ -1038,6 +1041,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       turnJobs: new TurnJobStoreLogic(db),
       gatewayInbox: new GatewayInboxStoreLogic(db, Date.now, {}, { leaseOwner: this.instanceId }),
       presentations: new SlackRunPresentationStoreLogic(db),
+      uiSurfaces: new UiSurfaceStoreLogic(db),
       memory: new MemoryStoreLogic(db),
       routines: new RoutineStoreLogic(db),
       usage: new UsageStoreLogic(db),
@@ -1543,8 +1547,14 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
 
   async admitSlackTurn(input: SlackCanonicalAdmissionInput) {
     return this.call((stores) =>
-      stores.slack.admitCanonical(input, stores.work, stores.turnJobs, stores.presentations),
+      stores.slack.admitCanonical(
+        input, stores.work, stores.turnJobs, stores.presentations, stores.uiSurfaces,
+      ),
     );
+  }
+
+  async uiSurfaceExecute(request: UiSurfaceRpcRequest) {
+    return this.call((stores) => stores.uiSurfaces.execute(request));
   }
 
   async slackAgentBindingPin(
@@ -2935,6 +2945,19 @@ async function drainGatewayInbox(
             platformEnv,
             client,
             appStores,
+          )
+        : item.delivery.kind === 'interaction.ui_action'
+        ? await processGatewayUiAction(
+            item.delivery,
+            platformEnv,
+            client,
+            {
+              stores: appStores,
+              enqueueTurn: async (job) => {
+                stores.turnJobs.enqueue(job);
+                return { ok: true, value: null };
+              },
+            },
           )
         : await processGatewayPrivateChannelSetup(
             item.delivery,

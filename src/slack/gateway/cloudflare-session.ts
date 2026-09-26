@@ -6,7 +6,10 @@ import { getSettingsStore, type PlatformEnv } from '../../config/state-backend.t
 import { tagStateStub } from '../../config/state-rpc.ts';
 import { cloudflareWorkerVersionId } from '../../config/cloudflare-version.ts';
 import { GATEWAY_BINDING_SETTING } from './client.ts';
-import { GATEWAY_DURABLE_ADMISSION_CAPABILITY } from './protocol.ts';
+import {
+  GATEWAY_DURABLE_ADMISSION_CAPABILITY,
+  GATEWAY_UI_INTERACTIONS_CAPABILITY,
+} from './protocol.ts';
 import { createGatewayDeploymentClient } from './runtime.ts';
 import { emitGatewayDelivery } from '../../observability/runtime-latency.ts';
 import { GatewayInboundAdmission } from './inbound-admission.ts';
@@ -95,7 +98,7 @@ export class SlackGatewaySession extends DurableObject implements SlackGatewaySe
         // A failed Durable Object RPC stub rejects subsequent calls too.
         // Reconnects must rebuild the stores captured by this client.
         client: () => createGatewayDeploymentClient(platformEnv),
-        capabilities: [GATEWAY_DURABLE_ADMISSION_CAPABILITY],
+        capabilities: [GATEWAY_DURABLE_ADMISSION_CAPABILITY, GATEWAY_UI_INTERACTIONS_CAPABILITY],
         waitUntil: (promise) => this.state.waitUntil(promise),
         onDiagnostic: (diagnostic) => console.warn({ component: 'slack_gateway',
           event: 'session_connection_failure', ...diagnostic }),
