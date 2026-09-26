@@ -614,6 +614,79 @@ test('deliverFinal redacts credential-shaped content before streaming it to Slac
   }
 });
 
+const LIVE_SLACK_BROADCAST =
+  /<!(?:here|channel|everyone|group|subteam\^)|(?<![\p{L}\p{N}_])@(?:here|channel|everyone)(?![\p{L}\p{N}_])/iu;
+const BROADCAST_ANSWER = 'Heads up <!here> and @channel, cc <!subteam^S1|@ops> and <@U1>';
+
+test('deliverFinal streams and records an answer whose broadcast mentions are inert', async () => {
+  const starts: Array<Record<string, unknown>> = [];
+  const approvedOutputs: string[] = [];
+  const presenter = new WebClientPresenter(
+    {
+      chat: {
+        async startStream(input: Record<string, unknown>) {
+          starts.push(input);
+          return { ok: true, ts: '1782770400.000303' };
+        },
+        async stopStream() { return { ok: true }; },
+      },
+    } as unknown as WebClient,
+    {
+      channelId: 'C_BOUND', threadTs: '1782770400.000100',
+      userId: 'U_REQUESTER', workspaceId: 'T_WORKSPACE',
+      agentName: 'Test agent', agentId: 'agent_test',
+    },
+    {
+      async beforeDelivery(input) {
+        approvedOutputs.push(input.approvedOutput);
+        return 'attempt-broadcast-neutralized';
+      },
+      async afterDelivery() {},
+    },
+  );
+
+  await presenter.deliverFinal(BROADCAST_ANSWER, 'markdown');
+
+  assert.equal(starts.length, 1);
+  assert.equal(approvedOutputs.length, 1);
+  for (const output of [String(starts[0]?.markdown_text), approvedOutputs[0]!]) {
+    assert.doesNotMatch(output, LIVE_SLACK_BROADCAST);
+    assert.equal(output, 'Heads up @⁠here and @⁠channel, cc @⁠ops and <@U1>');
+  }
+});
+
+test('the stream-rejection fallback post keeps broadcast mentions inert in blocks and text', async () => {
+  const posts: Array<Record<string, unknown>> = [];
+  const presenter = new WebClientPresenter(
+    {
+      chat: {
+        async startStream() {
+          throw new Error('confirmed start rejection');
+        },
+        async postMessage(input: Record<string, unknown>) {
+          posts.push(input);
+          return { ok: true, ts: '1782770400.000501' };
+        },
+      },
+    } as unknown as WebClient,
+    {
+      channelId: 'C_BOUND', threadTs: '1782770400.000100',
+      userId: 'U_REQUESTER', workspaceId: 'T_WORKSPACE',
+      agentName: 'Test agent', agentId: 'agent_test',
+    },
+  );
+
+  await presenter.deliverFinal(BROADCAST_ANSWER, 'markdown');
+
+  assert.equal(posts.length, 1);
+  const blocks = posts[0]?.blocks as Array<{ type: string; text?: string }>;
+  for (const output of [String(blocks[0]?.text), String(posts[0]?.text)]) {
+    assert.doesNotMatch(output, LIVE_SLACK_BROADCAST);
+    assert.match(output, /@⁠here/);
+  }
+  assert.match(String(blocks[0]?.text), /<@U1>/);
+});
+
 test('deliverFinal removes an algorithm-labeled PEM key before streaming or durable observation', async () => {
   const starts: Array<Record<string, unknown>> = [];
   const approvedOutputs: string[] = [];

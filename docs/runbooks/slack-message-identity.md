@@ -170,6 +170,43 @@ covers the line still being written. An emphasis or link label that
 continues onto a later line streams its opening literally until it closes;
 whether Slack re-renders it when it closes is still to be confirmed live.
 
+### Broadcast and user-group mentions
+
+Model-written text never notifies a channel, its active members, the
+workspace, or a user group. Slack's documentation (read September 26, 2026)
+covers only some of the paths a reply takes:
+
+| Path | Used for | Documented behavior |
+| --- | --- | --- |
+| `markdown` block | Every final answer | Silent on mentions |
+| Streamed `markdown_text` chunk | Progressive and final streams | Silent on mentions |
+| mrkdwn section text | File replies, routine file deliveries | Parses `<!here>`, `<!channel>`, `<!everyone>`, `<!subteam^ID>`; with the default `verbatim: false` it also auto-parses a plain `@here` and user-group handles |
+| Top-level `text` | Fallback and notification text | Parses `<!here>` syntax; a plain `@here` only with `link_names=1`, which Chickpea never sets |
+
+The undocumented paths are treated as parsing everything, so
+`canonicalSlackMarkdownText` neutralizes every answer last, after link
+sanitizing and credential redaction. `neutralizeSlackBroadcastMentions` in
+`src/slack/message-format.ts` rewrites:
+
+- `<!here>`, `<!channel>`, `<!everyone>` and `<!group>` in prose as
+  `@here`-style words, and `<!subteam^ID|@ops>` as `@ops` (a bare ID reads
+  `@user-group`). A U+2060 word joiner follows every `@`, and plain
+  `@here`/`@channel`/`@everyone` get one too.
+- The same tokens in code keep their characters with the joiner after `<`, so
+  they read `<!here>` but no parser sees a special mention.
+- File-reply mrkdwn gives every word-initial `@handle` in prose the joiner,
+  because mrkdwn auto-parses user-group handles. Plain broadcast words in code
+  there get it too, since Slack does not say whether auto-parsing skips code.
+
+User mentions (`<@U…>`), Channel links, `<!date^…>`, `<!DOCTYPE …>`, CDATA and
+email addresses are unchanged. Streaming withholds an open `<…` on the last
+line, a trailing `@` that could still grow into a broadcast word, and a
+mention inside an inline code span that has not closed, so each streamed
+prefix is a prefix of the neutralized final.
+
+A stream opened by an earlier build that already showed a raw mention diverges
+from the new final; the divergent-stream correction replaces it.
+
 ### Public message readback is a projection
 
 In the tested permalink replies, `conversations.replies` omitted `username`,

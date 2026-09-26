@@ -11,6 +11,7 @@ import {
   replyFooterModelLabel,
   renderUnassignedChannelHint,
   markdownFallbackText,
+  neutralizeSlackBroadcastMentions,
   renderSlackActionLink,
   renderSlackMarkdownActionLink,
   renderSlackMessage,
@@ -181,6 +182,10 @@ test('every progressive cut point is a monotone prefix of the canonical terminal
     'CHICKPEA_AUTH_SECRET=consumer-install-secret-value\nNever render this.',
     '<https://example.com/path|Slack link> then a safe suffix.',
     '| Metric | Value |\n| --- | ---: |\n| p95 | 120ms |\n| errors | 3 |',
+    'Heads up <!here> and <!subteam^S0123|@oncall>, plus @channel and `<!everyone>`.',
+    'Ask @here-now or @everyone123; mail a@here.com.\n```\n<!channel> @here\n```\nDone @here.',
+    '`@here <x` then <!here>, then `<!channel|x>` and <![CDATA[ a ]]>.',
+    'Key sk-proj-abcdefghijklmnopqrstuvwxyz123456@here stays redacted, @everyone.',
   ];
 
   for (const terminalInput of corpus) {
@@ -192,6 +197,103 @@ test('every progressive cut point is a monotone prefix of the canonical terminal
       assert.ok(prefix.startsWith(prior), `${JSON.stringify(prefix)} rewrote ${JSON.stringify(prior)}`);
       prior = prefix;
     }
+  }
+});
+
+const WJ = '⁠';
+// A live special mention, or a broadcast word Slack could auto-parse.
+const LIVE_BROADCAST = /<!(?:here|channel|everyone|group|subteam\^)|(?<![\p{L}\p{N}_])@(?:here|channel|everyone)(?![\p{L}\p{N}_])/iu;
+
+test('model text never renders a Slack broadcast or user-group mention', () => {
+  const answer = [
+    'Heads up <!here> and <!channel|@channel>, also <!everyone> and <!group>.',
+    'Paging <!subteam^S0123ABC|@oncall>, <!subteam^S0456DEF|design> and <!subteam^S0789GHI>.',
+    'Plain @here, @Channel and @EVERYONE too.',
+    'Keep <@U012AB3CD>, <#C0123|general>, <!date^1392734382^{date_short}|Feb 18>, a@here.com, @heresy and <!DOCTYPE html>.',
+  ].join('\n');
+  const canonical = canonicalSlackMarkdownText(answer);
+
+  assert.equal(canonical, [
+    `Heads up @${WJ}here and @${WJ}channel, also @${WJ}everyone and @${WJ}channel.`,
+    `Paging @${WJ}oncall, @${WJ}design and @${WJ}user-group.`,
+    `Plain @${WJ}here, @${WJ}Channel and @${WJ}EVERYONE too.`,
+    'Keep <@U012AB3CD>, <#C0123|general>, <!date^1392734382^{date_short}|Feb 18>, a@here.com, @heresy and <!DOCTYPE html>.',
+  ].join('\n'));
+  assert.equal(neutralizeSlackBroadcastMentions(canonical), canonical);
+  assert.equal(canonicalSlackMarkdownText(canonical), canonical);
+
+  const rendered = renderSlackMessage(answer, 'markdown');
+  const [block] = rendered.blocks ?? [];
+  assert.equal(block?.type, 'markdown');
+  const blockText = block?.type === 'markdown' ? block.text : '';
+  assert.equal(blockText, canonical);
+  assert.match(blockText, /<@U012AB3CD>/);
+  for (const text of [blockText, rendered.text]) assert.doesNotMatch(text, LIVE_BROADCAST);
+  assert.doesNotMatch(renderSlackMessage(answer, 'mrkdwn').text, LIVE_BROADCAST);
+});
+
+test('file replies keep broadcast words and user-group handles inert in mrkdwn', () => {
+  const answer = 'Deploy done <!here>, cc @oncall and <@U123>. Mail ops@example.com. `@here`';
+  const footer = { agentName: 'Analyst', agentId: 'analyst' };
+  const body = renderFileBody(answer, 'markdown', footer);
+
+  // File-reply prose already escaped Slack control syntax, `<@U123>` included.
+  assert.equal(
+    body,
+    `Deploy done @${WJ}here, cc @${WJ}oncall and &lt;@${WJ}U123&gt;. Mail ops@example.com. \`@${WJ}here\``,
+  );
+  const rendered = renderSlackArtifactMessage(answer, 'markdown', footer, [completedFile(0)]);
+  for (const text of [JSON.stringify(rendered.blocks), rendered.text]) {
+    assert.doesNotMatch(text, LIVE_BROADCAST);
+    assert.match(text, /ops@example\.com/);
+  }
+  // mrkdwn sections auto-parse handles; top-level text needs link_names.
+  assert.doesNotMatch(JSON.stringify(rendered.blocks), /(?<![\p{L}\p{N}_])@oncall/u);
+});
+
+test('code keeps a special mention readable but inert', () => {
+  const answer = [
+    'Send `<!here> deploy done` from the bot.',
+    '```js',
+    "post({ text: '<!channel> @here <!subteam^S1|@ops>' });",
+    '```',
+    'Then `@here` in prose code stays as written.',
+  ].join('\n');
+
+  assert.equal(canonicalSlackMarkdownText(answer), [
+    `Send \`<${WJ}!here> deploy done\` from the bot.`,
+    '```js',
+    `post({ text: '<${WJ}!channel> @here <${WJ}!subteam^S1|@ops>' });`,
+    '```',
+    'Then `@here` in prose code stays as written.',
+  ].join('\n'));
+});
+
+test('a streamed prefix withholds a mention until it neutralizes like the whole answer', () => {
+  const cases: Array<[string, string]> = [
+    ['Heads up <!he', 'Heads up'],
+    ['Heads up <!here', 'Heads up'],
+    ['Heads up <!here>', `Heads up @${WJ}here`],
+    ['Heads up <!subteam^S1|@on', 'Heads up'],
+    ['Heads up @', 'Heads up'],
+    ['Heads up @Her', 'Heads up'],
+    // `@here` can still become `@heresy`, which is not a mention.
+    ['Heads up @here', 'Heads up'],
+    ['Heads up @here ', 'Heads up'],
+    ['Heads up @here,', `Heads up @${WJ}here,`],
+    ['Heads up @heresy', 'Heads up @heresy'],
+    ['Heads up @ops.', 'Heads up @ops.'],
+    // An inline code span may still close, which changes how it neutralizes.
+    ['Try `x <!here>', 'Try `x'],
+    ['Try `x <!here>` now', `Try \`x <${WJ}!here>\` now`],
+    ['Try `x @here', 'Try `x'],
+    ['Try `x @here` now', 'Try `x @here` now'],
+    // A cut elsewhere cannot split a closed code span carrying a mention.
+    ['`@here <x` then', '`'],
+    ['Done.\n`<!he', 'Done.\n`'],
+  ];
+  for (const [input, expected] of cases) {
+    assert.equal(streamableSlackMarkdownPrefix(input), expected, JSON.stringify(input));
   }
 });
 
@@ -282,7 +384,7 @@ test('file sections preserve safe action labels while escaping malformed content
   assert.match(comment, /\*GRE:\* \$2,400 &amp; TOEFL: \$800/);
   assert.match(comment, /<https:\/\/example.com\/report\?exam=gre&amp;row=1\|View report>/);
   assert.match(comment, /Unsafe\n\[Malformed\]\(https:\/\/example.com\/&lt;broken/);
-  assert.match(comment, /&lt;!channel&gt;/);
+  assert.match(comment, /@\u2060channel/);
   assert.match(comment, /\[credential redacted\]/);
   assert.doesNotMatch(comment, new RegExp(`${canary}|javascript:|<!channel>`));
 });
