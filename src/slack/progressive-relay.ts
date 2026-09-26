@@ -62,6 +62,11 @@ export interface SlackProgressiveReadRelay {
    * next attempt to reattach to the same receipt.
    */
   suspendAndDrain(): Promise<ProgressiveRelaySummary>;
+  /**
+   * Whether this answer is streamed to Slack: a requested intent (durable or
+   * replayed) or any queued or accepted text.
+   */
+  streamedAnswer?(): boolean;
 }
 
 type RelayOperation =
@@ -501,6 +506,10 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
       this.startPump();
       await this.pumpPromise;
     }
+  }
+
+  streamedAnswer(): boolean {
+    return this.intentStatus === 'requested' || this.hasQueuedOrAcceptedText();
   }
 
   private hasQueuedOrAcceptedText(): boolean {

@@ -1321,17 +1321,28 @@ function chainedRecoveryStream(parts: string[]): Chunk[] {
   return chunks.map((chunk, index) => ({ ...chunk, position: { batch: 1, index } }) as Chunk);
 }
 
-async function recoveredAnswer(parts: string[], folded = parts.join('\n\n')) {
+async function recoveredAnswer(parts: string[], folded = parts.join('\n\n'), streamed?: boolean) {
   const logs: unknown[] = [];
   const info = console.info;
   console.info = (...args: unknown[]) => { if (args[0] === '[chickpea] interrupted answer recovered') logs.push(args[1]); };
   try {
-    const result = await promptSlackThreadAgent(promptInput(
-      state({ dispatchEnvelope: ENVELOPE, dispatchReceipt: RECEIPT }),
-      handle({ read: async (_receipt, options) => {
-        for (const chunk of chainedRecoveryStream(parts)) options?.onEvent?.(chunk);
-        return { text: folded, submissionId: RECEIPT.submissionId, data: {} };
-      } })));
+    const drained = { acceptedChunks: 0, acceptedBytes: 0, targetMessageCompleted: true, invalidated: false };
+    const relay: SlackProgressiveReadRelay = {
+      onEvent() {},
+      async closeAndDrain() { return drained; },
+      async invalidateAndDrain() { return drained; },
+      async suspendAndDrain() { return drained; },
+      streamedAnswer: () => streamed === true,
+    };
+    const result = await promptSlackThreadAgent({
+      ...promptInput(
+        state({ dispatchEnvelope: ENVELOPE, dispatchReceipt: RECEIPT }),
+        handle({ read: async (_receipt, options) => {
+          for (const chunk of chainedRecoveryStream(parts)) options?.onEvent?.(chunk);
+          return { text: folded, submissionId: RECEIPT.submissionId, data: {} };
+        } })),
+      ...(streamed === undefined ? {} : { prepareProgressiveRelay: async () => relay }),
+    });
     return { text: result.text, logs };
   } finally {
     console.info = info;
@@ -1343,7 +1354,7 @@ test('two interruptions with a restart in the middle keep one copy of the answer
   const { text, logs } = await recoveredAnswer([opening, `${opening} cleanup, in`, ' three phases.']);
   assert.equal(text, `${opening} cleanup, in three phases.`);
   assert.deepEqual(logs, [{ recoveryResolution: 'restarted', parts: 3,
-    partialChars: opening.length * 2 + ' cleanup, in'.length, continuationChars: ' three phases.'.length }]);
+    partialChars: opening.length * 2 + ' cleanup, in'.length, continuationChars: ' three phases.'.length, trimmedChars: 0 }]);
 });
 
 test('a short partial proves no restart and is always continued', async () => {
@@ -1363,10 +1374,37 @@ test('a paraphrased restart is concatenated, as the relay streamed it (accepted;
   assert.equal((logs[0] as { recoveryResolution: string }).recoveryResolution, 'continued');
 });
 
+test('a continuation that re-opens its section (the Workers AI gpt-oss shape) keeps one copy and joins cleanly', async () => {
+  const before = '## 7. Tools\n\nA hori-hori knife and a hand fork cover most small beds.\n\n';
+  const section = '## 8. Sustaining the Harvest\n\n';
+  const opening = 'A garden lasts only as long as the people who tend it, so plan the rota before the first frost. ';
+  const partial = `${before}${section}${opening}Keep a log of volunteer`;
+  // The model wrote the section heading and opening again, then went on.
+  const continuation = `8. Sustaining the Harvest\n\n${opening}Keep a log of volunteer hours and tasks.\n\n## 9. Closing\n\nThank everyone.`;
+  const { text, logs } = await recoveredAnswer([partial, continuation]);
+  assert.equal(text, `${partial} hours and tasks.\n\n## 9. Closing\n\nThank everyone.`);
+  assert.equal(text.split('Sustaining the Harvest').length, 2, 'the heading appears once');
+  assert.equal(text.split(opening).length, 2, 'the opening sentence appears once');
+  assert.doesNotMatch(text, /volunteer8\./);
+  const trimmedChars = continuation.length - ' hours and tasks.\n\n## 9. Closing\n\nThank everyone.'.length;
+  assert.deepEqual(logs, [{ recoveryResolution: 'continued_trimmed', parts: 2, partialChars: partial.length,
+    continuationChars: continuation.length, trimmedChars }]);
+});
+
+test('a streamed answer is never trimmed: the final stays what the relay streamed', async () => {
+  const partial = 'Intro paragraph that sets the scene for the reader.\n\n## 8. Sustaining the Harvest\n\nA garden lasts only as long as the people who tend it. Keep a log of volunteer';
+  const continuation = '## 8. Sustaining the Harvest\n\nA garden lasts only as long as the people who tend it. Keep a log of volunteer hours.';
+  const { text, logs } = await recoveredAnswer([partial, continuation], undefined, true);
+  assert.equal(text, partial + continuation);
+  assert.equal((logs[0] as { recoveryResolution: string }).recoveryResolution, 'continued');
+  // The same relay that streamed nothing lets the join trim.
+  assert.equal((await recoveredAnswer([partial, continuation], undefined, false)).text, `${partial} hours.`);
+});
+
 test('a continuation folded with other text blocks falls back to the last step and is logged unmatched', async () => {
   const partial = '## Plan\n\n1. Inventory the col';
   const { text, logs } = await recoveredAnswer([partial, 'umn.'], `${partial}\n\nA commentary block.\n\numn.`);
   assert.equal(text, 'umn.');
-  assert.deepEqual(logs, [{ recoveryResolution: 'unmatched', parts: 2, partialChars: partial.length, continuationChars: 4 }]);
+  assert.deepEqual(logs, [{ recoveryResolution: 'unmatched', parts: 2, partialChars: partial.length, continuationChars: 4, trimmedChars: 0 }]);
   assert.doesNotMatch(JSON.stringify(logs), /Plan|Inventory|umn/, 'the log carries no content');
 });

@@ -400,7 +400,11 @@ export async function promptSlackThreadAgent(
 
   // Flue's UI reply folds every assistant step (including interrupted drafts)
   // into one text value. Retain the durable step boundary before that fold.
-  const terminalText = new TerminalStepText(receipt.submissionId);
+  // A relay that cannot say whether it streamed is treated as streamed.
+  const terminalText = new TerminalStepText(
+    receipt.submissionId,
+    () => progressiveRelay !== undefined && (progressiveRelay.streamedAnswer?.() ?? true),
+  );
   const milestoneTarget = { instanceId: envelope.instanceId, submissionId: receipt.submissionId };
   const onWorkspaceMilestone = input.onWorkspaceMilestone;
   const milestones = onWorkspaceMilestone
@@ -577,7 +581,11 @@ class TerminalStepText {
   /** A completed step that Flue's recovery asked the model to continue. */
   private interrupted: { conversationId: string; messageId: string; parts: string[] } | undefined;
   private position: { batch: number; index: number } | undefined;
-  constructor(private readonly submissionId: string) {}
+  constructor(
+    private readonly submissionId: string,
+    /** Whether any of this answer was streamed to Slack progressively. */
+    private readonly streamed: () => boolean = () => false,
+  ) {}
 
   onEvent(chunk: import('@flue/runtime').ConversationStreamChunk): void {
     const prior = this.position;
@@ -650,18 +658,35 @@ class TerminalStepText {
       return text;
     }
     // Fold left: each continuation extends the answer so far, unless it
-    // demonstrably starts the answer over.
+    // demonstrably starts the answer over. When nothing was streamed to
+    // Slack, a continuation that re-opens its section or repeats the
+    // partial's last words is trimmed. A streamed answer is never trimmed:
+    // any change from what the relay streamed rewrites the Slack message.
     let answer = parts[0]!;
     let restarted = false;
+    let reopenedUnmatched = false;
+    let trimmedChars = 0;
     for (const part of parts.slice(1)) {
       if (restartsAnswer(answer, part)) {
         answer = part;
         restarted = true;
-      } else {
+      } else if (this.streamed()) {
         answer += part;
+      } else {
+        const joined = joinContinuation(answer, part);
+        answer = joined.text;
+        trimmedChars += joined.trimmedChars;
+        reopenedUnmatched ||= joined.reopenedUnmatched;
       }
     }
-    logRecoveryResolution(restarted ? 'restarted' : 'continued', parts);
+    logRecoveryResolution(
+      restarted ? 'restarted'
+        : reopenedUnmatched ? 'reopened_unmatched'
+        : trimmedChars > 0 ? 'continued_trimmed'
+        : 'continued',
+      parts,
+      trimmedChars,
+    );
     return answer;
   }
 }
@@ -673,6 +698,10 @@ class TerminalStepText {
  * and is concatenated, exactly as the relay already streamed it.
  */
 const MIN_RESTART_EVIDENCE_CHARS = 24;
+/** The least repeated tail that proves a repeat rather than a deliberate echo. */
+const MIN_OVERLAP_CHARS = 48;
+/** How far back into the answer a repeated tail is looked for. */
+const MAX_OVERLAP_CHARS = 1_500;
 
 function restartsAnswer(answer: string, continuation: string): boolean {
   const opening = answer.trimStart();
@@ -680,10 +709,133 @@ function restartsAnswer(answer: string, continuation: string): boolean {
   return continuation.trimStart().startsWith(opening.slice(0, REGENERATION_PROBE_CHARS));
 }
 
+/**
+ * Join a continuation to the unstreamed answer it continues. A model that saw
+ * its partial sometimes re-opens the section it was in (heading and opening
+ * again) or repeats its last words before going on. Nothing already written
+ * is ever replaced; only the continuation's repeat is cut:
+ * - the continuation's first line repeats the partial's last heading (a
+ *   `#` heading or a numbered "N. Title" line, not a bold label): drop that
+ *   line, and the restated section body when it matches the partial's; a
+ *   body that does not match keeps everything after the heading
+ *   (`reopenedUnmatched`);
+ * - otherwise the longest tail of the answer (from a word start, at least 48
+ *   characters, ending where the continuation's word ends, not a line the
+ *   answer already had earlier) that the continuation opens with is cut.
+ * Anything else is concatenated unchanged.
+ */
+export function joinContinuation(
+  answer: string,
+  continuation: string,
+): { text: string; trimmedChars: number; reopenedUnmatched: boolean } {
+  const unchanged = { text: answer + continuation, trimmedChars: 0, reopenedUnmatched: false };
+  if (answer.trimStart().length < MIN_RESTART_EVIDENCE_CHARS) return unchanged;
+  const heading = lastHeading(answer);
+  const repeated = heading ? repeatedHeadingEnd(continuation, heading.key) : undefined;
+  if (heading && repeated !== undefined) {
+    const rest = continuation.slice(repeated);
+    const body = answer.slice(heading.end);
+    const overlap = body.trim() ? overlapEnd(body, rest) : 0;
+    if (overlap === undefined) {
+      return { text: answer + rest, trimmedChars: repeated, reopenedUnmatched: true };
+    }
+    return { text: answer + rest.slice(overlap), trimmedChars: repeated + overlap, reopenedUnmatched: false };
+  }
+  const overlap = overlapEnd(answer, continuation);
+  return overlap === undefined
+    ? unchanged
+    : { text: answer + continuation.slice(overlap), trimmedChars: overlap, reopenedUnmatched: false };
+}
+
+/** A section heading: a `#` heading or a numbered "N. Title" line. Bold labels repeat by design. */
+const HEADING_LINE = /^(?:#{1,6}[ \t]+\S.*|\d{1,3}[.)][ \t]+\S.{0,120})$/;
+
+function headingKey(line: string): string {
+  return line.replace(/^#{1,6}[ \t]+/, '').replace(/[*_`]/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+/** The answer's last complete heading line: where its line ends, its comparable text. */
+function lastHeading(answer: string): { end: number; key: string } | undefined {
+  let offset = 0;
+  let found: { end: number; key: string } | undefined;
+  for (const line of answer.split('\n')) {
+    const end = offset + line.length;
+    // A heading the stream is still inside of is not a finished heading line.
+    if (end < answer.length && HEADING_LINE.test(line.trim())) {
+      const key = headingKey(line);
+      if (key.length >= 4) found = { end: end + 1, key };
+    }
+    offset = end + 1;
+  }
+  return found;
+}
+
+/**
+ * End (after its newline) of the continuation's first non-empty line when it
+ * repeats the heading `key`, marks optional (a model may drop them).
+ */
+function repeatedHeadingEnd(continuation: string, key: string): number | undefined {
+  const match = /^\s*([^\n]*)(\n|$)/.exec(continuation);
+  if (!match || headingKey(match[1]!.trim()) !== key) return undefined;
+  return match[0].length;
+}
+
+/**
+ * Where the continuation's repeat of the answer's tail ends: the longest
+ * tail (bounded, starting at a word start) that equals the continuation's
+ * opening, whitespace-insensitive, and ends at a word boundary of the
+ * continuation. A tail the answer already contained earlier is a deliberate
+ * echo (a refrain), not a repeat.
+ */
+function overlapEnd(answer: string, continuation: string): number | undefined {
+  const from = Math.max(0, answer.length - MAX_OVERLAP_CHARS);
+  const target = collapseWhitespace(continuation.trimStart());
+  for (let start = from; start <= answer.length - MIN_OVERLAP_CHARS; start += 1) {
+    if (start > 0 && !/\s/.test(answer[start - 1]!)) continue;
+    if (/\s/.test(answer[start]!)) continue;
+    const tail = collapseWhitespace(answer.slice(start)).trimEnd();
+    if (tail.length < MIN_OVERLAP_CHARS || !target.startsWith(tail)) continue;
+    const end = rawIndexAfter(continuation, tail.length);
+    const next = continuation[end];
+    if (next !== undefined && /[\p{L}\p{N}]/u.test(next)) return undefined;
+    if (repeatsEarlierLine(answer, start)) return undefined;
+    return end;
+  }
+  return undefined;
+}
+
+/** A line of the tail that the answer already had before it: a refrain, repeated on purpose. */
+function repeatsEarlierLine(answer: string, start: number): boolean {
+  const lines = (text: string) => text.split('\n').map((line) => collapseWhitespace(line).trim())
+    .filter((line) => line.length >= 8);
+  const earlier = new Set(lines(answer.slice(0, start)));
+  return lines(answer.slice(start)).some((line) => earlier.has(line));
+}
+
+function collapseWhitespace(text: string): string {
+  return text.replace(/\s+/g, ' ');
+}
+
+/** Raw index in `text` after `count` characters of its whitespace-collapsed, trim-started form. */
+function rawIndexAfter(text: string, count: number): number {
+  let index = text.length - text.trimStart().length;
+  let consumed = 0;
+  while (index < text.length && consumed < count) {
+    if (/\s/.test(text[index]!)) {
+      while (index < text.length && /\s/.test(text[index]!)) index += 1;
+    } else {
+      index += 1;
+    }
+    consumed += 1;
+  }
+  return index;
+}
+
 /** Content-free: which recovery shape a reattached answer took, for the live check. */
 function logRecoveryResolution(
-  recoveryResolution: 'continued' | 'restarted' | 'unmatched',
+  recoveryResolution: 'continued' | 'continued_trimmed' | 'reopened_unmatched' | 'restarted' | 'unmatched',
   parts: readonly string[],
+  trimmedChars = 0,
 ): void {
   try {
     console.info('[chickpea] interrupted answer recovered', {
@@ -691,6 +843,7 @@ function logRecoveryResolution(
       parts: parts.length,
       partialChars: parts.slice(0, -1).reduce((total, part) => total + part.length, 0),
       continuationChars: parts.at(-1)?.length ?? 0,
+      trimmedChars,
     });
   } catch {
     // Diagnostics never change the answer.

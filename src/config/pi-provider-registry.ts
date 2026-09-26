@@ -37,27 +37,133 @@ export function registeredPiProvider(id: string): Provider | undefined {
  * never changed: this is a per-request copy.
  */
 export function restoreInterruptedStreamPartials(context: Context): Context {
-  let changed = false;
-  const messages = context.messages.map((message, index) => {
-    if (message.role !== 'assistant' || message.stopReason !== 'aborted') return message;
+  return inspectInterruptedStreamPartials(context).context;
+}
+
+/** Why a request carrying Flue's recovery shape did not get its partial restored. */
+export type PartialRestoreMissReason =
+  | 'no_aborted_step'
+  | 'signals_missing'
+  | 'signals_out_of_order'
+  | 'gate_mismatch'
+  | 'contains_tool_call'
+  | 'no_text';
+
+/** Content-free account of one request's recovery shape. */
+export interface PartialRestoreReport {
+  restored: boolean;
+  reason?: PartialRestoreMissReason;
+  messages: number;
+  assistantMessages: number;
+  abortedMessages: number;
+  userSignals: number;
+}
+
+/**
+ * The per-request copy plus a report, or no report unless the request's last
+ * message is a recovery signal (the request that continues the partial).
+ */
+export function inspectInterruptedStreamPartials(
+  context: Context,
+): { context: Context; report?: PartialRestoreReport } {
+  const source = context.messages;
+  let restoredAny = false;
+  let reason: PartialRestoreMissReason | undefined;
+  let assistantMessages = 0;
+  let abortedMessages = 0;
+  let userSignals = 0;
+  const messages = source.map((message, index) => {
+    if (recoverySignalType(message)) userSignals += 1;
+    if (message.role !== 'assistant') return message;
+    assistantMessages += 1;
+    if (message.stopReason !== 'aborted') return message;
+    abortedMessages += 1;
     // Flue's shape exactly: its two recovery signals directly follow the
     // partial. Any other aborted step is left for pi-ai to drop, as before.
-    if (!isRecoverySignal(context.messages[index + 1], 'stream_interrupted') ||
-        !isRecoverySignal(context.messages[index + 2], 'stream_continued')) return message;
+    const next = recoverySignalType(source[index + 1]);
+    const afterNext = recoverySignalType(source[index + 2]);
+    if (next !== 'stream_interrupted' || afterNext !== 'stream_continued') {
+      reason = next === 'stream_continued' || (next === 'stream_interrupted' && afterNext !== undefined)
+        ? 'signals_out_of_order'
+        : 'signals_missing';
+      return message;
+    }
+    if (message.content.some((block) => block.type === 'toolCall')) {
+      reason = 'contains_tool_call';
+      return message;
+    }
     const restored = continuablePartial(message);
-    if (!restored) return message;
-    changed = true;
+    if (!restored) {
+      reason = 'no_text';
+      return message;
+    }
+    restoredAny = true;
     return restored;
   });
-  return changed ? { ...context, messages } : context;
+  // Report only the request that continues the partial (the signal is the
+  // last message). Later requests in the thread carry the same history.
+  const continuing = recoverySignalType(source.at(-1)) !== undefined;
+  if (!continuing) {
+    return { context: restoredAny ? { ...context, messages } : context };
+  }
+  if (!restoredAny && reason === undefined) {
+    // Signals, but no aborted step anywhere: gate_mismatch when an assistant
+    // step directly precedes them (Flue continues it, but it is not marked
+    // aborted), no_aborted_step when nothing does.
+    reason = source.some((message, index) =>
+      message.role === 'assistant' && recoverySignalType(source[index + 1]) === 'stream_interrupted')
+      ? 'gate_mismatch'
+      : 'no_aborted_step';
+  }
+  const report: PartialRestoreReport = {
+    restored: restoredAny,
+    ...(!restoredAny && reason ? { reason } : {}),
+    messages: source.length,
+    assistantMessages,
+    abortedMessages,
+    userSignals,
+  };
+  return {
+    context: restoredAny ? { ...context, messages: withContinuationInstruction(messages) } : context,
+    report,
+  };
+}
+
+/**
+ * Flue's own instruction ("Continue from the durable partial assistant
+ * response.") lets a model start the answer over, or re-open the section it
+ * was in. When the partial is restored, the request's copy of that signal
+ * says what continuing means. Appended to the last message (not the system
+ * prompt) so the cached prefix is unchanged.
+ */
+export const CONTINUATION_INSTRUCTION =
+  'Your previous message above was cut off. ' +
+  'Continue it from exactly where it stops, even mid-word or mid-sentence. ' +
+  'Do not repeat, restate, or re-open any of it, including its last heading.';
+
+function withContinuationInstruction(messages: Context['messages']): Context['messages'] {
+  const index = messages.findLastIndex((message) => recoverySignalType(message) === 'stream_continued');
+  if (index < 0 || index !== messages.length - 1) return messages;
+  const signal = messages[index]!;
+  if (signal.role !== 'user') return messages;
+  const content = typeof signal.content === 'string'
+    ? [{ type: 'text' as const, text: signal.content }]
+    : signal.content;
+  const copy = [...messages];
+  copy[index] = { ...signal, content: [...content, { type: 'text', text: CONTINUATION_INSTRUCTION }] };
+  return copy;
 }
 
 /** Flue renders a signal into model context as `<signal type="...">` user text. */
-function isRecoverySignal(message: Context['messages'][number] | undefined, type: string): boolean {
-  if (message?.role !== 'user') return false;
+function recoverySignalType(
+  message: Context['messages'][number] | undefined,
+): 'stream_interrupted' | 'stream_continued' | undefined {
+  if (message?.role !== 'user') return undefined;
   const first = typeof message.content === 'string' ? message.content : message.content[0];
   const text = typeof first === 'string' ? first : first?.type === 'text' ? first.text : undefined;
-  return text?.startsWith(`<signal type="${type}">`) ?? false;
+  if (text?.startsWith('<signal type="stream_interrupted">')) return 'stream_interrupted';
+  if (text?.startsWith('<signal type="stream_continued">')) return 'stream_continued';
+  return undefined;
 }
 
 function continuablePartial(message: AssistantMessage): AssistantMessage | undefined {
@@ -91,9 +197,9 @@ function withInterruptedStreamContinuation(provider: Provider): Provider {
   // A proxy, not a copy: a provider may be a class instance whose other
   // members rely on their own `this`.
   const stream: Provider['stream'] = (model, context, options) =>
-    provider.stream(model, restoreInterruptedStreamPartials(context), options);
+    provider.stream(model, restoreForRequest(model, context), options);
   const streamSimple: Provider['streamSimple'] = (model, context, options) =>
-    provider.streamSimple(model, restoreInterruptedStreamPartials(context), options);
+    provider.streamSimple(model, restoreForRequest(model, context), options);
   return new Proxy(provider, {
     get(target, property) {
       if (property === 'stream') return stream;
@@ -102,4 +208,19 @@ function withInterruptedStreamContinuation(provider: Provider): Provider {
       return typeof value === 'function' ? value.bind(target) : value;
     },
   });
+}
+
+function restoreForRequest(model: { provider: string; api: string }, context: Context): Context {
+  const { context: sent, report } = inspectInterruptedStreamPartials(context);
+  if (report) logPartialRestore(model, report);
+  return sent;
+}
+
+/** Content-free: whether the interrupted partial reached this provider request, and why not. */
+function logPartialRestore(model: { provider: string; api: string }, report: PartialRestoreReport): void {
+  try {
+    console.info('[chickpea] partial restore', { provider: model.provider, api: model.api, ...report });
+  } catch {
+    // Diagnostics never change the request.
+  }
 }
