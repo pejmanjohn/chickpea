@@ -379,3 +379,28 @@ test('a click in a DM thread is admitted like a DM reply from the clicker', asyn
   assert.ok(turn.approvedBrowserActionId);
   assert.equal((await f.read(surface.id))?.status, 'resolved');
 }));
+
+test('Cancel on a workspace-change card retires the proposal, so a later typed approve cannot apply it', async () => withFixture(async (f) => {
+  const owner = await f.stores.identity.resolveSlackIdentity('T1', 'U1');
+  assert.ok(owner);
+  const scope = `slack:T1:C1:${THREAD_TS}:agent:agent_support`;
+  const stamp = Date.now();
+  await f.stores.management.putChangeSetProposal({
+    proposalId: 'proposal_cancel', organizationId: owner.membership.organizationId,
+    actorUserId: owner.user.id, actorMembershipId: owner.membership.id,
+    originKey: scope, approvalScopeKey: scope, idempotencyKey: 'proposal_cancel',
+    guideVersion: 'test', authoringReason: 'agent_edit', digest: 'd'.repeat(64),
+    operations: [{ itemId: 'update', kind: 'update_agent', agentId: 'agent_support', expectedRevision: 1,
+      patch: { description: 'Frozen description' } }],
+    preview: { summary: 'Preview', changes: [], missingSetup: [] },
+    targetRevisions: { 'agent:agent_support': 1 }, at: stamp,
+  });
+  const surface = await f.surface({
+    spec: { kind: 'approval', approval: 'workspace_change', proposalId: 'proposal_cancel' },
+  });
+  await f.click(surface.id, { actionId: uiActionId('host', 'approval', 1), value: uiValue(surface.id, 1) });
+  assert.equal(f.jobs.length, 2);
+  assert.equal(f.jobs.at(-1)!.turn.managementApprovalProposalId, undefined);
+  assert.match(JSON.stringify(f.updates().at(-1)!.blocks), /Cancelled by <@U1>/);
+  assert.equal((await f.stores.management.getChangeSetProposal('proposal_cancel'))?.status, 'stale');
+}));

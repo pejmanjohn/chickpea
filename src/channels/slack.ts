@@ -175,7 +175,7 @@ import {
   parseSlackUiBlockAction,
   type SlackUiAction,
 } from '../slack/ui/interaction-payload.ts';
-import { uiResponseTurnText, type RenderedUiSurface } from '../slack/ui/render.ts';
+import { approvalChoice, uiResponseTurnText, type RenderedUiSurface } from '../slack/ui/render.ts';
 import {
   redrawUiSurface,
   retireApprovalSurfacesForTypedAnswer,
@@ -1159,6 +1159,15 @@ async function handleSlackUiAction(input: {
   const current = await uiSurfaceRecord(state, { kind: 'get_surface', id: surface.id }) ?? surface;
   if (admission.outcome === 'admitted') {
     emitUiInteraction('resolved');
+    // Cancel retires the proposal, so a later typed "approve" cannot apply
+    // what the card now shows as cancelled. Only the claimed click gets here.
+    const spec = surface.spec;
+    if (spec.kind === 'approval' && spec.approval === 'workspace_change' &&
+        approvalChoice(choice) === 'decline') {
+      await stores.management.markChangeSetProposalStale(spec.proposalId, Date.now()).catch(() => {
+        console.warn('[chickpea] cancelled proposal could not be retired');
+      });
+    }
     await redraw(current);
     return;
   }
