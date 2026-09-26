@@ -205,7 +205,7 @@
     "@flue/vite": "2.1.0",
     "@slack/socket-mode": "^2.0.7",
     "@slack/types": "3.0.0",
-    "@types/node": "26.0.0",
+    "@types/node": "26.6.2",
     "sharp": "^0.35.4",
     "tsx": "^4.22.4",
     "typescript": "6.0.3",
