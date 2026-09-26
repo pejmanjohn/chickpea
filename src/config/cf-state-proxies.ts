@@ -1819,6 +1819,13 @@ export class CfConfigStore implements ConfigStore {
     return rpcVia(this.stub,'configPutChannel', (stub) => stub.configPutChannel(channel, expectedRevision));
   }
 
+  async refreshChannelLabel(workspaceId: string, channelId: string, label: string): Promise<boolean> {
+    return rpcVia(this.stub,
+      'configRefreshChannelLabel',
+      (stub) => stub.configRefreshChannelLabel(workspaceId, channelId, label),
+    );
+  }
+
   async getAgentReferences(agentId: string): Promise<AgentReferenceSummary> {
     return rpcVia(this.stub,'configGetAgentReferences', (stub) => stub.configGetAgentReferences(agentId));
   }

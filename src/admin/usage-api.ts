@@ -18,6 +18,16 @@ import type { WorkStore } from '../work/types.ts';
 interface UsageAdminApiOptions {
   store: (c: Context) => UsageStore;
   work?: (c: Context) => WorkStore;
+  /**
+   * Current Channel display names keyed by `channelLabelKey`. Usage rows keep
+   * the label recorded at the time; display prefers the current name so a
+   * renamed Slack Channel reads the same everywhere in Admin.
+   */
+  channelLabels?: (c: Context) => Promise<ReadonlyMap<string, string>>;
+}
+
+export function channelLabelKey(workspaceId: string, channelId: string): string {
+  return `${workspaceId}\u0000${channelId}`;
 }
 
 const CUSTOMER_USAGE_OPERATION_KINDS = [
@@ -133,10 +143,12 @@ export function createUsageAdminApi(options: UsageAdminApiOptions): Hono {
     try {
       const page = await options.store(c).listOperations(parseCustomerUsageQuery(c, false));
       const visibility = await usageRunVisibility(options.work?.(c), page.items);
+      const channelLabels = await currentChannelLabels(options, c, page.items, visibility);
       return c.json({
         items: page.items.map((detail) => usageDetailProjection(
           detail,
           visibility.get(detail.operation.runId ?? '') ?? false,
+          channelLabels,
         )),
         nextCursor: page.nextCursor ? encodeCursor(page.nextCursor) : null,
       });
@@ -153,9 +165,11 @@ export function createUsageAdminApi(options: UsageAdminApiOptions): Hono {
         return c.json({ error: 'usage_operation_not_found' }, 404);
       }
       const visibility = await usageRunVisibility(options.work?.(c), [detail]);
+      const channelLabels = await currentChannelLabels(options, c, [detail], visibility);
       return c.json(usageDetailProjection(
         detail,
         visibility.get(detail.operation.runId ?? '') ?? false,
+        channelLabels,
       ));
     } catch (error) {
       return usageError(c, error);
@@ -179,8 +193,28 @@ function redactAggregateLabels<T extends { groups: Array<{ key: string; label: s
 function usageDetailProjection(
   detail: UsageOperationDetail,
   publicLabels: boolean,
+  channelLabels: ReadonlyMap<string, string>,
 ): Record<string, unknown> {
-  return publicLabels ? publicUsageDetail(detail) : redactedUsageDetail(detail);
+  return publicLabels ? publicUsageDetail(detail, channelLabels) : redactedUsageDetail(detail);
+}
+
+async function currentChannelLabels(
+  options: UsageAdminApiOptions,
+  c: Context,
+  details: UsageOperationDetail[],
+  visibility: ReadonlyMap<string, boolean>,
+): Promise<ReadonlyMap<string, string>> {
+  // Only public Channel rows show a Channel label.
+  const needed = details.some(({ operation }) =>
+    operation.conversationKind === 'named_channel' && operation.channelId &&
+    visibility.get(operation.runId ?? '') === true);
+  if (!options.channelLabels || !needed) return new Map();
+  try {
+    return await options.channelLabels(c);
+  } catch {
+    // Recorded labels remain a complete display when current names are unavailable.
+    return new Map();
+  }
 }
 
 function privateRoutineUsage(detail: UsageOperationDetail): boolean {
@@ -188,10 +222,13 @@ function privateRoutineUsage(detail: UsageOperationDetail): boolean {
     detail.operation.conversationKind === 'direct_message';
 }
 
-function publicUsageDetail(detail: UsageOperationDetail): Record<string, unknown> {
+function publicUsageDetail(
+  detail: UsageOperationDetail,
+  channelLabels: ReadonlyMap<string, string>,
+): Record<string, unknown> {
   return {
     projection: 'public',
-    operation: publicUsageOperation(detail),
+    operation: publicUsageOperation(detail, channelLabels),
     measurements: detail.measurements,
   };
 }
@@ -232,11 +269,18 @@ function usageOperationBase(detail: UsageOperationDetail): Record<string, unknow
   };
 }
 
-function publicUsageOperation(detail: UsageOperationDetail): Record<string, unknown> {
+function publicUsageOperation(
+  detail: UsageOperationDetail,
+  channelLabels: ReadonlyMap<string, string>,
+): Record<string, unknown> {
+  const operation = detail.operation;
+  const currentChannelLabel = operation.conversationKind === 'named_channel' && operation.workspaceId && operation.channelId
+    ? channelLabels.get(channelLabelKey(operation.workspaceId, operation.channelId))
+    : undefined;
   return {
     ...usageOperationBase(detail),
-    agentLabel: detail.operation.agentLabel,
-    channelLabel: detail.operation.channelLabel,
+    agentLabel: operation.agentLabel,
+    channelLabel: currentChannelLabel ?? operation.channelLabel,
     routineLabel: detail.operation.routineLabel,
   };
 }

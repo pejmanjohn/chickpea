@@ -1254,6 +1254,7 @@ async function processSlackEvent(
   let routedBaseAssignment: ResolvedAssignment | undefined;
   let agentRoutingActor: ResolvedAgentRoutingActor | undefined;
   let agentSourceVisibility: 'public' | 'private' | undefined;
+  let liveChannelName: string | undefined;
   const runtimeTransport = execution?.transport ?? (
     credentials.botToken ? createDirectSlackTransport(credentials.botToken) : undefined
   );
@@ -1353,6 +1354,14 @@ async function processSlackEvent(
       if (surface === 'channel') {
         const channel = await runtimeTransport.lookupChannel(turn.channelId);
         agentSourceVisibility = channel.private ? 'private' : 'public';
+        liveChannelName = channel.name;
+        if (liveChannelName && routedAssignment.channelLabel !== liveChannelName) {
+          // The Slack Channel was renamed after this Agent's grant cached its
+          // name. Record the current name on the Channel and all its grants; a
+          // failed refresh only leaves the previous labels in place.
+          await store.refreshChannelLabel(turn.workspaceId, turn.channelId, liveChannelName)
+            .catch(() => undefined);
+        }
       } else {
         agentSourceVisibility = 'private';
       }
@@ -1652,6 +1661,11 @@ async function processSlackEvent(
       ...assignment,
       agent: refreshLegacyAgentAvatar(assignment.agent, routedBaseAssignment.agent),
     };
+  }
+  // A thread snapshot freezes the Channel label from its first turn. This
+  // turn's usage names the Channel as Slack calls it now.
+  if (liveChannelName && assignment.channelLabel !== liveChannelName) {
+    assignment = { ...assignment, channelLabel: liveChannelName };
   }
   const assignmentAvatarUrl = await resolvedAgentAvatarUrl(
     assignment.agent,

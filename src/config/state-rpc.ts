@@ -452,6 +452,11 @@ export interface TagStateRpc {
     channel: ChannelConfig,
     expectedRevision?: number,
   ): Promise<StateRpcResult<ChannelConfig>>;
+  configRefreshChannelLabel(
+    workspaceId: string,
+    channelId: string,
+    label: string,
+  ): Promise<StateRpcResult<boolean>>;
   configGetAgentReferences(agentId: string): Promise<StateRpcResult<AgentReferenceSummary>>;
   // -- agent snapshots -----------------------------------------------------
   snapshotGet(threadKey: string): Promise<StateRpcResult<AgentSnapshot | null>>;

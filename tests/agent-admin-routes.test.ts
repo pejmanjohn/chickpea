@@ -4267,9 +4267,23 @@ test('channel inventory refreshes renamed labels only within the discovered work
       assert.equal(foreign.isPrivate, null);
       assert.equal(foreign.isMember, null);
       assert.equal(foreign.source, 'granted');
+      // Discovery records the current name on the cached labels that
+      // schedules and usage read, without touching another workspace.
+      assert.deepEqual(
+        (await fixture.store.listAgentChannelGrants()).map(({ workspaceId, channelLabel }) =>
+          [workspaceId, channelLabel]),
+        [['T_OTHER', 'other-workspace'], ['T_TEST', 'renamed-channel']],
+      );
+      if (configured) {
+        assert.equal((await fixture.store.getChannel('T_TEST', 'C_SUPPORT'))?.label, 'renamed-channel');
+        assert.equal((await fixture.store.getChannel('T_OTHER', 'C_SUPPORT'))?.label, 'other-workspace');
+      }
       fixture.transport.listChannels = async () => { throw new Error('unavailable'); };
       const unavailable = await readChannels(true);
-      assert.equal(unavailable.find((channel: any) => channel.workspaceId === 'T_TEST').channelName, 'old-name');
+      assert.equal(
+        unavailable.find((channel: any) => channel.workspaceId === 'T_TEST').channelName,
+        'renamed-channel',
+      );
     } finally {
       fixture.store.close();
       fixture.settings.close();

@@ -42,7 +42,7 @@ import {
 import { requestOrigin } from '../http/request-origin.ts';
 import { connectOrigin } from '../management/connect.ts';
 import { mcpClientsPayload } from '../management/mcp-client-config.ts';
-import { createUsageAdminApi } from './usage-api.ts';
+import { channelLabelKey, createUsageAdminApi } from './usage-api.ts';
 import {
   BROWSER_ENV_VARS,
   clearBrowserSettings,
@@ -6091,7 +6091,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     contentAccess: routineContentAccess,
     ...(options.routineCapability ? { capability: options.routineCapability } : {}),
   }));
-  app.route('/admin/api', createUsageAdminApi({ store: usage, work }));
+  app.route('/admin/api', createUsageAdminApi({
+    store: usage,
+    work,
+    channelLabels: async (c) => new Map((await store(c).listChannels()).flatMap((channel) =>
+      channel.label ? [[channelLabelKey(channel.workspaceId, channel.channelId), channel.label]] : [])),
+  }));
   app.route('/admin/api', createWorkAdminApi({
     store: work,
     usage,
@@ -10079,6 +10084,21 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       current.push(grant);
       grantsByChannel.set(key, current);
     }
+    // Slack Channels can be renamed after Chickpea cached their names. Bring
+    // stored labels (used by schedules and usage) up to the discovered name.
+    await Promise.all([...channelsByKey.entries()].flatMap(([key, { channel, discovered }]) => {
+      if (!discovered?.name || discovered.name === discovered.id) return [];
+      const storedLabels = [
+        ...(configuredChannels.some(({ workspaceId, channelId }) =>
+          workspaceId === channel.workspaceId && channelId === channel.channelId)
+          ? [channel.label]
+          : []),
+        ...(grantsByChannel.get(key) ?? []).map((grant) => grant.channelLabel),
+      ];
+      if (storedLabels.every((label) => label === discovered.name)) return [];
+      return [configStore.refreshChannelLabel(channel.workspaceId, channel.channelId, discovered.name)
+        .catch(() => false)];
+    }));
     const agentsById = new Map(agents.map((agent) => [agent.id, agent]));
     return c.json({
       channels: [...channelsByKey.values()].map(({ channel, discovered }) => {
