@@ -211,6 +211,8 @@ import {
 } from './slack/turn-executor.ts';
 import { slackTurnExecutor } from './slack/turn-executor-flag.ts';
 import { sandboxTurnReaders } from './slack/thread-runner.ts';
+import { receiveAlarmExecutorStop } from './slack/thread-runner-loop.ts';
+import { abortSlackThreadAgent } from './slack/flue-dispatch.ts';
 import {
   RUNNER_PREFETCHED_SETTINGS,
   threadRunnerStub,
@@ -233,7 +235,6 @@ import {
   TurnJobStoreLogic,
   type PendingTurnJob,
 } from './slack/turn-jobs.ts';
-import type { TurnStopNoticeReceiver } from './slack/turn-job-types.ts';
 import { DoSqlStateDb } from './state/do-state-db.ts';
 import { StateSchemaMarker, stateSchemaFingerprint } from './state/schema-lifecycle.ts';
 import { cloudflareWorkerVersionId } from './config/cloudflare-version.ts';
@@ -1912,8 +1913,10 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
    * The stop outbox (KTD2): offer every due stop to its head row's thread
    * runner, whose acknowledgement clears it, like a runner hand-off admitted
    * again until confirmed. A head no runner owns yet stays owed: the alarm
-   * hands it over first, and its dispatch is refused meanwhile. Keeps the
-   * alarm armed for notices still owed. Never throws.
+   * hands it over first, and its dispatch is refused meanwhile. A head this
+   * store's own alarm executes (SLACK_TAG_TURN_EXECUTOR=alarm) is aborted
+   * here instead (receiveAlarmExecutorStop). Keeps the alarm armed for
+   * notices still owed. Never throws.
    */
   private async deliverStopNotices(): Promise<void> {
     const stores = this.stores;
@@ -1922,12 +1925,16 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       await deliverDueStopNotices({
         turnJobs: stores.turnJobs,
         receiver: async (notice) => {
-          if (notice.executor !== 'runner') return false;
-          // The runner's `stop` RPC (U2) takes the notice; until a runner
-          // has one, the call rejects and the notice stays owed.
-          const runner = threadRunnerStub(this.env as PlatformEnv, notice.runnerKey) as
-            (SlackThreadRunnerRpc & Partial<TurnStopNoticeReceiver>) | undefined;
-          if (!runner?.stop) return false;
+          if (notice.executor !== 'runner') {
+            return receiveAlarmExecutorStop(
+              stores.turnJobs.runnerView(notice.turnJobId),
+              (target) => abortSlackThreadAgent(target),
+            );
+          }
+          // A runner of an older version has no `stop`: the call rejects
+          // and the notice stays owed until its successor takes it.
+          const runner = threadRunnerStub(this.env as PlatformEnv, notice.runnerKey);
+          if (!runner) return false;
           return (await runner.stop(notice)).acknowledged === true;
         },
       });

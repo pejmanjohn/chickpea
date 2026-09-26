@@ -16,7 +16,7 @@ import type {
   SlackPresentationTransitionResult,
   SlackRunPresentation,
 } from './run-presentations.ts';
-import type { FrozenRuntimePlanDecision } from './turn-job-types.ts';
+import type { FrozenRuntimePlanDecision, TurnStopNotice } from './turn-job-types.ts';
 import type { RunnerTurnJobView } from './turn-jobs.ts';
 import type { SlackRunFactsView } from './status-registry.ts';
 import type { ThreadRunnerJob, ThreadRunnerStatus } from './thread-runner-jobs.ts';
@@ -123,6 +123,13 @@ export interface SlackThreadRunnerRpc {
    * time since it), for a check-in; null when the turn has not started here.
    */
   runFacts(turnJobId: string): Promise<StateRpcResult<SlackRunFactsView | null>>;
+  /**
+   * A stop of one of this runner's turns, from the state store's stop outbox
+   * (KTD2): persisted here, the turn's Flue instance aborted while its
+   * submission is unsettled, and the stopped path left to the runner's
+   * alarm. `acknowledged: false` (or a rejection) leaves the notice owed.
+   */
+  stop(notice: TurnStopNotice): Promise<{ acknowledged: boolean }>;
   /**
    * The authoritative presentation of one of this runner's turns, for effects
    * the state store applies from outside the turn (an Agent welcome).

@@ -1,5 +1,7 @@
+import type { CodingTaskStopReport } from '../sandbox/coding-task-stop.ts';
 import type { StateDb } from '../state/state-db.ts';
 import type { SlackRunFacts } from './status-registry.ts';
+import type { TurnStopNotice } from './turn-job-types.ts';
 
 /** One turn handed to a thread's runner. `payload` stays opaque here. */
 export interface ThreadRunnerJob {
@@ -48,6 +50,36 @@ export interface ThreadRunnerJobRecord {
   /** A settled outcome the state store has not yet recorded. */
   terminalSync?: 'done' | 'error';
 }
+
+/**
+ * A stop this runner took for one of its turns (KTD2), kept in its own table
+ * because a stop can reach the runner before the turn's hand-off does.
+ *
+ * - `abort`: `owed` until Flue's `abort()` of the turn's coordinator instance
+ *   is confirmed (`done`); `none` when there is nothing to abort (the turn
+ *   never dispatched here, or its submission had already settled).
+ * - `cascade`: the coding-worker stop that follows the host abort (KTD4):
+ *   `owed` until its first report is saved (`done`), `none` when the turn
+ *   could not have started a coding job.
+ */
+export interface ThreadRunnerStopMarker {
+  turnJobId: string;
+  /** The latest notice, its dispatch coordinates merged across deliveries. */
+  notice?: TurnStopNotice;
+  abort: 'owed' | 'done' | 'none';
+  abortAttempts: number;
+  /** The Flue submission known when the confirmed abort was requested. */
+  abortedSubmissionId?: string;
+  cascade: 'owed' | 'done' | 'none';
+  /** The first coding stop report; a later cascade never replaces it. */
+  codingReport?: CodingTaskStopReport;
+  receivedAt: number;
+}
+
+export type ThreadRunnerStopPatch = Partial<Pick<
+  ThreadRunnerStopMarker,
+  'abort' | 'abortAttempts' | 'abortedSubmissionId' | 'cascade'
+>>;
 
 /** States that hold every later job of the thread until they settle. */
 const ORDERED_STATES: ReadonlySet<string> = new Set(['admitted', 'running', 'yielded']);
@@ -110,6 +142,21 @@ export class ThreadRunnerJobStore {
         db.exec(`ALTER TABLE runner_jobs ADD COLUMN ${name} ${type}`);
       }
     }
+    // Stops this runner took (ThreadRunnerStopMarker). An older release never
+    // reads the table, so a rollback only leaves it unused.
+    db.exec(`CREATE TABLE IF NOT EXISTS runner_stops (
+      id TEXT PRIMARY KEY,
+      notice_json TEXT,
+      abort_state TEXT NOT NULL DEFAULT 'none',
+      abort_attempts INTEGER NOT NULL DEFAULT 0,
+      aborted_submission TEXT,
+      cascade_state TEXT NOT NULL DEFAULT 'none',
+      coding_report TEXT,
+      ending_outcome TEXT,
+      ending_count INTEGER,
+      ending_reported INTEGER NOT NULL DEFAULT 0,
+      received_at INTEGER NOT NULL
+    )`);
   }
 
   /**
@@ -293,13 +340,22 @@ export class ThreadRunnerJobStore {
 
   /** Forget settled jobs after a week; open or unsynced ones are kept. */
   purge(now: number): number {
-    return this.db.run(
+    const changes = this.db.run(
       `DELETE FROM runner_jobs
        WHERE state NOT IN ${OPEN_STATES} AND terminal_sync IS NULL
          AND cleanup_at IS NULL AND active_clear = 0
          AND settled_at IS NOT NULL AND settled_at < ?`,
       now - SETTLED_RETENTION_MS,
     ).changes;
+    // A stop is forgotten after its turn: nothing owed, its job gone.
+    this.db.run(
+      `DELETE FROM runner_stops
+       WHERE received_at < ? AND abort_state != 'owed' AND cascade_state != 'owed'
+         AND (ending_outcome IS NULL OR ending_reported = 1)
+         AND NOT EXISTS (SELECT 1 FROM runner_jobs WHERE runner_jobs.id = runner_stops.id)`,
+      now - SETTLED_RETENTION_MS,
+    );
+    return changes;
   }
 
   status(): ThreadRunnerStatus {
@@ -356,6 +412,155 @@ export class ThreadRunnerJobStore {
       `SELECT COUNT(*) AS n FROM runner_jobs WHERE state IN ${OPEN_STATES}`,
     )?.n ?? 0);
   }
+
+  /** An admitted or yielded job waiting for its retry runs at the next alarm instead. */
+  makeDue(id: string): void {
+    this.db.run(
+      "UPDATE runner_jobs SET retry_at = NULL WHERE id = ? AND state IN ('admitted', 'yielded')",
+      id,
+    );
+  }
+
+  // ── stops this runner took (ThreadRunnerStopMarker) ─────────────────────
+
+  /**
+   * Record a stop, or merge a redelivered one into the first: the first
+   * decision stands, and a later notice only adds dispatch coordinates the
+   * earlier one lacked. Returns the stored marker.
+   */
+  recordStop(
+    notice: TurnStopNotice,
+    initial: Pick<ThreadRunnerStopMarker, 'abort' | 'cascade'>,
+    now: number,
+  ): ThreadRunnerStopMarker {
+    const existing = this.stopMarker(notice.turnJobId);
+    const merged: TurnStopNotice = existing?.notice
+      ? {
+          ...existing.notice,
+          attempts: notice.attempts,
+          ...(existing.notice.instanceId ? {} : notice.instanceId ? { instanceId: notice.instanceId } : {}),
+          ...(existing.notice.uid ? {} : notice.uid ? { uid: notice.uid } : {}),
+          ...(notice.submissionId ? { submissionId: notice.submissionId } : {}),
+        }
+      : notice;
+    this.db.run(
+      `INSERT INTO runner_stops (id, notice_json, abort_state, cascade_state, received_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET notice_json = excluded.notice_json`,
+      notice.turnJobId,
+      JSON.stringify(merged),
+      initial.abort,
+      initial.cascade,
+      now,
+    );
+    return this.stopMarker(notice.turnJobId)!;
+  }
+
+  stopMarker(id: string): ThreadRunnerStopMarker | undefined {
+    const row = this.db.get(
+      `SELECT id, notice_json, abort_state, abort_attempts, aborted_submission, cascade_state,
+         coding_report, received_at
+       FROM runner_stops WHERE id = ?`,
+      id,
+    );
+    return row ? decodeStop(row) : undefined;
+  }
+
+  updateStop(id: string, patch: ThreadRunnerStopPatch): void {
+    const current = this.stopMarker(id);
+    if (!current) return;
+    const next = { ...current, ...patch };
+    this.db.run(
+      `UPDATE runner_stops SET abort_state = ?, abort_attempts = ?, aborted_submission = ?,
+         cascade_state = ?
+       WHERE id = ?`,
+      next.abort,
+      next.abortAttempts,
+      next.abortedSubmissionId ?? null,
+      next.cascade,
+      id,
+    );
+  }
+
+  /** Save a stop's coding report; the first one stands. Returns the stored report. */
+  saveCodingStopReport(id: string, report: CodingTaskStopReport): CodingTaskStopReport | undefined {
+    this.db.run(
+      `UPDATE runner_stops SET coding_report = COALESCE(coding_report, ?), cascade_state = 'done'
+       WHERE id = ?`,
+      JSON.stringify(report),
+      id,
+    );
+    return this.stopMarker(id)?.codingReport;
+  }
+
+  /** Stops that still owe their abort or their coding cascade, oldest first. */
+  owedStops(limit = 16): ThreadRunnerStopMarker[] {
+    return this.db.all(
+      `SELECT id, notice_json, abort_state, abort_attempts, aborted_submission, cascade_state,
+         coding_report, received_at
+       FROM runner_stops WHERE abort_state = 'owed' OR cascade_state = 'owed'
+       ORDER BY received_at, rowid LIMIT ?`,
+      limit,
+    ).map(decodeStop);
+  }
+
+  hasOwedStops(): boolean {
+    return this.db.get(
+      "SELECT 1 AS owed FROM runner_stops WHERE abort_state = 'owed' OR cascade_state = 'owed' LIMIT 1",
+    ) !== undefined;
+  }
+
+  /**
+   * A stopped turn's ending, once per turn (a replayed ending is not counted
+   * again), for the alarm record's dropped-turn count. True the first time.
+   */
+  recordStopEnding(id: string, outcome: 'dropped' | 'released', count: number, now: number): boolean {
+    this.db.run(
+      `INSERT INTO runner_stops (id, received_at) VALUES (?, ?) ON CONFLICT(id) DO NOTHING`,
+      id,
+      now,
+    );
+    return this.db.run(
+      `UPDATE runner_stops SET ending_outcome = ?, ending_count = ?
+       WHERE id = ? AND ending_outcome IS NULL`,
+      outcome,
+      Math.max(0, Math.trunc(count)),
+      id,
+    ).changes === 1;
+  }
+
+  /** Turns dropped by stop endings not yet reported in an alarm record; marks them reported. */
+  takeUnreportedDrops(): number {
+    const dropped = Number(this.db.get(
+      `SELECT COALESCE(SUM(ending_count), 0) AS n FROM runner_stops
+       WHERE ending_outcome = 'dropped' AND ending_reported = 0`,
+    )?.n ?? 0);
+    this.db.run(
+      'UPDATE runner_stops SET ending_reported = 1 WHERE ending_outcome IS NOT NULL AND ending_reported = 0',
+    );
+    return dropped;
+  }
+}
+
+function decodeStop(row: Record<string, unknown>): ThreadRunnerStopMarker {
+  const state = <T extends string>(value: unknown, allowed: readonly T[], fallback: T): T =>
+    allowed.includes(value as T) ? value as T : fallback;
+  return {
+    turnJobId: String(row.id),
+    ...(typeof row.notice_json === 'string'
+      ? { notice: JSON.parse(row.notice_json) as TurnStopNotice }
+      : {}),
+    abort: state(row.abort_state, ['owed', 'done', 'none'] as const, 'none'),
+    abortAttempts: Number(row.abort_attempts ?? 0),
+    ...(typeof row.aborted_submission === 'string'
+      ? { abortedSubmissionId: row.aborted_submission }
+      : {}),
+    cascade: state(row.cascade_state, ['owed', 'done', 'none'] as const, 'none'),
+    ...(typeof row.coding_report === 'string'
+      ? { codingReport: JSON.parse(row.coding_report) as CodingTaskStopReport }
+      : {}),
+    receivedAt: Number(row.received_at),
+  };
 }
 
 function decodeJob(row: Record<string, unknown>): ThreadRunnerJobRecord {

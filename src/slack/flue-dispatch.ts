@@ -253,6 +253,44 @@ interface PromptSlackAgentInput {
   observeReply?: BoundedReplyReader;
 }
 
+/** A Slack thread's coordinator instance, as a persisted dispatch envelope names it. */
+export interface SlackThreadAgentTarget {
+  instanceId: string;
+  /** The pinned incarnation; null or absent before the first dispatch created it. */
+  uid?: string | null;
+}
+
+/** The Slack thread Agent, loaded only where a turn is dispatched or stopped. */
+async function slackThreadAgent(): Promise<Parameters<typeof init>[0]> {
+  return (await import('../agents/slack-thread.ts')).ChickpeaSlack;
+}
+
+/** The Flue handle of one coordinator instance, addressed by its dispatch envelope. */
+function slackThreadAgentHandle(
+  agent: Parameters<typeof init>[0],
+  target: SlackThreadAgentTarget,
+): ReturnType<typeof init> {
+  return init(agent, { id: target.instanceId, ...(target.uid === undefined ? {} : { uid: target.uid }) });
+}
+
+/**
+ * A stop's durable Flue abort (KTD2): the handle built from the stopped turn's
+ * persisted dispatch envelope, exactly as its dispatch built it, asks Flue to
+ * abort the instance's work. `abort()` covers the running submission and any
+ * queued behind it, never a dispatch that arrives later; the turn's live
+ * observation reads the `aborted` settlement through its normal path, so this
+ * never touches an observation signal (that would be a yield). Resolves once
+ * Flue recorded the intent.
+ */
+export async function abortSlackThreadAgent(
+  target: SlackThreadAgentTarget,
+  /** Focused seam; production builds the real handle. */
+  handleFor?: (target: SlackThreadAgentTarget) => Pick<ReturnType<typeof init>, 'abort'>,
+): Promise<void> {
+  const handle = handleFor ? handleFor(target) : slackThreadAgentHandle(await slackThreadAgent(), target);
+  await handle.abort();
+}
+
 /**
  * Durable Flue 2 dispatch/read adapter. Admission, receipt, and settlement are
  * separate checkpoints: ambiguous admission repeats the same keyed envelope;
@@ -294,8 +332,8 @@ export async function promptSlackThreadAgent(
       await buildTurnEnvelopeSafely(input.buildTurnEnvelope),
     );
   input.state.dispatchEnvelope = envelope;
-  const agent = input.handle ? undefined : (await import('../agents/slack-thread.ts')).ChickpeaSlack;
-  let handle = input.handle ?? init(agent!, { id: envelope.instanceId, uid: envelope.uid });
+  const agent = input.handle ? undefined : await slackThreadAgent();
+  let handle = input.handle ?? slackThreadAgentHandle(agent!, envelope);
   let receipt = input.state.dispatchReceipt;
   if (!receipt) {
     let admitted: DispatchReceipt;
@@ -310,10 +348,7 @@ export async function promptSlackThreadAgent(
         try {
           envelope = await input.state.reconcileExistingInstance(error.uid);
           input.state.dispatchEnvelope = envelope;
-          handle = input.handle ?? init(agent!, {
-            id: envelope.instanceId,
-            uid: envelope.uid,
-          });
+          handle = input.handle ?? slackThreadAgentHandle(agent!, envelope);
           admitted = await handle.dispatch({
             message: envelope.message,
             idempotencyKey: envelope.idempotencyKey,

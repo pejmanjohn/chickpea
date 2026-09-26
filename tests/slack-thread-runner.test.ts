@@ -53,8 +53,9 @@ test('the job store tells a new instance that a job was running', () => {
 
 test('a runner instance resumes a running job at once and runs admitted jobs only in its alarm', () => {
   const runner = readFileSync(new URL('../src/slack/thread-runner.ts', import.meta.url), 'utf8');
-  // On first load after a replacement: a running job re-arms the alarm now.
-  assert.match(runner, /blockConcurrencyWhile\(async \(\) => \{\s*try \{\s*if \(!this\.store\(\)\.hasRunning\(\)\) return;[\s\S]{0,200}setAlarm\(Date\.now\(\)\)/);
+  // On first load after a replacement: a running job, or a stop that still
+  // owes its abort or coding cascade, re-arms the alarm now.
+  assert.match(runner, /blockConcurrencyWhile\(async \(\) => \{\s*try \{\s*if \(!this\.store\(\)\.hasRunning\(\) && !this\.store\(\)\.hasOwedStops\(\)\) return;[\s\S]{0,200}setAlarm\(Date\.now\(\)\)/);
   // admit never starts the loop in the admitting request (work left running
   // after it returns loses its logs and is not resumed after a replacement):
   // it wakes a running drain and makes the alarm due now, keeping an earlier one.
@@ -140,4 +141,103 @@ test('run facts survive a simulated eviction and read back through the runner st
   // ...and its status RPC reads them through that registry.
   const rpc = source.slice(source.indexOf('async runFacts('), source.indexOf('async presentationGet('));
   assert.match(rpc, /this\.registry\.runFactsView\(turnJobId\)/);
+});
+
+const STOP_NOTICE = {
+  turnJobId: 'turn-1',
+  runnerKey: 'T1:C1:1.0',
+  executor: 'runner' as const,
+  record: {
+    schemaVersion: 1 as const, role: 'stopped' as const, source: 'typed' as const,
+    stopperUserId: 'U1', cutoffTs: '1.5', stoppedAt: 10,
+  },
+  attempts: 0,
+  instanceId: 'agent',
+};
+
+test('a stop marker keeps its first decision, merges later coordinates, and keeps its first coding report', () => {
+  const store = new ThreadRunnerJobStore(new NodeStateDb(new DatabaseSync(':memory:')));
+  const first = store.recordStop(STOP_NOTICE, { abort: 'owed', cascade: 'owed' }, 100);
+  assert.deepEqual(first, {
+    turnJobId: 'turn-1', notice: STOP_NOTICE, abort: 'owed', abortAttempts: 0, cascade: 'owed', receivedAt: 100,
+  });
+  assert.equal(store.hasOwedStops(), true);
+  assert.deepEqual(store.owedStops().map((marker) => marker.turnJobId), ['turn-1']);
+  // A redelivery adds the receipt the first notice lacked; its own decision is ignored.
+  const merged = store.recordStop(
+    { ...STOP_NOTICE, attempts: 2, uid: 'uid-1', submissionId: 'sub-1' },
+    { abort: 'none', cascade: 'none' },
+    200,
+  );
+  assert.equal(merged.abort, 'owed');
+  assert.equal(merged.receivedAt, 100);
+  assert.deepEqual(merged.notice, { ...STOP_NOTICE, attempts: 2, uid: 'uid-1', submissionId: 'sub-1' });
+  store.updateStop('turn-1', { abort: 'done', abortAttempts: 1, abortedSubmissionId: 'sub-1' });
+  const report = { recordsRead: true, allSettled: true, tasks: [] };
+  assert.deepEqual(store.saveCodingStopReport('turn-1', report), report);
+  assert.deepEqual(store.saveCodingStopReport('turn-1', { recordsRead: false, allSettled: false, tasks: [] }),
+    report, 'the first report stands');
+  assert.deepEqual({ ...store.stopMarker('turn-1'), notice: undefined }, {
+    turnJobId: 'turn-1', notice: undefined, abort: 'done', abortAttempts: 1,
+    abortedSubmissionId: 'sub-1', cascade: 'done', codingReport: report, receivedAt: 100,
+  });
+  assert.equal(store.hasOwedStops(), false);
+  assert.equal(store.stopMarker('unknown'), undefined);
+});
+
+test('a stopped ending is counted once for the alarm record, and a settled stop is forgotten after a week', () => {
+  const db = new NodeStateDb(new DatabaseSync(':memory:'));
+  const store = new ThreadRunnerJobStore(db);
+  const week = 7 * 24 * 60 * 60 * 1_000;
+  assert.equal(store.recordStopEnding('head', 'dropped', 2, 10), true);
+  assert.equal(store.recordStopEnding('head', 'dropped', 2, 11), false, 'a replayed ending');
+  assert.equal(store.recordStopEnding('race', 'released', 3, 12), true);
+  assert.equal(store.takeUnreportedDrops(), 2, 'released rows are not dropped');
+  assert.equal(store.takeUnreportedDrops(), 0);
+  store.admit({ id: 'kept', threadKey: 'k', payload: null }, 1);
+  store.recordStop({ ...STOP_NOTICE, turnJobId: 'kept' }, { abort: 'none', cascade: 'none' }, 1);
+  store.recordStop({ ...STOP_NOTICE, turnJobId: 'owed' }, { abort: 'owed', cascade: 'none' }, 1);
+  store.purge(20 + week);
+  assert.equal(store.stopMarker('head'), undefined);
+  assert.equal(store.stopMarker('race'), undefined);
+  assert.ok(store.stopMarker('kept'), 'its job is still held here');
+  assert.ok(store.stopMarker('owed'), 'it still owes its abort');
+});
+
+test('an admitted or yielded job is made due; a running or settled one is left as it is', () => {
+  const store = new ThreadRunnerJobStore(new NodeStateDb(new DatabaseSync(':memory:')));
+  for (const id of ['admitted', 'yielded', 'deferred']) store.admit({ id, threadKey: 'k', payload: null }, 1);
+  store.settle('admitted', 'admitted', 1, 5_000);
+  store.settle('yielded', 'yielded', 1, 5_000);
+  store.settle('deferred', 'deferred', 1, 5_000);
+  for (const id of ['admitted', 'yielded', 'deferred']) store.makeDue(id);
+  assert.equal(store.get('admitted')!.retryAt, undefined);
+  assert.equal(store.get('yielded')!.retryAt, undefined);
+  assert.equal(store.get('deferred')!.retryAt, 5_000);
+});
+
+test("the runner's stop RPC persists the stop first, leaves slow work to its alarm, and aborts through the dispatch envelope's handle", () => {
+  const runner = readFileSync(new URL('../src/slack/thread-runner.ts', import.meta.url), 'utf8');
+  const rpc = runner.slice(runner.indexOf('async stop('), runner.indexOf('async status('));
+  // Persist (and abort) through the runner's stops, then make the alarm due
+  // now as admit does; never run the loop or a cascade in the RPC's request.
+  assert.match(rpc, /taken = await this\.stops\(\)\.receive\(notice\);[\s\S]*this\.wake\?\.\(\);\s*const existing = await this\.ctx\.storage\.getAlarm\(\);\s*if \(existing === null \|\| existing > Date\.now\(\)\) await this\.ctx\.storage\.setAlarm\(Date\.now\(\)\);/);
+  assert.doesNotMatch(rpc, /runSoon|runAlarm|codingReport|stopCodingTasks/);
+  assert.match(rpc, /return \{ acknowledged: false \};/, 'a stop it could not persist stays owed');
+  // The host abort is the Flue handle built from the persisted envelope, and
+  // the cascade reads the host turn's records on the thread's Sandbox.
+  assert.match(runner, /abortHost: \(target\) => abortSlackThreadAgent\(target\)/);
+  assert.match(runner, /threadSandboxKey: sandboxThreadKey\(notice\.runnerKey\),\s*hostTurnId: notice\.turnJobId,\s*workers: cloudflareCodingWorkerStopClient\(env\)/);
+  assert.match(runner, /env\.SANDBOX \?\? env\.Sandbox\s*\?\s*\{\s*stopCodingTasks:/,
+    'no Sandbox binding, no coding job: a stop owes no cascade');
+  // The alarm runs what each stop owes, and the turn port reports receipts
+  // and settlements to it.
+  assert.match(runner, /turnJobs: runnerTurnJobsPort\(rows, jobs, Date\.now, this\.stops\(\)\)/);
+  assert.match(runner, /stops: this\.stops\(\),/);
+  // The state store's outbox reaches it with no compatibility cast.
+  const entry = readFileSync(new URL('../src/cloudflare.ts', import.meta.url), 'utf8');
+  assert.match(entry, /return \(await runner\.stop\(notice\)\)\.acknowledged === true;/);
+  assert.doesNotMatch(entry, /Partial<TurnStopNoticeReceiver>/);
+  assert.match(entry, /receiveAlarmExecutorStop\(\s*stores\.turnJobs\.runnerView\(notice\.turnJobId\),\s*\(target\) => abortSlackThreadAgent\(target\),\s*\)/,
+    "the alarm executor's own turns are aborted in-process");
 });

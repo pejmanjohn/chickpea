@@ -172,6 +172,11 @@ export interface ThreadRunnerAlarmRecord {
   yielded: boolean;
   /** Turns still running at the hard cap; they settle after this record. */
   carried: number;
+  /**
+   * Queued turns that stopped runs' endings dropped since the runner's last
+   * record (each counted once, however often its ending replays).
+   */
+  dropped?: number;
   durationMs: number;
   /** `idle`, `drained`, or `threw` (the alarm failed and re-armed with a backoff). */
   outcome: 'idle' | 'drained' | 'threw';

@@ -23,12 +23,15 @@ import {
   OPEN_JOB_STATES,
   type ThreadRunnerJobRecord,
   type ThreadRunnerJobStore,
+  type ThreadRunnerStopMarker,
 } from './thread-runner-jobs.ts';
+import type { CodingTaskStopReport } from '../sandbox/coding-task-stop.ts';
 import { isSandboxDisconnect } from '../sandbox/reconnect.ts';
 import { isStateStoreDisconnect } from '../config/cf-state-proxies.ts';
-import { StateStoreUnavailable } from './flue-dispatch.ts';
+import { StateStoreUnavailable, type SlackThreadAgentTarget } from './flue-dispatch.ts';
 import type { RunnerTurnBegin } from './thread-runner-rpc.ts';
 import type { TurnExecutionPorts } from './turn-executor.ts';
+import type { FlueSettlementCheckpointV1, TurnStopNotice } from './turn-job-types.ts';
 import {
   TURN_STOP_HOLD_RETRY_MS,
   turnJobStopGate,
@@ -139,6 +142,8 @@ export interface ThreadRunnerLoopDeps {
   versionId?: string;
   /** Per instance: whether a code update has replaced this runner's version. */
   supersede?: RunnerSupersedeState;
+  /** This runner's stops (see RunnerStops): what each still owes runs in the alarm. */
+  stops?: RunnerStops;
   now?: () => number;
   heartbeatMs?: number;
   versionCheckMs?: number;
@@ -216,6 +221,7 @@ export async function runThreadRunnerAlarm(
     ran: 0,
     yielded: false,
     carried: 0,
+    dropped: 0,
     durationMs: 0,
     outcome: 'idle',
     ...(deps.versionId ? { versionId: deps.versionId } : {}),
@@ -231,6 +237,9 @@ export async function runThreadRunnerAlarm(
     // A follow-up that could not reach the state store counts as a failed
     // alarm: the runner backs off instead of waking again at once.
     let followUpsFailed = !(await followUps(deps, now));
+    // A stop's abort still owed is retried before its turn reattaches, and a
+    // coding cascade the abort allows starts now (see RunnerStops).
+    await deps.stops?.followUp();
     // A turn could not reach the state store: the runner backs off too.
     const outage = { storeUnavailable: false };
     const budgetMs = deps.budgetMs ?? ALARM_TURN_BUDGET_MS;
@@ -275,6 +284,11 @@ export async function runThreadRunnerAlarm(
       }
     }
     followUpsFailed = !(await followUps(deps, now)) || followUpsFailed;
+    // A stop that ended its turn in this alarm may now start its coding
+    // cascade; this alarm waits for what it started (about 14 s at most),
+    // so no stop work outlives the invocation that owns it.
+    await deps.stops?.followUp();
+    await deps.stops?.drain();
     const repairs = deps.repair ? await deps.repair() : {};
     deps.jobs.purge(now());
     const at = now();
@@ -286,6 +300,7 @@ export async function runThreadRunnerAlarm(
       syncOwed ? at + THREAD_RUNNER_SYNC_RETRY_MS : undefined,
       deps.jobs.nextCleanupAt(),
       repairs.nextRetryAt,
+      deps.stops?.nextRetryAt(at),
     ].filter((value): value is number => value !== undefined);
     const supersededBy = deps.supersede?.by;
     if (supersededBy) {
@@ -316,9 +331,16 @@ export async function runThreadRunnerAlarm(
     // state; the next alarm reads the turn row again and reattaches.
     record.outcome = 'threw';
     record.reason = error instanceof Error && TOKEN.test(error.name) ? error.name : 'unknown';
+    await deps.stops?.drain();
     return { record, nextAlarmAt: now() + failureBackoff(deps, isSandboxDisconnect(error)) };
   } finally {
     record.durationMs = now() - startedAt;
+    try {
+      // Rows the stopped endings of this runner's turns dropped since the last record.
+      record.dropped = deps.jobs.takeUnreportedDrops();
+    } catch {
+      // The count is telemetry; the next record reports it.
+    }
     const supersede = deps.supersede;
     if (supersede?.by) {
       record.supersededBy = supersede.by;
@@ -445,9 +467,11 @@ async function runOne(
   const versionCheckMs = deps.versionCheckMs ?? THREAD_RUNNER_VERSION_CHECK_MS;
   let lastVersionCheck = now();
   let checkingVersion = false;
-  // Keep a wake a few seconds ahead for as long as the job runs, and watch
-  // for a code update.
+  // Keep a wake a few seconds ahead for as long as the job runs, watch for a
+  // code update, and move on what a stop of this job owes (its unconfirmed
+  // abort, then its coding cascade). A stop never touches `turnControl`.
   const heartbeat = setInterval(() => {
+    deps.stops?.heartbeat(local.id);
     void deps.armBackstop(now() + THREAD_RUNNER_BACKSTOP_MS).catch(() => {
       // This instance lost its storage: it has been shut down.
       if (!deps.supersede || deps.supersede.alarm !== generation) return;
@@ -473,6 +497,8 @@ async function runOne(
   } finally {
     clearInterval(heartbeat);
     await deps.afterJob?.(view.job).catch(() => undefined);
+    // What a stop of this job still owes moves on now that it has returned.
+    deps.stops?.heartbeat(local.id);
   }
   const after = deps.jobs.get(local.id);
   // The terminal was recorded locally first (see the runner's turn port).
@@ -655,12 +681,15 @@ function unavailable(error: unknown): unknown {
  * outcome is settled in the runner's own storage before the state store
  * records it. The Slack final is already posted when `markDelivered` runs; if
  * the state store cannot be reached then, the turn still never runs again,
- * and the runner records the outcome on a later alarm.
+ * and the runner records the outcome on a later alarm. The turn's Flue
+ * receipt and settlement are also told to `observer` (the runner's stops),
+ * and a stopped ending is kept for the alarm record's dropped-turn count.
  */
 export function runnerTurnJobsPort<P extends TurnExecutionPorts['turnJobs']>(
   remote: P,
   jobs: ThreadRunnerJobStore,
   now: () => number = Date.now,
+  observer?: RunnerTurnObserver,
 ): TurnExecutionPorts['turnJobs'] {
   const settle = async (id: string, outcome: 'done' | 'error') => {
     jobs.settleTerminal(id, outcome, now());
@@ -678,8 +707,17 @@ export function runnerTurnJobsPort<P extends TurnExecutionPorts['turnJobs']>(
     prepareFlueDispatch: (...args) => storeCall(() => remote.prepareFlueDispatch(...args)),
     reconcileFlueExistingInstance: (...args) =>
       storeCall(() => remote.reconcileFlueExistingInstance(...args)),
-    recordFlueReceipt: (...args) => storeCall(() => remote.recordFlueReceipt(...args)),
-    recordFlueSettlement: (...args) => storeCall(() => remote.recordFlueSettlement(...args)),
+    recordFlueReceipt: async (id, receipt) => {
+      const recorded = await storeCall(() => remote.recordFlueReceipt(id, receipt));
+      observer?.noteReceipt(id, receipt.submissionId);
+      return recorded;
+    },
+    recordFlueSettlement: async (id, settlement) => {
+      const recorded = await storeCall(() => remote.recordFlueSettlement(id, settlement));
+      // The stored settlement: a replay keeps the first one.
+      observer?.noteSettlement(id, (recorded ?? settlement).outcome);
+      return recorded;
+    },
     recordPullRequest: (...args) => storeCall(() => remote.recordPullRequest(...args)),
     freezeRuntimePlan: (...args) => storeCall(() => remote.freezeRuntimePlan(...args)),
     getBoundRuntimePlan: (...args) => storeCall(() => remote.getBoundRuntimePlan(...args)),
@@ -687,10 +725,382 @@ export function runnerTurnJobsPort<P extends TurnExecutionPorts['turnJobs']>(
     recordInteractionIntent: (...args) => storeCall(() => remote.recordInteractionIntent(...args)),
     recordSlackInteractionProgress: (...args) =>
       storeCall(() => remote.recordSlackInteractionProgress(...args)),
-    finishStop: (...args) => storeCall(() => remote.finishStop(...args)),
+    finishStop: async (headId, outcome) => {
+      const finish = await storeCall(() => remote.finishStop(headId, outcome));
+      if (finish) {
+        try {
+          jobs.recordStopEnding(headId, finish.outcome, finish.count, now());
+        } catch {
+          // Telemetry only: the ending itself is the state store's.
+        }
+      }
+      return finish;
+    },
     markDelivered: (id) => settle(id, 'done'),
     markError: (id) => settle(id, 'error'),
   };
+}
+
+/** A failed stop abort is tried again 2.5 s later, doubling to every 30 s. */
+export const THREAD_RUNNER_STOP_ABORT_BACKOFF_MAX_MS = 30_000;
+
+/**
+ * Runner states whose turn may still hold the thread's unsettled Flue
+ * submission. A runner runs its thread strictly in order, so while its
+ * stopped turn is in one of these states no later turn of the thread has
+ * been dispatched into the coordinator instance they share.
+ */
+const STOPPABLE_STATES: ReadonlySet<string> = new Set(['admitted', 'running', 'yielded']);
+
+/** A runner turn's Flue checkpoints, as the runner's turn port records them. */
+export interface RunnerTurnObserver {
+  noteReceipt(id: string, submissionId: string): void;
+  noteSettlement(id: string, outcome: FlueSettlementCheckpointV1['outcome']): void;
+}
+
+/** What a runner's stops reach outside the runner's own storage. */
+export interface RunnerStopDeps {
+  jobs: ThreadRunnerJobStore;
+  /** Flue `abort()` of the stopped turn's coordinator instance (abortSlackThreadAgent). */
+  abortHost(target: SlackThreadAgentTarget): Promise<void>;
+  /**
+   * Stop and confirm the coding workers the host turn's task records name
+   * (stopCodingTasks, KTD4); up to about 14 s. Absent where no coding
+   * workspace can exist (no Sandbox binding): a stop then owes no cascade.
+   */
+  stopCodingTasks?(notice: TurnStopNotice): Promise<CodingTaskStopReport>;
+  now?: () => number;
+}
+
+/**
+ * A thread runner's stops (KTD2, KTD4). The state store's stop outbox calls
+ * `receive` (the runner's `stop` RPC); everything slow runs in the runner's
+ * alarm, which the RPC makes due, never in the RPC's own request.
+ *
+ * - The host abort: Flue `abort()` of the coordinator instance named by the
+ *   stopped turn's persisted dispatch envelope, requested only while that
+ *   turn may still hold the thread's unsettled submission (STOPPABLE_STATES,
+ *   and no settlement recorded here). `abort()` stops the whole instance,
+ *   which later turns of the thread share, so a stop redelivered after its
+ *   turn settled is acknowledged without one. The turn's live observation is
+ *   left running: it reads the `aborted` settlement through its normal path,
+ *   so a stop never becomes a yield. A failed abort stays owed and the
+ *   running job's heartbeat (or the next alarm) repeats it.
+ * - The coding cascade: once the host abort is confirmed (or the turn read
+ *   its `aborted` settlement), the coding workers are stopped and confirmed
+ *   from the host turn's task records. The first report is kept for the
+ *   stop note (`codingReport`); a redelivered stop never runs it again. A
+ *   turn that settled on its own before any abort took effect (R22) owes
+ *   neither.
+ */
+export class RunnerStops implements RunnerTurnObserver {
+  private readonly aborting = new Map<string, Promise<void>>();
+  private readonly cascades = new Map<string, Promise<CodingTaskStopReport | undefined>>();
+  /** The receipt each turn recorded through this instance (lost with it). */
+  private readonly receipts = new Map<string, string>();
+  /** Turns whose Flue settlement this instance recorded: never aborted. */
+  private readonly settled = new Set<string>();
+  /** When a failed abort may be tried again from a heartbeat. */
+  private readonly retryAbortAt = new Map<string, number>();
+
+  constructor(private readonly deps: RunnerStopDeps) {}
+
+  /**
+   * The runner's `stop` RPC. Persists the stop first; `acknowledged` is true
+   * once the runner owns everything the stop still needs. It stays false
+   * while the stopped turn's submission is not yet known (a dispatch in
+   * flight could land after the abort), so the outbox brings the stop back
+   * with the receipt and the abort is repeated then. `wake`: the alarm should
+   * run now (the stopped path, or owed stop work).
+   */
+  async receive(notice: TurnStopNotice): Promise<{ acknowledged: boolean; wake: boolean }> {
+    if (!validStopNotice(notice)) {
+      console.warn('[chickpea] thread runner refused a malformed stop notice');
+      return { acknowledged: false, wake: false };
+    }
+    const { jobs } = this.deps;
+    const id = notice.turnJobId;
+    const live = this.stoppable(id);
+    const dispatched = notice.instanceId !== undefined;
+    const marker = jobs.recordStop(notice, {
+      abort: live && dispatched ? 'owed' : 'none',
+      cascade: live && dispatched && this.deps.stopCodingTasks ? 'owed' : 'none',
+    }, this.now());
+    if (!live) {
+      // Settled here (a redelivery, or a run that finished first), or never
+      // handed here: nothing of it is running, and later turns may share
+      // the instance. A stop that never dispatched is kept from dispatching
+      // by its row's stop record alone.
+      if (marker.abort === 'owed') this.lapse(marker);
+      return { acknowledged: true, wake: jobs.hasOwedStops() };
+    }
+    // Waiting for a retry: its stopped path runs at the next alarm instead.
+    jobs.makeDue(id);
+    const known = marker.notice?.submissionId ?? this.receipts.get(id);
+    if (marker.abort === 'done' && dispatched &&
+        (known === undefined || known !== marker.abortedSubmissionId)) {
+      // The confirmed abort was requested before this submission was known.
+      jobs.updateStop(id, { abort: 'owed' });
+    }
+    await this.tryAbort(id);
+    return { acknowledged: !dispatched || known !== undefined, wake: true };
+  }
+
+  noteReceipt(id: string, submissionId: string): void {
+    this.receipts.set(id, submissionId);
+    if (this.receipts.size > 64) this.receipts.delete(this.receipts.keys().next().value!);
+    try {
+      const marker = this.deps.jobs.stopMarker(id);
+      if (!marker?.notice?.instanceId || marker.abort === 'none' ||
+          marker.abortedSubmissionId === submissionId) return;
+      // The stop reached this turn while its dispatch was in flight: the
+      // abort may have preceded the submission, so it is repeated now.
+      this.deps.jobs.updateStop(id, { abort: 'owed' });
+      void this.tryAbort(id);
+    } catch {
+      console.warn('[chickpea] thread runner stop follow-up will retry');
+    }
+  }
+
+  noteSettlement(id: string, outcome: FlueSettlementCheckpointV1['outcome']): void {
+    this.settled.add(id);
+    if (this.settled.size > 64) this.settled.delete(this.settled.values().next().value!);
+    this.receipts.delete(id);
+    try {
+      const marker = this.deps.jobs.stopMarker(id);
+      if (!marker) return;
+      if (outcome === 'aborted') {
+        // The abort took effect, whether or not its request was confirmed.
+        if (marker.abort === 'owed') this.deps.jobs.updateStop(id, { abort: 'done' });
+        return;
+      }
+      // The run settled on its own before the abort took effect (R22; an
+      // abort that loses the race settles as completed): the stop stopped
+      // nothing, so no coding job is stopped for it either.
+      this.deps.jobs.updateStop(id, {
+        ...(marker.abort === 'owed' ? { abort: 'none' as const } : {}),
+        ...(marker.cascade === 'owed' && !this.cascades.has(id) ? { cascade: 'none' as const } : {}),
+      });
+    } catch {
+      console.warn('[chickpea] thread runner could not note a stopped settlement');
+    }
+  }
+
+  /**
+   * From a running job's heartbeat (and once it returns): repeat an owed
+   * abort when its backoff allows, or start the coding cascade a confirmed
+   * abort allows. Never throws; the work it starts is awaited by `drain`.
+   */
+  heartbeat(id: string): void {
+    try {
+      const marker = this.deps.jobs.stopMarker(id);
+      if (marker?.abort === 'owed' && this.stoppable(id)) {
+        if ((this.retryAbortAt.get(id) ?? 0) <= this.now()) void this.tryAbort(id);
+        return;
+      }
+      this.advance(id);
+    } catch {
+      console.warn('[chickpea] thread runner stop follow-up will retry');
+    }
+  }
+
+  /** At each alarm's start and end: every stop's owed abort (once, whatever its backoff), then its cascade. */
+  async followUp(): Promise<void> {
+    let owed: ThreadRunnerStopMarker[];
+    try {
+      owed = this.deps.jobs.owedStops();
+    } catch {
+      return;
+    }
+    for (const marker of owed) {
+      if (marker.abort === 'owed') await this.tryAbort(marker.turnJobId);
+      try {
+        this.advance(marker.turnJobId);
+      } catch {
+        console.warn('[chickpea] thread runner stop follow-up will retry');
+      }
+    }
+  }
+
+  /**
+   * The coding-worker confirmation of a stopped turn (KTD4), for its stop
+   * note (U3): the first report, running the cascade now if it is still
+   * owed. Call it once the turn read its `aborted` settlement: the host can
+   * then start no new coding job, so an abort this runner could not confirm
+   * has taken effect after all. Undefined when the stop owes no cascade (the
+   * turn never dispatched, or no coding workspace can exist) or the cascade
+   * failed (it is retried by a later alarm; the note says the coding work may
+   * still be winding down).
+   */
+  async codingReport(id: string): Promise<CodingTaskStopReport | undefined> {
+    const marker = this.deps.jobs.stopMarker(id);
+    if (!marker) return undefined;
+    if (marker.codingReport) return marker.codingReport;
+    if (marker.cascade !== 'owed') return undefined;
+    if (marker.abort === 'owed') this.deps.jobs.updateStop(id, { abort: 'done' });
+    return this.cascade(id);
+  }
+
+  /** Wait for every abort and cascade in flight (the alarm ends only after them). */
+  async drain(): Promise<void> {
+    while (this.aborting.size > 0 || this.cascades.size > 0) {
+      await Promise.allSettled([...this.aborting.values(), ...this.cascades.values()]);
+    }
+  }
+
+  /** A stop that still owes work brings the alarm back; its turn's own wake is usually sooner. */
+  nextRetryAt(at: number): number | undefined {
+    try {
+      return this.deps.jobs.hasOwedStops() ? at + THREAD_RUNNER_SYNC_RETRY_MS : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private now(): number {
+    return (this.deps.now ?? Date.now)();
+  }
+
+  /** An owed abort whose turn no longer runs here lapses; a confirmed one starts its cascade. */
+  private advance(id: string): void {
+    const marker = this.deps.jobs.stopMarker(id);
+    if (!marker) return;
+    if (marker.abort === 'owed') {
+      if (!this.stoppable(id)) this.lapse(marker);
+      return;
+    }
+    if (marker.abort === 'done' && marker.cascade === 'owed') void this.cascade(id);
+  }
+
+  /**
+   * The stopped turn settled (or was never here) before any abort was
+   * confirmed: nothing is left to stop, so neither the abort nor a cascade
+   * not yet started is owed any more. A confirmed abort keeps its cascade.
+   */
+  private lapse(marker: ThreadRunnerStopMarker): void {
+    const id = marker.turnJobId;
+    this.deps.jobs.updateStop(id, {
+      ...(marker.abort === 'owed' ? { abort: 'none' as const } : {}),
+      ...(marker.abort !== 'done' && marker.cascade === 'owed' && !this.cascades.has(id)
+        ? { cascade: 'none' as const }
+        : {}),
+    });
+  }
+
+  private stoppable(id: string): boolean {
+    const job = this.deps.jobs.get(id);
+    return job !== undefined && STOPPABLE_STATES.has(job.state) && !this.settled.has(id);
+  }
+
+  /** One abort request at a time per turn; a failure stays owed. Never rejects. */
+  private tryAbort(id: string): Promise<void> {
+    const inFlight = this.aborting.get(id);
+    if (inFlight) return inFlight;
+    const run = (async () => {
+      const { jobs } = this.deps;
+      const marker = jobs.stopMarker(id);
+      if (marker?.abort !== 'owed') return;
+      const target = marker.notice;
+      if (!target?.instanceId || !this.stoppable(id)) {
+        this.lapse(marker);
+        return;
+      }
+      const covering = target.submissionId ?? this.receipts.get(id);
+      const attempts = marker.abortAttempts + 1;
+      try {
+        await this.deps.abortHost({
+          instanceId: target.instanceId,
+          ...(target.uid ? { uid: target.uid } : {}),
+        });
+        this.retryAbortAt.delete(id);
+        jobs.updateStop(id, {
+          abort: 'done',
+          abortAttempts: attempts,
+          ...(covering ? { abortedSubmissionId: covering } : {}),
+        });
+      } catch {
+        jobs.updateStop(id, { abortAttempts: attempts });
+        this.retryAbortAt.set(id, this.now() + Math.min(
+          THREAD_RUNNER_HEARTBEAT_MS * 2 ** Math.min(attempts - 1, 8),
+          THREAD_RUNNER_STOP_ABORT_BACKOFF_MAX_MS,
+        ));
+        console.warn('[chickpea] thread runner stop abort will retry', { attempts });
+      }
+    })().catch(() => {
+      console.warn('[chickpea] thread runner stop abort will retry');
+    }).finally(() => {
+      this.aborting.delete(id);
+    });
+    this.aborting.set(id, run);
+    return run;
+  }
+
+  /** One cascade at a time per turn; its first report is kept. Never rejects. */
+  private cascade(id: string): Promise<CodingTaskStopReport | undefined> {
+    const inFlight = this.cascades.get(id);
+    if (inFlight) return inFlight;
+    const { jobs } = this.deps;
+    const marker = jobs.stopMarker(id);
+    if (!marker || marker.cascade !== 'owed') return Promise.resolve(marker?.codingReport);
+    const stopCodingTasks = this.deps.stopCodingTasks;
+    if (!marker.notice || !stopCodingTasks) {
+      jobs.updateStop(id, { cascade: 'none' });
+      return Promise.resolve(undefined);
+    }
+    const notice = marker.notice;
+    const run = (async () => {
+      try {
+        return jobs.saveCodingStopReport(id, await stopCodingTasks(notice));
+      } catch {
+        console.warn('[chickpea] thread runner coding stop will retry');
+        return undefined;
+      }
+    })().finally(() => {
+      this.cascades.delete(id);
+    });
+    this.cascades.set(id, run);
+    return run;
+  }
+}
+
+function validStopNotice(notice: TurnStopNotice | undefined): notice is TurnStopNotice {
+  const bounded = (value: unknown, max: number) =>
+    typeof value === 'string' && value.length > 0 && value.length <= max;
+  const optional = (value: unknown, max: number) => value === undefined || bounded(value, max);
+  return notice !== null && typeof notice === 'object' &&
+    bounded(notice.turnJobId, 256) && bounded(notice.runnerKey, 512) &&
+    notice.record?.role === 'stopped' &&
+    optional(notice.instanceId, 512) && optional(notice.uid, 512) && optional(notice.submissionId, 512);
+}
+
+/**
+ * A stop for a turn the state store's own alarm executes (the emergency
+ * `SLACK_TAG_TURN_EXECUTOR=alarm` fallback), decided from its row: the
+ * coordinator is aborted in-process while the row's Flue submission is
+ * unsettled, and the alarm's live observation reads the `aborted`
+ * settlement. The alarm runs a thread's turns in order, so a pending row's
+ * instance holds no later turn of the thread. True (acknowledged) once the
+ * abort covers a recorded submission or nothing is left to abort; a
+ * dispatch whose receipt is not yet recorded keeps the notice owed, so the
+ * abort is repeated once the submission exists, and a failed abort rejects
+ * (the outbox retries). This executor runs no coding cascade: the stopped
+ * coordinator's own `workspace_task` stops its worker best-effort.
+ */
+export async function receiveAlarmExecutorStop(
+  view: RunnerTurnJobView,
+  abortHost: (target: SlackThreadAgentTarget) => Promise<void>,
+): Promise<boolean> {
+  // A runner took the row over: the next delivery goes to it.
+  if (view.executor === 'runner') return false;
+  const job = view.status === 'pending' ? view.job : undefined;
+  // Settled: its submission is over, and the instance may hold later turns.
+  if (!job || job.flueSettlement) return true;
+  // Never dispatched: its stop record alone keeps it from dispatching.
+  const envelope = job.dispatchEnvelope;
+  if (!envelope) return true;
+  const uid = job.dispatchReceipt?.uid ?? envelope.uid;
+  await abortHost({ instanceId: envelope.instanceId, ...(uid ? { uid } : {}) });
+  return job.dispatchReceipt !== undefined;
 }
 
 /** Presentation copies are published at most this often, trailing the latest. */
