@@ -1169,6 +1169,7 @@ export function useRuntimePlanAgent(
     useTool(createRuntimePlanWorkspaceTaskTool({
       plan,
       coordinatorId: id,
+      ...(options.sandboxConversationKey ? { sandboxConversationKey: options.sandboxConversationKey } : {}),
       resolve: resolveWorkspace,
       onWorkerStarted: writeCodingWorkerRun,
       onWorkerUsage: writeCodingWorkerUsage,

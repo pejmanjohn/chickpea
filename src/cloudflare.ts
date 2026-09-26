@@ -161,6 +161,12 @@ import {
   type WorkspaceRosterState,
 } from './sandbox/workspace-limits.ts';
 import {
+  putStoredCodingTask,
+  readStoredCodingTasks,
+  settleStoredCodingTask,
+  type CodingTaskRecordV1,
+} from './sandbox/coding-task-record.ts';
+import {
   checkpointWorkspace,
   restoreWorkspaceCheckpoint,
   workspaceCheckpointsAvailable,
@@ -516,6 +522,22 @@ export class Sandbox extends CloudflareSandbox<SandboxWorkerEnv> {
 
   async saveWorkspaceRoster(key: string, state: unknown, forget: unknown): Promise<void> {
     await saveStoredWorkspaceRoster(this.policyStorage(), key, state, forget);
+  }
+
+  /**
+   * A host turn's active coding-task records, kept on the thread's default
+   * workspace so a stop finds every coding job the run waits on.
+   */
+  async readCodingTasks(turnId: string): Promise<CodingTaskRecordV1[]> {
+    return readStoredCodingTasks(this.policyStorage(), turnId);
+  }
+
+  async putCodingTask(turnId: string, record: unknown): Promise<void> {
+    await putStoredCodingTask(this.policyStorage(), turnId, record, Date.now());
+  }
+
+  async settleCodingTask(turnId: string, taskKey: string): Promise<void> {
+    await settleStoredCodingTask(this.policyStorage(), turnId, taskKey, Date.now());
   }
 
   private containerRunning(): boolean {

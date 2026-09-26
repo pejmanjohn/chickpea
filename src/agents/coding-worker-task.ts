@@ -2,15 +2,20 @@ import { init, type AgentInstanceHandle } from '@flue/runtime';
 
 import { createCloudflareBoundedAgentReplyReader } from '../slack/bounded-agent-observation.ts';
 import { publishActivityStatus } from '../slack/activity-publisher.ts';
+import type { SandboxCodingTaskStub } from '../sandbox/coding-task-record.ts';
 import {
   codingWorkerBindingForPlan,
   codingWorkerInstanceId,
 } from '../sandbox/coding-worker-binding.ts';
+import { CLOUDFLARE_SANDBOX_OPTIONS } from '../sandbox/lifecycle.ts';
+import { reconnectingSandboxStub } from '../sandbox/reconnect.ts';
 import { currentWorkspaceRegistry, type WorkspaceTurnRegistry } from '../sandbox/workspace-registry.ts';
+import { defaultWorkspaceId } from '../sandbox/workspace-session.ts';
 import { WORKSPACE_DELEGATION_GUIDANCE } from '../sandbox/workspace-skill.ts';
 import {
   createWorkspaceTaskTool,
   emptyWorkspaceTaskResponseState,
+  type CodingTaskRecordStore,
   type CodingWorkerClient,
   type WorkspaceTaskResponseState,
   type WorkspaceTaskToolOptions,
@@ -21,7 +26,7 @@ import type {
   CodingWorkerUsageRecord,
   WorkspaceMilestoneRecord,
 } from '../slack/coding-worker-run.ts';
-import type { RuntimePlanV2 } from './runtime-plan.ts';
+import { runtimePlanConversationKey, type RuntimePlanV2 } from './runtime-plan.ts';
 
 export { CHICKPEA_SUBMISSION_DURABILITY } from './submission-durability.ts';
 
@@ -34,6 +39,8 @@ export function createRuntimePlanWorkspaceTaskTool(input: {
   plan: RuntimePlanV2;
   /** The coordinator's own instance id; its status line shows the worker's progress. */
   coordinatorId: string;
+  /** The conversation key the workspace resolver uses, when it is not the plan's own. */
+  sandboxConversationKey?: string;
   resolve: WorkspaceTaskToolOptions['resolve'];
   onWorkerStarted: (record: CodingWorkerRunRecord) => void;
   onWorkerUsage: (record: CodingWorkerUsageRecord) => void;
@@ -53,7 +60,33 @@ export function createRuntimePlanWorkspaceTaskTool(input: {
       const stub = await session.activatable();
       return (await stub.getTurnProgress?.())?.pullRequest;
     },
+    taskRecords: threadCodingTaskRecords(() => input.sandboxConversationKey ?? runtimePlanConversationKey(input.plan)),
   });
+}
+
+/**
+ * Each job's active-task record on the thread's Sandbox Durable Object: the
+ * default workspace's, which also keeps the workspace roster. Every named
+ * workspace is its own Durable Object, so this one place lets a stop find
+ * every job the run waits on. Reaching it starts no container.
+ */
+function threadCodingTaskRecords(conversationKey: () => string): CodingTaskRecordStore {
+  const stub = reconnectingSandboxStub(async (): Promise<SandboxCodingTaskStub> => {
+    const { getCloudflareContext } = await import('@flue/runtime/cloudflare');
+    const env = getCloudflareContext().env as { SANDBOX?: unknown; Sandbox?: unknown };
+    const binding = env.SANDBOX ?? env.Sandbox;
+    if (!binding) throw new Error('No Sandbox binding');
+    const { getSandbox } = await import('@cloudflare/sandbox');
+    return getSandbox(
+      binding as Parameters<typeof getSandbox>[0],
+      defaultWorkspaceId(conversationKey()),
+      CLOUDFLARE_SANDBOX_OPTIONS,
+    ) as unknown as SandboxCodingTaskStub;
+  });
+  return {
+    put: (hostTurnId, record) => stub.putCodingTask(hostTurnId, record),
+    settle: (hostTurnId, taskKey) => stub.settleCodingTask(hostTurnId, taskKey),
+  };
 }
 
 const responseStates = new WeakMap<WorkspaceTurnRegistry, WorkspaceTaskResponseState>();
