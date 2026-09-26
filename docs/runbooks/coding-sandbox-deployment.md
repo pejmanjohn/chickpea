@@ -205,6 +205,10 @@ exact choices:
    npx wrangler rollback <previous-version-id> --name <worker> [--profile <name>] --message "Undo partial sandbox deploy"
    ```
 
+   Cloudflare refuses this rollback when the deploy applied a Durable Object
+   migration, for example the first v0.1.27 or later deploy over an earlier
+   release (migrations `v10` and `v11`). Use choice 1 in that case.
+
 The same message appears if the deploy finishes but no Container application
 named `<worker>-sandbox` exists.
 
