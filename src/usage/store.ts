@@ -1074,7 +1074,7 @@ export class UsageStoreLogic {
        FROM usage_operations o
        LEFT JOIN usage_measurements m ON m.operation_id = o.operation_id
        WHERE ${where.sql}
-       GROUP BY group_key, group_label
+       GROUP BY group_key
        ORDER BY estimate_amount_micros IS NULL, estimate_amount_micros DESC,
                 operation_count DESC, group_key
        LIMIT 100`,

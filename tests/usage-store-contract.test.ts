@@ -257,6 +257,57 @@ test('rollups reconcile to bounded work-instance pages without treating unknowns
   }
 });
 
+test('one channel or Agent is one group even when operations recorded different labels', async () => {
+  const store = new SqliteUsageStore(':memory:');
+  try {
+    // Operations in one channel can carry different stored labels: each
+    // Agent's assignment has its own channel label, an assignment without one
+    // falls back to the channel id, and an Agent can be renamed between turns.
+    await store.admitOperation(operation('op_label_named', {
+      channelLabel: 'qa-cobalt',
+      agentLabel: 'Coder',
+    }));
+    await store.admitOperation(operation('op_label_fallback', {
+      channelLabel: 'C_USAGE',
+      agentLabel: 'Renamed Coder',
+    }));
+    await store.admitOperation(operation('op_label_missing', {
+      channelLabel: null,
+      agentLabel: null,
+    }));
+    await store.admitOperation(operation('op_label_dm', {
+      channelId: 'D_USAGE',
+      channelLabel: null,
+      conversationKind: 'direct_message',
+    }));
+
+    const byChannel = await store.summarize({
+      from: START - 1,
+      to: START + 10_000,
+      groupBy: 'channel',
+    });
+    assert.deepEqual(
+      byChannel.groups.map(({ key, label, operationCount }) => ({ key, label, operationCount })),
+      [
+        { key: 'C_USAGE', label: 'qa-cobalt', operationCount: 3 },
+        { key: 'direct_message', label: 'Direct message', operationCount: 1 },
+      ],
+    );
+
+    const byAgent = await store.summarize({
+      from: START - 1,
+      to: START + 10_000,
+      groupBy: 'agent',
+    });
+    assert.equal(byAgent.groups.length, 1);
+    assert.equal(byAgent.groups[0]?.key, 'agent_default');
+    assert.equal(byAgent.groups[0]?.operationCount, 4);
+    assert.notEqual(byAgent.groups[0]?.label, 'agent_default');
+  } finally {
+    store.close();
+  }
+});
+
 test('usage schema initialization is additive beside existing application data', async () => {
   const path = join(mkdtempSync(join(tmpdir(), 'chickpea-usage-schema-')), 'state.db');
   const before = openStateDb(path);

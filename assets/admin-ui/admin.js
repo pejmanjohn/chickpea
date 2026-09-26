@@ -348,6 +348,7 @@
     usageMetadata: null,
     usageOperations: null,
     usageNextCursor: null,
+    usageRoutineNames: null,
     usageLoading: false,
     usageLoadingMore: false,
     usageError: "",
@@ -2025,6 +2026,7 @@
     state.usageError = "";
     state.usageOperations = null;
     state.usageNextCursor = null;
+    state.usageRoutineNames = null;
     render();
     var metadataPromise = state.usageMetadata && !forceMetadata
       ? Promise.resolve(state.usageMetadata)
@@ -2041,6 +2043,7 @@
       state.usageMetadata = parts[2];
       state.usageLoading = false;
       render();
+      loadUsageRoutineNames();
     }).catch(function (error) {
       if (requestId !== state.usageRequestId) return;
       state.usageLoading = false;
@@ -2063,11 +2066,33 @@
       state.usageNextCursor = body.nextCursor || null;
       state.usageLoadingMore = false;
       render();
+      loadUsageRoutineNames();
     }).catch(function (error) {
       state.usageLoadingMore = false;
       state.usageError = error.serverMessage || error.message || "Recent activity could not be loaded.";
       render();
     });
+  }
+
+  // Usage redacts stored routine labels. Names come from the scheduled-work
+  // list, which applies the viewer's routine content access, so a routine the
+  // viewer may not read stays unnamed. Loaded once, only when needed.
+  function loadUsageRoutineNames() {
+    if (state.usageRoutineNames) return;
+    var unnamed = (state.usageOperations || []).some(function (detail) {
+      var operation = detail && detail.operation;
+      return operation && operation.operationKind === "routine_run" && !operation.routineLabel && operation.routineId;
+    });
+    if (!unnamed) return;
+    state.usageRoutineNames = {};
+    api("/admin/api/audit/scheduled_work/routines?state=all&limit=100", { cache: "no-store" }).then(function (body) {
+      var names = {};
+      (body && body.routines || []).forEach(function (routine) {
+        if (routine && routine.id && routine.name) names[routine.id] = routine.name;
+      });
+      state.usageRoutineNames = names;
+      if (state.view === "usage") render();
+    }).catch(function () {});
   }
 
   function loadMoreUsageOperations() {
@@ -2118,8 +2143,19 @@
     return measurement && (measurement.returnedModel || measurement.requestedModel) || detail.operation.requestedModel || "Unknown";
   }
 
+  // Usage redacts stored Agent labels, so names come from the Agents list. The
+  // built-in Chickpea Agent is not in that list.
+  function usageAgentName(agentId) {
+    if (!agentId) return "";
+    if (agentId === "agent_chickpea") return "Chickpea";
+    var agent = agentById(agentId);
+    return (agent && agent.name) || agentId;
+  }
+
   function usageWorkLabel(operation) {
-    if (operation.operationKind === "routine_run") return operation.routineLabel || operation.routineId || "Scheduled work";
+    if (operation.operationKind === "routine_run") {
+      return operation.routineLabel || (state.usageRoutineNames && state.usageRoutineNames[operation.routineId]) || "Scheduled work";
+    }
     if (operation.operationKind === "interaction_classification") return "Interaction classification";
     if (operation.conversationKind === "direct_message") return "Direct message";
     return operation.channelLabel ? "#" + operation.channelLabel : operation.channelId || "Interactive turn";
@@ -2179,7 +2215,8 @@
     if (!groups.length) return '<div class="empty"><p class="hint">No breakdown data for this period.</p></div>';
     var rows = groups.map(function (group) {
       var channel = state.usageGroupBy === "channel" ? (state.channelIndex || []).find(function (candidate) { return candidate.channelId === group.key; }) : null;
-      var label = group.label || (channel && normalizeChannelLabel(channel.channelName)) || (state.usageGroupBy === "channel" && group.key === "direct_message" ? "Direct message" : group.key) || "Unknown";
+      var agentName = state.usageGroupBy === "agent" && group.key !== "unknown" ? usageAgentName(group.key) : "";
+      var label = group.label || agentName || (channel && normalizeChannelLabel(channel.channelName)) || (state.usageGroupBy === "channel" && group.key === "direct_message" ? "Direct message" : group.key) || "Unknown";
       label = state.usageGroupBy === "channel" && label !== "Direct message" && !String(label).startsWith("#") ? "#" + label : label;
       return '<tr><td><button type="button" class="usage-row-action" data-action="usage-group-filter" data-value="' + esc(group.key) + '" data-label="' + esc(label) + '">' + esc(label) + '</button></td>' +
         '<td class="number">' + usageInt(group.operationCount) + '</td><td class="number">' + usageInt(group.inputTokens) + '</td>' +
@@ -2202,8 +2239,7 @@
       var cached = usageOperationCachedTokens(detail);
       var output = usageOperationTokens(detail, "outputTokens");
       var total = usageOperationTokens(detail, "totalTokens");
-      var localAgent = agentById(operation.agentId);
-      var agentLabel = operation.agentLabel || (localAgent && localAgent.name) || operation.agentId || "Unknown";
+      var agentLabel = operation.agentLabel || usageAgentName(operation.agentId) || "Unknown";
       return '<tr><td><strong class="usage-work-label">' + esc(usageWorkLabel(operation)) + '</strong><div class="hint">' + esc(new Date(operation.startedAt).toLocaleString()) + '</div></td>' +
         '<td>' + esc(agentLabel) + '</td><td>' + esc(usageOperationProvider(detail)) + '</td><td>' + esc(usageOperationModel(detail)) + '</td>' +
         '<td>' + usageStatusBadge(operation.status) + '</td><td class="number">' + usageTokenTotalHtml(input, cached, output, total) + '</td><td class="number">' + usageMoney(usageOperationAmount(detail), "USD") + '</td></tr>';

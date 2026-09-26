@@ -41,6 +41,13 @@ export function usageWhere(query: NormalizedUsageQuery, includeCursor = false): 
   return { sql: clauses.join(' AND '), params };
 }
 
+/**
+ * A group is identified by its key alone; the label is display text. Each
+ * operation stores the label it saw when it ran (an Agent renamed later, or one
+ * channel reached through Agents whose assignments carry different channel
+ * labels), so the label is aggregated over the group instead of splitting it.
+ * A stored label that only repeats the id is a fallback and yields to a name.
+ */
 export function usageGroupExpressions(groupBy: UsageGroupBy): {
   key: string;
   label: string;
@@ -49,37 +56,37 @@ export function usageGroupExpressions(groupBy: UsageGroupBy): {
     case 'agent':
       return {
         key: "COALESCE(o.profile_id, 'unknown')",
-        label: "COALESCE(o.profile_label, o.profile_id, 'Unknown Agent')",
+        label: "COALESCE(MAX(NULLIF(o.profile_label, o.profile_id)), MAX(o.profile_id), 'Unknown Agent')",
       };
     case 'channel':
       return {
         key: "CASE WHEN o.conversation_kind = 'direct_message' THEN 'direct_message' ELSE COALESCE(o.channel_id, 'unknown') END",
-        label: "CASE WHEN o.conversation_kind = 'direct_message' THEN 'Direct message' ELSE COALESCE(o.channel_label, o.channel_id, 'Unknown channel') END",
+        label: "CASE WHEN MAX(o.conversation_kind = 'direct_message') = 1 THEN 'Direct message' ELSE COALESCE(MAX(NULLIF(o.channel_label, o.channel_id)), MAX(o.channel_id), 'Unknown channel') END",
       };
     case 'work_kind':
-      return { key: 'o.operation_kind', label: 'o.operation_kind' };
+      return { key: 'o.operation_kind', label: 'MAX(o.operation_kind)' };
     case 'routine':
       return {
         key: "COALESCE(o.routine_id, 'not_routine')",
-        label: "COALESCE(o.routine_label, o.routine_id, 'Not scheduled work')",
+        label: "COALESCE(MAX(NULLIF(o.routine_label, o.routine_id)), MAX(o.routine_id), 'Not scheduled work')",
       };
     case 'provider':
       return {
         key: "COALESCE(m.returned_provider, m.provider_route, o.requested_provider, 'unknown')",
-        label: "COALESCE(m.returned_provider, m.provider_route, o.requested_provider, 'Unknown provider')",
+        label: "MAX(COALESCE(m.returned_provider, m.provider_route, o.requested_provider, 'Unknown provider'))",
       };
     case 'credential':
       return {
         key: "COALESCE(m.credential_ref_id, o.credential_ref_id, 'unknown')",
-        label: "COALESCE(m.credential_ref_id, o.credential_ref_id, 'Unknown credential')",
+        label: "MAX(COALESCE(m.credential_ref_id, o.credential_ref_id, 'Unknown credential'))",
       };
     case 'model':
       return {
         key: "COALESCE(m.returned_model, m.requested_model, o.requested_model, 'unknown')",
-        label: "COALESCE(m.returned_model, m.requested_model, o.requested_model, 'Unknown model')",
+        label: "MAX(COALESCE(m.returned_model, m.requested_model, o.requested_model, 'Unknown model'))",
       };
     case 'status':
-      return { key: 'o.status', label: 'o.status' };
+      return { key: 'o.status', label: 'MAX(o.status)' };
   }
 }
 
