@@ -163,6 +163,20 @@ interface PreparedSlackActivityWrite {
 }
 
 const STALE_WRITER_MESSAGE = 'Slack Agent View presentation writer is stale.';
+/** Re-reads a stream write may take when only non-stream fields moved. */
+const STREAM_TRANSITION_RETRIES = 3;
+
+function isStaleWriterError(error: unknown): boolean {
+  return error instanceof Error && error.message === STALE_WRITER_MESSAGE;
+}
+
+/** A content-free code for a failed progressive append. */
+function sinkFailureCode(error: unknown): string {
+  if (isStaleWriterError(error)) return 'stale_writer';
+  // A state error may arrive across the Durable Object boundary, where its
+  // class identity is lost; its closed code survives.
+  return safeSlackErrorCode(error);
+}
 
 /**
  * Close an open Agent View stream once it is this old. Slack does not document
@@ -936,7 +950,7 @@ export class SlackAgentViewPresentation {
         chunk,
         control,
       ),
-      invalidate: (reason) => this.invalidate(reason),
+      invalidate: (reason, error) => this.invalidate(reason, error),
       streamedPrefixBound: () => this.streamCapBound,
       ...(presentation.schemaVersion !== 1
         ? {
@@ -975,6 +989,21 @@ export class SlackAgentViewPresentation {
         presentation = await this.requirePresentation();
       }
       return this.handledResult(presentation, approved, format);
+    }
+    if (presentation.schemaVersion === 3 && presentation.stream.state === 'streaming' &&
+        presentation.stream.pendingAppend && presentation.stream.messageTs &&
+        this.terminalIntentAcceptsRecovery(presentation, terminalTaskStatus)) {
+      // The relay has drained, so no append is in flight: this one lost its
+      // acknowledgement (a failed write, or an attempt that ended mid-call).
+      // Slack may or may not show its bytes, and close refuses while it is
+      // pending, so every retry would fail the same way. Treat it as an
+      // uncertain effect on a known coordinate: the recovery below stops the
+      // stream without chunks and replaces its contents with the final.
+      console.warn('[chickpea] Slack Agent View stream append unreconciled; recovering the final on the stream');
+      presentation = await this.transitionStream(presentation, {
+        kind: 'mark_unknown',
+        degradationReason: 'unknown_effect',
+      });
     }
     if (presentation.stream.priorStreamMessageTs ||
         artifacts.length > 0 && presentation.stream.state === 'streaming') {
@@ -1655,7 +1684,7 @@ export class SlackAgentViewPresentation {
         return;
       }
     }
-    presentation = await this.transition(presentation, {
+    presentation = await this.transitionStream(presentation, {
       kind: 'append_intent',
       position: chunk.position,
       from: presentation.stream.acknowledgedByteLength,
@@ -1672,7 +1701,7 @@ export class SlackAgentViewPresentation {
     } catch (error) {
       const outcome = slackEffectOutcome(error);
       if (outcome === 'failed') {
-        presentation = await this.transition(presentation, {
+        presentation = await this.transitionStream(presentation, {
           kind: 'append_rejected',
           cursor: pending.cursor,
         });
@@ -1693,7 +1722,7 @@ export class SlackAgentViewPresentation {
       await this.markUnknown(presentation, 'unknown_effect');
       throw error;
     }
-    await this.transition(presentation, {
+    await this.transitionStream(presentation, {
       kind: 'append_acknowledged',
       cursor: pending.cursor,
       acknowledgedPrefixHash: pending.hash,
@@ -1807,7 +1836,7 @@ export class SlackAgentViewPresentation {
     position: { batch: number; index: number },
     prefix: string,
   ): Promise<void> {
-    presentation = await this.transition(presentation, {
+    presentation = await this.transitionStream(presentation, {
       kind: 'append_intent',
       position,
       from: 0,
@@ -1815,7 +1844,7 @@ export class SlackAgentViewPresentation {
       hash: hash(prefix),
     });
     const pending = presentation.stream.pendingAppend!;
-    await this.transition(presentation, {
+    await this.transitionStream(presentation, {
       kind: 'append_acknowledged',
       cursor: pending.cursor,
       acknowledgedPrefixHash: pending.hash,
@@ -2189,7 +2218,10 @@ export class SlackAgentViewPresentation {
     return { handled: true, messageTs, text: first };
   }
 
-  private async invalidate(reason: ProgressiveRelayInvalidationReason): Promise<void> {
+  private async invalidate(
+    reason: ProgressiveRelayInvalidationReason,
+    error?: unknown,
+  ): Promise<void> {
     if (reason === 'intent_persistence_failed') {
       try {
         let presentation = await this.requirePresentation();
@@ -2208,7 +2240,14 @@ export class SlackAgentViewPresentation {
       }
       return;
     }
-    if (reason === 'sink_failed') return;
+    if (reason === 'sink_failed') {
+      // The relay stops appending after a failed append. Say so, and close
+      // the stream at the terminal with the whole answer instead of leaving
+      // the rest of the text to chunks that will never be sent.
+      console.warn(`[chickpea] stream append sink failed ${sinkFailureCode(error)}`);
+      this.degradedReason ??= 'unsafe_incomplete_block';
+      return;
+    }
     this.degradedReason = 'unsafe_incomplete_block';
   }
 
@@ -2285,6 +2324,38 @@ export class SlackAgentViewPresentation {
       throw new Error(STALE_WRITER_MESSAGE);
     }
     return result.presentation;
+  }
+
+  /**
+   * Apply a stream transition that another writer may have raced. Activity
+   * status, milestones, and the title write this same row and advance its
+   * version without touching the stream, often while `chat.appendStream` is
+   * in flight. When the stream fields this writer read are still exactly the
+   * stored ones (same state, coordinate, pending append, cursor, and Flue
+   * binding) under the same fence, the write is still this writer's: re-read
+   * and apply it on the current version. Any change to the stream itself is
+   * a genuine conflict and stays stale.
+   */
+  private async transitionStream(
+    presentation: SlackRunPresentation,
+    mutation: SlackPresentationMutation,
+  ): Promise<SlackRunPresentation> {
+    const fence = presentation.runFencingToken;
+    const stream = JSON.stringify(presentation.stream);
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        return await this.transition(presentation, mutation, fence);
+      } catch (error) {
+        if (attempt >= STREAM_TRANSITION_RETRIES || !isStaleWriterError(error)) throw error;
+        const current = await this.requirePresentation();
+        if (current.runFencingToken !== fence ||
+            current.workBindingGeneration !== presentation.workBindingGeneration ||
+            JSON.stringify(current.stream) !== stream) {
+          throw error;
+        }
+        presentation = current;
+      }
+    }
   }
 
   /**
