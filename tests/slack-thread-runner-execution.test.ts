@@ -1101,7 +1101,8 @@ test("the runner's port books the workspace's Slack budgets in the state store, 
 test('an unreachable state store leaves the runner pacing itself, and a booking is never replayed', async () => {
   const db = openStateDb(':memory:');
   const warn = console.warn;
-  console.warn = () => {};
+  const warnings: unknown[][] = [];
+  console.warn = (...args: unknown[]) => { warnings.push(args); };
   try {
     const local = new SlackRunPresentationStoreLogic(db, () => NOW);
     let mints = 0;
@@ -1140,6 +1141,22 @@ test('an unreachable state store leaves the runner pacing itself, and a booking 
     }).state;
     assert.equal((await state.reserveSlackAppend(ROOT.workspaceId)).outcome, 'reserved',
       'the stream goes on, paced by its own budget');
+    await state.reserveSlackAppend(ROOT.workspaceId);
+    assert.equal(warnings.length, 1, 'one warning per window, not one per call');
+    assert.deepEqual(warnings[0]![1], { operation: 'reserveSlackAppend', code: 'state_store_disconnected' });
+    // Anything but a disconnect surfaces: budgets never silently turn per thread.
+    const domain = runnerPresentationState({
+      local,
+      remote: {
+        ...sharedBudgets(local),
+        reserveSlackAppend: async () => { throw new Error('Slack budget policy is invalid.'); },
+        matchFlueObservation: async () => undefined,
+        getLatestThreadSessionGeneration: async () => undefined,
+      },
+      putRemote: async () => {},
+    }).state;
+    await assert.rejects(Promise.resolve(domain.reserveSlackAppend(ROOT.workspaceId)), /policy is invalid/);
+    assert.equal(warnings.length, 1);
   } finally {
     console.warn = warn;
     db.close();

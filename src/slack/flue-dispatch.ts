@@ -830,7 +830,8 @@ const SWAPPED_WORD = /^\s*([\p{L}\p{N}'’-]{1,24})\s+/u;
  * "understand enough about use patterns to restock intelligently, identify
  * gaps"): the swapped word and the repeat after it, when the repeat is the
  * answer's own tail (at least 48 characters, one line) right after a
- * different single word. The answer's own word stays.
+ * different single word, and not said earlier in the answer. The answer's
+ * own word stays.
  */
 function swappedWordOverlap(answer: string, continuation: string): number | undefined {
   const swapped = SWAPPED_WORD.exec(continuation);
@@ -838,6 +839,9 @@ function swappedWordOverlap(answer: string, continuation: string): number | unde
   const rest = continuation.slice(swapped[0].length);
   const overlap = tailOverlap(answer, rest);
   if (!overlap || answer.slice(overlap.start).includes('\n')) return undefined;
+  // A clause the answer already said earlier is a refrain, even mid-line.
+  const tail = collapseWhitespace(answer.slice(overlap.start)).trim();
+  if (collapseWhitespace(answer.slice(0, overlap.start)).includes(tail)) return undefined;
   const replaced = /([\p{L}\p{N}'’-]{1,24})[ \t]+$/u.exec(answer.slice(0, overlap.start));
   if (!replaced || replaced[1]!.toLowerCase() === swapped[1]!.toLowerCase()) return undefined;
   return swapped[0].length + overlap.end;

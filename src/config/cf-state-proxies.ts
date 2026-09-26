@@ -2132,7 +2132,8 @@ export class CfTurnJobsForRunner implements RunnerTurnJobsPort {
   /**
    * One attempt, never replayed: a budget booking is a write, and a replay
    * after a lost reply would book a second slot. The lost slot is simply
-   * unused; the caller paces from its own copy on the error.
+   * unused (wasted for the workspace); the caller paces from its own copy on
+   * the disconnect, which may allow that thread one extra append.
    */
   private async once<T>(run: (store: CfSlackStateStore) => Promise<T>): Promise<T> {
     try {
