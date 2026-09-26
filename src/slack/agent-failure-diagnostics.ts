@@ -4,6 +4,7 @@ import { CHICKPEA_SLACK_AGENT_NAME } from '../agents/names.ts';
 import { opaqueId } from '../work/admission.ts';
 
 const ERROR_KINDS = new Set([
+  'AgentRunError', 'BoundedObservationAbortedError', 'AlarmTurnBudgetYield',
   'Error', 'TypeError', 'RangeError', 'ReferenceError', 'SyntaxError',
   'AggregateError', 'AbortError', 'TimeoutError', 'FlueError',
   'AgentPromptFailure', 'AgentObservationYield', 'StateStoreUnavailable',
@@ -66,6 +67,7 @@ export function settlementFailureFacts(error: unknown): Record<string, unknown>[
       ...serializedProviderFailure(meta?.reason),
       ...(typeof value.message === 'string' && Object.hasOwn(PRESENTATION_FAILURES, value.message)
         ? { presentationFailureKind: PRESENTATION_FAILURES[value.message] } : {}),
+      ...platformResetFacts(value.message),
       // A fixed-vocabulary code such as work_execution_conflict, never prose.
       ...(value.name === 'WorkStateError' && typeof value.code === 'string' &&
           WORK_STATE_CODE.test(value.code)
@@ -107,6 +109,25 @@ function slackFailureFacts(value: Record<string, unknown>): Record<string, strin
     return code ? { slackErrorCode: code } : {};
   }
   return {};
+}
+
+/**
+ * Cloudflare's own messages when it resets a Durable Object under a call (a
+ * code update, a storage fault). Fixed prefixes only; the reference id and any
+ * other text are never emitted.
+ */
+const PLATFORM_RESETS: ReadonlyArray<readonly [string, string]> = [
+  ['Durable Object reset because its code was updated', 'code_updated'],
+  ['Internal error in Durable Object storage caused object to be reset', 'storage_reset'],
+  ['Durable Object storage operation exceeded timeout which caused object to be reset', 'storage_timeout_reset'],
+  ['The Durable Object\'s code has been updated', 'code_updated'],
+  ['Network connection lost', 'connection_lost'],
+];
+
+function platformResetFacts(message: unknown): Record<string, string> {
+  if (typeof message !== 'string') return {};
+  const match = PLATFORM_RESETS.find(([prefix]) => message.startsWith(prefix));
+  return match ? { platformReset: match[1] } : {};
 }
 
 /** Pi serializes SDK errors before Flue observes them. Read only its fixed

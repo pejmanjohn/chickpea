@@ -148,8 +148,9 @@ export class AgentPromptFailure extends Error {
  * attempt reattaches to the same submission exactly as after an isolate kill.
  */
 export class AgentObservationYield extends AgentPromptFailure {
-  constructor() {
-    super('agent', 503, false, true);
+  /** `cause`: the read failure that landed after the yield began, for diagnostics only. */
+  constructor(cause?: unknown) {
+    super('agent', 503, false, true, cause);
     this.name = 'AgentObservationYield';
   }
 }
@@ -449,6 +450,15 @@ export async function promptSlackThreadAgent(
       await progressiveRelay?.suspendAndDrain();
       throw error;
     }
+    if (signal?.aborted && !(error instanceof AgentRunError) &&
+        !(error instanceof AgentInstanceNotFoundError)) {
+      // The read broke after the caller had already stopped observing: a
+      // code update resets the agent object and this runner together, so the
+      // read's own failure (the platform's reset) often lands first. Nothing
+      // settled; it is the same yield, not an interrupted relay.
+      await progressiveRelay?.suspendAndDrain();
+      throw new AgentObservationYield(error);
+    }
     if (!(error instanceof AgentRunError)) {
       await progressiveRelay?.invalidateAndDrain('read_interrupted');
       if (error instanceof AgentInstanceNotFoundError) {
@@ -547,9 +557,25 @@ function isObservationAbort(error: unknown, signal: AbortSignal): boolean {
     error instanceof BoundedObservationAbortedError;
 }
 
+/**
+ * A continued step that opens with the start of its interrupted partial wrote
+ * the answer again instead of continuing it (a model that did not see its
+ * partial). The partial is then superseded, not a prefix.
+ */
+const REGENERATION_PROBE_CHARS = 64;
+
 /** Slack presents the final self-contained assistant step, not working narration. */
 class TerminalStepText {
-  private step: { conversationId: string; messageId: string; text: string; completed: boolean } | undefined;
+  private step: {
+    conversationId: string;
+    messageId: string;
+    text: string;
+    completed: boolean;
+    /** Interrupted partials this step continues, oldest first. */
+    continues: string[];
+  } | undefined;
+  /** A completed step that Flue's recovery asked the model to continue. */
+  private interrupted: { conversationId: string; messageId: string; parts: string[] } | undefined;
   private position: { batch: number; index: number } | undefined;
   constructor(private readonly submissionId: string) {}
 
@@ -561,8 +587,38 @@ class TerminalStepText {
     if (chunk.type === 'conversation-reset') {
       // A folded snapshot has no assistant-step boundaries. Do not guess.
       this.step = undefined;
+      this.interrupted = undefined;
+    } else if (chunk.type === 'message-appended') {
+      // Flue's stream recovery appends hidden advisory signals right after the
+      // interrupted step ("continue from the durable partial"). They are the
+      // only hidden advisories, and nothing else separates two steps of one
+      // response without a tool call.
+      const message = chunk.message;
+      const step = this.step;
+      if (step?.completed && step.text && message.role === 'system' &&
+          message.purpose === 'advisory' && message.display === 'hidden' &&
+          (message.submissionId === undefined || message.submissionId === this.submissionId) &&
+          chunk.conversationId === step.conversationId) {
+        this.interrupted = {
+          conversationId: step.conversationId,
+          messageId: step.messageId,
+          parts: [...step.continues, step.text],
+        };
+      } else if (message.role !== 'system' || message.display !== 'hidden') {
+        this.interrupted = undefined;
+      }
     } else if (chunk.type === 'message-started' && chunk.submissionId === this.submissionId) {
-      this.step = { conversationId: chunk.conversationId, messageId: chunk.messageId, text: '', completed: false };
+      const interrupted = this.interrupted;
+      this.interrupted = undefined;
+      this.step = {
+        conversationId: chunk.conversationId,
+        messageId: chunk.messageId,
+        text: '',
+        completed: false,
+        continues: interrupted && interrupted.conversationId === chunk.conversationId &&
+            interrupted.messageId === chunk.messageId
+          ? interrupted.parts : [],
+      };
     } else if (this.step && chunk.conversationId === this.step.conversationId &&
         'messageId' in chunk && chunk.messageId === this.step.messageId) {
       if (chunk.type === 'message-delta' && chunk.kind === 'text' && !this.step.completed) {
@@ -578,8 +634,23 @@ class TerminalStepText {
     const text = this.step?.completed ? this.step.text : undefined;
     // Only replace a proven complete trailing step. Legacy/snapshot-only reads
     // and structured replies without text retain their existing behavior.
-    return text && (folded === text || folded.endsWith(`\n\n${text}`)) ? text : folded;
+    if (!text || !(folded === text || folded.endsWith(`\n\n${text}`))) return folded;
+    const continues = this.step?.continues ?? [];
+    if (continues.length === 0) return text;
+    // Flue folds the interrupted partial and its continuation as separate
+    // parts. The continuation picks up exactly where the partial (already
+    // streamed to Slack) stopped, so the answer is their concatenation.
+    const parts = [...continues, text];
+    const foldedParts = parts.join('\n\n');
+    if (folded !== foldedParts && !folded.endsWith(`\n\n${foldedParts}`)) return text;
+    if (restartsPartial(parts[0]!, text)) return text;
+    return parts.join('');
   }
+}
+
+function restartsPartial(partial: string, continuation: string): boolean {
+  const probe = partial.trimStart().slice(0, REGENERATION_PROBE_CHARS);
+  return probe.length > 0 && continuation.trimStart().startsWith(probe);
 }
 
 /** Distinguish terminal failure boundaries without logging error or reply content. */

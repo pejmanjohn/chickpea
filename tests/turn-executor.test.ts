@@ -349,3 +349,59 @@ test('runner ports: an approval turn gets the state-store approval RPC, not a lo
   assert.equal(run?.managementApproval, undefined, 'a runner has no local management runtime');
   assert.deepEqual(requests, [], 'forwarding alone never applies anything');
 });
+
+test('a platform reset surfacing after a code-update yield began is the same free yield, with its cause named', async (t) => {
+  const infos: unknown[][] = [];
+  t.mock.method(console, 'info', (...args: unknown[]) => { infos.push(args); });
+  const errors: unknown[][] = [];
+  t.mock.method(console, 'error', (...args: unknown[]) => { errors.push(args); });
+  for (const thrown of [
+    // A write the turn made directly (the old runner's own storage went away).
+    new Error('Durable Object reset because its code was updated.'),
+    // The read of the reset agent object, wrapped as a transport interruption.
+    new AgentPromptFailure('agent', 503, false, true,
+      new Error('Internal error in Durable Object storage caused object to be reset; reference = x')),
+  ]) {
+    const controller = new AbortController();
+    const h = fakePorts(async () => {
+      controller.abort(new Error('code update'));
+      throw thrown;
+    });
+    const job = pendingJob({
+      attempts: 1,
+      dispatchEnvelope: { instanceId: 'agent' } as never,
+      dispatchReceipt: { submissionId: 'submission_1', acceptedAt: new Date().toISOString() } as never,
+    });
+    const settled = await executeTurnJob(job, h.ports, {
+      ...h.options,
+      control: { signal: controller.signal, observing: () => undefined },
+    });
+    assert.equal(settled, false);
+    assert.deepEqual(h.calls, ['recordAttempt("turn_1",2)', 'recordAttempt("turn_1",1)'],
+      'the attempt is restored: no reattachment budget spent');
+    assert.deepEqual(h.retries, []);
+  }
+  assert.equal(errors.length, 0, 'no "durable reattachment failed"');
+  assert.deepEqual(infos.map((args) => (args[1] as { interruptedBy: unknown }).interruptedBy), [
+    [{ kind: 'Error', platformReset: 'code_updated' }],
+    [{ kind: 'AgentPromptFailure' }, { kind: 'Error', platformReset: 'storage_reset' }],
+  ]);
+});
+
+test('a settled failure after the yield began keeps its meaning', async () => {
+  const controller = new AbortController();
+  const h = fakePorts(async () => {
+    controller.abort(new Error('code update'));
+    throw new AgentPromptFailure('provider');
+  });
+  const job = pendingJob({
+    attempts: 1,
+    dispatchEnvelope: { instanceId: 'agent' } as never,
+    dispatchReceipt: { submissionId: 'submission_1', acceptedAt: new Date().toISOString() } as never,
+  });
+  await executeTurnJob(job, h.ports, {
+    ...h.options,
+    control: { signal: controller.signal, observing: () => undefined },
+  });
+  assert.ok(!h.calls.includes('recordAttempt("turn_1",1)'), 'a decided failure is not a yield');
+});
