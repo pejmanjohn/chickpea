@@ -30,8 +30,12 @@ import {
   defaultOnlyWorkspaceRoster,
   normalizeWorkspaceName,
   openWorkspaceNames,
+  overlayWorkspaceRoster,
   parseRoster,
+  readStoredWorkspaceRoster,
+  saveStoredWorkspaceRoster,
   type WorkspaceRosterState,
+  type WorkspaceRosterStore,
 } from '../src/sandbox/workspace-limits.ts';
 import { workspaceRegistryKey } from '../src/sandbox/workspace-registry.ts';
 import { WORKSPACE_CHECKPOINT_TTL_SECONDS } from '../src/sandbox/workspace-lifecycle.ts';
@@ -832,17 +836,23 @@ test('the roster persists through its updater and keeps its own writes visible',
  * Tools over a roster and a resolver shaped like the coordinator's: a use
  * admits the name, and the name's generation picks its workspace.
  */
-function multiWorkspaceTools(options: { running?: Set<string>; describe?: Record<string, { running: boolean; hasCheckpoint: boolean }> } = {}) {
+function multiWorkspaceTools(options: {
+  running?: Set<string>;
+  describe?: Record<string, { running: boolean; hasCheckpoint: boolean }>;
+  store?: WorkspaceRosterStore;
+} = {}) {
   let stored: WorkspaceRosterState = EMPTY_WORKSPACE_ROSTER;
-  const roster = createWorkspaceRoster(stored, (updater) => { stored = updater(stored); });
+  const roster = createWorkspaceRoster(stored, (updater) => { stored = updater(stored); }, Date.now, options.store);
   const log: StubLog = { calls: [] };
   const sessions = new Map<string, WorkspaceSession>();
   const conversation = 'T1:C1:1783000000.000100';
   const tools = createWorkspaceTools({
     roster,
     taskRunning: (id) => options.running?.has(id) ?? false,
-    resolve: (name, access = 'use') => {
+    resolve: async (name, access = 'use') => {
+      await roster.ready();
       const generation = access === 'use' ? roster.admit(name) : roster.generation(name);
+      await roster.flush();
       const key = workspaceRegistryKey(name, generation);
       let found = sessions.get(key);
       if (!found) {
@@ -994,4 +1004,75 @@ test('a retired name keeps its generation however many other names the thread us
     state = closeWorkspace(admitWorkspace(state, `w${index}`, 2).state, `w${index}`, { discard: false, now: 2 });
   }
   assert.deepEqual(admitWorkspace(state, 'api', 3).admission, { ok: true, generation: 1 });
+});
+
+/** A Sandbox Durable Object's storage, reached through the store the coordinator uses. */
+function memoryRosterStore(key = 'agent_continuity:agent-1') {
+  const storage = new Map<string, unknown>();
+  const policyStorage = {
+    async get<T>(storageKey: string) { return structuredClone(storage.get(storageKey)) as T | undefined; },
+    async put<T>(storageKey: string, value: T) { storage.set(storageKey, structuredClone(value)); },
+  };
+  const store: WorkspaceRosterStore = {
+    load: () => readStoredWorkspaceRoster(policyStorage, key),
+    save: (state, forget) => saveStoredWorkspaceRoster(policyStorage, key, state, [...forget]),
+  };
+  return { store, read: () => readStoredWorkspaceRoster(policyStorage, key) };
+}
+
+test('a new coordinator instance keeps the thread\'s workspaces, open cap, and retirements', async () => {
+  const durable = memoryRosterStore();
+  // The instance before an Agent edit or coding model change.
+  const before = multiWorkspaceTools({ store: durable.store });
+  await run(before.tools.workspace_open!, { workspace: 'docs' });
+  await run(before.tools.workspace_open!, { workspace: 'fix' });
+  await run(before.tools.workspace_close!, { workspace: 'fix', discard: true });
+  await run(before.tools.workspace_open!, { workspace: 'fix' });
+
+  // The next harness revision is a new instance whose persistent state is empty.
+  const after = multiWorkspaceTools({ store: durable.store });
+  const listed = await run(after.tools.workspace_list!, {});
+  const byName = Object.fromEntries((listed.workspaces as Array<Record<string, unknown>>).map((entry) => [entry.workspace, entry]));
+  assert.deepEqual(Object.keys(byName), ['main', 'docs', 'fix']);
+  assert.equal(byName.docs!.open, true);
+  assert.equal(byName.fix!.open, true);
+  assert.equal((await run(after.tools.workspace_open!, { workspace: 'third' })).reason, 'workspace_limit');
+  assert.equal((await run(after.tools.workspace_open!, { workspace: 'fix' })).ok, true);
+  assert.equal(
+    after.sessions.get(workspaceRegistryKey('fix', 1))?.id,
+    workspaceIdFor(after.conversation, 'fix', 1),
+    'the retired generation is not readdressed',
+  );
+  assert.equal(after.sessions.has('fix'), false);
+  assert.deepEqual(after.stored(), await durable.read(), 'the new instance adopts the durable roster');
+});
+
+test('the durable roster never lowers a generation and forgets only a never-retired failed open', async () => {
+  const entry = (generation: number, open: boolean, lastUsedAt: number) => ({ generation, open, lastUsedAt });
+  const stored: WorkspaceRosterState = { schemaVersion: 1, workspaces: { api: entry(2, false, 5), web: entry(0, true, 5), x: entry(0, true, 5) } };
+  const stale: WorkspaceRosterState = { schemaVersion: 1, workspaces: { api: entry(1, true, 9), web: entry(0, false, 5) } };
+  assert.deepEqual(overlayWorkspaceRoster(stored, stale, ['x', 'api']), {
+    schemaVersion: 1,
+    workspaces: { api: entry(2, false, 5), web: entry(0, false, 5) },
+  });
+
+  const durable = memoryRosterStore();
+  const roster = createWorkspaceRoster(EMPTY_WORKSPACE_ROSTER, () => {}, () => 10, durable.store);
+  await roster.ready();
+  roster.admit('api');
+  roster.close('api', { discard: true });
+  await roster.flush();
+  roster.admit('web');
+  await roster.flush();
+  // An admission whose workspace never came up gives its slot back durably too.
+  roster.restore('web', undefined);
+  await roster.flush();
+  assert.deepEqual(await durable.read(), { schemaVersion: 1, workspaces: { api: entry(1, false, 10) } });
+
+  // An older instance whose persistent state still says api is open at
+  // generation 0 adopts the durable copy instead.
+  const older = createWorkspaceRoster({ schemaVersion: 1, workspaces: { api: entry(0, true, 10) } }, () => {}, () => 11, durable.store);
+  await older.ready();
+  assert.equal(older.generation('api'), 1);
+  assert.deepEqual(openWorkspaceNames(older.snapshot(), 11), []);
 });

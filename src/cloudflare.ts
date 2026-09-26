@@ -156,6 +156,11 @@ import {
   type WorkspaceTurnState,
 } from './sandbox/workspace-lifecycle.ts';
 import {
+  readStoredWorkspaceRoster,
+  saveStoredWorkspaceRoster,
+  type WorkspaceRosterState,
+} from './sandbox/workspace-limits.ts';
+import {
   checkpointWorkspace,
   restoreWorkspaceCheckpoint,
   workspaceCheckpointsAvailable,
@@ -500,6 +505,15 @@ export class Sandbox extends CloudflareSandbox<SandboxWorkerEnv> {
   async discardWorkspace(): Promise<void> {
     await this.workspaceState().dropCheckpoint();
     await this.destroy();
+  }
+
+  /** The conversation's workspace roster, kept here so it outlives the coordinator instance. */
+  async readWorkspaceRoster(key: string): Promise<WorkspaceRosterState> {
+    return readStoredWorkspaceRoster(this.policyStorage(), key);
+  }
+
+  async saveWorkspaceRoster(key: string, state: unknown, forget: unknown): Promise<void> {
+    await saveStoredWorkspaceRoster(this.policyStorage(), key, state, forget);
   }
 
   private containerRunning(): boolean {

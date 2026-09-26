@@ -17,6 +17,7 @@ export const RETRY_SAFE_SANDBOX_METHODS: ReadonlySet<string> = new Set([
   'getTurnProgress',
   'getEgressPolicy',
   'describeWorkspace',
+  'readWorkspaceRoster',
   'probeContainerRuntime',
   'listProcesses',
   'getProcess',
@@ -31,6 +32,8 @@ export const RETRY_SAFE_SANDBOX_METHODS: ReadonlySet<string> = new Set([
   'endTurn',
   'destroy',
   'discardWorkspace',
+  // Replaying the same overlay converges: it never lowers a generation.
+  'saveWorkspaceRoster',
 ]);
 
 /** Pauses before each retry; its length bounds the retries. */
