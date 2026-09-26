@@ -60,8 +60,8 @@ export interface PartialRestoreReport {
 }
 
 /**
- * The per-request copy plus a report, or no report when the request carries
- * neither an aborted step nor a recovery signal (every ordinary request).
+ * The per-request copy plus a report, or no report unless the request's last
+ * message is a recovery signal (the request that continues the partial).
  */
 export function inspectInterruptedStreamPartials(
   context: Context,
@@ -100,7 +100,12 @@ export function inspectInterruptedStreamPartials(
     restoredAny = true;
     return restored;
   });
-  if (abortedMessages === 0 && userSignals === 0) return { context };
+  // Report only the request that continues the partial (the signal is the
+  // last message). Later requests in the thread carry the same history.
+  const continuing = recoverySignalType(source.at(-1)) !== undefined;
+  if (!continuing) {
+    return { context: restoredAny ? { ...context, messages } : context };
+  }
   if (!restoredAny && reason === undefined) {
     // Signals, but no aborted step anywhere: gate_mismatch when an assistant
     // step directly precedes them (Flue continues it, but it is not marked
@@ -132,7 +137,7 @@ export function inspectInterruptedStreamPartials(
  * prompt) so the cached prefix is unchanged.
  */
 export const CONTINUATION_INSTRUCTION =
-  'Your previous message above was cut off and is already shown to the user. ' +
+  'Your previous message above was cut off. ' +
   'Continue it from exactly where it stops, even mid-word or mid-sentence. ' +
   'Do not repeat, restate, or re-open any of it, including its last heading.';
 

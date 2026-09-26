@@ -173,7 +173,14 @@ test('the report names why a recovery-shaped request did not restore its partial
   const reasonFor = (messages: Context['messages']) =>
     inspectInterruptedStreamPartials({ systemPrompt: 's', messages }).report?.reason;
   assert.equal(inspectInterruptedStreamPartials({ systemPrompt: 's', messages: [prompt!] }).report, undefined);
-  assert.equal(reasonFor([prompt!, PARTIAL]), 'signals_missing');
+  assert.equal(reasonFor([prompt!, PARTIAL, interrupted!]), 'signals_missing');
+  // History: the continued turn is over (the signal is no longer last). The partial is still
+  // restored for the model, but only the continuing request is reported.
+  const history = inspectInterruptedStreamPartials({ systemPrompt: 's', messages: [...recoveredContext(PARTIAL).messages,
+    assistant({ content: [{ type: 'text', text: 'rest of the answer' }] }), { role: 'user', content: 'thanks', timestamp: 5 }] });
+  assert.equal(history.report, undefined);
+  assert.equal((history.context.messages[1] as AssistantMessage).stopReason, 'stop');
+  assert.equal((history.context.messages[3] as { content: unknown[] }).content.length, 1, 'no instruction in history');
   assert.equal(reasonFor([prompt!, PARTIAL, continued!, interrupted!]), 'signals_out_of_order');
   assert.equal(reasonFor([prompt!, PARTIAL, interrupted!, interrupted!]), 'signals_out_of_order');
   assert.equal(reasonFor([prompt!, interrupted!, continued!]), 'no_aborted_step');
@@ -250,33 +257,44 @@ test('the restored partial and instruction reach the real OpenAI Responses, Anth
   }
 });
 
-test('overlap trimming: repeated last words, re-opened sections, and no false trims', () => {
-  const partial = 'Intro paragraph that sets the scene for the reader.\n\n## 3. Water\n\nWater early in the day, before the heat. Keep a log of volunteer';
-  // Repeated tail without a heading.
-  assert.deepEqual(joinContinuation(partial, 'before the heat. Keep a log of volunteer hours.'),
-    { text: `${partial} hours.`, trimmedChars: 'before the heat. Keep a log of volunteer'.length });
-  // Whitespace differences do not hide the repeat.
-  assert.equal(joinContinuation(partial, 'the  heat.\nKeep a log  of volunteer hours.').text, `${partial} hours.`);
-  // Re-opened heading with the section rewritten in other words: the rewrite, once.
-  const rewrite = '## 3. Water\n\nMorning watering keeps roots cool.';
-  assert.equal(joinContinuation(partial, rewrite).text,
-    'Intro paragraph that sets the scene for the reader.\n\n## 3. Water\n\nMorning watering keeps roots cool.');
+test('overlap trimming: repeated last words and a re-opened section are cut once', () => {
+  const partial = 'Intro paragraph that sets the scene for the reader.\n\n## 3. Water\n\nWater early in the day, before the heat, so the roots stay cool. Keep a log of volunteer';
+  const repeat = 'in the day, before the heat, so the roots stay cool. Keep a log of volunteer';
+  assert.deepEqual(joinContinuation(partial, `${repeat} hours.`),
+    { text: `${partial} hours.`, trimmedChars: repeat.length, reopenedUnmatched: false });
+  // Whitespace differences do not hide the repeat; the continuation's own line break is kept.
+  assert.equal(joinContinuation(partial, 'in the  day,\nbefore the heat, so the roots stay cool. Keep a log of volunteer\nhours.').text,
+    `${partial}\nhours.`);
+  // Heading repeated as the first line, restated body matched: one copy.
+  assert.equal(joinContinuation(partial, `## 3. Water\n\nWater early ${repeat} hours.`).text, `${partial} hours.`);
+  // Heading repeated, body in other words: only the repeated heading line goes; nothing written is replaced.
+  assert.deepEqual(joinContinuation(partial, '## 3. Water\n\nMorning watering keeps roots cool.'),
+    { text: `${partial}\nMorning watering keeps roots cool.`, trimmedChars: '## 3. Water\n'.length, reopenedUnmatched: true });
   // A partial that stopped right after the heading: drop the repeated heading only.
   const headed = 'Intro paragraph that sets the scene for the reader.\n\n## 3. Water\n';
-  assert.deepEqual(joinContinuation(headed, '## 3. Water\nWater early.'), { text: `${headed}Water early.`, trimmedChars: '## 3. Water\n'.length });
-  // Legitimate continuations are untouched.
-  for (const continuation of [
-    ' hours and tasks.',
-    's and their tasks.',
-    'volunteer hours.', // a short overlap proves nothing
-    ' hours.\n\n## 4. Harvest\n\nWater early in the day, before the heat. Keep a log of volunteer hours again.',
-    ' hours. As in 3. Water, keep it short.',
-  ]) {
-    assert.deepEqual(joinContinuation(partial, continuation), { text: partial + continuation, trimmedChars: 0 }, continuation);
-  }
-  // A heading repeated far from the continuation's start is not a re-open.
-  const far = `${' hours.'.padEnd(500, ' filler')}\n## 3. Water\n`;
-  assert.equal(joinContinuation(partial, far).trimmedChars, 0);
+  assert.deepEqual(joinContinuation(headed, '## 3. Water\nWater early.'),
+    { text: `${headed}Water early.`, trimmedChars: '## 3. Water\n'.length, reopenedUnmatched: false });
+});
+
+test('overlap trimming never deletes legitimate content', () => {
+  const same = (answer: string, continuation: string) =>
+    assert.deepEqual(joinContinuation(answer, continuation),
+      { text: answer + continuation, trimmedChars: 0, reopenedUnmatched: false }, continuation);
+  // Structured answers repeat bold labels by design (the review probes).
+  same('### Option A\n\n**Pros:**\n- fast\n\n**Cons:**\n- costly\n\n### Option B\n\n**Pros:**\n- cheap and',
+    ' simple\n\n**Cons:**\n- slow\n\n### Option C\n\n**Pros:**\n- none');
+  same('Rule one: name things clearly.\n\n**Example:**\n`const total = sum(items)`\n\nRule two: keep functions small.\n\n**Example:**\n',
+    '**Example:**\n`function add(a, b) { return a + b }`');
+  same('## Part 1\n\nThe first part covers setup and the reasons for it.\n\n### Summary\n\nSetup is quick and',
+    ' repeatable.\n\n## Part 2\n\nThe second part covers use.\n\n### Summary\n\nUse is simple.');
+  // A heading repeated later than the first line is not a re-open.
+  const partial = 'Intro paragraph that sets the scene for the reader.\n\n## 3. Water\n\nWater early in the day. Keep a log of volunteer';
+  same(partial, ` hours.${' More detail.'.repeat(8)}\n\n## 3. Water\n\nA later recap.`);
+  // A refrain the answer already had is repeated on purpose.
+  const refrain = 'Row, row, row your boat, gently down the stream, merrily on we go\n';
+  same(`Verse one.\n${refrain}Verse two.\n${refrain}`, `${refrain}Verse three.`);
+  // Legitimate continuations, a word completed mid-token, and a short overlap.
+  for (const continuation of [' hours and tasks.', 's and their tasks.', 'Keep a log of volunteer hours.']) same(partial, continuation);
   // A short answer is always continued.
-  assert.deepEqual(joinContinuation('## Pl', '## Plan'), { text: '## Pl## Plan', trimmedChars: 0 });
+  same('## Pl', '## Plan');
 });
