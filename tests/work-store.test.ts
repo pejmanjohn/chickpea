@@ -653,6 +653,56 @@ test('RunExecution keeps route evidence immutable and rejects internal or secret
   }
 });
 
+test('an execution settled without a model call drops the provider route recorded at prepare', () => {
+  const db = openStateDb(':memory:');
+  try {
+    const store = new WorkStoreLogic(db, { now: () => NOW });
+    const config = store.putConfigRevision(safeConfig());
+    const admitted = store.createGraph(graph(config.id, 'unused_route'));
+    const prepared = store.putContent({ sensitivity: 'public', body: 'prepared input', createdAt: NOW });
+    db.run(
+      `UPDATE runs SET status = 'input_ready', prepared_input_ref = ?, updated_at = ? WHERE id = ?`,
+      prepared.ref,
+      NOW,
+      admitted.run.id,
+    );
+    const executionId = 'execution_unused_route' as RunExecutionId;
+    store.createRunExecution({
+      id: executionId,
+      runId: admitted.run.id,
+      attemptNumber: 1,
+      fencingToken: 1,
+      executorKind: 'agent',
+      agentName: 'slack-thread',
+      canonicalModel: 'openai/gpt-5.6-sol',
+      startedAt: NOW + 1,
+    });
+    store.recordRunExecutionRoute({
+      executionId,
+      recordedAt: NOW + 1,
+      providerAuthRoute: 'openai_api_key',
+      modelCredentialRef: 'openai_platform',
+      modelCredentialVersion: 1,
+    });
+    const input = {
+      executionId,
+      fencingToken: 1,
+      outcome: 'succeeded' as const,
+      modelInvocationStatus: 'not_invoked' as const,
+      rawSettlementRef: 'settlement_unused_route',
+      rawSettlementStatus: 'host_management_approval_succeeded',
+      finishedAt: NOW + 2,
+    };
+    const settled = store.settleRunExecution(input);
+    assert.equal(settled.outcome, 'succeeded');
+    assert.equal(settled.modelInvocationStatus, 'not_invoked');
+    assert.equal(settled.providerAuthRoute, null, 'no provider was reached');
+    assert.equal(store.settleRunExecution(input).id, executionId, 'a repeated settlement is idempotent');
+  } finally {
+    db.close();
+  }
+});
+
 test('recovery quarantine is terminal, idempotent, body-free, and atomic with audit', () => {
   const db = openStateDb(':memory:');
   try {

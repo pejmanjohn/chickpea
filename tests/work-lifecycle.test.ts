@@ -398,6 +398,35 @@ test('pre-call resolver failure records not submitted without fabricating invoca
   }
 });
 
+for (const [label, rawStatus, method] of [
+  ['a management approval', 'host_management_approval_succeeded', 'slack_chat_post_message'],
+  ['a react-only turn', 'adapter_reaction_only', 'slack_reaction_add'],
+] as const) {
+  test(`${label} with a prepared OpenAI route settles its execution and run without a model call`, async () => {
+    const fixture = await lifecycleFixture('public');
+    try {
+      await fixture.lifecycle.prepareExecution('prepared input');
+      const ready = await fixture.store.getRunExecution(fixture.lifecycle.executionId);
+      assert.equal(ready?.providerAuthRoute, 'openai_api_key', 'the route is recorded at prepare');
+      await fixture.lifecycle.settleExecution({ outcome: 'succeeded', rawStatus, modelInvoked: false });
+      const execution = await fixture.store.getRunExecution(fixture.lifecycle.executionId);
+      assert.equal(execution?.outcome, 'succeeded');
+      assert.equal(execution?.modelInvocationStatus, 'not_invoked');
+      assert.equal(execution?.providerAuthRoute, null);
+      const attemptId = await fixture.lifecycle.beforeDelivery({
+        method, approvedOutput: 'Done.', renderedPayload: JSON.stringify({ method }),
+      });
+      assert.ok(attemptId, 'the lifecycle stays usable after settlement');
+      await fixture.lifecycle.afterDelivery({ attemptId, outcome: 'delivered', deliveryRef: 'slack:C123:123.456' });
+      const run = await fixture.store.getRun(fixture.runId);
+      assert.equal(run?.status, 'settled', 'the Work run is not left executing');
+      assert.equal(run?.deliveryStatus, 'delivered');
+    } finally {
+      fixture.close();
+    }
+  });
+}
+
 async function lifecycleFixture(
   sensitivity: 'public' | 'private',
   deferRoute = false,
