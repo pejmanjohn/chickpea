@@ -16,9 +16,17 @@ export const SLACK_PRESENTATION_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
 export const SLACK_PRESENTATION_FINALIZED_TTL_MS = 7 * 24 * 60 * 60 * 1_000;
 const MAX_SLACK_PENDING_APPEND_BYTES = 128 * 1_024;
 
+/**
+ * One workspace's share of `chat.appendStream`. Slack rates the method Tier 4
+ * ("100+ per minute"), counted per method per workspace per app, with bursts
+ * allowed; it is not a per-channel limit. One token per 600 ms is 100 a
+ * minute, and a burst of ten lets several threads that start together each
+ * open their stream without waiting. A reservation the budget cannot grant
+ * yet is deferred by the caller, never a reason to stop streaming.
+ */
 export const DEFAULT_SLACK_APPEND_BUDGET = {
-  capacity: 1,
-  refillWindowMs: 1_000,
+  capacity: 10,
+  refillWindowMs: 600,
 } as const;
 
 const DEFAULT_SLACK_ACTIVITY_STATUS_BUDGET = {
@@ -247,6 +255,12 @@ interface SlackPresentationContinuations {
    * earlier build, so its first message is recomputed by raw length alone.
    */
   shaped?: true;
+  /**
+   * The shape counted each header block's measured size overhead. A shaped
+   * plan without it was frozen before that bound, so its first message is
+   * recomputed without the overhead and still ends where its follow-ups begin.
+   */
+  headerOverhead?: true;
 }
 
 /** Options of `splitSlackMarkdownReply` that shape the first message. */
@@ -629,6 +643,8 @@ export type SlackPresentationMutation =
       replace?: true;
       /** Parts sized by rendered shape; set by every current build. */
       shaped?: true;
+      /** The shape counted header block overhead; set by every current build. */
+      headerOverhead?: true;
       parts: readonly string[];
       closing: SlackReplyClosing;
     }
@@ -685,6 +701,18 @@ export type SlackAppendReservation =
   | { outcome: 'cooldown'; retryAt: number; budgetVersion: number }
   | { outcome: 'exhausted'; retryAt: number; budgetVersion: number };
 
+/**
+ * A workspace append slot. `scheduled` books a slot in the near future, in
+ * arrival order: the caller waits until `at` and appends without asking
+ * again, so concurrent streams take turns instead of racing for each refill.
+ */
+export type SlackAppendBooking =
+  | SlackAppendReservation
+  | { outcome: 'scheduled'; at: number; budgetVersion: number };
+
+/** How far ahead a workspace append slot may be booked. */
+export const SLACK_APPEND_BOOKING_HORIZON_MS = 20_000;
+
 interface SlackAppendBudgetPolicy {
   capacity: number;
   refillWindowMs: number;
@@ -736,6 +764,12 @@ export interface SlackPresentationFinalizationRecord {
   acceptedBytes: number;
   /** Answer bytes delivered by the terminal Slack effect instead of appends. */
   terminalSuffixBytes: number;
+  /**
+   * Appends this writer deferred for the workspace append budget, the time
+   * they waited, and the appends it left to a later append or the terminal.
+   * Present only when the budget deferred something. Counts, never content.
+   */
+  appendBudget?: { deferrals: number; deferredMs: number; yielded: number };
   timingMs: {
     offerToRequest?: number;
     requestToFirstEffect?: number;
@@ -1196,10 +1230,18 @@ export class SlackRunPresentationStoreLogic {
     );
   }
 
+  /**
+   * Book the workspace's next `chat.appendStream` slot. The budget is a
+   * generic cell rate: slots are `refillWindowMs` apart, and up to
+   * `capacity` may be taken at once after a quiet period. A slot free now
+   * is `reserved`; the next free slot within the booking horizon is
+   * `scheduled`, in arrival order; beyond it the answer is `exhausted`.
+   * `last_refill_at` holds the theoretical time after the last booked slot.
+   */
   reserveAppend(
     workspaceId: string,
     policy: SlackAppendBudgetPolicy = DEFAULT_SLACK_APPEND_BUDGET,
-  ): SlackAppendReservation {
+  ): SlackAppendBooking {
     validateId(workspaceId, 'Workspace id');
     validateBudgetPolicy(policy);
     return this.db.transaction(() => {
@@ -1220,7 +1262,7 @@ export class SlackRunPresentationStoreLogic {
         );
         row = this.getBudget(workspaceId)!;
       }
-      assertBudgetPolicy(row, policy);
+      row = this.adoptAppendPolicy(row, policy, at);
       if (row.cooldown_until !== null && row.cooldown_until > at) {
         return {
           outcome: 'cooldown',
@@ -1228,34 +1270,34 @@ export class SlackRunPresentationStoreLogic {
           budgetVersion: row.version,
         };
       }
-      const elapsedWindows = Math.floor((at - row.last_refill_at) / row.refill_window_ms);
-      const available = elapsedWindows > 0
-        ? Math.min(row.capacity, row.available + elapsedWindows)
-        : row.available;
-      const refillAt = elapsedWindows > 0
-        ? row.last_refill_at + elapsedWindows * row.refill_window_ms
-        : row.last_refill_at;
-      if (available <= 0) {
+      const interval = row.refill_window_ms;
+      const burst = (row.capacity - 1) * interval;
+      const theoretical = Math.max(row.last_refill_at, at);
+      const slotAt = Math.max(at, theoretical - burst);
+      if (slotAt - at > SLACK_APPEND_BOOKING_HORIZON_MS) {
         return {
           outcome: 'exhausted',
-          retryAt: refillAt + row.refill_window_ms,
+          retryAt: slotAt - SLACK_APPEND_BOOKING_HORIZON_MS,
           budgetVersion: row.version,
         };
       }
+      const nextTheoretical = theoretical + interval;
       const nextVersion = row.version + 1;
       this.db.run(
         `UPDATE slack_workspace_append_budgets
          SET available = ?, last_refill_at = ?, cooldown_until = NULL,
              version = ?, updated_at = ?
          WHERE workspace_id = ? AND version = ?`,
-        available - 1,
-        refillAt,
+        Math.max(0, Math.floor((burst - (nextTheoretical - at)) / interval) + 1),
+        nextTheoretical,
         nextVersion,
         at,
         workspaceId,
         row.version,
       );
-      return { outcome: 'reserved', budgetVersion: nextVersion };
+      return slotAt > at
+        ? { outcome: 'scheduled', at: slotAt, budgetVersion: nextVersion }
+        : { outcome: 'reserved', budgetVersion: nextVersion };
     });
   }
 
@@ -1298,7 +1340,7 @@ export class SlackRunPresentationStoreLogic {
         );
         row = this.getBudget(workspaceId)!;
       }
-      assertBudgetPolicy(row, policy);
+      row = this.adoptAppendPolicy(row, policy, at);
       const cooldownUntil = Math.max(row.cooldown_until ?? 0, at + retryAfterMs);
       const budgetVersion = row.version + 1;
       this.db.run(
@@ -1458,6 +1500,33 @@ export class SlackRunPresentationStoreLogic {
       `SELECT ${PRESENTATION_COLUMNS} FROM slack_run_presentations WHERE run_id = ?`,
       runId,
     ) as PresentationRow | undefined;
+  }
+
+  /**
+   * A row frozen under an earlier policy takes the current one; its cooldown
+   * and booked slots stay.
+   */
+  private adoptAppendPolicy(
+    row: BudgetRow,
+    policy: SlackAppendBudgetPolicy,
+    at: number,
+  ): BudgetRow {
+    if (row.capacity === policy.capacity && row.refill_window_ms === policy.refillWindowMs) {
+      return row;
+    }
+    this.db.run(
+      `UPDATE slack_workspace_append_budgets
+       SET capacity = ?, refill_window_ms = ?, available = ?, version = ?, updated_at = ?
+       WHERE workspace_id = ? AND version = ?`,
+      policy.capacity,
+      policy.refillWindowMs,
+      Math.min(policy.capacity, row.available),
+      row.version + 1,
+      at,
+      row.workspace_id,
+      row.version,
+    );
+    return this.getBudget(row.workspace_id)!;
   }
 
   private getBudget(workspaceId: string): BudgetRow | undefined {
@@ -2377,9 +2446,14 @@ function applyMutation(
       if (mutation.shaped !== undefined && mutation.shaped !== true) {
         throw stateError('invalid_input', 'Continuation shape marker must be true.');
       }
+      if (mutation.headerOverhead !== undefined &&
+          (mutation.headerOverhead !== true || mutation.shaped !== true)) {
+        throw stateError('invalid_input', 'Continuation header overhead marker must be true on a shaped plan.');
+      }
       next.continuations = {
         state: 'active',
         ...(mutation.shaped ? { shaped: true as const } : {}),
+        ...(mutation.headerOverhead ? { headerOverhead: true as const } : {}),
         ...(mutation.split ? { split: structuredClone(mutation.split) } : {}),
         parts: mutation.parts.map((text) => ({ text })),
         closing: structuredClone(mutation.closing),
@@ -3211,6 +3285,8 @@ function isStoredContinuations(value: SlackPresentationContinuations | undefined
       !Array.isArray(value.parts) || value.parts.length < 1 ||
       value.parts.length > MAX_SLACK_CONTINUATION_PARTS) return false;
   if (value.shaped !== undefined && value.shaped !== true) return false;
+  if (value.headerOverhead !== undefined &&
+      (value.headerOverhead !== true || value.shaped !== true)) return false;
   if (value.resplits !== undefined && (!Number.isSafeInteger(value.resplits) ||
       value.resplits < 1 || value.resplits > MAX_SLACK_CONTINUATION_RESPLITS)) return false;
   validateReplySplit(value.split);

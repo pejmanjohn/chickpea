@@ -40,8 +40,22 @@ interface ProgressiveRelaySummary {
   invalidationReason?: ProgressiveRelayInvalidationReason;
 }
 
+/**
+ * What an append may ask of the relay while it waits. `closing` turns true
+ * once the relay stops reading: the terminal is about to deliver the whole
+ * answer, so an append still waiting for the Slack budget can give way.
+ */
+export interface ProgressiveAppendControl {
+  closing(): boolean;
+}
+
 interface ProgressiveTextSink {
-  append(chunk: ProgressiveTextChunk): Promise<void>;
+  /**
+   * Waits until the next append may go to Slack. Chunks that arrive during
+   * the wait join the append that follows it.
+   */
+  prepareAppend?(control: ProgressiveAppendControl): Promise<void>;
+  append(chunk: ProgressiveTextChunk, control: ProgressiveAppendControl): Promise<void>;
   invalidate(reason: ProgressiveRelayInvalidationReason): Promise<void>;
   /** Omitted only for retained V1 presentations with the legacy immediate relay. */
   modelIntent?: {
@@ -200,6 +214,10 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
   };
 
   private readonly queue: RelayOperation[] = [];
+  private closing = false;
+  private readonly appendControl: ProgressiveAppendControl = {
+    closing: () => this.closing,
+  };
   private pumpPromise: Promise<void> | undefined;
   private accepting = true;
   private targetMessageId: string | undefined;
@@ -271,6 +289,7 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
       }
     }
     this.accepting = false;
+    this.closing = true;
     await this.drain();
     return this.summary();
   }
@@ -279,6 +298,7 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
     reason: ProgressiveRelayInvalidationReason,
   ): Promise<ProgressiveRelaySummary> {
     this.queueInvalidation(reason);
+    this.closing = true;
     await this.drain();
     return this.summary();
   }
@@ -288,6 +308,7 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
     // queue: the next read replays the receipt from its start, and the sink's
     // durable position skips everything this relay already accepted.
     this.accepting = false;
+    this.closing = true;
     await this.drain();
     return this.summary();
   }
@@ -427,6 +448,7 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
     this.invalidated = true;
     this.invalidationReason = reason;
     this.accepting = false;
+    this.closing = true;
     this.queue.push({ kind: 'invalidate', reason });
     this.startPump();
   }
@@ -472,17 +494,20 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
       }
       if (this.invalidationReason === 'sink_failed' ||
           this.invalidationReason === 'intent_persistence_failed') continue;
-      while (this.queue[0]?.kind === 'append') {
-        const next = this.queue.shift() as Extract<RelayOperation, { kind: 'append' }>;
-        operation.chunk = {
-          messageId: operation.chunk.messageId,
-          delta: operation.chunk.delta + next.chunk.delta,
-          position: next.chunk.position,
-        };
-        operation.count += next.count;
-      }
       try {
-        await this.options.append(operation.chunk);
+        // Wait for the Slack pace first, then take every chunk that arrived
+        // meanwhile: a slower cadence carries more text per append.
+        if (this.options.prepareAppend) await this.options.prepareAppend(this.appendControl);
+        while (this.queue[0]?.kind === 'append') {
+          const next = this.queue.shift() as Extract<RelayOperation, { kind: 'append' }>;
+          operation.chunk = {
+            messageId: operation.chunk.messageId,
+            delta: operation.chunk.delta + next.chunk.delta,
+            position: next.chunk.position,
+          };
+          operation.count += next.count;
+        }
+        await this.options.append(operation.chunk, this.appendControl);
         this.acceptedChunks += operation.count;
         this.acceptedBytes += new TextEncoder().encode(operation.chunk.delta).byteLength;
       } catch {

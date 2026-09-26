@@ -24,6 +24,7 @@ import { CHICKPEA_AGENT_ID } from '../config/agent-id.ts';
 import type { SlackInteractionIntent } from './interaction-intent.ts';
 import {
   SlackRunPresentationStoreLogic,
+  type SlackAppendBooking,
   type SlackAppendReservation,
   type SlackPresentationActivity,
   type SlackPresentationOwner,
@@ -219,7 +220,7 @@ export interface SlackStateStore extends SlackClaimStore, SlackThreadRegistry {
   transitionRunPresentation?(
     input: SlackPresentationTransitionInput,
   ): Promise<SlackPresentationTransitionResult>;
-  reserveSlackAppend?(workspaceId: string): Promise<SlackAppendReservation>;
+  reserveSlackAppend?(workspaceId: string): Promise<SlackAppendBooking>;
   applySlackAppendCooldown?(
     workspaceId: string,
     retryAfterMs: number,

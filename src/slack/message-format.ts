@@ -301,11 +301,27 @@ const SLACK_FENCE_LINE = /^ {0,3}(`{3,})/;
  */
 export const slackMarkdownPartBlockLimit = 40;
 
+/**
+ * What each header block costs against Slack's message size, beyond its
+ * text. Measured against chat.postMessage with a `markdown` block: a message
+ * is accepted while its rendered characters plus about 100 per header block
+ * stay under about 13,200 (20 headers left room for 10,563 characters of
+ * prose, 40 headers for 7,875). Counting the overhead against the 12,000
+ * markdown limit keeps a header-dense part inside that bound with margin.
+ * Code fences, tables and dividers were not measured and add nothing.
+ */
+export const SLACK_HEADER_BLOCK_OVERHEAD_CHARS = 100;
+
 /** How one markdown message is expected to render, conservatively. */
 export interface SlackMarkdownRenderedShape {
   /** Upper-bound estimate of the blocks Slack renders the markdown into. */
   blocks: number;
-  /** Characters Slack counts once it escapes `&`, `<` and `>` as entities. */
+  /** Header blocks among them. */
+  headerBlocks: number;
+  /**
+   * Characters Slack counts: the text with `&`, `<` and `>` escaped as
+   * entities, plus `SLACK_HEADER_BLOCK_OVERHEAD_CHARS` per header block.
+   */
   countedLength: number;
 }
 
@@ -313,6 +329,12 @@ export interface SlackMarkdownRenderedShape {
 export interface SlackMarkdownShapeBudget {
   maxBlocks?: number;
   maxCountedLength?: number;
+  /**
+   * Characters each header block counts beyond its text. Defaults to
+   * `SLACK_HEADER_BLOCK_OVERHEAD_CHARS`; a plan frozen before that bound
+   * existed recomputes its first message with 0.
+   */
+  headerBlockOverhead?: number;
 }
 
 const SLACK_HEADING_LINE = /^ {0,3}#{1,6}(?:\s|$)/;
@@ -324,8 +346,8 @@ const SLACK_TABLE_LINE = /^\s*\|/;
  * Deliberately generous: a fence, table or divider also ends the text run
  * around it, so the count is an upper bound on what Slack produces.
  */
-function slackMarkdownBlockStarts(text: string): number[] {
-  const starts: number[] = [];
+function slackMarkdownBlockStarts(text: string): Array<{ at: number; header: boolean }> {
+  const starts: Array<{ at: number; header: boolean }> = [];
   let fence: string | undefined;
   let inRun = false;
   let inTable = false;
@@ -339,20 +361,20 @@ function slackMarkdownBlockStarts(text: string): number[] {
         fence = undefined;
       }
     } else if (marker) {
-      starts.push(lineStart);
+      starts.push({ at: lineStart, header: false });
       fence = marker;
       inRun = false;
       inTable = false;
     } else if (SLACK_HEADING_LINE.test(line) || SLACK_DIVIDER_LINE.test(line)) {
-      starts.push(lineStart);
+      starts.push({ at: lineStart, header: SLACK_HEADING_LINE.test(line) });
       inRun = false;
       inTable = false;
     } else if (SLACK_TABLE_LINE.test(line)) {
-      if (!inTable) starts.push(lineStart);
+      if (!inTable) starts.push({ at: lineStart, header: false });
       inTable = true;
       inRun = false;
     } else if (line.trim()) {
-      if (!inRun) starts.push(lineStart);
+      if (!inRun) starts.push({ at: lineStart, header: false });
       inRun = true;
       inTable = false;
     } else {
@@ -376,10 +398,16 @@ export function slackEscapedTextLength(text: string): number {
 }
 
 /** The conservative rendered shape of one markdown reply message. */
-export function slackMarkdownRenderedShape(text: string): SlackMarkdownRenderedShape {
+export function slackMarkdownRenderedShape(
+  text: string,
+  headerBlockOverhead = SLACK_HEADER_BLOCK_OVERHEAD_CHARS,
+): SlackMarkdownRenderedShape {
+  const starts = slackMarkdownBlockStarts(text);
+  const headerBlocks = starts.filter((start) => start.header).length;
   return {
-    blocks: slackMarkdownBlockStarts(text).length,
-    countedLength: slackEscapedTextLength(text),
+    blocks: starts.length,
+    headerBlocks,
+    countedLength: slackEscapedTextLength(text) + headerBlocks * headerBlockOverhead,
   };
 }
 
@@ -388,7 +416,7 @@ export function slackMarkdownPartFits(
   text: string,
   budget: SlackMarkdownShapeBudget = {},
 ): boolean {
-  const shape = slackMarkdownRenderedShape(text);
+  const shape = slackMarkdownRenderedShape(text, budget.headerBlockOverhead);
   return shape.blocks <= (budget.maxBlocks ?? slackMarkdownPartBlockLimit) &&
     shape.countedLength <= (budget.maxCountedLength ?? slackMarkdownBlockTextLimit);
 }
@@ -398,14 +426,25 @@ export function slackMarkdownPartFits(
  * before the line that would open one block too many, and before the
  * character that would take Slack's escaped count over the limit.
  */
-function slackMarkdownShapePrefixLength(text: string, budget: SlackMarkdownShapeBudget): number {
+export function slackMarkdownShapePrefixLength(
+  text: string,
+  budget: SlackMarkdownShapeBudget,
+): number {
   const maxBlocks = Math.max(1, budget.maxBlocks ?? slackMarkdownPartBlockLimit);
   const maxCounted = budget.maxCountedLength ?? slackMarkdownBlockTextLimit;
+  const headerOverhead = budget.headerBlockOverhead ?? SLACK_HEADER_BLOCK_OVERHEAD_CHARS;
   if (maxBlocks === Infinity && maxCounted === Infinity) return text.length;
   const starts = slackMarkdownBlockStarts(text);
-  let end = starts.length > maxBlocks ? Math.max(0, starts[maxBlocks]! - 1) : text.length;
+  let end = starts.length > maxBlocks ? Math.max(0, starts[maxBlocks]!.at - 1) : text.length;
   let counted = 0;
+  let nextStart = 0;
   for (let at = 0; at < end; at += 1) {
+    // A heading's block overhead counts from its first character, so a cut
+    // never keeps a header whose cost the message cannot pay.
+    while (nextStart < starts.length && starts[nextStart]!.at <= at) {
+      if (starts[nextStart]!.header) counted += headerOverhead;
+      nextStart += 1;
+    }
     counted += slackCountedCharLength(text[at]!);
     if (counted > maxCounted) {
       end = at;
@@ -475,15 +514,26 @@ export function splitSlackMarkdownReply(
       ? Math.min(options.firstPartLimit ?? partLimit, partLimit)
       : partLimit;
     const min = index === 0 ? Math.min(options.minFirstPartLength ?? 0, charLimit) : 0;
-    // A first-message bound (an update's, or room for a marker) is a bound
-    // on what Slack counts too.
     const budget = {
-      maxCountedLength: index === 0 && options.firstPartLimit !== undefined && !raw
-        ? Math.min(maxCounted, options.firstPartLimit)
-        : maxCounted,
+      maxCountedLength: maxCounted,
+      ...(options.headerBlockOverhead !== undefined
+        ? { headerBlockOverhead: options.headerBlockOverhead }
+        : {}),
     };
+    // A first-message bound (an update's, or room for a marker) is a bound
+    // on what Slack counts too: its escaped text. The header overhead was
+    // measured against the markdown message limit, not these bounds.
+    const firstBudget = index === 0 && options.firstPartLimit !== undefined && !raw
+      ? { maxCountedLength: options.firstPartLimit, headerBlockOverhead: 0 }
+      : undefined;
     const shaped = (blocks: number) => Math.max(
-      Math.min(charLimit, slackMarkdownShapePrefixLength(rest, { ...budget, maxBlocks: blocks })),
+      Math.min(
+        charLimit,
+        slackMarkdownShapePrefixLength(rest, { ...budget, maxBlocks: blocks }),
+        firstBudget
+          ? slackMarkdownShapePrefixLength(rest, { ...firstBudget, maxBlocks: blocks })
+          : Infinity,
+      ),
       min,
       1,
     );
@@ -658,17 +708,24 @@ function earliestUnsafeTail(value: string): number {
     }
   }
 
+  // A link or Slack `<...>` reference still being written sits on the last
+  // line. Once a line ends, a `[` or `<` on it was literal text (a CDATA
+  // example, a shell redirect): holding it would freeze the stream until
+  // some later `)` or `>` happened to appear.
+  const lastLineStart = value.lastIndexOf('\n') + 1;
   const openLink = value.lastIndexOf('[');
   const lastClosedLink = value.lastIndexOf(')');
-  if (openLink > lastClosedLink) {
+  if (openLink >= lastLineStart && openLink > lastClosedLink) {
     unsafeFrom = Math.min(unsafeFrom, openLink);
   }
   const openAngle = value.lastIndexOf('<');
-  if (openAngle > value.lastIndexOf('>')) {
+  if (openAngle >= lastLineStart && openAngle > value.lastIndexOf('>')) {
     unsafeFrom = Math.min(unsafeFrom, openAngle);
   }
+  // Emphasis around a URL is rewritten per line; an unpaired `**` on an
+  // earlier line (`**kwargs`, `2**10`) is literal and must not hold the rest.
   const emphasis = value.lastIndexOf('**');
-  if (emphasis >= 0 && countToken(value, '**') % 2 === 1) {
+  if (emphasis >= lastLineStart && countToken(value.slice(lastLineStart), '**') % 2 === 1) {
     unsafeFrom = Math.min(unsafeFrom, emphasis);
   }
   const trailingTicks = value.match(/`{1,2}$/)?.[0];

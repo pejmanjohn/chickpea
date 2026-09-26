@@ -14,6 +14,8 @@ import {
   slackEscapedTextLength,
   slackMarkdownBlockTextLimit,
   slackMarkdownPartBlockLimit,
+  slackMarkdownRenderedShape,
+  slackMarkdownShapePrefixLength,
   splitSlackMarkdownReply,
   streamableSlackMarkdownPrefix,
   type SlackReplyFooter,
@@ -35,6 +37,7 @@ import type {
 } from './artifact-receipts.ts';
 import {
   ReceiptScopedTextRelay,
+  type ProgressiveAppendControl,
   type ProgressiveIntentTransition,
   type ProgressiveRelayInvalidationReason,
   type ProgressiveTextChunk,
@@ -53,6 +56,7 @@ import {
   progressiveStreamingModeForReason,
   slackPresentationFinalizationRecord,
   type SlackPresentationFinalizationRecord,
+  type SlackAppendBooking,
   type SlackAppendReservation,
   type SlackPresentationMutation,
   type SlackPresentationActivity,
@@ -78,7 +82,7 @@ export interface SlackPresentationStatePort {
   transitionRunPresentation(
     input: SlackPresentationTransitionInput,
   ): MaybePromise<SlackPresentationTransitionResult>;
-  reserveSlackAppend(workspaceId: string): MaybePromise<SlackAppendReservation>;
+  reserveSlackAppend(workspaceId: string): MaybePromise<SlackAppendBooking>;
   applySlackAppendCooldown(
     workspaceId: string,
     retryAfterMs: number,
@@ -136,6 +140,8 @@ interface AgentViewPresentationOptions {
   minAppendIntervalMs?: number;
   now?: () => number;
   wait?: (milliseconds: number) => Promise<void>;
+  /** Spreads budget retries so concurrent streams do not wake together. */
+  random?: () => number;
   onNativeStarted?: () => Promise<void>;
   /** Observability only: Slack acknowledged a progressive or native stream start. */
   onStreamStarted?: () => void;
@@ -170,6 +176,19 @@ export const AGENT_VIEW_STREAM_RETIRE_AFTER_MS = 4 * 60_000;
 export const AGENT_VIEW_STREAM_AGE_CHECK_MS = 20_000;
 const MAX_PROGRESSIVE_BUFFER_BYTES = 128 * 1_024;
 const DEFAULT_APPEND_INTERVAL_MS = 750;
+/**
+ * How long one append may wait for the workspace append budget. Past this
+ * the append gives way: its text stays buffered, the next model text carries
+ * it in a larger append, and the terminal carries whatever is left. Many
+ * concurrent streams then append less often instead of stopping.
+ */
+const MAX_APPEND_DEFERRAL_MS = 20_000;
+/** Spread of a retry after the booking horizon, so waiters do not wake together. */
+const APPEND_DEFERRAL_JITTER_MS = 250;
+/** Shortest wait before asking the budget again. */
+const MIN_APPEND_DEFERRAL_MS = 50;
+/** A waiting append checks this often whether its reader has closed. */
+const APPEND_DEFERRAL_SLICE_MS = 1_000;
 const CORRECTED_MARKER = '_Corrected_';
 /**
  * Progressive text stays inside the first message, with room to close a
@@ -208,6 +227,19 @@ const CONTINUATION_DELIVERY_STEPS = 16;
 export class SlackAgentViewPresentation {
   private rawText = '';
   private nextAppendAt = 0;
+  /**
+   * Why the last append attempt left text unsent without ending the stream:
+   * the budget stayed spent past the deferral bound, or Slack rate limited
+   * it. A later granted append clears it.
+   */
+  private budgetShortfall:
+    | 'budget_exhausted'
+    | 'workspace_cooldown'
+    | 'rate_limited'
+    | undefined;
+  private readonly appendBudget = { deferrals: 0, deferredMs: 0, yielded: 0 };
+  /** The outcome of the pacing wait the relay ran before the next append. */
+  private appendSlot: 'reserved' | 'yielded' | undefined;
   private degradedReason:
     | 'budget_exhausted'
     | 'workspace_cooldown'
@@ -885,10 +917,12 @@ export class SlackAgentViewPresentation {
     return new ReceiptScopedTextRelay({
       submissionId: input.receipt.submissionId,
       mode: progressiveStreamingModeForReason(frozenEligibility.reason),
-      append: (chunk) => this.appendProgressiveText(
+      prepareAppend: (control) => this.prepareProgressiveAppend(control),
+      append: (chunk, control) => this.appendProgressiveText(
         input.instanceId,
         input.receipt.submissionId,
         chunk,
+        control,
       ),
       invalidate: (reason) => this.invalidate(reason),
       ...(presentation.schemaVersion !== 1
@@ -1196,6 +1230,7 @@ export class SlackAgentViewPresentation {
         kind: 'record_continuation_plan',
         ...(existing ? { replace: true as const } : {}),
         shaped: true,
+        headerOverhead: true,
         ...(split ? { split } : {}),
         parts: parts.slice(1),
         closing: {
@@ -1216,10 +1251,16 @@ export class SlackAgentViewPresentation {
   async frozenReplyParts(approved: string, format: SlackReplyFormat): Promise<string[] | undefined> {
     const presentation = await this.requirePresentation();
     if (presentation.schemaVersion !== 3 || !presentation.continuations) return undefined;
-    const { split, shaped } = presentation.continuations;
-    // A plan frozen by an earlier build splits by raw length, split or not,
-    // so its first message ends where its stored follow-ups begin.
-    if (!shaped) return slackReplyParts(approved, format, { ...split, rawLengthOnly: true });
+    const { split } = presentation.continuations;
+    // A plan frozen by an earlier build splits the way that build did, split
+    // or not, so its first message ends where its stored follow-ups begin.
+    if (!presentation.continuations.shaped || !presentation.continuations.headerOverhead) {
+      return slackReplyParts(
+        approved,
+        format,
+        frozenPlanSplit(presentation.continuations, split ?? {}),
+      );
+    }
     return split ? slackReplyParts(approved, format, split) : undefined;
   }
 
@@ -1421,11 +1462,7 @@ export class SlackAgentViewPresentation {
     }
     const plan = presentation.continuations;
     const split = plan?.split ?? this.replySplit(presentation, approved);
-    return slackReplyParts(
-      approved,
-      format,
-      plan && !plan.shaped ? { ...split, rawLengthOnly: true } : split,
-    );
+    return slackReplyParts(approved, format, plan ? frozenPlanSplit(plan, split) : split);
   }
 
   /** Whether the acknowledged stream prefix is exactly the start of this answer. */
@@ -1533,7 +1570,10 @@ export class SlackAgentViewPresentation {
     instanceId: string,
     submissionId: string,
     chunk: ProgressiveTextChunk,
+    control?: ProgressiveAppendControl,
   ): Promise<void> {
+    const slot = this.appendSlot;
+    this.appendSlot = undefined;
     this.rawText += chunk.delta;
     if (utf8Length(this.rawText) > MAX_PROGRESSIVE_BUFFER_BYTES) {
       this.degradedReason = 'unsafe_incomplete_block';
@@ -1586,14 +1626,17 @@ export class SlackAgentViewPresentation {
     }
     const delta = safePrefix.slice(acknowledged.length);
     if (!delta) return;
-    const delay = Math.max(0, this.nextAppendAt - this.now());
-    if (delay > 0) await this.wait(delay);
-    const reservation = await this.options.state.reserveSlackAppend(presentation.root.workspaceId);
-    if (reservation.outcome !== 'reserved') {
-      this.degradedReason = reservation.outcome === 'cooldown'
-        ? 'workspace_cooldown'
-        : 'budget_exhausted';
-      return;
+    if (slot === 'yielded') return;
+    if (slot !== 'reserved') {
+      const delay = Math.max(0, this.nextAppendAt - this.now());
+      if (delay > 0) await this.wait(delay);
+      if (!(await this.reserveAppendSlot(presentation.root.workspaceId, control))) return;
+      // The wait may have outlived this writer's view of the row.
+      presentation = await this.requirePresentation();
+      if (presentation.stream.state !== 'streaming' ||
+          presentation.stream.acknowledgedByteLength !== utf8Length(acknowledged)) {
+        return;
+      }
     }
     presentation = await this.transition(presentation, {
       kind: 'append_intent',
@@ -1617,11 +1660,14 @@ export class SlackAgentViewPresentation {
           cursor: pending.cursor,
         });
         if (isRateLimited(error)) {
+          // Everyone in the workspace waits out Slack's retry delay; this
+          // stream keeps its text and appends again after it.
           await this.options.state.applySlackAppendCooldown(
             presentation.root.workspaceId,
             retryAfterMs(error),
           );
-          this.degradedReason = 'rate_limited';
+          this.budgetShortfall = 'rate_limited';
+          this.appendBudget.yielded += 1;
         } else {
           this.degradedReason = 'unsafe_incomplete_block';
         }
@@ -1636,6 +1682,96 @@ export class SlackAgentViewPresentation {
       acknowledgedPrefixHash: pending.hash,
     });
     this.nextAppendAt = this.now() + this.appendIntervalMs();
+  }
+
+  /**
+   * Before the relay gathers its next append: wait out this stream's append
+   * interval and take a budget token, so text arriving during the wait joins
+   * this append instead of queueing behind it. Only an open stream waits;
+   * the first text opens the stream through startStream instead.
+   */
+  private async prepareProgressiveAppend(control: ProgressiveAppendControl): Promise<void> {
+    this.appendSlot = undefined;
+    if (this.degradedReason) return;
+    const presentation = await this.requirePresentation();
+    if (presentation.stream.state !== 'streaming' || !presentation.stream.messageTs) return;
+    const delay = Math.max(0, this.nextAppendAt - this.now());
+    if (delay > 0) await this.wait(delay);
+    this.appendSlot = await this.reserveAppendSlot(presentation.root.workspaceId, control)
+      ? 'reserved'
+      : 'yielded';
+  }
+
+  /**
+   * Take the workspace's next append slot, waiting for it when it is not
+   * free yet. A booked slot, a spent budget or a shared cooldown only delays
+   * this append; it never ends the stream. The wait gives way when the
+   * reader closes (the terminal delivers everything) or past
+   * `MAX_APPEND_DEFERRAL_MS`, leaving the text for the next append.
+   */
+  private async reserveAppendSlot(
+    workspaceId: string,
+    control: ProgressiveAppendControl | undefined,
+  ): Promise<boolean> {
+    const deadline = this.now() + MAX_APPEND_DEFERRAL_MS;
+    for (;;) {
+      const reservation = await this.options.state.reserveSlackAppend(workspaceId);
+      if (reservation.outcome === 'reserved') {
+        this.budgetShortfall = undefined;
+        return true;
+      }
+      if (reservation.outcome === 'scheduled') {
+        // The slot is ours; wait for its time.
+        this.appendBudget.deferrals += 1;
+        if (!(await this.waitForAppendSlot(reservation.at - this.now(), control))) return false;
+        this.budgetShortfall = undefined;
+        return true;
+      }
+      const at = this.now();
+      const jitter = Math.floor(
+        Math.min(0.999, Math.max(0, (this.options.random ?? Math.random)())) *
+          APPEND_DEFERRAL_JITTER_MS,
+      );
+      const delay = Math.max(MIN_APPEND_DEFERRAL_MS, reservation.retryAt - at) + jitter;
+      if (at + delay > deadline) {
+        // The budget will not free a slot within the bound: this text waits
+        // for the next append or the terminal.
+        this.budgetShortfall = reservation.outcome === 'cooldown'
+          ? 'workspace_cooldown'
+          : 'budget_exhausted';
+        this.appendBudget.yielded += 1;
+        return false;
+      }
+      if (control?.closing()) {
+        // The terminal delivers this text now; nothing was starved.
+        this.appendBudget.yielded += 1;
+        return false;
+      }
+      this.appendBudget.deferrals += 1;
+      if (!(await this.waitForAppendSlot(delay, control))) return false;
+    }
+  }
+
+  /**
+   * Wait in short slices so a closing reader never holds the terminal behind
+   * a long wait. False when the reader closed meanwhile.
+   */
+  private async waitForAppendSlot(
+    delay: number,
+    control: ProgressiveAppendControl | undefined,
+  ): Promise<boolean> {
+    for (let remaining = Math.max(0, delay); remaining > 0;) {
+      if (control?.closing()) break;
+      const slice = Math.min(remaining, APPEND_DEFERRAL_SLICE_MS);
+      await this.wait(slice);
+      this.appendBudget.deferredMs += slice;
+      remaining -= slice;
+    }
+    if (control?.closing()) {
+      this.appendBudget.yielded += 1;
+      return false;
+    }
+    return true;
   }
 
   private async recordAcknowledgedPrefix(
@@ -1734,10 +1870,11 @@ export class SlackAgentViewPresentation {
     terminalSuffixBytes: number,
     recover: (finalizing: SlackRunPresentation) => Promise<AgentViewFinalResult>,
   ): Promise<AgentViewFinalResult> {
+    const degradationReason = this.degradedReason ?? this.budgetShortfall;
     presentation = await this.transition(presentation, {
       kind: 'close_stream',
       outcome: presentation.stream.acknowledgedByteLength > 0 ? 'progressive' : 'terminal_only',
-      ...(this.degradedReason ? { degradationReason: this.degradedReason } : {}),
+      ...(degradationReason ? { degradationReason } : {}),
       terminalSuffixBytes,
     });
     if (presentation.schemaVersion !== 3 && presentation.plan &&
@@ -2227,6 +2364,9 @@ export class SlackAgentViewPresentation {
 
   private emitFinalizationRecord(presentation: SlackRunPresentation): void {
     const record = slackPresentationFinalizationRecord(presentation);
+    if (this.appendBudget.deferrals > 0 || this.appendBudget.yielded > 0) {
+      record.appendBudget = { ...this.appendBudget };
+    }
     try {
       const emitted = this.options.onFinalized
         ? this.options.onFinalized(record)
@@ -2504,52 +2644,121 @@ function terminalFlueIdentity(
 }
 
 /**
+ * How a frozen plan's first message is recomputed: by raw length for a plan
+ * from before rendered shapes, without header overhead for a plan from
+ * before that bound, else as this build splits.
+ */
+function frozenPlanSplit(
+  plan: { shaped?: true; headerOverhead?: true },
+  split: SlackReplySplit,
+): Parameters<typeof slackReplyParts>[2] {
+  if (!plan.shaped) return { ...split, rawLengthOnly: true };
+  if (!plan.headerOverhead) return { ...split, headerBlockOverhead: 0 };
+  return split;
+}
+
+/** The first message a stream may fill: the shape every reply part keeps. */
+const STREAM_SHAPE_BUDGET = {
+  maxBlocks: slackMarkdownPartBlockLimit,
+  maxCountedLength: MAX_STREAMED_REPLY_CHARS,
+} as const;
+
+/**
  * The safe prefix to stream, capped inside the first message. A longer answer
  * continues in follow-up messages after the stream stops. The canonical form
  * of a raw prefix is a prefix of the final canonical answer, and so is any
  * shorter prefix of it, so the cap keeps the stream's monotone guarantee.
  *
+ * The cap is the rendered shape of a reply part: at most
+ * `slackMarkdownPartBlockLimit` blocks, and Slack's count (escaped `&`, `<`,
+ * `>` plus each header block's overhead) under the markdown limit. Slack
+ * refused an append past that count (61 headers and 7,134 characters), and a
+ * first message over 50 blocks could never be corrected with chat.update.
+ *
  * Within the last `STREAM_EDGE_WINDOW_CHARS` before the cap the stream only
  * advances to a line boundary, so the first message never ends mid-line (for
  * example inside a code line) and the next message starts with a whole line.
- * At the cap it prefers a paragraph or heading boundary. It never falls
- * below the acknowledged prefix; with no boundary it keeps the plain cap.
+ * At the cap it prefers a paragraph or heading boundary outside a code
+ * block, then a line outside one, then a sentence end, then a line inside a
+ * code block. It never falls below the acknowledged prefix; with no boundary
+ * it keeps the plain cap.
  */
 function streamedReplyPrefix(rawText: string, acknowledgedBytes: number): string {
   const safePrefix = streamableSlackMarkdownPrefix(rawText);
+  const acknowledged = prefixAtUtf8Length(safePrefix, acknowledgedBytes);
+  const fit = slackMarkdownShapePrefixLength(safePrefix, STREAM_SHAPE_BUDGET);
+  const full = fit < safePrefix.length;
   let capped = safePrefix;
-  const full = slackEscapedTextLength(safePrefix) > MAX_STREAMED_REPLY_CHARS;
   if (full) {
-    capped = '';
-    for (let end = MAX_STREAMED_REPLY_CHARS; end > 0; end -= 512) {
-      const highSurrogate = /[\uD800-\uDBFF]/.test(rawText[end - 1] ?? '');
-      const candidate = streamableSlackMarkdownPrefix(
-        rawText.slice(0, highSurrogate ? end - 1 : end),
-      );
-      if (slackEscapedTextLength(candidate) <= MAX_STREAMED_REPLY_CHARS) {
-        capped = candidate;
-        break;
-      }
-    }
+    const end = /[\uD800-\uDBFF]/.test(safePrefix[fit - 1] ?? '') ? fit - 1 : fit;
+    capped = streamableSlackMarkdownPrefix(safePrefix.slice(0, end));
+    // Only ever a prefix of what the final will show.
+    if (!safePrefix.startsWith(capped)) capped = safePrefix.slice(0, end).trimEnd();
   }
-  if (slackEscapedTextLength(capped) <= MAX_STREAMED_REPLY_CHARS - STREAM_EDGE_WINDOW_CHARS) {
+  const acknowledgedLength = acknowledged?.length ?? 0;
+  // Never behind what Slack already shows, e.g. a stream a build with a
+  // looser cap began.
+  if (acknowledged !== undefined && capped.length <= acknowledgedLength) return acknowledged;
+  if (!full && slackMarkdownRenderedShape(capped).countedLength <=
+      MAX_STREAMED_REPLY_CHARS - STREAM_EDGE_WINDOW_CHARS) {
     return capped;
   }
-  const acknowledged = prefixAtUtf8Length(capped, acknowledgedBytes)?.length ?? 0;
-  const floor = Math.max(acknowledged, capped.length - STREAM_EDGE_WINDOW_CHARS);
-  const window = capped.slice(floor);
-  const paragraph = full
-    ? Math.max(window.lastIndexOf('\n\n'), lastHeadingBoundary(window))
-    : -1;
-  const line = paragraph >= 0 ? paragraph : window.lastIndexOf('\n');
-  if (line < 0) return capped;
-  return capped.slice(0, floor + line).trimEnd();
+  const floor = Math.max(acknowledgedLength, capped.length - STREAM_EDGE_WINDOW_CHARS);
+  const at = full ? streamCapBoundary(capped, floor) : lastLineBoundary(capped, floor);
+  if (at === undefined) return capped;
+  const cut = capped.slice(0, at).trimEnd();
+  return acknowledged !== undefined && cut.length < acknowledgedLength ? acknowledged : cut;
 }
 
-function lastHeadingBoundary(text: string): number {
-  let at = -1;
-  for (const match of text.matchAll(/\n#{1,6}\s/g)) at = match.index;
-  return at;
+function lastLineBoundary(text: string, floor: number): number | undefined {
+  const at = text.lastIndexOf('\n');
+  return at >= floor ? at : undefined;
+}
+
+/**
+ * Where a full stream ends, at or after `floor`: the best boundary for the
+ * first message to stop at while its follow-up carries the rest.
+ */
+function streamCapBoundary(text: string, floor: number): number | undefined {
+  const paragraph: number[] = [];
+  const line: number[] = [];
+  const fenced: number[] = [];
+  let fence: string | undefined;
+  let lineStart = 0;
+  while (lineStart <= text.length) {
+    const newline = text.indexOf('\n', lineStart);
+    if (newline < 0) break;
+    const current = text.slice(lineStart, newline);
+    const marker = /^ {0,3}(`{3,})/.exec(current)?.[1];
+    if (fence) {
+      if (marker && marker.length >= fence.length && !current.trim().slice(marker.length)) {
+        fence = undefined;
+      }
+    } else if (marker) {
+      fence = marker;
+    }
+    if (newline >= floor) {
+      if (fence) {
+        fenced.push(newline);
+      } else {
+        const next = text.slice(newline + 1, newline + 8);
+        (!current.trim() || /^#{1,6}\s/.test(next) ? paragraph : line).push(newline);
+      }
+    }
+    lineStart = newline + 1;
+  }
+  const sentence = fence
+    ? undefined
+    : [...text.slice(floor).matchAll(/[.!?]["')\]]?(?=\s)/g)]
+      .map((match) => floor + match.index + match[0].length)
+      .filter((at) => at > lastBoundaryAt(text, floor))
+      .at(-1);
+  return paragraph.at(-1) ?? line.at(-1) ?? sentence ?? fenced.at(-1);
+}
+
+/** The last newline at or after `floor`, or `floor` itself. */
+function lastBoundaryAt(text: string, floor: number): number {
+  return Math.max(floor, text.lastIndexOf('\n'));
 }
 
 async function notifyContinuation(

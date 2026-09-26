@@ -100,6 +100,49 @@ stopped and its message replaced with the answer and a `_Corrected_` marker.
 It uses the same bound and split as recovery, with room for the marker, and
 the same fresh-post fallback on a definite content error.
 
+### Message size is text plus a cost per header block
+
+Measured on Violet on September 26, 2026 with direct `chat.postMessage`
+probes (a `markdown` block, owner token) and one streamed reply:
+
+| Probe | Result |
+| --- | --- |
+| One paragraph of 5,000 to 11,900 characters | Accepted (one `rich_text` block) |
+| 20 header blocks plus prose | Largest accepted prose 10,563; refused from 10,625 (`msg_blocks_too_long`) |
+| 40 header blocks plus prose | Largest accepted prose 7,875; refused from 7,954 |
+| 49 headers plus a paragraph (50 blocks), or 50 headers | Accepted |
+| 51, 60 or 100 header blocks | `invalid_blocks` |
+| `chat.appendStream` | Accepted up to 62 rendered blocks; a later append refused at 61 headers plus 7,134 rendered characters |
+
+A two-point fit gives: rendered characters plus about 100 per header block
+must stay under about 13,200. The stream refusal fits the same bound.
+Per-block overhead of code fences, tables, dividers and `rich_text` runs was
+not measured.
+
+Chickpea sizes every reply part and the streamed first message by that
+shape: escaped characters (`&`, `<`, `>` count as their entities) plus 100
+per header block, under the 12,000 markdown limit, and at most 40 rendered
+blocks. The 40-block bound leaves room for the footer and a table, and keeps
+the first message correctable with `chat.update`, which refuses more than 50
+blocks. A continuation plan frozen before the header cost was counted
+recomputes its first message without it, so it still ends where its stored
+follow-ups begin.
+
+### Streaming pace across concurrent threads
+
+Slack rates `chat.appendStream` Tier 4 ("100+ per minute"). Tier limits count
+per method, per workspace, per app, not per channel. Chickpea keeps one
+append budget per workspace at 100 a minute (one slot every 600 ms) with a
+burst of 10. A stream books the next free slot in arrival order and waits for
+it; it never stops streaming because the budget is busy. While it waits, the
+text that arrives joins its next append, so many concurrent streams append
+less often (about every N x 600 ms for N busy streams) instead of freezing. A
+slot more than 20 seconds away is not booked: that text waits for the
+stream's next append or the terminal. A Slack `ratelimited` answer sets a
+workspace cooldown that every stream waits out. The `Slack presentation
+finalized` record carries `appendBudget` counts (deferrals, time waited,
+appends left to the terminal) when the budget delayed anything.
+
 ### Public message readback is a projection
 
 In the tested permalink replies, `conversations.replies` omitted `username`,
