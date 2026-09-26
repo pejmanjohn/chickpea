@@ -292,6 +292,129 @@ export const SLACK_REPLY_SHORTENED_NOTE =
 
 const SLACK_FENCE_LINE = /^ {0,3}(`{3,})/;
 
+/**
+ * Blocks one reply message may render into. Slack turns a `markdown` block
+ * into its own blocks (a header per heading, a rich_text per run of text, a
+ * block per code fence, table and divider) and refuses a message over 50
+ * blocks with `msg_blocks_too_long`. The last message also carries a footer
+ * and may carry a native table, so parts keep a margin below the limit.
+ */
+export const slackMarkdownPartBlockLimit = 40;
+
+/** How one markdown message is expected to render, conservatively. */
+export interface SlackMarkdownRenderedShape {
+  /** Upper-bound estimate of the blocks Slack renders the markdown into. */
+  blocks: number;
+  /** Characters Slack counts once it escapes `&`, `<` and `>` as entities. */
+  countedLength: number;
+}
+
+/** Bounds one reply message's rendered shape; the defaults are Slack's. */
+export interface SlackMarkdownShapeBudget {
+  maxBlocks?: number;
+  maxCountedLength?: number;
+}
+
+const SLACK_HEADING_LINE = /^ {0,3}#{1,6}(?:\s|$)/;
+const SLACK_DIVIDER_LINE = /^ {0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$/;
+const SLACK_TABLE_LINE = /^\s*\|/;
+
+/**
+ * Offsets of the lines where Slack's markdown rendering starts a new block.
+ * Deliberately generous: a fence, table or divider also ends the text run
+ * around it, so the count is an upper bound on what Slack produces.
+ */
+function slackMarkdownBlockStarts(text: string): number[] {
+  const starts: number[] = [];
+  let fence: string | undefined;
+  let inRun = false;
+  let inTable = false;
+  let lineStart = 0;
+  while (lineStart <= text.length) {
+    const newline = text.indexOf('\n', lineStart);
+    const line = text.slice(lineStart, newline < 0 ? text.length : newline);
+    const marker = SLACK_FENCE_LINE.exec(line)?.[1];
+    if (fence) {
+      if (marker && marker.length >= fence.length && !line.trim().slice(marker.length)) {
+        fence = undefined;
+      }
+    } else if (marker) {
+      starts.push(lineStart);
+      fence = marker;
+      inRun = false;
+      inTable = false;
+    } else if (SLACK_HEADING_LINE.test(line) || SLACK_DIVIDER_LINE.test(line)) {
+      starts.push(lineStart);
+      inRun = false;
+      inTable = false;
+    } else if (SLACK_TABLE_LINE.test(line)) {
+      if (!inTable) starts.push(lineStart);
+      inTable = true;
+      inRun = false;
+    } else if (line.trim()) {
+      if (!inRun) starts.push(lineStart);
+      inRun = true;
+      inTable = false;
+    } else {
+      inTable = false;
+    }
+    if (newline < 0) break;
+    lineStart = newline + 1;
+  }
+  return starts;
+}
+
+function slackCountedCharLength(char: string): number {
+  return char === '&' ? 5 : char === '<' || char === '>' ? 4 : char.length;
+}
+
+/** Characters Slack counts for this text once it escapes `&`, `<` and `>`. */
+export function slackEscapedTextLength(text: string): number {
+  let countedLength = 0;
+  for (const char of text) countedLength += slackCountedCharLength(char);
+  return countedLength;
+}
+
+/** The conservative rendered shape of one markdown reply message. */
+export function slackMarkdownRenderedShape(text: string): SlackMarkdownRenderedShape {
+  return {
+    blocks: slackMarkdownBlockStarts(text).length,
+    countedLength: slackEscapedTextLength(text),
+  };
+}
+
+/** Whether one markdown reply message fits Slack's rendered-block limits. */
+export function slackMarkdownPartFits(
+  text: string,
+  budget: SlackMarkdownShapeBudget = {},
+): boolean {
+  const shape = slackMarkdownRenderedShape(text);
+  return shape.blocks <= (budget.maxBlocks ?? slackMarkdownPartBlockLimit) &&
+    shape.countedLength <= (budget.maxCountedLength ?? slackMarkdownBlockTextLimit);
+}
+
+/**
+ * The longest prefix of `text` whose rendered shape fits the budget: it ends
+ * before the line that would open one block too many, and before the
+ * character that would take Slack's escaped count over the limit.
+ */
+function slackMarkdownShapePrefixLength(text: string, budget: SlackMarkdownShapeBudget): number {
+  const maxBlocks = Math.max(1, budget.maxBlocks ?? slackMarkdownPartBlockLimit);
+  const maxCounted = budget.maxCountedLength ?? slackMarkdownBlockTextLimit;
+  if (maxBlocks === Infinity && maxCounted === Infinity) return text.length;
+  const starts = slackMarkdownBlockStarts(text);
+  let end = starts.length > maxBlocks ? Math.max(0, starts[maxBlocks]! - 1) : text.length;
+  let counted = 0;
+  for (let at = 0; at < end; at += 1) {
+    counted += slackCountedCharLength(text[at]!);
+    if (counted > maxCounted) {
+      end = at;
+      break;
+    }
+  }
+  return end;
+}
+
 interface SlackReplyCut {
   /** Characters of the remaining text that belong to this message. */
   end: number;
@@ -301,40 +424,78 @@ interface SlackReplyCut {
   fence?: { opener: string; closer: string };
 }
 
+/** How `splitSlackMarkdownReply` divides an answer into messages. */
+export interface SlackReplySplitOptions extends SlackMarkdownShapeBudget {
+  /** Keep an already streamed prefix inside the first message. */
+  minFirstPartLength?: number;
+  /** Reserve room in the first message for a marker the caller appends. */
+  firstPartLimit?: number;
+  maxParts?: number;
+  /** Characters of every message; smaller when Slack refused a larger part. */
+  partLimit?: number;
+  /**
+   * Split by raw characters alone, as builds before the rendered-shape bound
+   * did. Only a plan frozen by such a build uses it, so the first message it
+   * recomputes still ends exactly where that plan's follow-ups begin.
+   */
+  rawLengthOnly?: boolean;
+}
+
 /**
  * Split a canonical markdown answer into at most 1 + `slackReplyContinuationLimit`
- * messages of `slackMarkdownBlockTextLimit` characters. Cuts prefer a heading,
- * then a paragraph or code-fence boundary, then a line, and never fall inside a
- * link or inline code span. A cut inside a fenced block closes that fence and
- * reopens it with the same info string in the next message. Text beyond the
- * last allowed message is dropped and that message ends with the shortened note.
+ * messages of `slackMarkdownBlockTextLimit` characters. Each message is also
+ * sized by what Slack renders it into: at most `slackMarkdownPartBlockLimit`
+ * blocks and at most the markdown limit once `&`, `<` and `>` are escaped.
+ * Cuts prefer a heading, then a paragraph or code-fence boundary, then a line,
+ * and never fall inside a link or inline code span. A cut inside a fenced block
+ * closes that fence and reopens it with the same info string in the next
+ * message. Text beyond the last allowed message is dropped and that message
+ * ends with the shortened note.
  *
  * `minFirstPartLength` keeps an already streamed prefix inside the first
- * message; `firstPartLimit` reserves room for a marker the caller appends.
+ * message, even past the rendered-shape bound, because Slack already shows it.
  */
 export function splitSlackMarkdownReply(
   text: string,
-  options: { minFirstPartLength?: number; firstPartLimit?: number; maxParts?: number } = {},
+  options: SlackReplySplitOptions = {},
 ): string[] {
   const maxParts = Math.max(1, options.maxParts ?? 1 + slackReplyContinuationLimit);
+  const raw = options.rawLengthOnly === true;
+  const maxBlocks = raw ? Infinity : Math.max(2, options.maxBlocks ?? slackMarkdownPartBlockLimit);
+  const partLimit = Math.min(
+    Math.max(1, options.partLimit ?? slackMarkdownBlockTextLimit),
+    slackMarkdownBlockTextLimit,
+  );
+  const maxCounted = raw ? Infinity : options.maxCountedLength ?? partLimit;
   const parts: string[] = [];
   let rest = text;
   while (rest) {
     const index = parts.length;
-    let limit = index === 0
-      ? Math.min(options.firstPartLimit ?? slackMarkdownBlockTextLimit, slackMarkdownBlockTextLimit)
-      : slackMarkdownBlockTextLimit;
+    const charLimit = index === 0
+      ? Math.min(options.firstPartLimit ?? partLimit, partLimit)
+      : partLimit;
+    const min = index === 0 ? Math.min(options.minFirstPartLength ?? 0, charLimit) : 0;
+    // A first-message bound (an update's, or room for a marker) is a bound
+    // on what Slack counts too.
+    const budget = {
+      maxCountedLength: index === 0 && options.firstPartLimit !== undefined && !raw
+        ? Math.min(maxCounted, options.firstPartLimit)
+        : maxCounted,
+    };
+    const shaped = (blocks: number) => Math.max(
+      Math.min(charLimit, slackMarkdownShapePrefixLength(rest, { ...budget, maxBlocks: blocks })),
+      min,
+      1,
+    );
+    let limit = shaped(maxBlocks);
     if (rest.length <= limit) {
       parts.push(rest);
       break;
     }
     const last = index === maxParts - 1;
-    if (last) limit -= SLACK_REPLY_SHORTENED_NOTE.length + 2;
-    const cut = chooseSlackReplyCut(
-      rest,
-      limit,
-      index === 0 ? Math.min(options.minFirstPartLength ?? 0, limit) : 0,
-    );
+    // The note is one more paragraph, so the last message leaves it a block.
+    if (last) limit = Math.max(1, shaped(maxBlocks - 1) - SLACK_REPLY_SHORTENED_NOTE.length - 2);
+    const cut = chooseSlackReplyCut(rest, limit, Math.min(min, limit));
     let head = rest.slice(0, cut.end);
     let tail = rest.slice(cut.end + cut.skip);
     if (cut.fence) {
