@@ -184,8 +184,14 @@ test('every progressive cut point is a monotone prefix of the canonical terminal
     '-xoxb-AWS_ACCESS_KEY_ID=\nxAKIAhello',
     'CHICKPEA_AUTH_SECRET\n=\nabcdefghij then prose.',
     'sk-proj-a-bcd-AWS_ACCESS_KEY_ID:\nabc done.',
+    'OPENAI_API_KEY=\nxoxb-xoxb- then prose.',
     '<https://example.com/path|Slack link> then a safe suffix.',
     '| Metric | Value |\n| --- | ---: |\n| p95 | 120ms |\n| errors | 3 |',
+    'word\nxoxb-xoxb-123456789012345678901234\nDone.',
+    'word\nsk-xoxb-xoxb-123456789012345678901234 then more.',
+    'word\nxoxb-sk-ant-xoxb-123456789012345678901234 then more.',
+    'word\nxoxp-sk-proj-abcdefghijklmnopqrstuvwxyz123456 then more.',
+    '```ts\nxoxb-xoxb-123456789012345678901234\n```\nComplete.',
   ];
 
   for (const terminalInput of corpus) {
@@ -198,6 +204,13 @@ test('every progressive cut point is a monotone prefix of the canonical terminal
       prior = prefix;
     }
   }
+});
+
+test('a repeated credential marker is held from its first occurrence', () => {
+  const input = 'word\nxoxb-xoxb-123456789012345678901234';
+  assert.equal(canonicalSlackMarkdownText(input), 'word\n[credential redacted]');
+  assert.equal(streamableSlackMarkdownPrefix(input), 'word');
+  assert.equal(streamableSlackMarkdownPrefix('word\nxoxb-xoxb-'), 'word');
 });
 
 test('plain progress replies disable Slack markup parsing and escape control characters', () => {

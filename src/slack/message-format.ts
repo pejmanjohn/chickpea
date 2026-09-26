@@ -721,17 +721,30 @@ function earliestUnsafeTail(value: string): number {
       }
     }
   }
-  // Hold an open assignment until its value token ends. That hold outlives
-  // the line, so it can start inside an earlier credential token or value
-  // (`OPENAI_API_KEY=sk-proj-...` then a newline): exposing the part before it
-  // would show a piece too short to redact. Hold from that credential instead.
-  let open = earliestMatch(value, OPEN_CREDENTIAL_ASSIGNMENTS);
-  while (open < value.length) {
-    const outer = earliestMatch(value.slice(0, open), CREDENTIALS_REACHING_END);
-    if (outer === open) break;
-    open = outer;
+  // Redaction starts at the first marker in a token (`xoxb-xoxb-…`,
+  // `xoxp-sk-proj-…`), whichever marker it is, so a hold inside a token moves
+  // back to that one.
+  if (unsafeFrom < value.length) {
+    let tokenStart = unsafeFrom;
+    while (tokenStart > 0 && !/\s/.test(value[tokenStart - 1]!)) tokenStart -= 1;
+    const token = lower.slice(tokenStart, unsafeFrom);
+    for (const marker of credentialMarkers()) {
+      const at = token.indexOf(marker.toLowerCase());
+      if (at >= 0) unsafeFrom = Math.min(unsafeFrom, tokenStart + at);
+    }
   }
-  unsafeFrom = Math.min(unsafeFrom, open);
+  // Hold an open assignment until its value token ends, even across a
+  // newline. A hold can also start inside an earlier credential token or
+  // assignment value (`OPENAI_API_KEY=\nxoxb-xoxb- …`): the part before it
+  // would then stream as a piece too short to redact. Hold from that
+  // credential instead.
+  let held = Math.min(unsafeFrom, earliestMatch(value, OPEN_CREDENTIAL_ASSIGNMENTS));
+  while (held < value.length) {
+    const outer = earliestMatch(value.slice(0, held), CREDENTIALS_REACHING_END);
+    if (outer === held) break;
+    held = outer;
+  }
+  unsafeFrom = held;
 
   // A link or Slack `<...>` reference still being written sits on the last
   // line. Once a line ends, a `[` or `<` on it was literal text (a CDATA
