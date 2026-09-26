@@ -95,6 +95,42 @@ test('publishing verifies actor membership, joins a public Channel, and creates 
   }
 });
 
+test('publishing into a renamed Channel refreshes its stored Channel and grant labels', async () => {
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const transport = new FakeSlackTransport();
+  try {
+    await config.createAgent(agent('agent_support', 'Support Triage', 'support'));
+    await config.createAgent(agent('agent_billing', 'Billing', 'billing'));
+    const reconciler = new AgentPresenceReconciler({ config, transport, now: () => NOW });
+    await reconciler.publish({
+      workspaceId: 'TACME',
+      agentId: 'agent_support',
+      channelId: 'C_SUPPORT',
+      actorMembershipId: 'membership_ada',
+      actorSlackUserId: 'UADA',
+    });
+    transport.channel = { ...transport.channel, name: 'support-renamed', member: true };
+    await reconciler.publish({
+      workspaceId: 'TACME',
+      agentId: 'agent_billing',
+      channelId: 'C_SUPPORT',
+      actorMembershipId: 'membership_ada',
+      actorSlackUserId: 'UADA',
+    });
+
+    const channel = await config.getChannel('TACME', 'C_SUPPORT');
+    assert.equal(channel?.label, 'support-renamed');
+    assert.equal(channel?.revision, 1, 'a label refresh is not a Channel behavior change');
+    assert.deepEqual(
+      (await config.listAgentChannelGrants('TACME', 'C_SUPPORT'))
+        .map(({ agentId, channelLabel }) => [agentId, channelLabel]),
+      [['agent_billing', 'support-renamed'], ['agent_support', 'support-renamed']],
+    );
+  } finally {
+    config.close();
+  }
+});
+
 test('publishing activates a private Chickpea-created draft before enabling its Channel grant', async () => {
   const config = new SqliteConfigStore(':memory:', { agents: [] });
   const transport = new FakeSlackTransport();

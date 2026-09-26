@@ -339,6 +339,9 @@ export class AgentPresenceReconciler {
         // Accept only that proven race; otherwise preserve the original error.
         if (!await config.getChannel(input.workspaceId, input.channelId)) throw error;
       }
+    } else if (channel.name && persistedChannel.label !== channel.name) {
+      // The Channel was imported under an earlier Slack name.
+      await config.refreshChannelLabel(input.workspaceId, input.channelId, channel.name);
     }
     const pendingGrant = await ensurePendingGrant();
     if (!channel.member) {

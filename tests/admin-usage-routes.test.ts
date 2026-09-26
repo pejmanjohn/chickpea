@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 
 import { createAdminRoutes } from '../src/admin/routes.ts';
+import { SqliteConfigStore } from '../src/config/store.ts';
 import { usageEstimatesEnabled } from '../src/usage/pricing/estimate.ts';
 import { usageRuntimeRecordingEnabled } from '../src/usage/runtime-recorder.ts';
 import { SqliteUsageStore } from '../src/usage/store.ts';
@@ -242,6 +243,7 @@ test('Usage public and redacted serializers expose canonical Run IDs without ret
   const path = join(mkdtempSync(join(tmpdir(), 'chickpea-admin-usage-redaction-')), 'state.db');
   const usage = new SqliteUsageStore(path);
   const work = new SqliteWorkStore(path);
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
   const privateCanary = 'PRIVATE_USAGE_LABEL_<script>alert(81)</script>';
   try {
     await seedUsageRun(work, 'public', 'public');
@@ -298,6 +300,7 @@ test('Usage public and redacted serializers expose canonical Run IDs without ret
       },
     });
     const app = createAdminRoutes({
+      store: config,
       usage,
       work: batchedWork,
       ...testAdminAuthority('usage-redaction-token'),
@@ -341,6 +344,71 @@ test('Usage public and redacted serializers expose canonical Run IDs without ret
   } finally {
     usage.close();
     work.close();
+    config.close();
+  }
+});
+
+test('Usage activity names a renamed Channel by its current label without rewriting history', async () => {
+  const path = join(mkdtempSync(join(tmpdir(), 'chickpea-admin-usage-rename-')), 'state.db');
+  const usage = new SqliteUsageStore(path);
+  const work = new SqliteWorkStore(path);
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  try {
+    await seedUsageRun(work, 'public', 'public');
+    await config.putChannel({
+      workspaceId: 'T_USAGE',
+      channelId: 'C_RENAMED',
+      label: 'new-channel',
+      lifecycle: 'active',
+    }, 0);
+    await usage.admitOperation({
+      operationId: 'op_usage_renamed',
+      runId: 'run_usage_public',
+      operationKind: 'interactive_turn',
+      sourceId: 'source_usage_renamed',
+      startedAt: 1_000,
+      installationId: 'installation',
+      workspaceId: 'T_USAGE',
+      agentId: 'agent_default',
+      agentLabel: 'Smoke',
+      channelId: 'C_RENAMED',
+      channelLabel: 'new-channel',
+      conversationKind: 'named_channel',
+      requestedProvider: 'openai',
+      requestedModel: 'gpt-5.6-sol',
+      credentialRefId: 'cred_openai_environment',
+      credentialVersion: 1,
+    });
+    assert.equal(await config.refreshChannelLabel('T_USAGE', 'C_RENAMED', 'qa-cobalt'), true);
+    assert.equal(await config.refreshChannelLabel('T_USAGE', 'C_RENAMED', 'qa-cobalt'), false);
+    assert.equal((await config.getChannel('T_USAGE', 'C_RENAMED'))?.revision, 1);
+
+    const app = createAdminRoutes({
+      store: config,
+      usage,
+      work,
+      ...testAdminAuthority('usage-rename-token'),
+    });
+    const headers = testAdminHeaders('usage-rename-token');
+    const page = await (await app.request(
+      '/admin/api/usage/operations?from=1&to=3000&limit=20',
+      { headers },
+    )).json() as Record<string, any>;
+    assert.equal(page.items[0].operation.channelLabel, 'qa-cobalt');
+    const detail = await (await app.request(
+      '/admin/api/usage/operations/op_usage_renamed',
+      { headers },
+    )).json() as Record<string, any>;
+    assert.equal(detail.operation.channelLabel, 'qa-cobalt');
+    assert.equal(
+      (await usage.getOperation('op_usage_renamed'))?.operation.channelLabel,
+      'new-channel',
+      'the recorded usage row keeps its historical label',
+    );
+  } finally {
+    usage.close();
+    work.close();
+    config.close();
   }
 });
 

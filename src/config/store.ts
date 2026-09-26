@@ -468,6 +468,12 @@ export interface ConfigStore {
   listChannels(): Promise<ChannelConfig[]>;
   getChannel(workspaceId: string, channelId: string): Promise<ChannelConfig | undefined>;
   putChannel(channel: ChannelConfig, expectedRevision?: number): Promise<ChannelConfig>;
+  /**
+   * Record a Slack Channel's current display name on the rows that already
+   * cache it (the Channel and its Agent grants). Labels are display metadata,
+   * so revisions stay unchanged. Returns whether any stored label changed.
+   */
+  refreshChannelLabel(workspaceId: string, channelId: string, label: string): Promise<boolean>;
   getAgentReferences(agentId: string): Promise<AgentReferenceSummary>;
   /** Node backend only (closes the SQLite handle); absent on RPC proxies. */
   close?(): void;
@@ -2286,6 +2292,30 @@ export class ConfigStoreLogic {
   putChannel(channel: ChannelConfig, expectedRevision?: number): ChannelConfig {
     this.putChannelRow(channel, expectedRevision);
     return this.getChannel(channel.workspaceId, channel.channelId) as ChannelConfig;
+  }
+
+  refreshChannelLabel(workspaceId: string, channelId: string, label: string): boolean {
+    const name = label.trim();
+    if (!name) return false;
+    return this.db.transaction(() => {
+      const channel = this.db.run(
+        `UPDATE config_channels SET label = ?
+         WHERE workspace_id = ? AND channel_id = ? AND label IS NOT ?`,
+        name,
+        workspaceId,
+        channelId,
+        name,
+      );
+      const grants = this.db.run(
+        `UPDATE config_agent_channel_grants SET channel_label = ?
+         WHERE workspace_id = ? AND channel_id = ? AND channel_label IS NOT ?`,
+        name,
+        workspaceId,
+        channelId,
+        name,
+      );
+      return Number(channel.changes) + Number(grants.changes) > 0;
+    });
   }
 
   private putChannelRow(channel: ChannelConfig, expectedRevision?: number): void {
