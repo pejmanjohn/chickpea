@@ -223,7 +223,7 @@ test('opening a workspace prepares Durable Object state without starting the con
   const target = session(log, { stub: { restorable: true } });
   const output = await run(toolsFor(target).workspace_open!, {});
   assert.deepEqual(output, { ok: true, workspace: 'main', state: 'restored' });
-  assert.deepEqual(log.calls, ['getTurnId', 'beginWorkspaceTurn', 'configureEgress']);
+  assert.deepEqual(log.calls, ['prepareTurn', 'beginWorkspaceTurn', 'configureEgress']);
   assert.equal(log.calls.includes('exists'), false, 'open must not probe the container');
 
   // Listing reads DO records only.
