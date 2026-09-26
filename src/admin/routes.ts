@@ -241,6 +241,7 @@ import {
   GITHUB_OWNER_PATTERN,
   GITHUB_SETTING_KEYS,
   isValidRepositoryFullName,
+  isValidRepositoryGrantShape,
   listInstallationRepos,
   listInstallations,
   normalizePrivateKeyPem,
@@ -1288,10 +1289,7 @@ const repositoryGrantSchema = v.pipe(
     enabled: v.boolean(),
   }),
   v.check(
-    (grant) =>
-      grant.allRepos === true
-        ? grant.installationId !== null && grant.fullName === ''
-        : isValidRepositoryFullName(grant.fullName),
+    (grant) => isValidRepositoryGrantShape(grant, { requireInstallation: true }),
     'repository grant must name one repository or one whole installation',
   ),
 );
