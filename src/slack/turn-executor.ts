@@ -47,9 +47,12 @@ import type {
   FlueTurnObservationV1,
 } from './turn-job-types.ts';
 import {
+  isTurnJobStopRefusal,
   MAX_POST_DISPATCH_ATTEMPTS,
   MAX_TURN_ATTEMPTS,
   replayTextForTurnProgress,
+  TURN_STOP_HOLD_RETRY_MS,
+  turnJobStopGate,
   type PendingTurnJob,
   type TurnJobStoreLogic,
 } from './turn-jobs.ts';
@@ -89,6 +92,7 @@ export interface TurnExecutionPorts {
     | 'recordSlackInteractionProgress'
     | 'markDelivered'
     | 'markError'
+    | 'finishStop'
   >>;
   /** Slack claims and the per-thread active-work flag. */
   slack: AsyncCapable<Pick<
@@ -165,6 +169,15 @@ export async function executeTurnJob(
   ports: TurnExecutionPorts,
   options: TurnExecutionOptions,
 ): Promise<boolean> {
+  // A row a stop holds waits for the stopped ending, which drops or releases
+  // it; a stopped row with no Flue receipt must never dispatch, because
+  // abort() does not cover a later dispatch. Neither spends an attempt.
+  // The stopped ending (U3) presents a stopped row that never dispatched.
+  const stopGate = turnJobStopGate(job);
+  if (stopGate === 'hold' || stopGate === 'stopped_before_dispatch') {
+    options.onRetry(TURN_STOP_HOLD_RETRY_MS);
+    return false;
+  }
   if (!job.turn.interactionIntent && job.progress.interactionIntent) {
     job.turn.interactionIntent = job.progress.interactionIntent;
   }
@@ -207,24 +220,35 @@ export async function executeTurnJob(
   // Advance the attempt count before running the turn: a crash mid-turn
   // then re-fires with the count already committed, bounding retries.
   await ports.turnJobs.recordAttempt(job.id, attempt);
+  // A stop recorded after this row was read: dispatch preparation refused it.
+  let stopRefused = false;
   const flueDispatch = {
     ...(job.dispatchEnvelope ? { dispatchEnvelope: job.dispatchEnvelope } : {}),
     ...(job.dispatchReceipt ? { dispatchReceipt: job.dispatchReceipt } : {}),
     ...(job.flueSettlement ? { flueSettlement: job.flueSettlement } : {}),
-    prepare: (
+    prepare: async (
       message: string,
       observation: FlueTurnObservationV1,
       threadImages?: readonly ThreadImageRecord[],
       admittedListIds?: readonly string[],
       turnEnvelope?: TurnEnvelopeV1,
-    ) => ports.turnJobs.prepareFlueDispatch(
-      job.id,
-      message,
-      options.observationRoute ? { ...observation, ...options.observationRoute } : observation,
-      threadImages,
-      admittedListIds,
-      turnEnvelope,
-    ),
+    ) => {
+      try {
+        return await ports.turnJobs.prepareFlueDispatch(
+          job.id,
+          message,
+          options.observationRoute ? { ...observation, ...options.observationRoute } : observation,
+          threadImages,
+          admittedListIds,
+          turnEnvelope,
+        );
+      } catch (error) {
+        if (!isTurnJobStopRefusal(error)) throw error;
+        // Retryable, so run-turn passes it through without a failure final.
+        stopRefused = true;
+        throw new AgentPromptFailure('agent', 409, false, true, error);
+      }
+    },
     reconcileExistingInstance: (uid: string) =>
       ports.turnJobs.reconcileFlueExistingInstance(job.id, uid),
     recordReceipt: (receipt: FlueDispatchReceiptV1) =>
@@ -436,6 +460,13 @@ export async function executeTurnJob(
     if (delivered) {
       console.warn('[chickpea] post-delivery cleanup did not complete');
       return true;
+    }
+    if (stopRefused) {
+      // Nothing was dispatched: give the attempt back and wait like a held row.
+      await Promise.resolve(ports.turnJobs.recordAttempt(job.id, job.attempts)).catch(() => undefined);
+      if (activeWorkKey) await ports.slack.setActiveWork(activeWorkKey, job.id, false);
+      options.onRetry(TURN_STOP_HOLD_RETRY_MS);
+      return false;
     }
     // A disconnect that escaped the turn unmapped (thrown before it began)
     // is the same outage.

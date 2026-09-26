@@ -28,6 +28,8 @@ export function localSlackStateStore(input: {
     admitCanonical: async (admission: SlackCanonicalAdmissionInput) =>
       slack.admitCanonical(admission, work, turnJobs, presentations),
     enqueueTurn: async (job) => turnJobs.enqueue(job),
+    steerTurn: async (request, enqueue) => turnJobs.steer(request, enqueue),
+    finishTurnStop: async (headId, outcome) => turnJobs.finishStop(headId, outcome),
     resumeTurnAfterOAuth: async (originalTaskId, continuationId) =>
       turnJobs.resumeAfterOAuth(originalTaskId, continuationId),
     pinAgentBinding: async (binding, expected) => turnJobs.pinAgentBinding(binding, expected),

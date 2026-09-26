@@ -29,7 +29,12 @@ import { isStateStoreDisconnect } from '../config/cf-state-proxies.ts';
 import { StateStoreUnavailable } from './flue-dispatch.ts';
 import type { RunnerTurnBegin } from './thread-runner-rpc.ts';
 import type { TurnExecutionPorts } from './turn-executor.ts';
-import type { PendingTurnJob, RunnerTurnJobView } from './turn-jobs.ts';
+import {
+  TURN_STOP_HOLD_RETRY_MS,
+  turnJobStopGate,
+  type PendingTurnJob,
+  type RunnerTurnJobView,
+} from './turn-jobs.ts';
 
 /**
  * The turn execution loop of one SlackThreadRunner alarm, free of
@@ -416,6 +421,12 @@ async function runOne(
     deps.jobs.settle(local.id, 'released', now());
     return true;
   }
+  // A row a stop holds never runs: it waits, holding its thread, for the
+  // stopped ending to drop it (the row then reads settled) or release it.
+  if (turnJobStopGate(view.job) === 'hold') {
+    deps.jobs.settle(local.id, 'admitted', now(), now() + TURN_STOP_HOLD_RETRY_MS);
+    return false;
+  }
   if (supersededBy(deps, start.servingVersion, generation, now)) return false;
   deps.jobs.markRunning(local.id);
   let retryAfterMs: number | undefined;
@@ -676,6 +687,7 @@ export function runnerTurnJobsPort<P extends TurnExecutionPorts['turnJobs']>(
     recordInteractionIntent: (...args) => storeCall(() => remote.recordInteractionIntent(...args)),
     recordSlackInteractionProgress: (...args) =>
       storeCall(() => remote.recordSlackInteractionProgress(...args)),
+    finishStop: (...args) => storeCall(() => remote.finishStop(...args)),
     markDelivered: (id) => settle(id, 'done'),
     markError: (id) => settle(id, 'error'),
   };

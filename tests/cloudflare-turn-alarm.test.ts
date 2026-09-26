@@ -14,6 +14,14 @@ import {
   startRelayAlarmMetrics,
   type RelayAlarmMetrics,
 } from '../src/observability/runtime-latency.ts';
+import {
+  isTurnJobStopRefusal,
+  TURN_STOP_HOLD_RETRY_MS,
+  turnJobStopGate,
+} from '../src/slack/turn-jobs.ts';
+
+// What the transplanted turn executor imports for stop records.
+const stopGlobals = { isTurnJobStopRefusal, TURN_STOP_HOLD_RETRY_MS, turnJobStopGate };
 
 // Execute the production RPC methods and alarm helper, not a copy of their
 // scheduling logic. The complete Worker is also exercised by verify:cf-smoke;
@@ -178,7 +186,7 @@ for (const entry of entryPoints) {
 for (const withPendingTurn of [false, true]) {
   test(`the ${withPendingTurn ? 'pending-turn' : 'empty-turn'} drain ending preserves a concurrent new turn's alarm`, async (context) => {
     context.mock.method(Date, 'now', () => NOW);
-    const alarmMethods = ['alarm', 'drainRelayAlarm'].map((name) => {
+    const alarmMethods = ['alarm', 'drainRelayAlarm', 'deliverStopNotices'].map((name) => {
       const method = stateClass.members.find((member) =>
         ts.isMethodDeclaration(member) && member.name.getText(source) === name);
       assert.ok(method, `production method ${name} exists`);
@@ -191,6 +199,7 @@ for (const withPendingTurn of [false, true]) {
     const { probe: storageProbe, alarm, writes } = fixture(null);
     const relayAlarmRecords: object[] = [];
     const AlarmProbe = vm.runInNewContext(alarmCode, {
+      ...stopGlobals,
       Date,
       setTimeout,
       clearTimeout,
@@ -307,7 +316,7 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
   const { alarmYieldIsFree } = await import('../src/slack/alarm-turn-drain.ts');
   const alarmMethods = [
     'armAlarmNoLaterThan', 'alarm', 'drainRelayAlarm', 'dispatchToRunners', 'admitToRunner',
-    'dispatchingWhile',
+    'dispatchingWhile', 'deliverStopNotices',
   ].map((name) => {
     const method = (stateClass as ts.ClassDeclaration).members.find((member) =>
       ts.isMethodDeclaration(member) && member.name.getText(source) === name);
@@ -336,6 +345,7 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
   const alarmOwned = (job: AlarmJob) => job.executor === undefined;
   let inboxDrains = 0;
   const AlarmProbe = vm.runInNewContext(alarmCode, {
+    ...stopGlobals,
     Date, setTimeout, clearTimeout, AbortController, Promise,
     MAX_TURN_DRAIN_BATCH: 16,
     RUNNER_DISPATCH_MAX_PAGES: 16,

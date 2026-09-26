@@ -221,11 +221,13 @@ import {
   type SlackPresentationRepairDrainResult,
 } from './slack/presentation-repair.ts';
 import {
+  deliverDueStopNotices,
   MAX_TURN_DRAIN_BATCH,
   oauthResumeTurnJobId,
   TurnJobStoreLogic,
   type PendingTurnJob,
 } from './slack/turn-jobs.ts';
+import type { TurnStopNoticeReceiver } from './slack/turn-job-types.ts';
 import { DoSqlStateDb } from './state/do-state-db.ts';
 import { StateSchemaMarker, stateSchemaFingerprint } from './state/schema-lifecycle.ts';
 import { cloudflareWorkerVersionId } from './config/cloudflare-version.ts';
@@ -1860,6 +1862,60 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     return result;
   }
 
+  async slackTurnSteer(
+    request: Parameters<TagStateRpc['slackTurnSteer']>[0],
+    enqueue?: Parameters<TagStateRpc['slackTurnSteer']>[1],
+  ): ReturnType<TagStateRpc['slackTurnSteer']> {
+    const result = this.call((stores) => stores.turnJobs.steer(request, enqueue));
+    if (!result.ok) return result;
+    const decision = result.value;
+    if (decision.outcome === 'enqueue' && decision.enqueued) {
+      // As enqueueTurn: the row and its alarm are durable before the reply.
+      await this.armAlarmNoLaterThan(Date.now() + RELAY_BATCH_WINDOW_MS, true);
+    } else if (decision.outcome === 'stopped' && decision.stop.created) {
+      // Offer the stop to its runner now; the outbox retries the rest.
+      await this.deliverStopNotices();
+    }
+    return result;
+  }
+
+  async slackTurnStopFinish(
+    headId: string,
+    outcome: 'dropped' | 'released',
+  ): ReturnType<TagStateRpc['slackTurnStopFinish']> {
+    return this.call((stores) => stores.turnJobs.finishStop(headId, outcome) ?? null);
+  }
+
+  /**
+   * The stop outbox (KTD2): offer every due stop to its head row's thread
+   * runner, whose acknowledgement clears it, like a runner hand-off admitted
+   * again until confirmed. A head no runner owns yet stays owed: the alarm
+   * hands it over first, and its dispatch is refused meanwhile. Keeps the
+   * alarm armed for notices still owed. Never throws.
+   */
+  private async deliverStopNotices(): Promise<void> {
+    const stores = this.stores;
+    if (!stores) return;
+    try {
+      await deliverDueStopNotices({
+        turnJobs: stores.turnJobs,
+        receiver: async (notice) => {
+          if (notice.executor !== 'runner') return false;
+          // The runner's `stop` RPC (U2) takes the notice; until a runner
+          // has one, the call rejects and the notice stays owed.
+          const runner = threadRunnerStub(this.env as PlatformEnv, notice.runnerKey) as
+            (SlackThreadRunnerRpc & Partial<TurnStopNoticeReceiver>) | undefined;
+          if (!runner?.stop) return false;
+          return (await runner.stop(notice)).acknowledged === true;
+        },
+      });
+      const due = stores.turnJobs.nextStopNoticeDueAt();
+      if (due !== undefined) await this.armAlarmNoLaterThan(Math.max(Date.now(), due));
+    } catch {
+      console.warn('[chickpea] stop notice delivery failed; the alarm retries it');
+    }
+  }
+
   async receiveGatewayHttp(input: {body: string; signature: string; url: string}): Promise<{status: number; body: unknown}> {
     const receivedAt = Date.now();
     let observed: {delivery: GatewayInboundDelivery; issuedAt: number} | undefined;
@@ -2115,6 +2171,8 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     const whileDispatching = <T>(work: () => Promise<T>): Promise<T> =>
       runnerMode ? this.dispatchingWhile(work, admitAndDispatch) : work();
     const gatewayNeedsRetry = await admitAndDispatch();
+    // Stops owed to runners, after the hand-offs above gave new rows theirs.
+    await this.deliverStopNotices();
     const threadKeyOf = (job: {
       turn: Parameters<typeof slackAgentThreadKey>[0];
       assignment: Parameters<typeof slackAgentThreadKey>[1];

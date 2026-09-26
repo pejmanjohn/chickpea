@@ -88,6 +88,9 @@ import type {
   SlackAgentBinding,
   SlackAgentBindingExpectation,
   TurnJob,
+  TurnSteeringDecision,
+  TurnSteeringRequest,
+  TurnStopFinish,
 } from '../slack/turn-job-types.ts';
 import type { SlackInteractionIntent } from '../slack/interaction-intent.ts';
 import type { ThreadImageRecord } from '../slack/thread-images.ts';
@@ -610,6 +613,22 @@ export interface TagStateRpc {
    * invocation's fate. Idempotent by `job.id` (a duplicate enqueue is ignored).
    */
   enqueueTurn(job: TurnJob): Promise<StateRpcResult<null>>;
+  /**
+   * Decide a matched stop or check-in (or report a plain message) against the
+   * thread's undelivered rows in one transaction (KTD1); `enqueue` is written
+   * in that transaction when the thread has nothing to steer. A new stop is
+   * offered to its runner at once and stays in the retrying stop outbox until
+   * the runner acknowledges it.
+   */
+  slackTurnSteer(
+    request: TurnSteeringRequest,
+    enqueue?: TurnJob,
+  ): Promise<StateRpcResult<TurnSteeringDecision>>;
+  /** The stopped ending drops (or, on a completion race, releases) the held rows; null without a stop. */
+  slackTurnStopFinish(
+    headId: string,
+    outcome: 'dropped' | 'released',
+  ): Promise<StateRpcResult<TurnStopFinish | null>>;
   /**
    * Transactionally accept a normalized shared-gateway delivery and arm the
    * state alarm before returning a receipt to the authenticated session.

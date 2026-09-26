@@ -9,7 +9,12 @@ import type {
   SlackTurnRecoveryItem,
 } from '../config/state-rpc.ts';
 import { TurnJobStoreLogic, type PendingTurnJob, type SlackProposalApprovalQuery, type SlackProposalApprovalTurn } from './turn-jobs.ts';
-import type { TurnJob } from './turn-job-types.ts';
+import type {
+  TurnJob,
+  TurnSteeringDecision,
+  TurnSteeringRequest,
+  TurnStopFinish,
+} from './turn-job-types.ts';
 import type {
   FlueDispatchReceiptV1,
   FlueObservationTarget,
@@ -159,6 +164,14 @@ export interface SlackStateStore extends SlackClaimStore, SlackThreadRegistry {
   admitCanonical(input: SlackCanonicalAdmissionInput): Promise<SlackCanonicalAdmissionResult>;
   /** Node fallback when Slack truth cannot authorize a canonical Work/Run. */
   enqueueTurn?(job: TurnJob): Promise<boolean>;
+  /**
+   * Decide a matched stop or check-in (or report a plain message) against the
+   * thread's undelivered rows in one transaction; `enqueue` is inserted in
+   * that transaction when the thread has nothing to steer (KTD1).
+   */
+  steerTurn?(request: TurnSteeringRequest, enqueue?: TurnJob): Promise<TurnSteeringDecision>;
+  /** The stopped ending: drop (or, on a completion race, release) the rows the stop holds. */
+  finishTurnStop?(headId: string, outcome: 'dropped' | 'released'): Promise<TurnStopFinish | undefined>;
   resumeTurnAfterOAuth?(originalTaskId: string, continuationId: string): Promise<boolean>;
   pinAgentBinding(
     input: SlackAgentBinding,

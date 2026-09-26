@@ -330,6 +330,7 @@ const REPLAY_SAFE_STATE_METHODS = new Set([
   'settingSet', 'settingDelete', // keyed upsert / delete
   'snapshotPutIfAbsent', // first write wins
   'slackFlueReceiptRecord', 'slackFlueSettlementRecord', // an equal checkpoint returns the saved one
+  'slackTurnStopFinish', // the first stop ending stands and is returned again
   'slackPresentationTransition', // compare-and-swap on the projection version
 ]);
 
@@ -1885,6 +1886,17 @@ export class CfSlackStateStore implements SlackStateStore {
     return rpcVia(this.stub,'admitSlackTurn', (stub) => stub.admitSlackTurn(input));
   }
 
+  async steerTurn(...args: Parameters<NonNullable<SlackStateStore['steerTurn']>>) {
+    return rpcVia(this.stub, 'slackTurnSteer', (stub) => stub.slackTurnSteer(...args));
+  }
+
+  async finishTurnStop(...args: Parameters<NonNullable<SlackStateStore['finishTurnStop']>>) {
+    return orUndefined(await rpcVia(this.stub,
+      'slackTurnStopFinish',
+      (stub) => stub.slackTurnStopFinish(...args),
+    ));
+  }
+
   async resumeTurnAfterOAuth(originalTaskId: string, continuationId: string) {
     return rpcVia(this.stub,
       'resumeTurnAfterOAuth',
@@ -2240,6 +2252,11 @@ export class CfTurnJobsForRunner implements RunnerTurnJobsPort {
 
   async markError(id: string) {
     await this.op({ kind: 'markError', id });
+  }
+
+  /** The stopped ending's drop or release of the held rows; the first ending stands. */
+  finishStop(headId: string, outcome: 'dropped' | 'released') {
+    return this.slack((store) => store.finishTurnStop(headId, outcome));
   }
 
   async markCodingActiveWork(key: string, generation: string) {
