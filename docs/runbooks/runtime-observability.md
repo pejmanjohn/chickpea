@@ -403,6 +403,16 @@ channel IDs, settings keys or values, or error text. Emission never throws.
   A late event on a session younger than its lag was not flushed when the
   session connected. Clock skew between Slack, the gateway, and Cloudflare is
   not corrected; a negative lag is logged as 0.
+- Deploy readiness (`POST /internal/deployment/ready`, polled by `npm run
+  deploy`) passes only after the new version's `SlackGatewaySession` is healthy
+  and the gateway answers a `session.ping` on its socket within 5 s. Local
+  session health trusts a silent socket until the 90 s heartbeat timeout, and
+  the gateway answers only the socket it holds as the binding's authenticated
+  session. An unanswered probe logs `component: "slack_gateway"`,
+  `event: "session_unconfirmed"` (`generation`, `versionId`), restarts the
+  session, and the deploy prints `Still waiting: the Slack gateway did not
+  answer on this version's session; reconnecting it.` HTTP delivery has no
+  socket and is not probed.
 - `state_rpc` is logged by the calling isolate (a Flue agent Durable Object,
   CodingWorker, or the Worker), not by `TagStateStore`. Every call at or above
   250 ms, and every failed call, is logged with `slow`/`ok`; otherwise one call

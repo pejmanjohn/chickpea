@@ -1396,3 +1396,129 @@ test('failed HTTP preparation preserves sockets, but active HTTP never falls bac
     assert.equal(warnings.length,1);assert.equal(JSON.stringify(warnings).includes('private provider response'),false);
   }
 });
+
+test('delivery confirmation needs the gateway to answer a ping on the ready socket', async () => {
+  const { settings, config } = gatewayStores(() => NOW);
+  const gateway = new FakeGateway();
+  const client = new GatewayDeploymentClient({
+    settings,
+    config,
+    keyring: generateCredentialKeyring('key_gateway'),
+    gatewayBaseUrl: 'https://gateway.chickpea.test',
+    fetch: gateway.fetch,
+    now: () => NOW,
+  });
+  const socket = new FakeSocket();
+  const timers: Array<{ callback: () => void; delay: number }> = [];
+  try {
+    await client.beginClaim();
+    await client.refreshClaim();
+    const runner = new GatewaySessionRunner({
+      client,
+      onEvent: async () => 'accepted',
+      createSocket: () => socket,
+      now: () => NOW,
+      setTimer: ((callback: () => void, delay: number) => {
+        timers.push({ callback, delay });
+        return timers.length as unknown as ReturnType<typeof setTimeout>;
+      }),
+      clearTimer: () => {},
+    });
+    assert.equal(await runner.confirmDelivery(5_000), false, 'no session to confirm before start');
+    await runner.start();
+    socket.open();
+    await waitFor(() => socket.sent.length === 1);
+    assert.equal(await runner.confirmDelivery(5_000), false, 'an unauthenticated socket is not confirmed');
+    ready(socket, 'session_confirm');
+    await waitFor(() => runner.healthSnapshot().healthy);
+
+    // The gateway answers: the probe resolves on the echoed timestamp only.
+    const answered = runner.confirmDelivery(5_000);
+    await waitFor(() => socket.sent.length === 2);
+    const ping = JSON.parse(socket.sent[1]!) as { kind: string; at: number };
+    assert.equal(ping.kind, 'session.ping');
+    socket.message(JSON.stringify({ protocolVersion: 1, kind: 'session.pong', at: ping.at + 1 }));
+    await spin();
+    socket.message(JSON.stringify({ protocolVersion: 1, kind: 'session.pong', at: ping.at }));
+    assert.equal(await answered, true);
+
+    // A socket the gateway no longer holds stays silent until the bound.
+    const silent = runner.confirmDelivery(5_000);
+    await waitFor(() => socket.sent.length === 3);
+    const second = JSON.parse(socket.sent[2]!) as { at: number };
+    assert.ok(second.at > ping.at, 'each probe carries its own timestamp');
+    const bound = timers.findLast(({ delay }) => delay === 5_000);
+    assert.ok(bound);
+    bound.callback();
+    assert.equal(await silent, false);
+    // A late echo after the bound is ignored.
+    socket.message(JSON.stringify({ protocolVersion: 1, kind: 'session.pong', at: second.at }));
+    await spin();
+    assert.equal(runner.healthSnapshot().healthy, true);
+    runner.stop();
+  } finally {
+    settings.close();
+    config.close();
+  }
+});
+
+test('an unconfirmed gateway session fails readiness and is restarted', async () => {
+  const source = ts.createSourceFile('cloudflare-session.ts',
+    readFileSync(new URL('../src/slack/gateway/cloudflare-session.ts', import.meta.url), 'utf8'),
+    ts.ScriptTarget.Latest, true);
+  const declaration = source.statements.find((node) =>
+    ts.isClassDeclaration(node) && node.name?.text === 'SlackGatewaySession');
+  assert.ok(declaration);
+  const compiled = ts.transpileModule(
+    declaration.getText(source).replace(/^export /u, '') + '\nSlackGatewaySession',
+    { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
+  ).outputText;
+  const runners: ConfirmingRunner[] = [];
+  const background: Promise<unknown>[] = [];
+  let answers = [false, true];
+  const Probe = vm.runInNewContext(compiled, {
+    resolveSlackPublicUrl: async () => undefined,
+    parseHttpDeliveryState: () => undefined,
+    GATEWAY_HTTP_SETTING: 'slack.gateway.httpDelivery.v1',
+    GATEWAY_DELIVERY_CONFIRM_TIMEOUT_MS: 5_000,
+    DurableObject: class { constructor(_context: unknown, public env: unknown) {} },
+    getSettingsStore: () => ({ getSetting: async () => 'configured' }),
+    GATEWAY_BINDING_SETTING: 'binding',
+    GATEWAY_DURABLE_ADMISSION_CAPABILITY: 'durable',
+    createGatewayDeploymentClient: () => ({ loadSessionCheckpoint: async () => undefined }),
+    cloudflareWorkerVersionId: () => 'test-version',
+    reconcileGatewaySessionStatus,
+    GatewaySessionRunnerSupervisor,
+    GatewayInboundAdmission,
+    console: { info() {}, warn() {} },
+    GatewaySessionRunner: class extends ConfirmingRunner {
+      constructor() { super(() => answers.shift() ?? true); runners.push(this); }
+    },
+  }) as new (context: object, env: object) => {
+    confirmDelivery(): Promise<{ healthy: boolean; detail: string | null; versionId?: string | null }>;
+  };
+  const object = new Probe({ waitUntil: (p: Promise<unknown>) => background.push(p), storage: alarmStorage() }, {});
+
+  const unconfirmed = await object.confirmDelivery();
+  assert.equal(unconfirmed.healthy, false);
+  assert.equal(unconfirmed.detail, 'gateway_session_unconfirmed');
+  await Promise.all(background);
+  assert.equal(runners[0]!.stops, 1, 'the silent session is retired');
+  assert.equal(runners.length, 2, 'and replaced before the next readiness poll');
+
+  const confirmed = await object.confirmDelivery();
+  assert.equal(confirmed.healthy, true);
+  assert.equal(confirmed.detail, null);
+  assert.equal(confirmed.versionId, 'test-version');
+  assert.equal(runners.length, 2);
+  answers = [];
+});
+
+class ConfirmingRunner extends FakeRunnerControl {
+  constructor(private readonly answer: () => boolean) { super('healthy'); }
+
+  async confirmDelivery(timeoutMs: number): Promise<boolean> {
+    assert.equal(timeoutMs, 5_000);
+    return this.answer();
+  }
+}

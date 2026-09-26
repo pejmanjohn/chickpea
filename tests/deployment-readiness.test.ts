@@ -135,3 +135,48 @@ test('authenticated readiness provisions recovery before gateway readiness and r
     assert.equal(((await authorizeDeploymentRecovery(settings,TARGET_VERSION,`Bearer ${recovery.capability}`)) as {binding:string}).binding,'new-installation');
   } finally {settings.close();}
 });
+
+test('deployment readiness waits until the gateway answers on the new version session', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  await settings.setSetting(GATEWAY_BINDING_SETTING, 'binding_test');
+  const activation = await mintDeploymentActivation();
+  let answered = false;
+  let statusCalls = 0;
+  const app = createAdminRoutes({ settings });
+  const env = {
+    [DEPLOYMENT_ACTIVATION_DIGEST_BINDING]: activation.digest,
+    [DEPLOYMENT_ACTIVATION_ISSUED_AT_BINDING]: String(activation.issuedAt),
+    CF_VERSION_METADATA: { id: TARGET_VERSION },
+    SLACK_GATEWAY_SESSION: {
+      idFromName: (name: string) => name,
+      get: () => ({
+        status: async () => {
+          statusCalls += 1;
+          return { healthy: true, phase: 'healthy', detail: null, generation: 1, versionId: TARGET_VERSION };
+        },
+        confirmDelivery: async () => answered
+          ? { healthy: true, phase: 'healthy', detail: null, generation: 2, versionId: TARGET_VERSION }
+          : { healthy: false, phase: 'stale', detail: 'gateway_session_unconfirmed', generation: 1, versionId: TARGET_VERSION },
+      }),
+    },
+  };
+  const request = () => app.request('http://localhost/internal/deployment/ready', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${activation.capability}`,
+      'X-Chickpea-Target-Version': TARGET_VERSION,
+    },
+  }, env);
+  try {
+    const silent = await request();
+    assert.equal(silent.status, 503);
+    assert.deepEqual(await silent.json(), { error: 'gateway_session_unconfirmed' });
+    assert.equal(silent.headers.get('retry-after'), '1');
+
+    answered = true;
+    assert.equal((await request()).status, 204);
+    assert.equal(statusCalls, 0, 'readiness confirms delivery instead of reading local health alone');
+  } finally {
+    settings.close();
+  }
+});

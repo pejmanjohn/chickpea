@@ -247,6 +247,54 @@ test('deploy waits through stale Worker and gateway versions before announcing s
   assert.match(result.stdout, /✔ Worker deployed/);
 });
 
+test('deploy reports each readiness wait reason once before announcing success', (context) => {
+  const harness = createHarness();
+  context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+
+  const result = runHarness(harness, ['--skip-build'], {
+    DEPLOY_TEST_URL: 'https://chickpea.example.workers.dev',
+    DEPLOY_TEST_READINESS_STATUSES: [
+      '409:worker_version_pending',
+      '503:gateway_session_offline',
+      '503:gateway_session_unconfirmed',
+      '503:gateway_session_unconfirmed',
+      '204',
+    ].join(','),
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const waits = result.stdout.match(/Still waiting: [^\n]*/g) ?? [];
+  assert.deepEqual(waits, [
+    'Still waiting: the new Worker version is not serving every request yet.',
+    "Still waiting: this version's Slack gateway session is not connected yet.",
+    "Still waiting: the Slack gateway did not answer on this version's session; reconnecting it.",
+  ]);
+  assert.ok(
+    result.stdout.indexOf('Verified current-version deployment readiness') >
+      result.stdout.indexOf('reconnecting it'),
+  );
+  assert.match(result.stdout, /✔ Worker deployed/);
+});
+
+test('deploy readiness timeout names the last gateway session state', (context) => {
+  const harness = createHarness();
+  context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+
+  const result = runHarness(harness, ['--skip-build'], {
+    DEPLOY_TEST_URL: 'https://chickpea.example.workers.dev',
+    DEPLOY_TEST_READINESS_STATUSES: '503:gateway_session_offline,503:gateway_session_unconfirmed',
+    CHICKPEA_DEPLOY_READINESS_TIMEOUT_MS: '90000',
+  });
+
+  assert.equal(result.status, 1);
+  assert.match(
+    result.stderr,
+    /current-version readiness was not confirmed within 90 s\. Last status: the Slack gateway did not answer on this version's session; reconnecting it\./,
+  );
+  assert.match(result.stderr, /Slack events can reach this Worker late or not at all until its gateway session connects/);
+  assert.doesNotMatch(result.stdout, /✔ Worker deployed/);
+});
+
 test('deploy does not announce readiness when the Slack gateway stays on older code', (context) => {
   const harness = createHarness();
   context.after(() => rmSync(harness.root, { recursive: true, force: true }));

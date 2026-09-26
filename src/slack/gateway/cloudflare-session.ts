@@ -22,7 +22,11 @@ interface SlackGatewaySessionRpc {
   restart(): Promise<void>;
   status(): Promise<GatewaySessionStatusSnapshot>;
   observe(): Promise<GatewaySessionStatusSnapshot>;
+  confirmDelivery(): Promise<GatewaySessionStatusSnapshot>;
 }
+
+/** Bound for the gateway's answer to a readiness ping; it normally takes <1 s. */
+const GATEWAY_DELIVERY_CONFIRM_TIMEOUT_MS = 5_000;
 
 /**
  * One Cloudflare Durable Object owns the deployment's outbound delivery
@@ -148,6 +152,26 @@ export class SlackGatewaySession extends DurableObject implements SlackGatewaySe
   async status(): Promise<GatewaySessionStatusSnapshot> {
     await this.wake();
     return this.snapshot();
+  }
+
+  /**
+   * Deployment readiness: status() plus a gateway round trip on the socket.
+   * Local health keeps trusting a socket the gateway has dropped until the
+   * heartbeat timeout, and an event sent then waits for Slack's retry about a
+   * minute later. An unanswered probe restarts the session, so a later
+   * readiness poll sees its replacement. HTTP delivery has no socket to probe.
+   */
+  async confirmDelivery(): Promise<GatewaySessionStatusSnapshot> {
+    const status = await this.status();
+    const supervisor = this.supervisor;
+    if (!status.healthy || !supervisor) return status;
+    if (await supervisor.confirmDelivery(GATEWAY_DELIVERY_CONFIRM_TIMEOUT_MS)) return status;
+    console.warn({ component: 'slack_gateway', event: 'session_unconfirmed',
+      generation: status.generation, versionId: cloudflareWorkerVersionId(this.env) ?? null });
+    if (this.supervisor === supervisor) {
+      this.state.waitUntil(supervisor.restart().catch(() => undefined));
+    }
+    return { ...status, healthy: false, phase: 'stale', detail: 'gateway_session_unconfirmed' };
   }
 
   /**

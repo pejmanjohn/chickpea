@@ -2101,7 +2101,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         await settings(c).getSetting(GATEWAY_BINDING_SETTING),
       );
       if (!gatewayConfigured) return c.body(null, 204);
-      const gateway = await readGatewaySessionStatus(c.env);
+      const gateway = await readGatewaySessionStatus(c.env, { confirm: true });
       if (!gateway.healthy || gateway.versionId !== targetVersion) {
         c.header('Retry-After', '1');
         return c.json({ error: gateway.detail ?? 'gateway_session_offline' }, 503);
@@ -11093,7 +11093,7 @@ async function restartCloudflareGatewaySession(rawEnv: unknown): Promise<void> {
 
 async function readGatewaySessionStatus(
   rawEnv: unknown,
-  options: { observe?: boolean } = {},
+  options: { observe?: boolean; confirm?: boolean } = {},
 ): Promise<GatewaySessionStatusSnapshot> {
   const env = (rawEnv ?? {}) as Record<string, unknown>;
   const namespace = env.SLACK_GATEWAY_SESSION as {
@@ -11101,15 +11101,18 @@ async function readGatewaySessionStatus(
     get(id: unknown): {
       status(): Promise<GatewaySessionStatusSnapshot>;
       observe?(): Promise<GatewaySessionStatusSnapshot>;
+      confirmDelivery?(): Promise<GatewaySessionStatusSnapshot>;
     };
   } | undefined;
   if (namespace) {
     try {
       const stub = namespace.get(namespace.idFromName('deployment'));
-      // Deployment readiness must see the woken session; an Admin observation
-      // reads the snapshot and lets the wake run behind the response.
+      // Deployment readiness must see the woken session, and the gateway must
+      // answer on it; an Admin observation reads the snapshot and lets the
+      // wake run behind the response.
       const status = await timed('gw', () =>
-        options.observe && typeof stub.observe === 'function' ? stub.observe() : stub.status());
+        options.confirm && typeof stub.confirmDelivery === 'function' ? stub.confirmDelivery()
+          : options.observe && typeof stub.observe === 'function' ? stub.observe() : stub.status());
       if (typeof status?.healthy === 'boolean') {
         const currentVersion = cloudflareWorkerVersionId(rawEnv);
         if (currentVersion && status.versionId !== currentVersion) {
