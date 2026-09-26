@@ -902,6 +902,12 @@ export class WorkStoreLogic {
       const existing = this.getRunExecution(input.id);
       if (existing) {
         if (sameExecution(existing, input)) return existing;
+        // A turn that yielded (the alarm budget, a code update) reattaches on
+        // the same attempt number and fence, so it opens the same execution
+        // again at a later time: that is this execution, still running.
+        if (existing.outcome === 'pending' && sameExecution(existing, { ...input, startedAt: existing.startedAt })) {
+          return existing;
+        }
         throw workError(
           'work_execution_conflict',
           'Run execution ID belongs to a different attempt.',

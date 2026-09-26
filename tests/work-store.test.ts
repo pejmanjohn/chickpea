@@ -714,6 +714,50 @@ test('an execution settled without a model call drops the provider route recorde
   }
 });
 
+test('a turn reattaching on the same attempt opens its still-running execution again', () => {
+  const db = openStateDb(':memory:');
+  try {
+    const store = new WorkStoreLogic(db, { now: () => NOW });
+    const config = store.putConfigRevision(safeConfig());
+    const admitted = store.createGraph(graph(config.id, 'reattached_attempt'));
+    const prepared = store.putContent({ sensitivity: 'public', body: 'prepared input', createdAt: NOW });
+    db.run(
+      `UPDATE runs SET status = 'input_ready', prepared_input_ref = ?, updated_at = ? WHERE id = ?`,
+      prepared.ref,
+      NOW,
+      admitted.run.id,
+    );
+    const input = {
+      id: 'execution_reattached' as RunExecutionId,
+      runId: admitted.run.id,
+      attemptNumber: 1,
+      fencingToken: 1,
+      executorKind: 'agent' as const,
+      agentName: 'slack-thread',
+      canonicalModel: 'openai/gpt-5.6-terra',
+      startedAt: NOW + 1,
+    };
+    const first = store.createRunExecution(input);
+    // A code update made the runner yield; the new version reattaches later.
+    const again = store.createRunExecution({ ...input, startedAt: NOW + 90_000 });
+    assert.equal(again.id, first.id);
+    assert.equal(again.startedAt, NOW + 1, 'the execution keeps when it started');
+    assert.throws(() => store.createRunExecution({ ...input, attemptNumber: 2, startedAt: NOW + 2 }),
+      (error: unknown) => (error as { code?: string }).code === 'work_execution_conflict',
+      'a different attempt never adopts it');
+    store.settleRunExecution({
+      executionId: input.id, fencingToken: 1, outcome: 'succeeded', modelInvocationStatus: 'not_invoked',
+      rawSettlementRef: 'settlement_reattached', rawSettlementStatus: 'host_management_approval_succeeded',
+      finishedAt: NOW + 3,
+    });
+    assert.throws(() => store.createRunExecution({ ...input, startedAt: NOW + 4 }),
+      (error: unknown) => (error as { code?: string }).code === 'work_execution_conflict',
+      'a settled execution is never reopened');
+  } finally {
+    db.close();
+  }
+});
+
 test('recovery quarantine is terminal, idempotent, body-free, and atomic with audit', () => {
   const db = openStateDb(':memory:');
   try {
