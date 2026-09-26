@@ -45,7 +45,7 @@ test('prepareFlueDispatch freezes the turn envelope once, beside (not inside) th
   try {
     const turns = new TurnJobStoreLogic(db, () => NOW);
     const plan = compileRuntimePlanV2({
-      turn: turn(), assignment: assignment(), instructions: 'Envelope.', memoryEpoch: 1, sandboxMode: 'bash',
+      turn: turn(), assignment: assignment(), instructions: 'Envelope.', memoryEpoch: 1,
     });
     turns.enqueue({ id: 'turn_envelope', evtKey: 'evt', msgKey: 'msg', turn: turn(), assignment: assignment() });
     turns.freezeRuntimePlan('turn_envelope', plan);
@@ -89,7 +89,7 @@ test('prepareFlueDispatch freezes the turn envelope once, beside (not inside) th
 
 test('the envelope freezes only non-secret facts, bounded, with a revision that ignores the clock', async () => {
   const plan = compileRuntimePlanV2({
-    turn: turn(), assignment: assignment(), instructions: 'Envelope.', memoryEpoch: 1, sandboxMode: 'bash',
+    turn: turn(), assignment: assignment(), instructions: 'Envelope.', memoryEpoch: 1,
   });
   const settings = memorySettings({
     [SANDBOX_SETTING_KEYS.enabled]: 'true',
@@ -254,7 +254,7 @@ function envelopeFor(settings: Record<string, string | null>): TurnEnvelopeV1 {
 
 function repositoryPlan(): RuntimePlanV2 {
   return compileRuntimePlanV2({
-    turn: turn(), assignment: assignment(), instructions: 'Envelope.', memoryEpoch: 1, sandboxMode: 'bash',
+    turn: turn(), assignment: assignment(), instructions: 'Envelope.', memoryEpoch: 1,
   });
 }
 

@@ -1,0 +1,118 @@
+{
+  "generatedBy": "compileRuntimePlanV2 at tag v0.1.26 (ce8322b2) with sandboxMode cloudflare",
+  "agent": {
+    "id": "agent_legacy_workspace",
+    "kind": "user",
+    "revision": 3,
+    "name": "Legacy Workspace Agent",
+    "instructions": "Help with the acme-rails repository.",
+    "enabled": true,
+    "model": "local-stub/proof",
+    "skills": [],
+    "mcpServers": [],
+    "apiConnections": [],
+    "repositories": [
+      {
+        "id": "repo_acme_rails",
+        "installationId": 50001,
+        "accountLogin": "acme",
+        "fullName": "acme/acme-rails",
+        "enabled": true
+      }
+    ]
+  },
+  "slackTurnPlan": {
+    "schemaVersion": 3,
+    "continuityPolicy": "slack-runtime-v3",
+    "agentId": "agent_legacy_workspace",
+    "connectionAccountIds": [],
+    "connectionAuthorizations": [],
+    "connectionChoices": [],
+    "configurationRevision": {
+      "agent": 3
+    },
+    "ownerIncarnation": 1,
+    "conversation": {
+      "workspaceId": "T_LEGACY",
+      "channelId": "C_LEGACY",
+      "threadTs": "1788000000.000100",
+      "surface": "channel_thread",
+      "continuityKey": "agent_67d08e939f2c1f96576a0e29e72187114c274217"
+    },
+    "runtimeModel": "local-stub/proof",
+    "model": "local-stub/proof",
+    "modelAttribution": {
+      "source": "workspace_default",
+      "providerId": "local-stub",
+      "workspaceDefaultRevision": 1
+    },
+    "instructions": "Help with the acme-rails repository.",
+    "memoryEpoch": 1,
+    "skills": [],
+    "mcpConnections": [],
+    "apiConnections": [],
+    "repositories": [
+      {
+        "id": "repo_acme_rails",
+        "fullName": "acme/acme-rails"
+      }
+    ],
+    "sandbox": {
+      "mode": "cloudflare"
+    },
+    "artifactDestination": {
+      "kind": "slack_conversation",
+      "channelId": "C_LEGACY",
+      "threadTs": "1788000000.000100"
+    },
+    "harnessRevision": "a493fceb82dc9e783150e095a84e6abb105ab8b199210edb56ff5c94659d6418"
+  },
+  "routineInitialData": {
+    "runtimePlan": {
+      "schemaVersion": 3,
+      "continuityPolicy": "slack-runtime-v3",
+      "agentId": "agent_legacy_workspace",
+      "connectionAccountIds": [],
+      "connectionAuthorizations": [],
+      "connectionChoices": [],
+      "configurationRevision": {
+        "agent": 3
+      },
+      "ownerIncarnation": 1,
+      "conversation": {
+        "workspaceId": "T_LEGACY",
+        "channelId": "C_LEGACY",
+        "threadTs": "1788000600.000000",
+        "surface": "channel_thread",
+        "continuityKey": "agent_02bd4e38afea004bc4b72d1593aa28966df6b8fc"
+      },
+      "runtimeModel": "local-stub/proof",
+      "model": "local-stub/proof",
+      "modelAttribution": {
+        "source": "workspace_default",
+        "providerId": "local-stub",
+        "workspaceDefaultRevision": 1
+      },
+      "instructions": "Help with the acme-rails repository.",
+      "memoryEpoch": 1,
+      "skills": [],
+      "mcpConnections": [],
+      "apiConnections": [],
+      "repositories": [
+        {
+          "id": "repo_acme_rails",
+          "fullName": "acme/acme-rails"
+        }
+      ],
+      "sandbox": {
+        "mode": "cloudflare"
+      },
+      "artifactDestination": {
+        "kind": "slack_conversation",
+        "channelId": "C_LEGACY"
+      },
+      "harnessRevision": "a493fceb82dc9e783150e095a84e6abb105ab8b199210edb56ff5c94659d6418"
+    },
+    "requestedModel": "local-stub/proof"
+  }
+}

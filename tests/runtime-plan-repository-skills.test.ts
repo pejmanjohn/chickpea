@@ -8,7 +8,9 @@ import {
   runtimePlanSkills,
 } from '../src/agents/slack-thread.ts';
 import { ChickpeaRoutineExecution } from '../src/agents/routine-execution.ts';
-import { compileRuntimePlanV2, type RuntimePlanSandboxMode } from '../src/agents/runtime-plan.ts';
+import { compileRuntimePlanV2, parseRuntimePlanV2, type RuntimePlanV2 } from '../src/agents/runtime-plan.ts';
+import { parseRoutineExecutionInitialData } from '../src/agents/routine-execution-data.ts';
+import legacyFixture from './fixtures/runtime-plan/v0.1.26-attached-container.json' with { type: 'json' };
 import { getConfigStore, getSettingsStore } from '../src/config/state-backend.ts';
 import { GITHUB_SETTING_KEYS } from '../src/config/github-app.ts';
 import { serializeCurrentRequestEnvelope } from '../src/memory/tool-policy.ts';
@@ -57,10 +59,10 @@ function compilePlanInput(agent: ReturnType<typeof supportAgent>, eventSuffix = 
   };
 }
 
-function compilePlan(agent: ReturnType<typeof supportAgent>, sandboxMode: RuntimePlanSandboxMode) {
+function compilePlan(agent: ReturnType<typeof supportAgent>) {
   return compileRuntimePlanV2({
     turn: {
-      workspaceId: 'T_TEST', channelId: 'C_TEST', eventId: `E_REPO_${sandboxMode}`,
+      workspaceId: 'T_TEST', channelId: 'C_TEST', eventId: 'E_REPO_bash',
       text: 'Look at the repo', userId: 'U_TEST', messageTs: '1787000000.000200',
       threadTs: '1787000000.000100', source: 'app_mention', contextMode: 'thread',
     },
@@ -70,12 +72,11 @@ function compilePlan(agent: ReturnType<typeof supportAgent>, sandboxMode: Runtim
     },
     instructions: agent.instructions,
     memoryEpoch: 1,
-    sandboxMode,
     effectiveConnections: [],
   } as any);
 }
 
-function slackSignal(plan: ReturnType<typeof compilePlan>) {
+function slackSignal(plan: RuntimePlanV2) {
   return {
     kind: 'signal', type: 'slack.message', tagName: 'slack_message',
     body: serializeCurrentRequestEnvelope(
@@ -83,7 +84,8 @@ function slackSignal(plan: ReturnType<typeof compilePlan>) {
       { schemaVersion: 2, progressiveStreamingOffered: true },
     ),
     attributes: {
-      workspaceId: 'T_TEST', channelId: 'C_TEST', threadTs: plan.conversation.threadTs,
+      workspaceId: plan.conversation.workspaceId, channelId: plan.conversation.channelId,
+      threadTs: plan.conversation.threadTs,
       slackUserId: 'U_TEST', eventId: plan.conversation.threadTs, messageTs: '1787000000.000200',
       turnJobId: `repo_${randomUUID()}`,
     },
@@ -94,33 +96,26 @@ function skillNames(harness: unknown): string[] {
   return Object.keys((harness as any).config.skills ?? {}).sort();
 }
 
-test('RuntimePlanV2 Cloudflare workspace turn mounts the workspace and Repositories skills', async (t) => {
-  const agent = supportAgent([
-    // A stored same-named Agent skill must not hide the live workspace contract.
-    { name: 'workspace', description: 'Stale copy.', instructions: 'Never clone anything.', enabled: true },
-  ]);
-  t.mock.method(getConfigStore(), 'getAgent', async () => agent);
-  const plan = compilePlan(agent, 'cloudflare');
-  assert.equal(plan.sandbox.mode, 'cloudflare');
-  assert.deepEqual(plan.repositories.map(({ fullName }) => fullName), ['acme/acme-rails']);
-
+test('a v0.1.26 plan admitted with an attached container renders as the virtual-sandbox coordinator', async (t) => {
+  // Skip-upgrade: the Flue instance was created from the stored v0.1.26
+  // plan, so the render reads exactly that creation data.
+  const admitted = legacyFixture.slackTurnPlan;
+  assert.equal(admitted.sandbox.mode, 'cloudflare');
+  t.mock.method(getConfigStore(), 'getAgent', async () => legacyFixture.agent);
   const context = createFlueContext({
-    id: 'repo-cloudflare-test', agentName: 'chickpea-slack-v2', env: {},
+    id: 'repo-legacy-test', agentName: 'chickpea-slack-v2', env: {},
     agentConfig: { resolveModel: () => ({}) } as any,
   });
-  const harness = await context.initializeRootHarness(ChickpeaSlack, slackSignal(plan), plan);
+  const plan = parseRuntimePlanV2(admitted);
+  const harness = await context.initializeRootHarness(ChickpeaSlack, slackSignal(plan), admitted as any);
   try {
     const skills = (harness as any).config.skills;
-    assert.deepEqual(skillNames(harness), ['agent-authoring', 'repositories', 'ticket-triage', 'workspace']);
-    assert.match(skills.workspace.instructions, /# Coding workspace/);
-    assert.match(skills.workspace.instructions, /git clone https:\/\/github\.com\/\{owner\}\/\{repo\}\.git/);
-    assert.doesNotMatch(skills.workspace.instructions, /Never clone anything/);
-    assert.match(skills.repositories.instructions, /- `acme\/acme-rails`/);
-
+    assert.deepEqual(skillNames(harness), ['agent-authoring', 'repositories', 'workspace']);
+    assert.match(skills.workspace.instructions, /workspace_exec/);
+    assert.doesNotMatch(skills.workspace.instructions, /Use the write tool to create/);
     const instructions = String((harness as any).config.instructions);
-    assert.match(instructions, /Granted GitHub repositories for this turn: \["acme\/acme-rails"\]/);
-    assert.match(instructions, /clone a granted repository with a plain HTTPS URL/);
-    assert.match(instructions, /credentials are injected automatically/);
+    assert.match(instructions, /Your own shell cannot clone them; for a real checkout, use the coding workspace tools/);
+    assert.doesNotMatch(instructions, /clone a granted repository with a plain HTTPS URL/);
   } finally {
     await harness.close();
   }
@@ -156,10 +151,13 @@ test('a current plan keeps the Agent in its virtual sandbox and teaches the work
   }
 });
 
-test('RuntimePlanV2 routine in a Cloudflare workspace mounts the same built-in skills', async (t) => {
-  const agent = supportAgent();
-  t.mock.method(getConfigStore(), 'getAgent', async () => agent);
-  const plan = compilePlan(agent, 'cloudflare');
+test('a v0.1.26 routine admitted with an attached container mounts the workspace through tools', async (t) => {
+  const admitted = legacyFixture.routineInitialData;
+  assert.equal(admitted.runtimePlan.sandbox.mode, 'cloudflare');
+  t.mock.method(getConfigStore(), 'getAgent', async () => legacyFixture.agent);
+  const { runtimePlan: plan } = parseRoutineExecutionInitialData(admitted);
+  assert.equal(plan.sandbox.mode, 'bash');
+  assert.deepEqual(plan.codingWorkspace, { available: true });
   const context = createFlueContext({
     id: 'repo-routine-test', agentName: 'chickpea-routine-execution-v2', env: {},
     agentConfig: { resolveModel: () => ({}) } as any,
@@ -167,10 +165,11 @@ test('RuntimePlanV2 routine in a Cloudflare workspace mounts the same built-in s
   const harness = await context.initializeRootHarness(
     ChickpeaRoutineExecution,
     slackSignal(plan),
-    { runtimePlan: plan, requestedModel: plan.model },
+    admitted as any,
   );
   try {
-    assert.deepEqual(skillNames(harness), ['repositories', 'ticket-triage', 'workspace']);
+    assert.deepEqual(skillNames(harness), ['repositories', 'workspace']);
+    assert.match((harness as any).config.skills.workspace.instructions, /workspace_exec/);
   } finally {
     await harness.close();
   }
@@ -199,7 +198,7 @@ test('RuntimePlanV2 bash turn with repository grants mounts Repositories and cre
     return Response.json({ full_name: 'acme/acme-rails', nonce });
   });
 
-  const plan = compilePlan(agent, 'bash');
+  const plan = compilePlan(agent);
   assert.equal(plan.sandbox.mode, 'bash');
   const context = createFlueContext({
     id: 'repo-bash-test', agentName: 'chickpea-slack-v2', env: {},
@@ -235,7 +234,8 @@ test('runtime plan skills keep connector precedence and the reserved authoring n
   const plan = {
     apiConnections: [],
     repositories: [{ id: 'repo_rails', fullName: 'acme/acme-rails' }],
-    sandbox: { mode: 'cloudflare' as const },
+    sandbox: { mode: 'bash' as const },
+    codingWorkspace: { available: true as const },
     skills: [
       // Agent-authored Repositories deliberately overrides the built-in one.
       { name: 'repositories', description: 'Custom repos.', instructions: 'Custom.' },
@@ -246,9 +246,9 @@ test('runtime plan skills keep connector precedence and the reserved authoring n
   assert.deepEqual(skills.map(({ name }) => name), ['repositories', 'workspace']);
   assert.equal((skills[0] as any).instructions, 'Custom.');
 
-  const bash = runtimePlanSkills({ ...plan, skills: [], sandbox: { mode: 'bash' } } as any);
+  const bash = runtimePlanSkills({ ...plan, skills: [], codingWorkspace: undefined } as any);
   assert.deepEqual(bash.map(({ name }) => name), ['repositories']);
-  const none = runtimePlanSkills({ ...plan, skills: [], repositories: [], sandbox: { mode: 'bash' } } as any);
+  const none = runtimePlanSkills({ ...plan, skills: [], repositories: [], codingWorkspace: undefined } as any);
   assert.deepEqual(none, []);
 });
 
@@ -259,7 +259,7 @@ test('an all-repositories grant names its org in the Repositories skill and the 
       id: 'all', installationId: 1, accountLogin: 'acme', fullName: '', allRepos: true, enabled: true,
     }],
   };
-  const plan = compilePlan(agent, 'cloudflare');
+  const plan = compilePlan(agent);
   assert.deepEqual(plan.repositories, [
     { id: 'all', fullName: '', allRepos: true, accountLogin: 'acme' },
   ]);

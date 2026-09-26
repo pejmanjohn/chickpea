@@ -97,9 +97,8 @@ export async function runWithWorkspaceRegistry<T>(work: () => Promise<T>): Promi
 /**
  * Scope one registry to each managed agent submission. The sandbox factory
  * (called once at initialization) and every tool call run inside this
- * submission's async context, so the attached container and the workspace
- * tools share one activation per workspace, and re-renders on every model
- * call find the same session.
+ * submission's async context, so the workspace tools share one activation
+ * per workspace, and re-renders on every model call find the same session.
  */
 export const workspaceRegistryInterceptor: FlueExecutionInterceptor = (
   operation,

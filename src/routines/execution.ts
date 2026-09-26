@@ -15,7 +15,6 @@ import {
 } from '../agents/routine-execution-data.ts';
 import {
   compileRuntimePlanV2,
-  runtimePlanSandboxConversationKey,
   type RuntimePlanBrowserCapabilityV1,
   type RuntimePlanWebsiteLoginV1,
   type RuntimePlanCodingModelV1,
@@ -48,10 +47,6 @@ import {
 } from '../config/state-backend.ts';
 import { OpenAiSubscriptionError } from '../openai-subscription/errors.ts';
 import { sandboxBindingInstalled } from '../sandbox/select.ts';
-import {
-  prepareCloudflareSandboxTurn,
-  releaseCloudflareSandboxTurn,
-} from '../slack/flue-dispatch.ts';
 import {
   freezeCodingModelForTurn,
   resolveCodingWorkspaceDecision,
@@ -130,8 +125,6 @@ interface RoutineExecutionDependencies {
   ) => Promise<boolean>;
   resolveWorkspaceDecision?: typeof resolveCodingWorkspaceDecision;
   sandboxInstalled?: typeof sandboxBindingInstalled;
-  prepareSandbox?: typeof prepareCloudflareSandboxTurn;
-  releaseSandbox?: typeof releaseCloudflareSandboxTurn;
   resolveCredential?: typeof resolveModelCredentialAttribution;
   handle?: AgentInstanceHandle;
   now?: () => number;
@@ -153,12 +146,10 @@ interface PreparedExecution {
   access: RoutineRuntimeAccess;
   prompt: PreparedRoutinePrompt;
   envelope: RoutineAgentDispatchEnvelope;
-  sandboxConversationKey: string;
   receipt: RoutineAgentReceiptV1 | null;
   usageRecorder?: RoutineUsageRecorder;
   workLifecycle?: ShadowWorkLifecycle;
   persistence: RoutinePersistenceTracker;
-  usedCloudflareSandbox: boolean;
   sandboxUnavailableFallback: boolean;
   productTelemetry?: ProductTelemetryCapture;
 }
@@ -270,7 +261,6 @@ export async function executeRoutineOccurrence(
     } finally {
       await prepared.usageRecorder?.repairAfterTerminal();
       prepared.persistence.emit();
-      await releasePreparedSandbox(input.env, prepared, dependencies);
     }
   }
 
@@ -286,139 +276,126 @@ export async function executeRoutineOccurrence(
   const toolCalls = new ToolCallCounter('submit_routine_result');
   let modelSettled = false;
   let settledUsage: RoutineAgentUsageV1 | null = null;
-  let retainPreparedSandbox = false;
   let settlement: RoutineAgentSettlementV1;
+  // Only model execution and result validation belong to this catch. Once a
+  // settlement is saved, delivery cannot rewrite it as a different execution.
   try {
-    // Only model execution and result validation belong to this catch. Once a
-    // settlement is saved, delivery cannot rewrite it as a different execution.
-    try {
-      if (!receipt) {
-        if (now() >= prepared.run.deadlineAt) {
-          throw new RoutineRuntimeError(
-            'deadline_exceeded',
-            'The routine occurrence exceeded its execution deadline.',
-          );
-        }
-        let admitted: DispatchReceipt;
-        try {
-          admitted = await handle.dispatch({
-            message: prepared.envelope.message,
-            initialData: prepared.envelope.initialData,
-            idempotencyKey: prepared.envelope.idempotencyKey,
-          });
-        } catch (error) {
-          if (now() < prepared.run.deadlineAt) {
-            retainPreparedSandbox = true;
-            return 'resumable';
-          }
-          throw error;
-        }
-        const checkpoint = boundedReceipt(admitted);
-        const recorded = await input.store.recordAgentReceipt({
-          occurrenceId: prepared.run.id,
-          attempt: input.attempt,
-          receipt: checkpoint,
-          at: now(),
-        });
-        receipt = recorded.flueAgentReceipt ?? checkpoint;
-      }
-      await prepared.workLifecycle?.markInvoked();
-
-      const remainingMs = prepared.run.deadlineAt - now();
-      if (remainingMs <= 0) {
-        await handle.abort();
+    if (!receipt) {
+      if (now() >= prepared.run.deadlineAt) {
         throw new RoutineRuntimeError(
           'deadline_exceeded',
           'The routine occurrence exceeded its execution deadline.',
         );
       }
-      let reply: AgentReply;
+      let admitted: DispatchReceipt;
       try {
-        reply = await handle.read(receipt as DispatchReceipt, {
-          signal: AbortSignal.timeout(remainingMs),
-          onEvent: (event) => toolCalls.observe(event),
+        admitted = await handle.dispatch({
+          message: prepared.envelope.message,
+          initialData: prepared.envelope.initialData,
+          idempotencyKey: prepared.envelope.idempotencyKey,
         });
       } catch (error) {
-        if (isLocalReadInterruption(error) && now() < prepared.run.deadlineAt) {
-          retainPreparedSandbox = true;
-          return 'resumable';
-        }
-        if (isLocalReadInterruption(error)) {
-          await handle.abort().catch(() => undefined);
-          throw new RoutineRuntimeError(
-            'deadline_exceeded',
-            'The routine occurrence exceeded its execution deadline.',
-          );
-        }
+        if (now() < prepared.run.deadlineAt) return 'resumable';
         throw error;
       }
-
-      settledUsage = routineUsageFromAgentReply(reply, prepared.access.config.model);
-      await prepared.workLifecycle?.settleExecution({
-        outcome: 'succeeded',
-        rawStatus: 'flue_succeeded',
-        flueSubmissionRef: opaqueId('fluesubmission', reply.submissionId),
+      const checkpoint = boundedReceipt(admitted);
+      const recorded = await input.store.recordAgentReceipt({
+        occurrenceId: prepared.run.id,
+        attempt: input.attempt,
+        receipt: checkpoint,
+        at: now(),
       });
-      modelSettled = true;
-      if (
-        prepared.prompt.prompt !== executionPrompt(prepared.envelope) ||
-        prepared.prompt.memoryEpoch !== executionInitialData(prepared.envelope).runtimePlan.memoryEpoch ||
-        !(await prepared.prompt.validateMemoryLease())
-      ) {
+      receipt = recorded.flueAgentReceipt ?? checkpoint;
+    }
+    await prepared.workLifecycle?.markInvoked();
+
+    const remainingMs = prepared.run.deadlineAt - now();
+    if (remainingMs <= 0) {
+      await handle.abort();
+      throw new RoutineRuntimeError(
+        'deadline_exceeded',
+        'The routine occurrence exceeded its execution deadline.',
+      );
+    }
+    let reply: AgentReply;
+    try {
+      reply = await handle.read(receipt as DispatchReceipt, {
+        signal: AbortSignal.timeout(remainingMs),
+        onEvent: (event) => toolCalls.observe(event),
+      });
+    } catch (error) {
+      if (isLocalReadInterruption(error) && now() < prepared.run.deadlineAt) return 'resumable';
+      if (isLocalReadInterruption(error)) {
+        await handle.abort().catch(() => undefined);
         throw new RoutineRuntimeError(
-          toolCalls.count > 0 ? 'unknown_external_outcome' : 'access_denied',
-          'Channel access changed while the routine was running.',
+          'deadline_exceeded',
+          'The routine occurrence exceeded its execution deadline.',
         );
       }
-      await prepared.prompt.confirmMemory();
-      const result = routineResult(reply, prepared.run, prepared.routine);
-      if (prepared.sandboxUnavailableFallback) {
-        result.message = result.message
-          ? `${SANDBOX_UNAVAILABLE_FALLBACK_NOTICE}\n\n${result.message}`
-          : SANDBOX_UNAVAILABLE_FALLBACK_NOTICE;
-      }
-      settlement = {
-        schemaVersion: 1,
-        outcome: 'completed',
-        settledAt: now(),
-        result: { ...result, toolCallCount: toolCalls.count, usage: settledUsage },
-      };
-    } catch (error) {
-      const toolCallCount = toolCalls.count;
-      const failure = runtimeFailure(error, toolCallCount > 0);
-      settlement = {
-        schemaVersion: 1,
-        outcome: error instanceof AgentRunError && error.outcome === 'aborted' ? 'aborted' : 'failed',
-        settledAt: now(),
-        failureClass: failure.failureClass,
-        publicError: failure.publicError,
-        toolCallCount,
-        usage: settledUsage,
-      };
-      if (!modelSettled) {
-        await prepared.workLifecycle?.settleExecution({
-          outcome: toolCallCount > 0 ? 'ambiguous' : 'failed',
-          rawStatus: toolCallCount > 0 ? 'flue_ambiguous' : 'flue_failed',
-          safeFailureCode: routineLifecycleFailureCode(failure.failureClass),
-          ...(receipt ? { flueSubmissionRef: opaqueId('fluesubmission', receipt.submissionId) } : {}),
-        });
-      }
+      throw error;
     }
-    await recordUsage(prepared, settlement);
-    try {
-      prepared.run = await input.store.recordAgentSettlement({
-        occurrenceId: prepared.run.id,
-        settlement,
+
+    settledUsage = routineUsageFromAgentReply(reply, prepared.access.config.model);
+    await prepared.workLifecycle?.settleExecution({
+      outcome: 'succeeded',
+      rawStatus: 'flue_succeeded',
+      flueSubmissionRef: opaqueId('fluesubmission', reply.submissionId),
+    });
+    modelSettled = true;
+    if (
+      prepared.prompt.prompt !== executionPrompt(prepared.envelope) ||
+      prepared.prompt.memoryEpoch !== executionInitialData(prepared.envelope).runtimePlan.memoryEpoch ||
+      !(await prepared.prompt.validateMemoryLease())
+    ) {
+      throw new RoutineRuntimeError(
+        toolCalls.count > 0 ? 'unknown_external_outcome' : 'access_denied',
+        'Channel access changed while the routine was running.',
+      );
+    }
+    await prepared.prompt.confirmMemory();
+    const result = routineResult(reply, prepared.run, prepared.routine);
+    if (prepared.sandboxUnavailableFallback) {
+      result.message = result.message
+        ? `${SANDBOX_UNAVAILABLE_FALLBACK_NOTICE}\n\n${result.message}`
+        : SANDBOX_UNAVAILABLE_FALLBACK_NOTICE;
+    }
+    settlement = {
+      schemaVersion: 1,
+      outcome: 'completed',
+      settledAt: now(),
+      result: { ...result, toolCallCount: toolCalls.count, usage: settledUsage },
+    };
+  } catch (error) {
+    const toolCallCount = toolCalls.count;
+    const failure = runtimeFailure(error, toolCallCount > 0);
+    settlement = {
+      schemaVersion: 1,
+      outcome: error instanceof AgentRunError && error.outcome === 'aborted' ? 'aborted' : 'failed',
+      settledAt: now(),
+      failureClass: failure.failureClass,
+      publicError: failure.publicError,
+      toolCallCount,
+      usage: settledUsage,
+    };
+    if (!modelSettled) {
+      await prepared.workLifecycle?.settleExecution({
+        outcome: toolCallCount > 0 ? 'ambiguous' : 'failed',
+        rawStatus: toolCallCount > 0 ? 'flue_ambiguous' : 'flue_failed',
+        safeFailureCode: routineLifecycleFailureCode(failure.failureClass),
+        ...(receipt ? { flueSubmissionRef: opaqueId('fluesubmission', receipt.submissionId) } : {}),
       });
-      return await finalizeSettlement(prepared, settlement, now());
-    } finally {
-      await prepared.usageRecorder?.repairAfterTerminal();
-      prepared.persistence.emit();
     }
+  }
+  await recordUsage(prepared, settlement);
+  try {
+    prepared.run = await input.store.recordAgentSettlement({
+      occurrenceId: prepared.run.id,
+      settlement,
+    });
+    return await finalizeSettlement(prepared, settlement, now());
   } finally {
-    if (!retainPreparedSandbox) {
-      await releasePreparedSandbox(input.env, prepared, dependencies);
-    }
+    await prepared.usageRecorder?.repairAfterTerminal();
+    prepared.persistence.emit();
   }
 }
 
@@ -555,18 +532,10 @@ async function prepareExecution(
     });
     sandboxUnavailableFallback = workspaceDecision.unavailableFallback;
   }
-  const initialData = executionInitialData(envelope);
-  // Only a plan admitted with an attached container has this relay prepare
-  // and release its workspace. A current plan's workspace tools open the
-  // workspace themselves, and the Agent releases it when its run settles.
-  const cloudflareSandboxRequested = initialData.runtimePlan.sandbox.mode === 'cloudflare';
-  const sandboxInstalled = (dependencies.sandboxInstalled ?? sandboxBindingInstalled)(input.env);
-  sandboxUnavailableFallback ||= cloudflareSandboxRequested && !sandboxInstalled;
-  const usedCloudflareSandbox = cloudflareSandboxRequested && sandboxInstalled;
-  const sandboxConversationKey = runtimePlanSandboxConversationKey(
-    initialData.runtimePlan,
-    envelope.instanceId,
-  );
+  // Validate the admitted envelope before starting. The workspace tools open
+  // the coding workspace themselves, and the Agent releases it when its run
+  // settles, so this relay prepares and releases nothing.
+  executionInitialData(envelope);
   const started = await input.store.prepareAgentDispatch({
     occurrenceId: input.run.id,
     attempt: input.attempt,
@@ -621,30 +590,6 @@ async function prepareExecution(
     : undefined;
   await usageRecorder?.admit();
 
-  const prepareSandbox = !input.run.flueAgentSettlement && usedCloudflareSandbox;
-  if (prepareSandbox) {
-    try {
-      await (dependencies.prepareSandbox ?? prepareCloudflareSandboxTurn)(
-        input.env,
-        sandboxConversationKey,
-        input.run.id,
-      );
-    } catch (error) {
-      await usageRecorder?.recordTerminal({
-        status: 'failed',
-        unknownReason: 'provider_request_unknown',
-      });
-      await usageRecorder?.repairAfterTerminal();
-      persistence.emit();
-      await (dependencies.releaseSandbox ?? releaseCloudflareSandboxTurn)(
-        input.env,
-        sandboxConversationKey,
-        usedCloudflareSandbox,
-      );
-      throw error;
-    }
-  }
-
   const workLifecycle = await createRoutineShadowLifecycle({
     run,
     access,
@@ -667,12 +612,10 @@ async function prepareExecution(
     access,
     prompt,
     envelope,
-    sandboxConversationKey,
     receipt: input.admission.flueAgentReceipt ?? null,
     ...(usageRecorder ? { usageRecorder } : {}),
     ...(workLifecycle ? { workLifecycle } : {}),
     persistence,
-    usedCloudflareSandbox: prepareSandbox,
     sandboxUnavailableFallback,
     ...(dependencies.productTelemetry ? { productTelemetry: dependencies.productTelemetry } : {}),
   };
@@ -1345,20 +1288,6 @@ async function deliverPauseNoticeBestEffort(prepared: PreparedExecution): Promis
   } catch {
     // The durable root-notice claim prevents a duplicate if this outward result is ambiguous.
   }
-}
-
-async function releasePreparedSandbox(
-  env: PlatformEnv,
-  prepared: PreparedExecution,
-  dependencies: RoutineExecutionDependencies,
-): Promise<void> {
-  // Only an attached container prepared here is released here.
-  if (!prepared.usedCloudflareSandbox) return;
-  await (dependencies.releaseSandbox ?? releaseCloudflareSandboxTurn)(
-    env,
-    prepared.sandboxConversationKey,
-    prepared.usedCloudflareSandbox,
-  );
 }
 
 function isLocalReadInterruption(error: unknown): boolean {

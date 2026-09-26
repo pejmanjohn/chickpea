@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
+import * as v from 'valibot';
+
 import type { AgentInstanceHandle, AgentReply, DispatchReceipt } from '@flue/runtime';
 import { WebClient } from '@slack/web-api';
 
@@ -20,6 +22,9 @@ import {
 } from '../src/routines/runtime.ts';
 import { hashRoutineValue, routineDestinationBindingDigest } from '../src/routines/ids.ts';
 import { SqliteRoutineStore } from '../src/routines/store.ts';
+import { openStateDb } from '../src/state/node-state-db.ts';
+import { ChickpeaRoutineExecution } from '../src/agents/routine-execution.ts';
+import { attachedContainerPlan } from './helpers/attached-container-plan.ts';
 import type {
   RoutineDefinition,
   RoutineDefinitionContent,
@@ -516,13 +521,10 @@ test('live access and a frozen app checkpoint precede Flue dispatch', async () =
 
 test('an interrupted local read stays resumable and the next execution reads the saved receipt', async () => {
   const store = new SqliteRoutineStore(':memory:', () => NOW);
-  const sandboxCalls: string[] = [];
   const sandboxDependencies = {
     ...dependencies(),
     sandboxInstalled: () => true,
     codingWorkspaceConfigured: async () => true,
-    prepareSandbox: async () => { sandboxCalls.push('prepare'); },
-    releaseSandbox: async () => { sandboxCalls.push('release'); },
   };
   try {
     const fixture = await admittedFixture(store, 'resume');
@@ -543,7 +545,6 @@ test('an interrupted local read stays resumable and the next execution reads the
     assert.equal(dispatches, 0);
     // The Agent opens and releases its own coding workspace; the relay never
     // touches the Sandbox Durable Object for a current plan.
-    assert.deepEqual(sandboxCalls, []);
     assert.equal((await store.getRun(fixture.run.id))?.status, 'no_op');
   } finally {
     store.close();
@@ -1105,7 +1106,7 @@ test('a preparation failure stays silent when fresh destination authorization fa
   }
 });
 
-test('an ambiguous dispatch freezes the coding workspace once and never touches the sandbox from the relay', async () => {
+test('an ambiguous dispatch freezes the coding workspace once', async () => {
   const store = new SqliteRoutineStore(':memory:', () => NOW);
   const events: string[] = [];
   let capabilityChecks = 0;
@@ -1116,8 +1117,6 @@ test('an ambiguous dispatch freezes the coding workspace once and never touches 
       capabilityChecks += 1;
       return capabilityChecks === 1;
     },
-    prepareSandbox: async () => { events.push('sandbox:prepare'); },
-    releaseSandbox: async () => { events.push('sandbox:release'); },
   };
   try {
     const fixture = await admittedFixture(store, 'dispatch_retry');
@@ -1138,7 +1137,6 @@ test('an ambiguous dispatch freezes the coding workspace once and never touches 
     }, { ...sandboxDependencies, handle: fakeHandle({ events }) });
     assert.equal(second, 'completed');
     assert.equal(capabilityChecks, 1);
-    assert.equal(events.some((event) => event.startsWith('sandbox:')), false);
     assert.deepEqual((await store.getRun(fixture.run.id))?.flueAgentEnvelope, frozen);
     assert.equal(
       (await store.listAdmissions(fixture.run.id))[0]?.flueAgentReceipt?.submissionId,
@@ -1174,7 +1172,6 @@ test('an unconfigured coding workspace freezes no workspace capability', async (
 
 test('an admitted routine with a pre-dispatch cloud plan narrows when the binding disappeared', async () => {
   const store = new SqliteRoutineStore(':memory:', () => NOW);
-  let preparations = 0;
   try {
     const fixture = await admittedFixture(store, 'binding_removed');
     const first = await executeRoutineOccurrence({
@@ -1183,12 +1180,10 @@ test('an admitted routine with a pre-dispatch cloud plan narrows when the bindin
       ...dependencies(),
       sandboxInstalled: () => false,
       codingWorkspaceConfigured: async () => true,
-      prepareSandbox: async () => { preparations += 1; },
       handle: fakeHandle({}),
     });
 
     assert.equal(first, 'completed');
-    assert.equal(preparations, 0);
     const completed = await store.getRun(fixture.run.id);
     assert.equal(completed?.status, 'no_op');
     const plan = parseRoutineExecutionInitialData(completed?.flueAgentEnvelope?.initialData).runtimePlan;
@@ -1199,7 +1194,7 @@ test('an admitted routine with a pre-dispatch cloud plan narrows when the bindin
   }
 });
 
-test('a persisted workspace plan survives a missing binding on resume without relay preparation', async () => {
+test('a persisted workspace plan survives a missing binding on resume', async () => {
   const store = new SqliteRoutineStore(':memory:', () => NOW);
   try {
     const fixture = await admittedFixture(store, 'persisted_binding_removed');
@@ -1209,7 +1204,6 @@ test('a persisted workspace plan survives a missing binding on resume without re
       ...dependencies(),
       sandboxInstalled: () => true,
       codingWorkspaceConfigured: async () => true,
-      prepareSandbox: async () => { throw new Error('must not prepare a current plan'); },
       handle: fakeHandle({ dispatchError: new Error('dispatch interrupted') }),
     });
     assert.equal(first, 'resumable');
@@ -1225,7 +1219,6 @@ test('a persisted workspace plan survives a missing binding on resume without re
       ...dependencies(),
       sandboxInstalled: () => false,
       codingWorkspaceConfigured: async () => { throw new Error('must preserve stored plan'); },
-      prepareSandbox: async () => { throw new Error('must not prepare missing binding'); },
       handle: fakeHandle({}),
     });
 
@@ -1235,6 +1228,52 @@ test('a persisted workspace plan survives a missing binding on resume without re
     assert.deepEqual(completed?.flueAgentEnvelope, persisted);
   } finally {
     store.close();
+  }
+});
+
+test('a routine occurrence admitted by v0.1.26 with an attached container resumes on the workspace tools', async () => {
+  // Skip-upgrade: v0.1.26 froze this occurrence's plan with an attached
+  // container, and the install updated past the release that still ran it.
+  const dir = mkdtempSync(join(tmpdir(), 'chickpea-legacy-routine-'));
+  const path = join(dir, 'state.db');
+  const store = new SqliteRoutineStore(path, () => NOW);
+  const db = openStateDb(path);
+  try {
+    const fixture = await admittedFixture(store, 'legacy_attached');
+    const first = await executeRoutineOccurrence({
+      env: {}, store, occurrenceId: fixture.run.id, attempt: fixture.attempt.attempt,
+    }, { ...dependencies(), handle: fakeHandle({ dispatchError: new Error('dispatch interrupted') }) });
+    assert.equal(first, 'resumable');
+    const persisted = (await store.getRun(fixture.run.id))!.flueAgentEnvelope!;
+    const current = parseRoutineExecutionInitialData(persisted.initialData);
+    const legacyData = { ...current, runtimePlan: attachedContainerPlan(current.runtimePlan) };
+    const legacyEnvelope = { ...persisted, initialData: legacyData };
+    db.run(
+      'UPDATE routine_runs SET flue_agent_envelope_json = ? WHERE id = ?',
+      JSON.stringify(legacyEnvelope),
+      fixture.run.id,
+    );
+    // The routine agent's creation-data contract still admits the stored plan.
+    assert.equal(v.safeParse(ChickpeaRoutineExecution.initialData!, legacyData).success, true);
+
+    const dispatches: unknown[] = [];
+    const resumed = await executeRoutineOccurrence({
+      env: {}, store, occurrenceId: fixture.run.id, attempt: fixture.attempt.attempt,
+    }, { ...dependencies(), handle: fakeHandle({ dispatches }) });
+
+    assert.equal(resumed, 'completed');
+    assert.equal((await store.getRun(fixture.run.id))?.status, 'no_op');
+    // Flue counts creation data in the submission's identity: the retry
+    // resends exactly what was admitted, never an upgraded copy.
+    assert.deepEqual((dispatches[0] as { initialData: unknown }).initialData, legacyData);
+    // Everything that reads the plan sees the virtual sandbox and a workspace.
+    const plan = parseRoutineExecutionInitialData(legacyData).runtimePlan;
+    assert.deepEqual(plan.sandbox, { mode: 'bash' });
+    assert.deepEqual(plan.codingWorkspace, { available: true });
+  } finally {
+    db.close();
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 
@@ -1753,8 +1792,6 @@ test('a routine with a coding workspace freezes the coding model its role resolv
           modelRoleReader: roleReader(options.modelId),
           sandboxInstalled: () => true,
           codingWorkspaceConfigured: async () => options.cloudflare,
-          prepareSandbox: async () => undefined,
-          releaseSandbox: async () => undefined,
           resolveModel: async (_agentId: string, model: string) => ({ model: `route:${model}` }),
         },
       );

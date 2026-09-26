@@ -25,8 +25,6 @@ import {
   OPENAI_SUBSCRIPTION_QUOTA_TEXT,
   OPENAI_SUBSCRIPTION_RECONNECT_TEXT,
   PROVIDER_FAILURE_TEXT,
-  SANDBOX_FAILURE_TEXT,
-  SANDBOX_SESSION_CAP_FAILURE_TEXT,
 } from '../src/slack/web-client-presenter.ts';
 import type { SlackProgressiveReadRelay } from '../src/slack/progressive-relay.ts';
 import { SLACK_TABLE_PRESENTATION_DATA_NAME } from '../src/slack/table-presentation.ts';
@@ -38,31 +36,15 @@ function envelope(type: string, message: string): string {
   return JSON.stringify({ error: { type, message, details: 'private detail' } });
 }
 
-test('agent prompt failure classification distinguishes provider, sandbox, and unknown errors', () => {
-  assert.equal(
-    classifyAgentPromptFailure(
-      500,
-      envelope('sandbox_unavailable', 'The coding workspace is temporarily unavailable.'),
-    ),
-    'sandbox',
-  );
-  assert.equal(
-    classifyAgentPromptFailure(
-      500,
-      envelope(
-        'operation_failed',
-        'Agent turn failed: Maximum number of running container instances exceeded.',
-      ),
-    ),
-    'sandbox',
-  );
-  assert.equal(
-    classifyAgentPromptFailure(
-      500,
-      envelope('sandbox_session_cap_reached', 'Monthly limit reached.'),
-    ),
-    'sandbox-session-cap',
-  );
+test('agent prompt failure classification distinguishes provider and unknown errors', () => {
+  // A coding workspace never fails the turn; container-shaped errors are the Agent's.
+  for (const [type, message] of [
+    ['sandbox_unavailable', 'The coding workspace is temporarily unavailable.'],
+    ['operation_failed', 'Agent turn failed: Maximum number of running container instances exceeded.'],
+    ['sandbox_session_cap_reached', 'Monthly limit reached.'],
+  ] as const) {
+    assert.equal(classifyAgentPromptFailure(500, envelope(type, message)), 'agent', type);
+  }
   assert.equal(
     classifyAgentPromptFailure(
       500,
@@ -111,11 +93,6 @@ test('Slack failure copy uses only the public-safe failure category', () => {
   assert.equal(
     agentFailureText(new AgentPromptFailure('openai-subscription-policy', 500)),
     OPENAI_SUBSCRIPTION_POLICY_TEXT,
-  );
-  assert.equal(agentFailureText(new AgentPromptFailure('sandbox', 500)), SANDBOX_FAILURE_TEXT);
-  assert.equal(
-    agentFailureText(new AgentPromptFailure('sandbox-session-cap', 500)),
-    SANDBOX_SESSION_CAP_FAILURE_TEXT,
   );
   assert.equal(agentFailureText(new AgentPromptFailure('agent', 500)), AGENT_FAILURE_TEXT);
   assert.equal(agentFailureText(new Error('raw secret')), AGENT_FAILURE_TEXT);
@@ -182,7 +159,6 @@ function promptInput(dispatchState: SlackFlueDispatchState, agent: AgentInstance
     state: dispatchState,
     turnId: 'turn_dispatch_test',
     conversationKey: 'T1:C1:1.0',
-    useCloudflareSandbox: false,
     requestedModel: 'local-stub/x',
     handle: agent,
     now: () => 1_800_000_000_000,
@@ -374,33 +350,6 @@ test('a create-only collision adopts the returned uid before retrying admission'
   assert.equal(dispatchState.dispatchEnvelope?.uid, existingUid);
 });
 
-test('an attached-container turn prepares its workspace turn once, never on reattachment', async () => {
-  let preparations = 0;
-  let dispatches = 0;
-  const dispatchState = state();
-  const prepareSandbox = async () => { preparations += 1; };
-  const agent = handle({
-    async dispatch() {
-      dispatches += 1;
-      return RECEIPT;
-    },
-  });
-  const first = await promptSlackThreadAgent({
-    ...promptInput(dispatchState, agent), useCloudflareSandbox: true, prepareSandbox,
-  });
-  assert.equal(first.text, 'done');
-  assert.deepEqual({ preparations, dispatches }, { preparations: 1, dispatches: 1 });
-
-  // The receipt survived an interrupted read; the reattaching attempt must not
-  // prepare the turn again, which would revoke the running submission's egress.
-  const reattaching = state({ dispatchEnvelope: ENVELOPE, dispatchReceipt: RECEIPT });
-  const reattached = await promptSlackThreadAgent({
-    ...promptInput(reattaching, agent), useCloudflareSandbox: true, prepareSandbox,
-  });
-  assert.equal(reattached.text, 'done');
-  assert.deepEqual({ preparations, dispatches }, { preparations: 1, dispatches: 1 });
-});
-
 test('a transient read interruption retains the receipt and does not checkpoint failure', async () => {
   let settlements = 0;
   const dispatchState = state({
@@ -543,36 +492,6 @@ test('native table intent is reduced into and replayed from the durable settleme
     async read() { throw new Error('read must not run'); },
   })));
   assert.deepEqual(replay.tablePresentations, result.tablePresentations);
-});
-
-test('sandbox activation failure is sanitized and never replays dispatch in normal mode', async () => {
-  let preparations = 0;
-  let dispatches = 0;
-  const dispatchState = state();
-  await assert.rejects(
-    () => promptSlackThreadAgent({
-      ...promptInput(dispatchState, handle({
-        async dispatch() {
-          dispatches += 1;
-          return RECEIPT;
-        },
-      })),
-      useCloudflareSandbox: true,
-      prepareSandbox: async () => {
-        preparations += 1;
-        throw new Error('private container control-plane detail');
-      },
-    }),
-    (error: unknown) =>
-      error instanceof AgentPromptFailure &&
-      error.kind === 'sandbox' &&
-      !error.retryable &&
-      !error.recoveryRequired,
-  );
-  assert.equal(preparations, 1);
-  assert.equal(dispatches, 0, 'activation failure must not admit or replay model work');
-  assert.equal(dispatchState.dispatchEnvelope, undefined);
-  assert.equal(dispatchState.dispatchReceipt, undefined);
 });
 
 test('receipt-scoped relay is prepared after durable receipt and drains after settlement', async () => {
@@ -930,24 +849,38 @@ test('a completed reply reports whether the Agent opened a coding workspace, wit
   assert.equal(plain.codingWorkspaceOpened, false);
 });
 
-test('only a turn with an attached container fails as a sandbox failure', async () => {
+test('a coding workspace never fails the turn as a sandbox failure', async () => {
   const sandboxFailure = () => handle({
     async read() {
       throw new AgentRunError({ outcome: 'failed', submissionId: RECEIPT.submissionId,
         cause: { type: 'sandbox_unavailable', message: 'The coding workspace is temporarily unavailable.' } });
     },
   });
-  // A legacy attached container keeps the sandbox category.
-  await assert.rejects(
-    () => promptSlackThreadAgent({ ...promptInput(state(), sandboxFailure()), useCloudflareSandbox: true,
-      prepareSandbox: async () => {} }),
-    (error: unknown) => error instanceof AgentPromptFailure && error.kind === 'sandbox',
-  );
   // The Agent in the virtual sandbox never fails its turn on a workspace.
   await assert.rejects(
     () => promptSlackThreadAgent(promptInput(state(), sandboxFailure())),
     (error: unknown) => error instanceof AgentPromptFailure && error.kind === 'agent',
   );
+});
+
+test('a sandbox failure settled by an attached container replays as an Agent failure', async () => {
+  // v0.1.26 and earlier could settle a turn this way; an update straight past
+  // the attached container still reads and replays that record.
+  for (const failureKind of ['sandbox', 'sandbox-session-cap'] as const) {
+    const settled = state({
+      dispatchEnvelope: ENVELOPE,
+      dispatchReceipt: RECEIPT,
+      flueSettlement: { outcome: 'failed', settledAt: 1, failureKind },
+    });
+    await assert.rejects(
+      () => promptSlackThreadAgent(promptInput(settled, handle({
+        async dispatch() { throw new Error('dispatch must not run'); },
+        async read() { throw new Error('read must not run'); },
+      }))),
+      (error: unknown) => error instanceof AgentPromptFailure && error.kind === 'agent' &&
+        agentFailureText(error) === AGENT_FAILURE_TEXT,
+    );
+  }
 });
 
 function milestone(

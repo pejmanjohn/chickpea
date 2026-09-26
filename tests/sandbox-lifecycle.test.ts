@@ -16,10 +16,6 @@ import {
 } from '../src/sandbox/errors.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { reserveMonthlySandboxSession } from '../src/sandbox/session-cap.ts';
-import {
-  prepareSandboxTurn,
-  requireSandboxTurnId,
-} from '../src/sandbox/turn-context.ts';
 
 test('Cloudflare sandbox guardrail options keep threads warm for 30 minutes and prohibit keep-alive', () => {
   assert.deepEqual(CLOUDFLARE_SANDBOX_OPTIONS, {
@@ -350,20 +346,3 @@ test('monthly cap is reserved once at first activation, not sandbox construction
   }
 });
 
-test('turn id helpers persist and recover the exact per-turn key', async () => {
-  let stored: string | undefined;
-  const sandbox = {
-    async prepareTurn(turnId: string) {
-      stored = turnId;
-    },
-    async getTurnId() {
-      return stored;
-    },
-  };
-
-  await prepareSandboxTurn(sandbox, 'msg:C1:1782770400.000100');
-  assert.equal(
-    await requireSandboxTurnId(sandbox),
-    'msg:C1:1782770400.000100',
-  );
-});

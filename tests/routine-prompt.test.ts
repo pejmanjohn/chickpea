@@ -254,7 +254,6 @@ function routineImagePlan(imageCapability?: RoutineImageCapability) {
     assignment,
     instructions: ROUTINE_AGENT.instructions,
     memoryEpoch: 1,
-    sandboxMode: 'bash',
     ...(imageCapability ? { imageCapability } : {}),
   });
 }

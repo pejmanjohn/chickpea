@@ -62,7 +62,6 @@ import {
   AgentObservationYield,
   StateStoreUnavailable,
   AgentPromptFailure,
-  endCloudflareSandboxTurn,
   promptSlackThreadAgent,
   type AgentDispatchResult,
   type SlackFlueDispatchState,
@@ -235,8 +234,6 @@ export interface RunTurnOptions {
   observationSignal?: AbortSignal;
   /** The durable receipt exists and this attempt is now only observing. */
   onObservationStarted?: () => void;
-  /** Focused seam; production revokes the workspace turn's egress. */
-  endSandboxTurn?: typeof endCloudflareSandboxTurn;
   /** Explicit lease fence for a ledger-authoritative attempt. */
   runFencingToken?: number;
   /** Immutable authority selected at admission. Missing means legacy. */
@@ -879,18 +876,7 @@ async function runTurnAttempt(
     ]);
     const conversationKey = preparedMemory?.conversationKey ?? slackAgentThreadKey(turn, assignment);
     const runtimePlanDecision = frozen?.decision ?? options.runtimePlanDecision;
-    let sandboxUnavailableFallback = frozen?.unavailableFallback ?? false;
-    // A frozen plan is durable, but binding availability is not. Preserve its
-    // envelope/receipt for idempotent reattachment while narrowing any work that
-    // has not settled yet; settled replies must replay their saved result.
-    const sandboxDispatchUnsettled = !options.flueDispatch?.flueSettlement;
-    if (
-      runtimePlanDecision?.runtimePlan.sandbox.mode === 'cloudflare' &&
-      !sandboxBindingInstalled(platformEnv) &&
-      sandboxDispatchUnsettled
-    ) {
-      sandboxUnavailableFallback = true;
-    }
+    const sandboxUnavailableFallback = frozen?.unavailableFallback ?? false;
     const agentConversationKey = options.continuityKey ?? conversationKey;
     const workLifecycle = options.runId && options.replayText === undefined && resolvedModel
       ? await createSlackShadowLifecycle({
@@ -935,7 +921,6 @@ async function runTurnAttempt(
   }
   const {
     preparedMemory,
-    conversationKey,
     agentConversationKey,
     runtimePlanDecision,
     sandboxUnavailableFallback,
@@ -999,7 +984,6 @@ async function runTurnAttempt(
     await agentViewPresentation?.settleLifecycle();
     terminalStatusFinished = true;
   };
-  let usedCloudflareSandbox = false;
   let usageRecorder: InteractiveUsageRecorder | undefined;
   let interactionProgress: SlackInteractionProgress = {
     ...options.interactionProgress,
@@ -1474,14 +1458,6 @@ async function runTurnAttempt(
       text = options.replayText;
     } else {
       try {
-        // Only a plan admitted with an attached container has the relay
-        // prepare and end its workspace turn. Current plans keep the Agent in
-        // the virtual sandbox, and the workspace tools open and end their own
-        // workspace turn, so a turn that never uses one touches no container.
-        usedCloudflareSandbox = runtimePlanDecision !== undefined &&
-          runtimePlanDecision.runtimePlan.sandbox.mode === 'cloudflare' &&
-          !turn.attachmentIntake && !turn.attachments?.length &&
-          !sandboxUnavailableFallback;
         if (!options.agentPrompt && !options.flueDispatch) {
           throw new Error('Durable Flue dispatch state is unavailable.');
         }
@@ -1525,7 +1501,6 @@ async function runTurnAttempt(
             state: options.flueDispatch!,
             turnId: statusGeneration,
             conversationKey: agentConversationKey,
-            useCloudflareSandbox: usedCloudflareSandbox,
             requestedModel: resolvedModel ?? null,
             ...(runtimePlanDecision
               ? { runtimePlan: runtimePlanDecision.runtimePlan }
@@ -1841,32 +1816,21 @@ async function runTurnAttempt(
     throw err;
   } finally {
     // A yielded turn is still running: it ends nothing a reattaching attempt
-    // needs (its status, acknowledgment, and workspace turn and egress), the
-    // same as an attempt the platform killed mid-observation.
+    // needs (its status and acknowledgment), the same as an attempt the
+    // platform killed mid-observation.
     if (yielded) {
       if (!terminalStatusFinished) statusTurn.close();
     } else {
       // A V3 retry/recovery attempt keeps its acknowledged activity visible.
       // Legacy presentations retain their prior best-effort finally cleanup.
-      try {
-        if (!terminalStatusFinished) {
-          if (frozenPresentation?.schemaVersion === 3) {
-            statusTurn.close();
-          } else {
-            await statusTurn.finish(async () => { await presenter.clearStatus(); });
-          }
+      if (!terminalStatusFinished) {
+        if (frozenPresentation?.schemaVersion === 3) {
+          statusTurn.close();
+        } else {
+          await statusTurn.finish(async () => { await presenter.clearStatus(); });
         }
-        await removeWorkAcknowledgment();
-      } finally {
-        // The Sandbox DO lives in a different isolate from the agent factory;
-        // close the turn by its durable thread id at the actual end-of-turn
-        // seam. The workspace stays warm for follow-ups in this thread.
-        await (options.endSandboxTurn ?? endCloudflareSandboxTurn)(
-          platformEnv,
-          conversationKey,
-          usedCloudflareSandbox,
-        );
       }
+      await removeWorkAcknowledgment();
     }
   }
 }
@@ -2083,8 +2047,6 @@ function agentFailureSafeCode(error: unknown): string {
     case 'openai-subscription-reconnect': return 'subscription_reconnect';
     case 'openai-subscription-quota': return 'subscription_quota';
     case 'openai-subscription-policy': return 'subscription_policy';
-    case 'sandbox': return 'sandbox_failed';
-    case 'sandbox-session-cap': return 'sandbox_session_cap';
     default: return 'agent_failed';
   }
 }
@@ -2094,8 +2056,6 @@ function agentFailureBeforeModelInvocation(error: unknown): boolean {
   return [
     'openai-subscription-reconnect',
     'openai-subscription-policy',
-    'sandbox',
-    'sandbox-session-cap',
   ].includes(error.kind);
 }
 

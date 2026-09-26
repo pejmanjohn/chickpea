@@ -65,7 +65,7 @@ test('exact schedule dependencies govern disconnects, mounting, metadata edits, 
       turn: { workspaceId: WORKSPACE, channelId: CHANNEL, eventId: 'run', userId: 'U_OWNER',
         actorMembershipId: owner.membership.id, messageTs: '1785509000.000100', threadTs: '1785509000.000100', text: 'Run the saved task',
         source: 'app_mention', contextMode: 'channel_history' },
-      instructions: agent.instructions, memoryEpoch: 1, sandboxMode: 'bash', effectiveConnections: authority.effectiveConnections });
+      instructions: agent.instructions, memoryEpoch: 1, effectiveConnections: authority.effectiveConnections });
     assert.deepEqual(plan.connectionAccountIds, [source.id]);
     assert.equal(plan.apiConnections.length, 1);
     const service = new ConnectionAccountService({ config, settings });

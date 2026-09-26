@@ -17,7 +17,7 @@ import {
 import { reconnectingSandboxStub } from './reconnect.ts';
 import { opaqueId } from '../work/admission.ts';
 import { sandboxThreadKey } from './thread-key.ts';
-import { requireSandboxTurnId, type SandboxTurnContext } from './turn-context.ts';
+import type { SandboxTurnContext } from './turn-context.ts';
 import { DEFAULT_WORKSPACE_NAME } from './workspace-limits.ts';
 import {
   WORKSPACE_DIR,
@@ -27,8 +27,8 @@ import {
 
 /**
  * The Sandbox Durable Object id of a conversation's default workspace. It is
- * the thread key the attached container has always used, so warm containers
- * and checkpoints carry over unchanged when tools address the workspace.
+ * the thread key the attached container always used, so warm containers and
+ * checkpoints from before workspaces were tools carry over unchanged.
  */
 export function defaultWorkspaceId(conversationKey: string): string {
   return sandboxThreadKey(conversationKey);
@@ -100,12 +100,8 @@ export interface WorkspaceSessionOptions<TStub extends WorkspaceSandboxStub> {
   agentId: string;
   grants: readonly RepositoryGrant[];
   credentialMode?: SandboxCredentialMode;
-  /**
-   * The turn this request binds the workspace to. When given, opening the
-   * workspace prepares that turn on the Durable Object itself; otherwise the
-   * relay must already have prepared it (the attached-container path).
-   */
-  turnId?: string;
+  /** The turn this request binds the workspace to; opening it prepares that turn. */
+  turnId: string;
   /** Mint a fresh DO stub. Never cached across acquisitions: stubs are bound to one I/O context. */
   mintStub: () => Promise<TStub>;
   /** Reserve one counted container start; false when the monthly cap refuses it. */
@@ -120,9 +116,9 @@ export interface WorkspaceSessionOptions<TStub extends WorkspaceSandboxStub> {
  * One request's handle on one coding workspace. Opening it prepares Durable
  * Object state only (turn binding, owner check, egress grants); the first
  * file or exec operation is the container-create boundary, where the session
- * cap is reserved and a checkpoint is restored. Every consumer this request
- * (the attached container and the workspace tools) shares one activation, so
- * a checkpoint is restored and a session counted at most once.
+ * cap is reserved and a checkpoint is restored. Every workspace tool this
+ * request shares one activation, so a checkpoint is restored and a session
+ * counted at most once.
  */
 export class WorkspaceSession<TStub extends WorkspaceSandboxStub = WorkspaceSandboxStub> {
   readonly id: string;
@@ -158,7 +154,7 @@ export class WorkspaceSession<TStub extends WorkspaceSandboxStub = WorkspaceSand
 
   /**
    * The activatable stub: a proxy whose first file/exec operation reserves the
-   * session and restores the checkpoint. The attached container wraps this.
+   * session and restores the checkpoint.
    */
   async activatable(): Promise<TStub> {
     return (await this.prepare()).stub;
@@ -226,8 +222,8 @@ export class WorkspaceSession<TStub extends WorkspaceSandboxStub = WorkspaceSand
     const stub = await acquireSandbox(async () => this.reconnecting(), async (candidate) => {
       // Preparing the turn revokes whatever egress the previous turn left
       // before this turn's grants are installed.
-      if (options.turnId !== undefined) await candidate.prepareTurn(options.turnId);
-      const turnId = options.turnId ?? await requireSandboxTurnId(candidate);
+      const { turnId } = options;
+      await candidate.prepareTurn(turnId);
       if (!options.credentialMode) {
         throw new Error('Sandbox repository credential mode is unavailable');
       }

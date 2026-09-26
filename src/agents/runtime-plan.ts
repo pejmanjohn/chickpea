@@ -62,7 +62,11 @@ export const RUNTIME_PLAN_SCHEMA_VERSION = 3 as const;
 export const DEFAULT_CONTINUITY_POLICY = 'slack-runtime-v3' as const;
 
 export type RuntimePlanSurface = 'channel_thread' | 'direct_message';
-export type RuntimePlanSandboxMode = 'bash' | 'cloudflare';
+/**
+ * The Agent's own environment. Only `bash` exists: the Agent lives in the
+ * virtual sandbox and reaches a coding workspace through the workspace tools.
+ */
+export type RuntimePlanSandboxMode = 'bash';
 
 export interface RuntimePlanConversationV2 {
   workspaceId: string;
@@ -220,10 +224,9 @@ export interface RuntimePlanV2 {
   managedConnections?: RuntimePlanManagedConnectionV2[];
   repositories: RuntimePlanRepositoryV2[];
   /**
-   * The Agent's own environment. New plans always write `bash`: the Agent
-   * lives in the virtual sandbox and reaches a coding workspace only through
-   * the workspace tools. `cloudflare` is read only from plans admitted with
-   * an attached container.
+   * The Agent's own environment, always `bash`. A stored V2/V3 plan admitted
+   * with an attached container reads as `bash` with the coding-workspace
+   * capability (see `parseRuntimePlanV2`).
    */
   sandbox: { mode: RuntimePlanSandboxMode };
   artifactDestination: {
@@ -303,8 +306,6 @@ export interface CompileRuntimePlanV2Input {
   /** Complete, already-layered model instruction text. */
   instructions: string;
   memoryEpoch: number;
-  /** Legacy compatibility only: new plans compile `bash`. Defaults to `bash`. */
-  sandboxMode?: RuntimePlanSandboxMode;
   /** Resolved internal Flue route; defaults to the canonical model for compatibility. */
   runtimeModel?: string;
   runtimeModelRoute?: FrozenRuntimeModelRoute;
@@ -457,7 +458,7 @@ export function compileRuntimePlanV2(input: CompileRuntimePlanV2Input): RuntimeP
       ? { managedConnections }
       : {}),
     repositories: compileRepositories(input.assignment.agent.repositories),
-    sandbox: { mode: input.sandboxMode ?? 'bash' },
+    sandbox: { mode: 'bash' },
     artifactDestination: {
       kind: 'slack_conversation',
       channelId: input.turn.channelId,
@@ -500,7 +501,7 @@ export function buildRuntimePlanActivityContext(
   if (
     plan.skills.length > 0 ||
     plan.repositories.length > 0 ||
-    runtimePlanHasCodingWorkspace(plan) ||
+    plan.codingWorkspace !== undefined ||
     options.browserMounted ||
     options.includeAgentAuthoringSkill
   ) {
@@ -527,7 +528,7 @@ export function buildRuntimePlanActivityContext(
     descriptors.push({ toolName, descriptor: sandboxDescriptor });
   }
   // The coding-workspace tools are the same primitives on the container.
-  if (runtimePlanHasCodingWorkspace(plan)) {
+  if (plan.codingWorkspace !== undefined) {
     for (const toolName of WORKSPACE_TOOL_NAMES) {
       descriptors.push({ toolName, descriptor: sandboxDescriptor });
     }
@@ -625,7 +626,7 @@ function dedupeActivityDescriptors(
   return [...byName.values()];
 }
 
-export function deriveRuntimePlanInstanceId(plan: RuntimePlanV2): string {
+export function deriveRuntimePlanInstanceId(plan: RuntimePlanV2 | AdmittedRuntimePlanData): string {
   const validated = parseRuntimePlanV2(plan);
   return opaqueId(
     'agent',
@@ -647,16 +648,6 @@ export function runtimePlanConversationKey(plan: RuntimePlanV2): string {
 }
 
 /**
- * Whether this plan can reach a coding workspace: through the workspace tools
- * on a current plan, or through the attached container on a legacy one.
- */
-export function runtimePlanHasCodingWorkspace(
-  plan: Pick<RuntimePlanV2, 'sandbox' | 'codingWorkspace'>,
-): boolean {
-  return plan.codingWorkspace !== undefined || plan.sandbox.mode === 'cloudflare';
-}
-
-/**
  * Owner-bound Sandbox coordinate for isolated executions such as routines.
  * The opaque key binds both the canonical Slack coordinate and frozen owner
  * identity while remaining below Cloudflare Sandbox's 63-character id limit.
@@ -673,6 +664,23 @@ export function runtimePlanSandboxConversationKey(
   }
   return opaqueId('sandbox', `${conversationKey}:${ownerId}`);
 }
+
+/**
+ * The stored sandbox mode of a V2/V3 plan admitted with an attached
+ * container. Read only, and only to upgrade it; nothing compiles it.
+ */
+const ATTACHED_CONTAINER_SANDBOX_MODE = 'cloudflare';
+
+/**
+ * A plan exactly as it was admitted, kept only to resend as Flue creation
+ * data. Flue counts creation data in a submission's identity, so a retried
+ * dispatch must repeat the admitted bytes, including the stored sandbox mode
+ * of a plan admitted with an attached container. Everything else reads the
+ * plan through `parseRuntimePlanV2`.
+ */
+export type AdmittedRuntimePlanData = Omit<RuntimePlanV2, 'sandbox'> & {
+  sandbox: { mode: RuntimePlanSandboxMode | typeof ATTACHED_CONTAINER_SANDBOX_MODE };
+};
 
 /** Strict allowlist parser for persisted/runtime-provided Flue initial data. */
 export type RuntimePlanLegacyArtifactThread = 'conversation' | 'none';
@@ -869,14 +877,23 @@ export function parseRuntimePlanV2(
     );
   const repositories = arrayOf(record.repositories, 'repositories', parseRepository, 256);
   const sandboxRecord = exactRecord(record.sandbox, 'sandbox', ['mode']);
-  const sandbox = {
-    mode: oneOf(sandboxRecord.mode, 'sandbox.mode', ['bash', 'cloudflare'] as const),
-  };
-  // The workspace tools serve the virtual-sandbox Agent; a plan admitted with
-  // an attached container never carries the capability.
-  if (codingWorkspace && sandbox.mode !== 'bash') {
+  const storedSandboxMode = oneOf(
+    sandboxRecord.mode,
+    'sandbox.mode',
+    ['bash', ATTACHED_CONTAINER_SANDBOX_MODE] as const,
+  );
+  // A plan admitted with an attached container (v0.1.26 and earlier) can
+  // still sit in a TurnJob, a Flue instance, or a routine envelope after an
+  // update. It reads as the current shape: the Agent in its virtual sandbox
+  // with the coding-workspace tools, on the same default workspace. Its
+  // coding model is the Agent's own, and the tools re-check live settings
+  // when they open a workspace. The stored harnessRevision is kept, so the
+  // Flue instance the plan names does not change.
+  const attachedContainer = storedSandboxMode === ATTACHED_CONTAINER_SANDBOX_MODE;
+  if (attachedContainer && codingWorkspace) {
     throw new Error('Runtime plan codingWorkspace requires the virtual sandbox.');
   }
+  const sandbox = { mode: 'bash' as const };
   const artifactRecord = exactRecord(
     record.artifactDestination,
     'artifactDestination',
@@ -917,6 +934,7 @@ export function parseRuntimePlanV2(
     ...(imageCapability ? { imageCapability } : {}),
     ...(browserCapability ? { browserCapability } : {}),
     ...(codingWorkspace ? { codingWorkspace } : {}),
+    ...(attachedContainer ? { codingWorkspace: { available: true as const } } : {}),
     ...(websiteLogins ? { websiteLogins } : {}),
     ...(modelAttribution ? { modelAttribution } : {}),
     ...(modelCredential ? { modelCredential } : {}),
@@ -931,18 +949,34 @@ export function parseRuntimePlanV2(
     artifactDestination,
     harnessRevision,
   };
-  const expected = computeHarnessRevision(parsed);
-  const legacyCandidate = { ...parsed };
-  delete legacyCandidate.connectionAccountIds;
-  delete legacyCandidate.connectionAuthorizations;
-  delete legacyCandidate.connectionChoices;
-  delete legacyCandidate.managedConnections;
-  const legacyExpected = !parsed.actorMembershipId && connectionAccountIds.length === 0 &&
-      connectionAuthorizations.length === 0 && connectionChoices.length === 0 &&
-      managedConnections.length === 0
-    ? computeHarnessRevision(legacyCandidate)
-    : undefined;
-  if (harnessRevision !== expected && harnessRevision !== legacyExpected) {
+  // The revision hashes the plan as it was admitted. Besides the plan as
+  // read, accept the shape from before connection fields were frozen and,
+  // for a V2/V3 plan read with the plain coding-workspace capability, the
+  // attached-container shape it was upgraded from. Re-reading an upgraded
+  // plan therefore validates and keeps naming the same instance.
+  const admittedShapes: HarnessRevisionInput[] = [parsed];
+  if (parsed.codingWorkspace && parsed.codingWorkspace.codingModel === undefined) {
+    const attachedShape: HarnessRevisionInput = {
+      ...parsed,
+      sandbox: { mode: ATTACHED_CONTAINER_SANDBOX_MODE },
+    };
+    delete attachedShape.codingWorkspace;
+    admittedShapes.push(attachedShape);
+  }
+  const predatesConnectionFields = !parsed.actorMembershipId && connectionAccountIds.length === 0 &&
+    connectionAuthorizations.length === 0 && connectionChoices.length === 0 &&
+    managedConnections.length === 0;
+  const matches = admittedShapes.some((shape) => {
+    if (computeHarnessRevision(shape) === harnessRevision) return true;
+    if (!predatesConnectionFields) return false;
+    const legacyCandidate = { ...shape };
+    delete legacyCandidate.connectionAccountIds;
+    delete legacyCandidate.connectionAuthorizations;
+    delete legacyCandidate.connectionChoices;
+    delete legacyCandidate.managedConnections;
+    return computeHarnessRevision(legacyCandidate) === harnessRevision;
+  });
+  if (!matches) {
     throw new Error('Runtime plan harnessRevision does not match its harness policy.');
   }
   return parsed;
@@ -1114,9 +1148,10 @@ function surfaceForTurn(turn: NormalizedSlackTurn): RuntimePlanSurface {
   return 'channel_thread';
 }
 
-function computeHarnessRevision(
-  plan: Omit<RuntimePlanV2, 'harnessRevision'> | RuntimePlanV2,
-): string {
+/** A plan shape whose harness revision can be computed, admitted or current. */
+type HarnessRevisionInput = Omit<AdmittedRuntimePlanData, 'harnessRevision'> & { harnessRevision?: string };
+
+function computeHarnessRevision(plan: HarnessRevisionInput): string {
   return createHash('sha256')
     .update(canonicalJson({
       schemaVersion: plan.schemaVersion,

@@ -795,21 +795,21 @@ test('progressive eligibility closes replacement paths and holds effect-capable 
     concurrentAttributionProven: true,
     replacementCapable: false,
   }), { allowed: false, reason: 'other' });
-  // A Cloudflare sandbox is only selected with repository grants, which make
-  // it effect-capable. On the Worker replacement-capable decides first, so
-  // container Agents stay terminal-only.
+  // A coding workspace is only available with repository grants, which make
+  // the plan effect-capable. On the Worker replacement-capable decides first,
+  // so such Agents stay terminal-only.
   assert.deepEqual(decide({
     runtimePlan: {
       ...basePlan,
       repositories: [{ id: 'repo_1', fullName: 'acme/example' }],
-      sandbox: { mode: 'cloudflare' },
+      codingWorkspace: { available: true },
     },
   }), { allowed: true, reason: 'final_answer_release' });
   assert.deepEqual(decide({
     runtimePlan: {
       ...basePlan,
       repositories: [{ id: 'repo_1', fullName: 'acme/example' }],
-      sandbox: { mode: 'cloudflare' },
+      codingWorkspace: { available: true },
     },
     replacementCapable: true,
   }), { allowed: false, reason: 'other' });
@@ -829,8 +829,8 @@ test('progressive eligibility closes replacement paths and holds effect-capable 
       id: 'managed_1', providerId: 'composio', adapterId: 'composio',
       toolkit: 'googlesheets', allowedCapabilities: ['google_sheets.values.update'],
     }] },
-    // The workspace tools mount on any Cloudflare sandbox.
-    { ...basePlan, sandbox: { mode: 'cloudflare' as const } },
+    // The workspace tools mount with the coding-workspace capability.
+    { ...basePlan, codingWorkspace: { available: true as const } },
     // A browser data change runs only under an `act` login.
     { ...basePlan, browserCapability: { provider: 'browserbase' as const }, websiteLogins: [{
       id: 'login_1', host: 'app.example.test', label: 'Example', level: 'act' as const,
