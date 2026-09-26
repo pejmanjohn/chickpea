@@ -6,6 +6,7 @@ import { createLocalJWKSet, jwtVerify, type JSONWebKeySet } from 'jose';
 import { createBetterAuth, type BetterAuthAdmissionOperation } from '../src/auth/better-auth.ts';
 import { createBetterAuthPublicHandler } from '../src/auth/better-auth-routes.ts';
 import { NodeBetterAuthBackend } from '../src/auth/better-auth-node.ts';
+import { lookupMcpClientName, renderMcpConsentPage } from '../src/auth/mcp-oauth-routes.ts';
 
 const ORIGIN = 'https://chickpea.example.test';
 const RESOURCE = `${ORIGIN}/mcp`;
@@ -88,7 +89,7 @@ async function fixture() {
       redirect_uri: REDIRECT, resource: RESOURCE,
     });
   }
-  return { backend, handler, register, beginAuthorize, authorize, token };
+  return { backend, options, cookie, handler, register, beginAuthorize, authorize, token };
 }
 
 for (const explicitRegistrationScope of [true, false]) {
@@ -192,4 +193,20 @@ test('adding offline access requires new consent even after workspace access was
   const upgrade = await f.authorize(client.client_id, RENEWABLE_SCOPE);
   assert.equal(upgrade.status, 200, 'authorize checks that the extra scope went through consent');
   assert.equal(typeof (await upgrade.json() as { refresh_token: unknown }).refresh_token, 'string');
+});
+
+test('MCP consent names the registered app instead of its client id', async (t) => {
+  const f = await fixture();
+  t.after(() => f.backend.close());
+  const registered = await f.register(RENEWABLE_SCOPE);
+  assert.equal(registered.status, 201);
+  const client = await registered.json() as { client_id: string };
+  const headers = new Headers({ cookie: f.cookie });
+  const name = await lookupMcpClientName(f.options, client.client_id, headers);
+  assert.equal(name, 'Refresh fixture');
+  const html = renderMcpConsentPage({ clientName: name, scope: RENEWABLE_SCOPE, oauthQuery: 'sig=test' });
+  assert.ok(html.includes('Refresh fixture'));
+  assert.ok(!html.includes(client.client_id), 'the dynamically registered client id stays off the page');
+  assert.equal(await lookupMcpClientName(f.options, 'unknown-client', headers), undefined);
+  assert.equal(await lookupMcpClientName(f.options, '', headers), undefined);
 });
