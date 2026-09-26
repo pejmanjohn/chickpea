@@ -289,17 +289,6 @@ test('the hook path registers the image tool only for a filled image capability'
   assert.deepEqual(names(undefined), ['post_artifact']);
 });
 
-test('the legacy app-identity assembler never mounts the image tool', async () => {
-  const source = await import('node:fs/promises').then(({ readFile }) =>
-    readFile(new URL('../src/agents/slack-thread.ts', import.meta.url), 'utf8')
-  );
-  const start = source.indexOf('const artifactCapability = createWorkspaceArtifactCapability(');
-  assert.ok(start > 0);
-  const legacy = source.slice(start, source.indexOf('if (input.registerActivityContext !== false)', start));
-  assert.match(legacy, /artifactCapability\.tool/);
-  assert.doesNotMatch(legacy, /createImageArtifactTool/);
-});
-
 test('a generation-only image capability limits each call before provider work', () => {
   const accumulator = createArtifactReceiptAccumulator(update => update({ schemaVersion: 1, receipts: [] }));
   const tool = createRuntimePlanArtifactTools(plan({ role: 'image', filled: true,

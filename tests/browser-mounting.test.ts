@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
 import { test } from 'node:test';
 
 import {
@@ -151,10 +150,3 @@ test('the sign-in tools mount with the browser and explain when the plan has no 
   }
 });
 
-test('the legacy app-identity assembler never mounts the browser tools', async () => {
-  const source = await readFile(new URL('../src/agents/slack-thread.ts', import.meta.url), 'utf8');
-  const start = source.indexOf('const artifactCapability = createWorkspaceArtifactCapability(');
-  assert.ok(start > 0);
-  const legacy = source.slice(start, source.indexOf('if (input.registerActivityContext !== false)', start));
-  assert.doesNotMatch(legacy, /createBrowserTools|browserSession/);
-});

@@ -455,5 +455,6 @@ test('a drop while opening the workspace keeps the container and tells the model
   assert.ok(!log.includes('destroy'), 'a dropped connection never destroys the container');
   // The next open reconnects and succeeds.
   assert.equal(await target.open(), 'warm');
-  assert.deepEqual(log, ['beginWorkspaceTurn', 'beginWorkspaceTurn', 'configureEgress']);
+  // Each open prepares the turn first; the Durable Object ignores the repeat.
+  assert.deepEqual(log, ['prepareTurn', 'beginWorkspaceTurn', 'prepareTurn', 'beginWorkspaceTurn', 'configureEgress']);
 });
