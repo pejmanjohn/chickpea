@@ -242,13 +242,24 @@ export function createSlackAgentCreationTurnCoordinator(
   const appendNotice = (
     notice: SlackAgentCreationTerminalIntent['followOnNotices'][number] | undefined,
     pendingProposalId?: string,
+    supersedesToolErrors = false,
   ): SlackAgentCreationTerminalIntent | undefined => {
     const terminal = current.terminalIntent;
-    if (!terminal || !notice || terminal.followOnNotices.length >= 8) return terminal;
+    if (!terminal) return terminal;
+    // A tool error the model recovered from (for example a retried revision
+    // conflict) is not an outcome the requester needs to read about.
+    const kept = supersedesToolErrors
+      ? terminal.followOnNotices.filter((existing) => !isToolErrorNotice(existing))
+      : terminal.followOnNotices;
+    const appended = notice && kept.length < 8 ? [...kept, notice] : kept;
+    if (appended.length === terminal.followOnNotices.length &&
+        appended.every((existing, index) => existing === terminal.followOnNotices[index])) {
+      return terminal;
+    }
     const updated = {
       ...terminal,
       ...(pendingProposalId ? { pendingProposalId } : {}),
-      followOnNotices: [...terminal.followOnNotices, notice],
+      followOnNotices: appended,
     };
     current = { ...current, terminalIntent: updated };
     persist(current);
@@ -325,9 +336,11 @@ export function createSlackAgentCreationTurnCoordinator(
       return intent;
     },
     recordFollowOn(result) {
+      const notice = followOnNoticeFromResult(result);
       return appendNotice(
-        followOnNoticeFromResult(result),
+        notice,
         pendingProposalIdFromResult(result),
+        result.ok && notice?.kind !== 'failure',
       );
     },
     recordScheduleFollowOn(result) {
@@ -393,9 +406,8 @@ function isManagementApplyResult(value: unknown): value is ManagementApplyResult
 function followOnNoticeFromResult(
   result: WorkspaceManagementToolResult,
 ): SlackAgentCreationTerminalIntent['followOnNotices'][number] | undefined {
-  if (!result.ok) {
-    return boundedFollowOnNotice('failure', result.error.message, 'A requested follow-on change failed.');
-  }
+  // Tool error messages are written for the model, not the requester.
+  if (!result.ok) return { kind: 'failure', text: FOLLOW_ON_TOOL_ERROR_TEXT };
   if (!result.result || typeof result.result !== 'object') return undefined;
   const value = result.result as Record<string, unknown>;
   const presentation = value.presentation && typeof value.presentation === 'object'
@@ -429,11 +441,19 @@ function followOnNoticeFromResult(
       return boundedFollowOnNotice(
         'failure',
         `A requested follow-on change did not finish: ${operations}.`,
-        'A requested follow-on change failed.',
+        'A requested follow-on change did not finish.',
       );
     }
   }
   return undefined;
+}
+
+const FOLLOW_ON_TOOL_ERROR_TEXT = 'A requested follow-on change failed.';
+
+function isToolErrorNotice(
+  notice: SlackAgentCreationTerminalIntent['followOnNotices'][number],
+): boolean {
+  return notice.kind === 'failure' && notice.text === FOLLOW_ON_TOOL_ERROR_TEXT;
 }
 
 function pendingProposalIdFromResult(

@@ -1431,6 +1431,88 @@ test('a Channel-origin direct create atomically includes its trusted source-Chan
   }
 });
 
+test('a Channel-origin create reports the Agent revision its source-Channel publish produced', async () => {
+  const f = await createManagementAdapterFixture('channel-create-origin-revision');
+  const workspaceId = f.admin.binding.slackTeamId;
+  const channelId = 'C_AGENT_REVISION';
+  const context: ManagementActorContext = {
+    userId: f.admin.user.id,
+    membershipId: f.admin.membership.id,
+    organizationId: f.admin.membership.organizationId,
+    actingAgentId: CHICKPEA_AGENT_ID,
+    origin: {
+      kind: 'slack',
+      workspaceId,
+      channelId,
+      threadTs: '1800000000.000002',
+      conversationKind: 'channel',
+      agentId: CHICKPEA_AGENT_ID,
+    },
+  };
+  const service = new WorkspaceManagementService({
+    identity: f.identity,
+    config: f.config,
+    management: f.management,
+    now: () => 1_800_000_000_000,
+    randomId: () => 'channel_create_origin_revision',
+    assertAgentChannelMembership: async () => undefined,
+    publishAgentPresence: async ({ agentId }) => ({ agent: await f.config.getAgent(agentId) }),
+    // Mirrors the Slack presence reconciler, which rewrites the Agent while
+    // publishing it to a Channel.
+    publishAgentChannel: async ({ actor, workspaceId: targetWorkspaceId, channelId: targetChannelId, agentId }) => {
+      const grant = await f.config.putAgentChannelGrant({
+        workspaceId: targetWorkspaceId,
+        channelId: targetChannelId,
+        agentId,
+        status: 'active',
+        createdByMembershipId: actor.membershipId,
+        channelLabel: 'agent-revision',
+      }, 0);
+      const current = await f.config.getAgent(agentId);
+      const agent = await f.config.updateAgent(agentId, {
+        slackPresence: { ...current.slackPresence!, observedAt: 1_800_000_000_001 },
+      }, current.revision);
+      return { agent, grant };
+    },
+  });
+  try {
+    const created = await service.applyWorkspaceChanges({
+      context,
+      idempotencyKey: 'channel-create-origin-revision',
+      operations: [{ itemId: 'create', kind: 'create_agent', agent: agentInput }],
+    });
+    assert.equal(created.status, 'completed');
+    const current = await f.config.getAgent(agentInput.id);
+    const reported = created.outcomes.flatMap(({ changed }) => changed ?? [])
+      .filter(({ kind, id }) => kind === 'agent' && id === agentInput.id)
+      .map(({ revision }) => revision ?? 0);
+    assert.equal(Math.max(...reported), current.revision);
+    assert.equal(created.outcomes.at(-1)?.changed?.find(({ kind }) => kind === 'agent')?.revision,
+      current.revision);
+
+    const proposed = await service.proposeWorkspaceChanges({
+      context,
+      ...authoringProposalMetadata('channel-create-origin-revision-follow-on'),
+      operations: [{
+        itemId: 'describe',
+        kind: 'update_agent',
+        agentId: agentInput.id,
+        expectedRevision: current.revision,
+        patch: { description: 'Follows the source-Channel publish.' },
+      }],
+    });
+    const confirmed = await service.confirmWorkspaceChange({
+      context,
+      proposalId: proposed.proposalId,
+    });
+    assert.equal(confirmed.status, 'completed');
+    assert.equal((await f.config.getAgent(agentInput.id)).description,
+      'Follows the source-Channel publish.');
+  } finally {
+    f.close();
+  }
+});
+
 test('Agent creation stays applied with a warning when Slack publication unexpectedly fails', async () => {
   const f = await createManagementAdapterFixture('create-presence-warning');
   const context: ManagementActorContext = {

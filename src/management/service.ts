@@ -4289,10 +4289,19 @@ export class WorkspaceManagementService {
             channelId: operation.channelId,
             agentId: operation.agentId!,
           });
-          return mutationForGrant(
+          const mutation = mutationForGrant(
             published.grant,
             grantInverseAtRevision(prepared.inverse, published.grant.revision),
           );
+          // Publishing reconciles the Agent's Slack presence and can advance its
+          // revision; report it so the next change targets the current revision.
+          return {
+            ...mutation,
+            changed: [
+              ...mutation.changed,
+              { kind: 'agent', id: published.agent.id, revision: published.agent.revision },
+            ],
+          };
         }
         const channel = await this.stores.config.getChannel(operation.workspaceId, operation.channelId);
         if (!channel) throw new ManagementError('revision_conflict', 'The Channel does not exist.');
