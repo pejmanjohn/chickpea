@@ -18,6 +18,7 @@ import {
   slackMarkdownPartFits,
   slackMarkdownRenderedShape,
   splitSlackMarkdownReply,
+  streamableSlackMarkdownPrefix,
 } from '../src/slack/message-format.ts';
 import {
   drainSlackPresentationRepairs,
@@ -628,9 +629,11 @@ test('a recovery split over a long fenced prefix stays within the update bound',
   assert.deepEqual(lines, code);
 });
 
-test('recovery carries as much as a normal reply: a 47,000-character answer is not shortened', () => {
-  const text = longPlan(40, 27);
-  assert.ok(text.length > 44_000 && text.length < 48_000);
+test('recovery carries as much as a normal reply: a 42,000-character, 40-heading answer is not shortened', () => {
+  // Each heading also costs its measured block overhead, so 40 of them take
+  // about 4,000 characters of the four messages' room.
+  const text = longPlan(40, 25);
+  assert.ok(text.length > 41_000 && text.length < 44_000);
   const normal = splitSlackMarkdownReply(text);
   assert.ok(!normal.at(-1)!.includes(SLACK_REPLY_SHORTENED_NOTE));
   const recovered = splitSlackMarkdownReply(text, recoveryReplySplit({ minFirstPartLength: 11_000 }, text));
@@ -1113,7 +1116,11 @@ test('a final posted fresh after its plan froze for a stream reuses the frozen s
     await streamLongAnswer(h, text);
     const streamedChars = v3(h).stream.acknowledgedByteLength;
     assert.ok(streamedChars > 0);
-    const split = { minFirstPartLength: streamedChars };
+    // The stream stops where the default split would cut. A plan frozen for
+    // a longer stream (an earlier build's cap) keeps its longer first message.
+    const split = {
+      minFirstPartLength: Math.max(streamedChars, splitSlackMarkdownReply(text)[0]!.length + 300),
+    };
     const frozen = splitSlackMarkdownReply(text, split);
     assert.notEqual(frozen[0], splitSlackMarkdownReply(text)[0], 'the default split differs');
 
@@ -1722,7 +1729,8 @@ test('the recovery bound counts the replaced first message at Slack\'s escaped l
 test('a refusal at the last planned follow-up re-splits into the follow-ups storage still allows', async () => {
   const h = harness();
   try {
-    await finalizeLongAnswer(h, longPlan(60, 35));
+    // Sections sized so four, with their header overhead, fill a half-size part.
+    await finalizeLongAnswer(h, longPlan(60, 32));
     const planned = v3(h).continuations!.parts.map((part) => part.text);
     assert.equal(planned.length, 3);
     assert.ok(planned[2]!.endsWith(SLACK_REPLY_SHORTENED_NOTE));
@@ -1744,10 +1752,14 @@ test('a fresh final after Slack refuses the recovery update no longer keeps the 
   try {
     const recorded: Array<{ messageTs: string; text: string }> = [];
     const presenter = planningPresenter(h, recorded);
-    // An unclosed link label holds the stream at a short prefix.
+    // The stream carried only a short prefix before the stop's outcome was lost.
     const intro = 'The migration keeps every step reversible. '.repeat(70).trim();
-    const text = `${intro}\n\nSee [the appendix at the end.\n\n${longPlan(18, 23)}`;
-    const split = await interruptLongStream(h, presenter, text);
+    const text = `${intro}\n\n${longPlan(18, 23)}`;
+    await streamLongAnswer(h, intro);
+    h.stopStreamErrors.push(new Error('socket hang up'));
+    await assert.rejects(presenter.deliverFinal(text, 'markdown'));
+    assert.equal(v3(h).stream.state, 'unknown');
+    const split = recoveryReplySplit({ minFirstPartLength: streamedText(h).length }, text);
     assert.equal(split.minFirstPartLength, streamedText(h).length, 'recovery keeps the short prefix');
     assert.ok(streamedText(h).length < RECOVERY_UPDATE_CHARS);
 
@@ -1762,4 +1774,121 @@ test('a fresh final after Slack refuses the recovery update no longer keeps the 
   } finally {
     h.close();
   }
+});
+
+/** Slack's measured bound: rendered characters plus about 101 per header block. */
+function measuredSlackCount(part: string): number {
+  const rendered = part.replace(/^ {0,3}#{1,6}\s+/gm, '').length;
+  return rendered + 101 * slackMarkdownRenderedShape(part).headerBlocks;
+}
+const MEASURED_SLACK_BOUND = 13_200;
+
+test('a header-dense part is sized by the measured header overhead, not refused first', () => {
+  // Past the probe Slack refused: 20 headers and 10,625 characters of prose.
+  const prose = 'Keep the rollout reversible and measured at every step. '.repeat(200).trim();
+  const text = [
+    ...Array.from({ length: 20 }, (_, index) => `### Step ${index + 1}`),
+    prose,
+  ].join('\n\n');
+  assert.ok(measuredSlackCount(text) > MEASURED_SLACK_BOUND, 'Slack refuses this as one message');
+  assert.equal(slackMarkdownRenderedShape(text).headerBlocks, 20);
+  assert.equal(slackMarkdownPartFits(text), false);
+  const parts = splitSlackMarkdownReply(text);
+  assert.ok(parts.length >= 2);
+  for (const part of parts) {
+    assert.ok(slackMarkdownPartFits(part));
+    assert.ok(measuredSlackCount(part) <= MEASURED_SLACK_BOUND - 1_000, 'with margin under the bound');
+  }
+  assert.equal(parts.join(' ').replace(/\s/g, ''), text.replace(/\s/g, ''), 'no text is lost');
+
+  // The case-3a follow-up (21 headers and prose at 11,900) now splits before posting.
+  const reconstructed = [
+    ...Array.from({ length: 21 }, (_, index) => `### Step ${41 + index}\n\n- Confirm the owner.`),
+    'Details. '.repeat(1_150).trim(),
+  ].join('\n\n').slice(0, 11_900);
+  assert.equal(slackMarkdownPartFits(reconstructed), false);
+});
+
+test('prose and a single header keep the full markdown limit', () => {
+  const text = `### Summary\n\n${'x'.repeat(11_800)}`;
+  assert.ok(slackMarkdownPartFits(text));
+  assert.deepEqual(splitSlackMarkdownReply(text), [text]);
+});
+
+test('a plan frozen before the header overhead recomputes its first message without it', async () => {
+  const h = harness();
+  try {
+    const text = longPlan(18, 23);
+    const split = { minFirstPartLength: 3_000 };
+    const legacy = splitSlackMarkdownReply(text, { ...split, headerBlockOverhead: 0 });
+    assert.notEqual(legacy[0], splitSlackMarkdownReply(text, split)[0], 'the two bounds disagree');
+    mutate(h, { kind: 'record_terminal_delivery_intent', operationId: 'terminal_answer', result: 'answer' });
+    mutate(h, {
+      kind: 'record_continuation_plan', split, shaped: true, parts: legacy.slice(1), closing: CLOSING,
+    });
+    assert.equal(v3(h).continuations?.headerOverhead, undefined);
+    assert.deepEqual(await h.presentation.frozenReplyParts(text, 'markdown'), legacy,
+      'the first message ends exactly where the stored follow-ups begin');
+  } finally {
+    h.close();
+  }
+});
+
+test('a heading-dense stream stops inside the first message\'s block and size bounds', async () => {
+  const h = harness();
+  try {
+    // The case-3b shape: Slack refused an append at 61 headers.
+    const text = checklistPhases(70);
+    await streamLongAnswer(h, text);
+    const streamed = streamedText(h);
+    assert.ok(streamed.length > 0 && text.startsWith(streamed));
+    const shape = slackMarkdownRenderedShape(streamed);
+    assert.ok(shape.blocks <= slackMarkdownPartBlockLimit, `${shape.blocks} blocks`);
+    assert.ok(shape.countedLength <= LIMIT - 16);
+    assert.ok(measuredSlackCount(streamed) <= MEASURED_SLACK_BOUND - 1_000);
+    assert.equal(v3(h).stream.state, 'streaming', 'streaming stopped at the cap, not by a refusal');
+
+    await finalizeLongAnswer(h, text);
+    await h.presentation.deliverContinuations();
+    assert.equal(v3(h).continuations?.state, 'delivered');
+  } finally {
+    h.close();
+  }
+});
+
+test('a full stream ends outside a code block, and a long paragraph at a sentence end', async () => {
+  const intro = 'The migration keeps every step reversible and measured. '.repeat(170).trim();
+  const code = Array.from({ length: 120 }, (_, index) => `  <step id="${index}"><![CDATA[ cmd > out.txt 2>&1 ]]></step>`);
+  const fenced = `${intro}\n\n\`\`\`xml\n${code.join('\n')}\n\`\`\`\n\nDone.`;
+  const h = harness();
+  try {
+    await streamLongAnswer(h, fenced);
+    const streamed = streamedText(h);
+    assert.ok(fenced.startsWith(streamed));
+    assert.equal((streamed.match(/^```/gm) ?? []).length % 2, 0, 'no code block is left open');
+  } finally {
+    h.close();
+  }
+  const paragraph = 'Each step is reversible, measured, and approved by its owner. '.repeat(260).trim();
+  const g = harness();
+  try {
+    await streamLongAnswer(g, paragraph);
+    const streamed = streamedText(g);
+    assert.ok(paragraph.startsWith(streamed) && streamed.length < paragraph.length);
+    assert.match(streamed, /owner\.$/, 'the first message ends at a sentence');
+  } finally {
+    g.close();
+  }
+});
+
+test('a literal [, < or ** on a finished line never holds the rest of the stream', () => {
+  // Case 2: a CDATA example held the stream for the rest of the answer.
+  const cdata = '```xml\n<snippet><![CDATA[ cmd > out.txt 2>&1 ]]></snippet>\n```\n\nNext section follows here.\n';
+  assert.equal(streamableSlackMarkdownPrefix(cdata), cdata.trimEnd());
+  const kwargs = 'def build(**kwargs):\n    return kwargs\n\nThe builder takes options.\n';
+  assert.equal(streamableSlackMarkdownPrefix(kwargs), kwargs.trimEnd());
+  // A link, reference or emphasis still being written on the last line is held.
+  assert.equal(streamableSlackMarkdownPrefix('Read more in [the guide'), 'Read more in');
+  assert.equal(streamableSlackMarkdownPrefix('Open <https://example.com/do'), 'Open');
+  assert.equal(streamableSlackMarkdownPrefix('This is **very'), 'This is');
 });

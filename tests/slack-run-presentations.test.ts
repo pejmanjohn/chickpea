@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import { openStateDb } from '../src/state/node-state-db.ts';
 import {
   DEFAULT_SLACK_APPEND_BUDGET,
+  SLACK_APPEND_BOOKING_HORIZON_MS,
   SLACK_PRESENTATION_FINALIZED_TTL_MS,
   SLACK_PRESENTATION_RETENTION_MS,
   SlackRunPresentationStoreLogic,
@@ -1716,26 +1717,107 @@ test('adopt_plan is refused when native tasks are disabled', () => {
   }
 });
 
-test('workspace append reservations use one server-clock budget and shared cooldown', () => {
+test('the append budget is sized to Slack Tier 4: 100 a minute with a burst', () => {
+  assert.equal(60_000 / DEFAULT_SLACK_APPEND_BUDGET.refillWindowMs, 100);
+  assert.ok(DEFAULT_SLACK_APPEND_BUDGET.capacity >= 8, 'eight threads can open together');
+});
+
+test('booking leaves the earlier one-token budget row as it was, so a rollback keeps streaming', () => {
   let clock = 1_800_000_000_000;
   const db = openStateDb(':memory:');
   try {
     const store = new SlackRunPresentationStoreLogic(db, () => clock);
-    assert.deepEqual(store.reserveAppend(ROOT.workspaceId), {
-      outcome: 'reserved',
-      budgetVersion: 1,
+    // What an earlier build wrote and still reads after a rollback.
+    const legacy = { capacity: 1, refillWindowMs: 1_000 };
+    assert.equal(store.reserveAppend(ROOT.workspaceId, legacy).outcome, 'reserved');
+    db.run(
+      `INSERT INTO slack_workspace_append_budgets (
+        workspace_id, capacity, refill_window_ms, available, last_refill_at,
+        cooldown_until, version, updated_at
+      ) VALUES (?, 1, 1000, 1, ?, NULL, 0, ?)`,
+      'T_ROLLBACK', clock, clock,
+    );
+    for (let index = 0; index < 12; index += 1) store.reserveAppend('T_ROLLBACK');
+    const legacyRow = () => db.get(
+      'SELECT capacity, refill_window_ms, available, last_refill_at FROM slack_workspace_append_budgets WHERE workspace_id = ?',
+      'T_ROLLBACK',
+    );
+    assert.deepEqual({ ...legacyRow() }, {
+      capacity: 1, refill_window_ms: 1_000, available: 1, last_refill_at: clock,
     });
-    assert.deepEqual(store.reserveAppend(ROOT.workspaceId), {
-      outcome: 'exhausted',
-      retryAt: clock + DEFAULT_SLACK_APPEND_BUDGET.refillWindowMs,
-      budgetVersion: 1,
-    });
+    // A Slack cooldown reaches the earlier build's row too, for a mixed rollout.
+    const { cooldownUntil } = store.applyAppendCooldown('T_ROLLBACK', 2_000);
+    assert.equal(db.get(
+      'SELECT cooldown_until FROM slack_workspace_append_budgets WHERE workspace_id = ?',
+      'T_ROLLBACK',
+    )?.cooldown_until, cooldownUntil);
+    assert.equal(store.appendCooldownUntil('T_ROLLBACK'), cooldownUntil);
+    clock += 2_000;
+    assert.equal(store.appendCooldownUntil('T_ROLLBACK'), undefined);
+  } finally {
+    db.close();
+  }
+});
 
-    clock += DEFAULT_SLACK_APPEND_BUDGET.refillWindowMs;
+test('a cooldown moves the next booked slot past it', () => {
+  const clock = 1_800_000_000_000;
+  const db = openStateDb(':memory:');
+  try {
+    const store = new SlackRunPresentationStoreLogic(db, () => clock);
+    for (let index = 0; index < DEFAULT_SLACK_APPEND_BUDGET.capacity; index += 1) {
+      store.reserveAppend(ROOT.workspaceId);
+    }
+    const { cooldownUntil } = store.applyAppendCooldown(ROOT.workspaceId, 5_000);
+    assert.equal(store.reserveAppend(ROOT.workspaceId).outcome, 'cooldown');
+    const later = new SlackRunPresentationStoreLogic(db, () => cooldownUntil);
+    const booking = later.reserveAppend(ROOT.workspaceId);
+    assert.ok(booking.outcome === 'reserved' ||
+      (booking.outcome === 'scheduled' && booking.at >= cooldownUntil));
+  } finally {
+    db.close();
+  }
+});
+
+test('workspace append slots are booked in arrival order under one server-clock budget and shared cooldown', () => {
+  let clock = 1_800_000_000_000;
+  const db = openStateDb(':memory:');
+  try {
+    const store = new SlackRunPresentationStoreLogic(db, () => clock);
+    const { capacity, refillWindowMs } = DEFAULT_SLACK_APPEND_BUDGET;
+    // A quiet workspace grants the whole burst at once.
+    for (let version = 1; version <= capacity; version += 1) {
+      assert.deepEqual(store.reserveAppend(ROOT.workspaceId), {
+        outcome: 'reserved',
+        budgetVersion: version,
+      });
+    }
+    // Then each caller books the next free slot, one interval apart.
     assert.deepEqual(store.reserveAppend(ROOT.workspaceId), {
-      outcome: 'reserved',
-      budgetVersion: 2,
+      outcome: 'scheduled',
+      at: clock + refillWindowMs,
+      budgetVersion: capacity + 1,
     });
+    assert.deepEqual(store.reserveAppend(ROOT.workspaceId), {
+      outcome: 'scheduled',
+      at: clock + 2 * refillWindowMs,
+      budgetVersion: capacity + 2,
+    });
+    // Booking stops at the horizon; the caller learns when to ask again.
+    const booked = Math.floor(SLACK_APPEND_BOOKING_HORIZON_MS / refillWindowMs);
+    for (let slot = 3; slot <= booked; slot += 1) {
+      assert.equal(store.reserveAppend(ROOT.workspaceId).outcome, 'scheduled');
+    }
+    const beyond = store.reserveAppend(ROOT.workspaceId);
+    assert.equal(beyond.outcome, 'exhausted');
+    // The first unbooked slot enters the horizon then.
+    assert.equal(
+      beyond.outcome === 'exhausted' && beyond.retryAt,
+      clock + (booked + 1) * refillWindowMs - SLACK_APPEND_BOOKING_HORIZON_MS,
+    );
+
+    // After a quiet period the burst is back.
+    clock += (booked + capacity + 1) * refillWindowMs;
+    assert.equal(store.reserveAppend(ROOT.workspaceId).outcome, 'reserved');
     const cooldown = store.applyAppendCooldown(ROOT.workspaceId, 2_000);
     assert.equal(cooldown.cooldownUntil, clock + 2_000);
     assert.deepEqual(store.reserveAppend(ROOT.workspaceId), {

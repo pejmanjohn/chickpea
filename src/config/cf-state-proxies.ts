@@ -2026,6 +2026,13 @@ export class CfSlackStateStore implements SlackStateStore {
     );
   }
 
+  async slackAppendCooldownUntil(workspaceId: string) {
+    return orUndefined(await rpcVia(this.stub,
+      'slackPresentationAppendCooldown',
+      (stub) => stub.slackPresentationAppendCooldown(workspaceId),
+    ));
+  }
+
   async applySlackAppendCooldown(workspaceId: string, retryAfterMs: number) {
     return rpcVia(this.stub,
       'slackPresentationApplyCooldown',

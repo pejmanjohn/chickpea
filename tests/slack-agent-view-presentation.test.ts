@@ -565,7 +565,10 @@ test('finalize delivers the whole unstreamed suffix once after early degradation
     assert.equal(h.store.get(h.runId)?.stream.state, 'finalized');
     assert.equal(h.finalizationRecords.length, 1);
     const record = h.finalizationRecords[0]!;
-    assert.equal(record.degradation, 'budget_exhausted');
+    // The reader closed while the budget was spent: the terminal carried the
+    // text without booking a slot, and the record counts the yielded append.
+    assert.equal(record.degradation, 'none');
+    assert.ok((record.appendBudget?.yielded ?? 0) >= 1);
     assert.equal(record.acceptedBytes, streamed.stream.acknowledgedByteLength);
     assert.equal(
       record.terminalSuffixBytes,

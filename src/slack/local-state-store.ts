@@ -72,6 +72,7 @@ export function localSlackStateStore(input: {
       presentations.getLatestThreadSessionGeneration(root),
     transitionRunPresentation: async (transition) => presentations.transition(transition),
     reserveSlackAppend: async (workspaceId) => presentations.reserveAppend(workspaceId),
+    slackAppendCooldownUntil: async (workspaceId) => presentations.appendCooldownUntil(workspaceId),
     applySlackAppendCooldown: async (workspaceId, retryAfterMs) =>
       presentations.applyAppendCooldown(workspaceId, retryAfterMs),
     reserveSlackActivityStatus: async (workspaceId) =>

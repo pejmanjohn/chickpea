@@ -98,6 +98,7 @@ import type {
 } from '../slack/gateway/inbox.ts';
 import type { GatewayInboundDelivery } from '../slack/gateway/protocol.ts';
 import type {
+  SlackAppendBooking,
   SlackAppendReservation,
   SlackPresentationTransitionInput,
   SlackPresentationTransitionResult,
@@ -538,7 +539,10 @@ export interface TagStateRpc {
   ): Promise<StateRpcResult<SlackPresentationTransitionResult>>;
   slackPresentationReserveAppend(
     workspaceId: string,
-  ): Promise<StateRpcResult<SlackAppendReservation>>;
+  ): Promise<StateRpcResult<SlackAppendBooking>>;
+  slackPresentationAppendCooldown(
+    workspaceId: string,
+  ): Promise<StateRpcResult<number | null>>;
   slackPresentationApplyCooldown(
     workspaceId: string,
     retryAfterMs: number,
