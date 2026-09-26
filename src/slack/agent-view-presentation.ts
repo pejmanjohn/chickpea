@@ -45,12 +45,12 @@ import { SlackTransportError } from './transport/types.ts';
 import { slackClientMessageId } from './transport/message-id.ts';
 import { setAgentSessionStatus } from './gateway/web-client.ts';
 import {
+  MAX_SLACK_CONTINUATION_PARTS,
   MAX_SLACK_CONTINUATION_RESPLITS,
   presentationHasTerminalOutcome,
   presentationAllowsProgressive,
   presentationUsesNativeTasks,
   progressiveStreamingModeForReason,
-  slackContinuationPartAllowance,
   slackPresentationFinalizationRecord,
   type SlackPresentationFinalizationRecord,
   type SlackAppendReservation,
@@ -1195,6 +1195,7 @@ export class SlackAgentViewPresentation {
       await this.transition(presentation, {
         kind: 'record_continuation_plan',
         ...(existing ? { replace: true as const } : {}),
+        shaped: true,
         ...(split ? { split } : {}),
         parts: parts.slice(1),
         closing: {
@@ -1214,8 +1215,12 @@ export class SlackAgentViewPresentation {
    */
   async frozenReplyParts(approved: string, format: SlackReplyFormat): Promise<string[] | undefined> {
     const presentation = await this.requirePresentation();
-    if (presentation.schemaVersion !== 3 || !presentation.continuations?.split) return undefined;
-    return slackReplyParts(approved, format, presentation.continuations.split);
+    if (presentation.schemaVersion !== 3 || !presentation.continuations) return undefined;
+    const { split, shaped } = presentation.continuations;
+    // A plan frozen by an earlier build splits by raw length, split or not,
+    // so its first message ends where its stored follow-ups begin.
+    if (!shaped) return slackReplyParts(approved, format, { ...split, rawLengthOnly: true });
+    return split ? slackReplyParts(approved, format, split) : undefined;
   }
 
   /**
@@ -1342,7 +1347,7 @@ export class SlackAgentViewPresentation {
       if (shortened) texts[texts.length - 1] = texts.at(-1)!.slice(0, -note.length);
       const scale = 2 ** resplits;
       parts = splitSlackMarkdownReply(texts.join('\n\n'), {
-        maxParts: slackContinuationPartAllowance(plan.split) - index,
+        maxParts: MAX_SLACK_CONTINUATION_PARTS - index,
         partLimit: Math.floor(slackMarkdownBlockTextLimit / scale),
         maxBlocks: Math.floor(slackMarkdownPartBlockLimit / scale),
       });
@@ -1414,10 +1419,12 @@ export class SlackAgentViewPresentation {
         maxParts: 1,
       });
     }
+    const plan = presentation.continuations;
+    const split = plan?.split ?? this.replySplit(presentation, approved);
     return slackReplyParts(
       approved,
       format,
-      presentation.continuations?.split ?? this.replySplit(presentation, approved),
+      plan && !plan.shaped ? { ...split, rawLengthOnly: true } : split,
     );
   }
 
@@ -1867,6 +1874,7 @@ export class SlackAgentViewPresentation {
             : 'slack_stream_message_missing',
         });
         await this.transition(presentation, { kind: 'stream_message_lost', messageTs });
+        if (rejectedContent) await this.replanFreshFinal(approved, format, tablePresentation);
         return freshFinalResult(await this.requirePresentation());
       }
       presentation = await this.transition(presentation, {
@@ -1885,6 +1893,28 @@ export class SlackAgentViewPresentation {
     }
     await observer.after({ attemptId, outcome: 'delivered', deliveryRef: deliveryRef(presentation) });
     return { handled: true, messageTs, text: first };
+  }
+
+  /**
+   * Slack refused the replacement's content, so the final posts fresh and
+   * the stream message is gone. Nothing shows the streamed prefix any more,
+   * and keeping it whole could repeat the refusal (a prefix dense with
+   * headings can render past Slack's block limit), so re-plan without it.
+   */
+  private async replanFreshFinal(
+    approved: string,
+    format: SlackReplyFormat,
+    tablePresentation: SlackTablePresentation | undefined,
+  ): Promise<void> {
+    const presentation = await this.requirePresentation();
+    if (presentation.schemaVersion !== 3) return;
+    const stored = presentation.continuations?.split;
+    if (stored?.minFirstPartLength === undefined) return;
+    const split: SlackReplySplit = stored.maxParts === undefined ? {} : { maxParts: stored.maxParts };
+    const parts = slackReplyParts(approved, format, split);
+    await this.planContinuations(
+      parts, renderSlackReplyTable(tablePresentation, parts.at(-1)!), [], split, true,
+    );
   }
 
   private async correctDivergentStream(
@@ -2637,8 +2667,10 @@ export function recoveryReplySplit(
   const prefix = split.minFirstPartLength;
   const fenceOpen = prefix !== undefined &&
     (approved.slice(0, prefix).match(/^ {0,3}`{3,}/gm) ?? []).length % 2 === 1;
+  // Slack counts `&`, `<` and `>` escaped, so the kept prefix is measured so.
   const keepsPrefix = prefix !== undefined &&
-    prefix <= limit - (fenceOpen ? RECOVERY_FENCE_ROOM_CHARS : 0);
+    slackEscapedTextLength(approved.slice(0, prefix)) <=
+      limit - (fenceOpen ? RECOVERY_FENCE_ROOM_CHARS : 0);
   return {
     ...(keepsPrefix ? { minFirstPartLength: split.minFirstPartLength } : {}),
     firstPartLimit: limit,

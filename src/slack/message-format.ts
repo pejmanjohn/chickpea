@@ -401,6 +401,7 @@ export function slackMarkdownPartFits(
 function slackMarkdownShapePrefixLength(text: string, budget: SlackMarkdownShapeBudget): number {
   const maxBlocks = Math.max(1, budget.maxBlocks ?? slackMarkdownPartBlockLimit);
   const maxCounted = budget.maxCountedLength ?? slackMarkdownBlockTextLimit;
+  if (maxBlocks === Infinity && maxCounted === Infinity) return text.length;
   const starts = slackMarkdownBlockStarts(text);
   let end = starts.length > maxBlocks ? Math.max(0, starts[maxBlocks]! - 1) : text.length;
   let counted = 0;
@@ -432,6 +433,12 @@ export interface SlackReplySplitOptions extends SlackMarkdownShapeBudget {
   maxParts?: number;
   /** Characters of every message; smaller when Slack refused a larger part. */
   partLimit?: number;
+  /**
+   * Split by raw characters alone, as builds before the rendered-shape bound
+   * did. Only a plan frozen by such a build uses it, so the first message it
+   * recomputes still ends exactly where that plan's follow-ups begin.
+   */
+  rawLengthOnly?: boolean;
 }
 
 /**
@@ -453,12 +460,13 @@ export function splitSlackMarkdownReply(
   options: SlackReplySplitOptions = {},
 ): string[] {
   const maxParts = Math.max(1, options.maxParts ?? 1 + slackReplyContinuationLimit);
-  const maxBlocks = Math.max(2, options.maxBlocks ?? slackMarkdownPartBlockLimit);
+  const raw = options.rawLengthOnly === true;
+  const maxBlocks = raw ? Infinity : Math.max(2, options.maxBlocks ?? slackMarkdownPartBlockLimit);
   const partLimit = Math.min(
     Math.max(1, options.partLimit ?? slackMarkdownBlockTextLimit),
     slackMarkdownBlockTextLimit,
   );
-  const budget = { maxBlocks, maxCountedLength: options.maxCountedLength ?? partLimit };
+  const maxCounted = raw ? Infinity : options.maxCountedLength ?? partLimit;
   const parts: string[] = [];
   let rest = text;
   while (rest) {
@@ -467,6 +475,13 @@ export function splitSlackMarkdownReply(
       ? Math.min(options.firstPartLimit ?? partLimit, partLimit)
       : partLimit;
     const min = index === 0 ? Math.min(options.minFirstPartLength ?? 0, charLimit) : 0;
+    // A first-message bound (an update's, or room for a marker) is a bound
+    // on what Slack counts too.
+    const budget = {
+      maxCountedLength: index === 0 && options.firstPartLimit !== undefined && !raw
+        ? Math.min(maxCounted, options.firstPartLimit)
+        : maxCounted,
+    };
     const shaped = (blocks: number) => Math.max(
       Math.min(charLimit, slackMarkdownShapePrefixLength(rest, { ...budget, maxBlocks: blocks })),
       min,

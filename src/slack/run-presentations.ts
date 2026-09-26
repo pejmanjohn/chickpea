@@ -241,6 +241,12 @@ interface SlackPresentationContinuations {
    * from it on were re-split smaller. Absent until the first refusal.
    */
   resplits?: number;
+  /**
+   * The plan's parts were sized by their rendered blocks and Slack's escaped
+   * count as well as raw characters. A plan without it was frozen by an
+   * earlier build, so its first message is recomputed by raw length alone.
+   */
+  shaped?: true;
 }
 
 /** Options of `splitSlackMarkdownReply` that shape the first message. */
@@ -252,7 +258,7 @@ export interface SlackReplySplit {
 }
 
 /** Three follow-ups, or four after a recovery's smaller first message. */
-const MAX_SLACK_CONTINUATION_PARTS = 4;
+export const MAX_SLACK_CONTINUATION_PARTS = 4;
 
 /**
  * Re-splits after Slack refuses a follow-up's content: two at smaller sizes,
@@ -621,6 +627,8 @@ export type SlackPresentationMutation =
       split?: SlackReplySplit;
       /** Recovery re-plans a set none of whose parts has started; no parts drops it. */
       replace?: true;
+      /** Parts sized by rendered shape; set by every current build. */
+      shaped?: true;
       parts: readonly string[];
       closing: SlackReplyClosing;
     }
@@ -2366,8 +2374,12 @@ function applyMutation(
       for (const text of mutation.parts) validateContinuationText(text);
       validateReplySplit(mutation.split);
       validateReplyClosing(mutation.closing);
+      if (mutation.shaped !== undefined && mutation.shaped !== true) {
+        throw stateError('invalid_input', 'Continuation shape marker must be true.');
+      }
       next.continuations = {
         state: 'active',
+        ...(mutation.shaped ? { shaped: true as const } : {}),
         ...(mutation.split ? { split: structuredClone(mutation.split) } : {}),
         parts: mutation.parts.map((text) => ({ text })),
         closing: structuredClone(mutation.closing),
@@ -2443,8 +2455,10 @@ function applyMutation(
       if (resplits > MAX_SLACK_CONTINUATION_RESPLITS) {
         throw stateError('invalid_transition', 'The continuation re-split bound is exhausted.');
       }
+      // A re-split may use every follow-up the plan can store before it
+      // shortens the reply.
       if (mutation.parts.length < 1 ||
-          mutation.index + mutation.parts.length > slackContinuationPartAllowance(plan.split)) {
+          mutation.index + mutation.parts.length > MAX_SLACK_CONTINUATION_PARTS) {
         throw stateError('invalid_input', 'A re-split keeps the reply within its message count.');
       }
       for (const text of mutation.parts) validateContinuationText(text);
@@ -3196,6 +3210,7 @@ function isStoredContinuations(value: SlackPresentationContinuations | undefined
   if ((value.state !== 'active' && value.state !== 'delivered' && value.state !== 'abandoned') ||
       !Array.isArray(value.parts) || value.parts.length < 1 ||
       value.parts.length > MAX_SLACK_CONTINUATION_PARTS) return false;
+  if (value.shaped !== undefined && value.shaped !== true) return false;
   if (value.resplits !== undefined && (!Number.isSafeInteger(value.resplits) ||
       value.resplits < 1 || value.resplits > MAX_SLACK_CONTINUATION_RESPLITS)) return false;
   validateReplySplit(value.split);

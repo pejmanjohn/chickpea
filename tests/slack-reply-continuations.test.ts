@@ -1646,3 +1646,120 @@ test('the stream cap counts &, < and > at their escaped length', async () => {
     h.close();
   }
 });
+
+/** The Amber LT-4 shape: about 70 short headed checklist phases, about 34,000 characters. */
+function checklistPhases(count = 70): string {
+  return Array.from({ length: count }, (_, index) => [
+    `### Phase ${index + 1}: verify the migration step`,
+    '- [ ] Confirm the owner and the change window before starting the step.',
+    '- [ ] Record objective rollback criteria and who approves a rollback.',
+    '- [ ] Capture the before and after metrics in the migration log.',
+    'Keep the step reversible until the checks above pass.',
+  ].join('\n')).join('\n\n');
+}
+
+test('a plan frozen by an earlier build recomputes its first message by raw length', async () => {
+  const h = harness();
+  try {
+    const text = checklistPhases();
+    const split = { minFirstPartLength: 3_887 };
+    const legacy = splitSlackMarkdownReply(text, { ...split, rawLengthOnly: true });
+    const current = splitSlackMarkdownReply(text, split);
+    assert.notEqual(legacy[0], current[0], 'the two splitters disagree on this answer');
+
+    mutate(h, { kind: 'record_terminal_delivery_intent', operationId: 'terminal_answer', result: 'answer' });
+    // What an earlier build stored: no shape marker.
+    mutate(h, {
+      kind: 'record_continuation_plan', split, parts: legacy.slice(1), closing: CLOSING,
+    });
+    assert.equal(v3(h).continuations?.shaped, undefined);
+    assert.deepEqual(await h.presentation.frozenReplyParts(text, 'markdown'), legacy,
+      'the first message ends exactly where the stored follow-ups begin');
+
+    // A stored plan without a split recomputes the old default too.
+    const g = harness();
+    try {
+      const plain = longPlan(30, 23);
+      const old = splitSlackMarkdownReply(plain, { rawLengthOnly: true });
+      mutate(g, { kind: 'record_terminal_delivery_intent', operationId: 'terminal_answer', result: 'answer' });
+      mutate(g, { kind: 'record_continuation_plan', parts: old.slice(1), closing: CLOSING });
+      assert.deepEqual(await g.presentation.frozenReplyParts(plain, 'markdown'), old);
+    } finally {
+      g.close();
+    }
+  } finally {
+    h.close();
+  }
+});
+
+test('a plan this build freezes carries the shape marker and splits by rendered blocks', async () => {
+  const h = harness();
+  try {
+    const text = checklistPhases();
+    await finalizeLongAnswer(h, text);
+    const plan = v3(h).continuations!;
+    assert.equal(plan.shaped, true);
+    const parts = splitSlackMarkdownReply(text);
+    assert.deepEqual(plan.parts.map((part) => part.text), parts.slice(1));
+    assert.ok(parts.every((part) => slackMarkdownRenderedShape(part).blocks <= slackMarkdownPartBlockLimit));
+  } finally {
+    h.close();
+  }
+});
+
+test('the recovery bound counts the replaced first message at Slack\'s escaped length', () => {
+  const line = 'Roll back if p99 > 200ms && errors < 1% -> page the owner & record it.';
+  const text = Array.from({ length: 200 }, () => line).join('\n');
+  const prefix = text.slice(0, text.indexOf('\n', 3_600));
+  assert.ok(prefix.length < RECOVERY_UPDATE_CHARS);
+  assert.ok(slackMarkdownRenderedShape(prefix).countedLength > RECOVERY_UPDATE_CHARS);
+  const split = recoveryReplySplit({ minFirstPartLength: prefix.length }, text);
+  assert.equal(split.minFirstPartLength, undefined, 'a prefix over the escaped bound is not kept');
+  const [first] = splitSlackMarkdownReply(text, split);
+  assert.ok(slackMarkdownRenderedShape(first!).countedLength <= RECOVERY_UPDATE_CHARS);
+});
+
+test('a refusal at the last planned follow-up re-splits into the follow-ups storage still allows', async () => {
+  const h = harness();
+  try {
+    await finalizeLongAnswer(h, longPlan(60, 35));
+    const planned = v3(h).continuations!.parts.map((part) => part.text);
+    assert.equal(planned.length, 3);
+    assert.ok(planned[2]!.endsWith(SLACK_REPLY_SHORTENED_NOTE));
+    h.postErrors.push(undefined, undefined,
+      new SlackTransportError('chat.postMessage', 'msg_blocks_too_long'));
+    await h.presentation.deliverContinuations();
+    const plan = v3(h).continuations!;
+    assert.equal(plan.state, 'delivered');
+    assert.equal(plan.parts.length, 4, 'the refused part becomes two half-size follow-ups');
+    const [third, fourth] = plan.parts.slice(2).map((part) => part.text);
+    assert.equal(`${third}\n\n${fourth}`, planned[2], 'no text dropped beyond the original note');
+  } finally {
+    h.close();
+  }
+});
+
+test('a fresh final after Slack refuses the recovery update no longer keeps the streamed prefix', async () => {
+  const h = harness();
+  try {
+    const recorded: Array<{ messageTs: string; text: string }> = [];
+    const presenter = planningPresenter(h, recorded);
+    // An unclosed link label holds the stream at a short prefix.
+    const intro = 'The migration keeps every step reversible. '.repeat(70).trim();
+    const text = `${intro}\n\nSee [the appendix at the end.\n\n${longPlan(18, 23)}`;
+    const split = await interruptLongStream(h, presenter, text);
+    assert.equal(split.minFirstPartLength, streamedText(h).length, 'recovery keeps the short prefix');
+    assert.ok(streamedText(h).length < RECOVERY_UPDATE_CHARS);
+
+    h.updateErrors.push(new SlackTransportError('chat.update', 'msg_blocks_too_long'));
+    await presenter.deliverFinal(text, 'markdown');
+    const planned = splitSlackMarkdownReply(text, { maxParts: split.maxParts! });
+    assert.notDeepEqual(planned, splitSlackMarkdownReply(text, split));
+    assertFreshReply(h, planned, recorded);
+    const plan = v3(h).continuations!;
+    assert.equal(plan.split?.minFirstPartLength, undefined);
+    assert.equal(plan.state, 'delivered');
+  } finally {
+    h.close();
+  }
+});
