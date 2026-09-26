@@ -540,6 +540,9 @@ export interface TagStateRpc {
   slackPresentationReserveAppend(
     workspaceId: string,
   ): Promise<StateRpcResult<SlackAppendBooking>>;
+  slackPresentationAppendCooldown(
+    workspaceId: string,
+  ): Promise<StateRpcResult<number | null>>;
   slackPresentationApplyCooldown(
     workspaceId: string,
     retryAfterMs: number,

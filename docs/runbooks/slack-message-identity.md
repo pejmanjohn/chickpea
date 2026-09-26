@@ -131,17 +131,44 @@ follow-ups begin.
 ### Streaming pace across concurrent threads
 
 Slack rates `chat.appendStream` Tier 4 ("100+ per minute"). Tier limits count
-per method, per workspace, per app, not per channel. Chickpea keeps one
-append budget per workspace at 100 a minute (one slot every 600 ms) with a
-burst of 10. A stream books the next free slot in arrival order and waits for
-it; it never stops streaming because the budget is busy. While it waits, the
-text that arrives joins its next append, so many concurrent streams append
-less often (about every N x 600 ms for N busy streams) instead of freezing. A
-slot more than 20 seconds away is not booked: that text waits for the
-stream's next append or the terminal. A Slack `ratelimited` answer sets a
-workspace cooldown that every stream waits out. The `Slack presentation
-finalized` record carries `appendBudget` counts (deferrals, time waited,
-appends left to the terminal) when the budget delayed anything.
+per method, per workspace, per app, not per channel. Chickpea books append
+slots per workspace in `slack_workspace_append_slots`: 100 a minute (one slot
+every 600 ms) with a burst of 10. A stream books the next free slot in
+arrival order and waits for it; it never stops streaming because the budget
+is busy. While it waits, the text that arrives joins its next append, so many
+concurrent streams append less often (about every N x 600 ms for N busy
+streams) instead of freezing. Text that is not streamable yet (an unfinished
+table row, an open link on the last line) keeps its slot for the next chunk
+rather than booking another.
+
+One append waits at most about 40 seconds: up to 20 seconds asking for a
+slot, then a slot booked up to 20 seconds ahead. A slot further away is not
+booked; that text waits for the stream's next chunk or the terminal. That
+happens only past about 43 continuously busy streams in one workspace. A
+reader that closes stops waiting within a second, so the terminal is never
+held.
+
+A Slack `ratelimited` answer sets a workspace cooldown. No slot is booked
+inside it, and a stream whose slot came due during it checks again and waits
+it out. The `Slack presentation finalized` record carries `appendBudget`
+counts (deferrals, time waited, appends left to the terminal, and
+`rateLimited` answers) whenever one of them is not zero.
+
+Rollback and rollout: builds before this change used a one-token row per
+workspace in `slack_workspace_append_budgets`. The booking no longer touches
+that row except to copy a Slack cooldown into it, so a rollback streams as
+before. While a rollout is in progress, an earlier Worker isolate calling a
+newer state object receives `scheduled`, which it treats as a spent budget:
+that one stream stops appending until its final, as before the change. A
+continuation plan frozen with `headerOverhead` and then finalized by an
+earlier build recomputes its first message without the header cost; for a
+header-dense answer, that first message can end away from where the stored
+follow-ups begin (rollback only).
+
+Holding a link, `<...>` reference, or `**` emphasis back from the stream only
+covers the line still being written. An emphasis or link label that
+continues onto a later line streams its opening literally until it closes;
+whether Slack re-renders it when it closes is still to be confirmed live.
 
 ### Public message readback is a projection
 

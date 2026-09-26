@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import type { WebClient } from '@slack/web-api';
+import { ErrorCode, type WebClient } from '@slack/web-api';
 
 import { openStateDb } from '../src/state/node-state-db.ts';
 import {
@@ -73,17 +73,24 @@ const observer: SlackPresentationDeliveryObserver = {
   async after() {},
 };
 
-function parallelStreams(count: number) {
+function parallelStreams(count: number, options: { appendErrors?: unknown[] } = {}) {
   const clock = fakeClock();
   const db = openStateDb(':memory:');
   const store = new SlackRunPresentationStoreLogic(db, clock.now);
-  const appends: Array<{ at: number; stream: number }> = [];
+  const appends: Array<{ at: number; stream: number; text: string }> = [];
   const records: SlackPresentationFinalizationRecord[] = [];
+  const bookings: Array<{ at: number; outcome: string }> = [];
+  const appendErrors = [...(options.appendErrors ?? [])];
   const state: SlackPresentationStatePort = {
     getRunPresentation: (id) => store.get(id),
     getLatestThreadSessionGeneration: (root) => store.getLatestThreadSessionGeneration(root),
     transitionRunPresentation: (value) => store.transition(value),
-    reserveSlackAppend: (workspaceId) => store.reserveAppend(workspaceId),
+    reserveSlackAppend: (workspaceId) => {
+      const booking = store.reserveAppend(workspaceId);
+      bookings.push({ at: clock.now(), outcome: booking.outcome });
+      return booking;
+    },
+    slackAppendCooldownUntil: (workspaceId) => store.appendCooldownUntil(workspaceId),
     applySlackAppendCooldown: (workspaceId, retryAfterMs) =>
       store.applyAppendCooldown(workspaceId, retryAfterMs),
     matchFlueObservation: (instanceId, submissionId) => {
@@ -131,8 +138,12 @@ function parallelStreams(count: number) {
         async startStream() {
           return { ok: true, ts: `1785700101.${String(100 + index).padStart(6, '0')}` };
         },
-        async appendStream() {
-          appends.push({ at: clock.now(), stream: index });
+        async appendStream(value: { chunks: Array<{ text?: string }> }) {
+          const error = appendErrors.shift();
+          if (error) throw error;
+          appends.push({
+            at: clock.now(), stream: index, text: value.chunks.map((chunk) => chunk.text ?? '').join(''),
+          });
           return { ok: true };
         },
         async stopStream() { return { ok: true }; },
@@ -156,7 +167,7 @@ function parallelStreams(count: number) {
     });
     return { index, runId, presentation, submissionId: `submission_parallel_${index}` };
   });
-  return { clock, db, store, streams, appends, records };
+  return { clock, db, store, streams, appends, records, bookings };
 }
 
 async function openRelay(stream: ReturnType<typeof parallelStreams>['streams'][number]) {
@@ -250,7 +261,10 @@ test('eight threads streaming at once in one workspace all keep progressing', as
       assert.equal(record.degradation, 'none', 'waiting for the budget never degrades a stream');
       assert.ok(record.appendBudget && record.appendBudget.deferrals > 0,
         'deferrals are counted, content-free');
-      assert.deepEqual(Object.keys(record.appendBudget!).sort(), ['deferrals', 'deferredMs', 'yielded']);
+      assert.deepEqual(
+        Object.keys(record.appendBudget!).sort(),
+        ['deferrals', 'deferredMs', 'rateLimited', 'yielded'],
+      );
     }
   } finally {
     h.db.close();
@@ -333,6 +347,147 @@ test('a closing reader does not wait out a long shared cooldown', async () => {
     await stream!.presentation.markCanonicalFinalized();
     assert.equal(h.records[0]!.degradation, 'none');
     assert.equal(h.records[0]!.appendBudget!.yielded, 1);
+  } finally {
+    h.db.close();
+  }
+});
+
+function delta(
+  relay: Awaited<ReturnType<typeof openRelay>>['relay'],
+  messageId: string,
+  text: string,
+  batch: number,
+) {
+  relay.onEvent({
+    type: 'message-delta', conversationId: 'conversation', messageId,
+    kind: 'text', delta: text, position: { batch, index: 0 },
+  });
+}
+
+test('text held back from the stream keeps its slot instead of spending the workspace budget', async () => {
+  const h = parallelStreams(2);
+  try {
+    const [table, prose] = await Promise.all(h.streams.map(openRelay));
+    delta(table!.relay, table!.messageId, 'Here is the comparison.\n\n', 4);
+    delta(prose!.relay, prose!.messageId, 'First line.\n', 4);
+    await h.clock.advance(1_000);
+    const before = h.bookings.length;
+    // One table row written for 10 s: never streamable until its newline.
+    for (let piece = 0; piece < 40; piece += 1) {
+      delta(table!.relay, table!.messageId, `| cell ${piece} `, 5 + piece);
+      await h.clock.advance(250);
+    }
+    const tableBookings = h.bookings.length - before;
+    assert.ok(tableBookings <= 2, `a held row booked ${tableBookings} slots`);
+    // The other stream still gets its slots on time.
+    delta(prose!.relay, prose!.messageId, 'Second line.\n', 5);
+    const at = h.clock.now();
+    await h.clock.advance(1_000);
+    const proseAppend = h.appends.find((append) => append.stream === 1 && append.at >= at);
+    assert.ok(proseAppend && proseAppend.at - at <= 750, 'no wait caused by the held row');
+    // The row completes and streams with the slot it kept.
+    delta(table!.relay, table!.messageId, '|\n', 100);
+    await h.clock.advance(1_000);
+    assert.ok(h.appends.some((append) => append.stream === 0 && append.text.includes('| cell 39')));
+  } finally {
+    h.db.close();
+  }
+});
+
+test('a cooldown applied after a slot was booked holds that slot too', async () => {
+  const h = parallelStreams(1);
+  try {
+    const [stream] = h.streams;
+    const { relay, messageId } = await openRelay(stream!);
+    delta(relay, messageId, 'First line of the answer.\n', 4);
+    await h.clock.advance(1_000);
+    // Other threads take the burst, so the next append books a slot ahead.
+    for (let index = 0; index < DEFAULT_SLACK_APPEND_BUDGET.capacity + 5; index += 1) {
+      h.store.reserveAppend(WORKSPACE);
+    }
+    delta(relay, messageId, 'Second line of the answer.\n', 5);
+    await h.clock.advance(100);
+    assert.ok(h.bookings.some((booking) => booking.outcome === 'scheduled'), 'a slot was booked');
+    // Slack rate limits another thread before the booked slot comes due.
+    const { cooldownUntil } = h.store.applyAppendCooldown(WORKSPACE, 12_000);
+    await h.clock.advance(20_000);
+    assert.equal(h.appends.filter((append) => append.at < cooldownUntil).length, 0,
+      'nothing reaches Slack inside the cooldown');
+    assert.ok(h.appends.some((append) => append.text.includes('Second line')),
+      'the text streams once the cooldown ends');
+  } finally {
+    h.db.close();
+  }
+});
+
+test('a rate-limited append is counted, and the stream carries on after the cooldown', async () => {
+  const rateLimited = Object.assign(new Error('ratelimited'), {
+    code: ErrorCode.RateLimitedError,
+    retryAfter: 2,
+  });
+  const h = parallelStreams(1, { appendErrors: [rateLimited] });
+  try {
+    const [stream] = h.streams;
+    const { relay, messageId } = await openRelay(stream!);
+    const lines = Array.from({ length: 10 }, (_, line) => `Line ${line + 1} of the answer.`);
+    for (const [line, text] of lines.entries()) {
+      delta(relay, messageId, `${text}\n`, 4 + line);
+      await h.clock.advance(1_000);
+    }
+    assert.ok(h.appends.length >= 3, 'appends continue after the rate limit');
+    assert.ok(h.appends.at(-1)!.text.length > 0);
+    relay.onEvent({
+      type: 'message-completed', conversationId: 'conversation', messageId,
+      position: { batch: 100, index: 0 },
+    });
+    await h.clock.until(relay.closeAndDrain());
+    await stream!.presentation.finalize(lines.join('\n'), 'markdown', 'complete', observer);
+    await stream!.presentation.markCanonicalFinalized();
+    const [record] = h.records;
+    assert.equal(record!.appendBudget!.rateLimited, 1, 'the Slack rate limit stays visible');
+    assert.ok(record!.acceptedBytes + record!.terminalSuffixBytes >= Buffer.byteLength(lines.join('\n')));
+  } finally {
+    h.db.close();
+  }
+});
+
+test('past the booking horizon a stream gives its text to the next append, never loses it', async () => {
+  const count = 50;
+  const h = parallelStreams(count);
+  try {
+    const relays = await Promise.all(h.streams.map(openRelay));
+    const lines = 40;
+    const answers = h.streams.map((stream) => Array.from(
+      { length: lines },
+      (_, line) => `Stream ${stream.index} step ${line + 1}.`,
+    ));
+    for (let line = 0; line < lines; line += 1) {
+      relays.forEach(({ relay, messageId }, index) =>
+        delta(relay, messageId, `${answers[index]![line]}\n`, 4 + line));
+      await h.clock.advance(1_000);
+    }
+    // Bookings never run more than the horizon ahead, and Slack sees at most Tier 4.
+    const elapsed = lines * 1_000;
+    assert.ok(h.appends.length <=
+      DEFAULT_SLACK_APPEND_BUDGET.capacity + elapsed / DEFAULT_SLACK_APPEND_BUDGET.refillWindowMs + 1);
+    await h.clock.until(Promise.all(relays.map(({ relay, messageId }) => {
+      relay.onEvent({
+        type: 'message-completed', conversationId: 'conversation', messageId,
+        position: { batch: 4 + lines, index: 0 },
+      });
+      return relay.closeAndDrain();
+    })));
+    for (const [index, stream] of h.streams.entries()) {
+      await stream.presentation.finalize(answers[index]!.join('\n'), 'markdown', 'complete', observer);
+      await stream.presentation.markCanonicalFinalized();
+    }
+    assert.equal(h.records.length, count);
+    assert.ok(h.records.some((record) => (record.appendBudget?.yielded ?? 0) > 0),
+      'some streams gave text up at the horizon');
+    for (const [index, record] of h.records.entries()) {
+      const total = Buffer.byteLength(answers[index]!.join('\n'));
+      assert.equal(record.acceptedBytes + record.terminalSuffixBytes, total, 'no text lost');
+    }
   } finally {
     h.db.close();
   }

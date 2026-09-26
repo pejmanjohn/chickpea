@@ -83,6 +83,8 @@ export interface SlackPresentationStatePort {
     input: SlackPresentationTransitionInput,
   ): MaybePromise<SlackPresentationTransitionResult>;
   reserveSlackAppend(workspaceId: string): MaybePromise<SlackAppendBooking>;
+  /** The shared append cooldown's end, if one is running. */
+  slackAppendCooldownUntil?(workspaceId: string): MaybePromise<number | undefined>;
   applySlackAppendCooldown(
     workspaceId: string,
     retryAfterMs: number,
@@ -237,8 +239,13 @@ export class SlackAgentViewPresentation {
     | 'workspace_cooldown'
     | 'rate_limited'
     | undefined;
-  private readonly appendBudget = { deferrals: 0, deferredMs: 0, yielded: 0 };
-  /** The outcome of the pacing wait the relay ran before the next append. */
+  private readonly appendBudget = { deferrals: 0, deferredMs: 0, yielded: 0, rateLimited: 0 };
+  /**
+   * The outcome of the pacing wait the relay ran before the next append. A
+   * `reserved` slot stays until an append uses it: text that does not yet
+   * move the safe prefix (a table row, an open link) keeps it for the next
+   * chunk instead of booking another.
+   */
   private appendSlot: 'reserved' | 'yielded' | undefined;
   private degradedReason:
     | 'budget_exhausted'
@@ -1573,7 +1580,7 @@ export class SlackAgentViewPresentation {
     control?: ProgressiveAppendControl,
   ): Promise<void> {
     const slot = this.appendSlot;
-    this.appendSlot = undefined;
+    if (slot === 'yielded') this.appendSlot = undefined;
     this.rawText += chunk.delta;
     if (utf8Length(this.rawText) > MAX_PROGRESSIVE_BUFFER_BYTES) {
       this.degradedReason = 'unsafe_incomplete_block';
@@ -1627,7 +1634,9 @@ export class SlackAgentViewPresentation {
     const delta = safePrefix.slice(acknowledged.length);
     if (!delta) return;
     if (slot === 'yielded') return;
-    if (slot !== 'reserved') {
+    if (slot === 'reserved') {
+      this.appendSlot = undefined;
+    } else {
       const delay = Math.max(0, this.nextAppendAt - this.now());
       if (delay > 0) await this.wait(delay);
       if (!(await this.reserveAppendSlot(presentation.root.workspaceId, control))) return;
@@ -1667,7 +1676,7 @@ export class SlackAgentViewPresentation {
             retryAfterMs(error),
           );
           this.budgetShortfall = 'rate_limited';
-          this.appendBudget.yielded += 1;
+          this.appendBudget.rateLimited += 1;
         } else {
           this.degradedReason = 'unsafe_incomplete_block';
         }
@@ -1691,8 +1700,10 @@ export class SlackAgentViewPresentation {
    * the first text opens the stream through startStream instead.
    */
   private async prepareProgressiveAppend(control: ProgressiveAppendControl): Promise<void> {
+    // An unused slot from a chunk that did not move the safe prefix.
+    if (this.appendSlot === 'reserved') return;
     this.appendSlot = undefined;
-    if (this.degradedReason) return;
+    if (this.degradedReason || control.closing()) return;
     const presentation = await this.requirePresentation();
     if (presentation.stream.state !== 'streaming' || !presentation.stream.messageTs) return;
     const delay = Math.max(0, this.nextAppendAt - this.now());
@@ -1715,6 +1726,11 @@ export class SlackAgentViewPresentation {
   ): Promise<boolean> {
     const deadline = this.now() + MAX_APPEND_DEFERRAL_MS;
     for (;;) {
+      if (control?.closing()) {
+        // The terminal delivers the text now; a slot booked here would be wasted.
+        this.appendBudget.yielded += 1;
+        return false;
+      }
       const reservation = await this.options.state.reserveSlackAppend(workspaceId);
       if (reservation.outcome === 'reserved') {
         this.budgetShortfall = undefined;
@@ -1724,6 +1740,10 @@ export class SlackAgentViewPresentation {
         // The slot is ours; wait for its time.
         this.appendBudget.deferrals += 1;
         if (!(await this.waitForAppendSlot(reservation.at - this.now(), control))) return false;
+        // A Slack rate limit that arrived while this stream waited covers
+        // slots booked before it too: wait it out and book again.
+        const cooldownUntil = await this.options.state.slackAppendCooldownUntil?.(workspaceId);
+        if (cooldownUntil !== undefined && cooldownUntil > this.now()) continue;
         this.budgetShortfall = undefined;
         return true;
       }
@@ -2364,7 +2384,8 @@ export class SlackAgentViewPresentation {
 
   private emitFinalizationRecord(presentation: SlackRunPresentation): void {
     const record = slackPresentationFinalizationRecord(presentation);
-    if (this.appendBudget.deferrals > 0 || this.appendBudget.yielded > 0) {
+    if (this.appendBudget.deferrals > 0 || this.appendBudget.yielded > 0 ||
+        this.appendBudget.rateLimited > 0) {
       record.appendBudget = { ...this.appendBudget };
     }
     try {

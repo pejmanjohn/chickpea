@@ -28,6 +28,9 @@ export function slackPresentationStatePort(
     transitionRunPresentation: state.transitionRunPresentation.bind(state),
     reserveSlackAppend: state.reserveSlackAppend.bind(state),
     applySlackAppendCooldown: state.applySlackAppendCooldown.bind(state),
+    ...(state.slackAppendCooldownUntil
+      ? { slackAppendCooldownUntil: state.slackAppendCooldownUntil.bind(state) }
+      : {}),
     ...activityCoordinator,
     matchFlueObservation: state.matchFlueObservation.bind(state),
   };
@@ -49,6 +52,7 @@ export function localSlackPresentationStatePort(input: {
       presentations.getLatestThreadSessionGeneration(root),
     transitionRunPresentation: (transition) => presentations.transition(transition),
     reserveSlackAppend: (workspaceId) => presentations.reserveAppend(workspaceId),
+    slackAppendCooldownUntil: (workspaceId) => presentations.appendCooldownUntil(workspaceId),
     applySlackAppendCooldown: (workspaceId, retryAfterMs) =>
       presentations.applyAppendCooldown(workspaceId, retryAfterMs),
     reserveSlackActivityStatus: (workspaceId) =>

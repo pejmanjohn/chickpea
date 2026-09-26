@@ -221,6 +221,7 @@ export interface SlackStateStore extends SlackClaimStore, SlackThreadRegistry {
     input: SlackPresentationTransitionInput,
   ): Promise<SlackPresentationTransitionResult>;
   reserveSlackAppend?(workspaceId: string): Promise<SlackAppendBooking>;
+  slackAppendCooldownUntil?(workspaceId: string): Promise<number | undefined>;
   applySlackAppendCooldown?(
     workspaceId: string,
     retryAfterMs: number,
