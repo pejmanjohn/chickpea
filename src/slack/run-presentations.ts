@@ -236,6 +236,11 @@ interface SlackPresentationContinuations {
   split?: SlackReplySplit;
   parts: SlackPresentationContinuationPart[];
   closing: SlackReplyClosing;
+  /**
+   * Times Slack refused an unsent part's content outright and the parts
+   * from it on were re-split smaller. Absent until the first refusal.
+   */
+  resplits?: number;
 }
 
 /** Options of `splitSlackMarkdownReply` that shape the first message. */
@@ -248,6 +253,20 @@ export interface SlackReplySplit {
 
 /** Three follow-ups, or four after a recovery's smaller first message. */
 const MAX_SLACK_CONTINUATION_PARTS = 4;
+
+/**
+ * Re-splits after Slack refuses a follow-up's content: two at smaller sizes,
+ * then one that carries only the shortened note and the footer.
+ */
+export const MAX_SLACK_CONTINUATION_RESPLITS = 3;
+
+/** Follow-up messages a plan split this way may hold. */
+export function slackContinuationPartAllowance(split: SlackReplySplit | undefined): number {
+  return Math.min(
+    MAX_SLACK_CONTINUATION_PARTS,
+    (split?.maxParts ?? MAX_SLACK_CONTINUATION_PARTS) - 1,
+  );
+}
 const MAX_SLACK_CONTINUATION_TEXT_CHARS = 12_000;
 const MAX_SLACK_CLOSING_FACT_BYTES = 2_048;
 const MAX_SLACK_CLOSING_TABLE_BYTES = 128 * 1_024;
@@ -612,6 +631,15 @@ export type SlackPresentationMutation =
       operationId: string;
       certainty: Exclude<SlackPresentationReceiptCertainty, 'pending'>;
       messageTs?: string;
+    }
+  | {
+      /**
+       * Slack refused the next part's content outright, so nothing posted:
+       * replace it and every later part with a smaller split of their text.
+       */
+      kind: 'resplit_continuations';
+      index: number;
+      parts: readonly string[];
     }
   | { kind: 'abandon_continuations' }
   | { kind: 'supersede_failed_answer_delivery'; operationId: string }
@@ -2328,10 +2356,7 @@ function applyMutation(
       }
       // Three follow-ups; a recovery split with a smaller first message may
       // allow one more.
-      const allowed = Math.min(
-        MAX_SLACK_CONTINUATION_PARTS,
-        (mutation.split?.maxParts ?? MAX_SLACK_CONTINUATION_PARTS) - 1,
-      );
+      const allowed = slackContinuationPartAllowance(mutation.split);
       if (mutation.parts.length < 1 || mutation.parts.length > allowed) {
         throw stateError(
           'invalid_input',
@@ -2399,6 +2424,35 @@ function applyMutation(
       } else if (mutation.messageTs !== undefined) {
         throw stateError('invalid_input', 'Only an acknowledged continuation has a coordinate.');
       }
+      next.repairRequired = v3RepairRequired(next);
+      return next;
+    }
+    case 'resplit_continuations': {
+      requireV3(current);
+      requireV3(next);
+      const plan = current.continuations;
+      if (!plan || plan.state !== 'active' || !next.continuations) {
+        throw stateError('invalid_transition', 'No continuation is owed.');
+      }
+      const owed = plan.parts.findIndex((part) => part.operation?.certainty !== 'acknowledged');
+      // Only a part Slack definitely refused may change: nothing of it is visible.
+      if (mutation.index !== owed || plan.parts[mutation.index]?.operation?.certainty !== 'failed') {
+        throw stateError('invalid_transition', 'Only a refused unsent continuation may be re-split.');
+      }
+      const resplits = (plan.resplits ?? 0) + 1;
+      if (resplits > MAX_SLACK_CONTINUATION_RESPLITS) {
+        throw stateError('invalid_transition', 'The continuation re-split bound is exhausted.');
+      }
+      if (mutation.parts.length < 1 ||
+          mutation.index + mutation.parts.length > slackContinuationPartAllowance(plan.split)) {
+        throw stateError('invalid_input', 'A re-split keeps the reply within its message count.');
+      }
+      for (const text of mutation.parts) validateContinuationText(text);
+      next.continuations.parts = [
+        ...next.continuations.parts.slice(0, mutation.index),
+        ...mutation.parts.map((text) => ({ text })),
+      ];
+      next.continuations.resplits = resplits;
       next.repairRequired = v3RepairRequired(next);
       return next;
     }
@@ -3142,6 +3196,8 @@ function isStoredContinuations(value: SlackPresentationContinuations | undefined
   if ((value.state !== 'active' && value.state !== 'delivered' && value.state !== 'abandoned') ||
       !Array.isArray(value.parts) || value.parts.length < 1 ||
       value.parts.length > MAX_SLACK_CONTINUATION_PARTS) return false;
+  if (value.resplits !== undefined && (!Number.isSafeInteger(value.resplits) ||
+      value.resplits < 1 || value.resplits > MAX_SLACK_CONTINUATION_RESPLITS)) return false;
   validateReplySplit(value.split);
   validateReplyClosing(value.closing);
   return value.parts.every((part) => {

@@ -14,6 +14,9 @@ import {
   canonicalSlackMarkdownText,
   SLACK_REPLY_SHORTENED_NOTE,
   slackMarkdownBlockTextLimit,
+  slackMarkdownPartBlockLimit,
+  slackMarkdownPartFits,
+  slackMarkdownRenderedShape,
   splitSlackMarkdownReply,
 } from '../src/slack/message-format.ts';
 import {
@@ -1425,4 +1428,185 @@ test('a presenter without a durable presentation posts follow-ups directly with 
   });
   assert.deepEqual(recorded, parts);
   assert.ok(recorded.at(-1)!.endsWith(SLACK_REPLY_SHORTENED_NOTE));
+});
+
+/** A guide shaped like the Amber LT-4 answer: many short headed checklist sections. */
+function denseChecklistGuide(sections: number): string {
+  return Array.from({ length: sections }, (_, index) => [
+    `### ${index + 1}. Checklist step ${index + 1}`,
+    '- [ ] Confirm the owner.',
+    '- [ ] Record the rollback criteria.',
+  ].join('\n')).join('\n\n');
+}
+
+function rendered(part: string) {
+  return slackMarkdownRenderedShape(part);
+}
+
+test('a part under 12,000 characters that renders past the block limit is split until it fits', () => {
+  // 80 headed sections: about 8,000 characters but about 160 rendered blocks.
+  const text = denseChecklistGuide(80);
+  assert.ok(text.length < LIMIT);
+  assert.ok(rendered(text).blocks > 50, 'one message would exceed Slack\'s 50 blocks');
+  const parts = splitSlackMarkdownReply(text);
+  assert.ok(parts.length > 1);
+  for (const part of parts) {
+    assert.ok(rendered(part).blocks <= slackMarkdownPartBlockLimit, 'each part fits the block budget');
+    assert.ok(slackMarkdownPartFits(part));
+  }
+  assert.match(parts[1]!, /^### \d+\. Checklist step/, 'cuts still land before a heading');
+  assert.equal(parts.join('\n\n'), text, 'no text is lost');
+});
+
+test('many code fences and tables are sized by their rendered blocks', () => {
+  const fences = Array.from({ length: 60 }, (_, index) =>
+    `Step ${index + 1}:\n\n\`\`\`sql\nSELECT ${index};\n\`\`\``).join('\n\n');
+  const tables = Array.from({ length: 40 }, (_, index) =>
+    `| Check | Owner |\n| --- | --- |\n| ${index} | ops |\n\nNote ${index}.`).join('\n\n');
+  for (const text of [fences, tables]) {
+    assert.ok(text.length < LIMIT);
+    const parts = splitSlackMarkdownReply(text);
+    assert.ok(parts.length > 1);
+    assert.ok(parts.every((part) => rendered(part).blocks <= slackMarkdownPartBlockLimit));
+    for (const part of parts) {
+      assert.equal((part.match(/^```/gm) ?? []).length % 2, 0, 'fences stay balanced');
+    }
+    assert.equal(parts.join('\n\n'), text);
+  }
+});
+
+test('characters Slack escapes count at their escaped length', () => {
+  // 10,000 characters that Slack counts as far more than 12,000.
+  const line = 'Compare p99 < 200ms && errors > 0 -> roll back & page the owner.';
+  const text = Array.from({ length: Math.ceil(10_000 / (line.length + 1)) }, () => line).join('\n');
+  assert.ok(text.length < LIMIT);
+  assert.ok(rendered(text).countedLength > LIMIT);
+  const parts = splitSlackMarkdownReply(text);
+  assert.ok(parts.length > 1);
+  assert.ok(parts.every((part) => rendered(part).countedLength <= LIMIT));
+  assert.equal(parts.join('\n'), text);
+});
+
+test('the rendered-shape bound never moves a streamed prefix out of the first message', () => {
+  const text = denseChecklistGuide(80);
+  const prefix = text.slice(0, text.indexOf('### 60.'));
+  const parts = splitSlackMarkdownReply(text, { minFirstPartLength: prefix.length });
+  assert.ok(parts[0]!.startsWith(prefix.trimEnd()));
+  assert.equal(parts.join('\n\n'), text);
+});
+
+test('msg_blocks_too_long on a continuation re-splits it smaller: one final set, one footer', async () => {
+  const h = harness();
+  try {
+    const text = longPlan(30, 23);
+    await finalizeLongAnswer(h, text);
+    const planned = v3(h).continuations!.parts.map((part) => part.text);
+    // Through the gateway Slack's refusal arrives with an unknown effect.
+    h.postErrors.push(new SlackTransportError('chat.postMessage', 'msg_blocks_too_long'));
+    const delivered: string[] = [];
+    await h.presentation.deliverContinuations({
+      onDelivered: async (_ts, partText) => { delivered.push(partText); },
+    });
+
+    const presentation = v3(h);
+    assert.equal(presentation.continuations?.state, 'delivered');
+    assert.equal(presentation.continuations?.resplits, 1);
+    const sent = posts(h);
+    assert.equal(sent.length, 1 + delivered.length, 'the refused post is never repeated as is');
+    assert.ok(delivered.length > planned.length, 'the refused text is carried in smaller parts');
+    assert.ok(delivered.every((part) => part.length <= LIMIT / 2));
+    assert.notEqual(sent[1]!.input.client_msg_id, sent[0]!.input.client_msg_id);
+    const footers = sent.slice(1).filter((post) => blockTypes(post.input).includes('context'));
+    assert.equal(footers.length, 1);
+    assert.equal(footers[0], sent.at(-1), 'the last message carries the footer');
+    const carried = delivered.join('\n\n');
+    const expected = planned.join('\n\n');
+    assert.ok(
+      carried === expected ||
+        (carried.endsWith(SLACK_REPLY_SHORTENED_NOTE) &&
+          expected.startsWith(carried.slice(0, -SLACK_REPLY_SHORTENED_NOTE.length - 2))),
+      'the parts carry the owed text in order, or end with the shortened note',
+    );
+
+    await h.presentation.deliverContinuations();
+    assert.equal(posts(h).length, sent.length, 'a delivered set never posts again');
+  } finally {
+    h.close();
+  }
+});
+
+test('a continuation Slack keeps refusing ends with the shortened note, then stops', async () => {
+  const h = harness();
+  try {
+    await finalizeLongAnswer(h, longPlan(30, 23));
+    const refuse = (count: number) => {
+      for (let attempt = 0; attempt < count; attempt += 1) {
+        h.postErrors.push(new SlackTransportError('chat.postMessage', 'msg_blocks_too_long'));
+      }
+    };
+    // Two smaller splits are refused; the note alone posts with the footer.
+    refuse(3);
+    await h.presentation.deliverContinuations();
+    let presentation = v3(h);
+    assert.equal(presentation.continuations?.state, 'delivered');
+    assert.equal(presentation.continuations?.resplits, 3);
+    const sent = posts(h);
+    assert.equal(sent.length, 4);
+    const last = sent.at(-1)!.input;
+    assert.deepEqual(blockTypes(last), ['markdown', 'context']);
+    assert.equal((last.blocks as Array<{ text?: string }>)[0]!.text, SLACK_REPLY_SHORTENED_NOTE);
+
+    // A reply whose note is refused too stops owing follow-ups at once.
+    const g = harness();
+    try {
+      await finalizeLongAnswer(g, longPlan(30, 23));
+      for (let attempt = 0; attempt < 10; attempt += 1) {
+        g.postErrors.push(new SlackTransportError('chat.postMessage', 'msg_blocks_too_long'));
+      }
+      await g.presentation.deliverContinuations();
+      presentation = v3(g);
+      assert.equal(presentation.continuations?.state, 'abandoned');
+      assert.equal(posts(g).length, 4, 'bounded: the refused part, two re-splits, the note');
+      await g.presentation.deliverContinuations();
+      await drainSlackPresentationRepairs({
+        presentations: g.store.listAutoRepairableV3(10),
+        state: g.state,
+        resolveClient: async () => g.client,
+        now: () => g.clock.now,
+      });
+      assert.equal(posts(g).length, 4, 'no retry after the bound');
+      assert.equal(hasRetryableTerminalRepair(v3(g)), false);
+    } finally {
+      g.close();
+    }
+  } finally {
+    h.close();
+  }
+});
+
+test('only a refused, unsent continuation may be re-split', async () => {
+  const h = harness();
+  try {
+    await finalizeLongAnswer(h, longPlan(30, 23));
+    const current = v3(h);
+    const attempt = (mutation: SlackPresentationMutation) => h.store.transition({
+      runId: current.runId,
+      workBindingGeneration: current.workBindingGeneration,
+      runFencingToken: current.runFencingToken,
+      expectedProjectionVersion: v3(h).projectionVersion,
+      expectedStreamState: v3(h).stream.state,
+      mutation,
+    });
+    assert.throws(() => attempt({ kind: 'resplit_continuations', index: 0, parts: ['smaller'] }));
+    mutate(h, { kind: 'record_continuation_intent', index: 0, operationId: 'continuation_unknown' });
+    mutate(h, {
+      kind: 'record_continuation_receipt', index: 0, operationId: 'continuation_unknown', certainty: 'unknown',
+    });
+    assert.throws(
+      () => attempt({ kind: 'resplit_continuations', index: 0, parts: ['smaller'] }),
+      'an unknown effect may be visible and is never replaced',
+    );
+  } finally {
+    h.close();
+  }
 });

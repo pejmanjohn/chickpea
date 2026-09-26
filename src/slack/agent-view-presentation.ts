@@ -10,7 +10,10 @@ import {
   appendSlackReplyFooter,
   canonicalSlackReplyText,
   renderSlackMessage,
+  SLACK_REPLY_SHORTENED_NOTE,
   slackMarkdownBlockTextLimit,
+  slackMarkdownPartBlockLimit,
+  splitSlackMarkdownReply,
   streamableSlackMarkdownPrefix,
   type SlackReplyFooter,
   type SlackReplyFormat,
@@ -41,10 +44,12 @@ import { SlackTransportError } from './transport/types.ts';
 import { slackClientMessageId } from './transport/message-id.ts';
 import { setAgentSessionStatus } from './gateway/web-client.ts';
 import {
+  MAX_SLACK_CONTINUATION_RESPLITS,
   presentationHasTerminalOutcome,
   presentationAllowsProgressive,
   presentationUsesNativeTasks,
   progressiveStreamingModeForReason,
+  slackContinuationPartAllowance,
   slackPresentationFinalizationRecord,
   type SlackPresentationFinalizationRecord,
   type SlackAppendReservation,
@@ -185,6 +190,11 @@ const RECOVERY_MAX_PARTS = 5;
 const STREAM_EDGE_WINDOW_CHARS = 2_000;
 /** A continuation intent this young may still belong to a live writer. */
 const CONTINUATION_INTENT_GRACE_MS = 60_000;
+/**
+ * Posts one delivery pass may make: every follow-up, each re-split after a
+ * refusal, and the readbacks between them.
+ */
+const CONTINUATION_DELIVERY_STEPS = 16;
 
 /**
  * One recoverable Agent View artifact for a canonical Slack Run. Flue owns
@@ -1215,7 +1225,7 @@ export class SlackAgentViewPresentation {
     /** Repair gave up: stop owing whatever is still unsent. */
     abandonUnresolved?: boolean;
   } = {}): Promise<void> {
-    for (let step = 0; step < 12; step += 1) {
+    for (let step = 0; step < CONTINUATION_DELIVERY_STEPS; step += 1) {
       const presentation = await this.requirePresentation();
       if (presentation.schemaVersion !== 3 ||
           presentation.continuations?.state !== 'active') return;
@@ -1257,8 +1267,10 @@ export class SlackAgentViewPresentation {
       'markdown',
       index === plan.parts.length - 1 ? plan.closing : undefined,
     );
+    // A re-split part is new content, so it gets its own client_msg_id.
     const operationId = part.operation?.operationId ??
-      `continuation_${hash(`${presentation.runId}:${index + 1}`).slice(0, 24)}`;
+      `continuation_${hash(`${presentation.runId}:${index + 1}${
+        plan.resplits ? `:resplit${plan.resplits}` : ''}`).slice(0, 24)}`;
     const intended = await this.transition(presentation, {
       kind: 'record_continuation_intent', index, operationId,
     });
@@ -1273,7 +1285,7 @@ export class SlackAgentViewPresentation {
       } as unknown as Parameters<WebClient['chat']['postMessage']>[0]);
       messageTs = requireSlackTs(posted.ts);
     } catch (error) {
-      await this.transition(intended, {
+      const refused = await this.transition(intended, {
         kind: 'record_continuation_receipt',
         index,
         operationId,
@@ -1283,12 +1295,56 @@ export class SlackAgentViewPresentation {
         `[chickpea] Slack reply continuation ${slackEffectOutcome(error)}: ` +
         safeSlackErrorCode(error),
       );
+      // The same content would be refused on every retry. Re-split it now.
+      if (definiteContentRejection(error)) return this.resplitRefusedContinuation(refused, index);
       return false;
     }
     await this.transition(intended, {
       kind: 'record_continuation_receipt', index, operationId, certainty: 'acknowledged', messageTs,
     });
     await notifyContinuation(onDelivered, messageTs, part.text);
+    return true;
+  }
+
+  /**
+   * Slack refused a follow-up's content outright (too many or too long
+   * rendered blocks, or malformed ones), so nothing of it posted. Split the
+   * text it and the later parts carry into smaller messages; after two
+   * smaller splits, end the reply with the shortened note and the footer
+   * alone. A refusal of that last message abandons the follow-ups, so a
+   * reply is never retried with content Slack cannot accept.
+   */
+  private async resplitRefusedContinuation(
+    presentation: SlackRunPresentation,
+    index: number,
+  ): Promise<boolean> {
+    if (presentation.schemaVersion !== 3 || presentation.continuations?.state !== 'active') {
+      return false;
+    }
+    const plan = presentation.continuations;
+    const resplits = (plan.resplits ?? 0) + 1;
+    if (resplits > MAX_SLACK_CONTINUATION_RESPLITS) {
+      await this.transition(presentation, { kind: 'abandon_continuations' });
+      return false;
+    }
+    let parts: string[];
+    if (resplits === MAX_SLACK_CONTINUATION_RESPLITS) {
+      parts = [SLACK_REPLY_SHORTENED_NOTE];
+    } else {
+      const note = `\n\n${SLACK_REPLY_SHORTENED_NOTE}`;
+      const texts = plan.parts.slice(index).map((part) => part.text);
+      const shortened = texts.at(-1)!.endsWith(note);
+      if (shortened) texts[texts.length - 1] = texts.at(-1)!.slice(0, -note.length);
+      const scale = 2 ** resplits;
+      parts = splitSlackMarkdownReply(texts.join('\n\n'), {
+        maxParts: slackContinuationPartAllowance(plan.split) - index,
+        partLimit: Math.floor(slackMarkdownBlockTextLimit / scale),
+        maxBlocks: Math.floor(slackMarkdownPartBlockLimit / scale),
+      });
+      if (shortened && !parts.at(-1)!.endsWith(note)) parts[parts.length - 1] += note;
+    }
+    await this.transition(presentation, { kind: 'resplit_continuations', index, parts });
+    console.warn(`[chickpea] Slack reply continuation re-split: ${parts.length} part(s)`);
     return true;
   }
 
@@ -2543,6 +2599,7 @@ function comparePosition(
 /** Slack's final answer that this content can never be written as sent. */
 const DEFINITE_CONTENT_REJECTION_ERRORS = new Set([
   'msg_too_long',
+  'msg_blocks_too_long',
   'invalid_blocks',
   'invalid_blocks_format',
   'too_many_blocks',
