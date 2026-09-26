@@ -405,3 +405,17 @@ test('the installed provider SDK pipeline yields the edge code through the doubl
     'the bare SDK form has no outer prefix and is never unwrapped');
   assert.doesNotMatch(JSON.stringify(logs), /private|prose|trailer/);
 });
+
+test('a failure the platform caused by resetting a Durable Object names the reset, never its reference', () => {
+  const read = new AgentPromptFailure('agent', 503, false, true,
+    new Error('Internal error in Durable Object storage caused object to be reset; reference = t1oi7n9lh71v530qvkk385fv'));
+  assert.deepEqual(settlementFailureFacts(read), [
+    { kind: 'AgentPromptFailure' }, { kind: 'Error', platformReset: 'storage_reset' },
+  ]);
+  assert.deepEqual(settlementFailureFacts(new Error('Durable Object reset because its code was updated.')), [
+    { kind: 'Error', platformReset: 'code_updated' },
+  ]);
+  assert.doesNotMatch(JSON.stringify(settlementFailureFacts(read)), /reference|t1oi7n/);
+  // Arbitrary prose that merely mentions a reset stays unnamed.
+  assert.deepEqual(settlementFailureFacts(new Error('private: the object was reset by code')), [{ kind: 'Error' }]);
+});

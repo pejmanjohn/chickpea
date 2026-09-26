@@ -902,6 +902,12 @@ export class WorkStoreLogic {
       const existing = this.getRunExecution(input.id);
       if (existing) {
         if (sameExecution(existing, input)) return existing;
+        // A turn that yielded (the alarm budget, a code update) reattaches on
+        // the same attempt number and fence, so it opens the same execution
+        // again at a later time: that is this execution, still running.
+        if (existing.outcome === 'pending' && sameExecution(existing, { ...input, startedAt: existing.startedAt })) {
+          return existing;
+        }
         throw workError(
           'work_execution_conflict',
           'Run execution ID belongs to a different attempt.',
@@ -973,6 +979,11 @@ export class WorkStoreLogic {
     validateRouteInput(input);
     return this.db.transaction(() => {
       const execution = requiredExecution(this.getRunExecution(input.executionId));
+      // A settled not-invoked execution is still `not_invoked`: a late route
+      // must not turn it back into a `ready` one.
+      if (execution.outcome !== 'pending' && execution.modelInvocationStatus === 'not_invoked') {
+        throw workError('work_execution_conflict', 'Run execution is already settled.');
+      }
       if (execution.modelInvocationStatus !== 'not_invoked') {
         if (sameRoute(execution, input)) return execution;
         throw workError('work_route_conflict', 'Run execution route is already immutable.');

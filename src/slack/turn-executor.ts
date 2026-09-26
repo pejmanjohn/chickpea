@@ -8,7 +8,7 @@ import { sandboxThreadKey } from '../sandbox/thread-key.ts';
 import type { ProductTelemetryCapture } from '../telemetry/client.ts';
 import type { UsageStore } from '../usage/types.ts';
 import type { WorkStore } from '../work/types.ts';
-import { settlementFailureFacts } from './agent-failure-diagnostics.ts';
+import { isPlatformReset, settlementFailureFacts } from './agent-failure-diagnostics.ts';
 import type { SlackPresentationStatePort } from './agent-view-presentation.ts';
 import { alarmYieldIsFree, type AlarmTurnJobControl } from './alarm-turn-drain.ts';
 import type { SlackStateLogic } from './claim-store.ts';
@@ -459,13 +459,23 @@ export async function executeTurnJob(
       // existing caps end the turn with the recovery notice.
       console.warn('[chickpea] state store still unavailable past the turn durability');
     }
-    if (err instanceof AgentObservationYield) {
+    if (err instanceof AgentObservationYield ||
+        interruptedAfterYield(err, options.control?.signal, flueDispatch.dispatchReceipt)) {
       if (alarmYieldIsFree(flueDispatch.dispatchReceipt?.acceptedAt, Date.now())) {
         // The alarm stopped observing on purpose; nothing failed. Restore
         // the attempt count so a long turn never spends its reattachment
         // budget on yields, and keep its receipt, active work, and claims.
         await ports.turnJobs.recordAttempt(job.id, job.attempts);
-        console.info('[chickpea] Flue turn yielded for reattachment by the next alarm');
+        const interruption = err instanceof AgentObservationYield ? err.cause : err;
+        if (interruption === undefined) {
+          console.info('[chickpea] Flue turn yielded for reattachment by the next alarm');
+        } else {
+          // A code update resets this runner and what it reads together, so
+          // the platform's reset can surface before the yield does. Name it.
+          console.info('[chickpea] Flue turn yielded for reattachment by the next alarm', {
+            interruptedBy: settlementFailureFacts(interruption),
+          });
+        }
         return false;
       }
       // Past its durability the submission should have settled. Spend
@@ -537,4 +547,24 @@ export async function executeTurnJob(
       return false;
     }
   }
+}
+
+/**
+ * A dispatched turn whose observation was already stopped on purpose (the
+ * alarm budget, or a code update that superseded this runner) and then failed
+ * with an interruption rather than a decided outcome: the platform resets this
+ * runner and the objects it reads together, so the reset often surfaces before
+ * the yield does. Nothing settled; it is the same yield. Only a recognised
+ * interruption qualifies: the platform's reset, a state store disconnect, or a
+ * retryable transport failure. Any other error (a bug in this code, a settled
+ * failure, a reconciliation requirement) keeps its meaning.
+ */
+function interruptedAfterYield(
+  err: unknown,
+  signal: AbortSignal | undefined,
+  receipt: FlueDispatchReceiptV1 | undefined,
+): boolean {
+  if (!signal?.aborted || !receipt) return false;
+  if (isPlatformReset(err) || isStateStoreDisconnect(err)) return true;
+  return err instanceof AgentPromptFailure && err.retryable && !err.recoveryRequired;
 }

@@ -298,7 +298,7 @@ test('dispatch diagnostics distinguish failed settlement from an empty completed
     '[chickpea] agent dispatch failed:',
     { stage, submissionRef: opaqueId('fluesubmission', RECEIPT.submissionId),
       ...(stage === 'invalid_result' ? { hasText: false } : {
-        causes: [{ kind: 'unknown' }, { kind: 'internal_error' }],
+        causes: [{ kind: 'AgentRunError' }, { kind: 'internal_error' }],
       }) },
   ]));
   assert.doesNotMatch(JSON.stringify(logs), /private|Bearer|secret|submission_dispatch_test/);
@@ -1188,4 +1188,185 @@ test('a missing agent instance found after the budget abort still requires recov
   }), (error: unknown) => error instanceof AgentPromptFailure &&
     !(error instanceof AgentObservationYield) && error.recoveryRequired);
   assert.deepEqual(reasons, ['flue_expected_instance_missing']);
+});
+
+// --- Version switch mid-turn ----------------------------------------------
+// A code update resets the Flue agent object with the runner. Flue's recovery
+// keeps the streamed text as an aborted step, appends two hidden advisories,
+// and runs one continuation step on the same response message.
+
+type Chunk = import('@flue/runtime').ConversationStreamChunk;
+
+function recoveredStream(partial: string, continuation: string): Chunk[] {
+  const chunks: Omit<Chunk, 'position'>[] = [
+    { type: 'message-started', conversationId: 'c', messageId: 'response', submissionId: RECEIPT.submissionId },
+    { type: 'message-delta', conversationId: 'c', messageId: 'response', kind: 'text', delta: partial },
+    // The recovery materializes the interrupted stream as a completed (aborted) step.
+    { type: 'message-completed', conversationId: 'c', messageId: 'response' },
+    ...['The previous assistant stream was interrupted.', 'Continue from the durable partial assistant response.']
+      .map((text, index) => ({
+        type: 'message-appended' as const,
+        conversationId: 'c',
+        message: {
+          id: `entry_recovery_${index}`, role: 'system' as const, purpose: 'advisory' as const,
+          display: 'hidden' as const, submissionId: RECEIPT.submissionId,
+          parts: [{ type: 'text' as const, text, state: 'done' as const }],
+        },
+      })),
+    { type: 'message-started', conversationId: 'c', messageId: 'response', submissionId: RECEIPT.submissionId },
+    { type: 'message-delta', conversationId: 'c', messageId: 'response', kind: 'text', delta: continuation },
+    { type: 'message-completed', conversationId: 'c', messageId: 'response' },
+  ] as Omit<Chunk, 'position'>[];
+  return chunks.map((chunk, index) => ({ ...chunk, position: { batch: 1, index } }) as Chunk);
+}
+
+function recoveredAgent(partial: string, continuation: string, counter: { dispatches: number }) {
+  return handle({
+    dispatch: async () => { counter.dispatches += 1; return RECEIPT; },
+    read: async (_receipt, options) => {
+      for (const chunk of recoveredStream(partial, continuation)) options?.onEvent?.(chunk);
+      // Flue folds the aborted partial and its continuation as two text parts.
+      return { text: `${partial}\n\n${continuation}`, submissionId: RECEIPT.submissionId, data: {} };
+    },
+  });
+}
+
+test('a reattached turn whose agent was reset answers with the streamed prefix and its continuation, without dispatching again', async () => {
+  const counter = { dispatches: 0 };
+  const partial = '## Plan\n\n1. Inventory every consumer of the old col';
+  const continuation = 'umn.\n2. Backfill.\n\nSummary: expand, migrate, contract.';
+  // Reattachment: the receipt from before the code update is saved.
+  const dispatchState = state({ dispatchEnvelope: ENVELOPE, dispatchReceipt: RECEIPT });
+  const result = await promptSlackThreadAgent(
+    promptInput(dispatchState, recoveredAgent(partial, continuation, counter)));
+  assert.equal(result.text, partial + continuation, 'one answer, the streamed prefix kept');
+  assert.equal(counter.dispatches, 0, 'the successor reattaches; Flue runs the one recovery');
+  assert.equal(dispatchState.flueSettlement?.outcome === 'completed' &&
+    dispatchState.flueSettlement.result.text, partial + continuation);
+});
+
+test('a recovered step that rewrote the answer from its start replaces the partial instead of repeating it', async () => {
+  const counter = { dispatches: 0 };
+  const partial = '## Plan\n\nThis migration plan covers the schema change end to end, from inventory to';
+  const regenerated = '## Plan\n\nThis migration plan covers the schema change end to end, from inventory to cleanup.';
+  const result = await promptSlackThreadAgent(promptInput(
+    state({ dispatchEnvelope: ENVELOPE, dispatchReceipt: RECEIPT }),
+    recoveredAgent(partial, regenerated, counter)));
+  assert.equal(result.text, regenerated);
+  assert.equal(counter.dispatches, 0);
+});
+
+test('a later step after ordinary narration is still the whole answer (no recovery advisories)', async () => {
+  const agent = handle({ read: async (_receipt, options) => {
+    const chunks = recoveredStream('Checking.', 'The answer.').filter((chunk) => chunk.type !== 'message-appended');
+    for (const chunk of chunks) options?.onEvent?.(chunk);
+    return { text: 'Checking.\n\nThe answer.', submissionId: RECEIPT.submissionId, data: {} };
+  } });
+  const result = await promptSlackThreadAgent(promptInput(state(), agent));
+  assert.equal(result.text, 'The answer.');
+});
+
+test('a read that fails with the platform reset after a code-update yield is the same yield, keeping stream and receipt', async () => {
+  const controller = new AbortController();
+  const relayOperations: string[] = [];
+  const relay: SlackProgressiveReadRelay = {
+    onEvent() {},
+    async closeAndDrain() { relayOperations.push('closed'); return { acceptedChunks: 0, acceptedBytes: 0, targetMessageCompleted: true, invalidated: false }; },
+    async invalidateAndDrain(reason) { relayOperations.push(`invalid:${reason}`); return { acceptedChunks: 0, acceptedBytes: 0, targetMessageCompleted: false, invalidated: true }; },
+    async suspendAndDrain() { relayOperations.push('suspended'); return { acceptedChunks: 0, acceptedBytes: 0, targetMessageCompleted: false, invalidated: false }; },
+  };
+  const dispatchState = state({ dispatchEnvelope: ENVELOPE, dispatchReceipt: RECEIPT });
+  const reset = new Error('Internal error in Durable Object storage caused object to be reset; reference = abc');
+  let caught: unknown;
+  await assert.rejects(() => promptSlackThreadAgent({
+    ...promptInput(dispatchState, handle({})),
+    observeReply: async () => {
+      // The runner was superseded (the signal fired), then the read broke.
+      controller.abort(new Error('code update'));
+      throw reset;
+    },
+    observationSignal: controller.signal,
+    prepareProgressiveRelay: async () => relay,
+  }), (error: unknown) => { caught = error; return error instanceof AgentObservationYield; });
+  assert.equal((caught as Error).cause, reset, 'the interruption stays attached for diagnostics');
+  assert.deepEqual(relayOperations, ['suspended'], 'not read_interrupted: the stream stays open');
+  assert.equal(dispatchState.flueSettlement, undefined);
+  assert.deepEqual(dispatchState.dispatchReceipt, RECEIPT);
+});
+
+test('a read that fails before any yield is still a retryable interruption, not a yield', async () => {
+  await assert.rejects(() => promptSlackThreadAgent({
+    ...promptInput(state({ dispatchEnvelope: ENVELOPE, dispatchReceipt: RECEIPT }), handle({})),
+    observeReply: async () => { throw new Error('Network connection lost.'); },
+    observationSignal: new AbortController().signal,
+  }), (error: unknown) => error instanceof AgentPromptFailure &&
+    !(error instanceof AgentObservationYield) && error.retryable);
+});
+
+/** A stream interrupted before each continuation after the first part. */
+function chainedRecoveryStream(parts: string[]): Chunk[] {
+  const chunks: Omit<Chunk, 'position'>[] = [];
+  parts.forEach((part, index) => {
+    if (index > 0) {
+      for (const text of ['interrupted', 'continue']) {
+        chunks.push({ type: 'message-appended', conversationId: 'c', message: {
+          id: `recovery_${index}_${text}`, role: 'system', purpose: 'advisory', display: 'hidden',
+          submissionId: RECEIPT.submissionId, parts: [{ type: 'text', text, state: 'done' }] } } as Omit<Chunk, 'position'>);
+      }
+    }
+    chunks.push({ type: 'message-started', conversationId: 'c', messageId: 'response', submissionId: RECEIPT.submissionId } as Omit<Chunk, 'position'>);
+    chunks.push({ type: 'message-delta', conversationId: 'c', messageId: 'response', kind: 'text', delta: part } as Omit<Chunk, 'position'>);
+    chunks.push({ type: 'message-completed', conversationId: 'c', messageId: 'response' } as Omit<Chunk, 'position'>);
+  });
+  return chunks.map((chunk, index) => ({ ...chunk, position: { batch: 1, index } }) as Chunk);
+}
+
+async function recoveredAnswer(parts: string[], folded = parts.join('\n\n')) {
+  const logs: unknown[] = [];
+  const info = console.info;
+  console.info = (...args: unknown[]) => { if (args[0] === '[chickpea] interrupted answer recovered') logs.push(args[1]); };
+  try {
+    const result = await promptSlackThreadAgent(promptInput(
+      state({ dispatchEnvelope: ENVELOPE, dispatchReceipt: RECEIPT }),
+      handle({ read: async (_receipt, options) => {
+        for (const chunk of chainedRecoveryStream(parts)) options?.onEvent?.(chunk);
+        return { text: folded, submissionId: RECEIPT.submissionId, data: {} };
+      } })));
+    return { text: result.text, logs };
+  } finally {
+    console.info = info;
+  }
+}
+
+test('two interruptions with a restart in the middle keep one copy of the answer', async () => {
+  const opening = '## Plan\n\nThis migration plan covers the schema change';
+  const { text, logs } = await recoveredAnswer([opening, `${opening} cleanup, in`, ' three phases.']);
+  assert.equal(text, `${opening} cleanup, in three phases.`);
+  assert.deepEqual(logs, [{ recoveryResolution: 'restarted', parts: 3,
+    partialChars: opening.length * 2 + ' cleanup, in'.length, continuationChars: ' three phases.'.length }]);
+});
+
+test('a short partial proves no restart and is always continued', async () => {
+  assert.equal((await recoveredAnswer(['## Pl', 'an\n\nExpand, migrate, contract.'])).text,
+    '## Plan\n\nExpand, migrate, contract.');
+  // Even a continuation that happens to begin with the same mark is continued.
+  const { text, logs } = await recoveredAnswer(['#', '# Plan']);
+  assert.equal(text, '## Plan');
+  assert.equal((logs[0] as { recoveryResolution: string }).recoveryResolution, 'continued');
+});
+
+test('a paraphrased restart is concatenated, as the relay streamed it (accepted; logged as continued)', async () => {
+  const partial = '## Plan\n\nThis migration plan covers the schema';
+  const paraphrase = '## Migration plan\n\nThis plan covers the schema change.';
+  const { text, logs } = await recoveredAnswer([partial, paraphrase]);
+  assert.equal(text, partial + paraphrase);
+  assert.equal((logs[0] as { recoveryResolution: string }).recoveryResolution, 'continued');
+});
+
+test('a continuation folded with other text blocks falls back to the last step and is logged unmatched', async () => {
+  const partial = '## Plan\n\n1. Inventory the col';
+  const { text, logs } = await recoveredAnswer([partial, 'umn.'], `${partial}\n\nA commentary block.\n\numn.`);
+  assert.equal(text, 'umn.');
+  assert.deepEqual(logs, [{ recoveryResolution: 'unmatched', parts: 2, partialChars: partial.length, continuationChars: 4 }]);
+  assert.doesNotMatch(JSON.stringify(logs), /Plan|Inventory|umn/, 'the log carries no content');
 });

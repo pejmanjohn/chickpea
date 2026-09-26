@@ -902,3 +902,30 @@ test('the deployment-only progressive gate defaults on and recognizes explicit f
     false,
   );
 });
+
+test('an answer interrupted by a code update streams its continuation right after the prefix', async () => {
+  for (const mode of ['early', 'final_answer'] as const) {
+    const h = modelRelay({ mode });
+    h.emit(streamInput({ batch: 2, index: 0 }));
+    h.emit(stepCompleted(3));
+    h.emit(streamOutput({ batch: 4, index: 0 }));
+    h.emit(stepStarted(5));
+    h.emit(answerDelta('## Plan\n\n1. Inventory the col', { batch: 6, index: 0 }));
+    // Flue's recovery on the new version: the aborted step completes, two
+    // hidden advisories, then the continuation step on the same response.
+    h.emit(stepCompleted(7));
+    for (const index of [0, 1]) {
+      h.emit({ type: 'message-appended', conversationId: 'conversation_model_intent',
+        message: { id: `recovery_${index}`, role: 'system', purpose: 'advisory', display: 'hidden',
+          parts: [{ type: 'text', text: 'private advisory', state: 'done' }] },
+        position: { batch: 8, index } });
+    }
+    h.emit(stepStarted(9));
+    h.emit(answerDelta('umn.\n2. Backfill.', { batch: 10, index: 0 }));
+    h.emit(stepCompleted(11));
+    const summary = await h.relay.closeAndDrain();
+    assert.deepEqual(h.delivered.map((chunk) => chunk.delta).join(''),
+      '## Plan\n\n1. Inventory the column.\n2. Backfill.', mode);
+    assert.equal(summary.invalidated, false, mode);
+  }
+});
