@@ -124,7 +124,14 @@ test('operator skill stays discoverable and separate from contract assertions', 
   assert.match(readme, /\.agents\/skills\/chickpea-live-verification\/SKILL\.md/);
 });
 
-test('skill relative references resolve from their owning files to the canonical workflow', () => {
+// The clean source export has no .git, so it cannot read the index manifest.
+// verify:hygiene and the export itself run the same docs-reference check on
+// the exact committed tree (inspectSource), so skipping here loses nothing.
+const IN_GIT_CHECKOUT = existsSync(resolve(ROOT, '.git'));
+
+test('skill relative references resolve from their owning files to the canonical workflow', {
+  skip: IN_GIT_CHECKOUT ? false : 'no .git in the source export; inspectSource covers this check',
+}, () => {
   // The same check runs in verify:hygiene; this keeps it in the full suite too.
   // Both inline-code references in the discovery wrapper and actual Markdown
   // links in the operator instructions must survive source publication.
