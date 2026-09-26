@@ -719,6 +719,7 @@ test('the Cloudflare gateway socket logs gateway_delivery for each admitted fram
       getSettingsStore: () => ({ getSetting: async () => 'configured' }),
       GATEWAY_BINDING_SETTING: 'binding',
       GATEWAY_DURABLE_ADMISSION_CAPABILITY: 'durable',
+    GATEWAY_UI_INTERACTIONS_CAPABILITY: 'ui',
       cloudflareWorkerVersionId: () => 'test-version',
       tagStateStub: () => ({ admitGatewayDelivery: () => { admissions += 1; return admit(); } }),
       GatewayInboundAdmission,

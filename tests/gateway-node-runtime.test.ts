@@ -89,7 +89,7 @@ test('Node gateway advertises durable admission only after save-before-receipt i
   });
   await spin();
 
-  assert.deepEqual(capabilities, ['durable_admission_v1']);
+  assert.deepEqual(capabilities, ['durable_admission_v1', 'ui_interactions_v1']);
   const outcome = await admission!(eventDelivery('delivery:Ev_DURABLE'));
   assert.deepEqual(saved, ['delivery:Ev_DURABLE']);
   assert.equal(outcome, 'accepted');
