@@ -995,12 +995,23 @@ export class SlackAgentViewPresentation {
     const recoverStream = (finalizing: SlackRunPresentation) =>
       this.recoverFinalizingStream(finalizing, text, format, observer, tablePresentation);
     // The stream carries the first message. Its table and footer move to the
-    // last follow-up when the answer continues.
-    const parts = this.replyParts(presentation, approved, format);
+    // last follow-up when the answer continues. A stream whose acknowledged
+    // prefix no longer matches the answer is corrected with chat.update,
+    // which refuses a message Slack accepts from a stream (`msg_too_long`),
+    // so its first message keeps the recovery bound.
+    const correctionSplit = presentation.schemaVersion === 3 &&
+        presentation.stream.state === 'streaming' && presentation.stream.messageTs &&
+        !this.streamedPrefixMatches(presentation, approved)
+      ? this.recoverySplit(presentation, approved)
+      : undefined;
+    const parts = correctionSplit
+      ? slackReplyParts(approved, format, correctionSplit)
+      : this.replyParts(presentation, approved, format);
     const first = parts[0]!;
     const renderedTable = renderSlackReplyTable(tablePresentation, parts.at(-1)!);
     const closes = !await this.planContinuations(
-      parts, renderedTable, [], this.replySplit(presentation, approved),
+      parts, renderedTable, [], correctionSplit ?? this.replySplit(presentation, approved),
+      correctionSplit !== undefined,
     );
     presentation = await this.requirePresentation();
     const footerBlocks = closes
@@ -1076,9 +1087,7 @@ export class SlackAgentViewPresentation {
       throw new Error('Slack Agent View presentation is not terminalizable.');
     }
     const acknowledged = prefixAtUtf8Length(approved, presentation.stream.acknowledgedByteLength);
-    const prefixMatches = acknowledged !== undefined &&
-      hash(acknowledged) === (presentation.stream.acknowledgedPrefixHash ?? hash(''));
-    if (!prefixMatches) {
+    if (acknowledged === undefined || !this.streamedPrefixMatches(presentation, approved)) {
       return this.correctDivergentStream(
         presentation,
         first,
@@ -1351,15 +1360,36 @@ export class SlackAgentViewPresentation {
     );
   }
 
+  /** Whether the acknowledged stream prefix is exactly the start of this answer. */
+  private streamedPrefixMatches(presentation: SlackRunPresentation, approved: string): boolean {
+    const acknowledged = prefixAtUtf8Length(approved, presentation.stream.acknowledgedByteLength);
+    return acknowledged !== undefined &&
+      hash(acknowledged) === (presentation.stream.acknowledgedPrefixHash ?? hash(''));
+  }
+
   /** How the first message is cut: after the streamed prefix, or with room for a marker. */
   private replySplit(presentation: SlackRunPresentation, approved: string): SlackReplySplit {
-    const acknowledged = prefixAtUtf8Length(approved, presentation.stream.acknowledgedByteLength);
     const streamed = presentation.stream.presentationOutcome !== 'corrected' &&
-      acknowledged !== undefined &&
-      hash(acknowledged) === (presentation.stream.acknowledgedPrefixHash ?? hash(''));
+      this.streamedPrefixMatches(presentation, approved);
     return streamed
-      ? { minFirstPartLength: acknowledged.length }
+      ? { minFirstPartLength: prefixAtUtf8Length(approved, presentation.stream.acknowledgedByteLength)!.length }
       : { firstPartLimit: slackMarkdownBlockTextLimit - CORRECTED_MARKER.length - 2 };
+  }
+
+  /**
+   * The split of a first message replaced through chat.update: a divergent
+   * stream's correction, or recovery of a stream whose stop was lost. Both
+   * compute the same split, so a recovery after an interrupted correction
+   * keeps the frozen plan. A split without a kept streamed prefix leaves
+   * room for the correction marker inside the update bound.
+   */
+  private recoverySplit(presentation: SlackRunPresentation, approved: string): SlackReplySplit {
+    const split = this.replySplit(presentation, approved);
+    return recoveryReplySplit(
+      split,
+      approved,
+      split.minFirstPartLength === undefined ? CORRECTED_MARKER.length + 2 : 0,
+    );
   }
 
   /** Retire only the exact saved interim stream, before any terminal write. */
@@ -1713,7 +1743,7 @@ export class SlackAgentViewPresentation {
     // message within RECOVERY_UPDATE_MAX_CHARS and re-plan the rest as
     // follow-ups; no follow-up has started before the final is acknowledged.
     const split = presentation.schemaVersion === 3
-      ? recoveryReplySplit(this.replySplit(presentation, approved), approved)
+      ? this.recoverySplit(presentation, approved)
       : undefined;
     const parts = split
       ? slackReplyParts(approved, format, split)
@@ -1852,7 +1882,34 @@ export class SlackAgentViewPresentation {
         channel: presentation.root.channelId,
         ts: presentation.stream.messageTs!,
       });
-      await this.options.client.chat.update(update);
+      try {
+        await this.options.client.chat.update(update);
+      } catch (error) {
+        if (!definiteContentRejection(error)) throw error;
+        // Slack refused this content at the coordinate for good
+        // (`msg_too_long`, malformed blocks): the stopped stream still shows
+        // the divergent prefix and a retry would fail the same way. Remove
+        // it when Slack lets us and post the terminal once, fresh.
+        console.warn(
+          '[chickpea] Slack Agent View stream correction was rejected; posting the final fresh: ' +
+          safeSlackErrorCode(error),
+        );
+        try {
+          await this.options.client.chat.delete({ channel: update.channel, ts: messageTs });
+        } catch (deleteError) {
+          console.warn(
+            `[chickpea] Slack Agent View divergent stream cleanup ${slackEffectOutcome(deleteError)}: ` +
+            safeSlackErrorCode(deleteError),
+          );
+        }
+        await observer.after({
+          attemptId,
+          outcome: 'failed',
+          safeFailureCode: 'slack_stream_update_rejected',
+        });
+        await this.transition(presentation, { kind: 'stream_message_lost', messageTs });
+        return freshFinalResult(await this.requirePresentation());
+      }
     } catch (error) {
       await this.markUnknown(presentation, 'unknown_effect');
       await this.recordTerminalDeliveryReceipt('unknown');
@@ -2506,8 +2563,13 @@ function definiteContentRejection(error: unknown): boolean {
  * to the exact bound, mid-word or inside a link. The replacement allows one
  * extra follow-up, so recovery carries as much as a normal reply.
  */
-export function recoveryReplySplit(split: SlackReplySplit, approved: string): SlackReplySplit {
-  const limit = Math.min(split.firstPartLimit ?? RECOVERY_UPDATE_MAX_CHARS, RECOVERY_UPDATE_MAX_CHARS);
+export function recoveryReplySplit(
+  split: SlackReplySplit,
+  approved: string,
+  reservedChars = 0,
+): SlackReplySplit {
+  const bound = RECOVERY_UPDATE_MAX_CHARS - reservedChars;
+  const limit = Math.min(split.firstPartLimit ?? bound, bound);
   const prefix = split.minFirstPartLength;
   const fenceOpen = prefix !== undefined &&
     (approved.slice(0, prefix).match(/^ {0,3}`{3,}/gm) ?? []).length % 2 === 1;

@@ -27,7 +27,7 @@ import {
 } from '../src/slack/run-presentations.ts';
 import { slackClientMessageId } from '../src/slack/transport/message-id.ts';
 import { SlackTransportError } from '../src/slack/transport/types.ts';
-import { WebClientPresenter } from '../src/slack/web-client-presenter.ts';
+import { deliverPersistedSlackPayload, WebClientPresenter } from '../src/slack/web-client-presenter.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
 
 const LIMIT = slackMarkdownBlockTextLimit;
@@ -712,6 +712,120 @@ test('msg_too_long on the recovery update is definite: the final posts fresh exa
     const before = posts(h).length;
     await presenter.deliverFinal(text, 'markdown');
     assert.equal(posts(h).length, before);
+  } finally {
+    h.close();
+  }
+});
+
+const CORRECTED = '_Corrected_';
+
+/**
+ * A reattached attempt whose final no longer starts with the streamed prefix.
+ * Its correction replaces the message through chat.update, so the first
+ * message keeps the recovery bound with room for the marker.
+ */
+async function streamDivergentAnswer(h: Harness): Promise<{ text: string; planned: string[] }> {
+  const streamed = longPlan(18, 23);
+  await streamLongAnswer(h, streamed);
+  assert.ok(streamedText(h).length > RECOVERY_UPDATE_CHARS);
+  const text = `## Revised plan\n\n${streamed}`;
+  const planned = splitSlackMarkdownReply(
+    text,
+    recoveryReplySplit({ firstPartLimit: LIMIT - CORRECTED.length - 2 }, text, CORRECTED.length + 2),
+  );
+  assert.ok(planned.length >= 3);
+  return { text, planned };
+}
+
+test('a divergent long final corrects the stream within the update bound, then its follow-ups', async () => {
+  const h = harness();
+  try {
+    const recorded: Array<{ messageTs: string; text: string }> = [];
+    const presenter = planningPresenter(h, recorded);
+    const { text, planned } = await streamDivergentAnswer(h);
+    await presenter.deliverFinal(text, 'markdown');
+
+    const stops = h.calls.filter((call) => call.method === 'chat.stopStream');
+    assert.equal(stops.length, 1);
+    assert.equal(Object.hasOwn(stops[0]!.input, 'chunks'), false, 'the stop appends nothing');
+    const updates = h.calls.filter((call) => call.method === 'chat.update');
+    assert.equal(updates.length, 1, 'one correction update');
+    const update = updates[0]!.input;
+    const blocks = update.blocks as Array<{ type: string; text?: string }>;
+    assert.deepEqual(blocks.map((block) => block.type), ['markdown'], 'no footer before the reply ends');
+    assert.equal(blocks[0]!.text, `${planned[0]}\n\n${CORRECTED}`);
+    assert.ok(blocks[0]!.text!.length <= RECOVERY_UPDATE_CHARS);
+    assert.ok(String(update.text).length <= RECOVERY_UPDATE_CHARS);
+
+    // The corrected stream message is the one final; only follow-ups post.
+    const all = posts(h);
+    assert.equal(all.length, planned.length - 1);
+    all.forEach((post, index) => {
+      assert.equal((post.input.blocks as Array<{ text?: string }>)[0]!.text, planned[index + 1]);
+    });
+    assert.deepEqual(blockTypes(all.at(-1)!.input), ['markdown', 'context']);
+    const presentation = v3(h);
+    assert.equal(presentation.stream.presentationOutcome, 'corrected');
+    assert.equal(presentation.stream.state, 'artifact_delivered');
+    assert.equal(presentation.continuations?.state, 'delivered');
+    assert.equal(presentation.continuations?.split?.firstPartLimit, RECOVERY_UPDATE_CHARS - CORRECTED.length - 2);
+  } finally {
+    h.close();
+  }
+});
+
+test('msg_too_long on a correction update is definite: the final posts fresh once, no attempt lost', async () => {
+  const h = harness();
+  try {
+    const recorded: Array<{ messageTs: string; text: string }> = [];
+    const presenter = planningPresenter(h, recorded);
+    const { text, planned } = await streamDivergentAnswer(h);
+    // Through the gateway a Slack error arrives with an unknown effect.
+    h.updateErrors.push(new SlackTransportError('chat.update', 'msg_too_long'));
+    await presenter.deliverFinal(text, 'markdown');
+
+    assert.equal(h.calls.filter((call) => call.method === 'chat.update').length, 1, 'never retried');
+    const deleted = h.calls.find((call) => call.method === 'chat.delete');
+    assert.equal(deleted?.input.ts, '1785800100.000200', 'the divergent stream is removed');
+    assertFreshReply(h, planned, recorded);
+    const presentation = v3(h);
+    assert.equal(presentation.stream.state, 'artifact_delivered');
+    assert.equal(presentation.continuations?.state, 'delivered');
+
+    const before = posts(h).length;
+    await presenter.deliverFinal(text, 'markdown');
+    assert.equal(posts(h).length, before, 'a replay of the same final posts nothing');
+  } finally {
+    h.close();
+  }
+});
+
+test('a persisted correction replays the same bounded update it recorded', async () => {
+  const h = harness();
+  try {
+    const { text } = await streamDivergentAnswer(h);
+    const rendered: string[] = [];
+    const recording: SlackPresentationDeliveryObserver = {
+      async before(input) { rendered.push(input.renderedPayload); return 'attempt'; },
+      async after() {},
+    };
+    const result = await h.presentation.finalize(text, 'markdown', 'complete', recording);
+    assert.equal(result.handled, true);
+    const live = h.calls.find((call) => call.method === 'chat.update')!.input;
+    assert.equal(rendered.length, 1);
+    assert.equal(JSON.parse(rendered[0]!).method, 'slack_chat_stream_correct');
+
+    const replayed: Array<{ method: string; input: Record<string, unknown> }> = [];
+    await deliverPersistedSlackPayload({
+      chat: {
+        async stopStream(input: Record<string, unknown>) { replayed.push({ method: 'stop', input }); return { ok: true }; },
+        async update(input: Record<string, unknown>) { replayed.push({ method: 'update', input }); return { ok: true }; },
+      },
+    } as unknown as WebClient, rendered[0]!);
+    assert.deepEqual(replayed.map((call) => call.method), ['stop', 'update']);
+    assert.deepEqual(replayed[1]!.input, live, 'replay sends exactly the live update');
+    const blocks = replayed[1]!.input.blocks as Array<{ text?: string }>;
+    assert.ok(blocks[0]!.text!.length <= RECOVERY_UPDATE_CHARS, 'the replay stays within the update bound');
   } finally {
     h.close();
   }

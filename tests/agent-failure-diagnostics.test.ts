@@ -6,6 +6,8 @@ import { agentFailureDiagnosticsInterceptor, observeAgentResultDiagnostics, sett
 import { CHICKPEA_SLACK_AGENT_NAME } from '../src/agents/names.ts';
 import { opaqueId } from '../src/work/admission.ts';
 import { AgentPromptFailure, StateStoreUnavailable } from '../src/slack/flue-dispatch.ts';
+import { SlackTransportError } from '../src/slack/transport/types.ts';
+import { PersistedSlackDeliveryError } from '../src/slack/web-client-presenter.ts';
 import { WorkStateError } from '../src/work/types.ts';
 
 const operation = { type: 'agent', operationId: 'private-submission', operationKind: 'prompt' } as const;
@@ -28,6 +30,27 @@ test('durable failure facts retain serialized cause kinds without private error 
   assert.equal(settlementFailureFacts(cyclic).length, 1);
   assert.deepEqual(settlementFailureFacts(new Error('Slack terminal delivery requires reconciliation.')), [
     { kind: 'Error', presentationFailureKind: 'terminal_reconciliation' },
+  ]);
+});
+
+test('a failed Slack write names what Slack refused, never the payload', () => {
+  // A rejected stream correction used to log "durable reattachment failed: unknown".
+  assert.deepEqual(settlementFailureFacts(new SlackTransportError('chat.update', 'msg_too_long')), [
+    { kind: 'SlackTransportError', slackErrorCode: 'msg_too_long', slackEffectOutcome: 'unknown' },
+  ]);
+  assert.deepEqual(settlementFailureFacts(
+    new PersistedSlackDeliveryError('failed', 'slack_stream_correction_failed'),
+  ), [{
+    kind: 'PersistedSlackDeliveryError',
+    slackDeliveryFailureCode: 'slack_stream_correction_failed',
+    slackEffectOutcome: 'failed',
+  }]);
+  const platform = Object.assign(new Error('An API error occurred: msg_too_long'), {
+    code: 'slack_webapi_platform_error', data: { ok: false, error: 'msg_too_long', private: 'x' },
+  });
+  assert.deepEqual(settlementFailureFacts(platform), [{ kind: 'Error', slackErrorCode: 'msg_too_long' }]);
+  assert.deepEqual(settlementFailureFacts(new SlackTransportError('chat.update', 'Private Prose Here')), [
+    { kind: 'SlackTransportError', slackEffectOutcome: 'unknown' },
   ]);
 });
 
