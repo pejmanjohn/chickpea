@@ -348,6 +348,7 @@
     usageMetadata: null,
     usageOperations: null,
     usageNextCursor: null,
+    usageRoutineNames: null,
     usageLoading: false,
     usageLoadingMore: false,
     usageError: "",
@@ -2025,6 +2026,7 @@
     state.usageError = "";
     state.usageOperations = null;
     state.usageNextCursor = null;
+    state.usageRoutineNames = null;
     render();
     var metadataPromise = state.usageMetadata && !forceMetadata
       ? Promise.resolve(state.usageMetadata)
@@ -2041,6 +2043,7 @@
       state.usageMetadata = parts[2];
       state.usageLoading = false;
       render();
+      loadUsageRoutineNames();
     }).catch(function (error) {
       if (requestId !== state.usageRequestId) return;
       state.usageLoading = false;
@@ -2063,11 +2066,33 @@
       state.usageNextCursor = body.nextCursor || null;
       state.usageLoadingMore = false;
       render();
+      loadUsageRoutineNames();
     }).catch(function (error) {
       state.usageLoadingMore = false;
       state.usageError = error.serverMessage || error.message || "Recent activity could not be loaded.";
       render();
     });
+  }
+
+  // Usage redacts stored routine labels. Names come from the scheduled-work
+  // list, which applies the viewer's routine content access, so a routine the
+  // viewer may not read stays unnamed. Loaded once, only when needed.
+  function loadUsageRoutineNames() {
+    if (state.usageRoutineNames) return;
+    var unnamed = (state.usageOperations || []).some(function (detail) {
+      var operation = detail && detail.operation;
+      return operation && operation.operationKind === "routine_run" && !operation.routineLabel && operation.routineId;
+    });
+    if (!unnamed) return;
+    state.usageRoutineNames = {};
+    api("/admin/api/audit/scheduled_work/routines?state=all&limit=100", { cache: "no-store" }).then(function (body) {
+      var names = {};
+      (body && body.routines || []).forEach(function (routine) {
+        if (routine && routine.id && routine.name) names[routine.id] = routine.name;
+      });
+      state.usageRoutineNames = names;
+      if (state.view === "usage") render();
+    }).catch(function () {});
   }
 
   function loadMoreUsageOperations() {
@@ -2128,7 +2153,9 @@
   }
 
   function usageWorkLabel(operation) {
-    if (operation.operationKind === "routine_run") return operation.routineLabel || operation.routineId || "Scheduled work";
+    if (operation.operationKind === "routine_run") {
+      return operation.routineLabel || (state.usageRoutineNames && state.usageRoutineNames[operation.routineId]) || "Scheduled work";
+    }
     if (operation.operationKind === "interaction_classification") return "Interaction classification";
     if (operation.conversationKind === "direct_message") return "Direct message";
     return operation.channelLabel ? "#" + operation.channelLabel : operation.channelId || "Interactive turn";

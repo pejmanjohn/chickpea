@@ -615,6 +615,7 @@ function runAdminPageHarness(
     usageCoverage?: { pricedOperationCount: number; meteredOperationCount: number };
     usageAgentLabel?: string | null;
     usageAgentId?: string;
+    usageRoutineId?: string;
     usageClassifierOnly?: boolean;
     usageNextCursor?: string | null;
     resetDocumentScrollOnRender?: boolean;
@@ -1499,6 +1500,12 @@ function runAdminPageHarness(
       conversationKind: 'direct_message', routineId: null, routineLabel: null, routineRunId: null,
       requestedProvider: 'openai', requestedModel: 'gpt-4.1-mini', credentialRefId: 'cred_openai_environment', credentialVersion: 1,
       coverage: 'aggregate_only', telemetrySchemaVersion: 1, createdAt: usageNow - 60_000, updatedAt: usageNow - 55_000,
+      ...(options.usageRoutineId
+        ? {
+            operationKind: 'routine_run', channelId: 'C0EXR3L9T', conversationKind: 'named_channel',
+            routineId: options.usageRoutineId, routineRunId: 'op_usage_fixture',
+          }
+        : {}),
     },
     measurements: [{
       executionId: 'exec_usage_fixture', operationId: 'op_usage_fixture', operationStatus: 'completed', observedAt: usageNow - 55_000,
@@ -15180,6 +15187,49 @@ test('Usage names the built-in Chickpea Agent on a redacted operation', async ()
 
   assert.match(harness.app.innerHTML, /<td>Chickpea<\/td>/);
   assert.doesNotMatch(harness.app.innerHTML, /agent_chickpea<\/td>/);
+});
+
+test('Usage names a redacted scheduled run from the readable scheduled-work list', async () => {
+  const harness = runAdminPageHarness({
+    usageAdminUi: true,
+    initialPath: '/admin/usage',
+    usageRoutineId: 'routine_release_digest',
+  });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /<strong class="usage-work-label">Release readiness check<\/strong>/);
+  assert.doesNotMatch(harness.app.innerHTML, />routine_release_digest</);
+  assert.equal(
+    harness.scheduledApiCalls.filter((path) => path.startsWith('/admin/api/audit/scheduled_work/routines?')).length,
+    1,
+  );
+});
+
+test('Usage keeps an unreadable or unknown scheduled run generic instead of showing its id', async () => {
+  const redacted = runAdminPageHarness({
+    usageAdminUi: true,
+    initialPath: '/admin/usage',
+    usageRoutineId: 'routine_release_digest',
+    redactScheduledName: true,
+  });
+  await flushAsync();
+  assert.match(redacted.app.innerHTML, /<strong class="usage-work-label">Scheduled work<\/strong>/);
+  assert.doesNotMatch(redacted.app.innerHTML, /routine_release_digest|Release readiness check/);
+
+  const unknown = runAdminPageHarness({
+    usageAdminUi: true,
+    initialPath: '/admin/usage',
+    usageRoutineId: 'routine_14b94c1fd794028d5c1c7770be60bc80',
+  });
+  await flushAsync();
+  assert.match(unknown.app.innerHTML, /<strong class="usage-work-label">Scheduled work<\/strong>/);
+  assert.doesNotMatch(unknown.app.innerHTML, /routine_14b94c1fd794028d5c1c7770be60bc80/);
+});
+
+test('Usage does not read scheduled work when no scheduled run needs a name', async () => {
+  const harness = runAdminPageHarness({ usageAdminUi: true, initialPath: '/admin/usage' });
+  await flushAsync();
+  assert.deepEqual(harness.scheduledApiCalls, []);
 });
 
 test('Usage names Agents in the Agent breakdown instead of showing their ids', async () => {
