@@ -35,11 +35,12 @@ interface UiSurfaceRow {
   expires_at: number;
 }
 
-export interface UiSurfaceThreadScope {
+export interface UiSurfaceScope {
   workspaceId: string;
   channelId: string;
-  threadTs: string;
   agentId: string;
+  /** One Slack thread; absent, the whole channel or DM. */
+  threadTs?: string;
 }
 
 /** A claim made inside Slack admission, atomically with the click's TurnJob. */
@@ -56,11 +57,11 @@ export type UiSurfaceRpcRequest =
   | { kind: 'resolve_surface'; id: string; resolution: UiSurfaceResolution }
   | {
       kind: 'supersede_surfaces';
-      scope: UiSurfaceThreadScope;
+      scope: UiSurfaceScope;
       exceptTurnJobId: string;
       kinds: UiSurfaceSpec['kind'][];
     }
-  | { kind: 'list_open_surfaces'; scope: UiSurfaceThreadScope; limit?: number };
+  | { kind: 'list_open_surfaces'; scope: UiSurfaceScope; limit?: number };
 
 export type UiSurfaceRpcResponse =
   | { kind: 'surface'; surface: UiSurfaceRecord | null }
@@ -203,42 +204,36 @@ export class UiSurfaceStoreLogic {
    * turn owns, and return them so their cards can be redrawn.
    */
   supersede(
-    scope: UiSurfaceThreadScope,
+    scope: UiSurfaceScope,
     options: { exceptTurnJobId: string; kinds: readonly UiSurfaceSpec['kind'][] },
   ): UiSurfaceRecord[] {
     if (options.kinds.length === 0) return [];
-    const rows = this.db.all(
-      `SELECT * FROM ui_surfaces
-       WHERE workspace_id = ? AND channel_id = ? AND thread_ts = ? AND agent_id = ?
-         AND status IN ('open', 'pending_delivery') AND turn_job_id != ?
-       ORDER BY created_at LIMIT 20`,
-      scope.workspaceId,
-      scope.channelId,
-      scope.threadTs,
-      scope.agentId,
-      options.exceptTurnJobId,
-    ) as unknown as UiSurfaceRow[];
     const closed: UiSurfaceRecord[] = [];
-    for (const row of rows) {
-      const record = decode(row);
-      if (!record || !options.kinds.includes(record.spec.kind)) continue;
+    for (const record of this.listOpen(scope, 20)) {
+      if (record.turnJobId === options.exceptTurnJobId || !options.kinds.includes(record.spec.kind)) continue;
       const next = this.close(record.id, 'superseded');
       if (next?.status === 'superseded') closed.push(next);
     }
     return closed;
   }
 
-  /** Open surfaces in a thread, newest first (for typed answers that retire them). */
-  listOpen(scope: UiSurfaceThreadScope, limit = 10): UiSurfaceRecord[] {
+  /**
+   * Open surfaces in scope, newest first. A typed answer retires by approval
+   * id across the channel, because a DM's approval can be typed in any of its
+   * threads; supersede stays bound to one thread.
+   */
+  listOpen(scope: UiSurfaceScope, limit = 10): UiSurfaceRecord[] {
     const rows = this.db.all(
       `SELECT * FROM ui_surfaces
-       WHERE workspace_id = ? AND channel_id = ? AND thread_ts = ? AND agent_id = ?
+       WHERE workspace_id = ? AND channel_id = ? AND agent_id = ?
+         AND (? IS NULL OR thread_ts = ?)
          AND status IN ('open', 'pending_delivery')
        ORDER BY created_at DESC LIMIT ?`,
       scope.workspaceId,
       scope.channelId,
-      scope.threadTs,
       scope.agentId,
+      scope.threadTs ?? null,
+      scope.threadTs ?? null,
       Math.max(1, Math.min(50, limit)),
     ) as unknown as UiSurfaceRow[];
     return rows.flatMap((row) => {

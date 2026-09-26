@@ -80,33 +80,34 @@ function selectedValues(element: Record<string, unknown>): string[] | undefined 
   return values as string[];
 }
 
-/** Keeps only host blocks, bounded; malformed or oversized state is refused. */
+/**
+ * Raw Slack `state.values` to the normalized shape the gateway also sends:
+ * host blocks only, each element as `{type, value?, selected?}`. Bounds are
+ * then checked once by `parseNormalizedUiState`.
+ */
 export function normalizeSlackUiState(value: unknown, maxBytes = MAX_STATE_BYTES): SlackUiState | undefined {
   const values = record(record(value)?.values) ?? record(value);
   if (!values) return {};
-  const state: SlackUiState = {};
+  const state: Record<string, Record<string, unknown>> = {};
   for (const [blockId, block] of Object.entries(values)) {
-    if (!blockId.startsWith('chickpea.') || blockId.length > MAX_ACTION_ID) continue;
+    if (!blockId.startsWith('chickpea.')) continue;
     const elements = record(block);
     if (!elements) return undefined;
-    const normalizedBlock: Record<string, SlackUiStateValue> = {};
+    const normalizedBlock: Record<string, unknown> = {};
     for (const [actionId, raw] of Object.entries(elements)) {
       const element = record(raw);
-      if (!element || actionId.length > MAX_ACTION_ID) return undefined;
-      const type = boundedString(element.type, MAX_ACTION_TYPE);
-      if (!type) return undefined;
+      if (!element) return undefined;
       const selected = selectedValues(element);
       if (!selected) return undefined;
-      const text = element.value === null ? null : boundedString(element.value, 3_000);
       normalizedBlock[actionId] = {
-        type,
-        ...(text !== undefined ? { value: text } : {}),
+        type: element.type,
+        ...(element.value === null || typeof element.value === 'string' ? { value: element.value } : {}),
         ...(selected.length ? { selected } : {}),
       };
     }
     state[blockId] = normalizedBlock;
   }
-  return new TextEncoder().encode(JSON.stringify(state)).byteLength <= maxBytes ? state : undefined;
+  return parseNormalizedUiState(state, { maxBytes });
 }
 
 /**

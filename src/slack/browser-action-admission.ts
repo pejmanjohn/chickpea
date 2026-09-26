@@ -10,7 +10,8 @@ import type { NormalizedSlackTurn } from './types.ts';
  * routed Agent is holding for this same person in this same thread. On a
  * match the pending action is answered, an approval is stamped onto the turn
  * (bound to this message), and the turn is marked to reach the Agent, which
- * reads the reply. Returns whether the reply answered a pending action.
+ * reads the reply. Returns the answered action, or undefined when the reply
+ * answered nothing.
  */
 export async function admitSlackBrowserActionReply(input: {
   turn: NormalizedSlackTurn;
@@ -18,9 +19,9 @@ export async function admitSlackBrowserActionReply(input: {
   settings: SettingsStore;
   actorMembershipId?: string | undefined;
   now?: number;
-}): Promise<boolean> {
+}): Promise<{ kind: 'approved' | 'stopped'; id: string } | undefined> {
   const word = slackBrowserActionReply(input.turn.text);
-  if (!word) return false;
+  if (!word) return undefined;
   const { turn } = input;
   const answer = await resolveBrowserActionReply({
     settings: input.settings,
@@ -42,8 +43,8 @@ export async function admitSlackBrowserActionReply(input: {
     outcome: answer?.kind ?? 'error',
     ...(answer?.kind === 'none' ? { reason: answer.reason } : {}),
   });
-  if (!answer || answer.kind === 'none') return false;
+  if (!answer || answer.kind === 'none') return undefined;
   if (answer.kind === 'approved') turn.approvedBrowserActionId = answer.id;
   turn.interactionIntent = { disposition: 'reply', reason: 'substantive_request' };
-  return true;
+  return answer;
 }

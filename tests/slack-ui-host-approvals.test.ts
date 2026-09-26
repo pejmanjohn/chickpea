@@ -149,7 +149,7 @@ test('a workspace-change proposal created by this turn gets Approve and Cancel',
   // A typed "approve" retires the same card.
   await retireApprovalSurfacesForTypedAnswer({
     state, messenger: out.value,
-    scope: { workspaceId: 'T1', channelId: 'C1', threadTs: THREAD_TS, agentId: 'agent_ops' },
+    scope: { workspaceId: 'T1', channelId: 'C1', agentId: 'agent_ops' },
     match: { proposalId: 'proposal_1' },
     resolution: { byUserId: 'U1', at: TURN_MS + 5_000, choice: 0 },
   });
@@ -157,6 +157,40 @@ test('a workspace-change proposal created by this turn gets Approve and Cancel',
   assert.match(JSON.stringify(out.updates[0]!.rendered.blocks), /Approved by <@U1> \(typed reply\)/);
   assert.equal((await surfaces(state)).length, 0);
   state.close();
+});
+
+test('a typed answer retires the card wherever in the DM it was typed, and only its own approval', async () => {
+  const state = new SqliteSlackStateStore(':memory:');
+  const settings = new SqliteSettingsStore(':memory:');
+  const out = messenger();
+  // The card sits in the thread under the person's first DM message.
+  const dm = turn({ channelId: 'D1', source: 'dm_message', channelType: 'im', sessionThreadTs: 'dm' });
+  const held = await createBrowserAction(settings, {
+    workspaceId: 'T1', channelId: 'D1', threadTs: THREAD_TS, agentId: 'agent_ops',
+    actorSlackUserId: 'U1', actorMembershipId: 'membership_u1',
+    loginId: `wl_${'a'.repeat(32)}`, host: 'billing.example.com', url: 'https://billing.example.com/plan',
+    title: 'Plan', ref: 'e3', role: 'button', name: 'Confirm change', occurrence: 0, action: 'click',
+    description: 'click "Confirm change"', now: TURN_MS + 1_000,
+  });
+  await deliverHostApprovalSurfaces({
+    turn: dm, assignment, turnJobId: 'job1', state, settings, messenger: out.value, now: TURN_MS + 2_000,
+  });
+  assert.equal(out.posts.length, 1);
+  const scope = { workspaceId: 'T1', channelId: 'D1', agentId: 'agent_ops' };
+  const retire = (match: { browserActionId: string }, choice: number) => retireApprovalSurfacesForTypedAnswer({
+    state, messenger: out.value, scope, match, resolution: { byUserId: 'U1', at: TURN_MS + 5_000, choice },
+  });
+  // Another action's answer leaves this card alone.
+  await retire({ browserActionId: 'b'.repeat(32) }, 0);
+  assert.equal(out.updates.length, 0);
+  // "stop" typed at the DM's top level (a different Slack thread) settles it.
+  await retire({ browserActionId: held.id }, 1);
+  assert.equal(out.updates.length, 1);
+  assert.match(JSON.stringify(out.updates[0]!.rendered.blocks), /Stopped by <@U1> \(typed reply\)/);
+  const response = await state.executeUiSurface!({ kind: 'list_open_surfaces', scope });
+  assert.deepEqual(response, { kind: 'surfaces', surfaces: [] });
+  state.close();
+  settings.close();
 });
 
 test('a click authorizes a workspace change only against the live proposal the card names', async () => {
@@ -176,7 +210,7 @@ test('a click authorizes a workspace change only against the live proposal the c
   } as UiSurfaceRecord;
   const authorize = (choice: number, patch: Partial<NormalizedSlackTurn> = {}, record = surface) => {
     const clicked = turn({ text: 'Approved the proposed workspace changes with the Approve button.', ...patch });
-    const admission: SlackUiAdmission = { surface: record, choice, outcome: 'pending' };
+    const admission: SlackUiAdmission = { surface: record, choice, outcome: 'unavailable' };
     return authorizeUiResponse({
       admission, turn: clicked, assignment, actorMembershipId: 'membership_u1',
       stores: { identity, management, settings },

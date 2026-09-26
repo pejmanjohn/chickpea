@@ -38,9 +38,8 @@ const MAX_CONFIRM_BUTTON = 30;
 /** Host-minted ids: namespace, version, then only structural tokens. */
 export const HOST_ACTION_ID_PATTERN = /^chickpea\.(?:ui|host)\.v1\.[a-z_]{1,24}(?:\.\d{1,3})?$/;
 export const HOST_BLOCK_ID_PATTERN = /^chickpea\.(?:ui|host)\.v1\.[a-f0-9]{32}\.\d{1,3}$/;
+/** Button and option values alike: the surface id and a choice index. */
 export const HOST_VALUE_PATTERN = /^[a-f0-9]{32}:\d{1,3}$/;
-/** Values of person/channel/date options that the host fills itself. */
-const HOST_OPTION_VALUE_PATTERN = /^[a-f0-9]{32}:\d{1,3}$/;
 
 /** `<!channel>`, `<!here>`, `<!everyone>` and user-group pings, however written. */
 const BROADCAST_PATTERN = /<!(?:channel|here|everyone|subteam\^)[^>]*>/i;
@@ -258,9 +257,8 @@ function checkElement(
   if (MODAL_ONLY_ELEMENTS.has(type) && context.surface !== 'modal') {
     context.issues.push(`${at} ${type} is modal-only`);
   }
-  if (type !== 'button' || value.url === undefined) {
-    checkActionId(value.action_id, `${at}.action_id`, context);
-  } else if (value.action_id !== undefined) {
+  // Only a link button may omit its action_id.
+  if (type !== 'button' || value.url === undefined || value.action_id !== undefined) {
     checkActionId(value.action_id, `${at}.action_id`, context);
   }
   if (value.placeholder !== undefined) {
@@ -330,7 +328,7 @@ function checkOptions(value: unknown, at: string, context: CheckContext, max: nu
       context.issues.push(`${where}.value must be 1–${MAX_OPTION_VALUE} characters`);
       return;
     }
-    if (!HOST_OPTION_VALUE_PATTERN.test(option.value)) {
+    if (!HOST_VALUE_PATTERN.test(option.value)) {
       context.issues.push(`${where}.value is not a structural host value`);
     }
     if (seen.has(option.value)) context.issues.push(`${where}.value duplicates ${option.value}`);

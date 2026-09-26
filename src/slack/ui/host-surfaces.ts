@@ -26,7 +26,8 @@ export interface UiSurfaceMessenger {
 
 type SurfaceState = Required<Pick<SlackStateStore, 'executeUiSurface'>>;
 
-async function surfaceResult(
+/** One surface request whose answer is a single record (or none). */
+export async function uiSurfaceRecord(
   state: SurfaceState,
   request: Parameters<SurfaceState['executeUiSurface']>[0],
 ): Promise<UiSurfaceRecord | undefined> {
@@ -34,7 +35,11 @@ async function surfaceResult(
   return response.kind === 'surface' ? response.surface ?? undefined : undefined;
 }
 
-async function redraw(messenger: UiSurfaceMessenger, surface: UiSurfaceRecord | undefined): Promise<void> {
+/** Redraw a posted surface from its stored state; a failed edit is only logged. */
+export async function redrawUiSurface(
+  messenger: Pick<UiSurfaceMessenger, 'update'>,
+  surface: UiSurfaceRecord | undefined,
+): Promise<void> {
   if (!surface?.messageTs) return;
   await messenger.update(surface.messageTs, renderUiSurface(surface)).catch(() => {
     console.warn('[chickpea] Slack card redraw failed');
@@ -115,12 +120,12 @@ export async function deliverHostApprovalSurfaces(input: {
     kinds: ['approval'],
   });
   if (superseded.kind === 'surfaces') {
-    for (const surface of superseded.surfaces) await redraw(input.messenger, surface);
+    for (const surface of superseded.surfaces) await redrawUiSurface(input.messenger, surface);
   }
 
   const now = input.now ?? Date.now();
   for (const spec of specs) {
-    const stored = await surfaceResult(state, {
+    const stored = await uiSurfaceRecord(state, {
       kind: 'put_surface',
       record: {
         id: uiSurfaceId(input.turnJobId, `host-approval:${spec.approval}`),
@@ -146,12 +151,12 @@ export async function deliverHostApprovalSurfaces(input: {
     if (!check.ok) {
       // The typed path still works; never post a card Slack would reject.
       console.error('[chickpea] host approval card failed the Block Kit check', { issues: check.issues.slice(0, 5) });
-      await surfaceResult(state, { kind: 'close_surface', id: stored.id, status: 'failed' });
+      await uiSurfaceRecord(state, { kind: 'close_surface', id: stored.id, status: 'failed' });
       continue;
     }
     const messageTs = await input.messenger.post(rendered).catch(() => undefined);
     if (messageTs) {
-      await surfaceResult(state, { kind: 'bind_surface_message', id: stored.id, messageTs });
+      await uiSurfaceRecord(state, { kind: 'bind_surface_message', id: stored.id, messageTs });
     }
   }
 }
@@ -159,11 +164,13 @@ export async function deliverHostApprovalSurfaces(input: {
 /**
  * A typed answer settles the same approval its card offers: mark the card
  * answered (noting it was typed) and redraw it, so no live button remains.
+ * The card is found by the approval it names anywhere in the channel: a DM's
+ * approval can be typed at the top level while its card sits in a thread.
  */
 export async function retireApprovalSurfacesForTypedAnswer(input: {
   state: SlackStateStore;
-  messenger: UiSurfaceMessenger;
-  scope: { workspaceId: string; channelId: string; threadTs: string; agentId: string };
+  messenger: Pick<UiSurfaceMessenger, 'update'>;
+  scope: { workspaceId: string; channelId: string; agentId: string };
   match: { proposalId?: string; browserActionId?: string };
   resolution: Omit<UiSurfaceResolution, 'typed'>;
 }): Promise<void> {
@@ -173,16 +180,15 @@ export async function retireApprovalSurfacesForTypedAnswer(input: {
   if (open.kind !== 'surfaces') return;
   for (const surface of open.surfaces) {
     const spec = surface.spec;
-    if (spec.kind !== 'approval') continue;
     const matches = spec.approval === 'workspace_change'
       ? spec.proposalId === input.match.proposalId
       : spec.browserActionId === input.match.browserActionId;
     if (!matches) continue;
-    const resolved = await surfaceResult(state, {
+    const resolved = await uiSurfaceRecord(state, {
       kind: 'resolve_surface',
       id: surface.id,
       resolution: { ...input.resolution, typed: true },
     });
-    await redraw(input.messenger, resolved);
+    await redrawUiSurface(input.messenger, resolved);
   }
 }

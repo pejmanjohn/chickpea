@@ -127,17 +127,3 @@ export function parseUiControl(input: {
   }
   return parsed;
 }
-
-/** A selected option's value, bound to its surface like a button value. */
-export function parseUiOptionValue(surfaceId: string, value: string): number | undefined {
-  const match = VALUE.exec(value);
-  return match && match[1] === surfaceId ? Number(match[2]) : undefined;
-}
-
-export function uiSurfaceNamespace(spec: UiSurfaceSpec): UiNamespace {
-  return spec.kind === 'approval' ? 'host' : 'ui';
-}
-
-export function isUiSurfaceOpen(record: UiSurfaceRecord, now: number): boolean {
-  return (record.status === 'open' || record.status === 'pending_delivery') && record.expiresAt > now;
-}

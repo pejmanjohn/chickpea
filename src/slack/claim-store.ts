@@ -129,7 +129,7 @@ export function selectSlackPresentationOwner(input: {
 }
 
 export type SlackCanonicalAdmissionResult =
-  | { claimed: false; uiSurfaceClosed?: true }
+  | { claimed: false }
   | { claimed: true; admission: ShadowRunAdmission };
 
 /**
@@ -391,7 +391,7 @@ export class SlackStateLogic {
         if (!claim?.claimed) {
           this.release(input.evtKey);
           this.release(input.msgKey);
-          return { claimed: false, uiSurfaceClosed: true };
+          return { claimed: false };
         }
       }
       const admission = work.admitShadowRunInTransaction(input.admission);

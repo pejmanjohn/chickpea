@@ -13,14 +13,14 @@ import type { UiSurfaceRecord } from './surface.ts';
 export type UiRefusal = 'unavailable' | 'wrong_user' | 'not_current' | 'answered' | 'closed';
 
 /**
- * A click travelling through ordinary Slack admission. Admission fills in
- * `outcome`; everything else is fixed by the ingress before admission starts.
+ * A click travelling through ordinary Slack admission. The ingress starts
+ * `outcome` at `unavailable`, so every early return in admission is a refusal;
+ * admission sets a more specific refusal or `admitted`.
  */
 export interface SlackUiAdmission {
   surface: UiSurfaceRecord;
   choice: number;
-  values?: string[];
-  outcome: 'pending' | 'admitted' | UiRefusal;
+  outcome: 'admitted' | UiRefusal;
 }
 
 /**

@@ -354,13 +354,13 @@ function parseGatewayUiAction(record: Record<string, unknown>): GatewayUiActionD
     throw new GatewayProtocolError('invalid_ui_action');
   }
   const nullableId = (value: unknown) => value === null ? null : requireId(value);
-  const nullableTs = (value: unknown) => {
-    if (value === null) return null;
+  const requireTs = (value: unknown) => {
     if (typeof value !== 'string' || !SLACK_TS_PATTERN.test(value)) {
       throw new GatewayProtocolError('invalid_ui_action');
     }
     return value;
   };
+  const nullableTs = (value: unknown) => value === null ? null : requireTs(value);
   const bounded = (value: unknown, maximum: number) => {
     if (typeof value !== 'string' || !value || value.length > maximum) {
       throw new GatewayProtocolError('invalid_ui_action');
@@ -399,7 +399,7 @@ function parseGatewayUiAction(record: Record<string, unknown>): GatewayUiActionD
     value,
     selected: [...record.selected] as string[],
     state,
-    actionTs: nullableTs(record.actionTs) ?? (() => { throw new GatewayProtocolError('invalid_ui_action'); })(),
+    actionTs: requireTs(record.actionTs),
     triggerId: bounded(record.triggerId, 256),
   };
 }

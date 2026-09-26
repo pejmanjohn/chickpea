@@ -38,7 +38,7 @@ interface Fixture {
   ephemerals(): string[];
   updates(): Array<Record<string, unknown>>;
   heldAction(scope?: { channelId: string; threadTs: string; agentId: string }): Promise<string>;
-  dm(envelope: Parameters<typeof processGatewaySlackEnvelope>[0]): Promise<void>;
+  message(envelope: Parameters<typeof processGatewaySlackEnvelope>[0]): Promise<void>;
 }
 
 async function withFixture(body: (f: Fixture) => Promise<void>): Promise<void> {
@@ -112,7 +112,7 @@ async function withFixture(body: (f: Fixture) => Promise<void>): Promise<void> {
       jobs,
       calls,
       ownerMembershipId: owner.membership.id,
-      async dm(envelope) {
+      async message(envelope) {
         assert.equal(await processGatewaySlackEnvelope(envelope, undefined, gateway, execution), 'accepted');
       },
       async heldAction(scope = { channelId: 'C1', threadTs: THREAD_TS, agentId: 'agent_support' }) {
@@ -219,6 +219,30 @@ test('Stop click spends the held step without stamping an approval', async () =>
   assert.match(turn.text, /Stopped the browser step/);
   assert.equal((await getBrowserAction(f.stores.settings, actionId))?.status, 'consumed');
   assert.match(JSON.stringify(f.updates().at(-1)!.blocks), /Stopped by <@U1>/);
+}));
+
+test('a typed "stop" in the thread spends the step and retires its card as a typed answer', async () => withFixture(async (f) => {
+  const surface = await f.surface();
+  const actionId = (surface.spec as { browserActionId: string }).browserActionId;
+  await f.message({
+    workspaceId: 'T1', eventId: 'EvStop', eventTime: 3002,
+    event: { type: 'message' as const, channel: 'C1', channel_type: 'channel', user: 'U1', ts: '3002.000100', thread_ts: THREAD_TS, text: 'stop' },
+  });
+  assert.equal(f.jobs.length, 2);
+  assert.equal(f.jobs[1]!.turn.approvedBrowserActionId, undefined);
+  assert.equal((await getBrowserAction(f.stores.settings, actionId))?.status, 'consumed');
+  const stored = await f.read(surface.id);
+  assert.equal(stored?.status, 'resolved');
+  assert.equal(stored?.resolution?.choice, 1);
+  assert.equal(stored?.resolution?.typed, true);
+  const update = f.updates().at(-1)!;
+  assert.equal(update.ts, CARD_TS);
+  assert.equal(hasActions(update), false);
+  assert.match(JSON.stringify(update.blocks), /Stopped by <@U1> \(typed reply\)/);
+  // A late click on the settled card starts nothing.
+  await f.click(surface.id);
+  assert.equal(f.jobs.length, 2);
+  assert.match(f.ephemerals().at(-1)!, /Already answered by <@U1>/);
 }));
 
 test('a double click or a replayed delivery starts one turn and tells the second clicker it was answered', async () => withFixture(async (f) => {
@@ -333,7 +357,7 @@ test('a click in a DM thread is admitted like a DM reply from the clicker', asyn
     workspaceId: 'T1', eventId: 'EvDm', eventTime: 4000,
     event: { type: 'message' as const, channel: 'D1', channel_type: 'im', user: 'U1', ts: '4000.000100', text: 'Please update my plan.' },
   };
-  await f.dm(envelope);
+  await f.message(envelope);
   assert.equal(f.jobs.length, jobsBefore + 1);
   const dmJob = f.jobs.at(-1)!;
   const surface = await f.surface({
