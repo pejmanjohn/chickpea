@@ -2099,8 +2099,9 @@ export function isStateStoreDisconnect(error: unknown): boolean {
  * The state store a SlackThreadRunner talks to. Every call goes to a freshly
  * minted stub: a stub whose Durable Object instance was replaced fails every
  * later call, and the singleton is replaced on each code update. Every
- * operation here is safe to replay (reads, first-write-wins or convergent
- * writes, version-gated snapshots), so a call that fails on a disconnect is
+ * operation here but the Slack budget bookings is safe to replay (reads,
+ * first-write-wins or convergent writes, version-gated snapshots), so a call
+ * that fails on a disconnect is
  * replayed once on a new stub; a second disconnect surfaces as
  * {@link StateStoreDisconnectedError}. Bounded calls per turn, plus one
  * storage-free `servingVersion` call every 5 s while a turn runs (the code
@@ -2126,6 +2127,20 @@ export class CfTurnJobsForRunner implements RunnerTurnJobsPort {
 
   private slack<T>(run: (store: CfSlackStateStore) => Promise<T>): Promise<T> {
     return this.call((stub) => run(new CfSlackStateStore(stub)));
+  }
+
+  /**
+   * One attempt, never replayed: a budget booking is a write, and a replay
+   * after a lost reply would book a second slot. The lost slot is simply
+   * unused; the caller paces from its own copy on the error.
+   */
+  private async once<T>(run: (store: CfSlackStateStore) => Promise<T>): Promise<T> {
+    try {
+      return await run(new CfSlackStateStore(this.mintStub()));
+    } catch (error) {
+      if (isSandboxDisconnect(error)) throw new StateStoreDisconnectedError(error);
+      throw error;
+    }
   }
 
   op<K extends ThreadRunnerTurnKind>(input: ThreadRunnerTurnOp<K>): Promise<ThreadRunnerTurnResult<K>> {
@@ -2251,6 +2266,32 @@ export class CfTurnJobsForRunner implements RunnerTurnJobsPort {
 
   putPresentation(presentation: SlackRunPresentation) {
     return this.op({ kind: 'putPresentation', presentation });
+  }
+
+  // The workspace's Slack budgets: shared by every thread runner, so booked
+  // here rather than in the runner's own SQLite (runnerPresentationState).
+
+  reserveSlackAppend(workspaceId: string) {
+    return this.once((store) => store.reserveSlackAppend(workspaceId));
+  }
+
+  /** A read: replay-safe. */
+  slackAppendCooldownUntil(workspaceId: string) {
+    return this.slack((store) => store.slackAppendCooldownUntil(workspaceId));
+  }
+
+  /** Convergent (the later of the running and the new cooldown end): replay-safe. */
+  applySlackAppendCooldown(workspaceId: string, retryAfterMs: number) {
+    return this.slack((store) => store.applySlackAppendCooldown(workspaceId, retryAfterMs));
+  }
+
+  reserveSlackActivityStatus(workspaceId: string) {
+    return this.once((store) => store.reserveSlackActivityStatus(workspaceId));
+  }
+
+  /** Convergent, like the append cooldown: replay-safe. */
+  applySlackActivityStatusCooldown(workspaceId: string, retryAfterMs: number) {
+    return this.slack((store) => store.applySlackActivityStatusCooldown(workspaceId, retryAfterMs));
   }
 }
 

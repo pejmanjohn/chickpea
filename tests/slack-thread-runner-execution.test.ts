@@ -17,7 +17,9 @@ import {
   StateStoreDisconnectedError,
 } from '../src/config/cf-state-proxies.ts';
 import type { TagStateRpc } from '../src/config/state-rpc.ts';
+import { localSlackPresentationStatePort } from '../src/slack/presentation-state-port.ts';
 import {
+  DEFAULT_SLACK_APPEND_BUDGET,
   SlackRunPresentationStoreLogic,
   type SlackPresentationMutation,
   type SlackRunPresentation,
@@ -26,6 +28,7 @@ import { observedStatusTargetFor, singletonObservedStatusTarget } from '../src/s
 import { ThreadRunnerJobStore } from '../src/slack/thread-runner-jobs.ts';
 import {
   runnerPresentationState,
+  RUNNER_SHARED_BUDGET_METHODS,
   runnerTurnJobsPort,
   runThreadRunnerAlarm,
   createRunnerSupersedeState,
@@ -52,6 +55,19 @@ import { createWorkModelInvocationInterceptor } from '../src/work/model-invocati
 import { NOW, turnJob } from './fixtures/state-db/maintenance.ts';
 
 const threadOf = (job: PendingTurnJob) => job.turn.threadTs;
+
+/** The state store's workspace budgets, over one presentation store. */
+function sharedBudgets(store: SlackRunPresentationStoreLogic) {
+  return {
+    reserveSlackAppend: async (workspaceId: string) => store.reserveAppend(workspaceId),
+    slackAppendCooldownUntil: async (workspaceId: string) => store.appendCooldownUntil(workspaceId),
+    applySlackAppendCooldown: async (workspaceId: string, retryAfterMs: number) =>
+      store.applyAppendCooldown(workspaceId, retryAfterMs),
+    reserveSlackActivityStatus: async (workspaceId: string) => store.reserveActivityStatus(workspaceId),
+    applySlackActivityStatusCooldown: async (workspaceId: string, retryAfterMs: number) =>
+      store.applyActivityStatusCooldown(workspaceId, retryAfterMs),
+  };
+}
 
 function inThread(id: string, threadTs: string) {
   const job = turnJob(id);
@@ -263,6 +279,7 @@ test('runner presentation state writes locally and publishes lifecycle changes o
     const presentation = runnerPresentationState({
       local,
       remote: {
+        ...sharedBudgets(local),
         matchFlueObservation: async () => undefined,
         getLatestThreadSessionGeneration: async () => {
           generationReads += 1;
@@ -889,7 +906,11 @@ test("a retired aged stream in the runner's copy is published and accepted by th
     const published: SlackRunPresentation[] = [];
     const presentation = runnerPresentationState({
       local,
-      remote: { matchFlueObservation: async () => undefined, getLatestThreadSessionGeneration: async () => 5 },
+      remote: {
+        ...sharedBudgets(shared),
+        matchFlueObservation: async () => undefined,
+        getLatestThreadSessionGeneration: async () => 5,
+      },
       putRemote: async (value) => { published.push(value); shared.putSnapshot(value); },
     });
     let current = local.create(v3Input('run_aged', 'turn_aged'));
@@ -957,7 +978,7 @@ test('a due cleanup check the state store cannot answer backs the runner off', a
   } finally { db.close(); }
 });
 
-test('activity changes make no state-store calls; the generation is read once per window', async () => {
+test('activity changes publish nothing; the generation is read once per window', async () => {
   const db = openStateDb(':memory:');
   try {
     const local = new SlackRunPresentationStoreLogic(db, () => NOW);
@@ -967,6 +988,7 @@ test('activity changes make no state-store calls; the generation is read once pe
     const presentation = runnerPresentationState({
       local,
       remote: {
+        ...sharedBudgets(local),
         matchFlueObservation: async () => undefined,
         getLatestThreadSessionGeneration: async () => {
           generationReads += 1;
@@ -1010,6 +1032,118 @@ test('activity changes make no state-store calls; the generation is read once pe
     await presentation.state.getLatestThreadSessionGeneration(ROOT);
     assert.equal(generationReads, 2);
   } finally { db.close(); }
+});
+
+test("the runner's port books the workspace's Slack budgets in the state store, not its own SQLite", async () => {
+  const runnerDbs = [openStateDb(':memory:'), openStateDb(':memory:')];
+  const sharedDb = openStateDb(':memory:');
+  try {
+    // Every workspace-scoped budget method on the port is routed.
+    const portBudgets = Object.keys(localSlackPresentationStatePort({
+      presentations: new SlackRunPresentationStoreLogic(runnerDbs[0]!, () => NOW),
+      matchFlueObservation: async () => undefined,
+    })).filter((name) => /slack(Append|ActivityStatus)/i.test(name)).sort();
+    assert.deepEqual([...RUNNER_SHARED_BUDGET_METHODS].sort(), portBudgets);
+
+    const shared = new SlackRunPresentationStoreLogic(sharedDb, () => NOW);
+    const calls: string[] = [];
+    const remote = Object.fromEntries(Object.entries(sharedBudgets(shared)).map(([name, method]) => [
+      name,
+      async (...args: never[]) => { calls.push(name); return (method as (...a: never[]) => unknown)(...args); },
+    ])) as ReturnType<typeof sharedBudgets>;
+    const [a, b] = runnerDbs.map((db) => {
+      const local = new SlackRunPresentationStoreLogic(db, () => NOW);
+      return {
+        local,
+        state: runnerPresentationState({
+          local,
+          remote: {
+            ...remote,
+            matchFlueObservation: async () => undefined,
+            getLatestThreadSessionGeneration: async () => undefined,
+          },
+          putRemote: async () => {},
+        }).state,
+      };
+    });
+    // Two threads share one burst, first come first served.
+    const outcomes: string[] = [];
+    for (let slot = 0; slot < DEFAULT_SLACK_APPEND_BUDGET.capacity + 2; slot += 1) {
+      const runner = slot % 2 === 0 ? a! : b!;
+      outcomes.push((await runner.state.reserveSlackAppend(ROOT.workspaceId)).outcome);
+    }
+    assert.deepEqual(outcomes, [
+      ...Array(DEFAULT_SLACK_APPEND_BUDGET.capacity).fill('reserved'), 'scheduled', 'scheduled',
+    ], "the second thread's bookings come after the first's in one budget");
+    const [slotA, slotB] = [
+      await a!.state.reserveSlackAppend(ROOT.workspaceId),
+      await b!.state.reserveSlackAppend(ROOT.workspaceId),
+    ];
+    assert.ok(slotA.outcome === 'scheduled' && slotB.outcome === 'scheduled' && slotB.at > slotA.at);
+    // A Slack rate limit one thread hit holds the other.
+    const { cooldownUntil } = await a!.state.applySlackAppendCooldown(ROOT.workspaceId, 5_000);
+    assert.equal(await b!.state.slackAppendCooldownUntil!(ROOT.workspaceId), cooldownUntil);
+    assert.equal((await b!.state.reserveSlackAppend(ROOT.workspaceId)).outcome, 'cooldown');
+    // Status writes share the workspace's status budget the same way.
+    await a!.state.reserveSlackActivityStatus!(ROOT.workspaceId);
+    await b!.state.applySlackActivityStatusCooldown!(ROOT.workspaceId, 1_000);
+    assert.deepEqual(new Set(calls), new Set(RUNNER_SHARED_BUDGET_METHODS));
+    for (const runner of [a!, b!]) {
+      assert.equal(runner.local.appendCooldownUntil(ROOT.workspaceId), undefined,
+        "the runner's own copy holds no budget");
+      assert.equal(runner.local.reserveAppend(ROOT.workspaceId).outcome, 'reserved');
+    }
+  } finally {
+    for (const db of [...runnerDbs, sharedDb]) db.close();
+  }
+});
+
+test('an unreachable state store leaves the runner pacing itself, and a booking is never replayed', async () => {
+  const db = openStateDb(':memory:');
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    const local = new SlackRunPresentationStoreLogic(db, () => NOW);
+    let mints = 0;
+    const calls: string[] = [];
+    const rows = new CfTurnJobsForRunner(() => {
+      mints += 1;
+      const disconnect = () => {
+        throw Object.assign(new Error('Durable Object reset because its code was updated.'), { retryable: true });
+      };
+      return {
+        async slackPresentationReserveAppend() { calls.push('reserve'); disconnect(); },
+        async slackPresentationReserveActivityStatus() { calls.push('status'); disconnect(); },
+        async slackPresentationApplyCooldown() {
+          calls.push('cooldown');
+          if (mints % 2 === 1) disconnect();
+          return { ok: true, value: { cooldownUntil: NOW + 1_000, budgetVersion: 3 } };
+        },
+      } as unknown as TagStateRpc;
+    });
+    await assert.rejects(rows.reserveSlackAppend(ROOT.workspaceId),
+      (error) => error instanceof StateStoreDisconnectedError);
+    await assert.rejects(rows.reserveSlackActivityStatus(ROOT.workspaceId),
+      (error) => error instanceof StateStoreDisconnectedError);
+    assert.deepEqual(calls, ['reserve', 'status'], 'one attempt: a lost reply only wastes that slot');
+    assert.deepEqual(await rows.applySlackAppendCooldown(ROOT.workspaceId, 1_000),
+      { cooldownUntil: NOW + 1_000, budgetVersion: 3 }, 'a convergent cooldown is replayed once');
+    const state = runnerPresentationState({
+      local,
+      remote: {
+        ...sharedBudgets(local),
+        reserveSlackAppend: (workspaceId) => rows.reserveSlackAppend(workspaceId),
+        matchFlueObservation: async () => undefined,
+        getLatestThreadSessionGeneration: async () => undefined,
+      },
+      putRemote: async () => {},
+    }).state;
+    assert.equal((await state.reserveSlackAppend(ROOT.workspaceId)).outcome, 'reserved',
+      'the stream goes on, paced by its own budget');
+  } finally {
+    console.warn = warn;
+    db.close();
+  }
 });
 
 test('every store built on fresh stubs mints one per call and replays a disconnect once', async () => {
@@ -1099,6 +1233,7 @@ test("a turn's first generation check uses the value its begin round trip read",
     const presentation = runnerPresentationState({
       local,
       remote: {
+        ...sharedBudgets(local),
         matchFlueObservation: async () => undefined,
         getLatestThreadSessionGeneration: async () => {
           generationReads += 1;

@@ -693,11 +693,14 @@ export const RUNNER_GENERATION_CACHE_MS = 15_000;
  * terminal delivery, session and cleanup settlement), at most one publish per
  * interval with the latest copy trailing, and once more when the job stops
  * (`publish`). The state store's generation for the thread is cached briefly,
- * so activity changes make no state-store calls.
+ * so activity changes read nothing from it. The workspace's Slack budgets are
+ * the exception: they are shared by every thread, so they stay in the state
+ * store (`runnerSharedBudgets`).
  */
 export function runnerPresentationState(input: {
   local: SlackRunPresentationStoreLogic;
-  remote: Pick<SlackPresentationStatePort, 'matchFlueObservation' | 'getLatestThreadSessionGeneration'>;
+  remote: Pick<SlackPresentationStatePort, 'matchFlueObservation' | 'getLatestThreadSessionGeneration'> &
+    RunnerSharedBudgets;
   putRemote(presentation: SlackRunPresentation): Promise<unknown>;
   now?: () => number;
   publishIntervalMs?: number;
@@ -753,6 +756,7 @@ export function runnerPresentationState(input: {
   return {
     state: {
       ...base,
+      ...runnerSharedBudgets(input.remote, base),
       // The shared store sees every presentation of this Slack thread,
       // including ones other executors own; generations never change, and a
       // newer one appears only with a new message, so a brief cache is safe.
@@ -802,6 +806,59 @@ export function runnerPresentationState(input: {
         at: now(),
       });
     },
+  };
+}
+
+/** The presentation-state methods whose budgets are per workspace, not per thread. */
+export const RUNNER_SHARED_BUDGET_METHODS = [
+  'reserveSlackAppend',
+  'slackAppendCooldownUntil',
+  'applySlackAppendCooldown',
+  'reserveSlackActivityStatus',
+  'applySlackActivityStatusCooldown',
+] as const;
+type RunnerSharedBudgets = Required<
+  Pick<SlackPresentationStatePort, typeof RUNNER_SHARED_BUDGET_METHODS[number]>
+>;
+
+/**
+ * Slack paces `chat.appendStream` and status writes per workspace, so their
+ * budgets (slot bookings and the shared rate-limit cooldown) live in the
+ * state store, where every thread runner of the workspace books from one
+ * row, as the alarm executor does. One state-store call per append or status
+ * write: at most the budget's own rate per workspace. When the state store
+ * cannot be reached, this thread paces itself from its own copy rather than
+ * stalling the stream. A booking is never replayed (see CfTurnJobsForRunner);
+ * a slot whose reply was lost is simply unused.
+ */
+function runnerSharedBudgets(
+  remote: RunnerSharedBudgets,
+  local: RunnerSharedBudgets,
+): RunnerSharedBudgets {
+  const shared = <A extends unknown[], T>(
+    name: string,
+    remoteCall: (...args: A) => T | Promise<T>,
+    localCall: (...args: A) => T | Promise<T>,
+  ) => async (...args: A): Promise<T> => {
+    try {
+      return await remoteCall(...args);
+    } catch {
+      console.warn(`[chickpea] thread runner ${name}: state store unavailable, pacing this thread locally`);
+      return localCall(...args);
+    }
+  };
+  return {
+    reserveSlackAppend: shared('reserveSlackAppend',
+      (id) => remote.reserveSlackAppend(id), local.reserveSlackAppend),
+    slackAppendCooldownUntil: shared('slackAppendCooldownUntil',
+      (id) => remote.slackAppendCooldownUntil(id), local.slackAppendCooldownUntil),
+    applySlackAppendCooldown: shared('applySlackAppendCooldown',
+      (id, ms) => remote.applySlackAppendCooldown(id, ms), local.applySlackAppendCooldown),
+    reserveSlackActivityStatus: shared('reserveSlackActivityStatus',
+      (id) => remote.reserveSlackActivityStatus(id), local.reserveSlackActivityStatus),
+    applySlackActivityStatusCooldown: shared('applySlackActivityStatusCooldown',
+      (id, ms) => remote.applySlackActivityStatusCooldown(id, ms),
+      local.applySlackActivityStatusCooldown),
   };
 }
 

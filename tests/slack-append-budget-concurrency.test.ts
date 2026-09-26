@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import { ErrorCode, type WebClient } from '@slack/web-api';
 
 import { openStateDb } from '../src/state/node-state-db.ts';
+import { runnerPresentationState } from '../src/slack/thread-runner-loop.ts';
 import {
   SlackAgentViewPresentation,
   type SlackPresentationDeliveryObserver,
@@ -73,13 +74,19 @@ const observer: SlackPresentationDeliveryObserver = {
   async after() {},
 };
 
-function parallelStreams(count: number, options: { appendErrors?: unknown[] } = {}) {
+/**
+ * `runners`: each stream runs in its own thread runner (Cloudflare), with its
+ * presentation in the runner's own SQLite and the workspace budgets in the
+ * shared state store (`store`), reached through the runner's port.
+ */
+function parallelStreams(count: number, options: { appendErrors?: unknown[]; runners?: boolean } = {}) {
   const clock = fakeClock();
   const db = openStateDb(':memory:');
   const store = new SlackRunPresentationStoreLogic(db, clock.now);
+  const runnerDbs: Array<ReturnType<typeof openStateDb>> = [];
   const appends: Array<{ at: number; stream: number; text: string }> = [];
   const records: SlackPresentationFinalizationRecord[] = [];
-  const bookings: Array<{ at: number; outcome: string }> = [];
+  const bookings: Array<{ at: number; outcome: string; stream?: number }> = [];
   const appendErrors = [...(options.appendErrors ?? [])];
   const state: SlackPresentationStatePort = {
     getRunPresentation: (id) => store.get(id),
@@ -104,7 +111,36 @@ function parallelStreams(count: number, options: { appendErrors?: unknown[] } = 
       };
     },
   };
+  const runnerState = (index: number) => {
+    const runnerDb = openStateDb(':memory:');
+    runnerDbs.push(runnerDb);
+    const local = new SlackRunPresentationStoreLogic(runnerDb, clock.now);
+    const runner = runnerPresentationState({
+      local,
+      remote: {
+        reserveSlackAppend: async (workspaceId) => {
+          const booking = store.reserveAppend(workspaceId);
+          bookings.push({ at: clock.now(), outcome: booking.outcome, stream: index });
+          return booking;
+        },
+        slackAppendCooldownUntil: async (workspaceId) => store.appendCooldownUntil(workspaceId),
+        applySlackAppendCooldown: async (workspaceId, retryAfterMs) =>
+          store.applyAppendCooldown(workspaceId, retryAfterMs),
+        reserveSlackActivityStatus: async (workspaceId) => store.reserveActivityStatus(workspaceId),
+        applySlackActivityStatusCooldown: async (workspaceId, retryAfterMs) =>
+          store.applyActivityStatusCooldown(workspaceId, retryAfterMs),
+        matchFlueObservation: async (instanceId, submissionId) =>
+          state.matchFlueObservation(instanceId, submissionId),
+        getLatestThreadSessionGeneration: async () => undefined,
+      },
+      putRemote: async () => {},
+      now: clock.now,
+      publishIntervalMs: 0,
+    });
+    return { local, state: runner.state };
+  };
   const streams = Array.from({ length: count }, (_, index) => {
+    const own = options.runners ? runnerState(index) : { local: store, state };
     const runId = `run_parallel_${index}`;
     const root = {
       workspaceId: WORKSPACE,
@@ -112,7 +148,7 @@ function parallelStreams(count: number, options: { appendErrors?: unknown[] } = 
       threadTs: `1785700100.00${String(100 + index).padStart(4, '0')}`,
       requesterUserId: 'U_PARALLEL',
     };
-    store.create({
+    own.local.create({
       runId,
       turnJobId: `turn_${runId}`,
       bindingId: `binding_${index}`,
@@ -155,7 +191,7 @@ function parallelStreams(count: number, options: { appendErrors?: unknown[] } = 
     } as unknown as WebClient;
     const presentation = new SlackAgentViewPresentation({
       client,
-      state,
+      state: own.state,
       runId,
       runFencingToken: 0,
       footer: { agentName: 'Chickpea', agentId: 'agent_default' },
@@ -165,9 +201,16 @@ function parallelStreams(count: number, options: { appendErrors?: unknown[] } = 
       random: seededRandom(index + 1),
       onFinalized: (record) => { records.push(structuredClone(record)); },
     });
-    return { index, runId, presentation, submissionId: `submission_parallel_${index}` };
+    return {
+      index, runId, presentation, submissionId: `submission_parallel_${index}`,
+      local: own.local, state: own.state,
+    };
   });
-  return { clock, db, store, streams, appends, records, bookings };
+  const close = () => {
+    for (const runnerDb of runnerDbs) runnerDb.close();
+    db.close();
+  };
+  return { clock, db, store, streams, appends, records, bookings, close };
 }
 
 async function openRelay(stream: ReturnType<typeof parallelStreams>['streams'][number]) {
@@ -490,5 +533,94 @@ test('past the booking horizon a stream gives its text to the next append, never
     }
   } finally {
     h.db.close();
+  }
+});
+
+test('thread runners in one workspace stream from one shared append budget', async () => {
+  // Amber F1: each runner booked from its own SQLite, so every thread had
+  // its own 100/min and nothing was ever deferred across threads.
+  const count = 4;
+  const h = parallelStreams(count, { runners: true });
+  try {
+    const relays = await Promise.all(h.streams.map(openRelay));
+    const lines = 60;
+    const answers = h.streams.map((stream) => Array.from(
+      { length: lines },
+      (_, line) => `Runner ${stream.index} step ${line + 1}: keep the rollout reversible.`,
+    ));
+    for (let line = 0; line < lines; line += 1) {
+      relays.forEach(({ relay, messageId }, index) =>
+        delta(relay, messageId, `${answers[index]![line]}\n`, 4 + line));
+      await h.clock.advance(250);
+    }
+    await h.clock.until(Promise.all(relays.map(({ relay, messageId }) => {
+      relay.onEvent({
+        type: 'message-completed', conversationId: 'conversation', messageId,
+        position: { batch: 4 + lines, index: 0 },
+      });
+      return relay.closeAndDrain();
+    })));
+    // Every booking went to the shared store, first come first served
+    // across threads: no thread takes two turns in a row for long.
+    const booked = h.bookings.filter((booking) => booking.outcome !== 'exhausted');
+    assert.deepEqual(new Set(booked.map((booking) => booking.stream)), new Set([0, 1, 2, 3]));
+    const longestRun = booked.reduce((state, booking) => {
+      const run = booking.stream === state.last ? state.run + 1 : 1;
+      return { last: booking.stream, run, max: Math.max(state.max, run) };
+    }, { last: -1 as number | undefined, run: 0, max: 0 }).max;
+    assert.ok(longestRun <= 4, `bookings interleave across threads (longest run ${longestRun})`);
+    assert.ok(booked.some((booking) => booking.outcome === 'scheduled'), 'threads waited for each other');
+    // Together they stay within Slack's Tier 4 pace plus the burst.
+    assert.ok(h.appends.length <=
+      DEFAULT_SLACK_APPEND_BUDGET.capacity + (lines * 250) / DEFAULT_SLACK_APPEND_BUDGET.refillWindowMs + 1);
+    for (const stream of h.streams) {
+      assert.equal(stream.local.appendCooldownUntil(WORKSPACE), undefined);
+      assert.equal(stream.local.reserveAppend(WORKSPACE).budgetVersion, 1,
+        "the runner's own budget row was never used");
+    }
+    for (const [index, stream] of h.streams.entries()) {
+      await stream.presentation.finalize(answers[index]!.join('\n'), 'markdown', 'complete', observer);
+      await stream.presentation.markCanonicalFinalized();
+    }
+    assert.equal(h.records.length, count);
+    for (const record of h.records) {
+      assert.equal(record.degradation, 'none');
+      assert.ok(record.appendBudget && record.appendBudget.deferrals > 0,
+        'the finalization record carries the deferral across threads');
+    }
+  } finally {
+    h.close();
+  }
+});
+
+test("a Slack rate limit one thread runner hits holds another runner's appends", async () => {
+  const h = parallelStreams(2, { runners: true });
+  try {
+    const [first, second] = h.streams;
+    const relays = await Promise.all([first!, second!].map(openRelay));
+    delta(relays[1]!.relay, relays[1]!.messageId, 'First line of the answer.\n', 4);
+    await h.clock.advance(1_000);
+    const before = h.appends.filter((append) => append.stream === 1).length;
+    // The first runner is rate limited and applies the workspace cooldown.
+    const { cooldownUntil } = await first!.state.applySlackAppendCooldown(WORKSPACE, 12_000);
+    delta(relays[1]!.relay, relays[1]!.messageId, 'Second line of the answer.\n', 5);
+    await h.clock.advance(20_000);
+    const own = h.appends.filter((append) => append.stream === 1);
+    assert.equal(own.slice(before).filter((append) => append.at < cooldownUntil).length, 0,
+      'the other runner sends nothing inside the cooldown');
+    assert.ok(own.some((append) => append.text.includes('Second line') && append.at >= cooldownUntil),
+      'and streams once it ends');
+    relays[1]!.relay.onEvent({
+      type: 'message-completed', conversationId: 'conversation', messageId: relays[1]!.messageId,
+      position: { batch: 6, index: 0 },
+    });
+    await h.clock.until(relays[1]!.relay.closeAndDrain());
+    await second!.presentation.finalize(
+      'First line of the answer.\nSecond line of the answer.', 'markdown', 'complete', observer,
+    );
+    await second!.presentation.markCanonicalFinalized();
+    assert.ok(h.records[0]!.appendBudget!.deferrals > 0, 'the wait is in its finalization record');
+  } finally {
+    h.close();
   }
 });

@@ -44,7 +44,11 @@ export function slackPresentationStatePort(
 export function localSlackPresentationStatePort(input: {
   presentations: SlackRunPresentationStoreLogic;
   matchFlueObservation: SlackPresentationStatePort['matchFlueObservation'];
-}): SlackPresentationStatePort {
+}): SlackPresentationStatePort & Required<Pick<SlackPresentationStatePort,
+  | 'slackAppendCooldownUntil'
+  | 'reserveSlackActivityStatus'
+  | 'applySlackActivityStatusCooldown'
+>> {
   const { presentations, matchFlueObservation } = input;
   return {
     getRunPresentation: (runId) => presentations.get(runId),
