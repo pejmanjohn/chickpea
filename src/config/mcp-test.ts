@@ -72,10 +72,6 @@ export interface McpConnectInput {
   url: string;
   transport: 'streamable-http' | 'sse';
   headers: Record<string, string>;
-  /** When present, each request resolves fresh headers instead of retaining these headers. */
-  resolveHeaders?: () => Promise<Record<string, string>>;
-  /** Optional policy response boundary used by reviewed server adapters. */
-  transformResponse?: (request: Request, response: Response) => Promise<Response>;
   /** Deadline around the initial connect (Flue's timeoutMs does not bound it). */
   connectTimeoutMs?: number;
   /** Per-request timeout passed to `createMcpConnection` (bounds tool calls). */
@@ -215,8 +211,7 @@ async function discoverProtocolTools(
 }
 
 /**
- * Connect and RETURN the live connection — the caller owns closing it. Used by
- * the turn-time resolver, which holds the connection open for tool calls.
+ * Connect and RETURN the live connection — the caller owns closing it.
  */
 export async function connectMcp(
   input: McpConnectInput,
@@ -235,27 +230,12 @@ export async function connectMcp(
     allowedOrigin: new URL(validated.url).origin,
     signal: controller.signal,
   });
-  const fetch = input.resolveHeaders || input.transformResponse
-    ? async (requestInput: RequestInfo | URL, requestInit?: RequestInit): Promise<Response> => {
-        const request = new Request(requestInput, requestInit);
-        const headers = new Headers(request.headers);
-        if (input.resolveHeaders) {
-          for (const [name, value] of Object.entries(await input.resolveHeaders())) headers.set(name, value);
-        }
-        const outbound = new Request(request, { headers });
-        const transformRequest = input.transformResponse ? outbound.clone() : undefined;
-        const response = await guardedFetch(outbound);
-        return input.transformResponse
-          ? input.transformResponse(transformRequest!, response)
-          : response;
-      }
-    : guardedFetch;
   const pending = connect(input.id, {
     url: validated.url,
     transport: input.transport,
-    headers: input.resolveHeaders ? {} : input.headers,
+    headers: input.headers,
     timeoutMs: callTimeoutMs,
-    fetch,
+    fetch: guardedFetch,
   });
   // A non-conforming connector may ignore the abort and resolve after our
   // deadline. Reclaim that late connection instead of leaking it indefinitely.

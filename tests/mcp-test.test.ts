@@ -918,30 +918,6 @@ test('connectMcp returns the live connection without closing it', async () => {
   assert.equal(calls[0]?.name, 'srv');
 });
 
-test('connectMcp preserves a transform request when provider fetch consumes its body', async () => {
-  let transformedMethod = '';
-  const connect = async (_name: string, options: McpServerOptions): Promise<McpServerConnection> => {
-    await options.fetch!('https://mcp.example.com/mcp', {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call' }),
-    });
-    return fakeConnection([]);
-  };
-  const createGuardedFetch = (): typeof fetch => async (input, init) => {
-    const request = new Request(input, init);
-    await request.text();
-    return Response.json({ jsonrpc: '2.0', id: 1, result: {} });
-  };
-  await connectMcp({
-    ...baseInput,
-    transformResponse: async (request, response) => {
-      transformedMethod = ((await request.json()) as { method: string }).method;
-      return response;
-    },
-  }, connect, createGuardedFetch);
-  assert.equal(transformedMethod, 'tools/call');
-});
-
 test('connectMcp also enforces the SSRF guard before connecting', async () => {
   let called = false;
   const spy = async (): Promise<McpServerConnection> => {

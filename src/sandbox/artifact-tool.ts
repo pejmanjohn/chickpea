@@ -1,4 +1,4 @@
-import { defineTool, type Sandbox, type SandboxFactory } from '@flue/runtime';
+import { defineTool, type Sandbox } from '@flue/runtime';
 import * as v from 'valibot';
 
 import { assertArtifactDeliveryAllowed } from '../memory/tool-policy.ts';
@@ -171,10 +171,6 @@ export interface ArtifactDestinationBinding {
   sourceWorkspace?: string;
 }
 
-interface WorkspaceArtifactCapabilityOptions extends ArtifactDestinationBinding {
-  sandbox: SandboxFactory;
-}
-
 type WorkspaceArtifactDelivery = (
   env: Sandbox,
   input: { path: string; filename: string; title?: string | undefined },
@@ -254,39 +250,6 @@ export function createWorkspaceArtifactTool(
       };
     },
   });
-}
-
-/**
- * Capture the Sandbox Flue creates for the selected factory and expose
- * one destination-bound upload tool. The model selects only a file path and
- * presentation metadata; trusted code owns the Slack channel and thread.
- */
-export function createWorkspaceArtifactCapability(
-  options: WorkspaceArtifactCapabilityOptions,
-) {
-  let sandboxEnv: Sandbox | undefined;
-  const sandbox: SandboxFactory = {
-    async createSandbox(createOptions) {
-      const created = await options.sandbox.createSandbox(createOptions);
-      sandboxEnv = created;
-      return created;
-    },
-    ...(options.sandbox.tools === undefined ? {} : { tools: options.sandbox.tools }),
-  };
-
-  const tool = defineTool({
-    name: POST_ARTIFACT_TOOL_NAME,
-    description: artifactToolDescription(options.sandboxKind),
-    input: ARTIFACT_INPUT,
-    async run({ data }) {
-      if (!sandboxEnv) {
-        throw new Error('workspace is not initialized');
-      }
-      return { output: await deliverArtifact(sandboxEnv, data, options) };
-    },
-  });
-
-  return { sandbox, tool };
 }
 
 async function deliverArtifact(

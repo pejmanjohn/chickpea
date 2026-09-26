@@ -2,20 +2,16 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { test } from 'node:test';
+import { test, type TestContext } from 'node:test';
 
 import { createMcpConnection, type ToolDefinition } from '@flue/runtime';
 
-import type {
-  McpServerConnection,
-  McpServerOptions,
-} from '../src/config/mcp-test.ts';
 import {
   resolveProfileMcpConnections,
-  resolveProfileMcpTools,
   resolveRuntimePlanMcpConnections,
 } from '../src/config/profile-mcp.ts';
 import { ConnectionCredentialUnavailableError } from '../src/connections/errors.ts';
+import { saveConnectionAccountSecret } from '../src/config/connector-secrets.ts';
 import {
   META_ADS_ACCOUNT_HELPER,
   META_ADS_APPROVED_ACCOUNT_SCOPE,
@@ -30,34 +26,9 @@ import {
   getSettingsStore,
 } from '../src/config/state-backend.ts';
 import type { McpConnectionConfig } from '../src/config/types.ts';
-import { projectEffectiveMcpConnections } from '../src/connections/runtime.ts';
-import type { EffectiveConnectionAccount } from '../src/connections/types.ts';
 import { withEnv } from './helpers/env.ts';
 
 // --- fixtures -------------------------------------------------------------
-
-/** A minimal adapted ToolDefinition; the adapter names tools `mcp__<id>__<tool>`. */
-function tool(name: string): ToolDefinition {
-  return {
-    name,
-    description: '',
-    input: undefined,
-    output: undefined,
-    run() {
-      throw new Error('not used');
-    },
-  } as ToolDefinition;
-}
-
-function fakeConnection(tools: ToolDefinition[], onClose?: () => void): McpServerConnection {
-  return {
-    name: 'srv',
-    tools,
-    async close() {
-      onClose?.();
-    },
-  };
-}
 
 function server(overrides: Partial<McpConnectionConfig> = {}): McpConnectionConfig {
   return {
@@ -161,800 +132,7 @@ function preparedMcpExecutor(tool: ToolDefinition): (args: unknown) => Promise<s
   return (args) => adapter.execute!(args);
 }
 
-/**
- * A connect stub that dispatches per server id to a preset connection (or a
- * behavior). Records which ids it was asked to connect.
- */
-function stubConnect(
-  byId: Record<string, McpServerConnection | (() => Promise<McpServerConnection>)>,
-): {
-  fn: (name: string, options: McpServerOptions) => Promise<McpServerConnection>;
-  connected: string[];
-} {
-  const connected: string[] = [];
-  const fn = async (name: string, _options: McpServerOptions): Promise<McpServerConnection> => {
-    connected.push(name);
-    const entry = byId[name];
-    if (entry === undefined) throw new Error('no stub for ' + name);
-    return typeof entry === 'function' ? entry() : entry;
-  };
-  return { fn, connected };
-}
-
 const noSecretsEnv = {} as Record<string, unknown>;
-
-// --- (a) filtering: disabled/failed/empty-allowlist never connect --
-
-test('skips servers that are disabled, not ready, or have an empty allowlist', async () => {
-  const servers: McpConnectionConfig[] = [
-    server({ id: 'disabled', enabled: false }),
-    server({ id: 'pending', lifecycleStatus: 'pending' }),
-    server({ id: 'failed', lifecycleStatus: 'failed' }),
-    server({ id: 'empty', allowedTools: [] }),
-  ];
-  const { fn, connected } = stubConnect({});
-  const starts: string[] = [];
-  const tools = await resolveProfileMcpTools(servers, {
-    agentId: 'agent_test',
-    env: noSecretsEnv,
-    existingToolNames: [],
-    connect: fn,
-    onConnectionStart(connection) {
-      starts.push(connection.id);
-    },
-  });
-  assert.deepEqual(connected, [], 'no filtered server should be connected');
-  assert.deepEqual(starts, [], 'no filtered server should report a connection start');
-  assert.deepEqual(tools, []);
-});
-
-test('returns [] without throwing when servers is undefined (pre-migration frozen snapshot)', async () => {
-  // A channel snapshot frozen before mcpServers existed deserializes with the
-  // field undefined; the factory must never throw.
-  const { fn, connected } = stubConnect({});
-  const tools = await resolveProfileMcpTools(undefined as unknown as McpConnectionConfig[], {
-    agentId: 'agent_test',
-    env: noSecretsEnv,
-    existingToolNames: [],
-    connect: fn,
-  });
-  assert.deepEqual(tools, []);
-  assert.deepEqual(connected, []);
-});
-
-// --- (c) intersection on stripped names -----------------------------------
-
-test('exposes only approved tools, keeping the mcp__<id>__ prefix on returned names', async () => {
-  const conn = fakeConnection([tool('mcp__srv__search'), tool('mcp__srv__create')]);
-  const { fn } = stubConnect({ srv: conn });
-  const tools = await resolveProfileMcpTools([server({ allowedTools: ['search'] })], {
-    agentId: 'agent_test',
-    env: noSecretsEnv,
-    existingToolNames: [],
-    connect: fn,
-  });
-  assert.deepEqual(
-    tools.map((t) => t.name),
-    ['mcp__srv__search'],
-  );
-});
-
-test('legacy Meta resolution does not connect when selected tools lack enforceable account policy', async () => {
-  const { fn, connected } = stubConnect({});
-  const tools = await resolveProfileMcpTools([server({
-    url: 'https://mcp.facebook.com/ads',
-    presetId: 'meta-ads',
-    discoveredTools: [{ name: metaReportTool }],
-    allowedTools: [metaReportTool],
-  })], {
-    agentId: 'agent_test', env: noSecretsEnv, existingToolNames: [], connect: fn,
-  });
-  assert.deepEqual(tools, []);
-  assert.deepEqual(connected, [], 'invalid Meta access is withheld before provider connection');
-});
-
-test('legacy Meta tools enforce exact account arguments before their run function', async () => {
-  let runs = 0;
-  const remoteTool = {
-    name: `mcp__srv__${metaReportTool}`, description: '', input: undefined, output: undefined,
-    run() { runs += 1; return 'reported'; },
-  } as ToolDefinition;
-  const { fn } = stubConnect({ srv: fakeConnection([remoteTool]) });
-  const metaServer = server({
-    url: 'https://mcp.facebook.com/ads',
-    presetId: 'meta-ads',
-    discoveredTools: [{ name: metaReportTool, inputSchema: metaEntitySchema }],
-    allowedTools: [metaReportTool],
-    toolPolicies: { [metaReportTool]: {
-      effect: 'read', argumentConstraints: { ad_account_id: ['act_123'] },
-    } },
-  });
-  const tools = await resolveProfileMcpTools([metaServer], {
-    agentId: 'agent_test', env: noSecretsEnv, existingToolNames: [], connect: fn,
-    resolveCurrentConnection: async () => metaServer,
-  });
-  assert.equal(tools.length, 1);
-  await assert.rejects(async () => { await tools[0]!.run({ data: { ad_account_id: 'act_456' } } as never); }, /approved value/);
-  assert.equal(runs, 0);
-  await assert.rejects(async () => {
-    await tools[0]!.run({ data: { ad_account_id: 'act_123', object_ids: ['other'] } } as never);
-  }, /does not permit the argument object_ids/);
-  assert.equal(runs, 0);
-  await assert.rejects(async () => {
-    await tools[0]!.run({ data: { ad_account_id: 'act_123', campaign_id: 'other' } } as never);
-  }, /does not permit the argument campaign_id/);
-  assert.equal(runs, 0);
-  assert.equal(await tools[0]!.run({
-    data: { ad_account_id: 'act_123', client_conversation_id: 'correlation-1' },
-  } as never), 'reported');
-  assert.equal(runs, 1);
-});
-
-test('legacy Meta tools reread policy and OAuth before provider I/O', async () => {
-  const frozen = server({
-    url: 'https://mcp.facebook.com/ads',
-    authMode: 'oauth',
-    presetId: 'meta-ads',
-    discoveredTools: [{ name: metaReportTool, inputSchema: metaAccountSchema }],
-    allowedTools: [metaReportTool],
-    toolPolicies: { [metaReportTool]: {
-      effect: 'read', argumentConstraints: { ad_account_id: ['act_123'] },
-    } },
-  });
-  let current: McpConnectionConfig | undefined = frozen;
-  let oauthGenerationCurrent = true;
-  let remoteRuns = 0;
-  let outbound = 0;
-  const connect = async (_name: string, options: McpServerOptions): Promise<McpServerConnection> =>
-    fakeConnection([{
-      name: `mcp__srv__${metaReportTool}`, description: '', input: undefined, output: undefined,
-      async run(context) {
-        remoteRuns += 1;
-        await options.fetch!('https://mcp.facebook.com/ads', {
-          method: 'POST', headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call',
-            params: { name: metaReportTool, arguments: 'data' in context ? context.data : undefined } }),
-        });
-        return 'reported';
-      },
-    } as ToolDefinition]);
-  const tools = await resolveProfileMcpTools([frozen], {
-    agentId: 'agent_test', env: noSecretsEnv, existingToolNames: [], connect,
-    resolveCurrentConnection: async () => current,
-    resolveOAuthAccessToken: async () => {
-      if (!oauthGenerationCurrent) throw new Error('OAuth client generation changed.');
-      return 'fresh-token';
-    },
-    createGuardedFetch: () => async () => {
-      outbound += 1;
-      return Response.json({ jsonrpc: '2.0', id: 1, result: {} });
-    },
-  });
-  assert.equal(tools.length, 1);
-
-  current = { ...frozen, allowedTools: [] };
-  await assert.rejects(async () => {
-    await tools[0]!.run({ data: { ad_account_id: 'act_123' } } as never);
-  }, /policy changed/);
-  assert.equal(remoteRuns, 0);
-  assert.equal(outbound, 0);
-
-  current = frozen;
-  oauthGenerationCurrent = false;
-  await assert.rejects(async () => {
-    await tools[0]!.run({ data: { ad_account_id: 'act_123' } } as never);
-  }, /generation changed/);
-  assert.equal(remoteRuns, 1, 'the local adapter begins but cannot use its old bearer');
-  assert.equal(outbound, 0, 'OAuth replacement blocks before provider network I/O');
-
-  current = undefined;
-  await assert.rejects(async () => {
-    await tools[0]!.run({ data: { ad_account_id: 'act_123' } } as never);
-  }, /policy changed/);
-  assert.equal(remoteRuns, 1, 'disconnect blocks before the remote tool adapter runs again');
-  assert.equal(outbound, 0);
-});
-
-test('legacy Meta account helper sends no fake scope argument and returns only approved accounts', async () => {
-  const frozen = metaAccountHelperServer();
-  let current: McpConnectionConfig | undefined = frozen;
-  let outbound = 0;
-  const connect = async (_name: string, options: McpServerOptions): Promise<McpServerConnection> =>
-    fakeConnection([{
-      name: `mcp__srv__${META_ADS_ACCOUNT_HELPER}`, description: '', input: undefined, output: undefined,
-      async run(context) {
-        const response = await options.fetch!('https://mcp.facebook.com/ads', {
-          method: 'POST', headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: {
-            name: META_ADS_ACCOUNT_HELPER, arguments: 'data' in context ? context.data : undefined,
-          } }),
-        });
-        return response.json();
-      },
-    } as ToolDefinition]);
-  const tools = await resolveProfileMcpTools([frozen], {
-    agentId: 'agent_test', env: noSecretsEnv, existingToolNames: [], connect,
-    resolveCurrentConnection: async () => current,
-    createGuardedFetch: () => async () => {
-      outbound += 1;
-      return Response.json({ jsonrpc: '2.0', id: 1, result: { structuredContent: { accounts: [
-        { id: 'act_999', is_ads_mcp_enabled: true, is_queryable: true, ad_account_name: 'Other' },
-        { id: 'act_123450001', is_ads_mcp_enabled: true, is_queryable: true, currency: 'USD', ad_account_name: 'Example Advertiser' },
-      ] } } });
-    },
-  });
-  await assert.rejects(async () => {
-    await tools[0]!.run({ data: { cursor: 'provider-cursor' } } as never);
-  }, /does not permit the argument cursor/);
-  await assert.rejects(async () => {
-    await tools[0]!.run({ data: { ad_account_id: 'act_123450001' } } as never);
-  }, /does not permit the argument ad_account_id/);
-  assert.equal(outbound, 0);
-  const result = await tools[0]!.run({ data: {
-    advertiser_request: 'List queryable approved accounts.',
-    client_conversation_id: 'correlation-1',
-  } } as never);
-  assert.equal(outbound, 1);
-  assert.match(JSON.stringify(result), /"ad_accounts"/);
-  assert.doesNotMatch(JSON.stringify(result), /"accounts"/);
-  assert.doesNotMatch(JSON.stringify(result), /999|Other/);
-  assert.match(JSON.stringify(result), /123450001|Example Advertiser/);
-
-  current = { ...frozen, allowedTools: [] };
-  await assert.rejects(async () => { await tools[0]!.run({ data: {} } as never); }, /policy changed/);
-  assert.equal(outbound, 1, 'revocation blocks before the provider request');
-});
-
-test('legacy Meta account helper blocks response release after policy changes in flight', async () => {
-  const frozen = metaAccountHelperServer();
-  let current: McpConnectionConfig | undefined = frozen;
-  let outbound = 0;
-  const connect = async (_name: string, options: McpServerOptions): Promise<McpServerConnection> =>
-    fakeConnection([{
-      name: `mcp__srv__${META_ADS_ACCOUNT_HELPER}`, description: '', input: undefined, output: undefined,
-      async run(context) {
-        const response = await options.fetch!('https://mcp.facebook.com/ads', {
-          method: 'POST', headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: {
-            name: META_ADS_ACCOUNT_HELPER, arguments: 'data' in context ? context.data : undefined,
-          } }),
-        });
-        return response.json();
-      },
-    } as ToolDefinition]);
-  const tools = await resolveProfileMcpTools([frozen], {
-    agentId: 'agent_test', env: noSecretsEnv, existingToolNames: [], connect,
-    resolveCurrentConnection: async () => current,
-    createGuardedFetch: () => async () => {
-      outbound += 1;
-      current = { ...frozen, allowedTools: [] };
-      return Response.json({ jsonrpc: '2.0', id: 1, result: { structuredContent: { accounts: [
-        { id: 'act_123450001', is_ads_mcp_enabled: true, is_queryable: true },
-      ] } } });
-    },
-  });
-  await assert.rejects(async () => { await tools[0]!.run({ data: {} } as never); }, /policy changed/);
-  assert.equal(outbound, 1);
-});
-
-test('reports connection start with policy-only identity before opening the server', async () => {
-  const conn = fakeConnection([tool('mcp__srv__search')]);
-  const starts: Array<{ id: string; displayName: string }> = [];
-  const connect = async (): Promise<McpServerConnection> => {
-    assert.deepEqual(starts, [{ id: 'srv', displayName: 'Docs search' }]);
-    return conn;
-  };
-
-  await resolveProfileMcpTools([server({ displayName: 'Docs search' })], {
-    agentId: 'agent_test',
-    env: noSecretsEnv,
-    existingToolNames: [],
-    connect,
-    onConnectionStart(connection) {
-      starts.push(connection);
-    },
-  });
-
-  assert.deepEqual(starts, [{ id: 'srv', displayName: 'Docs search' }]);
-});
-
-// --- (d) approved-but-vanished tool is simply absent, no error ------------
-
-test('an approved tool no longer discovered is absent, not an error', async () => {
-  // allowlist has search+create, but the server now only exposes search.
-  const conn = fakeConnection([tool('mcp__srv__search')]);
-  const { fn } = stubConnect({ srv: conn });
-  const tools = await resolveProfileMcpTools([server({ allowedTools: ['search', 'create'] })], {
-    agentId: 'agent_test',
-    env: noSecretsEnv,
-    existingToolNames: [],
-    connect: fn,
-  });
-  assert.deepEqual(
-    tools.map((t) => t.name),
-    ['mcp__srv__search'],
-  );
-});
-
-test('runtime resolution uses the agent-scoped environment override for the same connection id', async () => {
-  const seen: string[] = [];
-  const connect = async (_name: string, options: McpServerOptions): Promise<McpServerConnection> => {
-    seen.push(new Headers(options.headers).get('Authorization') ?? '');
-    return fakeConnection([tool('mcp__srv__search')]);
-  };
-
-  await withEnv(
-    {
-      MCP_AGENT_AGENT_5FALPHA_CONNECTION_SRV_BEARER: 'alpha-token',
-      MCP_AGENT_AGENT_5FBETA_CONNECTION_SRV_BEARER: 'beta-token',
-    },
-    async () => {
-      await resolveProfileMcpTools([server({ authMode: 'bearer', allowedTools: ['search'] })], {
-        agentId: 'agent_alpha',
-        env: noSecretsEnv,
-        existingToolNames: [],
-        connect,
-      });
-      await resolveProfileMcpTools([server({ authMode: 'bearer', allowedTools: ['search'] })], {
-        agentId: 'agent_beta',
-        env: noSecretsEnv,
-        existingToolNames: [],
-        connect,
-      });
-    },
-  );
-
-  assert.deepEqual(seen, ['Bearer alpha-token', 'Bearer beta-token']);
-});
-
-test('Agent-owned account credentials populate preset-specific MCP headers at runtime', async () => {
-  const seen: Record<string, string> = {};
-  const connect = async (_name: string, options: McpServerOptions): Promise<McpServerConnection> => {
-    new Headers(options.headers).forEach((value, key) => { seen[key] = value; });
-    return fakeConnection([tool('mcp__srv__search')]);
-  };
-  const tools = await resolveProfileMcpTools([
-    server({
-      authMode: 'none',
-      headerNames: ['Authorization'],
-      credentialHeaderName: 'Authorization',
-      credentialValuePrefix: 'Sentry-Bearer ',
-      allowedTools: ['search'],
-    }),
-  ], {
-    agentId: 'agent_test',
-    env: noSecretsEnv,
-    existingToolNames: [],
-    connect,
-    resolveBearerCredential: async () => 'sentry-user-token',
-  });
-
-  assert.deepEqual(tools.map((entry) => entry.name), ['mcp__srv__search']);
-  assert.equal(seen.authorization, 'Sentry-Bearer sentry-user-token');
-});
-
-test('Agent-owned account credential projection preserves custom headers without double-prefixing', async () => {
-  const effective: EffectiveConnectionAccount = {
-    account: {
-      id: 'connection_sentry',
-      workspaceId: 'T_TEST',
-      revision: 1,
-      ownerKind: 'team',
-      createdByMembershipId: 'membership_owner',
-      providerId: 'sentry',
-      label: 'Production Sentry',
-      policy: {
-        kind: 'mcp',
-        url: 'https://mcp.sentry.dev/mcp',
-        transport: 'streamable-http',
-        authMode: 'none',
-        headerNames: ['Authorization'],
-        credentialHeaderName: 'Authorization',
-        credentialValuePrefix: 'Sentry-Bearer ',
-        discoveredTools: [{ name: 'search_issues' }],
-        allowedTools: ['search_issues'],
-        presetId: 'sentry',
-      },
-      secretRefId: 'connection-account:connection_sentry',
-      lifecycle: 'ready',
-      createdAt: 1,
-      updatedAt: 1,
-    },
-    binding: {
-      agentId: 'agent_test',
-      connectionAccountId: 'connection_sentry',
-      providerId: 'sentry',
-      allowedCapabilities: ['search_issues'],
-      enabled: true,
-      createdAt: 1,
-      updatedAt: 1,
-    },
-    policy: {
-      kind: 'mcp',
-      url: 'https://mcp.sentry.dev/mcp',
-      transport: 'streamable-http',
-      authMode: 'none',
-      headerNames: ['Authorization'],
-      credentialHeaderName: 'Authorization',
-      credentialValuePrefix: 'Sentry-Bearer ',
-      discoveredTools: [{ name: 'search_issues' }],
-      allowedTools: ['search_issues'],
-      presetId: 'sentry',
-    },
-    scope: 'team',
-  };
-  const projected = projectEffectiveMcpConnections([effective]);
-  const seen: Record<string, string> = {};
-
-  await resolveProfileMcpTools(projected, {
-    agentId: 'agent_test',
-    env: noSecretsEnv,
-    existingToolNames: [],
-    connect: async (_name, options) => {
-      new Headers(options.headers).forEach((value, key) => { seen[key] = value; });
-      return fakeConnection([tool('mcp__connection_sentry__search_issues')]);
-    },
-    resolveBearerCredential: async () => 'Sentry-Bearer stored-token',
-  });
-
-  assert.equal(projected[0]?.credentialHeaderName, 'Authorization');
-  assert.equal(projected[0]?.credentialValuePrefix, 'Sentry-Bearer ');
-  assert.equal(seen.authorization, 'Sentry-Bearer stored-token');
-});
-
-test('an optional reusable MCP credential falls back to anonymous access', async () => {
-  const seen: Array<Record<string, string>> = [];
-  const tools = await resolveProfileMcpTools([
-    server({
-      authMode: 'none',
-      headerNames: ['x-api-key'],
-      credentialHeaderName: 'x-api-key',
-      credentialOptional: true,
-      allowedTools: ['search'],
-    }),
-  ], {
-    agentId: 'agent_test',
-    env: noSecretsEnv,
-    existingToolNames: [],
-    resolveBearerCredential: async () => { throw new ConnectionCredentialUnavailableError(); },
-    connect: async (_name, options) => {
-      const headers: Record<string, string> = {};
-      new Headers(options.headers).forEach((value, key) => { headers[key] = value; });
-      seen.push(headers);
-      return fakeConnection([tool('mcp__srv__search')]);
-    },
-  });
-
-  assert.deepEqual(tools.map(({ name }) => name), ['mcp__srv__search']);
-  assert.deepEqual(seen, [{}]);
-});
-
-test('an optional reusable MCP credential still fails closed on authorization errors', async () => {
-  let connected = false;
-  const tools = await resolveProfileMcpTools([
-    server({
-      authMode: 'none',
-      headerNames: ['x-api-key'],
-      credentialHeaderName: 'x-api-key',
-      credentialOptional: true,
-      allowedTools: ['search'],
-    }),
-  ], {
-    agentId: 'agent_test',
-    env: noSecretsEnv,
-    existingToolNames: [],
-    resolveBearerCredential: async () => {
-      throw new Error('Connection account is not available to this actor');
-    },
-    connect: async () => {
-      connected = true;
-      return fakeConnection([tool('mcp__srv__search')]);
-    },
-  });
-
-  assert.deepEqual(tools, []);
-  assert.equal(connected, false);
-});
-
-test('a required reusable MCP credential never falls back to anonymous access', async () => {
-  let connected = false;
-  const tools = await resolveProfileMcpTools([
-    server({
-      authMode: 'bearer',
-      allowedTools: ['search'],
-    }),
-  ], {
-    agentId: 'agent_test',
-    env: noSecretsEnv,
-    existingToolNames: [],
-    resolveBearerCredential: async () => { throw new ConnectionCredentialUnavailableError(); },
-    connect: async () => {
-      connected = true;
-      return fakeConnection([tool('mcp__srv__search')]);
-    },
-  });
-
-  assert.deepEqual(tools, []);
-  assert.equal(connected, false);
-});
-
-test('runtime resolves OAuth at connection time and injects only the bearer header', async () => {
-  const seen: Array<{ ref: object; serverUrl: string; authorization: string }> = [];
-  const connect = async (_name: string, options: McpServerOptions): Promise<McpServerConnection> => {
-    seen[0]!.authorization =
-      new Headers(options.headers).get('Authorization') ?? '';
-    return fakeConnection([tool('mcp__srv__search')]);
-  };
-
-  const tools = await resolveProfileMcpTools(
-    [server({ authMode: 'oauth', allowedTools: ['search'] })],
-    {
-      agentId: 'agent_test',
-      env: noSecretsEnv,
-      existingToolNames: [],
-      connect,
-      resolveOAuthAccessToken: async (input) => {
-        seen.push({
-          ref: input.ref,
-          serverUrl: input.serverUrl,
-          authorization: '',
-        });
-        return 'oauth-access-token';
-      },
-    },
-  );
-
-  assert.deepEqual(
-    tools.map((tool) => tool.name),
-    ['mcp__srv__search'],
-  );
-  assert.deepEqual(seen, [
-    {
-      ref: { agentId: 'agent_test', connectionId: 'srv' },
-      serverUrl: 'https://mcp.example.com/mcp',
-      authorization: 'Bearer oauth-access-token',
-    },
-  ]);
-});
-
-test('runtime preserves a Sentry-scoped OAuth URL and exposes only reviewed tools', async () => {
-  const serverUrl = 'https://mcp.sentry.dev/mcp/acme/web-app';
-  const seen: Array<{ serverUrl: string; connectedUrl: string; authorization: string }> = [];
-  const tools = await resolveProfileMcpTools([server({
-    id: 'sentry',
-    displayName: 'Sentry',
-    url: serverUrl,
-    authMode: 'oauth',
-    discoveredTools: [{ name: 'search_issues' }, { name: 'update_issue' }],
-    allowedTools: ['search_issues'],
-    presetId: 'sentry',
-  })], {
-    agentId: 'agent_test',
-    env: noSecretsEnv,
-    existingToolNames: [],
-    resolveOAuthAccessToken: async (input) => {
-      seen.push({ serverUrl: input.serverUrl, connectedUrl: '', authorization: '' });
-      return 'sentry-oauth-token';
-    },
-    connect: async (_name, options) => {
-      seen[0]!.connectedUrl = String(options.url);
-      seen[0]!.authorization = new Headers(options.headers).get('authorization') ?? '';
-      return fakeConnection([
-        tool('mcp__sentry__search_issues'),
-        tool('mcp__sentry__update_issue'),
-      ]);
-    },
-  });
-
-  assert.deepEqual(seen, [{
-    serverUrl,
-    connectedUrl: serverUrl,
-    authorization: 'Bearer sentry-oauth-token',
-  }]);
-  assert.deepEqual(tools.map(({ name }) => name), ['mcp__sentry__search_issues']);
-});
-
-test('runtime uses Intercom OAuth and withholds unreviewed discovered tools', async () => {
-  const serverUrl = 'https://mcp.intercom.com/mcp';
-  const seen: Array<{ serverUrl: string; connectedUrl: string; authorization: string }> = [];
-  const tools = await resolveProfileMcpTools([server({
-    id: 'intercom',
-    displayName: 'Intercom',
-    url: serverUrl,
-    authMode: 'oauth',
-    discoveredTools: [{ name: 'search_contacts' }, { name: 'delete_contact' }],
-    allowedTools: ['search_contacts'],
-    presetId: 'intercom',
-  })], {
-    agentId: 'agent_test',
-    env: noSecretsEnv,
-    existingToolNames: [],
-    resolveOAuthAccessToken: async (input) => {
-      seen.push({ serverUrl: input.serverUrl, connectedUrl: '', authorization: '' });
-      return 'intercom-oauth-token';
-    },
-    connect: async (_name, options) => {
-      seen[0]!.connectedUrl = String(options.url);
-      seen[0]!.authorization = new Headers(options.headers).get('authorization') ?? '';
-      return fakeConnection([
-        tool('mcp__intercom__search_contacts'),
-        tool('mcp__intercom__delete_contact'),
-      ]);
-    },
-  });
-
-  assert.deepEqual(seen, [{
-    serverUrl,
-    connectedUrl: serverUrl,
-    authorization: 'Bearer intercom-oauth-token',
-  }]);
-  assert.deepEqual(tools.map(({ name }) => name), ['mcp__intercom__search_contacts']);
-});
-
-// --- (b) graceful degrade: one dead server never kills the others ---------
-
-test('one server hanging past the connect deadline does not block the other', async () => {
-  const good = fakeConnection([tool('mcp__good__ok')]);
-  const hung = (): Promise<McpServerConnection> => new Promise(() => {});
-  const { fn } = stubConnect({ good, dead: hung });
-  const servers = [
-    server({ id: 'good', discoveredTools: [{ name: 'ok' }], allowedTools: ['ok'] }),
-    server({ id: 'dead', discoveredTools: [{ name: 'x' }], allowedTools: ['x'] }),
-  ];
-  const tools = await resolveProfileMcpTools(servers, {
-    agentId: 'agent_test',
-    env: noSecretsEnv,
-    existingToolNames: [],
-    connect: fn,
-    connectTimeoutMs: 50,
-  });
-  assert.deepEqual(
-    tools.map((t) => t.name),
-    ['mcp__good__ok'],
-    'the healthy server still returns its tools',
-  );
-});
-
-test('a server that rejects on connect degrades gracefully (returns nothing, no throw)', async () => {
-  const good = fakeConnection([tool('mcp__good__ok')]);
-  const rejecting = (): Promise<McpServerConnection> => {
-    throw new Error('HTTP 401 Unauthorized');
-  };
-  const { fn } = stubConnect({ good, bad: rejecting });
-  const servers = [
-    server({ id: 'good', discoveredTools: [{ name: 'ok' }], allowedTools: ['ok'] }),
-    server({ id: 'bad', discoveredTools: [{ name: 'x' }], allowedTools: ['x'] }),
-  ];
-  const tools = await resolveProfileMcpTools(servers, {
-    agentId: 'agent_test',
-    env: noSecretsEnv,
-    existingToolNames: [],
-    connect: fn,
-  });
-  assert.deepEqual(
-    tools.map((t) => t.name),
-    ['mcp__good__ok'],
-  );
-});
-
-test('turn-time MCP failure logs redact configured query and header credentials', async () => {
-  const warnings: string[] = [];
-  const previousWarn = console.warn;
-  console.warn = (...args: unknown[]) => warnings.push(args.map(String).join(' '));
-  try {
-    await withEnv(
-      {
-        MCP_AGENT_AGENT_5FTEST_CONNECTION_SRV_BEARER: 'bearer-secret',
-        MCP_AGENT_AGENT_5FTEST_CONNECTION_SRV_HEADER_X_2DCUSTOM_2DCREDENTIAL:
-          'custom-secret',
-      },
-      async () => {
-        const connect = async (
-          _name: string,
-          options: McpServerOptions,
-        ): Promise<McpServerConnection> => {
-          const headers = new Headers(options.headers);
-          throw new Error(
-            'upstream echoed ' +
-              options.url +
-              ' ' +
-              headers.get('Authorization') +
-              ' ' +
-              headers.get('X-Custom-Credential'),
-          );
-        };
-        const tools = await resolveProfileMcpTools(
-          [
-            server({
-              url: 'https://mcp.example.com/mcp?access_token=query-secret',
-              authMode: 'bearer',
-              headerNames: ['X-Custom-Credential'],
-            }),
-          ],
-          {
-            agentId: 'agent_test',
-            env: noSecretsEnv,
-            existingToolNames: [],
-            connect,
-          },
-        );
-        assert.deepEqual(tools, []);
-      },
-    );
-  } finally {
-    console.warn = previousWarn;
-  }
-
-  const logged = warnings.join('\n');
-  assert.ok(logged.includes('[redacted]'));
-  assert.doesNotMatch(logged, /query-secret|bearer-secret|custom-secret/);
-});
-
-// --- (e) collision with existingToolNames dropped -------------------------
-
-test('drops an MCP tool whose full name collides with an existing tool/skill name', async () => {
-  const conn = fakeConnection([tool('gmail_send_message'), tool('mcp__srv__create')]);
-  const { fn } = stubConnect({ srv: conn });
-  const tools = await resolveProfileMcpTools([server()], {
-    agentId: 'agent_test',
-    env: noSecretsEnv,
-    existingToolNames: ['gmail_send_message'],
-    connect: fn,
-  });
-  assert.deepEqual(
-    tools.map((t) => t.name),
-    ['mcp__srv__create'],
-    'the colliding tool is dropped, the other survives',
-  );
-});
-
-test('drops a later MCP tool that collides with an earlier server (first wins)', async () => {
-  // Two servers that (pathologically) produce the same full tool name.
-  const a = fakeConnection([tool('mcp__dup__go')]);
-  const b = fakeConnection([tool('mcp__dup__go')]);
-  const { fn } = stubConnect({ a, b });
-  const servers = [
-    server({ id: 'a', discoveredTools: [{ name: 'go' }], allowedTools: ['go'] }),
-    server({ id: 'b', discoveredTools: [{ name: 'go' }], allowedTools: ['go'] }),
-  ];
-  const tools = await resolveProfileMcpTools(servers, {
-    agentId: 'agent_test',
-    env: noSecretsEnv,
-    existingToolNames: [],
-    connect: fn,
-  });
-  assert.equal(tools.length, 1, 'only the first server keeps the colliding name');
-  assert.equal(tools[0]?.name, 'mcp__dup__go');
-});
-
-// --- (f) zero-approved-after-intersection closes immediately --------------
-
-test('a server whose approved tools all vanished is closed immediately', async () => {
-  let closed = false;
-  // allowlist approves only "gone", which the server no longer exposes.
-  const conn = fakeConnection([tool('mcp__srv__still-here')], () => {
-    closed = true;
-  });
-  const { fn } = stubConnect({ srv: conn });
-  const tools = await resolveProfileMcpTools(
-    [server({ discoveredTools: [{ name: 'gone' }], allowedTools: ['gone'] })],
-    { agentId: 'agent_test', env: noSecretsEnv, existingToolNames: [], connect: fn },
-  );
-  assert.deepEqual(tools, [], 'no approved tool survives the intersection');
-  assert.equal(closed, true, 'the useless connection is closed immediately');
-});
-
-test('returns [] for an empty server list without connecting', async () => {
-  const { fn, connected } = stubConnect({});
-  const tools = await resolveProfileMcpTools([], {
-    agentId: 'agent_test',
-    env: noSecretsEnv,
-    existingToolNames: [],
-    connect: fn,
-  });
-  assert.deepEqual(tools, []);
-  assert.deepEqual(connected, []);
-});
 
 test('Flue 2 MCP definitions retain only policy and resolve rotating bearer auth live', async () => {
   const ref = { agentId: 'agent_v2', connectionId: 'srv' };
@@ -1112,39 +290,6 @@ test('Meta adapter advertises its filtered account result to the real MCP SDK ov
   }
 });
 
-test('legacy Meta connector rewrites only its account helper tools/list contract', async () => {
-  const current = metaAccountHelperServer();
-  let inspected = false;
-  const connect = async (_name: string, options: McpServerOptions): Promise<McpServerConnection> => {
-    const response = await options.fetch!('https://mcp.facebook.com/ads', {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'tools/list', params: {} }),
-    });
-    const body = await response.json() as { result: { tools: Array<Record<string, unknown>> } };
-    const helper = body.result.tools[0]!;
-    assert.deepEqual((helper.outputSchema as { required: string[] }).required, ['ad_accounts']);
-    assert.deepEqual(helper.inputSchema, { type: 'object', properties: { cursor: { type: 'string' } } });
-    assert.deepEqual(body.result.tools[1], toolsListEnvelopeForLegacy().result.tools[1]);
-    inspected = true;
-    return fakeConnection([tool(`mcp__srv__${META_ADS_ACCOUNT_HELPER}`)]);
-  };
-  function toolsListEnvelopeForLegacy() {
-    return { jsonrpc: '2.0', id: 3, result: { tools: [
-      { name: META_ADS_ACCOUNT_HELPER, description: 'Provider helper.',
-        inputSchema: { type: 'object', properties: { cursor: { type: 'string' } } },
-        outputSchema: { type: 'object', properties: { accounts: { type: 'array' } } } },
-      { name: 'custom_tool', description: 'Untouched.', inputSchema: { type: 'object' },
-        outputSchema: { type: 'object', properties: { result: { type: 'string' } } } },
-    ] } };
-  }
-  await resolveProfileMcpTools([current], {
-    agentId: 'agent_test', env: noSecretsEnv, existingToolNames: [], connect,
-    resolveCurrentConnection: async () => current,
-    createGuardedFetch: () => async () => Response.json(toolsListEnvelopeForLegacy()),
-  });
-  assert.equal(inspected, true);
-});
-
 test('direct Meta field helper has no phantom account input and honors live revocation', async () => {
   const fieldServer = server({
     url: 'https://mcp.facebook.com/ads', presetId: 'meta-ads',
@@ -1213,48 +358,6 @@ test('direct Meta field helper has no phantom account input and honors live revo
     } }),
   }), /policy changed/);
   assert.equal(outbound, 1);
-});
-
-test('legacy Meta field helper enforces metadata values before its adapter runs', async () => {
-  let runs = 0;
-  const fieldServer = server({
-    url: 'https://mcp.facebook.com/ads', presetId: 'meta-ads',
-    discoveredTools: [{ name: META_ADS_FIELD_HELPER, inputSchema: {
-      propertyNames: ['advertiser_request', 'client_conversation_id', 'field_names'],
-      accountFields: [], ambiguous: false, fingerprint: 'd'.repeat(64),
-    } }],
-    allowedTools: [META_ADS_FIELD_HELPER],
-    toolPolicies: { [META_ADS_FIELD_HELPER]: { effect: 'read', argumentConstraints: {
-      [META_ADS_APPROVED_ACCOUNT_SCOPE]: ['act_123'],
-    } } },
-  });
-  const remote = {
-    name: `mcp__srv__${META_ADS_FIELD_HELPER}`, description: '', input: undefined, output: undefined,
-    run() { runs += 1; return 'fields'; },
-  } as ToolDefinition;
-  const { fn } = stubConnect({ srv: fakeConnection([remote]) });
-  const tools = await resolveProfileMcpTools([fieldServer], {
-    agentId: 'agent_test', env: noSecretsEnv, existingToolNames: [], connect: fn,
-    resolveCurrentConnection: async () => fieldServer,
-  });
-  await assert.rejects(async () => { await tools[0]!.run({ data: {
-    advertiser_request: 'verify', field_names: [],
-  } } as never); }, /invalid field_names/);
-  await assert.rejects(async () => { await tools[0]!.run({ data: {
-    advertiser_request: 'verify', account_id: 'act_123', field_names: ['spend'],
-  } } as never); }, /does not permit the argument account_id/);
-  await assert.rejects(async () => { await tools[0]!.run({ data: {
-    advertiser_request: null, field_names: ['spend'],
-  } } as never); }, /invalid advertiser_request/);
-  await assert.rejects(async () => { await tools[0]!.run({ data: {
-    advertiser_request: 'verify', field_names: 'spend',
-  } } as never); }, /invalid field_names/);
-  assert.equal(runs, 0);
-  assert.equal(await tools[0]!.run({ data: {
-    advertiser_request: 'verify', client_conversation_id: 'correlation-2',
-    field_names: ['spend', 'impressions'],
-  } } as never), 'fields');
-  assert.equal(runs, 1);
 });
 
 test('direct Meta account helper sanitizes SSE under live profile policy', async () => {
@@ -1574,4 +677,112 @@ test('account-backed runtime MCP resolves OAuth and rechecks live tool and actor
     closeNodeStateStores();
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+/**
+ * Send one tools/list request through an account-backed RuntimePlanV2 MCP
+ * connection whose account row carries `policy`. Returns the outbound headers,
+ * or the error thrown before any provider request.
+ */
+async function accountMcpRequest(
+  t: TestContext,
+  policy: Record<string, unknown> & { authMode: string; headerNames: string[] },
+  options: { secret?: string; active?: boolean } = {},
+): Promise<{ headers: Headers } | { error: unknown }> {
+  const directory = mkdtempSync(join(tmpdir(), 'chickpea-account-mcp-headers-'));
+  try {
+    return await withEnv({
+      SLACK_STATE_DB_PATH: join(directory, 'state.db'),
+      CHICKPEA_AUTH_DB_PATH: join(directory, 'auth.db'),
+    }, async () => {
+      const { getIdentityStore } = await import('../src/config/state-backend.ts');
+      const config = getConfigStore();
+      const identity = getIdentityStore();
+      const account = {
+        id: 'connection_test', workspaceId: 'T_TEST', providerId: 'test', label: 'Test MCP',
+        ownerKind: 'team', lifecycle: 'ready', secretRefId: 'connection_test',
+        policy: {
+          kind: 'mcp', url: 'https://mcp.example.com/mcp', transport: 'streamable-http',
+          discoveredTools: [{ name: 'search' }], allowedTools: ['search'], ...policy,
+        },
+      };
+      const binding = { agentId: 'agent_test', connectionAccountId: account.id, providerId: 'test', enabled: true, allowedCapabilities: [] };
+      t.mock.method(identity, 'getOrganization', async () => ({ id: 'org', slackTeamId: 'T_TEST' }));
+      t.mock.method(identity, 'getMembership', async () => ({
+        id: 'member', userId: 'user', organizationId: 'org', status: options.active === false ? 'suspended' : 'active',
+      }));
+      t.mock.method(identity, 'getMembershipAccessOverlay', async () => null);
+      t.mock.method(identity, 'getUser', async () => ({ id: 'user', slackTeamId: 'T_TEST', slackUserId: 'U_TEST' }));
+      t.mock.method(identity, 'resolveSlackIdentity', async () => ({ user: { id: 'user' }, membership: { id: 'member' }, binding: { membershipId: 'member' } }));
+      t.mock.method(config, 'listConnectionAccounts', async () => [account]);
+      t.mock.method(config, 'listAgentConnectionBindings', async () => [binding]);
+      if (options.secret) await saveConnectionAccountSecret(account.secretRefId, options.secret);
+      const captured: Request[] = [];
+      const [definition] = resolveRuntimePlanMcpConnections('agent_test', [{
+        id: account.id, url: 'https://mcp.example.com/mcp', transport: 'streamable-http',
+        authMode: policy.authMode as 'none' | 'bearer',
+        headerNames: policy.headerNames.map((name) => name.toLowerCase()),
+        allowedTools: ['search'], optional: true,
+      }], undefined, { workspaceId: 'T_TEST', actorMembershipId: 'member' }, {
+        createGuardedFetch: () => (async (input, init) => {
+          captured.push(new Request(input, init));
+          return new Response('{}');
+        }) as typeof fetch,
+      });
+      try {
+        await definition!.fetch!('https://mcp.example.com/mcp', {
+          method: 'POST', body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+        });
+      } catch (error) {
+        assert.equal(captured.length, 0, 'a rejected request never reaches the provider');
+        return { error };
+      }
+      assert.equal(captured.length, 1);
+      return { headers: captured[0]!.headers };
+    });
+  } finally {
+    t.mock.restoreAll();
+    closeNodeStateStores();
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
+
+test('account-backed runtime MCP applies the preset credential header and prefix', async (t) => {
+  const result = await accountMcpRequest(t, {
+    authMode: 'none', headerNames: ['Authorization'],
+    credentialHeaderName: 'Authorization', credentialValuePrefix: 'Sentry-Bearer ',
+  }, { secret: 'sentry-user-token' });
+  assert.ok('headers' in result);
+  assert.equal(result.headers.get('authorization'), 'Sentry-Bearer sentry-user-token');
+});
+
+test('account-backed runtime MCP does not double a prefix the stored credential already has', async (t) => {
+  const result = await accountMcpRequest(t, {
+    authMode: 'none', headerNames: ['Authorization'],
+    credentialHeaderName: 'Authorization', credentialValuePrefix: 'Sentry-Bearer ',
+  }, { secret: 'Sentry-Bearer stored-token' });
+  assert.ok('headers' in result);
+  assert.equal(result.headers.get('authorization'), 'Sentry-Bearer stored-token');
+});
+
+test('an optional account MCP credential falls back to anonymous access', async (t) => {
+  const result = await accountMcpRequest(t, {
+    authMode: 'none', headerNames: ['x-api-key'], credentialHeaderName: 'x-api-key', credentialOptional: true,
+  });
+  assert.ok('headers' in result);
+  assert.equal(result.headers.get('x-api-key'), null);
+});
+
+test('an optional account MCP credential still fails closed for an inactive actor', async (t) => {
+  const result = await accountMcpRequest(t, {
+    authMode: 'none', headerNames: ['x-api-key'], credentialHeaderName: 'x-api-key', credentialOptional: true,
+  }, { secret: 'api-key', active: false });
+  assert.ok('error' in result);
+  assert.match(String(result.error), /not available to this actor/);
+});
+
+test('a required account MCP credential never falls back to anonymous access', async (t) => {
+  const result = await accountMcpRequest(t, { authMode: 'bearer', headerNames: [] });
+  assert.ok('error' in result);
+  assert.ok(result.error instanceof ConnectionCredentialUnavailableError);
 });

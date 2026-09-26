@@ -5,7 +5,7 @@ import type { Sandbox, SandboxFactory } from '@flue/runtime';
 
 import {
   buildArtifactToolsInstruction,
-  createWorkspaceArtifactCapability,
+  createWorkspaceArtifactTool,
   MAX_ARTIFACT_BYTES,
 } from '../src/sandbox/artifact-tool.ts';
 import { GENERATE_IMAGE_TOOL_NAME } from '../src/sandbox/image-tool.ts';
@@ -15,6 +15,21 @@ const TOOL_RUN_CONTEXT = {
   toolCallId: 'artifact-test-call',
   log: { info() {}, warn() {}, error() {} },
 } as const;
+
+/** Create one sandbox and run `post_artifact` on it the way the Flue harness does. */
+async function artifactToolFor(
+  factory: SandboxFactory,
+  binding: Parameters<typeof createWorkspaceArtifactTool>[0],
+  id: string,
+) {
+  const sandbox = await factory.createSandbox({ id });
+  const tool = createWorkspaceArtifactTool(binding);
+  return {
+    sandbox,
+    run: (data: Record<string, unknown>) =>
+      tool.run({ ...TOOL_RUN_CONTEXT, data, harness: { sandbox } } as never),
+  };
+}
 
 function fakeSandbox(
   readPaths: string[],
@@ -74,8 +89,7 @@ test('workspace artifact tool reads through Sandbox and binds the Slack destinat
       });
     },
   };
-  const capability = createWorkspaceArtifactCapability({
-    sandbox: base,
+  const artifact = await artifactToolFor(base, {
     sandboxKind: 'cloudflare',
     channel: 'C_BOUND',
     threadTs: '1782770400.000100',
@@ -83,16 +97,11 @@ test('workspace artifact tool reads through Sandbox and binds the Slack destinat
       uploads.push(input);
       return { attached: true, byteLength: input.bytes.byteLength };
     },
-  });
-
-  await capability.sandbox.createSandbox({ id: 'thread-1' });
-  const result = await capability.tool.run({
-    ...TOOL_RUN_CONTEXT,
-    data: {
-      path: '/workspace/proof.png',
-      filename: 'proof.png',
-      title: 'Proof',
-    },
+  }, 'thread-1');
+  const result = await artifact.run({
+    path: '/workspace/proof.png',
+    filename: 'proof.png',
+    title: 'Proof',
   });
 
   assert.deepEqual(result, { output: { attached: true, filename: 'proof.png', byteLength: 3 } });
@@ -132,8 +141,7 @@ test('workspace artifact tool rejects over-cap files without reading or posting 
       return fakeSandbox(readPaths, statPaths, MAX_ARTIFACT_BYTES + 1);
     },
   };
-  const capability = createWorkspaceArtifactCapability({
-    sandbox: base,
+  const artifact = await artifactToolFor(base, {
     sandboxKind: 'cloudflare',
     channel: 'C_BOUND',
     threadTs: '1782770400.000100',
@@ -141,17 +149,12 @@ test('workspace artifact tool rejects over-cap files without reading or posting 
       uploads.push(input);
       return { attached: true, byteLength: input.bytes.byteLength };
     },
-  });
-
-  await capability.sandbox.createSandbox({ id: 'thread-1' });
+  }, 'thread-1');
   await assert.rejects(
     async () =>
-      capability.tool.run({
-        ...TOOL_RUN_CONTEXT,
-        data: {
-          path: '/workspace/oversized.zip',
-          filename: 'oversized.zip',
-        },
+      artifact.run({
+        path: '/workspace/oversized.zip',
+        filename: 'oversized.zip',
       }),
     /artifact exceeds the 8 MB upload limit/,
   );
@@ -175,8 +178,7 @@ test('workspace artifact copy-freeze bounds a source that grows after the pre-st
     },
   };
   let uploadedBytes = -1;
-  const capability = createWorkspaceArtifactCapability({
-    sandbox: base,
+  const artifact = await artifactToolFor(base, {
     sandboxKind: 'cloudflare',
     channel: 'C_BOUND',
     threadTs: '1782770400.000100',
@@ -184,15 +186,10 @@ test('workspace artifact copy-freeze bounds a source that grows after the pre-st
       uploadedBytes = input.bytes.byteLength;
       return { attached: true, byteLength: input.bytes.byteLength };
     },
-  });
-
-  await capability.sandbox.createSandbox({ id: 'thread-race' });
-  await capability.tool.run({
-    ...TOOL_RUN_CONTEXT,
-    data: {
-      path: '/workspace/racing.bin',
-      filename: 'racing.bin',
-    },
+  }, 'thread-race');
+  await artifact.run({
+    path: '/workspace/racing.bin',
+    filename: 'racing.bin',
   });
 
   assert.equal(uploadedBytes, MAX_ARTIFACT_BYTES);
@@ -214,8 +211,7 @@ test('workspace artifact tool rejects post-read oversize bytes and cleans up', a
       });
     },
   };
-  const capability = createWorkspaceArtifactCapability({
-    sandbox: base,
+  const artifact = await artifactToolFor(base, {
     sandboxKind: 'cloudflare',
     channel: 'C_BOUND',
     threadTs: '1782770400.000100',
@@ -223,17 +219,12 @@ test('workspace artifact tool rejects post-read oversize bytes and cleans up', a
       uploads.push(input);
       return { attached: true, byteLength: input.bytes.byteLength };
     },
-  });
-
-  await capability.sandbox.createSandbox({ id: 'thread-post-read' });
+  }, 'thread-post-read');
   await assert.rejects(
     async () =>
-      capability.tool.run({
-        ...TOOL_RUN_CONTEXT,
-        data: {
-          path: '/workspace/racing.bin',
-          filename: 'racing.bin',
-        },
+      artifact.run({
+        path: '/workspace/racing.bin',
+        filename: 'racing.bin',
       }),
     /artifact exceeds the 8 MB upload limit/,
   );
@@ -250,23 +241,17 @@ test('workspace artifact temp name is random and independent of model input', as
       return fakeSandbox(readPaths, [], 3, { execCommands });
     },
   };
-  const capability = createWorkspaceArtifactCapability({
-    sandbox: base,
+  const artifact = await artifactToolFor(base, {
     sandboxKind: 'cloudflare',
     channel: 'C_BOUND',
     threadTs: '1782770400.000100',
     async stageArtifact(input) {
       return { attached: true, byteLength: input.bytes.byteLength };
     },
-  });
-
-  await capability.sandbox.createSandbox({ id: 'thread-random' });
-  await capability.tool.run({
-    ...TOOL_RUN_CONTEXT,
-    data: {
-      path: "/workspace/model-controlled-'-$HOME.bin",
-      filename: 'model-controlled.bin',
-    },
+  }, 'thread-random');
+  await artifact.run({
+    path: "/workspace/model-controlled-'-$HOME.bin",
+    filename: 'model-controlled.bin',
   });
 
   assert.equal(execCommands.length, 1);
@@ -291,24 +276,19 @@ test('workspace artifact tool keeps the container root and rejects paths outside
       return fakeSandbox(readPaths);
     },
   };
-  const capability = createWorkspaceArtifactCapability({
-    sandbox: base,
+  const artifact = await artifactToolFor(base, {
     sandboxKind: 'cloudflare',
     channel: 'C_BOUND',
     threadTs: '1782770400.000100',
     async stageArtifact(input) {
       return { attached: true, byteLength: input.bytes.byteLength };
     },
-  });
-  await capability.sandbox.createSandbox({ id: 'thread-1' });
+  }, 'thread-1');
 
   assert.deepEqual(
-    await capability.tool.run({
-      ...TOOL_RUN_CONTEXT,
-      data: {
-        path: '/workspace/proof.png',
-        filename: 'proof.png',
-      },
+    await artifact.run({
+      path: '/workspace/proof.png',
+      filename: 'proof.png',
     }),
     { output: { attached: true, filename: 'proof.png', byteLength: 3 } },
   );
@@ -320,12 +300,9 @@ test('workspace artifact tool keeps the container root and rejects paths outside
 
   await assert.rejects(
     async () =>
-      capability.tool.run({
-        ...TOOL_RUN_CONTEXT,
-        data: {
-          path: '/workspace/../secret',
-          filename: 'secret',
-        },
+      artifact.run({
+        path: '/workspace/../secret',
+        filename: 'secret',
       }),
     /normalized file under \/workspace/,
   );
@@ -335,8 +312,7 @@ test('in-memory sandbox artifacts are read directly, byte for byte, with no shel
   const { bash } = await import('@flue/runtime');
   const { Bash, InMemoryFs } = await import('just-bash');
   const uploads: { bytes: Uint8Array; filename: string }[] = [];
-  const capability = createWorkspaceArtifactCapability({
-    sandbox: bash(() => new Bash({ fs: new InMemoryFs() })),
+  const artifact = await artifactToolFor(bash(() => new Bash({ fs: new InMemoryFs() })), {
     sandboxKind: 'bash',
     channel: 'C_BOUND',
     threadTs: '1782770400.000300',
@@ -344,16 +320,13 @@ test('in-memory sandbox artifacts are read directly, byte for byte, with no shel
       uploads.push({ bytes: (input.bytes as Uint8Array), filename: input.filename });
       return { attached: true, byteLength: input.bytes.byteLength };
     },
-  });
-  const env = await capability.sandbox.createSandbox({ id: 'thread-bash' });
+  }, 'thread-bash');
+  const env = artifact.sandbox;
 
   // A text file the model would write with the shell, addressed relative to cwd.
   const csv = 'exam,net_bookings\nGRE,2400\nTOEFL,800\n';
   await env.writeFile('bookings.csv', csv);
-  const textResult = await capability.tool.run({
-    ...TOOL_RUN_CONTEXT,
-    data: { path: 'bookings.csv', filename: 'bookings.csv' },
-  });
+  const textResult = await artifact.run({ path: 'bookings.csv', filename: 'bookings.csv' });
   assert.deepEqual(textResult, {
     output: { attached: true, filename: 'bookings.csv', byteLength: new TextEncoder().encode(csv).byteLength },
   });
@@ -363,16 +336,10 @@ test('in-memory sandbox artifacts are read directly, byte for byte, with no shel
   // guarantee: just-bash re-encodes non-UTF-8 bytes and rejects `head -- path`.
   const png = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0xff, 0x80, 0x7f]);
   await env.writeFile('/tmp/out/chart.png', png);
-  await capability.tool.run({
-    ...TOOL_RUN_CONTEXT,
-    data: { path: '/tmp/out/chart.png', filename: 'chart.png', title: 'Chart' },
-  });
+  await artifact.run({ path: '/tmp/out/chart.png', filename: 'chart.png', title: 'Chart' });
   assert.deepEqual(uploads[1]?.bytes, png);
   await env.writeFile('/home/normalized.txt', 'isolated');
-  await capability.tool.run({
-    ...TOOL_RUN_CONTEXT,
-    data: { path: '../normalized.txt', filename: 'normalized.txt' },
-  });
+  await artifact.run({ path: '../normalized.txt', filename: 'normalized.txt' });
   assert.deepEqual(uploads[2]?.bytes, new TextEncoder().encode('isolated'));
   const shellProbe = await env.exec('head -c 4 -- bookings.csv');
   assert.notEqual(shellProbe.exitCode, 0, 'shell freeze command is not portable to just-bash');
@@ -383,16 +350,15 @@ test('in-memory sandbox artifacts stat before reading and reject malformed resol
   const statPaths: string[] = [];
   const execCommands: string[] = [];
   const uploads: unknown[] = [];
-  const build = (size: number, readBytes?: Uint8Array) => createWorkspaceArtifactCapability({
-    sandbox: {
-      async createSandbox() {
-        const env = fakeSandbox(readPaths, statPaths, size, {
-          execCommands,
-          ...(readBytes ? { readBytes } : {}),
-        });
-        return { ...env, cwd: '/home/user', resolvePath: (path) => (path.startsWith('/') ? path : `/home/user/${path}`) };
-      },
+  const build = (size: number, id: string, readBytes?: Uint8Array) => artifactToolFor({
+    async createSandbox() {
+      const env = fakeSandbox(readPaths, statPaths, size, {
+        execCommands,
+        ...(readBytes ? { readBytes } : {}),
+      });
+      return { ...env, cwd: '/home/user', resolvePath: (path) => (path.startsWith('/') ? path : `/home/user/${path}`) };
     },
+  }, {
     sandboxKind: 'bash',
     channel: 'C_BOUND',
     threadTs: '1782770400.000400',
@@ -400,11 +366,10 @@ test('in-memory sandbox artifacts stat before reading and reject malformed resol
       uploads.push(input);
       return { attached: true, byteLength: input.bytes.byteLength };
     },
-  });
+  }, id);
 
-  const ok = build(3);
-  await ok.sandbox.createSandbox({ id: 'thread-a' });
-  await ok.tool.run({ ...TOOL_RUN_CONTEXT, data: { path: 'notes/report.md', filename: 'report.md' } });
+  const ok = await build(3, 'thread-a');
+  await ok.run({ path: 'notes/report.md', filename: 'report.md' });
   assert.deepEqual(statPaths, ['/home/user/notes/report.md']);
   assert.deepEqual(readPaths, ['/home/user/notes/report.md']);
   assert.deepEqual(execCommands, []);
@@ -414,32 +379,29 @@ test('in-memory sandbox artifacts stat before reading and reject malformed resol
   // normalizes traversal within its isolated virtual filesystem.
   for (const path of ['../secrets', '/home/user/../etc/passwd', '/home//user/x', '   ']) {
     await assert.rejects(
-      async () => ok.tool.run({ ...TOOL_RUN_CONTEXT, data: { path, filename: 'x' } }),
+      async () => ok.run({ path, filename: 'x' }),
       /artifact path/,
       path,
     );
   }
 
-  const tooLarge = build(MAX_ARTIFACT_BYTES + 1);
-  await tooLarge.sandbox.createSandbox({ id: 'thread-b' });
+  const tooLarge = await build(MAX_ARTIFACT_BYTES + 1, 'thread-b');
   readPaths.length = 0;
   await assert.rejects(
-    async () => tooLarge.tool.run({ ...TOOL_RUN_CONTEXT, data: { path: '/big.bin', filename: 'big.bin' } }),
+    async () => tooLarge.run({ path: '/big.bin', filename: 'big.bin' }),
     /exceeds the 8 MB upload limit/,
   );
   assert.deepEqual(readPaths, [], 'oversize files are refused before any read');
 
-  const grown = build(3, new Uint8Array(MAX_ARTIFACT_BYTES + 1));
-  await grown.sandbox.createSandbox({ id: 'thread-c' });
+  const grown = await build(3, 'thread-c', new Uint8Array(MAX_ARTIFACT_BYTES + 1));
   await assert.rejects(
-    async () => grown.tool.run({ ...TOOL_RUN_CONTEXT, data: { path: '/grown.bin', filename: 'grown.bin' } }),
+    async () => grown.run({ path: '/grown.bin', filename: 'grown.bin' }),
     /exceeds the 8 MB upload limit/,
   );
   assert.equal(uploads.length, 1, 'post-read oversize bytes are never posted');
 });
 
 test('the hook-agent artifact tool reads the in-memory sandbox through the harness', async () => {
-  const { createWorkspaceArtifactTool } = await import('../src/sandbox/artifact-tool.ts');
   const readPaths: string[] = [];
   const uploads: unknown[] = [];
   const tool = createWorkspaceArtifactTool({

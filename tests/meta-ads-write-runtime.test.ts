@@ -4,15 +4,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
-import type { ToolDefinition } from '@flue/runtime';
-
-import {
-  projectMcpToolInputSchema,
-  type McpServerConnection,
-} from '../src/config/mcp-test.ts';
+import { projectMcpToolInputSchema } from '../src/config/mcp-test.ts';
 import {
   resolveProfileMcpConnections,
-  resolveProfileMcpTools,
   resolveRuntimePlanMcpConnections,
 } from '../src/config/profile-mcp.ts';
 import { META_ADS_OWNERSHIP_ORIGIN } from '../src/config/meta-ads-write-guard.ts';
@@ -439,105 +433,6 @@ test('RuntimePlanV2 rejects a dropped Meta preset marker before any outbound req
     closeNodeStateStores();
     rmSync(directory, { recursive: true, force: true });
   }
-});
-
-test('legacy wrapped MCP tools verify ownership before their remote run', async () => {
-  const server = metaWriteServer();
-  const provider = orderedProvider();
-  const connection: McpServerConnection = {
-    name: 'meta',
-    tools: [{
-      name: `mcp__meta__${WRITE_TOOL}`,
-      description: '',
-      input: undefined,
-      output: undefined,
-      run() {
-        provider.events.push('MCP POST');
-        return 'updated';
-      },
-    } as ToolDefinition],
-    async close() {},
-  };
-  const tools = await resolveProfileMcpTools([server], {
-    agentId: 'agent_legacy_meta_write',
-    env: NO_SECRETS_ENV,
-    existingToolNames: [],
-    connect: async () => connection,
-    resolveCurrentConnection: async () => server,
-    resolveOAuthAccessToken: async () => TOKEN,
-    createGuardedFetch: provider.createGuardedFetch,
-  });
-  assert.equal(await tools[0]!.run({ data: ARGUMENTS } as never), 'updated');
-  assert.deepEqual(provider.events, ['ownership GET', 'MCP POST']);
-});
-
-test('legacy wrapped MCP tools block a write when Graph reports the wrong owner', async () => {
-  const server = metaWriteServer();
-  const provider = orderedProvider('999');
-  const connection: McpServerConnection = {
-    name: 'meta',
-    tools: [{
-      name: `mcp__meta__${WRITE_TOOL}`,
-      description: '',
-      input: undefined,
-      output: undefined,
-      run() {
-        provider.events.push('MCP POST');
-        return 'updated';
-      },
-    } as ToolDefinition],
-    async close() {},
-  };
-  const tools = await resolveProfileMcpTools([server], {
-    agentId: 'agent_legacy_wrong_owner',
-    env: NO_SECRETS_ENV,
-    existingToolNames: [],
-    connect: async () => connection,
-    resolveCurrentConnection: async () => server,
-    resolveOAuthAccessToken: async () => TOKEN,
-    createGuardedFetch: provider.createGuardedFetch,
-  });
-  await assert.rejects(
-    async () => { await tools[0]!.run({ data: ARGUMENTS } as never); },
-    /could not verify.*No ad changes were sent/i,
-  );
-  assert.deepEqual(provider.events, ['ownership GET']);
-});
-
-test('legacy revocation during ownership preflight blocks the remote run', async () => {
-  const frozen = metaWriteServer();
-  let current = frozen;
-  const provider = orderedProvider('123', () => {
-    current = { ...frozen, allowedTools: [] };
-  });
-  const connection: McpServerConnection = {
-    name: 'meta',
-    tools: [{
-      name: `mcp__meta__${WRITE_TOOL}`,
-      description: '',
-      input: undefined,
-      output: undefined,
-      run() {
-        provider.events.push('MCP POST');
-        return 'updated';
-      },
-    } as ToolDefinition],
-    async close() {},
-  };
-  const tools = await resolveProfileMcpTools([frozen], {
-    agentId: 'agent_legacy_revoked',
-    env: NO_SECRETS_ENV,
-    existingToolNames: [],
-    connect: async () => connection,
-    resolveCurrentConnection: async () => current,
-    resolveOAuthAccessToken: async () => TOKEN,
-    createGuardedFetch: provider.createGuardedFetch,
-  });
-  await assert.rejects(
-    async () => { await tools[0]!.run({ data: ARGUMENTS } as never); },
-    /policy changed/,
-  );
-  assert.deepEqual(provider.events, ['ownership GET']);
 });
 
 test('a wrong owner blocks the MCP write', async () => {
