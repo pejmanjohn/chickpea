@@ -33,7 +33,7 @@ import {
   type SlackRunPresentation,
 } from './run-presentations.ts';
 import { repairSlackInteractionProgress, runTurn, sanitizeError } from './run-turn.ts';
-import { SlackStatusRegistry } from './status-registry.ts';
+import { SlackStatusRegistry, type SlackRunFactsView } from './status-registry.ts';
 import { ThreadRunnerJobStore, type ThreadRunnerJob, type ThreadRunnerStatus } from './thread-runner-jobs.ts';
 import {
   runnerLoopScheduler,
@@ -83,7 +83,13 @@ export function sandboxTurnReaders(env: PlatformEnv): TurnExecutionPorts['sandbo
 export class SlackThreadRunner extends DurableObject implements SlackThreadRunnerRpc {
   private jobs: ThreadRunnerJobStore | undefined;
   private presentations: SlackRunPresentationStoreLogic | undefined;
-  private readonly registry = new SlackStatusRegistry();
+  /** Its turns' live status; run facts outlive an eviction in this object's storage. */
+  private readonly registry = new SlackStatusRegistry({
+    runFacts: {
+      load: (id) => this.store().runFacts(id),
+      save: (id, facts) => this.store().saveRunFacts(id, facts),
+    },
+  });
   /** Jobs an alarm returned without at its hard cap, still running here. */
   private readonly carried = new Map<string, Promise<void>>();
   /** Wakes a running alarm's drain when a job is admitted. */
@@ -185,6 +191,23 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
       // A dropped status update never fails a turn.
     }
     return { ok: true, value: null };
+  }
+
+  /**
+   * The run facts of one of this runner's turns, for a check-in answered at
+   * admission (KTD8): its live status turn's, or those saved here before an
+   * eviction. Reading them never touches the run. Null when the turn has not
+   * started here.
+   */
+  async runFacts(turnJobId: string): Promise<StateRpcResult<SlackRunFactsView | null>> {
+    try {
+      return { ok: true, value: this.registry.runFactsView(turnJobId) ?? null };
+    } catch (error) {
+      return {
+        ok: false,
+        error: { code: 'internal', message: error instanceof Error ? error.message : String(error) },
+      };
+    }
   }
 
   async presentationGet(runId: string): Promise<StateRpcResult<SlackRunPresentation | null>> {

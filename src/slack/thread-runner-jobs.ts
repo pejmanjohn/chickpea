@@ -1,4 +1,5 @@
 import type { StateDb } from '../state/state-db.ts';
+import type { SlackRunFacts } from './status-registry.ts';
 
 /** One turn handed to a thread's runner. `payload` stays opaque here. */
 export interface ThreadRunnerJob {
@@ -95,6 +96,19 @@ export class ThreadRunnerJobStore {
     // Reads of a deferred turn's row that found it still pending (the backoff).
     if (!columns.some((column) => column.name === 'deferred_checks')) {
       db.exec('ALTER TABLE runner_jobs ADD COLUMN deferred_checks INTEGER NOT NULL DEFAULT 0');
+    }
+    // The run facts of the job's turn (SlackRunFacts), which a check-in reads
+    // after an eviction: its start, its fixed-copy step, its last progress and
+    // the workspace milestones already counted.
+    for (const [name, type] of [
+      ['run_started_at', 'INTEGER'],
+      ['run_step', 'TEXT'],
+      ['run_progress_at', 'INTEGER'],
+      ['run_milestones', 'INTEGER'],
+    ] as const) {
+      if (!columns.some((column) => column.name === name)) {
+        db.exec(`ALTER TABLE runner_jobs ADD COLUMN ${name} ${type}`);
+      }
     }
   }
 
@@ -298,6 +312,37 @@ export class ThreadRunnerJobStore {
       total += count;
     }
     return { jobs, total };
+  }
+
+  /** The saved run facts of a job's turn, if its status turn saved any here. */
+  runFacts(id: string): SlackRunFacts | undefined {
+    const row = this.db.get(
+      `SELECT run_started_at, run_step, run_progress_at, run_milestones
+       FROM runner_jobs WHERE id = ?`,
+      id,
+    );
+    if (!row || row.run_started_at === null || row.run_started_at === undefined ||
+        row.run_progress_at === null || row.run_progress_at === undefined) return undefined;
+    return {
+      startedAt: Number(row.run_started_at),
+      ...(typeof row.run_step === 'string' ? { step: row.run_step } : {}),
+      progressAt: Number(row.run_progress_at),
+      milestones: Number(row.run_milestones ?? 0),
+    };
+  }
+
+  /** Save a job's run facts; a job this runner does not hold keeps none. */
+  saveRunFacts(id: string, facts: SlackRunFacts): void {
+    this.db.run(
+      `UPDATE runner_jobs SET run_started_at = ?, run_step = ?, run_progress_at = ?,
+         run_milestones = ?
+       WHERE id = ?`,
+      facts.startedAt,
+      facts.step ?? null,
+      facts.progressAt,
+      facts.milestones,
+      id,
+    );
   }
 
   /** A job was running when this object's previous instance stopped. */

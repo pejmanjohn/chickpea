@@ -6,7 +6,95 @@ import {
   type SemanticActivityQueueDisposition,
   type SemanticActivityTelemetrySink,
 } from '../activity/telemetry.ts';
-import { isSafeTypedActivityStatus } from '../activity/status.ts';
+import { activityShowsProgress, isSafeTypedActivityStatus } from '../activity/status.ts';
+
+/**
+ * A run with no real progress for this long is quiet: its turn stops
+ * refreshing the custom status and hands the thread back to Slack's native
+ * working indicator, which carries the Stop button (KTD7). The next progress
+ * brings the custom status back.
+ */
+export const SLACK_RUN_QUIET_AFTER_MS = 5 * 60_000;
+
+/** The time since a run's last real progress, as a check-in says it (KTD8). */
+export type SlackRunQuietBucket = '5+' | '10+' | '15+' | '30+' | '60+';
+
+const QUIET_BUCKETS: ReadonlyArray<readonly [minutes: number, bucket: SlackRunQuietBucket]> = [
+  [60, '60+'],
+  [30, '30+'],
+  [15, '15+'],
+  [10, '10+'],
+  [5, '5+'],
+];
+
+/** The bucket for a time since progress, or undefined under five minutes. */
+export function slackRunQuietBucket(sinceProgressMs: number): SlackRunQuietBucket | undefined {
+  for (const [minutes, bucket] of QUIET_BUCKETS) {
+    if (sinceProgressMs >= minutes * 60_000) return bucket;
+  }
+  return undefined;
+}
+
+/**
+ * What a check-in reports about one run (KTD8). The registry keeps them per
+ * turn generation (the TurnJob id), and its owner persists them (a thread
+ * runner in its own storage) so an admission can answer after an eviction.
+ */
+export interface SlackRunFacts {
+  /** When the run's first attempt registered its status. */
+  startedAt: number;
+  /** The fixed-copy phrase the status line shows, or would show while quiet. */
+  step?: string;
+  /** The run's last real progress; its start while it has made none. */
+  progressAt: number;
+  /** Workspace milestones already counted, by position in the reply. */
+  milestones: number;
+}
+
+/** Where run facts outlive a turn registration, keyed by turn generation. */
+export interface SlackRunFactsStore {
+  load(generation: string): SlackRunFacts | undefined;
+  save(generation: string, facts: SlackRunFacts): void;
+}
+
+/** Run facts as a check-in reads them. Content-free: fixed copy and times. */
+export interface SlackRunFactsView {
+  startedAt: number;
+  step?: string;
+  progressAt: number;
+  /** The time since the last progress; absent under five minutes. */
+  quietFor?: SlackRunQuietBucket;
+  /** When they were read, on the clock of `startedAt` (run time: `at - startedAt`). */
+  at: number;
+}
+
+export function slackRunFactsView(facts: SlackRunFacts, now: number): SlackRunFactsView {
+  const quietFor = slackRunQuietBucket(now - facts.progressAt);
+  return {
+    startedAt: facts.startedAt,
+    ...(facts.step === undefined ? {} : { step: facts.step }),
+    progressAt: facts.progressAt,
+    ...(quietFor ? { quietFor } : {}),
+    at: now,
+  };
+}
+
+/**
+ * Real progress a turn reports itself; tool activity and the coding worker's
+ * stages arrive as observed status instead.
+ */
+export type SlackRunProgress = {
+  kind: 'milestone';
+  /** How many distinct workspace milestone records the reply has shown. */
+  sequence: number;
+};
+
+export interface SlackStatusRegistryOptions {
+  /** Where run facts outlive a turn registration; this isolate's memory by default. */
+  runFacts?: SlackRunFactsStore;
+  /** Overrides SLACK_RUN_QUIET_AFTER_MS for deterministic focused tests. */
+  quietAfterMs?: number;
+}
 
 interface SlackStatusTurnRegistration {
   setStatus(update: SlackStatusUpdate): Promise<boolean>;
@@ -22,6 +110,14 @@ interface SlackStatusTurnRegistration {
    * status at once; observations only arrive after dispatch.
    */
   rebind(instanceId: string): void;
+  /**
+   * Real progress the turn reports itself. A workspace milestone counts by
+   * its position in the reply: a reattached turn replays the reply from its
+   * start, and a replayed record must not restart the quiet clock.
+   */
+  progress(event: SlackRunProgress): void;
+  /** This run's facts now. */
+  runFacts(): SlackRunFacts;
 }
 
 interface StatusPresenter {
@@ -34,6 +130,13 @@ interface StatusPresenter {
    * rejection), so the refresh must be re-armed before Slack expires it.
    */
   refreshRetryable?(): boolean;
+  /**
+   * The run went quiet: show Slack's native working indicator, with its Stop
+   * button, instead of the custom status. True once it shows; the next custom
+   * write hands the thread back from it. Without it (or when it cannot show)
+   * the turn keeps its custom status rather than showing nothing.
+   */
+  showNativeIndicator?(): Promise<boolean>;
 }
 
 interface SlackStatusTurnOptions {
@@ -43,7 +146,7 @@ interface SlackStatusTurnOptions {
   sessionGeneration?: number;
   /** Slack thread/session key whose visible status is shared across Agent handoffs. */
   ownershipKey?: string;
-  /** Deterministic clock for focused generation-history retention tests. */
+  /** Deterministic clock for focused generation-history and run-facts tests. */
   now?: () => number;
   /**
    * Detailed observations can arrive several times within one model/tool
@@ -70,9 +173,21 @@ interface QueuedStatusWrite {
   resolve(result: boolean): void;
 }
 
+/** One run's quiet clock, as its turn registers. */
+interface SlackRunClock {
+  now: () => number;
+  quietAfterMs: number;
+  facts: SlackRunFacts;
+  /** No earlier attempt saved them: save at once. */
+  fresh: boolean;
+}
+
 const DEFAULT_OBSERVED_STATUS_MIN_INTERVAL_MS = 1_000;
 const DEFAULT_STATUS_REFRESH_INTERVAL_MS = 90_000;
 const STATUS_REFRESH_RETRY_MS = 15_000;
+/** Run facts are saved at most this often; a new milestone is saved at once. */
+const RUN_FACTS_SAVE_INTERVAL_MS = 30_000;
+const MEMORY_RUN_FACTS_LIMIT = 256;
 
 class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
   private active: QueuedStatusWrite | undefined;
@@ -81,10 +196,26 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
   private refreshTimer: ReturnType<typeof setTimeout> | undefined;
   private lastObservedWriteStartedAt: number | undefined;
   private lastAppliedText: string | undefined;
+  /** The last custom status Slack accepted, reasserted when a quiet stretch ends. */
+  private shown: SlackStatusUpdate | undefined;
   private closed = false;
   private finished = false;
   private terminalizing = false;
   private ownershipReady: boolean;
+  private readonly now: () => number;
+  private readonly quietAfterMs: number;
+  private readonly facts: SlackRunFacts;
+  /**
+   * The run is quiet and Slack's native indicator shows (see `enterQuiet`):
+   * no custom write reaches Slack until the next progress.
+   */
+  private quiet = false;
+  private quietTimer: ReturnType<typeof setTimeout> | undefined;
+  /** The native hand-back in flight; custom writes wait behind it. */
+  private handingBack: Promise<void> | undefined;
+  private factsTimer: ReturnType<typeof setTimeout> | undefined;
+  private factsDirty = false;
+  private factsSavedAt: number | undefined;
 
   constructor(
     private readonly registry: SlackStatusRegistry,
@@ -95,12 +226,16 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
     private readonly observedMinIntervalMs: number,
     private readonly refreshIntervalMs: number,
     private readonly telemetry: SemanticActivityTelemetrySink,
-    private readonly sessionGeneration?: number,
-    private acceptsWrites = true,
-    ownershipBarrier?: Promise<void>,
-    initialAppliedStatus?: SlackStatusUpdate,
-    refreshInitialStatus = false,
+    private readonly sessionGeneration: number | undefined,
+    private acceptsWrites: boolean,
+    ownershipBarrier: Promise<void> | undefined,
+    initialAppliedStatus: SlackStatusUpdate | undefined,
+    refreshInitialStatus: boolean | undefined,
+    clock: SlackRunClock,
   ) {
+    this.now = clock.now;
+    this.quietAfterMs = clock.quietAfterMs;
+    this.facts = clock.facts;
     this.ownershipReady = ownershipBarrier === undefined;
     if (ownershipBarrier) {
       void ownershipBarrier.finally(() => {
@@ -108,14 +243,21 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
         this.scheduleNext();
       });
     }
+    if (clock.fresh) this.saveFacts(true);
     if (initialAppliedStatus) {
       this.lastAppliedText = initialAppliedStatus.text;
-      this.scheduleRefresh(
-        initialAppliedStatus,
-        refreshInitialStatus ? 0 : this.refreshIntervalMs,
-        'validated',
-      );
+      this.shown = initialAppliedStatus;
+      // A reattached run that is already quiet shows the native indicator
+      // (below), not its old phrase again.
+      if (!this.quietDue()) {
+        this.scheduleRefresh(
+          initialAppliedStatus,
+          refreshInitialStatus ? 0 : this.refreshIntervalMs,
+          'validated',
+        );
+      }
     }
+    this.armQuiet();
   }
 
   setStatus(update: SlackStatusUpdate): Promise<boolean> {
@@ -123,7 +265,24 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
   }
 
   setObservedStatus(update: SlackStatusUpdate): Promise<boolean> {
+    // Observed activity arrives live from the Agent (a tool starting or
+    // settling, a coding worker's stage), timed as it lands.
+    if (activityShowsProgress(update)) this.noteProgress(update);
     return this.enqueue(update, true, false);
+  }
+
+  progress(event: SlackRunProgress): void {
+    if (event.kind !== 'milestone') return;
+    // Only a record past those already counted is new: the rest are the
+    // reply replayed from its start by a reattached read.
+    if (!(event.sequence > this.facts.milestones)) return;
+    this.facts.milestones = event.sequence;
+    this.noteProgress();
+    this.saveFacts(true);
+  }
+
+  runFacts(): SlackRunFacts {
+    return { ...this.facts };
   }
 
   rebind(instanceId: string): void {
@@ -143,6 +302,7 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
   fenceByNewerGeneration(): Promise<void> {
     this.acceptsWrites = false;
     this.cancelRefresh();
+    this.cancelQuiet();
     this.discardPending('stale_dropped');
     return this.active?.result.then(() => undefined) ?? Promise.resolve();
   }
@@ -170,6 +330,10 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
       this.emitQueue('stale_dropped', observed);
       return Promise.resolve(false);
     }
+    // While the run is quiet, Slack's native indicator (and its Stop button)
+    // shows; only progress (which ends the quiet stretch first) writes again.
+    if (this.quiet) return Promise.resolve(false);
+    if (!refresh && isSafeTypedActivityStatus(update)) this.recordStep(update.text);
     if (!this.active && !this.pending && this.lastAppliedText === update.text) {
       this.emitQueue('duplicate', observed);
       return Promise.resolve(true);
@@ -227,11 +391,15 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
     if (this.active) {
       await this.active.result;
     }
+    // A native hand-back landing after the session settles would show the
+    // working indicator on a finished run.
+    if (this.handingBack) await this.handingBack;
   }
 
   async prepareFinal(): Promise<void> {
     this.terminalizing = true;
     this.cancelRefresh();
+    this.cancelQuiet();
     this.discardPending('terminal_dropped');
   }
 
@@ -239,6 +407,10 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
     if (this.closed) return;
     this.closed = true;
     this.cancelRefresh();
+    this.cancelQuiet();
+    // A yield ends this registration mid-run: the next attempt reads the
+    // facts back, including what the throttle still held.
+    if (this.factsDirty) this.saveFacts(true);
     this.discardPending('terminal_dropped');
     // Two turns in the same Slack conversation share one registry key
     // (workspace:channel:thread — and ALL DM turns share workspace:dm-channel:dm),
@@ -252,6 +424,7 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
     this.finished = true;
     this.terminalizing = true;
     this.cancelRefresh();
+    this.cancelQuiet();
     const clearAuthority = this.ownsVisibleWrites();
     const activeResult = this.active?.result;
     this.close();
@@ -273,6 +446,7 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
       !this.ownershipReady ||
       !this.ownsVisibleWrites() ||
       this.active ||
+      this.handingBack ||
       this.pendingTimer ||
       !this.pending
     ) {
@@ -301,7 +475,7 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
   }
 
   private startNext(): void {
-    if (this.closed || !this.ownsVisibleWrites() || this.active || !this.pending) {
+    if (this.closed || !this.ownsVisibleWrites() || this.active || this.handingBack || !this.pending) {
       if (!this.ownsVisibleWrites()) this.discardPending('stale_dropped');
       return;
     }
@@ -329,11 +503,16 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
       .catch(() => false)
       .then((succeeded) => {
         if (succeeded) {
-          this.lastAppliedText = queued.update.text;
-          if (!this.pending || this.pending.update.text === queued.update.text) {
-            this.scheduleRefresh(queued.update);
+          this.shown = queued.update;
+          // A write that lands as the run goes quiet is what the hand-back
+          // (queued behind it) replaces; it is reasserted on the next progress.
+          if (!this.quiet) {
+            this.lastAppliedText = queued.update.text;
+            if (!this.pending || this.pending.update.text === queued.update.text) {
+              this.scheduleRefresh(queued.update);
+            }
           }
-        } else if (!this.pending && this.refreshRetryable()) {
+        } else if (!this.pending && !this.quiet && this.refreshRetryable()) {
           // The status shown is still valid, so retry this write well before
           // Slack's two-minute expiry instead of letting it lapse mid-task. A
           // failed refresh re-arms the fact it reasserted; a failed new fact
@@ -362,6 +541,127 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
     }
   }
 
+  /**
+   * Real progress now. Refresh writes and turn-owned lifecycle writes never
+   * come here, so they cannot hold the clock back from going quiet.
+   */
+  private noteProgress(update?: SlackStatusUpdate): void {
+    if (this.closed || this.terminalizing) return;
+    const at = this.now();
+    if (at > this.facts.progressAt) this.facts.progressAt = at;
+    this.saveFacts();
+    this.armQuiet();
+    if (this.quiet) this.leaveQuiet(update);
+  }
+
+  private recordStep(text: string): void {
+    if (this.facts.step === text) return;
+    this.facts.step = text;
+    this.saveFacts();
+  }
+
+  private quietDue(): boolean {
+    return this.now() - this.facts.progressAt >= this.quietAfterMs;
+  }
+
+  private armQuiet(): void {
+    this.cancelQuiet();
+    if (this.closed || this.terminalizing) return;
+    const delayMs = Math.max(0, this.facts.progressAt + this.quietAfterMs - this.now());
+    this.quietTimer = setTimeout(() => {
+      this.quietTimer = undefined;
+      this.enterQuiet();
+    }, delayMs);
+    this.quietTimer.unref?.();
+  }
+
+  private cancelQuiet(): void {
+    if (!this.quietTimer) return;
+    clearTimeout(this.quietTimer);
+    this.quietTimer = undefined;
+  }
+
+  /**
+   * No progress for the quiet interval: stop refreshing the custom status and
+   * hand the thread back to Slack's native indicator, which shows the Stop
+   * button. Slack shows one or the other, never both (KTD7). The status text
+   * itself never gains a clock; the check-in reports the time instead.
+   */
+  private enterQuiet(): void {
+    if (this.quiet || this.closed || this.terminalizing || !this.ownsVisibleWrites()) return;
+    if (!this.quietDue()) {
+      this.armQuiet();
+      return;
+    }
+    // With nothing to hand back to, the custom status stays.
+    if (!this.presenter.showNativeIndicator) return;
+    this.quiet = true;
+    this.cancelRefresh();
+    this.discardPending('superseded');
+    this.lastAppliedText = undefined;
+    const handBack = async () => {
+      // The one write in flight lands first, so native is the last word.
+      await this.active?.result;
+      if (!this.quiet || this.closed || this.terminalizing || !this.ownsVisibleWrites()) return;
+      let native = false;
+      try {
+        native = await this.presenter.showNativeIndicator!();
+      } catch {
+        native = false;
+      }
+      // Native processing could not show (Agent Sessions unavailable): keep
+      // the custom status rather than none, until progress and a new quiet
+      // stretch try again.
+      if (!native && this.quiet) this.leaveQuiet();
+    };
+    this.handingBack = handBack().finally(() => {
+      this.handingBack = undefined;
+      this.scheduleNext();
+    });
+  }
+
+  /**
+   * Progress after a quiet stretch. A new phrase is written as usual, and the
+   * presenter hands the thread over from native first. The phrase shown before
+   * the stretch is reasserted as a refresh, because its durable writer skips
+   * an unchanged fact.
+   */
+  private leaveQuiet(update?: SlackStatusUpdate): void {
+    this.quiet = false;
+    const shown = this.shown;
+    if (shown && (!update || update.text === shown.text)) {
+      void this.enqueue(shown, false, 'ordinary');
+    }
+  }
+
+  /**
+   * Save the run facts: at once when `now` (a start, a milestone, a close),
+   * else at most once per interval with the newest facts at its end. A lost
+   * trailing save costs the clock at most that interval after an eviction.
+   */
+  private saveFacts(now = false): void {
+    this.factsDirty = true;
+    const at = this.now();
+    if (!now && this.factsSavedAt !== undefined &&
+        at - this.factsSavedAt < RUN_FACTS_SAVE_INTERVAL_MS) {
+      if (!this.factsTimer) {
+        this.factsTimer = setTimeout(() => {
+          this.factsTimer = undefined;
+          this.saveFacts(true);
+        }, this.factsSavedAt + RUN_FACTS_SAVE_INTERVAL_MS - at);
+        this.factsTimer.unref?.();
+      }
+      return;
+    }
+    if (this.factsTimer) {
+      clearTimeout(this.factsTimer);
+      this.factsTimer = undefined;
+    }
+    this.factsDirty = false;
+    this.factsSavedAt = at;
+    this.registry.saveRunFacts(this.generation, this.facts);
+  }
+
   private discardPending(disposition: SemanticActivityQueueDisposition): void {
     if (this.pendingTimer) {
       clearTimeout(this.pendingTimer);
@@ -385,7 +685,7 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
     refresh: false | 'ordinary' | 'validated' = 'ordinary',
   ): void {
     this.cancelRefresh();
-    if (this.closed || this.terminalizing || !this.ownsVisibleWrites()) return;
+    if (this.closed || this.terminalizing || this.quiet || !this.ownsVisibleWrites()) return;
     emitSemanticActivityTelemetry({
       event: 'activity.refresh',
       outcome: 'scheduled',
@@ -398,7 +698,7 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
       const stale = refresh
         ? this.lastAppliedText !== update.text
         : this.lastAppliedText === update.text;
-      if (this.closed || this.terminalizing || !this.ownsVisibleWrites() || stale) {
+      if (this.closed || this.terminalizing || this.quiet || !this.ownsVisibleWrites() || stale) {
         emitSemanticActivityTelemetry({
           event: 'activity.refresh',
           outcome: 'stale_dropped',
@@ -499,13 +799,21 @@ export class SlackStatusRegistry {
   private readonly activeTurns = new Map<string, Set<ActiveSlackStatusTurn>>();
   private readonly activeOwners = new Map<string, Set<ActiveSlackStatusTurn>>();
   private readonly latestGenerations = new Map<string, SlackStatusGenerationHistory>();
+  private readonly runFactsStore: SlackRunFactsStore;
+  private readonly quietAfterMs: number;
+
+  constructor(options: SlackStatusRegistryOptions = {}) {
+    this.runFactsStore = options.runFacts ?? memoryRunFactsStore();
+    this.quietAfterMs = options.quietAfterMs ?? SLACK_RUN_QUIET_AFTER_MS;
+  }
 
   registerTurn(
     instanceId: string,
     presenter: StatusPresenter,
     options: SlackStatusTurnOptions,
   ): SlackStatusTurnRegistration {
-    const now = options.now?.() ?? Date.now();
+    const clock = options.now ?? (() => Date.now());
+    const now = clock();
     this.pruneInactiveGenerationHistory(now);
     const turns = this.activeTurns.get(instanceId) ?? new Set<ActiveSlackStatusTurn>();
     const ownershipKey = options.ownershipKey ?? instanceId;
@@ -541,6 +849,7 @@ export class SlackStatusRegistry {
         acceptsWrites = false;
       }
     }
+    const stored = this.loadRunFacts(options.generation);
     const turn = new ActiveSlackStatusTurn(
       this,
       instanceId,
@@ -555,6 +864,14 @@ export class SlackStatusRegistry {
       ownershipBarrier,
       options.initialAppliedStatus,
       options.refreshInitialStatus,
+      {
+        now: clock,
+        quietAfterMs: this.quietAfterMs,
+        // A retry or a reattach of the same run keeps its start and its clock.
+        ...(stored
+          ? { facts: stored, fresh: false }
+          : { facts: { startedAt: now, progressAt: now, milestones: 0 }, fresh: true }),
+      },
     );
     turns.add(turn);
     this.activeTurns.set(instanceId, turns);
@@ -595,6 +912,45 @@ export class SlackStatusRegistry {
     if (!matchingTurn) return true;
     void matchingTurn.setObservedStatus(update);
     return true;
+  }
+
+  /**
+   * The facts of one run (its turn generation, the TurnJob id): its live
+   * turn's, else those its last registration saved. A check-in reads them
+   * without touching the run.
+   */
+  runFacts(generation: string): SlackRunFacts | undefined {
+    let live: ActiveSlackStatusTurn | undefined;
+    for (const turns of this.activeTurns.values()) {
+      for (const turn of turns) {
+        if (turn.belongsTo(generation)) live = turn;
+      }
+    }
+    return live ? live.runFacts() : this.loadRunFacts(generation);
+  }
+
+  /** `runFacts` as a check-in reads them, at `now`. */
+  runFactsView(generation: string, now = Date.now()): SlackRunFactsView | undefined {
+    const facts = this.runFacts(generation);
+    return facts ? slackRunFactsView(facts, now) : undefined;
+  }
+
+  /** @internal Save one run's facts; a failed save never fails a turn. */
+  saveRunFacts(generation: string, facts: SlackRunFacts): void {
+    try {
+      this.runFactsStore.save(generation, { ...facts });
+    } catch {
+      console.warn('[chickpea] run facts could not be saved');
+    }
+  }
+
+  private loadRunFacts(generation: string): SlackRunFacts | undefined {
+    try {
+      const facts = this.runFactsStore.load(generation);
+      return facts ? { ...facts } : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   /** @internal Live turns registered under one instance id. */
@@ -647,6 +1003,26 @@ export class SlackStatusRegistry {
       this.latestGenerations.delete(ownershipKey);
     }
   }
+}
+
+/** Run facts in this isolate's memory, for a registry whose owner persists none. */
+function memoryRunFactsStore(): SlackRunFactsStore {
+  const entries = new Map<string, SlackRunFacts>();
+  return {
+    load: (generation) => {
+      const facts = entries.get(generation);
+      return facts ? { ...facts } : undefined;
+    },
+    save: (generation, facts) => {
+      entries.delete(generation);
+      entries.set(generation, { ...facts });
+      while (entries.size > MEMORY_RUN_FACTS_LIMIT) {
+        const oldest = entries.keys().next().value;
+        if (oldest === undefined) break;
+        entries.delete(oldest);
+      }
+    },
+  };
 }
 
 /** The registry of this isolate's Node relay and Cloudflare alarm turns. */

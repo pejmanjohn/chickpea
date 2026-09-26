@@ -406,3 +406,59 @@ test('a retry whose native start failed but whose custom status is visible start
     assert.deepEqual(h.effects.slice(-2), ['session:active', 'custom:clear'], 'settled, then cleared');
   } finally { h.db.close(); }
 });
+
+test('a quiet run shows native processing again, and progress releases it before the custom text', async () => {
+  // A DM: its Agent memory has an owner in this fixture, so the turn reaches the Agent.
+  const turn = surfaceTurn('dm', '1790000011.000100');
+  const dmAssignment: ResolvedAssignment = { ...assignment, channelId: turn.channelId };
+  const work = new SqliteWorkStore(':memory:');
+  const admitted = await work.admitShadowRun(prepareSlackShadowAdmission({
+    turn, assignment: dmAssignment, sourceVisibility: 'private', admittedAt: Date.now(),
+  }));
+  const h = harness(turn, { runId: admitted.run.id });
+  // Five quiet minutes, shortened for the test.
+  const registry = new SlackStatusRegistry({ quietAfterMs: 50 });
+  const observed = activityStatus('reading', 'Reading', 'the thread');
+  const waitFor = async (condition: () => boolean) => {
+    for (let tries = 0; tries < 100 && !condition(); tries += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.ok(condition(), JSON.stringify(h.effects));
+  };
+  try {
+    await runTurn(turn, dmAssignment, undefined, {
+      client: h.client,
+      runId: h.runId,
+      turnId: `turn_${h.runId}`,
+      presentationState: h.state,
+      statusRegistry: registry,
+      workStore: work,
+      usageRecordingEnabled: false,
+      agentPrompt: async ({ runtimePlan, conversationKey }) => {
+        const shown = 'custom:Preparing your request…';
+        await waitFor(() => h.effects.lastIndexOf('session:processing') > h.effects.indexOf(shown) &&
+          h.effects.includes(shown));
+        // Tool activity after the quiet stretch: real progress.
+        const instanceId = runtimePlan ? deriveRuntimePlanInstanceId(runtimePlan) : conversationKey;
+        assert.equal(registry.setObservedStatus(instanceId, `turn_${h.runId}`, observed), true);
+        await waitFor(() => h.effects.includes(`custom:${observed.text}`));
+        return {
+          text: 'Done.',
+          requestedModel: assignment.model ?? null,
+          returnedModel: null,
+          reportedUsage: null,
+          usageCompleteness: 'not_reported',
+        };
+      },
+    });
+    assert.deepEqual(h.effects.slice(0, 6), [
+      'session:processing',
+      'session:active', // handed over
+      'custom:Preparing your request…',
+      'session:processing', // quiet: Slack's working indicator and its Stop button
+      'session:active', // released first, so the custom text renders
+      `custom:${observed.text}`,
+    ]);
+    assert.deepEqual(h.effects.slice(-2), ['session:active', 'custom:clear'], 'settled, then cleared');
+  } finally { h.db.close(); work.close(); }
+});

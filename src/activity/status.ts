@@ -26,6 +26,7 @@ import {
 } from './semantic.ts';
 
 export {
+  activityShowsProgress,
   activityStatus,
   isSafeTypedActivityStatus,
   type ActivityKind,

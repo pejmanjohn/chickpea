@@ -11,7 +11,7 @@ import {
   createCodingTaskProgress,
 } from '../src/slack/coding-task-progress.ts';
 import type { WorkspaceMilestoneRecord } from '../src/slack/coding-worker-run.ts';
-import { registerSlackStatusTurn } from '../src/slack/status-registry.ts';
+import { SlackStatusRegistry, registerSlackStatusTurn } from '../src/slack/status-registry.ts';
 import { WebClientPresenter } from '../src/slack/web-client-presenter.ts';
 
 const START = 1_785_700_000_000;
@@ -73,6 +73,33 @@ test('a reattached turn replaying a finished task publishes nothing for it', () 
   ]) progress.apply(record);
   assert.equal(progress.takeStatus(), undefined);
   assert.equal(progress.active(), false);
+});
+
+test('each distinct milestone record counts once, by its position in the reply', () => {
+  const records = [
+    milestone('workspace', 'started'),
+    milestone('workspace', 'completed'),
+    milestone('changes', 'started'),
+    milestone('changes', 'changed'),
+    milestone('pull_request', 'completed'),
+  ];
+  const progress = createCodingTaskProgress();
+  assert.equal(progress.applied(), 0);
+  for (const [index, record] of records.entries()) {
+    progress.apply(record);
+    assert.equal(progress.applied(), index + 1);
+  }
+  // A record read twice is one record; a settled task's records still count.
+  progress.apply(milestone('changes', 'started'));
+  assert.equal(progress.applied(), 5);
+  progress.apply(milestone('workspace', 'started', 'call_b'));
+  assert.equal(progress.applied(), 6);
+
+  // A reattached turn replays the same records in the same order, so the
+  // count it reaches names the same records.
+  const reattached = createCodingTaskProgress();
+  for (const record of records.slice(0, 3)) reattached.apply(record);
+  assert.equal(reattached.applied(), 3);
 });
 
 test('a second task in the same response keeps the indicator on until both settle', () => {
@@ -299,4 +326,69 @@ test('a 45-minute task refreshes its indicator every 90 s, writes only on a chan
     await settle();
   }
   assert.equal(writes.length, afterFinal, 'nothing refreshes a finished turn');
+});
+
+test('a quiet coding task gives the thread to Slack\'s native indicator; the next stage brings the rotation back', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: START });
+  const progress = createCodingTaskProgress();
+  const { client, writes } = statusClient();
+  const presenter = new WebClientPresenter(client, {
+    channelId: 'D_QUIET',
+    threadTs: '1785700000.000200',
+    agentName: 'Chickpea',
+    agentId: 'agent_default',
+    userId: 'U_QUIET',
+    workspaceId: 'T_QUIET',
+  }, undefined, { statusDisplay: (update) => progress.display(update) });
+  const native: number[] = [];
+  const registry = new SlackStatusRegistry();
+  const turn = registry.registerTurn('instance_quiet', {
+    setStatus: (update) => presenter.setStatus(update),
+    refreshStatus: (update) => presenter.setStatus(update),
+    showNativeIndicator: async () => { native.push(Date.now()); return true; },
+  }, { generation: 'turn_quiet', observedMinIntervalMs: 1, telemetry: { info() {} } });
+
+  progress.apply(milestone('workspace', 'started'));
+  turn.progress({ kind: 'milestone', sequence: progress.applied() });
+  await turn.setStatus(progress.takeStatus()!);
+  progress.apply(milestone('workspace', 'completed'));
+  progress.apply(milestone('changes', 'started'));
+  turn.progress({ kind: 'milestone', sequence: progress.applied() });
+  await turn.setStatus(progress.takeStatus()!);
+  // The worker's stage, relayed as observed activity, is progress.
+  registry.setObservedStatus('instance_quiet', 'turn_quiet', RUNNING_TESTS);
+  await settle();
+  const busyWrites = writes.length;
+
+  // One long test run with no further event: five minutes on, the status
+  // line gives way to the native indicator instead of repeating the phrase.
+  for (let elapsed = 0; elapsed < 20 * 60_000; elapsed += 10_000) {
+    t.mock.timers.tick(10_000);
+    await settle();
+  }
+  assert.deepEqual(native, [START + 5 * 60_000]);
+  const quietWrites = writes.filter((write) => write.at > START + 5 * 60_000);
+  assert.deepEqual(quietWrites, [], 'nothing custom is written while the run is quiet');
+  assert.equal(busyWrites, 3);
+  assert.equal(registry.runFactsView('turn_quiet')?.quietFor, '15+');
+
+  // The next stage: the rotation returns and shows what the task has done.
+  registry.setObservedStatus('instance_quiet', 'turn_quiet', COMMITTING);
+  await settle();
+  assert.deepEqual(writes.at(-1), {
+    at: START + 20 * 60_000,
+    status: 'Committing the changes…',
+    loadingMessages: [
+      'Committing the changes…',
+      'Step 2 of 3 · Code changes',
+      'Workspace ready',
+      'Test suite run',
+      'Next: opening the pull request',
+    ],
+  });
+  for (const write of writes) {
+    for (const line of [write.status, ...(write.loadingMessages ?? [])]) assert.doesNotMatch(line, LEAK, line);
+  }
+  await turn.prepareFinal();
+  await turn.finish(async () => { await presenter.clearStatus(); });
 });

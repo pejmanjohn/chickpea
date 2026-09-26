@@ -18,6 +18,7 @@ import type {
 } from './run-presentations.ts';
 import type { FrozenRuntimePlanDecision } from './turn-job-types.ts';
 import type { RunnerTurnJobView } from './turn-jobs.ts';
+import type { SlackRunFactsView } from './status-registry.ts';
 import type { ThreadRunnerJob, ThreadRunnerStatus } from './thread-runner-jobs.ts';
 
 /**
@@ -117,6 +118,11 @@ export interface SlackThreadRunnerRpc {
     submissionId: string,
     status: TypedActivityStatus,
   ): Promise<StateRpcResult<null>>;
+  /**
+   * A turn's run facts (start, fixed-copy step, last progress and the bucketed
+   * time since it), for a check-in; null when the turn has not started here.
+   */
+  runFacts(turnJobId: string): Promise<StateRpcResult<SlackRunFactsView | null>>;
   /**
    * The authoritative presentation of one of this runner's turns, for effects
    * the state store applies from outside the turn (an Agent welcome).

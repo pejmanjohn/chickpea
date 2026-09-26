@@ -626,9 +626,11 @@ async function runTurnAttempt(
   // Slack shows a custom assistant status only while the Agent Session is not
   // in native `processing`; the native indicator otherwise takes precedence.
   // A non-empty assistant status itself moves the session to processing, so
-  // the custom status carries the session once it shows. Trade-off: while
-  // custom text shows, Slack's native stop control is absent; Chickpea handles
-  // no native stop event today. Settle below stays on agents.sessions.
+  // the custom status carries the session once it shows. Slack's native stop
+  // control is absent while custom text shows, so a run that goes quiet (no
+  // progress for five minutes) shows native processing again
+  // (`showNativeIndicator`), and its next progress hands over again. Settle
+  // below stays on agents.sessions.
   const semanticStatusCarriesSession = () => semanticActivityEnabled &&
     presenter.preferredActivitySurface() === 'assistant_status' &&
     !presenter.activityReceipt().unavailable;
@@ -725,16 +727,40 @@ async function runTurnAttempt(
       // Without a V3 activity record there is nothing to validate against:
       // reassert the phrase exactly as a fresh write would.
       let succeeded: boolean;
+      // A refresh that brings the phrase back after a quiet stretch hands
+      // over from native processing first, like any custom write.
+      let handedOver = false;
       if (frozenPresentation?.schemaVersion !== 3) {
+        handedOver = nativeHeld && semanticStatusCarriesSession();
+        if (handedOver) await handOverToCustomStatus();
         succeeded = await presenter.setStatus(update);
       } else {
         if (!agentViewPresentation) return false;
         const durable = await agentViewPresentation.prepareActivityRefresh(update);
         if (!durable) return false;
+        handedOver = nativeHeld && semanticStatusCarriesSession();
+        if (handedOver) await handOverToCustomStatus();
         succeeded = await presenter.setStatus(update, durable);
       }
       if (succeeded) options.onSlackWrite?.('activity_status');
+      // The quiet stretch let the custom status lapse: show native again.
+      else if (handedOver) await beginNativeSessionFallback();
       return succeeded;
+    },
+    /**
+     * The run went quiet: the status registry stopped refreshing the custom
+     * status, so show Slack's native indicator, which carries the Stop
+     * button. The next custom write hands over again (`handOverToCustomStatus`).
+     */
+    async showNativeIndicator(): Promise<boolean> {
+      if (nativeHeld) return true;
+      if (!agentViewPresentation || !(await agentViewPresentation.reassertNativeProcessing())) {
+        return false;
+      }
+      nativeHeld = true;
+      nativeReleased = false;
+      options.onSlackWrite?.('agent_session');
+      return true;
     },
   };
   const statusRegistry = options.statusRegistry ?? defaultSlackStatusRegistry;
@@ -1535,6 +1561,8 @@ async function runTurnAttempt(
             onWorkspaceMilestone: async (record) => {
               await signalCodingTaskStarted();
               codingProgress.apply(record);
+              // Progress by its position in the reply: a replay is not.
+              statusTurn.progress({ kind: 'milestone', sequence: codingProgress.applied() });
               publishCodingProgress();
             },
           });

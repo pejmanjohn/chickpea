@@ -3,6 +3,8 @@ import { readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
 
+import { activityStatus } from '../src/activity/status.ts';
+import { SlackStatusRegistry } from '../src/slack/status-registry.ts';
 import { ThreadRunnerJobStore } from '../src/slack/thread-runner-jobs.ts';
 import { NodeStateDb } from '../src/state/node-state-db.ts';
 
@@ -73,4 +75,69 @@ test('the runner executes through the shared turn executor as the runner executo
   assert.match(runner, /executeTurnJob\(job, ports, \{\s*latency: \{ lane: 'cloudflare', executor: 'runner' \}/);
   assert.match(runner, /observationRoute: \{ executor: 'runner'/);
   assert.match(runner, /statusRegistry: this\.registry/);
+});
+
+test('an older runner table gains the run-facts columns, and run facts round-trip per job', () => {
+  const db = new NodeStateDb(new DatabaseSync(':memory:'));
+  db.exec(`CREATE TABLE runner_jobs (
+    id TEXT PRIMARY KEY,
+    thread_key TEXT NOT NULL,
+    job_json TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'admitted',
+    admitted_at INTEGER NOT NULL
+  )`);
+  db.run("INSERT INTO runner_jobs (id, thread_key, job_json, state, admitted_at) VALUES ('old', 'k', 'null', 'running', 1)");
+  const store = new ThreadRunnerJobStore(db);
+  assert.equal(store.runFacts('old'), undefined, 'a row from an older release has no run facts');
+  store.saveRunFacts('old', { startedAt: 10, step: 'Running the test suite…', progressAt: 20, milestones: 2 });
+  assert.deepEqual(store.runFacts('old'), { startedAt: 10, step: 'Running the test suite…', progressAt: 20, milestones: 2 });
+  store.saveRunFacts('old', { startedAt: 10, progressAt: 30, milestones: 3 });
+  assert.deepEqual(store.runFacts('old'), { startedAt: 10, progressAt: 30, milestones: 3 });
+  store.saveRunFacts('missing', { startedAt: 1, progressAt: 1, milestones: 0 });
+  assert.equal(store.runFacts('missing'), undefined, 'facts belong to a job the runner holds');
+  // A second store on the same storage (a new instance) reads them unchanged.
+  assert.deepEqual(new ThreadRunnerJobStore(db).runFacts('old')?.progressAt, 30);
+});
+
+test('run facts survive a simulated eviction and read back through the runner status RPC', async (t) => {
+  const start = 1_790_000_000_000;
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: start });
+  const db = new NodeStateDb(new DatabaseSync(':memory:'));
+  // Wired as SlackThreadRunner wires its registry to its job store.
+  const runner = () => {
+    const jobs = new ThreadRunnerJobStore(db);
+    return new SlackStatusRegistry({
+      runFacts: { load: (id) => jobs.runFacts(id), save: (id, facts) => jobs.saveRunFacts(id, facts) },
+    });
+  };
+  new ThreadRunnerJobStore(db).admit({ id: 'turn-1', threadKey: 'T1:C1:1.0', payload: null }, start);
+  const before = runner();
+  const shown: string[] = [];
+  before.registerTurn('agent-instance', {
+    setStatus: async (update) => { shown.push(update.text); return true; },
+    showNativeIndicator: async () => { shown.push('native'); return true; },
+  }, { generation: 'turn-1', observedMinIntervalMs: 1 });
+  t.mock.timers.tick(10_000);
+  before.setObservedStatus('agent-instance', 'turn-1', activityStatus('running', 'Running', 'the test suite', 'workspace'));
+  // The throttle saves within 30 s; the object is then evicted mid-turn
+  // (nothing closes the turn).
+  t.mock.timers.tick(20_000);
+
+  const after = runner();
+  assert.deepEqual(after.runFactsView('turn-1'), {
+    startedAt: start,
+    step: 'Running the test suite…',
+    progressAt: start + 10_000,
+    at: start + 30_000,
+  }, 'read from storage: no live turn in the new instance');
+  t.mock.timers.tick(12 * 60_000 - 30_000 + 10_000);
+  assert.equal(after.runFactsView('turn-1')?.quietFor, '10+');
+  assert.equal(after.runFactsView('turn-unknown'), undefined);
+
+  const source = readFileSync(new URL('../src/slack/thread-runner.ts', import.meta.url), 'utf8');
+  // The runner's registry persists run facts in its own job store...
+  assert.match(source, /new SlackStatusRegistry\(\{[\s\S]{0,300}load: \(id\) => this\.store\(\)\.runFacts\(id\)[\s\S]{0,120}save: \(id, facts\) => this\.store\(\)\.saveRunFacts\(id, facts\)/);
+  // ...and its status RPC reads them through that registry.
+  const rpc = source.slice(source.indexOf('async runFacts('), source.indexOf('async presentationGet('));
+  assert.match(rpc, /this\.registry\.runFactsView\(turnJobId\)/);
 });

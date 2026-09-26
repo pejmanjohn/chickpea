@@ -504,6 +504,16 @@ export function isSafeTypedActivityStatus(value: unknown): value is TypedActivit
   ).text === value.text;
 }
 
+/**
+ * Whether an observed activity is real progress for a run's quiet clock
+ * (docs/runbooks/semantic-activity-status.md): a tool starting or settling
+ * and a coding worker's stage are; a model attempt's `Thinking…` is not, so a
+ * long stretch of thinking without tools reads as no progress.
+ */
+export function activityShowsProgress(status: ActivityStatus): boolean {
+  return status.phase !== 'thinking';
+}
+
 export function activityStatus(
   kind: ActivityKind,
   action: string,
