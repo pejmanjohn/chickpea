@@ -21,6 +21,7 @@ import {
   createMcpAuthenticatedRequestHandler,
   verifySignedOAuthQuery,
   renderMcpConsentPage,
+  displayMcpClientName,
 } from '../src/auth/mcp-oauth-routes.ts';
 import { validateBrowserMutationProvenance } from '../src/auth/request-provenance.ts';
 
@@ -222,13 +223,44 @@ test('MCP consent can opt into opaque-origin same-origin form navigation', () =>
 test('MCP consent explains renewable access without changing the signed request', () => {
   const oauthQuery = 'scope=chickpea%3Aworkspace+offline_access&sig=test';
   const html = renderMcpConsentPage({
-    clientId: 'test-client', scope: 'chickpea:workspace offline_access', oauthQuery,
+    clientName: 'Test client', scope: 'chickpea:workspace offline_access', oauthQuery,
   });
   assert.ok(html.includes('<dd>Manage this Chickpea workspace and stay signed in</dd>'));
   assert.ok(html.includes(`value="${oauthQuery.replaceAll('&', '&amp;')}"`));
-  const temporary = renderMcpConsentPage({ clientId: 'test-client', scope: MCP_WORKSPACE_SCOPE, oauthQuery });
+  const temporary = renderMcpConsentPage({ clientName: 'Test client', scope: MCP_WORKSPACE_SCOPE, oauthQuery });
   assert.ok(temporary.includes('<dd>Manage this Chickpea workspace</dd>'));
   assert.ok(!temporary.includes('stay signed in'));
+});
+
+test('MCP consent shows the app-provided name, labelled as self-asserted', () => {
+  const html = renderMcpConsentPage({ clientName: 'Claude Code', scope: MCP_WORKSPACE_SCOPE, oauthQuery: 'sig=test' });
+  assert.ok(html.includes('<dt>App</dt><dd>Claude Code <span class="note">(name provided by the app)</span></dd>'));
+  assert.ok(!html.includes('<dt>Client</dt>'));
+});
+
+test('MCP consent falls back to a generic label when the app gave no name', () => {
+  for (const clientName of [undefined, '', '   ', '\u202e\u200b']) {
+    const html = renderMcpConsentPage({ clientName, scope: MCP_WORKSPACE_SCOPE, oauthQuery: 'sig=test' });
+    assert.ok(html.includes('<dt>App</dt><dd>An unnamed app</dd>'), JSON.stringify(clientName));
+    assert.ok(!html.includes('name provided by the app'));
+  }
+});
+
+test('MCP consent escapes, cleans, and bounds a hostile app name', () => {
+  const hostile = '<script>alert(1)</script>"><img src=x onerror=alert(1)>';
+  const html = renderMcpConsentPage({ clientName: hostile, scope: MCP_WORKSPACE_SCOPE, oauthQuery: 'sig=test' });
+  assert.ok(!html.includes('<script>alert'));
+  assert.ok(!html.includes('<img src=x'));
+  assert.ok(html.includes('&lt;script&gt;alert(1)&lt;/script&gt;'));
+
+  assert.equal(displayMcpClientName('Evil\u202eedoC edualC'), 'EviledoC edualC', 'bidi overrides are stripped');
+  assert.equal(displayMcpClientName('Line\none\ttwo\u0000three'), 'Line one two three');
+  const long = displayMcpClientName('A'.repeat(120))!;
+  assert.equal([...long].length, 60);
+  assert.ok(long.endsWith('…'));
+  const longHtml = renderMcpConsentPage({ clientName: 'B'.repeat(120), scope: MCP_WORKSPACE_SCOPE, oauthQuery: 'sig=test' });
+  assert.ok(!longHtml.includes('B'.repeat(60)));
+  assert.equal(displayMcpClientName('Chickpea CLI'), 'Chickpea CLI');
 });
 
 test('MCP consent finishes its form POST before returning to a client callback', async () => {

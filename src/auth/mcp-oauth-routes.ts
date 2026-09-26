@@ -210,9 +210,11 @@ async function showMcpConsent(c: Context, options: McpOAuthRuntimeOptions): Prom
   if (!await verifySignedOAuthQuery(query, runtime.environment.secret)) {
     return invalidBrowserRequest();
   }
-  const clientId = query.get('client_id') ?? '';
+  const clientName = await lookupMcpClientName(
+    runtime.environment, query.get('client_id') ?? '', c.req.raw.headers,
+  );
   const scope = query.get('scope') ?? MCP_WORKSPACE_SCOPE;
-  return new Response(renderMcpConsentPage({ clientId, scope, oauthQuery: query.toString() }), {
+  return new Response(renderMcpConsentPage({ clientName, scope, oauthQuery: query.toString() }), {
     status: 200,
     headers: browserHeaders('text/html; charset=utf-8'),
   });
@@ -437,7 +439,8 @@ h1{font-size:28px;line-height:1.15;margin:0 0 10px}
 p{margin:0 0 14px;color:var(--text-2)}
 dl{display:grid;grid-template-columns:auto 1fr;gap:6px 16px;margin:0 0 22px;padding:14px 16px;background:var(--well);border:1px solid var(--line);border-radius:12px}
 dt{color:var(--text-2);font-size:14px}
-dd{margin:0;font:14px/1.5 "JetBrains Mono",ui-monospace,Menlo,Consolas,monospace;overflow-wrap:anywhere}
+dd{margin:0;font-size:15px;overflow-wrap:anywhere}
+dd .note{color:var(--text-2);font-size:13px}
 form{display:flex;gap:10px;flex-wrap:wrap}
 button{font:inherit;font-weight:700;font-size:15px;padding:10px 18px;border:0;border-radius:10px;cursor:pointer}
 button[value=allow]{background:var(--gold);color:#3b3220;box-shadow:0 2px 0 var(--gold-press)}
@@ -461,11 +464,57 @@ ${body}
 </html>`;
 }
 
+const MCP_CLIENT_NAME_DISPLAY_LIMIT = 60;
+
+/**
+ * Reads the self-asserted `client_name` from the client's registration. The
+ * signed OAuth query already names a registered client; any lookup failure
+ * falls back to the generic label rather than blocking consent.
+ */
+export async function lookupMcpClientName(
+  environment: BetterAuthEnvironment,
+  clientId: string,
+  headers: Headers,
+): Promise<string | undefined> {
+  if (!clientId) return undefined;
+  try {
+    const auth = createBetterAuth(environment);
+    const api = auth.api as unknown as {
+      getOAuthClientPublic(input: {
+        query: { client_id: string };
+        headers: Headers;
+      }): Promise<{ client_name?: unknown } | null | undefined>;
+    };
+    const client = await api.getOAuthClientPublic({ query: { client_id: clientId }, headers });
+    return typeof client?.client_name === 'string' ? client.client_name : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Untrusted, app-chosen text: strip controls and bidi overrides, collapse, bound. */
+export function displayMcpClientName(name: string | undefined): string | undefined {
+  if (typeof name !== 'string') return undefined;
+  const cleaned = name
+    .replace(/\p{Cc}/gu, ' ')
+    .replace(/\p{Cf}/gu, '')
+    .replace(/\s+/gu, ' ')
+    .trim();
+  if (!cleaned) return undefined;
+  const chars = [...cleaned];
+  if (chars.length <= MCP_CLIENT_NAME_DISPLAY_LIMIT) return cleaned;
+  return `${chars.slice(0, MCP_CLIENT_NAME_DISPLAY_LIMIT - 1).join('').trimEnd()}…`;
+}
+
 export function renderMcpConsentPage(input: {
-  clientId: string;
+  clientName?: string | undefined;
   scope: string;
   oauthQuery: string;
 }): string {
+  const name = displayMcpClientName(input.clientName);
+  const app = name
+    ? `${escapeHtml(name)} <span class="note">(name provided by the app)</span>`
+    : 'An unnamed app';
   const permission = input.scope.split(/\s+/).filter(Boolean).map((scope) => {
     if (scope === MCP_WORKSPACE_SCOPE) return 'Manage this Chickpea workspace';
     if (scope === 'offline_access') return 'stay signed in';
@@ -473,7 +522,7 @@ export function renderMcpConsentPage(input: {
   }).join(' and ');
   return brandPage('Authorize Chickpea', `      <h1>Allow workspace management?</h1>
       <p>A coding agent is asking to manage this Chickpea workspace as you. It signs in as you and can only do what you can do.</p>
-      <dl><dt>Client</dt><dd>${escapeHtml(input.clientId)}</dd><dt>Permission</dt><dd>${escapeHtml(permission)}</dd></dl>
+      <dl><dt>App</dt><dd>${app}</dd><dt>Permission</dt><dd>${escapeHtml(permission)}</dd></dl>
       <form method="post" action="/auth/mcp/consent">
         <input type="hidden" name="oauth_query" value="${escapeHtml(input.oauthQuery)}">
         <button type="submit" name="decision" value="allow">Allow</button>
