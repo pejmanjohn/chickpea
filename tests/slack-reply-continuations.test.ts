@@ -777,14 +777,15 @@ test('a divergent long final corrects the stream within the update bound, then i
   }
 });
 
-test('msg_too_long on a correction update is definite: the final posts fresh once, no attempt lost', async () => {
+for (const code of ['msg_too_long', 'msg_blocks_too_long', 'invalid_blocks_format']) {
+test(`${code} on a correction update is definite: the final posts fresh once, no attempt lost`, async () => {
   const h = harness();
   try {
     const recorded: Array<{ messageTs: string; text: string }> = [];
     const presenter = planningPresenter(h, recorded);
     const { text, planned } = await streamDivergentAnswer(h);
     // Through the gateway a Slack error arrives with an unknown effect.
-    h.updateErrors.push(new SlackTransportError('chat.update', 'msg_too_long'));
+    h.updateErrors.push(new SlackTransportError('chat.update', code));
     await presenter.deliverFinal(text, 'markdown');
 
     assert.equal(h.calls.filter((call) => call.method === 'chat.update').length, 1, 'never retried');
@@ -802,6 +803,7 @@ test('msg_too_long on a correction update is definite: the final posts fresh onc
     h.close();
   }
 });
+}
 
 test('a persisted correction replays the same bounded update it recorded', async () => {
   const h = harness();
