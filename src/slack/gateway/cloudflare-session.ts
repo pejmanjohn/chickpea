@@ -165,9 +165,14 @@ export class SlackGatewaySession extends DurableObject implements SlackGatewaySe
     const status = await this.status();
     const supervisor = this.supervisor;
     if (!status.healthy || !supervisor) return status;
-    if (await supervisor.confirmDelivery(GATEWAY_DELIVERY_CONFIRM_TIMEOUT_MS)) return status;
+    const versionId = cloudflareWorkerVersionId(this.env) ?? null;
+    if (await supervisor.confirmDelivery(GATEWAY_DELIVERY_CONFIRM_TIMEOUT_MS)) {
+      console.info({ component: 'slack_gateway', event: 'session_confirmed',
+        generation: status.generation, versionId });
+      return status;
+    }
     console.warn({ component: 'slack_gateway', event: 'session_unconfirmed',
-      generation: status.generation, versionId: cloudflareWorkerVersionId(this.env) ?? null });
+      generation: status.generation, versionId });
     if (this.supervisor === supervisor) {
       this.state.waitUntil(supervisor.restart().catch(() => undefined));
     }

@@ -254,6 +254,7 @@ test('deploy reports each readiness wait reason once before announcing success',
   const result = runHarness(harness, ['--skip-build'], {
     DEPLOY_TEST_URL: 'https://chickpea.example.workers.dev',
     DEPLOY_TEST_READINESS_STATUSES: [
+      '404',
       '409:worker_version_pending',
       '503:gateway_session_offline',
       '503:gateway_session_unconfirmed',

@@ -408,8 +408,9 @@ channel IDs, settings keys or values, or error text. Emission never throws.
   and the gateway answers a `session.ping` on its socket within 5 s. Local
   session health trusts a silent socket until the 90 s heartbeat timeout, and
   the gateway answers only the socket it holds as the binding's authenticated
-  session. An unanswered probe logs `component: "slack_gateway"`,
-  `event: "session_unconfirmed"` (`generation`, `versionId`), restarts the
+  session. The probe logs `component: "slack_gateway"`, `event:
+  "session_confirmed"` or `"session_unconfirmed"` (`generation`,
+  `versionId`); an unanswered probe also restarts the
   session, and the deploy prints `Still waiting: the Slack gateway did not
   answer on this version's session; reconnecting it.` HTTP delivery has no
   socket and is not probed.

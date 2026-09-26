@@ -1505,6 +1505,8 @@ const READINESS_WAIT_REASONS = {
 
 function readinessWaitReason(result) {
   if (result.status === 0) return 'the Worker did not answer the readiness check';
+  // The previous version does not know this deploy's activation capability.
+  if (result.status === 404) return READINESS_WAIT_REASONS.worker_version_pending;
   return READINESS_WAIT_REASONS[result.error] ??
     `the readiness check returned HTTP ${result.status}${result.error ? ` (${result.error})` : ''}`;
 }
