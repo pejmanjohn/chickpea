@@ -687,6 +687,20 @@ export function sanitizeSlackMarkdownLinks(markdown: string): string {
     .join('');
 }
 
+// The `NAME = value` signatures allow any whitespace, newlines included,
+// around their `=`/`:` separator, so a newline after the marker does not end
+// them. A marker followed only by name characters, whitespace, the separator
+// and one unfinished value token can still become a redaction.
+const OPEN_CREDENTIAL_ASSIGNMENTS = credentialMarkerPatterns(String.raw`\w*["']?\s*(?:[=:]\s*\S*)?$`);
+// A marker whose token, or assignment value, runs up to the end of the text.
+const CREDENTIALS_REACHING_END = credentialMarkerPatterns(String.raw`(?:\w*["']?\s*[=:]\s*)?\S*$`);
+
+function credentialMarkerPatterns(tail: string): RegExp[] {
+  return credentialMarkers().map(
+    (marker) => new RegExp(`${marker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}${tail}`, 'i'),
+  );
+}
+
 function earliestUnsafeTail(value: string): number {
   let unsafeFrom = value.length;
   const lower = value.toLowerCase();
@@ -707,6 +721,17 @@ function earliestUnsafeTail(value: string): number {
       }
     }
   }
+  // Hold an open assignment until its value token ends. That hold outlives
+  // the line, so it can start inside an earlier credential token or value
+  // (`OPENAI_API_KEY=sk-proj-...` then a newline): exposing the part before it
+  // would show a piece too short to redact. Hold from that credential instead.
+  let open = earliestMatch(value, OPEN_CREDENTIAL_ASSIGNMENTS);
+  while (open < value.length) {
+    const outer = earliestMatch(value.slice(0, open), CREDENTIALS_REACHING_END);
+    if (outer === open) break;
+    open = outer;
+  }
+  unsafeFrom = Math.min(unsafeFrom, open);
 
   // A link or Slack `<...>` reference still being written sits on the last
   // line. Once a line ends, a `[` or `<` on it was literal text (a CDATA
@@ -741,6 +766,15 @@ function earliestUnsafeTail(value: string): number {
     unsafeFrom = Math.min(unsafeFrom, trailingLineStart);
   }
   return unsafeFrom;
+}
+
+function earliestMatch(value: string, patterns: readonly RegExp[]): number {
+  let earliest = value.length;
+  for (const pattern of patterns) {
+    const at = value.search(pattern);
+    if (at >= 0) earliest = Math.min(earliest, at);
+  }
+  return earliest;
 }
 
 function countToken(value: string, token: string): number {

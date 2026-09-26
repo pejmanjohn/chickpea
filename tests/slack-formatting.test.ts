@@ -179,6 +179,11 @@ test('every progressive cut point is a monotone prefix of the canonical terminal
     'Credential: xoxb-123456789012345678901234\nDo not expose it.',
     'OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwxyz123456\nRotated.',
     'CHICKPEA_AUTH_SECRET=consumer-install-secret-value\nNever render this.',
+    'CHICKPEA_AUTH_SECRET=\nabcdefghij',
+    'sk-proj-abcdefghijklmnopqrstuvwxyz123456OK.CHICKPEA_AUTH_SECRET=\nghp_abcdefghijklmnopqrstuvwxyz-',
+    '-xoxb-AWS_ACCESS_KEY_ID=\nxAKIAhello',
+    'CHICKPEA_AUTH_SECRET\n=\nabcdefghij then prose.',
+    'sk-proj-a-bcd-AWS_ACCESS_KEY_ID:\nabc done.',
     '<https://example.com/path|Slack link> then a safe suffix.',
     '| Metric | Value |\n| --- | ---: |\n| p95 | 120ms |\n| errors | 3 |',
   ];
