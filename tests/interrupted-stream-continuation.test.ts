@@ -298,3 +298,20 @@ test('overlap trimming never deletes legitimate content', () => {
   // A short answer is always continued.
   same('## Pl', '## Plan');
 });
+
+test('overlap trimming: a cut clause re-written with its first word swapped keeps one copy', () => {
+  const partial = 'Walk the shelves every week and note what runs out. The goal is to learn enough about use patterns to restock intelligently,';
+  const repeat = 'enough about use patterns to restock intelligently,';
+  // Amber X18 F2: "…restock intelligently,understand enough about use patterns…"
+  assert.deepEqual(joinContinuation(partial, `understand ${repeat} identify gaps early.`),
+    { text: `${partial} identify gaps early.`, trimmedChars: `understand ${repeat}`.length, reopenedUnmatched: false });
+  const same = (continuation: string) => assert.equal(joinContinuation(partial, continuation).text,
+    partial + continuation, continuation);
+  // Two swapped words, a short repeat, or the repeat cut mid-word: continued unchanged.
+  same(`to understand ${repeat} identify gaps.`);
+  same(' understand use patterns to restock intelligently, identify gaps.');
+  same(`understand ${repeat.slice(0, -1)}ly done.`);
+  // A repeat spanning lines is not one clause.
+  const lines = 'Walk the shelves every week and note what runs out.\nLearn enough about the patterns\nto restock the pantry intelligently';
+  assert.equal(joinContinuation(lines, 'Understand enough about the patterns\nto restock the pantry intelligently, then act.').trimmedChars, 0);
+});

@@ -57,6 +57,8 @@ interface ProgressiveTextSink {
   prepareAppend?(control: ProgressiveAppendControl): Promise<void>;
   append(chunk: ProgressiveTextChunk, control: ProgressiveAppendControl): Promise<void>;
   invalidate(reason: ProgressiveRelayInvalidationReason): Promise<void>;
+  /** See {@link SlackProgressiveReadRelay.streamedPrefixBound}. */
+  streamedPrefixBound?(): string | undefined;
   /** Omitted only for retained V1 presentations with the legacy immediate relay. */
   modelIntent?: {
     initial: SlackProgressiveIntent;
@@ -81,6 +83,12 @@ export interface SlackProgressiveReadRelay {
    * replayed) or any queued or accepted text.
    */
   streamedAnswer?(): boolean;
+  /**
+   * Once the stream reached its cap: the longest text (canonical Slack
+   * markdown) it can ever show, however much more of the answer arrives.
+   * Undefined while the stream may still show all of it.
+   */
+  streamedPrefixBound?(): string | undefined;
 }
 
 type RelayOperation =
@@ -535,6 +543,10 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
 
   streamedAnswer(): boolean {
     return this.intentStatus === 'requested' || this.hasQueuedOrAcceptedText();
+  }
+
+  streamedPrefixBound(): string | undefined {
+    return this.options.streamedPrefixBound?.();
   }
 
   private hasQueuedOrAcceptedText(): boolean {

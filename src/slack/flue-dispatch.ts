@@ -9,6 +9,7 @@ import {
   type WorkspaceMilestoneRecord,
 } from './coding-worker-run.ts';
 import { createWorkspaceMilestoneRelay } from './workspace-milestone-relay.ts';
+import { streamableSlackMarkdownPrefix } from './message-format.ts';
 import { FILE_DELIVERY_DATA_NAME, resolveFileDeliveryText } from './file-delivery-completion.ts';
 import {
   AgentInstanceExistsError,
@@ -404,6 +405,7 @@ export async function promptSlackThreadAgent(
   const terminalText = new TerminalStepText(
     receipt.submissionId,
     () => progressiveRelay !== undefined && (progressiveRelay.streamedAnswer?.() ?? true),
+    () => progressiveRelay?.streamedPrefixBound?.(),
   );
   const milestoneTarget = { instanceId: envelope.instanceId, submissionId: receipt.submissionId };
   const onWorkspaceMilestone = input.onWorkspaceMilestone;
@@ -585,6 +587,8 @@ class TerminalStepText {
     private readonly submissionId: string,
     /** Whether any of this answer was streamed to Slack progressively. */
     private readonly streamed: () => boolean = () => false,
+    /** The most a stream at its cap can ever show (canonical); undefined: not capped. */
+    private readonly streamedBound: () => string | undefined = () => undefined,
   ) {}
 
   onEvent(chunk: import('@flue/runtime').ConversationStreamChunk): void {
@@ -658,10 +662,14 @@ class TerminalStepText {
       return text;
     }
     // Fold left: each continuation extends the answer so far, unless it
-    // demonstrably starts the answer over. When nothing was streamed to
-    // Slack, a continuation that re-opens its section or repeats the
-    // partial's last words is trimmed. A streamed answer is never trimmed:
-    // any change from what the relay streamed rewrites the Slack message.
+    // demonstrably starts the answer over. A continuation that re-opens its
+    // section or repeats the partial's last words is trimmed when nothing
+    // was streamed to Slack, or when the stream stopped at its cap before
+    // the seam: everything it can show stays a prefix of the answer. Any
+    // other streamed answer is never trimmed, since a change to what the
+    // relay streamed would rewrite the Slack message.
+    const streamed = this.streamed();
+    const bound = streamed ? this.streamedBound() : '';
     let answer = parts[0]!;
     let restarted = false;
     let reopenedUnmatched = false;
@@ -670,13 +678,16 @@ class TerminalStepText {
       if (restartsAnswer(answer, part)) {
         answer = part;
         restarted = true;
-      } else if (this.streamed()) {
-        answer += part;
-      } else {
-        const joined = joinContinuation(answer, part);
+        continue;
+      }
+      const joined = bound === undefined ? undefined : joinContinuation(answer, part);
+      if (joined && (joined.trimmedChars === 0 || !streamed ||
+          streamableSlackMarkdownPrefix(joined.text).startsWith(bound!))) {
         answer = joined.text;
         trimmedChars += joined.trimmedChars;
         reopenedUnmatched ||= joined.reopenedUnmatched;
+      } else {
+        answer += part;
       }
     }
     logRecoveryResolution(
@@ -721,7 +732,9 @@ function restartsAnswer(answer: string, continuation: string): boolean {
  *   (`reopenedUnmatched`);
  * - otherwise the longest tail of the answer (from a word start, at least 48
  *   characters, ending where the continuation's word ends, not a line the
- *   answer already had earlier) that the continuation opens with is cut.
+ *   answer already had earlier) that the continuation opens with is cut;
+ * - or, within one line, that tail after one swapped first word (the model
+ *   re-wrote the cut clause): the swapped word and the repeat are cut.
  * Anything else is concatenated unchanged.
  */
 export function joinContinuation(
@@ -741,7 +754,7 @@ export function joinContinuation(
     }
     return { text: answer + rest.slice(overlap), trimmedChars: repeated + overlap, reopenedUnmatched: false };
   }
-  const overlap = overlapEnd(answer, continuation);
+  const overlap = overlapEnd(answer, continuation) ?? swappedWordOverlap(answer, continuation);
   return overlap === undefined
     ? unchanged
     : { text: answer + continuation.slice(overlap), trimmedChars: overlap, reopenedUnmatched: false };
@@ -788,6 +801,10 @@ function repeatedHeadingEnd(continuation: string, key: string): number | undefin
  * echo (a refrain), not a repeat.
  */
 function overlapEnd(answer: string, continuation: string): number | undefined {
+  return tailOverlap(answer, continuation)?.end;
+}
+
+function tailOverlap(answer: string, continuation: string): { start: number; end: number } | undefined {
   const from = Math.max(0, answer.length - MAX_OVERLAP_CHARS);
   const target = collapseWhitespace(continuation.trimStart());
   for (let start = from; start <= answer.length - MIN_OVERLAP_CHARS; start += 1) {
@@ -799,9 +816,31 @@ function overlapEnd(answer: string, continuation: string): number | undefined {
     const next = continuation[end];
     if (next !== undefined && /[\p{L}\p{N}]/u.test(next)) return undefined;
     if (repeatsEarlierLine(answer, start)) return undefined;
-    return end;
+    return { start, end };
   }
   return undefined;
+}
+
+/** One word, the way a model re-opening a clause swaps its first word. */
+const SWAPPED_WORD = /^\s*([\p{L}\p{N}'’-]{1,24})\s+/u;
+
+/**
+ * A continuation that re-writes the cut clause with its first word swapped
+ * ("...to learn enough about use patterns to restock intelligently," then
+ * "understand enough about use patterns to restock intelligently, identify
+ * gaps"): the swapped word and the repeat after it, when the repeat is the
+ * answer's own tail (at least 48 characters, one line) right after a
+ * different single word. The answer's own word stays.
+ */
+function swappedWordOverlap(answer: string, continuation: string): number | undefined {
+  const swapped = SWAPPED_WORD.exec(continuation);
+  if (!swapped) return undefined;
+  const rest = continuation.slice(swapped[0].length);
+  const overlap = tailOverlap(answer, rest);
+  if (!overlap || answer.slice(overlap.start).includes('\n')) return undefined;
+  const replaced = /([\p{L}\p{N}'’-]{1,24})[ \t]+$/u.exec(answer.slice(0, overlap.start));
+  if (!replaced || replaced[1]!.toLowerCase() === swapped[1]!.toLowerCase()) return undefined;
+  return swapped[0].length + overlap.end;
 }
 
 /** A line of the tail that the answer already had before it: a refrain, repeated on purpose. */

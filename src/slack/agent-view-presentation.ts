@@ -228,6 +228,11 @@ const CONTINUATION_DELIVERY_STEPS = 16;
  */
 export class SlackAgentViewPresentation {
   private rawText = '';
+  /**
+   * Once the stream reaches its cap: the most it can ever show (canonical
+   * text). The rest of the answer reaches Slack only in the terminal.
+   */
+  private streamCapBound: string | undefined;
   private nextAppendAt = 0;
   /**
    * Why the last append attempt left text unsent without ending the stream:
@@ -932,6 +937,7 @@ export class SlackAgentViewPresentation {
         control,
       ),
       invalidate: (reason) => this.invalidate(reason),
+      streamedPrefixBound: () => this.streamCapBound,
       ...(presentation.schemaVersion !== 1
         ? {
             modelIntent: {
@@ -1587,7 +1593,9 @@ export class SlackAgentViewPresentation {
       return;
     }
     let presentation = await this.requirePresentation();
-    const safePrefix = streamedReplyPrefix(this.rawText, presentation.stream.acknowledgedByteLength);
+    const streamable = streamedReplyPrefix(this.rawText, presentation.stream.acknowledgedByteLength);
+    const safePrefix = streamable.text;
+    if (streamable.capBound !== undefined) this.streamCapBound = streamable.capBound;
     const priorPosition = presentation.stream.flue?.lastAcceptedPosition;
     if (priorPosition && comparePosition(chunk.position, priorPosition) <= 0) return;
     if (!safePrefix || this.degradedReason) return;
@@ -2703,8 +2711,14 @@ const STREAM_SHAPE_BUDGET = {
  * block, then a line outside one, then a sentence end, then a line inside a
  * code block. It never falls below the acknowledged prefix; with no boundary
  * it keeps the plain cap.
+ *
+ * `capBound`, once the answer outgrows the cap: every prefix this stream can
+ * still take is a prefix of it.
  */
-function streamedReplyPrefix(rawText: string, acknowledgedBytes: number): string {
+function streamedReplyPrefix(
+  rawText: string,
+  acknowledgedBytes: number,
+): { text: string; capBound?: string } {
   const safePrefix = streamableSlackMarkdownPrefix(rawText);
   const acknowledged = prefixAtUtf8Length(safePrefix, acknowledgedBytes);
   const fit = slackMarkdownShapePrefixLength(safePrefix, STREAM_SHAPE_BUDGET);
@@ -2717,18 +2731,26 @@ function streamedReplyPrefix(rawText: string, acknowledgedBytes: number): string
     if (!safePrefix.startsWith(capped)) capped = safePrefix.slice(0, end).trimEnd();
   }
   const acknowledgedLength = acknowledged?.length ?? 0;
+  const bound = full
+    ? { capBound: acknowledged !== undefined && acknowledgedLength > capped.length ? acknowledged : capped }
+    : {};
   // Never behind what Slack already shows, e.g. a stream a build with a
   // looser cap began.
-  if (acknowledged !== undefined && capped.length <= acknowledgedLength) return acknowledged;
+  if (acknowledged !== undefined && capped.length <= acknowledgedLength) {
+    return { text: acknowledged, ...bound };
+  }
   if (!full && slackMarkdownRenderedShape(capped).countedLength <=
       MAX_STREAMED_REPLY_CHARS - STREAM_EDGE_WINDOW_CHARS) {
-    return capped;
+    return { text: capped };
   }
   const floor = Math.max(acknowledgedLength, capped.length - STREAM_EDGE_WINDOW_CHARS);
   const at = full ? streamCapBoundary(capped, floor) : lastLineBoundary(capped, floor);
-  if (at === undefined) return capped;
+  if (at === undefined) return { text: capped, ...bound };
   const cut = capped.slice(0, at).trimEnd();
-  return acknowledged !== undefined && cut.length < acknowledgedLength ? acknowledged : cut;
+  return {
+    text: acknowledged !== undefined && cut.length < acknowledgedLength ? acknowledged : cut,
+    ...bound,
+  };
 }
 
 function lastLineBoundary(text: string, floor: number): number | undefined {
