@@ -5,10 +5,13 @@ import type { AssistantMessage, Context, Model, Provider } from '@earendil-works
 import { transformMessages } from '@earendil-works/pi-ai/api/transform-messages';
 
 import {
+  CONTINUATION_INSTRUCTION,
+  inspectInterruptedStreamPartials,
   registerPiProvider,
   registeredPiProvider,
   restoreInterruptedStreamPartials,
 } from '../src/config/pi-provider-registry.ts';
+import { joinContinuation } from '../src/slack/flue-dispatch.ts';
 
 const model = {
   id: 'gpt-test', name: 'gpt-test', api: 'openai-responses', provider: 'openai',
@@ -146,4 +149,134 @@ test('the restored partial reaches the real OpenAI Responses and chat-completion
   assert.equal(assistantTurns.length, 1);
   assert.match(JSON.stringify(assistantTurns[0]!.content), /Inventory the col/);
   assert.doesNotMatch(JSON.stringify(chat), /plan it/, 'no reasoning replayed');
+});
+
+test('Flue renders both recovery signals the same way for every provider; the shape carries no provider marks', () => {
+  // dispatch renderSignalMessage: `<signal type="...">\n<content>\n</signal>` as user text, whatever
+  // the model. Flue materializes the in-flight text block without a signature (the item never
+  // completed), so a Responses partial carries no phase and no reasoning item the gate could trip on.
+  const flueResponsesPartial = assistant({ stopReason: 'aborted', errorMessage: 'Stream interrupted before completion.',
+    content: [
+      { type: 'thinking', thinking: 'plan', thinkingSignature: undefined as never },
+      { type: 'text', text: '## Plan\n\nPartial', textSignature: undefined as never },
+    ] });
+  const flueAnthropicPartial = { ...flueResponsesPartial, api: 'anthropic-messages', provider: 'anthropic', model: 'claude-test' } as AssistantMessage;
+  for (const partial of [flueResponsesPartial, flueAnthropicPartial]) {
+    const { report, context } = inspectInterruptedStreamPartials(recoveredContext(partial));
+    assert.deepEqual(report, { restored: true, messages: 4, assistantMessages: 1, abortedMessages: 1, userSignals: 2 });
+    assert.deepEqual((context.messages[1] as AssistantMessage).content, [{ type: 'text', text: '## Plan\n\nPartial' }]);
+  }
+});
+
+test('the report names why a recovery-shaped request did not restore its partial, and ordinary requests report nothing', () => {
+  const [prompt, , interrupted, continued] = recoveredContext(PARTIAL).messages;
+  const reasonFor = (messages: Context['messages']) =>
+    inspectInterruptedStreamPartials({ systemPrompt: 's', messages }).report?.reason;
+  assert.equal(inspectInterruptedStreamPartials({ systemPrompt: 's', messages: [prompt!] }).report, undefined);
+  assert.equal(reasonFor([prompt!, PARTIAL]), 'signals_missing');
+  assert.equal(reasonFor([prompt!, PARTIAL, continued!, interrupted!]), 'signals_out_of_order');
+  assert.equal(reasonFor([prompt!, PARTIAL, interrupted!, interrupted!]), 'signals_out_of_order');
+  assert.equal(reasonFor([prompt!, interrupted!, continued!]), 'no_aborted_step');
+  assert.equal(reasonFor([prompt!, assistant({ content: [{ type: 'text', text: 'done' }] }), interrupted!, continued!]), 'gate_mismatch');
+  assert.equal(reasonFor([prompt!, assistant({ stopReason: 'aborted', content: [
+    { type: 'text', text: 'Checking' }, { type: 'toolCall', id: 'call_1', name: 'read', arguments: {} }] }), interrupted!, continued!]),
+  'contains_tool_call');
+  assert.equal(reasonFor([prompt!, assistant({ stopReason: 'aborted', content: [{ type: 'thinking', thinking: 'hmm' }] }),
+    interrupted!, continued!]), 'no_text');
+});
+
+test('a restored partial carries the continuation instruction on the request copy of the last signal only', () => {
+  const context = recoveredContext(PARTIAL);
+  const sent = restoreInterruptedStreamPartials(context);
+  const last = sent.messages.at(-1) as { content: Array<{ type: string; text: string }> };
+  assert.equal(last.content.at(-1)!.text, CONTINUATION_INSTRUCTION);
+  assert.equal((context.messages.at(-1) as { content: unknown[] }).content.length, 1, 'Flue\'s record is unchanged');
+  // A later request in the same turn (after a tool call) is not re-instructed.
+  const later = { ...context, messages: [...context.messages,
+    assistant({ content: [{ type: 'toolCall', id: 'c1', name: 'read', arguments: {} }] }),
+    { role: 'toolResult', toolCallId: 'c1', toolName: 'read', content: [{ type: 'text', text: 'ok' }], isError: false, timestamp: 4 },
+  ] } as Context;
+  const laterSent = restoreInterruptedStreamPartials(later);
+  assert.equal((laterSent.messages[3] as { content: unknown[] }).content.length, 1);
+});
+
+/** Build the real registered provider for an API and capture the request payload it would send. */
+async function sentPayload(
+  register: () => void, providerId: string, pick: (model: Model<string>) => boolean,
+): Promise<{ payload: string; logs: unknown[] }> {
+  register();
+  const provider = registeredPiProvider(providerId)!;
+  const model = provider.getModels().find(pick)!;
+  assert.ok(model, `a ${providerId} model`);
+  const partial = assistant({ api: model.api, provider: model.provider, model: model.id, stopReason: 'aborted',
+    errorMessage: 'Stream interrupted before completion.', content: [
+      { type: 'thinking', thinking: 'REASONING', thinkingSignature: undefined as never },
+      { type: 'text', text: '## Plan\n\nPARTIAL ANSWER TEXT', textSignature: undefined as never }] });
+  const logs: unknown[] = [];
+  const info = console.info;
+  console.info = (...args: unknown[]) => { if (args[0] === '[chickpea] partial restore') logs.push(args[1]); };
+  let payload: unknown;
+  try {
+    const stream = provider.streamSimple(model, recoveredContext(partial), {
+      apiKey: 'test-key', reasoning: 'medium',
+      onPayload: (body: unknown) => { payload = body; throw new Error('captured'); },
+    } as never);
+    for await (const _event of stream) { /* the captured payload ends the stream */ }
+  } finally {
+    console.info = info;
+  }
+  assert.ok(payload, 'the request was built');
+  return { payload: JSON.stringify(payload), logs };
+}
+
+test('the restored partial and instruction reach the real OpenAI Responses, Anthropic, and chat-completions requests', async () => {
+  const { setBuiltinPiProvider, setLocalStubPiProvider } = await import('../src/config/pi-provider.ts');
+  const cases = [
+    { api: 'openai-responses', id: 'openai', register: () => setBuiltinPiProvider('openai', { apiKey: 'test-key', baseUrl: 'http://127.0.0.1:9' }),
+      pick: (m: Model<string>) => m.api === 'openai-responses' && m.reasoning },
+    { api: 'anthropic-messages', id: 'anthropic', register: () => setBuiltinPiProvider('anthropic', { apiKey: 'test-key', baseUrl: 'http://127.0.0.1:9' }),
+      pick: (m: Model<string>) => m.api === 'anthropic-messages' && m.reasoning },
+    { api: 'openai-completions', id: 'local-stub', register: () => setLocalStubPiProvider({ baseUrl: 'http://127.0.0.1:9', apiKey: 'test-key', modelIds: ['stub-model'] }),
+      pick: () => true },
+  ];
+  for (const { api, id, register, pick } of cases) {
+    const { payload, logs } = await sentPayload(register, id, pick);
+    assert.match(payload, /PARTIAL ANSWER TEXT/, `${api}: the partial is in the request`);
+    assert.doesNotMatch(payload, /REASONING/, `${api}: no orphaned reasoning`);
+    assert.ok(payload.includes(JSON.stringify(CONTINUATION_INSTRUCTION).slice(1, -1)), `${api}: the instruction is in the request`);
+    assert.ok(payload.indexOf('PARTIAL ANSWER TEXT') < payload.indexOf('stream_interrupted'), `${api}: partial before the signals`);
+    assert.deepEqual(logs, [{ provider: id, api, restored: true, messages: 4, assistantMessages: 1, abortedMessages: 1, userSignals: 2 }]);
+    assert.doesNotMatch(JSON.stringify(logs), /PARTIAL|Plan/, 'the log carries no content');
+  }
+});
+
+test('overlap trimming: repeated last words, re-opened sections, and no false trims', () => {
+  const partial = 'Intro paragraph that sets the scene for the reader.\n\n## 3. Water\n\nWater early in the day, before the heat. Keep a log of volunteer';
+  // Repeated tail without a heading.
+  assert.deepEqual(joinContinuation(partial, 'before the heat. Keep a log of volunteer hours.'),
+    { text: `${partial} hours.`, trimmedChars: 'before the heat. Keep a log of volunteer'.length });
+  // Whitespace differences do not hide the repeat.
+  assert.equal(joinContinuation(partial, 'the  heat.\nKeep a log  of volunteer hours.').text, `${partial} hours.`);
+  // Re-opened heading with the section rewritten in other words: the rewrite, once.
+  const rewrite = '## 3. Water\n\nMorning watering keeps roots cool.';
+  assert.equal(joinContinuation(partial, rewrite).text,
+    'Intro paragraph that sets the scene for the reader.\n\n## 3. Water\n\nMorning watering keeps roots cool.');
+  // A partial that stopped right after the heading: drop the repeated heading only.
+  const headed = 'Intro paragraph that sets the scene for the reader.\n\n## 3. Water\n';
+  assert.deepEqual(joinContinuation(headed, '## 3. Water\nWater early.'), { text: `${headed}Water early.`, trimmedChars: '## 3. Water\n'.length });
+  // Legitimate continuations are untouched.
+  for (const continuation of [
+    ' hours and tasks.',
+    's and their tasks.',
+    'volunteer hours.', // a short overlap proves nothing
+    ' hours.\n\n## 4. Harvest\n\nWater early in the day, before the heat. Keep a log of volunteer hours again.',
+    ' hours. As in 3. Water, keep it short.',
+  ]) {
+    assert.deepEqual(joinContinuation(partial, continuation), { text: partial + continuation, trimmedChars: 0 }, continuation);
+  }
+  // A heading repeated far from the continuation's start is not a re-open.
+  const far = `${' hours.'.padEnd(500, ' filler')}\n## 3. Water\n`;
+  assert.equal(joinContinuation(partial, far).trimmedChars, 0);
+  // A short answer is always continued.
+  assert.deepEqual(joinContinuation('## Pl', '## Plan'), { text: '## Pl## Plan', trimmedChars: 0 });
 });

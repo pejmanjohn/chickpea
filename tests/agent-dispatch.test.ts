@@ -1343,7 +1343,7 @@ test('two interruptions with a restart in the middle keep one copy of the answer
   const { text, logs } = await recoveredAnswer([opening, `${opening} cleanup, in`, ' three phases.']);
   assert.equal(text, `${opening} cleanup, in three phases.`);
   assert.deepEqual(logs, [{ recoveryResolution: 'restarted', parts: 3,
-    partialChars: opening.length * 2 + ' cleanup, in'.length, continuationChars: ' three phases.'.length }]);
+    partialChars: opening.length * 2 + ' cleanup, in'.length, continuationChars: ' three phases.'.length, trimmedChars: 0 }]);
 });
 
 test('a short partial proves no restart and is always continued', async () => {
@@ -1363,10 +1363,27 @@ test('a paraphrased restart is concatenated, as the relay streamed it (accepted;
   assert.equal((logs[0] as { recoveryResolution: string }).recoveryResolution, 'continued');
 });
 
+test('a continuation that re-opens its section (the Workers AI gpt-oss shape) keeps one copy and joins cleanly', async () => {
+  const before = '## 7. Tools\n\nA hori-hori knife and a hand fork cover most small beds.\n\n';
+  const section = '## 8. Sustaining the Harvest\n\n';
+  const opening = 'A garden lasts only as long as the people who tend it, so plan the rota before the first frost. ';
+  const partial = `${before}${section}${opening}Keep a log of volunteer`;
+  // The model wrote the section heading and opening again, then went on.
+  const continuation = `8. Sustaining the Harvest\n\n${opening}Keep a log of volunteer hours and tasks.\n\n## 9. Closing\n\nThank everyone.`;
+  const { text, logs } = await recoveredAnswer([partial, continuation]);
+  assert.equal(text, `${partial} hours and tasks.\n\n## 9. Closing\n\nThank everyone.`);
+  assert.equal(text.split('Sustaining the Harvest').length, 2, 'the heading appears once');
+  assert.equal(text.split(opening).length, 2, 'the opening sentence appears once');
+  assert.doesNotMatch(text, /volunteer8\./);
+  const trimmedChars = continuation.length - ' hours and tasks.\n\n## 9. Closing\n\nThank everyone.'.length;
+  assert.deepEqual(logs, [{ recoveryResolution: 'continued_trimmed', parts: 2, partialChars: partial.length,
+    continuationChars: continuation.length, trimmedChars }]);
+});
+
 test('a continuation folded with other text blocks falls back to the last step and is logged unmatched', async () => {
   const partial = '## Plan\n\n1. Inventory the col';
   const { text, logs } = await recoveredAnswer([partial, 'umn.'], `${partial}\n\nA commentary block.\n\numn.`);
   assert.equal(text, 'umn.');
-  assert.deepEqual(logs, [{ recoveryResolution: 'unmatched', parts: 2, partialChars: partial.length, continuationChars: 4 }]);
+  assert.deepEqual(logs, [{ recoveryResolution: 'unmatched', parts: 2, partialChars: partial.length, continuationChars: 4, trimmedChars: 0 }]);
   assert.doesNotMatch(JSON.stringify(logs), /Plan|Inventory|umn/, 'the log carries no content');
 });

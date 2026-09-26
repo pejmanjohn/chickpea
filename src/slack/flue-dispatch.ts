@@ -650,18 +650,26 @@ class TerminalStepText {
       return text;
     }
     // Fold left: each continuation extends the answer so far, unless it
-    // demonstrably starts the answer over.
+    // demonstrably starts the answer over. A continuation that re-opens the
+    // section it was in, or repeats the partial's last words, is trimmed.
     let answer = parts[0]!;
     let restarted = false;
+    let trimmedChars = 0;
     for (const part of parts.slice(1)) {
       if (restartsAnswer(answer, part)) {
         answer = part;
         restarted = true;
       } else {
-        answer += part;
+        const joined = joinContinuation(answer, part);
+        answer = joined.text;
+        trimmedChars += joined.trimmedChars;
       }
     }
-    logRecoveryResolution(restarted ? 'restarted' : 'continued', parts);
+    logRecoveryResolution(
+      restarted ? 'restarted' : trimmedChars > 0 ? 'continued_trimmed' : 'continued',
+      parts,
+      trimmedChars,
+    );
     return answer;
   }
 }
@@ -670,9 +678,14 @@ class TerminalStepText {
  * A restart is proven only by the continuation repeating the answer's
  * opening. An answer shorter than this proves nothing (a heading mark, a
  * word), so it is always continued. A paraphrased restart is not detected
- * and is concatenated, exactly as the relay already streamed it.
+ * and is concatenated, exactly as the relay already streamed it. The same
+ * floor is the least overlap that proves a repeat.
  */
 const MIN_RESTART_EVIDENCE_CHARS = 24;
+/** How far back into the answer a repeated tail is looked for. */
+const MAX_OVERLAP_CHARS = 1_500;
+/** How far into the continuation a repeated heading still counts as re-opening. */
+const REOPENED_HEADING_WINDOW_CHARS = 400;
 
 function restartsAnswer(answer: string, continuation: string): boolean {
   const opening = answer.trimStart();
@@ -680,10 +693,133 @@ function restartsAnswer(answer: string, continuation: string): boolean {
   return continuation.trimStart().startsWith(opening.slice(0, REGENERATION_PROBE_CHARS));
 }
 
+/**
+ * Join a continuation to the answer it continues. A model that saw its
+ * partial sometimes re-opens the section it was in (heading and opening
+ * again) or repeats its last words before going on. Keep one copy:
+ * - the partial's last heading repeated near the continuation's start drops
+ *   the continuation up to and including it, then the section body it
+ *   restates is trimmed as overlap; a restated body that does not match
+ *   replaces the partial's unfinished section with the continuation's;
+ * - otherwise the longest tail of the answer (from a line, sentence, or word
+ *   start, at least 24 characters) that the continuation opens with is cut
+ *   from the continuation.
+ * Anything else is concatenated unchanged.
+ */
+export function joinContinuation(
+  answer: string,
+  continuation: string,
+): { text: string; trimmedChars: number } {
+  if (answer.trimStart().length < MIN_RESTART_EVIDENCE_CHARS) {
+    return { text: answer + continuation, trimmedChars: 0 };
+  }
+  const heading = lastHeading(answer);
+  const repeated = heading && repeatedHeadingEnd(continuation, heading.key);
+  if (heading && repeated !== undefined) {
+    const rest = continuation.slice(repeated);
+    const body = answer.slice(heading.end);
+    if (!body.trim()) return { text: answer + rest, trimmedChars: repeated };
+    const overlap = overlapEnd(body, rest);
+    if (overlap !== undefined) {
+      return { text: answer + rest.slice(overlap), trimmedChars: repeated + overlap };
+    }
+    // The section was written again in other words: keep the rewrite once.
+    const rewrite = repeatedHeadingStart(continuation, repeated);
+    return {
+      text: answer.slice(0, heading.start) + continuation.slice(rewrite),
+      trimmedChars: answer.length - heading.start + rewrite,
+    };
+  }
+  const overlap = overlapEnd(answer, continuation);
+  return overlap === undefined
+    ? { text: answer + continuation, trimmedChars: 0 }
+    : { text: answer + continuation.slice(overlap), trimmedChars: overlap };
+}
+
+const HEADING_LINE = /^(?:#{1,6}[ \t]+\S.*|\*\*[^*\n]+\*\*:?)[ \t]*$/;
+
+function headingKey(line: string): string {
+  return line.replace(/^#{1,6}[ \t]+/, '').replace(/[*_`:]/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+/** The answer's last heading line: where it starts, where its line ends, its comparable text. */
+function lastHeading(answer: string): { start: number; end: number; key: string } | undefined {
+  let offset = 0;
+  let found: { start: number; end: number; key: string } | undefined;
+  for (const line of answer.split('\n')) {
+    const end = offset + line.length;
+    // A heading the stream is still inside of is not a finished heading line.
+    if (end < answer.length && HEADING_LINE.test(line.trim())) {
+      const key = headingKey(line);
+      if (key.length >= 4) found = { start: offset, end: end + 1, key };
+    }
+    offset = end + 1;
+  }
+  return found;
+}
+
+/** End (after its newline) of the heading line `key` near the continuation's start. */
+function repeatedHeadingEnd(continuation: string, key: string): number | undefined {
+  let offset = 0;
+  for (const line of continuation.split('\n')) {
+    if (offset > REOPENED_HEADING_WINDOW_CHARS) return undefined;
+    const trimmed = line.trim();
+    // The bare heading text also counts: a model may drop the heading marks.
+    if (trimmed && headingKey(trimmed) === key) {
+      return Math.min(continuation.length, offset + line.length + 1);
+    }
+    offset += line.length + 1;
+  }
+  return undefined;
+}
+
+function repeatedHeadingStart(continuation: string, end: number): number {
+  const lineEnd = continuation[end - 1] === '\n' ? end - 1 : end;
+  return continuation.lastIndexOf('\n', lineEnd - 1) + 1;
+}
+
+/**
+ * Where the continuation's repeat of the answer's tail ends: the longest
+ * tail (bounded, starting at a line, sentence, or word start) that equals the
+ * continuation's opening, whitespace-insensitive. At least 24 characters.
+ */
+function overlapEnd(answer: string, continuation: string): number | undefined {
+  const from = Math.max(0, answer.length - MAX_OVERLAP_CHARS);
+  const target = collapseWhitespace(continuation.trimStart());
+  for (let start = from; start <= answer.length - MIN_RESTART_EVIDENCE_CHARS; start += 1) {
+    if (start > 0 && !/\s/.test(answer[start - 1]!)) continue;
+    if (/\s/.test(answer[start]!)) continue;
+    const tail = collapseWhitespace(answer.slice(start)).trimEnd();
+    if (tail.length < MIN_RESTART_EVIDENCE_CHARS || !target.startsWith(tail)) continue;
+    return rawIndexAfter(continuation, tail.length);
+  }
+  return undefined;
+}
+
+function collapseWhitespace(text: string): string {
+  return text.replace(/\s+/g, ' ');
+}
+
+/** Raw index in `text` after `count` characters of its whitespace-collapsed, trim-started form. */
+function rawIndexAfter(text: string, count: number): number {
+  let index = text.length - text.trimStart().length;
+  let consumed = 0;
+  while (index < text.length && consumed < count) {
+    if (/\s/.test(text[index]!)) {
+      while (index < text.length && /\s/.test(text[index]!)) index += 1;
+    } else {
+      index += 1;
+    }
+    consumed += 1;
+  }
+  return index;
+}
+
 /** Content-free: which recovery shape a reattached answer took, for the live check. */
 function logRecoveryResolution(
-  recoveryResolution: 'continued' | 'restarted' | 'unmatched',
+  recoveryResolution: 'continued' | 'continued_trimmed' | 'restarted' | 'unmatched',
   parts: readonly string[],
+  trimmedChars = 0,
 ): void {
   try {
     console.info('[chickpea] interrupted answer recovered', {
@@ -691,6 +827,7 @@ function logRecoveryResolution(
       parts: parts.length,
       partialChars: parts.slice(0, -1).reduce((total, part) => total + part.length, 0),
       continuationChars: parts.at(-1)?.length ?? 0,
+      trimmedChars,
     });
   } catch {
     // Diagnostics never change the answer.
