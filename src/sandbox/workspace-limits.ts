@@ -1,3 +1,4 @@
+import type { SandboxPolicyStorage } from './cloudflare-policy.ts';
 import { WORKSPACE_CHECKPOINT_TTL_SECONDS } from './workspace-lifecycle.ts';
 
 /**
@@ -79,8 +80,9 @@ export interface WorkspaceRosterEntry {
 
 /**
  * The conversation's coding workspaces, kept in the coordinator's persistent
- * state: which names are open (for the open cap), and each name's retirement
- * generation (part of its workspace id). Names are never forgotten, so a
+ * state and mirrored to a durable copy that outlives the coordinator instance
+ * (see {@link WorkspaceRosterStore}): which names are open (for the open
+ * cap), and each name's retirement generation (part of its workspace id). Names are never forgotten, so a
  * retired generation is never reused.
  */
 export interface WorkspaceRosterState {
@@ -173,22 +175,89 @@ export interface WorkspaceRoster {
   /** Whether the conversation has ever used `name` (the default always counts). */
   knows(name: string): boolean;
   snapshot(): WorkspaceRosterState;
+  /** Merge in the durable copy; call before the first read of a request. */
+  ready(): Promise<void>;
+  /** Write this render's changes through to the durable copy. */
+  flush(): Promise<void>;
+}
+
+/**
+ * The roster's durable copy outside the coordinator instance. The coordinator
+ * is re-created whenever its harness revision changes (an Agent edit, a new
+ * coding model, another actor), and its persistent state starts empty then;
+ * this copy carries the names, open set, and generations across.
+ */
+export interface WorkspaceRosterStore {
+  load(): Promise<unknown>;
+  /** Overlay `state` on the stored copy and drop `forget` (see {@link overlayWorkspaceRoster}). */
+  save(state: WorkspaceRosterState, forget: readonly string[]): Promise<void>;
+}
+
+/**
+ * `overlay` over `base`: an overlay entry replaces the base entry unless the
+ * base entry has a higher generation, so a retirement is never undone. A
+ * forgotten name (an admission whose workspace never came up) is dropped only
+ * while it has never been retired.
+ */
+export function overlayWorkspaceRoster(
+  base: WorkspaceRosterState,
+  overlay: WorkspaceRosterState,
+  forget: readonly string[] = [],
+): WorkspaceRosterState {
+  const workspaces = { ...base.workspaces };
+  for (const name of forget) {
+    if (!(name in overlay.workspaces) && workspaces[name]?.generation === 0) delete workspaces[name];
+  }
+  for (const [name, entry] of Object.entries(overlay.workspaces)) {
+    const current = workspaces[name];
+    if (!current || current.generation <= entry.generation) workspaces[name] = entry;
+  }
+  return { schemaVersion: 1, workspaces };
 }
 
 export function createWorkspaceRoster(
   initial: unknown,
   update: (updater: (previous: WorkspaceRosterState) => WorkspaceRosterState) => void,
   now: () => number = Date.now,
+  store?: WorkspaceRosterStore,
 ): WorkspaceRoster {
   // The mirror is the source of truth for this render; every write goes
   // through it, so the updater's previous value is always the mirror.
   let latest = parseRoster(initial);
+  // What the durable copy is known to hold; a name dropped since is forgotten.
+  let synced = latest;
+  let loaded: Promise<void> | undefined;
   const write = (next: WorkspaceRosterState) => {
     if (next === latest) return;
     latest = next;
     update(() => next);
   };
+  // Loaded once per render; a failed load is retried by the next call.
+  const ready = (): Promise<void> => {
+    loaded ??= (async () => {
+      if (!store) return;
+      const durable = parseRoster(await store.load());
+      synced = durable;
+      // The durable copy is the newer one: another coordinator instance of
+      // this conversation may have written it since this one last ran.
+      write(overlayWorkspaceRoster(latest, durable));
+    })().catch((error: unknown) => {
+      loaded = undefined;
+      throw error;
+    });
+    return loaded;
+  };
   return {
+    ready,
+    async flush() {
+      if (!store) return;
+      await ready();
+      if (latest === synced) return;
+      const state = latest;
+      const forget = Object.keys(synced.workspaces).filter((name) => !(name in state.workspaces));
+      await store.save(state, forget);
+      synced = state;
+    },
     admit(name) {
       const { state, admission } = admitWorkspace(latest, name, now());
       if (!admission.ok) throw new WorkspaceLimitError(admission.open);
@@ -220,6 +289,8 @@ export function defaultOnlyWorkspaceRoster(): WorkspaceRoster {
     generation: () => 0,
     knows: (name) => name === DEFAULT_WORKSPACE_NAME,
     snapshot: () => EMPTY_WORKSPACE_ROSTER,
+    ready: async () => {},
+    flush: async () => {},
   };
 }
 
@@ -240,4 +311,34 @@ export function parseRoster(value: unknown): WorkspaceRosterState {
     }
   }
   return { schemaVersion: 1, workspaces };
+}
+
+const WORKSPACE_ROSTER_STORAGE_PREFIX = 'chickpea.workspace.roster.v1:';
+
+function workspaceRosterStorageKey(key: string): string {
+  if (typeof key !== 'string' || key.length < 1 || key.length > 400) {
+    throw new Error('Workspace roster key is invalid.');
+  }
+  return `${WORKSPACE_ROSTER_STORAGE_PREFIX}${key}`;
+}
+
+/** The Sandbox Durable Object side of {@link WorkspaceRosterStore}: a read. */
+export async function readStoredWorkspaceRoster(
+  storage: SandboxPolicyStorage,
+  key: string,
+): Promise<WorkspaceRosterState> {
+  return parseRoster(await storage.get(workspaceRosterStorageKey(key)));
+}
+
+/** The Sandbox Durable Object side of {@link WorkspaceRosterStore}: an overlay. */
+export async function saveStoredWorkspaceRoster(
+  storage: SandboxPolicyStorage,
+  key: string,
+  state: unknown,
+  forget: unknown,
+): Promise<void> {
+  const storageKey = workspaceRosterStorageKey(key);
+  const names = Array.isArray(forget) ? forget.filter((name): name is string => typeof name === 'string') : [];
+  const stored = parseRoster(await storage.get(storageKey));
+  await storage.put(storageKey, overlayWorkspaceRoster(stored, parseRoster(state), names));
 }

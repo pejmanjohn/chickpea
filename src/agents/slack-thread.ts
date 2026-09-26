@@ -139,9 +139,11 @@ import {
   normalizeWorkspaceName,
   type WorkspaceRoster,
   type WorkspaceRosterState,
+  type WorkspaceRosterStore,
 } from '../sandbox/workspace-limits.ts';
 import {
   WorkspaceSession,
+  defaultWorkspaceId,
   workspaceIdFor,
   workspaceReservationId,
   type WorkspaceSandboxStub,
@@ -1026,7 +1028,12 @@ export function useRuntimePlanAgent(
     CODING_WORKSPACE_ROSTER_STATE_NAME,
     EMPTY_WORKSPACE_ROSTER,
   );
-  const workspaceRoster = createWorkspaceRoster(workspaceRosterState, updateWorkspaceRoster);
+  const workspaceRoster = createWorkspaceRoster(
+    workspaceRosterState,
+    updateWorkspaceRoster,
+    Date.now,
+    runtimePlanWorkspaceRosterStore(plan, options.sandboxConversationKey),
+  );
   const resolveWorkspace = runtimePlanWorkspaceResolver(plan, {
     ...(options.sandboxConversationKey ? { sandboxConversationKey: options.sandboxConversationKey } : {}),
     release: options.releaseCodingWorkspace === true,
@@ -1282,6 +1289,48 @@ export function runtimePlanWorkspaceToolsMounted(
 export const CODING_WORKSPACE_ROSTER_STATE_NAME = 'codingWorkspaceRoster';
 
 /**
+ * The roster's durable copy, in the conversation's default Sandbox Durable
+ * Object. The coordinator's persistent state belongs to one Flue instance,
+ * and a changed harness revision (an Agent edit, a coding model change,
+ * another actor) addresses a new one that starts empty; without this copy
+ * the thread would forget its workspaces, its open set, and its retirement
+ * generations. Keyed by the conversation's continuity key (thread plus owner
+ * incarnation) and Agent: exactly the instance id without the revision.
+ * Only the Cloudflare target has coding workspaces.
+ */
+function runtimePlanWorkspaceRosterStore(
+  plan: RuntimePlanV2,
+  sandboxConversationKey: string | undefined,
+): WorkspaceRosterStore | undefined {
+  if (!plan.codingWorkspace || !isCloudflareTarget()) return undefined;
+  const rosterKey = `${plan.conversation.continuityKey}:${plan.agentId}`;
+  const stub = reconnectingSandboxStub(async (): Promise<WorkspaceRosterStub> => {
+    const env = await resolveAgentPlatformEnv();
+    const binding = env?.SANDBOX ?? env?.Sandbox;
+    if (!binding) throw new Error('No Sandbox binding');
+    const { getSandbox } = await import('@cloudflare/sandbox');
+    return getSandbox(
+      binding as Parameters<typeof getSandbox>[0],
+      defaultWorkspaceId(sandboxConversationKey ?? runtimePlanConversationKey(plan)),
+      CLOUDFLARE_SANDBOX_OPTIONS,
+    ) as unknown as WorkspaceRosterStub;
+  });
+  const unavailable = (error: unknown): never => {
+    if (error instanceof FlueError) throw error;
+    throw new SandboxUnavailableError(error);
+  };
+  return {
+    load: () => stub.readWorkspaceRoster(rosterKey).catch(unavailable),
+    save: (state, forget) => stub.saveWorkspaceRoster(rosterKey, state, [...forget]).catch(unavailable),
+  };
+}
+
+interface WorkspaceRosterStub {
+  readWorkspaceRoster(key: string): Promise<unknown>;
+  saveWorkspaceRoster(key: string, state: WorkspaceRosterState, forget: string[]): Promise<void>;
+}
+
+/**
  * How the workspace tools find a workspace this submission. The session is
  * created on the first tool call; it prepares and ends its own workspace
  * turn, so a submission that never calls a workspace tool touches no Sandbox
@@ -1307,6 +1356,7 @@ export function runtimePlanWorkspaceResolver(
   return async (name, access) => {
     const registry = currentWorkspaceRegistry();
     if (!registry) return undefined;
+    await roster.ready();
     // Inspecting never brings a workspace into being: a name the thread has
     // never used has nothing to read or close.
     if (access === 'inspect' && !roster.knows(name)) return undefined;
@@ -1318,13 +1368,19 @@ export function runtimePlanWorkspaceResolver(
       workspaceRegistryKey(name, generation),
       () => createRuntimePlanWorkspace(plan, name, generation, input),
     );
-    if (access === 'inspect' || before?.open) return created;
+    if (access === 'inspect') return created;
+    if (before?.open) {
+      await roster.flush();
+      return created;
+    }
     // A newly opened workspace that never came up must not hold a slot.
-    const session = await created.catch((error: unknown) => {
+    const session = await created.catch(async (error: unknown) => {
       roster.restore(name, before);
+      await roster.flush().catch(() => {});
       throw error;
     });
     if (!session) roster.restore(name, before);
+    await roster.flush();
     return session;
   };
 }

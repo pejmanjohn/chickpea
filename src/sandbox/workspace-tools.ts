@@ -136,6 +136,7 @@ export function createWorkspaceTools(options: WorkspaceToolsOptions) {
     name: string,
     access: WorkspaceAccess,
   ): Promise<WorkspaceSession | WorkspaceFailure> => {
+    await roster.ready();
     if (access === 'inspect' && !roster.knows(name)) {
       return failure('not_found', `This thread has no workspace named "${name}".`);
     }
@@ -187,6 +188,7 @@ export function createWorkspaceTools(options: WorkspaceToolsOptions) {
     async run({ signal }) {
       return {
         output: await guard(async () => {
+          await roster.ready();
           const snapshot = roster.snapshot();
           const open = openWorkspaceNames(snapshot, Date.now());
           const workspaces = await Promise.all(rosterWorkspaceNames(snapshot).map(async (name) => {
@@ -232,6 +234,7 @@ export function createWorkspaceTools(options: WorkspaceToolsOptions) {
           }
           if (discarded) await target.discard();
           roster.close(name, { discard: discarded });
+          await roster.flush();
           return { ok: true as const, workspace: name, closed: true, discarded };
         }, undefined, 'inspect'),
       };
