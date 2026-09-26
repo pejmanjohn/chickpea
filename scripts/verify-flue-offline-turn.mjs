@@ -34,6 +34,7 @@ import {
   REPO_ROOT,
   assertNodeVersion,
   buildNodeServer,
+  delay,
   getFreePort,
   loadFake,
   loadTsModule,
@@ -69,6 +70,22 @@ function craftMention({ eventId, ts }) {
     event_id: eventId,
     event: { ...appMention.event, ts, event_ts: ts },
   };
+}
+
+/**
+ * The turn clears its status only after the final reaches Slack, so a final
+ * on the wire does not mean the clear has landed yet. Wait for the last status
+ * write to be a clear (or for no status at all), then for the wire to go idle.
+ * A clear that never arrives leaves the status set and fails the check.
+ */
+async function waitForStatusSettled(timeoutMs = 5_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const last = backend.statusCalls().at(-1);
+    if (last === undefined || String(last.body.status) === '') break;
+    await delay(20);
+  }
+  await backend.quiesce();
 }
 
 const results = [];
@@ -192,6 +209,7 @@ try {
     const response = await postSignedEvent(eventsUrl, appMention);
     const finals = await waitForFinals(backend, 1, 15_000);
     const [final] = finals;
+    await waitForStatusSettled();
 
     const historyCalls = backend.callsOfMethod('conversations.history');
     const history = historyCalls[0];
@@ -243,6 +261,7 @@ try {
     );
     const finals = await waitForFinals(backend, 1, 15_000);
     const [final] = finals;
+    await backend.quiesce();
 
     const progressPosts = backend.progressPosts();
     const nonEmpty = backend
@@ -273,6 +292,7 @@ try {
     );
     const finals = await waitForFinals(backend, 1, 15_000);
     const [final] = finals;
+    await waitForStatusSettled();
     const lastStatus = backend.statusCalls().at(-1);
     const statusCleared = lastStatus === undefined || String(lastStatus.body.status) === '';
     const slackWire = JSON.stringify(backend.wireLog);
