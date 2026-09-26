@@ -37,7 +37,7 @@ Place each part of the request according to its lifetime and execution semantics
 - **Instructions**: standing role, priorities, boundaries, decision posture, and general behavior that should shape most turns.
 - **Skills**: repeatable procedures that should activate for a recognizable class of work. Read `skill-creation.md` before drafting or materially revising one.
 - **Memory**: durable facts, decisions, preferences, and context, plus requester-supplied scoped standing notes or preferences whose scope, exceptions, and precedence stay in the requester's words. Memory is not a repeatable procedure that belongs in a skill or a substitute for broad Agent instructions.
-- **Connections and repositories**: grants to tools and information sources. They describe access, not desired behavior.
+- **Connections and repositories**: grants to tools and information sources. They describe access, not desired behavior. A repository grant names one repository (`fullName` "owner/repo") or, with `allRepos: true`, every repository of one account: set `fullName` to "" and keep its `installationId` and `accountLogin`.
 - **Schedules**: recurring or one-time future work with a cadence, timezone, destination, and empty-result behavior. Mentioning a cadence does not by itself authorize a schedule.
 - **Model choice**: a supported live model selected for the workload; do not invent model availability.
 - **Slack presence and Channel reach**: where the Agent can appear and act. They do not teach the Agent what to do.

@@ -29,6 +29,37 @@ export function isValidRepositoryFullName(fullName: string): boolean {
   );
 }
 
+type RepositoryGrantShape = {
+  installationId: number | null;
+  accountLogin: string;
+  fullName: string;
+  allRepos?: boolean | undefined;
+};
+
+/**
+ * The one repository-grant invariant: a grant names exactly one repository, or
+ * (`allRepos: true`) every repository of one account with an empty fullName.
+ * The runtime filter drops anything else, so every write path must refuse it.
+ * Runtime policy-only copies carry no installation id, so it is checked only
+ * when `requireInstallation` is set (configured grants from Admin/management).
+ */
+export function isValidRepositoryGrantShape(
+  grant: RepositoryGrantShape,
+  options: { requireInstallation?: boolean } = {},
+): boolean {
+  if (!GITHUB_OWNER_PATTERN.test(grant.accountLogin)) return false;
+  if (grant.allRepos === true) {
+    return grant.fullName === '' &&
+      (!options.requireInstallation || grant.installationId !== null);
+  }
+  return isValidRepositoryFullName(grant.fullName);
+}
+
+export const REPOSITORY_GRANT_SHAPE_MESSAGE =
+  'Each repository grant must name one repository (fullName "owner/repo", allRepos omitted or false) ' +
+  'or every repository of one account: for all repositories of an account, set fullName to "" ' +
+  'and keep installationId and accountLogin.';
+
 export const GITHUB_SETTING_KEYS = {
   appId: 'github.app.id',
   appSlug: 'github.app.slug',

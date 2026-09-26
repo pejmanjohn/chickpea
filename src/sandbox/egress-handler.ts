@@ -1,6 +1,7 @@
 import {
   GITHUB_OWNER_PATTERN,
   isValidRepositoryFullName,
+  isValidRepositoryGrantShape,
 } from '../config/github-app.ts';
 import { SANDBOX_PACKAGE_REGISTRY_HOSTS } from '../config/sandbox-settings.ts';
 import type { RepositoryGrant } from '../config/types.ts';
@@ -58,12 +59,7 @@ export function validEnabledRepositoryGrants(
   grants: readonly RepositoryGrant[] | undefined,
 ): RepositoryGrant[] {
   return (grants ?? []).filter(
-    (grant) =>
-      grant.enabled &&
-      GITHUB_OWNER_PATTERN.test(grant.accountLogin) &&
-      (grant.allRepos === true
-        ? grant.fullName === ''
-        : isValidRepositoryFullName(grant.fullName)),
+    (grant) => grant.enabled && isValidRepositoryGrantShape(grant),
   );
 }
 

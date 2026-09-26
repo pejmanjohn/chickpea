@@ -83,6 +83,7 @@ import {
   managementActorOriginKey,
   managementOperationDigest,
   managementOriginKey,
+  assertValidRepositoryGrants,
   managementStorageIdempotencyKey,
   validateManagementOperations,
 } from './contracts.ts';
@@ -4050,6 +4051,8 @@ export class WorkspaceManagementService {
         const before = await this.stores.config.getAgent(operation.agentId);
         requireExpectedRevision(operation.expectedRevision, before.revision);
         assertNoLegacyMetaAdsConnections(operation.patch.mcpServers);
+        // Also guards proposals stored before submission-time validation existed.
+        assertValidRepositoryGrants(operation.patch.repositories);
         const patch = projectManagementAgentPatch(before, operation.patch);
         return {
           itemId: operation.itemId,

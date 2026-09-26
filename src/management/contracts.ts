@@ -6,6 +6,11 @@ import {
 } from '../security/content-validation.ts';
 import { isAgentId } from '../config/agent-id.ts';
 import {
+  isValidRepositoryGrantShape,
+  REPOSITORY_GRANT_SHAPE_MESSAGE,
+} from '../config/github-app.ts';
+import type { RepositoryGrant } from '../config/types.ts';
+import {
   ManagementError,
   type ManagementActorContext,
   type ManagementApplyResult,
@@ -70,6 +75,13 @@ export function validateManagementOperations(
       if (clientRefs.has(operation.clientRef)) throw invalid('Agent clientRef values must be unique.');
       clientRefs.add(operation.clientRef);
     }
+    assertValidRepositoryGrants(
+      operation.kind === 'create_agent'
+        ? operation.agent.repositories
+        : operation.kind === 'update_agent'
+          ? operation.patch.repositories
+          : undefined,
+    );
     if (operation.kind === 'create_agent' && !isAgentId(operation.agent.id)) {
       throw invalid('Agent IDs must start with a lowercase letter or digit and contain only lowercase letters, digits, underscores, or hyphens.');
     }
@@ -110,6 +122,20 @@ export function validateManagementOperations(
     seen.add(operation.itemId);
   }
   return [...operations];
+}
+
+/**
+ * Refuses repository grants the runtime would silently drop (for example
+ * `allRepos: true` with a repository fullName), so the proposer re-proposes the
+ * correct shape instead of saving a grant that removes all repository access.
+ */
+export function assertValidRepositoryGrants(
+  repositories: readonly Pick<RepositoryGrant, 'installationId' | 'accountLogin' | 'fullName' | 'allRepos'>[] | undefined,
+): void {
+  if (repositories?.some((grant) =>
+    !isValidRepositoryGrantShape(grant, { requireInstallation: true }))) {
+    throw invalid(REPOSITORY_GRANT_SHAPE_MESSAGE);
+  }
 }
 
 export function managementStorageIdempotencyKey(

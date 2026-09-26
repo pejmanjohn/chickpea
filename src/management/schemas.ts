@@ -4,6 +4,10 @@ import { skillImportSourceSchema } from '../config/skill-provenance.ts';
 
 import { AGENT_ID_PATTERN } from '../config/agent-id.ts';
 import {
+  isValidRepositoryGrantShape,
+  REPOSITORY_GRANT_SHAPE_MESSAGE,
+} from '../config/github-app.ts';
+import {
   AGENT_AUTHORING_GUIDE_VERSION,
   AGENT_AUTHORING_REASONS,
 } from './agent-authoring/index.ts';
@@ -35,6 +39,8 @@ const zAgentId = z.string().regex(AGENT_ID_PATTERN);
 const zSkillName = z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).max(64);
 const zRevision = z.number().int().nonnegative();
 const zModelSpecifier = z.string().min(1).max(500).regex(/^[^/]+\/.+$/);
+const repositoryFullNameDescription = 'One repository as "owner/repo", or "" when allRepos is true.';
+const repositoryAllReposDescription = 'true grants every repository of accountLogin\'s installation; then fullName must be "" and installationId kept.';
 const creationModelDescription = 'Omit to inherit the workspace default. Set only when the requester explicitly selected this model; never invent a model pin.';
 
 const zSkill = z.strictObject({
@@ -103,10 +109,13 @@ const zRepository = z.strictObject({
   id: zId,
   installationId: z.number().int().positive().nullable(),
   accountLogin: zText(240),
-  fullName: zText(500),
-  allRepos: z.boolean().optional(),
+  fullName: zOptionalText(500).describe(repositoryFullNameDescription),
+  allRepos: z.boolean().optional().describe(repositoryAllReposDescription),
   enabled: z.boolean(),
-});
+}).refine(
+  (grant) => isValidRepositoryGrantShape(grant, { requireInstallation: true }),
+  { message: REPOSITORY_GRANT_SHAPE_MESSAGE },
+);
 const zAgentFields = {
   name: zText(240),
   description: zOptionalText(500).optional(),
@@ -453,14 +462,20 @@ const vApiConnection = v.strictObject({
   identity: v.optional(vConnectionIdentity),
   presetId: v.optional(vid),
 });
-const vRepository = v.strictObject({
-  id: vid,
-  installationId: v.nullable(v.pipe(v.number(), v.integer(), v.minValue(1))),
-  accountLogin: vt(240),
-  fullName: vt(500),
-  allRepos: v.optional(v.boolean()),
-  enabled: v.boolean(),
-});
+const vRepository = v.pipe(
+  v.strictObject({
+    id: vid,
+    installationId: v.nullable(v.pipe(v.number(), v.integer(), v.minValue(1))),
+    accountLogin: vt(240),
+    fullName: v.pipe(vot(500), v.description(repositoryFullNameDescription)),
+    allRepos: v.pipe(v.optional(v.boolean()), v.description(repositoryAllReposDescription)),
+    enabled: v.boolean(),
+  }),
+  v.check(
+    (grant) => isValidRepositoryGrantShape(grant, { requireInstallation: true }),
+    REPOSITORY_GRANT_SHAPE_MESSAGE,
+  ),
+);
 const vAgentFields = {
   name: vt(240),
   description: v.optional(vot(500)),
