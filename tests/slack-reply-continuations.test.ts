@@ -1610,3 +1610,37 @@ test('only a refused, unsent continuation may be re-split', async () => {
     h.close();
   }
 });
+
+test('the stream cap counts &, < and > at their escaped length', async () => {
+  const h = harness();
+  try {
+    // About 11,800 raw characters: under the cap as typed, far over it as Slack counts.
+    const paragraph = 'Roll back if p99 > 200ms && errors < 1% -> page the owner & record it. '.repeat(6).trim();
+    const text = Array.from({ length: 28 }, () => paragraph).join('\n\n');
+    assert.ok(text.length > LIMIT - 400 && text.length < LIMIT - 16);
+    assert.ok(slackMarkdownRenderedShape(text).countedLength > LIMIT);
+
+    await streamLongAnswer(h, text);
+    const streamed = h.calls
+      .filter((call) => call.method === 'chat.startStream' || call.method === 'chat.appendStream')
+      .flatMap((call) => (call.input.chunks as Array<{ type: string; text?: string }>)
+        .filter((chunk) => chunk.type === 'markdown_text')
+        .map((chunk) => chunk.text ?? ''))
+      .join('');
+    assert.ok(text.startsWith(streamed));
+    assert.ok(streamed.length > 0 && streamed.length < text.length);
+    assert.ok(slackMarkdownRenderedShape(streamed).countedLength <= LIMIT - 16,
+      'the stream stays under the cap as Slack counts it');
+
+    await finalizeLongAnswer(h, text);
+    const stop = h.calls.find((call) => call.method === 'chat.stopStream')!;
+    const suffix = ((stop.input.chunks ?? []) as Array<{ type: string; text?: string }>)
+      .filter((chunk) => chunk.type === 'markdown_text').map((chunk) => chunk.text ?? '').join('');
+    assert.ok(slackMarkdownRenderedShape(streamed + suffix).countedLength <= LIMIT,
+      'the first message fits as Slack counts it');
+    await h.presentation.deliverContinuations();
+    assert.equal(v3(h).continuations?.state, 'delivered');
+  } finally {
+    h.close();
+  }
+});

@@ -11,6 +11,7 @@ import {
   canonicalSlackReplyText,
   renderSlackMessage,
   SLACK_REPLY_SHORTENED_NOTE,
+  slackEscapedTextLength,
   slackMarkdownBlockTextLimit,
   slackMarkdownPartBlockLimit,
   splitSlackMarkdownReply,
@@ -170,7 +171,11 @@ export const AGENT_VIEW_STREAM_AGE_CHECK_MS = 20_000;
 const MAX_PROGRESSIVE_BUFFER_BYTES = 128 * 1_024;
 const DEFAULT_APPEND_INTERVAL_MS = 750;
 const CORRECTED_MARKER = '_Corrected_';
-/** Progressive text stays inside the first message, with room to close a fence. */
+/**
+ * Progressive text stays inside the first message, with room to close a
+ * fence. Counted as Slack counts it, with `&`, `<` and `>` escaped: a stream
+ * under this bound in raw characters was refused with `msg_too_long`.
+ */
 const MAX_STREAMED_REPLY_CHARS = slackMarkdownBlockTextLimit - 16;
 /**
  * The first message of a replacement sent with chat.update. Slack rejected a
@@ -2483,7 +2488,7 @@ function terminalFlueIdentity(
 function streamedReplyPrefix(rawText: string, acknowledgedBytes: number): string {
   const safePrefix = streamableSlackMarkdownPrefix(rawText);
   let capped = safePrefix;
-  const full = safePrefix.length > MAX_STREAMED_REPLY_CHARS;
+  const full = slackEscapedTextLength(safePrefix) > MAX_STREAMED_REPLY_CHARS;
   if (full) {
     capped = '';
     for (let end = MAX_STREAMED_REPLY_CHARS; end > 0; end -= 512) {
@@ -2491,13 +2496,15 @@ function streamedReplyPrefix(rawText: string, acknowledgedBytes: number): string
       const candidate = streamableSlackMarkdownPrefix(
         rawText.slice(0, highSurrogate ? end - 1 : end),
       );
-      if (candidate.length <= MAX_STREAMED_REPLY_CHARS) {
+      if (slackEscapedTextLength(candidate) <= MAX_STREAMED_REPLY_CHARS) {
         capped = candidate;
         break;
       }
     }
   }
-  if (capped.length <= MAX_STREAMED_REPLY_CHARS - STREAM_EDGE_WINDOW_CHARS) return capped;
+  if (slackEscapedTextLength(capped) <= MAX_STREAMED_REPLY_CHARS - STREAM_EDGE_WINDOW_CHARS) {
+    return capped;
+  }
   const acknowledged = prefixAtUtf8Length(capped, acknowledgedBytes)?.length ?? 0;
   const floor = Math.max(acknowledged, capped.length - STREAM_EDGE_WINDOW_CHARS);
   const window = capped.slice(floor);

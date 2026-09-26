@@ -368,11 +368,19 @@ function slackCountedCharLength(char: string): number {
   return char === '&' ? 5 : char === '<' || char === '>' ? 4 : char.length;
 }
 
-/** The conservative rendered shape of one markdown reply message. */
-export function slackMarkdownRenderedShape(text: string): SlackMarkdownRenderedShape {
+/** Characters Slack counts for this text once it escapes `&`, `<` and `>`. */
+export function slackEscapedTextLength(text: string): number {
   let countedLength = 0;
   for (const char of text) countedLength += slackCountedCharLength(char);
-  return { blocks: slackMarkdownBlockStarts(text).length, countedLength };
+  return countedLength;
+}
+
+/** The conservative rendered shape of one markdown reply message. */
+export function slackMarkdownRenderedShape(text: string): SlackMarkdownRenderedShape {
+  return {
+    blocks: slackMarkdownBlockStarts(text).length,
+    countedLength: slackEscapedTextLength(text),
+  };
 }
 
 /** Whether one markdown reply message fits Slack's rendered-block limits. */
