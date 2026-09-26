@@ -312,3 +312,65 @@ test('creation reply data survives reduction and malformed metadata cannot claim
     connectorMentions: Array.from({ length: 13 }, (_, index) => `Connector ${index}`),
   }]), []);
 });
+
+test('a recovered follow-on tool error leaves only the proposal in the welcome', () => {
+  const coordinator = createSlackAgentCreationTurnCoordinator(
+    'turn_recovered_follow_on',
+    { turnJobId: 'turn_recovered_follow_on' },
+  );
+  coordinator.prepare({ idempotencyKey: 'create', operations: [createOperation] });
+  coordinator.record(appliedResult);
+
+  const failed = coordinator.recordFollowOn({
+    ok: false,
+    error: { code: 'revision_conflict', message: 'The target revision changed.' },
+  });
+  assert.deepEqual(failed?.followOnNotices, [{
+    kind: 'failure',
+    text: 'A requested follow-on change failed.',
+  }]);
+
+  const proposed = coordinator.recordFollowOn({
+    ok: true,
+    result: {
+      proposalId: 'proposal_repositories',
+      status: 'pending',
+      presentation: { slack: 'Proposed changes Deck — Repositories. Reply `approve` to continue.' },
+    },
+  });
+  assert.deepEqual(proposed?.followOnNotices, [{
+    kind: 'proposal',
+    text: 'Proposed changes Deck — Repositories. Reply `approve` to continue.',
+  }]);
+  assert.equal(proposed?.pendingProposalId, 'proposal_repositories');
+});
+
+test('a lone follow-on tool error renders fixed copy, never the tool message', () => {
+  const coordinator = createSlackAgentCreationTurnCoordinator(
+    'turn_lone_follow_on_error',
+    { turnJobId: 'turn_lone_follow_on_error' },
+  );
+  coordinator.prepare({ idempotencyKey: 'create', operations: [createOperation] });
+  coordinator.record(appliedResult);
+  const failed = coordinator.recordFollowOn({
+    ok: false,
+    error: { code: 'revision_conflict', message: 'The target revision changed.' },
+  });
+  assert.deepEqual(failed?.followOnNotices, [{
+    kind: 'failure',
+    text: 'A requested follow-on change failed.',
+  }]);
+
+  const applied = coordinator.recordFollowOn({
+    ok: true,
+    result: {
+      operationId: 'management_follow_on_applied',
+      idempotencyKey: 'follow-on',
+      status: 'completed',
+      outcomes: [{ itemId: 'update', operationKind: 'update_agent', disposition: 'applied' }],
+      effectiveRevision: 'follow_on_revision',
+      activation: 'next_turn',
+    },
+  });
+  assert.deepEqual(applied?.followOnNotices, []);
+});

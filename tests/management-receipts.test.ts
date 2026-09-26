@@ -9,6 +9,7 @@ import {
   formatManagementSetupReceipt,
   reconcileScheduleActionReceipts,
 } from '../src/management/receipts.ts';
+import { createSlackAgentCreationTurnCoordinator } from '../src/management/slack-tools.ts';
 import { SqliteManagementStore } from '../src/management/store.ts';
 import { SqliteRoutineStore } from '../src/routines/store.ts';
 import {
@@ -394,6 +395,78 @@ test('immediate Agent welcome renders connector actions in order and View Agent 
   assert.ok(text.indexOf('|Connect Notion>') < text.indexOf('|View Agent>'));
   assert.equal(text.match(/\|View Agent>/g)?.length, 1);
   assert.ok(text.endsWith('<https://example.test/admin/agents/agent_deck|View Agent>'));
+});
+
+test('Agent welcome never repeats a recovered follow-on tool error', () => {
+  const coordinator = createSlackAgentCreationTurnCoordinator(
+    'turn_welcome_follow_on',
+    { turnJobId: 'turn_welcome_follow_on' },
+  );
+  coordinator.prepare({
+    idempotencyKey: 'create',
+    operations: [{
+      itemId: 'create',
+      kind: 'create_agent',
+      agent: {
+        id: 'agent_coder',
+        name: 'Coder',
+        description: 'Writes code.',
+        requestedHandle: 'coder',
+        editPolicy: 'all_workspace_members',
+        instructions: 'Write code.',
+        enabled: true,
+        skills: [],
+        mcpServers: [],
+        apiConnections: [],
+        repositories: [],
+      },
+    }],
+  });
+  coordinator.record({
+    ok: true,
+    result: {
+      operationId: 'management_create_coder',
+      idempotencyKey: 'create',
+      status: 'completed',
+      outcomes: [{
+        itemId: 'create',
+        operationKind: 'create_agent',
+        disposition: 'applied',
+        changed: [{ kind: 'agent', id: 'agent_coder', revision: 1 }],
+      }],
+      effectiveRevision: 'rev_1',
+      activation: 'next_turn',
+    },
+  });
+  coordinator.recordFollowOn({
+    ok: false,
+    error: { code: 'revision_conflict', message: 'The target revision changed.' },
+  });
+  const intent = coordinator.recordFollowOn({
+    ok: true,
+    result: {
+      proposalId: 'proposal_repositories',
+      status: 'pending',
+      presentation: { slack: 'Proposed changes Coder — Repositories. Reply `approve` to continue.' },
+    },
+  });
+  assert.ok(intent);
+  const text = formatManagementSetupReceipt({
+    kind: 'agent_created_welcome',
+    creationOperationId: 'management_create_coder',
+    agentId: 'agent_coder',
+    agentName: 'Coder',
+    agentHandle: 'coder',
+    requesterMembershipId: 'membership_coder',
+    surface: 'channel',
+    persona: { name: 'Coder' },
+    publication: { status: 'complete', incomplete: [] },
+    followOnNotices: intent.followOnNotices,
+    viewAgentUrl: 'https://example.test/admin/agents/agent_coder',
+  });
+  assert.doesNotMatch(text, /target revision/i);
+  assert.doesNotMatch(text, /follow-on change failed/);
+  assert.match(text, /Proposed changes Coder — Repositories/);
 });
 
 test('source-Channel-only partial creation still posts with the Agent persona and caveat', async () => {
