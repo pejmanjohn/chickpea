@@ -148,7 +148,10 @@ export function createCodingTaskProgress(): CodingTaskProgress {
         }
         currentStage = stage;
       }
-      const step = pullRequestStage(update) ? 2 : running.get(latest ?? '') ?? 1;
+      // The worker opens the pull request itself, so its stage, not a milestone,
+      // moves the task to the last step; like a milestone, it never moves back.
+      if (latest !== undefined && pullRequestStage(update)) running.set(latest, 2);
+      const step = running.get(latest ?? '') ?? 1;
       const status = fit(`${stage}…`);
       const next = NEXT_STEP[step];
       const messages = [

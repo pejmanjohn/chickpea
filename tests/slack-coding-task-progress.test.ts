@@ -157,6 +157,44 @@ test('the rotation grows with what the task has done and never shows a clock', (
   }
 });
 
+test('the step never moves back once the pull request step has been shown', () => {
+  const progress = createCodingTaskProgress();
+  progress.apply(milestone('workspace', 'started'));
+  progress.apply(milestone('workspace', 'completed'));
+  progress.apply(milestone('changes', 'started'));
+  progress.display(CLONING);
+  progress.display(PUSHING);
+  assert.equal(progress.display(OPENING_PR)!.loadingMessages[1], 'Step 3 of 3 · Pull request');
+  // The coordinator reads the worker's result while the task is still running
+  // (the live Violet sequence), then a replayed start record arrives.
+  const reviewing = activityStatus('reading', 'Reviewing', 'the results', 'workspace');
+  assert.deepEqual(progress.display(reviewing), {
+    status: 'Reviewing the results…',
+    loadingMessages: [
+      'Reviewing the results…',
+      'Step 3 of 3 · Pull request',
+      'Workspace ready',
+      'Repository cloned',
+      'Branch pushed',
+    ],
+  });
+  progress.apply(milestone('changes', 'started'));
+  for (const update of [EDITING, RUNNING_TESTS, CODING_WORKER_STARTED_STATUS]) {
+    const messages = progress.display(update)!.loadingMessages;
+    assert.equal(messages[1], 'Step 3 of 3 · Pull request');
+    assert.ok(!messages.some((message) => message.startsWith('Next:')), messages.join(' | '));
+  }
+});
+
+test('a second task keeps its own step when the first reached the pull request', () => {
+  const progress = createCodingTaskProgress();
+  progress.apply(milestone('changes', 'started', 'call_a'));
+  progress.display(OPENING_PR);
+  progress.apply(milestone('workspace', 'started', 'call_b'));
+  assert.equal(progress.display(CODING_WORKSPACE_SETUP_STATUS)!.loadingMessages[1],
+    'Step 1 of 3 · Coding workspace');
+});
+
 test('a long stage phrase and a full history still fit Slack\'s limits', () => {
   const progress = createCodingTaskProgress();
   progress.apply(milestone('workspace', 'started'));
