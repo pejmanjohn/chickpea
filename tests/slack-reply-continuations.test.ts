@@ -307,7 +307,7 @@ async function finalizeLongAnswer(h: Harness, text: string): Promise<void> {
 }
 
 /** Stream a long answer progressively; the stream holds at most one message. */
-async function streamLongAnswer(h: Harness, text: string): Promise<void> {
+async function streamLongAnswer(h: Harness, text: string) {
   await h.presentation.freezeProgressiveEligibility({ allowed: true, reason: 'safe_early_release' });
   const relay = await h.presentation.prepareReceipt({
     instanceId: 'instance_stream',
@@ -340,6 +340,7 @@ async function streamLongAnswer(h: Harness, text: string): Promise<void> {
     position: { batch: 4 + pieces.length, index: 0 },
   });
   await relay.closeAndDrain();
+  return relay;
 }
 
 test('a terminal-only final holds part 1 without a footer; the follow-up closes the reply', async () => {
@@ -433,6 +434,30 @@ test('a stream whose cap falls inside a code line stops at the line boundary bef
     }
   } finally {
     h.close();
+  }
+});
+
+test('a stream at its cap reports the most it can ever show; one under it reports nothing', async () => {
+  const long = harness();
+  const short = harness();
+  try {
+    const text = longPlan(30, 35);
+    assert.ok(text.length > LIMIT + 2_000);
+    const relay = await streamLongAnswer(long, text);
+    const bound = relay.streamedPrefixBound?.();
+    assert.ok(bound !== undefined && bound.length <= LIMIT);
+    const streamed = long.calls
+      .filter((call) => call.method === 'chat.startStream' || call.method === 'chat.appendStream')
+      .flatMap((call) => (call.input.chunks as Array<{ type: string; text?: string }>)
+        .map((chunk) => chunk.text ?? ''))
+      .join('');
+    assert.ok(bound.startsWith(streamed), 'everything streamed lies inside the bound');
+    assert.ok(text.startsWith(bound), 'and the bound is a prefix of the answer');
+    const under = await streamLongAnswer(short, 'A short answer that fits the stream.\n\nWith two paragraphs.');
+    assert.equal(under.streamedPrefixBound?.(), undefined, 'a stream under its cap may show everything');
+  } finally {
+    long.close();
+    short.close();
   }
 });
 

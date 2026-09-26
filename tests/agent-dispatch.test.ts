@@ -10,6 +10,7 @@ import {
   StateStoreUnavailable,
   type SlackFlueDispatchState,
 } from '../src/slack/flue-dispatch.ts';
+import { streamableSlackMarkdownPrefix } from '../src/slack/message-format.ts';
 import type { AgentInstanceHandle } from '@flue/runtime';
 import { AgentInstanceExistsError, AgentInstanceNotFoundError, AgentRunError } from '@flue/runtime';
 import { opaqueId } from '../src/work/admission.ts';
@@ -1321,7 +1322,12 @@ function chainedRecoveryStream(parts: string[]): Chunk[] {
   return chunks.map((chunk, index) => ({ ...chunk, position: { batch: 1, index } }) as Chunk);
 }
 
-async function recoveredAnswer(parts: string[], folded = parts.join('\n\n'), streamed?: boolean) {
+async function recoveredAnswer(
+  parts: string[],
+  folded = parts.join('\n\n'),
+  streamed?: boolean,
+  streamedBound?: string,
+) {
   const logs: unknown[] = [];
   const info = console.info;
   console.info = (...args: unknown[]) => { if (args[0] === '[chickpea] interrupted answer recovered') logs.push(args[1]); };
@@ -1333,6 +1339,7 @@ async function recoveredAnswer(parts: string[], folded = parts.join('\n\n'), str
       async invalidateAndDrain() { return drained; },
       async suspendAndDrain() { return drained; },
       streamedAnswer: () => streamed === true,
+      streamedPrefixBound: () => streamedBound,
     };
     const result = await promptSlackThreadAgent({
       ...promptInput(
@@ -1399,6 +1406,24 @@ test('a streamed answer is never trimmed: the final stays what the relay streame
   assert.equal((logs[0] as { recoveryResolution: string }).recoveryResolution, 'continued');
   // The same relay that streamed nothing lets the join trim.
   assert.equal((await recoveredAnswer([partial, continuation], undefined, false)).text, `${partial} hours.`);
+});
+
+test('a stream that stopped at its cap before the seam lets the join trim (Amber X18 F2)', async () => {
+  const shown = 'Intro paragraph that the stream showed before it reached its cap.';
+  const partial = `${shown}\n\nThe goal is to learn enough about use patterns to restock intelligently,`;
+  // The model re-wrote the cut clause with its first word swapped.
+  const continuation = 'understand enough about use patterns to restock intelligently, identify gaps early.';
+  const capped = streamableSlackMarkdownPrefix(shown);
+  const { text, logs } = await recoveredAnswer([partial, continuation], undefined, true, capped);
+  assert.equal(text, `${partial} identify gaps early.`);
+  assert.equal((logs[0] as { recoveryResolution: string }).recoveryResolution, 'continued_trimmed');
+  // A cap past the seam: the stream may show the repeat, so nothing is cut.
+  const past = streamableSlackMarkdownPrefix(`${partial}understand enough`);
+  assert.equal((await recoveredAnswer([partial, continuation], undefined, true, past)).text,
+    partial + continuation);
+  // A stream still under its cap may show everything: nothing is cut.
+  assert.equal((await recoveredAnswer([partial, continuation], undefined, true)).text,
+    partial + continuation);
 });
 
 test('a continuation folded with other text blocks falls back to the last step and is logged unmatched', async () => {

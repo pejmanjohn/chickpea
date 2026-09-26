@@ -298,3 +298,32 @@ test('overlap trimming never deletes legitimate content', () => {
   // A short answer is always continued.
   same('## Pl', '## Plan');
 });
+
+test('overlap trimming: a cut clause re-written with its first word swapped keeps one copy', () => {
+  const partial = 'Walk the shelves every week and note what runs out. The goal is to learn enough about use patterns to restock intelligently,';
+  const repeat = 'enough about use patterns to restock intelligently,';
+  // Amber X18 F2: "…restock intelligently,understand enough about use patterns…"
+  assert.deepEqual(joinContinuation(partial, `understand ${repeat} identify gaps early.`),
+    { text: `${partial} identify gaps early.`, trimmedChars: `understand ${repeat}`.length, reopenedUnmatched: false });
+  const same = (continuation: string) => assert.equal(joinContinuation(partial, continuation).text,
+    partial + continuation, continuation);
+  // Two swapped words, a short repeat, or the repeat cut mid-word: continued unchanged.
+  same(`to understand ${repeat} identify gaps.`);
+  same(' understand use patterns to restock intelligently, identify gaps.');
+  same(`understand ${repeat.slice(0, -1)}ly done.`);
+  // The same word in both places is not a swap (and the exact tail did not match).
+  const kept = 'Walk the shelves every week. The goal is to learn much about how use patterns let us restock intelligently,';
+  assert.equal(joinContinuation(kept, 'learn about use patterns to restock intelligently, then act.').trimmedChars, 0);
+  const sameWord = 'Walk the shelves every week and note what runs out. The goal is to learn enough about use patterns to restock intelligently';
+  assert.equal(joinContinuation(sameWord, 'learn enough about use patterns to restock intelligently, then act.').trimmedChars,
+    'learn enough about use patterns to restock intelligently'.length, 'an exact repeat is the plain overlap');
+  assert.equal(joinContinuation(`${sameWord},`, `LEARN ${repeat} then act.`).trimmedChars, 0,
+    'a swapped word equal to the replaced one (case aside) is not a swap');
+  // A refrain the answer already had is repeated on purpose, swapped word or not.
+  const chorus = 'we keep the pantry full for every family that comes through the door';
+  const song = `Verse one.\nAnd ${chorus}\nVerse two.\nSo ${chorus}`;
+  assert.equal(joinContinuation(song, `\nYes ${chorus}\nVerse three.`).trimmedChars, 0);
+  // A repeat spanning lines is not one clause.
+  const lines = 'Walk the shelves every week and note what runs out.\nLearn enough about the patterns\nto restock the pantry intelligently';
+  assert.equal(joinContinuation(lines, 'Understand enough about the patterns\nto restock the pantry intelligently, then act.').trimmedChars, 0);
+});
