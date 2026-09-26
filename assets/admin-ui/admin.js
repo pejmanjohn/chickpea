@@ -2118,6 +2118,15 @@
     return measurement && (measurement.returnedModel || measurement.requestedModel) || detail.operation.requestedModel || "Unknown";
   }
 
+  // Usage redacts stored Agent labels, so names come from the Agents list. The
+  // built-in Chickpea Agent is not in that list.
+  function usageAgentName(agentId) {
+    if (!agentId) return "";
+    if (agentId === "agent_chickpea") return "Chickpea";
+    var agent = agentById(agentId);
+    return (agent && agent.name) || agentId;
+  }
+
   function usageWorkLabel(operation) {
     if (operation.operationKind === "routine_run") return operation.routineLabel || operation.routineId || "Scheduled work";
     if (operation.operationKind === "interaction_classification") return "Interaction classification";
@@ -2179,7 +2188,8 @@
     if (!groups.length) return '<div class="empty"><p class="hint">No breakdown data for this period.</p></div>';
     var rows = groups.map(function (group) {
       var channel = state.usageGroupBy === "channel" ? (state.channelIndex || []).find(function (candidate) { return candidate.channelId === group.key; }) : null;
-      var label = group.label || (channel && normalizeChannelLabel(channel.channelName)) || (state.usageGroupBy === "channel" && group.key === "direct_message" ? "Direct message" : group.key) || "Unknown";
+      var agentName = state.usageGroupBy === "agent" && group.key !== "unknown" ? usageAgentName(group.key) : "";
+      var label = group.label || agentName || (channel && normalizeChannelLabel(channel.channelName)) || (state.usageGroupBy === "channel" && group.key === "direct_message" ? "Direct message" : group.key) || "Unknown";
       label = state.usageGroupBy === "channel" && label !== "Direct message" && !String(label).startsWith("#") ? "#" + label : label;
       return '<tr><td><button type="button" class="usage-row-action" data-action="usage-group-filter" data-value="' + esc(group.key) + '" data-label="' + esc(label) + '">' + esc(label) + '</button></td>' +
         '<td class="number">' + usageInt(group.operationCount) + '</td><td class="number">' + usageInt(group.inputTokens) + '</td>' +
@@ -2202,8 +2212,7 @@
       var cached = usageOperationCachedTokens(detail);
       var output = usageOperationTokens(detail, "outputTokens");
       var total = usageOperationTokens(detail, "totalTokens");
-      var localAgent = agentById(operation.agentId);
-      var agentLabel = operation.agentLabel || (localAgent && localAgent.name) || operation.agentId || "Unknown";
+      var agentLabel = operation.agentLabel || usageAgentName(operation.agentId) || "Unknown";
       return '<tr><td><strong class="usage-work-label">' + esc(usageWorkLabel(operation)) + '</strong><div class="hint">' + esc(new Date(operation.startedAt).toLocaleString()) + '</div></td>' +
         '<td>' + esc(agentLabel) + '</td><td>' + esc(usageOperationProvider(detail)) + '</td><td>' + esc(usageOperationModel(detail)) + '</td>' +
         '<td>' + usageStatusBadge(operation.status) + '</td><td class="number">' + usageTokenTotalHtml(input, cached, output, total) + '</td><td class="number">' + usageMoney(usageOperationAmount(detail), "USD") + '</td></tr>';

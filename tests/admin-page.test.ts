@@ -614,6 +614,7 @@ function runAdminPageHarness(
     usageApiError?: boolean;
     usageCoverage?: { pricedOperationCount: number; meteredOperationCount: number };
     usageAgentLabel?: string | null;
+    usageAgentId?: string;
     usageClassifierOnly?: boolean;
     usageNextCursor?: string | null;
     resetDocumentScrollOnRender?: boolean;
@@ -1491,7 +1492,7 @@ function runAdminPageHarness(
     operation: {
       operationId: 'op_usage_fixture', operationKind: 'interactive_turn', sourceId: 'source_usage', status: 'completed',
       startedAt: usageNow - 60_000, finishedAt: usageNow - 55_000, installationId: 'chickpea', workspaceId: 'T_DESIGN',
-      agentId: 'agent_release', agentLabel: options.usageAgentLabel === undefined
+      agentId: options.usageAgentId ?? 'agent_release', agentLabel: options.usageAgentLabel === undefined
         ? 'Release <script>alert(1)</script>'
         : options.usageAgentLabel,
       channelId: 'D_PRIVATE', channelLabel: null,
@@ -1535,8 +1536,11 @@ function runAdminPageHarness(
       usageApiCalls.push(path);
       if (harnessOptions.usageApiError) return Promise.resolve(jsonResponse({ error: 'usage_unavailable' }, 503));
       if (path.startsWith('/admin/api/usage/overview')) {
+        const currentGroups = path.includes('groupBy=agent')
+          ? [{ key: 'agent_chickpea', label: null, ...usageTotals }, { key: 'agent_release', label: null, ...usageTotals }]
+          : [{ key: 'direct_message', label: null, ...usageTotals }, { key: 'C0EXR3L9T', label: null, ...usageTotals }];
         return Promise.resolve(jsonResponse({
-          current: { from: usageNow - 30 * 86400000, to: usageNow, groupBy: 'channel', currency: 'USD', mixedCurrency: false, availableCurrencies: ['USD'], totals: usageTotals, groups: [{ key: 'direct_message', label: null, ...usageTotals }, { key: 'C0EXR3L9T', label: null, ...usageTotals }] },
+          current: { from: usageNow - 30 * 86400000, to: usageNow, groupBy: 'channel', currency: 'USD', mixedCurrency: false, availableCurrencies: ['USD'], totals: usageTotals, groups: currentGroups },
           previous: { from: usageNow - 60 * 86400000, to: usageNow - 30 * 86400000, groupBy: 'channel', currency: 'USD', mixedCurrency: false, availableCurrencies: ['USD'], totals: { ...usageTotals, operationCount: 2, estimateAmountMicros: 10000 }, groups: [] },
         }));
       }
@@ -15163,6 +15167,34 @@ test('Usage resolves a redacted private operation to the local Agent name', asyn
 
   assert.match(harness.app.innerHTML, />Release Profile<\/td>/);
   assert.doesNotMatch(harness.app.innerHTML, />agent_release<\/td>/);
+});
+
+test('Usage names the built-in Chickpea Agent on a redacted operation', async () => {
+  const harness = runAdminPageHarness({
+    usageAdminUi: true,
+    initialPath: '/admin/usage',
+    usageAgentId: 'agent_chickpea',
+    usageAgentLabel: null,
+  });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /<td>Chickpea<\/td>/);
+  assert.doesNotMatch(harness.app.innerHTML, /agent_chickpea<\/td>/);
+});
+
+test('Usage names Agents in the Agent breakdown instead of showing their ids', async () => {
+  const harness = runAdminPageHarness({
+    usageAdminUi: true,
+    initialPath: '/admin/usage',
+    initialSearch: '?groupBy=agent',
+  });
+  await flushAsync();
+
+  const html = harness.app.innerHTML;
+  assert.match(html, /<option value="agent" selected>Agent<\/option>/);
+  assert.match(html, /data-value="agent_chickpea" data-label="Chickpea">Chickpea<\/button>/);
+  assert.match(html, /data-value="agent_release" data-label="Release Profile">Release Profile<\/button>/);
+  assert.doesNotMatch(html, />agent_chickpea<\/button>|>agent_release<\/button>/);
 });
 
 test('Usage preserves pagination when a page contains only hidden classifier work', async () => {
