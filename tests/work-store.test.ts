@@ -698,6 +698,17 @@ test('an execution settled without a model call drops the provider route recorde
     assert.equal(settled.modelInvocationStatus, 'not_invoked');
     assert.equal(settled.providerAuthRoute, null, 'no provider was reached');
     assert.equal(store.settleRunExecution(input).id, executionId, 'a repeated settlement is idempotent');
+    // A route recorded after the settlement must not reopen it as `ready`.
+    assert.throws(() => store.recordRunExecutionRoute({
+      executionId,
+      recordedAt: NOW + 3,
+      providerAuthRoute: 'openai_api_key',
+      modelCredentialRef: 'openai_platform',
+      modelCredentialVersion: 1,
+    }), (error: unknown) => (error as { code?: string }).code === 'work_execution_conflict');
+    const after = store.getRunExecution(executionId);
+    assert.equal(after?.modelInvocationStatus, 'not_invoked');
+    assert.equal(after?.providerAuthRoute, null);
   } finally {
     db.close();
   }

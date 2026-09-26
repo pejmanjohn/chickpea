@@ -973,6 +973,11 @@ export class WorkStoreLogic {
     validateRouteInput(input);
     return this.db.transaction(() => {
       const execution = requiredExecution(this.getRunExecution(input.executionId));
+      // A settled not-invoked execution is still `not_invoked`: a late route
+      // must not turn it back into a `ready` one.
+      if (execution.outcome !== 'pending') {
+        throw workError('work_execution_conflict', 'Run execution is already settled.');
+      }
       if (execution.modelInvocationStatus !== 'not_invoked') {
         if (sameRoute(execution, input)) return execution;
         throw workError('work_route_conflict', 'Run execution route is already immutable.');
