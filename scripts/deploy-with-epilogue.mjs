@@ -1484,11 +1484,32 @@ const deploymentReadinessTimeoutMs = Number.isFinite(configuredReadinessTimeout)
   configuredReadinessTimeout > 0
   ? Math.min(configuredReadinessTimeout, MAX_DEPLOYMENT_READINESS_TIMEOUT_MS)
   : DEFAULT_DEPLOYMENT_READINESS_TIMEOUT_MS;
+// Test hook: comma-separated `status` or `status:error` readiness responses.
 const testReadinessStatuses = process.env.DEPLOY_TEST_READINESS_STATUSES
   ?.split(',')
-  .map((value) => Number(value.trim()))
-  .filter(Number.isInteger);
+  .map((value) => {
+    const [status, error] = value.trim().split(':');
+    return { status: Number(status), error: error || undefined };
+  })
+  .filter(({ status }) => Number.isInteger(status));
 let testReadinessIndex = 0;
+
+const READINESS_WAIT_REASONS = {
+  worker_version_pending: 'the new Worker version is not serving every request yet',
+  gateway_session_stale_version: "the Slack gateway session still runs the previous Worker version",
+  gateway_session_offline: "this version's Slack gateway session is not connected yet",
+  gateway_session_unconfirmed:
+    "the Slack gateway did not answer on this version's session; reconnecting it",
+  gateway_upgrade_pending: 'Slack gateway HTTP delivery is still being registered',
+};
+
+function readinessWaitReason(result) {
+  if (result.status === 0) return 'the Worker did not answer the readiness check';
+  // The previous version does not know this deploy's activation capability.
+  if (result.status === 404) return READINESS_WAIT_REASONS.worker_version_pending;
+  return READINESS_WAIT_REASONS[result.error] ??
+    `the readiness check returned HTTP ${result.status}${result.error ? ` (${result.error})` : ''}`;
+}
 
 function readinessBaseUrl() {
   if (upgradeContext) return upgradeContext.target.url;
@@ -1504,11 +1525,11 @@ function readinessBaseUrl() {
 
 async function requestDeploymentReadiness(baseUrl, versionId, activation) {
   if (testReadinessStatuses?.length) {
-    const status = testReadinessStatuses[
+    const result = testReadinessStatuses[
       Math.min(testReadinessIndex, testReadinessStatuses.length - 1)
     ];
     testReadinessIndex += 1;
-    return status;
+    return result;
   }
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 10_000);
@@ -1523,22 +1544,40 @@ async function requestDeploymentReadiness(baseUrl, versionId, activation) {
       redirect: 'manual',
       signal: controller.signal,
     });
-    return response.status;
+    let error;
+    if (response.status !== 204) {
+      try {
+        const body = await response.json();
+        if (typeof body?.error === 'string' && /^[a-z0-9_]{1,64}$/.test(body.error)) error = body.error;
+      } catch {
+        // A body that is not the readiness JSON only loses the reason.
+      }
+    }
+    return { status: response.status, error };
   } catch {
-    return 0;
+    return { status: 0 };
   } finally {
     clearTimeout(timeout);
   }
 }
 
+// Readiness requires the new version to serve, its Slack gateway session to run
+// that version, and the gateway to answer on that session. Local session health
+// alone can trust a socket the gateway has dropped, which delays the next Slack
+// event until Slack retries it about a minute later.
 async function waitForDeploymentReadiness(baseUrl, versionId, activation) {
   const deadline = Date.now() + deploymentReadinessTimeoutMs;
   process.stdout.write('Waiting for the current Worker and Slack gateway version...\n');
+  let lastReason;
   while (Date.now() < deadline) {
-    if (await requestDeploymentReadiness(baseUrl, versionId, activation) === 204) {
+    const result = await requestDeploymentReadiness(baseUrl, versionId, activation);
+    if (result.status === 204) {
       process.stdout.write('Verified current-version deployment readiness.\n');
       return;
     }
+    const reason = readinessWaitReason(result);
+    if (reason !== lastReason) process.stdout.write(`  Still waiting: ${reason}.\n`);
+    lastReason = reason;
     if (testReadinessStatuses?.length &&
         testReadinessIndex >= testReadinessStatuses.length) break;
     if (!testReadinessStatuses?.length) {
@@ -1546,8 +1585,10 @@ async function waitForDeploymentReadiness(baseUrl, versionId, activation) {
     }
   }
   throw new Error(
-    'Worker uploaded, but current-version readiness was not confirmed. ' +
-    'The Slack gateway may still be serving older code.',
+    'Worker uploaded, but current-version readiness was not confirmed within ' +
+    `${Math.round(deploymentReadinessTimeoutMs / 1_000)} s. Last status: ${lastReason ?? 'no answer'}. ` +
+    'Slack events can reach this Worker late or not at all until its gateway session connects; ' +
+    'rerun the deploy or check Admin → Settings → Slack.',
   );
 }
 

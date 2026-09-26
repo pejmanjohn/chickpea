@@ -1023,6 +1023,7 @@ export type GatewaySessionEventHandler = (
 export class GatewayLogicalSession {
   private checkpoint: GatewaySessionCheckpoint;
   private ready = false;
+  private readonly pongWaiters = new Map<number, () => void>();
 
   constructor(private readonly input: {
     identity: GatewayDeploymentIdentity;
@@ -1080,6 +1081,10 @@ export class GatewayLogicalSession {
     }
     if (frame.kind === 'session.ping' || frame.kind === 'session.pong') {
       this.checkpoint = { ...this.checkpoint, lastHeartbeatAt: this.input.now() };
+      if (frame.kind === 'session.pong') {
+        this.pongWaiters.get(frame.at)?.();
+        this.pongWaiters.delete(frame.at);
+      }
       if (frame.kind === 'session.ping') {
         this.input.send({
           protocolVersion: CHICKPEA_GATEWAY_PROTOCOL_VERSION,
@@ -1118,8 +1123,26 @@ export class GatewayLogicalSession {
     });
   }
 
+  /**
+   * Send a client heartbeat; resolves when the gateway echoes it on this
+   * socket. The gateway answers only a socket it still holds as the binding's
+   * authenticated session, so an answer proves it would deliver here now.
+   */
+  ping(at: number): Promise<void> {
+    if (!this.ready) return Promise.reject(new Error('Gateway session is not ready.'));
+    const answered = new Promise<void>((resolve) => this.pongWaiters.set(at, resolve));
+    this.input.send({ protocolVersion: CHICKPEA_GATEWAY_PROTOCOL_VERSION, kind: 'session.ping', at });
+    return answered;
+  }
+
+  /** Drop an unanswered ping so a late echo cannot resolve a finished probe. */
+  forgetPing(at: number): void {
+    this.pongWaiters.delete(at);
+  }
+
   close(reason: string, random?: () => number): GatewaySessionCheckpoint {
     this.ready = false;
+    this.pongWaiters.clear();
     this.checkpoint = gatewaySessionFailure(this.checkpoint, reason, this.input.now(), random);
     return this.checkpoint;
   }

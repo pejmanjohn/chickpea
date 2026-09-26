@@ -75,7 +75,7 @@ interface GatewaySessionRunnerHealthInput {
 export interface GatewaySessionStatusSnapshot {
   healthy: boolean;
   phase: GatewaySessionRunnerPhase | 'offline';
-  detail: 'gateway_session_offline' | 'gateway_session_stale_version' | null;
+  detail: 'gateway_session_offline' | 'gateway_session_stale_version' | 'gateway_session_unconfirmed' | null;
   generation: number | null;
   /** Absent only while interoperating with a pre-version-metadata deployment. */
   versionId?: string | null;
@@ -85,6 +85,7 @@ export interface GatewaySessionRunnerControl {
   start(): Promise<boolean>;
   stop(): void;
   healthSnapshot(): GatewaySessionRunnerHealthSnapshot;
+  confirmDelivery?(timeoutMs: number): Promise<boolean>;
 }
 
 interface GatewaySessionEndpoint {
@@ -215,6 +216,10 @@ export class GatewaySessionRunnerSupervisor {
     return this.runner?.healthSnapshot();
   }
 
+  confirmDelivery(timeoutMs: number): Promise<boolean> {
+    return this.runner?.confirmDelivery?.(timeoutMs) ?? Promise.resolve(false);
+  }
+
   stop(): void {
     this.runner?.stop();
     this.runner = undefined;
@@ -255,6 +260,7 @@ export class GatewaySessionRunner implements GatewaySessionRunnerControl {
   private candidateOpeningGeneration: number | undefined;
   private candidateOpeningDeadline: number | undefined;
   private renewalPending = false;
+  private lastProbeAt = 0;
   private starting = false;
   private stopped = true;
   private generation = 0;
@@ -341,6 +347,28 @@ export class GatewaySessionRunner implements GatewaySessionRunnerControl {
     this.candidateOpeningDeadline = undefined;
     this.retireCandidate('shutdown');
     this.retireCurrentSocket('shutdown');
+  }
+
+  /**
+   * Whether the gateway answers a ping on the active socket within the bound.
+   * Local health trusts a silent socket until the 90 s heartbeat timeout, but
+   * the gateway pings every 30 s and closes a replaced session; only an
+   * answered probe shows the gateway would deliver an event here now.
+   */
+  async confirmDelivery(timeoutMs: number): Promise<boolean> {
+    const endpoint = this.active;
+    if (!endpoint || !this.healthSnapshot().healthy) return false;
+    const at = this.lastProbeAt = Math.max(this.lastProbeAt + 1, this.now());
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        endpoint.session.ping(at).then(() => this.active === endpoint, () => false),
+        new Promise<boolean>((resolve) => { timer = this.setTimer(() => resolve(false), timeoutMs); }),
+      ]);
+    } finally {
+      if (timer !== undefined) this.clearTimer(timer);
+      endpoint.session.forgetPing(at);
+    }
   }
 
   state(): ReturnType<GatewayLogicalSession['state']> | undefined {
