@@ -56,7 +56,8 @@ interface ProgressiveTextSink {
    */
   prepareAppend?(control: ProgressiveAppendControl): Promise<void>;
   append(chunk: ProgressiveTextChunk, control: ProgressiveAppendControl): Promise<void>;
-  invalidate(reason: ProgressiveRelayInvalidationReason): Promise<void>;
+  /** `error` is the failed append's error, for `sink_failed` only. */
+  invalidate(reason: ProgressiveRelayInvalidationReason, error?: unknown): Promise<void>;
   /** See {@link SlackProgressiveReadRelay.streamedPrefixBound}. */
   streamedPrefixBound?(): string | undefined;
   /** Omitted only for retained V1 presentations with the legacy immediate relay. */
@@ -518,13 +519,13 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
         await this.options.append(operation.chunk, this.appendControl);
         this.acceptedChunks += operation.count;
         this.acceptedBytes += new TextEncoder().encode(operation.chunk.delta).byteLength;
-      } catch {
+      } catch (error) {
         this.invalidated = true;
         this.invalidationReason = 'sink_failed';
         this.accepting = false;
         this.queue.length = 0;
         try {
-          await this.options.invalidate('sink_failed');
+          await this.options.invalidate('sink_failed', error);
         } catch {
           // Same fail-closed rule as an explicit invalidation above.
         }
