@@ -405,3 +405,24 @@ test('a settled failure after the yield began keeps its meaning', async () => {
   });
   assert.ok(!h.calls.includes('recordAttempt("turn_1",1)'), 'a decided failure is not a yield');
 });
+
+test('a bug in this code after the yield began is not a free yield', async (t) => {
+  t.mock.method(console, 'error', () => undefined);
+  t.mock.method(console, 'warn', () => undefined);
+  const controller = new AbortController();
+  const h = fakePorts(async () => {
+    controller.abort(new Error('code update'));
+    throw new TypeError('Cannot read properties of undefined');
+  });
+  const job = pendingJob({
+    attempts: 1,
+    dispatchEnvelope: { instanceId: 'agent' } as never,
+    dispatchReceipt: { submissionId: 'submission_1', acceptedAt: new Date().toISOString() } as never,
+  });
+  await executeTurnJob(job, h.ports, {
+    ...h.options,
+    control: { signal: controller.signal, observing: () => undefined },
+  });
+  assert.deepEqual(h.calls, ['recordAttempt("turn_1",2)'], 'the attempt is spent, not restored');
+  assert.equal(h.retries.length, 1, 'retained for durable reattachment as before');
+});

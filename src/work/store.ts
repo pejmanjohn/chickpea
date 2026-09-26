@@ -981,7 +981,7 @@ export class WorkStoreLogic {
       const execution = requiredExecution(this.getRunExecution(input.executionId));
       // A settled not-invoked execution is still `not_invoked`: a late route
       // must not turn it back into a `ready` one.
-      if (execution.outcome !== 'pending') {
+      if (execution.outcome !== 'pending' && execution.modelInvocationStatus === 'not_invoked') {
         throw workError('work_execution_conflict', 'Run execution is already settled.');
       }
       if (execution.modelInvocationStatus !== 'not_invoked') {

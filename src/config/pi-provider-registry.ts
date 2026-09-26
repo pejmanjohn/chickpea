@@ -29,16 +29,21 @@ export function registeredPiProvider(id: string): Provider | undefined {
  * redeploy, and a final that differs from the text already streamed to Slack.
  *
  * This hands the model its partial as the text it is, so it continues. Only a
- * text partial without tool calls qualifies (the only kind Flue continues).
- * Its reasoning is left out, because a provider rejects reasoning replayed
- * without the item that followed it, and so is the text's provider
- * signature, which names an item the provider never completed. Flue's records
- * are never changed: this is a per-request copy.
+ * text partial without tool calls, directly followed by Flue's two recovery
+ * signals, qualifies (the only kind Flue continues). Its reasoning is left
+ * out, because a provider rejects reasoning replayed without the item that
+ * followed it, and so is the provider item id in its signature, which names
+ * an item the provider never completed (its phase is kept). Flue's records are
+ * never changed: this is a per-request copy.
  */
 export function restoreInterruptedStreamPartials(context: Context): Context {
   let changed = false;
-  const messages = context.messages.map((message) => {
+  const messages = context.messages.map((message, index) => {
     if (message.role !== 'assistant' || message.stopReason !== 'aborted') return message;
+    // Flue's shape exactly: its two recovery signals directly follow the
+    // partial. Any other aborted step is left for pi-ai to drop, as before.
+    if (!isRecoverySignal(context.messages[index + 1], 'stream_interrupted') ||
+        !isRecoverySignal(context.messages[index + 2], 'stream_continued')) return message;
     const restored = continuablePartial(message);
     if (!restored) return message;
     changed = true;
@@ -47,13 +52,39 @@ export function restoreInterruptedStreamPartials(context: Context): Context {
   return changed ? { ...context, messages } : context;
 }
 
+/** Flue renders a signal into model context as `<signal type="...">` user text. */
+function isRecoverySignal(message: Context['messages'][number] | undefined, type: string): boolean {
+  if (message?.role !== 'user') return false;
+  const first = typeof message.content === 'string' ? message.content : message.content[0];
+  const text = typeof first === 'string' ? first : first?.type === 'text' ? first.text : undefined;
+  return text?.startsWith(`<signal type="${type}">`) ?? false;
+}
+
 function continuablePartial(message: AssistantMessage): AssistantMessage | undefined {
   if (message.content.some((block) => block.type === 'toolCall')) return undefined;
   const text = message.content.flatMap((block) =>
-    block.type === 'text' && block.text.length > 0 ? [{ type: 'text' as const, text: block.text }] : []);
+    block.type === 'text' && block.text.length > 0
+      ? [{ type: 'text' as const, text: block.text, ...phaseOnlySignature(block.textSignature) }]
+      : []);
   if (text.length === 0) return undefined;
   const { errorMessage: _errorMessage, ...rest } = message;
   return { ...rest, content: text, stopReason: 'stop' };
+}
+
+/**
+ * The OpenAI Responses text signature names the provider's output item (never
+ * completed here) and its phase (commentary or final answer). Keep the phase
+ * only: pi-ai then gives the item its own local id.
+ */
+function phaseOnlySignature(signature: string | undefined): { textSignature?: string } {
+  if (!signature?.startsWith('{')) return {};
+  try {
+    const parsed = JSON.parse(signature) as { v?: unknown; phase?: unknown };
+    if (parsed.v !== 1 || (parsed.phase !== 'commentary' && parsed.phase !== 'final_answer')) return {};
+    return { textSignature: JSON.stringify({ v: 1, id: '', phase: parsed.phase }) };
+  } catch {
+    return {};
+  }
 }
 
 function withInterruptedStreamContinuation(provider: Provider): Provider {

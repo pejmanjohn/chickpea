@@ -642,15 +642,59 @@ class TerminalStepText {
     // streamed to Slack) stopped, so the answer is their concatenation.
     const parts = [...continues, text];
     const foldedParts = parts.join('\n\n');
-    if (folded !== foldedParts && !folded.endsWith(`\n\n${foldedParts}`)) return text;
-    if (restartsPartial(parts[0]!, text)) return text;
-    return parts.join('');
+    if (folded !== foldedParts && !folded.endsWith(`\n\n${foldedParts}`)) {
+      // A step Flue folded differently (several text blocks in one step):
+      // the last step alone, as before. The divergent-stream correction
+      // reconciles Slack with it.
+      logRecoveryResolution('unmatched', parts);
+      return text;
+    }
+    // Fold left: each continuation extends the answer so far, unless it
+    // demonstrably starts the answer over.
+    let answer = parts[0]!;
+    let restarted = false;
+    for (const part of parts.slice(1)) {
+      if (restartsAnswer(answer, part)) {
+        answer = part;
+        restarted = true;
+      } else {
+        answer += part;
+      }
+    }
+    logRecoveryResolution(restarted ? 'restarted' : 'continued', parts);
+    return answer;
   }
 }
 
-function restartsPartial(partial: string, continuation: string): boolean {
-  const probe = partial.trimStart().slice(0, REGENERATION_PROBE_CHARS);
-  return probe.length > 0 && continuation.trimStart().startsWith(probe);
+/**
+ * A restart is proven only by the continuation repeating the answer's
+ * opening. An answer shorter than this proves nothing (a heading mark, a
+ * word), so it is always continued. A paraphrased restart is not detected
+ * and is concatenated, exactly as the relay already streamed it.
+ */
+const MIN_RESTART_EVIDENCE_CHARS = 24;
+
+function restartsAnswer(answer: string, continuation: string): boolean {
+  const opening = answer.trimStart();
+  if (opening.length < MIN_RESTART_EVIDENCE_CHARS) return false;
+  return continuation.trimStart().startsWith(opening.slice(0, REGENERATION_PROBE_CHARS));
+}
+
+/** Content-free: which recovery shape a reattached answer took, for the live check. */
+function logRecoveryResolution(
+  recoveryResolution: 'continued' | 'restarted' | 'unmatched',
+  parts: readonly string[],
+): void {
+  try {
+    console.info('[chickpea] interrupted answer recovered', {
+      recoveryResolution,
+      parts: parts.length,
+      partialChars: parts.slice(0, -1).reduce((total, part) => total + part.length, 0),
+      continuationChars: parts.at(-1)?.length ?? 0,
+    });
+  } catch {
+    // Diagnostics never change the answer.
+  }
 }
 
 /** Distinguish terminal failure boundaries without logging error or reply content. */

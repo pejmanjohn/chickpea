@@ -1302,3 +1302,71 @@ test('a read that fails before any yield is still a retryable interruption, not 
   }), (error: unknown) => error instanceof AgentPromptFailure &&
     !(error instanceof AgentObservationYield) && error.retryable);
 });
+
+/** A stream interrupted before each continuation after the first part. */
+function chainedRecoveryStream(parts: string[]): Chunk[] {
+  const chunks: Omit<Chunk, 'position'>[] = [];
+  parts.forEach((part, index) => {
+    if (index > 0) {
+      for (const text of ['interrupted', 'continue']) {
+        chunks.push({ type: 'message-appended', conversationId: 'c', message: {
+          id: `recovery_${index}_${text}`, role: 'system', purpose: 'advisory', display: 'hidden',
+          submissionId: RECEIPT.submissionId, parts: [{ type: 'text', text, state: 'done' }] } } as Omit<Chunk, 'position'>);
+      }
+    }
+    chunks.push({ type: 'message-started', conversationId: 'c', messageId: 'response', submissionId: RECEIPT.submissionId } as Omit<Chunk, 'position'>);
+    chunks.push({ type: 'message-delta', conversationId: 'c', messageId: 'response', kind: 'text', delta: part } as Omit<Chunk, 'position'>);
+    chunks.push({ type: 'message-completed', conversationId: 'c', messageId: 'response' } as Omit<Chunk, 'position'>);
+  });
+  return chunks.map((chunk, index) => ({ ...chunk, position: { batch: 1, index } }) as Chunk);
+}
+
+async function recoveredAnswer(parts: string[], folded = parts.join('\n\n')) {
+  const logs: unknown[] = [];
+  const info = console.info;
+  console.info = (...args: unknown[]) => { if (args[0] === '[chickpea] interrupted answer recovered') logs.push(args[1]); };
+  try {
+    const result = await promptSlackThreadAgent(promptInput(
+      state({ dispatchEnvelope: ENVELOPE, dispatchReceipt: RECEIPT }),
+      handle({ read: async (_receipt, options) => {
+        for (const chunk of chainedRecoveryStream(parts)) options?.onEvent?.(chunk);
+        return { text: folded, submissionId: RECEIPT.submissionId, data: {} };
+      } })));
+    return { text: result.text, logs };
+  } finally {
+    console.info = info;
+  }
+}
+
+test('two interruptions with a restart in the middle keep one copy of the answer', async () => {
+  const opening = '## Plan\n\nThis migration plan covers the schema change';
+  const { text, logs } = await recoveredAnswer([opening, `${opening} cleanup, in`, ' three phases.']);
+  assert.equal(text, `${opening} cleanup, in three phases.`);
+  assert.deepEqual(logs, [{ recoveryResolution: 'restarted', parts: 3,
+    partialChars: opening.length * 2 + ' cleanup, in'.length, continuationChars: ' three phases.'.length }]);
+});
+
+test('a short partial proves no restart and is always continued', async () => {
+  assert.equal((await recoveredAnswer(['## Pl', 'an\n\nExpand, migrate, contract.'])).text,
+    '## Plan\n\nExpand, migrate, contract.');
+  // Even a continuation that happens to begin with the same mark is continued.
+  const { text, logs } = await recoveredAnswer(['#', '# Plan']);
+  assert.equal(text, '## Plan');
+  assert.equal((logs[0] as { recoveryResolution: string }).recoveryResolution, 'continued');
+});
+
+test('a paraphrased restart is concatenated, as the relay streamed it (accepted; logged as continued)', async () => {
+  const partial = '## Plan\n\nThis migration plan covers the schema';
+  const paraphrase = '## Migration plan\n\nThis plan covers the schema change.';
+  const { text, logs } = await recoveredAnswer([partial, paraphrase]);
+  assert.equal(text, partial + paraphrase);
+  assert.equal((logs[0] as { recoveryResolution: string }).recoveryResolution, 'continued');
+});
+
+test('a continuation folded with other text blocks falls back to the last step and is logged unmatched', async () => {
+  const partial = '## Plan\n\n1. Inventory the col';
+  const { text, logs } = await recoveredAnswer([partial, 'umn.'], `${partial}\n\nA commentary block.\n\numn.`);
+  assert.equal(text, 'umn.');
+  assert.deepEqual(logs, [{ recoveryResolution: 'unmatched', parts: 2, partialChars: partial.length, continuationChars: 4 }]);
+  assert.doesNotMatch(JSON.stringify(logs), /Plan|Inventory|umn/, 'the log carries no content');
+});

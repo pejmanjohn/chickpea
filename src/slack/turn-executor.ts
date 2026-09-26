@@ -8,7 +8,7 @@ import { sandboxThreadKey } from '../sandbox/thread-key.ts';
 import type { ProductTelemetryCapture } from '../telemetry/client.ts';
 import type { UsageStore } from '../usage/types.ts';
 import type { WorkStore } from '../work/types.ts';
-import { settlementFailureFacts } from './agent-failure-diagnostics.ts';
+import { isPlatformReset, settlementFailureFacts } from './agent-failure-diagnostics.ts';
 import type { SlackPresentationStatePort } from './agent-view-presentation.ts';
 import { alarmYieldIsFree, type AlarmTurnJobControl } from './alarm-turn-drain.ts';
 import type { SlackStateLogic } from './claim-store.ts';
@@ -554,8 +554,10 @@ export async function executeTurnJob(
  * alarm budget, or a code update that superseded this runner) and then failed
  * with an interruption rather than a decided outcome: the platform resets this
  * runner and the objects it reads together, so the reset often surfaces before
- * the yield does. Nothing settled; it is the same yield. A settled failure and
- * a reconciliation requirement keep their meaning.
+ * the yield does. Nothing settled; it is the same yield. Only a recognised
+ * interruption qualifies: the platform's reset, a state store disconnect, or a
+ * retryable transport failure. Any other error (a bug in this code, a settled
+ * failure, a reconciliation requirement) keeps its meaning.
  */
 function interruptedAfterYield(
   err: unknown,
@@ -563,6 +565,6 @@ function interruptedAfterYield(
   receipt: FlueDispatchReceiptV1 | undefined,
 ): boolean {
   if (!signal?.aborted || !receipt) return false;
-  if (!(err instanceof AgentPromptFailure)) return true;
-  return err.retryable && !err.recoveryRequired;
+  if (isPlatformReset(err) || isStateStoreDisconnect(err)) return true;
+  return err instanceof AgentPromptFailure && err.retryable && !err.recoveryRequired;
 }

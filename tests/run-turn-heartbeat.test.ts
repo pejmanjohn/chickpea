@@ -14,6 +14,7 @@ import {
   AgentObservationYield,
   StateStoreUnavailable,
   AgentPromptFailure,
+  promptSlackThreadAgent,
   type AgentDispatchResult,
   type SlackFlueDispatchState,
 } from '../src/slack/flue-dispatch.ts';
@@ -2934,3 +2935,85 @@ for (const scenario of ['yield', 'store-outage', 'interruption'] as const) {
     }
   });
 }
+
+test('runTurn after a code update reset the agent: one Slack final with the streamed prefix, zero dispatches', async () => {
+  const partial = '## Plan\n\n1. Inventory every consumer of the old col';
+  const continuation = 'umn.\n2. Backfill.\n\nSummary: expand, migrate, contract.';
+  const posted: string[] = [];
+  const record = (input: Record<string, unknown>) => {
+    for (const key of ['markdown_text', 'text']) {
+      if (typeof input[key] === 'string') posted.push(input[key] as string);
+    }
+    if (Array.isArray(input.chunks)) posted.push(JSON.stringify(input.chunks));
+  };
+  const client = {
+    assistant: { threads: { setStatus: async () => ({ ok: true }) } },
+    reactions: { add: async () => ({ ok: true }), remove: async () => ({ ok: true }) },
+    conversations: { history: async () => ({ ok: true, messages: [] }) },
+    chat: {
+      postMessage: async (input: Record<string, unknown>) => { record(input); return { ok: true, channel: assignment.channelId, ts: 'final-ts' }; },
+      update: async (input: Record<string, unknown>) => { record(input); return { ok: true }; },
+      startStream: async (input: Record<string, unknown>) => { record(input); return { ok: true, ts: 'final-ts' }; },
+      appendStream: async (input: Record<string, unknown>) => { record(input); return { ok: true }; },
+      stopStream: async (input: Record<string, unknown>) => { record(input); return { ok: true }; },
+    },
+  } as unknown as WebClient;
+  const receipt: FlueDispatchReceiptV1 = {
+    submissionId: 'submission_redeploy_reset',
+    acceptedAt: new Date().toISOString(),
+    uid: 'uid_redeploy_reset',
+  };
+  const flueDispatch: SlackFlueDispatchState = {
+    dispatchEnvelope: {
+      schemaVersion: 1, agentName: 'chickpea-slack-v2', instanceId: `agent_${'b'.repeat(40)}`, uid: null,
+      message: { kind: 'user', body: 'plan it' }, idempotencyKey: 'redeploy-reset',
+    } as unknown as FlueDispatchEnvelopeV1,
+    dispatchReceipt: receipt,
+    prepare: async () => { throw new Error('a reattached turn never prepares'); },
+    recordReceipt: async (value) => value,
+    recordSettlement: async (value) => value,
+    reconcileExistingInstance: async () => { throw new Error('not used'); },
+    markRecoveryRequired: async () => {},
+  };
+  let dispatches = 0;
+  const deliveries: (string | undefined)[] = [];
+  const turn: NormalizedSlackTurn = {
+    workspaceId: assignment.workspaceId, channelId: assignment.channelId, eventId: 'Ev_REDEPLOY_RESET',
+    text: 'Write the migration plan.', userId: 'U_HEARTBEAT', messageTs: '1785509200.000100',
+    threadTs: '1785509200.000100', source: 'dm_message', channelType: 'im', contextMode: 'thread',
+  };
+  await runTurn(turn, assignment, undefined, {
+    client,
+    flueDispatch,
+    usageRecordingEnabled: false,
+    onDelivered: (outcome) => { deliveries.push(outcome); },
+    agentPrompt: (input) => promptSlackThreadAgent({
+      ...input,
+      handle: {
+        id: 'agent',
+        dispatch: async () => { dispatches += 1; throw new Error('never dispatched'); },
+        abort: async () => {},
+        read: async (_receipt: unknown, options?: { onEvent?: (chunk: never) => void }) => {
+          const chunks = [
+            { type: 'message-started', conversationId: 'c', messageId: 'response', submissionId: receipt.submissionId },
+            { type: 'message-delta', conversationId: 'c', messageId: 'response', kind: 'text', delta: partial },
+            { type: 'message-completed', conversationId: 'c', messageId: 'response' },
+            ...['interrupted', 'continue'].map((text) => ({ type: 'message-appended', conversationId: 'c', message: {
+              id: `recovery_${text}`, role: 'system', purpose: 'advisory', display: 'hidden',
+              submissionId: receipt.submissionId, parts: [{ type: 'text', text, state: 'done' }] } })),
+            { type: 'message-started', conversationId: 'c', messageId: 'response', submissionId: receipt.submissionId },
+            { type: 'message-delta', conversationId: 'c', messageId: 'response', kind: 'text', delta: continuation },
+            { type: 'message-completed', conversationId: 'c', messageId: 'response' },
+          ];
+          chunks.forEach((chunk, index) => options?.onEvent?.({ ...chunk, position: { batch: 1, index } } as never));
+          return { text: `${partial}\n\n${continuation}`, submissionId: receipt.submissionId, data: {} };
+        },
+      } as never,
+    }),
+  });
+  assert.equal(dispatches, 0, 'the successor reattaches; it never dispatches again');
+  assert.deepEqual(deliveries.length, 1, 'one terminal delivery');
+  const all = posted.join('\n');
+  assert.ok(all.includes('Inventory every consumer of the old column.'), 'prefix and continuation joined');
+  assert.equal(all.split('Summary: expand, migrate, contract.').length - 1, 1, 'the answer appears once');
+});

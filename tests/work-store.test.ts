@@ -560,6 +560,23 @@ test('RunExecution keeps route evidence immutable and rejects internal or secret
       (error: unknown) =>
         error instanceof WorkStateError && error.code === 'work_route_conflict',
     );
+    // A settled invoked execution still answers the identical route idempotently.
+    store.markRunExecutionInvoked({ executionId, fencingToken: 1, invokedAt: NOW + 1 });
+    store.settleRunExecution({
+      executionId, fencingToken: 1, outcome: 'succeeded', modelInvocationStatus: 'invoked',
+      rawSettlementRef: 'settlement_route', rawSettlementStatus: 'completed', finishedAt: NOW + 1,
+    });
+    assert.equal(store.recordRunExecutionRoute({
+      executionId,
+      recordedAt: NOW + 1,
+      providerAuthRoute: 'openai_subscription',
+      catalogSource: 'bundled',
+      catalogRevision: 'revision:0',
+      catalogDigest: 'c'.repeat(64),
+      compiledProfile: 'openai-codex-responses-standard@1',
+      modelCredentialRef: 'openai_subscription_installation',
+      modelCredentialVersion: 1,
+    }).outcome, 'succeeded');
 
     const nextId = 'execution_secret' as RunExecutionId;
     db.run(

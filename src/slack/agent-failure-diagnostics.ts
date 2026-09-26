@@ -124,6 +124,17 @@ const PLATFORM_RESETS: ReadonlyArray<readonly [string, string]> = [
   ['Network connection lost', 'connection_lost'],
 ];
 
+/** Whether the platform's reset of a Durable Object appears anywhere in the cause chain. */
+export function isPlatformReset(error: unknown): boolean {
+  const seen = new Set<unknown>();
+  for (let current = error; current && typeof current === 'object' && seen.size < 8 &&
+      !seen.has(current); current = (current as { cause?: unknown }).cause) {
+    seen.add(current);
+    if (platformResetFacts((current as { message?: unknown }).message).platformReset) return true;
+  }
+  return false;
+}
+
 function platformResetFacts(message: unknown): Record<string, string> {
   if (typeof message !== 'string') return {};
   const match = PLATFORM_RESETS.find(([prefix]) => message.startsWith(prefix));
