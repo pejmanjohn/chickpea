@@ -9,7 +9,11 @@ const ERROR_KINDS = new Set([
   'AgentPromptFailure', 'AgentObservationYield', 'StateStoreUnavailable',
   'StateStoreDisconnectedError', 'SlackPresentationStateError',
   'AgentInstanceNotFoundError', 'WorkStateError',
+  'SlackTransportError', 'PersistedSlackDeliveryError',
 ]);
+
+/** A Slack API error code or Chickpea's safe delivery code: fixed vocabulary, never prose. */
+const SLACK_ERROR_CODE = /^[a-z][a-z0-9_]{0,63}$/;
 
 const WORK_STATE_CODE = /^[a-z][a-z0-9_]{0,47}$/;
 
@@ -66,10 +70,43 @@ export function settlementFailureFacts(error: unknown): Record<string, unknown>[
       ...(value.name === 'WorkStateError' && typeof value.code === 'string' &&
           WORK_STATE_CODE.test(value.code)
         ? { workStateCode: value.code } : {}),
+      ...slackFailureFacts(value),
     });
     current = value.cause;
   }
   return facts;
+}
+
+/**
+ * The Slack error code (`msg_too_long`) of a transport or Web API platform
+ * failure, and the safe code of a persisted delivery failure, so a failed
+ * attempt names what Slack refused.
+ */
+function slackFailureFacts(value: Record<string, unknown>): Record<string, string> {
+  const token = (code: unknown): string | undefined =>
+    typeof code === 'string' && SLACK_ERROR_CODE.test(code) ? code : undefined;
+  if (value.name === 'SlackTransportError') {
+    const code = token(value.code);
+    const outcome = value.effectOutcome === 'failed' || value.effectOutcome === 'unknown'
+      ? value.effectOutcome : undefined;
+    return {
+      ...(code ? { slackErrorCode: code } : {}),
+      ...(outcome ? { slackEffectOutcome: outcome } : {}),
+    };
+  }
+  if (value.name === 'PersistedSlackDeliveryError') {
+    const code = token(value.safeFailureCode);
+    const outcome = value.outcome === 'failed' || value.outcome === 'unknown' ? value.outcome : undefined;
+    return {
+      ...(code ? { slackDeliveryFailureCode: code } : {}),
+      ...(outcome ? { slackEffectOutcome: outcome } : {}),
+    };
+  }
+  if (value.code === 'slack_webapi_platform_error' && value.data && typeof value.data === 'object') {
+    const code = token((value.data as Record<string, unknown>).error);
+    return code ? { slackErrorCode: code } : {};
+  }
+  return {};
 }
 
 /** Pi serializes SDK errors before Flue observes them. Read only its fixed

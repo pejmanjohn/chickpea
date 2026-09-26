@@ -1114,10 +1114,15 @@ export class WorkStoreLogic {
       ) {
         throw workError('work_transition_invalid', 'Unsubmitted execution cannot be marked invoked.');
       }
+      // A route recorded up front (at prepare) describes a model call that
+      // never happened when the execution settles without one: a management
+      // approval, a react-only turn, or a failure before submission. No
+      // provider was reached, so the execution carries no provider auth route.
       this.db.run(
         `UPDATE run_executions SET model_invocation_status = ?, finished_at = ?,
            flue_submission_ref = ?, raw_settlement_ref = ?, raw_settlement_status = ?, outcome = ?,
-           safe_disagreement_code = ?, safe_failure_code = ?
+           safe_disagreement_code = ?, safe_failure_code = ?,
+           provider_auth_route = CASE WHEN ? = 'not_invoked' THEN NULL ELSE provider_auth_route END
          WHERE id = ? AND outcome = 'pending'`,
         input.modelInvocationStatus,
         input.finishedAt,
@@ -1127,6 +1132,7 @@ export class WorkStoreLogic {
         input.outcome,
         input.safeDisagreementCode ?? null,
         input.safeFailureCode ?? null,
+        input.modelInvocationStatus,
         input.executionId,
       );
       this.db.run('UPDATE runs SET updated_at = ? WHERE id = ?', input.finishedAt, run.id);

@@ -93,6 +93,13 @@ and its failure notice cannot finish through the stuck presentation, the
 notice posts fresh with a `client_msg_id` fixed per Run. The exact
 `chat.update` threshold (text versus blocks) has not been measured.
 
+A divergent-stream correction is the other `chat.update` replacement: when a
+reattached attempt's final no longer starts with the streamed prefix (for
+example, the model call re-ran after the isolate was lost), the stream is
+stopped and its message replaced with the answer and a `_Corrected_` marker.
+It uses the same bound and split as recovery, with room for the marker, and
+the same fresh-post fallback on a definite content error.
+
 ### Public message readback is a projection
 
 In the tested permalink replies, `conversations.replies` omitted `username`,
