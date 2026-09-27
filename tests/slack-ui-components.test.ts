@@ -325,6 +325,13 @@ test('policy: a question ends the reply, one interactive component per reply, ne
   await withSubmission(async () => {
     assert.equal(await tool('offer_actions', 'o1', async () => 'offered'), 'offered');
     await assert.rejects(tool('ask_user', 'a1', async () => 'x'), SlackInteractiveComponentLimitError);
+    await assert.rejects(tool('request_form', 'f1', async () => 'x'), SlackInteractiveComponentLimitError);
+  });
+  // A form ends the reply like a question: its answers arrive as the next message.
+  await withSubmission(async () => {
+    assert.equal(await tool('request_form', 'f1', async () => 'posted'), 'posted');
+    await assert.rejects(tool('offer_actions', 'o1', async () => 'x'), SlackQuestionPostedToolDeniedError);
+    await assert.rejects(tool('search_tickets', 's1', async () => 'x'), SlackQuestionPostedToolDeniedError);
   });
   // Rehydrated from durable history: a successful question still ends the reply.
   await withSubmission(async () => {

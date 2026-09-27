@@ -657,9 +657,26 @@ test('a valid modal submission is admitted like a click and redraws the card as 
   assert.match(turn.text, /for <@U1> .*\n- Legal name: Acme &lt;!here&gt;\n- Billing email: ap@acme.test$/);
   assert.match(JSON.stringify(f.updates().at(-1)!.blocks), /Submitted by <@U2> for <@U1>/);
   assert.equal((await f.read(surface.id))?.status, 'resolved');
-  // A second submission of the answered form starts nothing.
+  // A submission that was valid at receipt but lost the race starts nothing;
+  // its modal already closed, so the person is told privately, like a late click.
   await f.submit(surface.id, { userId: 'U1', state, deliveryId: 'view:again' });
   assert.equal(f.jobs.length, 2);
+  assert.match(f.ephemerals().at(-1)!, /^Already answered by <@U2>\.$/);
+}));
+
+test('a modal submission whose card closed or expired meanwhile is told so, and an expired card is closed', async () => withFixture(async (f) => {
+  const fields: Parameters<typeof formSpec>[0] = [{ key: 'name', label: 'Legal name', type: 'text', required: true }];
+  const state = (surfaceId: string) => fieldState(surfaceId, 0, { type: 'plain_text_input', value: 'Acme' });
+  const superseded = await f.surface({ namespace: 'ui', spec: formSpec(fields), status: 'superseded' });
+  await f.submit(superseded.id, { state: state(superseded.id) });
+  assert.match(f.ephemerals().at(-1)!, /^This has closed\. Reply in the thread instead\.$/);
+  assert.match(JSON.stringify(f.updates().at(-1)!.blocks), /This form is closed/);
+
+  const expired = await f.surface({ namespace: 'ui', spec: formSpec(fields), expiresAt: Date.now() - 1 });
+  await f.submit(expired.id, { state: state(expired.id), deliveryId: 'view:expired' });
+  assert.match(f.ephemerals().at(-1)!, /^This has closed\./);
+  assert.equal((await f.read(expired.id))?.status, 'expired');
+  assert.equal(f.jobs.length, 1);
 }));
 
 test('"Something else…" answers a question in the person\'s own words', async () => withFixture(async (f) => {

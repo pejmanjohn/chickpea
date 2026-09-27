@@ -7,6 +7,16 @@ import {
   uiValue,
   type UiSurfaceRecord,
 } from './surface.ts';
+import {
+  clampDisplay,
+  escapeMrkdwn,
+  ISO_DATE,
+  mrkdwn,
+  plain,
+  SLACK_CHANNEL_ID,
+  SLACK_USER_ID,
+  slackTime,
+} from './text.ts';
 
 /**
  * request_form, compiled by the host. Up to three message-friendly fields
@@ -38,27 +48,6 @@ export function formLayout(form: RequestFormSpec): FormLayout {
     : 'modal';
 }
 
-function escape(text: string): string {
-  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
-
-function clamp(text: string, max: number): string {
-  const normalized = text.replace(/\s+/g, ' ').trim();
-  return normalized.length <= max ? normalized : `${normalized.slice(0, max - 1).trimEnd()}…`;
-}
-
-function plain(text: string, max = 75) {
-  return { type: 'plain_text', text: clamp(text, max), emoji: true };
-}
-
-function mrkdwn(text: string) {
-  return { type: 'mrkdwn', text };
-}
-
-function slackTime(at: number): string {
-  return `<!date^${Math.floor(at / 1000)}^{time}|${new Date(at).toISOString().slice(11, 16)} UTC>`;
-}
-
 export function formFieldBlockId(surfaceId: string, index: number): string {
   return uiBlockId('ui', surfaceId, index + 1);
 }
@@ -67,10 +56,52 @@ export function formFieldActionId(index: number): string {
   return uiActionId('ui', 'field', index);
 }
 
-const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const MAX_TEXT_VALUE = 3_000;
 const MAX_SUMMARY = 2_900;
-const TIME = /^\d{2}:\d{2}$/;
+const TIME = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
+const EMAIL = /^[^\s@<>|]+@[^\s@<>|]+\.[^\s@<>|]+$/;
+
+/** A real calendar date in YYYY-MM-DD, which is what Slack's pickers accept. */
+function isDate(value: string): boolean {
+  const at = ISO_DATE.test(value) ? Date.parse(`${value}T00:00:00Z`) : Number.NaN;
+  return Number.isFinite(at) && new Date(at).toISOString().startsWith(value);
+}
+
+function httpUrl(value: string): URL | undefined {
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' || url.protocol === 'http:' ? url : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The model's initial value, only when Slack would accept it: views.open
+ * refuses a malformed initial date, and a bad initial must never keep a
+ * modal from opening.
+ */
+function initialValue(field: FormFieldSpec): string | undefined {
+  const initial = field.initial;
+  if (!initial) return undefined;
+  switch (field.type) {
+    case 'text':
+    case 'long_text':
+      return initial;
+    case 'number':
+      return Number.isFinite(Number(initial)) ? initial : undefined;
+    case 'email':
+      return EMAIL.test(initial) ? initial : undefined;
+    case 'url':
+      return httpUrl(initial) ? initial : undefined;
+    case 'date':
+      return isDate(initial) ? initial : undefined;
+    case 'time':
+      return TIME.test(initial) ? initial : undefined;
+    default:
+      return undefined;
+  }
+}
 
 function fieldElement(surfaceId: string, field: FormFieldSpec, index: number): Block {
   const action_id = formFieldActionId(index);
@@ -79,27 +110,26 @@ function fieldElement(surfaceId: string, field: FormFieldSpec, index: number): B
     text: plain(label), value: uiValue(surfaceId, optionIndex),
   }));
   const initialOption = field.initial !== undefined ? options.find((option) => option.text.text === field.initial) : undefined;
+  const initial = initialValue(field);
+  const initialText = initial ? { initial_value: initial } : {};
   switch (field.type) {
     case 'text':
     case 'long_text':
       return {
         type: 'plain_text_input', action_id, ...placeholder, max_length: MAX_TEXT_VALUE,
         ...(field.type === 'long_text' ? { multiline: true } : {}),
-        ...(field.initial ? { initial_value: field.initial.slice(0, 3_000) } : {}),
+        ...initialText,
       };
     case 'number':
-      return {
-        type: 'number_input', action_id, is_decimal_allowed: true, ...placeholder,
-        ...(field.initial && Number.isFinite(Number(field.initial)) ? { initial_value: field.initial } : {}),
-      };
+      return { type: 'number_input', action_id, is_decimal_allowed: true, ...placeholder, ...initialText };
     case 'email':
-      return { type: 'email_text_input', action_id, ...placeholder, ...(field.initial ? { initial_value: field.initial } : {}) };
+      return { type: 'email_text_input', action_id, ...placeholder, ...initialText };
     case 'url':
-      return { type: 'url_text_input', action_id, ...placeholder, ...(field.initial ? { initial_value: field.initial } : {}) };
+      return { type: 'url_text_input', action_id, ...placeholder, ...initialText };
     case 'date':
-      return { type: 'datepicker', action_id, ...placeholder, ...(field.initial && DATE.test(field.initial) ? { initial_date: field.initial } : {}) };
+      return { type: 'datepicker', action_id, ...placeholder, ...(initial ? { initial_date: initial } : {}) };
     case 'time':
-      return { type: 'timepicker', action_id, ...placeholder, ...(field.initial && TIME.test(field.initial) ? { initial_time: field.initial } : {}) };
+      return { type: 'timepicker', action_id, ...placeholder, ...(initial ? { initial_time: initial } : {}) };
     case 'datetime':
       return { type: 'datetimepicker', action_id };
     case 'choice':
@@ -130,8 +160,8 @@ function inputBlocks(record: UiSurfaceRecord, form: RequestFormSpec): Block[] {
 }
 
 function header(record: UiSurfaceRecord, form: RequestFormSpec): Block {
-  const description = form.description ? `\n${escape(form.description)}` : '';
-  return { type: 'section', block_id: uiBlockId('ui', record.id, 0), text: mrkdwn(`*${escape(form.title)}*${description}`) };
+  const description = form.description ? `\n${escapeMrkdwn(form.description)}` : '';
+  return { type: 'section', block_id: uiBlockId('ui', record.id, 0), text: mrkdwn(`*${escapeMrkdwn(form.title)}*${description}`) };
 }
 
 function whoAnswers(record: UiSurfaceRecord, form: RequestFormSpec): Block {
@@ -142,7 +172,7 @@ function whoAnswers(record: UiSurfaceRecord, form: RequestFormSpec): Block {
 }
 
 function fallback(form: RequestFormSpec): string {
-  return `${escape(form.title)}: ${form.fields.map((field) => escape(field.label)).join(', ')}. Use the form below, or reply in this thread.`;
+  return `${escapeMrkdwn(form.title)}: ${form.fields.map((field) => escapeMrkdwn(field.label)).join(', ')}. Use the form below, or reply in this thread.`;
 }
 
 /** The message card: inline inputs with Submit, or a Fill in button for the modal. */
@@ -152,14 +182,14 @@ export function renderForm(record: UiSurfaceRecord, form: RequestFormSpec): Rend
     const summary: string[] = [];
     let length = 0;
     for (const field of form.fields) {
-      const line = `*${escape(clamp(field.label, 48))}*: ${formValueDisplay(field, values[field.key])}`;
+      const line = `*${escapeMrkdwn(clampDisplay(field.label, 48))}*: ${formValueDisplay(field, values[field.key])}`;
       if (length + line.length + 1 > MAX_SUMMARY) break;
       summary.push(line);
       length += line.length + 1;
     }
     const onBehalf = record.resolution.byUserId !== record.requesterUserId ? ` for <@${record.requesterUserId}>` : '';
     return {
-      text: `${escape(form.title)}: submitted by <@${record.resolution.byUserId}>.`,
+      text: `${escapeMrkdwn(form.title)}: submitted by <@${record.resolution.byUserId}>.`,
       blocks: [
         header(record, form),
         ...(summary.length ? [{ type: 'section', text: mrkdwn(summary.join('\n')) }] : []),
@@ -169,7 +199,7 @@ export function renderForm(record: UiSurfaceRecord, form: RequestFormSpec): Rend
   }
   if (record.status !== 'open' && record.status !== 'pending_delivery') {
     return {
-      text: `${escape(form.title)}: this form is closed.`,
+      text: `${escapeMrkdwn(form.title)}: this form is closed.`,
       blocks: [header(record, form), { type: 'context', elements: [mrkdwn('This form is closed.')] }],
     };
   }
@@ -218,7 +248,7 @@ export function formModalView(record: UiSurfaceRecord, form: RequestFormSpec): R
     submit: plain(form.submitLabel ?? 'Submit', 24),
     close: plain('Cancel', 24),
     blocks: [
-      ...(form.description ? [{ type: 'section', text: mrkdwn(escape(form.description)) }] : []),
+      ...(form.description ? [{ type: 'section', text: mrkdwn(escapeMrkdwn(form.description)) }] : []),
       ...inputBlocks(record, form),
     ],
   };
@@ -246,10 +276,6 @@ export type FormValues = Record<string, string | string[]>;
 
 /** Longest free-text answer the "Something else…" modal takes. */
 export const MAX_OTHER_ANSWER = 2_000;
-
-const USER_ID = /^[UW][A-Z0-9]{2,30}$/;
-const CHANNEL_ID = /^[CGD][A-Z0-9]{2,30}$/;
-const EMAIL = /^[^\s@<>|]+@[^\s@<>|]+\.[^\s@<>|]+$/;
 
 function fieldState(state: SlackUiState, surfaceId: string, index: number) {
   return state[formFieldBlockId(surfaceId, index)]?.[formFieldActionId(index)];
@@ -292,23 +318,20 @@ export function readFormSubmission(
         if (!EMAIL.test(text)) errors[blockId] = 'Enter an email address.';
         else values[field.key] = text;
         return;
-      case 'url':
+      case 'url': {
         if (!text) return missing();
-        try {
-          const url = new URL(text);
-          if (url.protocol !== 'https:' && url.protocol !== 'http:') throw new Error('scheme');
-          values[field.key] = url.href;
-        } catch {
-          errors[blockId] = 'Enter a full web address.';
-        }
+        const url = httpUrl(text);
+        if (!url) errors[blockId] = 'Enter a full web address.';
+        else values[field.key] = url.href;
         return;
+      }
       case 'date':
       case 'time':
       case 'datetime': {
         const value = selected[0] ?? '';
         if (!value) return missing();
-        const pattern = field.type === 'date' ? DATE : field.type === 'time' ? TIME : /^\d{9,11}$/;
-        if (!pattern.test(value)) errors[blockId] = 'Choose a valid value.';
+        const valid = field.type === 'date' ? isDate(value) : field.type === 'time' ? TIME.test(value) : /^\d{9,11}$/.test(value);
+        if (!valid) errors[blockId] = 'Choose a valid value.';
         else values[field.key] = field.type === 'datetime' ? new Date(Number(value) * 1000).toISOString() : value;
         return;
       }
@@ -330,7 +353,7 @@ export function readFormSubmission(
       case 'people':
       case 'channel': {
         if (!selected.length) return missing();
-        const pattern = field.type === 'channel' ? CHANNEL_ID : USER_ID;
+        const pattern = field.type === 'channel' ? SLACK_CHANNEL_ID : SLACK_USER_ID;
         if (!selected.every((value) => pattern.test(value)) || (field.type !== 'people' && selected.length !== 1)) {
           errors[blockId] = 'Choose from the list.';
         } else {
@@ -347,24 +370,24 @@ export function readFormSubmission(
 export function formErrorsText(record: UiSurfaceRecord, form: RequestFormSpec, errors: Record<string, string>): string {
   const lines = form.fields.flatMap((field, index) => {
     const error = errors[formFieldBlockId(record.id, index)];
-    return error ? [`• ${escape(clamp(field.label, 48))}: ${error}`] : [];
+    return error ? [`• ${escapeMrkdwn(clampDisplay(field.label, 48))}: ${error}`] : [];
   });
-  return `Not sent yet. Fix these, then press ${escape(clamp(form.submitLabel ?? 'Submit', 24))} again:\n${lines.join('\n')}`;
+  return `Not sent yet. Fix these, then press ${escapeMrkdwn(clampDisplay(form.submitLabel ?? 'Submit', 24))} again:\n${lines.join('\n')}`;
 }
 
 /** One stored value for the answered card: names render as mentions, never pings. */
 export function formValueDisplay(field: FormFieldSpec, value: string | string[] | undefined): string {
   if (value === undefined || value.length === 0) return '_(blank)_';
-  return fieldValueText(field, value, (text) => escape(clamp(text, 300)));
+  return fieldValueText(field, value, (text) => escapeMrkdwn(clampDisplay(text, 300)));
 }
 
 /** Ids render as mentions only when they are ids; everything else is escaped text. */
 function fieldValueText(field: FormFieldSpec, value: string | string[], text: (value: string) => string): string {
   const list = Array.isArray(value) ? value : [value];
   if (field.type === 'person' || field.type === 'people') {
-    return list.map((id) => USER_ID.test(id) ? `<@${id}>` : text(id)).join(', ');
+    return list.map((id) => SLACK_USER_ID.test(id) ? `<@${id}>` : text(id)).join(', ');
   }
-  if (field.type === 'channel') return list.map((id) => CHANNEL_ID.test(id) ? `<#${id}>` : text(id)).join(', ');
+  if (field.type === 'channel') return list.map((id) => SLACK_CHANNEL_ID.test(id) ? `<#${id}>` : text(id)).join(', ');
   return text(list.join(', '));
 }
 
@@ -387,7 +410,7 @@ export function formTurnText(record: UiSurfaceRecord, form: RequestFormSpec, val
   const forWhom = byUserId !== record.requesterUserId ? ` for <@${record.requesterUserId}>` : '';
   const lines = form.fields.map((field) => {
     const value = values[field.key];
-    const shown = value === undefined || value.length === 0 ? '(blank)' : fieldValueText(field, value, escape);
+    const shown = value === undefined || value.length === 0 ? '(blank)' : fieldValueText(field, value, escapeMrkdwn);
     return `- ${field.label}: ${shown}`;
   });
   return `Submitted the form "${form.title}"${forWhom} (form ${record.id.slice(0, 8)}):\n${lines.join('\n')}`;
