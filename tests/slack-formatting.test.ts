@@ -234,6 +234,10 @@ test('every progressive cut point is a monotone prefix of the canonical terminal
     '**https://x** `y` **https://z** `w',
     '*********',
     'Ping __@here__, _@channel_ and @here_now; see youtube.com/@everyone_team @here__ done.',
+    'see **https://x sk-proj-abcdefghijklmnopqrstuvwxyz123456** ok',
+    '**https://x OPENAI_API_KEY=**\nabc more',
+    'see **https://x/<a** ok',
+    '**>@<https://x\\n**a\\n',
   ];
 
   for (const terminalInput of corpus) {
