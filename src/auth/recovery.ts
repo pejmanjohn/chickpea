@@ -21,7 +21,9 @@ import {
 } from '../slack/installation-verification.ts';
 import { purgePendingSlackChallenge, verifyPendingSlackChallenge } from '../slack/installation-handshake.ts';
 import {
+  SLACK_OPTIONAL_BOT_EVENTS,
   slackManifestFingerprint,
+  slackManifestWithOptionalEvents,
   validateSlackAppManifest,
   validateSlackAppManifestUrlRepair,
   type SlackAppManifest,
@@ -167,9 +169,13 @@ export class SlackCredentialRecoveryService {
       throw new SlackCredentialRecoveryError('manifest_mismatch');
     }
     // The UI builds today's manifest. Accept only an exact stored fingerprint,
-    // including variants that predate the additive Lists permissions.
+    // including variants that predate the additive Lists permissions or the
+    // optional Stop event.
     const matchesStored = [[], ['lists:read'], ['lists:write'], ['lists:read', 'lists:write']].some(scopes =>
-      slackManifestFingerprint(recoveryManifestScopes(input.manifest, scopes)) === session.manifestFingerprint);
+      [[], SLACK_OPTIONAL_BOT_EVENTS].some(events => slackManifestFingerprint(recoveryManifestScopes(
+        slackManifestWithOptionalEvents(input.manifest, events),
+        scopes,
+      )) === session.manifestFingerprint));
     if (!matchesStored) {
       throw new SlackCredentialRecoveryError('manifest_mismatch');
     }
@@ -207,10 +213,14 @@ export class SlackCredentialRecoveryService {
     );
     let expected: SlackAppManifest;
     try {
-      // Preserve the exported feature grant exactly. URL repair is not a scope upgrade.
+      // Preserve the exported feature grant exactly. URL repair is not a scope
+      // upgrade, nor an event one: an app without the optional Stop event keeps
+      // its subscriptions as they are.
       const scopes = record(record(record(exported.manifest).oauth_config).scopes).bot;
       if (!Array.isArray(scopes) || !scopes.every(scope => typeof scope === 'string')) throw new Error();
-      expected = recoveryManifestScopes(input.expectedManifest, scopes);
+      const events = record(record(record(exported.manifest).settings).event_subscriptions).bot_events;
+      if (!Array.isArray(events) || !events.every(event => typeof event === 'string')) throw new Error();
+      expected = recoveryManifestScopes(slackManifestWithOptionalEvents(input.expectedManifest, events), scopes);
       validateSlackAppManifestUrlRepair(exported.manifest, expected);
     } catch {
       throw new SlackCredentialRecoveryError('manifest_mismatch');

@@ -16,6 +16,17 @@ import { activityShowsProgress, isSafeTypedActivityStatus } from '../activity/st
  */
 export const SLACK_RUN_QUIET_AFTER_MS = 5 * 60_000;
 
+/**
+ * Slack moves an Agent Session out of `processing` an hour after its status
+ * was last sent, and its Stop button goes with it. While a run's thread shows
+ * the native indicator (its start, and every quiet stretch), the turn sends
+ * `processing` again at most this often, well inside that hour (KTD6).
+ */
+export const SLACK_NATIVE_PROCESSING_KEEPALIVE_MS = 45 * 60_000;
+
+/** A keepalive Slack did not take is tried again this much later. */
+const NATIVE_KEEPALIVE_RETRY_MS = 5 * 60_000;
+
 /** The time since a run's last real progress, as a check-in says it (KTD8). */
 export type SlackRunQuietBucket = '5+' | '10+' | '15+' | '30+' | '60+';
 
@@ -94,6 +105,8 @@ export interface SlackStatusRegistryOptions {
   runFacts?: SlackRunFactsStore;
   /** Overrides SLACK_RUN_QUIET_AFTER_MS for deterministic focused tests. */
   quietAfterMs?: number;
+  /** Overrides SLACK_NATIVE_PROCESSING_KEEPALIVE_MS for deterministic focused tests. */
+  nativeKeepaliveMs?: number;
 }
 
 interface SlackStatusTurnRegistration {
@@ -118,6 +131,20 @@ interface SlackStatusTurnRegistration {
   progress(event: SlackRunProgress): void;
   /** This run's facts now. */
   runFacts(): SlackRunFacts;
+  /**
+   * Slack's native indicator now shows for this run: keep it alive (KTD6)
+   * until a custom status takes over (`releaseNative`) or the turn ends.
+   * `sent`: this attempt just sent `processing`. Otherwise it carries over
+   * from an earlier attempt, and the keepalive counts from the last send this
+   * registry saw for the run, else from the run's start.
+   */
+  holdNative(sent: boolean): void;
+  /**
+   * A custom status is about to take over from the native indicator: stop
+   * keeping it alive. Resolves once a keepalive already in flight has landed,
+   * so the hand-over's release reaches Slack after it.
+   */
+  releaseNative(): Promise<void>;
 }
 
 interface StatusPresenter {
@@ -137,6 +164,12 @@ interface StatusPresenter {
    * the turn keeps its custom status rather than showing nothing.
    */
   showNativeIndicator?(): Promise<boolean>;
+  /**
+   * The native indicator shows: send `processing` again so Slack keeps it,
+   * and its Stop button, past its one-hour timeout (KTD6). True once Slack
+   * took it. The indicator stays held: the next custom write releases it first.
+   */
+  keepNativeIndicator?(): Promise<boolean>;
 }
 
 interface SlackStatusTurnOptions {
@@ -177,6 +210,7 @@ interface QueuedStatusWrite {
 interface SlackRunClock {
   now: () => number;
   quietAfterMs: number;
+  nativeKeepaliveMs: number;
   facts: SlackRunFacts;
   /** No earlier attempt saved them: save at once. */
   fresh: boolean;
@@ -216,6 +250,12 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
   private factsTimer: ReturnType<typeof setTimeout> | undefined;
   private factsDirty = false;
   private factsSavedAt: number | undefined;
+  private readonly nativeKeepaliveMs: number;
+  /** Slack's native indicator shows and is kept alive (KTD6). */
+  private nativeHeld = false;
+  private nativeTimer: ReturnType<typeof setTimeout> | undefined;
+  /** A keepalive in flight: the hand-over and the settle wait for it. */
+  private nativeKeepalive: Promise<void> | undefined;
 
   constructor(
     private readonly registry: SlackStatusRegistry,
@@ -235,6 +275,7 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
   ) {
     this.now = clock.now;
     this.quietAfterMs = clock.quietAfterMs;
+    this.nativeKeepaliveMs = clock.nativeKeepaliveMs;
     this.facts = clock.facts;
     this.ownershipReady = ownershipBarrier === undefined;
     if (ownershipBarrier) {
@@ -285,6 +326,22 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
     return { ...this.facts };
   }
 
+  holdNative(sent: boolean): void {
+    if (this.closed || this.terminalizing || !this.presenter.keepNativeIndicator) return;
+    const now = this.now();
+    if (sent) this.registry.noteNativeProcessing(this.generation, now);
+    const sentAt = sent
+      ? now
+      : this.registry.nativeProcessingAt(this.generation) ?? this.facts.startedAt;
+    this.nativeHeld = true;
+    this.armNativeKeepalive(sentAt + this.nativeKeepaliveMs - now);
+  }
+
+  async releaseNative(): Promise<void> {
+    this.endNative();
+    await this.nativeKeepalive;
+  }
+
   rebind(instanceId: string): void {
     if (this.closed || instanceId === this.instanceId) return;
     this.registry.rekey(this, this.instanceId, instanceId);
@@ -303,6 +360,7 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
     this.acceptsWrites = false;
     this.cancelRefresh();
     this.cancelQuiet();
+    this.endNative();
     this.discardPending('stale_dropped');
     return this.active?.result.then(() => undefined) ?? Promise.resolve();
   }
@@ -391,16 +449,20 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
     if (this.active) {
       await this.active.result;
     }
-    // A native hand-back landing after the session settles would show the
-    // working indicator on a finished run.
+    // A native hand-back or keepalive landing after the session settles
+    // would show the working indicator on a finished run.
     if (this.handingBack) await this.handingBack;
+    if (this.nativeKeepalive) await this.nativeKeepalive;
   }
 
   async prepareFinal(): Promise<void> {
     this.terminalizing = true;
     this.cancelRefresh();
     this.cancelQuiet();
+    this.endNative();
     this.discardPending('terminal_dropped');
+    // The final lands after a keepalive already in flight, never before it.
+    if (this.nativeKeepalive) await this.nativeKeepalive;
   }
 
   close(): void {
@@ -408,6 +470,7 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
     this.closed = true;
     this.cancelRefresh();
     this.cancelQuiet();
+    this.endNative();
     // A yield ends this registration mid-run: the next attempt reads the
     // facts back, including what the throttle still held.
     if (this.factsDirty) this.saveFacts(true);
@@ -425,6 +488,8 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
     this.terminalizing = true;
     this.cancelRefresh();
     this.cancelQuiet();
+    this.endNative();
+    this.registry.forgetNativeProcessing(this.generation);
     const clearAuthority = this.ownsVisibleWrites();
     const activeResult = this.active?.result;
     this.close();
@@ -635,6 +700,49 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
   }
 
   /**
+   * Send native `processing` again after `delayMs` (at once when overdue),
+   * then every keepalive interval while it stays held. A keepalive Slack did
+   * not take is tried again sooner, still inside Slack's hour.
+   */
+  private armNativeKeepalive(delayMs: number): void {
+    this.cancelNativeKeepalive();
+    if (!this.nativeHeld || this.closed || this.terminalizing) return;
+    this.nativeTimer = setTimeout(() => {
+      this.nativeTimer = undefined;
+      if (!this.nativeHeld || this.closed || this.terminalizing || !this.ownsVisibleWrites()) return;
+      this.nativeKeepalive = this.keepNative().finally(() => {
+        this.nativeKeepalive = undefined;
+      });
+    }, Math.max(0, delayMs));
+    this.nativeTimer.unref?.();
+  }
+
+  private async keepNative(): Promise<void> {
+    let kept = false;
+    try {
+      kept = await this.presenter.keepNativeIndicator!();
+    } catch {
+      kept = false;
+    }
+    if (kept) this.registry.noteNativeProcessing(this.generation, this.now());
+    this.armNativeKeepalive(kept
+      ? this.nativeKeepaliveMs
+      : Math.min(this.nativeKeepaliveMs, NATIVE_KEEPALIVE_RETRY_MS));
+  }
+
+  /** Stop keeping native processing alive; a keepalive in flight still lands. */
+  private endNative(): void {
+    this.nativeHeld = false;
+    this.cancelNativeKeepalive();
+  }
+
+  private cancelNativeKeepalive(): void {
+    if (!this.nativeTimer) return;
+    clearTimeout(this.nativeTimer);
+    this.nativeTimer = undefined;
+  }
+
+  /**
    * Save the run facts: at once when `now` (a start, a milestone, a close),
    * else at most once per interval with the newest facts at its end. A lost
    * trailing save costs the clock at most that interval after an eviction.
@@ -801,10 +909,17 @@ export class SlackStatusRegistry {
   private readonly latestGenerations = new Map<string, SlackStatusGenerationHistory>();
   private readonly runFactsStore: SlackRunFactsStore;
   private readonly quietAfterMs: number;
+  private readonly nativeKeepaliveMs: number;
+  /** When native `processing` was last sent for a run, by turn generation (KTD6). */
+  private readonly nativeSentAt = new Map<string, number>();
 
   constructor(options: SlackStatusRegistryOptions = {}) {
     this.runFactsStore = options.runFacts ?? memoryRunFactsStore();
     this.quietAfterMs = options.quietAfterMs ?? SLACK_RUN_QUIET_AFTER_MS;
+    this.nativeKeepaliveMs = Math.max(
+      1,
+      Math.floor(options.nativeKeepaliveMs ?? SLACK_NATIVE_PROCESSING_KEEPALIVE_MS),
+    );
   }
 
   registerTurn(
@@ -867,6 +982,7 @@ export class SlackStatusRegistry {
       {
         now: clock,
         quietAfterMs: this.quietAfterMs,
+        nativeKeepaliveMs: this.nativeKeepaliveMs,
         // A retry or a reattach of the same run keeps its start and its clock.
         ...(stored
           ? { facts: stored, fresh: false }
@@ -942,6 +1058,30 @@ export class SlackStatusRegistry {
     } catch {
       console.warn('[chickpea] run facts could not be saved');
     }
+  }
+
+  /**
+   * @internal When native `processing` was last sent for one run, as far as
+   * this isolate saw: a reattached attempt keeps the keepalive's cadence.
+   */
+  nativeProcessingAt(generation: string): number | undefined {
+    return this.nativeSentAt.get(generation);
+  }
+
+  /** @internal Record a native `processing` send; bounded like memory run facts. */
+  noteNativeProcessing(generation: string, at: number): void {
+    this.nativeSentAt.delete(generation);
+    this.nativeSentAt.set(generation, at);
+    while (this.nativeSentAt.size > MEMORY_RUN_FACTS_LIMIT) {
+      const oldest = this.nativeSentAt.keys().next().value;
+      if (oldest === undefined) break;
+      this.nativeSentAt.delete(oldest);
+    }
+  }
+
+  /** @internal The run has ended: nothing keeps its native indicator alive. */
+  forgetNativeProcessing(generation: string): void {
+    this.nativeSentAt.delete(generation);
   }
 
   private loadRunFacts(generation: string): SlackRunFacts | undefined {

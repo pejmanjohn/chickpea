@@ -609,7 +609,11 @@ export class SlackAgentViewPresentation {
 
   /**
    * Show Slack's native indicator again after `releaseNativeProcessing` when
-   * the custom status could not be shown. Transport only, like the release.
+   * the custom status could not be shown, or when the run goes quiet. Also the
+   * keepalive (KTD6): sent again while native shows, before Slack's one-hour
+   * `processing` timeout would take the Stop button away. Transport only, like
+   * the release, with the owner's persona fields, and never once the session
+   * has settled.
    */
   async reassertNativeProcessing(): Promise<boolean> {
     return this.setAcknowledgedProcessingTransport('processing');

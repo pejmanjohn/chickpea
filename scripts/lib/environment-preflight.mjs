@@ -96,6 +96,16 @@ const OPTIONAL_EXISTING_INSTALL_BOT_SCOPES = Object.freeze([
 const OPTIONAL_EXISTING_INSTALL_BOT_SCOPE_SET = new Set(
   OPTIONAL_EXISTING_INSTALL_BOT_SCOPES,
 );
+// Likewise an additive event: Slack draws its Stop button only for an app
+// subscribed to it, and a lane installed before it keeps working without it
+// (typed stops still work). Its baseline is re-recorded only after the shared
+// app subscribes.
+const OPTIONAL_EXISTING_INSTALL_BOT_EVENTS = Object.freeze([
+  'agent_session_stopped',
+]);
+const OPTIONAL_EXISTING_INSTALL_BOT_EVENT_SET = new Set(
+  OPTIONAL_EXISTING_INSTALL_BOT_EVENTS,
+);
 const RUNTIME_SECRET_SOURCE_BINDINGS = Object.freeze({
   auth: 'CHICKPEA_AUTH_SECRET',
   cookie: 'hkdf(CHICKPEA_AUTH_SECRET,chickpea/cookie/v1)',
@@ -1448,6 +1458,20 @@ export function readLocalEnvironmentContract(options = {}) {
       },
     },
   };
+  const manifestBotEvents = manifest?.settings?.event_subscriptions?.bot_events;
+  if (!Array.isArray(manifestBotEvents)) throw fail('INVALID_LOCAL_CONTRACT');
+  const withoutOptionalEvents = (value) => ({
+    ...value,
+    settings: {
+      ...value.settings,
+      event_subscriptions: {
+        ...value.settings.event_subscriptions,
+        bot_events: manifestBotEvents.filter(
+          (event) => !OPTIONAL_EXISTING_INSTALL_BOT_EVENT_SET.has(event),
+        ),
+      },
+    },
+  });
   const installFiles = options.installContractFiles ?? [...INSTALL_CONTRACT_FILES];
   const setupFlowFiles = options.setupFlowFiles ?? [...SETUP_FLOW_FILES];
   const setupFiles = options.setupContractFiles ?? [...installFiles, ...setupFlowFiles];
@@ -1494,6 +1518,10 @@ export function readLocalEnvironmentContract(options = {}) {
     requiredScopes,
     existingInstallManifestDigest: digest(existingInstallManifest),
     existingInstallScopes,
+    withoutOptionalEvents: {
+      manifestDigest: digest(withoutOptionalEvents(manifest)),
+      existingInstallManifestDigest: digest(withoutOptionalEvents(existingInstallManifest)),
+    },
     setupContractDigest: digest(setupSources),
     installContractDigest: digest(installSources),
     setupFlowDigest: digest(setupFlowSources),
@@ -2179,13 +2207,21 @@ function validateBaseline(input) {
 function validateLocalContract(input) {
   const hasExistingInstallManifestDigest = input?.existingInstallManifestDigest !== undefined;
   const hasExistingInstallScopes = input?.existingInstallScopes !== undefined;
+  const eventless = input?.withoutOptionalEvents;
   if (!isRecord(input)
     || !exactKeys(input, [
       'manifestDigest', 'requiredScopes', 'setupContractDigest', 'schemaGeneration', 'schemaHistory',
     ], [
-      'existingInstallManifestDigest', 'existingInstallScopes',
+      'existingInstallManifestDigest', 'existingInstallScopes', 'withoutOptionalEvents',
       'installContractDigest', 'setupFlowDigest', 'installContractFiles',
     ])
+    // The same two manifests without the optional events: only beside them.
+    || (eventless !== undefined
+      && (!hasExistingInstallManifestDigest
+        || !isRecord(eventless)
+        || !exactKeys(eventless, ['manifestDigest', 'existingInstallManifestDigest'])
+        || !DIGEST.test(eventless.manifestDigest)
+        || !DIGEST.test(eventless.existingInstallManifestDigest)))
     || !DIGEST.test(input.manifestDigest)
     || !validScopes(input.requiredScopes)
     || hasExistingInstallManifestDigest !== hasExistingInstallScopes
@@ -2216,15 +2252,21 @@ function validateLocalContract(input) {
 function installedSlackContractMatchesBaseline(local, baseline) {
   // Deployment metadata keeps stamping the installed lane contract from the
   // baseline. The candidate's whole manifest may differ only by requesting
-  // these known optional scopes for new or explicitly reauthorized installs.
-  return (local.manifestDigest === baseline.manifestDigest
-      && stableEnvironmentJson(local.requiredScopes)
-        === stableEnvironmentJson(baseline.requiredScopes))
-    || (typeof local.existingInstallManifestDigest === 'string'
-      && Array.isArray(local.existingInstallScopes)
-      && local.existingInstallManifestDigest === baseline.manifestDigest
-      && stableEnvironmentJson(local.existingInstallScopes)
-        === stableEnvironmentJson(baseline.requiredScopes));
+  // these known optional scopes and events for new or explicitly
+  // reauthorized installs.
+  const installed = [[local.manifestDigest, local.requiredScopes]];
+  if (typeof local.existingInstallManifestDigest === 'string'
+    && Array.isArray(local.existingInstallScopes)) {
+    installed.push([local.existingInstallManifestDigest, local.existingInstallScopes]);
+    if (isRecord(local.withoutOptionalEvents)) {
+      installed.push(
+        [local.withoutOptionalEvents.manifestDigest, local.requiredScopes],
+        [local.withoutOptionalEvents.existingInstallManifestDigest, local.existingInstallScopes],
+      );
+    }
+  }
+  return installed.some(([manifestDigest, scopes]) => manifestDigest === baseline.manifestDigest
+    && stableEnvironmentJson(scopes) === stableEnvironmentJson(baseline.requiredScopes));
 }
 
 /**

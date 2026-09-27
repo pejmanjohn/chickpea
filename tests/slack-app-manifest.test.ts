@@ -5,8 +5,10 @@ import { test } from 'node:test';
 import {
   buildSlackAppManifest,
   canonicalSlackAppManifestJson,
+  SLACK_OPTIONAL_BOT_EVENTS,
   slackManifestFingerprint,
   slackManifestPrefillUrl,
+  slackManifestWithOptionalEvents,
   validateSlackAppManifest,
 } from '../src/slack/app-manifest.ts';
 import acceptedFixture from './fixtures/slack/slack-oauth-accepted-manifest.json' with { type: 'json' };
@@ -113,4 +115,42 @@ test('manifest validation accepts Slack exported PKCE defaults without accepting
   }
   exported.oauth_config.scopes.bot = exported.oauth_config.scopes.bot.slice(1);
   assert.throws(() => validateSlackAppManifest(exported, expected), /does not match/i);
+});
+
+test('new manifests subscribe to Slack\'s Stop event, and an app without it still validates (R25)', () => {
+  const expected = buildSlackAppManifest({ kind: 'workspace_app', origin: ORIGIN });
+  assert.deepEqual(SLACK_OPTIONAL_BOT_EVENTS, ['agent_session_stopped']);
+  assert.ok(expected.settings.event_subscriptions.bot_events.includes('agent_session_stopped'));
+  // Slack requires only `chat:write` for it, which the manifest already requests.
+  assert.ok(expected.oauth_config.scopes.bot.includes('chat:write'));
+
+  // An app created before the Stop button: the same manifest without the event.
+  const earlier = slackManifestWithOptionalEvents(expected, []);
+  assert.equal(earlier.settings.event_subscriptions.bot_events.includes('agent_session_stopped'), false);
+  assert.deepEqual(
+    earlier.settings.event_subscriptions.bot_events,
+    expected.settings.event_subscriptions.bot_events.filter((event) => event !== 'agent_session_stopped'),
+    'every other event keeps its place',
+  );
+  assert.notEqual(slackManifestFingerprint(earlier), slackManifestFingerprint(expected));
+  assert.deepEqual(slackManifestWithOptionalEvents(expected, ['agent_session_stopped']), expected);
+
+  assert.deepEqual(validateSlackAppManifest(expected, expected), {
+    fingerprint: slackManifestFingerprint(expected),
+  });
+  // The fingerprint is the one of the app Slack actually holds.
+  assert.deepEqual(validateSlackAppManifest(structuredClone(earlier), expected), {
+    fingerprint: slackManifestFingerprint(earlier),
+  });
+
+  // Only the optional event may be missing: any other event drift still fails.
+  const missingCore = structuredClone(expected);
+  missingCore.settings.event_subscriptions.bot_events =
+    missingCore.settings.event_subscriptions.bot_events.filter((event) => event !== 'message.im');
+  assert.throws(() => validateSlackAppManifest(missingCore, expected), /does not match/i);
+  const extra = structuredClone(expected);
+  extra.settings.event_subscriptions.bot_events.push('channel_created');
+  assert.throws(() => validateSlackAppManifest(extra, expected), /does not match/i);
+  // An expectation without the event does not accept an app that has it.
+  assert.throws(() => validateSlackAppManifest(expected, earlier), /does not match/i);
 });

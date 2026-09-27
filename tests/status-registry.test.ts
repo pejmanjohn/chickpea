@@ -5,6 +5,7 @@ import { activityStatus } from '../src/activity/status.ts';
 import type { SlackStatusUpdate } from '../src/slack/replies.ts';
 import { THREAD_TTL_MS } from '../src/slack/state-limits.ts';
 import {
+  SLACK_NATIVE_PROCESSING_KEEPALIVE_MS,
   SLACK_RUN_QUIET_AFTER_MS,
   SlackStatusRegistry,
   registerSlackStatusTurn,
@@ -1011,4 +1012,173 @@ test('run facts start at registration, keep a fixed-copy step, and flush when th
     generation: 'facts-run', at: START + 35_000, progressAt: START + 35_000, step: 'Running the test suite…',
   }, 'close flushes what the throttle held');
   assert.equal(registry.runFacts('facts-run')?.startedAt, START, 'read back from storage once the turn closed');
+});
+
+/**
+ * A presenter whose native indicator is kept alive, as run-turn's is: native
+ * shown (at the start, or by a quiet hand-back) is held for the turn, a held
+ * indicator is not sent again, and a keepalive re-sends `processing`.
+ */
+function keptNativePresenter(options: { keep?: () => boolean | Promise<boolean> } = {}) {
+  const calls: string[] = [];
+  const at: number[] = [];
+  let turn: { holdNative(sent: boolean): void; releaseNative(): Promise<void> } | undefined;
+  let held = false;
+  return {
+    calls,
+    /** When each native `processing` was sent (a hand-back or a keepalive). */
+    at,
+    attach(registration: { holdNative(sent: boolean): void; releaseNative(): Promise<void> }) {
+      turn = registration;
+    },
+    /** Native processing started with the turn, sent by an earlier attempt or this one. */
+    hold(sent: boolean) {
+      held = true;
+      turn?.holdNative(sent);
+    },
+    /** A custom write takes over. */
+    async release() {
+      await turn?.releaseNative();
+      held = false;
+    },
+    setStatus(update: SlackStatusUpdate): Promise<boolean> {
+      calls.push(`set:${update.text}`);
+      return Promise.resolve(true);
+    },
+    refreshStatus(update: SlackStatusUpdate): Promise<boolean> {
+      calls.push(`refresh:${update.text}`);
+      return Promise.resolve(true);
+    },
+    showNativeIndicator(): Promise<boolean> {
+      if (held) return Promise.resolve(true);
+      calls.push('native');
+      at.push(Date.now());
+      held = true;
+      turn?.holdNative(true);
+      return Promise.resolve(true);
+    },
+    async keepNativeIndicator(): Promise<boolean> {
+      const kept = await (options.keep?.() ?? true);
+      calls.push(kept ? 'keep' : 'keep:failed');
+      if (kept) at.push(Date.now());
+      return kept;
+    },
+  };
+}
+
+test('KTD6: a long quiet stretch re-sends native processing before each hour ends, and stops at the terminal', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: START });
+  assert.equal(SLACK_NATIVE_PROCESSING_KEEPALIVE_MS, 45 * MINUTE);
+  const registry = new SlackStatusRegistry();
+  const presenter = keptNativePresenter();
+  const turn = registry.registerTurn('kept-instance', presenter, {
+    generation: 'kept-run', observedMinIntervalMs: 1,
+  });
+  presenter.attach(turn);
+  registry.setObservedStatus('kept-instance', 'kept-run', RUNNING_TESTS);
+  await settle();
+  // Quiet at five minutes, then a stuck run for two and a half hours.
+  await advance(t, 150 * MINUTE);
+  assert.deepEqual(presenter.calls.filter((call) => call === 'native' || call === 'keep'), [
+    'native', 'keep', 'keep', 'keep',
+  ]);
+  assert.deepEqual(presenter.at.map((when) => (when - START) / MINUTE), [5, 50, 95, 140]);
+  for (let index = 1; index < presenter.at.length; index += 1) {
+    assert.ok(presenter.at[index]! - presenter.at[index - 1]! < 60 * MINUTE, 'inside Slack\'s hour');
+  }
+
+  await turn.drain();
+  await turn.prepareFinal();
+  await turn.finish(async () => { presenter.calls.push('clear'); });
+  await advance(t, 3 * 60 * MINUTE);
+  assert.equal(presenter.calls.at(-1), 'clear', 'no keepalive after the terminal');
+});
+
+test('KTD6: the run start keeps native alive too; a custom write releases it and waits for a keepalive in flight', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: START });
+  const registry = new SlackStatusRegistry();
+  const keeping = Promise.withResolvers<boolean>();
+  let slow = false;
+  const presenter = keptNativePresenter({ keep: () => slow ? keeping.promise : true });
+  const turn = registry.registerTurn('start-instance', presenter, { generation: 'start-run' });
+  presenter.attach(turn);
+  // Native processing started with the turn and nothing custom shows.
+  presenter.hold(false);
+  await advance(t, 45 * MINUTE);
+  assert.deepEqual(presenter.calls.filter((call) => call === 'keep'), ['keep'], 'counted from the run start');
+
+  slow = true;
+  await advance(t, 45 * MINUTE);
+  let released = false;
+  const releasing = presenter.release().then(() => { released = true; });
+  await settle();
+  assert.equal(released, false, 'the release lands after the keepalive in flight');
+  keeping.resolve(true);
+  await releasing;
+  await advance(t, 2 * 60 * MINUTE);
+  assert.deepEqual(presenter.calls.filter((call) => call === 'keep'), ['keep', 'keep'], 'nothing kept once released');
+  turn.close();
+});
+
+test('KTD6: a failed keepalive retries within the hour; close and a presenter without one keep nothing alive', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: START });
+  const registry = new SlackStatusRegistry();
+  let failures = 1;
+  const presenter = keptNativePresenter({ keep: () => failures-- <= 0 });
+  const turn = registry.registerTurn('retry-instance', presenter, { generation: 'retry-run' });
+  presenter.attach(turn);
+  presenter.hold(true);
+  await advance(t, 50 * MINUTE);
+  assert.deepEqual(presenter.calls, ['keep:failed', 'keep']);
+  assert.deepEqual(presenter.at.map((when) => (when - START) / MINUTE), [50]);
+  turn.close();
+  await advance(t, 2 * 60 * MINUTE);
+  assert.deepEqual(presenter.calls, ['keep:failed', 'keep'], 'a yield ends this attempt\'s keepalive');
+
+  const legacy = nativePresenter();
+  const legacyTurn = registry.registerTurn('legacy-keep', legacy, { generation: 'legacy-keep-run' });
+  legacyTurn.holdNative(true);
+  await advance(t, 2 * 60 * MINUTE);
+  assert.equal(legacy.calls.includes('keep'), false);
+  legacyTurn.close();
+});
+
+test('KTD6: a reattached run counts from the last keepalive, or from its start after an eviction', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: START });
+  const saved = new Map<string, SlackRunFacts>();
+  const storage = {
+    load: (generation: string) => saved.get(generation),
+    save: (generation: string, facts: SlackRunFacts) => { saved.set(generation, { ...facts }); },
+  };
+  const registry = new SlackStatusRegistry({ runFacts: storage });
+  const first = keptNativePresenter();
+  const turnA = registry.registerTurn('attempts-instance', first, { generation: 'attempts-run' });
+  first.attach(turnA);
+  first.hold(false);
+  await advance(t, 50 * MINUTE);
+  assert.deepEqual(first.calls, ['keep'], 'kept at 45 minutes');
+  turnA.close(); // the alarm budget ends this attempt: a yield
+
+  // The next attempt inherits native processing without sending it.
+  await advance(t, MINUTE);
+  const second = keptNativePresenter();
+  const turnB = registry.registerTurn('attempts-instance', second, { generation: 'attempts-run' });
+  second.attach(turnB);
+  second.hold(false);
+  await advance(t, 38 * MINUTE);
+  assert.deepEqual(second.calls, [], 'not yet 45 minutes since the last keepalive');
+  await advance(t, MINUTE);
+  assert.deepEqual(second.calls, ['keep'], 'kept 45 minutes after the last one, at 90');
+  assert.deepEqual(second.at.map((when) => (when - START) / MINUTE), [90]);
+  turnB.close();
+
+  // A new isolate (an eviction) knows only the run's start: it keeps at once.
+  const evicted = new SlackStatusRegistry({ runFacts: storage });
+  const third = keptNativePresenter();
+  const turnC = evicted.registerTurn('attempts-instance', third, { generation: 'attempts-run' });
+  third.attach(turnC);
+  third.hold(false);
+  await advance(t, 1);
+  assert.deepEqual(third.calls, ['keep']);
+  turnC.close();
 });

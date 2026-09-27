@@ -686,6 +686,12 @@ async function runTurnAttempt(
   let nativeHeld = false;
   /** Native processing was handed to the custom status. */
   let nativeReleased = false;
+  /**
+   * The turn's status registration: while native processing is held, it
+   * sends it again before Slack's hour runs out, and it stops at the
+   * terminal (KTD6).
+   */
+  let nativeKeepalive: ReturnType<SlackStatusRegistry['registerTurn']> | undefined;
   // Turn start (in `beginVisibleWork`): Slack's native indicator first, the
   // fast write (about 0.4 s, against about 2 s for the custom status and its
   // bookkeeping); the custom status then replaces it (see
@@ -713,6 +719,8 @@ async function runTurnAttempt(
    */
   const handOverToCustomStatus = async (): Promise<void> => {
     if (!nativeHeld || !agentViewPresentation) return;
+    // A keepalive in flight lands first, so the release is Slack's last word.
+    await nativeKeepalive?.releaseNative();
     nativeHeld = false;
     nativeReleased = await agentViewPresentation.releaseNativeProcessing();
   };
@@ -723,6 +731,7 @@ async function runTurnAttempt(
     nativeReleased = false;
     if (await agentViewPresentation.reassertNativeProcessing()) {
       nativeHeld = true;
+      nativeKeepalive?.holdNative(true);
       options.onSlackWrite?.('agent_session');
     }
   };
@@ -807,6 +816,20 @@ async function runTurnAttempt(
       }
       nativeHeld = true;
       nativeReleased = false;
+      nativeKeepalive?.holdNative(true);
+      options.onSlackWrite?.('agent_session');
+      return true;
+    },
+    /**
+     * Native processing shows: send it again before Slack drops the session
+     * (and its Stop button) at the hour (KTD6). It stays held, so the next
+     * custom write releases it first (`handOverToCustomStatus`).
+     */
+    async keepNativeIndicator(): Promise<boolean> {
+      if (!nativeHeld || !agentViewPresentation) return false;
+      if (!(await agentViewPresentation.reassertNativeProcessing())) return false;
+      nativeHeld = true;
+      nativeReleased = false;
       options.onSlackWrite?.('agent_session');
       return true;
     },
@@ -819,8 +842,8 @@ async function runTurnAttempt(
    * the custom status, which takes over from it (the hand-over runs inside
    * that custom write).
    */
-  const registerStatusTurn = (statusInstanceId: string) =>
-    statusRegistry.registerTurn(statusInstanceId, activityPresenter, {
+  const registerStatusTurn = (statusInstanceId: string) => {
+    const registration = statusRegistry.registerTurn(statusInstanceId, activityPresenter, {
       generation: statusGeneration,
       ...(frozenPresentation?.schemaVersion === 3
         ? {
@@ -836,9 +859,15 @@ async function runTurnAttempt(
           }
         : {}),
     });
+    nativeKeepalive = registration;
+    return registration;
+  };
   const beginVisibleWork = async (statusInstanceId: string) => {
     await startNativeIndicator();
     const registered = registerStatusTurn(statusInstanceId);
+    // Native processing shows from the start (sent now, or by an earlier
+    // attempt): keep it alive until a custom status takes over.
+    if (nativeHeld) registered.holdNative(false);
     if (frozenPresentation?.schemaVersion === 3 &&
         frozenPresentation.currentActivity?.operation.certainty === 'pending') {
       admissionStatusAttempted = true;

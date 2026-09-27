@@ -462,3 +462,114 @@ test('a quiet run shows native processing again, and progress releases it before
     assert.deepEqual(h.effects.slice(-2), ['session:active', 'custom:clear'], 'settled, then cleared');
   } finally { h.db.close(); work.close(); }
 });
+
+test('KTD6: a quiet stretch keeps native processing alive, the next custom write releases it first, and the terminal ends it', async () => {
+  // A DM: its Agent memory has an owner in this fixture, so the turn reaches the Agent.
+  const turn = surfaceTurn('dm', '1790000012.000100');
+  const dmAssignment: ResolvedAssignment = { ...assignment, channelId: turn.channelId };
+  const work = new SqliteWorkStore(':memory:');
+  const admitted = await work.admitShadowRun(prepareSlackShadowAdmission({
+    turn, assignment: dmAssignment, sourceVisibility: 'private', admittedAt: Date.now(),
+  }));
+  const h = harness(turn, { runId: admitted.run.id });
+  // Five quiet minutes and the 45-minute keepalive, shortened for the test.
+  const registry = new SlackStatusRegistry({ quietAfterMs: 50, nativeKeepaliveMs: 60 });
+  const observed = activityStatus('reading', 'Reading', 'the thread');
+  const shown = 'custom:Preparing your request…';
+  const waitFor = async (condition: () => boolean) => {
+    for (let tries = 0; tries < 100 && !condition(); tries += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.ok(condition(), JSON.stringify(h.effects));
+  };
+  const nativeAfterShown = () => h.effects.slice(h.effects.indexOf(shown) + 1)
+    .filter((effect) => effect === 'session:processing').length;
+  try {
+    await runTurn(turn, dmAssignment, undefined, {
+      client: h.client,
+      runId: h.runId,
+      turnId: `turn_${h.runId}`,
+      presentationState: h.state,
+      statusRegistry: registry,
+      workStore: work,
+      usageRecordingEnabled: false,
+      agentPrompt: async ({ runtimePlan, conversationKey }) => {
+        // Quiet: the native indicator, then a keepalive of it.
+        await waitFor(() => h.effects.includes(shown) && nativeAfterShown() >= 2);
+        // Tool activity after the quiet stretch: real progress.
+        const instanceId = runtimePlan ? deriveRuntimePlanInstanceId(runtimePlan) : conversationKey;
+        assert.equal(registry.setObservedStatus(instanceId, `turn_${h.runId}`, observed), true);
+        await waitFor(() => h.effects.includes(`custom:${observed.text}`));
+        return {
+          text: 'Done.',
+          requestedModel: assignment.model ?? null,
+          returnedModel: null,
+          reportedUsage: null,
+          usageCompleteness: 'not_reported',
+        };
+      },
+    });
+    const custom = h.effects.indexOf(`custom:${observed.text}`);
+    assert.deepEqual(h.effects.slice(0, 3), ['session:processing', 'session:active', shown]);
+    const quiet = h.effects.slice(3, custom - 1);
+    assert.ok(quiet.length >= 2, JSON.stringify(h.effects));
+    assert.ok(
+      quiet.every((effect) => effect === 'session:processing'),
+      'quiet: Slack\'s working indicator, then keepalives of it (its Stop button stays)',
+    );
+    assert.deepEqual(h.effects.slice(custom - 1, custom + 1), [
+      'session:active', // the keepalive left native held: released first, so the custom text renders
+      `custom:${observed.text}`,
+    ]);
+    const settled = h.effects.length;
+    assert.deepEqual(h.effects.slice(-2), ['session:active', 'custom:clear'], 'settled, then cleared');
+    // The terminal ends the keepalive: nothing re-sends processing afterwards.
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    assert.equal(h.effects.length, settled, JSON.stringify(h.effects.slice(settled)));
+  } finally { h.db.close(); work.close(); }
+});
+
+test('KTD6: a run that ends while quiet stops its keepalive at the terminal', async () => {
+  const turn = surfaceTurn('dm', '1790000013.000100');
+  const dmAssignment: ResolvedAssignment = { ...assignment, channelId: turn.channelId };
+  const work = new SqliteWorkStore(':memory:');
+  const admitted = await work.admitShadowRun(prepareSlackShadowAdmission({
+    turn, assignment: dmAssignment, sourceVisibility: 'private', admittedAt: Date.now(),
+  }));
+  const h = harness(turn, { runId: admitted.run.id });
+  const registry = new SlackStatusRegistry({ quietAfterMs: 50, nativeKeepaliveMs: 40 });
+  const shown = 'custom:Preparing your request…';
+  const nativeAfterShown = () => h.effects.slice(h.effects.indexOf(shown) + 1)
+    .filter((effect) => effect === 'session:processing').length;
+  try {
+    await runTurn(turn, dmAssignment, undefined, {
+      client: h.client,
+      runId: h.runId,
+      turnId: `turn_${h.runId}`,
+      presentationState: h.state,
+      statusRegistry: registry,
+      workStore: work,
+      usageRecordingEnabled: false,
+      agentPrompt: async () => {
+        for (let tries = 0; tries < 100 && !(h.effects.includes(shown) && nativeAfterShown() >= 3); tries += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        assert.ok(nativeAfterShown() >= 3, JSON.stringify(h.effects));
+        return {
+          text: 'Done.',
+          requestedModel: assignment.model ?? null,
+          returnedModel: null,
+          reportedUsage: null,
+          usageCompleteness: 'not_reported',
+        };
+      },
+    });
+    const final = h.effects.indexOf('final');
+    assert.ok(final > 0, JSON.stringify(h.effects));
+    assert.equal(h.effects.slice(final).includes('session:processing'), false, JSON.stringify(h.effects));
+    const settled = h.effects.length;
+    assert.deepEqual(h.effects.slice(-2), ['session:active', 'custom:clear'], 'settled, then cleared');
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    assert.equal(h.effects.length, settled, 'no keepalive after the terminal');
+  } finally { h.db.close(); work.close(); }
+});

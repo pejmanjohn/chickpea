@@ -18,7 +18,11 @@ import {
   stageSlackCredentialBundle,
 } from '../src/slack/installation-credentials.ts';
 import { recordPendingSlackChallenge } from '../src/slack/installation-handshake.ts';
-import { buildSlackAppManifest, slackManifestFingerprint } from '../src/slack/app-manifest.ts';
+import {
+  buildSlackAppManifest,
+  slackManifestFingerprint,
+  slackManifestWithOptionalEvents,
+} from '../src/slack/app-manifest.ts';
 import { REQUIRED_SLACK_BOT_SCOPES, REQUESTED_SLACK_BOT_SCOPES } from '../src/slack/scopes.ts';
 
 const NOW = 1_786_000_000_000;
@@ -243,11 +247,52 @@ for (const repairUrls of [false, true]) test(`core-only installation recovers wi
   } finally { fixture.close(); }
 });
 
+for (const repairUrls of [false, true]) test(`an app made before the Stop event recovers without subscribing it (URL repair: ${repairUrls})`, async () => {
+  for (const coreOnly of [false, true]) {
+    const fixture = await recoveryFixture({
+      withoutStopEvent: true,
+      coreOnly,
+      manifestFlow: repairUrls,
+      initialOrigin: repairUrls ? 'https://old-chickpea.example' : ORIGIN,
+    });
+    try {
+      const authority = { ...await fixture.service.begin({ recoveryToken: TOKEN, browserBinding: BROWSER }), browserBinding: BROWSER };
+      // The recovery page builds today's manifest, which has the Stop event.
+      const current = buildSlackAppManifest({ kind: 'workspace_app', origin: ORIGIN });
+      assert.ok(current.settings.event_subscriptions.bot_events.includes('agent_session_stopped'));
+      const held = slackManifestWithOptionalEvents(current, []);
+      if (coreOnly) held.oauth_config.scopes.bot = [...REQUIRED_SLACK_BOT_SCOPES];
+      if (repairUrls) {
+        await fixture.service.repairUrls({ ...authority, configurationToken: 'xoxe.configuration-token-secret', expectedManifest: current });
+        // URL repair is not an event upgrade: Slack gets back the app's own events.
+        assert.deepEqual(fixture.updatedManifest?.settings.event_subscriptions.bot_events, held.settings.event_subscriptions.bot_events);
+        assert.equal(fixture.updatedManifest?.settings.event_subscriptions.request_url, `${ORIGIN}/channels/slack/events`);
+        assert.equal(
+          (await fixture.identity.getSlackRecoverySession(authority.recoveryId))?.manifestFingerprint,
+          slackManifestFingerprint(held),
+        );
+      }
+      const other = structuredClone(current);
+      other.settings.event_subscriptions.bot_events.push('channel_created');
+      await assert.rejects(fixture.service.stageAppCredentials({ ...authority, appId: 'A12345678', teamId: 'TACME', clientId: '123.456', clientSecret: 'replacement-client-secret', signingSecret: 'replacement-signing-secret', manifest: other }), (e: unknown) => e instanceof SlackCredentialRecoveryError && e.code === 'manifest_mismatch');
+      await fixture.service.stageAppCredentials({ ...authority, appId: 'A12345678', teamId: 'TACME', clientId: '123.456', clientSecret: 'replacement-client-secret', signingSecret: 'replacement-signing-secret', manifest: current });
+      const started = await fixture.service.startBotOAuth({ ...authority, redirectUri: REDIRECT });
+      await fixture.service.callback({ ...authority, state: started.state, redirectUri: REDIRECT, code: `stop-event-recovery-${coreOnly}` });
+      await fixture.recordChallenge('replacement-signing-secret');
+      assert.deepEqual(await fixture.service.finalize(authority), { status: 'repaired' });
+      const active = await fixture.identity.getActiveSlackCredentialRevision(WORKSPACE_SLACK_INSTALLATION_ID);
+      assert.equal(active?.manifestFingerprint, slackManifestFingerprint(held));
+    } finally { fixture.close(); }
+  }
+});
+
 async function recoveryFixture(options: {
   serviceKeyring?: ReturnType<typeof generateCredentialKeyring>;
   initialOrigin?: string;
   manifestFlow?: boolean;
   coreOnly?: boolean;
+  /** The app was created from a manifest without Slack's Stop event. */
+  withoutStopEvent?: boolean;
 } = {}) {
   const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
   const config = new SqliteConfigStore(':memory:');
@@ -257,6 +302,10 @@ async function recoveryFixture(options: {
     kind: 'workspace_app', origin: options.initialOrigin ?? ORIGIN,
   });
   if (options.coreOnly) manifest.oauth_config.scopes.bot = manifest.oauth_config.scopes.bot.filter(scope => !scope.startsWith('lists:'));
+  if (options.withoutStopEvent) {
+    manifest.settings.event_subscriptions.bot_events = manifest.settings.event_subscriptions.bot_events
+      .filter((event) => event !== 'agent_session_stopped');
+  }
   const grantedScopes = [...manifest.oauth_config.scopes.bot];
   const app = await stageSlackCredentialBundle(credentials, {
     identityId: WORKSPACE_SLACK_INSTALLATION_ID,

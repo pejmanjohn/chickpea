@@ -1374,6 +1374,53 @@ test('V3 keeps one native processing status active until an acknowledged termina
   }
 });
 
+test('KTD6: a native processing keepalive is transport-only, keeps the owner persona, and stops once settled', async () => {
+  const persona = {
+    name: 'Sprout',
+    avatarUrl: 'https://chickpea.example/assets/agents/sprout/avatar/4',
+    avatarRevision: 4,
+  };
+  const h = harness({
+    schemaVersion: 3,
+    owner: { kind: 'selected_agent', persona },
+  });
+  try {
+    assert.equal(await h.presentation.reassertNativeProcessing(), false, 'nothing to keep before a start');
+    assert.equal(await h.presentation.beginAgentSessionProcessing(), true);
+    const started = h.store.get(h.runId);
+    // The keepalive, twice across a long quiet stretch.
+    assert.equal(await h.presentation.reassertNativeProcessing(), true);
+    assert.equal(await h.presentation.reassertNativeProcessing(), true);
+    const sessionCalls = h.calls.filter(({ method }) => method === 'agents.sessions.setStatus');
+    assert.equal(sessionCalls.length, 3);
+    for (const call of sessionCalls) {
+      assert.deepEqual(call.input, {
+        channel_id: ROOT.channelId,
+        thread_ts: ROOT.threadTs,
+        status: 'processing',
+        initiator_user_id: ROOT.requesterUserId,
+        username: persona.name,
+        icon_url: persona.avatarUrl,
+      });
+    }
+    assert.deepEqual(h.store.get(h.runId), started, 'no durable receipt: the session was already processing');
+
+    applyPresentationMutation(h, {
+      kind: 'record_terminal_delivery_intent', operationId: 'terminal_keepalive_answer', result: 'answer',
+    });
+    applyPresentationMutation(h, {
+      kind: 'record_terminal_delivery_receipt',
+      operationId: 'terminal_keepalive_answer', certainty: 'acknowledged',
+    });
+    await h.presentation.settleAgentSession('answer');
+    const settled = h.calls.length;
+    assert.equal(await h.presentation.reassertNativeProcessing(), false);
+    assert.equal(h.calls.length, settled, 'a settled session is never kept processing');
+  } finally {
+    h.db.close();
+  }
+});
+
 test('V3 quarantines an unknown native processing receipt instead of blindly retrying', async () => {
   const h = harness({
     schemaVersion: 3,

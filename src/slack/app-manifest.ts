@@ -18,9 +18,20 @@ export const SLACK_BOT_SCOPES = Object.freeze([
 ] as const);
 
 const SHARED_BOT_EVENTS = Object.freeze([
+  'agent_session_stopped',
   'app_context_changed', 'app_home_opened', 'app_mention', 'member_joined_channel',
   'message.channels', 'message.groups', 'message.im', 'reaction_added',
 ] as const);
+
+/**
+ * Bot events an app created from an earlier manifest may lack. Slack draws
+ * the Stop button on a working Agent Session only for an app subscribed to
+ * `agent_session_stopped` (it needs only `chat:write`); an app without it
+ * keeps passing setup and recovery, and its people stop a run by typing
+ * (R25). Recovery never adds one.
+ */
+export const SLACK_OPTIONAL_BOT_EVENTS: readonly string[] = Object.freeze(['agent_session_stopped']);
+
 const CONTROL_PLANE_EVENTS = Object.freeze([
   ...SHARED_BOT_EVENTS, 'app_uninstalled', 'tokens_revoked', 'user_change',
 ] as const);
@@ -102,15 +113,38 @@ export function slackManifestFingerprint(manifest: SlackAppManifest): string {
   return `sha256:${createHash('sha256').update(JSON.stringify(manifest)).digest('hex')}`;
 }
 
-/** Validate the actual app contract without reflecting hostile manifest values. */
+/**
+ * `manifest` subscribed to only those optional bot events that `subscribed`
+ * names. Every other event keeps its place, so an earlier app's manifest (and
+ * its stored fingerprint) is reproduced exactly.
+ */
+export function slackManifestWithOptionalEvents(
+  manifest: SlackAppManifest,
+  subscribed: readonly string[],
+): SlackAppManifest {
+  const result = structuredClone(manifest);
+  result.settings.event_subscriptions.bot_events = result.settings.event_subscriptions.bot_events
+    .filter((event) => !SLACK_OPTIONAL_BOT_EVENTS.includes(event) || subscribed.includes(event));
+  return result;
+}
+
+/**
+ * Validate the actual app contract without reflecting hostile manifest values.
+ * An app may lack the optional bot events; the fingerprint is then that of the
+ * expected manifest without them, which is what Slack holds.
+ */
 export function validateSlackAppManifest(
   actual: unknown,
   expected: SlackAppManifest,
 ): { fingerprint: string } {
-  if (JSON.stringify(manifestContract(actual)) !== JSON.stringify(manifestContract(expected))) {
+  const held = slackManifestWithOptionalEvents(
+    expected,
+    stringArray(record(record(record(actual).settings).event_subscriptions).bot_events),
+  );
+  if (JSON.stringify(manifestContract(actual)) !== JSON.stringify(manifestContract(held))) {
     throw new Error('Slack app manifest does not match the expected callbacks, scopes, or events.');
   }
-  return { fingerprint: slackManifestFingerprint(expected) };
+  return { fingerprint: slackManifestFingerprint(held) };
 }
 
 /** Recovery may change only this deployment's two OAuth URLs and Events URL. */
