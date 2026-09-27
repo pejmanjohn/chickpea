@@ -82,7 +82,13 @@ export function displayToolAcknowledgement(kind: DisplayKind, left: number): str
   return `${DISPLAY_NOUNS[kind]} recorded under your answer${left ? `; ${left} more display component allowed` : ''}. Don't repeat its contents in prose.`;
 }
 
-export function createDisplayTools(write: (part: SlackDisplayComponentPart) => void) {
+export function createDisplayTools(
+  write: (part: SlackDisplayComponentPart) => void,
+  options: {
+    /** Whether a card button without a url can be clicked here (see interactiveSurfaceScope). */
+    requestButtons?: boolean;
+  } = {},
+) {
   let used = 0;
   let cardsUsed = false;
   const record = (kind: DisplayKind, spec: unknown): { output: string } => {
@@ -114,8 +120,15 @@ export function createDisplayTools(write: (part: SlackDisplayComponentPart) => v
       description: describe(SLACK_PRESENT_CARDS_TOOL_NAME),
       input: PresentCardsSchema,
       output: v.string(),
-      run: ({ data }: { data: PresentCardsInput }) =>
-        teaching(() => record('cards', validatePresentCards(data))),
+      run: ({ data }: { data: PresentCardsInput }) => teaching(() => {
+        const cards = validatePresentCards(data);
+        // A request button nobody could ever press is refused while the model can still fix it.
+        if (options.requestButtons === false &&
+            cards.cards.some((card) => card.actions?.some((action) => !action.url))) {
+          throw new Error('Card buttons here can only open links: give each button a url, or leave it out.');
+        }
+        return record('cards', cards);
+      }),
     },
     chart: {
       name: SLACK_PRESENT_CHART_TOOL_NAME,

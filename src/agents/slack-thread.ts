@@ -854,16 +854,16 @@ function useSlackInteractiveComponents(
   writeInteractiveQuestion?: (record: SlackInteractiveQuestion) => void,
   writeDisplayComponent?: (part: SlackDisplayComponentPart) => void,
 ): void {
+  const signal = parseSlackManagementSignal(useDelivery(), plan);
+  const scope = signal && interactiveSurfaceScope(signal, plan.agentId);
   // Display components need no click round trip, so they mount wherever a
   // reply is delivered; the interactive ones need a trusted Slack signal.
   if (writeDisplayComponent) {
-    const display = createDisplayTools(writeDisplayComponent);
+    const display = createDisplayTools(writeDisplayComponent, { requestButtons: Boolean(scope) });
     useTool(display.cards);
     useTool(display.chart);
     useTool(display.details);
   }
-  const signal = parseSlackManagementSignal(useDelivery(), plan);
-  const scope = signal && interactiveSurfaceScope(signal, plan.agentId);
   if (!scope) {
     if (writeDisplayComponent) useInstruction(slackPresentationGuide(DISPLAY_GUIDE_TOOLS));
     return;

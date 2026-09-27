@@ -176,6 +176,18 @@ test('display tools teach, share a two-component budget, and allow cards once', 
   assert.throws(() => fresh.cards.run({ data: { cards: [{ title: 'Bo' }] } }), /once per reply/);
 });
 
+test('where no click can be admitted (group DMs, legacy DM sessions), cards keep only link buttons', () => {
+  const written: SlackDisplayComponentPart[] = [];
+  const tools = createDisplayTools((part) => written.push(part), { requestButtons: false });
+  assert.throws(
+    () => tools.cards.run({ data: { cards: [{ title: 'Acme', actions: [{ label: 'Draft outreach' }] }] } }),
+    /can only open links/,
+  );
+  assert.equal(written.length, 0);
+  tools.cards.run({ data: { cards: [{ title: 'Acme', actions: [{ label: 'Open CRM', url: 'https://crm.example.com/acme' }] }] } });
+  assert.equal(written.length, 1);
+});
+
 test('the host re-validates written components, keeps two, and never puts them in the settlement', () => {
   const parts = [
     { kind: 'chart', spec: { title: 'Bad', type: 'pie', categories: ['a'], series: [{ name: 's', values: [0] }] } },
