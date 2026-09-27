@@ -300,26 +300,26 @@ const SLACK_SPECIAL_MENTION =
 const SLACK_BROADCAST_WORD = /(?<![\p{L}\p{N}_])@(?=(?:here|channel|everyone)(?![\p{L}\p{N}_]))/giu;
 const SLACK_CODE_SEGMENT = /(```[\s\S]*?(?:```|$)|`[^`\n]+`)/g;
 
+/** A plain `@here`, `@channel` or `@everyone` word with the joiner. */
+function joinBroadcastWords(text: string): string {
+  return text.replace(SLACK_BROADCAST_WORD, `@${SLACK_MENTION_BREAK}`);
+}
+
 /**
- * Model-written text never notifies a channel, its active members, the
- * workspace, or a user group. Slack parses `<!here>`, `<!channel>`,
- * `<!everyone>` and `<!subteam^ID>` in mrkdwn and top-level text and
- * auto-parses a plain `@here` in mrkdwn text objects; how its markdown block
- * and streamed markdown_text treat them is not documented. Every answer is
- * therefore neutralized before any path renders it: in prose a special
- * mention reads as its name (`@here`, a user group's label) and a plain
- * broadcast word keeps its text, each with a word joiner after the `@`. In
- * code the literal keeps its characters with the joiner after `<`. User
- * mentions, Channel links and dates are unchanged. Idempotent, and a
- * streamed prefix neutralizes to a prefix of the whole answer.
+ * Model-written text never notifies a channel, the workspace, or a user
+ * group, whichever Slack path renders it (see the Slack message identity
+ * runbook). In prose a special mention reads as its name (`@here`, a user
+ * group's label) and a plain broadcast word keeps its text, each with the
+ * joiner after the `@`; in code the literal keeps its characters with the
+ * joiner after `<`. User mentions, Channel links and dates are unchanged.
+ * Idempotent, and a streamed prefix neutralizes to a prefix of the answer.
  */
 export function neutralizeSlackBroadcastMentions(markdown: string): string {
   return markdown.split(SLACK_CODE_SEGMENT).map((segment, index) => index % 2 === 1
     ? segment.replace(SLACK_SPECIAL_MENTION, (token) => `<${SLACK_MENTION_BREAK}${token.slice(1)}`)
-    : segment
-      .replace(SLACK_SPECIAL_MENTION, (_token, target: string, label: string | undefined) =>
-        `@${SLACK_MENTION_BREAK}${slackSpecialMentionName(target, label)}`)
-      .replace(SLACK_BROADCAST_WORD, `@${SLACK_MENTION_BREAK}`)
+    : joinBroadcastWords(segment.replace(SLACK_SPECIAL_MENTION,
+      (_token, target: string, label: string | undefined) =>
+        `@${SLACK_MENTION_BREAK}${slackSpecialMentionName(target, label)}`))
   ).join('');
 }
 
@@ -835,11 +835,8 @@ function unsafeMentionTail(value: string): number {
 function unmatchedBacktickOnLastLine(value: string, lastLineStart: number): number | undefined {
   let offset = 0;
   for (const [index, segment] of value.split(SLACK_CODE_SEGMENT).entries()) {
-    if (index % 2 === 0 && offset + segment.length > lastLineStart) {
-      const from = Math.max(0, lastLineStart - offset);
-      const tick = segment.indexOf('`', from);
-      if (tick >= 0) return offset + tick;
-    }
+    const tick = index % 2 === 0 ? segment.indexOf('`', lastLineStart - offset) : -1;
+    if (tick >= 0) return offset + tick;
     offset += segment.length;
   }
   return undefined;
@@ -1046,8 +1043,7 @@ export function markdownFallbackText(markdown: string): string {
   // Unwrapped code turns a literal `@here` into prose. Top-level text parses
   // it only with link_names, which Chickpea never sets; stay inert regardless.
   return truncateText(
-    escapeSlackControlCharacters(fallback || '(empty reply)')
-      .replace(SLACK_BROADCAST_WORD, `@${SLACK_MENTION_BREAK}`),
+    joinBroadcastWords(escapeSlackControlCharacters(fallback || '(empty reply)')),
     slackFallbackTextLimit,
   );
 }
@@ -1087,18 +1083,14 @@ function fileReplyMrkdwnText(markdown: string): string {
   ).join('').trim() || '(empty reply)';
 }
 
-/**
- * Code in a mrkdwn section. Slack does not document whether its automatic
- * mention parsing skips code, so a broadcast word there gets the joiner too.
- */
+/** Code in a mrkdwn section: Slack rewrites a plain `@here` even inside backticks. */
 function slackMrkdwnCodeText(code: string): string {
-  return escapeSlackControlCharacters(code).replace(SLACK_BROADCAST_WORD, `@${SLACK_MENTION_BREAK}`);
+  return joinBroadcastWords(escapeSlackControlCharacters(code));
 }
 
 /**
- * Escaped model or user text for a mrkdwn text object. mrkdwn auto-parses a
- * plain `@here` or user-group `@handle`, so every word-initial `@` gets the
- * joiner, as in file-reply prose.
+ * Escaped text for a mrkdwn text object, which auto-parses a plain `@here`
+ * or user-group `@handle`: every word-initial `@` gets the joiner.
  */
 export function neutralizeSlackMrkdwnHandles(escaped: string): string {
   return escaped.replace(/(?<![\p{L}\p{N}_])@(?=[\p{L}\p{N}_])/gu, `@${SLACK_MENTION_BREAK}`);
