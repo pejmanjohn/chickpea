@@ -19,6 +19,7 @@ import {
 } from '../src/slack/ui/presentation-tools.ts';
 import { cardRequestButtonAt, renderCards, renderChart, renderDetails } from '../src/slack/ui/render-display.ts';
 import { parseUiControl, uiActionId, uiBlockId, uiValue, type DisplaySurfaceSpec } from '../src/slack/ui/surface.ts';
+import { escapeMrkdwn } from '../src/slack/ui/text.ts';
 
 const SURFACE = 'a'.repeat(32);
 
@@ -99,6 +100,19 @@ test('details compile to one collapsed container of escaped mrkdwn sections', ()
   assert.doesNotMatch(JSON.stringify(children), /<!here>/);
   assert.equal(details.fallbackText, 'Details: How I calculated this');
   assert.deepEqual(checkSlackBlocks(details.blocks).issues, []);
+});
+
+test('model text in mrkdwn never becomes a live broadcast', () => {
+  // Slack auto-parses a bare `@here` in mrkdwn; plain_text is never parsed.
+  const details = renderDetails(validatePresentDetails({
+    title: 'Who to tell', markdown: '**Tell @channel** and @here, not <!everyone>.',
+  }));
+  const children = details.blocks[0]!.child_blocks as Array<{ text: { type: string; text: string } }>;
+  assert.deepEqual(children.map((child) => child.text), [{
+    type: 'mrkdwn', text: '*Tell @\u2060channel* and @\u2060here, not &lt;\u2060!everyone&gt;.',
+  }]);
+  assert.deepEqual(checkSlackBlocks(details.blocks).issues, []);
+  assert.equal(escapeMrkdwn('Ping @everyone & <@U1>'), 'Ping @\u2060everyone &amp; &lt;@U1&gt;');
 });
 
 function random(seed: number) {

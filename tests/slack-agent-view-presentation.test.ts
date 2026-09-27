@@ -15,6 +15,7 @@ import {
   type SlackPresentationMutation,
 } from '../src/slack/run-presentations.ts';
 import type { SlackPresentationFinalizationRecord } from '../src/slack/run-presentations.ts';
+import { canonicalSlackMarkdownText } from '../src/slack/message-format.ts';
 import { SlackTransportError } from '../src/slack/transport/types.ts';
 import { WebClientPresenter } from '../src/slack/web-client-presenter.ts';
 import { slackClientMessageId } from '../src/slack/transport/message-id.ts';
@@ -672,6 +673,56 @@ test('ordinary eligible answers start once, append ordered suffixes, and stop on
     assert.equal(h.finalizationRecords[0]?.policyOutcome, 'requested_progressive');
     assert.equal(h.finalizationRecords[0]?.acceptedBytes, 24);
     assert.equal(JSON.stringify(h.finalizationRecords).includes('Hello progressive world.'), false);
+  } finally {
+    h.db.close();
+  }
+});
+
+test('a broadcast split across stream deltas streams inert and finalizes without a correction', async () => {
+  const liveBroadcast =
+    /<!(?:channel|here|everyone)|(?<![\p{L}\p{N}_])@(?:channel|here|everyone)(?![\p{L}\p{N}_])/iu;
+  const deltas = ['Options:\n1. ', '<!chan', 'nel> alert\n2. @chan', 'nel and @he', 're, then <@U0123ABC>.'];
+  const answer = deltas.join('');
+  const h = harness({ schemaVersion: 3 });
+  try {
+    const relay = await prepareReceipt(h, {
+      instanceId: 'instance_broadcast',
+      receipt: { submissionId: 'submission_broadcast', acceptedAt: 'now', uid: 'uid' },
+      eligibility: { allowed: true, reason: 'safe_early_release' },
+    });
+    assert.ok(relay);
+    relay.onEvent({
+      type: 'message-started', conversationId: 'conversation',
+      submissionId: 'submission_broadcast', messageId: 'message_broadcast',
+      position: { batch: 1, index: 0 },
+    });
+    declareProgressiveIntent(relay, {
+      submissionId: 'submission_broadcast',
+      messageId: 'message_broadcast',
+    });
+    for (const [index, delta] of deltas.entries()) {
+      relay.onEvent({
+        type: 'message-delta', conversationId: 'conversation', messageId: 'message_broadcast',
+        kind: 'text', delta, position: { batch: 4 + index, index: 0 },
+      });
+      // Let each delta reach Slack before the next one arrives.
+      for (let turn = 0; turn < 20; turn += 1) await new Promise((resolve) => setImmediate(resolve));
+    }
+    relay.onEvent({
+      type: 'message-completed', conversationId: 'conversation', messageId: 'message_broadcast',
+      position: { batch: 4 + deltas.length, index: 0 },
+    });
+    await relay.closeAndDrain();
+    await h.presentation.finalize(answer, 'markdown', 'complete', observer([]));
+    await h.presentation.markCanonicalFinalized();
+
+    const writes = h.calls.filter((call) => call.method.startsWith('chat.'));
+    assert.equal(writes.some((call) => call.method === 'chat.update'), false);
+    assert.equal(h.store.get(h.runId)?.stream.state, 'finalized');
+    const visible = writes.map((call) => markdownChunkText(call.input)).join('');
+    assert.equal(visible, canonicalSlackMarkdownText(answer));
+    assert.doesNotMatch(visible, liveBroadcast);
+    assert.match(visible, /<@U0123ABC>/);
   } finally {
     h.db.close();
   }

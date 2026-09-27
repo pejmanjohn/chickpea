@@ -186,6 +186,11 @@ test('every progressive cut point is a monotone prefix of the canonical terminal
     'word\nxoxb-sk-ant-xoxb-123456789012345678901234 then more.',
     'word\nxoxp-sk-proj-abcdefghijklmnopqrstuvwxyz123456 then more.',
     '```ts\nxoxb-xoxb-123456789012345678901234\n```\nComplete.',
+    'Options: <!channel> alert, <!here|here> and <!subteam^S0123|@eng>.',
+    'Ping @chan\n@channels are fine; @channel is not, nor @HERE or @everyone',
+    'Trailing broadcasts @@here and <!everyone',
+    'x @herexoxb-123456789012345678901234 then more.',
+    'x <!herexoxb-123456789012345678901234> then more.',
   ];
 
   for (const terminalInput of corpus) {
@@ -212,7 +217,63 @@ test('plain progress replies disable Slack markup parsing and escape control cha
 
   assert.equal(rendered.blocks, undefined);
   assert.equal(rendered.mrkdwn, false);
-  assert.equal(rendered.text, 'Progress for &lt;@U123&gt; &amp; &lt;!channel&gt;');
+  assert.equal(rendered.text, 'Progress for &lt;@U123&gt; &amp; &lt;\u2060!channel&gt;');
+});
+
+// A live broadcast: Slack's `<!channel>` syntax in any formatted surface, or a
+// bare `@channel` that Slack auto-parses in mrkdwn text objects.
+const LIVE_BROADCAST =
+  /<!(?:channel|here|everyone|subteam\^)|(?<![\p{L}\p{N}_])@(?:channel|here|everyone)(?![\p{L}\p{N}_])/iu;
+
+const BROADCAST_ANSWER = [
+  'Options:',
+  '1. <!channel> alert',
+  '2. <!here|here>, <!everyone> and <!subteam^S0123ABC|@eng>',
+  '3. @channel, @HERE! (@everyone)',
+  '4. `<!channel>` and',
+  '```',
+  '@here',
+  '```',
+].join('\n');
+
+test('Agent reply text never carries a live broadcast mention in any format', () => {
+  const canonical = canonicalSlackMarkdownText(BROADCAST_ANSWER);
+  assert.doesNotMatch(canonical, LIVE_BROADCAST);
+  // The text reads the same; a word joiner keeps Slack from parsing it.
+  assert.match(canonical, /^1\. <\u2060!channel> alert$/m);
+  assert.match(canonical, /^3\. @\u2060channel, @\u2060HERE! \(@\u2060everyone\)$/m);
+  assert.equal(canonical.replaceAll('\u2060', ''), BROADCAST_ANSWER);
+  assert.equal(canonicalSlackMarkdownText(canonical), canonical);
+
+  for (const format of ['markdown', 'mrkdwn', 'plain_text'] as const) {
+    assert.doesNotMatch(JSON.stringify(renderSlackMessage(BROADCAST_ANSWER, format)), LIVE_BROADCAST);
+    const footer = { agentName: 'Analyst', agentId: 'agent_analyst', includeConfigureLink: false };
+    assert.doesNotMatch(
+      JSON.stringify(renderSlackFileBlocks(BROADCAST_ANSWER, format, footer, '| @here | 1 |')),
+      LIVE_BROADCAST,
+    );
+    assert.doesNotMatch(
+      JSON.stringify(renderSlackArtifactMessage(BROADCAST_ANSWER, format, footer, [completedFile(1)])),
+      LIVE_BROADCAST,
+    );
+  }
+});
+
+test('a broadcast in a long reply stays neutral in every continuation', () => {
+  const answer = `${'x'.repeat(slackMarkdownBlockTextLimit + 50)}\n\n<!channel> and @here`;
+  const parts = splitSlackMarkdownReply(canonicalSlackMarkdownText(answer));
+  assert.equal(parts.length, 2);
+  for (const part of parts) {
+    assert.doesNotMatch(JSON.stringify(renderSlackMessage(part, 'markdown')), LIVE_BROADCAST);
+  }
+});
+
+test('user, channel and date references and other @ words stay exactly as written', () => {
+  const text = [
+    'Ask <@U0123ABC> in <#C0123ABC|ops> by <!date^1785700100^{date}|today>.',
+    'Mail ops@here.example; @channels, @heretofore, @everyone_team and <!channelx> are not broadcasts.',
+  ].join('\n');
+  assert.equal(canonicalSlackMarkdownText(text), text);
 });
 
 test('plain Slack replies redact credential-shaped content', () => {
@@ -294,7 +355,7 @@ test('file sections preserve safe action labels while escaping malformed content
   assert.match(comment, /\*GRE:\* \$2,400 &amp; TOEFL: \$800/);
   assert.match(comment, /<https:\/\/example.com\/report\?exam=gre&amp;row=1\|View report>/);
   assert.match(comment, /Unsafe\n\[Malformed\]\(https:\/\/example.com\/&lt;broken/);
-  assert.match(comment, /&lt;!channel&gt;/);
+  assert.match(comment, /&lt;\u2060!channel&gt;/);
   assert.match(comment, /\[credential redacted\]/);
   assert.doesNotMatch(comment, new RegExp(`${canary}|javascript:|<!channel>`));
 });

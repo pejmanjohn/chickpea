@@ -614,6 +614,69 @@ test('deliverFinal redacts credential-shaped content before streaming it to Slac
   }
 });
 
+test('Agent broadcast mentions stay inert in the stream, post fallback, and ephemeral reply', async () => {
+  const liveBroadcast =
+    /<!(?:channel|here|everyone)|(?<![\p{L}\p{N}_])@(?:channel|here|everyone)(?![\p{L}\p{N}_])/iu;
+  const answer = 'Options:\n1. <!channel> alert\n2. @here and <!everyone>\nAsk <@U0123ABC> in <#C0123ABC>.';
+  const target = {
+    channelId: 'C_BOUND',
+    threadTs: '1782770400.000100',
+    userId: 'U_REQUESTER',
+    workspaceId: 'T_WORKSPACE',
+    agentName: 'Test agent',
+    agentId: 'agent_test',
+  };
+  for (const startFails of [false, true]) {
+    const writes: Array<Record<string, unknown>> = [];
+    const approvedOutputs: string[] = [];
+    const presenter = new WebClientPresenter(
+      {
+        chat: {
+          async startStream(input: Record<string, unknown>) {
+            writes.push(input);
+            if (startFails) throw new Error('confirmed start rejection');
+            return { ok: true, ts: '1782770400.000301' };
+          },
+          async stopStream(input: Record<string, unknown>) {
+            writes.push(input);
+            return { ok: true };
+          },
+          async postMessage(input: Record<string, unknown>) {
+            writes.push(input);
+            return { ok: true, ts: '1782770400.000302' };
+          },
+          async postEphemeral(input: Record<string, unknown>) {
+            writes.push(input);
+            return { ok: true, message_ts: '1782770400.000303' };
+          },
+        },
+      } as unknown as WebClient,
+      target,
+      {
+        async beforeDelivery(input) {
+          approvedOutputs.push(input.approvedOutput, input.renderedPayload);
+          return `attempt-${approvedOutputs.length}`;
+        },
+        async afterDelivery() {},
+      },
+    );
+
+    await presenter.deliverFinal(answer, 'markdown');
+    await presenter.deliverRequesterOnly(answer, 'markdown');
+
+    assert.equal(writes.some((write) => write.user === 'U_REQUESTER'), true);
+    const postedFallback = writes.some((write) =>
+      write.user === undefined && JSON.stringify(write.blocks ?? []).includes('Options'));
+    assert.equal(postedFallback, startFails);
+    for (const output of [...writes.map((write) => JSON.stringify(write)), ...approvedOutputs]) {
+      assert.doesNotMatch(output, liveBroadcast);
+      if (!output.includes('Options')) continue;
+      assert.match(output, /<@U0123ABC>/);
+      assert.match(output, /<#C0123ABC>/);
+    }
+  }
+});
+
 test('deliverFinal removes an algorithm-labeled PEM key before streaming or durable observation', async () => {
   const starts: Array<Record<string, unknown>> = [];
   const approvedOutputs: string[] = [];

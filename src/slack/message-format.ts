@@ -265,12 +265,12 @@ function splitSlackText(text: string, limit: number): string[] {
   return chunks;
 }
 
-/** Canonical credential-safe text shared by every terminal Slack delivery path. */
+/** Canonical credential- and broadcast-safe text shared by every terminal Slack delivery path. */
 export function canonicalSlackReplyText(text: string, format: SlackReplyFormat): string {
   const normalized = normalizeMessageText(text);
   return format === 'markdown'
     ? canonicalSlackMarkdownText(normalized)
-    : redactCredentialLikeContent(normalized);
+    : neutralizeSlackBroadcastMentions(redactCredentialLikeContent(normalized));
 }
 
 /**
@@ -280,7 +280,29 @@ export function canonicalSlackReplyText(text: string, format: SlackReplyFormat):
  */
 export function canonicalSlackMarkdownText(text: string): string {
   const normalized = normalizeMessageText(text);
-  return redactCredentialLikeContent(sanitizeSlackMarkdownLinks(normalized));
+  return neutralizeSlackBroadcastMentions(
+    redactCredentialLikeContent(sanitizeSlackMarkdownLinks(normalized)),
+  );
+}
+
+/** Every name a Slack broadcast is written with; `subteam` only as `<!subteam^…>`. */
+const SLACK_BROADCAST_NAMES = ['channel', 'here', 'everyone', 'subteam'];
+const SLACK_BROADCAST_MENTION =
+  /<(?=!(?:channel|here|everyone|subteam)(?![\p{L}\p{N}_]))|(?<![\p{L}\p{N}_])@(?=(?:channel|here|everyone)(?![\p{L}\p{N}_]))/giu;
+const WORD_JOINER = '\u2060';
+
+/**
+ * Agent text never pings a channel or a user group. Slack broadcasts
+ * `<!channel>`, `<!here>`, `<!everyone>` and `<!subteam^…>` from a markdown
+ * block (seen live) as from mrkdwn, and auto-parses a bare `@channel`,
+ * `@here` or `@everyone` in mrkdwn text objects (docs.slack.dev, read
+ * 2026-09-26; the markdown block leaves the bare form undocumented). A word
+ * joiner after the `<` or `@` reads the same and is not parsed. Code is not
+ * exempt: a ping from an example is still a ping. `<@U…>`, `<#C…>` and
+ * `<!date^…>` are untouched, and a neutralized text is left as it is.
+ */
+export function neutralizeSlackBroadcastMentions(text: string): string {
+  return text.replace(SLACK_BROADCAST_MENTION, `$&${WORD_JOINER}`);
 }
 
 /** Follow-up messages a long reply may use after its first message. */
@@ -660,9 +682,10 @@ function chooseSlackReplyCut(text: string, limit: number, min: number): SlackRep
 
 /**
  * Return the cumulative prefix that is safe to expose before generation ends.
- * Potential links, emphasized URLs, and credential-shaped tokens remain in the
- * in-memory tail until their closing delimiter arrives. The returned value is
- * therefore monotone and a prefix of `canonicalSlackMarkdownText(final)`.
+ * Potential links, emphasized URLs, credential-shaped tokens, and broadcast
+ * names remain in the in-memory tail until their closing delimiter arrives.
+ * The returned value is therefore monotone and a prefix of
+ * `canonicalSlackMarkdownText(final)`.
  */
 export function streamableSlackMarkdownPrefix(text: string): string {
   const normalized = text.replace(/\r\n?/g, '\n').replace(/^\s+/, '');
@@ -751,6 +774,13 @@ function earliestUnsafeTail(value: string): number {
   const trailingLineStart = value.lastIndexOf('\n') + 1;
   if (/^\s*\|/.test(value.slice(trailingLineStart)) && !value.endsWith('\n')) {
     unsafeFrom = Math.min(unsafeFrom, trailingLineStart);
+  }
+  // A broadcast name is neutralized once the next character shows the word
+  // ended, so hold one that could still grow into it (`@`, `@chan`, `<!he`).
+  const name = /(?:<!|(?<![\p{L}\p{N}_])@)(\p{L}*)$/u.exec(value.slice(0, unsafeFrom));
+  if (name && SLACK_BROADCAST_NAMES.some((broadcast) =>
+    broadcast.startsWith(name[1]!.toLowerCase()))) {
+    unsafeFrom = name.index;
   }
   return unsafeFrom;
 }
@@ -977,7 +1007,7 @@ function readableMarkdownText(markdown: string): string {
 
 /** Markdown as escaped Slack mrkdwn: links and emphasis kept, control syntax never live. */
 export function markdownToSlackMrkdwn(markdown: string): string {
-  return fileReplyMrkdwnText(markdown);
+  return fileReplyMrkdwnText(neutralizeSlackBroadcastMentions(markdown));
 }
 
 function fileReplyMrkdwnText(markdown: string): string {
