@@ -298,7 +298,9 @@ const SLACK_BROADCAST_KEYWORDS = ['here', 'channel', 'everyone'] as const;
 // `<!date^…>` stay as written.
 const SLACK_SPECIAL_MENTION =
   /<!(here|channel|everyone|group|subteam\^[^<>|\n]*)(?:\|([^<>\n]*))?>/gi;
-const SLACK_BROADCAST_WORD = /(?<![\p{L}\p{N}_])@(?=(?:here|channel|everyone)(?![\p{L}\p{N}_]))/giu;
+// `_` is a boundary: mrkdwn reads `__@here__` as `*@here*` and `_@here_` as
+// italic `@here`, so both still ping.
+const SLACK_BROADCAST_WORD = /(?<![\p{L}\p{N}])@(?=(?:here|channel|everyone)(?![\p{L}\p{N}]))/giu;
 const SLACK_CODE_SEGMENT = /(```[\s\S]*?(?:```|$)|`[^`\n]+`)/g;
 
 /** A plain `@here`, `@channel` or `@everyone` word with the joiner. */
@@ -966,11 +968,12 @@ export function renderSlackActionLink(
   const link = typeof urlOrLink === 'string'
     ? slackActionLink(urlOrLink, label ?? 'Open link')
     : urlOrLink;
-  const safeLabel = escapeSlackControlCharacters(link.label)
+  // A model-written label is mrkdwn text too; stripping styles can expose `@here`.
+  const safeLabel = neutralizeSlackMrkdwnHandles(escapeSlackControlCharacters(link.label)
     .replace(/[\r\n\u0000-\u001f\u007f|]+/g, ' ')
     .replace(/[*_~`]/g, '')
     .slice(0, 80)
-    .trim() || 'Open link';
+    .trim()) || 'Open link';
   const trimmed = link.url.trim();
   let parsed: URL;
   try {
@@ -1130,7 +1133,7 @@ function slackMrkdwnCodeText(code: string): string {
  * or user-group `@handle`: every word-initial `@` gets the joiner.
  */
 export function neutralizeSlackMrkdwnHandles(escaped: string): string {
-  return escaped.replace(/(?<![\p{L}\p{N}_])@(?=[\p{L}\p{N}_])/gu, `@${SLACK_MENTION_BREAK}`);
+  return escaped.replace(/(?<![\p{L}\p{N}])@(?=[\p{L}\p{N}_])/gu, `@${SLACK_MENTION_BREAK}`);
 }
 
 function fileReplyProseText(markdown: string): string {
@@ -1176,7 +1179,7 @@ function renderSlackInlineMarkdown(source: string): string {
     const link = source.slice(at).match(/^(!?)\[([^\]\n]*)\]\(([^)\n]+)\)/);
     if (link) {
       pieces.push(link[1]
-        ? escapeSlackControlCharacters(link[2]!)
+        ? neutralizeSlackMrkdwnHandles(escapeSlackControlCharacters(link[2]!))
         : renderSlackActionLink(link[3]!, link[2]!));
       at += link[0].length;
       continue;
@@ -1208,7 +1211,7 @@ function renderSlackInlineMarkdown(source: string): string {
     // mrkdwn text objects auto-parse a plain `@handle` into a user-group
     // mention; the canonical answer already neutralized broadcast words.
     if (source[at] === '@' && /[\p{L}\p{N}_]/u.test(source[at + 1] ?? '') &&
-        !/[\p{L}\p{N}_]/u.test(source[at - 1] ?? '')) {
+        !/[\p{L}\p{N}]/u.test(source[at - 1] ?? '')) {
       pieces.push(`@${SLACK_MENTION_BREAK}`);
       at += 1;
       continue;

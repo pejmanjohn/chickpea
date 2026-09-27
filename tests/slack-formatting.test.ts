@@ -11,6 +11,7 @@ import {
   replyFooterModelLabel,
   renderUnassignedChannelHint,
   markdownFallbackText,
+  markdownToSlackMrkdwn,
   neutralizeSlackBroadcastMentions,
   renderSlackActionLink,
   renderSlackMarkdownActionLink,
@@ -271,6 +272,25 @@ test('file replies keep broadcast words and user-group handles inert in mrkdwn',
   const withTable = renderFileBody(answer, 'markdown', footer, 'Owner: @here | Note: <!channel> for @oncall');
   assert.match(withTable, new RegExp(`Owner: @${WJ}here \\| Note: &lt;!channel&gt; for @${WJ}oncall`));
   assert.doesNotMatch(withTable, LIVE_BROADCAST);
+});
+
+test('mrkdwn emphasis, image alt text and link labels cannot revive a mention', () => {
+  const footer = { agentName: 'Analyst', agentId: 'analyst' };
+  const emphasis = 'Ping __@here__, _@channel_ and __@oncall__ now.';
+  const labels = [
+    '![@here](https://x.test/a.png) ![@oncall](u) [@everyone](nope)',
+    '[@_here_](nope) [@`everyone`](all) [@here](https://x.test/p)',
+  ].join('\n');
+  const inert = [
+    `Ping *@${WJ}here*, _@${WJ}channel_ and *@${WJ}oncall* now.`,
+    [
+      `@${WJ}here @${WJ}oncall @${WJ}everyone`,
+      `@${WJ}here @${WJ}everyone <https://x.test/p|@${WJ}here>`,
+    ].join('\n'),
+  ];
+  // File replies canonicalize first; present_details markdown does not.
+  assert.deepEqual([emphasis, labels].map((text) => renderFileBody(text, 'markdown', footer)), inert);
+  assert.deepEqual([emphasis, labels].map(markdownToSlackMrkdwn), inert);
 });
 
 test('code keeps a special mention readable but inert', () => {
