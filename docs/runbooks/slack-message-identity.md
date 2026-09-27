@@ -180,7 +180,7 @@ covers only some of the paths a reply takes:
 | --- | --- | --- |
 | `markdown` block | Every final answer | Silent on mentions (observed below) |
 | Streamed `markdown_text` chunk | Progressive and final streams | Silent on mentions (observed below) |
-| mrkdwn section text | File replies, routine file deliveries | Parses `<!here>`, `<!channel>`, `<!everyone>`, `<!subteam^ID>`; with the default `verbatim: false` it also auto-parses a plain `@here` and user-group handles |
+| mrkdwn section text | File replies, routine file deliveries, work checklists, milestone plans | Parses `<!here>`, `<!channel>`, `<!everyone>`, `<!subteam^ID>`; with the default `verbatim: false` it also auto-parses a plain `@here` and user-group handles |
 | Top-level `text` | Fallback and notification text | Parses `<!here>` syntax; a plain `@here` only with `link_names=1`, which Chickpea never sets |
 
 Every path is treated as parsing everything, so
@@ -197,6 +197,9 @@ sanitizing and credential redaction. `neutralizeSlackBroadcastMentions` in
 - File-reply mrkdwn gives every word-initial `@handle` in prose the joiner,
   because mrkdwn auto-parses user-group handles. Plain broadcast words in code
   there get it too, since Slack does not say whether auto-parsing skips code.
+- Work-checklist and milestone-plan labels and details are rendered through
+  `escapeMrkdwn`, so a classifier-written `@here` or `@handle` gets the joiner
+  in both the mrkdwn section and the top-level `text`.
 
 User mentions (`<@U…>`), Channel links, `<!date^…>`, `<!DOCTYPE …>`, CDATA and
 email addresses are unchanged. Streaming withholds an open `<…` on the last

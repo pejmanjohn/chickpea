@@ -39,6 +39,7 @@ import type {
   SlackPresentationPlanV3,
   SlackPresentationReceiptCertainty,
 } from './run-presentations.ts';
+import { escapeMrkdwn } from './ui/text.ts';
 import { slackClientMessageId } from './transport/message-id.ts';
 import { SlackTransportError } from './transport/types.ts';
 import { slackPlatformErrorCode } from './errors.ts';
@@ -1512,8 +1513,9 @@ function renderWorkChecklist(checklist: readonly string[], complete: boolean | '
     text: { type: 'mrkdwn'; text: string };
   }>;
 } {
+  // Labels are classifier-written; a mrkdwn section would ping a plain `@here`.
   const lines = checklist.map((item, index) =>
-    `${complete === true ? '✓' : complete === 'failed' ? '×' : index === 0 ? '✱' : '○'} ${item}`
+    `${complete === true ? '✓' : complete === 'failed' ? '×' : index === 0 ? '✱' : '○'} ${escapeMrkdwn(item)}`
   );
   const text = lines.join('\n');
   return {
@@ -1546,7 +1548,7 @@ function renderMilestonePlan(plan: SlackPresentationPlanV3): {
           : task.status === 'in_progress'
             ? '✱'
             : '○';
-    return `${marker} ${task.title}${task.detail ? ` — ${task.detail}` : ''}`;
+    return `${marker} ${escapeMrkdwn(task.title)}${task.detail ? ` — ${escapeMrkdwn(task.detail)}` : ''}`;
   });
   const text = lines.join('\n');
   return {

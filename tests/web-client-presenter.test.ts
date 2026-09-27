@@ -9,6 +9,7 @@ import {
   WebClientPresenter,
 } from '../src/slack/web-client-presenter.ts';
 import { activityStatus } from '../src/activity/status.ts';
+import type { SlackPresentationPlanV3 } from '../src/slack/run-presentations.ts';
 import { SlackTransportError } from '../src/slack/transport/types.ts';
 import { syntheticPem } from './helpers/credential-fixtures.ts';
 
@@ -1307,4 +1308,47 @@ test('fallback milestone projection distinguishes every semantic outcome without
   assert.match(rendered, /Failed: permission denied\./);
   assert.match(rendered, /Not run: publishing failed\./);
   assert.doesNotMatch(rendered, /UTC/);
+});
+
+test('classifier-written checklist and milestone labels cannot ping in mrkdwn or text', async () => {
+  // A mrkdwn section auto-parses a plain `@here` or user-group `@handle`.
+  const sent: Array<Record<string, unknown>> = [];
+  const presenter = presenterWith({
+    chat: {
+      async postMessage(input: Record<string, unknown>) {
+        sent.push(input);
+        return { ok: true, ts: '1782770400.001100' };
+      },
+      async update(input: Record<string, unknown>) {
+        sent.push(input);
+        return { ok: true };
+      },
+    },
+  });
+  const labels = ['Notify @here about the deploy', 'Ask @eng-oncall & <https://x.test|ops>'];
+  const ts = await presenter.postWorkChecklist(labels);
+  await presenter.updateWorkChecklist(ts!, labels, 'failed');
+  const plan: SlackPresentationPlanV3 = {
+    displayMode: 'plan',
+    tasks: [
+      { id: 'task_notify', title: labels[0]!, status: 'error', outcome: 'failed',
+        detail: 'Failed: @channel was unreachable.' },
+      { id: 'task_ask', title: labels[1]!, status: 'in_progress' },
+    ],
+  };
+  await presenter.postMilestonePlan(plan);
+  await presenter.updateMilestonePlan('1782770400.001100', plan);
+
+  assert.equal(sent.length, 4);
+  for (const message of sent) {
+    const blocks = message.blocks as Array<{ type: string; text: { type: string; text: string } }>;
+    assert.equal(blocks[0]?.text.type, 'mrkdwn');
+    for (const output of [blocks[0]!.text.text, String(message.text)]) {
+      assert.doesNotMatch(output, /(?<![\p{L}\p{N}_])@[\p{L}\p{N}_]/u);
+      assert.doesNotMatch(output, /</);
+      assert.match(output, /Notify @\u2060here about the deploy/);
+      assert.match(output, /Ask @\u2060eng-oncall &amp; &lt;https:\/\/x\.test\|ops&gt;/);
+    }
+  }
+  assert.match(String(sent[2]?.text), /^× Notify @\u2060here about the deploy — Failed: @\u2060channel was unreachable\.\n✱ Ask /);
 });
