@@ -176,6 +176,7 @@ import {
   type SlackUiAction,
 } from '../slack/ui/interaction-payload.ts';
 import { approvalChoice, uiResponseTurnText, type RenderedUiSurface } from '../slack/ui/render.ts';
+import { interactiveAnswer, type InteractiveAnswer } from '../slack/ui/render-interactive.ts';
 import {
   redrawUiSurface,
   retireApprovalSurfacesForTypedAnswer,
@@ -1131,12 +1132,25 @@ async function handleSlackUiAction(input: {
     await redraw(await uiSurfaceRecord(state, { kind: 'close_surface', id: surface.id, status: 'expired' }));
     return refuse('closed', surface);
   }
-  const choice = control.valueIndex;
-  if (choice === undefined) return refuse('unavailable', surface);
+  let answer: InteractiveAnswer | undefined;
+  if (surface.spec.kind === 'approval') {
+    if (control.valueIndex === undefined) return refuse('unavailable', surface);
+    answer = { choice: control.valueIndex };
+  } else {
+    // Ticking a checkbox or choosing in a picker before Submit also sends
+    // block_actions; only a complete answer goes on, and nothing is consumed.
+    answer = interactiveAnswer(surface, control, action);
+    if (!answer) return;
+  }
   const messageTs = microsecondSlackTs(action.actionTs);
   if (!messageTs) return refuse('unavailable', surface);
 
-  const admission: SlackUiAdmission = { surface, choice, outcome: 'unavailable' };
+  const admission: SlackUiAdmission = {
+    surface,
+    choice: answer.choice,
+    ...(answer.values ? { values: answer.values } : {}),
+    outcome: 'unavailable',
+  };
   await processSlackEvent({
     token: '',
     team_id: action.workspaceId,
@@ -1149,7 +1163,7 @@ async function handleSlackUiAction(input: {
       channel: surface.channelId,
       channel_type: surface.conversationKind === 'im' ? 'im' : 'channel',
       user: action.userId,
-      text: uiResponseTurnText(surface, choice),
+      text: uiResponseTurnText(surface, answer, action.userId),
       ts: messageTs,
       event_ts: messageTs,
       thread_ts: surface.threadTs,
@@ -1163,7 +1177,7 @@ async function handleSlackUiAction(input: {
     // what the card now shows as cancelled. Only the claimed click gets here.
     const spec = surface.spec;
     if (spec.kind === 'approval' && spec.approval === 'workspace_change' &&
-        approvalChoice(choice) === 'decline') {
+        approvalChoice(answer.choice) === 'decline') {
       await stores.management.markChangeSetProposalStale(spec.proposalId, Date.now()).catch(() => {
         console.warn('[chickpea] cancelled proposal could not be retired');
       });
@@ -1470,6 +1484,7 @@ async function processSlackEvent(
       namespace: ui.surface.namespace,
       kind: ui.surface.spec.kind,
       choice: ui.choice,
+      ...(ui.values?.length ? { values: ui.values } : {}),
     };
   }
   const state = stores.slackState;
@@ -2051,7 +2066,12 @@ async function processSlackEvent(
               uiSurfaceClaim: {
                 surfaceId: ui.surface.id,
                 namespace: ui.surface.namespace,
-                resolution: { byUserId: turn.userId, at: Date.now(), choice: ui.choice },
+                resolution: {
+                  byUserId: turn.userId,
+                  at: Date.now(),
+                  choice: ui.choice,
+                  ...(ui.values?.length ? { values: ui.values } : {}),
+                },
               },
             }
           : {}),

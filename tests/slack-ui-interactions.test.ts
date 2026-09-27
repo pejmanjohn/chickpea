@@ -380,6 +380,137 @@ test('a click in a DM thread is admitted like a DM reply from the clicker', asyn
   assert.equal((await f.read(surface.id))?.status, 'resolved');
 }));
 
+// ── model surfaces: ask_user and offer_actions ────────────────────────────
+
+function question(patch: Partial<import('../src/slack/ui/presentation-tools.ts').AskUserSpec> = {}) {
+  return {
+    kind: 'question' as const,
+    question: {
+      question: 'Which environment should I deploy to?',
+      options: [{ label: 'Staging', recommended: true as const }, { label: 'Production' }, { label: 'Both' }],
+      answerFrom: 'requester' as const,
+      ...patch,
+    },
+  };
+}
+
+test('an ask_user button answer becomes a typed turn from the clicker and redraws as answered', async () => withFixture(async (f) => {
+  const surface = await f.surface({ namespace: 'ui', spec: question() });
+  await f.click(surface.id, {
+    actionId: uiActionId('ui', 'question', 0), blockId: uiBlockId('ui', surface.id, 1), value: uiValue(surface.id, 0),
+  });
+  assert.equal(f.jobs.length, 2);
+  const turn = f.jobs[1]!.turn;
+  assert.match(turn.text, /^Answered your question "Which environment should I deploy to\?" \(question [a-f0-9]{8}\): Staging$/);
+  assert.deepEqual(turn.uiResponse, { surfaceId: surface.id, namespace: 'ui', kind: 'question', choice: 0, values: ['0'] });
+  assert.equal(turn.approvedBrowserActionId, undefined);
+  assert.equal(turn.managementApprovalProposalId, undefined);
+  const update = f.updates().at(-1)!;
+  assert.match(JSON.stringify(update.blocks), /:white_check_mark: \*Staging\*, answered by <@U1>/);
+  assert.ok(!hasActions(update));
+  assert.deepEqual((await f.read(surface.id))?.resolution?.values, ['0']);
+}));
+
+test('an option labelled Approve answers the question and never stamps an approval', async () => withFixture(async (f) => {
+  const held = await f.heldAction();
+  const surface = await f.surface({
+    namespace: 'ui',
+    spec: question({ question: 'Proceed?', options: [{ label: 'Approve' }, { label: 'approve' + ' step' }] }),
+  });
+  await f.click(surface.id, {
+    actionId: uiActionId('ui', 'question', 0), blockId: uiBlockId('ui', surface.id, 1), value: uiValue(surface.id, 0),
+  });
+  const turn = f.jobs.at(-1)!.turn;
+  assert.equal(turn.uiResponse?.kind, 'question');
+  assert.equal(turn.approvedBrowserActionId, undefined);
+  assert.equal(turn.managementApprovalProposalId, undefined);
+  assert.equal((await getBrowserAction(f.stores.settings, held))?.status, 'pending');
+}));
+
+test('requester-only questions refuse others privately; thread questions record who answered for whom', async () => withFixture(async (f) => {
+  const mine = await f.surface({ namespace: 'ui', spec: question() });
+  await f.click(mine.id, {
+    userId: 'U2', actionId: uiActionId('ui', 'question', 1), blockId: uiBlockId('ui', mine.id, 1), value: uiValue(mine.id, 1),
+  });
+  assert.equal(f.jobs.length, 1);
+  assert.match(f.ephemerals().at(-1)!, /Only <@U1> can answer this/);
+  assert.equal((await f.read(mine.id))?.status, 'open');
+
+  const shared = await f.surface({ namespace: 'ui', spec: question({ answerFrom: 'thread' }) });
+  await f.click(shared.id, {
+    userId: 'U2', actionId: uiActionId('ui', 'question', 2), blockId: uiBlockId('ui', shared.id, 1),
+    value: uiValue(shared.id, 2), actionTs: '3002.500000',
+  });
+  assert.equal(f.jobs.length, 2);
+  const turn = f.jobs.at(-1)!.turn;
+  assert.equal(turn.userId, 'U2');
+  assert.match(turn.text, /for <@U1> .*: Both$/);
+  assert.match(JSON.stringify(f.updates().at(-1)!.blocks), /answered by <@U2> for <@U1>/);
+}));
+
+test('multi-select answers wait for Submit and read the selection from state', async () => withFixture(async (f) => {
+  const surface = await f.surface({ namespace: 'ui', spec: question({ multiSelect: true }) });
+  const multi = uiActionId('ui', 'question_multi', 0);
+  // Ticking boxes sends block_actions too; nothing is consumed or refused.
+  await f.click(surface.id, {
+    actionId: multi, blockId: uiBlockId('ui', surface.id, 1), value: null, actionType: 'checkboxes',
+    selected: [uiValue(surface.id, 0)],
+  });
+  assert.equal(f.jobs.length, 1);
+  assert.deepEqual(f.ephemerals(), []);
+  await f.click(surface.id, {
+    actionId: uiActionId('ui', 'question_submit', 0), blockId: uiBlockId('ui', surface.id, 1),
+    value: uiValue(surface.id, 0), actionTs: '3002.600000',
+    state: { [uiBlockId('ui', surface.id, 1)]: { [multi]: { type: 'checkboxes', selected: [uiValue(surface.id, 2), uiValue(surface.id, 0)] } } },
+  });
+  assert.equal(f.jobs.length, 2);
+  assert.match(f.jobs.at(-1)!.turn.text, /: Staging, Both$/);
+  assert.deepEqual(f.jobs.at(-1)!.turn.uiResponse?.values, ['0', '2']);
+}));
+
+test('person and date pickers answer with validated ids, never free text', async () => withFixture(async (f) => {
+  const person = await f.surface({ namespace: 'ui', spec: { kind: 'question', question: { question: 'Who should review it?', pick: 'person', answerFrom: 'requester' } } });
+  const pick = uiActionId('ui', 'question_pick', 0);
+  await f.click(person.id, { actionId: pick, blockId: uiBlockId('ui', person.id, 0), value: null, actionType: 'users_select', selected: ['not a user'] });
+  assert.equal(f.jobs.length, 1, 'a malformed selection is ignored');
+  await f.click(person.id, { actionId: pick, blockId: uiBlockId('ui', person.id, 0), value: null, actionType: 'users_select', selected: ['U0REVIEWER'], actionTs: '3002.700000' });
+  assert.match(f.jobs.at(-1)!.turn.text, /: <@U0REVIEWER>$/);
+
+  const date = await f.surface({ namespace: 'ui', spec: { kind: 'question', question: { question: 'When should it ship?', pick: 'date', answerFrom: 'requester' } } });
+  await f.click(date.id, {
+    actionId: uiActionId('ui', 'question_submit', 0), blockId: uiBlockId('ui', date.id, 1), value: uiValue(date.id, 0),
+    actionTs: '3002.800000',
+    state: { [uiBlockId('ui', date.id, 1)]: { [pick]: { type: 'datepicker', selected: ['2026-10-01'] } } },
+  });
+  assert.match(f.jobs.at(-1)!.turn.text, /: 2026-10-01$/);
+}));
+
+test('a request button starts a turn from the clicker; link buttons do nothing server-side', async () => withFixture(async (f) => {
+  const surface = await f.surface({
+    namespace: 'ui',
+    spec: { kind: 'actions', actions: { actions: [{ label: 'Open the dashboard', url: 'https://example.com/d' }, { label: 'Draft the reply email' }] } },
+  });
+  await f.click(surface.id, { actionId: uiActionId('ui', 'link', 0), blockId: uiBlockId('ui', surface.id, 1), value: null });
+  assert.equal(f.jobs.length, 1);
+  await f.click(surface.id, {
+    userId: 'U2', actionId: uiActionId('ui', 'actions', 1), blockId: uiBlockId('ui', surface.id, 1),
+    value: uiValue(surface.id, 1), actionTs: '3002.900000',
+  });
+  assert.equal(f.jobs.length, 2);
+  assert.equal(f.jobs.at(-1)!.turn.userId, 'U2');
+  assert.match(f.jobs.at(-1)!.turn.text, /^Pressed the suggested next step "Draft the reply email"/);
+  const redraw = JSON.stringify(f.updates().at(-1)!.blocks);
+  assert.match(redraw, /<@U2>: Draft the reply email/);
+  assert.match(redraw, /Open the dashboard/, 'the link button stays');
+  // A request button index that points at a link is not a request.
+  const other = await f.surface({
+    namespace: 'ui',
+    spec: { kind: 'actions', actions: { actions: [{ label: 'Open', url: 'https://example.com/d' }] } },
+  });
+  await f.click(other.id, { actionId: uiActionId('ui', 'actions', 0), blockId: uiBlockId('ui', other.id, 1), value: uiValue(other.id, 0), actionTs: '3003.000000' });
+  assert.equal(f.jobs.length, 2);
+}));
+
 test('Cancel on a workspace-change card retires the proposal, so a later typed approve cannot apply it', async () => withFixture(async (f) => {
   const owner = await f.stores.identity.resolveSlackIdentity('T1', 'U1');
   assert.ok(owner);

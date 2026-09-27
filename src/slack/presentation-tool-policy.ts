@@ -18,10 +18,15 @@ import {
 } from '../memory/tool-policy.ts';
 import { SLACK_STREAM_ANSWER_TOOL_NAME } from './presentation-intent.ts';
 import { SLACK_PRESENT_TABLE_TOOL_NAME } from './table-presentation.ts';
+import { SLACK_ASK_USER_TOOL_NAME, SLACK_OFFER_ACTIONS_TOOL_NAME } from './ui/presentation-tools.ts';
 
 interface PresentationToolPolicyState {
   envelope?: CurrentRequestEnvelope;
   answerOnly: boolean;
+  /** A component was presented: only other presentation tools may follow. */
+  presented?: boolean;
+  /** This reply's one interactive component (ask_user, offer_actions) exists. */
+  interactiveUsed?: boolean;
   artifactDeliveryAttempted: boolean;
   /** A tool ran whose result the host may substitute for the model draft. */
   draftReplacementAttempted?: boolean;
@@ -30,6 +35,23 @@ interface PresentationToolPolicyState {
   fileDeliveryPending?: () => boolean;
   fileDeliveryAttempted?: () => boolean;
   fileDeliveryRepairing?: () => boolean;
+}
+
+/** Interactive components: at most one per reply; ask_user ends the reply. */
+const INTERACTIVE_TOOL_NAMES: ReadonlySet<string> = new Set([
+  SLACK_ASK_USER_TOOL_NAME,
+  SLACK_OFFER_ACTIONS_TOOL_NAME,
+]);
+const PRESENTATION_TOOL_NAMES: ReadonlySet<string> = new Set([
+  SLACK_PRESENT_TABLE_TOOL_NAME,
+  ...INTERACTIVE_TOOL_NAMES,
+]);
+
+export class SlackInteractiveComponentLimitError extends Error {
+  constructor() {
+    super('Use at most one of ask_user or offer_actions per reply. End your reply now.');
+    this.name = 'SlackInteractiveComponentLimitError';
+  }
 }
 
 const FILE_REPAIR_TOOLS = new Set([
@@ -126,11 +148,24 @@ export const presentationToolPolicyInterceptor: FlueExecutionInterceptor = async
     if (active.answerOnly) throw new SlackAnswerOnlyToolDeniedError();
     const result = await next();
     assertFileDeliveryChecked(active);
-    active.answerOnly = true;
+    active.presented = true;
     return result;
   }
 
-  if (active.answerOnly) throw new SlackAnswerOnlyToolDeniedError();
+  if (INTERACTIVE_TOOL_NAMES.has(operation.toolName)) {
+    assertFileDeliveryChecked(active);
+    if (active.answerOnly) throw new SlackAnswerOnlyToolDeniedError();
+    if (active.interactiveUsed) throw new SlackInteractiveComponentLimitError();
+    const result = await next();
+    assertFileDeliveryChecked(active);
+    active.interactiveUsed = true;
+    active.presented = true;
+    // A question ends the reply: its answer arrives as the next message.
+    if (operation.toolName === SLACK_ASK_USER_TOOL_NAME) active.answerOnly = true;
+    return result;
+  }
+
+  if (active.answerOnly || active.presented) throw new SlackAnswerOnlyToolDeniedError();
   // A failed/uncertain upload may already have staged a private file. Keep
   // that response on terminal delivery too; never stream ahead of its result.
   if (isArtifactUploadTool(operation.toolName)) {
@@ -159,6 +194,7 @@ function isArtifactUploadTool(name: string): boolean {
  */
 function declarationRefused(state: PresentationToolPolicyState): boolean {
   return artifactDeliveryAttempted(state) || state.draftReplacementAttempted === true ||
+    state.interactiveUsed === true ||
     (currentRequestProgressiveStreamingMode(state.envelope) === 'final_answer' &&
       state.inFlightTools > 0);
 }
@@ -190,6 +226,9 @@ export function observePresentationToolPolicy(
   if (current.envelope) active.envelope = current.envelope;
   else delete active.envelope;
   if (current.successfulDeclaration) active.answerOnly = true;
+  if (current.presented) active.presented = true;
+  if (current.interactiveUsed) active.interactiveUsed = true;
+  if (current.questionAsked) active.answerOnly = true;
   if (current.artifactDeliveryAttempted) active.artifactDeliveryAttempted = true;
   if (current.draftReplacementAttempted) active.draftReplacementAttempted = true;
 }
@@ -199,6 +238,9 @@ function currentResponsePolicy(messages: readonly LlmMessage[]): {
   successfulDeclaration: boolean;
   artifactDeliveryAttempted: boolean;
   draftReplacementAttempted: boolean;
+  presented?: boolean;
+  interactiveUsed?: boolean;
+  questionAsked?: boolean;
 } {
   let newestUserIndex = -1;
   let envelope: CurrentRequestEnvelope | undefined;
@@ -220,6 +262,10 @@ function currentResponsePolicy(messages: readonly LlmMessage[]): {
   }
 
   const declaredCalls = new Set<string>();
+  const presentationCalls = new Set<string>();
+  let presented = false;
+  let interactiveUsed = false;
+  let questionAsked = false;
   let successfulDeclaration = false;
   let artifactDeliveryAttempted = false;
   let draftReplacementAttempted = false;
@@ -232,19 +278,24 @@ function currentResponsePolicy(messages: readonly LlmMessage[]): {
         if (content.type === 'toolCall' && DRAFT_REPLACING_TOOL_NAMES.has(content.name)) {
           draftReplacementAttempted = true;
         }
-        if (content.type === 'toolCall' && (
-          content.name === SLACK_STREAM_ANSWER_TOOL_NAME ||
-          content.name === SLACK_PRESENT_TABLE_TOOL_NAME
-        )) {
+        if (content.type === 'toolCall' && content.name === SLACK_STREAM_ANSWER_TOOL_NAME) {
           declaredCalls.add(content.id);
+        }
+        if (content.type === 'toolCall' && PRESENTATION_TOOL_NAMES.has(content.name)) {
+          presentationCalls.add(content.id);
         }
       }
       continue;
     }
+    if (message.role === 'toolResult' && message.isError === false &&
+        presentationCalls.has(message.toolCallId)) {
+      presented = true;
+      if (INTERACTIVE_TOOL_NAMES.has(message.toolName)) interactiveUsed = true;
+      if (message.toolName === SLACK_ASK_USER_TOOL_NAME) questionAsked = true;
+    }
     if (
       message.role === 'toolResult' &&
-      (message.toolName === SLACK_STREAM_ANSWER_TOOL_NAME ||
-        message.toolName === SLACK_PRESENT_TABLE_TOOL_NAME) &&
+      message.toolName === SLACK_STREAM_ANSWER_TOOL_NAME &&
       message.isError === false &&
       declaredCalls.has(message.toolCallId)
     ) {
@@ -253,6 +304,9 @@ function currentResponsePolicy(messages: readonly LlmMessage[]): {
   }
   return {
     ...(envelope ? { envelope } : {}),
+    ...(presented ? { presented } : {}),
+    ...(interactiveUsed ? { interactiveUsed } : {}),
+    ...(questionAsked ? { questionAsked } : {}),
     successfulDeclaration,
     artifactDeliveryAttempted,
     draftReplacementAttempted,

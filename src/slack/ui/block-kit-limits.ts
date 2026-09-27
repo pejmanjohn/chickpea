@@ -182,7 +182,8 @@ function checkText(value: unknown, at: string, context: CheckContext, rule: Text
   if (value.text.length > rule.max) {
     context.issues.push(`${at}.text is ${value.text.length} characters; the limit is ${rule.max}`);
   }
-  checkBroadcast(value.text, `${at}.text`, context);
+  // plain_text is never parsed for mentions; only formatted text can ping.
+  if (value.type === 'mrkdwn') checkBroadcast(value.text, `${at}.text`, context);
 }
 
 function checkBroadcast(text: string, at: string, context: CheckContext): void {

@@ -1,4 +1,9 @@
 import {
+  interactiveTurnText,
+  renderInteractiveSurface,
+  type InteractiveAnswer,
+} from './render-interactive.ts';
+import {
   uiActionId,
   uiBlockId,
   uiValue,
@@ -125,30 +130,28 @@ function renderHostApproval(record: UiSurfaceRecord, spec: HostApprovalSpec): Re
   };
 }
 
-export function renderUiSurface(record: UiSurfaceRecord): RenderedUiSurface {
-  switch (record.spec.kind) {
-    case 'approval':
-      return renderHostApproval(record, record.spec);
-  }
+export function renderUiSurface(
+  record: UiSurfaceRecord,
+  options: { withHeader?: boolean } = {},
+): RenderedUiSurface {
+  if (record.spec.kind === 'approval') return renderHostApproval(record, record.spec);
+  return renderInteractiveSurface(record, options)!;
 }
 
 /**
  * The host-authored turn text a click becomes. It names who answered and what,
  * from the stored spec; clicked labels and payload text never reach the model.
  */
-export function uiResponseTurnText(record: UiSurfaceRecord, choice: number): string {
+export function uiResponseTurnText(record: UiSurfaceRecord, answer: InteractiveAnswer, byUserId: string): string {
   const spec = record.spec;
-  switch (spec.kind) {
-    case 'approval': {
-      const decision = approvalChoice(choice);
-      if (spec.approval === 'workspace_change') {
-        return decision === 'approve'
-          ? 'Approved the proposed workspace changes with the Approve button.'
-          : 'Cancelled the proposed workspace changes with the Cancel button. Do not apply them.';
-      }
-      return decision === 'approve'
-        ? `Approved the browser step with the Approve step button: ${spec.description} on ${spec.host}.`
-        : `Stopped the browser step with the Stop button: ${spec.description} on ${spec.host}. Do not take it.`;
-    }
+  if (spec.kind !== 'approval') return interactiveTurnText(record, answer, byUserId);
+  const decision = approvalChoice(answer.choice);
+  if (spec.approval === 'workspace_change') {
+    return decision === 'approve'
+      ? 'Approved the proposed workspace changes with the Approve button.'
+      : 'Cancelled the proposed workspace changes with the Cancel button. Do not apply them.';
   }
+  return decision === 'approve'
+    ? `Approved the browser step with the Approve step button: ${spec.description} on ${spec.host}.`
+    : `Stopped the browser step with the Stop button: ${spec.description} on ${spec.host}. Do not take it.`;
 }

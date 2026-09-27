@@ -61,7 +61,8 @@ export type UiSurfaceRpcRequest =
       exceptTurnJobId: string;
       kinds: UiSurfaceSpec['kind'][];
     }
-  | { kind: 'list_open_surfaces'; scope: UiSurfaceScope; limit?: number };
+  | { kind: 'list_open_surfaces'; scope: UiSurfaceScope; limit?: number }
+  | { kind: 'list_turn_surfaces'; turnJobId: string };
 
 export type UiSurfaceRpcResponse =
   | { kind: 'surface'; surface: UiSurfaceRecord | null }
@@ -112,12 +113,23 @@ export class UiSurfaceStoreLogic {
   }
 
   /**
-   * Insert write-once by id and return the stored record. A replayed delivery
-   * gets the existing row back, with any message binding or resolution.
+   * Insert by id and return the stored record. A replayed delivery gets the
+   * existing row back, with any message binding or resolution; a surface that
+   * was never posted takes the newer spec (a retried turn may ask differently).
    */
   put(record: UiSurfaceRecord): UiSurfaceRecord {
     validateRecord(record);
     this.purge();
+    this.db.run(
+      `UPDATE ui_surfaces SET spec_json = ?, updated_at = ?
+       WHERE id = ? AND turn_job_id = ? AND namespace = ?
+         AND status = 'pending_delivery' AND message_ts IS NULL`,
+      JSON.stringify(record.spec),
+      record.updatedAt,
+      record.id,
+      record.turnJobId,
+      record.namespace,
+    );
     this.db.run(
       `INSERT OR IGNORE INTO ui_surfaces (
         id, namespace, workspace_id, channel_id, thread_ts, conversation_thread_ts,
@@ -242,6 +254,18 @@ export class UiSurfaceStoreLogic {
     });
   }
 
+  /** Every surface one turn created, oldest first. */
+  listForTurn(turnJobId: string): UiSurfaceRecord[] {
+    const rows = this.db.all(
+      'SELECT * FROM ui_surfaces WHERE turn_job_id = ? ORDER BY created_at, id LIMIT 10',
+      turnJobId,
+    ) as unknown as UiSurfaceRow[];
+    return rows.flatMap((row) => {
+      const record = decode(row);
+      return record ? [record] : [];
+    });
+  }
+
   /** Resolve an open surface outside admission (a typed answer retired it). */
   resolve(id: string, resolution: UiSurfaceResolution): UiSurfaceRecord | undefined {
     const now = this.now();
@@ -278,6 +302,8 @@ export class UiSurfaceStoreLogic {
         };
       case 'list_open_surfaces':
         return { kind: 'surfaces', surfaces: this.listOpen(request.scope, request.limit) };
+      case 'list_turn_surfaces':
+        return { kind: 'surfaces', surfaces: this.listForTurn(request.turnJobId) };
     }
   }
 

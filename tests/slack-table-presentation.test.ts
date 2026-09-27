@@ -232,7 +232,7 @@ test('present_table records exactly one normalized table and then locks', () => 
   const tool = createSlackPresentTableTool((presentation) => recorded.push(presentation));
 
   assert.deepEqual(tool.run({ data: staticPayrollTable }), {
-    output: 'Table recorded. Finish with a short conclusion that does not repeat the rows.',
+    output: 'Table recorded. Finish with one or two sentences of takeaway; do not name the rows again.',
   });
   assert.equal(recorded.length, 1);
   assert.throws(() => tool.run({ data: staticPayrollTable }), /Only one native Slack table/);

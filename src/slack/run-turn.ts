@@ -31,7 +31,11 @@ import {
   type AppStores,
 } from '../config/state-backend.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
-import { deliverHostApprovalSurfaces } from './ui/host-surfaces.ts';
+import {
+  abandonTurnSurfaces,
+  deliverHostApprovalSurfaces,
+  deliverInteractiveSurfaces,
+} from './ui/host-surfaces.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import type { TurnEnvelopeV1 } from '../agents/turn-envelope.ts';
 import { buildTurnEnvelope } from './turn-envelope-builder.ts';
@@ -1795,6 +1799,30 @@ async function runTurnAttempt(
       deliverableArtifacts,
     );
     if (terminalResult === 'answer') {
+      const surfaceState = options.appStores?.slackState ?? getSlackStateStore(platformEnv);
+      const surfaceMessenger = {
+        post: (rendered: { text: string; blocks: Array<Record<string, unknown>> }) =>
+          presenter.postSurfaceMessage(rendered),
+        update: (messageTs: string, rendered: { text: string; blocks: Array<Record<string, unknown>> }) =>
+          presenter.updateSurfaceMessage(messageTs, rendered),
+      };
+      const surfaceTurnJobId = options.turnId ?? `msg:${turn.channelId}:${turn.messageTs}`;
+      // Components travel only with the model's own lease-valid answer.
+      const ownAnswer = recoveredText === undefined && leaseValid &&
+        !(acknowledgeMemoryUpdate && agentResult?.memoryUpdate?.preservesContext !== true);
+      await (ownAnswer
+        ? deliverInteractiveSurfaces({
+            turn,
+            agentId: assignment.agent.id,
+            turnJobId: surfaceTurnJobId,
+            state: surfaceState,
+            messenger: surfaceMessenger,
+            answerText: text,
+          })
+        : abandonTurnSurfaces(surfaceState, surfaceTurnJobId)
+      ).catch(() => {
+        console.warn('[chickpea] Slack reply buttons were not posted');
+      });
       // An approval this turn is holding gets host buttons under the reply.
       // A failure here never undoes the delivered answer; typed approval works.
       await deliverHostApprovalSurfaces({

@@ -180,6 +180,7 @@ export async function retireApprovalSurfacesForTypedAnswer(input: {
   if (open.kind !== 'surfaces') return;
   for (const surface of open.surfaces) {
     const spec = surface.spec;
+    if (spec.kind !== 'approval') continue;
     const matches = spec.approval === 'workspace_change'
       ? spec.proposalId === input.match.proposalId
       : spec.browserActionId === input.match.browserActionId;
@@ -190,5 +191,72 @@ export async function retireApprovalSurfacesForTypedAnswer(input: {
       resolution: { ...input.resolution, typed: true },
     });
     await redrawUiSurface(input.messenger, resolved);
+  }
+}
+
+/**
+ * After the Agent's own answer is delivered: close the questions and
+ * next-step buttons its earlier replies in this thread left open (redrawn as
+ * closed; link buttons stay), then post this turn's pending surface as its own
+ * message under the answer and bind it. Records exist before the post and are
+ * keyed by the turn, so a retried delivery never posts twice.
+ */
+export async function deliverInteractiveSurfaces(input: {
+  turn: Pick<NormalizedSlackTurn, 'workspaceId' | 'channelId' | 'threadTs'>;
+  agentId: string;
+  turnJobId: string;
+  state: SlackStateStore;
+  messenger: UiSurfaceMessenger;
+  /** The delivered answer text; a question it already states is not repeated. */
+  answerText: string;
+}): Promise<void> {
+  if (!input.state.executeUiSurface) return;
+  const state = input.state as SurfaceState;
+  const superseded = await state.executeUiSurface({
+    kind: 'supersede_surfaces',
+    scope: {
+      workspaceId: input.turn.workspaceId,
+      channelId: input.turn.channelId,
+      threadTs: input.turn.threadTs,
+      agentId: input.agentId,
+    },
+    exceptTurnJobId: input.turnJobId,
+    kinds: ['question', 'actions'],
+  });
+  if (superseded.kind === 'surfaces') {
+    for (const surface of superseded.surfaces) await redrawUiSurface(input.messenger, surface);
+  }
+  const own = await state.executeUiSurface({ kind: 'list_turn_surfaces', turnJobId: input.turnJobId });
+  if (own.kind !== 'surfaces') return;
+  for (const surface of own.surfaces) {
+    if (surface.namespace !== 'ui' || surface.status !== 'pending_delivery' || surface.messageTs) continue;
+    if (surface.threadTs !== input.turn.threadTs || surface.channelId !== input.turn.channelId) {
+      await uiSurfaceRecord(state, { kind: 'close_surface', id: surface.id, status: 'failed' });
+      continue;
+    }
+    const restated = surface.spec.kind === 'question' &&
+      input.answerText.trim() === surface.spec.question.question;
+    const rendered = renderUiSurface(surface, { withHeader: !restated });
+    const check = checkSlackBlocks(rendered.blocks, { text: rendered.text });
+    if (!check.ok) {
+      // The answer already stands on its own; never post a card Slack would reject.
+      console.error('[chickpea] interactive card failed the Block Kit check', { issues: check.issues.slice(0, 5) });
+      await uiSurfaceRecord(state, { kind: 'close_surface', id: surface.id, status: 'failed' });
+      continue;
+    }
+    const messageTs = await input.messenger.post(rendered).catch(() => undefined);
+    if (messageTs) await uiSurfaceRecord(state, { kind: 'bind_surface_message', id: surface.id, messageTs });
+  }
+}
+
+/** Surfaces a turn recorded but will not deliver (its answer was replaced). */
+export async function abandonTurnSurfaces(state: SlackStateStore, turnJobId: string): Promise<void> {
+  if (!state.executeUiSurface) return;
+  const own = await state.executeUiSurface({ kind: 'list_turn_surfaces', turnJobId });
+  if (own.kind !== 'surfaces') return;
+  for (const surface of own.surfaces) {
+    if (surface.namespace === 'ui' && surface.status === 'pending_delivery') {
+      await state.executeUiSurface({ kind: 'close_surface', id: surface.id, status: 'failed' });
+    }
   }
 }

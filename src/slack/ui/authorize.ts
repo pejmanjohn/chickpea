@@ -20,6 +20,8 @@ export type UiRefusal = 'unavailable' | 'wrong_user' | 'not_current' | 'answered
 export interface SlackUiAdmission {
   surface: UiSurfaceRecord;
   choice: number;
+  /** Chosen option indexes, person/channel ids, or a date (questions). */
+  values?: string[];
   outcome: 'admitted' | UiRefusal;
 }
 
@@ -44,7 +46,15 @@ export async function authorizeUiResponse(input: {
   const { surface } = admission;
   if (assignment.agent.id !== surface.agentId) return 'closed';
   const spec = surface.spec;
-  if (spec.kind !== 'approval' || surface.namespace !== 'host') return 'unavailable';
+  if (spec.kind === 'question' || spec.kind === 'actions') {
+    // A model-chosen surface answers a question or asks for a next step; it
+    // never stamps an approval, whatever its labels say.
+    if (surface.namespace !== 'ui') return 'unavailable';
+    const answerFrom = spec.kind === 'question' ? spec.question.answerFrom : 'thread';
+    if (answerFrom === 'requester' && turn.userId !== surface.requesterUserId) return 'wrong_user';
+    return undefined;
+  }
+  if (surface.namespace !== 'host') return 'unavailable';
   if (turn.userId !== surface.requesterUserId) return 'wrong_user';
   const decision = approvalChoice(admission.choice);
   if (!decision) return 'unavailable';
