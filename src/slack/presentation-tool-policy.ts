@@ -21,11 +21,9 @@ import { SLACK_PRESENT_TABLE_TOOL_NAME } from './table-presentation.ts';
 import {
   SLACK_ASK_USER_TOOL_NAME,
   SLACK_OFFER_ACTIONS_TOOL_NAME,
-  SLACK_PRESENT_CARDS_TOOL_NAME,
-  SLACK_PRESENT_CHART_TOOL_NAME,
-  SLACK_PRESENT_DETAILS_TOOL_NAME,
   SLACK_REQUEST_FORM_TOOL_NAME,
 } from './ui/presentation-tools.ts';
+import { DISPLAY_TOOL_KINDS, type RecordedDisplayComponent } from './ui/display-tools.ts';
 
 interface PresentationToolPolicyState {
   envelope?: CurrentRequestEnvelope;
@@ -44,6 +42,8 @@ interface PresentationToolPolicyState {
   fileDeliveryPending?: () => boolean;
   fileDeliveryAttempted?: () => boolean;
   fileDeliveryRepairing?: () => boolean;
+  /** Display components this reply's transcript shows as accepted, in call order. */
+  displayComponents?: RecordedDisplayComponent[];
 }
 
 /** Interactive components: at most one per reply; ask_user ends the reply. */
@@ -58,11 +58,7 @@ const REPLY_ENDING_TOOL_NAMES: ReadonlySet<string> = new Set([
   SLACK_REQUEST_FORM_TOOL_NAME,
 ]);
 /** Display components ride in the answer; other presentation tools may follow them. */
-const DISPLAY_TOOL_NAMES: ReadonlySet<string> = new Set([
-  SLACK_PRESENT_CARDS_TOOL_NAME,
-  SLACK_PRESENT_CHART_TOOL_NAME,
-  SLACK_PRESENT_DETAILS_TOOL_NAME,
-]);
+const DISPLAY_TOOL_NAMES: ReadonlySet<string> = new Set(Object.keys(DISPLAY_TOOL_KINDS));
 const PRESENTATION_TOOL_NAMES: ReadonlySet<string> = new Set([
   SLACK_PRESENT_TABLE_TOOL_NAME,
   ...DISPLAY_TOOL_NAMES,
@@ -270,6 +266,17 @@ export function observePresentationToolPolicy(
   }
   if (current.artifactDeliveryAttempted) active.artifactDeliveryAttempted = true;
   if (current.draftReplacementAttempted) active.draftReplacementAttempted = true;
+  active.displayComponents = current.displayComponents;
+}
+
+/**
+ * The display components this reply already recorded, rebuilt from its
+ * durable transcript at every model request. Flue renders the agent, and so
+ * its display tools, again before every model turn (and after a restart);
+ * each fresh closure merges these instead of starting from an empty list.
+ */
+export function replyDisplayHistory(): readonly RecordedDisplayComponent[] {
+  return submissionPolicy.getStore()?.displayComponents ?? [];
 }
 
 function currentResponsePolicy(messages: readonly LlmMessage[]): {
@@ -280,6 +287,7 @@ function currentResponsePolicy(messages: readonly LlmMessage[]): {
   presented?: boolean;
   interactiveUsed?: boolean;
   questionAsked?: boolean;
+  displayComponents: RecordedDisplayComponent[];
 } {
   let newestUserIndex = -1;
   let envelope: CurrentRequestEnvelope | undefined;
@@ -297,11 +305,14 @@ function currentResponsePolicy(messages: readonly LlmMessage[]): {
       successfulDeclaration: false,
       artifactDeliveryAttempted: false,
       draftReplacementAttempted: false,
+      displayComponents: [],
     };
   }
 
   const declaredCalls = new Set<string>();
   const presentationCalls = new Set<string>();
+  const displayCalls = new Map<string, Pick<RecordedDisplayComponent, 'kind' | 'spec'>>();
+  const displayComponents: RecordedDisplayComponent[] = [];
   let presented = false;
   let interactiveUsed = false;
   let questionAsked = false;
@@ -322,6 +333,8 @@ function currentResponsePolicy(messages: readonly LlmMessage[]): {
         }
         if (content.type === 'toolCall' && PRESENTATION_TOOL_NAMES.has(content.name)) {
           presentationCalls.add(content.id);
+          const kind = DISPLAY_TOOL_KINDS[content.name];
+          if (kind) displayCalls.set(content.id, { kind, spec: content.arguments });
         }
       }
       continue;
@@ -329,6 +342,8 @@ function currentResponsePolicy(messages: readonly LlmMessage[]): {
     if (message.role === 'toolResult' && message.isError === false &&
         presentationCalls.has(message.toolCallId)) {
       presented = true;
+      const display = displayCalls.get(message.toolCallId);
+      if (display) displayComponents.push({ toolCallId: message.toolCallId, ...display });
       if (INTERACTIVE_TOOL_NAMES.has(message.toolName)) interactiveUsed = true;
       if (REPLY_ENDING_TOOL_NAMES.has(message.toolName)) questionAsked = true;
     }
@@ -349,6 +364,7 @@ function currentResponsePolicy(messages: readonly LlmMessage[]): {
     successfulDeclaration,
     artifactDeliveryAttempted,
     draftReplacementAttempted,
+    displayComponents,
   };
 }
 
