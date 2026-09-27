@@ -71,6 +71,8 @@ interface Harness {
     channel?: string;
     threadTs?: string;
     eventId?: string;
+    /** Slack's `app_mention` event (it carries no `channel_type`) instead of a `message`. */
+    appMention?: boolean;
   }): Promise<void>;
   press(press: Press): Promise<void>;
   pending(): Promise<Awaited<ReturnType<NonNullable<AppStores['slackState']['listPendingTurns']>>>>;
@@ -132,8 +134,9 @@ async function withHarness(run: (harness: Harness) => Promise<void>): Promise<vo
           };
         }
         if (operation === 'conversations.info') {
-          return input.channel === 'C1'
-            ? { channel }
+          if (input.channel === 'C1') return { channel };
+          return String(input.channel).startsWith('G')
+            ? { channel: { id: input.channel, is_mpim: true, is_private: true, is_member: true } }
             : { channel: { id: input.channel, is_im: true, user: 'U1' } };
         }
         if (operation === 'conversations.members') return { members: ['U1', 'U2', 'U3', 'UBOT'] };
@@ -178,19 +181,20 @@ async function withHarness(run: (harness: Harness) => Promise<void>): Promise<vo
       async deliver(message) {
         const channelId = message.channel ?? 'C1';
         const direct = channelId.startsWith('D');
+        const posted = {
+          channel: channelId,
+          user: message.user ?? 'U1',
+          ts: message.ts,
+          text: message.text,
+          ...(message.threadTs ? { thread_ts: message.threadTs } : {}),
+        };
         assert.equal(await processGatewaySlackEnvelope({
           workspaceId: 'T1',
           eventId: message.eventId ?? `Ev${message.ts.replace('.', '')}`,
           eventTime: Math.floor(Number(message.ts)),
-          event: {
-            type: 'message',
-            channel: channelId,
-            channel_type: direct ? 'im' : 'channel',
-            user: message.user ?? 'U1',
-            ts: message.ts,
-            text: message.text,
-            ...(message.threadTs ? { thread_ts: message.threadTs } : {}),
-          },
+          event: message.appMention
+            ? { type: 'app_mention', event_ts: message.ts, ...posted }
+            : { type: 'message', channel_type: direct ? 'im' : 'channel', ...posted },
         }, undefined, gateway, execution), 'accepted');
       },
       async press(press) {
@@ -262,6 +266,25 @@ test('a press in a DM thread stops that thread\'s run', async () => {
     assert.equal(job?.id, 'msg:D1:1800000100.000100');
     assert.equal(job?.stop?.role === 'stopped' && job.stop.source, 'button');
     assert.deepEqual(harness.posts, []);
+  });
+});
+
+test('a press in a group DM stops its thread\'s run, as a mention there is admitted', async () => {
+  await withHarness(async (harness) => {
+    // Group DMs deliver only `app_mention` (no message.mpim subscription),
+    // with no channel_type: admission and the press both take the G… id as a
+    // Channel, where the thread's Chickpea needs no grant.
+    const rootTs = '1800000300.000100';
+    await harness.deliver({ channel: 'G1', ts: rootTs, text: '<@UBOT> Draft the plan.', appMention: true });
+    assert.equal(harness.jobs.length, 1);
+    assert.equal(harness.jobs[0]?.assignment.agentId, 'agent_chickpea');
+    await harness.press({ channel: 'G1', threadTs: rootTs, eventTs: '1800000310.000100', user: 'U2' });
+
+    const stop = (await harness.pending()).find((job) => job.id === `msg:G1:${rootTs}`)?.stop;
+    assert.equal(stop?.role === 'stopped' && stop.source, 'button');
+    assert.equal(stop?.role === 'stopped' && stop.stopperUserId, 'U2');
+    assert.deepEqual(harness.posts, []);
+    assert.deepEqual(harness.tokens, []);
   });
 });
 

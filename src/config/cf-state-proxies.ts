@@ -1898,6 +1898,11 @@ export class CfSlackStateStore implements SlackStateStore {
     ));
   }
 
+  /** One TurnJob as a runner reads it (a mid-run 👀 checks its row after adding). */
+  async turnJobView(id: string) {
+    return rpcVia(this.stub, 'threadRunnerTurn', (stub) => stub.threadRunnerTurn({ kind: 'view', id }), 'view');
+  }
+
   async runningDirectThreads(...args: Parameters<NonNullable<SlackStateStore['runningDirectThreads']>>) {
     return rpcVia(this.stub, 'slackTurnDirectThreads', (stub) => stub.slackTurnDirectThreads(...args));
   }

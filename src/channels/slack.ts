@@ -147,7 +147,11 @@ import type {
   TurnSteeringRequest,
   TurnStopSource,
 } from '../slack/turn-job-types.ts';
-import { addSlackReceiptReaction, slackMidRunReceipt } from '../slack/web-client-presenter.ts';
+import {
+  addSlackReceiptReaction,
+  removeSlackReaction,
+  slackMidRunReceipt,
+} from '../slack/web-client-presenter.ts';
 import { createDirectSlackTransport } from '../slack/transport/direct.ts';
 import {
   isRetryableDependencyFailure,
@@ -1606,8 +1610,11 @@ async function processSlackEvent(
   // A stop phrase or check-in typed alone is decided at admission, outside
   // the thread's queue, so it reaches a running (even a stuck) run without a
   // model (KTD1). A plain "stop" that answered a browser step above keeps
-  // that meaning (R21).
-  const steeringCommand = !browserActionAnswered && !candidateTurn && slackClient
+  // that meaning (R21). A message addressed to a different Agent (or to
+  // @Chickpea in another Agent's thread) hands the thread over and is not
+  // steering: routing checked the sender against the new Agent only, and a
+  // stop must come from someone who may use the running one (R3).
+  const steeringCommand = !browserActionAnswered && !candidateTurn && !routedHandoff && slackClient
     ? slackSteeringCommand(turn.text, commandAddress)
     : undefined;
   if (steeringCommand && slackClient && slackConversationKind(turn) === 'im' &&
@@ -2082,19 +2089,17 @@ type SlackSteeringAdmission = Extract<TurnSteeringRequest, { kind: 'stop' | 'che
  * Slack refuses it), the receipt is corrected so nothing ever removes a 👀
  * Chickpea did not add. Best effort: the admitted turn never depends on it.
  */
-async function addMidRunReaction(input: {
-  client: Pick<ReturnType<typeof createSlackWebClient>, 'reactions'>;
-  state: SlackStateStore;
-  jobId: string;
-  receipt: TurnMidRunReceipt;
-}): Promise<void> {
-  let created = false;
+async function addMidRunReaction(input: MidRunReaction): Promise<void> {
+  let added: { name: string; created: boolean } | undefined;
   try {
-    created = (await addSlackReceiptReaction(input.client, 'seen_mid_run', input.receipt)).created;
+    added = await addSlackReceiptReaction(input.client, 'seen_mid_run', input.receipt);
   } catch {
     console.warn('[chickpea] mid-run reaction failed');
   }
-  if (created) return;
+  if (added?.created) {
+    await removeLateMidRunReaction(input, added.name);
+    return;
+  }
   try {
     await input.state.recordSlackInteractionProgress?.(input.jobId, {
       acknowledgment: {
@@ -2103,6 +2108,40 @@ async function addMidRunReaction(input: {
     });
   } catch {
     console.warn('[chickpea] mid-run reaction receipt was not corrected');
+  }
+}
+
+interface MidRunReaction {
+  client: Pick<ReturnType<typeof createSlackWebClient>, 'reactions'>;
+  state: SlackStateStore;
+  jobId: string;
+  receipt: TurnMidRunReceipt;
+}
+
+/**
+ * The receipt is written before Slack adds the 👀, so what removes it (a stop
+ * that drops the message, or the turn's own finish) can run first: Slack
+ * answers `no_reaction`, that counts as removed, and the late 👀 would stay.
+ * Once Slack says the 👀 is Chickpea's, read the row again; when it has left
+ * the queue (dropped, delivered or gone) or its receipt is already finished,
+ * take that 👀 off the recorded message at once. A row still queued keeps it
+ * for its turn. Only where the state store serves its rows here (Node, and
+ * the Cloudflare state store's own gateway intake).
+ */
+async function removeLateMidRunReaction(input: MidRunReaction, name: string): Promise<void> {
+  if (!input.state.turnJobView) return;
+  try {
+    const view = await input.state.turnJobView(input.jobId);
+    const settled = view.status === 'done' || view.status === 'error' || view.status === 'missing';
+    if (!settled && view.job?.progress.slackInteraction?.acknowledgment?.cleanup !== 'done') return;
+    await removeSlackReaction(input.client, name, input.receipt);
+    await input.state.recordSlackInteractionProgress?.(input.jobId, {
+      acknowledgment: {
+        ...input.receipt, name, created: true, cleanup: 'done', reaction: 'seen_mid_run',
+      },
+    });
+  } catch {
+    console.warn('[chickpea] a late mid-run reaction was not removed');
   }
 }
 

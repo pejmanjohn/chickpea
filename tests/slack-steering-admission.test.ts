@@ -40,6 +40,8 @@ interface Harness {
     text: string;
     user?: string;
     channel?: string;
+    /** Slack's `channel_type`; by default `im` for a D… channel, else `channel`. */
+    channelType?: string;
     threadTs?: string;
     eventId?: string;
   }): Promise<void>;
@@ -115,8 +117,9 @@ async function withHarness(
           };
         }
         if (operation === 'conversations.info') {
-          return input.channel === 'C1'
-            ? { channel }
+          if (input.channel === 'C1') return { channel };
+          return String(input.channel).startsWith('G')
+            ? { channel: { id: input.channel, is_mpim: true, is_private: true, is_member: true } }
             : { channel: { id: input.channel, is_im: true, user: 'U1' } };
         }
         if (operation === 'conversations.members') return { members: ['U1', 'U2', 'U3', 'UBOT'] };
@@ -155,7 +158,7 @@ async function withHarness(
           event: {
             type: 'message',
             channel: channelId,
-            channel_type: direct ? 'im' : 'channel',
+            channel_type: message.channelType ?? (direct ? 'im' : 'channel'),
             user: message.user ?? 'U1',
             ts: message.ts,
             text: message.text,
@@ -385,6 +388,76 @@ test('a guest\'s stop keeps today\'s silence and leaves the run alone', async ()
     assert.equal(await stopRecordOf(harness), undefined);
     assert.equal(harness.jobs.length, 1);
     assert.deepEqual(harness.posts, []);
+  });
+});
+
+const PRIVATE = '<!subteam^SPRIV|@priv>';
+
+/** A private Agent: with no Channel grant, only its creator (U1) may use it. */
+async function createPrivateAgent(harness: Harness): Promise<void> {
+  await harness.stores.config.createAgent({
+    id: 'agent_private', name: 'priv', instructions: '', enabled: true, lifecycle: 'active',
+    model: 'local-stub/steering',
+    creatorMembershipId: harness.ownerMembershipId, editPolicy: 'creator_and_admins',
+    skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    slackPresence: {
+      requestedHandle: 'priv', normalizedHandle: 'priv', desiredState: 'active',
+      health: 'healthy', userGroupId: 'SPRIV',
+      avatar: { kind: 'generated', revision: 1, seed: 'priv' },
+    },
+  });
+}
+
+test('a stop addressed to another Agent hands the thread over and never stops the private Agent\'s run (R3)', async () => {
+  await withHarness(async (harness) => {
+    await createPrivateAgent(harness);
+    const rootTs = '1800000300.000100';
+    await harness.deliver({
+      channel: 'G1', channelType: 'mpim', ts: rootTs, text: `<@UBOT> ${PRIVATE} Summarize the report.`,
+    });
+    assert.equal(harness.jobs.length, 1);
+    assert.equal(harness.jobs[0]?.assignment.agentId, 'agent_private');
+
+    // U2 may not use the private Agent; "@Chickpea stop" routes to Chickpea.
+    await harness.deliver({
+      channel: 'G1', channelType: 'mpim', ts: '1800000310.000100', threadTs: rootTs, user: 'U2',
+      text: '<@UBOT> stop',
+    });
+    const root = (await harness.pending()).find((job) => job.id === `msg:G1:${rootTs}`);
+    assert.equal(root?.stop, undefined, 'the private Agent\'s run continues');
+    assert.equal(harness.jobs.length, 2, 'the message is today\'s handoff turn');
+    assert.equal(harness.jobs[1]?.assignment.agentId, 'agent_chickpea');
+    assert.deepEqual(harness.posts, []);
+    assert.deepEqual(harness.reactions, [], 'a handoff gets no mid-run 👀 either');
+  });
+});
+
+test('a stop addressed to the running Agent, or to Chickpea in its own thread, still stops the run', async () => {
+  await withHarness(async (harness) => {
+    await createPrivateAgent(harness);
+    const privateRoot = '1800000400.000100';
+    await harness.deliver({
+      channel: 'G1', channelType: 'mpim', ts: privateRoot, text: `<@UBOT> ${PRIVATE} Summarize the report.`,
+    });
+    await harness.deliver({
+      channel: 'G1', channelType: 'mpim', ts: '1800000410.000100', threadTs: privateRoot,
+      text: `<@UBOT> ${PRIVATE} stop`,
+    });
+    const privateStop = (await harness.pending()).find((job) => job.id === `msg:G1:${privateRoot}`)?.stop;
+    assert.equal(privateStop?.role === 'stopped' && privateStop.stopperUserId, 'U1', 'its creator stops it');
+
+    const chickpeaRoot = '1800000500.000100';
+    await harness.deliver({
+      channel: 'G1', channelType: 'mpim', ts: chickpeaRoot, text: '<@UBOT> Draft the plan.',
+    });
+    assert.equal(harness.jobs.at(-1)?.assignment.agentId, 'agent_chickpea');
+    await harness.deliver({
+      channel: 'G1', channelType: 'mpim', ts: '1800000510.000100', threadTs: chickpeaRoot, user: 'U2',
+      text: '<@UBOT> stop',
+    });
+    const chickpeaStop = (await harness.pending()).find((job) => job.id === `msg:G1:${chickpeaRoot}`)?.stop;
+    assert.equal(chickpeaStop?.role === 'stopped' && chickpeaStop.stopperUserId, 'U2');
+    assert.equal(harness.jobs.length, 2, 'neither stop is queued');
   });
 });
 

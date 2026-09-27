@@ -18,6 +18,7 @@ import { runTurn, type RunTurnOptions } from '../src/slack/run-turn.ts';
 import { SlackTransportError } from '../src/slack/transport/types.ts';
 import {
   executeTurnJob,
+  removeDroppedReceipts,
   type TurnExecutionOptions,
   type TurnExecutionPorts,
 } from '../src/slack/turn-executor.ts';
@@ -96,6 +97,8 @@ interface Harness {
   jobs: TurnJob[];
   reactions: Reactions;
   refuseReactions(): void;
+  /** Runs while Slack is still adding a 👀: the add lands after it. */
+  whileAdding(hook: (() => Promise<void>) | undefined): void;
   deliver(message: { ts: string; text: string; user?: string; threadTs?: string }): Promise<void>;
   pending(): Promise<PendingTurnJob[]>;
   receiptOf(id: string): Promise<SlackInteractionProgress['acknowledgment']>;
@@ -151,6 +154,7 @@ async function withHarness(run: (harness: Harness) => Promise<void>): Promise<vo
       id: 'C1', name: 'ops', is_channel: true, is_private: false, is_member: true, is_archived: false,
     };
     let refused = false;
+    let whileAdding: (() => Promise<void>) | undefined;
     const reactions = new Reactions(() => refused ? 'refused' : 'ok');
     const gatewayError = (operation: string) => (code: string) =>
       new SlackTransportError(operation, code, { effectOutcome: 'failed' });
@@ -170,7 +174,10 @@ async function withHarness(run: (harness: Harness) => Promise<void>): Promise<vo
         if (operation === 'conversations.info') return { channel };
         if (operation === 'conversations.members') return { members: ['U1', 'U2', BOT] };
         if (operation === 'users.conversations') return { channels: [channel] };
-        if (operation === 'reactions.add') return reactions.add(input, gatewayError(operation));
+        if (operation === 'reactions.add') {
+          await whileAdding?.();
+          return reactions.add(input, gatewayError(operation));
+        }
         if (operation === 'reactions.remove') return reactions.remove(input, gatewayError(operation));
         if (operation === 'chat.postMessage' || operation === 'chat.postEphemeral') {
           return { ok: true, ts: '1900000000.000001', channel: input.channel };
@@ -188,6 +195,7 @@ async function withHarness(run: (harness: Harness) => Promise<void>): Promise<vo
       jobs,
       reactions,
       refuseReactions() { refused = true; },
+      whileAdding(hook) { whileAdding = hook; },
       async deliver(message) {
         assert.equal(await processGatewaySlackEnvelope({
           workspaceId: 'T1',
@@ -319,6 +327,61 @@ test('a 👀 Slack says Chickpea already shows, or refuses, is corrected to a re
       ...RECEIPT, messageTs: refusedTs, created: false, cleanup: 'done',
     });
     assert.equal(harness.jobs.length, 3, 'a failed reaction never affects the admitted turn');
+  });
+});
+
+test('a 👀 whose add lands after a stop dropped its message is removed at once (invariant 8)', async () => {
+  await withHarness(async (harness) => {
+    await harness.deliver({ ts: ROOT_TS, text: `${OPS} Investigate the flaky build.` });
+    const state = harness.stores.slackState;
+    const client = {
+      reactions: {
+        remove: async (input: Record<string, unknown>) => harness.reactions.remove(input, platformError),
+      },
+    } as unknown as Pick<WebClient, 'reactions'>;
+    // A stop drops the message and its ending removes the 👀 (not there yet:
+    // Slack answers no_reaction) while Slack is still adding it.
+    harness.whileAdding(async () => {
+      assert.equal((await state.steerTurn!({
+        kind: 'stop', threadKey: `T1:C1:${ROOT_TS}`, source: 'typed',
+        stopperUserId: 'U1', cutoffTs: '1800000020.000100',
+      })).outcome, 'stopped');
+      const finished = await state.finishTurnStop!(ROOT_ID, 'dropped');
+      assert.deepEqual(finished?.rows.map(({ id }) => id), [MID_ID]);
+      await removeDroppedReceipts(finished!.rows, client, (id, patch) =>
+        state.recordSlackInteractionProgress!(id, patch));
+    });
+    await harness.deliver({ ts: MID_TS, threadTs: ROOT_TS, user: 'U2', text: 'Also check the nightly job.' });
+
+    assert.deepEqual(harness.reactions.log, [
+      `remove ${MID_TS}:eyes`, `add ${MID_TS}:eyes`, `remove ${MID_TS}:eyes`,
+    ]);
+    assert.deepEqual(harness.reactions.on(MID_TS), [], 'no 👀 stays on a message the stop dropped');
+    const view = await state.turnJobView!(MID_ID);
+    assert.equal(view.status, 'done');
+    assert.equal(view.cleanupPending, undefined, 'its receipt is finished');
+  });
+});
+
+test('a 👀 whose add lands after its turn already cleared the receipt is removed; a live one stays', async () => {
+  await withHarness(async (harness) => {
+    await harness.deliver({ ts: ROOT_TS, text: `${OPS} Investigate the flaky build.` });
+    const state = harness.stores.slackState;
+    harness.whileAdding(async () => {
+      await state.recordSlackInteractionProgress!(MID_ID, {
+        acknowledgment: { ...RECEIPT, cleanup: 'done' },
+      });
+    });
+    await harness.deliver({ ts: MID_TS, threadTs: ROOT_TS, user: 'U2', text: 'Also check the nightly job.' });
+    assert.deepEqual(harness.reactions.on(MID_TS), []);
+    assert.deepEqual(await harness.receiptOf(MID_ID), { ...RECEIPT, cleanup: 'done' });
+
+    // Nothing touched this one's receipt meanwhile: its queued turn removes it.
+    harness.whileAdding(undefined);
+    const liveTs = '1800000020.000100';
+    await harness.deliver({ ts: liveTs, threadTs: ROOT_TS, user: 'U2', text: 'And the weekly one.' });
+    assert.deepEqual(harness.reactions.on(liveTs), [BOT]);
+    assert.deepEqual(await harness.receiptOf(`msg:C1:${liveTs}`), { ...RECEIPT, messageTs: liveTs });
   });
 });
 
