@@ -247,6 +247,14 @@ test('every progressive cut point is a monotone prefix of the canonical terminal
     // Overlapping credential markers hold from the first.
     'xoxox-xox',
     'xoxox|OPENAI_API_KEY\n',
+    // A hold pulled back to a dropped span's opener reads the joined words too.
+    'a**` https://x xoxo**\nabcdefghij more',
+    'xo**xb-123456789012345678901234 https://x @**\nok',
+    'a xo**xb-123456789012345678901234 https://x OPENAI_API_KEY=**\nabcdefghijkl done',
+    '`c` AK**IAABCDEFGHIJKLMNOP https://x <**\n\nxoxb-123456789012345678901234 ok',
+    // `'\u0130'.toLowerCase()` is two characters; marker positions must not drift.
+    `${'\u0130'.repeat(33)} token xoxb-123456789012345678901234 done`,
+    `${'\u0130'.repeat(33)} xoxox-xox`,
   ];
 
   for (const terminalInput of corpus) {
@@ -259,6 +267,15 @@ test('every progressive cut point is a monotone prefix of the canonical terminal
       prior = prefix;
     }
   }
+});
+
+test('a run of decided broadcast-word prefixes streams instead of being peeled away', () => {
+  // Each `@h` is followed by a space: nothing is left to decide, so the
+  // stream shows it all rather than holding one more word per pass.
+  const spans = '**https://x @h** '.repeat(700);
+  assert.equal(streamableSlackMarkdownPrefix(spans), canonicalSlackMarkdownText(spans));
+  const words = `${'@h '.repeat(4000)}@`;
+  assert.equal(streamableSlackMarkdownPrefix(words), '@h '.repeat(4000).trimEnd());
 });
 
 const WJ = '⁠';
@@ -390,7 +407,8 @@ test('a streamed prefix withholds a mention until it neutralizes like the whole 
     ['Heads up @Her', 'Heads up'],
     // `@here` can still become `@heresy`, which is not a mention.
     ['Heads up @here', 'Heads up'],
-    ['Heads up @here ', 'Heads up'],
+    // A space ends the word as surely as a comma does.
+    ['Heads up @here ', `Heads up @${WJ}here`],
     ['Heads up @here,', `Heads up @${WJ}here,`],
     ['Heads up @heresy', 'Heads up @heresy'],
     ['Heads up @ops.', 'Heads up @ops.'],

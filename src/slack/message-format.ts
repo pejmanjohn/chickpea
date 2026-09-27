@@ -725,12 +725,18 @@ export function streamableSlackMarkdownPrefix(text: string): string {
   // A cut can end inside a closed code span or `<...>` reference, or right
   // after a broadcast word, where the whole answer neutralizes differently,
   // or inside code or a `**URL**` span, whose opener it leaves unclosed.
+  // Whether the cut's last word goes on is read from the answer so far: a
+  // word the answer has already ended is not held, which also keeps a run of
+  // such words from being peeled off one pass (and one rescan) at a time.
+  const answer = sanitizedView(normalized);
   for (;;) {
     const view = sanitizedView(stable);
+    const next = answer.text[answer.fromRaw(stable.length)];
+    const wordEnded = next !== undefined && !/[\p{L}\p{N}_]/u.test(next);
     const held = Math.min(
-      view.toRaw(unsafeMentionTail(view.text)),
+      view.toRaw(unsafeMentionTail(view.text, wordEnded)),
       heldBeforeStars(stable, openUrlEmphasis(stable, stable.lastIndexOf('\n') + 1, true)),
-      strippedSpanStart(normalized, stable.length),
+      heldBeforeStars(stable, strippedSpanStart(normalized, stable.length)),
     );
     if (held >= stable.length) break;
     stable = stable.slice(0, view.credentialHoldStart(held)).trimEnd();
@@ -794,6 +800,7 @@ function sanitizedView(value: string) {
   return {
     text,
     toRaw,
+    fromRaw,
     /** `credentialHoldStart` on the answer's reading; an unmoved hold stays put. */
     credentialHoldStart(held: number): number {
       if (!dropped.length) return credentialHoldStart(value, held);
@@ -868,10 +875,18 @@ function earliestUnsafeTail(value: string): number {
   return view.credentialHoldStart(unsafeFrom);
 }
 
+/**
+ * Lowercase ASCII only, so a marker's index in the result is its index in
+ * `value`: `'İ'.toLowerCase()` is two characters, and every marker is ASCII.
+ */
+function asciiLowerCase(value: string): string {
+  return value.replace(/[A-Z]+/g, (upper) => upper.toLowerCase());
+}
+
 /** Where redaction or mention neutralization may still rewrite the tail. */
 function unsafeTokenTail(value: string): number {
   let unsafeFrom = value.length;
-  const lower = value.toLowerCase();
+  const lower = asciiLowerCase(value);
 
   // Hold a full credential marker and its non-whitespace tail until a token
   // boundary proves that terminal redaction can no longer rewrite it.
@@ -902,7 +917,7 @@ function credentialHoldStart(value: string, held: number): number {
   // A hold can also land inside a marker that starts earlier (the second
   // `xox` of `xoxoxb`), which a search ending at the hold misses.
   let straddled = held;
-  const lower = value.toLowerCase();
+  const lower = asciiLowerCase(value);
   for (const marker of credentialMarkers()) {
     const markerLower = marker.toLowerCase();
     for (let back = 1; back < markerLower.length && back <= held; back += 1) {
@@ -960,7 +975,7 @@ function strippedSpanStart(value: string, cut: number): number {
  * broadcast word (`@here`, not `@heresy`), and a mention after an inline code
  * span opened on the last line, which neutralizes differently once it closes.
  */
-function unsafeMentionTail(value: string): number {
+function unsafeMentionTail(value: string, wordEnded = false): number {
   let unsafeFrom = value.length;
   const lastLineStart = value.lastIndexOf('\n') + 1;
   const openAngle = value.lastIndexOf('<');
@@ -970,7 +985,7 @@ function unsafeMentionTail(value: string): number {
   // Whatever precedes the `@`: redaction can turn `…9@here` into `…]@here`.
   // A trailing `_` run is undecided too: `@here_` may end (`@here_ now`) or
   // grow into another word (`@here_now`).
-  const word = /@([\p{L}\p{N}]*)(_*)$/u.exec(value);
+  const word = wordEnded ? null : /@([\p{L}\p{N}]*)(_*)$/u.exec(value);
   if (word && SLACK_BROADCAST_KEYWORDS.some((keyword) => word[2]
     ? keyword === word[1]!.toLowerCase()
     : keyword.startsWith(word[1]!.toLowerCase()))) {
