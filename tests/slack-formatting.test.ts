@@ -169,6 +169,20 @@ test('strong emphasis cannot leak a trailing asterisk into an auto-linked URL', 
   assert.doesNotMatch(block?.type === 'markdown' ? block.text : '', /\/4\*/);
 
   assert.equal(sanitizeSlackMarkdownLinks(`**bold** and \`${markdown}\``), `**bold** and \`${markdown}\``);
+  // Pairs close left to right, so a bold closer never opens a URL span.
+  assert.equal(
+    sanitizeSlackMarkdownLinks('- **Step:** go to https://x.test/a then **Save**.'),
+    '- **Step:** go to https://x.test/a then **Save**.',
+  );
+  assert.equal(sanitizeSlackMarkdownLinks('**a** [link](http://b) **c**'), '**a** [link](http://b) **c**');
+});
+
+test('a line led by bold text keeps streaming after the bold closes', () => {
+  for (const line of ['**Summary:** the deploy finished', '- **Step 1:** run it and **always** check']) {
+    assert.equal(streamableSlackMarkdownPrefix(line), line);
+  }
+  // A star run holds only the `**` that can still open a URL span.
+  assert.equal(streamableSlackMarkdownPrefix('*********'), '*******');
 });
 
 test('every progressive cut point is a monotone prefix of the canonical terminal answer', () => {
@@ -204,6 +218,21 @@ test('every progressive cut point is a monotone prefix of the canonical terminal
     'word\nxoxb-sk-ant-xoxb-123456789012345678901234 then more.',
     'word\nxoxp-sk-proj-abcdefghijklmnopqrstuvwxyz123456 then more.',
     '```ts\nxoxb-xoxb-123456789012345678901234\n```\nComplete.',
+    '@channelword\n******',
+    '**a**http://x** then more',
+    '****http://x*** then more',
+    '2**10 stays literal.\n**https://example.test/x** done',
+    'See **http://a.test** and **http://b.test** both.',
+    '**a `x` http://b** c http://d**',
+    'x `**http://a** y` z',
+    '```\n**http://a** x\n```\n**http://b** y',
+    '````\n**http://a**\n````',
+    '**https://a.test/x [draft]** is live',
+    '- **Step:** go to https://x.test/a then **Save**.',
+    '**Summary:** see https://x.test/a** then more',
+    '**a `b** c` https://d**',
+    '**https://x** `y` **https://z** `w',
+    '*********',
     'Ping __@here__, _@channel_ and @here_now; see youtube.com/@everyone_team @here__ done.',
   ];
 
