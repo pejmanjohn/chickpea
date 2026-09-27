@@ -178,12 +178,12 @@ covers only some of the paths a reply takes:
 
 | Path | Used for | Documented behavior |
 | --- | --- | --- |
-| `markdown` block | Every final answer | Silent on mentions |
-| Streamed `markdown_text` chunk | Progressive and final streams | Silent on mentions |
+| `markdown` block | Every final answer | Silent on mentions (observed below) |
+| Streamed `markdown_text` chunk | Progressive and final streams | Silent on mentions (observed below) |
 | mrkdwn section text | File replies, routine file deliveries | Parses `<!here>`, `<!channel>`, `<!everyone>`, `<!subteam^ID>`; with the default `verbatim: false` it also auto-parses a plain `@here` and user-group handles |
 | Top-level `text` | Fallback and notification text | Parses `<!here>` syntax; a plain `@here` only with `link_names=1`, which Chickpea never sets |
 
-The undocumented paths are treated as parsing everything, so
+Every path is treated as parsing everything, so
 `canonicalSlackMarkdownText` neutralizes every answer last, after link
 sanitizing and credential redaction. `neutralizeSlackBroadcastMentions` in
 `src/slack/message-format.ts` rewrites:
@@ -206,6 +206,26 @@ prefix is a prefix of the neutralized final.
 
 A stream opened by an earlier build that already showed a raw mention diverges
 from the new final; the divergent-stream correction replaces it.
+
+Protocol probe on Violet, September 26, 2026: a temporary probe build posted
+synthetic text as the lane bot into the QA test user's DM, read each message
+back with `conversations.replies`, and deleted all three. Stored results:
+
+| Input | `markdown` block | `chunks` stream (start, append, stop) | mrkdwn section |
+| --- | --- | --- | --- |
+| `<!here>`, `<!channel>` in prose | `broadcast` element (live) | `broadcast` element (live) | Not sent raw |
+| Plain `@here`, `@channel` in prose | Text | Text | `@here` rewritten to `<!here>` (live) |
+| `<!here>` or `@here` in inline code or a fence | Code text | Code text | `` `@here` `` rewritten to `` `<!here>` `` |
+| `<@U…>` | `user` element | `user` element | Not sent |
+| `@⁠here`, `<⁠!here>` (joiner) | Text | Text | Text |
+
+Slack therefore parses special mentions in markdown blocks and streams even
+though the documentation is silent, which is what the neutralization closes.
+The mrkdwn rewrite inside backticks is why file-reply code also gets the
+joiner. The Agent had no memberless user group, so `<!subteam^ID>` and plain
+user-group handles were not probed; they stay neutralized on the documented
+mrkdwn behavior. This is protocol evidence, not Agent acceptance: no real
+Agent reply containing a mention was graded.
 
 ### Public message readback is a projection
 
