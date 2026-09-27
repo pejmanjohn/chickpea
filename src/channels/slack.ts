@@ -2383,72 +2383,120 @@ async function processSlackEvent(
       turn.text,
     );
     const semanticActivityEnabled = slackSemanticActivityStatusEnabled(platformEnv);
-    try {
-      const result = await state.admitCanonical({
-        evtKey,
-        msgKey,
-        threadKey,
-        admission,
-        turnJob: canonicalTurnJob,
-        ...(steering ? { steering } : {}),
-        ...(midRun ? { midRun } : {}),
-        presentation: {
-          schemaVersion: 3,
-          root: {
-            workspaceId: turn.workspaceId,
-            channelId: turn.channelId,
-            threadTs: turn.threadTs,
-            requesterUserId: turn.userId,
+    // A stop or check-in the thread's run took is settled after the
+    // admission, outside its failure handling: a failure there has given the
+    // claims back for the gateway's retry, and must not replay the message
+    // through the legacy-lane fallback in the catch. A run that ended while
+    // the sender was checked against it leaves nothing to steer, so the
+    // message is admitted again without steering, as an ordinary turn (as
+    // with nothing running). Its claims are given back for that; a
+    // redelivery in between admits it instead, and only once.
+    let admitSteering = steering;
+    let steered: TurnSteeringInterception | undefined;
+    do {
+      steered = undefined;
+      try {
+        const result = await state.admitCanonical({
+          evtKey,
+          msgKey,
+          threadKey,
+          admission,
+          turnJob: canonicalTurnJob,
+          ...(admitSteering ? { steering: admitSteering } : {}),
+          ...(midRun ? { midRun } : {}),
+          presentation: {
+            schemaVersion: 3,
+            root: {
+              workspaceId: turn.workspaceId,
+              channelId: turn.channelId,
+              threadTs: turn.threadTs,
+              requesterUserId: turn.userId,
+            },
+            owner,
+            sessionGeneration,
+            ...(semanticActivityEnabled
+              ? {
+                  currentActivity: {
+                    kind: admittedActivity.kind,
+                    action: admittedActivity.action,
+                    object: admittedActivity.object,
+                    family: admittedActivity.family,
+                    phase: admittedActivity.phase,
+                    generation: sessionGeneration,
+                    sequence: 1,
+                    operation: {
+                      operationId: opaqueId(
+                        'activity',
+                        `${admission.run.id}:${canonicalTurnJob.id}:1`,
+                      ),
+                      certainty: 'pending' as const,
+                    },
+                  },
+                }
+              : {}),
+            ...(turn.interactionIntent?.disposition === 'work'
+              ? { taskLabels: turn.interactionIntent.checklist }
+              : {}),
           },
-          owner,
-          sessionGeneration,
-          ...(semanticActivityEnabled
+          ...(ui
             ? {
-                currentActivity: {
-                  kind: admittedActivity.kind,
-                  action: admittedActivity.action,
-                  object: admittedActivity.object,
-                  family: admittedActivity.family,
-                  phase: admittedActivity.phase,
-                  generation: sessionGeneration,
-                  sequence: 1,
-                  operation: {
-                    operationId: opaqueId(
-                      'activity',
-                      `${admission.run.id}:${canonicalTurnJob.id}:1`,
-                    ),
-                    certainty: 'pending' as const,
+                uiSurfaceClaim: {
+                  surfaceId: ui.surface.id,
+                  namespace: ui.surface.namespace,
+                  resolution: {
+                    byUserId: turn.userId,
+                    at: Date.now(),
+                    choice: ui.choice,
+                    ...(ui.values?.length ? { values: ui.values } : {}),
                   },
                 },
               }
             : {}),
-          ...(turn.interactionIntent?.disposition === 'work'
-            ? { taskLabels: turn.interactionIntent.checklist }
-            : {}),
-        },
-        ...(ui
-          ? {
-              uiSurfaceClaim: {
-                surfaceId: ui.surface.id,
-                namespace: ui.surface.namespace,
-                resolution: {
-                  byUserId: turn.userId,
-                  at: Date.now(),
-                  choice: ui.choice,
-                  ...(ui.values?.length ? { values: ui.values } : {}),
-                },
-              },
-            }
-          : {}),
-      });
-      if (!result.claimed) {
-        if (ui) ui.outcome = 'answered';
-        return;
+        });
+        if (!result.claimed) {
+          if (ui) ui.outcome = 'answered';
+          return;
+        }
+        if ('steered' in result) {
+          steered = result.steered;
+        } else {
+          if (ui) ui.outcome = 'admitted';
+          claimsHeldByCanonicalAdmission = true;
+          canonicalRunId = result.admission.run.id;
+          if (result.midRunReceipt) midRunReceipt = midRun?.receipt;
+        }
+      } catch (err) {
+        if (admission.run.executionAuthority === 'ledger') {
+          // A selected canary must never fall back across authority lanes. The
+          // transaction rolled its claims back, so Slack may safely redeliver.
+          if (execution?.durableIngress) {
+            console.error('[chickpea] ledger Work admission failed: durable_ingress_failure');
+          } else {
+            console.error('[chickpea] ledger Work admission failed:', sanitizeError(err));
+          }
+          if (promotedDecisionKey) await state.release(promotedDecisionKey);
+          if (execution?.enqueueTurn || execution?.durableIngress) {
+            throw new SlackDurableEnqueueError('Canonical Work admission failed.');
+          }
+          return;
+        }
+        if (ui) {
+          console.error('[chickpea] Slack click admission failed:', sanitizeError(err));
+          return;
+        }
+        // U3 is deliberately observational. Preserve the existing product path
+        // while surfacing a body-free operator gap for follow-up.
+        console.error('[chickpea] shadow Work admission failed:', sanitizeError(err));
+        if (!(await state.claim(evtKey))) return;
+        if (!(await state.claim(msgKey))) {
+          await state.release(evtKey);
+          return;
+        }
       }
-      if ('steered' in result) {
-        await settleSlackSteering({
-          decision: result.steered,
-          request: steering!,
+      if (steered) {
+        const settled = await settleSlackSteering({
+          decision: steered,
+          request: admitSteering!,
           keys: [evtKey, msgKey],
           mayUse: mayUseRunningAgent,
           turn,
@@ -2456,40 +2504,11 @@ async function processSlackEvent(
           client: slackClient!,
           platformEnv,
         });
-        return;
+        if (settled !== 'ended') return;
+        await releaseSteeringMessage(state, evtKey, msgKey);
+        admitSteering = undefined;
       }
-      if (ui) ui.outcome = 'admitted';
-      claimsHeldByCanonicalAdmission = true;
-      canonicalRunId = result.admission.run.id;
-      if (result.midRunReceipt) midRunReceipt = midRun?.receipt;
-    } catch (err) {
-      if (admission.run.executionAuthority === 'ledger') {
-        // A selected canary must never fall back across authority lanes. The
-        // transaction rolled its claims back, so Slack may safely redeliver.
-        if (execution?.durableIngress) {
-          console.error('[chickpea] ledger Work admission failed: durable_ingress_failure');
-        } else {
-          console.error('[chickpea] ledger Work admission failed:', sanitizeError(err));
-        }
-        if (promotedDecisionKey) await state.release(promotedDecisionKey);
-        if (execution?.enqueueTurn || execution?.durableIngress) {
-          throw new SlackDurableEnqueueError('Canonical Work admission failed.');
-        }
-        return;
-      }
-      if (ui) {
-        console.error('[chickpea] Slack click admission failed:', sanitizeError(err));
-        return;
-      }
-      // U3 is deliberately observational. Preserve the existing product path
-      // while surfacing a body-free operator gap for follow-up.
-      console.error('[chickpea] shadow Work admission failed:', sanitizeError(err));
-      if (!(await state.claim(evtKey))) return;
-      if (!(await state.claim(msgKey))) {
-        await state.release(evtKey);
-        return;
-      }
-    }
+    } while (steered);
   } else {
     if (!(await state.claim(evtKey))) return;
     if (!(await state.claim(msgKey))) {
@@ -2502,13 +2521,14 @@ async function processSlackEvent(
     // The legacy lane (no canonical admission) holds the claims already. Its
     // enqueue below is a separate write, so a stop racing the thread's first
     // message may queue behind it there; the canonical lane decides both in
-    // one transaction.
+    // one transaction. A run that ended while the sender was checked against
+    // it leaves the message to that enqueue, as with nothing running.
     const decision = await state.steerTurn?.(steering).catch((err: unknown) => {
       console.warn('[chickpea] steering decision failed:', sanitizeError(err));
       return undefined;
     });
     if (decision && decision.outcome !== 'enqueue') {
-      await settleSlackSteering({
+      const settled = await settleSlackSteering({
         decision,
         request: steering,
         keys: [evtKey, msgKey],
@@ -2518,7 +2538,7 @@ async function processSlackEvent(
         client: slackClient!,
         platformEnv,
       });
-      return;
+      if (settled !== 'ended') return;
     }
   }
   if (midRun && !claimsHeldByCanonicalAdmission) {
@@ -2895,36 +2915,38 @@ async function processSlackStopButton(
     throw err;
   }
   if (!decision) return;
-  if (decision.outcome === 'enqueue') {
-    logSlackStopButton('no_running_job');
-    await settleIdleAgentSession({
+  if (decision.outcome !== 'enqueue') {
+    const settled = await settleSlackSteering({
+      decision,
+      request,
+      keys,
+      mayUse: (agentId) => mayUseRunningSlackAgent({
+        agentId,
+        turn,
+        surface,
+        actor,
+        config: stores.config,
+        transport,
+      }),
+      turn,
+      state,
       client,
-      press,
-      turn,
-      assignment: routed.assignment,
-      installationHealth: installation.health,
-      stores,
       platformEnv,
+      source: 'button',
     });
-    return;
+    if (settled !== 'ended') return;
   }
-  await settleSlackSteering({
-    decision,
-    request,
-    keys,
-    mayUse: (agentId) => mayUseRunningSlackAgent({
-      agentId,
-      turn,
-      surface,
-      actor,
-      config: stores.config,
-      transport,
-    }),
-    turn,
-    state,
+  // Nothing was running, or the run ended while the presser was checked
+  // against it: the indicator is idle.
+  logSlackStopButton('no_running_job');
+  await settleIdleAgentSession({
     client,
+    press,
+    turn,
+    assignment: routed.assignment,
+    installationHealth: installation.health,
+    stores,
     platformEnv,
-    source: 'button',
   });
 }
 
@@ -2994,14 +3016,27 @@ function slackSteeringRequest(
 }
 
 /**
+ * How a stop or check-in the thread's run took ended up: `settled`, answered;
+ * `refused`, a stop refused privately or a check-in left unanswered (R3,
+ * R11); `ended`, the run ended while its sender was checked against it, so
+ * there is nothing left to steer and the caller treats the message as with
+ * nothing running (an ordinary message; an idle Stop press).
+ */
+type SlackSteeringSettlement = 'settled' | 'refused' | 'ended';
+
+/**
  * Settle a stop or check-in the thread's run took (KTD1). When that run is
  * another Agent's than the one the sender was routed to (the previous
  * owner's, after a handoff), only a sender who may use that Agent here
  * steers it (R3): the request is decided again bound to that Agent, so a
  * handoff mid-run does not hide the running turn from them. Anyone else's
  * stop is refused privately, and their check-in gets no answer, since what
- * it would tell is that Agent's run's (R11). The message's claims are held
- * already; a failure gives them back, so a redelivery decides it again.
+ * it would tell is that Agent's run's (R11). A run that ended meanwhile
+ * leaves nothing to steer (`ended`). One that keeps moving on to other
+ * Agents' past two decisions again is refused the same way, fail closed,
+ * rather than steered without its Agent checked (`unsettled`). The message's
+ * claims are held already; a failure gives them back and rethrows, so a
+ * redelivery decides it again.
  */
 async function settleSlackSteering(input: {
   decision: TurnSteeringInterception;
@@ -3013,28 +3048,35 @@ async function settleSlackSteering(input: {
   client: ReturnType<typeof createSlackWebClient>;
   platformEnv: PlatformEnv | undefined;
   source?: TurnStopSource;
-}): Promise<void> {
+}): Promise<SlackSteeringSettlement> {
+  const button = input.source === 'button' ? { source: input.source } : {};
   let decision: TurnSteeringDecision = input.decision;
   try {
     // Twice at most: the thread's run may move on to yet another Agent's.
     for (let round = 0; decision.outcome === 'other_agent'; round += 1) {
-      if (round === 2 || !input.state.steerTurn) return;
-      if (!(await input.mayUse(decision.agentId))) {
-        if (input.request.kind === 'stop') {
-          await tellIneligibleStopper(input.client, steeringReplyTarget(input.turn), input.source ?? 'typed');
-        } else {
-          console.info('[chickpea] steering.admission', { outcome: 'check_in_refused' });
-        }
-        return;
+      if (round === 2 || !input.state.steerTurn) {
+        console.info('[chickpea] steering.admission', { outcome: 'unsettled', ...button });
+        break;
       }
+      if (!(await input.mayUse(decision.agentId))) break;
       decision = await input.state.steerTurn({ ...input.request, agentId: decision.agentId });
     }
   } catch (err) {
     await releaseSteeringMessage(input.state, ...input.keys);
     throw err;
   }
-  // `enqueue`: the run ended meanwhile, and there is nothing left to steer.
-  if (decision.outcome === 'enqueue') return;
+  if (decision.outcome === 'other_agent') {
+    if (input.request.kind === 'stop') {
+      await tellIneligibleStopper(input.client, steeringReplyTarget(input.turn), input.source ?? 'typed');
+    } else {
+      console.info('[chickpea] steering.admission', { outcome: 'check_in_refused' });
+    }
+    return 'refused';
+  }
+  if (decision.outcome === 'enqueue') {
+    console.info('[chickpea] steering.admission', { outcome: 'ended', ...button });
+    return 'ended';
+  }
   await answerSlackSteering({
     decision,
     turn: input.turn,
@@ -3043,6 +3085,7 @@ async function settleSlackSteering(input: {
     platformEnv: input.platformEnv,
     ...(input.source ? { source: input.source } : {}),
   });
+  return 'settled';
 }
 
 /**

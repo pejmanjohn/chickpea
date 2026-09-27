@@ -442,6 +442,82 @@ test('after a handoff to Chickpea, a press by someone who may not use the runnin
   });
 });
 
+/**
+ * Runs that end while a presser is checked against them: before the `n`-th
+ * stop decided through the state store, the rows listed for `n` are
+ * delivered. Returns how many were decided.
+ */
+function deliverBeforeSteering(
+  harness: Harness,
+  rows: Record<number, readonly string[]>,
+): () => number {
+  const state = harness.stores.slackState;
+  const steer = state.steerTurn!.bind(state);
+  let decided = 0;
+  state.steerTurn = async (request, enqueue) => {
+    if (request.kind !== 'message') {
+      decided += 1;
+      for (const id of rows[decided] ?? []) await state.markTurnDelivered!(id);
+    }
+    return await steer(request, enqueue);
+  };
+  return () => decided;
+}
+
+test('a press whose run, another Agent\'s after a handoff, ends while the presser is checked settles the idle session', async () => {
+  await withHarness(async (harness) => {
+    await startRun(harness);
+    await harness.deliver({ ts: '1800000005.000100', threadTs: ROOT_TS, user: 'U2', text: '<@UBOT> hi' });
+    assert.equal(harness.jobs.at(-1)?.assignment.agentId, 'agent_chickpea');
+    // The Agent's run, and the handoff turn behind it, finish during U2's check.
+    const decided = deliverBeforeSteering(harness, { 2: [ROOT_ID, 'msg:C1:1800000005.000100'] });
+    await harness.press({ eventTs: '1800000010.000100', user: 'U2' });
+
+    assert.equal(decided(), 2, 'decided again once, bound to the Agent whose run it was');
+    assert.deepEqual(await harness.pending(), []);
+    assert.deepEqual(harness.posts, []);
+    assert.deepEqual(harness.tokens, [{ outcome: 'no_running_job' }], 'as with nothing running');
+    assert.deepEqual(harness.sessions, [{ channel_id: 'C1', thread_ts: ROOT_TS, status: 'active' }]);
+
+    // A Slack retry of the same press is a duplicate.
+    await harness.press({ eventTs: '1800000010.000100', user: 'U2' });
+    assert.equal(decided(), 2);
+    assert.equal(harness.tokens.length, 1);
+    assert.equal(harness.sessions.length, 1);
+  });
+});
+
+test('a press whose thread\'s run moves on to a third Agent while it is decided is refused, never applied unchecked', async () => {
+  await withHarness(async (harness) => {
+    await startRun(harness);
+    // The thread passes to Chickpea, back to the Agent, and to Chickpea again.
+    await harness.deliver({ ts: '1800000005.000100', threadTs: ROOT_TS, user: 'U2', text: '<@UBOT> hi' });
+    await harness.deliver({ ts: '1800000006.000100', threadTs: ROOT_TS, user: 'U2', text: `${OPS} again` });
+    await harness.deliver({ ts: '1800000007.000100', threadTs: ROOT_TS, user: 'U2', text: '<@UBOT> back' });
+    assert.deepEqual(
+      harness.jobs.map((job) => job.assignment.agentId),
+      ['agent_ops', 'agent_chickpea', 'agent_ops', 'agent_chickpea'],
+    );
+    // Each time the stop is decided again, the run it was bound to is over
+    // and the next row is another Agent's.
+    const decided = deliverBeforeSteering(harness, { 2: [ROOT_ID], 3: ['msg:C1:1800000005.000100'] });
+    await harness.press({ eventTs: '1800000010.000100', user: 'U2' });
+
+    assert.equal(decided(), 3, 'decided again twice at most');
+    const stops = (await harness.pending()).map((job) => job.stop);
+    assert.deepEqual(stops, [undefined, undefined], 'the third run is not stopped');
+    assert.deepEqual(harness.posts, [{
+      operation: 'chat.postEphemeral',
+      input: {
+        channel: 'C1', user: 'U2', thread_ts: ROOT_TS,
+        text: "You can't stop this run. Only people who can use this Agent here can stop it.",
+      },
+    }]);
+    assert.deepEqual(harness.sessions, [], 'the session is the running Agent\'s to settle');
+    assert.deepEqual(harness.tokens, []);
+  });
+});
+
 test('a guest\'s press keeps Chickpea\'s silence toward guests and leaves the run alone', async () => {
   await withHarness(async (harness) => {
     await startRun(harness);

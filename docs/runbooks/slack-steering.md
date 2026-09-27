@@ -191,7 +191,7 @@ user, channel, or workspace IDs.
 
 | Signal | Where | Meaning |
 | --- | --- | --- |
-| `[chickpea] steering.admission` | Worker or Node log | A stop or check-in decided at admission. `outcome` is `stopped` (with `created: false` when it joined an existing stop), `check_in`, or `stop_refused` (someone without access, told privately). `source: button` marks the Stop button. |
+| `[chickpea] steering.admission` | Worker or Node log | A stop or check-in decided at admission. `outcome` is `stopped` (with `created: false` when it joined an existing stop), `check_in`, `stop_refused` (someone without access, told privately), `check_in_refused` (someone without access to the Agent whose run it is, not answered), `ended` (after a handoff, that Agent's run ended while the sender was checked against it; the message went on as with nothing running), or `unsettled` (the run moved on to yet another Agent while it was decided; refused as for someone without access, fail closed). `source: button` marks the Stop button. |
 | `[chickpea] steering.stop_button` | Worker or Node log | A Stop press that stopped nothing. `outcome` is `invalid` (unreadable event), `no_route` (not an Agent thread), `no_running_job`, or `not_allowed` (no access and not told, a guest for example). |
 | `turn_latency` with `outcome: stopped` | Runtime event | A stopped run's ending (both lanes). |
 | `thread_runner_alarm` field `dropped` | Runtime event, Cloudflare runners | Turns that stopped runs' endings dropped since the runner's previous record. |
