@@ -168,6 +168,18 @@ test('strong emphasis cannot leak a trailing asterisk into an auto-linked URL', 
   assert.doesNotMatch(block?.type === 'markdown' ? block.text : '', /\/4\*/);
 
   assert.equal(sanitizeSlackMarkdownLinks(`**bold** and \`${markdown}\``), `**bold** and \`${markdown}\``);
+  // Pairs close left to right, so a bold closer never opens a URL span.
+  assert.equal(
+    sanitizeSlackMarkdownLinks('- **Step:** go to https://x.test/a then **Save**.'),
+    '- **Step:** go to https://x.test/a then **Save**.',
+  );
+  assert.equal(sanitizeSlackMarkdownLinks('**a** [link](http://b) **c**'), '**a** [link](http://b) **c**');
+});
+
+test('a line led by bold text keeps streaming after the bold closes', () => {
+  for (const line of ['**Summary:** the deploy finished', '- **Step 1:** run it and **always** check']) {
+    assert.equal(streamableSlackMarkdownPrefix(line), line);
+  }
 });
 
 test('every progressive cut point is a monotone prefix of the canonical terminal answer', () => {
@@ -213,6 +225,8 @@ test('every progressive cut point is a monotone prefix of the canonical terminal
     '```\n**http://a** x\n```\n**http://b** y',
     '````\n**http://a**\n````',
     '**https://a.test/x [draft]** is live',
+    '- **Step:** go to https://x.test/a then **Save**.',
+    '**Summary:** see https://x.test/a** then more',
   ];
 
   for (const terminalInput of corpus) {

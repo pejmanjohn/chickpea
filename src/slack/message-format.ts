@@ -727,23 +727,24 @@ export function streamableSlackMarkdownPrefix(text: string): string {
   return canonicalSlackMarkdownText(stable);
 }
 
-// Strong emphasis around one star-free segment that holds a URL.
-const URL_SEGMENT = String.raw`[^*\n]*https?:\/\/[^*\n]+`;
-const URL_EMPHASIS = new RegExp(String.raw`\*\*(${URL_SEGMENT})\*\*`, 'g');
-const WHOLE_URL_SEGMENT = new RegExp(`^${URL_SEGMENT}$`);
+// Strong emphasis, paired left to right, and a star-free segment holding a URL.
+const STRONG_EMPHASIS = /\*\*([^*\n]+)\*\*/g;
+const WHOLE_URL_SEGMENT = /^[^*\n]*https?:\/\/[^*\n]+$/;
 // Code the link sanitizer leaves alone; an unclosed fence or span is prose.
 const CLOSED_CODE_SEGMENT = /(```[\s\S]*?```|`[^`\n]*`)/g;
 
 // Slack's markdown renderer can treat the closing `*` in a strong span as part
 // of an auto-linked URL (`**https://example.test/4**` -> URL ending in `*`).
 // Drop only the unsafe outer emphasis while preserving ordinary bold text and
-// literal examples inside inline/fenced code.
+// literal examples inside inline/fenced code. Pairs close left to right, so a
+// bold closer (`**Step:** … https://x … **Save**`) never opens a URL span.
 export function sanitizeSlackMarkdownLinks(markdown: string): string {
   return markdown
     .split(CLOSED_CODE_SEGMENT)
     .map((segment, index) => {
       if (index % 2 === 1) return segment;
-      return segment.replace(URL_EMPHASIS, '$1');
+      return segment.replace(STRONG_EMPHASIS, (strong, inner: string) =>
+        WHOLE_URL_SEGMENT.test(inner) ? inner : strong);
     })
     .join('');
 }
@@ -905,8 +906,9 @@ function openUrlEmphasis(value: string, lastLineStart: number): number {
       // empty span, so the fence shows up here, not in the trailing prose.
       if (fence < 0 && segment === '``' && value[offset + 2] === '`') fence = offset;
     } else if (fence >= 0) {
-      const stripped = segment.search(URL_EMPHASIS);
-      if (stripped >= 0) return offset + stripped;
+      const stripped = [...segment.matchAll(STRONG_EMPHASIS)]
+        .find((strong) => WHOLE_URL_SEGMENT.test(strong[1]!));
+      if (stripped) return offset + stripped.index;
     }
     offset += segment.length;
   }
@@ -915,16 +917,18 @@ function openUrlEmphasis(value: string, lastLineStart: number): number {
   for (let at = value.indexOf('*', from); at >= 0; at = value.indexOf('*', at + 1)) {
     if (at === value.length - 1) return at;
     if (value[at + 1] !== '*') continue;
-    // The segment can only close at the next `*`: a `**` there pairs when the
-    // segment holds a URL, and none at all on an earlier line (`**kwargs`,
-    // `2**10`) is literal.
+    // The segment can only close at the next `*`, on the same line: a `**`
+    // there closes a pair (stripped when the segment holds a URL), and none
+    // at all on an earlier line (`**kwargs`, `2**10`) is literal.
     const star = value.indexOf('*', at + 2);
-    if (star < 0) return at < lastLineStart ? value.length : at;
-    const segment = value.slice(at + 2, star);
-    if (value[star + 1] === '*' && WHOLE_URL_SEGMENT.test(segment)) {
-      if (opener >= 0 && star + 2 > opener) return at;
+    const segment = value.slice(at + 2, star < 0 ? value.length : star);
+    if (segment.includes('\n')) continue;
+    if (star < 0) return at;
+    if (!segment) continue;
+    if (value[star + 1] === '*') {
+      if (opener >= 0 && star + 2 > opener && WHOLE_URL_SEGMENT.test(segment)) return at;
       at = star + 1;
-    } else if (at >= lastLineStart && star === value.length - 1 && WHOLE_URL_SEGMENT.test(segment)) {
+    } else if (star === value.length - 1 && WHOLE_URL_SEGMENT.test(segment)) {
       return at;
     }
   }
