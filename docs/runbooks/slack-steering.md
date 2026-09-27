@@ -101,6 +101,9 @@ the note seals the open stream after the partial answer. If Slack already
 halted the stream (its Stop button does this), the partial answer stays as
 Slack shows it and the note posts as a new reply. Both post as the thread's
 Agent with its footer; see [Slack message identity](slack-message-identity.md#steering-replies-and-the-stop-note).
+Unfinished rows of the run's task card settle as skipped, with a detail
+saying the run was stopped. Slack has no stopped state for a task, and it
+draws a failed or not-run row as "Something went wrong".
 
 ### When the run finished first
 

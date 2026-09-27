@@ -3098,7 +3098,7 @@ test('a stopped ending with no stream posts the note as the terminal message', a
   } finally { h.db.close(); }
 });
 
-test('a stopped run marks its active plan row stopped before it finished and the untouched rows not run', async () => {
+test('a stopped run marks its unfinished plan rows skipped, never as an error', async () => {
   const h = harness({ schemaVersion: 3, tasks: ['Inspect bookings', 'Prepare chart', 'Share it'] });
   try {
     const first = h.store.get(h.runId)!;
@@ -3110,9 +3110,12 @@ test('a stopped run marks its active plan row stopped before it finished and the
     assert.equal(stored?.schemaVersion, 3);
     if (stored?.schemaVersion !== 3) return;
     assert.deepEqual(stored.plan?.tasks.map((task) => [task.outcome, task.detail]), [
-      ['failed', 'Failed: the run was stopped before this finished.'],
-      ['not_run', 'Not run: the run was stopped.'],
-      ['not_run', 'Not run: the run was stopped.'],
+      ['skipped', 'Skipped: the run was stopped before this finished.'],
+      ['skipped', 'Skipped: the run was stopped.'],
+      ['skipped', 'Skipped: the run was stopped.'],
     ]);
+    // Slack draws an error row as "Something went wrong" under the stop
+    // note; a stop is intentional, so no row may project as an error.
+    assert.deepEqual(stored.plan?.tasks.map((task) => task.status), ['complete', 'complete', 'complete']);
   } finally { h.db.close(); }
 });

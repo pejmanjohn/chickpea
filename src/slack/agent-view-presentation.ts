@@ -484,8 +484,9 @@ export class SlackAgentViewPresentation {
 
   /**
    * A stop ended the run (KTD3): the active row did not finish and every
-   * untouched later row did not run. Unlike recordExecutionFailure, each
-   * detail says the run was stopped.
+   * untouched later row did not run. Each is skipped with a detail saying the
+   * run was stopped. Slack draws a failed or not-run row as "Something went
+   * wrong", which would read as a crash under an intentional stop's note.
    */
   async recordExecutionStopped(): Promise<void> {
     let presentation = await this.requirePresentation();
@@ -493,20 +494,14 @@ export class SlackAgentViewPresentation {
     const changed: string[] = [];
     for (const task of presentation.plan.tasks) {
       if (task.status !== 'in_progress' && task.status !== 'pending') continue;
-      // A started row cannot become "not run".
-      presentation = await this.transition(presentation, task.status === 'in_progress'
-        ? {
-            kind: 'transition_task',
-            taskId: task.id,
-            to: 'failed',
-            detail: 'Failed: the run was stopped before this finished.',
-          }
-        : {
-            kind: 'transition_task',
-            taskId: task.id,
-            to: 'not_run',
-            detail: 'Not run: the run was stopped.',
-          });
+      presentation = await this.transition(presentation, {
+        kind: 'transition_task',
+        taskId: task.id,
+        to: 'skipped',
+        detail: task.status === 'in_progress'
+          ? 'Skipped: the run was stopped before this finished.'
+          : 'Skipped: the run was stopped.',
+      });
       changed.push(task.id);
       if (presentation.schemaVersion !== 3 || !presentation.plan) return;
     }
