@@ -34,8 +34,9 @@ New Slack turns use only Slack's native under-composer status:
 - Previously persisted message projections may update or delete only their
   exact stored coordinate for recovery. They are never selected for new work.
 - A truthful phase refreshes at about 90 seconds so it does not expire at
-  Slack's two-minute boundary. Ownership fencing and the shared installation
-  budget can drop a cosmetic refresh; they never delay the answer.
+  Slack's two-minute boundary, until the run goes quiet (below). Ownership
+  fencing and the shared installation budget can drop a cosmetic refresh;
+  they never delay the answer.
 
 Slack currently describes
 [`assistant.threads.setStatus`](https://docs.slack.dev/reference/methods/assistant.threads.setStatus/)
@@ -46,6 +47,65 @@ expiry, persona behavior, and
 [replacement guidance](https://docs.slack.dev/changelog/2026/08/20/agent-updates/)
 on **2026-12-01**, then either keep the bridge or deliberately sunset to
 lifecycle-only behavior. Do not add a message fallback during that review.
+
+## Quiet runs and check-ins
+
+Slack shows either Chickpea's custom status text or its own working indicator
+with the Stop button, never both: the native indicator is hidden while a
+custom status shows. So the status line follows real progress:
+
+- **Real progress** is a tool starting or settling, a coding worker's stage,
+  and a workspace milestone. Each is timed by its own event: observed
+  activity as it arrives from the Agent, a workspace milestone by its
+  position in the reply. A refresh write, a turn-owned lifecycle write, a
+  model attempt's `Thinking…`, and the milestone replay a reattached turn
+  reads after every 10-minute yield never count, so they cannot hold a stuck
+  run's clock back. A long stretch where the model thinks without calling
+  tools reads as no progress.
+- **While work moves**, the custom status shows the current step and
+  refreshes as above.
+- **After five minutes without progress**, the status registry
+  (`src/slack/status-registry.ts`) stops refreshing the custom text and hands
+  the thread back to Slack's native `processing` indicator, which carries the
+  Stop button. Nothing custom is written while the run is quiet. A final
+  delivered during a quiet stretch waits for that hand-back, so native never
+  lands after the session settles.
+- **While the native indicator shows** (the run's first moments and every
+  quiet stretch), the turn sends `processing` again at most every 45 minutes
+  (`SLACK_NATIVE_PROCESSING_KEEPALIVE_MS`). Slack moves an Agent Session out
+  of `processing` an hour after its status was last sent, and the Stop button
+  goes with it, so the keepalive keeps the button on runs longer than an
+  hour. A keepalive Slack does not take is tried again 5 minutes later. The
+  keepalive stops at the terminal, and one already in flight lands before
+  the next custom status releases native processing, so the release is
+  Slack's last word.
+- **On the next progress**, the custom status comes back through the existing
+  hand-over in `src/slack/run-turn.ts`: native processing is released first,
+  so the text renders. A new step is written as usual; the step shown before
+  the quiet stretch is reasserted as a refresh.
+- **Without a native indicator** (a presenter without Agent Sessions, or a
+  hand-back Slack rejects), the custom status stays and keeps refreshing
+  rather than leaving the thread with no status at all.
+
+The status text keeps its fixed-copy, no-clock rule. The time since progress
+reaches people only through a check-in, which reads the run's facts without
+touching the run: its start, its current fixed-copy step, its last progress,
+and the time since that progress in buckets of `5+`, `10+`, `15+`, `30+` or
+`60+` minutes (none under five; `slackRunQuietBucket`). A thread runner keeps
+these facts in its own storage (additive `runner_jobs` columns
+`run_started_at`, `run_step`, `run_progress_at`, `run_milestones`), saved at
+most every 30 seconds and at once for a new milestone or when the turn's
+registration closes, and serves them through its `runFacts` RPC, so a check-in
+answers after an eviction. Registries without a persisting owner (the Node
+relay, the alarm executor) keep them in memory. The facts hold only fixed copy
+and times; no telemetry field was added for them.
+
+The check-in answer (`slackCheckInReply` in `src/slack/steering-replies.ts`)
+is fixed copy built from those facts: the current step when there is one,
+`No new progress for 10+ minutes` (or `Last progress under 5 minutes ago`),
+and the run's duration in whole minutes and hours. It never shows a clock
+time. The phrases that count as a check-in, and who sees the answer, are in
+[Slack steering](slack-steering.md#checking-on-a-run).
 
 ## How semantic copy is added
 
@@ -105,6 +165,7 @@ node --test --import tsx \
   tests/activity-status.test.ts \
   tests/activity-lifecycle.test.ts \
   tests/status-registry.test.ts \
+  tests/slack-coding-task-progress.test.ts \
   tests/status-relay.test.ts \
   tests/web-client-presenter.test.ts \
   tests/run-turn-heartbeat.test.ts \

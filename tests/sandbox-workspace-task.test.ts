@@ -25,6 +25,14 @@ import {
   type CodingWorkerBindingV1,
 } from '../src/sandbox/coding-worker-binding.ts';
 import { CODING_WORKER_INSTRUCTIONS } from '../src/sandbox/coding-worker-instructions.ts';
+import type { SandboxPolicyStorage } from '../src/sandbox/cloudflare-policy.ts';
+import {
+  putStoredCodingTask,
+  readStoredCodingTasks,
+  settleStoredCodingTask,
+  type CodingTaskRecordV1,
+} from '../src/sandbox/coding-task-record.ts';
+import { stopCodingTasks } from '../src/sandbox/coding-task-stop.ts';
 import {
   WorkspaceSession,
   defaultWorkspaceId,
@@ -44,6 +52,7 @@ import {
   pullRequestLinks,
   workerBranch,
   emptyWorkspaceTaskResponseState,
+  type CodingTaskRecordStore,
   type CodingWorkerClient,
   type WorkspaceTaskResponseState,
   type WorkspaceTaskToolOptions,
@@ -257,6 +266,41 @@ function harness(): Harness {
   };
 }
 
+/** A task record store that logs each write, in order, beside the dispatches. */
+function recordingStore(h: Harness, options: { failPut?: boolean; failAccepted?: boolean } = {}) {
+  const records = new Map<string, CodingTaskRecordV1>();
+  const puts: CodingTaskRecordV1[] = [];
+  const store: CodingTaskRecordStore = {
+    async put(turnId, record) {
+      if (options.failPut || (options.failAccepted && record.state === 'accepted')) {
+        throw new Error('sandbox unreachable');
+      }
+      h.calls.push(`record:put:${turnId}:${record.state}`);
+      puts.push(structuredClone(record));
+      records.set(`${turnId}|${record.taskKey}`, structuredClone(record));
+    },
+    async settle(turnId, taskKey) {
+      h.calls.push(`record:settle:${turnId}:${taskKey}`);
+      records.delete(`${turnId}|${taskKey}`);
+    },
+  };
+  return {
+    store,
+    puts,
+    list: (turnId: string) => [...records.entries()]
+      .filter(([key]) => key.startsWith(`${turnId}|`))
+      .map(([, record]) => record),
+  };
+}
+
+function memoryStorage(): SandboxPolicyStorage {
+  const values = new Map<string, unknown>();
+  return {
+    async get<T>(key: string) { return structuredClone(values.get(key)) as T | undefined; },
+    async put<T>(key: string, value: T) { values.set(key, structuredClone(value)); },
+  };
+}
+
 function resetEgress(opens: typeof PR_7 | undefined = PR_7) {
   egressRecorded = undefined;
   nextDispatchOpens = opens;
@@ -272,6 +316,7 @@ function taskTool(
     resolve?: WorkspaceTaskToolOptions['resolve'];
     onWorkerUsage?: (record: CodingWorkerUsageRecord) => void;
     now?: () => number;
+    taskRecords?: CodingTaskRecordStore;
   } = {},
 ) {
   return createWorkspaceTaskTool({
@@ -389,26 +434,219 @@ test('a failed or aborted worker settlement maps to worker_failed', async () => 
 
 test('a task past its deadline is aborted durably and reported as a timeout', async () => {
   const h = harness();
+  const records = recordingStore(h);
   const tool = taskTool(h, workspace([]), ({ signal }) => new Promise((_, reject) => {
     signal.addEventListener('abort', () => reject(signal.reason), { once: true });
-  }), { taskTimeoutMs: 20 });
+  }), { taskTimeoutMs: 20, taskRecords: records.store });
   const output = await run(tool, h, { task: 'slow' });
   assert.equal(output.reason, 'timeout');
+  assert.match(String(output.message), /did not finish in time/);
   assert.equal(h.aborted.length, 1);
   assert.equal(h.aborted[0], h.dispatched[0]!.instanceId);
   assert.equal(h.state.running.size, 0);
+  // The tool's own abort is not a confirmation: the record stays for a stop.
+  assert.equal(records.list('turn-1')[0]?.state, 'accepted');
 });
 
-test('a host abort of the coordinator also aborts the worker', async () => {
+test('a stopped run reports its coding task stopped, not timed out, and aborts the worker', async () => {
   const h = harness();
+  const records = recordingStore(h);
+  const usage: CodingWorkerUsageRecord[] = [];
   const host = new AbortController();
   const tool = taskTool(h, workspace([]), ({ signal }) => new Promise((_, reject) => {
     signal.addEventListener('abort', () => reject(signal.reason), { once: true });
     queueMicrotask(() => host.abort(new Error('stopped')));
-  }));
+  }), { taskRecords: records.store, onWorkerUsage: (record) => usage.push(record) });
   const output = await run(tool, h, { task: 'x' }, 'call-1', host.signal);
-  assert.equal(output.reason, 'timeout');
-  assert.equal(h.aborted.length, 1);
+  assert.equal(output.ok, false);
+  assert.equal(output.reason, 'stopped');
+  assert.doesNotMatch(String(output.message), /in time/);
+  assert.equal(h.aborted.length, 1, 'the in-tool fast path still aborts the worker');
+  assert.deepEqual(steps(h).slice(2), ['changes:started', 'changes:failed:stopped', 'pull_request:not_run:prior_failed']);
+  assert.deepEqual(usage.map((record) => record.status), ['interrupted']);
+  // Flue discards this result, so the runner confirms the stop from the
+  // record, which the tool leaves in place.
+  assert.equal(records.list('turn-1').length, 1);
+  assert.equal(h.state.running.size, 0);
+});
+
+test('a run stopped before its task reached a worker dispatches nothing', async () => {
+  const h = harness();
+  const records = recordingStore(h);
+  const host = new AbortController();
+  host.abort(new Error('stopped'));
+  const tool = taskTool(h, workspace([]), async () => reply('never'), { taskRecords: records.store });
+  const output = await run(tool, h, { task: 'x' }, 'call-1', host.signal);
+  assert.equal(output.reason, 'stopped');
+  assert.equal(h.dispatched.length, 0, 'abort() never covers a later dispatch, so none is sent');
+  assert.deepEqual(records.puts, [], 'the stop may already have read the records');
+
+  // Stopped while the record was being written: the record stays pending for
+  // the stop, which reads the records only after aborting the run.
+  const during = harness();
+  const duringRecords = recordingStore(during);
+  const duringHost = new AbortController();
+  const put = duringRecords.store.put;
+  duringRecords.store.put = async (turnId, record) => {
+    await put(turnId, record);
+    duringHost.abort(new Error('stopped'));
+  };
+  const duringOutput = await run(
+    taskTool(during, workspace([]), async () => reply('never'), { taskRecords: duringRecords.store }),
+    during,
+    { task: 'x' },
+    'call-1',
+    duringHost.signal,
+  );
+  assert.equal(duringOutput.reason, 'stopped');
+  assert.equal(during.dispatched.length, 0);
+  assert.deepEqual(duringRecords.list('turn-1').map((record) => record.state), ['dispatch_pending']);
+});
+
+test('dispatching a coding job writes its active-task record, pending before the dispatch, to the host turn', async () => {
+  const h = harness();
+  const records = recordingStore(h);
+  let observedRecord: CodingTaskRecordV1 | undefined;
+  const tool = taskTool(h, workspace([]), async () => {
+    observedRecord = records.list('turn-1')[0];
+    return reply('done');
+  }, { taskRecords: records.store, now: () => 1_790_000_000_000 });
+  const output = await run(tool, h, { task: 'x' }, 'call-1');
+  assert.equal(output.ok, true);
+  // Written before the dispatch, completed once the worker accepted it, and
+  // dropped once its submission settled.
+  assert.deepEqual(h.calls.filter((call) => /^(record|dispatch)/.test(call)), [
+    'record:put:turn-1:dispatch_pending',
+    'dispatch',
+    'record:put:turn-1:accepted',
+    'record:settle:turn-1:workspace_task:call-1',
+  ]);
+  const instanceId = h.dispatched[0]!.instanceId;
+  assert.deepEqual(records.puts[0], {
+    schemaVersion: 1,
+    taskKey: 'workspace_task:call-1',
+    toolCallId: 'call-1',
+    workspace: 'main',
+    workspaceId: WORKSPACE_ID,
+    instanceId,
+    state: 'dispatch_pending',
+    pendingAt: 1_790_000_000_000,
+    timeoutMs: WORKSPACE_TASK_TIMEOUT_MS,
+  });
+  // The record's key is the dispatch's idempotency key, which names the
+  // worker submission; acceptance adds the receipt a later wait resumes from.
+  assert.equal(records.puts[0]!.taskKey, h.dispatched[0]!.idempotencyKey);
+  assert.deepEqual(observedRecord, {
+    ...records.puts[0],
+    state: 'accepted',
+    submissionId: 'sub-1',
+    uid: 'uid-1',
+    acceptedAt: '2026-09-24T00:00:00.000Z',
+  });
+  assert.deepEqual(records.list('turn-1'), []);
+});
+
+test('a worker failure settles the task record; a broken observation keeps it for a stop', async () => {
+  const failed = harness();
+  const failedRecords = recordingStore(failed);
+  await run(taskTool(failed, workspace([]), async () => {
+    throw new AgentRunError({ outcome: 'failed', submissionId: 'sub-1' });
+  }, { taskRecords: failedRecords.store }), failed, { task: 'x' });
+  assert.deepEqual(failedRecords.list('turn-1'), []);
+
+  const broken = harness();
+  const brokenRecords = recordingStore(broken);
+  await assert.rejects(run(taskTool(broken, workspace([]), async () => {
+    throw new Error('transport');
+  }, { taskRecords: brokenRecords.store }), broken, { task: 'x' }));
+  assert.deepEqual(brokenRecords.list('turn-1').map((record) => record.state), ['accepted']);
+});
+
+test('a task whose record cannot be written is refused before any dispatch', async () => {
+  const h = harness();
+  const records = recordingStore(h, { failPut: true });
+  const output = await run(taskTool(h, workspace([]), async () => reply('x'), { taskRecords: records.store }), h, { task: 'x' });
+  assert.equal(output.reason, 'workspace_unavailable');
+  assert.equal(h.dispatched.length, 0, 'a job a stop could not find is never started');
+  assert.deepEqual(steps(h), [
+    'workspace:started',
+    'workspace:failed:workspace_unavailable',
+    'changes:not_run:prior_failed',
+    'pull_request:not_run:prior_failed',
+  ]);
+  assert.equal(h.state.running.size, 0);
+});
+
+test('a failed acceptance write never fails a task the worker already took', async () => {
+  const h = harness();
+  const records = recordingStore(h, { failAccepted: true });
+  const output = await run(taskTool(h, workspace([]), async () => reply('done'), { taskRecords: records.store }), h, { task: 'x' });
+  assert.equal(output.ok, true);
+  assert.equal(h.dispatched.length, 1);
+});
+
+test('a stop confirms the coding jobs a stopped run was waiting on, though Flue discards the tool results', async () => {
+  const h = harness();
+  const storage = memoryStorage();
+  // The Sandbox Durable Object's input gate runs each call's read and write
+  // without another call in between.
+  let gate: Promise<unknown> = Promise.resolve();
+  const serialized = (work: () => Promise<void>): Promise<void> => {
+    const next = gate.then(work);
+    gate = next.catch(() => undefined);
+    return next;
+  };
+  const store: CodingTaskRecordStore = {
+    put: (turnId, record) => serialized(() => putStoredCodingTask(storage, turnId, record, 1)),
+    settle: (turnId, taskKey) => serialized(() => settleStoredCodingTask(storage, turnId, taskKey, 2)),
+  };
+  const conversation = 'T1:C1:1700000000.000100';
+  const sessions = new Map(['api', 'web'].map((name) => [name, new WorkspaceSession({
+    id: workspaceIdFor(conversation, name),
+    name,
+    agentId: 'agent-1',
+    turnId: 'turn-1',
+    grants: [{ id: 'grant-1', installationId: 42, accountLogin: 'acme', fullName: 'acme/app', enabled: true }],
+    credentialMode: 'app',
+    mintStub: async () => stub([]),
+    reserveSession: async () => true,
+    toSandbox: async (activatable) => ({
+      async exists(path: string) { return activatable.exists(path); },
+    }) as unknown as Sandbox,
+  })]));
+  const host = new AbortController();
+  const tool = taskTool(h, undefined, ({ signal }) => new Promise((_, reject) => {
+    signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+  }), { taskRecords: store, resolve: async (name) => sessions.get(name) });
+  const api = run(tool, h, { task: 'api work', workspace: 'api' }, 'call-api', host.signal);
+  const web = run(tool, h, { task: 'web work', workspace: 'web' }, 'call-web', host.signal);
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal((await readStoredCodingTasks(storage, 'turn-1')).length, 2);
+  host.abort(new Error('stopped'));
+  assert.equal((await api).reason, 'stopped');
+  assert.equal((await web).reason, 'stopped');
+
+  // The runner's stop reads the same records and confirms both workers.
+  const settledWorkers = new Set<string>();
+  const report = await stopCodingTasks({
+    listTasks: () => readStoredCodingTasks(storage, 'turn-1'),
+    settleTask: (taskKey) => serialized(() => settleStoredCodingTask(storage, 'turn-1', taskKey, 3)),
+    workers: {
+      async abort(instanceId) {
+        const busy = !settledWorkers.has(instanceId);
+        settledWorkers.add(instanceId);
+        return busy;
+      },
+      async awaitSettlement() { return 'aborted'; },
+    },
+  }, { sleep: async () => {} });
+  assert.equal(report.allSettled, true);
+  assert.deepEqual(report.tasks.map((task) => [task.workspace, task.confirmed, task.outcome]).sort(), [
+    ['api', true, 'stopped'],
+    ['web', true, 'stopped'],
+  ]);
+  assert.deepEqual(new Set(report.tasks.map((task) => task.instanceId)), new Set(h.dispatched.map((sent) => sent.instanceId)));
+  assert.deepEqual(await readStoredCodingTasks(storage, 'turn-1'), []);
 });
 
 test('a broken observation aborts the worker and surfaces as a tool error', async () => {

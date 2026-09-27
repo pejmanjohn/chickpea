@@ -20,6 +20,16 @@ import type {
   SlackAgentBinding,
   SlackAgentBindingExpectation,
   TurnJob,
+  TurnPreviousStop,
+  TurnRunRoute,
+  TurnSteeringDecision,
+  TurnSteeringRequest,
+  TurnStopFinish,
+  TurnStopHeadRecordV1,
+  TurnStopMemberRecordV1,
+  TurnStopNotice,
+  TurnStopRecordV1,
+  TurnStopResult,
 } from './turn-job-types.ts';
 import { parseSlackTablePresentations } from './table-presentation.ts';
 import { parseCodingWorkerUsage } from './coding-worker-run.ts';
@@ -31,10 +41,10 @@ import type { SlackRuntimeDrainCounts } from '../config/state-rpc.ts';
 import type { SlackTurnRecoveryItem } from '../config/state-rpc.ts';
 import type { RunExecutionAuthority } from '../work/types.ts';
 import { CLAIM_TTL_MS } from './state-limits.ts';
-import type { NormalizedSlackTurn } from './types.ts';
+import { validSlackTs, type NormalizedSlackTurn } from './types.ts';
 import type { UsagePersistenceEvent } from '../usage/runtime-recorder.ts';
 import type { SlackInteractionIntent } from './interaction-intent.ts';
-import { slackConversationKind } from './thread-key.ts';
+import { conversationThreadTs, slackAgentThreadKey, slackConversationKind } from './thread-key.ts';
 import {
   MAX_THREAD_IMAGES_ATTRIBUTE_CHARS,
   parseThreadImageRecords,
@@ -72,6 +82,61 @@ export const MAX_TURN_ATTEMPTS = 2;
 /** Dispatched turns may reattach more often, but never hot-loop indefinitely. */
 export const MAX_POST_DISPATCH_ATTEMPTS = 8;
 export const MAX_TURN_DRAIN_BATCH = 16;
+
+/**
+ * A row a stop holds, or a stopped row that never dispatched, is looked at
+ * again this often: the stopped ending drops or releases it within seconds.
+ */
+export const TURN_STOP_HOLD_RETRY_MS = 5_000;
+/** Stop notices are retried after 1 s, doubling to every 30 s, until acknowledged. */
+const STOP_NOTICE_RETRY_MS = 1_000;
+const STOP_NOTICE_RETRY_MAX_MS = 30_000;
+const STOP_NOTICE_BATCH = 16;
+
+const TURN_JOB_STOP_REFUSAL_MESSAGE = 'TurnJob dispatch refused: its run was stopped.';
+
+/**
+ * Dispatch preparation refused a stopped row or a row a stop holds. Over the
+ * state store's RPC it arrives as a plain Error with this fixed, content-free
+ * message (see isTurnJobStopRefusal).
+ */
+export class TurnJobStopRefusal extends Error {
+  constructor() {
+    super(TURN_JOB_STOP_REFUSAL_MESSAGE);
+    this.name = 'TurnJobStopRefusal';
+  }
+}
+
+export function isTurnJobStopRefusal(error: unknown): boolean {
+  return error instanceof TurnJobStopRefusal ||
+    (error instanceof Error && error.message === TURN_JOB_STOP_REFUSAL_MESSAGE);
+}
+
+/**
+ * The Slack conversation a stop or check-in addresses (`turn_jobs.thread_key`):
+ * the runner's thread key without its owner incarnation, so a handoff mid-run
+ * does not hide the running turn, and a legacy installation's DM session key.
+ */
+export function turnStopThreadKey(
+  turn: Pick<NormalizedSlackTurn, 'workspaceId' | 'channelId' | 'threadTs' | 'sessionThreadTs'>,
+  assignment: Pick<ResolvedAssignment, 'runtimeContract'>,
+): string {
+  return `${turn.workspaceId}:${turn.channelId}:${conversationThreadTs(turn, assignment.runtimeContract)}`;
+}
+
+/**
+ * What a row's stop record allows now. `hold`: it waits for the stopped
+ * ending and never runs. `stopped_before_dispatch`: a stopped row with no
+ * Flue receipt, which must never dispatch. `stopped`: a dispatched stopped
+ * row, which reattaches to read its aborted settlement. `run`: an ordinary turn.
+ */
+export function turnJobStopGate(
+  job: Pick<PendingTurnJob, 'stop' | 'dispatchReceipt'>,
+): 'run' | 'hold' | 'stopped_before_dispatch' | 'stopped' {
+  if (job.stop?.role === 'held') return 'hold';
+  if (job.stop?.role !== 'stopped') return 'run';
+  return job.dispatchReceipt ? 'stopped' : 'stopped_before_dispatch';
+}
 
 /** The turn row an OAuth continuation resumes as (idempotent per continuation). */
 export function oauthResumeTurnJobId(continuationId: string): string {
@@ -133,6 +198,17 @@ export interface PendingTurnJob {
   executor?: 'runner';
   /** The runner has not yet confirmed admitting this row. */
   handoff?: true;
+  /**
+   * The row's stop record (see turnJobStopGate). A hold whose stop no longer
+   * holds anything (its head settled, an older release delivered it) reads
+   * as released.
+   */
+  stop?: TurnStopRecordV1;
+  /**
+   * The thread's previous run was stopped (see previousThreadStop). Read only
+   * for a row whose dispatch has not started, the one prompt it can reach.
+   */
+  previousStop?: TurnPreviousStop;
 }
 
 /**
@@ -195,15 +271,27 @@ interface TurnJobRow {
   enqueued_at?: number | null;
   received_at?: number | null;
   executor?: string | null;
+  stop_json?: string | null;
 }
 
 const TURN_JOB_SELECT_COLUMNS = `id, evt_key, msg_key, turn_json, assignment_json, run_id,
   execution_authority, attempts, progress_json, runtime_plan_json,
   agent_instance_id, dispatch_envelope_json,
   dispatch_receipt_json, flue_settlement_json, dispatch_started_at,
-  submission_id, observation_json, recovery_reason, enqueued_at, received_at, executor`;
+  submission_id, observation_json, recovery_reason, enqueued_at, received_at, executor,
+  stop_json`;
 
 const PENDING_ROW = "delivered = 0 AND status != 'recovery_required'";
+
+/** One undelivered row of a thread, as a stop or check-in weighs it. */
+interface StopThreadRow {
+  id: string;
+  messageTs?: string;
+  stop?: TurnStopRecordV1;
+  dispatched: boolean;
+  enqueuedAt: number;
+  order: number;
+}
 
 export class TurnJobStoreLogic {
   /** Receipt times of gateway deliveries being turned into jobs, by event ID. */
@@ -239,7 +327,12 @@ export class TurnJobStoreLogic {
         recovery_reason TEXT,
         enqueued_at INTEGER NOT NULL,
         received_at INTEGER,
-        executor TEXT NOT NULL DEFAULT 'alarm'
+        executor TEXT NOT NULL DEFAULT 'alarm',
+        thread_key TEXT,
+        message_ts TEXT,
+        stop_json TEXT,
+        stop_notice_at INTEGER,
+        stop_notice_attempts INTEGER NOT NULL DEFAULT 0
       )`,
     );
     const columns = db.all('PRAGMA table_info(turn_jobs)');
@@ -288,6 +381,39 @@ export class TurnJobStoreLogic {
     if (!columns.some((column) => column.name === 'executor')) {
       db.exec("ALTER TABLE turn_jobs ADD COLUMN executor TEXT NOT NULL DEFAULT 'alarm'");
     }
+    // Stop records (KTD2). A thread's rows could only be found by decoding
+    // every pending row's JSON; the conversation key and message timestamp
+    // are now written at enqueue, and undelivered rows are backfilled here.
+    // A row an older release writes later has none: stop lookups decode and
+    // key those few (see threadRows).
+    let threadColumnsAdded = false;
+    if (!columns.some((column) => column.name === 'thread_key')) {
+      db.exec('ALTER TABLE turn_jobs ADD COLUMN thread_key TEXT');
+      threadColumnsAdded = true;
+    }
+    if (!columns.some((column) => column.name === 'message_ts')) {
+      db.exec('ALTER TABLE turn_jobs ADD COLUMN message_ts TEXT');
+      threadColumnsAdded = true;
+    }
+    if (!columns.some((column) => column.name === 'stop_json')) {
+      db.exec('ALTER TABLE turn_jobs ADD COLUMN stop_json TEXT');
+    }
+    if (!columns.some((column) => column.name === 'stop_notice_at')) {
+      db.exec('ALTER TABLE turn_jobs ADD COLUMN stop_notice_at INTEGER');
+    }
+    if (!columns.some((column) => column.name === 'stop_notice_attempts')) {
+      db.exec('ALTER TABLE turn_jobs ADD COLUMN stop_notice_attempts INTEGER NOT NULL DEFAULT 0');
+    }
+    if (threadColumnsAdded) {
+      for (const row of db.all(
+        `SELECT id, turn_json, assignment_json FROM turn_jobs WHERE thread_key IS NULL AND delivered = 0`,
+      )) keyStopThreadRow(db, row);
+    }
+    db.exec('CREATE INDEX IF NOT EXISTS turn_jobs_thread_key_idx ON turn_jobs(thread_key)');
+    db.exec(
+      `CREATE INDEX IF NOT EXISTS turn_jobs_stop_notice_idx
+       ON turn_jobs (stop_notice_at) WHERE stop_notice_at IS NOT NULL`,
+    );
     db.exec('CREATE INDEX IF NOT EXISTS turn_jobs_instance_id_idx ON turn_jobs(agent_instance_id)');
     db.exec('CREATE INDEX IF NOT EXISTS turn_jobs_submission_id_idx ON turn_jobs(submission_id)');
     db.exec(`CREATE INDEX IF NOT EXISTS turn_jobs_actor_context_idx ON turn_jobs(
@@ -347,22 +473,486 @@ export class TurnJobStoreLogic {
 
   private insert(job: TurnJob): boolean {
     const enqueuedAt = this.now();
+    const threadKey = stopThreadKeyOf(job.turn, job.assignment);
+    const messageTs = validSlackTs(job.turn.messageTs) ? job.turn.messageTs : null;
+    const executionAuthority = job.executionAuthority ?? 'legacy';
+    const receipt = executionAuthority === 'legacy' ? midRunReceiptOf(job) : undefined;
     const inserted = this.db.run(
       `INSERT OR IGNORE INTO turn_jobs (
         id, evt_key, msg_key, turn_json, assignment_json, run_id, execution_authority,
-        attempts, delivered, status, enqueued_at, received_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, 'pending', ?, ?)`,
+        attempts, delivered, status, enqueued_at, received_at, thread_key, message_ts, progress_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, 'pending', ?, ?, ?, ?, ?)`,
       job.id,
       job.evtKey,
       job.msgKey,
       JSON.stringify(job.turn),
       JSON.stringify(job.assignment),
       job.runId ?? null,
-      job.executionAuthority ?? 'legacy',
+      executionAuthority,
       enqueuedAt,
       Math.min(this.receiptTimes.get(job.turn.eventId) ?? enqueuedAt, enqueuedAt),
+      threadKey ?? null,
+      messageTs,
+      // The mid-run 👀 is the turn's receipt from the start (KTD9): Chickpea's
+      // own, owed removal, and written before Slack is asked to add it, so no
+      // path can see the turn without it.
+      JSON.stringify(receipt ? { slackInteraction: { acknowledgment: receipt } } : {}),
     );
-    return inserted.changes === 1;
+    if (inserted.changes !== 1) return false;
+    // A message posted before an unfinished stop that Slack delivers late is
+    // held too; one posted after the stop runs as an ordinary turn (KTD2).
+    if (threadKey && messageTs && executionAuthority === 'legacy') {
+      const head = this.unfinishedStopHead(threadKey);
+      if (head && compareSlackTs(messageTs, head.record.cutoffTs) < 0) {
+        this.writeStopRecord(job.id, { schemaVersion: 1, role: 'held', headId: head.id, at: enqueuedAt });
+      }
+    }
+    return true;
+  }
+
+  // ── stops (KTD1, KTD2) ──────────────────────────────────────────────────
+
+  /**
+   * Decide a matched stop or check-in (or report a plain message) against the
+   * thread's undelivered rows, in one transaction. A stop is recorded, a
+   * check-in gets its run's route, and a thread with nothing to steer answers
+   * `enqueue`: the message is an ordinary turn, and `enqueue` (when given) is
+   * inserted in the same transaction, so a stop right after the thread's
+   * first message can never be queued behind it as an ordinary turn.
+   */
+  steer(request: TurnSteeringRequest, enqueue?: TurnJob): TurnSteeringDecision {
+    validateSteeringRequest(request, enqueue);
+    if (enqueue) this.purgeExpired();
+    return this.db.transaction(() => this.decideSteering(request, enqueue));
+  }
+
+  /**
+   * `steer` inside a caller's transaction (a composite Slack admission). It
+   * runs no transaction of its own: Node's store has no savepoints.
+   */
+  steerInTransaction(request: TurnSteeringRequest, enqueue?: TurnJob): TurnSteeringDecision {
+    validateSteeringRequest(request, enqueue);
+    if (enqueue) this.purgeExpired('borrowed');
+    return this.decideSteering(request, enqueue);
+  }
+
+  /**
+   * The conversations of one DM channel with an undelivered run that
+   * `requesterUserId` started (their stop thread keys, at most `limit`), so a
+   * top-level stop or check-in in a DM can find the one running thread it
+   * means (KTD1). Rows an older release left unkeyed are keyed on the way.
+   */
+  runningDirectThreadKeys(
+    input: { workspaceId: string; channelId: string; requesterUserId: string },
+    limit = 2,
+  ): string[] {
+    for (const part of [input.workspaceId, input.channelId]) {
+      validateBoundedString(part, 'DM coordinate', 128);
+      if (part.includes(':')) throw new Error('Flue DM coordinate is invalid.');
+    }
+    validateBoundedString(input.requesterUserId, 'requester user id', 128);
+    const prefix = `${input.workspaceId}:${input.channelId}:`;
+    const keys = new Set<string>();
+    for (const row of this.db.all(
+      `SELECT DISTINCT thread_key FROM turn_jobs
+       WHERE thread_key >= ? AND thread_key < ? AND ${PENDING_ROW}
+         AND execution_authority = 'legacy' AND json_extract(turn_json, '$.userId') = ?
+       ORDER BY thread_key LIMIT ?`,
+      prefix,
+      `${input.workspaceId}:${input.channelId};`,
+      input.requesterUserId,
+      limit,
+    )) keys.add(String(row.thread_key));
+    for (const row of this.db.all(
+      `SELECT id, turn_json, assignment_json FROM turn_jobs
+       WHERE thread_key IS NULL AND ${PENDING_ROW} AND execution_authority = 'legacy'
+         AND json_extract(turn_json, '$.userId') = ?`,
+      input.requesterUserId,
+    )) {
+      const keyed = keyStopThreadRow(this.db, row);
+      if (keyed?.threadKey.startsWith(prefix)) keys.add(keyed.threadKey);
+    }
+    return [...keys].slice(0, limit);
+  }
+
+  private decideSteering(request: TurnSteeringRequest, enqueue?: TurnJob): TurnSteeringDecision {
+    const rows = this.threadRows(request.threadKey);
+    if (request.kind === 'stop') {
+      // Idempotent: while the thread's stopped row is undelivered, a later
+      // stop (the Stop button after a typed stop) returns that first stop and
+      // holds nothing more.
+      const stopped = rows.find((row) => row.stop?.role === 'stopped');
+      const before = rows.filter((row) =>
+        row.messageTs !== undefined && compareSlackTs(row.messageTs, request.cutoffTs) < 0);
+      const head = stopped ?? before.find((row) => row.dispatched) ?? before[0];
+      if (head) {
+        return this.otherAgent(request, head.id) ?? {
+          outcome: 'stopped',
+          stop: stopped ? this.stopResult(stopped.id, false) : this.recordStop(request, before, head),
+        };
+      }
+    } else if (request.kind === 'check_in' && rows.length > 0) {
+      const head = rows.find((row) => row.dispatched) ?? rows[0]!;
+      return this.otherAgent(request, head.id) ??
+        { outcome: 'check_in', run: this.runRoute(head.id, rows.length) };
+    }
+    return {
+      outcome: 'enqueue',
+      undelivered: rows.length > 0,
+      ...(enqueue ? { enqueued: this.insert(enqueue) } : {}),
+    };
+  }
+
+  /**
+   * R3: a stop or check-in bound to one Agent never acts on another Agent's
+   * run (a handoff leaves the previous owner's run going). The decision names
+   * the run's Agent, so admission can check the sender against it and decide
+   * again bound to it. An unreadable row's Agent is '' and never matches.
+   */
+  private otherAgent(
+    request: Extract<TurnSteeringRequest, { kind: 'stop' | 'check_in' }>,
+    rowId: string,
+  ): Extract<TurnSteeringDecision, { outcome: 'other_agent' }> | undefined {
+    if (request.agentId === undefined) return undefined;
+    const row = this.db.get(
+      `SELECT json_extract(assignment_json, '$.agentId') AS agent_id FROM turn_jobs WHERE id = ?`,
+      rowId,
+    );
+    const agentId = typeof row?.agent_id === 'string' ? row.agent_id : '';
+    return agentId === request.agentId ? undefined : { outcome: 'other_agent', agentId };
+  }
+
+  /**
+   * The stop transaction. The run's head row (the one whose dispatch started,
+   * else the oldest posted before the stop's own Slack timestamp) is stamped
+   * with the stop; every other undelivered row posted before that timestamp
+   * that has not dispatched is held, so it can never dispatch.
+   */
+  private recordStop(
+    request: Extract<TurnSteeringRequest, { kind: 'stop' }>,
+    before: StopThreadRow[],
+    head: StopThreadRow,
+  ): TurnStopResult {
+    const at = this.now();
+    const record: TurnStopHeadRecordV1 = {
+      schemaVersion: 1,
+      role: 'stopped',
+      source: request.source,
+      stopperUserId: request.stopperUserId,
+      cutoffTs: request.cutoffTs,
+      stoppedAt: at,
+    };
+    this.db.run(
+      `UPDATE turn_jobs SET stop_json = ?, stop_notice_at = ?, stop_notice_attempts = 0
+       WHERE id = ?`,
+      JSON.stringify(record),
+      at,
+      head.id,
+    );
+    for (const row of before) {
+      // A dispatched row cannot be held back; only the head's Flue work is
+      // aborted. A released row is an ordinary queued turn again.
+      if (row === head || row.dispatched || (row.stop && row.stop.role !== 'released')) continue;
+      this.writeStopRecord(row.id, { schemaVersion: 1, role: 'held', headId: head.id, at });
+    }
+    return this.stopResult(head.id, true);
+  }
+
+  private stopResult(headId: string, created: boolean): TurnStopResult {
+    const row = this.db.get(
+      `SELECT ${TURN_JOB_SELECT_COLUMNS}, thread_key FROM turn_jobs WHERE id = ?`,
+      headId,
+    ) as unknown as TurnJobRow & { thread_key: string | null };
+    const job = this.decodeRow(row);
+    const record = job.stop as TurnStopHeadRecordV1;
+    return {
+      created,
+      headId,
+      runnerKey: runnerKeyOf(job),
+      executor: rowExecutor(row),
+      agentId: job.assignment.agentId,
+      record,
+      held: this.stopMembers(row.thread_key ?? undefined, headId, 'held').length,
+      ...(job.dispatchEnvelope ? { dispatchEnvelope: job.dispatchEnvelope } : {}),
+      ...(job.dispatchReceipt ? { dispatchReceipt: job.dispatchReceipt } : {}),
+    };
+  }
+
+  private runRoute(id: string, undelivered: number): TurnRunRoute {
+    const row = this.db.get(
+      `SELECT ${TURN_JOB_SELECT_COLUMNS} FROM turn_jobs WHERE id = ?`,
+      id,
+    ) as unknown as TurnJobRow;
+    const job = this.decodeRow(row);
+    return {
+      turnJobId: id,
+      runnerKey: runnerKeyOf(job),
+      executor: rowExecutor(row),
+      agentId: job.assignment.agentId,
+      requesterUserId: job.turn.userId,
+      dispatched: job.dispatchStartedAt !== undefined,
+      undelivered,
+    };
+  }
+
+  /**
+   * The thread's undelivered compatibility rows, oldest first, through the
+   * `thread_key` index. Rows an older release wrote carry no key: those few
+   * are decoded, keyed on the way, and kept when they belong to the thread.
+   */
+  private threadRows(threadKey: string): StopThreadRow[] {
+    const rows: StopThreadRow[] = [];
+    const read = (row: Record<string, unknown>, messageTs: unknown) => {
+      const stop = row.stop_json ? this.effectiveStop(parseTurnStopRecord(row.stop_json)) : undefined;
+      rows.push({
+        id: String(row.id),
+        ...(typeof messageTs === 'string' ? { messageTs } : {}),
+        ...(stop ? { stop } : {}),
+        dispatched: row.dispatch_started_at !== null && row.dispatch_started_at !== undefined,
+        enqueuedAt: Number(row.enqueued_at),
+        order: Number(row.row_order),
+      });
+    };
+    for (const row of this.db.all(
+      `SELECT rowid AS row_order, id, message_ts, stop_json, dispatch_started_at, enqueued_at
+       FROM turn_jobs
+       WHERE thread_key = ? AND ${PENDING_ROW} AND execution_authority = 'legacy'`,
+      threadKey,
+    )) read(row, row.message_ts);
+    for (const row of this.db.all(
+      `SELECT rowid AS row_order, id, turn_json, assignment_json, stop_json,
+         dispatch_started_at, enqueued_at
+       FROM turn_jobs
+       WHERE thread_key IS NULL AND ${PENDING_ROW} AND execution_authority = 'legacy'`,
+    )) {
+      const keyed = keyStopThreadRow(this.db, row);
+      if (keyed?.threadKey === threadKey) read(row, keyed.messageTs);
+    }
+    return rows.sort((left, right) => left.enqueuedAt - right.enqueuedAt || left.order - right.order);
+  }
+
+  /** The thread's stopped head whose ending has not finished, if any. */
+  private unfinishedStopHead(
+    threadKey: string,
+  ): { id: string; record: TurnStopHeadRecordV1 } | undefined {
+    for (const row of this.db.all(
+      `SELECT id, stop_json FROM turn_jobs
+       WHERE thread_key = ? AND stop_json IS NOT NULL AND ${PENDING_ROW}`,
+      threadKey,
+    )) {
+      const record = parseTurnStopRecord(row.stop_json);
+      if (record?.role === 'stopped' && !record.ending) return { id: String(row.id), record };
+    }
+    return undefined;
+  }
+
+  /**
+   * Rows whose stop record names `headId` in `role`, oldest first, each with
+   * the 👀 Chickpea added to its message and still owes removing (KTD9).
+   */
+  private stopMembers(
+    threadKey: string | undefined,
+    headId: string,
+    role: TurnStopMemberRecordV1['role'],
+  ): TurnStopFinish['rows'] {
+    if (!threadKey) return [];
+    return this.db.all(
+      `SELECT id, run_id, message_ts, stop_json, progress_json FROM turn_jobs
+       WHERE thread_key = ? AND stop_json IS NOT NULL
+       ORDER BY enqueued_at, rowid`,
+      threadKey,
+    ).filter((row) => {
+      const record = parseTurnStopRecord(row.stop_json);
+      return record?.role === role && record.headId === headId;
+    }).map((row) => {
+      const acknowledgment = parseTurnProgress(String(row.progress_json ?? '{}'))
+        .slackInteraction?.acknowledgment;
+      const owed = acknowledgment?.created === true && acknowledgment.cleanup === 'pending';
+      return {
+        id: String(row.id),
+        ...(row.run_id ? { runId: String(row.run_id) } : {}),
+        ...(row.message_ts ? { messageTs: String(row.message_ts) } : {}),
+        ...(owed
+          ? {
+              receipt: {
+                channelId: acknowledgment.channelId,
+                messageTs: acknowledgment.messageTs,
+                name: acknowledgment.name,
+              },
+            }
+          : {}),
+      };
+    });
+  }
+
+  private writeStopRecord(id: string, record: TurnStopRecordV1): void {
+    this.db.run('UPDATE turn_jobs SET stop_json = ? WHERE id = ?', JSON.stringify(record), id);
+  }
+
+  /**
+   * A hold only holds while its stop is unfinished: once the head settled
+   * without an ending (an older release delivered it, say), or the head is
+   * gone, the row is an ordinary turn again.
+   */
+  private effectiveStop(record: TurnStopRecordV1 | undefined): TurnStopRecordV1 | undefined {
+    if (record?.role !== 'held') return record;
+    const head = this.db.get(
+      'SELECT delivered, status, stop_json FROM turn_jobs WHERE id = ?',
+      record.headId,
+    );
+    const headRecord = head ? parseTurnStopRecord(head.stop_json) : undefined;
+    const holding = head !== undefined && Number(head.delivered) === 0 &&
+      head.status !== 'recovery_required' &&
+      headRecord?.role === 'stopped' && !headRecord.ending;
+    return holding ? record : { ...record, role: 'released' };
+  }
+
+  /**
+   * The stopped ending (KTD3) drops the rows the stop holds, or releases them
+   * on a completion race (R22), and records that ending on the head, all in
+   * one transaction. A dropped row keeps the existing `done` status
+   * (delivered), so an older release never dispatches it again or maps it to
+   * `error`. The first ending stands: a repeat returns it whatever outcome it
+   * asks for. Undefined when the row carries no stop.
+   */
+  finishStop(headId: string, outcome: 'dropped' | 'released'): TurnStopFinish | undefined {
+    validateBoundedString(headId, 'TurnJob id', 256);
+    if (outcome !== 'dropped' && outcome !== 'released') throw new Error('Stop ending is invalid.');
+    return this.db.transaction(() => this.finishStopRows(headId, outcome));
+  }
+
+  /**
+   * The ending's statements alone, with no transaction of its own, so a
+   * terminal write can release a stop it settles (see releaseStop). The head
+   * is written last: an interrupted ending is finished by the next call.
+   */
+  private finishStopRows(headId: string, outcome: 'dropped' | 'released'): TurnStopFinish | undefined {
+    const head = this.db.get('SELECT stop_json, thread_key FROM turn_jobs WHERE id = ?', headId);
+    const record = head ? parseTurnStopRecord(head.stop_json) : undefined;
+    if (record?.role !== 'stopped') return undefined;
+    const threadKey = head?.thread_key ? String(head.thread_key) : undefined;
+    if (record.ending) {
+      return {
+        outcome: record.ending.outcome,
+        count: record.ending.count,
+        rows: this.stopMembers(threadKey, headId, record.ending.outcome),
+        record,
+      };
+    }
+    const at = this.now();
+    const rows = this.stopMembers(threadKey, headId, 'held');
+    const member = JSON.stringify({ schemaVersion: 1, role: outcome, headId, at });
+    for (const row of rows) {
+      if (outcome === 'dropped') {
+        this.db.run(
+          `UPDATE turn_jobs SET delivered = 1, status = 'done', stop_json = ?
+           WHERE id = ? AND delivered = 0`,
+          member,
+          row.id,
+        );
+      } else {
+        this.db.run('UPDATE turn_jobs SET stop_json = ? WHERE id = ?', member, row.id);
+      }
+    }
+    const ended: TurnStopHeadRecordV1 = { ...record, ending: { outcome, count: rows.length, at } };
+    this.db.run('UPDATE turn_jobs SET stop_json = ? WHERE id = ?', JSON.stringify(ended), headId);
+    return { outcome, count: rows.length, rows, record: ended };
+  }
+
+  /**
+   * A stopped head settled without the stopped ending (a failure final, a
+   * recovery, a path that never read the stop): its held rows run as ordinary
+   * turns, so no teammate's message is stranded. A delivered head owes its
+   * runner nothing more; one held for recovery may still run in Flue, so its
+   * notice stays owed. Plain statements only: callers may hold a transaction.
+   */
+  private releaseStop(id: string): void {
+    const row = this.db.get(
+      'SELECT delivered, stop_json, stop_notice_at FROM turn_jobs WHERE id = ?',
+      id,
+    );
+    if (!row?.stop_json) return;
+    if (Number(row.delivered) === 1 && row.stop_notice_at !== null && row.stop_notice_at !== undefined) {
+      this.db.run('UPDATE turn_jobs SET stop_notice_at = NULL WHERE id = ?', id);
+    }
+    const record = parseTurnStopRecord(row.stop_json);
+    if (record?.role === 'stopped' && !record.ending) this.finishStopRows(id, 'released');
+  }
+
+  // ── the stop outbox ─────────────────────────────────────────────────────
+
+  /**
+   * Stop notices due for delivery to the head row's executor, oldest first.
+   * Like a runner hand-off, a notice stays owed until the runner acknowledges
+   * it; a settled head owes none.
+   */
+  listDueStopNotices(now = this.now(), limit = STOP_NOTICE_BATCH): TurnStopNotice[] {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+      throw new Error('Stop notice limit must be between 1 and 100.');
+    }
+    const rows = this.db.all(
+      `SELECT ${TURN_JOB_SELECT_COLUMNS}, stop_notice_attempts FROM turn_jobs
+       WHERE stop_notice_at IS NOT NULL AND stop_notice_at <= ? AND delivered = 0
+       ORDER BY stop_notice_at LIMIT ?`,
+      now,
+      limit,
+    ) as unknown as Array<TurnJobRow & { stop_notice_attempts: number }>;
+    const notices: TurnStopNotice[] = [];
+    for (const row of rows) {
+      const job = this.decodeRow(row);
+      if (job.stop?.role !== 'stopped') {
+        this.acknowledgeStopNotice(job.id);
+        continue;
+      }
+      const uid = job.dispatchReceipt?.uid ?? job.dispatchEnvelope?.uid ?? undefined;
+      notices.push({
+        turnJobId: job.id,
+        runnerKey: runnerKeyOf(job),
+        executor: rowExecutor(row),
+        record: job.stop,
+        attempts: Number(row.stop_notice_attempts),
+        ...(job.dispatchEnvelope ? { instanceId: job.dispatchEnvelope.instanceId } : {}),
+        ...(uid ? { uid } : {}),
+        ...(job.dispatchReceipt ? { submissionId: job.dispatchReceipt.submissionId } : {}),
+        ...(job.flueSettlement ? { settled: job.flueSettlement.outcome } : {}),
+      });
+    }
+    return notices;
+  }
+
+  /** When the next stop notice falls due; undefined when none is owed. */
+  nextStopNoticeDueAt(): number | undefined {
+    const row = this.db.get(
+      `SELECT MIN(stop_notice_at) AS due FROM turn_jobs
+       WHERE stop_notice_at IS NOT NULL AND delivered = 0`,
+    );
+    return row?.due === null || row?.due === undefined ? undefined : Number(row.due);
+  }
+
+  /** The head's runner took the stop. */
+  acknowledgeStopNotice(id: string): void {
+    this.db.run('UPDATE turn_jobs SET stop_notice_at = NULL WHERE id = ?', id);
+  }
+
+  /** A delivery failed: try again after 1 s, doubling to 30 s. Returns when. */
+  deferStopNotice(id: string, now = this.now()): number | undefined {
+    const row = this.db.get(
+      'SELECT stop_notice_attempts FROM turn_jobs WHERE id = ? AND stop_notice_at IS NOT NULL',
+      id,
+    );
+    if (!row) return undefined;
+    const attempts = Number(row.stop_notice_attempts ?? 0) + 1;
+    const dueAt = now + Math.min(
+      STOP_NOTICE_RETRY_MS * 2 ** Math.min(attempts - 1, 16),
+      STOP_NOTICE_RETRY_MAX_MS,
+    );
+    this.db.run(
+      'UPDATE turn_jobs SET stop_notice_at = ?, stop_notice_attempts = ? WHERE id = ?',
+      dueAt,
+      attempts,
+      id,
+    );
+    return dueAt;
   }
 
   /**
@@ -752,6 +1342,12 @@ export class TurnJobStoreLogic {
       return existing;
     }
     return this.db.transaction(() => {
+      // A stopped row, or one a stop holds, never dispatches: Flue's abort()
+      // does not cover a dispatch that arrives after it (KTD2).
+      const stop = this.effectiveStop(parseTurnStopRecord(
+        this.db.get('SELECT stop_json FROM turn_jobs WHERE id = ?', id)?.stop_json,
+      ));
+      if (stop?.role === 'stopped' || stop?.role === 'held') throw new TurnJobStopRefusal();
       const decision = this.getFrozenRuntimePlan(id);
       if (!decision) {
         throw new Error('RuntimePlanV2 must be frozen before Flue dispatch.');
@@ -1045,6 +1641,7 @@ export class TurnJobStoreLogic {
       console.error('[chickpea] TurnJob requires operator reconciliation', JSON.stringify({
         reason: LOGGABLE_TURN_RECOVERY_REASONS.has(reason) ? reason : 'unclassified',
       }));
+      this.releaseStop(id);
     }
   }
 
@@ -1385,12 +1982,14 @@ export class TurnJobStoreLogic {
   markDelivered(id: string): void {
     this.recordTerminalStatus(id, 'success');
     this.db.run("UPDATE turn_jobs SET delivered = 1, status = 'done' WHERE id = ?", id);
+    this.releaseStop(id);
   }
 
   /** Tombstone a job that exhausted its attempts (terminal failure). */
   markError(id: string): void {
     this.recordTerminalStatus(id, 'error');
     this.db.run("UPDATE turn_jobs SET delivered = 1, status = 'error' WHERE id = ?", id);
+    this.releaseStop(id);
   }
 
   /** Only a never-dispatched row may be physically discarded for redrive. */
@@ -1466,6 +2065,8 @@ export class TurnJobStoreLogic {
   private decodeRow(row: TurnJobRow): PendingTurnJob {
     const turn = JSON.parse(row.turn_json) as NormalizedSlackTurn;
     const assignment = JSON.parse(row.assignment_json) as ResolvedAssignment;
+    const stop = row.stop_json ? this.effectiveStop(parseTurnStopRecord(row.stop_json)) : undefined;
+    const previousStop = this.previousThreadStop(row, turn, assignment);
     return {
       id: row.id,
       evtKey: row.evt_key,
@@ -1501,8 +2102,225 @@ export class TurnJobStoreLogic {
         : { receivedAt: Number(row.received_at) }),
       ...(rowExecutor(row) === 'runner' ? { executor: 'runner' as const } : {}),
       ...(row.executor === 'handoff' ? { handoff: true as const } : {}),
+      ...(stop ? { stop } : {}),
+      ...(previousStop ? { previousStop } : {}),
     };
   }
+
+  /**
+   * The thread's previous run, when a stop stopped it (KTD3): the latest
+   * delivered row enqueued before this one, dropped rows aside (they never
+   * ran), is a stopped head whose ending dropped rather than released. Only
+   * a row whose dispatch has not started asks: its prompt is not yet built.
+   */
+  private previousThreadStop(
+    row: TurnJobRow,
+    turn: NormalizedSlackTurn,
+    assignment: ResolvedAssignment,
+  ): TurnPreviousStop | undefined {
+    if ((row.dispatch_started_at !== null && row.dispatch_started_at !== undefined) ||
+        row.enqueued_at === null || row.enqueued_at === undefined) return undefined;
+    const threadKey = stopThreadKeyOf(turn, assignment);
+    if (!threadKey) return undefined;
+    const previous = this.db.get(
+      `SELECT stop_json FROM turn_jobs
+       WHERE thread_key = ? AND delivered = 1 AND id != ? AND enqueued_at <= ?
+         AND (stop_json IS NULL OR json_extract(stop_json, '$.role') IS NOT 'dropped')
+       ORDER BY enqueued_at DESC, rowid DESC LIMIT 1`,
+      threadKey,
+      row.id,
+      Number(row.enqueued_at),
+    );
+    const record = previous?.stop_json ? parseTurnStopRecord(previous.stop_json) : undefined;
+    return record?.role === 'stopped' && record.ending?.outcome === 'dropped'
+      ? { stopperUserId: record.stopperUserId, stoppedAt: record.stoppedAt }
+      : undefined;
+  }
+}
+
+/**
+ * Deliver the stop notices due now (see TurnJobStoreLogic.listDueStopNotices),
+ * side by side: a receiver answer of true acknowledges one; false or a
+ * rejection leaves it owed with a backoff, the way an unconfirmed runner
+ * hand-off is admitted again. Never throws for a single notice.
+ */
+export async function deliverDueStopNotices(input: {
+  turnJobs: Pick<TurnJobStoreLogic, 'listDueStopNotices' | 'acknowledgeStopNotice' | 'deferStopNotice'>;
+  receiver(notice: TurnStopNotice): Promise<boolean>;
+  now?: () => number;
+  limit?: number;
+}): Promise<{ acknowledged: number; deferred: number }> {
+  const now = input.now ?? Date.now;
+  const notices = input.turnJobs.listDueStopNotices(now(), input.limit ?? STOP_NOTICE_BATCH);
+  const outcomes = await Promise.all(notices.map(async (notice) => {
+    let acknowledged = false;
+    try {
+      acknowledged = await input.receiver(notice);
+    } catch {
+      // The runner is unreachable or refused; the outbox retries.
+    }
+    if (acknowledged) input.turnJobs.acknowledgeStopNotice(notice.turnJobId);
+    else input.turnJobs.deferStopNotice(notice.turnJobId, now());
+    return acknowledged;
+  }));
+  const acknowledged = outcomes.filter(Boolean).length;
+  if (acknowledged < outcomes.length) {
+    console.warn('[chickpea] stop notice delivery will retry', {
+      deferred: outcomes.length - acknowledged,
+    });
+  }
+  return { acknowledged, deferred: outcomes.length - acknowledged };
+}
+
+const SLACK_REACTION_NAME = /^[a-z0-9_+-]{1,80}$/;
+
+/**
+ * A job's mid-run receipt, as its row records it (KTD9), or undefined unless
+ * it names the job's own message: the only 👀 a turn may ever remove.
+ */
+function midRunReceiptOf(job: TurnJob): NonNullable<TurnProgress['slackInteraction']>['acknowledgment'] {
+  const receipt = job.midRunReceipt;
+  if (!receipt || typeof receipt !== 'object' || !job.turn || typeof job.turn !== 'object') return undefined;
+  if (receipt.channelId !== job.turn.channelId || receipt.messageTs !== job.turn.messageTs ||
+      typeof receipt.channelId !== 'string' || receipt.channelId.length === 0 ||
+      !validSlackTs(receipt.messageTs) ||
+      typeof receipt.name !== 'string' || !SLACK_REACTION_NAME.test(receipt.name)) {
+    return undefined;
+  }
+  return {
+    channelId: receipt.channelId,
+    messageTs: receipt.messageTs,
+    name: receipt.name,
+    created: true,
+    cleanup: 'pending',
+    reaction: 'seen_mid_run',
+  };
+}
+
+/** The stop thread key of a turn, or undefined when its coordinates are unusable. */
+function stopThreadKeyOf(turn: NormalizedSlackTurn, assignment: ResolvedAssignment): string | undefined {
+  if (!turn || typeof turn !== 'object' || !assignment || typeof assignment !== 'object') return undefined;
+  const threadTs = conversationThreadTs(turn, assignment.runtimeContract);
+  for (const part of [turn.workspaceId, turn.channelId, threadTs]) {
+    if (typeof part !== 'string' || part.length === 0 || part.includes(':')) return undefined;
+  }
+  return turnStopThreadKey(turn, assignment);
+}
+
+/**
+ * Key one row an older release wrote without `thread_key` from its stored
+ * JSON. Returns the key it wrote, or undefined for an unreadable row.
+ */
+function keyStopThreadRow(
+  db: StateDb,
+  row: Record<string, unknown>,
+): { threadKey: string; messageTs?: string } | undefined {
+  try {
+    const turn = JSON.parse(String(row.turn_json)) as NormalizedSlackTurn;
+    const assignment = JSON.parse(String(row.assignment_json)) as ResolvedAssignment;
+    const threadKey = stopThreadKeyOf(turn, assignment);
+    if (!threadKey) return undefined;
+    const messageTs = validSlackTs(turn.messageTs) ? turn.messageTs : undefined;
+    db.run(
+      'UPDATE turn_jobs SET thread_key = ?, message_ts = ? WHERE id = ? AND thread_key IS NULL',
+      threadKey,
+      messageTs ?? null,
+      String(row.id),
+    );
+    return { threadKey, ...(messageTs ? { messageTs } : {}) };
+  } catch {
+    // An unreadable row stays unkeyed; it can never run either.
+    return undefined;
+  }
+}
+
+/** The thread runner a row's turn runs on (owner incarnation included). */
+function runnerKeyOf(job: Pick<PendingTurnJob, 'turn' | 'assignment'>): string {
+  try {
+    return slackAgentThreadKey(job.turn, job.assignment);
+  } catch {
+    return turnStopThreadKey(job.turn, job.assignment);
+  }
+}
+
+/** Order two Slack timestamps exactly (seconds, then the fraction), never as floats. */
+function compareSlackTs(left: string, right: string): number {
+  const [leftSeconds = '', leftFraction = ''] = left.split('.');
+  const [rightSeconds = '', rightFraction = ''] = right.split('.');
+  const seconds = BigInt(leftSeconds) - BigInt(rightSeconds);
+  if (seconds !== 0n) return seconds < 0n ? -1 : 1;
+  const width = Math.max(leftFraction.length, rightFraction.length);
+  const fraction = BigInt(leftFraction.padEnd(width, '0')) - BigInt(rightFraction.padEnd(width, '0'));
+  return fraction === 0n ? 0 : fraction < 0n ? -1 : 1;
+}
+
+function validateSteeringRequest(request: TurnSteeringRequest, enqueue?: TurnJob): void {
+  if (!request || (request.kind !== 'stop' && request.kind !== 'check_in' && request.kind !== 'message')) {
+    throw new Error('Steering request kind is invalid.');
+  }
+  validateBoundedString(request.threadKey, 'steering thread key', 512);
+  const parts = request.threadKey.split(':');
+  if (parts.length !== 3 || parts.some((part) => part.length === 0)) {
+    throw new Error('Steering thread key is invalid.');
+  }
+  if (request.kind === 'stop') {
+    if (request.source !== 'typed' && request.source !== 'button') {
+      throw new Error('Stop source is invalid.');
+    }
+    validateBoundedString(request.stopperUserId, 'stopper user id', 128);
+    if (!validSlackTs(request.cutoffTs)) throw new Error('Stop cutoff timestamp is invalid.');
+  }
+  if (request.kind !== 'message' && request.agentId !== undefined) {
+    validateBoundedString(request.agentId, 'steering agent id', 128);
+  }
+  if (enqueue && stopThreadKeyOf(enqueue.turn, enqueue.assignment) !== request.threadKey) {
+    throw new Error('The enqueued turn does not belong to the steered thread.');
+  }
+}
+
+/** Tolerant: a malformed record reads as none, so it can never suppress work. */
+function parseTurnStopRecord(raw: unknown): TurnStopRecordV1 | undefined {
+  if (typeof raw !== 'string' || raw.length === 0) return undefined;
+  try {
+    const value = JSON.parse(raw) as Record<string, unknown>;
+    if (!value || typeof value !== 'object' || value.schemaVersion !== 1) return undefined;
+    const at = (key: string) => Number.isSafeInteger(value[key]) ? Number(value[key]) : undefined;
+    if (value.role === 'stopped') {
+      const stoppedAt = at('stoppedAt');
+      if ((value.source !== 'typed' && value.source !== 'button') ||
+          typeof value.stopperUserId !== 'string' || !validSlackTs(value.cutoffTs) ||
+          stoppedAt === undefined) return undefined;
+      const ending = value.ending as Record<string, unknown> | undefined;
+      const validEnding = ending && typeof ending === 'object' &&
+        (ending.outcome === 'dropped' || ending.outcome === 'released') &&
+        Number.isSafeInteger(ending.count) && Number.isSafeInteger(ending.at);
+      return {
+        schemaVersion: 1,
+        role: 'stopped',
+        source: value.source,
+        stopperUserId: value.stopperUserId,
+        cutoffTs: value.cutoffTs,
+        stoppedAt,
+        ...(validEnding
+          ? {
+              ending: {
+                outcome: ending.outcome as 'dropped' | 'released',
+                count: Number(ending.count),
+                at: Number(ending.at),
+              },
+            }
+          : {}),
+      };
+    }
+    const memberAt = at('at');
+    if ((value.role === 'held' || value.role === 'dropped' || value.role === 'released') &&
+        typeof value.headId === 'string' && memberAt !== undefined) {
+      return { schemaVersion: 1, role: value.role, headId: value.headId, at: memberAt };
+    }
+  } catch {
+    // Malformed: treated as absent.
+  }
+  return undefined;
 }
 
 function parseFlueDispatchEnvelope(value: unknown): FlueDispatchEnvelopeV1 {

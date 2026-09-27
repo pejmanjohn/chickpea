@@ -12,6 +12,10 @@ import {
   isRecord,
 } from '../security/content-validation.ts';
 import type { AgentDispatchResult } from './flue-dispatch.ts';
+import {
+  stripResolvedSlackCommandAddress,
+  type SlackCommandAddress,
+} from './command-address.ts';
 
 const SLACK_INTERACTION_DISPOSITIONS = ['ignore', 'react_only', 'reply', 'work'] as const;
 
@@ -107,8 +111,31 @@ const REACTION_FALLBACKS: Record<SemanticReaction, readonly string[]> = {
   approved: ['approved', 'white_check_mark'],
 };
 
-export function reactionFallbacks(reaction: SemanticReaction): string[] {
-  return [...REACTION_FALLBACKS[reaction]];
+/**
+ * Receipts Chickpea adds and removes itself (KTD9), outside the classifier's
+ * vocabulary so a model can never choose one: `seen_mid_run` is the 👀 on a
+ * message posted while its thread's run is in progress (R12), and `read` the
+ * 👍 that replaces it once the running Agent has read the message (R14, in a
+ * later release). The classifier's `seen` is the same emoji; on the same
+ * message it is the turn's answer, which terminal cleanup keeps, and never a
+ * receipt it removes.
+ */
+export const RECEIPT_REACTIONS = ['seen_mid_run', 'read'] as const;
+export type ReceiptReaction = (typeof RECEIPT_REACTIONS)[number];
+
+const RECEIPT_REACTION_FALLBACKS: Record<ReceiptReaction, readonly string[]> = {
+  seen_mid_run: ['eyes'],
+  read: ['+1'],
+};
+
+function isReceiptReaction(reaction: SemanticReaction | ReceiptReaction): reaction is ReceiptReaction {
+  return (RECEIPT_REACTIONS as readonly string[]).includes(reaction);
+}
+
+export function reactionFallbacks(reaction: SemanticReaction | ReceiptReaction): string[] {
+  return [
+    ...(isReceiptReaction(reaction) ? RECEIPT_REACTION_FALLBACKS[reaction] : REACTION_FALLBACKS[reaction]),
+  ];
 }
 
 export function parseSlackInteractionIntent(
@@ -309,6 +336,53 @@ export function shouldResolveSlackManagementApproval(text: string): boolean {
 export function slackBrowserActionReply(text: string): 'approve' | 'stop' | undefined {
   const match = /^(approve|stop)\.?$/i.exec(normalizedInteractionText(text));
   return match ? (match[1]!.toLowerCase() as 'approve' | 'stop') : undefined;
+}
+
+/** A typed stop or check-in, which admission handles outside the thread's queue (KTD1). */
+export type SlackSteeringCommand = 'stop' | 'check_in';
+
+/**
+ * English stop phrases that hard-stop a run when typed alone (R2), starting
+ * from OpenClaw's standalone list. A bare "exit" or "esc" is left out: in a
+ * coding thread it is as likely an answer as an instruction.
+ */
+const STOP_PHRASES = new Set([
+  'stop', 'stop it', 'stop now', 'stop that', 'stop please', 'please stop', 'stop it please',
+  'please stop it', 'stop running', 'stop working', 'stop run', 'stop the run', 'stop current run',
+  'stop the current run', 'stop agent', 'stop the agent', 'stop action', 'stop current action',
+  'cancel', 'cancel it', 'cancel that', 'cancel please', 'please cancel', 'abort', 'abort it',
+  'halt', 'interrupt',
+]);
+
+/** The fixed check-in set (KTD8); other wordings reach the Agent in its queue. */
+const CHECK_IN_PHRASES = new Set([
+  'status', 'still working', 'are you still working', 'any update', 'any updates',
+  "how's it going",
+]);
+
+const TRAILING_STEERING_PUNCTUATION = /[\s.!?…,;:'"“”)\]}]+$/u;
+
+/**
+ * A message that is only a stop phrase or a check-in: the whole message,
+ * ignoring case, surrounding whitespace, a leading mention of the routed
+ * Agent or base app (`address`), and trailing punctuation. Pure and
+ * provider-free, so a stuck run is reached without a model. A plain "stop"
+ * also answers a pending browser step (`slackBrowserActionReply`); admission
+ * checks that first (R21).
+ */
+export function slackSteeringCommand(
+  text: string,
+  address: SlackCommandAddress = {},
+): SlackSteeringCommand | undefined {
+  const phrase = stripResolvedSlackCommandAddress(text, address)
+    .toLowerCase()
+    .replace(/[‘’ʼ`]/g, "'")
+    .replace(/\s+/g, ' ')
+    .replace(TRAILING_STEERING_PUNCTUATION, '')
+    .trim();
+  if (STOP_PHRASES.has(phrase)) return 'stop';
+  if (CHECK_IN_PHRASES.has(phrase)) return 'check_in';
+  return undefined;
 }
 
 function normalizedInteractionText(text: string): string {

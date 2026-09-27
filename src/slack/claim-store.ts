@@ -2,14 +2,30 @@ import { openStateDb, type NodeStateDb } from '../state/node-state-db.ts';
 import { addColumnIfMissing } from '../state/schema-links.ts';
 import { schemaInstallRequired, type StateDb } from '../state/state-db.ts';
 import { WorkStoreLogic } from '../work/store.ts';
-import type { AdmitShadowRunInput, ShadowRunAdmission } from '../work/types.ts';
+import type { AdmitShadowRunInput, RunId, ShadowRunAdmission } from '../work/types.ts';
 import type {
   SlackInteractionProgressPatch,
   SlackRuntimeDrainCounts,
   SlackTurnRecoveryItem,
 } from '../config/state-rpc.ts';
-import { TurnJobStoreLogic, type PendingTurnJob, type SlackProposalApprovalQuery, type SlackProposalApprovalTurn } from './turn-jobs.ts';
-import type { TurnJob } from './turn-job-types.ts';
+import {
+  TurnJobStoreLogic,
+  type PendingTurnJob,
+  type RunnerTurnJobView,
+  type SlackProposalApprovalQuery,
+  type SlackProposalApprovalTurn,
+} from './turn-jobs.ts';
+import type {
+  TurnDirectThreadQuery,
+  TurnJob,
+  TurnMidRunReceipt,
+  TurnSteeringDecision,
+  TurnSteeringInterception,
+  TurnSteeringRequest,
+  TurnStopFinish,
+  TurnStopNotice,
+} from './turn-job-types.ts';
+import type { SlackRunFactsView } from './status-registry.ts';
 import type {
   FlueDispatchReceiptV1,
   FlueObservationTarget,
@@ -64,6 +80,24 @@ export interface SlackCanonicalAdmissionInput {
   threadKey: string;
   admission: AdmitShadowRunInput;
   turnJob?: TurnJob;
+  /**
+   * A typed stop or check-in for this message's thread (KTD1). Decided after
+   * the claims and before the Work admission, in the same transaction: when
+   * the thread's run takes it, no Run or TurnJob is written, so a stop right
+   * after the thread's first message is never queued as an ordinary turn.
+   * A run of another Agent than the request's (`other_agent`, R3) takes it
+   * too, with nothing recorded: admission checks the sender against that
+   * Agent before deciding it again.
+   */
+  steering?: Extract<TurnSteeringRequest, { kind: 'stop' | 'check_in' }>;
+  /**
+   * An eligible ordinary message's 👀 (R12, KTD9): when its thread (the stop
+   * thread key) has an undelivered run, `turnJob` is written with Chickpea's
+   * receipt for it in the same transaction, and the result says so. Admission
+   * adds the reaction only for a receipt recorded here, so a 👀 it adds always
+   * has a turn that removes it.
+   */
+  midRun?: { threadKey: string; receipt: TurnMidRunReceipt };
   presentation?: {
     schemaVersion: 3;
     root: SlackPresentationRoot;
@@ -130,7 +164,10 @@ export function selectSlackPresentationOwner(input: {
 
 export type SlackCanonicalAdmissionResult =
   | { claimed: false }
-  | { claimed: true; admission: ShadowRunAdmission };
+  /** `midRunReceipt`: the TurnJob was written with its `midRun` receipt. */
+  | { claimed: true; admission: ShadowRunAdmission; midRunReceipt?: true }
+  /** The thread's run took the message's `steering`; its claims are held. */
+  | { claimed: true; steered: TurnSteeringInterception };
 
 /**
  * Application-owned duplicate-admission store.
@@ -171,6 +208,24 @@ export interface SlackStateStore extends SlackClaimStore, SlackThreadRegistry {
   admitCanonical(input: SlackCanonicalAdmissionInput): Promise<SlackCanonicalAdmissionResult>;
   /** Node fallback when Slack truth cannot authorize a canonical Work/Run. */
   enqueueTurn?(job: TurnJob): Promise<boolean>;
+  /**
+   * Decide a matched stop or check-in (or report a plain message) against the
+   * thread's undelivered rows in one transaction; `enqueue` is inserted in
+   * that transaction when the thread has nothing to steer (KTD1).
+   */
+  steerTurn?(request: TurnSteeringRequest, enqueue?: TurnJob): Promise<TurnSteeringDecision>;
+  /** The stopped ending: drop (or, on a completion race, release) the rows the stop holds. */
+  finishTurnStop?(headId: string, outcome: 'dropped' | 'released'): Promise<TurnStopFinish | undefined>;
+  /**
+   * The sender's threads of one DM channel whose run is undelivered (stop
+   * thread keys, at most two), for a top-level stop or check-in in a DM.
+   */
+  runningDirectThreads?(query: TurnDirectThreadQuery): Promise<string[]>;
+  /**
+   * Run facts of a turn the state store's own executor runs (the alarm
+   * executor, the Node relay), for a check-in; a runner's turn asks its runner.
+   */
+  runFacts?(turnJobId: string): Promise<SlackRunFactsView | undefined>;
   resumeTurnAfterOAuth?(originalTaskId: string, continuationId: string): Promise<boolean>;
   pinAgentBinding(
     input: SlackAgentBinding,
@@ -182,6 +237,20 @@ export interface SlackStateStore extends SlackClaimStore, SlackThreadRegistry {
   countPendingDeliveriesForWorkspace(workspaceId: string): Promise<number>;
   /** Node-only durable legacy relay operations; Cloudflare owns these in its DO alarm. */
   listPendingTurns?(): Promise<PendingTurnJob[]>;
+  /**
+   * The authoritative row of one turn (pending with its checkpoints, settled,
+   * or missing), which the Node relay reads again before it runs a row it
+   * listed earlier, since a stop may have held or dropped it meanwhile.
+   */
+  turnJobView?(id: string): Promise<RunnerTurnJobView>;
+  /**
+   * The Node relay's stop outbox pass (KTD2): offer every due stop notice to
+   * `receive`, whose true acknowledges it (false or a rejection retries it
+   * with a backoff). Resolves with when the next owed notice falls due.
+   */
+  deliverStopNotices?(
+    receive: (notice: TurnStopNotice) => Promise<boolean>,
+  ): Promise<number | undefined>;
   getPendingTurnByRunId?(runId: string): Promise<PendingTurnJob | undefined>;
   freezeRuntimePlan?(
     id: string,
@@ -394,6 +463,20 @@ export class SlackStateLogic {
           return { claimed: false };
         }
       }
+      if (input.steering && turnJobs) {
+        const steered = turnJobs.steerInTransaction(input.steering);
+        if (steered.outcome !== 'enqueue') return { claimed: true, steered };
+      }
+      // Whether the thread's run is in progress, read before this message's
+      // own row exists (KTD9).
+      const midRun = input.midRun && !input.steering && input.turnJob && turnJobs &&
+          (input.turnJob.executionAuthority ?? 'legacy') === 'legacy'
+        ? turnJobs.steerInTransaction({ kind: 'message', threadKey: input.midRun.threadKey })
+        : undefined;
+      const midRunReceipt = midRun?.outcome === 'enqueue' && midRun.undelivered
+        ? input.midRun!.receipt
+        : undefined;
+      let receiptWritten = false;
       const admission = work.admitShadowRunInTransaction(input.admission);
       this.start(input.threadKey);
       if (input.turnJob && turnJobs) {
@@ -404,7 +487,12 @@ export class SlackStateLogic {
         ) {
           throw new Error('Turn job authority does not match its canonical Run.');
         }
-        turnJobs.enqueueInTransaction(input.turnJob);
+        const enqueued = turnJobs.enqueueInTransaction(midRunReceipt
+          ? { ...input.turnJob, midRunReceipt }
+          : input.turnJob);
+        receiptWritten = enqueued && midRunReceipt !== undefined &&
+          turnJobs.getProgress(input.turnJob.id)?.slackInteraction?.acknowledgment?.reaction ===
+            'seen_mid_run';
       }
       if (input.presentation) {
         if (!input.turnJob || !presentations) {
@@ -428,8 +516,64 @@ export class SlackStateLogic {
             : {}),
         });
       }
-      return { claimed: true, admission };
+      return { claimed: true, admission, ...(receiptWritten ? { midRunReceipt: true as const } : {}) };
     });
+  }
+
+  /**
+   * The stopped ending's drop (or, on a completion race, release) of the rows
+   * a stop holds (TurnJobStoreLogic.finishStop), then the canonical records
+   * of the turns it dropped, which will never run: each Run settles
+   * `cancelled` and each admitted presentation closes with no Slack effect. A
+   * stopped head with no Flue receipt settles its Run too, since its stopped
+   * ending opens no Work lifecycle: from admission, or from the input and
+   * execution an earlier attempt prepared before the stop refused its
+   * dispatch (or before it lost its receipt). A dispatched head's own
+   * lifecycle settles its Run with the note. The head's presentation carries
+   * the stop note. Released rows keep theirs and run later as ordinary
+   * turns. The records settle after the drop commits, one at a time and best
+   * effort, so bookkeeping never undoes a stop; a repeated ending returns the
+   * same rows and settles whatever is left.
+   */
+  finishTurnStop(
+    headId: string,
+    outcome: 'dropped' | 'released',
+    turnJobs: TurnJobStoreLogic,
+    work: WorkStoreLogic,
+    presentations: SlackRunPresentationStoreLogic,
+  ): TurnStopFinish | undefined {
+    const finished = turnJobs.finishStop(headId, outcome);
+    if (finished?.outcome !== 'dropped') return finished;
+    const settleRun = (runId: string, prepared = false) => {
+      try {
+        const run = work.getRun(runId as RunId);
+        const settlement = {
+          runId: runId as RunId,
+          terminalDisposition: 'cancelled' as const,
+          safeFailureCode: 'run_stopped',
+          settledAt: this.now(),
+        };
+        if (run?.status === 'admitted' || run?.status === 'queued') {
+          work.settleUnstartedRun(settlement);
+        } else if (prepared && (run?.status === 'input_ready' || run?.status === 'executing')) {
+          work.settleInterruptedRun(settlement);
+        }
+      } catch {
+        console.warn('[chickpea] a stopped turn kept an unsettled Run');
+      }
+    };
+    const head = turnJobs.runnerView(headId).job;
+    if (head?.runId && !head.dispatchReceipt) settleRun(head.runId, true);
+    for (const row of finished.rows) {
+      if (!row.runId) continue;
+      settleRun(row.runId);
+      try {
+        presentations.settleUnstarted(row.runId);
+      } catch {
+        console.warn('[chickpea] a dropped turn kept an admitted presentation');
+      }
+    }
+    return finished;
   }
 
   private purgeExpired(): void {

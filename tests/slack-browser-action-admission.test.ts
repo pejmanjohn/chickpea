@@ -98,3 +98,21 @@ test('a legacy-contract Agent matches the session thread its signal carries', as
   assert.equal(reply.approvedBrowserActionId, record.id);
   settings.close();
 });
+
+test('a reply addressed to the routed Agent by its handle answers the step like a plain one', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const record = await held(settings);
+  const address = { botUserId: 'UBOT', agentUserGroupId: 'SOPS' };
+  // Another handle is not the routed Agent: the action stays pending.
+  assert.deepEqual(await admitSlackBrowserActionReply({
+    turn: turn('<!subteam^SOTHER|@other> stop'), assignment, settings,
+    actorMembershipId: 'membership_asker', address, now: NOW + 1,
+  }), undefined);
+  assert.equal((await getBrowserAction(settings, record.id))?.status, 'pending');
+  const reply = turn('<!subteam^SOPS|@ops> stop');
+  assert.deepEqual(await admitSlackBrowserActionReply({
+    turn: reply, assignment, settings, actorMembershipId: 'membership_asker', address, now: NOW + 1,
+  }), { kind: 'stopped', id: record.id });
+  assert.equal((await getBrowserAction(settings, record.id))?.status, 'consumed');
+  settings.close();
+});

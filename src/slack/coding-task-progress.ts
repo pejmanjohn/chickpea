@@ -28,6 +28,13 @@ export interface CodingTaskProgress {
    */
   apply(record: WorkspaceMilestoneRecord): void;
   /**
+   * How many distinct records this turn has applied, in reply order. A
+   * reattached turn replays the same records in the same order, so the count
+   * names a record's position: the status registry counts a milestone as
+   * progress only past the position it already counted.
+   */
+  applied(): number;
+  /**
    * The milestone phrase to publish now, once per change: the step of the
    * most recent running task, or undefined when nothing new is running. Read
    * after a burst of records settles, so a reattached turn replaying a task
@@ -106,9 +113,11 @@ export function createCodingTaskProgress(): CodingTaskProgress {
   // and the worker stages that have passed, with how often each passed.
   const done = new Map<string, number>();
   let currentStage: string | undefined;
+  const records = new Set<string>();
 
   return {
     apply(record) {
+      records.add(`${record.toolCallId}:${record.milestone}:${record.state}`);
       if (settled.has(record.toolCallId)) return;
       if (record.state === 'started' ||
           record.milestone === 'workspace' && record.state === 'completed') {
@@ -128,6 +137,7 @@ export function createCodingTaskProgress(): CodingTaskProgress {
       settled.add(record.toolCallId);
       if (latest === record.toolCallId) latest = [...running.keys()].at(-1);
     },
+    applied: () => records.size,
     takeStatus() {
       const step = latest === undefined ? undefined : running.get(latest);
       const status = step === undefined

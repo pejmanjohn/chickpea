@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import { activityStatus, type TypedActivityStatus } from '../src/activity/status.ts';
 import { publishActivityStatus } from '../src/slack/activity-publisher.ts';
 import {
+  abortSlackThreadAgent,
   AgentObservationYield,
   AgentPromptFailure,
   StateStoreUnavailable,
@@ -36,14 +37,32 @@ import {
   runnerLoopScheduler,
   type ThreadRunnerLoopDeps,
 } from '../src/slack/thread-runner-loop.ts';
+import {
+  receiveAlarmExecutorStop,
+  runnerStopRecorded,
+  RunnerStops,
+  StopAbortFence,
+  type RunnerStopDeps,
+} from '../src/slack/runner-stops.ts';
+import type {
+  FlueSettlementCheckpointV1,
+  TurnStopHeadRecordV1,
+  TurnStopNotice,
+  TurnStopRecordV1,
+} from '../src/slack/turn-job-types.ts';
+import type { CodingTaskStopReport } from '../src/sandbox/coding-task-stop.ts';
 import { executeTurnJob, type TurnExecutionPorts } from '../src/slack/turn-executor.ts';
 import { slackTurnExecutor } from '../src/slack/turn-executor-flag.ts';
 import {
   TurnJobStoreLogic,
+  turnJobStopGate,
+  turnStopThreadKey,
   type PendingTurnJob,
   type RunnerTurnJobView,
 } from '../src/slack/turn-jobs.ts';
 import type { RunTurnOptions } from '../src/slack/run-turn.ts';
+import { STOP_ALREADY_FINISHED_TEXT } from '../src/slack/web-client-presenter.ts';
+import { compileRuntimePlanV2 } from '../src/agents/runtime-plan.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
 import {
   drainManagementReceiptOutbox,
@@ -377,6 +396,10 @@ test('the agent relays activity for a runner turn straight to that runner', asyn
 function fakeRows(ids: string[]) {
   const rows = new Map<string, {
     status: RunnerTurnJobView['status']; attempts: number; receipt?: string; cleanup?: boolean;
+    /** The row's stop record (U1): the executor's stop gate reads it. */
+    stop?: TurnStopRecordV1;
+    /** Its Flue settlement, once recorded. */
+    settled?: FlueSettlementCheckpointV1['outcome'];
   }>(ids.map((id) => [id, { status: 'pending', attempts: 0 }]));
   const calls: string[] = [];
   let failMarkDelivered = 0;
@@ -388,10 +411,13 @@ function fakeRows(ids: string[]) {
       executor: 'runner',
       ...(row.receipt
         ? {
-            dispatchEnvelope: { instanceId: 'agent' } as never,
-            dispatchReceipt: { submissionId: row.receipt, acceptedAt: new Date().toISOString() } as never,
+            dispatchEnvelope: { instanceId: 'agent', uid: 'uid_agent' } as never,
+            dispatchReceipt: {
+              submissionId: row.receipt, acceptedAt: new Date().toISOString(), uid: 'uid_agent',
+            } as never,
           }
         : {}),
+      ...(row.stop ? { stop: row.stop } : {}),
     } as PendingTurnJob;
   };
   const view = (id: string): RunnerTurnJobView => {
@@ -466,9 +492,26 @@ function runnerHarness(db: ReturnType<typeof openStateDb>, rows: ReturnType<type
   slackOutage?: (id: string) => boolean;
   /** The turn ends on a deferred terminal (an Agent welcome the outbox posts). */
   deferred?: (id: string) => boolean;
+  /**
+   * The agent instance's submissions: a held turn observes its submission
+   * there, so an abort settles it `aborted` (read like any settlement).
+   */
+  host?: ReturnType<typeof fakeFlueHost>;
+  /** This runner's stops (RunnerStops over the harness's job store). */
+  stops?: Omit<RunnerStopDeps, 'jobs'>;
+  /** Before a turn's dispatch lands (its receipt is recorded after it). */
+  beforeDispatch?: (id: string) => Promise<void>;
+  /** A held turn has started observing its submission. */
+  onObserving?: (id: string) => void;
+  /** The turn read its settlement (and recorded it), before it delivers. */
+  onSettled?: (id: string, outcome: 'aborted' | 'completed') => Promise<void>;
+  /** The executor reads a stop as the runner does (runnerStopRecorded). */
+  stopRecorded?: boolean;
 } = {}) {
   const jobs = new ThreadRunnerJobStore(db);
+  const stops = script.stops ? new RunnerStops({ ...script.stops, jobs }) : undefined;
   const events: string[] = [];
+  const ephemerals: Array<Record<string, unknown>> = [];
   let failCleanups = script.failCleanups ?? 0;
   const records: string[] = [];
   let backstops = 0;
@@ -479,9 +522,19 @@ function runnerHarness(db: ReturnType<typeof openStateDb>, rows: ReturnType<type
       rows.rows.get(id)!.receipt = receipt.submissionId;
       return receipt;
     },
+    recordFlueSettlement: async (id: string, settlement: FlueSettlementCheckpointV1) => {
+      rows.rows.get(id)!.settled = settlement.outcome;
+      return settlement;
+    },
     markDelivered: (id: string) => rows.turns.markDelivered(id),
     markError: (id: string) => rows.turns.markError(id),
-  } as unknown as TurnExecutionPorts['turnJobs'], jobs, () => Date.now());
+    finishStop: async (id: string, outcome: 'dropped' | 'released') => {
+      rows.calls.push(`finishStop:${id}:${outcome}`);
+      const stop = rows.rows.get(id)?.stop;
+      if (stop?.role !== 'stopped') return undefined;
+      return { outcome, count: 0, rows: [], record: { ...stop, ending: { outcome, count: 0, at: NOW } } };
+    },
+  } as unknown as TurnExecutionPorts['turnJobs'], jobs, () => Date.now(), stops);
   const ports = {
     env: {},
     turnJobs: port,
@@ -497,11 +550,25 @@ function runnerHarness(db: ReturnType<typeof openStateDb>, rows: ReturnType<type
     telemetry: { capture() {} },
     resolveInstallation: async () => ({
       workspaceId: 'T_TEST',
-      client: { conversations: { info: async () => ({ ok: true, channel: { id: 'C_TEST', is_member: true } }) } },
+      client: {
+        conversations: { info: async () => ({ ok: true, channel: { id: 'C_TEST', is_member: true } }) },
+        chat: {
+          postEphemeral: async (input: Record<string, unknown>) => {
+            ephemerals.push(input);
+            return { ok: true };
+          },
+        },
+      },
     }),
     sandboxes: () => [],
     runTurn: async (_turn: unknown, _assignment: unknown, _env: unknown, options: RunTurnOptions) => {
       const id = options.turnId!;
+      if (options.stopEnding?.beforeDispatch) {
+        // A stopped row that never dispatched ends at once (U3's stopped ending).
+        events.push(`stopped:${id}`);
+        await options.onDelivered?.('stopped');
+        return;
+      }
       if (script.fail?.(id)) {
         events.push(`failed:${id}`);
         throw new Error('model unavailable');
@@ -520,9 +587,13 @@ function runnerHarness(db: ReturnType<typeof openStateDb>, rows: ReturnType<type
         events.push(`slack-outage:${id}`);
         throw new SlackTransportError('chat.postMessage', 'gateway_unreachable', { retryable: true });
       }
-      if (!options.flueDispatch?.dispatchReceipt) {
+      let submissionId = options.flueDispatch?.dispatchReceipt?.submissionId;
+      if (!submissionId) {
         events.push(`dispatch:${id}`);
-        await options.flueDispatch?.recordReceipt({ submissionId: `submission_${id}` } as never);
+        submissionId = `submission_${id}`;
+        await script.beforeDispatch?.(id);
+        script.host?.start('agent', submissionId);
+        await options.flueDispatch?.recordReceipt({ submissionId, uid: 'uid_agent' } as never);
       } else {
         events.push(`reattach:${id}`);
       }
@@ -534,9 +605,30 @@ function runnerHarness(db: ReturnType<typeof openStateDb>, rows: ReturnType<type
       if (script.hold?.(id)) {
         options.onObservationStarted?.();
         const signal = options.observationSignal!;
-        await new Promise((resolve) => signal.addEventListener('abort', resolve, { once: true }));
-        events.push(`yield:${id}`);
-        throw new AgentObservationYield();
+        if (script.host) {
+          script.onObserving?.(id);
+          const outcome = await script.host.observe(submissionId, signal);
+          if (outcome !== 'yield') {
+            await options.flueDispatch?.recordSettlement(outcome === 'aborted'
+              ? { outcome, settledAt: Date.now(), failureKind: 'agent' }
+              : { outcome, settledAt: Date.now(), result: { text: 'done' } } as never);
+            await script.onSettled?.(id, outcome);
+          }
+          if (outcome === 'aborted') {
+            // Where run-turn presents the stopped ending (U3).
+            events.push(`aborted:${id}`);
+            await options.onDelivered?.('stopped');
+            return;
+          }
+          if (outcome === 'yield') {
+            events.push(`yield:${id}`);
+            throw new AgentObservationYield();
+          }
+        } else {
+          await new Promise((resolve) => signal.addEventListener('abort', resolve, { once: true }));
+          events.push(`yield:${id}`);
+          throw new AgentObservationYield();
+        }
       }
       await options.onDelivered?.();
       events.push(`delivered:${id}`);
@@ -550,6 +642,7 @@ function runnerHarness(db: ReturnType<typeof openStateDb>, rows: ReturnType<type
       observationRoute: { executor: 'runner', runnerKey: threadKey },
       control,
       onRetry,
+      ...(script.stopRecorded ? { stopRecorded: () => runnerStopRecorded(jobs, rows.turns, job.id) } : {}),
     }),
     repairInteraction: async (job) => {
       if (failCleanups > 0) {
@@ -569,9 +662,10 @@ function runnerHarness(db: ReturnType<typeof openStateDb>, rows: ReturnType<type
     recheckMs: 2,
     sink: { info(record: Record<string, unknown>) { records.push(JSON.stringify(record)); } },
     now: () => Date.now() + offset,
+    ...(stops ? { stops } : {}),
   };
   return {
-    jobs, events, deps, records,
+    jobs, events, ephemerals, deps, records, stops: stops!, port,
     backstops: () => backstops,
     advance: (ms: number) => { offset += ms; },
   };
@@ -589,7 +683,7 @@ test('a runner runs its thread strictly in order and settles each job', async ()
     assert.deepEqual(h.jobs.status().jobs, { done: 2 });
     assert.equal(result.nextAlarmAt, undefined, 'an idle runner arms nothing');
     assert.deepEqual({ ...result.record, durationMs: 0 },
-      { jobs: 2, ran: 2, yielded: false, carried: 0, durationMs: 0, outcome: 'drained' });
+      { jobs: 2, ran: 2, yielded: false, carried: 0, dropped: 0, durationMs: 0, outcome: 'drained' });
     assert.equal(h.backstops(), 2, 'a backstop wake is armed whenever a job starts');
   } finally { db.close(); }
 });
@@ -1836,5 +1930,927 @@ test('a heartbeat storage failure after its alarm ended never holds the next ala
     rejectLate();
     await new Promise((resolve) => setTimeout(resolve, 5));
     assert.equal(h.deps.supersede!.by, undefined, 'the late storage failure is ignored');
+  } finally { db.close(); }
+});
+
+// ── stops: the runner's Flue abort (KTD2) and coding cascade (KTD4) ──────
+
+/**
+ * The agent instance's Flue submissions. `abortHost` is the stop's abort():
+ * instance-wide, it settles every unsettled submission of the instance
+ * `aborted`, never one dispatched after it. A held turn observes its
+ * submission until it settles or the observation signal fires (a yield).
+ */
+function fakeFlueHost(events: string[] = []) {
+  const aborts: Array<{ instanceId: string; uid?: string | null }> = [];
+  const submissions = new Map<string, {
+    instanceId: string; outcome?: 'aborted' | 'completed'; wake: Array<() => void>;
+  }>();
+  let failures = 0;
+  const submission = (id: string, instanceId = 'agent') => {
+    let found = submissions.get(id);
+    if (!found) {
+      found = { instanceId, wake: [] };
+      submissions.set(id, found);
+    }
+    return found;
+  };
+  const settle = (id: string, outcome: 'aborted' | 'completed') => {
+    const found = submission(id);
+    if (found.outcome) return;
+    found.outcome = outcome;
+    for (const wake of found.wake.splice(0)) wake();
+  };
+  return {
+    aborts,
+    events,
+    failNextAborts(times: number) { failures = times; },
+    start(instanceId: string, id: string) { submission(id, instanceId); },
+    complete(id: string) { settle(id, 'completed'); },
+    abortHost: async (target: { instanceId: string; uid?: string | null }) => {
+      aborts.push({ ...target });
+      if (failures > 0) {
+        failures -= 1;
+        events.push('abort-failed');
+        throw new Error('abort request failed');
+      }
+      events.push('abort');
+      for (const [id, found] of submissions) {
+        if (found.instanceId === target.instanceId && !found.outcome) settle(id, 'aborted');
+      }
+    },
+    observe(id: string, signal: AbortSignal): Promise<'aborted' | 'completed' | 'yield'> {
+      const found = submission(id);
+      if (found.outcome) return Promise.resolve(found.outcome);
+      if (signal.aborted) return Promise.resolve('yield');
+      return new Promise((resolve) => {
+        const onAbort = () => resolve('yield');
+        signal.addEventListener('abort', onAbort, { once: true });
+        found.wake.push(() => {
+          signal.removeEventListener('abort', onAbort);
+          resolve(found.outcome!);
+        });
+      });
+    },
+  };
+}
+
+const STOP_RECORD: TurnStopHeadRecordV1 = {
+  schemaVersion: 1, role: 'stopped', source: 'button', stopperUserId: 'U_STOPPER',
+  cutoffTs: '1800000000.000900', stoppedAt: NOW,
+};
+
+/** The outbox's notice for a stopped row whose dispatch landed (U1's listDueStopNotices). */
+function stopNotice(id: string, submitted = true): TurnStopNotice {
+  return {
+    turnJobId: id, runnerKey: 'thread', executor: 'runner', record: STOP_RECORD, attempts: 0,
+    instanceId: 'agent', uid: 'uid_agent',
+    ...(submitted ? { submissionId: `submission_${id}` } : {}),
+  };
+}
+
+/** The notice of a stopped row that never dispatched: no envelope, no receipt. */
+function undispatchedStopNotice(id: string): TurnStopNotice {
+  return { turnJobId: id, runnerKey: 'thread', executor: 'runner', record: STOP_RECORD, attempts: 0 };
+}
+
+const tick = (ms = 1) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** A clock for the runner's stops alone, so a stop's retry backoff can pass without the alarm budget. */
+function stopClock() {
+  let offset = 0;
+  return { now: () => Date.now() + offset, advance: (ms: number) => { offset += ms; } };
+}
+
+test('a stop during observation aborts the instance once with its envelope, and the run ends through its aborted settlement, never a yield', async () => {
+  const db = openStateDb(':memory:');
+  try {
+    const rows = fakeRows(['run', 'next']);
+    const host = fakeFlueHost();
+    const acks: unknown[] = [];
+    let h!: ReturnType<typeof runnerHarness>;
+    h = runnerHarness(db, rows, {
+      host,
+      hold: (id) => id === 'run',
+      stops: { abortHost: host.abortHost },
+      onObserving: (id) => {
+        // The state store's stop transaction stamps the row, then its outbox
+        // calls the runner's `stop` RPC while the alarm observes.
+        rows.rows.get(id)!.stop = STOP_RECORD;
+        setTimeout(() => void h.stops.receive(stopNotice(id)).then((ack) => acks.push(ack)), 2);
+      },
+    });
+    h.deps.budgetMs = 60_000;
+    h.deps.hardCapMs = 120_000;
+    h.jobs.admit({ id: 'run', threadKey: 'thread', payload: {} }, 1);
+    h.jobs.admit({ id: 'next', threadKey: 'thread', payload: {} }, 2);
+    const result = await runThreadRunnerAlarm(h.deps);
+    assert.deepEqual(host.aborts, [{ instanceId: 'agent', uid: 'uid_agent' }],
+      'abort() once, from the persisted envelope, with its instance id and uid');
+    assert.deepEqual(acks, [{ acknowledged: true, wake: true }]);
+    assert.deepEqual(h.events, ['dispatch:run', 'aborted:run', 'dispatch:next', 'delivered:next'],
+      'the live observation read the aborted settlement; the next turn runs normally after it');
+    assert.equal(result.record.yielded, false, 'a stop is never a yield');
+    assert.equal(rows.rows.get('run')!.settled, 'aborted');
+    assert.equal(rows.rows.get('run')!.attempts, 1, 'no reattachment attempt was spent');
+    assert.deepEqual(h.jobs.status().jobs, { done: 2 });
+    const marker = h.jobs.stopMarker('run')!;
+    assert.equal(marker.abort, 'done');
+    assert.equal(marker.abortedSubmissionId, 'submission_run');
+    assert.equal(marker.cascade, 'none', 'no coding workspace can exist here');
+
+    // The outbox redelivers (its acknowledgement was lost): nothing is aborted again.
+    assert.deepEqual(await h.stops.receive(stopNotice('run')), { acknowledged: true, wake: false });
+    assert.equal(host.aborts.length, 1);
+  } finally { db.close(); }
+});
+
+test('a stop between alarms makes the yielded turn due; its next alarm reads the aborted settlement without dispatching or yielding again', async () => {
+  const db = openStateDb(':memory:');
+  try {
+    const rows = fakeRows(['long']);
+    const host = fakeFlueHost();
+    const h = runnerHarness(db, rows, { host, hold: () => true, stops: { abortHost: host.abortHost } });
+    h.jobs.admit({ id: 'long', threadKey: 'thread', payload: {} }, 1);
+    const first = await runThreadRunnerAlarm(h.deps);
+    assert.deepEqual(h.events, ['dispatch:long', 'yield:long'], 'the budget yield');
+    assert.equal(first.record.yielded, true);
+    assert.ok(h.jobs.get('long')!.retryAt !== undefined, 'the yield waits a second to reattach');
+
+    // No alarm runs: the RPC takes the stop, aborts, and makes the turn due.
+    rows.rows.get('long')!.stop = STOP_RECORD;
+    assert.deepEqual(await h.stops.receive(stopNotice('long')), { acknowledged: true, wake: true });
+    assert.deepEqual(host.aborts, [{ instanceId: 'agent', uid: 'uid_agent' }]);
+    assert.equal(h.jobs.get('long')!.retryAt, undefined, 'due at once for the alarm the RPC arms');
+    assert.deepEqual(h.jobs.runnable(h.deps.now!()).map((job) => job.id), ['long']);
+
+    const second = await runThreadRunnerAlarm(h.deps);
+    assert.deepEqual(h.events.slice(2), ['reattach:long', 'aborted:long'],
+      'it reads its own aborted settlement once: no dispatch, no second yield');
+    assert.equal(second.record.yielded, false);
+    assert.equal(host.aborts.length, 1);
+    assert.deepEqual(h.jobs.status().jobs, { done: 1 });
+  } finally { db.close(); }
+});
+
+test('a stop before dispatch never calls abort(); the alarm hands the stopped row to its executor', async () => {
+  const db = openStateDb(':memory:');
+  try {
+    const rows = fakeRows(['early', 'unadmitted']);
+    const host = fakeFlueHost();
+    const h = runnerHarness(db, rows, { host, stops: { abortHost: host.abortHost } });
+    const gates: string[] = [];
+    const execute = h.deps.execute;
+    h.deps.execute = (job, ...rest) => {
+      gates.push(`${job.id}:${turnJobStopGate(job)}`);
+      return execute(job, ...rest);
+    };
+    // Admitted here, never dispatched: the stop transaction stamped its row.
+    h.jobs.admit({ id: 'early', threadKey: 'thread', payload: {} }, 1);
+    h.jobs.settle('early', 'admitted', h.deps.now!(), h.deps.now!() + 60_000);
+    rows.rows.get('early')!.stop = STOP_RECORD;
+    assert.deepEqual(await h.stops.receive(undispatchedStopNotice('early')),
+      { acknowledged: true, wake: true });
+    assert.equal(h.jobs.get('early')!.retryAt, undefined, 'a waiting row is made due');
+    assert.deepEqual({ ...h.jobs.stopMarker('early'), receivedAt: 0, notice: undefined },
+      { turnJobId: 'early', abort: 'none', abortAttempts: 0, cascade: 'none', receivedAt: 0, notice: undefined });
+
+    // The stop reaches the runner before the state store's hand-off does.
+    rows.rows.get('unadmitted')!.stop = STOP_RECORD;
+    assert.deepEqual(await h.stops.receive(undispatchedStopNotice('unadmitted')),
+      { acknowledged: true, wake: false });
+    h.jobs.admit({ id: 'unadmitted', threadKey: 'thread', payload: {} }, 2);
+
+    await runThreadRunnerAlarm(h.deps);
+    assert.deepEqual(gates, ['early:stopped_before_dispatch', 'unadmitted:stopped_before_dispatch'],
+      'the alarm reaches each stopped row and hands it to the executor, which ends it');
+    assert.deepEqual(h.events, ['stopped:early', 'stopped:unadmitted'], 'nothing is dispatched');
+    assert.deepEqual(host.aborts, [], 'nothing ran, so nothing is aborted');
+    assert.equal(h.jobs.get('early')!.state, 'done', 'the stopped ending settles it at once');
+    assert.equal(await h.stops.codingReport('early'), undefined, 'a stop before dispatch owes no cascade');
+  } finally { db.close(); }
+});
+
+test('a code-update yield still reattaches; the stop that arrived before it ends the run on the new version', async () => {
+  const db = openStateDb(':memory:');
+  try {
+    const rows = fakeRows(['long']);
+    const host = fakeFlueHost();
+    const clock = stopClock();
+    let serving = OLD_VERSION;
+    let h!: ReturnType<typeof versionedHarness>;
+    h = versionedHarness(db, rows, () => serving, {
+      host,
+      hold: () => true,
+      stops: { abortHost: host.abortHost, now: clock.now },
+      onObserving: (id) => {
+        if (host.aborts.length > 0) return;
+        rows.rows.get(id)!.stop = STOP_RECORD;
+        // The RPC's abort and the yielding alarm's own repeat both fail.
+        host.failNextAborts(2);
+        setTimeout(() => void h.stops.receive(stopNotice(id)).then(() => {
+          // The code update lands while the failed abort waits for its retry.
+          serving = NEW_VERSION;
+        }), 2);
+      },
+    });
+    h.jobs.admit({ id: 'long', threadKey: 'thread', payload: {} }, 1);
+    const first = await runThreadRunnerAlarm(h.deps);
+    assert.deepEqual(h.events, ['dispatch:long', 'yield:long'], 'the code update yields, as before');
+    assert.equal(first.record.supersededBy, NEW_VERSION);
+    assert.equal(h.jobs.get('long')!.state, 'yielded');
+    assert.equal(h.jobs.stopMarker('long')!.abort, 'owed', 'the unconfirmed abort stays owed');
+
+    // The successor alarm on the new version repeats the abort, then reattaches.
+    h.advance(1_000);
+    h.deps.versionId = NEW_VERSION;
+    h.deps.supersede = createRunnerSupersedeState();
+    const second = await runThreadRunnerAlarm(h.deps);
+    assert.deepEqual(host.events, ['abort-failed', 'abort-failed', 'abort']);
+    assert.deepEqual(h.events.slice(2), ['reattach:long', 'aborted:long'],
+      'reattached (never dispatched again), and only the stop ended the run');
+    assert.equal(second.record.yielded, false);
+    assert.equal(h.jobs.stopMarker('long')!.abort, 'done');
+  } finally { db.close(); }
+});
+
+test("a transient abort failure keeps the stop owed; the running job's heartbeat repeats it", async () => {
+  const db = openStateDb(':memory:');
+  try {
+    const rows = fakeRows(['run']);
+    const host = fakeFlueHost();
+    const clock = stopClock();
+    const acks: unknown[] = [];
+    let h!: ReturnType<typeof runnerHarness>;
+    h = runnerHarness(db, rows, {
+      host,
+      hold: () => true,
+      stops: { abortHost: host.abortHost, now: clock.now },
+      onObserving: (id) => {
+        rows.rows.get(id)!.stop = STOP_RECORD;
+        host.failNextAborts(1);
+        setTimeout(() => void h.stops.receive(stopNotice(id)).then(async (ack) => {
+          acks.push(ack);
+          const marker = h.jobs.stopMarker(id)!;
+          acks.push({ abort: marker.abort, abortAttempts: marker.abortAttempts });
+          // Heartbeats inside the backoff do not repeat it...
+          await tick(20);
+          acks.push(host.aborts.length);
+          // ...the first one after it does.
+          clock.advance(2_500);
+        }), 2);
+      },
+    });
+    h.deps.budgetMs = 60_000;
+    h.deps.hardCapMs = 120_000;
+    h.deps.heartbeatMs = 2;
+    h.jobs.admit({ id: 'run', threadKey: 'thread', payload: {} }, 1);
+    const result = await runThreadRunnerAlarm(h.deps);
+    assert.deepEqual(acks, [
+      { acknowledged: true, wake: true },
+      { abort: 'owed', abortAttempts: 1 },
+      1,
+    ], 'the runner owns the retry: the outbox is acknowledged once the stop is persisted');
+    assert.deepEqual(host.events, ['abort-failed', 'abort']);
+    assert.deepEqual(h.events, ['dispatch:run', 'aborted:run']);
+    assert.equal(result.record.yielded, false);
+    const marker = h.jobs.stopMarker('run')!;
+    assert.deepEqual([marker.abort, marker.abortAttempts], ['done', 2]);
+  } finally { db.close(); }
+});
+
+test('a failed abort for a turn between alarms is repeated by the next alarm before it reattaches', async () => {
+  const db = openStateDb(':memory:');
+  try {
+    const rows = fakeRows(['long']);
+    const host = fakeFlueHost();
+    const h = runnerHarness(db, rows, { host, hold: () => true, stops: { abortHost: host.abortHost } });
+    h.jobs.admit({ id: 'long', threadKey: 'thread', payload: {} }, 1);
+    await runThreadRunnerAlarm(h.deps);
+    rows.rows.get('long')!.stop = STOP_RECORD;
+    host.failNextAborts(1);
+    assert.deepEqual(await h.stops.receive(stopNotice('long')), { acknowledged: true, wake: true });
+    assert.equal(h.jobs.stopMarker('long')!.abort, 'owed');
+    assert.equal(h.jobs.hasOwedStops(), true, 'a new instance would re-arm its alarm for it');
+    const order: string[] = [];
+    const turnEvents = h.events;
+    const execute = h.deps.execute;
+    h.deps.execute = (...args) => {
+      order.push(`execute (after ${host.events.join(', ')})`);
+      return execute(...args);
+    };
+    await runThreadRunnerAlarm(h.deps);
+    assert.deepEqual(order, ['execute (after abort-failed, abort)'], 'the abort is repeated first');
+    assert.deepEqual(turnEvents.slice(2), ['reattach:long', 'aborted:long']);
+    assert.equal(h.jobs.hasOwedStops(), false);
+  } finally { db.close(); }
+});
+
+test('a stop redelivered after the thread\'s next turn dispatched is acknowledged without abort(); that turn completes normally', async () => {
+  const db = openStateDb(':memory:');
+  try {
+    const rows = fakeRows(['head', 'next']);
+    const host = fakeFlueHost();
+    const acks: unknown[] = [];
+    let h!: ReturnType<typeof runnerHarness>;
+    h = runnerHarness(db, rows, {
+      host,
+      hold: () => true,
+      stops: { abortHost: host.abortHost },
+      onObserving: (id) => {
+        if (id === 'head') {
+          rows.rows.get(id)!.stop = STOP_RECORD;
+          setTimeout(() => void h.stops.receive(stopNotice('head')), 2);
+          return;
+        }
+        // The head's notice again (its acknowledgement was lost), while the
+        // next turn runs in the same instance.
+        setTimeout(() => void h.stops.receive(stopNotice('head')).then((ack) => {
+          acks.push(ack);
+          host.complete('submission_next');
+        }), 2);
+      },
+    });
+    h.deps.budgetMs = 60_000;
+    h.deps.hardCapMs = 120_000;
+    h.jobs.admit({ id: 'head', threadKey: 'thread', payload: {} }, 1);
+    h.jobs.admit({ id: 'next', threadKey: 'thread', payload: {} }, 2);
+    await runThreadRunnerAlarm(h.deps);
+    assert.deepEqual(acks, [{ acknowledged: true, wake: false }]);
+    assert.equal(host.aborts.length, 1, 'only the first delivery aborted');
+    assert.deepEqual(h.events, ['dispatch:head', 'aborted:head', 'dispatch:next', 'delivered:next']);
+    assert.equal(rows.rows.get('next')!.settled, 'completed', 'the next turn was never aborted');
+
+    // A first delivery that only arrives now (the head settled on its own
+    // meanwhile) never aborts either.
+    const late = new RunnerStops({ jobs: new ThreadRunnerJobStore(db), abortHost: host.abortHost });
+    h.jobs.admit({ id: 'finished', threadKey: 'thread', payload: {} }, 3);
+    h.jobs.settle('finished', 'done', h.deps.now!());
+    assert.deepEqual(await late.receive(stopNotice('finished')), { acknowledged: true, wake: false });
+    assert.equal(host.aborts.length, 1);
+    assert.equal(h.jobs.stopMarker('finished')!.abort, 'none');
+  } finally { db.close(); }
+});
+
+test('a stop whose dispatch is still in flight aborts again once the receipt lands, and stays owed in the outbox until then', async () => {
+  const db = openStateDb(':memory:');
+  try {
+    const rows = fakeRows(['run']);
+    const host = fakeFlueHost();
+    const acks: unknown[] = [];
+    let h!: ReturnType<typeof runnerHarness>;
+    h = runnerHarness(db, rows, {
+      host,
+      hold: () => true,
+      stops: { abortHost: host.abortHost },
+      // The stop commits after dispatch preparation: the notice carries the
+      // envelope but no receipt, and its abort lands before the dispatch does.
+      beforeDispatch: async (id) => {
+        rows.rows.get(id)!.stop = STOP_RECORD;
+        acks.push(await h.stops.receive(stopNotice(id, false)));
+      },
+    });
+    h.deps.budgetMs = 60_000;
+    h.deps.hardCapMs = 120_000;
+    h.jobs.admit({ id: 'run', threadKey: 'thread', payload: {} }, 1);
+    await runThreadRunnerAlarm(h.deps);
+    assert.deepEqual(acks, [{ acknowledged: false, wake: true }],
+      'unknown submission: the outbox brings the stop back');
+    assert.equal(host.aborts.length, 2, 'repeated as soon as the receipt was recorded');
+    assert.deepEqual(h.events, ['dispatch:run', 'aborted:run']);
+    assert.equal(h.jobs.stopMarker('run')!.abortedSubmissionId, 'submission_run');
+    // The redelivery now carries the receipt; nothing more is aborted.
+    assert.deepEqual(await h.stops.receive(stopNotice('run')), { acknowledged: true, wake: false });
+    assert.equal(host.aborts.length, 2);
+  } finally { db.close(); }
+});
+
+test('a run that settled before its stop took effect is never aborted and owes no coding cascade', async () => {
+  const db = openStateDb(':memory:');
+  try {
+    const rows = fakeRows(['run']);
+    const host = fakeFlueHost();
+    const cascades: string[] = [];
+    let h!: ReturnType<typeof runnerHarness>;
+    h = runnerHarness(db, rows, {
+      host,
+      hold: () => true,
+      stops: {
+        abortHost: host.abortHost,
+        stopCodingTasks: async (notice) => {
+          cascades.push(notice.turnJobId);
+          return { recordsRead: true, allSettled: true, tasks: [] };
+        },
+      },
+      onObserving: () => { setTimeout(() => host.complete('submission_run'), 2); },
+      // The stop arrives while the completed answer is being delivered (R22).
+      onSettled: async (id) => {
+        rows.rows.get(id)!.stop = STOP_RECORD;
+        assert.deepEqual(await h.stops.receive(stopNotice(id)), { acknowledged: true, wake: false });
+      },
+    });
+    h.deps.budgetMs = 60_000;
+    h.deps.hardCapMs = 120_000;
+    h.jobs.admit({ id: 'run', threadKey: 'thread', payload: {} }, 1);
+    await runThreadRunnerAlarm(h.deps);
+    assert.deepEqual(h.events, ['dispatch:run', 'delivered:run']);
+    assert.deepEqual(host.aborts, []);
+    assert.deepEqual(cascades, []);
+    const marker = h.jobs.stopMarker('run')!;
+    assert.deepEqual([marker.abort, marker.cascade], ['none', 'none']);
+  } finally { db.close(); }
+});
+
+test("an abort still out when its turn settles holds the thread's next turn until it lands, and is recorded moot", async () => {
+  const db = openStateDb(':memory:');
+  try {
+    const rows = fakeRows(['run', 'next']);
+    const host = fakeFlueHost();
+    let land!: () => void;
+    const landing = new Promise<void>((resolve) => { land = resolve; });
+    let h!: ReturnType<typeof runnerHarness>;
+    h = runnerHarness(db, rows, {
+      host,
+      hold: () => true,
+      stops: {
+        // The abort request reaches the coordinator only once `land` runs.
+        abortHost: async (target) => {
+          await landing;
+          await host.abortHost(target);
+        },
+      },
+      onObserving: (id) => {
+        if (id === 'run') {
+          rows.rows.get(id)!.stop = STOP_RECORD;
+          setTimeout(() => {
+            void h.stops.receive(stopNotice(id));
+            // The run finishes on its own while its abort is still out (R22).
+            setTimeout(() => host.complete('submission_run'), 2);
+          }, 2);
+          // However late, the request lands.
+          setTimeout(land, 60);
+          return;
+        }
+        // The thread's next turn runs in the same instance: a late abort would stop it.
+        land();
+        setTimeout(() => host.complete('submission_next'), 2);
+      },
+    });
+    h.deps.budgetMs = 60_000;
+    h.deps.hardCapMs = 120_000;
+    h.jobs.admit({ id: 'run', threadKey: 'thread', payload: {} }, 1);
+    h.jobs.admit({ id: 'next', threadKey: 'thread', payload: {} }, 2);
+    await runThreadRunnerAlarm(h.deps);
+    assert.deepEqual(h.events, ['dispatch:run', 'delivered:run', 'dispatch:next', 'delivered:next'],
+      'the next turn dispatched only after the abort landed, so the abort never reached it');
+    assert.equal(rows.rows.get('next')!.settled, 'completed');
+    assert.deepEqual(host.events, ['abort']);
+    const marker = h.jobs.stopMarker('run')!;
+    assert.deepEqual([marker.abort, marker.cascade, marker.abortAttempts], ['none', 'none', 1],
+      'the run settled before the abort took effect: the abort stopped nothing');
+  } finally { db.close(); }
+});
+
+test('an abort request that never answers fails after its bound: the stop stays owed while its turn runs, and never holds the next turn past the bound', async () => {
+  const db = openStateDb(':memory:');
+  try {
+    const rows = fakeRows(['run', 'next']);
+    const host = fakeFlueHost();
+    const acks: unknown[] = [];
+    let stoppedAt = 0;
+    let h!: ReturnType<typeof runnerHarness>;
+    h = runnerHarness(db, rows, {
+      host,
+      hold: (id) => id === 'run',
+      stops: {
+        abortHost: async (target) => {
+          host.aborts.push({ ...target });
+          await new Promise<never>(() => {});
+        },
+        abortTimeoutMs: 40,
+        receiveWaitMs: 5,
+      },
+      onObserving: (id) => {
+        rows.rows.get(id)!.stop = STOP_RECORD;
+        setTimeout(() => {
+          stoppedAt = Date.now();
+          void h.stops.receive(stopNotice(id)).then((ack) => {
+            acks.push(ack, Date.now() - stoppedAt < 35);
+            const marker = h.jobs.stopMarker(id)!;
+            acks.push(marker.abort);
+            host.complete('submission_run');
+          });
+        }, 2);
+      },
+    });
+    h.deps.budgetMs = 60_000;
+    h.deps.hardCapMs = 120_000;
+    const started: Record<string, number> = {};
+    const execute = h.deps.execute;
+    h.deps.execute = (job, ...rest) => {
+      started[job.id] = Date.now();
+      return execute(job, ...rest);
+    };
+    h.jobs.admit({ id: 'run', threadKey: 'thread', payload: {} }, 1);
+    h.jobs.admit({ id: 'next', threadKey: 'thread', payload: {} }, 2);
+    await runThreadRunnerAlarm(h.deps);
+    assert.deepEqual(acks, [{ acknowledged: true, wake: true }, true, 'owed'],
+      'the stop RPC answers after a short wait while its abort is still out');
+    assert.deepEqual(h.events, ['dispatch:run', 'delivered:run', 'dispatch:next', 'delivered:next']);
+    assert.ok(started.next! - stoppedAt >= 35, 'the next turn waited for the abort...');
+    assert.ok(started.next! - stoppedAt < 1_000, '...only as long as its bound');
+    const marker = h.jobs.stopMarker('run')!;
+    assert.deepEqual([marker.abort, marker.abortAttempts], ['none', 1],
+      'the failed attempt counts; the run settled, so nothing is owed any more');
+    assert.equal(host.aborts.length, 1);
+  } finally { db.close(); }
+});
+
+test('a stop whose submission the state store saw settle is not live, even on a runner that lost what it noted', async () => {
+  const db = openStateDb(':memory:');
+  try {
+    const jobs = new ThreadRunnerJobStore(db);
+    const host = fakeFlueHost();
+    const cascades: string[] = [];
+    const stops = () => new RunnerStops({
+      jobs,
+      abortHost: host.abortHost,
+      stopCodingTasks: async (notice) => {
+        cascades.push(notice.turnJobId);
+        return { recordsRead: true, allSettled: true, tasks: [] };
+      },
+    });
+    // Evicted after its settlement was recorded, before its terminal: still `running` here.
+    jobs.admit({ id: 'finished', threadKey: 'thread', payload: {} }, 1);
+    jobs.markRunning('finished');
+    const fresh = stops();
+    assert.deepEqual(await fresh.receive({ ...stopNotice('finished'), settled: 'completed' }),
+      { acknowledged: true, wake: false });
+    const marker = jobs.stopMarker('finished')!;
+    assert.deepEqual([marker.abort, marker.cascade, marker.notice?.settled], ['none', 'none', 'completed']);
+    await fresh.followUp();
+    assert.deepEqual(host.aborts, [], 'a settled submission is never aborted');
+
+    // A stop taken before the settlement, its abort unconfirmed; a later
+    // notice carries the settlement to a new instance.
+    jobs.admit({ id: 'owed', threadKey: 'thread', payload: {} }, 2);
+    jobs.markRunning('owed');
+    host.failNextAborts(1);
+    assert.deepEqual(await stops().receive(stopNotice('owed')), { acknowledged: true, wake: true });
+    assert.equal(jobs.stopMarker('owed')!.abort, 'owed');
+    const evicted = stops();
+    assert.deepEqual(await evicted.receive({ ...stopNotice('owed'), settled: 'completed' }),
+      { acknowledged: true, wake: false });
+    assert.deepEqual([jobs.stopMarker('owed')!.abort, jobs.stopMarker('owed')!.cascade], ['none', 'none']);
+    await evicted.followUp();
+    assert.equal(host.aborts.length, 1, 'only the first, failed request');
+
+    // An aborted settlement: the abort took effect, so its coding cascade runs.
+    jobs.admit({ id: 'aborted', threadKey: 'thread', payload: {} }, 3);
+    jobs.markRunning('aborted');
+    host.failNextAborts(1);
+    await stops().receive(stopNotice('aborted'));
+    const later = stops();
+    assert.deepEqual(await later.receive({ ...stopNotice('aborted'), settled: 'aborted' }),
+      { acknowledged: true, wake: true });
+    assert.equal(jobs.stopMarker('aborted')!.abort, 'done');
+    await later.followUp();
+    await later.drain();
+    assert.deepEqual(cascades, ['aborted']);
+    assert.equal(host.aborts.length, 2);
+  } finally { db.close(); }
+});
+
+test("the stop outbox tells a runner whose turn's submission settled, so no settled run is aborted", () => {
+  const db = openStateDb(':memory:');
+  try {
+    const turns = new TurnJobStoreLogic(db, () => NOW);
+    const fixture = turnJob('head');
+    const head = {
+      ...fixture,
+      assignment: { ...fixture.assignment, model: 'local-stub/stop', runtimeContract: 'chickpea-v1', ownerIncarnation: 1 },
+    } as typeof fixture;
+    turns.enqueue(head);
+    turns.freezeRuntimePlan('head', compileRuntimePlanV2({
+      turn: head.turn, assignment: head.assignment, instructions: 'Help.', memoryEpoch: 1,
+    }));
+    turns.prepareFlueDispatch('head', 'Do the work', { generation: 'head' });
+    turns.recordFlueReceipt('head', {
+      submissionId: 'sub_head', acceptedAt: new Date(NOW).toISOString(), uid: 'inst_01ARZ3NDEKTSV4RRFFQ69G5FAV',
+    });
+    turns.assignRunner('head');
+    turns.confirmRunner('head');
+    assert.equal(turns.steer({
+      kind: 'stop', threadKey: turnStopThreadKey(head.turn, head.assignment), source: 'button',
+      stopperUserId: 'U_STOPPER', cutoffTs: '1800000000.999999',
+    }).outcome, 'stopped');
+    const [unsettled] = turns.listDueStopNotices(NOW);
+    assert.equal(unsettled?.submissionId, 'sub_head');
+    assert.equal('settled' in unsettled!, false, 'an unsettled submission carries no settlement');
+    turns.recordFlueSettlement('head', {
+      outcome: 'completed', settledAt: NOW,
+      result: {
+        text: 'Done.', requestedModel: null, returnedModel: null, reportedUsage: null,
+        usageCompleteness: 'not_reported',
+      },
+    });
+    assert.equal(turns.listDueStopNotices(NOW)[0]?.settled, 'completed');
+  } finally { db.close(); }
+});
+
+test("the runner reads a stop from the state store's row when its notice has not reached the runner (R22)", async () => {
+  const db = openStateDb(':memory:');
+  try {
+    const rows = fakeRows(['local', 'remote', 'none']);
+    const jobs = new ThreadRunnerJobStore(db);
+    rows.rows.get('remote')!.stop = STOP_RECORD;
+    jobs.recordStop(stopNotice('local'), { abort: 'none', cascade: 'none' }, NOW);
+    rows.calls.length = 0;
+    assert.equal(await runnerStopRecorded(jobs, rows.turns, 'local'), true);
+    assert.deepEqual(rows.calls, [], 'a stop the runner took needs no round trip');
+    assert.equal(await runnerStopRecorded(jobs, rows.turns, 'remote'), true,
+      'its notice is still in the outbox (a retry backoff, an older runner during a rollout)');
+    assert.equal(await runnerStopRecorded(jobs, rows.turns, 'none'), false);
+    rows.rows.get('none')!.stop = { schemaVersion: 1, role: 'held', headId: 'remote', at: NOW };
+    assert.equal(await runnerStopRecorded(jobs, rows.turns, 'none'), false, 'a held row is not a stopped run');
+  } finally { db.close(); }
+});
+
+test("the runner's R22 read of the state store is bounded, so a hung store never holds delivery open", async () => {
+  const db = openStateDb(':memory:');
+  try {
+    const jobs = new ThreadRunnerJobStore(db);
+    // The read sits between the posted final and the runner's delivery
+    // tombstone: a state store that never answers must not keep that open.
+    const hung = { view: () => new Promise<never>(() => {}) };
+    const started = Date.now();
+    await assert.rejects(runnerStopRecorded(jobs, hung as never, 'remote', 20));
+    assert.ok(Date.now() - started < 1_000, 'rejects at the bound, and the caller reads that as no stop');
+  } finally { db.close(); }
+});
+
+test('a runner turn whose stop never reached the runner still tells the stopper its run had finished (R22)', async () => {
+  const db = openStateDb(':memory:');
+  try {
+    const rows = fakeRows(['run']);
+    const host = fakeFlueHost();
+    let h!: ReturnType<typeof runnerHarness>;
+    h = runnerHarness(db, rows, {
+      host,
+      hold: () => true,
+      stops: { abortHost: host.abortHost },
+      stopRecorded: true,
+      onObserving: () => { setTimeout(() => host.complete('submission_run'), 2); },
+      // The stop is recorded while the answer is delivered; its notice waits in the outbox.
+      onSettled: async (id) => { rows.rows.get(id)!.stop = STOP_RECORD; },
+    });
+    h.deps.budgetMs = 60_000;
+    h.deps.hardCapMs = 120_000;
+    h.jobs.admit({ id: 'run', threadKey: 'thread', payload: {} }, 1);
+    await runThreadRunnerAlarm(h.deps);
+    assert.deepEqual(h.events, ['dispatch:run', 'delivered:run']);
+    assert.equal(h.jobs.stopMarker('run')?.notice, undefined, 'the runner never took the stop');
+    assert.deepEqual(h.ephemerals.map((post) => [post.user, post.text]), [['U_STOPPER', STOP_ALREADY_FINISHED_TEXT]]);
+    assert.deepEqual(rows.calls.filter((call) => call.startsWith('finishStop')), ['finishStop:run:released']);
+  } finally { db.close(); }
+});
+
+test('a thread waits for a stop abort in flight on a multi-thread executor, never past its bound, and other threads never wait', async () => {
+  const fence = new StopAbortFence(30);
+  let landed!: () => void;
+  const order: string[] = [];
+  const first = fence.run('thread-a', async () => {
+    await new Promise<void>((resolve) => { landed = resolve; });
+    order.push('abort landed');
+    return true;
+  });
+  await fence.clear('thread-b');
+  order.push('thread-b runs');
+  const waiting = fence.clear('thread-a').then(() => { order.push('thread-a runs'); });
+  await tick(5);
+  landed();
+  assert.equal(await first, true);
+  await waiting;
+  assert.deepEqual(order, ['thread-b runs', 'abort landed', 'thread-a runs']);
+
+  // An abort that never answers rejects after the bound, and releases the thread.
+  const hung = fence.run('thread-a', () => new Promise<never>(() => {}));
+  const startedAt = Date.now();
+  await fence.clear('thread-a');
+  assert.ok(Date.now() - startedAt >= 25);
+  await assert.rejects(hung);
+});
+
+test('the alarm executor reads its row again after the abort: a submission that settled meanwhile owes nothing more', async () => {
+  const aborts: unknown[] = [];
+  const job = (fields: Partial<PendingTurnJob> = {}) => ({
+    ...turnJob('alarm-row'), executionAuthority: 'legacy', attempts: 1, progress: {}, stop: STOP_RECORD, ...fields,
+  } as PendingTurnJob);
+  const envelope = { instanceId: 'agent', uid: null } as never;
+  const receipt = { submissionId: 'submission_1', acceptedAt: new Date(NOW).toISOString(), uid: 'uid_agent' };
+  // A receipt-less dispatch settled while the request was out: acknowledged.
+  assert.equal(await receiveAlarmExecutorStop(
+    { status: 'pending', executor: 'alarm', job: job({ dispatchEnvelope: envelope }) },
+    async (target) => { aborts.push(target); },
+    () => ({
+      status: 'pending', executor: 'alarm',
+      job: job({ dispatchEnvelope: envelope, dispatchReceipt: receipt, flueSettlement: { outcome: 'completed' } as never }),
+    }),
+  ), true);
+  // A receipt recorded while the request was out may name a submission the
+  // abort preceded: the notice stays owed, so the abort is repeated.
+  assert.equal(await receiveAlarmExecutorStop(
+    { status: 'pending', executor: 'alarm', job: job({ dispatchEnvelope: envelope }) },
+    async (target) => { aborts.push(target); },
+    async () => ({
+      status: 'pending', executor: 'alarm', job: job({ dispatchEnvelope: envelope, dispatchReceipt: receipt }),
+    }),
+  ), false);
+  assert.equal(aborts.length, 2);
+});
+
+test('the coding cascade runs after the host abort, once, and its first report is kept for the stop note', async () => {
+  const db = openStateDb(':memory:');
+  try {
+    const rows = fakeRows(['run']);
+    const host = fakeFlueHost();
+    const report: CodingTaskStopReport = {
+      recordsRead: true,
+      allSettled: false,
+      tasks: [{
+        taskKey: 'workspace_task:call-1', toolCallId: 'call-1', workspace: 'default',
+        workspaceId: 'ws-1', instanceId: 'worker-1', submissionId: 'worker-sub-1',
+        confirmed: false, outcome: 'unconfirmed',
+      }],
+    };
+    const cascades: TurnStopNotice[] = [];
+    let release!: () => void;
+    const slow = new Promise<void>((resolve) => { release = resolve; });
+    const noted: Array<CodingTaskStopReport | undefined> = [];
+    let h!: ReturnType<typeof runnerHarness>;
+    h = runnerHarness(db, rows, {
+      host,
+      hold: () => true,
+      stops: {
+        abortHost: host.abortHost,
+        stopCodingTasks: async (notice) => {
+          host.events.push('cascade');
+          cascades.push(notice);
+          await slow;
+          return report;
+        },
+      },
+      onObserving: (id) => {
+        rows.rows.get(id)!.stop = STOP_RECORD;
+        setTimeout(() => void h.stops.receive(stopNotice(id)), 2);
+      },
+      // U3's stopped ending asks for the report before its stop note.
+      onSettled: async (id) => {
+        setTimeout(release, 5);
+        noted.push(await h.stops.codingReport(id));
+      },
+    });
+    h.deps.budgetMs = 60_000;
+    h.deps.hardCapMs = 120_000;
+    h.jobs.admit({ id: 'run', threadKey: 'thread', payload: {} }, 1);
+    await runThreadRunnerAlarm(h.deps);
+    assert.deepEqual(host.events, ['abort', 'cascade'], 'the workers are stopped after the host');
+    assert.equal(cascades.length, 1);
+    assert.deepEqual([cascades[0]!.turnJobId, cascades[0]!.runnerKey], ['run', 'thread'],
+      'the cascade reads the host turn\'s records on the thread\'s Sandbox');
+    assert.deepEqual(noted, [report]);
+    assert.deepEqual(h.jobs.stopMarker('run')!.codingReport, report);
+    assert.equal(h.jobs.stopMarker('run')!.cascade, 'done');
+
+    // A redelivered stop never runs it again; the first report stands.
+    await h.stops.receive(stopNotice('run'));
+    await runThreadRunnerAlarm(h.deps);
+    assert.equal(cascades.length, 1);
+    assert.deepEqual(await h.stops.codingReport('run'), report);
+  } finally { db.close(); }
+});
+
+test('a cascade still owed when its alarm ends is run by the next one, and a failed one is retried', async () => {
+  const db = openStateDb(':memory:');
+  try {
+    const jobs = new ThreadRunnerJobStore(db);
+    const host = fakeFlueHost();
+    let fail = true;
+    let runs = 0;
+    const stops = new RunnerStops({
+      jobs,
+      abortHost: host.abortHost,
+      stopCodingTasks: async () => {
+        runs += 1;
+        if (fail) throw new Error('sandbox unavailable');
+        return { recordsRead: true, allSettled: true, tasks: [] };
+      },
+    });
+    jobs.admit({ id: 'long', threadKey: 'thread', payload: {} }, 1);
+    jobs.settle('long', 'yielded', Date.now(), Date.now() + 1_000);
+    assert.deepEqual(await stops.receive(stopNotice('long')), { acknowledged: true, wake: true });
+    assert.equal(runs, 0, 'the RPC never runs the cascade itself');
+    await stops.followUp();
+    await stops.drain();
+    assert.equal(runs, 1);
+    assert.equal(jobs.stopMarker('long')!.cascade, 'owed', 'a failed cascade stays owed');
+    assert.ok(stops.nextRetryAt(1_000) !== undefined);
+    fail = false;
+    await stops.followUp();
+    await stops.drain();
+    assert.equal(runs, 2);
+    assert.deepEqual(jobs.stopMarker('long')!.codingReport, { recordsRead: true, allSettled: true, tasks: [] });
+    assert.equal(stops.nextRetryAt(1_000), undefined);
+  } finally { db.close(); }
+});
+
+test("the runner alarm record counts turns a stopped ending dropped, once however often it replays", async () => {
+  const db = openStateDb(':memory:');
+  try {
+    const rows = fakeRows([]);
+    const h = runnerHarness(db, rows);
+    const finish = {
+      outcome: 'dropped' as const, count: 2, rows: [], record: { ...STOP_RECORD, ending: { outcome: 'dropped' as const, count: 2, at: NOW } },
+    };
+    const port = runnerTurnJobsPort({
+      finishStop: async () => finish,
+    } as unknown as TurnExecutionPorts['turnJobs'], h.jobs);
+    assert.deepEqual(await port.finishStop('head', 'dropped'), finish);
+    await port.finishStop('head', 'dropped');
+    const first = await runThreadRunnerAlarm(h.deps);
+    assert.equal(first.record.dropped, 2);
+    const logged = h.records.map((line) => JSON.parse(line) as Record<string, unknown>)
+      .filter((record) => record.event === 'thread_runner_alarm');
+    assert.equal(logged[0]!.dropped, 2, 'content-free: a count only');
+    const second = await runThreadRunnerAlarm(h.deps);
+    assert.equal(second.record.dropped, 0);
+  } finally { db.close(); }
+});
+
+test('the alarm executor aborts a stopped turn in-process from its row, only while its submission is unsettled', async () => {
+  const aborts: unknown[] = [];
+  const abort = async (target: unknown) => { aborts.push(target); };
+  const job = (fields: Partial<PendingTurnJob> = {}) => ({
+    ...turnJob('alarm-row'), executionAuthority: 'legacy', attempts: 1, progress: {}, stop: STOP_RECORD, ...fields,
+  } as PendingTurnJob);
+  const envelope = { instanceId: 'agent', uid: null } as never;
+  const receipt = { submissionId: 'submission_1', acceptedAt: new Date(NOW).toISOString(), uid: 'uid_agent' };
+  // Dispatched and unsettled: aborted with the receipt's incarnation, acknowledged.
+  assert.equal(await receiveAlarmExecutorStop(
+    { status: 'pending', executor: 'alarm', job: job({ dispatchEnvelope: envelope, dispatchReceipt: receipt }) },
+    abort,
+  ), true);
+  assert.deepEqual(aborts, [{ instanceId: 'agent', uid: 'uid_agent' }]);
+  // A dispatch whose receipt is not recorded yet: aborted, and left owed to repeat it.
+  assert.equal(await receiveAlarmExecutorStop(
+    { status: 'pending', executor: 'alarm', job: job({ dispatchEnvelope: envelope }) },
+    abort,
+  ), false);
+  assert.deepEqual(aborts.at(-1), { instanceId: 'agent' });
+  // Never dispatched, already settled in Flue, or delivered: nothing to abort.
+  for (const view of [
+    { status: 'pending', executor: 'alarm', job: job() },
+    {
+      status: 'pending', executor: 'alarm',
+      job: job({ dispatchEnvelope: envelope, dispatchReceipt: receipt, flueSettlement: { outcome: 'completed' } as never }),
+    },
+    { status: 'done', executor: 'alarm' },
+  ] as RunnerTurnJobView[]) {
+    assert.equal(await receiveAlarmExecutorStop(view, abort), true);
+  }
+  assert.equal(aborts.length, 2);
+  // A row a runner took over: its runner takes the next delivery.
+  assert.equal(await receiveAlarmExecutorStop({ status: 'pending', executor: 'runner', job: job() }, abort), false);
+  // A failed abort rejects, so the outbox retries it.
+  await assert.rejects(receiveAlarmExecutorStop(
+    { status: 'pending', executor: 'alarm', job: job({ dispatchEnvelope: envelope, dispatchReceipt: receipt }) },
+    async () => { throw new Error('abort request failed'); },
+  ));
+});
+
+test("a stop's abort builds the coordinator handle from the dispatch envelope's instance id and uid", async () => {
+  const handles: unknown[] = [];
+  let aborted = 0;
+  await abortSlackThreadAgent({ instanceId: 'agent', uid: 'uid_agent' }, (target) => {
+    handles.push(target);
+    return { abort: async () => { aborted += 1; } };
+  });
+  assert.deepEqual(handles, [{ instanceId: 'agent', uid: 'uid_agent' }]);
+  assert.equal(aborted, 1);
+});
+
+test('a malformed stop notice is refused and never persisted', async () => {
+  const db = openStateDb(':memory:');
+  try {
+    const jobs = new ThreadRunnerJobStore(db);
+    const stops = new RunnerStops({ jobs, abortHost: async () => { throw new Error('never'); } });
+    for (const notice of [
+      { ...stopNotice('x'), turnJobId: '' },
+      { ...stopNotice('x'), record: { ...STOP_RECORD, role: 'held' } },
+      null,
+    ]) {
+      assert.deepEqual(await stops.receive(notice as never), { acknowledged: false, wake: false });
+    }
+    assert.equal(jobs.stopMarker('x'), undefined);
   } finally { db.close(); }
 });

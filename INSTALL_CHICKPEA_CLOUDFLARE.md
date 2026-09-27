@@ -368,6 +368,10 @@ the Events URL after credential adoption, and complete Owner sign-in. Keep
 credentials in the intended forms. On an ambiguous app-creation result, inspect
 the user's apps and adopt the matching one instead of creating a duplicate.
 Do not switch to this route merely because a shared-app callback is slow.
+An app created from this release's manifest already subscribes to
+`agent_session_stopped`, which lets people stop a run with Slack's **Stop**
+button. An adopted app created earlier works without it; to add the button,
+follow [Slack's Stop button](SETUP_AGENT.md#slacks-stop-button).
 
 ## 5. Choose the provider and model
 

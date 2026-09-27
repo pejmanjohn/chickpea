@@ -126,7 +126,27 @@ export interface SlackUserChangeEvent {
   };
 }
 
+/**
+ * Someone pressed Stop on an Agent Session's working indicator (sent only to
+ * apps subscribed to it). Slack does not move the session out of
+ * `processing`: the app does, once its work has stopped. Parsed defensively
+ * (`parseSlackAgentSessionStopped`); every field may be absent or malformed.
+ */
+export interface SlackAgentSessionStoppedEvent {
+  type: 'agent_session_stopped';
+  /** The person who pressed Stop. */
+  user: string;
+  channel: string;
+  /** The Agent Session's thread. */
+  thread_ts: string;
+  /** When Stop was pressed: the stop's cutoff (KTD2). */
+  event_ts: string;
+  /** Streams Slack halted; empty when none was active. */
+  streaming_message_ts?: string[];
+}
+
 export type SlackEvent =
+  | SlackAgentSessionStoppedEvent
   | SlackAppMentionEvent
   | SlackMessageEvent
   | SlackAppHomeOpenedEvent
@@ -244,6 +264,42 @@ export function isSlackAppMentionEvent(event: SlackEvent): event is SlackAppMent
 
 export function isSlackMessageEvent(event: SlackEvent): event is SlackMessageEvent {
   return event.type === 'message';
+}
+
+/** A Stop button press whose every field is usable (KTD5). */
+export interface SlackStopButtonPress {
+  userId: string;
+  channelId: string;
+  threadTs: string;
+  /** The stop's cutoff: posted before it means held by the stop. */
+  eventTs: string;
+}
+
+const SLACK_EVENT_ID = /^[A-Z0-9]{2,64}$/;
+const SLACK_EVENT_TS = /^\d{1,12}\.\d{1,9}$/;
+
+/**
+ * A Slack message or event timestamp of the exact shape a stop's cutoff and
+ * the rows it is compared with need (KTD2): seconds, a dot, a fraction.
+ */
+export function validSlackTs(value: unknown): value is string {
+  return typeof value === 'string' && SLACK_EVENT_TS.test(value);
+}
+
+/**
+ * Read an `agent_session_stopped` event defensively: Slack documents
+ * `user`, `channel`, `thread_ts` and `event_ts`, and a press missing any of
+ * them (or carrying an unexpected shape) cannot be tied to a run.
+ */
+export function parseSlackAgentSessionStopped(event: unknown): SlackStopButtonPress | undefined {
+  if (!event || typeof event !== 'object' || Array.isArray(event)) return undefined;
+  const value = event as Record<string, unknown>;
+  if (value.type !== 'agent_session_stopped') return undefined;
+  const { user, channel, thread_ts: threadTs, event_ts: eventTs } = value;
+  if (typeof user !== 'string' || !SLACK_EVENT_ID.test(user)) return undefined;
+  if (typeof channel !== 'string' || !SLACK_EVENT_ID.test(channel)) return undefined;
+  if (!validSlackTs(threadTs) || !validSlackTs(eventTs)) return undefined;
+  return { userId: user, channelId: channel, threadTs, eventTs };
 }
 
 export function isSlackMemberJoinedChannelEvent(

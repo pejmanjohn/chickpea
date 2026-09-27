@@ -60,6 +60,29 @@ If an Agent was already saved with a permission error, return to it and select
 by selecting its real `@handle` in Slack's mention picker and observing a
 threaded reply in a channel attached to that Agent.
 
+## Slack's Stop button
+
+While an Agent works, Slack can show a **Stop** button on the thread's working
+indicator. Pressing it stops the run, the same as replying `stop` in the
+thread, and only people who can use that Agent there can stop it. Slack shows
+the button only to apps subscribed to the `agent_session_stopped` bot event.
+
+A customer-owned app created from this release's manifest is already
+subscribed. An app created earlier keeps working without it: setup and
+recovery still pass, and people stop a run by replying `stop` (or `cancel`)
+in its thread. To add the button to such an app, including a local Worker
+lane's own app:
+
+1. Open [api.slack.com/apps](https://api.slack.com/apps) and select the app.
+2. Go to **Event Subscriptions**, open **Subscribe to bot events**, and choose
+   **Add Bot User Event**.
+3. Add `agent_session_stopped`, then **Save Changes**.
+
+The event needs only the `chat:write` permission the app already has, so no
+new permission is requested. Credential recovery never adds the event: it
+keeps the app's subscriptions as they are. Installations on the shared
+Chickpea app get the button when its maintainer subscribes that app.
+
 ## Recovery
 
 If credential key material or the installed Slack app credentials are lost, use the hidden scoped recovery flow in [docs/runbooks/slack-auth-recovery.md](docs/runbooks/slack-auth-recovery.md). It can repair only the unchanged app and workspace. It cannot create an Owner, grant a role, or sign anyone in.

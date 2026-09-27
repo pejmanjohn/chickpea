@@ -1,7 +1,8 @@
 import type { WorkStoreLogic } from '../work/store.ts';
 import type { SlackCanonicalAdmissionInput, SlackStateStore, SlackStateLogic } from './claim-store.ts';
-import { MAX_TURN_DRAIN_BATCH, type TurnJobStoreLogic } from './turn-jobs.ts';
+import { deliverDueStopNotices, MAX_TURN_DRAIN_BATCH, type TurnJobStoreLogic } from './turn-jobs.ts';
 import type { SlackRunPresentationStoreLogic } from './run-presentations.ts';
+import { defaultSlackStatusRegistry } from './status-registry.ts';
 import type { UiSurfaceStoreLogic } from './ui/surface-store.ts';
 
 /**
@@ -30,6 +31,13 @@ export function localSlackStateStore(input: {
     admitCanonical: async (admission: SlackCanonicalAdmissionInput) =>
       slack.admitCanonical(admission, work, turnJobs, presentations, uiSurfaces),
     enqueueTurn: async (job) => turnJobs.enqueue(job),
+    steerTurn: async (request, enqueue) => turnJobs.steer(request, enqueue),
+    finishTurnStop: async (headId, outcome) =>
+      slack.finishTurnStop(headId, outcome, turnJobs, work, presentations),
+    runningDirectThreads: async (query) => turnJobs.runningDirectThreadKeys(query),
+    // This process's executor (the Node relay, or the state store's alarm)
+    // registers its turns' status here, so their run facts live here too.
+    runFacts: async (turnJobId) => defaultSlackStatusRegistry.runFactsView(turnJobId),
     resumeTurnAfterOAuth: async (originalTaskId, continuationId) =>
       turnJobs.resumeAfterOAuth(originalTaskId, continuationId),
     pinAgentBinding: async (binding, expected) => turnJobs.pinAgentBinding(binding, expected),
@@ -39,6 +47,12 @@ export function localSlackStateStore(input: {
     countPendingDeliveriesForWorkspace: async (workspaceId) =>
       turnJobs.countPendingDeliveriesForWorkspace(workspaceId),
     listPendingTurns: async () => turnJobs.listPending(MAX_TURN_DRAIN_BATCH),
+    turnJobView: async (id) => turnJobs.runnerView(id),
+    // Plain statements around the receiver: no transaction is held across it.
+    deliverStopNotices: async (receive) => {
+      await deliverDueStopNotices({ turnJobs, receiver: receive });
+      return turnJobs.nextStopNoticeDueAt();
+    },
     getPendingTurnByRunId: async (runId) => turnJobs.getPendingByRunId(runId),
     freezeRuntimePlan: async (id, candidate) => turnJobs.freezeRuntimePlan(id, candidate),
     prepareFlueDispatch: async (id, message, observation, threadImages, admittedListIds, turnEnvelope) =>

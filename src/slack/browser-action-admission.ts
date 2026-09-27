@@ -1,6 +1,10 @@
 import { resolveBrowserActionReply } from '../browser/actions.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
+import {
+  stripResolvedSlackCommandAddress,
+  type SlackCommandAddress,
+} from './command-address.ts';
 import { slackBrowserActionReply } from './interaction-intent.ts';
 import { conversationThreadTs } from './thread-key.ts';
 import type { NormalizedSlackTurn } from './types.ts';
@@ -11,16 +15,22 @@ import type { NormalizedSlackTurn } from './types.ts';
  * match the pending action is answered, an approval is stamped onto the turn
  * (bound to this message), and the turn is marked to reach the Agent, which
  * reads the reply. Returns the answered action, or undefined when the reply
- * answered nothing.
+ * answered nothing. Admission asks this before it treats a typed "stop" as a
+ * run stop: a "stop" that answers the sender's own pending step declines that
+ * step and the run continues (R21); any other stop phrase stops the run.
  */
 export async function admitSlackBrowserActionReply(input: {
   turn: NormalizedSlackTurn;
   assignment: Pick<ResolvedAssignment, 'agent' | 'runtimeContract'>;
   settings: SettingsStore;
   actorMembershipId?: string | undefined;
+  /** The routed Agent's handle and the base app, stripped like a stop phrase's (R2). */
+  address?: SlackCommandAddress;
   now?: number;
 }): Promise<{ kind: 'approved' | 'stopped'; id: string } | undefined> {
-  const word = slackBrowserActionReply(input.turn.text);
+  const word = slackBrowserActionReply(
+    stripResolvedSlackCommandAddress(input.turn.text, input.address),
+  );
   if (!word) return undefined;
   const { turn } = input;
   const answer = await resolveBrowserActionReply({

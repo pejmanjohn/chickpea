@@ -13,8 +13,14 @@ import {
 } from '../config/state-backend.ts';
 import type { SlackPublicContextEntryInput } from '../config/types.ts';
 import { tagStateStub, type StateRpcResult } from '../config/state-rpc.ts';
+import {
+  cloudflareCodingWorkerStopClient,
+  stopCodingTasks,
+  threadCodingTaskStopPorts,
+} from '../sandbox/coding-task-stop.ts';
 import { cloudflareSandboxOptionVariants } from '../sandbox/lifecycle.ts';
 import { reconnectingSandboxStub } from '../sandbox/reconnect.ts';
+import { sandboxThreadKey } from '../sandbox/thread-key.ts';
 import { DoSqlStateDb } from '../state/do-state-db.ts';
 import { createPlatformProductTelemetry } from '../telemetry/platform.ts';
 import {
@@ -24,6 +30,7 @@ import {
   verifySlackInstallationTurnAccess,
 } from './installation-execution.ts';
 import { resolveSlackPublicUrl } from './credentials.ts';
+import { abortSlackThreadAgent } from './flue-dispatch.ts';
 import { drainSlackPresentationRepairs } from './presentation-repair.ts';
 import {
   SlackPresentationStateError,
@@ -33,7 +40,7 @@ import {
   type SlackRunPresentation,
 } from './run-presentations.ts';
 import { repairSlackInteractionProgress, runTurn, sanitizeError } from './run-turn.ts';
-import { SlackStatusRegistry } from './status-registry.ts';
+import { SlackStatusRegistry, type SlackRunFactsView } from './status-registry.ts';
 import { ThreadRunnerJobStore, type ThreadRunnerJob, type ThreadRunnerStatus } from './thread-runner-jobs.ts';
 import {
   runnerLoopScheduler,
@@ -45,13 +52,14 @@ import {
   runnerTurnJobsPort,
   runThreadRunnerAlarm,
 } from './thread-runner-loop.ts';
+import { RunnerStops, runnerStopRecorded } from './runner-stops.ts';
 import type {
   RunnerTurnBegin,
   SlackThreadRunnerRpc,
   ThreadRunnerJobPayload,
 } from './thread-runner-rpc.ts';
 import { executeTurnJob, type SandboxTurnReader, type TurnExecutionPorts } from './turn-executor.ts';
-import type { FlueObservationTarget } from './turn-job-types.ts';
+import type { FlueObservationTarget, TurnStopNotice } from './turn-job-types.ts';
 import { MAX_TURN_DRAIN_BATCH } from './turn-jobs.ts';
 
 /** The coding Sandbox readers of one thread (identical for both executors). */
@@ -83,7 +91,13 @@ export function sandboxTurnReaders(env: PlatformEnv): TurnExecutionPorts['sandbo
 export class SlackThreadRunner extends DurableObject implements SlackThreadRunnerRpc {
   private jobs: ThreadRunnerJobStore | undefined;
   private presentations: SlackRunPresentationStoreLogic | undefined;
-  private readonly registry = new SlackStatusRegistry();
+  /** Its turns' live status; run facts outlive an eviction in this object's storage. */
+  private readonly registry = new SlackStatusRegistry({
+    runFacts: {
+      load: (id) => this.store().runFacts(id),
+      save: (id, facts) => this.store().saveRunFacts(id, facts),
+    },
+  });
   /** Jobs an alarm returned without at its hard cap, still running here. */
   private readonly carried = new Map<string, Promise<void>>();
   /** Wakes a running alarm's drain when a job is admitted. */
@@ -94,6 +108,8 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
   private readonly failures = { count: 0 };
   /** Whether a code update replaced this instance's version (see RunnerSupersedeState). */
   private readonly supersede: RunnerSupersedeState = createRunnerSupersedeState();
+  /** The stops of this runner's turns (see RunnerStops). */
+  private stopHandling: RunnerStops | undefined;
   /** Runs the loop, one at a time, from the alarm or an admission. */
   private readonly runSoon = runnerLoopScheduler({
     runOnce: () => this.runAlarm(),
@@ -106,10 +122,11 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
   constructor(...args: ConstructorParameters<typeof DurableObject>) {
     super(...args);
     // A job still marked running means the previous instance stopped mid-turn
-    // (a code update, an eviction): resume now, not at the next backstop.
+    // (a code update, an eviction): resume now, not at the next backstop. So
+    // does a stop whose abort or coding cascade is still owed.
     void this.ctx.blockConcurrencyWhile(async () => {
       try {
-        if (!this.store().hasRunning()) return;
+        if (!this.store().hasRunning() && !this.store().hasOwedStops()) return;
         const existing = await this.ctx.storage.getAlarm();
         if (existing === null || existing > Date.now()) await this.ctx.storage.setAlarm(Date.now());
       } catch {
@@ -121,6 +138,30 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
   private store(): ThreadRunnerJobStore {
     this.jobs ??= new ThreadRunnerJobStore(new DoSqlStateDb(this.ctx.storage));
     return this.jobs;
+  }
+
+  /**
+   * This runner's stops: the host abort goes to the turn's Flue coordinator
+   * instance, and the coding cascade to the coding workers its task records
+   * name (none where no Sandbox binding exists, so no coding job can).
+   */
+  private stops(): RunnerStops {
+    const env = this.env as PlatformEnv;
+    this.stopHandling ??= new RunnerStops({
+      jobs: this.store(),
+      abortHost: (target) => abortSlackThreadAgent(target),
+      ...(env.SANDBOX ?? env.Sandbox
+        ? {
+            stopCodingTasks: (notice: TurnStopNotice) => stopCodingTasks(threadCodingTaskStopPorts({
+              sandboxes: sandboxTurnReaders(env),
+              threadSandboxKey: sandboxThreadKey(notice.runnerKey),
+              hostTurnId: notice.turnJobId,
+              workers: cloudflareCodingWorkerStopClient(env),
+            })),
+          }
+        : {}),
+    });
+    return this.stopHandling;
   }
 
   private presentationStore(): SlackRunPresentationStoreLogic {
@@ -150,6 +191,33 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
     const existing = await this.ctx.storage.getAlarm();
     if (existing === null || existing > Date.now()) await this.ctx.storage.setAlarm(Date.now());
     return result;
+  }
+
+  /**
+   * A stop of one of this runner's turns, from the state store's stop outbox
+   * (KTD2). The stop is persisted and the turn's Flue instance aborted here
+   * (a single request, while its submission is unsettled, whose answer the
+   * RPC awaits for a short bound only); the turn is never unwound and its
+   * observation is never touched: the running alarm's live observation
+   * reads the `aborted` settlement. Everything else (a repeated abort, the
+   * coding cascade, the stopped path of a turn between alarms or not yet
+   * dispatched) runs in this object's alarm, made due now as `admit` does,
+   * so the outbox is never held for the up to 14 s a coding cascade can take.
+   */
+  async stop(notice: TurnStopNotice): Promise<{ acknowledged: boolean }> {
+    let taken: { acknowledged: boolean; wake: boolean };
+    try {
+      taken = await this.stops().receive(notice);
+    } catch {
+      console.warn('[chickpea] thread runner could not take a stop yet');
+      return { acknowledged: false };
+    }
+    if (taken.wake) {
+      this.wake?.();
+      const existing = await this.ctx.storage.getAlarm();
+      if (existing === null || existing > Date.now()) await this.ctx.storage.setAlarm(Date.now());
+    }
+    return { acknowledged: taken.acknowledged };
   }
 
   async status(): Promise<ThreadRunnerStatus> {
@@ -185,6 +253,23 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
       // A dropped status update never fails a turn.
     }
     return { ok: true, value: null };
+  }
+
+  /**
+   * The run facts of one of this runner's turns, for a check-in answered at
+   * admission (KTD8): its live status turn's, or those saved here before an
+   * eviction. Reading them never touches the run. Null when the turn has not
+   * started here.
+   */
+  async runFacts(turnJobId: string): Promise<StateRpcResult<SlackRunFactsView | null>> {
+    try {
+      return { ok: true, value: this.registry.runFactsView(turnJobId) ?? null };
+    } catch (error) {
+      return {
+        ok: false,
+        error: { code: 'internal', message: error instanceof Error ? error.message : String(error) },
+      };
+    }
   }
 
   async presentationGet(runId: string): Promise<StateRpcResult<SlackRunPresentation | null>> {
@@ -254,7 +339,7 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
     };
     const ports: TurnExecutionPorts = {
       env,
-      turnJobs: runnerTurnJobsPort(rows, jobs),
+      turnJobs: runnerTurnJobsPort(rows, jobs, Date.now, this.stops()),
       slack: runnerSlackPort({
         setActiveWork: (key, generation, active) => rows.setActiveWork(key, generation, active),
         markCodingActiveWork: (key, generation) => rows.markCodingActiveWork(key, generation),
@@ -294,6 +379,10 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
           control,
           onRetry,
           ...(publicUrl === undefined ? {} : { publicUrl }),
+          // A stopped turn's note reports its coding workers' confirmation.
+          codingStopReport: () => this.stops().codingReport(job.id),
+          // R22: a stop this runner took, else one its notice has not brought yet.
+          stopRecorded: () => runnerStopRecorded(jobs, rows, job.id),
         });
       },
       repairInteraction: async (job) => {
@@ -313,6 +402,7 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
       clearActiveWork: (threadKey, jobId) => rows.setActiveWork(threadKey, jobId, false),
       failures: this.failures,
       supersede: this.supersede,
+      stops: this.stops(),
       ...(versionId ? { versionId } : {}),
       afterJob: async (job) => {
         this.targets.clear();

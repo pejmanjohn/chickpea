@@ -725,3 +725,59 @@ test('permanent unsupported Agent Session rejection becomes durably unavailable'
     db.close();
   }
 });
+
+test('a stop note terminal repairs like an answer: the session settles active, never suspended', async () => {
+  const db = openStateDb(':memory:');
+  try {
+    const store = new SlackRunPresentationStoreLogic(db, () => BASE_NOW);
+    const runId = 'run_stopped_terminal_repair';
+    let current = createV3(store, runId, root('STOPPED_TERMINAL'), 100);
+    current = advance(store, current, { kind: 'select_activity_projection', surface: 'assistant_status' });
+    current = advance(store, current, {
+      kind: 'record_activity_receipt', operationId: `activity_${runId}_1`, certainty: 'acknowledged',
+    });
+    current = advance(store, current, {
+      kind: 'set_agent_session_desired', desired: 'processing', operationId: `session_${runId}_processing`,
+    });
+    current = advance(store, current, {
+      kind: 'record_agent_session_receipt', operationId: `session_${runId}_processing`,
+      certainty: 'acknowledged', acknowledged: 'processing',
+    });
+    // The stop note reached Slack; the turn stopped before settling anything else.
+    current = advance(store, current, {
+      kind: 'record_terminal_delivery_intent', operationId: `terminal_${runId}_1`,
+      result: 'answer', reason: 'stopped',
+    });
+    current = advance(store, current, {
+      kind: 'record_terminal_delivery_receipt', operationId: `terminal_${runId}_1`, certainty: 'acknowledged',
+    });
+    assert.deepEqual(store.listAutoRepairableV3().map((presentation) => presentation.runId), [runId]);
+    const statuses: string[] = [];
+    const calls: string[] = [];
+    const client = repairClient({ calls });
+    (client as unknown as { apiCall: (method: string, input: Record<string, unknown>) => Promise<unknown> })
+      .apiCall = async (_method, input) => {
+        statuses.push(String(input.status));
+        return { ok: true };
+      };
+    await drainSlackPresentationRepairs({
+      presentations: store.listAutoRepairableV3(),
+      state: statePort(store),
+      now: () => BASE_NOW,
+      resolveClient: async () => client,
+      onFailure: (_presentation, error) => assert.fail(String(error)),
+    });
+    assert.deepEqual(statuses, ['active']);
+    const repaired = store.get(runId);
+    assert.equal(repaired?.schemaVersion, 3);
+    if (repaired?.schemaVersion !== 3 || repaired.terminalDelivery.state !== 'intended') {
+      assert.fail('expected the stopped terminal');
+    }
+    assert.equal(repaired.terminalDelivery.reason, 'stopped');
+    assert.equal(repaired.agentSession.acknowledged, 'active');
+    assert.equal(repaired.activityProjection.state, 'cleared');
+    assert.equal(repaired.repairRequired, false);
+  } finally {
+    db.close();
+  }
+});
