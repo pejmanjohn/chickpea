@@ -690,15 +690,34 @@ export function sanitizeSlackMarkdownLinks(markdown: string): string {
 // The `NAME = value` signatures allow any whitespace, newlines included,
 // around their `=`/`:` separator, so a newline after the marker does not end
 // them. A marker followed only by name characters, whitespace, the separator
-// and one unfinished value token can still become a redaction.
-const OPEN_CREDENTIAL_ASSIGNMENTS = credentialMarkerPatterns(String.raw`\w*["']?\s*(?:[=:]\s*\S*)?$`);
+// and one unfinished value token can still become a redaction. (Only the AWS
+// pair accepts `:`; one separator class for every marker merely holds more.)
+const OPEN_CREDENTIAL_ASSIGNMENT = credentialMarkerPattern(String.raw`\w*["']?\s*(?:[=:]\s*\S*)?$`);
 // A marker whose token, or assignment value, runs up to the end of the text.
-const CREDENTIALS_REACHING_END = credentialMarkerPatterns(String.raw`(?:\w*["']?\s*[=:]\s*)?\S*$`);
+const CREDENTIAL_REACHING_END = credentialMarkerPattern(String.raw`(?:\w*["']?\s*[=:]\s*)?\S*$`);
+const LONGEST_CREDENTIAL_MARKER = Math.max(...credentialMarkers().map((marker) => marker.length));
 
-function credentialMarkerPatterns(tail: string): RegExp[] {
-  return credentialMarkers().map(
-    (marker) => new RegExp(`${marker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}${tail}`, 'i'),
-  );
+function credentialMarkerPattern(tail: string): RegExp {
+  const markers = credentialMarkers().map((marker) => marker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  return new RegExp(`(?:${markers.join('|')})${tail}`, 'i');
+}
+
+// The earliest start of either pattern above matching up to `end`, or `end`.
+// Such a match is at most a value token, whitespace, the separator, more
+// whitespace, a quote, name characters and the marker, so only that window is
+// searched: rescanning the whole text once per streamed chunk, and again per
+// credential the loop below walks back over, made long replies quadratic.
+function earliestCredentialReaching(value: string, end: number, pattern: RegExp): number {
+  let from = end;
+  while (from > 0 && !/\s/.test(value[from - 1]!)) from -= 1;
+  while (from > 0 && /\s/.test(value[from - 1]!)) from -= 1;
+  from -= 1;
+  while (from > 0 && /\s/.test(value[from - 1]!)) from -= 1;
+  from -= 1;
+  while (from > 0 && /\w/.test(value[from - 1]!)) from -= 1;
+  from = Math.max(0, from - LONGEST_CREDENTIAL_MARKER);
+  const at = value.slice(from, end).search(pattern);
+  return at < 0 ? end : from + at;
 }
 
 function earliestUnsafeTail(value: string): number {
@@ -721,20 +740,8 @@ function earliestUnsafeTail(value: string): number {
       }
     }
   }
-  // Redaction starts at the first marker in a token (`xoxb-xoxb-…`,
-  // `xoxp-sk-proj-…`), whichever marker it is, so a hold inside a token moves
-  // back to that one.
-  if (unsafeFrom < value.length) {
-    let tokenStart = unsafeFrom;
-    while (tokenStart > 0 && !/\s/.test(value[tokenStart - 1]!)) tokenStart -= 1;
-    const token = lower.slice(tokenStart, unsafeFrom);
-    for (const marker of credentialMarkers()) {
-      const at = token.indexOf(marker.toLowerCase());
-      if (at >= 0) unsafeFrom = Math.min(unsafeFrom, tokenStart + at);
-    }
-  }
   // Hold an open assignment until its value token ends, even across a newline.
-  unsafeFrom = Math.min(unsafeFrom, earliestMatch(value, OPEN_CREDENTIAL_ASSIGNMENTS));
+  unsafeFrom = Math.min(unsafeFrom, earliestCredentialReaching(value, value.length, OPEN_CREDENTIAL_ASSIGNMENT));
 
   // A link or Slack `<...>` reference still being written sits on the last
   // line. Once a line ends, a `[` or `<` on it was literal text (a CDATA
@@ -769,24 +776,15 @@ function earliestUnsafeTail(value: string): number {
     unsafeFrom = Math.min(unsafeFrom, trailingLineStart);
   }
   // Any hold above can start inside an earlier credential token or assignment
-  // value (`OPENAI_API_KEY=\nxoxb-xoxb- …`, `SECRET=\nabcdefg[hij …`): the
-  // part before it would then stream as a piece too short to redact. Hold
-  // from that credential instead.
+  // value (`xoxb-xoxb-…`, `OPENAI_API_KEY=\nxoxb-xoxb- …`, `SECRET=\nabcdefg[hij
+  // …`): the part before it would then stream as a piece too short to
+  // redact. Hold from that credential instead, whichever marker it is.
   while (unsafeFrom < value.length) {
-    const outer = earliestMatch(value.slice(0, unsafeFrom), CREDENTIALS_REACHING_END);
+    const outer = earliestCredentialReaching(value, unsafeFrom, CREDENTIAL_REACHING_END);
     if (outer === unsafeFrom) break;
     unsafeFrom = outer;
   }
   return unsafeFrom;
-}
-
-function earliestMatch(value: string, patterns: readonly RegExp[]): number {
-  let earliest = value.length;
-  for (const pattern of patterns) {
-    const at = value.search(pattern);
-    if (at >= 0) earliest = Math.min(earliest, at);
-  }
-  return earliest;
 }
 
 function countToken(value: string, token: string): number {
