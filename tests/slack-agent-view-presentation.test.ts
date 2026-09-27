@@ -580,6 +580,67 @@ test('finalize delivers the whole unstreamed suffix once after early degradation
   }
 });
 
+test('a streamed answer withholds a partial broadcast mention and never sends a live one', async () => {
+  const h = harness({ schemaVersion: 3 });
+  try {
+    const relay = await prepareReceipt(h, {
+      instanceId: 'instance_broadcast',
+      receipt: { submissionId: 'submission_broadcast', acceptedAt: 'now', uid: 'uid' },
+      eligibility: { allowed: true, reason: 'safe_early_release' },
+    });
+    assert.ok(relay);
+    relay.onEvent({
+      type: 'message-started', conversationId: 'conversation',
+      submissionId: 'submission_broadcast', messageId: 'message_broadcast',
+      position: { batch: 1, index: 0 },
+    });
+    declareProgressiveIntent(relay, {
+      submissionId: 'submission_broadcast',
+      messageId: 'message_broadcast',
+    });
+    const delta = (text: string, batch: number) => relay.onEvent({
+      type: 'message-delta', conversationId: 'conversation', messageId: 'message_broadcast',
+      kind: 'text', delta: text, position: { batch, index: 0 },
+    });
+    delta('Heads up <!he', 4);
+    for (let turn = 0; turn < 100 && h.store.get(h.runId)?.stream.state !== 'streaming'; turn += 1) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    assert.equal(h.store.get(h.runId)?.stream.state, 'streaming');
+    const start = h.calls.find((call) => call.method === 'chat.startStream')!;
+    assert.equal(markdownChunkText(start.input), 'Heads up');
+
+    delta('re> and @ever', 5);
+    delta('yone: done.', 6);
+    relay.onEvent({
+      type: 'message-completed', conversationId: 'conversation', messageId: 'message_broadcast',
+      position: { batch: 7, index: 0 },
+    });
+    await relay.closeAndDrain();
+    await h.presentation.finalize(
+      'Heads up <!here> and @everyone: done.', 'markdown', 'complete', observer([]),
+    );
+    await h.presentation.markCanonicalFinalized();
+
+    const streamed = h.calls.filter((call) =>
+      ['chat.startStream', 'chat.appendStream', 'chat.stopStream'].includes(call.method));
+    assert.equal(streamed.at(-1)?.method, 'chat.stopStream');
+    for (const call of streamed) {
+      assert.doesNotMatch(
+        markdownChunkText(call.input),
+        /<!|(?<![\p{L}\p{N}_])@(?:here|channel|everyone)(?![\p{L}\p{N}_])/iu,
+      );
+    }
+    assert.equal(
+      streamed.map((call) => markdownChunkText(call.input)).join(''),
+      'Heads up @⁠here and @⁠everyone: done.',
+    );
+    assert.equal(h.store.get(h.runId)?.stream.state, 'finalized');
+  } finally {
+    h.db.close();
+  }
+});
+
 test('ordinary eligible answers start once, append ordered suffixes, and stop once', async () => {
   const h = harness({
     schemaVersion: 3,

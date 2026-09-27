@@ -31,7 +31,8 @@ import {
   type GatewayClientFrame,
   type GatewayAttachmentReadRequest,
   type GatewayAttachmentRepresentation,
-  type GatewayEventAck,
+  gatewayAdmissionOutcome,
+  type GatewayAdmissionResult,
   type GatewayInboundDelivery,
   type GatewayOperationRequest,
   type GatewayServerFrame,
@@ -1017,7 +1018,7 @@ export class GatewayDeploymentClient implements GatewayOperationClient {
 export type GatewaySessionEventHandler = (
   delivery: GatewayInboundDelivery,
   context: GatewayAdmissionContext,
-) => Promise<'accepted' | 'duplicate' | 'rejected'>;
+) => Promise<GatewayAdmissionResult>;
 
 /** One socket incarnation of a renewable logical session. */
 export class GatewayLogicalSession {
@@ -1096,7 +1097,8 @@ export class GatewayLogicalSession {
     }
     if (!this.ready) throw new Error('Gateway delivered an event before session authentication.');
     if (frame.kind !== 'event.deliver' && frame.kind !== 'interaction.agent_selected' &&
-        frame.kind !== 'interaction.channel_agent_add') {
+        frame.kind !== 'interaction.channel_agent_add' && frame.kind !== 'interaction.ui_action' &&
+        frame.kind !== 'interaction.view_submission') {
       throw new Error('Unsupported gateway session frame.');
     }
     return frame;
@@ -1104,22 +1106,23 @@ export class GatewayLogicalSession {
 
   /** Admit one accepted delivery, then send its receipt. */
   async acknowledge(frame: GatewayInboundDelivery): Promise<void> {
-    let outcome: GatewayEventAck['outcome'];
+    let result: GatewayAdmissionResult;
     try {
-      outcome = await this.input.onEvent(frame, {
+      result = await this.input.onEvent(frame, {
         botUserId: this.input.binding.botUserId,
         appId: this.input.binding.appId,
       });
     } catch {
       // Admission itself failed, so no durable deployment receipt exists.
       // Reject for gateway/Slack retry without tearing down the socket.
-      outcome = 'rejected';
+      result = 'rejected';
     }
     this.input.send({
       protocolVersion: CHICKPEA_GATEWAY_PROTOCOL_VERSION,
       kind: 'event.ack',
       deliveryId: frame.deliveryId,
-      outcome,
+      outcome: gatewayAdmissionOutcome(result),
+      ...(typeof result === 'string' ? {} : { interaction: result.interaction }),
     });
   }
 

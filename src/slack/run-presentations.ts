@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 
+import { checkSlackBlocks } from './ui/block-kit-limits.ts';
 import { schemaInstallRequired, type StateDb } from '../state/state-db.ts';
 import type {
   ActivityKind,
@@ -299,6 +300,9 @@ export function slackContinuationPartAllowance(split: SlackReplySplit | undefine
 const MAX_SLACK_CONTINUATION_TEXT_CHARS = 12_000;
 const MAX_SLACK_CLOSING_FACT_BYTES = 2_048;
 const MAX_SLACK_CLOSING_TABLE_BYTES = 128 * 1_024;
+/** Display components (cards, charts, details) on a reply's last message. */
+const MAX_SLACK_CLOSING_COMPONENT_BLOCKS = 8;
+const MAX_SLACK_CLOSING_COMPONENT_BYTES = 64 * 1024;
 const MAX_SLACK_CLOSING_FILES = 10;
 
 interface SlackPresentationRepairSchedule {
@@ -3354,6 +3358,16 @@ function validateReplyClosing(closing: SlackReplyClosing): void {
           MAX_SLACK_CLOSING_TABLE_BYTES ||
         typeof closing.table.fallbackText !== 'string') {
       throw stateError('invalid_input', 'Continuation table must be a bounded native table.');
+    }
+  }
+  if (closing.components !== undefined) {
+    const { components } = closing;
+    if (!components || !Array.isArray(components.blocks) || components.blocks.length < 1 ||
+        components.blocks.length > MAX_SLACK_CLOSING_COMPONENT_BLOCKS ||
+        typeof components.fallbackText !== 'string' ||
+        new TextEncoder().encode(JSON.stringify(components)).byteLength > MAX_SLACK_CLOSING_COMPONENT_BYTES ||
+        !checkSlackBlocks(components.blocks).ok) {
+      throw stateError('invalid_input', 'Continuation components must be bounded, valid Block Kit.');
     }
   }
   if (closing.files !== undefined) {

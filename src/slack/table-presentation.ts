@@ -12,7 +12,7 @@ import {
 export const SLACK_PRESENT_TABLE_TOOL_NAME = 'present_table';
 export const SLACK_TABLE_PRESENTATION_DATA_NAME = 'slackTablePresentation';
 const SLACK_PRESENT_TABLE_ACKNOWLEDGEMENT =
-  'Table recorded. Finish with a short conclusion that does not repeat the rows.';
+  'Table recorded. Finish with one or two sentences of takeaway; do not name the rows again.';
 
 export const SLACK_PRESENT_TABLE_INSTRUCTION = [
   'Use prose or bullets instead of a table for a yes/no answer, sequential steps, one record, three or fewer simple facts, or rows that would contain long explanations.',
@@ -231,12 +231,13 @@ export function renderSlackTablePresentation(
 export function appendSlackTableToRenderedMessage(
   rendered: RenderedSlackMessage,
   sourceText: string,
-  table: Pick<RenderedSlackTablePresentation, 'block' | 'fallbackText'>,
+  extras: Pick<RenderedSlackTablePresentation, 'block' | 'fallbackText'> | { blocks: readonly unknown[]; fallbackText: string },
 ): RenderedSlackMessage {
+  const blocks = 'blocks' in extras ? extras.blocks : [extras.block];
   return {
     ...rendered,
-    text: markdownFallbackText(`${sourceText}\n\n${table.fallbackText}`),
-    blocks: [...(rendered.blocks ?? []), table.block],
+    text: markdownFallbackText(extras.fallbackText ? `${sourceText}\n\n${extras.fallbackText}` : sourceText),
+    blocks: [...(rendered.blocks ?? []), ...blocks] as NonNullable<RenderedSlackMessage['blocks']>,
   };
 }
 

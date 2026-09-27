@@ -3,6 +3,7 @@ import type { SlackCanonicalAdmissionInput, SlackStateStore, SlackStateLogic } f
 import { deliverDueStopNotices, MAX_TURN_DRAIN_BATCH, type TurnJobStoreLogic } from './turn-jobs.ts';
 import type { SlackRunPresentationStoreLogic } from './run-presentations.ts';
 import { defaultSlackStatusRegistry } from './status-registry.ts';
+import type { UiSurfaceStoreLogic } from './ui/surface-store.ts';
 
 /**
  * Promise-shaped Slack state port for code already running inside the shared
@@ -16,8 +17,9 @@ export function localSlackStateStore(input: {
   work: WorkStoreLogic;
   turnJobs: TurnJobStoreLogic;
   presentations: SlackRunPresentationStoreLogic;
+  uiSurfaces?: UiSurfaceStoreLogic;
 }): SlackStateStore {
-  const { slack, work, turnJobs, presentations } = input;
+  const { slack, work, turnJobs, presentations, uiSurfaces } = input;
   return {
     claim: async (key) => slack.claim(key),
     release: async (key) => slack.release(key),
@@ -27,7 +29,7 @@ export function localSlackStateStore(input: {
     setActiveWork: async (key, generation, active) =>
       slack.setActiveWork(key, generation, active),
     admitCanonical: async (admission: SlackCanonicalAdmissionInput) =>
-      slack.admitCanonical(admission, work, turnJobs, presentations),
+      slack.admitCanonical(admission, work, turnJobs, presentations, uiSurfaces),
     enqueueTurn: async (job) => turnJobs.enqueue(job),
     steerTurn: async (request, enqueue) => turnJobs.steer(request, enqueue),
     finishTurnStop: async (headId, outcome) =>
@@ -97,6 +99,9 @@ export function localSlackStateStore(input: {
       presentations.listAutoRepairableV3(limit),
     maintainRunPresentations: async (limit = 100) => presentations.maintain(limit),
     summarizeRunPresentations: async (workspaceId) => presentations.summarize(workspaceId),
+    ...(uiSurfaces
+      ? { executeUiSurface: async (request: Parameters<UiSurfaceStoreLogic['execute']>[0]) => uiSurfaces.execute(request) }
+      : {}),
     discardTurn: async (id) => turnJobs.discard(id),
   };
 }

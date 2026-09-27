@@ -40,9 +40,9 @@ test('an exact approve from the asker stamps the approved action onto the turn a
   const settings = new SqliteSettingsStore(':memory:');
   const record = await held(settings);
   const reply = turn('<@UBOT> Approve.');
-  assert.equal(await admitSlackBrowserActionReply({
+  assert.deepEqual(await admitSlackBrowserActionReply({
     turn: reply, assignment, settings, actorMembershipId: 'membership_asker', now: NOW + 1,
-  }), true);
+  }), { kind: 'approved', id: record.id });
   assert.equal(reply.approvedBrowserActionId, record.id);
   assert.deepEqual(reply.interactionIntent, { disposition: 'reply', reason: 'substantive_request' });
   const stored = await getBrowserAction(settings, record.id);
@@ -55,9 +55,9 @@ test('stop spends the action without stamping an approval; the Agent still reads
   const settings = new SqliteSettingsStore(':memory:');
   const record = await held(settings);
   const reply = turn('stop');
-  assert.equal(await admitSlackBrowserActionReply({
+  assert.deepEqual(await admitSlackBrowserActionReply({
     turn: reply, assignment, settings, actorMembershipId: 'membership_asker', now: NOW + 1,
-  }), true);
+  }), { kind: 'stopped', id: record.id });
   assert.equal(reply.approvedBrowserActionId, undefined);
   assert.deepEqual(reply.interactionIntent, { disposition: 'reply', reason: 'substantive_request' });
   assert.equal((await getBrowserAction(settings, record.id))?.status, 'consumed');
@@ -76,7 +76,7 @@ test('other people, other threads, other Agents, and other words leave the actio
     [turn('yes'), 'membership_asker', assignment],
   ];
   for (const [reply, actorMembershipId, routed] of cases) {
-    assert.equal(await admitSlackBrowserActionReply({ turn: reply, assignment: routed, settings, actorMembershipId, now: NOW + 1 }), false);
+    assert.equal(await admitSlackBrowserActionReply({ turn: reply, assignment: routed, settings, actorMembershipId, now: NOW + 1 }), undefined);
     assert.equal(reply.approvedBrowserActionId, undefined);
     assert.equal(reply.interactionIntent, undefined);
   }
@@ -88,13 +88,13 @@ test('a legacy-contract Agent matches the session thread its signal carries', as
   const settings = new SqliteSettingsStore(':memory:');
   const record = await held(settings, '1700000000.000100');
   const reply = turn('approve', { sessionThreadTs: '1700000000.000100' });
-  assert.equal(await admitSlackBrowserActionReply({
+  assert.deepEqual(await admitSlackBrowserActionReply({
     turn: reply,
     assignment: { agent: { id: 'agent_ops' }, runtimeContract: 'legacy' } as never,
     settings,
     actorMembershipId: 'membership_asker',
     now: NOW + 1,
-  }), true);
+  }), { kind: 'approved', id: record.id });
   assert.equal(reply.approvedBrowserActionId, record.id);
   settings.close();
 });
@@ -104,15 +104,15 @@ test('a reply addressed to the routed Agent by its handle answers the step like 
   const record = await held(settings);
   const address = { botUserId: 'UBOT', agentUserGroupId: 'SOPS' };
   // Another handle is not the routed Agent: the action stays pending.
-  assert.equal(await admitSlackBrowserActionReply({
+  assert.deepEqual(await admitSlackBrowserActionReply({
     turn: turn('<!subteam^SOTHER|@other> stop'), assignment, settings,
     actorMembershipId: 'membership_asker', address, now: NOW + 1,
-  }), false);
+  }), undefined);
   assert.equal((await getBrowserAction(settings, record.id))?.status, 'pending');
   const reply = turn('<!subteam^SOPS|@ops> stop');
-  assert.equal(await admitSlackBrowserActionReply({
+  assert.deepEqual(await admitSlackBrowserActionReply({
     turn: reply, assignment, settings, actorMembershipId: 'membership_asker', address, now: NOW + 1,
-  }), true);
+  }), { kind: 'stopped', id: record.id });
   assert.equal((await getBrowserAction(settings, record.id))?.status, 'consumed');
   settings.close();
 });

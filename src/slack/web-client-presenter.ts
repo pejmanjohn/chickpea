@@ -1,4 +1,4 @@
-import { ErrorCode, type WebClient } from '@slack/web-api';
+import { ErrorCode, type KnownBlock, type WebClient } from '@slack/web-api';
 
 import { isRecord } from '../security/content-validation.ts';
 import {
@@ -18,10 +18,11 @@ import {
   type SlackReplyFormat,
   type SlackReplyFooter,
 } from './message-format.ts';
-import type { SlackTablePresentation } from './table-presentation.ts';
 import {
   renderSlackReplyPart,
   renderSlackReplyTable,
+  slackReplyClosingExtras,
+  type SlackClosingInput,
   slackReplyParts,
   type SlackReplyClosing,
 } from './reply-continuations.ts';
@@ -553,6 +554,36 @@ export class WebClientPresenter {
     return addReactionChain(this.client, reactionFallbacks(reaction), coordinate);
   }
 
+  /**
+   * Post one host-owned interactive surface as its own message in the reply
+   * thread, under the same sender as the answer. Returns its timestamp.
+   */
+  async postSurfaceMessage(rendered: { text: string; blocks: unknown[] }): Promise<string | undefined> {
+    const posted = await this.client.chat.postMessage({
+      channel: this.target.channelId,
+      thread_ts: this.target.threadTs,
+      text: rendered.text,
+      blocks: rendered.blocks,
+      unfurl_links: false,
+      unfurl_media: false,
+      ...this.persona(),
+    } as unknown as Parameters<WebClient['chat']['postMessage']>[0]);
+    return typeof posted.ts === 'string' && posted.ts ? posted.ts : undefined;
+  }
+
+  /** Redraw a surface message from stored state; the sender is kept by Slack. */
+  async updateSurfaceMessage(
+    messageTs: string,
+    rendered: { text: string; blocks: unknown[] },
+  ): Promise<void> {
+    await this.client.chat.update({
+      channel: this.target.channelId,
+      ts: messageTs,
+      text: rendered.text,
+      blocks: rendered.blocks,
+    } as unknown as Parameters<WebClient['chat']['update']>[0]);
+  }
+
   async removeReaction(name: string, coordinate: SlackReactionCoordinate): Promise<void> {
     await removeSlackReaction(this.client, name, coordinate);
   }
@@ -725,7 +756,7 @@ export class WebClientPresenter {
     text: string,
     format: SlackReplyFormat,
     terminalTaskStatus: 'complete' | 'error' = 'complete',
-    tablePresentation?: SlackTablePresentation,
+    tablePresentation?: SlackClosingInput,
     artifacts?: readonly SlackArtifactReceipt[],
     /**
      * `stopped`: `text` is a stopped run's note (KTD3). Posted like any final,
@@ -794,7 +825,7 @@ export class WebClientPresenter {
     const renderedTable = renderSlackReplyTable(tablePresentation, parts.at(-1)!);
     const closing = {
       footer,
-      ...(renderedTable ? { table: renderedTable } : {}),
+      ...slackReplyClosingExtras(renderedTable),
       ...(completedFiles.length > 0 ? { files: completedFiles } : {}),
     };
     const continuations = parts.slice(1);
@@ -814,7 +845,7 @@ export class WebClientPresenter {
       const stopBlocks = continuations.length > 0
         ? []
         : [
-            ...(renderedTable ? [renderedTable.block] : []),
+            ...((renderedTable?.blocks ?? []) as KnownBlock[]),
             renderSlackReplyFooterBlock(footer),
           ];
       const stop = stopBlocks.length > 0 ? { blocks: stopBlocks } : {};
@@ -973,7 +1004,7 @@ export class WebClientPresenter {
   async deliverRequesterOnly(
     text: string,
     format: SlackReplyFormat,
-    tablePresentation?: SlackTablePresentation,
+    tablePresentation?: SlackClosingInput,
   ): Promise<void> {
     if (!this.target.userId) {
       throw new Error('Requester-only Slack delivery requires a target user.');
@@ -988,7 +1019,7 @@ export class WebClientPresenter {
     const renderedTable = renderSlackReplyTable(tablePresentation, displayText);
     const rendered = renderSlackReplyPart(displayText, format, {
       footer: this.replyFooter(),
-      ...(renderedTable ? { table: renderedTable } : {}),
+      ...slackReplyClosingExtras(renderedTable),
     });
     const payload = {
       channel: this.target.channelId,

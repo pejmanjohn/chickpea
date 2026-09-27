@@ -1,4 +1,7 @@
 import { SLACK_MEMORY_UPDATE_DATA_NAME, parseSlackMemoryUpdate, type SlackMemoryUpdate } from './memory-update-terminal.ts';
+import { SLACK_INTERACTIVE_QUESTION_DATA_NAME } from './ui/interactive-tools.ts';
+import { parseDisplayComponents, SLACK_DISPLAY_COMPONENTS_DATA_NAME } from './ui/display-tools.ts';
+import type { DisplaySurfaceSpec } from './ui/surface.ts';
 import {
   CODING_WORKER_RUN_DATA_NAME,
   CODING_WORKER_USAGE_DATA_NAME,
@@ -99,6 +102,12 @@ interface AgentReturnedModel {
 export interface AgentDispatchResult {
   text: string;
   tablePresentations?: SlackTablePresentation[];
+  /**
+   * Display components from this attempt's reply. Never in the settlement
+   * checkpoint (its parse is strict across versions); the executor stores them
+   * with the turn's surfaces before delivery, and a replay reads them there.
+   */
+  displayComponents?: DisplaySurfaceSpec[];
   /** Host-staged files to publish with the final reply; never model-authored. */
   artifacts?: SlackArtifactReceipt[];
   agentCreationTerminal?: SlackAgentCreationTerminalIntent;
@@ -543,12 +552,13 @@ export async function promptSlackThreadAgent(
     throw new AgentPromptFailure(failureKind);
   }
 
+  const { displayComponents, ...settled } = completed;
   let checkpoint: FlueSettlementCheckpointV1;
   try {
     checkpoint = await input.state.recordSettlement({
       outcome: 'completed',
       settledAt: now(),
-      result: completed,
+      result: settled,
     });
   } catch (settlementError) {
     await settlementNotSaved(settlementError);
@@ -559,6 +569,7 @@ export async function promptSlackThreadAgent(
   await input.beforeResult?.();
   return {
     ...resultFromSettlement(checkpoint),
+    ...(displayComponents ? { displayComponents } : {}),
     codingWorkspaceOpened: codingWorkspaceOpenedFromReplyData(
       reply.data?.[CODING_WORKSPACE_USE_DATA_NAME],
     ),
@@ -961,7 +972,12 @@ export function resultFromAgentReply(
   const artifacts = parseSlackArtifactReceipts(reply.data?.[SLACK_ARTIFACT_RECEIPTS_DATA_NAME]);
   // Checkpoints and the Work ledger require nonempty approved text. A file-only
   // model result still has a useful host caption for its combined Slack reply.
-  const text = resolveFileDeliveryText(reply.text || (artifacts.length > 0 ? 'Requested files' : ''), reply.data?.[FILE_DELIVERY_DATA_NAME]);
+  // A reply that is only an ask_user question carries the question as its text.
+  const question = interactiveQuestionText(reply.data?.[SLACK_INTERACTIVE_QUESTION_DATA_NAME]);
+  const text = resolveFileDeliveryText(
+    reply.text.trim() ? reply.text : question ?? (artifacts.length > 0 ? 'Requested files' : reply.text),
+    reply.data?.[FILE_DELIVERY_DATA_NAME],
+  );
   if (!text && artifacts.length === 0) throw new Error('agent prompt returned no result text');
   // Reject only extreme single-punctuation degeneration, not code, JSON,
   // Markdown separators, short emphatic answers, or mixed punctuation.
@@ -980,8 +996,10 @@ export function resultFromAgentReply(
   const agentCreationTerminal = parseSlackAgentCreationTerminalIntents(
     reply.data?.[SLACK_AGENT_CREATION_TERMINAL_DATA_NAME],
   )[0];
+  const displayComponents = parseDisplayComponents(reply.data?.[SLACK_DISPLAY_COMPONENTS_DATA_NAME]);
   return {
     text,
+    ...(displayComponents.length > 0 ? { displayComponents } : {}),
     ...(tablePresentations.length > 0 ? { tablePresentations } : {}),
     ...(artifacts.length > 0 ? { artifacts } : {}),
     ...(agentCreationTerminal ? { agentCreationTerminal } : {}),
@@ -994,6 +1012,12 @@ export function resultFromAgentReply(
     usageCompleteness: usage.completeness,
     flueSubmissionRef: opaqueId('fluesubmission', reply.submissionId),
   };
+}
+
+function interactiveQuestionText(value: unknown): string | undefined {
+  const records = Array.isArray(value) ? value : value === undefined ? [] : [value];
+  const last = records.at(-1) as { question?: unknown } | undefined;
+  return typeof last?.question === 'string' && last.question.trim() ? last.question.trim() : undefined;
 }
 
 /** Compatibility parser retained for stored usage fixtures during migration. */

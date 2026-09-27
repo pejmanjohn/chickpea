@@ -16,6 +16,7 @@ import { createWebsiteLogin, getWebsiteLogin, type WebsiteLogin } from '../src/b
 import { BrowserProviderError, type BrowserProvider } from '../src/browser/provider.ts';
 import { browserHandoffMessage, createSlackRequesterNotifier } from '../src/browser/requester.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
+import { BROWSER_APPROVAL_INSTRUCTION } from '../src/browser/messages.ts';
 import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
 import type { SlackArtifactStageInput, SlackArtifactStageOutcome } from '../src/sandbox/artifact-tool.ts';
 import { FakeCdpSocket, fakeBrowserProvider } from './helpers/fake-cdp-socket.ts';
@@ -993,7 +994,7 @@ test('an action login holds a data-changing step for approval with a screenshot,
   assert.equal(held.awaitingApproval, true);
   assert.match(held.actionId, /^[a-f0-9]{32}$/);
   assert.equal(held.description, 'click "Confirm change"');
-  assert.equal(held.instruction, 'Ask the person to reply exactly "approve" in this thread to let you take this step, or "stop". End your reply after asking.');
+  assert.equal(held.instruction, BROWSER_APPROVAL_INSTRUCTION);
   assert.deepEqual(ask.browsers[0]!.clicked(), [21], 'only the field was clicked; the button waits');
   assert.equal(ask.staged.length, 1);
   assert.equal(ask.staged[0]!.kind, 'image');

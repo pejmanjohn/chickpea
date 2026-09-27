@@ -25,11 +25,20 @@ import {
   getIdentityStore,
   getManagementStore,
   getSettingsStore,
+  getSlackStateStore,
   getUsageStore,
   getWorkStore,
   type AppStores,
 } from '../config/state-backend.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
+import {
+  abandonTurnSurfaces,
+  deliverHostApprovalSurfaces,
+  deliverInteractiveSurfaces,
+  markDisplaySurfacesDelivered,
+  prepareDisplaySurfaces,
+  renderDisplayComponents,
+} from './ui/host-surfaces.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import type { TurnEnvelopeV1 } from '../agents/turn-envelope.ts';
 import { buildTurnEnvelope } from './turn-envelope-builder.ts';
@@ -1302,9 +1311,13 @@ async function runTurnAttempt(
       await finishDelivery('failed');
       return;
     }
-    await agentViewPresentation?.setTitle(turn.text).catch(() => {
-      console.warn('[chickpea] Slack Agent View title could not be recorded');
-    });
+    // A click or form answers inside the conversation; its host-authored
+    // text never becomes the thread's title.
+    if (!turn.uiResponse) {
+      await agentViewPresentation?.setTitle(turn.text).catch(() => {
+        console.warn('[chickpea] Slack Agent View title could not be recorded');
+      });
+    }
     if (turn.managementApprovalProposalId && options.replayText === undefined &&
         options.invokeManagementApproval && !options.managementApproval) {
       const persisted = await workLifecycle?.prepareExecution('Slack management approval');
@@ -1620,6 +1633,9 @@ async function runTurnAttempt(
     // retry loop from the claims being released on an uncaught throw).
     let text: string;
     let agentResult: AgentDispatchResult | undefined;
+    // A settled answer replayed from its checkpoint carries no display
+    // components; they are read back from the turn's stored surfaces.
+    const settledBeforePrompt = options.flueDispatch?.flueSettlement?.outcome === 'completed';
     let tablePresentation: SlackTablePresentation | undefined =
       options.flueDispatch?.flueSettlement?.outcome === 'completed'
         ? options.flueDispatch.flueSettlement.result.tablePresentations?.[0]
@@ -1972,13 +1988,74 @@ async function runTurnAttempt(
     const deliverableArtifacts = recoveredText === undefined && leaseValid && terminalResult === 'answer'
       ? artifacts
       : undefined;
+    const surfaceState = options.appStores?.slackState ?? getSlackStateStore(platformEnv);
+    const surfaceTurnJobId = options.turnId ?? `msg:${turn.channelId}:${turn.messageTs}`;
+    // Components travel only with the model's own lease-valid answer.
+    const ownAnswer = terminalResult === 'answer' && recoveredText === undefined && leaseValid &&
+      !(acknowledgeMemoryUpdate && agentResult?.memoryUpdate?.preservesContext !== true);
+    const displaySurfaces = ownAnswer
+      ? await prepareDisplaySurfaces({
+          state: surfaceState,
+          turn,
+          agentId: assignment.agent.id,
+          turnJobId: surfaceTurnJobId,
+          ...(settledBeforePrompt ? {} : { fresh: agentResult?.displayComponents ?? [] }),
+        }).catch(() => {
+          console.warn('[chickpea] display components were not stored; the answer posts without them');
+          return [];
+        })
+      : [];
+    const displayComponents = renderDisplayComponents(displaySurfaces);
     await presenter.deliverFinal(
       text,
       'markdown',
       terminalResult === 'failure' ? 'error' : 'complete',
-      tablePresentation,
+      displayComponents
+        ? { ...(tablePresentation ? { table: tablePresentation } : {}), components: displayComponents }
+        : tablePresentation,
       deliverableArtifacts,
     );
+    if (displaySurfaces.length) {
+      await markDisplaySurfacesDelivered(surfaceState, displaySurfaces).catch(() => undefined);
+    }
+    if (terminalResult === 'answer') {
+      const surfaceMessenger = {
+        post: (rendered: { text: string; blocks: Array<Record<string, unknown>> }) =>
+          presenter.postSurfaceMessage(rendered),
+        update: (messageTs: string, rendered: { text: string; blocks: Array<Record<string, unknown>> }) =>
+          presenter.updateSurfaceMessage(messageTs, rendered),
+      };
+      await (ownAnswer
+        ? deliverInteractiveSurfaces({
+            turn,
+            agentId: assignment.agent.id,
+            turnJobId: surfaceTurnJobId,
+            state: surfaceState,
+            messenger: surfaceMessenger,
+            answerText: text,
+          })
+        : abandonTurnSurfaces(surfaceState, surfaceTurnJobId)
+      ).catch(() => {
+        console.warn('[chickpea] Slack reply buttons were not posted');
+      });
+      // An approval this turn is holding gets host buttons under the reply.
+      // A failure here never undoes the delivered answer; typed approval works.
+      await deliverHostApprovalSurfaces({
+        turn,
+        assignment,
+        turnJobId: options.turnId ?? `msg:${turn.channelId}:${turn.messageTs}`,
+        state: options.appStores?.slackState ?? getSlackStateStore(platformEnv),
+        ...(settingsStore ? { settings: settingsStore } : {}),
+        identity: options.appStores?.identity ?? getIdentityStore(platformEnv),
+        management: options.appStores?.management ?? getManagementStore(platformEnv),
+        messenger: {
+          post: (rendered) => presenter.postSurfaceMessage(rendered),
+          update: (messageTs, rendered) => presenter.updateSurfaceMessage(messageTs, rendered),
+        },
+      }).catch(() => {
+        console.warn('[chickpea] Slack approval buttons were not posted');
+      });
+    }
     // Clear after the final reaches Slack. A custom Agent persona does not
     // reliably trigger Slack's automatic app-status cleanup, and clearing
     // before delivery can leave the custom status visible after the reply.

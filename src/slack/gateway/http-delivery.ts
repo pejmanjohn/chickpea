@@ -87,7 +87,8 @@ export async function verifyHttpDelivery(input: {
   } else {
     const delivery = parseGatewayFrameText(JSON.stringify(value.delivery));
     if ((delivery.kind !== 'event.deliver' && delivery.kind !== 'interaction.agent_selected' &&
-        delivery.kind !== 'interaction.channel_agent_add') ||
+        delivery.kind !== 'interaction.channel_agent_add' && delivery.kind !== 'interaction.ui_action' &&
+        delivery.kind !== 'interaction.view_submission') ||
         delivery.bindingId !== value.bindingId || delivery.workspaceId !== value.workspaceId ||
         (delivery.kind === 'event.deliver' && delivery.envelope.workspaceId !== value.workspaceId)) fail();
     value.delivery = delivery as GatewayInboundDelivery;

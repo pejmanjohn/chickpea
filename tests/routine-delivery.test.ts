@@ -166,6 +166,21 @@ test('routine delivery redacts credential-shaped content from blocks and fallbac
   assert.match(rendered.text, /\[credential redacted\]/);
 });
 
+test('routine delivery never renders a live broadcast mention in blocks or fallback text', () => {
+  const rendered = renderRoutineDelivery(
+    'Weekly report is ready <!channel>, cc <@U1>',
+    { agentName: 'Default', agentId: 'agent_default' },
+  );
+  const live = /<!(?:here|channel|everyone|group|subteam\^)|(?<![\p{L}\p{N}_])@(?:here|channel|everyone)(?![\p{L}\p{N}_])/iu;
+
+  for (const text of [JSON.stringify(rendered.blocks), rendered.text]) {
+    assert.doesNotMatch(text, live);
+    assert.match(text, /@⁠channel/);
+  }
+  // The markdown block keeps the user mention; fallback text escapes it as before.
+  assert.match(JSON.stringify(rendered.blocks), /<@U1>/);
+});
+
 test('routine Work observation receives only credential-safe approved output', async () => {
   const canary = 'sk-proj-abcdefghijklmnopqrstuvwxyz0123456789';
   const approvedOutputs: string[] = [];
