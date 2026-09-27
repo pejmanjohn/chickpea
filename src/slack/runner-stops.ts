@@ -530,13 +530,16 @@ export async function boundedStopCall<T>(call: Promise<T>, ms: number): Promise<
  * store's row. A stop whose notice has not reached the runner yet (its
  * outbox backoff, an older runner during a rollout) is recorded there only,
  * and marking the turn delivered would release it without a word to the
- * person who pressed it.
+ * person who pressed it. The read sits between the posted final and the
+ * runner's delivery tombstone, so it is bounded: a hung state store rejects
+ * after `waitMs`, which the caller reads as no stop.
  */
 export async function runnerStopRecorded(
   jobs: Pick<ThreadRunnerJobStore, 'stopMarker'>,
   turns: Pick<ThreadRunnerTurnRows, 'view'>,
   id: string,
+  waitMs = THREAD_RUNNER_STOP_RECEIVE_WAIT_MS,
 ): Promise<boolean> {
   if (jobs.stopMarker(id)?.notice?.record.role === 'stopped') return true;
-  return (await turns.view(id)).job?.stop?.role === 'stopped';
+  return (await boundedStopCall(turns.view(id), waitMs)).job?.stop?.role === 'stopped';
 }

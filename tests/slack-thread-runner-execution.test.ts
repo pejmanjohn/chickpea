@@ -2576,6 +2576,19 @@ test("the runner reads a stop from the state store's row when its notice has not
   } finally { db.close(); }
 });
 
+test("the runner's R22 read of the state store is bounded, so a hung store never holds delivery open", async () => {
+  const db = openStateDb(':memory:');
+  try {
+    const jobs = new ThreadRunnerJobStore(db);
+    // The read sits between the posted final and the runner's delivery
+    // tombstone: a state store that never answers must not keep that open.
+    const hung = { view: () => new Promise<never>(() => {}) };
+    const started = Date.now();
+    await assert.rejects(runnerStopRecorded(jobs, hung as never, 'remote', 20));
+    assert.ok(Date.now() - started < 1_000, 'rejects at the bound, and the caller reads that as no stop');
+  } finally { db.close(); }
+});
+
 test('a runner turn whose stop never reached the runner still tells the stopper its run had finished (R22)', async () => {
   const db = openStateDb(':memory:');
   try {

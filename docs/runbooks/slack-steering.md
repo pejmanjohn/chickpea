@@ -71,7 +71,9 @@ Slack Connect user gets no stop-specific reply.
    retrying outbox (1 second, doubling to 30 seconds). The runner aborts the
    Flue run from its saved dispatch. No model is called. The abort request is
    bounded at five seconds, and a thread's next turn waits for an abort in
-   flight (up to that bound), so a late abort can never reach it. It then
+   flight (up to that bound). Flue aborts an instance rather than one
+   submission, so only an abort slower than five seconds could still reach
+   the next turn. It then
    stops any coding job the run started, from the job's durable task record,
    and waits for the coding worker to confirm (up to about 14 seconds). A
    stop that reaches a turn that never started ends it before it dispatches.
