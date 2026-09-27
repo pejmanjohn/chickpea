@@ -5,7 +5,6 @@ import {
   chmodSync,
   existsSync,
   lstatSync,
-  linkSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -62,8 +61,14 @@ function fixture(): Fixture {
   writeFileSync(path.join(home, '.installer-home'), 'chickpea-node-v1\n', { mode: 0o600 });
   mkdirSync(path.join(home, '.install-lock'), { mode: 0o700 });
   writeFileSync(path.join(release, 'release-source.json'), JSON.stringify({ commit: COMMIT }));
-  linkSync(process.execPath, path.join(home, 'tools', 'node', 'bin', 'node'));
-  chmodSync(path.join(home, 'tools', 'node', 'bin', 'node'), 0o755);
+  // The launcher requires a regular file here. Exec the host runtime instead of
+  // linking it: Homebrew's node loads libnode from @loader_path/../lib, and a
+  // hard link also fails when the temp directory is on another volume.
+  writeFileSync(
+    path.join(home, 'tools', 'node', 'bin', 'node'),
+    `#!/bin/sh\nexec '${process.execPath.replaceAll("'", "'\\''")}' "$@"\n`,
+    { mode: 0o755 },
+  );
   return { root, home, release };
 }
 

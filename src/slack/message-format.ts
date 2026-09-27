@@ -720,7 +720,7 @@ export function streamableSlackMarkdownPrefix(text: string): string {
   // A cut can end inside a closed code span or `<...>` reference, or right
   // after a broadcast word, where the whole answer neutralizes differently.
   for (let held = unsafeMentionTail(stable); held < stable.length; held = unsafeMentionTail(stable)) {
-    stable = stable.slice(0, held).trimEnd();
+    stable = stable.slice(0, credentialHoldStart(stable, held)).trimEnd();
   }
   if (!stable) return '';
   return canonicalSlackMarkdownText(stable);
@@ -738,6 +738,39 @@ export function sanitizeSlackMarkdownLinks(markdown: string): string {
       return segment.replace(/\*\*([^*\n]*https?:\/\/[^*\n]+)\*\*/g, '$1');
     })
     .join('');
+}
+
+// The `NAME = value` signatures allow any whitespace, newlines included,
+// around their `=`/`:` separator, so a newline after the marker does not end
+// them. A marker followed only by name characters, whitespace, the separator
+// and one unfinished value token can still become a redaction. (Only the AWS
+// pair accepts `:`; one separator class for every marker merely holds more.)
+const OPEN_CREDENTIAL_ASSIGNMENT = credentialMarkerPattern(String.raw`\w*["']?\s*(?:[=:]\s*\S*)?$`);
+// A marker whose token, or assignment value, runs up to the end of the text.
+const CREDENTIAL_REACHING_END = credentialMarkerPattern(String.raw`(?:\w*["']?\s*[=:]\s*)?\S*$`);
+const LONGEST_CREDENTIAL_MARKER = Math.max(...credentialMarkers().map((marker) => marker.length));
+
+function credentialMarkerPattern(tail: string): RegExp {
+  const markers = credentialMarkers().map((marker) => marker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  return new RegExp(`(?:${markers.join('|')})${tail}`, 'i');
+}
+
+// The earliest start of either pattern above matching up to `end`, or `end`.
+// Such a match is at most a value token, whitespace, the separator, more
+// whitespace, a quote, name characters and the marker, so only that window is
+// searched: rescanning the whole text once per streamed chunk, and again per
+// credential the loop below walks back over, made long replies quadratic.
+function earliestCredentialReaching(value: string, end: number, pattern: RegExp): number {
+  let from = end;
+  while (from > 0 && !/\s/.test(value[from - 1]!)) from -= 1;
+  while (from > 0 && /\s/.test(value[from - 1]!)) from -= 1;
+  from -= 1;
+  while (from > 0 && /\s/.test(value[from - 1]!)) from -= 1;
+  from -= 1;
+  while (from > 0 && /\w/.test(value[from - 1]!)) from -= 1;
+  from = Math.max(0, from - LONGEST_CREDENTIAL_MARKER);
+  const at = value.slice(from, end).search(pattern);
+  return at < 0 ? end : from + at;
 }
 
 function earliestUnsafeTail(value: string): number {
@@ -760,18 +793,8 @@ function earliestUnsafeTail(value: string): number {
       }
     }
   }
-  // Redaction starts at the first marker in a token (`xoxb-xoxb-…`,
-  // `xoxp-sk-proj-…`), whichever marker it is, so a hold inside a token moves
-  // back to that one.
-  if (unsafeFrom < value.length) {
-    let tokenStart = unsafeFrom;
-    while (tokenStart > 0 && !/\s/.test(value[tokenStart - 1]!)) tokenStart -= 1;
-    const token = lower.slice(tokenStart, unsafeFrom);
-    for (const marker of credentialMarkers()) {
-      const at = token.indexOf(marker.toLowerCase());
-      if (at >= 0) unsafeFrom = Math.min(unsafeFrom, tokenStart + at);
-    }
-  }
+  // Hold an open assignment until its value token ends, even across a newline.
+  unsafeFrom = Math.min(unsafeFrom, earliestCredentialReaching(value, value.length, OPEN_CREDENTIAL_ASSIGNMENT));
 
   // A link or Slack `<...>` reference still being written sits on the last
   // line. Once a line ends, a `[` or `<` on it was literal text (a CDATA
@@ -802,7 +825,20 @@ function earliestUnsafeTail(value: string): number {
   if (/^\s*\|/.test(value.slice(trailingLineStart)) && !value.endsWith('\n')) {
     unsafeFrom = Math.min(unsafeFrom, trailingLineStart);
   }
-  return unsafeFrom;
+  return credentialHoldStart(value, unsafeFrom);
+}
+
+// Any hold can start inside an earlier credential token or assignment value
+// (`xoxb-xoxb-…`, `OPENAI_API_KEY=\nxoxb-xoxb- …`, `SECRET=\nabcdefg[hij …`):
+// the part before it would then stream as a piece too short to redact. Hold
+// from that credential instead, whichever marker it is.
+function credentialHoldStart(value: string, held: number): number {
+  while (held < value.length) {
+    const outer = earliestCredentialReaching(value, held, CREDENTIAL_REACHING_END);
+    if (outer === held) break;
+    held = outer;
+  }
+  return held;
 }
 
 /**
