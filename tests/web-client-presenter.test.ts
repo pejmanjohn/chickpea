@@ -616,7 +616,7 @@ test('deliverFinal redacts credential-shaped content before streaming it to Slac
 });
 
 const LIVE_SLACK_BROADCAST =
-  /<!(?:here|channel|everyone|group|subteam\^)|(?<![\p{L}\p{N}_])@(?:here|channel|everyone)(?![\p{L}\p{N}_])/iu;
+  /<!(?:here|channel|everyone|group|subteam\^)|(?<![\p{L}\p{N}])@(?:here|channel|everyone)(?![\p{L}\p{N}])/iu;
 const BROADCAST_ANSWER = 'Heads up <!here> and @channel, cc <!subteam^S1|@ops> and <@U1>';
 
 test('deliverFinal streams and records an answer whose broadcast mentions are inert', async () => {
