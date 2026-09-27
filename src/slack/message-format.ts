@@ -725,13 +725,16 @@ export function streamableSlackMarkdownPrefix(text: string): string {
   // A cut can end inside a closed code span or `<...>` reference, or right
   // after a broadcast word, where the whole answer neutralizes differently,
   // or inside code or a `**URL**` span, whose opener it leaves unclosed.
-  const unsafeTailOfCut = (cut: string) => Math.min(
-    unsafeMentionTail(cut),
-    openUrlEmphasis(cut, cut.lastIndexOf('\n') + 1, true),
-    strippedSpanStart(normalized, cut.length),
-  );
+  const unsafeTailOfCut = (cut: string) => {
+    const view = sanitizedView(cut);
+    return Math.min(
+      view.toRaw(unsafeMentionTail(view.text)),
+      heldBeforeStars(cut, openUrlEmphasis(cut, cut.lastIndexOf('\n') + 1, true)),
+      strippedSpanStart(normalized, cut.length),
+    );
+  };
   for (let held = unsafeTailOfCut(stable); held < stable.length; held = unsafeTailOfCut(stable)) {
-    stable = stable.slice(0, credentialHoldStart(stable, held)).trimEnd();
+    stable = stable.slice(0, sanitizedView(stable).credentialHoldStart(held)).trimEnd();
   }
   if (!stable) return '';
   return canonicalSlackMarkdownText(stable);
@@ -757,6 +760,49 @@ export function sanitizeSlackMarkdownLinks(markdown: string): string {
         WHOLE_URL_SEGMENT.test(inner) ? inner : strong);
     })
     .join('');
+}
+
+/**
+ * `value` as the answer reads once `sanitizeSlackMarkdownLinks` drops its
+ * `**URL**` spans' stars, with index maps back and forth. Dropping a closing
+ * `**` joins the span's last word to whatever follows it
+ * (`**https://x @here**b` reads `https://x @hereb`), so redaction and mention
+ * holds judge this text. A position maps back after any stars dropped there:
+ * a hold inside a span moves to its start anyway, and one after a closer
+ * must not pull back the span it follows.
+ */
+function sanitizedView(value: string) {
+  const dropped: number[] = [];
+  let offset = 0;
+  for (const [index, segment] of value.split(CLOSED_CODE_SEGMENT).entries()) {
+    if (index % 2 === 0) {
+      for (const strong of segment.matchAll(STRONG_EMPHASIS)) {
+        if (!WHOLE_URL_SEGMENT.test(strong[1]!)) continue;
+        dropped.push(offset + strong.index, offset + strong.index + strong[0].length - 2);
+      }
+    }
+    offset += segment.length;
+  }
+  const text = dropped.length ? sanitizeSlackMarkdownLinks(value) : value;
+  const toRaw = (at: number) => {
+    if (at >= text.length) return value.length;
+    let raw = at;
+    for (const [pair, star] of dropped.entries()) if (star - 2 * pair <= at) raw += 2;
+    return raw;
+  };
+  const fromRaw = (raw: number) =>
+    dropped.reduce((at, star) => at - Math.min(Math.max(raw - star, 0), 2), raw);
+  return {
+    text,
+    toRaw,
+    /** `credentialHoldStart` on the answer's reading; an unmoved hold stays put. */
+    credentialHoldStart(held: number): number {
+      if (!dropped.length) return credentialHoldStart(value, held);
+      const at = fromRaw(held);
+      const start = credentialHoldStart(text, at);
+      return start === at ? held : toRaw(start);
+    },
+  };
 }
 
 // The `NAME = value` signatures allow any whitespace, newlines included,
@@ -793,6 +839,38 @@ function earliestCredentialReaching(value: string, end: number, pattern: RegExp)
 }
 
 function earliestUnsafeTail(value: string): number {
+  // Redaction and neutralization read the answer after its `**URL**` spans
+  // lose their stars, so their holds judge that text.
+  const view = sanitizedView(value);
+  let unsafeFrom = view.toRaw(unsafeTokenTail(view.text));
+
+  // A link or Slack `<...>` reference still being written sits on the last
+  // line. Once a line ends, a `[` or `<` on it was literal text (a CDATA
+  // example, a shell redirect): holding it would freeze the stream until
+  // some later `)` or `>` happened to appear.
+  const lastLineStart = value.lastIndexOf('\n') + 1;
+  const openLink = value.lastIndexOf('[');
+  const lastClosedLink = value.lastIndexOf(')');
+  if (openLink >= lastLineStart && openLink > lastClosedLink) {
+    unsafeFrom = Math.min(unsafeFrom, openLink);
+  }
+  // Emphasis around a URL is rewritten per line; an unpaired `**` on an
+  // earlier line (`**kwargs`, `2**10`) is literal and must not hold the rest.
+  unsafeFrom = Math.min(unsafeFrom, heldBeforeStars(value, openUrlEmphasis(value, lastLineStart)));
+  const trailingTicks = value.match(/`{1,2}$/)?.[0];
+  if (trailingTicks) unsafeFrom = Math.min(unsafeFrom, value.length - trailingTicks.length);
+  // A Markdown table row can look complete several tokens before the model
+  // adds its newline. Hold the whole trailing row so Slack never flashes a
+  // partially populated table during progressive delivery.
+  const trailingLineStart = value.lastIndexOf('\n') + 1;
+  if (/^\s*\|/.test(value.slice(trailingLineStart)) && !value.endsWith('\n')) {
+    unsafeFrom = Math.min(unsafeFrom, trailingLineStart);
+  }
+  return view.credentialHoldStart(unsafeFrom);
+}
+
+/** Where redaction or mention neutralization may still rewrite the tail. */
+function unsafeTokenTail(value: string): number {
   let unsafeFrom = value.length;
   const lower = value.toLowerCase();
 
@@ -814,31 +892,7 @@ function earliestUnsafeTail(value: string): number {
   }
   // Hold an open assignment until its value token ends, even across a newline.
   unsafeFrom = Math.min(unsafeFrom, earliestCredentialReaching(value, value.length, OPEN_CREDENTIAL_ASSIGNMENT));
-
-  // A link or Slack `<...>` reference still being written sits on the last
-  // line. Once a line ends, a `[` or `<` on it was literal text (a CDATA
-  // example, a shell redirect): holding it would freeze the stream until
-  // some later `)` or `>` happened to appear.
-  const lastLineStart = value.lastIndexOf('\n') + 1;
-  const openLink = value.lastIndexOf('[');
-  const lastClosedLink = value.lastIndexOf(')');
-  if (openLink >= lastLineStart && openLink > lastClosedLink) {
-    unsafeFrom = Math.min(unsafeFrom, openLink);
-  }
-  unsafeFrom = Math.min(unsafeFrom, unsafeMentionTail(value));
-  // Emphasis around a URL is rewritten per line; an unpaired `**` on an
-  // earlier line (`**kwargs`, `2**10`) is literal and must not hold the rest.
-  unsafeFrom = Math.min(unsafeFrom, openUrlEmphasis(value, lastLineStart));
-  const trailingTicks = value.match(/`{1,2}$/)?.[0];
-  if (trailingTicks) unsafeFrom = Math.min(unsafeFrom, value.length - trailingTicks.length);
-  // A Markdown table row can look complete several tokens before the model
-  // adds its newline. Hold the whole trailing row so Slack never flashes a
-  // partially populated table during progressive delivery.
-  const trailingLineStart = value.lastIndexOf('\n') + 1;
-  if (/^\s*\|/.test(value.slice(trailingLineStart)) && !value.endsWith('\n')) {
-    unsafeFrom = Math.min(unsafeFrom, trailingLineStart);
-  }
-  return credentialHoldStart(value, unsafeFrom);
+  return Math.min(unsafeFrom, unsafeMentionTail(value));
 }
 
 // Any hold can start inside an earlier credential token or assignment value
@@ -846,12 +900,37 @@ function earliestUnsafeTail(value: string): number {
 // the part before it would then stream as a piece too short to redact. Hold
 // from that credential instead, whichever marker it is.
 function credentialHoldStart(value: string, held: number): number {
+  // A hold can also land inside a marker that starts earlier (the second
+  // `xox` of `xoxoxb`), which a search ending at the hold misses.
+  let straddled = held;
+  const lower = value.toLowerCase();
+  for (const marker of credentialMarkers()) {
+    const markerLower = marker.toLowerCase();
+    for (let back = 1; back < markerLower.length && back <= held; back += 1) {
+      if (lower.startsWith(markerLower, held - back)) straddled = Math.min(straddled, held - back);
+    }
+  }
+  return Math.min(outermostCredential(value, held), outermostCredential(value, straddled));
+}
+
+function outermostCredential(value: string, held: number): number {
   while (held < value.length) {
     const outer = earliestCredentialReaching(value, held, CREDENTIAL_REACHING_END);
     if (outer === held) break;
     held = outer;
   }
   return held;
+}
+
+/**
+ * The hold for an undecided `**` at `at`. If its span is stripped, the word
+ * before it joins the span's first (`xo**xoxb-…**` reads `xoxoxb-…`), so the
+ * text before it is held as it was when the stream ended there.
+ */
+function heldBeforeStars(value: string, at: number): number {
+  if (at >= value.length) return at;
+  const view = sanitizedView(value.slice(0, at));
+  return Math.min(at, view.toRaw(unsafeTokenTail(view.text)));
 }
 
 /**

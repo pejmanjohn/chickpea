@@ -172,6 +172,10 @@ whether Slack re-renders it when it closes is still to be confirmed live.
 Any hold (a credential, a mention, an open `[` or `<`) that lands inside a URL
 emphasis span the text has already closed moves back to that span's opening
 `**`, because the whole answer drops the pair and the stream must not show it.
+Dropping the pair also joins the words on either side of each `**`
+(`**https://x @here**b` reads `https://x @hereb`), so credential and mention
+holds judge the text as it reads without those stars, and the text before a
+`**` that may still be dropped is held as if the stream ended there.
 
 ### Broadcast and user-group mentions
 
