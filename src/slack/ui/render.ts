@@ -13,6 +13,7 @@ import {
   type HostApprovalSpec,
   type UiSurfaceRecord,
 } from './surface.ts';
+import { clampDisplay, escapeMrkdwn, mrkdwn, plain, slackTime } from './text.ts';
 
 /**
  * Surfaces render only from their durable record: the open card, the answered
@@ -22,32 +23,6 @@ import {
 export interface RenderedUiSurface {
   text: string;
   blocks: Array<Record<string, unknown>>;
-}
-
-/** Model- or user-supplied text shown in mrkdwn: no markup and no pings. */
-export function escapeMrkdwn(text: string): string {
-  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
-
-/** Display text only is ever clamped; ids and values are refused instead. */
-export function clampDisplay(text: string, max: number): string {
-  const normalized = text.replace(/\s+/g, ' ').trim();
-  if (normalized.length <= max) return normalized;
-  return `${normalized.slice(0, Math.max(1, max - 1)).trimEnd()}…`;
-}
-
-function plain(text: string, max: number): { type: 'plain_text'; text: string; emoji: true } {
-  return { type: 'plain_text', text: clampDisplay(text, max), emoji: true };
-}
-
-function mrkdwn(text: string): { type: 'mrkdwn'; text: string } {
-  return { type: 'mrkdwn', text };
-}
-
-function slackTime(at: number): string {
-  const seconds = Math.floor(at / 1000);
-  const fallback = new Date(at).toISOString().slice(11, 16);
-  return `<!date^${seconds}^{time}|${fallback} UTC>`;
 }
 
 type ApprovalChoice = 'approve' | 'decline';

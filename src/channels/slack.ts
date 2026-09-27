@@ -1258,8 +1258,6 @@ async function handleSlackUiViewSubmission(
   emitUiInteraction('received');
   const surface = await uiSurfaceRecord(state, { kind: 'get_surface', id: surfaceId });
   const reading = readViewSubmission(submission, surface);
-  // The modal already showed why; nothing else to say.
-  if (!reading.ok || !reading.surface.messageTs) return;
   const refuse = async (refusal: UiRefusal, current: UiSurfaceRecord) => {
     emitUiInteraction('refused', refusal);
     await sendUiNotice(client, {
@@ -1269,6 +1267,18 @@ async function handleSlackUiViewSubmission(
       threadTs: current.threadTs,
     });
   };
+  if (!reading.ok) {
+    // It was valid when Slack asked, so the modal closed; only the card can
+    // have changed since. Say so privately, as a late click would.
+    if (!surface || surface.namespace !== 'ui' || surface.workspaceId !== submission.workspaceId) return;
+    const open = surface.status === 'open' || surface.status === 'pending_delivery';
+    if (open && surface.expiresAt > Date.now()) return;
+    const current = open
+      ? await uiSurfaceRecord(state, { kind: 'close_surface', id: surface.id, status: 'expired' }) ?? surface
+      : surface;
+    await redrawUiSurface(surfaceMessenger(client, current.channelId), current);
+    return refuse(current.status === 'resolved' ? 'answered' : 'closed', current);
+  }
   if (input.botUserId && answerPicksUser(reading.surface, reading.answer, input.botUserId)) {
     return refuse('unavailable', reading.surface);
   }

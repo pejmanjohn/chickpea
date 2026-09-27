@@ -2961,10 +2961,10 @@ async function drainGatewayInbox(
             client,
             appStores,
           )
-        : item.delivery.kind === 'interaction.ui_action' || item.delivery.kind === 'interaction.view_submission'
-        ? await (item.delivery.kind === 'interaction.ui_action'
-          ? processGatewayUiAction(item.delivery, platformEnv, client, uiExecution)
-          : processGatewayViewSubmission(item.delivery, platformEnv, client, uiExecution))
+        : item.delivery.kind === 'interaction.ui_action'
+        ? await processGatewayUiAction(item.delivery, platformEnv, client, uiExecution)
+        : item.delivery.kind === 'interaction.view_submission'
+        ? await processGatewayViewSubmission(item.delivery, platformEnv, client, uiExecution)
         : await processGatewayPrivateChannelSetup(
             item.delivery,
             platformEnv,

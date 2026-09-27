@@ -6,6 +6,7 @@ import type {
 } from './presentation-tools.ts';
 import { markdownToSlackMrkdwn } from '../message-format.ts';
 import { uiActionId, uiBlockId, uiValue } from './surface.ts';
+import { clampDisplay, escapeMrkdwn, plain } from './text.ts';
 
 /**
  * Host-compiled display components that ride in the answer message after the
@@ -23,19 +24,6 @@ export interface RenderedDisplay {
    * Raw, like a table's: the message renderer escapes `&`, `<` and `>` once.
    */
   fallbackText: string;
-}
-
-function escape(text: string): string {
-  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
-
-function clamp(text: string, max: number): string {
-  const normalized = text.replace(/\s+/g, ' ').trim();
-  return normalized.length <= max ? normalized : `${normalized.slice(0, max - 1).trimEnd()}…`;
-}
-
-function plain(text: string, max: number) {
-  return { type: 'plain_text', text: clamp(text, max), emoji: true };
 }
 
 // ── cards ────────────────────────────────────────────────────────────────
@@ -74,7 +62,7 @@ function cardBlock(card: CardSpec, index: number, surfaceId: string | undefined)
     ...(card.subtitle ? { subtitle: plain(card.subtitle, 150) } : {}),
     ...(card.body ? { body: plain(card.body, 200) } : {}),
     ...(card.footnote ? { subtext: plain(card.footnote, 200) } : {}),
-    ...(card.imageUrl ? { hero_image: { type: 'image', image_url: card.imageUrl, alt_text: clamp(card.title, 2_000) } } : {}),
+    ...(card.imageUrl ? { hero_image: { type: 'image', image_url: card.imageUrl, alt_text: clampDisplay(card.title, 2_000) } } : {}),
     ...(buttons.length ? { actions: buttons.slice(0, 3) } : {}),
   };
 }
@@ -86,7 +74,7 @@ export function renderCards(spec: PresentCardsSpec, surfaceId?: string): Rendere
   const blockId = (index: number) => (surfaceId ? { block_id: uiBlockId('ui', surfaceId, index) } : {});
   const cards = spec.cards.map((card, index) => cardBlock(card, index, surfaceId));
   const blocks: Block[] = [];
-  if (spec.caption) blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `*${escape(spec.caption)}*` } });
+  if (spec.caption) blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `*${escapeMrkdwn(spec.caption)}*` } });
   blocks.push(cards.length === 1
     ? { ...cards[0]!, ...blockId(1) }
     : { type: 'carousel', ...blockId(1), elements: cards.map((card, index) => ({ ...card, ...blockId(index + 2) })) });

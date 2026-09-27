@@ -85,13 +85,13 @@ interface NodeGatewayDeliveryDependencies {
 }
 
 const NODE_GATEWAY_RETRY_MS = 5_000;
+const NODE_GATEWAY_DRAIN_RETRY_MS = 2_000;
 
 async function readNodeUiSurface(env: PlatformEnv | undefined, id: string): Promise<UiSurfaceRecord | undefined> {
   const state = resolveStores(env).slackState;
   if (!state.executeUiSurface) return undefined;
   return uiSurfaceRecord(state as Parameters<typeof uiSurfaceRecord>[0], { kind: 'get_surface', id });
 }
-const NODE_GATEWAY_DRAIN_RETRY_MS = 2_000;
 
 /** Single-process, single-flight drain for Node's durable gateway inbox. */
 export class NodeGatewayInboxWorker {

@@ -209,6 +209,81 @@ test('submissions are validated against the stored spec, never the payload', () 
   assert.deepEqual(good, { ok: true, values: { city: 'Porto', start: '2026-10-01' } });
 });
 
+test('time, datetime, choices, people and channel values are read from their picker shapes', () => {
+  const spec = validateRequestForm({
+    title: 'Kickoff',
+    fields: [
+      { key: 'at', label: 'Time', type: 'time' },
+      { key: 'when', label: 'When', type: 'datetime' },
+      { key: 'tracks', label: 'Tracks', type: 'choices', options: ['Design', 'Build', 'Launch'], required: true },
+      { key: 'crew', label: 'Crew', type: 'people' },
+      { key: 'where', label: 'Channel', type: 'channel' },
+    ],
+  });
+  const record = form(spec);
+  const ok = readFormSubmission(record, spec, {
+    ...field(record, 0, { type: 'timepicker', selected: ['09:30'] }),
+    ...field(record, 1, { type: 'datetimepicker', selected: ['1790000000'] }),
+    ...field(record, 2, { type: 'multi_static_select', selected: [uiValue(record.id, 2), uiValue(record.id, 0)] }),
+    ...field(record, 3, { type: 'multi_users_select', selected: ['U2AB', 'U3CD', 'U2AB'] }),
+    ...field(record, 4, { type: 'conversations_select', selected: ['C9ZZ'] }),
+  });
+  assert.deepEqual(ok, { ok: true, values: {
+    at: '09:30', when: '2026-09-21T14:13:20.000Z', tracks: ['Launch', 'Design'], crew: ['U2AB', 'U3CD'], where: 'C9ZZ',
+  } });
+  const bad = readFormSubmission(record, spec, {
+    ...field(record, 0, { type: 'timepicker', selected: ['25:00'] }),
+    ...field(record, 1, { type: 'datetimepicker', selected: ['soon'] }),
+    ...field(record, 3, { type: 'multi_users_select', selected: ['U2AB', 'not-an-id'] }),
+    ...field(record, 4, { type: 'conversations_select', selected: ['U2AB'] }),
+  });
+  assert.deepEqual(!bad.ok && bad.errors, {
+    [formFieldBlockId(record.id, 0)]: 'Choose a valid value.',
+    [formFieldBlockId(record.id, 1)]: 'Choose a valid value.',
+    [formFieldBlockId(record.id, 2)]: 'This field is required.',
+    [formFieldBlockId(record.id, 3)]: 'Choose from the list.',
+    [formFieldBlockId(record.id, 4)]: 'Choose from the list.',
+  });
+  // A picked date must exist on the calendar, not just match the shape.
+  const dated = form(INLINE);
+  const rolled = readFormSubmission(dated, INLINE, {
+    ...field(dated, 0, { type: 'static_select', selected: [uiValue(dated.id, 0)] }),
+    ...field(dated, 1, { type: 'datepicker', selected: ['2026-02-30'] }),
+  });
+  assert.deepEqual(!rolled.ok && rolled.errors, { [formFieldBlockId(dated.id, 1)]: 'Choose a valid value.' });
+});
+
+test('initial values reach the view only when Slack would accept them', () => {
+  const spec = validateRequestForm({
+    title: 'Renewal',
+    fields: [
+      { key: 'name', label: 'Name', type: 'text', initial: 'Acme' },
+      { key: 'email', label: 'Email', type: 'email', initial: 'not an email' },
+      { key: 'site', label: 'Site', type: 'url', initial: 'ftp://acme.test' },
+      { key: 'seats', label: 'Seats', type: 'number', initial: 'twelve' },
+      { key: 'start', label: 'Start', type: 'date', initial: '2026-02-30' },
+      { key: 'end', label: 'End', type: 'date', initial: '2026-02-28' },
+      { key: 'at', label: 'At', type: 'time', initial: '25:00' },
+      { key: 'plan', label: 'Plan', type: 'choice', options: ['Team', 'Business'], initial: 'Business' },
+    ],
+  });
+  const view = formModalView(form(spec), spec);
+  const elements = (view.blocks as Array<{ element?: Record<string, unknown> }>).flatMap((block) => block.element ? [block.element] : []);
+  assert.deepEqual(elements.map((element) => [
+    element.type, element.initial_value ?? element.initial_date ?? element.initial_time ?? (element.initial_option as { value?: string } | undefined)?.value,
+  ]), [
+    ['plain_text_input', 'Acme'],
+    ['email_text_input', undefined],
+    ['url_text_input', undefined],
+    ['number_input', undefined],
+    ['datepicker', undefined],
+    ['datepicker', '2026-02-28'],
+    ['timepicker', undefined],
+    ['static_select', uiValue(form(spec).id, 1)],
+  ]);
+  assert.deepEqual(checkSlackBlocks(view.blocks as Array<Record<string, unknown>>, { surface: 'modal' }).issues, []);
+});
+
 test('a submission becomes host-authored turn text, escaped like a typed message', () => {
   const record = form(MODAL);
   const values = { name: 'Acme <!channel> & Co', email: 'ap@acme.test' };
@@ -269,6 +344,9 @@ test('modal submissions answer Slack with field errors; only a valid one goes on
   assert.deepEqual(answered, { ok: false, responseAction: {
     response_action: 'errors', errors: { [formFieldBlockId(record.id, 0)]: 'This was already answered. Close this window.' },
   } });
+  for (const gone of [form(MODAL, { expiresAt: NOW - 1 }), form(MODAL, { status: 'superseded' })]) {
+    assert.match(JSON.stringify(readViewSubmission(submission(record, {}), gone, NOW)), /This has closed\. Reply in the thread instead\./);
+  }
   assert.deepEqual(readViewSubmission(submission(record, {}, { privateMetadata: 'forged' }), record, NOW),
     { ok: false, responseAction: { response_action: 'clear' } });
   const forOthers = readViewSubmission(submission(record, {}, { userId: 'U2' }), form({ ...MODAL, answerFrom: 'requester' }), NOW);
