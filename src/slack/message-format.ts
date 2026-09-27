@@ -726,6 +726,12 @@ export function streamableSlackMarkdownPrefix(text: string): string {
   return canonicalSlackMarkdownText(stable);
 }
 
+// Strong emphasis around one star-free segment that holds a URL.
+const URL_SEGMENT = String.raw`[^*\n]*https?:\/\/[^*\n]+`;
+const URL_EMPHASIS = new RegExp(String.raw`\*\*(${URL_SEGMENT})\*\*`, 'g');
+const URL_EMPHASIS_AT = new RegExp(String.raw`\*\*${URL_SEGMENT}\*\*`, 'y');
+const WHOLE_URL_SEGMENT = new RegExp(`^${URL_SEGMENT}$`);
+
 // Slack's markdown renderer can treat the closing `*` in a strong span as part
 // of an auto-linked URL (`**https://example.test/4**` -> URL ending in `*`).
 // Drop only the unsafe outer emphasis while preserving ordinary bold text and
@@ -735,7 +741,7 @@ export function sanitizeSlackMarkdownLinks(markdown: string): string {
     .split(/(```[\s\S]*?```|`[^`\n]*`)/g)
     .map((segment, index) => {
       if (index % 2 === 1) return segment;
-      return segment.replace(/\*\*([^*\n]*https?:\/\/[^*\n]+)\*\*/g, '$1');
+      return segment.replace(URL_EMPHASIS, '$1');
     })
     .join('');
 }
@@ -809,15 +815,9 @@ function earliestUnsafeTail(value: string): number {
   unsafeFrom = Math.min(unsafeFrom, unsafeMentionTail(value));
   // Emphasis around a URL is rewritten per line; an unpaired `**` on an
   // earlier line (`**kwargs`, `2**10`) is literal and must not hold the rest.
-  const emphasis = value.lastIndexOf('**');
-  if (emphasis >= lastLineStart && countToken(value.slice(lastLineStart), '**') % 2 === 1) {
-    unsafeFrom = Math.min(unsafeFrom, emphasis);
-  }
+  unsafeFrom = Math.min(unsafeFrom, openUrlEmphasis(value, lastLineStart));
   const trailingTicks = value.match(/`{1,2}$/)?.[0];
   if (trailingTicks) unsafeFrom = Math.min(unsafeFrom, value.length - trailingTicks.length);
-  if (value.endsWith('*') && !value.endsWith('**')) {
-    unsafeFrom = Math.min(unsafeFrom, value.length - 1);
-  }
   // A Markdown table row can look complete several tokens before the model
   // adds its newline. Hold the whole trailing row so Slack never flashes a
   // partially populated table during progressive delivery.
@@ -879,10 +879,28 @@ function unmatchedBacktickOnLastLine(value: string, lastLineStart: number): numb
   return undefined;
 }
 
-function countToken(value: string, token: string): number {
-  let count = 0;
-  for (let at = 0; (at = value.indexOf(token, at)) >= 0; at += token.length) count += 1;
-  return count;
+/**
+ * Where `sanitizeSlackMarkdownLinks` could still strip `**` on the last line
+ * once more text arrives, scanning it as its global replace does: a `**`
+ * whose segment runs to the end, or ends in a lone `*` after a URL, and a
+ * lone trailing `*` that may become one. Counting `**` pairs instead let a
+ * growing `***…` run flip between held and shown.
+ */
+function openUrlEmphasis(value: string, lastLineStart: number): number {
+  for (let at = lastLineStart; at < value.length; at += 1) {
+    if (value[at] !== '*') continue;
+    if (at === value.length - 1) return at;
+    if (value[at + 1] !== '*') continue;
+    URL_EMPHASIS_AT.lastIndex = at;
+    if (URL_EMPHASIS_AT.test(value)) {
+      at = URL_EMPHASIS_AT.lastIndex - 1;
+      continue;
+    }
+    const star = value.indexOf('*', at + 2);
+    if (star < 0) return at;
+    if (star === value.length - 1 && WHOLE_URL_SEGMENT.test(value.slice(at + 2, star))) return at;
+  }
+  return value.length;
 }
 
 export function appendSlackReplyFooter(

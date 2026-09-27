@@ -203,6 +203,9 @@ test('every progressive cut point is a monotone prefix of the canonical terminal
     'word\nxoxb-sk-ant-xoxb-123456789012345678901234 then more.',
     'word\nxoxp-sk-proj-abcdefghijklmnopqrstuvwxyz123456 then more.',
     '```ts\nxoxb-xoxb-123456789012345678901234\n```\nComplete.',
+    '@channelword\n******',
+    '**a**http://x** then more',
+    '****http://x*** then more',
   ];
 
   for (const terminalInput of corpus) {
