@@ -208,6 +208,20 @@ export interface NormalizedSlackTurn {
    * timestamp; Slack text cannot supply the id.
    */
   approvedBrowserActionId?: string;
+  /**
+   * Set only by host click admission: this turn is a person's answer to a
+   * durable Slack surface, not typed text. It never enters text-based approval
+   * matching; only a host-namespace click can stamp an approval above.
+   */
+  uiResponse?: SlackUiResponse;
+}
+
+export interface SlackUiResponse {
+  surfaceId: string;
+  namespace: 'ui' | 'host';
+  kind: string;
+  /** Index of the chosen control on the surface. */
+  choice: number;
 }
 
 interface IgnoredSlackTurn {

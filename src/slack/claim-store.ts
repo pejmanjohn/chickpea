@@ -43,6 +43,13 @@ import {
 } from './state-limits.ts';
 import { slackTimestampUnits } from './thread-context.ts';
 import { SqliteGatewayInboxStore } from './gateway/node-inbox-store.ts';
+import {
+  UiSurfaceStoreLogic,
+  type UiSurfaceClaim,
+  type UiSurfaceRpcRequest,
+  type UiSurfaceRpcResponse,
+} from './ui/surface-store.ts';
+import type { UiNamespace } from './ui/surface.ts';
 
 export {
   ACTIVE_WORK_TTL_MS,
@@ -65,6 +72,11 @@ export interface SlackCanonicalAdmissionInput {
     currentActivity?: SlackPresentationActivity;
     taskLabels?: readonly string[];
   };
+  /**
+   * A click's first-wins surface claim, committed with its TurnJob so a
+   * refused or duplicate admission never consumes the control.
+   */
+  uiSurfaceClaim?: UiSurfaceClaim & { namespace: UiNamespace };
 }
 
 export function slackSessionGenerationFromTimestamp(messageTs: string): number {
@@ -237,6 +249,8 @@ export interface SlackStateStore extends SlackClaimStore, SlackThreadRegistry {
   ): Promise<{ finalizedPurged: number; expiredTombstoned: number }>;
   summarizeRunPresentations?(workspaceId: string): Promise<SlackPresentationSummary>;
   discardTurn?(id: string): Promise<boolean>;
+  /** Durable interactive surfaces (see src/slack/ui/surface-store.ts). */
+  executeUiSurface?(request: UiSurfaceRpcRequest): Promise<UiSurfaceRpcResponse>;
   /** Node backend only (closes the SQLite handle); absent on RPC proxies. */
   close?(): void;
 }
@@ -364,12 +378,21 @@ export class SlackStateLogic {
     work: WorkStoreLogic,
     turnJobs?: TurnJobStoreLogic,
     presentations?: SlackRunPresentationStoreLogic,
+    uiSurfaces?: UiSurfaceStoreLogic,
   ): SlackCanonicalAdmissionResult {
     return this.db.transaction(() => {
       if (!this.claim(input.evtKey)) return { claimed: false };
       if (!this.claim(input.msgKey)) {
         this.release(input.evtKey);
         return { claimed: false };
+      }
+      if (input.uiSurfaceClaim) {
+        const claim = uiSurfaces?.claim(input.uiSurfaceClaim, input.uiSurfaceClaim.namespace);
+        if (!claim?.claimed) {
+          this.release(input.evtKey);
+          this.release(input.msgKey);
+          return { claimed: false };
+        }
       }
       const admission = work.admitShadowRunInTransaction(input.admission);
       this.start(input.threadKey);
@@ -470,9 +493,12 @@ export class SqliteSlackStateStore {
     const slack = new SlackStateLogic(this.db, now);
     const turnJobs = new TurnJobStoreLogic(this.db, now);
     const presentations = new SlackRunPresentationStoreLogic(this.db, now);
+    const uiSurfaces = new UiSurfaceStoreLogic(this.db, now);
     const work = new WorkStoreLogic(this.db, { now });
     this.gatewayInbox = new SqliteGatewayInboxStore(this.db);
-    const facade: SlackStateStore = localSlackStateStore({ slack, work, turnJobs, presentations });
+    const facade: SlackStateStore = localSlackStateStore({
+      slack, work, turnJobs, presentations, uiSurfaces,
+    });
     Object.assign(this, facade);
   }
 

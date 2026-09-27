@@ -492,6 +492,36 @@ export class WebClientPresenter {
     return addReactionChain(this.client, reactionFallbacks(reaction), coordinate);
   }
 
+  /**
+   * Post one host-owned interactive surface as its own message in the reply
+   * thread, under the same sender as the answer. Returns its timestamp.
+   */
+  async postSurfaceMessage(rendered: { text: string; blocks: unknown[] }): Promise<string | undefined> {
+    const posted = await this.client.chat.postMessage({
+      channel: this.target.channelId,
+      thread_ts: this.target.threadTs,
+      text: rendered.text,
+      blocks: rendered.blocks,
+      unfurl_links: false,
+      unfurl_media: false,
+      ...this.persona(),
+    } as unknown as Parameters<WebClient['chat']['postMessage']>[0]);
+    return typeof posted.ts === 'string' && posted.ts ? posted.ts : undefined;
+  }
+
+  /** Redraw a surface message from stored state; the sender is kept by Slack. */
+  async updateSurfaceMessage(
+    messageTs: string,
+    rendered: { text: string; blocks: unknown[] },
+  ): Promise<void> {
+    await this.client.chat.update({
+      channel: this.target.channelId,
+      ts: messageTs,
+      text: rendered.text,
+      blocks: rendered.blocks,
+    } as unknown as Parameters<WebClient['chat']['update']>[0]);
+  }
+
   async removeReaction(name: string, coordinate: SlackReactionCoordinate): Promise<void> {
     try {
       await this.client.reactions.remove({

@@ -391,6 +391,7 @@ const DELIVERY_KIND: Readonly<Record<GatewayInboundDelivery['kind'], string>> = 
   'event.deliver': 'event',
   'interaction.agent_selected': 'agent_selected',
   'interaction.channel_agent_add': 'channel_agent_add',
+  'interaction.ui_action': 'ui_action',
 };
 
 const SLACK_TS = /^\d{1,12}(?:\.\d{1,6})?$/;

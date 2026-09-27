@@ -102,6 +102,13 @@ function authoredBySelf(
 export function gatewayDeliveryOrderKey(delivery: GatewayInboundDelivery): string {
   if (delivery.kind === 'interaction.agent_selected') return `user:${delivery.userId}`;
   if (delivery.kind === 'interaction.channel_agent_add') return `channel:${delivery.channelId}`;
+  // A click is ordered with the messages of the thread holding its card.
+  if (delivery.kind === 'interaction.ui_action') {
+    if (!delivery.channelId) return `user:${delivery.userId}`;
+    if (delivery.channelId.startsWith('D')) return `channel:${delivery.channelId}`;
+    const root = delivery.threadTs ?? delivery.messageTs;
+    return root ? `thread:${delivery.channelId}:${root}` : `channel:${delivery.channelId}`;
+  }
   const event = delivery.envelope.event as unknown as Record<string, unknown>;
   const channel = str(event.channel);
   if (event.type === 'reaction_added') {

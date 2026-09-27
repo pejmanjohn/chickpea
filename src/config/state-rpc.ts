@@ -55,6 +55,7 @@ import type { UsageRpcRequest, UsageRpcResponse } from '../usage/types.ts';
 import type { WorkRpcRequest, WorkRpcResponse } from '../work/types.ts';
 import type { IdentityRpcRequest, IdentityRpcResponse } from '../identity/types.ts';
 import type { ManagementRpcRequest, ManagementRpcResponse } from '../management/types.ts';
+import type { UiSurfaceRpcRequest, UiSurfaceRpcResponse } from '../slack/ui/surface-store.ts';
 import type { SlackManagementSignal } from '../management/slack-tools.ts';
 import type {
   HostSlackManagementApprovalResult,
@@ -278,6 +279,8 @@ export interface TagStateRpc {
   managementExecute(
     request: ManagementRpcRequest,
   ): Promise<StateRpcResult<ManagementRpcResponse>>;
+  // -- durable interactive Slack surfaces ----------------------------------
+  uiSurfaceExecute(request: UiSurfaceRpcRequest): Promise<StateRpcResult<UiSurfaceRpcResponse>>;
   // -- config: agents ------------------------------------------------------
   configListAgents(): Promise<StateRpcResult<CustomAgentConfig[]>>;
   configListUserAgents(): Promise<StateRpcResult<CustomAgentConfig[]>>;
