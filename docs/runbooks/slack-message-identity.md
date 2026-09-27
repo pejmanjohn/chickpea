@@ -185,6 +185,13 @@ Holding a link, `<...>` reference, or `**` emphasis back from the stream only
 covers the line still being written. An emphasis or link label that
 continues onto a later line streams its opening literally until it closes;
 whether Slack re-renders it when it closes is still to be confirmed live.
+Any hold (a credential, a mention, an open `[` or `<`) that lands inside a URL
+emphasis span the text has already closed moves back to that span's opening
+`**`, because the whole answer drops the pair and the stream must not show it.
+Dropping the pair also joins the words on either side of each `**`
+(`**https://x @here**b` reads `https://x @hereb`), so credential and mention
+holds judge the text as it reads without those stars, and the text before a
+`**` that may still be dropped is held as if the stream ended there.
 
 ### Broadcast and user-group mentions
 
@@ -196,7 +203,7 @@ covers only some of the paths a reply takes:
 | --- | --- | --- |
 | `markdown` block | Every final answer | Silent on mentions (observed below) |
 | Streamed `markdown_text` chunk | Progressive and final streams | Silent on mentions (observed below) |
-| mrkdwn section text | File replies, routine file deliveries | Parses `<!here>`, `<!channel>`, `<!everyone>`, `<!subteam^ID>`; with the default `verbatim: false` it also auto-parses a plain `@here` and user-group handles |
+| mrkdwn section text | File replies, routine file deliveries, legacy work-checklist messages | Parses `<!here>`, `<!channel>`, `<!everyone>`, `<!subteam^ID>`; with the default `verbatim: false` it also auto-parses a plain `@here` and user-group handles |
 | Top-level `text` | Fallback and notification text | Parses `<!here>` syntax; a plain `@here` only with `link_names=1`, which Chickpea never sets |
 
 Every path is treated as parsing everything, so
@@ -219,6 +226,12 @@ sanitizing and credential redaction. `neutralizeSlackBroadcastMentions` in
   `@**here**`), and a link label or image alt text ending in `@`, get it too,
   so markup cannot join an `@` to the next word. These forms were not probed;
   they follow the documented mrkdwn auto-parsing.
+- The work-checklist and milestone-plan message renderers pass labels and
+  details through `escapeMrkdwn`, so a classifier-written `@here` or `@handle`
+  gets the joiner in both the mrkdwn section and the top-level `text`. Current
+  turns only re-render checklist messages that older builds posted; new turns
+  show these labels on the native task card (`task_update` chunks), which has
+  not been probed for mention parsing.
 
 User mentions (`<@U…>`), Channel links, `<!date^…>`, `<!DOCTYPE …>`, CDATA and
 email addresses are unchanged. Streaming withholds an open `<…` on the last

@@ -234,6 +234,19 @@ test('every progressive cut point is a monotone prefix of the canonical terminal
     '**https://x** `y` **https://z** `w',
     '*********',
     'Ping __@here__, _@channel_ and @here_now; see youtube.com/@everyone_team @here__ done.',
+    'see **https://x sk-proj-abcdefghijklmnopqrstuvwxyz123456** ok',
+    '**https://x OPENAI_API_KEY=**\nabc more',
+    'see **https://x/<a** ok',
+    '**>@<https://x\\n**a\\n',
+    // Dropping a `**URL**` span's stars joins the words on either side of them.
+    '**https://x @here**b and more.',
+    '**https://x xo**xb-123456789012345678901234 done',
+    'xo**xb-123456789012345678901234 https://x** done',
+    '@he**re https://x** now',
+    '**http://y/OPENAI_API_KEY= **\nhttps://xhttps://x',
+    // Overlapping credential markers hold from the first.
+    'xoxox-xox',
+    'xoxox|OPENAI_API_KEY\n',
   ];
 
   for (const terminalInput of corpus) {
