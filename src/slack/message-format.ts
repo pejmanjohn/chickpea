@@ -725,16 +725,15 @@ export function streamableSlackMarkdownPrefix(text: string): string {
   // A cut can end inside a closed code span or `<...>` reference, or right
   // after a broadcast word, where the whole answer neutralizes differently,
   // or inside code or a `**URL**` span, whose opener it leaves unclosed.
-  const unsafeTailOfCut = (cut: string) => {
-    const view = sanitizedView(cut);
-    return Math.min(
+  for (;;) {
+    const view = sanitizedView(stable);
+    const held = Math.min(
       view.toRaw(unsafeMentionTail(view.text)),
-      heldBeforeStars(cut, openUrlEmphasis(cut, cut.lastIndexOf('\n') + 1, true)),
-      strippedSpanStart(normalized, cut.length),
+      heldBeforeStars(stable, openUrlEmphasis(stable, stable.lastIndexOf('\n') + 1, true)),
+      strippedSpanStart(normalized, stable.length),
     );
-  };
-  for (let held = unsafeTailOfCut(stable); held < stable.length; held = unsafeTailOfCut(stable)) {
-    stable = stable.slice(0, sanitizedView(stable).credentialHoldStart(held)).trimEnd();
+    if (held >= stable.length) break;
+    stable = stable.slice(0, view.credentialHoldStart(held)).trimEnd();
   }
   if (!stable) return '';
   return canonicalSlackMarkdownText(stable);
@@ -787,11 +786,11 @@ function sanitizedView(value: string) {
   const toRaw = (at: number) => {
     if (at >= text.length) return value.length;
     let raw = at;
-    for (const [pair, star] of dropped.entries()) if (star - 2 * pair <= at) raw += 2;
+    for (const [nth, stars] of dropped.entries()) if (stars - 2 * nth <= at) raw += 2;
     return raw;
   };
   const fromRaw = (raw: number) =>
-    dropped.reduce((at, star) => at - Math.min(Math.max(raw - star, 0), 2), raw);
+    dropped.reduce((at, stars) => at - Math.min(Math.max(raw - stars, 0), 2), raw);
   return {
     text,
     toRaw,

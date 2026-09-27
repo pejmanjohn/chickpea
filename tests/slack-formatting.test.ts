@@ -245,7 +245,8 @@ test('every progressive cut point is a monotone prefix of the canonical terminal
     '@he**re https://x** now',
     '**http://y/OPENAI_API_KEY= **\nhttps://xhttps://x',
     // Overlapping credential markers hold from the first.
-    'https://x xoxoxoxb-123456789012345678901234)xo|xox done',
+    'xoxox-xox',
+    'xoxox|OPENAI_API_KEY\n',
   ];
 
   for (const terminalInput of corpus) {
