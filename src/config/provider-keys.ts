@@ -51,6 +51,9 @@ type ProviderRegistrationOptions = { apiKey?: string; baseUrl?: string };
 let storedCache: { expiresAt: number; values: StoredProviderKeys } | undefined;
 const appliedProviderFingerprints = new Map<ProviderKeyId, string>();
 const appliedProviderModelOverlays = new Map<ProviderKeyId, Map<string, Model<Api>>>();
+// The credential each rebind applied, so an overlay added during a synchronous
+// agent render keeps it. Absent means only the bootstrap env key is bound.
+const appliedProviderApiKeys = new Map<ProviderKeyId, string | undefined>();
 
 export function isProviderKeyId(id: string): id is ProviderKeyId {
   return (PROVIDER_KEY_IDS as readonly string[]).includes(id);
@@ -182,6 +185,7 @@ export function rebindBuiltinProvider(
   for (const model of modelOverlays) overlays.set(model.id, model);
   if (overlays.size > 0) appliedProviderModelOverlays.set(id, overlays);
   const models = [...overlays.values()];
+  appliedProviderApiKeys.set(id, apiKey);
   const fingerprint = keyFingerprint(JSON.stringify({ options, models }));
   if (appliedProviderFingerprints.get(id) === fingerprint) {
     return;
@@ -200,6 +204,16 @@ export function rebindBuiltinProvider(
   }
 }
 
+/**
+ * Add a model overlay without changing the provider's credential. A key
+ * stored in Admin (not the environment) is bound later, before the first
+ * model call, by the turn's runtime model preparation.
+ */
+export function addBuiltinProviderModelOverlay(id: ProviderKeyId, model: Model<Api>): void {
+  const apiKey = appliedProviderApiKeys.has(id) ? appliedProviderApiKeys.get(id) : envApiKey(id);
+  rebindBuiltinProvider(id, apiKey, [model]);
+}
+
 export function hasBuiltinProviderModelOverlay(
   id: ProviderKeyId,
   modelId: string,
@@ -207,10 +221,18 @@ export function hasBuiltinProviderModelOverlay(
   return appliedProviderModelOverlays.get(id)?.has(modelId) === true;
 }
 
+export function builtinProviderModelOverlay(
+  id: ProviderKeyId,
+  modelId: string,
+): Model<Api> | undefined {
+  return appliedProviderModelOverlays.get(id)?.get(modelId);
+}
+
 export function invalidateProviderKeyCache(): void {
   storedCache = undefined;
   appliedProviderFingerprints.clear();
   appliedProviderModelOverlays.clear();
+  appliedProviderApiKeys.clear();
 }
 
 async function readStoredProviderKeys(

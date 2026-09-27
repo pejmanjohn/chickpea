@@ -38,6 +38,7 @@ import type { ConnectionAccountSelection, EffectiveConnectionAccount } from '../
 import type { PersonalConnectionAuthorizationOption } from '../connections/types.ts';
 import {
   validateFrozenRuntimeModelRoute,
+  type FrozenOpenRouterLiveModelRoute,
   type FrozenRuntimeModelRoute,
 } from '../config/runtime-model.ts';
 import { isCompiledModelProfileId } from '../model-catalog/profiles.ts';
@@ -1479,6 +1480,9 @@ function parseModelCredential(value: unknown): RuntimePlanModelCredentialV3 {
 }
 
 function parseFrozenRuntimeModelRoute(value: unknown): FrozenRuntimeModelRoute {
+  if ((value as { source?: unknown } | null)?.source === 'openrouter_live_catalog') {
+    return parseFrozenOpenRouterLiveModelRoute(value);
+  }
   const record = exactRecord(value, 'runtimeModelRoute', [
     'source',
     'revision',
@@ -1521,6 +1525,53 @@ function parseFrozenRuntimeModelRoute(value: unknown): FrozenRuntimeModelRoute {
       ? {}
       : { maxTokens: positiveInteger(record.maxTokens, 'runtimeModelRoute.maxTokens') }),
   };
+}
+
+function parseFrozenOpenRouterLiveModelRoute(value: unknown): FrozenOpenRouterLiveModelRoute {
+  const record = exactRecord(value, 'runtimeModelRoute', [
+    'source',
+    'displayName',
+    'contextWindow',
+    'maxTokens',
+    'reasoning',
+    'input',
+    'cost',
+  ]);
+  if (!Array.isArray(record.input) || record.input.length < 1 || record.input.length > 2) {
+    throw new Error('Runtime plan runtimeModelRoute.input is invalid.');
+  }
+  const input = record.input.map((modality, index) =>
+    oneOf(modality, `runtimeModelRoute.input[${index}]`, ['text', 'image'] as const));
+  if (new Set(input).size !== input.length) {
+    throw new Error('Runtime plan runtimeModelRoute.input is invalid.');
+  }
+  const cost = exactRecord(record.cost, 'runtimeModelRoute.cost', [
+    'input',
+    'output',
+    'cacheRead',
+    'cacheWrite',
+  ]);
+  return {
+    source: 'openrouter_live_catalog',
+    displayName: boundedString(record.displayName, 'runtimeModelRoute.displayName', 1, 160),
+    contextWindow: positiveInteger(record.contextWindow, 'runtimeModelRoute.contextWindow'),
+    maxTokens: positiveInteger(record.maxTokens, 'runtimeModelRoute.maxTokens'),
+    reasoning: booleanField(record.reasoning, 'runtimeModelRoute.reasoning'),
+    input,
+    cost: {
+      input: finiteNumber(cost.input, 'runtimeModelRoute.cost.input'),
+      output: finiteNumber(cost.output, 'runtimeModelRoute.cost.output'),
+      cacheRead: finiteNumber(cost.cacheRead, 'runtimeModelRoute.cost.cacheRead'),
+      cacheWrite: finiteNumber(cost.cacheWrite, 'runtimeModelRoute.cost.cacheWrite'),
+    },
+  };
+}
+
+function finiteNumber(value: unknown, label: string): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new Error(`Runtime plan ${label} must be a finite number.`);
+  }
+  return value;
 }
 
 function requireFrozenModel(assignment: ResolvedAssignment): string {

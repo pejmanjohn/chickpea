@@ -2,6 +2,8 @@ import type { Api, Model } from '@earendil-works/pi-ai';
 import { openrouterProvider } from '@earendil-works/pi-ai/providers/openrouter';
 
 import {
+  addBuiltinProviderModelOverlay,
+  builtinProviderModelOverlay,
   hasBuiltinProviderModelOverlay,
   rebindBuiltinProvider,
   resolveProviderApiKey,
@@ -13,6 +15,22 @@ import type { PlatformEnv } from './state-backend.ts';
 const OPENROUTER_PREFIX = 'openrouter/';
 const OPENROUTER_CONTEXT_WINDOW_CEILING = 2_000_000;
 const OPENROUTER_MAX_COMPLETION_TOKENS = 128_000;
+
+/**
+ * The live-catalog metadata a turn admitted with an overlaid OpenRouter model.
+ * Flue resolves a model synchronously while it renders the agent, before any
+ * app hook can await the live catalog, so a cold Durable Object isolate
+ * registers the overlay from this frozen copy instead.
+ */
+export interface FrozenOpenRouterLiveModelRoute {
+  source: 'openrouter_live_catalog';
+  displayName: string;
+  contextWindow: number;
+  maxTokens: number;
+  reasoning: boolean;
+  input: Array<'text' | 'image'>;
+  cost: { input: number; output: number; cacheRead: number; cacheWrite: number };
+}
 
 /**
  * The Settings picker reads OpenRouter's live public catalog. Pi ships a
@@ -45,12 +63,74 @@ export async function ensureOpenRouterRuntimeModel(
   const discovered = models.find((model) => model.id === modelId);
   if (!discovered) return false;
 
-  const template = catalog.getModels().find((model) => model.id === 'openrouter/auto');
+  const template = openRouterTemplate();
   if (!template) return false;
   const runtimeModel = liveOpenRouterModel(discovered, template);
   const { apiKey } = await resolveProviderApiKey('openrouter', env, settings);
   rebindBuiltinProvider('openrouter', apiKey, [runtimeModel]);
   return true;
+}
+
+/**
+ * Freeze the overlay this isolate projected for a model outside Pi's static
+ * baseline. Baseline models need no route: every isolate already knows them.
+ */
+export function freezeOpenRouterRuntimeModelRoute(
+  canonicalModel: string,
+): FrozenOpenRouterLiveModelRoute | undefined {
+  const modelId = canonicalModel.slice(OPENROUTER_PREFIX.length);
+  if (openrouterProvider().getModels().some((model) => model.id === modelId)) return undefined;
+  const overlay = builtinProviderModelOverlay('openrouter', modelId);
+  if (!overlay) return undefined;
+  return {
+    source: 'openrouter_live_catalog',
+    displayName: overlay.name,
+    contextWindow: overlay.contextWindow,
+    maxTokens: overlay.maxTokens,
+    reasoning: overlay.reasoning,
+    input: [...overlay.input],
+    cost: { ...overlay.cost },
+  };
+}
+
+/** Synchronously register a frozen overlay before useModel() in a cold isolate. */
+export function registerFrozenOpenRouterRuntimeModelRoute(
+  canonicalModel: string,
+  runtimeModel: string,
+  route: FrozenOpenRouterLiveModelRoute,
+): void {
+  addBuiltinProviderModelOverlay(
+    'openrouter',
+    frozenOpenRouterRuntimeModel(canonicalModel, runtimeModel, route),
+  );
+}
+
+export function frozenOpenRouterRuntimeModel(
+  canonicalModel: string,
+  runtimeModel: string,
+  route: FrozenOpenRouterLiveModelRoute,
+): Model<'openai-completions'> {
+  if (!canonicalModel.startsWith(OPENROUTER_PREFIX) || runtimeModel !== canonicalModel) {
+    throw new Error('Frozen OpenRouter model route does not match its model.');
+  }
+  const template = openRouterTemplate();
+  if (!template) throw new Error('OpenRouter model template is unavailable.');
+  return {
+    ...template,
+    id: canonicalModel.slice(OPENROUTER_PREFIX.length),
+    name: route.displayName,
+    api: 'openai-completions',
+    provider: 'openrouter',
+    reasoning: route.reasoning,
+    input: [...route.input],
+    cost: { ...route.cost },
+    contextWindow: Math.min(route.contextWindow, OPENROUTER_CONTEXT_WINDOW_CEILING),
+    maxTokens: Math.min(route.maxTokens, route.contextWindow, OPENROUTER_MAX_COMPLETION_TOKENS),
+  };
+}
+
+function openRouterTemplate(): Model<Api> | undefined {
+  return openrouterProvider().getModels().find((model) => model.id === 'openrouter/auto');
 }
 
 function liveOpenRouterModel(

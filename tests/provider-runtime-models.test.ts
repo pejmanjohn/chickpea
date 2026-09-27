@@ -9,7 +9,13 @@ import {
 } from '../src/config/provider-keys.ts';
 import { invalidateProviderModelCache } from '../src/config/provider-models.ts';
 import { setWorkersAiRestPiProvider } from '../src/config/pi-provider.ts';
-import { resolveRuntimeModel, RuntimeModelReadinessError } from '../src/config/runtime-model.ts';
+import { registeredPiProvider } from '../src/config/pi-provider-registry.ts';
+import {
+  freezeRuntimeModelRoute,
+  registerFrozenRuntimeModelRoute,
+  resolveRuntimeModel,
+  RuntimeModelReadinessError,
+} from '../src/config/runtime-model.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 
 const originalFetch = globalThis.fetch;
@@ -129,6 +135,51 @@ test('an OpenRouter model discovered live is registered before runtime resolutio
     assert.equal(bounded.maxTokens, 128_000);
     assert.equal(bounded.cost.input, -1_000_000);
     assert.equal(bounded.cost.output, -1_000_000);
+  } finally {
+    settings.close();
+  }
+});
+
+test('an admitted OpenRouter overlay is frozen and recreated in a cold isolate', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    await settings.setSetting(PROVIDER_KEY_SETTING_KEYS.openrouter, 'openrouter-stored-key');
+    globalThis.fetch = async () => Response.json({
+      data: [{
+        id: 'acme/fresh-live-model',
+        name: 'Acme Fresh Live Model',
+        context_length: 196_608,
+        architecture: { input_modalities: ['text', 'image'] },
+        supported_parameters: ['reasoning'],
+        top_provider: { max_completion_tokens: 32_768 },
+        pricing: { prompt: '0.000002', completion: '0.000006' },
+      }],
+    });
+    const canonical = 'openrouter/acme/fresh-live-model';
+    const resolved = await resolveRuntimeModel('agent_openrouter', canonical, {
+      settings,
+      loadCatalog: async () => ({ status: 'bundled', revision: 0 }),
+    });
+    const admitted = resolveModel(resolved.model);
+    const route = freezeRuntimeModelRoute(canonical, resolved.providerAuthRoute);
+    assert.equal(route?.source, 'openrouter_live_catalog');
+    // Pi's static baseline already knows this model in every isolate.
+    assert.equal(freezeRuntimeModelRoute('openrouter/meta/muse-spark-1.1', undefined), undefined);
+
+    // A fresh Durable Object isolate: only the bootstrap registration exists.
+    resetModelsForTests();
+    invalidateProviderKeyCache();
+    rebindBuiltinProvider('openrouter', 'openrouter-stored-key');
+    assert.throws(() => resolveModel(canonical), /Unknown model ID/);
+    registerFrozenRuntimeModelRoute(canonical, resolved.model, route);
+    const recreated = resolveModel(canonical);
+    for (const field of ['id', 'name', 'api', 'contextWindow', 'maxTokens', 'reasoning'] as const) {
+      assert.equal(recreated[field], admitted[field], field);
+    }
+    assert.deepEqual(recreated.input, admitted.input);
+    assert.deepEqual(recreated.cost, admitted.cost);
+    const auth = await registeredPiProvider('openrouter')?.auth.apiKey?.resolve({} as never);
+    assert.equal(auth?.auth.apiKey, 'openrouter-stored-key');
   } finally {
     settings.close();
   }

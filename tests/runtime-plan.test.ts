@@ -391,7 +391,8 @@ test('a hosted route carries only compiled profile facts and binds its revisione
   });
 
   assert.deepEqual(plan.runtimeModelRoute, runtimeModelRoute);
-  assert.equal(parseRuntimePlanV2(structuredClone(plan)).runtimeModelRoute?.profile,
+  const parsedRoute = parseRuntimePlanV2(structuredClone(plan)).runtimeModelRoute;
+  assert.equal(parsedRoute?.source === 'hosted_catalog' && parsedRoute.profile,
     'openai-codex-responses-standard@1');
   assert.throws(
     () => parseRuntimePlanV2({
@@ -399,6 +400,44 @@ test('a hosted route carries only compiled profile facts and binds its revisione
       runtimeModelRoute: { ...runtimeModelRoute, baseUrl: 'https://attacker.example' },
     }),
     /runtimeModelRoute.*unknown field/i,
+  );
+});
+
+test('an OpenRouter live-catalog route freezes only model metadata', () => {
+  const model = 'openrouter/acme/fresh-live-model';
+  const runtimeModelRoute = {
+    source: 'openrouter_live_catalog' as const,
+    displayName: 'Acme Fresh Live Model',
+    contextWindow: 196_608,
+    maxTokens: 32_768,
+    reasoning: true,
+    input: ['text' as const, 'image' as const],
+    cost: { input: 2, output: 6, cacheRead: 0.2, cacheWrite: 2.5 },
+  };
+  const plan = compile({
+    assignment: assignment({ model }),
+    runtimeModel: model,
+    runtimeModelRoute,
+  });
+
+  assert.deepEqual(parseRuntimePlanV2(structuredClone(plan)).runtimeModelRoute, runtimeModelRoute);
+  for (const route of [
+    { ...runtimeModelRoute, baseUrl: 'https://attacker.example' },
+    { ...runtimeModelRoute, cost: { ...runtimeModelRoute.cost, extra: 1 } },
+    { ...runtimeModelRoute, input: ['text', 'audio'] },
+    { ...runtimeModelRoute, input: ['text', 'text'] },
+    { ...runtimeModelRoute, contextWindow: 0 },
+    { ...runtimeModelRoute, cost: { ...runtimeModelRoute.cost, input: Number.NaN } },
+  ]) {
+    assert.throws(() => parseRuntimePlanV2({ ...plan, runtimeModelRoute: route }), /runtimeModelRoute/);
+  }
+  assert.throws(
+    () => compile({
+      assignment: assignment({ model }),
+      runtimeModel: 'openrouter/acme/other-model',
+      runtimeModelRoute,
+    }),
+    /does not match/,
   );
 });
 

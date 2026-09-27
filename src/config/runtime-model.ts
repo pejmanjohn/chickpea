@@ -38,11 +38,19 @@ import type {
 } from '../model-catalog/types.ts';
 import type { ModelCredentialAttribution } from './types.ts';
 import type { RunExecutionRouteInput } from '../work/types.ts';
-import { ensureOpenRouterRuntimeModel } from './openrouter-runtime-model.ts';
+import {
+  ensureOpenRouterRuntimeModel,
+  freezeOpenRouterRuntimeModelRoute,
+  frozenOpenRouterRuntimeModel,
+  registerFrozenOpenRouterRuntimeModelRoute,
+  type FrozenOpenRouterLiveModelRoute,
+} from './openrouter-runtime-model.ts';
 import {
   ProviderModelsUnavailableError,
   ProviderUnreachableError,
 } from './provider-models.ts';
+
+export type { FrozenOpenRouterLiveModelRoute };
 
 export type ProviderAuthRoute = 'openai_api_key' | 'openai_subscription';
 
@@ -53,8 +61,12 @@ export interface ResolvedRuntimeModel {
   providerAuthRoute?: ProviderAuthRoute;
 }
 
-/** Safe hosted-route facts carried across the Flue creation boundary. */
-export interface FrozenRuntimeModelRoute {
+/** Safe model-route facts carried across the Flue creation boundary. */
+export type FrozenRuntimeModelRoute =
+  | FrozenHostedCatalogModelRoute
+  | FrozenOpenRouterLiveModelRoute;
+
+export interface FrozenHostedCatalogModelRoute {
   source: 'hosted_catalog';
   revision: number;
   sha256: string;
@@ -140,6 +152,9 @@ export function freezeRuntimeModelRoute(
   canonicalModel: string,
   providerAuthRoute: ProviderAuthRoute | undefined,
 ): FrozenRuntimeModelRoute | undefined {
+  if (providerPrefix(canonicalModel) === 'openrouter') {
+    return freezeOpenRouterRuntimeModelRoute(canonicalModel);
+  }
   const lane = authLaneForCanonicalModel(canonicalModel, providerAuthRoute);
   if (!lane) return undefined;
   const route = resolveActiveCatalogRoute(canonicalModel, lane);
@@ -166,6 +181,10 @@ export function registerFrozenRuntimeModelRoute(
   route: FrozenRuntimeModelRoute | undefined,
 ): void {
   if (!route) return;
+  if (route.source === 'openrouter_live_catalog') {
+    registerFrozenOpenRouterRuntimeModelRoute(canonicalModel, runtimeModel, route);
+    return;
+  }
   const { model, aliases } = materializeFrozenRuntimeModelRoute(
     canonicalModel,
     runtimeModel,
@@ -196,13 +215,18 @@ export function validateFrozenRuntimeModelRoute(
   runtimeModel: string,
   route: FrozenRuntimeModelRoute | undefined,
 ): void {
-  if (route) materializeFrozenRuntimeModelRoute(canonicalModel, runtimeModel, route);
+  if (!route) return;
+  if (route.source === 'openrouter_live_catalog') {
+    frozenOpenRouterRuntimeModel(canonicalModel, runtimeModel, route);
+    return;
+  }
+  materializeFrozenRuntimeModelRoute(canonicalModel, runtimeModel, route);
 }
 
 function materializeFrozenRuntimeModelRoute(
   canonicalModel: string,
   runtimeModel: string,
-  route: FrozenRuntimeModelRoute,
+  route: FrozenHostedCatalogModelRoute,
 ) {
   const entry: ModelCatalogEntry = {
     id: canonicalModel as ModelCatalogEntry['id'],

@@ -93,6 +93,66 @@ test('Cloudflare bootstrap omits the Node-only subscription provider', () => {
   assert.equal(output, 'true');
 });
 
+test('a frozen OpenRouter live-catalog route registers its model in a fresh process', () => {
+  const script = String.raw`
+    import { resolveModel } from '@flue/runtime/internal';
+    import { registeredPiProvider } from './src/config/pi-provider-registry.ts';
+    import { registerFrozenRuntimeModelRoute } from './src/config/runtime-model.ts';
+    import { bootstrapRuntimeProviders } from './src/runtime-bootstrap.ts';
+
+    bootstrapRuntimeProviders();
+    const canonical = 'openrouter/acme/fresh-live-model';
+    let before = 'resolved';
+    try { resolveModel(canonical); } catch (error) { before = error.message; }
+    registerFrozenRuntimeModelRoute(canonical, canonical, {
+      source: 'openrouter_live_catalog',
+      displayName: 'Acme Fresh Live Model',
+      contextWindow: 196608,
+      maxTokens: 32768,
+      reasoning: true,
+      input: ['text', 'image'],
+      cost: { input: 2, output: 6, cacheRead: 0.2, cacheWrite: 2.5 },
+    });
+    const model = resolveModel(canonical);
+    const auth = await registeredPiProvider('openrouter').auth.apiKey.resolve();
+    process.stdout.write(JSON.stringify({
+      before,
+      model: {
+        provider: model.provider, id: model.id, name: model.name, api: model.api,
+        contextWindow: model.contextWindow, maxTokens: model.maxTokens,
+        reasoning: model.reasoning, input: model.input, cost: model.cost,
+      },
+      apiKey: auth?.auth.apiKey,
+    }));
+  `;
+  const output = execFileSync(
+    process.execPath,
+    ['--import', 'tsx', '--input-type=module', '-e', script],
+    {
+      cwd: new URL('..', import.meta.url),
+      encoding: 'utf8',
+      env: { ...providerHermeticEnv(), OPENROUTER_API_KEY: 'openrouter-env-key' },
+    },
+  );
+  const result = JSON.parse(output);
+
+  // Flue resolves the model while rendering the agent, before any app hook can
+  // await the live catalog; without the frozen route a cold isolate fails here.
+  assert.match(result.before, /Unknown model ID "acme\/fresh-live-model"/);
+  assert.deepEqual(result.model, {
+    provider: 'openrouter',
+    id: 'acme/fresh-live-model',
+    name: 'Acme Fresh Live Model',
+    api: 'openai-completions',
+    contextWindow: 196_608,
+    maxTokens: 32_768,
+    reasoning: true,
+    input: ['text', 'image'],
+    cost: { input: 2, output: 6, cacheRead: 0.2, cacheWrite: 2.5 },
+  });
+  assert.equal(result.apiKey, 'openrouter-env-key');
+});
+
 test('a frozen hosted route registers its revisioned provider in a fresh process', () => {
   const script = String.raw`
     import { resolveModel } from '@flue/runtime/internal';
