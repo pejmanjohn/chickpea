@@ -145,6 +145,6 @@ export function parseUiControl(input: {
 
 /** A selected option's value, bound to its surface like a button value. */
 export function parseUiOptionValue(surfaceId: string, value: string): number | undefined {
-  const match = /^([a-f0-9]{32}):(\d{1,3})$/.exec(value);
+  const match = VALUE.exec(value);
   return match && match[1] === surfaceId ? Number(match[2]) : undefined;
 }

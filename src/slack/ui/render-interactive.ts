@@ -5,7 +5,9 @@ import {
   uiActionId,
   uiBlockId,
   uiValue,
+  type ActionsSurfaceSpec,
   type ParsedUiControl,
+  type QuestionSurfaceSpec,
   type UiSurfaceRecord,
 } from './surface.ts';
 
@@ -330,12 +332,12 @@ function renderActions(record: UiSurfaceRecord, spec: OfferActionsSpec): Rendere
 
 export function renderInteractiveSurface(
   record: UiSurfaceRecord,
+  spec: QuestionSurfaceSpec | ActionsSurfaceSpec,
   options: { withHeader?: boolean } = {},
-): RenderedInteractive | undefined {
-  const spec = record.spec;
-  if (spec.kind === 'question') return renderQuestion(record, spec.question, options.withHeader ?? true);
-  if (spec.kind === 'actions') return renderActions(record, spec.actions);
-  return undefined;
+): RenderedInteractive {
+  return spec.kind === 'question'
+    ? renderQuestion(record, spec.question, options.withHeader ?? true)
+    : renderActions(record, spec.actions);
 }
 
 // ── clicks ────────────────────────────────────────────────────────────────
@@ -425,14 +427,17 @@ export function interactiveAnswer(
  * The host-authored turn a click becomes. It quotes the stored question and
  * labels, never text from the click payload, and names who answered.
  */
-export function interactiveTurnText(record: UiSurfaceRecord, answer: InteractiveAnswer, byUserId: string): string {
-  const spec = record.spec;
-  const reference = `(${record.spec.kind} ${record.id.slice(0, 8)})`;
+export function interactiveTurnText(
+  record: UiSurfaceRecord,
+  spec: QuestionSurfaceSpec | ActionsSurfaceSpec,
+  answer: InteractiveAnswer,
+  byUserId: string,
+): string {
+  const reference = `(${spec.kind} ${record.id.slice(0, 8)})`;
   if (spec.kind === 'actions') {
     const label = spec.actions.actions[answer.choice]?.label ?? 'a suggested next step';
     return `Pressed the suggested next step "${label}" under your previous reply ${reference}.`;
   }
-  if (spec.kind !== 'question') return 'Answered with a button.';
   const question = spec.question;
   const values = answer.values ?? [String(answer.choice)];
   const answered = questionAnswerLabel(question, values);

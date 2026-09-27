@@ -134,8 +134,10 @@ export function renderUiSurface(
   record: UiSurfaceRecord,
   options: { withHeader?: boolean } = {},
 ): RenderedUiSurface {
-  if (record.spec.kind === 'approval') return renderHostApproval(record, record.spec);
-  return renderInteractiveSurface(record, options)!;
+  const spec = record.spec;
+  return spec.kind === 'approval'
+    ? renderHostApproval(record, spec)
+    : renderInteractiveSurface(record, spec, options);
 }
 
 /**
@@ -144,7 +146,7 @@ export function renderUiSurface(
  */
 export function uiResponseTurnText(record: UiSurfaceRecord, answer: InteractiveAnswer, byUserId: string): string {
   const spec = record.spec;
-  if (spec.kind !== 'approval') return interactiveTurnText(record, answer, byUserId);
+  if (spec.kind !== 'approval') return interactiveTurnText(record, spec, answer, byUserId);
   const decision = approvalChoice(answer.choice);
   if (spec.approval === 'workspace_change') {
     return decision === 'approve'

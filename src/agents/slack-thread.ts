@@ -216,6 +216,7 @@ import { slackPresentationIntentCapability } from '../slack/presentation-intent.
 import {
   createAskUserTool,
   createOfferActionsTool,
+  interactiveSurfaceScope,
   SLACK_INTERACTIVE_QUESTION_DATA_NAME,
   SlackInteractiveQuestionSchema,
   type SlackInteractiveQuestion,
@@ -820,26 +821,17 @@ export function useChickpeaSlackRuntimeCapabilities(
 
 /**
  * ask_user and offer_actions, bound to this request's host coordinates. They
- * mount only where a click can be admitted like a reply: never in group DMs
- * or without a trusted Slack signal. The guide names only mounted tools.
+ * mount only where a click can be admitted like a reply (see
+ * interactiveSurfaceScope) and never without a trusted Slack signal. The
+ * guide names only mounted tools.
  */
 function useSlackInteractiveComponents(
   plan: RuntimePlanV2,
   writeInteractiveQuestion?: (record: SlackInteractiveQuestion) => void,
 ): void {
   const signal = parseSlackManagementSignal(useDelivery(), plan);
-  if (!signal) return;
-  const conversationKind = signal.conversationKind ?? (signal.channelId.startsWith('D') ? 'im' : 'channel');
-  if (conversationKind === 'mpim') return;
-  const scope = {
-    workspaceId: signal.workspaceId,
-    channelId: signal.channelId,
-    threadTs: signal.threadTs,
-    conversationKind,
-    agentId: plan.agentId,
-    turnJobId: signal.turnJobId,
-    requesterUserId: signal.slackUserId,
-  } as const;
+  const scope = signal && interactiveSurfaceScope(signal, plan.agentId);
+  if (!scope) return;
   const store = async () => getSlackStateStore(await resolveAgentPlatformEnv());
   useInstruction(slackPresentationGuide([
     SLACK_ASK_USER_TOOL_NAME, SLACK_OFFER_ACTIONS_TOOL_NAME, SLACK_PRESENT_TABLE_TOOL_NAME,

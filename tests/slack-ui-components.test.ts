@@ -21,6 +21,7 @@ import { deliverInteractiveSurfaces, type UiSurfaceMessenger } from '../src/slac
 import {
   createAskUserTool,
   createOfferActionsTool,
+  interactiveSurfaceScope,
   SLACK_INTERACTIVE_QUESTION_DATA_NAME,
 } from '../src/slack/ui/interactive-tools.ts';
 import {
@@ -182,6 +183,26 @@ test('validators teach instead of throwing opaque errors', () => {
   assert.equal(validateAskUser({ question: 'Oct 13 or Oct 20?', options: [{ label: 'Oct 13' }, { label: 'Oct 20' }] }).options?.length, 2);
   const both = validateAskUser({ question: 'When?', pick: 'date', options: [{ label: 'Mon' }, { label: 'Tue' }] });
   assert.equal(both.pick, undefined, 'known options win over a picker');
+});
+
+test('the tools mount only where a click could be admitted like a reply', () => {
+  const signal = {
+    workspaceId: 'T1', channelId: 'C1', threadTs: '1.000001', conversationKind: 'channel' as const,
+    slackUserId: 'U1', turnJobId: 'job1',
+  };
+  assert.deepEqual(interactiveSurfaceScope(signal, 'agent_a'), {
+    workspaceId: 'T1', channelId: 'C1', threadTs: '1.000001', conversationKind: 'channel',
+    agentId: 'agent_a', turnJobId: 'job1', requesterUserId: 'U1',
+  });
+  assert.equal(interactiveSurfaceScope({ ...signal, channelId: 'D1', conversationKind: 'im' }, 'agent_a')?.conversationKind, 'im');
+  // Group DMs admit no plain thread replies, so a click there could never be admitted.
+  assert.equal(interactiveSurfaceScope({ ...signal, conversationKind: 'mpim' }, 'agent_a'), undefined);
+  // A legacy DM session signals its channel-wide key, not the Slack thread a
+  // card would be posted in; a card recorded there could never be delivered.
+  assert.equal(interactiveSurfaceScope({ ...signal, channelId: 'D1', conversationKind: 'im', threadTs: 'dm' }, 'agent_a'), undefined);
+  // A signal without a trusted conversation kind is never DM-authorized.
+  const { conversationKind: _kind, ...untyped } = signal;
+  assert.equal(interactiveSurfaceScope(untyped, 'agent_a'), undefined);
 });
 
 test('ask_user and offer_actions record one pending surface per turn and teach on bad input', async () => {
