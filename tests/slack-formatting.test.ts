@@ -186,6 +186,11 @@ test('every progressive cut point is a monotone prefix of the canonical terminal
     'Ask @here-now or @everyone123; mail a@here.com.\n```\n<!channel> @here\n```\nDone @here.',
     '`@here <x` then <!here>, then `<!channel|x>` and <![CDATA[ a ]]>.',
     'Key sk-proj-abcdefghijklmnopqrstuvwxyz123456@here stays redacted, @everyone.',
+    'word\nxoxb-xoxb-123456789012345678901234\nDone.',
+    'word\nsk-xoxb-xoxb-123456789012345678901234 then more.',
+    'word\nxoxb-sk-ant-xoxb-123456789012345678901234 then more.',
+    'word\nxoxp-sk-proj-abcdefghijklmnopqrstuvwxyz123456 then more.',
+    '```ts\nxoxb-xoxb-123456789012345678901234\n```\nComplete.',
   ];
 
   for (const terminalInput of corpus) {
@@ -295,6 +300,13 @@ test('a streamed prefix withholds a mention until it neutralizes like the whole 
   for (const [input, expected] of cases) {
     assert.equal(streamableSlackMarkdownPrefix(input), expected, JSON.stringify(input));
   }
+});
+
+test('a repeated credential marker is held from its first occurrence', () => {
+  const input = 'word\nxoxb-xoxb-123456789012345678901234';
+  assert.equal(canonicalSlackMarkdownText(input), 'word\n[credential redacted]');
+  assert.equal(streamableSlackMarkdownPrefix(input), 'word');
+  assert.equal(streamableSlackMarkdownPrefix('word\nxoxb-xoxb-'), 'word');
 });
 
 test('plain progress replies disable Slack markup parsing and escape control characters', () => {

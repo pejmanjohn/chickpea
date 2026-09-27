@@ -759,6 +759,18 @@ function earliestUnsafeTail(value: string): number {
       }
     }
   }
+  // Redaction starts at the first marker in a token (`xoxb-xoxb-…`,
+  // `xoxp-sk-proj-…`), whichever marker it is, so a hold inside a token moves
+  // back to that one.
+  if (unsafeFrom < value.length) {
+    let tokenStart = unsafeFrom;
+    while (tokenStart > 0 && !/\s/.test(value[tokenStart - 1]!)) tokenStart -= 1;
+    const token = lower.slice(tokenStart, unsafeFrom);
+    for (const marker of credentialMarkers()) {
+      const at = token.indexOf(marker.toLowerCase());
+      if (at >= 0) unsafeFrom = Math.min(unsafeFrom, tokenStart + at);
+    }
+  }
 
   // A link or Slack `<...>` reference still being written sits on the last
   // line. Once a line ends, a `[` or `<` on it was literal text (a CDATA
