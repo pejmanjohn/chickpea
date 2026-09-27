@@ -7,7 +7,7 @@ import type {
 } from '../config/state-rpc.ts';
 import type { TurnLatencyContext } from '../observability/runtime-latency.ts';
 import { isStateStoreDisconnect } from '../config/cf-state-proxies.ts';
-import type { CodingTaskStopReport } from '../sandbox/coding-task-stop.ts';
+import { readSandboxTurnProgress, type CodingTaskStopReport } from '../sandbox/coding-task-stop.ts';
 import { sandboxThreadKey } from '../sandbox/thread-key.ts';
 import type { ProductTelemetryCapture } from '../telemetry/client.ts';
 import type { UsageStore } from '../usage/types.ts';
@@ -279,9 +279,8 @@ export async function executeTurnJob(
         );
       } catch (error) {
         if (!isTurnJobStopRefusal(error)) throw error;
-        // Retryable, so run-turn passes it through without a failure final.
         stopRefused = true;
-        throw new AgentPromptFailure('agent', 409, false, true, error);
+        throw stopRefusedDispatch(error);
       }
     },
     reconcileExistingInstance: (uid: string) =>
@@ -405,22 +404,13 @@ export async function executeTurnJob(
     const codingTaskStarted = reattaching && activeWorkKey !== undefined &&
       await ports.slack.isCodingActiveWork(activeWorkKey, job.id);
     /**
-     * What the thread's coding Sandbox holds for this turn, for a stop note:
-     * whether this turn opened a workspace there, and the progress recorded.
+     * The progress the thread's coding Sandbox recorded for this turn, for a
+     * stop note; defined only when this turn opened a workspace there.
      */
-    const readStoppedSandbox = async (): Promise<{ progress?: TurnProgress } | undefined> => {
+    const readStoppedSandbox = async (): Promise<TurnProgress | undefined> => {
       if (!frozenPlan?.codingWorkspace) return undefined;
       const sandboxKey = sandboxThreadKey(slackAgentThreadKey(job.turn, job.assignment));
-      for (const openSandbox of ports.sandboxes(sandboxKey)) {
-        try {
-          const sandbox = openSandbox();
-          if ((await sandbox.getTurnId()) !== job.id) continue;
-          return { progress: await sandbox.getTurnProgress() };
-        } catch {
-          // One identity can be unavailable during a rolling deploy.
-        }
-      }
-      return undefined;
+      return readSandboxTurnProgress(ports.sandboxes(sandboxKey), job.id);
     };
     // The stopped ending (KTD3). The state store drops (and counts) the rows
     // the stop held before anything is delivered: once the turn is marked
@@ -444,7 +434,7 @@ export async function executeTurnJob(
         // presentations with the drop (see SlackStateLogic.finishTurnStop);
         // they keep their claims so a Slack retry never runs them. Only the
         // stopped run itself could have coding work or progress.
-        const sandbox = stoppedBeforeDispatch ? undefined : await readStoppedSandbox();
+        const sandboxProgress = stoppedBeforeDispatch ? undefined : await readStoppedSandbox();
         const report = stoppedBeforeDispatch
           ? undefined
           : await options.codingStopReport?.().catch(() => undefined);
@@ -452,8 +442,8 @@ export async function executeTurnJob(
           finished,
           beforeDispatch: stoppedBeforeDispatch,
           progress: job.progress,
-          ...(sandbox?.progress ? { sandboxProgress: sandbox.progress } : {}),
-          codingRan: codingTaskStarted || codingTaskSeen || sandbox !== undefined,
+          ...(sandboxProgress ? { sandboxProgress } : {}),
+          codingRan: codingTaskStarted || codingTaskSeen || sandboxProgress !== undefined,
           ...(report ? { report } : {}),
         });
         keepCodingActiveWork = ending.keepCodingActiveWork;
@@ -749,6 +739,16 @@ export function stopNoteFacts(input: {
     },
     keepCodingActiveWork: report ? !report.allSettled : input.codingRan,
   };
+}
+
+/**
+ * A dispatch preparation the row's stop record refused (TurnJobStopRefusal),
+ * as run-turn must see it: retryable, so it passes through without a
+ * failure final, and the executor gives the attempt back and waits like a
+ * held row. Shared with the Node relay (KTD16).
+ */
+export function stopRefusedDispatch(refusal: unknown): AgentPromptFailure {
+  return new AgentPromptFailure('agent', 409, false, true, refusal);
 }
 
 /**

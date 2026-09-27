@@ -263,6 +263,14 @@ const SLACK_EVENT_ID = /^[A-Z0-9]{2,64}$/;
 const SLACK_EVENT_TS = /^\d{1,12}\.\d{1,9}$/;
 
 /**
+ * A Slack message or event timestamp of the exact shape a stop's cutoff and
+ * the rows it is compared with need (KTD2): seconds, a dot, a fraction.
+ */
+export function validSlackTs(value: unknown): value is string {
+  return typeof value === 'string' && SLACK_EVENT_TS.test(value);
+}
+
+/**
  * Read an `agent_session_stopped` event defensively: Slack documents
  * `user`, `channel`, `thread_ts` and `event_ts`, and a press missing any of
  * them (or carrying an unexpected shape) cannot be tied to a run.
@@ -274,8 +282,7 @@ export function parseSlackAgentSessionStopped(event: unknown): SlackStopButtonPr
   const { user, channel, thread_ts: threadTs, event_ts: eventTs } = value;
   if (typeof user !== 'string' || !SLACK_EVENT_ID.test(user)) return undefined;
   if (typeof channel !== 'string' || !SLACK_EVENT_ID.test(channel)) return undefined;
-  if (typeof threadTs !== 'string' || !SLACK_EVENT_TS.test(threadTs)) return undefined;
-  if (typeof eventTs !== 'string' || !SLACK_EVENT_TS.test(eventTs)) return undefined;
+  if (!validSlackTs(threadTs) || !validSlackTs(eventTs)) return undefined;
   return { userId: user, channelId: channel, threadTs, eventTs };
 }
 

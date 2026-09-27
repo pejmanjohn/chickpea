@@ -41,7 +41,7 @@ import type { SlackRuntimeDrainCounts } from '../config/state-rpc.ts';
 import type { SlackTurnRecoveryItem } from '../config/state-rpc.ts';
 import type { RunExecutionAuthority } from '../work/types.ts';
 import { CLAIM_TTL_MS } from './state-limits.ts';
-import type { NormalizedSlackTurn } from './types.ts';
+import { validSlackTs, type NormalizedSlackTurn } from './types.ts';
 import type { UsagePersistenceEvent } from '../usage/runtime-recorder.ts';
 import type { SlackInteractionIntent } from './interaction-intent.ts';
 import { conversationThreadTs, slackAgentThreadKey, slackConversationKind } from './thread-key.ts';
@@ -785,7 +785,7 @@ export class TurnJobStoreLogic {
   }
 
   /**
-   * The stopped ending (U3) drops the rows the stop holds, or releases them
+   * The stopped ending (KTD3) drops the rows the stop holds, or releases them
    * on a completion race (R22), and records that ending on the head, all in
    * one transaction. A dropped row keeps the existing `done` status
    * (delivered), so an older release never dispatches it again or maps it to
@@ -2148,6 +2148,8 @@ export async function deliverDueStopNotices(input: {
   return { acknowledged, deferred: outcomes.length - acknowledged };
 }
 
+const SLACK_REACTION_NAME = /^[a-z0-9_+-]{1,80}$/;
+
 /**
  * A job's mid-run receipt, as its row records it (KTD9), or undefined unless
  * it names the job's own message: the only 👀 a turn may ever remove.
@@ -2170,8 +2172,6 @@ function midRunReceiptOf(job: TurnJob): NonNullable<TurnProgress['slackInteracti
     reaction: 'seen_mid_run',
   };
 }
-
-const SLACK_REACTION_NAME = /^[a-z0-9_+-]{1,80}$/;
 
 /** The stop thread key of a turn, or undefined when its coordinates are unusable. */
 function stopThreadKeyOf(turn: NormalizedSlackTurn, assignment: ResolvedAssignment): string | undefined {
@@ -2217,12 +2217,6 @@ function runnerKeyOf(job: Pick<PendingTurnJob, 'turn' | 'assignment'>): string {
   } catch {
     return turnStopThreadKey(job.turn, job.assignment);
   }
-}
-
-const SLACK_TS = /^\d{1,12}\.\d{1,9}$/;
-
-function validSlackTs(value: unknown): value is string {
-  return typeof value === 'string' && SLACK_TS.test(value);
 }
 
 /** Order two Slack timestamps exactly (seconds, then the fraction), never as floats. */

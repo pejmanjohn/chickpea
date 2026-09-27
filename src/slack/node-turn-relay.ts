@@ -47,6 +47,7 @@ import { receiveAlarmExecutorStop } from './thread-runner-loop.ts';
 import {
   removeDroppedReceipts,
   stopNoteFacts,
+  stopRefusedDispatch,
   tellStopperAlreadyFinished,
 } from './turn-executor.ts';
 import {
@@ -515,9 +516,8 @@ function createNodeThreadDrain(
             );
           } catch (error) {
             if (!isTurnJobStopRefusal(error)) throw error;
-            // Retryable, so runTurn passes it through without a failure final.
             stopRefused = true;
-            throw new AgentPromptFailure('agent', 409, false, true, error);
+            throw stopRefusedDispatch(error);
           }
         },
         reconcileExistingInstance: (uid: string) =>

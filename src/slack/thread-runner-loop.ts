@@ -21,6 +21,7 @@ import type {
 } from './run-presentations.ts';
 import {
   OPEN_JOB_STATES,
+  ORDERED_JOB_STATES,
   type ThreadRunnerJobRecord,
   type ThreadRunnerJobStore,
   type ThreadRunnerStopMarker,
@@ -746,11 +747,12 @@ export const THREAD_RUNNER_STOP_ABORT_BACKOFF_MAX_MS = 30_000;
 
 /**
  * Runner states whose turn may still hold the thread's unsettled Flue
- * submission. A runner runs its thread strictly in order, so while its
- * stopped turn is in one of these states no later turn of the thread has
- * been dispatched into the coordinator instance they share.
+ * submission: the states that hold the thread's later jobs. A runner runs
+ * its thread strictly in order, so while its stopped turn is in one of them
+ * no later turn of the thread has been dispatched into the coordinator
+ * instance they share.
  */
-const STOPPABLE_STATES: ReadonlySet<string> = new Set(['admitted', 'running', 'yielded']);
+const STOPPABLE_STATES = ORDERED_JOB_STATES;
 
 /** A runner turn's Flue checkpoints, as the runner's turn port records them. */
 export interface RunnerTurnObserver {
@@ -924,7 +926,7 @@ export class RunnerStops implements RunnerTurnObserver {
 
   /**
    * The coding-worker confirmation of a stopped turn (KTD4), for its stop
-   * note (U3): the first report, running the cascade now if it is still
+   * note (KTD3): the first report, running the cascade now if it is still
    * owed. Call it once the turn read its `aborted` settlement: the host can
    * then start no new coding job, so an abort this runner could not confirm
    * has taken effect after all. Undefined when the stop owes no cascade (the

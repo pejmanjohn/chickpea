@@ -1,6 +1,7 @@
 import type { WebClient } from '@slack/web-api';
 
 import type { NormalizedSlackTurn } from './types.ts';
+import { countOf } from './message-format.ts';
 import type { SlackRunFactsView } from './status-registry.ts';
 import { slackConversationKind } from './thread-key.ts';
 import { threadRunnerStub } from './thread-runner-rpc.ts';
@@ -97,12 +98,10 @@ function runDuration(ms: number): string {
   if (minutes < 1) return 'less than a minute';
   const hours = Math.floor(minutes / 60);
   const rest = minutes % 60;
-  if (hours === 0) return plural(minutes, 'minute');
-  return rest === 0 ? plural(hours, 'hour') : `${plural(hours, 'hour')} ${plural(rest, 'minute')}`;
-}
-
-function plural(count: number, unit: string): string {
-  return `${count} ${unit}${count === 1 ? '' : 's'}`;
+  if (hours === 0) return countOf(minutes, 'minute', 'minutes');
+  return rest === 0
+    ? countOf(hours, 'hour', 'hours')
+    : `${countOf(hours, 'hour', 'hours')} ${countOf(rest, 'minute', 'minutes')}`;
 }
 
 /**

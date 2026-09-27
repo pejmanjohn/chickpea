@@ -128,10 +128,14 @@ const RECEIPT_REACTION_FALLBACKS: Record<ReceiptReaction, readonly string[]> = {
   read: ['+1'],
 };
 
+function isReceiptReaction(reaction: SemanticReaction | ReceiptReaction): reaction is ReceiptReaction {
+  return (RECEIPT_REACTIONS as readonly string[]).includes(reaction);
+}
+
 export function reactionFallbacks(reaction: SemanticReaction | ReceiptReaction): string[] {
-  return (RECEIPT_REACTIONS as readonly string[]).includes(reaction)
-    ? [...RECEIPT_REACTION_FALLBACKS[reaction as ReceiptReaction]]
-    : [...REACTION_FALLBACKS[reaction as SemanticReaction]];
+  return [
+    ...(isReceiptReaction(reaction) ? RECEIPT_REACTION_FALLBACKS[reaction] : REACTION_FALLBACKS[reaction]),
+  ];
 }
 
 export function parseSlackInteractionIntent(

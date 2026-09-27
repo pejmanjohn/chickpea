@@ -82,9 +82,9 @@ export type ThreadRunnerStopPatch = Partial<Pick<
 >>;
 
 /** States that hold every later job of the thread until they settle. */
-const ORDERED_STATES: ReadonlySet<string> = new Set(['admitted', 'running', 'yielded']);
+export const ORDERED_JOB_STATES: ReadonlySet<string> = new Set(['admitted', 'running', 'yielded']);
 /** Jobs the runner still has to run (or run again). */
-export const OPEN_JOB_STATES: ReadonlySet<string> = new Set([...ORDERED_STATES, 'deferred']);
+export const OPEN_JOB_STATES: ReadonlySet<string> = new Set([...ORDERED_JOB_STATES, 'deferred']);
 const OPEN_STATES = "('admitted', 'running', 'yielded', 'deferred')";
 /** A job settled here as recovery or released can be handed over again. */
 const REVIVABLE_STATES = "('recovery_required', 'released')";
@@ -202,7 +202,7 @@ export class ThreadRunnerJobStore {
       const job = decodeJob(row);
       const due = job.retryAt === undefined || job.retryAt <= now;
       if (due) jobs.push(job);
-      else if (ORDERED_STATES.has(job.state)) break;
+      else if (ORDERED_JOB_STATES.has(job.state)) break;
       if (jobs.length >= limit) break;
     }
     return jobs;
@@ -218,7 +218,7 @@ export class ThreadRunnerJobStore {
       const at = row.retry_at === null || row.retry_at === undefined ? now : Number(row.retry_at);
       due = Math.min(due ?? at, at);
       // Jobs after the first ordered one wait for it (see runnable()).
-      if (ORDERED_STATES.has(String(row.state))) break;
+      if (ORDERED_JOB_STATES.has(String(row.state))) break;
     }
     return due === undefined ? undefined : Math.max(now, due);
   }

@@ -2249,7 +2249,7 @@ async function processSlackStopButton(
   } catch (err) {
     // Free the claims so a redelivery decides it again; a recorded stop is
     // idempotent, so deciding twice records one stop.
-    for (const key of keys) await state.release(key);
+    await releaseSteeringMessage(state, ...keys);
     throw err;
   }
   if (!decision) return;
@@ -2386,6 +2386,16 @@ async function claimSteeringMessage(
   return false;
 }
 
+/** Give a steering message's claims back, so a redelivery decides it again. */
+async function releaseSteeringMessage(
+  state: SlackStateStore,
+  evtKey: string,
+  msgKey: string,
+): Promise<void> {
+  await state.release(evtKey);
+  await state.release(msgKey);
+}
+
 async function replyToSteering(
   client: ReturnType<typeof createSlackWebClient>,
   target: SteeringReplyTarget,
@@ -2432,12 +2442,18 @@ async function steerTopLevelDirectMessage(input: {
   } catch (err) {
     // Free the claims so a redelivery decides it again; a recorded stop is
     // idempotent, so deciding twice records one stop.
-    await state.release(input.evtKey);
-    await state.release(input.msgKey);
+    await releaseSteeringMessage(state, input.evtKey, input.msgKey);
     throw err;
   }
   if (decision) {
-    await answerSlackSteering({ ...input, decision, target });
+    await answerSlackSteering({
+      decision,
+      turn,
+      state,
+      client: input.client,
+      platformEnv: input.platformEnv,
+      target,
+    });
     return;
   }
   // Several running threads, or none (the one just finished).

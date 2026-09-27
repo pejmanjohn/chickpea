@@ -2314,12 +2314,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     // its own presentation state (see src/slack/turn-executor.ts).
     const turnPorts: TurnExecutionPorts = {
       env: this.env as PlatformEnv,
-      // The rows' store, except that the stopped ending also settles the
-      // dropped turns' Runs and presentations, as slackTurnStopFinish does.
-      turnJobs: Object.assign(Object.create(stores.turnJobs) as TurnJobStoreLogic, {
-        finishStop: (headId: string, outcome: 'dropped' | 'released') =>
-          stores.slack.finishTurnStop(headId, outcome, stores.turnJobs, stores.work, stores.presentations),
-      }),
+      turnJobs: alarmTurnJobsPort(stores),
       slack: stores.slack,
       config: stores.config,
       presentationState: localSlackPresentationState(stores),
@@ -3184,6 +3179,34 @@ function localManagementRuntime(
         setupBaseUrl: () => resolveSlackPublicUrl(platformEnv, settings),
       },
     }),
+  };
+}
+
+/**
+ * The alarm executor's turn-row port: the state store's own rows, except
+ * that the stopped ending also settles the dropped turns' Runs and
+ * presentations, as slackTurnStopFinish does. Spelled out like
+ * runnerTurnJobsPort, so the one method that differs is visible.
+ */
+function alarmTurnJobsPort(stores: TagStateStores): TurnExecutionPorts['turnJobs'] {
+  const rows = stores.turnJobs;
+  return {
+    recordAttempt: (...args) => rows.recordAttempt(...args),
+    markRecoveryRequired: (...args) => rows.markRecoveryRequired(...args),
+    prepareFlueDispatch: (...args) => rows.prepareFlueDispatch(...args),
+    reconcileFlueExistingInstance: (...args) => rows.reconcileFlueExistingInstance(...args),
+    recordFlueReceipt: (...args) => rows.recordFlueReceipt(...args),
+    recordFlueSettlement: (...args) => rows.recordFlueSettlement(...args),
+    recordPullRequest: (...args) => rows.recordPullRequest(...args),
+    freezeRuntimePlan: (...args) => rows.freezeRuntimePlan(...args),
+    getBoundRuntimePlan: (...args) => rows.getBoundRuntimePlan(...args),
+    recordUsagePersistence: (...args) => rows.recordUsagePersistence(...args),
+    recordInteractionIntent: (...args) => rows.recordInteractionIntent(...args),
+    recordSlackInteractionProgress: (...args) => rows.recordSlackInteractionProgress(...args),
+    markDelivered: (...args) => rows.markDelivered(...args),
+    markError: (...args) => rows.markError(...args),
+    finishStop: (headId, outcome) =>
+      stores.slack.finishTurnStop(headId, outcome, rows, stores.work, stores.presentations),
   };
 }
 

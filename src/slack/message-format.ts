@@ -871,6 +871,11 @@ export function renderSlackMarkdownActionLink(link: SlackActionLink): string {
   return `[${safeLabel}](${safeUrl})`;
 }
 
+/** A count with its noun: `1 message was`, `3 messages were`, `2 hours`. */
+export function countOf(count: number, one: string, many: string): string {
+  return `${count} ${count === 1 ? one : many}`;
+}
+
 // The channel onboarding disclosure posted when the bot itself joins a channel.
 // Rendered here (the presentation layer) so all Slack-visible chrome — footer,
 // configure link, onboarding — lives in one place and stays unit-testable.

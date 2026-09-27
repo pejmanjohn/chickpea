@@ -11,6 +11,7 @@ import { isSafeTypedActivityStatus } from '../activity/status.ts';
 import type { TurnPullRequestProgress } from '../config/state-rpc.ts';
 import {
   canonicalSlackReplyText,
+  countOf,
   renderSlackMarkdownActionLink,
   renderSlackReplyFooterBlock,
   slackActionLink,
@@ -137,10 +138,6 @@ export function slackStopNoteText(facts: SlackStopNoteFacts): string {
     lines.push('', `${countOf(facts.unread, 'message was', 'messages were')} not read and can be sent again.`);
   }
   return lines.join('\n');
-}
-
-function countOf(count: number, one: string, many: string): string {
-  return `${count} ${count === 1 ? one : many}`;
 }
 
 export interface SlackPresenterTarget {
@@ -763,11 +760,15 @@ export class WebClientPresenter {
         before: (input) => this.observeBeforeDelivery(input),
         after: (input) => this.observeAfterDelivery(input),
       };
-      const result = ending?.stopped
-        ? await agentView.finalize(
-            text, format, terminalTaskStatus, observer, tablePresentation, files, { stopped: true },
-          )
-        : await agentView.finalize(text, format, terminalTaskStatus, observer, tablePresentation, files);
+      const result = await agentView.finalize(
+        text,
+        format,
+        terminalTaskStatus,
+        observer,
+        tablePresentation,
+        files,
+        ending?.stopped ? { stopped: true } : undefined,
+      );
       if (result.handled) {
         if (result.messageTs) {
           await this.notifyPublicDelivery(result.messageTs, result.text ?? displayText);

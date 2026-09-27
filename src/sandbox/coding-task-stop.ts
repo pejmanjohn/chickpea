@@ -7,6 +7,7 @@ import {
   type AgentObjectNamespace,
   type AgentUpdatesRoute,
 } from '../slack/bounded-agent-observation.ts';
+import type { SandboxTurnReader } from '../slack/turn-executor.ts';
 import {
   parseCodingTaskRecord,
   type CodingTaskRecordV1,
@@ -205,10 +206,29 @@ async function confirmTask(
 }
 
 /** A Sandbox Durable Object as the stop reads it. */
-type ThreadSandbox = Pick<SandboxCodingTaskStub, 'readCodingTasks' | 'settleCodingTask'> & {
-  getTurnId(): Promise<string | undefined>;
-  getTurnProgress(): Promise<TurnProgress>;
-};
+type ThreadSandbox = Pick<SandboxCodingTaskStub, 'readCodingTasks' | 'settleCodingTask'> &
+  SandboxTurnReader;
+
+/**
+ * The progress a thread's Sandbox Durable Object recorded for one turn, from
+ * whichever of its identities holds that turn (`sandboxes` opens the object
+ * once per identity); undefined when none does.
+ */
+export async function readSandboxTurnProgress(
+  sandboxes: Array<() => SandboxTurnReader>,
+  turnId: string,
+): Promise<TurnProgress | undefined> {
+  for (const open of sandboxes) {
+    try {
+      const sandbox = open();
+      if ((await sandbox.getTurnId()) !== turnId) continue;
+      return await sandbox.getTurnProgress();
+    } catch {
+      // One identity can be unavailable during a rolling deploy.
+    }
+  }
+  return undefined;
+}
 
 /**
  * The stop ports for one host turn on Cloudflare. `sandboxes` opens a Sandbox
@@ -241,18 +261,10 @@ export function threadCodingTaskStopPorts(input: {
     },
     settleTask: (taskKey) => thread().settleCodingTask(input.hostTurnId, taskKey),
     workers: input.workers,
-    recordedPullRequest: async (workspaceId) => {
-      for (const open of input.sandboxes(workspaceId)) {
-        try {
-          const sandbox = open() as ThreadSandbox;
-          if ((await sandbox.getTurnId()) !== input.hostTurnId) continue;
-          return (await sandbox.getTurnProgress()).pullRequest;
-        } catch {
-          // One identity can be unavailable during a rolling deploy.
-        }
-      }
-      return undefined;
-    },
+    recordedPullRequest: async (workspaceId) => (await readSandboxTurnProgress(
+      input.sandboxes(workspaceId) as Array<() => ThreadSandbox>,
+      input.hostTurnId,
+    ))?.pullRequest,
   };
 }
 
