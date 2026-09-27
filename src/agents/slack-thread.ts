@@ -234,7 +234,7 @@ import {
 import {
   createDisplayTools,
   SLACK_DISPLAY_COMPONENTS_DATA_NAME,
-  SlackDisplayComponentSchema,
+  SlackDisplayComponentsSchema,
   type SlackDisplayComponentPart,
 } from '../slack/ui/display-tools.ts';
 
@@ -769,7 +769,7 @@ export function ChickpeaSlack({ id }: AgentProps) {
     schema: SlackInteractiveQuestionSchema,
   });
   const writeDisplayComponent = useDataWriter(SLACK_DISPLAY_COMPONENTS_DATA_NAME, {
-    schema: SlackDisplayComponentSchema,
+    schema: SlackDisplayComponentsSchema,
   });
   const managementEnabled = !!parseSlackManagementSignal(delivery, plan);
   const turn = runtimePlanTurnContext(plan, delivery);
@@ -810,7 +810,7 @@ export function useChickpeaSlackRuntimeCapabilities(
   threadImages?: readonly ThreadImageRecord[],
   turn?: TurnEnvelopeContext,
   writeInteractiveQuestion?: (record: SlackInteractiveQuestion) => void,
-  writeDisplayComponent?: (part: SlackDisplayComponentPart) => void,
+  writeDisplayComponent?: (parts: SlackDisplayComponentPart[]) => void,
 ): void {
   useRuntimePlanAgent(plan, id, {
     responseMetadataModel: plan.model,
@@ -852,7 +852,7 @@ export function useChickpeaSlackRuntimeCapabilities(
 function useSlackInteractiveComponents(
   plan: RuntimePlanV2,
   writeInteractiveQuestion?: (record: SlackInteractiveQuestion) => void,
-  writeDisplayComponent?: (part: SlackDisplayComponentPart) => void,
+  writeDisplayComponent?: (parts: SlackDisplayComponentPart[]) => void,
 ): void {
   const signal = parseSlackManagementSignal(useDelivery(), plan);
   const scope = signal && interactiveSurfaceScope(signal, plan.agentId);

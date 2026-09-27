@@ -32,6 +32,11 @@ export const SlackDisplayComponentSchema = v.strictObject({
   spec: v.unknown(),
 });
 export type SlackDisplayComponentPart = v.InferOutput<typeof SlackDisplayComponentSchema>;
+/** The data part's value: every display component this reply recorded, in call order. */
+export const SlackDisplayComponentsSchema = v.pipe(
+  v.array(SlackDisplayComponentSchema),
+  v.maxLength(MAX_DISPLAY_COMPONENTS),
+);
 type DisplayKind = SlackDisplayComponentPart['kind'];
 
 function describe(name: string): string {
@@ -57,7 +62,11 @@ function displaySurfaceSpec(kind: DisplayKind, spec: unknown): DisplaySurfaceSpe
  * left out and the prose stands alone.
  */
 export function parseDisplayComponents(value: unknown): DisplaySurfaceSpec[] {
-  const parts = Array.isArray(value) ? value : value === undefined ? [] : [value];
+  // A data part keeps its latest write, and each write is the reply's whole
+  // list; take the last list written (a lone part is still accepted).
+  const entries = Array.isArray(value) ? value : value === undefined ? [] : [value];
+  const latest = [...entries].reverse().find(Array.isArray) as unknown[] | undefined;
+  const parts = latest ?? entries;
   const components: DisplaySurfaceSpec[] = [];
   for (const part of parts) {
     if (components.length === MAX_DISPLAY_COMPONENTS) break;
@@ -83,12 +92,14 @@ export function displayToolAcknowledgement(kind: DisplayKind, left: number): str
 }
 
 export function createDisplayTools(
-  write: (part: SlackDisplayComponentPart) => void,
+  /** Receives the reply's whole list each time: a later write replaces the part. */
+  write: (parts: SlackDisplayComponentPart[]) => void,
   options: {
     /** Whether a card button without a url can be clicked here (see interactiveSurfaceScope). */
     requestButtons?: boolean;
   } = {},
 ) {
+  const written: SlackDisplayComponentPart[] = [];
   let used = 0;
   let cardsUsed = false;
   const record = (kind: DisplayKind, spec: unknown): { output: string } => {
@@ -101,7 +112,8 @@ export function createDisplayTools(
         `This component is too large to keep (over ${UI_SURFACE_MAX_SPEC_BYTES / 1024} KiB); shorten its text and links or show fewer items.`,
       );
     }
-    write({ kind, spec });
+    written.push({ kind, spec });
+    write([...written]);
     used += 1;
     if (kind === 'cards') cardsUsed = true;
     return { output: displayToolAcknowledgement(kind, MAX_DISPLAY_COMPONENTS - used) };
