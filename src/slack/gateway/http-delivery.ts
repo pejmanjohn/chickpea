@@ -86,10 +86,9 @@ export async function verifyHttpDelivery(input: {
     value.proof = btoa(String.fromCharCode(...proofBytes)).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
   } else {
     const delivery = parseGatewayFrameText(JSON.stringify(value.delivery));
-    // Modal forms are not served yet; the gateway answers the clicker.
-    if (delivery.kind === 'interaction.view_submission') throw new HttpDeliveryError(422, 'delivery_unsupported');
     if ((delivery.kind !== 'event.deliver' && delivery.kind !== 'interaction.agent_selected' &&
-        delivery.kind !== 'interaction.channel_agent_add' && delivery.kind !== 'interaction.ui_action') ||
+        delivery.kind !== 'interaction.channel_agent_add' && delivery.kind !== 'interaction.ui_action' &&
+        delivery.kind !== 'interaction.view_submission') ||
         delivery.bindingId !== value.bindingId || delivery.workspaceId !== value.workspaceId ||
         (delivery.kind === 'event.deliver' && delivery.envelope.workspaceId !== value.workspaceId)) fail();
     value.delivery = delivery as GatewayInboundDelivery;

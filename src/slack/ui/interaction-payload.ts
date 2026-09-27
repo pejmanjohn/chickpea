@@ -22,6 +22,21 @@ export interface SlackUiAction {
   triggerId: string;
 }
 
+/**
+ * A submitted host modal (a request_form modal or a "Something else…"
+ * answer), direct from Slack or through the gateway. `privateMetadata` names
+ * the surface; the stored spec decides what the state means.
+ */
+export interface SlackUiViewSubmission {
+  workspaceId: string;
+  userId: string;
+  viewId: string;
+  callbackId: string;
+  privateMetadata: string;
+  state: SlackUiState;
+  triggerId: string | null;
+}
+
 export type SlackUiState = Record<string, Record<string, SlackUiStateValue>>;
 
 export interface SlackUiStateValue {
@@ -218,6 +233,32 @@ export function parseSlackUiBlockAction(payload: unknown): SlackUiAction | undef
     state,
     actionTs,
     triggerId,
+  };
+}
+
+const MAX_VIEW_STATE_BYTES = 64 * 1024;
+
+/** Parse a verified direct `view_submission` for a host modal. */
+export function parseSlackUiViewSubmission(payload: unknown): SlackUiViewSubmission | undefined {
+  const root = record(payload);
+  if (root?.type !== 'view_submission') return undefined;
+  const view = record(root.view);
+  const team = record(root.team);
+  const user = record(root.user);
+  const callbackId = boundedString(view?.callback_id, MAX_ACTION_ID);
+  const privateMetadata = boundedString(view?.private_metadata, 3_000);
+  if (!view || !safeId(team?.id) || !safeId(user?.id) || !safeId(view.id) ||
+      !callbackId?.startsWith('chickpea.ui.v1.') || privateMetadata === undefined) return undefined;
+  const state = normalizeSlackUiState(view.state, MAX_VIEW_STATE_BYTES);
+  if (!state) return undefined;
+  return {
+    workspaceId: team.id,
+    userId: user.id,
+    viewId: view.id,
+    callbackId,
+    privateMetadata,
+    state,
+    triggerId: boundedString(root.trigger_id, 256) ?? null,
   };
 }
 

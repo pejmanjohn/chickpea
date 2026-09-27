@@ -1,3 +1,4 @@
+import { formTurnText, parseFormValues, renderForm } from './render-form.ts';
 import {
   cardTurnText,
   interactiveTurnText,
@@ -141,6 +142,7 @@ export function renderUiSurface(
   if (isDisplaySurface(spec)) {
     throw new Error('Display components render inside the answer, not as their own message.');
   }
+  if (spec.kind === 'form') return renderForm(record, spec.form);
   return renderInteractiveSurface(record, spec, options);
 }
 
@@ -152,6 +154,9 @@ export function uiResponseTurnText(record: UiSurfaceRecord, answer: InteractiveA
   const spec = record.spec;
   if (spec.kind === 'cards') return cardTurnText(record, spec, answer);
   if (spec.kind === 'chart' || spec.kind === 'details') return 'Pressed a button.';
+  if (spec.kind === 'form') {
+    return formTurnText(record, spec.form, parseFormValues(answer.values), byUserId);
+  }
   if (spec.kind !== 'approval') return interactiveTurnText(record, spec, answer, byUserId);
   const decision = approvalChoice(answer.choice);
   if (spec.approval === 'workspace_change') {
@@ -163,3 +168,4 @@ export function uiResponseTurnText(record: UiSurfaceRecord, answer: InteractiveA
     ? `Approved the browser step with the Approve step button: ${spec.description} on ${spec.host}.`
     : `Stopped the browser step with the Stop button: ${spec.description} on ${spec.host}. Do not take it.`;
 }
+

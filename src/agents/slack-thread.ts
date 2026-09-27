@@ -216,6 +216,7 @@ import { slackPresentationIntentCapability } from '../slack/presentation-intent.
 import {
   createAskUserTool,
   createOfferActionsTool,
+  createRequestFormTool,
   interactiveSurfaceScope,
   SLACK_INTERACTIVE_QUESTION_DATA_NAME,
   SlackInteractiveQuestionSchema,
@@ -227,6 +228,7 @@ import {
   SLACK_PRESENT_CARDS_TOOL_NAME,
   SLACK_PRESENT_CHART_TOOL_NAME,
   SLACK_PRESENT_DETAILS_TOOL_NAME,
+  SLACK_REQUEST_FORM_TOOL_NAME,
   slackPresentationGuide,
 } from '../slack/ui/presentation-tools.ts';
 import {
@@ -868,17 +870,15 @@ function useSlackInteractiveComponents(
   }
   const store = async () => getSlackStateStore(await resolveAgentPlatformEnv());
   useInstruction(slackPresentationGuide([
-    SLACK_ASK_USER_TOOL_NAME, SLACK_OFFER_ACTIONS_TOOL_NAME,
+    SLACK_ASK_USER_TOOL_NAME, SLACK_OFFER_ACTIONS_TOOL_NAME, SLACK_REQUEST_FORM_TOOL_NAME,
     ...(writeDisplayComponent ? DISPLAY_GUIDE_TOOLS : [SLACK_PRESENT_TABLE_TOOL_NAME]),
   ]));
-  useTool(createAskUserTool({
-    store,
-    scope,
-    ...(writeInteractiveQuestion
-      ? { onRecorded: (question: string) => writeInteractiveQuestion({ question }) }
-      : {}),
-  }));
+  const fallback = writeInteractiveQuestion
+    ? { onRecorded: (question: string) => writeInteractiveQuestion({ question }) }
+    : {};
+  useTool(createAskUserTool({ store, scope, ...fallback }));
   useTool(createOfferActionsTool({ store, scope }));
+  useTool(createRequestFormTool({ store, scope, ...fallback }));
 }
 
 /**

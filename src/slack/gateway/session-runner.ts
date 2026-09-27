@@ -1,5 +1,5 @@
 import type { GatewayDeploymentClient, GatewayLogicalSession } from './client.ts';
-import type { GatewayInboundDelivery } from './protocol.ts';
+import type { GatewayAdmissionResult, GatewayInboundDelivery } from './protocol.ts';
 import type { GatewaySessionCapability } from './protocol.ts';
 import { GatewayInboundAdmission } from './inbound-admission.ts';
 import {
@@ -23,7 +23,7 @@ interface GatewaySessionRunnerOptions {
   // Long-lived Cloudflare sessions need fresh RPC stubs after a failed attempt.
   client: GatewayDeploymentClient | (() => GatewayDeploymentClient);
   /** Durable admission of one delivery; wrapped in a default intake when `admission` is absent. */
-  onEvent?(delivery: GatewayInboundDelivery): Promise<'accepted' | 'duplicate' | 'rejected'>;
+  onEvent?(delivery: GatewayInboundDelivery): Promise<GatewayAdmissionResult>;
   /**
    * Shared intake (ordering, concurrency, retry memory, self-event filter).
    * Pass one that outlives this runner so its memory survives reconnects.

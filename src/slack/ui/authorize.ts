@@ -46,11 +46,13 @@ export async function authorizeUiResponse(input: {
   const { surface } = admission;
   if (assignment.agent.id !== surface.agentId) return 'closed';
   const spec = surface.spec;
-  if (spec.kind === 'question' || spec.kind === 'actions' || spec.kind === 'cards') {
+  if (spec.kind === 'question' || spec.kind === 'form' || spec.kind === 'actions' || spec.kind === 'cards') {
     // A model-chosen surface answers a question or asks for a next step; it
     // never stamps an approval, whatever its labels say.
     if (surface.namespace !== 'ui') return 'unavailable';
-    const answerFrom = spec.kind === 'question' ? spec.question.answerFrom : 'thread';
+    const answerFrom = spec.kind === 'question' ? spec.question.answerFrom
+      : spec.kind === 'form' ? spec.form.answerFrom
+      : 'thread';
     if (answerFrom === 'requester' && turn.userId !== surface.requesterUserId) return 'wrong_user';
     return undefined;
   }

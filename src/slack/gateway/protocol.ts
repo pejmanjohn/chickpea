@@ -3,7 +3,7 @@ import {
   isHostUiActionId,
   parseNormalizedUiState,
   type SlackUiAction,
-  type SlackUiState,
+  type SlackUiViewSubmission,
 } from '../ui/interaction-payload.ts';
 import { SLACK_LIST_OPERATIONS } from '../lists/types.ts';
 
@@ -170,28 +170,22 @@ export interface GatewayUiActionDelivery extends SlackUiAction {
 }
 
 /**
- * A submitted `chickpea.ui.v1.*` modal. Parsed so a session that advertised
- * `ui_interactions_v1` never fails on one; admission answers it until forms ship.
+ * A submitted `chickpea.ui.v1.*` modal. The session validates it at receipt:
+ * field errors return in the ack's `responseAction`; a valid one is admitted.
  */
-export interface GatewayViewSubmissionDelivery {
+export interface GatewayViewSubmissionDelivery extends SlackUiViewSubmission {
   protocolVersion: typeof CHICKPEA_GATEWAY_PROTOCOL_VERSION;
   kind: 'interaction.view_submission';
   deliveryId: string;
   bindingId: string;
-  workspaceId: string;
-  userId: string;
-  viewId: string;
-  callbackId: string;
-  privateMetadata: string;
-  state: SlackUiState;
-  triggerId: string | null;
 }
 
 export type GatewayInboundDelivery =
   | GatewayEventDelivery
   | GatewayAgentSelectionDelivery
   | GatewayPrivateChannelSetupDelivery
-  | GatewayUiActionDelivery;
+  | GatewayUiActionDelivery
+  | GatewayViewSubmissionDelivery;
 
 export interface GatewayEventAck {
   protocolVersion: typeof CHICKPEA_GATEWAY_PROTOCOL_VERSION;
@@ -205,6 +199,19 @@ export interface GatewayEventAck {
 export interface GatewayInteractionResponse {
   openView?: Record<string, unknown>;
   responseAction?: Record<string, unknown>;
+}
+
+/** A UI delivery answered in its ack; nothing was queued for it. */
+export interface GatewayInteractionReceipt {
+  outcome: 'accepted';
+  interaction: GatewayInteractionResponse;
+}
+
+/** What admitting one delivery yields: an ack outcome, or an answered interaction. */
+export type GatewayAdmissionResult = GatewayEventAck['outcome'] | GatewayInteractionReceipt;
+
+export function gatewayAdmissionOutcome(result: GatewayAdmissionResult): GatewayEventAck['outcome'] {
+  return typeof result === 'string' ? result : result.outcome;
 }
 
 interface GatewayHeartbeat {

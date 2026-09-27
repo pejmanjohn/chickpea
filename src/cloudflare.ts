@@ -1,7 +1,8 @@
 import { GatewayInboxConflictError } from './slack/gateway/inbox.ts';
 import { GATEWAY_HTTP_SETTING, parseHttpDeliveryState, verifyHttpDelivery, httpDeliveryReceipt, HttpDeliveryError } from './slack/gateway/http-delivery.ts';
 import { GATEWAY_BINDING_SETTING } from './slack/gateway/client.ts';
-import type { GatewayInboundDelivery, GatewayWorkspaceBinding } from './slack/gateway/protocol.ts';
+import type { GatewayAdmissionResult, GatewayInboundDelivery, GatewayWorkspaceBinding } from './slack/gateway/protocol.ts';
+import { gatewayUiReceiptNow } from './slack/gateway/ui-receipt.ts';
 import { scheduleActionRpcResult } from './management/slack-schedule-rpc.ts';
 import {
   DurableObject,
@@ -260,6 +261,7 @@ import {
   processGatewayAgentSelection,
   processGatewayPrivateChannelSetup,
   processGatewayUiAction,
+  processGatewayViewSubmission,
   processGatewaySlackEnvelope,
 } from './channels/slack.ts';
 import {
@@ -1897,7 +1899,9 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
             installation.gatewayBindingId !== binding.bindingId || installation.appId !== binding.appId ||
             installation.botUserId !== binding.botUserId) throw new HttpDeliveryError(409, 'delivery_binding_rejected');
         if (value.kind === 'gateway.challenge') return 'verified' as const;
-        const outcome = stores.gatewayInbox.admit(value.delivery!);
+        // A modal click or submission is answered in the receipt from its stored card.
+        const receipt = gatewayUiReceiptNow(value.delivery!, stores.uiSurfaces);
+        const outcome = receipt ?? stores.gatewayInbox.admit(value.delivery!);
         // Only a real delivery proves gateway activation. A challenge must not
         // retire the old route before the gateway commits its compare-and-swap.
         if (state.pending?.keyId === value.keyId && state.pending.routeRevision === value.routeRevision) {
@@ -1911,6 +1915,10 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
         if (admissionError instanceof HttpDeliveryError) throw admissionError;
         if (admissionError instanceof GatewayInboxConflictError) throw new HttpDeliveryError(409,'delivery_identity_conflict');
         throw new HttpDeliveryError(503,'delivery_unavailable');
+      }
+      if (typeof admitted.value !== 'string') {
+        outcome = admitted.value.outcome;
+        return {status:200, body:{...httpDeliveryReceipt(value, admitted.value.outcome), interaction:admitted.value.interaction}};
       }
       if (admitted.value !== 'verified') outcome = admitted.value;
       // A duplicate also arms recovery: a previous insert may have survived an
@@ -1929,11 +1937,11 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
   async admitGatewayDelivery(
     delivery: Parameters<TagStateRpc['admitGatewayDelivery']>[0],
   ): ReturnType<TagStateRpc['admitGatewayDelivery']> {
-    const result = this.call((stores) => {
+    const result = this.call((stores): GatewayAdmissionResult => {
       if (parseHttpDeliveryState(stores.settings.getSetting(GATEWAY_HTTP_SETTING))?.mode === 'http') throw new Error('Socket delivery is disabled.');
-      return stores.gatewayInbox.admit(delivery);
+      return gatewayUiReceiptNow(delivery, stores.uiSurfaces) ?? stores.gatewayInbox.admit(delivery);
     });
-    if (result.ok) {
+    if (result.ok && typeof result.value === 'string') {
       await this.armAlarmNoLaterThan(Date.now() + RELAY_BATCH_WINDOW_MS, true);
     }
     return result;
@@ -2919,6 +2927,13 @@ async function drainGatewayInbox(
     return stores.gatewayInbox.hasPending();
   }
   let needsRetry = false;
+  const uiExecution = {
+    stores: appStores,
+    enqueueTurn: async (job: TurnJob) => {
+      stores.turnJobs.enqueue(job);
+      return { ok: true as const, value: null };
+    },
+  };
   const admit = async (item: (typeof pending)[number]) => {
     // A turn admitted from this delivery measures its latency from receipt:
     // the delivery may have waited here while an earlier alarm ran turns.
@@ -2946,19 +2961,10 @@ async function drainGatewayInbox(
             client,
             appStores,
           )
-        : item.delivery.kind === 'interaction.ui_action'
-        ? await processGatewayUiAction(
-            item.delivery,
-            platformEnv,
-            client,
-            {
-              stores: appStores,
-              enqueueTurn: async (job) => {
-                stores.turnJobs.enqueue(job);
-                return { ok: true, value: null };
-              },
-            },
-          )
+        : item.delivery.kind === 'interaction.ui_action' || item.delivery.kind === 'interaction.view_submission'
+        ? await (item.delivery.kind === 'interaction.ui_action'
+          ? processGatewayUiAction(item.delivery, platformEnv, client, uiExecution)
+          : processGatewayViewSubmission(item.delivery, platformEnv, client, uiExecution))
         : await processGatewayPrivateChannelSetup(
             item.delivery,
             platformEnv,

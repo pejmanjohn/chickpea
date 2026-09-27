@@ -93,11 +93,8 @@ import type {
 import type { SlackInteractionIntent } from '../slack/interaction-intent.ts';
 import type { ThreadImageRecord } from '../slack/thread-images.ts';
 import type { TurnEnvelopeV1 } from '../agents/turn-envelope.ts';
-import type {
-  GatewayInboxAdmissionOutcome,
-  GatewayInboxDrainCounts,
-} from '../slack/gateway/inbox.ts';
-import type { GatewayInboundDelivery } from '../slack/gateway/protocol.ts';
+import type { GatewayInboxDrainCounts } from '../slack/gateway/inbox.ts';
+import type { GatewayAdmissionResult, GatewayInboundDelivery } from '../slack/gateway/protocol.ts';
 import type {
   SlackAppendBooking,
   SlackAppendReservation,
@@ -620,7 +617,7 @@ export interface TagStateRpc {
   receiveGatewayHttp(input: {body: string; signature: string; url: string}): Promise<{status: number; body: unknown}>;
   admitGatewayDelivery(
     delivery: GatewayInboundDelivery,
-  ): Promise<StateRpcResult<GatewayInboxAdmissionOutcome>>;
+  ): Promise<StateRpcResult<GatewayAdmissionResult>>;
   /** Clone a completed authorization-link turn into one idempotent resume turn. */
   resumeTurnAfterOAuth(
     originalTaskId: string,

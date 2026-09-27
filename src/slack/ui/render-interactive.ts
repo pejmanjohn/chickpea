@@ -25,6 +25,9 @@ export interface RenderedInteractive {
   blocks: Block[];
 }
 
+/** The answer index of a "Something else…" reply; option indexes stay below it. */
+export const QUESTION_OTHER_CHOICE = 100;
+const OTHER_BLOCK = 30;
 const SHORT_LABEL = 30;
 const MAX_ROW_BUTTONS = 5;
 const MAX_CHECKBOXES = 10;
@@ -114,6 +117,21 @@ function whoAnswers(record: UiSurfaceRecord, question: AskUserSpec): Block {
   return { type: 'context', elements: [mrkdwn(`${who} · or reply in this thread`)] };
 }
 
+/** Opens a one-field modal for an answer the options don't cover. */
+function otherButton(record: UiSurfaceRecord): Block {
+  return {
+    type: 'button',
+    action_id: uiActionId('ui', 'question_other', 0),
+    text: plain('Something else…'),
+    value: uiValue(record.id, 0),
+  };
+}
+
+/** Questions with options take a free-text answer too; pickers already are the answer. */
+export function questionTakesOtherAnswer(question: AskUserSpec): boolean {
+  return !question.pick && (question.options?.length ?? 0) > 0;
+}
+
 function submitButton(record: UiSurfaceRecord): Block {
   return {
     type: 'button',
@@ -155,7 +173,10 @@ function renderOpenQuestion(record: UiSurfaceRecord, question: AskUserSpec, with
       blocks.push({
         type: 'actions',
         block_id: controls,
-        elements: options.map((option, index) => answerButton(record, index, option.label, option)),
+        elements: [
+          ...options.map((option, index) => answerButton(record, index, option.label, option)),
+          otherButton(record),
+        ],
       });
       break;
     case 'option_rows':
@@ -202,6 +223,7 @@ function renderOpenQuestion(record: UiSurfaceRecord, question: AskUserSpec, with
                 options: options.map((option, index) => optionObject(record, index, option)),
               },
           submitButton(record),
+          otherButton(record),
         ],
       });
       break;
@@ -243,6 +265,9 @@ function renderOpenQuestion(record: UiSurfaceRecord, question: AskUserSpec, with
       });
       break;
   }
+  if (widget === 'option_rows' || widget === 'select') {
+    blocks.push({ type: 'actions', block_id: uiBlockId('ui', record.id, OTHER_BLOCK), elements: [otherButton(record)] });
+  }
   blocks.push(whoAnswers(record, question));
   return { text: questionFallback(question), blocks };
 }
@@ -264,8 +289,9 @@ function renderQuestion(record: UiSurfaceRecord, question: AskUserSpec, withHead
   if (record.status === 'resolved' && record.resolution) {
     const { resolution } = record;
     const values = resolution.values ?? [String(resolution.choice)];
-    const answer = questionAnswerLabel(question, values);
-    const shown = question.pick ? answer : `*${escape(answer)}*`;
+    const other = resolution.choice === QUESTION_OTHER_CHOICE;
+    const answer = other ? clamp(values[0] ?? '', 300) : questionAnswerLabel(question, values);
+    const shown = question.pick ? answer : other ? `“${escape(answer)}”` : `*${escape(answer)}*`;
     const onBehalf = resolution.byUserId !== record.requesterUserId ? ` for <@${record.requesterUserId}>` : '';
     const via = resolution.typed ? ' (typed reply)' : '';
     return {
@@ -446,8 +472,12 @@ export function interactiveTurnText(
   }
   const question = spec.question;
   const values = answer.values ?? [String(answer.choice)];
-  const answered = questionAnswerLabel(question, values);
   const forWhom = byUserId !== record.requesterUserId ? ` for <@${record.requesterUserId}>` : '';
+  if (answer.choice === QUESTION_OTHER_CHOICE) {
+    // Their own words, escaped the way Slack escapes a typed message.
+    return `Answered your question "${question.question}"${forWhom} ${reference} in their own words: ${escape(values[0] ?? '')}`;
+  }
+  const answered = questionAnswerLabel(question, values);
   return `Answered your question "${question.question}"${forWhom} ${reference}: ${answered}`;
 }
 

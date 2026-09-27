@@ -5,6 +5,7 @@ import type {
   PresentCardsSpec,
   PresentChartSpec,
   PresentDetailsSpec,
+  RequestFormSpec,
 } from './presentation-tools.ts';
 
 /**
@@ -45,6 +46,12 @@ export interface QuestionSurfaceSpec {
   question: AskUserSpec;
 }
 
+/** A model-requested form (request_form): inline inputs or a modal. */
+export interface FormSurfaceSpec {
+  kind: 'form';
+  form: RequestFormSpec;
+}
+
 /** Model-offered next steps (offer_actions): link and request buttons. */
 export interface ActionsSurfaceSpec {
   kind: 'actions';
@@ -67,7 +74,12 @@ export function isDisplaySurface(spec: UiSurfaceSpec): spec is DisplaySurfaceSpe
   return (DISPLAY_SURFACE_KINDS as readonly string[]).includes(spec.kind);
 }
 
-export type UiSurfaceSpec = HostApprovalSpec | QuestionSurfaceSpec | ActionsSurfaceSpec | DisplaySurfaceSpec;
+export type UiSurfaceSpec =
+  | HostApprovalSpec
+  | QuestionSurfaceSpec
+  | ActionsSurfaceSpec
+  | FormSurfaceSpec
+  | DisplaySurfaceSpec;
 export type UiSurfaceKind = UiSurfaceSpec['kind'];
 
 export interface UiSurfaceResolution {
