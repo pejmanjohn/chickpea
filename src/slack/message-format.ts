@@ -735,8 +735,8 @@ export function streamableSlackMarkdownPrefix(text: string): string {
     const wordEnded = next !== undefined && !/[\p{L}\p{N}_]/u.test(next);
     const held = Math.min(
       view.toRaw(unsafeMentionTail(view.text, wordEnded)),
-      heldBeforeStars(stable, openUrlEmphasis(stable, stable.lastIndexOf('\n') + 1, true)),
-      heldBeforeStars(stable, strippedSpanStart(normalized, stable.length)),
+      heldBeforeClosedSpan(answer, openUrlEmphasis(stable, stable.lastIndexOf('\n') + 1, true), stable.length),
+      heldBeforeClosedSpan(answer, strippedSpanStart(normalized, stable.length), stable.length),
     );
     if (held >= stable.length) break;
     stable = stable.slice(0, view.credentialHoldStart(held)).trimEnd();
@@ -779,7 +779,8 @@ export function sanitizeSlackMarkdownLinks(markdown: string): string {
 function sanitizedView(value: string) {
   const dropped: number[] = [];
   let offset = 0;
-  for (const [index, segment] of value.split(CLOSED_CODE_SEGMENT).entries()) {
+  const segments = value.includes('**') ? value.split(CLOSED_CODE_SEGMENT) : [];
+  for (const [index, segment] of segments.entries()) {
     if (index % 2 === 0) {
       for (const strong of segment.matchAll(STRONG_EMPHASIS)) {
         if (!WHOLE_URL_SEGMENT.test(strong[1]!)) continue;
@@ -945,6 +946,39 @@ function heldBeforeStars(value: string, at: number): number {
   if (at >= value.length) return at;
   const view = sanitizedView(value.slice(0, at));
   return Math.min(at, view.toRaw(unsafeTokenTail(view.text)));
+}
+
+/**
+ * `heldBeforeStars` for a closed `**URL**` span at `at` inside a cut: the
+ * words after its opener are known, so only a token the answer joins across
+ * the opener is held (`a xo**xb-…` reads `a xoxb-…`), not whatever the text
+ * before it could still grow into, which would peel back-to-back spans
+ * (`**…/docs****…`) one pass at a time. If the span later turns into code it
+ * keeps its stars and joins nothing.
+ */
+function heldBeforeClosedSpan(
+  answer: ReturnType<typeof sanitizedView>,
+  at: number,
+  cut: number,
+): number {
+  if (at >= cut) return at;
+  const start = answer.fromRaw(at);
+  const before = answer.text.slice(0, start);
+  // A credential the answer joins across the opener, an open `<` or code
+  // mention, and a broadcast word the opener splits.
+  let held = Math.min(credentialHoldStart(answer.text, start), unsafeMentionTail(before, true));
+  const word = /(?<![\p{L}\p{N}]_*)@[\p{L}\p{N}]*_*$/u.exec(before);
+  if (word) {
+    const joined = /^@([\p{L}\p{N}]*)(_*)/u.exec(answer.text.slice(word.index))!;
+    const letters = joined[1]!.toLowerCase();
+    const open = word.index + joined[0].length >= answer.text.length;
+    const broadcast = open
+      ? SLACK_BROADCAST_KEYWORDS.some((keyword) =>
+        joined[2] ? keyword === letters : keyword.startsWith(letters))
+      : /^@(?:here|channel|everyone)(?!_*[\p{L}\p{N}])/iu.test(answer.text.slice(word.index));
+    if (broadcast) held = Math.min(held, word.index);
+  }
+  return held < start ? Math.min(at, answer.toRaw(held)) : at;
 }
 
 /**

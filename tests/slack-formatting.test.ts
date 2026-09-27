@@ -276,6 +276,16 @@ test('a run of decided broadcast-word prefixes streams instead of being peeled a
   assert.equal(streamableSlackMarkdownPrefix(spans), canonicalSlackMarkdownText(spans));
   const words = `${'@h '.repeat(4000)}@`;
   assert.equal(streamableSlackMarkdownPrefix(words), '@h '.repeat(4000).trimEnd());
+  // Back-to-back spans: only the last, whose `s` may still grow, waits.
+  const docs = '**https://a.test/docs**';
+  assert.equal(streamableSlackMarkdownPrefix(docs.repeat(480)), 'https://a.test/docs'.repeat(479));
+});
+
+test('a cut after stripped stars reads the answer at the matching place', () => {
+  // The answer drops four stars before `@h`; its next character is the space.
+  const text = '**https://a/1** @h then';
+  assert.equal(streamableSlackMarkdownPrefix(text.slice(0, 18)), 'https://a/1');
+  assert.equal(streamableSlackMarkdownPrefix(text.slice(0, 19)), 'https://a/1 @h');
 });
 
 const WJ = '⁠';
@@ -410,6 +420,11 @@ test('a streamed prefix withholds a mention until it neutralizes like the whole 
     // A space ends the word as surely as a comma does.
     ['Heads up @here ', `Heads up @${WJ}here`],
     ['Heads up @here,', `Heads up @${WJ}here,`],
+    // Any character that cannot continue the word ends it.
+    ['Heads up @here<x', `Heads up @${WJ}here`],
+    ['Heads up @here[x', `Heads up @${WJ}here`],
+    ['Heads up @here\nx', `Heads up @${WJ}here`],
+    ['Heads up @here_ x', `Heads up @${WJ}here_`],
     ['Heads up @heresy', 'Heads up @heresy'],
     ['Heads up @ops.', 'Heads up @ops.'],
     // An inline code span may still close, which changes how it neutralizes.
