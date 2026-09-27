@@ -214,6 +214,38 @@ import { useSlackAttachmentContext } from '../slack/attachment-context.ts';
 import { resolveSlackInstallationExecutionContext } from '../slack/installation-execution.ts';
 import { slackPresentationIntentCapability } from '../slack/presentation-intent.ts';
 import {
+  createAskUserTool,
+  createOfferActionsTool,
+  createRequestFormTool,
+  interactiveSurfaceScope,
+  SLACK_INTERACTIVE_QUESTION_DATA_NAME,
+  SlackInteractiveQuestionSchema,
+  type SlackInteractiveQuestion,
+} from '../slack/ui/interactive-tools.ts';
+import {
+  SLACK_ASK_USER_TOOL_NAME,
+  SLACK_OFFER_ACTIONS_TOOL_NAME,
+  SLACK_PRESENT_CARDS_TOOL_NAME,
+  SLACK_PRESENT_CHART_TOOL_NAME,
+  SLACK_PRESENT_DETAILS_TOOL_NAME,
+  SLACK_REQUEST_FORM_TOOL_NAME,
+  slackPresentationGuide,
+} from '../slack/ui/presentation-tools.ts';
+import {
+  createDisplayTools,
+  SLACK_DISPLAY_COMPONENTS_DATA_NAME,
+  SlackDisplayComponentsSchema,
+  type SlackDisplayComponentPart,
+} from '../slack/ui/display-tools.ts';
+
+/** Display components the guide describes wherever they mount. */
+const DISPLAY_GUIDE_TOOLS = [
+  'present_table',
+  SLACK_PRESENT_CARDS_TOOL_NAME,
+  SLACK_PRESENT_CHART_TOOL_NAME,
+  SLACK_PRESENT_DETAILS_TOOL_NAME,
+];
+import {
   createSlackPresentTableTool,
   SLACK_PRESENT_TABLE_INSTRUCTION,
   SLACK_PRESENT_TABLE_TOOL_NAME,
@@ -733,6 +765,12 @@ export function ChickpeaSlack({ id }: AgentProps) {
     schema: SlackAgentCreationTerminalIntentSchema,
   });
   const writeMemoryUpdate = useDataWriter(SLACK_MEMORY_UPDATE_DATA_NAME, { schema: SlackMemoryUpdateSchema });
+  const writeInteractiveQuestion = useDataWriter(SLACK_INTERACTIVE_QUESTION_DATA_NAME, {
+    schema: SlackInteractiveQuestionSchema,
+  });
+  const writeDisplayComponent = useDataWriter(SLACK_DISPLAY_COMPONENTS_DATA_NAME, {
+    schema: SlackDisplayComponentsSchema,
+  });
   const managementEnabled = !!parseSlackManagementSignal(delivery, plan);
   const turn = runtimePlanTurnContext(plan, delivery);
   useChickpeaSlackRuntimeCapabilities(
@@ -745,6 +783,8 @@ export function ChickpeaSlack({ id }: AgentProps) {
     writeMemoryUpdate,
     slackDeliveryThreadImages(plan, delivery),
     turn,
+    writeInteractiveQuestion,
+    writeDisplayComponent,
   );
   useSlackAttachmentContext(
     plan,
@@ -769,6 +809,8 @@ export function useChickpeaSlackRuntimeCapabilities(
   writeMemoryUpdate?: (receipt: SlackMemoryUpdate) => void,
   threadImages?: readonly ThreadImageRecord[],
   turn?: TurnEnvelopeContext,
+  writeInteractiveQuestion?: (record: SlackInteractiveQuestion) => void,
+  writeDisplayComponent?: (parts: SlackDisplayComponentPart[]) => void,
 ): void {
   useRuntimePlanAgent(plan, id, {
     responseMetadataModel: plan.model,
@@ -794,10 +836,49 @@ export function useChickpeaSlackRuntimeCapabilities(
   useSlackListsTools(plan, resolveAgentPlatformEnv);
   useInstruction(SLACK_PRESENT_TABLE_INSTRUCTION);
   useTool(createSlackPresentTableTool(writeTablePresentation));
+  useSlackInteractiveComponents(plan, writeInteractiveQuestion, writeDisplayComponent);
   if (presentationIntent) {
     useInstruction(presentationIntent.instruction);
     useTool(presentationIntent.tool);
   }
+}
+
+/**
+ * ask_user and offer_actions, bound to this request's host coordinates. They
+ * mount only where a click can be admitted like a reply (see
+ * interactiveSurfaceScope) and never without a trusted Slack signal. The
+ * guide names only mounted tools.
+ */
+function useSlackInteractiveComponents(
+  plan: RuntimePlanV2,
+  writeInteractiveQuestion?: (record: SlackInteractiveQuestion) => void,
+  writeDisplayComponent?: (parts: SlackDisplayComponentPart[]) => void,
+): void {
+  const signal = parseSlackManagementSignal(useDelivery(), plan);
+  const scope = signal && interactiveSurfaceScope(signal, plan.agentId);
+  // Display components need no click round trip, so they mount wherever a
+  // reply is delivered; the interactive ones need a trusted Slack signal.
+  if (writeDisplayComponent) {
+    const display = createDisplayTools(writeDisplayComponent, { requestButtons: Boolean(scope) });
+    useTool(display.cards);
+    useTool(display.chart);
+    useTool(display.details);
+  }
+  if (!scope) {
+    if (writeDisplayComponent) useInstruction(slackPresentationGuide(DISPLAY_GUIDE_TOOLS));
+    return;
+  }
+  const store = async () => getSlackStateStore(await resolveAgentPlatformEnv());
+  useInstruction(slackPresentationGuide([
+    SLACK_ASK_USER_TOOL_NAME, SLACK_OFFER_ACTIONS_TOOL_NAME, SLACK_REQUEST_FORM_TOOL_NAME,
+    ...(writeDisplayComponent ? DISPLAY_GUIDE_TOOLS : [SLACK_PRESENT_TABLE_TOOL_NAME]),
+  ]));
+  const fallback = writeInteractiveQuestion
+    ? { onRecorded: (question: string) => writeInteractiveQuestion({ question }) }
+    : {};
+  useTool(createAskUserTool({ store, scope, ...fallback }));
+  useTool(createOfferActionsTool({ store, scope }));
+  useTool(createRequestFormTool({ store, scope, ...fallback }));
 }
 
 /**

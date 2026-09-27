@@ -8,7 +8,7 @@ export const SOURCE_EXPORT_CHECKS = [
 ];
 export const REGRESSION_AREAS = Object.freeze({
   releases: ['release-manifest', 'build-identity', 'release-update-check', 'support-report', 'installation-routes', 'upgrade-source', 'upgrade-installation', 'upgrade-receipt', 'upgrade', 'upgrade-baseline'],
-  delivery: ['slack-admission', 'slack-thread-context', 'gateway-inbox', 'gateway-session-runner', 'flue-v2-runtime-regressions', 'file-delivery-completion', 'file-delivery-completion-runtime', 'file-delivery-streaming-runtime'],
+  delivery: ['slack-admission', 'slack-thread-context', 'gateway-inbox', 'gateway-session-runner', 'flue-v2-runtime-regressions', 'file-delivery-completion', 'file-delivery-completion-runtime', 'file-delivery-streaming-runtime', 'slack-presentation-eval'],
   agents: ['management-policy', 'management-security-regression', 'management-agent-creation-welcome', 'management-agent-parity', 'slack-proposal-approval-readback', 'agent-authoring-guide'],
   routines: ['routine-schedule', 'routine-scheduler', 'routine-delivery', 'routine-workflow', 'routine-channel-destination', 'schedule-contract-evaluation'],
   connections: ['connection-accounts', 'managed-authorization-flow', 'api-connection-runtime', 'managed-connections'],
@@ -24,6 +24,7 @@ const rules = [
   [/^scripts\/(?:upgrade\.mjs|lib\/(?:upgrade-[a-z-]+|inspect-deployment|auth-schema)\.mjs)/, ['releases']],
   [/^(?:release(?:-source)?\.json|src\/release\/|scripts\/(?:verify-release|lib\/(?:build-identity|release-manifest))\.mjs)/, ['releases']],
   [/^(?:evals\/schedule-contract\/|scripts\/(?:evaluate-schedule-contract|lib\/schedule-contract-evaluation)\.mjs)/, ['routines', 'verification']],
+  [/^(?:evals\/slack-presentation\/|scripts\/(?:evaluate-slack-presentation|lib\/slack-presentation-evaluation)\.mjs)/, ['delivery']],
   [/^scripts\/(?:verify-host|lib\/verification-(?:host|scope))\.mjs$/, ['verification']],
   [/^src\/slack\/(?:install-oauth|installation-credentials|credential-keyring|setup|gateway\/installation-authority)/, ['auth', 'delivery']],
   [/^src\/slack\//, ['delivery']],

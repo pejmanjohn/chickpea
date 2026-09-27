@@ -1071,6 +1071,11 @@ function readableMarkdownText(markdown: string): string {
     .replace(/[ \t]+\n/g, '\n');
 }
 
+/** Markdown as escaped Slack mrkdwn: links and emphasis kept, control syntax never live. */
+export function markdownToSlackMrkdwn(markdown: string): string {
+  return fileReplyMrkdwnText(markdown);
+}
+
 function fileReplyMrkdwnText(markdown: string): string {
   // Native Slack mrkdwn understands code fences and inline backticks. Protect
   // those literals before converting prose so filenames, expressions, and

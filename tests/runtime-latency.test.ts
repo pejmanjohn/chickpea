@@ -36,6 +36,7 @@ import {
   httpDeliveryReceipt,
   parseHttpDeliveryState,
 } from '../src/slack/gateway/http-delivery.ts';
+import { gatewayUiReceiptNow } from '../src/slack/gateway/ui-receipt.ts';
 import type { GatewayEventDelivery, GatewayInboundDelivery } from '../src/slack/gateway/protocol.ts';
 import { GatewayInboundAdmission } from '../src/slack/gateway/inbound-admission.ts';
 import {
@@ -719,6 +720,7 @@ test('the Cloudflare gateway socket logs gateway_delivery for each admitted fram
       getSettingsStore: () => ({ getSetting: async () => 'configured' }),
       GATEWAY_BINDING_SETTING: 'binding',
       GATEWAY_DURABLE_ADMISSION_CAPABILITY: 'durable',
+    GATEWAY_UI_INTERACTIONS_CAPABILITY: 'ui',
       cloudflareWorkerVersionId: () => 'test-version',
       tagStateStub: () => ({ admitGatewayDelivery: () => { admissions += 1; return admit(); } }),
       GatewayInboundAdmission,
@@ -786,6 +788,8 @@ test('HTTP gateway admission logs gateway_delivery with the signed issuedAt lag'
   });
   let kind: 'gateway.delivery' | 'gateway.challenge' = 'gateway.delivery';
   let verifyFails = false;
+  let delivery: object = gatewayEvent();
+  let queued = 0;
   const Probe = vm.runInNewContext(
     ts.transpileModule(`class Probe { ${method.getText(source)} }\nProbe`,
       { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText,
@@ -799,19 +803,20 @@ test('HTTP gateway admission logs gateway_delivery with the signed issuedAt lag'
       GatewayInboxConflictError: class extends Error {},
       parseHttpDeliveryState,
       httpDeliveryReceipt,
+      gatewayUiReceiptNow,
       loadCredentialKeyring: () => ({}),
       verifyHttpDelivery: async () => {
         if (verifyFails) throw new HttpDeliveryError(401, 'delivery_unauthorized');
         return {
           protocolVersion: 1, kind, bindingId: 'binding_latency', workspaceId: 'T_LATENCY', appId: 'A',
           deploymentId: 'dep', routeRevision: 2, keyId: 'k', issuedAt: GATEWAY_NOW - 240,
-          ...(kind === 'gateway.delivery' ? { delivery: gatewayEvent() } : { challengeId: 'c', proof: 'p' }),
+          ...(kind === 'gateway.delivery' ? { delivery } : { challengeId: 'c', proof: 'p' }),
         };
       },
       emitGatewayDelivery: (observation: Parameters<typeof emitGatewayDelivery>[0]) =>
         emitGatewayDelivery(observation, sink),
     },
-  ) as new () => { receiveGatewayHttp(input: object): Promise<{ status: number }> };
+  ) as new () => { receiveGatewayHttp(input: object): Promise<{ status: number; body: unknown }> };
   const probe = Object.assign(new Probe(), {
     env: {},
     armAlarmNoLaterThan: async () => {},
@@ -822,7 +827,8 @@ test('HTTP gateway admission logs gateway_delivery with the signed issuedAt lag'
           config: { getWorkspaceInstallation: () => ({ transportMode: 'gateway', health: 'healthy',
             gatewayBindingId: 'binding_latency', appId: 'A', botUserId: 'B' }) },
           identity: { getAuthControl: () => undefined },
-          gatewayInbox: { admit: () => 'accepted' },
+          gatewayInbox: { admit: () => { queued += 1; return 'accepted'; } },
+          uiSurfaces: { get: () => undefined },
         }) };
       } catch {
         return { ok: false };
@@ -840,4 +846,19 @@ test('HTTP gateway admission logs gateway_delivery with the signed issuedAt lag'
     eventType: 'app_mention', outcome: 'accepted', lagMs: 240, slackLagMs: 61_400,
   }], 'challenges and unauthenticated requests log nothing');
   records.forEach(assertContentFree);
+
+  // A modal submission for no known card is answered in the receipt and never queued.
+  kind = 'gateway.delivery';
+  verifyFails = false;
+  delivery = {
+    protocolVersion: 1, kind: 'interaction.view_submission', deliveryId: 'view:1', bindingId: 'binding_latency',
+    workspaceId: 'T_LATENCY', userId: 'U1', viewId: 'V1', callbackId: 'chickpea.ui.v1.form',
+    privateMetadata: 'forged', state: {}, triggerId: null,
+  };
+  const answered = await probe.receiveGatewayHttp(input);
+  assert.equal(answered.status, 200);
+  assert.deepEqual((answered.body as { interaction?: unknown }).interaction, {
+    responseAction: { response_action: 'clear' },
+  });
+  assert.equal(queued, 1, 'only the earlier event was queued');
 });

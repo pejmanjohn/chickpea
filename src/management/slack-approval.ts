@@ -21,6 +21,7 @@ import {
   type ManagementAgentCreatedWelcome,
   type ManagementActorContext,
   type ManagementApplyResult,
+  type ManagementChangeSetProposalRecord,
   type ManagementReceiptOutboxRecord,
 } from './types.ts';
 import {
@@ -70,6 +71,17 @@ export async function resolveHostSlackManagementApproval(input: {
   identity: Pick<IdentityStore, 'resolveSlackIdentity'>;
   management: Pick<ManagementStore, 'getActiveChangeSetProposal'>;
 }): Promise<string | undefined> {
+  return (await resolveHostSlackManagementProposal(input))?.proposalId;
+}
+
+/** The active proposal this requester could approve from this conversation. */
+export async function resolveHostSlackManagementProposal(input: {
+  turn: NormalizedSlackTurn;
+  assignment: ResolvedAssignment;
+  actorMembershipId: string;
+  identity: Pick<IdentityStore, 'resolveSlackIdentity'>;
+  management: Pick<ManagementStore, 'getActiveChangeSetProposal'>;
+}): Promise<ManagementChangeSetProposalRecord | undefined> {
   const signal = slackManagementSignal(input.turn, input.assignment, input.turn.eventId);
   let actor: ManagementActorContext;
   try {
@@ -92,7 +104,7 @@ export async function resolveHostSlackManagementApproval(input: {
   if (threadedDirectReply && proposal.originKey !== managementActorOriginKey(actor)) {
     return undefined;
   }
-  return proposal.proposalId;
+  return proposal;
 }
 
 export async function executeHostSlackManagementApproval(input: {

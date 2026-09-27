@@ -12,6 +12,7 @@ import {
   UnknownAgentError,
   WorkspaceModelDefaultRevisionConflictError,
 } from './errors.ts';
+import type { UiSurfaceRpcRequest } from '../slack/ui/surface-store.ts';
 import type {
   EncryptedCredentialStore,
   ReplaceEncryptedCredentialRevisionInput,
@@ -336,12 +337,15 @@ const REPLAY_SAFE_STATE_METHODS = new Set([
 /** Kinds sent through a store's `*Execute` RPC. */
 const EXECUTE_STATE_METHODS = new Set([
   'identityExecute', 'managementExecute', 'memoryExecute', 'routinesExecute', 'usageExecute',
-  'workExecute',
+  'workExecute', 'uiSurfaceExecute',
 ]);
 const READ_EXECUTE_KIND = /^(get|list|find|count|has|latest|next)_/;
 const REPLAY_SAFE_EXECUTE_KINDS = new Set([
   'summarize', 'retention_status', 'export_summary',
   'put_agent_memory', // gated on the expected revision
+  // Interactive surfaces: write-once inserts and status moves out of `open`.
+  'put_surface', 'bind_surface_message', 'close_surface', 'resolve_surface', 'supersede_surfaces',
+  'open_surface',
 ]);
 
 /**
@@ -1883,6 +1887,10 @@ export class CfSlackStateStore implements SlackStateStore {
 
   async admitCanonical(input: SlackCanonicalAdmissionInput) {
     return rpcVia(this.stub,'admitSlackTurn', (stub) => stub.admitSlackTurn(input));
+  }
+
+  async executeUiSurface(request: UiSurfaceRpcRequest) {
+    return rpcVia(this.stub, 'uiSurfaceExecute', (stub) => stub.uiSurfaceExecute(request), request.kind);
   }
 
   async resumeTurnAfterOAuth(originalTaskId: string, continuationId: string) {

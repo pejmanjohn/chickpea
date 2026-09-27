@@ -21,6 +21,7 @@ test('local Slack admission injects every transactional state owner', async () =
   const work = { owner: 'work' };
   const turnJobs = { owner: 'turn-jobs' };
   const presentations = { owner: 'presentations' };
+  const uiSurfaces = { owner: 'ui-surfaces', execute() {} };
   const admission = { evtKey: 'evt' };
   let received: unknown[] | undefined;
   const slack = {
@@ -35,10 +36,11 @@ test('local Slack admission injects every transactional state owner', async () =
     work: work as never,
     turnJobs: turnJobs as never,
     presentations: presentations as never,
+    uiSurfaces: uiSurfaces as never,
   });
 
   assert.deepEqual(await store.admitCanonical(admission as never), { claimed: false });
-  assert.deepEqual(received, [admission, work, turnJobs, presentations]);
+  assert.deepEqual(received, [admission, work, turnJobs, presentations, uiSurfaces]);
 });
 
 test('canonical Slack admission creates V3 owner and activity state in the same transaction', () => {

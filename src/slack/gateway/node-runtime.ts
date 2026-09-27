@@ -9,6 +9,8 @@ import { isCloudflareTarget } from '../../config/runtime-target.ts';
 import {
   processGatewayAgentSelection,
   processGatewayPrivateChannelSetup,
+  processGatewayUiAction,
+  processGatewayViewSubmission,
   processGatewaySlackEnvelope,
 } from '../../channels/slack.ts';
 import { createGatewayDeploymentClient } from './runtime.ts';
@@ -21,8 +23,14 @@ import {
 } from './inbox.ts';
 import {
   GATEWAY_DURABLE_ADMISSION_CAPABILITY,
+  GATEWAY_UI_INTERACTIONS_CAPABILITY,
+  type GatewayAdmissionResult,
   type GatewayInboundDelivery,
+  type GatewaySessionCapability,
 } from './protocol.ts';
+import { answerGatewayUiAtReceipt } from './ui-receipt.ts';
+import { uiSurfaceRecord } from '../ui/host-surfaces.ts';
+import type { UiSurfaceRecord } from '../ui/surface.ts';
 import {
   GatewaySessionRunner,
   reconcileGatewaySessionStatus,
@@ -72,10 +80,18 @@ interface NodeGatewayDeliveryDependencies {
   processSlackEnvelope?: typeof processGatewaySlackEnvelope;
   processAgentSelection?: typeof processGatewayAgentSelection;
   processPrivateChannelSetup?: typeof processGatewayPrivateChannelSetup;
+  processUiAction?: typeof processGatewayUiAction;
+  processViewSubmission?: typeof processGatewayViewSubmission;
 }
 
 const NODE_GATEWAY_RETRY_MS = 5_000;
 const NODE_GATEWAY_DRAIN_RETRY_MS = 2_000;
+
+async function readNodeUiSurface(env: PlatformEnv | undefined, id: string): Promise<UiSurfaceRecord | undefined> {
+  const state = resolveStores(env).slackState;
+  if (!state.executeUiSurface) return undefined;
+  return uiSurfaceRecord(state as Parameters<typeof uiSurfaceRecord>[0], { kind: 'get_surface', id });
+}
 
 /** Single-process, single-flight drain for Node's durable gateway inbox. */
 export class NodeGatewayInboxWorker {
@@ -212,8 +228,8 @@ interface NodeGatewayRuntimeDependencies {
   createRunner?: (
     env: PlatformEnv | undefined,
     input: {
-      capabilities: readonly [typeof GATEWAY_DURABLE_ADMISSION_CAPABILITY];
-      onEvent(delivery: GatewayInboundDelivery): Promise<'accepted' | 'duplicate' | 'rejected'>;
+      capabilities: readonly GatewaySessionCapability[];
+      onEvent(delivery: GatewayInboundDelivery): Promise<GatewayAdmissionResult>;
     },
   ) => NodeGatewayRunner;
   createInboxWorker?: (env?: PlatformEnv) => NodeGatewayInboxWorker;
@@ -262,9 +278,16 @@ export function startNodeGatewaySession(
   );
   void readBinding(env).then(async (binding) => {
     if (generation !== lifecycleGeneration || !binding || runner) return;
-    const capabilities = [GATEWAY_DURABLE_ADMISSION_CAPABILITY] as const;
-    const onEvent = async (delivery: GatewayInboundDelivery) => {
+    const capabilities = [
+      GATEWAY_DURABLE_ADMISSION_CAPABILITY,
+      GATEWAY_UI_INTERACTIONS_CAPABILITY,
+    ] as const;
+    const onEvent = async (delivery: GatewayInboundDelivery): Promise<GatewayAdmissionResult> => {
       if (runtimeQuiescing || generation !== lifecycleGeneration) return 'rejected';
+      // A modal click or submission is answered in the ack from its stored card.
+      const receipt = await answerGatewayUiAtReceipt(delivery, (id) => readNodeUiSurface(env, id))
+        .catch(() => undefined);
+      if (receipt) return receipt;
       const outcome = getInbox().admit(delivery, binding);
       if (outcome !== 'rejected') inboxWorker?.wake();
       return outcome;
@@ -363,6 +386,8 @@ export function createNodeGatewayInboxWorker(
   const processAgentSelection = dependencies.processAgentSelection ?? processGatewayAgentSelection;
   const processPrivateChannelSetup =
     dependencies.processPrivateChannelSetup ?? processGatewayPrivateChannelSetup;
+  const processUiAction = dependencies.processUiAction ?? processGatewayUiAction;
+  const processViewSubmission = dependencies.processViewSubmission ?? processGatewayViewSubmission;
   return new NodeGatewayInboxWorker({
     getStore: dependencies.getStore ?? getNodeGatewayInboxStore,
     processDelivery: async (delivery) => {
@@ -375,6 +400,10 @@ export function createNodeGatewayInboxWorker(
           })
         : delivery.kind === 'interaction.agent_selected'
         ? processAgentSelection(delivery, env, client, appStores)
+        : delivery.kind === 'interaction.ui_action'
+        ? processUiAction(delivery, env, client, { stores: appStores, durableIngress: true })
+        : delivery.kind === 'interaction.view_submission'
+        ? processViewSubmission(delivery, env, client, { stores: appStores, durableIngress: true })
         : processPrivateChannelSetup(delivery, env, client, appStores);
     },
   });

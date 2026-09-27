@@ -271,3 +271,34 @@ test('intake memory is bounded and never forgets an in-flight admission', async 
   gates.at(-1)!.resolve('duplicate');
   assert.equal(await evicted, 'duplicate');
 });
+
+test('an interaction answered in its ack is returned to every copy and never remembered as queued', async () => {
+  const receipt = {
+    outcome: 'accepted' as const,
+    interaction: { responseAction: { response_action: 'errors', errors: { b: 'Enter a number.' } } },
+  };
+  const calls: string[] = [];
+  const gate = deferred<typeof receipt>();
+  const intake = new GatewayInboundAdmission({
+    rememberDeliveries: true,
+    admit: async (delivery) => {
+      calls.push(delivery.deliveryId);
+      return calls.length === 1 ? gate.promise : receipt;
+    },
+  });
+  const submission: GatewayInboundDelivery = {
+    protocolVersion: 1, kind: 'interaction.view_submission', deliveryId: 'view:1', bindingId: 'binding_test',
+    workspaceId: 'T1', userId: 'U1', viewId: 'V1', callbackId: 'chickpea.ui.v1.form',
+    privateMetadata: 'a'.repeat(32), state: {}, triggerId: null,
+  };
+  assert.equal(gatewayDeliveryOrderKey(submission), 'user:U1');
+  const first = intake.deliver(submission);
+  const copy = intake.deliver(submission);
+  await flush();
+  gate.resolve(receipt);
+  assert.deepEqual(await first, receipt);
+  assert.deepEqual(await copy, receipt, 'a concurrent copy gets the same answer, not a bare duplicate');
+  // Nothing was queued, so a later copy is answered again rather than as a duplicate.
+  assert.deepEqual(await intake.deliver(submission), receipt);
+  assert.deepEqual(calls, ['view:1', 'view:1']);
+});
