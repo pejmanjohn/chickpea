@@ -197,12 +197,19 @@ sanitizing and credential redaction. `neutralizeSlackBroadcastMentions` in
 - File-reply mrkdwn gives every word-initial `@handle` in prose the joiner,
   because mrkdwn auto-parses user-group handles. Plain broadcast words in code
   there get it too, since Slack does not say whether auto-parsing skips code.
+- An `_` run beside the word is emphasis, not part of it: `__@here__` and
+  `_@here_` get the joiner, while `@channel_news` and `ops_@example.com` stay
+  exact. In file-reply mrkdwn an `@` directly before markup (`@[here](…)`,
+  `@**here**`), and a link label or image alt text ending in `@`, get it too,
+  so markup cannot join an `@` to the next word. These forms were not probed;
+  they follow the documented mrkdwn auto-parsing.
 
 User mentions (`<@U…>`), Channel links, `<!date^…>`, `<!DOCTYPE …>`, CDATA and
 email addresses are unchanged. Streaming withholds an open `<…` on the last
-line, a trailing `@` that could still grow into a broadcast word, and a
-mention inside an inline code span that has not closed, so each streamed
-prefix is a prefix of the neutralized final.
+line, a trailing `@` that could still grow into a broadcast word (or a
+broadcast word followed by an `_` run), and a mention inside an inline code
+span that has not closed, so each streamed prefix is a prefix of the
+neutralized final.
 
 A stream opened by an earlier build that already showed a raw mention diverges
 from the new final; the divergent-stream correction replaces it.

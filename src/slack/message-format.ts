@@ -136,8 +136,10 @@ export function renderSlackArtifactMessage(
   const links = files.map((file) => {
     // Receipt validation bounds the encoded URL and excludes Slack delimiters.
     const url = new URL(file.permalink).href;
-    const label = escapeSlackControlCharacters(redactCredentialLikeContent(file.filename)
-      .replace(/[|\r\n\u0000-\u001f\u007f]/g, ' '));
+    // A model-chosen filename is a mrkdwn link label.
+    const label = neutralizeSlackMrkdwnHandles(escapeSlackControlCharacters(
+      redactCredentialLikeContent(file.filename).replace(/[|\r\n\u0000-\u001f\u007f]/g, ' '),
+    ));
     const shortLabel = splitSlackText(label, 256)[0]?.trim() || 'Download file';
     return `<${url}|${shortLabel}>`;
   }).join('\n');
@@ -298,7 +300,10 @@ const SLACK_BROADCAST_KEYWORDS = ['here', 'channel', 'everyone'] as const;
 // `<!date^…>` stay as written.
 const SLACK_SPECIAL_MENTION =
   /<!(here|channel|everyone|group|subteam\^[^<>|\n]*)(?:\|([^<>\n]*))?>/gi;
-const SLACK_BROADCAST_WORD = /(?<![\p{L}\p{N}_])@(?=(?:here|channel|everyone)(?![\p{L}\p{N}_]))/giu;
+// An `_` run next to the word is emphasis, not part of it: mrkdwn reads
+// `__@here__` as `*@here*` and `_@here_` as italic `@here`, both live, while
+// `@channel_news` (a handle or URL path) is a different word.
+const SLACK_BROADCAST_WORD = /(?<![\p{L}\p{N}]_*)@(?=(?:here|channel|everyone)(?!_*[\p{L}\p{N}]))/giu;
 const SLACK_CODE_SEGMENT = /(```[\s\S]*?(?:```|$)|`[^`\n]+`)/g;
 
 /** A plain `@here`, `@channel` or `@everyone` word with the joiner. */
@@ -885,9 +890,12 @@ function unsafeMentionTail(value: string): number {
     unsafeFrom = Math.min(unsafeFrom, openAngle);
   }
   // Whatever precedes the `@`: redaction can turn `…9@here` into `…]@here`.
-  const word = /@([\p{L}\p{N}_]*)$/u.exec(value);
-  if (word && SLACK_BROADCAST_KEYWORDS.some((keyword) =>
-    keyword.startsWith(word[1]!.toLowerCase()))) {
+  // A trailing `_` run is undecided too: `@here_` may end (`@here_ now`) or
+  // grow into another word (`@here_now`).
+  const word = /@([\p{L}\p{N}]*)(_*)$/u.exec(value);
+  if (word && SLACK_BROADCAST_KEYWORDS.some((keyword) => word[2]
+    ? keyword === word[1]!.toLowerCase()
+    : keyword.startsWith(word[1]!.toLowerCase()))) {
     unsafeFrom = Math.min(unsafeFrom, word.index);
   }
   const openCode = unmatchedBacktickOnLastLine(value, lastLineStart);
@@ -1043,11 +1051,13 @@ export function renderSlackActionLink(
   const link = typeof urlOrLink === 'string'
     ? slackActionLink(urlOrLink, label ?? 'Open link')
     : urlOrLink;
-  const safeLabel = escapeSlackControlCharacters(link.label)
+  // A model-written label is mrkdwn text too; stripping styles can expose `@here`.
+  const plainLabel = escapeSlackControlCharacters(link.label)
     .replace(/[\r\n\u0000-\u001f\u007f|]+/g, ' ')
     .replace(/[*_~`]/g, '')
     .slice(0, 80)
-    .trim() || 'Open link';
+    .trim();
+  const safeLabel = neutralizeSlackMrkdwnHandles(plainLabel) || 'Open link';
   const trimmed = link.url.trim();
   let parsed: URL;
   try {
@@ -1207,7 +1217,7 @@ function slackMrkdwnCodeText(code: string): string {
  * or user-group `@handle`: every word-initial `@` gets the joiner.
  */
 export function neutralizeSlackMrkdwnHandles(escaped: string): string {
-  return escaped.replace(/(?<![\p{L}\p{N}_])@(?=[\p{L}\p{N}_])/gu, `@${SLACK_MENTION_BREAK}`);
+  return escaped.replace(/(?<![\p{L}\p{N}]_*)@(?=[\p{L}\p{N}_])/gu, `@${SLACK_MENTION_BREAK}`);
 }
 
 function fileReplyProseText(markdown: string): string {
@@ -1252,9 +1262,11 @@ function renderSlackInlineMarkdown(source: string): string {
 
     const link = source.slice(at).match(/^(!?)\[([^\]\n]*)\]\(([^)\n]+)\)/);
     if (link) {
-      pieces.push(link[1]
-        ? escapeSlackControlCharacters(link[2]!)
-        : renderSlackActionLink(link[3]!, link[2]!));
+      const piece = link[1]
+        ? neutralizeSlackMrkdwnHandles(escapeSlackControlCharacters(link[2]!))
+        : renderSlackActionLink(link[3]!, link[2]!);
+      // A bare label ending in `@` would join the word after the link.
+      pieces.push(/(?<![\p{L}\p{N}]_*)@$/u.test(piece) ? `${piece}${SLACK_MENTION_BREAK}` : piece);
       at += link[0].length;
       continue;
     }
@@ -1283,9 +1295,12 @@ function renderSlackInlineMarkdown(source: string): string {
     if (handledDelimiter) continue;
 
     // mrkdwn text objects auto-parse a plain `@handle` into a user-group
-    // mention; the canonical answer already neutralized broadcast words.
-    if (source[at] === '@' && /[\p{L}\p{N}_]/u.test(source[at + 1] ?? '') &&
-        !/[\p{L}\p{N}_]/u.test(source[at - 1] ?? '')) {
+    // mention; the canonical answer already neutralized broadcast words. Any
+    // markup after the `@` gets the joiner too: `@[here](…)` and `@**here**`
+    // render the `@` next to a word.
+    const next = source[at + 1] ?? '';
+    if (source[at] === '@' && /\S/u.test(next) && next !== SLACK_MENTION_BREAK &&
+        !/[\p{L}\p{N}]_*$/u.test(source.slice(0, at))) {
       pieces.push(`@${SLACK_MENTION_BREAK}`);
       at += 1;
       continue;

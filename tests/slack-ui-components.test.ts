@@ -189,7 +189,7 @@ test('model text in question mrkdwn never becomes a broadcast or user-group ment
   assert.match(texts, /@\u2060here or @\u2060eng review/);
   assert.match(texts, /Loop in @\u2060everyone/);
   // `<@U1>` is the host's own requester mention and stays live.
-  assert.doesNotMatch(texts, /(?<![\p{L}\p{N}_<])@[\p{L}\p{N}_]/u);
+  assert.doesNotMatch(texts, /(?<![\p{L}\p{N}<])@[\p{L}\p{N}_]/u);
   assert.match(texts, /<@U1>/);
   assert.equal(
     escapeMrkdwn('Ping @channel & <@U1>; mail ops@example.com'),
