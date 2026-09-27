@@ -171,7 +171,7 @@ test('routine delivery never renders a live broadcast mention in blocks or fallb
     'Weekly report is ready <!channel>, cc <@U1>',
     { agentName: 'Default', agentId: 'agent_default' },
   );
-  const live = /<!(?:here|channel|everyone|group|subteam\^)|(?<![\p{L}\p{N}_])@(?:here|channel|everyone)(?![\p{L}\p{N}_])/iu;
+  const live = /<!(?:here|channel|everyone|group|subteam\^)|(?<![\p{L}\p{N}])@(?:here|channel|everyone)(?![\p{L}\p{N}])/iu;
 
   for (const text of [JSON.stringify(rendered.blocks), rendered.text]) {
     assert.doesNotMatch(text, live);
