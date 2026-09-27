@@ -146,7 +146,7 @@ export class RunnerStops implements RunnerTurnObserver {
       // before the settlement takes it as its turn would have noted it. A
       // stop that never dispatched is kept from dispatching by its row's
       // stop record alone.
-      if (notice.settled !== undefined) this.noteSettlement(id, notice.settled);
+      if (notice.settled !== undefined) this.noteSettlement(id, notice.settled, marker);
       else if (marker.abort === 'owed') this.lapse(marker);
       return { acknowledged: true, wake: jobs.hasOwedStops() };
     }
@@ -181,12 +181,17 @@ export class RunnerStops implements RunnerTurnObserver {
     }
   }
 
-  noteSettlement(id: string, outcome: FlueSettlementCheckpointV1['outcome']): void {
+  noteSettlement(
+    id: string,
+    outcome: FlueSettlementCheckpointV1['outcome'],
+    /** The turn's stop marker, where the caller has just read it (`receive`). */
+    marker?: ThreadRunnerStopMarker,
+  ): void {
     this.settled.add(id);
     if (this.settled.size > 64) this.settled.delete(this.settled.values().next().value!);
     this.receipts.delete(id);
     try {
-      const marker = this.deps.jobs.stopMarker(id);
+      marker ??= this.deps.jobs.stopMarker(id);
       if (!marker) return;
       if (outcome === 'aborted') {
         // The abort took effect, whether or not its request was confirmed.

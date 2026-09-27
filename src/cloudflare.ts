@@ -242,6 +242,7 @@ import {
   TurnJobStoreLogic,
   type PendingTurnJob,
 } from './slack/turn-jobs.ts';
+import type { TurnSteeringDecision } from './slack/turn-job-types.ts';
 import { DoSqlStateDb } from './state/do-state-db.ts';
 import { StateSchemaMarker, stateSchemaFingerprint } from './state/schema-lifecycle.ts';
 import { cloudflareWorkerVersionId } from './config/cloudflare-version.ts';
@@ -1588,13 +1589,8 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
         input, stores.work, stores.turnJobs, stores.presentations, stores.uiSurfaces,
       ),
     );
-    // A typed stop the admission recorded is offered to its runner now, as in
-    // slackTurnSteer; the outbox retries the rest.
-    if (
-      result.ok && result.value.claimed && 'steered' in result.value &&
-      result.value.steered.outcome === 'stopped' && result.value.steered.stop.created
-    ) {
-      await this.deliverStopNotices();
+    if (result.ok && result.value.claimed && 'steered' in result.value) {
+      await this.offerCreatedStop(result.value.steered);
     }
     return result;
   }
@@ -1926,11 +1922,20 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     if (decision.outcome === 'enqueue' && decision.enqueued) {
       // As enqueueTurn: the row and its alarm are durable before the reply.
       await this.armAlarmNoLaterThan(Date.now() + RELAY_BATCH_WINDOW_MS, true);
-    } else if (decision.outcome === 'stopped' && decision.stop.created) {
-      // Offer the stop to its runner now; the outbox retries the rest.
-      await this.deliverStopNotices();
+    } else {
+      await this.offerCreatedStop(decision);
     }
     return result;
+  }
+
+  /**
+   * A stop the RPC just created (a steer, or a typed stop the admission
+   * recorded) is offered to its runner before the RPC answers; the outbox
+   * retries the rest. Any other decision, and a stop that already existed,
+   * offers nothing.
+   */
+  private async offerCreatedStop(decision: TurnSteeringDecision): Promise<void> {
+    if (decision.outcome === 'stopped' && decision.stop.created) await this.deliverStopNotices();
   }
 
   async slackTurnStopFinish(

@@ -1102,7 +1102,9 @@ function stopOutboxHarness(input: {
   deliveryTimeoutMs?: number;
   runner?: boolean;
 }) {
-  const methods = ['deliverStopNotices', 'armAlarmNoLaterThan', 'slackTurnSteer', 'admitSlackTurn'].map((name) => {
+  const methods = [
+    'deliverStopNotices', 'armAlarmNoLaterThan', 'slackTurnSteer', 'admitSlackTurn', 'offerCreatedStop',
+  ].map((name) => {
     const method = (stateClass as ts.ClassDeclaration).members.find((member) =>
       ts.isMethodDeclaration(member) && member.name.getText(source) === name);
     assert.ok(method, `production method ${name} exists`);
