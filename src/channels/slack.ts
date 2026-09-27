@@ -2353,7 +2353,13 @@ async function answerSlackSteering(input: {
     ...(input.source === 'button' ? { source: input.source } : {}),
     ...(decision.outcome === 'stopped' ? { created: decision.stop.created } : {}),
   });
-  if (decision.outcome === 'stopped') return;
+  if (decision.outcome === 'stopped') {
+    // Node has no state store alarm: its relay delivers the new stop in this
+    // process, beside the run it stops (KTD16). Never awaited, and never
+    // rejects; on Cloudflare the state store delivered it already.
+    if (decision.stop.created) void wakeNodeTurnRelay(input.platformEnv);
+    return;
+  }
   const facts = await readSteeringRunFacts(decision.run, {
     state: input.state,
     env: input.platformEnv as Record<string, unknown> | undefined,

@@ -49,6 +49,8 @@ function relayHarness() {
   const gates = new Map<string, Deferred>();
   const events: string[] = [];
   const started = new Map<string, number>();
+  const owedStops = new Set<string>();
+  const aborts: string[] = [];
   const remove = async (id: string) => {
     const index = rows.findIndex((row) => row.id === id);
     if (index >= 0) rows.splice(index, 1);
@@ -68,6 +70,27 @@ function relayHarness() {
     markTurnDelivered: remove,
     discardTurn: remove,
     setActiveWork: noop,
+    // The row as the relay reads it again, running with a recorded dispatch.
+    turnJobView: async (id: string) => {
+      const row = rows.find((candidate) => candidate.id === id);
+      return row
+        ? {
+            status: 'pending',
+            executor: 'alarm',
+            job: {
+              ...row,
+              dispatchEnvelope: { instanceId: `instance:${id}` },
+              dispatchReceipt: { submissionId: `submission:${id}`, acceptedAt: '2026-09-26T12:00:00.000Z' },
+            },
+          }
+        : { status: 'missing' };
+    },
+    deliverStopNotices: async (receive: (notice: { turnJobId: string }) => Promise<boolean>) => {
+      for (const id of [...owedStops]) {
+        if (await receive({ turnJobId: id })) owedStops.delete(id);
+      }
+      return undefined;
+    },
   } as unknown as SlackStateStore;
   const executeTurn = async (turn: { text: string }) => {
     const id = turn.text;
@@ -81,10 +104,20 @@ function relayHarness() {
     state,
     work: {} as unknown as WorkStore,
     executeTurn: executeTurn as never,
+    abortAgent: async (target: { instanceId: string }) => {
+      aborts.push(target.instanceId);
+    },
   };
   return {
     events,
     started,
+    aborts,
+    oweStop(id: string) {
+      owedStops.add(id);
+    },
+    owesStop(id: string) {
+      return owedStops.has(id);
+    },
     enqueue(id: string, threadTs: string, blocked = true) {
       if (blocked) gates.set(id, deferred());
       rows.push(pendingTurn(id, threadTs));
@@ -110,6 +143,28 @@ async function settled(promise: Promise<unknown>): Promise<boolean> {
   await new Promise((resolve) => setTimeout(resolve, 20));
   return done;
 }
+
+// Runs before the test below, which shuts the relay down for good.
+test('a stop reaches the turn a busy thread loop runs, and its wake waits on no loop', async () => {
+  const relay = relayHarness();
+
+  relay.enqueue('s1', '400.1');
+  const wakeS = relay.wake();
+  await waitFor(() => relay.started.has('s1'));
+
+  // A typed stop for the running turn wakes the relay: its stop outbox pass
+  // aborts the run in process while the thread's loop is still busy with it.
+  relay.oweStop('s1');
+  const stopWake = relay.wake();
+  assert.equal(await settled(stopWake), true, 'the stop wake waits on no thread loop');
+  assert.deepEqual(relay.aborts, ['instance:s1']);
+  assert.equal(relay.owesStop('s1'), false, 'acknowledged: the dispatch receipt was recorded');
+  assert.equal(await settled(wakeS), false, 'the stopped turn is still settling in its loop');
+
+  relay.release('s1');
+  await wakeS;
+  assert.deepEqual(relay.events, ['start:s1', 'end:s1']);
+});
 
 test('a slow thread holds only itself and stop waits for every thread loop', async () => {
   const relay = relayHarness();

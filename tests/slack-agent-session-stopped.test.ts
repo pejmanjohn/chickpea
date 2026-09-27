@@ -18,6 +18,7 @@ import {
   promoteSlackCredentialBundle,
   stageSlackCredentialBundle,
 } from '../src/slack/installation-credentials.ts';
+import { stopNodeTurnRelay } from '../src/slack/node-turn-relay.ts';
 import type { TurnJob } from '../src/slack/turn-job-types.ts';
 import { parseSlackAgentSessionStopped } from '../src/slack/types.ts';
 import { createSlackOwner } from './helpers/slack-owner.ts';
@@ -433,6 +434,10 @@ test('a message posted before the press is held by the stop; one posted after it
 });
 
 test('a customer-owned app\'s signed Stop event (direct transport) stops the run the same way', async () => {
+  // On Node a new stop wakes the relay, which takes it in process (see
+  // tests/node-turn-relay-stop.test.ts); keep this process's relay stopped so
+  // no wake runs the stopped turn under these assertions.
+  await stopNodeTurnRelay();
   const envKeys = [
     'TAG_DB_PATH', 'SLACK_STATE_DB_PATH', 'CHICKPEA_AUTH_DB_PATH', 'CHICKPEA_CREDENTIAL_KEYRING_PATH',
   ] as const;

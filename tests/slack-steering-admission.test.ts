@@ -7,6 +7,7 @@ import { openStateDb } from '../src/state/node-state-db.ts';
 import { processGatewaySlackEnvelope } from '../src/channels/slack.ts';
 import { closeNodeStateStores, resolveStores, type AppStores } from '../src/config/state-backend.ts';
 import type { GatewayDeploymentClient } from '../src/slack/gateway/client.ts';
+import { stopNodeTurnRelay } from '../src/slack/node-turn-relay.ts';
 import { defaultSlackStatusRegistry } from '../src/slack/status-registry.ts';
 import type { TurnJob } from '../src/slack/turn-job-types.ts';
 import { createSlackOwner } from './helpers/slack-owner.ts';
@@ -451,7 +452,11 @@ test('"status" in a DM thread is answered with a threaded reply', async () => {
   });
 });
 
-test('the Node path stops and checks in the same way without waking its relay', async () => {
+test('the Node path stops, checks in and adds the mid-run 👀 the same way', async () => {
+  // Admission wakes Node's relay (after an ordinary message, and after a new
+  // stop); the relay's side is tests/node-turn-relay-stop.test.ts. Keep this
+  // process's relay stopped so no wake runs a turn under these assertions.
+  await stopNodeTurnRelay();
   await withHarness(async (harness) => {
     // Admit the run through the Cloudflare lane, then steer it through Node's.
     Object.defineProperty(globalThis, 'navigator', {
@@ -467,9 +472,14 @@ test('the Node path stops and checks in the same way without waking its relay', 
     await harness.deliver({ ts: '1800000010.000100', threadTs: ROOT_TS, text: 'how’s it going?' });
     assert.match(String(harness.posts[0]?.input.text), /No new progress for 30\+ minutes/);
 
+    await harness.deliver({ ts: '1800000015.000100', threadTs: ROOT_TS, text: 'Also check the nightly job.' });
+    assert.deepEqual(harness.reactions, ['1800000015.000100:eyes'], 'a mid-run message gets 👀 (R12)');
+
     await harness.deliver({ ts: '1800000020.000100', threadTs: ROOT_TS, text: 'halt' });
-    assert.deepEqual((await harness.pending()).map(({ id }) => id), [ROOT_ID]);
+    const pending = await harness.pending();
+    assert.deepEqual(pending.map(({ id }) => id), [ROOT_ID, 'msg:C1:1800000015.000100']);
     assert.equal((await stopRecordOf(harness))?.role, 'stopped');
+    assert.equal(pending[1]?.stop?.role, 'held', 'the unread message waits for the stopped ending');
   }, { target: 'node' });
 });
 

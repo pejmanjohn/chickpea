@@ -8,7 +8,13 @@ import type {
   SlackRuntimeDrainCounts,
   SlackTurnRecoveryItem,
 } from '../config/state-rpc.ts';
-import { TurnJobStoreLogic, type PendingTurnJob, type SlackProposalApprovalQuery, type SlackProposalApprovalTurn } from './turn-jobs.ts';
+import {
+  TurnJobStoreLogic,
+  type PendingTurnJob,
+  type RunnerTurnJobView,
+  type SlackProposalApprovalQuery,
+  type SlackProposalApprovalTurn,
+} from './turn-jobs.ts';
 import type {
   TurnDirectThreadQuery,
   TurnJob,
@@ -17,6 +23,7 @@ import type {
   TurnSteeringInterception,
   TurnSteeringRequest,
   TurnStopFinish,
+  TurnStopNotice,
 } from './turn-job-types.ts';
 import type { SlackRunFactsView } from './status-registry.ts';
 import type {
@@ -215,6 +222,20 @@ export interface SlackStateStore extends SlackClaimStore, SlackThreadRegistry {
   countPendingDeliveriesForWorkspace(workspaceId: string): Promise<number>;
   /** Node-only durable legacy relay operations; Cloudflare owns these in its DO alarm. */
   listPendingTurns?(): Promise<PendingTurnJob[]>;
+  /**
+   * The authoritative row of one turn (pending with its checkpoints, settled,
+   * or missing), which the Node relay reads again before it runs a row it
+   * listed earlier, since a stop may have held or dropped it meanwhile.
+   */
+  turnJobView?(id: string): Promise<RunnerTurnJobView>;
+  /**
+   * The Node relay's stop outbox pass (KTD2): offer every due stop notice to
+   * `receive`, whose true acknowledges it (false or a rejection retries it
+   * with a backoff). Resolves with when the next owed notice falls due.
+   */
+  deliverStopNotices?(
+    receive: (notice: TurnStopNotice) => Promise<boolean>,
+  ): Promise<number | undefined>;
   getPendingTurnByRunId?(runId: string): Promise<PendingTurnJob | undefined>;
   freezeRuntimePlan?(
     id: string,

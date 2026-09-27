@@ -1,6 +1,6 @@
 import type { WorkStoreLogic } from '../work/store.ts';
 import type { SlackCanonicalAdmissionInput, SlackStateStore, SlackStateLogic } from './claim-store.ts';
-import { MAX_TURN_DRAIN_BATCH, type TurnJobStoreLogic } from './turn-jobs.ts';
+import { deliverDueStopNotices, MAX_TURN_DRAIN_BATCH, type TurnJobStoreLogic } from './turn-jobs.ts';
 import type { SlackRunPresentationStoreLogic } from './run-presentations.ts';
 import { defaultSlackStatusRegistry } from './status-registry.ts';
 
@@ -45,6 +45,12 @@ export function localSlackStateStore(input: {
     countPendingDeliveriesForWorkspace: async (workspaceId) =>
       turnJobs.countPendingDeliveriesForWorkspace(workspaceId),
     listPendingTurns: async () => turnJobs.listPending(MAX_TURN_DRAIN_BATCH),
+    turnJobView: async (id) => turnJobs.runnerView(id),
+    // Plain statements around the receiver: no transaction is held across it.
+    deliverStopNotices: async (receive) => {
+      await deliverDueStopNotices({ turnJobs, receiver: receive });
+      return turnJobs.nextStopNoticeDueAt();
+    },
     getPendingTurnByRunId: async (runId) => turnJobs.getPendingByRunId(runId),
     freezeRuntimePlan: async (id, candidate) => turnJobs.freezeRuntimePlan(id, candidate),
     prepareFlueDispatch: async (id, message, observation, threadImages, admittedListIds, turnEnvelope) =>
