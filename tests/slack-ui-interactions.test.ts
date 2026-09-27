@@ -473,6 +473,9 @@ test('person and date pickers answer with validated ids, never free text', async
   const pick = uiActionId('ui', 'question_pick', 0);
   await f.click(person.id, { actionId: pick, blockId: uiBlockId('ui', person.id, 0), value: null, actionType: 'users_select', selected: ['not a user'] });
   assert.equal(f.jobs.length, 1, 'a malformed selection is ignored');
+  await f.click(person.id, { actionId: pick, blockId: uiBlockId('ui', person.id, 0), value: null, actionType: 'users_select', selected: ['UBOT'], actionTs: '3002.650000' });
+  assert.equal(f.jobs.length, 1, 'the app itself is never a picked person');
+  assert.match(f.ephemerals().at(-1)!, /isn't available right now/);
   await f.click(person.id, { actionId: pick, blockId: uiBlockId('ui', person.id, 0), value: null, actionType: 'users_select', selected: ['U0REVIEWER'], actionTs: '3002.700000' });
   assert.match(f.jobs.at(-1)!.turn.text, /: <@U0REVIEWER>$/);
 

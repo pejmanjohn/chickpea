@@ -13,6 +13,7 @@ import {
   SlackAnswerOnlyToolDeniedError,
   SlackInteractiveComponentLimitError,
   SlackPresentationToolUnavailableError,
+  SlackQuestionPostedToolDeniedError,
 } from '../src/slack/presentation-tool-policy.ts';
 import { SLACK_STREAM_ANSWER_TOOL_NAME } from '../src/slack/presentation-intent.ts';
 import { SLACK_PRESENT_TABLE_TOOL_NAME } from '../src/slack/table-presentation.ts';
@@ -316,7 +317,8 @@ test('policy: a question ends the reply, one interactive component per reply, ne
     assert.equal(await tool(SLACK_PRESENT_TABLE_TOOL_NAME, 't1', async () => 'table'), 'table');
     await assert.rejects(tool('search_tickets', 's1', async () => 'x'), SlackAnswerOnlyToolDeniedError);
     assert.equal(await tool('ask_user', 'a1', async () => 'asked'), 'asked', 'presentation tools may follow a table');
-    await assert.rejects(tool('offer_actions', 'o1', async () => 'x'), SlackAnswerOnlyToolDeniedError);
+    await assert.rejects(tool('offer_actions', 'o1', async () => 'x'), SlackQuestionPostedToolDeniedError);
+    await assert.rejects(tool('search_tickets', 's2', async () => 'x'), /question is posted/);
     await assert.rejects(tool(SLACK_STREAM_ANSWER_TOOL_NAME, 'd1', async () => 'x'), SlackPresentationToolUnavailableError);
   });
   await withSubmission(async () => {
@@ -333,6 +335,6 @@ test('policy: a question ends the reply, one interactive component per reply, ne
     observePresentationToolPolicy({
       type: 'turn_request', purpose: 'agent', request: { input: { messages } },
     } as unknown as FlueObservation, { agentName: CHICKPEA_SLACK_AGENT_NAME } as unknown as FlueEventContext);
-    await assert.rejects(tool('search_tickets', 's1', async () => 'x'), SlackAnswerOnlyToolDeniedError);
+    await assert.rejects(tool('search_tickets', 's1', async () => 'x'), SlackQuestionPostedToolDeniedError);
   });
 });

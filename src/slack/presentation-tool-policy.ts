@@ -27,6 +27,8 @@ interface PresentationToolPolicyState {
   presented?: boolean;
   /** This reply's one interactive component (ask_user, offer_actions) exists. */
   interactiveUsed?: boolean;
+  /** An ask_user question ended the reply. */
+  questionAsked?: boolean;
   artifactDeliveryAttempted: boolean;
   /** A tool ran whose result the host may substitute for the model draft. */
   draftReplacementAttempted?: boolean;
@@ -93,6 +95,14 @@ export class SlackAnswerOnlyToolDeniedError extends Error {
   }
 }
 
+/** Tools after a posted question: the answer arrives as the next message. */
+export class SlackQuestionPostedToolDeniedError extends Error {
+  constructor() {
+    super('Your question is posted, so this reply is finished. Do not call more tools; end your reply now.');
+    this.name = 'SlackQuestionPostedToolDeniedError';
+  }
+}
+
 export class SlackPresentationToolUnavailableError extends Error {
   constructor() {
     super('This response does not offer a progressive-delivery declaration.');
@@ -145,6 +155,7 @@ export const presentationToolPolicyInterceptor: FlueExecutionInterceptor = async
 
   if (operation.toolName === SLACK_PRESENT_TABLE_TOOL_NAME) {
     assertFileDeliveryChecked(active);
+    if (active.questionAsked) throw new SlackQuestionPostedToolDeniedError();
     if (active.answerOnly) throw new SlackAnswerOnlyToolDeniedError();
     const result = await next();
     assertFileDeliveryChecked(active);
@@ -154,6 +165,7 @@ export const presentationToolPolicyInterceptor: FlueExecutionInterceptor = async
 
   if (INTERACTIVE_TOOL_NAMES.has(operation.toolName)) {
     assertFileDeliveryChecked(active);
+    if (active.questionAsked) throw new SlackQuestionPostedToolDeniedError();
     if (active.answerOnly) throw new SlackAnswerOnlyToolDeniedError();
     if (active.interactiveUsed) throw new SlackInteractiveComponentLimitError();
     const result = await next();
@@ -161,10 +173,14 @@ export const presentationToolPolicyInterceptor: FlueExecutionInterceptor = async
     active.interactiveUsed = true;
     active.presented = true;
     // A question ends the reply: its answer arrives as the next message.
-    if (operation.toolName === SLACK_ASK_USER_TOOL_NAME) active.answerOnly = true;
+    if (operation.toolName === SLACK_ASK_USER_TOOL_NAME) {
+      active.answerOnly = true;
+      active.questionAsked = true;
+    }
     return result;
   }
 
+  if (active.questionAsked) throw new SlackQuestionPostedToolDeniedError();
   if (active.answerOnly || active.presented) throw new SlackAnswerOnlyToolDeniedError();
   // A failed/uncertain upload may already have staged a private file. Keep
   // that response on terminal delivery too; never stream ahead of its result.
@@ -228,7 +244,10 @@ export function observePresentationToolPolicy(
   if (current.successfulDeclaration) active.answerOnly = true;
   if (current.presented) active.presented = true;
   if (current.interactiveUsed) active.interactiveUsed = true;
-  if (current.questionAsked) active.answerOnly = true;
+  if (current.questionAsked) {
+    active.answerOnly = true;
+    active.questionAsked = true;
+  }
   if (current.artifactDeliveryAttempted) active.artifactDeliveryAttempted = true;
   if (current.draftReplacementAttempted) active.draftReplacementAttempted = true;
 }

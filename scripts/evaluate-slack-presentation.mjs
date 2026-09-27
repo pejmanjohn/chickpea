@@ -4,6 +4,11 @@
 // the real presentation tools and guide against real models, per case, with
 // a private report and a gate on the calibration targets.
 
+import {
+  SLACK_ASK_USER_ACKNOWLEDGEMENT,
+  SLACK_OFFER_ACTIONS_ACKNOWLEDGEMENT,
+} from '../src/slack/ui/interactive-tools.ts';
+import { SlackQuestionPostedToolDeniedError } from '../src/slack/presentation-tool-policy.ts';
 import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
@@ -91,8 +96,13 @@ const PROVIDER_ENV = {
 const LOADABLE_ENV = new Set(Object.values(PROVIDER_ENV).flat());
 const ABANDON_AFTER_FAILURES = 3;
 
-const QUESTION_POSTED = 'Question posted. End your reply now; the answer arrives as the next message.';
-const AFTER_QUESTION = 'Your question is already posted, so this reply is finished. Do not call more tools; end your reply now.';
+// The production acknowledgements and refusal, so the gate measures what ships.
+const QUESTION_POSTED = SLACK_ASK_USER_ACKNOWLEDGEMENT;
+const AFTER_QUESTION = new SlackQuestionPostedToolDeniedError().message;
+const ACKNOWLEDGEMENTS = {
+  ask_user: SLACK_ASK_USER_ACKNOWLEDGEMENT,
+  offer_actions: SLACK_OFFER_ACTIONS_ACKNOWLEDGEMENT,
+};
 
 const VALIDATORS = {
   ask_user: validateAskUser,
@@ -181,9 +191,8 @@ function presentationTool(definition, run, writeComponent) {
       }
       run.recorder.accept(definition.name, toolCallId, spec);
       writeComponent({ tool: definition.name, spec });
-      return BLOCKING_TOOL_NAMES.includes(definition.name)
-        ? QUESTION_POSTED
-        : `Recorded. ${run.recorder.remaining()}`;
+      return ACKNOWLEDGEMENTS[definition.name] ??
+        (BLOCKING_TOOL_NAMES.includes(definition.name) ? QUESTION_POSTED : `Recorded. ${run.recorder.remaining()}`);
     },
   };
 }

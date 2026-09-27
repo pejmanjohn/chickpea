@@ -1081,6 +1081,8 @@ async function handleSlackUiAction(input: {
   stores: AppStores;
   client: ReturnType<typeof createSlackWebClient>;
   execution?: SlackEventExecution;
+  /** The app's own bot user: never a person someone can pick. */
+  botUserId?: string;
 }): Promise<void> {
   const { action, stores, client } = input;
   const control = parseUiControl(action);
@@ -1141,6 +1143,8 @@ async function handleSlackUiAction(input: {
     // block_actions; only a complete answer goes on, and nothing is consumed.
     answer = interactiveAnswer(surface, control, action);
     if (!answer) return;
+    // A picked bot user would also read as an @mention of the app.
+    if (input.botUserId && answer.values?.includes(input.botUserId)) return refuse('unavailable', surface);
   }
   const messageTs = microsecondSlackTs(action.actionTs);
   if (!messageTs) return refuse('unavailable', surface);
@@ -1236,6 +1240,7 @@ async function processDirectSlackUiAction(
     platformEnv,
     stores,
     client: createSlackWebClient(credentials.botToken),
+    ...(installation.botUserId ? { botUserId: installation.botUserId } : {}),
   });
 }
 
@@ -1269,6 +1274,7 @@ export async function processGatewayUiAction(
     platformEnv,
     stores,
     client,
+    botUserId: installation.botUserId,
     execution: {
       transport: createGatewaySlackTransport(gateway),
       client,
