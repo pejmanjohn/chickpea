@@ -20,6 +20,7 @@ import type {
   SlackAgentBinding,
   SlackAgentBindingExpectation,
   TurnJob,
+  TurnPreviousStop,
   TurnRunRoute,
   TurnSteeringDecision,
   TurnSteeringRequest,
@@ -203,6 +204,11 @@ export interface PendingTurnJob {
    * as released.
    */
   stop?: TurnStopRecordV1;
+  /**
+   * The thread's previous run was stopped (see previousThreadStop). Read only
+   * for a row whose dispatch has not started, the one prompt it can reach.
+   */
+  previousStop?: TurnPreviousStop;
 }
 
 /**
@@ -2014,6 +2020,7 @@ export class TurnJobStoreLogic {
     const turn = JSON.parse(row.turn_json) as NormalizedSlackTurn;
     const assignment = JSON.parse(row.assignment_json) as ResolvedAssignment;
     const stop = row.stop_json ? this.effectiveStop(parseTurnStopRecord(row.stop_json)) : undefined;
+    const previousStop = this.previousThreadStop(row, turn, assignment);
     return {
       id: row.id,
       evtKey: row.evt_key,
@@ -2050,7 +2057,38 @@ export class TurnJobStoreLogic {
       ...(rowExecutor(row) === 'runner' ? { executor: 'runner' as const } : {}),
       ...(row.executor === 'handoff' ? { handoff: true as const } : {}),
       ...(stop ? { stop } : {}),
+      ...(previousStop ? { previousStop } : {}),
     };
+  }
+
+  /**
+   * The thread's previous run, when a stop stopped it (KTD3): the latest
+   * delivered row enqueued before this one, dropped rows aside (they never
+   * ran), is a stopped head whose ending dropped rather than released. Only
+   * a row whose dispatch has not started asks: its prompt is not yet built.
+   */
+  private previousThreadStop(
+    row: TurnJobRow,
+    turn: NormalizedSlackTurn,
+    assignment: ResolvedAssignment,
+  ): TurnPreviousStop | undefined {
+    if ((row.dispatch_started_at !== null && row.dispatch_started_at !== undefined) ||
+        row.enqueued_at === null || row.enqueued_at === undefined) return undefined;
+    const threadKey = stopThreadKeyOf(turn, assignment);
+    if (!threadKey) return undefined;
+    const previous = this.db.get(
+      `SELECT stop_json FROM turn_jobs
+       WHERE thread_key = ? AND delivered = 1 AND id != ? AND enqueued_at <= ?
+         AND (stop_json IS NULL OR json_extract(stop_json, '$.role') IS NOT 'dropped')
+       ORDER BY enqueued_at DESC, rowid DESC LIMIT 1`,
+      threadKey,
+      row.id,
+      Number(row.enqueued_at),
+    );
+    const record = previous?.stop_json ? parseTurnStopRecord(previous.stop_json) : undefined;
+    return record?.role === 'stopped' && record.ending?.outcome === 'dropped'
+      ? { stopperUserId: record.stopperUserId, stoppedAt: record.stoppedAt }
+      : undefined;
   }
 }
 

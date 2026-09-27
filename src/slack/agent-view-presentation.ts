@@ -66,6 +66,7 @@ import {
   type SlackPresentationRoot,
   type SlackPresentationTaskOutcome,
   type SlackPresentationReceiptCertainty,
+  type SlackPresentationTerminalReason,
   type SlackPresentationTransitionInput,
   type SlackPresentationTransitionResult,
   type SlackReplySplit,
@@ -482,6 +483,37 @@ export class SlackAgentViewPresentation {
     await this.projectMilestonesBestEffort(presentation, changed);
   }
 
+  /**
+   * A stop ended the run (KTD3): the active row did not finish and every
+   * untouched later row did not run. Unlike recordExecutionFailure, each
+   * detail says the run was stopped.
+   */
+  async recordExecutionStopped(): Promise<void> {
+    let presentation = await this.requirePresentation();
+    if (presentation.schemaVersion !== 3 || !presentation.plan) return;
+    const changed: string[] = [];
+    for (const task of presentation.plan.tasks) {
+      if (task.status !== 'in_progress' && task.status !== 'pending') continue;
+      // A started row cannot become "not run".
+      presentation = await this.transition(presentation, task.status === 'in_progress'
+        ? {
+            kind: 'transition_task',
+            taskId: task.id,
+            to: 'failed',
+            detail: 'Failed: the run was stopped before this finished.',
+          }
+        : {
+            kind: 'transition_task',
+            taskId: task.id,
+            to: 'not_run',
+            detail: 'Not run: the run was stopped.',
+          });
+      changed.push(task.id);
+      if (presentation.schemaVersion !== 3 || !presentation.plan) return;
+    }
+    if (changed.length > 0) await this.projectMilestonesBestEffort(presentation, changed);
+  }
+
   async recordTerminalDeliveryReceipt(
     certainty: Exclude<SlackPresentationReceiptCertainty, 'pending'>,
   ): Promise<void> {
@@ -671,10 +703,19 @@ export class SlackAgentViewPresentation {
     await this.transition(presentation, { kind: 'supersede_shared_repair_effects' });
   }
 
-  async prepareActivityCleanup(): Promise<SlackActivityCleanupPreparation> {
+  async prepareActivityCleanup(
+    /**
+     * `stopped`: a stopped run's ending (KTD3). The thread's newer turns were
+     * either dropped by the stop or queued behind this run, so none has shown
+     * a status: this run's own is the one the thread shows, and its cleanup is
+     * not fenced by their newer generations.
+     */
+    ending?: { stopped?: boolean },
+  ): Promise<SlackActivityCleanupPreparation> {
     let presentation = await this.requirePresentation();
     if (presentation.schemaVersion === 3 &&
         presentation.activityProjection.surface === 'assistant_status' &&
+        ending?.stopped !== true &&
         !(await this.ownsLatestThreadGeneration(presentation))) return { kind: 'fenced' };
     if (presentation.schemaVersion === 3 && presentation.cleanup.state === 'required' &&
         presentation.cleanup.operation.certainty === 'unknown') {
@@ -971,8 +1012,16 @@ export class SlackAgentViewPresentation {
     observer: SlackPresentationDeliveryObserver,
     tablePresentation?: SlackTablePresentation,
     artifacts: readonly SlackArtifactReceipt[] = [],
+    /**
+     * `stopped`: `text` is a stop note (KTD3), an `answer` terminal recorded
+     * as stopped. An open stream is sealed with the note after its streamed
+     * prefix instead of being corrected to the note.
+     */
+    ending?: { stopped?: boolean },
   ): Promise<AgentViewFinalResult> {
     const approved = canonicalSlackReplyText(text, format);
+    const stopped = ending?.stopped === true && terminalTaskStatus === 'complete';
+    const reason: SlackPresentationTerminalReason | undefined = stopped ? 'stopped' : undefined;
     let presentation = await this.requirePresentation();
     // A stream old enough for Slack to have sealed it is closed first; the
     // terminal then takes the fresh-post route instead of a stop that fails.
@@ -1031,6 +1080,7 @@ export class SlackAgentViewPresentation {
       // until the relay abandons the run silently.
       const terminal = await this.prepareTerminalDelivery(
         terminalTaskStatus === 'error' ? 'failure' : 'answer',
+        reason,
       );
       if (terminal.acknowledged) {
         return this.handledResult(presentation, approved, format);
@@ -1064,6 +1114,7 @@ export class SlackAgentViewPresentation {
     }
     const terminal = await this.prepareTerminalDelivery(
       terminalTaskStatus === 'error' ? 'failure' : 'answer',
+      reason,
     );
     if (!terminal.mayWrite) {
       if (terminal.acknowledged) {
@@ -1085,6 +1136,9 @@ export class SlackAgentViewPresentation {
 
     const recoverStream = (finalizing: SlackRunPresentation) =>
       this.recoverFinalizingStream(finalizing, text, format, observer, tablePresentation);
+    if (stopped && presentation.stream.state === 'streaming' && presentation.stream.messageTs) {
+      return this.sealStoppedStream(presentation, approved, observer, recoverStream);
+    }
     // The stream carries the first message. Its table and footer move to the
     // last follow-up when the answer continues. A stream whose acknowledged
     // prefix no longer matches the answer is corrected with chat.update,
@@ -1916,6 +1970,52 @@ export class SlackAgentViewPresentation {
     return presentation;
   }
 
+  /**
+   * A stopped run's open stream (KTD3): sealed through the chunked stop path
+   * with the stop note appended after the prefix Slack already shows, so the
+   * partial answer stays whole, marked stopped by the note that follows it,
+   * and no second message posts. Never a `chat.update`; only a recovery of a
+   * stop whose outcome was lost replaces the message, as for any answer.
+   */
+  private async sealStoppedStream(
+    presentation: SlackRunPresentation,
+    note: string,
+    observer: SlackPresentationDeliveryObserver,
+    recover: (finalizing: SlackRunPresentation) => Promise<AgentViewFinalResult>,
+  ): Promise<AgentViewFinalResult> {
+    const suffix = presentation.stream.acknowledgedByteLength > 0 ? `\n\n${note}` : note;
+    const footerBlocks = [this.footerBlock()];
+    const stopChunks: AnyChunk[] = [
+      { type: 'markdown_text', text: suffix },
+      ...(presentationUsesNativeTasks(presentation)
+        ? terminalTaskChunks(presentation, 'complete')
+        : []),
+    ];
+    const stop = { chunks: stopChunks, blocks: footerBlocks };
+    const attemptId = await observer.before({
+      method: 'slack_chat_stream_resume',
+      approvedOutput: note,
+      renderedPayload: JSON.stringify({
+        method: 'slack_chat_stream_resume',
+        channel: presentation.root.channelId,
+        ts: presentation.stream.messageTs,
+        stop,
+        terminalTaskStatus: 'complete',
+      }),
+    });
+    return this.stopKnownStream(
+      presentation,
+      attemptId,
+      observer,
+      stopChunks,
+      footerBlocks,
+      'complete',
+      note,
+      utf8Length(suffix),
+      recover,
+    );
+  }
+
   private async stopKnownStream(
     presentation: SlackRunPresentation,
     attemptId: string | undefined,
@@ -2578,7 +2678,11 @@ export class SlackAgentViewPresentation {
       terminal.operation.certainty !== 'acknowledged';
   }
 
-  private async prepareTerminalDelivery(result: 'answer' | 'failure'): Promise<{
+  private async prepareTerminalDelivery(
+    result: 'answer' | 'failure',
+    /** A stop note (KTD3): recorded beside the `answer` result. */
+    reason?: SlackPresentationTerminalReason,
+  ): Promise<{
     mayWrite: boolean;
     acknowledged: boolean;
     operationId?: string;
@@ -2593,9 +2697,12 @@ export class SlackAgentViewPresentation {
       };
     }
     if (presentation.terminalDelivery.state === 'none') {
-      const operationId = `terminal_${hash(`${presentation.runId}:${result}:1`).slice(0, 24)}`;
+      const operationId = `terminal_${hash(
+        `${presentation.runId}:${result}${reason ? `:${reason}` : ''}:1`,
+      ).slice(0, 24)}`;
       await this.transition(presentation, {
         kind: 'record_terminal_delivery_intent', operationId, result,
+        ...(reason ? { reason } : {}),
       });
       return { mayWrite: true, acknowledged: false, operationId };
     }

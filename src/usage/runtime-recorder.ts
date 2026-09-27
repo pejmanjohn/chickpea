@@ -146,6 +146,28 @@ export class InteractiveUsageRecorder {
     await this.persistTerminal();
   }
 
+  /**
+   * A person stopped the run (KTD3): Flue's aborted settlement reports no
+   * usage, and the operation reads as interrupted, never as failed.
+   */
+  async recordStopped(): Promise<void> {
+    if (this.terminalInput) return;
+    this.terminalInput = this.baseTerminal({
+      status: 'interrupted',
+      providerRoute: this.admission.requestedProvider,
+      returnedProvider: null,
+      returnedModel: null,
+      usageCompleteness: 'not_reported',
+      inputTokens: null,
+      outputTokens: null,
+      cacheReadTokens: null,
+      cacheWriteTokens: null,
+      totalTokens: null,
+      usageUnknownReason: 'stream_interrupted',
+    });
+    await this.persistTerminal();
+  }
+
   async repairAfterDelivery(): Promise<void> {
     if (!this.terminalInput || !this.needsRepair || this.repairAttempted) return;
     this.repairAttempted = true;

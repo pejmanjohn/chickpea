@@ -260,8 +260,11 @@ export class TurnLatencyTracker {
     if (kind === 'delivered' && !this.firstWrite) this.firstWrite = { surface: 'final', at };
   }
 
-  /** Emit exactly once, when the attempt returns or throws. */
-  emit(outcome: 'returned' | 'threw'): void {
+  /**
+   * Emit exactly once, when the attempt returns or throws. `stopped`: it
+   * returned with a stopped run's ending (KTD3), which is not a failure.
+   */
+  emit(outcome: 'returned' | 'threw' | 'stopped'): void {
     if (this.emitted) return;
     this.emitted = true;
     const { admittedAt, receivedAt } = this.context;

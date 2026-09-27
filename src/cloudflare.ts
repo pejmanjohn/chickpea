@@ -2328,6 +2328,9 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     ): Promise<boolean> => executeTurnJob(job, turnPorts, {
       latency: { lane: 'cloudflare', executor: 'alarm' },
       ...(control ? { control } : {}),
+      // The alarm executor has no coding cascade; its stop note reads only
+      // whether a stop was recorded (R22 versus the stopped ending).
+      stopRecorded: () => stores.turnJobs.runnerView(job.id).job?.stop?.role === 'stopped',
       onRetry: (afterMs) => {
         needsRetry = true;
         if (afterMs !== undefined) {

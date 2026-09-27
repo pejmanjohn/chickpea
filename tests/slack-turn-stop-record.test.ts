@@ -336,23 +336,29 @@ function pending(id: string, extra: Partial<PendingTurnJob> = {}): PendingTurnJo
   return { ...job(id, '101'), executionAuthority: 'legacy', attempts: 0, progress: {}, ...extra };
 }
 
-test('the executor never runs a held row or a stopped row that never dispatched, and spends no attempt', async () => {
-  const cases: Array<[string, Partial<PendingTurnJob>]> = [
-    ['held', { stop: { schemaVersion: 1, role: 'held', headId: 'head', at: NOW } }],
-    ['stopped', {
-      stop: {
-        schemaVersion: 1, role: 'stopped', source: 'button', stopperUserId: 'U_STOPPER',
-        cutoffTs: '1800000000.000110', stoppedAt: NOW,
-      },
-    }],
-  ];
-  for (const [id, extra] of cases) {
-    const h = executorPorts(async () => assert.fail('a held or stopped row must not run'));
-    assert.equal(await executeTurnJob(pending(id, extra), h.ports, h.options), false);
-    assert.deepEqual(h.runs, []);
-    assert.deepEqual(h.calls, [], `${id}: no attempt, no terminal, no claim release`);
-    assert.deepEqual(h.retries, [TURN_STOP_HOLD_RETRY_MS]);
-  }
+test('the executor never runs a held row, and spends no attempt', async () => {
+  const h = executorPorts(async () => assert.fail('a held row must not run'));
+  const held = pending('held', { stop: { schemaVersion: 1, role: 'held', headId: 'head', at: NOW } });
+  assert.equal(await executeTurnJob(held, h.ports, h.options), false);
+  assert.deepEqual(h.runs, []);
+  assert.deepEqual(h.calls, [], 'no attempt, no terminal, no claim release');
+  assert.deepEqual(h.retries, [TURN_STOP_HOLD_RETRY_MS]);
+});
+
+test('a stopped row that never dispatched takes the stopped ending at once and never prepares a dispatch', async () => {
+  const h = executorPorts(async (options) => {
+    // The stopped ending (U3; tests/run-turn-stopped.test.ts) replaces the hold.
+    assert.equal(options.stopEnding?.beforeDispatch, true);
+  }, () => assert.fail('a stopped row must never prepare its dispatch'));
+  const stopped = pending('stopped', {
+    stop: {
+      schemaVersion: 1, role: 'stopped', source: 'button', stopperUserId: 'U_STOPPER',
+      cutoffTs: '1800000000.000110', stoppedAt: NOW,
+    },
+  });
+  await executeTurnJob(stopped, h.ports, h.options);
+  assert.deepEqual(h.runs, ['stopped']);
+  assert.deepEqual(h.retries, [], 'no 5 s hold');
 });
 
 test('a stop that lands between the read and the dispatch is refused without a failure final', async () => {

@@ -379,6 +379,9 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
           control,
           onRetry,
           ...(publicUrl === undefined ? {} : { publicUrl }),
+          // A stopped turn's note reports its coding workers' confirmation.
+          codingStopReport: () => this.stops().codingReport(job.id),
+          stopRecorded: () => jobs.stopMarker(job.id)?.notice?.record.role === 'stopped',
         });
       },
       repairInteraction: async (job) => {

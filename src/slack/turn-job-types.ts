@@ -174,6 +174,16 @@ export interface TurnStopEndingV1 {
   at: number;
 }
 
+/**
+ * The thread's previous run ended with a stop that stopped it (its stopped
+ * ending dropped, not released): the next turn's prompt says so, and by whom,
+ * so the Agent does not resume the stopped work unless asked (KTD3).
+ */
+export interface TurnPreviousStop {
+  stopperUserId: string;
+  stoppedAt: number;
+}
+
 export interface TurnStopMemberRecordV1 {
   schemaVersion: 1;
   role: 'held' | 'dropped' | 'released';

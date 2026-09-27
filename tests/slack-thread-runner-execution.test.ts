@@ -539,6 +539,12 @@ function runnerHarness(db: ReturnType<typeof openStateDb>, rows: ReturnType<type
     sandboxes: () => [],
     runTurn: async (_turn: unknown, _assignment: unknown, _env: unknown, options: RunTurnOptions) => {
       const id = options.turnId!;
+      if (options.stopEnding?.beforeDispatch) {
+        // A stopped row that never dispatched ends at once (U3's stopped ending).
+        events.push(`stopped:${id}`);
+        await options.onDelivered?.('stopped');
+        return;
+      }
       if (script.fail?.(id)) {
         events.push(`failed:${id}`);
         throw new Error('model unavailable');
@@ -585,9 +591,9 @@ function runnerHarness(db: ReturnType<typeof openStateDb>, rows: ReturnType<type
             await script.onSettled?.(id, outcome);
           }
           if (outcome === 'aborted') {
-            // Where U3 presents the stopped ending; today a settled failure's final.
+            // Where run-turn presents the stopped ending (U3).
             events.push(`aborted:${id}`);
-            await options.onDelivered?.();
+            await options.onDelivered?.('stopped');
             return;
           }
           if (outcome === 'yield') {
@@ -2091,12 +2097,11 @@ test('a stop before dispatch never calls abort(); the alarm hands the stopped ro
     h.jobs.admit({ id: 'unadmitted', threadKey: 'thread', payload: {} }, 2);
 
     await runThreadRunnerAlarm(h.deps);
-    assert.deepEqual(gates, ['early:stopped_before_dispatch'],
-      'the alarm reaches the stopped row and hands it to the executor (U3 presents its ending)');
-    assert.deepEqual(h.events, [], 'nothing is dispatched');
+    assert.deepEqual(gates, ['early:stopped_before_dispatch', 'unadmitted:stopped_before_dispatch'],
+      'the alarm reaches each stopped row and hands it to the executor, which ends it');
+    assert.deepEqual(h.events, ['stopped:early', 'stopped:unadmitted'], 'nothing is dispatched');
     assert.deepEqual(host.aborts, [], 'nothing ran, so nothing is aborted');
-    assert.equal(h.jobs.get('early')!.state, 'admitted',
-      'today the executor retries a never-dispatched stopped row; U3 ends it');
+    assert.equal(h.jobs.get('early')!.state, 'done', 'the stopped ending settles it at once');
     assert.equal(await h.stops.codingReport('early'), undefined, 'a stop before dispatch owes no cascade');
   } finally { db.close(); }
 });

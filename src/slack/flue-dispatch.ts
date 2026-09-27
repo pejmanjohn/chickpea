@@ -135,6 +135,19 @@ export class AgentPromptFailure extends Error {
 }
 
 /**
+ * The run's Flue settlement is `aborted`, live or replayed: a stop's durable
+ * abort took effect (KTD2). Nothing is retried. The turn ends with the
+ * stopped ending when its row carries a stop record (KTD3); an abort without
+ * one stays an ordinary Agent failure.
+ */
+export class AgentRunAborted extends AgentPromptFailure {
+  constructor(kind: AgentPromptFailureKind = 'agent') {
+    super(kind);
+    this.name = 'AgentRunAborted';
+  }
+}
+
+/**
  * The caller stopped observing an already-dispatched turn on purpose (the
  * Cloudflare alarm's wall-time budget). Nothing settled and nothing was
  * decided: the durable receipt stays, no Slack output is written, and a later
@@ -496,9 +509,11 @@ export async function promptSlackThreadAgent(
       throw settlementError;
     }
     input.state.flueSettlement = checkpoint;
+    // The stream (if any) stays open on its acknowledged prefix: a stopped
+    // ending seals it there, a failure final corrects it.
     await progressiveRelay?.invalidateAndDrain('run_failed');
     await input.beforeResult?.();
-    throw new AgentPromptFailure(kind);
+    throw checkpoint.outcome === 'aborted' ? new AgentRunAborted(kind) : new AgentPromptFailure(kind);
   }
 
   milestones?.replay(reply.data?.[WORKSPACE_MILESTONE_DATA_NAME]);
@@ -925,7 +940,8 @@ function resultFromSettlement(
   const kind = settlement.failureKind === 'sandbox' || settlement.failureKind === 'sandbox-session-cap'
     ? 'agent'
     : settlement.failureKind;
-  throw new AgentPromptFailure(kind);
+  // A replayed abort ends the same way as the live one.
+  throw settlement.outcome === 'aborted' ? new AgentRunAborted(kind) : new AgentPromptFailure(kind);
 }
 
 function boundedReceipt(receipt: DispatchReceipt): FlueDispatchReceiptV1 {

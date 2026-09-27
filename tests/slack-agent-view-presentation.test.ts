@@ -2943,3 +2943,68 @@ test('streaming_state_conflict on stop and recovery posts the final fresh instea
     h.db.close();
   }
 });
+
+test('a stopped ending seals an open stream with the note after its prefix, never an update or a second message', async () => {
+  const h = harness({ schemaVersion: 3 });
+  try {
+    applyPresentationMutation(h, { kind: 'freeze_progressive_eligibility',
+      eligibility: { allowed: true, reason: 'safe_early_release' } });
+    applyPresentationMutation(h, { kind: 'stream_start_intent' });
+    applyPresentationMutation(h, { kind: 'stream_started', messageTs: '1785700100.000201',
+      flue: { instanceId: 'instance_stopped', submissionId: 'submission_stopped', messageId: 'message_stopped' } });
+    applyPresentationMutation(h, { kind: 'append_intent', position: { batch: 5, index: 0 }, from: 0, to: 12, hash: 'a'.repeat(64) });
+    applyPresentationMutation(h, { kind: 'append_acknowledged', cursor: 1, acknowledgedPrefixHash: 'a'.repeat(64) });
+    const events: Array<Record<string, unknown>> = [];
+    const note = 'Stopped by <@U_STOPPER>.';
+    const result = await h.presentation.finalize(note, 'markdown', 'complete', observer(events), undefined, [], {
+      stopped: true,
+    });
+    assert.deepEqual(result, { handled: true, messageTs: '1785700100.000201', text: note });
+    assert.deepEqual(h.calls.map((call) => call.method), ['chat.stopStream']);
+    const stop = h.calls[0]!.input;
+    assert.deepEqual(stop.chunks, [{ type: 'markdown_text', text: `\n\n${note}` }]);
+    assert.equal((stop.blocks as unknown[]).length, 1, 'one compact footer');
+    assert.equal(events[0]?.approvedOutput, note);
+    const stored = h.store.get(h.runId);
+    assert.equal(stored?.schemaVersion, 3);
+    if (stored?.schemaVersion !== 3 || stored.terminalDelivery.state !== 'intended') {
+      assert.fail('expected the stopped terminal');
+    }
+    assert.equal(stored.terminalDelivery.result, 'answer');
+    assert.equal(stored.terminalDelivery.reason, 'stopped');
+    assert.equal(stored.terminalDelivery.operation.certainty, 'acknowledged');
+    assert.equal(stored.stream.presentationOutcome, 'progressive', 'the streamed prefix stays');
+  } finally { h.db.close(); }
+});
+
+test('a stopped ending with no stream posts the note as the terminal message', async () => {
+  const h = harness({ schemaVersion: 3 });
+  try {
+    const note = 'Stopped by <@U_STOPPER>.';
+    await h.presentation.finalize(note, 'markdown', 'complete', observer([]), undefined, [], { stopped: true });
+    assert.deepEqual(h.calls.map((call) => call.method), ['chat.startStream', 'chat.stopStream']);
+    const stored = h.store.get(h.runId);
+    assert.equal(stored?.schemaVersion === 3 && stored.terminalDelivery.state === 'intended'
+      ? stored.terminalDelivery.reason
+      : undefined, 'stopped');
+  } finally { h.db.close(); }
+});
+
+test('a stopped run marks its active plan row stopped before it finished and the untouched rows not run', async () => {
+  const h = harness({ schemaVersion: 3, tasks: ['Inspect bookings', 'Prepare chart', 'Share it'] });
+  try {
+    const first = h.store.get(h.runId)!;
+    assert.equal(first.schemaVersion, 3);
+    if (first.schemaVersion !== 3) return;
+    await h.presentation.transitionMilestone({ taskId: first.plan!.tasks[0]!.id, to: 'in_progress' });
+    await h.presentation.recordExecutionStopped();
+    const stored = h.store.get(h.runId);
+    assert.equal(stored?.schemaVersion, 3);
+    if (stored?.schemaVersion !== 3) return;
+    assert.deepEqual(stored.plan?.tasks.map((task) => [task.outcome, task.detail]), [
+      ['failed', 'Failed: the run was stopped before this finished.'],
+      ['not_run', 'Not run: the run was stopped.'],
+      ['not_run', 'Not run: the run was stopped.'],
+    ]);
+  } finally { h.db.close(); }
+});

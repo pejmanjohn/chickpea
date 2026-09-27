@@ -2026,3 +2026,45 @@ test('indexed maintenance orders finalized ties before spending the remaining ba
     assert.equal(store.listRetentionTombstones().length, 1);
   } finally { db.close(); }
 });
+
+test('a stop note records its reason beside the answer result, never as a new terminal literal', () => {
+  const db = openStateDb(':memory:');
+  try {
+    const store = new SlackRunPresentationStoreLogic(db);
+    const created = store.create(createV3Input('run_stopped_reason'));
+    for (const mutation of [
+      { kind: 'record_terminal_delivery_intent', operationId: 'terminal_stop', result: 'failure', reason: 'stopped' },
+      { kind: 'record_terminal_delivery_intent', operationId: 'terminal_stop', result: 'answer', reason: 'cancelled' },
+    ] as unknown as SlackPresentationMutation[]) {
+      assert.throws(() => advance(store, created, mutation), SlackPresentationStateError);
+    }
+    const stopped = advance(store, created, {
+      kind: 'record_terminal_delivery_intent', operationId: 'terminal_stop', result: 'answer', reason: 'stopped',
+    });
+    assert.equal(stopped.schemaVersion, 3);
+    if (stopped.schemaVersion !== 3 || stopped.terminalDelivery.state !== 'intended') {
+      assert.fail('expected an intended terminal');
+    }
+    // An older release reads the closed `answer` result and ignores the reason.
+    assert.equal(stopped.terminalDelivery.result, 'answer');
+    assert.equal(stopped.terminalDelivery.reason, 'stopped');
+    assert.deepEqual(store.get('run_stopped_reason'), stopped, 'the reason survives durable readback');
+    const acknowledged = advance(store, stopped, {
+      kind: 'record_terminal_delivery_receipt', operationId: 'terminal_stop', certainty: 'acknowledged',
+    });
+    assert.equal(
+      acknowledged.schemaVersion === 3 && acknowledged.terminalDelivery.state === 'intended'
+        ? acknowledged.terminalDelivery.reason
+        : undefined,
+      'stopped',
+    );
+    // A stored reason this release does not know is refused at decode.
+    db.run(
+      `UPDATE slack_run_presentations
+       SET presentation_json = json_set(presentation_json, '$.terminalDelivery.reason', 'mystery')
+       WHERE run_id = ?`,
+      'run_stopped_reason',
+    );
+    assert.throws(() => store.get('run_stopped_reason'), SlackPresentationStateError);
+  } finally { db.close(); }
+});

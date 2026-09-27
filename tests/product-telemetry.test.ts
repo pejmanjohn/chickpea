@@ -517,3 +517,11 @@ test('telemetry transport fails closed before fetch for oversized or hostile inp
   await hostileTasks[0];
   assert.equal(fetches, 0);
 });
+
+test('a stopped run completes with the stopped outcome, not as a failure', async () => {
+  const built = await buildProductTelemetryEvent({
+    event: 'run_completed', workspaceId: 'workspace', agentId: 'agent_default',
+    triggerKind: 'interactive', outcome: 'stopped',
+  }, IDENTITY);
+  assert.equal(built?.properties.outcome, 'stopped');
+});

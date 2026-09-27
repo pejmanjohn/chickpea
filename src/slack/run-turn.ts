@@ -60,6 +60,7 @@ import { isStateStoreDisconnect } from '../config/cf-state-proxies.ts';
 import {
   agentFailureText,
   AgentObservationYield,
+  AgentRunAborted,
   StateStoreUnavailable,
   AgentPromptFailure,
   promptSlackThreadAgent,
@@ -84,7 +85,7 @@ import {
   SlackInstallationUnavailableError,
   type SlackInstallationExecutionContext,
 } from './installation-execution.ts';
-import type { FrozenRuntimePlanDecision } from './turn-job-types.ts';
+import type { FrozenRuntimePlanDecision, TurnPreviousStop } from './turn-job-types.ts';
 import type { FlueDispatchReceiptV1 } from './turn-job-types.ts';
 import type { SlackProgressiveReadRelay } from './progressive-relay.ts';
 import {
@@ -118,7 +119,9 @@ import {
   WebClientPresenter,
   type SlackDeliveryObserver,
   slackDeliveryFailureOutcome,
+  slackStopNoteText,
   type SlackReactionReceipt,
+  type SlackStopNoteFacts,
 } from './web-client-presenter.ts';
 import type { SlackTablePresentation } from './table-presentation.ts';
 import type { SlackArtifactReceipt } from './artifact-receipts.ts';
@@ -212,8 +215,20 @@ export interface RunTurnOptions {
     /** Whether the Agent opened a coding workspace; undefined when unknown. */
     codingWorkspaceOpened?: boolean;
   }) => Promise<string | undefined>;
-  /** Persist terminal delivery before post-delivery workspace teardown begins. */
-  onDelivered?: (outcome?: 'succeeded' | 'no_op' | 'failed') => void | Promise<void>;
+  /**
+   * Persist terminal delivery before post-delivery workspace teardown begins.
+   * `stopped`: the stopped ending delivered its stop note (KTD3).
+   */
+  onDelivered?: (outcome?: 'succeeded' | 'no_op' | 'failed' | 'stopped') => void | Promise<void>;
+  /**
+   * The stopped ending of a turn a person stopped (KTD3). An aborted
+   * settlement ends with it instead of the failure text or a replayed
+   * pull-request answer; with `beforeDispatch`, the turn never dispatched and
+   * ends with it at once, with no classification, memory, plan or model call.
+   */
+  stopEnding?: SlackStopEnding;
+  /** The thread's previous run was stopped: the prompt says so, and by whom. */
+  previousStop?: Pick<TurnPreviousStop, 'stopperUserId'>;
   /** A durable outbox now owns the terminal; keep the TurnJob open until it settles. */
   onDeferredTerminal?: () => void | Promise<void>;
   /** Record a confirmed Slack-visible final for future owner handoffs. */
@@ -325,6 +340,24 @@ export interface RunTurnOptions {
   onSlackWrite?: (surface: TurnFirstWrite) => void;
 }
 
+/** How a stopped turn ends (see RunTurnOptions.stopEnding). */
+export interface SlackStopEnding {
+  /** The stopped turn never dispatched: nothing ran, so it ends at once. */
+  beforeDispatch?: boolean;
+  /**
+   * Ends the stop in the state store, dropping and counting the rows it
+   * held, before any Slack delivery, and returns what the stop note says.
+   * Undefined when the turn carries no stop: an aborted settlement is then
+   * an ordinary Agent failure. Repeatable: a replay reads the first ending.
+   */
+  finish(): Promise<SlackStopNoteFacts | undefined>;
+  /**
+   * An earlier attempt admitted this turn's usage operation before the stop
+   * refused its dispatch; `beforeDispatch` then records it interrupted.
+   */
+  usageAdmitted?: boolean;
+}
+
 export const WORKSPACE_DEFAULT_MODEL_REPAIR_TEXT =
   'The Workspace default model needs attention. An owner or admin can repair it in Settings → Model providers.';
 
@@ -368,12 +401,14 @@ export async function runTurn(
     ...(options.runAttempt === undefined ? {} : { attempt: options.runAttempt }),
   });
   const { onDelivered, onDeferredTerminal } = options;
+  let stopped = false;
   try {
     await runTurnAttempt(turn, assignment, platformEnv, {
       ...options,
       onSlackWrite: (surface) => tracker.markSlackWrite(surface),
       onDelivered: async (outcome) => {
         tracker.markFinal('delivered');
+        if (outcome === 'stopped') stopped = true;
         await onDelivered?.(outcome);
       },
       ...(onDeferredTerminal
@@ -385,7 +420,7 @@ export async function runTurn(
           }
         : {}),
     });
-    tracker.emit('returned');
+    tracker.emit(stopped ? 'stopped' : 'returned');
   } catch (error) {
     tracker.emit('threw');
     throw error;
@@ -529,8 +564,13 @@ async function runTurnAttempt(
   // Delivery-only recovery replays the exact persisted answer. It must not
   // re-resolve current Agent memory (which could both block recovery
   // on a changed lease and unnecessarily touch live state).
+  // A stopped turn that never dispatched ends without reading anything more,
+  // and a replayed abort delivers only its stop note: neither needs memory.
+  const stoppedBeforeDispatch = options.stopEnding?.beforeDispatch === true;
+  const abortedReplay = options.stopEnding !== undefined &&
+    options.flueDispatch?.flueSettlement?.outcome === 'aborted';
   const skipMemory = Boolean(memoryCommand) || Boolean(turn.managementApprovalProposalId) ||
-    options.replayText !== undefined;
+    options.replayText !== undefined || stoppedBeforeDispatch || abortedReplay;
   let onNativeStarted = async (): Promise<void> => {};
   const agentViewPresentation = options.presentationState && options.runId
     ? new SlackAgentViewPresentation({
@@ -557,10 +597,18 @@ async function runTurnAttempt(
   // The Work lifecycle is created after the first status (it reads the state
   // store); the presenter reaches it only when it delivers, which is later.
   let deliveryLifecycle: ShadowWorkLifecycle | undefined;
+  /** The stopped ending is delivering its note: the Run settles cancelled. */
+  let stoppedEnding = false;
+  /** The turn is taking the stopped ending: whatever interrupts it is retried, never a failure. */
+  let stopping = false;
   const deliveryObserver: SlackDeliveryObserver = {
     beforeDelivery: async (input) => deliveryLifecycle?.beforeDelivery(input),
     afterDelivery: async (input) => {
-      await deliveryLifecycle?.afterDelivery(input);
+      await deliveryLifecycle?.afterDelivery(
+        stoppedEnding && input.outcome === 'delivered'
+          ? { ...input, terminalDisposition: 'cancelled' }
+          : input,
+      );
     },
   };
   const presenter = new WebClientPresenter(client, {
@@ -771,9 +819,8 @@ async function runTurnAttempt(
    * the custom status, which takes over from it (the hand-over runs inside
    * that custom write).
    */
-  const beginVisibleWork = async (statusInstanceId: string) => {
-    await startNativeIndicator();
-    const registered = statusRegistry.registerTurn(statusInstanceId, activityPresenter, {
+  const registerStatusTurn = (statusInstanceId: string) =>
+    statusRegistry.registerTurn(statusInstanceId, activityPresenter, {
       generation: statusGeneration,
       ...(frozenPresentation?.schemaVersion === 3
         ? {
@@ -784,10 +831,14 @@ async function runTurnAttempt(
               frozenPresentation.root.threadTs,
             ].join(':'),
             ...(admittedVisibleStatus ? { initialAppliedStatus: admittedVisibleStatus } : {}),
-            ...(admittedVisibleStatus ? { refreshInitialStatus: true } : {}),
+            // A stopped turn ends at once: nothing is refreshed, only cleared.
+            ...(admittedVisibleStatus && !stoppedBeforeDispatch ? { refreshInitialStatus: true } : {}),
           }
         : {}),
     });
+  const beginVisibleWork = async (statusInstanceId: string) => {
+    await startNativeIndicator();
+    const registered = registerStatusTurn(statusInstanceId);
     if (frozenPresentation?.schemaVersion === 3 &&
         frozenPresentation.currentActivity?.operation.certainty === 'pending') {
       admissionStatusAttempted = true;
@@ -812,18 +863,21 @@ async function runTurnAttempt(
   // shows is the admission's own pending activity, whatever the turn decides
   // later. Observed activity is routed by the Agent instance, known once the
   // plan is frozen; nothing is observed before dispatch.
-  const earlyStatusTurn = frozenPresentation?.schemaVersion === 3
-    ? await beginVisibleWork(
-        options.runtimePlanDecision?.instanceId ??
-          options.continuityKey ??
-          slackAgentThreadKey(turn, assignment),
-      )
-    : undefined;
+  // A stopped turn that never dispatched shows nothing new: its status turn
+  // only lets the stopped ending clear what an earlier attempt showed.
+  const earlyStatusInstanceId = options.runtimePlanDecision?.instanceId ??
+    options.continuityKey ??
+    slackAgentThreadKey(turn, assignment);
+  const earlyStatusTurn = frozenPresentation?.schemaVersion !== 3
+    ? undefined
+    : stoppedBeforeDispatch
+      ? registerStatusTurn(earlyStatusInstanceId)
+      : await beginVisibleWork(earlyStatusInstanceId);
   let interactionIntent = turn.interactionIntent;
   // Classification and the memory → plan → Work lifecycle chain read
   // independent state; each chain keeps its own writes in order.
   const classifyTurn = async (): Promise<void> => {
-    if (deterministicCommand || interactionIntent) return;
+    if (deterministicCommand || interactionIntent || stoppedBeforeDispatch) return;
     const classification = await classifySlackInteraction({
       workspaceId: turn.workspaceId,
       channelId: turn.channelId,
@@ -904,7 +958,8 @@ async function runTurnAttempt(
     const runtimePlanDecision = frozen?.decision ?? options.runtimePlanDecision;
     const sandboxUnavailableFallback = frozen?.unavailableFallback ?? false;
     const agentConversationKey = options.continuityKey ?? conversationKey;
-    const workLifecycle = options.runId && options.replayText === undefined && resolvedModel
+    const workLifecycle = options.runId && options.replayText === undefined && resolvedModel &&
+        !stoppedBeforeDispatch
       ? await createSlackShadowLifecycle({
           runId: options.runId,
           attemptNumber: options.runAttempt ?? 1,
@@ -957,7 +1012,9 @@ async function runTurnAttempt(
   agentViewPresentation?.setFooterMemoryItems(preparedMemory?.footerItems);
   const statusInstanceId = runtimePlanDecision?.instanceId ?? agentConversationKey;
   earlyStatusTurn?.rebind(statusInstanceId);
-  const statusTurn = earlyStatusTurn ?? await beginVisibleWork(statusInstanceId);
+  const statusTurn = earlyStatusTurn ?? (stoppedBeforeDispatch
+    ? registerStatusTurn(statusInstanceId)
+    : await beginVisibleWork(statusInstanceId));
   // Once per turn; a failed hint never holds back the task's progress.
   let codingTaskSignalled = false;
   const signalCodingTaskStarted = async () => {
@@ -991,7 +1048,9 @@ async function runTurnAttempt(
         await presenter.clearStatus(late);
         return;
       }
-      const cleanup = await agentViewPresentation.prepareActivityCleanup();
+      const cleanup = await agentViewPresentation.prepareActivityCleanup(
+        stoppedEnding ? { stopped: true } : undefined,
+      );
       if (cleanup.kind === 'already_cleared') {
         // An in-flight native write may have landed after the acknowledged
         // durable cleanup. Re-clear the transport without rewriting receipts.
@@ -1011,6 +1070,29 @@ async function runTurnAttempt(
     terminalStatusFinished = true;
   };
   let usageRecorder: InteractiveUsageRecorder | undefined;
+  const usageRecordingEnabled = options.usageRecordingEnabled ??
+    usageRuntimeRecordingEnabled(platformEnv);
+  const openUsageRecorder = async (): Promise<void> => {
+    usageRecorder = new InteractiveUsageRecorder({
+      turn,
+      assignment,
+      requestedModel: resolvedModel ?? null,
+      operationId: statusGeneration,
+      executionId: options.usageExecutionId ?? `exec:${statusGeneration}:1`,
+      store: options.usageStore ?? options.appStores?.usage ?? getUsageStore(platformEnv),
+      ...(options.flueDispatch?.flueSettlement
+        ? { replaySettlementAt: options.flueDispatch.flueSettlement.settledAt } : {}),
+      ...(options.runId ? { runId: options.runId } : {}),
+      ...(platformEnv ? { platformEnv } : {}),
+      ...(options.usageWriteBudgetMs === undefined
+        ? {}
+        : { writeBudgetMs: options.usageWriteBudgetMs }),
+      ...(options.onUsagePersistence
+        ? { onPersistence: options.onUsagePersistence }
+        : {}),
+    });
+    await usageRecorder.admit();
+  };
   let interactionProgress: SlackInteractionProgress = {
     ...options.interactionProgress,
   };
@@ -1077,7 +1159,7 @@ async function runTurnAttempt(
     }
   };
   const finishDelivery = async (
-    outcome?: 'succeeded' | 'no_op' | 'failed',
+    outcome?: 'succeeded' | 'no_op' | 'failed' | 'stopped',
   ): Promise<void> => {
     // Delivery gets its durable tombstone before the best-effort repair so a
     // slow reporting backend can never make Slack retry already-delivered work.
@@ -1117,9 +1199,50 @@ async function runTurnAttempt(
     }
   };
 
+  /**
+   * The stopped ending (KTD3): one stop note, posted as the thread's Agent
+   * like a final (sealing an open stream after its partial answer), then the
+   * Agent Session settles `active`, the status clears and Chickpea's 👀
+   * receipt goes, through the ordinary delivery finish. No failure text, and
+   * no replayed pull-request answer: what already happened is in the note.
+   */
+  const endStopped = async (facts: SlackStopNoteFacts): Promise<void> => {
+    stoppedEnding = true;
+    await agentViewPresentation?.recordExecutionStopped().catch(() => {
+      console.warn('[chickpea] stopped Slack plan rows could not be recorded');
+    });
+    await workLifecycle?.settleExecution({
+      outcome: 'failed',
+      rawStatus: 'flue_stopped',
+      safeFailureCode: 'run_stopped',
+    });
+    await usageRecorder?.recordStopped();
+    await statusTurn.prepareFinal();
+    await presenter.deliverFinal(
+      slackStopNoteText(facts),
+      'markdown',
+      'complete',
+      undefined,
+      undefined,
+      { stopped: true },
+    );
+    await finishStatus('answer');
+    await finishDelivery('stopped');
+  };
+
   // 1. Visible work: set best-effort native status. A rejection degrades to
   //    Agent Session lifecycle only and never creates a progress message.
   try {
+    if (stoppedBeforeDispatch) {
+      // The stop refused this turn's dispatch: nothing ran, so it ends now.
+      stopping = true;
+      const facts = await options.stopEnding!.finish();
+      // The executor saw a stop record; without one nothing may run here.
+      if (!facts) throw new Error('A stopped turn lost its stop record.');
+      if (options.stopEnding!.usageAdmitted && usageRecordingEnabled) await openUsageRecorder();
+      await endStopped(facts);
+      return;
+    }
     // Owner-native memory is authorized live, independently of the frozen
     // config snapshot. Fence every visible Slack effect as well as model/tool
     // execution when the selected owner lease has already gone stale.
@@ -1299,29 +1422,7 @@ async function runTurnAttempt(
       await finishDelivery();
       return;
     }
-    const recordingEnabled = options.usageRecordingEnabled ??
-      usageRuntimeRecordingEnabled(platformEnv);
-    if (recordingEnabled && options.replayText === undefined) {
-      usageRecorder = new InteractiveUsageRecorder({
-        turn,
-        assignment,
-        requestedModel: resolvedModel ?? null,
-        operationId: statusGeneration,
-        executionId: options.usageExecutionId ?? `exec:${statusGeneration}:1`,
-        store: options.usageStore ?? options.appStores?.usage ?? getUsageStore(platformEnv),
-        ...(options.flueDispatch?.flueSettlement
-          ? { replaySettlementAt: options.flueDispatch.flueSettlement.settledAt } : {}),
-        ...(options.runId ? { runId: options.runId } : {}),
-        ...(platformEnv ? { platformEnv } : {}),
-        ...(options.usageWriteBudgetMs === undefined
-          ? {}
-          : { writeBudgetMs: options.usageWriteBudgetMs }),
-        ...(options.onUsagePersistence
-          ? { onPersistence: options.onUsagePersistence }
-          : {}),
-      });
-      await usageRecorder.admit();
-    }
+    if (usageRecordingEnabled && options.replayText === undefined) await openUsageRecorder();
     // A substantive @-mention is classified late (above), AFTER Work admission
     // froze the presentation without a plan — whereas ambient and obvious-work
     // turns carry their plan from admission. Attach the late-classified work
@@ -1441,6 +1542,9 @@ async function runTurnAttempt(
       progressiveStreamingOffered: offeredEligibility !== undefined,
       ...(offeredEligibility
         ? { progressiveStreamingMode: progressiveStreamingModeForReason(offeredEligibility.reason) }
+        : {}),
+      ...(options.previousStop
+        ? { previousRunStopped: { stopperUserId: options.previousStop.stopperUserId } }
         : {}),
       ...(installationContext
         ? {
@@ -1603,6 +1707,17 @@ async function runTurnAttempt(
         // A settled Flue failure is an AgentPromptFailure and is final as is.
         if (!(err instanceof AgentPromptFailure) && isSandboxDisconnect(err)) {
           throw new StateStoreUnavailable();
+        }
+        // A stop's abort took effect (live or replayed): the stopped ending,
+        // never the failure text or a replayed pull-request answer.
+        if (err instanceof AgentRunAborted && options.stopEnding) {
+          stopping = true;
+          const facts = await options.stopEnding.finish();
+          if (facts) {
+            await endStopped(facts);
+            return;
+          }
+          stopping = false;
         }
         await agentViewPresentation?.recordExecutionFailure(
           'agent execution stopped before the active milestone finished.',
@@ -1838,7 +1953,7 @@ async function runTurnAttempt(
       ? new StateStoreUnavailable()
       : caught;
     if (err instanceof AgentObservationYield || err instanceof StateStoreUnavailable) yielded = true;
-    if (!(err instanceof AgentPromptFailure && err.retryable)) {
+    if (!stopping && !(err instanceof AgentPromptFailure && err.retryable)) {
       await usageRecorder?.recordFailure();
     }
     throw err;
