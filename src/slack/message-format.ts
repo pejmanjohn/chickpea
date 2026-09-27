@@ -176,10 +176,11 @@ function renderSlackFileContent(
     : format === 'plain_text' ? escapeSlackControlCharacters(displayText) : displayText;
   const sections = [body];
   if (tableText) {
-    sections.push(escapeSlackControlCharacters(truncateText(
+    // Model-written cells land in a mrkdwn section, which auto-parses `@here`.
+    sections.push(neutralizeSlackMrkdwnHandles(escapeSlackControlCharacters(truncateText(
       canonicalSlackReplyText(tableText, 'plain_text'),
       slackMarkdownBlockTextLimit,
-    )));
+    ))));
   }
   const content = sections.join('\n\n');
   let plainText = format === 'plain_text';
@@ -268,9 +269,10 @@ function splitSlackText(text: string, limit: number): string[] {
 /** Canonical credential-safe text shared by every terminal Slack delivery path. */
 export function canonicalSlackReplyText(text: string, format: SlackReplyFormat): string {
   const normalized = normalizeMessageText(text);
-  return format === 'markdown'
-    ? canonicalSlackMarkdownText(normalized)
-    : redactCredentialLikeContent(normalized);
+  if (format === 'markdown') return canonicalSlackMarkdownText(normalized);
+  // Plain text is escaped and never parsed; mrkdwn parses mentions.
+  const redacted = redactCredentialLikeContent(normalized);
+  return format === 'mrkdwn' ? neutralizeSlackBroadcastMentions(redacted) : redacted;
 }
 
 /**
@@ -280,7 +282,54 @@ export function canonicalSlackReplyText(text: string, format: SlackReplyFormat):
  */
 export function canonicalSlackMarkdownText(text: string): string {
   const normalized = normalizeMessageText(text);
-  return redactCredentialLikeContent(sanitizeSlackMarkdownLinks(normalized));
+  // Last: redaction can leave a broadcast word after its marker (`…]@here`).
+  return neutralizeSlackBroadcastMentions(
+    redactCredentialLikeContent(sanitizeSlackMarkdownLinks(normalized)),
+  );
+}
+
+/**
+ * Invisible and not a word character, so no Slack parser reads `@⁠here`
+ * or `<⁠!here>` as a mention while every client shows `@here`/`<!here>`.
+ */
+const SLACK_MENTION_BREAK = '⁠';
+const SLACK_BROADCAST_KEYWORDS = ['here', 'channel', 'everyone'] as const;
+// Slack's notifying special mentions only: `<!DOCTYPE>`, `<![CDATA[` and
+// `<!date^…>` stay as written.
+const SLACK_SPECIAL_MENTION =
+  /<!(here|channel|everyone|group|subteam\^[^<>|\n]*)(?:\|([^<>\n]*))?>/gi;
+const SLACK_BROADCAST_WORD = /(?<![\p{L}\p{N}_])@(?=(?:here|channel|everyone)(?![\p{L}\p{N}_]))/giu;
+const SLACK_CODE_SEGMENT = /(```[\s\S]*?(?:```|$)|`[^`\n]+`)/g;
+
+/** A plain `@here`, `@channel` or `@everyone` word with the joiner. */
+function joinBroadcastWords(text: string): string {
+  return text.replace(SLACK_BROADCAST_WORD, `@${SLACK_MENTION_BREAK}`);
+}
+
+/**
+ * Model-written text never notifies a channel, the workspace, or a user
+ * group, whichever Slack path renders it (see the Slack message identity
+ * runbook). In prose a special mention reads as its name (`@here`, a user
+ * group's label) and a plain broadcast word keeps its text, each with the
+ * joiner after the `@`; in code the literal keeps its characters with the
+ * joiner after `<`. User mentions, Channel links and dates are unchanged.
+ * Idempotent, and a streamed prefix neutralizes to a prefix of the answer.
+ */
+export function neutralizeSlackBroadcastMentions(markdown: string): string {
+  return markdown.split(SLACK_CODE_SEGMENT).map((segment, index) => index % 2 === 1
+    ? segment.replace(SLACK_SPECIAL_MENTION, (token) => `<${SLACK_MENTION_BREAK}${token.slice(1)}`)
+    : joinBroadcastWords(segment.replace(SLACK_SPECIAL_MENTION,
+      (_token, target: string, label: string | undefined) =>
+        `@${SLACK_MENTION_BREAK}${slackSpecialMentionName(target, label)}`))
+  ).join('');
+}
+
+/** How `<!here>`, `<!subteam^S1|@ops>` or `<!subteam^S1>` reads once inert. */
+function slackSpecialMentionName(target: string, label: string | undefined): string {
+  const keyword = target.toLowerCase();
+  if (keyword === 'group') return 'channel';
+  if (!keyword.startsWith('subteam^')) return keyword;
+  return label?.replace(/^@+/, '').trim() || 'user-group';
 }
 
 /** Follow-up messages a long reply may use after its first message. */
@@ -667,8 +716,12 @@ function chooseSlackReplyCut(text: string, limit: number, min: number): SlackRep
 export function streamableSlackMarkdownPrefix(text: string): string {
   const normalized = text.replace(/\r\n?/g, '\n').replace(/^\s+/, '');
   if (!normalized) return '';
-  const unsafeFrom = earliestUnsafeTail(normalized);
-  const stable = normalized.slice(0, unsafeFrom).trimEnd();
+  let stable = normalized.slice(0, earliestUnsafeTail(normalized)).trimEnd();
+  // A cut can end inside a closed code span or `<...>` reference, or right
+  // after a broadcast word, where the whole answer neutralizes differently.
+  for (let held = unsafeMentionTail(stable); held < stable.length; held = unsafeMentionTail(stable)) {
+    stable = stable.slice(0, held).trimEnd();
+  }
   if (!stable) return '';
   return canonicalSlackMarkdownText(stable);
 }
@@ -753,10 +806,7 @@ function earliestUnsafeTail(value: string): number {
   if (openLink >= lastLineStart && openLink > lastClosedLink) {
     unsafeFrom = Math.min(unsafeFrom, openLink);
   }
-  const openAngle = value.lastIndexOf('<');
-  if (openAngle >= lastLineStart && openAngle > value.lastIndexOf('>')) {
-    unsafeFrom = Math.min(unsafeFrom, openAngle);
-  }
+  unsafeFrom = Math.min(unsafeFrom, unsafeMentionTail(value));
   // Emphasis around a URL is rewritten per line; an unpaired `**` on an
   // earlier line (`**kwargs`, `2**10`) is literal and must not hold the rest.
   const emphasis = value.lastIndexOf('**');
@@ -785,6 +835,44 @@ function earliestUnsafeTail(value: string): number {
     unsafeFrom = outer;
   }
   return unsafeFrom;
+}
+
+/**
+ * Where the tail `neutralizeSlackBroadcastMentions` may still rewrite begins:
+ * a `<...>` reference on the last line, an `@` that can still become a whole
+ * broadcast word (`@here`, not `@heresy`), and a mention after an inline code
+ * span opened on the last line, which neutralizes differently once it closes.
+ */
+function unsafeMentionTail(value: string): number {
+  let unsafeFrom = value.length;
+  const lastLineStart = value.lastIndexOf('\n') + 1;
+  const openAngle = value.lastIndexOf('<');
+  if (openAngle >= lastLineStart && openAngle > value.lastIndexOf('>')) {
+    unsafeFrom = Math.min(unsafeFrom, openAngle);
+  }
+  // Whatever precedes the `@`: redaction can turn `…9@here` into `…]@here`.
+  const word = /@([\p{L}\p{N}_]*)$/u.exec(value);
+  if (word && SLACK_BROADCAST_KEYWORDS.some((keyword) =>
+    keyword.startsWith(word[1]!.toLowerCase()))) {
+    unsafeFrom = Math.min(unsafeFrom, word.index);
+  }
+  const openCode = unmatchedBacktickOnLastLine(value, lastLineStart);
+  if (openCode !== undefined) {
+    const mention = value.slice(openCode).search(/[<@]/);
+    if (mention >= 0) unsafeFrom = Math.min(unsafeFrom, openCode + mention);
+  }
+  return unsafeFrom;
+}
+
+/** The first backtick on the last line that no code segment has closed yet. */
+function unmatchedBacktickOnLastLine(value: string, lastLineStart: number): number | undefined {
+  let offset = 0;
+  for (const [index, segment] of value.split(SLACK_CODE_SEGMENT).entries()) {
+    const tick = index % 2 === 0 ? segment.indexOf('`', lastLineStart - offset) : -1;
+    if (tick >= 0) return offset + tick;
+    offset += segment.length;
+  }
+  return undefined;
 }
 
 function countToken(value: string, token: string): number {
@@ -985,7 +1073,12 @@ export function buildSlackAdminUrl(
 
 export function markdownFallbackText(markdown: string): string {
   const fallback = readableMarkdownText(markdown).trim();
-  return truncateText(escapeSlackControlCharacters(fallback || '(empty reply)'), slackFallbackTextLimit);
+  // Unwrapped code turns a literal `@here` into prose. Top-level text parses
+  // it only with link_names, which Chickpea never sets; stay inert regardless.
+  return truncateText(
+    joinBroadcastWords(escapeSlackControlCharacters(fallback || '(empty reply)')),
+    slackFallbackTextLimit,
+  );
 }
 
 function readableMarkdownText(markdown: string): string {
@@ -1018,9 +1111,22 @@ function fileReplyMrkdwnText(markdown: string): string {
   // example links retain their exact characters. An unfinished fence can be
   // the result of the canonical answer limit and still needs literal handling.
   return markdown.split(/(```[\s\S]*?(?:```|$))/g).map((segment, index) => index % 2 === 1
-    ? escapeSlackControlCharacters(segment)
+    ? slackMrkdwnCodeText(segment)
     : fileReplyProseText(segment)
   ).join('').trim() || '(empty reply)';
+}
+
+/** Code in a mrkdwn section: Slack rewrites a plain `@here` even inside backticks. */
+function slackMrkdwnCodeText(code: string): string {
+  return joinBroadcastWords(escapeSlackControlCharacters(code));
+}
+
+/**
+ * Escaped text for a mrkdwn text object, which auto-parses a plain `@here`
+ * or user-group `@handle`: every word-initial `@` gets the joiner.
+ */
+export function neutralizeSlackMrkdwnHandles(escaped: string): string {
+  return escaped.replace(/(?<![\p{L}\p{N}_])@(?=[\p{L}\p{N}_])/gu, `@${SLACK_MENTION_BREAK}`);
 }
 
 function fileReplyProseText(markdown: string): string {
@@ -1058,7 +1164,7 @@ function renderSlackInlineMarkdown(source: string): string {
 
     const code = inlineCodeSpanAt(source, at);
     if (code) {
-      pieces.push(escapeSlackControlCharacters(source.slice(at, code.next)));
+      pieces.push(slackMrkdwnCodeText(source.slice(at, code.next)));
       at = code.next;
       continue;
     }
@@ -1095,6 +1201,14 @@ function renderSlackInlineMarkdown(source: string): string {
     }
     if (handledDelimiter) continue;
 
+    // mrkdwn text objects auto-parse a plain `@handle` into a user-group
+    // mention; the canonical answer already neutralized broadcast words.
+    if (source[at] === '@' && /[\p{L}\p{N}_]/u.test(source[at + 1] ?? '') &&
+        !/[\p{L}\p{N}_]/u.test(source[at - 1] ?? '')) {
+      pieces.push(`@${SLACK_MENTION_BREAK}`);
+      at += 1;
+      continue;
+    }
     pieces.push(escapeSlackControlCharacters(source[at]!));
     at += 1;
   }

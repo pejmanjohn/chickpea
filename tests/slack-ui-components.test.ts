@@ -36,6 +36,7 @@ import {
 import { questionWidget } from '../src/slack/ui/render-interactive.ts';
 import { renderUiSurface, type RenderedUiSurface } from '../src/slack/ui/render.ts';
 import { uiSurfaceId, type UiSurfaceRecord } from '../src/slack/ui/surface.ts';
+import { escapeMrkdwn } from '../src/slack/ui/text.ts';
 
 const NOW = Date.UTC(2026, 8, 26, 16, 0);
 
@@ -168,6 +169,32 @@ test('property: seeded valid ask_user and offer_actions specs always compile wit
     }
   }
   assert.ok(compiled > 400, `only ${compiled} specs compiled`);
+});
+
+function mrkdwnTexts(value: unknown): string[] {
+  if (Array.isArray(value)) return value.flatMap(mrkdwnTexts);
+  if (!value || typeof value !== 'object') return [];
+  const object = value as Record<string, unknown>;
+  if (object.type === 'mrkdwn' && typeof object.text === 'string') return [object.text];
+  return Object.values(object).flatMap(mrkdwnTexts);
+}
+
+test('model text in question mrkdwn never becomes a broadcast or user-group mention', () => {
+  // mrkdwn auto-parses a plain `@here` or `@handle`; plain_text is never parsed.
+  const record = ask(validateAskUser({
+    question: 'Should @here or @eng review this?',
+    options: [{ label: 'Yes', description: 'Loop in @everyone' }, { label: 'No' }],
+  }));
+  const texts = mrkdwnTexts(renderUiSurface(record, { withHeader: true }).blocks).join('\n');
+  assert.match(texts, /@\u2060here or @\u2060eng review/);
+  assert.match(texts, /Loop in @\u2060everyone/);
+  // `<@U1>` is the host's own requester mention and stays live.
+  assert.doesNotMatch(texts, /(?<![\p{L}\p{N}_<])@[\p{L}\p{N}_]/u);
+  assert.match(texts, /<@U1>/);
+  assert.equal(
+    escapeMrkdwn('Ping @channel & <@U1>; mail ops@example.com'),
+    'Ping @\u2060channel &amp; &lt;@\u2060U1&gt;; mail ops@example.com',
+  );
 });
 
 test('validators teach instead of throwing opaque errors', () => {

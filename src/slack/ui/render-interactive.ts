@@ -1,3 +1,4 @@
+import { escapeSlackControlCharacters } from '../message-format.ts';
 import type { SlackUiAction } from './interaction-payload.ts';
 import type { AskUserSpec, OfferActionsSpec } from './presentation-tools.ts';
 import { cardRequestButtonAt } from './render-display.ts';
@@ -460,7 +461,7 @@ export function interactiveTurnText(
   const forWhom = byUserId !== record.requesterUserId ? ` for <@${record.requesterUserId}>` : '';
   if (answer.choice === QUESTION_OTHER_CHOICE) {
     // Their own words, escaped the way Slack escapes a typed message.
-    return `Answered your question "${question.question}"${forWhom} ${reference} in their own words: ${escapeMrkdwn(values[0] ?? '')}`;
+    return `Answered your question "${question.question}"${forWhom} ${reference} in their own words: ${escapeSlackControlCharacters(values[0] ?? '')}`;
   }
   const answered = questionAnswerLabel(question, values);
   return `Answered your question "${question.question}"${forWhom} ${reference}: ${answered}`;

@@ -3,9 +3,11 @@
  * escaped and clamped for display; ids are matched, never clamped.
  */
 
+import { escapeSlackControlCharacters, neutralizeSlackMrkdwnHandles } from '../message-format.ts';
+
 /** Model- or user-supplied text shown in mrkdwn: no markup and no pings. */
 export function escapeMrkdwn(text: string): string {
-  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return neutralizeSlackMrkdwnHandles(escapeSlackControlCharacters(text));
 }
 
 /** Display text only is ever clamped; ids and values are refused instead. */
