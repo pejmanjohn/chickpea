@@ -108,7 +108,7 @@ test('open, answered, typed, and closed cards render from state and pass the che
   }
   assert.match(JSON.stringify(cases[2]!.blocks), /Stopped by <@U2> \(typed reply\)/);
   assert.ok(cases.slice(1, 5).every((rendered) => !rendered.blocks.some((block) => block.type === 'actions')));
-  assert.equal(uiResponseTurnText(record(), 0).includes('Approve step button'), true);
+  assert.equal(uiResponseTurnText(record(), { choice: 0 }, 'U1').includes('Approve step button'), true);
 });
 
 /** A small deterministic generator, so the property test is reproducible. */

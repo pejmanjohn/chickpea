@@ -1,4 +1,5 @@
 import { sha256HexNode } from '../../security/digest.ts';
+import type { AskUserSpec, OfferActionsSpec } from './presentation-tools.ts';
 
 /**
  * A durable interactive surface: one host-owned Slack message whose controls
@@ -32,7 +33,19 @@ export type HostApprovalSpec =
       host: string;
     };
 
-export type UiSurfaceSpec = HostApprovalSpec;
+/** A model-chosen question (ask_user) the person answers with one click. */
+export interface QuestionSurfaceSpec {
+  kind: 'question';
+  question: AskUserSpec;
+}
+
+/** Model-offered next steps (offer_actions): link and request buttons. */
+export interface ActionsSurfaceSpec {
+  kind: 'actions';
+  actions: OfferActionsSpec;
+}
+
+export type UiSurfaceSpec = HostApprovalSpec | QuestionSurfaceSpec | ActionsSurfaceSpec;
 export type UiSurfaceKind = UiSurfaceSpec['kind'];
 
 export interface UiSurfaceResolution {
@@ -40,6 +53,8 @@ export interface UiSurfaceResolution {
   at: number;
   /** Index of the chosen control; each surface kind names its choices. */
   choice: number;
+  /** Chosen option indexes, person/channel ids, or a date, for pickers and multi-selects. */
+  values?: string[];
   /** The answer arrived as typed text rather than a click. */
   typed?: true;
 }
@@ -126,4 +141,10 @@ export function parseUiControl(input: {
     parsed.valueIndex = Number(value[2]);
   }
   return parsed;
+}
+
+/** A selected option's value, bound to its surface like a button value. */
+export function parseUiOptionValue(surfaceId: string, value: string): number | undefined {
+  const match = VALUE.exec(value);
+  return match && match[1] === surfaceId ? Number(match[2]) : undefined;
 }

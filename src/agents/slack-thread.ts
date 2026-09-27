@@ -214,6 +214,19 @@ import { useSlackAttachmentContext } from '../slack/attachment-context.ts';
 import { resolveSlackInstallationExecutionContext } from '../slack/installation-execution.ts';
 import { slackPresentationIntentCapability } from '../slack/presentation-intent.ts';
 import {
+  createAskUserTool,
+  createOfferActionsTool,
+  interactiveSurfaceScope,
+  SLACK_INTERACTIVE_QUESTION_DATA_NAME,
+  SlackInteractiveQuestionSchema,
+  type SlackInteractiveQuestion,
+} from '../slack/ui/interactive-tools.ts';
+import {
+  SLACK_ASK_USER_TOOL_NAME,
+  SLACK_OFFER_ACTIONS_TOOL_NAME,
+  slackPresentationGuide,
+} from '../slack/ui/presentation-tools.ts';
+import {
   createSlackPresentTableTool,
   SLACK_PRESENT_TABLE_INSTRUCTION,
   SLACK_PRESENT_TABLE_TOOL_NAME,
@@ -733,6 +746,9 @@ export function ChickpeaSlack({ id }: AgentProps) {
     schema: SlackAgentCreationTerminalIntentSchema,
   });
   const writeMemoryUpdate = useDataWriter(SLACK_MEMORY_UPDATE_DATA_NAME, { schema: SlackMemoryUpdateSchema });
+  const writeInteractiveQuestion = useDataWriter(SLACK_INTERACTIVE_QUESTION_DATA_NAME, {
+    schema: SlackInteractiveQuestionSchema,
+  });
   const managementEnabled = !!parseSlackManagementSignal(delivery, plan);
   const turn = runtimePlanTurnContext(plan, delivery);
   useChickpeaSlackRuntimeCapabilities(
@@ -745,6 +761,7 @@ export function ChickpeaSlack({ id }: AgentProps) {
     writeMemoryUpdate,
     slackDeliveryThreadImages(plan, delivery),
     turn,
+    writeInteractiveQuestion,
   );
   useSlackAttachmentContext(
     plan,
@@ -769,6 +786,7 @@ export function useChickpeaSlackRuntimeCapabilities(
   writeMemoryUpdate?: (receipt: SlackMemoryUpdate) => void,
   threadImages?: readonly ThreadImageRecord[],
   turn?: TurnEnvelopeContext,
+  writeInteractiveQuestion?: (record: SlackInteractiveQuestion) => void,
 ): void {
   useRuntimePlanAgent(plan, id, {
     responseMetadataModel: plan.model,
@@ -794,10 +812,38 @@ export function useChickpeaSlackRuntimeCapabilities(
   useSlackListsTools(plan, resolveAgentPlatformEnv);
   useInstruction(SLACK_PRESENT_TABLE_INSTRUCTION);
   useTool(createSlackPresentTableTool(writeTablePresentation));
+  useSlackInteractiveComponents(plan, writeInteractiveQuestion);
   if (presentationIntent) {
     useInstruction(presentationIntent.instruction);
     useTool(presentationIntent.tool);
   }
+}
+
+/**
+ * ask_user and offer_actions, bound to this request's host coordinates. They
+ * mount only where a click can be admitted like a reply (see
+ * interactiveSurfaceScope) and never without a trusted Slack signal. The
+ * guide names only mounted tools.
+ */
+function useSlackInteractiveComponents(
+  plan: RuntimePlanV2,
+  writeInteractiveQuestion?: (record: SlackInteractiveQuestion) => void,
+): void {
+  const signal = parseSlackManagementSignal(useDelivery(), plan);
+  const scope = signal && interactiveSurfaceScope(signal, plan.agentId);
+  if (!scope) return;
+  const store = async () => getSlackStateStore(await resolveAgentPlatformEnv());
+  useInstruction(slackPresentationGuide([
+    SLACK_ASK_USER_TOOL_NAME, SLACK_OFFER_ACTIONS_TOOL_NAME, SLACK_PRESENT_TABLE_TOOL_NAME,
+  ]));
+  useTool(createAskUserTool({
+    store,
+    scope,
+    ...(writeInteractiveQuestion
+      ? { onRecorded: (question: string) => writeInteractiveQuestion({ question }) }
+      : {}),
+  }));
+  useTool(createOfferActionsTool({ store, scope }));
 }
 
 /**

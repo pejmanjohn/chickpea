@@ -333,12 +333,17 @@ export function unknownSemanticDescriptor(): SemanticActivityDescriptor {
   return descriptor('run', 'unknown', 'the request', 'none', 'unknown');
 }
 
+/** Slack presentation components are part of drafting the answer. */
+const SLACK_COMPONENT_TOOLS: ReadonlySet<string> = new Set([
+  'ask_user', 'offer_actions', 'present_cards', 'present_chart', 'present_details', 'request_form',
+]);
+
 export function semanticDescriptorForCoreTool(toolName: string): SemanticActivityDescriptor {
   if (['read_slack_list', 'read_slack_list_item'].includes(toolName)) return descriptor('read', 'workspace', 'tasks', 'read', 'built_in');
   if (['create_slack_list_item', 'create_slack_task_list'].includes(toolName)) return descriptor('create', 'workspace', 'tasks', 'reversible_write', 'built_in');
   if (toolName === 'update_slack_list_item') return descriptor('update', 'workspace', 'tasks', 'reversible_write', 'built_in');
   if (toolName === 'share_slack_list') return descriptor('share', 'workspace', 'tasks', 'reversible_write', 'built_in');
-  if (toolName === 'stream_answer' || toolName === 'present_table') {
+  if (toolName === 'stream_answer' || toolName === 'present_table' || SLACK_COMPONENT_TOOLS.has(toolName)) {
     return {
       ...descriptor('draft', 'response', 'the response', 'none', 'built_in'),
       role: 'answer_generation',

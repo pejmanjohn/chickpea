@@ -222,6 +222,8 @@ export interface SlackUiResponse {
   kind: string;
   /** Index of the chosen control on the surface. */
   choice: number;
+  /** Selected values, for pickers and multi-selects. */
+  values?: string[];
 }
 
 interface IgnoredSlackTurn {
