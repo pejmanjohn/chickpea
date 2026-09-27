@@ -19,6 +19,22 @@ customization does not change file ownership. A bot-name caption on a file can
 coexist with the correct Agent sender. Never rename the global bot profile to
 fix one Agent's message: other Agents share that installation.
 
+## Steering replies and the stop note
+
+Stopping a run and checking on it (see [Slack steering](slack-steering.md))
+add two senders:
+
+| Message | Sender | Delivery path | Who sees it |
+| --- | --- | --- | --- |
+| Stop note | The thread's Agent, with its footer | The final-reply path. An open stream is sealed with the note after its partial answer, through `chat.stopStream` with `chunks` and the footer `blocks`, never `chat.update`. When Slack already halted the stream (its Stop button does), the partial answer stays and the note posts once as a fresh customized threaded reply. Otherwise it posts like any final. | Everyone in the thread |
+| Chickpea's steering replies: check-in answers, `You can't stop this run.`, `This run had already finished…`, and the direct-message hints | The installation's bot, with no Agent persona and no footer | `chat.postEphemeral` with `thread_ts` in channels and group DMs; a threaded `chat.postMessage` in a one-to-one DM | Only the person it answers |
+
+Verify the stop note's sender, avatar and footer on the exact message, with
+API readback and fresh desktop and real phone views, for both a sealed stream
+and a halted one. An ephemeral reply has no readback: `conversations.replies`
+never returns it. Check it as the asker and confirm a second person in the
+thread does not see it.
+
 ## Verified protocol findings
 
 These are observations from a controlled comparison on September 10, 2026 using

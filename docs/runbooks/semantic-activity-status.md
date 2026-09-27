@@ -70,6 +70,15 @@ custom status shows. So the status line follows real progress:
   Stop button. Nothing custom is written while the run is quiet. A final
   delivered during a quiet stretch waits for that hand-back, so native never
   lands after the session settles.
+- **While the native indicator shows** (the run's first moments and every
+  quiet stretch), the turn sends `processing` again at most every 45 minutes
+  (`SLACK_NATIVE_PROCESSING_KEEPALIVE_MS`). Slack moves an Agent Session out
+  of `processing` an hour after its status was last sent, and the Stop button
+  goes with it, so the keepalive keeps the button on runs longer than an
+  hour. A keepalive Slack does not take is tried again 5 minutes later. The
+  keepalive stops at the terminal, and one already in flight lands before
+  the next custom status releases native processing, so the release is
+  Slack's last word.
 - **On the next progress**, the custom status comes back through the existing
   hand-over in `src/slack/run-turn.ts`: native processing is released first,
   so the text renders. A new step is written as usual; the step shown before
@@ -90,6 +99,13 @@ registration closes, and serves them through its `runFacts` RPC, so a check-in
 answers after an eviction. Registries without a persisting owner (the Node
 relay, the alarm executor) keep them in memory. The facts hold only fixed copy
 and times; no telemetry field was added for them.
+
+The check-in answer (`slackCheckInReply` in `src/slack/steering-replies.ts`)
+is fixed copy built from those facts: the current step when there is one,
+`No new progress for 10+ minutes` (or `Last progress under 5 minutes ago`),
+and the run's duration in whole minutes and hours. It never shows a clock
+time. The phrases that count as a check-in, and who sees the answer, are in
+[Slack steering](slack-steering.md#checking-on-a-run).
 
 ## How semantic copy is added
 

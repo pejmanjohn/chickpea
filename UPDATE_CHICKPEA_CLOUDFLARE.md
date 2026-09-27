@@ -72,6 +72,16 @@ the previous executor without a rollback, and remove the variable later to
 return to the default. See the
 [upgrading runbook](docs/runbooks/upgrading.md).
 
+Releases that let people stop a run from Slack need nothing to configure.
+Rolling back from one is safe, except that messages a stop is still holding
+(usually for a few seconds) then run on the older release. A customer-owned
+Slack app created before that support shows Slack's **Stop** button only after
+it subscribes to the `agent_session_stopped` event; without it, people stop a
+run by replying `stop` in its thread. Tell the user this optional step is in
+[Slack's Stop button](SETUP_AGENT.md#slacks-stop-button), and change their
+Slack app only if they ask. Installations on the shared Chickpea app need
+nothing. See [Slack steering](docs/runbooks/slack-steering.md#rollback).
+
 ## 3. Deploy to the same Worker
 
 For the core Cloudflare deployment, run the release's guarded command from the

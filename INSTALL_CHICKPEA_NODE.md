@@ -219,7 +219,10 @@ them and resumes pending work when it restarts. Keep its state directory.
 
 If you prefer to operate the Slack app yourself, follow
 [the customer-owned Slack app setup](SETUP_AGENT.md). That path uses Slack's
-HTTP Events API through your public HTTPS address.
+HTTP Events API through your public HTTPS address. An app created from the
+current manifest lets people stop a run with Slack's **Stop** button. An app
+created earlier works without it; to add the button, follow
+[Slack's Stop button](SETUP_AGENT.md#slacks-stop-button).
 
 The setup page supports Anthropic, OpenAI, OpenRouter, and REST-based Cloudflare
 Workers AI. A Node installation cannot use a Worker-only binding.
