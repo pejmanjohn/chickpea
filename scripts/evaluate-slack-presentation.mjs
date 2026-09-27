@@ -8,6 +8,7 @@ import { displayToolAcknowledgement } from '../src/slack/ui/display-tools.ts';
 import {
   SLACK_ASK_USER_ACKNOWLEDGEMENT,
   SLACK_OFFER_ACTIONS_ACKNOWLEDGEMENT,
+  SLACK_REQUEST_FORM_ACKNOWLEDGEMENT,
 } from '../src/slack/ui/interactive-tools.ts';
 import { SlackQuestionPostedToolDeniedError } from '../src/slack/presentation-tool-policy.ts';
 import { randomUUID } from 'node:crypto';
@@ -104,6 +105,7 @@ const DISPLAY_KINDS = { present_cards: 'cards', present_chart: 'chart', present_
 const ACKNOWLEDGEMENTS = {
   ask_user: SLACK_ASK_USER_ACKNOWLEDGEMENT,
   offer_actions: SLACK_OFFER_ACTIONS_ACKNOWLEDGEMENT,
+  request_form: SLACK_REQUEST_FORM_ACKNOWLEDGEMENT,
 };
 
 const VALIDATORS = {

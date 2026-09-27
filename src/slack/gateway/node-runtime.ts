@@ -10,6 +10,7 @@ import {
   processGatewayAgentSelection,
   processGatewayPrivateChannelSetup,
   processGatewayUiAction,
+  processGatewayViewSubmission,
   processGatewaySlackEnvelope,
 } from '../../channels/slack.ts';
 import { createGatewayDeploymentClient } from './runtime.ts';
@@ -23,9 +24,13 @@ import {
 import {
   GATEWAY_DURABLE_ADMISSION_CAPABILITY,
   GATEWAY_UI_INTERACTIONS_CAPABILITY,
+  type GatewayAdmissionResult,
   type GatewayInboundDelivery,
   type GatewaySessionCapability,
 } from './protocol.ts';
+import { answerGatewayUiAtReceipt } from './ui-receipt.ts';
+import { uiSurfaceRecord } from '../ui/host-surfaces.ts';
+import type { UiSurfaceRecord } from '../ui/surface.ts';
 import {
   GatewaySessionRunner,
   reconcileGatewaySessionStatus,
@@ -76,10 +81,17 @@ interface NodeGatewayDeliveryDependencies {
   processAgentSelection?: typeof processGatewayAgentSelection;
   processPrivateChannelSetup?: typeof processGatewayPrivateChannelSetup;
   processUiAction?: typeof processGatewayUiAction;
+  processViewSubmission?: typeof processGatewayViewSubmission;
 }
 
 const NODE_GATEWAY_RETRY_MS = 5_000;
 const NODE_GATEWAY_DRAIN_RETRY_MS = 2_000;
+
+async function readNodeUiSurface(env: PlatformEnv | undefined, id: string): Promise<UiSurfaceRecord | undefined> {
+  const state = resolveStores(env).slackState;
+  if (!state.executeUiSurface) return undefined;
+  return uiSurfaceRecord(state as Parameters<typeof uiSurfaceRecord>[0], { kind: 'get_surface', id });
+}
 
 /** Single-process, single-flight drain for Node's durable gateway inbox. */
 export class NodeGatewayInboxWorker {
@@ -217,7 +229,7 @@ interface NodeGatewayRuntimeDependencies {
     env: PlatformEnv | undefined,
     input: {
       capabilities: readonly GatewaySessionCapability[];
-      onEvent(delivery: GatewayInboundDelivery): Promise<'accepted' | 'duplicate' | 'rejected'>;
+      onEvent(delivery: GatewayInboundDelivery): Promise<GatewayAdmissionResult>;
     },
   ) => NodeGatewayRunner;
   createInboxWorker?: (env?: PlatformEnv) => NodeGatewayInboxWorker;
@@ -270,8 +282,12 @@ export function startNodeGatewaySession(
       GATEWAY_DURABLE_ADMISSION_CAPABILITY,
       GATEWAY_UI_INTERACTIONS_CAPABILITY,
     ] as const;
-    const onEvent = async (delivery: GatewayInboundDelivery) => {
+    const onEvent = async (delivery: GatewayInboundDelivery): Promise<GatewayAdmissionResult> => {
       if (runtimeQuiescing || generation !== lifecycleGeneration) return 'rejected';
+      // A modal click or submission is answered in the ack from its stored card.
+      const receipt = await answerGatewayUiAtReceipt(delivery, (id) => readNodeUiSurface(env, id))
+        .catch(() => undefined);
+      if (receipt) return receipt;
       const outcome = getInbox().admit(delivery, binding);
       if (outcome !== 'rejected') inboxWorker?.wake();
       return outcome;
@@ -371,6 +387,7 @@ export function createNodeGatewayInboxWorker(
   const processPrivateChannelSetup =
     dependencies.processPrivateChannelSetup ?? processGatewayPrivateChannelSetup;
   const processUiAction = dependencies.processUiAction ?? processGatewayUiAction;
+  const processViewSubmission = dependencies.processViewSubmission ?? processGatewayViewSubmission;
   return new NodeGatewayInboxWorker({
     getStore: dependencies.getStore ?? getNodeGatewayInboxStore,
     processDelivery: async (delivery) => {
@@ -385,6 +402,8 @@ export function createNodeGatewayInboxWorker(
         ? processAgentSelection(delivery, env, client, appStores)
         : delivery.kind === 'interaction.ui_action'
         ? processUiAction(delivery, env, client, { stores: appStores, durableIngress: true })
+        : delivery.kind === 'interaction.view_submission'
+        ? processViewSubmission(delivery, env, client, { stores: appStores, durableIngress: true })
         : processPrivateChannelSetup(delivery, env, client, appStores);
     },
   });

@@ -64,12 +64,13 @@ const options = (count: number, patch: Record<string, unknown> = {}) =>
 
 test('the host picks the widget from the question shape', () => {
   const cases: Array<[Partial<AskUserSpec>, string, string[]]> = [
-    [{ options: options(3) }, 'buttons', ['section', 'actions:button:button:button', 'context']],
-    [{ options: options(2, { description: 'Why this one' }) }, 'option_rows', ['section', 'section:button', 'section:button', 'context']],
-    [{ options: [{ label: 'A deliberately long label that wraps on phones' }, { label: 'B' }] }, 'option_rows', ['section', 'section:button', 'section:button', 'context']],
-    [{ options: options(9) }, 'select', ['section:static_select', 'context']],
-    [{ options: options(4), multiSelect: true }, 'checkboxes', ['section', 'actions:checkboxes:button', 'context']],
-    [{ options: options(14), multiSelect: true }, 'multi_select', ['section', 'actions:multi_static_select:button', 'context']],
+    // Questions with options end with "Something else…"; pickers are already the answer.
+    [{ options: options(3) }, 'buttons', ['section', 'actions:button:button:button:button', 'context']],
+    [{ options: options(2, { description: 'Why this one' }) }, 'option_rows', ['section', 'section:button', 'section:button', 'actions:button', 'context']],
+    [{ options: [{ label: 'A deliberately long label that wraps on phones' }, { label: 'B' }] }, 'option_rows', ['section', 'section:button', 'section:button', 'actions:button', 'context']],
+    [{ options: options(9) }, 'select', ['section:static_select', 'actions:button', 'context']],
+    [{ options: options(4), multiSelect: true }, 'checkboxes', ['section', 'actions:checkboxes:button:button', 'context']],
+    [{ options: options(14), multiSelect: true }, 'multi_select', ['section', 'actions:multi_static_select:button:button', 'context']],
     [{ pick: 'person' }, 'person', ['section:users_select', 'context']],
     [{ pick: 'person', multiSelect: true }, 'people', ['section', 'actions:multi_users_select:button', 'context']],
     [{ pick: 'channel' }, 'channel', ['section:conversations_select', 'context']],
@@ -90,7 +91,7 @@ test('the host picks the widget from the question shape', () => {
   assert.match(renderUiSurface(ask({ question: 'Which env?', options: options(3) })).text,
     /Which env\? 1\. Option 1 2\. Option 2 3\. Option 3\. Reply with a number, or use the buttons\./);
   const restated = renderUiSurface(ask({ question: 'Which env?', options: options(3) }), { withHeader: false });
-  assert.deepEqual(types(restated), ['actions:button:button:button', 'context']);
+  assert.deepEqual(types(restated), ['actions:button:button:button:button', 'context']);
   assert.match(JSON.stringify(renderUiSurface(ask({ question: 'Q', options: options(2), answerFrom: 'thread' })).blocks),
     /Anyone in this thread can answer/);
 });
@@ -324,6 +325,13 @@ test('policy: a question ends the reply, one interactive component per reply, ne
   await withSubmission(async () => {
     assert.equal(await tool('offer_actions', 'o1', async () => 'offered'), 'offered');
     await assert.rejects(tool('ask_user', 'a1', async () => 'x'), SlackInteractiveComponentLimitError);
+    await assert.rejects(tool('request_form', 'f1', async () => 'x'), SlackInteractiveComponentLimitError);
+  });
+  // A form ends the reply like a question: its answers arrive as the next message.
+  await withSubmission(async () => {
+    assert.equal(await tool('request_form', 'f1', async () => 'posted'), 'posted');
+    await assert.rejects(tool('offer_actions', 'o1', async () => 'x'), SlackQuestionPostedToolDeniedError);
+    await assert.rejects(tool('search_tickets', 's1', async () => 'x'), SlackQuestionPostedToolDeniedError);
   });
   // Rehydrated from durable history: a successful question still ends the reply.
   await withSubmission(async () => {

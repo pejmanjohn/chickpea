@@ -227,7 +227,7 @@ export async function deliverInteractiveSurfaces(input: {
     },
     exceptTurnJobId: input.turnJobId,
     // Card request buttons close too; the answer they sit in is left as is.
-    kinds: ['question', 'actions', 'cards'],
+    kinds: ['question', 'form', 'actions', 'cards'],
   });
   if (superseded.kind === 'surfaces') {
     for (const surface of superseded.surfaces) await redrawUiSurface(input.messenger, surface);

@@ -163,17 +163,41 @@ test('property: seeded valid display specs always compile within Slack limits', 
 });
 
 test('display tools teach, share a two-component budget, and allow cards once', () => {
-  const written: SlackDisplayComponentPart[] = [];
-  const tools = createDisplayTools((part) => written.push(part));
+  const writes: SlackDisplayComponentPart[][] = [];
+  const tools = createDisplayTools((parts) => writes.push(parts));
   assert.throws(() => tools.cards.run({ data: { cards: [] } }), /1–10 cards/);
   const chart = { title: 'Latency', type: 'line' as const, categories: ['Mon', 'Tue'], series: [{ name: 'p95', values: [120, 130] }] };
   assert.match(tools.chart.run({ data: chart }).output, /1 more display component allowed/);
   assert.match(tools.cards.run({ data: { cards: [{ title: 'Ada' }] } }).output, /recorded under your answer\. Don't repeat/);
   assert.throws(() => tools.details.run({ data: { title: 'Sources', markdown: 'x' } }), /already has two display components/);
-  assert.equal(written.length, 2);
+  assert.deepEqual(writes.map((parts) => parts.map((part) => part.kind)), [['chart'], ['chart', 'cards']]);
   const fresh = createDisplayTools(() => undefined);
   fresh.cards.run({ data: { cards: [{ title: 'Ada' }] } });
   assert.throws(() => fresh.cards.run({ data: { cards: [{ title: 'Bo' }] } }), /once per reply/);
+});
+
+test('where no click can be admitted (group DMs, legacy DM sessions), cards keep only link buttons', () => {
+  const written: SlackDisplayComponentPart[][] = [];
+  const tools = createDisplayTools((parts) => written.push(parts), { requestButtons: false });
+  assert.throws(
+    () => tools.cards.run({ data: { cards: [{ title: 'Acme', actions: [{ label: 'Draft outreach' }] }] } }),
+    /can only open links/,
+  );
+  assert.equal(written.length, 0);
+  tools.cards.run({ data: { cards: [{ title: 'Acme', actions: [{ label: 'Open CRM', url: 'https://crm.example.com/acme' }] }] } });
+  assert.equal(written.length, 1);
+});
+
+test('two display components survive the data part being replaced in place', () => {
+  // Flue keeps a data part's latest write; each write carries the whole list.
+  let part: SlackDisplayComponentPart[] | undefined;
+  const allWrites: SlackDisplayComponentPart[][] = [];
+  const tools = createDisplayTools((parts) => { part = parts; allWrites.push(parts); });
+  tools.chart.run({ data: { title: 'Signups', type: 'line', categories: ['W1', 'W2'], series: [{ name: 'Signups', values: [120, 135] }] } });
+  tools.details.run({ data: { title: 'Method', markdown: '(135 - 120) / 120' } });
+  assert.deepEqual(parseDisplayComponents([part]).map((component) => component.kind), ['chart', 'details']);
+  // Were every write kept instead, the last list still wins: nothing is doubled.
+  assert.deepEqual(parseDisplayComponents(allWrites).map((component) => component.kind), ['chart', 'details']);
 });
 
 test('the host re-validates written components, keeps two, and never puts them in the settlement', () => {
@@ -268,8 +292,8 @@ test('a component the surface store could not keep is refused at call time, not 
       title: `Record ${index}`, link: longUrl, actions: [{ label: 'A', url: longUrl }, { label: 'B', url: longUrl }],
     })),
   };
-  const written: SlackDisplayComponentPart[] = [];
-  const tools = createDisplayTools((part) => written.push(part));
+  const written: SlackDisplayComponentPart[][] = [];
+  const tools = createDisplayTools((parts) => written.push(parts));
   assert.throws(() => tools.cards.run({ data: oversize }), /too large to keep/);
   assert.equal(written.length, 0);
   assert.deepEqual(parseDisplayComponents([{ kind: 'cards', spec: oversize }]), []);

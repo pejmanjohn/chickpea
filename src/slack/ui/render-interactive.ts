@@ -11,6 +11,16 @@ import {
   type QuestionSurfaceSpec,
   type UiSurfaceRecord,
 } from './surface.ts';
+import {
+  clampDisplay,
+  escapeMrkdwn,
+  ISO_DATE,
+  mrkdwn,
+  plain,
+  SLACK_CHANNEL_ID,
+  SLACK_USER_ID,
+  slackTime,
+} from './text.ts';
 
 /**
  * Host-owned widgets for model-chosen questions and next steps. The model says
@@ -26,30 +36,12 @@ export interface RenderedInteractive {
   blocks: Block[];
 }
 
+/** The answer index of a "Something else…" reply; option indexes stay below it. */
+export const QUESTION_OTHER_CHOICE = 100;
+const OTHER_BLOCK = 30;
 const SHORT_LABEL = 30;
 const MAX_ROW_BUTTONS = 5;
 const MAX_CHECKBOXES = 10;
-
-function escape(text: string): string {
-  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
-
-function clamp(text: string, max: number): string {
-  const normalized = text.replace(/\s+/g, ' ').trim();
-  return normalized.length <= max ? normalized : `${normalized.slice(0, max - 1).trimEnd()}…`;
-}
-
-function plain(text: string, max = 75) {
-  return { type: 'plain_text', text: clamp(text, max), emoji: true };
-}
-
-function mrkdwn(text: string) {
-  return { type: 'mrkdwn', text };
-}
-
-function slackTime(at: number): string {
-  return `<!date^${Math.floor(at / 1000)}^{time}|${new Date(at).toISOString().slice(11, 16)} UTC>`;
-}
 
 // ── questions ─────────────────────────────────────────────────────────────
 
@@ -80,7 +72,7 @@ export function questionWidget(question: AskUserSpec): QuestionWidget {
 function confirmFor(label: string) {
   return {
     title: plain('Are you sure?', 100),
-    text: plain(`${clamp(label, 200)}. This can't be undone.`, 300),
+    text: plain(`${clampDisplay(label, 200)}. This can't be undone.`, 300),
     confirm: plain('Yes, continue', 30),
     deny: plain('Go back', 30),
     style: 'danger',
@@ -104,7 +96,7 @@ function questionHeader(record: UiSurfaceRecord, question: AskUserSpec): Block {
   return {
     type: 'section',
     block_id: uiBlockId('ui', record.id, 0),
-    text: mrkdwn(`*${escape(question.question)}*`),
+    text: mrkdwn(`*${escapeMrkdwn(question.question)}*`),
   };
 }
 
@@ -113,6 +105,21 @@ function whoAnswers(record: UiSurfaceRecord, question: AskUserSpec): Block {
     ? 'Anyone in this thread can answer'
     : `Only <@${record.requesterUserId}> can answer`;
   return { type: 'context', elements: [mrkdwn(`${who} · or reply in this thread`)] };
+}
+
+/** Opens a one-field modal for an answer the options don't cover. */
+function otherButton(record: UiSurfaceRecord): Block {
+  return {
+    type: 'button',
+    action_id: uiActionId('ui', 'question_other', 0),
+    text: plain('Something else…'),
+    value: uiValue(record.id, 0),
+  };
+}
+
+/** Questions with options take a free-text answer too; pickers already are the answer. */
+export function questionTakesOtherAnswer(question: AskUserSpec): boolean {
+  return !question.pick && (question.options?.length ?? 0) > 0;
 }
 
 function submitButton(record: UiSurfaceRecord): Block {
@@ -136,12 +143,12 @@ function optionObject(record: UiSurfaceRecord, index: number, option: { label: s
 function questionFallback(question: AskUserSpec): string {
   const options = question.options ?? [];
   if (options.length) {
-    const listed = options.map((option, index) => `${index + 1}. ${escape(option.label)}`).join(' ');
+    const listed = options.map((option, index) => `${index + 1}. ${escapeMrkdwn(option.label)}`).join(' ');
     const how = question.multiSelect ? 'Reply with the numbers' : 'Reply with a number';
-    return `${escape(question.question)} ${listed}. ${how}, or use the buttons.`;
+    return `${escapeMrkdwn(question.question)} ${listed}. ${how}, or use the buttons.`;
   }
   const what = question.pick === 'person' ? 'a person' : question.pick === 'channel' ? 'a channel' : 'a date';
-  return `${escape(question.question)} Pick ${what} below, or reply in this thread.`;
+  return `${escapeMrkdwn(question.question)} Pick ${what} below, or reply in this thread.`;
 }
 
 function renderOpenQuestion(record: UiSurfaceRecord, question: AskUserSpec, withHeader: boolean): RenderedInteractive {
@@ -156,17 +163,20 @@ function renderOpenQuestion(record: UiSurfaceRecord, question: AskUserSpec, with
       blocks.push({
         type: 'actions',
         block_id: controls,
-        elements: options.map((option, index) => answerButton(record, index, option.label, option)),
+        elements: [
+          ...options.map((option, index) => answerButton(record, index, option.label, option)),
+          otherButton(record),
+        ],
       });
       break;
     case 'option_rows':
       if (withHeader) blocks.push(header);
       options.forEach((option, index) => {
-        const description = option.description ? `\n${escape(option.description)}` : '';
+        const description = option.description ? `\n${escapeMrkdwn(option.description)}` : '';
         blocks.push({
           type: 'section',
           block_id: uiBlockId('ui', record.id, index + 1),
-          text: mrkdwn(`*${index + 1}. ${escape(option.label)}*${description}`),
+          text: mrkdwn(`*${index + 1}. ${escapeMrkdwn(option.label)}*${description}`),
           accessory: answerButton(record, index, 'Choose', option),
         });
       });
@@ -203,6 +213,7 @@ function renderOpenQuestion(record: UiSurfaceRecord, question: AskUserSpec, with
                 options: options.map((option, index) => optionObject(record, index, option)),
               },
           submitButton(record),
+          otherButton(record),
         ],
       });
       break;
@@ -244,6 +255,9 @@ function renderOpenQuestion(record: UiSurfaceRecord, question: AskUserSpec, with
       });
       break;
   }
+  if (widget === 'option_rows' || widget === 'select') {
+    blocks.push({ type: 'actions', block_id: uiBlockId('ui', record.id, OTHER_BLOCK), elements: [otherButton(record)] });
+  }
   blocks.push(whoAnswers(record, question));
   return { text: questionFallback(question), blocks };
 }
@@ -265,12 +279,13 @@ function renderQuestion(record: UiSurfaceRecord, question: AskUserSpec, withHead
   if (record.status === 'resolved' && record.resolution) {
     const { resolution } = record;
     const values = resolution.values ?? [String(resolution.choice)];
-    const answer = questionAnswerLabel(question, values);
-    const shown = question.pick ? answer : `*${escape(answer)}*`;
+    const other = resolution.choice === QUESTION_OTHER_CHOICE;
+    const answer = other ? clampDisplay(values[0] ?? '', 300) : questionAnswerLabel(question, values);
+    const shown = question.pick ? answer : other ? `“${escapeMrkdwn(answer)}”` : `*${escapeMrkdwn(answer)}*`;
     const onBehalf = resolution.byUserId !== record.requesterUserId ? ` for <@${record.requesterUserId}>` : '';
     const via = resolution.typed ? ' (typed reply)' : '';
     return {
-      text: `${escape(question.question)} Answered: ${question.pick ? answer : escape(answer)}.`,
+      text: `${escapeMrkdwn(question.question)} Answered: ${question.pick ? answer : escapeMrkdwn(answer)}.`,
       blocks: [header, {
         type: 'context',
         elements: [mrkdwn(`:white_check_mark: ${shown}, answered by <@${resolution.byUserId}>${onBehalf}${via} · ${slackTime(resolution.at)}`)],
@@ -278,7 +293,7 @@ function renderQuestion(record: UiSurfaceRecord, question: AskUserSpec, withHead
     };
   }
   return {
-    text: `${escape(question.question)} This question is closed.`,
+    text: `${escapeMrkdwn(question.question)} This question is closed.`,
     blocks: [header, { type: 'context', elements: [mrkdwn('This question is closed.')] }],
   };
 }
@@ -296,7 +311,7 @@ function renderActions(record: UiSurfaceRecord, spec: OfferActionsSpec): Rendere
     url: action.url,
     ...(action.recommended ? { style: 'primary' } : {}),
   });
-  const labels = spec.actions.map((action) => escape(action.label)).join(' · ');
+  const labels = spec.actions.map((action) => escapeMrkdwn(action.label)).join(' · ');
   if (record.status === 'open' || record.status === 'pending_delivery') {
     return {
       text: `Next steps: ${labels}`,
@@ -319,7 +334,7 @@ function renderActions(record: UiSurfaceRecord, spec: OfferActionsSpec): Rendere
   let text = 'Next steps closed.';
   if (record.status === 'resolved' && record.resolution) {
     const chosen = spec.actions[record.resolution.choice];
-    const label = chosen ? escape(chosen.label) : 'a next step';
+    const label = chosen ? escapeMrkdwn(chosen.label) : 'a next step';
     text = `${label}, requested by <@${record.resolution.byUserId}>.`;
     blocks.push({ type: 'context', elements: [mrkdwn(`:leftwards_arrow_with_hook: <@${record.resolution.byUserId}>: ${label}`)] });
   }
@@ -347,10 +362,6 @@ export interface InteractiveAnswer {
   choice: number;
   values?: string[];
 }
-
-const USER_ID = /^[UW][A-Z0-9]{2,30}$/;
-const CHANNEL_ID = /^[CGD][A-Z0-9]{2,30}$/;
-const DATE = /^\d{4}-\d{2}-\d{2}$/;
 
 /**
  * What a click answers, read from the stored spec and the click's own
@@ -410,7 +421,7 @@ export function interactiveAnswer(
     case 'person':
     case 'channel': {
       if (control.kind !== 'question_pick') return undefined;
-      const pattern = widget === 'person' ? USER_ID : CHANNEL_ID;
+      const pattern = widget === 'person' ? SLACK_USER_ID : SLACK_CHANNEL_ID;
       return action.selected.length === 1 && pattern.test(action.selected[0]!)
         ? { choice: 0, values: [action.selected[0]!] }
         : undefined;
@@ -420,7 +431,7 @@ export function interactiveAnswer(
     case 'date': {
       if (control.kind !== 'question_submit') return undefined;
       const selected = stateSelection();
-      const pattern = widget === 'people' ? USER_ID : widget === 'channels' ? CHANNEL_ID : DATE;
+      const pattern = widget === 'people' ? SLACK_USER_ID : widget === 'channels' ? SLACK_CHANNEL_ID : ISO_DATE;
       if (!selected.length || selected.length > 25 || !selected.every((value) => pattern.test(value))) {
         return undefined;
       }
@@ -446,8 +457,12 @@ export function interactiveTurnText(
   }
   const question = spec.question;
   const values = answer.values ?? [String(answer.choice)];
-  const answered = questionAnswerLabel(question, values);
   const forWhom = byUserId !== record.requesterUserId ? ` for <@${record.requesterUserId}>` : '';
+  if (answer.choice === QUESTION_OTHER_CHOICE) {
+    // Their own words, escaped the way Slack escapes a typed message.
+    return `Answered your question "${question.question}"${forWhom} ${reference} in their own words: ${escapeMrkdwn(values[0] ?? '')}`;
+  }
+  const answered = questionAnswerLabel(question, values);
   return `Answered your question "${question.question}"${forWhom} ${reference}: ${answered}`;
 }
 

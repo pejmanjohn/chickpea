@@ -24,6 +24,7 @@ import {
   SLACK_PRESENT_CARDS_TOOL_NAME,
   SLACK_PRESENT_CHART_TOOL_NAME,
   SLACK_PRESENT_DETAILS_TOOL_NAME,
+  SLACK_REQUEST_FORM_TOOL_NAME,
 } from './ui/presentation-tools.ts';
 
 interface PresentationToolPolicyState {
@@ -49,6 +50,12 @@ interface PresentationToolPolicyState {
 const INTERACTIVE_TOOL_NAMES: ReadonlySet<string> = new Set([
   SLACK_ASK_USER_TOOL_NAME,
   SLACK_OFFER_ACTIONS_TOOL_NAME,
+  SLACK_REQUEST_FORM_TOOL_NAME,
+]);
+/** Interactive tools whose answer arrives as the next message: they end the reply. */
+const REPLY_ENDING_TOOL_NAMES: ReadonlySet<string> = new Set([
+  SLACK_ASK_USER_TOOL_NAME,
+  SLACK_REQUEST_FORM_TOOL_NAME,
 ]);
 /** Display components ride in the answer; other presentation tools may follow them. */
 const DISPLAY_TOOL_NAMES: ReadonlySet<string> = new Set([
@@ -64,7 +71,7 @@ const PRESENTATION_TOOL_NAMES: ReadonlySet<string> = new Set([
 
 export class SlackInteractiveComponentLimitError extends Error {
   constructor() {
-    super('Use at most one of ask_user or offer_actions per reply. End your reply now.');
+    super('Use at most one of ask_user, request_form or offer_actions per reply. End your reply now.');
     this.name = 'SlackInteractiveComponentLimitError';
   }
 }
@@ -186,7 +193,7 @@ export const presentationToolPolicyInterceptor: FlueExecutionInterceptor = async
     active.interactiveUsed = true;
     active.presented = true;
     // A question ends the reply: its answer arrives as the next message.
-    if (operation.toolName === SLACK_ASK_USER_TOOL_NAME) {
+    if (REPLY_ENDING_TOOL_NAMES.has(operation.toolName)) {
       active.answerOnly = true;
       active.questionAsked = true;
     }
@@ -323,7 +330,7 @@ function currentResponsePolicy(messages: readonly LlmMessage[]): {
         presentationCalls.has(message.toolCallId)) {
       presented = true;
       if (INTERACTIVE_TOOL_NAMES.has(message.toolName)) interactiveUsed = true;
-      if (message.toolName === SLACK_ASK_USER_TOOL_NAME) questionAsked = true;
+      if (REPLY_ENDING_TOOL_NAMES.has(message.toolName)) questionAsked = true;
     }
     if (
       message.role === 'toolResult' &&

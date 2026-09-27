@@ -2,12 +2,20 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { createBrowserAction, getBrowserAction } from '../src/browser/actions.ts';
-import { processGatewaySlackEnvelope, processGatewayUiAction } from '../src/channels/slack.ts';
+import {
+  processGatewaySlackEnvelope,
+  processGatewayUiAction,
+  processGatewayViewSubmission,
+} from '../src/channels/slack.ts';
 import { closeNodeStateStores, resolveStores, type AppStores } from '../src/config/state-backend.ts';
 import type { GatewayDeploymentClient } from '../src/slack/gateway/client.ts';
-import type { GatewayUiActionDelivery } from '../src/slack/gateway/protocol.ts';
+import type { GatewayUiActionDelivery, GatewayViewSubmissionDelivery } from '../src/slack/gateway/protocol.ts';
 import type { TurnJob } from '../src/slack/turn-job-types.ts';
 import { checkSlackBlocks } from '../src/slack/ui/block-kit-limits.ts';
+import type { SlackUiStateValue } from '../src/slack/ui/interaction-payload.ts';
+import { validateRequestForm } from '../src/slack/ui/presentation-tools.ts';
+import { formFieldActionId, formFieldBlockId } from '../src/slack/ui/render-form.ts';
+import { QUESTION_OTHER_CHOICE } from '../src/slack/ui/render-interactive.ts';
 import {
   uiActionId,
   uiBlockId,
@@ -34,6 +42,7 @@ interface Fixture {
   ownerMembershipId: string;
   surface(patch?: Partial<UiSurfaceRecord>): Promise<UiSurfaceRecord>;
   click(surfaceId: string, patch?: Partial<GatewayUiActionDelivery>): Promise<'accepted' | 'rejected'>;
+  submit(surfaceId: string, patch?: Partial<GatewayViewSubmissionDelivery>): Promise<'accepted' | 'rejected'>;
   read(id: string): Promise<UiSurfaceRecord | undefined>;
   ephemerals(): string[];
   updates(): Array<Record<string, unknown>>;
@@ -152,6 +161,14 @@ async function withFixture(body: (f: Fixture) => Promise<void>): Promise<void> {
           actionId: uiActionId('host', 'approval', 0), blockId: uiBlockId('host', surfaceId, 1),
           actionType: 'button', value: uiValue(surfaceId, 0), selected: [], state: {},
           actionTs: '3001.123456', triggerId: 'trigger1',
+          ...patch,
+        }, undefined, gateway, execution);
+      },
+      async submit(surfaceId, patch = {}) {
+        return processGatewayViewSubmission({
+          protocolVersion: 1, kind: 'interaction.view_submission', deliveryId: `view:${surfaceId}`,
+          bindingId: 'binding1', workspaceId: 'T1', userId: 'U1', viewId: 'V1',
+          callbackId: 'chickpea.ui.v1.form', privateMetadata: surfaceId, state: {}, triggerId: null,
           ...patch,
         }, undefined, gateway, execution);
       },
@@ -566,4 +583,132 @@ test('a card request button starts a turn and never redraws the answer message i
   assert.equal(f.jobs.length, 2);
   assert.match(f.ephemerals().at(-1)!, /Already requested by <@U2>/);
   assert.deepEqual(f.updates(), []);
+}));
+
+// ── request_form and "Something else…" ───────────────────────────────────
+
+const fieldState = (surfaceId: string, index: number, value: SlackUiStateValue) =>
+  ({ [formFieldBlockId(surfaceId, index)]: { [formFieldActionId(index)]: value } });
+
+function formSpec(fields: Parameters<typeof validateRequestForm>[0]['fields'], patch: Record<string, unknown> = {}) {
+  return { kind: 'form' as const, form: validateRequestForm({ title: 'Offsite details', fields, ...patch }) };
+}
+
+test('an inline form Submit is validated privately, then becomes one typed turn with its values', async () => withFixture(async (f) => {
+  const surface = await f.surface({
+    namespace: 'ui',
+    spec: formSpec([
+      { key: 'city', label: 'City', type: 'choice', options: ['Lisbon', 'Porto'], required: true },
+      { key: 'host', label: 'Host', type: 'person' },
+    ]),
+  });
+  const submit = {
+    actionId: uiActionId('ui', 'form_submit', 0), blockId: uiBlockId('ui', surface.id, 20), value: uiValue(surface.id, 0),
+  };
+  // Choosing a value in a field sends block_actions too (live on Slack); it is
+  // neither an answer nor refused.
+  await f.click(surface.id, {
+    actionId: formFieldActionId(0), blockId: formFieldBlockId(surface.id, 0), value: null,
+    actionType: 'static_select', selected: [uiValue(surface.id, 1)], actionTs: '3002.600000',
+  });
+  assert.deepEqual(f.ephemerals(), []);
+  assert.equal(f.jobs.length, 1);
+  await f.click(surface.id, submit);
+  assert.equal(f.jobs.length, 1, 'a missing required field is not an answer');
+  assert.match(f.ephemerals().at(-1)!, /^Not sent yet\. Fix these, then press Submit again:\n• City: This field is required\.$/);
+  assert.equal((await f.read(surface.id))?.status, 'open');
+
+  await f.click(surface.id, {
+    ...submit, actionTs: '3002.700000',
+    state: {
+      ...fieldState(surface.id, 0, { type: 'static_select', selected: [uiValue(surface.id, 1)] }),
+      ...fieldState(surface.id, 1, { type: 'users_select', selected: ['UBOT'] }),
+    },
+  });
+  assert.equal(f.jobs.length, 1, 'picking the app itself would read as an @mention');
+  assert.match(f.ephemerals().at(-1)!, /isn't available/);
+
+  await f.click(surface.id, {
+    ...submit, actionTs: '3002.800000',
+    state: {
+      ...fieldState(surface.id, 0, { type: 'static_select', selected: [uiValue(surface.id, 1)] }),
+      ...fieldState(surface.id, 1, { type: 'users_select', selected: ['U0HOST'] }),
+    },
+  });
+  assert.equal(f.jobs.length, 2);
+  const turn = f.jobs.at(-1)!.turn;
+  assert.match(turn.text, /^Submitted the form "Offsite details" \(form [a-f0-9]{8}\):\n- City: Porto\n- Host: <@U0HOST>$/);
+  assert.equal(turn.uiResponse?.kind, 'form');
+  assert.deepEqual(JSON.parse(turn.uiResponse!.values![0]!), { city: 'Porto', host: 'U0HOST' });
+  const update = f.updates().at(-1)!;
+  assert.match(JSON.stringify(update.blocks), /\*City\*: Porto\\n\*Host\*: <@U0HOST>/);
+  assert.match(JSON.stringify(update.blocks), /Submitted by <@U1>/);
+  assert.ok(!(update.blocks as Array<{ type: string }>).some((block) => block.type === 'input'));
+}));
+
+test('a valid modal submission is admitted like a click and redraws the card as submitted', async () => withFixture(async (f) => {
+  const surface = await f.surface({
+    namespace: 'ui',
+    spec: formSpec([
+      { key: 'name', label: 'Legal name', type: 'text', required: true },
+      { key: 'email', label: 'Billing email', type: 'email', required: true },
+    ], { answerFrom: 'thread' }),
+  });
+  const state = {
+    ...fieldState(surface.id, 0, { type: 'plain_text_input', value: 'Acme <!here>' }),
+    ...fieldState(surface.id, 1, { type: 'email_text_input', value: 'ap@acme.test' }),
+  };
+  assert.equal(await f.submit(surface.id, { userId: 'U2', state }), 'accepted');
+  assert.equal(f.jobs.length, 2);
+  const turn = f.jobs.at(-1)!.turn;
+  assert.equal(turn.userId, 'U2');
+  assert.match(turn.text, /for <@U1> .*\n- Legal name: Acme &lt;!here&gt;\n- Billing email: ap@acme.test$/);
+  assert.match(JSON.stringify(f.updates().at(-1)!.blocks), /Submitted by <@U2> for <@U1>/);
+  assert.equal((await f.read(surface.id))?.status, 'resolved');
+  // A submission that was valid at receipt but lost the race starts nothing;
+  // its modal already closed, so the person is told privately, like a late click.
+  await f.submit(surface.id, { userId: 'U1', state, deliveryId: 'view:again' });
+  assert.equal(f.jobs.length, 2);
+  assert.match(f.ephemerals().at(-1)!, /^Already answered by <@U2>\.$/);
+}));
+
+test('a modal submission whose card closed or expired meanwhile is told so, and an expired card is closed', async () => withFixture(async (f) => {
+  const fields: Parameters<typeof formSpec>[0] = [{ key: 'name', label: 'Legal name', type: 'text', required: true }];
+  const state = (surfaceId: string) => fieldState(surfaceId, 0, { type: 'plain_text_input', value: 'Acme' });
+  const superseded = await f.surface({ namespace: 'ui', spec: formSpec(fields), status: 'superseded' });
+  await f.submit(superseded.id, { state: state(superseded.id) });
+  assert.match(f.ephemerals().at(-1)!, /^This has closed\. Reply in the thread instead\.$/);
+  assert.match(JSON.stringify(f.updates().at(-1)!.blocks), /This form is closed/);
+
+  const expired = await f.surface({ namespace: 'ui', spec: formSpec(fields), expiresAt: Date.now() - 1 });
+  await f.submit(expired.id, { state: state(expired.id), deliveryId: 'view:expired' });
+  assert.match(f.ephemerals().at(-1)!, /^This has closed\./);
+  assert.equal((await f.read(expired.id))?.status, 'expired');
+  assert.equal(f.jobs.length, 1);
+}));
+
+test('"Something else…" answers a question in the person\'s own words', async () => withFixture(async (f) => {
+  const surface = await f.surface({ namespace: 'ui', spec: question() });
+  await f.submit(surface.id, {
+    callbackId: 'chickpea.ui.v1.other',
+    state: fieldState(surface.id, 0, { type: 'plain_text_input', value: 'Neither. Hold the deploy until Monday.' }),
+  });
+  assert.equal(f.jobs.length, 2);
+  const turn = f.jobs.at(-1)!.turn;
+  assert.match(turn.text, /\(question [a-f0-9]{8}\) in their own words: Neither\. Hold the deploy until Monday\.$/);
+  assert.equal(turn.uiResponse?.choice, QUESTION_OTHER_CHOICE);
+  assert.match(JSON.stringify(f.updates().at(-1)!.blocks), /“Neither\. Hold the deploy until Monday\.”, answered by <@U1>/);
+}));
+
+test('a modal button that reaches admission explains why its modal did not open', async () => withFixture(async (f) => {
+  const surface = await f.surface({ namespace: 'ui', spec: question() });
+  const other = {
+    actionId: uiActionId('ui', 'question_other', 0), blockId: uiBlockId('ui', surface.id, 1), value: uiValue(surface.id, 0),
+  };
+  await f.click(surface.id, { ...other, userId: 'U2' });
+  assert.match(f.ephemerals().at(-1)!, /Only <@U1> can answer this/);
+  await f.click(surface.id, { ...other, actionTs: '3003.000000' });
+  assert.match(f.ephemerals().at(-1)!, /isn't available/);
+  assert.equal(f.jobs.length, 1);
+  assert.equal((await f.read(surface.id))?.status, 'open');
 }));

@@ -1,3 +1,4 @@
+import { formTurnText, parseFormValues, renderForm } from './render-form.ts';
 import {
   cardTurnText,
   interactiveTurnText,
@@ -12,6 +13,7 @@ import {
   type HostApprovalSpec,
   type UiSurfaceRecord,
 } from './surface.ts';
+import { clampDisplay, escapeMrkdwn, mrkdwn, plain, slackTime } from './text.ts';
 
 /**
  * Surfaces render only from their durable record: the open card, the answered
@@ -21,32 +23,6 @@ import {
 export interface RenderedUiSurface {
   text: string;
   blocks: Array<Record<string, unknown>>;
-}
-
-/** Model- or user-supplied text shown in mrkdwn: no markup and no pings. */
-export function escapeMrkdwn(text: string): string {
-  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
-
-/** Display text only is ever clamped; ids and values are refused instead. */
-export function clampDisplay(text: string, max: number): string {
-  const normalized = text.replace(/\s+/g, ' ').trim();
-  if (normalized.length <= max) return normalized;
-  return `${normalized.slice(0, Math.max(1, max - 1)).trimEnd()}…`;
-}
-
-function plain(text: string, max: number): { type: 'plain_text'; text: string; emoji: true } {
-  return { type: 'plain_text', text: clampDisplay(text, max), emoji: true };
-}
-
-function mrkdwn(text: string): { type: 'mrkdwn'; text: string } {
-  return { type: 'mrkdwn', text };
-}
-
-function slackTime(at: number): string {
-  const seconds = Math.floor(at / 1000);
-  const fallback = new Date(at).toISOString().slice(11, 16);
-  return `<!date^${seconds}^{time}|${fallback} UTC>`;
 }
 
 type ApprovalChoice = 'approve' | 'decline';
@@ -141,6 +117,7 @@ export function renderUiSurface(
   if (isDisplaySurface(spec)) {
     throw new Error('Display components render inside the answer, not as their own message.');
   }
+  if (spec.kind === 'form') return renderForm(record, spec.form);
   return renderInteractiveSurface(record, spec, options);
 }
 
@@ -152,6 +129,9 @@ export function uiResponseTurnText(record: UiSurfaceRecord, answer: InteractiveA
   const spec = record.spec;
   if (spec.kind === 'cards') return cardTurnText(record, spec, answer);
   if (spec.kind === 'chart' || spec.kind === 'details') return 'Pressed a button.';
+  if (spec.kind === 'form') {
+    return formTurnText(record, spec.form, parseFormValues(answer.values), byUserId);
+  }
   if (spec.kind !== 'approval') return interactiveTurnText(record, spec, answer, byUserId);
   const decision = approvalChoice(answer.choice);
   if (spec.approval === 'workspace_change') {
@@ -163,3 +143,4 @@ export function uiResponseTurnText(record: UiSurfaceRecord, answer: InteractiveA
     ? `Approved the browser step with the Approve step button: ${spec.description} on ${spec.host}.`
     : `Stopped the browser step with the Stop button: ${spec.description} on ${spec.host}. Do not take it.`;
 }
+

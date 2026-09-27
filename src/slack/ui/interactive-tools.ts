@@ -4,6 +4,10 @@ import type { SlackStateStore } from '../claim-store.ts';
 import {
   AskUserSchema,
   OfferActionsSchema,
+  RequestFormSchema,
+  SLACK_REQUEST_FORM_TOOL_NAME,
+  validateRequestForm,
+  type RequestFormInput,
   SLACK_ASK_USER_TOOL_NAME,
   SLACK_OFFER_ACTIONS_TOOL_NAME,
   SLACK_PRESENTATION_TOOL_DEFINITIONS,
@@ -17,6 +21,7 @@ import {
   UI_SURFACE_TTL_MS,
   uiSurfaceId,
   type ActionsSurfaceSpec,
+  type FormSurfaceSpec,
   type QuestionSurfaceSpec,
 } from './surface.ts';
 
@@ -80,6 +85,8 @@ export const INTERACTIVE_SURFACE_SLOT = 'interactive';
 
 export const SLACK_ASK_USER_ACKNOWLEDGEMENT =
   'Question posted as buttons under your reply. End your reply now: at most one short lead-in sentence, and do not list the options. The answer arrives as the next message.';
+export const SLACK_REQUEST_FORM_ACKNOWLEDGEMENT =
+  'Form posted under your reply. End your reply now: at most one short lead-in sentence, and do not list the fields. The answers arrive as the next message.';
 export const SLACK_OFFER_ACTIONS_ACKNOWLEDGEMENT =
   'Buttons recorded under your reply. Do not list them again in prose.';
 
@@ -93,7 +100,7 @@ type SurfaceStore = Pick<SlackStateStore, 'executeUiSurface'>;
 async function recordSurface(
   store: SurfaceStore,
   scope: InteractiveSurfaceScope,
-  spec: QuestionSurfaceSpec | ActionsSurfaceSpec,
+  spec: QuestionSurfaceSpec | ActionsSurfaceSpec | FormSurfaceSpec,
   now = Date.now(),
 ): Promise<void> {
   if (!store.executeUiSurface) {
@@ -169,6 +176,26 @@ export function createOfferActionsTool(input: {
       const actions = validateOfferActions(data);
       await recordSurface(await input.store(), input.scope, { kind: 'actions', actions });
       return { output: SLACK_OFFER_ACTIONS_ACKNOWLEDGEMENT };
+    }),
+  };
+}
+
+export function createRequestFormTool(input: {
+  store: () => Promise<SurfaceStore>;
+  scope: InteractiveSurfaceScope;
+  /** Lets an empty final reply fall back to the form's title. */
+  onRecorded?: (question: string) => void;
+}) {
+  return {
+    name: SLACK_REQUEST_FORM_TOOL_NAME,
+    description: describe(SLACK_REQUEST_FORM_TOOL_NAME),
+    input: RequestFormSchema,
+    output: v.string(),
+    run: ({ data }: { data: RequestFormInput }) => teaching(async () => {
+      const form = validateRequestForm(data);
+      await recordSurface(await input.store(), input.scope, { kind: 'form', form });
+      input.onRecorded?.(form.title);
+      return { output: SLACK_REQUEST_FORM_ACKNOWLEDGEMENT };
     }),
   };
 }
