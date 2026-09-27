@@ -180,7 +180,7 @@ covers only some of the paths a reply takes:
 | --- | --- | --- |
 | `markdown` block | Every final answer | Silent on mentions (observed below) |
 | Streamed `markdown_text` chunk | Progressive and final streams | Silent on mentions (observed below) |
-| mrkdwn section text | File replies, routine file deliveries | Parses `<!here>`, `<!channel>`, `<!everyone>`, `<!subteam^ID>`; with the default `verbatim: false` it also auto-parses a plain `@here` and user-group handles |
+| mrkdwn section text | File replies, routine file deliveries, legacy work-checklist messages | Parses `<!here>`, `<!channel>`, `<!everyone>`, `<!subteam^ID>`; with the default `verbatim: false` it also auto-parses a plain `@here` and user-group handles |
 | Top-level `text` | Fallback and notification text | Parses `<!here>` syntax; a plain `@here` only with `link_names=1`, which Chickpea never sets |
 
 Every path is treated as parsing everything, so
@@ -203,6 +203,12 @@ sanitizing and credential redaction. `neutralizeSlackBroadcastMentions` in
   `@**here**`), and a link label or image alt text ending in `@`, get it too,
   so markup cannot join an `@` to the next word. These forms were not probed;
   they follow the documented mrkdwn auto-parsing.
+- The work-checklist and milestone-plan message renderers pass labels and
+  details through `escapeMrkdwn`, so a classifier-written `@here` or `@handle`
+  gets the joiner in both the mrkdwn section and the top-level `text`. Current
+  turns only re-render checklist messages that older builds posted; new turns
+  show these labels on the native task card (`task_update` chunks), which has
+  not been probed for mention parsing.
 
 User mentions (`<@U…>`), Channel links, `<!date^…>`, `<!DOCTYPE …>`, CDATA and
 email addresses are unchanged. Streaming withholds an open `<…` on the last
