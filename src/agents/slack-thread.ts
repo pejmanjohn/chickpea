@@ -237,6 +237,7 @@ import {
   SlackDisplayComponentsSchema,
   type SlackDisplayComponentPart,
 } from '../slack/ui/display-tools.ts';
+import { replyDisplayHistory } from '../slack/presentation-tool-policy.ts';
 
 /** Display components the guide describes wherever they mount. */
 const DISPLAY_GUIDE_TOOLS = [
@@ -859,7 +860,10 @@ function useSlackInteractiveComponents(
   // Display components need no click round trip, so they mount wherever a
   // reply is delivered; the interactive ones need a trusted Slack signal.
   if (writeDisplayComponent) {
-    const display = createDisplayTools(writeDisplayComponent, { requestButtons: Boolean(scope) });
+    const display = createDisplayTools(writeDisplayComponent, {
+      requestButtons: Boolean(scope),
+      history: replyDisplayHistory,
+    });
     useTool(display.cards);
     useTool(display.chart);
     useTool(display.details);

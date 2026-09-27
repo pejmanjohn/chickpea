@@ -91,33 +91,51 @@ export function displayToolAcknowledgement(kind: DisplayKind, left: number): str
   return `${DISPLAY_NOUNS[kind]} recorded under your answer${left ? `; ${left} more display component allowed` : ''}. Don't repeat its contents in prose.`;
 }
 
+/** A display component this reply already recorded, keyed by the tool call that recorded it. */
+export interface RecordedDisplayComponent extends SlackDisplayComponentPart {
+  toolCallId: string;
+}
+
 export function createDisplayTools(
   /** Receives the reply's whole list each time: a later write replaces the part. */
   write: (parts: SlackDisplayComponentPart[]) => void,
   options: {
     /** Whether a card button without a url can be clicked here (see interactiveSurfaceScope). */
     requestButtons?: boolean;
+    /**
+     * Components this reply recorded before these tools were (re)created,
+     * rebuilt from the durable transcript; a restart mid-reply keeps them.
+     */
+    history?: () => readonly RecordedDisplayComponent[];
   } = {},
 ) {
-  const written: SlackDisplayComponentPart[] = [];
-  let used = 0;
-  let cardsUsed = false;
-  const record = (kind: DisplayKind, spec: unknown): { output: string } => {
-    if (used >= MAX_DISPLAY_COMPONENTS) {
+  const written: RecordedDisplayComponent[] = [];
+  let calls = 0;
+  /** Earlier calls first (the transcript), then this closure's own, once each. */
+  const recorded = (): RecordedDisplayComponent[] => {
+    const earlier = options.history?.() ?? [];
+    const seen = new Set(earlier.map((component) => component.toolCallId));
+    return [...earlier, ...written.filter((component) => !seen.has(component.toolCallId))];
+  };
+  const record = (kind: DisplayKind, spec: unknown, toolCallId: string): { output: string } => {
+    const prior = recorded().filter((component) => component.toolCallId !== toolCallId);
+    if (prior.length >= MAX_DISPLAY_COMPONENTS) {
       throw new Error('This reply already has two display components; put anything else in prose.');
     }
-    if (kind === 'cards' && cardsUsed) throw new Error('Use present_cards once per reply.');
+    if (kind === 'cards' && prior.some((component) => component.kind === 'cards')) {
+      throw new Error('Use present_cards once per reply.');
+    }
     if (storedSpecBytes(kind, spec) > UI_SURFACE_MAX_SPEC_BYTES) {
       throw new Error(
         `This component is too large to keep (over ${UI_SURFACE_MAX_SPEC_BYTES / 1024} KiB); shorten its text and links or show fewer items.`,
       );
     }
-    written.push({ kind, spec });
-    write([...written]);
-    used += 1;
-    if (kind === 'cards') cardsUsed = true;
-    return { output: displayToolAcknowledgement(kind, MAX_DISPLAY_COMPONENTS - used) };
+    written.push({ toolCallId, kind, spec });
+    write([...prior, { kind, spec }].map(({ kind: partKind, spec: partSpec }) => ({ kind: partKind, spec: partSpec })));
+    return { output: displayToolAcknowledgement(kind, MAX_DISPLAY_COMPONENTS - prior.length - 1) };
   };
+  /** Flue always passes the call's id; a direct call (tests) gets a local one. */
+  const callId = (toolCallId: string | undefined) => toolCallId ?? `local_${(calls += 1)}`;
   const teaching = <T>(run: () => T): T => {
     try {
       return run();
@@ -132,14 +150,14 @@ export function createDisplayTools(
       description: describe(SLACK_PRESENT_CARDS_TOOL_NAME),
       input: PresentCardsSchema,
       output: v.string(),
-      run: ({ data }: { data: PresentCardsInput }) => teaching(() => {
+      run: ({ data, toolCallId }: { data: PresentCardsInput; toolCallId?: string }) => teaching(() => {
         const cards = validatePresentCards(data);
         // A request button nobody could ever press is refused while the model can still fix it.
         if (options.requestButtons === false &&
             cards.cards.some((card) => card.actions?.some((action) => !action.url))) {
           throw new Error('Card buttons here can only open links: give each button a url, or leave it out.');
         }
-        return record('cards', cards);
+        return record('cards', cards, callId(toolCallId));
       }),
     },
     chart: {
@@ -147,16 +165,16 @@ export function createDisplayTools(
       description: describe(SLACK_PRESENT_CHART_TOOL_NAME),
       input: PresentChartSchema,
       output: v.string(),
-      run: ({ data }: { data: PresentChartInput }) =>
-        teaching(() => record('chart', validatePresentChart(data))),
+      run: ({ data, toolCallId }: { data: PresentChartInput; toolCallId?: string }) =>
+        teaching(() => record('chart', validatePresentChart(data), callId(toolCallId))),
     },
     details: {
       name: SLACK_PRESENT_DETAILS_TOOL_NAME,
       description: describe(SLACK_PRESENT_DETAILS_TOOL_NAME),
       input: PresentDetailsSchema,
       output: v.string(),
-      run: ({ data }: { data: PresentDetailsInput }) =>
-        teaching(() => record('details', validatePresentDetails(data))),
+      run: ({ data, toolCallId }: { data: PresentDetailsInput; toolCallId?: string }) =>
+        teaching(() => record('details', validatePresentDetails(data), callId(toolCallId))),
     },
   };
 }
