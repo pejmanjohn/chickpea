@@ -16,7 +16,7 @@ import {
   type PresentChartInput,
   type PresentDetailsInput,
 } from './presentation-tools.ts';
-import type { DisplaySurfaceSpec } from './surface.ts';
+import { UI_SURFACE_MAX_SPEC_BYTES, type DisplaySurfaceSpec } from './surface.ts';
 
 /**
  * present_cards, present_chart and present_details: display components that
@@ -32,27 +32,45 @@ export const SlackDisplayComponentSchema = v.strictObject({
   spec: v.unknown(),
 });
 export type SlackDisplayComponentPart = v.InferOutput<typeof SlackDisplayComponentSchema>;
+type DisplayKind = SlackDisplayComponentPart['kind'];
 
 function describe(name: string): string {
   return SLACK_PRESENTATION_TOOL_DEFINITIONS.find((tool) => tool.name === name)!.description;
 }
 
-/** Re-validate stored or written components; anything invalid is dropped. */
+/** The record the host stores for a component; the surface store caps a spec's size. */
+function storedSpecBytes(kind: DisplayKind, spec: unknown): number {
+  return new TextEncoder().encode(JSON.stringify({ kind, [kind]: spec })).byteLength;
+}
+
+function displaySurfaceSpec(kind: DisplayKind, spec: unknown): DisplaySurfaceSpec {
+  switch (kind) {
+    case 'cards': return { kind, cards: validatePresentCards(v.parse(PresentCardsSchema, spec)) };
+    case 'chart': return { kind, chart: validatePresentChart(v.parse(PresentChartSchema, spec)) };
+    case 'details': return { kind, details: validatePresentDetails(v.parse(PresentDetailsSchema, spec)) };
+  }
+}
+
+/**
+ * Re-validate stored or written components under the tools' own rules: two
+ * per reply, cards once, and only a spec the store can keep. Anything else is
+ * left out and the prose stands alone.
+ */
 export function parseDisplayComponents(value: unknown): DisplaySurfaceSpec[] {
   const parts = Array.isArray(value) ? value : value === undefined ? [] : [value];
   const components: DisplaySurfaceSpec[] = [];
   for (const part of parts) {
+    if (components.length === MAX_DISPLAY_COMPONENTS) break;
     const parsed = v.safeParse(SlackDisplayComponentSchema, part);
     if (!parsed.success) continue;
+    const { kind, spec } = parsed.output;
+    if (kind === 'cards' && components.some((component) => component.kind === 'cards')) continue;
+    if (storedSpecBytes(kind, spec) > UI_SURFACE_MAX_SPEC_BYTES) continue;
     try {
-      const { kind, spec } = parsed.output;
-      if (kind === 'cards') components.push({ kind, cards: validatePresentCards(v.parse(PresentCardsSchema, spec)) });
-      if (kind === 'chart') components.push({ kind, chart: validatePresentChart(v.parse(PresentChartSchema, spec)) });
-      if (kind === 'details') components.push({ kind, details: validatePresentDetails(v.parse(PresentDetailsSchema, spec)) });
+      components.push(displaySurfaceSpec(kind, spec));
     } catch {
-      // A component that no longer validates is left out; the prose stands alone.
+      // A component that no longer validates is left out.
     }
-    if (components.length === MAX_DISPLAY_COMPONENTS) break;
   }
   return components;
 }
@@ -60,18 +78,23 @@ export function parseDisplayComponents(value: unknown): DisplaySurfaceSpec[] {
 const DISPLAY_NOUNS = { cards: 'Cards', chart: 'Chart', details: 'Details' } as const;
 
 /** The production result a display tool returns; the eval returns the same text. */
-export function displayToolAcknowledgement(kind: SlackDisplayComponentPart['kind'], left: number): string {
+export function displayToolAcknowledgement(kind: DisplayKind, left: number): string {
   return `${DISPLAY_NOUNS[kind]} recorded under your answer${left ? `; ${left} more display component allowed` : ''}. Don't repeat its contents in prose.`;
 }
 
 export function createDisplayTools(write: (part: SlackDisplayComponentPart) => void) {
   let used = 0;
   let cardsUsed = false;
-  const record = (kind: SlackDisplayComponentPart['kind'], spec: unknown): { output: string } => {
+  const record = (kind: DisplayKind, spec: unknown): { output: string } => {
     if (used >= MAX_DISPLAY_COMPONENTS) {
       throw new Error('This reply already has two display components; put anything else in prose.');
     }
     if (kind === 'cards' && cardsUsed) throw new Error('Use present_cards once per reply.');
+    if (storedSpecBytes(kind, spec) > UI_SURFACE_MAX_SPEC_BYTES) {
+      throw new Error(
+        `This component is too large to keep (over ${UI_SURFACE_MAX_SPEC_BYTES / 1024} KiB); shorten its text and links or show fewer items.`,
+      );
+    }
     write({ kind, spec });
     used += 1;
     if (kind === 'cards') cardsUsed = true;

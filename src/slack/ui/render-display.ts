@@ -18,7 +18,10 @@ type Block = Record<string, unknown>;
 
 export interface RenderedDisplay {
   blocks: Block[];
-  /** Plain fallback appended to the message `text` (notifications, screen readers). */
+  /**
+   * Fallback appended to the message `text` (notifications, screen readers).
+   * Raw, like a table's: the message renderer escapes `&`, `<` and `>` once.
+   */
   fallbackText: string;
 }
 
@@ -37,9 +40,19 @@ function plain(text: string, max: number) {
 
 // ── cards ────────────────────────────────────────────────────────────────
 
-/** Card button slots: each card owns three, so a value names its card and button. */
+/** Card button slots: each card owns three (the link, then its actions), so a value names its card and button. */
 export function cardButtonIndex(card: number, button: number): number {
   return card * 3 + button;
+}
+
+/** The request button a slot names; the link and url buttons never start a turn. */
+export function cardRequestButtonAt(
+  spec: PresentCardsSpec,
+  slot: number,
+): { card: CardSpec; label: string } | undefined {
+  const card = spec.cards[Math.floor(slot / 3)];
+  const action = card?.actions?.[(slot % 3) - 1];
+  return card && action && !action.url ? { card, label: action.label } : undefined;
 }
 
 function cardBlock(card: CardSpec, index: number, surfaceId: string | undefined): Block {
@@ -67,17 +80,21 @@ function cardBlock(card: CardSpec, index: number, surfaceId: string | undefined)
 }
 
 export function renderCards(spec: PresentCardsSpec, surfaceId?: string): RenderedDisplay {
+  // A click reports the block id of the card it sits in (Slack's carousel
+  // example ids each card), so every card names the surface, not only the
+  // carousel: index 1 is the carousel or the lone card, cards follow.
+  const blockId = (index: number) => (surfaceId ? { block_id: uiBlockId('ui', surfaceId, index) } : {});
   const cards = spec.cards.map((card, index) => cardBlock(card, index, surfaceId));
   const blocks: Block[] = [];
   if (spec.caption) blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `*${escape(spec.caption)}*` } });
   blocks.push(cards.length === 1
-    ? { ...cards[0]!, ...(surfaceId ? { block_id: uiBlockId('ui', surfaceId, 1) } : {}) }
-    : { type: 'carousel', ...(surfaceId ? { block_id: uiBlockId('ui', surfaceId, 1) } : {}), elements: cards });
+    ? { ...cards[0]!, ...blockId(1) }
+    : { type: 'carousel', ...blockId(1), elements: cards.map((card, index) => ({ ...card, ...blockId(index + 2) })) });
   const lines = spec.cards.map((card) => {
     const detail = card.subtitle ? ` — ${card.subtitle}` : '';
     return `• ${card.title}${detail}${card.link ? ` (${card.link})` : ''}`;
   });
-  return { blocks, fallbackText: [spec.caption, ...lines].filter(Boolean).map((line) => escape(line!)).join('\n') };
+  return { blocks, fallbackText: [spec.caption, ...lines].filter(Boolean).join('\n') };
 }
 
 // ── charts ───────────────────────────────────────────────────────────────
@@ -104,7 +121,7 @@ export function renderChart(spec: PresentChartSpec): RenderedDisplay {
     `${spec.series.length > 1 ? `${series.name}: ` : ''}${spec.categories.map((label, index) => `${label} ${series.values[index]}`).join(', ')}`);
   return {
     blocks: [{ type: 'data_visualization', title: spec.title, chart }],
-    fallbackText: escape(`${spec.title}\n${rows.join('\n')}`),
+    fallbackText: `${spec.title}\n${rows.join('\n')}`,
   };
 }
 
@@ -143,6 +160,6 @@ export function renderDetails(spec: PresentDetailsSpec): RenderedDisplay {
       default_collapsed: true,
       child_blocks: children,
     }],
-    fallbackText: `Details: ${escape(spec.title)}`,
+    fallbackText: `Details: ${spec.title}`,
   };
 }

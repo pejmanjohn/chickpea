@@ -17,8 +17,8 @@ import {
   validatePresentChart,
   validatePresentDetails,
 } from '../src/slack/ui/presentation-tools.ts';
-import { renderCards, renderChart, renderDetails } from '../src/slack/ui/render-display.ts';
-import { uiActionId, uiBlockId, uiValue, type DisplaySurfaceSpec } from '../src/slack/ui/surface.ts';
+import { cardRequestButtonAt, renderCards, renderChart, renderDetails } from '../src/slack/ui/render-display.ts';
+import { parseUiControl, uiActionId, uiBlockId, uiValue, type DisplaySurfaceSpec } from '../src/slack/ui/surface.ts';
 
 const SURFACE = 'a'.repeat(32);
 
@@ -192,7 +192,7 @@ test('the host re-validates written components, keeps two, and never puts them i
 
 test('display surfaces are stored in call order, replayed from the store, and stale slots close', async () => {
   const state = new SqliteSlackStateStore(':memory:');
-  const turn = { workspaceId: 'T1', channelId: 'C1', threadTs: '1.000001', userId: 'U1' };
+  const turn = { workspaceId: 'T1', channelId: 'C1', threadTs: '1.000001', userId: 'U1', source: 'app_mention' as const };
   const chart: DisplaySurfaceSpec = { kind: 'chart', chart: validatePresentChart({ title: 'A', type: 'bar', categories: ['x'], series: [{ name: 's', values: [1] }] }) };
   const details: DisplaySurfaceSpec = { kind: 'details', details: validatePresentDetails({ title: 'Sources', markdown: 'x' }) };
   const firstAttempt = await prepareDisplaySurfaces({ state, turn, agentId: 'agent_a', turnJobId: 'job1', fresh: [chart, details], now: Date.now() });
@@ -222,4 +222,68 @@ test('components ride after the table and before the footer on the reply\'s last
   });
   assert.deepEqual(part.blocks?.map((block) => block.type), ['markdown', 'data_visualization', 'context']);
   assert.match(part.text, /Answer text\.[\s\S]*Mix/);
+});
+
+test('the fallback text is escaped once by the message renderer, never by the component', () => {
+  const cards = renderCards(validatePresentCards({ cards: [{ title: 'Acme & Co <!channel>', subtitle: 'a > b' }] }), SURFACE);
+  assert.equal(cards.fallbackText, '• Acme & Co <!channel> — a > b');
+  const part = renderSlackReplyPart('Answer.', 'markdown', {
+    footer: { agentName: 'Ops', agentId: 'agent_ops', modelLabel: 'model' },
+    components: { blocks: cards.blocks, fallbackText: cards.fallbackText },
+  });
+  assert.match(part.text, /Acme &amp; Co &lt;!channel&gt; — a &gt; b/);
+  assert.doesNotMatch(part.text, /&amp;amp;|<!channel>/);
+  assert.deepEqual(checkSlackBlocks(part.blocks!, { text: part.text }).issues, []);
+});
+
+test('every card in a carousel names the surface, so a click reports either block id and still resolves', () => {
+  const spec = validatePresentCards({
+    cards: [
+      { title: 'Acme', link: 'https://example.com/acme', actions: [{ label: 'Draft outreach' }] },
+      { title: 'Globex', actions: [{ label: 'Draft outreach' }, { label: 'Open', url: 'https://example.com/globex' }] },
+    ],
+  });
+  const carousel = renderCards(spec, SURFACE).blocks[0]!;
+  const elements = carousel.elements as Array<Record<string, unknown>>;
+  assert.equal(carousel.block_id, uiBlockId('ui', SURFACE, 1));
+  assert.deepEqual(elements.map((card) => card.block_id), [uiBlockId('ui', SURFACE, 2), uiBlockId('ui', SURFACE, 3)]);
+  for (const blockId of [carousel.block_id, elements[1]!.block_id] as string[]) {
+    const control = parseUiControl({ actionId: uiActionId('ui', 'cards', 4), blockId, value: uiValue(SURFACE, 4) });
+    assert.equal(control?.surfaceId, SURFACE);
+    assert.equal(control?.valueIndex, 4);
+  }
+  assert.deepEqual(checkSlackBlocks([carousel]).issues, []);
+  // Slot arithmetic lives in one place: the link and url buttons never start a turn.
+  assert.equal(cardRequestButtonAt(spec, 0), undefined);
+  assert.equal(cardRequestButtonAt(spec, 1)?.label, 'Draft outreach');
+  assert.equal(cardRequestButtonAt(spec, 4)?.card.title, 'Globex');
+  assert.equal(cardRequestButtonAt(spec, 5), undefined);
+  assert.equal(renderCards(spec).blocks[0]!.block_id, undefined, 'no surface, no ids');
+});
+
+test('a component the surface store could not keep is refused at call time, not dropped at delivery', () => {
+  const longUrl = `https://example.com/${'p'.repeat(2_900)}`;
+  const oversize = {
+    cards: Array.from({ length: 10 }, (_, index) => ({
+      title: `Record ${index}`, link: longUrl, actions: [{ label: 'A', url: longUrl }, { label: 'B', url: longUrl }],
+    })),
+  };
+  const written: SlackDisplayComponentPart[] = [];
+  const tools = createDisplayTools((part) => written.push(part));
+  assert.throws(() => tools.cards.run({ data: oversize }), /too large to keep/);
+  assert.equal(written.length, 0);
+  assert.deepEqual(parseDisplayComponents([{ kind: 'cards', spec: oversize }]), []);
+  // The bound is the store's own, so a fitting spec still stores.
+  const fits = { cards: [{ title: 'Ada', link: longUrl }] };
+  assert.match(tools.cards.run({ data: fits }).output, /Cards recorded/);
+  assert.equal(parseDisplayComponents([{ kind: 'cards', spec: fits }]).length, 1);
+});
+
+test('the host keeps cards once, as the tool does', () => {
+  const parts = [
+    { kind: 'cards', spec: { cards: [{ title: 'Ada' }] } },
+    { kind: 'cards', spec: { cards: [{ title: 'Bo' }] } },
+    { kind: 'details', spec: { title: 'Sources', markdown: 'x' } },
+  ];
+  assert.deepEqual(parseDisplayComponents(parts).map((component) => component.kind), ['cards', 'details']);
 });

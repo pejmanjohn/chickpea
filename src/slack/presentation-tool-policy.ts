@@ -18,7 +18,13 @@ import {
 } from '../memory/tool-policy.ts';
 import { SLACK_STREAM_ANSWER_TOOL_NAME } from './presentation-intent.ts';
 import { SLACK_PRESENT_TABLE_TOOL_NAME } from './table-presentation.ts';
-import { SLACK_ASK_USER_TOOL_NAME, SLACK_OFFER_ACTIONS_TOOL_NAME } from './ui/presentation-tools.ts';
+import {
+  SLACK_ASK_USER_TOOL_NAME,
+  SLACK_OFFER_ACTIONS_TOOL_NAME,
+  SLACK_PRESENT_CARDS_TOOL_NAME,
+  SLACK_PRESENT_CHART_TOOL_NAME,
+  SLACK_PRESENT_DETAILS_TOOL_NAME,
+} from './ui/presentation-tools.ts';
 
 interface PresentationToolPolicyState {
   envelope?: CurrentRequestEnvelope;
@@ -45,7 +51,11 @@ const INTERACTIVE_TOOL_NAMES: ReadonlySet<string> = new Set([
   SLACK_OFFER_ACTIONS_TOOL_NAME,
 ]);
 /** Display components ride in the answer; other presentation tools may follow them. */
-const DISPLAY_TOOL_NAMES: ReadonlySet<string> = new Set(['present_cards', 'present_chart', 'present_details']);
+const DISPLAY_TOOL_NAMES: ReadonlySet<string> = new Set([
+  SLACK_PRESENT_CARDS_TOOL_NAME,
+  SLACK_PRESENT_CHART_TOOL_NAME,
+  SLACK_PRESENT_DETAILS_TOOL_NAME,
+]);
 const PRESENTATION_TOOL_NAMES: ReadonlySet<string> = new Set([
   SLACK_PRESENT_TABLE_TOOL_NAME,
   ...DISPLAY_TOOL_NAMES,
