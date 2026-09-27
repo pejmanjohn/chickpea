@@ -216,7 +216,7 @@ import {
   receiveAlarmExecutorStop,
   STOP_NOTICE_DELIVERY_TIMEOUT_MS,
   StopAbortFence,
-} from './slack/thread-runner-loop.ts';
+} from './slack/runner-stops.ts';
 import { abortSlackThreadAgent } from './slack/flue-dispatch.ts';
 import {
   RUNNER_PREFETCHED_SETTINGS,

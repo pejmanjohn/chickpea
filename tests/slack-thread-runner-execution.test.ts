@@ -35,13 +35,15 @@ import {
   createRunnerSupersedeState,
   THREAD_RUNNER_SUPERSEDE_COOLDOWN_MS,
   runnerLoopScheduler,
+  type ThreadRunnerLoopDeps,
+} from '../src/slack/thread-runner-loop.ts';
+import {
   receiveAlarmExecutorStop,
   runnerStopRecorded,
   RunnerStops,
   StopAbortFence,
   type RunnerStopDeps,
-  type ThreadRunnerLoopDeps,
-} from '../src/slack/thread-runner-loop.ts';
+} from '../src/slack/runner-stops.ts';
 import type {
   FlueSettlementCheckpointV1,
   TurnStopHeadRecordV1,

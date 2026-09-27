@@ -45,15 +45,14 @@ import { ThreadRunnerJobStore, type ThreadRunnerJob, type ThreadRunnerStatus } f
 import {
   runnerLoopScheduler,
   createRunnerSupersedeState,
-  RunnerStops,
   type RunnerSupersedeState,
   type ThreadRunnerAlarmResult,
   runnerPresentationState,
   runnerSlackPort,
-  runnerStopRecorded,
   runnerTurnJobsPort,
   runThreadRunnerAlarm,
 } from './thread-runner-loop.ts';
+import { RunnerStops, runnerStopRecorded } from './runner-stops.ts';
 import type {
   RunnerTurnBegin,
   SlackThreadRunnerRpc,

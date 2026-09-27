@@ -27,7 +27,7 @@ import {
   receiveAlarmExecutorStop,
   STOP_NOTICE_DELIVERY_TIMEOUT_MS,
   StopAbortFence,
-} from '../src/slack/thread-runner-loop.ts';
+} from '../src/slack/runner-stops.ts';
 import type { TurnSteeringRequest, TurnStopNotice } from '../src/slack/turn-job-types.ts';
 import { slackAgentThreadKey } from '../src/slack/thread-key.ts';
 import { compileRuntimePlanV2 } from '../src/agents/runtime-plan.ts';

@@ -43,7 +43,7 @@ import {
   type SlackStopNoteFacts,
 } from './web-client-presenter.ts';
 import { slackAgentThreadKey } from './thread-key.ts';
-import { receiveAlarmExecutorStop, StopAbortFence } from './thread-runner-loop.ts';
+import { receiveAlarmExecutorStop, StopAbortFence } from './runner-stops.ts';
 import {
   removeDroppedReceipts,
   stopNoteFacts,

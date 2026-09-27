@@ -69,10 +69,12 @@ Slack Connect user gets no stop-specific reply.
    messages, so a message posted before the press is admitted first.
 3. **Abort.** The state store hands the stop to the thread's runner through a
    retrying outbox (1 second, doubling to 30 seconds). The runner aborts the
-   Flue run from its saved dispatch. No model is called. It then stops any
-   coding job the run started, from the job's durable task record, and waits
-   for the coding worker to confirm (up to about 14 seconds). A stop that
-   reaches a turn that never started ends it before it dispatches.
+   Flue run from its saved dispatch. No model is called. The abort request is
+   bounded at five seconds, and a thread's next turn waits for an abort in
+   flight (up to that bound), so a late abort can never reach it. It then
+   stops any coding job the run started, from the job's durable task record,
+   and waits for the coding worker to confirm (up to about 14 seconds). A
+   stop that reaches a turn that never started ends it before it dispatches.
 4. **Ending.** The stopped ending drops the held turns and counts them.
    Their Runs settle `cancelled` and Chickpea removes its 👀 from their
    messages. The thread gets one stop note, the Agent Session moves to
