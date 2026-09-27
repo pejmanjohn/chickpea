@@ -234,10 +234,15 @@ test("the runner's stop RPC persists the stop first, leaves slow work to its ala
   // and settlements to it.
   assert.match(runner, /turnJobs: runnerTurnJobsPort\(rows, jobs, Date\.now, this\.stops\(\)\)/);
   assert.match(runner, /stops: this\.stops\(\),/);
-  // The state store's outbox reaches it with no compatibility cast.
+  // R22: the executor reads a stop the runner took, else the state store's row.
+  assert.match(runner, /stopRecorded: \(\) => runnerStopRecorded\(jobs, rows, job\.id\),/);
+  // The state store's outbox reaches it with no compatibility cast, and a
+  // runner that does not answer in time counts as not acknowledged.
   const entry = readFileSync(new URL('../src/cloudflare.ts', import.meta.url), 'utf8');
-  assert.match(entry, /return \(await runner\.stop\(notice\)\)\.acknowledged === true;/);
+  assert.match(entry, /const taken = await boundedStopCall\(runner\.stop\(notice\), STOP_NOTICE_DELIVERY_TIMEOUT_MS\);\s*return taken\.acknowledged === true;/);
   assert.doesNotMatch(entry, /Partial<TurnStopNoticeReceiver>/);
-  assert.match(entry, /receiveAlarmExecutorStop\(\s*stores\.turnJobs\.runnerView\(notice\.turnJobId\),\s*\(target\) => abortSlackThreadAgent\(target\),\s*\)/,
-    "the alarm executor's own turns are aborted in-process");
+  assert.match(entry, /this\.stopAborts\.run\(notice\.runnerKey, \(\) => receiveAlarmExecutorStop\(\s*stores\.turnJobs\.runnerView\(notice\.turnJobId\),\s*\(target\) => abortSlackThreadAgent\(target\),\s*\(\) => stores\.turnJobs\.runnerView\(notice\.turnJobId\),\s*\)\)/,
+    "the alarm executor's own turns are aborted in-process, inside their thread's fence");
+  assert.match(entry, /await this\.stopAborts\.clear\(threadKeyOf\(job\)\);\s*const jobStartedAt = Date\.now\(\);/,
+    'the alarm starts no turn of a thread while its stop abort is out');
 });

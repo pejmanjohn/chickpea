@@ -891,6 +891,7 @@ export class TurnJobStoreLogic {
         ...(job.dispatchEnvelope ? { instanceId: job.dispatchEnvelope.instanceId } : {}),
         ...(uid ? { uid } : {}),
         ...(job.dispatchReceipt ? { submissionId: job.dispatchReceipt.submissionId } : {}),
+        ...(job.flueSettlement ? { settled: job.flueSettlement.outcome } : {}),
       });
     }
     return notices;

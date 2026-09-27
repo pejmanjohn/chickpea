@@ -430,10 +430,13 @@ async function runOne(
   if (deps.supersede?.by) return false;
   // The state store's row is authoritative: a settled or reclaimed turn never
   // runs here, and a dispatched one reattaches through its checkpoints. One
-  // round trip also brings what the turn's installation context reads.
+  // round trip also brings what the turn's installation context reads. No
+  // turn starts while a stop's abort request is out: it would stop whatever
+  // the thread's coordinator instance runs when it lands (see RunnerStops).
   const [start] = await Promise.all([
     deps.turns.begin(local.id),
     deps.armBackstop(now() + THREAD_RUNNER_BACKSTOP_MS),
+    deps.stops?.abortsSettled(),
   ]);
   const view = start.view;
   if (view.status !== 'pending' || !view.job) {
@@ -744,6 +747,21 @@ export function runnerTurnJobsPort<P extends TurnExecutionPorts['turnJobs']>(
 
 /** A failed stop abort is tried again 2.5 s later, doubling to every 30 s. */
 export const THREAD_RUNNER_STOP_ABORT_BACKOFF_MAX_MS = 30_000;
+/**
+ * A stop's Flue abort request unanswered this long counts as a failed
+ * attempt: it stays owed and is repeated while its turn is unsettled. The
+ * thread's next turn waits for a request in flight no longer than this.
+ */
+export const THREAD_RUNNER_STOP_ABORT_TIMEOUT_MS = 5_000;
+/** The runner's `stop` RPC waits this long at most for its abort's answer. */
+export const THREAD_RUNNER_STOP_RECEIVE_WAIT_MS = 2_000;
+/**
+ * The state store's outbox waits this long at most for a runner's `stop`
+ * RPC, which answers within THREAD_RUNNER_STOP_RECEIVE_WAIT_MS when the
+ * runner is well: one that has not answered counts as not acknowledged, and
+ * the stop is offered again after the outbox's backoff.
+ */
+export const STOP_NOTICE_DELIVERY_TIMEOUT_MS = 5_000;
 
 /**
  * Runner states whose turn may still hold the thread's unsettled Flue
@@ -772,6 +790,9 @@ export interface RunnerStopDeps {
    */
   stopCodingTasks?(notice: TurnStopNotice): Promise<CodingTaskStopReport>;
   now?: () => number;
+  /** Focused seams: THREAD_RUNNER_STOP_ABORT_TIMEOUT_MS and THREAD_RUNNER_STOP_RECEIVE_WAIT_MS. */
+  abortTimeoutMs?: number;
+  receiveWaitMs?: number;
 }
 
 /**
@@ -782,12 +803,20 @@ export interface RunnerStopDeps {
  * - The host abort: Flue `abort()` of the coordinator instance named by the
  *   stopped turn's persisted dispatch envelope, requested only while that
  *   turn may still hold the thread's unsettled submission (STOPPABLE_STATES,
- *   and no settlement recorded here). `abort()` stops the whole instance,
- *   which later turns of the thread share, so a stop redelivered after its
- *   turn settled is acknowledged without one. The turn's live observation is
- *   left running: it reads the `aborted` settlement through its normal path,
- *   so a stop never becomes a yield. A failed abort stays owed and the
- *   running job's heartbeat (or the next alarm) repeats it.
+ *   and no settlement recorded here or carried by the notice). `abort()`
+ *   stops whatever the instance runs when the request lands, and later turns
+ *   of the thread share it, so a stop redelivered after its turn settled is
+ *   acknowledged without one, and no turn starts while a request is out
+ *   (`abortsSettled`). A request unanswered after
+ *   THREAD_RUNNER_STOP_ABORT_TIMEOUT_MS counts as failed, so that wait is
+ *   bounded; its request was sent at least that long before the next
+ *   turn's dispatch to the same instance, which almost always takes it
+ *   first, and a wedged coordinator cannot hold the thread forever. An
+ *   answered request whose turn settled meanwhile is recorded moot, never
+ *   done. The turn's live observation is left running: it reads the
+ *   `aborted` settlement through its normal path, so a stop never becomes a
+ *   yield. A failed abort stays owed and the running job's heartbeat (or the
+ *   next alarm) repeats it.
  * - The coding cascade: once the host abort is confirmed (or the turn read
  *   its `aborted` settlement), the coding workers are stopped and confirmed
  *   from the host turn's task records. The first report is kept for the
@@ -813,7 +842,10 @@ export class RunnerStops implements RunnerTurnObserver {
    * while the stopped turn's submission is not yet known (a dispatch in
    * flight could land after the abort), so the outbox brings the stop back
    * with the receipt and the abort is repeated then. `wake`: the alarm should
-   * run now (the stopped path, or owed stop work).
+   * run now (the stopped path, or owed stop work). The RPC waits for its
+   * abort's answer THREAD_RUNNER_STOP_RECEIVE_WAIT_MS at most: a slower one
+   * goes on in this object, where the alarm (made due by the RPC) and the
+   * thread's next turn wait for it.
    */
   async receive(notice: TurnStopNotice): Promise<{ acknowledged: boolean; wake: boolean }> {
     if (!validStopNotice(notice)) {
@@ -822,18 +854,23 @@ export class RunnerStops implements RunnerTurnObserver {
     }
     const { jobs } = this.deps;
     const id = notice.turnJobId;
-    const live = this.stoppable(id);
+    // A notice of a settled submission is not live even where this instance
+    // lost what it noted (an eviction between the settlement and the terminal).
+    const live = notice.settled === undefined && this.stoppable(id);
     const dispatched = notice.instanceId !== undefined;
     const marker = jobs.recordStop(notice, {
       abort: live && dispatched ? 'owed' : 'none',
       cascade: live && dispatched && this.deps.stopCodingTasks ? 'owed' : 'none',
     }, this.now());
     if (!live) {
-      // Settled here (a redelivery, or a run that finished first), or never
-      // handed here: nothing of it is running, and later turns may share
-      // the instance. A stop that never dispatched is kept from dispatching
-      // by its row's stop record alone.
-      if (marker.abort === 'owed') this.lapse(marker);
+      // Settled here (a redelivery, or a run that finished first), settled
+      // as the state store recorded it, or never handed here: nothing of it
+      // is running, and later turns may share the instance. A stop taken
+      // before the settlement takes it as its turn would have noted it. A
+      // stop that never dispatched is kept from dispatching by its row's
+      // stop record alone.
+      if (notice.settled !== undefined) this.noteSettlement(id, notice.settled);
+      else if (marker.abort === 'owed') this.lapse(marker);
       return { acknowledged: true, wake: jobs.hasOwedStops() };
     }
     // Waiting for a retry: its stopped path runs at the next alarm instead.
@@ -844,7 +881,10 @@ export class RunnerStops implements RunnerTurnObserver {
       // The confirmed abort was requested before this submission was known.
       jobs.updateStop(id, { abort: 'owed' });
     }
-    await this.tryAbort(id);
+    await boundedStopCall(
+      this.tryAbort(id),
+      this.deps.receiveWaitMs ?? THREAD_RUNNER_STOP_RECEIVE_WAIT_MS,
+    ).catch(() => undefined);
     return { acknowledged: !dispatched || known !== undefined, wake: true };
   }
 
@@ -896,7 +936,7 @@ export class RunnerStops implements RunnerTurnObserver {
   heartbeat(id: string): void {
     try {
       const marker = this.deps.jobs.stopMarker(id);
-      if (marker?.abort === 'owed' && this.stoppable(id)) {
+      if (marker?.abort === 'owed' && this.stoppable(id, marker)) {
         if ((this.retryAbortAt.get(id) ?? 0) <= this.now()) void this.tryAbort(id);
         return;
       }
@@ -943,6 +983,15 @@ export class RunnerStops implements RunnerTurnObserver {
     return this.cascade(id);
   }
 
+  /**
+   * Resolves once no abort request is in flight. Before a turn starts: an
+   * abort stops whatever the thread's coordinator instance runs when it
+   * lands. Bounded, since each request is (THREAD_RUNNER_STOP_ABORT_TIMEOUT_MS).
+   */
+  async abortsSettled(): Promise<void> {
+    while (this.aborting.size > 0) await Promise.allSettled([...this.aborting.values()]);
+  }
+
   /** Wait for every abort and cascade in flight (the alarm ends only after them). */
   async drain(): Promise<void> {
     while (this.aborting.size > 0 || this.cascades.size > 0) {
@@ -968,7 +1017,7 @@ export class RunnerStops implements RunnerTurnObserver {
     const marker = this.deps.jobs.stopMarker(id);
     if (!marker) return;
     if (marker.abort === 'owed') {
-      if (!this.stoppable(id)) this.lapse(marker);
+      if (!this.stoppable(id, marker)) this.lapse(marker);
       return;
     }
     if (marker.abort === 'done' && marker.cascade === 'owed') void this.cascade(id);
@@ -989,12 +1038,18 @@ export class RunnerStops implements RunnerTurnObserver {
     });
   }
 
-  private stoppable(id: string): boolean {
+  private stoppable(id: string, marker = this.deps.jobs.stopMarker(id)): boolean {
     const job = this.deps.jobs.get(id);
-    return job !== undefined && STOPPABLE_STATES.has(job.state) && !this.settled.has(id);
+    return job !== undefined && STOPPABLE_STATES.has(job.state) && !this.settled.has(id) &&
+      marker?.notice?.settled === undefined;
   }
 
-  /** One abort request at a time per turn; a failure stays owed. Never rejects. */
+  /**
+   * One abort request at a time per turn, bounded by
+   * THREAD_RUNNER_STOP_ABORT_TIMEOUT_MS; a failure stays owed. Never rejects.
+   * The stoppable check and the entry in `aborting` happen in one step, so a
+   * turn started after it waits for the request (see `abortsSettled`).
+   */
   private tryAbort(id: string): Promise<void> {
     const inFlight = this.aborting.get(id);
     if (inFlight) return inFlight;
@@ -1003,23 +1058,17 @@ export class RunnerStops implements RunnerTurnObserver {
       const marker = jobs.stopMarker(id);
       if (marker?.abort !== 'owed') return;
       const target = marker.notice;
-      if (!target?.instanceId || !this.stoppable(id)) {
+      if (!target?.instanceId || !this.stoppable(id, marker)) {
         this.lapse(marker);
         return;
       }
       const covering = target.submissionId ?? this.receipts.get(id);
       const attempts = marker.abortAttempts + 1;
       try {
-        await this.deps.abortHost({
+        await boundedStopCall(this.deps.abortHost({
           instanceId: target.instanceId,
           ...(target.uid ? { uid: target.uid } : {}),
-        });
-        this.retryAbortAt.delete(id);
-        jobs.updateStop(id, {
-          abort: 'done',
-          abortAttempts: attempts,
-          ...(covering ? { abortedSubmissionId: covering } : {}),
-        });
+        }), this.deps.abortTimeoutMs ?? THREAD_RUNNER_STOP_ABORT_TIMEOUT_MS);
       } catch {
         jobs.updateStop(id, { abortAttempts: attempts });
         this.retryAbortAt.set(id, this.now() + Math.min(
@@ -1027,7 +1076,24 @@ export class RunnerStops implements RunnerTurnObserver {
           THREAD_RUNNER_STOP_ABORT_BACKOFF_MAX_MS,
         ));
         console.warn('[chickpea] thread runner stop abort will retry', { attempts });
+        return;
       }
+      this.retryAbortAt.delete(id);
+      // Read the stop again: its turn may have settled while the request was
+      // out. One that finished on its own (R22) makes the abort moot: it
+      // stopped nothing, so it owes no coding cascade either.
+      const after = jobs.stopMarker(id);
+      if (!after) return;
+      if (after.abort === 'none' || (after.abort === 'owed' && !this.stoppable(id, after))) {
+        jobs.updateStop(id, { abortAttempts: attempts });
+        if (after.abort === 'owed') this.lapse(after);
+        return;
+      }
+      jobs.updateStop(id, {
+        abort: 'done',
+        abortAttempts: attempts,
+        ...(covering ? { abortedSubmissionId: covering } : {}),
+      });
     })().catch(() => {
       console.warn('[chickpea] thread runner stop abort will retry');
     }).finally(() => {
@@ -1065,6 +1131,8 @@ export class RunnerStops implements RunnerTurnObserver {
   }
 }
 
+const SETTLEMENT_OUTCOMES: ReadonlySet<string> = new Set(['completed', 'failed', 'aborted']);
+
 function validStopNotice(notice: TurnStopNotice | undefined): notice is TurnStopNotice {
   const bounded = (value: unknown, max: number) =>
     typeof value === 'string' && value.length > 0 && value.length <= max;
@@ -1072,7 +1140,8 @@ function validStopNotice(notice: TurnStopNotice | undefined): notice is TurnStop
   return notice !== null && typeof notice === 'object' &&
     bounded(notice.turnJobId, 256) && bounded(notice.runnerKey, 512) &&
     notice.record?.role === 'stopped' &&
-    optional(notice.instanceId, 512) && optional(notice.uid, 512) && optional(notice.submissionId, 512);
+    optional(notice.instanceId, 512) && optional(notice.uid, 512) && optional(notice.submissionId, 512) &&
+    (notice.settled === undefined || SETTLEMENT_OUTCOMES.has(notice.settled));
 }
 
 /**
@@ -1081,16 +1150,21 @@ function validStopNotice(notice: TurnStopNotice | undefined): notice is TurnStop
  * coordinator is aborted in-process while the row's Flue submission is
  * unsettled, and the alarm's live observation reads the `aborted`
  * settlement. The alarm runs a thread's turns in order, so a pending row's
- * instance holds no later turn of the thread. True (acknowledged) once the
- * abort covers a recorded submission or nothing is left to abort; a
- * dispatch whose receipt is not yet recorded keeps the notice owed, so the
- * abort is repeated once the submission exists, and a failed abort rejects
- * (the outbox retries). This executor runs no coding cascade: the stopped
- * coordinator's own `workspace_task` stops its worker best-effort.
+ * instance holds no later turn of the thread; the caller runs this inside
+ * its StopAbortFence, so none starts while the abort is out. True
+ * (acknowledged) once the abort covers a recorded submission or nothing is
+ * left to abort: `reread`, the row read again after the abort, shows a
+ * submission that settled meanwhile (the abort was moot). A dispatch whose
+ * receipt was not recorded before the abort keeps the notice owed, so the
+ * abort is repeated for the submission that may have landed after it, and
+ * a failed abort rejects (the outbox retries). This executor runs no coding
+ * cascade: the stopped coordinator's own `workspace_task` stops its worker
+ * best-effort.
  */
 export async function receiveAlarmExecutorStop(
   view: RunnerTurnJobView,
   abortHost: (target: SlackThreadAgentTarget) => Promise<void>,
+  reread?: () => RunnerTurnJobView | Promise<RunnerTurnJobView>,
 ): Promise<boolean> {
   // A runner took the row over: the next delivery goes to it.
   if (view.executor === 'runner') return false;
@@ -1102,7 +1176,87 @@ export async function receiveAlarmExecutorStop(
   if (!envelope) return true;
   const uid = job.dispatchReceipt?.uid ?? envelope.uid;
   await abortHost({ instanceId: envelope.instanceId, ...(uid ? { uid } : {}) });
+  if (reread) {
+    const after = await reread();
+    const current = after.status === 'pending' ? after.job : undefined;
+    if (!current || current.flueSettlement) return true;
+  }
   return job.dispatchReceipt !== undefined;
+}
+
+/**
+ * Stop aborts in flight, per thread, on an executor that runs many threads
+ * (the state store's alarm executor, the Node relay). Flue's `abort()` stops
+ * whatever the thread's coordinator instance runs when the request lands, so
+ * a turn of the thread never starts while one is out: the executor awaits
+ * `clear(threadKey)` before each turn. `run` registers the stop's work
+ * (reading the row, then aborting) before it starts, so a row read as
+ * unsettled always has its abort fenced. The work is bounded by
+ * THREAD_RUNNER_STOP_ABORT_TIMEOUT_MS: one unanswered that long rejects (the
+ * outbox repeats it while the row is unsettled) and holds the thread no
+ * longer, as a thread runner's stops do (see RunnerStops).
+ */
+export class StopAbortFence {
+  private readonly inFlight = new Map<string, Set<Promise<void>>>();
+
+  constructor(private readonly timeoutMs = THREAD_RUNNER_STOP_ABORT_TIMEOUT_MS) {}
+
+  run<T>(threadKey: string, work: () => Promise<T>): Promise<T> {
+    const bounded = boundedStopCall(Promise.resolve().then(work), this.timeoutMs);
+    const settled = bounded.then(() => undefined, () => undefined);
+    let entries = this.inFlight.get(threadKey);
+    if (!entries) {
+      entries = new Set();
+      this.inFlight.set(threadKey, entries);
+    }
+    const current = entries;
+    current.add(settled);
+    void settled.then(() => {
+      current.delete(settled);
+      if (current.size === 0 && this.inFlight.get(threadKey) === current) this.inFlight.delete(threadKey);
+    });
+    return bounded;
+  }
+
+  /** Resolves once no stop abort of the thread is in flight. */
+  async clear(threadKey: string): Promise<void> {
+    for (let entries = this.inFlight.get(threadKey); entries && entries.size > 0;
+      entries = this.inFlight.get(threadKey)) {
+      await Promise.all([...entries]);
+    }
+  }
+}
+
+/** `call`, or a rejection once `ms` pass without an answer (the call itself goes on). */
+export async function boundedStopCall<T>(call: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      call,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error('The stop call was not answered in time.')), ms);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Whether a stop of a runner turn is recorded, read just before its answer
+ * is marked delivered (R22): the stop this runner took, else the state
+ * store's row. A stop whose notice has not reached the runner yet (its
+ * outbox backoff, an older runner during a rollout) is recorded there only,
+ * and marking the turn delivered would release it without a word to the
+ * person who pressed it.
+ */
+export async function runnerStopRecorded(
+  jobs: Pick<ThreadRunnerJobStore, 'stopMarker'>,
+  turns: Pick<ThreadRunnerTurnRows, 'view'>,
+  id: string,
+): Promise<boolean> {
+  if (jobs.stopMarker(id)?.notice?.record.role === 'stopped') return true;
+  return (await turns.view(id)).job?.stop?.role === 'stopped';
 }
 
 /** Presentation copies are published at most this often, trailing the latest. */

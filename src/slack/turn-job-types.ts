@@ -280,6 +280,12 @@ export interface TurnStopNotice {
   instanceId?: string;
   uid?: string;
   submissionId?: string;
+  /**
+   * The outcome of the head's Flue settlement, once the row records one: its
+   * submission is over, so nothing of it is left to abort. A runner that lost
+   * what it noted (an eviction) learns it here.
+   */
+  settled?: FlueSettlementCheckpointV1['outcome'];
 }
 
 /**

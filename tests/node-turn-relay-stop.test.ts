@@ -23,9 +23,10 @@ import { runTurn, type RunTurnOptions } from '../src/slack/run-turn.ts';
 import { defaultSlackStatusRegistry } from '../src/slack/status-registry.ts';
 import { readSteeringRunFacts, slackCheckInReply } from '../src/slack/steering-replies.ts';
 import type { TurnJob, TurnSteeringRequest } from '../src/slack/turn-job-types.ts';
-import { turnStopThreadKey } from '../src/slack/turn-jobs.ts';
+import { MAX_POST_DISPATCH_ATTEMPTS, turnStopThreadKey } from '../src/slack/turn-jobs.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import {
+  DURABLE_RECOVERY_FAILURE_TEXT,
   STOP_ALREADY_FINISHED_TEXT,
   slackStopNoteText,
   type SlackStopNoteFacts,
@@ -171,7 +172,11 @@ type Script = (options: RunTurnOptions, turn: NormalizedSlackTurn) => Promise<vo
  * (as the Cloudflare executor tests script it), and any other turn delivers
  * at once, or runs the real `runTurn` replaying a fixed answer.
  */
-function relayHarness(input: { realRunTurn?: boolean } = {}) {
+function relayHarness(input: {
+  realRunTurn?: boolean;
+  /** The in-process abort takes effect only once this resolves. */
+  abortLands?: () => Promise<void>;
+} = {}) {
   const state = new SqliteSlackStateStore(':memory:');
   const work = new SqliteWorkStore(':memory:');
   const calls: string[] = [];
@@ -256,6 +261,7 @@ function relayHarness(input: { realRunTurn?: boolean } = {}) {
     abortAgent: async (target: SlackThreadAgentTarget) => {
       aborts.push(target);
       for (const waiter of abortWaiters) if (aborts.length >= waiter.count) waiter.done.resolve();
+      await input.abortLands?.();
     },
     productTelemetry: { capture: (event: Record<string, unknown>) => { telemetry.push(event); } },
   };
@@ -549,6 +555,113 @@ test('a stop that lands before the dispatch receipt is recorded stays owed, and 
     await headWake;
     assert.equal(await statusOf(h, head.id), 'done');
     assert.equal(h.posts.length, 1);
+  } finally { h.close(); }
+});
+
+test("on Node, an abort still out when its run settles holds the thread's next turn until it lands", async () => {
+  let land!: () => void;
+  const landing = new Promise<void>((resolve) => { land = resolve; });
+  const order: string[] = [];
+  const h = relayHarness({
+    abortLands: async () => {
+      await landing;
+      order.push('abort landed');
+    },
+  });
+  const thread = slackThread('1800001000.000100');
+  try {
+    const head = thread.job('n10_head', '101');
+    const next = thread.job('n10_next', '102');
+    await admit(h.state, thread, head);
+    await admit(h.state, thread, next);
+    const running = deferred();
+    const settle = deferred();
+    h.scripts.set(head.id, async (options, turn) => {
+      await dispatchRun(options, turn);
+      running.resolve();
+      await settle.promise;
+      // The run finished on its own while the abort was still out (R22).
+      await options.flueDispatch!.recordSettlement(COMPLETED());
+      await options.onDelivered?.('succeeded');
+    });
+    h.scripts.set(next.id, async (options) => {
+      order.push('next runs');
+      // It shares the thread's coordinator instance: a late abort would stop it.
+      land();
+      await options.onDelivered?.('succeeded');
+    });
+    const headWake = h.wake();
+    await running.promise;
+    assert.equal((await h.state.steerTurn!(thread.stop('110'))).outcome, 'stopped');
+    const stopWake = h.wake();
+    await h.abortsReach(1);
+    // However late, the request lands.
+    setTimeout(land, 50);
+    settle.resolve();
+    await headWake;
+    await stopWake;
+    assert.deepEqual(order, ['abort landed', 'next runs']);
+    assert.deepEqual(h.runs, [head.id, next.id]);
+    assert.equal(await statusOf(h, next.id), 'done');
+    assert.deepEqual(h.ephemerals.map((post) => post.text), [STOP_ALREADY_FINISHED_TEXT]);
+    assert.equal(await h.state.deliverStopNotices!(async () => assert.fail('no stop notice is owed')), undefined,
+      'the abort was moot: the row settled while it was out');
+  } finally { h.close(); }
+});
+
+test('no stop path posts the generic failure on Node: a failing ending retries, then gives up quietly', async () => {
+  const h = relayHarness();
+  const thread = slackThread('1800001100.000100');
+  try {
+    const head = await busyThread(h, thread, 'n11');
+    h.scripts.set(head.id, async (options, turn) => {
+      if (!options.flueDispatch!.dispatchReceipt) {
+        await dispatchRun(options, turn);
+        assert.equal((await h.state.steerTurn!(thread.stop('110'))).outcome, 'stopped');
+        await options.flueDispatch!.recordSettlement(ABORTED());
+      }
+      await options.stopEnding!.finish();
+      throw new Error('Slack terminal delivery requires reconciliation.');
+    });
+    await h.wake();
+    assert.equal(await statusOf(h, head.id), 'pending', 'the stopped ending will retry');
+    assert.equal(h.posts.length, 0, 'no failure final at the first attempt');
+    assert.equal(h.calls.some((call) => /^(markTurnError|release|discardTurn)\(/.test(call)), false);
+
+    await h.state.recordTurnAttempt!(head.id, MAX_POST_DISPATCH_ATTEMPTS);
+    await h.wake();
+    assert.ok(h.calls.includes(`markTurnError(${head.id})`), h.calls.join(' '));
+    assert.equal(h.posts.some((post) => String(post.text).includes(DURABLE_RECOVERY_FAILURE_TEXT)), false,
+      'no recovery notice');
+    assert.equal(h.posts.some((post) => /reconciliation/.test(String(post.text))), false, 'no failure text');
+    assert.equal(h.calls.some((call) => /^(release|discardTurn)\(/.test(call)), false, 'claims stay held');
+    assert.deepEqual(h.runs, [head.id, head.id], 'no recovery replay');
+  } finally { h.close(); }
+});
+
+test('no stop path posts the generic failure on Node: a failing ending before dispatch keeps its claims', async () => {
+  const h = relayHarness();
+  const thread = slackThread('1800001200.000100');
+  try {
+    const head = await busyThread(h, thread, 'n12');
+    assert.equal((await h.state.steerTurn!(thread.stop('110'))).outcome, 'stopped');
+    h.scripts.set(head.id, async (options) => {
+      assert.equal(options.stopEnding?.beforeDispatch, true);
+      await options.stopEnding!.finish();
+      throw new Error('Slack terminal delivery requires reconciliation.');
+    });
+    await h.wake();
+    assert.equal(await statusOf(h, head.id), 'pending');
+    assert.deepEqual(h.posts, []);
+    assert.equal(h.calls.some((call) => /^(markTurnError|release|discardTurn)\(/.test(call)), false);
+
+    await h.state.recordTurnAttempt!(head.id, MAX_POST_DISPATCH_ATTEMPTS);
+    await h.wake();
+    assert.ok(h.calls.includes(`markTurnError(${head.id})`), h.calls.join(' '));
+    assert.deepEqual(h.posts, [], 'no failure final, no recovery notice');
+    assert.equal(h.calls.some((call) => /^(release|discardTurn)\(/.test(call)), false,
+      'the claims stay held, so Slack never redrives the stopped message');
+    assert.deepEqual(h.aborts, [], 'nothing was dispatched');
   } finally { h.close(); }
 });
 

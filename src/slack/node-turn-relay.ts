@@ -43,7 +43,7 @@ import {
   type SlackStopNoteFacts,
 } from './web-client-presenter.ts';
 import { slackAgentThreadKey } from './thread-key.ts';
-import { receiveAlarmExecutorStop } from './thread-runner-loop.ts';
+import { receiveAlarmExecutorStop, StopAbortFence } from './thread-runner-loop.ts';
 import {
   removeDroppedReceipts,
   stopNoteFacts,
@@ -98,6 +98,9 @@ let wakePassRequested = false;
 // and the wake-level pass, so a stop never waits on the run it stops.
 let stopPass: Promise<void> | undefined;
 let stopPassRequested = false;
+// Stop aborts in flight, per thread: a thread loop starts no turn while one
+// is out, since the abort stops whatever the thread's instance runs then.
+const stopAborts = new StopAbortFence();
 let retryTimer: ReturnType<typeof setTimeout> | undefined;
 let reconcileTimer: ReturnType<typeof setInterval> | undefined;
 let autoWakeSuspended = false;
@@ -215,7 +218,10 @@ function requestNodeStopPass(options: NodeTurnRelayDrainOptions): Promise<void> 
  * the `aborted` settlement and takes the stopped ending. A settled row is
  * acknowledged without an abort (R22); a dispatch whose receipt is not
  * recorded yet keeps the notice owed, so the abort repeats once the
- * submission exists. Never rejects.
+ * submission exists. Each stop runs in the thread's abort fence, so the
+ * thread's loop starts no later turn while its abort is out (at most
+ * THREAD_RUNNER_STOP_ABORT_TIMEOUT_MS; a slower one is retried). Never
+ * rejects.
  */
 async function deliverNodeStopNotices(options: NodeTurnRelayDrainOptions): Promise<void> {
   try {
@@ -223,8 +229,12 @@ async function deliverNodeStopNotices(options: NodeTurnRelayDrainOptions): Promi
     if (!state.deliverStopNotices || !state.turnJobView) return;
     const turnJobView = state.turnJobView.bind(state);
     const abortAgent = options.abortAgent ?? ((target) => abortSlackThreadAgent(target));
-    const nextDueAt = await state.deliverStopNotices(async (notice) =>
-      receiveAlarmExecutorStop(await turnJobView(notice.turnJobId), abortAgent));
+    const nextDueAt = await state.deliverStopNotices((notice) =>
+      stopAborts.run(notice.runnerKey, async () => receiveAlarmExecutorStop(
+        await turnJobView(notice.turnJobId),
+        abortAgent,
+        () => turnJobView(notice.turnJobId),
+      )));
     // Production drains retry an owed notice; injected test drains stay caller-owned.
     if (nextDueAt !== undefined && !options.state) {
       scheduleNodeTurnRelayRetry(options.env, nextDueAt - Date.now());
@@ -292,6 +302,8 @@ async function runNodeThreadLoop(
     for (;;) {
       for (const job of jobs) {
         attempted.add(job.id);
+        // Never while a stop's abort for an earlier turn of the thread is out.
+        await stopAborts.clear(key);
         // A retained turn holds its thread until a later wake redrives it.
         if (!(await drain.runJob(job))) return;
       }

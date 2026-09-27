@@ -211,7 +211,12 @@ import {
 } from './slack/turn-executor.ts';
 import { slackTurnExecutor } from './slack/turn-executor-flag.ts';
 import { sandboxTurnReaders } from './slack/thread-runner.ts';
-import { receiveAlarmExecutorStop } from './slack/thread-runner-loop.ts';
+import {
+  boundedStopCall,
+  receiveAlarmExecutorStop,
+  STOP_NOTICE_DELIVERY_TIMEOUT_MS,
+  StopAbortFence,
+} from './slack/thread-runner-loop.ts';
 import { abortSlackThreadAgent } from './slack/flue-dispatch.ts';
 import {
   RUNNER_PREFETCHED_SETTINGS,
@@ -809,6 +814,11 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
    * settle so a delivery in flight is never started a second time.
    */
   private readonly carriedAlarmTurns = new Map<string, string>();
+  /**
+   * Stop aborts this store sends for its own alarm's turns, per thread: the
+   * alarm starts no turn of a thread while one is out (see StopAbortFence).
+   */
+  private readonly stopAborts = new StopAbortFence();
   private readonly presentationRunnerOf = (runId: string) => this.presentationRunner(runId);
   /** Set while runner-mode alarm work runs: admission hands new turns over at once. */
   private dispatchWake: (() => void) | undefined;
@@ -1946,8 +1956,11 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
    * again until confirmed. A head no runner owns yet stays owed: the alarm
    * hands it over first, and its dispatch is refused meanwhile. A head this
    * store's own alarm executes (SLACK_TAG_TURN_EXECUTOR=alarm) is aborted
-   * here instead (receiveAlarmExecutorStop). Keeps the alarm armed for
-   * notices still owed. Never throws.
+   * here instead (receiveAlarmExecutorStop), inside its thread's abort fence.
+   * Every offer is bounded, so a wedged runner or coordinator never holds the
+   * steer and admission RPCs or the relay alarm that await this: one not
+   * answered in time counts as not acknowledged and is retried. Keeps the
+   * alarm armed for notices still owed. Never throws.
    */
   private async deliverStopNotices(): Promise<void> {
     const stores = this.stores;
@@ -1957,16 +1970,18 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
         turnJobs: stores.turnJobs,
         receiver: async (notice) => {
           if (notice.executor !== 'runner') {
-            return receiveAlarmExecutorStop(
+            return this.stopAborts.run(notice.runnerKey, () => receiveAlarmExecutorStop(
               stores.turnJobs.runnerView(notice.turnJobId),
               (target) => abortSlackThreadAgent(target),
-            );
+              () => stores.turnJobs.runnerView(notice.turnJobId),
+            ));
           }
           // A runner of an older version has no `stop`: the call rejects
           // and the notice stays owed until its successor takes it.
           const runner = threadRunnerStub(this.env as PlatformEnv, notice.runnerKey);
           if (!runner) return false;
-          return (await runner.stop(notice)).acknowledged === true;
+          const taken = await boundedStopCall(runner.stop(notice), STOP_NOTICE_DELIVERY_TIMEOUT_MS);
+          return taken.acknowledged === true;
         },
       });
       const due = stores.turnJobs.nextStopNoticeDueAt();
@@ -2358,6 +2373,8 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       jobId: (job) => job.id,
       threadKey: threadKeyOf,
       runJob: async (job, control) => {
+        // Never while a stop's abort for an earlier turn of the thread is out.
+        await this.stopAborts.clear(threadKeyOf(job));
         const jobStartedAt = Date.now();
         metrics.jobsRun += 1;
         drainedThreads.add(threadKeyOf(job));

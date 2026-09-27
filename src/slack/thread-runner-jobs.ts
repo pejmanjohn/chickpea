@@ -425,8 +425,8 @@ export class ThreadRunnerJobStore {
 
   /**
    * Record a stop, or merge a redelivered one into the first: the first
-   * decision stands, and a later notice only adds dispatch coordinates the
-   * earlier one lacked. Returns the stored marker.
+   * decision stands, and a later notice only adds dispatch coordinates, and
+   * the settlement, the earlier one lacked. Returns the stored marker.
    */
   recordStop(
     notice: TurnStopNotice,
@@ -441,6 +441,7 @@ export class ThreadRunnerJobStore {
           ...(existing.notice.instanceId ? {} : notice.instanceId ? { instanceId: notice.instanceId } : {}),
           ...(existing.notice.uid ? {} : notice.uid ? { uid: notice.uid } : {}),
           ...(notice.submissionId ? { submissionId: notice.submissionId } : {}),
+          ...(existing.notice.settled ? {} : notice.settled ? { settled: notice.settled } : {}),
         }
       : notice;
     this.db.run(

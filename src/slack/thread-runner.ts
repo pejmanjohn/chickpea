@@ -50,6 +50,7 @@ import {
   type ThreadRunnerAlarmResult,
   runnerPresentationState,
   runnerSlackPort,
+  runnerStopRecorded,
   runnerTurnJobsPort,
   runThreadRunnerAlarm,
 } from './thread-runner-loop.ts';
@@ -196,13 +197,13 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
   /**
    * A stop of one of this runner's turns, from the state store's stop outbox
    * (KTD2). The stop is persisted and the turn's Flue instance aborted here
-   * (a single request, while its submission is unsettled); the turn is never
-   * unwound and its observation is never touched: the running alarm's live
-   * observation reads the `aborted` settlement. Everything else (a repeated
-   * abort, the coding cascade, the stopped path of a turn between alarms or
-   * not yet dispatched) runs in this object's alarm, made due now as
-   * `admit` does, so the outbox is never held for the up to 14 s a coding
-   * cascade can take.
+   * (a single request, while its submission is unsettled, whose answer the
+   * RPC awaits for a short bound only); the turn is never unwound and its
+   * observation is never touched: the running alarm's live observation
+   * reads the `aborted` settlement. Everything else (a repeated abort, the
+   * coding cascade, the stopped path of a turn between alarms or not yet
+   * dispatched) runs in this object's alarm, made due now as `admit` does,
+   * so the outbox is never held for the up to 14 s a coding cascade can take.
    */
   async stop(notice: TurnStopNotice): Promise<{ acknowledged: boolean }> {
     let taken: { acknowledged: boolean; wake: boolean };
@@ -381,7 +382,8 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
           ...(publicUrl === undefined ? {} : { publicUrl }),
           // A stopped turn's note reports its coding workers' confirmation.
           codingStopReport: () => this.stops().codingReport(job.id),
-          stopRecorded: () => jobs.stopMarker(job.id)?.notice?.record.role === 'stopped',
+          // R22: a stop this runner took, else one its notice has not brought yet.
+          stopRecorded: () => runnerStopRecorded(jobs, rows, job.id),
         });
       },
       repairInteraction: async (job) => {

@@ -15,10 +15,24 @@ import {
   type RelayAlarmMetrics,
 } from '../src/observability/runtime-latency.ts';
 import {
+  deliverDueStopNotices,
   isTurnJobStopRefusal,
   TURN_STOP_HOLD_RETRY_MS,
+  TurnJobStoreLogic,
   turnJobStopGate,
+  turnStopThreadKey,
 } from '../src/slack/turn-jobs.ts';
+import {
+  boundedStopCall,
+  receiveAlarmExecutorStop,
+  STOP_NOTICE_DELIVERY_TIMEOUT_MS,
+  StopAbortFence,
+} from '../src/slack/thread-runner-loop.ts';
+import type { TurnSteeringRequest, TurnStopNotice } from '../src/slack/turn-job-types.ts';
+import { slackAgentThreadKey } from '../src/slack/thread-key.ts';
+import { compileRuntimePlanV2 } from '../src/agents/runtime-plan.ts';
+import { openStateDb } from '../src/state/node-state-db.ts';
+import { turnJob as maintenanceTurnJob } from './fixtures/state-db/maintenance.ts';
 
 // What the transplanted turn executor imports for stop records.
 const stopGlobals = { isTurnJobStopRefusal, TURN_STOP_HOLD_RETRY_MS, turnJobStopGate };
@@ -255,8 +269,9 @@ for (const withPendingTurn of [false, true]) {
     const drainingProbe = new AlarmProbe();
     drainingProbe.ctx = storageProbe.ctx;
     (drainingProbe as unknown as { env: object }).env = {};
-    // A class field the method-only probe does not carry.
+    // Class fields the method-only probe does not carry.
     (drainingProbe as unknown as { carriedAlarmTurns: Map<string, string> }).carriedAlarmTurns = new Map();
+    (drainingProbe as unknown as { stopAborts: StopAbortFence }).stopAborts = new StopAbortFence();
     drainingProbe.createAlarmIdentityResolver = () => async () => { throw new Error('rate limited'); };
     drainingProbe.stores = {
       management: { cleanupRetention() {}, nextOutboxDueAt: () => NOW + 120_000 },
@@ -317,6 +332,8 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
   beforeChores?: () => void;
   /** Runs inside the alarm's receipt delivery (its other due work). */
   duringChores?: (jobs: Map<string, AlarmJob>, admit: () => Promise<void>) => Promise<void>;
+  /** The store's stop aborts in flight (a class field the probe does not carry). */
+  stopAborts?: StopAbortFence;
 } = {}) {
   const { AgentObservationYield, AgentPromptFailure } = await import('../src/slack/flue-dispatch.ts');
   const { alarmYieldIsFree } = await import('../src/slack/alarm-turn-drain.ts');
@@ -464,6 +481,7 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
   };
   (probe as unknown as { carriedAlarmTurns: Map<string, string> }).carriedAlarmTurns = new Map();
   (probe as unknown as { admissionsSeen: number }).admissionsSeen = 0;
+  (probe as unknown as { stopAborts: StopAbortFence }).stopAborts = hooks.stopAborts ?? new StopAbortFence();
   probe.ctx = { storage: {
     async getAlarm() { return record.alarmAt; },
     async setAlarm(at: number) { record.alarmAt = at; },
@@ -1024,4 +1042,230 @@ test('the state store tells a runner its serving version without touching storag
     ((await probe.threadRunnerTurn({ kind: 'begin', id: 'job' })).value as { servingVersion?: string }).servingVersion,
     undefined,
   );
+});
+
+test("the alarm executor starts no turn of a thread while a stop's abort for it is out, and other threads run meanwhile", async () => {
+  const stopAborts = new StopAbortFence();
+  const { probe, record } = await alarmHarness(
+    [channelJob('first', 'stopped-thread'), channelJob('other', 'other-thread')],
+    { executorVar: 'alarm', stopAborts },
+  );
+  const aborting = stopAborts.run('stopped-thread', async () => {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    record.events.push('abort landed');
+    return true;
+  });
+  await probe.alarm();
+  await aborting;
+  assert.deepEqual(record.events.filter((event) => !event.startsWith('tick:')), [
+    'start:other', 'delivered:other', 'abort landed', 'start:first', 'delivered:first',
+  ]);
+});
+
+test("the alarm executor's wait for a stop abort is bounded: one that never answers holds its thread no longer", async () => {
+  const stopAborts = new StopAbortFence(20);
+  const { probe, record } = await alarmHarness([channelJob('first', 'stopped-thread')], {
+    executorVar: 'alarm', stopAborts,
+  });
+  const hung = stopAborts.run('stopped-thread', () => new Promise<never>(() => {}));
+  const startedAt = Date.now();
+  await probe.alarm();
+  await assert.rejects(hung);
+  assert.ok(Date.now() - startedAt >= 15);
+  assert.deepEqual(record.events.filter((event) => !event.startsWith('tick:')), ['start:first', 'delivered:first']);
+});
+
+// ── the stop outbox ──────────────────────────────────────────────────────
+
+const STOP_UID = 'inst_01ARZ3NDEKTSV4RRFFQ69G5FAV';
+
+type StopProbe = {
+  stores: object;
+  env: object;
+  stopAborts: StopAbortFence;
+  ctx: { storage: { getAlarm(): Promise<number | null>; setAlarm(at: number): Promise<void> } };
+  call(run: (stores: unknown) => unknown): Result;
+  deliverStopNotices(): Promise<void>;
+  slackTurnSteer(request: TurnSteeringRequest): Promise<Result>;
+  admitSlackTurn(input: object): Promise<Result>;
+};
+
+/**
+ * The production stop outbox of the state store (deliverStopNotices, its
+ * alarm re-arm, and the steer and admission RPCs that offer a created stop at
+ * once) over a real TurnJobStoreLogic, with the runner's `stop` RPC and the
+ * in-process Flue abort scripted.
+ */
+function stopOutboxHarness(input: {
+  runnerStop?: (notice: TurnStopNotice) => Promise<{ acknowledged: boolean }>;
+  abort?: (target: object) => Promise<void>;
+  deliveryTimeoutMs?: number;
+  runner?: boolean;
+}) {
+  const methods = ['deliverStopNotices', 'armAlarmNoLaterThan', 'slackTurnSteer', 'admitSlackTurn'].map((name) => {
+    const method = (stateClass as ts.ClassDeclaration).members.find((member) =>
+      ts.isMethodDeclaration(member) && member.name.getText(source) === name);
+    assert.ok(method, `production method ${name} exists`);
+    return method.getText(source);
+  });
+  const code = ts.transpileModule(
+    `${batchDeclaration!.getText(source)}\nclass StopProbe { ${methods.join('\n')} }\nStopProbe`,
+    { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
+  ).outputText;
+  const clock = { now: NOW };
+  const runnerCalls: TurnStopNotice[] = [];
+  const aborts: object[] = [];
+  const writes: number[] = [];
+  let alarm: number | null = null;
+  const Probe = vm.runInNewContext(code, {
+    Date, setTimeout, clearTimeout, Promise,
+    console: { warn() {} },
+    deliverDueStopNotices,
+    receiveAlarmExecutorStop,
+    boundedStopCall,
+    STOP_NOTICE_DELIVERY_TIMEOUT_MS: input.deliveryTimeoutMs ?? STOP_NOTICE_DELIVERY_TIMEOUT_MS,
+    abortSlackThreadAgent: async (target: object) => {
+      aborts.push(target);
+      await input.abort?.(target);
+    },
+    threadRunnerStub: () => ({
+      stop: (notice: TurnStopNotice) => {
+        runnerCalls.push(structuredClone(notice));
+        return input.runnerStop ? input.runnerStop(notice) : Promise.resolve({ acknowledged: true });
+      },
+    }),
+  }) as new () => StopProbe;
+  const db = openStateDb(':memory:');
+  const turns = new TurnJobStoreLogic(db, () => clock.now);
+  const fixture = maintenanceTurnJob('head');
+  const head = {
+    ...fixture,
+    assignment: { ...fixture.assignment, model: 'local-stub/stop', runtimeContract: 'chickpea-v1', ownerIncarnation: 1 },
+  } as typeof fixture;
+  turns.enqueue(head);
+  turns.freezeRuntimePlan('head', compileRuntimePlanV2({
+    turn: head.turn, assignment: head.assignment, instructions: 'Help.', memoryEpoch: 1,
+  }));
+  const envelope = turns.prepareFlueDispatch('head', 'Do the work', { generation: 'head' });
+  turns.recordFlueReceipt('head', {
+    submissionId: 'sub_head', acceptedAt: new Date(NOW).toISOString(), uid: STOP_UID,
+  });
+  if (input.runner !== false) {
+    turns.assignRunner('head');
+    turns.confirmRunner('head');
+  }
+  const probe = new Probe();
+  probe.stores = {
+    turnJobs: turns,
+    // The canonical admission's steering half (see SlackStateLogic.admitCanonical).
+    slack: {
+      admitCanonical: (admission: { steering: TurnSteeringRequest }, _work: unknown, turnJobs: TurnJobStoreLogic) =>
+        ({ claimed: true, steered: turnJobs.steer(admission.steering) }),
+    },
+  };
+  probe.env = {};
+  probe.stopAborts = new StopAbortFence();
+  probe.call = (run) => ({ ok: true, value: run(probe.stores) });
+  probe.ctx = { storage: {
+    async getAlarm() { return alarm; },
+    async setAlarm(at) { alarm = at; writes.push(at); },
+  } };
+  const stop: TurnSteeringRequest = {
+    kind: 'stop', threadKey: turnStopThreadKey(head.turn, head.assignment), source: 'button',
+    stopperUserId: 'U_STOPPER', cutoffTs: '1800000000.999999',
+  };
+  return {
+    probe, turns, clock, runnerCalls, aborts, writes, stop, envelope,
+    runnerKey: slackAgentThreadKey(head.turn, head.assignment),
+    alarm: () => alarm,
+    close: () => db.close(),
+  };
+}
+
+test('the stop outbox offers a created stop to its runner at once; a failed offer re-arms the alarm, whose redelivery is acknowledged', async (context) => {
+  const answers: Array<'reject' | 'ack'> = ['reject', 'ack'];
+  const h = stopOutboxHarness({
+    runnerStop: async () => {
+      if (answers.shift() === 'reject') throw new Error('runner unreachable');
+      return { acknowledged: true };
+    },
+  });
+  context.mock.method(Date, 'now', () => h.clock.now);
+  try {
+    const steered = await h.probe.slackTurnSteer(h.stop);
+    assert.equal(steered.ok && (steered.value as { outcome: string }).outcome, 'stopped');
+    assert.equal(h.runnerCalls.length, 1, 'offered to its runner before the steer answers');
+    assert.deepEqual(
+      { ...h.runnerCalls[0], record: undefined },
+      {
+        turnJobId: 'head', runnerKey: h.runnerKey, executor: 'runner', record: undefined, attempts: 0,
+        instanceId: h.envelope.instanceId, uid: STOP_UID, submissionId: 'sub_head',
+      },
+    );
+    const due = h.turns.nextStopNoticeDueAt();
+    assert.ok(due !== undefined && due > NOW, 'the failed offer is owed after a backoff');
+    assert.deepEqual(h.writes, [due], 'the alarm is armed for the retry');
+
+    // The relay alarm delivers the stop outbox when the retry falls due.
+    h.clock.now = due;
+    await h.probe.deliverStopNotices();
+    assert.equal(h.runnerCalls.length, 2);
+    assert.equal(h.runnerCalls[1]!.attempts, 1);
+    assert.equal(h.turns.nextStopNoticeDueAt(), undefined, 'acknowledged');
+    assert.deepEqual(h.writes, [due], 'nothing more to arm');
+    assert.deepEqual(h.aborts, [], "a runner's turn is never aborted by the state store");
+  } finally { h.close(); }
+});
+
+test('a runner that does not answer a stop in time counts as not acknowledged, and the outbox retries it', async (context) => {
+  const h = stopOutboxHarness({
+    runnerStop: () => new Promise<never>(() => {}),
+    deliveryTimeoutMs: 20,
+  });
+  context.mock.method(Date, 'now', () => h.clock.now);
+  try {
+    const steered = await h.probe.slackTurnSteer(h.stop);
+    assert.equal(steered.ok, true, 'the steer answers although the runner never does');
+    assert.equal(h.runnerCalls.length, 1);
+    const due = h.turns.nextStopNoticeDueAt();
+    assert.ok(due !== undefined && due > NOW);
+    assert.deepEqual(h.writes, [due]);
+  } finally { h.close(); }
+});
+
+test("an alarm-executor stop is aborted in process from the row's envelope, fencing its thread, and never reaches a runner", async (context) => {
+  let land!: () => void;
+  const landing = new Promise<void>((resolve) => { land = resolve; });
+  const h = stopOutboxHarness({ runner: false, abort: () => landing });
+  context.mock.method(Date, 'now', () => h.clock.now);
+  try {
+    const steering = h.probe.slackTurnSteer(h.stop);
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    assert.deepEqual(h.aborts, [{ instanceId: h.envelope.instanceId, uid: STOP_UID }]);
+    let cleared = false;
+    const threadFree = h.probe.stopAborts.clear(h.runnerKey).then(() => { cleared = true; });
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    assert.equal(cleared, false, "the thread's next turn waits while the abort is out");
+    land();
+    const steered = await steering;
+    await threadFree;
+    assert.equal(steered.ok, true);
+    assert.equal(h.runnerCalls.length, 0);
+    assert.equal(h.turns.nextStopNoticeDueAt(), undefined, 'acknowledged: the abort covered the recorded submission');
+    assert.deepEqual(h.writes, []);
+  } finally { h.close(); }
+});
+
+test('a stop created at admission is offered to its runner at once; a repeated stop offers nothing new', async (context) => {
+  const h = stopOutboxHarness({});
+  context.mock.method(Date, 'now', () => h.clock.now);
+  try {
+    const admitted = await h.probe.admitSlackTurn({ steering: h.stop });
+    assert.equal(admitted.ok, true);
+    assert.equal(h.runnerCalls.length, 1);
+    assert.equal(h.turns.nextStopNoticeDueAt(), undefined);
+    await h.probe.admitSlackTurn({ steering: { ...h.stop, cutoffTs: '1800000001.000000' } });
+    await h.probe.slackTurnSteer(h.stop);
+    assert.equal(h.runnerCalls.length, 1, 'an acknowledged stop is not offered again');
+  } finally { h.close(); }
 });
