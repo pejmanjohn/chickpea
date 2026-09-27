@@ -1453,6 +1453,75 @@ export class WorkStoreLogic {
     });
   }
 
+  /**
+   * Settle a legacy Run whose executor stopped it after it prepared its input
+   * (and perhaps opened an execution) but before any response, and will never
+   * finish it: a stop that refused the dispatch, or one that found no Flue
+   * receipt. Its open execution settles too: `not_submitted` when the model
+   * was never reached, `ambiguous` when it was, since that outcome is never
+   * read. The Run settles with no delivery; a Run already settled with the
+   * same disposition is returned as it is.
+   */
+  settleInterruptedRun(input: SettleUnstartedRunInput): RunRecord {
+    validateSettleUnstartedRun(input);
+    return this.db.transaction(() => {
+      const run = requiredRun(this.getRun(input.runId));
+      if (run.status === 'settled') {
+        if (run.terminalDisposition === input.terminalDisposition) return run;
+        throw workError('work_transition_invalid', 'Run is already settled.');
+      }
+      if (!['input_ready', 'executing'].includes(run.status) || run.executionAuthority !== 'legacy' ||
+          run.leaseOwner !== null) {
+        throw workError('work_transition_invalid', 'Only a prepared legacy Run can settle this way.');
+      }
+      for (const execution of this.listRunExecutions(run.id, 100)) {
+        if (execution.outcome !== 'pending') continue;
+        const invocation = execution.modelInvocationStatus === 'invoked' ? 'invoked' : 'not_invoked';
+        this.db.run(
+          `UPDATE run_executions SET model_invocation_status = ?, finished_at = ?, outcome = ?,
+             safe_failure_code = ?,
+             provider_auth_route = CASE WHEN ? = 'not_invoked' THEN NULL ELSE provider_auth_route END
+           WHERE id = ? AND outcome = 'pending'`,
+          invocation,
+          input.settledAt,
+          invocation === 'invoked' ? 'ambiguous' : 'not_submitted',
+          input.safeFailureCode ?? null,
+          invocation,
+          execution.id,
+        );
+        this.appendLifecycleAudit(
+          'work.execution_settled',
+          run.id,
+          input.settledAt,
+          { runExecutionId: execution.id, runId: run.id },
+          execution.id,
+          input.safeFailureCode ?? null,
+          'failure',
+        );
+      }
+      this.db.run(
+        `UPDATE runs SET status = 'settled', terminal_disposition = ?,
+           delivery_status = 'not_applicable', safe_failure_code = ?, settled_at = ?,
+           updated_at = ?
+         WHERE id = ? AND status IN ('input_ready', 'executing') AND lease_owner IS NULL`,
+        input.terminalDisposition,
+        input.safeFailureCode ?? null,
+        input.settledAt,
+        input.settledAt,
+        input.runId,
+      );
+      this.appendLifecycleAudit(
+        'work.run_settled_without_delivery',
+        input.runId,
+        input.settledAt,
+        { runId: input.runId },
+        `${input.runId}:${input.terminalDisposition}`,
+        input.safeFailureCode ?? null,
+      );
+      return requiredRun(this.getRun(input.runId));
+    });
+  }
+
   recordWorkAction(input: RecordWorkActionInput): AuditEvent {
     validateWorkAction(input);
     return this.db.transaction(() => {

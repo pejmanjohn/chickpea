@@ -10,13 +10,15 @@ import { compileRuntimePlanV2 } from '../src/agents/runtime-plan.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import type { ResolvedAssignment } from '../src/config/types.ts';
 import type { CodingTaskStopReport } from '../src/sandbox/coding-task-stop.ts';
-import { AgentRunAborted } from '../src/slack/flue-dispatch.ts';
+import { SlackStateLogic } from '../src/slack/claim-store.ts';
+import { AgentPromptFailure, AgentRunAborted } from '../src/slack/flue-dispatch.ts';
 import { SlackRunPresentationStoreLogic } from '../src/slack/run-presentations.ts';
 import { runTurn, type RunTurnOptions, type SlackStopEnding } from '../src/slack/run-turn.ts';
 import { SlackStatusRegistry } from '../src/slack/status-registry.ts';
 import { SlackTransportError } from '../src/slack/transport/types.ts';
 import {
   executeTurnJob,
+  stopRefusedDispatch,
   type SandboxTurnReader,
   type TurnExecutionOptions,
   type TurnExecutionPorts,
@@ -25,6 +27,8 @@ import type { TurnJob } from '../src/slack/turn-job-types.ts';
 import {
   MAX_POST_DISPATCH_ATTEMPTS,
   TurnJobStoreLogic,
+  turnJobStopGate,
+  turnStopThreadKey,
   type PendingTurnJob,
 } from '../src/slack/turn-jobs.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
@@ -35,9 +39,11 @@ import {
   type SlackStopNoteFacts,
 } from '../src/slack/web-client-presenter.ts';
 import { prepareSlackShadowAdmission } from '../src/slack/work-admission.ts';
+import { promisify } from '../src/state/async-facade.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
 import { SqliteUsageStore } from '../src/usage/store.ts';
-import { SqliteWorkStore } from '../src/work/store.ts';
+import { SqliteWorkStore, WorkStoreLogic } from '../src/work/store.ts';
+import type { WorkStore } from '../src/work/types.ts';
 
 /**
  * The stopped ending (U3, KTD3): an aborted settlement on a stopped row, or a
@@ -585,9 +591,9 @@ function dmTurn(messageTs: string): NormalizedSlackTurn {
 
 async function presentationHarness(
   turn: NormalizedSlackTurn,
-  options: { stopStreamError?: unknown } = {},
+  options: { stopStreamError?: unknown; work?: WorkStore & { close(): void } } = {},
 ) {
-  const work = new SqliteWorkStore(':memory:');
+  const work = options.work ?? new SqliteWorkStore(':memory:');
   const admitted = await work.admitShadowRun(prepareSlackShadowAdmission({
     turn, assignment, sourceVisibility: 'private', admittedAt: Date.now(),
   }));
@@ -1051,5 +1057,65 @@ test('a replayed aborted settlement ends with the stop note, without the Agent o
     assert.deepEqual(outcomes, ['stopped']);
     assert.match(written(h).join('\n'), /^Stopped by <@U_STOPPER>\./);
     assert.doesNotMatch(written(h).join('\n'), /failed before completion/);
+  } finally { h.close(); }
+});
+
+test('a stop refused at dispatch after the Run prepared its execution ends with the note, and the Run settles cancelled', async () => {
+  const turn = dmTurn('1790100011.000100');
+  // One state database, as on either lane: the TurnJob, its stop and the Work Run.
+  const db = openStateDb(':memory:');
+  const work = new WorkStoreLogic(db);
+  const h = await presentationHarness(turn, { work: promisify(work, { close: () => db.close() }) });
+  try {
+    const turns = new TurnJobStoreLogic(db);
+    const headId = `turn_${h.runId}`;
+    turns.enqueue({
+      id: headId, evtKey: `evt:${headId}`, msgKey: `msg:${headId}`, turn, assignment,
+      runId: h.runId, executionAuthority: 'legacy',
+    });
+    turns.freezeRuntimePlan(headId, compileRuntimePlanV2({
+      turn, assignment, instructions: 'Answer directly.', memoryEpoch: 1,
+    }));
+    // Attempt 1 persists its prompt and opens its execution; the stop lands
+    // before it asks for the dispatch, which the stop refuses.
+    await assert.rejects(stoppedRun(turn, h, {
+      agentPrompt: async ({ message }) => {
+        assert.equal(turns.steer({
+          kind: 'stop', threadKey: turnStopThreadKey(turn, assignment), source: 'typed',
+          stopperUserId: STOPPER, cutoffTs: '1790100011.000200',
+        }).outcome, 'stopped');
+        try {
+          turns.prepareFlueDispatch(headId, message, { generation: headId });
+        } catch (error) {
+          throw stopRefusedDispatch(error);
+        }
+        return assert.fail('a refused dispatch never reaches Flue');
+      },
+    }), (error: unknown) => error instanceof AgentPromptFailure && error.retryable);
+    assert.equal((await h.work.getRun(h.runId))?.status, 'executing');
+    assert.equal(turnJobStopGate(turns.runnerView(headId).job!), 'stopped_before_dispatch');
+    // Attempt 2: the stopped ending, which drops through the state store's stop ending.
+    const slack = new SlackStateLogic(db);
+    const outcomes: Array<string | undefined> = [];
+    await stoppedRun(turn, h, {
+      stopEnding: {
+        beforeDispatch: true,
+        finish: async () => slack.finishTurnStop(headId, 'dropped', turns, work, h.store)
+          ? { stopperUserId: STOPPER, unread: 1, pullRequests: [], windingDown: false }
+          : undefined,
+      },
+      agentPrompt: async () => assert.fail('a stopped turn never reaches the Agent'),
+      onDelivered: (outcome) => { outcomes.push(outcome); },
+    });
+    assert.deepEqual(outcomes, ['stopped']);
+    assert.match(written(h).join('\n'), /^Stopped by <@U_STOPPER>\./);
+    const run = await h.work.getRun(h.runId);
+    assert.equal(run?.status, 'settled', 'the prepared Run is not left executing');
+    assert.equal(run?.terminalDisposition, 'cancelled');
+    assert.equal(run?.safeFailureCode, 'run_stopped');
+    assert.equal(run?.deliveryStatus, 'not_applicable');
+    const [execution] = await h.work.listRunExecutions(h.runId);
+    assert.equal(execution?.outcome, 'not_submitted');
+    assert.equal(execution?.modelInvocationStatus, 'not_invoked');
   } finally { h.close(); }
 });

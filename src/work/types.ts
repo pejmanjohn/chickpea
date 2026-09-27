@@ -427,7 +427,11 @@ export interface SettleRunWithoutDeliveryInput {
   settledAt: number;
 }
 
-/** A Run that never started (see WorkStoreLogic.settleUnstartedRun). */
+/**
+ * A Run its executor settles without delivery: one that never started
+ * (WorkStoreLogic.settleUnstartedRun) or one stopped after it prepared its
+ * input (WorkStoreLogic.settleInterruptedRun).
+ */
 export interface SettleUnstartedRunInput {
   runId: RunId;
   terminalDisposition: Extract<RunDisposition, 'skipped' | 'cancelled' | 'superseded'>;

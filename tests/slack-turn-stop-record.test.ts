@@ -36,7 +36,9 @@ import {
 } from '../src/slack/turn-jobs.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import { prepareSlackShadowAdmission } from '../src/slack/work-admission.ts';
+import { promisify } from '../src/state/async-facade.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
+import { ShadowWorkLifecycle } from '../src/work/lifecycle.ts';
 import { WorkStoreLogic } from '../src/work/store.ts';
 import type { RunId } from '../src/work/types.ts';
 import { recordingDb } from './fixtures/state-db/maintenance.ts';
@@ -83,11 +85,16 @@ function stop(suffix: string, overrides: Partial<Extract<TurnSteeringRequest, { 
   };
 }
 
-/** Freeze, prepare and admit the row's Flue dispatch, as a running turn has. */
-function dispatch(turns: TurnJobStoreLogic, queued: TurnJob): void {
+/** Freeze the row's runtime plan, as a running turn does before its dispatch. */
+function freezePlan(turns: TurnJobStoreLogic, queued: TurnJob): void {
   turns.freezeRuntimePlan(queued.id, compileRuntimePlanV2({
     turn: queued.turn, assignment: queued.assignment, instructions: 'Help.', memoryEpoch: 1,
   }));
+}
+
+/** Freeze, prepare and admit the row's Flue dispatch, as a running turn has. */
+function dispatch(turns: TurnJobStoreLogic, queued: TurnJob): void {
+  freezePlan(turns, queued);
   turns.prepareFlueDispatch(queued.id, 'Do the work', { generation: queued.id });
   turns.recordFlueReceipt(queued.id, {
     submissionId: `sub_${queued.id}`, acceptedAt: '2026-09-26T12:00:00.000Z', uid: UID,
@@ -930,6 +937,131 @@ test('a stopped head that never dispatched settles its own Run cancelled and kee
     for (const id of ['unread_1', 'unread_2'] as const) {
       assert.equal(s.work.getRun(s.runs[id])?.terminalDisposition, 'cancelled');
     }
+  } finally { s.db.close(); }
+});
+
+/**
+ * The head's Work lifecycle as run-turn opens it before the Flue dispatch:
+ * the prompt persisted and the execution created (Run `executing`).
+ */
+async function prepareHeadExecution(s: CanonicalStore, runId: RunId): Promise<ShadowWorkLifecycle> {
+  const lifecycle = new ShadowWorkLifecycle({
+    store: promisify(s.work, { close: () => undefined }),
+    runId, attemptNumber: 1, agentName: 'agent_stop', canonicalModel: 'local-stub/stop',
+    sensitivity: 'public', routeEvidence: {}, mode: 'observe', now: () => s.clock.now,
+  });
+  assert.equal(await lifecycle.prepareExecution('Do the work'), 'Do the work');
+  assert.equal(s.work.getRun(runId)?.status, 'executing');
+  return lifecycle;
+}
+
+/** The head's Run, its executions and its audit trail, to compare across endings. */
+function headRecords(s: CanonicalStore, runId: RunId) {
+  return {
+    run: s.work.getRun(runId),
+    executions: s.work.listRunExecutions(runId),
+    audit: s.work.listAuditEvents(runId, 100),
+  };
+}
+
+test('a stop refused at dispatch after the head prepared its execution settles that Run cancelled, once', async () => {
+  const s = canonicalStore();
+  try {
+    const runs = {
+      running: admitCanonical(s, job('running', '101')),
+      unread: admitCanonical(s, job('unread', '102')),
+    };
+    // run-turn persists the prompt and opens the execution, then the stop
+    // lands before it asks for the dispatch, which the stop refuses.
+    await prepareHeadExecution(s, runs.running);
+    freezePlan(s.turns, job('running', '101'));
+    assert.equal(s.turns.steer(stop('110')).outcome, 'stopped');
+    assert.throws(() => s.turns.prepareFlueDispatch('running', 'Do the work', { generation: 'running' }),
+      (error: unknown) => error instanceof TurnJobStopRefusal);
+    assert.equal(turnJobStopGate(s.turns.runnerView('running').job!), 'stopped_before_dispatch',
+      'the retry takes the stopped ending, with no Work lifecycle of its own');
+    const finished = s.slack.finishTurnStop('running', 'dropped', s.turns, s.work, s.presentations);
+    assert.equal(finished?.count, 1);
+    const run = s.work.getRun(runs.running);
+    assert.equal(run?.status, 'settled', 'nothing else would ever settle it');
+    assert.equal(run?.terminalDisposition, 'cancelled');
+    assert.equal(run?.safeFailureCode, 'run_stopped');
+    assert.equal(run?.deliveryStatus, 'not_applicable');
+    const executions = s.work.listRunExecutions(runs.running);
+    assert.equal(executions.length, 1);
+    assert.equal(executions[0]?.outcome, 'not_submitted', 'the model was never reached');
+    assert.equal(executions[0]?.modelInvocationStatus, 'not_invoked');
+    assert.equal(executions[0]?.safeFailureCode, 'run_stopped');
+    assert.equal(v3(s, runs.running).lifecyclePhase, 'admitted', 'the stop note is still to post through it');
+    assert.equal(s.work.getRun(runs.unread)?.terminalDisposition, 'cancelled');
+    // A replayed ending changes nothing.
+    const settled = headRecords(s, runs.running);
+    s.clock.now += 60_000;
+    assert.equal(s.slack.finishTurnStop('running', 'dropped', s.turns, s.work, s.presentations)?.count, 1);
+    assert.deepEqual(headRecords(s, runs.running), settled);
+    assert.equal(s.work.verifyIntegrity().invariantViolationCount, 0);
+  } finally { s.db.close(); }
+});
+
+for (const reached of [false, true]) {
+  test(`a stopped head with a dispatch envelope but no receipt settles its Run too${reached ? ', even after its model was reached' : ''}`, async () => {
+    const s = canonicalStore();
+    try {
+      const runId = admitCanonical(s, job('running', '101'));
+      const lifecycle = await prepareHeadExecution(s, runId);
+      freezePlan(s.turns, job('running', '101'));
+      s.turns.prepareFlueDispatch('running', 'Do the work', { generation: 'running' });
+      // The attempt ended before it recorded Flue's receipt (a crash, or a
+      // dispatch error); with the model reached, the outcome is unknown.
+      if (reached) await lifecycle.markInvoked();
+      assert.equal(s.turns.steer(stop('110')).outcome, 'stopped');
+      const head = s.turns.runnerView('running').job!;
+      assert.notEqual(head.dispatchStartedAt, undefined);
+      assert.equal(turnJobStopGate(head), 'stopped_before_dispatch');
+      s.slack.finishTurnStop('running', 'dropped', s.turns, s.work, s.presentations);
+      const run = s.work.getRun(runId);
+      assert.equal(run?.status, 'settled');
+      assert.equal(run?.terminalDisposition, 'cancelled');
+      const [execution] = s.work.listRunExecutions(runId);
+      assert.equal(execution?.outcome, reached ? 'ambiguous' : 'not_submitted');
+      assert.equal(execution?.modelInvocationStatus, reached ? 'invoked' : 'not_invoked');
+      const settled = headRecords(s, runId);
+      s.slack.finishTurnStop('running', 'dropped', s.turns, s.work, s.presentations);
+      assert.deepEqual(headRecords(s, runId), settled);
+    } finally { s.db.close(); }
+  });
+}
+
+test('a dispatched stopped head keeps its Run for its own lifecycle, which settles it with the note', async () => {
+  const s = canonicalStore();
+  try {
+    const runId = admitCanonical(s, job('running', '101'));
+    const lifecycle = await prepareHeadExecution(s, runId);
+    dispatch(s.turns, job('running', '101'));
+    assert.equal(s.turns.steer(stop('110')).outcome, 'stopped');
+    assert.equal(turnJobStopGate(s.turns.runnerView('running').job!), 'stopped');
+    const before = headRecords(s, runId);
+    s.slack.finishTurnStop('running', 'dropped', s.turns, s.work, s.presentations);
+    assert.deepEqual(headRecords(s, runId), before, 'the ending leaves a dispatched head to its lifecycle');
+    assert.equal(before.run?.status, 'executing');
+    assert.equal(before.executions[0]?.outcome, 'pending');
+    // run-turn's stopped ending: the aborted execution, then the note delivered cancelled.
+    await lifecycle.settleExecution({ outcome: 'failed', rawStatus: 'flue_stopped', safeFailureCode: 'run_stopped' });
+    const attemptId = await lifecycle.beforeDelivery({
+      method: 'slack_chat_post', approvedOutput: 'Stopped by <@U_STOPPER>.', renderedPayload: 'Stopped by <@U_STOPPER>.',
+    });
+    assert.ok(attemptId);
+    await lifecycle.afterDelivery({
+      attemptId, outcome: 'delivered', deliveryRef: 'slack:C_STOP:1800000000.000200', terminalDisposition: 'cancelled',
+    });
+    const run = s.work.getRun(runId);
+    assert.equal(run?.status, 'settled');
+    assert.equal(run?.terminalDisposition, 'cancelled');
+    assert.equal(run?.deliveryStatus, 'delivered');
+    assert.equal(s.work.listRunExecutions(runId)[0]?.outcome, 'failed');
+    const settled = headRecords(s, runId);
+    s.slack.finishTurnStop('running', 'dropped', s.turns, s.work, s.presentations);
+    assert.deepEqual(headRecords(s, runId), settled, 'a replayed ending changes nothing');
   } finally { s.db.close(); }
 });
 

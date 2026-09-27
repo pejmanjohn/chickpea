@@ -499,11 +499,15 @@ export class SlackStateLogic {
    * a stop holds (TurnJobStoreLogic.finishStop), then the canonical records
    * of the turns it dropped, which will never run: each Run settles
    * `cancelled` and each admitted presentation closes with no Slack effect. A
-   * stopped head that never dispatched settles its Run too; its presentation
-   * carries the stop note. Released rows keep theirs and run later as
-   * ordinary turns. The records settle after the drop commits, one at a time
-   * and best effort, so bookkeeping never undoes a stop; a repeated ending
-   * returns the same rows and settles whatever is left.
+   * stopped head with no Flue receipt settles its Run too, since its stopped
+   * ending opens no Work lifecycle: from admission, or from the input and
+   * execution an earlier attempt prepared before the stop refused its
+   * dispatch (or before it lost its receipt). A dispatched head's own
+   * lifecycle settles its Run with the note. The head's presentation carries
+   * the stop note. Released rows keep theirs and run later as ordinary
+   * turns. The records settle after the drop commits, one at a time and best
+   * effort, so bookkeeping never undoes a stop; a repeated ending returns the
+   * same rows and settles whatever is left.
    */
   finishTurnStop(
     headId: string,
@@ -514,24 +518,26 @@ export class SlackStateLogic {
   ): TurnStopFinish | undefined {
     const finished = turnJobs.finishStop(headId, outcome);
     if (finished?.outcome !== 'dropped') return finished;
-    const settleRun = (runId: string) => {
+    const settleRun = (runId: string, prepared = false) => {
       try {
         const run = work.getRun(runId as RunId);
-        if (run?.status !== 'admitted' && run?.status !== 'queued') return;
-        work.settleUnstartedRun({
-          runId: run.id,
-          terminalDisposition: 'cancelled',
+        const settlement = {
+          runId: runId as RunId,
+          terminalDisposition: 'cancelled' as const,
           safeFailureCode: 'run_stopped',
           settledAt: this.now(),
-        });
+        };
+        if (run?.status === 'admitted' || run?.status === 'queued') {
+          work.settleUnstartedRun(settlement);
+        } else if (prepared && (run?.status === 'input_ready' || run?.status === 'executing')) {
+          work.settleInterruptedRun(settlement);
+        }
       } catch {
         console.warn('[chickpea] a stopped turn kept an unsettled Run');
       }
     };
     const head = turnJobs.runnerView(headId).job;
-    if (head?.runId && head.dispatchStartedAt === undefined && !head.dispatchReceipt) {
-      settleRun(head.runId);
-    }
+    if (head?.runId && !head.dispatchReceipt) settleRun(head.runId, true);
     for (const row of finished.rows) {
       if (!row.runId) continue;
       settleRun(row.runId);
