@@ -1,3 +1,4 @@
+import { frozenRuntimeModelRouteIdentity } from '../config/runtime-model.ts';
 import type { RepositoryGrant } from '../config/types.ts';
 import {
   parseRepository,
@@ -63,7 +64,9 @@ export function codingWorkerInstanceId(binding: CodingWorkerBindingV1): string {
     binding.agentId,
     binding.codingModel.model,
     binding.codingModel.runtimeModel,
-    binding.codingModel.runtimeModelRoute ?? null,
+    binding.codingModel.runtimeModelRoute
+      ? frozenRuntimeModelRouteIdentity(binding.codingModel.runtimeModelRoute)
+      : null,
     repositories,
   ]));
 }
