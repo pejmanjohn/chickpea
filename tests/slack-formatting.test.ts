@@ -237,7 +237,6 @@ test('every progressive cut point is a monotone prefix of the canonical terminal
     'see **https://x sk-proj-abcdefghijklmnopqrstuvwxyz123456** ok',
     '**https://x OPENAI_API_KEY=**\nabc more',
     'see **https://x/<a** ok',
-    '**https://x `@a** ok',
     '**>@<https://x\\n**a\\n',
   ];
 

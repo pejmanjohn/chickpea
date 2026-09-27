@@ -169,7 +169,7 @@ Holding a link, `<...>` reference, or `**` emphasis back from the stream only
 covers the line still being written. An emphasis or link label that
 continues onto a later line streams its opening literally until it closes;
 whether Slack re-renders it when it closes is still to be confirmed live.
-Any hold (a credential, a mention, an open `<`) that lands inside a URL
+Any hold (a credential, a mention, an open `[` or `<`) that lands inside a URL
 emphasis span the text has already closed moves back to that span's opening
 `**`, because the whole answer drops the pair and the stream must not show it.
 
