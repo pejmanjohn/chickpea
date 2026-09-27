@@ -32,7 +32,7 @@ const GUIDE_LINES: ReadonlyArray<readonly [string, string]> = [
   [SLACK_REQUEST_FORM_TOOL_NAME, '- Three or more structured values at once, or exact dates, people or channels → request_form. One or two values → ask in prose or with ask_user.'],
   ['present_table', '- Seven or more similar rows → present_table.'],
   [SLACK_PRESENT_CHART_TOOL_NAME, '- A trend, share or comparison where the shape matters → present_chart, with the takeaway in prose.'],
-  [SLACK_PRESENT_CARDS_TOOL_NAME, '- Two to ten distinct things with identity (tickets, PRs, people, docs) → present_cards, once per reply; more than ten → present_table.'],
+  [SLACK_PRESENT_CARDS_TOOL_NAME, '- Several records someone will act on one by one (PRs to review, candidates to compare, accounts to follow up), where each needs a few facts and its own link or button → present_cards, once per reply; then say only what matters (which to look at first), not the list again. A short list of links reads fine as bullets. More than ten → present_table.'],
   [SLACK_PRESENT_DETAILS_TOOL_NAME, '- Detail most readers will skip (sources, method, full working) → present_details.'],
   [SLACK_OFFER_ACTIONS_TOOL_NAME, '- A link to open, or two or three obvious next steps someone could start with one click → offer_actions. Not after a how-to, an explanation or a finished task.'],
   [SLACK_ASK_USER_TOOL_NAME, '- When something you tried fails, explain why in prose; don\'t ask what to do next. An obvious retry can be an offer_actions button.'],
@@ -177,7 +177,7 @@ export const SLACK_PRESENTATION_TOOL_DEFINITIONS: readonly SlackPresentationTool
   {
     name: SLACK_PRESENT_CARDS_TOOL_NAME,
     description:
-      'Show one to ten distinct things with identity (tickets, PRs, candidates, documents, products) as cards with a title, short details and an optional link. Not for plain lists of facts.',
+      'Show two to ten records someone will act on one by one (PRs, candidates, tickets, accounts) as cards, each with a title, a few facts and its own link or button. Not for plain lists of facts, links or steps.',
     input: PresentCardsSchema,
     interactive: false,
   },

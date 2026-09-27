@@ -62,7 +62,8 @@ export type UiSurfaceRpcRequest =
       kinds: UiSurfaceSpec['kind'][];
     }
   | { kind: 'list_open_surfaces'; scope: UiSurfaceScope; limit?: number }
-  | { kind: 'list_turn_surfaces'; turnJobId: string };
+  | { kind: 'list_turn_surfaces'; turnJobId: string }
+  | { kind: 'open_surface'; id: string };
 
 export type UiSurfaceRpcResponse =
   | { kind: 'surface'; surface: UiSurfaceRecord | null }
@@ -199,6 +200,16 @@ export class UiSurfaceStoreLogic {
     return changed && surface ? { claimed: true, surface } : { claimed: false, ...(surface ? { surface } : {}) };
   }
 
+  /** Mark a surface delivered where its message timestamp is not known (display components). */
+  open(id: string): UiSurfaceRecord | undefined {
+    this.db.run(
+      `UPDATE ui_surfaces SET status = 'open', updated_at = ? WHERE id = ? AND status = 'pending_delivery'`,
+      this.now(),
+      id,
+    );
+    return this.get(id);
+  }
+
   /** Close an open surface without an answer (expired, superseded, or failed). */
   close(id: string, status: Extract<UiSurfaceStatus, 'superseded' | 'expired' | 'failed'>): UiSurfaceRecord | undefined {
     this.db.run(
@@ -302,6 +313,8 @@ export class UiSurfaceStoreLogic {
         };
       case 'list_open_surfaces':
         return { kind: 'surfaces', surfaces: this.listOpen(request.scope, request.limit) };
+      case 'open_surface':
+        return { kind: 'surface', surface: this.open(request.id) ?? null };
       case 'list_turn_surfaces':
         return { kind: 'surfaces', surfaces: this.listForTurn(request.turnJobId) };
     }

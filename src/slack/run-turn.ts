@@ -35,6 +35,9 @@ import {
   abandonTurnSurfaces,
   deliverHostApprovalSurfaces,
   deliverInteractiveSurfaces,
+  markDisplaySurfacesDelivered,
+  prepareDisplaySurfaces,
+  renderDisplayComponents,
 } from './ui/host-surfaces.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import type { TurnEnvelopeV1 } from '../agents/turn-envelope.ts';
@@ -1452,6 +1455,9 @@ async function runTurnAttempt(
     // retry loop from the claims being released on an uncaught throw).
     let text: string;
     let agentResult: AgentDispatchResult | undefined;
+    // A settled answer replayed from its checkpoint carries no display
+    // components; they are read back from the turn's stored surfaces.
+    const settledBeforePrompt = options.flueDispatch?.flueSettlement?.outcome === 'completed';
     let tablePresentation: SlackTablePresentation | undefined =
       options.flueDispatch?.flueSettlement?.outcome === 'completed'
         ? options.flueDispatch.flueSettlement.result.tablePresentations?.[0]
@@ -1791,25 +1797,43 @@ async function runTurnAttempt(
     const deliverableArtifacts = recoveredText === undefined && leaseValid && terminalResult === 'answer'
       ? artifacts
       : undefined;
+    const surfaceState = options.appStores?.slackState ?? getSlackStateStore(platformEnv);
+    const surfaceTurnJobId = options.turnId ?? `msg:${turn.channelId}:${turn.messageTs}`;
+    // Components travel only with the model's own lease-valid answer.
+    const ownAnswer = terminalResult === 'answer' && recoveredText === undefined && leaseValid &&
+      !(acknowledgeMemoryUpdate && agentResult?.memoryUpdate?.preservesContext !== true);
+    const displaySurfaces = ownAnswer
+      ? await prepareDisplaySurfaces({
+          state: surfaceState,
+          turn,
+          agentId: assignment.agent.id,
+          turnJobId: surfaceTurnJobId,
+          ...(settledBeforePrompt ? {} : { fresh: agentResult?.displayComponents ?? [] }),
+        }).catch(() => {
+          console.warn('[chickpea] display components were not stored; the answer posts without them');
+          return [];
+        })
+      : [];
+    const displayComponents = renderDisplayComponents(displaySurfaces);
     await presenter.deliverFinal(
       text,
       'markdown',
       terminalResult === 'failure' ? 'error' : 'complete',
-      tablePresentation,
+      displayComponents
+        ? { ...(tablePresentation ? { table: tablePresentation } : {}), components: displayComponents }
+        : tablePresentation,
       deliverableArtifacts,
     );
+    if (displaySurfaces.length) {
+      await markDisplaySurfacesDelivered(surfaceState, displaySurfaces).catch(() => undefined);
+    }
     if (terminalResult === 'answer') {
-      const surfaceState = options.appStores?.slackState ?? getSlackStateStore(platformEnv);
       const surfaceMessenger = {
         post: (rendered: { text: string; blocks: Array<Record<string, unknown>> }) =>
           presenter.postSurfaceMessage(rendered),
         update: (messageTs: string, rendered: { text: string; blocks: Array<Record<string, unknown>> }) =>
           presenter.updateSurfaceMessage(messageTs, rendered),
       };
-      const surfaceTurnJobId = options.turnId ?? `msg:${turn.channelId}:${turn.messageTs}`;
-      // Components travel only with the model's own lease-valid answer.
-      const ownAnswer = recoveredText === undefined && leaseValid &&
-        !(acknowledgeMemoryUpdate && agentResult?.memoryUpdate?.preservesContext !== true);
       await (ownAnswer
         ? deliverInteractiveSurfaces({
             turn,

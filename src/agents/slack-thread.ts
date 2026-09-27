@@ -224,8 +224,25 @@ import {
 import {
   SLACK_ASK_USER_TOOL_NAME,
   SLACK_OFFER_ACTIONS_TOOL_NAME,
+  SLACK_PRESENT_CARDS_TOOL_NAME,
+  SLACK_PRESENT_CHART_TOOL_NAME,
+  SLACK_PRESENT_DETAILS_TOOL_NAME,
   slackPresentationGuide,
 } from '../slack/ui/presentation-tools.ts';
+import {
+  createDisplayTools,
+  SLACK_DISPLAY_COMPONENTS_DATA_NAME,
+  SlackDisplayComponentSchema,
+  type SlackDisplayComponentPart,
+} from '../slack/ui/display-tools.ts';
+
+/** Display components the guide describes wherever they mount. */
+const DISPLAY_GUIDE_TOOLS = [
+  'present_table',
+  SLACK_PRESENT_CARDS_TOOL_NAME,
+  SLACK_PRESENT_CHART_TOOL_NAME,
+  SLACK_PRESENT_DETAILS_TOOL_NAME,
+];
 import {
   createSlackPresentTableTool,
   SLACK_PRESENT_TABLE_INSTRUCTION,
@@ -749,6 +766,9 @@ export function ChickpeaSlack({ id }: AgentProps) {
   const writeInteractiveQuestion = useDataWriter(SLACK_INTERACTIVE_QUESTION_DATA_NAME, {
     schema: SlackInteractiveQuestionSchema,
   });
+  const writeDisplayComponent = useDataWriter(SLACK_DISPLAY_COMPONENTS_DATA_NAME, {
+    schema: SlackDisplayComponentSchema,
+  });
   const managementEnabled = !!parseSlackManagementSignal(delivery, plan);
   const turn = runtimePlanTurnContext(plan, delivery);
   useChickpeaSlackRuntimeCapabilities(
@@ -762,6 +782,7 @@ export function ChickpeaSlack({ id }: AgentProps) {
     slackDeliveryThreadImages(plan, delivery),
     turn,
     writeInteractiveQuestion,
+    writeDisplayComponent,
   );
   useSlackAttachmentContext(
     plan,
@@ -787,6 +808,7 @@ export function useChickpeaSlackRuntimeCapabilities(
   threadImages?: readonly ThreadImageRecord[],
   turn?: TurnEnvelopeContext,
   writeInteractiveQuestion?: (record: SlackInteractiveQuestion) => void,
+  writeDisplayComponent?: (part: SlackDisplayComponentPart) => void,
 ): void {
   useRuntimePlanAgent(plan, id, {
     responseMetadataModel: plan.model,
@@ -812,7 +834,7 @@ export function useChickpeaSlackRuntimeCapabilities(
   useSlackListsTools(plan, resolveAgentPlatformEnv);
   useInstruction(SLACK_PRESENT_TABLE_INSTRUCTION);
   useTool(createSlackPresentTableTool(writeTablePresentation));
-  useSlackInteractiveComponents(plan, writeInteractiveQuestion);
+  useSlackInteractiveComponents(plan, writeInteractiveQuestion, writeDisplayComponent);
   if (presentationIntent) {
     useInstruction(presentationIntent.instruction);
     useTool(presentationIntent.tool);
@@ -828,13 +850,26 @@ export function useChickpeaSlackRuntimeCapabilities(
 function useSlackInteractiveComponents(
   plan: RuntimePlanV2,
   writeInteractiveQuestion?: (record: SlackInteractiveQuestion) => void,
+  writeDisplayComponent?: (part: SlackDisplayComponentPart) => void,
 ): void {
+  // Display components need no click round trip, so they mount wherever a
+  // reply is delivered; the interactive ones need a trusted Slack signal.
+  if (writeDisplayComponent) {
+    const display = createDisplayTools(writeDisplayComponent);
+    useTool(display.cards);
+    useTool(display.chart);
+    useTool(display.details);
+  }
   const signal = parseSlackManagementSignal(useDelivery(), plan);
   const scope = signal && interactiveSurfaceScope(signal, plan.agentId);
-  if (!scope) return;
+  if (!scope) {
+    if (writeDisplayComponent) useInstruction(slackPresentationGuide(DISPLAY_GUIDE_TOOLS));
+    return;
+  }
   const store = async () => getSlackStateStore(await resolveAgentPlatformEnv());
   useInstruction(slackPresentationGuide([
-    SLACK_ASK_USER_TOOL_NAME, SLACK_OFFER_ACTIONS_TOOL_NAME, SLACK_PRESENT_TABLE_TOOL_NAME,
+    SLACK_ASK_USER_TOOL_NAME, SLACK_OFFER_ACTIONS_TOOL_NAME,
+    ...(writeDisplayComponent ? DISPLAY_GUIDE_TOOLS : [SLACK_PRESENT_TABLE_TOOL_NAME]),
   ]));
   useTool(createAskUserTool({
     store,

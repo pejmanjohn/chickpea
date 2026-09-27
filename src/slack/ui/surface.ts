@@ -1,5 +1,11 @@
 import { sha256HexNode } from '../../security/digest.ts';
-import type { AskUserSpec, OfferActionsSpec } from './presentation-tools.ts';
+import type {
+  AskUserSpec,
+  OfferActionsSpec,
+  PresentCardsSpec,
+  PresentChartSpec,
+  PresentDetailsSpec,
+} from './presentation-tools.ts';
 
 /**
  * A durable interactive surface: one host-owned Slack message whose controls
@@ -45,7 +51,23 @@ export interface ActionsSurfaceSpec {
   actions: OfferActionsSpec;
 }
 
-export type UiSurfaceSpec = HostApprovalSpec | QuestionSurfaceSpec | ActionsSurfaceSpec;
+/**
+ * Display components ride in the answer message itself. They are stored so a
+ * retried delivery can still render them, and so card request buttons resolve
+ * like any click; the answer message is never redrawn for them.
+ */
+export type DisplaySurfaceSpec =
+  | { kind: 'cards'; cards: PresentCardsSpec }
+  | { kind: 'chart'; chart: PresentChartSpec }
+  | { kind: 'details'; details: PresentDetailsSpec };
+
+export const DISPLAY_SURFACE_KINDS = ['cards', 'chart', 'details'] as const;
+
+export function isDisplaySurface(spec: UiSurfaceSpec): spec is DisplaySurfaceSpec {
+  return (DISPLAY_SURFACE_KINDS as readonly string[]).includes(spec.kind);
+}
+
+export type UiSurfaceSpec = HostApprovalSpec | QuestionSurfaceSpec | ActionsSurfaceSpec | DisplaySurfaceSpec;
 export type UiSurfaceKind = UiSurfaceSpec['kind'];
 
 export interface UiSurfaceResolution {

@@ -46,7 +46,7 @@ export async function authorizeUiResponse(input: {
   const { surface } = admission;
   if (assignment.agent.id !== surface.agentId) return 'closed';
   const spec = surface.spec;
-  if (spec.kind === 'question' || spec.kind === 'actions') {
+  if (spec.kind === 'question' || spec.kind === 'actions' || spec.kind === 'cards') {
     // A model-chosen surface answers a question or asks for a next step; it
     // never stamps an approval, whatever its labels say.
     if (surface.namespace !== 'ui') return 'unavailable';
@@ -54,7 +54,7 @@ export async function authorizeUiResponse(input: {
     if (answerFrom === 'requester' && turn.userId !== surface.requesterUserId) return 'wrong_user';
     return undefined;
   }
-  if (surface.namespace !== 'host') return 'unavailable';
+  if (spec.kind !== 'approval' || surface.namespace !== 'host') return 'unavailable';
   if (turn.userId !== surface.requesterUserId) return 'wrong_user';
   const decision = approvalChoice(admission.choice);
   if (!decision) return 'unavailable';
@@ -101,10 +101,12 @@ export function uiRefusalText(refusal: UiRefusal, surface?: UiSurfaceRecord): st
       return surface
         ? `Only <@${surface.requesterUserId}> can answer this. You can reply in the thread.`
         : 'This isn\'t yours to answer. You can reply in the thread.';
-    case 'answered':
+    case 'answered': {
+      const verb = surface?.spec.kind === 'actions' || surface?.spec.kind === 'cards' ? 'requested' : 'answered';
       return surface?.resolution
-        ? `Already answered by <@${surface.resolution.byUserId}>.`
-        : 'This was already answered.';
+        ? `Already ${verb} by <@${surface.resolution.byUserId}>.`
+        : `This was already ${verb}.`;
+    }
     case 'not_current':
       return 'This is no longer current. Reply in the thread if you still need it.';
     case 'closed':

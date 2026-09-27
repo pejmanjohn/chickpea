@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "corpusVersion": "1.1.0",
-  "guideVersion": "sha256:6e19649eafb19c89",
+  "corpusVersion": "1.2.0",
+  "guideVersion": "sha256:b9186ae4a7f6225e",
   "description": "Slack presentation usage calibration: does the Agent reach for a Slack component only when it helps? Synthetic workspace; every tool is a stub whose output comes from the case.",
   "cases": [
     {
@@ -1549,7 +1549,6 @@
     {
       "id": "entities-candidate-shortlist",
       "category": "entity_list",
-      "strongSignal": true,
       "thread": [],
       "request": {
         "user": "U01ALICE",
@@ -1595,17 +1594,13 @@
         "allowed": [
           "present_cards",
           "present_table"
-        ],
-        "required_one_of": [
-          "present_cards"
         ]
       },
-      "note": "Four people with identity, details and a profile link: cards."
+      "note": "Four candidates. Cards or a table are welcome; a concise linked list also answers well, so this is not a strong signal."
     },
     {
       "id": "entities-prs-my-review",
       "category": "entity_list",
-      "strongSignal": true,
       "thread": [],
       "request": {
         "user": "U05EMEKA",
@@ -1652,12 +1647,9 @@
         "allowed": [
           "present_cards",
           "offer_actions"
-        ],
-        "required_one_of": [
-          "present_cards"
         ]
       },
-      "note": "Three distinct PRs with links and state: cards."
+      "note": "Three PRs to review. Cards (one per PR with its link) are welcome, but a short linked list with a suggested order is an equally good answer, so this is not a strong signal."
     },
     {
       "id": "entities-onboarding-docs",
@@ -1734,7 +1726,6 @@
     {
       "id": "sources-nrr-method",
       "category": "sources_method",
-      "strongSignal": true,
       "thread": [],
       "request": {
         "user": "U04DANA",
@@ -1756,13 +1747,9 @@
         "allowed": [
           "present_details",
           "present_table"
-        ],
-        "required_one_of": [
-          "present_details",
-          "present_table"
         ]
       },
-      "note": "Headline NRR in prose; the working in a collapsed details section."
+      "note": "The working is short: a collapsed details section or a table is welcome, and a few inline lines of working also satisfy 'somewhere I can check it'."
     },
     {
       "id": "sources-competitor-sso",

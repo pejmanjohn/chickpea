@@ -1,9 +1,11 @@
 import {
+  cardTurnText,
   interactiveTurnText,
   renderInteractiveSurface,
   type InteractiveAnswer,
 } from './render-interactive.ts';
 import {
+  isDisplaySurface,
   uiActionId,
   uiBlockId,
   uiValue,
@@ -135,9 +137,11 @@ export function renderUiSurface(
   options: { withHeader?: boolean } = {},
 ): RenderedUiSurface {
   const spec = record.spec;
-  return spec.kind === 'approval'
-    ? renderHostApproval(record, spec)
-    : renderInteractiveSurface(record, spec, options);
+  if (spec.kind === 'approval') return renderHostApproval(record, spec);
+  if (isDisplaySurface(spec)) {
+    throw new Error('Display components render inside the answer, not as their own message.');
+  }
+  return renderInteractiveSurface(record, spec, options);
 }
 
 /**
@@ -146,6 +150,8 @@ export function renderUiSurface(
  */
 export function uiResponseTurnText(record: UiSurfaceRecord, answer: InteractiveAnswer, byUserId: string): string {
   const spec = record.spec;
+  if (spec.kind === 'cards') return cardTurnText(record, spec, answer);
+  if (spec.kind === 'chart' || spec.kind === 'details') return 'Pressed a button.';
   if (spec.kind !== 'approval') return interactiveTurnText(record, spec, answer, byUserId);
   const decision = approvalChoice(answer.choice);
   if (spec.approval === 'workspace_change') {
