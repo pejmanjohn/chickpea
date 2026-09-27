@@ -180,6 +180,8 @@ test('a line led by bold text keeps streaming after the bold closes', () => {
   for (const line of ['**Summary:** the deploy finished', '- **Step 1:** run it and **always** check']) {
     assert.equal(streamableSlackMarkdownPrefix(line), line);
   }
+  // A star run holds only the `**` that can still open a URL span.
+  assert.equal(streamableSlackMarkdownPrefix('*********'), '*******');
 });
 
 test('every progressive cut point is a monotone prefix of the canonical terminal answer', () => {
@@ -227,6 +229,9 @@ test('every progressive cut point is a monotone prefix of the canonical terminal
     '**https://a.test/x [draft]** is live',
     '- **Step:** go to https://x.test/a then **Save**.',
     '**Summary:** see https://x.test/a** then more',
+    '**a `b** c` https://d**',
+    '**https://x** `y` **https://z** `w',
+    '*********',
   ];
 
   for (const terminalInput of corpus) {

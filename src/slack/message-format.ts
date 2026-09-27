@@ -719,7 +719,12 @@ export function streamableSlackMarkdownPrefix(text: string): string {
   let stable = normalized.slice(0, earliestUnsafeTail(normalized)).trimEnd();
   // A cut can end inside a closed code span or `<...>` reference, or right
   // after a broadcast word, where the whole answer neutralizes differently,
-  // and a span it leaves unclosed exposes emphasis the answer keeps as code.
+  // or inside code or a `**URL**` span, whose opener it leaves unclosed.
+  const unsafeTailOfCut = (cut: string) => Math.min(
+    unsafeMentionTail(cut),
+    openUrlEmphasis(cut, cut.lastIndexOf('\n') + 1, true),
+    strippedSpanStart(normalized, cut.length),
+  );
   for (let held = unsafeTailOfCut(stable); held < stable.length; held = unsafeTailOfCut(stable)) {
     stable = stable.slice(0, credentialHoldStart(stable, held)).trimEnd();
   }
@@ -844,8 +849,26 @@ function credentialHoldStart(value: string, held: number): number {
   return held;
 }
 
-function unsafeTailOfCut(value: string): number {
-  return Math.min(unsafeMentionTail(value), openUrlEmphasis(value, value.lastIndexOf('\n') + 1));
+/**
+ * The start of the `**URL**` span `sanitizeSlackMarkdownLinks` strips from
+ * the answer that `cut` falls inside, else `cut`: the prefix ending there
+ * keeps the opener the answer drops.
+ */
+function strippedSpanStart(value: string, cut: number): number {
+  let offset = 0;
+  for (const [index, segment] of value.split(CLOSED_CODE_SEGMENT).entries()) {
+    const end = offset + segment.length;
+    if (cut <= offset) break;
+    if (cut < end && index % 2 === 0) {
+      for (const strong of segment.matchAll(STRONG_EMPHASIS)) {
+        const start = offset + strong.index;
+        if (start >= cut) break;
+        if (cut < start + strong[0].length && WHOLE_URL_SEGMENT.test(strong[1]!)) return start;
+      }
+    }
+    offset = end;
+  }
+  return cut;
 }
 
 /**
@@ -894,8 +917,12 @@ function unmatchedBacktickOnLastLine(value: string, lastLineStart: number): numb
  * may become one. After an unclosed fence, or backtick on the last line: any
  * `**URL**` it strips now, which is code once that closes. Counting `**`
  * pairs instead let a growing `***…` run flip between held and shown.
+ *
+ * For a cut of the answer (`ofCut`) only the code holds apply: what follows
+ * the cut is the answer, whose spans `strippedSpanStart` checks, and holding
+ * the cut's own trailing `**` peeled a `***…` run two stars per pass.
  */
-function openUrlEmphasis(value: string, lastLineStart: number): number {
+function openUrlEmphasis(value: string, lastLineStart: number, ofCut = false): number {
   const segments = value.split(CLOSED_CODE_SEGMENT);
   let offset = 0;
   let fence = -1;
@@ -915,7 +942,7 @@ function openUrlEmphasis(value: string, lastLineStart: number): number {
   const opener = fence >= 0 ? fence : value.indexOf('`', Math.max(offset, lastLineStart));
   const from = fence >= 0 ? offset : Math.max(offset, lastLineStart);
   for (let at = value.indexOf('*', from); at >= 0; at = value.indexOf('*', at + 1)) {
-    if (at === value.length - 1) return at;
+    if (at === value.length - 1) return ofCut ? value.length : at;
     if (value[at + 1] !== '*') continue;
     // The segment can only close at the next `*`, on the same line: a `**`
     // there closes a pair (stripped when the segment holds a URL), and none
@@ -923,12 +950,12 @@ function openUrlEmphasis(value: string, lastLineStart: number): number {
     const star = value.indexOf('*', at + 2);
     const segment = value.slice(at + 2, star < 0 ? value.length : star);
     if (segment.includes('\n')) continue;
-    if (star < 0) return at;
+    if (star < 0) return ofCut ? value.length : at;
     if (!segment) continue;
     if (value[star + 1] === '*') {
       if (opener >= 0 && star + 2 > opener && WHOLE_URL_SEGMENT.test(segment)) return at;
       at = star + 1;
-    } else if (star === value.length - 1 && WHOLE_URL_SEGMENT.test(segment)) {
+    } else if (!ofCut && star === value.length - 1 && WHOLE_URL_SEGMENT.test(segment)) {
       return at;
     }
   }
