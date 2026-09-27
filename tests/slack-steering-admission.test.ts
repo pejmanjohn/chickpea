@@ -807,6 +807,66 @@ test('a failure while the sender is checked against another Agent\'s run gives t
   });
 });
 
+test('a stop whose run ended, and whose admission as an ordinary turn then fails, goes on through the fallback without being decided again', async () => {
+  await withHarness(async (harness) => {
+    const handoff = await startChickpeaRunHandedToAgent(harness);
+    const decided = deliverBeforeSteering(harness, { 1: [ROOT_ID, handoff] });
+    const state = harness.stores.slackState;
+    const admitCanonical = state.admitCanonical.bind(state);
+    let admissions = 0;
+    state.admitCanonical = async (input) => {
+      admissions += 1;
+      if (admissions === 2) throw new Error('canonical admission unavailable');
+      return await admitCanonical(input);
+    };
+    const errors: unknown[][] = [];
+    const previousError = console.error;
+    console.error = (...args: unknown[]) => { errors.push(args); };
+    let outcomes: unknown[];
+    try {
+      outcomes = await steeringOutcomes(() => harness.deliver({
+        ts: '1800000020.000100', threadTs: ROOT_TS, user: 'U2', text: 'stop',
+      }));
+    } finally {
+      console.error = previousError;
+    }
+
+    assert.equal(admissions, 2, 'admitted again without steering, which failed');
+    assert.equal(errors.filter(([line]) => String(line).includes('shadow Work admission failed')).length, 1);
+    assert.equal(decided(), 1, 'the fallback never decides the stop again');
+    assert.deepEqual(outcomes, ['ended']);
+    assert.equal(harness.jobs.length, 3, 'an ordinary turn, as with nothing running');
+    assert.equal(harness.jobs[2]?.turn.text, 'stop');
+    assert.equal(harness.jobs[2]?.runId, undefined, 'queued by the fallback');
+    const pending = await harness.pending();
+    assert.deepEqual(pending.map(({ id }) => id), ['msg:C1:1800000020.000100']);
+    assert.equal(pending[0]?.stop, undefined);
+    assert.deepEqual(harness.posts, []);
+
+    // The fallback holds its claims: a Slack retry is a duplicate.
+    await harness.deliver({ ts: '1800000020.000100', threadTs: ROOT_TS, user: 'U2', text: 'stop' });
+    assert.equal(harness.jobs.length, 3);
+    assert.equal(decided(), 1);
+  });
+});
+
+test('a check-in whose thread\'s run moves on to a third Agent while it is decided is left unanswered', async () => {
+  await withHarness(async (harness) => {
+    const handoff = await startChickpeaRunHandedToAgent(harness);
+    await harness.deliver({ ts: '1800000011.000100', threadTs: ROOT_TS, user: 'U2', text: '<@UBOT> back' });
+    await harness.deliver({ ts: '1800000012.000100', threadTs: ROOT_TS, user: 'U2', text: `${OPS} again` });
+    const decided = deliverBeforeSteering(harness, { 1: [ROOT_ID], 2: [handoff] });
+    const outcomes = await steeringOutcomes(() => harness.deliver({
+      ts: '1800000020.000100', threadTs: ROOT_TS, user: 'U2', text: 'status',
+    }));
+
+    assert.equal(decided(), 2, 'decided again twice at most');
+    assert.deepEqual(outcomes, ['unsettled', 'check_in_refused']);
+    assert.equal(harness.jobs.length, 4, 'the check-in is never queued');
+    assert.deepEqual(harness.posts, []);
+  });
+});
+
 test('a stop addressed to the running Agent, or to Chickpea in its own thread, still stops the run', async () => {
   await withHarness(async (harness) => {
     await createPrivateAgent(harness);

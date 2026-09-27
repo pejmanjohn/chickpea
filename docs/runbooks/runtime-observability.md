@@ -456,7 +456,7 @@ Slack user, channel or workspace ID.
 
 | Line | Fields |
 | --- | --- |
-| `[chickpea] steering.admission` | `outcome` (`stopped`, `check_in`, `stop_refused`), `created` on `stopped` (`false` when the stop joined one already recorded), and `source: button` for Slack's Stop button (absent for a typed stop) |
+| `[chickpea] steering.admission` | `outcome` (`stopped`, `check_in`, `stop_refused`, `check_in_refused`, `ended`, `unsettled`), `created` on `stopped` (`false` when the stop joined one already recorded), and `source: button` for Slack's Stop button (absent for a typed stop) |
 | `[chickpea] steering.stop_button` | `outcome` for a Stop press that stopped nothing: `invalid` (unreadable event), `no_route` (not an Agent thread), `no_running_job`, or `not_allowed` (no access and not told) |
 
 A stopped run's ending logs `turn_latency` with `outcome: stopped`. Filter a

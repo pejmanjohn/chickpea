@@ -2157,7 +2157,7 @@ async function processSlackEvent(
   }
   // Bound to the routed Agent: another Agent's run (the previous owner's,
   // after a handoff) is steered only once the sender may use that Agent (R3).
-  const steering = steeringCommand
+  let steering = steeringCommand
     ? slackSteeringRequest(steeringCommand, turnStopThreadKey(turn, assignment), turn, assignment.agentId)
     : undefined;
   const mayUseRunningAgent = (agentId: string) => agentRoutingActor && runtimeTransport
@@ -2383,18 +2383,13 @@ async function processSlackEvent(
       turn.text,
     );
     const semanticActivityEnabled = slackSemanticActivityStatusEnabled(platformEnv);
-    // A stop or check-in the thread's run took is settled after the
-    // admission, outside its failure handling: a failure there has given the
-    // claims back for the gateway's retry, and must not replay the message
-    // through the legacy-lane fallback in the catch. A run that ended while
-    // the sender was checked against it leaves nothing to steer, so the
-    // message is admitted again without steering, as an ordinary turn (as
-    // with nothing running). Its claims are given back for that; a
-    // redelivery in between admits it instead, and only once.
-    let admitSteering = steering;
-    let steered: TurnSteeringInterception | undefined;
-    do {
-      steered = undefined;
+    // A stop or check-in the thread's run took is settled outside the catch:
+    // a failure there has given the claims back already, for the gateway's
+    // retry. When its run ended meanwhile, the message is admitted again as
+    // an ordinary turn, its claims given back first since the admission
+    // takes them itself.
+    for (;;) {
+      let steered: TurnSteeringInterception | undefined;
       try {
         const result = await state.admitCanonical({
           evtKey,
@@ -2402,7 +2397,7 @@ async function processSlackEvent(
           threadKey,
           admission,
           turnJob: canonicalTurnJob,
-          ...(admitSteering ? { steering: admitSteering } : {}),
+          ...(steering ? { steering } : {}),
           ...(midRun ? { midRun } : {}),
           presentation: {
             schemaVersion: 3,
@@ -2493,22 +2488,21 @@ async function processSlackEvent(
           return;
         }
       }
-      if (steered) {
-        const settled = await settleSlackSteering({
-          decision: steered,
-          request: admitSteering!,
-          keys: [evtKey, msgKey],
-          mayUse: mayUseRunningAgent,
-          turn,
-          state,
-          client: slackClient!,
-          platformEnv,
-        });
-        if (settled !== 'ended') return;
-        await releaseSteeringMessage(state, evtKey, msgKey);
-        admitSteering = undefined;
-      }
-    } while (steered);
+      if (!steered) break;
+      const settled = await settleSlackSteering({
+        decision: steered,
+        request: steering!,
+        keys: [evtKey, msgKey],
+        mayUse: mayUseRunningAgent,
+        turn,
+        state,
+        client: slackClient!,
+        platformEnv,
+      });
+      if (settled !== 'ended') return;
+      await releaseSteeringMessage(state, evtKey, msgKey);
+      steering = undefined;
+    }
   } else {
     if (!(await state.claim(evtKey))) return;
     if (!(await state.claim(msgKey))) {
@@ -2776,6 +2770,19 @@ function logSlackStopButton(outcome: SlackStopButtonToken): void {
   console.info('[chickpea] steering.stop_button', { outcome });
 }
 
+/** A stop or check-in decided at admission, as one content-free token. */
+function logSteeringAdmission(
+  outcome: 'stopped' | 'check_in' | 'stop_refused' | 'check_in_refused' | 'ended' | 'unsettled',
+  source?: TurnStopSource,
+  detail?: { created: boolean },
+): void {
+  console.info('[chickpea] steering.admission', {
+    outcome,
+    ...(source === 'button' ? { source } : {}),
+    ...detail,
+  });
+}
+
 /**
  * Slack's Stop button (R1, R3, KTD5). Slack sends `agent_session_stopped`
  * when someone presses Stop on the working indicator of a thread's Agent
@@ -3015,13 +3022,7 @@ function slackSteeringRequest(
     : { kind: 'check_in', threadKey, ...bound };
 }
 
-/**
- * How a stop or check-in the thread's run took ended up: `settled`, answered;
- * `refused`, a stop refused privately or a check-in left unanswered (R3,
- * R11); `ended`, the run ended while its sender was checked against it, so
- * there is nothing left to steer and the caller treats the message as with
- * nothing running (an ordinary message; an idle Stop press).
- */
+/** How settleSlackSteering left a stop or check-in; `ended` is as with nothing running. */
 type SlackSteeringSettlement = 'settled' | 'refused' | 'ended';
 
 /**
@@ -3032,11 +3033,10 @@ type SlackSteeringSettlement = 'settled' | 'refused' | 'ended';
  * handoff mid-run does not hide the running turn from them. Anyone else's
  * stop is refused privately, and their check-in gets no answer, since what
  * it would tell is that Agent's run's (R11). A run that ended meanwhile
- * leaves nothing to steer (`ended`). One that keeps moving on to other
- * Agents' past two decisions again is refused the same way, fail closed,
- * rather than steered without its Agent checked (`unsettled`). The message's
- * claims are held already; a failure gives them back and rethrows, so a
- * redelivery decides it again.
+ * leaves nothing to steer (`ended`). One still moving on to other Agents
+ * after two decisions is refused the same way, fail closed (`unsettled`).
+ * The message's claims are held already; a failure gives them back and
+ * rethrows, so a redelivery decides it again.
  */
 async function settleSlackSteering(input: {
   decision: TurnSteeringInterception;
@@ -3049,13 +3049,12 @@ async function settleSlackSteering(input: {
   platformEnv: PlatformEnv | undefined;
   source?: TurnStopSource;
 }): Promise<SlackSteeringSettlement> {
-  const button = input.source === 'button' ? { source: input.source } : {};
   let decision: TurnSteeringDecision = input.decision;
   try {
     // Twice at most: the thread's run may move on to yet another Agent's.
     for (let round = 0; decision.outcome === 'other_agent'; round += 1) {
       if (round === 2 || !input.state.steerTurn) {
-        console.info('[chickpea] steering.admission', { outcome: 'unsettled', ...button });
+        logSteeringAdmission('unsettled', input.source);
         break;
       }
       if (!(await input.mayUse(decision.agentId))) break;
@@ -3069,12 +3068,12 @@ async function settleSlackSteering(input: {
     if (input.request.kind === 'stop') {
       await tellIneligibleStopper(input.client, steeringReplyTarget(input.turn), input.source ?? 'typed');
     } else {
-      console.info('[chickpea] steering.admission', { outcome: 'check_in_refused' });
+      logSteeringAdmission('check_in_refused');
     }
     return 'refused';
   }
   if (decision.outcome === 'enqueue') {
-    console.info('[chickpea] steering.admission', { outcome: 'ended', ...button });
+    logSteeringAdmission('ended', input.source);
     return 'ended';
   }
   await answerSlackSteering({
@@ -3142,11 +3141,11 @@ async function answerSlackSteering(input: {
   source?: TurnStopSource;
 }): Promise<void> {
   const { decision } = input;
-  console.info('[chickpea] steering.admission', {
-    outcome: decision.outcome,
-    ...(input.source === 'button' ? { source: input.source } : {}),
-    ...(decision.outcome === 'stopped' ? { created: decision.stop.created } : {}),
-  });
+  logSteeringAdmission(
+    decision.outcome,
+    input.source,
+    decision.outcome === 'stopped' ? { created: decision.stop.created } : undefined,
+  );
   if (decision.outcome === 'stopped') {
     // Node has no state store alarm: its relay delivers the new stop in this
     // process, beside the run it stops (KTD16). Never awaited, and never
@@ -3340,10 +3339,7 @@ async function tellIneligibleStopper(
   target: SteeringReplyTarget,
   source: TurnStopSource,
 ): Promise<void> {
-  console.info('[chickpea] steering.admission', {
-    outcome: 'stop_refused',
-    ...(source === 'button' ? { source } : {}),
-  });
+  logSteeringAdmission('stop_refused', source);
   await replyToSteering(client, target, STEERING_REPLY_TEXT.ineligibleStop);
 }
 
