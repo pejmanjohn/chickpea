@@ -720,7 +720,7 @@ export function streamableSlackMarkdownPrefix(text: string): string {
   // A cut can end inside a closed code span or `<...>` reference, or right
   // after a broadcast word, where the whole answer neutralizes differently.
   for (let held = unsafeMentionTail(stable); held < stable.length; held = unsafeMentionTail(stable)) {
-    stable = stable.slice(0, held).trimEnd();
+    stable = stable.slice(0, credentialHoldStart(stable, held)).trimEnd();
   }
   if (!stable) return '';
   return canonicalSlackMarkdownText(stable);
@@ -825,16 +825,20 @@ function earliestUnsafeTail(value: string): number {
   if (/^\s*\|/.test(value.slice(trailingLineStart)) && !value.endsWith('\n')) {
     unsafeFrom = Math.min(unsafeFrom, trailingLineStart);
   }
-  // Any hold above can start inside an earlier credential token or assignment
-  // value (`xoxb-xoxb-…`, `OPENAI_API_KEY=\nxoxb-xoxb- …`, `SECRET=\nabcdefg[hij
-  // …`): the part before it would then stream as a piece too short to
-  // redact. Hold from that credential instead, whichever marker it is.
-  while (unsafeFrom < value.length) {
-    const outer = earliestCredentialReaching(value, unsafeFrom, CREDENTIAL_REACHING_END);
-    if (outer === unsafeFrom) break;
-    unsafeFrom = outer;
+  return credentialHoldStart(value, unsafeFrom);
+}
+
+// Any hold can start inside an earlier credential token or assignment value
+// (`xoxb-xoxb-…`, `OPENAI_API_KEY=\nxoxb-xoxb- …`, `SECRET=\nabcdefg[hij …`):
+// the part before it would then stream as a piece too short to redact. Hold
+// from that credential instead, whichever marker it is.
+function credentialHoldStart(value: string, held: number): number {
+  while (held < value.length) {
+    const outer = earliestCredentialReaching(value, held, CREDENTIAL_REACHING_END);
+    if (outer === held) break;
+    held = outer;
   }
-  return unsafeFrom;
+  return held;
 }
 
 /**
