@@ -44,8 +44,11 @@ const INTERACTIVE_TOOL_NAMES: ReadonlySet<string> = new Set([
   SLACK_ASK_USER_TOOL_NAME,
   SLACK_OFFER_ACTIONS_TOOL_NAME,
 ]);
+/** Display components ride in the answer; other presentation tools may follow them. */
+const DISPLAY_TOOL_NAMES: ReadonlySet<string> = new Set(['present_cards', 'present_chart', 'present_details']);
 const PRESENTATION_TOOL_NAMES: ReadonlySet<string> = new Set([
   SLACK_PRESENT_TABLE_TOOL_NAME,
+  ...DISPLAY_TOOL_NAMES,
   ...INTERACTIVE_TOOL_NAMES,
 ]);
 
@@ -153,7 +156,7 @@ export const presentationToolPolicyInterceptor: FlueExecutionInterceptor = async
     return result;
   }
 
-  if (operation.toolName === SLACK_PRESENT_TABLE_TOOL_NAME) {
+  if (operation.toolName === SLACK_PRESENT_TABLE_TOOL_NAME || DISPLAY_TOOL_NAMES.has(operation.toolName)) {
     assertFileDeliveryChecked(active);
     if (active.questionAsked) throw new SlackQuestionPostedToolDeniedError();
     if (active.answerOnly) throw new SlackAnswerOnlyToolDeniedError();

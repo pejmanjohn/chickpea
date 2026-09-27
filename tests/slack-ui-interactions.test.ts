@@ -538,3 +538,32 @@ test('Cancel on a workspace-change card retires the proposal, so a later typed a
   assert.match(JSON.stringify(f.updates().at(-1)!.blocks), /Cancelled by <@U1>/);
   assert.equal((await f.stores.management.getChangeSetProposal('proposal_cancel'))?.status, 'stale');
 }));
+
+test('a card request button starts a turn and never redraws the answer message it rides in', async () => withFixture(async (f) => {
+  const surface = await f.surface({
+    namespace: 'ui',
+    status: 'open',
+    spec: { kind: 'cards', cards: { cards: [
+      { title: 'Acme Corp', actions: [{ label: 'Draft outreach' }] },
+      { title: 'Globex', actions: [{ label: 'Open', url: 'https://example.com/globex' }] },
+    ] } },
+  });
+  // The link button on the second card is ignored server-side.
+  await f.click(surface.id, { actionId: uiActionId('ui', 'link', 4), blockId: uiBlockId('ui', surface.id, 1), value: null });
+  assert.equal(f.jobs.length, 1);
+  await f.click(surface.id, {
+    userId: 'U2', actionId: uiActionId('ui', 'cards', 1), blockId: uiBlockId('ui', surface.id, 1),
+    value: uiValue(surface.id, 1), actionTs: '3004.000000',
+  });
+  assert.equal(f.jobs.length, 2);
+  assert.match(f.jobs.at(-1)!.turn.text, /^Pressed "Draft outreach" on the card "Acme Corp"/);
+  assert.equal(f.jobs.at(-1)!.turn.userId, 'U2');
+  assert.deepEqual(f.updates(), [], 'the answer message is never rewritten');
+  await f.click(surface.id, {
+    actionId: uiActionId('ui', 'cards', 1), blockId: uiBlockId('ui', surface.id, 1),
+    value: uiValue(surface.id, 1), actionTs: '3004.100000',
+  });
+  assert.equal(f.jobs.length, 2);
+  assert.match(f.ephemerals().at(-1)!, /Already requested by <@U2>/);
+  assert.deepEqual(f.updates(), []);
+}));

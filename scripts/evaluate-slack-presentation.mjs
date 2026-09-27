@@ -4,6 +4,7 @@
 // the real presentation tools and guide against real models, per case, with
 // a private report and a gate on the calibration targets.
 
+import { displayToolAcknowledgement } from '../src/slack/ui/display-tools.ts';
 import {
   SLACK_ASK_USER_ACKNOWLEDGEMENT,
   SLACK_OFFER_ACTIONS_ACKNOWLEDGEMENT,
@@ -99,6 +100,7 @@ const ABANDON_AFTER_FAILURES = 3;
 // The production acknowledgements and refusal, so the gate measures what ships.
 const QUESTION_POSTED = SLACK_ASK_USER_ACKNOWLEDGEMENT;
 const AFTER_QUESTION = new SlackQuestionPostedToolDeniedError().message;
+const DISPLAY_KINDS = { present_cards: 'cards', present_chart: 'chart', present_details: 'details' };
 const ACKNOWLEDGEMENTS = {
   ask_user: SLACK_ASK_USER_ACKNOWLEDGEMENT,
   offer_actions: SLACK_OFFER_ACTIONS_ACKNOWLEDGEMENT,
@@ -192,7 +194,9 @@ function presentationTool(definition, run, writeComponent) {
       run.recorder.accept(definition.name, toolCallId, spec);
       writeComponent({ tool: definition.name, spec });
       return ACKNOWLEDGEMENTS[definition.name] ??
-        (BLOCKING_TOOL_NAMES.includes(definition.name) ? QUESTION_POSTED : `Recorded. ${run.recorder.remaining()}`);
+        (DISPLAY_KINDS[definition.name]
+          ? displayToolAcknowledgement(DISPLAY_KINDS[definition.name], Math.max(0, MAX_DISPLAY_PER_REPLY - run.recorder.display))
+          : BLOCKING_TOOL_NAMES.includes(definition.name) ? QUESTION_POSTED : `Recorded. ${run.recorder.remaining()}`);
     },
   };
 }

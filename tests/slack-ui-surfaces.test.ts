@@ -168,10 +168,12 @@ test('the checker names malformed payloads instead of throwing', () => {
     [[{ type: 'actions', elements: [{ type: 'overflow', action_id: uiActionId('ui', 'actions', 0), options: [] }] }], /overflow menus are excluded/],
     [[{ type: 'input', label: { type: 'plain_text', text: 'Email' }, element: { type: 'email_text_input', action_id: uiActionId('ui', 'form', 0) } }], /modal-only/],
     [[{ type: 'bogus' }], /unsupported block type/],
-    [[{ type: 'data_visualization', chart: { title: 't', chart_type: 'pie', labels: ['a', 'b'], series: [{ name: 's', values: [1, 0] }] } }], /pie values must be greater than 0/],
+    [[{ type: 'data_visualization', title: 't', chart: { type: 'pie', segments: [{ label: 'a', value: 1 }, { label: 'b', value: 0 }] } }], /value greater than 0/],
+    [[{ type: 'data_visualization', title: 't', chart: { type: 'bar', series: [{ name: 's', data: [{ label: 'b', value: 1 }] }], axis_config: { categories: ['a'] } } }], /one finite value per category/],
     [[{ type: 'data_visualization' }, { type: 'data_visualization' }, { type: 'data_visualization' }], /3 charts exceed/],
     [[{ type: 'carousel', elements: Array.from({ length: 11 }, () => ({ type: 'card', title: { type: 'mrkdwn', text: 'x' } })) }], /1–10 cards/],
-    [[{ type: 'container', elements: [{ type: 'markdown', text: 'x' }] }], /cannot be a markdown block/],
+    [[{ type: 'container', title: { type: 'plain_text', text: 'T' }, child_blocks: [{ type: 'markdown', text: 'x' }] }], /cannot be a markdown block/],
+    [[{ type: 'container', child_blocks: [{ type: 'divider' }] }], /needs a title/],
   ];
   for (const [blocks, pattern] of expectations) {
     const check = checkSlackBlocks(blocks);

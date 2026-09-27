@@ -362,6 +362,12 @@ export function interactiveAnswer(
   action: Pick<SlackUiAction, 'selected' | 'state' | 'value'>,
 ): InteractiveAnswer | undefined {
   const spec = record.spec;
+  if (spec.kind === 'cards') {
+    const slot = control.valueIndex;
+    if (control.kind !== 'cards' || slot === undefined) return undefined;
+    const action = spec.cards.cards[Math.floor(slot / 3)]?.actions?.[(slot % 3) - 1];
+    return action && !action.url ? { choice: slot } : undefined;
+  }
   if (spec.kind === 'actions') {
     const index = control.valueIndex;
     if (control.kind !== 'actions' || index === undefined) return undefined;
@@ -443,4 +449,15 @@ export function interactiveTurnText(
   const answered = questionAnswerLabel(question, values);
   const forWhom = byUserId !== record.requesterUserId ? ` for <@${record.requesterUserId}>` : '';
   return `Answered your question "${question.question}"${forWhom} ${reference}: ${answered}`;
+}
+
+/** A card request button: the stored card title and button label, never payload text. */
+export function cardTurnText(
+  record: UiSurfaceRecord,
+  spec: Extract<UiSurfaceRecord['spec'], { kind: 'cards' }>,
+  answer: InteractiveAnswer,
+): string {
+  const card = spec.cards.cards[Math.floor(answer.choice / 3)];
+  const label = card?.actions?.[(answer.choice % 3) - 1]?.label ?? 'a button';
+  return `Pressed "${label}" on the card "${card?.title ?? 'a card'}" under your previous reply (cards ${record.id.slice(0, 8)}).`;
 }

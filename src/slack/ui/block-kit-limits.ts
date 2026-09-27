@@ -414,61 +414,82 @@ function checkCarousel(value: Json, at: string, context: CheckContext): void {
 
 function checkContainer(value: Json, at: string, context: CheckContext, nested: boolean): void {
   if (nested) context.issues.push(`${at} containers cannot nest`);
-  const children = value.elements ?? value.blocks;
+  const children = value.child_blocks;
   if (!Array.isArray(children) || children.length < 1 || children.length > MAX_CONTAINER_CHILDREN) {
-    context.issues.push(`${at} must hold 1–${MAX_CONTAINER_CHILDREN} child blocks`);
+    context.issues.push(`${at}.child_blocks must hold 1–${MAX_CONTAINER_CHILDREN} blocks`);
     return;
   }
+  if (value.title === undefined && value.rich_text_title === undefined) context.issues.push(`${at} needs a title`);
   if (value.title !== undefined) checkText(value.title, `${at}.title`, context, { max: 150, kind: 'plain_text' });
   children.forEach((child, index) => {
     if (isRecord(child) && typeof child.type === 'string' && CONTAINER_CHILD_EXCLUDED.has(child.type)) {
       context.issues.push(`${at} child ${index} cannot be a ${child.type} block`);
     }
-    checkBlock(child, `${at}.children[${index}]`, context, true);
+    checkBlock(child, `${at}.child_blocks[${index}]`, context, true);
   });
 }
 
+/** data_visualization per docs.slack.dev: pie segments, or series over axis_config.categories. */
 function checkChart(value: Json, at: string, context: CheckContext): void {
   context.charts += 1;
-  const chart = isRecord(value.chart) ? value.chart : value;
-  const title = chart.title;
-  if (typeof title !== 'string' || !title || title.length > 50) {
-    context.issues.push(`${at} chart title must be 1–50 characters`);
+  if (typeof value.title !== 'string' || !value.title || value.title.length > 50) {
+    context.issues.push(`${at}.title must be 1–50 characters`);
   }
-  const type = chart.chart_type ?? chart.type;
-  if (!['bar', 'line', 'area', 'pie'].includes(String(type))) {
-    context.issues.push(`${at} chart type must be bar, line, area or pie`);
-  }
-  const labels = chart.labels ?? chart.categories;
-  if (!Array.isArray(labels) || labels.length < 1 || labels.length > 20) {
-    context.issues.push(`${at} chart needs 1–20 labels`);
+  const chart = isRecord(value.chart) ? value.chart : undefined;
+  if (!chart) {
+    context.issues.push(`${at}.chart is required`);
     return;
   }
-  if (labels.some((label) => typeof label !== 'string' || !label || label.length > 20)) {
-    context.issues.push(`${at} chart labels must be 1–20 characters`);
-  }
-  if (new Set(labels).size !== labels.length) context.issues.push(`${at} chart labels must be unique`);
-  const series = chart.series ?? chart.datasets;
-  if (!Array.isArray(series) || series.length < 1 || series.length > 12) {
-    context.issues.push(`${at} chart needs 1–12 series`);
-    return;
-  }
-  series.forEach((entry, index) => {
-    if (!isRecord(entry)) {
-      context.issues.push(`${at} series ${index} is not an object`);
+  const label = (text: unknown) => typeof text === 'string' && text.length > 0 && text.length <= 20;
+  if (chart.type === 'pie') {
+    const segments = chart.segments;
+    if (!Array.isArray(segments) || segments.length < 1 || segments.length > 12) {
+      context.issues.push(`${at} pie charts take 1–12 segments`);
       return;
     }
-    const name = entry.name ?? entry.label;
-    if (typeof name !== 'string' || !name || name.length > 20) {
-      context.issues.push(`${at} series ${index} name must be 1–20 characters`);
+    segments.forEach((segment, index) => {
+      if (!isRecord(segment) || !label(segment.label) || typeof segment.value !== 'number' ||
+          !Number.isFinite(segment.value) || segment.value <= 0) {
+        context.issues.push(`${at} segment ${index} needs a 1–20 character label and a value greater than 0`);
+      }
+    });
+    return;
+  }
+  if (!['bar', 'line', 'area'].includes(String(chart.type))) {
+    context.issues.push(`${at} chart type must be bar, line, area or pie`);
+    return;
+  }
+  const axis = isRecord(chart.axis_config) ? chart.axis_config : undefined;
+  const categories = axis?.categories;
+  if (!Array.isArray(categories) || categories.length < 1 || categories.length > 20 || !categories.every(label)) {
+    context.issues.push(`${at} axis_config.categories needs 1–20 labels of 1–20 characters`);
+    return;
+  }
+  if (new Set(categories).size !== categories.length) context.issues.push(`${at} categories must be unique`);
+  for (const key of ['x_label', 'y_label']) {
+    const text = axis![key];
+    if (text !== undefined && (typeof text !== 'string' || !text || text.length > 50)) {
+      context.issues.push(`${at} axis_config.${key} must be 1–50 characters`);
     }
-    const values = entry.values ?? entry.data;
-    if (!Array.isArray(values) || values.length !== labels.length ||
-        values.some((point) => typeof point !== 'number' || !Number.isFinite(point))) {
-      context.issues.push(`${at} series ${index} needs one finite number per label`);
-    } else if (type === 'pie' && values.some((point) => (point as number) <= 0)) {
-      context.issues.push(`${at} pie values must be greater than 0`);
+  }
+  const series = chart.series;
+  if (!Array.isArray(series) || series.length < 1 || series.length > 12) {
+    context.issues.push(`${at} needs 1–12 series`);
+    return;
+  }
+  const names = new Set<string>();
+  series.forEach((entry, index) => {
+    if (!isRecord(entry) || !label(entry.name)) {
+      context.issues.push(`${at} series ${index} name must be 1–20 characters`);
+      return;
+    }
+    if (names.has(entry.name as string)) context.issues.push(`${at} series names must be unique`);
+    names.add(entry.name as string);
+    const data = entry.data;
+    if (!Array.isArray(data) || data.length !== categories.length ||
+        data.some((point, pointIndex) => !isRecord(point) || point.label !== categories[pointIndex] ||
+          typeof point.value !== 'number' || !Number.isFinite(point.value))) {
+      context.issues.push(`${at} series ${index} needs one finite value per category, in order`);
     }
   });
-  if (type === 'pie' && series.length !== 1) context.issues.push(`${at} pie charts take one series`);
 }

@@ -10,9 +10,13 @@ import { slackTimestampUnits } from '../thread-context.ts';
 import type { NormalizedSlackTurn } from '../types.ts';
 import { checkSlackBlocks } from './block-kit-limits.ts';
 import { renderUiSurface, type RenderedUiSurface } from './render.ts';
+import { renderCards, renderChart, renderDetails } from './render-display.ts';
+import type { RenderedSlackComponents } from '../reply-continuations.ts';
 import {
+  isDisplaySurface,
   UI_SURFACE_TTL_MS,
   uiSurfaceId,
+  type DisplaySurfaceSpec,
   type HostApprovalSpec,
   type UiSurfaceRecord,
   type UiSurfaceResolution,
@@ -40,7 +44,8 @@ export async function redrawUiSurface(
   messenger: Pick<UiSurfaceMessenger, 'update'>,
   surface: UiSurfaceRecord | undefined,
 ): Promise<void> {
-  if (!surface?.messageTs) return;
+  // Display components live inside the answer message, which is never redrawn.
+  if (!surface?.messageTs || isDisplaySurface(surface.spec)) return;
   await messenger.update(surface.messageTs, renderUiSurface(surface)).catch(() => {
     console.warn('[chickpea] Slack card redraw failed');
   });
@@ -221,7 +226,8 @@ export async function deliverInteractiveSurfaces(input: {
       agentId: input.agentId,
     },
     exceptTurnJobId: input.turnJobId,
-    kinds: ['question', 'actions'],
+    // Card request buttons close too; the answer they sit in is left as is.
+    kinds: ['question', 'actions', 'cards'],
   });
   if (superseded.kind === 'surfaces') {
     for (const surface of superseded.surfaces) await redrawUiSurface(input.messenger, surface);
@@ -229,7 +235,8 @@ export async function deliverInteractiveSurfaces(input: {
   const own = await state.executeUiSurface({ kind: 'list_turn_surfaces', turnJobId: input.turnJobId });
   if (own.kind !== 'surfaces') return;
   for (const surface of own.surfaces) {
-    if (surface.namespace !== 'ui' || surface.status !== 'pending_delivery' || surface.messageTs) continue;
+    if (surface.namespace !== 'ui' || surface.status !== 'pending_delivery' || surface.messageTs ||
+        isDisplaySurface(surface.spec)) continue;
     if (surface.threadTs !== input.turn.threadTs || surface.channelId !== input.turn.channelId) {
       await uiSurfaceRecord(state, { kind: 'close_surface', id: surface.id, status: 'failed' });
       continue;
@@ -257,6 +264,104 @@ export async function abandonTurnSurfaces(state: SlackStateStore, turnJobId: str
   for (const surface of own.surfaces) {
     if (surface.namespace === 'ui' && surface.status === 'pending_delivery') {
       await state.executeUiSurface({ kind: 'close_surface', id: surface.id, status: 'failed' });
+    }
+  }
+}
+
+/**
+ * The display components the answer carries. A fresh result's components are
+ * stored first (one slot each, in order), so a retried delivery that replays
+ * the settled answer renders the same ones; a replay reads them back.
+ */
+export async function prepareDisplaySurfaces(input: {
+  state: SlackStateStore;
+  turn: Pick<NormalizedSlackTurn, 'workspaceId' | 'channelId' | 'threadTs' | 'userId'> &
+    Partial<Pick<NormalizedSlackTurn, 'channelType' | 'source'>>;
+  agentId: string;
+  turnJobId: string;
+  /** This attempt's components; undefined when replaying a settled answer. */
+  fresh?: readonly DisplaySurfaceSpec[];
+  now?: number;
+}): Promise<UiSurfaceRecord[]> {
+  if (!input.state.executeUiSurface) return [];
+  const state = input.state as SurfaceState;
+  const now = input.now ?? Date.now();
+  if (input.fresh) {
+    const ids = new Set<string>();
+    for (const [index, spec] of input.fresh.entries()) {
+      const id = uiSurfaceId(input.turnJobId, `display:${index}`);
+      ids.add(id);
+      await uiSurfaceRecord(state, {
+        kind: 'put_surface',
+        record: {
+          id,
+          namespace: 'ui',
+          workspaceId: input.turn.workspaceId,
+          channelId: input.turn.channelId,
+          threadTs: input.turn.threadTs,
+          conversationThreadTs: input.turn.threadTs,
+          conversationKind: input.turn.channelId.startsWith('D') ? 'im' : 'channel',
+          agentId: input.agentId,
+          turnJobId: input.turnJobId,
+          requesterUserId: input.turn.userId,
+          spec,
+          status: 'pending_delivery',
+          // Slots keep call order: listing sorts by creation time.
+          createdAt: now + index,
+          updatedAt: now,
+          expiresAt: now + UI_SURFACE_TTL_MS,
+        },
+      });
+    }
+    // An earlier attempt's extra components never reach Slack.
+    const listed = await state.executeUiSurface({ kind: 'list_turn_surfaces', turnJobId: input.turnJobId });
+    for (const surface of listed.kind === 'surfaces' ? listed.surfaces : []) {
+      if (isDisplaySurface(surface.spec) && !ids.has(surface.id) && surface.status === 'pending_delivery') {
+        await state.executeUiSurface({ kind: 'close_surface', id: surface.id, status: 'failed' });
+      }
+    }
+  }
+  const listed = await state.executeUiSurface({ kind: 'list_turn_surfaces', turnJobId: input.turnJobId });
+  return (listed.kind === 'surfaces' ? listed.surfaces : []).filter((surface) =>
+    isDisplaySurface(surface.spec) && (surface.status === 'pending_delivery' || surface.status === 'open'));
+}
+
+/**
+ * Compile stored display components for the answer's closing. Each one must
+ * pass the Block Kit checker on its own; one that does not is left out and the
+ * prose still stands.
+ */
+export function renderDisplayComponents(records: readonly UiSurfaceRecord[]): RenderedSlackComponents | undefined {
+  const blocks: Array<Record<string, unknown>> = [];
+  const fallback: string[] = [];
+  for (const record of records) {
+    const spec = record.spec;
+    if (!isDisplaySurface(spec)) continue;
+    const rendered = spec.kind === 'cards'
+      ? renderCards(spec.cards, record.id)
+      : spec.kind === 'chart' ? renderChart(spec.chart) : renderDetails(spec.details);
+    const check = checkSlackBlocks(rendered.blocks);
+    if (!check.ok) {
+      console.error('[chickpea] display component failed the Block Kit check', {
+        kind: spec.kind, issues: check.issues.slice(0, 5),
+      });
+      continue;
+    }
+    blocks.push(...rendered.blocks);
+    fallback.push(rendered.fallbackText);
+  }
+  return blocks.length ? { blocks, fallbackText: fallback.join('\n\n') } : undefined;
+}
+
+/** After the answer is delivered, its display components are open for card clicks. */
+export async function markDisplaySurfacesDelivered(
+  state: SlackStateStore,
+  records: readonly UiSurfaceRecord[],
+): Promise<void> {
+  if (!state.executeUiSurface) return;
+  for (const record of records) {
+    if (record.status === 'pending_delivery') {
+      await state.executeUiSurface({ kind: 'open_surface', id: record.id });
     }
   }
 }

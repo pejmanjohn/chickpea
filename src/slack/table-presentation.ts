@@ -231,12 +231,13 @@ export function renderSlackTablePresentation(
 export function appendSlackTableToRenderedMessage(
   rendered: RenderedSlackMessage,
   sourceText: string,
-  table: Pick<RenderedSlackTablePresentation, 'block' | 'fallbackText'>,
+  extras: Pick<RenderedSlackTablePresentation, 'block' | 'fallbackText'> | { blocks: readonly unknown[]; fallbackText: string },
 ): RenderedSlackMessage {
+  const blocks = 'blocks' in extras ? extras.blocks : [extras.block];
   return {
     ...rendered,
-    text: markdownFallbackText(`${sourceText}\n\n${table.fallbackText}`),
-    blocks: [...(rendered.blocks ?? []), table.block],
+    text: markdownFallbackText(extras.fallbackText ? `${sourceText}\n\n${extras.fallbackText}` : sourceText),
+    blocks: [...(rendered.blocks ?? []), ...blocks] as NonNullable<RenderedSlackMessage['blocks']>,
   };
 }
 
