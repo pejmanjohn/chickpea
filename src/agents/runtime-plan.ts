@@ -37,6 +37,7 @@ import {
 import type { ConnectionAccountSelection, EffectiveConnectionAccount } from '../connections/types.ts';
 import type { PersonalConnectionAuthorizationOption } from '../connections/types.ts';
 import {
+  frozenRuntimeModelRouteIdentity,
   validateFrozenRuntimeModelRoute,
   type FrozenOpenRouterLiveModelRoute,
   type FrozenRuntimeModelRoute,
@@ -1175,7 +1176,9 @@ function computeHarnessRevision(plan: HarnessRevisionInput): string {
       ...(plan.ownerIncarnation ? { ownerIncarnation: plan.ownerIncarnation } : {}),
       ...(plan.handoffContext?.length ? { handoffContext: plan.handoffContext } : {}),
       ...(plan.runtimeModel ? { runtimeModel: plan.runtimeModel } : {}),
-      ...(plan.runtimeModelRoute ? { runtimeModelRoute: plan.runtimeModelRoute } : {}),
+      ...(plan.runtimeModelRoute
+        ? { runtimeModelRoute: frozenRuntimeModelRouteIdentity(plan.runtimeModelRoute) }
+        : {}),
       model: plan.model,
       ...(plan.imageCapability ? { imageCapability: plan.imageCapability } : {}),
       ...(plan.browserCapability ? { browserCapability: plan.browserCapability } : {}),

@@ -421,6 +421,15 @@ test('an OpenRouter live-catalog route freezes only model metadata', () => {
   });
 
   assert.deepEqual(parseRuntimePlanV2(structuredClone(plan)).runtimeModelRoute, runtimeModelRoute);
+  // OpenRouter changes live prices and limits on its own; a thread keeps its
+  // incarnation and renders the metadata frozen on its first turn.
+  const repriced = compile({
+    assignment: assignment({ model }),
+    runtimeModel: model,
+    runtimeModelRoute: { ...runtimeModelRoute, maxTokens: 16_384, cost: { ...runtimeModelRoute.cost, input: 3 } },
+  });
+  assert.equal(repriced.harnessRevision, plan.harnessRevision);
+  assert.equal(deriveRuntimePlanInstanceId(repriced), deriveRuntimePlanInstanceId(plan));
   for (const route of [
     { ...runtimeModelRoute, baseUrl: 'https://attacker.example' },
     { ...runtimeModelRoute, cost: { ...runtimeModelRoute.cost, extra: 1 } },

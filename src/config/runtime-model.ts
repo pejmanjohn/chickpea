@@ -210,6 +210,18 @@ export function registerFrozenRuntimeModelRoute(
   }
 }
 
+/**
+ * The part of a frozen route that addresses a Flue incarnation. OpenRouter's
+ * live metadata (prices, limits, names) changes on its own; hashing it would
+ * rotate every thread on that model to a new incarnation. A continuing
+ * instance keeps rendering the route frozen on its first turn.
+ */
+export function frozenRuntimeModelRouteIdentity(
+  route: FrozenRuntimeModelRoute,
+): FrozenRuntimeModelRoute | { source: 'openrouter_live_catalog' } {
+  return route.source === 'openrouter_live_catalog' ? { source: route.source } : route;
+}
+
 export function validateFrozenRuntimeModelRoute(
   canonicalModel: string,
   runtimeModel: string,

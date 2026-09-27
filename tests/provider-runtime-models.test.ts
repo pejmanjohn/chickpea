@@ -8,7 +8,7 @@ import {
   rebindBuiltinProvider,
 } from '../src/config/provider-keys.ts';
 import { invalidateProviderModelCache } from '../src/config/provider-models.ts';
-import { setWorkersAiRestPiProvider } from '../src/config/pi-provider.ts';
+import { setBuiltinPiProvider, setWorkersAiRestPiProvider } from '../src/config/pi-provider.ts';
 import { registeredPiProvider } from '../src/config/pi-provider-registry.ts';
 import {
   freezeRuntimeModelRoute,
@@ -153,23 +153,35 @@ test('an admitted OpenRouter overlay is frozen and recreated in a cold isolate',
         supported_parameters: ['reasoning'],
         top_provider: { max_completion_tokens: 32_768 },
         pricing: { prompt: '0.000002', completion: '0.000006' },
+      }, {
+        id: 'acme/nameless-live-model',
+        name: '',
+        context_length: 8_192,
       }],
     });
     const canonical = 'openrouter/acme/fresh-live-model';
-    const resolved = await resolveRuntimeModel('agent_openrouter', canonical, {
+    const dependencies = {
       settings,
-      loadCatalog: async () => ({ status: 'bundled', revision: 0 }),
-    });
+      loadCatalog: async () => ({ status: 'bundled' as const, revision: 0 }),
+    };
+    const resolved = await resolveRuntimeModel('agent_openrouter', canonical, dependencies);
     const admitted = resolveModel(resolved.model);
     const route = freezeRuntimeModelRoute(canonical, resolved.providerAuthRoute);
-    assert.equal(route?.source, 'openrouter_live_catalog');
+    if (route?.source !== 'openrouter_live_catalog') throw new Error('Expected a live-catalog route.');
     // Pi's static baseline already knows this model in every isolate.
-    assert.equal(freezeRuntimeModelRoute('openrouter/meta/muse-spark-1.1', undefined), undefined);
+    const baseline = 'openrouter/meta/muse-spark-1.1';
+    assert.equal(freezeRuntimeModelRoute(baseline, undefined), undefined);
+    // A frozen name satisfies the plan's displayName bound.
+    await resolveRuntimeModel('agent_openrouter', 'openrouter/acme/nameless-live-model', dependencies);
+    const nameless = freezeRuntimeModelRoute('openrouter/acme/nameless-live-model', undefined);
+    assert.equal(nameless?.source === 'openrouter_live_catalog' && nameless.displayName, 'acme/nameless-live-model');
 
-    // A fresh Durable Object isolate: only the bootstrap registration exists.
+    // A fresh Durable Object isolate: only the bootstrap registration exists,
+    // and the agent render registers the route before the turn binds the
+    // stored key.
     resetModelsForTests();
     invalidateProviderKeyCache();
-    rebindBuiltinProvider('openrouter', 'openrouter-stored-key');
+    setBuiltinPiProvider('openrouter', {});
     assert.throws(() => resolveModel(canonical), /Unknown model ID/);
     registerFrozenRuntimeModelRoute(canonical, resolved.model, route);
     const recreated = resolveModel(canonical);
@@ -178,8 +190,16 @@ test('an admitted OpenRouter overlay is frozen and recreated in a cold isolate',
     }
     assert.deepEqual(recreated.input, admitted.input);
     assert.deepEqual(recreated.cost, admitted.cost);
+    // Binding the stored key keeps the overlay.
+    rebindBuiltinProvider('openrouter', 'openrouter-stored-key');
+    assert.equal(resolveModel(canonical).name, admitted.name);
     const auth = await registeredPiProvider('openrouter')?.auth.apiKey?.resolve({} as never);
     assert.equal(auth?.auth.apiKey, 'openrouter-stored-key');
+    // A route persisted before its model entered Pi's baseline keeps the
+    // reviewed baseline entry instead of overlaying it.
+    const baselineName = resolveModel(baseline).name;
+    registerFrozenRuntimeModelRoute(baseline, baseline, { ...route, displayName: 'Stale overlay' });
+    assert.equal(resolveModel(baseline).name, baselineName);
   } finally {
     settings.close();
   }

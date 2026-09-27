@@ -214,13 +214,6 @@ export function addBuiltinProviderModelOverlay(id: ProviderKeyId, model: Model<A
   rebindBuiltinProvider(id, apiKey, [model]);
 }
 
-export function hasBuiltinProviderModelOverlay(
-  id: ProviderKeyId,
-  modelId: string,
-): boolean {
-  return appliedProviderModelOverlays.get(id)?.has(modelId) === true;
-}
-
 export function builtinProviderModelOverlay(
   id: ProviderKeyId,
   modelId: string,

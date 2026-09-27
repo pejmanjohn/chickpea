@@ -4,7 +4,6 @@ import { openrouterProvider } from '@earendil-works/pi-ai/providers/openrouter';
 import {
   addBuiltinProviderModelOverlay,
   builtinProviderModelOverlay,
-  hasBuiltinProviderModelOverlay,
   rebindBuiltinProvider,
   resolveProviderApiKey,
 } from './provider-keys.ts';
@@ -45,8 +44,7 @@ export async function ensureOpenRouterRuntimeModel(
 ): Promise<boolean> {
   if (!canonicalModel.startsWith(OPENROUTER_PREFIX)) return false;
   const modelId = canonicalModel.slice(OPENROUTER_PREFIX.length);
-  const catalog = openrouterProvider();
-  if (catalog.getModels().some((model) => model.id === modelId)) return true;
+  if (isOpenRouterBaselineModel(modelId)) return true;
 
   let models: ProviderModel[];
   try {
@@ -57,7 +55,7 @@ export async function ensureOpenRouterRuntimeModel(
   } catch (error) {
     // A live catalog outage must not break a model already projected into the
     // runtime during this isolate's lifetime. Cold isolates still fail closed.
-    if (hasBuiltinProviderModelOverlay('openrouter', modelId)) return true;
+    if (builtinProviderModelOverlay('openrouter', modelId)) return true;
     throw error;
   }
   const discovered = models.find((model) => model.id === modelId);
@@ -79,12 +77,14 @@ export function freezeOpenRouterRuntimeModelRoute(
   canonicalModel: string,
 ): FrozenOpenRouterLiveModelRoute | undefined {
   const modelId = canonicalModel.slice(OPENROUTER_PREFIX.length);
-  if (openrouterProvider().getModels().some((model) => model.id === modelId)) return undefined;
+  if (isOpenRouterBaselineModel(modelId)) return undefined;
   const overlay = builtinProviderModelOverlay('openrouter', modelId);
   if (!overlay) return undefined;
   return {
     source: 'openrouter_live_catalog',
-    displayName: overlay.name,
+    // The plan parser bounds displayName to 1-160 characters; OpenRouter's
+    // `name` is unbounded and may be empty.
+    displayName: overlay.name.slice(0, 160) || modelId,
     contextWindow: overlay.contextWindow,
     maxTokens: overlay.maxTokens,
     reasoning: overlay.reasoning,
@@ -93,16 +93,19 @@ export function freezeOpenRouterRuntimeModelRoute(
   };
 }
 
-/** Synchronously register a frozen overlay before useModel() in a cold isolate. */
+/**
+ * Synchronously register a frozen overlay before useModel() in a cold isolate.
+ * A model that has since entered Pi's reviewed baseline keeps the baseline
+ * entry: a continuing instance re-registers its first-turn route every render.
+ */
 export function registerFrozenOpenRouterRuntimeModelRoute(
   canonicalModel: string,
   runtimeModel: string,
   route: FrozenOpenRouterLiveModelRoute,
 ): void {
-  addBuiltinProviderModelOverlay(
-    'openrouter',
-    frozenOpenRouterRuntimeModel(canonicalModel, runtimeModel, route),
-  );
+  const model = frozenOpenRouterRuntimeModel(canonicalModel, runtimeModel, route);
+  if (isOpenRouterBaselineModel(model.id)) return;
+  addBuiltinProviderModelOverlay('openrouter', model);
 }
 
 export function frozenOpenRouterRuntimeModel(
@@ -124,28 +127,33 @@ export function frozenOpenRouterRuntimeModel(
     reasoning: route.reasoning,
     input: [...route.input],
     cost: { ...route.cost },
-    contextWindow: Math.min(route.contextWindow, OPENROUTER_CONTEXT_WINDOW_CEILING),
-    maxTokens: Math.min(route.maxTokens, route.contextWindow, OPENROUTER_MAX_COMPLETION_TOKENS),
+    ...openRouterLimits(route.contextWindow, route.maxTokens),
   };
+}
+
+function isOpenRouterBaselineModel(modelId: string): boolean {
+  return openrouterProvider().getModels().some((model) => model.id === modelId);
 }
 
 function openRouterTemplate(): Model<Api> | undefined {
   return openrouterProvider().getModels().find((model) => model.id === 'openrouter/auto');
 }
 
+function openRouterLimits(
+  contextWindow: number,
+  maxTokens: number,
+): Pick<Model<Api>, 'contextWindow' | 'maxTokens'> {
+  const boundedContextWindow = Math.min(contextWindow, OPENROUTER_CONTEXT_WINDOW_CEILING);
+  return {
+    contextWindow: boundedContextWindow,
+    maxTokens: Math.min(maxTokens, boundedContextWindow, OPENROUTER_MAX_COMPLETION_TOKENS),
+  };
+}
+
 function liveOpenRouterModel(
   discovered: ProviderModel,
   template: Model<Api>,
 ): Model<'openai-completions'> {
-  const contextWindow = Math.min(
-    positiveInteger(discovered.context_length) ?? template.contextWindow,
-    OPENROUTER_CONTEXT_WINDOW_CEILING,
-  );
-  const maxTokens = Math.min(
-    positiveInteger(discovered.max_completion_tokens) ?? template.maxTokens,
-    contextWindow,
-    OPENROUTER_MAX_COMPLETION_TOKENS,
-  );
   const supported = new Set(discovered.supported_parameters ?? []);
   const modalities = new Set(discovered.input_modalities ?? []);
   return {
@@ -165,8 +173,10 @@ function liveOpenRouterModel(
       cacheRead: pricePerMillion(discovered.pricing?.input_cache_read, template.cost.cacheRead),
       cacheWrite: pricePerMillion(discovered.pricing?.input_cache_write, template.cost.cacheWrite),
     },
-    contextWindow,
-    maxTokens,
+    ...openRouterLimits(
+      positiveInteger(discovered.context_length) ?? template.contextWindow,
+      positiveInteger(discovered.max_completion_tokens) ?? template.maxTokens,
+    ),
   };
 }
 
