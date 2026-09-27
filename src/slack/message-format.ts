@@ -176,10 +176,11 @@ function renderSlackFileContent(
     : format === 'plain_text' ? escapeSlackControlCharacters(displayText) : displayText;
   const sections = [body];
   if (tableText) {
-    sections.push(escapeSlackControlCharacters(truncateText(
+    // Model-written cells land in a mrkdwn section, which auto-parses `@here`.
+    sections.push(neutralizeSlackMrkdwnHandles(escapeSlackControlCharacters(truncateText(
       canonicalSlackReplyText(tableText, 'plain_text'),
       slackMarkdownBlockTextLimit,
-    )));
+    ))));
   }
   const content = sections.join('\n\n');
   let plainText = format === 'plain_text';

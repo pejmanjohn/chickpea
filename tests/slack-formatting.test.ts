@@ -254,6 +254,11 @@ test('file replies keep broadcast words and user-group handles inert in mrkdwn',
   }
   // mrkdwn sections auto-parse handles; top-level text needs link_names.
   assert.doesNotMatch(JSON.stringify(rendered.blocks), /(?<![\p{L}\p{N}_])@oncall/u);
+
+  // Table cells join the same mrkdwn section as prose.
+  const withTable = renderFileBody(answer, 'markdown', footer, 'Owner: @here | Note: <!channel> for @oncall');
+  assert.match(withTable, new RegExp(`Owner: @${WJ}here \\| Note: &lt;!channel&gt; for @${WJ}oncall`));
+  assert.doesNotMatch(withTable, LIVE_BROADCAST);
 });
 
 test('code keeps a special mention readable but inert', () => {
