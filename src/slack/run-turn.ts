@@ -1118,9 +1118,13 @@ async function runTurnAttempt(
       await finishDelivery('failed');
       return;
     }
-    await agentViewPresentation?.setTitle(turn.text).catch(() => {
-      console.warn('[chickpea] Slack Agent View title could not be recorded');
-    });
+    // A click or form answers inside the conversation; its host-authored
+    // text never becomes the thread's title.
+    if (!turn.uiResponse) {
+      await agentViewPresentation?.setTitle(turn.text).catch(() => {
+        console.warn('[chickpea] Slack Agent View title could not be recorded');
+      });
+    }
     if (turn.managementApprovalProposalId && options.replayText === undefined &&
         options.invokeManagementApproval && !options.managementApproval) {
       const persisted = await workLifecycle?.prepareExecution('Slack management approval');
