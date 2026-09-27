@@ -1,6 +1,10 @@
 import type { SettingsStore } from '../config/settings-store.ts';
 import type { AppStores, PlatformEnv } from '../config/state-backend.ts';
-import type { TurnProgress, TurnPullRequestProgress } from '../config/state-rpc.ts';
+import type {
+  SlackInteractionProgressPatch,
+  TurnProgress,
+  TurnPullRequestProgress,
+} from '../config/state-rpc.ts';
 import type { TurnLatencyContext } from '../observability/runtime-latency.ts';
 import { isStateStoreDisconnect } from '../config/cf-state-proxies.ts';
 import type { CodingTaskStopReport } from '../sandbox/coding-task-stop.ts';
@@ -63,6 +67,7 @@ import {
 } from './turn-jobs.ts';
 import {
   DURABLE_RECOVERY_FAILURE_TEXT,
+  removeSlackReaction,
   STOP_ALREADY_FINISHED_TEXT,
   type SlackStopNoteFacts,
 } from './web-client-presenter.ts';
@@ -430,6 +435,10 @@ export async function executeTurnJob(
           stopEnding = false;
           return undefined;
         }
+        if (finished.outcome === 'dropped') {
+          await removeDroppedReceipts(finished.rows, client, (id, patch) =>
+            ports.turnJobs.recordSlackInteractionProgress(id, patch));
+        }
         // Dropped rows never ran: they made no Slack effect and hold no Work
         // execution. The state store settled their Runs and closed their
         // presentations with the drop (see SlackStateLogic.finishTurnStop);
@@ -740,6 +749,33 @@ export function stopNoteFacts(input: {
     },
     keepCodingActiveWork: report ? !report.allSettled : input.codingRan,
   };
+}
+
+/**
+ * The 👀 of the messages a stop dropped (KTD3, KTD9): a dropped row never
+ * runs, so the 👀 Chickpea added when its message arrived mid-run goes here,
+ * on that message, and its receipt is finished. Only receipts Chickpea
+ * recorded as its own are listed (TurnStopFinish rows). Best effort and
+ * content-free: a failure leaves the delivered row's receipt pending for the
+ * durable interaction cleanup. Released rows keep theirs for their own turn.
+ * Shared with the Node relay (KTD16).
+ */
+export async function removeDroppedReceipts(
+  rows: TurnStopFinish['rows'],
+  client: Pick<SlackInstallationExecutionContext['client'], 'reactions'>,
+  recordProgress: (id: string, patch: SlackInteractionProgressPatch) => MaybePromise<unknown>,
+): Promise<void> {
+  for (const row of rows) {
+    if (!row.receipt) continue;
+    try {
+      await removeSlackReaction(client, row.receipt.name, row.receipt);
+      await recordProgress(row.id, {
+        acknowledgment: { ...row.receipt, created: true, cleanup: 'done' },
+      });
+    } catch {
+      console.warn('[chickpea] a dropped message kept its mid-run reaction for now');
+    }
+  }
 }
 
 /**

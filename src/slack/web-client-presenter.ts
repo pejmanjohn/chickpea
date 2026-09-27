@@ -32,8 +32,10 @@ import {
 import {
   reactionFallbacks,
   SEMANTIC_REACTIONS,
+  type ReceiptReaction,
   type SemanticReaction,
 } from './interaction-intent.ts';
+import type { TurnMidRunReceipt } from './turn-job-types.ts';
 import type {
   SlackAgentViewPresentation,
   SlackPresentationDeliveryObserver,
@@ -548,23 +550,14 @@ export class WebClientPresenter {
   /** Best-effort work acknowledgment. The receipt records whether this run
    * created the reaction so terminal cleanup never removes a pre-existing eye. */
   async addSemanticReaction(
-    reaction: SemanticReaction,
+    reaction: SemanticReaction | ReceiptReaction,
     coordinate: SlackReactionCoordinate,
   ): Promise<SlackReactionReceipt> {
     return addReactionChain(this.client, reactionFallbacks(reaction), coordinate);
   }
 
   async removeReaction(name: string, coordinate: SlackReactionCoordinate): Promise<void> {
-    try {
-      await this.client.reactions.remove({
-        name,
-        channel: coordinate.channelId,
-        timestamp: coordinate.messageTs,
-      });
-    } catch (error) {
-      if (slackPlatformErrorCode(error) === 'no_reaction') return;
-      throw error;
-    }
+    await removeSlackReaction(this.client, name, coordinate);
   }
 
   /** Canonical reaction-only delivery. The whole fallback chain is persisted
@@ -1497,8 +1490,53 @@ export function isMissingFilesScopeError(err: unknown): boolean {
   return error === 'missing_scope' || error === 'not_allowed_token_type';
 }
 
+/**
+ * Where Chickpea's mid-run 👀 goes (R12, KTD9): the message's own
+ * coordinates, as its TurnJob records the receipt.
+ */
+export function slackMidRunReceipt(coordinate: SlackReactionCoordinate): TurnMidRunReceipt {
+  return {
+    channelId: coordinate.channelId,
+    messageTs: coordinate.messageTs,
+    name: reactionFallbacks('seen_mid_run')[0]!,
+  };
+}
+
+/**
+ * Add one of Chickpea's own receipt reactions (KTD9). `created: false` when
+ * Slack already shows Chickpea's reaction there, which it then never removes.
+ */
+export function addSlackReceiptReaction(
+  client: Pick<WebClient, 'reactions'>,
+  reaction: ReceiptReaction,
+  coordinate: SlackReactionCoordinate,
+): Promise<SlackReactionReceipt> {
+  return addReactionChain(client, reactionFallbacks(reaction), coordinate);
+}
+
+/**
+ * Remove Chickpea's reaction from one message. Slack removes only the
+ * caller's own; a reaction already gone counts as removed.
+ */
+export async function removeSlackReaction(
+  client: Pick<WebClient, 'reactions'>,
+  name: string,
+  coordinate: SlackReactionCoordinate,
+): Promise<void> {
+  try {
+    await client.reactions.remove({
+      name,
+      channel: coordinate.channelId,
+      timestamp: coordinate.messageTs,
+    });
+  } catch (error) {
+    if (slackPlatformErrorCode(error) === 'no_reaction') return;
+    throw error;
+  }
+}
+
 async function addReactionChain(
-  client: WebClient,
+  client: Pick<WebClient, 'reactions'>,
   names: readonly string[],
   coordinate: SlackReactionCoordinate,
 ): Promise<SlackReactionReceipt> {

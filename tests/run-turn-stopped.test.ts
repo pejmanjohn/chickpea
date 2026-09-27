@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, test } from 'node:test';
 
-import type { WebClient } from '@slack/web-api';
+import { ErrorCode, type WebClient } from '@slack/web-api';
 
 import { compileRuntimePlanV2 } from '../src/agents/runtime-plan.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
@@ -14,6 +14,7 @@ import { AgentRunAborted } from '../src/slack/flue-dispatch.ts';
 import { SlackRunPresentationStoreLogic } from '../src/slack/run-presentations.ts';
 import { runTurn, type RunTurnOptions, type SlackStopEnding } from '../src/slack/run-turn.ts';
 import { SlackStatusRegistry } from '../src/slack/status-registry.ts';
+import { SlackTransportError } from '../src/slack/transport/types.ts';
 import {
   executeTurnJob,
   type SandboxTurnReader,
@@ -582,7 +583,10 @@ function dmTurn(messageTs: string): NormalizedSlackTurn {
   };
 }
 
-async function presentationHarness(turn: NormalizedSlackTurn) {
+async function presentationHarness(
+  turn: NormalizedSlackTurn,
+  options: { stopStreamError?: unknown } = {},
+) {
   const work = new SqliteWorkStore(':memory:');
   const admitted = await work.admitShadowRun(prepareSlackShadowAdmission({
     turn, assignment, sourceVisibility: 'private', admittedAt: Date.now(),
@@ -649,6 +653,7 @@ async function presentationHarness(turn: NormalizedSlackTurn) {
       },
       stopStream: async (input: Record<string, unknown>) => {
         slack.push({ method: 'chat.stopStream', input });
+        if (options.stopStreamError) throw options.stopStreamError;
         return { ok: true };
       },
       postMessage: async (input: Record<string, unknown>) => {
@@ -657,6 +662,10 @@ async function presentationHarness(turn: NormalizedSlackTurn) {
       },
       update: async (input: Record<string, unknown>) => {
         slack.push({ method: 'chat.update', input });
+        return { ok: true };
+      },
+      delete: async (input: Record<string, unknown>) => {
+        slack.push({ method: 'chat.delete', input });
         return { ok: true };
       },
     },
@@ -796,6 +805,67 @@ test('a stop mid-stream seals the partial answer with the note, with no second m
     assert.equal(stored?.stream.presentationOutcome, 'progressive');
   } finally { h.close(); }
 });
+
+/** Stream the start of an answer on the harness's presentation, as a running turn has. */
+function streamPartialAnswer(h: PresentationHarness): string {
+  const apply = (mutation: Parameters<typeof h.store.transition>[0]['mutation']) => {
+    const current = h.store.get(h.runId)!;
+    const result = h.store.transition({
+      runId: current.runId,
+      workBindingGeneration: current.workBindingGeneration,
+      runFencingToken: current.runFencingToken,
+      expectedProjectionVersion: current.projectionVersion,
+      expectedStreamState: current.stream.state,
+      mutation,
+    });
+    assert.equal(result.outcome, 'applied');
+  };
+  const streamTs = `${Math.floor(Date.now() / 1000)}.000400`;
+  apply({ kind: 'freeze_progressive_eligibility', eligibility: { allowed: true, reason: 'safe_early_release' } });
+  apply({ kind: 'stream_start_intent' });
+  apply({ kind: 'stream_started', messageTs: streamTs,
+    flue: { instanceId: 'instance_stopped', submissionId: 'submission_stopped', messageId: 'message_stopped' } });
+  apply({ kind: 'append_intent', position: { batch: 5, index: 0 }, from: 0, to: 18, hash: 'a'.repeat(64) });
+  apply({ kind: 'append_acknowledged', cursor: 1, acknowledgedPrefixHash: 'a'.repeat(64) });
+  return streamTs;
+}
+
+for (const [label, halted] of [
+  ['Slack\'s Stop button halted the stream', { code: ErrorCode.PlatformError, data: { ok: false, error: 'message_not_in_streaming_state' } }],
+  ['the gateway relays a stream conflict', new SlackTransportError('chat.stopStream', 'streaming_state_conflict')],
+] as const) {
+  test(`a stop whose stream is already halted (${label}) keeps the partial answer and posts the note as a new reply`, async () => {
+    const turn = dmTurn(`17901000${label.length}.000100`);
+    const h = await presentationHarness(turn, { stopStreamError: halted });
+    try {
+      const streamTs = streamPartialAnswer(h);
+      const outcomes: Array<string | undefined> = [];
+      await stoppedRun(turn, h, {
+        stopEnding: stopEnding(FACTS).ending,
+        onDelivered: (outcome) => { outcomes.push(outcome); },
+      });
+      assert.deepEqual(h.slack.map((call) => call.method), ['chat.stopStream', 'chat.postMessage'],
+        'never chat.update (which would replace the partial answer) and never chat.delete');
+      assert.equal(h.slack[0]!.input.ts, streamTs);
+      const post = h.slack[1]!.input;
+      assert.equal(post.channel, turn.channelId);
+      assert.equal(post.thread_ts, turn.threadTs, 'a threaded reply');
+      const blocks = post.blocks as Array<{ type: string; text?: string }>;
+      assert.equal(blocks[0]?.type, 'markdown');
+      assert.match(String(blocks[0]?.text), /^Stopped by <@U_STOPPER>\./);
+      assert.equal(blocks.at(-1)?.type, 'context', 'the Agent footer closes it');
+      assert.equal(post.username, 'Stopped Agent', 'posted as the Agent');
+      assert.equal(post.icon_url, 'https://chickpea.example/assets/agents/stopped/avatar/1');
+      assert.ok(typeof post.client_msg_id === 'string', 'the post is idempotent per terminal');
+      assert.deepEqual(outcomes, ['stopped']);
+      assert.equal(h.sessions.at(-1), 'active');
+      const stored = h.store.get(h.runId);
+      assert.equal(stored?.stream.state, 'finalized');
+      assert.equal(stored?.stream.messageTs, `${turn.messageTs.split('.')[0]}.000600`, 'the note is the terminal');
+      assert.equal(stored?.repairRequired, false);
+    } finally { h.close(); }
+  });
+}
 
 test('a crash after the note posted and before the delivery was recorded replays without a second note', async () => {
   const turn = dmTurn('1790100003.000100');

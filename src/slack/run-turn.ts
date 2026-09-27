@@ -1164,28 +1164,43 @@ async function runTurnAttempt(
     };
     await options.onInteractionProgress?.(patch);
   };
+  /**
+   * Remove the turn's receipt: its work acknowledgment, or the 👀 admission
+   * added because the message arrived mid-run (KTD9). Only a receipt recorded
+   * as Chickpea's own is removed, and only on the message it names, because
+   * `reactions.remove` is not scoped to the code path that added it.
+   */
   const removeWorkAcknowledgment = async (): Promise<void> => {
     const persisted = interactionProgress.acknowledgment;
-    if (!workAcknowledgment?.created || persisted?.cleanup === 'done') return;
-    const acknowledgment = workAcknowledgment;
+    if (!workAcknowledgment?.created || !persisted || persisted.cleanup === 'done') return;
     try {
-      const coordinate = persisted
-        ? { channelId: persisted.channelId, messageTs: persisted.messageTs }
-        : triggerCoordinate;
-      await presenter.removeReaction(acknowledgment.name, coordinate);
+      await presenter.removeReaction(persisted.name, {
+        channelId: persisted.channelId,
+        messageTs: persisted.messageTs,
+      });
       workAcknowledgment = undefined;
       await recordInteractionProgress({
-        acknowledgment: {
-          channelId: coordinate.channelId,
-          messageTs: coordinate.messageTs,
-          name: acknowledgment.name,
-          created: true,
-          cleanup: 'done',
-        },
+        acknowledgment: { ...persisted, created: true, cleanup: 'done' },
       });
     } catch {
       console.warn('[chickpea] Slack work acknowledgment cleanup failed');
     }
+  };
+  /**
+   * A reaction answer that is the receipt's own emoji on the receipt's own
+   * message (the classifier's `seen` on a message admission gave 👀) is the
+   * turn's output now: the finish keeps it instead of removing the answer.
+   */
+  const keepAcknowledgmentAsAnswer = async (
+    delivered: SlackReactionReceipt,
+    coordinate: { channelId: string; messageTs: string },
+  ): Promise<void> => {
+    const persisted = interactionProgress.acknowledgment;
+    if (!workAcknowledgment?.created || !persisted || persisted.cleanup === 'done' ||
+        persisted.name !== delivered.name || persisted.channelId !== coordinate.channelId ||
+        persisted.messageTs !== coordinate.messageTs) return;
+    workAcknowledgment = undefined;
+    await recordInteractionProgress({ acknowledgment: { ...persisted, cleanup: 'done' } });
   };
   const finishDelivery = async (
     outcome?: 'succeeded' | 'no_op' | 'failed' | 'stopped',
@@ -1435,15 +1450,15 @@ async function runTurnAttempt(
           !(await agentViewPresentation.prepareDeferredTerminalDelivery('answer'))) {
         throw new Error('Slack reaction delivery requires reconciliation.');
       }
+      const reactionCoordinate = resolveReactionCoordinate(turn, interactionIntent.target);
+      let delivered: SlackReactionReceipt;
       try {
-        await presenter.deliverReaction(
-          interactionIntent.reaction,
-          resolveReactionCoordinate(turn, interactionIntent.target),
-        );
+        delivered = await presenter.deliverReaction(interactionIntent.reaction, reactionCoordinate);
       } catch (error) {
         await agentViewPresentation?.recordTerminalDeliveryReceipt(slackDeliveryFailureOutcome(error));
         throw error;
       }
+      await keepAcknowledgmentAsAnswer(delivered, reactionCoordinate);
       // The reaction is the terminal output. V3 cleanup requires its receipt,
       // just as it does for a written answer.
       await agentViewPresentation?.recordTerminalDeliveryReceipt('acknowledged');

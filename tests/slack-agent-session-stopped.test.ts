@@ -57,6 +57,10 @@ interface Harness {
   stores: AppStores;
   jobs: TurnJob[];
   posts: SlackPost[];
+  /** Agent Session status writes (`agents.sessions.setStatus`), in order. */
+  sessions: Array<Record<string, unknown>>;
+  /** Make the next Agent Session status writes fail. */
+  failSessions(): void;
   /** `steering.stop_button` tokens logged, in order. */
   tokens: unknown[];
   deliver(message: {
@@ -110,6 +114,8 @@ async function withHarness(run: (harness: Harness) => Promise<void>): Promise<vo
       id: 'C1', name: 'ops', is_channel: true, is_private: false, is_member: true, is_archived: false,
     };
     const posts: SlackPost[] = [];
+    const sessions: Array<Record<string, unknown>> = [];
+    let sessionsFail = false;
     let posted = 0;
     const gateway = {
       workspaceId: 'T1',
@@ -136,6 +142,11 @@ async function withHarness(run: (harness: Harness) => Promise<void>): Promise<vo
           posted += 1;
           return { ok: true, ts: `1900000000.${String(posted).padStart(6, '0')}`, channel: input.channel };
         }
+        if (operation === 'agents.sessions.setStatus') {
+          sessions.push(input);
+          if (sessionsFail) throw new Error('gateway unavailable for T1 C1 U1');
+          return { ok: true };
+        }
         throw new Error(`Unexpected gateway operation: ${operation}`);
       },
     } as unknown as GatewayDeploymentClient;
@@ -160,6 +171,8 @@ async function withHarness(run: (harness: Harness) => Promise<void>): Promise<vo
       stores,
       jobs,
       posts,
+      sessions,
+      failSessions() { sessionsFail = true; },
       tokens,
       async deliver(message) {
         const channelId = message.channel ?? 'C1';
@@ -270,6 +283,8 @@ test('a press with nothing running, or an unreadable event, does nothing and log
     assert.deepEqual(await harness.pending(), []);
     assert.deepEqual(harness.posts, []);
     assert.deepEqual(harness.tokens, [{ outcome: 'no_running_job' }]);
+    // Slack leaves the orphaned indicator processing: the app moves it out.
+    assert.deepEqual(harness.sessions, [{ channel_id: 'C1', thread_ts: ROOT_TS, status: 'active' }]);
 
     await startRun(harness, '1800000200.000100');
     await harness.press({
@@ -285,6 +300,51 @@ test('a press with nothing running, or an unreadable event, does nothing and log
     });
     assert.equal(await stopRecordOf(harness, 'msg:C1:1800000200.000100'), undefined);
     assert.deepEqual(harness.tokens.slice(1), [{ outcome: 'invalid' }, { outcome: 'invalid' }]);
+  });
+});
+
+test('a failed session write on a press with nothing running is logged without content and never throws', async () => {
+  await withHarness(async (harness) => {
+    await startRun(harness);
+    await harness.stores.slackState.markTurnDelivered!(ROOT_ID);
+    harness.failSessions();
+    const warnings: unknown[][] = [];
+    const previousWarn = console.warn;
+    console.warn = (...args: unknown[]) => { warnings.push(args); };
+    try {
+      await harness.press({ eventTs: '1800000010.000100', user: 'U2' });
+    } finally {
+      console.warn = previousWarn;
+    }
+    assert.equal(harness.sessions.length, 1);
+    assert.deepEqual(harness.tokens, [{ outcome: 'no_running_job' }]);
+    assert.deepEqual(warnings, [['[chickpea] Stop button could not settle an idle Agent Session']]);
+  });
+});
+
+test('the idle session settles under the thread\'s Agent persona, as a run\'s settle does', async () => {
+  await withHarness(async (harness) => {
+    const installation = await harness.stores.config.getWorkspaceInstallation('T1');
+    await harness.stores.config.updateWorkspaceInstallation('T1', { health: 'healthy' }, installation!.revision);
+    await harness.stores.settings.setSetting('slack.publicUrl', 'https://chickpea.example');
+    await startRun(harness);
+    await harness.stores.slackState.markTurnDelivered!(ROOT_ID);
+    await harness.press({ eventTs: '1800000010.000100', user: 'U2' });
+
+    assert.equal(harness.sessions.length, 1);
+    const [session] = harness.sessions;
+    assert.equal(session?.status, 'active');
+    assert.equal(session?.username, 'ops');
+    assert.match(String(session?.icon_url), /^https:\/\/chickpea\.example\//);
+  });
+});
+
+test('a press on a running thread leaves the session to the stopped ending', async () => {
+  await withHarness(async (harness) => {
+    await startRun(harness);
+    await harness.press({ eventTs: '1800000010.000100', user: 'U2' });
+    assert.equal((await stopRecordOf(harness))?.role, 'stopped');
+    assert.deepEqual(harness.sessions, []);
   });
 });
 

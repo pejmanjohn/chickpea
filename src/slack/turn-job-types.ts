@@ -254,7 +254,13 @@ export interface TurnStopFinish {
   outcome: 'dropped' | 'released';
   count: number;
   /** Content-free coordinates of those rows, to finalize their records and receipts. */
-  rows: Array<{ id: string; runId?: string; messageTs?: string }>;
+  rows: Array<{
+    id: string;
+    runId?: string;
+    messageTs?: string;
+    /** The row's 👀 Chickpea added and has not removed yet (KTD9). */
+    receipt?: TurnMidRunReceipt;
+  }>;
   record: TurnStopHeadRecordV1;
 }
 
@@ -298,6 +304,21 @@ export interface TurnJob {
   /** First-write-wins harness and target decision, populated before dispatch. */
   runtimePlan?: RuntimePlanV2;
   agentInstanceId?: string;
+  /**
+   * Chickpea's 👀 on this message, which arrived while its thread's run was
+   * in progress (R12, KTD9). Written with the row, before Slack is asked to
+   * add it, as the turn's receipt: its queued turn reuses it, and that turn's
+   * finish, or a stop that drops it, removes exactly this reaction on exactly
+   * this message. Only the job's own message may carry one.
+   */
+  midRunReceipt?: TurnMidRunReceipt;
+}
+
+/** Where Chickpea's mid-run 👀 goes: the message's own coordinates and emoji. */
+export interface TurnMidRunReceipt {
+  channelId: string;
+  messageTs: string;
+  name: string;
 }
 
 /** The only long-lived app-owned binding to a Flue conversation incarnation. */

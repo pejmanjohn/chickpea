@@ -32,6 +32,8 @@ interface Harness {
   /** Turns handed to the durable relay (the Cloudflare enqueue). */
   jobs: TurnJob[];
   posts: SlackPost[];
+  /** Mid-run 👀 added, as `<ts>:<name>` (U8). */
+  reactions: string[];
   deliver(message: {
     ts: string;
     text: string;
@@ -96,6 +98,7 @@ async function withHarness(
       id: 'C1', name: 'ops', is_channel: true, is_private: false, is_member: true, is_archived: false,
     };
     const posts: SlackPost[] = [];
+    const reactions: string[] = [];
     let posted = 0;
     const gateway = {
       workspaceId: 'T1',
@@ -122,6 +125,10 @@ async function withHarness(
           posted += 1;
           return { ok: true, ts: `1900000000.${String(posted).padStart(6, '0')}`, channel: input.channel };
         }
+        if (operation === 'reactions.add') {
+          reactions.push(`${String(input.timestamp)}:${String(input.name)}`);
+          return { ok: true };
+        }
         throw new Error(`Unexpected gateway operation: ${operation}`);
       },
     } as unknown as GatewayDeploymentClient;
@@ -136,6 +143,7 @@ async function withHarness(
       ownerMembershipId: owner.membership.id,
       jobs,
       posts,
+      reactions,
       async deliver(message) {
         const channelId = message.channel ?? 'C1';
         const direct = channelId.startsWith('D');
@@ -212,6 +220,7 @@ test('covers AE2: "@Agent Stop please!" stops the run without queueing a turn', 
       },
     );
     assert.deepEqual(harness.posts, [], 'the stop note is the stopped ending\'s, not admission\'s');
+    assert.deepEqual(harness.reactions, [], 'a stop gets no mid-run 👀');
   });
 });
 
@@ -226,6 +235,7 @@ test('covers AE2: a stop word inside a sentence is an ordinary mid-run message',
     assert.equal(harness.jobs[1]?.turn.text, "don't stop the migration halfway");
     assert.equal(await stopRecordOf(harness), undefined);
     assert.equal((await harness.pending()).length, 2);
+    assert.deepEqual(harness.reactions, ['1800000010.000100:eyes'], 'it gets the mid-run 👀 (R12)');
   });
 });
 

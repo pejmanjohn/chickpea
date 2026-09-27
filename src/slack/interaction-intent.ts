@@ -111,8 +111,27 @@ const REACTION_FALLBACKS: Record<SemanticReaction, readonly string[]> = {
   approved: ['approved', 'white_check_mark'],
 };
 
-export function reactionFallbacks(reaction: SemanticReaction): string[] {
-  return [...REACTION_FALLBACKS[reaction]];
+/**
+ * Receipts Chickpea adds and removes itself (KTD9), outside the classifier's
+ * vocabulary so a model can never choose one: `seen_mid_run` is the 👀 on a
+ * message posted while its thread's run is in progress (R12), and `read` the
+ * 👍 that replaces it once the running Agent has read the message (R14, in a
+ * later release). The classifier's `seen` is the same emoji; on the same
+ * message it is the turn's answer, which terminal cleanup keeps, and never a
+ * receipt it removes.
+ */
+export const RECEIPT_REACTIONS = ['seen_mid_run', 'read'] as const;
+export type ReceiptReaction = (typeof RECEIPT_REACTIONS)[number];
+
+const RECEIPT_REACTION_FALLBACKS: Record<ReceiptReaction, readonly string[]> = {
+  seen_mid_run: ['eyes'],
+  read: ['+1'],
+};
+
+export function reactionFallbacks(reaction: SemanticReaction | ReceiptReaction): string[] {
+  return (RECEIPT_REACTIONS as readonly string[]).includes(reaction)
+    ? [...RECEIPT_REACTION_FALLBACKS[reaction as ReceiptReaction]]
+    : [...REACTION_FALLBACKS[reaction as SemanticReaction]];
 }
 
 export function parseSlackInteractionIntent(

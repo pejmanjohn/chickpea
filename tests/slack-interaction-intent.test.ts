@@ -11,7 +11,9 @@ import {
   classifySlackInteraction,
   parseSlackInteractionIntent,
   reactionFallbacks,
+  RECEIPT_REACTIONS,
   resolveImmediateSlackInteractionIntent,
+  SEMANTIC_REACTIONS,
   resolveSlackInteractionIntent,
   shouldResolveSlackManagementApproval,
   SLACK_INTERACTION_CLASSIFIER_INSTRUCTIONS,
@@ -515,6 +517,19 @@ test('semantic reactions have deterministic standard fallbacks', () => {
   assert.deepEqual(reactionFallbacks('merged'), ['merged', 'ship', 'white_check_mark']);
   assert.deepEqual(reactionFallbacks('approved'), ['approved', 'white_check_mark']);
   assert.deepEqual(reactionFallbacks('failed'), ['x']);
+});
+
+test('receipt reactions are Chickpea\'s own: 👀 mid-run, 👍 once read, never a classifier answer', () => {
+  assert.deepEqual(reactionFallbacks('seen_mid_run'), ['eyes']);
+  assert.deepEqual(reactionFallbacks('read'), ['+1']);
+  for (const reaction of RECEIPT_REACTIONS) {
+    assert.equal((SEMANTIC_REACTIONS as readonly string[]).includes(reaction), false, reaction);
+    assert.deepEqual(parseSlackInteractionIntent(JSON.stringify({
+      disposition: 'react_only', reason: 'midwork_ack', memoryIntent: 'none', reaction, target: 'trigger',
+    }), { guaranteed: false }), { disposition: 'ignore', reason: 'classifier_fallback' }, reaction);
+  }
+  // The classifier's `seen` shares the admission receipt's emoji.
+  assert.deepEqual(reactionFallbacks('seen'), reactionFallbacks('seen_mid_run'));
 });
 
 test('the stateless classifier has no tools and treats Slack context as data', () => {

@@ -94,7 +94,7 @@ import type {
   TurnStopFinish,
 } from '../slack/turn-job-types.ts';
 import type { SlackRunFactsView } from '../slack/status-registry.ts';
-import type { SlackInteractionIntent } from '../slack/interaction-intent.ts';
+import type { ReceiptReaction, SlackInteractionIntent } from '../slack/interaction-intent.ts';
 import type { ThreadImageRecord } from '../slack/thread-images.ts';
 import type { TurnEnvelopeV1 } from '../agents/turn-envelope.ts';
 import type {
@@ -230,12 +230,23 @@ export interface TurnPullRequestProgress {
 }
 
 export interface SlackInteractionProgress {
+  /**
+   * The turn's one reaction receipt, on the message it names: `created` says
+   * Chickpea added it, so only then is it ever removed (`reactions.remove`
+   * is not scoped to the code path that added it).
+   */
   acknowledgment?: {
     channelId: string;
     messageTs: string;
     name: string;
     created: boolean;
     cleanup: 'pending' | 'done';
+    /**
+     * A receipt admission recorded (KTD9): `seen_mid_run` is the 👀 on a
+     * message posted while its thread's run was in progress. Absent for a
+     * turn's own work acknowledgment.
+     */
+    reaction?: ReceiptReaction;
   };
   checklist?: {
     channelId: string;

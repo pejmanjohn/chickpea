@@ -476,11 +476,12 @@ export class TurnJobStoreLogic {
     const threadKey = stopThreadKeyOf(job.turn, job.assignment);
     const messageTs = validSlackTs(job.turn.messageTs) ? job.turn.messageTs : null;
     const executionAuthority = job.executionAuthority ?? 'legacy';
+    const receipt = executionAuthority === 'legacy' ? midRunReceiptOf(job) : undefined;
     const inserted = this.db.run(
       `INSERT OR IGNORE INTO turn_jobs (
         id, evt_key, msg_key, turn_json, assignment_json, run_id, execution_authority,
-        attempts, delivered, status, enqueued_at, received_at, thread_key, message_ts
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, 'pending', ?, ?, ?, ?)`,
+        attempts, delivered, status, enqueued_at, received_at, thread_key, message_ts, progress_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, 'pending', ?, ?, ?, ?, ?)`,
       job.id,
       job.evtKey,
       job.msgKey,
@@ -492,6 +493,10 @@ export class TurnJobStoreLogic {
       Math.min(this.receiptTimes.get(job.turn.eventId) ?? enqueuedAt, enqueuedAt),
       threadKey ?? null,
       messageTs,
+      // The mid-run 👀 is the turn's receipt from the start (KTD9): Chickpea's
+      // own, owed removal, and written before Slack is asked to add it, so no
+      // path can see the turn without it.
+      JSON.stringify(receipt ? { slackInteraction: { acknowledgment: receipt } } : {}),
     );
     if (inserted.changes !== 1) return false;
     // A message posted before an unfinished stop that Slack delivers late is
@@ -718,26 +723,43 @@ export class TurnJobStoreLogic {
     return undefined;
   }
 
-  /** Rows whose stop record names `headId` in `role`, oldest first. */
+  /**
+   * Rows whose stop record names `headId` in `role`, oldest first, each with
+   * the 👀 Chickpea added to its message and still owes removing (KTD9).
+   */
   private stopMembers(
     threadKey: string | undefined,
     headId: string,
     role: TurnStopMemberRecordV1['role'],
-  ): Array<{ id: string; runId?: string; messageTs?: string }> {
+  ): TurnStopFinish['rows'] {
     if (!threadKey) return [];
     return this.db.all(
-      `SELECT id, run_id, message_ts, stop_json FROM turn_jobs
+      `SELECT id, run_id, message_ts, stop_json, progress_json FROM turn_jobs
        WHERE thread_key = ? AND stop_json IS NOT NULL
        ORDER BY enqueued_at, rowid`,
       threadKey,
     ).filter((row) => {
       const record = parseTurnStopRecord(row.stop_json);
       return record?.role === role && record.headId === headId;
-    }).map((row) => ({
-      id: String(row.id),
-      ...(row.run_id ? { runId: String(row.run_id) } : {}),
-      ...(row.message_ts ? { messageTs: String(row.message_ts) } : {}),
-    }));
+    }).map((row) => {
+      const acknowledgment = parseTurnProgress(String(row.progress_json ?? '{}'))
+        .slackInteraction?.acknowledgment;
+      const owed = acknowledgment?.created === true && acknowledgment.cleanup === 'pending';
+      return {
+        id: String(row.id),
+        ...(row.run_id ? { runId: String(row.run_id) } : {}),
+        ...(row.message_ts ? { messageTs: String(row.message_ts) } : {}),
+        ...(owed
+          ? {
+              receipt: {
+                channelId: acknowledgment.channelId,
+                messageTs: acknowledgment.messageTs,
+                name: acknowledgment.name,
+              },
+            }
+          : {}),
+      };
+    });
   }
 
   private writeStopRecord(id: string, record: TurnStopRecordV1): void {
@@ -2125,6 +2147,31 @@ export async function deliverDueStopNotices(input: {
   }
   return { acknowledged, deferred: outcomes.length - acknowledged };
 }
+
+/**
+ * A job's mid-run receipt, as its row records it (KTD9), or undefined unless
+ * it names the job's own message: the only 👀 a turn may ever remove.
+ */
+function midRunReceiptOf(job: TurnJob): NonNullable<TurnProgress['slackInteraction']>['acknowledgment'] {
+  const receipt = job.midRunReceipt;
+  if (!receipt || typeof receipt !== 'object' || !job.turn || typeof job.turn !== 'object') return undefined;
+  if (receipt.channelId !== job.turn.channelId || receipt.messageTs !== job.turn.messageTs ||
+      typeof receipt.channelId !== 'string' || receipt.channelId.length === 0 ||
+      !validSlackTs(receipt.messageTs) ||
+      typeof receipt.name !== 'string' || !SLACK_REACTION_NAME.test(receipt.name)) {
+    return undefined;
+  }
+  return {
+    channelId: receipt.channelId,
+    messageTs: receipt.messageTs,
+    name: receipt.name,
+    created: true,
+    cleanup: 'pending',
+    reaction: 'seen_mid_run',
+  };
+}
+
+const SLACK_REACTION_NAME = /^[a-z0-9_+-]{1,80}$/;
 
 /** The stop thread key of a turn, or undefined when its coordinates are unusable. */
 function stopThreadKeyOf(turn: NormalizedSlackTurn, assignment: ResolvedAssignment): string | undefined {

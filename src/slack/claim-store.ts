@@ -12,6 +12,7 @@ import { TurnJobStoreLogic, type PendingTurnJob, type SlackProposalApprovalQuery
 import type {
   TurnDirectThreadQuery,
   TurnJob,
+  TurnMidRunReceipt,
   TurnSteeringDecision,
   TurnSteeringInterception,
   TurnSteeringRequest,
@@ -72,6 +73,14 @@ export interface SlackCanonicalAdmissionInput {
    * after the thread's first message is never queued as an ordinary turn.
    */
   steering?: Extract<TurnSteeringRequest, { kind: 'stop' | 'check_in' }>;
+  /**
+   * An eligible ordinary message's 👀 (R12, KTD9): when its thread (the stop
+   * thread key) has an undelivered run, `turnJob` is written with Chickpea's
+   * receipt for it in the same transaction, and the result says so. Admission
+   * adds the reaction only for a receipt recorded here, so a 👀 it adds always
+   * has a turn that removes it.
+   */
+  midRun?: { threadKey: string; receipt: TurnMidRunReceipt };
   presentation?: {
     schemaVersion: 3;
     root: SlackPresentationRoot;
@@ -133,7 +142,8 @@ export function selectSlackPresentationOwner(input: {
 
 export type SlackCanonicalAdmissionResult =
   | { claimed: false }
-  | { claimed: true; admission: ShadowRunAdmission }
+  /** `midRunReceipt`: the TurnJob was written with its `midRun` receipt. */
+  | { claimed: true; admission: ShadowRunAdmission; midRunReceipt?: true }
   /** The thread's run took the message's `steering`; its claims are held. */
   | { claimed: true; steered: TurnSteeringInterception };
 
@@ -410,6 +420,16 @@ export class SlackStateLogic {
         const steered = turnJobs.steerInTransaction(input.steering);
         if (steered.outcome !== 'enqueue') return { claimed: true, steered };
       }
+      // Whether the thread's run is in progress, read before this message's
+      // own row exists (KTD9).
+      const midRun = input.midRun && !input.steering && input.turnJob && turnJobs &&
+          (input.turnJob.executionAuthority ?? 'legacy') === 'legacy'
+        ? turnJobs.steerInTransaction({ kind: 'message', threadKey: input.midRun.threadKey })
+        : undefined;
+      const midRunReceipt = midRun?.outcome === 'enqueue' && midRun.undelivered
+        ? input.midRun!.receipt
+        : undefined;
+      let receiptWritten = false;
       const admission = work.admitShadowRunInTransaction(input.admission);
       this.start(input.threadKey);
       if (input.turnJob && turnJobs) {
@@ -420,7 +440,12 @@ export class SlackStateLogic {
         ) {
           throw new Error('Turn job authority does not match its canonical Run.');
         }
-        turnJobs.enqueueInTransaction(input.turnJob);
+        const enqueued = turnJobs.enqueueInTransaction(midRunReceipt
+          ? { ...input.turnJob, midRunReceipt }
+          : input.turnJob);
+        receiptWritten = enqueued && midRunReceipt !== undefined &&
+          turnJobs.getProgress(input.turnJob.id)?.slackInteraction?.acknowledgment?.reaction ===
+            'seen_mid_run';
       }
       if (input.presentation) {
         if (!input.turnJob || !presentations) {
@@ -444,7 +469,7 @@ export class SlackStateLogic {
             : {}),
         });
       }
-      return { claimed: true, admission };
+      return { claimed: true, admission, ...(receiptWritten ? { midRunReceipt: true as const } : {}) };
     });
   }
 

@@ -1141,7 +1141,12 @@ export class SlackAgentViewPresentation {
     const recoverStream = (finalizing: SlackRunPresentation) =>
       this.recoverFinalizingStream(finalizing, text, format, observer, tablePresentation);
     if (stopped && presentation.stream.state === 'streaming' && presentation.stream.messageTs) {
-      return this.sealStoppedStream(presentation, approved, observer, recoverStream);
+      return this.sealStoppedStream(
+        presentation,
+        approved,
+        observer,
+        (finalizing) => this.keepHaltedStoppedStream(finalizing),
+      );
     }
     // The stream carries the first message. Its table and footer move to the
     // last follow-up when the answer continues. A stream whose acknowledged
@@ -2018,6 +2023,26 @@ export class SlackAgentViewPresentation {
       utf8Length(suffix),
       recover,
     );
+  }
+
+  /**
+   * Slack refused to seal a stopped run's stream with the note: its Stop
+   * button halts open streams itself (`agent_session_stopped` lists them),
+   * and a halted stream answers `message_not_in_streaming_state` (or, from a
+   * stream in another state, a sibling refusal). Nothing was written. The
+   * partial answer stays exactly as Slack shows it, and the note posts once,
+   * fresh, as the Agent's next reply in the thread (the ordinary customized
+   * post, idempotent per terminal). Never the recovery's `chat.update`, which
+   * would replace the partial answer with the note.
+   */
+  private async keepHaltedStoppedStream(
+    presentation: SlackRunPresentation,
+  ): Promise<AgentViewFinalResult> {
+    presentation = await this.transition(presentation, {
+      kind: 'stream_message_lost',
+      messageTs: presentation.stream.messageTs!,
+    });
+    return freshFinalResult(presentation);
   }
 
   private async stopKnownStream(
