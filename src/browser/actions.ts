@@ -171,6 +171,15 @@ export async function getBrowserAction(
   return raw ? safeParse(raw) : undefined;
 }
 
+/** The action this thread's Agent is currently holding, whatever its status. */
+export async function getBrowserActionForThread(
+  settings: SettingsStore,
+  scope: Pick<BrowserActionScope, 'workspaceId' | 'channelId' | 'threadTs' | 'agentId'>,
+): Promise<BrowserActionRecord | undefined> {
+  const id = await settings.getSetting(threadKey(scope));
+  return id ? getBrowserAction(settings, id) : undefined;
+}
+
 /**
  * Admission: answer the pending action for this thread, Agent, and person.
  * "approve" marks it approved for the replying message; "stop" spends it.

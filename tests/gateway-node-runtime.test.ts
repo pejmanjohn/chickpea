@@ -9,7 +9,14 @@ import {
   stopNodeGatewayRuntime,
   stopNodeGatewaySession,
 } from '../src/slack/gateway/node-runtime.ts';
-import type { GatewayEventDelivery } from '../src/slack/gateway/protocol.ts';
+import type {
+  GatewayAdmissionResult,
+  GatewayEventDelivery,
+  GatewayInboundDelivery,
+} from '../src/slack/gateway/protocol.ts';
+import { closeNodeStateStores, resolveStores } from '../src/config/state-backend.ts';
+import { validateRequestForm } from '../src/slack/ui/presentation-tools.ts';
+import { uiActionId, uiBlockId, uiSurfaceId, uiValue } from '../src/slack/ui/surface.ts';
 import { GatewayInboxStoreLogic } from '../src/slack/gateway/inbox.ts';
 import { SlackTransportError } from '../src/slack/transport/types.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
@@ -73,7 +80,7 @@ test('Node gateway advertises durable admission only after save-before-receipt i
     },
   };
   let admission:
-    | ((delivery: GatewayEventDelivery) => Promise<'accepted' | 'duplicate' | 'rejected'>)
+    | ((delivery: GatewayEventDelivery) => Promise<GatewayAdmissionResult>)
     | undefined;
   let capabilities: readonly string[] | undefined;
   await startNodeGatewayRuntime(undefined, {
@@ -89,7 +96,7 @@ test('Node gateway advertises durable admission only after save-before-receipt i
   });
   await spin();
 
-  assert.deepEqual(capabilities, ['durable_admission_v1']);
+  assert.deepEqual(capabilities, ['durable_admission_v1', 'ui_interactions_v1']);
   const outcome = await admission!(eventDelivery('delivery:Ev_DURABLE'));
   assert.deepEqual(saved, ['delivery:Ev_DURABLE']);
   assert.equal(outcome, 'accepted');
@@ -98,7 +105,7 @@ test('Node gateway advertises durable admission only after save-before-receipt i
 test('Node gateway rejects a receipt when durable admission fails', async () => {
   await stopNodeGatewayRuntime();
   let admission:
-    | ((delivery: GatewayEventDelivery) => Promise<'accepted' | 'duplicate' | 'rejected'>)
+    | ((delivery: GatewayEventDelivery) => Promise<GatewayAdmissionResult>)
     | undefined;
   await startNodeGatewayRuntime(undefined, {
     isCloudflare: () => false,
@@ -156,7 +163,7 @@ test('stopping during binding lookup fences the stale start and permits a clean 
 test('binding refresh retires the old callback even when the binding ID is reused', async () => {
   await stopNodeGatewayRuntime();
   const admissions: Array<
-    (delivery: GatewayEventDelivery) => Promise<'accepted' | 'duplicate' | 'rejected'>
+    (delivery: GatewayEventDelivery) => Promise<GatewayAdmissionResult>
   > = [];
   const stopped: number[] = [];
   let admitted = 0;
@@ -184,7 +191,7 @@ test('binding refresh retires the old callback even when the binding ID is reuse
     }),
     createInboxWorker: () => idleWorker(),
     createRunner: (_env: unknown, input: {
-      onEvent(delivery: GatewayEventDelivery): Promise<'accepted' | 'duplicate' | 'rejected'>;
+      onEvent(delivery: GatewayEventDelivery): Promise<GatewayAdmissionResult>;
     }) => {
       const index = admissions.length;
       admissions.push(input.onEvent);
@@ -243,7 +250,7 @@ test('a retained socket callback cannot admit after runtime shutdown begins', as
   await stopNodeGatewayRuntime();
   let admitted = 0;
   let admission:
-    | ((delivery: GatewayEventDelivery) => Promise<'accepted' | 'duplicate' | 'rejected'>)
+    | ((delivery: GatewayEventDelivery) => Promise<GatewayAdmissionResult>)
     | undefined;
   const inbox = {
     ...emptyInbox,
@@ -447,3 +454,73 @@ function eventDelivery(deliveryId: string): GatewayEventDelivery {
 async function spin(): Promise<void> {
   await new Promise<void>((resolve) => setImmediate(resolve));
 }
+
+test('a modal click or submission is answered in the socket ack from the stored card, never queued', async () => {
+  await stopNodeGatewayRuntime();
+  const envKeys = ['TAG_DB_PATH', 'SLACK_STATE_DB_PATH', 'CHICKPEA_AUTH_DB_PATH'] as const;
+  const previousEnv = envKeys.map((key) => process.env[key]);
+  for (const key of envKeys) process.env[key] = ':memory:';
+  closeNodeStateStores();
+  try {
+    const now = Date.now();
+    const id = uiSurfaceId('msg:C1:1.000001', 'interactive');
+    const form = validateRequestForm({
+      title: 'New vendor',
+      fields: [{ key: 'name', label: 'Legal name', type: 'text', required: true }, { key: 'email', label: 'Email', type: 'email' }],
+    });
+    await resolveStores().slackState.executeUiSurface!({
+      kind: 'put_surface',
+      record: {
+        id, namespace: 'ui', workspaceId: 'T_TEST', channelId: 'C1', threadTs: '1.000001', conversationThreadTs: '1.000001',
+        conversationKind: 'channel', agentId: 'agent_a', turnJobId: 'msg:C1:1.000001', requesterUserId: 'U1',
+        spec: { kind: 'form', form }, status: 'open', messageTs: '1.000300',
+        createdAt: now, updatedAt: now, expiresAt: now + 60_000,
+      },
+    });
+    let admission: ((delivery: GatewayInboundDelivery) => Promise<GatewayAdmissionResult>) | undefined;
+    let queued = 0;
+    await startNodeGatewayRuntime(undefined, {
+      isCloudflare: () => false,
+      readBinding: async () => '{"bindingId":"binding_test"}',
+      getInbox: () => ({ ...emptyInbox, admit: () => { queued += 1; return 'accepted' as const; } }),
+      createInboxWorker: () => idleWorker(),
+      createRunner: (_env: unknown, input: { onEvent(delivery: GatewayInboundDelivery): Promise<GatewayAdmissionResult> }) => {
+        admission = input.onEvent;
+        return { start: async () => true, stop() {} };
+      },
+    });
+    await spin();
+    const click: GatewayInboundDelivery = {
+      protocolVersion: 1, kind: 'interaction.ui_action', deliveryId: 'ui:1', bindingId: 'binding_test',
+      workspaceId: 'T_TEST', userId: 'U1', containerType: 'message', channelId: 'C1', messageTs: '1.000300',
+      threadTs: '1.000001', isEphemeral: false, viewId: null, actionId: uiActionId('ui', 'form_open', 0),
+      blockId: uiBlockId('ui', id, 20), actionType: 'button', value: uiValue(id, 0), selected: [], state: {},
+      actionTs: '2.000001', triggerId: 'trigger1',
+    };
+    const opened = await admission!(click);
+    assert.equal(typeof opened === 'object' && opened.interaction.openView?.callback_id, 'chickpea.ui.v1.form');
+    const view: GatewayInboundDelivery = {
+      protocolVersion: 1, kind: 'interaction.view_submission', deliveryId: 'view:1', bindingId: 'binding_test',
+      workspaceId: 'T_TEST', userId: 'U1', viewId: 'V1', callbackId: 'chickpea.ui.v1.form', privateMetadata: id,
+      state: {}, triggerId: null,
+    };
+    const errors = await admission!(view);
+    assert.deepEqual(typeof errors === 'object' && errors.interaction.responseAction, {
+      response_action: 'errors', errors: { [uiBlockId('ui', id, 1)]: 'This field is required.' },
+    });
+    assert.equal(queued, 0);
+    // A valid submission and an ordinary click are queued for admission as usual.
+    const valid = { ...view, deliveryId: 'view:2', state: {
+      [uiBlockId('ui', id, 1)]: { [uiActionId('ui', 'field', 0)]: { type: 'plain_text_input', value: 'Acme' } },
+    } };
+    assert.equal(await admission!(valid), 'accepted');
+    assert.equal(await admission!({ ...click, deliveryId: 'ui:2', actionId: uiActionId('ui', 'form_submit', 0) }), 'accepted');
+    assert.equal(queued, 2);
+  } finally {
+    closeNodeStateStores();
+    envKeys.forEach((key, index) => {
+      if (previousEnv[index] === undefined) delete process.env[key];
+      else process.env[key] = previousEnv[index];
+    });
+  }
+});

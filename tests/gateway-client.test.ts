@@ -26,6 +26,7 @@ import {
   canonicalGatewayPayload,
   parseGatewayFrameText,
   type GatewayClientFrame,
+  type GatewayInteractionReceipt,
   type GatewayPublicKey,
 } from '../src/slack/gateway/protocol.ts';
 import { gatewayReconnectAt, gatewaySessionHealthy } from '../src/slack/gateway/session.ts';
@@ -1438,12 +1439,14 @@ test('logical sessions authenticate before delivery, ack once, and fence tenant 
   });
   const sent: GatewayClientFrame[] = [];
   const deliveries: string[] = [];
+  let answerAtReceipt: GatewayInteractionReceipt | undefined;
   try {
     await client.beginClaim();
     await client.refreshClaim();
     const session = await client.createSession(
       (frame) => sent.push(frame),
       async (delivery) => {
+        if (answerAtReceipt) return answerAtReceipt;
         deliveries.push(delivery.deliveryId);
         if (delivery.deliveryId === 'delivery_failure') throw new Error('store unavailable');
         return deliveries.length === 1 ? 'accepted' : 'duplicate';
@@ -1506,6 +1509,19 @@ test('logical sessions authenticate before delivery, ack once, and fence tenant 
     assert.deepEqual(sent.slice(-4).map((frame) =>
       frame.kind === 'event.ack' ? frame.outcome : undefined
     ), ['accepted', 'duplicate', 'duplicate', 'duplicate']);
+    // A modal submission answered at receipt: its ack carries Slack's response.
+    const responseAction = { response_action: 'errors', errors: { field: 'Enter a number.' } };
+    answerAtReceipt = { outcome: 'accepted', interaction: { responseAction } };
+    await session.handle(JSON.stringify({
+      protocolVersion: 1, kind: 'interaction.view_submission', deliveryId: 'delivery_view',
+      bindingId: 'binding_test', workspaceId: 'TGATEWAY', userId: 'U_MEMBER', viewId: 'V1',
+      callbackId: 'chickpea.ui.v1.form', privateMetadata: 'a'.repeat(32), state: {}, triggerId: null,
+    }));
+    assert.deepEqual(sent.at(-1), {
+      protocolVersion: 1, kind: 'event.ack', deliveryId: 'delivery_view', outcome: 'accepted',
+      interaction: { responseAction },
+    });
+    answerAtReceipt = undefined;
     await session.handle(JSON.stringify({ ...delivery, deliveryId: 'delivery_failure' }));
     const failureAck = sent.at(-1);
     assert.equal(failureAck?.kind, 'event.ack');

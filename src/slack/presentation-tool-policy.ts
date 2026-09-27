@@ -18,10 +18,22 @@ import {
 } from '../memory/tool-policy.ts';
 import { SLACK_STREAM_ANSWER_TOOL_NAME } from './presentation-intent.ts';
 import { SLACK_PRESENT_TABLE_TOOL_NAME } from './table-presentation.ts';
+import {
+  SLACK_ASK_USER_TOOL_NAME,
+  SLACK_OFFER_ACTIONS_TOOL_NAME,
+  SLACK_REQUEST_FORM_TOOL_NAME,
+} from './ui/presentation-tools.ts';
+import { DISPLAY_TOOL_KINDS, type RecordedDisplayComponent } from './ui/display-tools.ts';
 
 interface PresentationToolPolicyState {
   envelope?: CurrentRequestEnvelope;
   answerOnly: boolean;
+  /** A component was presented: only other presentation tools may follow. */
+  presented?: boolean;
+  /** This reply's one interactive component (ask_user, offer_actions) exists. */
+  interactiveUsed?: boolean;
+  /** An ask_user question ended the reply. */
+  questionAsked?: boolean;
   artifactDeliveryAttempted: boolean;
   /** A tool ran whose result the host may substitute for the model draft. */
   draftReplacementAttempted?: boolean;
@@ -30,6 +42,34 @@ interface PresentationToolPolicyState {
   fileDeliveryPending?: () => boolean;
   fileDeliveryAttempted?: () => boolean;
   fileDeliveryRepairing?: () => boolean;
+  /** Display components this reply's transcript shows as accepted, in call order. */
+  displayComponents?: RecordedDisplayComponent[];
+}
+
+/** Interactive components: at most one per reply; ask_user ends the reply. */
+const INTERACTIVE_TOOL_NAMES: ReadonlySet<string> = new Set([
+  SLACK_ASK_USER_TOOL_NAME,
+  SLACK_OFFER_ACTIONS_TOOL_NAME,
+  SLACK_REQUEST_FORM_TOOL_NAME,
+]);
+/** Interactive tools whose answer arrives as the next message: they end the reply. */
+const REPLY_ENDING_TOOL_NAMES: ReadonlySet<string> = new Set([
+  SLACK_ASK_USER_TOOL_NAME,
+  SLACK_REQUEST_FORM_TOOL_NAME,
+]);
+/** Display components ride in the answer; other presentation tools may follow them. */
+const DISPLAY_TOOL_NAMES: ReadonlySet<string> = new Set(Object.keys(DISPLAY_TOOL_KINDS));
+const PRESENTATION_TOOL_NAMES: ReadonlySet<string> = new Set([
+  SLACK_PRESENT_TABLE_TOOL_NAME,
+  ...DISPLAY_TOOL_NAMES,
+  ...INTERACTIVE_TOOL_NAMES,
+]);
+
+export class SlackInteractiveComponentLimitError extends Error {
+  constructor() {
+    super('Use at most one of ask_user, request_form or offer_actions per reply. End your reply now.');
+    this.name = 'SlackInteractiveComponentLimitError';
+  }
 }
 
 const FILE_REPAIR_TOOLS = new Set([
@@ -68,6 +108,14 @@ export class SlackAnswerOnlyToolDeniedError extends Error {
       'This response declared answer-only delivery. Finish the answer using facts already gathered; additional tools are unavailable. Do not claim a denied tool ran or attached a file. Include useful information inline.',
     );
     this.name = 'SlackAnswerOnlyToolDeniedError';
+  }
+}
+
+/** Tools after a posted question: the answer arrives as the next message. */
+export class SlackQuestionPostedToolDeniedError extends Error {
+  constructor() {
+    super('Your question is posted, so this reply is finished. Do not call more tools; end your reply now.');
+    this.name = 'SlackQuestionPostedToolDeniedError';
   }
 }
 
@@ -121,16 +169,35 @@ export const presentationToolPolicyInterceptor: FlueExecutionInterceptor = async
     return result;
   }
 
-  if (operation.toolName === SLACK_PRESENT_TABLE_TOOL_NAME) {
+  if (operation.toolName === SLACK_PRESENT_TABLE_TOOL_NAME || DISPLAY_TOOL_NAMES.has(operation.toolName)) {
     assertFileDeliveryChecked(active);
+    if (active.questionAsked) throw new SlackQuestionPostedToolDeniedError();
     if (active.answerOnly) throw new SlackAnswerOnlyToolDeniedError();
     const result = await next();
     assertFileDeliveryChecked(active);
-    active.answerOnly = true;
+    active.presented = true;
     return result;
   }
 
-  if (active.answerOnly) throw new SlackAnswerOnlyToolDeniedError();
+  if (INTERACTIVE_TOOL_NAMES.has(operation.toolName)) {
+    assertFileDeliveryChecked(active);
+    if (active.questionAsked) throw new SlackQuestionPostedToolDeniedError();
+    if (active.answerOnly) throw new SlackAnswerOnlyToolDeniedError();
+    if (active.interactiveUsed) throw new SlackInteractiveComponentLimitError();
+    const result = await next();
+    assertFileDeliveryChecked(active);
+    active.interactiveUsed = true;
+    active.presented = true;
+    // A question ends the reply: its answer arrives as the next message.
+    if (REPLY_ENDING_TOOL_NAMES.has(operation.toolName)) {
+      active.answerOnly = true;
+      active.questionAsked = true;
+    }
+    return result;
+  }
+
+  if (active.questionAsked) throw new SlackQuestionPostedToolDeniedError();
+  if (active.answerOnly || active.presented) throw new SlackAnswerOnlyToolDeniedError();
   // A failed/uncertain upload may already have staged a private file. Keep
   // that response on terminal delivery too; never stream ahead of its result.
   if (isArtifactUploadTool(operation.toolName)) {
@@ -159,6 +226,7 @@ function isArtifactUploadTool(name: string): boolean {
  */
 function declarationRefused(state: PresentationToolPolicyState): boolean {
   return artifactDeliveryAttempted(state) || state.draftReplacementAttempted === true ||
+    state.interactiveUsed === true ||
     (currentRequestProgressiveStreamingMode(state.envelope) === 'final_answer' &&
       state.inFlightTools > 0);
 }
@@ -190,8 +258,25 @@ export function observePresentationToolPolicy(
   if (current.envelope) active.envelope = current.envelope;
   else delete active.envelope;
   if (current.successfulDeclaration) active.answerOnly = true;
+  if (current.presented) active.presented = true;
+  if (current.interactiveUsed) active.interactiveUsed = true;
+  if (current.questionAsked) {
+    active.answerOnly = true;
+    active.questionAsked = true;
+  }
   if (current.artifactDeliveryAttempted) active.artifactDeliveryAttempted = true;
   if (current.draftReplacementAttempted) active.draftReplacementAttempted = true;
+  active.displayComponents = current.displayComponents;
+}
+
+/**
+ * The display components this reply already recorded, rebuilt from its
+ * durable transcript at every model request. Flue renders the agent, and so
+ * its display tools, again before every model turn (and after a restart);
+ * each fresh closure merges these instead of starting from an empty list.
+ */
+export function replyDisplayHistory(): readonly RecordedDisplayComponent[] {
+  return submissionPolicy.getStore()?.displayComponents ?? [];
 }
 
 function currentResponsePolicy(messages: readonly LlmMessage[]): {
@@ -199,6 +284,10 @@ function currentResponsePolicy(messages: readonly LlmMessage[]): {
   successfulDeclaration: boolean;
   artifactDeliveryAttempted: boolean;
   draftReplacementAttempted: boolean;
+  presented?: boolean;
+  interactiveUsed?: boolean;
+  questionAsked?: boolean;
+  displayComponents: RecordedDisplayComponent[];
 } {
   let newestUserIndex = -1;
   let envelope: CurrentRequestEnvelope | undefined;
@@ -216,10 +305,17 @@ function currentResponsePolicy(messages: readonly LlmMessage[]): {
       successfulDeclaration: false,
       artifactDeliveryAttempted: false,
       draftReplacementAttempted: false,
+      displayComponents: [],
     };
   }
 
   const declaredCalls = new Set<string>();
+  const presentationCalls = new Set<string>();
+  const displayCalls = new Map<string, Pick<RecordedDisplayComponent, 'kind' | 'spec'>>();
+  const displayComponents: RecordedDisplayComponent[] = [];
+  let presented = false;
+  let interactiveUsed = false;
+  let questionAsked = false;
   let successfulDeclaration = false;
   let artifactDeliveryAttempted = false;
   let draftReplacementAttempted = false;
@@ -232,19 +328,28 @@ function currentResponsePolicy(messages: readonly LlmMessage[]): {
         if (content.type === 'toolCall' && DRAFT_REPLACING_TOOL_NAMES.has(content.name)) {
           draftReplacementAttempted = true;
         }
-        if (content.type === 'toolCall' && (
-          content.name === SLACK_STREAM_ANSWER_TOOL_NAME ||
-          content.name === SLACK_PRESENT_TABLE_TOOL_NAME
-        )) {
+        if (content.type === 'toolCall' && content.name === SLACK_STREAM_ANSWER_TOOL_NAME) {
           declaredCalls.add(content.id);
+        }
+        if (content.type === 'toolCall' && PRESENTATION_TOOL_NAMES.has(content.name)) {
+          presentationCalls.add(content.id);
+          const kind = DISPLAY_TOOL_KINDS[content.name];
+          if (kind) displayCalls.set(content.id, { kind, spec: content.arguments });
         }
       }
       continue;
     }
+    if (message.role === 'toolResult' && message.isError === false &&
+        presentationCalls.has(message.toolCallId)) {
+      presented = true;
+      const display = displayCalls.get(message.toolCallId);
+      if (display) displayComponents.push({ toolCallId: message.toolCallId, ...display });
+      if (INTERACTIVE_TOOL_NAMES.has(message.toolName)) interactiveUsed = true;
+      if (REPLY_ENDING_TOOL_NAMES.has(message.toolName)) questionAsked = true;
+    }
     if (
       message.role === 'toolResult' &&
-      (message.toolName === SLACK_STREAM_ANSWER_TOOL_NAME ||
-        message.toolName === SLACK_PRESENT_TABLE_TOOL_NAME) &&
+      message.toolName === SLACK_STREAM_ANSWER_TOOL_NAME &&
       message.isError === false &&
       declaredCalls.has(message.toolCallId)
     ) {
@@ -253,9 +358,13 @@ function currentResponsePolicy(messages: readonly LlmMessage[]): {
   }
   return {
     ...(envelope ? { envelope } : {}),
+    ...(presented ? { presented } : {}),
+    ...(interactiveUsed ? { interactiveUsed } : {}),
+    ...(questionAsked ? { questionAsked } : {}),
     successfulDeclaration,
     artifactDeliveryAttempted,
     draftReplacementAttempted,
+    displayComponents,
   };
 }
 

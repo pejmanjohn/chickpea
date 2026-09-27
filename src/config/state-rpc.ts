@@ -55,6 +55,7 @@ import type { UsageRpcRequest, UsageRpcResponse } from '../usage/types.ts';
 import type { WorkRpcRequest, WorkRpcResponse } from '../work/types.ts';
 import type { IdentityRpcRequest, IdentityRpcResponse } from '../identity/types.ts';
 import type { ManagementRpcRequest, ManagementRpcResponse } from '../management/types.ts';
+import type { UiSurfaceRpcRequest, UiSurfaceRpcResponse } from '../slack/ui/surface-store.ts';
 import type { SlackManagementSignal } from '../management/slack-tools.ts';
 import type {
   HostSlackManagementApprovalResult,
@@ -92,11 +93,8 @@ import type {
 import type { SlackInteractionIntent } from '../slack/interaction-intent.ts';
 import type { ThreadImageRecord } from '../slack/thread-images.ts';
 import type { TurnEnvelopeV1 } from '../agents/turn-envelope.ts';
-import type {
-  GatewayInboxAdmissionOutcome,
-  GatewayInboxDrainCounts,
-} from '../slack/gateway/inbox.ts';
-import type { GatewayInboundDelivery } from '../slack/gateway/protocol.ts';
+import type { GatewayInboxDrainCounts } from '../slack/gateway/inbox.ts';
+import type { GatewayAdmissionResult, GatewayInboundDelivery } from '../slack/gateway/protocol.ts';
 import type {
   SlackAppendBooking,
   SlackAppendReservation,
@@ -278,6 +276,8 @@ export interface TagStateRpc {
   managementExecute(
     request: ManagementRpcRequest,
   ): Promise<StateRpcResult<ManagementRpcResponse>>;
+  // -- durable interactive Slack surfaces ----------------------------------
+  uiSurfaceExecute(request: UiSurfaceRpcRequest): Promise<StateRpcResult<UiSurfaceRpcResponse>>;
   // -- config: agents ------------------------------------------------------
   configListAgents(): Promise<StateRpcResult<CustomAgentConfig[]>>;
   configListUserAgents(): Promise<StateRpcResult<CustomAgentConfig[]>>;
@@ -617,7 +617,7 @@ export interface TagStateRpc {
   receiveGatewayHttp(input: {body: string; signature: string; url: string}): Promise<{status: number; body: unknown}>;
   admitGatewayDelivery(
     delivery: GatewayInboundDelivery,
-  ): Promise<StateRpcResult<GatewayInboxAdmissionOutcome>>;
+  ): Promise<StateRpcResult<GatewayAdmissionResult>>;
   /** Clone a completed authorization-link turn into one idempotent resume turn. */
   resumeTurnAfterOAuth(
     originalTaskId: string,

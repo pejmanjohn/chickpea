@@ -21,14 +21,13 @@ import {
   type SlackReplyFooter,
   type SlackReplyFormat,
 } from './message-format.ts';
-import {
-  appendSlackTableToRenderedMessage,
-  type RenderedSlackTablePresentation,
-  type SlackTablePresentation,
-} from './table-presentation.ts';
+import { appendSlackTableToRenderedMessage } from './table-presentation.ts';
 import {
   renderSlackReplyPart,
   renderSlackReplyTable,
+  slackReplyClosingExtras,
+  type RenderedSlackReplyExtras,
+  type SlackClosingInput,
   slackReplyParts,
 } from './reply-continuations.ts';
 import type {
@@ -969,7 +968,7 @@ export class SlackAgentViewPresentation {
     format: SlackReplyFormat,
     terminalTaskStatus: 'complete' | 'error',
     observer: SlackPresentationDeliveryObserver,
-    tablePresentation?: SlackTablePresentation,
+    tablePresentation?: SlackClosingInput,
     artifacts: readonly SlackArtifactReceipt[] = [],
   ): Promise<AgentViewFinalResult> {
     const approved = canonicalSlackReplyText(text, format);
@@ -1107,7 +1106,7 @@ export class SlackAgentViewPresentation {
     presentation = await this.requirePresentation();
     const footerBlocks = closes
       ? [
-          ...(renderedTable ? [renderedTable.block as unknown as KnownBlock] : []),
+          ...((renderedTable?.blocks ?? []) as unknown as KnownBlock[]),
           this.footerBlock(),
         ]
       : [];
@@ -1248,7 +1247,7 @@ export class SlackAgentViewPresentation {
    */
   async planContinuations(
     parts: readonly string[],
-    table?: RenderedSlackTablePresentation,
+    table?: RenderedSlackReplyExtras,
     files: readonly CompletedSlackArtifactReceipt[] = [],
     split?: SlackReplySplit,
     replace = false,
@@ -1277,7 +1276,7 @@ export class SlackAgentViewPresentation {
         parts: parts.slice(1),
         closing: {
           footer: this.options.footer,
-          ...(table ? { table: { block: table.block, fallbackText: table.fallbackText } } : {}),
+          ...slackReplyClosingExtras(table),
           ...(files.length > 0 ? { files } : {}),
         },
       });
@@ -1997,7 +1996,7 @@ export class SlackAgentViewPresentation {
     text: string,
     format: SlackReplyFormat,
     observer: SlackPresentationDeliveryObserver,
-    tablePresentation?: SlackTablePresentation,
+    tablePresentation?: SlackClosingInput,
   ): Promise<AgentViewFinalResult> {
     const approved = canonicalSlackReplyText(text, format);
     // The replacement goes through chat.update, which refuses a message
@@ -2098,7 +2097,7 @@ export class SlackAgentViewPresentation {
   private async replanFreshFinal(
     approved: string,
     format: SlackReplyFormat,
-    tablePresentation: SlackTablePresentation | undefined,
+    tablePresentation: SlackClosingInput,
   ): Promise<void> {
     const presentation = await this.requirePresentation();
     if (presentation.schemaVersion !== 3) return;
@@ -2117,7 +2116,7 @@ export class SlackAgentViewPresentation {
     approved: string,
     terminalTaskStatus: 'complete' | 'error',
     observer: SlackPresentationDeliveryObserver,
-    table: RenderedSlackTablePresentation | undefined,
+    table: RenderedSlackReplyExtras | undefined,
     closes: boolean,
   ): Promise<AgentViewFinalResult> {
     const corrected = `${first}\n\n${CORRECTED_MARKER}`;

@@ -128,6 +128,7 @@ import {
 import {
   selectSlackPresentationOwner,
   slackSessionGenerationFromTimestamp,
+  type SlackStateStore,
 } from '../slack/claim-store.ts';
 import { createDirectSlackTransport } from '../slack/transport/direct.ts';
 import {
@@ -163,6 +164,49 @@ import type { AuthPrincipal } from '../auth/types.ts';
 import { emitManagementMetric } from '../management/telemetry.ts';
 import { resolveHostSlackManagementApproval } from '../management/slack-approval.ts';
 import { admitSlackBrowserActionReply } from '../slack/browser-action-admission.ts';
+import {
+  authorizeUiResponse,
+  uiRefusalText,
+  type SlackUiAdmission,
+  type UiRefusal,
+} from '../slack/ui/authorize.ts';
+import {
+  microsecondSlackTs,
+  parseSlackUiBlockAction,
+  parseSlackUiViewSubmission,
+  type SlackUiAction,
+  type SlackUiViewSubmission,
+} from '../slack/ui/interaction-payload.ts';
+import {
+  isModalControl,
+  modalForClick,
+  readViewSubmission,
+  surfaceMayAnswer,
+  viewSubmissionSurfaceId,
+} from '../slack/ui/modals.ts';
+import {
+  encodeFormValues,
+  formErrorsText,
+  formLayout,
+  parseFormValues,
+  readFormSubmission,
+} from '../slack/ui/render-form.ts';
+import { approvalChoice, uiResponseTurnText, type RenderedUiSurface } from '../slack/ui/render.ts';
+import {
+  interactiveAnswer,
+  QUESTION_OTHER_CHOICE,
+  type InteractiveAnswer,
+} from '../slack/ui/render-interactive.ts';
+import {
+  redrawUiSurface,
+  retireApprovalSurfacesForTypedAnswer,
+  uiSurfaceRecord,
+} from '../slack/ui/host-surfaces.ts';
+import { parseUiControl, type UiSurfaceRecord } from '../slack/ui/surface.ts';
+import type {
+  GatewayUiActionDelivery,
+  GatewayViewSubmissionDelivery,
+} from '../slack/gateway/protocol.ts';
 import {
   agentAvatarUrlForPresentation,
   refreshLegacyAgentAvatar,
@@ -507,6 +551,27 @@ function handleDirectSlackEvents(
 
 function handleDirectSlackInteractions(): NonNullable<SlackChannelOptions['interactions']> {
   return async ({ c, payload }) => {
+    const uiAction = parseSlackUiBlockAction(payload);
+    // A modal opens now, inside Slack's three-second trigger window; a click
+    // that cannot open one goes on to ordinary admission, which says why.
+    if (uiAction && isModalControl(parseUiControl(uiAction)) &&
+        await openDirectSlackUiModal(uiAction, payload.api_app_id ?? '', c.env as PlatformEnv | undefined)) {
+      return;
+    }
+    if (uiAction) {
+      detach(c, processDirectSlackUiAction(
+        uiAction, payload.api_app_id ?? '', c.env as PlatformEnv | undefined,
+      ).catch((error) => {
+        console.error('[chickpea] Slack click failed:', sanitizeError(error));
+      }));
+      return;
+    }
+    const submission = parseSlackUiViewSubmission(payload);
+    if (submission) {
+      return receiveDirectSlackUiViewSubmission(
+        c, submission, payload.api_app_id ?? '', c.env as PlatformEnv | undefined,
+      );
+    }
     const setupAction = parsePrivateChannelSetupAction(payload);
     if (setupAction) {
       detach(c, processDirectPrivateChannelSetup(
@@ -1037,6 +1102,429 @@ export async function processGatewayPrivateChannelSetup(
   return 'accepted';
 }
 
+type SlackUiClient = ReturnType<typeof createSlackWebClient>;
+
+interface SlackUiContext {
+  appId: string;
+  platformEnv: PlatformEnv | undefined;
+  stores: AppStores;
+  client: SlackUiClient;
+  execution?: SlackEventExecution;
+  /** The app's own bot user: never a person someone can pick. */
+  botUserId?: string;
+}
+
+type UiSurfaceState = Required<Pick<SlackStateStore, 'executeUiSurface'>>;
+
+/** A private notice to the person who clicked or submitted, in the card's thread. */
+async function sendUiNotice(
+  client: SlackUiClient,
+  input: { channelId: string | null; userId: string; text: string; threadTs?: string },
+): Promise<void> {
+  if (!input.channelId) return;
+  await client.chat.postEphemeral({
+    channel: input.channelId,
+    user: input.userId,
+    text: input.text,
+    ...(input.threadTs ? { thread_ts: input.threadTs } : {}),
+  }).catch(() => {
+    console.warn('[chickpea] Slack click notice was not delivered');
+  });
+}
+
+/**
+ * A click on a host-namespace control. It resolves against the durable
+ * surface, passes the same admission gate as a typed message from the
+ * clicker, claims the surface first-wins together with its TurnJob, and then
+ * redraws the card from stored state. Refusals are private to the clicker and
+ * never consume the control.
+ */
+async function handleSlackUiAction(input: SlackUiContext & { action: SlackUiAction }): Promise<void> {
+  const { action, stores, client } = input;
+  const control = parseUiControl(action);
+  // Link buttons also send block_actions, and so does choosing a value in a
+  // form's field (in a message or a modal); only Submit answers a form.
+  if (!control || control.kind === 'link' || control.kind === 'field') return;
+  if (!stores.slackState.executeUiSurface) return;
+  const state = stores.slackState as UiSurfaceState;
+  const refuse = async (refusal: UiRefusal, surface?: UiSurfaceRecord) => {
+    emitUiInteraction('refused', refusal);
+    await sendUiNotice(client, {
+      channelId: action.channelId,
+      userId: action.userId,
+      text: uiRefusalText(refusal, surface),
+      ...(surface?.threadTs ? { threadTs: surface.threadTs } : {}),
+    });
+  };
+  emitUiInteraction('received');
+
+  let surface = await uiSurfaceRecord(state, { kind: 'get_surface', id: control.surfaceId });
+  if (!surface) return refuse('closed');
+  if (surface.namespace !== control.namespace || surface.workspaceId !== action.workspaceId) {
+    console.warn('[chickpea] Slack click refused: namespace_or_workspace_mismatch');
+    return refuse('unavailable');
+  }
+  if (action.containerType !== 'message' || action.isEphemeral ||
+      action.channelId !== surface.channelId || !action.messageTs ||
+      (surface.messageTs && surface.messageTs !== action.messageTs)) {
+    return refuse('unavailable');
+  }
+  const messenger = surfaceMessenger(client, surface.channelId);
+  const redraw = (next: UiSurfaceRecord | undefined) => redrawUiSurface(messenger, next);
+  if (!surface.messageTs) {
+    surface = await uiSurfaceRecord(state, {
+      kind: 'bind_surface_message', id: surface.id, messageTs: action.messageTs,
+    }) ?? surface;
+  }
+  if (surface.status === 'resolved') {
+    await redraw(surface);
+    return refuse('answered', surface);
+  }
+  if (surface.status !== 'open' && surface.status !== 'pending_delivery') {
+    await redraw(surface);
+    return refuse('closed', surface);
+  }
+  if (surface.expiresAt <= Date.now()) {
+    await redraw(await uiSurfaceRecord(state, { kind: 'close_surface', id: surface.id, status: 'expired' }));
+    return refuse('closed', surface);
+  }
+  // A modal control is answered when Slack's request arrives; one that gets
+  // here could not open its modal for this person.
+  if (isModalControl(control)) {
+    return refuse(surfaceMayAnswer(surface, action.userId) ? 'unavailable' : 'wrong_user', surface);
+  }
+  let answer: InteractiveAnswer | undefined;
+  const spec = surface.spec;
+  if (spec.kind === 'approval') {
+    if (control.valueIndex === undefined) return refuse('unavailable', surface);
+    answer = { choice: control.valueIndex };
+  } else if (spec.kind === 'form') {
+    if (control.kind !== 'form_submit' || formLayout(spec.form) !== 'inline') return refuse('unavailable', surface);
+    const read = readFormSubmission(surface, spec.form, action.state);
+    if (!read.ok) {
+      emitUiInteraction('refused', 'unavailable');
+      return sendUiNotice(client, {
+        channelId: action.channelId,
+        userId: action.userId,
+        text: formErrorsText(surface, spec.form, read.errors),
+        threadTs: surface.threadTs,
+      });
+    }
+    answer = { choice: 0, values: encodeFormValues(read.values) };
+  } else {
+    // Ticking a checkbox or choosing in a picker before Submit also sends
+    // block_actions; only a complete answer goes on, and nothing is consumed.
+    answer = interactiveAnswer(surface, control, action);
+    if (!answer) return;
+  }
+  // A picked bot user would also read as an @mention of the app.
+  if (input.botUserId && answerPicksUser(surface, answer, input.botUserId)) return refuse('unavailable', surface);
+  const messageTs = microsecondSlackTs(action.actionTs);
+  if (!messageTs) return refuse('unavailable', surface);
+  const outcome = await admitUiAnswer(input, { surface, answer, userId: action.userId, messageTs });
+  const current = await uiSurfaceRecord(state, { kind: 'get_surface', id: surface.id }) ?? surface;
+  if (outcome === 'admitted') {
+    emitUiInteraction('resolved');
+    // Cancel retires the proposal, so a later typed "approve" cannot apply
+    // what the card now shows as cancelled. Only the claimed click gets here.
+    if (spec.kind === 'approval' && spec.approval === 'workspace_change' &&
+        approvalChoice(answer.choice) === 'decline') {
+      await stores.management.markChangeSetProposalStale(spec.proposalId, Date.now()).catch(() => {
+        console.warn('[chickpea] cancelled proposal could not be retired');
+      });
+    }
+    await redraw(current);
+    return;
+  }
+  if (outcome === 'not_current') {
+    await redraw(await uiSurfaceRecord(state, { kind: 'close_surface', id: surface.id, status: 'expired' }));
+  } else if (outcome === 'answered' || outcome === 'closed') {
+    await redraw(current);
+  }
+  return refuse(current.status === 'resolved' ? 'answered' : outcome, current);
+}
+
+/**
+ * A submitted host modal, already validated when Slack's request arrived (the
+ * modal closed only for a valid answer). It is re-read against the stored
+ * surface and then admitted exactly like a click on the card.
+ */
+async function handleSlackUiViewSubmission(
+  input: SlackUiContext & { submission: SlackUiViewSubmission },
+): Promise<void> {
+  const { submission, stores, client } = input;
+  const surfaceId = viewSubmissionSurfaceId(submission);
+  if (!surfaceId || !stores.slackState.executeUiSurface) return;
+  const state = stores.slackState as UiSurfaceState;
+  emitUiInteraction('received');
+  const surface = await uiSurfaceRecord(state, { kind: 'get_surface', id: surfaceId });
+  const reading = readViewSubmission(submission, surface);
+  const refuse = async (refusal: UiRefusal, current: UiSurfaceRecord) => {
+    emitUiInteraction('refused', refusal);
+    await sendUiNotice(client, {
+      channelId: current.channelId,
+      userId: submission.userId,
+      text: uiRefusalText(refusal, current),
+      threadTs: current.threadTs,
+    });
+  };
+  if (!reading.ok) {
+    // It was valid when Slack asked, so the modal closed; only the card can
+    // have changed since. Say so privately, as a late click would.
+    if (!surface || surface.namespace !== 'ui' || surface.workspaceId !== submission.workspaceId) return;
+    const open = surface.status === 'open' || surface.status === 'pending_delivery';
+    if (open && surface.expiresAt > Date.now()) return;
+    const current = open
+      ? await uiSurfaceRecord(state, { kind: 'close_surface', id: surface.id, status: 'expired' }) ?? surface
+      : surface;
+    await redrawUiSurface(surfaceMessenger(client, current.channelId), current);
+    return refuse(current.status === 'resolved' ? 'answered' : 'closed', current);
+  }
+  if (input.botUserId && answerPicksUser(reading.surface, reading.answer, input.botUserId)) {
+    return refuse('unavailable', reading.surface);
+  }
+  const outcome = await admitUiAnswer(input, {
+    surface: reading.surface,
+    answer: reading.answer,
+    userId: submission.userId,
+    messageTs: receiptSlackTs(),
+  });
+  const current = await uiSurfaceRecord(state, { kind: 'get_surface', id: surfaceId }) ?? reading.surface;
+  await redrawUiSurface(surfaceMessenger(client, current.channelId), current);
+  if (outcome === 'admitted') {
+    emitUiInteraction('resolved');
+    return;
+  }
+  return refuse(current.status === 'resolved' ? 'answered' : outcome, current);
+}
+
+/**
+ * The answer becomes a synthetic message from the person, through the same
+ * admission as typed text; the surface is claimed first-wins with its TurnJob.
+ */
+async function admitUiAnswer(
+  context: SlackUiContext,
+  input: { surface: UiSurfaceRecord; answer: InteractiveAnswer; userId: string; messageTs: string },
+): Promise<SlackUiAdmission['outcome']> {
+  const { surface, answer } = input;
+  const admission: SlackUiAdmission = {
+    surface,
+    choice: answer.choice,
+    ...(answer.values ? { values: answer.values } : {}),
+    outcome: 'unavailable',
+  };
+  await processSlackEvent({
+    token: '',
+    team_id: surface.workspaceId,
+    api_app_id: context.appId,
+    event_id: `EvUI${surface.id}`,
+    event_time: Math.floor(Number(input.messageTs)),
+    type: 'event_callback',
+    event: {
+      type: 'message',
+      channel: surface.channelId,
+      channel_type: surface.conversationKind === 'im' ? 'im' : 'channel',
+      user: input.userId,
+      text: uiResponseTurnText(surface, answer, input.userId),
+      ts: input.messageTs,
+      event_ts: input.messageTs,
+      thread_ts: surface.threadTs,
+    },
+  }, context.platformEnv, context.execution, admission);
+  return admission.outcome;
+}
+
+/** A modal has no action_ts: the receipt time, with sub-millisecond noise against same-ms collisions. */
+function receiptSlackTs(now = Date.now()): string {
+  const micros = (now % 1000) * 1000 + Math.floor(Math.random() * 1000);
+  return `${Math.floor(now / 1000)}.${String(micros).padStart(6, '0')}`;
+}
+
+/** Whether an answer names this user as a picked person. */
+function answerPicksUser(surface: UiSurfaceRecord, answer: InteractiveAnswer, userId: string): boolean {
+  const spec = surface.spec;
+  if (spec.kind === 'form') {
+    const values = parseFormValues(answer.values);
+    return spec.form.fields.some((field) => (field.type === 'person' || field.type === 'people') &&
+      [values[field.key]].flat().includes(userId));
+  }
+  if (spec.kind === 'question' && answer.choice === QUESTION_OTHER_CHOICE) return false;
+  return answer.values?.includes(userId) ?? false;
+}
+
+function emitUiInteraction(outcome: 'received' | 'refused' | 'resolved', reason?: UiRefusal): void {
+  console.info('[chickpea] slack_ui.click', { outcome, ...(reason ? { reason } : {}) });
+}
+
+/** Edits a host surface message in place; `chat.update` keeps the sender. */
+function surfaceMessenger(
+  client: ReturnType<typeof createSlackWebClient>,
+  channelId: string,
+): { update(messageTs: string, rendered: RenderedUiSurface): Promise<void> } {
+  return {
+    async update(messageTs, rendered) {
+      await client.chat.update({
+        channel: channelId,
+        ts: messageTs,
+        text: rendered.text,
+        blocks: rendered.blocks,
+      } as unknown as Parameters<typeof client.chat.update>[0]);
+    },
+  };
+}
+
+async function processDirectSlackUiAction(
+  action: SlackUiAction,
+  appId: string,
+  platformEnv: PlatformEnv | undefined,
+): Promise<void> {
+  const context = await directSlackUiContext(action.workspaceId, appId, platformEnv);
+  if (context) await handleSlackUiAction({ ...context, action });
+}
+
+/** The bound direct installation for a verified interaction, with its bot client. */
+async function directSlackUiContext(
+  workspaceId: string,
+  appId: string,
+  platformEnv: PlatformEnv | undefined,
+): Promise<SlackUiContext | undefined> {
+  const stores = resolveStores(platformEnv);
+  const installation = await stores.config.getWorkspaceInstallation(workspaceId);
+  if (!installation || installation.transportMode !== 'direct' ||
+      installation.health === 'revoked' ||
+      (installation.appId && installation.appId !== appId)) return undefined;
+  const credentials = await resolveSlackInstallationCredentials(
+    WORKSPACE_SLACK_INSTALLATION_ID,
+    platformEnv,
+  );
+  if (!credentials.botToken) return undefined;
+  return {
+    appId,
+    platformEnv,
+    stores,
+    client: createSlackWebClient(credentials.botToken),
+    ...(installation.botUserId ? { botUserId: installation.botUserId } : {}),
+  };
+}
+
+async function readUiSurface(stores: AppStores, id: string): Promise<UiSurfaceRecord | undefined> {
+  if (!stores.slackState.executeUiSurface) return undefined;
+  return uiSurfaceRecord(stores.slackState as UiSurfaceState, { kind: 'get_surface', id });
+}
+
+/** Opens a Fill in or "Something else…" modal with the click's trigger_id; false when it cannot. */
+async function openDirectSlackUiModal(
+  action: SlackUiAction,
+  appId: string,
+  platformEnv: PlatformEnv | undefined,
+): Promise<boolean> {
+  try {
+    const control = parseUiControl(action);
+    const context = control ? await directSlackUiContext(action.workspaceId, appId, platformEnv) : undefined;
+    if (!control || !context) return false;
+    const view = modalForClick(action, await readUiSurface(context.stores, control.surfaceId));
+    if (!view) return false;
+    await context.client.views.open({
+      trigger_id: action.triggerId,
+      view,
+    } as unknown as Parameters<typeof context.client.views.open>[0]);
+    emitUiInteraction('received');
+    return true;
+  } catch (error) {
+    console.warn('[chickpea] Slack modal did not open:', sanitizeError(error));
+    return false;
+  }
+}
+
+/**
+ * A submitted host modal answers Slack in this response: field errors keep the
+ * modal open; a valid answer closes it and is admitted after the response.
+ */
+async function receiveDirectSlackUiViewSubmission(
+  c: Parameters<NonNullable<SlackChannelOptions['interactions']>>[0]['c'],
+  submission: SlackUiViewSubmission,
+  appId: string,
+  platformEnv: PlatformEnv | undefined,
+): Promise<Response | undefined> {
+  const context = await directSlackUiContext(submission.workspaceId, appId, platformEnv);
+  const surfaceId = viewSubmissionSurfaceId(submission);
+  const surface = context && surfaceId ? await readUiSurface(context.stores, surfaceId) : undefined;
+  const reading = readViewSubmission(submission, surface);
+  if (!reading.ok) return Response.json(reading.responseAction);
+  detach(c, handleSlackUiViewSubmission({ ...context!, submission }).catch((error) => {
+    console.error('[chickpea] Slack form submission failed:', sanitizeError(error));
+  }));
+  return undefined;
+}
+
+type GatewayUiExecution = {
+  stores: AppStores;
+  enqueueTurn?(job: TurnJob): Promise<StateRpcResult<null>>;
+  durableIngress?: boolean;
+};
+
+/** A normalized gateway click or modal still needs the Worker's current binding. */
+async function gatewaySlackUiContext(
+  delivery: { workspaceId: string; bindingId: string },
+  platformEnv: PlatformEnv | undefined,
+  providedClient: GatewayDeploymentClient | undefined,
+  providedExecution: GatewayUiExecution | undefined,
+): Promise<SlackUiContext | undefined> {
+  const stores = providedExecution?.stores ?? resolveStores(platformEnv);
+  const installation = await stores.config.getWorkspaceInstallation(delivery.workspaceId);
+  if (!installation || installation.transportMode !== 'gateway' ||
+      installation.health === 'revoked' || !installation.appId || !installation.botUserId ||
+      !installation.gatewayBindingId || installation.gatewayBindingId !== delivery.bindingId) {
+    return undefined;
+  }
+  const gateway = providedClient ?? createGatewayDeploymentClient(platformEnv);
+  const binding = await gateway.loadBinding();
+  if (!binding || binding.bindingId !== delivery.bindingId ||
+      binding.workspaceId !== delivery.workspaceId || binding.appId !== installation.appId ||
+      binding.botUserId !== installation.botUserId) return undefined;
+  const client = createGatewaySlackWebClient(gateway);
+  return {
+    appId: installation.appId,
+    platformEnv,
+    stores,
+    client,
+    botUserId: installation.botUserId,
+    execution: {
+      transport: createGatewaySlackTransport(gateway),
+      client,
+      botUserId: installation.botUserId,
+      stores,
+      ...(providedExecution?.enqueueTurn ? { enqueueTurn: providedExecution.enqueueTurn } : {}),
+      ...(providedExecution?.durableIngress ? { durableIngress: true } : {}),
+    },
+  };
+}
+
+export async function processGatewayUiAction(
+  delivery: GatewayUiActionDelivery,
+  platformEnv?: PlatformEnv,
+  providedClient?: GatewayDeploymentClient,
+  providedExecution?: GatewayUiExecution,
+): Promise<'accepted' | 'rejected'> {
+  const context = await gatewaySlackUiContext(delivery, platformEnv, providedClient, providedExecution);
+  if (!context) return 'rejected';
+  await handleSlackUiAction({ ...context, action: delivery });
+  return 'accepted';
+}
+
+/** A modal the session validated at receipt; admitted like a click on its card. */
+export async function processGatewayViewSubmission(
+  delivery: GatewayViewSubmissionDelivery,
+  platformEnv?: PlatformEnv,
+  providedClient?: GatewayDeploymentClient,
+  providedExecution?: GatewayUiExecution,
+): Promise<'accepted' | 'rejected'> {
+  const context = await gatewaySlackUiContext(delivery, platformEnv, providedClient, providedExecution);
+  if (!context) return 'rejected';
+  await handleSlackUiViewSubmission({ ...context, submission: delivery });
+  return 'accepted';
+}
+
 async function processDirectPrivateChannelSetup(
   action: PrivateChannelSetupAction,
   apiAppId: string | undefined,
@@ -1191,7 +1679,10 @@ async function processSlackEvent(
   payload: SlackEventFixture,
   platformEnv: PlatformEnv | undefined,
   execution?: SlackEventExecution,
+  ui?: SlackUiAdmission,
 ): Promise<void> {
+  // A click is admitted like a message; every early return below is a refusal
+  // (its outcome starts at `unavailable`).
   const stores = execution?.stores ?? resolveStores(platformEnv);
   const behavior = await resolveSlackBehaviorSettings(platformEnv, stores.settings);
   const installation = await stores.config.getWorkspaceInstallation(payload.team_id);
@@ -1231,6 +1722,15 @@ async function processSlackEvent(
   });
   if (normalization.status !== 'runnable') return;
   const turn = normalization.turn;
+  if (ui) {
+    turn.uiResponse = {
+      surfaceId: ui.surface.id,
+      namespace: ui.surface.namespace,
+      kind: ui.surface.spec.kind,
+      choice: ui.choice,
+      ...(ui.values?.length ? { values: ui.values } : {}),
+    };
+  }
   const state = stores.slackState;
   const preliminarySurface = turnSurface(turn);
   const liveChannelConfig = liveChannelConfigurationEnabled(platformEnv);
@@ -1311,6 +1811,7 @@ async function processSlackEvent(
         }),
       });
       if (routed.kind === 'ignore') return;
+      if (routed.kind !== 'routed' && ui) return;
       if (routed.kind !== 'routed') {
         await postAgentRoutingFeedback({
           turn,
@@ -1472,8 +1973,8 @@ async function processSlackEvent(
     botUserId: resolvedBotUserId,
     agentUserGroupId: assignment.agent.slackPresence?.userGroupId,
   };
-  let deterministicCommand = Boolean(parseMemoryCommand(turn.text)) ||
-    (isRoutineSlackTurn(turn) && Boolean(parseRoutineCommand(turn.text, commandAddress)));
+  let deterministicCommand = !ui && (Boolean(parseMemoryCommand(turn.text)) ||
+    (isRoutineSlackTurn(turn) && Boolean(parseRoutineCommand(turn.text, commandAddress))));
   let admissionTruth: SlackAdmissionTruth = {
     eligible: false,
     reason: 'slack_truth_unavailable',
@@ -1531,20 +2032,42 @@ async function processSlackEvent(
     turn.actorMembershipId = admittedActorMembershipId;
   }
 
+  // A click is structured data: it never enters the typed approve/stop
+  // matching below. Only a host-namespace click on a live host record can
+  // stamp an approval, and only after the clicker passed the gate above.
+  if (ui) {
+    const refusal = admissionTruth.eligible && !candidateTurn
+      ? await authorizeUiResponse({
+          admission: ui,
+          turn,
+          assignment,
+          actorMembershipId: admittedActorMembershipId,
+          stores,
+        })
+      : 'unavailable';
+    if (refusal) {
+      ui.outcome = refusal;
+      return;
+    }
+    turn.interactionIntent = { disposition: 'reply', reason: 'substantive_request' };
+    if (turn.managementApprovalProposalId) deterministicCommand = true;
+  }
+
   // An exact "approve" or "stop" answers a browser step this Agent is holding
   // for the same person in the same thread. It is checked before management
   // approvals because it is bound to this thread, and the Agent then runs
   // with the reply (the approved step is bound to this message).
-  const browserActionAnswered = admissionTruth.eligible && !candidateTurn &&
-    await admitSlackBrowserActionReply({
-      turn,
-      assignment,
-      settings: stores.settings,
-      actorMembershipId: admittedActorMembershipId,
-    });
+  const browserActionAnswered = !ui && admissionTruth.eligible && !candidateTurn
+    ? await admitSlackBrowserActionReply({
+        turn,
+        assignment,
+        settings: stores.settings,
+        actorMembershipId: admittedActorMembershipId,
+      })
+    : undefined;
 
   if (
-    !browserActionAnswered &&
+    !ui && !browserActionAnswered &&
     admissionTruth.eligible && admittedActorMembershipId &&
     shouldResolveSlackManagementApproval(turn.text)
   ) {
@@ -1562,7 +2085,7 @@ async function processSlackEvent(
     }
   }
 
-  if (!deterministicCommand && !browserActionAnswered && !candidateTurn) {
+  if (!ui && !deterministicCommand && !browserActionAnswered && !candidateTurn) {
     const immediateIntent = resolveImmediateSlackInteractionIntent({
       workspaceId: turn.workspaceId,
       channelId: turn.channelId,
@@ -1681,6 +2204,9 @@ async function processSlackEvent(
   modelReadyForCanonicalAdmission = Boolean(turn.managementApprovalProposalId) ||
     Boolean(assignment.model && assignment.modelAttribution);
 
+  // A click resolves its surface inside canonical admission, atomically with
+  // its TurnJob; it never takes the legacy claim path that could not.
+  if (ui && !(admissionTruth.eligible && modelReadyForCanonicalAdmission)) return;
   if (admissionTruth.eligible && modelReadyForCanonicalAdmission) {
     emitManagementMetric('live_revision.admission', {
       surface,
@@ -1779,8 +2305,26 @@ async function processSlackEvent(
             ? { taskLabels: turn.interactionIntent.checklist }
             : {}),
         },
+        ...(ui
+          ? {
+              uiSurfaceClaim: {
+                surfaceId: ui.surface.id,
+                namespace: ui.surface.namespace,
+                resolution: {
+                  byUserId: turn.userId,
+                  at: Date.now(),
+                  choice: ui.choice,
+                  ...(ui.values?.length ? { values: ui.values } : {}),
+                },
+              },
+            }
+          : {}),
       });
-      if (!result.claimed) return;
+      if (!result.claimed) {
+        if (ui) ui.outcome = 'answered';
+        return;
+      }
+      if (ui) ui.outcome = 'admitted';
       claimsHeldByCanonicalAdmission = true;
       canonicalRunId = result.admission.run.id;
     } catch (err) {
@@ -1796,6 +2340,10 @@ async function processSlackEvent(
         if (execution?.enqueueTurn || execution?.durableIngress) {
           throw new SlackDurableEnqueueError('Canonical Work admission failed.');
         }
+        return;
+      }
+      if (ui) {
+        console.error('[chickpea] Slack click admission failed:', sanitizeError(err));
         return;
       }
       // U3 is deliberately observational. Preserve the existing product path
@@ -1842,6 +2390,25 @@ async function processSlackEvent(
   //    session-created-before-provider-call semantics. A failed turn leaves
   //    the thread registered (only the claims are released, for retry).
   if (!claimsHeldByCanonicalAdmission) await state.start(threadKey);
+  if (!ui && runtimeClient && (turn.managementApprovalProposalId || browserActionAnswered)) {
+    // A typed approve or stop settles the card offering the same approval.
+    await retireApprovalSurfacesForTypedAnswer({
+      state,
+      messenger: surfaceMessenger(runtimeClient, turn.channelId),
+      scope: { workspaceId: turn.workspaceId, channelId: turn.channelId, agentId: assignment.agent.id },
+      match: {
+        ...(turn.managementApprovalProposalId ? { proposalId: turn.managementApprovalProposalId } : {}),
+        ...(browserActionAnswered ? { browserActionId: browserActionAnswered.id } : {}),
+      },
+      resolution: {
+        byUserId: turn.userId,
+        at: Date.now(),
+        choice: browserActionAnswered?.kind === 'stopped' ? 1 : 0,
+      },
+    }).catch(() => {
+      console.warn('[chickpea] typed approval did not retire its card');
+    });
+  }
   const marksActiveWork = turn.interactionIntent?.disposition === 'work';
   if (marksActiveWork) await state.setActiveWork(threadKey, msgKey, true);
 
@@ -1879,9 +2446,11 @@ async function processSlackEvent(
       console.error('[chickpea] enqueue turn failed:', enqueued.error.message);
       throw new SlackDurableEnqueueError(enqueued.error.message);
     }
-    await recordAcceptedSlackHumanMessage(stores.config, turn, assignment).catch(() => {
-      console.warn('[chickpea] accepted Slack message was not added to public context');
-    });
+    if (!ui) {
+      await recordAcceptedSlackHumanMessage(stores.config, turn, assignment).catch(() => {
+        console.warn('[chickpea] accepted Slack message was not added to public context');
+      });
+    }
     return;
   }
   if (!durableCanonicalTurnJob) {
@@ -1914,9 +2483,11 @@ async function processSlackEvent(
       return;
     }
   }
-  await recordAcceptedSlackHumanMessage(stores.config, turn, assignment).catch(() => {
-    console.warn('[chickpea] accepted Slack message was not added to public context');
-  });
+  if (!ui) {
+    await recordAcceptedSlackHumanMessage(stores.config, turn, assignment).catch(() => {
+      console.warn('[chickpea] accepted Slack message was not added to public context');
+    });
+  }
   const wake = wakeNodeTurnRelay(platformEnv).catch((err) => {
     if (execution?.durableIngress) {
       console.error('[chickpea] node turn wake failed: durable_ingress_failure');

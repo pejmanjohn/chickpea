@@ -1,4 +1,8 @@
-import type { GatewayInboundDelivery } from './protocol.ts';
+import {
+  gatewayAdmissionOutcome,
+  type GatewayAdmissionResult,
+  type GatewayInboundDelivery,
+} from './protocol.ts';
 
 /**
  * Worker-side intake for gateway socket deliveries.
@@ -102,6 +106,15 @@ function authoredBySelf(
 export function gatewayDeliveryOrderKey(delivery: GatewayInboundDelivery): string {
   if (delivery.kind === 'interaction.agent_selected') return `user:${delivery.userId}`;
   if (delivery.kind === 'interaction.channel_agent_add') return `channel:${delivery.channelId}`;
+  // A modal names its card only in private metadata; its thread is unknown here.
+  if (delivery.kind === 'interaction.view_submission') return `user:${delivery.userId}`;
+  // A click is ordered with the messages of the thread holding its card.
+  if (delivery.kind === 'interaction.ui_action') {
+    if (!delivery.channelId) return `user:${delivery.userId}`;
+    if (delivery.channelId.startsWith('D')) return `channel:${delivery.channelId}`;
+    const root = delivery.threadTs ?? delivery.messageTs;
+    return root ? `thread:${delivery.channelId}:${root}` : `channel:${delivery.channelId}`;
+  }
   const event = delivery.envelope.event as unknown as Record<string, unknown>;
   const channel = str(event.channel);
   if (event.type === 'reaction_added') {
@@ -178,7 +191,7 @@ export class GatewayKeyedAdmissionQueue {
 interface RecentDelivery {
   identity: string;
   at: number;
-  pending?: Promise<GatewayAdmissionOutcome>;
+  pending?: Promise<GatewayAdmissionResult>;
 }
 
 /**
@@ -202,7 +215,7 @@ export class GatewayRecentDeliveries {
 
   lookup(delivery: GatewayInboundDelivery):
     | { state: 'admitted' }
-    | { state: 'in_flight'; pending: Promise<GatewayAdmissionOutcome> }
+    | { state: 'in_flight'; pending: Promise<GatewayAdmissionResult> }
     | undefined {
     const entry = this.entries.get(delivery.deliveryId);
     if (!entry) return undefined;
@@ -216,7 +229,7 @@ export class GatewayRecentDeliveries {
     return { state: 'admitted' };
   }
 
-  track(delivery: GatewayInboundDelivery, pending: Promise<GatewayAdmissionOutcome>): void {
+  track(delivery: GatewayInboundDelivery, pending: Promise<GatewayAdmissionResult>): void {
     const id = delivery.deliveryId;
     const entry: RecentDelivery = { identity: deliveryIdentity(delivery), at: this.now(), pending };
     this.entries.delete(id);
@@ -224,6 +237,8 @@ export class GatewayRecentDeliveries {
     this.evict();
     void pending.then((outcome) => {
       if (this.entries.get(id) !== entry) return;
+      // An interaction answered in its ack was never queued: a repeat is
+      // answered again (a modal's errors must reach every copy).
       if (outcome === 'accepted' || outcome === 'duplicate') {
         delete entry.pending;
         entry.at = this.now();
@@ -266,7 +281,7 @@ export interface GatewayIntakeObservation {
 }
 
 export interface GatewayInboundAdmissionOptions {
-  admit(delivery: GatewayInboundDelivery): Promise<GatewayAdmissionOutcome>;
+  admit(delivery: GatewayInboundDelivery): Promise<GatewayAdmissionResult>;
   /** Parallel store admissions across ordering keys. */
   concurrency?: number;
   /** Drop events this app's bot user generated before admission. */
@@ -310,7 +325,7 @@ export class GatewayInboundAdmission {
   async deliver(
     delivery: GatewayInboundDelivery,
     context: GatewayAdmissionContext = {},
-  ): Promise<GatewayAdmissionOutcome> {
+  ): Promise<GatewayAdmissionResult> {
     const receivedAt = this.now();
     const inFlight = this.queue.inFlight;
     const known = this.recent?.lookup(delivery);
@@ -318,6 +333,8 @@ export class GatewayInboundAdmission {
       // Slack retried while the first copy is still being admitted: answer
       // with its receipt instead of rejecting and provoking another retry.
       const first = await known.pending.catch(() => 'rejected' as const);
+      // A copy of an interaction answered in its ack gets the same answer.
+      if (typeof first !== 'string') return first;
       if (first !== 'rejected') {
         this.observe({ delivery, receivedAt, outcome: 'duplicate', source: 'recent', inFlight });
         return 'duplicate';
@@ -337,7 +354,7 @@ export class GatewayInboundAdmission {
       return 'accepted';
     }
     let startedAt: number | undefined;
-    let observed: GatewayAdmissionOutcome | 'failed' = 'failed';
+    let observed: GatewayAdmissionResult | 'failed' = 'failed';
     const pending = this.queue.run(gatewayDeliveryOrderKey(delivery), async () => {
       startedAt = this.now();
       return this.options.admit(delivery);
@@ -349,7 +366,8 @@ export class GatewayInboundAdmission {
     } finally {
       const settledAt = this.now();
       this.observe({
-        delivery, receivedAt, outcome: observed, source: 'store', inFlight,
+        delivery, receivedAt, outcome: observed === 'failed' ? observed : gatewayAdmissionOutcome(observed),
+        source: 'store', inFlight,
         ...(startedAt !== undefined
           ? { queueMs: startedAt - receivedAt, admitMs: settledAt - startedAt }
           : {}),

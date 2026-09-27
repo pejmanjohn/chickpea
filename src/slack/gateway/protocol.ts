@@ -1,4 +1,10 @@
 import type { SlackInboundEnvelope } from '../transport/types.ts';
+import {
+  isHostUiActionId,
+  parseNormalizedUiState,
+  type SlackUiAction,
+  type SlackUiViewSubmission,
+} from '../ui/interaction-payload.ts';
 import { SLACK_LIST_OPERATIONS } from '../lists/types.ts';
 
 export const CHICKPEA_GATEWAY_PROTOCOL_VERSION = 1 as const;
@@ -6,7 +12,11 @@ export const MAX_GATEWAY_FRAME_BYTES = 1_048_576;
 /** Leaves space for base64 expansion, metadata, and the signed request envelope. */
 export const MAX_GATEWAY_ARTIFACT_BYTES = 700 * 1024;
 export const GATEWAY_DURABLE_ADMISSION_CAPABILITY = 'durable_admission_v1' as const;
-export type GatewaySessionCapability = typeof GATEWAY_DURABLE_ADMISSION_CAPABILITY;
+/** The session can admit `interaction.ui_action` clicks on host-namespace controls. */
+export const GATEWAY_UI_INTERACTIONS_CAPABILITY = 'ui_interactions_v1' as const;
+export type GatewaySessionCapability =
+  | typeof GATEWAY_DURABLE_ADMISSION_CAPABILITY
+  | typeof GATEWAY_UI_INTERACTIONS_CAPABILITY;
 
 const GATEWAY_SLACK_OPERATIONS = [
   ...SLACK_LIST_OPERATIONS,
@@ -148,16 +158,60 @@ export interface GatewayPrivateChannelSetupDelivery {
   agentId: string | null;
 }
 
+/**
+ * A click on a `chickpea.ui.v1.*` or `chickpea.host.v1.*` control, normalized
+ * by the gateway. It carries no response_url and no raw payload.
+ */
+export interface GatewayUiActionDelivery extends SlackUiAction {
+  protocolVersion: typeof CHICKPEA_GATEWAY_PROTOCOL_VERSION;
+  kind: 'interaction.ui_action';
+  deliveryId: string;
+  bindingId: string;
+}
+
+/**
+ * A submitted `chickpea.ui.v1.*` modal. The session validates it at receipt:
+ * field errors return in the ack's `responseAction`; a valid one is admitted.
+ */
+export interface GatewayViewSubmissionDelivery extends SlackUiViewSubmission {
+  protocolVersion: typeof CHICKPEA_GATEWAY_PROTOCOL_VERSION;
+  kind: 'interaction.view_submission';
+  deliveryId: string;
+  bindingId: string;
+}
+
 export type GatewayInboundDelivery =
   | GatewayEventDelivery
   | GatewayAgentSelectionDelivery
-  | GatewayPrivateChannelSetupDelivery;
+  | GatewayPrivateChannelSetupDelivery
+  | GatewayUiActionDelivery
+  | GatewayViewSubmissionDelivery;
 
 export interface GatewayEventAck {
   protocolVersion: typeof CHICKPEA_GATEWAY_PROTOCOL_VERSION;
   kind: 'event.ack';
   deliveryId: string;
   outcome: 'accepted' | 'duplicate' | 'rejected';
+  /** Synchronous interaction response (modals); absent for ordinary receipts. */
+  interaction?: GatewayInteractionResponse;
+}
+
+export interface GatewayInteractionResponse {
+  openView?: Record<string, unknown>;
+  responseAction?: Record<string, unknown>;
+}
+
+/** A UI delivery answered in its ack; nothing was queued for it. */
+export interface GatewayInteractionReceipt {
+  outcome: 'accepted';
+  interaction: GatewayInteractionResponse;
+}
+
+/** What admitting one delivery yields: an ack outcome, or an answered interaction. */
+export type GatewayAdmissionResult = GatewayEventAck['outcome'] | GatewayInteractionReceipt;
+
+export function gatewayAdmissionOutcome(result: GatewayAdmissionResult): GatewayEventAck['outcome'] {
+  return typeof result === 'string' ? result : result.outcome;
 }
 
 interface GatewayHeartbeat {
@@ -213,6 +267,8 @@ export type GatewayServerFrame =
   | GatewayEventDelivery
   | GatewayAgentSelectionDelivery
   | GatewayPrivateChannelSetupDelivery
+  | GatewayUiActionDelivery
+  | GatewayViewSubmissionDelivery
   | GatewayHeartbeat;
 
 export type GatewayClientFrame = GatewaySessionHello | GatewayEventAck | GatewayHeartbeat;
@@ -277,6 +333,10 @@ function parseGatewayServerFrame(value: unknown): GatewayServerFrame {
         setupId: requireId(record.setupId, 128),
         agentId: record.agentId === null ? null : requireId(record.agentId, 128),
       };
+    case 'interaction.ui_action':
+      return parseGatewayUiAction(record);
+    case 'interaction.view_submission':
+      return parseGatewayViewSubmission(record);
     case 'session.ping':
     case 'session.pong':
       return {
@@ -287,6 +347,100 @@ function parseGatewayServerFrame(value: unknown): GatewayServerFrame {
     default:
       throw new GatewayProtocolError('unknown_frame');
   }
+}
+
+const UI_ACTION_FIELDS = new Set([
+  'protocolVersion', 'kind', 'deliveryId', 'bindingId', 'workspaceId', 'userId', 'containerType',
+  'channelId', 'messageTs', 'threadTs', 'isEphemeral', 'viewId', 'actionId', 'blockId',
+  'actionType', 'value', 'selected', 'state', 'actionTs', 'triggerId',
+]);
+const SLACK_TS_PATTERN = /^\d{1,16}\.\d{1,16}$/;
+
+function parseGatewayUiAction(record: Record<string, unknown>): GatewayUiActionDelivery {
+  if (Object.keys(record).some((key) => !UI_ACTION_FIELDS.has(key))) {
+    throw new GatewayProtocolError('invalid_ui_action');
+  }
+  const nullableId = (value: unknown) => value === null ? null : requireId(value);
+  const requireTs = (value: unknown) => {
+    if (typeof value !== 'string' || !SLACK_TS_PATTERN.test(value)) {
+      throw new GatewayProtocolError('invalid_ui_action');
+    }
+    return value;
+  };
+  const nullableTs = (value: unknown) => value === null ? null : requireTs(value);
+  const bounded = (value: unknown, maximum: number) => {
+    if (typeof value !== 'string' || !value || value.length > maximum) {
+      throw new GatewayProtocolError('invalid_ui_action');
+    }
+    return value;
+  };
+  if (record.containerType !== 'message' && record.containerType !== 'view') {
+    throw new GatewayProtocolError('invalid_ui_action');
+  }
+  if (!isHostUiActionId(record.actionId) || typeof record.isEphemeral !== 'boolean') {
+    throw new GatewayProtocolError('invalid_ui_action');
+  }
+  if (!Array.isArray(record.selected) || record.selected.length > 100 ||
+      record.selected.some((value) => typeof value !== 'string' || value.length > 2_000)) {
+    throw new GatewayProtocolError('invalid_ui_action');
+  }
+  const value = record.value === null ? null : bounded(record.value, 2_000);
+  const state = parseNormalizedUiState(record.state);
+  if (!state) throw new GatewayProtocolError('invalid_ui_action');
+  return {
+    protocolVersion: CHICKPEA_GATEWAY_PROTOCOL_VERSION,
+    kind: 'interaction.ui_action',
+    deliveryId: requireId(record.deliveryId),
+    bindingId: requireId(record.bindingId),
+    workspaceId: requireId(record.workspaceId),
+    userId: requireId(record.userId),
+    containerType: record.containerType,
+    channelId: nullableId(record.channelId),
+    messageTs: nullableTs(record.messageTs),
+    threadTs: nullableTs(record.threadTs),
+    isEphemeral: record.isEphemeral,
+    viewId: nullableId(record.viewId),
+    actionId: record.actionId,
+    blockId: bounded(record.blockId, 255),
+    actionType: bounded(record.actionType, 64),
+    value,
+    selected: [...record.selected] as string[],
+    state,
+    actionTs: requireTs(record.actionTs),
+    triggerId: bounded(record.triggerId, 256),
+  };
+}
+
+const VIEW_SUBMISSION_FIELDS = new Set([
+  'protocolVersion', 'kind', 'deliveryId', 'bindingId', 'workspaceId', 'userId', 'viewId',
+  'callbackId', 'privateMetadata', 'state', 'triggerId',
+]);
+
+function parseGatewayViewSubmission(record: Record<string, unknown>): GatewayViewSubmissionDelivery {
+  if (Object.keys(record).some((key) => !VIEW_SUBMISSION_FIELDS.has(key))) {
+    throw new GatewayProtocolError('invalid_view_submission');
+  }
+  if (typeof record.callbackId !== 'string' || !record.callbackId.startsWith('chickpea.ui.v1.') ||
+      record.callbackId.length > 255 || typeof record.privateMetadata !== 'string' ||
+      record.privateMetadata.length > 3_000 ||
+      (record.triggerId !== null && (typeof record.triggerId !== 'string' || record.triggerId.length > 256))) {
+    throw new GatewayProtocolError('invalid_view_submission');
+  }
+  const state = parseNormalizedUiState(record.state, { hostBlocksOnly: false, maxBytes: 64 * 1024 });
+  if (!state) throw new GatewayProtocolError('invalid_view_submission');
+  return {
+    protocolVersion: CHICKPEA_GATEWAY_PROTOCOL_VERSION,
+    kind: 'interaction.view_submission',
+    deliveryId: requireId(record.deliveryId),
+    bindingId: requireId(record.bindingId),
+    workspaceId: requireId(record.workspaceId),
+    userId: requireId(record.userId),
+    viewId: requireId(record.viewId),
+    callbackId: record.callbackId,
+    privateMetadata: record.privateMetadata,
+    state,
+    triggerId: record.triggerId as string | null,
+  };
 }
 
 export function parseGatewayFrameText(raw: string): GatewayServerFrame {
