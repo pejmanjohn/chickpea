@@ -21,12 +21,9 @@ import { SLACK_PRESENT_TABLE_TOOL_NAME } from './table-presentation.ts';
 import {
   SLACK_ASK_USER_TOOL_NAME,
   SLACK_OFFER_ACTIONS_TOOL_NAME,
-  SLACK_PRESENT_CARDS_TOOL_NAME,
-  SLACK_PRESENT_CHART_TOOL_NAME,
-  SLACK_PRESENT_DETAILS_TOOL_NAME,
   SLACK_REQUEST_FORM_TOOL_NAME,
 } from './ui/presentation-tools.ts';
-import type { RecordedDisplayComponent } from './ui/display-tools.ts';
+import { DISPLAY_TOOL_KINDS, type RecordedDisplayComponent } from './ui/display-tools.ts';
 
 interface PresentationToolPolicyState {
   envelope?: CurrentRequestEnvelope;
@@ -61,11 +58,6 @@ const REPLY_ENDING_TOOL_NAMES: ReadonlySet<string> = new Set([
   SLACK_REQUEST_FORM_TOOL_NAME,
 ]);
 /** Display components ride in the answer; other presentation tools may follow them. */
-const DISPLAY_TOOL_KINDS: Readonly<Record<string, RecordedDisplayComponent['kind']>> = {
-  [SLACK_PRESENT_CARDS_TOOL_NAME]: 'cards',
-  [SLACK_PRESENT_CHART_TOOL_NAME]: 'chart',
-  [SLACK_PRESENT_DETAILS_TOOL_NAME]: 'details',
-};
 const DISPLAY_TOOL_NAMES: ReadonlySet<string> = new Set(Object.keys(DISPLAY_TOOL_KINDS));
 const PRESENTATION_TOOL_NAMES: ReadonlySet<string> = new Set([
   SLACK_PRESENT_TABLE_TOOL_NAME,
@@ -279,8 +271,9 @@ export function observePresentationToolPolicy(
 
 /**
  * The display components this reply already recorded, rebuilt from its
- * durable transcript at every model request. Display tools recreated
- * mid-reply (a restart) merge these instead of starting an empty list.
+ * durable transcript at every model request. Flue renders the agent, and so
+ * its display tools, again before every model turn (and after a restart);
+ * each fresh closure merges these instead of starting from an empty list.
  */
 export function replyDisplayHistory(): readonly RecordedDisplayComponent[] {
   return submissionPolicy.getStore()?.displayComponents ?? [];
