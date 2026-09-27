@@ -716,10 +716,15 @@ function chooseSlackReplyCut(text: string, limit: number, min: number): SlackRep
 export function streamableSlackMarkdownPrefix(text: string): string {
   const normalized = text.replace(/\r\n?/g, '\n').replace(/^\s+/, '');
   if (!normalized) return '';
+  const emphasis = urlEmphasisSpans(normalized);
   let stable = normalized.slice(0, earliestUnsafeTail(normalized)).trimEnd();
-  // A cut can end inside a closed code span or `<...>` reference, or right
-  // after a broadcast word, where the whole answer neutralizes differently.
-  for (let held = unsafeMentionTail(stable); held < stable.length; held = unsafeMentionTail(stable)) {
+  // A cut can end inside a closed code span or `<...>` reference, right after
+  // a broadcast word, or inside a closed URL emphasis span, where the whole
+  // answer neutralizes or drops the `**` differently. Each move can land in
+  // another of these, so repeat until the cut stays put.
+  for (;;) {
+    const held = Math.min(unsafeMentionTail(stable), urlEmphasisOpening(emphasis, stable.length));
+    if (held >= stable.length) break;
     stable = stable.slice(0, credentialHoldStart(stable, held)).trimEnd();
   }
   if (!stable) return '';
@@ -731,6 +736,8 @@ const URL_SEGMENT = String.raw`[^*\n]*https?:\/\/[^*\n]+`;
 const URL_EMPHASIS = new RegExp(String.raw`\*\*(${URL_SEGMENT})\*\*`, 'g');
 const URL_EMPHASIS_AT = new RegExp(String.raw`\*\*${URL_SEGMENT}\*\*`, 'y');
 const WHOLE_URL_SEGMENT = new RegExp(`^${URL_SEGMENT}$`);
+// Code that `sanitizeSlackMarkdownLinks` leaves as written.
+const LINK_CODE_SEGMENT = /(```[\s\S]*?```|`[^`\n]*`)/g;
 
 // Slack's markdown renderer can treat the closing `*` in a strong span as part
 // of an auto-linked URL (`**https://example.test/4**` -> URL ending in `*`).
@@ -738,12 +745,34 @@ const WHOLE_URL_SEGMENT = new RegExp(`^${URL_SEGMENT}$`);
 // literal examples inside inline/fenced code.
 export function sanitizeSlackMarkdownLinks(markdown: string): string {
   return markdown
-    .split(/(```[\s\S]*?```|`[^`\n]*`)/g)
+    .split(LINK_CODE_SEGMENT)
     .map((segment, index) => {
       if (index % 2 === 1) return segment;
       return segment.replace(URL_EMPHASIS, '$1');
     })
     .join('');
+}
+
+/** The `[start, end)` of every span `sanitizeSlackMarkdownLinks` unwraps. */
+function urlEmphasisSpans(markdown: string): Array<[number, number]> {
+  const spans: Array<[number, number]> = [];
+  let offset = 0;
+  for (const [index, segment] of markdown.split(LINK_CODE_SEGMENT).entries()) {
+    if (index % 2 === 0) {
+      for (const match of segment.matchAll(URL_EMPHASIS)) {
+        spans.push([offset + match.index, offset + match.index + match[0].length]);
+      }
+    }
+    offset += segment.length;
+  }
+  return spans;
+}
+
+// A cut strictly inside a closed span would stream its opening `**`, which the
+// whole answer drops: hold from the opening instead.
+function urlEmphasisOpening(spans: Array<[number, number]>, cut: number): number {
+  const span = spans.find(([start, end]) => start < cut && cut < end);
+  return span ? span[0] : cut;
 }
 
 // The `NAME = value` signatures allow any whitespace, newlines included,
