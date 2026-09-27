@@ -733,18 +733,8 @@ function earliestUnsafeTail(value: string): number {
       if (at >= 0) unsafeFrom = Math.min(unsafeFrom, tokenStart + at);
     }
   }
-  // Hold an open assignment until its value token ends, even across a
-  // newline. A hold can also start inside an earlier credential token or
-  // assignment value (`OPENAI_API_KEY=\nxoxb-xoxb- …`): the part before it
-  // would then stream as a piece too short to redact. Hold from that
-  // credential instead.
-  let held = Math.min(unsafeFrom, earliestMatch(value, OPEN_CREDENTIAL_ASSIGNMENTS));
-  while (held < value.length) {
-    const outer = earliestMatch(value.slice(0, held), CREDENTIALS_REACHING_END);
-    if (outer === held) break;
-    held = outer;
-  }
-  unsafeFrom = held;
+  // Hold an open assignment until its value token ends, even across a newline.
+  unsafeFrom = Math.min(unsafeFrom, earliestMatch(value, OPEN_CREDENTIAL_ASSIGNMENTS));
 
   // A link or Slack `<...>` reference still being written sits on the last
   // line. Once a line ends, a `[` or `<` on it was literal text (a CDATA
@@ -777,6 +767,15 @@ function earliestUnsafeTail(value: string): number {
   const trailingLineStart = value.lastIndexOf('\n') + 1;
   if (/^\s*\|/.test(value.slice(trailingLineStart)) && !value.endsWith('\n')) {
     unsafeFrom = Math.min(unsafeFrom, trailingLineStart);
+  }
+  // Any hold above can start inside an earlier credential token or assignment
+  // value (`OPENAI_API_KEY=\nxoxb-xoxb- …`, `SECRET=\nabcdefg[hij …`): the
+  // part before it would then stream as a piece too short to redact. Hold
+  // from that credential instead.
+  while (unsafeFrom < value.length) {
+    const outer = earliestMatch(value.slice(0, unsafeFrom), CREDENTIALS_REACHING_END);
+    if (outer === unsafeFrom) break;
+    unsafeFrom = outer;
   }
   return unsafeFrom;
 }
