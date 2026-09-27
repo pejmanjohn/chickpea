@@ -1,3 +1,4 @@
+import { escapeSlackControlCharacters } from '../message-format.ts';
 import type { SlackUiState } from './interaction-payload.ts';
 import type { FormFieldSpec, RequestFormSpec } from './presentation-tools.ts';
 import {
@@ -410,7 +411,7 @@ export function formTurnText(record: UiSurfaceRecord, form: RequestFormSpec, val
   const forWhom = byUserId !== record.requesterUserId ? ` for <@${record.requesterUserId}>` : '';
   const lines = form.fields.map((field) => {
     const value = values[field.key];
-    const shown = value === undefined || value.length === 0 ? '(blank)' : fieldValueText(field, value, escapeMrkdwn);
+    const shown = value === undefined || value.length === 0 ? '(blank)' : fieldValueText(field, value, escapeSlackControlCharacters);
     return `- ${field.label}: ${shown}`;
   });
   return `Submitted the form "${form.title}"${forWhom} (form ${record.id.slice(0, 8)}):\n${lines.join('\n')}`;

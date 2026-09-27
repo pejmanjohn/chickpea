@@ -1095,6 +1095,15 @@ function slackMrkdwnCodeText(code: string): string {
   return escapeSlackControlCharacters(code).replace(SLACK_BROADCAST_WORD, `@${SLACK_MENTION_BREAK}`);
 }
 
+/**
+ * Escaped model or user text for a mrkdwn text object. mrkdwn auto-parses a
+ * plain `@here` or user-group `@handle`, so every word-initial `@` gets the
+ * joiner, as in file-reply prose.
+ */
+export function neutralizeSlackMrkdwnHandles(escaped: string): string {
+  return escaped.replace(/(?<![\p{L}\p{N}_])@(?=[\p{L}\p{N}_])/gu, `@${SLACK_MENTION_BREAK}`);
+}
+
 function fileReplyProseText(markdown: string): string {
   const content = linearizeMarkdownTables(markdown)
     .replace(/^#{1,6}\s+/gm, '')
