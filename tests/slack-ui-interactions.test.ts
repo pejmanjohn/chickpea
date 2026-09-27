@@ -605,6 +605,14 @@ test('an inline form Submit is validated privately, then becomes one typed turn 
   const submit = {
     actionId: uiActionId('ui', 'form_submit', 0), blockId: uiBlockId('ui', surface.id, 20), value: uiValue(surface.id, 0),
   };
+  // Choosing a value in a field sends block_actions too (live on Slack); it is
+  // neither an answer nor refused.
+  await f.click(surface.id, {
+    actionId: formFieldActionId(0), blockId: formFieldBlockId(surface.id, 0), value: null,
+    actionType: 'static_select', selected: [uiValue(surface.id, 1)], actionTs: '3002.600000',
+  });
+  assert.deepEqual(f.ephemerals(), []);
+  assert.equal(f.jobs.length, 1);
   await f.click(surface.id, submit);
   assert.equal(f.jobs.length, 1, 'a missing required field is not an answer');
   assert.match(f.ephemerals().at(-1)!, /^Not sent yet\. Fix these, then press Submit again:\n• City: This field is required\.$/);

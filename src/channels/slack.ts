@@ -1142,8 +1142,9 @@ async function sendUiNotice(
 async function handleSlackUiAction(input: SlackUiContext & { action: SlackUiAction }): Promise<void> {
   const { action, stores, client } = input;
   const control = parseUiControl(action);
-  // Link buttons also send block_actions; they are acknowledged and ignored.
-  if (!control || control.kind === 'link') return;
+  // Link buttons also send block_actions, and so does choosing a value in a
+  // form's field (in a message or a modal); only Submit answers a form.
+  if (!control || control.kind === 'link' || control.kind === 'field') return;
   if (!stores.slackState.executeUiSurface) return;
   const state = stores.slackState as UiSurfaceState;
   const refuse = async (refusal: UiRefusal, surface?: UiSurfaceRecord) => {
