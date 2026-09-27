@@ -718,8 +718,9 @@ export function streamableSlackMarkdownPrefix(text: string): string {
   if (!normalized) return '';
   let stable = normalized.slice(0, earliestUnsafeTail(normalized)).trimEnd();
   // A cut can end inside a closed code span or `<...>` reference, or right
-  // after a broadcast word, where the whole answer neutralizes differently.
-  for (let held = unsafeMentionTail(stable); held < stable.length; held = unsafeMentionTail(stable)) {
+  // after a broadcast word, where the whole answer neutralizes differently,
+  // and a span it leaves unclosed exposes emphasis the answer keeps as code.
+  for (let held = unsafeTailOfCut(stable); held < stable.length; held = unsafeTailOfCut(stable)) {
     stable = stable.slice(0, credentialHoldStart(stable, held)).trimEnd();
   }
   if (!stable) return '';
@@ -729,8 +730,9 @@ export function streamableSlackMarkdownPrefix(text: string): string {
 // Strong emphasis around one star-free segment that holds a URL.
 const URL_SEGMENT = String.raw`[^*\n]*https?:\/\/[^*\n]+`;
 const URL_EMPHASIS = new RegExp(String.raw`\*\*(${URL_SEGMENT})\*\*`, 'g');
-const URL_EMPHASIS_AT = new RegExp(String.raw`\*\*${URL_SEGMENT}\*\*`, 'y');
 const WHOLE_URL_SEGMENT = new RegExp(`^${URL_SEGMENT}$`);
+// Code the link sanitizer leaves alone; an unclosed fence or span is prose.
+const CLOSED_CODE_SEGMENT = /(```[\s\S]*?```|`[^`\n]*`)/g;
 
 // Slack's markdown renderer can treat the closing `*` in a strong span as part
 // of an auto-linked URL (`**https://example.test/4**` -> URL ending in `*`).
@@ -738,7 +740,7 @@ const WHOLE_URL_SEGMENT = new RegExp(`^${URL_SEGMENT}$`);
 // literal examples inside inline/fenced code.
 export function sanitizeSlackMarkdownLinks(markdown: string): string {
   return markdown
-    .split(/(```[\s\S]*?```|`[^`\n]*`)/g)
+    .split(CLOSED_CODE_SEGMENT)
     .map((segment, index) => {
       if (index % 2 === 1) return segment;
       return segment.replace(URL_EMPHASIS, '$1');
@@ -841,6 +843,10 @@ function credentialHoldStart(value: string, held: number): number {
   return held;
 }
 
+function unsafeTailOfCut(value: string): number {
+  return Math.min(unsafeMentionTail(value), openUrlEmphasis(value, value.lastIndexOf('\n') + 1));
+}
+
 /**
  * Where the tail `neutralizeSlackBroadcastMentions` may still rewrite begins:
  * a `<...>` reference on the last line, an `@` that can still become a whole
@@ -880,25 +886,47 @@ function unmatchedBacktickOnLastLine(value: string, lastLineStart: number): numb
 }
 
 /**
- * Where `sanitizeSlackMarkdownLinks` could still strip `**` on the last line
- * once more text arrives, scanning it as its global replace does: a `**`
- * whose segment runs to the end, or ends in a lone `*` after a URL, and a
- * lone trailing `*` that may become one. Counting `**` pairs instead let a
- * growing `***…` run flip between held and shown.
+ * Where `sanitizeSlackMarkdownLinks` could still change what it strips once
+ * more text arrives, scanning the prose after its last closed code segment
+ * as its global replace does. On the last line: a `**` whose segment runs to
+ * the end, or ends in a lone `*` after a URL, and a lone trailing `*` that
+ * may become one. After an unclosed fence, or backtick on the last line: any
+ * `**URL**` it strips now, which is code once that closes. Counting `**`
+ * pairs instead let a growing `***…` run flip between held and shown.
  */
 function openUrlEmphasis(value: string, lastLineStart: number): number {
-  for (let at = lastLineStart; at < value.length; at += 1) {
-    if (value[at] !== '*') continue;
+  const segments = value.split(CLOSED_CODE_SEGMENT);
+  let offset = 0;
+  let fence = -1;
+  for (const [index, segment] of segments.entries()) {
+    if (index === segments.length - 1) break;
+    if (index % 2 === 1) {
+      // The sanitizer takes an unclosed fence's first two backticks as an
+      // empty span, so the fence shows up here, not in the trailing prose.
+      if (fence < 0 && segment === '``' && value[offset + 2] === '`') fence = offset;
+    } else if (fence >= 0) {
+      const stripped = segment.search(URL_EMPHASIS);
+      if (stripped >= 0) return offset + stripped;
+    }
+    offset += segment.length;
+  }
+  const opener = fence >= 0 ? fence : value.indexOf('`', Math.max(offset, lastLineStart));
+  const from = fence >= 0 ? offset : Math.max(offset, lastLineStart);
+  for (let at = value.indexOf('*', from); at >= 0; at = value.indexOf('*', at + 1)) {
     if (at === value.length - 1) return at;
     if (value[at + 1] !== '*') continue;
-    URL_EMPHASIS_AT.lastIndex = at;
-    if (URL_EMPHASIS_AT.test(value)) {
-      at = URL_EMPHASIS_AT.lastIndex - 1;
-      continue;
-    }
+    // The segment can only close at the next `*`: a `**` there pairs when the
+    // segment holds a URL, and none at all on an earlier line (`**kwargs`,
+    // `2**10`) is literal.
     const star = value.indexOf('*', at + 2);
-    if (star < 0) return at;
-    if (star === value.length - 1 && WHOLE_URL_SEGMENT.test(value.slice(at + 2, star))) return at;
+    if (star < 0) return at < lastLineStart ? value.length : at;
+    const segment = value.slice(at + 2, star);
+    if (value[star + 1] === '*' && WHOLE_URL_SEGMENT.test(segment)) {
+      if (opener >= 0 && star + 2 > opener) return at;
+      at = star + 1;
+    } else if (at >= lastLineStart && star === value.length - 1 && WHOLE_URL_SEGMENT.test(segment)) {
+      return at;
+    }
   }
   return value.length;
 }

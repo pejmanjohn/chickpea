@@ -206,6 +206,13 @@ test('every progressive cut point is a monotone prefix of the canonical terminal
     '@channelword\n******',
     '**a**http://x** then more',
     '****http://x*** then more',
+    '2**10 stays literal.\n**https://example.test/x** done',
+    'See **http://a.test** and **http://b.test** both.',
+    '**a `x` http://b** c http://d**',
+    'x `**http://a** y` z',
+    '```\n**http://a** x\n```\n**http://b** y',
+    '````\n**http://a**\n````',
+    '**https://a.test/x [draft]** is live',
   ];
 
   for (const terminalInput of corpus) {
