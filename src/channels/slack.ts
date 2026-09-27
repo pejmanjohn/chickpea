@@ -53,6 +53,7 @@ import {
   resolveSlackBehaviorSettings,
 } from '../slack/behavior-settings.ts';
 import {
+  mayUseThreadAgent,
   parseAgentUserGroupMentions,
   resolveAgentRoute,
   type AgentRoutingActor,
@@ -143,6 +144,7 @@ import {
 import { turnStopThreadKey } from '../slack/turn-jobs.ts';
 import type {
   TurnMidRunReceipt,
+  TurnSteeringDecision,
   TurnSteeringInterception,
   TurnSteeringRequest,
   TurnStopSource,
@@ -2153,9 +2155,21 @@ async function processSlackEvent(
     });
     return;
   }
+  // Bound to the routed Agent: another Agent's run (the previous owner's,
+  // after a handoff) is steered only once the sender may use that Agent (R3).
   const steering = steeringCommand
-    ? slackSteeringRequest(steeringCommand, turnStopThreadKey(turn, assignment), turn)
+    ? slackSteeringRequest(steeringCommand, turnStopThreadKey(turn, assignment), turn, assignment.agentId)
     : undefined;
+  const mayUseRunningAgent = (agentId: string) => agentRoutingActor && runtimeTransport
+    ? mayUseRunningSlackAgent({
+        agentId,
+        turn,
+        surface,
+        actor: agentRoutingActor,
+        config: stores.config,
+        transport: runtimeTransport,
+      })
+    : Promise.resolve(false);
   // An eligible message posted while its thread's run is in progress gets
   // Chickpea's 👀 at once, before any model reads it (R12, KTD9). A stop or
   // check-in is answered instead, a reaction or surface click is not a
@@ -2432,8 +2446,11 @@ async function processSlackEvent(
         return;
       }
       if ('steered' in result) {
-        await answerSlackSteering({
+        await settleSlackSteering({
           decision: result.steered,
+          request: steering!,
+          keys: [evtKey, msgKey],
+          mayUse: mayUseRunningAgent,
           turn,
           state,
           client: slackClient!,
@@ -2491,7 +2508,16 @@ async function processSlackEvent(
       return undefined;
     });
     if (decision && decision.outcome !== 'enqueue') {
-      await answerSlackSteering({ decision, turn, state, client: slackClient!, platformEnv });
+      await settleSlackSteering({
+        decision,
+        request: steering,
+        keys: [evtKey, msgKey],
+        mayUse: mayUseRunningAgent,
+        turn,
+        state,
+        client: slackClient!,
+        platformEnv,
+      });
       return;
     }
   }
@@ -2848,15 +2874,20 @@ async function processSlackStopButton(
     return;
   }
   if (!(await claimSteeringMessage(state, ...keys))) return;
-  let decision: Awaited<ReturnType<NonNullable<SlackStateStore['steerTurn']>>> | undefined;
+  // Bound to the thread's Agent the press was checked against: after a
+  // handoff the run may be the previous owner's, which the presser must be
+  // allowed to use as well (R3).
+  const request: SlackSteeringAdmission = {
+    kind: 'stop',
+    threadKey,
+    source: 'button',
+    stopperUserId: press.userId,
+    cutoffTs: press.eventTs,
+    agentId: routed.assignment.agentId,
+  };
+  let decision: TurnSteeringDecision | undefined;
   try {
-    decision = await state.steerTurn?.({
-      kind: 'stop',
-      threadKey,
-      source: 'button',
-      stopperUserId: press.userId,
-      cutoffTs: press.eventTs,
-    });
+    decision = await state.steerTurn?.(request);
   } catch (err) {
     // Free the claims so a redelivery decides it again; a recorded stop is
     // idempotent, so deciding twice records one stop.
@@ -2877,7 +2908,24 @@ async function processSlackStopButton(
     });
     return;
   }
-  await answerSlackSteering({ decision, turn, state, client, platformEnv, source: 'button' });
+  await settleSlackSteering({
+    decision,
+    request,
+    keys,
+    mayUse: (agentId) => mayUseRunningSlackAgent({
+      agentId,
+      turn,
+      surface,
+      actor,
+      config: stores.config,
+      transport,
+    }),
+    turn,
+    state,
+    client,
+    platformEnv,
+    source: 'button',
+  });
 }
 
 /**
@@ -2923,13 +2971,16 @@ async function settleIdleAgentSession(input: {
 
 /**
  * A typed stop or check-in for one thread (KTD1). A stop's cutoff is the
- * typed message's own timestamp, and its stopper is the sender.
+ * typed message's own timestamp, and its stopper is the sender. `agentId`,
+ * when given, is the Agent the sender was checked against (R3).
  */
 function slackSteeringRequest(
   command: SlackSteeringCommand,
   threadKey: string,
   turn: NormalizedSlackTurn,
+  agentId?: string,
 ): SlackSteeringAdmission {
+  const bound = agentId ? { agentId } : {};
   return command === 'stop'
     ? {
         kind: 'stop',
@@ -2937,8 +2988,97 @@ function slackSteeringRequest(
         source: 'typed',
         stopperUserId: turn.userId,
         cutoffTs: turn.messageTs,
+        ...bound,
       }
-    : { kind: 'check_in', threadKey };
+    : { kind: 'check_in', threadKey, ...bound };
+}
+
+/**
+ * Settle a stop or check-in the thread's run took (KTD1). When that run is
+ * another Agent's than the one the sender was routed to (the previous
+ * owner's, after a handoff), only a sender who may use that Agent here
+ * steers it (R3): the request is decided again bound to that Agent, so a
+ * handoff mid-run does not hide the running turn from them. Anyone else's
+ * stop is refused privately, and their check-in gets no answer, since what
+ * it would tell is that Agent's run's (R11). The message's claims are held
+ * already; a failure gives them back, so a redelivery decides it again.
+ */
+async function settleSlackSteering(input: {
+  decision: TurnSteeringInterception;
+  request: SlackSteeringAdmission;
+  keys: readonly [string, string];
+  mayUse(agentId: string): Promise<boolean>;
+  turn: NormalizedSlackTurn;
+  state: SlackStateStore;
+  client: ReturnType<typeof createSlackWebClient>;
+  platformEnv: PlatformEnv | undefined;
+  source?: TurnStopSource;
+}): Promise<void> {
+  let decision: TurnSteeringDecision = input.decision;
+  try {
+    // Twice at most: the thread's run may move on to yet another Agent's.
+    for (let round = 0; decision.outcome === 'other_agent'; round += 1) {
+      if (round === 2 || !input.state.steerTurn) return;
+      if (!(await input.mayUse(decision.agentId))) {
+        if (input.request.kind === 'stop') {
+          await tellIneligibleStopper(input.client, steeringReplyTarget(input.turn), input.source ?? 'typed');
+        } else {
+          console.info('[chickpea] steering.admission', { outcome: 'check_in_refused' });
+        }
+        return;
+      }
+      decision = await input.state.steerTurn({ ...input.request, agentId: decision.agentId });
+    }
+  } catch (err) {
+    await releaseSteeringMessage(input.state, ...input.keys);
+    throw err;
+  }
+  // `enqueue`: the run ended meanwhile, and there is nothing left to steer.
+  if (decision.outcome === 'enqueue') return;
+  await answerSlackSteering({
+    decision,
+    turn: input.turn,
+    state: input.state,
+    client: input.client,
+    platformEnv: input.platformEnv,
+    ...(input.source ? { source: input.source } : {}),
+  });
+}
+
+/**
+ * R3 across a handoff: whether the sender may use `agentId`, the Agent whose
+ * run a stop or check-in reached, by the rule routing applies to a reply of
+ * theirs to it in this thread. An Agent that no longer exists is a no; a
+ * retryable lookup failure throws.
+ */
+async function mayUseRunningSlackAgent(input: {
+  agentId: string;
+  turn: NormalizedSlackTurn;
+  surface: AssignmentSurface;
+  actor: ResolvedAgentRoutingActor;
+  config: AppStores['config'];
+  transport: SlackTransport;
+}): Promise<boolean> {
+  const { turn, config, actor } = input;
+  const agent = await config.getAgent(input.agentId).catch((err: unknown) => {
+    if (isRetryableDependencyFailure(err)) throw err;
+    return undefined;
+  });
+  return mayUseThreadAgent({
+    workspaceId: turn.workspaceId,
+    channelId: turn.channelId,
+    agent,
+    surface: input.surface,
+    actor: actor.routing,
+    config,
+    authorizeUserAgent: async (candidate) => resolvePrivateAgentAccess({
+      agent: candidate,
+      workspaceId: turn.workspaceId,
+      grants: await config.listAgentChannelGrants(turn.workspaceId),
+      actor: privateAgentActor(actor, turn.userId),
+      transport: input.transport,
+    }),
+  });
 }
 
 /**
@@ -2949,7 +3089,7 @@ function slackSteeringRequest(
  * Slack retry a duplicate.
  */
 async function answerSlackSteering(input: {
-  decision: TurnSteeringInterception;
+  decision: Extract<TurnSteeringDecision, { outcome: 'stopped' | 'check_in' }>;
   turn: NormalizedSlackTurn;
   state: SlackStateStore;
   client: ReturnType<typeof createSlackWebClient>;
@@ -3036,7 +3176,7 @@ async function steerTopLevelDirectMessage(input: {
   const { turn, state } = input;
   if (!(await claimSteeringMessage(state, input.evtKey, input.msgKey))) return;
   const target = steeringReplyTarget(turn);
-  let decision: TurnSteeringInterception | undefined;
+  let decision: Extract<TurnSteeringDecision, { outcome: 'stopped' | 'check_in' }> | undefined;
   let running: string[];
   try {
     running = await state.runningDirectThreads?.({
@@ -3048,7 +3188,8 @@ async function steerTopLevelDirectMessage(input: {
       const steered = await state.steerTurn?.(
         slackSteeringRequest(input.command, running[0]!, turn),
       );
-      if (steered && steered.outcome !== 'enqueue') decision = steered;
+      // Unbound (no Agent): the sender's own run in their DM.
+      if (steered?.outcome === 'stopped' || steered?.outcome === 'check_in') decision = steered;
     }
   } catch (err) {
     // Free the claims so a redelivery decides it again; a recorded stop is
@@ -3146,12 +3287,21 @@ async function refuseSlackStop(input: {
     return 'idle';
   }
   if (!(await claimSteeringMessage(input.state, ...input.keys))) return 'duplicate';
+  await tellIneligibleStopper(input.client, input.target, input.source);
+  return 'refused';
+}
+
+/** The private R3 note to someone whose stop was refused (its claims held). */
+async function tellIneligibleStopper(
+  client: ReturnType<typeof createSlackWebClient>,
+  target: SteeringReplyTarget,
+  source: TurnStopSource,
+): Promise<void> {
   console.info('[chickpea] steering.admission', {
     outcome: 'stop_refused',
-    ...(input.source === 'button' ? { source: input.source } : {}),
+    ...(source === 'button' ? { source } : {}),
   });
-  await replyToSteering(input.client, input.target, STEERING_REPLY_TEXT.ineligibleStop);
-  return 'refused';
+  await replyToSteering(client, target, STEERING_REPLY_TEXT.ineligibleStop);
 }
 
 async function handleMemberJoinedChannel(

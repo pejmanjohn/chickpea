@@ -578,11 +578,23 @@ export class TurnJobStoreLogic {
   private decideSteering(request: TurnSteeringRequest, enqueue?: TurnJob): TurnSteeringDecision {
     const rows = this.threadRows(request.threadKey);
     if (request.kind === 'stop') {
-      const stop = this.recordStop(request, rows);
-      if (stop) return { outcome: 'stopped', stop };
+      // Idempotent: while the thread's stopped row is undelivered, a later
+      // stop (the Stop button after a typed stop) returns that first stop and
+      // holds nothing more.
+      const stopped = rows.find((row) => row.stop?.role === 'stopped');
+      const before = rows.filter((row) =>
+        row.messageTs !== undefined && compareSlackTs(row.messageTs, request.cutoffTs) < 0);
+      const head = stopped ?? before.find((row) => row.dispatched) ?? before[0];
+      if (head) {
+        return this.otherAgent(request, head.id) ?? {
+          outcome: 'stopped',
+          stop: stopped ? this.stopResult(stopped.id, false) : this.recordStop(request, before, head),
+        };
+      }
     } else if (request.kind === 'check_in' && rows.length > 0) {
       const head = rows.find((row) => row.dispatched) ?? rows[0]!;
-      return { outcome: 'check_in', run: this.runRoute(head.id, rows.length) };
+      return this.otherAgent(request, head.id) ??
+        { outcome: 'check_in', run: this.runRoute(head.id, rows.length) };
     }
     return {
       outcome: 'enqueue',
@@ -592,24 +604,35 @@ export class TurnJobStoreLogic {
   }
 
   /**
+   * R3: a stop or check-in bound to one Agent never acts on another Agent's
+   * run (a handoff leaves the previous owner's run going). The decision names
+   * the run's Agent, so admission can check the sender against it and decide
+   * again bound to it. An unreadable row's Agent is '' and never matches.
+   */
+  private otherAgent(
+    request: Extract<TurnSteeringRequest, { kind: 'stop' | 'check_in' }>,
+    rowId: string,
+  ): Extract<TurnSteeringDecision, { outcome: 'other_agent' }> | undefined {
+    if (request.agentId === undefined) return undefined;
+    const row = this.db.get(
+      `SELECT json_extract(assignment_json, '$.agentId') AS agent_id FROM turn_jobs WHERE id = ?`,
+      rowId,
+    );
+    const agentId = typeof row?.agent_id === 'string' ? row.agent_id : '';
+    return agentId === request.agentId ? undefined : { outcome: 'other_agent', agentId };
+  }
+
+  /**
    * The stop transaction. The run's head row (the one whose dispatch started,
-   * else the oldest) is stamped with the stop; every other undelivered row
-   * posted before the stop's own Slack timestamp that has not dispatched is
-   * held, so it can never dispatch. Idempotent: while the thread's stopped
-   * row is undelivered, a later stop (the Stop button after a typed stop)
-   * returns that first stop and holds nothing more. Undefined when nothing
-   * was posted before the cutoff.
+   * else the oldest posted before the stop's own Slack timestamp) is stamped
+   * with the stop; every other undelivered row posted before that timestamp
+   * that has not dispatched is held, so it can never dispatch.
    */
   private recordStop(
     request: Extract<TurnSteeringRequest, { kind: 'stop' }>,
-    rows: StopThreadRow[],
-  ): TurnStopResult | undefined {
-    const existing = rows.find((row) => row.stop?.role === 'stopped');
-    if (existing) return this.stopResult(existing.id, false);
-    const before = rows.filter((row) =>
-      row.messageTs !== undefined && compareSlackTs(row.messageTs, request.cutoffTs) < 0);
-    const head = before.find((row) => row.dispatched) ?? before[0];
-    if (!head) return undefined;
+    before: StopThreadRow[],
+    head: StopThreadRow,
+  ): TurnStopResult {
     const at = this.now();
     const record: TurnStopHeadRecordV1 = {
       schemaVersion: 1,
@@ -2246,6 +2269,9 @@ function validateSteeringRequest(request: TurnSteeringRequest, enqueue?: TurnJob
     }
     validateBoundedString(request.stopperUserId, 'stopper user id', 128);
     if (!validSlackTs(request.cutoffTs)) throw new Error('Stop cutoff timestamp is invalid.');
+  }
+  if (request.kind !== 'message' && request.agentId !== undefined) {
+    validateBoundedString(request.agentId, 'steering agent id', 128);
   }
   if (enqueue && stopThreadKeyOf(enqueue.turn, enqueue.assignment) !== request.threadKey) {
     throw new Error('The enqueued turn does not belong to the steered thread.');

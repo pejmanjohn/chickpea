@@ -73,6 +73,8 @@ interface Harness {
     eventId?: string;
     /** Slack's `app_mention` event (it carries no `channel_type`) instead of a `message`. */
     appMention?: boolean;
+    /** A `message` event's `channel_type`; by default `im` for a D… channel, else `channel`. */
+    channelType?: string;
   }): Promise<void>;
   press(press: Press): Promise<void>;
   pending(): Promise<Awaited<ReturnType<NonNullable<AppStores['slackState']['listPendingTurns']>>>>;
@@ -194,7 +196,7 @@ async function withHarness(run: (harness: Harness) => Promise<void>): Promise<vo
           eventTime: Math.floor(Number(message.ts)),
           event: message.appMention
             ? { type: 'app_mention', event_ts: message.ts, ...posted }
-            : { type: 'message', channel_type: direct ? 'im' : 'channel', ...posted },
+            : { type: 'message', channel_type: message.channelType ?? (direct ? 'im' : 'channel'), ...posted },
         }, undefined, gateway, execution), 'accepted');
       },
       async press(press) {
@@ -390,6 +392,52 @@ test('covers AE4: a press by someone who may not use the thread\'s Agent gets a 
 
     // A Slack retry of the same press posts no second note.
     await harness.press({ eventTs: '1800000010.000100', user: 'U2' });
+    assert.equal(harness.posts.length, 1);
+  });
+});
+
+test('after a handoff to Chickpea, a press by someone who may not use the running Agent gets a private note only (R3)', async () => {
+  await withHarness(async (harness) => {
+    // A private Agent: with no grant anywhere, only its creator (U1) may use it.
+    const owner = await harness.stores.config.getAgent('agent_ops');
+    await harness.stores.config.createAgent({
+      id: 'agent_private', name: 'priv', instructions: '', enabled: true, lifecycle: 'active',
+      model: 'local-stub/steering',
+      creatorMembershipId: owner!.creatorMembershipId!, editPolicy: 'creator_and_admins',
+      skills: [], mcpServers: [], apiConnections: [], repositories: [],
+      slackPresence: {
+        requestedHandle: 'priv', normalizedHandle: 'priv', desiredState: 'active',
+        health: 'healthy', userGroupId: 'SPRIV',
+        avatar: { kind: 'generated', revision: 1, seed: 'priv' },
+      },
+    });
+    const rootTs = '1800000300.000100';
+    await harness.deliver({
+      channel: 'G1', channelType: 'mpim', ts: rootTs, text: '<@UBOT> <!subteam^SPRIV|@priv> Summarize the report.',
+    });
+    assert.equal(harness.jobs.at(-1)?.assignment.agentId, 'agent_private');
+    // U2 hands the thread to Chickpea; the private Agent's run keeps going.
+    await harness.deliver({
+      channel: 'G1', channelType: 'mpim', ts: '1800000310.000100', threadTs: rootTs, user: 'U2',
+      text: '<@UBOT> hi',
+    });
+    assert.equal(harness.jobs.at(-1)?.assignment.agentId, 'agent_chickpea');
+
+    await harness.press({ channel: 'G1', threadTs: rootTs, eventTs: '1800000320.000100', user: 'U2' });
+    const pending = await harness.pending();
+    assert.equal(pending.find((job) => job.id === `msg:G1:${rootTs}`)?.stop, undefined, 'the run continues');
+    assert.equal(pending.find((job) => job.id === 'msg:G1:1800000310.000100')?.stop, undefined);
+    assert.deepEqual(harness.posts, [{
+      operation: 'chat.postEphemeral',
+      input: {
+        channel: 'G1', user: 'U2', thread_ts: rootTs,
+        text: "You can't stop this run. Only people who can use this Agent here can stop it.",
+      },
+    }]);
+    assert.deepEqual(harness.sessions, [], 'the session is the running Agent\'s to settle');
+
+    // A Slack retry of the same press posts no second note.
+    await harness.press({ channel: 'G1', threadTs: rootTs, eventTs: '1800000320.000100', user: 'U2' });
     assert.equal(harness.posts.length, 1);
   });
 });

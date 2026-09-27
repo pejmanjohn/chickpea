@@ -247,28 +247,18 @@ export async function resolveAgentRoute(
     return { kind: 'ignore' };
   }
 
-  if (!selected || !agentIsActive(selected)) {
-    return denied('not_available', available);
-  }
-
-  if (surface === 'channel') {
-    const grant = activeGrants.find((candidate) => candidate.agentId === selected!.id);
-    const workspaceManagementRoute = isWorkspaceManagementRoute(
-      selected,
-      source,
-      turn,
-      surface,
-    );
-    if (!actor.channelMember || (!workspaceManagementRoute && !grant)) {
-      return denied('not_available', available);
-    }
-  } else {
-    if (selected.kind === 'user') {
-      const access = await input.authorizeUserAgent?.(selected);
-      if (access?.status !== 'allowed') {
-        return denied('not_available', []);
-      }
-    }
+  const access = await agentAccess({
+    agent: selected,
+    surface,
+    actor,
+    activeGrants,
+    workspaceManagementRoute: selected
+      ? isWorkspaceManagementRoute(selected, source, turn, surface)
+      : false,
+    ...(input.authorizeUserAgent ? { authorizeUserAgent: input.authorizeUserAgent } : {}),
+  });
+  if (!selected || access !== 'allowed') {
+    return denied('not_available', access === 'private_denied' ? [] : available);
   }
 
   return commitSelectedAgentRoute({
@@ -281,6 +271,63 @@ export async function resolveAgentRoute(
     activeGrants,
     currentRoute,
   });
+}
+
+/**
+ * Whether the actor may talk to `agent`, whose run is still going in this
+ * thread although the thread was handed to another Agent since (a stop or
+ * check-in reaches that run, R3): routing's own rule for a reply to the
+ * thread's owner, without selecting or committing a route. A system Agent's
+ * Channel thread is a workspace-management thread, which needs no grant.
+ */
+export async function mayUseThreadAgent(input: {
+  workspaceId: string;
+  channelId: string;
+  agent: CustomAgentConfig | undefined;
+  surface: AgentRouteSurface;
+  actor: AgentRoutingActor;
+  config: Pick<ConfigStore, 'listAgentChannelGrants'>;
+  authorizeUserAgent?: ResolveAgentRouteInput['authorizeUserAgent'];
+}): Promise<boolean> {
+  const activeGrants = input.surface === 'channel'
+    ? (await input.config.listAgentChannelGrants(input.workspaceId, input.channelId))
+        .filter((grant) => grant.status === 'active')
+    : [];
+  return await agentAccess({
+    agent: input.agent,
+    surface: input.surface,
+    actor: input.actor,
+    activeGrants,
+    workspaceManagementRoute: input.surface === 'channel' && input.agent?.kind === 'system',
+    ...(input.authorizeUserAgent ? { authorizeUserAgent: input.authorizeUserAgent } : {}),
+  }) === 'allowed';
+}
+
+/**
+ * Whether the actor may talk to the Agent routing selected: a full member and
+ * an active Agent; in a Channel, a member of it with the Agent's active grant
+ * there (a workspace-management route needs none); elsewhere, a user-created
+ * Agent's live placement authority (`private_denied` when that says no).
+ */
+async function agentAccess(input: {
+  agent: CustomAgentConfig | undefined;
+  surface: AgentRouteSurface;
+  actor: AgentRoutingActor;
+  activeGrants: AgentChannelGrant[];
+  workspaceManagementRoute: boolean;
+  authorizeUserAgent?: ResolveAgentRouteInput['authorizeUserAgent'];
+}): Promise<'allowed' | 'unavailable' | 'private_denied'> {
+  const { agent, actor } = input;
+  if (!actor.fullMember || !agent || !agentIsActive(agent)) return 'unavailable';
+  if (input.surface === 'channel') {
+    const grant = input.activeGrants.find((candidate) => candidate.agentId === agent.id);
+    return actor.channelMember && (input.workspaceManagementRoute || grant)
+      ? 'allowed'
+      : 'unavailable';
+  }
+  if (agent.kind !== 'user') return 'allowed';
+  const access = await input.authorizeUserAgent?.(agent);
+  return access?.status === 'allowed' ? 'allowed' : 'private_denied';
 }
 
 /**

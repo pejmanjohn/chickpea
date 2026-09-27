@@ -197,6 +197,10 @@ export interface TurnStopMemberRecordV1 {
  * decided against the thread's undelivered rows in one state-store
  * transaction (KTD1). `threadKey` is `turnStopThreadKey`: the conversation
  * without its owner incarnation, so a stop reaches a run across a handoff.
+ * `agentId` binds a stop or check-in to the Agent its sender was checked
+ * against (R3): when the thread's run is another Agent's, nothing is recorded
+ * and the decision names that Agent (`other_agent`). Absent, as from an older
+ * release, any Agent's run is steered.
  */
 export type TurnSteeringRequest =
   | {
@@ -205,8 +209,9 @@ export type TurnSteeringRequest =
       source: TurnStopSource;
       stopperUserId: string;
       cutoffTs: string;
+      agentId?: string;
     }
-  | { kind: 'check_in'; threadKey: string }
+  | { kind: 'check_in'; threadKey: string; agentId?: string }
   | { kind: 'message'; threadKey: string };
 
 /** Where a thread's current run executes, for an admission-time run-facts read. */
@@ -240,13 +245,17 @@ export interface TurnStopResult {
 
 /**
  * `stopped`: the stop is recorded (or already was). `check_in`: answer from
- * the run's facts. `enqueue`: the thread has nothing to steer, so the message
- * is an ordinary turn (enqueued in the same transaction when one was given);
- * `undelivered` says whether a run is in progress.
+ * the run's facts. `other_agent`: the thread's run belongs to `agentId`, not
+ * the Agent the request was bound to; nothing was recorded, held or enqueued,
+ * and the request may be decided again bound to `agentId` only once its
+ * sender may use that Agent there (R3). `enqueue`: the thread has nothing to
+ * steer, so the message is an ordinary turn (enqueued in the same transaction
+ * when one was given); `undelivered` says whether a run is in progress.
  */
 export type TurnSteeringDecision =
   | { outcome: 'stopped'; stop: TurnStopResult }
   | { outcome: 'check_in'; run: TurnRunRoute }
+  | { outcome: 'other_agent'; agentId: string }
   | { outcome: 'enqueue'; undelivered: boolean; enqueued?: boolean };
 
 /** What the stopped ending (or a completion race) did with the held rows. */
@@ -347,7 +356,8 @@ export interface FrozenRuntimePlanDecision {
 
 /**
  * A steering decision that took the message instead of queueing it: a stop
- * recorded, or a check-in to answer. No Run or TurnJob is written for it.
+ * recorded, a check-in to answer, or another Agent's run to check the sender
+ * against. No Run or TurnJob is written for it.
  */
 export type TurnSteeringInterception = Exclude<TurnSteeringDecision, { outcome: 'enqueue' }>;
 

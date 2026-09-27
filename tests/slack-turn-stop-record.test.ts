@@ -647,6 +647,41 @@ test('a handoff to a new owner incarnation does not hide the running turn from a
   } finally { db.close(); }
 });
 
+test('R3: a stop or check-in bound to another Agent than the running row\'s records nothing and names that Agent', () => {
+  const { db, turns } = store();
+  try {
+    turns.enqueue(job('running', '101'));
+    turns.enqueue({
+      ...job('handoff', '102'),
+      assignment: assignment({ agentId: 'agent_chickpea', ownerIncarnation: 2 }),
+    });
+    const elsewhere = { outcome: 'other_agent', agentId: 'agent_stop' };
+    assert.deepEqual(turns.steer(stop('110', { agentId: 'agent_chickpea' })), elsewhere);
+    assert.deepEqual(turns.steer({ kind: 'check_in', threadKey: THREAD, agentId: 'agent_chickpea' }), elsewhere);
+    // Nothing is stamped, held or owed to a runner, and a given message is not enqueued.
+    assert.deepEqual(
+      turns.steer(stop('110', { agentId: 'agent_chickpea' }), job('stop_message', '110')),
+      elsewhere,
+    );
+    assert.equal(stopOf(turns, 'running'), undefined);
+    assert.equal(stopOf(turns, 'handoff'), undefined);
+    assert.equal(turns.runnerView('stop_message').status, 'missing');
+    assert.deepEqual(turns.listDueStopNotices(), []);
+
+    // Bound to the running row's Agent (a sender who may use it), a stop
+    // reaches that run across the handoff (KTD1), and a later stop bound to
+    // another Agent still learns only whose run it is.
+    const decision = turns.steer(stop('110', { agentId: 'agent_stop' }));
+    assert.equal(decision.outcome === 'stopped' ? decision.stop.headId : undefined, 'running');
+    assert.equal(stopOf(turns, 'handoff')?.role, 'held');
+    assert.deepEqual(turns.steer(stop('120', { agentId: 'agent_chickpea' })), elsewhere);
+    const checkIn = turns.steer({ kind: 'check_in', threadKey: THREAD, agentId: 'agent_stop' });
+    assert.equal(checkIn.outcome === 'check_in' ? checkIn.run.turnJobId : undefined, 'running');
+
+    assert.throws(() => turns.steer(stop('130', { agentId: '' })), /agent/);
+  } finally { db.close(); }
+});
+
 test('a stop finds and holds rows enqueued before the new columns existed', () => {
   // Rows an older release wrote after the columns existed (a rollback, then forward).
   {

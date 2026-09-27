@@ -85,6 +85,9 @@ export interface SlackCanonicalAdmissionInput {
    * the claims and before the Work admission, in the same transaction: when
    * the thread's run takes it, no Run or TurnJob is written, so a stop right
    * after the thread's first message is never queued as an ordinary turn.
+   * A run of another Agent than the request's (`other_agent`, R3) takes it
+   * too, with nothing recorded: admission checks the sender against that
+   * Agent before deciding it again.
    */
   steering?: Extract<TurnSteeringRequest, { kind: 'stop' | 'check_in' }>;
   /**
