@@ -10,6 +10,7 @@ import { resultFromAgentReply } from '../src/slack/flue-dispatch.ts';
 import {
   observePresentationToolPolicy,
   presentationToolPolicyInterceptor,
+  replyDisplayHistory,
   SlackAnswerOnlyToolDeniedError,
   SlackInteractiveComponentLimitError,
   SlackPresentationToolUnavailableError,
@@ -372,4 +373,33 @@ test('policy: a question ends the reply, one interactive component per reply, ne
     } as unknown as FlueObservation, { agentName: CHICKPEA_SLACK_AGENT_NAME } as unknown as FlueEventContext);
     await assert.rejects(tool('search_tickets', 's1', async () => 'x'), SlackQuestionPostedToolDeniedError);
   });
+});
+
+test('policy: the reply\'s accepted display components are rebuilt from the durable transcript', async () => {
+  await withSubmission(async () => {
+    assert.deepEqual(replyDisplayHistory(), []);
+    const chart = { title: 'Signups', type: 'line', categories: ['W1'], series: [{ name: 'S', values: [1] }] };
+    const messages: LlmMessage[] = [
+      { role: 'user', content: prompt() },
+      { role: 'assistant', content: [
+        { type: 'toolCall', id: 'c1', name: 'present_chart', arguments: chart },
+        { type: 'toolCall', id: 'c2', name: 'present_cards', arguments: { cards: [] } },
+      ] } as never,
+      { role: 'toolResult', toolCallId: 'c1', toolName: 'present_chart', isError: false, content: [] } as never,
+      // A refused call recorded nothing.
+      { role: 'toolResult', toolCallId: 'c2', toolName: 'present_cards', isError: true, content: [] } as never,
+      { role: 'assistant', content: [
+        { type: 'toolCall', id: 'd1', name: 'present_details', arguments: { title: 'Method', markdown: 'x' } },
+      ] } as never,
+      { role: 'toolResult', toolCallId: 'd1', toolName: 'present_details', isError: false, content: [] } as never,
+    ];
+    observePresentationToolPolicy({
+      type: 'turn_request', purpose: 'agent', request: { input: { messages } },
+    } as unknown as FlueObservation, { agentName: CHICKPEA_SLACK_AGENT_NAME } as unknown as FlueEventContext);
+    assert.deepEqual(replyDisplayHistory(), [
+      { toolCallId: 'c1', kind: 'chart', spec: chart },
+      { toolCallId: 'd1', kind: 'details', spec: { title: 'Method', markdown: 'x' } },
+    ]);
+  });
+  assert.deepEqual(replyDisplayHistory(), [], 'history belongs to its submission');
 });

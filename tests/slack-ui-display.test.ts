@@ -10,6 +10,7 @@ import {
   parseDisplayComponents,
   SLACK_DISPLAY_COMPONENTS_DATA_NAME,
   type SlackDisplayComponentPart,
+  type RecordedDisplayComponent,
 } from '../src/slack/ui/display-tools.ts';
 import { prepareDisplaySurfaces, renderDisplayComponents } from '../src/slack/ui/host-surfaces.ts';
 import {
@@ -165,26 +166,26 @@ test('property: seeded valid display specs always compile within Slack limits', 
 test('display tools teach, share a two-component budget, and allow cards once', () => {
   const writes: SlackDisplayComponentPart[][] = [];
   const tools = createDisplayTools((parts) => writes.push(parts));
-  assert.throws(() => tools.cards.run({ data: { cards: [] } }), /1–10 cards/);
+  assert.throws(() => tools.cards.run({ data: { cards: [] }, toolCallId: 'c1' }), /1–10 cards/);
   const chart = { title: 'Latency', type: 'line' as const, categories: ['Mon', 'Tue'], series: [{ name: 'p95', values: [120, 130] }] };
-  assert.match(tools.chart.run({ data: chart }).output, /1 more display component allowed/);
-  assert.match(tools.cards.run({ data: { cards: [{ title: 'Ada' }] } }).output, /recorded under your answer\. Don't repeat/);
-  assert.throws(() => tools.details.run({ data: { title: 'Sources', markdown: 'x' } }), /already has two display components/);
+  assert.match(tools.chart.run({ data: chart, toolCallId: 'c2' }).output, /1 more display component allowed/);
+  assert.match(tools.cards.run({ data: { cards: [{ title: 'Ada' }] }, toolCallId: 'c3' }).output, /recorded under your answer\. Don't repeat/);
+  assert.throws(() => tools.details.run({ data: { title: 'Sources', markdown: 'x' }, toolCallId: 'c4' }), /already has two display components/);
   assert.deepEqual(writes.map((parts) => parts.map((part) => part.kind)), [['chart'], ['chart', 'cards']]);
   const fresh = createDisplayTools(() => undefined);
-  fresh.cards.run({ data: { cards: [{ title: 'Ada' }] } });
-  assert.throws(() => fresh.cards.run({ data: { cards: [{ title: 'Bo' }] } }), /once per reply/);
+  fresh.cards.run({ data: { cards: [{ title: 'Ada' }] }, toolCallId: 'c1' });
+  assert.throws(() => fresh.cards.run({ data: { cards: [{ title: 'Bo' }] }, toolCallId: 'c2' }), /once per reply/);
 });
 
 test('where no click can be admitted (group DMs, legacy DM sessions), cards keep only link buttons', () => {
   const written: SlackDisplayComponentPart[][] = [];
   const tools = createDisplayTools((parts) => written.push(parts), { requestButtons: false });
   assert.throws(
-    () => tools.cards.run({ data: { cards: [{ title: 'Acme', actions: [{ label: 'Draft outreach' }] }] } }),
+    () => tools.cards.run({ data: { cards: [{ title: 'Acme', actions: [{ label: 'Draft outreach' }] }] }, toolCallId: 'c1' }),
     /can only open links/,
   );
   assert.equal(written.length, 0);
-  tools.cards.run({ data: { cards: [{ title: 'Acme', actions: [{ label: 'Open CRM', url: 'https://crm.example.com/acme' }] }] } });
+  tools.cards.run({ data: { cards: [{ title: 'Acme', actions: [{ label: 'Open CRM', url: 'https://crm.example.com/acme' }] }] }, toolCallId: 'c2' });
   assert.equal(written.length, 1);
 });
 
@@ -193,8 +194,8 @@ test('two display components survive the data part being replaced in place', () 
   let part: SlackDisplayComponentPart[] | undefined;
   const allWrites: SlackDisplayComponentPart[][] = [];
   const tools = createDisplayTools((parts) => { part = parts; allWrites.push(parts); });
-  tools.chart.run({ data: { title: 'Signups', type: 'line', categories: ['W1', 'W2'], series: [{ name: 'Signups', values: [120, 135] }] } });
-  tools.details.run({ data: { title: 'Method', markdown: '(135 - 120) / 120' } });
+  tools.chart.run({ data: { title: 'Signups', type: 'line', categories: ['W1', 'W2'], series: [{ name: 'Signups', values: [120, 135] }] }, toolCallId: 'c1' });
+  tools.details.run({ data: { title: 'Method', markdown: '(135 - 120) / 120' }, toolCallId: 'c2' });
   assert.deepEqual(parseDisplayComponents([part]).map((component) => component.kind), ['chart', 'details']);
   // Were every write kept instead, the last list still wins: nothing is doubled.
   assert.deepEqual(parseDisplayComponents(allWrites).map((component) => component.kind), ['chart', 'details']);
@@ -294,12 +295,12 @@ test('a component the surface store could not keep is refused at call time, not 
   };
   const written: SlackDisplayComponentPart[][] = [];
   const tools = createDisplayTools((parts) => written.push(parts));
-  assert.throws(() => tools.cards.run({ data: oversize }), /too large to keep/);
+  assert.throws(() => tools.cards.run({ data: oversize, toolCallId: 'c1' }), /too large to keep/);
   assert.equal(written.length, 0);
   assert.deepEqual(parseDisplayComponents([{ kind: 'cards', spec: oversize }]), []);
   // The bound is the store's own, so a fitting spec still stores.
   const fits = { cards: [{ title: 'Ada', link: longUrl }] };
-  assert.match(tools.cards.run({ data: fits }).output, /Cards recorded/);
+  assert.match(tools.cards.run({ data: fits, toolCallId: 'c2' }).output, /Cards recorded/);
   assert.equal(parseDisplayComponents([{ kind: 'cards', spec: fits }]).length, 1);
 });
 
@@ -310,4 +311,39 @@ test('the host keeps cards once, as the tool does', () => {
     { kind: 'details', spec: { title: 'Sources', markdown: 'x' } },
   ];
   assert.deepEqual(parseDisplayComponents(parts).map((component) => component.kind), ['cards', 'details']);
+});
+
+test('display tools recreated mid-reply keep the components the transcript already recorded', () => {
+  const chart = { title: 'Signups', type: 'line' as const, categories: ['W1', 'W2'], series: [{ name: 'Signups', values: [120, 135] }] };
+  const details = { title: 'Method', markdown: '(135 - 120) / 120' };
+  // Before the restart: the chart was recorded by call c1.
+  let history: RecordedDisplayComponent[] = [];
+  const writes: SlackDisplayComponentPart[][] = [];
+  const first = createDisplayTools((parts) => writes.push(parts), { history: () => history });
+  first.chart.run({ data: chart, toolCallId: 'c1' });
+  // The next model request rehydrates c1 from the transcript; the same closure
+  // does not record it twice.
+  history = [{ toolCallId: 'c1', kind: 'chart', spec: chart }];
+  first.details.run({ data: details, toolCallId: 'c2' });
+  assert.deepEqual(writes.at(-1)!.map((part) => part.kind), ['chart', 'details']);
+
+  // A restart recreates the tools with an empty closure; the transcript still has c1.
+  const restartedWrites: SlackDisplayComponentPart[][] = [];
+  const restarted = createDisplayTools((parts) => restartedWrites.push(parts), {
+    history: () => [{ toolCallId: 'c1', kind: 'chart', spec: chart }],
+  });
+  assert.match(restarted.details.run({ data: details, toolCallId: 'c2' }).output, /recorded under your answer\. Don't repeat/);
+  assert.deepEqual(parseDisplayComponents([restartedWrites.at(-1)]).map((component) => component.kind), ['chart', 'details']);
+  // The budget and cards-once rule count what the transcript recorded too.
+  const full = createDisplayTools(() => undefined, {
+    history: () => [
+      { toolCallId: 'c1', kind: 'cards', spec: { cards: [{ title: 'Ada' }] } },
+      { toolCallId: 'c2', kind: 'chart', spec: chart },
+    ],
+  });
+  assert.throws(() => full.details.run({ data: details, toolCallId: 'c3' }), /already has two display components/);
+  const withCards = createDisplayTools(() => undefined, {
+    history: () => [{ toolCallId: 'c1', kind: 'cards', spec: { cards: [{ title: 'Ada' }] } }],
+  });
+  assert.throws(() => withCards.cards.run({ data: { cards: [{ title: 'Bo' }] }, toolCallId: 'c2' }), /once per reply/);
 });

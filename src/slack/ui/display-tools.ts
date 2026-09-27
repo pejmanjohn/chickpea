@@ -38,6 +38,12 @@ export const SlackDisplayComponentsSchema = v.pipe(
   v.maxLength(MAX_DISPLAY_COMPONENTS),
 );
 type DisplayKind = SlackDisplayComponentPart['kind'];
+/** The component each display tool records; the policy rebuilds a reply's history by it. */
+export const DISPLAY_TOOL_KINDS: Readonly<Record<string, DisplayKind>> = {
+  [SLACK_PRESENT_CARDS_TOOL_NAME]: 'cards',
+  [SLACK_PRESENT_CHART_TOOL_NAME]: 'chart',
+  [SLACK_PRESENT_DETAILS_TOOL_NAME]: 'details',
+};
 
 function describe(name: string): string {
   return SLACK_PRESENTATION_TOOL_DEFINITIONS.find((tool) => tool.name === name)!.description;
@@ -91,32 +97,52 @@ export function displayToolAcknowledgement(kind: DisplayKind, left: number): str
   return `${DISPLAY_NOUNS[kind]} recorded under your answer${left ? `; ${left} more display component allowed` : ''}. Don't repeat its contents in prose.`;
 }
 
+/** A display component this reply already recorded, keyed by the tool call that recorded it. */
+export interface RecordedDisplayComponent extends SlackDisplayComponentPart {
+  toolCallId: string;
+}
+
+const part = ({ kind, spec }: RecordedDisplayComponent): SlackDisplayComponentPart => ({ kind, spec });
+
 export function createDisplayTools(
   /** Receives the reply's whole list each time: a later write replaces the part. */
   write: (parts: SlackDisplayComponentPart[]) => void,
   options: {
     /** Whether a card button without a url can be clicked here (see interactiveSurfaceScope). */
     requestButtons?: boolean;
+    /**
+     * Components this reply recorded through earlier tool closures, rebuilt
+     * from the durable transcript. Flue renders the agent (and so these tools)
+     * again before every model turn, so a closure only ever sees its own batch.
+     */
+    history?: () => readonly RecordedDisplayComponent[];
   } = {},
 ) {
-  const written: SlackDisplayComponentPart[] = [];
-  let used = 0;
-  let cardsUsed = false;
-  const record = (kind: DisplayKind, spec: unknown): { output: string } => {
-    if (used >= MAX_DISPLAY_COMPONENTS) {
+  /** This closure's own calls: the ones the transcript cannot show yet. */
+  const written: RecordedDisplayComponent[] = [];
+  /** Earlier turns first (the transcript), then this closure's own, once each. */
+  const recorded = (): RecordedDisplayComponent[] => {
+    const earlier = options.history?.() ?? [];
+    const seen = new Set(earlier.map((component) => component.toolCallId));
+    return [...earlier, ...written.filter((component) => !seen.has(component.toolCallId))];
+  };
+  const record = (kind: DisplayKind, spec: unknown, toolCallId: string): { output: string } => {
+    const prior = recorded();
+    if (prior.length >= MAX_DISPLAY_COMPONENTS) {
       throw new Error('This reply already has two display components; put anything else in prose.');
     }
-    if (kind === 'cards' && cardsUsed) throw new Error('Use present_cards once per reply.');
+    if (kind === 'cards' && prior.some((component) => component.kind === 'cards')) {
+      throw new Error('Use present_cards once per reply.');
+    }
     if (storedSpecBytes(kind, spec) > UI_SURFACE_MAX_SPEC_BYTES) {
       throw new Error(
         `This component is too large to keep (over ${UI_SURFACE_MAX_SPEC_BYTES / 1024} KiB); shorten its text and links or show fewer items.`,
       );
     }
-    written.push({ kind, spec });
-    write([...written]);
-    used += 1;
-    if (kind === 'cards') cardsUsed = true;
-    return { output: displayToolAcknowledgement(kind, MAX_DISPLAY_COMPONENTS - used) };
+    const component = { toolCallId, kind, spec };
+    written.push(component);
+    write([...prior, component].map(part));
+    return { output: displayToolAcknowledgement(kind, MAX_DISPLAY_COMPONENTS - prior.length - 1) };
   };
   const teaching = <T>(run: () => T): T => {
     try {
@@ -132,14 +158,14 @@ export function createDisplayTools(
       description: describe(SLACK_PRESENT_CARDS_TOOL_NAME),
       input: PresentCardsSchema,
       output: v.string(),
-      run: ({ data }: { data: PresentCardsInput }) => teaching(() => {
+      run: ({ data, toolCallId }: { data: PresentCardsInput; toolCallId: string }) => teaching(() => {
         const cards = validatePresentCards(data);
         // A request button nobody could ever press is refused while the model can still fix it.
         if (options.requestButtons === false &&
             cards.cards.some((card) => card.actions?.some((action) => !action.url))) {
           throw new Error('Card buttons here can only open links: give each button a url, or leave it out.');
         }
-        return record('cards', cards);
+        return record('cards', cards, toolCallId);
       }),
     },
     chart: {
@@ -147,16 +173,16 @@ export function createDisplayTools(
       description: describe(SLACK_PRESENT_CHART_TOOL_NAME),
       input: PresentChartSchema,
       output: v.string(),
-      run: ({ data }: { data: PresentChartInput }) =>
-        teaching(() => record('chart', validatePresentChart(data))),
+      run: ({ data, toolCallId }: { data: PresentChartInput; toolCallId: string }) =>
+        teaching(() => record('chart', validatePresentChart(data), toolCallId)),
     },
     details: {
       name: SLACK_PRESENT_DETAILS_TOOL_NAME,
       description: describe(SLACK_PRESENT_DETAILS_TOOL_NAME),
       input: PresentDetailsSchema,
       output: v.string(),
-      run: ({ data }: { data: PresentDetailsInput }) =>
-        teaching(() => record('details', validatePresentDetails(data))),
+      run: ({ data, toolCallId }: { data: PresentDetailsInput; toolCallId: string }) =>
+        teaching(() => record('details', validatePresentDetails(data), toolCallId)),
     },
   };
 }
