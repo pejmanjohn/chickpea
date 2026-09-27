@@ -10,11 +10,14 @@ import type {
 } from '../config/state-rpc.ts';
 import { TurnJobStoreLogic, type PendingTurnJob, type SlackProposalApprovalQuery, type SlackProposalApprovalTurn } from './turn-jobs.ts';
 import type {
+  TurnDirectThreadQuery,
   TurnJob,
   TurnSteeringDecision,
+  TurnSteeringInterception,
   TurnSteeringRequest,
   TurnStopFinish,
 } from './turn-job-types.ts';
+import type { SlackRunFactsView } from './status-registry.ts';
 import type {
   FlueDispatchReceiptV1,
   FlueObservationTarget,
@@ -62,6 +65,13 @@ export interface SlackCanonicalAdmissionInput {
   threadKey: string;
   admission: AdmitShadowRunInput;
   turnJob?: TurnJob;
+  /**
+   * A typed stop or check-in for this message's thread (KTD1). Decided after
+   * the claims and before the Work admission, in the same transaction: when
+   * the thread's run takes it, no Run or TurnJob is written, so a stop right
+   * after the thread's first message is never queued as an ordinary turn.
+   */
+  steering?: Extract<TurnSteeringRequest, { kind: 'stop' | 'check_in' }>;
   presentation?: {
     schemaVersion: 3;
     root: SlackPresentationRoot;
@@ -123,7 +133,9 @@ export function selectSlackPresentationOwner(input: {
 
 export type SlackCanonicalAdmissionResult =
   | { claimed: false }
-  | { claimed: true; admission: ShadowRunAdmission };
+  | { claimed: true; admission: ShadowRunAdmission }
+  /** The thread's run took the message's `steering`; its claims are held. */
+  | { claimed: true; steered: TurnSteeringInterception };
 
 /**
  * Application-owned duplicate-admission store.
@@ -172,6 +184,16 @@ export interface SlackStateStore extends SlackClaimStore, SlackThreadRegistry {
   steerTurn?(request: TurnSteeringRequest, enqueue?: TurnJob): Promise<TurnSteeringDecision>;
   /** The stopped ending: drop (or, on a completion race, release) the rows the stop holds. */
   finishTurnStop?(headId: string, outcome: 'dropped' | 'released'): Promise<TurnStopFinish | undefined>;
+  /**
+   * The sender's threads of one DM channel whose run is undelivered (stop
+   * thread keys, at most two), for a top-level stop or check-in in a DM.
+   */
+  runningDirectThreads?(query: TurnDirectThreadQuery): Promise<string[]>;
+  /**
+   * Run facts of a turn the state store's own executor runs (the alarm
+   * executor, the Node relay), for a check-in; a runner's turn asks its runner.
+   */
+  runFacts?(turnJobId: string): Promise<SlackRunFactsView | undefined>;
   resumeTurnAfterOAuth?(originalTaskId: string, continuationId: string): Promise<boolean>;
   pinAgentBinding(
     input: SlackAgentBinding,
@@ -383,6 +405,10 @@ export class SlackStateLogic {
       if (!this.claim(input.msgKey)) {
         this.release(input.evtKey);
         return { claimed: false };
+      }
+      if (input.steering && turnJobs) {
+        const steered = turnJobs.steerInTransaction(input.steering);
+        if (steered.outcome !== 'enqueue') return { claimed: true, steered };
       }
       const admission = work.admitShadowRunInTransaction(input.admission);
       this.start(input.threadKey);

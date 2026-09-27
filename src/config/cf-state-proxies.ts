@@ -331,6 +331,7 @@ const REPLAY_SAFE_STATE_METHODS = new Set([
   'snapshotPutIfAbsent', // first write wins
   'slackFlueReceiptRecord', 'slackFlueSettlementRecord', // an equal checkpoint returns the saved one
   'slackTurnStopFinish', // the first stop ending stands and is returned again
+  'slackTurnDirectThreads', 'slackRunFacts', // reads (a DM lookup keys old rows idempotently)
   'slackPresentationTransition', // compare-and-swap on the projection version
 ]);
 
@@ -1895,6 +1896,14 @@ export class CfSlackStateStore implements SlackStateStore {
       'slackTurnStopFinish',
       (stub) => stub.slackTurnStopFinish(...args),
     ));
+  }
+
+  async runningDirectThreads(...args: Parameters<NonNullable<SlackStateStore['runningDirectThreads']>>) {
+    return rpcVia(this.stub, 'slackTurnDirectThreads', (stub) => stub.slackTurnDirectThreads(...args));
+  }
+
+  async runFacts(turnJobId: string) {
+    return orUndefined(await rpcVia(this.stub, 'slackRunFacts', (stub) => stub.slackRunFacts(turnJobId)));
   }
 
   async resumeTurnAfterOAuth(originalTaskId: string, continuationId: string) {

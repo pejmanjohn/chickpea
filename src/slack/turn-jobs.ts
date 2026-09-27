@@ -525,6 +525,45 @@ export class TurnJobStoreLogic {
     return this.decideSteering(request, enqueue);
   }
 
+  /**
+   * The conversations of one DM channel with an undelivered run that
+   * `requesterUserId` started (their stop thread keys, at most `limit`), so a
+   * top-level stop or check-in in a DM can find the one running thread it
+   * means (KTD1). Rows an older release left unkeyed are keyed on the way.
+   */
+  runningDirectThreadKeys(
+    input: { workspaceId: string; channelId: string; requesterUserId: string },
+    limit = 2,
+  ): string[] {
+    for (const part of [input.workspaceId, input.channelId]) {
+      validateBoundedString(part, 'DM coordinate', 128);
+      if (part.includes(':')) throw new Error('Flue DM coordinate is invalid.');
+    }
+    validateBoundedString(input.requesterUserId, 'requester user id', 128);
+    const prefix = `${input.workspaceId}:${input.channelId}:`;
+    const keys = new Set<string>();
+    for (const row of this.db.all(
+      `SELECT DISTINCT thread_key FROM turn_jobs
+       WHERE thread_key >= ? AND thread_key < ? AND ${PENDING_ROW}
+         AND execution_authority = 'legacy' AND json_extract(turn_json, '$.userId') = ?
+       ORDER BY thread_key LIMIT ?`,
+      prefix,
+      `${input.workspaceId}:${input.channelId};`,
+      input.requesterUserId,
+      limit,
+    )) keys.add(String(row.thread_key));
+    for (const row of this.db.all(
+      `SELECT id, turn_json, assignment_json FROM turn_jobs
+       WHERE thread_key IS NULL AND ${PENDING_ROW} AND execution_authority = 'legacy'
+         AND json_extract(turn_json, '$.userId') = ?`,
+      input.requesterUserId,
+    )) {
+      const keyed = keyStopThreadRow(this.db, row);
+      if (keyed?.threadKey.startsWith(prefix)) keys.add(keyed.threadKey);
+    }
+    return [...keys].slice(0, limit);
+  }
+
   private decideSteering(request: TurnSteeringRequest, enqueue?: TurnJob): TurnSteeringDecision {
     const rows = this.threadRows(request.threadKey);
     if (request.kind === 'stop') {

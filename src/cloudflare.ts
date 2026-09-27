@@ -1567,9 +1567,18 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
   }
 
   async admitSlackTurn(input: SlackCanonicalAdmissionInput) {
-    return this.call((stores) =>
+    const result = this.call((stores) =>
       stores.slack.admitCanonical(input, stores.work, stores.turnJobs, stores.presentations),
     );
+    // A typed stop the admission recorded is offered to its runner now, as in
+    // slackTurnSteer; the outbox retries the rest.
+    if (
+      result.ok && result.value.claimed && 'steered' in result.value &&
+      result.value.steered.outcome === 'stopped' && result.value.steered.stop.created
+    ) {
+      await this.deliverStopNotices();
+    }
+    return result;
   }
 
   async slackAgentBindingPin(
@@ -1907,6 +1916,22 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     outcome: 'dropped' | 'released',
   ): ReturnType<TagStateRpc['slackTurnStopFinish']> {
     return this.call((stores) => stores.turnJobs.finishStop(headId, outcome) ?? null);
+  }
+
+  async slackTurnDirectThreads(
+    query: Parameters<TagStateRpc['slackTurnDirectThreads']>[0],
+  ): ReturnType<TagStateRpc['slackTurnDirectThreads']> {
+    return this.call((stores) => stores.turnJobs.runningDirectThreadKeys(query));
+  }
+
+  /** The alarm executor registers its turns in this isolate's status registry. */
+  async slackRunFacts(turnJobId: string): ReturnType<TagStateRpc['slackRunFacts']> {
+    return this.call(() => {
+      if (typeof turnJobId !== 'string' || turnJobId.length === 0 || turnJobId.length > 256) {
+        throw new Error('TurnJob id is invalid.');
+      }
+      return defaultSlackStatusRegistry.runFactsView(turnJobId) ?? null;
+    });
   }
 
   /**

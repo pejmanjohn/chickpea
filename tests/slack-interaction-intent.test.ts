@@ -15,6 +15,8 @@ import {
   resolveSlackInteractionIntent,
   shouldResolveSlackManagementApproval,
   SLACK_INTERACTION_CLASSIFIER_INSTRUCTIONS,
+  slackBrowserActionReply,
+  slackSteeringCommand,
 } from '../src/slack/interaction-intent.ts';
 
 const baseContext = {
@@ -451,6 +453,60 @@ test('high-confidence explicit work requests cannot collapse into ordinary repli
       checklist: ['Execution result', 'Supporting evidence'],
     },
   );
+});
+
+test('a whole-message stop phrase is a stop, addressed to the routed Agent or not', () => {
+  const address = { botUserId: 'UBOT', agentUserGroupId: 'SOPS' };
+  for (const text of [
+    'stop', 'STOP', '  stop  ', 'stop.', 'Stop!!', 'stop?', 'cancel', 'Cancel.', 'please stop',
+    'stop please', 'Stop please!', 'stop   please', 'abort', 'halt', 'stop it', 'stop now',
+    'Stop now…', 'please cancel', 'interrupt', 'stop the run', 'stop working',
+    '<@UBOT> stop', '<@UBOT>: Stop please!', '<!subteam^SOPS|@ops> Stop please!',
+    '<!subteam^SOPS> stop', '<@UBOT> <@UBOT> cancel',
+  ]) {
+    assert.equal(slackSteeringCommand(text, address), 'stop', text);
+  }
+});
+
+test('a stop word inside a longer message, or addressed to someone else, is not a stop', () => {
+  const address = { botUserId: 'UBOT', agentUserGroupId: 'SOPS' };
+  for (const text of [
+    "don't stop the migration halfway", 'stop the migration', 'please stop and think',
+    'can you stop?', 'stopped', 'non-stop', 'cancel the order', 'why stop',
+    '<@UALICE> stop', '<!subteam^SOTHER|@other> stop', 'stop <@UBOT>', '`stop`', '> stop',
+    'exit', '', '   ',
+  ]) {
+    assert.equal(slackSteeringCommand(text, address), undefined, text);
+  }
+  // Without a resolved address, no mention is stripped.
+  assert.equal(slackSteeringCommand('<@UBOT> stop'), undefined);
+  assert.equal(slackSteeringCommand('stop'), 'stop');
+});
+
+test('a fixed set of still-working questions is a check-in', () => {
+  const address = { botUserId: 'UBOT', agentUserGroupId: 'SOPS' };
+  for (const text of [
+    'status', 'Status?', ' STATUS. ', 'still working?', 'Still working', 'are you still working?',
+    'Are you still working??', 'any update?', 'Any updates?', "how's it going?",
+    'How’s it going?', '<@UBOT> status', '<!subteam^SOPS|@ops> still working?',
+  ]) {
+    assert.equal(slackSteeringCommand(text, address), 'check_in', text);
+  }
+  for (const text of [
+    'status of the deploy?', 'what is the status', 'still working on the report?',
+    'any update on the PR?', 'how is the migration going?', 'are you still there?',
+  ]) {
+    assert.equal(slackSteeringCommand(text, address), undefined, text);
+  }
+});
+
+test('a plain stop is also the browser decline word; other stop phrases are not', () => {
+  assert.equal(slackBrowserActionReply('stop'), 'stop');
+  assert.equal(slackBrowserActionReply('<@UBOT> Stop.'), 'stop');
+  for (const text of ['cancel', 'please stop', 'stop please', 'abort', 'stop now']) {
+    assert.equal(slackBrowserActionReply(text), undefined, text);
+    assert.equal(slackSteeringCommand(text), 'stop', text);
+  }
 });
 
 test('semantic reactions have deterministic standard fallbacks', () => {

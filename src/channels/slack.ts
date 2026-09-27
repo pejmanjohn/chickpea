@@ -73,6 +73,8 @@ import {
   classifySlackInteraction,
   resolveImmediateSlackInteractionIntent,
   shouldResolveSlackManagementApproval,
+  slackSteeringCommand,
+  type SlackSteeringCommand,
 } from '../slack/interaction-intent.ts';
 import {
   InteractionUsageRecorder,
@@ -128,7 +130,21 @@ import {
 import {
   selectSlackPresentationOwner,
   slackSessionGenerationFromTimestamp,
+  type SlackStateStore,
 } from '../slack/claim-store.ts';
+import {
+  postSteeringReply,
+  readSteeringRunFacts,
+  slackCheckInReply,
+  STEERING_REPLY_TEXT,
+  steeringReplyTarget,
+  type SteeringReplyTarget,
+} from '../slack/steering-replies.ts';
+import { turnStopThreadKey } from '../slack/turn-jobs.ts';
+import type {
+  TurnSteeringInterception,
+  TurnSteeringRequest,
+} from '../slack/turn-job-types.ts';
 import { createDirectSlackTransport } from '../slack/transport/direct.ts';
 import {
   isRetryableDependencyFailure,
@@ -1312,6 +1328,22 @@ async function processSlackEvent(
       });
       if (routed.kind === 'ignore') return;
       if (routed.kind !== 'routed') {
+        // Guests and Slack Connect users are refused before this check and
+        // keep today's behaviour.
+        if (
+          routed.kind === 'denied' && routed.reason === 'not_available' &&
+          agentRoutingActor.routing.fullMember &&
+          await refuseIneligibleSlackStop({
+            turn,
+            evtKey,
+            msgKey,
+            state,
+            config: store,
+            client: runtimeClient,
+            botUserId: resolvedBotUserId,
+            runtimeContract: installation.runtimeContract,
+          })
+        ) return;
         await postAgentRoutingFeedback({
           turn,
           surface,
@@ -1541,7 +1573,32 @@ async function processSlackEvent(
       assignment,
       settings: stores.settings,
       actorMembershipId: admittedActorMembershipId,
+      address: commandAddress,
     });
+
+  // A stop phrase or check-in typed alone is decided at admission, outside
+  // the thread's queue, so it reaches a running (even a stuck) run without a
+  // model (KTD1). A plain "stop" that answered a browser step above keeps
+  // that meaning (R21).
+  const steeringCommand = !browserActionAnswered && !candidateTurn && slackClient
+    ? slackSteeringCommand(turn.text, commandAddress)
+    : undefined;
+  if (steeringCommand && slackClient && slackConversationKind(turn) === 'im' &&
+      turn.messageTs === turn.threadTs) {
+    await steerTopLevelDirectMessage({
+      command: steeringCommand,
+      turn,
+      evtKey,
+      msgKey,
+      state,
+      client: slackClient,
+      platformEnv,
+    });
+    return;
+  }
+  const steering = steeringCommand
+    ? slackSteeringRequest(steeringCommand, turnStopThreadKey(turn, assignment), turn)
+    : undefined;
 
   if (
     !browserActionAnswered &&
@@ -1745,6 +1802,7 @@ async function processSlackEvent(
         threadKey,
         admission,
         turnJob: canonicalTurnJob,
+        ...(steering ? { steering } : {}),
         presentation: {
           schemaVersion: 3,
           root: {
@@ -1781,6 +1839,16 @@ async function processSlackEvent(
         },
       });
       if (!result.claimed) return;
+      if ('steered' in result) {
+        await answerSlackSteering({
+          decision: result.steered,
+          turn,
+          state,
+          client: slackClient!,
+          platformEnv,
+        });
+        return;
+      }
       claimsHeldByCanonicalAdmission = true;
       canonicalRunId = result.admission.run.id;
     } catch (err) {
@@ -1811,6 +1879,21 @@ async function processSlackEvent(
     if (!(await state.claim(evtKey))) return;
     if (!(await state.claim(msgKey))) {
       await state.release(evtKey);
+      return;
+    }
+  }
+
+  if (steering && !claimsHeldByCanonicalAdmission) {
+    // The legacy lane (no canonical admission) holds the claims already. Its
+    // enqueue below is a separate write, so a stop racing the thread's first
+    // message may queue behind it there; the canonical lane decides both in
+    // one transaction.
+    const decision = await state.steerTurn?.(steering).catch((err: unknown) => {
+      console.warn('[chickpea] steering decision failed:', sanitizeError(err));
+      return undefined;
+    });
+    if (decision && decision.outcome !== 'enqueue') {
+      await answerSlackSteering({ decision, turn, state, client: slackClient!, platformEnv });
       return;
     }
   }
@@ -1931,6 +2014,184 @@ async function processSlackEvent(
   await wake;
 }
 
+
+type SlackSteeringAdmission = Extract<TurnSteeringRequest, { kind: 'stop' | 'check_in' }>;
+
+/**
+ * A typed stop or check-in for one thread (KTD1). A stop's cutoff is the
+ * typed message's own timestamp, and its stopper is the sender.
+ */
+function slackSteeringRequest(
+  command: SlackSteeringCommand,
+  threadKey: string,
+  turn: NormalizedSlackTurn,
+): SlackSteeringAdmission {
+  return command === 'stop'
+    ? {
+        kind: 'stop',
+        threadKey,
+        source: 'typed',
+        stopperUserId: turn.userId,
+        cutoffTs: turn.messageTs,
+      }
+    : { kind: 'check_in', threadKey };
+}
+
+/**
+ * Act on a stop or check-in the thread's run took. A stop is recorded and
+ * already offered to its runner; the stopped ending posts its note. A
+ * check-in reads the run's facts without touching the run and answers only
+ * the asker (R9-R11). Nothing here is retried: the claims already make a
+ * Slack retry a duplicate.
+ */
+async function answerSlackSteering(input: {
+  decision: TurnSteeringInterception;
+  turn: NormalizedSlackTurn;
+  state: SlackStateStore;
+  client: ReturnType<typeof createSlackWebClient>;
+  platformEnv: PlatformEnv | undefined;
+  target?: SteeringReplyTarget;
+}): Promise<void> {
+  const { decision } = input;
+  console.info('[chickpea] steering.admission', {
+    outcome: decision.outcome,
+    ...(decision.outcome === 'stopped' ? { created: decision.stop.created } : {}),
+  });
+  if (decision.outcome === 'stopped') return;
+  const facts = await readSteeringRunFacts(decision.run, {
+    state: input.state,
+    env: input.platformEnv as Record<string, unknown> | undefined,
+  });
+  await replyToSteering(
+    input.client,
+    input.target ?? steeringReplyTarget(input.turn),
+    slackCheckInReply({ facts, dispatched: decision.run.dispatched }),
+  );
+}
+
+/** Claim a steering message's event and message keys, as ordinary admission does. */
+async function claimSteeringMessage(
+  state: SlackStateStore,
+  evtKey: string,
+  msgKey: string,
+): Promise<boolean> {
+  if (!(await state.claim(evtKey))) return false;
+  if (await state.claim(msgKey)) return true;
+  await state.release(evtKey);
+  return false;
+}
+
+async function replyToSteering(
+  client: ReturnType<typeof createSlackWebClient>,
+  target: SteeringReplyTarget,
+  text: string,
+): Promise<void> {
+  try {
+    await postSteeringReply(client, target, text);
+  } catch (err) {
+    console.warn('[chickpea] steering reply failed:', sanitizeError(err));
+  }
+}
+
+/**
+ * A stop or check-in typed at the top of a DM means the sender's single
+ * running DM thread (KTD1); with none or several, the sender gets a hint in
+ * a reply to their message. It is never queued as a turn.
+ */
+async function steerTopLevelDirectMessage(input: {
+  command: SlackSteeringCommand;
+  turn: NormalizedSlackTurn;
+  evtKey: string;
+  msgKey: string;
+  state: SlackStateStore;
+  client: ReturnType<typeof createSlackWebClient>;
+  platformEnv: PlatformEnv | undefined;
+}): Promise<void> {
+  const { turn, state } = input;
+  if (!(await claimSteeringMessage(state, input.evtKey, input.msgKey))) return;
+  const target = steeringReplyTarget(turn);
+  let decision: TurnSteeringInterception | undefined;
+  let running: string[];
+  try {
+    running = await state.runningDirectThreads?.({
+      workspaceId: turn.workspaceId,
+      channelId: turn.channelId,
+      requesterUserId: turn.userId,
+    }) ?? [];
+    if (running.length === 1) {
+      const steered = await state.steerTurn?.(
+        slackSteeringRequest(input.command, running[0]!, turn),
+      );
+      if (steered && steered.outcome !== 'enqueue') decision = steered;
+    }
+  } catch (err) {
+    // Free the claims so a redelivery decides it again; a recorded stop is
+    // idempotent, so deciding twice records one stop.
+    await state.release(input.evtKey);
+    await state.release(input.msgKey);
+    throw err;
+  }
+  if (decision) {
+    await answerSlackSteering({ ...input, decision, target });
+    return;
+  }
+  // Several running threads, or none (the one just finished).
+  await replyToSteering(
+    input.client,
+    target,
+    running.length > 1
+      ? STEERING_REPLY_TEXT.directSeveralRunning
+      : STEERING_REPLY_TEXT.directNoneRunning,
+  );
+}
+
+/**
+ * R3: a stop typed by someone who may not use the thread's Agent leaves its
+ * run alone, and only they are told. True when the stop was answered here;
+ * false leaves the message to today's routing feedback (no run in progress,
+ * not a stop, or the store could not say).
+ */
+async function refuseIneligibleSlackStop(input: {
+  turn: NormalizedSlackTurn;
+  evtKey: string;
+  msgKey: string;
+  state: SlackStateStore;
+  config: AppStores['config'];
+  client: ReturnType<typeof createSlackWebClient>;
+  botUserId: string;
+  runtimeContract: ResolvedAssignment['runtimeContract'];
+}): Promise<boolean> {
+  const { turn, state } = input;
+  try {
+    const route = await input.config.getAgentThreadRoute(
+      turn.workspaceId,
+      turn.channelId,
+      turn.threadTs,
+    );
+    const agent = route
+      ? await input.config.getAgent(route.agentId).catch(() => undefined)
+      : undefined;
+    const command = slackSteeringCommand(turn.text, {
+      botUserId: input.botUserId,
+      agentUserGroupId: agent?.slackPresence?.userGroupId,
+    });
+    if (command !== 'stop') return false;
+    const decision = await state.steerTurn?.({
+      kind: 'message',
+      threadKey: turnStopThreadKey(
+        turn,
+        input.runtimeContract ? { runtimeContract: input.runtimeContract } : {},
+      ),
+    });
+    if (decision?.outcome !== 'enqueue' || !decision.undelivered) return false;
+  } catch {
+    return false;
+  }
+  if (!(await claimSteeringMessage(state, input.evtKey, input.msgKey))) return true;
+  console.info('[chickpea] steering.admission', { outcome: 'stop_refused' });
+  await replyToSteering(input.client, steeringReplyTarget(turn), STEERING_REPLY_TEXT.ineligibleStop);
+  return true;
+}
 
 async function handleMemberJoinedChannel(
   payload: SlackEventFixture,

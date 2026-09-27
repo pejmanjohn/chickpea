@@ -307,3 +307,19 @@ export interface FrozenRuntimePlanDecision {
   runtimePlan: RuntimePlanV2;
   instanceId: string;
 }
+
+/**
+ * A steering decision that took the message instead of queueing it: a stop
+ * recorded, or a check-in to answer. No Run or TurnJob is written for it.
+ */
+export type TurnSteeringInterception = Exclude<TurnSteeringDecision, { outcome: 'enqueue' }>;
+
+/**
+ * One person's threads in one DM channel, for a top-level stop or check-in
+ * there: it means that person's single running DM thread (KTD1).
+ */
+export interface TurnDirectThreadQuery {
+  workspaceId: string;
+  channelId: string;
+  requesterUserId: string;
+}

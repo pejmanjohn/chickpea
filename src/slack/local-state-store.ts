@@ -2,6 +2,7 @@ import type { WorkStoreLogic } from '../work/store.ts';
 import type { SlackCanonicalAdmissionInput, SlackStateStore, SlackStateLogic } from './claim-store.ts';
 import { MAX_TURN_DRAIN_BATCH, type TurnJobStoreLogic } from './turn-jobs.ts';
 import type { SlackRunPresentationStoreLogic } from './run-presentations.ts';
+import { defaultSlackStatusRegistry } from './status-registry.ts';
 
 /**
  * Promise-shaped Slack state port for code already running inside the shared
@@ -30,6 +31,10 @@ export function localSlackStateStore(input: {
     enqueueTurn: async (job) => turnJobs.enqueue(job),
     steerTurn: async (request, enqueue) => turnJobs.steer(request, enqueue),
     finishTurnStop: async (headId, outcome) => turnJobs.finishStop(headId, outcome),
+    runningDirectThreads: async (query) => turnJobs.runningDirectThreadKeys(query),
+    // This process's executor (the Node relay, or the state store's alarm)
+    // registers its turns' status here, so their run facts live here too.
+    runFacts: async (turnJobId) => defaultSlackStatusRegistry.runFactsView(turnJobId),
     resumeTurnAfterOAuth: async (originalTaskId, continuationId) =>
       turnJobs.resumeAfterOAuth(originalTaskId, continuationId),
     pinAgentBinding: async (binding, expected) => turnJobs.pinAgentBinding(binding, expected),

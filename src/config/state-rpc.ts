@@ -87,11 +87,13 @@ import type {
   FlueTurnObservationV1,
   SlackAgentBinding,
   SlackAgentBindingExpectation,
+  TurnDirectThreadQuery,
   TurnJob,
   TurnSteeringDecision,
   TurnSteeringRequest,
   TurnStopFinish,
 } from '../slack/turn-job-types.ts';
+import type { SlackRunFactsView } from '../slack/status-registry.ts';
 import type { SlackInteractionIntent } from '../slack/interaction-intent.ts';
 import type { ThreadImageRecord } from '../slack/thread-images.ts';
 import type { TurnEnvelopeV1 } from '../agents/turn-envelope.ts';
@@ -629,6 +631,13 @@ export interface TagStateRpc {
     headId: string,
     outcome: 'dropped' | 'released',
   ): Promise<StateRpcResult<TurnStopFinish | null>>;
+  /** The sender's DM threads with an undelivered run (at most two), for a top-level stop or check-in. */
+  slackTurnDirectThreads(query: TurnDirectThreadQuery): Promise<StateRpcResult<string[]>>;
+  /**
+   * Run facts of a turn this store's alarm executor runs, from its in-memory
+   * status registry, for a check-in; null when it has none.
+   */
+  slackRunFacts(turnJobId: string): Promise<StateRpcResult<SlackRunFactsView | null>>;
   /**
    * Transactionally accept a normalized shared-gateway delivery and arm the
    * state alarm before returning a receipt to the authenticated session.
