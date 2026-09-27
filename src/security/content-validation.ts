@@ -94,6 +94,13 @@ export function redactCredentialLikeContent(text: string): string {
   );
 }
 
+/** Where `redactCredentialLikeContent` redacts `text`, as `[start, end)` ranges. */
+export function credentialMatchRanges(text: string): Array<[number, number]> {
+  return CREDENTIAL_REDACTIONS.flatMap((pattern) =>
+    [...text.matchAll(pattern)].map((match): [number, number] =>
+      [match.index, match.index + match[0].length]));
+}
+
 /** Literal prefixes of the signatures above, for streaming tail suppression. */
 export function credentialMarkers(): readonly string[] {
   return CREDENTIAL_MARKERS;
