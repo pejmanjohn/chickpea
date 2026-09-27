@@ -284,6 +284,19 @@ test('initial values reach the view only when Slack would accept them', () => {
   assert.deepEqual(checkSlackBlocks(view.blocks as Array<Record<string, unknown>>, { surface: 'modal' }).issues, []);
 });
 
+test('a submitted @word stays exact in the turn text and inert in the answered form', () => {
+  const values = { name: 'Ping @here about vendor' };
+  const text = formTurnText(form(MODAL), MODAL, values, 'U2');
+  // The turn is model input: the person's words carry no word joiner.
+  assert.match(text, /- Legal name: Ping @here about vendor\n/);
+  assert.equal(text.includes('\u2060'), false);
+
+  const answered = renderUiSurface(form(MODAL, {
+    status: 'resolved', resolution: { byUserId: 'U2', at: NOW, choice: 0, values: [JSON.stringify(values)] },
+  }));
+  assert.match(JSON.stringify(answered.blocks), /Ping @\u2060here about vendor/);
+});
+
 test('a submission becomes host-authored turn text, escaped like a typed message', () => {
   const record = form(MODAL);
   const values = { name: 'Acme <!channel> & Co', email: 'ap@acme.test' };

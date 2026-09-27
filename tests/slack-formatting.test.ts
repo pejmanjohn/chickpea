@@ -11,6 +11,7 @@ import {
   replyFooterModelLabel,
   renderUnassignedChannelHint,
   markdownFallbackText,
+  markdownToSlackMrkdwn,
   neutralizeSlackBroadcastMentions,
   renderSlackActionLink,
   renderSlackMarkdownActionLink,
@@ -168,6 +169,20 @@ test('strong emphasis cannot leak a trailing asterisk into an auto-linked URL', 
   assert.doesNotMatch(block?.type === 'markdown' ? block.text : '', /\/4\*/);
 
   assert.equal(sanitizeSlackMarkdownLinks(`**bold** and \`${markdown}\``), `**bold** and \`${markdown}\``);
+  // Pairs close left to right, so a bold closer never opens a URL span.
+  assert.equal(
+    sanitizeSlackMarkdownLinks('- **Step:** go to https://x.test/a then **Save**.'),
+    '- **Step:** go to https://x.test/a then **Save**.',
+  );
+  assert.equal(sanitizeSlackMarkdownLinks('**a** [link](http://b) **c**'), '**a** [link](http://b) **c**');
+});
+
+test('a line led by bold text keeps streaming after the bold closes', () => {
+  for (const line of ['**Summary:** the deploy finished', '- **Step 1:** run it and **always** check']) {
+    assert.equal(streamableSlackMarkdownPrefix(line), line);
+  }
+  // A star run holds only the `**` that can still open a URL span.
+  assert.equal(streamableSlackMarkdownPrefix('*********'), '*******');
 });
 
 test('every progressive cut point is a monotone prefix of the canonical terminal answer', () => {
@@ -203,6 +218,22 @@ test('every progressive cut point is a monotone prefix of the canonical terminal
     'word\nxoxb-sk-ant-xoxb-123456789012345678901234 then more.',
     'word\nxoxp-sk-proj-abcdefghijklmnopqrstuvwxyz123456 then more.',
     '```ts\nxoxb-xoxb-123456789012345678901234\n```\nComplete.',
+    '@channelword\n******',
+    '**a**http://x** then more',
+    '****http://x*** then more',
+    '2**10 stays literal.\n**https://example.test/x** done',
+    'See **http://a.test** and **http://b.test** both.',
+    '**a `x` http://b** c http://d**',
+    'x `**http://a** y` z',
+    '```\n**http://a** x\n```\n**http://b** y',
+    '````\n**http://a**\n````',
+    '**https://a.test/x [draft]** is live',
+    '- **Step:** go to https://x.test/a then **Save**.',
+    '**Summary:** see https://x.test/a** then more',
+    '**a `b** c` https://d**',
+    '**https://x** `y` **https://z** `w',
+    '*********',
+    'Ping __@here__, _@channel_ and @here_now; see youtube.com/@everyone_team @here__ done.',
   ];
 
   for (const terminalInput of corpus) {
@@ -219,7 +250,7 @@ test('every progressive cut point is a monotone prefix of the canonical terminal
 
 const WJ = '⁠';
 // A live special mention, or a broadcast word Slack could auto-parse.
-const LIVE_BROADCAST = /<!(?:here|channel|everyone|group|subteam\^)|(?<![\p{L}\p{N}_])@(?:here|channel|everyone)(?![\p{L}\p{N}_])/iu;
+const LIVE_BROADCAST = /<!(?:here|channel|everyone|group|subteam\^)|(?<![\p{L}\p{N}])@(?:here|channel|everyone)(?![\p{L}\p{N}])/iu;
 
 test('model text never renders a Slack broadcast or user-group mention', () => {
   const answer = [
@@ -265,12 +296,57 @@ test('file replies keep broadcast words and user-group handles inert in mrkdwn',
     assert.match(text, /ops@example\.com/);
   }
   // mrkdwn sections auto-parse handles; top-level text needs link_names.
-  assert.doesNotMatch(JSON.stringify(rendered.blocks), /(?<![\p{L}\p{N}_])@oncall/u);
+  assert.doesNotMatch(JSON.stringify(rendered.blocks), /(?<![\p{L}\p{N}])@oncall/u);
 
   // Table cells join the same mrkdwn section as prose.
   const withTable = renderFileBody(answer, 'markdown', footer, 'Owner: @here | Note: <!channel> for @oncall');
   assert.match(withTable, new RegExp(`Owner: @${WJ}here \\| Note: &lt;!channel&gt; for @${WJ}oncall`));
   assert.doesNotMatch(withTable, LIVE_BROADCAST);
+});
+
+test('mrkdwn emphasis, image alt text and link labels cannot revive a mention', () => {
+  const footer = { agentName: 'Analyst', agentId: 'analyst' };
+  const emphasis = 'Ping __@here__, _@channel_ and __@oncall__ now.';
+  const labels = [
+    '![@here](https://x.test/a.png) ![@oncall](u) [@everyone](nope)',
+    '[@_here_](nope) [@`everyone`](all) [@here](https://x.test/p)',
+  ].join('\n');
+  const inert = [
+    `Ping *@${WJ}here*, _@${WJ}channel_ and *@${WJ}oncall* now.`,
+    [
+      `@${WJ}here @${WJ}oncall @${WJ}everyone`,
+      `@${WJ}here @${WJ}everyone <https://x.test/p|@${WJ}here>`,
+    ].join('\n'),
+  ];
+  // File replies canonicalize first; present_details markdown does not.
+  assert.deepEqual([emphasis, labels].map((text) => renderFileBody(text, 'markdown', footer)), inert);
+  assert.deepEqual([emphasis, labels].map(markdownToSlackMrkdwn), inert);
+
+  // Markup must not fuse an `@` with the word after it.
+  const fused = [
+    '@![here](https://x.test/a.png) now', '@[here](nope) now', '@[oncall](nope) now',
+    '![@](u)here now', '[@](nope)channel now', '@**here** now',
+  ];
+  const plainMention = /(?<![\p{L}\p{N}]_*)@[\p{L}\p{N}*]/u;
+  for (const text of fused) {
+    for (const rendered of [renderFileBody(text, 'markdown', footer), markdownToSlackMrkdwn(text)]) {
+      assert.doesNotMatch(rendered, plainMention, `${text} -> ${rendered}`);
+    }
+  }
+
+  // Handles, URL paths and emails that merely contain a broadcast word stay exact.
+  const words = 'See https://www.youtube.com/@channel_news, @here_now and ops_@example.com.';
+  assert.equal(canonicalSlackMarkdownText(words), words);
+  assert.match(
+    renderFileBody('[profile](https://medium.com/@here_now)', 'markdown', footer),
+    /^<https:\/\/medium\.com\/@here_now\|profile>$/,
+  );
+
+  // A model-chosen filename is a mrkdwn link label.
+  const named = renderSlackArtifactMessage('Attached.', 'markdown', footer, [
+    { ...completedFile(0), filename: '@here.csv' },
+  ]);
+  assert.match(JSON.stringify(named.blocks), new RegExp(`\\|@${WJ}here\\.csv>`));
 });
 
 test('code keeps a special mention readable but inert', () => {

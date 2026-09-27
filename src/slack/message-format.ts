@@ -136,8 +136,10 @@ export function renderSlackArtifactMessage(
   const links = files.map((file) => {
     // Receipt validation bounds the encoded URL and excludes Slack delimiters.
     const url = new URL(file.permalink).href;
-    const label = escapeSlackControlCharacters(redactCredentialLikeContent(file.filename)
-      .replace(/[|\r\n\u0000-\u001f\u007f]/g, ' '));
+    // A model-chosen filename is a mrkdwn link label.
+    const label = neutralizeSlackMrkdwnHandles(escapeSlackControlCharacters(
+      redactCredentialLikeContent(file.filename).replace(/[|\r\n\u0000-\u001f\u007f]/g, ' '),
+    ));
     const shortLabel = splitSlackText(label, 256)[0]?.trim() || 'Download file';
     return `<${url}|${shortLabel}>`;
   }).join('\n');
@@ -298,7 +300,10 @@ const SLACK_BROADCAST_KEYWORDS = ['here', 'channel', 'everyone'] as const;
 // `<!date^…>` stay as written.
 const SLACK_SPECIAL_MENTION =
   /<!(here|channel|everyone|group|subteam\^[^<>|\n]*)(?:\|([^<>\n]*))?>/gi;
-const SLACK_BROADCAST_WORD = /(?<![\p{L}\p{N}_])@(?=(?:here|channel|everyone)(?![\p{L}\p{N}_]))/giu;
+// An `_` run next to the word is emphasis, not part of it: mrkdwn reads
+// `__@here__` as `*@here*` and `_@here_` as italic `@here`, both live, while
+// `@channel_news` (a handle or URL path) is a different word.
+const SLACK_BROADCAST_WORD = /(?<![\p{L}\p{N}]_*)@(?=(?:here|channel|everyone)(?!_*[\p{L}\p{N}]))/giu;
 const SLACK_CODE_SEGMENT = /(```[\s\S]*?(?:```|$)|`[^`\n]+`)/g;
 
 /** A plain `@here`, `@channel` or `@everyone` word with the joiner. */
@@ -718,24 +723,38 @@ export function streamableSlackMarkdownPrefix(text: string): string {
   if (!normalized) return '';
   let stable = normalized.slice(0, earliestUnsafeTail(normalized)).trimEnd();
   // A cut can end inside a closed code span or `<...>` reference, or right
-  // after a broadcast word, where the whole answer neutralizes differently.
-  for (let held = unsafeMentionTail(stable); held < stable.length; held = unsafeMentionTail(stable)) {
+  // after a broadcast word, where the whole answer neutralizes differently,
+  // or inside code or a `**URL**` span, whose opener it leaves unclosed.
+  const unsafeTailOfCut = (cut: string) => Math.min(
+    unsafeMentionTail(cut),
+    openUrlEmphasis(cut, cut.lastIndexOf('\n') + 1, true),
+    strippedSpanStart(normalized, cut.length),
+  );
+  for (let held = unsafeTailOfCut(stable); held < stable.length; held = unsafeTailOfCut(stable)) {
     stable = stable.slice(0, credentialHoldStart(stable, held)).trimEnd();
   }
   if (!stable) return '';
   return canonicalSlackMarkdownText(stable);
 }
 
+// Strong emphasis, paired left to right, and a star-free segment holding a URL.
+const STRONG_EMPHASIS = /\*\*([^*\n]+)\*\*/g;
+const WHOLE_URL_SEGMENT = /^[^*\n]*https?:\/\/[^*\n]+$/;
+// Code the link sanitizer leaves alone; an unclosed fence or span is prose.
+const CLOSED_CODE_SEGMENT = /(```[\s\S]*?```|`[^`\n]*`)/g;
+
 // Slack's markdown renderer can treat the closing `*` in a strong span as part
 // of an auto-linked URL (`**https://example.test/4**` -> URL ending in `*`).
 // Drop only the unsafe outer emphasis while preserving ordinary bold text and
-// literal examples inside inline/fenced code.
+// literal examples inside inline/fenced code. Pairs close left to right, so a
+// bold closer (`**Step:** … https://x … **Save**`) never opens a URL span.
 export function sanitizeSlackMarkdownLinks(markdown: string): string {
   return markdown
-    .split(/(```[\s\S]*?```|`[^`\n]*`)/g)
+    .split(CLOSED_CODE_SEGMENT)
     .map((segment, index) => {
       if (index % 2 === 1) return segment;
-      return segment.replace(/\*\*([^*\n]*https?:\/\/[^*\n]+)\*\*/g, '$1');
+      return segment.replace(STRONG_EMPHASIS, (strong, inner: string) =>
+        WHOLE_URL_SEGMENT.test(inner) ? inner : strong);
     })
     .join('');
 }
@@ -809,15 +828,9 @@ function earliestUnsafeTail(value: string): number {
   unsafeFrom = Math.min(unsafeFrom, unsafeMentionTail(value));
   // Emphasis around a URL is rewritten per line; an unpaired `**` on an
   // earlier line (`**kwargs`, `2**10`) is literal and must not hold the rest.
-  const emphasis = value.lastIndexOf('**');
-  if (emphasis >= lastLineStart && countToken(value.slice(lastLineStart), '**') % 2 === 1) {
-    unsafeFrom = Math.min(unsafeFrom, emphasis);
-  }
+  unsafeFrom = Math.min(unsafeFrom, openUrlEmphasis(value, lastLineStart));
   const trailingTicks = value.match(/`{1,2}$/)?.[0];
   if (trailingTicks) unsafeFrom = Math.min(unsafeFrom, value.length - trailingTicks.length);
-  if (value.endsWith('*') && !value.endsWith('**')) {
-    unsafeFrom = Math.min(unsafeFrom, value.length - 1);
-  }
   // A Markdown table row can look complete several tokens before the model
   // adds its newline. Hold the whole trailing row so Slack never flashes a
   // partially populated table during progressive delivery.
@@ -842,6 +855,28 @@ function credentialHoldStart(value: string, held: number): number {
 }
 
 /**
+ * The start of the `**URL**` span `sanitizeSlackMarkdownLinks` strips from
+ * the answer that `cut` falls inside, else `cut`: the prefix ending there
+ * keeps the opener the answer drops.
+ */
+function strippedSpanStart(value: string, cut: number): number {
+  let offset = 0;
+  for (const [index, segment] of value.split(CLOSED_CODE_SEGMENT).entries()) {
+    const end = offset + segment.length;
+    if (cut <= offset) break;
+    if (cut < end && index % 2 === 0) {
+      for (const strong of segment.matchAll(STRONG_EMPHASIS)) {
+        const start = offset + strong.index;
+        if (start >= cut) break;
+        if (cut < start + strong[0].length && WHOLE_URL_SEGMENT.test(strong[1]!)) return start;
+      }
+    }
+    offset = end;
+  }
+  return cut;
+}
+
+/**
  * Where the tail `neutralizeSlackBroadcastMentions` may still rewrite begins:
  * a `<...>` reference on the last line, an `@` that can still become a whole
  * broadcast word (`@here`, not `@heresy`), and a mention after an inline code
@@ -855,9 +890,12 @@ function unsafeMentionTail(value: string): number {
     unsafeFrom = Math.min(unsafeFrom, openAngle);
   }
   // Whatever precedes the `@`: redaction can turn `…9@here` into `…]@here`.
-  const word = /@([\p{L}\p{N}_]*)$/u.exec(value);
-  if (word && SLACK_BROADCAST_KEYWORDS.some((keyword) =>
-    keyword.startsWith(word[1]!.toLowerCase()))) {
+  // A trailing `_` run is undecided too: `@here_` may end (`@here_ now`) or
+  // grow into another word (`@here_now`).
+  const word = /@([\p{L}\p{N}]*)(_*)$/u.exec(value);
+  if (word && SLACK_BROADCAST_KEYWORDS.some((keyword) => word[2]
+    ? keyword === word[1]!.toLowerCase()
+    : keyword.startsWith(word[1]!.toLowerCase()))) {
     unsafeFrom = Math.min(unsafeFrom, word.index);
   }
   const openCode = unmatchedBacktickOnLastLine(value, lastLineStart);
@@ -879,10 +917,57 @@ function unmatchedBacktickOnLastLine(value: string, lastLineStart: number): numb
   return undefined;
 }
 
-function countToken(value: string, token: string): number {
-  let count = 0;
-  for (let at = 0; (at = value.indexOf(token, at)) >= 0; at += token.length) count += 1;
-  return count;
+/**
+ * Where `sanitizeSlackMarkdownLinks` could still change what it strips once
+ * more text arrives, scanning the prose after its last closed code segment
+ * as its global replace does. On the last line: a `**` whose segment runs to
+ * the end, or ends in a lone `*` after a URL, and a lone trailing `*` that
+ * may become one. After an unclosed fence, or backtick on the last line: any
+ * `**URL**` it strips now, which is code once that closes. Counting `**`
+ * pairs instead let a growing `***…` run flip between held and shown.
+ *
+ * For a cut of the answer (`ofCut`) only the code holds apply: what follows
+ * the cut is the answer, whose spans `strippedSpanStart` checks, and holding
+ * the cut's own trailing `**` peeled a `***…` run two stars per pass.
+ */
+function openUrlEmphasis(value: string, lastLineStart: number, ofCut = false): number {
+  const segments = value.split(CLOSED_CODE_SEGMENT);
+  let offset = 0;
+  let fence = -1;
+  for (const [index, segment] of segments.entries()) {
+    if (index === segments.length - 1) break;
+    if (index % 2 === 1) {
+      // The sanitizer takes an unclosed fence's first two backticks as an
+      // empty span, so the fence shows up here, not in the trailing prose.
+      if (fence < 0 && segment === '``' && value[offset + 2] === '`') fence = offset;
+    } else if (fence >= 0) {
+      const stripped = [...segment.matchAll(STRONG_EMPHASIS)]
+        .find((strong) => WHOLE_URL_SEGMENT.test(strong[1]!));
+      if (stripped) return offset + stripped.index;
+    }
+    offset += segment.length;
+  }
+  const opener = fence >= 0 ? fence : value.indexOf('`', Math.max(offset, lastLineStart));
+  const from = fence >= 0 ? offset : Math.max(offset, lastLineStart);
+  for (let at = value.indexOf('*', from); at >= 0; at = value.indexOf('*', at + 1)) {
+    if (at === value.length - 1) return ofCut ? value.length : at;
+    if (value[at + 1] !== '*') continue;
+    // The segment can only close at the next `*`, on the same line: a `**`
+    // there closes a pair (stripped when the segment holds a URL), and none
+    // at all on an earlier line (`**kwargs`, `2**10`) is literal.
+    const star = value.indexOf('*', at + 2);
+    const segment = value.slice(at + 2, star < 0 ? value.length : star);
+    if (segment.includes('\n')) continue;
+    if (star < 0) return ofCut ? value.length : at;
+    if (!segment) continue;
+    if (value[star + 1] === '*') {
+      if (opener >= 0 && star + 2 > opener && WHOLE_URL_SEGMENT.test(segment)) return at;
+      at = star + 1;
+    } else if (!ofCut && star === value.length - 1 && WHOLE_URL_SEGMENT.test(segment)) {
+      return at;
+    }
+  }
+  return value.length;
 }
 
 export function appendSlackReplyFooter(
@@ -966,11 +1051,13 @@ export function renderSlackActionLink(
   const link = typeof urlOrLink === 'string'
     ? slackActionLink(urlOrLink, label ?? 'Open link')
     : urlOrLink;
-  const safeLabel = escapeSlackControlCharacters(link.label)
+  // A model-written label is mrkdwn text too; stripping styles can expose `@here`.
+  const plainLabel = escapeSlackControlCharacters(link.label)
     .replace(/[\r\n\u0000-\u001f\u007f|]+/g, ' ')
     .replace(/[*_~`]/g, '')
     .slice(0, 80)
-    .trim() || 'Open link';
+    .trim();
+  const safeLabel = neutralizeSlackMrkdwnHandles(plainLabel) || 'Open link';
   const trimmed = link.url.trim();
   let parsed: URL;
   try {
@@ -1135,7 +1222,7 @@ function slackMrkdwnCodeText(code: string): string {
  * or user-group `@handle`: every word-initial `@` gets the joiner.
  */
 export function neutralizeSlackMrkdwnHandles(escaped: string): string {
-  return escaped.replace(/(?<![\p{L}\p{N}_])@(?=[\p{L}\p{N}_])/gu, `@${SLACK_MENTION_BREAK}`);
+  return escaped.replace(/(?<![\p{L}\p{N}]_*)@(?=[\p{L}\p{N}_])/gu, `@${SLACK_MENTION_BREAK}`);
 }
 
 function fileReplyProseText(markdown: string): string {
@@ -1180,9 +1267,11 @@ function renderSlackInlineMarkdown(source: string): string {
 
     const link = source.slice(at).match(/^(!?)\[([^\]\n]*)\]\(([^)\n]+)\)/);
     if (link) {
-      pieces.push(link[1]
-        ? escapeSlackControlCharacters(link[2]!)
-        : renderSlackActionLink(link[3]!, link[2]!));
+      const piece = link[1]
+        ? neutralizeSlackMrkdwnHandles(escapeSlackControlCharacters(link[2]!))
+        : renderSlackActionLink(link[3]!, link[2]!);
+      // A bare label ending in `@` would join the word after the link.
+      pieces.push(/(?<![\p{L}\p{N}]_*)@$/u.test(piece) ? `${piece}${SLACK_MENTION_BREAK}` : piece);
       at += link[0].length;
       continue;
     }
@@ -1211,9 +1300,12 @@ function renderSlackInlineMarkdown(source: string): string {
     if (handledDelimiter) continue;
 
     // mrkdwn text objects auto-parse a plain `@handle` into a user-group
-    // mention; the canonical answer already neutralized broadcast words.
-    if (source[at] === '@' && /[\p{L}\p{N}_]/u.test(source[at + 1] ?? '') &&
-        !/[\p{L}\p{N}_]/u.test(source[at - 1] ?? '')) {
+    // mention; the canonical answer already neutralized broadcast words. Any
+    // markup after the `@` gets the joiner too: `@[here](…)` and `@**here**`
+    // render the `@` next to a word.
+    const next = source[at + 1] ?? '';
+    if (source[at] === '@' && /\S/u.test(next) && next !== SLACK_MENTION_BREAK &&
+        !/[\p{L}\p{N}]_*$/u.test(source.slice(0, at))) {
       pieces.push(`@${SLACK_MENTION_BREAK}`);
       at += 1;
       continue;

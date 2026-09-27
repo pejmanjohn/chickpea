@@ -628,7 +628,7 @@ test('a streamed answer withholds a partial broadcast mention and never sends a 
     for (const call of streamed) {
       assert.doesNotMatch(
         markdownChunkText(call.input),
-        /<!|(?<![\p{L}\p{N}_])@(?:here|channel|everyone)(?![\p{L}\p{N}_])/iu,
+        /<!|(?<![\p{L}\p{N}])@(?:here|channel|everyone)(?![\p{L}\p{N}])/iu,
       );
     }
     assert.equal(
