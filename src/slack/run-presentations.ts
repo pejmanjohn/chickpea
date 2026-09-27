@@ -199,12 +199,21 @@ interface SlackPresentationAgentSession {
   disposition?: 'superseded' | 'unavailable';
 }
 
+/** A terminal's reason recorded beside its result (see SlackPresentationTerminalDelivery). */
+export type SlackPresentationTerminalReason = 'stopped';
+
 type SlackPresentationTerminalDelivery =
   | { state: 'none' }
   | {
       state: 'intended';
       result: 'answer' | 'failure' | 'legacy';
       operation: SlackPresentationOperationReceipt;
+      /**
+       * Why the run ended, beside the closed result: `stopped` is a stop
+       * note (KTD3), an `answer` whose session settles `active`. Absent on
+       * every other terminal; an older release reads the result alone.
+       */
+      reason?: SlackPresentationTerminalReason;
     }
   | {
       /** Further terminal writes were stopped after the delivery budget was
@@ -633,6 +642,8 @@ export type SlackPresentationMutation =
       kind: 'record_terminal_delivery_intent';
       operationId: string;
       result: 'answer' | 'failure';
+      /** Only with an `answer`: the terminal is a stop note. */
+      reason?: SlackPresentationTerminalReason;
     }
   | {
       kind: 'record_terminal_delivery_receipt';
@@ -1192,6 +1203,54 @@ export class SlackRunPresentationStoreLogic {
       );
       if (updated.changes !== 1) return { outcome: 'stale' };
       return { outcome: 'applied', presentation: next };
+    });
+  }
+
+  /**
+   * Close the presentation of a Run whose turn never started: a stop dropped
+   * it before it ran (KTD3). Nothing was shown for it, so it settles with no
+   * Slack effect, through existing transitions only, which any release reads
+   * as settled: its shared effects are superseded (the stopped run's ending
+   * owns the thread's Agent Session), its terminal is abandoned and its
+   * lifecycle is settled. Its admitted activity, never projected, is dropped,
+   * so no pending receipt keeps it marked for repair. A presentation that
+   * showed anything is left as it is; one already closed is returned again.
+   */
+  settleUnstarted(runId: string): SlackRunPresentation | undefined {
+    validateId(runId, 'Run id');
+    return this.db.transaction(() => {
+      const row = this.getRow(runId);
+      if (!row) return undefined;
+      const current = decodePresentation(row);
+      if (current.schemaVersion !== 3 || !presentationUnstarted(current)) return current;
+      const at = this.now();
+      const operationId = `terminal_${createHash('sha256')
+        .update(`${runId}:unstarted`).digest('hex').slice(0, 24)}`;
+      const mutations: SlackPresentationMutation[] = [
+        { kind: 'supersede_shared_repair_effects' },
+        { kind: 'record_terminal_delivery_intent', operationId, result: 'failure' },
+        { kind: 'abandon_terminal_delivery', operationId },
+        { kind: 'set_lifecycle_phase', phase: 'settled' },
+      ];
+      let next: SlackRunPresentation = current;
+      for (const mutation of mutations) next = applyMutation(next, mutation, at);
+      requireV3(next);
+      delete next.currentActivity;
+      next.repairRequired = v3RepairRequired(next);
+      next.projectionVersion = current.projectionVersion + 1;
+      next.updatedAt = at;
+      const updated = this.db.run(
+        `UPDATE slack_run_presentations
+         SET projection_version = ?, repair_required = ?, presentation_json = ?, updated_at = ?
+         WHERE run_id = ? AND projection_version = ?`,
+        next.projectionVersion,
+        next.repairRequired ? 1 : 0,
+        JSON.stringify(next),
+        at,
+        runId,
+        current.projectionVersion,
+      );
+      return updated.changes === 1 ? next : current;
     });
   }
 
@@ -2387,10 +2446,15 @@ function applyMutation(
         throw stateError('invalid_transition', 'Interim stream cleanup must finish before terminal delivery.');
       }
       validateId(mutation.operationId, 'Terminal delivery operation id');
+      if (mutation.reason !== undefined &&
+          (mutation.reason !== 'stopped' || mutation.result !== 'answer')) {
+        throw stateError('invalid_input', 'Terminal delivery reason is invalid.');
+      }
       next.terminalDelivery = {
         state: 'intended',
         result: mutation.result,
         operation: { operationId: mutation.operationId, certainty: 'pending' },
+        ...(mutation.reason ? { reason: mutation.reason } : {}),
       };
       next.lifecyclePhase = 'terminal_intended';
       next.repairRequired = v3RepairRequired(next);
@@ -3188,6 +3252,9 @@ function isStoredV3Presentation(
           presentation.terminalDelivery.result !== 'failure' &&
           presentation.terminalDelivery.result !== 'legacy') ||
           !isOperationReceipt(presentation.terminalDelivery.operation)) return false;
+      if (presentation.terminalDelivery.reason !== undefined &&
+          (presentation.terminalDelivery.reason !== 'stopped' ||
+            presentation.terminalDelivery.result !== 'answer')) return false;
     } else if (presentation.terminalDelivery?.state === 'abandoned') {
       if (presentation.terminalDelivery.result !== 'failure' ||
           !isOperationReceipt(presentation.terminalDelivery.operation) ||
@@ -3559,6 +3626,18 @@ function v3RepairRequired(presentation: SlackRunPresentationV3): boolean {
   return receipts.some((receipt) =>
     receipt !== undefined && receipt.certainty !== 'acknowledged'
   );
+}
+
+/** An admitted V3 presentation nothing has been shown for or intended through yet. */
+function presentationUnstarted(presentation: SlackRunPresentationV3): boolean {
+  return presentation.lifecyclePhase === 'admitted' &&
+    presentation.stream.state === 'absent' && presentation.stream.messageTs === undefined &&
+    presentation.terminalDelivery.state === 'none' &&
+    presentation.agentSession.operation === undefined &&
+    presentation.agentSession.disposition === undefined &&
+    presentation.activityProjection.surface === 'unselected' &&
+    presentation.cleanup.state === 'not_required' &&
+    presentation.continuations === undefined;
 }
 
 export function presentationHasTerminalOutcome(

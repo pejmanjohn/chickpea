@@ -438,3 +438,28 @@ test('coding worker usage is recorded once on the turn, under the coding model',
     store.close();
   }
 });
+
+test('a stopped run is recorded interrupted with no reported usage, never failed', async () => {
+  const store = new SqliteUsageStore(':memory:');
+  try {
+    const stopped = new InteractiveUsageRecorder({
+      turn,
+      assignment,
+      requestedModel: assignment.model!,
+      operationId: 'msg_stopped',
+      executionId: 'exec_stopped',
+      store,
+      now: () => 4_000_000,
+    });
+    await stopped.admit();
+    await stopped.recordStopped();
+    // A later failure report cannot rewrite the stopped terminal.
+    await stopped.recordFailure();
+    const detail = await store.getOperation('msg_stopped');
+    assert.equal(detail?.operation.status, 'interrupted');
+    assert.equal(detail?.measurements[0]?.usageUnknownReason, 'stream_interrupted');
+    assert.equal(detail?.measurements[0]?.totalTokens, null);
+  } finally {
+    store.close();
+  }
+});

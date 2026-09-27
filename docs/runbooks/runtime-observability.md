@@ -309,8 +309,8 @@ channel IDs, settings keys or values, or error text. Emission never throws.
 | `event` | Emitted | Fields |
 | --- | --- | --- |
 | `relay_alarm` | Once per `TagStateStore.alarm()` invocation (Cloudflare) | `outcome` (`idle`, `drained`, `threw`), `durationMs`, `jobsListed`, `groups`, `jobsRun`, `jobsSettled`, `jobsRetained`, `jobsCarried`, `longestJobMs`, `turnsMs`, `needsRetry`, `rearmed`, `yielded`, `jobsDispatched` |
-| `thread_runner_alarm` | Once per `SlackThreadRunner.alarm()` invocation (Cloudflare) | `outcome` (`idle`, `drained`, `threw`), `jobs`, `ran`, `yielded`, `carried`, `durationMs` |
-| `turn_latency` | Once per relay attempt of one turn (both lanes) | `turnRef`, `runRef`, `lane` (`cloudflare`, `node`), `executor` (`alarm`, `runner`, `node`), `attempt`, `outcome` (`returned`, `threw`), `firstWrite`, `final` (`delivered`, `deferred`, `none`), `admissionToStartMs`, `admissionToFirstWriteMs`, `admissionToFinalMs`, `receiptToAdmissionMs`, `receiptToFirstWriteMs`, `attemptMs` |
+| `thread_runner_alarm` | Once per `SlackThreadRunner.alarm()` invocation (Cloudflare) | `outcome` (`idle`, `drained`, `threw`), `jobs`, `ran`, `yielded`, `carried`, `dropped`, `durationMs` |
+| `turn_latency` | Once per relay attempt of one turn (both lanes) | `turnRef`, `runRef`, `lane` (`cloudflare`, `node`), `executor` (`alarm`, `runner`, `node`), `attempt`, `outcome` (`returned`, `threw`, `stopped`: a stopped run's ending), `firstWrite`, `final` (`delivered`, `deferred`, `none`), `admissionToStartMs`, `admissionToFirstWriteMs`, `admissionToFinalMs`, `receiptToAdmissionMs`, `receiptToFirstWriteMs`, `attemptMs` |
 | `state_rpc` | Sampled calls from a `Cf*Store` proxy into `TagStateStore` | `method` (RPC name), `op` (request kind for `*Execute` RPCs), `ms`, `slow`, `ok`, `isolateCalls`, `isolateSlowCalls` |
 | `gateway_delivery` | Once per authenticated gateway delivery at Worker admission (Cloudflare) | `transport` (`http`, `socket`), `deliveryKind` (`event`, `agent_selected`, `channel_agent_add`), `eventType` and `subtype` (Slack's event vocabulary), `outcome` (`accepted`, `duplicate`, `rejected`, `failed`, `filtered`), `lagMs`, `slackLagMs`, socket only: `source` (`store`, `recent`, `filter`), `filterReason`, `queueMs`, `admitMs`, `inFlight`, `sessionPhase`, `sessionHealth`, `sessionAttempt`, `sessionGeneration`, `sessionAgeMs` |
 
@@ -348,7 +348,9 @@ channel IDs, settings keys or values, or error text. Emission never throws.
   a runner whose alarm handler was running on the old version resumes only
   when that handler returns (alarms never overlap per object): on Amber this
   took about 3 minutes, during which the turn shows its last status. `carried`
-  counts turns still running at the 12-minute cap. Runner turns log
+  counts turns still running at the 12-minute cap. `dropped` counts queued
+  turns that stopped runs' endings dropped since the runner's previous
+  record, each once however often its ending replays. Runner turns log
   `turn_latency` with `executor: runner`. The runner keeps the turn's Slack
   presentation in its own storage and repairs it itself; the state store's
   presentation copy is refreshed at lifecycle changes, and its repair sweep
@@ -445,3 +447,19 @@ events; join them to a Run through `runRef` and the time window. On a Node
 install the same objects print to the process log, for example
 `{ component: 'runtime', event: 'turn_latency', ... }`; filter with
 `grep "event: 'turn_latency'"`.
+
+## Steering logs
+
+Stops and check-ins decided at admission log one content-free line each, on
+Cloudflare and Node alike. Neither carries message text, a stop reason, or a
+Slack user, channel or workspace ID.
+
+| Line | Fields |
+| --- | --- |
+| `[chickpea] steering.admission` | `outcome` (`stopped`, `check_in`, `stop_refused`, `check_in_refused`, `ended`, `unsettled`), `created` on `stopped` (`false` when the stop joined one already recorded), and `source: button` for Slack's Stop button (absent for a typed stop) |
+| `[chickpea] steering.stop_button` | `outcome` for a Stop press that stopped nothing: `invalid` (unreadable event), `no_route` (not an Agent thread), `no_running_job`, or `not_allowed` (no access and not told) |
+
+A stopped run's ending logs `turn_latency` with `outcome: stopped`. Filter a
+bounded capture with `wrangler tail --search steering.` or, on Node,
+`grep "steering\."`. See [Slack steering](slack-steering.md#operator-view)
+for the retry warnings and the durable stop record.

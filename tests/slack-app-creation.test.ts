@@ -9,7 +9,11 @@ import {
   SLACK_SETUP_TTL_MS,
 } from '../src/slack/app-creation.ts';
 import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
-import { buildSlackAppManifest } from '../src/slack/app-manifest.ts';
+import {
+  buildSlackAppManifest,
+  slackManifestFingerprint,
+  slackManifestWithOptionalEvents,
+} from '../src/slack/app-manifest.ts';
 import { resolveSlackControlPlaneAppCredentials } from '../src/slack/installation-credentials.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
 import { WORKSPACE_SLACK_INSTALLATION_ID } from '../src/config/types.ts';
@@ -309,6 +313,32 @@ test('manual adoption validates exact configuration and converges at app_created
     });
     assert.equal(adopted.state, 'app_created');
     assert.doesNotMatch(JSON.stringify(adopted), /client-secret|signing-secret/);
+  } finally {
+    store.close();
+  }
+});
+
+test('manual adoption accepts an app made before the Stop event and records the manifest it holds (R25)', async () => {
+  const store = new SqliteIdentityStore(':memory:', { now: () => NOW });
+  const credentials = { state: store, keyring: generateCredentialKeyring('key_v1') };
+  try {
+    const setup = await setupTransaction(store);
+    const service = new SlackAppCreationService({
+      identity: store, credentials, now: () => NOW, fetch: successfulCreateFetch(),
+    });
+    const manifest = buildSlackAppManifest({ kind: 'workspace_app', origin: ORIGIN });
+    // Exported from an app created from the previous manifest: no Stop event.
+    const earlier = slackManifestWithOptionalEvents(manifest, []);
+    const adopted = await service.adoptManual({
+      setupId: setup.id,
+      expectedRevision: setup.revision,
+      appId: 'A12345678', clientId: '123.456',
+      clientSecret: 'client-secret-value', signingSecret: 'signing-secret-value',
+      expectedManifest: manifest,
+      observedManifest: structuredClone(earlier),
+    });
+    assert.equal(adopted.state, 'app_created');
+    assert.equal(adopted.manifestFingerprint, slackManifestFingerprint(earlier));
   } finally {
     store.close();
   }

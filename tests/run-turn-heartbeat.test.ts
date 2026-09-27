@@ -1504,7 +1504,13 @@ test('a 45-minute coding task shows its progress in the working indicator, opens
         assert.equal(setObservedSlackStatus(instanceId, input.turnId,
           activityStatus('running', 'Running', 'the test suite', 'workspace')), true);
         await settle();
-        await advance(45 * 60_000);
+        // A busy worker keeps reporting its stage (progress, not a new
+        // phrase), so the status line stays custom text for the whole task.
+        for (let minute = 0; minute < 45; minute += 3) {
+          await advance(3 * 60_000);
+          assert.equal(setObservedSlackStatus(instanceId, input.turnId,
+            activityStatus('running', 'Running', 'the test suite', 'workspace')), true);
+        }
         await input.onWorkspaceMilestone?.(milestone('changes', 'changed'), target);
         await input.onWorkspaceMilestone?.(milestone('pull_request', 'completed'), target);
         await settle();

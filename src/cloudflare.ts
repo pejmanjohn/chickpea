@@ -163,6 +163,12 @@ import {
   type WorkspaceRosterState,
 } from './sandbox/workspace-limits.ts';
 import {
+  putStoredCodingTask,
+  readStoredCodingTasks,
+  settleStoredCodingTask,
+  type CodingTaskRecordV1,
+} from './sandbox/coding-task-record.ts';
+import {
   checkpointWorkspace,
   restoreWorkspaceCheckpoint,
   workspaceCheckpointsAvailable,
@@ -208,6 +214,13 @@ import {
 import { slackTurnExecutor } from './slack/turn-executor-flag.ts';
 import { sandboxTurnReaders } from './slack/thread-runner.ts';
 import {
+  boundedStopCall,
+  receiveAlarmExecutorStop,
+  STOP_NOTICE_DELIVERY_TIMEOUT_MS,
+  StopAbortFence,
+} from './slack/runner-stops.ts';
+import { abortSlackThreadAgent } from './slack/flue-dispatch.ts';
+import {
   RUNNER_PREFETCHED_SETTINGS,
   threadRunnerStub,
   type RunnerTurnBegin,
@@ -223,11 +236,13 @@ import {
   type SlackPresentationRepairDrainResult,
 } from './slack/presentation-repair.ts';
 import {
+  deliverDueStopNotices,
   MAX_TURN_DRAIN_BATCH,
   oauthResumeTurnJobId,
   TurnJobStoreLogic,
   type PendingTurnJob,
 } from './slack/turn-jobs.ts';
+import type { TurnSteeringDecision } from './slack/turn-job-types.ts';
 import { DoSqlStateDb } from './state/do-state-db.ts';
 import { StateSchemaMarker, stateSchemaFingerprint } from './state/schema-lifecycle.ts';
 import { cloudflareWorkerVersionId } from './config/cloudflare-version.ts';
@@ -520,6 +535,22 @@ export class Sandbox extends CloudflareSandbox<SandboxWorkerEnv> {
     await saveStoredWorkspaceRoster(this.policyStorage(), key, state, forget);
   }
 
+  /**
+   * A host turn's active coding-task records, kept on the thread's default
+   * workspace so a stop finds every coding job the run waits on.
+   */
+  async readCodingTasks(turnId: string): Promise<CodingTaskRecordV1[]> {
+    return readStoredCodingTasks(this.policyStorage(), turnId);
+  }
+
+  async putCodingTask(turnId: string, record: unknown): Promise<void> {
+    await putStoredCodingTask(this.policyStorage(), turnId, record, Date.now());
+  }
+
+  async settleCodingTask(turnId: string, taskKey: string): Promise<void> {
+    await settleStoredCodingTask(this.policyStorage(), turnId, taskKey, Date.now());
+  }
+
   private containerRunning(): boolean {
     return (this.ctx as { container?: { running?: boolean } }).container?.running === true;
   }
@@ -789,6 +820,11 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
    * settle so a delivery in flight is never started a second time.
    */
   private readonly carriedAlarmTurns = new Map<string, string>();
+  /**
+   * Stop aborts this store sends for its own alarm's turns, per thread: the
+   * alarm starts no turn of a thread while one is out (see StopAbortFence).
+   */
+  private readonly stopAborts = new StopAbortFence();
   private readonly presentationRunnerOf = (runId: string) => this.presentationRunner(runId);
   /** Set while runner-mode alarm work runs: admission hands new turns over at once. */
   private dispatchWake: (() => void) | undefined;
@@ -1548,11 +1584,15 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
   }
 
   async admitSlackTurn(input: SlackCanonicalAdmissionInput) {
-    return this.call((stores) =>
+    const result = this.call((stores) =>
       stores.slack.admitCanonical(
         input, stores.work, stores.turnJobs, stores.presentations, stores.uiSurfaces,
       ),
     );
+    if (result.ok && result.value.claimed && 'steered' in result.value) {
+      await this.offerCreatedStop(result.value.steered);
+    }
+    return result;
   }
 
   async uiSurfaceExecute(request: UiSurfaceRpcRequest) {
@@ -1872,6 +1912,102 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     return result;
   }
 
+  async slackTurnSteer(
+    request: Parameters<TagStateRpc['slackTurnSteer']>[0],
+    enqueue?: Parameters<TagStateRpc['slackTurnSteer']>[1],
+  ): ReturnType<TagStateRpc['slackTurnSteer']> {
+    const result = this.call((stores) => stores.turnJobs.steer(request, enqueue));
+    if (!result.ok) return result;
+    const decision = result.value;
+    if (decision.outcome === 'enqueue' && decision.enqueued) {
+      // As enqueueTurn: the row and its alarm are durable before the reply.
+      await this.armAlarmNoLaterThan(Date.now() + RELAY_BATCH_WINDOW_MS, true);
+    } else {
+      await this.offerCreatedStop(decision);
+    }
+    return result;
+  }
+
+  /**
+   * A stop the RPC just created (a steer, or a typed stop the admission
+   * recorded) is offered to its runner before the RPC answers; the outbox
+   * retries the rest. Any other decision, and a stop that already existed,
+   * offers nothing.
+   */
+  private async offerCreatedStop(decision: TurnSteeringDecision): Promise<void> {
+    if (decision.outcome === 'stopped' && decision.stop.created) await this.deliverStopNotices();
+  }
+
+  async slackTurnStopFinish(
+    headId: string,
+    outcome: 'dropped' | 'released',
+  ): ReturnType<TagStateRpc['slackTurnStopFinish']> {
+    return this.call((stores) => stores.slack.finishTurnStop(
+      headId,
+      outcome,
+      stores.turnJobs,
+      stores.work,
+      stores.presentations,
+    ) ?? null);
+  }
+
+  async slackTurnDirectThreads(
+    query: Parameters<TagStateRpc['slackTurnDirectThreads']>[0],
+  ): ReturnType<TagStateRpc['slackTurnDirectThreads']> {
+    return this.call((stores) => stores.turnJobs.runningDirectThreadKeys(query));
+  }
+
+  /** The alarm executor registers its turns in this isolate's status registry. */
+  async slackRunFacts(turnJobId: string): ReturnType<TagStateRpc['slackRunFacts']> {
+    return this.call(() => {
+      if (typeof turnJobId !== 'string' || turnJobId.length === 0 || turnJobId.length > 256) {
+        throw new Error('TurnJob id is invalid.');
+      }
+      return defaultSlackStatusRegistry.runFactsView(turnJobId) ?? null;
+    });
+  }
+
+  /**
+   * The stop outbox (KTD2): offer every due stop to its head row's thread
+   * runner, whose acknowledgement clears it, like a runner hand-off admitted
+   * again until confirmed. A head no runner owns yet stays owed: the alarm
+   * hands it over first, and its dispatch is refused meanwhile. A head this
+   * store's own alarm executes (SLACK_TAG_TURN_EXECUTOR=alarm) is aborted
+   * here instead (receiveAlarmExecutorStop), inside its thread's abort fence.
+   * Every offer is bounded, so a wedged runner or coordinator never holds the
+   * steer and admission RPCs or the relay alarm that await this: one not
+   * answered in time counts as not acknowledged and is retried. Keeps the
+   * alarm armed for notices still owed. Never throws.
+   */
+  private async deliverStopNotices(): Promise<void> {
+    const stores = this.stores;
+    if (!stores) return;
+    try {
+      await deliverDueStopNotices({
+        turnJobs: stores.turnJobs,
+        receiver: async (notice) => {
+          if (notice.executor !== 'runner') {
+            return this.stopAborts.run(notice.runnerKey, () => receiveAlarmExecutorStop(
+              stores.turnJobs.runnerView(notice.turnJobId),
+              (target) => abortSlackThreadAgent(target),
+              () => stores.turnJobs.runnerView(notice.turnJobId),
+            ));
+          }
+          // A runner of an older version has no `stop`: the call rejects
+          // and the notice stays owed until its successor takes it.
+          const runner = threadRunnerStub(this.env as PlatformEnv, notice.runnerKey);
+          if (!runner) return false;
+          const taken = await boundedStopCall(runner.stop(notice), STOP_NOTICE_DELIVERY_TIMEOUT_MS);
+          return taken.acknowledged === true;
+        },
+      });
+      const due = stores.turnJobs.nextStopNoticeDueAt();
+      if (due !== undefined) await this.armAlarmNoLaterThan(Math.max(Date.now(), due));
+    } catch {
+      console.warn('[chickpea] stop notice delivery failed; the alarm retries it');
+    }
+  }
+
   async receiveGatewayHttp(input: {body: string; signature: string; url: string}): Promise<{status: number; body: unknown}> {
     const receivedAt = Date.now();
     let observed: {delivery: GatewayInboundDelivery; issuedAt: number} | undefined;
@@ -2133,6 +2269,8 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     const whileDispatching = <T>(work: () => Promise<T>): Promise<T> =>
       runnerMode ? this.dispatchingWhile(work, admitAndDispatch) : work();
     const gatewayNeedsRetry = await admitAndDispatch();
+    // Stops owed to runners, after the hand-offs above gave new rows theirs.
+    await this.deliverStopNotices();
     const threadKeyOf = (job: {
       turn: Parameters<typeof slackAgentThreadKey>[0];
       assignment: Parameters<typeof slackAgentThreadKey>[1];
@@ -2214,7 +2352,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     // its own presentation state (see src/slack/turn-executor.ts).
     const turnPorts: TurnExecutionPorts = {
       env: this.env as PlatformEnv,
-      turnJobs: stores.turnJobs,
+      turnJobs: alarmTurnJobsPort(stores),
       slack: stores.slack,
       config: stores.config,
       presentationState: localSlackPresentationState(stores),
@@ -2234,6 +2372,9 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     ): Promise<boolean> => executeTurnJob(job, turnPorts, {
       latency: { lane: 'cloudflare', executor: 'alarm' },
       ...(control ? { control } : {}),
+      // The alarm executor has no coding cascade; its stop note reads only
+      // whether a stop was recorded (R22 versus the stopped ending).
+      stopRecorded: () => stores.turnJobs.runnerView(job.id).job?.stop?.role === 'stopped',
       onRetry: (afterMs) => {
         needsRetry = true;
         if (afterMs !== undefined) {
@@ -2255,6 +2396,8 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       jobId: (job) => job.id,
       threadKey: threadKeyOf,
       runJob: async (job, control) => {
+        // Never while a stop's abort for an earlier turn of the thread is out.
+        await this.stopAborts.clear(threadKeyOf(job));
         const jobStartedAt = Date.now();
         metrics.jobsRun += 1;
         drainedThreads.add(threadKeyOf(job));
@@ -3087,6 +3230,34 @@ function localManagementRuntime(
         setupBaseUrl: () => resolveSlackPublicUrl(platformEnv, settings),
       },
     }),
+  };
+}
+
+/**
+ * The alarm executor's turn-row port: the state store's own rows, except
+ * that the stopped ending also settles the dropped turns' Runs and
+ * presentations, as slackTurnStopFinish does. Spelled out like
+ * runnerTurnJobsPort, so the one method that differs is visible.
+ */
+function alarmTurnJobsPort(stores: TagStateStores): TurnExecutionPorts['turnJobs'] {
+  const rows = stores.turnJobs;
+  return {
+    recordAttempt: (...args) => rows.recordAttempt(...args),
+    markRecoveryRequired: (...args) => rows.markRecoveryRequired(...args),
+    prepareFlueDispatch: (...args) => rows.prepareFlueDispatch(...args),
+    reconcileFlueExistingInstance: (...args) => rows.reconcileFlueExistingInstance(...args),
+    recordFlueReceipt: (...args) => rows.recordFlueReceipt(...args),
+    recordFlueSettlement: (...args) => rows.recordFlueSettlement(...args),
+    recordPullRequest: (...args) => rows.recordPullRequest(...args),
+    freezeRuntimePlan: (...args) => rows.freezeRuntimePlan(...args),
+    getBoundRuntimePlan: (...args) => rows.getBoundRuntimePlan(...args),
+    recordUsagePersistence: (...args) => rows.recordUsagePersistence(...args),
+    recordInteractionIntent: (...args) => rows.recordInteractionIntent(...args),
+    recordSlackInteractionProgress: (...args) => rows.recordSlackInteractionProgress(...args),
+    markDelivered: (...args) => rows.markDelivered(...args),
+    markError: (...args) => rows.markError(...args),
+    finishStop: (headId, outcome) =>
+      stores.slack.finishTurnStop(headId, outcome, rows, stores.work, stores.presentations),
   };
 }
 

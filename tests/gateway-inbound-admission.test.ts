@@ -121,6 +121,15 @@ test('ordering keys group a thread, its edits, and a whole DM, and separate unre
   // until normalization resolves it, so it orders with that reply's key.
   assert.equal(key({ type: 'reaction_added', user: 'U', item: { type: 'message', channel: 'C1', ts: '100.5' } }),
     'thread:C1:100.5');
+  // Slack's Stop button (KTD5): the thread's messages and the stop share one
+  // order, so a message posted before the click is admitted before the stop.
+  assert.equal(key({ type: 'agent_session_stopped', channel: 'C1', thread_ts: '100.1', user: 'U',
+    event_ts: '105.0', streaming_message_ts: [] }), root);
+  // A DM orders as a whole, like its messages.
+  assert.equal(key({ type: 'agent_session_stopped', channel: 'D1', thread_ts: '1.1', user: 'U',
+    event_ts: '3.0' }), 'channel:D1');
+  assert.equal(key({ type: 'agent_session_stopped', channel: 'C1', user: 'U', event_ts: '105.0' }),
+    'channel:C1', 'without a thread, the channel is the best scope');
   assert.equal(key({ type: 'member_joined_channel', channel: 'C1', user: 'U' }), 'channel:C1');
   assert.equal(key({ type: 'user_change', user: { id: 'U' } }), 'workspace');
   assert.equal(gatewayDeliveryOrderKey({

@@ -27,9 +27,15 @@ import {
 import { isSandboxDisconnect } from '../sandbox/reconnect.ts';
 import { isStateStoreDisconnect } from '../config/cf-state-proxies.ts';
 import { StateStoreUnavailable } from './flue-dispatch.ts';
+import type { RunnerStops, RunnerTurnObserver } from './runner-stops.ts';
 import type { RunnerTurnBegin } from './thread-runner-rpc.ts';
 import type { TurnExecutionPorts } from './turn-executor.ts';
-import type { PendingTurnJob, RunnerTurnJobView } from './turn-jobs.ts';
+import {
+  TURN_STOP_HOLD_RETRY_MS,
+  turnJobStopGate,
+  type PendingTurnJob,
+  type RunnerTurnJobView,
+} from './turn-jobs.ts';
 
 /**
  * The turn execution loop of one SlackThreadRunner alarm, free of
@@ -134,6 +140,8 @@ export interface ThreadRunnerLoopDeps {
   versionId?: string;
   /** Per instance: whether a code update has replaced this runner's version. */
   supersede?: RunnerSupersedeState;
+  /** This runner's stops (see RunnerStops): what each still owes runs in the alarm. */
+  stops?: RunnerStops;
   now?: () => number;
   heartbeatMs?: number;
   versionCheckMs?: number;
@@ -211,6 +219,7 @@ export async function runThreadRunnerAlarm(
     ran: 0,
     yielded: false,
     carried: 0,
+    dropped: 0,
     durationMs: 0,
     outcome: 'idle',
     ...(deps.versionId ? { versionId: deps.versionId } : {}),
@@ -226,6 +235,9 @@ export async function runThreadRunnerAlarm(
     // A follow-up that could not reach the state store counts as a failed
     // alarm: the runner backs off instead of waking again at once.
     let followUpsFailed = !(await followUps(deps, now));
+    // A stop's abort still owed is retried before its turn reattaches, and a
+    // coding cascade the abort allows starts now (see RunnerStops).
+    await deps.stops?.followUp();
     // A turn could not reach the state store: the runner backs off too.
     const outage = { storeUnavailable: false };
     const budgetMs = deps.budgetMs ?? ALARM_TURN_BUDGET_MS;
@@ -270,6 +282,11 @@ export async function runThreadRunnerAlarm(
       }
     }
     followUpsFailed = !(await followUps(deps, now)) || followUpsFailed;
+    // A stop that ended its turn in this alarm may now start its coding
+    // cascade; this alarm waits for what it started (about 14 s at most),
+    // so no stop work outlives the invocation that owns it.
+    await deps.stops?.followUp();
+    await deps.stops?.drain();
     const repairs = deps.repair ? await deps.repair() : {};
     deps.jobs.purge(now());
     const at = now();
@@ -281,6 +298,7 @@ export async function runThreadRunnerAlarm(
       syncOwed ? at + THREAD_RUNNER_SYNC_RETRY_MS : undefined,
       deps.jobs.nextCleanupAt(),
       repairs.nextRetryAt,
+      deps.stops?.nextRetryAt(at),
     ].filter((value): value is number => value !== undefined);
     const supersededBy = deps.supersede?.by;
     if (supersededBy) {
@@ -311,9 +329,16 @@ export async function runThreadRunnerAlarm(
     // state; the next alarm reads the turn row again and reattaches.
     record.outcome = 'threw';
     record.reason = error instanceof Error && TOKEN.test(error.name) ? error.name : 'unknown';
+    await deps.stops?.drain();
     return { record, nextAlarmAt: now() + failureBackoff(deps, isSandboxDisconnect(error)) };
   } finally {
     record.durationMs = now() - startedAt;
+    try {
+      // Rows the stopped endings of this runner's turns dropped since the last record.
+      record.dropped = deps.jobs.takeUnreportedDrops();
+    } catch {
+      // The count is telemetry; the next record reports it.
+    }
     const supersede = deps.supersede;
     if (supersede?.by) {
       record.supersededBy = supersede.by;
@@ -402,10 +427,13 @@ async function runOne(
   if (deps.supersede?.by) return false;
   // The state store's row is authoritative: a settled or reclaimed turn never
   // runs here, and a dispatched one reattaches through its checkpoints. One
-  // round trip also brings what the turn's installation context reads.
+  // round trip also brings what the turn's installation context reads. No
+  // turn starts while a stop's abort request is out: it would stop whatever
+  // the thread's coordinator instance runs when it lands (see RunnerStops).
   const [start] = await Promise.all([
     deps.turns.begin(local.id),
     deps.armBackstop(now() + THREAD_RUNNER_BACKSTOP_MS),
+    deps.stops?.abortsSettled(),
   ]);
   const view = start.view;
   if (view.status !== 'pending' || !view.job) {
@@ -415,6 +443,12 @@ async function runOne(
   if (view.executor !== 'runner') {
     deps.jobs.settle(local.id, 'released', now());
     return true;
+  }
+  // A row a stop holds never runs: it waits, holding its thread, for the
+  // stopped ending to drop it (the row then reads settled) or release it.
+  if (turnJobStopGate(view.job) === 'hold') {
+    deps.jobs.settle(local.id, 'admitted', now(), now() + TURN_STOP_HOLD_RETRY_MS);
+    return false;
   }
   if (supersededBy(deps, start.servingVersion, generation, now)) return false;
   deps.jobs.markRunning(local.id);
@@ -434,9 +468,11 @@ async function runOne(
   const versionCheckMs = deps.versionCheckMs ?? THREAD_RUNNER_VERSION_CHECK_MS;
   let lastVersionCheck = now();
   let checkingVersion = false;
-  // Keep a wake a few seconds ahead for as long as the job runs, and watch
-  // for a code update.
+  // Keep a wake a few seconds ahead for as long as the job runs, watch for a
+  // code update, and move on what a stop of this job owes (its unconfirmed
+  // abort, then its coding cascade). A stop never touches `turnControl`.
   const heartbeat = setInterval(() => {
+    deps.stops?.heartbeat(local.id);
     void deps.armBackstop(now() + THREAD_RUNNER_BACKSTOP_MS).catch(() => {
       // This instance lost its storage: it has been shut down.
       if (!deps.supersede || deps.supersede.alarm !== generation) return;
@@ -462,6 +498,8 @@ async function runOne(
   } finally {
     clearInterval(heartbeat);
     await deps.afterJob?.(view.job).catch(() => undefined);
+    // What a stop of this job still owes moves on now that it has returned.
+    deps.stops?.heartbeat(local.id);
   }
   const after = deps.jobs.get(local.id);
   // The terminal was recorded locally first (see the runner's turn port).
@@ -644,12 +682,15 @@ function unavailable(error: unknown): unknown {
  * outcome is settled in the runner's own storage before the state store
  * records it. The Slack final is already posted when `markDelivered` runs; if
  * the state store cannot be reached then, the turn still never runs again,
- * and the runner records the outcome on a later alarm.
+ * and the runner records the outcome on a later alarm. The turn's Flue
+ * receipt and settlement are also told to `observer` (the runner's stops),
+ * and a stopped ending is kept for the alarm record's dropped-turn count.
  */
 export function runnerTurnJobsPort<P extends TurnExecutionPorts['turnJobs']>(
   remote: P,
   jobs: ThreadRunnerJobStore,
   now: () => number = Date.now,
+  observer?: RunnerTurnObserver,
 ): TurnExecutionPorts['turnJobs'] {
   const settle = async (id: string, outcome: 'done' | 'error') => {
     jobs.settleTerminal(id, outcome, now());
@@ -667,8 +708,17 @@ export function runnerTurnJobsPort<P extends TurnExecutionPorts['turnJobs']>(
     prepareFlueDispatch: (...args) => storeCall(() => remote.prepareFlueDispatch(...args)),
     reconcileFlueExistingInstance: (...args) =>
       storeCall(() => remote.reconcileFlueExistingInstance(...args)),
-    recordFlueReceipt: (...args) => storeCall(() => remote.recordFlueReceipt(...args)),
-    recordFlueSettlement: (...args) => storeCall(() => remote.recordFlueSettlement(...args)),
+    recordFlueReceipt: async (id, receipt) => {
+      const recorded = await storeCall(() => remote.recordFlueReceipt(id, receipt));
+      observer?.noteReceipt(id, receipt.submissionId);
+      return recorded;
+    },
+    recordFlueSettlement: async (id, settlement) => {
+      const recorded = await storeCall(() => remote.recordFlueSettlement(id, settlement));
+      // The stored settlement: a replay keeps the first one.
+      observer?.noteSettlement(id, (recorded ?? settlement).outcome);
+      return recorded;
+    },
     recordPullRequest: (...args) => storeCall(() => remote.recordPullRequest(...args)),
     freezeRuntimePlan: (...args) => storeCall(() => remote.freezeRuntimePlan(...args)),
     getBoundRuntimePlan: (...args) => storeCall(() => remote.getBoundRuntimePlan(...args)),
@@ -676,6 +726,17 @@ export function runnerTurnJobsPort<P extends TurnExecutionPorts['turnJobs']>(
     recordInteractionIntent: (...args) => storeCall(() => remote.recordInteractionIntent(...args)),
     recordSlackInteractionProgress: (...args) =>
       storeCall(() => remote.recordSlackInteractionProgress(...args)),
+    finishStop: async (headId, outcome) => {
+      const finish = await storeCall(() => remote.finishStop(headId, outcome));
+      if (finish) {
+        try {
+          jobs.recordStopEnding(headId, finish.outcome, finish.count, now());
+        } catch {
+          // Telemetry only: the ending itself is the state store's.
+        }
+      }
+      return finish;
+    },
     markDelivered: (id) => settle(id, 'done'),
     markError: (id) => settle(id, 'error'),
   };

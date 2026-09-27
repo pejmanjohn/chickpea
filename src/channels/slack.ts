@@ -29,7 +29,7 @@ import { isCloudflareTarget } from '../config/runtime-target.ts';
 import type { ProductTelemetryCapture } from '../telemetry/client.ts';
 import { createPlatformProductTelemetry } from '../telemetry/platform.ts';
 import { createRequestTelemetryLifecycle } from '../telemetry/runtime.ts';
-import type { AssignmentSurface } from '../config/resolver.ts';
+import { surfaceForChannelId, type AssignmentSurface } from '../config/resolver.ts';
 import {
   getOrCreateSnapshot,
   getOrReplaceSnapshotForRoute,
@@ -53,6 +53,7 @@ import {
   resolveSlackBehaviorSettings,
 } from '../slack/behavior-settings.ts';
 import {
+  mayUseThreadAgent,
   parseAgentUserGroupMentions,
   resolveAgentRoute,
   type AgentRoutingActor,
@@ -73,6 +74,8 @@ import {
   classifySlackInteraction,
   resolveImmediateSlackInteractionIntent,
   shouldResolveSlackManagementApproval,
+  slackSteeringCommand,
+  type SlackSteeringCommand,
 } from '../slack/interaction-intent.ts';
 import {
   InteractionUsageRecorder,
@@ -130,6 +133,27 @@ import {
   slackSessionGenerationFromTimestamp,
   type SlackStateStore,
 } from '../slack/claim-store.ts';
+import {
+  postSteeringReply,
+  readSteeringRunFacts,
+  slackCheckInReply,
+  STEERING_REPLY_TEXT,
+  steeringReplyTarget,
+  type SteeringReplyTarget,
+} from '../slack/steering-replies.ts';
+import { turnStopThreadKey } from '../slack/turn-jobs.ts';
+import type {
+  TurnMidRunReceipt,
+  TurnSteeringDecision,
+  TurnSteeringInterception,
+  TurnSteeringRequest,
+  TurnStopSource,
+} from '../slack/turn-job-types.ts';
+import {
+  addSlackReceiptReaction,
+  removeSlackReaction,
+  slackMidRunReceipt,
+} from '../slack/web-client-presenter.ts';
 import { createDirectSlackTransport } from '../slack/transport/direct.ts';
 import {
   isRetryableDependencyFailure,
@@ -139,7 +163,7 @@ import {
 import { createGatewaySlackTransport } from '../slack/transport/gateway.ts';
 import { GatewayDeploymentClient } from '../slack/gateway/client.ts';
 import { createGatewayDeploymentClient } from '../slack/gateway/runtime.ts';
-import { createGatewaySlackWebClient } from '../slack/gateway/web-client.ts';
+import { createGatewaySlackWebClient, setAgentSessionStatus } from '../slack/gateway/web-client.ts';
 import type { GatewayPrivateChannelSetupDelivery } from '../slack/gateway/protocol.ts';
 import { AgentPresenceReconciler } from '../slack/agent-presence/reconciler.ts';
 import { prepareGeneratedGatewayAgentAvatar } from '../slack/agent-presence/gateway-avatar.ts';
@@ -157,8 +181,10 @@ import { opaqueId } from '../work/admission.ts';
 import { EGRESS_SETTING_KEY, parseEgressPolicy } from '../config/egress.ts';
 import {
   isSlackMemberJoinedChannelEvent,
+  parseSlackAgentSessionStopped,
   type NormalizedSlackTurn,
   type SlackEventFixture,
+  type SlackStopButtonPress,
 } from '../slack/types.ts';
 import type { AuthPrincipal } from '../auth/types.ts';
 import { emitManagementMetric } from '../management/telemetry.ts';
@@ -540,6 +566,16 @@ function handleDirectSlackEvents(
       return;
     }
     if (eventType === 'app_context_changed') return;
+    // Slack's Stop button; the SDK's event union predates it.
+    if (verifiedEventType === 'agent_session_stopped') {
+      detach(
+        c,
+        processSlackStopButton(payload as unknown as SlackEventFixture, platformEnv).catch((error) => {
+          console.error('[chickpea] Slack Stop button intake failed:', sanitizeError(error));
+        }),
+      );
+      return;
+    }
     detach(
       c,
       processSlackEvent(payload as unknown as SlackEventFixture, platformEnv).catch((error) => {
@@ -1016,6 +1052,15 @@ export async function processGatewaySlackEnvelope(
       envelope.event.type,
       stores,
     );
+    return 'accepted';
+  }
+  if (envelope.event.type === 'agent_session_stopped') {
+    await processSlackStopButton(payload, platformEnv, {
+      transport,
+      client,
+      botUserId: installation.botUserId,
+      stores,
+    });
     return 'accepted';
   }
   if (envelope.event.type === 'user_change') {
@@ -1752,6 +1797,8 @@ async function processSlackEvent(
 
   let assignment: ResolvedAssignment;
   let routedBaseAssignment: ResolvedAssignment | undefined;
+  // A mention of a different Agent hands the thread over: no mid-run 👀 (R12).
+  let routedHandoff = false;
   let agentRoutingActor: ResolvedAgentRoutingActor | undefined;
   let agentSourceVisibility: 'public' | 'private' | undefined;
   let liveChannelName: string | undefined;
@@ -1813,6 +1860,22 @@ async function processSlackEvent(
       if (routed.kind === 'ignore') return;
       if (routed.kind !== 'routed' && ui) return;
       if (routed.kind !== 'routed') {
+        // Guests and Slack Connect users are refused before this check and
+        // keep today's behaviour.
+        if (
+          routed.kind === 'denied' && routed.reason === 'not_available' &&
+          agentRoutingActor.routing.fullMember &&
+          await refuseIneligibleSlackStop({
+            turn,
+            evtKey,
+            msgKey,
+            state,
+            config: store,
+            client: runtimeClient,
+            botUserId: resolvedBotUserId,
+            runtimeContract: installation.runtimeContract,
+          })
+        ) return;
         await postAgentRoutingFeedback({
           turn,
           surface,
@@ -1822,6 +1885,7 @@ async function processSlackEvent(
         });
         return;
       }
+      routedHandoff = routed.handoff;
       await claimChickpeaIntroductionForAgentInteraction({
         actor: agentRoutingActor,
         workspaceId: turn.workspaceId,
@@ -2063,8 +2127,63 @@ async function processSlackEvent(
         assignment,
         settings: stores.settings,
         actorMembershipId: admittedActorMembershipId,
+        address: commandAddress,
       })
     : undefined;
+
+  // A stop phrase or check-in typed alone is decided at admission, outside
+  // the thread's queue, so it reaches a running (even a stuck) run without a
+  // model (KTD1). A plain "stop" that answered a browser step above keeps
+  // that meaning (R21). A message addressed to a different Agent (or to
+  // @Chickpea in another Agent's thread) hands the thread over and is not
+  // steering: routing checked the sender against the new Agent only, and a
+  // stop must come from someone who may use the running one (R3). A click or
+  // form answer on an interactive surface is never steering.
+  const steeringCommand = !ui && !browserActionAnswered && !candidateTurn && !routedHandoff && slackClient
+    ? slackSteeringCommand(turn.text, commandAddress)
+    : undefined;
+  if (steeringCommand && slackClient && slackConversationKind(turn) === 'im' &&
+      turn.messageTs === turn.threadTs) {
+    await steerTopLevelDirectMessage({
+      command: steeringCommand,
+      turn,
+      evtKey,
+      msgKey,
+      state,
+      client: slackClient,
+      platformEnv,
+    });
+    return;
+  }
+  // Bound to the routed Agent: another Agent's run (the previous owner's,
+  // after a handoff) is steered only once the sender may use that Agent (R3).
+  let steering = steeringCommand
+    ? slackSteeringRequest(steeringCommand, turnStopThreadKey(turn, assignment), turn, assignment.agentId)
+    : undefined;
+  const mayUseRunningAgent = (agentId: string) => agentRoutingActor && runtimeTransport
+    ? mayUseRunningSlackAgent({
+        agentId,
+        turn,
+        surface,
+        actor: agentRoutingActor,
+        config: stores.config,
+        transport: runtimeTransport,
+      })
+    : Promise.resolve(false);
+  // An eligible message posted while its thread's run is in progress gets
+  // Chickpea's 👀 at once, before any model reads it (R12, KTD9). A stop or
+  // check-in is answered instead, a reaction or surface click is not a
+  // message, and a mention of a different Agent takes the thread over rather
+  // than waiting on its run.
+  // The receipt is recorded with the message's TurnJob before the reaction is
+  // added, so the 👀 always has a turn that removes it.
+  const midRun = !ui && !steering && !candidateTurn && !routedHandoff && slackClient
+    ? {
+        threadKey: turnStopThreadKey(turn, assignment),
+        receipt: slackMidRunReceipt({ channelId: turn.channelId, messageTs: turn.messageTs }),
+      }
+    : undefined;
+  let midRunReceipt: TurnMidRunReceipt | undefined;
 
   if (
     !ui && !browserActionAnswered &&
@@ -2264,96 +2383,125 @@ async function processSlackEvent(
       turn.text,
     );
     const semanticActivityEnabled = slackSemanticActivityStatusEnabled(platformEnv);
-    try {
-      const result = await state.admitCanonical({
-        evtKey,
-        msgKey,
-        threadKey,
-        admission,
-        turnJob: canonicalTurnJob,
-        presentation: {
-          schemaVersion: 3,
-          root: {
-            workspaceId: turn.workspaceId,
-            channelId: turn.channelId,
-            threadTs: turn.threadTs,
-            requesterUserId: turn.userId,
+    // A stop or check-in the thread's run took is settled outside the catch:
+    // a failure there has given the claims back already, for the gateway's
+    // retry. When its run ended meanwhile, the message is admitted again as
+    // an ordinary turn, its claims given back first since the admission
+    // takes them itself.
+    for (;;) {
+      let steered: TurnSteeringInterception | undefined;
+      try {
+        const result = await state.admitCanonical({
+          evtKey,
+          msgKey,
+          threadKey,
+          admission,
+          turnJob: canonicalTurnJob,
+          ...(steering ? { steering } : {}),
+          ...(midRun ? { midRun } : {}),
+          presentation: {
+            schemaVersion: 3,
+            root: {
+              workspaceId: turn.workspaceId,
+              channelId: turn.channelId,
+              threadTs: turn.threadTs,
+              requesterUserId: turn.userId,
+            },
+            owner,
+            sessionGeneration,
+            ...(semanticActivityEnabled
+              ? {
+                  currentActivity: {
+                    kind: admittedActivity.kind,
+                    action: admittedActivity.action,
+                    object: admittedActivity.object,
+                    family: admittedActivity.family,
+                    phase: admittedActivity.phase,
+                    generation: sessionGeneration,
+                    sequence: 1,
+                    operation: {
+                      operationId: opaqueId(
+                        'activity',
+                        `${admission.run.id}:${canonicalTurnJob.id}:1`,
+                      ),
+                      certainty: 'pending' as const,
+                    },
+                  },
+                }
+              : {}),
+            ...(turn.interactionIntent?.disposition === 'work'
+              ? { taskLabels: turn.interactionIntent.checklist }
+              : {}),
           },
-          owner,
-          sessionGeneration,
-          ...(semanticActivityEnabled
+          ...(ui
             ? {
-                currentActivity: {
-                  kind: admittedActivity.kind,
-                  action: admittedActivity.action,
-                  object: admittedActivity.object,
-                  family: admittedActivity.family,
-                  phase: admittedActivity.phase,
-                  generation: sessionGeneration,
-                  sequence: 1,
-                  operation: {
-                    operationId: opaqueId(
-                      'activity',
-                      `${admission.run.id}:${canonicalTurnJob.id}:1`,
-                    ),
-                    certainty: 'pending' as const,
+                uiSurfaceClaim: {
+                  surfaceId: ui.surface.id,
+                  namespace: ui.surface.namespace,
+                  resolution: {
+                    byUserId: turn.userId,
+                    at: Date.now(),
+                    choice: ui.choice,
+                    ...(ui.values?.length ? { values: ui.values } : {}),
                   },
                 },
               }
             : {}),
-          ...(turn.interactionIntent?.disposition === 'work'
-            ? { taskLabels: turn.interactionIntent.checklist }
-            : {}),
-        },
-        ...(ui
-          ? {
-              uiSurfaceClaim: {
-                surfaceId: ui.surface.id,
-                namespace: ui.surface.namespace,
-                resolution: {
-                  byUserId: turn.userId,
-                  at: Date.now(),
-                  choice: ui.choice,
-                  ...(ui.values?.length ? { values: ui.values } : {}),
-                },
-              },
-            }
-          : {}),
-      });
-      if (!result.claimed) {
-        if (ui) ui.outcome = 'answered';
-        return;
-      }
-      if (ui) ui.outcome = 'admitted';
-      claimsHeldByCanonicalAdmission = true;
-      canonicalRunId = result.admission.run.id;
-    } catch (err) {
-      if (admission.run.executionAuthority === 'ledger') {
-        // A selected canary must never fall back across authority lanes. The
-        // transaction rolled its claims back, so Slack may safely redeliver.
-        if (execution?.durableIngress) {
-          console.error('[chickpea] ledger Work admission failed: durable_ingress_failure');
+        });
+        if (!result.claimed) {
+          if (ui) ui.outcome = 'answered';
+          return;
+        }
+        if ('steered' in result) {
+          steered = result.steered;
         } else {
-          console.error('[chickpea] ledger Work admission failed:', sanitizeError(err));
+          if (ui) ui.outcome = 'admitted';
+          claimsHeldByCanonicalAdmission = true;
+          canonicalRunId = result.admission.run.id;
+          if (result.midRunReceipt) midRunReceipt = midRun?.receipt;
         }
-        if (promotedDecisionKey) await state.release(promotedDecisionKey);
-        if (execution?.enqueueTurn || execution?.durableIngress) {
-          throw new SlackDurableEnqueueError('Canonical Work admission failed.');
+      } catch (err) {
+        if (admission.run.executionAuthority === 'ledger') {
+          // A selected canary must never fall back across authority lanes. The
+          // transaction rolled its claims back, so Slack may safely redeliver.
+          if (execution?.durableIngress) {
+            console.error('[chickpea] ledger Work admission failed: durable_ingress_failure');
+          } else {
+            console.error('[chickpea] ledger Work admission failed:', sanitizeError(err));
+          }
+          if (promotedDecisionKey) await state.release(promotedDecisionKey);
+          if (execution?.enqueueTurn || execution?.durableIngress) {
+            throw new SlackDurableEnqueueError('Canonical Work admission failed.');
+          }
+          return;
         }
-        return;
+        if (ui) {
+          console.error('[chickpea] Slack click admission failed:', sanitizeError(err));
+          return;
+        }
+        // U3 is deliberately observational. Preserve the existing product path
+        // while surfacing a body-free operator gap for follow-up.
+        console.error('[chickpea] shadow Work admission failed:', sanitizeError(err));
+        if (!(await state.claim(evtKey))) return;
+        if (!(await state.claim(msgKey))) {
+          await state.release(evtKey);
+          return;
+        }
       }
-      if (ui) {
-        console.error('[chickpea] Slack click admission failed:', sanitizeError(err));
-        return;
-      }
-      // U3 is deliberately observational. Preserve the existing product path
-      // while surfacing a body-free operator gap for follow-up.
-      console.error('[chickpea] shadow Work admission failed:', sanitizeError(err));
-      if (!(await state.claim(evtKey))) return;
-      if (!(await state.claim(msgKey))) {
-        await state.release(evtKey);
-        return;
-      }
+      if (!steered) break;
+      const settled = await settleSlackSteering({
+        decision: steered,
+        request: steering!,
+        keys: [evtKey, msgKey],
+        mayUse: mayUseRunningAgent,
+        turn,
+        state,
+        client: slackClient!,
+        platformEnv,
+      });
+      if (settled !== 'ended') return;
+      await releaseSteeringMessage(state, evtKey, msgKey);
+      steering = undefined;
     }
   } else {
     if (!(await state.claim(evtKey))) return;
@@ -2361,6 +2509,38 @@ async function processSlackEvent(
       await state.release(evtKey);
       return;
     }
+  }
+
+  if (steering && !claimsHeldByCanonicalAdmission) {
+    // The legacy lane (no canonical admission) holds the claims already. Its
+    // enqueue below is a separate write, so a stop racing the thread's first
+    // message may queue behind it there; the canonical lane decides both in
+    // one transaction. A run that ended while the sender was checked against
+    // it leaves the message to that enqueue, as with nothing running.
+    const decision = await state.steerTurn?.(steering).catch((err: unknown) => {
+      console.warn('[chickpea] steering decision failed:', sanitizeError(err));
+      return undefined;
+    });
+    if (decision && decision.outcome !== 'enqueue') {
+      const settled = await settleSlackSteering({
+        decision,
+        request: steering,
+        keys: [evtKey, msgKey],
+        mayUse: mayUseRunningAgent,
+        turn,
+        state,
+        client: slackClient!,
+        platformEnv,
+      });
+      if (settled !== 'ended') return;
+    }
+  }
+  if (midRun && !claimsHeldByCanonicalAdmission) {
+    // The legacy lane's enqueue below is a separate write: a run that ends in
+    // between leaves this message a 👀 its own turn reuses and removes.
+    const decision = await state.steerTurn?.({ kind: 'message', threadKey: midRun.threadKey })
+      .catch(() => undefined);
+    if (decision?.outcome === 'enqueue' && decision.undelivered) midRunReceipt = midRun.receipt;
   }
 
   const durableCanonicalTurnJob = canonicalRunId ? canonicalTurnJob : undefined;
@@ -2432,6 +2612,7 @@ async function processSlackEvent(
       msgKey,
       turn,
       assignment,
+      ...(midRunReceipt ? { midRunReceipt } : {}),
     };
     const enqueued = execution?.enqueueTurn
       ? await execution.enqueueTurn(job)
@@ -2445,6 +2626,9 @@ async function processSlackEvent(
       if (marksActiveWork) await state.setActiveWork(threadKey, msgKey, false);
       console.error('[chickpea] enqueue turn failed:', enqueued.error.message);
       throw new SlackDurableEnqueueError(enqueued.error.message);
+    }
+    if (midRunReceipt && slackClient) {
+      await addMidRunReaction({ client: slackClient, state, jobId: job.id, receipt: midRunReceipt });
     }
     if (!ui) {
       await recordAcceptedSlackHumanMessage(stores.config, turn, assignment).catch(() => {
@@ -2461,6 +2645,7 @@ async function processSlackEvent(
         msgKey,
         turn,
         assignment,
+        ...(midRunReceipt ? { midRunReceipt } : {}),
       });
       if (enqueued === undefined) {
         throw new Error('Node turn store is unavailable.');
@@ -2483,6 +2668,9 @@ async function processSlackEvent(
       return;
     }
   }
+  if (midRunReceipt && slackClient) {
+    await addMidRunReaction({ client: slackClient, state, jobId: msgKey, receipt: midRunReceipt });
+  }
   if (!ui) {
     await recordAcceptedSlackHumanMessage(stores.config, turn, assignment).catch(() => {
       console.warn('[chickpea] accepted Slack message was not added to public context');
@@ -2502,6 +2690,658 @@ async function processSlackEvent(
   await wake;
 }
 
+
+type SlackSteeringAdmission = Extract<TurnSteeringRequest, { kind: 'stop' | 'check_in' }>;
+
+/**
+ * Add the mid-run 👀 whose receipt admission recorded with the message's
+ * TurnJob (R12, KTD9). The receipt already says Chickpea's own, so the queued
+ * turn reuses it and its finish, or a stop that drops it, removes it. When
+ * Slack does not create the reaction here (Chickpea's is already there, or
+ * Slack refuses it), the receipt is corrected so nothing ever removes a 👀
+ * Chickpea did not add. Best effort: the admitted turn never depends on it.
+ */
+async function addMidRunReaction(input: MidRunReaction): Promise<void> {
+  let added: { name: string; created: boolean } | undefined;
+  try {
+    added = await addSlackReceiptReaction(input.client, 'seen_mid_run', input.receipt);
+  } catch {
+    console.warn('[chickpea] mid-run reaction failed');
+  }
+  if (added?.created) {
+    await removeLateMidRunReaction(input, added.name);
+    return;
+  }
+  try {
+    await input.state.recordSlackInteractionProgress?.(input.jobId, {
+      acknowledgment: {
+        ...input.receipt, created: false, cleanup: 'done', reaction: 'seen_mid_run',
+      },
+    });
+  } catch {
+    console.warn('[chickpea] mid-run reaction receipt was not corrected');
+  }
+}
+
+interface MidRunReaction {
+  client: Pick<ReturnType<typeof createSlackWebClient>, 'reactions'>;
+  state: SlackStateStore;
+  jobId: string;
+  receipt: TurnMidRunReceipt;
+}
+
+/**
+ * The receipt is written before Slack adds the 👀, so what removes it (a stop
+ * that drops the message, or the turn's own finish) can run first: Slack
+ * answers `no_reaction`, that counts as removed, and the late 👀 would stay.
+ * Once Slack says the 👀 is Chickpea's, read the row again; when it has left
+ * the queue (dropped, delivered or gone) or its receipt is already finished,
+ * take that 👀 off the recorded message at once. A row still queued keeps it
+ * for its turn. Only where the state store serves its rows here (Node, and
+ * the Cloudflare state store's own gateway intake).
+ */
+async function removeLateMidRunReaction(input: MidRunReaction, name: string): Promise<void> {
+  if (!input.state.turnJobView) return;
+  try {
+    const view = await input.state.turnJobView(input.jobId);
+    const settled = view.status === 'done' || view.status === 'error' || view.status === 'missing';
+    if (!settled && view.job?.progress.slackInteraction?.acknowledgment?.cleanup !== 'done') return;
+    await removeSlackReaction(input.client, name, input.receipt);
+    await input.state.recordSlackInteractionProgress?.(input.jobId, {
+      acknowledgment: {
+        ...input.receipt, name, created: true, cleanup: 'done', reaction: 'seen_mid_run',
+      },
+    });
+  } catch {
+    console.warn('[chickpea] a late mid-run reaction was not removed');
+  }
+}
+
+/**
+ * A Stop button press that stopped nothing, as one content-free
+ * `steering.stop_button` token, so a button that does nothing shows in the
+ * field: `invalid` (an unreadable event), `no_route` (not an Agent thread),
+ * `no_running_job` (nothing undelivered to stop) or `not_allowed` (someone
+ * who may not use the Agent there, and is not told: a guest, say).
+ */
+type SlackStopButtonToken = 'invalid' | 'no_route' | 'no_running_job' | 'not_allowed';
+
+function logSlackStopButton(outcome: SlackStopButtonToken): void {
+  console.info('[chickpea] steering.stop_button', { outcome });
+}
+
+/** A stop or check-in decided at admission, as one content-free token. */
+function logSteeringAdmission(
+  outcome: 'stopped' | 'check_in' | 'stop_refused' | 'check_in_refused' | 'ended' | 'unsettled',
+  source?: TurnStopSource,
+  detail?: { created: boolean },
+): void {
+  console.info('[chickpea] steering.admission', {
+    outcome,
+    ...(source === 'button' ? { source } : {}),
+    ...detail,
+  });
+}
+
+/**
+ * Slack's Stop button (R1, R3, KTD5). Slack sends `agent_session_stopped`
+ * when someone presses Stop on the working indicator of a thread's Agent
+ * Session; turn normalization would drop it, so both transports hand it here
+ * first. The thread must be an Agent thread, and the person who pressed goes
+ * through the same actor and Agent-access checks as a reply of theirs in that
+ * thread would. The stop is then recorded exactly as a typed one (KTD1), its
+ * cutoff the press's own Slack timestamp (KTD2), so a message posted before
+ * the press is held and one posted after it is a new turn. Recording is
+ * idempotent and the press is claimed, so a Slack retry, a second press and a
+ * typed stop record one stop. Slack leaves the session in `processing`; the
+ * stopped ending settles it.
+ */
+async function processSlackStopButton(
+  payload: SlackEventFixture,
+  platformEnv: PlatformEnv | undefined,
+  execution?: Pick<SlackEventExecution, 'transport' | 'client' | 'botUserId' | 'stores'>,
+): Promise<void> {
+  const press = parseSlackAgentSessionStopped(payload.event);
+  if (!press) {
+    logSlackStopButton('invalid');
+    return;
+  }
+  const stores = execution?.stores ?? resolveStores(platformEnv);
+  const installation = await stores.config.getWorkspaceInstallation(payload.team_id);
+  if (!installation || installation.health === 'revoked') return;
+  if (execution && installation.transportMode !== 'gateway') return;
+  if (!execution && installation.transportMode !== 'direct') return;
+  if (!(await stores.config.getAgentThreadRoute(payload.team_id, press.channelId, press.threadTs))) {
+    logSlackStopButton('no_route');
+    return;
+  }
+  const credentials = execution
+    ? undefined
+    : await resolveSlackInstallationCredentials(WORKSPACE_SLACK_INSTALLATION_ID, platformEnv);
+  const transport = execution?.transport ?? (
+    credentials?.botToken ? createDirectSlackTransport(credentials.botToken) : undefined
+  );
+  const client = execution?.client ?? (
+    credentials?.botToken ? createSlackWebClient(credentials.botToken) : undefined
+  );
+  const botUserId = execution?.botUserId ?? (credentials
+    ? await resolveInstallationBotUserId(installation.botUserId, credentials, platformEnv)
+    : undefined);
+  if (!transport || !client || !botUserId) return;
+
+  // The press, as a reply of that person's in the Agent Session's thread.
+  const surface = surfaceForChannelId(press.channelId);
+  const turn: NormalizedSlackTurn = {
+    workspaceId: payload.team_id,
+    channelId: press.channelId,
+    eventId: payload.event_id,
+    text: '',
+    userId: press.userId,
+    messageTs: press.eventTs,
+    threadTs: press.threadTs,
+    ...(surface === 'direct' ? { sessionThreadTs: 'dm', channelType: 'im' } : {}),
+    source: surface === 'direct' ? 'dm_message' : 'implicit_thread_reply',
+    contextMode: 'thread',
+  };
+  let actor: ResolvedAgentRoutingActor;
+  let routed: AgentRoutingResult;
+  try {
+    // No membership proof comes with a press: the channel is asked.
+    actor = await resolveAgentRoutingActor({
+      workspaceId: turn.workspaceId,
+      userId: turn.userId,
+      ...(surface === 'channel' ? { channelId: turn.channelId } : {}),
+      botUserId,
+      transport,
+      stores,
+    });
+    routed = await resolveAgentRoute({
+      turn,
+      surface,
+      actor: actor.routing,
+      config: stores.config,
+      transport,
+      authorizeUserAgent: async (agent) => resolvePrivateAgentAccess({
+        agent,
+        workspaceId: turn.workspaceId,
+        grants: await stores.config.listAgentChannelGrants(turn.workspaceId),
+        actor: privateAgentActor(actor, turn.userId),
+        transport,
+      }),
+    });
+  } catch (err) {
+    // Nothing is claimed yet: a rate-limited or unreachable lookup is retried
+    // by the durable gateway inbox, as for a message.
+    if (isRetryableDependencyFailure(err)) throw err;
+    console.warn('[chickpea] Stop button admission failed:', sanitizeError(err));
+    return;
+  }
+  const state = stores.slackState;
+  const threadKey = turnStopThreadKey(
+    turn,
+    installation.runtimeContract ? { runtimeContract: installation.runtimeContract } : {},
+  );
+  const keys = [`evt:${payload.event_id}`, `stop:${press.channelId}:${press.eventTs}`] as const;
+  if (routed.kind !== 'routed') {
+    // As for a typed stop, only a full member is told (AE4); a guest keeps
+    // Chickpea's silence.
+    const refusal = routed.kind === 'denied' && routed.reason === 'not_available' &&
+        actor.routing.fullMember
+      ? await refuseSlackStop({
+          threadKey,
+          keys,
+          target: steeringReplyTarget(turn),
+          state,
+          client,
+          source: 'button',
+        })
+      : 'not_allowed';
+    if (refusal === 'idle') logSlackStopButton('no_running_job');
+    else if (refusal === 'not_allowed') logSlackStopButton('not_allowed');
+    return;
+  }
+  if (!(await claimSteeringMessage(state, ...keys))) return;
+  // Bound to the thread's Agent the press was checked against: after a
+  // handoff the run may be the previous owner's, which the presser must be
+  // allowed to use as well (R3).
+  const request: SlackSteeringAdmission = {
+    kind: 'stop',
+    threadKey,
+    source: 'button',
+    stopperUserId: press.userId,
+    cutoffTs: press.eventTs,
+    agentId: routed.assignment.agentId,
+  };
+  let decision: TurnSteeringDecision | undefined;
+  try {
+    decision = await state.steerTurn?.(request);
+  } catch (err) {
+    // Free the claims so a redelivery decides it again; a recorded stop is
+    // idempotent, so deciding twice records one stop.
+    await releaseSteeringMessage(state, ...keys);
+    throw err;
+  }
+  if (!decision) return;
+  if (decision.outcome !== 'enqueue') {
+    const settled = await settleSlackSteering({
+      decision,
+      request,
+      keys,
+      mayUse: (agentId) => mayUseRunningSlackAgent({
+        agentId,
+        turn,
+        surface,
+        actor,
+        config: stores.config,
+        transport,
+      }),
+      turn,
+      state,
+      client,
+      platformEnv,
+      source: 'button',
+    });
+    if (settled !== 'ended') return;
+  }
+  // Nothing was running, or the run ended while the presser was checked
+  // against it: the indicator is idle.
+  logSlackStopButton('no_running_job');
+  await settleIdleAgentSession({
+    client,
+    press,
+    turn,
+    assignment: routed.assignment,
+    installationHealth: installation.health,
+    stores,
+    platformEnv,
+  });
+}
+
+/**
+ * Slack leaves an Agent Session `processing` when its Stop button is pressed;
+ * the app moves it out once its work has stopped. With nothing running, the
+ * indicator Stop was pressed on is an orphan (a settle that never reached
+ * Slack, say), so it goes `active` now, as a run's settle would set it, with
+ * the thread's Agent persona, instead of spinning until Slack's one-hour
+ * timeout. Best effort; a failure is logged without content.
+ */
+async function settleIdleAgentSession(input: {
+  client: ReturnType<typeof createSlackWebClient>;
+  press: SlackStopButtonPress;
+  turn: NormalizedSlackTurn;
+  assignment: ResolvedAssignment;
+  installationHealth: Parameters<typeof selectSlackPresentationOwner>[0]['installationHealth'];
+  stores: AppStores;
+  platformEnv: PlatformEnv | undefined;
+}): Promise<void> {
+  try {
+    const { agent } = input.assignment;
+    const avatarUrl = await resolvedAgentAvatarUrl(agent, input.stores, input.platformEnv);
+    const owner = selectSlackPresentationOwner({
+      installationHealth: input.installationHealth,
+      agentId: agent.id,
+      agentName: agent.name,
+      conversationKind: slackConversationKind(input.turn),
+      ...(avatarUrl ? { avatarUrl } : {}),
+      ...(agent.slackPresence ? { slackPresence: agent.slackPresence } : {}),
+    });
+    await setAgentSessionStatus(input.client, {
+      channel_id: input.press.channelId,
+      thread_ts: input.press.threadTs,
+      status: 'active',
+      ...(owner.kind === 'selected_agent'
+        ? { username: owner.persona.name, icon_url: owner.persona.avatarUrl }
+        : {}),
+    });
+  } catch {
+    console.warn('[chickpea] Stop button could not settle an idle Agent Session');
+  }
+}
+
+/**
+ * A typed stop or check-in for one thread (KTD1). A stop's cutoff is the
+ * typed message's own timestamp, and its stopper is the sender. `agentId`,
+ * when given, is the Agent the sender was checked against (R3).
+ */
+function slackSteeringRequest(
+  command: SlackSteeringCommand,
+  threadKey: string,
+  turn: NormalizedSlackTurn,
+  agentId?: string,
+): SlackSteeringAdmission {
+  const bound = agentId ? { agentId } : {};
+  return command === 'stop'
+    ? {
+        kind: 'stop',
+        threadKey,
+        source: 'typed',
+        stopperUserId: turn.userId,
+        cutoffTs: turn.messageTs,
+        ...bound,
+      }
+    : { kind: 'check_in', threadKey, ...bound };
+}
+
+/** How settleSlackSteering left a stop or check-in; `ended` is as with nothing running. */
+type SlackSteeringSettlement = 'settled' | 'refused' | 'ended';
+
+/**
+ * Settle a stop or check-in the thread's run took (KTD1). When that run is
+ * another Agent's than the one the sender was routed to (the previous
+ * owner's, after a handoff), only a sender who may use that Agent here
+ * steers it (R3): the request is decided again bound to that Agent, so a
+ * handoff mid-run does not hide the running turn from them. Anyone else's
+ * stop is refused privately, and their check-in gets no answer, since what
+ * it would tell is that Agent's run's (R11). A run that ended meanwhile
+ * leaves nothing to steer (`ended`). One still moving on to other Agents
+ * after two decisions is refused the same way, fail closed (`unsettled`).
+ * The message's claims are held already; a failure gives them back and
+ * rethrows, so a redelivery decides it again.
+ */
+async function settleSlackSteering(input: {
+  decision: TurnSteeringInterception;
+  request: SlackSteeringAdmission;
+  keys: readonly [string, string];
+  mayUse(agentId: string): Promise<boolean>;
+  turn: NormalizedSlackTurn;
+  state: SlackStateStore;
+  client: ReturnType<typeof createSlackWebClient>;
+  platformEnv: PlatformEnv | undefined;
+  source?: TurnStopSource;
+}): Promise<SlackSteeringSettlement> {
+  let decision: TurnSteeringDecision = input.decision;
+  try {
+    // Twice at most: the thread's run may move on to yet another Agent's.
+    for (let round = 0; decision.outcome === 'other_agent'; round += 1) {
+      if (round === 2 || !input.state.steerTurn) {
+        logSteeringAdmission('unsettled', input.source);
+        break;
+      }
+      if (!(await input.mayUse(decision.agentId))) break;
+      decision = await input.state.steerTurn({ ...input.request, agentId: decision.agentId });
+    }
+  } catch (err) {
+    await releaseSteeringMessage(input.state, ...input.keys);
+    throw err;
+  }
+  if (decision.outcome === 'other_agent') {
+    if (input.request.kind === 'stop') {
+      await tellIneligibleStopper(input.client, steeringReplyTarget(input.turn), input.source ?? 'typed');
+    } else {
+      logSteeringAdmission('check_in_refused');
+    }
+    return 'refused';
+  }
+  if (decision.outcome === 'enqueue') {
+    logSteeringAdmission('ended', input.source);
+    return 'ended';
+  }
+  await answerSlackSteering({
+    decision,
+    turn: input.turn,
+    state: input.state,
+    client: input.client,
+    platformEnv: input.platformEnv,
+    ...(input.source ? { source: input.source } : {}),
+  });
+  return 'settled';
+}
+
+/**
+ * R3 across a handoff: whether the sender may use `agentId`, the Agent whose
+ * run a stop or check-in reached, by the rule routing applies to a reply of
+ * theirs to it in this thread. An Agent that no longer exists is a no; a
+ * retryable lookup failure throws.
+ */
+async function mayUseRunningSlackAgent(input: {
+  agentId: string;
+  turn: NormalizedSlackTurn;
+  surface: AssignmentSurface;
+  actor: ResolvedAgentRoutingActor;
+  config: AppStores['config'];
+  transport: SlackTransport;
+}): Promise<boolean> {
+  const { turn, config, actor } = input;
+  const agent = await config.getAgent(input.agentId).catch((err: unknown) => {
+    if (isRetryableDependencyFailure(err)) throw err;
+    return undefined;
+  });
+  return mayUseThreadAgent({
+    workspaceId: turn.workspaceId,
+    channelId: turn.channelId,
+    agent,
+    surface: input.surface,
+    actor: actor.routing,
+    config,
+    authorizeUserAgent: async (candidate) => resolvePrivateAgentAccess({
+      agent: candidate,
+      workspaceId: turn.workspaceId,
+      grants: await config.listAgentChannelGrants(turn.workspaceId),
+      actor: privateAgentActor(actor, turn.userId),
+      transport: input.transport,
+    }),
+  });
+}
+
+/**
+ * Act on a stop or check-in the thread's run took. A stop is recorded and
+ * already offered to its runner; the stopped ending posts its note. A
+ * check-in reads the run's facts without touching the run and answers only
+ * the asker (R9-R11). Nothing here is retried: the claims already make a
+ * Slack retry a duplicate.
+ */
+async function answerSlackSteering(input: {
+  decision: Extract<TurnSteeringDecision, { outcome: 'stopped' | 'check_in' }>;
+  turn: NormalizedSlackTurn;
+  state: SlackStateStore;
+  client: ReturnType<typeof createSlackWebClient>;
+  platformEnv: PlatformEnv | undefined;
+  target?: SteeringReplyTarget;
+  /** Slack's Stop button rather than a typed message. */
+  source?: TurnStopSource;
+}): Promise<void> {
+  const { decision } = input;
+  logSteeringAdmission(
+    decision.outcome,
+    input.source,
+    decision.outcome === 'stopped' ? { created: decision.stop.created } : undefined,
+  );
+  if (decision.outcome === 'stopped') {
+    // Node has no state store alarm: its relay delivers the new stop in this
+    // process, beside the run it stops (KTD16). Never awaited, and never
+    // rejects; on Cloudflare the state store delivered it already.
+    if (decision.stop.created) void wakeNodeTurnRelay(input.platformEnv);
+    return;
+  }
+  const facts = await readSteeringRunFacts(decision.run, {
+    state: input.state,
+    env: input.platformEnv as Record<string, unknown> | undefined,
+  });
+  await replyToSteering(
+    input.client,
+    input.target ?? steeringReplyTarget(input.turn),
+    slackCheckInReply({ facts, dispatched: decision.run.dispatched }),
+  );
+}
+
+/**
+ * Claim a steering message's event and message keys, as ordinary admission
+ * does (a Stop press claims its event and the press itself).
+ */
+async function claimSteeringMessage(
+  state: SlackStateStore,
+  evtKey: string,
+  msgKey: string,
+): Promise<boolean> {
+  if (!(await state.claim(evtKey))) return false;
+  if (await state.claim(msgKey)) return true;
+  await state.release(evtKey);
+  return false;
+}
+
+/** Give a steering message's claims back, so a redelivery decides it again. */
+async function releaseSteeringMessage(
+  state: SlackStateStore,
+  evtKey: string,
+  msgKey: string,
+): Promise<void> {
+  await state.release(evtKey);
+  await state.release(msgKey);
+}
+
+async function replyToSteering(
+  client: ReturnType<typeof createSlackWebClient>,
+  target: SteeringReplyTarget,
+  text: string,
+): Promise<void> {
+  try {
+    await postSteeringReply(client, target, text);
+  } catch (err) {
+    console.warn('[chickpea] steering reply failed:', sanitizeError(err));
+  }
+}
+
+/**
+ * A stop or check-in typed at the top of a DM means the sender's single
+ * running DM thread (KTD1); with none or several, the sender gets a hint in
+ * a reply to their message. It is never queued as a turn.
+ */
+async function steerTopLevelDirectMessage(input: {
+  command: SlackSteeringCommand;
+  turn: NormalizedSlackTurn;
+  evtKey: string;
+  msgKey: string;
+  state: SlackStateStore;
+  client: ReturnType<typeof createSlackWebClient>;
+  platformEnv: PlatformEnv | undefined;
+}): Promise<void> {
+  const { turn, state } = input;
+  if (!(await claimSteeringMessage(state, input.evtKey, input.msgKey))) return;
+  const target = steeringReplyTarget(turn);
+  let decision: Extract<TurnSteeringDecision, { outcome: 'stopped' | 'check_in' }> | undefined;
+  let running: string[];
+  try {
+    running = await state.runningDirectThreads?.({
+      workspaceId: turn.workspaceId,
+      channelId: turn.channelId,
+      requesterUserId: turn.userId,
+    }) ?? [];
+    if (running.length === 1) {
+      const steered = await state.steerTurn?.(
+        slackSteeringRequest(input.command, running[0]!, turn),
+      );
+      // Unbound (no Agent): the sender's own run in their DM.
+      if (steered?.outcome === 'stopped' || steered?.outcome === 'check_in') decision = steered;
+    }
+  } catch (err) {
+    // Free the claims so a redelivery decides it again; a recorded stop is
+    // idempotent, so deciding twice records one stop.
+    await releaseSteeringMessage(state, input.evtKey, input.msgKey);
+    throw err;
+  }
+  if (decision) {
+    await answerSlackSteering({
+      decision,
+      turn,
+      state,
+      client: input.client,
+      platformEnv: input.platformEnv,
+      target,
+    });
+    return;
+  }
+  // Several running threads, or none (the one just finished).
+  await replyToSteering(
+    input.client,
+    target,
+    running.length > 1
+      ? STEERING_REPLY_TEXT.directSeveralRunning
+      : STEERING_REPLY_TEXT.directNoneRunning,
+  );
+}
+
+/**
+ * R3: a stop typed by someone who may not use the thread's Agent leaves its
+ * run alone, and only they are told. True when the stop was answered here;
+ * false leaves the message to today's routing feedback (no run in progress,
+ * not a stop, or the store could not say).
+ */
+async function refuseIneligibleSlackStop(input: {
+  turn: NormalizedSlackTurn;
+  evtKey: string;
+  msgKey: string;
+  state: SlackStateStore;
+  config: AppStores['config'];
+  client: ReturnType<typeof createSlackWebClient>;
+  botUserId: string;
+  runtimeContract: ResolvedAssignment['runtimeContract'];
+}): Promise<boolean> {
+  const { turn, state } = input;
+  try {
+    const route = await input.config.getAgentThreadRoute(
+      turn.workspaceId,
+      turn.channelId,
+      turn.threadTs,
+    );
+    const agent = route
+      ? await input.config.getAgent(route.agentId).catch(() => undefined)
+      : undefined;
+    const command = slackSteeringCommand(turn.text, {
+      botUserId: input.botUserId,
+      agentUserGroupId: agent?.slackPresence?.userGroupId,
+    });
+    if (command !== 'stop') return false;
+  } catch {
+    return false;
+  }
+  const refusal = await refuseSlackStop({
+    threadKey: turnStopThreadKey(
+      turn,
+      input.runtimeContract ? { runtimeContract: input.runtimeContract } : {},
+    ),
+    keys: [input.evtKey, input.msgKey],
+    target: steeringReplyTarget(turn),
+    state,
+    client: input.client,
+    source: 'typed',
+  });
+  return refusal !== 'idle';
+}
+
+/**
+ * R3 for a typed stop and the Stop button alike: a stop from someone who may
+ * not use the thread's Agent leaves its run alone, and only they are told,
+ * once per stop (its claim keys). `idle` when nothing runs in the thread, or
+ * the store could not say: there is no run to refuse.
+ */
+async function refuseSlackStop(input: {
+  threadKey: string;
+  keys: readonly [string, string];
+  target: SteeringReplyTarget;
+  state: SlackStateStore;
+  client: ReturnType<typeof createSlackWebClient>;
+  source: TurnStopSource;
+}): Promise<'refused' | 'duplicate' | 'idle'> {
+  try {
+    const decision = await input.state.steerTurn?.({ kind: 'message', threadKey: input.threadKey });
+    if (decision?.outcome !== 'enqueue' || !decision.undelivered) return 'idle';
+  } catch {
+    return 'idle';
+  }
+  if (!(await claimSteeringMessage(input.state, ...input.keys))) return 'duplicate';
+  await tellIneligibleStopper(input.client, input.target, input.source);
+  return 'refused';
+}
+
+/** The private R3 note to someone whose stop was refused (its claims held). */
+async function tellIneligibleStopper(
+  client: ReturnType<typeof createSlackWebClient>,
+  target: SteeringReplyTarget,
+  source: TurnStopSource,
+): Promise<void> {
+  logSteeringAdmission('stop_refused', source);
+  await replyToSteering(client, target, STEERING_REPLY_TEXT.ineligibleStop);
+}
 
 async function handleMemberJoinedChannel(
   payload: SlackEventFixture,

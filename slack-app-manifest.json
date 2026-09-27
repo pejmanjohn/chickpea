@@ -73,6 +73,7 @@
     "event_subscriptions": {
       "request_url": "https://chickpea.example/channels/slack/events",
       "bot_events": [
+        "agent_session_stopped",
         "app_context_changed",
         "app_home_opened",
         "app_mention",

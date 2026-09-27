@@ -1,11 +1,18 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
+import { activityStatus } from '../src/activity/status.ts';
 import type { SlackStatusUpdate } from '../src/slack/replies.ts';
 import { THREAD_TTL_MS } from '../src/slack/state-limits.ts';
 import {
+  SLACK_NATIVE_PROCESSING_KEEPALIVE_MS,
+  SLACK_RUN_QUIET_AFTER_MS,
+  SlackStatusRegistry,
   registerSlackStatusTurn,
   setObservedSlackStatus,
+  slackRunFactsView,
+  slackRunQuietBucket,
+  type SlackRunFacts,
 } from '../src/slack/status-registry.ts';
 
 function recordingPresenter() {
@@ -665,4 +672,513 @@ test('a turn registered before its agent instance is known routes observations o
     false,
     'closing releases the rebound id',
   );
+});
+
+// --- Run facts and the quiet hand-over (KTD7, KTD8) -------------------------
+
+const START = 1_790_000_000_000;
+const MINUTE = 60_000;
+const RUNNING_TESTS = activityStatus('running', 'Running', 'the test suite', 'workspace');
+const COMMITTING = activityStatus('finishing', 'Committing', 'the changes', 'workspace');
+const WORKING = activityStatus('running', 'Working on', 'the code changes', 'workspace');
+const THINKING = activityStatus('preparing', 'Thinking', 'the request', 'unknown', 'thinking');
+
+/** A presenter that can hand the thread back to Slack's native indicator. */
+function nativePresenter(options: { nativeShown?: () => boolean } = {}) {
+  const calls: string[] = [];
+  return {
+    calls,
+    setStatus(update: SlackStatusUpdate): Promise<boolean> {
+      calls.push(`set:${update.text}`);
+      return Promise.resolve(true);
+    },
+    refreshStatus(update: SlackStatusUpdate): Promise<boolean> {
+      calls.push(`refresh:${update.text}`);
+      return Promise.resolve(true);
+    },
+    showNativeIndicator(): Promise<boolean> {
+      calls.push('native');
+      return Promise.resolve(options.nativeShown?.() ?? true);
+    },
+  };
+}
+
+async function settle(): Promise<void> {
+  for (let index = 0; index < 5; index += 1) await new Promise((resolve) => setImmediate(resolve));
+}
+
+async function advance(t: { mock: { timers: { tick(ms: number): void } } }, ms: number): Promise<void> {
+  for (let elapsed = 0; elapsed < ms; elapsed += 10_000) {
+    t.mock.timers.tick(Math.min(10_000, ms - elapsed));
+    await settle();
+  }
+}
+
+test('the check-in bucket picks 5+, 10+, 15+, 30+ or 60+ at each boundary, and none under five minutes', () => {
+  assert.equal(SLACK_RUN_QUIET_AFTER_MS, 5 * MINUTE);
+  const cases: Array<[number, string | undefined]> = [
+    [0, undefined],
+    [5 * MINUTE - 1, undefined],
+    [5 * MINUTE, '5+'],
+    [10 * MINUTE - 1, '5+'],
+    [10 * MINUTE, '10+'],
+    [12 * MINUTE, '10+'],
+    [15 * MINUTE - 1, '10+'],
+    [15 * MINUTE, '15+'],
+    [30 * MINUTE - 1, '15+'],
+    [30 * MINUTE, '30+'],
+    [60 * MINUTE - 1, '30+'],
+    [60 * MINUTE, '60+'],
+    [3 * 60 * MINUTE, '60+'],
+    [-MINUTE, undefined],
+    [Number.NaN, undefined],
+  ];
+  for (const [sinceProgressMs, bucket] of cases) {
+    assert.equal(slackRunQuietBucket(sinceProgressMs), bucket, String(sinceProgressMs));
+  }
+  const view = slackRunFactsView(
+    { startedAt: START, step: 'Running the test suite…', progressAt: START + MINUTE, milestones: 2 },
+    START + 13 * MINUTE,
+  );
+  assert.deepEqual(view, {
+    startedAt: START,
+    step: 'Running the test suite…',
+    progressAt: START + MINUTE,
+    quietFor: '10+',
+    at: START + 13 * MINUTE,
+  }, 'the view carries no milestone count and a bucket, never a raw clock in the step');
+});
+
+test('AE5: after five quiet minutes the thread goes to native processing, and at twelve the check-in reads 10+', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: START });
+  const registry = new SlackStatusRegistry();
+  const presenter = nativePresenter();
+  const turn = registry.registerTurn('quiet-instance', presenter, {
+    generation: 'quiet-run',
+    observedMinIntervalMs: 1,
+  });
+  assert.equal(registry.setObservedStatus('quiet-instance', 'quiet-run', RUNNING_TESTS), true);
+  await settle();
+  assert.deepEqual(presenter.calls, ['set:Running the test suite…']);
+
+  // The custom text is refreshed before Slack's two-minute expiry meanwhile.
+  await advance(t, 5 * MINUTE - 1);
+  assert.deepEqual(presenter.calls, [
+    'set:Running the test suite…',
+    'refresh:Running the test suite…',
+    'refresh:Running the test suite…',
+    'refresh:Running the test suite…',
+  ]);
+  assert.equal(registry.runFactsView('quiet-run')?.quietFor, undefined, 'still under five minutes');
+
+  t.mock.timers.tick(1);
+  await settle();
+  assert.equal(presenter.calls.at(-1), 'native', 'handed back to Slack\'s native indicator and its Stop button');
+  const handedBack = presenter.calls.length;
+
+  await advance(t, 7 * MINUTE);
+  assert.equal(presenter.calls.length, handedBack, 'no custom refresh repeats the last phrase while quiet');
+  assert.deepEqual(registry.runFactsView('quiet-run'), {
+    startedAt: START,
+    step: 'Running the test suite…',
+    progressAt: START,
+    quietFor: '10+',
+    at: START + 12 * MINUTE,
+  });
+  turn.close();
+});
+
+test('a progress event hands the thread back to custom text after the native indicator', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: START });
+  const registry = new SlackStatusRegistry();
+  const presenter = nativePresenter();
+  const turn = registry.registerTurn('resume-instance', presenter, {
+    generation: 'resume-run',
+    observedMinIntervalMs: 1,
+  });
+  registry.setObservedStatus('resume-instance', 'resume-run', RUNNING_TESTS);
+  await settle();
+  await advance(t, 6 * MINUTE);
+  assert.equal(presenter.calls.at(-1), 'native');
+  presenter.calls.length = 0;
+
+  // The same stage again: the phrase shown before the quiet stretch is
+  // reasserted as a refresh (its durable writer skips an unchanged fact).
+  registry.setObservedStatus('resume-instance', 'resume-run', RUNNING_TESTS);
+  await settle();
+  assert.deepEqual(presenter.calls, ['refresh:Running the test suite…']);
+  assert.equal(registry.runFactsView('resume-run')?.quietFor, undefined, 'progress restarts the clock');
+  assert.equal(registry.runFacts('resume-run')?.progressAt, START + 6 * MINUTE);
+
+  // The clock re-arms from that progress, and a new phrase is written as usual.
+  await advance(t, 5 * MINUTE);
+  assert.equal(presenter.calls.at(-1), 'native');
+  presenter.calls.length = 0;
+  registry.setObservedStatus('resume-instance', 'resume-run', COMMITTING);
+  await settle();
+  assert.deepEqual(presenter.calls, ['set:Committing the changes…']);
+  turn.close();
+});
+
+test('refresh writes, turn-owned lifecycle writes and a model "Thinking…" never reset the progress clock', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: START });
+  const registry = new SlackStatusRegistry();
+  const presenter = nativePresenter();
+  const turn = registry.registerTurn('clock-instance', presenter, {
+    generation: 'clock-run',
+    observedMinIntervalMs: 1,
+  });
+  await turn.setStatus(WORKING);
+  await advance(t, 90_000);
+  assert.deepEqual(presenter.calls, ['set:Working on the code changes…', 'refresh:Working on the code changes…']);
+  assert.equal(registry.runFacts('clock-run')?.progressAt, START, 'a 90-second refresh is not progress');
+
+  // A retried model attempt reports thinking, which is not tool activity.
+  registry.setObservedStatus('clock-instance', 'clock-run', THINKING);
+  await settle();
+  assert.equal(registry.runFacts('clock-run')?.progressAt, START);
+  await turn.setStatus(WORKING);
+  await advance(t, 5 * MINUTE - 90_000);
+  assert.equal(presenter.calls.at(-1), 'native', 'quiet five minutes after the start, not after a refresh');
+
+  // While quiet, a write that is not progress stays off Slack and off the step.
+  presenter.calls.length = 0;
+  const stepBefore = registry.runFacts('clock-run')?.step;
+  assert.equal(await turn.setStatus(activityStatus('reading', 'Reviewing', 'the results')), false);
+  registry.setObservedStatus('clock-instance', 'clock-run', THINKING);
+  await settle();
+  assert.deepEqual(presenter.calls, [], 'the native indicator keeps its Stop button');
+  assert.equal(registry.runFacts('clock-run')?.step, stepBefore);
+  turn.close();
+});
+
+test('a yield and reattach replaying milestones does not reset the progress clock', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: START });
+  const registry = new SlackStatusRegistry();
+  const first = nativePresenter();
+  const turnA = registry.registerTurn('coding-instance', first, { generation: 'coding-run' });
+  await turnA.setStatus(WORKING);
+  turnA.progress({ kind: 'milestone', sequence: 1 });
+  await advance(t, MINUTE);
+  turnA.progress({ kind: 'milestone', sequence: 2 });
+  await advance(t, MINUTE);
+  turnA.progress({ kind: 'milestone', sequence: 3 });
+  // The alarm budget ends observation after ten minutes: a yield.
+  await advance(t, 8 * MINUTE);
+  assert.equal(first.calls.at(-1), 'native', 'quiet since the third milestone');
+  turnA.close();
+
+  // The next alarm reattaches: its reader replays the reply from the start.
+  const second = nativePresenter();
+  const turnB = registry.registerTurn('coding-instance', second, {
+    generation: 'coding-run',
+    initialAppliedStatus: WORKING,
+    refreshInitialStatus: true,
+  });
+  t.mock.timers.tick(0);
+  await settle();
+  assert.deepEqual(second.calls, ['native'], 'a reattach that is already quiet shows native, not the old phrase');
+  for (const sequence of [1, 2, 3]) turnB.progress({ kind: 'milestone', sequence });
+  await settle();
+  assert.deepEqual(second.calls, ['native'], 'replayed milestones are not progress');
+  assert.deepEqual(registry.runFacts('coding-run'), {
+    startedAt: START,
+    step: 'Working on the code changes…',
+    progressAt: START + 2 * MINUTE,
+    milestones: 3,
+  });
+  await advance(t, 4 * MINUTE);
+  assert.equal(registry.runFactsView('coding-run')?.quietFor, '10+', 'twelve minutes since the last milestone');
+
+  // A milestone past those already counted is new progress.
+  turnB.progress({ kind: 'milestone', sequence: 4 });
+  await settle();
+  assert.deepEqual(second.calls, ['native', 'refresh:Working on the code changes…']);
+  assert.equal(registry.runFacts('coding-run')?.progressAt, START + 14 * MINUTE);
+  turnB.close();
+});
+
+test('within six minutes a stuck run shows the native indicator while a busy run keeps its custom text', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: START });
+  const registry = new SlackStatusRegistry();
+  const stuck = nativePresenter();
+  const busy = nativePresenter();
+  const stuckTurn = registry.registerTurn('stuck-instance', stuck, { generation: 'stuck-run', observedMinIntervalMs: 1 });
+  const busyTurn = registry.registerTurn('busy-instance', busy, { generation: 'busy-run', observedMinIntervalMs: 1 });
+  registry.setObservedStatus('stuck-instance', 'stuck-run', RUNNING_TESTS);
+  registry.setObservedStatus('busy-instance', 'busy-run', RUNNING_TESTS);
+  for (let minute = 1; minute <= 6; minute += 1) {
+    await advance(t, MINUTE);
+    // The busy run's worker keeps reporting stages.
+    registry.setObservedStatus('busy-instance', 'busy-run', minute % 2 ? COMMITTING : RUNNING_TESTS);
+    await settle();
+  }
+  assert.equal(stuck.calls.at(-1), 'native');
+  assert.equal(busy.calls.includes('native'), false);
+  assert.equal(busy.calls.at(-1), 'set:Running the test suite…');
+  stuckTurn.close();
+  busyTurn.close();
+});
+
+test('a presenter that cannot show the native indicator keeps its custom text refreshed', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: START });
+  const registry = new SlackStatusRegistry();
+  // A legacy presenter has no native indicator; one whose hand-back fails
+  // (Agent Sessions unavailable) has nothing to show either.
+  const legacy = recordingPresenter();
+  const failing = nativePresenter({ nativeShown: () => false });
+  const legacyTurn = registry.registerTurn('legacy-instance', legacy, { generation: 'legacy-run' });
+  const failingTurn = registry.registerTurn('failing-instance', failing, { generation: 'failing-run' });
+  await legacyTurn.setStatus(RUNNING_TESTS);
+  await failingTurn.setStatus(RUNNING_TESTS);
+  await advance(t, 10 * MINUTE);
+  assert.ok(legacy.statuses.length >= 6, `legacy refreshes: ${legacy.statuses.length}`);
+  assert.equal(failing.calls.filter((call) => call === 'native').length, 1, 'one hand-back attempt per quiet stretch');
+  const afterHandBack = failing.calls.slice(failing.calls.indexOf('native') + 1);
+  assert.equal(afterHandBack[0], 'refresh:Running the test suite…', 'the custom text is reasserted at once');
+  assert.ok(afterHandBack.length >= 4, `refreshes after the failed hand-back: ${afterHandBack.length}`);
+  assert.equal(registry.runFactsView('failing-run')?.quietFor, '10+', 'the check-in still reports the quiet stretch');
+  legacyTurn.close();
+  failingTurn.close();
+});
+
+test('a final during a quiet stretch waits for the hand-back and never reasserts native after it', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: START });
+  const registry = new SlackStatusRegistry();
+  const handBack = Promise.withResolvers<boolean>();
+  const calls: string[] = [];
+  const turn = registry.registerTurn('final-quiet-instance', {
+    setStatus(update) {
+      calls.push(`set:${update.text}`);
+      return Promise.resolve(true);
+    },
+    showNativeIndicator() {
+      calls.push('native');
+      return handBack.promise;
+    },
+  }, { generation: 'final-quiet-run' });
+  await turn.setStatus(RUNNING_TESTS);
+  await advance(t, 5 * MINUTE);
+  assert.deepEqual(calls, ['set:Running the test suite…', 'set:Running the test suite…', 'set:Running the test suite…', 'set:Running the test suite…', 'native']);
+  let drained = false;
+  const draining = turn.drain().then(() => { drained = true; });
+  await settle();
+  assert.equal(drained, false, 'the settle must not race the native write');
+  handBack.resolve(true);
+  await draining;
+  await turn.prepareFinal();
+  await turn.finish(async () => { calls.push('clear'); });
+  await advance(t, 10 * MINUTE);
+  assert.deepEqual(calls.slice(-2), ['native', 'clear']);
+});
+
+test('run facts start at registration, keep a fixed-copy step, and flush when the turn closes', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: START });
+  const saves: Array<{ generation: string; at: number; progressAt: number; step?: string }> = [];
+  const stored = new Map<string, SlackRunFacts>();
+  const registry = new SlackStatusRegistry({
+    runFacts: {
+      load: (generation) => stored.get(generation),
+      save: (generation, facts) => {
+        saves.push({ generation, at: Date.now(), progressAt: facts.progressAt, ...(facts.step ? { step: facts.step } : {}) });
+        stored.set(generation, { ...facts });
+      },
+    },
+  });
+  const turn = registry.registerTurn('facts-instance', nativePresenter(), {
+    generation: 'facts-run',
+    observedMinIntervalMs: 1,
+  });
+  assert.deepEqual(saves, [{ generation: 'facts-run', at: START, progressAt: START }], 'the start is saved at once');
+
+  // Throttled: one save per 30 s window, the newest facts at its end.
+  t.mock.timers.tick(10_000);
+  registry.setObservedStatus('facts-instance', 'facts-run', RUNNING_TESTS);
+  t.mock.timers.tick(5_000);
+  registry.setObservedStatus('facts-instance', 'facts-run', COMMITTING);
+  await settle();
+  assert.equal(saves.length, 1);
+  t.mock.timers.tick(15_000);
+  await settle();
+  assert.deepEqual(saves.at(-1), {
+    generation: 'facts-run', at: START + 30_000, progressAt: START + 15_000, step: 'Committing the changes…',
+  });
+  // Legacy free text never becomes the persisted step.
+  await turn.setStatus({ text: 'is reading acme/secret-repo' });
+  t.mock.timers.tick(5_000);
+  registry.setObservedStatus('facts-instance', 'facts-run', RUNNING_TESTS);
+  turn.close();
+  assert.deepEqual(saves.at(-1), {
+    generation: 'facts-run', at: START + 35_000, progressAt: START + 35_000, step: 'Running the test suite…',
+  }, 'close flushes what the throttle held');
+  assert.equal(registry.runFacts('facts-run')?.startedAt, START, 'read back from storage once the turn closed');
+});
+
+/**
+ * A presenter whose native indicator is kept alive, as run-turn's is: native
+ * shown (at the start, or by a quiet hand-back) is held for the turn, a held
+ * indicator is not sent again, and a keepalive re-sends `processing`.
+ */
+function keptNativePresenter(options: { keep?: () => boolean | Promise<boolean> } = {}) {
+  const calls: string[] = [];
+  const at: number[] = [];
+  let turn: { holdNative(sent: boolean): void; releaseNative(): Promise<void> } | undefined;
+  let held = false;
+  return {
+    calls,
+    /** When each native `processing` was sent (a hand-back or a keepalive). */
+    at,
+    attach(registration: { holdNative(sent: boolean): void; releaseNative(): Promise<void> }) {
+      turn = registration;
+    },
+    /** Native processing started with the turn, sent by an earlier attempt or this one. */
+    hold(sent: boolean) {
+      held = true;
+      turn?.holdNative(sent);
+    },
+    /** A custom write takes over. */
+    async release() {
+      await turn?.releaseNative();
+      held = false;
+    },
+    setStatus(update: SlackStatusUpdate): Promise<boolean> {
+      calls.push(`set:${update.text}`);
+      return Promise.resolve(true);
+    },
+    refreshStatus(update: SlackStatusUpdate): Promise<boolean> {
+      calls.push(`refresh:${update.text}`);
+      return Promise.resolve(true);
+    },
+    showNativeIndicator(): Promise<boolean> {
+      if (held) return Promise.resolve(true);
+      calls.push('native');
+      at.push(Date.now());
+      held = true;
+      turn?.holdNative(true);
+      return Promise.resolve(true);
+    },
+    async keepNativeIndicator(): Promise<boolean> {
+      const kept = await (options.keep?.() ?? true);
+      calls.push(kept ? 'keep' : 'keep:failed');
+      if (kept) at.push(Date.now());
+      return kept;
+    },
+  };
+}
+
+test('KTD6: a long quiet stretch re-sends native processing before each hour ends, and stops at the terminal', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: START });
+  assert.equal(SLACK_NATIVE_PROCESSING_KEEPALIVE_MS, 45 * MINUTE);
+  const registry = new SlackStatusRegistry();
+  const presenter = keptNativePresenter();
+  const turn = registry.registerTurn('kept-instance', presenter, {
+    generation: 'kept-run', observedMinIntervalMs: 1,
+  });
+  presenter.attach(turn);
+  registry.setObservedStatus('kept-instance', 'kept-run', RUNNING_TESTS);
+  await settle();
+  // Quiet at five minutes, then a stuck run for two and a half hours.
+  await advance(t, 150 * MINUTE);
+  assert.deepEqual(presenter.calls.filter((call) => call === 'native' || call === 'keep'), [
+    'native', 'keep', 'keep', 'keep',
+  ]);
+  assert.deepEqual(presenter.at.map((when) => (when - START) / MINUTE), [5, 50, 95, 140]);
+  for (let index = 1; index < presenter.at.length; index += 1) {
+    assert.ok(presenter.at[index]! - presenter.at[index - 1]! < 60 * MINUTE, 'inside Slack\'s hour');
+  }
+
+  await turn.drain();
+  await turn.prepareFinal();
+  await turn.finish(async () => { presenter.calls.push('clear'); });
+  await advance(t, 3 * 60 * MINUTE);
+  assert.equal(presenter.calls.at(-1), 'clear', 'no keepalive after the terminal');
+});
+
+test('KTD6: the run start keeps native alive too; a custom write releases it and waits for a keepalive in flight', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: START });
+  const registry = new SlackStatusRegistry();
+  const keeping = Promise.withResolvers<boolean>();
+  let slow = false;
+  const presenter = keptNativePresenter({ keep: () => slow ? keeping.promise : true });
+  const turn = registry.registerTurn('start-instance', presenter, { generation: 'start-run' });
+  presenter.attach(turn);
+  // Native processing started with the turn and nothing custom shows.
+  presenter.hold(false);
+  await advance(t, 45 * MINUTE);
+  assert.deepEqual(presenter.calls.filter((call) => call === 'keep'), ['keep'], 'counted from the run start');
+
+  slow = true;
+  await advance(t, 45 * MINUTE);
+  let released = false;
+  const releasing = presenter.release().then(() => { released = true; });
+  await settle();
+  assert.equal(released, false, 'the release lands after the keepalive in flight');
+  keeping.resolve(true);
+  await releasing;
+  await advance(t, 2 * 60 * MINUTE);
+  assert.deepEqual(presenter.calls.filter((call) => call === 'keep'), ['keep', 'keep'], 'nothing kept once released');
+  turn.close();
+});
+
+test('KTD6: a failed keepalive retries within the hour; close and a presenter without one keep nothing alive', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: START });
+  const registry = new SlackStatusRegistry();
+  let failures = 1;
+  const presenter = keptNativePresenter({ keep: () => failures-- <= 0 });
+  const turn = registry.registerTurn('retry-instance', presenter, { generation: 'retry-run' });
+  presenter.attach(turn);
+  presenter.hold(true);
+  await advance(t, 50 * MINUTE);
+  assert.deepEqual(presenter.calls, ['keep:failed', 'keep']);
+  assert.deepEqual(presenter.at.map((when) => (when - START) / MINUTE), [50]);
+  turn.close();
+  await advance(t, 2 * 60 * MINUTE);
+  assert.deepEqual(presenter.calls, ['keep:failed', 'keep'], 'a yield ends this attempt\'s keepalive');
+
+  const legacy = nativePresenter();
+  const legacyTurn = registry.registerTurn('legacy-keep', legacy, { generation: 'legacy-keep-run' });
+  legacyTurn.holdNative(true);
+  await advance(t, 2 * 60 * MINUTE);
+  assert.equal(legacy.calls.includes('keep'), false);
+  legacyTurn.close();
+});
+
+test('KTD6: a reattached run counts from the last keepalive, or from its start after an eviction', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: START });
+  const saved = new Map<string, SlackRunFacts>();
+  const storage = {
+    load: (generation: string) => saved.get(generation),
+    save: (generation: string, facts: SlackRunFacts) => { saved.set(generation, { ...facts }); },
+  };
+  const registry = new SlackStatusRegistry({ runFacts: storage });
+  const first = keptNativePresenter();
+  const turnA = registry.registerTurn('attempts-instance', first, { generation: 'attempts-run' });
+  first.attach(turnA);
+  first.hold(false);
+  await advance(t, 50 * MINUTE);
+  assert.deepEqual(first.calls, ['keep'], 'kept at 45 minutes');
+  turnA.close(); // the alarm budget ends this attempt: a yield
+
+  // The next attempt inherits native processing without sending it.
+  await advance(t, MINUTE);
+  const second = keptNativePresenter();
+  const turnB = registry.registerTurn('attempts-instance', second, { generation: 'attempts-run' });
+  second.attach(turnB);
+  second.hold(false);
+  await advance(t, 38 * MINUTE);
+  assert.deepEqual(second.calls, [], 'not yet 45 minutes since the last keepalive');
+  await advance(t, MINUTE);
+  assert.deepEqual(second.calls, ['keep'], 'kept 45 minutes after the last one, at 90');
+  assert.deepEqual(second.at.map((when) => (when - START) / MINUTE), [90]);
+  turnB.close();
+
+  // A new isolate (an eviction) knows only the run's start: it keeps at once.
+  const evicted = new SlackStatusRegistry({ runFacts: storage });
+  const third = keptNativePresenter();
+  const turnC = evicted.registerTurn('attempts-instance', third, { generation: 'attempts-run' });
+  third.attach(turnC);
+  third.hold(false);
+  await advance(t, 1);
+  assert.deepEqual(third.calls, ['keep']);
+  turnC.close();
 });

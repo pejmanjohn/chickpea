@@ -6,7 +6,7 @@ import test from 'node:test';
 // @ts-expect-error Executable environment modules intentionally have no declarations.
 import { claimEnvironment, environmentMarkerPath, readEnvironmentRegistry, withEnvironmentInstallationClaim, reclaimEnvironment, recordEnvironmentInstallation, recordEnvironmentAttestation, releaseEnvironment } from '../scripts/lib/environment-registry.mjs';
 // @ts-expect-error Executable environment modules intentionally have no declarations.
-import { adoptEnvironmentFromFile, beginEnvironmentDeployment, completeEnvironmentDeployment, environmentDeployReceiptPath, preflightEnvironmentMutation, readEnvironmentDeployReceipt, reconcileEnvironmentDeployment, recheckEnvironmentMutationAuthority, resumeEnvironmentDeployment, writeEnvironmentBaseline, writeEnvironmentSchemaAdvancementIntent, withEnvironmentReleaseFence } from '../scripts/lib/environment-preflight.mjs';
+import { adoptEnvironmentFromFile, beginEnvironmentDeployment, readLocalEnvironmentContract, completeEnvironmentDeployment, environmentDeployReceiptPath, preflightEnvironmentMutation, readEnvironmentDeployReceipt, reconcileEnvironmentDeployment, recheckEnvironmentMutationAuthority, resumeEnvironmentDeployment, writeEnvironmentBaseline, writeEnvironmentSchemaAdvancementIntent, withEnvironmentReleaseFence } from '../scripts/lib/environment-preflight.mjs';
 // @ts-expect-error Executable environment modules intentionally have no declarations.
 import { reserveEnvironmentInstallation, restoreEnvironmentInstallation, assertInstallationDeployment, assertInstallationNodeRuntime } from '../scripts/lib/environment-installation.mjs';
 // @ts-expect-error Executable environment modules intentionally have no declarations.
@@ -15,7 +15,7 @@ import { nodeInstallationEnvironment, nodeInstallationProcessPath, reconcileNode
 import { waitForEnvironmentClaim } from '../scripts/lib/environment-wait.mjs';
 // @ts-expect-error Executable environment modules intentionally have no declarations.
 import { runEnvironmentCli } from '../scripts/chickpea-environment.mjs';
-import { NOW, DEAD_PID, git, fixture, fingerprints, baseline, localContract, authority, RUNTIME_SECRET_SOURCE_BINDINGS, rejects, installationDatabaseReceipt, nodeInstallationFixture, makeMutationLockStale } from './environment-preflight.fixture.ts';
+import { NOW, DEAD_PID, git, fixture, fingerprints, baseline, localContract, splitBaseline, optionalListsLocalContract, authority, RUNTIME_SECRET_SOURCE_BINDINGS, rejects, installationDatabaseReceipt, nodeInstallationFixture, makeMutationLockStale } from './environment-preflight.fixture.ts';
 
 test('borrowed installation retains its lane across expiry and refuses release until live restoration and exact cleanup', async (context) => {
   const f = fixture();
@@ -483,6 +483,103 @@ test('preflight refuses baseline, scope, credential, and migration drift with no
   await assert.rejects(preflightEnvironmentMutation('amber', {
     ...f.options, baseline: duplicate, localContract: localContract(), observeAuthority: async () => authority(),
   }), rejects('CREDENTIAL_FINGERPRINT_REUSED'));
+});
+
+test('a lane installed before Slack\'s Stop event keeps its baseline without an install continuation (R25)', async (context) => {
+  // The checked-in manifest subscribes to `agent_session_stopped`; without it,
+  // it is exactly the manifest the lane baselines were recorded from.
+  const contract = readLocalEnvironmentContract({ projectRoot: process.cwd() });
+  const manifest = JSON.parse(readFileSync(join(process.cwd(), 'slack-app-manifest.json'), 'utf8'));
+  assert.ok(manifest.settings.event_subscriptions.bot_events.includes('agent_session_stopped'));
+  assert.notEqual(contract.withoutOptionalEvents.manifestDigest, contract.manifestDigest);
+  assert.notEqual(
+    contract.withoutOptionalEvents.existingInstallManifestDigest,
+    contract.existingInstallManifestDigest,
+  );
+
+  const FULL = ['chat:write', 'lists:read', 'lists:write'];
+  const eventless = {
+    manifestDigest: `sha256:${'3'.repeat(64)}`,
+    existingInstallManifestDigest: `sha256:${'1'.repeat(64)}`,
+  };
+  const local = optionalListsLocalContract({
+    manifestDigest: `sha256:${'5'.repeat(64)}`,
+    existingInstallManifestDigest: `sha256:${'6'.repeat(64)}`,
+    withoutOptionalEvents: eventless,
+  });
+  const accepted = [
+    { name: 'recorded before the event, core-only grant', baseline: splitBaseline() },
+    {
+      name: 'recorded before the event, full grant',
+      baseline: splitBaseline({ manifestDigest: `sha256:${'3'.repeat(64)}`, requiredScopes: FULL }),
+    },
+    {
+      name: 're-recorded after the shared app subscribes',
+      baseline: splitBaseline({ manifestDigest: `sha256:${'5'.repeat(64)}`, requiredScopes: FULL }),
+    },
+    {
+      name: 're-recorded with the event, core-only grant',
+      baseline: splitBaseline({ manifestDigest: `sha256:${'6'.repeat(64)}` }),
+    },
+  ];
+  for (const entry of accepted) {
+    const f = fixture({ baseline: entry.baseline });
+    context.after(() => rmSync(f.parent, { recursive: true, force: true }));
+    claimEnvironment('amber', f.options);
+    const preflight = await preflightEnvironmentMutation('amber', {
+      ...f.options,
+      baseline: entry.baseline,
+      localContract: local,
+      observeAuthority: async () => authority('amber', {
+        slack: { ...authority().slack, scopes: entry.baseline.requiredScopes },
+      }),
+    });
+    assert.equal(preflight.deploymentMetadata.manifestDigest, entry.baseline.manifestDigest, entry.name);
+  }
+
+  const refused = [
+    {
+      name: 'the event-free full manifest with a core-only grant',
+      baseline: splitBaseline({ manifestDigest: `sha256:${'3'.repeat(64)}` }),
+    },
+    {
+      name: 'the event-free core manifest with a full grant',
+      baseline: splitBaseline({ requiredScopes: FULL }),
+    },
+    { name: 'an unrelated manifest', baseline: splitBaseline({ manifestDigest: `sha256:${'7'.repeat(64)}` }) },
+  ];
+  for (const entry of refused) {
+    const f = fixture({ baseline: entry.baseline });
+    context.after(() => rmSync(f.parent, { recursive: true, force: true }));
+    claimEnvironment('amber', f.options);
+    await assert.rejects(preflightEnvironmentMutation('amber', {
+      ...f.options,
+      baseline: entry.baseline,
+      localContract: local,
+      observeAuthority: async () => authority('amber', {
+        slack: { ...authority().slack, scopes: entry.baseline.requiredScopes },
+      }),
+    }), rejects('INSTALL_CONTINUATION_REQUIRED'), entry.name);
+  }
+
+  // A partial or malformed projection fails closed.
+  const f = fixture({ baseline: splitBaseline() });
+  context.after(() => rmSync(f.parent, { recursive: true, force: true }));
+  claimEnvironment('amber', f.options);
+  const withoutExisting = { ...local } as Record<string, unknown>;
+  delete withoutExisting.existingInstallManifestDigest;
+  delete withoutExisting.existingInstallScopes;
+  for (const malformed of [
+    withoutExisting,
+    { ...local, withoutOptionalEvents: { manifestDigest: `sha256:${'3'.repeat(64)}` } },
+    { ...local, withoutOptionalEvents: { ...eventless, manifestDigest: 'sha256:short' } },
+    { ...local, withoutOptionalEvents: { ...eventless, extra: true } },
+  ]) {
+    await assert.rejects(preflightEnvironmentMutation('amber', {
+      ...f.options, baseline: splitBaseline(), localContract: malformed,
+      observeAuthority: async () => authority(),
+    }), rejects('INVALID_LOCAL_CONTRACT'));
+  }
 });
 
 test('forward-only schema rejects local rollback and backward intents before authority or D1', async (context) => {

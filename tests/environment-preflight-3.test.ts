@@ -779,12 +779,18 @@ test('the local contract splits the setup sources into an install contract and a
   const contract = readLocalEnvironmentContract({ projectRoot: process.cwd() });
   assert.equal(
     contract.manifestDigest,
-    'sha256:7f18704b748f5c02253f493b2562bcf471097a237305776d277ceb463ab9ed0a',
+    'sha256:7e1ebdc8f52c672ce81774caec2efd40a68dcda3161ce60fccb8a3f60fd671c4',
   );
   assert.equal(
     contract.existingInstallManifestDigest,
-    'sha256:ebb63684f95e53b72033bd3f1b709268e6ec6a73aeac8c8ba119e5c66366e248',
+    'sha256:bd807ce3a06b6cff935ec316251f3ba3cc3cdf71e7ba5de09e95beac7ad94120',
   );
+  // Without the optional Stop event these are the manifests lane baselines
+  // were recorded from before it, so those baselines still match.
+  assert.deepEqual(contract.withoutOptionalEvents, {
+    manifestDigest: 'sha256:7f18704b748f5c02253f493b2562bcf471097a237305776d277ceb463ab9ed0a',
+    existingInstallManifestDigest: 'sha256:ebb63684f95e53b72033bd3f1b709268e6ec6a73aeac8c8ba119e5c66366e248',
+  });
   assert.deepEqual(
     contract.existingInstallScopes,
     contract.requiredScopes.filter((scope: string) => !['lists:read', 'lists:write'].includes(scope)),

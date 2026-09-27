@@ -31,10 +31,25 @@ import {
   repairSlackInteractionProgress,
   runTurn,
   sanitizeError,
+  type SlackStopEnding,
 } from './run-turn.ts';
-import { AgentPromptFailure } from './flue-dispatch.ts';
-import { DURABLE_RECOVERY_FAILURE_TEXT } from './web-client-presenter.ts';
+import {
+  abortSlackThreadAgent,
+  AgentPromptFailure,
+  type SlackThreadAgentTarget,
+} from './flue-dispatch.ts';
+import {
+  DURABLE_RECOVERY_FAILURE_TEXT,
+  type SlackStopNoteFacts,
+} from './web-client-presenter.ts';
 import { slackAgentThreadKey } from './thread-key.ts';
+import { receiveAlarmExecutorStop, StopAbortFence } from './runner-stops.ts';
+import {
+  removeDroppedReceipts,
+  stopNoteFacts,
+  stopRefusedDispatch,
+  tellStopperAlreadyFinished,
+} from './turn-executor.ts';
 import {
   cacheSlackInstallationExecutionContexts,
   effectiveTurnSlackInstallationId,
@@ -46,7 +61,12 @@ import {
   type SlackInstallationExecutionResolver,
 } from './installation-execution.ts';
 import { recordSlackInstallationUnavailable } from './installation-observability.ts';
-import { MAX_POST_DISPATCH_ATTEMPTS } from './turn-jobs.ts';
+import {
+  isTurnJobStopRefusal,
+  MAX_POST_DISPATCH_ATTEMPTS,
+  TURN_STOP_HOLD_RETRY_MS,
+  turnJobStopGate,
+} from './turn-jobs.ts';
 import { slackPresentationStatePort } from './presentation-state-port.ts';
 import { recordDeliveredSlackAgentMessage } from './public-context.ts';
 import {
@@ -74,6 +94,13 @@ const threadRelistRequested = new Set<string>();
 // wake-level pass that never waits on thread loops.
 let wakePass: Promise<void> | undefined;
 let wakePassRequested = false;
+// The stop outbox runs in its own single-flight pass, beside the thread loops
+// and the wake-level pass, so a stop never waits on the run it stops.
+let stopPass: Promise<void> | undefined;
+let stopPassRequested = false;
+// Stop aborts in flight, per thread: a thread loop starts no turn while one
+// is out, since the abort stops whatever the thread's instance runs then.
+const stopAborts = new StopAbortFence();
 let retryTimer: ReturnType<typeof setTimeout> | undefined;
 let reconcileTimer: ReturnType<typeof setInterval> | undefined;
 let autoWakeSuspended = false;
@@ -127,21 +154,24 @@ export async function stopNodeTurnRelay(): Promise<void> {
   shuttingDown = true;
   started = false;
   wakePassRequested = false;
+  stopPassRequested = false;
   if (retryTimer) clearTimeout(retryTimer);
   retryTimer = undefined;
   if (reconcileTimer) clearInterval(reconcileTimer);
   reconcileTimer = undefined;
-  await Promise.all([...threadLoops.values(), wakePass]);
+  await Promise.all([...threadLoops.values(), wakePass, stopPass]);
 }
 
 /**
- * Wake after admission, on the reconcile heartbeat, and on bounded retry.
- * Lists pending turns, starts a loop for every thread that has none, and
- * requests the wake-level pass. The returned promise settles once the loops
- * this wake started (plus the pass each requests on exit) and the pass this
- * wake started or joined have finished. It never waits for a loop an earlier
- * wake started: that loop re-lists its thread before exiting, so a message
- * admitted mid-turn runs after it without holding other threads. Never rejects.
+ * Wake after admission (a created stop included), on the reconcile heartbeat,
+ * and on bounded retry. Delivers the stop outbox, lists pending turns, starts
+ * a loop for every thread that has none, and requests the wake-level pass.
+ * The returned promise settles once the stop pass, the loops this wake
+ * started (plus the pass each requests on exit) and the pass this wake
+ * started or joined have finished. It never waits for a loop an earlier wake
+ * started: that loop re-lists its thread before exiting, so a message
+ * admitted mid-turn runs after it without holding other threads, and a stop
+ * reaches the turn that loop is running. Never rejects.
  */
 export async function wakeNodeTurnRelay(
   env?: PlatformEnv,
@@ -153,8 +183,65 @@ export async function wakeNodeTurnRelay(
   // The durable turn is already admitted; it stays pending until the next drain.
   if (autoWakeSuspended) return;
   const options: NodeTurnRelayDrainOptions = { ...overrides, ...(env ? { env } : {}) };
+  const stops = requestNodeStopPass(options);
   const loops = await startNodeThreadLoops(options);
-  await Promise.all([...loops, requestNodeWakePass(options)]);
+  await Promise.all([stops, ...loops, requestNodeWakePass(options)]);
+}
+
+/** Single-flight stop outbox pass; a wake arriving mid-pass requests one more round. */
+function requestNodeStopPass(options: NodeTurnRelayDrainOptions): Promise<void> {
+  if (stopPass) {
+    stopPassRequested = true;
+    return stopPass;
+  }
+  if (shuttingDown) return Promise.resolve();
+  stopPass = (async () => {
+    try {
+      do {
+        stopPassRequested = false;
+        await deliverNodeStopNotices(options);
+      } while (stopPassRequested && !shuttingDown);
+    } finally {
+      stopPass = undefined;
+    }
+  })();
+  return stopPass;
+}
+
+/**
+ * The stop outbox on Node (KTD2, KTD16): no runner Durable Object owns the
+ * run, so each due stop is taken here, in the process that runs it. The relay
+ * runs a thread's turns in order, as the Cloudflare alarm executor does, so
+ * the same rules decide it (receiveAlarmExecutorStop): while the stopped
+ * row's Flue submission is unsettled, its coordinator instance is aborted
+ * from the persisted dispatch envelope, and the turn's own observation reads
+ * the `aborted` settlement and takes the stopped ending. A settled row is
+ * acknowledged without an abort (R22); a dispatch whose receipt is not
+ * recorded yet keeps the notice owed, so the abort repeats once the
+ * submission exists. Each stop runs in the thread's abort fence, so the
+ * thread's loop starts no later turn while its abort is out (at most
+ * THREAD_RUNNER_STOP_ABORT_TIMEOUT_MS; a slower one is retried). Never
+ * rejects.
+ */
+async function deliverNodeStopNotices(options: NodeTurnRelayDrainOptions): Promise<void> {
+  try {
+    const state = options.state ?? getSlackStateStore(options.env);
+    if (!state.deliverStopNotices || !state.turnJobView) return;
+    const turnJobView = state.turnJobView.bind(state);
+    const abortAgent = options.abortAgent ?? ((target) => abortSlackThreadAgent(target));
+    const nextDueAt = await state.deliverStopNotices((notice) =>
+      stopAborts.run(notice.runnerKey, async () => receiveAlarmExecutorStop(
+        await turnJobView(notice.turnJobId),
+        abortAgent,
+        () => turnJobView(notice.turnJobId),
+      )));
+    // Production drains retry an owed notice; injected test drains stay caller-owned.
+    if (nextDueAt !== undefined && !options.state) {
+      scheduleNodeTurnRelayRetry(options.env, nextDueAt - Date.now());
+    }
+  } catch (error) {
+    reportNodeTurnRelayFailure(error, options);
+  }
 }
 
 async function startNodeThreadLoops(
@@ -215,6 +302,8 @@ async function runNodeThreadLoop(
     for (;;) {
       for (const job of jobs) {
         attempted.add(job.id);
+        // Never while a stop's abort for an earlier turn of the thread is out.
+        await stopAborts.clear(key);
         // A retained turn holds its thread until a later wake redrives it.
         if (!(await drain.runJob(job))) return;
       }
@@ -281,6 +370,8 @@ interface NodeTurnRelayDrainOptions {
   verifyInstallationAccess?: SlackInstallationAccessVerifier;
   executeTurn?: LedgerSlackTurnExecutor;
   productTelemetry?: ProductTelemetryCapture;
+  /** Focused seam: the in-process Flue abort of a stopped run. */
+  abortAgent?: (target: SlackThreadAgentTarget) => Promise<void>;
 }
 
 function createNodeTurnRelayContext(options: NodeTurnRelayDrainOptions) {
@@ -360,8 +451,25 @@ function createNodeThreadDrain(
     const markTurnDelivered = state.markTurnDelivered.bind(state);
     const markTurnError = state.markTurnError?.bind(state);
     const discardTurn = state.discardTurn.bind(state);
+    const turnJobView = state.turnJobView?.bind(state);
+    const finishTurnStop = state.finishTurnStop?.bind(state);
     const presentationState = slackPresentationStatePort(state);
-    const runJob = async (job: NodePendingTurn): Promise<boolean> => {
+    const runJob = async (listed: NodePendingTurn): Promise<boolean> => {
+      // The loop listed this row before the turns ahead of it ran: a stop
+      // since then may have held it, or dropped it with no run (KTD2).
+      const current = await turnJobView?.(listed.id);
+      if (current && current.status !== 'pending') return true;
+      const job = current?.job ?? listed;
+      // A row a stop holds waits, without spending an attempt, for the
+      // stopped ending that drops or releases it. A stopped row with no Flue
+      // receipt must never dispatch: it takes the stopped ending at once
+      // (KTD3), with no model call. As in executeTurnJob.
+      const stopGate = turnJobStopGate(job);
+      if (stopGate === 'hold') {
+        if (!options.state) scheduleNodeTurnRelayRetry(env, TURN_STOP_HOLD_RETRY_MS);
+        return false;
+      }
+      const stoppedBeforeDispatch = stopGate === 'stopped_before_dispatch';
       if (!job.turn.interactionIntent && job.progress.interactionIntent) {
         job.turn.interactionIntent = job.progress.interactionIntent;
       }
@@ -399,17 +507,31 @@ function createNodeThreadDrain(
         ? slackAgentThreadKey(job.turn, job.assignment)
         : undefined;
       await recordTurnAttempt(job.id, attempt);
+      // A stop recorded after this row was read: dispatch preparation refused it.
+      let stopRefused = false;
+      // The turn entered its stopped ending: nothing may post a failure for it.
+      let stopEnding = false;
       const flueDispatch = {
         ...(job.dispatchEnvelope ? { dispatchEnvelope: job.dispatchEnvelope } : {}),
         ...(job.dispatchReceipt ? { dispatchReceipt: job.dispatchReceipt } : {}),
         ...(job.flueSettlement ? { flueSettlement: job.flueSettlement } : {}),
-        prepare: (
+        prepare: async (
           message: string,
           observation: Parameters<typeof prepareFlueDispatch>[2],
           threadImages: Parameters<typeof prepareFlueDispatch>[3],
           admittedListIds: Parameters<typeof prepareFlueDispatch>[4],
           turnEnvelope: Parameters<typeof prepareFlueDispatch>[5],
-        ) => prepareFlueDispatch(job.id, message, observation, threadImages, admittedListIds, turnEnvelope),
+        ) => {
+          try {
+            return await prepareFlueDispatch(
+              job.id, message, observation, threadImages, admittedListIds, turnEnvelope,
+            );
+          } catch (error) {
+            if (!isTurnJobStopRefusal(error)) throw error;
+            stopRefused = true;
+            throw stopRefusedDispatch(error);
+          }
+        },
         reconcileExistingInstance: (uid: string) =>
           reconcileFlueExistingInstance(job.id, uid),
         recordReceipt: (receipt: Parameters<typeof recordFlueReceipt>[1]) =>
@@ -479,6 +601,46 @@ function createNodeThreadDrain(
           return false;
         }
       };
+      const slackClient = installationContext?.client ?? options.client;
+      // The stopped ending (KTD3), as in executeTurnJob. The state store drops
+      // (and counts) the rows the stop held before anything is delivered:
+      // once the turn is marked delivered, an unfinished stop would release
+      // them instead. Coding workspaces run only on Cloudflare, so a Node run
+      // has no coding work to stop and its note never says any may still run.
+      const stoppedEnding: SlackStopEnding | undefined = finishTurnStop
+        ? {
+            ...(stoppedBeforeDispatch ? { beforeDispatch: true } : {}),
+            ...(job.progress.usageTelemetry?.admission ? { usageAdmitted: true } : {}),
+            finish: async (): Promise<SlackStopNoteFacts | undefined> => {
+              stopEnding = true;
+              const finished = await finishTurnStop(job.id, 'dropped');
+              if (!finished) {
+                stopEnding = false;
+                return undefined;
+              }
+              if (finished.outcome === 'dropped' && slackClient) {
+                await removeDroppedReceipts(finished.rows, slackClient, (id, patch) =>
+                  recordSlackInteractionProgress(id, patch));
+              }
+              return stopNoteFacts({
+                finished,
+                beforeDispatch: stoppedBeforeDispatch,
+                progress: job.progress,
+                codingRan: false,
+              }).facts;
+            },
+          }
+        : undefined;
+      // R22 needs the stop known before the turn is marked delivered; one
+      // recorded after the row was read is on its current row.
+      const stopKnown = async (): Promise<boolean> => {
+        try {
+          return job.stop?.role === 'stopped' ||
+            (await turnJobView?.(job.id))?.job?.stop?.role === 'stopped';
+        } catch {
+          return false;
+        }
+      };
       try {
         const runtimePlanDecision = job.runtimePlan && job.agentInstanceId
           ? {
@@ -516,11 +678,15 @@ function createNodeThreadDrain(
             recordSlackInteractionProgress(job.id, patch),
           onPublicMessageDelivered: (delivery) =>
             recordDeliveredSlackAgentMessage(config, job.turn, job.assignment, delivery),
+          ...(stoppedEnding ? { stopEnding: stoppedEnding } : {}),
+          ...(job.previousStop ? { previousStop: job.previousStop } : {}),
           onDeferredTerminal: async () => {
             deferredTerminal = true;
             if (activeWorkKey) await state.setActiveWork(activeWorkKey, job.id, false);
           },
           onDelivered: async (outcome) => {
+            // A stop that reached a run which finished first (R22).
+            const raced = outcome !== 'stopped' && await stopKnown();
             await markTurnDelivered(job.id);
             terminalDelivered = true;
             if (activeWorkKey) await state.setActiveWork(activeWorkKey, job.id, false);
@@ -533,6 +699,13 @@ function createNodeThreadDrain(
                 outcome,
               });
             }
+            if (raced && finishTurnStop && slackClient) {
+              await tellStopperAlreadyFinished(
+                job.turn,
+                (ending) => finishTurnStop(job.id, ending),
+                slackClient,
+              );
+            }
           },
         });
         if (deferredTerminal) return true;
@@ -540,6 +713,39 @@ function createNodeThreadDrain(
         if (activeWorkKey) await state.setActiveWork(activeWorkKey, job.id, false);
         return true;
       } catch (error) {
+        if (stopRefused) {
+          // Nothing was dispatched: give the attempt back and wait like a held
+          // row. The claims and the row stay: the stopped ending ends it.
+          await recordTurnAttempt(job.id, job.attempts).catch(() => undefined);
+          if (activeWorkKey) await state.setActiveWork(activeWorkKey, job.id, false);
+          if (!options.state) scheduleNodeTurnRelayRetry(env, TURN_STOP_HOLD_RETRY_MS);
+          return false;
+        }
+        if (stopEnding || stoppedBeforeDispatch) {
+          // The stopped ending posts its note and nothing else, never a
+          // failure text or recovery notice: a later attempt replays the same
+          // ending, which posts the note once. Past the bound it gives up
+          // quietly. As in executeTurnJob.
+          if (terminalDelivered) return true;
+          console.warn('[chickpea] stopped ending will retry', { causes: settlementFailureFacts(error) });
+          if (attempt >= MAX_POST_DISPATCH_ATTEMPTS) {
+            if (job.runId && slackClient) {
+              await abandonTerminalSlackPresentationBestEffort({
+                runId: job.runId,
+                state: presentationState,
+                client: slackClient,
+                requireUnresolvedDelivery: true,
+              });
+            }
+            if (markTurnError) await markTurnError(job.id);
+            else await markTurnDelivered(job.id);
+            if (activeWorkKey) await state.setActiveWork(activeWorkKey, job.id, false);
+            return true;
+          }
+          if (activeWorkKey) await state.setActiveWork(activeWorkKey, job.id, false);
+          if (!options.state) scheduleNodeTurnRelayRetry(env);
+          return false;
+        }
         if (flueDispatch.dispatchEnvelope) {
           console.error('[chickpea] durable reattachment failed:', {
             causes: settlementFailureFacts(error),

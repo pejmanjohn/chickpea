@@ -42,7 +42,7 @@ export const CodingWorkerUsageSchema = v.strictObject({
   toolCallId: v.pipe(v.string(), v.minLength(1), v.maxLength(200)),
   /** The coding model the worker ran on (canonical id). */
   model: v.pipe(v.string(), v.minLength(3), v.maxLength(240)),
-  /** `interrupted`: the task timed out and was stopped; `failed`: the worker failed. */
+  /** `interrupted`: the task timed out or its run was stopped; `failed`: the worker failed. */
   status: v.picklist(['completed', 'failed', 'interrupted']),
   /** The worker's reported token usage; absent when it reported none. */
   usage: v.optional(v.strictObject({

@@ -820,6 +820,190 @@ test('recovery quarantine is terminal, idempotent, body-free, and atomic with au
   }
 });
 
+test('a Run that never started settles without delivery, once, and a started or leased Run never does', () => {
+  const db = openStateDb(':memory:');
+  try {
+    const store = new WorkStoreLogic(db, { now: () => NOW });
+    const config = store.putConfigRevision(safeConfig());
+    const unstarted = store.createGraph(graph(config.id, 'unstarted')).run;
+    const input = {
+      runId: unstarted.id,
+      terminalDisposition: 'cancelled' as const,
+      safeFailureCode: 'run_stopped',
+      settledAt: NOW + 1,
+    };
+    const settled = store.settleUnstartedRun(input);
+    assert.equal(settled.status, 'settled');
+    assert.equal(settled.terminalDisposition, 'cancelled');
+    assert.equal(settled.deliveryStatus, 'not_applicable');
+    assert.equal(settled.safeFailureCode, 'run_stopped');
+    assert.equal(settled.settledAt, NOW + 1);
+    assert.deepEqual(store.settleUnstartedRun({ ...input, settledAt: NOW + 5 }), settled, 'a repeat changes nothing');
+    const events = store.listAuditEvents(unstarted.id)
+      .filter(({ eventType }) => eventType === 'work.run_settled_without_delivery');
+    assert.equal(events.length, 1);
+    assert.deepEqual(JSON.parse(events[0]!.metadataJson), { runId: unstarted.id });
+    assert.throws(
+      () => store.settleUnstartedRun({ ...input, terminalDisposition: 'skipped' }),
+      (error: unknown) => error instanceof WorkStateError && error.code === 'work_transition_invalid',
+    );
+
+    const prepared = store.createGraph(graph(config.id, 'prepared')).run;
+    store.prepareRunInput({ runId: prepared.id, sensitivity: 'public', body: 'Started input', preparedAt: NOW + 1 });
+    assert.throws(
+      () => store.settleUnstartedRun({ ...input, runId: prepared.id }),
+      (error: unknown) => error instanceof WorkStateError && error.code === 'work_transition_invalid',
+    );
+    assert.equal(store.getRun(prepared.id)?.status, 'input_ready');
+
+    const leased = store.createGraph(graph(config.id, 'leased')).run;
+    db.run("UPDATE runs SET lease_owner = 'owner_a', lease_until = ? WHERE id = ?", NOW + 60_000, leased.id);
+    assert.throws(
+      () => store.settleUnstartedRun({ ...input, runId: leased.id }),
+      (error: unknown) => error instanceof WorkStateError && error.code === 'work_transition_invalid',
+    );
+    assert.equal(store.getRun(leased.id)?.status, 'admitted');
+    for (const invalid of [
+      { ...input, terminalDisposition: 'failed' },
+      { ...input, safeFailureCode: 'Free text reason' },
+      { ...input, fencingToken: 1 },
+    ]) {
+      assert.throws(() => store.settleUnstartedRun(invalid as never), WorkStateError);
+    }
+  } finally {
+    db.close();
+  }
+});
+
+test('a legacy Run interrupted before any response settles without delivery, once, and settles its open execution', () => {
+  const db = openStateDb(':memory:');
+  try {
+    const store = new WorkStoreLogic(db, { now: () => NOW });
+    const config = store.putConfigRevision(safeConfig());
+    const settlement = (runId: RunId) => ({
+      runId,
+      terminalDisposition: 'cancelled' as const,
+      safeFailureCode: 'run_stopped',
+      settledAt: NOW + 10,
+    });
+    /** A Run through prepared input, and optionally its execution, as the Slack lifecycle leaves it. */
+    const prepared = (suffix: string, execution?: 'not_invoked' | 'ready' | 'invoked') => {
+      const run = store.createGraph(graph(config.id, suffix)).run;
+      store.prepareRunInput({ runId: run.id, sensitivity: 'public', body: 'Prepared input', preparedAt: NOW + 1 });
+      if (!execution) return { run, executionId: undefined };
+      const executionId = `execution_${suffix}` as RunExecutionId;
+      store.createRunExecution({
+        id: executionId, runId: run.id, attemptNumber: 1, fencingToken: 1, executorKind: 'agent',
+        agentName: 'slack-thread', canonicalModel: 'openai/gpt-5.6-sol', startedAt: NOW + 2,
+      });
+      if (execution !== 'not_invoked') {
+        store.recordRunExecutionRoute({
+          executionId, recordedAt: NOW + 2, providerAuthRoute: 'openai_api_key',
+          modelCredentialRef: 'openai_platform', modelCredentialVersion: 1,
+        });
+      }
+      if (execution === 'invoked') {
+        store.markRunExecutionInvoked({ executionId, fencingToken: 1, invokedAt: NOW + 3 });
+      }
+      return { run, executionId };
+    };
+    const settledAudit = (runId: RunId) => store.listAuditEvents(runId)
+      .filter(({ eventType }) => eventType === 'work.run_settled_without_delivery');
+
+    // Input prepared, no execution yet.
+    const inputOnly = prepared('input_only').run;
+    assert.equal(store.getRun(inputOnly.id)?.status, 'input_ready');
+    const settled = store.settleInterruptedRun(settlement(inputOnly.id));
+    assert.equal(settled.status, 'settled');
+    assert.equal(settled.terminalDisposition, 'cancelled');
+    assert.equal(settled.deliveryStatus, 'not_applicable');
+    assert.equal(settled.safeFailureCode, 'run_stopped');
+    assert.equal(settled.settledAt, NOW + 10);
+    assert.equal(settled.leaseOwner, null);
+    assert.deepEqual(store.settleInterruptedRun({ ...settlement(inputOnly.id), settledAt: NOW + 50 }), settled,
+      'a repeat changes nothing');
+    assert.equal(settledAudit(inputOnly.id).length, 1);
+    assert.deepEqual(JSON.parse(settledAudit(inputOnly.id)[0]!.metadataJson), { runId: inputOnly.id });
+    assert.throws(
+      () => store.settleInterruptedRun({ ...settlement(inputOnly.id), terminalDisposition: 'skipped' }),
+      (error: unknown) => error instanceof WorkStateError && error.code === 'work_transition_invalid',
+    );
+
+    // An execution the model never reached (route recorded or not) settles not submitted.
+    for (const status of ['not_invoked', 'ready'] as const) {
+      const { run, executionId } = prepared(`unsubmitted_${status}`, status);
+      assert.equal(store.getRun(run.id)?.status, 'executing');
+      assert.equal(store.settleInterruptedRun(settlement(run.id)).terminalDisposition, 'cancelled');
+      const execution = store.getRunExecution(executionId!);
+      assert.equal(execution?.outcome, 'not_submitted', status);
+      assert.equal(execution?.modelInvocationStatus, 'not_invoked');
+      assert.equal(execution?.providerAuthRoute, null, 'no provider was reached');
+      assert.equal(execution?.safeFailureCode, 'run_stopped');
+      assert.equal(execution?.finishedAt, NOW + 10);
+      const before = store.listAuditEvents(run.id);
+      assert.equal(before.filter(({ eventType }) => eventType === 'work.execution_settled').length, 1);
+      store.settleInterruptedRun({ ...settlement(run.id), settledAt: NOW + 50 });
+      assert.deepEqual(store.getRunExecution(executionId!), execution, 'a repeat settles nothing twice');
+      assert.deepEqual(store.listAuditEvents(run.id), before);
+    }
+
+    // An execution the model reached has an outcome nobody read: ambiguous.
+    const invoked = prepared('invoked', 'invoked');
+    assert.equal(store.settleInterruptedRun(settlement(invoked.run.id)).status, 'settled');
+    const ambiguous = store.getRunExecution(invoked.executionId!);
+    assert.equal(ambiguous?.outcome, 'ambiguous');
+    assert.equal(ambiguous?.modelInvocationStatus, 'invoked');
+    assert.equal(ambiguous?.providerAuthRoute, 'openai_api_key');
+    assert.equal(ambiguous?.safeFailureCode, 'run_stopped');
+
+    // An execution already settled (an earlier failed attempt) is left as it is.
+    const failed = prepared('failed_attempt', 'ready');
+    const failedExecution = store.settleRunExecution({
+      executionId: failed.executionId!, fencingToken: 1, outcome: 'failed', modelInvocationStatus: 'settled',
+      safeFailureCode: 'agent_failed', finishedAt: NOW + 4,
+    });
+    store.settleInterruptedRun(settlement(failed.run.id));
+    assert.deepEqual(store.getRunExecution(failed.executionId!), failedExecution);
+    assert.equal(store.getRun(failed.run.id)?.terminalDisposition, 'cancelled');
+
+    // Only a prepared, unleased legacy Run with no response settles this way.
+    const unstarted = store.createGraph(graph(config.id, 'unstarted')).run;
+    const responded = prepared('responded', 'ready');
+    store.recordRunResponse({
+      runId: responded.run.id, executionId: responded.executionId!, fencingToken: 1, sensitivity: 'public',
+      approvedOutput: 'Answer', renderedPayload: 'Answer', recordedAt: NOW + 4,
+    });
+    const ledger = prepared('ledger', 'ready');
+    db.run("UPDATE runs SET execution_authority = 'ledger' WHERE id = ?", ledger.run.id);
+    const leased = prepared('leased', 'ready');
+    db.run("UPDATE runs SET lease_owner = 'owner_a', lease_until = ? WHERE id = ?", NOW + 60_000, leased.run.id);
+    for (const [run, status] of [
+      [unstarted, 'admitted'],
+      [responded.run, 'response_ready'],
+      [ledger.run, 'executing'],
+      [leased.run, 'executing'],
+    ] as const) {
+      assert.throws(
+        () => store.settleInterruptedRun(settlement(run.id)),
+        (error: unknown) => error instanceof WorkStateError && error.code === 'work_transition_invalid',
+        run.id,
+      );
+      assert.equal(store.getRun(run.id)?.status, status);
+    }
+    assert.equal(store.getRunExecution(ledger.executionId!)?.outcome, 'pending');
+    for (const invalid of [
+      { ...settlement(inputOnly.id), terminalDisposition: 'failed' },
+      { ...settlement(inputOnly.id), safeFailureCode: 'Free text reason' },
+      { ...settlement(inputOnly.id), fencingToken: 1 },
+    ]) {
+      assert.throws(() => store.settleInterruptedRun(invalid as never), WorkStateError);
+    }
+    assert.equal(store.verifyIntegrity().invariantViolationCount, 0);
+  } finally {
+    db.close();
+  }
+});
+
 test('Routine compatibility links preserve coordinator admission and project canonical route evidence', () => {
   const db = openStateDb(':memory:');
   try {

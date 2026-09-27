@@ -8,9 +8,13 @@ import {
   type SemanticActivityTelemetrySurface,
 } from '../activity/telemetry.ts';
 import { isSafeTypedActivityStatus } from '../activity/status.ts';
+import type { TurnPullRequestProgress } from '../config/state-rpc.ts';
 import {
   canonicalSlackReplyText,
+  countOf,
+  renderSlackMarkdownActionLink,
   renderSlackReplyFooterBlock,
+  slackActionLink,
   type SlackReplyFormat,
   type SlackReplyFooter,
 } from './message-format.ts';
@@ -30,9 +34,14 @@ import {
 import {
   reactionFallbacks,
   SEMANTIC_REACTIONS,
+  type ReceiptReaction,
   type SemanticReaction,
 } from './interaction-intent.ts';
-import type { SlackAgentViewPresentation } from './agent-view-presentation.ts';
+import type { TurnMidRunReceipt } from './turn-job-types.ts';
+import type {
+  SlackAgentViewPresentation,
+  SlackPresentationDeliveryObserver,
+} from './agent-view-presentation.ts';
 import type {
   SlackPresentationOwner,
   SlackPresentationActivityProjection,
@@ -80,6 +89,58 @@ export const ARTIFACT_UNDELIVERED_NOTE =
 
 export const DURABLE_RECOVERY_FAILURE_TEXT =
   "I couldn't finish this request after retrying. Please try again. If it keeps happening, ask a workspace admin to check Chickpea's Slack connection.";
+
+/** Told privately to the person whose stop reached a run that had already finished (R22). */
+export const STOP_ALREADY_FINISHED_TEXT =
+  'This run had already finished, so there was nothing to stop.';
+
+/** What a stopped run's one stop note says (R5, R6, R23). */
+export interface SlackStopNoteFacts {
+  /** The Slack user who stopped the run; the note names them. */
+  stopperUserId: string;
+  /** Messages posted before the stop that the Agent never read; none ran. */
+  unread: number;
+  /** Pull requests the run already opened (with the branch it pushed). */
+  pullRequests: readonly TurnPullRequestProgress[];
+  /** A coding job's stop could not be confirmed: it may still be winding down. */
+  windingDown: boolean;
+  /** Replies the Agent already posted mid-run (none are recorded before release 2). */
+  repliesPosted?: number;
+}
+
+/**
+ * The stop note: fixed copy naming who stopped the run, what had already
+ * happened and was not undone, whether coding work may still be winding
+ * down, and how many unread messages can be sent again. Nothing is claimed
+ * that the host cannot see.
+ */
+export function slackStopNoteText(facts: SlackStopNoteFacts): string {
+  const lines = [`Stopped by <@${facts.stopperUserId}>.`];
+  const done: string[] = [];
+  const seen = new Set<string>();
+  for (const pullRequest of facts.pullRequests) {
+    if (seen.has(pullRequest.url)) continue;
+    seen.add(pullRequest.url);
+    const link = renderSlackMarkdownActionLink(slackActionLink(
+      pullRequest.url,
+      `${pullRequest.repository}#${pullRequest.number}`,
+    ));
+    const branch = pullRequest.branch?.replace(/[`\s]/g, '');
+    done.push(branch
+      ? `Pushed branch \`${branch}\` and opened pull request ${link}.`
+      : `Opened pull request ${link}.`);
+  }
+  const replies = facts.repliesPosted ?? 0;
+  if (replies > 0) done.push(`Posted ${countOf(replies, 'reply', 'replies')} in this thread.`);
+  if (done.length > 0) {
+    lines.push('', 'Already done, not undone:', ...done.map((entry) => `- ${entry}`));
+  }
+  if (facts.windingDown) lines.push('', 'Coding work may still be winding down.');
+  if (facts.unread > 0) {
+    lines.push('', `${countOf(facts.unread, 'message was', 'messages were')} not read and can be sent again.`);
+  }
+  return lines.join('\n');
+}
 
 export interface SlackPresenterTarget {
   channelId: string;
@@ -488,7 +549,7 @@ export class WebClientPresenter {
   /** Best-effort work acknowledgment. The receipt records whether this run
    * created the reaction so terminal cleanup never removes a pre-existing eye. */
   async addSemanticReaction(
-    reaction: SemanticReaction,
+    reaction: SemanticReaction | ReceiptReaction,
     coordinate: SlackReactionCoordinate,
   ): Promise<SlackReactionReceipt> {
     return addReactionChain(this.client, reactionFallbacks(reaction), coordinate);
@@ -525,16 +586,7 @@ export class WebClientPresenter {
   }
 
   async removeReaction(name: string, coordinate: SlackReactionCoordinate): Promise<void> {
-    try {
-      await this.client.reactions.remove({
-        name,
-        channel: coordinate.channelId,
-        timestamp: coordinate.messageTs,
-      });
-    } catch (error) {
-      if (slackPlatformErrorCode(error) === 'no_reaction') return;
-      throw error;
-    }
+    await removeSlackReaction(this.client, name, coordinate);
   }
 
   /** Canonical reaction-only delivery. The whole fallback chain is persisted
@@ -707,6 +759,12 @@ export class WebClientPresenter {
     terminalTaskStatus: 'complete' | 'error' = 'complete',
     tablePresentation?: SlackClosingInput,
     artifacts?: readonly SlackArtifactReceipt[],
+    /**
+     * `stopped`: `text` is a stopped run's note (KTD3). Posted like any final,
+     * as the thread's Agent with its footer; a durable presentation seals an
+     * open stream with it instead (SlackAgentViewPresentation.finalize).
+     */
+    ending?: { stopped?: boolean },
   ): Promise<void> {
     const footer = this.replyFooter();
     const approvedText = canonicalSlackReplyText(text, format);
@@ -730,16 +788,18 @@ export class WebClientPresenter {
       ? undefined
       : configured;
     if (agentView) {
+      const observer: SlackPresentationDeliveryObserver = {
+        before: (input) => this.observeBeforeDelivery(input),
+        after: (input) => this.observeAfterDelivery(input),
+      };
       const result = await agentView.finalize(
         text,
         format,
         terminalTaskStatus,
-        {
-          before: (input) => this.observeBeforeDelivery(input),
-          after: (input) => this.observeAfterDelivery(input),
-        },
+        observer,
         tablePresentation,
         files,
+        ending?.stopped ? { stopped: true } : undefined,
       );
       if (result.handled) {
         if (result.messageTs) {
@@ -1463,8 +1523,53 @@ export function isMissingFilesScopeError(err: unknown): boolean {
   return error === 'missing_scope' || error === 'not_allowed_token_type';
 }
 
+/**
+ * Where Chickpea's mid-run 👀 goes (R12, KTD9): the message's own
+ * coordinates, as its TurnJob records the receipt.
+ */
+export function slackMidRunReceipt(coordinate: SlackReactionCoordinate): TurnMidRunReceipt {
+  return {
+    channelId: coordinate.channelId,
+    messageTs: coordinate.messageTs,
+    name: reactionFallbacks('seen_mid_run')[0]!,
+  };
+}
+
+/**
+ * Add one of Chickpea's own receipt reactions (KTD9). `created: false` when
+ * Slack already shows Chickpea's reaction there, which it then never removes.
+ */
+export function addSlackReceiptReaction(
+  client: Pick<WebClient, 'reactions'>,
+  reaction: ReceiptReaction,
+  coordinate: SlackReactionCoordinate,
+): Promise<SlackReactionReceipt> {
+  return addReactionChain(client, reactionFallbacks(reaction), coordinate);
+}
+
+/**
+ * Remove Chickpea's reaction from one message. Slack removes only the
+ * caller's own; a reaction already gone counts as removed.
+ */
+export async function removeSlackReaction(
+  client: Pick<WebClient, 'reactions'>,
+  name: string,
+  coordinate: SlackReactionCoordinate,
+): Promise<void> {
+  try {
+    await client.reactions.remove({
+      name,
+      channel: coordinate.channelId,
+      timestamp: coordinate.messageTs,
+    });
+  } catch (error) {
+    if (slackPlatformErrorCode(error) === 'no_reaction') return;
+    throw error;
+  }
+}
+
 async function addReactionChain(
-  client: WebClient,
+  client: Pick<WebClient, 'reactions'>,
   names: readonly string[],
   coordinate: SlackReactionCoordinate,
 ): Promise<SlackReactionReceipt> {

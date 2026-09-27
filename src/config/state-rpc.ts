@@ -88,9 +88,14 @@ import type {
   FlueTurnObservationV1,
   SlackAgentBinding,
   SlackAgentBindingExpectation,
+  TurnDirectThreadQuery,
   TurnJob,
+  TurnSteeringDecision,
+  TurnSteeringRequest,
+  TurnStopFinish,
 } from '../slack/turn-job-types.ts';
-import type { SlackInteractionIntent } from '../slack/interaction-intent.ts';
+import type { SlackRunFactsView } from '../slack/status-registry.ts';
+import type { ReceiptReaction, SlackInteractionIntent } from '../slack/interaction-intent.ts';
 import type { ThreadImageRecord } from '../slack/thread-images.ts';
 import type { TurnEnvelopeV1 } from '../agents/turn-envelope.ts';
 import type { GatewayInboxDrainCounts } from '../slack/gateway/inbox.ts';
@@ -223,12 +228,23 @@ export interface TurnPullRequestProgress {
 }
 
 export interface SlackInteractionProgress {
+  /**
+   * The turn's one reaction receipt, on the message it names: `created` says
+   * Chickpea added it, so only then is it ever removed (`reactions.remove`
+   * is not scoped to the code path that added it).
+   */
   acknowledgment?: {
     channelId: string;
     messageTs: string;
     name: string;
     created: boolean;
     cleanup: 'pending' | 'done';
+    /**
+     * A receipt admission recorded (KTD9): `seen_mid_run` is the 👀 on a
+     * message posted while its thread's run was in progress. Absent for a
+     * turn's own work acknowledgment.
+     */
+    reaction?: ReceiptReaction;
   };
   checklist?: {
     channelId: string;
@@ -610,6 +626,29 @@ export interface TagStateRpc {
    * invocation's fate. Idempotent by `job.id` (a duplicate enqueue is ignored).
    */
   enqueueTurn(job: TurnJob): Promise<StateRpcResult<null>>;
+  /**
+   * Decide a matched stop or check-in (or report a plain message) against the
+   * thread's undelivered rows in one transaction (KTD1); `enqueue` is written
+   * in that transaction when the thread has nothing to steer. A new stop is
+   * offered to its runner at once and stays in the retrying stop outbox until
+   * the runner acknowledges it.
+   */
+  slackTurnSteer(
+    request: TurnSteeringRequest,
+    enqueue?: TurnJob,
+  ): Promise<StateRpcResult<TurnSteeringDecision>>;
+  /** The stopped ending drops (or, on a completion race, releases) the held rows; null without a stop. */
+  slackTurnStopFinish(
+    headId: string,
+    outcome: 'dropped' | 'released',
+  ): Promise<StateRpcResult<TurnStopFinish | null>>;
+  /** The sender's DM threads with an undelivered run (at most two), for a top-level stop or check-in. */
+  slackTurnDirectThreads(query: TurnDirectThreadQuery): Promise<StateRpcResult<string[]>>;
+  /**
+   * Run facts of a turn this store's alarm executor runs, from its in-memory
+   * status registry, for a check-in; null when it has none.
+   */
+  slackRunFacts(turnJobId: string): Promise<StateRpcResult<SlackRunFactsView | null>>;
   /**
    * Transactionally accept a normalized shared-gateway delivery and arm the
    * state alarm before returning a receipt to the authenticated session.

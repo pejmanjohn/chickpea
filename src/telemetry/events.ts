@@ -48,7 +48,8 @@ export type ProductTelemetryEventInput =
       workspaceId: string;
       agentId: string;
       triggerKind: 'interactive' | 'scheduled';
-      outcome: 'succeeded' | 'no_op' | 'failed';
+      /** `stopped`: a person stopped the run; it is not a failure. */
+      outcome: 'succeeded' | 'no_op' | 'failed' | 'stopped';
     }
   | {
       event: 'installation_active';
@@ -65,7 +66,7 @@ const OWNER_KINDS = new Set(['team', 'member'] as const);
 const CADENCE_KINDS = new Set(['one_time', 'recurring'] as const);
 const DESTINATION_KINDS = new Set(['channel', 'direct_thread'] as const);
 const TRIGGER_KINDS = new Set(['interactive', 'scheduled'] as const);
-const RUN_OUTCOMES = new Set(['succeeded', 'no_op', 'failed'] as const);
+const RUN_OUTCOMES = new Set(['succeeded', 'no_op', 'failed', 'stopped'] as const);
 
 /**
  * Rebuild a product event from its event-specific allowlist. Callers are

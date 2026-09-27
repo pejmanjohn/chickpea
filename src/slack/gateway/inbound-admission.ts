@@ -137,6 +137,15 @@ export function gatewayDeliveryOrderKey(delivery: GatewayInboundDelivery): strin
     const root = str(subject?.thread_ts) ?? str(subject?.ts) ?? str(event.deleted_ts) ?? str(event.ts);
     return root ? `thread:${channel}:${root}` : `channel:${channel}`;
   }
+  if (event.type === 'agent_session_stopped') {
+    // Slack's Stop button names the Agent Session's thread. It shares the
+    // thread's order (a whole DM's, like its messages), so a message posted
+    // before the click is admitted before the stop (KTD5).
+    const threadTs = str(event.thread_ts);
+    if (!channel) return 'workspace';
+    if (channel.startsWith('D') || !threadTs) return `channel:${channel}`;
+    return `thread:${channel}:${threadTs}`;
+  }
   if (channel) return `channel:${channel}`;
   return 'workspace';
 }

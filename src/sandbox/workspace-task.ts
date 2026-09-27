@@ -24,6 +24,7 @@ import {
   CHICKPEA_RESPONSE_METADATA_KEY,
   parseChickpeaResponseMetadata,
 } from '../usage/response-metadata.ts';
+import { workspaceTaskDispatchKey, type CodingTaskRecordV1 } from './coding-task-record.ts';
 import type { CodingWorkerBindingV1 } from './coding-worker-binding.ts';
 import {
   SandboxConnectionDroppedError,
@@ -74,6 +75,7 @@ export type WorkspaceTaskFailureReason =
   | 'workspace_unavailable'
   | 'session_cap'
   | 'timeout'
+  | 'stopped'
   | 'worker_failed'
   | 'busy'
   | 'task_limit'
@@ -127,6 +129,19 @@ export interface CodingWorkerClient {
   }): Promise<AgentReply>;
 }
 
+/**
+ * Where the tool keeps each coding job's durable active-task record
+ * (./coding-task-record.ts), under the host turn its workspace is bound to.
+ * A stop reads them to abort and confirm the workers, because Flue discards
+ * an aborted call's own result.
+ */
+export interface CodingTaskRecordStore {
+  /** Write or replace one job's record. */
+  put(hostTurnId: string, record: CodingTaskRecordV1): Promise<void>;
+  /** Drop a job's record once its submission settled. */
+  settle(hostTurnId: string, taskKey: string): Promise<void>;
+}
+
 /** Per-response bookkeeping: tasks started, and tasks running by workspace id. */
 export interface WorkspaceTaskResponseState {
   started: number;
@@ -165,9 +180,15 @@ export interface WorkspaceTaskToolOptions {
   publishProgress?: (status: ActivityStatus) => void;
   /** Pull requests the workspace's egress recorded for this turn. */
   recordedPullRequest?: (session: WorkspaceSession) => Promise<TurnPullRequestProgress | undefined>;
+  /**
+   * Each job's active-task record for a stop. With a store, a job whose
+   * record cannot be written before its dispatch is refused: a stop could
+   * not find it.
+   */
+  taskRecords?: CodingTaskRecordStore;
   /** Test seam for the task deadline. */
   taskTimeoutMs?: number;
-  /** Test seam for when a task settled. */
+  /** Test seam for when a task was dispatched and when it settled. */
   now?: () => number;
 }
 
@@ -175,6 +196,8 @@ const WORKER_FAILED_MESSAGE =
   'The coding worker could not finish this task (its container or its coding model failed). Say so plainly. If the work is small, use the Repositories API path; otherwise the person can ask again later. Do not retry this call in the same reply.';
 const TIMEOUT_MESSAGE =
   'The coding task did not finish in time and was stopped. Report what is known; a pushed branch may already hold partial work. Do not retry the same task in the same reply.';
+const STOPPED_MESSAGE =
+  'This run was stopped, so the coding task was stopped with it. Do not retry it.';
 
 /**
  * `workspace_task`: brief a coding worker to do multi-step repository work in
@@ -267,13 +290,72 @@ export function createWorkspaceTaskTool(options: WorkspaceTaskToolOptions) {
         const binding = options.binding(target.id);
         const instanceId = options.instanceId(binding);
         const handle = options.client.handle(instanceId);
+        const taskKey = workspaceTaskDispatchKey(toolCallId);
+        const stopped = (): WorkspaceTaskFailure => {
+          milestones.stop('stopped');
+          return failure('stopped', STOPPED_MESSAGE);
+        };
+        // A stopped run never dispatches: abort() does not cover a later
+        // dispatch.
+        if (signal?.aborted) return stopped();
+
+        // The job's active-task record goes to the host turn before the
+        // dispatch, so a stop always finds the worker (KTD4); it stays until
+        // the job's submission settles or the stop reconciles it.
+        const pending: CodingTaskRecordV1 = {
+          schemaVersion: 1,
+          taskKey,
+          toolCallId,
+          workspace: target.name,
+          workspaceId: target.id,
+          instanceId,
+          state: 'dispatch_pending',
+          pendingAt: (options.now ?? Date.now)(),
+          timeoutMs: taskTimeoutMs,
+        };
+        let hostTurnId: string | undefined;
+        if (options.taskRecords) {
+          try {
+            // The turn this workspace is bound to: the host turn.
+            hostTurnId = await (await target.activatable()).getTurnId();
+            if (!hostTurnId) throw new Error('The workspace is bound to no turn.');
+            await options.taskRecords.put(hostTurnId, pending);
+          } catch {
+            console.warn('[chickpea] coding task record write failed');
+            milestones.stop('workspace_unavailable');
+            return failure('workspace_unavailable', WORKSPACE_UNAVAILABLE_MESSAGE);
+          }
+        }
+        const settleRecord = async () => {
+          if (!options.taskRecords || !hostTurnId) return;
+          await options.taskRecords.settle(hostTurnId, taskKey).catch(() => {
+            console.warn('[chickpea] coding task record settle failed');
+          });
+        };
+
+        // Stopped while the record was written: the stop, which aborts this
+        // run before it reads the records, reconciles the pending one.
+        if (signal?.aborted) return stopped();
+
         // A retried coordinator replays the recorded receipt; the idempotency
         // key also collapses a dispatch whose receipt was never recorded.
         const receipt = await step.do('dispatch', async () => boundedReceipt(await handle.dispatch({
           message: task,
           initialData: binding,
-          idempotencyKey: `workspace_task:${toolCallId}`,
+          idempotencyKey: taskKey,
         })));
+        if (options.taskRecords && hostTurnId) {
+          // Best effort: the pending record already names the worker.
+          await options.taskRecords.put(hostTurnId, {
+            ...pending,
+            state: 'accepted',
+            submissionId: receipt.submissionId,
+            uid: receipt.uid,
+            acceptedAt: receipt.acceptedAt,
+          }).catch(() => {
+            console.warn('[chickpea] coding task record write failed');
+          });
+        }
         options.onWorkerStarted?.(binding.codingModel.model);
         milestones.settle('workspace', 'completed');
         milestones.start('changes');
@@ -314,13 +396,19 @@ export function createWorkspaceTaskTool(options: WorkspaceTaskToolOptions) {
         } catch (error) {
           if (observation.aborted) {
             // Stop the worker durably: a task nobody waits for must not keep
-            // running, pushing, or spending.
+            // running, pushing, or spending. Not a confirmation, so the
+            // record stays for a stop to confirm.
             await handle.abort().catch(() => undefined);
             recordUsage('interrupted');
+            // The run itself was stopped. Flue discards this result; the
+            // runner confirms the worker from the record (KTD4), and this
+            // abort is only the fast path.
+            if (signal?.aborted) return stopped();
             milestones.stop('timeout');
             return failure('timeout', TIMEOUT_MESSAGE);
           }
           if (error instanceof AgentRunError || error instanceof AgentInstanceNotFoundError) {
+            await settleRecord();
             recordUsage('failed');
             milestones.stop('worker_failed');
             return failure('worker_failed', WORKER_FAILED_MESSAGE);
@@ -331,6 +419,7 @@ export function createWorkspaceTaskTool(options: WorkspaceTaskToolOptions) {
           throw error;
         }
 
+        await settleRecord();
         recordUsage('completed', reply);
 
         // Egress saw a pull request being created: the authoritative record,

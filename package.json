@@ -51,6 +51,7 @@
     "docs/runbooks/agent-first-acceptance-2026-08-21.md",
     "docs/runbooks/slack-auth-recovery.md",
     "docs/runbooks/slack-lists.md",
+    "docs/runbooks/slack-steering.md",
     "docs/runbooks/workspace-management-mcp.md",
     "evals",
     "fixtures",
