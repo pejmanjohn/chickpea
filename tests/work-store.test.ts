@@ -820,6 +820,61 @@ test('recovery quarantine is terminal, idempotent, body-free, and atomic with au
   }
 });
 
+test('a Run that never started settles without delivery, once, and a started or leased Run never does', () => {
+  const db = openStateDb(':memory:');
+  try {
+    const store = new WorkStoreLogic(db, { now: () => NOW });
+    const config = store.putConfigRevision(safeConfig());
+    const unstarted = store.createGraph(graph(config.id, 'unstarted')).run;
+    const input = {
+      runId: unstarted.id,
+      terminalDisposition: 'cancelled' as const,
+      safeFailureCode: 'run_stopped',
+      settledAt: NOW + 1,
+    };
+    const settled = store.settleUnstartedRun(input);
+    assert.equal(settled.status, 'settled');
+    assert.equal(settled.terminalDisposition, 'cancelled');
+    assert.equal(settled.deliveryStatus, 'not_applicable');
+    assert.equal(settled.safeFailureCode, 'run_stopped');
+    assert.equal(settled.settledAt, NOW + 1);
+    assert.deepEqual(store.settleUnstartedRun({ ...input, settledAt: NOW + 5 }), settled, 'a repeat changes nothing');
+    const events = store.listAuditEvents(unstarted.id)
+      .filter(({ eventType }) => eventType === 'work.run_settled_without_delivery');
+    assert.equal(events.length, 1);
+    assert.deepEqual(JSON.parse(events[0]!.metadataJson), { runId: unstarted.id });
+    assert.throws(
+      () => store.settleUnstartedRun({ ...input, terminalDisposition: 'skipped' }),
+      (error: unknown) => error instanceof WorkStateError && error.code === 'work_transition_invalid',
+    );
+
+    const prepared = store.createGraph(graph(config.id, 'prepared')).run;
+    store.prepareRunInput({ runId: prepared.id, sensitivity: 'public', body: 'Started input', preparedAt: NOW + 1 });
+    assert.throws(
+      () => store.settleUnstartedRun({ ...input, runId: prepared.id }),
+      (error: unknown) => error instanceof WorkStateError && error.code === 'work_transition_invalid',
+    );
+    assert.equal(store.getRun(prepared.id)?.status, 'input_ready');
+
+    const leased = store.createGraph(graph(config.id, 'leased')).run;
+    db.run("UPDATE runs SET lease_owner = 'owner_a', lease_until = ? WHERE id = ?", NOW + 60_000, leased.id);
+    assert.throws(
+      () => store.settleUnstartedRun({ ...input, runId: leased.id }),
+      (error: unknown) => error instanceof WorkStateError && error.code === 'work_transition_invalid',
+    );
+    assert.equal(store.getRun(leased.id)?.status, 'admitted');
+    for (const invalid of [
+      { ...input, terminalDisposition: 'failed' },
+      { ...input, safeFailureCode: 'Free text reason' },
+      { ...input, fencingToken: 1 },
+    ]) {
+      assert.throws(() => store.settleUnstartedRun(invalid as never), WorkStateError);
+    }
+  } finally {
+    db.close();
+  }
+});
+
 test('Routine compatibility links preserve coordinator admission and project canonical route evidence', () => {
   const db = openStateDb(':memory:');
   try {

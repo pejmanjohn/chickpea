@@ -3,8 +3,18 @@ import { test } from 'node:test';
 
 import { compileRuntimePlanV2 } from '../src/agents/runtime-plan.ts';
 import type { ResolvedAssignment } from '../src/config/types.ts';
-import { SqliteSlackStateStore } from '../src/slack/claim-store.ts';
+import {
+  SlackStateLogic,
+  SqliteSlackStateStore,
+  slackSessionGenerationFromTimestamp,
+} from '../src/slack/claim-store.ts';
 import { AgentPromptFailure } from '../src/slack/flue-dispatch.ts';
+import { localSlackStateStore } from '../src/slack/local-state-store.ts';
+import { hasRetryableTerminalRepair } from '../src/slack/presentation-repair.ts';
+import {
+  SlackRunPresentationStoreLogic,
+  type SlackRunPresentationV3,
+} from '../src/slack/run-presentations.ts';
 import type { RunTurnOptions } from '../src/slack/run-turn.ts';
 import { ThreadRunnerJobStore } from '../src/slack/thread-runner-jobs.ts';
 import { runThreadRunnerAlarm, type ThreadRunnerLoopDeps } from '../src/slack/thread-runner-loop.ts';
@@ -25,7 +35,10 @@ import {
   type PendingTurnJob,
 } from '../src/slack/turn-jobs.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
+import { prepareSlackShadowAdmission } from '../src/slack/work-admission.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
+import { WorkStoreLogic } from '../src/work/store.ts';
+import type { RunId } from '../src/work/types.ts';
 import { recordingDb } from './fixtures/state-db/maintenance.ts';
 
 const NOW = 1_800_000_000_000;
@@ -709,4 +722,244 @@ test('the stop operations run on the Node SQLite store without a nested transact
       turns.steerInTransaction({ kind: 'message', threadKey: THREAD }, job('queued', '111')));
     assert.deepEqual(enqueued, { outcome: 'enqueue', undelivered: true, enqueued: true });
   } finally { db.close(); }
+});
+
+// ── the dropped turns' canonical records ───────────────────────────────
+
+/** One state store with every owner of a canonical Slack admission. */
+function canonicalStore(clock: { now: number } = { now: NOW }) {
+  const db = openStateDb(':memory:');
+  const now = () => clock.now;
+  return {
+    db,
+    clock,
+    slack: new SlackStateLogic(db, now),
+    work: new WorkStoreLogic(db, { now }),
+    turns: new TurnJobStoreLogic(db, now),
+    presentations: new SlackRunPresentationStoreLogic(db, now),
+  };
+}
+
+type CanonicalStore = ReturnType<typeof canonicalStore>;
+
+/**
+ * Admit a turn as Slack admission does: its claims, a Work Run, the TurnJob
+ * and an admitted V3 presentation whose first activity was never shown.
+ */
+function admitCanonical(s: CanonicalStore, queued: TurnJob): RunId {
+  const admission = prepareSlackShadowAdmission({
+    turn: queued.turn, assignment: queued.assignment, sourceVisibility: 'public', admittedAt: s.clock.now,
+  });
+  const sessionGeneration = slackSessionGenerationFromTimestamp(queued.turn.messageTs);
+  const result = s.slack.admitCanonical({
+    evtKey: queued.evtKey,
+    msgKey: queued.msgKey,
+    threadKey: THREAD,
+    admission,
+    turnJob: { ...queued, runId: admission.run.id, executionAuthority: admission.run.executionAuthority },
+    presentation: {
+      schemaVersion: 3,
+      root: { workspaceId: 'T_STOP', channelId: 'C_STOP', threadTs: THREAD_TS, requesterUserId: queued.turn.userId },
+      owner: { kind: 'chickpea' },
+      sessionGeneration,
+      currentActivity: {
+        kind: 'preparing', action: 'Preparing', object: 'your request',
+        generation: sessionGeneration, sequence: 1,
+        operation: { operationId: `activity_${queued.id}`, certainty: 'pending' },
+      },
+    },
+  }, s.work, s.turns, s.presentations);
+  assert.equal(result.claimed, true);
+  return admission.run.id;
+}
+
+function v3(s: CanonicalStore, runId: string) {
+  const presentation = s.presentations.get(runId);
+  assert.equal(presentation?.schemaVersion, 3);
+  return presentation as SlackRunPresentationV3;
+}
+
+/** A running head with two unread messages after it, all admitted canonically, then a stop. */
+function canonicalStoppedThread(input: { dispatched?: boolean } = {}) {
+  const s = canonicalStore();
+  const runs = {
+    running: admitCanonical(s, job('running', '101')),
+    unread_1: admitCanonical(s, job('unread_1', '102')),
+    unread_2: admitCanonical(s, job('unread_2', '103')),
+  };
+  if (input.dispatched !== false) dispatch(s.turns, job('running', '101'));
+  assert.equal(s.turns.steer(stop('110')).outcome, 'stopped');
+  return { ...s, runs };
+}
+
+test('the stopped ending settles each dropped turn\'s Run cancelled and closes its presentation with no Slack effect', () => {
+  const s = canonicalStoppedThread();
+  try {
+    for (const id of ['unread_1', 'unread_2'] as const) {
+      assert.equal(s.work.getRun(s.runs[id])?.status, 'admitted', 'before the ending the Run waits');
+    }
+    const finished = s.slack.finishTurnStop('running', 'dropped', s.turns, s.work, s.presentations);
+    assert.equal(finished?.outcome, 'dropped');
+    assert.equal(finished?.count, 2);
+    assert.deepEqual(finished?.rows.map((row) => row.runId), [s.runs.unread_1, s.runs.unread_2]);
+    for (const id of ['unread_1', 'unread_2'] as const) {
+      const run = s.work.getRun(s.runs[id]);
+      assert.equal(run?.status, 'settled', `${id}: never read, its Run is terminal`);
+      assert.equal(run?.terminalDisposition, 'cancelled');
+      assert.equal(run?.deliveryStatus, 'not_applicable');
+      assert.equal(run?.leaseOwner, null);
+      assert.equal(s.work.listRunExecutions(s.runs[id]).length, 0, 'it never executed');
+      const presentation = v3(s, s.runs[id]);
+      assert.equal(presentation.lifecyclePhase, 'settled');
+      assert.equal(presentation.terminalDelivery.state, 'abandoned');
+      assert.equal(presentation.agentSession.disposition, 'superseded',
+        'the thread\'s Agent Session belongs to the stopped run\'s ending');
+      assert.equal(presentation.stream.state, 'absent');
+      assert.equal(presentation.activityProjection.state, 'absent');
+      assert.equal(presentation.currentActivity, undefined, 'its first activity was never shown');
+      assert.equal(presentation.repairRequired, false);
+      assert.equal(hasRetryableTerminalRepair(presentation), false);
+    }
+    assert.deepEqual(s.presentations.listAutoRepairableV3(50), [], 'nothing for presentation repair to do');
+    const audit = s.work.listAuditEvents(s.runs.unread_1, 50)
+      .filter((event) => event.eventType === 'work.run_settled_without_delivery');
+    assert.equal(audit.length, 1);
+    // The running head is the stop's own ending's: untouched here.
+    assert.equal(s.work.getRun(s.runs.running)?.status, 'admitted');
+    assert.equal(v3(s, s.runs.running).lifecyclePhase, 'admitted');
+    // Claims stay held, so a Slack retry of a dropped message never runs it.
+    for (const id of ['unread_1', 'unread_2']) {
+      assert.equal(s.slack.claim(`evt:${id}`), false);
+      assert.equal(s.slack.claim(`msg:${id}`), false);
+    }
+  } finally { s.db.close(); }
+});
+
+test('a repeated or replayed ending settles nothing twice and keeps the first outcome', () => {
+  const s = canonicalStoppedThread();
+  try {
+    s.slack.finishTurnStop('running', 'dropped', s.turns, s.work, s.presentations);
+    const settled = [s.runs.unread_1, s.runs.unread_2].map((runId) => ({
+      run: s.work.getRun(runId),
+      presentation: s.presentations.get(runId),
+    }));
+    s.clock.now += 60_000;
+    const replay = s.slack.finishTurnStop('running', 'dropped', s.turns, s.work, s.presentations);
+    assert.equal(replay?.count, 2);
+    const raced = s.slack.finishTurnStop('running', 'released', s.turns, s.work, s.presentations);
+    assert.equal(raced?.outcome, 'dropped', 'the first ending stands');
+    assert.deepEqual([s.runs.unread_1, s.runs.unread_2].map((runId) => ({
+      run: s.work.getRun(runId),
+      presentation: s.presentations.get(runId),
+    })), settled);
+    assert.equal(s.work.listAuditEvents(s.runs.unread_2, 50)
+      .filter((event) => event.eventType === 'work.run_settled_without_delivery').length, 1);
+  } finally { s.db.close(); }
+});
+
+test('an ending interrupted before the records settled finishes them on its replay', () => {
+  const s = canonicalStoppedThread();
+  try {
+    // A drop that committed before its records settled (an older build, or
+    // an isolate lost between the two): the replayed ending settles them.
+    assert.equal(s.turns.finishStop('running', 'dropped')?.count, 2);
+    assert.equal(s.work.getRun(s.runs.unread_1)?.status, 'admitted');
+    s.slack.finishTurnStop('running', 'dropped', s.turns, s.work, s.presentations);
+    for (const id of ['unread_1', 'unread_2'] as const) {
+      assert.equal(s.work.getRun(s.runs[id])?.terminalDisposition, 'cancelled');
+      assert.equal(v3(s, s.runs[id]).lifecyclePhase, 'settled');
+    }
+  } finally { s.db.close(); }
+});
+
+test('a record that cannot settle never undoes the drop', () => {
+  const s = canonicalStoppedThread();
+  const warn = console.warn;
+  const warnings: unknown[][] = [];
+  console.warn = (...args: unknown[]) => { warnings.push(args); };
+  try {
+    const failingWork = Object.assign(Object.create(s.work) as WorkStoreLogic, {
+      settleUnstartedRun: () => { throw new Error('ledger unavailable'); },
+    });
+    const finished = s.slack.finishTurnStop('running', 'dropped', s.turns, failingWork, s.presentations);
+    assert.equal(finished?.count, 2, 'the stop still drops and counts its rows');
+    for (const id of ['unread_1', 'unread_2'] as const) {
+      assert.equal(s.turns.runnerView(id).status, 'done');
+      assert.equal(v3(s, s.runs[id]).lifecyclePhase, 'settled', 'the other record still settles');
+    }
+    assert.ok(warnings.length > 0);
+    assert.ok(warnings.every((args) => args.every((arg) => typeof arg === 'string' && !arg.includes('run_'))),
+      'the warning is content-free');
+    // The next ending settles what is left.
+    s.slack.finishTurnStop('running', 'dropped', s.turns, s.work, s.presentations);
+    assert.equal(s.work.getRun(s.runs.unread_1)?.terminalDisposition, 'cancelled');
+  } finally {
+    console.warn = warn;
+    s.db.close();
+  }
+});
+
+test('R22: rows released by a completion race keep their Runs and presentations, to run as ordinary turns', () => {
+  const s = canonicalStoppedThread();
+  try {
+    const released = s.slack.finishTurnStop('running', 'released', s.turns, s.work, s.presentations);
+    assert.equal(released?.outcome, 'released');
+    for (const id of ['unread_1', 'unread_2'] as const) {
+      assert.equal(s.turns.runnerView(id).status, 'pending');
+      assert.equal(s.work.getRun(s.runs[id])?.status, 'admitted');
+      const presentation = v3(s, s.runs[id]);
+      assert.equal(presentation.lifecyclePhase, 'admitted');
+      assert.equal(presentation.terminalDelivery.state, 'none');
+      assert.equal(presentation.currentActivity?.operation.certainty, 'pending');
+    }
+    assert.equal(s.work.getRun(s.runs.running)?.status, 'admitted');
+  } finally { s.db.close(); }
+});
+
+test('a stopped head that never dispatched settles its own Run cancelled and keeps its presentation for the note', () => {
+  const s = canonicalStoppedThread({ dispatched: false });
+  try {
+    const finished = s.slack.finishTurnStop('running', 'dropped', s.turns, s.work, s.presentations);
+    assert.equal(finished?.count, 2);
+    const head = s.work.getRun(s.runs.running);
+    assert.equal(head?.status, 'settled', 'its message was never read either');
+    assert.equal(head?.terminalDisposition, 'cancelled');
+    const presentation = v3(s, s.runs.running);
+    assert.equal(presentation.lifecyclePhase, 'admitted', 'the stop note is still to post through it');
+    assert.equal(presentation.terminalDelivery.state, 'none');
+    for (const id of ['unread_1', 'unread_2'] as const) {
+      assert.equal(s.work.getRun(s.runs[id])?.terminalDisposition, 'cancelled');
+    }
+  } finally { s.db.close(); }
+});
+
+test('a dropped legacy-lane row without a Run is dropped as before', () => {
+  const s = canonicalStore();
+  try {
+    admitCanonical(s, job('running', '101'));
+    s.turns.enqueue(job('legacy', '102'));
+    const unread = admitCanonical(s, job('unread', '103'));
+    dispatch(s.turns, job('running', '101'));
+    s.turns.steer(stop('110'));
+    const finished = s.slack.finishTurnStop('running', 'dropped', s.turns, s.work, s.presentations);
+    assert.equal(finished?.count, 2);
+    assert.deepEqual(finished?.rows.map((row) => row.id), ['legacy', 'unread']);
+    assert.equal(finished?.rows[0]?.runId, undefined);
+    assert.equal(s.turns.runnerView('legacy').status, 'done');
+    assert.equal(s.work.getRun(unread)?.terminalDisposition, 'cancelled');
+  } finally { s.db.close(); }
+});
+
+test('the Node state store settles the dropped turns\' records through its stop ending', async () => {
+  const s = canonicalStoppedThread();
+  try {
+    const state = localSlackStateStore({
+      slack: s.slack, work: s.work, turnJobs: s.turns, presentations: s.presentations,
+    });
+    assert.equal((await state.finishTurnStop!('running', 'dropped'))?.count, 2);
+    for (const id of ['unread_1', 'unread_2'] as const) {
+      assert.equal(s.work.getRun(s.runs[id])?.terminalDisposition, 'cancelled');
+      assert.equal(v3(s, s.runs[id]).lifecyclePhase, 'settled');
+    }
+  } finally { s.db.close(); }
 });

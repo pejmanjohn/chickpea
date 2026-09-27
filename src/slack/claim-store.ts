@@ -2,7 +2,7 @@ import { openStateDb, type NodeStateDb } from '../state/node-state-db.ts';
 import { addColumnIfMissing } from '../state/schema-links.ts';
 import { schemaInstallRequired, type StateDb } from '../state/state-db.ts';
 import { WorkStoreLogic } from '../work/store.ts';
-import type { AdmitShadowRunInput, ShadowRunAdmission } from '../work/types.ts';
+import type { AdmitShadowRunInput, RunId, ShadowRunAdmission } from '../work/types.ts';
 import type {
   SlackInteractionProgressPatch,
   SlackRuntimeDrainCounts,
@@ -446,6 +446,56 @@ export class SlackStateLogic {
       }
       return { claimed: true, admission };
     });
+  }
+
+  /**
+   * The stopped ending's drop (or, on a completion race, release) of the rows
+   * a stop holds (TurnJobStoreLogic.finishStop), then the canonical records
+   * of the turns it dropped, which will never run: each Run settles
+   * `cancelled` and each admitted presentation closes with no Slack effect. A
+   * stopped head that never dispatched settles its Run too; its presentation
+   * carries the stop note. Released rows keep theirs and run later as
+   * ordinary turns. The records settle after the drop commits, one at a time
+   * and best effort, so bookkeeping never undoes a stop; a repeated ending
+   * returns the same rows and settles whatever is left.
+   */
+  finishTurnStop(
+    headId: string,
+    outcome: 'dropped' | 'released',
+    turnJobs: TurnJobStoreLogic,
+    work: WorkStoreLogic,
+    presentations: SlackRunPresentationStoreLogic,
+  ): TurnStopFinish | undefined {
+    const finished = turnJobs.finishStop(headId, outcome);
+    if (finished?.outcome !== 'dropped') return finished;
+    const settleRun = (runId: string) => {
+      try {
+        const run = work.getRun(runId as RunId);
+        if (run?.status !== 'admitted' && run?.status !== 'queued') return;
+        work.settleUnstartedRun({
+          runId: run.id,
+          terminalDisposition: 'cancelled',
+          safeFailureCode: 'run_stopped',
+          settledAt: this.now(),
+        });
+      } catch {
+        console.warn('[chickpea] a stopped turn kept an unsettled Run');
+      }
+    };
+    const head = turnJobs.runnerView(headId).job;
+    if (head?.runId && head.dispatchStartedAt === undefined && !head.dispatchReceipt) {
+      settleRun(head.runId);
+    }
+    for (const row of finished.rows) {
+      if (!row.runId) continue;
+      settleRun(row.runId);
+      try {
+        presentations.settleUnstarted(row.runId);
+      } catch {
+        console.warn('[chickpea] a dropped turn kept an admitted presentation');
+      }
+    }
+    return finished;
   }
 
   private purgeExpired(): void {

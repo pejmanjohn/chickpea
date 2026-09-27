@@ -40,6 +40,7 @@ import {
   type StartRunDeliveryInput,
   type FinalizeRunDeliveryInput,
   type SettleRunWithoutDeliveryInput,
+  type SettleUnstartedRunInput,
   type RunExecutionRecord,
   type RunExecutionRouteInput,
   type RunId,
@@ -1409,6 +1410,49 @@ export class WorkStoreLogic {
     });
   }
 
+  /**
+   * Settle a Run that never started: admitted or queued, not leased, and
+   * with no prepared input, so nothing holds it and nothing has run for it.
+   * A stop drops a turn before it runs (KTD3); its Run settles here rather
+   * than waiting as admitted forever. A Run already settled with the same
+   * disposition is returned as it is.
+   */
+  settleUnstartedRun(input: SettleUnstartedRunInput): RunRecord {
+    validateSettleUnstartedRun(input);
+    return this.db.transaction(() => {
+      const run = requiredRun(this.getRun(input.runId));
+      if (run.status === 'settled') {
+        if (run.terminalDisposition === input.terminalDisposition) return run;
+        throw workError('work_transition_invalid', 'Run is already settled.');
+      }
+      if (!['admitted', 'queued'].includes(run.status) || run.leaseOwner !== null ||
+          run.preparedInputRef !== null) {
+        throw workError('work_transition_invalid', 'Only a Run that never started can settle this way.');
+      }
+      this.db.run(
+        `UPDATE runs SET status = 'settled', terminal_disposition = ?,
+           delivery_status = 'not_applicable', safe_failure_code = ?, settled_at = ?,
+           updated_at = ?
+         WHERE id = ? AND status IN ('admitted', 'queued') AND lease_owner IS NULL
+           AND prepared_input_ref IS NULL`,
+        input.terminalDisposition,
+        input.safeFailureCode ?? null,
+        input.settledAt,
+        input.settledAt,
+        input.runId,
+      );
+      this.appendLifecycleAudit(
+        'work.run_settled_without_delivery',
+        input.runId,
+        input.settledAt,
+        { runId: input.runId },
+        `${input.runId}:${input.terminalDisposition}`,
+        input.safeFailureCode ?? null,
+      );
+      return requiredRun(this.getRun(input.runId));
+    });
+  }
+
   recordWorkAction(input: RecordWorkActionInput): AuditEvent {
     validateWorkAction(input);
     return this.db.transaction(() => {
@@ -2423,6 +2467,23 @@ function validateSettleWithoutDelivery(input: SettleRunWithoutDeliveryInput): vo
     if (!SAFE_REASON.test(input.safeFailureCode)) {
       throw workError('work_transition_invalid', 'Settlement failure code is invalid.');
     }
+  }
+  assertTimestamp(input.settledAt, 'Run settlement time');
+}
+
+function validateSettleUnstartedRun(input: SettleUnstartedRunInput): void {
+  assertExactKeys(
+    input,
+    ['runId', 'terminalDisposition', 'safeFailureCode', 'settledAt'],
+    'Unstarted Run settlement',
+  );
+  assertOpaqueId(input.runId, 'Settlement Run ID');
+  if (!['skipped', 'cancelled', 'superseded'].includes(input.terminalDisposition)) {
+    throw workError('work_transition_invalid', 'Terminal disposition is invalid.');
+  }
+  if (input.safeFailureCode !== undefined && input.safeFailureCode !== null &&
+      !SAFE_REASON.test(input.safeFailureCode)) {
+    throw workError('work_transition_invalid', 'Settlement failure code is invalid.');
   }
   assertTimestamp(input.settledAt, 'Run settlement time');
 }

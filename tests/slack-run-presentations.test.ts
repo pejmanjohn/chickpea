@@ -2068,3 +2068,43 @@ test('a stop note records its reason beside the answer result, never as a new te
     assert.throws(() => store.get('run_stopped_reason'), SlackPresentationStateError);
   } finally { db.close(); }
 });
+
+test('a presentation whose turn never started closes with no Slack effect in the existing vocabulary', () => {
+  const db = openStateDb(':memory:');
+  try {
+    const store = new SlackRunPresentationStoreLogic(db, () => 1_800_000_000_000);
+    const created = store.create(createV3Input('run_unstarted'));
+    assert.equal(created.repairRequired, true, 'an admitted presentation waits for its run');
+    const closed = store.settleUnstarted('run_unstarted');
+    if (closed?.schemaVersion !== 3) assert.fail('expected a V3 presentation');
+    assert.equal(closed.lifecyclePhase, 'settled');
+    if (closed.terminalDelivery.state !== 'abandoned') assert.fail('expected an abandoned terminal');
+    assert.equal(closed.terminalDelivery.result, 'failure');
+    assert.equal(closed.terminalDelivery.operation.certainty, 'failed');
+    assert.equal(closed.agentSession.disposition, 'superseded');
+    assert.equal(closed.agentSession.operation, undefined);
+    assert.equal(closed.currentActivity, undefined);
+    assert.deepEqual(closed.activityProjection, { surface: 'unselected', state: 'absent' });
+    assert.equal(closed.stream.state, 'absent');
+    assert.equal(closed.repairRequired, false);
+    assert.equal(closed.projectionVersion, created.projectionVersion + 1);
+    assert.deepEqual(store.get('run_unstarted'), closed, 'it reads back as stored');
+    assert.deepEqual(store.listAutoRepairableV3(50), []);
+    assert.deepEqual(store.settleUnstarted('run_unstarted'), closed, 'a repeat changes nothing');
+    assert.throws(
+      () => advance(store, closed, { kind: 'set_lifecycle_phase', phase: 'active' }),
+      SlackPresentationStateError,
+      'a closed presentation is terminal',
+    );
+    assert.equal(store.settleUnstarted('run_missing'), undefined);
+
+    // A presentation that showed anything is its run's to finish.
+    const shown = advance(store, store.create(createV3Input('run_shown')), {
+      kind: 'select_activity_projection', surface: 'assistant_status',
+    });
+    assert.deepEqual(store.settleUnstarted('run_shown'), shown);
+    // An older schema has no lifecycle to close.
+    const legacy = store.create({ ...createInput('run_legacy_unstarted'), schemaVersion: 2 });
+    assert.deepEqual(store.settleUnstarted('run_legacy_unstarted'), legacy);
+  } finally { db.close(); }
+});

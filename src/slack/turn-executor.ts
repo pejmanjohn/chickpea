@@ -430,9 +430,11 @@ export async function executeTurnJob(
           stopEnding = false;
           return undefined;
         }
-        // Dropped rows never ran: they made no Slack effect, hold no Work
-        // execution, and keep their claims so a Slack retry never runs them.
-        // Only the stopped run itself could have coding work or progress.
+        // Dropped rows never ran: they made no Slack effect and hold no Work
+        // execution. The state store settled their Runs and closed their
+        // presentations with the drop (see SlackStateLogic.finishTurnStop);
+        // they keep their claims so a Slack retry never runs them. Only the
+        // stopped run itself could have coding work or progress.
         const sandbox = stoppedBeforeDispatch ? undefined : await readStoppedSandbox();
         const report = stoppedBeforeDispatch
           ? undefined

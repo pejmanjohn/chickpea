@@ -1915,7 +1915,13 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     headId: string,
     outcome: 'dropped' | 'released',
   ): ReturnType<TagStateRpc['slackTurnStopFinish']> {
-    return this.call((stores) => stores.turnJobs.finishStop(headId, outcome) ?? null);
+    return this.call((stores) => stores.slack.finishTurnStop(
+      headId,
+      outcome,
+      stores.turnJobs,
+      stores.work,
+      stores.presentations,
+    ) ?? null);
   }
 
   async slackTurnDirectThreads(
@@ -2308,7 +2314,12 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     // its own presentation state (see src/slack/turn-executor.ts).
     const turnPorts: TurnExecutionPorts = {
       env: this.env as PlatformEnv,
-      turnJobs: stores.turnJobs,
+      // The rows' store, except that the stopped ending also settles the
+      // dropped turns' Runs and presentations, as slackTurnStopFinish does.
+      turnJobs: Object.assign(Object.create(stores.turnJobs) as TurnJobStoreLogic, {
+        finishStop: (headId: string, outcome: 'dropped' | 'released') =>
+          stores.slack.finishTurnStop(headId, outcome, stores.turnJobs, stores.work, stores.presentations),
+      }),
       slack: stores.slack,
       config: stores.config,
       presentationState: localSlackPresentationState(stores),

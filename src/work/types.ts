@@ -427,6 +427,14 @@ export interface SettleRunWithoutDeliveryInput {
   settledAt: number;
 }
 
+/** A Run that never started (see WorkStoreLogic.settleUnstartedRun). */
+export interface SettleUnstartedRunInput {
+  runId: RunId;
+  terminalDisposition: Extract<RunDisposition, 'skipped' | 'cancelled' | 'superseded'>;
+  safeFailureCode?: string | null;
+  settledAt: number;
+}
+
 export interface RecordWorkActionInput {
   eventId: string;
   idempotencyKey: string;

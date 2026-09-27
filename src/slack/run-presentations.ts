@@ -1202,6 +1202,54 @@ export class SlackRunPresentationStoreLogic {
     });
   }
 
+  /**
+   * Close the presentation of a Run whose turn never started: a stop dropped
+   * it before it ran (KTD3). Nothing was shown for it, so it settles with no
+   * Slack effect, through existing transitions only, which any release reads
+   * as settled: its shared effects are superseded (the stopped run's ending
+   * owns the thread's Agent Session), its terminal is abandoned and its
+   * lifecycle is settled. Its admitted activity, never projected, is dropped,
+   * so no pending receipt keeps it marked for repair. A presentation that
+   * showed anything is left as it is; one already closed is returned again.
+   */
+  settleUnstarted(runId: string): SlackRunPresentation | undefined {
+    validateId(runId, 'Run id');
+    return this.db.transaction(() => {
+      const row = this.getRow(runId);
+      if (!row) return undefined;
+      const current = decodePresentation(row);
+      if (current.schemaVersion !== 3 || !presentationUnstarted(current)) return current;
+      const at = this.now();
+      const operationId = `terminal_${createHash('sha256')
+        .update(`${runId}:unstarted`).digest('hex').slice(0, 24)}`;
+      const mutations: SlackPresentationMutation[] = [
+        { kind: 'supersede_shared_repair_effects' },
+        { kind: 'record_terminal_delivery_intent', operationId, result: 'failure' },
+        { kind: 'abandon_terminal_delivery', operationId },
+        { kind: 'set_lifecycle_phase', phase: 'settled' },
+      ];
+      let next: SlackRunPresentation = current;
+      for (const mutation of mutations) next = applyMutation(next, mutation, at);
+      requireV3(next);
+      delete next.currentActivity;
+      next.repairRequired = v3RepairRequired(next);
+      next.projectionVersion = current.projectionVersion + 1;
+      next.updatedAt = at;
+      const updated = this.db.run(
+        `UPDATE slack_run_presentations
+         SET projection_version = ?, repair_required = ?, presentation_json = ?, updated_at = ?
+         WHERE run_id = ? AND projection_version = ?`,
+        next.projectionVersion,
+        next.repairRequired ? 1 : 0,
+        JSON.stringify(next),
+        at,
+        runId,
+        current.projectionVersion,
+      );
+      return updated.changes === 1 ? next : current;
+    });
+  }
+
   listRepairRequired(limit = 50): SlackRunPresentation[] {
     const boundedLimit = boundedLimitValue(limit);
     return (this.db.all(
@@ -3564,6 +3612,18 @@ function v3RepairRequired(presentation: SlackRunPresentationV3): boolean {
   return receipts.some((receipt) =>
     receipt !== undefined && receipt.certainty !== 'acknowledged'
   );
+}
+
+/** An admitted V3 presentation nothing has been shown for or intended through yet. */
+function presentationUnstarted(presentation: SlackRunPresentationV3): boolean {
+  return presentation.lifecyclePhase === 'admitted' &&
+    presentation.stream.state === 'absent' && presentation.stream.messageTs === undefined &&
+    presentation.terminalDelivery.state === 'none' &&
+    presentation.agentSession.operation === undefined &&
+    presentation.agentSession.disposition === undefined &&
+    presentation.activityProjection.surface === 'unselected' &&
+    presentation.cleanup.state === 'not_required' &&
+    presentation.continuations === undefined;
 }
 
 export function presentationHasTerminalOutcome(
