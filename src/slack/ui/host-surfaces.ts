@@ -275,8 +275,7 @@ export async function abandonTurnSurfaces(state: SlackStateStore, turnJobId: str
  */
 export async function prepareDisplaySurfaces(input: {
   state: SlackStateStore;
-  turn: Pick<NormalizedSlackTurn, 'workspaceId' | 'channelId' | 'threadTs' | 'userId'> &
-    Partial<Pick<NormalizedSlackTurn, 'channelType' | 'source'>>;
+  turn: Pick<NormalizedSlackTurn, 'workspaceId' | 'channelId' | 'threadTs' | 'userId' | 'source' | 'channelType'>;
   agentId: string;
   turnJobId: string;
   /** This attempt's components; undefined when replaying a settled answer. */
@@ -300,7 +299,7 @@ export async function prepareDisplaySurfaces(input: {
           channelId: input.turn.channelId,
           threadTs: input.turn.threadTs,
           conversationThreadTs: input.turn.threadTs,
-          conversationKind: input.turn.channelId.startsWith('D') ? 'im' : 'channel',
+          conversationKind: slackConversationKind(input.turn) === 'im' ? 'im' : 'channel',
           agentId: input.agentId,
           turnJobId: input.turnJobId,
           requesterUserId: input.turn.userId,

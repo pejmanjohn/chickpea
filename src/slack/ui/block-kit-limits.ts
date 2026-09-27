@@ -378,6 +378,7 @@ function checkCard(value: Json, at: string, context: CheckContext): void {
   if (value.title !== undefined) checkText(value.title, `${at}.title`, context, { max: 150 });
   if (value.subtitle !== undefined) checkText(value.subtitle, `${at}.subtitle`, context, { max: 150 });
   if (value.body !== undefined) checkText(value.body, `${at}.body`, context, { max: 200 });
+  if (value.subtext !== undefined) checkText(value.subtext, `${at}.subtext`, context, { max: 200 });
   if (value.actions !== undefined) {
     if (!Array.isArray(value.actions) || value.actions.length < 1 || value.actions.length > MAX_CARD_BUTTONS) {
       context.issues.push(`${at}.actions must hold 1–${MAX_CARD_BUTTONS} buttons`);

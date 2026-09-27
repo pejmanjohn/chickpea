@@ -12,6 +12,7 @@ import type { GatewayDeploymentClient } from '../src/slack/gateway/client.ts';
 import type { GatewayUiActionDelivery, GatewayViewSubmissionDelivery } from '../src/slack/gateway/protocol.ts';
 import type { TurnJob } from '../src/slack/turn-job-types.ts';
 import { checkSlackBlocks } from '../src/slack/ui/block-kit-limits.ts';
+import type { SlackUiStateValue } from '../src/slack/ui/interaction-payload.ts';
 import { validateRequestForm } from '../src/slack/ui/presentation-tools.ts';
 import { formFieldActionId, formFieldBlockId } from '../src/slack/ui/render-form.ts';
 import { QUESTION_OTHER_CHOICE } from '../src/slack/ui/render-interactive.ts';
@@ -586,7 +587,7 @@ test('a card request button starts a turn and never redraws the answer message i
 
 // ── request_form and "Something else…" ───────────────────────────────────
 
-const fieldState = (surfaceId: string, index: number, value: Record<string, unknown>) =>
+const fieldState = (surfaceId: string, index: number, value: SlackUiStateValue) =>
   ({ [formFieldBlockId(surfaceId, index)]: { [formFieldActionId(index)]: value } });
 
 function formSpec(fields: Parameters<typeof validateRequestForm>[0]['fields'], patch: Record<string, unknown> = {}) {

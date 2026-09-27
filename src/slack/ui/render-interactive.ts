@@ -1,5 +1,6 @@
 import type { SlackUiAction } from './interaction-payload.ts';
 import type { AskUserSpec, OfferActionsSpec } from './presentation-tools.ts';
+import { cardRequestButtonAt } from './render-display.ts';
 import {
   parseUiOptionValue,
   uiActionId,
@@ -391,8 +392,7 @@ export function interactiveAnswer(
   if (spec.kind === 'cards') {
     const slot = control.valueIndex;
     if (control.kind !== 'cards' || slot === undefined) return undefined;
-    const action = spec.cards.cards[Math.floor(slot / 3)]?.actions?.[(slot % 3) - 1];
-    return action && !action.url ? { choice: slot } : undefined;
+    return cardRequestButtonAt(spec.cards, slot) ? { choice: slot } : undefined;
   }
   if (spec.kind === 'actions') {
     const index = control.valueIndex;
@@ -487,7 +487,6 @@ export function cardTurnText(
   spec: Extract<UiSurfaceRecord['spec'], { kind: 'cards' }>,
   answer: InteractiveAnswer,
 ): string {
-  const card = spec.cards.cards[Math.floor(answer.choice / 3)];
-  const label = card?.actions?.[(answer.choice % 3) - 1]?.label ?? 'a button';
-  return `Pressed "${label}" on the card "${card?.title ?? 'a card'}" under your previous reply (cards ${record.id.slice(0, 8)}).`;
+  const button = cardRequestButtonAt(spec.cards, answer.choice);
+  return `Pressed "${button?.label ?? 'a button'}" on the card "${button?.card.title ?? 'a card'}" under your previous reply (cards ${record.id.slice(0, 8)}).`;
 }
