@@ -1,4 +1,8 @@
-import { credentialMarkers, redactCredentialLikeContent } from '../security/content-validation.ts';
+import {
+  credentialMarkers,
+  credentialMatchRanges,
+  redactCredentialLikeContent,
+} from '../security/content-validation.ts';
 import type { CompletedSlackArtifactReceipt } from './artifact-receipts.ts';
 import type { SlackNativeTableBlock } from './table-presentation.ts';
 
@@ -731,8 +735,9 @@ export function streamableSlackMarkdownPrefix(text: string): string {
   const answer = sanitizedView(normalized);
   for (;;) {
     const view = sanitizedView(stable);
-    const next = answer.text[answer.fromRaw(stable.length)];
-    const wordEnded = next !== undefined && !/[\p{L}\p{N}_]/u.test(next);
+    const nextAt = answer.fromRaw(stable.length);
+    const wordEnded = nextAt < answer.text.length &&
+      !/^[\p{L}\p{N}_]/u.test(answer.text.slice(nextAt, nextAt + 2));
     const held = Math.min(
       view.toRaw(unsafeMentionTail(view.text, wordEnded)),
       heldBeforeClosedSpan(answer, openUrlEmphasis(stable, stable.lastIndexOf('\n') + 1, true), stable.length),
@@ -798,10 +803,13 @@ function sanitizedView(value: string) {
   };
   const fromRaw = (raw: number) =>
     dropped.reduce((at, stars) => at - Math.min(Math.max(raw - stars, 0), 2), raw);
+  let redactions: Array<[number, number]> | undefined;
   return {
     text,
     toRaw,
     fromRaw,
+    /** Where the answer's redaction applies in `text`, found once. */
+    redactions: () => (redactions ??= credentialMatchRanges(text)),
     /** `credentialHoldStart` on the answer's reading; an unmoved hold stays put. */
     credentialHoldStart(held: number): number {
       if (!dropped.length) return credentialHoldStart(value, held);
@@ -963,20 +971,21 @@ function heldBeforeClosedSpan(
 ): number {
   if (at >= cut) return at;
   const start = answer.fromRaw(at);
-  const before = answer.text.slice(0, start);
-  // A credential the answer joins across the opener, an open `<` or code
-  // mention, and a broadcast word the opener splits.
-  let held = Math.min(credentialHoldStart(answer.text, start), unsafeMentionTail(before, true));
-  const word = /(?<![\p{L}\p{N}]_*)@[\p{L}\p{N}]*_*$/u.exec(before);
-  if (word) {
-    const joined = /^@([\p{L}\p{N}]*)(_*)/u.exec(answer.text.slice(word.index))!;
-    const letters = joined[1]!.toLowerCase();
-    const open = word.index + joined[0].length >= answer.text.length;
-    const broadcast = open
-      ? SLACK_BROADCAST_KEYWORDS.some((keyword) =>
-        joined[2] ? keyword === letters : keyword.startsWith(letters))
-      : /^@(?:here|channel|everyone)(?!_*[\p{L}\p{N}])/iu.test(answer.text.slice(word.index));
-    if (broadcast) held = Math.min(held, word.index);
+  // A credential the answer joins across the opener (`xo**xb-…`), or redacts
+  // across it: a name before it and its `=` after (`OPENAI_API_KEY\n**= …`),
+  // or a PEM header split in two. A mention the opener splits (`@c**hannel`,
+  // `<!he**re>`) needs nothing here: the loop checks the cut before the
+  // opener against the answer next.
+  let held = credentialHoldStart(answer.text, start);
+  let shown: Array<[number, number]> | undefined;
+  for (const [from, to] of answer.redactions()) {
+    if (from >= start || to <= start) continue;
+    // Text before the opener that already redacts from the same place (an
+    // unfinished PEM block) shows what the answer will.
+    shown ??= credentialMatchRanges(answer.text.slice(0, start));
+    if (!shown.some(([shownFrom]) => shownFrom === from)) {
+      held = Math.min(held, credentialHoldStart(answer.text, from));
+    }
   }
   return held < start ? Math.min(at, answer.toRaw(held)) : at;
 }

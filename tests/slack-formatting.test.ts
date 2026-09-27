@@ -255,6 +255,18 @@ test('every progressive cut point is a monotone prefix of the canonical terminal
     // `'\u0130'.toLowerCase()` is two characters; marker positions must not drift.
     `${'\u0130'.repeat(33)} token xoxb-123456789012345678901234 done`,
     `${'\u0130'.repeat(33)} xoxox-xox`,
+    // A credential the answer redacts across a span opener: a name before
+    // it and its separator after, or a PEM header split in two.
+    'OPENAI_API_KEY\n**= abcdefghij https://x <**',
+    'OPENAI_API_KEY **= abcdefghij https://x OPENAI_API_KEY**',
+    'AWS_ACCESS_KEY_ID\n**: abcdefgh https://x** y',
+    'ADMIN_TOKEN\t**=\tabcdefghij https://x** ok',
+    '-----BEGIN RSA PRIVATE **KEY----- https://x <**\nabc',
+    '-----BEGIN RSA **PRIVATE KEY----- https://x `**\n',
+    // A mention the opener splits, and a letter outside the BMP after one.
+    'x @c**hannel https://a.test/docs**',
+    'x <!he**re> https://a.test/docs**',
+    `Heads up @here**${'\u{1D400}'} https://x @h** done`,
   ];
 
   for (const terminalInput of corpus) {
