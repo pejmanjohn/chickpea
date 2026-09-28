@@ -1991,12 +1991,9 @@ export class TurnJobStoreLogic {
     // run records stay unread: a row whose run records this release cannot
     // read (a newer release's, after a rollback) is still cleaned up instead
     // of failing every sweep and holding the alarm armed for it.
-    return rows.map((row) => this.decodeRow({
-      ...row,
-      runtime_plan_json: null,
-      dispatch_envelope_json: null,
-      dispatch_receipt_json: null,
-      flue_settlement_json: null,
+    return rows.map((row) => this.decodeRow(row, {
+      turn: JSON.parse(row.turn_json) as NormalizedSlackTurn,
+      assignment: JSON.parse(row.assignment_json) as ResolvedAssignment,
     }));
   }
 
