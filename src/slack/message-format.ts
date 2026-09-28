@@ -751,9 +751,11 @@ export function streamableSlackMarkdownPrefix(text: string): string {
   const settled = answer.fromRaw(unsafeFrom);
   for (let passes = 0; ; passes += 1) {
     const view = answer.prefix(stable.length);
+    // A code hold at a span's closer is its opener when the answer drops the span.
+    const codeHold = answer.spanStart(openUrlEmphasis(stable, stable.lastIndexOf('\n') + 1, true));
     const held = Math.min(
       view.toRaw(unsafeMentionTail(view.text, answerAfterCut(answer, view, stable.length, settled))),
-      heldBeforeClosedSpan(answer, openUrlEmphasis(stable, stable.lastIndexOf('\n') + 1, true), stable.length),
+      heldBeforeClosedSpan(answer, codeHold, stable.length),
       heldBeforeClosedSpan(answer, answer.spanStart(stable.length), stable.length),
     );
     if (held >= stable.length) break;
@@ -1082,9 +1084,9 @@ function heldBeforeClosedSpan(
 interface AnswerAfterCut {
   /**
    * The answer's character after the cut cannot continue a word. Read even
-   * where the unsafe tail begins: what can rewrite it there (a redaction, a
-   * special mention) also begins with a character that ends a word, and
-   * stars that may still drop hold the word before them.
+   * where the unsafe tail begins: a character there that ends a word still
+   * ends one once rewritten (a redaction reads `[`, a special mention `@` or
+   * `<`), and stars that may still drop hold the word before them.
    */
   wordEnded: boolean;
   /** Whether a special mention starts at the `<` at `at`; `undefined` while unsettled. */
@@ -1212,8 +1214,9 @@ function unmatchedBacktickOnLastLine(value: string, lastLineStart: number): numb
  * the cut is the answer, whose spans `spanStart` checks, and holding
  * the cut's own trailing `**` peeled a `***…` run two stars per pass. A code
  * hold keeps the cut from closing the span, at its closing `**`: the answer
- * keeps the stars once that code closes, and a span it drops is
- * `spanStart`'s. Holding the opener pulled a cut below one already streamed.
+ * keeps the stars once that code closes, and `spanStart` moves the hold to
+ * the opener of a span it drops. Holding the opener pulled a cut below one
+ * already streamed.
  */
 function openUrlEmphasis(value: string, lastLineStart: number, ofCut = false): number {
   // A cut's only hold is a `**` pair (below), so a cut without one has none.

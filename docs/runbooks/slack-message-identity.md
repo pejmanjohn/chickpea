@@ -201,8 +201,8 @@ the answer's unsafe tail: a `<` that cannot start a special mention and an
 back-to-back `**https://x @h**` spans (the answer reads `@hhttps`) stream as
 in v0.1.29; v0.1.30 judged the cut alone and held each back to its start.
 A cut that would close a `**URL**` span after a backtick it leaves open
-stops before the span's closing `**`, since the answer keeps those stars as
-code.
+stops before the span's closing `**` when the answer keeps those stars as
+code, and at its opener when the answer drops them.
 
 A run that must hold still pulls the cut back one unit per pass:
 back-to-back `**https://x @here_**` would show `@⁠here_` at every span
