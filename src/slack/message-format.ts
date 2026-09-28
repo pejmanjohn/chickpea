@@ -717,33 +717,47 @@ function chooseSlackReplyCut(text: string, limit: number, min: number): SlackRep
 }
 
 /**
+ * How many times the hold loop may pull its cut back before it gives up for
+ * this chunk. Each pass rescans the cut, and a run of repeated structure
+ * (back-to-back `**URL**` spans that each end in `@h` or `<`, or one line of
+ * `a < b < c …`) pulls it back one unit per pass: quadratic per chunk, cubic
+ * per streamed answer. Measured answers pull back at most once and the
+ * monotone-prefix corpus at most twice.
+ */
+const STREAM_HOLD_PASS_LIMIT = 4;
+
+/**
  * Return the cumulative prefix that is safe to expose before generation ends.
  * Potential links, emphasized URLs, and credential-shaped tokens remain in the
- * in-memory tail until their closing delimiter arrives. The returned value is
- * therefore monotone and a prefix of `canonicalSlackMarkdownText(final)`.
+ * in-memory tail until their closing delimiter arrives. Every value is a
+ * prefix of `canonicalSlackMarkdownText(final)`, and every non-empty value is
+ * monotone. A cut that would take more than `STREAM_HOLD_PASS_LIMIT` passes
+ * returns `''`, nothing new to stream for now: the stream keeps what it
+ * shows, which a shorter non-empty prefix would rewrite.
  */
 export function streamableSlackMarkdownPrefix(text: string): string {
   const normalized = text.replace(/\r\n?/g, '\n').replace(/^\s+/, '');
   if (!normalized) return '';
-  let stable = normalized.slice(0, earliestUnsafeTail(normalized)).trimEnd();
+  const answer = sanitizedView(normalized);
+  let stable = normalized.slice(0, earliestUnsafeTail(normalized, answer)).trimEnd();
   // A cut can end inside a closed code span or `<...>` reference, or right
   // after a broadcast word, where the whole answer neutralizes differently,
   // or inside code or a `**URL**` span, whose opener it leaves unclosed.
   // Whether the cut's last word goes on is read from the answer so far: a
   // word the answer has already ended is not held, which also keeps a run of
   // such words from being peeled off one pass (and one rescan) at a time.
-  const answer = sanitizedView(normalized);
-  for (;;) {
-    const view = sanitizedView(stable);
+  for (let passes = 0; ; passes += 1) {
+    const view = answer.prefix(stable.length);
     const nextAt = answer.fromRaw(stable.length);
     const wordEnded = nextAt < answer.text.length &&
       !/^[\p{L}\p{N}_]/u.test(answer.text.slice(nextAt, nextAt + 2));
     const held = Math.min(
       view.toRaw(unsafeMentionTail(view.text, wordEnded)),
       heldBeforeClosedSpan(answer, openUrlEmphasis(stable, stable.lastIndexOf('\n') + 1, true), stable.length),
-      heldBeforeClosedSpan(answer, strippedSpanStart(normalized, stable.length), stable.length),
+      heldBeforeClosedSpan(answer, answer.spanStart(stable.length), stable.length),
     );
     if (held >= stable.length) break;
+    if (passes === STREAM_HOLD_PASS_LIMIT) return '';
     stable = stable.slice(0, view.credentialHoldStart(held)).trimEnd();
   }
   if (!stable) return '';
@@ -782,11 +796,16 @@ export function sanitizeSlackMarkdownLinks(markdown: string): string {
  * must not pull back the span it follows.
  */
 function sanitizedView(value: string) {
+  // Each dropped span's opening and closing `**`, in order.
   const dropped: number[] = [];
+  // Each closed code segment's start and end, in order.
+  const code: number[] = [];
   let offset = 0;
   const segments = value.includes('**') ? value.split(CLOSED_CODE_SEGMENT) : [];
   for (const [index, segment] of segments.entries()) {
-    if (index % 2 === 0) {
+    if (index % 2 === 1) {
+      code.push(offset, offset + segment.length);
+    } else {
       for (const strong of segment.matchAll(STRONG_EMPHASIS)) {
         if (!WHOLE_URL_SEGMENT.test(strong[1]!)) continue;
         dropped.push(offset + strong.index, offset + strong.index + strong[0].length - 2);
@@ -795,14 +814,48 @@ function sanitizedView(value: string) {
     offset += segment.length;
   }
   const text = dropped.length ? sanitizeSlackMarkdownLinks(value) : value;
-  const toRaw = (at: number) => {
-    if (at >= text.length) return value.length;
-    let raw = at;
-    for (const [nth, stars] of dropped.entries()) if (stars - 2 * nth <= at) raw += 2;
-    return raw;
+  const view = starsDroppedView(value, text, dropped, dropped.length);
+  const spansBefore = (cut: number) => leadingCount(dropped.length / 2, (span) => dropped[2 * span]! < cut);
+  return {
+    ...view,
+    /** The dropped span `cut` falls inside: its opening `**`, else `cut`. */
+    spanStart(cut: number): number {
+      const spans = spansBefore(cut);
+      return spans && cut < dropped[2 * spans - 1]! + 2 ? dropped[2 * spans - 2]! : cut;
+    },
+    /**
+     * `sanitizedView(value.slice(0, cut))` for the hold loop's cuts. A cut
+     * that splits no closed code segment pairs and drops exactly the stars
+     * before it that this view does, except a span it splits: that keeps its
+     * stars, and nothing inside it can pair. A cut inside code is read afresh.
+     */
+    prefix(cut: number) {
+      const codes = leadingCount(code.length / 2, (segment) => code[2 * segment]! < cut);
+      if (codes && cut < code[2 * codes - 1]!) return sanitizedView(value.slice(0, cut));
+      let spans = spansBefore(cut);
+      let kept = cut;
+      if (spans && cut < dropped[2 * spans - 1]! + 2) kept = dropped[2 * --spans]!;
+      const cutText = text.slice(0, view.fromRaw(kept)) + value.slice(kept, cut);
+      return starsDroppedView(value.slice(0, cut), cutText, dropped, 2 * spans);
+    },
   };
-  const fromRaw = (raw: number) =>
-    dropped.reduce((at, stars) => at - Math.min(Math.max(raw - stars, 0), 2), raw);
+}
+
+/**
+ * The index maps and credential reading of `text`, which is `value` without
+ * the first `count` stars runs in `dropped`. Each run is two characters and
+ * the runs are ordered, so both maps are binary searches.
+ */
+function starsDroppedView(value: string, text: string, dropped: readonly number[], count: number) {
+  // A run wholly before `raw` removes two characters; one ending at it, one.
+  const fromRaw = (raw: number) => {
+    const before = leadingCount(count, (nth) => dropped[nth]! <= raw - 2);
+    return raw - 2 * before - (before < count && dropped[before] === raw - 1 ? 1 : 0);
+  };
+  // `dropped[nth] - 2 * nth` is where run `nth` sat in `text`; it never decreases.
+  const toRaw = (at: number) => at >= text.length
+    ? value.length
+    : at + 2 * leadingCount(count, (nth) => dropped[nth]! - 2 * nth <= at);
   let redactions: Array<[number, number]> | undefined;
   return {
     text,
@@ -812,12 +865,24 @@ function sanitizedView(value: string) {
     redactions: () => (redactions ??= credentialMatchRanges(text)),
     /** `credentialHoldStart` on the answer's reading; an unmoved hold stays put. */
     credentialHoldStart(held: number): number {
-      if (!dropped.length) return credentialHoldStart(value, held);
+      if (!count) return credentialHoldStart(value, held);
       const at = fromRaw(held);
       const start = credentialHoldStart(text, at);
       return start === at ? held : toRaw(start);
     },
   };
+}
+
+/** How many of the first `length` indices pass `test`, which holds for a prefix of them. */
+function leadingCount(length: number, test: (index: number) => boolean): number {
+  let low = 0;
+  let high = length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (test(middle)) low = middle + 1;
+    else high = middle;
+  }
+  return low;
 }
 
 // The `NAME = value` signatures allow any whitespace, newlines included,
@@ -842,21 +907,33 @@ function credentialMarkerPattern(tail: string): RegExp {
 // credential the loop below walks back over, made long replies quadratic.
 function earliestCredentialReaching(value: string, end: number, pattern: RegExp): number {
   let from = end;
-  while (from > 0 && !/\s/.test(value[from - 1]!)) from -= 1;
-  while (from > 0 && /\s/.test(value[from - 1]!)) from -= 1;
+  while (from > 0 && !isSpaceAt(value, from - 1)) from -= 1;
+  while (from > 0 && isSpaceAt(value, from - 1)) from -= 1;
   from -= 1;
-  while (from > 0 && /\s/.test(value[from - 1]!)) from -= 1;
+  while (from > 0 && isSpaceAt(value, from - 1)) from -= 1;
   from -= 1;
-  while (from > 0 && /\w/.test(value[from - 1]!)) from -= 1;
+  while (from > 0 && isWordAt(value, from - 1)) from -= 1;
   from = Math.max(0, from - LONGEST_CREDENTIAL_MARKER);
   const at = value.slice(from, end).search(pattern);
   return at < 0 ? end : from + at;
 }
 
-function earliestUnsafeTail(value: string): number {
+// `/\s/` and `/\w/` on one UTF-16 unit, without a regex call per character:
+// a whitespace-free answer is one token these walks cross in full. Below
+// U+00A0 `\s` is exactly tab through carriage return and space.
+function isSpaceAt(value: string, at: number): boolean {
+  const code = value.charCodeAt(at);
+  return code === 32 || (code >= 9 && code <= 13) || (code >= 0xa0 && /\s/.test(value[at]!));
+}
+
+function isWordAt(value: string, at: number): boolean {
+  const code = value.charCodeAt(at);
+  return (code >= 48 && code <= 57) || (code >= 65 && code <= 90) || (code >= 97 && code <= 122) || code === 95;
+}
+
+function earliestUnsafeTail(value: string, view: ReturnType<typeof sanitizedView>): number {
   // Redaction and neutralization read the answer after its `**URL**` spans
   // lose their stars, so their holds judge that text.
-  const view = sanitizedView(value);
   let unsafeFrom = view.toRaw(unsafeTokenTail(view.text));
 
   // A link or Slack `<...>` reference still being written sits on the last
@@ -871,7 +948,7 @@ function earliestUnsafeTail(value: string): number {
   }
   // Emphasis around a URL is rewritten per line; an unpaired `**` on an
   // earlier line (`**kwargs`, `2**10`) is literal and must not hold the rest.
-  unsafeFrom = Math.min(unsafeFrom, heldBeforeStars(value, openUrlEmphasis(value, lastLineStart)));
+  unsafeFrom = Math.min(unsafeFrom, heldBeforeStars(view, openUrlEmphasis(value, lastLineStart), value.length));
   const trailingTicks = value.match(/`{1,2}$/)?.[0];
   if (trailingTicks) unsafeFrom = Math.min(unsafeFrom, value.length - trailingTicks.length);
   // A Markdown table row can look complete several tokens before the model
@@ -926,11 +1003,13 @@ function credentialHoldStart(value: string, held: number): number {
   // A hold can also land inside a marker that starts earlier (the second
   // `xox` of `xoxoxb`), which a search ending at the hold misses.
   let straddled = held;
-  const lower = asciiLowerCase(value);
+  // Only a marker that overlaps the hold matters, so only that window is read.
+  const from = Math.max(0, held - LONGEST_CREDENTIAL_MARKER);
+  const lower = asciiLowerCase(value.slice(from, held + LONGEST_CREDENTIAL_MARKER));
   for (const marker of credentialMarkers()) {
     const markerLower = marker.toLowerCase();
     for (let back = 1; back < markerLower.length && back <= held; back += 1) {
-      if (lower.startsWith(markerLower, held - back)) straddled = Math.min(straddled, held - back);
+      if (lower.startsWith(markerLower, held - back - from)) straddled = Math.min(straddled, held - back);
     }
   }
   return Math.min(outermostCredential(value, held), outermostCredential(value, straddled));
@@ -950,9 +1029,9 @@ function outermostCredential(value: string, held: number): number {
  * before it joins the span's first (`xo**xoxb-…**` reads `xoxoxb-…`), so the
  * text before it is held as it was when the stream ended there.
  */
-function heldBeforeStars(value: string, at: number): number {
-  if (at >= value.length) return at;
-  const view = sanitizedView(value.slice(0, at));
+function heldBeforeStars(answer: ReturnType<typeof sanitizedView>, at: number, length: number): number {
+  if (at >= length) return at;
+  const view = answer.prefix(at);
   return Math.min(at, view.toRaw(unsafeTokenTail(view.text)));
 }
 
@@ -991,28 +1070,6 @@ function heldBeforeClosedSpan(
 }
 
 /**
- * The start of the `**URL**` span `sanitizeSlackMarkdownLinks` strips from
- * the answer that `cut` falls inside, else `cut`: the prefix ending there
- * keeps the opener the answer drops.
- */
-function strippedSpanStart(value: string, cut: number): number {
-  let offset = 0;
-  for (const [index, segment] of value.split(CLOSED_CODE_SEGMENT).entries()) {
-    const end = offset + segment.length;
-    if (cut <= offset) break;
-    if (cut < end && index % 2 === 0) {
-      for (const strong of segment.matchAll(STRONG_EMPHASIS)) {
-        const start = offset + strong.index;
-        if (start >= cut) break;
-        if (cut < start + strong[0].length && WHOLE_URL_SEGMENT.test(strong[1]!)) return start;
-      }
-    }
-    offset = end;
-  }
-  return cut;
-}
-
-/**
  * Where the tail `neutralizeSlackBroadcastMentions` may still rewrite begins:
  * a `<...>` reference on the last line, an `@` that can still become a whole
  * broadcast word (`@here`, not `@heresy`), and a mention after an inline code
@@ -1044,6 +1101,7 @@ function unsafeMentionTail(value: string, wordEnded = false): number {
 
 /** The first backtick on the last line that no code segment has closed yet. */
 function unmatchedBacktickOnLastLine(value: string, lastLineStart: number): number | undefined {
+  if (value.indexOf('`', lastLineStart) < 0) return undefined;
   let offset = 0;
   for (const [index, segment] of value.split(SLACK_CODE_SEGMENT).entries()) {
     const tick = index % 2 === 0 ? segment.indexOf('`', lastLineStart - offset) : -1;
@@ -1063,10 +1121,12 @@ function unmatchedBacktickOnLastLine(value: string, lastLineStart: number): numb
  * pairs instead let a growing `***…` run flip between held and shown.
  *
  * For a cut of the answer (`ofCut`) only the code holds apply: what follows
- * the cut is the answer, whose spans `strippedSpanStart` checks, and holding
+ * the cut is the answer, whose spans `spanStart` checks, and holding
  * the cut's own trailing `**` peeled a `***…` run two stars per pass.
  */
 function openUrlEmphasis(value: string, lastLineStart: number, ofCut = false): number {
+  // A cut's only hold is a `**` pair (below), so a cut without one has none.
+  if (ofCut && !value.includes('**')) return value.length;
   const segments = value.split(CLOSED_CODE_SEGMENT);
   let offset = 0;
   let fence = -1;
@@ -1084,6 +1144,8 @@ function openUrlEmphasis(value: string, lastLineStart: number, ofCut = false): n
     offset += segment.length;
   }
   const opener = fence >= 0 ? fence : value.indexOf('`', Math.max(offset, lastLineStart));
+  // A cut's only hold below is a span closing after code opens.
+  if (ofCut && opener < 0) return value.length;
   const from = fence >= 0 ? offset : Math.max(offset, lastLineStart);
   for (let at = value.indexOf('*', from); at >= 0; at = value.indexOf('*', at + 1)) {
     if (at === value.length - 1) return ofCut ? value.length : at;

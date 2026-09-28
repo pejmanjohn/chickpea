@@ -293,6 +293,31 @@ test('a run of decided broadcast-word prefixes streams instead of being peeled a
   assert.equal(streamableSlackMarkdownPrefix(docs.repeat(480)), 'https://a.test/docs'.repeat(479));
 });
 
+test('a run the hold pulls back one unit at a time streams within a CPU bound', () => {
+  // Each shape pulls the cut back one span, `<` or code span per pass. In
+  // v0.1.30 every pass rescanned the whole cut, so streaming 12,000
+  // characters of these in 40-character chunks took 4 to 47 s of CPU each;
+  // the bounded hold takes under 150 ms.
+  const shapes = ['**https://x @h**', '**https://x @here_**', 'a < b ', '`<` '];
+  for (const unit of shapes) {
+    const answer = unit.repeat(Math.ceil(12_000 / unit.length)).slice(0, 12_000);
+    const terminal = canonicalSlackMarkdownText(answer);
+    let shown = '';
+    const start = process.cpuUsage();
+    for (let end = 40; end < answer.length + 40; end += 40) {
+      const prefix = streamableSlackMarkdownPrefix(answer.slice(0, end));
+      assert.ok(terminal.startsWith(prefix), `${unit}: ${JSON.stringify(prefix.slice(-40))} is not terminal prefix`);
+      // `''` is nothing new to stream; anything else extends what was shown.
+      if (prefix) {
+        assert.ok(prefix.startsWith(shown), `${unit}: ${JSON.stringify(prefix.slice(-40))} rewrote the stream`);
+        shown = prefix;
+      }
+      const { user, system } = process.cpuUsage(start);
+      assert.ok(user + system < 1_500_000, `${unit}: ${Math.round((user + system) / 1_000)} ms of CPU by ${end}`);
+    }
+  }
+});
+
 test('a cut after stripped stars reads the answer at the matching place', () => {
   // The answer drops four stars before `@h`; its next character is the space.
   const text = '**https://a/1** @h then';

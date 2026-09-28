@@ -193,6 +193,15 @@ Dropping the pair also joins the words on either side of each `**`
 holds judge the text as it reads without those stars, and the text before a
 `**` that may still be dropped is held as if the stream ended there.
 
+A hold can pull the cut back onto another hold. A run of repeated structure
+(back-to-back `**URL**` spans that each end in `@h` or `<`, or one line of
+`a < b < c …`) pulls it back one unit per pass. In v0.1.30 every pass
+rescanned the whole answer, so streaming 12,000 characters of
+`**https://x @h**` took about 21 s of CPU. A chunk whose cut needs more than
+four passes now streams nothing new: the stream keeps what it shows and
+continues when a later chunk settles. v0.1.30 streamed none of such a run
+either.
+
 ### Broadcast and user-group mentions
 
 Model-written text never notifies a channel, its active members, the
