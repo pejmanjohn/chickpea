@@ -174,17 +174,20 @@ test('traditional encrypted PEM metadata is redacted with its key body', () => {
   assert.doesNotMatch(redacted, /Proc-Type|DEK-Info|secretkeybody|END RSA PRIVATE KEY/);
 });
 
-test('PEM armor is redacted where the patterns it replaced found it', () => {
-  // Redaction used to find armor with these two patterns. Seeded text built
-  // from armor pieces (labels read two ways, case and length edges, a Kelvin
-  // sign that is not a K) must redact the same ranges.
+test('PEM armor is redacted where these patterns find it', () => {
+  // The armor grammar as two patterns: a label has no two hyphens in a row,
+  // and a BEGIN in the closing dashes of a BEGIN line before it is part of
+  // that line. Seeded text built from armor pieces (labels with hyphen runs,
+  // lines sharing dashes, case and length edges, a Kelvin sign that is not
+  // a K) must redact the same ranges.
   const armor = '-'.repeat(5);
-  const label = String.raw`(?:[A-Z0-9][A-Z0-9 -]{0,62} )?PRIVATE KEY`;
+  const label = String.raw`(?:[A-Z0-9](?:[A-Z0-9 ]|-(?!-)){0,62} )?PRIVATE KEY`;
+  const begin = String.raw`(?<!${armor}BEGIN ${label}-{0,4})${armor}BEGIN `;
   const complete = new RegExp(
-    String.raw`${armor}BEGIN (${label})${armor}[\s\S]{0,262144}?${armor}END \1${armor}`,
+    String.raw`${begin}(${label})${armor}[\s\S]{0,262144}?${armor}END \1${armor}`,
     'gi',
   );
-  const truncated = new RegExp(String.raw`${armor}BEGIN ${label}${armor}[\s\S]{0,262144}$`, 'gi');
+  const truncated = new RegExp(String.raw`${begin}${label}${armor}[\s\S]{0,262144}$`, 'gi');
   const found = (text: string, pattern: RegExp) =>
     [...text.matchAll(pattern)].map((match) => [match.index, match.index + match[0].length]);
   const labels = [
@@ -196,6 +199,9 @@ test('PEM armor is redacted where the patterns it replaced found it', () => {
     `${'X'.repeat(63)} PRIVATE KEY`,
     `${'X'.repeat(64)} PRIVATE KEY`,
     'EC  PRIVATE KEY',
+    'X-Y PRIVATE KEY',
+    'X- PRIVATE KEY',
+    'X--Y PRIVATE KEY',
     'PRIVATE KEY',
   ];
   const pieces = [
@@ -206,6 +212,9 @@ test('PEM armor is redacted where the patterns it replaced found it', () => {
     'Proc-Type: 4,ENCRYPTED',
     'MIIEvgIBADANBg',
     armor,
+    '-',
+    'BEGIN ',
+    'END ',
     'PRIVATE KEY',
   ];
   // xorshift32, so every run builds the same texts.
@@ -238,6 +247,24 @@ test('PEM armor is redacted where the patterns it replaced found it', () => {
       shown,
     );
   }
+});
+
+test('a PEM BEGIN line never takes the dashes of another armor line', () => {
+  const armor = '-'.repeat(5);
+  // A label with a hyphen run would hold the later BEGIN line, so the
+  // stream showed text before it that the whole answer redacted.
+  assert.equal(
+    redactCredentialLikeContent(`${armor}BEGIN y ${pemBegin('PRIVATE KEY')}\nbody`),
+    `${armor}BEGIN y [credential redacted]`,
+  );
+  // A BEGIN in the closing dashes of the line before it belongs to that
+  // line, so a later END line cannot take those dashes and unredact it.
+  assert.equal(
+    redactCredentialLikeContent(
+      `${pemBegin('PRIVATE KEY')}BEGIN RSA PRIVATE KEY${armor}\nbody\n${pemEnd('RSA PRIVATE KEY')} after`,
+    ),
+    '[credential redacted]',
+  );
 });
 
 test('PEM redaction stays linear in unclosed BEGIN lines', () => {

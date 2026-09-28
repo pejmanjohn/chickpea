@@ -114,12 +114,14 @@ export function credentialMarkers(): readonly string[] {
 
 // PEM armor lines are `-----BEGIN <label>-----` and `-----END <label>-----`,
 // case-insensitive. A label is `PRIVATE KEY`, optionally after a prefix of a
-// letter or digit, up to 62 letters, digits, spaces or hyphens, and a space
-// (`RSA `, `ENCRYPTED `).
+// letter or digit, up to 62 letters, digits, spaces or single hyphens, and a
+// space (`RSA `, `ENCRYPTED `). With no two hyphens in a row, a label never
+// holds another armor line's dashes, so it reads one way: up to the first
+// `PRIVATE KEY-----` after its line's start.
 const PEM_BEGIN = /-----BEGIN /gi;
 const PEM_END = /-----END /gi;
-const PEM_LABEL = /^(?:[A-Z0-9][A-Z0-9 -]{0,62} )?PRIVATE KEY$/i;
-const PEM_LABEL_TAIL = /PRIVATE KEY-----/gi;
+const PEM_LABEL = /^(?:[A-Z0-9](?:[A-Z0-9 ]|-(?!-)){0,62} )?PRIVATE KEY$/i;
+const PEM_LABEL_TAIL = /PRIVATE KEY-----/i;
 const PEM_LABEL_MAX = 1 + 62 + 1 + 'PRIVATE KEY'.length;
 // The most text armor holds after its BEGIN line: up to the END line, or
 // for a truncated block, up to the end of the text.
@@ -127,10 +129,8 @@ const PEM_BODY_MAX = 262_144;
 
 /**
  * Complete armor: a BEGIN line, at most `PEM_BODY_MAX` characters, then the
- * first END line with the same label in any case. A BEGIN line whose label
- * reads more than one way (`A PRIVATE KEY----- PRIVATE KEY`) tries its
- * longest reading first. Blocks never overlap; a BEGIN line inside one is
- * body text.
+ * first END line with the same label in any case. Blocks never overlap; a
+ * BEGIN line inside one is body text.
  *
  * Each END line is read once and each BEGIN line looks its label up, so text
  * full of unclosed BEGIN lines stays linear: searching from every BEGIN line
@@ -140,20 +140,16 @@ function completePemArmor(text: string): CredentialRange[] {
   const armor: CredentialRange[] = [];
   let endLines: Map<string, number[]> | undefined;
   let from = 0;
-  for (const { index: begin } of text.matchAll(PEM_BEGIN)) {
+  for (const { begin, labelEnd } of pemBeginLines(text)) {
     if (begin < from) continue;
-    const labelStart = begin + '-----BEGIN '.length;
-    for (const labelEnd of pemLabelEnds(text, labelStart)) {
-      endLines ??= pemEndLines(text);
-      const label = text.slice(labelStart, labelEnd).toUpperCase();
-      const bodyStart = labelEnd + '-----'.length;
-      const starts = endLines.get(label) ?? [];
-      const end = starts[firstAtOrAfter(starts, bodyStart)];
-      if (end !== undefined && end - bodyStart <= PEM_BODY_MAX) {
-        from = end + '-----END '.length + label.length + '-----'.length;
-        armor.push([begin, from]);
-        break;
-      }
+    endLines ??= pemEndLines(text);
+    const label = text.slice(begin + '-----BEGIN '.length, labelEnd).toUpperCase();
+    const bodyStart = labelEnd + '-----'.length;
+    const starts = endLines.get(label) ?? [];
+    const end = starts[firstAtOrAfter(starts, bodyStart)];
+    if (end !== undefined && end - bodyStart <= PEM_BODY_MAX) {
+      from = end + '-----END '.length + label.length + '-----'.length;
+      armor.push([begin, from]);
     }
   }
   return armor;
@@ -161,40 +157,51 @@ function completePemArmor(text: string): CredentialRange[] {
 
 /** A truncated block: from the first BEGIN line within `PEM_BODY_MAX` of the end, to the end. */
 function truncatedPemArmor(text: string): CredentialRange[] {
-  for (const { index: begin } of text.matchAll(PEM_BEGIN)) {
-    // The longest reading of a label ends last, so it reaches furthest.
-    const [labelEnd] = pemLabelEnds(text, begin + '-----BEGIN '.length);
-    if (labelEnd !== undefined && text.length - (labelEnd + '-----'.length) <= PEM_BODY_MAX) {
-      return [[begin, text.length]];
-    }
-  }
-  return [];
+  const line = pemBeginLines(text).find(({ labelEnd }) =>
+    text.length - (labelEnd + '-----'.length) <= PEM_BODY_MAX);
+  return line ? [[line.begin, text.length]] : [];
 }
 
-/** Where each END line starts, by every label it can close (upper-cased), in order. */
+/**
+ * Each BEGIN line with a valid label: where it starts and its label ends. A
+ * `-----BEGIN ` in the closing dashes of the BEGIN line before it
+ * (`…KEY-----BEGIN …`) belongs to that line; were it another, the block it
+ * opens would take those dashes, and the earlier line with them.
+ */
+function pemBeginLines(text: string): Array<{ begin: number; labelEnd: number }> {
+  const lines: Array<{ begin: number; labelEnd: number }> = [];
+  let closed = 0;
+  for (const { index: begin } of text.matchAll(PEM_BEGIN)) {
+    const labelEnd = pemLabelEnd(text, begin + '-----BEGIN '.length);
+    if (labelEnd === undefined) continue;
+    if (begin >= closed) lines.push({ begin, labelEnd });
+    closed = labelEnd + '-----'.length;
+  }
+  return lines;
+}
+
+/** Where each END line starts, by the label it closes (upper-cased), in order. */
 function pemEndLines(text: string): Map<string, number[]> {
   const endLines = new Map<string, number[]>();
   for (const { index: end } of text.matchAll(PEM_END)) {
     const labelStart = end + '-----END '.length;
-    for (const labelEnd of pemLabelEnds(text, labelStart)) {
-      const label = text.slice(labelStart, labelEnd).toUpperCase();
-      const starts = endLines.get(label);
-      if (starts) starts.push(end);
-      else endLines.set(label, [end]);
-    }
+    const labelEnd = pemLabelEnd(text, labelStart);
+    if (labelEnd === undefined) continue;
+    const label = text.slice(labelStart, labelEnd).toUpperCase();
+    const starts = endLines.get(label);
+    if (starts) starts.push(end);
+    else endLines.set(label, [end]);
   }
   return endLines;
 }
 
-/** Where each label that starts at `start` and is closed by `-----` can end, longest first. */
-function pemLabelEnds(text: string, start: number): number[] {
+/** Where the label that starts at `start` and is closed by `-----` ends, if it is one. */
+function pemLabelEnd(text: string, start: number): number | undefined {
   const window = text.slice(start, start + PEM_LABEL_MAX + '-----'.length);
-  const ends: number[] = [];
-  for (const { index } of window.matchAll(PEM_LABEL_TAIL)) {
-    const end = index + 'PRIVATE KEY'.length;
-    if (PEM_LABEL.test(window.slice(0, end))) ends.unshift(start + end);
-  }
-  return ends;
+  const tail = window.search(PEM_LABEL_TAIL);
+  if (tail < 0) return undefined;
+  const end = tail + 'PRIVATE KEY'.length;
+  return PEM_LABEL.test(window.slice(0, end)) ? start + end : undefined;
 }
 
 /** The index of the first of the ascending `values` at or after `at`. */
