@@ -758,7 +758,10 @@ export function streamableSlackMarkdownPrefix(text: string): string {
     );
     if (held >= stable.length) break;
     if (passes === STREAM_HOLD_PASS_LIMIT) return '';
-    stable = stable.slice(0, view.credentialHoldStart(held)).trimEnd();
+    // From a credential the answer reads across the hold, read only up to
+    // the cut. The cut's own reading can join words the answer keeps apart:
+    // it strips a `**URL**` span the answer keeps as code.
+    stable = stable.slice(0, answer.credentialHoldStart(held, stable.length)).trimEnd();
   }
   if (!stable) return '';
   return canonicalSlackMarkdownText(stable);
@@ -864,11 +867,14 @@ function starsDroppedView(value: string, text: string, dropped: readonly number[
     fromRaw,
     /** Where the answer's redaction applies in `text`, found once. */
     redactions: () => (redactions ??= credentialMatchRanges(text)),
-    /** `credentialHoldStart` on the answer's reading; an unmoved hold stays put. */
-    credentialHoldStart(held: number): number {
-      if (!count) return credentialHoldStart(value, held);
+    /**
+     * `credentialHoldStart` on the answer's reading before `end`; an unmoved
+     * hold stays put.
+     */
+    credentialHoldStart(held: number, end = value.length): number {
+      if (!count) return credentialHoldStart(value, held, end);
       const at = fromRaw(held);
-      const start = credentialHoldStart(text, at);
+      const start = credentialHoldStart(text, at, fromRaw(end));
       return start === at ? held : toRaw(start);
     },
   };
@@ -999,14 +1005,15 @@ function unsafeTokenTail(value: string): number {
 // Any hold can start inside an earlier credential token or assignment value
 // (`xoxb-xoxb-…`, `OPENAI_API_KEY=\nxoxb-xoxb- …`, `SECRET=\nabcdefg[hij …`):
 // the part before it would then stream as a piece too short to redact. Hold
-// from that credential instead, whichever marker it is.
-function credentialHoldStart(value: string, held: number): number {
+// from that credential instead, whichever marker it is. Nothing at or after
+// `end` is read.
+function credentialHoldStart(value: string, held: number, end = value.length): number {
   // A hold can also land inside a marker that starts earlier (the second
   // `xox` of `xoxoxb`), which a search ending at the hold misses.
   let straddled = held;
   // Only a marker that overlaps the hold matters, so only that window is read.
   const from = Math.max(0, held - LONGEST_CREDENTIAL_MARKER);
-  const lower = asciiLowerCase(value.slice(from, held + LONGEST_CREDENTIAL_MARKER));
+  const lower = asciiLowerCase(value.slice(from, Math.min(end, held + LONGEST_CREDENTIAL_MARKER)));
   for (const marker of credentialMarkers()) {
     const markerLower = marker.toLowerCase();
     for (let back = 1; back < markerLower.length && back <= held; back += 1) {
@@ -1113,8 +1120,8 @@ function answerAfterCut(
   const { text } = answer;
   const nextAt = answer.fromRaw(cut);
   const inAnswer = (at: number) => answer.fromRaw(view.toRaw(at));
-  const redacted = (from: number, to: number) =>
-    answer.redactions().some(([start, end]) => start <= to && end > from);
+  const redacted = (first: number, last: number) =>
+    answer.redactions().some(([start, end]) => start <= last && end > first);
   return {
     wordEnded: nextAt < text.length && !/^[\p{L}\p{N}_]/u.test(text.slice(nextAt, nextAt + 2)),
     mentionAt(at) {

@@ -281,8 +281,10 @@ test('every progressive cut point is a monotone prefix of the canonical terminal
     'x <!here|xoxb-123456789012345678901234> ok\nnext',
     'xoxb-123456789012345678901234@here**https://x xoxb-1**23456789012345678901234 more',
     'OPENAI_API_KEY=abcdefghij<**https://x xoxb-**!here> more',
-    // A cut that would close a span after a backtick it leaves open.
+    // A cut that would close a span after a backtick it leaves open, and a
+    // credential marker the cut's own reading would join across its stars.
     'Try `**https://a.test/<**xox` < b',
+    'Run `**https://a.test/xo**xox <` then xox',
   ];
 
   for (const terminalInput of corpus) {
