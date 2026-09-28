@@ -247,6 +247,10 @@ function slackContextAuthor(
   if (own) {
     return { userId: message.user ?? 'agent', role: 'agent', ...(postingName ? { authorName: postingName } : {}) };
   }
+  // Slackbot (reminders, workflow notices) is Slack's own bot, not a person.
+  if (message.user === 'USLACKBOT' || message.user === 'USLACK') {
+    return { userId: message.user, role: 'app', authorName: postingName ?? 'Slackbot' };
+  }
   if (message.bot_id || appId || message.subtype === 'bot_message' || !message.user) {
     const id = message.bot_id ?? appId ?? message.user;
     if (!id && !postingName) return undefined;

@@ -161,12 +161,14 @@ test('context rows label people, other apps, webhooks, and this installation\'s 
     { type: 'message', user: 'UBOT', bot_id: 'B_CHICKPEA', username: 'Oncall', ts: '1003.000100',
       thread_ts: ROOT, text: 'Looking into it.' },
     { type: 'message', subtype: 'channel_join', user: 'U_NEW', ts: '1004.000100', text: 'joined' },
+    { type: 'message', user: 'USLACKBOT', ts: '1005.000100', thread_ts: ROOT, text: 'Reminder: rotate keys' },
   ], { botUserId: 'UBOT' });
   assert.deepEqual(rows.map(({ ts, role, userId, authorName }) => ({ ts, role, userId, authorName })), [
     { ts: ROOT, role: 'app', userId: 'B_PD', authorName: 'PagerDuty' },
     { ts: '1001.000100', role: 'human', userId: 'U_DANA', authorName: undefined },
     { ts: '1002.000100', role: 'app', userId: 'B_SENTRY', authorName: 'Sentry' },
     { ts: '1003.000100', role: 'agent', userId: 'UBOT', authorName: 'Oncall' },
+    { ts: '1005.000100', role: 'app', userId: 'USLACKBOT', authorName: 'Slackbot' },
   ]);
 });
 
