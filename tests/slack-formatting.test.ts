@@ -30,7 +30,7 @@ import {
   toolStatus,
 } from '../src/slack/replies.ts';
 import { activityStatus } from '../src/activity/status.ts';
-import { syntheticPem } from './helpers/credential-fixtures.ts';
+import { pemBegin, pemEnd, syntheticPem } from './helpers/credential-fixtures.ts';
 import type { CompletedSlackArtifactReceipt } from '../src/slack/artifact-receipts.ts';
 
 function completedFile(index: number, suffix = 'report.csv'): CompletedSlackArtifactReceipt {
@@ -186,6 +186,7 @@ test('a line led by bold text keeps streaming after the bold closes', () => {
 });
 
 test('every progressive cut point is a monotone prefix of the canonical terminal answer', () => {
+  const armor = '-'.repeat(5);
   const corpus = [
     'A plain answer that arrives one character at a time.',
     'Done: **https://github.com/octo-org/example-site/pull/4** after review.',
@@ -285,6 +286,27 @@ test('every progressive cut point is a monotone prefix of the canonical terminal
     // credential marker the cut's own reading would join across its stars.
     'Try `**https://a.test/<**xox` < b',
     'Run `**https://a.test/xo**xox <` then xox',
+    // A cut between a surrogate pair's halves.
+    `@here__${'\u{1D400}'}`,
+    // A PEM label never runs over another armor line's dashes, and a BEGIN
+    // in the closing dashes of the one before it belongs to that line.
+    `${armor}BEGIN y ${pemBegin('PRIVATE KEY')}`,
+    `${armor}BEGIN d${pemBegin('RSA PRIVATE KEY')}\n${pemEnd('RSA PRIVATE KEY')}`,
+    `${pemBegin('PRIVATE KEY')}BEGIN y`,
+    `x ${pemBegin('RSA PRIVATE KEY')}-BEGIN y\nabc`,
+    `${pemBegin('PRIVATE KEY')}BEGIN RSA PRIVATE KEY-----\nabc\n${pemEnd('RSA PRIVATE KEY')} done`,
+    // Redaction that drops a backtick or line break pairs code and `<…>`
+    // references differently than the text before it.
+    '`OPENAI_API_KEY=`_API_Kb @here<AKIA`<\n',
+    `\`@here${syntheticPem('RSA PRIVATE KEY', [])}\``,
+    `\`<!channel>${syntheticPem('RSA PRIVATE KEY', [])}\``,
+    `<!subteam^S1${syntheticPem('RSA PRIVATE KEY', ['abc'])}> ok`,
+    // A backtick inside a special mention splits it once it pairs, but not
+    // one a later `<` already ended, and a credential that completes does
+    // not pull back a `<` the stream already shows.
+    '<!here|`>`',
+    '=<<!<`',
+    '@<`OPENAI_API_KEY=|<!here>',
   ];
 
   for (const terminalInput of corpus) {

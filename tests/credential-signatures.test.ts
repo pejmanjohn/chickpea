@@ -6,6 +6,7 @@ import {
   credentialMatchRanges,
   hasCredentialLikeContent,
   redactCredentialLikeContent,
+  traceCredentialRedaction,
 } from '../src/security/content-validation.ts';
 import { streamableSlackMarkdownPrefix } from '../src/slack/message-format.ts';
 import { awsExampleAccessKeyId, pemBegin, pemEnd, syntheticPem } from './helpers/credential-fixtures.ts';
@@ -265,6 +266,29 @@ test('a PEM BEGIN line never takes the dashes of another armor line', () => {
     ),
     '[credential redacted]',
   );
+});
+
+test('a traced redaction maps each kept character back to where it came from', () => {
+  const marker = '[credential redacted]';
+  const texts = [
+    'plain text',
+    `a ${SYNTHETIC_SLACK_TOKEN} b @here c`,
+    // A later signature reads an earlier one's marker (`[credential`).
+    `OPENAI_API_KEY=${SYNTHETIC_SLACK_TOKEN} after`,
+    `x <!here ${syntheticPem('RSA PRIVATE KEY', ['body'])}> y ${pemBegin('EC PRIVATE KEY')}\ntail`,
+    `\`CHICKPEA_AUTH_SECRET=\`abcdefgh @here\` ${awsExampleAccessKeyId('AKIA')} z`,
+  ];
+  for (const text of texts) {
+    const { text: redacted, source } = traceCredentialRedaction(text);
+    assert.equal(redacted, redactCredentialLikeContent(text));
+    assert.equal(source(redacted.length), text.length, text);
+    for (let at = 0; at < redacted.length; at += 1) {
+      // Only the text supplies a character that no marker has.
+      if (!marker.includes(redacted[at]!)) {
+        assert.equal(text[source(at)], redacted[at], `${JSON.stringify(text)} @${at}`);
+      }
+    }
+  }
 });
 
 test('PEM redaction stays linear in unclosed BEGIN lines', () => {

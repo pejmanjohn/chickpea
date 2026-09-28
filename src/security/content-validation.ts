@@ -89,17 +89,50 @@ export function hasCredentialLikeContent(value: string): boolean {
 }
 
 export function redactCredentialLikeContent(text: string): string {
-  return CREDENTIAL_FINDERS.reduce((value, find) => {
+  return traceCredentialRedaction(text).text;
+}
+
+const CREDENTIAL_REPLACEMENT = '[credential redacted]';
+
+/**
+ * `redactCredentialLikeContent(text)`, and `source(at)`: where the character
+ * at `at` of it came from in `text`, for a character `text` supplied rather
+ * than a `[credential redacted]` marker, or the end.
+ */
+export function traceCredentialRedaction(text: string): {
+  text: string;
+  source: (at: number) => number;
+} {
+  // Each signature reads what the ones before it left, so a position maps
+  // back one signature at a time.
+  const stages: CredentialRange[][] = [];
+  const redacted = CREDENTIAL_FINDERS.reduce((value, find) => {
     const ranges = find(value);
     if (!ranges.length) return value;
+    stages.push(ranges);
     let redacted = '';
     let from = 0;
     for (const [start, end] of ranges) {
-      redacted += `${value.slice(from, start)}[credential redacted]`;
+      redacted += `${value.slice(from, start)}${CREDENTIAL_REPLACEMENT}`;
       from = end;
     }
     return redacted + value.slice(from);
   }, text);
+  return {
+    text: redacted,
+    source: (at) => stages.reduceRight((position, ranges) => positionBefore(ranges, position), at),
+  };
+}
+
+/** Where `at` sat before `ranges` were replaced; inside a marker, its range's start. */
+function positionBefore(ranges: readonly CredentialRange[], at: number): number {
+  let shift = 0;
+  for (const [start, end] of ranges) {
+    if (at < start - shift) break;
+    if (at < start - shift + CREDENTIAL_REPLACEMENT.length) return start;
+    shift += end - start - CREDENTIAL_REPLACEMENT.length;
+  }
+  return at + shift;
 }
 
 /** Where `redactCredentialLikeContent` redacts `text`, as `[start, end)` ranges. */
@@ -178,6 +211,20 @@ function pemBeginLines(text: string): Array<{ begin: number; labelEnd: number }>
     closed = labelEnd + '-----'.length;
   }
   return lines;
+}
+
+const PEM_BEGIN_LINE_MAX = '-----BEGIN '.length + PEM_LABEL_MAX + '-----'.length;
+
+/**
+ * The start of the PEM BEGIN line `at` falls inside, else `at`. Whether a
+ * `-----BEGIN ` starts a line depends only on the line before it, so a
+ * window of two lines' length before `at` decides it.
+ */
+export function pemBeginLineStart(text: string, at: number): number {
+  const from = Math.max(0, at - 2 * PEM_BEGIN_LINE_MAX);
+  const line = pemBeginLines(text.slice(from, at + PEM_BEGIN_LINE_MAX)).find(({ begin, labelEnd }) =>
+    from + begin < at && at < from + labelEnd + '-----'.length);
+  return line ? from + line.begin : at;
 }
 
 /** Where each END line starts, by the label it closes (upper-cased), in order. */

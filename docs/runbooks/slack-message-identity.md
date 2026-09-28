@@ -258,7 +258,15 @@ email addresses are unchanged. Streaming withholds an open `<…` on the last
 line, a trailing `@` that could still grow into a broadcast word (or a
 broadcast word followed by an `_` run), and a mention inside an inline code
 span that has not closed, so each streamed prefix is a prefix of the
-neutralized final.
+neutralized final. A backtick inside a special mention (`` <!here|`> ``)
+holds the mention too, since the mention splits once the backtick pairs.
+These holds read the text as credential redaction leaves it, because
+neutralization runs after redaction. Redaction can remove a backtick or a
+line break, such as an assignment value that runs through a backtick or a
+PEM block's line breaks. That pairs code, and joins `<…>` references, in a
+different way. So an open `<`, or a mention after an unpaired backtick,
+that precedes a PEM block on its BEGIN line waits until the block's END line
+arrives.
 
 A stream opened by an earlier build that already showed a raw mention diverges
 from the new final; the divergent-stream correction replaces it.
