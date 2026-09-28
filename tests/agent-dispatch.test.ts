@@ -1362,8 +1362,8 @@ test('a stream that stopped at its cap before the seam lets the join trim (Amber
 test('a capped stream trims the seam even when the joined tail is a run the hold gives up on', async () => {
   const shown = 'Intro paragraph that the stream showed before it reached its cap.';
   const partial = `${shown}\n\nThe goal is to learn enough about use patterns to restock intelligently,`;
-  // Each open `<` on the last line pulls the hold back once, past its limit.
-  const bounds = ` Bounds:${' 0 < a'.repeat(6)}`;
+  // Each span pulls the hold back twice (see slack-formatting), past its limit.
+  const bounds = ` Bounds: ${'**https://x @here_**'.repeat(3)}`;
   const continuation = `understand enough about use patterns to restock intelligently, identify gaps early.${bounds}`;
   const capped = streamableSlackMarkdownPrefix(shown);
   const { text, logs } = await recoveredAnswer([partial, continuation], undefined, true, capped);
