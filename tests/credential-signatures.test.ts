@@ -231,6 +231,21 @@ test('PEM armor is redacted where these patterns find it', () => {
   const texts = ['EC PRIVATE KEY', 'A PRIVATE KEY----- PRIVATE KEY'].flatMap((edge) =>
     [body, `${body}x`].flatMap((filler) =>
       [`${pemBegin(edge)}${filler}${pemEnd(edge)}`, `${pemBegin(edge)}${filler}`]));
+  // Lines that share closing dashes, two and three in a row, which random
+  // pieces rarely build: each `-----BEGIN ` starts in the dashes before it
+  // unless five extra hyphens part them.
+  const chained = ['PRIVATE KEY', 'RSA PRIVATE KEY', 'EC PRIVATE KEY'];
+  for (const first of chained) {
+    for (const second of chained) {
+      for (let extra = 0; extra <= 5; extra += 1) {
+        const two = `${armor}BEGIN ${first}${'-'.repeat(extra)}${pemBegin(second)}`;
+        const three = `${two.slice(0, -armor.length)}${'-'.repeat(extra)}${pemBegin(first)}`;
+        for (const head of [two, three]) {
+          texts.push(head, ...chained.map((label) => `${head}\nbody\n${pemEnd(label)} after`));
+        }
+      }
+    }
+  }
   for (let count = 0; count < 3_000; count += 1) {
     let text = '';
     for (let size = 1 + next(24); size > 0; size -= 1) text += pieces[next(pieces.length)];
@@ -273,6 +288,8 @@ test('a traced redaction maps each kept character back to where it came from', (
   const texts = [
     'plain text',
     `a ${SYNTHETIC_SLACK_TOKEN} b @here c`,
+    // Two matches of one signature shift what follows the second by both.
+    `a ${SYNTHETIC_SLACK_TOKEN} b ${SYNTHETIC_SLACK_TOKEN} @here c`,
     // A later signature reads an earlier one's marker (`[credential`).
     `OPENAI_API_KEY=${SYNTHETIC_SLACK_TOKEN} after`,
     `x <!here ${syntheticPem('RSA PRIVATE KEY', ['body'])}> y ${pemBegin('EC PRIVATE KEY')}\ntail`,

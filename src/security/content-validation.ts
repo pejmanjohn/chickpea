@@ -216,13 +216,15 @@ function pemBeginLines(text: string): Array<{ begin: number; labelEnd: number }>
 const PEM_BEGIN_LINE_MAX = '-----BEGIN '.length + PEM_LABEL_MAX + '-----'.length;
 
 /**
- * The start of the PEM BEGIN line `at` falls inside, else `at`. Whether a
- * `-----BEGIN ` starts a line depends only on the line before it, so a
- * window of two lines' length before `at` decides it.
+ * The start of the PEM BEGIN line `at` falls inside, else `at`, reading
+ * nothing at or after `end`. Whether a `-----BEGIN ` starts a line depends
+ * only on the line before it, so a window of two lines' length before `at`
+ * decides it.
  */
-export function pemBeginLineStart(text: string, at: number): number {
+export function pemBeginLineStart(text: string, at: number, end = text.length): number {
   const from = Math.max(0, at - 2 * PEM_BEGIN_LINE_MAX);
-  const line = pemBeginLines(text.slice(from, at + PEM_BEGIN_LINE_MAX)).find(({ begin, labelEnd }) =>
+  const window = text.slice(from, Math.min(end, at + PEM_BEGIN_LINE_MAX));
+  const line = pemBeginLines(window).find(({ begin, labelEnd }) =>
     from + begin < at && at < from + labelEnd + '-----'.length);
   return line ? from + line.begin : at;
 }

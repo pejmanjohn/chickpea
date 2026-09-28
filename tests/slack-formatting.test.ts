@@ -30,7 +30,7 @@ import {
   toolStatus,
 } from '../src/slack/replies.ts';
 import { activityStatus } from '../src/activity/status.ts';
-import { pemBegin, pemEnd, syntheticPem } from './helpers/credential-fixtures.ts';
+import { awsExampleAccessKeyId, pemBegin, pemEnd, syntheticPem } from './helpers/credential-fixtures.ts';
 import type { CompletedSlackArtifactReceipt } from '../src/slack/artifact-receipts.ts';
 
 function completedFile(index: number, suffix = 'report.csv'): CompletedSlackArtifactReceipt {
@@ -294,6 +294,8 @@ test('every progressive cut point is a monotone prefix of the canonical terminal
     `${armor}BEGIN d${pemBegin('RSA PRIVATE KEY')}\n${pemEnd('RSA PRIVATE KEY')}`,
     `${pemBegin('PRIVATE KEY')}BEGIN y`,
     `x ${pemBegin('RSA PRIVATE KEY')}-BEGIN y\nabc`,
+    `${pemBegin('PRIVATE KEY')}BEGIN y${armor}BEGIN x`,
+    `${pemBegin('PRIVATE KEY')}BEGIN ${armor}BEGIN `,
     `${pemBegin('PRIVATE KEY')}BEGIN RSA PRIVATE KEY-----\nabc\n${pemEnd('RSA PRIVATE KEY')} done`,
     // Redaction that drops a backtick or line break pairs code and `<…>`
     // references differently than the text before it.
@@ -307,6 +309,8 @@ test('every progressive cut point is a monotone prefix of the canonical terminal
     '<!here|`>`',
     '=<<!<`',
     '@<`OPENAI_API_KEY=|<!here>',
+    // A redaction shifts what follows it; the answer is read at the matching place.
+    `${awsExampleAccessKeyId('AKIA')}\n@Orders`,
   ];
 
   for (const terminalInput of corpus) {
@@ -319,6 +323,11 @@ test('every progressive cut point is a monotone prefix of the canonical terminal
       prior = prefix;
     }
   }
+});
+
+test('a backtick after a closed code span splits no special mention before it', () => {
+  // The code span already split `<!here|…>`, so the open backtick holds nothing.
+  assert.equal(streamableSlackMarkdownPrefix('<!here|`x` `>'), '<!here|`x` `>');
 });
 
 test('a run of decided broadcast-word prefixes streams instead of being peeled away', () => {

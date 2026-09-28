@@ -1015,20 +1015,27 @@ function unsafeTokenTail(value: string): number {
 // from that credential instead, whichever marker it is. Nothing at or after
 // `end` is read.
 function credentialHoldStart(value: string, held: number, end = value.length): number {
-  // A hold can also land inside a marker that starts earlier (the second
-  // `xox` of `xoxoxb`), which a search ending at the hold misses, or inside
-  // a PEM BEGIN line (`…KEY-----BEGIN y`), which is redacted from its start.
-  let straddled = pemBeginLineStart(value, held);
-  // Only a marker that overlaps the hold matters, so only that window is read.
-  const from = Math.max(0, held - LONGEST_CREDENTIAL_MARKER);
-  const lower = asciiLowerCase(value.slice(from, Math.min(end, held + LONGEST_CREDENTIAL_MARKER)));
-  for (const marker of credentialMarkers()) {
-    const markerLower = marker.toLowerCase();
-    for (let back = 1; back < markerLower.length && back <= held; back += 1) {
-      if (lower.startsWith(markerLower, held - back - from)) straddled = Math.min(straddled, held - back);
+  // Walking back can land the hold inside another credential or BEGIN line
+  // (`…KEY-----BEGIN y-----BEGIN x` reaches the second `-----BEGIN `, in
+  // the first line's dashes), so repeat until it stays; it only moves back.
+  for (;;) {
+    // A hold can also land inside a marker that starts earlier (the second
+    // `xox` of `xoxoxb`), which a search ending at the hold misses, or inside
+    // a PEM BEGIN line (`…KEY-----BEGIN y`), which is redacted from its start.
+    let straddled = pemBeginLineStart(value, held, end);
+    // Only a marker that overlaps the hold matters, so only that window is read.
+    const from = Math.max(0, held - LONGEST_CREDENTIAL_MARKER);
+    const lower = asciiLowerCase(value.slice(from, Math.min(end, held + LONGEST_CREDENTIAL_MARKER)));
+    for (const marker of credentialMarkers()) {
+      const markerLower = marker.toLowerCase();
+      for (let back = 1; back < markerLower.length && back <= held; back += 1) {
+        if (lower.startsWith(markerLower, held - back - from)) straddled = Math.min(straddled, held - back);
+      }
     }
+    const start = Math.min(outermostCredential(value, held), outermostCredential(value, straddled));
+    if (start >= held) return held;
+    held = start;
   }
-  return Math.min(outermostCredential(value, held), outermostCredential(value, straddled));
 }
 
 function outermostCredential(value: string, held: number): number {
