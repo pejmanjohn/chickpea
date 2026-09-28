@@ -22,6 +22,7 @@ import {
   type SlackWebApiMessage,
 } from './thread-context.ts';
 import {
+  emitSlackRead,
   isSlackRateLimitError,
   slackRetryAfterMs,
   UNGATED_SLACK_READS,
@@ -214,7 +215,10 @@ async function fetchHistory(
   const window = computeHistoryWindow(mode, turn.text, turn.messageTs);
   const degradations: string[] = [];
   const decision = await reserveRead(input.gate, 'conversations.history', degradations, mode);
-  if (!decision.ok) return { ...currentMessageOnlyContext(turn, degradations), window };
+  if (!decision.ok) {
+    emitSlackRead({ source: 'prefetch', method: 'conversations.history', gated: input.gate.gated, outcome: 'refused' });
+    return { ...currentMessageOnlyContext(turn, degradations), window };
+  }
 
   // On the shared app the window read includes the trigger, so its own
   // images come from this one read: a second history call would exceed the
@@ -238,6 +242,11 @@ async function fetchHistory(
   }
 
   const rawMessages = (response.messages ?? []) as unknown as SlackWebApiMessage[];
+  emitSlackRead({
+    source: 'prefetch', method: 'conversations.history', gated: input.gate.gated, outcome: 'ok',
+    limit: paced ? input.maxMessages + 1 : input.maxMessages, rows: rawMessages, anchorTs: turn.messageTs,
+    hasCursor: Boolean(response.response_metadata?.next_cursor?.trim()) || response.has_more === true,
+  });
   const triggerRows = rawMessages.filter((row) => row.ts === turn.messageTs);
   const windowRows = rawMessages.filter((row) => row.ts !== turn.messageTs).slice(0, input.maxMessages);
   const images = mergeThreadImages(
@@ -277,13 +286,14 @@ async function fetchThread(
     self: SlackContextSelf;
   },
 ): Promise<SlackTurnContext> {
-  // conversations.replies pages OLDEST-first from the thread root, so the
-  // NEWEST rows reached are kept as a rolling tail. When the pages stop
-  // before the trigger (a long thread, or the shared app's one 15-row read),
-  // that tail is an old middle segment, not the recent tail: it is omitted
-  // so it cannot compete with later corrections, which the thread record
-  // supplies. The root is always kept: it is what a reply usually refers to
-  // (an alert, a request), and it cannot go stale the way a middle can.
+  // The NEWEST rows reached are kept as a rolling tail. When the pages stop
+  // before the trigger (a long thread the install's own app pages oldest
+  // first), that tail is an old middle segment, not the recent tail: it is
+  // omitted so it cannot compete with later corrections, which the thread
+  // record supplies. A page that reaches the trigger is the recent tail
+  // whatever Slack's order; the shared app's capped read returns the root
+  // and the newest replies, so its one page is kept. The root is always
+  // kept: it is what a reply usually refers to (an alert, a request).
   let root: SlackContextMessage | undefined;
   let replyCount: number | undefined;
   const collected: SlackContextMessage[] = [];
@@ -292,10 +302,12 @@ async function fetchThread(
   let cursor: string | undefined;
   let pagesRead = 0;
   let stoppedEarly = false;
+  let reachedTrigger = false;
 
   for (let page = 0; page < input.maxPages; page += 1) {
     const decision = await reserveRead(input.gate, 'conversations.replies', degradations, 'thread');
     if (!decision.ok) {
+      emitSlackRead({ source: 'prefetch', method: 'conversations.replies', gated: input.gate.gated, outcome: 'refused' });
       stoppedEarly = true;
       break;
     }
@@ -311,6 +323,7 @@ async function fetchThread(
       });
     } catch (error) {
       if (await rateLimitedRead(input.gate, 'conversations.replies', error, degradations, 'thread')) {
+        emitSlackRead({ source: 'prefetch', method: 'conversations.replies', gated: input.gate.gated, outcome: 'rate_limited' });
         stoppedEarly = true;
         break;
       }
@@ -319,6 +332,13 @@ async function fetchThread(
     pagesRead += 1;
 
     const rawMessages = (response.messages ?? []) as unknown as SlackWebApiMessage[];
+    const pageCursor = Boolean(response.response_metadata?.next_cursor?.trim());
+    emitSlackRead({
+      source: 'prefetch', method: 'conversations.replies', gated: input.gate.gated, outcome: 'ok',
+      limit: input.pageLimit, rows: rawMessages, rootTs: turn.threadTs, anchorTs: turn.messageTs,
+      hasCursor: pageCursor,
+    });
+    if (rawMessages.some((row) => row.ts === turn.messageTs)) reachedTrigger = true;
     // Collected from the raw rows, before the projection drops system rows
     // and text-less rows; bounded the same way the retained tail is.
     images.push(...collectThreadImages(rawMessages, turn));
@@ -350,7 +370,7 @@ async function fetchThread(
   }
   const truncated = Boolean(cursor) || stoppedEarly;
   if (cursor) degradations.push('slack_context.thread:truncated');
-  const tail = truncated ? [] : orderMessages(collected);
+  const tail = truncated && !reachedTrigger ? [] : orderMessages(collected);
 
   return {
     mode: 'thread',

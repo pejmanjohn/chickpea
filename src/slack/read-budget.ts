@@ -10,6 +10,7 @@
  * build during a rollout, a disconnect), this isolate paces itself from its
  * own copy rather than stopping reads or turning the budget off.
  */
+import { emitRuntimeLatency, type RuntimeLatencySink } from '../observability/runtime-latency.ts';
 import type { SlackStateStore } from './claim-store.ts';
 import type { SlackReadMethod } from './run-presentations.ts';
 import { SlackTransportError } from './transport/types.ts';
@@ -173,4 +174,41 @@ function warnLocal(operation: string, error: unknown, at: number): void {
     operation,
     error: error instanceof Error ? error.name : typeof error,
   });
+}
+
+/**
+ * One content-free record per Slack history or replies read, so the shared
+ * app's limits (rows returned per call, which end of a thread a capped page
+ * comes from, refusals) can be confirmed from Worker logs. No message text,
+ * ids, or timestamps leave; only counts, booleans, and fixed tokens.
+ */
+export function emitSlackRead(input: {
+  source: 'prefetch' | 'tool';
+  method: SlackReadMethod;
+  gated: boolean;
+  outcome: 'ok' | 'refused' | 'rate_limited';
+  limit?: number;
+  rows?: ReadonlyArray<{ ts?: string }>;
+  /** A thread's root ts, to report whether the page included it. */
+  rootTs?: string;
+  /** The message the read had to reach (a turn's trigger), if any. */
+  anchorTs?: string;
+  hasCursor?: boolean;
+}, sink?: RuntimeLatencySink): void {
+  const stamps = (input.rows ?? []).map((row) => Number(row.ts)).filter(Number.isFinite);
+  const replies = input.rootTs ? stamps.filter((ts) => ts !== Number(input.rootTs)) : stamps;
+  const ascending = replies.every((ts, index) => index === 0 || ts >= replies[index - 1]!);
+  const descending = replies.every((ts, index) => index === 0 || ts <= replies[index - 1]!);
+  emitRuntimeLatency('slack_read', {
+    source: input.source,
+    method: input.method === 'conversations.replies' ? 'replies' : 'history',
+    outcome: input.outcome,
+    gated: input.gated,
+    ...(input.limit !== undefined ? { limit: input.limit } : {}),
+    ...(input.rows ? { returned: input.rows.length } : {}),
+    ...(input.rows && input.rootTs ? { includesRoot: stamps.includes(Number(input.rootTs)) } : {}),
+    ...(input.rows && input.anchorTs ? { reachesAnchor: stamps.some((ts) => ts >= Number(input.anchorTs)) } : {}),
+    ...(input.hasCursor !== undefined ? { hasCursor: input.hasCursor } : {}),
+    ...(replies.length > 1 ? { order: ascending ? 'oldest_first' : descending ? 'newest_first' : 'mixed' } : {}),
+  }, sink);
 }
