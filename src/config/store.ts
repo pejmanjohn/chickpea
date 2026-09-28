@@ -55,6 +55,7 @@ import {
   type RollbackChickpeaCutoverInput,
   type SlackPublicContextEntry,
   type SlackPublicContextEntryInput,
+  type SlackPublicContextFile,
   type RecentSlackPublicContextInput,
   MAX_SLACK_PUBLIC_HANDOFF_MESSAGES,
   type NonChatModelRole,
@@ -69,7 +70,7 @@ import {
 } from './types.ts';
 import { promisify } from '../state/async-facade.ts';
 import { openStateDb, resolveStateDbPath } from '../state/node-state-db.ts';
-import { schemaInstallRequired, type StateDb } from '../state/state-db.ts';
+import { schemaInstallRequired, type SqlParam, type StateDb } from '../state/state-db.ts';
 import { addColumnIfMissing, tableExists } from '../state/schema-links.ts';
 import { MemoryStoreLogic } from '../memory/store.ts';
 import { normalizeAgentHandle } from '../slack/agent-presence/handles.ts';
@@ -242,6 +243,10 @@ interface SlackPublicContextRow {
   text: string;
   agent_id: string | null;
   content_version_ts: string | null;
+  author_kind?: string | null;
+  author_id?: string | null;
+  author_name?: string | null;
+  files_json?: string | null;
   updated_at: number;
 }
 
@@ -435,6 +440,8 @@ export interface ConfigStore {
   ): Promise<SlackPublicContextEntry[]>;
   listRecentSlackPublicContext(input: RecentSlackPublicContextInput): Promise<SlackPublicContextEntry[]>;
   putSlackPublicContext(input: SlackPublicContextEntryInput): Promise<SlackPublicContextEntry>;
+  /** Insert rows read from Slack that the record lacks; existing rows win. Returns rows added. */
+  seedSlackPublicContext(inputs: SlackPublicContextEntryInput[]): Promise<number>;
   deleteSlackPublicContextMessage(
     workspaceId: string,
     channelId: string,
@@ -522,6 +529,11 @@ export class ConfigStoreLogic {
       // Existing installs already carry the extension marker. Their column
       // upgrades must run after the marker-guarded table creation path too.
       addColumnIfMissing(this.db, 'config_slack_public_context', 'content_version_ts', 'TEXT');
+      // Thread-record authorship: additive and nullable, so older code that
+      // never reads them keeps working (an app row reads as a human row there).
+      for (const column of ['author_kind', 'author_id', 'author_name', 'files_json']) {
+        addColumnIfMissing(this.db, 'config_slack_public_context', column, 'TEXT');
+      }
       // Additive: older code never reads the column, so no schema-version bump.
       if (tableExists(this.db, 'config_agents')) {
         addColumnIfMissing(
@@ -1606,33 +1618,28 @@ export class ConfigStoreLogic {
   }
 
   putSlackPublicContext(input: SlackPublicContextEntryInput): SlackPublicContextEntry {
-    if (!input.text.trim()) throw new Error('Slack public context text is required');
-    if ((input.role === 'agent') !== Boolean(input.agentId)) {
-      throw new Error('Slack public Agent context requires exactly one Agent identity');
-    }
+    const row = validatedSlackPublicContextRow(input);
     if (input.agentId) this.getAgent(input.agentId);
     const now = Date.now();
     this.db.run(
       `INSERT INTO config_slack_public_context (
-        workspace_id, channel_id, root_ts, message_ts, role, text, agent_id, content_version_ts, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        workspace_id, channel_id, root_ts, message_ts, role, text, agent_id, content_version_ts,
+        author_kind, author_id, author_name, files_json, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(workspace_id, channel_id, root_ts, message_ts) DO UPDATE SET
         role = excluded.role,
         text = excluded.text,
         agent_id = excluded.agent_id,
         content_version_ts = excluded.content_version_ts,
+        author_kind = COALESCE(excluded.author_kind, config_slack_public_context.author_kind),
+        author_id = COALESCE(excluded.author_id, config_slack_public_context.author_id),
+        author_name = COALESCE(excluded.author_name, config_slack_public_context.author_name),
+        files_json = COALESCE(excluded.files_json, config_slack_public_context.files_json),
         updated_at = excluded.updated_at
       WHERE config_slack_public_context.content_version_ts IS NULL OR
         (excluded.content_version_ts IS NOT NULL AND
          CAST(excluded.content_version_ts AS REAL) >= CAST(config_slack_public_context.content_version_ts AS REAL))`,
-      input.workspaceId,
-      input.channelId,
-      input.rootTs,
-      input.messageTs,
-      input.role,
-      input.text,
-      input.agentId ?? null,
-      input.contentVersionTs ?? null,
+      ...slackPublicContextValues(input, row),
       now,
     );
     // Retention is root-scoped: one recent message keeps the bounded public
@@ -1640,23 +1647,7 @@ export class ConfigStoreLogic {
     // 30 days is removed as a unit. The write above makes the current root
     // active before this opportunistic sweep runs.
     this.pruneExpiredSlackPublicContext(now);
-    this.db.run(
-      `DELETE FROM config_slack_public_context
-       WHERE workspace_id = ? AND channel_id = ? AND root_ts = ?
-         AND message_ts NOT IN (
-           SELECT message_ts FROM config_slack_public_context
-           WHERE workspace_id = ? AND channel_id = ? AND root_ts = ?
-           ORDER BY CAST(message_ts AS REAL) DESC, message_ts DESC
-           LIMIT ?
-         )`,
-      input.workspaceId,
-      input.channelId,
-      input.rootTs,
-      input.workspaceId,
-      input.channelId,
-      input.rootTs,
-      MAX_STORED_SLACK_PUBLIC_CONTEXT_ROWS,
-    );
+    this.trimSlackPublicContextRoot(input.workspaceId, input.channelId, input.rootTs);
     const stored = this.db.get(
       `SELECT * FROM config_slack_public_context
        WHERE workspace_id = ? AND channel_id = ? AND root_ts = ? AND message_ts = ?`,
@@ -1667,6 +1658,79 @@ export class ConfigStoreLogic {
     );
     if (!stored) throw new Error('Slack public context was not stored');
     return rowToSlackPublicContext(stored as unknown as SlackPublicContextRow);
+  }
+
+  /**
+   * Rows an Agent read from Slack before the record held them, such as the
+   * alert at a thread's root. A row the record already has is left alone: it
+   * may carry a newer edit or an Agent attribution a Slack read cannot.
+   * Invalid rows are skipped, never fatal.
+   */
+  seedSlackPublicContext(inputs: SlackPublicContextEntryInput[]): number {
+    if (inputs.length === 0) return 0;
+    if (inputs.length > MAX_STORED_SLACK_PUBLIC_CONTEXT_ROWS) {
+      throw new Error('Slack public context seed exceeds the thread record bound');
+    }
+    const agents = new Map<string, boolean>();
+    const known = (agentId: string) => {
+      if (!agents.has(agentId)) {
+        try { this.getAgent(agentId); agents.set(agentId, true); } catch { agents.set(agentId, false); }
+      }
+      return agents.get(agentId)!;
+    };
+    const now = Date.now();
+    return this.db.transaction(() => {
+      let added = 0;
+      const roots = new Set<string>();
+      for (const input of inputs) {
+        let row;
+        try { row = validatedSlackPublicContextRow(input); } catch { continue; }
+        if (input.agentId && !known(input.agentId)) continue;
+        added += this.db.run(
+          `INSERT INTO config_slack_public_context (
+            workspace_id, channel_id, root_ts, message_ts, role, text, agent_id, content_version_ts,
+            author_kind, author_id, author_name, files_json, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(workspace_id, channel_id, root_ts, message_ts) DO NOTHING`,
+          ...slackPublicContextValues(input, row),
+          now,
+        ).changes;
+        roots.add(JSON.stringify([input.workspaceId, input.channelId, input.rootTs]));
+      }
+      for (const root of roots) {
+        const [workspaceId, channelId, rootTs] = JSON.parse(root) as [string, string, string];
+        this.trimSlackPublicContextRoot(workspaceId, channelId, rootTs);
+      }
+      return added;
+    });
+  }
+
+  /** Keep the newest rows of one thread within the bound; the root row always stays. */
+  private trimSlackPublicContextRoot(workspaceId: string, channelId: string, rootTs: string): void {
+    const rootStored = Boolean(this.db.get(
+      `SELECT 1 AS present FROM config_slack_public_context
+       WHERE workspace_id = ? AND channel_id = ? AND root_ts = ? AND message_ts = root_ts`,
+      workspaceId,
+      channelId,
+      rootTs,
+    ));
+    this.db.run(
+      `DELETE FROM config_slack_public_context
+       WHERE workspace_id = ? AND channel_id = ? AND root_ts = ? AND message_ts <> root_ts
+         AND message_ts NOT IN (
+           SELECT message_ts FROM config_slack_public_context
+           WHERE workspace_id = ? AND channel_id = ? AND root_ts = ? AND message_ts <> root_ts
+           ORDER BY CAST(message_ts AS REAL) DESC, message_ts DESC
+           LIMIT ?
+         )`,
+      workspaceId,
+      channelId,
+      rootTs,
+      workspaceId,
+      channelId,
+      rootTs,
+      MAX_STORED_SLACK_PUBLIC_CONTEXT_ROWS - (rootStored ? 1 : 0),
+    );
   }
 
   private pruneExpiredSlackPublicContext(now: number): void {
@@ -3112,6 +3176,11 @@ export class ConfigStoreLogic {
         role TEXT NOT NULL CHECK (role IN ('human', 'agent')),
         text TEXT NOT NULL,
         agent_id TEXT,
+        content_version_ts TEXT,
+        author_kind TEXT,
+        author_id TEXT,
+        author_name TEXT,
+        files_json TEXT,
         updated_at INTEGER NOT NULL,
         PRIMARY KEY (workspace_id, channel_id, root_ts, message_ts)
       )`,
@@ -3525,7 +3594,7 @@ function parseAgentThreadHandoffContext(
       const entry = candidate as Record<string, unknown>;
       if (
         typeof entry.messageTs !== 'string' ||
-        (entry.role !== 'human' && entry.role !== 'agent') ||
+        (entry.role !== 'human' && entry.role !== 'agent' && entry.role !== 'app') ||
         typeof entry.text !== 'string' ||
         (entry.role === 'agent') !== (typeof entry.agentId === 'string')
       ) return [];
@@ -3595,17 +3664,93 @@ function requireNonChatModelRole(role: string): NonChatModelRole {
 }
 
 function rowToSlackPublicContext(row: SlackPublicContextRow): SlackPublicContextEntry {
+  const files = parseSlackPublicContextFiles(row.files_json);
   return {
     workspaceId: row.workspace_id,
     channelId: row.channel_id,
     rootTs: row.root_ts,
     messageTs: row.message_ts,
-    role: row.role === 'agent' ? 'agent' : 'human',
+    role: row.role === 'agent' ? 'agent' : row.author_kind === 'app' ? 'app' : 'human',
     text: row.text,
     ...(row.agent_id ? { agentId: row.agent_id } : {}),
+    ...(row.author_id ? { authorId: row.author_id } : {}),
+    ...(row.author_name ? { authorName: row.author_name } : {}),
+    ...(files.length ? { files } : {}),
     ...(row.content_version_ts ? { contentVersionTs: row.content_version_ts } : {}),
     updatedAt: Number(row.updated_at),
   };
+}
+
+const MAX_SLACK_PUBLIC_CONTEXT_FILES = 10;
+const MAX_SLACK_PUBLIC_CONTEXT_AUTHOR_CHARS = 120;
+
+interface ValidatedSlackPublicContextRow {
+  /** Stored role: the column's CHECK allows only these two. */
+  role: 'human' | 'agent';
+  authorKind: 'person' | 'app' | 'agent';
+  filesJson: string | null;
+}
+
+function validatedSlackPublicContextRow(
+  input: SlackPublicContextEntryInput,
+): ValidatedSlackPublicContextRow {
+  const files = (input.files ?? []).slice(0, MAX_SLACK_PUBLIC_CONTEXT_FILES);
+  if (!input.text.trim() && files.length === 0) throw new Error('Slack public context text is required');
+  if ((input.role === 'agent') !== Boolean(input.agentId)) {
+    throw new Error('Slack public Agent context requires exactly one Agent identity');
+  }
+  if (input.role === 'app' && !input.authorName?.trim() && !input.authorId?.trim()) {
+    throw new Error('Slack public app context requires an author');
+  }
+  for (const value of [input.authorId, input.authorName]) {
+    if (value !== undefined && value.length > MAX_SLACK_PUBLIC_CONTEXT_AUTHOR_CHARS) {
+      throw new Error('Slack public context author is too long');
+    }
+  }
+  return {
+    role: input.role === 'agent' ? 'agent' : 'human',
+    authorKind: input.role === 'app' ? 'app' : input.role === 'agent' ? 'agent' : 'person',
+    filesJson: files.length ? JSON.stringify(files) : null,
+  };
+}
+
+function slackPublicContextValues(
+  input: SlackPublicContextEntryInput,
+  row: ValidatedSlackPublicContextRow,
+): SqlParam[] {
+  return [
+    input.workspaceId,
+    input.channelId,
+    input.rootTs,
+    input.messageTs,
+    row.role,
+    input.text,
+    input.agentId ?? null,
+    input.contentVersionTs ?? null,
+    row.authorKind,
+    input.authorId ?? null,
+    input.authorName ?? null,
+    row.filesJson,
+  ];
+}
+
+function parseSlackPublicContextFiles(value: string | null | undefined): SlackPublicContextFile[] {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.flatMap((file) => {
+      if (!file || typeof file !== 'object' || typeof (file as { name?: unknown }).name !== 'string') return [];
+      const { name, type, sizeBytes } = file as { name: string; type?: unknown; sizeBytes?: unknown };
+      return [{
+        name,
+        ...(typeof type === 'string' ? { type } : {}),
+        ...(typeof sizeBytes === 'number' ? { sizeBytes } : {}),
+      }];
+    }).slice(0, MAX_SLACK_PUBLIC_CONTEXT_FILES);
+  } catch {
+    return [];
+  }
 }
 
 function validateConnectionAccountInput(input: ConnectionAccountInput): void {

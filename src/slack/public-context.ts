@@ -9,7 +9,8 @@ import type { NormalizedSlackTurn, SlackMessageEvent } from './types.ts';
 import { preserveSlackRichTextLinks } from './rich-text-links.ts';
 import {
   atOrBeforeSlackWatermark, DEFAULT_MAX_MESSAGES, ensureTriggerMessage, orderMessages,
-  slackTimestampUnits, type SlackTurnContext,
+  slackTimestampUnits, toContextMessage, type SlackContextMessage, type SlackContextSelf,
+  type SlackTurnContext, type SlackWebApiMessage,
 } from './thread-context.ts';
 
 export { MAX_SLACK_PUBLIC_HANDOFF_MESSAGES };
@@ -57,6 +58,7 @@ export async function recordAcceptedSlackHumanMessage(
     messageTs: turn.messageTs,
     role: 'human',
     text: turn.text,
+    authorId: turn.userId,
   });
 }
 
@@ -76,6 +78,76 @@ export async function recordDeliveredSlackAgentMessage(
     agentId: assignment.agentId,
     text: delivery.text,
   });
+}
+
+type SlackPublicContextSeeder = {
+  seedSlackPublicContext(inputs: SlackPublicContextEntryInput[]): number | Promise<number>;
+};
+
+/**
+ * One Slack-visible message posted in a thread an Agent is part of, as it
+ * arrives from Slack: people who did not address the Agent, guests, other
+ * apps and alert bots, and other AI agents. The caller has already checked
+ * that the thread belongs to an Agent. This installation's own posts are
+ * skipped: the delivery path records them with their Agent attribution.
+ * Returns whether a row was written.
+ */
+export async function recordSlackThreadEventMessage(
+  store: SlackPublicContextWriter,
+  workspaceId: string,
+  event: SlackMessageEvent,
+  self: SlackContextSelf,
+): Promise<boolean> {
+  const rootTs = event.thread_ts;
+  if (!rootTs || rootTs === event.ts) return false;
+  const row = toContextMessage(event as unknown as SlackWebApiMessage, self);
+  if (!row || row.role === 'agent') return false;
+  await store.putSlackPublicContext(threadRecordInput(workspaceId, event.channel, rootTs, row));
+  return true;
+}
+
+/**
+ * Rows the Agent read from Slack for this thread, kept so later turns and
+ * tools need no Slack read for them (the shared app gets one read a minute).
+ * Only the thread's own rows are seeded, never another root's, and only
+ * rows the host can attribute: people, apps, and this Agent's rows once the
+ * delivery path has named their Agent.
+ */
+export async function seedSlackThreadRecord(
+  store: SlackPublicContextSeeder,
+  turn: Pick<NormalizedSlackTurn, 'workspaceId' | 'channelId' | 'threadTs' | 'contextMode'>,
+  context: SlackTurnContext,
+): Promise<number> {
+  if (turn.contextMode !== 'thread') return 0;
+  const inputs = context.messages
+    .filter((message) => !message.isTrigger && message.rootTs === turn.threadTs &&
+      (message.role === 'human' || message.role === 'app'))
+    .slice(-MAX_SEEDED_THREAD_ROWS)
+    .map((message) => threadRecordInput(turn.workspaceId, turn.channelId, turn.threadTs, message));
+  return inputs.length ? store.seedSlackPublicContext(inputs) : 0;
+}
+
+/** Kept below the record's own 200-row bound, so a seed never evicts captured rows. */
+const MAX_SEEDED_THREAD_ROWS = 100;
+
+function threadRecordInput(
+  workspaceId: string,
+  channelId: string,
+  rootTs: string,
+  message: SlackContextMessage,
+): SlackPublicContextEntryInput {
+  return {
+    workspaceId,
+    channelId,
+    rootTs,
+    messageTs: message.ts,
+    role: message.role === 'app' ? 'app' : 'human',
+    text: message.text,
+    ...(message.userId ? { authorId: message.userId.slice(0, 120) } : {}),
+    ...(message.role === 'app' && message.authorName ? { authorName: message.authorName } : {}),
+    ...(message.files?.length ? { files: message.files } : {}),
+    ...(message.contentVersionTs ? { contentVersionTs: message.contentVersionTs } : {}),
+  };
 }
 
 /** Reconcile only messages already admitted to the private public-context ledger. */
@@ -117,6 +189,8 @@ export async function reconcileSlackPublicContextMutation(
     text,
     contentVersionTs: message?.edited?.ts ?? event.event_ts ?? event.ts,
     ...(existing.agentId ? { agentId: existing.agentId } : {}),
+    ...(existing.authorId ? { authorId: existing.authorId } : {}),
+    ...(existing.authorName ? { authorName: existing.authorName } : {}),
   });
   return true;
 }
@@ -124,9 +198,10 @@ export async function reconcileSlackPublicContextMutation(
 /** One bounded view for prompts, including after a model runtime rolls over.
  * The combined background budget applies to every mode, including channel
  * history. The current request is kept separately and is never budget-trimmed.
- * Human rows are public within this root, never imported from another DM root.
- * A capped forward Slack scan cannot establish the latest tail: discard that
- * segment and use only retained admitted rows, while preserving the gap marker.
+ * Rows of this root come from the Slack read and the thread record; across DM
+ * roots only this Agent's own replies are imported. A capped forward Slack
+ * scan has already dropped its stale middle (the root is kept); the thread
+ * record supplies later rows. The root keeps a reserved share of the budget.
  */
 export async function assembleRetainedSlackContext(
   context: SlackTurnContext,
@@ -159,24 +234,20 @@ export async function assembleRetainedSlackContext(
       degradations.push('slack_context.retained:unavailable');
     }
   }
-  const rows = new Map((context.mode === 'thread' && context.truncated ? [] : context.messages)
+  const rows = new Map(context.messages
     .filter((message) => !message.isTrigger).map((message) => [message.ts, message]));
   for (const entry of entries) {
+    // Same root: every Slack-visible row, including other Agents' replies.
+    // Across DM roots: only this Agent's own replies, as before.
+    const ownAgentRow = entry.role === 'agent' && entry.agentId === options.agentId;
     if (entry.workspaceId !== turn.workspaceId || entry.channelId !== turn.channelId ||
-        (entry.rootTs !== turn.threadTs && !(acrossRoots && entry.role === 'agent')) ||
-        (entry.role === 'agent' && entry.agentId !== options.agentId)) continue;
+        (entry.rootTs !== turn.threadTs && !(acrossRoots && ownAgentRow))) continue;
     // A reconciled edit supersedes the fetched copy, even when that newer edit
     // must be omitted for this turn's watermark. No old version is invented.
     const fetched = rows.get(entry.messageTs);
     if (fetched?.contentVersionTs && (!entry.contentVersionTs ||
         !atOrBeforeSlackWatermark(fetched.contentVersionTs, entry.contentVersionTs))) continue;
-    rows.set(entry.messageTs, {
-      ts: entry.messageTs, text: entry.text, isTrigger: false,
-      userId: entry.role === 'human' ? 'Human (retained)' : `Agent ${entry.agentId}`,
-      role: entry.role,
-      rootTs: entry.rootTs,
-      ...(entry.contentVersionTs ? { contentVersionTs: entry.contentVersionTs } : {}),
-    });
+    rows.set(entry.messageTs, retainedContextMessage(entry, fetched));
   }
   const eligible = orderMessages([...rows.values()].filter((message) => {
     if (message.ts === turn.messageTs || !atOrBeforeSlackWatermark(message.ts, turn.messageTs)) return false;
@@ -189,18 +260,74 @@ export async function assembleRetainedSlackContext(
     return barrier == null || (Number.isSafeInteger(barrier) && barrier >= 0 &&
       ts !== null && ts >= BigInt(barrier) * 1_000n);
   }));
-  const visible = eligible.slice(-(options.maxMessages ?? DEFAULT_MAX_MESSAGES));
-  if (visible.length < eligible.length) degradations.push('slack_context.prompt:bounded');
-  let remaining = MAX_SLACK_PUBLIC_HANDOFF_CHARS;
+  // The thread's first message is what a reply usually refers to (an alert,
+  // a request, a decision), so it keeps a reserved share of both bounds.
+  const root = context.mode === 'thread'
+    ? eligible.find((message) => message.ts === turn.threadTs)
+    : undefined;
+  const rest = root ? eligible.filter((message) => message !== root) : eligible;
+  const maxMessages = options.maxMessages ?? DEFAULT_MAX_MESSAGES;
+  const visible = rest.slice(-(root ? Math.max(0, maxMessages - 1) : maxMessages));
+  if (visible.length < rest.length) degradations.push('slack_context.prompt:bounded');
+  const rootText = root ? truncatePublicText(root.text, ROOT_RESERVED_CHARS) : '';
+  if (root && rootText.length < root.text.length) degradations.push('slack_context.prompt:bounded');
+  let remaining = MAX_SLACK_PUBLIC_HANDOFF_CHARS - rootText.length;
   const bounded = [];
   for (const message of visible.reverse()) {
     const text = truncatePublicText(message.text, remaining);
     if (text.length < message.text.length) degradations.push('slack_context.prompt:bounded');
-    if (!text) break;
+    if (!text && !message.files?.length) break;
     bounded.push({ ...message, text });
     remaining -= text.length;
   }
-  return { ...context, messages: ensureTriggerMessage(bounded.reverse(), turn), degradations: [...new Set(degradations)] };
+  bounded.reverse();
+  if (root && (rootText || root.files?.length)) bounded.unshift({ ...root, text: rootText });
+  return { ...context, messages: ensureTriggerMessage(bounded, turn), degradations: [...new Set(degradations)] };
+}
+
+function optionalName(name: string | undefined): { authorName?: string } {
+  return name ? { authorName: name } : {};
+}
+
+/** Share of the context character budget kept for a thread's first message. */
+const ROOT_RESERVED_CHARS = 1_500;
+
+/**
+ * A thread-record row as context. The fetched copy's author survives when the
+ * record has none (rows written before authorship was recorded).
+ */
+function retainedContextMessage(
+  entry: SlackPublicContextEntry,
+  fetched: SlackContextMessage | undefined,
+): SlackContextMessage {
+  const author: Pick<SlackContextMessage, 'userId' | 'authorName' | 'agentId'> =
+    entry.role === 'agent'
+      ? {
+          userId: `Agent ${entry.agentId}`,
+          ...(entry.agentId ? { agentId: entry.agentId } : {}),
+          ...optionalName(entry.authorName ?? fetched?.authorName),
+        }
+      : entry.role === 'app'
+        ? {
+            userId: entry.authorId ?? fetched?.userId ?? 'app',
+            authorName: entry.authorName ?? fetched?.authorName ?? 'an app',
+          }
+        : {
+            userId: entry.authorId ?? (fetched?.role === 'human' ? fetched.userId : undefined) ??
+              'Human (retained)',
+            ...(fetched?.authorName ? { authorName: fetched.authorName } : {}),
+          };
+  const files = entry.files ?? fetched?.files;
+  return {
+    ...author,
+    ts: entry.messageTs,
+    text: entry.text,
+    isTrigger: false,
+    role: entry.role,
+    rootTs: entry.rootTs,
+    ...(entry.contentVersionTs ? { contentVersionTs: entry.contentVersionTs } : {}),
+    ...(files?.length ? { files } : {}),
+  };
 }
 
 /** Newest bounded Slack-visible transcript used only when ownership changes. */
@@ -234,7 +361,9 @@ export function formatSlackPublicHandoff(
   const rows = messages.map((message) => {
     const speaker = message.role === 'human'
       ? 'Human'
-      : `Agent ${message.agentId ?? 'unknown'}`;
+      : message.role === 'app'
+        ? 'App'
+        : `Agent ${message.agentId ?? 'unknown'}`;
     return `- ${speaker}: ${message.text}`;
   });
   return [

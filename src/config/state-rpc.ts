@@ -416,6 +416,9 @@ export interface TagStateRpc {
   configPutSlackPublicContext(
     input: SlackPublicContextEntryInput,
   ): Promise<StateRpcResult<SlackPublicContextEntry>>;
+  configSeedSlackPublicContext(
+    inputs: SlackPublicContextEntryInput[],
+  ): Promise<StateRpcResult<number>>;
   configDeleteSlackPublicContextMessage(
     workspaceId: string,
     channelId: string,

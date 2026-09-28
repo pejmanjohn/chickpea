@@ -1,18 +1,34 @@
 import type { ThreadImageRecord } from './thread-images.ts';
 import type { NormalizedSlackTurn, SlackContextMode } from './types.ts';
-import { preserveSlackRichTextLinks } from './rich-text-links.ts';
-import { isSlackContentMessageSubtype } from './message-subtypes.ts';
+import { isSlackContextMessageSubtype } from './message-subtypes.ts';
+import { slackFileSummaries, slackMessageText, type SlackFileSummary } from './message-text.ts';
+
+/**
+ * Who wrote a context row, derived by the host from Slack's author fields:
+ * a person, one of this installation's Chickpea Agents, or any other app or
+ * integration (alert bots, webhooks, other AI agents).
+ */
+export type SlackContextRole = 'human' | 'agent' | 'app';
 
 export interface SlackContextMessage {
+  /** Slack user id for people; the bot or app id for apps; a label for Agents. */
   userId: string;
   text: string;
   ts: string;
   isTrigger: boolean;
   /** Host-derived Slack-visible provenance; absent only on legacy fixtures. */
-  role?: 'human' | 'agent';
+  role?: SlackContextRole;
+  /** Display name: a person's resolved profile name, an app's or Agent's posting name. */
+  authorName?: string;
+  /** The Chickpea Agent that wrote an `agent` row, when the host knows it. */
+  agentId?: string;
   /** Slack root that owns this message. Top-level DM roots equal their message ts. */
   rootTs?: string;
   contentVersionTs?: string;
+  /** Files shared with this message: names, types, sizes only. */
+  files?: SlackFileSummary[];
+  /** Replies under this message, for a channel-history row that starts a thread. */
+  replyCount?: number;
 }
 
 export interface SlackContextExchange {
@@ -39,6 +55,8 @@ export interface SlackTurnContext {
   window?: SlackContextWindow;
   truncated: boolean;
   degradations: string[];
+  /** Replies Slack reports under the thread root, when a read returned the root. */
+  threadReplyCount?: number;
   /**
    * Additive: images found in the raw fetch rows, collected before the
    * projection above filters them. Consumers of `messages` are unchanged and
@@ -61,9 +79,21 @@ export interface SlackWebApiMessage {
   thread_ts?: string;
   subtype?: string;
   bot_id?: string;
+  app_id?: string;
+  /** Posting name an app chose for this message (chat:write.customize, webhooks). */
+  username?: string;
+  bot_profile?: { name?: string; app_id?: string };
   edited?: { ts: string };
   files?: unknown[];
   blocks?: unknown[];
+  attachments?: unknown[];
+  reply_count?: number;
+}
+
+/** This installation's own bot, so its rows are labeled as Agents, not apps. */
+export interface SlackContextSelf {
+  botUserId?: string;
+  appId?: string;
 }
 
 export const DEFAULT_MAX_MESSAGES = 50;
@@ -165,27 +195,69 @@ export function computeHistoryWindow(
   };
 }
 
-export function toContextMessages(messages: SlackWebApiMessage[]): SlackContextMessage[] {
+export function toContextMessages(
+  messages: SlackWebApiMessage[],
+  self: SlackContextSelf = {},
+): SlackContextMessage[] {
   return messages.flatMap((message) => {
-    const text = preserveSlackRichTextLinks(message.text, message.blocks);
-    if (!message.user || !text || !message.ts) {
-      return [];
-    }
-    if (message.bot_id || !isSlackContentMessageSubtype(message.subtype)) {
-      return [];
-    }
-    return [
-      {
-        userId: message.user,
-        text,
-        ts: message.ts,
-        isTrigger: false,
-        role: 'human',
-        rootTs: message.thread_ts ?? message.ts,
-        ...(message.edited?.ts ? { contentVersionTs: message.edited.ts } : {}),
-      },
-    ];
+    const row = toContextMessage(message, self);
+    return row ? [row] : [];
   });
+}
+
+/**
+ * One raw Slack row as a labeled context row, or undefined for mutation
+ * wrappers, system events, and rows with nothing to show. App and bot rows
+ * are kept: an alert the Agent is asked about must be visible to it. They
+ * are labeled so the model can weigh them; the prompt treats every row as
+ * data, never instructions.
+ */
+export function toContextMessage(
+  message: SlackWebApiMessage,
+  self: SlackContextSelf = {},
+): SlackContextMessage | undefined {
+  if (!message.ts || !isSlackContextMessageSubtype(message.subtype)) return undefined;
+  const text = slackMessageText(message);
+  const files = slackFileSummaries(message.files);
+  if (!text && files.length === 0) return undefined;
+  const author = slackContextAuthor(message, self);
+  if (!author) return undefined;
+  return {
+    ...author,
+    text,
+    ts: message.ts,
+    isTrigger: false,
+    rootTs: message.thread_ts ?? message.ts,
+    ...(message.edited?.ts ? { contentVersionTs: message.edited.ts } : {}),
+    ...(files.length ? { files } : {}),
+    ...(typeof message.reply_count === 'number' && message.reply_count > 0
+      ? { replyCount: message.reply_count }
+      : {}),
+  };
+}
+
+function slackContextAuthor(
+  message: SlackWebApiMessage,
+  self: SlackContextSelf,
+): Pick<SlackContextMessage, 'userId' | 'role' | 'authorName'> | undefined {
+  const appId = message.app_id ?? message.bot_profile?.app_id;
+  const postingName = boundedName(message.username) ?? boundedName(message.bot_profile?.name);
+  const own = (self.botUserId !== undefined && message.user === self.botUserId) ||
+    (self.appId !== undefined && appId === self.appId);
+  if (own) {
+    return { userId: message.user ?? 'agent', role: 'agent', ...(postingName ? { authorName: postingName } : {}) };
+  }
+  if (message.bot_id || appId || message.subtype === 'bot_message' || !message.user) {
+    const id = message.bot_id ?? appId ?? message.user;
+    if (!id && !postingName) return undefined;
+    return { userId: id ?? 'app', role: 'app', authorName: postingName ?? 'an app' };
+  }
+  return { userId: message.user, role: 'human' };
+}
+
+function boundedName(value: string | undefined): string | undefined {
+  const name = value?.replace(/[\p{Cc}\p{Cf}]/gu, '').trim();
+  return name ? name.slice(0, 80) : undefined;
 }
 
 /**

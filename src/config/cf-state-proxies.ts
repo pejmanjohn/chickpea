@@ -1694,6 +1694,10 @@ export class CfConfigStore implements ConfigStore {
     return rpcVia(this.stub,'configPutSlackPublicContext', (stub) => stub.configPutSlackPublicContext(input));
   }
 
+  async seedSlackPublicContext(inputs: SlackPublicContextEntryInput[]): Promise<number> {
+    return rpcVia(this.stub,'configSeedSlackPublicContext', (stub) => stub.configSeedSlackPublicContext(inputs));
+  }
+
   async deleteSlackPublicContextMessage(
     workspaceId: string,
     channelId: string,

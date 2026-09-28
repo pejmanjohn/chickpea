@@ -12,9 +12,15 @@ export function collectAdmittedSlackListIds(input: {
   contextMessages: readonly SlackContextMessage[];
   instructions?: string | undefined;
   memoryPromptBlock?: string | undefined;
+  /** The acting Agent, whose own replies may carry a List link forward. */
+  agentId?: string | undefined;
 }): string[] {
+  // Only people's messages and this Agent's own replies: an app post or
+  // another Agent's reply cannot put a List in scope.
   const sameRoot = input.contextMessages
-    .filter(message => !message.isTrigger && message.rootTs === input.activeRootTs)
+    .filter(message => !message.isTrigger && message.rootTs === input.activeRootTs &&
+      (message.role === undefined || message.role === 'human' ||
+        (message.role === 'agent' && (input.agentId === undefined || message.agentId === input.agentId))))
     .map(message => message.text);
   // Current intent wins, followed by configured defaults. Same-root history
   // provides continuity only within the remaining bounded capacity.

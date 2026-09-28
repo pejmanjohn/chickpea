@@ -160,11 +160,12 @@ test('scheduled thread prompts recover bounded admitted corrections', async () =
         footerItems: [], visibilityBarrierAt: null, ownerBound: true,
         validateLease: async () => true, confirmInjection: async () => true }),
     });
-    assert.doesNotMatch(prepared.prompt, /STALE_BUDGET/);
+    // The thread's first message is always kept; the later correction
+    // follows it in order, so the prompt reads as root then correction.
+    assert.match(prepared.prompt, /STALE_BUDGET: 99[\s\S]*CORRECTED_BUDGET: 42/);
     assert.match(prepared.prompt, /not a complete transcript/);
-    assert.match(prepared.prompt, /CORRECTED_BUDGET: 42/);
     assert.match(prepared.prompt, /Current Slack request[\s\S]*Report the corrected budget/);
-    assert.equal(calls, 3);
+    assert.equal(calls, 5);
   } finally { store.close(); }
 });
 

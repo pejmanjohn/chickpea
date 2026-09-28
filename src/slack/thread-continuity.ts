@@ -13,12 +13,14 @@ import type { NormalizedSlackTurn } from './types.ts';
 export function slackContextSinceWatermark(
   context: SlackTurnContext,
   watermarkTs: string,
+  /** This Agent: its own replies are in the transcript. Other Agents' are not. */
+  agentId?: string,
 ): SlackTurnContext {
   return {
     ...context,
     messages: context.messages.filter((message) => {
       if (message.isTrigger) return true;
-      if (message.role === 'agent') return false;
+      if (message.role === 'agent' && (agentId === undefined || message.agentId === agentId)) return false;
       const newRow = !atOrBeforeSlackWatermark(message.ts, watermarkTs);
       const editedSince = message.contentVersionTs !== undefined &&
         !atOrBeforeSlackWatermark(message.contentVersionTs, watermarkTs);

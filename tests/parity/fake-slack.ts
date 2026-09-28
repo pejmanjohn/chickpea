@@ -196,12 +196,11 @@ export const DEFAULT_REPLIES_PAGES: RepliesPage[] = [
   {
     messages: [
       { user: 'U_ALICE', text: 'root thread topic', ts: '1782770400.000100' },
-      // Carries `user` so it passes the `!message.user` guard in
-      // toContextMessages and is excluded ONLY by its `bot_id` filter — the
-      // row S07 asserts must never reach the provider.
+      // Another app's reply: context keeps it, labeled role=app, so a
+      // question asked under an alert can see the alert.
       { user: 'UBOTUSER', bot_id: 'B_OTHER', text: 'bot prior reply', ts: '1782770405.000100' },
-      // Human `user` but a non-message subtype: excluded by the `subtype` half
-      // of the same filter. S07 asserts this text is likewise absent.
+      // Human `user` but a non-message subtype: a system event, which
+      // context still excludes.
       { user: 'U_JOINER', subtype: 'channel_join', text: 'subtype prior row', ts: '1782770405.000200' },
     ],
     next_cursor: 'cursor_2',

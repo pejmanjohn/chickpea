@@ -1,11 +1,13 @@
 import * as v from 'valibot';
 import type { WebClient } from '@slack/web-api';
 
-import { getConfigStore, type PlatformEnv } from '../config/state-backend.ts';
+import { getConfigStore, getSlackStateStore, type PlatformEnv } from '../config/state-backend.ts';
 import { assembleRetainedSlackContext } from '../slack/public-context.ts';
 import { resolvedAssignmentFromEffectiveConfig } from '../config/effective-config.ts';
 import { prepareMemoryTurn } from '../memory/runtime.ts';
 import { createSlackWebClient } from '../slack/run-turn.ts';
+import { resolveSlackContextNames } from '../slack/context-names.ts';
+import { hydrateTurnSlackContext } from '../slack/turn-context-reads.ts';
 import type { NormalizedSlackTurn } from '../slack/types.ts';
 import {
   assembleSlackPrompt,
@@ -104,7 +106,16 @@ export async function prepareRoutinePrompt(
     requesterTimezone: routine.timezone,
     contextMode: routine.destination.threadTs ? 'thread' : 'channel_history',
   };
-  const hydrateContext = dependencies.hydrateContext ?? hydrateSlackContextViaWebClient;
+  // Routine reads draw on the same per-workspace Slack budget as turns.
+  const hydrateContext = dependencies.hydrateContext ??
+    ((readClient: WebClient, readTurn: NormalizedSlackTurn, options?: { maxMessages?: number }) =>
+      hydrateTurnSlackContext({
+        client: readClient,
+        turn: readTurn,
+        state: getSlackStateStore(env),
+        ...(access.botUserId ? { botUserId: access.botUserId } : {}),
+        ...(options?.maxMessages !== undefined ? { maxMessages: options.maxMessages } : {}),
+      }));
   const prepareMemory = dependencies.prepareMemory ?? prepareMemoryTurn;
   const [hydratedContext, memory] = await Promise.all([
     hydrateContext(client, turn, { maxMessages: 20 }),
@@ -117,12 +128,16 @@ export async function prepareRoutinePrompt(
       botUserId: access.botUserId,
     }),
   ]);
-  const context = await assembleRetainedSlackContext(hydratedContext, turn, {
-    store: dependencies.contextStore ?? getConfigStore(env),
-    agentId: access.config.agentId,
-    visibilityBarrierAt: memory.visibilityBarrierAt,
-    maxMessages: 20,
-  });
+  const context = await resolveSlackContextNames(
+    client,
+    turn.workspaceId,
+    await assembleRetainedSlackContext(hydratedContext, turn, {
+      store: dependencies.contextStore ?? getConfigStore(env),
+      agentId: access.config.agentId,
+      visibilityBarrierAt: memory.visibilityBarrierAt,
+      maxMessages: 20,
+    }),
+  );
   const ordinaryPrompt = assembleSlackPrompt(turn, context, {
     ...(memory.promptBlock ? { memoryBlock: memory.promptBlock } : {}),
     memorySelected: (memory.selection?.entries.length ?? 0) > 0,

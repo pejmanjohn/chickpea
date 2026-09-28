@@ -100,6 +100,8 @@ import type {
   TurnPreviousStop,
 } from './turn-job-types.ts';
 import { slackContextSinceWatermark, threadContinuityNote } from './thread-continuity.ts';
+import { hydrateTurnSlackContext } from './turn-context-reads.ts';
+import { resolveSlackContextNames } from './context-names.ts';
 import type { FlueDispatchReceiptV1 } from './turn-job-types.ts';
 import type { SlackProgressiveReadRelay } from './progressive-relay.ts';
 import {
@@ -124,7 +126,6 @@ import {
 } from '../sandbox/select.ts';
 import {
   assembleSlackPrompt,
-  hydrateSlackContextViaWebClient,
   renderSlackSelfMention,
 } from './web-client-context.ts';
 import {
@@ -1554,17 +1555,31 @@ async function runTurnAttempt(
     const frozenHandoff = continuation
       ? []
       : runtimePlanDecision?.runtimePlan.handoffContext ?? assignment.handoffContext ?? [];
+    const threadRecord = assignment.runtimeContract === 'chickpea-v1' && frozenHandoff.length === 0
+      ? options.appStores?.config ?? getConfigStore(platformEnv)
+      : undefined;
     const hydratedContext = frozenHandoff.length > 0
       ? currentMessageOnlyContext(turn)
-      : await hydrateSlackContextViaWebClient(client, turn);
-    const context = await assembleRetainedSlackContext(hydratedContext, turn, {
-      visibilityBarrierAt: preparedMemory?.visibilityBarrierAt ?? null,
-      ...(assignment.runtimeContract === 'chickpea-v1' && frozenHandoff.length === 0
-        ? { store: options.appStores?.config ?? getConfigStore(platformEnv), agentId: assignment.agentId }
-        : {}),
-    });
+      : await hydrateTurnSlackContext({
+          client,
+          turn,
+          ...(installationContext ? {
+            transportMode: installationContext.transportMode,
+            botUserId: installationContext.botUserId,
+          } : {}),
+          state: options.appStores?.slackState ?? getSlackStateStore(platformEnv),
+          ...(threadRecord ? { record: threadRecord } : {}),
+        });
+    const context = await resolveSlackContextNames(
+      client,
+      turn.workspaceId,
+      await assembleRetainedSlackContext(hydratedContext, turn, {
+        visibilityBarrierAt: preparedMemory?.visibilityBarrierAt ?? null,
+        ...(threadRecord ? { store: threadRecord, agentId: assignment.agentId } : {}),
+      }),
+    );
     const promptContext = continuation
-      ? slackContextSinceWatermark(context, continuation.messageTs)
+      ? slackContextSinceWatermark(context, continuation.messageTs, assignment.agentId)
       : context;
     const continuityNote = continuation && runtimePlanDecision
       ? threadContinuityNote({
@@ -1586,6 +1601,7 @@ async function runTurnAttempt(
           contextMessages: context.messages,
           instructions: runtimePlanDecision.runtimePlan.instructions,
           memoryPromptBlock: preparedMemory?.promptBlock,
+          agentId: assignment.agentId,
         })
       : [];
     const handoffBlock = formatSlackPublicHandoff(frozenHandoff);

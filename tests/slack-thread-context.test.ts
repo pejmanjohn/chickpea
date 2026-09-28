@@ -182,17 +182,18 @@ test('hydrated Slack rich-text destinations remain available to prompt assembly'
 test('a capped forward scan omits its stale segment and recovers retained recent corrections', async () => {
   const store = new SqliteConfigStore(':memory:');
   const turn = threadTurn({ messageTs: '1201.000000' });
-  const pages = Array.from({ length: 4 }, (_, page) => ({
+  const pages = Array.from({ length: 6 }, (_, page) => ({
     messages: Array.from({ length: 50 }, (_, row) => humanMsg(page * 50 + row + 1, `${1001 + page * 50 + row}.000000`)),
-    ...(page < 3 ? { next_cursor: `page${page + 1}` } : {}),
+    ...(page < 5 ? { next_cursor: `page${page + 1}` } : {}),
   }));
   const client = fakeClientWithReplyPages(pages);
   try {
     const hydrated = await hydrateSlackContextViaWebClient(client as never, turn);
-    assert.equal(client.calls(), 3);
+    // The install's own app reads up to five large pages before stopping.
+    assert.equal(client.calls(), 5);
     const noLedger = assembleSlackPrompt(turn, await assembleRetainedSlackContext(hydrated, turn));
-    assert.doesNotMatch(noLedger, /msg 150|only the most recent messages/);
-    assert.match(noLedger, /incomplete.*bounded forward scan/s);
+    assert.doesNotMatch(noLedger, /msg 150|msg 250|only the most recent messages/);
+    assert.match(noLedger, /Thread context is incomplete/);
     assert.match(noLedger, /ask for clarification/);
     const base = { workspaceId: 'T1', channelId: 'C1', rootTs: turn.threadTs, role: 'human' as const };
     await store.putSlackPublicContext({ ...base, messageTs: '1200.000000', text: 'CORRECTION: the final budget is 42.' });
@@ -209,7 +210,8 @@ test('a capped forward scan omits its stale segment and recovers retained recent
     });
     const withReplies = assembleSlackPrompt(turn, await assembleRetainedSlackContext(hydrated, turn, { store, agentId: 'agent_support' }));
     assert.match(withReplies, /REPLY_agent_support/);
-    assert.doesNotMatch(withReplies, /REPLY_agent_other/);
+    // Another Agent's reply in the same thread is Slack-visible context too.
+    assert.match(withReplies, /REPLY_agent_other/);
     const barrier = await assembleRetainedSlackContext(hydrated, turn, {
       store, agentId: 'agent_support', visibilityBarrierAt: 1_200_001,
     });
@@ -295,7 +297,7 @@ test('short thread (single page) is returned intact', async () => {
   assert.equal(client.calls(), 1);
 });
 
-test('new runtime prompts retain only this Agent public replies in the admitted thread', async () => {
+test('new runtime prompts retain Agent replies from the admitted thread only', async () => {
   const store = new SqliteConfigStore(':memory:');
   try {
     for (const id of ['agent_support', 'agent_other']) await store.createAgent({ id, name: id, instructions: '', enabled: true, lifecycle: 'active', creatorMembershipId: 'owner', editPolicy: 'creator_and_admins', skills: [], mcpServers: [], apiConnections: [], repositories: [] });
@@ -308,14 +310,20 @@ test('new runtime prompts retain only this Agent public replies in the admitted 
     const hydrated = await hydrateSlackContextViaWebClient(fakeClientWithReplyPages([{ messages: [humanMsg(1, '1001.0000')] }]) as never, turn);
     const context = await assembleRetainedSlackContext(hydrated, turn, { store, agentId: 'agent_support' });
     assert.deepEqual(partitionSlackContext(turn, context).historicalBackground
-      .map(({ role, rootTs }) => ({ role, rootTs })), [
-      { role: 'human', rootTs: '1001.0000' },
-      { role: 'agent', rootTs: '1000.0000' },
+      .map(({ role, rootTs, agentId }) => ({ role, rootTs, agentId })), [
+      { role: 'human', rootTs: '1001.0000', agentId: undefined },
+      { role: 'agent', rootTs: '1000.0000', agentId: 'agent_support' },
+      { role: 'agent', rootTs: '1000.0000', agentId: 'agent_other' },
     ]);
     const prompt = assembleSlackPrompt(turn, context);
     assert.match(prompt, /CEDAR-410/);
-    assert.doesNotMatch(prompt, /OTHER_AGENT|FUTURE_REPLY|OTHER_THREAD/);
+    // Same thread: another Agent's reply is visible. Other threads and later
+    // replies are not.
+    assert.match(prompt, /OTHER_AGENT/);
+    assert.doesNotMatch(prompt, /FUTURE_REPLY|OTHER_THREAD/);
     await store.deleteSlackPublicContextMessage('T1', 'C1', '1000.0000', '1002.0000');
+    assert.match(await retainedPrompt(store, turn, 'agent_support') ?? '', /OTHER_AGENT/);
+    await store.deleteSlackPublicContextMessage('T1', 'C1', '1000.0000', '1003.0000');
     assert.equal(await retainedPrompt(store, turn, 'agent_support'), undefined);
     assert.equal(await retainedPrompt(store, threadTurn({ contextMode: 'channel_history' }), 'agent_support'), undefined);
   } finally { store.close(); }
@@ -536,7 +544,10 @@ test('thread and DM history retain human broadcasts once and preserve their thre
       userId: 'U_HUMAN', text: broadcast.text, ts: broadcast.ts,
       isTrigger: false, role: 'human', rootTs: broadcast.thread_ts,
     }]);
-    assert.doesNotMatch(JSON.stringify(context), /Rendering-only|Bot broadcast|Mutation wrapper|Future broadcast/);
+    assert.doesNotMatch(JSON.stringify(context), /Rendering-only|Mutation wrapper|Future broadcast/);
+    // An app's broadcast is kept and labeled as an app row, never as a person.
+    assert.deepEqual(context.messages.filter((message) => message.ts === '1002.0000')
+      .map(({ role, userId }) => ({ role, userId })), [{ role: 'app', userId: 'B_OTHER' }]);
 
     const trigger = { ...turn, messageTs: broadcast.ts, text: broadcast.text };
     const triggerContext = await hydrateSlackContextViaWebClient(client as never, trigger);
@@ -860,7 +871,7 @@ test('pre-scope V1 and V2 envelopes remain readable but lose coarse write author
   assert.equal(currentRequestOffersProgressiveStreaming(parseCurrentRequestEnvelope(v2)), true);
 });
 
-test('image-bearing rows widen only the additive inventory, never the projection or the prompt', async () => {
+test('image-bearing rows add a file listing to the projection, never a file id to the prompt', async () => {
   const turn = threadTurn();
   const rows = (files: boolean) => [
     { user: 'U_HUMAN', type: 'message', text: 'here is the brief', ts: '1001.000000' },
@@ -878,14 +889,19 @@ test('image-bearing rows widen only the additive inventory, never the projection
     fakeClientWithReplyPages([{ messages: rows(false) }]) as never, turn,
   );
 
-  assert.deepEqual(withFiles.messages, without.messages);
+  // A file-only row now appears, listing the file by name, type, and size.
+  assert.deepEqual(withFiles.messages.find((message) => message.ts === '1002.000000')?.files, [
+    { name: 'logo.png', type: 'image/png', sizeBytes: 1024 },
+  ]);
+  assert.equal(without.messages.some((message) => message.ts === '1002.000000'), false);
   assert.equal(without.images, undefined);
   assert.deepEqual(withFiles.images?.map((image) => [image.fileId, image.origin, image.messageTs]), [
     ['F00000000AA', 'person', '1002.000000'],
   ]);
   // The inventory feeds tool handles only; no file identifier reaches the prompt.
-  assert.equal(assembleSlackPrompt(turn, withFiles), assembleSlackPrompt(turn, without));
-  assert.equal(assembleSlackPrompt(turn, withFiles).includes('F00000000AA'), false);
+  const prompt = assembleSlackPrompt(turn, withFiles);
+  assert.match(prompt, /\[files: logo\.png \(image\/png, 1 KB\)\]/);
+  assert.equal(prompt.includes('F00000000AA'), false);
 });
 
 // dm_history and channel_history read the window with `inclusive: false`, so
