@@ -4,7 +4,7 @@ import type { SlackPublicContextEntry, SlackPublicContextEntryInput } from '../.
 import { lookupSlackDisplayNames } from '../context-names.ts';
 import { readSlackIdentityProfile } from '../identity-profile.ts';
 import { seedSlackThreadRecord } from '../public-context.ts';
-import { isSlackRateLimitError, slackRetryAfterMs, type SlackReadGate } from '../read-budget.ts';
+import { emitSlackRead, isSlackRateLimitError, slackRetryAfterMs, type SlackReadGate } from '../read-budget.ts';
 import { slackPlatformErrorCode } from '../errors.ts';
 import {
   toContextMessages,
@@ -98,9 +98,17 @@ export class SlackReadingService {
       }
       throw failure;
     }
-    const raw = (response.messages ?? []) as unknown as SlackWebApiMessage[];
+    // Oldest first within the page, whichever end of the thread Slack
+    // returned (the shared app's capped page is the root plus the newest).
+    const raw = [...(response.messages ?? []) as unknown as SlackWebApiMessage[]]
+      .sort((left, right) => compareTs(left.ts ?? '0', right.ts ?? '0'));
     const rootTs = raw[0]?.thread_ts ?? raw[0]?.ts ?? anchorTs;
     const replyCount = raw.find((row) => row.ts === rootTs)?.reply_count;
+    emitSlackRead({
+      source: 'tool', method: 'conversations.replies', gated: this.options.gate.gated, outcome: 'ok',
+      limit: this.pageLimit(input.limit), rows: (response.messages ?? []) as Array<{ ts?: string }>, rootTs,
+      hasCursor: Boolean(response.response_metadata?.next_cursor?.trim()),
+    });
     let messages = toContextMessages(raw, this.options.self);
     let withheld = 0;
     if (conversation.current && rootTs === current.threadTs) {
@@ -149,8 +157,14 @@ export class SlackReadingService {
       throw readFailure(error);
     }
     const raw = (response.messages ?? []) as unknown as SlackWebApiMessage[];
-    // Slack returns newest first; the model reads chronologically.
-    const messages = toContextMessages([...raw].reverse(), this.options.self);
+    emitSlackRead({
+      source: 'tool', method: 'conversations.history', gated: this.options.gate.gated, outcome: 'ok',
+      limit: this.pageLimit(input.limit), rows: raw as Array<{ ts?: string }>,
+      hasCursor: Boolean(response.response_metadata?.next_cursor?.trim()),
+    });
+    // The model reads chronologically, whatever order Slack returned.
+    const messages = toContextMessages([...raw].sort((left, right) =>
+      compareTs(left.ts ?? '0', right.ts ?? '0')), this.options.self);
     const nextCursor = response.response_metadata?.next_cursor?.trim();
     return this.result({
       conversation: describe(conversation),
@@ -213,13 +227,19 @@ export class SlackReadingService {
       throw new SlackReadError('read_limit', SLACK_READ_MESSAGES.read_limit);
     }
     const decision = await this.options.gate.reserve(method);
-    if (!decision.ok) throw new SlackReadError('rate_limited', SLACK_READ_MESSAGES.rate_limited, decision.retryAt);
+    if (!decision.ok) {
+      emitSlackRead({ source: 'tool', method, gated: this.options.gate.gated, outcome: 'refused' });
+      throw new SlackReadError('rate_limited', SLACK_READ_MESSAGES.rate_limited, decision.retryAt);
+    }
     this.reads += 1;
     this.options.signal?.throwIfAborted();
     try {
       return await call();
     } catch (error) {
-      if (isSlackRateLimitError(error)) await this.options.gate.rateLimited(method, slackRetryAfterMs(error));
+      if (isSlackRateLimitError(error)) {
+        emitSlackRead({ source: 'tool', method, gated: this.options.gate.gated, outcome: 'rate_limited' });
+        await this.options.gate.rateLimited(method, slackRetryAfterMs(error));
+      }
       throw error;
     }
   }

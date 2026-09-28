@@ -340,3 +340,15 @@ test('a large read is shortened row by row to fit the tool limit, never silently
   assert.ok(messages.every((row) => row.truncated));
   assert.ok(new TextEncoder().encode(JSON.stringify(result)).byteLength <= MAX_SLACK_READ_RESULT_BYTES);
 });
+
+test('a thread page Slack returns newest first reads oldest first', async () => {
+  const client = slackClient({ replies: () => ({ ok: true, messages: [
+    { user: REQUESTER, ts: '1.000001', thread_ts: '1.000001', text: 'root' },
+    { user: REQUESTER, ts: '9.000001', thread_ts: '1.000001', text: 'newest' },
+    { user: REQUESTER, ts: '8.000001', thread_ts: '1.000001', text: 'older' },
+  ], response_metadata: { next_cursor: 'older-page' } }) });
+  const result = await service(client).readThread({ target: { channelId: 'C0OTHER', ts: '1.000001' } });
+  assert.deepEqual((result.messages as Array<{ text: string }>).map((row) => row.text), ['root', 'older', 'newest']);
+  assert.equal(result.threadTs, '1.000001');
+  assert.equal(typeof result.nextCursor, 'string');
+});
