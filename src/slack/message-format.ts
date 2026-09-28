@@ -740,7 +740,8 @@ const STREAM_HOLD_PASS_LIMIT = 4;
  */
 export function streamableSlackMarkdownPrefix(text: string): string {
   // Providers deliver whole code points, but a cut between a surrogate
-  // pair's halves (`@here__` and half of `𝐀`) waits for the second half.
+  // pair's halves waits for the second half: a lone high surrogate is not a
+  // letter, so `@here__` before half of `𝐀` reads as a broadcast word.
   const normalized = text.replace(/\r\n?/g, '\n').replace(/^\s+/, '').replace(/[\uD800-\uDBFF]$/, '');
   if (!normalized) return '';
   const answer = sanitizedView(normalized);
@@ -1112,6 +1113,12 @@ function isBroadcastWordAt(text: string, at: number): boolean {
   return SLACK_BROADCAST_WORD_AT.test(text);
 }
 
+/** Where the special mention at the `<` at `at` in `text` ends, or -1 when none starts there. */
+function specialMentionEndAt(text: string, at: number): number {
+  SLACK_SPECIAL_MENTION_AT.lastIndex = at;
+  return SLACK_SPECIAL_MENTION_AT.test(text) ? SLACK_SPECIAL_MENTION_AT.lastIndex : -1;
+}
+
 /**
  * The answer after a hold loop's cut, `view`, read from its sanitized text
  * before `settled`, where its unsafe tail begins: beyond that, text can
@@ -1141,8 +1148,7 @@ function answerAfterCut(
         end = SPECIAL_MENTION_END.exec(text)?.index ?? text.length;
       }
       if (end >= settled || redacted(start, end)) return undefined;
-      SLACK_SPECIAL_MENTION_AT.lastIndex = start;
-      return SLACK_SPECIAL_MENTION_AT.test(text);
+      return specialMentionEndAt(text, start) >= 0;
     },
     broadcastWordAt(at) {
       const start = inAnswer(at);
@@ -1163,7 +1169,8 @@ function answerAfterCut(
  * Where the tail `neutralizeSlackBroadcastMentions` may still rewrite begins:
  * a `<...>` reference on the last line, an `@` that can still become a whole
  * broadcast word (`@here`, not `@heresy`), and a mention after an inline code
- * span opened on the last line, which neutralizes differently once it closes.
+ * span opened on the last line, or the special mention it opened inside
+ * (`<!here|`>`), which neutralize differently once the span closes.
  * For a cut of the answer, a `<` the answer has settled as no special
  * mention, and an `@` word it has settled to neutralize as the cut does, are
  * not held.
@@ -1191,9 +1198,7 @@ function unsafeMentionTail(value: string, answer?: AnswerAfterCut): number {
     const [tick, proseStart] = openCode;
     // Once it pairs, the backtick also splits a special mention it sits in (`<!here|`>`).
     const angle = value.lastIndexOf('<', tick);
-    SLACK_SPECIAL_MENTION_AT.lastIndex = angle;
-    const split = angle >= proseStart && SLACK_SPECIAL_MENTION_AT.test(value) &&
-      SLACK_SPECIAL_MENTION_AT.lastIndex > tick;
+    const split = angle >= proseStart && specialMentionEndAt(value, angle) > tick;
     const from = split ? angle : tick;
     const mention = value.slice(from).search(/[<@]/);
     if (mention >= 0) unsafeFrom = Math.min(unsafeFrom, from + mention);

@@ -106,18 +106,19 @@ export function traceCredentialRedaction(text: string): {
   // Each signature reads what the ones before it left, so a position maps
   // back one signature at a time.
   const stages: CredentialRange[][] = [];
-  const redacted = CREDENTIAL_FINDERS.reduce((value, find) => {
-    const ranges = find(value);
-    if (!ranges.length) return value;
+  let redacted = text;
+  for (const find of CREDENTIAL_FINDERS) {
+    const ranges = find(redacted);
+    if (!ranges.length) continue;
     stages.push(ranges);
-    let redacted = '';
+    let replaced = '';
     let from = 0;
     for (const [start, end] of ranges) {
-      redacted += `${value.slice(from, start)}${CREDENTIAL_REPLACEMENT}`;
+      replaced += `${redacted.slice(from, start)}${CREDENTIAL_REPLACEMENT}`;
       from = end;
     }
-    return redacted + value.slice(from);
-  }, text);
+    redacted = replaced + redacted.slice(from);
+  }
   return {
     text: redacted,
     source: (at) => stages.reduceRight((position, ranges) => positionBefore(ranges, position), at),
@@ -153,8 +154,7 @@ export function credentialMarkers(): readonly string[] {
 // `PRIVATE KEY-----` after its line's start.
 const PEM_BEGIN = /-----BEGIN /gi;
 const PEM_END = /-----END /gi;
-const PEM_LABEL = /^(?:[A-Z0-9](?:[A-Z0-9 ]|-(?!-)){0,62} )?PRIVATE KEY$/i;
-const PEM_LABEL_TAIL = /PRIVATE KEY-----/i;
+const PEM_LABEL_AT = /(?:[A-Z0-9](?:[A-Z0-9 ]|-(?!-)){0,62} )?PRIVATE KEY(?=-----)/iy;
 const PEM_LABEL_MAX = 1 + 62 + 1 + 'PRIVATE KEY'.length;
 // The most text armor holds after its BEGIN line: up to the END line, or
 // for a truncated block, up to the end of the text.
@@ -244,11 +244,9 @@ function pemEndLines(text: string): Map<string, number[]> {
 
 /** Where the label that starts at `start` and is closed by `-----` ends, if it is one. */
 function pemLabelEnd(text: string, start: number): number | undefined {
-  const window = text.slice(start, start + PEM_LABEL_MAX + '-----'.length);
-  const tail = window.search(PEM_LABEL_TAIL);
-  if (tail < 0) return undefined;
-  const end = tail + 'PRIVATE KEY'.length;
-  return PEM_LABEL.test(window.slice(0, end)) ? start + end : undefined;
+  PEM_LABEL_AT.lastIndex = start;
+  const label = PEM_LABEL_AT.exec(text);
+  return label ? start + label[0].length : undefined;
 }
 
 /** The index of the first of the ascending `values` at or after `at`. */
