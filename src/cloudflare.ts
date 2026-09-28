@@ -185,7 +185,7 @@ import {
 import { createLedgerSlackRunHandler } from './slack/ledger-turn-driver.ts';
 import type { SlackPresentationStatePort } from './slack/agent-view-presentation.ts';
 import { CfSlackStateStore } from './config/cf-state-proxies.ts';
-import type { SlackPresentationTransitionInput } from './slack/run-presentations.ts';
+import type { SlackPresentationTransitionInput, SlackReadMethod } from './slack/run-presentations.ts';
 import { defaultSlackStatusRegistry } from './slack/status-registry.ts';
 import {
   activityStatus,
@@ -1767,6 +1767,20 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
   ) {
     return this.call((stores) =>
       stores.presentations.applyActivityStatusCooldown(workspaceId, retryAfterMs),
+    );
+  }
+
+  async slackReserveRead(workspaceId: string, method: SlackReadMethod) {
+    return this.call((stores) => stores.presentations.reserveSlackRead(workspaceId, method));
+  }
+
+  async slackApplyReadCooldown(
+    workspaceId: string,
+    method: SlackReadMethod,
+    retryAfterMs: number,
+  ) {
+    return this.call((stores) =>
+      stores.presentations.applySlackReadCooldown(workspaceId, method, retryAfterMs),
     );
   }
 

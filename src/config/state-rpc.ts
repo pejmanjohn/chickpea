@@ -103,6 +103,7 @@ import type { GatewayAdmissionResult, GatewayInboundDelivery } from '../slack/ga
 import type {
   SlackAppendBooking,
   SlackAppendReservation,
+  SlackReadMethod,
   SlackPresentationTransitionInput,
   SlackPresentationTransitionResult,
   SlackRunPresentation,
@@ -573,6 +574,15 @@ export interface TagStateRpc {
   ): Promise<StateRpcResult<SlackAppendReservation>>;
   slackPresentationApplyActivityStatusCooldown(
     workspaceId: string,
+    retryAfterMs: number,
+  ): Promise<StateRpcResult<{ cooldownUntil: number; budgetVersion: number }>>;
+  slackReserveRead(
+    workspaceId: string,
+    method: SlackReadMethod,
+  ): Promise<StateRpcResult<SlackAppendReservation>>;
+  slackApplyReadCooldown(
+    workspaceId: string,
+    method: SlackReadMethod,
     retryAfterMs: number,
   ): Promise<StateRpcResult<{ cooldownUntil: number; budgetVersion: number }>>;
   slackPresentationRepairList(

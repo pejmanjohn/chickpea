@@ -30,7 +30,7 @@ import type {
 import type { RuntimePlanV2 } from '../agents/runtime-plan.ts';
 import type { UsagePersistenceEvent } from '../usage/runtime-recorder.ts';
 import type { SlackInteractionIntent } from '../slack/interaction-intent.ts';
-import type { SlackRunPresentation } from '../slack/run-presentations.ts';
+import type { SlackReadMethod, SlackRunPresentation } from '../slack/run-presentations.ts';
 import type {
   ThreadRunnerTurnKind,
   ThreadRunnerTurnOp,
@@ -2095,6 +2095,20 @@ export class CfSlackStateStore implements SlackStateStore {
     );
   }
 
+  async reserveSlackRead(workspaceId: string, method: SlackReadMethod) {
+    return rpcVia(this.stub,
+      'slackReserveRead',
+      (stub) => stub.slackReserveRead(workspaceId, method),
+    );
+  }
+
+  async applySlackReadCooldown(workspaceId: string, method: SlackReadMethod, retryAfterMs: number) {
+    return rpcVia(this.stub,
+      'slackApplyReadCooldown',
+      (stub) => stub.slackApplyReadCooldown(workspaceId, method, retryAfterMs),
+    );
+  }
+
   async listRunPresentationsForRepair(limit = 50) {
     return rpcVia(this.stub,'slackPresentationRepairList', (stub) => stub.slackPresentationRepairList(limit));
   }
@@ -2348,6 +2362,15 @@ export class CfTurnJobsForRunner implements RunnerTurnJobsPort {
   /** Convergent, like the append cooldown: replay-safe. */
   applySlackActivityStatusCooldown(workspaceId: string, retryAfterMs: number) {
     return this.slack((store) => store.applySlackActivityStatusCooldown(workspaceId, retryAfterMs));
+  }
+
+  reserveSlackRead(workspaceId: string, method: SlackReadMethod) {
+    return this.once((store) => store.reserveSlackRead(workspaceId, method));
+  }
+
+  /** Convergent, like the append cooldown: replay-safe. */
+  applySlackReadCooldown(workspaceId: string, method: SlackReadMethod, retryAfterMs: number) {
+    return this.slack((store) => store.applySlackReadCooldown(workspaceId, method, retryAfterMs));
   }
 }
 

@@ -43,6 +43,7 @@ import {
   SlackRunPresentationStoreLogic,
   type SlackAppendBooking,
   type SlackAppendReservation,
+  type SlackReadMethod,
   type SlackPresentationActivity,
   type SlackPresentationOwner,
   type SlackPresentationTransitionInput,
@@ -320,6 +321,13 @@ export interface SlackStateStore extends SlackClaimStore, SlackThreadRegistry {
   reserveSlackActivityStatus?(workspaceId: string): Promise<SlackAppendReservation>;
   applySlackActivityStatusCooldown?(
     workspaceId: string,
+    retryAfterMs: number,
+  ): Promise<{ cooldownUntil: number; budgetVersion: number }>;
+  /** Books one Slack history read from the workspace's per-method budget. */
+  reserveSlackRead?(workspaceId: string, method: SlackReadMethod): Promise<SlackAppendReservation>;
+  applySlackReadCooldown?(
+    workspaceId: string,
+    method: SlackReadMethod,
     retryAfterMs: number,
   ): Promise<{ cooldownUntil: number; budgetVersion: number }>;
   listRunPresentationsForRepair?(limit?: number): Promise<SlackRunPresentation[]>;
