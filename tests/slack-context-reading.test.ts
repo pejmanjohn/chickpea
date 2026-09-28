@@ -429,3 +429,34 @@ test('display names are resolved once, cached, and a failed lookup keeps the id'
   assert.deepEqual(lookups.sort(), ['U0DANA1', 'U0GONE1', 'U0GONE1']);
   clearSlackContextNameCache();
 });
+
+test('a shared-app page that reaches the trigger is the recent tail and is kept', async () => {
+  const gate = countingGate(1);
+  // What the shared app returned live: the root plus the newest replies.
+  const client = repliesClient([{ messages: [
+    PAGERDUTY_ALERT,
+    { type: 'message', user: 'U_DANA', ts: '1008.000100', thread_ts: ROOT, text: 'note 158: owner is Marcus' },
+    { type: 'message', user: 'U_DANA', ts: '1009.000100', thread_ts: ROOT, text: 'note 160' },
+    { type: 'message', user: 'U_DANA', ts: '1010.000100', thread_ts: ROOT, text: '<@UBOT> what is this?' },
+  ], next_cursor: '1' }]);
+  const context = await hydrateSlackContextViaWebClient(client as never, turn(), { readGate: gate });
+  assert.equal(context.truncated, true);
+  assert.deepEqual(context.messages.map((message) => message.ts), [ROOT, '1008.000100', '1009.000100', '1010.000100']);
+  assert.match(assembleSlackPrompt(turn(), context), /owner is Marcus[\s\S]*Thread context is incomplete/);
+});
+
+test('a Slack read log carries counts and order, never text or ids', async () => {
+  const { emitSlackRead } = await import('../src/slack/read-budget.ts');
+  const records: Array<Record<string, unknown>> = [];
+  emitSlackRead({
+    source: 'prefetch', method: 'conversations.replies', gated: true, outcome: 'ok', limit: 15,
+    rows: [{ ts: ROOT }, { ts: '1009.000100' }, { ts: '1008.000100' }], rootTs: ROOT, anchorTs: '1009.000100',
+    hasCursor: true,
+  }, { info: (record) => records.push(record) });
+  assert.deepEqual(records, [{
+    component: 'runtime', event: 'slack_read', source: 'prefetch', method: 'replies', outcome: 'ok',
+    gated: true, limit: 15, returned: 3, includesRoot: true, reachesAnchor: true, hasCursor: true,
+    order: 'newest_first',
+  }]);
+  assert.doesNotMatch(JSON.stringify(records), /1000\.|1009\.|U_|C1/);
+});
