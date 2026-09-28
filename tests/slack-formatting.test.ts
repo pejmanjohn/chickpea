@@ -311,6 +311,10 @@ test('every progressive cut point is a monotone prefix of the canonical terminal
     '@<`OPENAI_API_KEY=|<!here>',
     // A redaction shifts what follows it; the answer is read at the matching place.
     `${awsExampleAccessKeyId('AKIA')}\n@Orders`,
+    // After a complete PEM block, an unfinished one is redacted from its own
+    // BEGIN line: the text before a span's closer already shows what the
+    // answer's second complete block will.
+    `\`\`\`${pemBegin('PRIVATE KEY')}${pemEnd('PRIVATE KEY')}${pemBegin('RSA PRIVATE KEY')}\n**http://h**${pemEnd('RSA PRIVATE KEY')}\`\`\``,
   ];
 
   for (const terminalInput of corpus) {

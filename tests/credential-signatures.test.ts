@@ -190,7 +190,21 @@ test('PEM armor is redacted where these patterns find it', () => {
   );
   const truncated = new RegExp(String.raw`${begin}${label}${armor}[\s\S]{0,262144}$`, 'gi');
   const found = (text: string, pattern: RegExp) =>
-    [...text.matchAll(pattern)].map((match) => [match.index, match.index + match[0].length]);
+    [...text.matchAll(pattern)].map((match): [number, number] => [match.index, match.index + match[0].length]);
+  const marker = '[credential redacted]';
+  // Complete blocks, then a truncated block found after they are replaced.
+  // It runs to the end, so it takes any complete block after its BEGIN line.
+  const redactedRanges = (text: string) => {
+    const blocks = found(text, complete);
+    const [tail] = found(text.replace(complete, marker), truncated);
+    if (!tail) return blocks;
+    let [start] = tail;
+    for (const [from, to] of blocks) {
+      if (from >= start) break;
+      start += to - from - marker.length;
+    }
+    return [...blocks.filter(([from]) => from < start), [start, text.length]];
+  };
   const labels = [
     'PRIVATE KEY',
     'RSA PRIVATE KEY',
@@ -253,13 +267,13 @@ test('PEM armor is redacted where these patterns find it', () => {
   }
 
   for (const text of texts) {
-    const expected = [...found(text, complete), ...found(text, truncated)];
+    const expected = redactedRanges(text);
     const shown = JSON.stringify(text.slice(0, 200));
     assert.deepEqual(credentialMatchRanges(text), expected, shown);
     assert.equal(hasCredentialLikeContent(text), expected.length > 0, shown);
     assert.equal(
       redactCredentialLikeContent(text),
-      text.replace(complete, '[credential redacted]').replace(truncated, '[credential redacted]'),
+      text.replace(complete, marker).replace(truncated, marker),
       shown,
     );
   }
@@ -306,6 +320,30 @@ test('a traced redaction maps each kept character back to where it came from', (
       }
     }
   }
+});
+
+test('credential ranges are where redaction rewrites the text', () => {
+  // After a complete block, an unfinished one is redacted from its own BEGIN
+  // line, not the first one in the text.
+  const complete = `${pemBegin('PRIVATE KEY')}${pemEnd('PRIVATE KEY')}`;
+  const truncated = `${pemBegin('RSA PRIVATE KEY')}\nbody`;
+  assert.deepEqual(credentialMatchRanges(`${complete}${truncated}`), [
+    [0, complete.length],
+    [complete.length, complete.length + truncated.length],
+  ]);
+  // An unclosed BEGIN line before a complete block redacts through it.
+  const text = `a ${pemBegin('EC PRIVATE KEY')}\n${syntheticPem('RSA PRIVATE KEY', ['body'])} b`;
+  assert.deepEqual(credentialMatchRanges(text), [[2, text.length]]);
+  // A signature that reads an earlier one's marker (`OPENAI_API_KEY=[credential`)
+  // covers the text that marker replaced.
+  const assignment = `OPENAI_API_KEY=${SYNTHETIC_SLACK_TOKEN}`;
+  assert.deepEqual(credentialMatchRanges(`x ${assignment} after`), [[2, 2 + assignment.length]]);
+  // One that ends where an earlier marker starts has read none of it.
+  const block = `${pemBegin('PRIVATE KEY')}body${pemEnd('PRIVATE KEY')}`;
+  assert.deepEqual(credentialMatchRanges(`${block}${SYNTHETIC_SLACK_TOKEN} z`), [
+    [0, block.length],
+    [block.length, block.length + SYNTHETIC_SLACK_TOKEN.length],
+  ]);
 });
 
 test('PEM redaction stays linear in unclosed BEGIN lines', () => {
