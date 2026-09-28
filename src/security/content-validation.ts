@@ -201,7 +201,10 @@ const PEM_BODY_MAX = 262_144;
 /**
  * Complete armor: a BEGIN line, at most `PEM_BODY_MAX` characters, then the
  * first END line with the same label in any case. Blocks never overlap; a
- * BEGIN line inside one is body text.
+ * BEGIN line inside one is body text. A BEGIN line in the closing dashes of
+ * the END line before it (`…KEY-----BEGIN …`) takes those dashes: left in
+ * that block, they would hide the BEGIN line from the truncated finder and
+ * show the key after it.
  *
  * Each END line is read once and each BEGIN line looks its label up, so text
  * full of unclosed BEGIN lines stays linear: searching from every BEGIN line
@@ -212,6 +215,9 @@ function completePemArmor(text: string): CredentialRange[] {
   let endLines: Map<string, number[]> | undefined;
   let from = 0;
   for (const { begin, labelEnd } of pemBeginLines(text)) {
+    // The last block ends with its END line's closing dashes; a BEGIN line
+    // that starts in them takes them.
+    if (from - '-----'.length <= begin && begin < from) armor.at(-1)![1] = from = begin;
     if (begin < from) continue;
     endLines ??= pemEndLines(text);
     const label = text.slice(begin + '-----BEGIN '.length, labelEnd).toUpperCase();
