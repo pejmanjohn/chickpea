@@ -119,6 +119,17 @@ test('parking a row mid-scan never lists a later turn of a thread ahead of an ea
   assert.deepEqual(f.status('newer'), PARKED);
 });
 
+test('a later turn in the same thread runs once the unreadable earlier one is parked', (t) => {
+  const f = fixture(t);
+  f.enqueue('newer', THREAD_A, NEWER_PLAN);
+  f.enqueue('next', THREAD_A);
+
+  // The parked turn will never run on this release, so its thread moves on.
+  const heads = f.jobs.listPendingByThread({ maxThreads: 10, perThread: 1, threadKey });
+  assert.deepEqual(heads.map((job) => job.id), ['next']);
+  assert.deepEqual(f.status('newer'), PARKED);
+});
+
 test('a stop notice owed by a row this release cannot read is dropped as the row is parked', (t) => {
   const f = fixture(t);
   f.enqueue('newer', THREAD_A, NEWER_PLAN);
@@ -127,6 +138,62 @@ test('a stop notice owed by a row this release cannot read is dropped as the row
   assert.deepEqual(f.jobs.listDueStopNotices(NOW + 60_000), []);
   assert.equal(f.jobs.nextStopNoticeDueAt(), undefined);
   assert.deepEqual(f.status('newer'), PARKED);
+});
+
+test('a row already held for recovery keeps its reason when a sweep finds it unreadable', (t) => {
+  const f = fixture(t);
+  f.enqueue('newer', THREAD_A, NEWER_PLAN);
+  f.jobs.markRecoveryRequired('newer', 'flue_receipt_conflict');
+  // A held head's stop notice stays owed, so the notice sweep still reads it.
+  f.db.run('UPDATE turn_jobs SET stop_notice_at = ? WHERE id = ?', NOW, 'newer');
+
+  assert.deepEqual(f.jobs.listDueStopNotices(NOW + 60_000), []);
+  assert.equal(f.jobs.nextStopNoticeDueAt(), undefined);
+  assert.deepEqual(f.status('newer'), { status: 'recovery_required', recovery_reason: 'flue_receipt_conflict' });
+  assert.deepEqual(f.errors, [
+    '[chickpea] TurnJob requires operator reconciliation {"reason":"flue_receipt_conflict"}',
+  ]);
+});
+
+test('a thread runner reading its own unreadable row parks it and sees it held for recovery', (t) => {
+  const f = fixture(t);
+  f.enqueue('newer', THREAD_A, NEWER_PLAN);
+  assert.equal(f.jobs.assignRunner('newer'), true);
+  f.jobs.confirmRunner('newer');
+
+  assert.deepEqual(f.jobs.runnerView('newer'), { status: 'recovery_required', executor: 'runner' });
+  assert.deepEqual(f.status('newer'), PARKED);
+  assert.deepEqual(f.jobs.runnerView('newer'), { status: 'recovery_required', executor: 'runner' });
+  assert.equal(f.errors.length, 1);
+});
+
+test('a thread runner still repairs Slack cleanup on its delivered row a newer release wrote', (t) => {
+  const f = fixture(t);
+  f.enqueue('newer', THREAD_A, NEWER_PLAN);
+  assert.equal(f.jobs.assignRunner('newer'), true);
+  f.jobs.confirmRunner('newer');
+  const acknowledgment = {
+    channelId: 'C_ROLLBACK', messageTs: '1788000001.000001', name: 'eyes', created: true, cleanup: 'pending' as const,
+  };
+  f.db.run(
+    "UPDATE turn_jobs SET delivered = 1, status = 'done', progress_json = ? WHERE id = ?",
+    JSON.stringify({ slackInteraction: { acknowledgment } }), 'newer',
+  );
+
+  const view = f.jobs.runnerView('newer');
+  assert.equal(view.status, 'done');
+  assert.equal(view.cleanupPending, true);
+  assert.deepEqual(view.job?.progress.slackInteraction?.acknowledgment, acknowledgment);
+});
+
+test('an OAuth continuation resumes from an original turn a newer release wrote', (t) => {
+  const f = fixture(t);
+  f.enqueue('newer', THREAD_A, NEWER_PLAN);
+
+  assert.equal(f.jobs.resumeAfterOAuth('newer', 'continuation-1'), true);
+  const [resumed] = f.jobs.listPending(100).filter((job) => job.id !== 'newer');
+  assert.equal(resumed?.turn.threadTs, THREAD_A);
+  assert.equal(resumed?.assignment.agentId, legacyFixture.agent.id);
 });
 
 test('a thread\'s previous plan this release cannot read is skipped instead of failing the next turn', (t) => {

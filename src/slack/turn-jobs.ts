@@ -977,7 +977,7 @@ export class TurnJobStoreLogic {
       originalTaskId,
     ) as unknown as TurnJobRow | undefined;
     if (!row) return false;
-    const original = this.decodeRow(row);
+    const original = this.decodeWithoutRunRecords(row);
     return this.enqueue({
       id,
       evtKey: `evt:${id}`,
@@ -1195,11 +1195,18 @@ export class TurnJobStoreLogic {
         executor,
         // The runner retries a delivered turn's cleanup from the decoded row.
         ...(row.progress_json.includes('"cleanup":"pending"')
-          ? { cleanupPending: true, job: this.decodeRow(row) }
+          ? { cleanupPending: true, job: this.decodeWithoutRunRecords(row) }
           : {}),
       };
     }
-    return { status: 'pending', executor, job: this.decodeRow(row) };
+    const unreadable: string[] = [];
+    const job = this.decodeReadable(row, unreadable);
+    if (!job) {
+      // Parked here too: the state alarm may not sweep a runner's rows soon.
+      this.quarantineUnreadable(unreadable);
+      return { status: 'recovery_required', executor };
+    }
+    return { status: 'pending', executor, job };
   }
 
   countPendingDeliveriesForWorkspace(workspaceId: string): number {
@@ -1987,14 +1994,9 @@ export class TurnJobStoreLogic {
        ORDER BY enqueued_at LIMIT ?`,
       limit,
     ) as unknown as TurnJobRow[];
-    // Cleanup reads only the turn, its assignment and its progress, so the
-    // run records stay unread: a row whose run records this release cannot
-    // read (a newer release's, after a rollback) is still cleaned up instead
-    // of failing every sweep and holding the alarm armed for it.
-    return rows.map((row) => this.decodeRow(row, {
-      turn: JSON.parse(row.turn_json) as NormalizedSlackTurn,
-      assignment: JSON.parse(row.assignment_json) as ResolvedAssignment,
-    }));
+    // A row a newer release wrote is still cleaned up instead of failing
+    // every sweep and holding the alarm armed for it.
+    return rows.map((row) => this.decodeWithoutRunRecords(row));
   }
 
   hasPendingSlackInteractionCleanup(): boolean {
@@ -2124,8 +2126,25 @@ export class TurnJobStoreLogic {
   private quarantineUnreadable(ids: readonly string[]): void {
     for (const id of ids) {
       this.db.run('UPDATE turn_jobs SET stop_notice_at = NULL WHERE id = ? AND delivered = 0', id);
+      // A row already held for recovery keeps its original reason.
+      if (this.db.get("SELECT 1 AS held FROM turn_jobs WHERE id = ? AND status = 'recovery_required'", id)) {
+        continue;
+      }
       this.markRecoveryRequired(id, 'stored_turn_unreadable');
     }
+  }
+
+  /**
+   * Decode only the turn, its assignment and its progress, for work that
+   * needs nothing more (Slack cleanup, an OAuth continuation). The run
+   * records stay unread, so a row a newer release wrote (read after a
+   * rollback) still decodes.
+   */
+  private decodeWithoutRunRecords(row: TurnJobRow): PendingTurnJob {
+    return this.decodeRow(row, {
+      turn: JSON.parse(row.turn_json) as NormalizedSlackTurn,
+      assignment: JSON.parse(row.assignment_json) as ResolvedAssignment,
+    });
   }
 
   private decodeRow(row: TurnJobRow, records = parseTurnJobRecords(row)): PendingTurnJob {
