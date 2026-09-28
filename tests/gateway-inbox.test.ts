@@ -471,6 +471,46 @@ test('a retry backoff and an orphaned lease stay distinct states across a reset'
   }
 });
 
+test('a delivery this release cannot read is parked with a body-free log and never holds up the queue', (t) => {
+  const errors: unknown[][] = [];
+  t.mock.method(console, 'error', (...args: unknown[]) => { errors.push(args); });
+  const db = openStateDb(':memory:');
+  try {
+    const inbox = new GatewayInboxStoreLogic(db, () => NOW);
+    // A kind from a newer release, still queued when a rollback lands, and a
+    // corrupt row. Both sort ahead of the delivery this release can run.
+    inbox.admit({ ...eventDelivery('delivery:Ev_NEWER', 'private words'), kind: 'interaction.newer_kind' } as never);
+    inbox.admit(eventDelivery('delivery:Ev_CORRUPT', 'corrupt'));
+    db.run("UPDATE gateway_inbox SET payload_json = '{' WHERE id = 'delivery:Ev_CORRUPT'");
+    inbox.admit(eventDelivery('delivery:Ev_PRESENT', 'present'));
+
+    assert.deepEqual(inbox.claimPending(3).map((item) => item.id), ['delivery:Ev_PRESENT']);
+    for (const id of ['delivery:Ev_CORRUPT', 'delivery:Ev_NEWER']) {
+      const row = db.get(
+        'SELECT status, payload_json, payload_bytes, attempts, recovery_reason FROM gateway_inbox WHERE id = ?',
+        id,
+      );
+      assert.deepEqual({ ...row }, {
+        status: 'recovery_required',
+        payload_json: null,
+        payload_bytes: 0,
+        attempts: 0,
+        recovery_reason: 'delivery_unreadable',
+      }, id);
+    }
+    assert.equal(inbox.complete('delivery:Ev_PRESENT'), true);
+    assert.equal(inbox.hasPending(), false, 'nothing is left to retry');
+    assert.equal(inbox.runtimeDrainCounts().recoveryRequiredGatewayInboxDeliveries, 2);
+    assert.deepEqual(errors.map(([event, detail]) => [event, JSON.parse(String(detail))]), [
+      ['[chickpea] gateway_delivery_unreadable', { kind: 'event.deliver' }],
+      ['[chickpea] gateway_delivery_unreadable', { kind: 'interaction.newer_kind' }],
+    ]);
+    assert.doesNotMatch(JSON.stringify(errors), /private words/);
+  } finally {
+    db.close();
+  }
+});
+
 function eventDelivery(deliveryId: string, text: string): GatewayEventDelivery {
   return {
     protocolVersion: 1,

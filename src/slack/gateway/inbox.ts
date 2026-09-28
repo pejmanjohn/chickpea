@@ -313,6 +313,18 @@ export class GatewayInboxStoreLogic {
           this.markRecoveryRequired(row.id, 'missing_payload');
           continue;
         }
+        // Read before claiming: a row this release cannot read (a newer
+        // release's kind, after a rollback) is parked for recovery. Throwing
+        // here would roll the claim back and leave it first in line, failing
+        // every drain until it aged out.
+        const delivery = readStoredDelivery(row.payload_json);
+        if (!delivery) {
+          this.markRecoveryRequired(row.id, 'delivery_unreadable');
+          console.error('[chickpea] gateway_delivery_unreadable', JSON.stringify({
+            kind: /^[a-z][a-z0-9_.]{0,63}$/.test(String(row.kind)) ? row.kind : 'other',
+          }));
+          continue;
+        }
         const attempts = Number(row.attempts) + 1;
         const updated = this.db.run(
           `UPDATE gateway_inbox
@@ -326,7 +338,7 @@ export class GatewayInboxStoreLogic {
         if (updated.changes !== 1) continue;
         claimed.push({
           id: row.id,
-          delivery: parseStoredDelivery(row.payload_json),
+          delivery,
           attempts,
           acceptedAt: Number(row.accepted_at),
         });
@@ -510,17 +522,23 @@ export class GatewayInboxStoreLogic {
   }
 }
 
-function parseStoredDelivery(payload: string): GatewayInboundDelivery {
-  const value = JSON.parse(payload) as GatewayInboundDelivery;
-  if (
-    !value || typeof value !== 'object' ||
-    (value.kind !== 'event.deliver' && value.kind !== 'interaction.agent_selected' &&
-      value.kind !== 'interaction.channel_agent_add' && value.kind !== 'interaction.ui_action' &&
-      value.kind !== 'interaction.view_submission')
-  ) {
-    throw new Error('Stored gateway delivery is invalid.');
+const STORED_DELIVERY_KINDS: ReadonlySet<string> = new Set<GatewayInboundDelivery['kind']>([
+  'event.deliver',
+  'interaction.agent_selected',
+  'interaction.channel_agent_add',
+  'interaction.ui_action',
+  'interaction.view_submission',
+]);
+
+/** The stored delivery, or undefined when it is malformed or of a kind this release does not know. */
+function readStoredDelivery(payload: string): GatewayInboundDelivery | undefined {
+  let value: GatewayInboundDelivery;
+  try {
+    value = JSON.parse(payload) as GatewayInboundDelivery;
+  } catch {
+    return undefined;
   }
-  return value;
+  return value && typeof value === 'object' && STORED_DELIVERY_KINDS.has(value.kind) ? value : undefined;
 }
 
 function boundedReason(reason: string): string {
