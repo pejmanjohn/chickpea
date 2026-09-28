@@ -3,11 +3,12 @@ import { test } from 'node:test';
 
 import {
   credentialMarkers,
+  credentialMatchRanges,
   hasCredentialLikeContent,
   redactCredentialLikeContent,
 } from '../src/security/content-validation.ts';
 import { streamableSlackMarkdownPrefix } from '../src/slack/message-format.ts';
-import { awsExampleAccessKeyId, pemBegin, syntheticPem } from './helpers/credential-fixtures.ts';
+import { awsExampleAccessKeyId, pemBegin, pemEnd, syntheticPem } from './helpers/credential-fixtures.ts';
 
 // Assemble the token-shaped fixture at runtime so repository push protection
 // never has to distinguish synthetic test data from a real Slack credential.
@@ -171,6 +172,94 @@ test('traditional encrypted PEM metadata is redacted with its key body', () => {
 
   assert.equal(redacted, 'before\n[credential redacted]\nafter');
   assert.doesNotMatch(redacted, /Proc-Type|DEK-Info|secretkeybody|END RSA PRIVATE KEY/);
+});
+
+test('PEM armor is redacted where the patterns it replaced found it', () => {
+  // Redaction used to find armor with these two patterns. Seeded text built
+  // from armor pieces (labels read two ways, case and length edges, a Kelvin
+  // sign that is not a K) must redact the same ranges.
+  const armor = '-'.repeat(5);
+  const label = String.raw`(?:[A-Z0-9][A-Z0-9 -]{0,62} )?PRIVATE KEY`;
+  const complete = new RegExp(
+    String.raw`${armor}BEGIN (${label})${armor}[\s\S]{0,262144}?${armor}END \1${armor}`,
+    'gi',
+  );
+  const truncated = new RegExp(String.raw`${armor}BEGIN ${label}${armor}[\s\S]{0,262144}$`, 'gi');
+  const found = (text: string, pattern: RegExp) =>
+    [...text.matchAll(pattern)].map((match) => [match.index, match.index + match[0].length]);
+  const labels = [
+    'PRIVATE KEY',
+    'RSA PRIVATE KEY',
+    'rsa Private key',
+    'A PRIVATE KEY',
+    'A PRIVATE KEY----- PRIVATE KEY',
+    `${'X'.repeat(63)} PRIVATE KEY`,
+    `${'X'.repeat(64)} PRIVATE KEY`,
+    'EC  PRIVATE KEY',
+    'PRIVATE KEY',
+  ];
+  const pieces = [
+    ...labels.map(pemBegin),
+    ...labels.map(pemEnd),
+    '\n',
+    ' ',
+    'Proc-Type: 4,ENCRYPTED',
+    'MIIEvgIBADANBg',
+    armor,
+    'PRIVATE KEY',
+  ];
+  // xorshift32, so every run builds the same texts.
+  let seed = 7;
+  const next = (bound: number) => {
+    seed ^= seed << 13;
+    seed ^= seed >>> 17;
+    seed ^= seed << 5;
+    return (seed >>> 0) % bound;
+  };
+  // The ceiling on either side, closed and truncated.
+  const body = 'MIIEvgIBADANBgkqhkiG9w0B\n'.repeat(10_923).slice(0, 262_144);
+  const texts = ['EC PRIVATE KEY', 'A PRIVATE KEY----- PRIVATE KEY'].flatMap((edge) =>
+    [body, `${body}x`].flatMap((filler) =>
+      [`${pemBegin(edge)}${filler}${pemEnd(edge)}`, `${pemBegin(edge)}${filler}`]));
+  for (let count = 0; count < 3_000; count += 1) {
+    let text = '';
+    for (let size = 1 + next(24); size > 0; size -= 1) text += pieces[next(pieces.length)];
+    texts.push(text);
+  }
+
+  for (const text of texts) {
+    const expected = [...found(text, complete), ...found(text, truncated)];
+    const shown = JSON.stringify(text.slice(0, 200));
+    assert.deepEqual(credentialMatchRanges(text), expected, shown);
+    assert.equal(hasCredentialLikeContent(text), expected.length > 0, shown);
+    assert.equal(
+      redactCredentialLikeContent(text),
+      text.replace(complete, '[credential redacted]').replace(truncated, '[credential redacted]'),
+      shown,
+    );
+  }
+});
+
+test('PEM redaction stays linear in unclosed BEGIN lines', () => {
+  // Every unclosed BEGIN line used to search up to 256 KiB for its END line,
+  // and the streaming path redacts the whole answer on every chunk: one call
+  // on 128,000 characters of them took about 670 ms, and streaming 48,000
+  // took 35 s of CPU. Reading each END line once takes about 2 ms here, a
+  // hundredth of the bound asserted.
+  const lines = [
+    () => pemBegin('RSA PRIVATE KEY'),
+    (index: number) => `${pemBegin(`K${index} PRIVATE KEY`)}\n`,
+  ];
+  for (const line of lines) {
+    let text = 'Intro\n';
+    for (let index = 0; text.length < 128_000; index += 1) text += line(index);
+    const start = process.cpuUsage();
+    assert.equal(redactCredentialLikeContent(text), 'Intro\n[credential redacted]');
+    assert.deepEqual(credentialMatchRanges(text), [[6, text.length]]);
+    assert.equal(hasCredentialLikeContent(text), true);
+    const { user, system } = process.cpuUsage(start);
+    assert.ok(user + system < 200_000, `${Math.round((user + system) / 1_000)} ms of CPU`);
+  }
 });
 
 test('the AWS access-key-id signature stays case-sensitive', () => {
