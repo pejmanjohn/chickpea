@@ -12,7 +12,7 @@ import {
   type WorkspaceMilestoneRecord,
 } from './coding-worker-run.ts';
 import { createWorkspaceMilestoneRelay } from './workspace-milestone-relay.ts';
-import { streamableSlackMarkdownPrefix } from './message-format.ts';
+import { canonicalSlackMarkdownText, streamableSlackMarkdownPrefix } from './message-format.ts';
 import { FILE_DELIVERY_DATA_NAME, resolveFileDeliveryText } from './file-delivery-completion.ts';
 import {
   AgentInstanceExistsError,
@@ -704,8 +704,11 @@ class TerminalStepText {
         continue;
       }
       const joined = bound === undefined ? undefined : joinContinuation(answer, part);
+      // A hold that shows nothing may have given up on a long run in the
+      // joined tail; the whole answer is what the bound must then begin.
       if (joined && (joined.trimmedChars === 0 || !streamed ||
-          streamableSlackMarkdownPrefix(joined.text).startsWith(bound!))) {
+          (streamableSlackMarkdownPrefix(joined.text) || canonicalSlackMarkdownText(joined.text))
+            .startsWith(bound!))) {
         answer = joined.text;
         trimmedChars += joined.trimmedChars;
         reopenedUnmatched ||= joined.reopenedUnmatched;
