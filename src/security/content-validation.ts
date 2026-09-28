@@ -103,8 +103,41 @@ export function traceCredentialRedaction(text: string): {
   text: string;
   source: (at: number) => number;
 } {
-  // Each signature reads what the ones before it left, so a position maps
-  // back one signature at a time.
+  const { text: redacted, stages } = redactionStages(text);
+  return { text: redacted, source: (at) => positionsBefore(stages)(at) };
+}
+
+/**
+ * Where `redactCredentialLikeContent` rewrites `text`, as `[start, end)`
+ * ranges in order that never overlap; the rest of `text` stays as written.
+ * A range that reads an earlier signature's marker (`OPENAI_API_KEY=` before
+ * a redacted token) covers the text that marker replaced. Ranges that only
+ * touch stay separate.
+ */
+export function credentialMatchRanges(text: string): CredentialRange[] {
+  const { stages } = redactionStages(text);
+  // No signature starts inside a marker, so only an end can land in one and
+  // each stage's ranges stay in order as they map back.
+  const found = stages.flatMap((ranges, stage) => {
+    const before = positionsBefore(stages.slice(0, stage));
+    return ranges.map(([start, end]): CredentialRange => [before(start), before(end, true)]);
+  });
+  const merged: CredentialRange[] = [];
+  for (const [start, end] of found.sort(([a], [b]) => a - b)) {
+    const last = merged.at(-1);
+    if (last && start < last[1]) last[1] = Math.max(last[1], end);
+    else merged.push([start, end]);
+  }
+  return merged;
+}
+
+/**
+ * The redacted text, and each matching signature's ranges in the text it
+ * read. Each signature reads what the ones before it left (the truncated PEM
+ * finder reads the text after complete blocks are replaced), so a position
+ * maps back one signature at a time.
+ */
+function redactionStages(text: string): { text: string; stages: CredentialRange[][] } {
   const stages: CredentialRange[][] = [];
   let redacted = text;
   for (const find of CREDENTIAL_FINDERS) {
@@ -119,26 +152,31 @@ export function traceCredentialRedaction(text: string): {
     }
     redacted = replaced + redacted.slice(from);
   }
-  return {
-    text: redacted,
-    source: (at) => stages.reduceRight((position, ranges) => positionBefore(ranges, position), at),
-  };
+  return { text: redacted, stages };
 }
 
-/** Where `at` sat before `ranges` were replaced; inside a marker, its range's start. */
-function positionBefore(ranges: readonly CredentialRange[], at: number): number {
-  let shift = 0;
-  for (const [start, end] of ranges) {
-    if (at < start - shift) break;
-    if (at < start - shift + CREDENTIAL_REPLACEMENT.length) return start;
-    shift += end - start - CREDENTIAL_REPLACEMENT.length;
-  }
-  return at + shift;
-}
-
-/** Where `redactCredentialLikeContent` redacts `text`, as `[start, end)` ranges. */
-export function credentialMatchRanges(text: string): CredentialRange[] {
-  return CREDENTIAL_FINDERS.flatMap((find) => find(text));
+/**
+ * Where positions sat before `stages` replaced their ranges, asked in
+ * ascending order, so one walk of each stage answers them all. Inside a
+ * marker, a position is its range's start, and a range end that reads any
+ * of the marker is its range's end.
+ */
+function positionsBefore(stages: readonly CredentialRange[][]): (at: number, isEnd?: boolean) => number {
+  const walks = stages.map((ranges) => {
+    let next = 0;
+    let shift = 0;
+    return (at: number, isEnd: boolean): number => {
+      for (; next < ranges.length; next += 1) {
+        const [start, end] = ranges[next]!;
+        const marker = start - shift;
+        if (at < marker) break;
+        if (at < marker + CREDENTIAL_REPLACEMENT.length) return isEnd && at > marker ? end : start;
+        shift += end - start - CREDENTIAL_REPLACEMENT.length;
+      }
+      return at + shift;
+    };
+  });
+  return (at, isEnd = false) => walks.reduceRight((position, walk) => walk(position, isEnd), at);
 }
 
 /** Literal prefixes of the signatures above, for streaming tail suppression. */
@@ -163,7 +201,10 @@ const PEM_BODY_MAX = 262_144;
 /**
  * Complete armor: a BEGIN line, at most `PEM_BODY_MAX` characters, then the
  * first END line with the same label in any case. Blocks never overlap; a
- * BEGIN line inside one is body text.
+ * BEGIN line inside one is body text. A BEGIN line in the closing dashes of
+ * the END line before it (`…KEY-----BEGIN …`) takes those dashes: left in
+ * that block, they would hide the BEGIN line from the truncated finder and
+ * show the key after it.
  *
  * Each END line is read once and each BEGIN line looks its label up, so text
  * full of unclosed BEGIN lines stays linear: searching from every BEGIN line
@@ -174,6 +215,9 @@ function completePemArmor(text: string): CredentialRange[] {
   let endLines: Map<string, number[]> | undefined;
   let from = 0;
   for (const { begin, labelEnd } of pemBeginLines(text)) {
+    // The last block ends with its END line's closing dashes; a BEGIN line
+    // that starts in them takes them.
+    if (from - '-----'.length <= begin && begin < from) armor.at(-1)![1] = from = begin;
     if (begin < from) continue;
     endLines ??= pemEndLines(text);
     const label = text.slice(begin + '-----BEGIN '.length, labelEnd).toUpperCase();
