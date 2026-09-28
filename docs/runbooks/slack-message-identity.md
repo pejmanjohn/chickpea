@@ -193,14 +193,25 @@ Dropping the pair also joins the words on either side of each `**`
 holds judge the text as it reads without those stars, and the text before a
 `**` that may still be dropped is held as if the stream ended there.
 
-A hold can pull the cut back onto another hold. A run of repeated structure
-(back-to-back `**URL**` spans that each end in `@h` or `<`, or one line of
-`a < b < c …`) pulls it back one unit per pass. In v0.1.30 every pass
+A hold can pull the cut back onto another hold. The cut's own last `<` and
+trailing `@` word are judged by the answer after the cut, read only before
+the answer's unsafe tail: a `<` that cannot start a special mention and an
+`@` word the answer neutralizes as the cut does are not held. One line of
+`a < b < c …`, back-to-back `` `<` ``, fenced lines starting `<a`, and
+back-to-back `**https://x @h**` spans (the answer reads `@hhttps`) stream as
+in v0.1.29; v0.1.30 judged the cut alone and held each back to its start.
+A cut that would close a `**URL**` span after a backtick it leaves open
+stops before the span's closing `**`, since the answer keeps those stars as
+code.
+
+A run that must hold still pulls the cut back one unit per pass:
+back-to-back `**https://x @here_**` would show `@⁠here_` at every span
+boundary, where the answer reads `@here_https`. In v0.1.30 every pass
 rescanned the whole answer, so streaming 12,000 characters of
 `**https://x @h**` took about 22 s of CPU. A chunk whose cut needs more than
-four passes now streams nothing new: the stream keeps what it shows and
-continues once the run's line ends. v0.1.30 also held such a run back to its
-start; text before the run on the same line now waits with it.
+four passes streams nothing new: the stream keeps what it shows and
+continues once the run ends. Text before such a run on the same line waits
+with it.
 
 ### Broadcast and user-group mentions
 
