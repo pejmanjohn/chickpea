@@ -304,11 +304,12 @@ interface PromptSlackAgentInput {
 async function stageTurnInputForDispatch(
   input: PromptSlackAgentInput,
   envelope: FlueDispatchEnvelopeV1,
+  runtimePlan: RuntimePlanV2,
 ): Promise<void> {
   const turnInput = createSlackTurnInput({
     turnJobId: envelope.idempotencyKey,
     instanceId: envelope.instanceId,
-    runtimePlan: input.runtimePlan!,
+    runtimePlan,
     memoryBlock: input.memoryBlock,
   });
   try {
@@ -406,7 +407,7 @@ export async function promptSlackThreadAgent(
     );
   input.state.dispatchEnvelope = envelope;
   if (!input.state.dispatchReceipt && input.runtimePlan) {
-    await stageTurnInputForDispatch(input, envelope);
+    await stageTurnInputForDispatch(input, envelope, input.runtimePlan);
   }
   const agent = input.handle ? undefined : await slackThreadAgent();
   let handle = input.handle ?? slackThreadAgentHandle(agent!, envelope);

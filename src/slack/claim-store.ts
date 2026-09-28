@@ -34,6 +34,7 @@ import type {
   FrozenRuntimePlanDecision,
   SlackAgentBinding,
   SlackAgentBindingExpectation,
+  SlackThreadContinuation,
 } from './turn-job-types.ts';
 import type { RuntimePlanV2 } from '../agents/runtime-plan.ts';
 import { CHICKPEA_AGENT_ID } from '../config/agent-id.ts';
@@ -237,9 +238,11 @@ export interface SlackStateStore extends SlackClaimStore, SlackThreadRegistry {
     continuityKey: string,
     instanceId: string,
     beforeMessageTs: string,
-  ): Promise<import('./turn-job-types.ts').SlackThreadContinuation | undefined>;
+  ): Promise<SlackThreadContinuation | undefined>;
   /** Node: the durable copy of a staged turn input (Cloudflare stages in the agent object). */
   stageTurnInput?(json: string): Promise<void>;
+  /** Node, synchronous: an agent render in the host process reads its staged turn input here. */
+  readTurnInputJson?(turnJobId: string): string | undefined;
   runtimeDrainCounts(): Promise<SlackRuntimeDrainCounts>;
   countPendingDeliveriesForWorkspace(workspaceId: string): Promise<number>;
   /** Node-only durable legacy relay operations; Cloudflare owns these in its DO alarm. */

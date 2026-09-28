@@ -26,11 +26,12 @@ import {
 } from './turn-jobs.ts';
 import type { NormalizedSlackTurn } from './types.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
-import type { FrozenRuntimePlanDecision } from './turn-job-types.ts';
 import type {
   FlueDispatchReceiptV1,
   FlueSettlementCheckpointV1,
   FlueTurnObservationV1,
+  FrozenRuntimePlanDecision,
+  SlackThreadContinuation,
 } from './turn-job-types.ts';
 import type { RuntimePlanV2 } from '../agents/runtime-plan.ts';
 import { slackAgentThreadKey } from './thread-key.ts';
@@ -69,7 +70,7 @@ interface LedgerSlackTurnStore {
     continuityKey: string,
     instanceId: string,
     beforeMessageTs: string,
-  ): MaybePromise<import('./turn-job-types.ts').SlackThreadContinuation | undefined>;
+  ): MaybePromise<SlackThreadContinuation | undefined>;
   stageTurnInput?(json: string): MaybePromise<void>;
   getPendingByRunId(runId: string): MaybePromise<PendingTurnJob | undefined>;
   freezeRuntimePlan(
@@ -242,7 +243,7 @@ export function createLedgerSlackRunHandler(
           markRecoveryRequired: (reason) =>
             options.turns.markRecoveryRequired(job.id, reason),
           ...(options.turns.stageTurnInput
-            ? { stageTurnInput: async (json: string) => { await options.turns.stageTurnInput!(json); } }
+            ? { stageTurnInput: options.turns.stageTurnInput.bind(options.turns) }
             : {}),
         },
         workStore: options.work,

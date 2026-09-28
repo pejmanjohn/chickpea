@@ -95,7 +95,7 @@ export function parseSlackTurnInput(value: unknown): SlackTurnInput {
     throw new Error('Slack turn input instanceId is invalid.');
   }
   const runtimePlan = parseRuntimePlanV2(record.runtimePlan);
-  if (!runtimePlanInstanceIdMatches(record.runtimePlan as AdmittedRuntimePlanData, record.instanceId)) {
+  if (!runtimePlanInstanceIdMatches(runtimePlan, record.instanceId)) {
     throw new Error('Slack turn input plan belongs to another instance.');
   }
   let memoryBlock: string | undefined;

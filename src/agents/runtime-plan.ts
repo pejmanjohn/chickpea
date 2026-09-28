@@ -643,7 +643,10 @@ export const RUNTIME_PLAN_THREAD_CONTINUITY_EPOCH = 'thread-v1' as const;
  * plan reaches the render through the staged turn input (see turn-input.ts).
  */
 export function deriveRuntimePlanInstanceId(plan: RuntimePlanV2 | AdmittedRuntimePlanData): string {
-  const validated = parseRuntimePlanV2(plan);
+  return threadInstanceId(parseRuntimePlanV2(plan));
+}
+
+function threadInstanceId(validated: RuntimePlanV2): string {
   return opaqueId(
     'agent',
     [
@@ -661,7 +664,10 @@ export function deriveRuntimePlanInstanceId(plan: RuntimePlanV2 | AdmittedRuntim
  * instance's creation data is exactly the plan every one of its turns ran.
  */
 export function deriveLegacyRuntimePlanInstanceId(plan: RuntimePlanV2 | AdmittedRuntimePlanData): string {
-  const validated = parseRuntimePlanV2(plan);
+  return legacyInstanceId(parseRuntimePlanV2(plan));
+}
+
+function legacyInstanceId(validated: RuntimePlanV2): string {
   return opaqueId(
     'agent',
     `${validated.conversation.continuityKey}:${validated.harnessRevision}`,
@@ -673,8 +679,8 @@ export function runtimePlanInstanceIdMatches(
   plan: RuntimePlanV2 | AdmittedRuntimePlanData,
   instanceId: string,
 ): boolean {
-  return deriveRuntimePlanInstanceId(plan) === instanceId ||
-    deriveLegacyRuntimePlanInstanceId(plan) === instanceId;
+  const validated = parseRuntimePlanV2(plan);
+  return threadInstanceId(validated) === instanceId || legacyInstanceId(validated) === instanceId;
 }
 
 /**

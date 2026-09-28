@@ -850,8 +850,7 @@ function slackDeliveryTurnJobId(delivery: ReturnType<typeof useDelivery>): strin
 
 /** Node only: the host's state DB, for a render after a process restart. */
 function readDurableNodeTurnInput(turnJobId: string): string | undefined {
-  const store = getSlackStateStore() as { readTurnInputJson?: (id: string) => string | undefined };
-  return store.readTurnInputJson?.(turnJobId);
+  return getSlackStateStore().readTurnInputJson?.(turnJobId);
 }
 
 /**

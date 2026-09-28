@@ -1385,19 +1385,17 @@ export class TurnJobStoreLogic {
       beforeMessageTs,
     );
     if (!row?.runtime_plan_json || typeof row.message_ts !== 'string') return undefined;
-    let runtimePlan: RuntimePlanV2;
+    const previous: SlackThreadContinuation = {
+      messageTs: row.message_ts,
+      ...(typeof row.user_id === 'string' ? { slackUserId: row.user_id } : {}),
+    };
     try {
-      runtimePlan = parseRuntimePlanV2(JSON.parse(String(row.runtime_plan_json)));
+      return { ...previous, runtimePlan: parseRuntimePlanV2(JSON.parse(String(row.runtime_plan_json))) };
     } catch {
       // Unreadable after a rollback: the transcript is still there, only the
       // narration of what changed is lost.
-      return { messageTs: row.message_ts, ...(typeof row.user_id === 'string' ? { slackUserId: row.user_id } : {}) };
+      return previous;
     }
-    return {
-      messageTs: row.message_ts,
-      ...(typeof row.user_id === 'string' ? { slackUserId: row.user_id } : {}),
-      runtimePlan,
-    };
   }
 
   /** Node's durable copy of a staged turn input; the first write wins. */
@@ -2535,7 +2533,7 @@ function parseFlueDispatchEnvelope(value: unknown): FlueDispatchEnvelopeV1 {
   }
   // Either derivation: a row frozen before thread continuity still targets
   // its plan-addressed instance.
-  if (initialData && !runtimePlanInstanceIdMatches(record.initialData as AdmittedRuntimePlanData, instanceId)) {
+  if (initialData && !runtimePlanInstanceIdMatches(initialData, instanceId)) {
     throw new Error('Flue dispatch target does not match its RuntimePlanV2.');
   }
   // Validated above, but kept as admitted: a retried dispatch must resend the
