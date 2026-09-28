@@ -815,14 +815,16 @@ function sanitizedView(value: string) {
   }
   const text = dropped.length ? sanitizeSlackMarkdownLinks(value) : value;
   const view = starsDroppedView(value, text, dropped, dropped.length);
-  const spansBefore = (cut: number) => leadingCount(dropped.length / 2, (span) => dropped[2 * span]! < cut);
+  // How many dropped spans lie wholly before `cut`, and `cut` itself unless
+  // it splits the next span: then that span's opening `**`.
+  const wholeSpans = (cut: number): [spans: number, kept: number] => {
+    const spans = leadingCount(dropped.length / 2, (span) => dropped[2 * span]! < cut);
+    return spans && cut < dropped[2 * spans - 1]! + 2 ? [spans - 1, dropped[2 * spans - 2]!] : [spans, cut];
+  };
   return {
     ...view,
     /** The dropped span `cut` falls inside: its opening `**`, else `cut`. */
-    spanStart(cut: number): number {
-      const spans = spansBefore(cut);
-      return spans && cut < dropped[2 * spans - 1]! + 2 ? dropped[2 * spans - 2]! : cut;
-    },
+    spanStart: (cut: number) => wholeSpans(cut)[1],
     /**
      * `sanitizedView(value.slice(0, cut))` for the hold loop's cuts. A cut
      * that splits no closed code segment pairs and drops exactly the stars
@@ -832,9 +834,7 @@ function sanitizedView(value: string) {
     prefix(cut: number) {
       const codes = leadingCount(code.length / 2, (segment) => code[2 * segment]! < cut);
       if (codes && cut < code[2 * codes - 1]!) return sanitizedView(value.slice(0, cut));
-      let spans = spansBefore(cut);
-      let kept = cut;
-      if (spans && cut < dropped[2 * spans - 1]! + 2) kept = dropped[2 * --spans]!;
+      const [spans, kept] = wholeSpans(cut);
       const cutText = text.slice(0, view.fromRaw(kept)) + value.slice(kept, cut);
       return starsDroppedView(value.slice(0, cut), cutText, dropped, 2 * spans);
     },
@@ -847,7 +847,8 @@ function sanitizedView(value: string) {
  * the runs are ordered, so both maps are binary searches.
  */
 function starsDroppedView(value: string, text: string, dropped: readonly number[], count: number) {
-  // A run wholly before `raw` removes two characters; one ending at it, one.
+  // Each run wholly before `raw` removes two characters; a run whose first
+  // star is at `raw - 1` removes one.
   const fromRaw = (raw: number) => {
     const before = leadingCount(count, (nth) => dropped[nth]! <= raw - 2);
     return raw - 2 * before - (before < count && dropped[before] === raw - 1 ? 1 : 0);

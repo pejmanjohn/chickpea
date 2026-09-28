@@ -197,10 +197,10 @@ A hold can pull the cut back onto another hold. A run of repeated structure
 (back-to-back `**URL**` spans that each end in `@h` or `<`, or one line of
 `a < b < c …`) pulls it back one unit per pass. In v0.1.30 every pass
 rescanned the whole answer, so streaming 12,000 characters of
-`**https://x @h**` took about 21 s of CPU. A chunk whose cut needs more than
+`**https://x @h**` took about 22 s of CPU. A chunk whose cut needs more than
 four passes now streams nothing new: the stream keeps what it shows and
-continues when a later chunk settles. v0.1.30 streamed none of such a run
-either.
+continues once the run's line ends. v0.1.30 also held such a run back to its
+start; text before the run on the same line now waits with it.
 
 ### Broadcast and user-group mentions
 

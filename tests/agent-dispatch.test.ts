@@ -1359,6 +1359,18 @@ test('a stream that stopped at its cap before the seam lets the join trim (Amber
     partial + continuation);
 });
 
+test('a capped stream trims the seam even when the joined tail is a run the hold gives up on', async () => {
+  const shown = 'Intro paragraph that the stream showed before it reached its cap.';
+  const partial = `${shown}\n\nThe goal is to learn enough about use patterns to restock intelligently,`;
+  // Each open `<` on the last line pulls the hold back once, past its limit.
+  const bounds = ` Bounds:${' 0 < a'.repeat(6)}`;
+  const continuation = `understand enough about use patterns to restock intelligently, identify gaps early.${bounds}`;
+  const capped = streamableSlackMarkdownPrefix(shown);
+  const { text, logs } = await recoveredAnswer([partial, continuation], undefined, true, capped);
+  assert.equal(text, `${partial} identify gaps early.${bounds}`);
+  assert.equal((logs[0] as { recoveryResolution: string }).recoveryResolution, 'continued_trimmed');
+});
+
 test('a continuation folded with other text blocks falls back to the last step and is logged unmatched', async () => {
   const partial = '## Plan\n\n1. Inventory the col';
   const { text, logs } = await recoveredAnswer([partial, 'umn.'], `${partial}\n\nA commentary block.\n\numn.`);
