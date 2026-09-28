@@ -1080,15 +1080,11 @@ function heldBeforeClosedSpan(
   // `<!he**re>`) needs nothing here: the loop checks the cut before the
   // opener against the answer next.
   let held = credentialHoldStart(answer.text, start);
-  let shown: Array<[number, number]> | undefined;
-  for (const [from, to] of answer.redactions()) {
-    if (from >= start || to <= start) continue;
-    // Text before the opener that already redacts from the same place (an
-    // unfinished PEM block) shows what the answer will.
-    shown ??= credentialMatchRanges(answer.text.slice(0, start));
-    if (!shown.some(([shownFrom]) => shownFrom === from)) {
-      held = Math.min(held, credentialHoldStart(answer.text, from));
-    }
+  const across = answer.redactions().find(([from, to]) => from < start && to > start);
+  // Text before the opener that already redacts from the same place (an
+  // unfinished PEM block) shows what the answer will.
+  if (across && !credentialMatchRanges(answer.text.slice(0, start)).some(([from]) => from === across[0])) {
+    held = Math.min(held, credentialHoldStart(answer.text, across[0]));
   }
   return held < start ? Math.min(at, answer.toRaw(held)) : at;
 }

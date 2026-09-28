@@ -177,20 +177,35 @@ test('traditional encrypted PEM metadata is redacted with its key body', () => {
 
 test('PEM armor is redacted where these patterns find it', () => {
   // The armor grammar as two patterns: a label has no two hyphens in a row,
-  // and a BEGIN in the closing dashes of a BEGIN line before it is part of
-  // that line. Seeded text built from armor pieces (labels with hyphen runs,
+  // a BEGIN in the closing dashes of a BEGIN line before it is part of that
+  // line, and one in the closing dashes of an END line takes them from its
+  // block. Seeded text built from armor pieces (labels with hyphen runs,
   // lines sharing dashes, case and length edges, a Kelvin sign that is not
   // a K) must redact the same ranges.
   const armor = '-'.repeat(5);
   const label = String.raw`(?:[A-Z0-9](?:[A-Z0-9 ]|-(?!-)){0,62} )?PRIVATE KEY`;
   const begin = String.raw`(?<!${armor}BEGIN ${label}-{0,4})${armor}BEGIN `;
   const complete = new RegExp(
-    String.raw`${begin}(${label})${armor}[\s\S]{0,262144}?${armor}END \1${armor}`,
+    String.raw`${begin}(${label})${armor}[\s\S]{0,262144}?${armor}END \1(?:-{0,4}(?=${armor}BEGIN ${label}${armor})|${armor})`,
     'gi',
   );
   const truncated = new RegExp(String.raw`${begin}${label}${armor}[\s\S]{0,262144}$`, 'gi');
   const found = (text: string, pattern: RegExp) =>
-    [...text.matchAll(pattern)].map((match) => [match.index, match.index + match[0].length]);
+    [...text.matchAll(pattern)].map((match): [number, number] => [match.index, match.index + match[0].length]);
+  const marker = '[credential redacted]';
+  // Complete blocks, then a truncated block found after they are replaced.
+  // It runs to the end, so it takes any complete block after its BEGIN line.
+  const redactedRanges = (text: string) => {
+    const blocks = found(text, complete);
+    const [tail] = found(text.replace(complete, marker), truncated);
+    if (!tail) return blocks;
+    let [start] = tail;
+    for (const [from, to] of blocks) {
+      if (from >= start) break;
+      start += to - from - marker.length;
+    }
+    return [...blocks.filter(([from]) => from < start), [start, text.length]];
+  };
   const labels = [
     'PRIVATE KEY',
     'RSA PRIVATE KEY',
@@ -231,9 +246,10 @@ test('PEM armor is redacted where these patterns find it', () => {
   const texts = ['EC PRIVATE KEY', 'A PRIVATE KEY----- PRIVATE KEY'].flatMap((edge) =>
     [body, `${body}x`].flatMap((filler) =>
       [`${pemBegin(edge)}${filler}${pemEnd(edge)}`, `${pemBegin(edge)}${filler}`]));
-  // Lines that share closing dashes, two and three in a row, which random
-  // pieces rarely build: each `-----BEGIN ` starts in the dashes before it
-  // unless five extra hyphens part them.
+  // Lines that share closing dashes, which random pieces rarely build: two
+  // and three BEGIN lines in a row, and an END line before a BEGIN line.
+  // Each `-----BEGIN ` starts in the dashes before it unless five extra
+  // hyphens part them.
   const chained = ['PRIVATE KEY', 'RSA PRIVATE KEY', 'EC PRIVATE KEY'];
   for (const first of chained) {
     for (const second of chained) {
@@ -243,6 +259,8 @@ test('PEM armor is redacted where these patterns find it', () => {
         for (const head of [two, three]) {
           texts.push(head, ...chained.map((label) => `${head}\nbody\n${pemEnd(label)} after`));
         }
+        const shared = `${pemBegin(first)}\nbody\n${armor}END ${first}${'-'.repeat(extra)}${pemBegin(second)}\nkey`;
+        texts.push(shared, `${shared}\n${pemEnd(second)} after`);
       }
     }
   }
@@ -253,19 +271,19 @@ test('PEM armor is redacted where these patterns find it', () => {
   }
 
   for (const text of texts) {
-    const expected = [...found(text, complete), ...found(text, truncated)];
+    const expected = redactedRanges(text);
     const shown = JSON.stringify(text.slice(0, 200));
     assert.deepEqual(credentialMatchRanges(text), expected, shown);
     assert.equal(hasCredentialLikeContent(text), expected.length > 0, shown);
     assert.equal(
       redactCredentialLikeContent(text),
-      text.replace(complete, '[credential redacted]').replace(truncated, '[credential redacted]'),
+      text.replace(complete, marker).replace(truncated, marker),
       shown,
     );
   }
 });
 
-test('a PEM BEGIN line never takes the dashes of another armor line', () => {
+test('a PEM BEGIN line takes the closing dashes of an END line, never of a BEGIN line', () => {
   const armor = '-'.repeat(5);
   // A label with a hyphen run would hold the later BEGIN line, so the
   // stream showed text before it that the whole answer redacted.
@@ -273,14 +291,22 @@ test('a PEM BEGIN line never takes the dashes of another armor line', () => {
     redactCredentialLikeContent(`${armor}BEGIN y ${pemBegin('PRIVATE KEY')}\nbody`),
     `${armor}BEGIN y [credential redacted]`,
   );
-  // A BEGIN in the closing dashes of the line before it belongs to that
-  // line, so a later END line cannot take those dashes and unredact it.
+  // A BEGIN in the closing dashes of the BEGIN line before it belongs to
+  // that line, so a later END line cannot take those dashes and unredact it.
   assert.equal(
     redactCredentialLikeContent(
       `${pemBegin('PRIVATE KEY')}BEGIN RSA PRIVATE KEY${armor}\nbody\n${pemEnd('RSA PRIVATE KEY')} after`,
     ),
     '[credential redacted]',
   );
+  // One in the closing dashes of an END line takes them, so the key after it
+  // is redacted with its own block, closed or not.
+  const shared = `${syntheticPem('RSA PRIVATE KEY', ['body'])}BEGIN RSA PRIVATE KEY${armor}\nSECRET`;
+  assert.equal(
+    redactCredentialLikeContent(`${shared}\n${pemEnd('RSA PRIVATE KEY')} after`),
+    '[credential redacted][credential redacted] after',
+  );
+  assert.equal(redactCredentialLikeContent(`${shared} tail`), '[credential redacted][credential redacted]');
 });
 
 test('a traced redaction maps each kept character back to where it came from', () => {
@@ -306,6 +332,30 @@ test('a traced redaction maps each kept character back to where it came from', (
       }
     }
   }
+});
+
+test('credential ranges are where redaction rewrites the text', () => {
+  // After a complete block, an unfinished one is redacted from its own BEGIN
+  // line, not the first one in the text.
+  const complete = `${pemBegin('PRIVATE KEY')}${pemEnd('PRIVATE KEY')}`;
+  const truncated = `${pemBegin('RSA PRIVATE KEY')}\nbody`;
+  assert.deepEqual(credentialMatchRanges(`${complete}${truncated}`), [
+    [0, complete.length],
+    [complete.length, complete.length + truncated.length],
+  ]);
+  // An unclosed BEGIN line before a complete block redacts through it.
+  const text = `a ${pemBegin('EC PRIVATE KEY')}\n${syntheticPem('RSA PRIVATE KEY', ['body'])} b`;
+  assert.deepEqual(credentialMatchRanges(text), [[2, text.length]]);
+  // A signature that reads an earlier one's marker (`OPENAI_API_KEY=[credential`)
+  // covers the text that marker replaced.
+  const assignment = `OPENAI_API_KEY=${SYNTHETIC_SLACK_TOKEN}`;
+  assert.deepEqual(credentialMatchRanges(`x ${assignment} after`), [[2, 2 + assignment.length]]);
+  // One that ends where an earlier marker starts has read none of it.
+  const block = `${pemBegin('PRIVATE KEY')}body${pemEnd('PRIVATE KEY')}`;
+  assert.deepEqual(credentialMatchRanges(`${block}${SYNTHETIC_SLACK_TOKEN} z`), [
+    [0, block.length],
+    [block.length, block.length + SYNTHETIC_SLACK_TOKEN.length],
+  ]);
 });
 
 test('PEM redaction stays linear in unclosed BEGIN lines', () => {
