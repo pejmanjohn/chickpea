@@ -66,6 +66,19 @@ interface FlueDispatchEnvelopeV2 extends FlueDispatchEnvelopeBase {
   };
 }
 
+/**
+ * The previous turn a thread instance admitted, read when the next turn
+ * continues the same transcript (see TurnJobStoreLogic.getThreadContinuation).
+ */
+export interface SlackThreadContinuation {
+  /** The previous turn's trigger: the transcript holds Slack context up to it. */
+  messageTs: string;
+  /** Who sent that trigger. */
+  slackUserId?: string;
+  /** Its frozen plan, absent when this release cannot read it. */
+  runtimePlan?: RuntimePlanV2;
+}
+
 /** Compatibility name used across the durable relay while both versions drain. */
 export type FlueDispatchEnvelopeV1 = LegacyFlueDispatchEnvelopeV1 | FlueDispatchEnvelopeV2;
 

@@ -29,7 +29,15 @@ import type { RuntimePlanV2 } from '../agents/runtime-plan.ts';
 import type { ThreadImageRecord } from './thread-images.ts';
 import type { TurnEnvelopeV1 } from '../agents/turn-envelope.ts';
 import {
+  createSlackTurnInput,
+  rememberInProcessTurnInput,
+  serializeSlackTurnInput,
+  stageSlackTurnInputOnAgentObject,
+  type SlackTurnInputV1,
+} from '../agents/turn-input.ts';
+import {
   BoundedObservationAbortedError,
+  CHICKPEA_SLACK_AGENT_BINDING,
   createCloudflareBoundedAgentReplyReader,
   type BoundedReplyReader,
 } from './bounded-agent-observation.ts';
@@ -215,6 +223,11 @@ export interface SlackFlueDispatchState {
     uid: string,
   ): FlueDispatchEnvelopeV1 | Promise<FlueDispatchEnvelopeV1>;
   markRecoveryRequired(reason: string): void | Promise<void>;
+  /**
+   * Node: persist a staged turn input so a render after a process restart can
+   * read it. Cloudflare stages in the thread's agent object instead.
+   */
+  stageTurnInput?(json: string): void | Promise<void>;
 }
 
 interface PromptSlackAgentInput {
@@ -223,8 +236,16 @@ interface PromptSlackAgentInput {
   turnId: string;
   conversationKey: string;
   requestedModel: string | null;
-  /** Frozen, non-secret revision evidence retained by the adapter observation. */
+  /**
+   * The turn's frozen plan. Besides revision evidence for the observation, it
+   * is staged beside the thread instance before dispatch: a continuing
+   * instance renders this turn's plan, not its creation data.
+   */
   runtimePlan?: RuntimePlanV2;
+  /** This turn's Agent memory block, rendered as an instruction. */
+  memoryBlock?: string;
+  /** Focused seam; production stages in the agent object or the host process. */
+  stageTurnInput?: (input: SlackTurnInputV1) => Promise<void>;
   /** Images already in this Slack conversation, collected by the host fetch. */
   threadImages?: readonly ThreadImageRecord[];
   /** Host-admitted List references for this exact turn. */
@@ -273,6 +294,36 @@ interface PromptSlackAgentInput {
    * in-process `read()`.
    */
   observeReply?: BoundedReplyReader;
+}
+
+/**
+ * Stage this turn's plan and memory beside its thread instance, before the
+ * dispatch that renders them. Repeating it for a retried dispatch is
+ * harmless: the first staged input for a turn wins, and its plan is frozen.
+ */
+async function stageTurnInputForDispatch(
+  input: PromptSlackAgentInput,
+  envelope: FlueDispatchEnvelopeV1,
+): Promise<void> {
+  const turnInput = createSlackTurnInput({
+    turnJobId: envelope.idempotencyKey,
+    instanceId: envelope.instanceId,
+    runtimePlan: input.runtimePlan!,
+    memoryBlock: input.memoryBlock,
+  });
+  try {
+    if (input.stageTurnInput) {
+      await input.stageTurnInput(turnInput);
+    } else if (isCloudflareTarget()) {
+      await stageSlackTurnInputOnAgentObject(input.env, CHICKPEA_SLACK_AGENT_BINDING, turnInput);
+    } else {
+      rememberInProcessTurnInput(turnInput);
+      await input.state.stageTurnInput?.(serializeSlackTurnInput(turnInput));
+    }
+  } catch (error) {
+    // Nothing was admitted: the turn retries like any failed dispatch.
+    throw new AgentPromptFailure('agent', 503, false, true, error);
+  }
 }
 
 /** A Slack thread's coordinator instance, as a persisted dispatch envelope names it. */
@@ -354,6 +405,9 @@ export async function promptSlackThreadAgent(
       await buildTurnEnvelopeSafely(input.buildTurnEnvelope),
     );
   input.state.dispatchEnvelope = envelope;
+  if (!input.state.dispatchReceipt && input.runtimePlan) {
+    await stageTurnInputForDispatch(input, envelope);
+  }
   const agent = input.handle ? undefined : await slackThreadAgent();
   let handle = input.handle ?? slackThreadAgentHandle(agent!, envelope);
   let receipt = input.state.dispatchReceipt;

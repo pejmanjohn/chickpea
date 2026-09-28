@@ -94,7 +94,12 @@ import {
   SlackInstallationUnavailableError,
   type SlackInstallationExecutionContext,
 } from './installation-execution.ts';
-import type { FrozenRuntimePlanDecision, TurnPreviousStop } from './turn-job-types.ts';
+import type {
+  FrozenRuntimePlanDecision,
+  SlackThreadContinuation,
+  TurnPreviousStop,
+} from './turn-job-types.ts';
+import { slackContextSinceWatermark, threadContinuityNote } from './thread-continuity.ts';
 import type { FlueDispatchReceiptV1 } from './turn-job-types.ts';
 import type { SlackProgressiveReadRelay } from './progressive-relay.ts';
 import {
@@ -273,6 +278,15 @@ export interface RunTurnOptions {
     actorMembershipId: string,
     agentId: string,
   ) => RuntimePlanV2 | undefined | Promise<RuntimePlanV2 | undefined>;
+  /**
+   * The thread instance's previous admitted turn, when this turn continues its
+   * transcript: its prompt then carries only newer Slack rows.
+   */
+  getThreadContinuation?: (
+    continuityKey: string,
+    instanceId: string,
+    beforeMessageTs: string,
+  ) => SlackThreadContinuation | undefined | Promise<SlackThreadContinuation | undefined>;
   /** Persist the first complete plan before the agent dispatch boundary. */
   onRuntimePlan?: (
     candidate: RuntimePlanV2,
@@ -1533,8 +1547,13 @@ async function runTurnAttempt(
     }
 
     // 2. Hydrate bounded context (degrades to current-message-only on failure).
-    const frozenHandoff = runtimePlanDecision?.runtimePlan.handoffContext ??
-      assignment.handoffContext ?? [];
+    // A turn that continues the thread's transcript sends only what arrived
+    // since the previous turn; the transcript already holds the rest,
+    // including any ownership handoff context its first turn carried.
+    const continuation = await readThreadContinuation(options, runtimePlanDecision, turn);
+    const frozenHandoff = continuation
+      ? []
+      : runtimePlanDecision?.runtimePlan.handoffContext ?? assignment.handoffContext ?? [];
     const hydratedContext = frozenHandoff.length > 0
       ? currentMessageOnlyContext(turn)
       : await hydrateSlackContextViaWebClient(client, turn);
@@ -1544,6 +1563,21 @@ async function runTurnAttempt(
         ? { store: options.appStores?.config ?? getConfigStore(platformEnv), agentId: assignment.agentId }
         : {}),
     });
+    const promptContext = continuation
+      ? slackContextSinceWatermark(context, continuation.messageTs)
+      : context;
+    const continuityNote = continuation && runtimePlanDecision
+      ? threadContinuityNote({
+          previous: continuation,
+          plan: runtimePlanDecision.runtimePlan,
+          turn,
+          sharedThread: slackConversationKind(turn) !== 'im',
+        })
+      : undefined;
+    // A frozen plan reaches the render with the turn's staged input, so the
+    // memory is rendered as an instruction there, once, instead of piling up
+    // in the thread's transcript turn after turn.
+    const memoryRendered = runtimePlanDecision !== undefined;
     const admittedListIds = runtimePlanDecision
       ? collectAdmittedSlackListIds({
           workspaceId: turn.workspaceId,
@@ -1591,9 +1625,12 @@ async function runTurnAttempt(
       currentRequestPolicyVersion === 2 && frozenProgressiveEligibility?.allowed === true
         ? frozenProgressiveEligibility
         : undefined;
-    const prompt = assembleSlackPrompt(turn, context, {
+    const prompt = assembleSlackPrompt(turn, promptContext, {
       ...(handoffBlock ? { handoffBlock } : {}),
-      ...(preparedMemory?.promptBlock ? { memoryBlock: preparedMemory.promptBlock } : {}),
+      ...(preparedMemory?.promptBlock && !memoryRendered
+        ? { memoryBlock: preparedMemory.promptBlock }
+        : {}),
+      ...(continuityNote ? { continuityNote } : {}),
       memorySelected: (preparedMemory?.selection?.entries.length ?? 0) > 0,
       currentRequestPolicyVersion,
       progressiveStreamingOffered: offeredEligibility !== undefined,
@@ -1694,6 +1731,9 @@ async function runTurnAttempt(
             requestedModel: resolvedModel ?? null,
             ...(runtimePlanDecision
               ? { runtimePlan: runtimePlanDecision.runtimePlan }
+              : {}),
+            ...(memoryRendered && preparedMemory?.promptBlock
+              ? { memoryBlock: preparedMemory.promptBlock }
               : {}),
             // The host fetch is the only place these records exist; the dispatch
             // envelope is the only channel that reaches the Agent object. Only a
@@ -2372,6 +2412,29 @@ function turnEnvelopeBuilder(
   return {
     buildTurnEnvelope: () => buildTurnEnvelope({ plan, settings, config, ...(env ? { env } : {}) }),
   };
+}
+
+/**
+ * The thread instance's previous turn, if this turn continues its transcript.
+ * A failed read degrades to a full bounded context: repeating rows the
+ * transcript holds is harmless; omitting ones it lacks is not.
+ */
+async function readThreadContinuation(
+  options: Pick<RunTurnOptions, 'getThreadContinuation' | 'replayText'>,
+  decision: FrozenRuntimePlanDecision | undefined,
+  turn: NormalizedSlackTurn,
+): Promise<SlackThreadContinuation | undefined> {
+  if (!decision || !options.getThreadContinuation || options.replayText !== undefined) return undefined;
+  try {
+    return await options.getThreadContinuation(
+      decision.runtimePlan.conversation.continuityKey,
+      decision.instanceId,
+      turn.messageTs,
+    );
+  } catch {
+    console.warn('[chickpea] thread continuation read failed; sending the full bounded context');
+    return undefined;
+  }
 }
 
 async function freezeRuntimePlanForTurn(input: {

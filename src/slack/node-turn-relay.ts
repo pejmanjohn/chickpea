@@ -540,6 +540,7 @@ function createNodeThreadDrain(
           recordFlueSettlement(job.id, settlement),
         markRecoveryRequired: (reason: string) =>
           markTurnRecoveryRequired(job.id, reason),
+        ...(state.stageTurnInput ? { stageTurnInput: state.stageTurnInput.bind(state) } : {}),
       };
       const turnLatency = {
         ...(job.enqueuedAt === undefined ? {} : { admittedAt: job.enqueuedAt }),
@@ -661,6 +662,9 @@ function createNodeThreadDrain(
           ...(runtimePlanDecision ? { runtimePlanDecision } : {}),
           onRuntimePlan: (candidate) => freezeRuntimePlan(job.id, candidate),
           ...(state.getBoundRuntimePlan ? { getBoundRuntimePlan: state.getBoundRuntimePlan.bind(state) } : {}),
+          ...(state.getThreadContinuation
+            ? { getThreadContinuation: state.getThreadContinuation.bind(state) }
+            : {}),
           flueDispatch,
           ...(presentationState
             ? { presentationState, progressiveAttributionProven: true }
@@ -960,6 +964,10 @@ async function drainLedgerRuns(input: {
         getPendingByRunId: state.getPendingTurnByRunId.bind(state),
         freezeRuntimePlan: state.freezeRuntimePlan.bind(state),
         ...(state.getBoundRuntimePlan ? { getBoundRuntimePlan: state.getBoundRuntimePlan.bind(state) } : {}),
+        ...(state.getThreadContinuation
+          ? { getThreadContinuation: state.getThreadContinuation.bind(state) }
+          : {}),
+        ...(state.stageTurnInput ? { stageTurnInput: state.stageTurnInput.bind(state) } : {}),
         prepareFlueDispatch: state.prepareFlueDispatch.bind(state),
         reconcileFlueExistingInstance: state.reconcileFlueExistingInstance.bind(state),
         recordFlueReceipt: state.recordFlueReceipt.bind(state),

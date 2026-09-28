@@ -2252,6 +2252,15 @@ export class CfTurnJobsForRunner implements RunnerTurnJobsPort {
     }));
   }
 
+  async getThreadContinuation(continuityKey: string, instanceId: string, beforeMessageTs: string) {
+    return orUndefined(await this.op({
+      kind: 'getThreadContinuation',
+      continuityKey,
+      instanceId,
+      beforeMessageTs,
+    }));
+  }
+
   async recordUsagePersistence(id: string, event: UsagePersistenceEvent) {
     return orUndefined(await this.op({ kind: 'recordUsagePersistence', id, event }));
   }

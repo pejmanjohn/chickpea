@@ -33,8 +33,6 @@ export const RETRY_SAFE_SANDBOX_METHODS: ReadonlySet<string> = new Set([
   'endTurn',
   'destroy',
   'discardWorkspace',
-  // Replaying the same overlay converges: it never lowers a generation.
-  'saveWorkspaceRoster',
   // A coding task record is written whole under its key, and dropped by it.
   'putCodingTask',
   'settleCodingTask',

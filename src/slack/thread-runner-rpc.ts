@@ -16,7 +16,11 @@ import type {
   SlackPresentationTransitionResult,
   SlackRunPresentation,
 } from './run-presentations.ts';
-import type { FrozenRuntimePlanDecision, TurnStopNotice } from './turn-job-types.ts';
+import type {
+  FrozenRuntimePlanDecision,
+  SlackThreadContinuation,
+  TurnStopNotice,
+} from './turn-job-types.ts';
 import type { RunnerTurnJobView } from './turn-jobs.ts';
 import type { SlackRunFactsView } from './status-registry.ts';
 import type { ThreadRunnerJob, ThreadRunnerStatus } from './thread-runner-jobs.ts';
@@ -52,6 +56,11 @@ export interface ThreadRunnerTurnOps {
     actorMembershipId: string;
     agentId: string;
   }, RuntimePlanV2 | null];
+  getThreadContinuation: [{
+    continuityKey: string;
+    instanceId: string;
+    beforeMessageTs: string;
+  }, SlackThreadContinuation | null];
   recordUsagePersistence: [{ id: string; event: UsagePersistenceEvent }, TurnProgress | null];
   recordInteractionIntent: [{ id: string; intent: SlackInteractionIntent }, TurnProgress | null];
   markDelivered: [{ id: string }, null];

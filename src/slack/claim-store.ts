@@ -233,6 +233,13 @@ export interface SlackStateStore extends SlackClaimStore, SlackThreadRegistry {
   ): Promise<SlackAgentBinding>;
   getAgentBinding(continuityKey: string): Promise<SlackAgentBinding | undefined>;
   getBoundRuntimePlan?(continuityKey: string, beforeMessageTs: string, actorMembershipId: string, agentId: string): Promise<RuntimePlanV2 | undefined>;
+  getThreadContinuation?(
+    continuityKey: string,
+    instanceId: string,
+    beforeMessageTs: string,
+  ): Promise<import('./turn-job-types.ts').SlackThreadContinuation | undefined>;
+  /** Node: the durable copy of a staged turn input (Cloudflare stages in the agent object). */
+  stageTurnInput?(json: string): Promise<void>;
   runtimeDrainCounts(): Promise<SlackRuntimeDrainCounts>;
   countPendingDeliveriesForWorkspace(workspaceId: string): Promise<number>;
   /** Node-only durable legacy relay operations; Cloudflare owns these in its DO alarm. */
@@ -631,11 +638,13 @@ export interface SqliteSlackStateStore extends SlackStateStore {
 export class SqliteSlackStateStore {
   private readonly db: NodeStateDb;
   private readonly gatewayInbox: SqliteGatewayInboxStore;
+  private readonly turnJobRows: TurnJobStoreLogic;
 
   constructor(path: string, now: () => number = Date.now) {
     this.db = openStateDb(path);
     const slack = new SlackStateLogic(this.db, now);
     const turnJobs = new TurnJobStoreLogic(this.db, now);
+    this.turnJobRows = turnJobs;
     const presentations = new SlackRunPresentationStoreLogic(this.db, now);
     const uiSurfaces = new UiSurfaceStoreLogic(this.db, now);
     const work = new WorkStoreLogic(this.db, { now });
@@ -652,5 +661,10 @@ export class SqliteSlackStateStore {
 
   gatewayInboxStore(): SqliteGatewayInboxStore {
     return this.gatewayInbox;
+  }
+
+  /** Synchronous: an agent render on Node reads its staged turn input here. */
+  readTurnInputJson(turnJobId: string): string | undefined {
+    return this.turnJobRows.readTurnInputJson(turnJobId);
   }
 }

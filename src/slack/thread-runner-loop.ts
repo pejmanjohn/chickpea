@@ -722,6 +722,7 @@ export function runnerTurnJobsPort<P extends TurnExecutionPorts['turnJobs']>(
     recordPullRequest: (...args) => storeCall(() => remote.recordPullRequest(...args)),
     freezeRuntimePlan: (...args) => storeCall(() => remote.freezeRuntimePlan(...args)),
     getBoundRuntimePlan: (...args) => storeCall(() => remote.getBoundRuntimePlan(...args)),
+    getThreadContinuation: (...args) => storeCall(() => remote.getThreadContinuation(...args)),
     recordUsagePersistence: (...args) => storeCall(() => remote.recordUsagePersistence(...args)),
     recordInteractionIntent: (...args) => storeCall(() => remote.recordInteractionIntent(...args)),
     recordSlackInteractionProgress: (...args) =>

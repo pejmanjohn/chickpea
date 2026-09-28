@@ -65,6 +65,12 @@ type MaybePromise<T> = T | Promise<T>;
 
 interface LedgerSlackTurnStore {
   getBoundRuntimePlan?(continuityKey: string, beforeMessageTs: string, actorMembershipId: string, agentId: string): MaybePromise<RuntimePlanV2 | undefined>;
+  getThreadContinuation?(
+    continuityKey: string,
+    instanceId: string,
+    beforeMessageTs: string,
+  ): MaybePromise<import('./turn-job-types.ts').SlackThreadContinuation | undefined>;
+  stageTurnInput?(json: string): MaybePromise<void>;
   getPendingByRunId(runId: string): MaybePromise<PendingTurnJob | undefined>;
   freezeRuntimePlan(
     id: string,
@@ -217,6 +223,9 @@ export function createLedgerSlackRunHandler(
         ...(runtimePlanDecision ? { runtimePlanDecision } : {}),
         onRuntimePlan: (candidate) => options.turns.freezeRuntimePlan(job.id, candidate),
         ...(options.turns.getBoundRuntimePlan ? { getBoundRuntimePlan: options.turns.getBoundRuntimePlan.bind(options.turns) } : {}),
+        ...(options.turns.getThreadContinuation
+          ? { getThreadContinuation: options.turns.getThreadContinuation.bind(options.turns) }
+          : {}),
         flueDispatch: {
           ...(job.dispatchEnvelope ? { dispatchEnvelope: job.dispatchEnvelope } : {}),
           ...(job.dispatchReceipt ? { dispatchReceipt: job.dispatchReceipt } : {}),
@@ -232,6 +241,9 @@ export function createLedgerSlackRunHandler(
             options.turns.recordFlueSettlement(job.id, settlement),
           markRecoveryRequired: (reason) =>
             options.turns.markRecoveryRequired(job.id, reason),
+          ...(options.turns.stageTurnInput
+            ? { stageTurnInput: async (json: string) => { await options.turns.stageTurnInput!(json); } }
+            : {}),
         },
         workStore: options.work,
         ...(options.presentationState

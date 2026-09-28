@@ -7,7 +7,9 @@ import {
   buildRuntimePlanActivityContext,
   compileRuntimePlanV2,
   compileWebsiteLogins,
+  deriveLegacyRuntimePlanInstanceId,
   deriveRuntimePlanInstanceId,
+  runtimePlanInstanceIdMatches,
   parseRuntimePlanV2,
   runtimePlanConversationKey,
   runtimePlanSandboxConversationKey,
@@ -192,7 +194,7 @@ test('runtime plans freeze approved MCP effects and keep legacy declarations rea
   const plan = compile({ effectiveConnections });
   assert.deepEqual(plan.mcpConnections[0]!.readOnlyTools, ['search']);
   assert.deepEqual(plan.mcpConnections[0]!.writeTools, []);
-  assert.notEqual(deriveRuntimePlanInstanceId(plan), deriveRuntimePlanInstanceId(compile()));
+  assert.equal(deriveRuntimePlanInstanceId(plan), deriveRuntimePlanInstanceId(compile()));
   const legacy = structuredClone(plan);
   delete legacy.mcpConnections[0]!.displayName;
   delete legacy.mcpConnections[0]!.readOnlyTools;
@@ -656,7 +658,7 @@ test('equivalent key and set ordering produces one revision and instance id', ()
   assert.equal(deriveRuntimePlanInstanceId(reordered), deriveRuntimePlanInstanceId(first));
 });
 
-test('harness policy and frozen credential epochs rotate the runtime incarnation', () => {
+test('the thread instance survives every render input: speaker, memory, configuration, model, credentials, connections', () => {
   const baseline = compile();
   const cases = [
     compile({ assignment: assignment({
@@ -671,17 +673,34 @@ test('harness policy and frozen credential epochs rotate the runtime incarnation
     }),
     compile({ effectiveConnections: withMcpPolicy({ allowedTools: ['read'] }) }),
     compile({ codingWorkspace: true }),
+    // An Agent memory write.
     compile({ memoryEpoch: 4 }),
-    compile({ continuityPolicy: 'slack-runtime-v4' }),
+    // An Agent configuration edit.
     compile({
       assignment: assignment({
         agent: { ...structuredClone(AGENT), revision: AGENT.revision + 1 },
       }),
     }),
+    // Another person speaking in the same thread.
+    compile({ turn: turn({ actorMembershipId: 'membership_bob', userId: 'U_BOB' }) }),
   ];
   for (const changed of cases) {
-    assert.notEqual(changed.harnessRevision, baseline.harnessRevision);
-    assert.notEqual(deriveRuntimePlanInstanceId(changed), deriveRuntimePlanInstanceId(baseline));
+    assert.notEqual(changed.harnessRevision, baseline.harnessRevision, 'the plan itself still differs');
+    assert.equal(deriveRuntimePlanInstanceId(changed), deriveRuntimePlanInstanceId(baseline));
+    assert.notEqual(
+      deriveLegacyRuntimePlanInstanceId(changed),
+      deriveLegacyRuntimePlanInstanceId(baseline),
+      'the plan-addressed derivation forked here',
+    );
+  }
+  // Only continuity itself rotates the instance: the continuity policy, the
+  // Agent, the thread, and (in its own test) an ownership transfer.
+  for (const rotated of [
+    compile({ continuityPolicy: 'slack-runtime-v4' }),
+    compile({ assignment: assignment({ agentId: 'agent_other', agent: { ...structuredClone(AGENT), id: 'agent_other' } }) }),
+    compile({ turn: turn({ threadTs: '1783000000.000999' }) }),
+  ]) {
+    assert.notEqual(deriveRuntimePlanInstanceId(rotated), deriveRuntimePlanInstanceId(baseline));
   }
 
   const credentialRotated = compile({
@@ -703,7 +722,7 @@ test('harness policy and frozen credential epochs rotate the runtime incarnation
     providerId: 'openai',
   });
   assert.notEqual(credentialRotated.harnessRevision, baseline.harnessRevision);
-  assert.notEqual(deriveRuntimePlanInstanceId(credentialRotated), deriveRuntimePlanInstanceId(baseline));
+  assert.equal(deriveRuntimePlanInstanceId(credentialRotated), deriveRuntimePlanInstanceId(baseline));
   assert.doesNotMatch(JSON.stringify(credentialRotated), /Rotated key/);
 
   const liveResolverChange = compile({
@@ -713,7 +732,10 @@ test('harness policy and frozen credential epochs rotate the runtime incarnation
     }),
   });
   assert.notEqual(liveResolverChange.harnessRevision, baseline.harnessRevision);
-  assert.notEqual(deriveRuntimePlanInstanceId(liveResolverChange), deriveRuntimePlanInstanceId(baseline));
+  assert.equal(deriveRuntimePlanInstanceId(liveResolverChange), deriveRuntimePlanInstanceId(baseline));
+  assert.ok(runtimePlanInstanceIdMatches(liveResolverChange, deriveLegacyRuntimePlanInstanceId(liveResolverChange)));
+  assert.ok(runtimePlanInstanceIdMatches(liveResolverChange, deriveRuntimePlanInstanceId(baseline)));
+  assert.ok(!runtimePlanInstanceIdMatches(liveResolverChange, deriveLegacyRuntimePlanInstanceId(baseline)));
 });
 
 test('legacy Agent-scoped connector rows never enter a runtime plan', () => {
