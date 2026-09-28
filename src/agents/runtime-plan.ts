@@ -684,7 +684,6 @@ export type AdmittedRuntimePlanData = Omit<RuntimePlanV2, 'sandbox'> & {
   sandbox: { mode: RuntimePlanSandboxMode | typeof ATTACHED_CONTAINER_SANDBOX_MODE };
 };
 
-/** Strict allowlist parser for persisted/runtime-provided Flue initial data. */
 export type RuntimePlanLegacyArtifactThread = 'conversation' | 'none';
 
 export interface ParseRuntimePlanV2Options {
@@ -692,6 +691,15 @@ export interface ParseRuntimePlanV2Options {
   legacyArtifactThread?: RuntimePlanLegacyArtifactThread;
 }
 
+/**
+ * Strict allowlist parser for persisted/runtime-provided Flue initial data.
+ * An unknown field or variant is rejected, never dropped, even one a newer
+ * release wrote: the plan carries authority (connections, hosts, tools,
+ * sandbox) and the frozen model route, so an unknown field may restrict or
+ * redirect what this release would otherwise run, and most fields are bound
+ * by harnessRevision. Rollback safety comes from the readers instead: a
+ * TurnJob sweep parks a row it cannot read for operator recovery.
+ */
 export function parseRuntimePlanV2(
   value: unknown,
   options: ParseRuntimePlanV2Options = {},

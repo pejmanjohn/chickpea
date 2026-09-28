@@ -82,6 +82,20 @@ run by replying `stop` in its thread. Tell the user this optional step is in
 Slack app only if they ask. Installations on the shared Chickpea app need
 nothing. See [Slack steering](docs/runbooks/slack-steering.md#rollback).
 
+v0.1.27, v0.1.28 and v0.1.29 cannot read two kinds of record that v0.1.30
+writes, and a single one stalls them after a rollback. On a shared-gateway
+installation, a button click or form submission that is still queued stops the
+older release's gateway queue for up to 7 days. The other is a turn on an
+OpenRouter model newer than the built-in model list. If a reply, routine run or
+coding task on such a model is still running at the rollback, no thread starts
+a new turn. Before rolling back from v0.1.30, make sure none is running. If
+Slack goes quiet after a rollback, redeploy v0.1.30 with the same deploy
+command. It processes the stuck record. Roll back again only after that work
+finishes.
+[Recover a stalled rollback](docs/runbooks/operations.md#recover-a-stalled-rollback)
+says how to recognise the stall. Later releases set such a record aside for
+operator recovery instead of stalling.
+
 ## 3. Deploy to the same Worker
 
 For the core Cloudflare deployment, run the release's guarded command from the

@@ -166,6 +166,7 @@ const LOGGABLE_TURN_RECOVERY_REASONS = new Set([
   'slack_file_fallback_unavailable',
   'slack_installation_unavailable',
   'slack_presentation_effect_unresolved',
+  'stored_turn_unreadable',
 ]);
 
 /** A pending job the alarm should run, decoded from its row. */
@@ -898,8 +899,10 @@ export class TurnJobStoreLogic {
       limit,
     ) as unknown as Array<TurnJobRow & { stop_notice_attempts: number }>;
     const notices: TurnStopNotice[] = [];
+    const unreadable: string[] = [];
     for (const row of rows) {
-      const job = this.decodeRow(row);
+      const job = this.decodeReadable(row, unreadable);
+      if (!job) continue;
       if (job.stop?.role !== 'stopped') {
         this.acknowledgeStopNotice(job.id);
         continue;
@@ -917,6 +920,7 @@ export class TurnJobStoreLogic {
         ...(job.flueSettlement ? { settled: job.flueSettlement.outcome } : {}),
       });
     }
+    this.quarantineUnreadable(unreadable);
     return notices;
   }
 
@@ -973,7 +977,7 @@ export class TurnJobStoreLogic {
       originalTaskId,
     ) as unknown as TurnJobRow | undefined;
     if (!row) return false;
-    const original = this.decodeRow(row);
+    const original = this.decodeWithoutRunRecords(row);
     return this.enqueue({
       id,
       evtKey: `evt:${id}`,
@@ -1004,7 +1008,7 @@ export class TurnJobStoreLogic {
       executionAuthority,
       limit,
     ) as unknown as TurnJobRow[];
-    return rows.map((row) => this.decodeRow(row));
+    return this.decodeSweep(rows);
   }
 
   /**
@@ -1085,6 +1089,7 @@ export class TurnJobStoreLogic {
     done: () => boolean,
   ): void {
     const pageSize = 100;
+    const unreadable: string[] = [];
     for (let offset = 0; offset < scanLimit; offset += pageSize) {
       const rows = this.db.all(
         `SELECT ${TURN_JOB_SELECT_COLUMNS}
@@ -1095,9 +1100,16 @@ export class TurnJobStoreLogic {
         pageSize,
         offset,
       ) as unknown as TurnJobRow[];
-      for (const row of rows) visit(this.decodeRow(row));
-      if (rows.length < pageSize || done()) return;
+      for (const row of rows) {
+        const job = this.decodeReadable(row, unreadable);
+        if (job) visit(job);
+      }
+      if (rows.length < pageSize || done()) break;
     }
+    // Parked only after the scan: a row leaving the pending set mid-scan
+    // would move the next page's offset past an unread row, and a later turn
+    // of that row's thread could be listed ahead of it.
+    this.quarantineUnreadable(unreadable);
   }
 
   /**
@@ -1160,12 +1172,12 @@ export class TurnJobStoreLogic {
 
   /** Hand-offs whose runner admission is unconfirmed; re-admission is idempotent. */
   listHandoffs(limit: number): PendingTurnJob[] {
-    return (this.db.all(
+    return this.decodeSweep(this.db.all(
       `SELECT ${TURN_JOB_SELECT_COLUMNS} FROM turn_jobs
        WHERE ${PENDING_ROW} AND executor = 'handoff'
        ORDER BY enqueued_at LIMIT ?`,
       limit,
-    ) as unknown as TurnJobRow[]).map((row) => this.decodeRow(row));
+    ) as unknown as TurnJobRow[]);
   }
 
   /** The authoritative row a thread runner reads before it runs or reattaches. */
@@ -1183,11 +1195,18 @@ export class TurnJobStoreLogic {
         executor,
         // The runner retries a delivered turn's cleanup from the decoded row.
         ...(row.progress_json.includes('"cleanup":"pending"')
-          ? { cleanupPending: true, job: this.decodeRow(row) }
+          ? { cleanupPending: true, job: this.decodeWithoutRunRecords(row) }
           : {}),
       };
     }
-    return { status: 'pending', executor, job: this.decodeRow(row) };
+    const unreadable: string[] = [];
+    const job = this.decodeReadable(row, unreadable);
+    if (!job) {
+      // Parked here too: the state alarm may not sweep a runner's rows soon.
+      this.quarantineUnreadable(unreadable);
+      return { status: 'recovery_required', executor };
+    }
+    return { status: 'pending', executor, job };
   }
 
   countPendingDeliveriesForWorkspace(workspaceId: string): number {
@@ -1312,7 +1331,16 @@ export class TurnJobStoreLogic {
       continuityKey, actorMembershipId, agentId, beforeMessageTs,
     );
     if (!row?.runtime_plan_json) return undefined;
-    const plan = parseRuntimePlanV2(JSON.parse(String(row.runtime_plan_json)));
+    let plan: RuntimePlanV2;
+    try {
+      plan = parseRuntimePlanV2(JSON.parse(String(row.runtime_plan_json)));
+    } catch {
+      // A plan this release cannot read (a newer release's, after a
+      // rollback) only loses the thread's carried context: the turn picks
+      // its connections afresh instead of failing.
+      console.warn('[chickpea] a thread\'s previous runtime plan is unreadable; continuing without it');
+      return undefined;
+    }
     return plan.conversation.continuityKey === continuityKey ? plan : undefined;
   }
 
@@ -1966,7 +1994,9 @@ export class TurnJobStoreLogic {
        ORDER BY enqueued_at LIMIT ?`,
       limit,
     ) as unknown as TurnJobRow[];
-    return rows.map((row) => this.decodeRow(row));
+    // A row a newer release wrote is still cleaned up instead of failing
+    // every sweep and holding the alarm armed for it.
+    return rows.map((row) => this.decodeWithoutRunRecords(row));
   }
 
   hasPendingSlackInteractionCleanup(): boolean {
@@ -2062,9 +2092,63 @@ export class TurnJobStoreLogic {
     });
   }
 
-  private decodeRow(row: TurnJobRow): PendingTurnJob {
-    const turn = JSON.parse(row.turn_json) as NormalizedSlackTurn;
-    const assignment = JSON.parse(row.assignment_json) as ResolvedAssignment;
+  /**
+   * Decode a row a sweep read, or collect its id in `unreadable` when this
+   * release cannot read it (see quarantineUnreadable). One such row must not
+   * fail the sweep: that would stall every conversation on every pass.
+   */
+  private decodeReadable(row: TurnJobRow, unreadable: string[]): PendingTurnJob | undefined {
+    let records: TurnJobRecords;
+    try {
+      records = parseTurnJobRecords(row);
+    } catch {
+      unreadable.push(row.id);
+      return undefined;
+    }
+    return this.decodeRow(row, records);
+  }
+
+  /** Decode a one-page sweep, parking the rows this release cannot read. */
+  private decodeSweep(rows: readonly TurnJobRow[]): PendingTurnJob[] {
+    const unreadable: string[] = [];
+    const jobs = rows.flatMap((row) => this.decodeReadable(row, unreadable) ?? []);
+    this.quarantineUnreadable(unreadable);
+    return jobs;
+  }
+
+  /**
+   * Park undelivered rows this release cannot read, such as a newer
+   * release's rows after a rollback, for operator recovery. They leave every
+   * sweep, a stop notice they owe is dropped (it names a runner only the row
+   * can tell), and a stop they head releases the rows it holds. Plain
+   * statements only: callers may hold a transaction.
+   */
+  private quarantineUnreadable(ids: readonly string[]): void {
+    for (const id of ids) {
+      this.db.run('UPDATE turn_jobs SET stop_notice_at = NULL WHERE id = ? AND delivered = 0', id);
+      // A row already held for recovery keeps its original reason.
+      if (this.db.get("SELECT 1 AS held FROM turn_jobs WHERE id = ? AND status = 'recovery_required'", id)) {
+        continue;
+      }
+      this.markRecoveryRequired(id, 'stored_turn_unreadable');
+    }
+  }
+
+  /**
+   * Decode only the turn, its assignment and its progress, for work that
+   * needs nothing more (Slack cleanup, an OAuth continuation). The run
+   * records stay unread, so a row a newer release wrote (read after a
+   * rollback) still decodes.
+   */
+  private decodeWithoutRunRecords(row: TurnJobRow): PendingTurnJob {
+    return this.decodeRow(row, {
+      turn: JSON.parse(row.turn_json) as NormalizedSlackTurn,
+      assignment: JSON.parse(row.assignment_json) as ResolvedAssignment,
+    });
+  }
+
+  private decodeRow(row: TurnJobRow, records = parseTurnJobRecords(row)): PendingTurnJob {
+    const { turn, assignment, runtimePlan, dispatchEnvelope, dispatchReceipt, flueSettlement } = records;
     const stop = row.stop_json ? this.effectiveStop(parseTurnStopRecord(row.stop_json)) : undefined;
     const previousStop = this.previousThreadStop(row, turn, assignment);
     return {
@@ -2077,19 +2161,11 @@ export class TurnJobStoreLogic {
       executionAuthority: row.execution_authority,
       attempts: Number(row.attempts),
       progress: parseTurnProgress(row.progress_json),
-      ...(row.runtime_plan_json
-        ? { runtimePlan: parseRuntimePlanV2(JSON.parse(row.runtime_plan_json)) }
-        : {}),
+      ...(runtimePlan ? { runtimePlan } : {}),
       ...(row.agent_instance_id ? { agentInstanceId: row.agent_instance_id } : {}),
-      ...(row.dispatch_envelope_json
-        ? { dispatchEnvelope: parseFlueDispatchEnvelope(JSON.parse(row.dispatch_envelope_json)) }
-        : {}),
-      ...(row.dispatch_receipt_json
-        ? { dispatchReceipt: parseFlueDispatchReceipt(JSON.parse(row.dispatch_receipt_json)) }
-        : {}),
-      ...(row.flue_settlement_json
-        ? { flueSettlement: parseFlueSettlement(JSON.parse(row.flue_settlement_json)) }
-        : {}),
+      ...(dispatchEnvelope ? { dispatchEnvelope } : {}),
+      ...(dispatchReceipt ? { dispatchReceipt } : {}),
+      ...(flueSettlement ? { flueSettlement } : {}),
       ...(row.dispatch_started_at === null || row.dispatch_started_at === undefined
         ? {}
         : { dispatchStartedAt: Number(row.dispatch_started_at) }),
@@ -2276,6 +2352,35 @@ function validateSteeringRequest(request: TurnSteeringRequest, enqueue?: TurnJob
   if (enqueue && stopThreadKeyOf(enqueue.turn, enqueue.assignment) !== request.threadKey) {
     throw new Error('The enqueued turn does not belong to the steered thread.');
   }
+}
+
+type TurnJobRecords = Pick<
+  PendingTurnJob,
+  'turn' | 'assignment' | 'runtimePlan' | 'dispatchEnvelope' | 'dispatchReceipt' | 'flueSettlement'
+>;
+
+/**
+ * The row's records that this release reads strictly. Pure, so a throw means
+ * only that this release cannot read the row: it is corrupt, or a newer
+ * release wrote a shape this one does not know (read after a rollback).
+ */
+function parseTurnJobRecords(row: TurnJobRow): TurnJobRecords {
+  return {
+    turn: JSON.parse(row.turn_json) as NormalizedSlackTurn,
+    assignment: JSON.parse(row.assignment_json) as ResolvedAssignment,
+    ...(row.runtime_plan_json
+      ? { runtimePlan: parseRuntimePlanV2(JSON.parse(row.runtime_plan_json)) }
+      : {}),
+    ...(row.dispatch_envelope_json
+      ? { dispatchEnvelope: parseFlueDispatchEnvelope(JSON.parse(row.dispatch_envelope_json)) }
+      : {}),
+    ...(row.dispatch_receipt_json
+      ? { dispatchReceipt: parseFlueDispatchReceipt(JSON.parse(row.dispatch_receipt_json)) }
+      : {}),
+    ...(row.flue_settlement_json
+      ? { flueSettlement: parseFlueSettlement(JSON.parse(row.flue_settlement_json)) }
+      : {}),
+  };
 }
 
 /** Tolerant: a malformed record reads as none, so it can never suppress work. */

@@ -307,6 +307,52 @@ schema migration or recover deleted data. Downgrade only when the release notes
 declare it safe; otherwise use the tested full recovery procedure or a forward
 fix. Never silently reset an incompatible database to make an upgrade pass.
 
+### Recover a stalled rollback
+
+A release can write records an older release cannot read. A rollback from
+v0.1.30 to v0.1.27, v0.1.28 or v0.1.29 has two such records, and the older
+release stalls on them instead of skipping them:
+
+- On a shared-gateway installation, a Slack button click or form submission
+  still queued at the rollback. The older release retries that entry first on
+  every pass and processes no Slack event until the entry ages out after 7 days.
+- A turn still running on an OpenRouter model newer than the built-in model
+  list, from a reply, routine run or coding task. The older release cannot read
+  the pending turn, and no thread starts a new turn.
+
+Before rolling back from v0.1.30, make sure no reply, routine or coding task on
+such a model is running.
+
+A stalled rollback shows as Slack going quiet in every thread. On Cloudflare,
+every state-store alarm fails, so each `relay_alarm` log line reports
+`"outcome":"threw"` (see
+[runtime observability](runtime-observability.md#turn-latency-and-relay-alarm-logs)).
+The Worker also logs `Stored gateway delivery is invalid.` for the gateway
+entry, or `Runtime plan runtimeModelRoute has unknown field reasoning.` for the
+OpenRouter turn. A Node installation stalls the same way and repeats the
+failure in its service log.
+
+Recover by deploying v0.1.30 forward with the ordinary `npm run deploy` (or
+`npm run deploy:sandbox`), or on Node by restarting the service on the v0.1.30
+checkout. It reads and processes the stuck record. Roll back again only after
+that work has finished. Do not edit or delete state records to unblock the
+older release.
+
+One smaller effect remains after any rollback from v0.1.30. A person who used
+such an OpenRouter model with an Agent in a thread gets failed replies from that
+Agent there, even after the Agent moves to another model, because the older
+release cannot read the thread's earlier turn. Other threads are unaffected,
+and updating again clears it.
+
+Later releases set an unreadable record aside instead of stalling. The gateway
+queue marks such an entry for recovery, scrubs its body, and logs
+`gateway_delivery_unreadable` with only its kind. A turn becomes
+recovery-required with reason `stored_turn_unreadable`. List those turns with
+`GET /admin/api/runtime/recovery-turns` and close one with
+`POST /admin/api/runtime/recovery-turns/:id/resolve`. A thread's unreadable
+earlier turn no longer fails its replies. No Agent answers a click or message
+set aside this way, so ask the person to send it again.
+
 ## Build-time Node and Cloudflare runtimes
 
 Cloudflare Workers Builds reads `.nvmrc`; an explicit `NODE_VERSION` build
