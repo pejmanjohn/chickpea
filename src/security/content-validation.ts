@@ -113,14 +113,14 @@ export function credentialMarkers(): readonly string[] {
 }
 
 // PEM armor lines are `-----BEGIN <label>-----` and `-----END <label>-----`,
-// case-insensitive. A label is `PRIVATE KEY`, optionally after up to 64
-// letters, digits, spaces and hyphens that end in a space (`RSA `,
-// `ENCRYPTED `), so at most 75 characters.
+// case-insensitive. A label is `PRIVATE KEY`, optionally after a prefix of a
+// letter or digit, up to 62 letters, digits, spaces or hyphens, and a space
+// (`RSA `, `ENCRYPTED `).
 const PEM_BEGIN = /-----BEGIN /gi;
 const PEM_END = /-----END /gi;
 const PEM_LABEL = /^(?:[A-Z0-9][A-Z0-9 -]{0,62} )?PRIVATE KEY$/i;
 const PEM_LABEL_TAIL = /PRIVATE KEY-----/gi;
-const PEM_LABEL_MAX = 75;
+const PEM_LABEL_MAX = 1 + 62 + 1 + 'PRIVATE KEY'.length;
 // The most text armor holds after its BEGIN line: up to the END line, or
 // for a truncated block, up to the end of the text.
 const PEM_BODY_MAX = 262_144;
@@ -132,10 +132,9 @@ const PEM_BODY_MAX = 262_144;
  * longest reading first. Blocks never overlap; a BEGIN line inside one is
  * body text.
  *
- * A search for the END line from every BEGIN line made text full of unclosed
- * BEGIN lines quadratic, and the streaming path redacts the whole answer on
- * every chunk. Each END line is read once instead, and each BEGIN line looks
- * its label up.
+ * Each END line is read once and each BEGIN line looks its label up, so text
+ * full of unclosed BEGIN lines stays linear: searching from every BEGIN line
+ * was quadratic, and the streaming path redacts the whole answer per chunk.
  */
 function completePemArmor(text: string): CredentialRange[] {
   const armor: CredentialRange[] = [];
