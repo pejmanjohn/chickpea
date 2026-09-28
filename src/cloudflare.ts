@@ -159,7 +159,6 @@ import {
 } from './sandbox/workspace-lifecycle.ts';
 import {
   readStoredWorkspaceRoster,
-  saveStoredWorkspaceRoster,
   type WorkspaceRosterState,
 } from './sandbox/workspace-limits.ts';
 import {
@@ -526,13 +525,12 @@ export class Sandbox extends CloudflareSandbox<SandboxWorkerEnv> {
     await this.destroy();
   }
 
-  /** The conversation's workspace roster, kept here so it outlives the coordinator instance. */
+  /**
+   * The roster copy releases before thread continuity wrote here. Read only,
+   * to seed a thread instance once (see WorkspaceRosterSeed).
+   */
   async readWorkspaceRoster(key: string): Promise<WorkspaceRosterState> {
     return readStoredWorkspaceRoster(this.policyStorage(), key);
-  }
-
-  async saveWorkspaceRoster(key: string, state: unknown, forget: unknown): Promise<void> {
-    await saveStoredWorkspaceRoster(this.policyStorage(), key, state, forget);
   }
 
   /**
@@ -2823,6 +2821,8 @@ function applyThreadRunnerTurnOp(
         op.actorMembershipId,
         op.agentId,
       ) ?? null;
+    case 'getThreadContinuation':
+      return turnJobs.getThreadContinuation(op.continuityKey, op.instanceId, op.beforeMessageTs) ?? null;
     case 'recordUsagePersistence':
       return turnJobs.recordUsagePersistence(op.id, op.event) ?? null;
     case 'recordInteractionIntent':
@@ -3251,6 +3251,7 @@ function alarmTurnJobsPort(stores: TagStateStores): TurnExecutionPorts['turnJobs
     recordPullRequest: (...args) => rows.recordPullRequest(...args),
     freezeRuntimePlan: (...args) => rows.freezeRuntimePlan(...args),
     getBoundRuntimePlan: (...args) => rows.getBoundRuntimePlan(...args),
+    getThreadContinuation: (...args) => rows.getThreadContinuation(...args),
     recordUsagePersistence: (...args) => rows.recordUsagePersistence(...args),
     recordInteractionIntent: (...args) => rows.recordInteractionIntent(...args),
     recordSlackInteractionProgress: (...args) => rows.recordSlackInteractionProgress(...args),

@@ -28,7 +28,7 @@ Acceptance evidence:
 
 - the in-flight response and any retry retain their admitted harness/configuration revision;
 - the next event resolves the new Agent and Channel revisions;
-- reassignment rotates the Flue instance revision and rehydrates bounded Slack history;
+- the edit keeps the thread's Flue instance: the next turn renders the new revision on the same transcript and its prompt carries a host continuity note; only a different Agent or an ownership transfer starts a new instance with bounded Slack history;
 - no fresh-context continuity notice is posted;
 - disabled/deleted/unplaced targets fail closed on the next event; and
 - `[chickpea:management]` telemetry contains only event tokens/counts, not workspace, Channel, actor, instruction, or message content.

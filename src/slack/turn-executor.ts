@@ -101,6 +101,7 @@ export interface TurnExecutionPorts {
     | 'recordPullRequest'
     | 'freezeRuntimePlan'
     | 'getBoundRuntimePlan'
+    | 'getThreadContinuation'
     | 'recordUsagePersistence'
     | 'recordInteractionIntent'
     | 'recordSlackInteractionProgress'
@@ -485,6 +486,7 @@ export async function executeTurnJob(
         return decision;
       },
       getBoundRuntimePlan: (...args) => ports.turnJobs.getBoundRuntimePlan(...args),
+      getThreadContinuation: (...args) => ports.turnJobs.getThreadContinuation(...args),
       flueDispatch,
       presentationState,
       progressiveAttributionProven: true,

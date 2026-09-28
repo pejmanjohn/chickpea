@@ -234,7 +234,6 @@ export function createWorkspaceTools(options: WorkspaceToolsOptions) {
           }
           if (discarded) await target.discard();
           roster.close(name, { discard: discarded });
-          await roster.flush();
           return { ok: true as const, workspace: name, closed: true, discarded };
         }, undefined, 'inspect'),
       };

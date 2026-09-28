@@ -628,12 +628,59 @@ function dedupeActivityDescriptors(
   return [...byName.values()];
 }
 
+/**
+ * Bump to give every Slack thread a fresh transcript on its next turn. Nothing
+ * else a plan carries (speaker, memory, Agent or channel configuration, model,
+ * credentials, connections, skills) names the instance.
+ */
+export const RUNTIME_PLAN_THREAD_CONTINUITY_EPOCH = 'thread-v1' as const;
+
+/**
+ * The Flue instance for one Agent in one Slack thread. It is the thread's
+ * durable transcript, so it is keyed by the conversation's continuity (the
+ * thread plus its owner incarnation, which rotates on ownership transfer),
+ * the Agent, and the continuity policy, never by render inputs. Each turn's
+ * plan reaches the render through the staged turn input (see turn-input.ts).
+ */
 export function deriveRuntimePlanInstanceId(plan: RuntimePlanV2 | AdmittedRuntimePlanData): string {
-  const validated = parseRuntimePlanV2(plan);
+  return threadInstanceId(parseRuntimePlanV2(plan));
+}
+
+function threadInstanceId(validated: RuntimePlanV2): string {
+  return opaqueId(
+    'agent',
+    [
+      validated.conversation.continuityKey,
+      validated.agentId,
+      validated.continuityPolicy,
+      RUNTIME_PLAN_THREAD_CONTINUITY_EPOCH,
+    ].join(':'),
+  );
+}
+
+/**
+ * The id releases before thread continuity derived: one instance per exact
+ * plan. Pending turns frozen by such a release still target it, and such an
+ * instance's creation data is exactly the plan every one of its turns ran.
+ */
+export function deriveLegacyRuntimePlanInstanceId(plan: RuntimePlanV2 | AdmittedRuntimePlanData): string {
+  return legacyInstanceId(parseRuntimePlanV2(plan));
+}
+
+function legacyInstanceId(validated: RuntimePlanV2): string {
   return opaqueId(
     'agent',
     `${validated.conversation.continuityKey}:${validated.harnessRevision}`,
   );
+}
+
+/** Whether `instanceId` is this plan's instance under either derivation. */
+export function runtimePlanInstanceIdMatches(
+  plan: RuntimePlanV2 | AdmittedRuntimePlanData,
+  instanceId: string,
+): boolean {
+  const validated = parseRuntimePlanV2(plan);
+  return threadInstanceId(validated) === instanceId || legacyInstanceId(validated) === instanceId;
 }
 
 /**

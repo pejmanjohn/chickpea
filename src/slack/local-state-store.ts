@@ -43,6 +43,8 @@ export function localSlackStateStore(input: {
     pinAgentBinding: async (binding, expected) => turnJobs.pinAgentBinding(binding, expected),
     getAgentBinding: async (continuityKey) => turnJobs.getAgentBinding(continuityKey),
     getBoundRuntimePlan: async (...args) => turnJobs.getBoundRuntimePlan(...args),
+    getThreadContinuation: async (...args) => turnJobs.getThreadContinuation(...args),
+    stageTurnInput: async (json) => turnJobs.stageTurnInput(json),
     runtimeDrainCounts: async () => turnJobs.runtimeDrainCounts(),
     countPendingDeliveriesForWorkspace: async (workspaceId) =>
       turnJobs.countPendingDeliveriesForWorkspace(workspaceId),

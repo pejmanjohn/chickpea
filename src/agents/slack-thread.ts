@@ -16,6 +16,7 @@ import {
   FlueError,
   type AgentProps,
   type SandboxFactory,
+  useAgentStart,
   useDataWriter,
   useDelivery,
   useInitialData,
@@ -138,9 +139,16 @@ import {
   defaultOnlyWorkspaceRoster,
   normalizeWorkspaceName,
   type WorkspaceRoster,
+  type WorkspaceRosterSeed,
   type WorkspaceRosterState,
-  type WorkspaceRosterStore,
 } from '../sandbox/workspace-limits.ts';
+import {
+  readStagedSlackTurnInput,
+  resolveSlackTurnRenderInput,
+  slackThreadCloudflareExtension,
+  validTurnJobId,
+} from './turn-input.ts';
+import { ADVISORY_MEMORY_FINAL_CHECK } from '../slack/web-client-context.ts';
 import {
   WorkspaceSession,
   defaultWorkspaceId,
@@ -755,8 +763,12 @@ async function resolveRuntimePlanApiConnections(plan: RuntimePlanV2, env?: Platf
 export function ChickpeaSlack({ id }: AgentProps) {
   const initialData = useInitialData<RuntimePlanV2>();
   if (!initialData) throw new Error('ChickpeaSlack requires RuntimePlanV2 creation data.');
-  const plan = parseRuntimePlanV2(initialData);
   const delivery = useDelivery();
+  const { runtimePlan: plan, memoryBlock } = useSlackTurnRenderInput(
+    id,
+    parseRuntimePlanV2(initialData),
+    delivery,
+  );
   const currentRequest = parseCurrentRequestEnvelope(delivery.body);
   const presentationIntent = slackPresentationIntentCapability(currentRequest);
   const writeTablePresentation = useDataWriter(SLACK_TABLE_PRESENTATION_DATA_NAME, {
@@ -792,7 +804,53 @@ export function ChickpeaSlack({ id }: AgentProps) {
     resolveAgentPlatformEnv,
     async (env) => plan.runtimeModel ?? (await prepareRuntimePlanModel(plan, env, turn)).model,
   );
+  if (memoryBlock) useInstruction(`${memoryBlock}\n\n${ADVISORY_MEMORY_FINAL_CHECK}`);
   return plan.instructions;
+}
+
+/** Persistent state naming the Slack turn this instance is answering. */
+export const CURRENT_SLACK_TURN_STATE_NAME = 'chickpeaSlackTurn';
+
+/**
+ * This turn's plan and memory. The instance is the thread's transcript and
+ * outlives any one plan, so its creation data is not this turn's plan (see
+ * turn-input.ts). The turn is the delivered Slack message; a later render of
+ * the same response whose delivery is a hook-appended signal (or a recovered
+ * attempt resuming at one) finds it in persistent state, written as the
+ * delivery was taken up.
+ */
+function useSlackTurnRenderInput(
+  id: string,
+  initialData: RuntimePlanV2,
+  delivery: ReturnType<typeof useDelivery>,
+): { runtimePlan: RuntimePlanV2; memoryBlock?: string } {
+  const [current, setCurrent] = usePersistentState<{ turnJobId?: string }>(
+    CURRENT_SLACK_TURN_STATE_NAME,
+    {},
+  );
+  const delivered = slackDeliveryTurnJobId(delivery);
+  useAgentStart(() => {
+    if (delivered && current.turnJobId !== delivered) setCurrent({ turnJobId: delivered });
+  });
+  return resolveSlackTurnRenderInput({
+    instanceId: id,
+    initialData,
+    turnJobId: delivered ?? current.turnJobId,
+    read: (turnJobId, durable) =>
+      readStagedSlackTurnInput(turnJobId, durable ? readDurableNodeTurnInput : undefined),
+  });
+}
+
+function slackDeliveryTurnJobId(delivery: ReturnType<typeof useDelivery>): string | undefined {
+  if (delivery.kind !== 'signal' || delivery.type !== 'slack.message') return undefined;
+  const turnJobId = delivery.attributes?.turnJobId;
+  if (turnJobId === undefined) return undefined;
+  return validTurnJobId(turnJobId);
+}
+
+/** Node only: the host's state DB, for a render after a process restart. */
+function readDurableNodeTurnInput(turnJobId: string): string | undefined {
+  return getSlackStateStore().readTurnInputJson?.(turnJobId);
 }
 
 /**
@@ -1113,11 +1171,21 @@ export function useRuntimePlanAgent(
     CODING_WORKSPACE_ROSTER_STATE_NAME,
     EMPTY_WORKSPACE_ROSTER,
   );
+  const [workspaceRosterSeeded, setWorkspaceRosterSeeded] = usePersistentState<boolean>(
+    CODING_WORKSPACE_ROSTER_SEEDED_STATE_NAME,
+    false,
+  );
   const workspaceRoster = createWorkspaceRoster(
     workspaceRosterState,
     updateWorkspaceRoster,
     Date.now,
-    runtimePlanWorkspaceRosterStore(plan, options.sandboxConversationKey),
+    workspaceRosterSeeded
+      ? undefined
+      : runtimePlanWorkspaceRosterSeed(
+        plan,
+        options.sandboxConversationKey,
+        () => setWorkspaceRosterSeeded(true),
+      ),
   );
   const resolveWorkspace = runtimePlanWorkspaceResolver(plan, {
     ...(options.sandboxConversationKey ? { sandboxConversationKey: options.sandboxConversationKey } : {}),
@@ -1349,6 +1417,8 @@ function slackActivityToolDescriptors(input: {
 
 // Must stay a static literal — see the note on ChickpeaRoutineExecution.
 ChickpeaSlack.agentName = 'chickpea-slack-v2';
+/** The thread's agent object accepts staged turn inputs (see turn-input.ts). */
+export const cloudflare = slackThreadCloudflareExtension;
 ChickpeaSlack.durability = CHICKPEA_SUBMISSION_DURABILITY;
 ChickpeaSlack.initialData = v.custom<RuntimePlanV2>((value) => {
   try {
@@ -1374,20 +1444,20 @@ export function runtimePlanWorkspaceToolsMounted(
 /** Persistent coordinator state: the thread's workspace names, open set, and retirements. */
 export const CODING_WORKSPACE_ROSTER_STATE_NAME = 'codingWorkspaceRoster';
 
+/** Persistent coordinator state: the legacy roster copy was merged in. */
+export const CODING_WORKSPACE_ROSTER_SEEDED_STATE_NAME = 'codingWorkspaceRosterSeeded';
+
 /**
- * The roster's durable copy, in the conversation's default Sandbox Durable
- * Object. The coordinator's persistent state belongs to one Flue instance,
- * and a changed harness revision (an Agent edit, a coding model change,
- * another actor) addresses a new one that starts empty; without this copy
- * the thread would forget its workspaces, its open set, and its retirement
- * generations. Keyed by the conversation's continuity key (thread plus owner
- * incarnation) and Agent: exactly the instance id without the revision.
- * Only the Cloudflare target has coding workspaces.
+ * The roster copy releases before thread continuity kept in the
+ * conversation's default Sandbox Durable Object (see WorkspaceRosterSeed),
+ * keyed by the conversation's continuity key and Agent. Read once per thread
+ * instance. Only the Cloudflare target has coding workspaces.
  */
-function runtimePlanWorkspaceRosterStore(
+function runtimePlanWorkspaceRosterSeed(
   plan: RuntimePlanV2,
   sandboxConversationKey: string | undefined,
-): WorkspaceRosterStore | undefined {
+  loaded: () => void,
+): WorkspaceRosterSeed | undefined {
   if (!plan.codingWorkspace || !isCloudflareTarget()) return undefined;
   const rosterKey = `${plan.conversation.continuityKey}:${plan.agentId}`;
   const stub = reconnectingSandboxStub(async (): Promise<WorkspaceRosterStub> => {
@@ -1407,13 +1477,12 @@ function runtimePlanWorkspaceRosterStore(
   };
   return {
     load: () => stub.readWorkspaceRoster(rosterKey).catch(unavailable),
-    save: (state, forget) => stub.saveWorkspaceRoster(rosterKey, state, [...forget]).catch(unavailable),
+    loaded,
   };
 }
 
 interface WorkspaceRosterStub {
   readWorkspaceRoster(key: string): Promise<unknown>;
-  saveWorkspaceRoster(key: string, state: WorkspaceRosterState, forget: string[]): Promise<void>;
 }
 
 /**
@@ -1454,19 +1523,13 @@ export function runtimePlanWorkspaceResolver(
       workspaceRegistryKey(name, generation),
       () => createRuntimePlanWorkspace(plan, name, generation, input),
     );
-    if (access === 'inspect') return created;
-    if (before?.open) {
-      await roster.flush();
-      return created;
-    }
+    if (access === 'inspect' || before?.open) return created;
     // A newly opened workspace that never came up must not hold a slot.
-    const session = await created.catch(async (error: unknown) => {
+    const session = await created.catch((error: unknown) => {
       roster.restore(name, before);
-      await roster.flush().catch(() => {});
       throw error;
     });
     if (!session) roster.restore(name, before);
-    await roster.flush();
     return session;
   };
 }

@@ -7,9 +7,11 @@ import type {
 import {
   deriveRuntimePlanInstanceId,
   parseRuntimePlanV2,
+  runtimePlanInstanceIdMatches,
   type AdmittedRuntimePlanData,
   type RuntimePlanV2,
 } from '../agents/runtime-plan.ts';
+import { parseSlackTurnInput } from '../agents/turn-input.ts';
 import type {
   FlueDispatchEnvelopeV1,
   FlueDispatchReceiptV1,
@@ -19,6 +21,7 @@ import type {
   FrozenRuntimePlanDecision,
   SlackAgentBinding,
   SlackAgentBindingExpectation,
+  SlackThreadContinuation,
   TurnJob,
   TurnPreviousStop,
   TurnRunRoute,
@@ -436,6 +439,16 @@ export class TurnJobStoreLogic {
         instance_id TEXT NOT NULL,
         uid TEXT NOT NULL,
         updated_at INTEGER NOT NULL
+      )`,
+    );
+    // Node only in practice: the host stages each turn's input here too, so
+    // an agent render after a process restart can still read it (see
+    // src/agents/turn-input.ts). Cloudflare stages in the agent object.
+    db.exec(
+      `CREATE TABLE IF NOT EXISTS slack_turn_inputs (
+        turn_job_id TEXT PRIMARY KEY,
+        input_json TEXT NOT NULL,
+        staged_at INTEGER NOT NULL
       )`,
     );
     // This ephemeral beta bridge mixed per-turn Slack coordinates with Flue
@@ -1345,6 +1358,67 @@ export class TurnJobStoreLogic {
   }
 
   /**
+   * The thread instance's previous turn, when this turn continues it: the
+   * conversation is pinned to `instanceId` and that instance already admitted
+   * an earlier turn. Its trigger is the watermark below which the transcript
+   * already holds the Slack context. Undefined means the dispatch starts a
+   * transcript (a new thread, an ownership transfer, or a rotation).
+   */
+  getThreadContinuation(
+    continuityKey: string,
+    instanceId: string,
+    beforeMessageTs: string,
+  ): SlackThreadContinuation | undefined {
+    validateOpaqueAgentId(instanceId, 'instance id');
+    if (!/^\d+\.\d+$/.test(beforeMessageTs)) throw new Error('Invalid Slack message timestamp');
+    const binding = this.getAgentBinding(continuityKey);
+    if (!binding || binding.instanceId !== instanceId) return undefined;
+    const row = this.db.get(
+      `SELECT runtime_plan_json, json_extract(turn_json, '$.messageTs') AS message_ts,
+         json_extract(turn_json, '$.userId') AS user_id
+       FROM turn_jobs
+       WHERE agent_instance_id = ? AND runtime_plan_json IS NOT NULL
+         AND dispatch_receipt_json IS NOT NULL
+         AND CAST(json_extract(turn_json, '$.messageTs') AS REAL) < CAST(? AS REAL)
+       ORDER BY CAST(json_extract(turn_json, '$.messageTs') AS REAL) DESC LIMIT 1`,
+      instanceId,
+      beforeMessageTs,
+    );
+    if (!row?.runtime_plan_json || typeof row.message_ts !== 'string') return undefined;
+    const previous: SlackThreadContinuation = {
+      messageTs: row.message_ts,
+      ...(typeof row.user_id === 'string' ? { slackUserId: row.user_id } : {}),
+    };
+    try {
+      return { ...previous, runtimePlan: parseRuntimePlanV2(JSON.parse(String(row.runtime_plan_json))) };
+    } catch {
+      // Unreadable after a rollback: the transcript is still there, only the
+      // narration of what changed is lost.
+      return previous;
+    }
+  }
+
+  /** Node's durable copy of a staged turn input; the first write wins. */
+  stageTurnInput(json: string): void {
+    const input = parseSlackTurnInput(json);
+    this.db.run(
+      `INSERT INTO slack_turn_inputs (turn_job_id, input_json, staged_at) VALUES (?, ?, ?)
+       ON CONFLICT(turn_job_id) DO NOTHING`,
+      input.turnJobId,
+      json,
+      this.now(),
+    );
+  }
+
+  readTurnInputJson(turnJobId: string): string | undefined {
+    const row = this.db.get(
+      'SELECT input_json FROM slack_turn_inputs WHERE turn_job_id = ?',
+      turnJobId,
+    );
+    return typeof row?.input_json === 'string' ? row.input_json : undefined;
+  }
+
+  /**
    * Freeze the exact Flue admission before crossing the dispatch boundary.
    * A retry always receives the byte-equivalent envelope, including its
    * create/continue condition and idempotency key.
@@ -2050,6 +2124,7 @@ export class TurnJobStoreLogic {
       'DELETE FROM slack_agent_bindings WHERE updated_at < ?',
       now - SLACK_AGENT_BINDING_TTL_MS,
     );
+    this.db.run('DELETE FROM slack_turn_inputs WHERE staged_at < ?', now - TURN_JOB_TTL_MS);
     // Keep each actor/Agent's latest dispatched context per live binding. Other completed
     // turns retain the ordinary redelivery TTL; expired bindings retain none.
     // Build the retained-ID list once, independently of the terminal-row scan.
@@ -2456,7 +2531,9 @@ function parseFlueDispatchEnvelope(value: unknown): FlueDispatchEnvelopeV1 {
   if (uid !== null && initialData) {
     throw new Error('Continued Flue dispatch cannot reseed initial data.');
   }
-  if (initialData && deriveRuntimePlanInstanceId(initialData) !== instanceId) {
+  // Either derivation: a row frozen before thread continuity still targets
+  // its plan-addressed instance.
+  if (initialData && !runtimePlanInstanceIdMatches(initialData, instanceId)) {
     throw new Error('Flue dispatch target does not match its RuntimePlanV2.');
   }
   // Validated above, but kept as admitted: a retried dispatch must resend the

@@ -125,7 +125,7 @@ test('interleaved actors preserve their own account defaults in one channel thre
     const otherActor = { ...channel, actorMembershipId: f.owner.membership.id, userId: f.owner.user.slackUserId };
     const other = await f.run('Open mail', otherActor, scope);
     assert.deepEqual(other.plan.connectionAccountIds, [], 'B never inherits A choice');
-    assert.notEqual(other.instanceId, first.instanceId);
+    assert.equal(other.instanceId, first.instanceId, 'B continues the thread transcript A started');
     f.advance(TURN_JOB_TTL_MS + 1);
     const returning = await f.run('Open the first result', channel, scope);
     assert.deepEqual(returning.plan.connectionAccountIds, ['connection_work']);
