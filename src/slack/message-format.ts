@@ -1,7 +1,9 @@
 import {
   credentialMarkers,
   credentialMatchRanges,
+  pemBeginLineStart,
   redactCredentialLikeContent,
+  traceCredentialRedaction,
 } from '../security/content-validation.ts';
 import type { CompletedSlackArtifactReceipt } from './artifact-receipts.ts';
 import type { SlackNativeTableBlock } from './table-presentation.ts';
@@ -737,7 +739,10 @@ const STREAM_HOLD_PASS_LIMIT = 4;
  * shows, which a shorter non-empty prefix would rewrite.
  */
 export function streamableSlackMarkdownPrefix(text: string): string {
-  const normalized = text.replace(/\r\n?/g, '\n').replace(/^\s+/, '');
+  // Providers deliver whole code points, but a cut between a surrogate
+  // pair's halves waits for the second half: a lone high surrogate is not a
+  // letter, so `@here__` before half of `𝐀` reads as a broadcast word.
+  const normalized = text.replace(/\r\n?/g, '\n').replace(/^\s+/, '').replace(/[\uD800-\uDBFF]$/, '');
   if (!normalized) return '';
   const answer = sanitizedView(normalized);
   const unsafeFrom = earliestUnsafeTail(normalized, answer);
@@ -754,7 +759,7 @@ export function streamableSlackMarkdownPrefix(text: string): string {
     // A code hold at a span's closer is its opener when the answer drops the span.
     const codeHold = answer.spanStart(openUrlEmphasis(stable, stable.lastIndexOf('\n') + 1, true));
     const held = Math.min(
-      view.toRaw(unsafeMentionTail(view.text, answerAfterCut(answer, view, stable.length, settled))),
+      view.toRaw(unsafeRedactedMentionTail(view.text, answerAfterCut(answer, view, stable.length, settled))),
       heldBeforeClosedSpan(answer, codeHold, stable.length),
       heldBeforeClosedSpan(answer, answer.spanStart(stable.length), stable.length),
     );
@@ -1010,19 +1015,27 @@ function unsafeTokenTail(value: string): number {
 // from that credential instead, whichever marker it is. Nothing at or after
 // `end` is read.
 function credentialHoldStart(value: string, held: number, end = value.length): number {
-  // A hold can also land inside a marker that starts earlier (the second
-  // `xox` of `xoxoxb`), which a search ending at the hold misses.
-  let straddled = held;
-  // Only a marker that overlaps the hold matters, so only that window is read.
-  const from = Math.max(0, held - LONGEST_CREDENTIAL_MARKER);
-  const lower = asciiLowerCase(value.slice(from, Math.min(end, held + LONGEST_CREDENTIAL_MARKER)));
-  for (const marker of credentialMarkers()) {
-    const markerLower = marker.toLowerCase();
-    for (let back = 1; back < markerLower.length && back <= held; back += 1) {
-      if (lower.startsWith(markerLower, held - back - from)) straddled = Math.min(straddled, held - back);
+  // Walking back can land the hold inside another credential or BEGIN line
+  // (`…KEY-----BEGIN y-----BEGIN x` reaches the second `-----BEGIN `, in
+  // the first line's dashes), so repeat until it stays; it only moves back.
+  for (;;) {
+    // A hold can also land inside a marker that starts earlier (the second
+    // `xox` of `xoxoxb`), which a search ending at the hold misses, or inside
+    // a PEM BEGIN line (`…KEY-----BEGIN y`), which is redacted from its start.
+    let straddled = pemBeginLineStart(value, held, end);
+    // Only a marker that overlaps the hold matters, so only that window is read.
+    const from = Math.max(0, held - LONGEST_CREDENTIAL_MARKER);
+    const lower = asciiLowerCase(value.slice(from, Math.min(end, held + LONGEST_CREDENTIAL_MARKER)));
+    for (const marker of credentialMarkers()) {
+      const markerLower = marker.toLowerCase();
+      for (let back = 1; back < markerLower.length && back <= held; back += 1) {
+        if (lower.startsWith(markerLower, held - back - from)) straddled = Math.min(straddled, held - back);
+      }
     }
+    const start = Math.min(outermostCredential(value, held), outermostCredential(value, straddled));
+    if (start >= held) return held;
+    held = start;
   }
-  return Math.min(outermostCredential(value, held), outermostCredential(value, straddled));
 }
 
 function outermostCredential(value: string, held: number): number {
@@ -1107,6 +1120,12 @@ function isBroadcastWordAt(text: string, at: number): boolean {
   return SLACK_BROADCAST_WORD_AT.test(text);
 }
 
+/** Where the special mention at the `<` at `at` in `text` ends, or -1 when none starts there. */
+function specialMentionEndAt(text: string, at: number): number {
+  SLACK_SPECIAL_MENTION_AT.lastIndex = at;
+  return SLACK_SPECIAL_MENTION_AT.test(text) ? SLACK_SPECIAL_MENTION_AT.lastIndex : -1;
+}
+
 /**
  * The answer after a hold loop's cut, `view`, read from its sanitized text
  * before `settled`, where its unsafe tail begins: beyond that, text can
@@ -1136,8 +1155,7 @@ function answerAfterCut(
         end = SPECIAL_MENTION_END.exec(text)?.index ?? text.length;
       }
       if (end >= settled || redacted(start, end)) return undefined;
-      SLACK_SPECIAL_MENTION_AT.lastIndex = start;
-      return SLACK_SPECIAL_MENTION_AT.test(text);
+      return specialMentionEndAt(text, start) >= 0;
     },
     broadcastWordAt(at) {
       const start = inAnswer(at);
@@ -1158,7 +1176,8 @@ function answerAfterCut(
  * Where the tail `neutralizeSlackBroadcastMentions` may still rewrite begins:
  * a `<...>` reference on the last line, an `@` that can still become a whole
  * broadcast word (`@here`, not `@heresy`), and a mention after an inline code
- * span opened on the last line, which neutralizes differently once it closes.
+ * span opened on the last line, or the special mention it opened inside
+ * (`<!here|`>`), which neutralize differently once the span closes.
  * For a cut of the answer, a `<` the answer has settled as no special
  * mention, and an `@` word it has settled to neutralize as the cut does, are
  * not held.
@@ -1182,20 +1201,49 @@ function unsafeMentionTail(value: string, answer?: AnswerAfterCut): number {
     unsafeFrom = Math.min(unsafeFrom, word.index);
   }
   const openCode = unmatchedBacktickOnLastLine(value, lastLineStart);
-  if (openCode !== undefined) {
-    const mention = value.slice(openCode).search(/[<@]/);
-    if (mention >= 0) unsafeFrom = Math.min(unsafeFrom, openCode + mention);
+  if (openCode) {
+    const [tick, proseStart] = openCode;
+    // Once it pairs, the backtick also splits a special mention it sits in (`<!here|`>`).
+    const angle = value.lastIndexOf('<', tick);
+    const split = angle >= proseStart && specialMentionEndAt(value, angle) > tick;
+    const from = split ? angle : tick;
+    const mention = value.slice(from).search(/[<@]/);
+    if (mention >= 0) unsafeFrom = Math.min(unsafeFrom, from + mention);
   }
   return unsafeFrom;
 }
 
-/** The first backtick on the last line that no code segment has closed yet. */
-function unmatchedBacktickOnLastLine(value: string, lastLineStart: number): number | undefined {
+/**
+ * `unsafeMentionTail` of a hold loop's cut as redaction leaves it, which is
+ * what the answer neutralizes: removing a credential can drop a backtick or
+ * a line break (`` `OPENAI_API_KEY=`x… ``, a PEM block's lines), pairing
+ * code and `<…>` differently than the cut does. Only a cut is read this way,
+ * since it holds back every credential still being written. Read on the
+ * whole answer, a hold appeared the moment a credential matched and pulled
+ * the cut below text already streamed.
+ */
+function unsafeRedactedMentionTail(value: string, answer: AnswerAfterCut): number {
+  const { text, source } = traceCredentialRedaction(value);
+  return source(unsafeMentionTail(text, {
+    wordEnded: answer.wordEnded,
+    mentionAt: (at) => answer.mentionAt(source(at)),
+    broadcastWordAt: (at) => answer.broadcastWordAt(source(at)),
+  }));
+}
+
+/**
+ * The first backtick on the last line that no code segment has closed yet,
+ * and where the prose it is in starts on that line.
+ */
+function unmatchedBacktickOnLastLine(
+  value: string,
+  lastLineStart: number,
+): [tick: number, proseStart: number] | undefined {
   if (value.indexOf('`', lastLineStart) < 0) return undefined;
   let offset = 0;
   for (const [index, segment] of value.split(SLACK_CODE_SEGMENT).entries()) {
     const tick = index % 2 === 0 ? segment.indexOf('`', lastLineStart - offset) : -1;
-    if (tick >= 0) return offset + tick;
+    if (tick >= 0) return [offset + tick, Math.max(offset, lastLineStart)];
     offset += segment.length;
   }
   return undefined;

@@ -6,6 +6,7 @@ import {
   credentialMatchRanges,
   hasCredentialLikeContent,
   redactCredentialLikeContent,
+  traceCredentialRedaction,
 } from '../src/security/content-validation.ts';
 import { streamableSlackMarkdownPrefix } from '../src/slack/message-format.ts';
 import { awsExampleAccessKeyId, pemBegin, pemEnd, syntheticPem } from './helpers/credential-fixtures.ts';
@@ -174,17 +175,20 @@ test('traditional encrypted PEM metadata is redacted with its key body', () => {
   assert.doesNotMatch(redacted, /Proc-Type|DEK-Info|secretkeybody|END RSA PRIVATE KEY/);
 });
 
-test('PEM armor is redacted where the patterns it replaced found it', () => {
-  // Redaction used to find armor with these two patterns. Seeded text built
-  // from armor pieces (labels read two ways, case and length edges, a Kelvin
-  // sign that is not a K) must redact the same ranges.
+test('PEM armor is redacted where these patterns find it', () => {
+  // The armor grammar as two patterns: a label has no two hyphens in a row,
+  // and a BEGIN in the closing dashes of a BEGIN line before it is part of
+  // that line. Seeded text built from armor pieces (labels with hyphen runs,
+  // lines sharing dashes, case and length edges, a Kelvin sign that is not
+  // a K) must redact the same ranges.
   const armor = '-'.repeat(5);
-  const label = String.raw`(?:[A-Z0-9][A-Z0-9 -]{0,62} )?PRIVATE KEY`;
+  const label = String.raw`(?:[A-Z0-9](?:[A-Z0-9 ]|-(?!-)){0,62} )?PRIVATE KEY`;
+  const begin = String.raw`(?<!${armor}BEGIN ${label}-{0,4})${armor}BEGIN `;
   const complete = new RegExp(
-    String.raw`${armor}BEGIN (${label})${armor}[\s\S]{0,262144}?${armor}END \1${armor}`,
+    String.raw`${begin}(${label})${armor}[\s\S]{0,262144}?${armor}END \1${armor}`,
     'gi',
   );
-  const truncated = new RegExp(String.raw`${armor}BEGIN ${label}${armor}[\s\S]{0,262144}$`, 'gi');
+  const truncated = new RegExp(String.raw`${begin}${label}${armor}[\s\S]{0,262144}$`, 'gi');
   const found = (text: string, pattern: RegExp) =>
     [...text.matchAll(pattern)].map((match) => [match.index, match.index + match[0].length]);
   const labels = [
@@ -196,6 +200,9 @@ test('PEM armor is redacted where the patterns it replaced found it', () => {
     `${'X'.repeat(63)} PRIVATE KEY`,
     `${'X'.repeat(64)} PRIVATE KEY`,
     'EC  PRIVATE KEY',
+    'X-Y PRIVATE KEY',
+    'X- PRIVATE KEY',
+    'X--Y PRIVATE KEY',
     'PRIVATE KEY',
   ];
   const pieces = [
@@ -206,6 +213,9 @@ test('PEM armor is redacted where the patterns it replaced found it', () => {
     'Proc-Type: 4,ENCRYPTED',
     'MIIEvgIBADANBg',
     armor,
+    '-',
+    'BEGIN ',
+    'END ',
     'PRIVATE KEY',
   ];
   // xorshift32, so every run builds the same texts.
@@ -221,6 +231,21 @@ test('PEM armor is redacted where the patterns it replaced found it', () => {
   const texts = ['EC PRIVATE KEY', 'A PRIVATE KEY----- PRIVATE KEY'].flatMap((edge) =>
     [body, `${body}x`].flatMap((filler) =>
       [`${pemBegin(edge)}${filler}${pemEnd(edge)}`, `${pemBegin(edge)}${filler}`]));
+  // Lines that share closing dashes, two and three in a row, which random
+  // pieces rarely build: each `-----BEGIN ` starts in the dashes before it
+  // unless five extra hyphens part them.
+  const chained = ['PRIVATE KEY', 'RSA PRIVATE KEY', 'EC PRIVATE KEY'];
+  for (const first of chained) {
+    for (const second of chained) {
+      for (let extra = 0; extra <= 5; extra += 1) {
+        const two = `${armor}BEGIN ${first}${'-'.repeat(extra)}${pemBegin(second)}`;
+        const three = `${two.slice(0, -armor.length)}${'-'.repeat(extra)}${pemBegin(first)}`;
+        for (const head of [two, three]) {
+          texts.push(head, ...chained.map((label) => `${head}\nbody\n${pemEnd(label)} after`));
+        }
+      }
+    }
+  }
   for (let count = 0; count < 3_000; count += 1) {
     let text = '';
     for (let size = 1 + next(24); size > 0; size -= 1) text += pieces[next(pieces.length)];
@@ -237,6 +262,49 @@ test('PEM armor is redacted where the patterns it replaced found it', () => {
       text.replace(complete, '[credential redacted]').replace(truncated, '[credential redacted]'),
       shown,
     );
+  }
+});
+
+test('a PEM BEGIN line never takes the dashes of another armor line', () => {
+  const armor = '-'.repeat(5);
+  // A label with a hyphen run would hold the later BEGIN line, so the
+  // stream showed text before it that the whole answer redacted.
+  assert.equal(
+    redactCredentialLikeContent(`${armor}BEGIN y ${pemBegin('PRIVATE KEY')}\nbody`),
+    `${armor}BEGIN y [credential redacted]`,
+  );
+  // A BEGIN in the closing dashes of the line before it belongs to that
+  // line, so a later END line cannot take those dashes and unredact it.
+  assert.equal(
+    redactCredentialLikeContent(
+      `${pemBegin('PRIVATE KEY')}BEGIN RSA PRIVATE KEY${armor}\nbody\n${pemEnd('RSA PRIVATE KEY')} after`,
+    ),
+    '[credential redacted]',
+  );
+});
+
+test('a traced redaction maps each kept character back to where it came from', () => {
+  const marker = '[credential redacted]';
+  const texts = [
+    'plain text',
+    `a ${SYNTHETIC_SLACK_TOKEN} b @here c`,
+    // Two matches of one signature shift what follows the second by both.
+    `a ${SYNTHETIC_SLACK_TOKEN} b ${SYNTHETIC_SLACK_TOKEN} @here c`,
+    // A later signature reads an earlier one's marker (`[credential`).
+    `OPENAI_API_KEY=${SYNTHETIC_SLACK_TOKEN} after`,
+    `x <!here ${syntheticPem('RSA PRIVATE KEY', ['body'])}> y ${pemBegin('EC PRIVATE KEY')}\ntail`,
+    `\`CHICKPEA_AUTH_SECRET=\`abcdefgh @here\` ${awsExampleAccessKeyId('AKIA')} z`,
+  ];
+  for (const text of texts) {
+    const { text: redacted, source } = traceCredentialRedaction(text);
+    assert.equal(redacted, redactCredentialLikeContent(text));
+    assert.equal(source(redacted.length), text.length, text);
+    for (let at = 0; at < redacted.length; at += 1) {
+      // Only the text supplies a character that no marker has.
+      if (!marker.includes(redacted[at]!)) {
+        assert.equal(text[source(at)], redacted[at], `${JSON.stringify(text)} @${at}`);
+      }
+    }
   }
 });
 
