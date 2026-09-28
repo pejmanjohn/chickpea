@@ -1832,7 +1832,7 @@ async function processSlackEvent(
   //    a later event in the same Slack thread resolves again. Channels remain
   //    fail-closed and never fall through to the global direct-message default.
   if (
-    (turn.source === 'implicit_thread_reply' || turn.source === 'reaction_added') &&
+    turnRequiresOwnedThread(turn) &&
     !(await stores.config.getAgentThreadRoute(turn.workspaceId, turn.channelId, turn.threadTs))
   ) {
     return;
@@ -3500,6 +3500,18 @@ async function recordInteractionClassifierUsage(input: {
       : 'usage_not_reported',
   });
   await recorder.repairAfterTerminal();
+}
+
+/**
+ * Whether a turn continues only a thread an Agent already owns. A reaction
+ * or a plain reply does; a reply that names an Agent's handle does not: it
+ * addresses that Agent directly, like a root mention, so "@oncall what is
+ * this?" under an alert nobody has answered reaches @oncall. Routing still
+ * decides which Agent that is and whether it may work in this channel.
+ */
+export function turnRequiresOwnedThread(turn: Pick<NormalizedSlackTurn, 'source' | 'text'>): boolean {
+  if (turn.source === 'reaction_added') return true;
+  return turn.source === 'implicit_thread_reply' && parseAgentUserGroupMentions(turn.text).length === 0;
 }
 
 /**
