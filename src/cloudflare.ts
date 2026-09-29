@@ -277,6 +277,7 @@ import {
   processGatewayUiAction,
   processGatewayViewSubmission,
   processGatewaySlackEnvelope,
+  processSlackAgentAsks,
 } from './channels/slack.ts';
 import {
   SlackGatewaySession,
@@ -294,6 +295,7 @@ import { ManagementStoreLogic, type ManagementStore } from './management/store.t
 import { createLiveWorkspaceManagementService } from './management/live-service.ts';
 import { createPlatformProductTelemetry } from './telemetry/platform.ts';
 import type { ProductTelemetryCapture } from './telemetry/client.ts';
+import type { SlackAgentAskDispatcher } from './slack/agent-asks.ts';
 import { createWaitUntilTelemetryLifecycle } from './telemetry/runtime.ts';
 import {
   invokeSlackWorkspaceManagementTool,
@@ -2382,6 +2384,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       telemetry: productTelemetry,
       resolveInstallation,
       sandboxes: sandboxTurnReaders(this.env as PlatformEnv),
+      dispatchAgentAsks: localAgentAskDispatcher(stores, this.env as PlatformEnv, productTelemetry),
       runTurn,
     };
     const runJob = (
@@ -3192,6 +3195,42 @@ function gatewayConversationKey(delivery: GatewayInboundDelivery): string {
   return typeof event.channel === 'string' && typeof root === 'string'
     ? `${event.channel}:${root}`
     : 'other';
+}
+
+/**
+ * Asks made by a turn this state store runs itself (the legacy alarm
+ * executor) are admitted here, against the local stores and queue, the way
+ * the gateway inbox admits a Slack event.
+ */
+function localAgentAskDispatcher(
+  stores: TagStateStores,
+  platformEnv: PlatformEnv,
+  productTelemetry: ProductTelemetryCapture,
+): SlackAgentAskDispatcher {
+  return async (request) => {
+    const appStores = localGatewayAppStores(stores);
+    let gatewayClient: GatewayDeploymentClient | undefined;
+    try {
+      gatewayClient = new GatewayDeploymentClient({
+        settings: appStores.settings,
+        config: appStores.config,
+        identity: appStores.identity,
+        keyring: loadCredentialKeyring(platformEnv),
+        gatewayBaseUrl: resolveChickpeaGatewayUrl(platformEnv),
+        productTelemetry,
+      });
+    } catch {
+      // A direct installation needs no gateway client.
+    }
+    await processSlackAgentAsks(request, platformEnv, {
+      stores: appStores,
+      ...(gatewayClient ? { gatewayClient } : {}),
+      enqueueTurn: async (job) => {
+        stores.turnJobs.enqueue(job);
+        return { ok: true, value: null };
+      },
+    });
+  };
 }
 
 function localGatewayAppStores(stores: TagStateStores): AppStores {

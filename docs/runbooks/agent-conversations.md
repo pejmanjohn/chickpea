@@ -68,9 +68,9 @@ user, and messages from apps and bots never start a turn. The deployment
 admits asks itself from each delivered reply, after the reply is recorded as
 delivered:
 
-- Cloudflare admits them in the thread's `SlackThreadRunner`, the default
-  executor. The legacy alarm executor (`SLACK_TAG_TURN_EXECUTOR=alarm`)
-  admits none.
+- Cloudflare admits them where the turn ran: in the thread's
+  `SlackThreadRunner` (the default executor), or in the state store for a
+  turn its legacy alarm executor ran.
 - Node admits them in the process that ran the turn.
 
 An asked Agent keeps its own transcript of the thread, apart from the

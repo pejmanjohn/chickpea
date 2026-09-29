@@ -33,6 +33,7 @@ import { slackAgentThreadKey } from '../src/slack/thread-key.ts';
 import { compileRuntimePlanV2 } from '../src/agents/runtime-plan.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
 import { turnJob as maintenanceTurnJob } from './fixtures/state-db/maintenance.ts';
+import { createAgentAskCollector } from '../src/slack/agent-asks.ts';
 
 // What the transplanted turn executor imports for stop records.
 const stopGlobals = { isTurnJobStopRefusal, TURN_STOP_HOLD_RETRY_MS, turnJobStopGate };
@@ -241,6 +242,7 @@ for (const withPendingTurn of [false, true]) {
       localSettingsStore: () => ({}),
       localGatewayAppStores: () => ({ config: {} }),
       localUsageStore: () => ({}),
+      localAgentAskDispatcher: () => undefined,
       localSlackPresentationState: () => ({}),
       runTurn: async () => { throw new Error('the preflight fails first'); },
       drainGatewayInbox: async () => false,
@@ -443,6 +445,8 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
     verifySlackInstallationTurnAccess: async () => {},
     replayTextForTurnProgress: () => 'Pull request #12 is already open',
     recordDeliveredSlackAgentMessage() {},
+    createAgentAskCollector,
+    localAgentAskDispatcher: () => undefined,
     earliestDefined: (...values: Array<number | undefined>) =>
       values.filter((value): value is number => value !== undefined).sort((a, b) => a - b)[0],
     runTurn: async (_turn: unknown, _assignment: unknown, _env: unknown, options: {
