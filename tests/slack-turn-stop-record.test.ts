@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { compileRuntimePlanV2 } from '../src/agents/runtime-plan.ts';
+import { runtimePlanGuestSandboxKey, sandboxThreadKey } from '../src/sandbox/thread-key.ts';
 import type { ResolvedAssignment } from '../src/config/types.ts';
 import {
   SlackStateLogic,
@@ -1129,4 +1130,41 @@ test('the Node state store settles the dropped turns\' records through its stop 
       assert.equal(v3(s, s.runs[id]).lifecyclePhase, 'settled');
     }
   } finally { s.db.close(); }
+});
+
+test("a guest's stop notice names its own coding Sandbox; a plan frozen before guests had one names none", () => {
+  const clock = { now: NOW };
+  const { db, turns } = store(clock);
+  try {
+    const guest: TurnJob = { ...job('guest', '101'), assignment: assignment({ threadGuest: true }) };
+    turns.enqueue(guest);
+    dispatch(turns, guest);
+    turns.assignRunner('guest');
+    turns.confirmRunner('guest');
+    turns.steer(stop('110'));
+    const [notice] = turns.listDueStopNotices(clock.now);
+    assert.equal(notice?.guestSandboxKey, runtimePlanGuestSandboxKey(turns.runnerView('guest').job!.runtimePlan!));
+    assert.match(notice!.guestSandboxKey!, /^sandbox_[a-f0-9]{40}$/);
+    assert.equal(notice!.runnerKey, RUNNER_KEY);
+    assert.notEqual(notice!.guestSandboxKey, sandboxThreadKey(notice!.runnerKey));
+  } finally { db.close(); }
+  const older = store(clock);
+  try {
+    const guest: TurnJob = { ...job('early', '101'), assignment: assignment({ threadGuest: true }) };
+    older.turns.enqueue(guest);
+    // The plan an older release froze carries no `guest`: the Agent wrote to the thread's Sandbox.
+    older.turns.freezeRuntimePlan('early', compileRuntimePlanV2({
+      turn: guest.turn, assignment: assignment(), instructions: 'Help.', memoryEpoch: 1,
+    }));
+    older.turns.prepareFlueDispatch('early', 'Do the work', { generation: 'early' });
+    older.turns.recordFlueReceipt('early', {
+      submissionId: 'sub_early', acceptedAt: '2026-09-26T12:00:00.000Z', uid: UID,
+    });
+    older.turns.assignRunner('early');
+    older.turns.confirmRunner('early');
+    older.turns.steer(stop('110'));
+    const [notice] = older.turns.listDueStopNotices(clock.now);
+    assert.equal(notice?.turnJobId, 'early');
+    assert.equal(notice?.guestSandboxKey, undefined);
+  } finally { older.db.close(); }
 });

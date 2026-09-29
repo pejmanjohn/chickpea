@@ -308,6 +308,13 @@ export interface TurnStopNotice {
    * what it noted (an eviction) learns it here.
    */
   settled?: FlueSettlementCheckpointV1['outcome'];
+  /**
+   * The stopped turn's own coding Sandbox when it is a guest's
+   * (runtimePlanGuestSandboxKey); absent, its coding tasks are on the
+   * thread's. Carried here so the coding cascade needs no row read,
+   * whatever state the row is in by then.
+   */
+  guestSandboxKey?: string;
 }
 
 /**

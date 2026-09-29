@@ -26,7 +26,7 @@ import type {
   CodingWorkerUsageRecord,
   WorkspaceMilestoneRecord,
 } from '../slack/coding-worker-run.ts';
-import { runtimePlanConversationKey, type RuntimePlanV2 } from './runtime-plan.ts';
+import { runtimePlanWorkspaceConversationKey, type RuntimePlanV2 } from './runtime-plan.ts';
 
 export { CHICKPEA_SUBMISSION_DURABILITY } from './submission-durability.ts';
 
@@ -60,7 +60,7 @@ export function createRuntimePlanWorkspaceTaskTool(input: {
       const stub = await session.activatable();
       return (await stub.getTurnProgress?.())?.pullRequest;
     },
-    taskRecords: threadCodingTaskRecords(() => input.sandboxConversationKey ?? runtimePlanConversationKey(input.plan)),
+    taskRecords: threadCodingTaskRecords(() => input.sandboxConversationKey ?? runtimePlanWorkspaceConversationKey(input.plan)),
   });
 }
 

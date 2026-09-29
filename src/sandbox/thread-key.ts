@@ -1,11 +1,6 @@
-import type { ResolvedAssignment } from '../config/types.ts';
-import {
-  baseSlackThreadKey,
-  conversationThreadTs,
-  slackAgentThreadKey,
-  slackConversationKey,
-} from '../slack/thread-key.ts';
-import type { NormalizedSlackTurn } from '../slack/types.ts';
+import type { RuntimePlanV2 } from '../agents/runtime-plan.ts';
+import { baseSlackThreadKey, slackAgentThreadKey, slackConversationKey } from '../slack/thread-key.ts';
+import type { TurnJob } from '../slack/turn-job-types.ts';
 import { opaqueId } from '../work/admission.ts';
 
 const OWNER_BOUND_SANDBOX_KEY = /^sandbox_[a-f0-9]{40}$/;
@@ -40,21 +35,27 @@ export function guestSandboxKey(conversationKey: string, agentId: string): strin
 }
 
 /**
- * The Sandbox Durable Object a Slack turn's coding workspace uses: the
- * thread's own, or a guest's own (the key the Agent side derives from its
- * runtime plan, runtimePlanGuestSandboxKey).
+ * A guest's own coding Sandbox (guestSandboxKey), or undefined for the
+ * thread's owner, which uses the thread's. Read from a plan the caller
+ * already parsed, on every render, so it validates nothing again.
  */
-export function slackTurnSandboxKey(
-  turn: NormalizedSlackTurn,
-  assignment: Pick<ResolvedAssignment, 'runtimeContract' | 'ownerIncarnation' | 'agentId' | 'threadGuest'>,
-): string {
-  if (!assignment.threadGuest) return sandboxThreadKey(slackAgentThreadKey(turn, assignment));
-  return guestSandboxKey(
-    slackConversationKey({
-      workspaceId: turn.workspaceId,
-      channelId: turn.channelId,
-      threadTs: conversationThreadTs(turn, assignment.runtimeContract),
-    }),
-    assignment.agentId,
-  );
+export function runtimePlanGuestSandboxKey(
+  plan: Pick<RuntimePlanV2, 'agentId' | 'conversation'>,
+): string | undefined {
+  return plan.conversation.guest
+    ? guestSandboxKey(slackConversationKey(plan.conversation), plan.agentId)
+    : undefined;
+}
+
+/**
+ * The Sandbox Durable Object a Slack turn's coding workspace uses, as the
+ * runner reads it: a guest's own when the turn's frozen plan says so, else
+ * the thread's. The plan decides, not the assignment, so the runner reads
+ * where the Agent wrote: a guest turn whose plan was frozen before plans
+ * carried `guest` used the thread's. A turn without a frozen plan opened no
+ * workspace, and the thread's key is as good as any.
+ */
+export function slackTurnSandboxKey(job: Pick<TurnJob, 'turn' | 'assignment' | 'runtimePlan'>): string {
+  const guest = job.runtimePlan ? runtimePlanGuestSandboxKey(job.runtimePlan) : undefined;
+  return guest ?? sandboxThreadKey(slackAgentThreadKey(job.turn, job.assignment));
 }

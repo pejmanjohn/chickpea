@@ -442,6 +442,9 @@ export class ThreadRunnerJobStore {
           ...(existing.notice.uid ? {} : notice.uid ? { uid: notice.uid } : {}),
           ...(notice.submissionId ? { submissionId: notice.submissionId } : {}),
           ...(existing.notice.settled ? {} : notice.settled ? { settled: notice.settled } : {}),
+          ...(existing.notice.guestSandboxKey
+            ? {}
+            : notice.guestSandboxKey ? { guestSandboxKey: notice.guestSandboxKey } : {}),
         }
       : notice;
     this.db.run(

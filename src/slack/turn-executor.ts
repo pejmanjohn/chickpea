@@ -377,7 +377,7 @@ export async function executeTurnJob(
       if (!frozenPlan?.codingWorkspace || use?.codingWorkspaceOpened === false) return undefined;
       // The same Durable Object the workspace uses (the thread's, or a
       // guest's own), not the agent key, which names no workspace.
-      const sandboxKey = slackTurnSandboxKey(job.turn, job.assignment);
+      const sandboxKey = slackTurnSandboxKey({ ...job, runtimePlan: frozenPlan });
       for (const openSandbox of ports.sandboxes(sandboxKey)) {
         try {
           const sandbox = openSandbox();
@@ -422,7 +422,7 @@ export async function executeTurnJob(
      */
     const readStoppedSandbox = async (): Promise<TurnProgress | undefined> => {
       if (!frozenPlan?.codingWorkspace) return undefined;
-      const sandboxKey = slackTurnSandboxKey(job.turn, job.assignment);
+      const sandboxKey = slackTurnSandboxKey({ ...job, runtimePlan: frozenPlan });
       return readSandboxTurnProgress(ports.sandboxes(sandboxKey), job.id);
     };
     // The stopped ending (KTD3). The state store drops (and counts) the rows

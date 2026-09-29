@@ -77,7 +77,8 @@ Agent's list of teammates names only Agents it can reach.
   any other queued message. A reply from a run someone stopped asks nobody.
 
 Asked Agents run one at a time in the thread's queue, after the reply that
-asked them, so each one sees what came before it.
+asked them. Each reads the thread up to the reply that asked it, so
+teammates asked together do not see one another's answers.
 
 ## Where it runs
 
@@ -95,19 +96,20 @@ An asked Agent keeps its own transcript of the thread, apart from the
 thread's own Agent, so answering an ask never resets the owner's transcript.
 It also has its own coding sandbox for the thread: its workspaces,
 checkpoints and coding tasks never replace the owner's or another asked
-Agent's. A person's stop in the thread reaches the coding tasks of whichever
-Agent's run it stopped. An Agent that takes a thread over uses the thread's
-sandbox.
+Agent's. On the default `SlackThreadRunner` executor, a person's stop in the
+thread reaches the coding tasks of whichever Agent's run it stopped. An
+Agent that takes a thread over uses the thread's sandbox.
 
 ## Coordinating teammates
 
 One Agent can split work across others: its reply gives each teammate its
-own part, mentioning each once, and they take their turns in that order.
-Each asked Agent that was asked to report back mentions the coordinator with
-its result, and the coordinator combines the results for the person. When
-two teammates report back, the coordinator may answer twice: once after the
-first report, which is all it can see at that point, and again after the
-second. The limit on asks bounds the whole exchange.
+own self-contained part, mentioning each once, and they answer one at a
+time in that order; none of them sees another's answer. To combine the
+results, the coordinator asks only the last teammate to mention it back when
+done, so that report comes after every other answer and the coordinator
+reads them all in one turn before giving the person one combined answer.
+Splitting work across N teammates uses N asks, plus one for the report back,
+of the 8 a person's message allows.
 
 ## Logs
 

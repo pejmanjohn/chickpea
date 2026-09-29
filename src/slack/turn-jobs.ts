@@ -48,6 +48,7 @@ import { validSlackTs, type NormalizedSlackTurn } from './types.ts';
 import type { UsagePersistenceEvent } from '../usage/runtime-recorder.ts';
 import type { SlackInteractionIntent } from './interaction-intent.ts';
 import { conversationThreadTs, slackAgentThreadKey, slackConversationKind } from './thread-key.ts';
+import { runtimePlanGuestSandboxKey } from '../sandbox/thread-key.ts';
 import {
   MAX_THREAD_IMAGES_ATTRIBUTE_CHARS,
   parseThreadImageRecords,
@@ -937,6 +938,7 @@ export class TurnJobStoreLogic {
         continue;
       }
       const uid = job.dispatchReceipt?.uid ?? job.dispatchEnvelope?.uid ?? undefined;
+      const guestSandboxKey = job.runtimePlan ? runtimePlanGuestSandboxKey(job.runtimePlan) : undefined;
       notices.push({
         turnJobId: job.id,
         runnerKey: runnerKeyOf(job),
@@ -947,6 +949,7 @@ export class TurnJobStoreLogic {
         ...(uid ? { uid } : {}),
         ...(job.dispatchReceipt ? { submissionId: job.dispatchReceipt.submissionId } : {}),
         ...(job.flueSettlement ? { settled: job.flueSettlement.outcome } : {}),
+        ...(guestSandboxKey ? { guestSandboxKey } : {}),
       });
     }
     this.quarantineUnreadable(unreadable);

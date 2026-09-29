@@ -22,7 +22,7 @@ import {
   planAllowsConnectionRequests,
 } from '../connections/request-tool.ts';
 import { WORKSPACE_TOOL_NAMES } from '../sandbox/workspace-tools.ts';
-import { guestSandboxKey, ownerBoundSandboxKey } from '../sandbox/thread-key.ts';
+import { ownerBoundSandboxKey, runtimePlanGuestSandboxKey } from '../sandbox/thread-key.ts';
 import { conversationThreadTs, slackAgentContinuityKey, slackConversationKey } from '../slack/thread-key.ts';
 import type { NormalizedSlackTurn } from '../slack/types.ts';
 import {
@@ -716,14 +716,12 @@ export function runtimePlanSandboxConversationKey(
 }
 
 /**
- * A guest's own coding Sandbox (guestSandboxKey), or undefined for the
- * thread's owner, which uses the thread's. Read from a plan the caller
- * already parsed, on every render, so it validates nothing again.
+ * The conversation key a plan's coding workspaces are keyed by: a guest's
+ * own Sandbox (runtimePlanGuestSandboxKey), else the Slack conversation's,
+ * which names the thread's Sandbox.
  */
-export function runtimePlanGuestSandboxKey(plan: RuntimePlanV2): string | undefined {
-  return plan.conversation.guest
-    ? guestSandboxKey(slackConversationKey(plan.conversation), plan.agentId)
-    : undefined;
+export function runtimePlanWorkspaceConversationKey(plan: RuntimePlanV2): string {
+  return runtimePlanGuestSandboxKey(plan) ?? runtimePlanConversationKey(plan);
 }
 
 /**

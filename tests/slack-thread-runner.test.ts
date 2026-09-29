@@ -163,15 +163,22 @@ test('a stop marker keeps its first decision, merges later coordinates, and keep
   });
   assert.equal(store.hasOwedStops(), true);
   assert.deepEqual(store.owedStops().map((marker) => marker.turnJobId), ['turn-1']);
-  // A redelivery adds the receipt the first notice lacked; its own decision is ignored.
+  // A redelivery adds the receipt and the guest Sandbox the first notice
+  // lacked; its own decision is ignored.
+  const guestSandboxKey = `sandbox_${'a'.repeat(40)}`;
   const merged = store.recordStop(
-    { ...STOP_NOTICE, attempts: 2, uid: 'uid-1', submissionId: 'sub-1' },
+    { ...STOP_NOTICE, attempts: 2, uid: 'uid-1', submissionId: 'sub-1', guestSandboxKey },
     { abort: 'none', cascade: 'none' },
     200,
   );
   assert.equal(merged.abort, 'owed');
   assert.equal(merged.receivedAt, 100);
-  assert.deepEqual(merged.notice, { ...STOP_NOTICE, attempts: 2, uid: 'uid-1', submissionId: 'sub-1' });
+  assert.deepEqual(merged.notice, { ...STOP_NOTICE, attempts: 2, uid: 'uid-1', submissionId: 'sub-1', guestSandboxKey });
+  assert.equal(
+    store.recordStop({ ...STOP_NOTICE, attempts: 3 }, { abort: 'none', cascade: 'none' }, 300).notice?.guestSandboxKey,
+    guestSandboxKey,
+    'a later notice without the key never drops it',
+  );
   store.updateStop('turn-1', { abort: 'done', abortAttempts: 1, abortedSubmissionId: 'sub-1' });
   const report = { recordsRead: true, allSettled: true, tasks: [] };
   assert.deepEqual(store.saveCodingStopReport('turn-1', report), report);
@@ -225,11 +232,12 @@ test("the runner's stop RPC persists the stop first, leaves slow work to its ala
   assert.doesNotMatch(rpc, /runSoon|runAlarm|codingReport|stopCodingTasks/);
   assert.match(rpc, /return \{ acknowledged: false \};/, 'a stop it could not persist stays owed');
   // The host abort is the Flue handle built from the persisted envelope, and
-  // the cascade reads the host turn's records on its Sandbox: a guest's own,
-  // else the thread's.
+  // the cascade reads the host turn's records on the Sandbox the notice
+  // names: a guest's own, else the thread's. No row read: the row may be
+  // delivered or parked by the time a cascade runs.
   assert.match(runner, /abortHost: \(target\) => abortSlackThreadAgent\(target\)/);
-  assert.match(runner, /turnSandboxKey: await this\.stoppedTurnSandboxKey\(notice\),\s*hostTurnId: notice\.turnJobId,\s*workers: cloudflareCodingWorkerStopClient\(env\)/);
-  assert.match(runner, /if \(job\) return slackTurnSandboxKey\(job\.turn, job\.assignment\);[\s\S]*return sandboxThreadKey\(notice\.runnerKey\);/);
+  assert.match(runner, /turnSandboxKey: notice\.guestSandboxKey \?\? sandboxThreadKey\(notice\.runnerKey\),\s*hostTurnId: notice\.turnJobId,\s*workers: cloudflareCodingWorkerStopClient\(env\)/);
+  assert.doesNotMatch(runner, /stateStore\(\)\.view\(notice/);
   assert.match(runner, /env\.SANDBOX \?\? env\.Sandbox\s*\?\s*\{\s*stopCodingTasks:/,
     'no Sandbox binding, no coding job: a stop owes no cascade');
   // The alarm runs what each stop owes, and the turn port reports receipts
