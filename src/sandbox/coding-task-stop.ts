@@ -210,7 +210,7 @@ type ThreadSandbox = Pick<SandboxCodingTaskStub, 'readCodingTasks' | 'settleCodi
   SandboxTurnReader;
 
 /**
- * The progress a thread's Sandbox Durable Object recorded for one turn, from
+ * The progress a turn's Sandbox Durable Object recorded for it, from
  * whichever of its identities holds that turn (`sandboxes` opens the object
  * once per identity); undefined when none does.
  */
@@ -233,13 +233,13 @@ export async function readSandboxTurnProgress(
 /**
  * The stop ports for one host turn on Cloudflare. `sandboxes` opens a Sandbox
  * Durable Object once per identity it may run under (the runner's
- * `sandboxTurnReaders`); `threadSandboxKey` is `sandboxThreadKey` of the
- * thread's runner key, the Durable Object the coordinator writes the records
- * to.
+ * `sandboxTurnReaders`); `turnSandboxKey` is the turn's Sandbox
+ * (slackTurnSandboxKey: the thread's, or a guest's own), the Durable Object
+ * the coordinator writes the records to.
  */
 export function threadCodingTaskStopPorts(input: {
   sandboxes: (sandboxKey: string) => Array<() => object>;
-  threadSandboxKey: string;
+  turnSandboxKey: string;
   hostTurnId: string;
   workers: CodingWorkerStopClient;
 }): CodingTaskStopPorts {
@@ -247,7 +247,7 @@ export function threadCodingTaskStopPorts(input: {
   // (CLOUDFLARE_SANDBOX_OPTIONS), which cloudflareSandboxOptionVariants
   // lists first; a compatibility identity never holds records.
   const thread = (): ThreadSandbox => {
-    const open = input.sandboxes(input.threadSandboxKey)[0];
+    const open = input.sandboxes(input.turnSandboxKey)[0];
     if (!open) throw new Error('No Sandbox binding');
     return open() as ThreadSandbox;
   };

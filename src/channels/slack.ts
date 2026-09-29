@@ -2795,6 +2795,10 @@ async function processSlackEvent(
           });
           return;
         }
+        if ('agentAskCoalesced' in result) {
+          console.info('[chickpea] agent ask joined the asked Agent\'s queued turn');
+          return;
+        }
         if ('steered' in result) {
           steered = result.steered;
         } else {

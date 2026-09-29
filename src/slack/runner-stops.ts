@@ -423,6 +423,7 @@ function validStopNotice(notice: TurnStopNotice | undefined): notice is TurnStop
     bounded(notice.turnJobId, 256) && bounded(notice.runnerKey, 512) &&
     notice.record?.role === 'stopped' &&
     optional(notice.instanceId, 512) && optional(notice.uid, 512) && optional(notice.submissionId, 512) &&
+    optional(notice.guestSandboxKey, 512) &&
     (notice.settled === undefined || SETTLEMENT_OUTCOMES.has(notice.settled));
 }
 

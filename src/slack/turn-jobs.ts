@@ -48,6 +48,7 @@ import { validSlackTs, type NormalizedSlackTurn } from './types.ts';
 import type { UsagePersistenceEvent } from '../usage/runtime-recorder.ts';
 import type { SlackInteractionIntent } from './interaction-intent.ts';
 import { conversationThreadTs, slackAgentThreadKey, slackConversationKind } from './thread-key.ts';
+import { runtimePlanGuestSandboxKey } from '../sandbox/thread-key.ts';
 import {
   MAX_THREAD_IMAGES_ATTRIBUTE_CHARS,
   parseThreadImageRecords,
@@ -487,6 +488,29 @@ export class TurnJobStoreLogic {
       originMessageTs,
     );
     return Number(row?.used ?? 0);
+  }
+
+  /**
+   * Whether `job`'s Agent already has an ask in this thread from the same
+   * exchange that has not started (no attempt recorded yet, so it has not
+   * read the thread). That turn reads the thread when it runs, a later
+   * message included, so asking the Agent again would only repeat it. A row
+   * an unfinished stop holds does not count: its ending may drop it, and a
+   * message posted after the stop runs as an ordinary turn.
+   */
+  hasQueuedAgentAsk(job: Pick<TurnJob, 'turn' | 'assignment'>, originMessageTs: string): boolean {
+    const threadKey = stopThreadKeyOf(job.turn, job.assignment);
+    if (!threadKey) return false;
+    return this.db.all(
+      `SELECT stop_json FROM turn_jobs
+       WHERE thread_key = ? AND delivered = 0 AND status = 'pending' AND attempts = 0
+         AND dispatch_envelope_json IS NULL
+         AND json_extract(assignment_json, '$.agentId') = ?
+         AND json_extract(turn_json, '$.agentAsk.originMessageTs') = ?`,
+      threadKey,
+      job.assignment.agentId,
+      originMessageTs,
+    ).some((row) => this.effectiveStop(parseTurnStopRecord(row.stop_json))?.role !== 'held');
   }
 
   /**
@@ -937,6 +961,7 @@ export class TurnJobStoreLogic {
         continue;
       }
       const uid = job.dispatchReceipt?.uid ?? job.dispatchEnvelope?.uid ?? undefined;
+      const guestSandboxKey = job.runtimePlan ? runtimePlanGuestSandboxKey(job.runtimePlan) : undefined;
       notices.push({
         turnJobId: job.id,
         runnerKey: runnerKeyOf(job),
@@ -947,6 +972,7 @@ export class TurnJobStoreLogic {
         ...(uid ? { uid } : {}),
         ...(job.dispatchReceipt ? { submissionId: job.dispatchReceipt.submissionId } : {}),
         ...(job.flueSettlement ? { settled: job.flueSettlement.outcome } : {}),
+        ...(guestSandboxKey ? { guestSandboxKey } : {}),
       });
     }
     this.quarantineUnreadable(unreadable);

@@ -8,7 +8,7 @@ import type {
 import type { TurnLatencyContext } from '../observability/runtime-latency.ts';
 import { isStateStoreDisconnect } from '../config/cf-state-proxies.ts';
 import { readSandboxTurnProgress, type CodingTaskStopReport } from '../sandbox/coding-task-stop.ts';
-import { sandboxThreadKey } from '../sandbox/thread-key.ts';
+import { slackTurnSandboxKey } from '../sandbox/thread-key.ts';
 import type { ProductTelemetryCapture } from '../telemetry/client.ts';
 import type { UsageStore } from '../usage/types.ts';
 import type { WorkStore } from '../work/types.ts';
@@ -148,14 +148,14 @@ export interface TurnExecutionPorts {
   /** Current credentials for one Slack installation. */
   resolveInstallation(workspaceId: string): Promise<SlackInstallationExecutionContext>;
   /**
-   * The coding Sandbox Durable Object of one thread, once per identity it may
-   * run under; none when this deployment has no Sandbox binding.
+   * A coding Sandbox Durable Object (a thread's, or a guest's own), once per
+   * identity it may run under; none when this deployment has no Sandbox binding.
    */
   sandboxes(sandboxKey: string): Array<() => SandboxTurnReader>;
   runTurn: typeof runTurn;
 }
 
-/** What a turn's recovery reads from its thread's coding Sandbox. */
+/** What a turn's recovery reads from its coding Sandbox. */
 export interface SandboxTurnReader {
   getTurnId(): Promise<string | undefined>;
   getTurnProgress(): Promise<TurnProgress>;
@@ -375,9 +375,9 @@ export async function executeTurnJob(
       // progress there. A turn whose own reply says it opened none skips
       // the Sandbox Durable Object entirely; an unknown one still checks.
       if (!frozenPlan?.codingWorkspace || use?.codingWorkspaceOpened === false) return undefined;
-      // The same Durable Object the workspace uses: the thread key, not
-      // the owner-bound agent key, which names no workspace.
-      const sandboxKey = sandboxThreadKey(slackAgentThreadKey(job.turn, job.assignment));
+      // The same Durable Object the workspace uses (the thread's, or a
+      // guest's own), not the agent key, which names no workspace.
+      const sandboxKey = slackTurnSandboxKey({ ...job, runtimePlan: frozenPlan });
       for (const openSandbox of ports.sandboxes(sandboxKey)) {
         try {
           const sandbox = openSandbox();
@@ -417,12 +417,12 @@ export async function executeTurnJob(
     const codingTaskStarted = reattaching && activeWorkKey !== undefined &&
       await ports.slack.isCodingActiveWork(activeWorkKey, job.id);
     /**
-     * The progress the thread's coding Sandbox recorded for this turn, for a
-     * stop note; defined only when this turn opened a workspace there.
+     * The progress this turn's coding Sandbox recorded for it, for a stop
+     * note; defined only when this turn opened a workspace there.
      */
     const readStoppedSandbox = async (): Promise<TurnProgress | undefined> => {
       if (!frozenPlan?.codingWorkspace) return undefined;
-      const sandboxKey = sandboxThreadKey(slackAgentThreadKey(job.turn, job.assignment));
+      const sandboxKey = slackTurnSandboxKey({ ...job, runtimePlan: frozenPlan });
       return readSandboxTurnProgress(ports.sandboxes(sandboxKey), job.id);
     };
     // The stopped ending (KTD3). The state store drops (and counts) the rows

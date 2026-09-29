@@ -306,7 +306,7 @@ import {
   buildRuntimePlanActivityContext,
   compileWebsiteLogins,
   parseRuntimePlanV2,
-  runtimePlanConversationKey,
+  runtimePlanWorkspaceConversationKey,
   type RuntimePlanApiConnectionV2,
   type RuntimePlanRepositoryV2,
   type RuntimePlanV2,
@@ -1472,7 +1472,7 @@ function runtimePlanWorkspaceRosterSeed(
     const { getSandbox } = await import('@cloudflare/sandbox');
     return getSandbox(
       binding as Parameters<typeof getSandbox>[0],
-      defaultWorkspaceId(sandboxConversationKey ?? runtimePlanConversationKey(plan)),
+      defaultWorkspaceId(sandboxConversationKey ?? runtimePlanWorkspaceConversationKey(plan)),
       CLOUDFLARE_SANDBOX_OPTIONS,
     ) as unknown as WorkspaceRosterStub;
   });
@@ -1594,7 +1594,7 @@ async function createRuntimePlanWorkspace(
     });
     const session = await createCloudflareWorkspaceSession({
       binding,
-      conversationKey: input.sandboxConversationKey ?? runtimePlanConversationKey(plan),
+      conversationKey: input.sandboxConversationKey ?? runtimePlanWorkspaceConversationKey(plan),
       name,
       generation,
       agentId: plan.agentId,

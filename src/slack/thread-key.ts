@@ -17,6 +17,15 @@ export function conversationThreadTs(
   return runtimeContract === 'chickpea-v1' ? turn.threadTs : turn.sessionThreadTs ?? turn.threadTs;
 }
 
+/** The canonical Slack coordinate of a conversation, as a runtime plan carries it. */
+export function slackConversationKey(conversation: {
+  workspaceId: string;
+  channelId: string;
+  threadTs: string;
+}): string {
+  return `${conversation.workspaceId}:${conversation.channelId}:${conversation.threadTs}`;
+}
+
 /**
  * Trusted Slack conversation shape. Direct-message events can omit
  * `channel_type`, so the normalized DM source is authoritative as well.
@@ -84,8 +93,8 @@ function continuityBaseSlackThreadKey(threadKey: string): string {
   const base = baseSlackThreadKey(threadKey);
   const [, , , owner, guest] = threadKey.split(':');
   if (!owner || !/^owner-i[1-9]\d*$/.test(owner)) return base;
-  // A guest keeps its own memory conversation. The coding Sandbox stays the
-  // thread's: sandboxThreadKey drops this segment.
+  // A guest keeps its own memory conversation. Its coding Sandbox is keyed
+  // apart (guestSandboxKey); sandboxThreadKey drops this segment.
   return guest && /^guest-[A-Za-z0-9_.-]+$/.test(guest)
     ? `${base}:${owner}:${guest}`
     : `${base}:${owner}`;

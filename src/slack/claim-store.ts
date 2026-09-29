@@ -177,7 +177,9 @@ export type SlackCanonicalAdmissionResult =
   /** The thread's run took the message's `steering`; its claims are held. */
   | { claimed: true; steered: TurnSteeringInterception }
   /** The ask's exchange used every ask it may (`agentAskLimit`); its claims are held. */
-  | { claimed: true; agentAskLimitReached: true };
+  | { claimed: true; agentAskLimitReached: true }
+  /** The asked Agent's earlier ask in this thread has not started; it will read this message. */
+  | { claimed: true; agentAskCoalesced: true };
 
 /**
  * Application-owned duplicate-admission store.
@@ -491,9 +493,17 @@ export class SlackStateLogic {
       }
       const { turnJob } = input;
       const ask = turnJob?.turn?.agentAsk;
-      if (turnJob && ask && input.agentAskLimit !== undefined && turnJobs &&
-          turnJobs.countAgentAskTurns(turnJob, ask.originMessageTs) >= input.agentAskLimit) {
-        return { claimed: true, agentAskLimitReached: true };
+      if (turnJob && ask && turnJobs) {
+        // The Agent's earlier ask here has not started: it reads this message
+        // when it runs, so it is not asked twice (one answer to both reports).
+        // Decided before the limit, which a joined ask never counts against.
+        if (turnJobs.hasQueuedAgentAsk(turnJob, ask.originMessageTs)) {
+          return { claimed: true, agentAskCoalesced: true };
+        }
+        if (input.agentAskLimit !== undefined &&
+            turnJobs.countAgentAskTurns(turnJob, ask.originMessageTs) >= input.agentAskLimit) {
+          return { claimed: true, agentAskLimitReached: true };
+        }
       }
       if (input.steering && turnJobs) {
         const steered = turnJobs.steerInTransaction(input.steering);

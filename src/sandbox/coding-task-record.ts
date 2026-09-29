@@ -4,13 +4,13 @@ import type { SandboxPolicyStorage } from './cloudflare-policy.ts';
 
 /**
  * Durable active-task records (KTD4): one per coding job a response delegates
- * with `workspace_task`, kept on the thread's Sandbox Durable Object under the
- * host turn. A stop aborts and confirms every coding worker named here: once
+ * with `workspace_task`, kept on the run's Sandbox Durable Object (the
+ * thread's, or a guest's own) under the host turn. A stop aborts and confirms every coding worker named here: once
  * the coordinator is aborted, Flue discards the tool's own result, so a
  * confirmation from inside the tool can never reach the stop note.
  *
- * Every workspace of a thread is its own Sandbox Durable Object, so the
- * records live on the thread's default one (which also keeps the workspace
+ * Every workspace of a run is its own Sandbox Durable Object, so the
+ * records live on the run's default one (which also keeps the workspace
  * roster), and a stop finds every job whichever workspace it runs in.
  */
 

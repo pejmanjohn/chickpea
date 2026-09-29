@@ -155,7 +155,8 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
         ? {
             stopCodingTasks: (notice: TurnStopNotice) => stopCodingTasks(threadCodingTaskStopPorts({
               sandboxes: sandboxTurnReaders(env),
-              threadSandboxKey: sandboxThreadKey(notice.runnerKey),
+              // The stopped run's Sandbox: a guest's own, else the thread's.
+              turnSandboxKey: notice.guestSandboxKey ?? sandboxThreadKey(notice.runnerKey),
               hostTurnId: notice.turnJobId,
               workers: cloudflareCodingWorkerStopClient(env),
             })),

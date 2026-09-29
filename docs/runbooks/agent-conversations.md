@@ -77,7 +77,8 @@ Agent's list of teammates names only Agents it can reach.
   any other queued message. A reply from a run someone stopped asks nobody.
 
 Asked Agents run one at a time in the thread's queue, after the reply that
-asked them, so each one sees what came before it.
+asked them. An ask reads the whole thread when it runs, so a teammate asked
+after another sees the earlier answers.
 
 ## Where it runs
 
@@ -93,8 +94,26 @@ delivered:
 
 An asked Agent keeps its own transcript of the thread, apart from the
 thread's own Agent, so answering an ask never resets the owner's transcript.
-It shares the thread's coding sandbox, as an Agent that takes a thread over
-does today.
+It also has its own coding sandbox for the thread: its workspaces,
+checkpoints and coding tasks never replace the owner's or another asked
+Agent's. On the default `SlackThreadRunner` executor, a person's stop in the
+thread reaches the coding tasks of whichever Agent's run it stopped. An
+Agent that takes a thread over uses the thread's sandbox.
+
+## Coordinating teammates
+
+One Agent can split work across others: its reply gives each teammate its
+own part, mentioning each once, and they answer one at a time in that
+order. To combine the results, the coordinator asks only the last teammate
+to mention it back when done, so that report comes after every other answer
+and the coordinator reads them all in one turn before giving the person one
+combined answer. Splitting work across N teammates uses N asks, plus one for
+the report back, of the 8 a person's message allows.
+
+If several teammates do mention the coordinator, it still answers once when
+it can: an Agent that already has an ask waiting in the thread for the same
+exchange, not started yet, is not asked again, and the waiting turn reads the
+later reports too.
 
 ## Logs
 

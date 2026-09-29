@@ -22,7 +22,8 @@ import {
   planAllowsConnectionRequests,
 } from '../connections/request-tool.ts';
 import { WORKSPACE_TOOL_NAMES } from '../sandbox/workspace-tools.ts';
-import { conversationThreadTs, slackAgentContinuityKey } from '../slack/thread-key.ts';
+import { ownerBoundSandboxKey, runtimePlanGuestSandboxKey } from '../sandbox/thread-key.ts';
+import { conversationThreadTs, slackAgentContinuityKey, slackConversationKey } from '../slack/thread-key.ts';
 import type { NormalizedSlackTurn } from '../slack/types.ts';
 import {
   MAX_SLACK_PUBLIC_HANDOFF_CHARS,
@@ -76,6 +77,11 @@ export interface RuntimePlanConversationV2 {
   threadTs: string;
   surface: RuntimePlanSurface;
   continuityKey: string;
+  /**
+   * This Agent answers an ask in a thread another Agent owns: its coding
+   * Sandbox is its own (runtimePlanGuestSandboxKey).
+   */
+  guest?: true;
 }
 
 export interface RuntimePlanSkillV2 {
@@ -412,6 +418,7 @@ export function compileRuntimePlanV2(input: CompileRuntimePlanV2Input): RuntimeP
       threadTs,
       surface: surfaceForTurn(input.turn),
       continuityKey,
+      ...(input.assignment.threadGuest ? { guest: true as const } : {}),
     },
     runtimeModel: input.runtimeModel ?? requireFrozenModel(input.assignment),
     ...(input.runtimeModelRoute ? { runtimeModelRoute: input.runtimeModelRoute } : {}),
@@ -688,20 +695,14 @@ export function runtimePlanInstanceIdMatches(
  * Slack conversation rather than to one opaque Flue agent incarnation.
  */
 export function runtimePlanConversationKey(plan: RuntimePlanV2): string {
-  const validated = parseRuntimePlanV2(plan);
-  return [
-    validated.conversation.workspaceId,
-    validated.conversation.channelId,
-    validated.conversation.threadTs,
-  ].join(':');
+  return slackConversationKey(parseRuntimePlanV2(plan).conversation);
 }
 
 /**
- * Owner-bound Sandbox coordinate for isolated executions such as routines.
- * The opaque key binds both the canonical Slack coordinate and frozen owner
- * identity while remaining below Cloudflare Sandbox's 63-character id limit.
- * Concurrent occurrences stay isolated and retries with the same owner
- * converge without exposing a provider identity to unbounded Slack fields.
+ * Owner-bound Sandbox coordinate for isolated executions such as routines
+ * (ownerBoundSandboxKey). Concurrent occurrences stay isolated and retries
+ * with the same owner converge without exposing a provider identity to
+ * unbounded Slack fields.
  */
 export function runtimePlanSandboxConversationKey(
   plan: RuntimePlanV2,
@@ -711,7 +712,16 @@ export function runtimePlanSandboxConversationKey(
   if (!ownerId.trim() || ownerId.length > 200) {
     throw new Error('Sandbox owner identity is invalid.');
   }
-  return opaqueId('sandbox', `${conversationKey}:${ownerId}`);
+  return ownerBoundSandboxKey(conversationKey, ownerId);
+}
+
+/**
+ * The conversation key a plan's coding workspaces are keyed by: a guest's
+ * own Sandbox (runtimePlanGuestSandboxKey), else the Slack conversation's,
+ * which names the thread's Sandbox.
+ */
+export function runtimePlanWorkspaceConversationKey(plan: RuntimePlanV2): string {
+  return runtimePlanGuestSandboxKey(plan) ?? runtimePlanConversationKey(plan);
 }
 
 /**
@@ -863,7 +873,11 @@ export function parseRuntimePlanV2(
     'threadTs',
     'surface',
     'continuityKey',
-  ]);
+    'guest',
+  ], ['guest']);
+  if (conversationRecord.guest !== undefined && conversationRecord.guest !== true) {
+    throw new Error('Runtime plan conversation.guest must be true when present.');
+  }
   const persistedSurface = oneOf(
     conversationRecord.surface,
     'conversation.surface',
@@ -881,6 +895,7 @@ export function parseRuntimePlanV2(
     threadTs: conversationThread(conversationRecord.threadTs),
     surface,
     continuityKey: opaqueAgentId(conversationRecord.continuityKey, 'conversation.continuityKey'),
+    ...(conversationRecord.guest === true ? { guest: true as const } : {}),
   };
   const model = boundedString(record.model, 'model', 3, 240);
   const runtimeModel = record.runtimeModel === undefined
