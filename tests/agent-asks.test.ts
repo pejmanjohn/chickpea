@@ -264,7 +264,25 @@ const OWNER = {
   is_restricted: false, is_ultra_restricted: false, is_stranger: false,
 };
 
-test('a delivered reply that mentions a teammate admits one ask per Agent, up to the exchange limit', async () => {
+interface GatewayLane {
+  stores: ReturnType<typeof resolveStores>;
+  gateway: GatewayDeploymentClient;
+  jobs: TurnJob[];
+  posts: Array<Record<string, unknown>>;
+  enqueueTurn(job: TurnJob): Promise<{ ok: true; value: null }>;
+  /** The next chat.postMessage fails, once. */
+  failNextPost(): void;
+}
+
+/**
+ * A chickpea-v1 gateway installation with Support, Finance, and Legal, where
+ * only Support and Finance have a grant in C1 unless `grantLegal`, and a fake
+ * gateway that records posts. Admitted jobs are collected in order.
+ */
+async function withGatewayLane(
+  scenario: (lane: GatewayLane) => Promise<void>,
+  options: { grantLegal?: boolean } = {},
+): Promise<void> {
   const envKeys = ['TAG_DB_PATH', 'SLACK_STATE_DB_PATH', 'CHICKPEA_AUTH_DB_PATH'] as const;
   const previousEnv = envKeys.map((key) => process.env[key]);
   for (const key of envKeys) process.env[key] = ':memory:';
@@ -286,8 +304,8 @@ test('a delivered reply that mentions a teammate admits one ask per Agent, up to
       gatewayBindingId: 'binding1', runtimeContract: 'chickpea-v1',
     });
     await stores.config.putChannel({ workspaceId: 'T1', channelId: 'C1', label: 'team', lifecycle: 'active' }, 0);
-    // Legal has no grant in this Channel.
-    for (const agent of agents.slice(0, 2)) {
+    // Legal has no grant in this Channel unless a scenario asks for one.
+    for (const agent of options.grantLegal ? agents : agents.slice(0, 2)) {
       await stores.config.putAgentChannelGrant({
         workspaceId: 'T1', channelId: 'C1', agentId: agent.id, status: 'active',
         createdByMembershipId: owner.membership.id, channelLabel: 'team', channelIsPrivate: false,
@@ -298,7 +316,7 @@ test('a delivered reply that mentions a teammate admits one ask per Agent, up to
     const liveChannel = {
       id: 'C1', name: 'team', is_channel: true, is_private: false, is_member: true, is_archived: false,
     };
-    let failNextPost = false;
+    let postFails = false;
     const gateway = {
       workspaceId: 'T1',
       async loadBinding() { return binding; },
@@ -308,12 +326,16 @@ test('a delivered reply that mentions a teammate admits one ask per Agent, up to
         if (operation === 'conversations.members') return { members: ['U1', 'UBOT'] };
         if (operation === 'users.conversations') return { channels: [liveChannel] };
         if (operation === 'chat.postMessage') {
-          if (failNextPost) {
-            failNextPost = false;
+          if (postFails) {
+            postFails = false;
             throw new Error('slack_unavailable');
           }
           posts.push(args);
           return { ok: true, ts: `9000.00000${posts.length}`, channel: 'C1' };
+        }
+        if (operation === 'chat.postEphemeral') {
+          posts.push({ ...args, ephemeral: true });
+          return { ok: true };
         }
         throw new Error(`Unexpected gateway operation: ${operation}`);
       },
@@ -326,90 +348,7 @@ test('a delivered reply that mentions a teammate admits one ask per Agent, up to
       if (!jobs.some(({ id }) => id === job.id)) jobs.push(job);
       return { ok: true as const, value: null };
     };
-
-    // A person asks Support, which owns the thread from here.
-    await processGatewaySlackEnvelope({
-      workspaceId: 'T1', eventId: 'Ev3000', eventTime: 3000,
-      event: {
-        type: 'message', channel: 'C1', channel_type: 'channel', user: 'U1', ts: '3000.000100',
-        text: '<!subteam^SSUPPORT|@support> What was Q3 revenue?',
-      },
-    }, undefined, gateway, { stores, enqueueTurn });
-    assert.equal(jobs.length, 1);
-    const supportJob = jobs[0]!;
-    assert.equal(supportJob.assignment.agentId, 'agent_support');
-    assert.deepEqual(supportJob.assignment.channelTeammates, [{ name: 'Finance', handle: 'finance', userGroupId: 'SFINANCE' }]);
-
-    // Support's reply asks Finance (and mentions Legal, who cannot be asked here).
-    const ask = (messageTs: string, text = 'Let me check. @finance what was Q3 revenue? cc @legal') =>
-      processSlackAgentAsks({
-        turn: supportJob.turn,
-        fromAgentId: 'agent_support',
-        deliveries: [{ messageTs, text }],
-      }, undefined, { stores, gatewayClient: gateway, enqueueTurn });
-    await ask('3000.000200');
-    assert.equal(jobs.length, 2);
-    const financeJob = jobs[1]!;
-    assert.equal(financeJob.id, 'msg:C1:3000.000200:ask-agent_finance');
-    assert.equal(financeJob.assignment.agentId, 'agent_finance');
-    assert.equal(financeJob.assignment.threadGuest, true);
-    assert.equal(financeJob.assignment.ownerIncarnation, supportJob.assignment.ownerIncarnation);
-    assert.equal(financeJob.turn.userId, 'U1');
-    assert.equal(financeJob.turn.threadTs, '3000.000100');
-    assert.deepEqual(financeJob.turn.agentAsk, {
-      fromAgentId: 'agent_support', fromAgentName: 'Support', fromAgentHandle: 'support',
-      originMessageTs: '3000.000100',
-    });
-    assert.equal(slackAgentThreadKey(financeJob.turn, financeJob.assignment),
-      slackAgentThreadKey(supportJob.turn, supportJob.assignment));
-    // The thread is still Support's.
-    assert.equal((await stores.config.getAgentThreadRoute('T1', 'C1', '3000.000100'))?.agentId, 'agent_support');
-
-    // The same delivery again (a redelivered notification) asks nobody twice.
-    await ask('3000.000200');
-    assert.equal(jobs.length, 2);
-
-    // An Agent cannot ask itself.
-    await ask('3000.000250', '@support note to self');
-    assert.equal(jobs.length, 2);
-
-    // An Agent's words never steer, approve, or command: an ask that says
-    // "stop" is an ordinary turn for the asked Agent.
-    await ask('3000.000302', '<!subteam^SFINANCE|@finance> stop');
-    assert.equal(jobs.length, 3);
-    assert.equal(jobs.at(-1)?.turn.text, '<!subteam^SFINANCE|@finance> stop');
-    assert.equal(jobs.at(-1)?.midRunReceipt, undefined);
-    assert.equal(posts.length, 0, 'no steering reply');
-
-    // Keep asking from the same person's message until the exchange pauses.
-    for (let index = 3; index <= AGENT_ASK_TURN_LIMIT; index += 1) {
-      await ask(`3000.000${300 + index}`);
-    }
-    assert.equal(jobs.length, 1 + AGENT_ASK_TURN_LIMIT);
-    assert.equal(posts.length, 0);
-    // The pause note that Slack refuses gives its claim back, so the next
-    // refused ask says it; once said, it is not repeated.
-    failNextPost = true;
-    await ask('3000.000400');
-    assert.equal(posts.length, 0);
-    await ask('3000.000401');
-    await ask('3000.000402');
-    assert.equal(jobs.length, 1 + AGENT_ASK_TURN_LIMIT);
-    assert.equal(posts.length, 1, 'the pause is said once per exchange');
-    assert.equal(posts[0]?.text, AGENT_ASK_PAUSE_TEXT);
-    assert.equal(posts[0]?.thread_ts, '3000.000100');
-    assert.equal(posts[0]?.username, 'Support');
-
-    // A new person message starts a new exchange with its own asks.
-    await ask('3000.000500');
-    assert.equal(jobs.length, 1 + AGENT_ASK_TURN_LIMIT);
-    await processSlackAgentAsks({
-      turn: { ...supportJob.turn, messageTs: '3000.000600' },
-      fromAgentId: 'agent_support',
-      deliveries: [{ messageTs: '3000.000700', text: '@finance one more thing' }],
-    }, undefined, { stores, gatewayClient: gateway, enqueueTurn });
-    assert.equal(jobs.length, 2 + AGENT_ASK_TURN_LIMIT);
-    assert.equal(jobs.at(-1)?.turn.agentAsk?.originMessageTs, '3000.000600');
+    await scenario({ stores, gateway, jobs, posts, enqueueTurn, failNextPost: () => { postFails = true; } });
   } finally {
     if (previousNavigator) Object.defineProperty(globalThis, 'navigator', previousNavigator);
     else Reflect.deleteProperty(globalThis, 'navigator');
@@ -419,6 +358,114 @@ test('a delivered reply that mentions a teammate admits one ask per Agent, up to
       else process.env[key] = previousEnv[index];
     });
   }
+}
+
+test('a delivered reply that mentions a teammate admits one ask per Agent, up to the exchange limit', async () => {
+  await withGatewayLane(async ({ stores, gateway, jobs, posts, enqueueTurn, failNextPost }) => {
+      // A person asks Support, which owns the thread from here.
+      await processGatewaySlackEnvelope({
+        workspaceId: 'T1', eventId: 'Ev3000', eventTime: 3000,
+        event: {
+          type: 'message', channel: 'C1', channel_type: 'channel', user: 'U1', ts: '3000.000100',
+          text: '<!subteam^SSUPPORT|@support> What was Q3 revenue?',
+        },
+      }, undefined, gateway, { stores, enqueueTurn });
+      assert.equal(jobs.length, 1);
+      const supportJob = jobs[0]!;
+      assert.equal(supportJob.assignment.agentId, 'agent_support');
+      assert.deepEqual(supportJob.assignment.channelTeammates, [{ name: 'Finance', handle: 'finance', userGroupId: 'SFINANCE' }]);
+
+      // Support's reply asks Finance (and mentions Legal, who cannot be asked here).
+      const ask = (messageTs: string, text = 'Let me check. @finance what was Q3 revenue? cc @legal') =>
+        processSlackAgentAsks({
+          turn: supportJob.turn,
+          fromAgentId: 'agent_support',
+          deliveries: [{ messageTs, text }],
+        }, undefined, { stores, gatewayClient: gateway, enqueueTurn });
+      await ask('3000.000200');
+      assert.equal(jobs.length, 2);
+      const financeJob = jobs[1]!;
+      assert.equal(financeJob.id, 'msg:C1:3000.000200:ask-agent_finance');
+      assert.equal(financeJob.assignment.agentId, 'agent_finance');
+      assert.equal(financeJob.assignment.threadGuest, true);
+      assert.equal(financeJob.assignment.ownerIncarnation, supportJob.assignment.ownerIncarnation);
+      assert.equal(financeJob.turn.userId, 'U1');
+      assert.equal(financeJob.turn.threadTs, '3000.000100');
+      assert.deepEqual(financeJob.turn.agentAsk, {
+        fromAgentId: 'agent_support', fromAgentName: 'Support', fromAgentHandle: 'support',
+        originMessageTs: '3000.000100',
+      });
+      assert.equal(slackAgentThreadKey(financeJob.turn, financeJob.assignment),
+        slackAgentThreadKey(supportJob.turn, supportJob.assignment));
+      // The thread is still Support's.
+      assert.equal((await stores.config.getAgentThreadRoute('T1', 'C1', '3000.000100'))?.agentId, 'agent_support');
+
+      // The same delivery again (a redelivered notification) asks nobody twice.
+      await ask('3000.000200');
+      assert.equal(jobs.length, 2);
+
+      // An Agent cannot ask itself.
+      await ask('3000.000250', '@support note to self');
+      assert.equal(jobs.length, 2);
+
+      // An Agent's words never steer, approve, or command: an ask that says
+      // "stop" is an ordinary turn for the asked Agent.
+      await ask('3000.000302', '<!subteam^SFINANCE|@finance> stop');
+      assert.equal(jobs.length, 3);
+      assert.equal(jobs.at(-1)?.turn.text, '<!subteam^SFINANCE|@finance> stop');
+      assert.equal(jobs.at(-1)?.midRunReceipt, undefined);
+      assert.equal(posts.length, 0, 'no steering reply');
+
+      // Keep asking from the same person's message until the exchange pauses.
+      for (let index = 3; index <= AGENT_ASK_TURN_LIMIT; index += 1) {
+        await ask(`3000.000${300 + index}`);
+      }
+      assert.equal(jobs.length, 1 + AGENT_ASK_TURN_LIMIT);
+      assert.equal(posts.length, 0);
+      // The pause note that Slack refuses gives its claim back, so the next
+      // refused ask says it; once said, it is not repeated.
+      failNextPost();
+      await ask('3000.000400');
+      assert.equal(posts.length, 0);
+      await ask('3000.000401');
+      await ask('3000.000402');
+      assert.equal(jobs.length, 1 + AGENT_ASK_TURN_LIMIT);
+      assert.equal(posts.length, 1, 'the pause is said once per exchange');
+      assert.equal(posts[0]?.text, AGENT_ASK_PAUSE_TEXT);
+      assert.equal(posts[0]?.thread_ts, '3000.000100');
+      assert.equal(posts[0]?.username, 'Support');
+
+      // A new person message starts a new exchange with its own asks.
+      await ask('3000.000500');
+      assert.equal(jobs.length, 1 + AGENT_ASK_TURN_LIMIT);
+      await processSlackAgentAsks({
+        turn: { ...supportJob.turn, messageTs: '3000.000600' },
+        fromAgentId: 'agent_support',
+        deliveries: [{ messageTs: '3000.000700', text: '@finance one more thing' }],
+      }, undefined, { stores, gatewayClient: gateway, enqueueTurn });
+      assert.equal(jobs.length, 2 + AGENT_ASK_TURN_LIMIT);
+      assert.equal(jobs.at(-1)?.turn.agentAsk?.originMessageTs, '3000.000600');
+  });
+});
+
+test('one reply that asks two teammates admits a separate run for each', async () => {
+  await withGatewayLane(async ({ stores, gateway, jobs, enqueueTurn }) => {
+    await processGatewaySlackEnvelope({
+      workspaceId: 'T1', eventId: 'Ev6000', eventTime: 6000,
+      event: {
+        type: 'message', channel: 'C1', channel_type: 'channel', user: 'U1', ts: '6000.000100',
+        text: '<!subteam^SSUPPORT|@support> can we refund order 4821?',
+      },
+    }, undefined, gateway, { stores, enqueueTurn });
+    await processSlackAgentAsks({
+      turn: jobs[0]!.turn,
+      fromAgentId: 'agent_support',
+      deliveries: [{ messageTs: '6000.000200', text: '@finance what was charged? @legal may we refund?' }],
+    }, undefined, { stores, gatewayClient: gateway, enqueueTurn });
+    assert.deepEqual(jobs.map(({ assignment }) => assignment.agentId),
+      ['agent_support', 'agent_finance', 'agent_legal']);
+    assert.notEqual(jobs[1]!.runId, jobs[2]!.runId);
+  }, { grantLegal: true });
 });
 
 test('a reply mentions its Channel teammates live and every other user group stays inert', () => {

@@ -126,7 +126,10 @@ export function prepareSlackShadowAdmission(input: {
     ? `dm:${turn.channelId}`
     : `thread:${turn.channelId}:${turn.threadTs}`;
   const scope = `slack:${turn.workspaceId}:${conversationIdentity}:1`;
-  const messageScope = `slack:${turn.workspaceId}:${turn.channelId}:${turn.messageTs}`;
+  // One reply can ask several Agents: each ask is a run of its own, scoped
+  // by the Agent it asks.
+  const messageScope = `slack:${turn.workspaceId}:${turn.channelId}:${turn.messageTs}` +
+    (turn.agentAsk ? `:agent:${assignment.agentId}` : '');
   const workId = opaqueId('work', scope);
   const bindingId = opaqueId('binding', scope);
   const runId = opaqueId('run', messageScope);
