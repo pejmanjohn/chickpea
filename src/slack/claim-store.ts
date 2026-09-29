@@ -177,7 +177,9 @@ export type SlackCanonicalAdmissionResult =
   /** The thread's run took the message's `steering`; its claims are held. */
   | { claimed: true; steered: TurnSteeringInterception }
   /** The ask's exchange used every ask it may (`agentAskLimit`); its claims are held. */
-  | { claimed: true; agentAskLimitReached: true };
+  | { claimed: true; agentAskLimitReached: true }
+  /** The asked Agent's earlier ask in this thread has not started; it will read this message. */
+  | { claimed: true; agentAskCoalesced: true };
 
 /**
  * Application-owned duplicate-admission store.
@@ -494,6 +496,12 @@ export class SlackStateLogic {
       if (turnJob && ask && input.agentAskLimit !== undefined && turnJobs &&
           turnJobs.countAgentAskTurns(turnJob, ask.originMessageTs) >= input.agentAskLimit) {
         return { claimed: true, agentAskLimitReached: true };
+      }
+      // The Agent's earlier ask here has not started: it reads this message
+      // when it runs, so it is not asked twice (one answer to both reports).
+      if (turnJob && ask && input.agentAskLimit !== undefined && turnJobs &&
+          turnJobs.hasQueuedAgentAsk(turnJob, ask.originMessageTs)) {
+        return { claimed: true, agentAskCoalesced: true };
       }
       if (input.steering && turnJobs) {
         const steered = turnJobs.steerInTransaction(input.steering);

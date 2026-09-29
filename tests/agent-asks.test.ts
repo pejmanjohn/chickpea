@@ -19,7 +19,7 @@ import {
 } from '../src/slack/agent-asks.ts';
 import { resolveAgentRoute } from '../src/slack/agent-routing.ts';
 import type { GatewayDeploymentClient } from '../src/slack/gateway/client.ts';
-import { ensureTriggerMessage } from '../src/slack/thread-context.ts';
+import { ensureTriggerMessage, slackContextWatermark } from '../src/slack/thread-context.ts';
 import {
   memoryEpochThreadKey,
   slackAgentContinuityKey,
@@ -381,12 +381,16 @@ test('a delivered reply that mentions a teammate admits one ask per Agent, up to
       assert.deepEqual(supportJob.assignment.channelTeammates, [{ name: 'Finance', handle: 'finance', userGroupId: 'SFINANCE' }]);
 
       // Support's reply asks Finance (and mentions Legal, who cannot be asked here).
-      const ask = (messageTs: string, text = 'Let me check. @finance what was Q3 revenue? cc @legal') =>
-        processSlackAgentAsks({
+      // Each asked turn has started before the next ask, so none joins another.
+      const state = stores.slackState as unknown as { recordTurnAttempt(id: string, n: number): Promise<void> };
+      const ask = async (messageTs: string, text = 'Let me check. @finance what was Q3 revenue? cc @legal') => {
+        await processSlackAgentAsks({
           turn: supportJob.turn,
           fromAgentId: 'agent_support',
           deliveries: [{ messageTs, text }],
         }, undefined, { stores, gatewayClient: gateway, enqueueTurn });
+        for (const job of jobs) await state.recordTurnAttempt(job.id, 1);
+      };
       await ask('3000.000200');
       assert.equal(jobs.length, 2);
       const financeJob = jobs[1]!;
@@ -451,6 +455,44 @@ test('a delivered reply that mentions a teammate admits one ask per Agent, up to
       assert.equal(jobs.length, 2 + AGENT_ASK_TURN_LIMIT);
       assert.equal(jobs.at(-1)?.turn.agentAsk?.originMessageTs, '3000.000600');
   });
+});
+
+test('a second report to the same Agent joins its queued ask, and asks again once that turn has started', async () => {
+  await withGatewayLane(async ({ stores, gateway, jobs, enqueueTurn }) => {
+    await processGatewaySlackEnvelope({
+      workspaceId: 'T1', eventId: 'Ev7000', eventTime: 7000,
+      event: {
+        type: 'message', channel: 'C1', channel_type: 'channel', user: 'U1', ts: '7000.000100',
+        text: '<!subteam^SSUPPORT|@support> get both answers for me',
+      },
+    }, undefined, gateway, { stores, enqueueTurn });
+    const supportTurn = jobs[0]!.turn;
+    const report = (fromAgentId: string, messageTs: string, text: string) => processSlackAgentAsks({
+      turn: { ...supportTurn, messageTs, agentAsk: {
+        fromAgentId: 'agent_support', fromAgentName: 'Support', fromAgentHandle: 'support', originMessageTs: '7000.000100',
+      } },
+      fromAgentId,
+      deliveries: [{ messageTs, text }],
+    }, undefined, { stores, gatewayClient: gateway, enqueueTurn });
+    // Finance and Legal both report back to Support before Support runs.
+    await report('agent_finance', '7000.000300', '@support Finance: 129.');
+    await report('agent_legal', '7000.000400', '@support Legal: needs a ticket.');
+    assert.deepEqual(jobs.map(({ assignment }) => assignment.agentId), ['agent_support', 'agent_support']);
+    assert.equal(jobs[1]!.turn.messageTs, '7000.000300');
+    // Once that turn has started it has read the thread: a later report asks again.
+    await (stores.slackState as unknown as { recordTurnAttempt(id: string, n: number): Promise<void> })
+      .recordTurnAttempt(jobs[1]!.id, 1);
+    await report('agent_legal', '7000.000500', '@support Legal: one more thing.');
+    assert.deepEqual(jobs.map(({ turn }) => turn.messageTs), ['7000.000100', '7000.000300', '7000.000500']);
+  }, { grantLegal: true });
+});
+
+test('an ask reads the thread to the end, so it sees reports that joined it', () => {
+  const ask = turn({ messageTs: '100.4', agentAsk: {
+    fromAgentId: 'agent_finance', fromAgentName: 'Finance', originMessageTs: '100.2',
+  } });
+  assert.equal(slackContextWatermark(ask), undefined);
+  assert.equal(slackContextWatermark(turn({ messageTs: '100.4' })), '100.4');
 });
 
 test('one reply that asks two teammates admits a separate run for each', async () => {

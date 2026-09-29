@@ -491,6 +491,28 @@ export class TurnJobStoreLogic {
   }
 
   /**
+   * Whether `job`'s Agent already has an ask in this thread from the same
+   * exchange that has not started (no attempt recorded yet, so it has not
+   * read the thread). That turn reads the thread when it runs, a later
+   * message included, so asking the Agent again would only repeat it.
+   */
+  hasQueuedAgentAsk(job: Pick<TurnJob, 'turn' | 'assignment'>, originMessageTs: string): boolean {
+    const threadKey = stopThreadKeyOf(job.turn, job.assignment);
+    if (!threadKey) return false;
+    return this.db.get(
+      `SELECT 1 AS found FROM turn_jobs
+       WHERE thread_key = ? AND delivered = 0 AND status = 'pending' AND attempts = 0
+         AND dispatch_envelope_json IS NULL
+         AND json_extract(assignment_json, '$.agentId') = ?
+         AND json_extract(turn_json, '$.agentAsk.originMessageTs') = ?
+       LIMIT 1`,
+      threadKey,
+      job.assignment.agentId,
+      originMessageTs,
+    ) !== undefined;
+  }
+
+  /**
    * While a queued delivery is processed, jobs admitted for its Slack event
    * record when the delivery was received rather than when it was admitted.
    * Returns the release function; call it once processing ends.

@@ -77,8 +77,8 @@ Agent's list of teammates names only Agents it can reach.
   any other queued message. A reply from a run someone stopped asks nobody.
 
 Asked Agents run one at a time in the thread's queue, after the reply that
-asked them. Each reads the thread up to the reply that asked it, so
-teammates asked together do not see one another's answers.
+asked them. An ask reads the whole thread when it runs, so a teammate asked
+after another sees the earlier answers.
 
 ## Where it runs
 
@@ -103,13 +103,17 @@ Agent that takes a thread over uses the thread's sandbox.
 ## Coordinating teammates
 
 One Agent can split work across others: its reply gives each teammate its
-own self-contained part, mentioning each once, and they answer one at a
-time in that order; none of them sees another's answer. To combine the
-results, the coordinator asks only the last teammate to mention it back when
-done, so that report comes after every other answer and the coordinator
-reads them all in one turn before giving the person one combined answer.
-Splitting work across N teammates uses N asks, plus one for the report back,
-of the 8 a person's message allows.
+own part, mentioning each once, and they answer one at a time in that
+order. To combine the results, the coordinator asks only the last teammate
+to mention it back when done, so that report comes after every other answer
+and the coordinator reads them all in one turn before giving the person one
+combined answer. Splitting work across N teammates uses N asks, plus one for
+the report back, of the 8 a person's message allows.
+
+If several teammates do mention the coordinator, it still answers once when
+it can: an Agent that already has an ask waiting in the thread for the same
+exchange, not started yet, is not asked again, and the waiting turn reads the
+later reports too.
 
 ## Logs
 

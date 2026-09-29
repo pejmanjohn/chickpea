@@ -326,14 +326,15 @@ export function atOrBeforeSlackWatermark(timestamp: string, watermark: string | 
 
 /**
  * The newest row a turn may read: its trigger, so a reply never sees what
- * came after the message it answers. An Agent answering a person's message
- * after the Agents it mentioned before it reads their replies too, which are
- * newer than that message, so it has no upper bound.
+ * came after the message it answers. Two kinds of turn read to the end of
+ * the thread instead: an Agent answering a person's message after the
+ * Agents it mentioned before it (their replies are newer than that message),
+ * and an ask, which also answers every ask that joined it while it waited.
  */
 export function slackContextWatermark(
-  turn: Pick<NormalizedSlackTurn, 'messageTs' | 'coAddressed'>,
+  turn: Pick<NormalizedSlackTurn, 'messageTs' | 'coAddressed' | 'agentAsk'>,
 ): string | undefined {
-  return isLaterCoAddressedTurn(turn) ? undefined : turn.messageTs;
+  return turn.agentAsk || isLaterCoAddressedTurn(turn) ? undefined : turn.messageTs;
 }
 
 export function ensureTriggerMessage(
