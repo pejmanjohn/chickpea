@@ -8,6 +8,7 @@ import { collectAdmittedSlackListIds } from '../src/slack/lists/admission.ts';
 import { slackFileSummaries, slackMessageText } from '../src/slack/message-text.ts';
 import {
   assembleRetainedSlackContext,
+  boundedSlackPublicHandoff,
   reconcileSlackPublicContextMutation,
   recordAcceptedSlackHumanMessage,
   recordSlackThreadEventMessage,
@@ -459,4 +460,102 @@ test('a Slack read log carries counts and order, never text or ids', async () =>
     order: 'newest_first',
   }]);
   assert.doesNotMatch(JSON.stringify(records), /1000\.|1009\.|U_|C1/);
+});
+
+test('an edited alert whose text lives in its attachments keeps its record row', async () => {
+  await withStore(async (store) => {
+    await seedSlackThreadRecord(store, turn(), {
+      mode: 'thread', truncated: false, degradations: [], messages: toContextMessages([PAGERDUTY_ALERT]),
+    });
+    const resolved = {
+      ...PAGERDUTY_ALERT,
+      attachments: [{ ...PAGERDUTY_ALERT.attachments[0], title: 'Resolved #4821: checkout p99 latency > 2s' }],
+      edited: { ts: '1050.000000' },
+    };
+    await reconcileSlackPublicContextMutation(store, 'T1', {
+      type: 'message', subtype: 'message_changed', channel: 'C1', ts: '1050.000000',
+      message: resolved as never,
+    });
+    const [row] = await store.listSlackPublicContext('T1', 'C1', ROOT);
+    assert.match(row?.text ?? '', /Resolved #4821/);
+    assert.deepEqual([row?.role, row?.authorName], ['app', 'PagerDuty']);
+
+    // A file share without a caption survives its edit too; a row with nothing left is removed.
+    await recordSlackThreadEventMessage(store, 'T1', {
+      type: 'message', channel: 'C1', thread_ts: ROOT, ts: '1001.000100', user: 'U_DANA', text: '',
+      files: [{ id: 'F1', name: 'brief.pdf', mimetype: 'application/pdf', size: 2_048 }],
+    }, {});
+    await reconcileSlackPublicContextMutation(store, 'T1', {
+      type: 'message', subtype: 'message_changed', channel: 'C1', ts: '1051.000000',
+      message: { type: 'message', channel: 'C1', ts: '1001.000100', thread_ts: ROOT, user: 'U_DANA', text: '',
+        files: [{ id: 'F1', name: 'brief.pdf', mimetype: 'application/pdf', size: 2_048 }], edited: { ts: '1051.000000' } },
+    });
+    assert.deepEqual((await store.listSlackPublicContext('T1', 'C1', ROOT)).find((r) => r.messageTs === '1001.000100')?.files,
+      [{ name: 'brief.pdf', type: 'application/pdf', sizeBytes: 2_048 }]);
+    // A caption added while the file is removed: the listing goes, the text stays.
+    await reconcileSlackPublicContextMutation(store, 'T1', {
+      type: 'message', subtype: 'message_changed', channel: 'C1', ts: '1051.500000',
+      message: { type: 'message', channel: 'C1', ts: '1001.000100', thread_ts: ROOT, user: 'U_DANA',
+        text: 'brief withdrawn', edited: { ts: '1051.500000' } },
+    });
+    const withdrawn = (await store.listSlackPublicContext('T1', 'C1', ROOT)).find((r) => r.messageTs === '1001.000100');
+    assert.deepEqual([withdrawn?.text, withdrawn?.files], ['brief withdrawn', undefined]);
+    await reconcileSlackPublicContextMutation(store, 'T1', {
+      type: 'message', subtype: 'message_changed', channel: 'C1', ts: '1052.000000',
+      message: { type: 'message', channel: 'C1', ts: '1001.000100', thread_ts: ROOT, user: 'U_DANA', text: '',
+        edited: { ts: '1052.000000' } },
+    });
+    assert.equal((await store.listSlackPublicContext('T1', 'C1', ROOT)).some((r) => r.messageTs === '1001.000100'), false);
+  });
+});
+
+test('a seed never writes Agent rows; only the delivery path attributes them', async () => {
+  await withStore(async (store) => {
+    assert.equal(await store.seedSlackPublicContext([
+      { workspaceId: 'T1', channelId: 'C1', rootTs: ROOT, messageTs: '1003.000100', role: 'agent',
+        agentId: 'agent_oncall', text: 'Looking into it.' },
+    ]), 0);
+    assert.deepEqual(await store.listSlackPublicContext('T1', 'C1', ROOT), []);
+  });
+});
+
+test('the thread capture asks whether an Agent is in the thread only for a row it would keep', async () => {
+  await withStore(async (store) => {
+    const asked: string[] = [];
+    const guard = (answer: boolean) => async (rootTs: string) => { asked.push(rootTs); return answer; };
+    const base = { type: 'message' as const, channel: 'C1', thread_ts: ROOT };
+    // Own post and a system row: no lookup.
+    assert.equal(await recordSlackThreadEventMessage(store, 'T1',
+      { ...base, ts: '1003.000100', user: 'UBOT', bot_id: 'B_CHICKPEA', text: 'our own reply' }, { botUserId: 'UBOT' }, guard(true)), false);
+    assert.equal(await recordSlackThreadEventMessage(store, 'T1',
+      { ...base, ts: '1004.000100', subtype: 'channel_join', user: 'U_NEW', text: 'joined' }, {}, guard(true)), false);
+    assert.deepEqual(asked, []);
+    // A guest's reply: looked up; a thread no Agent is in writes nothing.
+    assert.equal(await recordSlackThreadEventMessage(store, 'T1',
+      { ...base, ts: '1001.000100', user: 'U_GUEST', text: 'is prod down?' }, {}, guard(false)), false);
+    assert.deepEqual(asked, [ROOT]);
+    assert.deepEqual(await store.listSlackPublicContext('T1', 'C1', ROOT), []);
+    assert.equal(await recordSlackThreadEventMessage(store, 'T1',
+      { ...base, ts: '1001.000100', user: 'U_GUEST', text: 'is prod down?' }, {}, guard(true)), true);
+    assert.equal((await store.listSlackPublicContext('T1', 'C1', ROOT)).length, 1);
+  });
+});
+
+test('a handoff skips file-only rows instead of ending at them, and carries app rows', () => {
+  const entry = (messageTs: string, text: string, role: 'human' | 'app' = 'human') => ({
+    workspaceId: 'T1', channelId: 'C1', rootTs: ROOT, messageTs, role, text, updatedAt: 0,
+    ...(role === 'app' ? { authorName: 'PagerDuty' } : {}),
+    ...(text ? {} : { files: [{ name: 'brief.pdf' }] }),
+  });
+  const handoff = boundedSlackPublicHandoff([
+    entry(ROOT, 'Triggered #4821', 'app'),
+    entry('1001.000100', 'is prod down?'),
+    entry('1002.000100', ''),
+    entry('1003.000100', 'yes'),
+  ]);
+  assert.deepEqual(handoff.map(({ messageTs, role }) => ({ messageTs, role })), [
+    { messageTs: ROOT, role: 'app' },
+    { messageTs: '1001.000100', role: 'human' },
+    { messageTs: '1003.000100', role: 'human' },
+  ]);
 });

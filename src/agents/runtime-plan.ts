@@ -1398,7 +1398,7 @@ function parseHandoffContext(value: unknown): SlackPublicHandoffMessage[] {
       'text',
       'agentId',
     ], ['agentId']);
-    const role = oneOf(record.role, 'handoff context role', ['human', 'agent'] as const);
+    const role = oneOf(record.role, 'handoff context role', ['human', 'agent', 'app'] as const);
     const agentId = record.agentId === undefined
       ? undefined
       : boundedString(record.agentId, 'handoff context agentId', 1, 128);

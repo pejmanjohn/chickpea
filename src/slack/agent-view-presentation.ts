@@ -3,7 +3,11 @@ import { createHash } from 'node:crypto';
 import { ErrorCode, type WebClient } from '@slack/web-api';
 import type { AnyChunk, KnownBlock } from '@slack/types';
 
-import { hasCredentialLikeContent, hasDisallowedControlCharacter } from '../security/content-validation.ts';
+import {
+  CREDENTIAL_REPLACEMENT,
+  hasCredentialLikeContent,
+  hasDisallowedControlCharacter,
+} from '../security/content-validation.ts';
 import type { FlueDispatchReceiptV1, FlueObservationTarget } from './turn-job-types.ts';
 import { activityStatus, type ActivityStatus } from '../activity/status.ts';
 import {
@@ -1722,8 +1726,12 @@ export class SlackAgentViewPresentation {
     );
     if (acknowledged === undefined ||
         hash(acknowledged) !== (presentation.stream.acknowledgedPrefixHash ?? hash(''))) {
-      await this.markUnknown(presentation, 'unknown_effect');
-      throw new Error('Progressive Slack prefix cannot be reconstructed.');
+      // The safe prefix no longer starts with what Slack shows. Keep that
+      // text and stop appending: the final continues from it when the
+      // answer still starts with it, and corrects the message otherwise.
+      console.warn('[chickpea] progressive Slack prefix diverged; the stream waits for the final');
+      this.degradedReason = 'unsafe_incomplete_block';
+      return;
     }
     const delta = safePrefix.slice(acknowledged.length);
     if (!delta) return;
@@ -2328,6 +2336,14 @@ export class SlackAgentViewPresentation {
       });
       throw error;
     }
+    // How much had streamed, and whether the answer redacts a credential
+    // there, where the stream may have shown it; never the text.
+    const streamedBytes = presentation.stream.acknowledgedByteLength;
+    const redaction = approved.indexOf(CREDENTIAL_REPLACEMENT);
+    console.info('[chickpea] Slack Agent View divergent stream corrected', JSON.stringify({
+      streamedBytes,
+      redactsStreamedText: redaction >= 0 && redaction < streamedBytes,
+    }));
     presentation = await this.transition(presentation, {
       kind: 'mark_artifact_delivered',
       outcome: 'corrected',

@@ -261,6 +261,18 @@ test('activated owner incarnations rotate continuity and freeze public handoff c
   ]);
 });
 
+test('a frozen handoff carries an app row, such as the alert at a thread root', () => {
+  const handoffContext = [
+    { messageTs: '1783000000.000010', role: 'app' as const, text: 'Triggered #4821: checkout p99 latency > 2s' },
+    { messageTs: '1783000000.000050', role: 'human' as const, text: 'Visible question.' },
+  ];
+  const plan = compile({
+    assignment: assignment({ runtimeContract: 'chickpea-v1', ownerIncarnation: 2, handoffContext }),
+  });
+  assert.deepEqual(plan.handoffContext, handoffContext);
+  assert.deepEqual(parseRuntimePlanV2(JSON.parse(JSON.stringify(plan))).handoffContext, handoffContext);
+});
+
 test('activated DMs use the real Slack root instead of the legacy channel-wide DM key', () => {
   const dmTurn = turn({
     channelId: 'D_RUNTIME',

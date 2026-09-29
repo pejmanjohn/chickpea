@@ -1,3 +1,5 @@
+import { isRecord } from '../security/content-validation.ts';
+import type { SlackPublicContextFile } from '../config/types.ts';
 import { preserveSlackRichTextLinks } from './rich-text-links.ts';
 
 /**
@@ -11,10 +13,12 @@ import { preserveSlackRichTextLinks } from './rich-text-links.ts';
  */
 
 /** Drawn from blocks and attachments per message: an alert with its fields fits. */
-export const MAX_SLACK_MESSAGE_EXTRA_CHARS = 4_000;
+const MAX_SLACK_MESSAGE_EXTRA_CHARS = 4_000;
 const MAX_PART_CHARS = 1_500;
 const MAX_PARTS = 24;
 const MAX_FILES_PER_MESSAGE = 10;
+/** A person's, app's, or Agent's display name as context shows it. */
+const MAX_DISPLAY_NAME_CHARS = 80;
 
 /** Characters a listed filename may keep; everything else folds to `-`. */
 const MANIFEST_FILENAME_CHARACTER = /[A-Za-z0-9._ -]/;
@@ -27,13 +31,12 @@ export interface SlackMessageContentSource {
   attachments?: unknown[];
 }
 
-export interface SlackFileSummary {
-  /** Member-supplied label reduced to the manifest allowlist. */
-  name: string;
-  /** Slack's short file type (pdf, csv, png) or a MIME type. */
-  type?: string;
-  sizeBytes?: number;
-}
+/**
+ * A file as a message lists it: a member-supplied label reduced to the
+ * manifest allowlist, Slack's short file type (pdf, csv, png) or a MIME type,
+ * and its size. The same shape the thread record stores.
+ */
+export type SlackFileSummary = SlackPublicContextFile;
 
 export function slackMessageText(message: SlackMessageContentSource): string {
   const base = preserveSlackRichTextLinks(message.text, message.blocks);
@@ -131,6 +134,15 @@ export function manifestFileLabel(value: string, fallback = 'file'): string {
   return folded || fallback;
 }
 
+/**
+ * A display name safe to show beside a row: control and format characters
+ * removed, whitespace trimmed, bounded. Undefined when nothing is left.
+ */
+export function boundedDisplayName(value: string | undefined): string | undefined {
+  const name = value?.replace(/[\p{Cc}\p{Cf}]/gu, '').trim();
+  return name ? name.slice(0, MAX_DISPLAY_NAME_CHARS) : undefined;
+}
+
 function formatBytes(bytes: number): string {
   if (bytes < 1_024) return `${bytes} B`;
   if (bytes < 1_024 * 1_024) return `${Math.round(bytes / 1_024)} KB`;
@@ -140,8 +152,4 @@ function formatBytes(bytes: number): string {
 function textObject(value: unknown): string | undefined {
   if (!isRecord(value)) return undefined;
   return typeof value.text === 'string' ? value.text : undefined;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
