@@ -299,7 +299,7 @@ const ROOT_RESERVED_CHARS = 1_500;
  * A thread-record row as context. The fetched copy's author survives when the
  * record has none (rows written before authorship was recorded).
  */
-function retainedContextMessage(
+export function retainedContextMessage(
   entry: SlackPublicContextEntry,
   fetched: SlackContextMessage | undefined,
 ): SlackContextMessage {

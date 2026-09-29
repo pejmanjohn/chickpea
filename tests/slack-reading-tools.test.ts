@@ -6,6 +6,7 @@ import { clearSlackContextNameCache } from '../src/slack/context-names.ts';
 import type { SlackReadGate } from '../src/slack/read-budget.ts';
 import {
   authorizeSlackRead,
+  slackReadAuthorityPorts,
   slackReadConversationFacts,
   type SlackReadAuthorityPorts,
   type SlackReadConversationFacts,
@@ -18,7 +19,6 @@ import {
   SlackReadingService,
   slackReadFailure,
 } from '../src/slack/reading/service.ts';
-import { slackReadAuthorityPorts } from '../src/slack/reading/tools.ts';
 
 const WORKSPACE = 'T0WORK';
 const CURRENT = { channelId: 'C0CURRENT', threadTs: '1000.000100', messageTs: '1010.000100' };
@@ -43,7 +43,6 @@ function ports(overrides: Partial<SlackReadAuthorityPorts> & {
   const grantChecks: string[] = [];
   return {
     workspaceId: WORKSPACE,
-    agentId: 'agent_oncall',
     managementAgent: false,
     requesterSlackUserId: REQUESTER,
     current: CURRENT,
@@ -81,6 +80,9 @@ test('permalinks, channel links, and web client links parse; other hosts do not'
     'https://acme.slack.com/archives/not-an-id',
     'https://acme.slack.com/archives/C0OTHER/p123',
     'https://acme.slack.com/lists/T0WORK/F0LIST',
+    'https://user:pw@acme.slack.com/archives/C0OTHER',
+    'https://acme.slack.com:8443/archives/C0OTHER',
+    'https://app.slack.com/client/T0WORK/C0OTHER/thread/C0ELSE-1700000000.123456',
   ]) {
     assert.throws(() => parseSlackLink(bad), (error: unknown) => error instanceof SlackReadError && error.code === 'invalid_link', bad);
   }
@@ -215,6 +217,9 @@ function slackClient(options: {
       async info({ user }: { user: string }) {
         if (user === 'U0EXTERNAL') return { ok: true, user: { id: user, team_id: 'T0PARTNER', profile: { display_name: 'Partner', email: 'p@x.example' } } };
         if (user === 'U0GUEST') return { ok: true, user: { id: user, team_id: WORKSPACE, is_restricted: true, profile: { display_name: 'Guest' } } };
+        if (user === 'U0GRID') return { ok: true, user: { id: user, team_id: 'T0SIBLING', enterprise_user: { id: 'W0GRID', enterprise_id: 'E0ORG' }, profile: { display_name: 'Grid Colleague', title: 'PM' } } };
+        if (user === 'U0STRANGER') return { ok: true, user: { id: user, team_id: WORKSPACE, is_stranger: true, profile: { display_name: 'Stranger', email: 's@x.example' } } };
+        if (user === 'U0MISSING') throw Object.assign(new Error('x'), { code: 'slack_webapi_platform_error', data: { error: 'user_not_found' } });
         return { ok: true, user: { id: user, team_id: WORKSPACE, tz: 'America/Los_Angeles',
           profile: { display_name: 'Dana Lee', real_name: 'Dana Lee', title: 'SRE', email: 'dana@acme.example', phone: '555' } } };
       },
@@ -329,6 +334,86 @@ test('a user lookup returns work details only, and nothing about another organiz
   assert.doesNotMatch(JSON.stringify(dana), /dana@acme|555/);
   assert.deepEqual((await reader.lookupUser({ user: 'U0EXTERNAL' })).user, { id: 'U0EXTERNAL', kind: 'external' });
   assert.equal(((await reader.lookupUser({ user: 'U0GUEST' })).user as { kind: string }).kind, 'guest');
+  // Enterprise Grid: a colleague from a sibling workspace of this org stays a person.
+  assert.equal(((await reader.lookupUser({ user: 'U0GRID' })).user as { kind: string }).kind, 'person');
+  // is_stranger wins even when Slack reports this workspace's team id.
+  assert.deepEqual((await reader.lookupUser({ user: 'U0STRANGER' })).user, { id: 'U0STRANGER', kind: 'external' });
+  assert.equal(slackReadFailure(await reader.lookupUser({ user: 'U0MISSING' }).catch((error: unknown) => error)).code, 'not_found');
+  assert.equal(slackReadFailure(await reader.lookupUser({ user: 'not-a-user' }).catch((error: unknown) => error)).code, 'invalid_target');
+});
+
+test('the record fallback serves only the current thread, never another thread in this channel', async () => {
+  const store = new SqliteConfigStore(':memory:');
+  try {
+    await store.putSlackPublicContext({ workspaceId: WORKSPACE, channelId: CURRENT.channelId, rootTs: CURRENT.threadTs,
+      messageTs: CURRENT.threadTs, role: 'human', authorId: REQUESTER, text: 'RECORDED ROOT' });
+    const client = slackClient();
+    const failure = slackReadFailure(await service(client, gate(0), store)
+      .readThread({ target: { channelId: CURRENT.channelId, ts: '900.000100' } }).catch((error: unknown) => error));
+    assert.equal(failure.code, 'rate_limited');
+    assert.doesNotMatch(JSON.stringify(failure), /RECORDED ROOT/);
+  } finally { store.close(); }
+});
+
+test('a cursor that is not ours is refused without reaching Slack', async () => {
+  const client = slackClient();
+  const reader = service(client);
+  for (const cursor of ['not base64 json', Buffer.from('null').toString('base64url'), Buffer.from('{"k":"channel"}').toString('base64url')]) {
+    const failure = slackReadFailure(await reader.readChannel({ target: { channelId: 'C0OTHER' }, cursor }).catch((error: unknown) => error));
+    assert.equal(failure.code, 'invalid_cursor', cursor);
+  }
+  assert.equal(client.calls.length, 0);
+});
+
+test('Slack answers a thread that is gone as not found, and a hidden channel as not available', async () => {
+  const platform = (code: string) => Object.assign(new Error(code), { code: 'slack_webapi_platform_error', data: { error: code } });
+  const gone = slackClient({ replies: () => { throw platform('thread_not_found'); } });
+  assert.equal(slackReadFailure(await service(gone).readThread({ target: { channelId: 'C0OTHER', ts: '1.000001' } }).catch((error: unknown) => error)).code, 'not_found');
+  const hidden = slackClient({ history: () => { throw platform('not_in_channel'); } });
+  assert.equal(slackReadFailure(await service(hidden).readChannel({ target: { channelId: 'C0OTHER' } }).catch((error: unknown) => error)).code, 'not_available');
+});
+
+test('conversation facts: a hidden channel is absent, a transient failure is retried next call', async () => {
+  let infoCalls = 0;
+  let failing = true;
+  const client = {
+    conversations: {
+      async info({ channel }: { channel: string }) {
+        infoCalls += 1;
+        if (channel === 'C0HIDDEN') throw Object.assign(new Error('x'), { data: { error: 'channel_not_found' } });
+        if (failing) throw new Error('socket hang up');
+        return { ok: true, channel: { id: channel, name: 'deploys', is_member: true } };
+      },
+      async members() { return { ok: true, members: [] }; },
+    },
+  };
+  const live = slackReadAuthorityPorts({
+    workspaceId: WORKSPACE, agentId: 'agent_oncall', requesterSlackUserId: REQUESTER, current: CURRENT,
+    client: client as never, assertActive: async () => {}, hasActiveGrant: async () => true,
+  });
+  assert.equal(await live.conversation('C0HIDDEN'), undefined);
+  assert.equal(await refusal(live.conversation('C0OTHER')), 'unavailable');
+  failing = false;
+  assert.equal((await live.conversation('C0OTHER'))?.name, 'deploys');
+  assert.equal((await live.conversation('C0OTHER'))?.member, true);
+  assert.equal(infoCalls, 3);
+});
+
+test('concurrent membership checks for one channel page Slack once', async () => {
+  let pages = 0;
+  const client = {
+    conversations: {
+      async members() { pages += 1; return { ok: true, members: ['U0OTHER'], response_metadata: { next_cursor: pages < 3 ? 'more' : '' } }; },
+      async info() { return { ok: true }; },
+    },
+  };
+  const live = slackReadAuthorityPorts({
+    workspaceId: WORKSPACE, agentId: 'agent_oncall', requesterSlackUserId: REQUESTER, current: CURRENT,
+    client: client as never, assertActive: async () => {}, hasActiveGrant: async () => true,
+  });
+  const [first, second] = await Promise.all([live.isMember('C0BIG', REQUESTER), live.isMember('C0BIG', REQUESTER)]);
+  assert.deepEqual([first, second], [false, false]);
+  assert.equal(pages, 3);
 });
 
 test('a large read is shortened row by row to fit the tool limit, never silently dropped', async () => {

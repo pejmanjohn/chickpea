@@ -1,9 +1,7 @@
 import { defineTool, useDelivery, useInstruction, useTool } from '@flue/runtime';
-import type { WebClient } from '@slack/web-api';
 import * as v from 'valibot';
 
 import type { RuntimePlanV2 } from '../../agents/runtime-plan.ts';
-import { CHICKPEA_AGENT_ID } from '../../config/agent-id.ts';
 import {
   getConfigStore,
   getIdentityStore,
@@ -12,15 +10,15 @@ import {
   getSlackStateStore,
   type PlatformEnv,
 } from '../../config/state-backend.ts';
-import { isActiveConnectionActor } from '../../connections/runtime.ts';
-import { parseSlackManagementSignal, resolveSlackManagementActor } from '../../management/slack-tools.ts';
-import { slackPlatformErrorCode } from '../errors.ts';
+import { parseSlackManagementSignal } from '../../management/slack-tools.ts';
 import { resolveSlackInstallationExecutionContext } from '../installation-execution.ts';
+import { assertSlackListsAccess } from '../lists/tools.ts';
+import { SlackListError } from '../lists/types.ts';
 import { createSlackReadGate } from '../read-budget.ts';
-import { slackReadConversationFacts, type SlackReadAuthorityPorts, type SlackReadConversationFacts } from './authority.ts';
+import { slackReadAuthorityPorts } from './authority.ts';
 import { SlackReadError, SLACK_READ_MESSAGES } from './errors.ts';
 import { resolveSlackReadTarget } from './links.ts';
-import { MAX_SLACK_READ_RESULT_BYTES, SlackReadingService, slackReadFailure } from './service.ts';
+import { byteLength, MAX_SLACK_READ_RESULT_BYTES, SlackReadingService, slackReadFailure } from './service.ts';
 
 export const SLACK_READ_TOOL_NAMES = ['read_slack_thread', 'read_slack_channel', 'lookup_slack_user'] as const;
 
@@ -42,10 +40,11 @@ export function createSlackReadingTools(resolve: (signal: AbortSignal | undefine
     let output: Record<string, unknown>;
     try { output = await action(await resolve(signal)); }
     catch (error) { output = slackReadFailure(error); }
-    const serialized = JSON.stringify(output);
-    return new TextEncoder().encode(serialized).byteLength <= MAX_SLACK_READ_RESULT_BYTES
-      ? serialized
-      : JSON.stringify({ status: 'not_read', code: 'result_too_large', message: 'The result exceeds the tool limit. Ask for fewer messages with limit.' });
+    // The service shortens message rows to fit; this is the floor for a page
+    // that still does not, so no result ever exceeds the tool limit.
+    return byteLength(output) <= MAX_SLACK_READ_RESULT_BYTES
+      ? JSON.stringify(output)
+      : JSON.stringify(slackReadFailure(new SlackReadError('result_too_large')));
   };
   return [
     defineTool({
@@ -76,10 +75,7 @@ export function createSlackReadingTools(resolve: (signal: AbortSignal | undefine
         limit,
       }),
       run: ({ data, signal }) => execute(signal, (service) => service.readChannel({
-        target: resolveSlackReadTarget({
-          ...(data.link !== undefined ? { link: data.link } : {}),
-          ...(data.channel !== undefined ? { channel: data.channel } : {}),
-        }),
+        target: resolveSlackReadTarget(data),
         ...(data.oldest ? { oldest: data.oldest } : {}),
         ...(data.latest ? { latest: data.latest } : {}),
         ...(data.cursor ? { cursor: data.cursor } : {}),
@@ -142,16 +138,16 @@ async function buildService(
     requesterSlackUserId: signal.slackUserId,
     current: { channelId: signal.channelId, threadTs: signal.threadTs, messageTs: signal.messageTs },
     client,
+    // The same standing the Lists tools require: an active requester, an
+    // enabled Agent, and the Agent's grant for the channel it is answering in.
     assertActive: async () => {
-      let actor;
-      try { actor = await resolveSlackManagementActor(signal, identity); }
-      catch { throw new SlackReadError('requester_unavailable', SLACK_READ_MESSAGES.requester_unavailable); }
-      if (actor.membershipId !== plan.actorMembershipId ||
-          !(await isActiveConnectionActor({ identity, workspaceId: signal.workspaceId, actorMembershipId: actor.membershipId }))) {
-        throw new SlackReadError('requester_unavailable', SLACK_READ_MESSAGES.requester_unavailable);
+      try {
+        await assertSlackListsAccess(plan, signal, config, identity);
+      } catch (error) {
+        if (error instanceof SlackListError && error.code === 'actor_unavailable') throw new SlackReadError('requester_unavailable');
+        if (error instanceof SlackListError && error.code === 'agent_unavailable') throw new SlackReadError('agent_unavailable');
+        throw new SlackReadError('unavailable');
       }
-      const agent = await config.getAgent(plan.agentId).catch(() => undefined);
-      if (!agent?.enabled) throw new SlackReadError('agent_unavailable', SLACK_READ_MESSAGES.agent_unavailable);
     },
     hasActiveGrant: async (channelId) => (await config.listAgentChannelGrants(signal.workspaceId, channelId))
       .some((grant) => grant.agentId === plan.agentId && grant.status === 'active'),
@@ -168,85 +164,4 @@ async function buildService(
     record: config,
     ...(abort ? { signal: abort } : {}),
   });
-}
-
-const MEMBERSHIP_TTL_MS = 5 * 60_000;
-const MAX_MEMBER_PAGES = 50;
-
-/**
- * Authority ports over a Slack client, with per-render caches: conversation
- * facts for the render, membership answers for five minutes.
- */
-export function slackReadAuthorityPorts(input: {
-  workspaceId: string;
-  agentId: string;
-  requesterSlackUserId: string;
-  current: SlackReadAuthorityPorts['current'];
-  client: Pick<WebClient, 'conversations'>;
-  assertActive: SlackReadAuthorityPorts['assertActive'];
-  hasActiveGrant: SlackReadAuthorityPorts['hasActiveGrant'];
-  now?: () => number;
-}): SlackReadAuthorityPorts {
-  const now = input.now ?? Date.now;
-  const conversations = new Map<string, Promise<SlackReadConversationFacts | undefined>>();
-  const members = new Map<string, { member: boolean; at: number }>();
-  return {
-    workspaceId: input.workspaceId,
-    agentId: input.agentId,
-    managementAgent: input.agentId === CHICKPEA_AGENT_ID,
-    requesterSlackUserId: input.requesterSlackUserId,
-    current: input.current,
-    assertActive: input.assertActive,
-    hasActiveGrant: input.hasActiveGrant,
-    conversation(channelId) {
-      let facts = conversations.get(channelId);
-      if (!facts) {
-        facts = (async () => {
-          try {
-            const response = await input.client.conversations.info({ channel: channelId });
-            return slackReadConversationFacts(response.channel);
-          } catch (error) {
-            const code = slackPlatformErrorCode(error);
-            if (code === 'channel_not_found' || code === 'not_in_channel' || code === 'access_denied') return undefined;
-            conversations.delete(channelId);
-            throw new SlackReadError('unavailable', SLACK_READ_MESSAGES.unavailable);
-          }
-        })();
-        conversations.set(channelId, facts);
-      }
-      return facts;
-    },
-    async isMember(channelId, userId) {
-      const key = `${channelId}\u0000${userId}`;
-      const cached = members.get(key);
-      if (cached && now() - cached.at < MEMBERSHIP_TTL_MS) return cached.member;
-      let cursor: string | undefined;
-      for (let page = 0; page < MAX_MEMBER_PAGES; page += 1) {
-        let response;
-        try {
-          response = await input.client.conversations.members({
-            channel: channelId,
-            limit: 200,
-            ...(cursor ? { cursor } : {}),
-          });
-        } catch (error) {
-          const code = slackPlatformErrorCode(error);
-          if (code === 'channel_not_found' || code === 'not_in_channel' || code === 'access_denied') {
-            members.set(key, { member: false, at: now() });
-            return false;
-          }
-          throw new SlackReadError('unavailable', SLACK_READ_MESSAGES.unavailable);
-        }
-        if ((response.members ?? []).includes(userId)) {
-          members.set(key, { member: true, at: now() });
-          return true;
-        }
-        cursor = response.response_metadata?.next_cursor?.trim() || undefined;
-        if (!cursor) break;
-      }
-      // A channel too large to page through fails closed.
-      members.set(key, { member: false, at: now() });
-      return false;
-    },
-  };
 }
