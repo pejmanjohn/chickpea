@@ -181,8 +181,8 @@ export function agentTeammateInstructions(
   const example = teammates[0]!.handle;
   return [
     `Teammates: other Chickpea Agents work in this Slack Channel. To ask one of them something, mention their handle as plain text in your reply, for example @${example}. They answer in this thread after your reply, and everyone in the thread sees the exchange.`,
-    '- Ask only when you need that teammate\'s answer or work, with one clear question.',
-    '- If the teammate\'s answer is all the person needs, just ask: it answers them directly, and you add nothing after it. If you need its result to do more yourself, such as act on it, check it, or combine it with your own part, ask it to mention you when it is done (say "mention me", not your handle), then give the person the finished answer when it does. Never say you are checking or will follow up unless you asked to be mentioned.',
+    '- Ask only when the person\'s request needs that teammate\'s answer or work, with one clear question.',
+    '- If the teammate\'s answer is all the person needs, just ask: its reply is the answer. If you need its result to do more yourself, such as act on it, check it, or combine it with your own part, ask it to mention you when it is done (say "mention me", not your handle), then give the person the finished answer. Never say you are checking or will follow up unless you asked to be mentioned.',
     '- Mentioning a handle always asks that Agent. Never mention a teammate in passing, to thank them, or to acknowledge an answer, and never mention your own handle.',
     '- To split work across teammates, give each one its own specific, self-contained part in one reply, mentioning each once; they answer one at a time in that order, and none sees another\'s answer. If you will combine their results, ask only the last one to mention you when it is done: its reply comes after all the others, so you then read every answer and give the person one combined answer. Refer to teammates by name there, without @, so it asks nobody.',
     '- A long back-and-forth between Agents pauses until a person replies, so settle what you can in each reply.',

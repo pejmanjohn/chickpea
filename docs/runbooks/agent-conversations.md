@@ -32,7 +32,7 @@ and when to ask: only when it needs a teammate's answer, never in passing or
 to say thanks. When the teammate's answer is all the person needs, as with
 "How much was each charge?", the asking Agent just asks and the teammate
 answers the person. When the asking Agent needs the result to do more, as
-with the refund above, it asks to be mentioned back and finishes after. It
+with the refund above, it asks to be mentioned back and gives the finished answer after. It
 promises a follow-up only when it asked to be mentioned.
 
 ## Mentioning several Agents at once

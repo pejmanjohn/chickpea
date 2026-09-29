@@ -672,7 +672,7 @@ function agentAskContext(
     access,
     'Answer in this thread, as you would a colleague who asked in front of the team. You are not taking the thread over: its own Agent keeps working with the people in it.',
     ask.fromAgentHandle
-      ? `If ${JSON.stringify(ask.fromAgentName)} asked you to mention it when you are done, finish your part and end your reply by mentioning @${ask.fromAgentHandle} with the result so it picks it up. Otherwise your reply is the answer: give it to the people in the thread, without mentioning ${JSON.stringify(ask.fromAgentName)}.`
+      ? `If ${JSON.stringify(ask.fromAgentName)} asked you to mention it when you are done, finish your part and end your reply by mentioning @${ask.fromAgentHandle} with the result so it picks it up. Otherwise your reply is the answer: answer the people in the thread and do not mention ${JSON.stringify(ask.fromAgentName)}.`
       : 'Just answer; the asking Agent can read your reply in the thread.',
   ].join('\n');
 }
