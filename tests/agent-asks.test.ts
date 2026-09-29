@@ -458,7 +458,7 @@ test('a delivered reply that mentions a teammate admits one ask per Agent, up to
 });
 
 test('a second report to the same Agent joins its queued ask, and asks again once that turn has started', async () => {
-  await withGatewayLane(async ({ stores, gateway, jobs, enqueueTurn }) => {
+  await withGatewayLane(async ({ stores, gateway, jobs, posts, enqueueTurn }) => {
     await processGatewaySlackEnvelope({
       workspaceId: 'T1', eventId: 'Ev7000', eventTime: 7000,
       event: {
@@ -479,11 +479,35 @@ test('a second report to the same Agent joins its queued ask, and asks again onc
     await report('agent_legal', '7000.000400', '@support Legal: needs a ticket.');
     assert.deepEqual(jobs.map(({ assignment }) => assignment.agentId), ['agent_support', 'agent_support']);
     assert.equal(jobs[1]!.turn.messageTs, '7000.000300');
-    // Once that turn has started it has read the thread: a later report asks again.
-    await (stores.slackState as unknown as { recordTurnAttempt(id: string, n: number): Promise<void> })
-      .recordTurnAttempt(jobs[1]!.id, 1);
-    await report('agent_legal', '7000.000500', '@support Legal: one more thing.');
-    assert.deepEqual(jobs.map(({ turn }) => turn.messageTs), ['7000.000100', '7000.000300', '7000.000500']);
+    // A joined report counts against nothing: with the exchange at its limit,
+    // a report to the waiting Agent still joins instead of pausing the exchange.
+    const state = stores.slackState as unknown as { recordTurnAttempt(id: string, n: number): Promise<void> };
+    for (let index = jobs.length; index <= AGENT_ASK_TURN_LIMIT; index += 1) {
+      await report('agent_finance', `7000.0006${String(index).padStart(2, '0')}`, '@legal check this too');
+      await state.recordTurnAttempt(jobs.at(-1)!.id, 1);
+    }
+    assert.equal(jobs.length, 1 + AGENT_ASK_TURN_LIMIT);
+    await report('agent_legal', '7000.000450', '@support Legal: all checked.');
+    assert.equal(jobs.length, 1 + AGENT_ASK_TURN_LIMIT);
+    assert.equal(posts.length, 0, 'a joined report never says the pause');
+    await report('agent_finance', '7000.000460', '@legal and this');
+    assert.equal(jobs.length, 1 + AGENT_ASK_TURN_LIMIT);
+    assert.equal(posts[0]?.text, AGENT_ASK_PAUSE_TEXT);
+    // Once that turn has started it has read the thread: a later report asks again
+    // (here, in a new exchange, since this one is at its limit).
+    await state.recordTurnAttempt(jobs[1]!.id, 1);
+    await processSlackAgentAsks({
+      turn: { ...supportTurn, messageTs: '7000.000700' },
+      fromAgentId: 'agent_finance',
+      deliveries: [{ messageTs: '7000.000800', text: '@support one more thing' }],
+    }, undefined, { stores, gatewayClient: gateway, enqueueTurn });
+    assert.equal(jobs.at(-1)?.turn.messageTs, '7000.000800');
+    await processSlackAgentAsks({
+      turn: { ...supportTurn, messageTs: '7000.000700' },
+      fromAgentId: 'agent_legal',
+      deliveries: [{ messageTs: '7000.000900', text: '@support me too' }],
+    }, undefined, { stores, gatewayClient: gateway, enqueueTurn });
+    assert.equal(jobs.at(-1)?.turn.messageTs, '7000.000800', 'joined the new exchange\'s waiting ask');
   }, { grantLegal: true });
 });
 

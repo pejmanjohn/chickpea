@@ -287,6 +287,33 @@ test('a check-in during a run routes to the run facts; a plain message reports t
 
 // ── the dispatch gate ──────────────────────────────────────────────────
 
+test('an ask a stop holds is not joined; released, it is again', () => {
+  const { db, turns } = store();
+  try {
+    const running = job('running', '101');
+    turns.enqueue(running);
+    dispatch(turns, running);
+    const agentAsk = { fromAgentId: 'agent_other', fromAgentName: 'Other', originMessageTs: THREAD_TS };
+    const queuedAsk = job('ask', '102', { agentAsk });
+    turns.enqueue(queuedAsk);
+    const laterAsk = job('later', '120', { agentAsk });
+    assert.equal(turns.hasQueuedAgentAsk(laterAsk, THREAD_TS), true);
+    assert.equal(turns.hasQueuedAgentAsk(laterAsk, '1800000000.000999'), false, 'another exchange');
+    assert.equal(turns.hasQueuedAgentAsk(
+      { ...laterAsk, assignment: assignment({ agentId: 'agent_else' }) }, THREAD_TS,
+    ), false, 'another Agent');
+
+    assert.equal(turns.steer(stop('110')).outcome, 'stopped');
+    assert.equal(turns.hasQueuedAgentAsk(laterAsk, THREAD_TS), false, 'held: its ending may drop it');
+    turns.finishStop('running', 'released');
+    assert.equal(turns.hasQueuedAgentAsk(laterAsk, THREAD_TS), true, 'released: an ordinary queued turn');
+    turns.recordAttempt('ask', 1);
+    assert.equal(turns.hasQueuedAgentAsk(laterAsk, THREAD_TS), false, 'started: it has read the thread');
+  } finally {
+    db.close();
+  }
+});
+
 test('dispatch preparation refuses a stopped or held row whose dispatch never started', () => {
   const { db, turns } = store();
   try {
