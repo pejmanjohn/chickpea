@@ -105,10 +105,14 @@ within seconds, but a routine run or coding task can take up to an hour. Before
 rolling back from v0.1.31, make sure no reply, routine run, coding task or
 Agent-to-Agent question is running. If Slack goes quiet after a rollback,
 redeploy v0.1.31 with the same deploy command, let that work finish, and roll
-back again. After a rollback, Agents in existing threads no longer remember the
-turns they took on v0.1.31, the older release reads apps' posts in a thread as
-people's posts, and a person whose last turn in a thread carried an app's post
-gets failed replies from that Agent there until they update again. v0.1.31
+back again.
+[Recover a stalled rollback](docs/runbooks/operations.md#recover-a-stalled-rollback)
+lists the log lines that identify this stall.
+
+After a rollback from v0.1.31, Agents in existing threads no longer remember
+the turns they took on v0.1.31, and the older release reads apps' posts in a
+thread as people's posts. A person whose last turn in a thread carried an app's
+post gets failed replies from that Agent there until you update again. v0.1.31
 sets unreadable records from a later release aside instead of stalling.
 
 ## 3. Deploy to the same Worker
