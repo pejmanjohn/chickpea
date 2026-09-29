@@ -36,10 +36,12 @@ import {
 } from '../config/snapshot-store.ts';
 import {
   getSlackCredentialDependencies,
+  getSlackStateStore,
   resolveStores,
   type AppStores,
   type PlatformEnv,
 } from '../config/state-backend.ts';
+import type { ConfigStore } from '../config/store.ts';
 import {
   tagStateStub,
   type StateRpcResult,
@@ -118,13 +120,12 @@ import {
   wakeNodeTurnRelay,
 } from '../slack/node-turn-relay.ts';
 import { slackSemanticActivityStatusEnabled } from '../slack/semantic-status-flag.ts';
-import {
-  hydrateSlackContextViaWebClient,
-  hydrateSlackPublicHandoffFallback,
-} from '../slack/web-client-context.ts';
+import { hydrateSlackPublicHandoffFallback } from '../slack/web-client-context.ts';
+import { hydrateTurnSlackContext } from '../slack/turn-context-reads.ts';
 import {
   assembleRetainedSlackContext,
   reconcileSlackPublicContextMutation,
+  recordSlackThreadEventMessage,
   recordAcceptedSlackHumanMessage,
   recordDeliveredSlackAgentMessage,
 } from '../slack/public-context.ts';
@@ -184,6 +185,7 @@ import {
   parseSlackAgentSessionStopped,
   type NormalizedSlackTurn,
   type SlackEventFixture,
+  type SlackMessageEvent,
   type SlackStopButtonPress,
 } from '../slack/types.ts';
 import type { AuthPrincipal } from '../auth/types.ts';
@@ -1743,6 +1745,9 @@ async function processSlackEvent(
       payload.event,
     )
   ) return;
+  if (installation.runtimeContract === 'chickpea-v1' && payload.event.type === 'message') {
+    await recordAgentThreadMessage(stores.config, payload.team_id, payload.event, installation.botUserId);
+  }
   const credentials = execution
     ? ({ connectionRevision: null } as ResolvedSlackInstallationCredentials)
     : await resolveSlackInstallationCredentials(WORKSPACE_SLACK_INSTALLATION_ID, platformEnv);
@@ -1826,7 +1831,7 @@ async function processSlackEvent(
   //    a later event in the same Slack thread resolves again. Channels remain
   //    fail-closed and never fall through to the global direct-message default.
   if (
-    (turn.source === 'implicit_thread_reply' || turn.source === 'reaction_added') &&
+    turnRequiresOwnedThread(turn) &&
     !(await stores.config.getAgentThreadRoute(turn.workspaceId, turn.channelId, turn.threadTs))
   ) {
     return;
@@ -2257,7 +2262,13 @@ async function processSlackEvent(
         assignment,
         platformEnv,
         slackClient as ReturnType<typeof createSlackWebClient>,
-        { config: stores.config },
+        {
+          config: stores.config,
+          installation: {
+            transportMode: installation.transportMode,
+            ...(installation.botUserId ? { botUserId: installation.botUserId } : {}),
+          },
+        },
       );
       if (classification.intent.disposition === 'ignore') {
         await recordInteractionClassifierUsage({
@@ -3496,6 +3507,43 @@ async function recordInteractionClassifierUsage(input: {
   await recorder.repairAfterTerminal();
 }
 
+/**
+ * Whether a turn continues only a thread an Agent already owns. A reaction
+ * or a plain reply does; a reply that names an Agent's handle does not: it
+ * addresses that Agent directly, like a root mention, so "@oncall what is
+ * this?" under an alert nobody has answered reaches @oncall. Routing still
+ * decides which Agent that is and whether it may work in this channel.
+ */
+export function turnRequiresOwnedThread(turn: Pick<NormalizedSlackTurn, 'source' | 'text'>): boolean {
+  if (turn.source === 'reaction_added') return true;
+  return turn.source === 'implicit_thread_reply' && parseAgentUserGroupMentions(turn.text).length === 0;
+}
+
+/**
+ * Keep a Slack-visible reply in the thread record when an Agent is part of
+ * that thread: people who did not address the Agent, guests, apps and alert
+ * bots, other AI agents. Nothing is kept for threads no Agent is in. A
+ * record write that fails loses only this context row, never the event.
+ */
+async function recordAgentThreadMessage(
+  config: Pick<ConfigStore, 'getAgentThreadRoute' | 'putSlackPublicContext'>,
+  workspaceId: string,
+  event: SlackMessageEvent,
+  botUserId: string | undefined,
+): Promise<void> {
+  try {
+    await recordSlackThreadEventMessage(
+      config,
+      workspaceId,
+      event,
+      botUserId ? { botUserId } : {},
+      async (rootTs) => Boolean(await config.getAgentThreadRoute(workspaceId, event.channel, rootTs)),
+    );
+  } catch {
+    console.warn('[chickpea] thread record capture failed');
+  }
+}
+
 export async function classifyCandidateTurn(
   turn: NormalizedSlackTurn,
   assignment: ResolvedAssignment,
@@ -3504,17 +3552,28 @@ export async function classifyCandidateTurn(
   dependencies: {
     config?: NonNullable<Parameters<typeof assembleRetainedSlackContext>[2]>['store'];
     classify?: typeof classifySlackInteraction;
+    /** The installation's app, so its reads are paced and its own rows labeled as Agent rows. */
+    installation?: { transportMode: 'direct' | 'gateway'; botUserId?: string };
   } = {},
 ): Promise<{
   classification: Awaited<ReturnType<typeof classifySlackInteraction>>;
   requestedModel: string | null;
 }> {
   const requestedModel = assignment.model ?? null;
-  const hydrated = await hydrateSlackContextViaWebClient(
+  const hydrated = await hydrateTurnSlackContext({
     client,
     turn,
-    { maxMessages: 12, maxPages: 2 },
-  );
+    ...(dependencies.installation ? {
+      transportMode: dependencies.installation.transportMode,
+      ...(dependencies.installation.botUserId ? { botUserId: dependencies.installation.botUserId } : {}),
+    } : {}),
+    state: getSlackStateStore(platformEnv),
+    ...(assignment.runtimeContract === 'chickpea-v1' && dependencies.config
+      ? { record: dependencies.config }
+      : {}),
+    maxMessages: 12,
+    maxPages: 2,
+  });
   const context = await assembleRetainedSlackContext(hydrated, turn, {
     ...(assignment.runtimeContract === 'chickpea-v1' && dependencies.config
       ? { store: dependencies.config, agentId: assignment.agentId }

@@ -470,7 +470,7 @@ export interface AgentThreadHandoff {
   /** Undefined until the bounded legacy fallback has been attempted. */
   context?: Array<{
     messageTs: string;
-    role: 'human' | 'agent';
+    role: SlackPublicContextRole;
     text: string;
     agentId?: string;
   }>;
@@ -484,9 +484,25 @@ export type AgentThreadRouteInput = Omit<
   ownerIncarnation?: number;
 };
 
-export type SlackPublicContextRole = 'human' | 'agent';
+/**
+ * Who wrote a thread-record row: a person, one of this installation's
+ * Chickpea Agents, or another app (alert bots, webhooks, other AI agents).
+ */
+export type SlackPublicContextRole = 'human' | 'agent' | 'app';
 
-/** Bounded retained Slack-visible context; never private runtime state. */
+/** A file shared with a recorded message: label, type, size. Never contents. */
+export interface SlackPublicContextFile {
+  name: string;
+  type?: string;
+  sizeBytes?: number;
+}
+
+/**
+ * The thread record: bounded Slack-visible messages of a thread an Agent is
+ * part of, kept in the deployment's own state and never private runtime
+ * state. 200 rows per thread; a thread is dropped after 30 days without
+ * activity; Slack edits and deletes are applied.
+ */
 export interface SlackPublicContextEntry {
   workspaceId: string;
   channelId: string;
@@ -495,6 +511,11 @@ export interface SlackPublicContextEntry {
   role: SlackPublicContextRole;
   text: string;
   agentId?: string;
+  /** Slack user id of a person, or the bot/app id of an app. */
+  authorId?: string;
+  /** Posting name of an app or Agent row. People's names are resolved at read time. */
+  authorName?: string;
+  files?: SlackPublicContextFile[];
   /** Slack timestamp of an edit; excludes later revisions from an earlier turn. */
   contentVersionTs?: string;
   updatedAt: number;

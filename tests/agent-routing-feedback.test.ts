@@ -96,3 +96,14 @@ test('the unassigned hint setting controls ambiguous mention guidance', async ()
     assert.equal(calls.length, expectedCalls);
   }
 });
+
+test('a thread reply that names an Agent does not need an existing Agent thread', async () => {
+  const { turnRequiresOwnedThread } = await import('../src/channels/slack.ts');
+  // "@oncall what is this?" under an alert nobody has answered.
+  assert.equal(turnRequiresOwnedThread(turn({ source: 'implicit_thread_reply', text: '<!subteam^SAGENT> what is this?' })), false);
+  assert.equal(turnRequiresOwnedThread(turn({ source: 'implicit_thread_reply', text: '<!subteam^SAGENT|@oncall> what is this?' })), false);
+  // A plain reply or a reaction still continues only an owned thread.
+  assert.equal(turnRequiresOwnedThread(turn({ source: 'implicit_thread_reply', text: 'thanks!' })), true);
+  assert.equal(turnRequiresOwnedThread(turn({ source: 'reaction_added', text: 'Reacted :eyes:' })), true);
+  assert.equal(turnRequiresOwnedThread(turn()), false);
+});

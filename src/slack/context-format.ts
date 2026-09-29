@@ -1,4 +1,5 @@
 import type { SlackContextMessage, SlackTurnContext } from './thread-context.ts';
+import { formatSlackFileSummary } from './message-text.ts';
 
 export function slackContextWindowLabel(
   context: SlackTurnContext | undefined,
@@ -23,10 +24,27 @@ export function formatSlackContextRows(
       const provenance = [
         message.role ? `role=${message.role}` : undefined,
         message.rootTs ? `root=${message.rootTs}` : undefined,
+        message.replyCount ? `replies=${message.replyCount}` : undefined,
       ].filter(Boolean).join(' ');
-      return `${options.prefix ?? ''}[${timestamp}${triggerMarker}${provenance ? ` ${provenance}` : ''}] ${message.userId}: ${message.text}`;
+      const files = message.files?.length
+        ? `${message.text ? ' ' : ''}[files: ${message.files.map(formatSlackFileSummary).join('; ')}]`
+        : '';
+      return `${options.prefix ?? ''}[${timestamp}${triggerMarker}${provenance ? ` ${provenance}` : ''}] ${slackContextAuthorLabel(message)}: ${message.text}${files}`;
     })
     .join(options.separator);
+}
+
+/**
+ * The author as the model sees it. People keep their Slack id beside the
+ * name, so a mention or a task assignment can still use the exact id. Apps
+ * and Agents are named by what they posted as; the row's role says which.
+ */
+export function slackContextAuthorLabel(
+  message: Pick<SlackContextMessage, 'userId' | 'role' | 'authorName'>,
+): string {
+  const name = message.authorName ? JSON.stringify(message.authorName) : undefined;
+  if (message.role === 'app' || message.role === 'agent') return name ?? message.userId;
+  return name ? `${name} (${message.userId})` : message.userId;
 }
 
 export interface SlackLocalContextTime {

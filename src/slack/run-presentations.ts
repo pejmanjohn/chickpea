@@ -37,6 +37,29 @@ const DEFAULT_SLACK_ACTIVITY_STATUS_BUDGET = {
   refillWindowMs: 1_000,
 } as const;
 
+/** The Slack history reads that share a per-workspace budget. */
+export type SlackReadMethod = 'conversations.history' | 'conversations.replies';
+
+/**
+ * One workspace's share of a Slack history read. An app that is not listed
+ * on the Slack Marketplace may call `conversations.history` and
+ * `conversations.replies` once a minute per workspace, each method counted
+ * on its own, so every reader of a workspace books from one row per method.
+ */
+export const DEFAULT_SLACK_READ_BUDGET = {
+  capacity: 1,
+  refillWindowMs: 60_000,
+} as const;
+
+const SLACK_READ_BUDGET_TABLES = {
+  'conversations.history': 'slack_workspace_history_read_budgets',
+  'conversations.replies': 'slack_workspace_replies_read_budgets',
+} as const satisfies Record<SlackReadMethod, string>;
+
+type SlackNamedBudgetTable =
+  | 'slack_workspace_activity_status_budgets'
+  | typeof SLACK_READ_BUDGET_TABLES[SlackReadMethod];
+
 export type SlackProgressiveEligibilityReason =
   | 'safe_early_release'
   // Effect-capable plans: answer text may stream only after a declaration the
@@ -931,6 +954,20 @@ export class SlackRunPresentationStoreLogic {
         updated_at INTEGER NOT NULL
       )`,
     );
+    for (const table of Object.values(SLACK_READ_BUDGET_TABLES)) {
+      db.exec(
+        `CREATE TABLE IF NOT EXISTS ${table} (
+          workspace_id TEXT PRIMARY KEY,
+          capacity INTEGER NOT NULL,
+          refill_window_ms INTEGER NOT NULL,
+          available INTEGER NOT NULL,
+          last_refill_at INTEGER NOT NULL,
+          cooldown_until INTEGER,
+          version INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        )`,
+      );
+    }
     db.exec(
       `CREATE TABLE IF NOT EXISTS slack_presentation_retention_tombstones (
         sequence INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1449,6 +1486,30 @@ export class SlackRunPresentationStoreLogic {
     );
   }
 
+  /** One Slack history read for the workspace, per method. */
+  reserveSlackRead(
+    workspaceId: string,
+    method: SlackReadMethod,
+    policy: SlackAppendBudgetPolicy = DEFAULT_SLACK_READ_BUDGET,
+  ): SlackAppendReservation {
+    return this.reserveBudget(slackReadBudgetTable(method), workspaceId, policy);
+  }
+
+  /** A Slack rate limit on a history read holds every reader of the workspace. */
+  applySlackReadCooldown(
+    workspaceId: string,
+    method: SlackReadMethod,
+    retryAfterMs: number,
+    policy: SlackAppendBudgetPolicy = DEFAULT_SLACK_READ_BUDGET,
+  ): { cooldownUntil: number; budgetVersion: number } {
+    return this.applyBudgetCooldown(
+      slackReadBudgetTable(method),
+      workspaceId,
+      retryAfterMs,
+      policy,
+    );
+  }
+
   maintain(limit = 100): { finalizedPurged: number; expiredTombstoned: number } {
     const boundedLimit = boundedLimitValue(limit);
     return this.db.transaction(() => {
@@ -1622,7 +1683,7 @@ export class SlackRunPresentationStoreLogic {
   }
 
   private reserveBudget(
-    table: 'slack_workspace_activity_status_budgets',
+    table: SlackNamedBudgetTable,
     workspaceId: string,
     policy: SlackAppendBudgetPolicy,
   ): SlackAppendReservation {
@@ -1686,7 +1747,7 @@ export class SlackRunPresentationStoreLogic {
   }
 
   private applyBudgetCooldown(
-    table: 'slack_workspace_activity_status_budgets',
+    table: SlackNamedBudgetTable,
     workspaceId: string,
     retryAfterMs: number,
     policy: SlackAppendBudgetPolicy,
@@ -1732,7 +1793,7 @@ export class SlackRunPresentationStoreLogic {
   }
 
   private getNamedBudget(
-    table: 'slack_workspace_activity_status_budgets',
+    table: SlackNamedBudgetTable,
     workspaceId: string,
   ): BudgetRow | undefined {
     return this.db.get(
@@ -3733,6 +3794,13 @@ function boundedLimitValue(limit: number): number {
     throw stateError('invalid_input', 'Presentation query limit is invalid.');
   }
   return limit;
+}
+
+function slackReadBudgetTable(method: SlackReadMethod): SlackNamedBudgetTable {
+  if (!Object.hasOwn(SLACK_READ_BUDGET_TABLES, method)) {
+    throw stateError('invalid_input', 'Slack read method is invalid.');
+  }
+  return SLACK_READ_BUDGET_TABLES[method];
 }
 
 function validateBudgetPolicy(policy: SlackAppendBudgetPolicy): void {

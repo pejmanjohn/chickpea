@@ -20,7 +20,8 @@ export type RuntimeLatencyEvent =
   | 'state_rpc'
   | 'gateway_delivery'
   | 'thread_runner_alarm'
-  | 'thread_runner_superseded';
+  | 'thread_runner_superseded'
+  | 'slack_read';
 
 type RuntimeLatencyValue = number | boolean | string;
 
@@ -50,6 +51,7 @@ const STRING_FIELDS: Readonly<Record<string, RegExp>> = {
   subtype: TOKEN,
   source: TOKEN,
   filterReason: TOKEN,
+  order: TOKEN,
   reason: TOKEN,
   runRef: OPAQUE_REF,
   turnRef: OPAQUE_REF,

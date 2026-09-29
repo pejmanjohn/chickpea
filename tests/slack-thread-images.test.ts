@@ -153,7 +153,7 @@ test('the thread fetch inventories person uploads and the Agent\'s own file shar
   );
 });
 
-test('rows the context projection drops still yield handles', async () => {
+test('bot and caption-less image rows are listed and still yield handles', async () => {
   const turn = threadTurn();
   const context = await hydrateSlackContextViaWebClient(
     fakeReplies([
@@ -163,10 +163,14 @@ test('rows the context projection drops still yield handles', async () => {
     turn,
   );
 
-  // The projection is unchanged: a bot row and a caption-less row reach no
-  // prompt message, so only the trigger remains.
-  assert.deepEqual(context.messages.map((message) => message.ts), [turn.messageTs]);
-  assert.equal(context.messages.every((message) => message.isTrigger), true);
+  // Both rows now reach the projection as file listings: the bot row as an
+  // app row, the caption-less upload as a person's row. No file id is in them.
+  assert.deepEqual(context.messages.map((message) => [message.ts, message.role]), [
+    ['1001.000000', 'app'],
+    ['1002.000000', 'human'],
+    [turn.messageTs, 'human'],
+  ]);
+  assert.equal(JSON.stringify(context.messages).includes('F00000000'), false);
 
   const inventory = buildThreadImageInventory({
     threadRecords: context.images,

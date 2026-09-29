@@ -386,7 +386,8 @@ test('runTurn retains the admitted latest correction across runtime rollover bey
         },
       });
     }
-    assert.equal(calls, 6);
+    // The install's own app reads up to five pages per turn before stopping.
+    assert.equal(calls, 10);
     assert.equal(prompts.length, 2);
     for (const prompt of prompts) {
       assert.match(prompt, /LATEST_CORRECTION: use 42/);
