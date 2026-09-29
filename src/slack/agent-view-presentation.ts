@@ -1381,7 +1381,7 @@ export class SlackAgentViewPresentation {
    * stops here without throwing; durable repair resumes the set later.
    */
   async deliverContinuations(options: {
-    onDelivered?: (messageTs: string, text: string) => Promise<void>;
+    onDelivered?: ContinuationDelivered;
     /** Repair gave up: stop owing whatever is still unsent. */
     abandonUnresolved?: boolean;
   } = {}): Promise<void> {
@@ -1417,7 +1417,7 @@ export class SlackAgentViewPresentation {
   private async postContinuation(
     presentation: Extract<SlackRunPresentation, { schemaVersion: 3 }>,
     index: number,
-    onDelivered: ((messageTs: string, text: string) => Promise<void>) | undefined,
+    onDelivered: ContinuationDelivered | undefined,
   ): Promise<boolean> {
     const plan = presentation.continuations!;
     const part = plan.parts[index]!;
@@ -1462,7 +1462,7 @@ export class SlackAgentViewPresentation {
     await this.transition(intended, {
       kind: 'record_continuation_receipt', index, operationId, certainty: 'acknowledged', messageTs,
     });
-    await notifyContinuation(onDelivered, messageTs, part.text);
+    await notifyContinuation(onDelivered, messageTs, part.text, closingFiles(plan, index));
     return true;
   }
 
@@ -1516,7 +1516,7 @@ export class SlackAgentViewPresentation {
   private async reconcileContinuation(
     presentation: Extract<SlackRunPresentation, { schemaVersion: 3 }>,
     index: number,
-    onDelivered: ((messageTs: string, text: string) => Promise<void>) | undefined,
+    onDelivered: ContinuationDelivered | undefined,
   ): Promise<boolean> {
     const part = presentation.continuations!.parts[index]!;
     const operation = part.operation!;
@@ -1536,7 +1536,11 @@ export class SlackAgentViewPresentation {
         ? { certainty: 'acknowledged' as const, messageTs: found.ts }
         : { certainty: 'failed' as const }),
     });
-    if (found?.ts) await notifyContinuation(onDelivered, found.ts, part.text);
+    if (found?.ts) {
+      await notifyContinuation(
+        onDelivered, found.ts, part.text, closingFiles(presentation.continuations!, index),
+      );
+    }
     return true;
   }
 
@@ -3037,13 +3041,29 @@ function lastBoundaryAt(text: string, floor: number): number {
   return Math.max(floor, text.lastIndexOf('\n'));
 }
 
-async function notifyContinuation(
-  onDelivered: ((messageTs: string, text: string) => Promise<void>) | undefined,
+/** A posted follow-up; the last one also passes the files the reply shares. */
+type ContinuationDelivered = (
   messageTs: string,
   text: string,
+  files?: readonly CompletedSlackArtifactReceipt[],
+) => Promise<void>;
+
+/** The files a follow-up carries: only the last part closes the reply. */
+function closingFiles(
+  plan: { parts: readonly unknown[]; closing: { files?: readonly CompletedSlackArtifactReceipt[] } },
+  index: number,
+): readonly CompletedSlackArtifactReceipt[] | undefined {
+  return index === plan.parts.length - 1 ? plan.closing.files : undefined;
+}
+
+async function notifyContinuation(
+  onDelivered: ContinuationDelivered | undefined,
+  messageTs: string,
+  text: string,
+  files: readonly CompletedSlackArtifactReceipt[] | undefined,
 ): Promise<void> {
   try {
-    await onDelivered?.(messageTs, text);
+    await onDelivered?.(messageTs, text, files);
   } catch {
     // The Slack post is the commit point; thread context is best effort.
     console.warn('[chickpea] Slack reply continuation context was not recorded');

@@ -68,11 +68,22 @@ export async function recordAcceptedSlackHumanMessage(
   });
 }
 
+/** One confirmed Slack-visible Agent message, for the thread record. */
+export interface SlackPublicDelivery {
+  messageTs: string;
+  text: string;
+  /**
+   * The images this message shares (the Agent's own uploads), so a later turn
+   * that reads the record, not Slack, can still offer them. References only.
+   */
+  images?: SlackPublicContextImage[];
+}
+
 export async function recordDeliveredSlackAgentMessage(
   store: SlackPublicContextWriter,
   turn: NormalizedSlackTurn,
   assignment: Pick<ResolvedAssignment, 'runtimeContract' | 'agentId'>,
-  delivery: { messageTs: string; text: string },
+  delivery: SlackPublicDelivery,
 ): Promise<void> {
   if (assignment.runtimeContract !== 'chickpea-v1') return;
   await store.putSlackPublicContext({
@@ -83,6 +94,7 @@ export async function recordDeliveredSlackAgentMessage(
     role: 'agent',
     agentId: assignment.agentId,
     text: delivery.text,
+    ...(delivery.images?.length ? { images: delivery.images } : {}),
   });
 }
 

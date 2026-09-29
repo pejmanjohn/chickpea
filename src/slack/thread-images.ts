@@ -174,6 +174,16 @@ export function threadImageRef(record: ThreadImageRecord): SlackPublicContextIma
   };
 }
 
+/** Image references of the files an Agent reply shares, for its thread-record row. */
+export function artifactImageRefs(
+  receipts: readonly SlackArtifactReceipt[] | undefined,
+): SlackPublicContextImage[] {
+  return (receipts ?? []).flatMap((receipt) => {
+    const record = receiptRecord(receipt, '');
+    return record ? [threadImageRef(record)] : [];
+  });
+}
+
 /**
  * Image records rebuilt from thread-record rows, for a turn that reads the
  * record instead of Slack. Each reference is validated again, as if Slack

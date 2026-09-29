@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import type { SlackPublicContextEntry } from '../src/config/types.ts';
 import { clearSlackContextNameCache, resolveSlackContextNames } from '../src/slack/context-names.ts';
+import type { CompletedSlackArtifactReceipt } from '../src/slack/artifact-receipts.ts';
 import { slackContextAuthorLabel } from '../src/slack/context-format.ts';
 import { collectAdmittedSlackListIds } from '../src/slack/lists/admission.ts';
 import { slackFileSummaries, slackMessageText } from '../src/slack/message-text.ts';
@@ -12,6 +13,7 @@ import {
   boundedSlackPublicHandoff,
   reconcileSlackPublicContextMutation,
   recordAcceptedSlackHumanMessage,
+  recordDeliveredSlackAgentMessage,
   recordSlackThreadEventMessage,
   seedSlackThreadRecord,
 } from '../src/slack/public-context.ts';
@@ -25,6 +27,7 @@ import {
   hydrateSlackContextViaWebClient,
   PACED_SLACK_READ_LIMIT,
 } from '../src/slack/web-client-context.ts';
+import { WebClientPresenter } from '../src/slack/web-client-presenter.ts';
 
 const ROOT = '1000.000100';
 
@@ -601,6 +604,43 @@ test('a thread read from the record keeps its images, including the request that
       { fileId: 'F0SHOT0001', origin: 'person', messageTs: '1001.000100', byteLength: undefined },
     ]);
     assert.equal(context.truncated, false);
+  });
+});
+
+test('an image the Agent posted stays in a record-only turn\'s inventory', async () => {
+  await withStore(async (store) => {
+    const request = turn({ messageTs: ROOT, text: 'chart our bookings' });
+    const assignment = { runtimeContract: 'chickpea-v1', agentId: 'agent_oncall' } as const;
+    await recordAcceptedSlackHumanMessage(store, request, assignment);
+    // The Agent's reply shares a generated chart and a CSV beside it.
+    const destination = { workspaceId: 'T1', agentId: 'agent_oncall', channelId: 'C1', threadTs: ROOT };
+    const files: CompletedSlackArtifactReceipt[] = [['F0CHART001', 'chart.png'], ['F0TABLE001', 'table.csv']]
+      .map(([fileId, filename]) => ({
+        schemaVersion: 2, fileId: fileId!, filename: filename!, kind: 'file', byteLength: 4096,
+        stagedAt: 1, completedAt: 2, destination,
+        permalink: `https://fixture.slack.com/files/UBOT/${fileId}/${filename}`,
+      }));
+    const slack = { chat: { postMessage: async () => ({ ok: true, ts: '1005.000100' }) } };
+    const presenter = new WebClientPresenter(slack as never, {
+      workspaceId: 'T1', channelId: 'C1', threadTs: ROOT, agentId: 'agent_oncall', agentName: 'On-call',
+    }, undefined, {
+      onPublicDelivery: (delivery) => recordDeliveredSlackAgentMessage(store, request, assignment, delivery),
+    });
+    await presenter.deliverFinal('Here is the chart.', 'markdown', 'complete', undefined, files);
+
+    const [, reply] = await store.listSlackPublicContext('T1', 'C1', ROOT);
+    assert.deepEqual(reply?.images, [
+      { id: 'F0CHART001', name: 'chart.png', mimeType: 'image/png', sizeBytes: 4096 },
+    ]);
+    const client = repliesClient([]);
+    const context = await hydrateTurnSlackContext({
+      client: client as never, turn: turn(), transportMode: 'gateway', state: GRANTING_STATE, record: store,
+    });
+    assert.equal(client.calls.length, 0);
+    assert.deepEqual(context.images?.map(({ fileId, origin, messageTs, byteLength }) =>
+      ({ fileId, origin, messageTs, byteLength })), [
+      { fileId: 'F0CHART001', origin: 'agent', messageTs: '1005.000100', byteLength: 4096 },
+    ]);
   });
 });
 

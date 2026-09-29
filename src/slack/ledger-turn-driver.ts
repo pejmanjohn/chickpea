@@ -10,6 +10,7 @@ import type {
   RunRecord,
   WorkStore,
 } from '../work/types.ts';
+import type { SlackPublicDelivery } from './public-context.ts';
 import { runTurn, type RunTurnOptions } from './run-turn.ts';
 import {
   DURABLE_RECOVERY_FAILURE_TEXT,
@@ -129,7 +130,7 @@ interface LedgerSlackRunHandlerOptions {
   onPublicMessageDelivered?: (
     turn: NormalizedSlackTurn,
     assignment: ResolvedAssignment,
-    delivery: { messageTs: string; text: string },
+    delivery: SlackPublicDelivery,
   ) => MaybePromise<void>;
   now?: () => number;
   productTelemetry?: ProductTelemetryCapture;

@@ -32,6 +32,8 @@ import {
 import { slackClientMessageId } from '../src/slack/transport/message-id.ts';
 import { SlackTransportError } from '../src/slack/transport/types.ts';
 import { deliverPersistedSlackPayload, WebClientPresenter } from '../src/slack/web-client-presenter.ts';
+import type { CompletedSlackArtifactReceipt } from '../src/slack/artifact-receipts.ts';
+import type { SlackPublicDelivery } from '../src/slack/public-context.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
 
 const LIMIT = slackMarkdownBlockTextLimit;
@@ -167,7 +169,7 @@ const PERSONA = {
   avatarRevision: 1,
 };
 
-function harness(): Harness {
+function harness(root = ROOT): Harness {
   // A minute after the fake stream starts: younger than the Agent View
   // stream retirement age, so only tests that expire it see a retired stream.
   const clock = { now: 1_785_800_160_000 };
@@ -181,7 +183,7 @@ function harness(): Harness {
     bindingId: 'binding_continuations',
     workBindingGeneration: 1,
     runFencingToken: 0,
-    root: ROOT,
+    root,
     owner: { kind: 'selected_agent', persona: PERSONA },
     sessionGeneration: 1,
   });
@@ -1425,6 +1427,84 @@ test('the presenter records every part of a long answer in thread context', asyn
   } finally {
     h.close();
   }
+});
+
+/** A thread whose ids are Slack-shaped, as a file receipt's destination must be. */
+const FILE_ROOT = {
+  workspaceId: 'T0CONTINUE',
+  channelId: 'C0CONTINUE',
+  threadTs: ROOT.threadTs,
+  requesterUserId: 'U0CONTINUE',
+};
+
+/** A completed image upload for this thread's Agent, and a CSV beside it. */
+function continuationFiles(): CompletedSlackArtifactReceipt[] {
+  return [['F0CHART001', 'chart.png'], ['F0TABLE001', 'table.csv']].map(([fileId, filename]) => ({
+    schemaVersion: 2, fileId: fileId!, filename: filename!, kind: 'file', byteLength: 2048, stagedAt: 1,
+    completedAt: 2, permalink: `https://fixture.slack.com/files/U0CONTINUE/${fileId}/${filename}`,
+    destination: {
+      workspaceId: FILE_ROOT.workspaceId, agentId: 'agent_planning',
+      channelId: FILE_ROOT.channelId, threadTs: FILE_ROOT.threadTs,
+    },
+  }));
+}
+
+function fileRootPresenter(
+  client: WebClient,
+  recorded: SlackPublicDelivery[],
+  agentView?: SlackAgentViewPresentation,
+): WebClientPresenter {
+  return new WebClientPresenter(client, {
+    workspaceId: FILE_ROOT.workspaceId,
+    channelId: FILE_ROOT.channelId,
+    threadTs: FILE_ROOT.threadTs,
+    userId: FILE_ROOT.requesterUserId,
+    agentName: PERSONA.name,
+    visibleOwner: { kind: 'selected_agent', persona: PERSONA },
+    agentId: 'agent_planning',
+  }, undefined, {
+    ...(agentView ? { agentViewPresentation: agentView } : {}),
+    onPublicDelivery: (delivery) => { recorded.push(delivery); },
+  });
+}
+
+const CHART_IMAGE = { id: 'F0CHART001', name: 'chart.png', mimeType: 'image/png', sizeBytes: 2048 };
+
+test('a long answer with files records their images on the follow-up that carries them', async () => {
+  const h = harness(FILE_ROOT);
+  try {
+    const recorded: SlackPublicDelivery[] = [];
+    await fileRootPresenter(h.client, recorded, h.presentation)
+      .deliverFinal(longPlan(), 'markdown', 'complete', undefined, continuationFiles());
+    const all = posts(h);
+    assert.equal(all.length, 2);
+    assert.match(JSON.stringify(all[1]!.input), /F0CHART001/);
+    assert.doesNotMatch(JSON.stringify(all[0]!.input), /F0CHART001/);
+    assert.deepEqual(recorded.map(({ messageTs, images }) => ({ messageTs, images })), [
+      { messageTs: '1785800100.000301', images: undefined },
+      { messageTs: '1785800100.000302', images: [CHART_IMAGE] },
+    ]);
+  } finally {
+    h.close();
+  }
+});
+
+test('a direct long answer with files records their images on its last message', async () => {
+  let posted = 0;
+  const client = {
+    chat: {
+      async postMessage() {
+        posted += 1;
+        return { ok: true, ts: `1785800200.00010${posted}` };
+      },
+    },
+  } as unknown as WebClient;
+  const recorded: SlackPublicDelivery[] = [];
+  await fileRootPresenter(client, recorded)
+    .deliverFinal(longPlan(), 'markdown', 'complete', undefined, continuationFiles());
+  assert.equal(recorded.length, 2);
+  assert.equal(recorded[0]!.images, undefined);
+  assert.deepEqual(recorded[1]!.images, [CHART_IMAGE]);
 });
 
 test('a presenter without a durable presentation posts follow-ups directly with one footer', async () => {
