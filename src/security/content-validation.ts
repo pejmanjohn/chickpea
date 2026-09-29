@@ -16,6 +16,23 @@ const CREDENTIAL_SIGNATURES: readonly (
   | { source: string; flags: string; markers: readonly string[] }
   | { find: (text: string) => CredentialRange[]; markers: readonly string[] }
 )[] = [
+  // PEM armor first: a token's class takes hyphens and letters in any case,
+  // so a token glued to a BEGIN line (`xoxb-…-----BEGIN …`) would consume
+  // its dashes and `BEGIN` and leave the key after it. A token inside armor
+  // goes with the block.
+  {
+    // Consume complete armor, including traditional encrypted-PEM metadata
+    // and blank lines. The hard character ceiling bounds malformed input.
+    find: completePemArmor,
+    markers: ['-----BEGIN '],
+  },
+  {
+    // A truncated PEM has no trustworthy content boundary. Fail closed by
+    // removing the bounded remainder instead of exposing key material after
+    // merely replacing the BEGIN line.
+    find: truncatedPemArmor,
+    markers: [],
+  },
   { source: String.raw`\bxox[a-z]-[a-z0-9-]{20,}\b`, flags: 'i', markers: ['xox'] },
   { source: String.raw`\bxapp-[a-z0-9-]{20,}\b`, flags: 'i', markers: ['xapp-'] },
   { source: String.raw`\bsk-ant-[a-z0-9_-]{20,}\b`, flags: 'i', markers: ['sk-ant-'] },
@@ -31,19 +48,6 @@ const CREDENTIAL_SIGNATURES: readonly (
   },
   { source: String.raw`\b(?:AKIA|ASIA)[A-Z0-9]{16}\b`, flags: '', markers: ['AKIA', 'ASIA'] },
   { source: String.raw`\bbb_(?:live|test)_[a-z0-9_-]{8,}`, flags: 'i', markers: ['bb_live_', 'bb_test_'] },
-  {
-    // Consume complete armor, including traditional encrypted-PEM metadata
-    // and blank lines. The hard character ceiling bounds malformed input.
-    find: completePemArmor,
-    markers: ['-----BEGIN '],
-  },
-  {
-    // A truncated PEM has no trustworthy content boundary. Fail closed by
-    // removing the bounded remainder instead of exposing key material after
-    // merely replacing the BEGIN line.
-    find: truncatedPemArmor,
-    markers: [],
-  },
   {
     source: String.raw`\b(?:CHICKPEA_(?:AUTH_SECRET|RECOVERY_TOKEN|CREDENTIAL_KEY_[A-Z0-9_]+)|TAG_ADMIN_TOKEN|ADMIN_TOKEN|SLACK_(?:BOT|APP)_TOKEN|ANTHROPIC_API_KEY|OPENAI_API_KEY|COMPOSIO_(?:API_KEY|WEBHOOK_SECRET)|GITHUB_TOKEN|BROWSERBASE_API_KEY)\s*=\s*[^\s]{8,}`,
     flags: 'i',
@@ -92,7 +96,7 @@ export function redactCredentialLikeContent(text: string): string {
   return traceCredentialRedaction(text).text;
 }
 
-const CREDENTIAL_REPLACEMENT = '[credential redacted]';
+export const CREDENTIAL_REPLACEMENT = '[credential redacted]';
 
 /**
  * `redactCredentialLikeContent(text)`, and `source(at)`: where the character
