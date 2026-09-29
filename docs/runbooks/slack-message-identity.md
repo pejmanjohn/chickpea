@@ -181,37 +181,46 @@ earlier build recomputes its first message without the header cost; for a
 header-dense answer, that first message can end away from where the stored
 follow-ups begin (rollback only).
 
-Holding a link, `<...>` reference, or `**` emphasis back from the stream only
-covers the line still being written. An emphasis or link label that
+### What streams before the answer ends
+
+Each rewrite `canonicalSlackMarkdownText` makes stays on one line, reading
+lines as redaction leaves them:
+
+- Link sanitizing pairs `**` within a line, and it reads code the way
+  mention neutralization does: a fence that has not closed runs to the end.
+- No credential signature except PEM armor crosses a line break. An
+  assignment's value sits on its name's line, so `NAME=` with the value on
+  the next line redacts nothing unless the value matches a signature of its
+  own.
+- Mention neutralization pairs inline code and `<…>` within a line.
+
+PEM armor goes with its line breaks, so the text around a block reads as one
+line, and a block that has not closed runs to the end. So a line cannot
+change once it ends, and `streamableSlackMarkdownPrefix` streams two things:
+
+- Every complete line.
+- On the line still being written, complete words (each ended by a space)
+  before its first markup that has not closed and before any credential
+  marker. Markup is `*`, a backtick, `<`, `[` or `|`.
+
+Three kinds of markup count as closed: bold the link sanitizer keeps, a
+closed inline code span, and a complete link. A `**URL**` span does not,
+because the answer drops its stars.
+
+The last word waits for the space or line break that ends it: `sk` may
+still become `sk-proj-…`. A line with an open link, table row, `<…>`
+reference or italic streams when it ends. An emphasis or link label that
 continues onto a later line streams its opening literally until it closes;
 whether Slack re-renders it when it closes is still to be confirmed live.
-Any hold (a credential, a mention, an open `[` or `<`) that lands inside a URL
-emphasis span the text has already closed moves back to that span's opening
-`**`, because the whole answer drops the pair and the stream must not show it.
-Dropping the pair also joins the words on either side of each `**`
-(`**https://x @here**b` reads `https://x @hereb`), so credential and mention
-holds judge the text as it reads without those stars, and the text before a
-`**` that may still be dropped is held as if the stream ended there.
 
-A hold can pull the cut back onto another hold. The cut's own last `<` and
-trailing `@` word are judged by the answer after the cut, read only before
-the answer's unsafe tail: a `<` that cannot start a special mention and an
-`@` word the answer neutralizes as the cut does are not held. One line of
-`a < b < c …`, back-to-back `` `<` ``, fenced lines starting `<a`, and
-back-to-back `**https://x @h**` spans (the answer reads `@hhttps`) stream as
-in v0.1.29; v0.1.30 judged the cut alone and held each back to its start.
-A cut that would close a `**URL**` span after a backtick it leaves open
-stops before the span's closing `**` when the answer keeps those stars as
-code, and at its opener when the answer drops them.
+The function scans the text once per chunk, with no pass limit and no
+give-up.
 
-A run that must hold still pulls the cut back one unit per pass:
-back-to-back `**https://x @here_**` would show `@⁠here_` at every span
-boundary, where the answer reads `@here_https`. In v0.1.30 every pass
-rescanned the whole answer, so streaming 12,000 characters of
-`**https://x @h**` took about 22 s of CPU. A chunk whose cut needs more than
-four passes streams nothing new: the stream keeps what it shows and
-continues once the run ends. Text before such a run on the same line waits
-with it.
+A safe prefix that no longer extends what Slack shows freezes the stream.
+Only a formatter change between builds can cause that. Finalization then
+continues the stream, or corrects it with `_Corrected_`. A correction logs
+how many bytes had streamed and whether the answer redacts a credential
+inside them.
 
 ### Broadcast and user-group mentions
 
@@ -254,19 +263,11 @@ sanitizing and credential redaction. `neutralizeSlackBroadcastMentions` in
   not been probed for mention parsing.
 
 User mentions (`<@U…>`), Channel links, `<!date^…>`, `<!DOCTYPE …>`, CDATA and
-email addresses are unchanged. Streaming withholds an open `<…` on the last
-line, a trailing `@` that could still grow into a broadcast word (or a
-broadcast word followed by an `_` run), and a mention inside an inline code
-span that has not closed, so each streamed prefix is a prefix of the
-neutralized final. A backtick inside a special mention (`` <!here|`> ``)
-holds the mention too, since the mention splits once the backtick pairs.
-These holds read the text as credential redaction leaves it, because
-neutralization runs after redaction. Redaction can remove a backtick or a
-line break, such as an assignment value that runs through a backtick or a
-PEM block's line breaks. That pairs code, and joins `<…>` references, in a
-different way. So an open `<`, or a mention after an unpaired backtick,
-that precedes a PEM block on its BEGIN line waits until the block's END line
-arrives.
+email addresses are unchanged. Streaming shows a word only once nothing
+later can change how it neutralizes: a `<`, or a backtick that has not
+closed, holds the rest of its line, and an `@` word waits for the space that
+ends it (see [What streams before the answer ends](#what-streams-before-the-answer-ends)).
+So each streamed prefix is a prefix of the neutralized final.
 
 A stream opened by an earlier build that already showed a raw mention diverges
 from the new final; the divergent-stream correction replaces it.

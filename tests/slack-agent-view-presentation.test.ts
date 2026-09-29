@@ -708,8 +708,9 @@ test('ordinary eligible answers start once, append ordered suffixes, and stop on
     );
     assert.ok(h.calls.filter((call) => call.method === 'chat.appendStream').length <= 1);
     assert.equal(h.calls.filter((call) => call.method === 'chat.stopStream').length, 1);
+    // The last word streams with the stop, once nothing can follow it.
     const visible = h.calls
-      .filter((call) => call.method === 'chat.startStream' || call.method === 'chat.appendStream')
+      .filter((call) => ['chat.startStream', 'chat.appendStream', 'chat.stopStream'].includes(call.method))
       .flatMap((call) => {
         // Slack fixes a stream's mode at start, so every write uses chunks.
         assert.equal(call.input.markdown_text, undefined);
@@ -731,7 +732,8 @@ test('ordinary eligible answers start once, append ordered suffixes, and stop on
     ]);
     assert.equal(h.finalizationRecords.length, 1);
     assert.equal(h.finalizationRecords[0]?.policyOutcome, 'requested_progressive');
-    assert.equal(h.finalizationRecords[0]?.acceptedBytes, 24);
+    // `world.` could still grow, so it waited for the stop.
+    assert.equal(h.finalizationRecords[0]?.acceptedBytes, 'Hello progressive'.length);
     assert.equal(JSON.stringify(h.finalizationRecords).includes('Hello progressive world.'), false);
   } finally {
     h.db.close();
@@ -2520,7 +2522,7 @@ test('a final-answer declaration streams after an activity message without retir
       '## Result\n\nThe final answer streams.', 'markdown', 'complete', observer([]),
     );
     const visible = h.calls
-      .filter((call) => call.method === 'chat.startStream' || call.method === 'chat.appendStream')
+      .filter((call) => ['chat.startStream', 'chat.appendStream', 'chat.stopStream'].includes(call.method))
       .flatMap((call) => ((call.input.chunks ?? []) as Array<{ type: string; text?: string }>)
         .filter((chunk) => chunk.type === 'markdown_text')
         .map((chunk) => chunk.text ?? ''))

@@ -759,8 +759,8 @@ class TerminalStepText {
         continue;
       }
       const joined = bound === undefined ? undefined : joinContinuation(answer, part);
-      // A hold that shows nothing may have given up on a long run in the
-      // joined tail; the whole answer is what the bound must then begin.
+      // A hold that shows nothing has no settled line yet; the whole answer
+      // is what the bound must then begin.
       if (joined && (joined.trimmedChars === 0 || !streamed ||
           (streamableSlackMarkdownPrefix(joined.text) || canonicalSlackMarkdownText(joined.text))
             .startsWith(bound!))) {
