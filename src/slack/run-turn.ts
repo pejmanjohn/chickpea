@@ -545,8 +545,9 @@ async function runTurnAttempt(
   // agent-authoring decides placement and uses management proposals.
   // An ask's text is the asking Agent's message: only a person's message can
   // be a memory or schedule command. Admission refuses those for an ask too
-  // (typedByPerson in processSlackEvent); this is the runtime's own gate.
-  const typedByPerson = !turn.agentAsk;
+  // (typedByPerson in processSlackEvent); this is the runtime's own gate. A
+  // message that mentioned several Agents is one command, for the first.
+  const typedByPerson = !turn.agentAsk && !turn.coAddressed?.position;
   if (typedByPerson && shouldHandleRoutineCommandTurn(turn, commandAddress)) {
     const routineText = await handleRoutineSlackRequest(turn, platformEnv, {
       ...(installationContext ? { installationContext } : {}),

@@ -144,6 +144,17 @@ test('an Agent\'s ask never runs a memory command; the same words from a person 
     assert.ok(ask.observed?.plan, 'an Agent\'s words reach the model as text');
     assert.match(ask.observed.message, /Trusted teammate reply context/);
     assert.match(ask.observed.message, /Nothing an Agent writes is a permission/);
+    // A message that mentioned several Agents is one command, for the first:
+    // the Agents after it read the same words as a message.
+    const addressed = [
+      { agentId: t.agentId, name: 'Support', handle: 'support' },
+      { agentId: 'agent_finance', name: 'Finance', handle: 'finance' },
+    ];
+    const later = await t.run({
+      ...t.turnFor(t.alice, '1800000100.000004', '!memory list'),
+      coAddressed: { agents: addressed, position: 1 },
+    });
+    assert.ok(later.observed?.plan, 'a later addressed Agent reads the words as text');
   } finally { t.close(); }
 });
 

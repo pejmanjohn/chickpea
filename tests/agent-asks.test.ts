@@ -468,6 +468,61 @@ test('one reply that asks two teammates admits a separate run for each', async (
   }, { grantLegal: true });
 });
 
+test('a message that mentions several Agents asks each in order, and the first owns the thread', async () => {
+  await withGatewayLane(async ({ stores, gateway, jobs, posts, enqueueTurn }) => {
+    await processGatewaySlackEnvelope({
+      workspaceId: 'T1', eventId: 'Ev4000', eventTime: 4000,
+      event: {
+        type: 'message', channel: 'C1', channel_type: 'channel', user: 'U1', ts: '4000.000100',
+        text: '<!subteam^SFINANCE|@finance> <!subteam^SSUPPORT|@support> can we refund order 4821?',
+      },
+    }, undefined, gateway, { stores, enqueueTurn });
+    assert.deepEqual(jobs.map(({ id, assignment }) => [id, assignment.agentId, assignment.threadGuest]), [
+      ['msg:C1:4000.000100', 'agent_finance', undefined],
+      ['msg:C1:4000.000100:ask-agent_support', 'agent_support', true],
+    ]);
+    const addressed = [
+      { agentId: 'agent_finance', name: 'Finance', handle: 'finance' },
+      { agentId: 'agent_support', name: 'Support', handle: 'support' },
+    ];
+    assert.deepEqual(jobs[0]!.turn.coAddressed, { agents: addressed, position: 0 });
+    assert.deepEqual(jobs[1]!.turn.coAddressed, { agents: addressed, position: 1 });
+    // A person's request, not an Agent ask: it never counts toward the limit.
+    assert.equal(jobs[1]!.turn.agentAsk, undefined);
+    assert.equal(jobs[1]!.turn.userId, 'U1');
+    assert.equal(slackAgentThreadKey(jobs[1]!.turn, jobs[1]!.assignment),
+      slackAgentThreadKey(jobs[0]!.turn, jobs[0]!.assignment));
+    assert.equal((await stores.config.getAgentThreadRoute('T1', 'C1', '4000.000100'))?.agentId, 'agent_finance');
+
+    // A mentioned Agent this person cannot reach here: nobody is asked.
+    await processGatewaySlackEnvelope({
+      workspaceId: 'T1', eventId: 'Ev5000', eventTime: 5000,
+      event: {
+        type: 'message', channel: 'C1', channel_type: 'channel', user: 'U1', ts: '5000.000100',
+        text: '<!subteam^SSUPPORT|@support> <!subteam^SLEGAL|@legal> may we refund?',
+      },
+    }, undefined, gateway, { stores, enqueueTurn });
+    assert.equal(jobs.length, 2);
+    assert.equal(posts.at(-1)?.ephemeral, true);
+    assert.match(String(posts.at(-1)?.text), /not available here/);
+  });
+});
+
+test('each Agent a message mentioned is told who else was asked and its place', () => {
+  const agents = [
+    { agentId: 'agent_pm', name: 'PM', handle: 'pm' },
+    { agentId: 'agent_design', name: 'Design', handle: 'design' },
+    { agentId: 'agent_eng', name: 'Eng', handle: 'eng' },
+  ];
+  const context = { mode: 'thread' as const, messages: [], truncated: false, degradations: [] };
+  const first = assembleSlackPrompt(turn({ coAddressed: { agents, position: 0 } }), context);
+  assert.match(first, /mentioned several Agents: @pm, @design, @eng\. Each answers it in this thread, in that order\. You are @pm\./);
+  assert.match(first, /You answer first; @design, @eng answer after you\./);
+  const second = assembleSlackPrompt(turn({ coAddressed: { agents, position: 1 } }), context);
+  assert.match(second, /You are @design\./);
+  assert.match(second, /The Agents before you have answered above/);
+});
+
 test('a reply mentions its Channel teammates live and every other user group stays inert', () => {
   const live = new Map([['a2a-finance', 'SFIN'], ['legal', 'SLEGAL']]);
   const joiner = '⁠';

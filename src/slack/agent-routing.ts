@@ -28,7 +28,6 @@ type AgentRouteSource =
 
 type AgentRoutingDenialReason =
   | 'not_available'
-  | 'multiple_agents'
   | 'member_required'
   | 'installation_unavailable'
   | 'temporarily_unavailable';
@@ -42,7 +41,7 @@ interface AgentRouteAlternative {
 export type AgentRoutingResult =
   | { kind: 'ignore' }
   | {
-      kind: 'denied' | 'ambiguous';
+      kind: 'denied';
       reason: AgentRoutingDenialReason;
       alternatives: AgentRouteAlternative[];
     }
@@ -55,6 +54,11 @@ export type AgentRoutingResult =
       routeChanged: boolean;
       previousAgentId?: string;
       handoffFallbackRequired?: boolean;
+      /**
+       * The other Agents one person's message mentioned, in mention order
+       * after the routed first one. Each answers after it, as a guest.
+       */
+      alsoAddressed?: CustomAgentConfig[];
     };
 
 export interface AgentRoutingActor {
@@ -259,8 +263,24 @@ export async function resolveAgentRoute(
   if (mentionedAgents.length !== mentionedGroupIds.length) {
     return denied('not_available', []);
   }
-  if (mentionedAgents.length > 1) {
-    return denied('multiple_agents', available, 'ambiguous');
+  // Several handles address each of those Agents, in order: the first takes
+  // the thread and the rest answer after it. Every one must be reachable by
+  // this person here, or none is asked.
+  const addressed = mentionedAgents.slice(0, MAX_ADDRESSED_AGENTS);
+  if (addressed.length > 1 && !input.appHomeAgentId) {
+    for (const agent of addressed) {
+      const access = await agentAccess({
+        agent,
+        surface,
+        actor,
+        activeGrants,
+        workspaceManagementRoute: false,
+        ...(input.authorizeUserAgent ? { authorizeUserAgent: input.authorizeUserAgent } : {}),
+      });
+      if (access !== 'allowed') {
+        return denied('not_available', access === 'private_denied' ? [] : available);
+      }
+    }
   }
 
   let source: AgentRouteSource;
@@ -310,7 +330,7 @@ export async function resolveAgentRoute(
     return denied('not_available', access === 'private_denied' ? [] : available);
   }
 
-  return withTeammates(await commitSelectedAgentRoute({
+  const routed = withTeammates(await commitSelectedAgentRoute({
     turn,
     surface,
     config,
@@ -320,6 +340,9 @@ export async function resolveAgentRoute(
     activeGrants,
     currentRoute,
   }));
+  return source === 'agent_handle' && addressed.length > 1
+    ? { ...routed, alsoAddressed: addressed.slice(1) }
+    : routed;
 }
 
 /**
@@ -557,6 +580,9 @@ async function availableAlternatives(
     .sort((left, right) => left.name.localeCompare(right.name));
 }
 
+/** Agents one person's message can address; later handles are not asked. */
+export const MAX_ADDRESSED_AGENTS = 6;
+
 /** Most teammates one Agent is told about. */
 const MAX_CHANNEL_TEAMMATES = 20;
 
@@ -609,7 +635,6 @@ function assignmentForAgent(
 function denied(
   reason: AgentRoutingDenialReason,
   alternatives: AgentRouteAlternative[],
-  kind: 'denied' | 'ambiguous' = 'denied',
-): Extract<AgentRoutingResult, { kind: 'denied' | 'ambiguous' }> {
-  return { kind, reason, alternatives };
+): Extract<AgentRoutingResult, { kind: 'denied' }> {
+  return { kind: 'denied', reason, alternatives };
 }

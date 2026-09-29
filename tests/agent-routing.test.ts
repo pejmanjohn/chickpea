@@ -789,17 +789,45 @@ test('a non-member Channel denial never enumerates Agent alternatives', async ()
   }
 });
 
-test('multiple Agent handles are ambiguous and root messages without an address are ignored', async () => {
-  const { store } = await fixture();
+test('several Agent handles address each Agent in order, and root messages without an address are ignored', async () => {
+  const { store, support, finance } = await fixture();
   try {
-    const ambiguous = await resolveAgentRoute({
-      turn: turn({ text: '<!subteam^SSUPPORT> meet <!subteam^SFINANCE>' }),
-      surface: 'channel', actor: { channelMember: true, fullMember: true }, config: store,
+    const actor = { channelMember: true, fullMember: true };
+    const both = await resolveAgentRoute({
+      turn: turn({ text: '<!subteam^SFINANCE> and <!subteam^SSUPPORT> please compare notes' }),
+      surface: 'channel', actor, config: store,
     });
-    assert.equal(ambiguous.kind, 'ambiguous');
+    assert.equal(both.kind, 'routed');
+    if (both.kind !== 'routed') return;
+    // The first handle takes the thread; the rest answer after it.
+    assert.equal(both.assignment.agentId, finance.id);
+    assert.deepEqual(both.alsoAddressed?.map(({ id }) => id), [support.id]);
+    assert.equal((await store.getAgentThreadRoute('T1', 'C1', '100.1'))?.agentId, finance.id);
+
+    // One mentioned Agent this person cannot reach here: nobody is asked.
+    await store.createAgent({
+      id: 'agent_legal', name: 'Legal', instructions: 'Legal.', enabled: true, lifecycle: 'active',
+      creatorMembershipId: 'membership_owner', editPolicy: 'creator_and_admins',
+      model: 'local-stub/legal', skills: [], mcpServers: [], apiConnections: [], repositories: [],
+      slackPresence: {
+        requestedHandle: 'legal', normalizedHandle: 'legal', desiredState: 'active',
+        health: 'healthy', userGroupId: 'SLEGAL',
+        avatar: { kind: 'generated', revision: 1, seed: 'legal' },
+      },
+    });
+    const withUngranted = await resolveAgentRoute({
+      turn: turn({
+        eventId: 'Ev2', messageTs: '102.1', threadTs: '102.1',
+        text: '<!subteam^SSUPPORT> <!subteam^SLEGAL> can we refund?',
+      }),
+      surface: 'channel', actor, config: store,
+    });
+    assert.equal(withUngranted.kind, 'denied');
+    assert.equal(await store.getAgentThreadRoute('T1', 'C1', '102.1'), undefined);
+
     const ignored = await resolveAgentRoute({
-      turn: turn({ text: 'hello everyone' }), surface: 'channel',
-      actor: { channelMember: true, fullMember: true }, config: store,
+      turn: turn({ eventId: 'Ev3', messageTs: '103.1', threadTs: '103.1', text: 'hello everyone' }),
+      surface: 'channel', actor, config: store,
     });
     assert.equal(ignored.kind, 'ignore');
   } finally {
