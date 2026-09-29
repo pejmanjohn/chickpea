@@ -160,15 +160,18 @@ export function slackImageRefs(files: unknown): SlackPublicContextImage[] {
   if (!Array.isArray(files)) return [];
   return files.flatMap((file) => {
     const record = fileRecord(file, { conversationKey: '', origin: 'person', messageTs: '' });
-    return record
-      ? [{
-        id: record.fileId,
-        name: record.filename,
-        mimeType: record.mimeType,
-        ...(record.byteLength !== undefined ? { sizeBytes: record.byteLength } : {}),
-      }]
-      : [];
+    return record ? [threadImageRef(record)] : [];
   });
+}
+
+/** The reference the thread record keeps for an image record. */
+export function threadImageRef(record: ThreadImageRecord): SlackPublicContextImage {
+  return {
+    id: record.fileId,
+    name: record.filename,
+    mimeType: record.mimeType,
+    ...(record.byteLength !== undefined ? { sizeBytes: record.byteLength } : {}),
+  };
 }
 
 /**

@@ -3528,17 +3528,17 @@ export function turnRequiresOwnedThread(turn: Pick<NormalizedSlackTurn, 'source'
   return turn.source === 'implicit_thread_reply' && parseAgentUserGroupMentions(turn.text).length === 0;
 }
 
+/** A Slack event's files, for the image references the thread record keeps. */
+function slackEventFiles(event: SlackEventFixture['event']): unknown {
+  return 'files' in event ? event.files : undefined;
+}
+
 /**
  * Keep a Slack-visible reply in the thread record when an Agent is part of
  * that thread: people who did not address the Agent, guests, apps and alert
  * bots, other AI agents. Nothing is kept for threads no Agent is in. A
  * record write that fails loses only this context row, never the event.
  */
-/** A Slack event's files, for the image references the thread record keeps. */
-function slackEventFiles(event: SlackEventFixture['event']): unknown {
-  return 'files' in event ? event.files : undefined;
-}
-
 async function recordAgentThreadMessage(
   config: Pick<ConfigStore, 'getAgentThreadRoute' | 'putSlackPublicContext'>,
   workspaceId: string,

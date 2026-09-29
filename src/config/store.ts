@@ -1613,16 +1613,26 @@ export class ConfigStoreLogic {
     const watermark = Number(input.beforeMessageTs);
     if (!Number.isFinite(watermark) || !Number.isFinite(input.limit) || input.limit <= 0) return [];
     const limit = Math.min(Math.floor(input.limit), MAX_SLACK_PUBLIC_HANDOFF_MESSAGES);
-    this.pruneExpiredSlackPublicContext(Date.now());
+    const now = Date.now();
+    this.pruneExpiredSlackPublicContext(now);
+    // Only threads still within retention, as the throttled sweep may lag.
     return this.db.all(
       `SELECT * FROM config_slack_public_context
        WHERE workspace_id = ? AND channel_id = ? AND role = 'agent' AND agent_id = ?
          AND CAST(message_ts AS REAL) <= ?
+         AND root_ts IN (
+           SELECT root_ts FROM config_slack_public_context
+           WHERE workspace_id = ? AND channel_id = ?
+           GROUP BY root_ts HAVING MAX(updated_at) >= ?
+         )
        ORDER BY CAST(message_ts AS REAL) DESC, message_ts DESC LIMIT ?`,
       input.workspaceId,
       input.channelId,
       input.agentId,
       watermark,
+      input.workspaceId,
+      input.channelId,
+      now - SLACK_PUBLIC_CONTEXT_RETENTION_MS,
       limit,
     ).map((row) => rowToSlackPublicContext(row as unknown as SlackPublicContextRow));
   }

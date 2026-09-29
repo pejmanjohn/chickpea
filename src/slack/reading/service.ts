@@ -19,7 +19,12 @@ import {
 } from '../thread-context.ts';
 import { collectThreadImageRecords, slackThreadImageConversationKey } from '../thread-images.ts';
 import { SLACK_USER_ID } from '../ui/text.ts';
-import { authorizeSlackRead, type AuthorizedSlackConversation, type SlackReadAuthorityPorts } from './authority.ts';
+import {
+  assertCurrentConversationNotShared,
+  authorizeSlackRead,
+  type AuthorizedSlackConversation,
+  type SlackReadAuthorityPorts,
+} from './authority.ts';
 import { isConversationUnavailableError, SlackReadError } from './errors.ts';
 import { SLACK_MESSAGE_TS, type SlackReadTarget } from './links.ts';
 
@@ -126,7 +131,8 @@ export class SlackReadingService {
       const visible = messages.filter((row) => atOrBeforeSlackWatermark(row.ts, current.messageTs));
       withheld = messages.length - visible.length;
       messages = visible;
-      await this.seedCurrentThread(messages, raw, Boolean(nextCursor));
+      // Only the first page starts at the root and says what lies before its replies.
+      await this.seedCurrentThread(messages, raw, !slackCursor && Boolean(nextCursor));
     }
     return this.result('ok', {
       conversation: conversationSummary(conversation),
@@ -191,9 +197,7 @@ export class SlackReadingService {
     // The app's own DM with the requester is not shared (and the app has no
     // im:read to ask); any other conversation fails closed.
     if (!authority.current.channelId.startsWith('D')) {
-      const current = await authority.conversation(authority.current.channelId);
-      if (!current) throw new SlackReadError('unavailable');
-      if (current.shared) throw new SlackReadError('shared_conversation_only', SHARED_LOOKUP_MESSAGE);
+      await assertCurrentConversationNotShared(authority, SHARED_LOOKUP_MESSAGE);
     }
     input.signal?.throwIfAborted();
     this.lookups += 1;
@@ -307,7 +311,7 @@ export class SlackReadingService {
     }, await this.rows(messages), undefined);
   }
 
-  /** `truncated`: Slack has more replies than this page, so the record marks what it is missing. */
+  /** `truncated`: Slack has more replies than this first page; on the shared app the record marks the gap. */
   private async seedCurrentThread(
     messages: SlackContextMessage[],
     raw: SlackWebApiMessage[],
@@ -329,7 +333,7 @@ export class SlackReadingService {
       const images = collectThreadImageRecords(raw, slackThreadImageConversationKey(turn));
       await seedSlackThreadRecord(record, turn, {
         mode: 'thread', messages: context, truncated, degradations: [], ...(images.length ? { images } : {}),
-      });
+      }, { cappedRead: this.options.gate.gated });
     } catch {
       console.warn('[chickpea] thread record seed from a Slack read failed');
     }

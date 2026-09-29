@@ -80,10 +80,7 @@ export async function authorizeSlackRead(
     };
   }
   if (ports.managementAgent) throw new SlackReadError('current_conversation_only');
-
-  const current = await ports.conversation(ports.current.channelId);
-  if (!current) throw new SlackReadError('unavailable');
-  if (current.shared) throw new SlackReadError('shared_conversation_only');
+  await assertCurrentConversationNotShared(ports);
 
   const target = await ports.conversation(channelId);
   if (!target || target.im || target.mpim) throw new SlackReadError('not_available');
@@ -99,6 +96,20 @@ export async function authorizeSlackRead(
     kind: conversationKind(target),
     current: false,
   };
+}
+
+/**
+ * Rule 4, for anything read or looked up beyond the current conversation:
+ * unknown facts fail closed, and a Slack Connect or org-shared conversation
+ * refuses with `message` or the standard text.
+ */
+export async function assertCurrentConversationNotShared(
+  ports: Pick<SlackReadAuthorityPorts, 'conversation' | 'current'>,
+  message?: string,
+): Promise<void> {
+  const current = await ports.conversation(ports.current.channelId);
+  if (!current) throw new SlackReadError('unavailable');
+  if (current.shared) throw new SlackReadError('shared_conversation_only', message);
 }
 
 /** conversations.info's channel object as authority facts. */

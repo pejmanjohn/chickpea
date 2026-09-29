@@ -74,7 +74,7 @@ export async function hydrateTurnSlackContext(input: {
         { seedSlackPublicContext: input.record.seedSlackPublicContext.bind(input.record) },
         turn,
         context,
-        new Set(threadRecord?.map((entry) => entry.messageTs)),
+        { held: new Set(threadRecord?.map((entry) => entry.messageTs)), cappedRead: gated },
       );
     } catch {
       // The record is an optimization over Slack reads; a write that cannot

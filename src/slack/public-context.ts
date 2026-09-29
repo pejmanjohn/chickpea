@@ -8,7 +8,7 @@ import type {
 import { MAX_SLACK_PUBLIC_HANDOFF_MESSAGES } from '../config/types.ts';
 import type { NormalizedSlackTurn, SlackMessageEvent } from './types.ts';
 import { slackFileSummaries, slackMessageText } from './message-text.ts';
-import { slackImageRefs } from './thread-images.ts';
+import { slackImageRefs, threadImageRef } from './thread-images.ts';
 import {
   atOrBeforeSlackWatermark, DEFAULT_MAX_MESSAGES, ensureTriggerMessage, orderMessages,
   slackTimestampUnits, toContextMessage, type SlackContextMessage, type SlackContextSelf,
@@ -125,26 +125,28 @@ export async function recordSlackThreadEventMessage(
  * the delivery path, which knows which Agent wrote them. Rows the record
  * already holds (`held`) are not sent again.
  *
- * A read that could not reach every reply (the shared app returns the root
- * and only the newest replies) marks the root with `gapBeforeTs`, so a later
- * turn that reads the record instead of Slack still says what it is missing.
+ * The shared app's capped read (`cappedRead`) returns the root and only the
+ * newest replies. When it could not reach every reply, the root is marked
+ * with `gapBeforeTs`, so a later turn that reads the record instead of Slack
+ * still says what it is missing. The install's own app pages oldest first,
+ * so its gaps are newer replies, which the record captures as they arrive.
  */
 export async function seedSlackThreadRecord(
   store: SlackPublicContextSeeder,
   turn: Pick<NormalizedSlackTurn, 'workspaceId' | 'channelId' | 'threadTs' | 'messageTs' | 'contextMode'>,
   context: SlackTurnContext,
-  held: ReadonlySet<string> = new Set(),
+  options: { held?: ReadonlySet<string>; cappedRead?: boolean } = {},
 ): Promise<number> {
   if (turn.contextMode !== 'thread') return 0;
   const seeded = context.messages
     .filter((message) => !message.isTrigger && message.rootTs === turn.threadTs &&
       (message.role === 'human' || message.role === 'app'))
     .slice(-MAX_SEEDED_THREAD_ROWS);
-  const gapBeforeTs = context.truncated
+  const gapBeforeTs = options.cappedRead && context.truncated
     ? seeded.find((message) => message.ts !== turn.threadTs)?.ts ?? turn.messageTs
     : undefined;
   const inputs = seeded
-    .filter((message) => !held.has(message.ts))
+    .filter((message) => !options.held?.has(message.ts))
     .map((message) => ({
       ...threadRecordInput(
         turn.workspaceId, turn.channelId, turn.threadTs, message, imageRefsFor(context, message.ts),
@@ -155,12 +157,7 @@ export async function seedSlackThreadRecord(
 }
 
 function imageRefsFor(context: SlackTurnContext, messageTs: string): SlackPublicContextImage[] {
-  return (context.images ?? []).filter((image) => image.messageTs === messageTs).map((image) => ({
-    id: image.fileId,
-    name: image.filename,
-    mimeType: image.mimeType,
-    ...(image.byteLength !== undefined ? { sizeBytes: image.byteLength } : {}),
-  }));
+  return (context.images ?? []).filter((image) => image.messageTs === messageTs).map(threadImageRef);
 }
 
 /** Kept below the record's own 200-row bound, so a seed never evicts captured rows. */
