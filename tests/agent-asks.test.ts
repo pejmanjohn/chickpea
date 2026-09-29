@@ -253,7 +253,7 @@ test('teammate instructions name whom an Agent can ask and how', () => {
   assert.match(text!, /After the last one answers, you read every answer and give the person one combined answer\./);
   assert.match(text!, /Refer to teammates by name there, without @, so it asks nobody\./);
   assert.match(text!, /Teammates here: "Finance" \(@finance\), "Legal" \(@legal\)\./);
-  // A guest is answered back only when it asks to be mentioned.
+  // A guest gets the answer only when it asks to be mentioned.
   const guest = agentTeammateInstructions({
     threadGuest: true,
     channelTeammates: [{ name: 'Finance', handle: 'finance', userGroupId: 'SFINANCE' }],
@@ -661,6 +661,34 @@ test('a chained ask carries the thread\'s Agent, and its answer comes back to it
     assert.equal(jobs[3]!.turn.agentAsk?.handedBack, true);
     assert.equal(posts.length, 0);
   }, { grantLegal: true });
+});
+
+test('a handed-back answer is dropped when a person gave the thread to another Agent meanwhile', async () => {
+  await withGatewayLane(async ({ stores, gateway, jobs, posts, enqueueTurn }) => {
+    await processGatewaySlackEnvelope({
+      workspaceId: 'T1', eventId: 'Ev8300', eventTime: 8300,
+      event: {
+        type: 'message', channel: 'C1', channel_type: 'channel', user: 'U1', ts: '8300.000100',
+        text: '<!subteam^SSUPPORT|@support> how much was each charge on order 4821?',
+      },
+    }, undefined, gateway, { stores, enqueueTurn });
+    await processSlackAgentAsks({
+      turn: jobs[0]!.turn, fromAgentId: 'agent_support', fromThreadOwner: true,
+      deliveries: [{ messageTs: '8300.000200', text: '@finance how much was each charge?' }],
+    }, undefined, { stores, gatewayClient: gateway, enqueueTurn });
+    const financeJob = jobs[1]!;
+    // A person hands the thread to Finance before Finance answers.
+    const route = (await stores.config.getAgentThreadRoute('T1', 'C1', '8300.000100'))!;
+    await stores.config.putAgentThreadRoute({ ...route, agentId: 'agent_finance' }, route.revision);
+    const state = stores.slackState as unknown as { recordTurnAttempt(id: string, n: number): Promise<void> };
+    await state.recordTurnAttempt(financeJob.id, 1);
+    await processSlackAgentAsks({
+      turn: financeJob.turn, fromAgentId: 'agent_finance', deliveries: [],
+      answer: { messageTs: '8300.000300', text: 'Each charge was $129.' },
+    }, undefined, { stores, gatewayClient: gateway, enqueueTurn });
+    assert.equal(jobs.length, 2, 'Support, no longer the thread\'s Agent, is not handed the answer');
+    assert.equal(posts.length, 0);
+  });
 });
 
 test('a handed-back answer past the exchange limit waits for a person, without a pause note', async () => {

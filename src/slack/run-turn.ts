@@ -1677,7 +1677,7 @@ async function runTurnAttempt(
         ? { previousRunStopped: { stopperUserId: options.previousStop.stopperUserId } }
         : {}),
       // The thread's own Agent reads a teammate's message as its answer; a
-      // guest reads it as a question. Each reads the ask differently.
+      // guest reads it as a question.
       ...(turn.agentAsk ? { askedAsThreadOwner: assignment.threadGuest !== true } : {}),
       ...(installationContext
         ? {

@@ -1140,10 +1140,11 @@ const AGENT_ASK_ADMISSION_ATTEMPTS = 3;
  * turn in the same thread. Each turn is admitted like a person's message in
  * that thread, with that person's access, except that no human-only command
  * (approve, stop, check-in, memory) can come from it and it never takes the
- * thread over. A guest's answer to the thread's own Agent that asks nobody
- * is handed back to that Agent the same way, so it can finish the person's
- * request (or stay silent). Only the thread's own Agent is answered back, so
- * this never loops. Runs where the asking turn ran; failures are logged.
+ * thread over. A guest's answer that asks nobody, in a chain the thread's
+ * own Agent started, is handed back to that Agent the same way, so it can
+ * finish the person's request (or stay silent). Only the thread's own Agent
+ * is handed answers, and its own reply hands nothing back, so this never
+ * loops. Runs where the asking turn ran; failures are logged.
  */
 export async function processSlackAgentAsks(
   request: SlackAgentAskRequest,
@@ -1184,8 +1185,10 @@ export async function processSlackAgentAsks(
   let handedBack = false;
   if (targets.length === 0 && request.answer && threadOwnerAgentId) {
     const owner = agents.find((agent) => agent.id === threadOwnerAgentId);
-    if (owner) targets.push({ agent: owner, delivery: request.answer });
-    handedBack = true;
+    if (owner) {
+      targets.push({ agent: owner, delivery: request.answer });
+      handedBack = true;
+    }
   }
   if (targets.length === 0) return;
 
@@ -2549,6 +2552,14 @@ async function processSlackEvent(
     }
   }
 
+  // A person handed the thread to another Agent while the chain was out: the
+  // answer is already in the thread for that Agent, and nobody is owed it.
+  if (turn.agentAsk?.handedBack && assignment.threadGuest === true) {
+    console.info('[chickpea] handed-back answer dropped: the thread has a new Agent');
+    await state.claim(evtKey);
+    await state.claim(msgKey);
+    return;
+  }
   // The thread's own Agent, handed a teammate's answer, replies or stays
   // silent: it never opens a checklist or reacts instead.
   const handedBack = isHandedBackTurn(turn, assignment);
