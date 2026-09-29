@@ -1,7 +1,9 @@
 import type { ThreadImageRecord } from './thread-images.ts';
 import type { NormalizedSlackTurn, SlackContextMode } from './types.ts';
 import { isSlackContextMessageSubtype } from './message-subtypes.ts';
-import { slackFileSummaries, slackMessageText, type SlackFileSummary } from './message-text.ts';
+import {
+  boundedDisplayName, slackFileSummaries, slackMessageText, type SlackFileSummary,
+} from './message-text.ts';
 
 /**
  * Who wrote a context row, derived by the host from Slack's author fields:
@@ -241,7 +243,7 @@ function slackContextAuthor(
   self: SlackContextSelf,
 ): Pick<SlackContextMessage, 'userId' | 'role' | 'authorName'> | undefined {
   const appId = message.app_id ?? message.bot_profile?.app_id;
-  const postingName = boundedName(message.username) ?? boundedName(message.bot_profile?.name);
+  const postingName = boundedDisplayName(message.username) ?? boundedDisplayName(message.bot_profile?.name);
   const own = (self.botUserId !== undefined && message.user === self.botUserId) ||
     (self.appId !== undefined && appId === self.appId);
   if (own) {
@@ -257,11 +259,6 @@ function slackContextAuthor(
     return { userId: id ?? 'app', role: 'app', authorName: postingName ?? 'an app' };
   }
   return { userId: message.user, role: 'human' };
-}
-
-function boundedName(value: string | undefined): string | undefined {
-  const name = value?.replace(/[\p{Cc}\p{Cf}]/gu, '').trim();
-  return name ? name.slice(0, 80) : undefined;
 }
 
 /**

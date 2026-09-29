@@ -12,7 +12,7 @@
  */
 import { emitRuntimeLatency, type RuntimeLatencySink } from '../observability/runtime-latency.ts';
 import type { SlackStateStore } from './claim-store.ts';
-import type { SlackReadMethod } from './run-presentations.ts';
+import { DEFAULT_SLACK_READ_BUDGET, type SlackReadMethod } from './run-presentations.ts';
 import { SlackTransportError } from './transport/types.ts';
 
 export type { SlackReadMethod } from './run-presentations.ts';
@@ -28,9 +28,9 @@ export interface SlackReadGate {
   readonly gated: boolean;
 }
 
-/** The pace of the local fallback: the shared budget's own window. */
-const LOCAL_READ_WINDOW_MS = 60_000;
-const DEFAULT_READ_RETRY_AFTER_MS = 60_000;
+/** The pace of the local fallback, and of a rate limit that names no delay: the shared budget's own window. */
+const LOCAL_READ_WINDOW_MS = DEFAULT_SLACK_READ_BUDGET.refillWindowMs;
+const DEFAULT_READ_RETRY_AFTER_MS = DEFAULT_SLACK_READ_BUDGET.refillWindowMs;
 const MAX_READ_RETRY_AFTER_MS = 15 * 60_000;
 /** Entries past their window are pruned once the map grows beyond this. */
 const LOCAL_READ_ENTRY_LIMIT = 1_024;

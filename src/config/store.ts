@@ -1664,28 +1664,22 @@ export class ConfigStoreLogic {
    * Rows an Agent read from Slack before the record held them, such as the
    * alert at a thread's root. A row the record already has is left alone: it
    * may carry a newer edit or an Agent attribution a Slack read cannot.
-   * Invalid rows are skipped, never fatal.
+   * Agent rows are never seeded: only the delivery path can name their
+   * Agent. Invalid rows are skipped, never fatal.
    */
   seedSlackPublicContext(inputs: SlackPublicContextEntryInput[]): number {
     if (inputs.length === 0) return 0;
     if (inputs.length > MAX_STORED_SLACK_PUBLIC_CONTEXT_ROWS) {
       throw new Error('Slack public context seed exceeds the thread record bound');
     }
-    const agents = new Map<string, boolean>();
-    const known = (agentId: string) => {
-      if (!agents.has(agentId)) {
-        try { this.getAgent(agentId); agents.set(agentId, true); } catch { agents.set(agentId, false); }
-      }
-      return agents.get(agentId)!;
-    };
     const now = Date.now();
     return this.db.transaction(() => {
       let added = 0;
       const roots = new Set<string>();
       for (const input of inputs) {
+        if (input.role === 'agent') continue;
         let row;
         try { row = validatedSlackPublicContextRow(input); } catch { continue; }
-        if (input.agentId && !known(input.agentId)) continue;
         added += this.db.run(
           `INSERT INTO config_slack_public_context (
             workspace_id, channel_id, root_ts, message_ts, role, text, agent_id, content_version_ts,
@@ -1697,6 +1691,7 @@ export class ConfigStoreLogic {
         ).changes;
         roots.add(JSON.stringify([input.workspaceId, input.channelId, input.rootTs]));
       }
+      if (added === 0) return 0;
       for (const root of roots) {
         const [workspaceId, channelId, rootTs] = JSON.parse(root) as [string, string, string];
         this.trimSlackPublicContextRoot(workspaceId, channelId, rootTs);

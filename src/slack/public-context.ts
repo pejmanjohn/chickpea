@@ -6,7 +6,7 @@ import type {
 } from '../config/types.ts';
 import { MAX_SLACK_PUBLIC_HANDOFF_MESSAGES } from '../config/types.ts';
 import type { NormalizedSlackTurn, SlackMessageEvent } from './types.ts';
-import { preserveSlackRichTextLinks } from './rich-text-links.ts';
+import { slackFileSummaries, slackMessageText } from './message-text.ts';
 import {
   atOrBeforeSlackWatermark, DEFAULT_MAX_MESSAGES, ensureTriggerMessage, orderMessages,
   slackTimestampUnits, toContextMessage, type SlackContextMessage, type SlackContextSelf,
@@ -87,21 +87,24 @@ type SlackPublicContextSeeder = {
 /**
  * One Slack-visible message posted in a thread an Agent is part of, as it
  * arrives from Slack: people who did not address the Agent, guests, other
- * apps and alert bots, and other AI agents. The caller has already checked
- * that the thread belongs to an Agent. This installation's own posts are
+ * apps and alert bots, and other AI agents. This installation's own posts are
  * skipped: the delivery path records them with their Agent attribution.
- * Returns whether a row was written.
+ * `threadHasAgent` is asked only for a row worth keeping, after the cheap
+ * checks, since on Cloudflare it is a state-store round trip. Returns
+ * whether a row was written.
  */
 export async function recordSlackThreadEventMessage(
   store: SlackPublicContextWriter,
   workspaceId: string,
   event: SlackMessageEvent,
   self: SlackContextSelf,
+  threadHasAgent: (rootTs: string) => Promise<boolean> = async () => true,
 ): Promise<boolean> {
   const rootTs = event.thread_ts;
   if (!rootTs || rootTs === event.ts) return false;
   const row = toContextMessage(event as unknown as SlackWebApiMessage, self);
   if (!row || row.role === 'agent') return false;
+  if (!(await threadHasAgent(rootTs))) return false;
   await store.putSlackPublicContext(threadRecordInput(workspaceId, event.channel, rootTs, row));
   return true;
 }
@@ -110,8 +113,8 @@ export async function recordSlackThreadEventMessage(
  * Rows the Agent read from Slack for this thread, kept so later turns and
  * tools need no Slack read for them (the shared app gets one read a minute).
  * Only the thread's own rows are seeded, never another root's, and only
- * rows the host can attribute: people, apps, and this Agent's rows once the
- * delivery path has named their Agent.
+ * rows a Slack read can attribute: people and apps. Agent rows are left to
+ * the delivery path, which knows which Agent wrote them.
  */
 export async function seedSlackThreadRecord(
   store: SlackPublicContextSeeder,
@@ -169,8 +172,11 @@ export async function reconcileSlackPublicContextMutation(
     await store.deleteSlackPublicContextMessage(workspaceId, event.channel, rootTs, messageTs);
     return true;
   }
-  const text = preserveSlackRichTextLinks(message?.text, message?.blocks);
-  if (!text) {
+  // The same projection a read uses, so an alert whose text lives in its
+  // attachments, or a file share without a caption, survives its own edit.
+  const text = message ? slackMessageText(message) : '';
+  const files = slackFileSummaries(message?.files);
+  if (!text && files.length === 0) {
     await store.deleteSlackPublicContextMessage(workspaceId, event.channel, rootTs, messageTs);
     return true;
   }
@@ -191,6 +197,7 @@ export async function reconcileSlackPublicContextMutation(
     ...(existing.agentId ? { agentId: existing.agentId } : {}),
     ...(existing.authorId ? { authorId: existing.authorId } : {}),
     ...(existing.authorName ? { authorName: existing.authorName } : {}),
+    ...(files.length ? { files } : {}),
   });
   return true;
 }
@@ -285,10 +292,6 @@ export async function assembleRetainedSlackContext(
   return { ...context, messages: ensureTriggerMessage(bounded, turn), degradations: [...new Set(degradations)] };
 }
 
-function optionalName(name: string | undefined): { authorName?: string } {
-  return name ? { authorName: name } : {};
-}
-
 /** Share of the context character budget kept for a thread's first message. */
 const ROOT_RESERVED_CHARS = 1_500;
 
@@ -300,26 +303,9 @@ function retainedContextMessage(
   entry: SlackPublicContextEntry,
   fetched: SlackContextMessage | undefined,
 ): SlackContextMessage {
-  const author: Pick<SlackContextMessage, 'userId' | 'authorName' | 'agentId'> =
-    entry.role === 'agent'
-      ? {
-          userId: `Agent ${entry.agentId}`,
-          ...(entry.agentId ? { agentId: entry.agentId } : {}),
-          ...optionalName(entry.authorName ?? fetched?.authorName),
-        }
-      : entry.role === 'app'
-        ? {
-            userId: entry.authorId ?? fetched?.userId ?? 'app',
-            authorName: entry.authorName ?? fetched?.authorName ?? 'an app',
-          }
-        : {
-            userId: entry.authorId ?? (fetched?.role === 'human' ? fetched.userId : undefined) ??
-              'Human (retained)',
-            ...(fetched?.authorName ? { authorName: fetched.authorName } : {}),
-          };
   const files = entry.files ?? fetched?.files;
   return {
-    ...author,
+    ...retainedAuthor(entry, fetched),
     ts: entry.messageTs,
     text: entry.text,
     isTrigger: false,
@@ -327,6 +313,31 @@ function retainedContextMessage(
     rootTs: entry.rootTs,
     ...(entry.contentVersionTs ? { contentVersionTs: entry.contentVersionTs } : {}),
     ...(files?.length ? { files } : {}),
+  };
+}
+
+function retainedAuthor(
+  entry: SlackPublicContextEntry,
+  fetched: SlackContextMessage | undefined,
+): Pick<SlackContextMessage, 'userId' | 'authorName' | 'agentId'> {
+  if (entry.role === 'agent') {
+    const authorName = entry.authorName ?? fetched?.authorName;
+    return {
+      userId: `Agent ${entry.agentId}`,
+      ...(entry.agentId ? { agentId: entry.agentId } : {}),
+      ...(authorName ? { authorName } : {}),
+    };
+  }
+  if (entry.role === 'app') {
+    return {
+      userId: entry.authorId ?? fetched?.userId ?? 'app',
+      authorName: entry.authorName ?? fetched?.authorName ?? 'an app',
+    };
+  }
+  return {
+    userId: entry.authorId ?? (fetched?.role === 'human' ? fetched.userId : undefined) ??
+      'Human (retained)',
+    ...(fetched?.authorName ? { authorName: fetched.authorName } : {}),
   };
 }
 

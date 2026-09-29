@@ -1,7 +1,9 @@
 import type { WebClient } from '@slack/web-api';
 
 import { readSlackIdentityProfile } from './identity-profile.ts';
+import { boundedDisplayName } from './message-text.ts';
 import type { SlackContextMessage, SlackTurnContext } from './thread-context.ts';
+import { SLACK_USER_ID } from './ui/text.ts';
 
 /**
  * Display names for the people in a turn's Slack context, so "summarize what
@@ -17,8 +19,6 @@ const MAX_LOOKUPS_PER_TURN = 20;
 const LOOKUP_CONCURRENCY = 5;
 const CACHE_TTL_MS = 10 * 60_000;
 const MAX_CACHE_ENTRIES = 2_000;
-const MAX_NAME_CHARS = 80;
-const SLACK_USER_ID = /^[UW][A-Z0-9]{2,}$/;
 
 const cache = new Map<string, { name: string | null; at: number }>();
 
@@ -42,7 +42,7 @@ export async function resolveSlackContextNames(
 }
 
 /** Cached display names for Slack user ids; absent when a lookup failed. */
-export async function lookupSlackDisplayNames(
+async function lookupSlackDisplayNames(
   client: Pick<WebClient, 'users'>,
   workspaceId: string,
   ids: readonly string[],
@@ -63,7 +63,7 @@ export async function lookupSlackDisplayNames(
     await Promise.all(pending.slice(index, index + LOOKUP_CONCURRENCY).map(async (id) => {
       try {
         const response = await client.users.info({ user: id });
-        const name = boundedName(readSlackIdentityProfile(response.user).displayName);
+        const name = boundedDisplayName(readSlackIdentityProfile(response.user).displayName);
         remember(workspaceId, id, name ?? null, now());
         if (name) names.set(id, name);
       } catch {
@@ -87,18 +87,15 @@ function withName(message: SlackContextMessage, names: Map<string, string>): Sla
 }
 
 function remember(workspaceId: string, id: string, name: string | null, at: number): void {
-  if (cache.size >= MAX_CACHE_ENTRIES) {
+  const key = cacheKey(workspaceId, id);
+  // Re-insert so a refreshed name moves to the newest end; evict only for a new key.
+  if (!cache.delete(key) && cache.size >= MAX_CACHE_ENTRIES) {
     const oldest = cache.keys().next().value;
     if (oldest !== undefined) cache.delete(oldest);
   }
-  cache.set(cacheKey(workspaceId, id), { name, at });
+  cache.set(key, { name, at });
 }
 
 function cacheKey(workspaceId: string, id: string): string {
   return `${workspaceId}\u0000${id}`;
-}
-
-function boundedName(value: string | undefined): string | undefined {
-  const name = value?.replace(/[\p{Cc}\p{Cf}]/gu, '').trim();
-  return name ? name.slice(0, MAX_NAME_CHARS) : undefined;
 }

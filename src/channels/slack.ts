@@ -122,7 +122,6 @@ import {
 import { slackSemanticActivityStatusEnabled } from '../slack/semantic-status-flag.ts';
 import { hydrateSlackPublicHandoffFallback } from '../slack/web-client-context.ts';
 import { hydrateTurnSlackContext } from '../slack/turn-context-reads.ts';
-import { isSlackContextMessageSubtype } from '../slack/message-subtypes.ts';
 import {
   assembleRetainedSlackContext,
   reconcileSlackPublicContextMutation,
@@ -2263,7 +2262,13 @@ async function processSlackEvent(
         assignment,
         platformEnv,
         slackClient as ReturnType<typeof createSlackWebClient>,
-        { config: stores.config },
+        {
+          config: stores.config,
+          installation: {
+            transportMode: installation.transportMode,
+            ...(installation.botUserId ? { botUserId: installation.botUserId } : {}),
+          },
+        },
       );
       if (classification.intent.disposition === 'ignore') {
         await recordInteractionClassifierUsage({
@@ -3526,11 +3531,14 @@ async function recordAgentThreadMessage(
   event: SlackMessageEvent,
   botUserId: string | undefined,
 ): Promise<void> {
-  if (!event.thread_ts || event.thread_ts === event.ts ||
-      !isSlackContextMessageSubtype(event.subtype)) return;
   try {
-    if (!(await config.getAgentThreadRoute(workspaceId, event.channel, event.thread_ts))) return;
-    await recordSlackThreadEventMessage(config, workspaceId, event, botUserId ? { botUserId } : {});
+    await recordSlackThreadEventMessage(
+      config,
+      workspaceId,
+      event,
+      botUserId ? { botUserId } : {},
+      async (rootTs) => Boolean(await config.getAgentThreadRoute(workspaceId, event.channel, rootTs)),
+    );
   } catch {
     console.warn('[chickpea] thread record capture failed');
   }
@@ -3544,6 +3552,8 @@ export async function classifyCandidateTurn(
   dependencies: {
     config?: NonNullable<Parameters<typeof assembleRetainedSlackContext>[2]>['store'];
     classify?: typeof classifySlackInteraction;
+    /** The installation's app, so its reads are paced and its own rows labeled as Agent rows. */
+    installation?: { transportMode: 'direct' | 'gateway'; botUserId?: string };
   } = {},
 ): Promise<{
   classification: Awaited<ReturnType<typeof classifySlackInteraction>>;
@@ -3553,6 +3563,10 @@ export async function classifyCandidateTurn(
   const hydrated = await hydrateTurnSlackContext({
     client,
     turn,
+    ...(dependencies.installation ? {
+      transportMode: dependencies.installation.transportMode,
+      ...(dependencies.installation.botUserId ? { botUserId: dependencies.installation.botUserId } : {}),
+    } : {}),
     state: getSlackStateStore(platformEnv),
     ...(assignment.runtimeContract === 'chickpea-v1' && dependencies.config
       ? { record: dependencies.config }
