@@ -10,7 +10,7 @@ for this in Admin.
 Someone asks `@support` in `#billing` whether a refund is allowed. Support
 needs a number only Finance has, so its reply says:
 
-> @finance what did we bill order 4821 in Q3? Mention me when you have it.
+> Checking the charge history. @finance what did we bill order 4821 in Q3?
 
 1. **The mention is the ask.** When an Agent's delivered reply mentions the
    handle of another Agent that can work in the Channel, that Agent gets a
@@ -19,21 +19,22 @@ needs a number only Finance has, so its reply says:
    do not count, and an Agent never asks itself.
 2. **The asked Agent answers in the thread.** It sees the whole thread,
    including the asking Agent's message, and knows which Agent asked and which
-   person started the exchange. If the asking Agent asked to be mentioned
-   back, the asked Agent mentions it, and the asking Agent picks the answer
-   up on its next turn. Otherwise the asked Agent's reply is the answer.
-3. **The thread stays with its Agent.** An ask never hands the thread over.
+   person started the exchange.
+3. **The answer goes back to the thread's Agent.** When the thread's own
+   Agent asked, the answer is handed back to it, and it finishes the
+   person's request with it. When the answer already covers the request, as
+   with "How much was each charge?", it posts nothing more, so the person
+   never reads the answer twice. An answer that asks another Agent is not
+   handed back yet. An asked Agent that asks a teammate itself gets the answer
+   back only if it asks to be mentioned, and the teammate then mentions it.
+4. **The thread stays with its Agent.** An ask never hands the thread over.
    Replies from people that mention nobody still go to the thread's own
    Agent. A person mentioning a different Agent still hands the thread over,
    as before.
 
 Each Agent is told which other Agents work in the Channel and their handles,
 and when to ask: only when it needs a teammate's answer, never in passing or
-to say thanks. When the teammate's answer is all the person needs, as with
-"How much was each charge?", the asking Agent just asks and the teammate
-answers the person. When the asking Agent needs the result to do more, as
-with the refund above, it asks to be mentioned back and gives the finished answer after. It
-promises a follow-up only when it asked to be mentioned.
+to say thanks.
 
 ## Mentioning several Agents at once
 
@@ -106,18 +107,16 @@ Agent that takes a thread over uses the thread's sandbox.
 
 ## Coordinating teammates
 
-One Agent can split work across others: its reply gives each teammate its
-own part, mentioning each once, and they answer one at a time in that
-order. To combine the results, the coordinator asks only the last teammate
-to mention it back when done, so that report comes after every other answer
-and the coordinator reads them all in one turn before giving the person one
-combined answer. Splitting work across N teammates uses N asks, plus one for
-the report back, of the 8 a person's message allows.
-
-If several teammates do mention the coordinator, it still answers once when
-it can: an Agent that already has an ask waiting in the thread for the same
-exchange, not started yet, is not asked again, and the waiting turn reads the
-later reports too.
+The thread's own Agent can split work across others: its reply gives each
+teammate its own part, mentioning each once, and they answer one at a time in
+that order. Each answer goes back to the coordinator, and it answers once when
+it can: an Agent that already has a turn waiting in the thread for the same
+exchange, not started yet, is not given another, and the waiting turn reads
+every later answer too. It then gives the person one combined answer.
+Splitting work across N teammates uses N asks, plus one for the answers going
+back, of the 8 a person's message allows. An asked Agent that coordinates
+others asks only the last one to mention it back, so that report comes after
+every other answer.
 
 ## Logs
 

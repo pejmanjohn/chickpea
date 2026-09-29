@@ -1139,7 +1139,10 @@ const AGENT_ASK_ADMISSION_ATTEMPTS = 3;
  * turn in the same thread. Each turn is admitted like a person's message in
  * that thread, with that person's access, except that no human-only command
  * (approve, stop, check-in, memory) can come from it and it never takes the
- * thread over. Runs where the asking turn ran; failures are logged.
+ * thread over. A guest's answer to the thread's own Agent that asks nobody
+ * is handed back to that Agent the same way, so it can finish the person's
+ * request (or stay silent). Only the thread's own Agent is answered back, so
+ * this never loops. Runs where the asking turn ran; failures are logged.
  */
 export async function processSlackAgentAsks(
   request: SlackAgentAskRequest,
@@ -1172,6 +1175,13 @@ export async function processSlackAgentAsks(
       if (!agent || agent.id === from.id || targets.some((target) => target.agent.id === agent.id)) continue;
       if (targets.length < AGENT_ASK_MAX_TARGETS) targets.push({ agent, delivery });
     }
+  }
+  // A guest's answer that asks nobody goes back to the thread's own Agent.
+  // One that mentions it is already a report, and one that asks another
+  // Agent is not finished yet.
+  if (targets.length === 0 && request.answer && asking.agentAsk?.fromThreadOwner) {
+    const owner = agents.find((agent) => agent.id === asking.agentAsk!.fromAgentId);
+    if (owner) targets.push({ agent: owner, delivery: request.answer });
   }
   if (targets.length === 0) return;
 
@@ -1213,6 +1223,7 @@ export async function processSlackAgentAsks(
         fromAgentName: from.name,
         ...(fromHandle ? { fromAgentHandle: fromHandle } : {}),
         originMessageTs,
+        ...(request.fromThreadOwner ? { fromThreadOwner: true as const } : {}),
       },
     };
     const payload: SlackEventFixture = {
@@ -2529,7 +2540,11 @@ async function processSlackEvent(
     }
   }
 
-  if (!ui && !deterministicCommand && !browserActionAnswered && !candidateTurn) {
+  // The thread's own Agent, answered back by a teammate it asked, replies or
+  // stays silent: it never opens a checklist or reacts instead.
+  const answeredBack = Boolean(turn.agentAsk) && assignment.threadGuest !== true;
+  if (answeredBack) turn.interactionIntent = { disposition: 'reply', reason: 'substantive_request' };
+  if (!ui && !deterministicCommand && !browserActionAnswered && !candidateTurn && !answeredBack) {
     const immediateIntent = resolveImmediateSlackInteractionIntent({
       workspaceId: turn.workspaceId,
       channelId: turn.channelId,

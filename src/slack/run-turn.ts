@@ -90,7 +90,7 @@ import {
   assembleRetainedSlackContext, formatSlackPublicHandoff, type SlackPublicDelivery,
 } from './public-context.ts';
 import type { NormalizedSlackTurn } from './types.ts';
-import { isLaterCoAddressedTurn } from './agent-asks.ts';
+import { isAgentAskSilentReply, isLaterCoAddressedTurn } from './agent-asks.ts';
 import {
   effectiveTurnSlackInstallationId,
   resolveSlackInstallationExecutionContext,
@@ -549,6 +549,9 @@ async function runTurnAttempt(
   // (typedByPerson in processSlackEvent); this is the runtime's own gate. A
   // message that mentioned several Agents is one command, for the first.
   const typedByPerson = !turn.agentAsk && !isLaterCoAddressedTurn(turn);
+  // The thread's own Agent, answered back by a teammate it asked: it may end
+  // the turn silently, so its answer never streams before it is known.
+  const answeredBack = Boolean(turn.agentAsk) && assignment.threadGuest !== true;
   if (typedByPerson && shouldHandleRoutineCommandTurn(turn, commandAddress)) {
     const routineText = await handleRoutineSlackRequest(turn, platformEnv, {
       ...(installationContext ? { installationContext } : {}),
@@ -1641,7 +1644,7 @@ async function runTurnAttempt(
         memorySelected: (preparedMemory?.selection?.entries.length ?? 0) > 0,
         recoveryRequired: false,
         concurrentAttributionProven: options.progressiveAttributionProven === true,
-        replacementCapable: false,
+        replacementCapable: answeredBack,
       });
       if (agentViewPresentation) {
         const frozen = await agentViewPresentation.freezeProgressiveEligibility(candidate);
@@ -1675,7 +1678,7 @@ async function runTurnAttempt(
         : {}),
       // The thread's own Agent is asked back by a guest it asked; a guest is
       // asked by the thread's Agent. Each reads the ask differently.
-      ...(turn.agentAsk ? { askedAsThreadOwner: assignment.threadGuest !== true } : {}),
+      ...(turn.agentAsk ? { askedAsThreadOwner: answeredBack } : {}),
       ...(installationContext
         ? {
             slackApp: {
@@ -2056,6 +2059,26 @@ async function runTurnAttempt(
     );
     if (installationContext) {
       text = renderSlackSelfMention(text, installationContext.botUserId);
+    }
+    // Teammates' answers already completed the request: nothing is posted, and
+    // the turn ends like a reaction-only one. Anything else still delivers.
+    if (answeredBack && options.replayTerminalResult === undefined && isAgentAskSilentReply(text) &&
+        recoveredText === undefined && leaseValid && !acknowledgeMemoryUpdate &&
+        !artifacts?.length && !tablePresentation && !agentResult?.displayComponents?.length &&
+        !workChecklistTs) {
+      if (frozenPresentation?.schemaVersion === 3 && agentViewPresentation &&
+          !(await agentViewPresentation.prepareDeferredTerminalDelivery('answer'))) {
+        throw new Error('Slack silent reply requires reconciliation.');
+      }
+      await abandonTurnSurfaces(
+        options.appStores?.slackState ?? getSlackStateStore(platformEnv),
+        options.turnId ?? `msg:${turn.channelId}:${turn.messageTs}`,
+      ).catch(() => undefined);
+      await workLifecycle?.settleWithoutDelivery({ terminalDisposition: 'no_op' });
+      await agentViewPresentation?.recordTerminalDeliveryReceipt('acknowledged');
+      await finishStatus('answer');
+      await finishDelivery('no_op');
+      return;
     }
     const terminalResult = options.replayTerminalResult ?? 'answer';
     await statusTurn.prepareFinal();

@@ -262,6 +262,11 @@ export interface SlackAgentAsk {
   fromAgentHandle?: string;
   /** The person's message that started this exchange; bounds its asks. */
   originMessageTs: string;
+  /**
+   * The thread's own Agent asked: when this guest's reply asks nobody, the
+   * host hands its answer back to that Agent (see `processSlackAgentAsks`).
+   */
+  fromThreadOwner?: true;
 }
 
 export interface SlackUiResponse {

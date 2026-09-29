@@ -18,6 +18,15 @@ import type { NormalizedSlackTurn } from './types.ts';
 export const AGENT_ASK_TURN_LIMIT = 8;
 /** Agents one message can ask; later mentions in it are not asked. */
 export const AGENT_ASK_MAX_TARGETS = 6;
+/**
+ * The whole reply of the thread's own Agent, answered back by teammates,
+ * when their answers already complete the request: nothing is posted.
+ */
+export const AGENT_ASK_SILENT_REPLY = 'NO_REPLY';
+/** Whether a reply is the silent reply, allowing stray markup around it. */
+export function isAgentAskSilentReply(text: string): boolean {
+  return text.trim().replace(/^[`*"']+|[`*"'.!]+$/g, '') === AGENT_ASK_SILENT_REPLY;
+}
 /** Posted as the asking Agent when an exchange of asks reaches its limit. */
 export const AGENT_ASK_PAUSE_TEXT =
   "I'll pause here so this exchange doesn't keep going without you. Reply in this thread to continue.";
@@ -31,8 +40,15 @@ export interface SlackAgentAskRequest {
     'requesterTimezone' | 'agentAsk'
   >;
   fromAgentId: string;
+  /** The replying Agent is the thread's own, not a guest answering an ask. */
+  fromThreadOwner: boolean;
   /** Every Slack message of the reply that mentioned a handle-shaped word. */
   deliveries: Array<{ messageTs: string; text: string }>;
+  /**
+   * The last message of a guest's reply to an ask from the thread's own
+   * Agent: when the reply asks nobody, the host hands it back to that Agent.
+   */
+  answer?: { messageTs: string; text: string };
 }
 
 export type SlackAgentAskDispatcher = (request: SlackAgentAskRequest) => Promise<void>;
@@ -124,15 +140,21 @@ export function createAgentAskCollector(input: {
 } {
   const deliveries: Array<{ messageTs: string; text: string }> = [];
   const eligible = Boolean(input.dispatch) && turnMayAskAgents(input.turn, input.assignment);
+  // A guest answering the thread's own Agent: its answer goes back to it.
+  const answersOwner = eligible && input.assignment.threadGuest === true &&
+    input.turn.agentAsk?.fromThreadOwner === true;
+  let answer: { messageTs: string; text: string } | undefined;
   let flushed = false;
   return {
     note(delivery) {
-      if (!eligible || flushed || mentionedHandleWords(delivery.text).length === 0) return;
+      if (!eligible || flushed) return;
+      if (answersOwner) answer = { messageTs: delivery.messageTs, text: delivery.text };
+      if (mentionedHandleWords(delivery.text).length === 0) return;
       if (deliveries.some(({ messageTs }) => messageTs === delivery.messageTs)) return;
       deliveries.push({ messageTs: delivery.messageTs, text: delivery.text });
     },
     async flush() {
-      if (flushed || deliveries.length === 0 || !input.dispatch) return;
+      if (flushed || (deliveries.length === 0 && !answer) || !input.dispatch) return;
       flushed = true;
       const { turn } = input;
       try {
@@ -148,7 +170,9 @@ export function createAgentAskCollector(input: {
             ...(turn.agentAsk ? { agentAsk: turn.agentAsk } : {}),
           },
           fromAgentId: input.assignment.agentId,
+          fromThreadOwner: input.assignment.threadGuest !== true,
           deliveries,
+          ...(answer ? { answer } : {}),
         });
       } catch (error) {
         console.warn('[chickpea] agent ask dispatch failed:', error instanceof Error ? error.name : 'unknown');
