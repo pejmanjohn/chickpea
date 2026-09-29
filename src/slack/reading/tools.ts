@@ -35,10 +35,10 @@ const text = (max: number) => v.pipe(v.string(), v.trim(), v.minLength(1), v.max
 const limit = v.optional(v.pipe(v.number(), v.integer(), v.minValue(1), v.maxValue(100)));
 
 /** Ordinary read-only tools; an interrupted call is safe to repeat. */
-export function createSlackReadingTools(resolve: (signal: AbortSignal | undefined) => Promise<SlackReadingService>) {
-  const execute = async (signal: AbortSignal | undefined, action: (service: SlackReadingService) => Promise<Record<string, unknown>>) => {
+export function createSlackReadingTools(resolve: () => Promise<SlackReadingService>) {
+  const execute = async (action: (service: SlackReadingService) => Promise<Record<string, unknown>>) => {
     let output: Record<string, unknown>;
-    try { output = await action(await resolve(signal)); }
+    try { output = await action(await resolve()); }
     catch (error) { output = slackReadFailure(error); }
     // The service shortens message rows to fit; this is the floor for a page
     // that still does not, so no result ever exceeds the tool limit.
@@ -57,10 +57,11 @@ export function createSlackReadingTools(resolve: (signal: AbortSignal | undefine
         cursor: v.optional(text(1_024)),
         limit,
       }),
-      run: ({ data, signal }) => execute(signal, (service) => service.readThread({
+      run: ({ data, signal }) => execute((service) => service.readThread({
         target: resolveSlackReadTarget(data),
         ...(data.cursor ? { cursor: data.cursor } : {}),
         ...(data.limit ? { limit: data.limit } : {}),
+        ...(signal ? { signal } : {}),
       })),
     }),
     defineTool({
@@ -74,19 +75,20 @@ export function createSlackReadingTools(resolve: (signal: AbortSignal | undefine
         cursor: v.optional(text(1_024)),
         limit,
       }),
-      run: ({ data, signal }) => execute(signal, (service) => service.readChannel({
+      run: ({ data, signal }) => execute((service) => service.readChannel({
         target: resolveSlackReadTarget(data),
         ...(data.oldest ? { oldest: data.oldest } : {}),
         ...(data.latest ? { latest: data.latest } : {}),
         ...(data.cursor ? { cursor: data.cursor } : {}),
         ...(data.limit ? { limit: data.limit } : {}),
+        ...(signal ? { signal } : {}),
       })),
     }),
     defineTool({
       name: 'lookup_slack_user',
       description: 'Look up one person in this Slack workspace by user id (U…) or <@U…> mention: name, real name, title, timezone, and whether they are a person, guest, app, or deactivated. No email or contact details.',
       input: v.strictObject({ user: text(64) }),
-      run: ({ data, signal }) => execute(signal, (service) => service.lookupUser({ user: data.user })),
+      run: ({ data, signal }) => execute((service) => service.lookupUser({ user: data.user, ...(signal ? { signal } : {}) })),
     }),
   ];
 }
@@ -96,11 +98,11 @@ export function useSlackReadingTools(plan: RuntimePlanV2, resolveEnv: () => Prom
   const signal = parseSlackManagementSignal(useDelivery(), plan);
   if (!signal || !plan.actorMembershipId) return;
   useInstruction(SLACK_READING_INSTRUCTION);
-  // One service per render: its request read cap and caches span the turn's
+  // One service per render: its request caps and authority caches span the turn's
   // calls; authority is still checked again on every call.
   let service: Promise<SlackReadingService> | undefined;
-  for (const tool of createSlackReadingTools(async (abort) => {
-    service ??= buildService(plan, signal, resolveEnv, abort);
+  for (const tool of createSlackReadingTools(async () => {
+    service ??= buildService(plan, signal, resolveEnv);
     try {
       return await service;
     } catch (error) {
@@ -114,7 +116,6 @@ async function buildService(
   plan: RuntimePlanV2,
   signal: NonNullable<ReturnType<typeof parseSlackManagementSignal>>,
   resolveEnv: () => Promise<PlatformEnv | undefined>,
-  abort: AbortSignal | undefined,
 ): Promise<SlackReadingService> {
   const env = await resolveEnv();
   const config = getConfigStore(env);
@@ -162,6 +163,5 @@ async function buildService(
     authority,
     self: { botUserId: installation.botUserId },
     record: config,
-    ...(abort ? { signal: abort } : {}),
   });
 }

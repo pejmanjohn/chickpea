@@ -101,6 +101,8 @@ import type {
 } from './turn-job-types.ts';
 import { slackContextSinceWatermark, threadContinuityNote } from './thread-continuity.ts';
 import { hydrateTurnSlackContext } from './turn-context-reads.ts';
+import { createSlackReadGate } from './read-budget.ts';
+import { isGatewaySlackWebClient } from './gateway/web-client.ts';
 import { resolveSlackContextNames } from './context-names.ts';
 import type { FlueDispatchReceiptV1 } from './turn-job-types.ts';
 import type { SlackProgressiveReadRelay } from './progressive-relay.ts';
@@ -600,6 +602,11 @@ async function runTurnAttempt(
     ? new SlackAgentViewPresentation({
         client,
         state: options.presentationState,
+        readGate: createSlackReadGate({
+          state: options.appStores?.slackState ?? getSlackStateStore(platformEnv),
+          workspaceId: turn.workspaceId,
+          gated: installationContext ? installationContext.transportMode === 'gateway' : isGatewaySlackWebClient(client),
+        }),
         runId: options.runId,
         runFencingToken: options.runFencingToken ?? 0,
         footer: {

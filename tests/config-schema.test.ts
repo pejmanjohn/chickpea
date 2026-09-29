@@ -685,6 +685,28 @@ test('the private public-context ledger expires inactive roots after 30 days', (
   }
 });
 
+test('Agent replies from an expired thread are not imported across roots before the sweep', () => {
+  const db = openStateDb(':memory:');
+  try {
+    const store = new ConfigStoreLogic(db, { agents: [] });
+    store.createAgent({ id: 'agent_dm', name: 'DM', instructions: '', enabled: true, lifecycle: 'active',
+      creatorMembershipId: 'owner', editPolicy: 'creator_and_admins', skills: [], mcpServers: [],
+      apiConnections: [], repositories: [] });
+    for (const rootTs of ['100.1', '200.1']) {
+      store.putSlackPublicContext({ workspaceId: 'T1', channelId: 'D1', rootTs, messageTs: rootTs,
+        role: 'agent', agentId: 'agent_dm', text: `reply ${rootTs}` });
+    }
+    // The sweep just ran, so only the read-side cutoff can hide the stale root.
+    db.run(`UPDATE config_slack_public_context SET updated_at = 0 WHERE root_ts = '100.1'`);
+    const recent = store.listRecentSlackPublicContext({
+      workspaceId: 'T1', channelId: 'D1', agentId: 'agent_dm', beforeMessageTs: '300.1', limit: 10,
+    });
+    assert.deepEqual(recent.map(({ text }) => text), ['reply 200.1']);
+  } finally {
+    db.close();
+  }
+});
+
 test('a private draft may hold only a pending publication grant until activation', () => {
   const db = openStateDb(':memory:');
   try {

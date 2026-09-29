@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { SqliteConfigStore } from '../src/config/store.ts';
+import type { SlackPublicContextEntry } from '../src/config/types.ts';
 import { clearSlackContextNameCache, resolveSlackContextNames } from '../src/slack/context-names.ts';
 import { slackContextAuthorLabel } from '../src/slack/context-format.ts';
 import { collectAdmittedSlackListIds } from '../src/slack/lists/admission.ts';
@@ -96,6 +97,22 @@ function repliesClient(pages: Array<{ messages: unknown[]; next_cursor?: string 
     },
   };
 }
+
+/** A thread-record row for this test thread. */
+function recordEntry(messageTs: string, extra: Partial<SlackPublicContextEntry> = {}): SlackPublicContextEntry {
+  return {
+    workspaceId: 'T1', channelId: 'C1', rootTs: ROOT, messageTs, role: 'human', text: 'recorded',
+    updatedAt: 0, ...extra,
+  };
+}
+
+const LOGO = { id: 'F0LOGO0001', name: 'logo.png', mimetype: 'image/png', size: 2048 };
+
+/** A shared-app state port that always grants the read. */
+const GRANTING_STATE = {
+  reserveSlackRead: async () => ({ outcome: 'reserved' as const, budgetVersion: 1 }),
+  applySlackReadCooldown: async () => ({ cooldownUntil: 0, budgetVersion: 1 }),
+};
 
 async function withStore(run: (store: SqliteConfigStore) => Promise<void>): Promise<void> {
   const store = new SqliteConfigStore(':memory:');
@@ -235,7 +252,7 @@ test('a thread the record holds is not read from Slack on the shared app', async
   const client = repliesClient([{ messages: [PAGERDUTY_ALERT] }]);
   const context = await hydrateSlackContextViaWebClient(client as never, turn(), {
     readGate: gate,
-    recordCoversThread: true,
+    threadRecord: [recordEntry(turn().threadTs)],
   });
   assert.equal(client.calls.length, 0);
   assert.deepEqual(gate.asked, []);
@@ -558,4 +575,121 @@ test('a handoff skips file-only rows instead of ending at them, and carries app 
     { messageTs: '1001.000100', role: 'human' },
     { messageTs: '1003.000100', role: 'human' },
   ]);
+});
+
+test('a thread read from the record keeps its images, including the request that started it', async () => {
+  await withStore(async (store) => {
+    // The root was a request with a logo; a reply added a screenshot.
+    await recordAcceptedSlackHumanMessage(store, turn({ messageTs: ROOT, text: 'make an ad with this' }),
+      { runtimeContract: 'chickpea-v1' }, [LOGO]);
+    await recordSlackThreadEventMessage(store, 'T1', {
+      type: 'message', channel: 'C1', thread_ts: ROOT, ts: '1001.000100', user: 'U_SAM', text: 'like this',
+      files: [{ id: 'F0SHOT0001', name: 'shot.jpg', mimetype: 'image/jpeg' }, { id: 'F0DOC00001', name: 'a.pdf', mimetype: 'application/pdf' }],
+    } as never, { botUserId: 'UBOT' });
+    await recordSlackThreadEventMessage(store, 'T1', {
+      type: 'message', channel: 'C1', thread_ts: ROOT, ts: '1030.000100', user: 'U_SAM', text: 'later',
+      files: [{ id: 'F0LATE0001', name: 'late.png', mimetype: 'image/png' }],
+    } as never, { botUserId: 'UBOT' });
+    const client = repliesClient([]);
+    const context = await hydrateTurnSlackContext({
+      client: client as never, turn: turn(), transportMode: 'gateway', state: GRANTING_STATE, record: store,
+    });
+    assert.equal(client.calls.length, 0);
+    assert.deepEqual(context.images?.map(({ fileId, origin, messageTs, byteLength }) =>
+      ({ fileId, origin, messageTs, byteLength })), [
+      { fileId: 'F0LOGO0001', origin: 'person', messageTs: ROOT, byteLength: 2048 },
+      { fileId: 'F0SHOT0001', origin: 'person', messageTs: '1001.000100', byteLength: undefined },
+    ]);
+    assert.equal(context.truncated, false);
+  });
+});
+
+test('a record seeded from a capped read says what it is missing on later turns', async () => {
+  await withStore(async (store) => {
+    const newest = { type: 'message', user: 'U_SAM', ts: '1008.000100', thread_ts: ROOT, text: 'newest reply' };
+    const trigger = { type: 'message', user: 'U_DANA', ts: turn().messageTs, thread_ts: ROOT, text: turn().text };
+    // The shared app's capped page: the root, then only the newest replies.
+    const client = repliesClient([{ messages: [PAGERDUTY_ALERT, newest, trigger], next_cursor: '1' }]);
+    const first = await hydrateTurnSlackContext({
+      client: client as never, turn: turn(), transportMode: 'gateway', state: GRANTING_STATE, record: store,
+    });
+    assert.equal(first.truncated, true);
+    const [root] = await store.listSlackPublicContext('T1', 'C1', ROOT);
+    assert.equal(root?.gapBeforeTs, '1008.000100');
+
+    const later = turn({ messageTs: '1020.000100' });
+    const second = await hydrateTurnSlackContext({
+      client: client as never, turn: later, transportMode: 'gateway', state: GRANTING_STATE, record: store,
+    });
+    assert.equal(client.calls.length, 1);
+    assert.equal(second.truncated, true);
+    assert.deepEqual(second.degradations, ['slack_context.thread:record_gap']);
+    const prompt = assembleSlackPrompt(later,
+      await assembleRetainedSlackContext(second, later, { store, agentId: 'agent_oncall' }));
+    assert.match(prompt, /some older replies in between were never read/);
+  });
+});
+
+test('a turn lists the record once and seeds only rows it does not hold', async () => {
+  await withStore(async (store) => {
+    await store.putSlackPublicContext({ workspaceId: 'T1', channelId: 'C1', rootTs: ROOT,
+      messageTs: '1001.000100', role: 'human', text: 'held' });
+    let lists = 0;
+    const seeded: string[][] = [];
+    const record = {
+      listSlackPublicContext: async (...args: [string, string, string]) => {
+        lists += 1;
+        return store.listSlackPublicContext(...args);
+      },
+      listRecentSlackPublicContext: store.listRecentSlackPublicContext.bind(store),
+      seedSlackPublicContext: async (inputs: Parameters<typeof store.seedSlackPublicContext>[0]) => {
+        seeded.push(inputs.map((input) => input.messageTs));
+        return store.seedSlackPublicContext(inputs);
+      },
+    };
+    const client = repliesClient([{ messages: [
+      PAGERDUTY_ALERT,
+      { type: 'message', user: 'U_DANA', ts: '1001.000100', thread_ts: ROOT, text: 'held' },
+      { type: 'message', user: 'U_SAM', ts: '1002.000100', thread_ts: ROOT, text: 'new' },
+    ] }]);
+    const hydrated = await hydrateTurnSlackContext({
+      client: client as never, turn: turn(), transportMode: 'direct', record,
+    });
+    const assembled = await assembleRetainedSlackContext(hydrated, turn(), { store: record, agentId: 'agent_oncall' });
+    assert.equal(lists, 1);
+    assert.deepEqual(seeded, [[ROOT, '1002.000100']]);
+    assert.equal('threadRecord' in assembled, false);
+    assert.deepEqual(assembled.messages.map((message) => message.ts), [ROOT, '1001.000100', '1002.000100', turn().messageTs]);
+  });
+});
+
+test('classifying a message leaves the shared app\'s read to the turn', async () => {
+  await withStore(async (store) => {
+    const client = repliesClient([{ messages: [PAGERDUTY_ALERT] }]);
+    const unread = await hydrateTurnSlackContext({
+      client: client as never, turn: turn(), transportMode: 'gateway', state: GRANTING_STATE, record: store,
+      pacedReads: false,
+    });
+    assert.equal(client.calls.length, 0);
+    assert.deepEqual(unread.degradations, ['slack_context.thread:not_read']);
+
+    // The install's own app has no shared budget to protect.
+    await hydrateTurnSlackContext({
+      client: client as never, turn: turn(), transportMode: 'direct', record: store, pacedReads: false,
+    });
+    assert.equal(client.calls.length, 1);
+  });
+});
+
+test('an edit that removes an image drops it from the record', async () => {
+  await withStore(async (store) => {
+    const base = { type: 'message', channel: 'C1', thread_ts: ROOT, ts: '1001.000100', user: 'U_SAM' };
+    await recordSlackThreadEventMessage(store, 'T1', { ...base, text: 'see', files: [LOGO] } as never, {});
+    assert.equal((await store.listSlackPublicContext('T1', 'C1', ROOT))[0]?.images?.length, 1);
+    await reconcileSlackPublicContextMutation(store, 'T1', {
+      type: 'message', subtype: 'message_changed', channel: 'C1', ts: '1050.000000',
+      message: { ...base, text: 'see (removed the logo)', edited: { ts: '1050.000000' } },
+    } as never);
+    assert.equal((await store.listSlackPublicContext('T1', 'C1', ROOT))[0]?.images, undefined);
+  });
 });

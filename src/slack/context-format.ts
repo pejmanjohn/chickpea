@@ -29,9 +29,20 @@ export function formatSlackContextRows(
       const files = message.files?.length
         ? `${message.text ? ' ' : ''}[files: ${message.files.map(formatSlackFileSummary).join('; ')}]`
         : '';
-      return `${options.prefix ?? ''}[${timestamp}${triggerMarker}${provenance ? ` ${provenance}` : ''}] ${slackContextAuthorLabel(message)}: ${message.text}${files}`;
+      return `${options.prefix ?? ''}[${timestamp}${triggerMarker}${provenance ? ` ${provenance}` : ''}] ${slackContextAuthorLabel(message)}: ${continuationMarked(message.text)}${files}`;
     })
     .join(options.separator);
+}
+
+/**
+ * A message's later lines start with a fixed marker, so message text can
+ * never begin a line that looks like a new row (`- [time role=...]`) and
+ * pass as another author's message.
+ */
+export const SLACK_CONTEXT_CONTINUATION_MARKER = '  | ';
+
+function continuationMarked(text: string): string {
+  return text.replace(/\r\n?|\n/g, `\n${SLACK_CONTEXT_CONTINUATION_MARKER}`);
 }
 
 /**

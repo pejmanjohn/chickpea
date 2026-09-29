@@ -49,7 +49,8 @@ import {
 import type { ProgressiveEligibilityDecision } from './progressive-eligibility.ts';
 import { SlackTransportError } from './transport/types.ts';
 import { slackClientMessageId } from './transport/message-id.ts';
-import { setAgentSessionStatus } from './gateway/web-client.ts';
+import { isGatewaySlackWebClient, setAgentSessionStatus } from './gateway/web-client.ts';
+import { createSlackReadGate, isSlackRateLimitError, slackRetryAfterMs, type SlackReadGate } from './read-budget.ts';
 import {
   MAX_SLACK_CONTINUATION_PARTS,
   MAX_SLACK_CONTINUATION_RESPLITS,
@@ -152,6 +153,11 @@ interface AgentViewPresentationOptions {
   /** Observability only: Slack acknowledged a progressive or native stream start. */
   onStreamStarted?: () => void;
   onFinalized?: (record: SlackPresentationFinalizationRecord) => MaybePromise<void>;
+  /**
+   * The workspace's shared Slack read budget. Without one, a shared-app
+   * client still paces its receipt reads within this isolate.
+   */
+  readGate?: SlackReadGate;
 }
 
 interface SlackMilestoneTransition {
@@ -2643,6 +2649,15 @@ export class SlackAgentViewPresentation {
     presentation: Extract<SlackRunPresentation, { schemaVersion: 3 }>,
     oldest?: string,
   ): Promise<{ messages: Array<{ ts?: string; clientMsgId?: string }>; complete: boolean } | undefined> {
+    // A receipt read is worth less than the next turn's context read. When the
+    // shared app's budget has none left, the receipt stays unknown and the
+    // caller tries again later, exactly as after a failed read.
+    const gate = this.options.readGate ?? createSlackReadGate({
+      state: undefined,
+      workspaceId: presentation.root.workspaceId,
+      gated: isGatewaySlackWebClient(this.options.client),
+    });
+    if (!(await gate.reserve('conversations.replies')).ok) return undefined;
     try {
       const response = await this.options.client.conversations.replies({
         channel: presentation.root.channelId,
@@ -2672,7 +2687,8 @@ export class SlackAgentViewPresentation {
         complete: raw.has_more !== true &&
           !(typeof nextCursor === 'string' && nextCursor.trim().length > 0),
       };
-    } catch {
+    } catch (error) {
+      if (isSlackRateLimitError(error)) await gate.rateLimited('conversations.replies', slackRetryAfterMs(error));
       return undefined;
     }
   }

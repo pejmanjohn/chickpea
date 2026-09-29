@@ -56,6 +56,7 @@ import {
   type SlackPublicContextEntry,
   type SlackPublicContextEntryInput,
   type SlackPublicContextFile,
+  type SlackPublicContextImage,
   type RecentSlackPublicContextInput,
   MAX_SLACK_PUBLIC_HANDOFF_MESSAGES,
   type NonChatModelRole,
@@ -125,6 +126,7 @@ function parseJsonArray<T>(raw: string | null | undefined, isItem?: (value: unkn
 
 const MAX_STORED_SLACK_PUBLIC_CONTEXT_ROWS = 200;
 const SLACK_PUBLIC_CONTEXT_RETENTION_MS = 30 * 24 * 60 * 60_000;
+const SLACK_PUBLIC_CONTEXT_PRUNE_INTERVAL_MS = 60_000;
 
 interface AgentRow {
   id: string;
@@ -247,6 +249,8 @@ interface SlackPublicContextRow {
   author_id?: string | null;
   author_name?: string | null;
   files_json?: string | null;
+  images_json?: string | null;
+  gap_before_ts?: string | null;
   updated_at: number;
 }
 
@@ -516,6 +520,7 @@ export interface RefreshGatewayClaimSetupInput {
 
 export class ConfigStoreLogic {
   private readonly legacyChannelBehaviorColumns: boolean;
+  private slackPublicContextPrunedAt = Number.NEGATIVE_INFINITY;
 
   constructor(
     private readonly db: StateDb,
@@ -531,7 +536,7 @@ export class ConfigStoreLogic {
       addColumnIfMissing(this.db, 'config_slack_public_context', 'content_version_ts', 'TEXT');
       // Thread-record authorship: additive and nullable, so older code that
       // never reads them keeps working (an app row reads as a human row there).
-      for (const column of ['author_kind', 'author_id', 'author_name', 'files_json']) {
+      for (const column of ['author_kind', 'author_id', 'author_name', 'files_json', 'images_json', 'gap_before_ts']) {
         addColumnIfMissing(this.db, 'config_slack_public_context', column, 'TEXT');
       }
       // Additive: older code never reads the column, so no schema-version bump.
@@ -1588,31 +1593,46 @@ export class ConfigStoreLogic {
     channelId: string,
     rootTs: string,
   ): SlackPublicContextEntry[] {
-    this.pruneExpiredSlackPublicContext(Date.now());
-    return this.db.all(
+    const now = Date.now();
+    this.pruneExpiredSlackPublicContext(now);
+    const rows = this.db.all(
       `SELECT * FROM config_slack_public_context
        WHERE workspace_id = ? AND channel_id = ? AND root_ts = ?
        ORDER BY CAST(message_ts AS REAL), message_ts`,
       workspaceId,
       channelId,
       rootTs,
-    ).map((row) => rowToSlackPublicContext(row as unknown as SlackPublicContextRow));
+    ) as unknown as SlackPublicContextRow[];
+    // The sweep is throttled; an expired thread is never read in between.
+    const cutoff = now - SLACK_PUBLIC_CONTEXT_RETENTION_MS;
+    if (!rows.some((row) => Number(row.updated_at) >= cutoff)) return [];
+    return rows.map(rowToSlackPublicContext);
   }
 
   listRecentSlackPublicContext(input: RecentSlackPublicContextInput): SlackPublicContextEntry[] {
     const watermark = Number(input.beforeMessageTs);
     if (!Number.isFinite(watermark) || !Number.isFinite(input.limit) || input.limit <= 0) return [];
     const limit = Math.min(Math.floor(input.limit), MAX_SLACK_PUBLIC_HANDOFF_MESSAGES);
-    this.pruneExpiredSlackPublicContext(Date.now());
+    const now = Date.now();
+    this.pruneExpiredSlackPublicContext(now);
+    // Only threads still within retention, as the throttled sweep may lag.
     return this.db.all(
       `SELECT * FROM config_slack_public_context
        WHERE workspace_id = ? AND channel_id = ? AND role = 'agent' AND agent_id = ?
          AND CAST(message_ts AS REAL) <= ?
+         AND root_ts IN (
+           SELECT root_ts FROM config_slack_public_context
+           WHERE workspace_id = ? AND channel_id = ?
+           GROUP BY root_ts HAVING MAX(updated_at) >= ?
+         )
        ORDER BY CAST(message_ts AS REAL) DESC, message_ts DESC LIMIT ?`,
       input.workspaceId,
       input.channelId,
       input.agentId,
       watermark,
+      input.workspaceId,
+      input.channelId,
+      now - SLACK_PUBLIC_CONTEXT_RETENTION_MS,
       limit,
     ).map((row) => rowToSlackPublicContext(row as unknown as SlackPublicContextRow));
   }
@@ -1624,8 +1644,8 @@ export class ConfigStoreLogic {
     this.db.run(
       `INSERT INTO config_slack_public_context (
         workspace_id, channel_id, root_ts, message_ts, role, text, agent_id, content_version_ts,
-        author_kind, author_id, author_name, files_json, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        author_kind, author_id, author_name, files_json, images_json, gap_before_ts, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(workspace_id, channel_id, root_ts, message_ts) DO UPDATE SET
         role = excluded.role,
         text = excluded.text,
@@ -1635,6 +1655,8 @@ export class ConfigStoreLogic {
         author_id = COALESCE(excluded.author_id, config_slack_public_context.author_id),
         author_name = COALESCE(excluded.author_name, config_slack_public_context.author_name),
         files_json = COALESCE(excluded.files_json, config_slack_public_context.files_json),
+        images_json = COALESCE(excluded.images_json, config_slack_public_context.images_json),
+        gap_before_ts = COALESCE(config_slack_public_context.gap_before_ts, excluded.gap_before_ts),
         updated_at = excluded.updated_at
       WHERE config_slack_public_context.content_version_ts IS NULL OR
         (excluded.content_version_ts IS NOT NULL AND
@@ -1683,8 +1705,8 @@ export class ConfigStoreLogic {
         added += this.db.run(
           `INSERT INTO config_slack_public_context (
             workspace_id, channel_id, root_ts, message_ts, role, text, agent_id, content_version_ts,
-            author_kind, author_id, author_name, files_json, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            author_kind, author_id, author_name, files_json, images_json, gap_before_ts, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(workspace_id, channel_id, root_ts, message_ts) DO NOTHING`,
           ...slackPublicContextValues(input, row),
           now,
@@ -1728,7 +1750,14 @@ export class ConfigStoreLogic {
     );
   }
 
+  /**
+   * The 30-day sweep scans every thread, so it runs at most once a minute
+   * per store rather than on every read and write. A thread therefore lives
+   * up to a minute past its expiry; nothing depends on the exact moment.
+   */
   private pruneExpiredSlackPublicContext(now: number): void {
+    if (now - this.slackPublicContextPrunedAt < SLACK_PUBLIC_CONTEXT_PRUNE_INTERVAL_MS) return;
+    this.slackPublicContextPrunedAt = now;
     this.db.run(
       `DELETE FROM config_slack_public_context
        WHERE (workspace_id, channel_id, root_ts) IN (
@@ -3176,6 +3205,8 @@ export class ConfigStoreLogic {
         author_id TEXT,
         author_name TEXT,
         files_json TEXT,
+        images_json TEXT,
+        gap_before_ts TEXT,
         updated_at INTEGER NOT NULL,
         PRIMARY KEY (workspace_id, channel_id, root_ts, message_ts)
       )`,
@@ -3660,6 +3691,7 @@ function requireNonChatModelRole(role: string): NonChatModelRole {
 
 function rowToSlackPublicContext(row: SlackPublicContextRow): SlackPublicContextEntry {
   const files = parseSlackPublicContextFiles(row.files_json);
+  const images = parseSlackPublicContextImages(row.images_json);
   return {
     workspaceId: row.workspace_id,
     channelId: row.channel_id,
@@ -3671,6 +3703,8 @@ function rowToSlackPublicContext(row: SlackPublicContextRow): SlackPublicContext
     ...(row.author_id ? { authorId: row.author_id } : {}),
     ...(row.author_name ? { authorName: row.author_name } : {}),
     ...(files.length ? { files } : {}),
+    ...(images.length ? { images } : {}),
+    ...(row.gap_before_ts ? { gapBeforeTs: row.gap_before_ts } : {}),
     ...(row.content_version_ts ? { contentVersionTs: row.content_version_ts } : {}),
     updatedAt: Number(row.updated_at),
   };
@@ -3684,6 +3718,7 @@ interface ValidatedSlackPublicContextRow {
   role: 'human' | 'agent';
   authorKind: 'person' | 'app' | 'agent';
   filesJson: string | null;
+  imagesJson: string | null;
 }
 
 function validatedSlackPublicContextRow(
@@ -3708,6 +3743,9 @@ function validatedSlackPublicContextRow(
     // Absent means "no information" and keeps a stored listing; an explicit
     // empty list (an edit that removed every file) replaces it.
     filesJson: input.files === undefined ? null : JSON.stringify(files),
+    imagesJson: input.images === undefined
+      ? null
+      : JSON.stringify(input.images.slice(0, MAX_SLACK_PUBLIC_CONTEXT_FILES)),
   };
 }
 
@@ -3728,6 +3766,8 @@ function slackPublicContextValues(
     input.authorId ?? null,
     input.authorName ?? null,
     row.filesJson,
+    row.imagesJson,
+    input.gapBeforeTs ?? null,
   ];
 }
 
@@ -3744,6 +3784,22 @@ function parseSlackPublicContextFiles(value: string | null | undefined): SlackPu
         ...(typeof type === 'string' ? { type } : {}),
         ...(typeof sizeBytes === 'number' ? { sizeBytes } : {}),
       }];
+    }).slice(0, MAX_SLACK_PUBLIC_CONTEXT_FILES);
+  } catch {
+    return [];
+  }
+}
+
+function parseSlackPublicContextImages(value: string | null | undefined): SlackPublicContextImage[] {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.flatMap((image) => {
+      if (!image || typeof image !== 'object') return [];
+      const { id, name, mimeType, sizeBytes } = image as Record<string, unknown>;
+      if (typeof id !== 'string' || typeof name !== 'string' || typeof mimeType !== 'string') return [];
+      return [{ id, name, mimeType, ...(typeof sizeBytes === 'number' ? { sizeBytes } : {}) }];
     }).slice(0, MAX_SLACK_PUBLIC_CONTEXT_FILES);
   } catch {
     return [];

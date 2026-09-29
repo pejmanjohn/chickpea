@@ -59,7 +59,9 @@ export function slackMessageText(message: SlackMessageContentSource): string {
   }
   const attachments = Array.isArray(message.attachments) ? message.attachments : [];
   for (const attachment of attachments) {
-    if (!isRecord(attachment)) continue;
+    // A link preview or a shared-message card carries another page's or
+    // another person's text; it is not what this author wrote.
+    if (!isRecord(attachment) || isLinkPreview(attachment)) continue;
     const before = parts.length;
     add(attachment.pretext);
     add(attachment.author_name);
@@ -152,4 +154,9 @@ function formatBytes(bytes: number): string {
 function textObject(value: unknown): string | undefined {
   if (!isRecord(value)) return undefined;
   return typeof value.text === 'string' ? value.text : undefined;
+}
+
+function isLinkPreview(attachment: Record<string, unknown>): boolean {
+  return typeof attachment.from_url === 'string' || typeof attachment.original_url === 'string' ||
+    attachment.is_app_unfurl === true || attachment.is_msg_unfurl === true || attachment.is_share === true;
 }

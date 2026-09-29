@@ -2367,15 +2367,6 @@ export class CfTurnJobsForRunner implements RunnerTurnJobsPort {
   applySlackActivityStatusCooldown(workspaceId: string, retryAfterMs: number) {
     return this.slack((store) => store.applySlackActivityStatusCooldown(workspaceId, retryAfterMs));
   }
-
-  reserveSlackRead(workspaceId: string, method: SlackReadMethod) {
-    return this.once((store) => store.reserveSlackRead(workspaceId, method));
-  }
-
-  /** Convergent, like the append cooldown: replay-safe. */
-  applySlackReadCooldown(workspaceId: string, method: SlackReadMethod, retryAfterMs: number) {
-    return this.slack((store) => store.applySlackReadCooldown(workspaceId, method, retryAfterMs));
-  }
 }
 
 export class CfSettingsStore implements SettingsStore, EncryptedCredentialStore {

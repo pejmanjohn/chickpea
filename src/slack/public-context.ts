@@ -2,11 +2,13 @@ import type {
   ResolvedAssignment,
   SlackPublicContextEntry,
   SlackPublicContextEntryInput,
+  SlackPublicContextImage,
   RecentSlackPublicContextInput,
 } from '../config/types.ts';
 import { MAX_SLACK_PUBLIC_HANDOFF_MESSAGES } from '../config/types.ts';
 import type { NormalizedSlackTurn, SlackMessageEvent } from './types.ts';
 import { slackFileSummaries, slackMessageText } from './message-text.ts';
+import { slackImageRefs, threadImageRef } from './thread-images.ts';
 import {
   atOrBeforeSlackWatermark, DEFAULT_MAX_MESSAGES, ensureTriggerMessage, orderMessages,
   slackTimestampUnits, toContextMessage, type SlackContextMessage, type SlackContextSelf,
@@ -49,8 +51,11 @@ export async function recordAcceptedSlackHumanMessage(
   store: SlackPublicContextWriter,
   turn: NormalizedSlackTurn,
   assignment: Pick<ResolvedAssignment, 'runtimeContract'>,
+  /** The Slack event's files: their image references let a later turn read the record, not Slack. */
+  files?: unknown,
 ): Promise<void> {
   if (assignment.runtimeContract !== 'chickpea-v1' || turn.source === 'reaction_added') return;
+  const images = slackImageRefs(files);
   await store.putSlackPublicContext({
     workspaceId: turn.workspaceId,
     channelId: turn.channelId,
@@ -59,6 +64,7 @@ export async function recordAcceptedSlackHumanMessage(
     role: 'human',
     text: turn.text,
     authorId: turn.userId,
+    ...(images.length ? { images } : {}),
   });
 }
 
@@ -105,7 +111,9 @@ export async function recordSlackThreadEventMessage(
   const row = toContextMessage(event as unknown as SlackWebApiMessage, self);
   if (!row || row.role === 'agent') return false;
   if (!(await threadHasAgent(rootTs))) return false;
-  await store.putSlackPublicContext(threadRecordInput(workspaceId, event.channel, rootTs, row));
+  await store.putSlackPublicContext(
+    threadRecordInput(workspaceId, event.channel, rootTs, row, slackImageRefs(event.files)),
+  );
   return true;
 }
 
@@ -114,20 +122,42 @@ export async function recordSlackThreadEventMessage(
  * tools need no Slack read for them (the shared app gets one read a minute).
  * Only the thread's own rows are seeded, never another root's, and only
  * rows a Slack read can attribute: people and apps. Agent rows are left to
- * the delivery path, which knows which Agent wrote them.
+ * the delivery path, which knows which Agent wrote them. Rows the record
+ * already holds (`held`) are not sent again.
+ *
+ * The shared app's capped read (`cappedRead`) returns the root and only the
+ * newest replies. When it could not reach every reply, the root is marked
+ * with `gapBeforeTs`, so a later turn that reads the record instead of Slack
+ * still says what it is missing. The install's own app pages oldest first,
+ * so its gaps are newer replies, which the record captures as they arrive.
  */
 export async function seedSlackThreadRecord(
   store: SlackPublicContextSeeder,
-  turn: Pick<NormalizedSlackTurn, 'workspaceId' | 'channelId' | 'threadTs' | 'contextMode'>,
+  turn: Pick<NormalizedSlackTurn, 'workspaceId' | 'channelId' | 'threadTs' | 'messageTs' | 'contextMode'>,
   context: SlackTurnContext,
+  options: { held?: ReadonlySet<string>; cappedRead?: boolean } = {},
 ): Promise<number> {
   if (turn.contextMode !== 'thread') return 0;
-  const inputs = context.messages
+  const seeded = context.messages
     .filter((message) => !message.isTrigger && message.rootTs === turn.threadTs &&
       (message.role === 'human' || message.role === 'app'))
-    .slice(-MAX_SEEDED_THREAD_ROWS)
-    .map((message) => threadRecordInput(turn.workspaceId, turn.channelId, turn.threadTs, message));
+    .slice(-MAX_SEEDED_THREAD_ROWS);
+  const gapBeforeTs = options.cappedRead && context.truncated
+    ? seeded.find((message) => message.ts !== turn.threadTs)?.ts ?? turn.messageTs
+    : undefined;
+  const inputs = seeded
+    .filter((message) => !options.held?.has(message.ts))
+    .map((message) => ({
+      ...threadRecordInput(
+        turn.workspaceId, turn.channelId, turn.threadTs, message, imageRefsFor(context, message.ts),
+      ),
+      ...(gapBeforeTs && message.ts === turn.threadTs ? { gapBeforeTs } : {}),
+    }));
   return inputs.length ? store.seedSlackPublicContext(inputs) : 0;
+}
+
+function imageRefsFor(context: SlackTurnContext, messageTs: string): SlackPublicContextImage[] {
+  return (context.images ?? []).filter((image) => image.messageTs === messageTs).map(threadImageRef);
 }
 
 /** Kept below the record's own 200-row bound, so a seed never evicts captured rows. */
@@ -138,6 +168,7 @@ function threadRecordInput(
   channelId: string,
   rootTs: string,
   message: SlackContextMessage,
+  images: SlackPublicContextImage[] = [],
 ): SlackPublicContextEntryInput {
   return {
     workspaceId,
@@ -149,6 +180,7 @@ function threadRecordInput(
     ...(message.userId ? { authorId: message.userId.slice(0, 120) } : {}),
     ...(message.role === 'app' && message.authorName ? { authorName: message.authorName } : {}),
     ...(message.files?.length ? { files: message.files } : {}),
+    ...(images.length ? { images } : {}),
     ...(message.contentVersionTs ? { contentVersionTs: message.contentVersionTs } : {}),
   };
 }
@@ -186,6 +218,10 @@ export async function reconcileSlackPublicContextMutation(
     rootTs,
   )).find((entry) => entry.messageTs === messageTs);
   if (!existing) return true;
+  // Slack also sends message_changed for link previews and reply counts.
+  // Without an edit, nothing the record holds changed: keep its version.
+  if (!message?.edited && existing.text === text &&
+      sameFileNames(existing.files ?? [], files)) return true;
   await store.putSlackPublicContext({
     workspaceId,
     channelId: event.channel,
@@ -198,6 +234,7 @@ export async function reconcileSlackPublicContextMutation(
     ...(existing.authorId ? { authorId: existing.authorId } : {}),
     ...(existing.authorName ? { authorName: existing.authorName } : {}),
     files,
+    images: slackImageRefs(message?.files),
   });
   return true;
 }
@@ -229,7 +266,7 @@ export async function assembleRetainedSlackContext(
   if (options.store && options.agentId &&
       (turn.contextMode === 'thread' || turn.contextMode === 'dm_history')) {
     try {
-      entries.push(...await options.store.listSlackPublicContext(
+      entries.push(...context.threadRecord ?? await options.store.listSlackPublicContext(
         turn.workspaceId, turn.channelId, turn.threadTs,
       ));
       if (acrossRoots) entries.push(...await options.store.listRecentSlackPublicContext({
@@ -289,7 +326,8 @@ export async function assembleRetainedSlackContext(
   }
   bounded.reverse();
   if (root && (rootText || root.files?.length)) bounded.unshift({ ...root, text: rootText });
-  return { ...context, messages: ensureTriggerMessage(bounded, turn), degradations: [...new Set(degradations)] };
+  const { threadRecord: _listed, ...assembled } = context;
+  return { ...assembled, messages: ensureTriggerMessage(bounded, turn), degradations: [...new Set(degradations)] };
 }
 
 /** Share of the context character budget kept for a thread's first message. */
@@ -402,4 +440,11 @@ function compareSlackTs(left: string, right: string): number {
     return leftNumber - rightNumber;
   }
   return left.localeCompare(right);
+}
+
+function sameFileNames(
+  left: ReadonlyArray<{ name: string }>,
+  right: ReadonlyArray<{ name: string }>,
+): boolean {
+  return left.length === right.length && left.every((file, index) => file.name === right[index]?.name);
 }
