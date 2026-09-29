@@ -66,7 +66,11 @@ function turnMayAskAgents(
 
 // A handle word: `@` (with the word joiner neutralization may leave after
 // it) not preceded by a word character or `.`, `@`, `/`, `:`, `-`, so an
-// email address, a URL, or a path is never a mention.
+// email address, a URL, or a path is never a mention. Unlike the word
+// message-format.ts links live (SLACK_HANDLE_WORD), this one accepts a `|`
+// or `<` before the `@`: a delivered reply holds its teammates' mentions as
+// `<!subteam^ID|@handle>`, whose label must still ask. Whatever that word
+// links, this must match.
 const HANDLE_WORD = new RegExp(
   `(?<![\\p{L}\\p{N}_.@/:-])@${SLACK_MENTION_BREAK}?([A-Za-z0-9_-]+)`,
   'gu',

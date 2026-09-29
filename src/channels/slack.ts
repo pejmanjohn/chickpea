@@ -1116,6 +1116,11 @@ interface SlackAgentAskAdmission {
   /** Built by the host from the asking Agent's delivered message. */
   turn: NormalizedSlackTurn;
   targetAgentId: string;
+  /**
+   * The queue of the host that admits the ask, when that host runs inside
+   * the state store: it must never enqueue through its own stub.
+   */
+  enqueueTurn?: SlackEventExecution['enqueueTurn'];
   /** The exchange used every ask it may: pause it, once, in the thread. */
   onLimitReached(client: ReturnType<typeof createSlackWebClient>): Promise<void>;
 }
@@ -1225,6 +1230,7 @@ export async function processSlackAgentAsks(
     const admission: SlackAgentAskAdmission = {
       turn,
       targetAgentId: agent.id,
+      ...(provided?.enqueueTurn ? { enqueueTurn: provided.enqueueTurn } : {}),
       onLimitReached: (client) => postAgentAskPause({
         client,
         stores,
@@ -1267,14 +1273,23 @@ async function postAgentAskPause(input: {
   const key = `agent-ask-pause:${turn.workspaceId}:${turn.channelId}:${turn.threadTs}:${input.originMessageTs}`;
   if (!(await input.stores.slackState.claim(key))) return;
   console.info('[chickpea] agent ask limit reached; exchange paused');
-  const avatarUrl = await resolvedAgentAvatarUrl(from, input.stores, input.platformEnv);
-  const posted = await input.client.chat.postMessage({
-    channel: turn.channelId,
-    thread_ts: turn.threadTs,
-    text: AGENT_ASK_PAUSE_TEXT,
-    username: from.name,
-    ...(avatarUrl ? { icon_url: avatarUrl } : {}),
-  });
+  let posted: Awaited<ReturnType<typeof input.client.chat.postMessage>>;
+  try {
+    const avatarUrl = await resolvedAgentAvatarUrl(from, input.stores, input.platformEnv);
+    posted = await input.client.chat.postMessage({
+      channel: turn.channelId,
+      thread_ts: turn.threadTs,
+      text: AGENT_ASK_PAUSE_TEXT,
+      username: from.name,
+      ...(avatarUrl ? { icon_url: avatarUrl } : {}),
+    });
+  } catch (error) {
+    // The note was not posted: give the claim back so the exchange's next
+    // refused ask says so. A post Slack accepted but did not acknowledge may
+    // then be said twice; a paused exchange nobody can see is worse.
+    await input.stores.slackState.release(key).catch(() => undefined);
+    throw error;
+  }
   if (typeof posted.ts === 'string' && posted.ts) {
     await recordDeliveredSlackAgentMessage(
       input.stores.config,
@@ -2731,7 +2746,8 @@ async function processSlackEvent(
             console.error('[chickpea] ledger Work admission failed:', sanitizeError(err));
           }
           if (promotedDecisionKey) await state.release(promotedDecisionKey);
-          if (execution?.enqueueTurn || execution?.durableIngress) {
+          // An ask's own retry loop is its redelivery.
+          if (execution?.enqueueTurn || execution?.durableIngress || ask) {
             throw new SlackDurableEnqueueError('Canonical Work admission failed.');
           }
           return;
@@ -2881,8 +2897,11 @@ async function processSlackEvent(
       assignment,
       ...(midRunReceipt ? { midRunReceipt } : {}),
     };
-    const enqueued = execution?.enqueueTurn
-      ? await execution.enqueueTurn(job)
+    // An ask admitted inside the state store enqueues into its own queue
+    // whatever the installation's transport; the stub is for a Worker.
+    const enqueueTurn = execution?.enqueueTurn ?? ask?.enqueueTurn;
+    const enqueued = enqueueTurn
+      ? await enqueueTurn(job)
       : await tagStateStub(platformEnv).enqueueTurn(job);
     if (!enqueued.ok) {
       // Enqueue failed before anything ran: free the claims so a Slack

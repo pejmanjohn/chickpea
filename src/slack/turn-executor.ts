@@ -118,8 +118,9 @@ export interface TurnExecutionPorts {
   /** Thread context for every Agent message the turn delivers. */
   config: Parameters<typeof recordDeliveredSlackAgentMessage>[0];
   /**
-   * Admits the asks a delivered reply made of other Agents. Absent where
-   * this executor admits none (the state store's legacy alarm executor).
+   * Admits the asks a delivered reply made of other Agents. Each host
+   * supplies its own (the thread runner, the state store's alarm executor);
+   * absent only where a caller admits none.
    */
   dispatchAgentAsks?: SlackAgentAskDispatcher;
   presentationState: SlackPresentationStatePort;

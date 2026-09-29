@@ -436,7 +436,13 @@ test('a delivered Channel reply hands its teammate asks over after the row is se
     },
     assignment: { agentId: 'agent_support', runtimeContract: 'chickpea-v1' } as never,
   });
-  for (const [outcome, expected] of [['completed', 1], ['stopped', 0]] as const) {
+  // A stop that reached the run after it finished (raced) asks nobody either.
+  const cases = [
+    ['completed', 1, false],
+    ['stopped', 0, false],
+    ['completed', 0, true],
+  ] as const;
+  for (const [outcome, expected, raced] of cases) {
     const h = fakePorts(async (options) => {
       await options.onPublicMessageDelivered?.({ messageTs: '1785900000.000200', text: '@finance Q3?' });
       await options.onDelivered?.(outcome as never);
@@ -451,8 +457,9 @@ test('a delivered Channel reply hands its teammate asks over after the row is se
       dispatched.push(`${request.fromAgentId}:${request.deliveries.map(({ text }) => text).join('|')}`);
       h.calls.push('dispatchAgentAsks');
     };
-    assert.equal(await executeTurnJob(channelJob, h.ports, h.options), true);
-    assert.equal(dispatched.length, expected, outcome);
+    const options = raced ? { ...h.options, stopRecorded: async () => true } : h.options;
+    assert.equal(await executeTurnJob(channelJob, h.ports, options), true);
+    assert.equal(dispatched.length, expected, `${outcome}${raced ? ' (raced stop)' : ''}`);
     if (expected) {
       assert.deepEqual(dispatched, ['agent_support:@finance Q3?']);
       assert.ok(h.calls.indexOf('markDelivered("turn_1")') < h.calls.indexOf('dispatchAgentAsks'));

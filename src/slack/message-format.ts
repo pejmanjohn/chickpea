@@ -86,8 +86,12 @@ export interface SlackReplyFooter {
   scheduled?: boolean | undefined;
 }
 
-export function renderSlackMessage(text: string, format: SlackReplyFormat): RenderedSlackMessage {
-  const displayText = canonicalSlackReplyText(text, format);
+export function renderSlackMessage(
+  text: string,
+  format: SlackReplyFormat,
+  live?: SlackLiveAgentHandles,
+): RenderedSlackMessage {
+  const displayText = canonicalSlackReplyText(text, format, live);
 
   if (format === 'markdown') {
     return {
@@ -136,6 +140,7 @@ export function renderSlackArtifactMessage(
   footer: SlackReplyFooter,
   files: readonly CompletedSlackArtifactReceipt[],
   tableText?: string,
+  live?: SlackLiveAgentHandles,
 ): RenderedSlackMessage {
   const links = files.map((file) => {
     // Receipt validation bounds the encoded URL and excludes Slack delimiters.
@@ -149,9 +154,9 @@ export function renderSlackArtifactMessage(
   }).join('\n');
   const linkChunks = splitSlackFileSections(links);
   const content = renderSlackFileContent(
-    text, format, tableText, slackFileContentBlockLimit - linkChunks.length,
+    text, format, tableText, slackFileContentBlockLimit - linkChunks.length, live,
   );
-  const fallbackBody = [renderSlackMessage(text, format).text,
+  const fallbackBody = [renderSlackMessage(text, format, live).text,
     tableText ? renderSlackMessage(tableText, 'plain_text').text : '',
   ].filter(Boolean).join('\n\n');
   // 4,000 is Slack's recommendation, not its 40,000-character hard limit.
@@ -175,8 +180,9 @@ function renderSlackFileContent(
   format: SlackReplyFormat,
   tableText: string | undefined,
   maxBlocks: number,
+  live?: SlackLiveAgentHandles,
 ): SlackSectionBlock[] {
-  const displayText = truncateText(canonicalSlackReplyText(text, format), slackMarkdownBlockTextLimit);
+  const displayText = truncateText(canonicalSlackReplyText(text, format, live), slackMarkdownBlockTextLimit);
   const body = format === 'markdown'
     ? fileReplyMrkdwnText(displayText)
     : format === 'plain_text' ? escapeSlackControlCharacters(displayText) : displayText;

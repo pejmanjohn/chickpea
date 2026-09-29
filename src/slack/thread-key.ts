@@ -84,7 +84,8 @@ function continuityBaseSlackThreadKey(threadKey: string): string {
   const base = baseSlackThreadKey(threadKey);
   const [, , , owner, guest] = threadKey.split(':');
   if (!owner || !/^owner-i[1-9]\d*$/.test(owner)) return base;
-  // A guest keeps its own memory conversation and coding workspace.
+  // A guest keeps its own memory conversation. The coding Sandbox stays the
+  // thread's: sandboxThreadKey drops this segment.
   return guest && /^guest-[A-Za-z0-9_.-]+$/.test(guest)
     ? `${base}:${owner}:${guest}`
     : `${base}:${owner}`;

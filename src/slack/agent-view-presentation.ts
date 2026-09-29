@@ -1004,6 +1004,11 @@ export class SlackAgentViewPresentation {
       ),
       invalidate: (reason, error) => this.invalidate(reason, error),
       streamedPrefixBound: () => this.streamCapBound,
+      // The bound above renders with this reply's live handles; what is
+      // compared against it must render the same way.
+      canonicalStreamText: (text) =>
+        streamableSlackMarkdownPrefix(text, this.options.liveAgentHandles) ||
+        canonicalSlackReplyText(text, 'markdown', this.options.liveAgentHandles),
       ...(presentation.schemaVersion !== 1
         ? {
             modelIntent: {
@@ -1429,6 +1434,7 @@ export class SlackAgentViewPresentation {
       part.text,
       'markdown',
       index === plan.parts.length - 1 ? plan.closing : undefined,
+      this.options.liveAgentHandles,
     );
     // A re-split part is new content, so it gets its own client_msg_id.
     const operationId = part.operation?.operationId ??
@@ -2162,9 +2168,10 @@ export class SlackAgentViewPresentation {
     const table = renderSlackReplyTable(tablePresentation, parts.at(-1)!);
     const closes = !await this.planContinuations(parts, table, [], split, true);
     presentation = await this.requirePresentation();
+    const live = this.options.liveAgentHandles;
     const content = table && closes
-      ? appendSlackTableToRenderedMessage(renderSlackMessage(first, 'markdown'), first, table)
-      : renderSlackMessage(first, 'markdown');
+      ? appendSlackTableToRenderedMessage(renderSlackMessage(first, 'markdown', live), first, table)
+      : renderSlackMessage(first, 'markdown', live);
     const rendered = closes ? appendSlackReplyFooter(content, this.options.footer) : content;
     const messageTs = presentation.stream.messageTs!;
     const update = { channel: presentation.root.channelId, ts: messageTs,
@@ -2269,13 +2276,14 @@ export class SlackAgentViewPresentation {
     closes: boolean,
   ): Promise<AgentViewFinalResult> {
     const corrected = `${first}\n\n${CORRECTED_MARKER}`;
+    const live = this.options.liveAgentHandles;
     const content = table
       ? appendSlackTableToRenderedMessage(
-          renderSlackMessage(corrected, 'markdown'),
+          renderSlackMessage(corrected, 'markdown', live),
           corrected,
           table,
         )
-      : renderSlackMessage(corrected, 'markdown');
+      : renderSlackMessage(corrected, 'markdown', live);
     const rendered = closes ? appendSlackReplyFooter(content, this.options.footer) : content;
     const messageTs = presentation.stream.messageTs!;
     const update = {

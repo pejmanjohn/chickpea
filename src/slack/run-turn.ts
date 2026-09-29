@@ -543,7 +543,11 @@ async function runTurnAttempt(
   // Exact `!routines` controls stay deterministic. All natural-language
   // schedule creation and editing reaches the interactive Flue Agent, where
   // agent-authoring decides placement and uses management proposals.
-  if (shouldHandleRoutineCommandTurn(turn, commandAddress)) {
+  // An ask's text is the asking Agent's message: only a person's message can
+  // be a memory or schedule command. Admission refuses those for an ask too
+  // (typedByPerson in processSlackEvent); this is the runtime's own gate.
+  const typedByPerson = !turn.agentAsk;
+  if (typedByPerson && shouldHandleRoutineCommandTurn(turn, commandAddress)) {
     const routineText = await handleRoutineSlackRequest(turn, platformEnv, {
       ...(installationContext ? { installationContext } : {}),
       assignment,
@@ -583,10 +587,10 @@ async function runTurnAttempt(
       return;
     }
   }
-  const memoryCommand = parseMemoryCommand(turn.text);
+  const memoryCommand = typedByPerson ? parseMemoryCommand(turn.text) : undefined;
   const deterministicCommand = Boolean(memoryCommand) ||
     Boolean(turn.managementApprovalProposalId) ||
-    (isRoutineSlackTurn(turn) && Boolean(parseRoutineCommand(turn.text, commandAddress)));
+    (typedByPerson && isRoutineSlackTurn(turn) && Boolean(parseRoutineCommand(turn.text, commandAddress)));
   // Delivery-only recovery replays the exact persisted answer. It must not
   // re-resolve current Agent memory (which could both block recovery
   // on a changed lease and unnecessarily touch live state).
@@ -1667,6 +1671,9 @@ async function runTurnAttempt(
       ...(options.previousStop
         ? { previousRunStopped: { stopperUserId: options.previousStop.stopperUserId } }
         : {}),
+      // The thread's own Agent is asked back by a guest it asked; a guest is
+      // asked by the thread's Agent. Each reads the ask differently.
+      ...(turn.agentAsk ? { askedAsThreadOwner: assignment.threadGuest !== true } : {}),
       ...(installationContext
         ? {
             slackApp: {

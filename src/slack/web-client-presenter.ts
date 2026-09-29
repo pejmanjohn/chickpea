@@ -915,6 +915,7 @@ export class WebClientPresenter {
       first,
       format,
       continuations.length > 0 ? undefined : closing,
+      this.options.liveAgentHandles,
     );
     const postPayload = {
       channel: this.target.channelId,
@@ -987,7 +988,7 @@ export class WebClientPresenter {
       const last = index === continuations.length - 1;
       try {
         const posted = await this.client.chat.postMessage({
-          ...renderSlackReplyPart(text, format, last ? closing : undefined),
+          ...renderSlackReplyPart(text, format, last ? closing : undefined, this.options.liveAgentHandles),
           channel: this.target.channelId,
           thread_ts: this.target.threadTs,
           ...this.persona(),
