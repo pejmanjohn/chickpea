@@ -127,12 +127,11 @@ function conversationKind(facts: SlackReadConversationFacts): AuthorizedSlackCon
   return facts.private ? 'private_channel' : 'channel';
 }
 
-const MEMBERSHIP_TTL_MS = 5 * 60_000;
-
 /**
- * Authority ports over a Slack client. Both caches live as long as the ports
- * do (one render): conversation facts for the whole render, membership
- * answers for at most five minutes of it. A transient failure is not cached.
+ * Authority ports over a Slack client. Both caches, conversation facts and
+ * membership answers, live as long as the ports do: one render, so one turn.
+ * The next turn asks Slack again, so a requester who left a channel cannot
+ * read it on the next request. A transient failure is not cached.
  */
 export function slackReadAuthorityPorts(input: {
   workspaceId: string;
@@ -142,11 +141,9 @@ export function slackReadAuthorityPorts(input: {
   client: Pick<WebClient, 'conversations'>;
   assertActive: SlackReadAuthorityPorts['assertActive'];
   hasActiveGrant: SlackReadAuthorityPorts['hasActiveGrant'];
-  now?: () => number;
 }): SlackReadAuthorityPorts {
-  const now = input.now ?? Date.now;
   const conversations = new Map<string, Promise<SlackReadConversationFacts | undefined>>();
-  const members = new Map<string, { member: Promise<boolean>; at: number }>();
+  const members = new Map<string, Promise<boolean>>();
   const membersPage = async (page: SlackApiInput): Promise<SlackApiResult> =>
     (await input.client.conversations.members(page as { channel: string; limit?: number; cursor?: string })) as unknown as SlackApiResult;
   return {
@@ -176,7 +173,7 @@ export function slackReadAuthorityPorts(input: {
     isMember(channelId, userId) {
       const key = `${channelId}\u0000${userId}`;
       const cached = members.get(key);
-      if (cached && now() - cached.at < MEMBERSHIP_TTL_MS) return cached.member;
+      if (cached) return cached;
       const member = (async () => {
         try {
           return await channelIncludesMember(membersPage, channelId, userId);
@@ -188,7 +185,7 @@ export function slackReadAuthorityPorts(input: {
           throw new SlackReadError('unavailable');
         }
       })();
-      members.set(key, { member, at: now() });
+      members.set(key, member);
       return member;
     },
   };

@@ -17,6 +17,7 @@ export type SlackReadErrorCode =
   | 'agent_unavailable'
   | 'rate_limited'
   | 'read_limit'
+  | 'lookup_limit'
   | 'result_too_large'
   | 'invalid_link'
   | 'invalid_target'
@@ -45,6 +46,7 @@ export const SLACK_READ_MESSAGES: Record<SlackReadErrorCode, string> = {
   agent_unavailable: 'This Agent is no longer available.',
   rate_limited: 'Slack lets this app read older messages about once a minute. Answer from what you have and say what you could not read yet.',
   read_limit: 'This request already made the maximum number of Slack reads. Answer from what you have.',
+  lookup_limit: 'This request already looked up the maximum number of Slack people. Answer from what you have.',
   result_too_large: 'The result exceeds the tool limit. Ask for fewer messages with limit.',
   invalid_link: 'That is not a Slack message or channel link from this workspace.',
   invalid_target: 'Pass a Slack link, or a channel id with an optional message timestamp.',

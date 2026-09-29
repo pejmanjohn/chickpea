@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { encodeBase64Url } from '../src/security/base64url.ts';
 import { clearSlackContextNameCache } from '../src/slack/context-names.ts';
 import type { SlackReadGate } from '../src/slack/read-budget.ts';
 import {
@@ -16,6 +17,7 @@ import { parseSlackLink, resolveSlackReadTarget } from '../src/slack/reading/lin
 import {
   MAX_SLACK_READ_RESULT_BYTES,
   MAX_SLACK_READS_PER_REQUEST,
+  MAX_SLACK_USER_LOOKUPS_PER_REQUEST,
   SlackReadingService,
   slackReadFailure,
 } from '../src/slack/reading/service.ts';
@@ -165,7 +167,7 @@ test('shared-channel facts cover every Slack sharing flag', () => {
   assert.equal(slackReadConversationFacts({ id: 'C1', context_team_id: 'T9', team_id: 'T1' })?.teamId, 'T9');
 });
 
-test('membership is cached across calls and a missing channel is not a member', async () => {
+test('membership is cached for one render only, and a missing channel is not a member', async () => {
   let pages = 0;
   const client = {
     conversations: {
@@ -177,14 +179,20 @@ test('membership is cached across calls and a missing channel is not a member', 
       async info() { return { ok: true, channel: { id: 'C0OTHER' } }; },
     },
   };
-  const live = slackReadAuthorityPorts({
+  const render = () => slackReadAuthorityPorts({
     workspaceId: WORKSPACE, agentId: 'agent_oncall', requesterSlackUserId: REQUESTER, current: CURRENT,
     client: client as never, assertActive: async () => {}, hasActiveGrant: async () => true,
   });
+  const live = render();
   assert.equal(await live.isMember('C0OTHER', REQUESTER), true);
   assert.equal(await live.isMember('C0OTHER', REQUESTER), true);
   assert.equal(pages, 1);
   assert.equal(await live.isMember('C0GONE', REQUESTER), false);
+  // The next turn builds new ports and asks Slack again, so a requester who
+  // left the channel cannot read it on the next request.
+  const pagesBefore = pages;
+  assert.equal(await render().isMember('C0OTHER', REQUESTER), true);
+  assert.equal(pages, pagesBefore + 1);
 });
 
 function gate(grants = Infinity, gated = true): SlackReadGate & { limited: number[] } {
@@ -207,14 +215,17 @@ function slackClient(options: {
   history?: (args: Record<string, unknown>) => unknown;
 } = {}) {
   const calls: Array<[string, Record<string, unknown>]> = [];
+  const lookups: string[] = [];
   return {
     calls,
+    lookups,
     conversations: {
       async replies(args: Record<string, unknown>) { calls.push(['replies', args]); return options.replies?.(args) ?? { ok: true, messages: [] }; },
       async history(args: Record<string, unknown>) { calls.push(['history', args]); return options.history?.(args) ?? { ok: true, messages: [] }; },
     },
     users: {
       async info({ user }: { user: string }) {
+        lookups.push(user);
         if (user === 'U0EXTERNAL') return { ok: true, user: { id: user, team_id: 'T0PARTNER', profile: { display_name: 'Partner', email: 'p@x.example' } } };
         if (user === 'U0GUEST') return { ok: true, user: { id: user, team_id: WORKSPACE, is_restricted: true, profile: { display_name: 'Guest' } } };
         if (user === 'U0GRID') return { ok: true, user: { id: user, team_id: 'T0SIBLING', enterprise_user: { id: 'W0GRID', enterprise_id: 'E0ORG' }, profile: { display_name: 'Grid Colleague', title: 'PM' } } };
@@ -227,12 +238,12 @@ function slackClient(options: {
   };
 }
 
-function service(client: ReturnType<typeof slackClient>, readGate = gate(), record?: SqliteConfigStore) {
+function service(client: ReturnType<typeof slackClient>, readGate = gate(), record?: SqliteConfigStore, authority = ports()) {
   clearSlackContextNameCache();
   return new SlackReadingService({
     client: client as never,
     gate: readGate,
-    authority: ports(),
+    authority,
     self: { botUserId: 'U0BOT' },
     ...(record ? { record } : {}),
   });
@@ -342,23 +353,123 @@ test('a user lookup returns work details only, and nothing about another organiz
   assert.equal(slackReadFailure(await reader.lookupUser({ user: 'not-a-user' }).catch((error: unknown) => error)).code, 'invalid_target');
 });
 
+test('one request looks up at most the capped number of people', async () => {
+  const client = slackClient();
+  const reader = service(client);
+  for (let index = 0; index < MAX_SLACK_USER_LOOKUPS_PER_REQUEST; index += 1) {
+    await reader.lookupUser({ user: `U0PERSON${index}` });
+  }
+  const failure = slackReadFailure(await reader.lookupUser({ user: 'U0ONEMORE' }).catch((error: unknown) => error));
+  assert.equal(failure.code, 'lookup_limit');
+  assert.match(String(failure.message), /Answer from what you have/);
+  assert.equal(client.lookups.length, MAX_SLACK_USER_LOOKUPS_PER_REQUEST);
+});
+
+test('from a Slack Connect or org-shared conversation, people are not looked up', async () => {
+  const client = slackClient();
+  const shared = ports({ conversations: { [CURRENT.channelId]: facts({ id: CURRENT.channelId, shared: true }) } });
+  const failure = slackReadFailure(await service(client, gate(), undefined, shared)
+    .lookupUser({ user: 'U0DANA' }).catch((error: unknown) => error));
+  assert.equal(failure.code, 'shared_conversation_only');
+  assert.doesNotMatch(JSON.stringify(failure), /SRE|America/);
+  assert.deepEqual(client.lookups, []);
+  // Fails closed when Slack does not show the current conversation.
+  const hidden = ports({ conversations: {} });
+  assert.equal(slackReadFailure(await service(client, gate(), undefined, hidden)
+    .lookupUser({ user: 'U0DANA' }).catch((error: unknown) => error)).code, 'unavailable');
+  assert.deepEqual(client.lookups, []);
+  // The app's DM with the requester needs no conversations.info (no im:read).
+  const dm = ports({
+    current: { ...CURRENT, channelId: 'D0DANA' },
+    conversation: async () => { throw new SlackReadError('unavailable'); },
+  });
+  assert.equal((await service(client, gate(), undefined, dm).lookupUser({ user: 'U0DANA' })).status, 'ok');
+});
+
+test('each call honors its own abort signal, not an earlier call\'s', async () => {
+  const client = slackClient();
+  const reader = service(client, gate(2));
+  await reader.readChannel({ target: { channelId: 'C0OTHER' }, signal: new AbortController().signal });
+  const aborted = new AbortController();
+  aborted.abort();
+  await assert.rejects(reader.readChannel({ target: { channelId: 'C0OTHER' }, signal: aborted.signal }));
+  await assert.rejects(reader.lookupUser({ user: 'U0DANA', signal: aborted.signal }));
+  assert.deepEqual(client.lookups, []);
+  // The aborted call spent no budget: the next live call still reads Slack.
+  await reader.readChannel({ target: { channelId: 'C0OTHER' }, signal: new AbortController().signal });
+  assert.equal(client.calls.length, 2);
+  assert.equal((await reader.lookupUser({ user: 'U0DANA' })).status, 'ok');
+});
+
 test('the record fallback serves only the current thread, never another thread in this channel', async () => {
   const store = new SqliteConfigStore(':memory:');
   try {
     await store.putSlackPublicContext({ workspaceId: WORKSPACE, channelId: CURRENT.channelId, rootTs: CURRENT.threadTs,
       messageTs: CURRENT.threadTs, role: 'human', authorId: REQUESTER, text: 'RECORDED ROOT' });
+    // A reply the record holds under another thread of this channel.
+    await store.putSlackPublicContext({ workspaceId: WORKSPACE, channelId: CURRENT.channelId, rootTs: '900.000100',
+      messageTs: '905.000100', role: 'human', authorId: REQUESTER, text: 'OTHER THREAD' });
     const client = slackClient();
-    const failure = slackReadFailure(await service(client, gate(0), store)
-      .readThread({ target: { channelId: CURRENT.channelId, ts: '900.000100' } }).catch((error: unknown) => error));
-    assert.equal(failure.code, 'rate_limited');
-    assert.doesNotMatch(JSON.stringify(failure), /RECORDED ROOT/);
+    for (const target of [
+      { channelId: CURRENT.channelId, ts: '900.000100' },
+      { channelId: CURRENT.channelId, ts: '905.000100' },
+      { channelId: CURRENT.channelId, ts: '905.000100', threadTs: '900.000100' },
+      // A link into another thread, even naming a ts the record holds here.
+      { channelId: CURRENT.channelId, ts: CURRENT.threadTs, threadTs: '900.000100' },
+    ]) {
+      const failure = slackReadFailure(await service(client, gate(0), store)
+        .readThread({ target }).catch((error: unknown) => error));
+      assert.equal(failure.code, 'rate_limited', JSON.stringify(target));
+      assert.doesNotMatch(JSON.stringify(failure), /RECORDED ROOT|OTHER THREAD/);
+    }
+    assert.equal(client.calls.length, 0);
+  } finally { store.close(); }
+});
+
+test('the record fallback answers a reply link or reply ts in the current thread', async () => {
+  const store = new SqliteConfigStore(':memory:');
+  try {
+    await store.putSlackPublicContext({ workspaceId: WORKSPACE, channelId: CURRENT.channelId, rootTs: CURRENT.threadTs,
+      messageTs: CURRENT.threadTs, role: 'human', authorId: REQUESTER, text: 'RECORDED ROOT' });
+    await store.putSlackPublicContext({ workspaceId: WORKSPACE, channelId: CURRENT.channelId, rootTs: CURRENT.threadTs,
+      messageTs: '1005.000100', role: 'app', authorId: 'B0PD', authorName: 'PagerDuty', text: 'RECORDED REPLY' });
+    const client = slackClient();
+    for (const target of [
+      // Channel plus a reply ts the record holds under the current root.
+      { channelId: CURRENT.channelId, ts: '1005.000100' },
+      // A reply permalink with thread_ts, even for a reply the record lacks.
+      { channelId: CURRENT.channelId, ts: '1007.000100', threadTs: CURRENT.threadTs },
+    ]) {
+      const result = await service(client, gate(0), store).readThread({ target });
+      assert.equal(result.status, 'partial', JSON.stringify(target));
+      assert.equal(result.source, 'thread_record');
+      assert.equal(result.threadTs, CURRENT.threadTs);
+      assert.match(JSON.stringify(result), /RECORDED ROOT/);
+      assert.match(JSON.stringify(result), /RECORDED REPLY/);
+    }
+    // A reply ts the record does not hold, without thread_ts, is not known to
+    // be in this thread.
+    const unknown = slackReadFailure(await service(client, gate(0), store)
+      .readThread({ target: { channelId: CURRENT.channelId, ts: '1007.000100' } }).catch((error: unknown) => error));
+    assert.equal(unknown.code, 'rate_limited');
+    assert.equal(client.calls.length, 0);
   } finally { store.close(); }
 });
 
 test('a cursor that is not ours is refused without reaching Slack', async () => {
   const client = slackClient();
   const reader = service(client);
-  for (const cursor of ['not base64 json', Buffer.from('null').toString('base64url'), Buffer.from('{"k":"channel"}').toString('base64url')]) {
+  const encode = (value: string) => encodeBase64Url(new TextEncoder().encode(value));
+  for (const cursor of [
+    'not base64 json',
+    '!!!',
+    encode('null'),
+    encode('{"k":"channel"}'),
+    // A thread cursor offered to a channel read.
+    encode('{"k":"thread","c":"C0OTHER","t":"1.000001","s":"slack-next"}'),
+    // Bytes that are not UTF-8.
+    encodeBase64Url(new Uint8Array([0xff, 0xfe, 0x7b, 0x7d])),
+  ]) {
     const failure = slackReadFailure(await reader.readChannel({ target: { channelId: 'C0OTHER' }, cursor }).catch((error: unknown) => error));
     assert.equal(failure.code, 'invalid_cursor', cursor);
   }
