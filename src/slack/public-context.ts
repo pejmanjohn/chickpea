@@ -197,7 +197,7 @@ export async function reconcileSlackPublicContextMutation(
     ...(existing.agentId ? { agentId: existing.agentId } : {}),
     ...(existing.authorId ? { authorId: existing.authorId } : {}),
     ...(existing.authorName ? { authorName: existing.authorName } : {}),
-    ...(files.length ? { files } : {}),
+    files,
   });
   return true;
 }
@@ -353,7 +353,11 @@ export function boundedSlackPublicHandoff(
   for (let index = recent.length - 1; index >= 0 && remaining > 0; index -= 1) {
     const entry = recent[index]!;
     const text = truncatePublicText(entry.text, remaining);
-    if (!text) break;
+    // A row with nothing but files has no handoff text; the budget is what ends the walk.
+    if (!text) {
+      if (!entry.text.trim()) continue;
+      break;
+    }
     selected.push({
       messageTs: entry.messageTs,
       role: entry.role,

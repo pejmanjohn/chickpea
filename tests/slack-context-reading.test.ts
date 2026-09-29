@@ -8,6 +8,7 @@ import { collectAdmittedSlackListIds } from '../src/slack/lists/admission.ts';
 import { slackFileSummaries, slackMessageText } from '../src/slack/message-text.ts';
 import {
   assembleRetainedSlackContext,
+  boundedSlackPublicHandoff,
   reconcileSlackPublicContextMutation,
   recordAcceptedSlackHumanMessage,
   recordSlackThreadEventMessage,
@@ -491,6 +492,14 @@ test('an edited alert whose text lives in its attachments keeps its record row',
     });
     assert.deepEqual((await store.listSlackPublicContext('T1', 'C1', ROOT)).find((r) => r.messageTs === '1001.000100')?.files,
       [{ name: 'brief.pdf', type: 'application/pdf', sizeBytes: 2_048 }]);
+    // A caption added while the file is removed: the listing goes, the text stays.
+    await reconcileSlackPublicContextMutation(store, 'T1', {
+      type: 'message', subtype: 'message_changed', channel: 'C1', ts: '1051.500000',
+      message: { type: 'message', channel: 'C1', ts: '1001.000100', thread_ts: ROOT, user: 'U_DANA',
+        text: 'brief withdrawn', edited: { ts: '1051.500000' } },
+    });
+    const withdrawn = (await store.listSlackPublicContext('T1', 'C1', ROOT)).find((r) => r.messageTs === '1001.000100');
+    assert.deepEqual([withdrawn?.text, withdrawn?.files], ['brief withdrawn', undefined]);
     await reconcileSlackPublicContextMutation(store, 'T1', {
       type: 'message', subtype: 'message_changed', channel: 'C1', ts: '1052.000000',
       message: { type: 'message', channel: 'C1', ts: '1001.000100', thread_ts: ROOT, user: 'U_DANA', text: '',
@@ -530,4 +539,23 @@ test('the thread capture asks whether an Agent is in the thread only for a row i
       { ...base, ts: '1001.000100', user: 'U_GUEST', text: 'is prod down?' }, {}, guard(true)), true);
     assert.equal((await store.listSlackPublicContext('T1', 'C1', ROOT)).length, 1);
   });
+});
+
+test('a handoff skips file-only rows instead of ending at them, and carries app rows', () => {
+  const entry = (messageTs: string, text: string, role: 'human' | 'app' = 'human') => ({
+    workspaceId: 'T1', channelId: 'C1', rootTs: ROOT, messageTs, role, text, updatedAt: 0,
+    ...(role === 'app' ? { authorName: 'PagerDuty' } : {}),
+    ...(text ? {} : { files: [{ name: 'brief.pdf' }] }),
+  });
+  const handoff = boundedSlackPublicHandoff([
+    entry(ROOT, 'Triggered #4821', 'app'),
+    entry('1001.000100', 'is prod down?'),
+    entry('1002.000100', ''),
+    entry('1003.000100', 'yes'),
+  ]);
+  assert.deepEqual(handoff.map(({ messageTs, role }) => ({ messageTs, role })), [
+    { messageTs: ROOT, role: 'app' },
+    { messageTs: '1001.000100', role: 'human' },
+    { messageTs: '1003.000100', role: 'human' },
+  ]);
 });

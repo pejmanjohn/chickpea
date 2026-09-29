@@ -3705,7 +3705,9 @@ function validatedSlackPublicContextRow(
   return {
     role: input.role === 'agent' ? 'agent' : 'human',
     authorKind: input.role === 'app' ? 'app' : input.role === 'agent' ? 'agent' : 'person',
-    filesJson: files.length ? JSON.stringify(files) : null,
+    // Absent means "no information" and keeps a stored listing; an explicit
+    // empty list (an edit that removed every file) replaces it.
+    filesJson: input.files === undefined ? null : JSON.stringify(files),
   };
 }
 
