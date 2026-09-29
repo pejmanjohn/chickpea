@@ -94,7 +94,10 @@ for (const count of [1, 2, 10]) {
     assert.equal(h.observations.filter((event) => event.phase === 'before').length, 1);
     assert.deepEqual(JSON.parse(h.observations[0]!.renderedPayload as string), { method: 'slack_chat_post_message', payload: post });
     assert.equal(h.observations[0]!.approvedOutput, 'GRE: $2,400');
-    assert.deepEqual(h.handoffs, [{ messageTs: ts, text: 'GRE: $2,400' }]);
+    // Only the image is recorded, as a reference: never its link or contents.
+    assert.deepEqual(h.handoffs, [{ messageTs: ts, text: 'GRE: $2,400', images: [
+      { id: 'F12345670', name: 'bookings.png', mimeType: 'image/png', sizeBytes: 123 },
+    ] }]);
     assert.equal(h.observations.at(-1)!.outcome, 'delivered');
   });
 }
@@ -187,7 +190,11 @@ for (const mixed of [false, true]) {
     assert.equal(String(h.posts[0]!.text).split(ARTIFACT_UNDELIVERED_NOTE).length - 1, 1);
     assert.equal(JSON.stringify(h.posts[0]).includes(receipt.permalink), mixed);
     assert.deepEqual(h.observations.filter((event) => event.phase === 'before').map((event) => event.approvedOutput), ['GRE: $2,400']);
-    assert.deepEqual(h.handoffs, [{ messageTs: ts, text: `${ARTIFACT_UNDELIVERED_NOTE}\n\nGRE: $2,400` }]);
+    // Only the completed file is shared, so only its image is recorded.
+    assert.deepEqual(h.handoffs, [{ messageTs: ts, text: `${ARTIFACT_UNDELIVERED_NOTE}\n\nGRE: $2,400`,
+      ...(mixed
+        ? { images: [{ id: 'F12345678', name: 'bookings.png', mimeType: 'image/png', sizeBytes: 123 }] }
+        : {}) }]);
   });
 }
 

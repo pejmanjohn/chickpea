@@ -56,8 +56,11 @@ import { MAX_GATEWAY_ARTIFACT_BYTES } from './gateway/protocol.ts';
 import {
   isCompletedSlackArtifactReceipt,
   selectDeliverableArtifacts,
+  type CompletedSlackArtifactReceipt,
   type SlackArtifactReceipt,
 } from './artifact-receipts.ts';
+import type { SlackPublicDelivery } from './public-context.ts';
+import { artifactImageRefs } from './thread-images.ts';
 import {
   createSlackFileTransport,
   resolveFileShares,
@@ -210,7 +213,7 @@ export interface SlackPresenterOptions {
   deliverySafety?: 'legacy' | 'ledger';
   agentViewPresentation?: SlackPresenterAgentView;
   /** Successful non-ephemeral final, for the ownership handoff ledger. */
-  onPublicDelivery?: (input: { messageTs: string; text: string }) => void | Promise<void>;
+  onPublicDelivery?: (input: SlackPublicDelivery) => void | Promise<void>;
   /** Rehydrates the one V3 activity artifact after an isolate restart. */
   activityProjection?: SlackPresentationActivityProjection;
   /** A native write had an ambiguous receipt and therefore still needs clear. */
@@ -802,6 +805,8 @@ export class WebClientPresenter {
         ending?.stopped ? { stopped: true } : undefined,
       );
       if (result.handled) {
+        // With files, only a replay is handled here: the first delivery
+        // recorded their images, and a row without images keeps them.
         if (result.messageTs) {
           await this.notifyPublicDelivery(result.messageTs, result.text ?? displayText);
         }
@@ -935,7 +940,10 @@ export class WebClientPresenter {
         deliveryRef: slackDeliveryRef(this.target.channelId, posted.ts),
       });
       if (typeof posted.ts === 'string' && posted.ts) {
-        await this.notifyPublicDelivery(posted.ts, first);
+        // The files travel with the message that closes the reply.
+        await this.notifyPublicDelivery(
+          posted.ts, first, continuations.length > 0 ? undefined : completedFiles,
+        );
       }
     } catch (error) {
       const outcome = this.deliveryOutcome(error);
@@ -959,7 +967,7 @@ export class WebClientPresenter {
   ): Promise<void> {
     try {
       await agentView.deliverContinuations({
-        onDelivered: (messageTs, text) => this.notifyPublicDelivery(messageTs, text),
+        onDelivered: (messageTs, text, files) => this.notifyPublicDelivery(messageTs, text, files),
       });
     } catch {
       console.warn('[chickpea] Slack reply continuations deferred to presentation repair');
@@ -973,19 +981,16 @@ export class WebClientPresenter {
     closing: SlackReplyClosing,
   ): Promise<void> {
     for (const [index, text] of continuations.entries()) {
+      const last = index === continuations.length - 1;
       try {
         const posted = await this.client.chat.postMessage({
-          ...renderSlackReplyPart(
-            text,
-            format,
-            index === continuations.length - 1 ? closing : undefined,
-          ),
+          ...renderSlackReplyPart(text, format, last ? closing : undefined),
           channel: this.target.channelId,
           thread_ts: this.target.threadTs,
           ...this.persona(),
         } as unknown as Parameters<WebClient['chat']['postMessage']>[0]);
         if (typeof posted.ts === 'string' && posted.ts) {
-          await this.notifyPublicDelivery(posted.ts, text);
+          await this.notifyPublicDelivery(posted.ts, text, last ? closing.files : undefined);
         }
       } catch {
         // The final is already delivered; never retry it for a follow-up.
@@ -1065,9 +1070,15 @@ export class WebClientPresenter {
     }
   }
 
-  private async notifyPublicDelivery(messageTs: string, text: string): Promise<void> {
+  /** `files`: the Agent's files this message shares; their images are recorded with it. */
+  private async notifyPublicDelivery(
+    messageTs: string,
+    text: string,
+    files?: readonly CompletedSlackArtifactReceipt[],
+  ): Promise<void> {
     try {
-      await this.options.onPublicDelivery?.({ messageTs, text });
+      const images = artifactImageRefs(files);
+      await this.options.onPublicDelivery?.({ messageTs, text, ...(images.length ? { images } : {}) });
     } catch {
       // Slack delivery is the commit point. Ledger repair must never turn a
       // confirmed final into a duplicate-delivery retry.

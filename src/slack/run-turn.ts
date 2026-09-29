@@ -86,7 +86,9 @@ import { currentMessageOnlyContext } from './thread-context.ts';
 import { collectAdmittedSlackListIds } from './lists/admission.ts';
 import { conversationThreadTs, slackAgentThreadKey, slackConversationKind } from './thread-key.ts';
 import { slackTimestampMs } from './timestamp.ts';
-import { assembleRetainedSlackContext, formatSlackPublicHandoff } from './public-context.ts';
+import {
+  assembleRetainedSlackContext, formatSlackPublicHandoff, type SlackPublicDelivery,
+} from './public-context.ts';
 import type { NormalizedSlackTurn } from './types.ts';
 import {
   effectiveTurnSlackInstallationId,
@@ -249,9 +251,7 @@ export interface RunTurnOptions {
   /** A durable outbox now owns the terminal; keep the TurnJob open until it settles. */
   onDeferredTerminal?: () => void | Promise<void>;
   /** Record a confirmed Slack-visible final for future owner handoffs. */
-  onPublicMessageDelivered?: (
-    input: { messageTs: string; text: string },
-  ) => void | Promise<void>;
+  onPublicMessageDelivered?: (input: SlackPublicDelivery) => void | Promise<void>;
   /** Stable ID for one actual model invocation; persistence retries reuse it. */
   usageExecutionId?: string;
   /** Observational canonical Run correlation; legacy remains authoritative. */

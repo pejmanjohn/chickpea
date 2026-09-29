@@ -1,6 +1,8 @@
 import type { GatewayAttachmentClient } from './gateway/client.ts';
 import { compareSlackTs, DEFAULT_MAX_MESSAGES, type SlackWebApiMessage } from './thread-context.ts';
-import { isSlackFilePermalink, type SlackArtifactReceipt } from './artifact-receipts.ts';
+import {
+  isSlackFilePermalink, type CompletedSlackArtifactReceipt, type SlackArtifactReceipt,
+} from './artifact-receipts.ts';
 import { SLACK_FILE_ID, SLACK_TS } from './ids.ts';
 import { safeFilename } from './attachment-context.ts';
 import { MAX_SLACK_ATTACHMENT_BYTES } from './attachment-normalization.ts';
@@ -19,8 +21,9 @@ import type { SlackPublicContextEntry, SlackPublicContextImage } from '../config
  * model-visible context by the runtime, so the file ids in it are readable by
  * the model — the same posture as the pre-existing `attachmentFileIds`
  * attribute — and inert, because no tool takes one. Nothing here is durable:
- * the inventory is rebuilt from the raw thread fetch plus the receipts staged
- * in the current response.
+ * the inventory is rebuilt from the raw thread fetch (or, on a turn that reads
+ * the thread record instead, from its rows' image references) plus the
+ * receipts staged in the current response.
  */
 
 export const THREAD_IMAGE_HANDLE_PREFIX = 'img:';
@@ -172,6 +175,16 @@ export function threadImageRef(record: ThreadImageRecord): SlackPublicContextIma
     mimeType: record.mimeType,
     ...(record.byteLength !== undefined ? { sizeBytes: record.byteLength } : {}),
   };
+}
+
+/** Image references of the files an Agent reply shares, for its thread-record row. */
+export function artifactImageRefs(
+  receipts: readonly CompletedSlackArtifactReceipt[] | undefined,
+): SlackPublicContextImage[] {
+  return (receipts ?? []).flatMap((receipt) => {
+    const record = receiptRecord(receipt, '');
+    return record ? [threadImageRef(record)] : [];
+  });
 }
 
 /**
