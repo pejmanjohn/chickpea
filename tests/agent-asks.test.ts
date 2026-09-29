@@ -198,6 +198,7 @@ test('teammate instructions name whom an Agent can ask and how', () => {
   assert.match(text!, /never mention your own handle/);
   // A lookup hands off; needing the result to do more asks for a mention back.
   assert.match(text!, /You get no turn after their answer unless you asked them to mention you\./);
+  assert.match(text!, /including anything your instructions tell you to do after a teammate answers/);
   assert.match(text!, /If the teammate's answer is all the person needs, just ask: its reply is the answer, so do not say you are checking or will follow up\./);
   assert.match(text!, /If you must use the answer yourself, .*end the ask with "Mention me when you have it\." \(never your own handle\) and finish the person's request when it does\./);
   // Fan-in: only the last teammate reports back.
