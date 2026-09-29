@@ -333,11 +333,16 @@ export function ensureTriggerMessage(
   return orderMessages([...messages, triggerMessage(turn)]);
 }
 
+/** The `userId` a context row carries for a message an Agent wrote. */
+export function agentContextUserId(agentId: string | undefined): string {
+  return `Agent ${agentId}`;
+}
+
 function triggerMessage(turn: NormalizedSlackTurn): SlackContextMessage {
   // An ask's trigger is the asking Agent's message, not the person's.
   const ask = turn.agentAsk;
   return {
-    userId: ask ? `Agent ${ask.fromAgentId}` : turn.userId,
+    userId: ask ? agentContextUserId(ask.fromAgentId) : turn.userId,
     text: turn.text,
     ts: turn.messageTs,
     isTrigger: true,

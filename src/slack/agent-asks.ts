@@ -1,4 +1,5 @@
-import type { ResolvedAssignment } from '../config/types.ts';
+import type { CustomAgentConfig, ResolvedAssignment } from '../config/types.ts';
+import { SLACK_CODE_SEGMENT, SLACK_MENTION_BREAK } from './message-format.ts';
 import { slackConversationKind } from './thread-key.ts';
 import type { NormalizedSlackTurn } from './types.ts';
 
@@ -17,6 +18,9 @@ import type { NormalizedSlackTurn } from './types.ts';
 export const AGENT_ASK_TURN_LIMIT = 8;
 /** Agents one message can ask; later mentions in it are not asked. */
 export const AGENT_ASK_MAX_TARGETS = 6;
+/** Posted as the asking Agent when an exchange of asks reaches its limit. */
+export const AGENT_ASK_PAUSE_TEXT =
+  "I'll pause here so this exchange doesn't keep going without you. Reply in this thread to continue.";
 
 /** What the host admits asks from: one delivered Agent reply's messages. */
 export interface SlackAgentAskRequest {
@@ -39,21 +43,34 @@ export function agentAskOrigin(turn: Pick<NormalizedSlackTurn, 'messageTs' | 'ag
 }
 
 /**
+ * The handle an Agent is asked by, with the user group Slack renders it
+ * with: only an Agent whose handle is published has one.
+ */
+export function agentSlackHandle(
+  agent: Pick<CustomAgentConfig, 'slackPresence'>,
+): { handle: string; userGroupId: string } | undefined {
+  const userGroupId = agent.slackPresence?.userGroupId;
+  return userGroupId ? { handle: agent.slackPresence!.normalizedHandle, userGroupId } : undefined;
+}
+
+/**
  * Whether this turn's replies may ask other Agents: a chickpea-v1 Channel
  * thread. A DM has one Agent, and a legacy installation has no handles.
  */
-export function turnMayAskAgents(
+function turnMayAskAgents(
   turn: Pick<NormalizedSlackTurn, 'source' | 'channelType'>,
   assignment: Pick<ResolvedAssignment, 'runtimeContract'>,
 ): boolean {
   return assignment.runtimeContract === 'chickpea-v1' && slackConversationKind(turn) === 'channel';
 }
 
-const CODE_SEGMENT = /(```[\s\S]*?(?:```|$)|`[^`\n]+`)/g;
 // A handle word: `@` (with the word joiner neutralization may leave after
 // it) not preceded by a word character or `.`, `@`, `/`, `:`, `-`, so an
 // email address, a URL, or a path is never a mention.
-const HANDLE_WORD = /(?<![\p{L}\p{N}_.@/:-])@\u2060?([A-Za-z0-9_-]+)/gu;
+const HANDLE_WORD = new RegExp(
+  `(?<![\\p{L}\\p{N}_.@/:-])@${SLACK_MENTION_BREAK}?([A-Za-z0-9_-]+)`,
+  'gu',
+);
 
 /**
  * The handle-shaped words of a delivered message outside code, lowercased,
@@ -63,7 +80,7 @@ const HANDLE_WORD = /(?<![\p{L}\p{N}_.@/:-])@\u2060?([A-Za-z0-9_-]+)/gu;
 export function mentionedHandleWords(text: string): string[] {
   const words: string[] = [];
   const seen = new Set<string>();
-  text.split(CODE_SEGMENT).forEach((segment, index) => {
+  text.split(SLACK_CODE_SEGMENT).forEach((segment, index) => {
     if (index % 2 === 1) return;
     for (const match of segment.matchAll(HANDLE_WORD)) {
       const word = match[1]!.toLowerCase().replace(/-+$/, '');

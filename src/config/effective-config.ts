@@ -180,7 +180,7 @@ export function agentTeammateInstructions(
   if (teammates.length === 0) return undefined;
   const example = teammates[0]!.handle;
   return [
-    'Teammates: other Chickpea Agents work in this Slack Channel. To ask one of them something, mention their handle as plain text in your reply, for example @' + example + '. They answer in this thread after your reply, and everyone in the thread sees the exchange.',
+    `Teammates: other Chickpea Agents work in this Slack Channel. To ask one of them something, mention their handle as plain text in your reply, for example @${example}. They answer in this thread after your reply, and everyone in the thread sees the exchange.`,
     '- Ask only when you need that teammate\'s answer or work, with one clear question.',
     '- Mentioning a handle always asks that Agent. Never mention a teammate in passing, to thank them, or to acknowledge an answer, and never mention your own handle.',
     '- A long back-and-forth between Agents pauses until a person replies, so settle what you can in each reply.',
@@ -192,7 +192,7 @@ export function agentTeammateInstructions(
 export function agentTeammateHandles(
   assignment: Pick<ResolvedAssignment, 'channelTeammates'>,
 ): ReadonlyMap<string, string> | undefined {
-  const teammates = (assignment.channelTeammates ?? []).filter(({ userGroupId }) => userGroupId);
+  const teammates = assignment.channelTeammates ?? [];
   return teammates.length
     ? new Map(teammates.map(({ handle, userGroupId }) => [handle, userGroupId]))
     : undefined;

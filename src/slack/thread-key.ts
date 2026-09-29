@@ -56,7 +56,12 @@ export function slackAgentContinuityKey(
   assignment: Pick<ResolvedAssignment, 'runtimeContract' | 'ownerIncarnation' | 'agentId' | 'threadGuest'>,
 ): string {
   const threadKey = slackAgentThreadKey(turn, assignment);
-  return assignment.threadGuest ? `${threadKey}:guest-${assignment.agentId}` : threadKey;
+  return assignment.threadGuest ? slackGuestThreadKey(threadKey, assignment.agentId) : threadKey;
+}
+
+/** A guest Agent's own segment of a thread key: what it keeps apart from the owner's. */
+export function slackGuestThreadKey(threadKey: string, agentId: string): string {
+  return `${threadKey}:guest-${agentId}`;
 }
 
 export function memoryEpochThreadKey(baseThreadKey: string, epoch: number): string {

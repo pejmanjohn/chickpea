@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import {
-  AGENT_ASK_PAUSE_TEXT,
   processGatewaySlackEnvelope,
   processSlackAgentAsks,
 } from '../src/channels/slack.ts';
@@ -11,6 +10,7 @@ import { closeNodeStateStores, resolveStores } from '../src/config/state-backend
 import { SqliteConfigStore } from '../src/config/store.ts';
 import type { CustomAgentConfig, ResolvedAssignment } from '../src/config/types.ts';
 import {
+  AGENT_ASK_PAUSE_TEXT,
   AGENT_ASK_TURN_LIMIT,
   agentAskOrigin,
   createAgentAskCollector,

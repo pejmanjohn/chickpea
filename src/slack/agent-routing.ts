@@ -1,10 +1,12 @@
 import type { ConfigStore } from '../config/store.ts';
 import {
   type AgentChannelGrant,
+  type AgentTeammate,
   type AgentThreadRoute,
   type CustomAgentConfig,
   type ResolvedAssignment,
 } from '../config/types.ts';
+import { agentSlackHandle } from './agent-asks.ts';
 import type { NormalizedSlackTurn } from './types.ts';
 import { CHICKPEA_AGENT_ID } from '../config/agent-id.ts';
 import { boundedSlackPublicHandoff } from './public-context.ts';
@@ -566,17 +568,16 @@ function channelTeammates(
   grants: AgentChannelGrant[],
   agentsById: Map<string, CustomAgentConfig>,
   agentId: string,
-): NonNullable<ResolvedAssignment['channelTeammates']> {
+): AgentTeammate[] {
   const seen = new Set<string>();
   return grants
     .flatMap((grant) => {
       const agent = agentsById.get(grant.agentId);
-      const userGroupId = agent?.slackPresence?.userGroupId;
-      const handle = userGroupId ? agent.slackPresence!.normalizedHandle : undefined;
-      if (!agent || agent.id === agentId || agent.kind !== 'user' || !agentIsActive(agent) || !handle) return [];
+      const presence = agent && agentSlackHandle(agent);
+      if (!agent || !presence || agent.id === agentId || agent.kind !== 'user' || !agentIsActive(agent)) return [];
       if (seen.has(agent.id)) return [];
       seen.add(agent.id);
-      return [{ name: agent.name, handle, userGroupId: userGroupId! }];
+      return [{ name: agent.name, ...presence }];
     })
     .sort((left, right) => left.name.localeCompare(right.name))
     .slice(0, MAX_CHANNEL_TEAMMATES);

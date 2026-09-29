@@ -489,9 +489,10 @@ export class SlackStateLogic {
           return { claimed: false };
         }
       }
-      const ask = input.turnJob?.turn?.agentAsk;
-      if (ask && input.agentAskLimit !== undefined && turnJobs &&
-          turnJobs.countAgentAskTurns(input.turnJob!, ask.originMessageTs) >= input.agentAskLimit) {
+      const { turnJob } = input;
+      const ask = turnJob?.turn?.agentAsk;
+      if (turnJob && ask && input.agentAskLimit !== undefined && turnJobs &&
+          turnJobs.countAgentAskTurns(turnJob, ask.originMessageTs) >= input.agentAskLimit) {
         return { claimed: true, agentAskLimitReached: true };
       }
       if (input.steering && turnJobs) {

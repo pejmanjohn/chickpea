@@ -115,7 +115,12 @@ import {
   createSlackWebClient,
   sanitizeError,
 } from '../slack/run-turn.ts';
-import { slackAgentThreadKey, slackThreadKey, slackConversationKind } from '../slack/thread-key.ts';
+import {
+  slackAgentThreadKey,
+  slackConversationKind,
+  slackGuestThreadKey,
+  slackThreadKey,
+} from '../slack/thread-key.ts';
 import { normalizeSlackTurn } from '../slack/turn-normalization.ts';
 import {
   registerNodeAgentAskDispatcher,
@@ -167,8 +172,10 @@ import {
 import { createGatewaySlackTransport } from '../slack/transport/gateway.ts';
 import {
   AGENT_ASK_MAX_TARGETS,
+  AGENT_ASK_PAUSE_TEXT,
   AGENT_ASK_TURN_LIMIT,
   agentAskOrigin,
+  agentSlackHandle,
   mentionedHandleWords,
   type SlackAgentAskRequest,
 } from '../slack/agent-asks.ts';
@@ -1113,10 +1120,6 @@ interface SlackAgentAskAdmission {
   onLimitReached(client: ReturnType<typeof createSlackWebClient>): Promise<void>;
 }
 
-/** Posted as the asking Agent when an exchange of asks reaches its limit. */
-export const AGENT_ASK_PAUSE_TEXT =
-  "I'll pause here so this exchange doesn't keep going without you. Reply in this thread to continue.";
-
 /** Attempts of one ask's admission when a dependency fails transiently. */
 const AGENT_ASK_ADMISSION_ATTEMPTS = 3;
 
@@ -1149,7 +1152,7 @@ export async function processSlackAgentAsks(
   if (!from) return;
   const byHandle = new Map<string, CustomAgentConfig>();
   for (const agent of agents) {
-    const handle = agent.slackPresence?.userGroupId ? agent.slackPresence.normalizedHandle : undefined;
+    const handle = agentSlackHandle(agent)?.handle;
     if (agent.kind === 'user' && handle) byHandle.set(handle, agent);
   }
   const targets: Array<{ agent: CustomAgentConfig; delivery: SlackAgentAskRequest['deliveries'][number] }> = [];
@@ -1181,7 +1184,7 @@ export async function processSlackAgentAsks(
     };
   }
   const originMessageTs = agentAskOrigin(asking);
-  const fromHandle = from.slackPresence?.userGroupId ? from.slackPresence.normalizedHandle : undefined;
+  const fromHandle = agentSlackHandle(from)?.handle;
   for (const { agent, delivery } of targets) {
     const turn: NormalizedSlackTurn = {
       workspaceId: asking.workspaceId,
@@ -2158,7 +2161,7 @@ async function processSlackEvent(
       const guestAgent = routedAssignment.threadGuest ? routedAssignment.agent : undefined;
       const frozenAssignment = await getOrReplaceSnapshotForRoute(
         stores.snapshots,
-        guestAgent ? `${threadKey}:guest-${guestAgent.id}` : threadKey,
+        guestAgent ? slackGuestThreadKey(threadKey, guestAgent.id) : threadKey,
         guestAgent
           ? {
               agentId: guestAgent.id,
@@ -2273,9 +2276,11 @@ async function processSlackEvent(
     botUserId: resolvedBotUserId,
     agentUserGroupId: assignment.agent.slackPresence?.userGroupId,
   };
-  // An Agent's words never run a command, approve, stop, or check in: those
-  // stay with people.
-  let deterministicCommand = !ui && !ask && (Boolean(parseMemoryCommand(turn.text)) ||
+  // A message a person typed: neither a click nor an Agent's ask. Only such
+  // a message can run a command, approve, stop, check in, or answer a
+  // browser step; an Agent's words never do, whatever they say.
+  const typedByPerson = !ui && !ask;
+  let deterministicCommand = typedByPerson && (Boolean(parseMemoryCommand(turn.text)) ||
     (isRoutineSlackTurn(turn) && Boolean(parseRoutineCommand(turn.text, commandAddress))));
   let admissionTruth: SlackAdmissionTruth = {
     eligible: false,
@@ -2359,7 +2364,7 @@ async function processSlackEvent(
   // for the same person in the same thread. It is checked before management
   // approvals because it is bound to this thread, and the Agent then runs
   // with the reply (the approved step is bound to this message).
-  const browserActionAnswered = !ui && !ask && admissionTruth.eligible && !candidateTurn
+  const browserActionAnswered = typedByPerson && admissionTruth.eligible && !candidateTurn
     ? await admitSlackBrowserActionReply({
         turn,
         assignment,
@@ -2377,7 +2382,7 @@ async function processSlackEvent(
   // steering: routing checked the sender against the new Agent only, and a
   // stop must come from someone who may use the running one (R3). A click or
   // form answer on an interactive surface is never steering.
-  const steeringCommand = !ui && !ask && !browserActionAnswered && !candidateTurn && !routedHandoff && slackClient
+  const steeringCommand = typedByPerson && !browserActionAnswered && !candidateTurn && !routedHandoff && slackClient
     ? slackSteeringCommand(turn.text, commandAddress)
     : undefined;
   if (steeringCommand && slackClient && slackConversationKind(turn) === 'im' &&
@@ -2415,7 +2420,7 @@ async function processSlackEvent(
   // than waiting on its run.
   // The receipt is recorded with the message's TurnJob before the reaction is
   // added, so the 👀 always has a turn that removes it.
-  const midRun = !ui && !ask && !steering && !candidateTurn && !routedHandoff && slackClient
+  const midRun = typedByPerson && !steering && !candidateTurn && !routedHandoff && slackClient
     ? {
         threadKey: turnStopThreadKey(turn, assignment),
         receipt: slackMidRunReceipt({ channelId: turn.channelId, messageTs: turn.messageTs }),
@@ -2424,7 +2429,7 @@ async function processSlackEvent(
   let midRunReceipt: TurnMidRunReceipt | undefined;
 
   if (
-    !ui && !ask && !browserActionAnswered &&
+    typedByPerson && !browserActionAnswered &&
     admissionTruth.eligible && admittedActorMembershipId &&
     shouldResolveSlackManagementApproval(turn.text)
   ) {
@@ -2892,7 +2897,7 @@ async function processSlackEvent(
     if (midRunReceipt && slackClient) {
       await addMidRunReaction({ client: slackClient, state, jobId: job.id, receipt: midRunReceipt });
     }
-    if (!ui && !ask) {
+    if (typedByPerson) {
       await recordAcceptedSlackHumanMessage(stores.config, turn, assignment, slackEventFiles(payload.event)).catch(() => {
         console.warn('[chickpea] accepted Slack message was not added to public context');
       });
@@ -2933,7 +2938,7 @@ async function processSlackEvent(
   if (midRunReceipt && slackClient) {
     await addMidRunReaction({ client: slackClient, state, jobId: msgKey, receipt: midRunReceipt });
   }
-  if (!ui && !ask) {
+  if (typedByPerson) {
     await recordAcceptedSlackHumanMessage(stores.config, turn, assignment, slackEventFiles(payload.event)).catch(() => {
       console.warn('[chickpea] accepted Slack message was not added to public context');
     });

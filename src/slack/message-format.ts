@@ -303,7 +303,7 @@ export function canonicalSlackMarkdownText(text: string, live?: SlackLiveAgentHa
  * Invisible and not a word character, so no Slack parser reads `@⁠here`
  * or `<⁠!here>` as a mention while every client shows `@here`/`<!here>`.
  */
-const SLACK_MENTION_BREAK = '⁠';
+export const SLACK_MENTION_BREAK = '⁠';
 // Slack's notifying special mentions only: `<!DOCTYPE>`, `<![CDATA[` and
 // `<!date^…>` stay as written.
 const SLACK_SPECIAL_MENTION =
@@ -312,7 +312,8 @@ const SLACK_SPECIAL_MENTION =
 // `__@here__` as `*@here*` and `_@here_` as italic `@here`, both live, while
 // `@channel_news` (a handle or URL path) is a different word.
 const SLACK_BROADCAST_WORD = /(?<![\p{L}\p{N}]_*)@(?=(?:here|channel|everyone)(?!_*[\p{L}\p{N}]))/giu;
-const SLACK_CODE_SEGMENT = /(```[\s\S]*?(?:```|$)|`[^`\n]+`)/g;
+/** Splits text into prose and code: odd `split` parts are code. */
+export const SLACK_CODE_SEGMENT = /(```[\s\S]*?(?:```|$)|`[^`\n]+`)/g;
 
 /** A plain `@here`, `@channel` or `@everyone` word with the joiner. */
 function joinBroadcastWords(text: string): string {
@@ -361,21 +362,20 @@ export function neutralizeSlackBroadcastMentions(
   markdown: string,
   live?: SlackLiveAgentHandles,
 ): string {
-  const liveGroups = live?.size
-    ? new Map([...live].map(([handle, userGroupId]) => [userGroupId, handle]))
-    : undefined;
+  const liveHandles = live?.size ? live : undefined;
+  const liveGroups = liveHandles &&
+    new Map([...liveHandles].map(([handle, userGroupId]) => [userGroupId, handle]));
   return markdown.split(SLACK_CODE_SEGMENT).map((segment, index) => {
     if (index % 2 === 1) {
       return segment.replace(SLACK_SPECIAL_MENTION, (token) => `<${SLACK_MENTION_BREAK}${token.slice(1)}`);
     }
-    const linked = live?.size ? linkAgentHandleWords(segment, live) : segment;
+    const linked = liveHandles ? linkAgentHandleWords(segment, liveHandles) : segment;
     return joinBroadcastWords(linked.replace(SLACK_SPECIAL_MENTION,
       (_token, target: string, label: string | undefined) => {
-        const handle = /^subteam\^/i.test(target)
-          ? liveGroups?.get(target.slice('subteam^'.length))
-          : undefined;
-        return handle
-          ? liveAgentMention(target.slice('subteam^'.length), handle)
+        const groupId = /^subteam\^/i.test(target) ? target.slice('subteam^'.length) : undefined;
+        const handle = groupId === undefined ? undefined : liveGroups?.get(groupId);
+        return groupId !== undefined && handle
+          ? liveAgentMention(groupId, handle)
           : `@${SLACK_MENTION_BREAK}${slackSpecialMentionName(target, label)}`;
       }));
   }).join('');
