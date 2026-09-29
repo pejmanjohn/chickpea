@@ -40,7 +40,7 @@ import {
   type ThreadImageRecord,
 } from './thread-images.ts';
 import type { SlackPublicContextEntry } from '../config/types.ts';
-import type { NormalizedSlackTurn } from './types.ts';
+import type { NormalizedSlackTurn, SlackCoAddressed } from './types.ts';
 import { boundedSlackPublicHandoff, type SlackPublicHandoffMessage } from './public-context.ts';
 import { isSlackContentMessageSubtype } from './message-subtypes.ts';
 
@@ -676,7 +676,7 @@ function agentAskContext(
  * One person's message mentioned several Agents: who they are, in what
  * order they answer, and which one this turn is.
  */
-function coAddressedContext(addressed: NonNullable<NormalizedSlackTurn['coAddressed']>): string {
+function coAddressedContext(addressed: SlackCoAddressed): string {
   const handles = addressed.agents.map(({ handle }) => `@${handle}`);
   const self = handles[addressed.position] ?? 'one of them';
   const later = handles.slice(addressed.position + 1);

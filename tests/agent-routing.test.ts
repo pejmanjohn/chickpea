@@ -801,7 +801,13 @@ test('several Agent handles address each Agent in order, and root messages witho
     if (both.kind !== 'routed') return;
     // The first handle takes the thread; the rest answer after it.
     assert.equal(both.assignment.agentId, finance.id);
-    assert.deepEqual(both.alsoAddressed?.map(({ id }) => id), [support.id]);
+    assert.deepEqual(both.coAddressed, {
+      agents: [
+        { agentId: finance.id, name: finance.name, handle: 'finance' },
+        { agentId: support.id, name: support.name, handle: 'support' },
+      ],
+      position: 0,
+    });
     assert.equal((await store.getAgentThreadRoute('T1', 'C1', '100.1'))?.agentId, finance.id);
 
     // One mentioned Agent this person cannot reach here: nobody is asked.

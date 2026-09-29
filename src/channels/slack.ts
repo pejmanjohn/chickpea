@@ -1107,9 +1107,13 @@ export async function processGatewaySlackEnvelope(
 // The Node relay runs turns in this process and admits their asks here.
 registerNodeAgentAskDispatcher(processSlackAgentAsks);
 
-/** How an ask's admission reaches back to the asking side. */
+/**
+ * A turn the host addressed to an Agent: an ask, or one of the later Agents
+ * a person's message mentioned. Admitted like a person's message, minus
+ * everything only a person's own words may do.
+ */
 interface SlackAgentAskAdmission {
-  /** Built by the host from the asking Agent's delivered message. */
+  /** Built by the host: from the asking Agent's delivered message, or from the person's. */
   turn: NormalizedSlackTurn;
   targetAgentId: string;
   /**
@@ -1117,11 +1121,14 @@ interface SlackAgentAskAdmission {
    * the state store: it must never enqueue through its own stub.
    */
   enqueueTurn?: SlackEventExecution['enqueueTurn'];
-  /** The exchange used every ask it may: pause it, once, in the thread. */
-  onLimitReached(client: ReturnType<typeof createSlackWebClient>): Promise<void>;
+  /**
+   * The exchange used every ask it may: pause it, once, in the thread.
+   * Only an ask can reach the limit.
+   */
+  onLimitReached?(client: ReturnType<typeof createSlackWebClient>): Promise<void>;
 }
 
-/** Attempts of one ask's admission when a dependency fails transiently. */
+/** Attempts of one host-addressed turn's admission when a dependency fails transiently. */
 const AGENT_ASK_ADMISSION_ATTEMPTS = 3;
 
 /**
@@ -1279,15 +1286,18 @@ async function admitCoAddressedTurns(input: {
   platformEnv: PlatformEnv | undefined;
   execution: SlackEventExecution | undefined;
 }): Promise<void> {
-  const addressed = input.turn.coAddressed;
-  if (!addressed) return;
+  const { turn } = input;
+  const addressed = turn.coAddressed;
+  // Only the first Agent's turn admits the others; theirs never fan out again.
+  if (addressed?.position !== 0) return;
   for (const [position, agent] of addressed.agents.entries()) {
     if (position === 0) continue;
-    const { turn } = input;
+    // Copied field by field: by now admission has stamped the first turn with
+    // what only it may carry (an approval, a click, its interaction intent).
     const coTurn: NormalizedSlackTurn = {
       workspaceId: turn.workspaceId,
       channelId: turn.channelId,
-      eventId: `co-mention:${turn.channelId}:${turn.messageTs}:${agent.agentId}`,
+      eventId: `co-addressed:${turn.channelId}:${turn.messageTs}:${agent.agentId}`,
       text: turn.text,
       userId: turn.userId,
       messageTs: turn.messageTs,
@@ -1304,7 +1314,7 @@ async function admitCoAddressedTurns(input: {
       { ...input.payload, event_id: coTurn.eventId },
       input.platformEnv,
       input.execution,
-      { turn: coTurn, targetAgentId: agent.agentId, onLimitReached: async () => {} },
+      { turn: coTurn, targetAgentId: agent.agentId },
     );
   }
 }
@@ -2031,8 +2041,9 @@ async function processSlackEvent(
 
   const resolvedBotUserId = execution?.botUserId ??
     await resolveInstallationBotUserId(installation.botUserId, credentials, platformEnv);
-  // An ask's turn is built by the host from a delivered Agent reply; it
-  // never passes Slack event normalization, which ignores app-authored posts.
+  // A host-addressed turn is built by the host: an ask's from a delivered
+  // Agent reply, which Slack event normalization would ignore as an
+  // app-authored post; a co-addressed one from the person's normalized turn.
   const normalization = ask
     ? { status: 'runnable' as const, turn: ask.turn }
     : normalizeSlackTurn(payload, {
@@ -2066,7 +2077,8 @@ async function processSlackEvent(
   // d. Claim BOTH the event id and the (channel, message-ts) so the
   //    app_mention + message fan-out for a single mention replies once.
   const evtKey = `evt:${payload.event_id}`;
-  // One Agent reply can ask several Agents: each ask is its own turn.
+  // Several Agents can answer one message (asked by a reply, or mentioned
+  // together by a person): each Agent's turn on it is its own.
   const msgKey = ask
     ? `msg:${turn.channelId}:${turn.messageTs}:ask-${ask.targetAgentId}`
     : `msg:${turn.channelId}:${turn.messageTs}`;
@@ -2169,16 +2181,7 @@ async function processSlackEvent(
         return;
       }
       routedHandoff = routed.handoff;
-      if (!ask && routed.alsoAddressed?.length) {
-        turn.coAddressed = {
-          agents: [routed.assignment.agent, ...routed.alsoAddressed].map((agent) => ({
-            agentId: agent.id,
-            name: agent.name,
-            handle: agent.slackPresence?.normalizedHandle ?? agent.id,
-          })),
-          position: 0,
-        };
-      }
+      if (routed.coAddressed) turn.coAddressed = routed.coAddressed;
       if (!ask) {
         await claimChickpeaIntroductionForAgentInteraction({
           actor: agentRoutingActor,
@@ -2785,7 +2788,7 @@ async function processSlackEvent(
           return;
         }
         if ('agentAskLimitReached' in result) {
-          if (ask && slackClient) await ask.onLimitReached(slackClient).catch(() => {
+          if (ask?.onLimitReached && slackClient) await ask.onLimitReached(slackClient).catch(() => {
             console.warn('[chickpea] agent ask pause note was not posted');
           });
           return;
@@ -2983,7 +2986,7 @@ async function processSlackEvent(
         console.warn('[chickpea] accepted Slack message was not added to public context');
       });
     }
-    if (!ask) await admitCoAddressedTurns({ payload, turn, platformEnv, execution });
+    await admitCoAddressedTurns({ payload, turn, platformEnv, execution });
     return;
   }
   if (!durableCanonicalTurnJob) {
@@ -3025,7 +3028,7 @@ async function processSlackEvent(
       console.warn('[chickpea] accepted Slack message was not added to public context');
     });
   }
-  if (!ask) await admitCoAddressedTurns({ payload, turn, platformEnv, execution });
+  await admitCoAddressedTurns({ payload, turn, platformEnv, execution });
   const wake = wakeNodeTurnRelay(platformEnv).catch((err) => {
     if (execution?.durableIngress) {
       console.error('[chickpea] node turn wake failed: durable_ingress_failure');

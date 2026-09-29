@@ -7,7 +7,7 @@ import {
   type ResolvedAssignment,
 } from '../config/types.ts';
 import { agentSlackHandle } from './agent-asks.ts';
-import type { NormalizedSlackTurn } from './types.ts';
+import type { NormalizedSlackTurn, SlackCoAddressed } from './types.ts';
 import { CHICKPEA_AGENT_ID } from '../config/agent-id.ts';
 import { boundedSlackPublicHandoff } from './public-context.ts';
 import {
@@ -55,10 +55,11 @@ export type AgentRoutingResult =
       previousAgentId?: string;
       handoffFallbackRequired?: boolean;
       /**
-       * The other Agents one person's message mentioned, in mention order
-       * after the routed first one. Each answers after it, as a guest.
+       * Every Agent one person's message mentioned, in mention order, when
+       * there were several: the routed first one at position 0, and the
+       * rest, who answer after it as guests.
        */
-      alsoAddressed?: CustomAgentConfig[];
+      coAddressed?: SlackCoAddressed;
     };
 
 export interface AgentRoutingActor {
@@ -341,7 +342,7 @@ export async function resolveAgentRoute(
     currentRoute,
   }));
   return source === 'agent_handle' && addressed.length > 1
-    ? { ...routed, alsoAddressed: addressed.slice(1) }
+    ? { ...routed, coAddressed: { agents: addressed.map(addressedAgent), position: 0 } }
     : routed;
 }
 
@@ -581,7 +582,16 @@ async function availableAlternatives(
 }
 
 /** Agents one person's message can address; later handles are not asked. */
-export const MAX_ADDRESSED_AGENTS = 6;
+const MAX_ADDRESSED_AGENTS = 6;
+
+/** How a turn names one of the Agents a person's message addressed. */
+function addressedAgent(agent: CustomAgentConfig): SlackCoAddressed['agents'][number] {
+  return {
+    agentId: agent.id,
+    name: agent.name,
+    handle: agentSlackHandle(agent)?.handle ?? agent.id,
+  };
+}
 
 /** Most teammates one Agent is told about. */
 const MAX_CHANNEL_TEAMMATES = 20;
