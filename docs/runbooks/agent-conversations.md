@@ -96,8 +96,8 @@ thread's own Agent, so answering an ask never resets the owner's transcript.
 It also has its own coding sandbox for the thread: its workspaces,
 checkpoints and coding tasks never replace the owner's or another asked
 Agent's. A person's stop in the thread reaches the coding tasks of whichever
-Agent's run it stopped. (An Agent that takes a thread over keeps using the
-thread's sandbox, as before.)
+Agent's run it stopped. An Agent that takes a thread over uses the thread's
+sandbox.
 
 ## Coordinating teammates
 

@@ -155,7 +155,7 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
         ? {
             stopCodingTasks: async (notice: TurnStopNotice) => stopCodingTasks(threadCodingTaskStopPorts({
               sandboxes: sandboxTurnReaders(env),
-              threadSandboxKey: await this.stoppedTurnSandboxKey(notice),
+              turnSandboxKey: await this.stoppedTurnSandboxKey(notice),
               hostTurnId: notice.turnJobId,
               workers: cloudflareCodingWorkerStopClient(env),
             })),
@@ -302,8 +302,8 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
 
   /**
    * The Sandbox holding a stopped turn's coding tasks: a guest's own, read
-   * from its turn row, else the thread's. A row that cannot be read falls
-   * back to the thread's, as before guests had their own.
+   * from its turn row, else the thread's. An unreadable row falls back to
+   * the thread's.
    */
   private async stoppedTurnSandboxKey(notice: TurnStopNotice): Promise<string> {
     try {

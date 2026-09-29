@@ -281,7 +281,7 @@ test('the thread ports read the host turn\'s records from the thread Sandbox and
     };
   });
   const workers: CodingWorkerStopClient = { abort: async () => false, awaitSettlement: async () => 'aborted' };
-  const ports = threadCodingTaskStopPorts({ sandboxes, threadSandboxKey: 'T1:C1:1.2', hostTurnId: 'turn-1', workers });
+  const ports = threadCodingTaskStopPorts({ sandboxes, turnSandboxKey: 'T1:C1:1.2', hostTurnId: 'turn-1', workers });
   assert.deepEqual((await ports.listTasks()).map((task) => task.toolCallId), ['call-a']);
   // The coordinator writes through the primary Sandbox identity only.
   assert.deepEqual(opened, ['T1:C1:1.2#0']);

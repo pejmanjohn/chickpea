@@ -22,7 +22,8 @@ import {
   planAllowsConnectionRequests,
 } from '../connections/request-tool.ts';
 import { WORKSPACE_TOOL_NAMES } from '../sandbox/workspace-tools.ts';
-import { conversationThreadTs, guestSandboxOwner, slackAgentContinuityKey } from '../slack/thread-key.ts';
+import { guestSandboxKey, ownerBoundSandboxKey } from '../sandbox/thread-key.ts';
+import { conversationThreadTs, slackAgentContinuityKey, slackConversationKey } from '../slack/thread-key.ts';
 import type { NormalizedSlackTurn } from '../slack/types.ts';
 import {
   MAX_SLACK_PUBLIC_HANDOFF_CHARS,
@@ -694,20 +695,14 @@ export function runtimePlanInstanceIdMatches(
  * Slack conversation rather than to one opaque Flue agent incarnation.
  */
 export function runtimePlanConversationKey(plan: RuntimePlanV2): string {
-  const validated = parseRuntimePlanV2(plan);
-  return [
-    validated.conversation.workspaceId,
-    validated.conversation.channelId,
-    validated.conversation.threadTs,
-  ].join(':');
+  return slackConversationKey(parseRuntimePlanV2(plan).conversation);
 }
 
 /**
- * Owner-bound Sandbox coordinate for isolated executions such as routines.
- * The opaque key binds both the canonical Slack coordinate and frozen owner
- * identity while remaining below Cloudflare Sandbox's 63-character id limit.
- * Concurrent occurrences stay isolated and retries with the same owner
- * converge without exposing a provider identity to unbounded Slack fields.
+ * Owner-bound Sandbox coordinate for isolated executions such as routines
+ * (ownerBoundSandboxKey). Concurrent occurrences stay isolated and retries
+ * with the same owner converge without exposing a provider identity to
+ * unbounded Slack fields.
  */
 export function runtimePlanSandboxConversationKey(
   plan: RuntimePlanV2,
@@ -717,16 +712,17 @@ export function runtimePlanSandboxConversationKey(
   if (!ownerId.trim() || ownerId.length > 200) {
     throw new Error('Sandbox owner identity is invalid.');
   }
-  return opaqueId('sandbox', `${conversationKey}:${ownerId}`);
+  return ownerBoundSandboxKey(conversationKey, ownerId);
 }
 
 /**
- * A guest's own coding Sandbox coordinate (see guestSandboxOwner), or
- * undefined for the thread's owner, which uses the thread's Sandbox.
+ * A guest's own coding Sandbox (guestSandboxKey), or undefined for the
+ * thread's owner, which uses the thread's. Read from a plan the caller
+ * already parsed, on every render, so it validates nothing again.
  */
 export function runtimePlanGuestSandboxKey(plan: RuntimePlanV2): string | undefined {
   return plan.conversation.guest
-    ? runtimePlanSandboxConversationKey(plan, guestSandboxOwner(plan.agentId))
+    ? guestSandboxKey(slackConversationKey(plan.conversation), plan.agentId)
     : undefined;
 }
 

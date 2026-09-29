@@ -65,7 +65,7 @@ export function createRuntimePlanWorkspaceTaskTool(input: {
 }
 
 /**
- * Each job's active-task record on the thread's Sandbox Durable Object: the
+ * Each job's active-task record on the run's Sandbox Durable Object: the
  * default workspace's, which also keeps the workspace roster. Every named
  * workspace is its own Durable Object, so this one place lets a stop find
  * every job the run waits on. Reaching it starts no container.
