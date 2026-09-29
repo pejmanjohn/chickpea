@@ -22,6 +22,7 @@ const SYNTHETIC_GITHUB_INSTALLATION_TOKEN = ['gh', 's_'].join('') +
 
 // One sample per credential signature, in table order.
 const SAMPLES: readonly { input: string; redacted: string }[] = [
+  { input: pemBegin('RSA PRIVATE KEY'), redacted: '[credential redacted]' },
   {
     input: `token ${SYNTHETIC_SLACK_TOKEN} rest`,
     redacted: 'token [credential redacted] rest',
@@ -44,7 +45,6 @@ const SAMPLES: readonly { input: string; redacted: string }[] = [
   },
   { input: `id ${awsExampleAccessKeyId('AKIA')} here`, redacted: 'id [credential redacted] here' },
   { input: 'key bb_live_abcdefghijkl1234 here', redacted: 'key [credential redacted] here' },
-  { input: pemBegin('RSA PRIVATE KEY'), redacted: '[credential redacted]' },
   {
     input: 'CHICKPEA_AUTH_SECRET=supersecretvalue',
     redacted: '[credential redacted]',
@@ -69,6 +69,7 @@ const SAMPLES: readonly { input: string; redacted: string }[] = [
 
 test('credential markers stay the exact projection the streaming path relies on', () => {
   assert.deepEqual([...credentialMarkers()], [
+    '-----BEGIN ',
     'xox',
     'xapp-',
     'sk-ant-',
@@ -83,7 +84,6 @@ test('credential markers stay the exact projection the streaming path relies on'
     'ASIA',
     'bb_live_',
     'bb_test_',
-    '-----BEGIN ',
     'CHICKPEA_AUTH_SECRET',
     'CHICKPEA_RECOVERY_TOKEN',
     'CHICKPEA_CREDENTIAL_KEY_',
@@ -307,6 +307,19 @@ test('a PEM BEGIN line takes the closing dashes of an END line, never of a BEGIN
     '[credential redacted][credential redacted] after',
   );
   assert.equal(redactCredentialLikeContent(`${shared} tail`), '[credential redacted][credential redacted]');
+});
+
+test('a token glued to a PEM BEGIN line leaves the key redacted', () => {
+  // Token classes take hyphens and letters, so a token matched first took
+  // `-----BEGIN` with it and left the key after that line.
+  assert.equal(
+    redactCredentialLikeContent(`${SYNTHETIC_SLACK_TOKEN}${syntheticPem('RSA PRIVATE KEY', ['SECRET'])} after`),
+    '[credential redacted][credential redacted] after',
+  );
+  assert.equal(
+    redactCredentialLikeContent(`key bb_live_abcdefgh${pemBegin('RSA PRIVATE KEY')}\nSECRET tail`),
+    'key [credential redacted][credential redacted]',
+  );
 });
 
 test('a traced redaction maps each kept character back to where it came from', () => {

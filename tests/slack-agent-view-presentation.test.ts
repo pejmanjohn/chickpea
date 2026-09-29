@@ -2057,6 +2057,64 @@ test('a divergent terminal answer corrects the exact stream instead of posting a
   }
 });
 
+test('a safe prefix that stops extending the stream freezes it until the final corrects it', async () => {
+  const h = harness();
+  const infos: string[] = [];
+  const info = console.info;
+  console.info = (...args: unknown[]) => { infos.push(args.join(' ')); };
+  try {
+    const relay = await prepareReceipt(h, {
+      instanceId: 'instance_frozen',
+      receipt: { submissionId: 'submission_frozen', acceptedAt: 'now', uid: 'uid' },
+      eligibility: { allowed: true, reason: 'safe_early_release' },
+    });
+    assert.ok(relay);
+    relay.onEvent({
+      type: 'message-started', conversationId: 'conversation',
+      submissionId: 'submission_frozen', messageId: 'message_frozen',
+      position: { batch: 1, index: 0 },
+    });
+    declareProgressiveIntent(relay, { submissionId: 'submission_frozen', messageId: 'message_frozen' });
+    const delta = (text: string, batch: number) => relay.onEvent({
+      type: 'message-delta', conversationId: 'conversation', messageId: 'message_frozen',
+      kind: 'text', delta: text, position: { batch, index: 0 },
+    });
+    delta('First line.\n', 4);
+    for (let turn = 0; turn < 100 && !h.store.get(h.runId)?.stream.acknowledgedByteLength; turn += 1) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    // Slack now shows text the safe prefix does not start with.
+    const shown = h.store.get(h.runId)!.stream.acknowledgedByteLength;
+    applyPresentationMutation(h, {
+      kind: 'append_intent', position: { batch: 4, index: 1 }, from: shown, to: shown + 3, hash: 'b'.repeat(64),
+    });
+    applyPresentationMutation(h, {
+      kind: 'append_acknowledged',
+      cursor: h.store.get(h.runId)!.stream.pendingAppend!.cursor,
+      acknowledgedPrefixHash: 'b'.repeat(64),
+    });
+    delta('Second line.\n', 5);
+    relay.onEvent({
+      type: 'message-completed', conversationId: 'conversation', messageId: 'message_frozen',
+      position: { batch: 6, index: 0 },
+    });
+    await relay.closeAndDrain();
+    assert.equal(h.store.get(h.runId)?.stream.state, 'streaming');
+    assert.equal(h.calls.some((call) => call.method === 'chat.appendStream'), false);
+
+    await h.presentation.finalize('First line.\nSecond line.', 'markdown', 'complete', observer([]));
+    const update = h.calls.find((call) => call.method === 'chat.update')?.input;
+    assert.match(JSON.stringify(update), /Second line/);
+    assert.match(JSON.stringify(update), /Corrected/);
+    assert.equal(h.store.get(h.runId)?.stream.presentationOutcome, 'corrected');
+    assert.ok(infos.some((line) =>
+      line.includes('divergent stream corrected') && line.includes('"redactsStreamedText":false')));
+  } finally {
+    console.info = info;
+    h.db.close();
+  }
+});
+
 test('thread titles are deterministic, bounded, and reject credential-shaped input', async () => {
   assert.equal(deriveSlackThreadTitle('  <@U123> **Review** the release  '), 'Review the release');
   assert.equal(
