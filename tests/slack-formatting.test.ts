@@ -179,10 +179,13 @@ test('strong emphasis cannot leak a trailing asterisk into an auto-linked URL', 
 
 test('a line led by bold text keeps streaming after the bold closes', () => {
   for (const line of ['**Summary:** the deploy finished', '- **Step 1:** run it and **always** check']) {
-    assert.equal(streamableSlackMarkdownPrefix(line), line);
+    // The last word waits for the space or line break that ends it.
+    assert.equal(streamableSlackMarkdownPrefix(`${line} `), line);
   }
-  // A star run holds only the `**` that can still open a URL span.
-  assert.equal(streamableSlackMarkdownPrefix('*********'), '*******');
+  // Stars that can still pair, or a URL span the answer drops, hold the
+  // line from their first star.
+  assert.equal(streamableSlackMarkdownPrefix('Done **https://x.test/a** now more'), 'Done');
+  assert.equal(streamableSlackMarkdownPrefix('*********'), '');
 });
 
 test('every progressive cut point is a monotone prefix of the canonical terminal answer', () => {
@@ -321,6 +324,13 @@ test('every progressive cut point is a monotone prefix of the canonical terminal
     `${syntheticPem('RSA PRIVATE KEY', ['body'])}BEGIN RSA PRIVATE KEY${armor}\nSECRET\n${pemEnd('RSA PRIVATE KEY')} after`,
     // A token glued to a BEGIN line goes after the armor it touches.
     `Key: xoxb-123456789012345678901234${syntheticPem('RSA PRIVATE KEY', ['SECRET'])} after`,
+    // Line-local streaming: closed markup is settled, a space inside it is
+    // no cut, a PEM block joins the lines around it, and dropped URL stars
+    // can join dashes into a BEGIN line.
+    '**Summary:** run `npm test` and see [the guide](https://x.test/g) now.\nNext line @here done.\n',
+    '`a b`* tail and `c d` more',
+    `Intro.\n\`<!here> ${syntheticPem('RSA PRIVATE KEY', ['body'])}\` more\nNext`,
+    '`@here **https://x ---**--BEGIN RSA PRIVATE KEY-----\nbody\n-----END RSA PRIVATE KEY-----` more\n',
   ];
 
   for (const terminalInput of corpus) {
@@ -335,102 +345,64 @@ test('every progressive cut point is a monotone prefix of the canonical terminal
   }
 });
 
-test('a backtick after a closed code span splits no special mention before it', () => {
-  // The code span already split `<!here|…>`, so the open backtick holds nothing.
-  assert.equal(streamableSlackMarkdownPrefix('<!here|`x` `>'), '<!here|`x` `>');
-});
+const WJ = '⁠';
+// A live special mention, or a broadcast word Slack could auto-parse.
+const LIVE_BROADCAST = /<!(?:here|channel|everyone|group|subteam\^)|(?<![\p{L}\p{N}])@(?:here|channel|everyone)(?![\p{L}\p{N}])/iu;
 
-test('a run of decided broadcast-word prefixes streams instead of being peeled away', () => {
-  // Each `@h` is followed by a space: nothing is left to decide, so the
-  // stream shows it all rather than holding one more word per pass.
-  const spans = '**https://x @h** '.repeat(700);
-  assert.equal(streamableSlackMarkdownPrefix(spans), canonicalSlackMarkdownText(spans));
-  const words = `${'@h '.repeat(4000)}@`;
-  assert.equal(streamableSlackMarkdownPrefix(words), '@h '.repeat(4000).trimEnd());
-  // Back-to-back spans: only the last, whose `s` may still grow, waits.
-  const docs = '**https://a.test/docs**';
-  assert.equal(streamableSlackMarkdownPrefix(docs.repeat(480)), 'https://a.test/docs'.repeat(479));
-});
-
-test('a `<` or `@` word the answer has settled streams as v0.1.29 streamed it', () => {
-  // v0.1.30 judged each cut alone and held each of these runs back to its
-  // start. A `<` followed by a space, a backtick or a letter can never
-  // become `<!here>`; only the one on the line still being written waits.
-  const settled: Array<[string, string]> = [
-    ['Intro.\n\na < b < c < d < e', 'Intro.\n\na < b < c < d'],
-    [`Intro.\n\n${'`<` '.repeat(8)}x`, `Intro.\n\n${'`<` '.repeat(7)}\``],
-    [`Intro.\n\n\`\`\`\n${'<a\n'.repeat(6)}<a`, `Intro.\n\n\`\`\`\n${'<a\n'.repeat(5)}<a`],
-    // The answer reads `@hhttps`, not a broadcast word. The last `@h`, whose
-    // word runs into the text still being written, waits.
-    [`Intro.\n\n${'**https://x @h**'.repeat(8)}x`, `Intro.\n\n${'https://x @h'.repeat(7)}`],
+test('the line still being written streams its settled words', () => {
+  const cases: Array<[string, string]> = [
+    // Closed bold, inline code and links are settled; a space ends a word.
+    ['Run `npm test` then **Save** and see [the guide](https://x.test/g) now ok',
+      'Run `npm test` then **Save** and see [the guide](https://x.test/g) now'],
+    // Markup that has not closed holds the line from its start.
+    ['Read more in [the guide and more', 'Read more in'],
+    ['a < b < c more', 'a'],
+    ['| a | b', ''],
+    ['*italic* text more', ''],
+    // A credential marker holds from the last space before it.
+    ['secrets ahead OPENAI_API_KEY= abcdefghij more', 'secrets ahead'],
+    // A space inside closed markup is not a cut: that would split it.
+    ['`a b`* tail', ''],
   ];
-  for (const [input, expected] of settled) {
+  for (const [input, expected] of cases) {
     assert.equal(streamableSlackMarkdownPrefix(input), expected, JSON.stringify(input));
   }
-  // Settled the other way: every span boundary would show `@⁠here_` or
-  // `@⁠here`, which the answer reads as `@here_https` and `@herehttps`, and
-  // a cut at `@h` whose answer reads `@here https://x`.
-  assert.equal(streamableSlackMarkdownPrefix(`Intro.\n\n${'**https://x @here_**'.repeat(2)}x`), 'Intro.');
-  assert.equal(streamableSlackMarkdownPrefix(`Intro.\n\n${'**https://x @here**'.repeat(2)}x`), 'Intro.');
-  assert.equal(streamableSlackMarkdownPrefix('Intro. @h**ere https://x <**b'), 'Intro.');
 });
 
-test('a cut that would close a span inside code it leaves open stops before the closing stars', () => {
-  // The answer keeps the stars as code once its backtick closes. Pulling the
-  // cut back to the span's opener instead dropped text already streamed.
-  const text = 'Try `**https://a.test/<**xox` < b';
-  assert.equal(streamableSlackMarkdownPrefix(text.slice(0, 30)), 'Try `**https://a.test/');
-  assert.equal(streamableSlackMarkdownPrefix(text.slice(0, 31)), 'Try `**https://a.test/');
+test('lines joined by a PEM block stream as one line', () => {
+  // A block collapses its line breaks, so a backtick before it can pair with
+  // one after it: nothing from its BEGIN line streams until that line ends.
+  const block = syntheticPem('RSA PRIVATE KEY', ['body']);
+  assert.equal(streamableSlackMarkdownPrefix(`Intro.\n\`<!here> ${block}\` more`), 'Intro.');
+  assert.equal(
+    streamableSlackMarkdownPrefix(`Intro.\n\`<!here> ${block}\` more\nNext`),
+    `Intro.\n\`<${WJ}!here> [credential redacted]\` more`,
+  );
+  // A block that has not closed runs to the end.
+  assert.equal(streamableSlackMarkdownPrefix(`Intro.\nKey: ${pemBegin('EC PRIVATE KEY')}\nbody\nmore `), 'Intro.\nKey:');
 });
 
-test('the hold gives up after four pull-backs instead of showing less', () => {
-  // Each span would end the cut in `@here_`, which the answer reads as
-  // `@here_https`: it pulls the cut back to its `@`, then to its opener.
-  const spans = (count: number) => `Intro.\nx ${'**https://x @here_**'.repeat(count)}`;
-  assert.equal(streamableSlackMarkdownPrefix(spans(2)), 'Intro.\nx');
-  assert.equal(streamableSlackMarkdownPrefix(spans(3)), '');
-  // Once the run's word ends nothing is left to decide.
-  assert.equal(streamableSlackMarkdownPrefix(`${spans(3)} done`), canonicalSlackMarkdownText(`${spans(3)} done`));
-});
-
-test('a run the hold pulls back one unit at a time streams within a CPU bound', () => {
-  // Each shape pulls the cut back one span, `<` or code span per pass. In
-  // v0.1.30 every pass rescanned the whole cut, so streaming 12,000
-  // characters of these in 40-character chunks took 4 to 47 s of CPU each;
-  // the bounded hold takes under 150 ms, a tenth of the bound asserted here.
-  const shapes = ['**https://x @h**', '**https://x @here_**', 'a < b ', '`<` '];
+test('long lines of markup stream within a CPU bound', () => {
+  // v0.1.30's hold rescanned a 12,000-character line of these per pass and
+  // per 40-character chunk, 4 to 47 s of CPU each.
+  const shapes = ['**https://x @h**', '**https://x @here_**', 'a < b ', '`<` ', '**Bold** and `code` '];
   for (const unit of shapes) {
     const run = unit.repeat(Math.ceil(12_000 / unit.length)).slice(0, 12_000);
-    const answer = `Intro.\n\n${run}\n\nDone.`;
+    const answer = `Intro.\n\n${run}\n\nDone.\n`;
     const terminal = canonicalSlackMarkdownText(answer);
     let shown = '';
     const start = process.cpuUsage();
     for (let end = 40; end < answer.length + 40; end += 40) {
       const prefix = streamableSlackMarkdownPrefix(answer.slice(0, end));
       assert.ok(terminal.startsWith(prefix), `${unit}: ${JSON.stringify(prefix.slice(-40))} is not terminal prefix`);
-      // `''` is nothing new to stream; anything else extends what was shown.
-      if (prefix) {
-        assert.ok(prefix.startsWith(shown), `${unit}: ${JSON.stringify(prefix.slice(-40))} rewrote the stream`);
-        shown = prefix;
-      }
-      const { user, system } = process.cpuUsage(start);
-      assert.ok(user + system < 1_500_000, `${unit}: ${Math.round((user + system) / 1_000)} ms of CPU by ${end}`);
+      assert.ok(prefix.startsWith(shown), `${unit}: ${JSON.stringify(prefix.slice(-40))} rewrote the stream`);
+      shown = prefix;
     }
-    // After the run's line ends, the stream catches up with the whole answer.
+    const { user, system } = process.cpuUsage(start);
+    assert.ok(user + system < 1_500_000, `${unit}: ${Math.round((user + system) / 1_000)} ms of CPU`);
     assert.equal(shown, terminal, unit);
   }
 });
-
-test('a cut after stripped stars reads the answer at the matching place', () => {
-  // The answer drops four stars before `@h`; its next character is the space.
-  const text = '**https://a/1** @h then';
-  assert.equal(streamableSlackMarkdownPrefix(text.slice(0, 18)), 'https://a/1');
-  assert.equal(streamableSlackMarkdownPrefix(text.slice(0, 19)), 'https://a/1 @h');
-});
-
-const WJ = '⁠';
-// A live special mention, or a broadcast word Slack could auto-parse.
-const LIVE_BROADCAST = /<!(?:here|channel|everyone|group|subteam\^)|(?<![\p{L}\p{N}])@(?:here|channel|everyone)(?![\p{L}\p{N}])/iu;
 
 test('model text never renders a Slack broadcast or user-group mention', () => {
   const answer = [
@@ -550,31 +522,25 @@ test('code keeps a special mention readable but inert', () => {
 test('a streamed prefix withholds a mention until it neutralizes like the whole answer', () => {
   const cases: Array<[string, string]> = [
     ['Heads up <!he', 'Heads up'],
-    ['Heads up <!here', 'Heads up'],
-    ['Heads up <!here>', `Heads up @${WJ}here`],
+    ['Heads up <!here> now', 'Heads up'],
     ['Heads up <!subteam^S1|@on', 'Heads up'],
     ['Heads up @', 'Heads up'],
     ['Heads up @Her', 'Heads up'],
     // `@here` can still become `@heresy`, which is not a mention.
     ['Heads up @here', 'Heads up'],
-    // A space ends the word as surely as a comma does.
+    // A space or a line break ends the word.
     ['Heads up @here ', `Heads up @${WJ}here`],
-    ['Heads up @here,', `Heads up @${WJ}here,`],
-    // Any character that cannot continue the word ends it.
-    ['Heads up @here<x', `Heads up @${WJ}here`],
-    ['Heads up @here[x', `Heads up @${WJ}here`],
+    ['Heads up @here, ok', `Heads up @${WJ}here,`],
     ['Heads up @here\nx', `Heads up @${WJ}here`],
     ['Heads up @here_ x', `Heads up @${WJ}here_`],
-    ['Heads up @heresy', 'Heads up @heresy'],
-    ['Heads up @ops.', 'Heads up @ops.'],
+    ['Heads up @heresy now', 'Heads up @heresy'],
     // An inline code span may still close, which changes how it neutralizes.
-    ['Try `x <!here>', 'Try `x'],
-    ['Try `x <!here>` now', `Try \`x <${WJ}!here>\` now`],
-    ['Try `x @here', 'Try `x'],
-    ['Try `x @here` now', 'Try `x @here` now'],
-    // A cut elsewhere cannot split a closed code span carrying a mention.
-    ['`@here <x` then', '`'],
-    ['Done.\n`<!he', 'Done.\n`'],
+    ['Try `x <!here>', 'Try'],
+    ['Try `x <!here>` now', `Try \`x <${WJ}!here>\``],
+    ['Try `x @here', 'Try'],
+    ['Try `x @here` now', 'Try `x @here`'],
+    ['`@here <x` then', '`@here <x`'],
+    ['Done.\n`<!he', 'Done.'],
   ];
   for (const [input, expected] of cases) {
     assert.equal(streamableSlackMarkdownPrefix(input), expected, JSON.stringify(input));
