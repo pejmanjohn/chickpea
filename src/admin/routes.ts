@@ -1644,7 +1644,6 @@ async function sandboxStatus(
 const slackBehaviorPatchSchema = v.pipe(
   v.partial(
     v.strictObject({
-      unassignedHint: v.boolean(),
       welcomeOnJoin: v.boolean(),
     }),
   ),

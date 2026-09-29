@@ -27,12 +27,12 @@ test('Slack behavior API retains internal keys and rejects removed presentation 
     const current = await app.request('/admin/api/slack-behavior', { headers });
     assert.equal(current.status, 200);
     assert.deepEqual(await current.json(), {
-      unassignedHint: { value: false, source: 'stored' },
       welcomeOnJoin: { value: true, source: 'stored' },
     });
 
     for (const removed of [
       { progressiveStreaming: true },
+      { unassignedHint: true },
       { nativeTasks: true },
       { welcomeOnJoin: false, progressiveStreaming: true },
     ]) {
@@ -48,13 +48,13 @@ test('Slack behavior API retains internal keys and rejects removed presentation 
     const updated = await app.request('/admin/api/slack-behavior', {
       method: 'PUT',
       headers,
-      body: JSON.stringify({ unassignedHint: true, welcomeOnJoin: false }),
+      body: JSON.stringify({ welcomeOnJoin: false }),
     });
     assert.equal(updated.status, 200);
     assert.deepEqual(await updated.json(), {
-      unassignedHint: { value: true, source: 'stored' },
       welcomeOnJoin: { value: false, source: 'stored' },
     });
+    assert.equal(await settings.getSetting('slack.behavior.unassignedHint'), 'false');
     assert.equal(await settings.getSetting('slack.behavior.progressiveStreaming'), 'false');
     assert.equal(await settings.getSetting('slack.behavior.nativeTasks'), 'false');
   } finally {

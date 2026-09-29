@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { createInterface } from 'node:readline/promises';
 import { assertNodeVersion } from './lib/node-version.mjs';
 import { wranglerInspector } from './lib/inspect-deployment.mjs';
-import { assertCompatibleRelease, inventoryDigest, overlayInstallation, validateInstallation, validateTarget, wranglerProfileArgs } from './lib/upgrade-installation.mjs';
+import { assertCompatibleRelease, inventoryDigest, normalizeStoredInstallation, overlayInstallation, validateInstallation, validateTarget, wranglerProfileArgs } from './lib/upgrade-installation.mjs';
 import { assertPrivatePath, readPrivateJson, writePrivateJson, createRecoveryAuthority, validateRecoveryAuthority } from './lib/upgrade-receipt.mjs';
 import { fetchReleaseSource, releaseTag, resolveOfficialRelease, verifyReleaseSource } from './lib/upgrade-source.mjs';
 import { executePreparedUpgrade, requestDeliveryRecovery } from './lib/upgrade-execution.mjs';
@@ -216,7 +216,7 @@ export async function runUpgrade(args = process.argv.slice(2)) {
       fetchReleaseSource(path.join(directory, 'previous'), previous);
       fetchReleaseSource(path.join(directory, 'destination'), destination);
     }
-    const initial = readPrivateJson(path.join(directory, 'installation.json'));
+    const initial = normalizeStoredInstallation(readPrivateJson(path.join(directory, 'installation.json')));
     const previousRoot = path.join(directory, 'previous');
     const destinationRoot = path.join(directory, 'destination');
     // Verify retained source again on every retry/recovery, before running any
