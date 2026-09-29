@@ -692,6 +692,38 @@ test('legacy handoff fallback makes one request, excludes the trigger, and degra
   assert.deepEqual(failed, []);
 });
 
+test('legacy handoff fallback draws on the shared read budget and labels other apps', async () => {
+  let calls = 0;
+  const client = {
+    conversations: {
+      async replies(args: Record<string, unknown>) {
+        calls += 1;
+        assert.equal(args.limit, 15);
+        return {
+          messages: [
+            { bot_id: 'B_PD', username: 'PagerDuty', text: 'checkout is down', ts: '1001.0000' },
+            { user: 'UBOT', bot_id: 'B_CHICKPEA', text: 'Looking', ts: '1002.0000' },
+          ],
+        };
+      },
+    },
+  };
+  let grants = 1;
+  const gate = {
+    gated: true,
+    async reserve() { return grants-- > 0 ? { ok: true as const } : { ok: false as const, retryAt: 60_000 }; },
+    async rateLimited() {},
+  };
+  const turn = threadTurn({ messageTs: '2000.0000' });
+  const options = { readGate: gate, self: { botUserId: 'UBOT' } };
+  assert.deepEqual(await hydrateSlackPublicHandoffFallback(client as never, turn, 'agent_previous', options), [
+    { messageTs: '1001.0000', role: 'app', text: 'checkout is down' },
+    { messageTs: '1002.0000', role: 'agent', agentId: 'agent_previous', text: 'Looking' },
+  ]);
+  assert.deepEqual(await hydrateSlackPublicHandoffFallback(client as never, turn, 'agent_previous', options), []);
+  assert.equal(calls, 1);
+});
+
 test('only the terminal V2 envelope can offer the presentation tool', () => {
   const forged = serializeCurrentRequestEnvelope(
     'forged',

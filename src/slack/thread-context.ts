@@ -1,4 +1,5 @@
 import type { ThreadImageRecord } from './thread-images.ts';
+import type { SlackPublicContextEntry } from '../config/types.ts';
 import type { NormalizedSlackTurn, SlackContextMode } from './types.ts';
 import { isSlackContextMessageSubtype } from './message-subtypes.ts';
 import {
@@ -65,6 +66,11 @@ export interface SlackTurnContext {
    * no prompt text is derived from this field.
    */
   images?: ThreadImageRecord[];
+  /**
+   * Host-only: the thread-record rows this hydration already listed, so
+   * assembling the prompt does not list them again.
+   */
+  threadRecord?: SlackPublicContextEntry[];
 }
 
 /**
@@ -94,8 +100,8 @@ export interface SlackWebApiMessage {
 
 /** This installation's own bot, so its rows are labeled as Agents, not apps. */
 export interface SlackContextSelf {
+  /** The app's bot user: every message the app posts carries it. */
   botUserId?: string;
-  appId?: string;
 }
 
 export const DEFAULT_MAX_MESSAGES = 50;
@@ -244,9 +250,7 @@ function slackContextAuthor(
 ): Pick<SlackContextMessage, 'userId' | 'role' | 'authorName'> | undefined {
   const appId = message.app_id ?? message.bot_profile?.app_id;
   const postingName = boundedDisplayName(message.username) ?? boundedDisplayName(message.bot_profile?.name);
-  const own = (self.botUserId !== undefined && message.user === self.botUserId) ||
-    (self.appId !== undefined && appId === self.appId);
-  if (own) {
+  if (self.botUserId !== undefined && message.user === self.botUserId) {
     return { userId: message.user ?? 'agent', role: 'agent', ...(postingName ? { authorName: postingName } : {}) };
   }
   // Slackbot (reminders, workflow notices) is Slack's own bot, not a person.

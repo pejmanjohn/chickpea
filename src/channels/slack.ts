@@ -122,6 +122,7 @@ import {
 import { slackSemanticActivityStatusEnabled } from '../slack/semantic-status-flag.ts';
 import { hydrateSlackPublicHandoffFallback } from '../slack/web-client-context.ts';
 import { hydrateTurnSlackContext } from '../slack/turn-context-reads.ts';
+import { createSlackReadGate } from '../slack/read-budget.ts';
 import {
   assembleRetainedSlackContext,
   reconcileSlackPublicContextMutation,
@@ -1903,6 +1904,14 @@ async function processSlackEvent(
           runtimeClient,
           turn,
           routed.previousAgentId,
+          {
+            readGate: createSlackReadGate({
+              state,
+              workspaceId: turn.workspaceId,
+              gated: installation.transportMode === 'gateway',
+            }),
+            ...(installation.botUserId ? { self: { botUserId: installation.botUserId } } : {}),
+          },
         );
         await store.putAgentThreadRoute({
           workspaceId: routed.route.workspaceId,
@@ -2642,7 +2651,7 @@ async function processSlackEvent(
       await addMidRunReaction({ client: slackClient, state, jobId: job.id, receipt: midRunReceipt });
     }
     if (!ui) {
-      await recordAcceptedSlackHumanMessage(stores.config, turn, assignment).catch(() => {
+      await recordAcceptedSlackHumanMessage(stores.config, turn, assignment, slackEventFiles(payload.event)).catch(() => {
         console.warn('[chickpea] accepted Slack message was not added to public context');
       });
     }
@@ -2683,7 +2692,7 @@ async function processSlackEvent(
     await addMidRunReaction({ client: slackClient, state, jobId: msgKey, receipt: midRunReceipt });
   }
   if (!ui) {
-    await recordAcceptedSlackHumanMessage(stores.config, turn, assignment).catch(() => {
+    await recordAcceptedSlackHumanMessage(stores.config, turn, assignment, slackEventFiles(payload.event)).catch(() => {
       console.warn('[chickpea] accepted Slack message was not added to public context');
     });
   }
@@ -3525,6 +3534,11 @@ export function turnRequiresOwnedThread(turn: Pick<NormalizedSlackTurn, 'source'
  * bots, other AI agents. Nothing is kept for threads no Agent is in. A
  * record write that fails loses only this context row, never the event.
  */
+/** A Slack event's files, for the image references the thread record keeps. */
+function slackEventFiles(event: SlackEventFixture['event']): unknown {
+  return 'files' in event ? event.files : undefined;
+}
+
 async function recordAgentThreadMessage(
   config: Pick<ConfigStore, 'getAgentThreadRoute' | 'putSlackPublicContext'>,
   workspaceId: string,
@@ -3571,6 +3585,8 @@ export async function classifyCandidateTurn(
     ...(assignment.runtimeContract === 'chickpea-v1' && dependencies.config
       ? { record: dependencies.config }
       : {}),
+    // The turn this classifies needs the shared app's one read a minute.
+    pacedReads: false,
     maxMessages: 12,
     maxPages: 2,
   });

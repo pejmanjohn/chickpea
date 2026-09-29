@@ -5,7 +5,6 @@ import { ErrorCode } from '@slack/web-api';
 
 import {
   CfSlackStateStore,
-  CfTurnJobsForRunner,
   FreshTagStateStubs,
   StateStoreDisconnectedError,
 } from '../src/config/cf-state-proxies.ts';
@@ -157,18 +156,20 @@ test('the Node state store books Slack reads from the shared presentation store'
   }
 });
 
-test('the Cloudflare state proxies book Slack reads in the state store', async () => {
+test('the Cloudflare state proxy books Slack reads in the state store', async () => {
   const db = openStateDb(':memory:');
   try {
     const shared = new SlackRunPresentationStoreLogic(db, () => START);
     const calls: string[] = [];
+    // Thread runners reach the budget through this same proxy: one row per
+    // workspace and method, whoever reads.
     const worker = new CfSlackStateStore(readBudgetStub(shared, calls));
-    const runner = new CfTurnJobsForRunner(() => readBudgetStub(shared, calls));
+    const runnerTurn = new CfSlackStateStore(readBudgetStub(shared, calls));
 
     assert.equal((await worker.reserveSlackRead('T_CF', HISTORY)).outcome, 'reserved');
-    assert.equal((await runner.reserveSlackRead('T_CF', HISTORY)).outcome, 'exhausted',
-      'a thread runner and the Worker book from one row');
-    await runner.applySlackReadCooldown('T_CF', REPLIES, 30_000);
+    assert.equal((await runnerTurn.reserveSlackRead('T_CF', HISTORY)).outcome, 'exhausted',
+      'a thread runner turn and the Worker book from one row');
+    await runnerTurn.applySlackReadCooldown('T_CF', REPLIES, 30_000);
     assert.equal((await worker.reserveSlackRead('T_CF', REPLIES)).outcome, 'cooldown');
     assert.deepEqual(calls, [
       'reserve:conversations.history', 'reserve:conversations.history',
@@ -179,30 +180,15 @@ test('the Cloudflare state proxies book Slack reads in the state store', async (
   }
 });
 
-test('a Slack read booking is never replayed on a disconnect; its cooldown is', async () => {
+test('a Slack read booking is never replayed on a disconnect', async () => {
   const calls: string[] = [];
   const mint = () => ({
     async slackReserveRead() { calls.push('reserve'); throw disconnectError(); },
-    async slackApplyReadCooldown() {
-      calls.push('cooldown');
-      // The first cooldown call is lost to a restart; its replay lands.
-      if (calls.filter((call) => call === 'cooldown').length === 1) throw disconnectError();
-      return { ok: true, value: { cooldownUntil: START + 1_000, budgetVersion: 2 } };
-    },
   }) as unknown as TagStateRpc;
-  const runner = new CfTurnJobsForRunner(mint);
-  await assert.rejects(runner.reserveSlackRead('T_CF', HISTORY),
-    (error) => error instanceof StateStoreDisconnectedError);
-  assert.deepEqual(calls, ['reserve'], 'one attempt: a lost reply only wastes that read');
-  assert.deepEqual(await runner.applySlackReadCooldown('T_CF', HISTORY, 1_000),
-    { cooldownUntil: START + 1_000, budgetVersion: 2 }, 'a convergent cooldown is replayed once');
-  assert.deepEqual(calls, ['reserve', 'cooldown', 'cooldown']);
-
-  calls.length = 0;
   const worker = new CfSlackStateStore(new FreshTagStateStubs(mint));
   await assert.rejects(worker.reserveSlackRead('T_CF', HISTORY),
     (error) => error instanceof StateStoreDisconnectedError);
-  assert.deepEqual(calls, ['reserve'], 'the Worker proxy does not replay a booking either');
+  assert.deepEqual(calls, ['reserve'], 'one attempt: a lost reply only wastes that read');
 });
 
 test('an ungated Slack read gate always reads and records nothing', async () => {

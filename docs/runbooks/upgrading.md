@@ -212,6 +212,18 @@ to runners still finish on their runners. Prefer the variable to a code
 rollback: code from before the runner execution path does not know which turns
 runners own.
 
+### Thread record rollback
+
+The Slack reading release adds nullable columns to the thread record: who
+wrote each row (a person, an app, or an Agent), file listings, image file
+references, and a marker for replies a capped read could not reach. Earlier
+code ignores them, so a rollback keeps working, but it reads a row posted by
+an app or integration as a person's row. In that code, a Slack List link that
+an integration posted in an Agent's thread counts as shared by a person, and
+that code lets the Agent use the List. The exposure ends as those threads expire, 30
+days after their last message. Prefer rolling forward to a fix over rolling
+back across this release.
+
 ## Acceptance and handoff
 
 After success, verify the destination release and full source commit in

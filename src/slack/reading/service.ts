@@ -16,6 +16,7 @@ import {
   type SlackContextSelf,
   type SlackWebApiMessage,
 } from '../thread-context.ts';
+import { collectThreadImageRecords, slackThreadImageConversationKey } from '../thread-images.ts';
 import { SLACK_USER_ID } from '../ui/text.ts';
 import { authorizeSlackRead, type AuthorizedSlackConversation, type SlackReadAuthorityPorts } from './authority.ts';
 import { isConversationUnavailableError, SlackReadError } from './errors.ts';
@@ -119,7 +120,7 @@ export class SlackReadingService {
       const visible = messages.filter((row) => atOrBeforeSlackWatermark(row.ts, current.messageTs));
       withheld = messages.length - visible.length;
       messages = visible;
-      await this.seedCurrentThread(messages);
+      await this.seedCurrentThread(messages, raw, Boolean(nextCursor));
     }
     return this.result('ok', {
       conversation: conversationSummary(conversation),
@@ -261,19 +262,29 @@ export class SlackReadingService {
     }, await this.rows(messages), undefined);
   }
 
-  private async seedCurrentThread(messages: SlackContextMessage[]): Promise<void> {
+  /** `truncated`: Slack has more replies than this page, so the record marks what it is missing. */
+  private async seedCurrentThread(
+    messages: SlackContextMessage[],
+    raw: SlackWebApiMessage[],
+    truncated: boolean,
+  ): Promise<void> {
     const record = this.options.record;
     if (!record) return;
     const current = this.options.authority.current;
+    const turn = {
+      workspaceId: this.options.authority.workspaceId,
+      channelId: current.channelId,
+      threadTs: current.threadTs,
+      messageTs: current.messageTs,
+      contextMode: 'thread' as const,
+    };
     try {
       // The trigger is marked so the seed skips it, as the turn's own read does.
       const context = messages.map((row) => row.ts === current.messageTs ? { ...row, isTrigger: true } : row);
-      await seedSlackThreadRecord(record, {
-        workspaceId: this.options.authority.workspaceId,
-        channelId: current.channelId,
-        threadTs: current.threadTs,
-        contextMode: 'thread',
-      }, { mode: 'thread', messages: context, truncated: false, degradations: [] });
+      const images = collectThreadImageRecords(raw, slackThreadImageConversationKey(turn));
+      await seedSlackThreadRecord(record, turn, {
+        mode: 'thread', messages: context, truncated, degradations: [], ...(images.length ? { images } : {}),
+      });
     } catch {
       console.warn('[chickpea] thread record seed from a Slack read failed');
     }

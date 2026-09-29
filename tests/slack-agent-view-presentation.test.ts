@@ -19,6 +19,7 @@ import { SlackTransportError } from '../src/slack/transport/types.ts';
 import { WebClientPresenter } from '../src/slack/web-client-presenter.ts';
 import { slackClientMessageId } from '../src/slack/transport/message-id.ts';
 import type { SlackArtifactReceipt } from '../src/slack/artifact-receipts.ts';
+import type { SlackReadGate } from '../src/slack/read-budget.ts';
 
 const HARNESS_START_MS = 1_785_700_100_000;
 
@@ -47,6 +48,7 @@ function harness(input: {
   failRetirementReceipt?: boolean;
   sessionError?: unknown;
   onNativeStarted?: () => Promise<void>;
+  readGate?: SlackReadGate;
   persona?: { name: string; avatarUrl: string; avatarRevision: number };
   owner?:
     | { kind: 'selected_agent'; persona: { name: string; avatarUrl: string; avatarRevision: number } }
@@ -200,6 +202,7 @@ function harness(input: {
     wait: async (milliseconds) => { clock += milliseconds; },
     onFinalized: (record) => { finalizationRecords.push(structuredClone(record)); },
     ...(input.onNativeStarted ? { onNativeStarted: input.onNativeStarted } : {}),
+    ...(input.readGate ? { readGate: input.readGate } : {}),
   });
   return {
     db,
@@ -1076,6 +1079,34 @@ test('V3 lets an answer supersede a failed failure delivery, but never pending, 
         blocked.db.close();
       }
     }
+  } finally {
+    h.db.close();
+  }
+});
+
+test('a receipt read waits for the shared app\'s read budget and leaves the receipt unknown', async () => {
+  const asked: string[] = [];
+  const h = harness({
+    schemaVersion: 3,
+    owner: { kind: 'chickpea' },
+    readGate: {
+      gated: true,
+      async reserve(method) { asked.push(method); return { ok: false, retryAt: 60_000 }; },
+      async rateLimited() {},
+    },
+  });
+  try {
+    const prepared = await h.presentation.beginActivity({
+      kind: 'reading', action: 'Reading', object: 'the request', text: 'Reading the request',
+    }, 'message');
+    assert.ok(prepared);
+    await h.presentation.recordActivityReceipt(prepared.operationId, 'unknown');
+    h.setThreadReplies([{ ts: '1785700100.000355', client_msg_id: slackClientMessageId(prepared.operationId) }]);
+    await h.presentation.reconcileActivityReceipts();
+    assert.deepEqual(asked, ['conversations.replies']);
+    assert.equal(h.calls.some((call) => call.method === 'conversations.replies'), false);
+    const stored = h.store.get(h.runId);
+    assert.equal(stored?.schemaVersion === 3 && stored.currentActivity?.operation.certainty, 'unknown');
   } finally {
     h.db.close();
   }

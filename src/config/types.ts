@@ -490,6 +490,14 @@ export type AgentThreadRouteInput = Omit<
  */
 export type SlackPublicContextRole = 'human' | 'agent' | 'app';
 
+/** An image file of a recorded message, for the host's image inventory only. */
+export interface SlackPublicContextImage {
+  id: string;
+  name: string;
+  mimeType: string;
+  sizeBytes?: number;
+}
+
 /** A file shared with a recorded message: label, type, size. Never contents. */
 export interface SlackPublicContextFile {
   name: string;
@@ -516,6 +524,18 @@ export interface SlackPublicContextEntry {
   /** Posting name of an app or Agent row. People's names are resolved at read time. */
   authorName?: string;
   files?: SlackPublicContextFile[];
+  /**
+   * Image files of the message, host-side only: the thread image inventory
+   * rebuilds its handles from these when a turn reads the record instead of
+   * Slack. Never rendered into model-facing text.
+   */
+  images?: SlackPublicContextImage[];
+  /**
+   * Set on a thread's root row when the record was seeded from a read that
+   * could not reach every reply: replies older than this timestamp (after
+   * the root) may be missing from the record.
+   */
+  gapBeforeTs?: string;
   /** Slack timestamp of an edit; excludes later revisions from an earlier turn. */
   contentVersionTs?: string;
   updatedAt: number;

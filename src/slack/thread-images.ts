@@ -6,6 +6,7 @@ import { safeFilename } from './attachment-context.ts';
 import { MAX_SLACK_ATTACHMENT_BYTES } from './attachment-normalization.ts';
 import { MAX_ARTIFACT_BYTES } from '../sandbox/artifact-tool.ts';
 import { manifestFileLabel } from './message-text.ts';
+import type { SlackPublicContextEntry, SlackPublicContextImage } from '../config/types.ts';
 
 /**
  * Per-turn inventory of the images already in this Slack conversation.
@@ -152,6 +153,43 @@ export function collectThreadImageRecords(
     }
   }
   return records;
+}
+
+/** Image references of one raw Slack row, for the thread record. */
+export function slackImageRefs(files: unknown): SlackPublicContextImage[] {
+  if (!Array.isArray(files)) return [];
+  return files.flatMap((file) => {
+    const record = fileRecord(file, { conversationKey: '', origin: 'person', messageTs: '' });
+    return record
+      ? [{
+        id: record.fileId,
+        name: record.filename,
+        mimeType: record.mimeType,
+        ...(record.byteLength !== undefined ? { sizeBytes: record.byteLength } : {}),
+      }]
+      : [];
+  });
+}
+
+/**
+ * Image records rebuilt from thread-record rows, for a turn that reads the
+ * record instead of Slack. Each reference is validated again, as if Slack
+ * had just returned it.
+ */
+export function threadImageRecordsFromRecord(
+  entries: readonly SlackPublicContextEntry[],
+  conversationKey: string,
+): ThreadImageRecord[] {
+  return entries.flatMap((entry) => {
+    const origin: ThreadImageOrigin = entry.role === 'human' ? 'person' : 'agent';
+    return (entry.images ?? []).flatMap((image) => {
+      const record = fileRecord(
+        { id: image.id, name: image.name, mimetype: image.mimeType, size: image.sizeBytes },
+        { conversationKey, origin, messageTs: entry.messageTs },
+      );
+      return record ? [record] : [];
+    });
+  });
 }
 
 /**
