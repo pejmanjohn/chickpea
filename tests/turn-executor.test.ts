@@ -426,3 +426,36 @@ test('a bug in this code after the yield began is not a free yield', async (t) =
   assert.deepEqual(h.calls, ['recordAttempt("turn_1",2)'], 'the attempt is spent, not restored');
   assert.equal(h.retries.length, 1, 'retained for durable reattachment as before');
 });
+
+test('a delivered Channel reply hands its teammate asks over after the row is settled, and a stopped one asks nobody', async () => {
+  const channelJob = pendingJob({
+    turn: {
+      workspaceId: 'T1', channelId: 'C1', channelType: 'channel', threadTs: '1785900000.000100',
+      messageTs: '1785900000.000100', userId: 'U1', text: 'question', source: 'agent_mention',
+      eventId: 'Ev1', contextMode: 'thread',
+    },
+    assignment: { agentId: 'agent_support', runtimeContract: 'chickpea-v1' } as never,
+  });
+  for (const [outcome, expected] of [['completed', 1], ['stopped', 0]] as const) {
+    const h = fakePorts(async (options) => {
+      await options.onPublicMessageDelivered?.({ messageTs: '1785900000.000200', text: '@finance Q3?' });
+      await options.onDelivered?.(outcome as never);
+    }, async () => ({
+      workspaceId: 'T1',
+      transportMode: 'gateway',
+      client: { conversations: { info: async () => ({ ok: true, channel: { id: 'C1', is_member: true } }) } },
+    }));
+    const dispatched: string[] = [];
+    (h.ports as { config: unknown }).config = { putSlackPublicContext: async () => undefined };
+    h.ports.dispatchAgentAsks = async (request) => {
+      dispatched.push(`${request.fromAgentId}:${request.deliveries.map(({ text }) => text).join('|')}`);
+      h.calls.push('dispatchAgentAsks');
+    };
+    assert.equal(await executeTurnJob(channelJob, h.ports, h.options), true);
+    assert.equal(dispatched.length, expected, outcome);
+    if (expected) {
+      assert.deepEqual(dispatched, ['agent_support:@finance Q3?']);
+      assert.ok(h.calls.indexOf('markDelivered("turn_1")') < h.calls.indexOf('dispatchAgentAsks'));
+    }
+  }
+});

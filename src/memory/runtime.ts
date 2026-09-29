@@ -21,7 +21,7 @@ import { isRetryableDependencyFailure } from '../slack/transport/types.ts';
 import {
   memoryEpochThreadKey,
   memoryQuarantineThreadKey,
-  slackAgentThreadKey,
+  slackAgentContinuityKey,
   slackConversationKind,
   workspaceManagementThreadKey,
 } from '../slack/thread-key.ts';
@@ -141,7 +141,7 @@ export async function prepareMemoryTurn(input: {
   assignment: ResolvedAssignment;
   dependencies?: AgentMemoryRuntimeDependencies;
 }): Promise<PreparedMemoryTurn> {
-  const baseKey = slackAgentThreadKey(input.turn, input.assignment);
+  const baseKey = slackAgentContinuityKey(input.turn, input.assignment);
   try {
     if (await isWorkspaceManagementTurn(input)) {
       return await prepareWorkspaceManagementTurn(input, baseKey);

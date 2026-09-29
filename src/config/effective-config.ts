@@ -168,6 +168,26 @@ function runtimeIdentityInstruction(
   return parts.join(' ');
 }
 
+/**
+ * Whom this Agent can ask in this Channel, and how asking works: a plain
+ * `@handle` in its reply asks that Agent, which answers in the thread after
+ * it. Absent when no other Agent with a handle works in the Channel.
+ */
+export function agentTeammateInstructions(
+  assignment: Pick<ResolvedAssignment, 'channelTeammates'>,
+): string | undefined {
+  const teammates = assignment.channelTeammates ?? [];
+  if (teammates.length === 0) return undefined;
+  const example = teammates[0]!.handle;
+  return [
+    'Teammates: other Chickpea Agents work in this Slack Channel. To ask one of them something, mention their handle as plain text in your reply, for example @' + example + '. They answer in this thread after your reply, and everyone in the thread sees the exchange.',
+    '- Ask only when you need that teammate\'s answer or work, with one clear question.',
+    '- Mentioning a handle always asks that Agent. Never mention a teammate in passing, to thank them, or to acknowledge an answer, and never mention your own handle.',
+    '- A long back-and-forth between Agents pauses until a person replies, so settle what you can in each reply.',
+    `Teammates here: ${teammates.map(({ name, handle }) => `${JSON.stringify(name)} (@${handle})`).join(', ')}.`,
+  ].join('\n');
+}
+
 export function effectiveSlackInstructions(
   assignment: Pick<
     ResolvedAssignment,

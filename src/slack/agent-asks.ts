@@ -1,0 +1,128 @@
+import type { ResolvedAssignment } from '../config/types.ts';
+import { slackConversationKind } from './thread-key.ts';
+import type { NormalizedSlackTurn } from './types.ts';
+
+/**
+ * Agent-to-Agent asks: an Agent that mentions another Agent's handle in a
+ * reply it delivered in a Channel thread asks that Agent, which answers in
+ * the same thread. The ask never arrives as a Slack event (every Agent posts
+ * as this app's one bot user, and admission ignores app-authored events);
+ * the host admits it from the delivered reply instead.
+ */
+
+/**
+ * Asks one person's message can lead to, however they chain. Past it the
+ * exchange pauses until a person posts in the thread again.
+ */
+export const AGENT_ASK_TURN_LIMIT = 8;
+/** Agents one message can ask; later mentions in it are not asked. */
+export const AGENT_ASK_MAX_TARGETS = 6;
+
+/** What the host admits asks from: one delivered Agent reply's messages. */
+export interface SlackAgentAskRequest {
+  /** The asking turn: its thread, its person, and its own ask, if any. */
+  turn: Pick<
+    NormalizedSlackTurn,
+    'workspaceId' | 'channelId' | 'threadTs' | 'messageTs' | 'userId' | 'channelType' |
+    'requesterTimezone' | 'agentAsk'
+  >;
+  fromAgentId: string;
+  /** Every Slack message of the reply that mentioned a handle-shaped word. */
+  deliveries: Array<{ messageTs: string; text: string }>;
+}
+
+export type SlackAgentAskDispatcher = (request: SlackAgentAskRequest) => Promise<void>;
+
+/** The person's message an exchange of asks started from. */
+export function agentAskOrigin(turn: Pick<NormalizedSlackTurn, 'messageTs' | 'agentAsk'>): string {
+  return turn.agentAsk?.originMessageTs ?? turn.messageTs;
+}
+
+/**
+ * Whether this turn's replies may ask other Agents: a chickpea-v1 Channel
+ * thread. A DM has one Agent, and a legacy installation has no handles.
+ */
+export function turnMayAskAgents(
+  turn: Pick<NormalizedSlackTurn, 'source' | 'channelType'>,
+  assignment: Pick<ResolvedAssignment, 'runtimeContract'>,
+): boolean {
+  return assignment.runtimeContract === 'chickpea-v1' && slackConversationKind(turn) === 'channel';
+}
+
+const CODE_SEGMENT = /(```[\s\S]*?(?:```|$)|`[^`\n]+`)/g;
+// A handle word: `@` (with the word joiner neutralization may leave after
+// it) not preceded by a word character or `.`, `@`, `/`, `:`, `-`, so an
+// email address, a URL, or a path is never a mention.
+const HANDLE_WORD = /(?<![\p{L}\p{N}_.@/:-])@\u2060?([A-Za-z0-9_-]+)/gu;
+
+/**
+ * The handle-shaped words of a delivered message outside code, lowercased,
+ * in order of first appearance. Which of them are Agents is decided by the
+ * host against the Agents it knows.
+ */
+export function mentionedHandleWords(text: string): string[] {
+  const words: string[] = [];
+  const seen = new Set<string>();
+  text.split(CODE_SEGMENT).forEach((segment, index) => {
+    if (index % 2 === 1) return;
+    for (const match of segment.matchAll(HANDLE_WORD)) {
+      const word = match[1]!.toLowerCase().replace(/-+$/, '');
+      if (word && !seen.has(word)) {
+        seen.add(word);
+        words.push(word);
+      }
+    }
+  });
+  return words;
+}
+
+/**
+ * Collects a turn's delivered messages that may ask other Agents, and hands
+ * them over once the turn's reply is recorded as delivered. Recording the
+ * thread context stays the delivery callback's job; asks never delay or fail
+ * the reply that made them.
+ */
+export function createAgentAskCollector(input: {
+  turn: NormalizedSlackTurn;
+  assignment: ResolvedAssignment;
+  dispatch?: SlackAgentAskDispatcher | undefined;
+}): {
+  /** Note one delivered message. */
+  note(delivery: { messageTs: string; text: string }): void;
+  /** Hand the noted messages over, once; failures are logged, never thrown. */
+  flush(): Promise<void>;
+} {
+  const deliveries: Array<{ messageTs: string; text: string }> = [];
+  const eligible = Boolean(input.dispatch) && turnMayAskAgents(input.turn, input.assignment);
+  let flushed = false;
+  return {
+    note(delivery) {
+      if (!eligible || flushed || mentionedHandleWords(delivery.text).length === 0) return;
+      if (deliveries.some(({ messageTs }) => messageTs === delivery.messageTs)) return;
+      deliveries.push({ messageTs: delivery.messageTs, text: delivery.text });
+    },
+    async flush() {
+      if (flushed || deliveries.length === 0 || !input.dispatch) return;
+      flushed = true;
+      const { turn } = input;
+      try {
+        await input.dispatch({
+          turn: {
+            workspaceId: turn.workspaceId,
+            channelId: turn.channelId,
+            threadTs: turn.threadTs,
+            messageTs: turn.messageTs,
+            userId: turn.userId,
+            ...(turn.channelType ? { channelType: turn.channelType } : {}),
+            ...(turn.requesterTimezone ? { requesterTimezone: turn.requesterTimezone } : {}),
+            ...(turn.agentAsk ? { agentAsk: turn.agentAsk } : {}),
+          },
+          fromAgentId: input.assignment.agentId,
+          deliveries,
+        });
+      } catch (error) {
+        console.warn('[chickpea] agent ask dispatch failed:', error instanceof Error ? error.name : 'unknown');
+      }
+    },
+  };
+}

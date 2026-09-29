@@ -69,6 +69,7 @@ import {
 } from './turn-jobs.ts';
 import { slackPresentationStatePort } from './presentation-state-port.ts';
 import { recordDeliveredSlackAgentMessage } from './public-context.ts';
+import { createAgentAskCollector, type SlackAgentAskRequest } from './agent-asks.ts';
 import {
   abandonTerminalSlackPresentationBestEffort,
   postRecoveryNoticeBestEffort,
@@ -104,6 +105,18 @@ const stopAborts = new StopAbortFence();
 let retryTimer: ReturnType<typeof setTimeout> | undefined;
 let reconcileTimer: ReturnType<typeof setInterval> | undefined;
 let autoWakeSuspended = false;
+/**
+ * Admits the asks a delivered Agent reply made. The Slack channel module
+ * registers it at startup: it imports this relay, so the relay cannot import
+ * it back.
+ */
+let agentAskDispatcher: ((request: SlackAgentAskRequest, env?: PlatformEnv) => Promise<void>) | undefined;
+
+export function registerNodeAgentAskDispatcher(
+  dispatcher: (request: SlackAgentAskRequest, env?: PlatformEnv) => Promise<void>,
+): void {
+  agentAskDispatcher = dispatcher;
+}
 let shuttingDown = false;
 
 export { slackPresentationStatePort } from './presentation-state-port.ts';
@@ -603,6 +616,12 @@ function createNodeThreadDrain(
         }
       };
       const slackClient = installationContext?.client ?? options.client;
+      const dispatcher = agentAskDispatcher;
+      const agentAsks = createAgentAskCollector({
+        turn: job.turn,
+        assignment: job.assignment,
+        dispatch: dispatcher ? (request) => dispatcher(request, env) : undefined,
+      });
       // The stopped ending (KTD3), as in executeTurnJob. The state store drops
       // (and counts) the rows the stop held before anything is delivered:
       // once the turn is marked delivered, an unfinished stop would release
@@ -680,8 +699,10 @@ function createNodeThreadDrain(
             : {}),
           onInteractionProgress: (patch) =>
             recordSlackInteractionProgress(job.id, patch),
-          onPublicMessageDelivered: (delivery) =>
-            recordDeliveredSlackAgentMessage(config, job.turn, job.assignment, delivery),
+          onPublicMessageDelivered: (delivery) => {
+            agentAsks.note(delivery);
+            return recordDeliveredSlackAgentMessage(config, job.turn, job.assignment, delivery);
+          },
           ...(stoppedEnding ? { stopEnding: stoppedEnding } : {}),
           ...(job.previousStop ? { previousStop: job.previousStop } : {}),
           onDeferredTerminal: async () => {
@@ -710,6 +731,8 @@ function createNodeThreadDrain(
                 slackClient,
               );
             }
+            // Teammates this reply asked; a stopped run asks nobody.
+            if (outcome !== 'stopped' && !raced) await agentAsks.flush();
           },
         });
         if (deferredTerminal) return true;

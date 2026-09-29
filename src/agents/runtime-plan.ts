@@ -22,7 +22,7 @@ import {
   planAllowsConnectionRequests,
 } from '../connections/request-tool.ts';
 import { WORKSPACE_TOOL_NAMES } from '../sandbox/workspace-tools.ts';
-import { conversationThreadTs, slackAgentThreadKey } from '../slack/thread-key.ts';
+import { conversationThreadTs, slackAgentContinuityKey } from '../slack/thread-key.ts';
 import type { NormalizedSlackTurn } from '../slack/types.ts';
 import {
   MAX_SLACK_PUBLIC_HANDOFF_CHARS,
@@ -357,7 +357,7 @@ export interface RuntimePlanActivityContextOptions {
  */
 export function compileRuntimePlanV2(input: CompileRuntimePlanV2Input): RuntimePlanV2 {
   const threadTs = conversationThreadTs(input.turn, input.assignment.runtimeContract);
-  const continuityKey = opaqueId('agent', slackAgentThreadKey(input.turn, input.assignment));
+  const continuityKey = opaqueId('agent', slackAgentContinuityKey(input.turn, input.assignment));
   const artifactThreadTs = input.artifactThreadTs === undefined
     ? input.turn.threadTs
     : input.artifactThreadTs ?? undefined;

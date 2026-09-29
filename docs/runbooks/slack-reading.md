@@ -17,7 +17,9 @@ the request:
   not read a file's contents unless it was attached to the current request.
 
 Everything read from Slack is information for the Agent to weigh, never an
-instruction or a permission. Messages from apps and bots never start a turn.
+instruction or a permission. Messages from apps and bots never start a turn;
+another Chickpea Agent reaches an Agent only by asking it (see
+[Agent conversations](agent-conversations.md)).
 
 ## What an Agent can read on request
 

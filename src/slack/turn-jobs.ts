@@ -474,6 +474,22 @@ export class TurnJobStoreLogic {
   }
 
   /**
+   * Agent-to-Agent asks this thread admitted from one person's message
+   * (`agentAsk.originMessageTs`), terminal rows included until they age out.
+   */
+  countAgentAskTurns(job: Pick<TurnJob, 'turn' | 'assignment'>, originMessageTs: string): number {
+    const threadKey = stopThreadKeyOf(job.turn, job.assignment);
+    if (!threadKey) return 0;
+    const row = this.db.get(
+      `SELECT COUNT(*) AS used FROM turn_jobs
+       WHERE thread_key = ? AND json_extract(turn_json, '$.agentAsk.originMessageTs') = ?`,
+      threadKey,
+      originMessageTs,
+    );
+    return Number(row?.used ?? 0);
+  }
+
+  /**
    * While a queued delivery is processed, jobs admitted for its Slack event
    * record when the delivery was received rather than when it was admitted.
    * Returns the release function; call it once processing ends.

@@ -334,12 +334,15 @@ export function ensureTriggerMessage(
 }
 
 function triggerMessage(turn: NormalizedSlackTurn): SlackContextMessage {
+  // An ask's trigger is the asking Agent's message, not the person's.
+  const ask = turn.agentAsk;
   return {
-    userId: turn.userId,
+    userId: ask ? `Agent ${ask.fromAgentId}` : turn.userId,
     text: turn.text,
     ts: turn.messageTs,
     isTrigger: true,
-    role: 'human',
+    role: ask ? 'agent' : 'human',
+    ...(ask ? { authorName: ask.fromAgentName, agentId: ask.fromAgentId } : {}),
     rootTs: turn.threadTs,
   };
 }

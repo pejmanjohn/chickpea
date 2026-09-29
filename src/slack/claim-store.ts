@@ -100,6 +100,12 @@ export interface SlackCanonicalAdmissionInput {
    * has a turn that removes it.
    */
   midRun?: { threadKey: string; receipt: TurnMidRunReceipt };
+  /**
+   * An Agent-to-Agent ask (`turnJob.turn.agentAsk`) is written only while
+   * its exchange has admitted fewer asks than this, counted in the same
+   * transaction. Past it the claims stay held and nothing else is written.
+   */
+  agentAskLimit?: number;
   presentation?: {
     schemaVersion: 3;
     root: SlackPresentationRoot;
@@ -169,7 +175,9 @@ export type SlackCanonicalAdmissionResult =
   /** `midRunReceipt`: the TurnJob was written with its `midRun` receipt. */
   | { claimed: true; admission: ShadowRunAdmission; midRunReceipt?: true }
   /** The thread's run took the message's `steering`; its claims are held. */
-  | { claimed: true; steered: TurnSteeringInterception };
+  | { claimed: true; steered: TurnSteeringInterception }
+  /** The ask's exchange used every ask it may (`agentAskLimit`); its claims are held. */
+  | { claimed: true; agentAskLimitReached: true };
 
 /**
  * Application-owned duplicate-admission store.
@@ -480,6 +488,11 @@ export class SlackStateLogic {
           this.release(input.msgKey);
           return { claimed: false };
         }
+      }
+      const ask = input.turnJob?.turn?.agentAsk;
+      if (ask && input.agentAskLimit !== undefined && turnJobs &&
+          turnJobs.countAgentAskTurns(input.turnJob!, ask.originMessageTs) >= input.agentAskLimit) {
+        return { claimed: true, agentAskLimitReached: true };
       }
       if (input.steering && turnJobs) {
         const steered = turnJobs.steerInTransaction(input.steering);

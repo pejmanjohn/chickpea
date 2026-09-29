@@ -66,6 +66,7 @@ docs/plans/evidence/*
 !docs/runbooks/operations.md
 !docs/runbooks/slack-lists.md
 !docs/runbooks/slack-reading.md
+!docs/runbooks/agent-conversations.md
 !docs/runbooks/releasing.md
 !docs/runbooks/upgrading.md
 !docs/runbooks/live-contract-verification.md

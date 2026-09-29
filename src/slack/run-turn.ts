@@ -7,7 +7,7 @@ import {
   deriveRuntimePlanInstanceId,
   type RuntimePlanV2,
 } from '../agents/runtime-plan.ts';
-import { effectiveSlackInstructions } from '../config/effective-config.ts';
+import { agentTeammateInstructions, effectiveSlackInstructions } from '../config/effective-config.ts';
 import { CHICKPEA_AGENT_NAME } from '../config/agent-id.ts';
 import {
   imageCapabilityForResolution,
@@ -84,7 +84,7 @@ import { defaultSlackStatusRegistry, type SlackStatusRegistry } from './status-r
 import { createCodingTaskProgress } from './coding-task-progress.ts';
 import { currentMessageOnlyContext } from './thread-context.ts';
 import { collectAdmittedSlackListIds } from './lists/admission.ts';
-import { conversationThreadTs, slackAgentThreadKey, slackConversationKind } from './thread-key.ts';
+import { conversationThreadTs, slackAgentContinuityKey, slackAgentThreadKey, slackConversationKind } from './thread-key.ts';
 import { slackTimestampMs } from './timestamp.ts';
 import {
   assembleRetainedSlackContext, formatSlackPublicHandoff, type SlackPublicDelivery,
@@ -2496,7 +2496,7 @@ async function freezeRuntimePlanForTurn(input: {
       : undefined,
     input.turn.actorMembershipId
       ? input.getBoundRuntimePlan?.(
-          opaqueId('agent', slackAgentThreadKey(input.turn, input.assignment)), input.turn.messageTs,
+          opaqueId('agent', slackAgentContinuityKey(input.turn, input.assignment)), input.turn.messageTs,
           input.turn.actorMembershipId, input.assignment.agentId,
         )
       : undefined,
@@ -2505,9 +2505,11 @@ async function freezeRuntimePlanForTurn(input: {
     'instructions' in input.assignment && typeof input.assignment.instructions === 'string'
       ? input.assignment.instructions
       : effectiveSlackInstructions(input.assignment);
+  const teammates = agentTeammateInstructions(input.assignment);
   const instructions = [
     baseInstructions,
     externalActionAuthorityInstructions(input.assignment.agent.instructions),
+    ...(teammates ? [teammates] : []),
   ].join('\n');
   const allEffectiveConnections = connectionContext?.effective ?? [];
   const connectionAuthorizations = connectionContext?.authorizations;

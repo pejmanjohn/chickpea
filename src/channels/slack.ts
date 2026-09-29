@@ -49,6 +49,7 @@ import {
 } from '../config/state-rpc.ts';
 import {
   WORKSPACE_SLACK_INSTALLATION_ID,
+  type CustomAgentConfig,
   type ResolvedAssignment,
 } from '../config/types.ts';
 import {
@@ -117,6 +118,7 @@ import {
 import { slackAgentThreadKey, slackThreadKey, slackConversationKind } from '../slack/thread-key.ts';
 import { normalizeSlackTurn } from '../slack/turn-normalization.ts';
 import {
+  registerNodeAgentAskDispatcher,
   wakeNodeTurnRelay,
 } from '../slack/node-turn-relay.ts';
 import { slackSemanticActivityStatusEnabled } from '../slack/semantic-status-flag.ts';
@@ -163,6 +165,13 @@ import {
   type SlackTransport,
 } from '../slack/transport/types.ts';
 import { createGatewaySlackTransport } from '../slack/transport/gateway.ts';
+import {
+  AGENT_ASK_MAX_TARGETS,
+  AGENT_ASK_TURN_LIMIT,
+  agentAskOrigin,
+  mentionedHandleWords,
+  type SlackAgentAskRequest,
+} from '../slack/agent-asks.ts';
 import { GatewayDeploymentClient } from '../slack/gateway/client.ts';
 import { createGatewayDeploymentClient } from '../slack/gateway/runtime.ts';
 import { createGatewaySlackWebClient, setAgentSessionStatus } from '../slack/gateway/web-client.ts';
@@ -1092,6 +1101,187 @@ export async function processGatewaySlackEnvelope(
   return 'accepted';
 }
 
+// The Node relay runs turns in this process and admits their asks here.
+registerNodeAgentAskDispatcher(processSlackAgentAsks);
+
+/** How an ask's admission reaches back to the asking side. */
+interface SlackAgentAskAdmission {
+  /** Built by the host from the asking Agent's delivered message. */
+  turn: NormalizedSlackTurn;
+  targetAgentId: string;
+  /** The exchange used every ask it may: pause it, once, in the thread. */
+  onLimitReached(client: ReturnType<typeof createSlackWebClient>): Promise<void>;
+}
+
+/** Posted as the asking Agent when an exchange of asks reaches its limit. */
+export const AGENT_ASK_PAUSE_TEXT =
+  "I'll pause here so this exchange doesn't keep going without you. Reply in this thread to continue.";
+
+/** Attempts of one ask's admission when a dependency fails transiently. */
+const AGENT_ASK_ADMISSION_ATTEMPTS = 3;
+
+/**
+ * Admit the asks one delivered Agent reply made: each Agent whose handle it
+ * mentions (at most AGENT_ASK_MAX_TARGETS, in order, never the asker) gets a
+ * turn in the same thread. Each turn is admitted like a person's message in
+ * that thread, with that person's access, except that no human-only command
+ * (approve, stop, check-in, memory) can come from it and it never takes the
+ * thread over. Runs where the asking turn ran; failures are logged.
+ */
+export async function processSlackAgentAsks(
+  request: SlackAgentAskRequest,
+  platformEnv?: PlatformEnv,
+  provided?: {
+    stores?: AppStores;
+    gatewayClient?: GatewayDeploymentClient;
+    enqueueTurn?: SlackEventExecution['enqueueTurn'];
+  },
+): Promise<void> {
+  const stores = provided?.stores ?? resolveStores(platformEnv);
+  const { turn: asking } = request;
+  const installation = await stores.config.getWorkspaceInstallation(asking.workspaceId);
+  if (
+    !installation || installation.health === 'revoked' ||
+    installation.runtimeContract !== 'chickpea-v1'
+  ) return;
+  const agents = await stores.config.listAgents();
+  const from = agents.find((agent) => agent.id === request.fromAgentId);
+  if (!from) return;
+  const byHandle = new Map<string, CustomAgentConfig>();
+  for (const agent of agents) {
+    const handle = agent.slackPresence?.userGroupId ? agent.slackPresence.normalizedHandle : undefined;
+    if (agent.kind === 'user' && handle) byHandle.set(handle, agent);
+  }
+  const targets: Array<{ agent: CustomAgentConfig; delivery: SlackAgentAskRequest['deliveries'][number] }> = [];
+  for (const delivery of request.deliveries) {
+    for (const word of mentionedHandleWords(delivery.text)) {
+      const agent = byHandle.get(word);
+      if (!agent || agent.id === from.id || targets.some((target) => target.agent.id === agent.id)) continue;
+      if (targets.length < AGENT_ASK_MAX_TARGETS) targets.push({ agent, delivery });
+    }
+  }
+  if (targets.length === 0) return;
+
+  let execution: SlackEventExecution | undefined;
+  if (installation.transportMode === 'gateway') {
+    if (!installation.gatewayBindingId || !installation.appId || !installation.botUserId) return;
+    const gateway = provided?.gatewayClient ?? createGatewayDeploymentClient(platformEnv);
+    const binding = await gateway.loadBinding();
+    if (
+      !binding || binding.bindingId !== installation.gatewayBindingId ||
+      binding.workspaceId !== asking.workspaceId || binding.appId !== installation.appId ||
+      binding.botUserId !== installation.botUserId
+    ) return;
+    execution = {
+      transport: createGatewaySlackTransport(gateway),
+      client: createGatewaySlackWebClient(gateway),
+      botUserId: installation.botUserId,
+      stores,
+      ...(provided?.enqueueTurn ? { enqueueTurn: provided.enqueueTurn } : {}),
+    };
+  }
+  const originMessageTs = agentAskOrigin(asking);
+  const fromHandle = from.slackPresence?.userGroupId ? from.slackPresence.normalizedHandle : undefined;
+  for (const { agent, delivery } of targets) {
+    const turn: NormalizedSlackTurn = {
+      workspaceId: asking.workspaceId,
+      channelId: asking.channelId,
+      eventId: `agent-ask:${asking.channelId}:${delivery.messageTs}:${agent.id}`,
+      text: delivery.text,
+      userId: asking.userId,
+      messageTs: delivery.messageTs,
+      threadTs: asking.threadTs,
+      source: 'agent_mention',
+      contextMode: 'thread',
+      ...(asking.channelType ? { channelType: asking.channelType } : {}),
+      ...(asking.requesterTimezone ? { requesterTimezone: asking.requesterTimezone } : {}),
+      agentAsk: {
+        fromAgentId: from.id,
+        fromAgentName: from.name,
+        ...(fromHandle ? { fromAgentHandle: fromHandle } : {}),
+        originMessageTs,
+      },
+    };
+    const payload: SlackEventFixture = {
+      token: '',
+      team_id: asking.workspaceId,
+      api_app_id: installation.appId ?? '',
+      event_id: turn.eventId,
+      event_time: Math.floor(Number(delivery.messageTs)) || 0,
+      type: 'event_callback',
+      event: {
+        type: 'message',
+        channel: asking.channelId,
+        ts: delivery.messageTs,
+        thread_ts: asking.threadTs,
+        user: asking.userId,
+        text: delivery.text,
+        ...(asking.channelType ? { channel_type: asking.channelType } : {}),
+      },
+    };
+    const admission: SlackAgentAskAdmission = {
+      turn,
+      targetAgentId: agent.id,
+      onLimitReached: (client) => postAgentAskPause({
+        client,
+        stores,
+        platformEnv,
+        turn,
+        from,
+        originMessageTs,
+      }),
+    };
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        await processSlackEvent(payload, platformEnv, execution, undefined, admission);
+        break;
+      } catch (error) {
+        const retryable = error instanceof SlackDurableEnqueueError || isRetryableDependencyFailure(error);
+        if (!retryable || attempt >= AGENT_ASK_ADMISSION_ATTEMPTS) {
+          console.error('[chickpea] agent ask was not admitted:', sanitizeError(error));
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 1_000 * attempt));
+      }
+    }
+  }
+}
+
+/**
+ * The exchange of asks one person's message started reached its limit: the
+ * asking Agent says it is pausing, once per exchange, and the thread waits
+ * for a person. The note enters the thread record like any Agent reply.
+ */
+async function postAgentAskPause(input: {
+  client: ReturnType<typeof createSlackWebClient>;
+  stores: AppStores;
+  platformEnv: PlatformEnv | undefined;
+  turn: NormalizedSlackTurn;
+  from: CustomAgentConfig;
+  originMessageTs: string;
+}): Promise<void> {
+  const { turn, from } = input;
+  const key = `agent-ask-pause:${turn.workspaceId}:${turn.channelId}:${turn.threadTs}:${input.originMessageTs}`;
+  if (!(await input.stores.slackState.claim(key))) return;
+  console.info('[chickpea] agent ask limit reached; exchange paused');
+  const avatarUrl = await resolvedAgentAvatarUrl(from, input.stores, input.platformEnv);
+  const posted = await input.client.chat.postMessage({
+    channel: turn.channelId,
+    thread_ts: turn.threadTs,
+    text: AGENT_ASK_PAUSE_TEXT,
+    username: from.name,
+    ...(avatarUrl ? { icon_url: avatarUrl } : {}),
+  });
+  if (typeof posted.ts === 'string' && posted.ts) {
+    await recordDeliveredSlackAgentMessage(
+      input.stores.config,
+      turn,
+      { runtimeContract: 'chickpea-v1', agentId: from.id },
+      { messageTs: posted.ts, text: AGENT_ASK_PAUSE_TEXT },
+    ).catch(() => undefined);
+  }
+}
+
 export async function processGatewayAgentSelection(
   selection: AgentAppHomeSelection,
   platformEnv?: PlatformEnv,
@@ -1728,6 +1918,7 @@ async function processSlackEvent(
   platformEnv: PlatformEnv | undefined,
   execution?: SlackEventExecution,
   ui?: SlackUiAdmission,
+  ask?: SlackAgentAskAdmission,
 ): Promise<void> {
   // A click is admitted like a message; every early return below is a refusal
   // (its outcome starts at `unavailable`).
@@ -1738,6 +1929,7 @@ async function processSlackEvent(
   if (execution && installation.transportMode !== 'gateway') return;
   if (!execution && installation.transportMode !== 'direct') return;
   if (
+    !ask &&
     installation.runtimeContract === 'chickpea-v1' &&
     payload.event.type === 'message' &&
     await reconcileSlackPublicContextMutation(
@@ -1746,7 +1938,7 @@ async function processSlackEvent(
       payload.event,
     )
   ) return;
-  if (installation.runtimeContract === 'chickpea-v1' && payload.event.type === 'message') {
+  if (!ask && installation.runtimeContract === 'chickpea-v1' && payload.event.type === 'message') {
     await recordAgentThreadMessage(stores.config, payload.team_id, payload.event, installation.botUserId);
   }
   const credentials = execution
@@ -1768,9 +1960,13 @@ async function processSlackEvent(
 
   const resolvedBotUserId = execution?.botUserId ??
     await resolveInstallationBotUserId(installation.botUserId, credentials, platformEnv);
-  const normalization = normalizeSlackTurn(payload, {
-    ...(resolvedBotUserId ? { botUserId: resolvedBotUserId } : {}),
-  });
+  // An ask's turn is built by the host from a delivered Agent reply; it
+  // never passes Slack event normalization, which ignores app-authored posts.
+  const normalization = ask
+    ? { status: 'runnable' as const, turn: ask.turn }
+    : normalizeSlackTurn(payload, {
+        ...(resolvedBotUserId ? { botUserId: resolvedBotUserId } : {}),
+      });
   if (normalization.status !== 'runnable') return;
   const turn = normalization.turn;
   if (ui) {
@@ -1799,7 +1995,10 @@ async function processSlackEvent(
   // d. Claim BOTH the event id and the (channel, message-ts) so the
   //    app_mention + message fan-out for a single mention replies once.
   const evtKey = `evt:${payload.event_id}`;
-  const msgKey = `msg:${turn.channelId}:${turn.messageTs}`;
+  // One Agent reply can ask several Agents: each ask is its own turn.
+  const msgKey = ask
+    ? `msg:${turn.channelId}:${turn.messageTs}:ask-${ask.targetAgentId}`
+    : `msg:${turn.channelId}:${turn.messageTs}`;
 
   let assignment: ResolvedAssignment;
   let routedBaseAssignment: ResolvedAssignment | undefined;
@@ -1832,6 +2031,7 @@ async function processSlackEvent(
   //    a later event in the same Slack thread resolves again. Channels remain
   //    fail-closed and never fall through to the global direct-message default.
   if (
+    !ask &&
     turnRequiresOwnedThread(turn) &&
     !(await stores.config.getAgentThreadRoute(turn.workspaceId, turn.channelId, turn.threadTs))
   ) {
@@ -1855,6 +2055,7 @@ async function processSlackEvent(
         actor: agentRoutingActor.routing,
         config: store,
         transport: runtimeTransport,
+        ...(ask ? { askAgentId: ask.targetAgentId } : {}),
         authorizeUserAgent: async (agent) => resolvePrivateAgentAccess({
           agent,
           workspaceId: turn.workspaceId,
@@ -1865,6 +2066,12 @@ async function processSlackEvent(
       });
       if (routed.kind === 'ignore') return;
       if (routed.kind !== 'routed' && ui) return;
+      if (routed.kind !== 'routed' && ask) {
+        // The asking Agent's teammates list names whom it can reach; an ask
+        // that cannot run here is not answered, and nobody is told in Slack.
+        console.info(`[chickpea] agent ask not admitted: ${routed.reason}`);
+        return;
+      }
       if (routed.kind !== 'routed') {
         // Guests and Slack Connect users are refused before this check and
         // keep today's behaviour.
@@ -1892,12 +2099,14 @@ async function processSlackEvent(
         return;
       }
       routedHandoff = routed.handoff;
-      await claimChickpeaIntroductionForAgentInteraction({
-        actor: agentRoutingActor,
-        workspaceId: turn.workspaceId,
-        slackUserId: turn.userId,
-        management: stores.management,
-      });
+      if (!ask) {
+        await claimChickpeaIntroductionForAgentInteraction({
+          actor: agentRoutingActor,
+          workspaceId: turn.workspaceId,
+          slackUserId: turn.userId,
+          management: stores.management,
+        });
+      }
       let routedAssignment = routed.assignment;
       if (routed.handoffFallbackRequired && routed.previousAgentId && routed.route.handoff) {
         const fallbackContext = await hydrateSlackPublicHandoffFallback(
@@ -1944,10 +2153,19 @@ async function processSlackEvent(
       } else {
         agentSourceVisibility = 'private';
       }
+      // A guest answering an ask keeps its own frozen configuration, so the
+      // owner's snapshot is never replaced by the guest's.
+      const guestAgent = routedAssignment.threadGuest ? routedAssignment.agent : undefined;
       const frozenAssignment = await getOrReplaceSnapshotForRoute(
         stores.snapshots,
-        threadKey,
-        { ...routed.route, modelAttribution: policyAssignment.modelAttribution },
+        guestAgent ? `${threadKey}:guest-${guestAgent.id}` : threadKey,
+        guestAgent
+          ? {
+              agentId: guestAgent.id,
+              agentGeneration: guestAgent.configurationGeneration ?? guestAgent.revision,
+              modelAttribution: policyAssignment.modelAttribution,
+            }
+          : { ...routed.route, modelAttribution: policyAssignment.modelAttribution },
         async () => {
           const config = effectiveSlackConfigFromAssignment(policyAssignment);
           const modelCredential = await resolveModelCredentialAttribution(
@@ -1972,6 +2190,10 @@ async function processSlackEvent(
           : {}),
         ...(routedAssignment.interactionMode
           ? { interactionMode: routedAssignment.interactionMode }
+          : {}),
+        ...(routedAssignment.threadGuest ? { threadGuest: true as const } : {}),
+        ...(routedAssignment.channelTeammates?.length
+          ? { channelTeammates: routedAssignment.channelTeammates }
           : {}),
       };
   } catch (err) {
@@ -2051,7 +2273,9 @@ async function processSlackEvent(
     botUserId: resolvedBotUserId,
     agentUserGroupId: assignment.agent.slackPresence?.userGroupId,
   };
-  let deterministicCommand = !ui && (Boolean(parseMemoryCommand(turn.text)) ||
+  // An Agent's words never run a command, approve, stop, or check in: those
+  // stay with people.
+  let deterministicCommand = !ui && !ask && (Boolean(parseMemoryCommand(turn.text)) ||
     (isRoutineSlackTurn(turn) && Boolean(parseRoutineCommand(turn.text, commandAddress))));
   let admissionTruth: SlackAdmissionTruth = {
     eligible: false,
@@ -2135,7 +2359,7 @@ async function processSlackEvent(
   // for the same person in the same thread. It is checked before management
   // approvals because it is bound to this thread, and the Agent then runs
   // with the reply (the approved step is bound to this message).
-  const browserActionAnswered = !ui && admissionTruth.eligible && !candidateTurn
+  const browserActionAnswered = !ui && !ask && admissionTruth.eligible && !candidateTurn
     ? await admitSlackBrowserActionReply({
         turn,
         assignment,
@@ -2153,7 +2377,7 @@ async function processSlackEvent(
   // steering: routing checked the sender against the new Agent only, and a
   // stop must come from someone who may use the running one (R3). A click or
   // form answer on an interactive surface is never steering.
-  const steeringCommand = !ui && !browserActionAnswered && !candidateTurn && !routedHandoff && slackClient
+  const steeringCommand = !ui && !ask && !browserActionAnswered && !candidateTurn && !routedHandoff && slackClient
     ? slackSteeringCommand(turn.text, commandAddress)
     : undefined;
   if (steeringCommand && slackClient && slackConversationKind(turn) === 'im' &&
@@ -2191,7 +2415,7 @@ async function processSlackEvent(
   // than waiting on its run.
   // The receipt is recorded with the message's TurnJob before the reaction is
   // added, so the 👀 always has a turn that removes it.
-  const midRun = !ui && !steering && !candidateTurn && !routedHandoff && slackClient
+  const midRun = !ui && !ask && !steering && !candidateTurn && !routedHandoff && slackClient
     ? {
         threadKey: turnStopThreadKey(turn, assignment),
         receipt: slackMidRunReceipt({ channelId: turn.channelId, messageTs: turn.messageTs }),
@@ -2200,7 +2424,7 @@ async function processSlackEvent(
   let midRunReceipt: TurnMidRunReceipt | undefined;
 
   if (
-    !ui && !browserActionAnswered &&
+    !ui && !ask && !browserActionAnswered &&
     admissionTruth.eligible && admittedActorMembershipId &&
     shouldResolveSlackManagementApproval(turn.text)
   ) {
@@ -2346,6 +2570,11 @@ async function processSlackEvent(
   // A click resolves its surface inside canonical admission, atomically with
   // its TurnJob; it never takes the legacy claim path that could not.
   if (ui && !(admissionTruth.eligible && modelReadyForCanonicalAdmission)) return;
+  // An ask is admitted canonically or not at all: its limit is counted there.
+  if (ask && !(admissionTruth.eligible && modelReadyForCanonicalAdmission)) {
+    console.info('[chickpea] agent ask not admitted: not_eligible');
+    return;
+  }
   if (admissionTruth.eligible && modelReadyForCanonicalAdmission) {
     emitManagementMetric('live_revision.admission', {
       surface,
@@ -2419,6 +2648,7 @@ async function processSlackEvent(
           turnJob: canonicalTurnJob,
           ...(steering ? { steering } : {}),
           ...(midRun ? { midRun } : {}),
+          ...(ask ? { agentAskLimit: AGENT_ASK_TURN_LIMIT } : {}),
           presentation: {
             schemaVersion: 3,
             root: {
@@ -2472,6 +2702,12 @@ async function processSlackEvent(
           if (ui) ui.outcome = 'answered';
           return;
         }
+        if ('agentAskLimitReached' in result) {
+          if (ask && slackClient) await ask.onLimitReached(slackClient).catch(() => {
+            console.warn('[chickpea] agent ask pause note was not posted');
+          });
+          return;
+        }
         if ('steered' in result) {
           steered = result.steered;
         } else {
@@ -2498,6 +2734,12 @@ async function processSlackEvent(
         if (ui) {
           console.error('[chickpea] Slack click admission failed:', sanitizeError(err));
           return;
+        }
+        if (ask) {
+          // Never the uncounted legacy path: the claims rolled back, so the
+          // ask's own retry may admit it again.
+          console.error('[chickpea] agent ask admission failed:', sanitizeError(err));
+          throw new SlackDurableEnqueueError('Agent ask admission failed.');
         }
         // U3 is deliberately observational. Preserve the existing product path
         // while surfacing a body-free operator gap for follow-up.
@@ -2650,7 +2892,7 @@ async function processSlackEvent(
     if (midRunReceipt && slackClient) {
       await addMidRunReaction({ client: slackClient, state, jobId: job.id, receipt: midRunReceipt });
     }
-    if (!ui) {
+    if (!ui && !ask) {
       await recordAcceptedSlackHumanMessage(stores.config, turn, assignment, slackEventFiles(payload.event)).catch(() => {
         console.warn('[chickpea] accepted Slack message was not added to public context');
       });
@@ -2691,7 +2933,7 @@ async function processSlackEvent(
   if (midRunReceipt && slackClient) {
     await addMidRunReaction({ client: slackClient, state, jobId: msgKey, receipt: midRunReceipt });
   }
-  if (!ui) {
+  if (!ui && !ask) {
     await recordAcceptedSlackHumanMessage(stores.config, turn, assignment, slackEventFiles(payload.event)).catch(() => {
       console.warn('[chickpea] accepted Slack message was not added to public context');
     });
