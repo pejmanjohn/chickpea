@@ -352,3 +352,10 @@ test('a thread page Slack returns newest first reads oldest first', async () => 
   assert.equal(result.threadTs, '1.000001');
   assert.equal(typeof result.nextCursor, 'string');
 });
+
+test('the reading instruction says Slack cannot be searched and asks for a link instead of browsing', async () => {
+  const { SLACK_READING_INSTRUCTION } = await import('../src/slack/reading/tools.ts');
+  assert.match(SLACK_READING_INSTRUCTION, /You cannot search Slack/);
+  assert.match(SLACK_READING_INSTRUCTION, /do not browse channels page by page/);
+  assert.match(SLACK_READING_INSTRUCTION, /ask the requester for a link/);
+});
