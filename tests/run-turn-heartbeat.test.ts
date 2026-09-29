@@ -1850,14 +1850,14 @@ test('reaction-only delivery settles the V3 session and clears admitted activity
   } finally { h.db.close(); work.close(); }
 });
 
-test('the thread\'s Agent, answered back, can end silently: nothing posts and the turn settles', async () => {
+test('the thread\'s Agent, handed an answer, can end silently: nothing posts and the turn settles', async () => {
   const answeredBack = (eventId: string): NormalizedSlackTurn => ({
     ...workTurn(eventId),
     text: 'Order 4821 was charged $129 twice.',
     interactionIntent: { disposition: 'reply', reason: 'substantive_request' },
     agentAsk: {
       fromAgentId: 'agent_finance', fromAgentName: 'Finance', fromAgentHandle: 'finance',
-      originMessageTs: '1785509000.000100',
+      originMessageTs: '1785509000.000100', handedBack: true,
     },
   });
   const run = async (turn: NormalizedSlackTurn, reply: string, runAssignment = assignment) => {

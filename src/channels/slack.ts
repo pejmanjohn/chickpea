@@ -176,6 +176,7 @@ import {
   AGENT_ASK_TURN_LIMIT,
   agentAskOrigin,
   agentSlackHandle,
+  isHandedBackTurn,
   mentionedHandleWords,
   type SlackAgentAskRequest,
 } from '../slack/agent-asks.ts';
@@ -1176,12 +1177,15 @@ export async function processSlackAgentAsks(
       if (targets.length < AGENT_ASK_MAX_TARGETS) targets.push({ agent, delivery });
     }
   }
-  // A guest's answer that asks nobody goes back to the thread's own Agent.
-  // One that mentions it is already a report, and one that asks another
-  // Agent is not finished yet.
-  if (targets.length === 0 && request.answer && asking.agentAsk?.fromThreadOwner) {
-    const owner = agents.find((agent) => agent.id === asking.agentAsk!.fromAgentId);
+  // The thread's own Agent, if it started this chain: asks made here carry it,
+  // and a guest's answer that asks nobody goes back to it. One that mentions
+  // an Agent is a report or a further ask, whose answer comes back later.
+  const threadOwnerAgentId = request.fromThreadOwner ? from.id : asking.agentAsk?.threadOwnerAgentId;
+  let handedBack = false;
+  if (targets.length === 0 && request.answer && threadOwnerAgentId) {
+    const owner = agents.find((agent) => agent.id === threadOwnerAgentId);
     if (owner) targets.push({ agent: owner, delivery: request.answer });
+    handedBack = true;
   }
   if (targets.length === 0) return;
 
@@ -1223,7 +1227,9 @@ export async function processSlackAgentAsks(
         fromAgentName: from.name,
         ...(fromHandle ? { fromAgentHandle: fromHandle } : {}),
         originMessageTs,
-        ...(request.fromThreadOwner ? { fromThreadOwner: true as const } : {}),
+        ...(handedBack
+          ? { handedBack: true as const }
+          : threadOwnerAgentId ? { threadOwnerAgentId } : {}),
       },
     };
     const payload: SlackEventFixture = {
@@ -1247,13 +1253,16 @@ export async function processSlackAgentAsks(
       turn,
       targetAgentId: agent.id,
       ...(provided?.enqueueTurn ? { enqueueTurn: provided.enqueueTurn } : {}),
-      onLimitReached: (client) => postAgentAskPause({
-        client,
-        stores,
-        platformEnv,
-        turn,
-        from,
-        originMessageTs,
+      // A handed-back answer at the limit asked nobody: no pause to announce.
+      ...(handedBack ? {} : {
+        onLimitReached: (client: ReturnType<typeof createSlackWebClient>) => postAgentAskPause({
+          client,
+          stores,
+          platformEnv,
+          turn,
+          from,
+          originMessageTs,
+        }),
       }),
     };
     await admitHostAddressedTurn(payload, platformEnv, execution, admission);
@@ -2540,11 +2549,11 @@ async function processSlackEvent(
     }
   }
 
-  // The thread's own Agent, answered back by a teammate it asked, replies or
-  // stays silent: it never opens a checklist or reacts instead.
-  const answeredBack = Boolean(turn.agentAsk) && assignment.threadGuest !== true;
-  if (answeredBack) turn.interactionIntent = { disposition: 'reply', reason: 'substantive_request' };
-  if (!ui && !deterministicCommand && !browserActionAnswered && !candidateTurn && !answeredBack) {
+  // The thread's own Agent, handed a teammate's answer, replies or stays
+  // silent: it never opens a checklist or reacts instead.
+  const handedBack = isHandedBackTurn(turn, assignment);
+  if (handedBack) turn.interactionIntent = { disposition: 'reply', reason: 'substantive_request' };
+  if (!ui && !deterministicCommand && !browserActionAnswered && !candidateTurn && !handedBack) {
     const immediateIntent = resolveImmediateSlackInteractionIntent({
       workspaceId: turn.workspaceId,
       channelId: turn.channelId,
