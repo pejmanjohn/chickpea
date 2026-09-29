@@ -19,8 +19,9 @@ import type { SlackPublicContextEntry, SlackPublicContextImage } from '../config
  * model-visible context by the runtime, so the file ids in it are readable by
  * the model — the same posture as the pre-existing `attachmentFileIds`
  * attribute — and inert, because no tool takes one. Nothing here is durable:
- * the inventory is rebuilt from the raw thread fetch plus the receipts staged
- * in the current response.
+ * the inventory is rebuilt from the raw thread fetch (or, on a turn that reads
+ * the thread record instead, from its rows' image references) plus the
+ * receipts staged in the current response.
  */
 
 export const THREAD_IMAGE_HANDLE_PREFIX = 'img:';
