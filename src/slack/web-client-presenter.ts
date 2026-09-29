@@ -15,6 +15,7 @@ import {
   renderSlackMarkdownActionLink,
   renderSlackReplyFooterBlock,
   slackActionLink,
+  type SlackLiveAgentHandles,
   type SlackReplyFormat,
   type SlackReplyFooter,
 } from './message-format.ts';
@@ -212,6 +213,8 @@ export type SlackPresenterAgentView = Pick<
 export interface SlackPresenterOptions {
   deliverySafety?: 'legacy' | 'ledger';
   agentViewPresentation?: SlackPresenterAgentView;
+  /** Agent handles this turn's reply may mention live (its Channel teammates). */
+  liveAgentHandles?: SlackLiveAgentHandles;
   /** Successful non-ephemeral final, for the ownership handoff ledger. */
   onPublicDelivery?: (input: SlackPublicDelivery) => void | Promise<void>;
   /** Rehydrates the one V3 activity artifact after an isolate restart. */
@@ -770,7 +773,7 @@ export class WebClientPresenter {
     ending?: { stopped?: boolean },
   ): Promise<void> {
     const footer = this.replyFooter();
-    const approvedText = canonicalSlackReplyText(text, format);
+    const approvedText = canonicalSlackReplyText(text, format, this.options.liveAgentHandles);
     let displayText = approvedText;
     const files = selectDeliverableArtifacts(artifacts, {
       workspaceId: this.target.workspaceId,

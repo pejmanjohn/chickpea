@@ -838,6 +838,8 @@ export interface ResolvedAssignment {
 export interface AgentTeammate {
   name: string;
   handle: string;
+  /** Slack writes a live mention of the handle with this user group. */
+  userGroupId: string;
 }
 
 // A snapshot IS a resolved assignment frozen at a thread's first turn, plus the

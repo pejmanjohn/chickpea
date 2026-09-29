@@ -273,12 +273,16 @@ function splitSlackText(text: string, limit: number): string[] {
 }
 
 /** Canonical credential-safe text shared by every terminal Slack delivery path. */
-export function canonicalSlackReplyText(text: string, format: SlackReplyFormat): string {
+export function canonicalSlackReplyText(
+  text: string,
+  format: SlackReplyFormat,
+  live?: SlackLiveAgentHandles,
+): string {
   const normalized = normalizeMessageText(text);
-  if (format === 'markdown') return canonicalSlackMarkdownText(normalized);
+  if (format === 'markdown') return canonicalSlackMarkdownText(normalized, live);
   // Plain text is escaped and never parsed; mrkdwn parses mentions.
   const redacted = redactCredentialLikeContent(normalized);
-  return format === 'mrkdwn' ? neutralizeSlackBroadcastMentions(redacted) : redacted;
+  return format === 'mrkdwn' ? neutralizeSlackBroadcastMentions(redacted, live) : redacted;
 }
 
 /**
@@ -286,11 +290,12 @@ export function canonicalSlackReplyText(text: string, format: SlackReplyFormat):
  * never truncates: `splitSlackMarkdownReply` divides a long answer into
  * messages that each fit Slack's markdown limit.
  */
-export function canonicalSlackMarkdownText(text: string): string {
+export function canonicalSlackMarkdownText(text: string, live?: SlackLiveAgentHandles): string {
   const normalized = normalizeMessageText(text);
   // Last: redaction can leave a broadcast word after its marker (`…]@here`).
   return neutralizeSlackBroadcastMentions(
     redactCredentialLikeContent(sanitizeSlackMarkdownLinks(normalized)),
+    live,
   );
 }
 
@@ -315,21 +320,65 @@ function joinBroadcastWords(text: string): string {
 }
 
 /**
+ * Agent handles a reply may mention live: normalized handle to the Agent's
+ * user-group id. Agent handles are zero-member user groups, so a live one
+ * notifies nobody; it only renders as a mention and asks that Agent.
+ */
+export type SlackLiveAgentHandles = ReadonlyMap<string, string>;
+
+// A plain handle word: `@` not preceded by a word character or `.`, `@`,
+// `/`, `:`, `-`, `|`, `<` (an email address, a URL, a path, or the label of
+// a mention token), and not followed by more handle characters.
+const SLACK_HANDLE_WORD = /(?<![\p{L}\p{N}_.@/:|<-])@([A-Za-z0-9_-]+)(?![A-Za-z0-9_-])/gu;
+
+function liveAgentMention(userGroupId: string, handle: string): string {
+  return `<!subteam^${userGroupId}|@${handle}>`;
+}
+
+/** Plain `@handle` words of listed Agents, as live mentions. */
+function linkAgentHandleWords(text: string, live: SlackLiveAgentHandles): string {
+  return text.replace(SLACK_HANDLE_WORD, (word, handle: string) => {
+    const userGroupId = live.get(handle.toLowerCase());
+    return userGroupId ? liveAgentMention(userGroupId, handle.toLowerCase()) : word;
+  });
+}
+
+/**
  * Model-written text never notifies a channel, the workspace, or a user
  * group, whichever Slack path renders it (see the Slack message identity
  * runbook). In prose a special mention reads as its name (`@here`, a user
  * group's label) and a plain broadcast word keeps its text, each with the
  * joiner after the `@`; in code the literal keeps its characters with the
  * joiner after `<`. User mentions, Channel links and dates are unchanged.
- * Idempotent, and a streamed prefix neutralizes to a prefix of the answer.
+ *
+ * `live` names the Agent handles this reply may mention: in prose, a plain
+ * `@handle` or a user-group mention of one of them becomes a live mention of
+ * that Agent, which notifies nobody. Every other user group stays inert.
+ * Idempotent, and a streamed prefix neutralizes to a prefix of the answer:
+ * a handle word changes only once it is complete.
  */
-export function neutralizeSlackBroadcastMentions(markdown: string): string {
-  return markdown.split(SLACK_CODE_SEGMENT).map((segment, index) => index % 2 === 1
-    ? segment.replace(SLACK_SPECIAL_MENTION, (token) => `<${SLACK_MENTION_BREAK}${token.slice(1)}`)
-    : joinBroadcastWords(segment.replace(SLACK_SPECIAL_MENTION,
-      (_token, target: string, label: string | undefined) =>
-        `@${SLACK_MENTION_BREAK}${slackSpecialMentionName(target, label)}`))
-  ).join('');
+export function neutralizeSlackBroadcastMentions(
+  markdown: string,
+  live?: SlackLiveAgentHandles,
+): string {
+  const liveGroups = live?.size
+    ? new Map([...live].map(([handle, userGroupId]) => [userGroupId, handle]))
+    : undefined;
+  return markdown.split(SLACK_CODE_SEGMENT).map((segment, index) => {
+    if (index % 2 === 1) {
+      return segment.replace(SLACK_SPECIAL_MENTION, (token) => `<${SLACK_MENTION_BREAK}${token.slice(1)}`);
+    }
+    const linked = live?.size ? linkAgentHandleWords(segment, live) : segment;
+    return joinBroadcastWords(linked.replace(SLACK_SPECIAL_MENTION,
+      (_token, target: string, label: string | undefined) => {
+        const handle = /^subteam\^/i.test(target)
+          ? liveGroups?.get(target.slice('subteam^'.length))
+          : undefined;
+        return handle
+          ? liveAgentMention(target.slice('subteam^'.length), handle)
+          : `@${SLACK_MENTION_BREAK}${slackSpecialMentionName(target, label)}`;
+      }));
+  }).join('');
 }
 
 /** How `<!here>`, `<!subteam^S1|@ops>` or `<!subteam^S1>` reads once inert. */
@@ -738,7 +787,7 @@ const LOWERCASE_CREDENTIAL_MARKERS = credentialMarkers().map((marker) => marker.
  * crosses a space starts at one of those, and a space settles the word
  * before it.
  */
-export function streamableSlackMarkdownPrefix(text: string): string {
+export function streamableSlackMarkdownPrefix(text: string, live?: SlackLiveAgentHandles): string {
   // Providers deliver whole code points, but a cut between a surrogate
   // pair's halves waits for the second half.
   const normalized = text.replace(/\r\n?/g, '\n').replace(/^\s+/, '').replace(/[\uD800-\uDBFF]$/, '');
@@ -759,7 +808,7 @@ export function streamableSlackMarkdownPrefix(text: string): string {
     lineStart = normalized.indexOf('\n', lineStart) + 1;
   }
   const stable = normalized.slice(0, settledWords(normalized, lineStart)).trimEnd();
-  return stable ? canonicalSlackMarkdownText(stable) : '';
+  return stable ? canonicalSlackMarkdownText(stable, live) : '';
 }
 
 /**

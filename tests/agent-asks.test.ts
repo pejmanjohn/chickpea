@@ -28,6 +28,11 @@ import {
 import type { TurnJob } from '../src/slack/turn-job-types.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import { assembleSlackPrompt } from '../src/slack/web-client-context.ts';
+import {
+  canonicalSlackMarkdownText,
+  canonicalSlackReplyText,
+  streamableSlackMarkdownPrefix,
+} from '../src/slack/message-format.ts';
 import { createSlackOwner } from './helpers/slack-owner.ts';
 
 const allowUserAgent = async () => ({
@@ -169,7 +174,10 @@ test('an ask’s trigger is the asking Agent’s message, and the prompt says wh
 test('teammate instructions name whom an Agent can ask and how', () => {
   assert.equal(agentTeammateInstructions({}), undefined);
   const text = agentTeammateInstructions({
-    channelTeammates: [{ name: 'Finance', handle: 'finance' }, { name: 'Legal', handle: 'legal' }],
+    channelTeammates: [
+      { name: 'Finance', handle: 'finance', userGroupId: 'SFINANCE' },
+      { name: 'Legal', handle: 'legal', userGroupId: 'SLEGAL' },
+    ],
   });
   assert.match(text!, /mention their handle as plain text in your reply, for example @finance/);
   assert.match(text!, /never mention your own handle/);
@@ -211,7 +219,7 @@ test('an ask routes to the asked Agent without taking the thread over', async ()
   assert.equal(routed.assignment.agentId, finance.id);
   assert.equal(routed.assignment.threadGuest, true);
   assert.equal(routed.assignment.ownerIncarnation, 2);
-  assert.deepEqual(routed.assignment.channelTeammates, [{ name: 'Support', handle: 'support' }]);
+  assert.deepEqual(routed.assignment.channelTeammates, [{ name: 'Support', handle: 'support', userGroupId: 'SSUPPORT' }]);
   const route = await store.getAgentThreadRoute('T1', 'C1', '100.1');
   assert.equal(route?.agentId, support.id);
   assert.equal(route?.ownerIncarnation, 2);
@@ -315,7 +323,7 @@ test('a delivered reply that mentions a teammate admits one ask per Agent, up to
     assert.equal(jobs.length, 1);
     const supportJob = jobs[0]!;
     assert.equal(supportJob.assignment.agentId, 'agent_support');
-    assert.deepEqual(supportJob.assignment.channelTeammates, [{ name: 'Finance', handle: 'finance' }]);
+    assert.deepEqual(supportJob.assignment.channelTeammates, [{ name: 'Finance', handle: 'finance', userGroupId: 'SFINANCE' }]);
 
     // Support's reply asks Finance (and mentions Legal, who cannot be asked here).
     const ask = (messageTs: string, text = 'Let me check. @finance what was Q3 revenue? cc @legal') =>
@@ -382,5 +390,40 @@ test('a delivered reply that mentions a teammate admits one ask per Agent, up to
       if (previousEnv[index] === undefined) delete process.env[key];
       else process.env[key] = previousEnv[index];
     });
+  }
+});
+
+test('a reply mentions its Channel teammates live and every other user group stays inert', () => {
+  const live = new Map([['a2a-finance', 'SFIN'], ['legal', 'SLEGAL']]);
+  const joiner = '⁠';
+  assert.equal(
+    canonicalSlackMarkdownText('Checking. @a2a-finance, what was Q3? cc @A2A-Finance', live),
+    'Checking. <!subteam^SFIN|@a2a-finance>, what was Q3? cc <!subteam^SFIN|@a2a-finance>',
+  );
+  // A mention token the model wrote for a teammate stays live, normalized.
+  assert.equal(canonicalSlackMarkdownText('<!subteam^SLEGAL|@counsel> ok?', live), '<!subteam^SLEGAL|@legal> ok?');
+  // Other groups, broadcasts, code, emails, and longer words stay as before.
+  assert.equal(canonicalSlackMarkdownText('<!subteam^SOPS|@ops> and @here', live), `@${joiner}ops and @${joiner}here`);
+  assert.equal(canonicalSlackMarkdownText('run `@a2a-finance` or mail a2a@legal.com', live),
+    'run `@a2a-finance` or mail a2a@legal.com');
+  assert.equal(canonicalSlackMarkdownText('ask @a2a-finance-team', live), 'ask @a2a-finance-team');
+  // Without a list nothing is live, exactly as before.
+  assert.equal(canonicalSlackMarkdownText('<!subteam^SFIN|@a2a-finance> @a2a-finance'), `@${joiner}a2a-finance @a2a-finance`);
+  // Idempotent, and file-reply mrkdwn renders the same live mention.
+  const once = canonicalSlackMarkdownText('Hi @legal', live);
+  assert.equal(canonicalSlackMarkdownText(once, live), once);
+  assert.equal(canonicalSlackReplyText('Hi @legal', 'mrkdwn', live), 'Hi <!subteam^SLEGAL|@legal>');
+  // The host reads the live token as a handle word, so it still asks.
+  assert.deepEqual(mentionedHandleWords('Hi <!subteam^SLEGAL|@legal>'), ['legal']);
+});
+
+test('every streamed prefix of a reply with live mentions is a prefix of its final text', () => {
+  const live = new Map([['a2a-finance', 'SFIN'], ['a2a-support', 'SSUP']]);
+  const answer = 'Checking with @a2a-finance, one moment.\nEach charge was *$129*. @a2a-support\n' +
+    'See `@a2a-finance` notes, then <!subteam^SSUP|@support> or @a2a-financeX.';
+  const final = canonicalSlackMarkdownText(answer, live);
+  for (let end = 0; end <= answer.length; end += 1) {
+    const prefix = streamableSlackMarkdownPrefix(answer.slice(0, end), live);
+    assert.ok(final.startsWith(prefix), `prefix at ${end}: ${JSON.stringify(prefix)}`);
   }
 });

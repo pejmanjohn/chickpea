@@ -7,7 +7,7 @@ import {
   deriveRuntimePlanInstanceId,
   type RuntimePlanV2,
 } from '../agents/runtime-plan.ts';
-import { agentTeammateInstructions, effectiveSlackInstructions } from '../config/effective-config.ts';
+import { agentTeammateHandles, agentTeammateInstructions, effectiveSlackInstructions } from '../config/effective-config.ts';
 import { CHICKPEA_AGENT_NAME } from '../config/agent-id.ts';
 import {
   imageCapabilityForResolution,
@@ -598,9 +598,12 @@ async function runTurnAttempt(
   const skipMemory = Boolean(memoryCommand) || Boolean(turn.managementApprovalProposalId) ||
     options.replayText !== undefined || stoppedBeforeDispatch || abortedReplay;
   let onNativeStarted = async (): Promise<void> => {};
+  // A reply mentions its Channel teammates live; each mention asks that Agent.
+  const liveAgentHandles = agentTeammateHandles(assignment);
   const agentViewPresentation = options.presentationState && options.runId
     ? new SlackAgentViewPresentation({
         client,
+        ...(liveAgentHandles ? { liveAgentHandles } : {}),
         state: options.presentationState,
         readGate: createSlackReadGate({
           state: options.appStores?.slackState ?? getSlackStateStore(platformEnv),
@@ -658,6 +661,7 @@ async function runTurnAttempt(
   }, deliveryObserver, {
     deliverySafety: ledgerAuthority ? 'ledger' : 'legacy',
     statusDisplay: (update) => codingProgress.display(update),
+    ...(liveAgentHandles ? { liveAgentHandles } : {}),
     ...(agentViewPresentation ? { agentViewPresentation } : {}),
     ...(frozenPresentation?.schemaVersion === 3
       ? { activityProjection: frozenPresentation.activityProjection }

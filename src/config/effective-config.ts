@@ -188,6 +188,16 @@ export function agentTeammateInstructions(
   ].join('\n');
 }
 
+/** The teammates' handles a reply may mention live, or none. */
+export function agentTeammateHandles(
+  assignment: Pick<ResolvedAssignment, 'channelTeammates'>,
+): ReadonlyMap<string, string> | undefined {
+  const teammates = (assignment.channelTeammates ?? []).filter(({ userGroupId }) => userGroupId);
+  return teammates.length
+    ? new Map(teammates.map(({ handle, userGroupId }) => [handle, userGroupId]))
+    : undefined;
+}
+
 export function effectiveSlackInstructions(
   assignment: Pick<
     ResolvedAssignment,

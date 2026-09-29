@@ -14,7 +14,8 @@ needs a number only Finance has, so its reply says:
 
 1. **The mention is the ask.** When an Agent's delivered reply mentions the
    handle of another Agent that can work in the Channel, that Agent gets a
-   turn in the same thread. Mentions inside code, email addresses, and URLs
+   turn in the same thread. The mention renders as a live Slack mention of
+   that Agent; Agent handles have no members, so it notifies nobody. Mentions inside code, email addresses, and URLs
    do not count, and an Agent never asks itself.
 2. **The asked Agent answers in the thread.** It sees the whole thread,
    including the asking Agent's message, and knows which Agent asked and which

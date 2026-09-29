@@ -571,11 +571,12 @@ function channelTeammates(
   return grants
     .flatMap((grant) => {
       const agent = agentsById.get(grant.agentId);
-      const handle = agent?.slackPresence?.userGroupId ? agent.slackPresence.normalizedHandle : undefined;
+      const userGroupId = agent?.slackPresence?.userGroupId;
+      const handle = userGroupId ? agent.slackPresence!.normalizedHandle : undefined;
       if (!agent || agent.id === agentId || agent.kind !== 'user' || !agentIsActive(agent) || !handle) return [];
       if (seen.has(agent.id)) return [];
       seen.add(agent.id);
-      return [{ name: agent.name, handle }];
+      return [{ name: agent.name, handle, userGroupId: userGroupId! }];
     })
     .sort((left, right) => left.name.localeCompare(right.name))
     .slice(0, MAX_CHANNEL_TEAMMATES);
