@@ -916,7 +916,9 @@ export async function postAgentRoutingFeedback(input: {
     : '';
   const text = input.result.reason === 'temporarily_unavailable'
     ? 'That Agent address could not be verified right now. Try again.'
-    : `That Agent is not available here.${alternatives}`;
+    : input.result.reason === 'several_agents'
+      ? 'Mention one Agent at a time here.'
+      : `That Agent is not available here.${alternatives}`;
   if (input.surface === 'channel') {
     // Explicit base-app and Agent-handle mentions receive a private denial.
     // Ambient roots remain silent, and a denied Agent never becomes visible
@@ -2152,7 +2154,7 @@ async function processSlackEvent(
       if (routed.kind !== 'routed' && ask) {
         // The asking Agent's teammates list names whom it can reach; an ask
         // that cannot run here is not answered, and nobody is told in Slack.
-        console.info(`[chickpea] agent ask not admitted: ${routed.reason}`);
+        console.info(`[chickpea] host-addressed turn not admitted: ${routed.reason}`);
         return;
       }
       if (routed.kind !== 'routed') {
@@ -2657,7 +2659,7 @@ async function processSlackEvent(
   if (ui && !(admissionTruth.eligible && modelReadyForCanonicalAdmission)) return;
   // An ask is admitted canonically or not at all: its limit is counted there.
   if (ask && !(admissionTruth.eligible && modelReadyForCanonicalAdmission)) {
-    console.info('[chickpea] agent ask not admitted: not_eligible');
+    console.info('[chickpea] host-addressed turn not admitted: not_eligible');
     return;
   }
   if (admissionTruth.eligible && modelReadyForCanonicalAdmission) {
@@ -2733,7 +2735,7 @@ async function processSlackEvent(
           turnJob: canonicalTurnJob,
           ...(steering ? { steering } : {}),
           ...(midRun ? { midRun } : {}),
-          ...(ask ? { agentAskLimit: AGENT_ASK_TURN_LIMIT } : {}),
+          ...(ask?.turn.agentAsk ? { agentAskLimit: AGENT_ASK_TURN_LIMIT } : {}),
           presentation: {
             schemaVersion: 3,
             root: {
@@ -3036,7 +3038,10 @@ async function processSlackEvent(
       console.error('[chickpea] node turn wake failed:', sanitizeError(err));
     }
   });
-  if (execution?.durableIngress) {
+  // A host-addressed turn is admitted from inside another turn's admission
+  // or run: waiting for the relay here could hold the next Agent's admission
+  // until earlier turns finish.
+  if (execution?.durableIngress || ask) {
     void wake;
     return;
   }

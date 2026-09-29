@@ -37,7 +37,9 @@ A person can mention several Agents in one message, for example
 `@pm @design @eng what do you think of this idea?`. Each Agent answers in
 turn, in the order the message named them, and each sees the answers before
 its own. The first Agent keeps the thread: a later reply that mentions nobody
-goes to it. The others answer as guests, as when an Agent asks them.
+goes to it. The others answer as guests, as when an Agent asks them, which
+only a Channel thread has: a direct message that mentions several Agents is
+asked to mention one at a time.
 
 Every mentioned Agent must be available to that person in the Channel. If one
 is not, nobody answers and the person gets the usual private note that the

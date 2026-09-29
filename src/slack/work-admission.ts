@@ -13,6 +13,7 @@ import {
   type SlackUserFacts,
 } from './credentials.ts';
 import type { NormalizedSlackTurn } from './types.ts';
+import { isLaterCoAddressedTurn } from './agent-asks.ts';
 import { classifySlackUserForAdmission } from './user-classification.ts';
 
 type SlackAdmissionTruthReason =
@@ -129,7 +130,7 @@ export function prepareSlackShadowAdmission(input: {
   // Several Agents can answer one message (the Agents a reply asked, or the
   // ones a person mentioned together): each after the first is a run of its
   // own, scoped by its Agent.
-  const hostAddressed = turn.agentAsk !== undefined || (turn.coAddressed?.position ?? 0) > 0;
+  const hostAddressed = turn.agentAsk !== undefined || isLaterCoAddressedTurn(turn);
   const messageScope = `slack:${turn.workspaceId}:${turn.channelId}:${turn.messageTs}` +
     (hostAddressed ? `:agent:${assignment.agentId}` : '');
   const workId = opaqueId('work', scope);

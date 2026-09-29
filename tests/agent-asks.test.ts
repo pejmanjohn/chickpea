@@ -28,6 +28,7 @@ import {
 import type { TurnJob } from '../src/slack/turn-job-types.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import { assembleSlackPrompt } from '../src/slack/web-client-context.ts';
+import { prepareSlackShadowAdmission } from '../src/slack/work-admission.ts';
 import {
   canonicalSlackMarkdownText,
   canonicalSlackReplyText,
@@ -490,6 +491,15 @@ test('a message that mentions several Agents asks each in order, and the first o
     // A person's request, not an Agent ask: it never counts toward the limit.
     assert.equal(jobs[1]!.turn.agentAsk, undefined);
     assert.equal(jobs[1]!.turn.userId, 'U1');
+    // Each Agent after the first is a run of its own; the first's run id is
+    // the one a lone mention gets, so in-flight rows keep matching.
+    assert.notEqual(jobs[0]!.runId, jobs[1]!.runId);
+    const runIdFor = (turn: NormalizedSlackTurn) => prepareSlackShadowAdmission({
+      turn, assignment: jobs[0]!.assignment, sourceVisibility: 'public', admittedAt: 4000,
+    }).run.id;
+    const { coAddressed: _first, ...lone } = jobs[0]!.turn;
+    assert.equal(runIdFor(jobs[0]!.turn), runIdFor(lone));
+    assert.notEqual(runIdFor(jobs[1]!.turn), runIdFor(lone));
     assert.equal(slackAgentThreadKey(jobs[1]!.turn, jobs[1]!.assignment),
       slackAgentThreadKey(jobs[0]!.turn, jobs[0]!.assignment));
     assert.equal((await stores.config.getAgentThreadRoute('T1', 'C1', '4000.000100'))?.agentId, 'agent_finance');

@@ -70,6 +70,24 @@ test('an ambient Channel denial remains silent', async () => {
   assert.deepEqual(calls, []);
 });
 
+test('a direct message that named several Agents is told to name one', async () => {
+  const posts: unknown[] = [];
+  await postAgentRoutingFeedback({
+    turn: turn({ channelId: 'D1', source: 'dm_message', channelType: 'im', contextMode: 'dm_history' }),
+    surface: 'direct',
+    result: { kind: 'denied', reason: 'several_agents', alternatives: [] },
+    client: {
+      chat: {
+        async postMessage(input: unknown) {
+          posts.push(input);
+          return { ok: true };
+        },
+      },
+    } as never,
+  });
+  assert.deepEqual(posts, [{ channel: 'D1', thread_ts: '100.1', text: 'Mention one Agent at a time here.' }]);
+});
+
 test('a thread reply that names an Agent does not need an existing Agent thread', async () => {
   const { turnRequiresOwnedThread } = await import('../src/channels/slack.ts');
   // "@oncall what is this?" under an alert nobody has answered.

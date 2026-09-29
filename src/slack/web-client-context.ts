@@ -18,6 +18,7 @@ import {
   toContextMessage,
   toContextMessages,
   atOrBeforeSlackWatermark,
+  slackContextWatermark,
   type SlackContextMessage,
   type SlackContextSelf,
   type SlackTurnContext,
@@ -144,17 +145,20 @@ function recordOnlyThreadContext(
   record: readonly SlackPublicContextEntry[],
 ): SlackTurnContext {
   const gap = record.find((entry) => entry.messageTs === turn.threadTs)?.gapBeforeTs;
+  const watermark = slackContextWatermark(turn);
   const images = threadImageRecordsFromRecord(
     record.filter((entry) => entry.rootTs === turn.threadTs),
     slackThreadImageConversationKey(turn),
   )
-    .filter((image) => atOrBeforeSlackWatermark(image.messageTs, turn.messageTs))
+    .filter((image) => atOrBeforeSlackWatermark(image.messageTs, watermark))
     .sort((left, right) => compareSlackTs(left.messageTs, right.messageTs))
     .slice(-MAX_THREAD_IMAGE_ENTRIES);
   return {
     mode: 'thread',
     messages: ensureTriggerMessage([], turn),
-    window: { mode: 'thread', oldest: turn.threadTs, latest: turn.messageTs, reason: 'thread_record' },
+    window: {
+      mode: 'thread', oldest: turn.threadTs, ...(watermark ? { latest: watermark } : {}), reason: 'thread_record',
+    },
     truncated: gap !== undefined,
     degradations: gap !== undefined ? ['slack_context.thread:record_gap'] : [],
     ...(images.length ? { images } : {}),
@@ -339,6 +343,7 @@ async function fetchThread(
   let pagesRead = 0;
   let stoppedEarly = false;
   let reachedTrigger = false;
+  const watermark = slackContextWatermark(turn);
 
   for (let page = 0; page < input.maxPages; page += 1) {
     const decision = await reserveRead(input.gate, 'conversations.replies', degradations, 'thread');
@@ -352,7 +357,7 @@ async function fetchThread(
         channel: turn.channelId,
         ts: turn.threadTs,
         limit: input.pageLimit,
-        latest: turn.messageTs,
+        ...(watermark ? { latest: watermark } : {}),
         inclusive: true,
         ...(cursor ? { cursor } : {}),
       });
@@ -381,7 +386,7 @@ async function fetchThread(
     }
     for (const raw of rawMessages) {
       if (raw.ts === turn.threadTs && typeof raw.reply_count === 'number') replyCount = raw.reply_count;
-      if (!raw.ts || !atOrBeforeSlackWatermark(raw.ts, turn.messageTs)) continue;
+      if (!raw.ts || !atOrBeforeSlackWatermark(raw.ts, watermark)) continue;
       const message = toContextMessage(raw, input.self);
       if (!message) continue;
       if (message.ts === turn.threadTs) root = message;
@@ -413,7 +418,7 @@ async function fetchThread(
     window: {
       mode: 'thread',
       oldest: turn.threadTs,
-      latest: turn.messageTs,
+      ...(watermark ? { latest: watermark } : {}),
       reason: 'thread_root',
     },
     truncated,
@@ -472,7 +477,7 @@ function collectThreadImages(
   turn: NormalizedSlackTurn,
 ): ThreadImageRecord[] {
   return collectThreadImageRecords(rawMessages, slackThreadImageConversationKey(turn))
-    .filter((record) => atOrBeforeSlackWatermark(record.messageTs, turn.messageTs));
+    .filter((record) => atOrBeforeSlackWatermark(record.messageTs, slackContextWatermark(turn)));
 }
 
 /**

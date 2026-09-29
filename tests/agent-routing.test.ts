@@ -910,6 +910,61 @@ test('activated plain base-app DMs and mentions route to the Chickpea system Age
   }
 });
 
+test('one message addresses at most six Agents, in mention order', async () => {
+  const { store } = await fixture();
+  try {
+    const handles: string[] = [];
+    for (let index = 1; index <= 7; index += 1) {
+      const id = `agent_extra_${index}`;
+      await store.createAgent({
+        id, name: `Extra ${index}`, instructions: 'Help.', enabled: true, lifecycle: 'active',
+        creatorMembershipId: 'membership_owner', editPolicy: 'creator_and_admins',
+        model: 'local-stub/extra', skills: [], mcpServers: [], apiConnections: [], repositories: [],
+        slackPresence: {
+          requestedHandle: `extra-${index}`, normalizedHandle: `extra-${index}`, desiredState: 'active',
+          health: 'healthy', userGroupId: `SEXTRA${index}`,
+          avatar: { kind: 'generated', revision: 1, seed: `extra-${index}` },
+        },
+      });
+      await store.putAgentChannelGrant({
+        workspaceId: 'T1', channelId: 'C1', agentId: id, status: 'active',
+        createdByMembershipId: 'membership_owner', channelLabel: 'support', channelIsPrivate: false,
+      });
+      handles.push(`<!subteam^SEXTRA${index}|@extra-${index}>`);
+    }
+    const routed = await resolveAgentRoute({
+      turn: turn({ text: `${handles.join(' ')} thoughts?` }),
+      surface: 'channel', actor: { channelMember: true, fullMember: true }, config: store,
+    });
+    assert.equal(routed.kind, 'routed');
+    if (routed.kind !== 'routed') return;
+    assert.equal(routed.assignment.agentId, 'agent_extra_1');
+    assert.deepEqual(routed.coAddressed?.agents.map(({ handle }) => handle),
+      ['extra-1', 'extra-2', 'extra-3', 'extra-4', 'extra-5', 'extra-6']);
+  } finally {
+    store.close();
+  }
+});
+
+test('a direct message that mentions several Agents is asked for one at a time', async () => {
+  const { store } = await fixture();
+  try {
+    await activateChickpea(store);
+    const denied = await resolveAgentRoute({
+      turn: turn({
+        channelId: 'D1', text: '<!subteam^SSUPPORT|@support> <!subteam^SFINANCE|@finance> hey',
+        source: 'dm_message', channelType: 'im', contextMode: 'dm_history',
+      }),
+      surface: 'direct', actor: { channelMember: false, fullMember: true }, config: store,
+      authorizeUserAgent: allowUserAgent,
+    });
+    assert.deepEqual(denied, { kind: 'denied', reason: 'several_agents', alternatives: [] });
+    assert.equal(await store.getAgentThreadRoute('T1', 'D1', '100.1'), undefined);
+  } finally {
+    store.close();
+  }
+});
+
 test('activated addressed DM roots are sticky and explicit addresses transfer ownership', async () => {
   const { store, support, finance } = await fixture();
   try {

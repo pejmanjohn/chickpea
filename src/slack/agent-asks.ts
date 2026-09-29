@@ -43,6 +43,15 @@ export function agentAskOrigin(turn: Pick<NormalizedSlackTurn, 'messageTs' | 'ag
 }
 
 /**
+ * Whether this turn answers a person's message after the Agents it mentioned
+ * before this one: their replies are its context, and its words are a
+ * message to read, never a command it may run.
+ */
+export function isLaterCoAddressedTurn(turn: Pick<NormalizedSlackTurn, 'coAddressed'>): boolean {
+  return (turn.coAddressed?.position ?? 0) > 0;
+}
+
+/**
  * The handle an Agent is asked by, with the user group Slack renders it
  * with: only an Agent whose handle is published has one.
  */

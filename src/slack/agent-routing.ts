@@ -28,6 +28,7 @@ type AgentRouteSource =
 
 type AgentRoutingDenialReason =
   | 'not_available'
+  | 'several_agents'
   | 'member_required'
   | 'installation_unavailable'
   | 'temporarily_unavailable';
@@ -265,11 +266,13 @@ export async function resolveAgentRoute(
     return denied('not_available', []);
   }
   // Several handles address each of those Agents, in order: the first takes
-  // the thread and the rest answer after it. Every one must be reachable by
-  // this person here, or none is asked.
+  // the thread and the rest answer after it, as guests, which only a Channel
+  // thread has. Every one must be reachable by this person here, or none is
+  // asked; the first is checked below as the routed Agent.
   const addressed = mentionedAgents.slice(0, MAX_ADDRESSED_AGENTS);
   if (addressed.length > 1 && !input.appHomeAgentId) {
-    for (const agent of addressed) {
+    if (surface !== 'channel') return denied('several_agents', []);
+    for (const agent of addressed.slice(1)) {
       const access = await agentAccess({
         agent,
         surface,
