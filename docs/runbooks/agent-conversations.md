@@ -10,7 +10,7 @@ for this in Admin.
 Someone asks `@support` in `#billing` whether a refund is allowed. Support
 needs a number only Finance has, so its reply says:
 
-> Checking the charge history. @finance what did we bill order 4821 in Q3?
+> @finance what did we bill order 4821 in Q3? Mention me when you have it.
 
 1. **The mention is the ask.** When an Agent's delivered reply mentions the
    handle of another Agent that can work in the Channel, that Agent gets a
@@ -19,9 +19,9 @@ needs a number only Finance has, so its reply says:
    do not count, and an Agent never asks itself.
 2. **The asked Agent answers in the thread.** It sees the whole thread,
    including the asking Agent's message, and knows which Agent asked and which
-   person started the exchange. If the asking Agent needs the answer to
-   continue, the asked Agent mentions it back, and the asking Agent picks the
-   answer up on its next turn.
+   person started the exchange. If the asking Agent asked to be mentioned
+   back, the asked Agent mentions it, and the asking Agent picks the answer
+   up on its next turn. Otherwise the asked Agent's reply is the answer.
 3. **The thread stays with its Agent.** An ask never hands the thread over.
    Replies from people that mention nobody still go to the thread's own
    Agent. A person mentioning a different Agent still hands the thread over,
@@ -29,7 +29,11 @@ needs a number only Finance has, so its reply says:
 
 Each Agent is told which other Agents work in the Channel and their handles,
 and when to ask: only when it needs a teammate's answer, never in passing or
-to say thanks.
+to say thanks. When the teammate's answer is all the person needs, as with
+"How much was each charge?", the asking Agent just asks and the teammate
+answers the person. When the asking Agent needs the result to do more, as
+with the refund above, it asks to be mentioned back and finishes after. It
+promises a follow-up only when it asked to be mentioned.
 
 ## Mentioning several Agents at once
 
