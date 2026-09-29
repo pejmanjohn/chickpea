@@ -123,6 +123,13 @@ export function validateInstallation(remote) {
   return { ...result, resourceDigest: inventoryDigest({ resources: result.resources, variables: preservedVars, secretNames: secrets }) };
 }
 
+// A receipt written before a variable retired still carries it in the stored
+// inventory. Drop it there too, so continuing that upgrade compares like with like.
+export function normalizeStoredInstallation(installation) {
+  const variables = Object.fromEntries(Object.entries(installation.variables).filter(([name]) => !RETIRED_VARIABLES.has(name)));
+  return { ...installation, variables, resourceDigest: inventoryDigest({ resources: installation.resources, variables, secretNames: installation.secretNames }) };
+}
+
 export function assertCompatibleRelease(before, after) {
   let result;
   try { result = evaluateUpgradeCompatibility(before, after); }
