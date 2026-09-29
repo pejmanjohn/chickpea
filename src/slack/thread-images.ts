@@ -1,6 +1,8 @@
 import type { GatewayAttachmentClient } from './gateway/client.ts';
 import { compareSlackTs, DEFAULT_MAX_MESSAGES, type SlackWebApiMessage } from './thread-context.ts';
-import { isSlackFilePermalink, type SlackArtifactReceipt } from './artifact-receipts.ts';
+import {
+  isSlackFilePermalink, type CompletedSlackArtifactReceipt, type SlackArtifactReceipt,
+} from './artifact-receipts.ts';
 import { SLACK_FILE_ID, SLACK_TS } from './ids.ts';
 import { safeFilename } from './attachment-context.ts';
 import { MAX_SLACK_ATTACHMENT_BYTES } from './attachment-normalization.ts';
@@ -177,7 +179,7 @@ export function threadImageRef(record: ThreadImageRecord): SlackPublicContextIma
 
 /** Image references of the files an Agent reply shares, for its thread-record row. */
 export function artifactImageRefs(
-  receipts: readonly SlackArtifactReceipt[] | undefined,
+  receipts: readonly CompletedSlackArtifactReceipt[] | undefined,
 ): SlackPublicContextImage[] {
   return (receipts ?? []).flatMap((receipt) => {
     const record = receiptRecord(receipt, '');

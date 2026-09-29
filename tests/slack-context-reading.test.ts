@@ -627,6 +627,9 @@ test('an image the Agent posted stays in a record-only turn\'s inventory', async
       onPublicDelivery: (delivery) => recordDeliveredSlackAgentMessage(store, request, assignment, delivery),
     });
     await presenter.deliverFinal('Here is the chart.', 'markdown', 'complete', undefined, files);
+    // A replay records the same message again without its files; the row keeps them.
+    await recordDeliveredSlackAgentMessage(store, request, assignment,
+      { messageTs: '1005.000100', text: 'Here is the chart.' });
 
     const [, reply] = await store.listSlackPublicContext('T1', 'C1', ROOT);
     assert.deepEqual(reply?.images, [

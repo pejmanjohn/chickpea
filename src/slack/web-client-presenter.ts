@@ -56,6 +56,7 @@ import { MAX_GATEWAY_ARTIFACT_BYTES } from './gateway/protocol.ts';
 import {
   isCompletedSlackArtifactReceipt,
   selectDeliverableArtifacts,
+  type CompletedSlackArtifactReceipt,
   type SlackArtifactReceipt,
 } from './artifact-receipts.ts';
 import type { SlackPublicDelivery } from './public-context.ts';
@@ -980,21 +981,16 @@ export class WebClientPresenter {
     closing: SlackReplyClosing,
   ): Promise<void> {
     for (const [index, text] of continuations.entries()) {
+      const last = index === continuations.length - 1;
       try {
         const posted = await this.client.chat.postMessage({
-          ...renderSlackReplyPart(
-            text,
-            format,
-            index === continuations.length - 1 ? closing : undefined,
-          ),
+          ...renderSlackReplyPart(text, format, last ? closing : undefined),
           channel: this.target.channelId,
           thread_ts: this.target.threadTs,
           ...this.persona(),
         } as unknown as Parameters<WebClient['chat']['postMessage']>[0]);
         if (typeof posted.ts === 'string' && posted.ts) {
-          await this.notifyPublicDelivery(
-            posted.ts, text, index === continuations.length - 1 ? closing.files : undefined,
-          );
+          await this.notifyPublicDelivery(posted.ts, text, last ? closing.files : undefined);
         }
       } catch {
         // The final is already delivered; never retry it for a follow-up.
@@ -1078,7 +1074,7 @@ export class WebClientPresenter {
   private async notifyPublicDelivery(
     messageTs: string,
     text: string,
-    files?: readonly SlackArtifactReceipt[],
+    files?: readonly CompletedSlackArtifactReceipt[],
   ): Promise<void> {
     try {
       const images = artifactImageRefs(files);
