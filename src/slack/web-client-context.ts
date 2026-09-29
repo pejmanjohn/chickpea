@@ -664,9 +664,9 @@ function agentAskContext(
         ? `Your teammate ${asker}, another Chickpea Agent you asked earlier in this thread, has answered. Its message is below, after any other teammates' answers: read them as the answers to what you asked.`
         : `Your teammate ${asker}, another Chickpea Agent in this thread, has mentioned you. Its message is below: read it as its answer to what you asked, and answer anything it asks you.`,
       access,
-      `This thread is yours. Finish <@${originUserId}>'s original request with what your teammates said and reply to the people in the thread, without just repeating their answers.${ask.handedBack
-        ? ` If their answers already give the people everything they asked for, reply with exactly ${AGENT_ASK_SILENT_REPLY} and nothing else: nothing is posted.`
-        : ''}`,
+      ask.handedBack
+        ? `This thread is yours, and the people in it can already read your teammates' answers. First decide whether <@${originUserId}>'s original request still needs anything from you, as your instructions define your part. If the answers already give the people everything they asked for, reply with exactly ${AGENT_ASK_SILENT_REPLY} and nothing else: nothing is posted, and restating an answer only repeats it. Otherwise finish the request with what your teammates said, adding only what is new.`
+        : `This thread is yours. Finish <@${originUserId}>'s original request with what your teammates said and reply to the people in the thread, without just repeating their answers.`,
       ask.fromAgentHandle
         ? `Mention @${ask.fromAgentHandle} again only if you need something more from it; never to thank or acknowledge it.`
         : 'Ask it again only if you need something more from it; never to thank or acknowledge it.',

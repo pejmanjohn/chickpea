@@ -226,7 +226,9 @@ test('an ask’s trigger is the asking Agent’s message, and the prompt says wh
     mode: 'thread', messages: [trigger!], truncated: false, degradations: [],
   }, { askedAsThreadOwner: true });
   assert.match(handedBack, /another Chickpea Agent you asked earlier in this thread, has answered/);
-  assert.match(handedBack, /If their answers already give the people everything they asked for, reply with exactly NO_REPLY and nothing else: nothing is posted\./);
+  assert.match(handedBack, /First decide whether <@U1>'s original request still needs anything from you, as your instructions define your part\./);
+  assert.match(handedBack, /If the answers already give the people everything they asked for, reply with exactly NO_REPLY and nothing else: nothing is posted/);
+  assert.match(handedBack, /Otherwise finish the request with what your teammates said, adding only what is new\./);
   assert.match(owner, /Current Slack message, from your teammate "Support"/);
   assert.doesNotMatch(owner, /not taking the thread over/);
   const plain = assembleSlackPrompt(turn(), { mode: 'thread', messages: [], truncated: false, degradations: [] });
