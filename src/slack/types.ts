@@ -242,6 +242,17 @@ export interface NormalizedSlackTurn {
    * message. Slack text can never supply it.
    */
   agentAsk?: SlackAgentAsk;
+  /**
+   * Set only by host admission when one person's message mentioned several
+   * Agents: all of them, in mention order, and this turn's place among them.
+   * Each answers in turn in the thread; the first owns it.
+   */
+  coAddressed?: SlackCoAddressed;
+}
+
+export interface SlackCoAddressed {
+  agents: Array<{ agentId: string; name: string; handle: string }>;
+  position: number;
 }
 
 /** Who asked, and which person's message the exchange of asks started from. */

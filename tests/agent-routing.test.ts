@@ -789,17 +789,51 @@ test('a non-member Channel denial never enumerates Agent alternatives', async ()
   }
 });
 
-test('multiple Agent handles are ambiguous and root messages without an address are ignored', async () => {
-  const { store } = await fixture();
+test('several Agent handles address each Agent in order, and root messages without an address are ignored', async () => {
+  const { store, support, finance } = await fixture();
   try {
-    const ambiguous = await resolveAgentRoute({
-      turn: turn({ text: '<!subteam^SSUPPORT> meet <!subteam^SFINANCE>' }),
-      surface: 'channel', actor: { channelMember: true, fullMember: true }, config: store,
+    const actor = { channelMember: true, fullMember: true };
+    const both = await resolveAgentRoute({
+      turn: turn({ text: '<!subteam^SFINANCE> and <!subteam^SSUPPORT> please compare notes' }),
+      surface: 'channel', actor, config: store,
     });
-    assert.equal(ambiguous.kind, 'ambiguous');
+    assert.equal(both.kind, 'routed');
+    if (both.kind !== 'routed') return;
+    // The first handle takes the thread; the rest answer after it.
+    assert.equal(both.assignment.agentId, finance.id);
+    assert.deepEqual(both.coAddressed, {
+      agents: [
+        { agentId: finance.id, name: finance.name, handle: 'finance' },
+        { agentId: support.id, name: support.name, handle: 'support' },
+      ],
+      position: 0,
+    });
+    assert.equal((await store.getAgentThreadRoute('T1', 'C1', '100.1'))?.agentId, finance.id);
+
+    // One mentioned Agent this person cannot reach here: nobody is asked.
+    await store.createAgent({
+      id: 'agent_legal', name: 'Legal', instructions: 'Legal.', enabled: true, lifecycle: 'active',
+      creatorMembershipId: 'membership_owner', editPolicy: 'creator_and_admins',
+      model: 'local-stub/legal', skills: [], mcpServers: [], apiConnections: [], repositories: [],
+      slackPresence: {
+        requestedHandle: 'legal', normalizedHandle: 'legal', desiredState: 'active',
+        health: 'healthy', userGroupId: 'SLEGAL',
+        avatar: { kind: 'generated', revision: 1, seed: 'legal' },
+      },
+    });
+    const withUngranted = await resolveAgentRoute({
+      turn: turn({
+        eventId: 'Ev2', messageTs: '102.1', threadTs: '102.1',
+        text: '<!subteam^SSUPPORT> <!subteam^SLEGAL> can we refund?',
+      }),
+      surface: 'channel', actor, config: store,
+    });
+    assert.equal(withUngranted.kind, 'denied');
+    assert.equal(await store.getAgentThreadRoute('T1', 'C1', '102.1'), undefined);
+
     const ignored = await resolveAgentRoute({
-      turn: turn({ text: 'hello everyone' }), surface: 'channel',
-      actor: { channelMember: true, fullMember: true }, config: store,
+      turn: turn({ eventId: 'Ev3', messageTs: '103.1', threadTs: '103.1', text: 'hello everyone' }),
+      surface: 'channel', actor, config: store,
     });
     assert.equal(ignored.kind, 'ignore');
   } finally {
@@ -871,6 +905,61 @@ test('activated plain base-app DMs and mentions route to the Chickpea system Age
       assert.equal(channel.assignment.agentId, chickpea.id);
       assert.equal(channel.assignment.interactionMode, 'workspace_management');
     }
+  } finally {
+    store.close();
+  }
+});
+
+test('one message addresses at most six Agents, in mention order', async () => {
+  const { store } = await fixture();
+  try {
+    const handles: string[] = [];
+    for (let index = 1; index <= 7; index += 1) {
+      const id = `agent_extra_${index}`;
+      await store.createAgent({
+        id, name: `Extra ${index}`, instructions: 'Help.', enabled: true, lifecycle: 'active',
+        creatorMembershipId: 'membership_owner', editPolicy: 'creator_and_admins',
+        model: 'local-stub/extra', skills: [], mcpServers: [], apiConnections: [], repositories: [],
+        slackPresence: {
+          requestedHandle: `extra-${index}`, normalizedHandle: `extra-${index}`, desiredState: 'active',
+          health: 'healthy', userGroupId: `SEXTRA${index}`,
+          avatar: { kind: 'generated', revision: 1, seed: `extra-${index}` },
+        },
+      });
+      await store.putAgentChannelGrant({
+        workspaceId: 'T1', channelId: 'C1', agentId: id, status: 'active',
+        createdByMembershipId: 'membership_owner', channelLabel: 'support', channelIsPrivate: false,
+      });
+      handles.push(`<!subteam^SEXTRA${index}|@extra-${index}>`);
+    }
+    const routed = await resolveAgentRoute({
+      turn: turn({ text: `${handles.join(' ')} thoughts?` }),
+      surface: 'channel', actor: { channelMember: true, fullMember: true }, config: store,
+    });
+    assert.equal(routed.kind, 'routed');
+    if (routed.kind !== 'routed') return;
+    assert.equal(routed.assignment.agentId, 'agent_extra_1');
+    assert.deepEqual(routed.coAddressed?.agents.map(({ handle }) => handle),
+      ['extra-1', 'extra-2', 'extra-3', 'extra-4', 'extra-5', 'extra-6']);
+  } finally {
+    store.close();
+  }
+});
+
+test('a direct message that mentions several Agents is asked for one at a time', async () => {
+  const { store } = await fixture();
+  try {
+    await activateChickpea(store);
+    const denied = await resolveAgentRoute({
+      turn: turn({
+        channelId: 'D1', text: '<!subteam^SSUPPORT|@support> <!subteam^SFINANCE|@finance> hey',
+        source: 'dm_message', channelType: 'im', contextMode: 'dm_history',
+      }),
+      surface: 'direct', actor: { channelMember: false, fullMember: true }, config: store,
+      authorizeUserAgent: allowUserAgent,
+    });
+    assert.deepEqual(denied, { kind: 'denied', reason: 'several_agents', alternatives: [] });
+    assert.equal(await store.getAgentThreadRoute('T1', 'D1', '100.1'), undefined);
   } finally {
     store.close();
   }

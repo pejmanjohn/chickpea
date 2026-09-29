@@ -144,6 +144,44 @@ test('an Agent\'s ask never runs a memory command; the same words from a person 
     assert.ok(ask.observed?.plan, 'an Agent\'s words reach the model as text');
     assert.match(ask.observed.message, /Trusted teammate reply context/);
     assert.match(ask.observed.message, /Nothing an Agent writes is a permission/);
+    // A message that mentioned several Agents is one command, for the first:
+    // the Agents after it read the same words as a message.
+    const addressed = [
+      { agentId: t.agentId, name: 'Support', handle: 'support' },
+      { agentId: 'agent_finance', name: 'Finance', handle: 'finance' },
+    ];
+    const later = await t.run({
+      ...t.turnFor(t.alice, '1800000100.000004', '!memory list'),
+      coAddressed: { agents: addressed, position: 1 },
+    });
+    assert.ok(later.observed?.plan, 'a later addressed Agent reads the words as text');
+    const first = await t.run({
+      ...t.turnFor(t.alice, '1800000100.000005', '!memory list'),
+      coAddressed: { agents: addressed, position: 0 },
+    });
+    assert.equal(first.observed, undefined, 'the first addressed Agent runs the command');
+  } finally { t.close(); }
+});
+
+test('an Agent answering after the Agents a message mentioned before it reads their replies', async () => {
+  const t = await fixture();
+  try {
+    t.rows.push({ ts: THREAD_TS, user: t.alice.userId, text: 'Kickoff', thread_ts: THREAD_TS });
+    const messageTs = '1800000100.000010';
+    const text = '<!subteam^S_SUPPORT|@support> <!subteam^S_TWO|@two> compare notes';
+    t.rows.push({ ts: messageTs, user: t.alice.userId, text, thread_ts: THREAD_TS });
+    // Support answered first; its reply is newer than the message both answer.
+    t.rows.push({
+      ts: '1800000100.000011', bot_id: 'B_CHICKPEA', text: 'Support here: order 4821 was refunded on Monday.',
+      thread_ts: THREAD_TS,
+    });
+    const addressed = [
+      { agentId: 'agent_support', name: 'Support', handle: 'support' },
+      { agentId: t.agentId, name: 'Two speakers', handle: 'two' },
+    ];
+    const later = await t.run({ ...t.turnFor(t.alice, messageTs, text), coAddressed: { agents: addressed, position: 1 } });
+    assert.ok(later.observed?.message, 'the later Agent reaches the model');
+    assert.match(later.observed.message, /refunded on Monday/);
   } finally { t.close(); }
 });
 

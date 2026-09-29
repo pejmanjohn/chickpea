@@ -908,17 +908,16 @@ async function resolvedAgentAvatarUrl(
 export async function postAgentRoutingFeedback(input: {
   turn: NormalizedSlackTurn;
   surface: AssignmentSurface;
-  result: Extract<AgentRoutingResult, { kind: 'denied' | 'ambiguous' }>;
+  result: Extract<AgentRoutingResult, { kind: 'denied' }>;
   client: ReturnType<typeof createSlackWebClient>;
-  channelHintEnabled: boolean;
 }): Promise<void> {
   const alternatives = input.result.alternatives.length > 0
     ? ` Available here: ${input.result.alternatives.map(({ handle }) => `@${handle}`).join(', ')}.`
     : '';
-  const text = input.result.kind === 'ambiguous'
-    ? `Mention one Agent at a time.${alternatives}`
-    : input.result.reason === 'temporarily_unavailable'
-        ? 'That Agent address could not be verified right now. Try again.'
+  const text = input.result.reason === 'temporarily_unavailable'
+    ? 'That Agent address could not be verified right now. Try again.'
+    : input.result.reason === 'several_agents'
+      ? 'Mention one Agent at a time here.'
       : `That Agent is not available here.${alternatives}`;
   if (input.surface === 'channel') {
     // Explicit base-app and Agent-handle mentions receive a private denial.
@@ -928,7 +927,6 @@ export async function postAgentRoutingFeedback(input: {
       (input.turn.source === 'implicit_thread_reply' &&
         parseAgentUserGroupMentions(input.turn.text).length > 0);
     if (
-      (input.result.kind === 'ambiguous' && !input.channelHintEnabled) ||
       (input.turn.source !== 'app_mention' && !explicitAgentMention) ||
       (!input.turn.channelId.startsWith('C') && input.turn.channelType !== 'group')
     ) return;
@@ -1111,9 +1109,13 @@ export async function processGatewaySlackEnvelope(
 // The Node relay runs turns in this process and admits their asks here.
 registerNodeAgentAskDispatcher(processSlackAgentAsks);
 
-/** How an ask's admission reaches back to the asking side. */
+/**
+ * A turn the host addressed to an Agent: an ask, or one of the later Agents
+ * a person's message mentioned. Admitted like a person's message, minus
+ * everything only a person's own words may do.
+ */
 interface SlackAgentAskAdmission {
-  /** Built by the host from the asking Agent's delivered message. */
+  /** Built by the host: from the asking Agent's delivered message, or from the person's. */
   turn: NormalizedSlackTurn;
   targetAgentId: string;
   /**
@@ -1121,11 +1123,14 @@ interface SlackAgentAskAdmission {
    * the state store: it must never enqueue through its own stub.
    */
   enqueueTurn?: SlackEventExecution['enqueueTurn'];
-  /** The exchange used every ask it may: pause it, once, in the thread. */
-  onLimitReached(client: ReturnType<typeof createSlackWebClient>): Promise<void>;
+  /**
+   * The exchange used every ask it may: pause it, once, in the thread.
+   * Only an ask can reach the limit.
+   */
+  onLimitReached?(client: ReturnType<typeof createSlackWebClient>): Promise<void>;
 }
 
-/** Attempts of one ask's admission when a dependency fails transiently. */
+/** Attempts of one host-addressed turn's admission when a dependency fails transiently. */
 const AGENT_ASK_ADMISSION_ATTEMPTS = 3;
 
 /**
@@ -1240,19 +1245,79 @@ export async function processSlackAgentAsks(
         originMessageTs,
       }),
     };
-    for (let attempt = 1; ; attempt += 1) {
-      try {
-        await processSlackEvent(payload, platformEnv, execution, undefined, admission);
-        break;
-      } catch (error) {
-        const retryable = error instanceof SlackDurableEnqueueError || isRetryableDependencyFailure(error);
-        if (!retryable || attempt >= AGENT_ASK_ADMISSION_ATTEMPTS) {
-          console.error('[chickpea] agent ask was not admitted:', sanitizeError(error));
-          break;
-        }
-        await new Promise((resolve) => setTimeout(resolve, 1_000 * attempt));
+    await admitHostAddressedTurn(payload, platformEnv, execution, admission);
+  }
+}
+
+/**
+ * Admit one turn the host addressed to an Agent (an ask, or one of several
+ * Agents a person mentioned), retrying a dependency that fails transiently.
+ * Its claims were given back on failure, so a retry may admit it again.
+ */
+async function admitHostAddressedTurn(
+  payload: SlackEventFixture,
+  platformEnv: PlatformEnv | undefined,
+  execution: SlackEventExecution | undefined,
+  admission: SlackAgentAskAdmission,
+): Promise<void> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      await processSlackEvent(payload, platformEnv, execution, undefined, admission);
+      return;
+    } catch (error) {
+      const retryable = error instanceof SlackDurableEnqueueError || isRetryableDependencyFailure(error);
+      if (!retryable || attempt >= AGENT_ASK_ADMISSION_ATTEMPTS) {
+        console.error('[chickpea] agent turn was not admitted:', sanitizeError(error));
+        return;
       }
+      await new Promise((resolve) => setTimeout(resolve, 1_000 * attempt));
     }
+  }
+}
+
+/**
+ * The other Agents one person's message mentioned, admitted after the first
+ * one took the thread: each gets its own turn on that message in the same
+ * thread queue, in mention order, so each answers after the one before it
+ * and sees its reply. They are guests, as when asked; the message's
+ * human-only commands stay with the first Agent's turn.
+ */
+async function admitCoAddressedTurns(input: {
+  payload: SlackEventFixture;
+  turn: NormalizedSlackTurn;
+  platformEnv: PlatformEnv | undefined;
+  execution: SlackEventExecution | undefined;
+}): Promise<void> {
+  const { turn } = input;
+  const addressed = turn.coAddressed;
+  // Only the first Agent's turn admits the others; theirs never fan out again.
+  if (addressed?.position !== 0) return;
+  for (const [position, agent] of addressed.agents.entries()) {
+    if (position === 0) continue;
+    // Copied field by field: by now admission has stamped the first turn with
+    // what only it may carry (an approval, a click, its interaction intent).
+    const coTurn: NormalizedSlackTurn = {
+      workspaceId: turn.workspaceId,
+      channelId: turn.channelId,
+      eventId: `co-addressed:${turn.channelId}:${turn.messageTs}:${agent.agentId}`,
+      text: turn.text,
+      userId: turn.userId,
+      messageTs: turn.messageTs,
+      threadTs: turn.threadTs,
+      source: turn.source,
+      contextMode: 'thread',
+      ...(turn.channelType ? { channelType: turn.channelType } : {}),
+      ...(turn.requesterTimezone ? { requesterTimezone: turn.requesterTimezone } : {}),
+      ...(turn.attachments?.length ? { attachments: turn.attachments } : {}),
+      ...(turn.attachmentIntake ? { attachmentIntake: turn.attachmentIntake } : {}),
+      coAddressed: { agents: addressed.agents, position },
+    };
+    await admitHostAddressedTurn(
+      { ...input.payload, event_id: coTurn.eventId },
+      input.platformEnv,
+      input.execution,
+      { turn: coTurn, targetAgentId: agent.agentId },
+    );
   }
 }
 
@@ -1978,8 +2043,9 @@ async function processSlackEvent(
 
   const resolvedBotUserId = execution?.botUserId ??
     await resolveInstallationBotUserId(installation.botUserId, credentials, platformEnv);
-  // An ask's turn is built by the host from a delivered Agent reply; it
-  // never passes Slack event normalization, which ignores app-authored posts.
+  // A host-addressed turn is built by the host: an ask's from a delivered
+  // Agent reply, which Slack event normalization would ignore as an
+  // app-authored post; a co-addressed one from the person's normalized turn.
   const normalization = ask
     ? { status: 'runnable' as const, turn: ask.turn }
     : normalizeSlackTurn(payload, {
@@ -2013,7 +2079,8 @@ async function processSlackEvent(
   // d. Claim BOTH the event id and the (channel, message-ts) so the
   //    app_mention + message fan-out for a single mention replies once.
   const evtKey = `evt:${payload.event_id}`;
-  // One Agent reply can ask several Agents: each ask is its own turn.
+  // Several Agents can answer one message (asked by a reply, or mentioned
+  // together by a person): each Agent's turn on it is its own.
   const msgKey = ask
     ? `msg:${turn.channelId}:${turn.messageTs}:ask-${ask.targetAgentId}`
     : `msg:${turn.channelId}:${turn.messageTs}`;
@@ -2087,7 +2154,7 @@ async function processSlackEvent(
       if (routed.kind !== 'routed' && ask) {
         // The asking Agent's teammates list names whom it can reach; an ask
         // that cannot run here is not answered, and nobody is told in Slack.
-        console.info(`[chickpea] agent ask not admitted: ${routed.reason}`);
+        console.info(`[chickpea] host-addressed turn not admitted: ${routed.reason}`);
         return;
       }
       if (routed.kind !== 'routed') {
@@ -2112,11 +2179,11 @@ async function processSlackEvent(
           surface,
           result: routed,
           client: runtimeClient,
-          channelHintEnabled: behavior.unassignedHint.value,
         });
         return;
       }
       routedHandoff = routed.handoff;
+      if (routed.coAddressed) turn.coAddressed = routed.coAddressed;
       if (!ask) {
         await claimChickpeaIntroductionForAgentInteraction({
           actor: agentRoutingActor,
@@ -2592,7 +2659,7 @@ async function processSlackEvent(
   if (ui && !(admissionTruth.eligible && modelReadyForCanonicalAdmission)) return;
   // An ask is admitted canonically or not at all: its limit is counted there.
   if (ask && !(admissionTruth.eligible && modelReadyForCanonicalAdmission)) {
-    console.info('[chickpea] agent ask not admitted: not_eligible');
+    console.info('[chickpea] host-addressed turn not admitted: not_eligible');
     return;
   }
   if (admissionTruth.eligible && modelReadyForCanonicalAdmission) {
@@ -2668,7 +2735,7 @@ async function processSlackEvent(
           turnJob: canonicalTurnJob,
           ...(steering ? { steering } : {}),
           ...(midRun ? { midRun } : {}),
-          ...(ask ? { agentAskLimit: AGENT_ASK_TURN_LIMIT } : {}),
+          ...(ask?.turn.agentAsk ? { agentAskLimit: AGENT_ASK_TURN_LIMIT } : {}),
           presentation: {
             schemaVersion: 3,
             root: {
@@ -2723,7 +2790,7 @@ async function processSlackEvent(
           return;
         }
         if ('agentAskLimitReached' in result) {
-          if (ask && slackClient) await ask.onLimitReached(slackClient).catch(() => {
+          if (ask?.onLimitReached && slackClient) await ask.onLimitReached(slackClient).catch(() => {
             console.warn('[chickpea] agent ask pause note was not posted');
           });
           return;
@@ -2921,6 +2988,7 @@ async function processSlackEvent(
         console.warn('[chickpea] accepted Slack message was not added to public context');
       });
     }
+    await admitCoAddressedTurns({ payload, turn, platformEnv, execution });
     return;
   }
   if (!durableCanonicalTurnJob) {
@@ -2962,6 +3030,7 @@ async function processSlackEvent(
       console.warn('[chickpea] accepted Slack message was not added to public context');
     });
   }
+  await admitCoAddressedTurns({ payload, turn, platformEnv, execution });
   const wake = wakeNodeTurnRelay(platformEnv).catch((err) => {
     if (execution?.durableIngress) {
       console.error('[chickpea] node turn wake failed: durable_ingress_failure');
@@ -2969,7 +3038,10 @@ async function processSlackEvent(
       console.error('[chickpea] node turn wake failed:', sanitizeError(err));
     }
   });
-  if (execution?.durableIngress) {
+  // A host-addressed turn is admitted from inside another turn's admission
+  // or run: waiting for the relay here could hold the next Agent's admission
+  // until earlier turns finish.
+  if (execution?.durableIngress || ask) {
     void wake;
     return;
   }

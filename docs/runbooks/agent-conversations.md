@@ -31,6 +31,23 @@ Each Agent is told which other Agents work in the Channel and their handles,
 and when to ask: only when it needs a teammate's answer, never in passing or
 to say thanks.
 
+## Mentioning several Agents at once
+
+A person can mention several Agents in one message, for example
+`@pm @design @eng what do you think of this idea?`. Each Agent answers in
+turn, in the order the message named them, and each sees the answers before
+its own. The first Agent keeps the thread: a later reply that mentions nobody
+goes to it. The others answer as guests, as when an Agent asks them, which
+only a Channel thread has: a direct message that mentions several Agents is
+asked to mention one at a time.
+
+Every mentioned Agent must be available to that person in the Channel. If one
+is not, nobody answers and the person gets the usual private note that the
+Agent is not available here. One message addresses at most 6 Agents. Approve,
+stop, and other commands in such a message apply to the first Agent only.
+These answers are a person's request, so they do not count toward the limit
+on asks between Agents.
+
 ## Who may be asked
 
 An ask is admitted like a message from the person whose message started the

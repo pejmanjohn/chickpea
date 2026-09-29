@@ -11,7 +11,7 @@ import { slackFileSummaries, slackMessageText } from './message-text.ts';
 import { slackImageRefs, threadImageRef } from './thread-images.ts';
 import {
   agentContextUserId, atOrBeforeSlackWatermark, DEFAULT_MAX_MESSAGES, ensureTriggerMessage,
-  orderMessages, slackTimestampUnits, toContextMessage, type SlackContextMessage,
+  orderMessages, slackContextWatermark, slackTimestampUnits, toContextMessage, type SlackContextMessage,
   type SlackContextSelf, type SlackTurnContext, type SlackWebApiMessage,
 } from './thread-context.ts';
 
@@ -305,9 +305,10 @@ export async function assembleRetainedSlackContext(
         !atOrBeforeSlackWatermark(fetched.contentVersionTs, entry.contentVersionTs))) continue;
     rows.set(entry.messageTs, retainedContextMessage(entry, fetched));
   }
+  const watermark = slackContextWatermark(turn);
   const eligible = orderMessages([...rows.values()].filter((message) => {
-    if (message.ts === turn.messageTs || !atOrBeforeSlackWatermark(message.ts, turn.messageTs)) return false;
-    if (message.contentVersionTs && !atOrBeforeSlackWatermark(message.contentVersionTs, turn.messageTs)) {
+    if (message.ts === turn.messageTs || !atOrBeforeSlackWatermark(message.ts, watermark)) return false;
+    if (message.contentVersionTs && !atOrBeforeSlackWatermark(message.contentVersionTs, watermark)) {
       degradations.push('slack_context.revision:after_trigger');
       return false;
     }

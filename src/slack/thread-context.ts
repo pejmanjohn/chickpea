@@ -1,6 +1,7 @@
 import type { ThreadImageRecord } from './thread-images.ts';
 import type { SlackPublicContextEntry } from '../config/types.ts';
 import type { NormalizedSlackTurn, SlackContextMode } from './types.ts';
+import { isLaterCoAddressedTurn } from './agent-asks.ts';
 import { isSlackContextMessageSubtype } from './message-subtypes.ts';
 import {
   boundedDisplayName, slackFileSummaries, slackMessageText, type SlackFileSummary,
@@ -311,11 +312,28 @@ export function compareSlackTs(left: string, right: string): number {
   return parseSlackTs(left) - parseSlackTs(right);
 }
 
-/** Reject rows newer than the admitted trigger even if Slack returns them. */
-export function atOrBeforeSlackWatermark(timestamp: string, watermark: string): boolean {
+/**
+ * Reject rows newer than the watermark even if Slack returns them; without
+ * a watermark every dated row passes.
+ */
+export function atOrBeforeSlackWatermark(timestamp: string, watermark: string | undefined): boolean {
   const value = slackTimestampUnits(timestamp);
+  if (value === null) return false;
+  if (watermark === undefined) return true;
   const maximum = slackTimestampUnits(watermark);
-  return value !== null && maximum !== null && value <= maximum;
+  return maximum !== null && value <= maximum;
+}
+
+/**
+ * The newest row a turn may read: its trigger, so a reply never sees what
+ * came after the message it answers. An Agent answering a person's message
+ * after the Agents it mentioned before it reads their replies too, which are
+ * newer than that message, so it has no upper bound.
+ */
+export function slackContextWatermark(
+  turn: Pick<NormalizedSlackTurn, 'messageTs' | 'coAddressed'>,
+): string | undefined {
+  return isLaterCoAddressedTurn(turn) ? undefined : turn.messageTs;
 }
 
 export function ensureTriggerMessage(

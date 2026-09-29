@@ -1043,3 +1043,36 @@ test('the thread path collects the trigger row without a second read', async () 
   assert.equal(client.calls(), 1);
   assert.deepEqual(context.images?.map((image) => image.fileId), ['F00000000TR']);
 });
+
+test('an Agent answering after the Agents a person mentioned before it reads their replies', async () => {
+  const store = new SqliteConfigStore(':memory:');
+  const agents = [
+    { agentId: 'agent_finance', name: 'Finance', handle: 'finance' },
+    { agentId: 'agent_legal', name: 'Legal', handle: 'legal' },
+  ];
+  const person = threadTurn({ text: '@finance @legal refund policy?', messageTs: '2000.000000' });
+  try {
+    for (const id of ['agent_finance', 'agent_legal']) {
+      await store.createAgent({
+        id, name: id, instructions: '', enabled: true, lifecycle: 'active', creatorMembershipId: 'owner',
+        editPolicy: 'creator_and_admins', skills: [], mcpServers: [], apiConnections: [], repositories: [],
+      });
+    }
+    // Finance answered the person's message; Legal's turn runs after it.
+    await store.putSlackPublicContext({
+      workspaceId: 'T1', channelId: 'C1', rootTs: person.threadTs, role: 'agent',
+      agentId: 'agent_finance', messageTs: '2001.000000', text: 'FINANCE_VIEW: refunds cost 129 each.',
+    });
+    const empty = { mode: 'thread' as const, messages: [], truncated: false, degradations: [] };
+    const later = { ...person, coAddressed: { agents, position: 1 } };
+    const legalPrompt = assembleSlackPrompt(later,
+      await assembleRetainedSlackContext(empty, later, { store, agentId: 'agent_legal' }));
+    assert.match(legalPrompt, /FINANCE_VIEW/);
+    // The first Agent, and an ordinary reply, never read past their trigger.
+    const first = { ...person, coAddressed: { agents, position: 0 } };
+    for (const turn of [first, person]) {
+      assert.doesNotMatch(assembleSlackPrompt(turn,
+        await assembleRetainedSlackContext(empty, turn, { store, agentId: 'agent_legal' })), /FINANCE_VIEW/);
+    }
+  } finally { store.close(); }
+});
