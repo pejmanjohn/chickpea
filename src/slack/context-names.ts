@@ -42,7 +42,7 @@ export async function resolveSlackContextNames(
 }
 
 /** Cached display names for Slack user ids; absent when a lookup failed. */
-async function lookupSlackDisplayNames(
+export async function lookupSlackDisplayNames(
   client: Pick<WebClient, 'users'>,
   workspaceId: string,
   ids: readonly string[],
