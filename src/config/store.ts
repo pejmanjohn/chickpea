@@ -1593,15 +1593,20 @@ export class ConfigStoreLogic {
     channelId: string,
     rootTs: string,
   ): SlackPublicContextEntry[] {
-    this.pruneExpiredSlackPublicContext(Date.now());
-    return this.db.all(
+    const now = Date.now();
+    this.pruneExpiredSlackPublicContext(now);
+    const rows = this.db.all(
       `SELECT * FROM config_slack_public_context
        WHERE workspace_id = ? AND channel_id = ? AND root_ts = ?
        ORDER BY CAST(message_ts AS REAL), message_ts`,
       workspaceId,
       channelId,
       rootTs,
-    ).map((row) => rowToSlackPublicContext(row as unknown as SlackPublicContextRow));
+    ) as unknown as SlackPublicContextRow[];
+    // The sweep is throttled; an expired thread is never read in between.
+    const cutoff = now - SLACK_PUBLIC_CONTEXT_RETENTION_MS;
+    if (!rows.some((row) => Number(row.updated_at) >= cutoff)) return [];
+    return rows.map(rowToSlackPublicContext);
   }
 
   listRecentSlackPublicContext(input: RecentSlackPublicContextInput): SlackPublicContextEntry[] {
