@@ -59,7 +59,7 @@ data, and explain that problem rather than telling the user to wait indefinitely
 
 Some releases add Durable Object migrations; v0.1.27 adds two, on every
 installation: `v10` for coding workers and `v11` for per-thread Slack turn
-runners. v0.1.28, v0.1.29 and v0.1.30 add none; an update from v0.1.26 or
+runners. v0.1.28, v0.1.29, v0.1.30 and v0.1.31 add none; an update from v0.1.26 or
 earlier straight to any of them still applies `v10` and `v11`. Once the deploy applies them,
 Cloudflare refuses `wrangler rollback` and dashboard rollbacks to any version
 from before that release. Recovery from a bad update then means deploying a newer or fixed
@@ -95,6 +95,25 @@ finishes.
 [Recover a stalled rollback](docs/runbooks/operations.md#recover-a-stalled-rollback)
 says how to recognise the stall. Later releases set such a record aside for
 operator recovery instead of stalling.
+
+v0.1.30 and earlier cannot read three kinds of turn that v0.1.31 writes. One
+that has not finished stalls every thread after a rollback. The three kinds are
+a turn that starts a conversation (a new thread, the first turn in an older
+thread after the update, or a routine run), a question one Agent asks another,
+and a turn whose saved thread context includes a post from an app. Most finish
+within seconds, but a routine run or coding task can take up to an hour. Before
+rolling back from v0.1.31, make sure no reply, routine run, coding task or
+Agent-to-Agent question is running. If Slack goes quiet after a rollback,
+redeploy v0.1.31 with the same deploy command, let that work finish, and roll
+back again.
+[Recover a stalled rollback](docs/runbooks/operations.md#recover-a-stalled-rollback)
+lists the log lines that identify this stall.
+
+After a rollback from v0.1.31, Agents in existing threads no longer remember
+the turns they took on v0.1.31, and the older release reads apps' posts in a
+thread as people's posts. A person whose last turn in a thread carried an app's
+post gets failed replies from that Agent there until you update again. v0.1.31
+sets unreadable records from a later release aside instead of stalling.
 
 ## 3. Deploy to the same Worker
 
