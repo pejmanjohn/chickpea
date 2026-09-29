@@ -277,6 +277,7 @@ import {
   processGatewayUiAction,
   processGatewayViewSubmission,
   processGatewaySlackEnvelope,
+  processSlackAgentAsks,
 } from './channels/slack.ts';
 import {
   SlackGatewaySession,
@@ -294,6 +295,7 @@ import { ManagementStoreLogic, type ManagementStore } from './management/store.t
 import { createLiveWorkspaceManagementService } from './management/live-service.ts';
 import { createPlatformProductTelemetry } from './telemetry/platform.ts';
 import type { ProductTelemetryCapture } from './telemetry/client.ts';
+import type { SlackAgentAskDispatcher } from './slack/agent-asks.ts';
 import { createWaitUntilTelemetryLifecycle } from './telemetry/runtime.ts';
 import {
   invokeSlackWorkspaceManagementTool,
@@ -2382,6 +2384,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       telemetry: productTelemetry,
       resolveInstallation,
       sandboxes: sandboxTurnReaders(this.env as PlatformEnv),
+      dispatchAgentAsks: localAgentAskDispatcher(stores, this.env as PlatformEnv, productTelemetry),
       runTurn,
     };
     const runJob = (
@@ -3071,18 +3074,11 @@ async function drainGatewayInbox(
   const appStores = localGatewayAppStores(stores);
   let client: GatewayDeploymentClient;
   try {
-    client = new GatewayDeploymentClient({
+    client = localGatewayDeploymentClient(appStores, platformEnv, createPlatformProductTelemetry({
+      env: platformEnv,
       settings: appStores.settings,
       config: appStores.config,
-      identity: appStores.identity,
-      keyring: loadCredentialKeyring(platformEnv),
-      gatewayBaseUrl: resolveChickpeaGatewayUrl(platformEnv),
-      productTelemetry: createPlatformProductTelemetry({
-        env: platformEnv,
-        settings: appStores.settings,
-        config: appStores.config,
-      }),
-    });
+    }));
   } catch {
     for (const item of pending) {
       stores.gatewayInbox.retryOrRecover(item.id, 'delivery_dependency_unavailable');
@@ -3090,13 +3086,7 @@ async function drainGatewayInbox(
     return stores.gatewayInbox.hasPending();
   }
   let needsRetry = false;
-  const uiExecution = {
-    stores: appStores,
-    enqueueTurn: async (job: TurnJob) => {
-      stores.turnJobs.enqueue(job);
-      return { ok: true as const, value: null };
-    },
-  };
+  const uiExecution = { stores: appStores, enqueueTurn: localTurnEnqueue(stores) };
   const admit = async (item: (typeof pending)[number]) => {
     // A turn admitted from this delivery measures its latency from receipt:
     // the delivery may have waited here while an earlier alarm ran turns.
@@ -3109,13 +3099,7 @@ async function drainGatewayInbox(
             item.delivery.envelope,
             platformEnv,
             client,
-            {
-              stores: appStores,
-              enqueueTurn: async (job) => {
-                stores.turnJobs.enqueue(job);
-                return { ok: true, value: null };
-              },
-            },
+            uiExecution,
           )
         : item.delivery.kind === 'interaction.agent_selected'
         ? await processGatewayAgentSelection(
@@ -3192,6 +3176,56 @@ function gatewayConversationKey(delivery: GatewayInboundDelivery): string {
   return typeof event.channel === 'string' && typeof root === 'string'
     ? `${event.channel}:${root}`
     : 'other';
+}
+
+/**
+ * Asks made by a turn this state store runs itself (the legacy alarm
+ * executor) are admitted here, against the local stores and queue, the way
+ * the gateway inbox admits a Slack event.
+ */
+function localAgentAskDispatcher(
+  stores: TagStateStores,
+  platformEnv: PlatformEnv,
+  productTelemetry: ProductTelemetryCapture,
+): SlackAgentAskDispatcher {
+  return async (request) => {
+    const appStores = localGatewayAppStores(stores);
+    let gatewayClient: GatewayDeploymentClient | undefined;
+    try {
+      gatewayClient = localGatewayDeploymentClient(appStores, platformEnv, productTelemetry);
+    } catch {
+      // A direct installation needs no gateway client.
+    }
+    await processSlackAgentAsks(request, platformEnv, {
+      stores: appStores,
+      ...(gatewayClient ? { gatewayClient } : {}),
+      enqueueTurn: localTurnEnqueue(stores),
+    });
+  };
+}
+
+/** The gateway client of a turn admitted inside this state store, on its own stores. */
+function localGatewayDeploymentClient(
+  appStores: AppStores,
+  platformEnv: PlatformEnv,
+  productTelemetry: ProductTelemetryCapture,
+): GatewayDeploymentClient {
+  return new GatewayDeploymentClient({
+    settings: appStores.settings,
+    config: appStores.config,
+    identity: appStores.identity,
+    keyring: loadCredentialKeyring(platformEnv),
+    gatewayBaseUrl: resolveChickpeaGatewayUrl(platformEnv),
+    productTelemetry,
+  });
+}
+
+/** Enqueues a turn admitted inside this state store into its own queue. */
+function localTurnEnqueue(stores: TagStateStores) {
+  return async (job: TurnJob) => {
+    stores.turnJobs.enqueue(job);
+    return { ok: true as const, value: null };
+  };
 }
 
 function localGatewayAppStores(stores: TagStateStores): AppStores {

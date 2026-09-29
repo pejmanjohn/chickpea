@@ -5,6 +5,7 @@ import {
   renderSlackMessage,
   splitSlackMarkdownReply,
   type RenderedSlackMessage,
+  type SlackLiveAgentHandles,
   type SlackReplyFooter,
   type SlackReplyFormat,
 } from './message-format.ts';
@@ -114,14 +115,16 @@ export function renderSlackReplyPart(
   text: string,
   format: SlackReplyFormat,
   closing?: SlackReplyClosing,
+  /** The reply's live Agent handles: every message of one reply renders with the same map. */
+  live?: SlackLiveAgentHandles,
 ): RenderedSlackReplyPart {
-  const content = renderSlackMessage(text, format);
+  const content = renderSlackMessage(text, format, live);
   if (!closing) return content;
   const extras = closingExtras(closing.table, closing.components);
   if (closing.files?.length) {
     return {
       ...renderSlackArtifactMessage(
-        text, format, closing.footer, closing.files, extras.fallbackText || undefined,
+        text, format, closing.footer, closing.files, extras.fallbackText || undefined, live,
       ),
       unfurl_links: true,
       unfurl_media: true,

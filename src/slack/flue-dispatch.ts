@@ -489,6 +489,7 @@ export async function promptSlackThreadAgent(
     receipt.submissionId,
     () => progressiveRelay !== undefined && (progressiveRelay.streamedAnswer?.() ?? true),
     () => progressiveRelay?.streamedPrefixBound?.(),
+    (text) => progressiveRelay?.canonicalStreamText?.(text) ?? canonicalStreamPrefix(text),
   );
   const milestoneTarget = { instanceId: envelope.instanceId, submissionId: receipt.submissionId };
   const onWorkspaceMilestone = input.onWorkspaceMilestone;
@@ -648,6 +649,11 @@ function isObservationAbort(error: unknown, signal: AbortSignal): boolean {
  */
 const REGENERATION_PROBE_CHARS = 64;
 
+/** The canonical Slack markdown of an answer prefix, as a plain stream shows it. */
+function canonicalStreamPrefix(text: string): string {
+  return streamableSlackMarkdownPrefix(text) || canonicalSlackMarkdownText(text);
+}
+
 /** Slack presents the final self-contained assistant step, not working narration. */
 class TerminalStepText {
   private step: {
@@ -667,6 +673,8 @@ class TerminalStepText {
     private readonly streamed: () => boolean = () => false,
     /** The most a stream at its cap can ever show (canonical); undefined: not capped. */
     private readonly streamedBound: () => string | undefined = () => undefined,
+    /** Renders an answer prefix the way the stream rendered its bound. */
+    private readonly canonicalPrefix: (text: string) => string = canonicalStreamPrefix,
   ) {}
 
   onEvent(chunk: import('@flue/runtime').ConversationStreamChunk): void {
@@ -762,8 +770,7 @@ class TerminalStepText {
       // A hold that shows nothing has no settled line yet; the whole answer
       // is what the bound must then begin.
       if (joined && (joined.trimmedChars === 0 || !streamed ||
-          (streamableSlackMarkdownPrefix(joined.text) || canonicalSlackMarkdownText(joined.text))
-            .startsWith(bound!))) {
+          this.canonicalPrefix(joined.text).startsWith(bound!))) {
         answer = joined.text;
         trimmedChars += joined.trimmedChars;
         reopenedUnmatched ||= joined.reopenedUnmatched;

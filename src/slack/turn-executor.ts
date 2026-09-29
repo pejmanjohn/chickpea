@@ -35,6 +35,7 @@ import {
   postRecoveryNoticeBestEffort,
 } from './presentation-repair.ts';
 import { recordDeliveredSlackAgentMessage } from './public-context.ts';
+import { createAgentAskCollector, type SlackAgentAskDispatcher } from './agent-asks.ts';
 import {
   deliverAgentFailureFinal,
   sanitizeError,
@@ -116,6 +117,12 @@ export interface TurnExecutionPorts {
   >>;
   /** Thread context for every Agent message the turn delivers. */
   config: Parameters<typeof recordDeliveredSlackAgentMessage>[0];
+  /**
+   * Admits the asks a delivered reply made of other Agents. Each host
+   * supplies its own (the thread runner, the state store's alarm executor);
+   * absent only where a caller admits none.
+   */
+  dispatchAgentAsks?: SlackAgentAskDispatcher;
   presentationState: SlackPresentationStatePort;
   /**
    * Local stores when the turn runs inside the shared state store. A thread
@@ -242,6 +249,11 @@ export async function executeTurnJob(
   }
   const client = installationContext.client;
   const attempt = job.attempts + 1;
+  const agentAsks = createAgentAskCollector({
+    turn: job.turn,
+    assignment: job.assignment,
+    dispatch: ports.dispatchAgentAsks,
+  });
   let delivered = false;
   let deferredTerminal = false;
   let activeWorkKey = job.turn.interactionIntent?.disposition === 'work'
@@ -515,8 +527,10 @@ export async function executeTurnJob(
       onInteractionProgress: async (patch) => {
         await ports.turnJobs.recordSlackInteractionProgress(job.id, patch);
       },
-      onPublicMessageDelivered: (delivery) =>
-        recordDeliveredSlackAgentMessage(ports.config, job.turn, job.assignment, delivery),
+      onPublicMessageDelivered: (delivery) => {
+        agentAsks.note(delivery);
+        return recordDeliveredSlackAgentMessage(ports.config, job.turn, job.assignment, delivery);
+      },
       ...(replayText === undefined ? {} : { replayText }),
       stopEnding: stoppedEnding,
       ...(job.previousStop ? { previousStop: job.previousStop } : {}),
@@ -547,6 +561,9 @@ export async function executeTurnJob(
         if (raced) {
           await tellStopperAlreadyFinished(job.turn, (outcome) => ports.turnJobs.finishStop(job.id, outcome), client);
         }
+        // Teammates this reply asked, once it is recorded as delivered. A
+        // stopped run, or one someone tried to stop, asks nobody.
+        if (outcome !== 'stopped' && !raced) await agentAsks.flush();
       },
       onDeferredTerminal: async () => {
         deferredTerminal = true;

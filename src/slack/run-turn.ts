@@ -7,7 +7,7 @@ import {
   deriveRuntimePlanInstanceId,
   type RuntimePlanV2,
 } from '../agents/runtime-plan.ts';
-import { effectiveSlackInstructions } from '../config/effective-config.ts';
+import { agentTeammateHandles, agentTeammateInstructions, effectiveSlackInstructions } from '../config/effective-config.ts';
 import { CHICKPEA_AGENT_NAME } from '../config/agent-id.ts';
 import {
   imageCapabilityForResolution,
@@ -84,7 +84,7 @@ import { defaultSlackStatusRegistry, type SlackStatusRegistry } from './status-r
 import { createCodingTaskProgress } from './coding-task-progress.ts';
 import { currentMessageOnlyContext } from './thread-context.ts';
 import { collectAdmittedSlackListIds } from './lists/admission.ts';
-import { conversationThreadTs, slackAgentThreadKey, slackConversationKind } from './thread-key.ts';
+import { conversationThreadTs, slackAgentContinuityKey, slackAgentThreadKey, slackConversationKind } from './thread-key.ts';
 import { slackTimestampMs } from './timestamp.ts';
 import {
   assembleRetainedSlackContext, formatSlackPublicHandoff, type SlackPublicDelivery,
@@ -543,7 +543,11 @@ async function runTurnAttempt(
   // Exact `!routines` controls stay deterministic. All natural-language
   // schedule creation and editing reaches the interactive Flue Agent, where
   // agent-authoring decides placement and uses management proposals.
-  if (shouldHandleRoutineCommandTurn(turn, commandAddress)) {
+  // An ask's text is the asking Agent's message: only a person's message can
+  // be a memory or schedule command. Admission refuses those for an ask too
+  // (typedByPerson in processSlackEvent); this is the runtime's own gate.
+  const typedByPerson = !turn.agentAsk;
+  if (typedByPerson && shouldHandleRoutineCommandTurn(turn, commandAddress)) {
     const routineText = await handleRoutineSlackRequest(turn, platformEnv, {
       ...(installationContext ? { installationContext } : {}),
       assignment,
@@ -583,10 +587,10 @@ async function runTurnAttempt(
       return;
     }
   }
-  const memoryCommand = parseMemoryCommand(turn.text);
+  const memoryCommand = typedByPerson ? parseMemoryCommand(turn.text) : undefined;
   const deterministicCommand = Boolean(memoryCommand) ||
     Boolean(turn.managementApprovalProposalId) ||
-    (isRoutineSlackTurn(turn) && Boolean(parseRoutineCommand(turn.text, commandAddress)));
+    (typedByPerson && isRoutineSlackTurn(turn) && Boolean(parseRoutineCommand(turn.text, commandAddress)));
   // Delivery-only recovery replays the exact persisted answer. It must not
   // re-resolve current Agent memory (which could both block recovery
   // on a changed lease and unnecessarily touch live state).
@@ -598,9 +602,12 @@ async function runTurnAttempt(
   const skipMemory = Boolean(memoryCommand) || Boolean(turn.managementApprovalProposalId) ||
     options.replayText !== undefined || stoppedBeforeDispatch || abortedReplay;
   let onNativeStarted = async (): Promise<void> => {};
+  // A reply mentions its Channel teammates live; each mention asks that Agent.
+  const liveAgentHandles = agentTeammateHandles(assignment);
   const agentViewPresentation = options.presentationState && options.runId
     ? new SlackAgentViewPresentation({
         client,
+        ...(liveAgentHandles ? { liveAgentHandles } : {}),
         state: options.presentationState,
         readGate: createSlackReadGate({
           state: options.appStores?.slackState ?? getSlackStateStore(platformEnv),
@@ -658,6 +665,7 @@ async function runTurnAttempt(
   }, deliveryObserver, {
     deliverySafety: ledgerAuthority ? 'ledger' : 'legacy',
     statusDisplay: (update) => codingProgress.display(update),
+    ...(liveAgentHandles ? { liveAgentHandles } : {}),
     ...(agentViewPresentation ? { agentViewPresentation } : {}),
     ...(frozenPresentation?.schemaVersion === 3
       ? { activityProjection: frozenPresentation.activityProjection }
@@ -1663,6 +1671,9 @@ async function runTurnAttempt(
       ...(options.previousStop
         ? { previousRunStopped: { stopperUserId: options.previousStop.stopperUserId } }
         : {}),
+      // The thread's own Agent is asked back by a guest it asked; a guest is
+      // asked by the thread's Agent. Each reads the ask differently.
+      ...(turn.agentAsk ? { askedAsThreadOwner: assignment.threadGuest !== true } : {}),
       ...(installationContext
         ? {
             slackApp: {
@@ -2496,7 +2507,7 @@ async function freezeRuntimePlanForTurn(input: {
       : undefined,
     input.turn.actorMembershipId
       ? input.getBoundRuntimePlan?.(
-          opaqueId('agent', slackAgentThreadKey(input.turn, input.assignment)), input.turn.messageTs,
+          opaqueId('agent', slackAgentContinuityKey(input.turn, input.assignment)), input.turn.messageTs,
           input.turn.actorMembershipId, input.assignment.agentId,
         )
       : undefined,
@@ -2505,9 +2516,11 @@ async function freezeRuntimePlanForTurn(input: {
     'instructions' in input.assignment && typeof input.assignment.instructions === 'string'
       ? input.assignment.instructions
       : effectiveSlackInstructions(input.assignment);
+  const teammates = agentTeammateInstructions(input.assignment);
   const instructions = [
     baseInstructions,
     externalActionAuthorityInstructions(input.assignment.agent.instructions),
+    ...(teammates ? [teammates] : []),
   ].join('\n');
   const allEffectiveConnections = connectionContext?.effective ?? [];
   const connectionAuthorizations = connectionContext?.authorizations;

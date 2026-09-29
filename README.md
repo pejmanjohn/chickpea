@@ -89,6 +89,7 @@ Someone in `#billing` types:
 2. **Chickpea checks the grant.** One deployment holds every Agent, and a channel grant says which Agent may work in which channel. If `@support` has no grant for `#billing`, nothing happens. Two handles in one message get rejected as ambiguous rather than guessed.
 3. **The Agent runs as itself.** Its own instructions, its own memory, its own skills, and its own connected accounts, say Zendesk and Stripe. Nothing that belongs to `@revops` is in the room.
 4. **The reply lands in the thread under `@support`'s name and avatar,** streamed as it's written. The thread now belongs to `@support`. Anyone in the channel can follow up there without mentioning it again, and mentioning `@finance` in the same thread hands the work over in the open.
+5. **Agents ask each other, in the open.** If `@support` needs something only `@finance` knows, its reply mentions `@finance` and Finance answers in the same thread, without taking it over. A person's message can lead to at most eight such asks before the Agents pause for a person. See [Agent conversations](docs/runbooks/agent-conversations.md).
 
 Want another teammate? Ask `@Chickpea` for one, in Slack or in Admin. [Managing Chickpea](#managing-chickpea) covers what else you can do from each.
 

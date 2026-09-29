@@ -45,6 +45,25 @@ export function slackAgentThreadKey(
   return `${turn.workspaceId}:${turn.channelId}:${turn.threadTs}:owner-i${incarnation}`;
 }
 
+/**
+ * The key of one Agent's Flue transcript of a thread (its binding and
+ * instance). The thread's owner keeps the thread key; an Agent answering an
+ * ask there (`threadGuest`) has a transcript of its own, so the owner's is
+ * never rotated away by a guest's turn.
+ */
+export function slackAgentContinuityKey(
+  turn: NormalizedSlackTurn,
+  assignment: Pick<ResolvedAssignment, 'runtimeContract' | 'ownerIncarnation' | 'agentId' | 'threadGuest'>,
+): string {
+  const threadKey = slackAgentThreadKey(turn, assignment);
+  return assignment.threadGuest ? slackGuestThreadKey(threadKey, assignment.agentId) : threadKey;
+}
+
+/** A guest Agent's own segment of a thread key: what it keeps apart from the owner's. */
+export function slackGuestThreadKey(threadKey: string, agentId: string): string {
+  return `${threadKey}:guest-${agentId}`;
+}
+
 export function memoryEpochThreadKey(baseThreadKey: string, epoch: number): string {
   if (!Number.isInteger(epoch) || epoch < 1) {
     throw new Error('Memory conversation epoch must be a positive integer');
@@ -63,8 +82,13 @@ export function workspaceManagementThreadKey(baseThreadKey: string): string {
 
 function continuityBaseSlackThreadKey(threadKey: string): string {
   const base = baseSlackThreadKey(threadKey);
-  const owner = threadKey.split(':')[3];
-  return owner && /^owner-i[1-9]\d*$/.test(owner) ? `${base}:${owner}` : base;
+  const [, , , owner, guest] = threadKey.split(':');
+  if (!owner || !/^owner-i[1-9]\d*$/.test(owner)) return base;
+  // A guest keeps its own memory conversation. The coding Sandbox stays the
+  // thread's: sandboxThreadKey drops this segment.
+  return guest && /^guest-[A-Za-z0-9_.-]+$/.test(guest)
+    ? `${base}:${owner}:${guest}`
+    : `${base}:${owner}`;
 }
 
 export function baseSlackThreadKey(threadKey: string): string {

@@ -22,6 +22,7 @@ import {
   slackMarkdownShapePrefixLength,
   splitSlackMarkdownReply,
   streamableSlackMarkdownPrefix,
+  type SlackLiveAgentHandles,
   type SlackReplyFooter,
   type SlackReplyFormat,
 } from './message-format.ts';
@@ -140,6 +141,8 @@ type AgentViewFinalResult =
 
 interface AgentViewPresentationOptions {
   client: WebClient;
+  /** Agent handles this run's reply may mention live (its Channel teammates). */
+  liveAgentHandles?: SlackLiveAgentHandles;
   state: SlackPresentationStatePort;
   runId: string;
   runFencingToken: number;
@@ -1001,6 +1004,11 @@ export class SlackAgentViewPresentation {
       ),
       invalidate: (reason, error) => this.invalidate(reason, error),
       streamedPrefixBound: () => this.streamCapBound,
+      // The bound above renders with this reply's live handles; what is
+      // compared against it must render the same way.
+      canonicalStreamText: (text) =>
+        streamableSlackMarkdownPrefix(text, this.options.liveAgentHandles) ||
+        canonicalSlackReplyText(text, 'markdown', this.options.liveAgentHandles),
       ...(presentation.schemaVersion !== 1
         ? {
             modelIntent: {
@@ -1027,7 +1035,7 @@ export class SlackAgentViewPresentation {
      */
     ending?: { stopped?: boolean },
   ): Promise<AgentViewFinalResult> {
-    const approved = canonicalSlackReplyText(text, format);
+    const approved = canonicalSlackReplyText(text, format, this.options.liveAgentHandles);
     const stopped = ending?.stopped === true && terminalTaskStatus === 'complete';
     const reason: SlackPresentationTerminalReason | undefined = stopped ? 'stopped' : undefined;
     let presentation = await this.requirePresentation();
@@ -1426,6 +1434,7 @@ export class SlackAgentViewPresentation {
       part.text,
       'markdown',
       index === plan.parts.length - 1 ? plan.closing : undefined,
+      this.options.liveAgentHandles,
     );
     // A re-split part is new content, so it gets its own client_msg_id.
     const operationId = part.operation?.operationId ??
@@ -1693,7 +1702,11 @@ export class SlackAgentViewPresentation {
       return;
     }
     let presentation = await this.requirePresentation();
-    const streamable = streamedReplyPrefix(this.rawText, presentation.stream.acknowledgedByteLength);
+    const streamable = streamedReplyPrefix(
+      this.rawText,
+      presentation.stream.acknowledgedByteLength,
+      this.options.liveAgentHandles,
+    );
     const safePrefix = streamable.text;
     if (streamable.capBound !== undefined) this.streamCapBound = streamable.capBound;
     const priorPosition = presentation.stream.flue?.lastAcceptedPosition;
@@ -2140,7 +2153,7 @@ export class SlackAgentViewPresentation {
     observer: SlackPresentationDeliveryObserver,
     tablePresentation?: SlackClosingInput,
   ): Promise<AgentViewFinalResult> {
-    const approved = canonicalSlackReplyText(text, format);
+    const approved = canonicalSlackReplyText(text, format, this.options.liveAgentHandles);
     // The replacement goes through chat.update, which refuses a message
     // Slack accepts from a stream or a post (`msg_too_long`). Keep the first
     // message within RECOVERY_UPDATE_MAX_CHARS and re-plan the rest as
@@ -2155,9 +2168,10 @@ export class SlackAgentViewPresentation {
     const table = renderSlackReplyTable(tablePresentation, parts.at(-1)!);
     const closes = !await this.planContinuations(parts, table, [], split, true);
     presentation = await this.requirePresentation();
+    const live = this.options.liveAgentHandles;
     const content = table && closes
-      ? appendSlackTableToRenderedMessage(renderSlackMessage(first, 'markdown'), first, table)
-      : renderSlackMessage(first, 'markdown');
+      ? appendSlackTableToRenderedMessage(renderSlackMessage(first, 'markdown', live), first, table)
+      : renderSlackMessage(first, 'markdown', live);
     const rendered = closes ? appendSlackReplyFooter(content, this.options.footer) : content;
     const messageTs = presentation.stream.messageTs!;
     const update = { channel: presentation.root.channelId, ts: messageTs,
@@ -2262,13 +2276,14 @@ export class SlackAgentViewPresentation {
     closes: boolean,
   ): Promise<AgentViewFinalResult> {
     const corrected = `${first}\n\n${CORRECTED_MARKER}`;
+    const live = this.options.liveAgentHandles;
     const content = table
       ? appendSlackTableToRenderedMessage(
-          renderSlackMessage(corrected, 'markdown'),
+          renderSlackMessage(corrected, 'markdown', live),
           corrected,
           table,
         )
-      : renderSlackMessage(corrected, 'markdown');
+      : renderSlackMessage(corrected, 'markdown', live);
     const rendered = closes ? appendSlackReplyFooter(content, this.options.footer) : content;
     const messageTs = presentation.stream.messageTs!;
     const update = {
@@ -2955,15 +2970,16 @@ const STREAM_SHAPE_BUDGET = {
 function streamedReplyPrefix(
   rawText: string,
   acknowledgedBytes: number,
+  live?: SlackLiveAgentHandles,
 ): { text: string; capBound?: string } {
-  const safePrefix = streamableSlackMarkdownPrefix(rawText);
+  const safePrefix = streamableSlackMarkdownPrefix(rawText, live);
   const acknowledged = prefixAtUtf8Length(safePrefix, acknowledgedBytes);
   const fit = slackMarkdownShapePrefixLength(safePrefix, STREAM_SHAPE_BUDGET);
   const full = fit < safePrefix.length;
   let capped = safePrefix;
   if (full) {
     const end = /[\uD800-\uDBFF]/.test(safePrefix[fit - 1] ?? '') ? fit - 1 : fit;
-    capped = streamableSlackMarkdownPrefix(safePrefix.slice(0, end));
+    capped = streamableSlackMarkdownPrefix(safePrefix.slice(0, end), live);
     // Only ever a prefix of what the final will show.
     if (!safePrefix.startsWith(capped)) capped = safePrefix.slice(0, end).trimEnd();
   }

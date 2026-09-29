@@ -10,9 +10,9 @@ import type { NormalizedSlackTurn, SlackMessageEvent } from './types.ts';
 import { slackFileSummaries, slackMessageText } from './message-text.ts';
 import { slackImageRefs, threadImageRef } from './thread-images.ts';
 import {
-  atOrBeforeSlackWatermark, DEFAULT_MAX_MESSAGES, ensureTriggerMessage, orderMessages,
-  slackTimestampUnits, toContextMessage, type SlackContextMessage, type SlackContextSelf,
-  type SlackTurnContext, type SlackWebApiMessage,
+  agentContextUserId, atOrBeforeSlackWatermark, DEFAULT_MAX_MESSAGES, ensureTriggerMessage,
+  orderMessages, slackTimestampUnits, toContextMessage, type SlackContextMessage,
+  type SlackContextSelf, type SlackTurnContext, type SlackWebApiMessage,
 } from './thread-context.ts';
 
 export { MAX_SLACK_PUBLIC_HANDOFF_MESSAGES };
@@ -373,7 +373,7 @@ function retainedAuthor(
   if (entry.role === 'agent') {
     const authorName = entry.authorName ?? fetched?.authorName;
     return {
-      userId: `Agent ${entry.agentId}`,
+      userId: agentContextUserId(entry.agentId),
       ...(entry.agentId ? { agentId: entry.agentId } : {}),
       ...(authorName ? { authorName } : {}),
     };

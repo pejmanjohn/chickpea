@@ -10,7 +10,7 @@ import {
   StateStoreUnavailable,
   type SlackFlueDispatchState,
 } from '../src/slack/flue-dispatch.ts';
-import { streamableSlackMarkdownPrefix } from '../src/slack/message-format.ts';
+import { canonicalSlackMarkdownText, streamableSlackMarkdownPrefix } from '../src/slack/message-format.ts';
 import type { AgentInstanceHandle } from '@flue/runtime';
 import { AgentInstanceExistsError, AgentInstanceNotFoundError, AgentRunError } from '@flue/runtime';
 import { opaqueId } from '../src/work/admission.ts';
@@ -1260,6 +1260,7 @@ async function recoveredAnswer(
   folded = parts.join('\n\n'),
   streamed?: boolean,
   streamedBound?: string,
+  canonicalStreamText?: (text: string) => string,
 ) {
   const logs: unknown[] = [];
   const info = console.info;
@@ -1273,6 +1274,7 @@ async function recoveredAnswer(
       async suspendAndDrain() { return drained; },
       streamedAnswer: () => streamed === true,
       streamedPrefixBound: () => streamedBound,
+      ...(canonicalStreamText ? { canonicalStreamText } : {}),
     };
     const result = await promptSlackThreadAgent({
       ...promptInput(
@@ -1356,6 +1358,24 @@ test('a stream that stopped at its cap before the seam lets the join trim (Amber
     partial + continuation);
   // A stream still under its cap may show everything: nothing is cut.
   assert.equal((await recoveredAnswer([partial, continuation], undefined, true)).text,
+    partial + continuation);
+});
+
+test('a capped stream whose bound holds a live teammate mention still lets the join trim', async () => {
+  const live = new Map([['finance', 'SFIN']]);
+  const shown = 'Checking with @finance before the stream reached its cap.';
+  const partial = `${shown}\n\nThe goal is to learn enough about use patterns to restock intelligently,`;
+  const continuation = 'understand enough about use patterns to restock intelligently, identify gaps early.';
+  // The relay rendered its bound with the reply's live handles.
+  const capped = streamableSlackMarkdownPrefix(shown, live);
+  assert.match(capped, /<!subteam\^SFIN\|@finance>/);
+  const withLive = (text: string) =>
+    streamableSlackMarkdownPrefix(text, live) || canonicalSlackMarkdownText(text, live);
+  const { text, logs } = await recoveredAnswer([partial, continuation], undefined, true, capped, withLive);
+  assert.equal(text, `${partial} identify gaps early.`);
+  assert.equal((logs[0] as { recoveryResolution: string }).recoveryResolution, 'continued_trimmed');
+  // A relay that renders the join without the map can never match that bound.
+  assert.equal((await recoveredAnswer([partial, continuation], undefined, true, capped)).text,
     partial + continuation);
 });
 

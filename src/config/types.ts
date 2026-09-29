@@ -817,12 +817,29 @@ export interface ResolvedAssignment {
     'messageTs' | 'role' | 'text' | 'agentId'
   >>;
   agent: CustomAgentConfig;
+  /**
+   * This Agent answers an ask in a thread another Agent owns. It keeps its
+   * own transcript of the thread and never takes the thread over.
+   */
+  threadGuest?: true;
+  /**
+   * Other Agents a person in this Channel can reach here, so this Agent
+   * knows whom it may ask and by which handle. Channel turns only.
+   */
+  channelTeammates?: AgentTeammate[];
   // Optional pre-resolved model label. Set only when the assignment is served
   // from a frozen thread snapshot; undefined means resolve from the agent via
   // model policy at turn time.
   model?: string;
   modelAttribution?: AgentModelAttribution;
   modelCredential?: ModelCredentialAttribution;
+}
+
+export interface AgentTeammate {
+  name: string;
+  handle: string;
+  /** Slack writes a live mention of the handle with this user group. */
+  userGroupId: string;
 }
 
 // A snapshot IS a resolved assignment frozen at a thread's first turn, plus the

@@ -335,7 +335,8 @@ test('conversational schedules cannot enter the exact Routine command lane', asy
     readFile(new URL('../src/slack/run-turn.ts', import.meta.url), 'utf8'),
     readFile(new URL('../src/routines/commands.ts', import.meta.url), 'utf8'),
   ]);
-  assert.match(runTurnSource, /if \(shouldHandleRoutineCommandTurn\(turn, commandAddress\)\)/);
+  // Only a person's own message reaches the Routine command lane.
+  assert.match(runTurnSource, /if \(typedByPerson && shouldHandleRoutineCommandTurn\(turn, commandAddress\)\)/);
   assert.doesNotMatch(runTurnSource, /isRoutineIntentCandidate|parseRoutineIntent/);
   assert.doesNotMatch(commandSource, /isRoutineIntentCandidate|parseRoutineIntent|saveRoutineIntent/);
   const handler = commandSource.slice(commandSource.indexOf('export async function handleRoutineSlackRequest'));

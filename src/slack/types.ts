@@ -234,6 +234,23 @@ export interface NormalizedSlackTurn {
    * matching; only a host-namespace click can stamp an approval above.
    */
   uiResponse?: SlackUiResponse;
+  /**
+   * Set only by host admission of an Agent-to-Agent ask: another Chickpea
+   * Agent mentioned this turn's Agent in a message it delivered. `userId` is
+   * then the person whose message started the exchange (their access
+   * authorizes the turn); `text` and `messageTs` are the asking Agent's
+   * message. Slack text can never supply it.
+   */
+  agentAsk?: SlackAgentAsk;
+}
+
+/** Who asked, and which person's message the exchange of asks started from. */
+export interface SlackAgentAsk {
+  fromAgentId: string;
+  fromAgentName: string;
+  fromAgentHandle?: string;
+  /** The person's message that started this exchange; bounds its asks. */
+  originMessageTs: string;
 }
 
 export interface SlackUiResponse {

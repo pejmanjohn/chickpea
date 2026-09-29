@@ -1,10 +1,12 @@
 import type { ConfigStore } from '../config/store.ts';
 import {
   type AgentChannelGrant,
+  type AgentTeammate,
   type AgentThreadRoute,
   type CustomAgentConfig,
   type ResolvedAssignment,
 } from '../config/types.ts';
+import { agentSlackHandle } from './agent-asks.ts';
 import type { NormalizedSlackTurn } from './types.ts';
 import { CHICKPEA_AGENT_ID } from '../config/agent-id.ts';
 import { boundedSlackPublicHandoff } from './public-context.ts';
@@ -21,7 +23,8 @@ type AgentRouteSource =
   | 'thread_owner'
   | 'default_agent'
   | 'app_home'
-  | 'creation_handoff';
+  | 'creation_handoff'
+  | 'agent_ask';
 
 type AgentRoutingDenialReason =
   | 'not_available'
@@ -76,6 +79,12 @@ interface ResolveAgentRouteInput {
   >;
   /** Trusted Agent seed from App Home interactivity, never Slack message text. */
   appHomeAgentId?: string;
+  /**
+   * Trusted host admission of an Agent-to-Agent ask: the Agent another Agent
+   * mentioned in a reply it delivered. It answers in the thread without
+   * taking the thread over; never Slack message text.
+   */
+  askAgentId?: string;
   /** Authenticated Slack directory seam used only when a mentioned immutable
    * group id is absent from the stored Agent map. */
   transport?: Pick<SlackTransport, 'lookupUserGroup'>;
@@ -168,6 +177,46 @@ export async function resolveAgentRoute(
   );
   const activeGrants = channelGrants.filter((grant) => grant.status === 'active');
   const available = await availableAlternatives(activeGrants, agentsById);
+  const withTeammates = (
+    routed: Extract<AgentRoutingResult, { kind: 'routed' }>,
+  ): Extract<AgentRoutingResult, { kind: 'routed' }> => {
+    if (surface !== 'channel' || installation.runtimeContract !== 'chickpea-v1') return routed;
+    const teammates = channelTeammates(activeGrants, agentsById, routed.assignment.agentId);
+    return teammates.length
+      ? { ...routed, assignment: { ...routed.assignment, channelTeammates: teammates } }
+      : routed;
+  };
+
+  if (input.askAgentId !== undefined) {
+    // An ask continues a thread its asker is part of; it never opens one.
+    if (surface !== 'channel' || !currentRoute) return denied('not_available', []);
+    const asked = agentsById.get(input.askAgentId);
+    const access = await agentAccess({
+      agent: asked,
+      surface,
+      actor,
+      activeGrants,
+      workspaceManagementRoute: false,
+      ...(input.authorizeUserAgent ? { authorizeUserAgent: input.authorizeUserAgent } : {}),
+    });
+    if (!asked || asked.kind !== 'user' || access !== 'allowed') return denied('not_available', []);
+    const assignment = assignmentForAgent(
+      turn,
+      asked,
+      activeGrants,
+      undefined,
+      currentRoute.ownerIncarnation,
+      installation.runtimeContract,
+    );
+    return withTeammates({
+      kind: 'routed',
+      source: 'agent_ask',
+      assignment: asked.id === currentRoute.agentId ? assignment : { ...assignment, threadGuest: true },
+      route: currentRoute,
+      handoff: false,
+      routeChanged: false,
+    });
+  }
 
   const mentionedGroupIds = parseAgentUserGroupMentions(turn.text);
   const mentionedAgents = mentionedGroupIds
@@ -261,7 +310,7 @@ export async function resolveAgentRoute(
     return denied('not_available', access === 'private_denied' ? [] : available);
   }
 
-  return commitSelectedAgentRoute({
+  return withTeammates(await commitSelectedAgentRoute({
     turn,
     surface,
     config,
@@ -270,7 +319,7 @@ export async function resolveAgentRoute(
     source,
     activeGrants,
     currentRoute,
-  });
+  }));
 }
 
 /**
@@ -506,6 +555,32 @@ async function availableAlternatives(
       }];
     })
     .sort((left, right) => left.name.localeCompare(right.name));
+}
+
+/** Most teammates one Agent is told about. */
+const MAX_CHANNEL_TEAMMATES = 20;
+
+/**
+ * The other active user Agents with a grant in this Channel and a Slack
+ * handle: whom `agentId` can ask here. Ordered by name.
+ */
+function channelTeammates(
+  grants: AgentChannelGrant[],
+  agentsById: Map<string, CustomAgentConfig>,
+  agentId: string,
+): AgentTeammate[] {
+  const seen = new Set<string>();
+  return grants
+    .flatMap((grant) => {
+      const agent = agentsById.get(grant.agentId);
+      const presence = agent && agentSlackHandle(agent);
+      if (!agent || !presence || agent.id === agentId || agent.kind !== 'user' || !agentIsActive(agent)) return [];
+      if (seen.has(agent.id)) return [];
+      seen.add(agent.id);
+      return [{ name: agent.name, ...presence }];
+    })
+    .sort((left, right) => left.name.localeCompare(right.name))
+    .slice(0, MAX_CHANNEL_TEAMMATES);
 }
 
 function assignmentForAgent(

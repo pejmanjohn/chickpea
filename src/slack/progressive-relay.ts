@@ -60,6 +60,8 @@ interface ProgressiveTextSink {
   invalidate(reason: ProgressiveRelayInvalidationReason, error?: unknown): Promise<void>;
   /** See {@link SlackProgressiveReadRelay.streamedPrefixBound}. */
   streamedPrefixBound?(): string | undefined;
+  /** See {@link SlackProgressiveReadRelay.canonicalStreamText}. */
+  canonicalStreamText?(text: string): string;
   /** Omitted only for retained V1 presentations with the legacy immediate relay. */
   modelIntent?: {
     initial: SlackProgressiveIntent;
@@ -90,6 +92,13 @@ export interface SlackProgressiveReadRelay {
    * Undefined while the stream may still show all of it.
    */
   streamedPrefixBound?(): string | undefined;
+  /**
+   * How this stream renders an answer prefix to canonical Slack markdown,
+   * so that text compared against `streamedPrefixBound` renders the same
+   * way the bound did (a reply's live Agent handles, for one). Undefined:
+   * the plain rendering.
+   */
+  canonicalStreamText?(text: string): string | undefined;
 }
 
 type RelayOperation =
@@ -548,6 +557,10 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
 
   streamedPrefixBound(): string | undefined {
     return this.options.streamedPrefixBound?.();
+  }
+
+  canonicalStreamText(text: string): string | undefined {
+    return this.options.canonicalStreamText?.(text);
   }
 
   private hasQueuedOrAcceptedText(): boolean {
