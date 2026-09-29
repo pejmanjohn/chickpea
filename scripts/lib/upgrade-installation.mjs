@@ -6,7 +6,7 @@ import { evaluateUpgradeCompatibility } from '../../src/release/upgrade-compatib
 // configuration (or credentials) that the upgrader does not understand.
 export const PRESERVED_VARIABLES = new Set(`
 CHICKPEA_GATEWAY_URL SLACK_BOT_USER_ID SLACK_API_URL SLACK_TAG_PUBLIC_URL
-SLACK_TAG_UNASSIGNED_HINT SLACK_TAG_WELCOME_ON_JOIN SLACK_TAG_PROGRESSIVE_STREAMING
+SLACK_TAG_WELCOME_ON_JOIN SLACK_TAG_PROGRESSIVE_STREAMING
 SLACK_TAG_LEDGER_CANARY_CHANNELS SLACK_TAG_MODEL CHICKPEA_LIVE_CHANNEL_CONFIG
 CHICKPEA_COMPOSIO_CONFIGURATION_MODE CHICKPEA_INSTALLATION_ID DO_NOT_TRACK
 CHICKPEA_DISABLE_TELEMETRY CHICKPEA_TELEMETRY_ENVIRONMENT CHICKPEA_DEPLOYMENT_EPOCH
@@ -31,6 +31,9 @@ OPENROUTER_CREDENTIAL_ALIAS OPENROUTER_CREDENTIAL_EPOCH CLOUDFLARE_WORKERS_AI_CR
 ANTHROPIC_BASE_URL ANTHROPIC_API_URL OPENAI_API_URL OPENROUTER_API_URL
 CLOUDFLARE_WORKERS_AI_BASE_URL CLOUDFLARE_API_URL
 `.trim().split(/\s+/));
+// Variables no release reads any more. An installation that still sets one
+// upgrades normally; the redeploy leaves it out.
+const RETIRED_VARIABLES = new Set(['SLACK_TAG_UNASSIGNED_HINT']);
 
 const SETUP_NAMES = ['CHICKPEA_SETUP_CAPABILITY_DIGEST', 'CHICKPEA_SETUP_CAPABILITY_ISSUED_AT'];
 const BUILD_NAMES = new Set(['CHICKPEA_APP_VERSION', 'CHICKPEA_SOURCE_COMMIT', 'CHICKPEA_DEPLOYMENT_ACTIVATION_DIGEST', 'CHICKPEA_DEPLOYMENT_ACTIVATION_ISSUED_AT']);
@@ -92,6 +95,7 @@ export function validateInstallation(remote) {
       continue;
     }
     if (binding.type === 'plain_text') {
+      if (RETIRED_VARIABLES.has(binding.name)) continue;
       if (!PRESERVED_VARIABLES.has(binding.name) && !SETUP_NAMES.includes(binding.name) && !BUILD_NAMES.has(binding.name)) {
         throw new Error('Unsupported plain Worker variable. Review configuration and move any plaintext credentials into Cloudflare secrets; values were not printed.');
       }

@@ -76,6 +76,13 @@ test('installation preserves supported vars and resources without copying secret
   }
   assert.throws(() => overlayInstallation({ ...config, kv_namespaces: [{ binding: 'NEW_CACHE', id: 'new' }] }, installation, { worker: 'custom', profile: 'core' }), /unsupported resource/);
 });
+test('a retired variable does not block an upgrade and is not carried forward', () => {
+  const value: any = fixture();
+  value.bindings.push({ name: 'SLACK_TAG_UNASSIGNED_HINT', type: 'plain_text', text: 'false' });
+  const installation = validateInstallation(value);
+  assert.equal(Object.hasOwn(installation.variables, 'SLACK_TAG_UNASSIGNED_HINT'), false);
+  assert.equal(installation.resourceDigest, validateInstallation(fixture()).resourceDigest);
+});
 test('ambiguous identity, unknown configuration and missing authority are refused', () => {
   for (const change of [
     (value: any) => { value.versions.push({ version_id: 'other', percentage: 10 }); },
