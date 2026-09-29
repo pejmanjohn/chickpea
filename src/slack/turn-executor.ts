@@ -8,7 +8,7 @@ import type {
 import type { TurnLatencyContext } from '../observability/runtime-latency.ts';
 import { isStateStoreDisconnect } from '../config/cf-state-proxies.ts';
 import { readSandboxTurnProgress, type CodingTaskStopReport } from '../sandbox/coding-task-stop.ts';
-import { sandboxThreadKey } from '../sandbox/thread-key.ts';
+import { slackTurnSandboxKey } from '../sandbox/thread-key.ts';
 import type { ProductTelemetryCapture } from '../telemetry/client.ts';
 import type { UsageStore } from '../usage/types.ts';
 import type { WorkStore } from '../work/types.ts';
@@ -377,7 +377,7 @@ export async function executeTurnJob(
       if (!frozenPlan?.codingWorkspace || use?.codingWorkspaceOpened === false) return undefined;
       // The same Durable Object the workspace uses: the thread key, not
       // the owner-bound agent key, which names no workspace.
-      const sandboxKey = sandboxThreadKey(slackAgentThreadKey(job.turn, job.assignment));
+      const sandboxKey = slackTurnSandboxKey(job.turn, job.assignment);
       for (const openSandbox of ports.sandboxes(sandboxKey)) {
         try {
           const sandbox = openSandbox();
@@ -422,7 +422,7 @@ export async function executeTurnJob(
      */
     const readStoppedSandbox = async (): Promise<TurnProgress | undefined> => {
       if (!frozenPlan?.codingWorkspace) return undefined;
-      const sandboxKey = sandboxThreadKey(slackAgentThreadKey(job.turn, job.assignment));
+      const sandboxKey = slackTurnSandboxKey(job.turn, job.assignment);
       return readSandboxTurnProgress(ports.sandboxes(sandboxKey), job.id);
     };
     // The stopped ending (KTD3). The state store drops (and counts) the rows

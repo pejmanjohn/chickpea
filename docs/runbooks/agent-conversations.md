@@ -93,8 +93,21 @@ delivered:
 
 An asked Agent keeps its own transcript of the thread, apart from the
 thread's own Agent, so answering an ask never resets the owner's transcript.
-It shares the thread's coding sandbox, as an Agent that takes a thread over
-does today.
+It also has its own coding sandbox for the thread: its workspaces,
+checkpoints and coding tasks never replace the owner's or another asked
+Agent's. A person's stop in the thread reaches the coding tasks of whichever
+Agent's run it stopped. (An Agent that takes a thread over keeps using the
+thread's sandbox, as before.)
+
+## Coordinating teammates
+
+One Agent can split work across others: its reply gives each teammate its
+own part, mentioning each once, and they take their turns in that order.
+Each asked Agent that was asked to report back mentions the coordinator with
+its result, and the coordinator combines the results for the person. When
+two teammates report back, the coordinator may answer twice: once after the
+first report, which is all it can see at that point, and again after the
+second. The limit on asks bounds the whole exchange.
 
 ## Logs
 

@@ -225,9 +225,11 @@ test("the runner's stop RPC persists the stop first, leaves slow work to its ala
   assert.doesNotMatch(rpc, /runSoon|runAlarm|codingReport|stopCodingTasks/);
   assert.match(rpc, /return \{ acknowledged: false \};/, 'a stop it could not persist stays owed');
   // The host abort is the Flue handle built from the persisted envelope, and
-  // the cascade reads the host turn's records on the thread's Sandbox.
+  // the cascade reads the host turn's records on its Sandbox: a guest's own,
+  // else the thread's.
   assert.match(runner, /abortHost: \(target\) => abortSlackThreadAgent\(target\)/);
-  assert.match(runner, /threadSandboxKey: sandboxThreadKey\(notice\.runnerKey\),\s*hostTurnId: notice\.turnJobId,\s*workers: cloudflareCodingWorkerStopClient\(env\)/);
+  assert.match(runner, /threadSandboxKey: await this\.stoppedTurnSandboxKey\(notice\),\s*hostTurnId: notice\.turnJobId,\s*workers: cloudflareCodingWorkerStopClient\(env\)/);
+  assert.match(runner, /if \(job\) return slackTurnSandboxKey\(job\.turn, job\.assignment\);[\s\S]*return sandboxThreadKey\(notice\.runnerKey\);/);
   assert.match(runner, /env\.SANDBOX \?\? env\.Sandbox\s*\?\s*\{\s*stopCodingTasks:/,
     'no Sandbox binding, no coding job: a stop owes no cascade');
   // The alarm runs what each stop owes, and the turn port reports receipts

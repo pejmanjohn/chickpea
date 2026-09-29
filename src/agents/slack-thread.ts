@@ -307,6 +307,7 @@ import {
   compileWebsiteLogins,
   parseRuntimePlanV2,
   runtimePlanConversationKey,
+  runtimePlanGuestSandboxKey,
   type RuntimePlanApiConnectionV2,
   type RuntimePlanRepositoryV2,
   type RuntimePlanV2,
@@ -872,8 +873,10 @@ export function useChickpeaSlackRuntimeCapabilities(
   writeInteractiveQuestion?: (record: SlackInteractiveQuestion) => void,
   writeDisplayComponent?: (parts: SlackDisplayComponentPart[]) => void,
 ): void {
+  const guestSandboxKey = runtimePlanGuestSandboxKey(plan);
   useRuntimePlanAgent(plan, id, {
     responseMetadataModel: plan.model,
+    ...(guestSandboxKey ? { sandboxConversationKey: guestSandboxKey } : {}),
     ...(turn ? { turn } : {}),
     ...(threadImages?.length ? { threadImages } : {}),
     includeAgentAuthoringSkill: true,

@@ -183,6 +183,7 @@ export function agentTeammateInstructions(
     `Teammates: other Chickpea Agents work in this Slack Channel. To ask one of them something, mention their handle as plain text in your reply, for example @${example}. They answer in this thread after your reply, and everyone in the thread sees the exchange.`,
     '- Ask only when you need that teammate\'s answer or work, with one clear question.',
     '- Mentioning a handle always asks that Agent. Never mention a teammate in passing, to thank them, or to acknowledge an answer, and never mention your own handle.',
+    '- To split work across teammates, give each one its own specific part in one reply, mentioning each once; they take their turns in that order. If you will combine their results, ask them to mention you when they are done, then give the person one combined answer.',
     '- A long back-and-forth between Agents pauses until a person replies, so settle what you can in each reply.',
     `Teammates here: ${teammates.map(({ name, handle }) => `${JSON.stringify(name)} (@${handle})`).join(', ')}.`,
   ].join('\n');

@@ -20,7 +20,7 @@ import {
 } from '../sandbox/coding-task-stop.ts';
 import { cloudflareSandboxOptionVariants } from '../sandbox/lifecycle.ts';
 import { reconnectingSandboxStub } from '../sandbox/reconnect.ts';
-import { sandboxThreadKey } from '../sandbox/thread-key.ts';
+import { sandboxThreadKey, slackTurnSandboxKey } from '../sandbox/thread-key.ts';
 import { DoSqlStateDb } from '../state/do-state-db.ts';
 import { createPlatformProductTelemetry } from '../telemetry/platform.ts';
 import {
@@ -153,9 +153,9 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
       abortHost: (target) => abortSlackThreadAgent(target),
       ...(env.SANDBOX ?? env.Sandbox
         ? {
-            stopCodingTasks: (notice: TurnStopNotice) => stopCodingTasks(threadCodingTaskStopPorts({
+            stopCodingTasks: async (notice: TurnStopNotice) => stopCodingTasks(threadCodingTaskStopPorts({
               sandboxes: sandboxTurnReaders(env),
-              threadSandboxKey: sandboxThreadKey(notice.runnerKey),
+              threadSandboxKey: await this.stoppedTurnSandboxKey(notice),
               hostTurnId: notice.turnJobId,
               workers: cloudflareCodingWorkerStopClient(env),
             })),
@@ -298,6 +298,21 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
   private stateStore(): CfTurnJobsForRunner {
     const env = this.env as PlatformEnv;
     return new CfTurnJobsForRunner(() => tagStateStub(env));
+  }
+
+  /**
+   * The Sandbox holding a stopped turn's coding tasks: a guest's own, read
+   * from its turn row, else the thread's. A row that cannot be read falls
+   * back to the thread's, as before guests had their own.
+   */
+  private async stoppedTurnSandboxKey(notice: TurnStopNotice): Promise<string> {
+    try {
+      const job = (await this.stateStore().view(notice.turnJobId)).job;
+      if (job) return slackTurnSandboxKey(job.turn, job.assignment);
+    } catch {
+      // The thread's Sandbox is where every non-guest turn keeps its tasks.
+    }
+    return sandboxThreadKey(notice.runnerKey);
   }
 
   private async runAlarm(): Promise<ThreadRunnerAlarmResult> {

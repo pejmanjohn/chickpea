@@ -64,6 +64,15 @@ export function slackGuestThreadKey(threadKey: string, agentId: string): string 
   return `${threadKey}:guest-${agentId}`;
 }
 
+/**
+ * The owner a guest's coding Sandbox is bound to. An Agent answering an ask
+ * in a thread another Agent owns never shares that thread's Sandbox: each
+ * guest has its own workspaces, checkpoints and coding tasks there.
+ */
+export function guestSandboxOwner(agentId: string): string {
+  return `guest:${agentId}`;
+}
+
 export function memoryEpochThreadKey(baseThreadKey: string, epoch: number): string {
   if (!Number.isInteger(epoch) || epoch < 1) {
     throw new Error('Memory conversation epoch must be a positive integer');
