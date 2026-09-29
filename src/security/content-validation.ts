@@ -8,6 +8,10 @@ type CredentialRange = [number, number];
  * text markers the Slack streaming path holds back until a token boundary
  * proves terminal redaction can no longer rewrite the tail.
  *
+ * Every signature but PEM armor stays on one line, so a streamed line never
+ * changes once it ends: tokens hold no whitespace, and an assignment's value
+ * sits on its name's line (`NAME=` then a line break redacts nothing).
+ *
  * Flags are per signature on purpose: the AWS access-key-id shape is
  * case-sensitive today, and widening it to `i` would change what counts as a
  * credential.
@@ -20,19 +24,7 @@ const CREDENTIAL_SIGNATURES: readonly (
   // so a token glued to a BEGIN line (`xoxb-…-----BEGIN …`) would consume
   // its dashes and `BEGIN` and leave the key after it. A token inside armor
   // goes with the block.
-  {
-    // Consume complete armor, including traditional encrypted-PEM metadata
-    // and blank lines. The hard character ceiling bounds malformed input.
-    find: completePemArmor,
-    markers: ['-----BEGIN '],
-  },
-  {
-    // A truncated PEM has no trustworthy content boundary. Fail closed by
-    // removing the bounded remainder instead of exposing key material after
-    // merely replacing the BEGIN line.
-    find: truncatedPemArmor,
-    markers: [],
-  },
+  { find: pemArmorRanges, markers: ['-----BEGIN '] },
   { source: String.raw`\bxox[a-z]-[a-z0-9-]{20,}\b`, flags: 'i', markers: ['xox'] },
   { source: String.raw`\bxapp-[a-z0-9-]{20,}\b`, flags: 'i', markers: ['xapp-'] },
   { source: String.raw`\bsk-ant-[a-z0-9_-]{20,}\b`, flags: 'i', markers: ['sk-ant-'] },
@@ -49,7 +41,7 @@ const CREDENTIAL_SIGNATURES: readonly (
   { source: String.raw`\b(?:AKIA|ASIA)[A-Z0-9]{16}\b`, flags: '', markers: ['AKIA', 'ASIA'] },
   { source: String.raw`\bbb_(?:live|test)_[a-z0-9_-]{8,}`, flags: 'i', markers: ['bb_live_', 'bb_test_'] },
   {
-    source: String.raw`\b(?:CHICKPEA_(?:AUTH_SECRET|RECOVERY_TOKEN|CREDENTIAL_KEY_[A-Z0-9_]+)|TAG_ADMIN_TOKEN|ADMIN_TOKEN|SLACK_(?:BOT|APP)_TOKEN|ANTHROPIC_API_KEY|OPENAI_API_KEY|COMPOSIO_(?:API_KEY|WEBHOOK_SECRET)|GITHUB_TOKEN|BROWSERBASE_API_KEY)\s*=\s*[^\s]{8,}`,
+    source: String.raw`\b(?:CHICKPEA_(?:AUTH_SECRET|RECOVERY_TOKEN|CREDENTIAL_KEY_[A-Z0-9_]+)|TAG_ADMIN_TOKEN|ADMIN_TOKEN|SLACK_(?:BOT|APP)_TOKEN|ANTHROPIC_API_KEY|OPENAI_API_KEY|COMPOSIO_(?:API_KEY|WEBHOOK_SECRET)|GITHUB_TOKEN|BROWSERBASE_API_KEY)[ \t]*=[ \t]*[^\s]{8,}`,
     flags: 'i',
     markers: [
       'CHICKPEA_AUTH_SECRET',
@@ -68,7 +60,7 @@ const CREDENTIAL_SIGNATURES: readonly (
     ],
   },
   {
-    source: String.raw`\bAWS_(?:ACCESS_KEY_ID|SECRET_ACCESS_KEY)\b["']?\s*(?:=|:)\s*["']?[a-z0-9/+=]{8,}`,
+    source: String.raw`\bAWS_(?:ACCESS_KEY_ID|SECRET_ACCESS_KEY)\b["']?[ \t]*(?:=|:)[ \t]*["']?[a-z0-9/+=]{8,}`,
     flags: 'i',
     markers: ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY'],
   },
@@ -92,96 +84,22 @@ export function hasCredentialLikeContent(value: string): boolean {
   return CREDENTIAL_FINDERS.some((find) => find(value).length > 0);
 }
 
+/** Each signature redacts what the ones before it left. */
 export function redactCredentialLikeContent(text: string): string {
-  return traceCredentialRedaction(text).text;
+  return CREDENTIAL_FINDERS.reduce((value, find) => {
+    const ranges = find(value);
+    if (!ranges.length) return value;
+    let redacted = '';
+    let from = 0;
+    for (const [start, end] of ranges) {
+      redacted += `${value.slice(from, start)}${CREDENTIAL_REPLACEMENT}`;
+      from = end;
+    }
+    return redacted + value.slice(from);
+  }, text);
 }
 
 export const CREDENTIAL_REPLACEMENT = '[credential redacted]';
-
-/**
- * `redactCredentialLikeContent(text)`, and `source(at)`: where the character
- * at `at` of it came from in `text`, for a character `text` supplied rather
- * than a `[credential redacted]` marker, or the end.
- */
-export function traceCredentialRedaction(text: string): {
-  text: string;
-  source: (at: number) => number;
-} {
-  const { text: redacted, stages } = redactionStages(text);
-  return { text: redacted, source: (at) => positionsBefore(stages)(at) };
-}
-
-/**
- * Where `redactCredentialLikeContent` rewrites `text`, as `[start, end)`
- * ranges in order that never overlap; the rest of `text` stays as written.
- * A range that reads an earlier signature's marker (`OPENAI_API_KEY=` before
- * a redacted token) covers the text that marker replaced. Ranges that only
- * touch stay separate.
- */
-export function credentialMatchRanges(text: string): CredentialRange[] {
-  const { stages } = redactionStages(text);
-  // No signature starts inside a marker, so only an end can land in one and
-  // each stage's ranges stay in order as they map back.
-  const found = stages.flatMap((ranges, stage) => {
-    const before = positionsBefore(stages.slice(0, stage));
-    return ranges.map(([start, end]): CredentialRange => [before(start), before(end, true)]);
-  });
-  const merged: CredentialRange[] = [];
-  for (const [start, end] of found.sort(([a], [b]) => a - b)) {
-    const last = merged.at(-1);
-    if (last && start < last[1]) last[1] = Math.max(last[1], end);
-    else merged.push([start, end]);
-  }
-  return merged;
-}
-
-/**
- * The redacted text, and each matching signature's ranges in the text it
- * read. Each signature reads what the ones before it left (the truncated PEM
- * finder reads the text after complete blocks are replaced), so a position
- * maps back one signature at a time.
- */
-function redactionStages(text: string): { text: string; stages: CredentialRange[][] } {
-  const stages: CredentialRange[][] = [];
-  let redacted = text;
-  for (const find of CREDENTIAL_FINDERS) {
-    const ranges = find(redacted);
-    if (!ranges.length) continue;
-    stages.push(ranges);
-    let replaced = '';
-    let from = 0;
-    for (const [start, end] of ranges) {
-      replaced += `${redacted.slice(from, start)}${CREDENTIAL_REPLACEMENT}`;
-      from = end;
-    }
-    redacted = replaced + redacted.slice(from);
-  }
-  return { text: redacted, stages };
-}
-
-/**
- * Where positions sat before `stages` replaced their ranges, asked in
- * ascending order, so one walk of each stage answers them all. Inside a
- * marker, a position is its range's start, and a range end that reads any
- * of the marker is its range's end.
- */
-function positionsBefore(stages: readonly CredentialRange[][]): (at: number, isEnd?: boolean) => number {
-  const walks = stages.map((ranges) => {
-    let next = 0;
-    let shift = 0;
-    return (at: number, isEnd: boolean): number => {
-      for (; next < ranges.length; next += 1) {
-        const [start, end] = ranges[next]!;
-        const marker = start - shift;
-        if (at < marker) break;
-        if (at < marker + CREDENTIAL_REPLACEMENT.length) return isEnd && at > marker ? end : start;
-        shift += end - start - CREDENTIAL_REPLACEMENT.length;
-      }
-      return at + shift;
-    };
-  });
-  return (at, isEnd = false) => walks.reduceRight((position, walk) => walk(position, isEnd), at);
-}
 
 /** Literal prefixes of the signatures above, for streaming tail suppression. */
 export function credentialMarkers(): readonly string[] {
@@ -197,24 +115,28 @@ export function credentialMarkers(): readonly string[] {
 const PEM_BEGIN = /-----BEGIN /gi;
 const PEM_END = /-----END /gi;
 const PEM_LABEL_AT = /(?:[A-Z0-9](?:[A-Z0-9 ]|-(?!-)){0,62} )?PRIVATE KEY(?=-----)/iy;
-const PEM_LABEL_MAX = 1 + 62 + 1 + 'PRIVATE KEY'.length;
 // The most text armor holds after its BEGIN line: up to the END line, or
 // for a truncated block, up to the end of the text.
 const PEM_BODY_MAX = 262_144;
 
 /**
- * Complete armor: a BEGIN line, at most `PEM_BODY_MAX` characters, then the
- * first END line with the same label in any case. Blocks never overlap; a
- * BEGIN line inside one is body text. A BEGIN line in the closing dashes of
- * the END line before it (`…KEY-----BEGIN …`) takes those dashes: left in
- * that block, they would hide the BEGIN line from the truncated finder and
- * show the key after it.
+ * Where redaction removes PEM armor from `text`, in order. A complete block
+ * is a BEGIN line, at most `PEM_BODY_MAX` characters, then the first END
+ * line with the same label in any case. Blocks never overlap; a BEGIN line
+ * inside one is body text. A BEGIN line in the closing dashes of the END
+ * line before it (`…KEY-----BEGIN …`) takes those dashes: left in that
+ * block, they would hide the BEGIN line from the truncated block that
+ * starts there and show the key after it.
+ *
+ * A truncated PEM has no trustworthy content boundary, so it fails closed:
+ * the first BEGIN line no block holds, within `PEM_BODY_MAX` of the end,
+ * is redacted to the end, taking any complete block after it.
  *
  * Each END line is read once and each BEGIN line looks its label up, so text
  * full of unclosed BEGIN lines stays linear: searching from every BEGIN line
  * was quadratic, and the streaming path redacts the whole answer per chunk.
  */
-function completePemArmor(text: string): CredentialRange[] {
+export function pemArmorRanges(text: string): CredentialRange[] {
   const armor: CredentialRange[] = [];
   let endLines: Map<string, number[]> | undefined;
   let from = 0;
@@ -231,16 +153,12 @@ function completePemArmor(text: string): CredentialRange[] {
     if (end !== undefined && end - bodyStart <= PEM_BODY_MAX) {
       from = end + '-----END '.length + label.length + '-----'.length;
       armor.push([begin, from]);
+    } else if (text.length - bodyStart <= PEM_BODY_MAX) {
+      armor.push([begin, text.length]);
+      break;
     }
   }
   return armor;
-}
-
-/** A truncated block: from the first BEGIN line within `PEM_BODY_MAX` of the end, to the end. */
-function truncatedPemArmor(text: string): CredentialRange[] {
-  const line = pemBeginLines(text).find(({ labelEnd }) =>
-    text.length - (labelEnd + '-----'.length) <= PEM_BODY_MAX);
-  return line ? [[line.begin, text.length]] : [];
 }
 
 /**
@@ -259,22 +177,6 @@ function pemBeginLines(text: string): Array<{ begin: number; labelEnd: number }>
     closed = labelEnd + '-----'.length;
   }
   return lines;
-}
-
-const PEM_BEGIN_LINE_MAX = '-----BEGIN '.length + PEM_LABEL_MAX + '-----'.length;
-
-/**
- * The start of the PEM BEGIN line `at` falls inside, else `at`, reading
- * nothing at or after `end`. Whether a `-----BEGIN ` starts a line depends
- * only on the line before it, so a window of two lines' length before `at`
- * decides it.
- */
-export function pemBeginLineStart(text: string, at: number, end = text.length): number {
-  const from = Math.max(0, at - 2 * PEM_BEGIN_LINE_MAX);
-  const window = text.slice(from, Math.min(end, at + PEM_BEGIN_LINE_MAX));
-  const line = pemBeginLines(window).find(({ begin, labelEnd }) =>
-    from + begin < at && at < from + labelEnd + '-----'.length);
-  return line ? from + line.begin : at;
 }
 
 /** Where each END line starts, by the label it closes (upper-cased), in order. */
