@@ -348,6 +348,7 @@ type ProviderSummaryFixture = {
   enabled?: boolean;
   activeAuthMethod?: 'api_key' | 'subscription';
   subscriptionAvailable?: boolean;
+  subscriptionProtocol?: 'chatgpt-plan' | 'codex';
   subscription?: OpenAiSubscriptionStatusFixture;
 };
 type ModelProviderFixture = {
@@ -13097,7 +13098,7 @@ test('Node onboarding sends OpenAI subscription setup through Settings and accep
   assert.match(connected.app.innerHTML, /Meet Chickpea in Slack/);
 });
 
-test('subscription onboarding return affordances stay Node-only', async () => {
+test('subscription onboarding offers ChatGPT before API keys on Cloudflare', async () => {
   const settings = runAdminPageHarness({
     initialPath: '/admin/settings/providers',
     initialSearch: '?return=onboarding',
@@ -13126,9 +13127,9 @@ test('subscription onboarding return affordances stay Node-only', async () => {
   cloudflare.listeners.click?.({
     target: actionTarget({ 'data-action': 'onboarding-provider-select', 'data-provider': 'openai' }),
   });
-  assert.doesNotMatch(cloudflare.app.innerHTML, /ChatGPT subscription|return=onboarding/);
-  assert.match(cloudflare.app.innerHTML, /Needs API key/);
-  assert.match(cloudflare.app.innerHTML, /Use OpenAI models with a Platform API key\./);
+  assert.match(cloudflare.app.innerHTML, /return=onboarding">Continue with ChatGPT/);
+  assert.match(cloudflare.app.innerHTML, /OpenAI API key/);
+  assert.ok(cloudflare.app.innerHTML.indexOf('Continue with ChatGPT') < cloudflare.app.innerHTML.indexOf('id="onboarding-provider-key"'));
 });
 
 test('onboarding refreshes the image catalog and server-selected image default after adding an OpenAI key', async () => {
@@ -15481,12 +15482,13 @@ test('Settings shows the selected OpenAI chat method without exposing account id
   assert.doesNotMatch(harness.app.innerHTML, /oas_safe_fixture/);
 });
 
-test('Settings fails closed on Cloudflare even if an OpenAI subscription capability is reported', async () => {
+test('Settings offers the official Cloudflare ChatGPT flow and keeps API-key images explicit', async () => {
   const harness = runAdminPageHarness({
     cloudflare: true,
+    installationOwner: true,
     providers: [
       { id: 'anthropic', status: 'missing', modelCount: null },
-      { id: 'openai', status: 'missing', modelCount: null, activeAuthMethod: 'api_key', subscriptionAvailable: true, subscription: { state: 'disconnected', updatedAt: 0 } },
+      { id: 'openai', status: 'missing', modelCount: null, activeAuthMethod: 'api_key', subscriptionAvailable: true, subscriptionProtocol: 'chatgpt-plan', subscription: { state: 'disconnected', updatedAt: 0 } },
       { id: 'openrouter', status: 'missing', modelCount: null },
       { id: 'workers-ai', status: 'env', modelCount: null },
     ],
@@ -15495,8 +15497,10 @@ test('Settings fails closed on Cloudflare even if an OpenAI subscription capabil
   harness.listeners.click?.({ target: actionTarget({ 'data-action': 'open-settings' }) });
   await flushAsync();
 
-  assert.doesNotMatch(harness.app.innerHTML, /ChatGPT subscription|Connect subscription|openai-subscription|not supported/);
-  assert.match(harness.app.innerHTML, /Platform billing requires an API key here/);
+  assert.match(harness.app.innerHTML, /Sign in with ChatGPT/);
+  assert.match(harness.app.innerHTML, /data-action="chatgpt-plan-open"/);
+  assert.match(harness.app.innerHTML, /Image generation requires an OpenAI API key/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="openai-subscription-start"/);
 });
 
 test('Settings lets Cloudflare recover a persisted subscription selection with an API key', async () => {

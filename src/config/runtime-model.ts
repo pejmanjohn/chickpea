@@ -1,3 +1,6 @@
+import { isCloudflareTarget } from './runtime-target.ts';
+import { planDependencies } from '../chatgpt-plan/connection.ts';
+import { bindChatgptPlanProvider, CHATGPT_PLAN_PROVIDER, registerChatgptPlanModel } from '../chatgpt-plan/provider.ts';
 import { createHash } from 'node:crypto';
 
 import { resolveOpenAiAuthMethod } from './openai-auth.ts';
@@ -64,7 +67,8 @@ export interface ResolvedRuntimeModel {
 /** Safe model-route facts carried across the Flue creation boundary. */
 export type FrozenRuntimeModelRoute =
   | FrozenHostedCatalogModelRoute
-  | FrozenOpenRouterLiveModelRoute;
+  | FrozenOpenRouterLiveModelRoute
+  | { source: 'chatgpt_plan' };
 
 export interface FrozenHostedCatalogModelRoute {
   source: 'hosted_catalog';
@@ -155,6 +159,7 @@ export function freezeRuntimeModelRoute(
   if (providerPrefix(canonicalModel) === 'openrouter') {
     return freezeOpenRouterRuntimeModelRoute(canonicalModel);
   }
+  if (isCloudflareTarget() && providerPrefix(canonicalModel) === 'openai' && providerAuthRoute === 'openai_subscription') return { source: 'chatgpt_plan' };
   const lane = authLaneForCanonicalModel(canonicalModel, providerAuthRoute);
   if (!lane) return undefined;
   const route = resolveActiveCatalogRoute(canonicalModel, lane);
@@ -181,6 +186,11 @@ export function registerFrozenRuntimeModelRoute(
   route: FrozenRuntimeModelRoute | undefined,
 ): void {
   if (!route) return;
+  if (route.source === 'chatgpt_plan') {
+    if (!canonicalModel.startsWith('openai/') || runtimeModel !== `${CHATGPT_PLAN_PROVIDER}/${canonicalModel.slice(7)}`) throw new Error('ChatGPT model route does not match.');
+    registerChatgptPlanModel(canonicalModel.slice(7));
+    return;
+  }
   if (route.source === 'openrouter_live_catalog') {
     registerFrozenOpenRouterRuntimeModelRoute(canonicalModel, runtimeModel, route);
     return;
@@ -228,6 +238,11 @@ export function validateFrozenRuntimeModelRoute(
   route: FrozenRuntimeModelRoute | undefined,
 ): void {
   if (!route) return;
+  if (route.source === 'chatgpt_plan') {
+    if (!canonicalModel.startsWith('openai/') || runtimeModel !== `${CHATGPT_PLAN_PROVIDER}/${canonicalModel.slice(7)}`) throw new Error('ChatGPT model route does not match.');
+    registerChatgptPlanModel(canonicalModel.slice(7));
+    return;
+  }
   if (route.source === 'openrouter_live_catalog') {
     frozenOpenRouterRuntimeModel(canonicalModel, runtimeModel, route);
     return;
@@ -285,7 +300,7 @@ export async function resolveRuntimeModel(
   dependencies: RuntimeModelDependencies,
 ): Promise<ResolvedRuntimeModel> {
   const providerId = providerPrefix(canonicalModel);
-  if (isOpenAiSubscriptionProviderId(providerId)) {
+  if (providerId === CHATGPT_PLAN_PROVIDER || isOpenAiSubscriptionProviderId(providerId)) {
     throw new OpenAiSubscriptionError('unsupported_model');
   }
   if (isInternalCompatibilityProvider(providerId)) {
@@ -296,6 +311,11 @@ export async function resolveRuntimeModel(
         dependencies.settings,
       )
     : undefined;
+  if (openAiAuthorization === 'subscription' && isCloudflareTarget()) {
+    const modelId = canonicalModel.slice('openai/'.length);
+    await bindChatgptPlanProvider(planDependencies(dependencies.env, dependencies.settings), modelId);
+    return { model: `${CHATGPT_PLAN_PROVIDER}/${modelId}`, providerAuthRoute: 'openai_subscription' };
+  }
   if (openAiAuthorization === 'subscription') {
     // This target check precedes catalog refresh and credential binding so a
     // stored Node selection cannot cause Cloudflare auth or model egress.
@@ -385,7 +405,7 @@ export async function resolveRuntimeModel(
 export function canonicalRuntimeModel(model: string): string {
   const separator = model.indexOf('/');
   const providerId = separator > 0 ? model.slice(0, separator) : model;
-  const canonical = isOpenAiSubscriptionProviderId(providerId)
+  const canonical = providerId === CHATGPT_PLAN_PROVIDER || isOpenAiSubscriptionProviderId(providerId)
     ? `openai/${model.slice(separator + 1)}`
     : model;
   return canonicalCompatibilityModel(canonical);

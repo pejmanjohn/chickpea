@@ -252,7 +252,7 @@ test('runtime admission loads a persisted Subscription-only hosted route without
   }
 });
 
-test('Cloudflare rejects a stored Subscription selection before catalog, credentials, or binding', async (t) => {
+test('Cloudflare requires its own ChatGPT plan connection without using the legacy catalog or API key', async (t) => {
   const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
   Object.defineProperty(globalThis, 'navigator', {
     configurable: true,
@@ -281,7 +281,7 @@ test('Cloudflare rejects a stored Subscription selection before catalog, credent
       bindSubscription: async () => { events.push('subscription'); },
     }),
     (error: unknown) =>
-      error instanceof OpenAiSubscriptionError && error.code === 'unsupported_runtime',
+      error instanceof OpenAiSubscriptionError && error.code === 'auth_reconnect_required',
   );
   assert.deepEqual(events, []);
   assert.equal(await settings.getSetting(OPENAI_AUTH_METHOD_SETTING_KEY), 'subscription');

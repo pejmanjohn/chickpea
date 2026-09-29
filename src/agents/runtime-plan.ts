@@ -1553,6 +1553,10 @@ function parseModelCredential(value: unknown): RuntimePlanModelCredentialV3 {
 }
 
 function parseFrozenRuntimeModelRoute(value: unknown): FrozenRuntimeModelRoute {
+  if ((value as { source?: unknown } | null)?.source === 'chatgpt_plan') {
+    exactRecord(value, 'runtimeModelRoute', ['source']);
+    return { source: 'chatgpt_plan' };
+  }
   if ((value as { source?: unknown } | null)?.source === 'openrouter_live_catalog') {
     return parseFrozenOpenRouterLiveModelRoute(value);
   }

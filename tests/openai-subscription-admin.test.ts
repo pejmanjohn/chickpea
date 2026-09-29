@@ -583,7 +583,7 @@ test('subscription-only readiness supports workspace defaults and onboarding mod
   assert.ok(selectedJson.models.includes('openai/gpt-5.6-sol'));
 });
 
-test('Cloudflare rejects subscription authorization and selection before protocol work but permits cleanup', async (t) => {
+test('Cloudflare exposes ChatGPT plan setup while rejecting legacy Codex device authorization', async (t) => {
   const config = new SqliteConfigStore(':memory:', { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   t.after(() => { config.close(); settings.close(); });
@@ -626,7 +626,7 @@ test('Cloudflare rejects subscription authorization and selection before protoco
   assert.deepEqual(openAi && {
     activeAuthMethod: openAi.activeAuthMethod,
     subscriptionAvailable: openAi.subscriptionAvailable,
-  }, { activeAuthMethod: 'subscription', subscriptionAvailable: false });
+  }, { activeAuthMethod: 'subscription', subscriptionAvailable: true });
 
   for (const [path, body] of [
     ['/admin/api/providers/openai/subscription/start', {}],
@@ -647,10 +647,10 @@ test('Cloudflare rejects subscription authorization and selection before protoco
     body: JSON.stringify({ method: 'subscription' }),
   });
   assert.equal(selection.status, 409);
-  assert.equal((await selection.json() as { error: string }).error, 'unsupported_runtime');
+  assert.equal((await selection.json() as { error: string }).error, 'openai_subscription_missing');
   const models = await app.request('/admin/api/providers/openai/models', { headers: auth() });
   assert.equal(models.status, 409);
-  assert.deepEqual(await models.json(), { error: 'unsupported_runtime', provider: 'openai' });
+  assert.deepEqual(await models.json(), { error: 'auth_reconnect_required' });
   assert.equal(protocolCalls, 0);
   assert.equal(await settings.getSetting('provider.openai.authMethod'), 'subscription');
 
@@ -716,4 +716,34 @@ test('OpenAI subscription admin routes map safe failure codes to stable HTTP sta
   });
   assert.equal(unexpected.status, 502);
   assert.deepEqual(await unexpected.json(), { error: 'provider_unavailable' });
+});
+
+test('Cloudflare ChatGPT setup requires a human owner and keeps native handoff separate from browser requests', async t => {
+  const navigatorDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { userAgent: 'Cloudflare-Workers' } });
+  t.after(() => {
+    if (navigatorDescriptor) Object.defineProperty(globalThis, 'navigator', navigatorDescriptor);
+    else Reflect.deleteProperty(globalThis, 'navigator');
+  });
+  for (const role of ['owner', 'admin', 'member'] as const) {
+    const config = new SqliteConfigStore(':memory:', { agents: [] });
+    const settings = new SqliteSettingsStore(':memory:');
+    t.after(() => { config.close(); settings.close(); });
+    const principal = { userId: 'test', membershipId: 'test', organizationId: 'org_oss', role,
+      authenticatorKind: 'test_slack_session' as const, credentialId: 'test', correlationId: 'test', machine: false };
+    const app = createAdminRoutes({ store: config, settings, ...testAdminAuthority(ADMIN_TOKEN, 'http://localhost', undefined, principal) });
+    const descriptor = { challenge: 'a'.repeat(43), state: 'b'.repeat(43), nonce: 'c'.repeat(43), redirectUri: 'http://127.0.0.1:1234/auth/callback' };
+    const response = await app.request('/admin/api/providers/openai/chatgpt-plan/prepare', {
+      method: 'POST', headers: { ...auth(), 'content-type': 'application/json' }, body: JSON.stringify(descriptor),
+    });
+    assert.equal(response.status, role === 'owner' ? 200 : 403, role);
+    if (role !== 'owner') assert.equal(await settings.getSetting('chatgpt-plan.pending'), undefined);
+    for (const action of ['confirm', 'cancel']) {
+      if (role === 'owner') continue;
+      const denied = await app.request(`/admin/api/providers/openai/chatgpt-plan/${action}`, { method: 'POST', headers: { ...auth(), 'content-type': 'application/json' }, body: '{}' });
+      assert.equal(denied.status, 403);
+    }
+    const browserHandoff = await app.request('/auth/chatgpt-plan/handoff', { method: 'POST', headers: { origin: 'http://localhost', 'content-type': 'application/json' }, body: JSON.stringify({ verifier: 'd'.repeat(43) }) });
+    assert.equal(browserHandoff.status, 403);
+  }
 });

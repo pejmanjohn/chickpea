@@ -26,13 +26,14 @@ test('every public asset is served byte-identically without authentication', asy
     assert.equal(response.status, 200, path);
     assert.equal(
       response.headers.get('content-type'),
-      path.endsWith('.js') ? 'text/javascript; charset=utf-8'
+      /\.m?js$/.test(path) ? 'text/javascript; charset=utf-8'
         : path.endsWith('.css') ? 'text/css; charset=utf-8'
         : path.endsWith('.webp') ? 'image/webp'
         : 'image/png',
     );
     assert.equal(response.headers.get('cache-control'), 'public, max-age=3600');
     assert.equal(response.headers.get('x-content-type-options'), 'nosniff');
+    if (path.endsWith('.mjs')) assert.match(response.headers.get('content-disposition') ?? '', /^attachment;/);
     assert.deepEqual(Buffer.from(await response.arrayBuffer()), await readFile(`assets/${path}`), path);
   }
 });

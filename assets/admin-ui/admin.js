@@ -304,6 +304,7 @@
     // The device authorization capability is intentionally browser-memory only.
     // It is cleared on cancellation, expiry, completion, or navigation and is
     // never rendered or persisted.
+    chatgptPlan: { descriptor: null, helperOpen: false, timer: null },
     openAiSubscription: { attempt: null, timer: null, requestId: 0, busy: "", error: "", notice: "" },
     // null = favorites not yet fetched (picker/Settings load them lazily). The
     // profile Model picker distinguishes "not loaded" (fall back to static
@@ -2359,12 +2360,12 @@
       var ready = onboardingProviderConfigured(provider.id);
       var status = ready
         ? '<span class="onboarding-provider-tab-status">' + (provider.id === "cloudflare" ? 'Ready, no key' : 'Ready') + '</span>'
-        : '<span class="onboarding-provider-tab-sub">' + esc(!IS_CLOUDFLARE && provider.id === "openai" ? "Needs API key or subscription" : provider.sublabel) + '</span>';
+        : '<span class="onboarding-provider-tab-sub">' + esc(provider.id === "openai" ? "Needs API key or subscription" : provider.sublabel) + '</span>';
       return '<button type="button" class="onboarding-provider-tab' + (active ? ' selected' : '') + '" data-action="onboarding-provider-select" data-provider="' + esc(provider.id) + '" aria-pressed="' + String(active) + '">' +
         onboardingProviderLogoHtml(provider) + '<span class="onboarding-provider-tab-copy"><span>' + esc(provider.tabName || provider.name) + '</span>' + status + '</span></button>';
     }).join("");
     var canContinue = !!selected && (configured || (selected.id !== "cloudflare" && !!String(state.onboardingProviderKey || "").trim()));
-    var description = !IS_CLOUDFLARE && selected && selected.id === "openai"
+    var description = selected && selected.id === "openai"
       ? "Use OpenAI models with a Platform API key or ChatGPT subscription."
       : selected && selected.description;
     var panel = selected
@@ -2379,14 +2380,14 @@
   }
 
   function onboardingProviderConfigurationHtml(selected, configured) {
-    var subscriptionSetup = !IS_CLOUDFLARE && selected.id === "openai"
-      ? '<div class="onboarding-form-actions"><p class="hint"><strong>Have a ChatGPT subscription?</strong><br>Connect it in Model providers, select it for chat, then return here to choose a model.</p><a class="btn btn-soft" href="/admin/settings/providers?return=onboarding">Connect ChatGPT subscription</a></div>'
+    var subscriptionSetup = selected.id === "openai"
+      ? '<div class="onboarding-form-actions"><p class="hint"><strong>Have a ChatGPT subscription?</strong><br>Sign in to use your plan for chat, then return here to choose a model.</p><a class="btn btn-primary" href="/admin/settings/providers?return=onboarding">' + (IS_CLOUDFLARE ? 'Continue with ChatGPT' : 'Connect ChatGPT subscription') + '</a></div>'
       : "";
-    return (configured
+    return subscriptionSetup + (configured
       ? '<p class="onboarding-provider-ready">' + esc(selected.name) + ' is ready to use.</p>'
       : selected.id === "cloudflare"
         ? '<p class="field-error" role="alert">Cloudflare Workers AI is not available for this deployment.</p>'
-        : '<label class="field" for="onboarding-provider-key"><span class="field-label">' + esc(selected.keyLabel) + '</span><input class="input" id="onboarding-provider-key" type="password" autocomplete="off" spellcheck="false" data-action="onboarding-provider-key" data-provider="' + esc(selected.id) + '" value="' + esc(state.onboardingProviderKey) + '" placeholder="Paste your key"></label><p class="onboarding-provider-secret-note">Stored encrypted and never shown again.</p>') + subscriptionSetup;
+        : '<label class="field" for="onboarding-provider-key"><span class="field-label">' + esc(selected.keyLabel) + '</span><input class="input" id="onboarding-provider-key" type="password" autocomplete="off" spellcheck="false" data-action="onboarding-provider-key" data-provider="' + esc(selected.id) + '" value="' + esc(state.onboardingProviderKey) + '" placeholder="Paste your key"></label><p class="onboarding-provider-secret-note">Stored encrypted and never shown again.</p>');
   }
 
   function onboardingModelOptions() {
@@ -9274,7 +9275,7 @@
     var head = '<div style="display:flex; flex-direction:column; gap:6px;">' +
       '<h1 class="page-title">Settings</h1>' +
       '<p class="hint">Configure GitHub, model providers, and outbound internet access for the sandbox.</p></div>';
-    var onboardingReturn = !IS_CLOUDFLARE && typeof location !== "undefined" &&
+    var onboardingReturn = typeof location !== "undefined" &&
         new URLSearchParams(location.search || "").get("return") === "onboarding"
       ? '<div class="callout"><span>Connect a ChatGPT subscription and select it for chat. Then return to setup to choose its model.</span><a class="btn btn-primary btn-sm" href="/admin/onboarding">Return to setup</a></div>'
       : "";
@@ -9907,7 +9908,51 @@
       '<div class="prov-actions">' + controls + '</div>';
   }
 
+  function chatgptPlanControlsHtml(summary) {
+    var status = summary.subscription || {};
+    var ui = state.openAiSubscription;
+    var setup = state.chatgptPlan;
+    var disabled = ui.busy ? ' disabled' : '';
+    var copy = status.state === "connected"
+      ? 'Connected as <strong>' + esc(status.email || "your ChatGPT account") + '</strong>. This account powers this installation’s Agents.'
+      : 'Use your ChatGPT plan for the models available to your account. Usage shares your plan’s limits.';
+    var controls = '';
+    if (!INSTALLATION_OWNER) {
+      controls = '<p class="hint">Ask the installation owner to connect ChatGPT.</p>';
+    } else if (status.pending && status.pending.state === "confirm") {
+      copy = 'Use <strong>' + esc(status.pending.email || "this ChatGPT account") + '</strong> to power this installation’s Agents?';
+      controls = '<button type="button" class="btn btn-primary" data-action="chatgpt-plan-confirm"' + disabled + '>Use this account</button><button type="button" class="btn btn-ghost" data-action="chatgpt-plan-cancel"' + disabled + '>Cancel</button>';
+    } else if (status.pending) {
+      copy = 'Finish signing in with OpenAI in the browser opened by the helper. Return here to confirm your account.';
+      controls = '<button type="button" class="btn btn-ghost" data-action="chatgpt-plan-cancel"' + disabled + '>Cancel sign-in</button>';
+    } else if (setup.descriptor) {
+      copy = 'Your sign-in helper is ready. Continue to open OpenAI and choose the ChatGPT account for this installation.';
+      controls = '<button type="button" class="btn btn-primary" data-action="chatgpt-plan-prepare"' + disabled + '>Continue with ChatGPT</button>';
+    } else {
+      controls = '<button type="button" class="btn btn-primary" data-action="chatgpt-plan-open"' + disabled + '>' + (status.state === "connected" ? 'Reconnect ChatGPT' : 'Continue with ChatGPT') + '</button>';
+      if (status.state === "connected") controls += '<button type="button" class="btn btn-ghost danger-text" data-action="openai-subscription-disconnect"' + disabled + '>Disconnect</button>';
+      if (setup.helperOpen) controls += '<div class="provider-card-copy"><p>Download the sign-in helper, then run it from the folder where you saved it with Node.js 24. It opens Chickpea and OpenAI in your browser.</p><a class="btn btn-soft btn-sm" href="/chickpea-chatgpt-connect.mjs" download="chickpea-chatgpt-connect.mjs">Download sign-in helper</a><pre class="mono">' + esc('node chickpea-chatgpt-connect.mjs ' + location.origin) + '</pre></div>';
+    }
+    return '<div class="provider-card-copy"><p><span class="openai-auth-title">Sign in with ChatGPT</span></p><p class="provider-card-muted">' + copy + '</p><p class="provider-card-muted">Image generation requires an OpenAI API key.</p></div>' +
+      (ui.error ? '<p class="field-error" role="alert">' + esc(ui.error) + '</p>' : '') +
+      (ui.notice ? '<p class="inline-status" role="status">' + esc(ui.notice) + '</p>' : '') + '<div class="prov-actions">' + controls + '</div>';
+  }
+
+  function chatgptPlanProviderRowHtml(summary, ui, meta) {
+    var keyConnected = summary.status === "stored" || summary.status === "env";
+    var connected = openAiSubscriptionConnected(summary);
+    var active = summary.activeAuthMethod;
+    var ready = active === "subscription" ? connected : keyConnected;
+    var editor = ui.removeOpen ? removeConfirmHtml("openai", summary) : ui.open ? pasteBodyHtml("openai", ui, meta) : '';
+    var choices = connected || keyConnected ? '<div class="provider-step-list openai-auth-methods" aria-label="OpenAI chat method">' +
+      openAiAuthChoiceHtml("subscription", "ChatGPT plan", "Use your ChatGPT plan for chat.", connected, active === "subscription", !!state.openAiSubscription.busy) +
+      openAiAuthChoiceHtml("api_key", "OpenAI API key", "Chat requests are billed to your API account.", keyConnected, active === "api_key", !!state.openAiSubscription.busy) + '</div>' : '';
+    return '<article class="prov-row provider-card" data-provider-card="openai"><div class="prov-head">' + providerCardIdentityHtml("openai", meta) + '<span class="badge ' + (ready ? 'badge-on' : 'badge-off') + '">' + (ready ? 'Connected' : 'Connect OpenAI') + '</span></div><div class="prov-body">' + chatgptPlanControlsHtml(summary) + choices +
+      '<div class="provider-card-copy"><p><span class="openai-auth-title">Or use an API key</span></p><p class="provider-card-muted">An API key can power chat and image generation. API usage is billed separately from your ChatGPT plan.</p></div>' + (editor ? '<div class="provider-card-editor">' + editor + '</div>' : '') + '<div class="provider-card-footer">' + providerActionsHtml("openai", summary, ui) + '</div></div></article>';
+  }
+
   function openAiProviderRowHtml(summary, ui, meta) {
+    if (summary.subscriptionProtocol === "chatgpt-plan") return chatgptPlanProviderRowHtml(summary, ui, meta);
     var keyConnected = summary.status === "stored" || summary.status === "env";
     var subscriptionConnected = openAiSubscriptionConnected(summary);
     var active = summary.activeAuthMethod === "subscription" ? "subscription" : "api_key";
@@ -9929,7 +9974,7 @@
   }
 
   function openAiNeedsApiKeyRecovery(summary) {
-    return summary.activeAuthMethod === "subscription" && (summary.subscriptionAvailable !== true || IS_CLOUDFLARE);
+    return summary.activeAuthMethod === "subscription" && (summary.subscriptionAvailable !== true);
   }
 
   function openAiApiKeyRecoveryRowHtml(summary, ui, meta) {
@@ -9958,7 +10003,7 @@
     var id = summary.id;
     var meta = providerMeta(id);
     var ui = state.provUi[id] || {};
-    if (id === "openai" && summary.subscriptionAvailable === true && !IS_CLOUDFLARE) return openAiProviderRowHtml(summary, ui, meta);
+    if (id === "openai" && summary.subscriptionAvailable === true) return openAiProviderRowHtml(summary, ui, meta);
     if (id === "openai" && openAiNeedsApiKeyRecovery(summary)) return openAiApiKeyRecoveryRowHtml(summary, ui, meta);
     if (isFavoriteProvider(id)) return favoriteProviderRowHtml(summary, ui, meta);
     var body = "";
@@ -10753,6 +10798,7 @@
       if (requestId !== state.providerSettingsRequestId || !settingsLoadIsCurrent(generation)) return;
       state.settings = body;
       state.settingsLoaded = true;
+      scheduleChatgptPlanPoll();
       // Load favorites + the live model lists for the curated providers so their
       // managers render metas and counts. OpenRouter's list is public (no key);
       // Workers AI needs the binding, present only on the Cloudflare target.
@@ -11534,9 +11580,48 @@
     });
   }
 
+  function scheduleChatgptPlanPoll() {
+    var setup = state.chatgptPlan;
+    if (setup.timer != null) window.clearTimeout(setup.timer);
+    setup.timer = null;
+    var summary = providerSummaryById("openai");
+    if (!summary || summary.subscriptionProtocol !== "chatgpt-plan" || !summary.subscription || !summary.subscription.pending || state.view !== "settings" || state.settingsSection !== "providers") return;
+    if (summary.subscription.pending.state === "confirm") return;
+    setup.timer = window.setTimeout(function () {
+      api("/admin/api/providers/openai/subscription", { cache: "no-store" }).then(function (body) {
+        applyOpenAiSubscriptionStatus(body.status);
+        render();
+        scheduleChatgptPlanPoll();
+      }).catch(function () { state.openAiSubscription.error = "Could not check sign-in. Refresh this page to continue."; render(); });
+    }, 2000);
+  }
+
+  function chatgptPlanAction(action) {
+    var ui = state.openAiSubscription;
+    if (ui.busy || !INSTALLATION_OWNER) return;
+    ui.busy = action;
+    ui.error = "";
+    ui.notice = "";
+    render();
+    postJson("/admin/api/providers/openai/chatgpt-plan/" + action, "POST", action === "prepare" ? state.chatgptPlan.descriptor : { challenge: (providerSummaryById("openai").subscription.pending || {}).challenge }).then(function (body) {
+      ui.busy = "";
+      if (action !== "prepare") state.chatgptPlan.descriptor = null;
+      applyOpenAiSubscriptionStatus(body.status);
+      if (action === "confirm") {
+        ui.notice = "ChatGPT connected. Choose a model for your Agents or the Workspace default.";
+        providerSummaryById("openai").activeAuthMethod = "subscription";
+        invalidateOpenAiProviderModels();
+        refreshModels();
+        loadProviderModels("openai");
+      }
+      scheduleChatgptPlanPoll();
+      render();
+    }).catch(function () { ui.busy = ""; ui.error = "Could not finish ChatGPT setup. Retry, or cancel and run the sign-in helper again."; render(); });
+  }
+
   function openAiSummary() {
     var summary = providerSummaryById("openai");
-    return summary && summary.subscriptionAvailable === true && !IS_CLOUDFLARE ? summary : null;
+    return summary && summary.subscriptionAvailable === true ? summary : null;
   }
 
   function applyOpenAiSubscriptionStatus(status) {
@@ -11755,7 +11840,7 @@
     var summary = providerSummaryById("openai");
     var subscriptionUi = state.openAiSubscription;
     if (!summary || summary.id !== "openai" || subscriptionUi.busy || (method !== "api_key" && method !== "subscription")) return;
-    if (method === "subscription" && (summary.subscriptionAvailable !== true || IS_CLOUDFLARE)) return;
+    if (method === "subscription" && (summary.subscriptionAvailable !== true)) return;
     var available = method === "api_key"
       ? summary.status === "stored" || summary.status === "env"
       : openAiSubscriptionConnected(summary);
@@ -13311,6 +13396,10 @@
     if (action === "prov-remove") { openProviderRemove(target.getAttribute("data-provider")); }
     if (action === "prov-remove-cancel") { closeProviderRemove(target.getAttribute("data-provider")); }
     if (action === "prov-remove-confirm") { removeProviderKey(target.getAttribute("data-provider")); }
+    if (action === "chatgpt-plan-open") { state.chatgptPlan.helperOpen = true; render(); }
+    if (action === "chatgpt-plan-prepare") { chatgptPlanAction("prepare"); }
+    if (action === "chatgpt-plan-confirm") { chatgptPlanAction("confirm"); }
+    if (action === "chatgpt-plan-cancel") { chatgptPlanAction("cancel"); }
     if (action === "openai-subscription-start") { startOpenAiSubscription(); }
     if (action === "openai-subscription-cancel") { cancelOpenAiSubscription(); }
     if (action === "openai-subscription-confirm") { confirmOpenAiSubscriptionAccount(); }
@@ -16707,6 +16796,18 @@
     };
   }
 
+  if (canNavigate) {
+    var planParams = new URLSearchParams(location.search || "");
+    var planDescriptor = planParams.get("chatgpt_connect");
+    if (planDescriptor) {
+      try {
+        if (planDescriptor.length > 2048 || !/^[A-Za-z0-9_-]+$/.test(planDescriptor)) throw new Error("Invalid helper request");
+        state.chatgptPlan.descriptor = JSON.parse(atob(planDescriptor.replace(/-/g, "+").replace(/_/g, "/")));
+      } catch (_) { state.openAiSubscription.error = "This sign-in helper request is invalid. Run the command again."; }
+      planParams.delete("chatgpt_connect");
+      history.replaceState(null, "", location.pathname + (planParams.toString() ? "?" + planParams.toString() : ""));
+    }
+  }
   var initialRoute = canNavigate ? location.pathname : "/admin";
   if (initialRoute === "/admin/onboarding") {
     state.view = "onboarding";

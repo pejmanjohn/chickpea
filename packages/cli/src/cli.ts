@@ -1,4 +1,5 @@
-import { spawn } from 'node:child_process';
+import { connectChatgpt } from './chatgpt.ts';
+import { openBrowserDetached } from './browser.ts';
 import { readFileSync } from 'node:fs';
 
 import { runDoctor, renderDoctorReport } from './doctor.ts';
@@ -33,6 +34,7 @@ export const USAGE = `chickpea ${CLI_VERSION}
 Usage:
   chickpea doctor <deployment-url>                    Check the public OAuth and MCP surface (no sign-in)
   chickpea mcp config <deployment-url> [--client c]   Print MCP client configuration (${MCP_CLIENTS.join('|')})
+  chickpea chatgpt connect <deployment-url>            Connect a ChatGPT plan to this installation
   chickpea login <deployment-url>                     Sign in through the browser and save a session
   chickpea logout <deployment-url>                    Revoke the saved session and delete it
   chickpea workspace inspect <deployment-url>         Summarize Agents, channels, providers, and team
@@ -127,6 +129,13 @@ export async function run(argv: readonly string[], overrides: Partial<CliDeps> =
     }
     const [command, ...rest] = positional;
     switch (command) {
+      case 'chatgpt': {
+        if (rest[0] !== 'connect') throw new CliError('UNKNOWN_COMMAND', 'Usage: chickpea chatgpt connect <deployment-url>');
+        const origin = requireOrigin(rest.slice(1), 'chickpea chatgpt connect <deployment-url>');
+        await connectChatgpt(origin, { fetch: deps.fetch, openBrowser: deps.openBrowser, note: text => io.note(text), ...(deps.loginTimeoutMs ? { timeoutMs: deps.loginTimeoutMs } : {}) });
+        if (io.json) io.printJson({ ok: true, origin, connected: true });
+        return 0;
+      }
       case 'doctor':
         return await commandDoctor(rest, io, deps);
       case 'mcp':
@@ -386,21 +395,5 @@ function failEnvelope(envelope: Extract<ToolEnvelope, { ok: false }>, io: Io): n
   throw new CliError(`TOOL_${envelope.error.code.toUpperCase()}`, envelope.error.message);
 }
 
-async function openBrowserDetached(url: string): Promise<void> {
-  const [command, args] = process.platform === 'darwin'
-    ? ['open', [url]]
-    : process.platform === 'win32'
-      ? ['cmd', ['/c', 'start', '', url.replace(/&/g, '^&')]]
-      : ['xdg-open', [url]];
-  await new Promise<void>((resolve) => {
-    try {
-      const child = spawn(command, args, { detached: true, stdio: 'ignore' });
-      child.once('error', () => resolve());
-      child.once('spawn', () => { child.unref(); resolve(); });
-    } catch {
-      resolve();
-    }
-  });
-}
 
 export { mcpUrl };
