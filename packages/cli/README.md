@@ -17,6 +17,7 @@ You do not need the CLI to connect a coding agent. Admin **Settings → MCP** on
 | `chickpea doctor <url>` | no | Fetches the OAuth discovery documents, the signing keys, and the unauthenticated MCP challenge. One line per check, exit 1 on any failure. |
 | `chickpea mcp config <url> [--client claude-code\|codex\|cursor\|vscode\|windsurf\|gemini-cli\|json]` | no | Prints the MCP client configuration for `<url>/mcp`, the same snippets the deployment serves at `/connect.md` and in Admin Settings. Default: every client. |
 | `chickpea login <url>` | browser | Registers a public PKCE client, opens the browser for Slack sign-in and consent, and saves the tokens. |
+| `chickpea chatgpt connect <url>` | browser | Opens owner approval in Chickpea, completes ChatGPT sign-in through a local callback, and waits for account confirmation. OpenAI tokens stay on the deployment. |
 | `chickpea logout <url>` | saved | Revokes the refresh token at the deployment and deletes the saved session. |
 | `chickpea workspace inspect <url> [--json]` | saved | Calls `inspect_workspace` and prints Agents, skills, connections, repositories, channels, provider availability, and team. |
 | `chickpea tools list <url>` | saved | Lists every management tool with its annotations. |

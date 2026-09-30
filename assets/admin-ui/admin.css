@@ -988,6 +988,13 @@ details[open].advanced summary::before {
   width: 100%;
 }
 .modal-title { color: var(--text); font-family: var(--display); font-size: 1.0625rem; font-weight: 700; }
+.chatgpt-setup-dialog { display: grid; gap: 16px; max-width: 580px; max-height: calc(100dvh - 40px); overflow: auto; padding: 28px; color: var(--text-2); line-height: 1.55; }
+.chatgpt-setup-dialog p, .chatgpt-setup-dialog ol { margin: 0; }
+.chatgpt-setup-dialog .modal-title { font-size: 1.25rem; }
+.chatgpt-setup-dialog .modal-foot { margin-top: 0; justify-content: flex-end; }
+.chatgpt-setup-steps { padding-left: 22px; display: grid; gap: 8px; }
+.chatgpt-setup-request { height: auto; min-height: 132px; resize: vertical; line-height: 1.55; font: inherit; overflow-wrap: anywhere; }
+.chatgpt-setup-status { color: var(--text); font-weight: 600; }
 .modal-body { color: var(--text-2); font-size: 0.875rem; margin-top: 6px; }
 .modal-foot { align-items: center; display: flex; gap: 8px; margin-top: 18px; }
 .modal-foot .spacer { flex: 1; }

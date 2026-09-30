@@ -1,5 +1,33 @@
 # Authentication and authorization
 
+## Connect a ChatGPT plan on Cloudflare
+
+In **Settings → Model providers → OpenAI**, choose **Continue with ChatGPT**.
+The installation owner downloads the sign-in helper and runs the displayed
+command on their own computer with Node.js 24. The helper opens Chickpea for
+approval, then OpenAI for sign-in. Return to Chickpea and confirm the account.
+Select a model for the Workspace default or an individual Agent from the models
+available to that ChatGPT account.
+
+One connected account powers the installation's Agents and shares that account's
+ChatGPT plan limits. Chickpea stores its access and rotating refresh tokens in
+encrypted deployment storage. The local helper holds only a temporary sign-in
+proof; it never receives or saves OpenAI access or refresh tokens. **Disconnect**
+revokes this installation's session. Reconnecting uses the saved client
+registration and the same installation identity.
+
+**Or use an API key** remains available for OpenAI chat. Selecting the chat method
+is explicit: a failed ChatGPT request never falls back to a billable API request.
+Image generation requires a separately configured OpenAI API key and is billed
+to that API account. Sign in with ChatGPT currently supports chat and image
+inputs, but does not support image generation. See the
+[OpenAI preview limitations](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations).
+
+This Cloudflare connection is separate from the existing Node subscription
+connection. Signing in to Chickpea Admin itself continues to use Slack.
+
+## Human identity
+
 Chickpea has one human identity path: Slack OpenID Connect. Better Auth stores the provider account and opaque browser session. Chickpea owns the workspace binding, members, roles, authorization overlays, setup and recovery capabilities, and audit history.
 
 ## First Owner

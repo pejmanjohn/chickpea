@@ -1303,8 +1303,8 @@ async function main() {
       `${JSON.stringify(providerSummaries.openai)} expected=${expectedOpenAi.modelCount}`,
     );
     check(
-      providerSummaries.openai?.subscriptionAvailable === false,
-      'workerd reports ChatGPT subscription authentication unavailable',
+      providerSummaries.openai?.subscriptionAvailable === true && providerSummaries.openai?.subscriptionProtocol === 'chatgpt-plan',
+      'workerd advertises the official ChatGPT plan connection',
     );
     for (const action of ['start', 'poll', 'confirm-account']) {
       const rejected = await adminFetch(baseUrl, `/admin/api/providers/openai/subscription/${action}`, {
@@ -1322,8 +1322,8 @@ async function main() {
       body: JSON.stringify({ method: 'subscription' }),
     });
     check(
-      subscriptionSelection.status === 409 && subscriptionSelection.body?.error === 'unsupported_runtime',
-      'workerd rejects subscription selection even with an API key configured',
+      subscriptionSelection.status === 409 && subscriptionSelection.body?.error === 'openai_subscription_missing',
+      'workerd requires a connected ChatGPT account before subscription selection',
     );
     const imageModels = await adminFetch(baseUrl, '/admin/api/image-models');
     const imageModelIds = (imageModels.body?.models ?? []).map((model) => model.id);

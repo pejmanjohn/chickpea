@@ -16,6 +16,7 @@ export const ADMIN_UI_ASSET_PATHS = [ADMIN_UI_SCRIPT_PATH, ADMIN_UI_STYLESHEET_P
 // turn a request pathname into an unrestricted filesystem path.
 export const PUBLIC_ASSET_PATHS = [
   ...ADMIN_UI_ASSET_PATHS,
+  'chickpea-chatgpt-connect.mjs',
   'chickpea-mark-128.png', 'chickpea-favicon-32.png', 'chickpea-wordmark-512.png',
   ...DEFAULT_AGENT_AVATAR_FILES.map((file) => `chickpea-avatars/agent-defaults/${file}`),
   ...ONBOARDING_ASSET_FILES.map((file) => `onboarding/${file}`),

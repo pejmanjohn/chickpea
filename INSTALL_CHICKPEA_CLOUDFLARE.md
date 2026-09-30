@@ -386,6 +386,14 @@ Complete the chosen provider's setup using the normal credential form or an
 explicitly authorized secure local handoff. Ask for only the credentials that
 provider needs. A coding-agent subscription is not a provider API key.
 
+If the user chooses their **ChatGPT plan**, read this installation's
+`/connect-chatgpt.md` guide and perform its local setup steps yourself. The
+bundled connector opens the owner approval and OpenAI sign-in in the user's
+browser. Keep it running until they confirm the account. Do not ask the user
+to download a helper or run a command. After Admin reports the connection,
+return to onboarding to select a model. Images require a separate, explicitly
+configured OpenAI API key; do not request one unless the user wants images.
+
 For API-key entry, bring the existing Chickpea setup tab to the foreground.
 Identify its browser/profile, page title, and public URL without a setup
 capability. Focus the key field and ask the user to enter the key there and tell
