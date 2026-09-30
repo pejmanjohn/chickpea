@@ -325,8 +325,8 @@ const GENERIC_DESCRIPTORS = {
 >;
 
 /**
- * Return a family descriptor with no slot for a customer-authored display name.
- * Invocation owners may select only this closed family-level fact.
+ * Return the closed family descriptor without a name; only
+ * `configuredSemanticDescriptor` adds one, from the Agent's configuration.
  */
 export function genericSemanticDescriptor(
   family: keyof typeof GENERIC_DESCRIPTORS,
@@ -635,39 +635,32 @@ function familyActivity(
   event: SemanticLifecycleEvent,
 ): TypedActivityStatus {
   const settled = event.phase === 'settled';
-  const label = descriptorValue.label?.kind === descriptorValue.target &&
-      isSafeConfiguredLabel(descriptorValue.label.label)
-    ? descriptorValue.label.label
-    : undefined;
   switch (descriptorValue.target) {
     case 'custom_connection': {
+      // Fit the name against the longer settled copy so it never drops out
+      // between start and review.
+      const label = fittingLabel(descriptorValue, (name) => `Reviewing ${name} results…`);
+      if (settled) {
+        return activityStatus('reading', 'Reviewing', label ? `${label} results` : 'the results');
+      }
       const read = descriptorValue.effect === 'read';
-      return settled
-        ? labeledOr(
-            'reading', 'Reviewing', label && `${label} results`,
-            activityStatus('reading', 'Reviewing', 'the results'),
-          )
-        : labeledOr(
-            read ? 'checking' : 'updating', read ? 'Checking' : 'Updating', label,
-            activityStatus(
-              read ? 'checking' : 'updating',
-              read ? 'Checking' : 'Updating',
-              'a connected service',
-            ),
-          );
+      return activityStatus(
+        read ? 'checking' : 'updating',
+        read ? 'Checking' : 'Updating',
+        label ?? 'a connected service',
+      );
     }
-    case 'skill':
+    case 'skill': {
       // Loading a skill is quick; afterwards the model works from its
       // instructions, which is what the settled copy says.
-      return settled
-        ? labeledOr(
-            'reading', 'Following', label && `the ${label} skill`,
-            activityStatus('reading', 'Reviewing', 'skill results'),
-          )
-        : labeledOr(
-            'running', 'Using', label && `the ${label} skill`,
-            activityStatus('running', 'Using', 'a skill'),
-          );
+      const label = fittingLabel(descriptorValue, (name) => `Following the ${name} skill…`);
+      if (settled) {
+        return label
+          ? activityStatus('reading', 'Following', `the ${label} skill`)
+          : activityStatus('reading', 'Reviewing', 'skill results');
+      }
+      return activityStatus('running', 'Using', label ? `the ${label} skill` : 'a skill');
+    }
     case 'repository':
       if (settled) {
         const object = descriptorValue.operation === 'run'
@@ -728,15 +721,14 @@ function genericActivity(event: SemanticLifecycleEvent): TypedActivityStatus {
       : activityStatus('preparing', 'Reassessing', 'the request');
 }
 
-/** Named copy when a label fits the status line, otherwise the family copy. */
-function labeledOr(
-  kind: ActivityKind,
-  action: string,
-  object: string | undefined,
-  fallback: TypedActivityStatus,
-): TypedActivityStatus {
-  if (!object || `${action} ${object}…`.length > ACTIVITY_STATUS_TEXT_LIMIT) return fallback;
-  return activityStatus(kind, action, object);
+/** The configured name when it belongs to this family and fits the longest copy. */
+function fittingLabel(
+  descriptorValue: SemanticActivityDescriptor,
+  longestCopy: (label: string) => string,
+): string | undefined {
+  const label = descriptorValue.label;
+  if (label?.kind !== descriptorValue.target || !isSafeConfiguredLabel(label.label)) return undefined;
+  return longestCopy(label.label).length <= ACTIVITY_STATUS_TEXT_LIMIT ? label.label : undefined;
 }
 
 function boundedOrGeneric(
@@ -765,15 +757,10 @@ function isSafeManagedLabel(value: string): boolean {
  * Admin-authored names: letters and digits in any script plus light
  * punctuation, short enough for a status line, and never credential-shaped.
  */
-function isSafeConfiguredLabel(value: string): boolean {
+export function isSafeConfiguredLabel(value: string): boolean {
   return value.length <= 32 && value.trim() === value &&
     /^[\p{L}\p{N}][\p{L}\p{N} .'’+/-]*$/u.test(value) && !/\s{2}/.test(value) &&
     !hasCredentialLikeContent(value);
-}
-
-/** The configured name itself when it may appear in status copy. */
-export function configuredActivityLabel(value: string): string | undefined {
-  return isSafeConfiguredLabel(value) ? value : undefined;
 }
 
 function isSafeLabelId(value: string): boolean {

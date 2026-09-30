@@ -542,7 +542,10 @@ test('activity context projects exact mounted declarations, closed families, and
   );
   // Names ride beside the descriptors as lookup data only; instructions,
   // header policy, and repositories never enter the activity context.
-  assert.deepEqual(context.skills, [{ name: 'research' }]);
+  assert.deepEqual(context.skills, [
+    { name: 'research' },
+    { name: 'agent-authoring', displayName: 'Agent setup' },
+  ]);
   assert.deepEqual(context.mcpConnections, [{ id: 'notion', displayName: 'Notion' }]);
   assert.deepEqual(context.apiConnections.map(({ id, displayName }) => ({ id, displayName })), [
     { id: 'crm', displayName: 'CRM' },

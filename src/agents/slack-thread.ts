@@ -1216,10 +1216,7 @@ export function useRuntimePlanAgent(
       : { includeAgentAuthoringSkill: options.includeAgentAuthoringSkill }),
     reservedToolNames: [AGENT_AUTHORING_SKILL_NAME],
     browserMounted,
-    mountedSkillNames: [
-      ...skills.map(({ name }) => name),
-      ...(options.includeAgentAuthoringSkill ? [AGENT_AUTHORING_SKILL_NAME] : []),
-    ],
+    mountedSkillNames: skills.map(({ name }) => name),
     ...(options.additionalActivityToolDescriptors === undefined
       ? {}
       : { additionalToolDescriptors: options.additionalActivityToolDescriptors }),

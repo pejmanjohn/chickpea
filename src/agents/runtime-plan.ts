@@ -45,6 +45,7 @@ import {
 } from '../config/runtime-model.ts';
 import { isCompiledModelProfileId } from '../model-catalog/profiles.ts';
 import { mcpToolEffect } from '../config/mcp-tool-policy.ts';
+import { AGENT_AUTHORING_SKILL_NAME } from '../management/agent-authoring/index.ts';
 import { GITHUB_OWNER_PATTERN } from '../config/github-app.ts';
 import {
   buildSemanticActivityContext,
@@ -354,15 +355,16 @@ export interface RuntimePlanActivityContextOptions {
   /** The render mounted the browser skill and tools. */
   browserMounted?: boolean;
   /**
-   * Every skill name the render mounted, including connector and built-in
-   * skills; defaults to the Agent's own skills.
+   * Every skill name the render mounted from the plan, including connector
+   * and built-in skills; defaults to the Agent's own skills. The authoring
+   * skill follows `includeAgentAuthoringSkill`.
    */
   mountedSkillNames?: readonly string[];
 }
 
 /** Status-line names for skills Chickpea mounts itself. */
 const BUILT_IN_SKILL_LABELS: Readonly<Record<string, string>> = {
-  'agent-authoring': 'Agent setup',
+  [AGENT_AUTHORING_SKILL_NAME]: 'Agent setup',
   'asana-api': 'Asana',
   browser: 'browser',
   'github-api': 'GitHub',
@@ -600,7 +602,10 @@ export function buildRuntimePlanActivityContext(
     dedupeActivityDescriptors(descriptors),
     [...families],
     {
-      skills: (options.mountedSkillNames ?? plan.skills.map(({ name }) => name)).map((name) => {
+      skills: [
+        ...options.mountedSkillNames ?? plan.skills.map(({ name }) => name),
+        ...(options.includeAgentAuthoringSkill ? [AGENT_AUTHORING_SKILL_NAME] : []),
+      ].map((name) => {
         // An Agent's own skill keeps its own name even when it shadows a built-in one.
         const label = plan.skills.some((skill) => skill.name === name)
           ? undefined

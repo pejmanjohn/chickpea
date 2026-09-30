@@ -9,6 +9,7 @@ import {
   initialActivityStatus,
   isSafeTypedActivityStatus,
   registerActivityContext,
+  registerActivityInvocationFact,
   toolActivityStatus,
 } from '../src/activity/status.ts';
 import {
@@ -384,10 +385,15 @@ function registerNamedContext(instanceId: string): void {
       { name: 'weekly-report' },
       { name: 'asana-api', displayName: 'Asana' },
       { name: 'a-skill-whose-name-is-far-too-long-for-status' },
+      // Thirty characters fit "Using the … skill…" but not "Following the … skill…".
+      { name: 'thirty', displayName: 'thirty character skill name ab' },
     ],
     mcpConnections: [
       { id: 'sql-dash', displayName: 'SQL Dash' },
-      { id: 'mcp.crm', displayName: 'Dangerous <@U123>' },
+      { id: 'mcp.crm', displayName: 'CRM' },
+      { id: 'unsafe', displayName: 'Dangerous <@U123>' },
+      { id: 'twin.a', displayName: 'Twin A' },
+      { id: 'twin:a', displayName: 'Twin B' },
     ],
     apiConnections: [{
       id: 'zendesk',
@@ -417,9 +423,21 @@ test('a configured MCP connection is named from its configuration, not its tool 
   }), 'Reviewing SQL Dash results…');
 
   // Flue sanitizes the server id into the tool name; the lookup follows it.
-  // An unsafe configured name keeps the family copy.
-  assert.equal(observeNamed('named-mcp', {
+  registerNamedContext('sanitized-mcp');
+  assert.equal(observeNamed('sanitized-mcp', {
     type: 'tool_start', toolName: 'mcp__mcp_crm__search', toolCallId: 'q2',
+  }), 'Checking CRM…');
+
+  // An unsafe configured name keeps the family copy.
+  registerNamedContext('unsafe-mcp');
+  assert.equal(observeNamed('unsafe-mcp', {
+    type: 'tool_start', toolName: 'mcp__unsafe__search', toolCallId: 'q4',
+  }), 'Checking a connected service…');
+
+  // Two ids that sanitize to one tool-name part name neither.
+  registerNamedContext('twin-mcp');
+  assert.equal(observeNamed('twin-mcp', {
+    type: 'tool_start', toolName: 'mcp__twin_a__search', toolCallId: 'q5',
   }), 'Checking a connected service…');
 
   const secret = 'xoxb-server-do-not-leak';
@@ -444,6 +462,15 @@ test('skill activation names only a configured skill', () => {
     type: 'tool_start', toolName: 'activate_skill', toolCallId: 's4', args: { name: 'asana-api' },
   }), 'Using the Asana skill…');
 
+  // A name that fits only the start copy stays generic in both phases.
+  registerNamedContext('thirty-skill');
+  assert.equal(observeNamed('thirty-skill', {
+    type: 'tool_start', toolName: 'activate_skill', toolCallId: 's5', args: { name: 'thirty' },
+  }), 'Using a skill…');
+  assert.equal(observeNamed('thirty-skill', {
+    type: 'tool', toolName: 'activate_skill', toolCallId: 's5', isError: false,
+  }), 'Reviewing skill results…');
+
   registerNamedContext('invented-skill');
   const invented = observeNamed('invented-skill', {
     type: 'tool_start', toolName: 'activate_skill', toolCallId: 's2', args: { name: 'sk-proj-invented' },
@@ -467,6 +494,9 @@ test('a connection request is named by the configured API connection it matches'
     toolCallId: 'r1',
     args: { url: 'https://acme.zendesk.com/api/v2/tickets', method: 'GET' },
   }), 'Checking Zendesk…');
+  assert.equal(observeNamed('named-api', {
+    type: 'tool', toolName: 'connection_request', toolCallId: 'r1', isError: false,
+  }), 'Reviewing Zendesk results…');
 
   registerNamedContext('unmatched-api');
   assert.equal(observeNamed('unmatched-api', {
@@ -492,6 +522,53 @@ test('configured labels are bound to their own family and trust tier', () => {
     configuredSemanticDescriptor('custom_connection', 'crm', 'AKIAABCDEFGHIJKLMNOP').label,
     undefined,
   );
+  assert.equal(configuredSemanticDescriptor('custom_connection', '../crm', 'CRM').label, undefined);
+});
+
+test('parallel calls review by name only when they share one connection', () => {
+  registerNamedContext('batch-same');
+  for (const id of ['b1', 'b2']) {
+    observeNamed('batch-same', { type: 'tool_start', toolName: 'mcp__sql-dash__run_query', toolCallId: id });
+  }
+  observeNamed('batch-same', { type: 'tool', toolName: 'mcp__sql-dash__run_query', toolCallId: 'b1', isError: false });
+  assert.equal(observeNamed('batch-same', {
+    type: 'tool', toolName: 'mcp__sql-dash__run_query', toolCallId: 'b2', isError: false,
+  }), 'Reviewing SQL Dash results…');
+
+  registerNamedContext('batch-mixed');
+  observeNamed('batch-mixed', { type: 'tool_start', toolName: 'mcp__sql-dash__run_query', toolCallId: 'm1' });
+  observeNamed('batch-mixed', { type: 'tool_start', toolName: 'mcp__mcp_crm__search', toolCallId: 'm2' });
+  observeNamed('batch-mixed', { type: 'tool', toolName: 'mcp__sql-dash__run_query', toolCallId: 'm1', isError: false });
+  assert.equal(observeNamed('batch-mixed', {
+    type: 'tool', toolName: 'mcp__mcp_crm__search', toolCallId: 'm2', isError: false,
+  }), 'Reviewing the results…');
+});
+
+test('an invocation owner cannot invent a configured connection or skill name', () => {
+  registerNamedContext('owner-named');
+  const submissionId = 'owner-named-submission';
+  activityStatusForObservation({
+    type: 'tool_start',
+    instanceId: 'owner-named',
+    submissionId,
+    toolName: 'connection_request',
+    toolCallId: 'owner-call',
+  });
+  for (const descriptor of [
+    configuredSemanticDescriptor('custom_connection', 'payroll', 'Payroll'),
+    configuredSemanticDescriptor('custom_connection', 'zendesk', 'Payroll'),
+    configuredSemanticDescriptor('skill', 'weekly-report', 'Payroll'),
+  ]) {
+    assert.ok(descriptor.label);
+    assert.equal(registerActivityInvocationFact(
+      'owner-named', submissionId, semanticInvocationFact('owner-call', descriptor),
+    ), undefined);
+  }
+  assert.equal(registerActivityInvocationFact(
+    'owner-named',
+    submissionId,
+    semanticInvocationFact('owner-call', configuredSemanticDescriptor('custom_connection', 'zendesk', 'Zendesk')),
+  )?.text, 'Checking Zendesk…');
 });
 
 test('the presentation declaration uses user-facing activity copy', () => {
@@ -883,5 +960,4 @@ test('configured activity labels are Slack-safe and bounded', () => {
 
   assert.equal(status.text, 'Connecting to a connected service…');
   assert.equal(connectingActivityStatus('Zendesk').text, 'Connecting to Zendesk…');
-  assert.equal(connectingActivityStatus(undefined).text, 'Connecting to a connected service…');
 });
