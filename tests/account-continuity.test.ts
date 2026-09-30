@@ -154,6 +154,26 @@ test('no remaining eligible account retains the prior choice and gives reconnect
   } finally { f.close(); }
 });
 
+test('a demoted team account is named for admin reconnect on later turns until reconnected', async () => {
+  const f = await fixture();
+  try {
+    assert.equal('teamReconnects' in (await f.run('Use Work')).plan, false);
+    const [work] = (await f.config.listConnectionAccounts(f.assignment.workspaceId))
+      .filter(({ id }) => id === 'connection_work');
+    await f.config.putConnectionAccount({ ...work!, lifecycle: 'needs_attention' }, work!.revision);
+    const next = await f.run('Check the Personal inbox');
+    assert.deepEqual(next.plan.teamReconnects, [{ providerId: 'mail', label: 'Work' }]);
+    assert.deepEqual(next.plan.connectionAccountIds, ['connection_personal']);
+    assert.deepEqual(f.jobs.getFrozenRuntimePlan(next.id)?.runtimePlan.teamReconnects, next.plan.teamReconnects);
+    assert.equal(next.instanceId, (await f.run('Again')).instanceId);
+
+    const [current] = (await f.config.listConnectionAccounts(f.assignment.workspaceId))
+      .filter(({ id }) => id === 'connection_work');
+    await f.config.putConnectionAccount({ ...current!, lifecycle: 'ready' }, current!.revision);
+    assert.equal('teamReconnects' in (await f.run('Use Work')).plan, false);
+  } finally { f.close(); }
+});
+
 test('unavailable prior account remains withheld across repeated turns until explicit switch', async () => {
   const f = await fixture();
   try {

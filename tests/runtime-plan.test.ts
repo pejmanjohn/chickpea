@@ -22,7 +22,10 @@ import { attachedContainerPlan } from './helpers/attached-container-plan.ts';
 import legacyFixture from './fixtures/runtime-plan/v0.1.26-attached-container.json' with { type: 'json' };
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import { revisionedAlias } from '../src/model-catalog/provider-alias.ts';
-import { runtimeRepositoryMatches } from '../src/agents/slack-thread.ts';
+import {
+  runtimePlanConnectedServicesInstruction,
+  runtimeRepositoryMatches,
+} from '../src/agents/slack-thread.ts';
 
 const AGENT: CustomAgentConfig = {
   id: 'agent_runtime',
@@ -643,6 +646,54 @@ test('routing defaults remain credential-free, survive parsing and cannot be cha
   const changed = structuredClone(plan);
   changed.connectionSelections![0]!.accountId = 'connection_personal';
   assert.throws(() => parseRuntimePlanV2(changed), /harnessRevision/);
+});
+
+test('team connections needing an admin reconnect are frozen only when present', () => {
+  const plain = compile();
+  const withNone = compile({ teamReconnects: [] });
+  // An empty notice keeps the exact shape an earlier release reads.
+  assert.equal('teamReconnects' in withNone, false);
+  assert.equal(withNone.harnessRevision, plain.harnessRevision);
+
+  const plan = compile({
+    teamReconnects: [
+      { providerId: 'sentry', label: 'Sentry' },
+      { providerId: 'bugsnag', label: 'BugSnag' },
+      { providerId: 'bugsnag', label: 'BugSnag' },
+      { providerId: 'bugsnag', label: 'x'.repeat(300) },
+    ],
+  });
+  assert.deepEqual(plan.teamReconnects, [
+    { providerId: 'bugsnag', label: 'BugSnag' },
+    { providerId: 'bugsnag', label: 'x'.repeat(240) },
+    { providerId: 'sentry', label: 'Sentry' },
+  ]);
+  assert.notEqual(plan.harnessRevision, plain.harnessRevision);
+  assert.deepEqual(parseRuntimePlanV2(structuredClone(plan)), plan);
+  assert.equal(deriveRuntimePlanInstanceId(plan), deriveRuntimePlanInstanceId(plain));
+
+  const tampered = structuredClone(plan);
+  tampered.teamReconnects![0]!.label = 'Other';
+  assert.throws(() => parseRuntimePlanV2(tampered), /harnessRevision/);
+  const empty = { ...structuredClone(plan), teamReconnects: [] };
+  assert.throws(() => parseRuntimePlanV2(empty), /teamReconnects must be absent when empty/);
+  const extra = structuredClone(plan) as unknown as { teamReconnects: Array<Record<string, unknown>> };
+  extra.teamReconnects[0]!.accountId = 'connection_errors';
+  assert.throws(() => parseRuntimePlanV2(extra), /team reconnect/);
+});
+
+test('the connected-services instruction tells the Agent to name a connection an admin must reconnect', () => {
+  const plain = runtimePlanConnectedServicesInstruction(compile());
+  assert.doesNotMatch(plain, /reconnect/i);
+
+  const instruction = runtimePlanConnectedServicesInstruction(compile({
+    teamReconnects: [{ providerId: 'bugsnag', label: 'BugSnag' }],
+  }));
+  assert.match(instruction, /must be reconnected by an admin in Chickpea Admin: \["BugSnag"\]/);
+  assert.match(instruction, /tell the user plainly which connection is unavailable/);
+  assert.match(instruction, /Do not say you chose not to use it/);
+  // Non-technical: no provider ids, lifecycle states or error text.
+  assert.doesNotMatch(instruction, /bugsnag|needs_attention|invalid_grant|OAuth/);
 });
 
 test('semantic-memory runtime policy rotates new plans while v2 plans remain readable', () => {

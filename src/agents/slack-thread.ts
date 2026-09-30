@@ -995,7 +995,7 @@ export function runtimePlanConnectedServicesInstruction(
   plan: Pick<
     RuntimePlanV2,
     'apiConnections' | 'mcpConnections' | 'managedConnections' | 'connectionChoices'
-  > & Partial<Pick<RuntimePlanV2, 'repositories' | 'codingWorkspace'>>,
+  > & Partial<Pick<RuntimePlanV2, 'repositories' | 'codingWorkspace' | 'teamReconnects'>>,
 ): string {
   const selected = [
     ...plan.apiConnections.map(({ id, displayName }) => ({
@@ -1036,7 +1036,25 @@ export function runtimePlanConnectedServicesInstruction(
     'Pending selections and setup or authorization options are not active tools or permissions. The active ' +
     'selection is the permission ceiling for connected-service actions in this turn, not a guarantee of remote ' +
     'service health; use only the connected tools or REST declarations actually mounted.' +
+    runtimePlanTeamReconnectsDeclaration(plan.teamReconnects) +
     runtimePlanRepositoriesDeclaration(plan);
+}
+
+/**
+ * A demoted team connection leaves no tools behind, so without this the
+ * Agent cannot tell "unavailable" from "not needed" and may say it chose to
+ * skip the service.
+ */
+function runtimePlanTeamReconnectsDeclaration(
+  reconnects: RuntimePlanV2['teamReconnects'],
+): string {
+  if (!reconnects?.length) return '';
+  const labels = reconnects.map(({ label }) => label);
+  return ` Team connections that stopped working and must be reconnected by an admin in Chickpea Admin: ${JSON.stringify(labels)}. ` +
+    'Their tools are not available in this turn. When a request would use one of them, tell the user plainly ' +
+    'which connection is unavailable and that an admin needs to reconnect it. Do not say you ' +
+    'chose not to use it, do not ask the user to authorize it themselves, and do not guess what it would have returned. ' +
+    'This replaces any other reconnect guidance for these connections.';
 }
 
 /** Name frozen repository grants so the model does not guess at their absence. */

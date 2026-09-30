@@ -53,6 +53,12 @@ export interface PersonalConnectionAuthorizationOption {
   }>;
 }
 
+/** A team account this Agent cannot use until an admin reconnects it. */
+export interface TeamConnectionNeedingReconnect {
+  providerId: string;
+  label: string;
+}
+
 export type ConnectionSelection =
   | { kind: 'selected'; connection: EffectiveConnectionAccount; reason: 'only_eligible' | 'language' | 'previous' }
   | { kind: 'missing'; providerId: string }

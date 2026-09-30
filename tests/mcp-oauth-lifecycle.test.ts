@@ -5,7 +5,11 @@ import { mcpOAuthSettingKeys, resolveMcpOAuthAccessToken } from '../src/config/m
 import { SqliteConfigStore } from '../src/config/store.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { mcpOAuthLifecycleDependencies } from '../src/connections/mcp-oauth-lifecycle.ts';
-import { resolveEffectiveConnectionAccounts } from '../src/connections/runtime.ts';
+import {
+  projectTeamConnectionsNeedingReconnect,
+  resolveConnectionAccountContext,
+  resolveEffectiveConnectionAccounts,
+} from '../src/connections/runtime.ts';
 
 const SERVER_URL = 'https://mcp.example.test/mcp';
 const TOKEN_ENDPOINT = 'https://auth.example.test/token';
@@ -101,6 +105,58 @@ test('a rejected refresh demotes a team MCP account and pauses its dependents', 
     assert.deepEqual(schedule?.connectionPauseAccountIds, [f.account.id]);
     assert.equal(await f.scheduleState('schedule_digest'), 'active');
     assert.deepEqual(await resolveEffectiveConnectionAccounts(f.context), []);
+  } finally { f.close(); }
+});
+
+test('later turns name a demoted team MCP connection for an admin until it is reconnected', async () => {
+  const f = await fixture();
+  try {
+    assert.deepEqual((await resolveConnectionAccountContext(f.context)).teamReconnects, []);
+    await assert.rejects(f.resolve(rejectGrant), { code: 'reauthorization_required' });
+    const demoted = await resolveConnectionAccountContext(f.context);
+    assert.deepEqual(demoted.effective, []);
+    // A team account is not the member's to authorize.
+    assert.deepEqual(demoted.authorizations, []);
+    assert.deepEqual(demoted.teamReconnects, [{ providerId: 'bugsnag', label: 'BugSnag' }]);
+
+    const [account] = await f.config.listConnectionAccounts('T_MCP');
+    await f.config.putConnectionAccount({ ...account!, lifecycle: 'ready' }, account!.revision);
+    const reconnected = await resolveConnectionAccountContext(f.context);
+    assert.equal(reconnected.effective.length, 1);
+    assert.deepEqual(reconnected.teamReconnects, []);
+  } finally { f.close(); }
+});
+
+test('a transient MCP refresh failure does not report the connection as needing reconnect', async () => {
+  const f = await fixture();
+  try {
+    await assert.rejects(
+      f.resolve(async () => Response.json({ error: 'temporarily_unavailable' }, { status: 503 })),
+      { code: 'oauth_unavailable' },
+    );
+    assert.deepEqual((await resolveConnectionAccountContext(f.context)).teamReconnects, []);
+  } finally { f.close(); }
+});
+
+test('only enabled team bindings of this Agent in needs_attention are named for reconnect', async () => {
+  const f = await fixture();
+  try {
+    const [account] = await f.config.listConnectionAccounts('T_MCP');
+    const demoted = { ...account!, lifecycle: 'needs_attention' as const };
+    const binding = (await f.config.listAgentConnectionBindings('agent_triage'))[0]!;
+    const named = [{ providerId: 'bugsnag', label: 'BugSnag' }];
+    assert.deepEqual(projectTeamConnectionsNeedingReconnect([demoted], [binding]), named);
+    for (const [accounts, bindings] of [
+      [[account!], [binding]],
+      [[{ ...demoted, lifecycle: 'revoked' as const }], [binding]],
+      [[{ ...demoted, lifecycle: 'pending' as const }], [binding]],
+      [[{ ...demoted, ownerKind: 'member' as const, ownerMembershipId: 'member_owner' }], [binding]],
+      [[demoted], [{ ...binding, enabled: false }]],
+      [[demoted], [{ ...binding, providerId: 'sentry' }]],
+      [[demoted], []],
+    ] as const) {
+      assert.deepEqual(projectTeamConnectionsNeedingReconnect([...accounts], [...bindings]), []);
+    }
   } finally { f.close(); }
 });
 

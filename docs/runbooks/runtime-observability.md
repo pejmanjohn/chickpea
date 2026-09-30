@@ -490,6 +490,10 @@ token, client id, URL, tool argument, result, or provider error text.
 - `missing`: a ready connection account has no stored credential. The account
   moves to Needs attention.
 
+On later turns, an Agent bound to a team connection in Needs attention is told
+which connection is unavailable and says that an admin must reconnect it in
+Admin. A personal connection instead offers the member a reconnect link.
+
 `reason` is the provider's registered OAuth error code, `http_<status>` when
 the provider sent none, `network` or `timeout` for a failed request,
 `invalid_response` for an unusable token response, or `other` for an
