@@ -191,8 +191,9 @@ export interface RuntimePlanV2 {
   connectionChoices?: RuntimePlanConnectionChoiceV2[];
   /**
    * Team connections bound to this Agent that need an admin to reconnect
-   * them (Needs attention, or a sign-in left pending). Present only when non-empty, so every other plan keeps the shape
-   * an earlier release reads; an earlier reader parks a plan that has it.
+   * them (Needs attention, or a sign-in left pending). Present only when
+   * non-empty, so every other plan keeps the shape an earlier release reads;
+   * an earlier reader parks a plan that has it.
    */
   teamReconnects?: RuntimePlanTeamReconnectV1[];
   /** Object revisions used to explain which live configuration this turn froze. */

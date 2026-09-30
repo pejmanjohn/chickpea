@@ -162,18 +162,17 @@ test('only enabled team bindings of this Agent awaiting an admin sign-in are nam
   try {
     const [account] = await f.config.listConnectionAccounts('T_MCP');
     const demoted = { ...account!, lifecycle: 'needs_attention' as const };
+    const pending = { ...demoted, lifecycle: 'pending' as const };
+    const personal = { ...demoted, ownerKind: 'member' as const, ownerMembershipId: 'member_owner' };
     const binding = (await f.config.listAgentConnectionBindings('agent_triage'))[0]!;
     const named = [{ providerId: 'bugsnag', label: 'BugSnag' }];
     assert.deepEqual(projectTeamConnectionsNeedingReconnect([demoted], [binding]), named);
-    assert.deepEqual(
-      projectTeamConnectionsNeedingReconnect([{ ...demoted, lifecycle: 'pending' }], [binding]),
-      named,
-    );
+    assert.deepEqual(projectTeamConnectionsNeedingReconnect([pending], [binding]), named);
     for (const [accounts, bindings] of [
       [[account!], [binding]],
       [[{ ...demoted, lifecycle: 'revoked' as const }], [binding]],
-      [[{ ...demoted, lifecycle: 'pending' as const, ownerKind: 'member' as const, ownerMembershipId: 'member_owner' }], [binding]],
-      [[{ ...demoted, ownerKind: 'member' as const, ownerMembershipId: 'member_owner' }], [binding]],
+      [[personal], [binding]],
+      [[{ ...personal, lifecycle: 'pending' as const }], [binding]],
       [[demoted], [{ ...binding, enabled: false }]],
       [[demoted], [{ ...binding, providerId: 'sentry' }]],
       [[demoted], []],
