@@ -6,6 +6,7 @@ import {
   getWorkStore,
   type PlatformEnv,
 } from '../config/state-backend.ts';
+import { OAUTH_KEEPALIVE_INTERVAL_MS, runOAuthKeepAliveSweep } from '../connections/oauth-keepalive.ts';
 import { purgeExpiredImageOutputs } from '../images/output-store.ts';
 import { createLiveWorkspaceManagementService } from '../management/live-service.ts';
 import { reconcileScheduleActionReceipts } from '../management/receipts.ts';
@@ -23,6 +24,9 @@ interface NodeScheduledDutyDependencies {
   retryScheduleActions?: typeof retryDueSlackScheduleActions;
   reconcileReceipts?: typeof reconcileScheduleActionReceipts;
   purgeImages?: typeof purgeExpiredImageOutputs;
+  keepCredentialsAlive?: typeof runOAuthKeepAliveSweep;
+  /** When this process last started a credential keep-alive sweep. */
+  keepAliveSchedule?: { lastStartedAt?: number };
   routines?: RoutineStore;
   management?: ReturnType<typeof getManagementStore>;
   service?: ScheduleRetryInput['dependencies']['service'];
@@ -30,6 +34,8 @@ interface NodeScheduledDutyDependencies {
   work?: ReturnType<typeof getWorkStore>;
   config?: ReturnType<typeof getConfigStore>;
 }
+
+const nodeKeepAliveSchedule: { lastStartedAt?: number } = {};
 
 /** Run every durable duty that Cloudflare's alarms provide for a Node install. */
 export async function runNodeScheduledDuties(
@@ -41,10 +47,8 @@ export async function runNodeScheduledDuties(
   const management = dependencies.management ?? getManagementStore(env);
   const settings = dependencies.settings ?? getSettingsStore(env);
   const work = dependencies.work ?? getWorkStore(env);
-  const productTelemetry = createPlatformProductTelemetry({
-    settings,
-    config: dependencies.config ?? getConfigStore(env),
-  });
+  const config = dependencies.config ?? getConfigStore(env);
+  const productTelemetry = createPlatformProductTelemetry({ settings, config });
   await settleScheduledDuties([
     () => drainNodeScheduleActions({
       at: input.scheduledTime,
@@ -65,6 +69,15 @@ export async function runNodeScheduledDuties(
     }),
     () => work.purgeContent(input.scheduledTime, 100),
     () => (dependencies.purgeImages ?? purgeExpiredImageOutputs)(settings, input.scheduledTime),
+    async () => {
+      // Elapsed time, not the wall-clock minute: a slow tick delays Node's
+      // next scheduled run to an arbitrary minute, which would skip a sweep.
+      const schedule = dependencies.keepAliveSchedule ?? nodeKeepAliveSchedule;
+      if (schedule.lastStartedAt !== undefined &&
+          input.scheduledTime - schedule.lastStartedAt < OAUTH_KEEPALIVE_INTERVAL_MS) return;
+      schedule.lastStartedAt = input.scheduledTime;
+      await (dependencies.keepCredentialsAlive ?? runOAuthKeepAliveSweep)({ config, settings });
+    },
   ]);
 }
 

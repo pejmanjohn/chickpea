@@ -61,6 +61,8 @@ export function createRoutineScheduledHandler(input: {
     context: RoutineExecutionContext,
   ) => Promise<unknown>;
   maintenance?: (scheduledTime: number, env: Record<string, unknown>) => Promise<unknown>;
+  /** Further duties settled independently, so none can delay or block another. */
+  duties?: Array<(scheduledTime: number, env: Record<string, unknown>) => Promise<unknown>>;
 }): {
   scheduled(
     controller: RoutineScheduledController,
@@ -78,6 +80,9 @@ export function createRoutineScheduledHandler(input: {
         tasks.push(() => input.maintenance!(controller.scheduledTime, env));
       }
       tasks.push(() => input.heartbeat(controller.scheduledTime, owner, env, context));
+      for (const duty of input.duties ?? []) {
+        tasks.push(() => duty(controller.scheduledTime, env));
+      }
       context.waitUntil(settleScheduledDuties(tasks));
     },
   };

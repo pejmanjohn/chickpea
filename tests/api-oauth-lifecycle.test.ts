@@ -187,3 +187,25 @@ test('API refresh telemetry reports each outcome with bounded reasons', async ()
     } finally { f.close(); }
   }
 });
+
+test('refreshIfObtainedBefore renews a still-valid Google credential only when it is older', async () => {
+  const f = await fixture();
+  let refreshes = 0;
+  try {
+    const fresh = JSON.stringify({ provider: 'google', accessToken: 'valid', refreshToken: 'old-refresh', tokenType: 'Bearer', obtainedAt: 5_000, expiresIn: 86_400 });
+    await f.settings.setSetting(f.keys[2], fresh);
+    const dependencies = {
+      ...f.dependencies,
+      now: () => 10_000,
+      refreshTelemetry: { trigger: 'keepalive' as const, emit: () => {} },
+      fetchFn: async () => {
+        refreshes += 1;
+        return Response.json({ access_token: 'renewed', token_type: 'Bearer', expires_in: 3_600 });
+      },
+    };
+    assert.equal(await resolveApiOAuthAccessToken({ ref: f.ref, provider: 'google', refreshIfObtainedBefore: 5_000 }, dependencies), 'valid');
+    assert.equal(refreshes, 0);
+    assert.equal(await resolveApiOAuthAccessToken({ ref: f.ref, provider: 'google', refreshIfObtainedBefore: 5_001 }, dependencies), 'renewed');
+    assert.equal(refreshes, 1);
+  } finally { f.close(); }
+});

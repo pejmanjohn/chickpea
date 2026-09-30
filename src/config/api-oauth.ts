@@ -451,7 +451,12 @@ export function apiOAuthReturnRefFromState(state: string): ApiOAuthRef {
 }
 
 export async function resolveApiOAuthAccessToken(
-  input: { ref: ApiOAuthRef; provider: ApiOAuthProvider },
+  input: {
+    ref: ApiOAuthRef;
+    provider: ApiOAuthProvider;
+    /** Also renew a still-valid credential last issued before this time. */
+    refreshIfObtainedBefore?: number;
+  },
   dependencies: ApiOAuthDependencies,
 ): Promise<string> {
   validateRef(input.ref);
@@ -467,7 +472,9 @@ export async function resolveApiOAuthAccessToken(
   await requireCurrentConnection(
     input.ref, selectedProvider, dependencies, undefined, bundle.oauthAttemptId,
   );
-  if (!tokenNeedsRefresh(bundle, oauthNow(dependencies))) return bundle.accessToken;
+  if (!tokenNeedsRefresh(bundle, oauthNow(dependencies), input.refreshIfObtainedBefore)) {
+    return bundle.accessToken;
+  }
   if (!bundle.refreshToken) throw reauthorizationRequired();
 
   const owner = oauthRandomId(dependencies);
@@ -479,7 +486,9 @@ export async function resolveApiOAuthAccessToken(
     await requireCurrentConnection(
       input.ref, selectedProvider, dependencies, undefined, bundle.oauthAttemptId,
     );
-    if (!tokenNeedsRefresh(bundle, oauthNow(dependencies))) return bundle.accessToken;
+    if (!tokenNeedsRefresh(bundle, oauthNow(dependencies), input.refreshIfObtainedBefore)) {
+      return bundle.accessToken;
+    }
 
     const leaseRaw = await dependencies.settings.getSetting(leaseKey);
     const lease = leaseRaw ? parseLease(leaseRaw) : undefined;
@@ -851,9 +860,14 @@ function parseLease(raw: string): StoredOAuthLease {
   return parseOAuthLease(raw, parseStoredRecord, invalidStorage);
 }
 
-function tokenNeedsRefresh(bundle: StoredTokenBundle, currentTime: number): boolean {
+function tokenNeedsRefresh(
+  bundle: StoredTokenBundle,
+  currentTime: number,
+  refreshIfObtainedBefore?: number,
+): boolean {
   if (bundle.expiresIn === undefined) return false;
-  return bundle.obtainedAt + bundle.expiresIn * 1_000 <= currentTime + REFRESH_SKEW_MS;
+  return bundle.obtainedAt + bundle.expiresIn * 1_000 <= currentTime + REFRESH_SKEW_MS ||
+    (refreshIfObtainedBefore !== undefined && bundle.obtainedAt < refreshIfObtainedBefore);
 }
 
 function tokenHardExpired(bundle: StoredTokenBundle, currentTime: number): boolean {

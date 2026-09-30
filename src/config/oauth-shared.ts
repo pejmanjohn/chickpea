@@ -9,6 +9,13 @@ import type { SettingsStore } from './settings-store.ts';
 
 export const PENDING_TTL_MS = 10 * 60_000;
 export const REFRESH_SKEW_MS = 60_000;
+/**
+ * Renew every refreshable credential at least this often, even when unused.
+ * Providers may expire refresh tokens after inactivity (RFC 9700 §4.14.2), in
+ * some cases after only 24 hours; a third of that leaves two missed renewals of
+ * margin, and costs long-lived providers three token requests a day.
+ */
+export const OAUTH_KEEPALIVE_AGE_MS = 8 * 60 * 60_000;
 export const LEASE_TTL_MS = 20_000;
 export const LEASE_RETRY_MS = 25;
 export const LEASE_MAX_RETRY_MS = 400;

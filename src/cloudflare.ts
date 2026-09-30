@@ -150,6 +150,7 @@ import {
   isCheckpointSweepMinute,
   sweepExpiredWorkspaceCheckpoints,
 } from './sandbox/checkpoint-sweep.ts';
+import { isOAuthKeepAliveMinute, runOAuthKeepAliveSweep } from './connections/oauth-keepalive.ts';
 import {
   SandboxWorkspaceState,
   WORKSPACE_CHECKPOINT_EXCLUDES,
@@ -3372,7 +3373,21 @@ function rpcError(
 export default createRoutineScheduledHandler({
   heartbeat: runRoutineHeartbeat,
   maintenance: runWorkMaintenance,
+  duties: [keepOAuthCredentialsAlive],
 });
+
+/** Its own duty, so renewals never delay maintenance or the gateway wake. */
+async function keepOAuthCredentialsAlive(
+  scheduledTime: number,
+  rawEnv: Record<string, unknown>,
+): Promise<void> {
+  if (!isOAuthKeepAliveMinute(scheduledTime)) return;
+  const platformEnv = rawEnv as PlatformEnv;
+  await runOAuthKeepAliveSweep({
+    config: getConfigStore(platformEnv),
+    settings: getSettingsStore(platformEnv),
+  });
+}
 
 async function runWorkMaintenance(
   scheduledTime: number,

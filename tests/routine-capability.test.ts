@@ -155,3 +155,20 @@ test('scheduled maintenance always runs its finalizer without hiding failures', 
     },
   );
 });
+
+test('Cloudflare scheduled handler runs extra duties independently of maintenance', async () => {
+  const events: string[] = [];
+  const waited: Promise<unknown>[] = [];
+  const handler = createRoutineScheduledHandler({
+    heartbeat: async () => { events.push('heartbeat'); },
+    maintenance: async () => { throw new Error('maintenance failed'); },
+    duties: [async (scheduledTime) => { events.push(`duty:${scheduledTime}`); }],
+  });
+  handler.scheduled(
+    { scheduledTime: 42 },
+    {},
+    { waitUntil: (promise) => waited.push(promise) },
+  );
+  await assert.rejects(Promise.all(waited), /maintenance failed/);
+  assert.deepEqual(events.sort(), ['duty:42', 'heartbeat']);
+});
