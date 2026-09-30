@@ -150,6 +150,7 @@ import {
   isCheckpointSweepMinute,
   sweepExpiredWorkspaceCheckpoints,
 } from './sandbox/checkpoint-sweep.ts';
+import { isOAuthKeepAliveMinute, runOAuthKeepAliveSweep } from './connections/oauth-keepalive.ts';
 import {
   SandboxWorkspaceState,
   WORKSPACE_CHECKPOINT_EXCLUDES,
@@ -3390,6 +3391,14 @@ async function runWorkMaintenance(
     if (checkpoints && isCheckpointSweepMinute(scheduledTime)) {
       try { await sweepExpiredWorkspaceCheckpoints(checkpoints, scheduledTime); }
       catch { console.warn('[chickpea] Coding workspace checkpoint cleanup did not complete'); }
+    }
+    if (isOAuthKeepAliveMinute(scheduledTime)) {
+      try {
+        await runOAuthKeepAliveSweep({
+          config: getConfigStore(platformEnv),
+          settings: getSettingsStore(platformEnv),
+        });
+      } catch { console.warn('[chickpea] OAuth credential keep-alive did not complete'); }
     }
     await repairPendingOAuthContinuationResumes({
       settings: getSettingsStore(platformEnv),

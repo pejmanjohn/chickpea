@@ -176,6 +176,8 @@ export interface CompleteMcpOAuthInput {
 export interface ResolveMcpOAuthAccessInput {
   ref: McpSecretRef;
   serverUrl: string;
+  /** Also renew a still-valid credential last issued before this time. */
+  refreshIfObtainedBefore?: number;
 }
 
 interface StoredClient {
@@ -676,7 +678,7 @@ export async function resolveMcpOAuthAccessToken(
     input.ref, serverUrl, dependencies, undefined, initial.oauthAttemptId,
   );
   await requireStoredTokenConfiguration(initial, raw, tokenKey, dependencies);
-  if (!tokenNeedsRefresh(initial, oauthNow(dependencies))) {
+  if (!tokenNeedsRefresh(initial, oauthNow(dependencies), input.refreshIfObtainedBefore)) {
     await requireStoredTokenConfiguration(initial, raw, tokenKey, dependencies);
     return initial.tokens.access_token;
   }
@@ -720,7 +722,7 @@ export async function resolveMcpOAuthAccessToken(
         input.ref, serverUrl, dependencies, undefined, current.oauthAttemptId,
       );
       await requireStoredTokenConfiguration(current, currentRaw, tokenKey, dependencies);
-      if (!tokenNeedsRefresh(current, oauthNow(dependencies))) {
+      if (!tokenNeedsRefresh(current, oauthNow(dependencies), input.refreshIfObtainedBefore)) {
         await requireStoredTokenConfiguration(current, currentRaw, tokenKey, dependencies);
         return current.tokens.access_token;
       }
@@ -1231,12 +1233,16 @@ async function withLease<T>(
   throw new McpOAuthError('oauth_unavailable', 'OAuth operation is already in progress');
 }
 
-function tokenNeedsRefresh(bundle: StoredTokenBundle, currentTime: number): boolean {
+function tokenNeedsRefresh(
+  bundle: StoredTokenBundle,
+  currentTime: number,
+  refreshIfObtainedBefore?: number,
+): boolean {
   if (bundle.tokens.expires_in === undefined) return false;
   return (
     bundle.obtainedAt + bundle.tokens.expires_in * 1_000 <=
     currentTime + REFRESH_SKEW_MS
-  );
+  ) || (refreshIfObtainedBefore !== undefined && bundle.obtainedAt < refreshIfObtainedBefore);
 }
 
 function tokenHardExpired(bundle: StoredTokenBundle, currentTime: number): boolean {

@@ -6,6 +6,7 @@ import {
   getWorkStore,
   type PlatformEnv,
 } from '../config/state-backend.ts';
+import { isOAuthKeepAliveMinute, runOAuthKeepAliveSweep } from '../connections/oauth-keepalive.ts';
 import { purgeExpiredImageOutputs } from '../images/output-store.ts';
 import { createLiveWorkspaceManagementService } from '../management/live-service.ts';
 import { reconcileScheduleActionReceipts } from '../management/receipts.ts';
@@ -23,6 +24,7 @@ interface NodeScheduledDutyDependencies {
   retryScheduleActions?: typeof retryDueSlackScheduleActions;
   reconcileReceipts?: typeof reconcileScheduleActionReceipts;
   purgeImages?: typeof purgeExpiredImageOutputs;
+  keepCredentialsAlive?: typeof runOAuthKeepAliveSweep;
   routines?: RoutineStore;
   management?: ReturnType<typeof getManagementStore>;
   service?: ScheduleRetryInput['dependencies']['service'];
@@ -41,10 +43,8 @@ export async function runNodeScheduledDuties(
   const management = dependencies.management ?? getManagementStore(env);
   const settings = dependencies.settings ?? getSettingsStore(env);
   const work = dependencies.work ?? getWorkStore(env);
-  const productTelemetry = createPlatformProductTelemetry({
-    settings,
-    config: dependencies.config ?? getConfigStore(env),
-  });
+  const config = dependencies.config ?? getConfigStore(env);
+  const productTelemetry = createPlatformProductTelemetry({ settings, config });
   await settleScheduledDuties([
     () => drainNodeScheduleActions({
       at: input.scheduledTime,
@@ -65,6 +65,10 @@ export async function runNodeScheduledDuties(
     }),
     () => work.purgeContent(input.scheduledTime, 100),
     () => (dependencies.purgeImages ?? purgeExpiredImageOutputs)(settings, input.scheduledTime),
+    async () => {
+      if (!isOAuthKeepAliveMinute(input.scheduledTime)) return;
+      await (dependencies.keepCredentialsAlive ?? runOAuthKeepAliveSweep)({ config, settings });
+    },
   ]);
 }
 
