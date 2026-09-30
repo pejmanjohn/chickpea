@@ -484,9 +484,10 @@ export function compileRuntimePlanV2(input: CompileRuntimePlanV2Input): RuntimeP
 }
 
 /**
- * Project one admitted RuntimePlan into the exact content-free activity
- * declarations mounted by the hook render. Customer-authored names remain
- * lookup keys only; every descriptor is closed, generic, or catalog-owned.
+ * Project one admitted RuntimePlan into the exact activity declarations
+ * mounted by the hook render. Every descriptor is closed, generic, or
+ * catalog-owned; the configured skill and connection names ride alongside so
+ * a call that selects one of them by exact lookup can name it.
  */
 export function buildRuntimePlanActivityContext(
   plan: RuntimePlanV2,
@@ -523,9 +524,9 @@ export function buildRuntimePlanActivityContext(
   }
 
   if (plan.mcpConnections.length > 0) {
-    // MCP server and tool names are customer-authored. The mounted runtime is
-    // already the authority that an observed MCP call is real, so retain only
-    // the closed family grant and classify the stable `mcp__` namespace.
+    // Tool names come from the MCP server. The mounted runtime is already the
+    // authority that an observed MCP call is real, so classify the stable
+    // `mcp__` namespace and name only the configured connection it selects.
     families.add('custom_connection');
   }
 
@@ -581,6 +582,20 @@ export function buildRuntimePlanActivityContext(
   return buildSemanticActivityContext(
     dedupeActivityDescriptors(descriptors),
     [...families],
+    {
+      skills: plan.skills.map(({ name }) => ({ name })),
+      mcpConnections: plan.mcpConnections.flatMap(({ id, displayName }) =>
+        displayName ? [{ id, displayName }] : []),
+      apiConnections: plan.apiConnections.flatMap((connection) => connection.displayName
+        ? [{
+            id: connection.id,
+            displayName: connection.displayName,
+            allowedHosts: connection.allowedHosts,
+            pathPrefixes: connection.pathPrefixes,
+            allowedMethods: connection.allowedMethods,
+          }]
+        : []),
+    },
   );
 }
 

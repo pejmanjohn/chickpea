@@ -132,18 +132,23 @@ type SemanticLifecycleRole = 'work' | 'answer_generation' | 'internal_hidden';
 type SemanticTrustTier = 'managed_catalog' | 'built_in' | 'customer_configuration' | 'unknown';
 type SemanticEffectClass = ManagedEffectClass | 'none';
 
-interface ManagedSemanticLabelReference {
-  readonly kind: 'managed_connector';
-  /** Stable product-controlled catalog identity. */
+type SemanticLabelKind = 'managed_connector' | 'custom_connection' | 'skill';
+
+interface SemanticLabelReference {
+  readonly kind: SemanticLabelKind;
+  /** Catalog identity, or the configured connection id or skill name. */
   readonly id: string;
-  /** Immutable catalog copy; validated again before narration. */
+  /**
+   * Catalog copy, or the name a workspace admin gave the connection or skill.
+   * Validated again before narration.
+   */
   readonly label: string;
 }
 
 export interface SemanticActivityDescriptor {
   readonly operation: SemanticOperation;
   readonly target: SemanticTargetFamily;
-  readonly label?: ManagedSemanticLabelReference | undefined;
+  readonly label?: SemanticLabelReference | undefined;
   readonly object: SemanticObject;
   readonly effect: SemanticEffectClass;
   readonly role: SemanticLifecycleRole;
@@ -329,6 +334,22 @@ export function genericSemanticDescriptor(
   return { ...GENERIC_DESCRIPTORS[family] };
 }
 
+/**
+ * Name a custom connection or skill in activity copy. The caller selects the
+ * id by exact lookup in the Agent's own configuration; tool input may only
+ * pick among those entries, so the label is always the name an admin gave it.
+ * A label that fails the copy rules keeps the generic family descriptor.
+ */
+export function configuredSemanticDescriptor(
+  family: 'custom_connection' | 'skill',
+  id: string,
+  label: string,
+): SemanticActivityDescriptor {
+  const generic = genericSemanticDescriptor(family);
+  if (!isSafeLabelId(id) || !isSafeConfiguredLabel(label)) return generic;
+  return { ...generic, label: { kind: family, id, label } };
+}
+
 export function unknownSemanticDescriptor(): SemanticActivityDescriptor {
   return descriptor('run', 'unknown', 'the request', 'none', 'unknown');
 }
@@ -482,12 +503,18 @@ export function isSemanticActivityDescriptor(value: unknown): value is SemanticA
       !isSemanticObject(value.object) || !isEffect(value.effect) ||
       !isLifecycleRole(value.role) || !isTrustTier(value.trust)) return false;
   if (value.label === undefined) return value.target !== 'managed_connector';
-  if (value.target !== 'managed_connector' || value.trust !== 'managed_catalog' ||
-      !isRecord(value.label)) return false;
-  if (!hasOnlyKeys(value.label, ['kind', 'id', 'label'])) return false;
-  return value.label.kind === 'managed_connector' &&
-    typeof value.label.id === 'string' && /^[a-z0-9][a-z0-9_.-]{0,191}$/.test(value.label.id) &&
-    typeof value.label.label === 'string' && isSafeManagedLabel(value.label.label);
+  if (!isRecord(value.label) || !hasOnlyKeys(value.label, ['kind', 'id', 'label'])) return false;
+  const { kind, id, label } = value.label;
+  if (typeof id !== 'string' || typeof label !== 'string') return false;
+  if (value.target === 'managed_connector') {
+    return value.trust === 'managed_catalog' && kind === 'managed_connector' &&
+      /^[a-z0-9][a-z0-9_.-]{0,191}$/.test(id) && isSafeManagedLabel(label);
+  }
+  if (value.target === 'custom_connection' || value.target === 'skill') {
+    return value.trust === 'customer_configuration' && kind === value.target &&
+      isSafeLabelId(id) && isSafeConfiguredLabel(label);
+  }
+  return false;
 }
 
 /** Accept only canonical structured copy before crossing the activity wire. */
@@ -608,19 +635,39 @@ function familyActivity(
   event: SemanticLifecycleEvent,
 ): TypedActivityStatus {
   const settled = event.phase === 'settled';
+  const label = descriptorValue.label?.kind === descriptorValue.target &&
+      isSafeConfiguredLabel(descriptorValue.label.label)
+    ? descriptorValue.label.label
+    : undefined;
   switch (descriptorValue.target) {
-    case 'custom_connection':
+    case 'custom_connection': {
+      const read = descriptorValue.effect === 'read';
       return settled
-        ? activityStatus('reading', 'Reviewing', 'the results')
-        : activityStatus(
-            descriptorValue.effect === 'read' ? 'checking' : 'updating',
-            descriptorValue.effect === 'read' ? 'Checking' : 'Updating',
-            'a connected service',
+        ? labeledOr(
+            'reading', 'Reviewing', label && `${label} results`,
+            activityStatus('reading', 'Reviewing', 'the results'),
+          )
+        : labeledOr(
+            read ? 'checking' : 'updating', read ? 'Checking' : 'Updating', label,
+            activityStatus(
+              read ? 'checking' : 'updating',
+              read ? 'Checking' : 'Updating',
+              'a connected service',
+            ),
           );
+    }
     case 'skill':
+      // Loading a skill is quick; afterwards the model works from its
+      // instructions, which is what the settled copy says.
       return settled
-        ? activityStatus('reading', 'Reviewing', 'skill results')
-        : activityStatus('running', 'Using', 'a skill');
+        ? labeledOr(
+            'reading', 'Following', label && `the ${label} skill`,
+            activityStatus('reading', 'Reviewing', 'skill results'),
+          )
+        : labeledOr(
+            'running', 'Using', label && `the ${label} skill`,
+            activityStatus('running', 'Using', 'a skill'),
+          );
     case 'repository':
       if (settled) {
         const object = descriptorValue.operation === 'run'
@@ -681,6 +728,17 @@ function genericActivity(event: SemanticLifecycleEvent): TypedActivityStatus {
       : activityStatus('preparing', 'Reassessing', 'the request');
 }
 
+/** Named copy when a label fits the status line, otherwise the family copy. */
+function labeledOr(
+  kind: ActivityKind,
+  action: string,
+  object: string | undefined,
+  fallback: TypedActivityStatus,
+): TypedActivityStatus {
+  if (!object || `${action} ${object}…`.length > ACTIVITY_STATUS_TEXT_LIMIT) return fallback;
+  return activityStatus(kind, action, object);
+}
+
 function boundedOrGeneric(
   kind: ActivityKind,
   action: string,
@@ -701,6 +759,25 @@ function managedReviewObject(label: string, object: SemanticObject): string {
 function isSafeManagedLabel(value: string): boolean {
   return value.length <= 40 && /^[A-Za-z0-9][A-Za-z0-9 .+/-]*$/.test(value) &&
     !hasCredentialLikeContent(value);
+}
+
+/**
+ * Admin-authored names: letters and digits in any script plus light
+ * punctuation, short enough for a status line, and never credential-shaped.
+ */
+function isSafeConfiguredLabel(value: string): boolean {
+  return value.length <= 32 && value.trim() === value &&
+    /^[\p{L}\p{N}][\p{L}\p{N} .'’+/-]*$/u.test(value) && !/\s{2}/.test(value) &&
+    !hasCredentialLikeContent(value);
+}
+
+/** The configured name itself when it may appear in status copy. */
+export function configuredActivityLabel(value: string): string | undefined {
+  return isSafeConfiguredLabel(value) ? value : undefined;
+}
+
+function isSafeLabelId(value: string): boolean {
+  return /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,191}$/.test(value);
 }
 
 function descriptor(

@@ -1296,8 +1296,8 @@ export function useRuntimePlanAgent(
   for (const connection of resolveRuntimePlanMcpConnections(
     plan.agentId,
     plan.mcpConnections,
-    () => {
-      publishActivityStatus(id, connectingActivityStatus('a connected service'));
+    (connection) => {
+      publishActivityStatus(id, connectingActivityStatus(connection.displayName));
     },
     plan.actorMembershipId ? { workspaceId: plan.conversation.workspaceId, actorMembershipId: plan.actorMembershipId } : undefined,
   )) {

@@ -512,7 +512,7 @@ test('managed providers freeze Chickpea capabilities without remote account iden
   assert.equal(parseRuntimePlanV2(structuredClone(plan)).harnessRevision, plan.harnessRevision);
 });
 
-test('activity context projects only exact mounted declarations and closed generic families', () => {
+test('activity context projects exact mounted declarations, closed families, and configured names', () => {
   const plan = compile();
   const context = buildRuntimePlanActivityContext(plan, {
     includeAgentAuthoringSkill: true,
@@ -536,10 +536,20 @@ test('activity context projects only exact mounted declarations and closed gener
     'skill', 'custom_connection', 'repository', 'artifact', 'workspace',
   ]));
 
-  const projectedDescriptors = JSON.stringify(context);
   assert.doesNotMatch(
-    projectedDescriptors,
+    JSON.stringify(context.toolDescriptors),
     /Runtime|research|notion|CRM|api\.example\.com|acme\/product|x-secret-header|Complete instructions/,
+  );
+  // Names ride beside the descriptors as lookup data only; instructions,
+  // header policy, and repositories never enter the activity context.
+  assert.deepEqual(context.skills, [{ name: 'research' }]);
+  assert.deepEqual(context.mcpConnections, [{ id: 'notion', displayName: 'Notion' }]);
+  assert.deepEqual(context.apiConnections.map(({ id, displayName }) => ({ id, displayName })), [
+    { id: 'crm', displayName: 'CRM' },
+  ]);
+  assert.doesNotMatch(
+    JSON.stringify(context),
+    /Runtime|acme\/product|x-secret-header|Complete instructions/,
   );
 });
 
