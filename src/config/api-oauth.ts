@@ -23,8 +23,8 @@ import {
   type OAuthAuthorizationAuthority,
 } from './oauth-authorization.ts';
 import {
-  emitOAuthRefreshTelemetry,
   oauthRequestFailureReason,
+  reportOAuthRefresh,
   type OAuthRefreshOutcome,
   type OAuthRefreshTelemetry,
 } from './oauth-refresh-telemetry.ts';
@@ -635,6 +635,7 @@ async function reportMissingAuthorization(
   try {
     connectionRevision = await dependencies.getConnectionRevision?.(ref);
   } catch {
+    // Without a revision the connection is simply not demoted.
     return;
   }
   if (connectionRevision === undefined) return;
@@ -648,15 +649,8 @@ function reportRefresh(
   details: { reason: string | null; tokenDeleted: boolean; obtainedAt?: number; startedAt?: number },
   dependencies: ApiOAuthDependencies,
 ): void {
-  const currentTime = oauthNow(dependencies);
-  emitOAuthRefreshTelemetry(dependencies.refreshTelemetry, {
-    lane: 'api',
-    connectionId: connectionAccountIdFromOAuthRef(ref) ?? `${ref.agentId}/${ref.connectionId}`,
-    outcome,
-    reason: details.reason,
-    tokenDeleted: details.tokenDeleted,
-    tokenAgeMs: details.obtainedAt === undefined ? null : Math.max(0, currentTime - details.obtainedAt),
-    durationMs: details.startedAt === undefined ? null : Math.max(0, currentTime - details.startedAt),
+  reportOAuthRefresh(dependencies.refreshTelemetry, {
+    lane: 'api', ref, now: oauthNow(dependencies), outcome, ...details,
   });
 }
 

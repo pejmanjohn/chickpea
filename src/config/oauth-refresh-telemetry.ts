@@ -58,6 +58,35 @@ export function emitOAuthRefreshTelemetry(
   }
 }
 
+/** Report one renewal outcome for a credential, deriving its age and duration. */
+export function reportOAuthRefresh(
+  telemetry: OAuthRefreshTelemetry | undefined,
+  input: {
+    lane: OAuthRefreshTelemetryEvent['lane'];
+    ref: { agentId: string; connectionId: string };
+    now: number;
+    outcome: OAuthRefreshOutcome;
+    reason: string | null;
+    tokenDeleted: boolean;
+    obtainedAt?: number;
+    startedAt?: number;
+  },
+): void {
+  const { ref, now } = input;
+  emitOAuthRefreshTelemetry(telemetry, {
+    lane: input.lane,
+    // Connection accounts are keyed by their own id; legacy lanes by Agent and connection.
+    connectionId: ref.connectionId === 'account' && ref.agentId.startsWith('connection_')
+      ? ref.agentId
+      : `${ref.agentId}/${ref.connectionId}`,
+    outcome: input.outcome,
+    reason: input.reason,
+    tokenDeleted: input.tokenDeleted,
+    tokenAgeMs: input.obtainedAt === undefined ? null : Math.max(0, now - input.obtainedAt),
+    durationMs: input.startedAt === undefined ? null : Math.max(0, now - input.startedAt),
+  });
+}
+
 /** Bounded failure class for a refresh request that produced no OAuth error code. */
 export function oauthRequestFailureReason(error: unknown): string {
   if (error instanceof Error && (error.name === 'AbortError' || error.name === 'TimeoutError')) {

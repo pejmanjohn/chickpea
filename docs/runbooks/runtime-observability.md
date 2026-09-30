@@ -492,7 +492,7 @@ token, client id, URL, tool argument, result, or provider error text.
 `reason` is the provider's registered OAuth error code, `http_<status>` when
 the provider sent none, `network` or `timeout` for a failed request,
 `invalid_response` for an unusable token response, or `other` for an
-unrecognized code. `tokenAgeMs` is the time since the credential was issued or
+unrecognized code (the MCP lane reports unrecognized codes as `server_error`). `tokenAgeMs` is the time since the credential was issued or
 last renewed; a `rejected` line with a large `tokenAgeMs` after a quiet period
 points to an expired refresh token. An account that was reconnected or renewed
 concurrently is never demoted by a late report.

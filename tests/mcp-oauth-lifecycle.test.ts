@@ -174,3 +174,38 @@ test('a rejection reported after a reconnect advanced the account revision does 
     assert.equal(await f.scheduleState('schedule_triage'), 'active');
   } finally { f.close(); }
 });
+
+test('a missing credential during a reconnect leaves the pending account alone', async () => {
+  const f = await fixture();
+  try {
+    const pending = await f.config.putConnectionAccount({ ...f.account, lifecycle: 'pending' }, f.account.revision);
+    await f.settings.deleteSetting(f.tokenKey);
+    await assert.rejects(
+      f.resolve(async () => assert.fail('no provider request without a credential')),
+      { code: 'reauthorization_required' },
+    );
+    const [account] = await f.config.listConnectionAccounts('T_MCP');
+    assert.equal(account?.lifecycle, 'pending');
+    assert.equal(account?.revision, pending.revision);
+    assert.equal(await f.scheduleState('schedule_triage'), 'active');
+  } finally { f.close(); }
+});
+
+test('a legacy per-Agent connection is marked for reconnection instead of an account', async () => {
+  const f = await fixture();
+  try {
+    const agent = await f.config.getAgent('agent_triage');
+    await f.config.updateAgent(agent.id, {
+      mcpServers: [{
+        id: 'errors', displayName: 'Errors', url: SERVER_URL, transport: 'streamable-http',
+        authMode: 'oauth', headerNames: [], enabled: true, lifecycleStatus: 'ready',
+        statusText: 'Connected', discoveredTools: [], allowedTools: [],
+      }],
+    }, agent.revision);
+    await f.dependencies.onReauthorizationRequired!({ agentId: 'agent_triage', connectionId: 'errors' }, SERVER_URL);
+    const [server] = (await f.config.getAgent('agent_triage')).mcpServers;
+    assert.equal(server?.lifecycleStatus, 'pending');
+    assert.equal(server?.statusText, 'Reconnect required');
+    assert.equal(await f.lifecycle(), 'ready');
+  } finally { f.close(); }
+});

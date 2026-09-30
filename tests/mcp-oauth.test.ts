@@ -2496,3 +2496,46 @@ test('refresh telemetry records bounded outcome fields and never credential mate
   }
 });
 
+
+test('a network failure during refresh is transient and logged with a bounded reason', async () => {
+  const f = await connectedFixture({ initialExpiresIn: 1 });
+  const tokenKey = mcpOAuthSettingKeys(REF)[2];
+  try {
+    const before = await f.settings.getSetting(tokenKey);
+    f.advance(2_000);
+    const oauthFetch = f.dependencies.fetchFn;
+    f.dependencies.fetchFn = async (input, init) => {
+      if (new Request(input, init).url.endsWith('/token')) throw new TypeError('fetch failed');
+      return oauthFetch(input, init);
+    };
+    await assert.rejects(
+      f.resolve(),
+      (error: unknown) => error instanceof McpOAuthError && error.code === 'oauth_unavailable',
+    );
+    assert.equal(await f.settings.getSetting(tokenKey), before);
+    assert.deepEqual(f.reports, []);
+    assert.equal(f.events[0]!.outcome, 'unavailable');
+    assert.ok(['network', 'request_failed'].includes(f.events[0]!.reason ?? ''));
+  } finally {
+    f.settings.close();
+  }
+});
+
+test('an invalid_client rejection keeps a registration a reconnect already replaced', async () => {
+  const f = await connectedFixture({ initialExpiresIn: 1, refreshError: 'invalid_client' });
+  const [clientKey, , tokenKey] = mcpOAuthSettingKeys(REF);
+  try {
+    const stored = JSON.parse((await f.settings.getSetting(clientKey))!) as {
+      clientInformation: { client_id: string };
+    };
+    stored.clientInformation.client_id = 'replacement-client';
+    const replacement = JSON.stringify(stored);
+    await f.settings.setSetting(clientKey, replacement);
+    f.advance(2_000);
+    await assert.rejects(f.resolve(), isReauthorizationRequired);
+    assert.equal(await f.settings.getSetting(tokenKey), undefined);
+    assert.equal(await f.settings.getSetting(clientKey), replacement);
+  } finally {
+    f.settings.close();
+  }
+});

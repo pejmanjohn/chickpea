@@ -63,8 +63,8 @@ import {
   validateOAuthAttemptId,
 } from './oauth-shared.ts';
 import {
-  emitOAuthRefreshTelemetry,
   oauthRequestFailureReason,
+  reportOAuthRefresh,
   type OAuthRefreshOutcome,
   type OAuthRefreshTelemetry,
 } from './oauth-refresh-telemetry.ts';
@@ -693,7 +693,6 @@ export async function resolveMcpOAuthAccessToken(
       current: initial,
       outcome: 'expired',
       reason: null,
-      connectionRevision: await dependencies.getConnectionRevision?.(input.ref),
     }, dependencies);
   }
 
@@ -739,11 +738,10 @@ export async function resolveMcpOAuthAccessToken(
           current,
           outcome: 'expired',
           reason: null,
-          connectionRevision: await dependencies.getConnectionRevision?.(input.ref),
         }, dependencies);
       }
 
-      const connectionRevision = await dependencies.getConnectionRevision?.(input.ref);
+      const revision = await connectionRevision(input.ref, dependencies);
       const startedAt = oauthNow(dependencies);
       let tokens: OAuthTokens;
       try {
@@ -766,7 +764,7 @@ export async function resolveMcpOAuthAccessToken(
             current,
             outcome: 'rejected',
             reason: code,
-            connectionRevision,
+            connectionRevision: revision,
             startedAt,
             cause: error,
           }, dependencies);
@@ -861,7 +859,11 @@ async function rejectStoredAuthorization(
     current: StoredTokenBundle;
     outcome: Extract<OAuthRefreshOutcome, 'rejected' | 'expired'>;
     reason: string | null;
-    connectionRevision: number | undefined;
+    /**
+     * Captured before a refresh request (possibly unknown), so a late rejection
+     * cannot demote a reconnect. Read now when no request was made.
+     */
+    connectionRevision?: number | undefined;
     startedAt?: number;
     cause?: unknown;
   },
@@ -895,7 +897,12 @@ async function rejectStoredAuthorization(
     obtainedAt: current.obtainedAt,
     ...(input.startedAt !== undefined ? { startedAt: input.startedAt } : {}),
   }, dependencies);
-  await notifyReauthorizationRequired(ref, serverUrl, dependencies, input.connectionRevision);
+  await notifyReauthorizationRequired(
+    ref,
+    serverUrl,
+    dependencies,
+    'connectionRevision' in input ? input.connectionRevision : await connectionRevision(ref, dependencies),
+  );
   throw new McpOAuthError(
     'reauthorization_required',
     input.outcome === 'expired'
@@ -915,15 +922,25 @@ async function reportMissingAuthorization(
   serverUrl: string,
   dependencies: McpOAuthDependencies,
 ): Promise<void> {
-  let connectionRevision: number | undefined;
-  try {
-    connectionRevision = await dependencies.getConnectionRevision?.(ref);
-  } catch {
-    return;
-  }
-  if (connectionRevision === undefined) return;
+  const revision = await connectionRevision(ref, dependencies);
+  if (revision === undefined) return;
   reportRefresh(ref, 'missing', { reason: null, tokenDeleted: false }, dependencies);
-  await notifyReauthorizationRequired(ref, serverUrl, dependencies, connectionRevision);
+  await notifyReauthorizationRequired(ref, serverUrl, dependencies, revision);
+}
+
+/**
+ * A lifecycle lookup failure must never block a renewal or mask its outcome;
+ * without a revision the connection is simply not demoted.
+ */
+async function connectionRevision(
+  ref: McpSecretRef,
+  dependencies: McpOAuthDependencies,
+): Promise<number | undefined> {
+  try {
+    return await dependencies.getConnectionRevision?.(ref);
+  } catch {
+    return undefined;
+  }
 }
 
 function reportRefresh(
@@ -932,20 +949,9 @@ function reportRefresh(
   details: { reason: string | null; tokenDeleted: boolean; obtainedAt?: number; startedAt?: number },
   dependencies: McpOAuthDependencies,
 ): void {
-  const currentTime = oauthNow(dependencies);
-  emitOAuthRefreshTelemetry(dependencies.refreshTelemetry, {
-    lane: 'mcp',
-    connectionId: telemetryConnectionId(ref),
-    outcome,
-    reason: details.reason,
-    tokenDeleted: details.tokenDeleted,
-    tokenAgeMs: details.obtainedAt === undefined ? null : Math.max(0, currentTime - details.obtainedAt),
-    durationMs: details.startedAt === undefined ? null : Math.max(0, currentTime - details.startedAt),
+  reportOAuthRefresh(dependencies.refreshTelemetry, {
+    lane: 'mcp', ref, now: oauthNow(dependencies), outcome, ...details,
   });
-}
-
-function telemetryConnectionId(ref: McpSecretRef): string {
-  return ref.connectionId === 'account' ? ref.agentId : `${ref.agentId}/${ref.connectionId}`;
 }
 
 function oauthErrorCode(error: unknown): string | null {
