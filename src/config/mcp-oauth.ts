@@ -178,7 +178,19 @@ export interface ResolveMcpOAuthAccessInput {
   serverUrl: string;
   /** Also renew a still-valid credential last issued before this time. */
   refreshIfObtainedBefore?: number;
+  /**
+   * The MCP server just answered 401 to this access token. Renew it now,
+   * before its expiry, if it is still the stored credential and was not
+   * itself issued moments ago.
+   */
+  rejectedAccessToken?: string;
 }
+
+/**
+ * A credential issued this recently is never force-renewed on a 401: a server
+ * that rejects fresh tokens would otherwise drive a refresh per request.
+ */
+export const UNAUTHORIZED_REFRESH_MIN_AGE_MS = 60_000;
 
 interface StoredClient {
   authorizationServerUrl: string;
@@ -678,7 +690,7 @@ export async function resolveMcpOAuthAccessToken(
     input.ref, serverUrl, dependencies, undefined, initial.oauthAttemptId,
   );
   await requireStoredTokenConfiguration(initial, raw, tokenKey, dependencies);
-  if (!tokenNeedsRefresh(initial, oauthNow(dependencies), input.refreshIfObtainedBefore)) {
+  if (!tokenNeedsRefresh(initial, oauthNow(dependencies), input)) {
     await requireStoredTokenConfiguration(initial, raw, tokenKey, dependencies);
     return initial.tokens.access_token;
   }
@@ -722,7 +734,7 @@ export async function resolveMcpOAuthAccessToken(
         input.ref, serverUrl, dependencies, undefined, current.oauthAttemptId,
       );
       await requireStoredTokenConfiguration(current, currentRaw, tokenKey, dependencies);
-      if (!tokenNeedsRefresh(current, oauthNow(dependencies), input.refreshIfObtainedBefore)) {
+      if (!tokenNeedsRefresh(current, oauthNow(dependencies), input)) {
         await requireStoredTokenConfiguration(current, currentRaw, tokenKey, dependencies);
         return current.tokens.access_token;
       }
@@ -1236,8 +1248,13 @@ async function withLease<T>(
 function tokenNeedsRefresh(
   bundle: StoredTokenBundle,
   currentTime: number,
-  refreshIfObtainedBefore?: number,
+  { refreshIfObtainedBefore, rejectedAccessToken }: ResolveMcpOAuthAccessInput,
 ): boolean {
+  if (
+    rejectedAccessToken !== undefined &&
+    bundle.tokens.access_token === rejectedAccessToken &&
+    bundle.obtainedAt <= currentTime - UNAUTHORIZED_REFRESH_MIN_AGE_MS
+  ) return true;
   if (bundle.tokens.expires_in === undefined) return false;
   return (
     bundle.obtainedAt + bundle.tokens.expires_in * 1_000 <=
