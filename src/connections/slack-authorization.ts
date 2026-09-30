@@ -232,9 +232,17 @@ export async function startPersonalConnectionAuthorization(input: {
   };
 }
 
-export function connectionChoiceInstructions(choices: NonNullable<RuntimePlanV2['connectionChoices']>): string {
+export function connectionChoiceInstructions(
+  choices: NonNullable<RuntimePlanV2['connectionChoices']>,
+  teamReconnects: RuntimePlanV2['teamReconnects'] = [],
+): string {
   const availableChoices = choices.filter((choice) => choice.choices.length > 0);
-  const unavailableProviders = choices.filter((choice) => choice.choices.length === 0).map((choice) => choice.providerId);
+  // A provider whose account an admin must reconnect is covered by the
+  // connected-services notice; asking the user to reconnect it would conflict.
+  const adminReconnects = new Set(teamReconnects.map(({ providerId }) => providerId.toLowerCase()));
+  const unavailableProviders = choices
+    .filter((choice) => choice.choices.length === 0 && !adminReconnects.has(choice.providerId.toLowerCase()))
+    .map((choice) => choice.providerId);
   return [
     'Some connection credentials were withheld because the account choice is ambiguous or the previously selected account is no longer available.',
     ...(availableChoices.length > 0
@@ -253,7 +261,7 @@ export function usePersonalConnectionAuthorizationSlackTool(
   const signal = parseSlackManagementSignal(useDelivery(), plan);
   if (!signal || !plan.actorMembershipId) return;
   if (plan.connectionChoices?.length) {
-    useInstruction(connectionChoiceInstructions(plan.connectionChoices));
+    useInstruction(connectionChoiceInstructions(plan.connectionChoices, plan.teamReconnects));
   }
   if (!(plan.connectionAuthorizations?.length)) return;
   const providers = plan.connectionAuthorizations.map((option) => option.providerId);

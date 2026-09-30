@@ -20,6 +20,7 @@ import type {
   EffectiveConnectionAccount,
   ManagedConnectionDeclaration,
   PersonalConnectionAuthorizationOption,
+  TeamConnectionNeedingReconnect,
 } from './types.ts';
 import { ConnectionCredentialUnavailableError } from './errors.ts';
 import {
@@ -49,6 +50,7 @@ export async function resolveConnectionAccountContext(input: {
 }): Promise<{
   effective: EffectiveConnectionAccount[];
   authorizations: PersonalConnectionAuthorizationOption[];
+  teamReconnects: TeamConnectionNeedingReconnect[];
 }> {
   const [accounts, bindings] = await Promise.all([
     input.config.listConnectionAccounts(input.workspaceId),
@@ -61,6 +63,7 @@ export async function resolveConnectionAccountContext(input: {
       bindings,
       input.actorMembershipId,
     ),
+    teamReconnects: projectTeamConnectionsNeedingReconnect(accounts, bindings),
   };
 }
 
@@ -106,6 +109,28 @@ function projectConnectionAccounts(
       policy: applyConnectionCapabilityCeiling(account.policy, binding),
       scope: account.ownerKind === 'member' ? 'personal' as const : 'team' as const,
     }];
+  });
+}
+
+/**
+ * Team accounts bound to this Agent that need an admin to sign in: a demoted
+ * authorization, or one never completed. They drop out of the effective set,
+ * and only an admin can reconnect them, so the Agent is told which ones are
+ * down instead of silently lacking tools. A `pending` account is mid-setup
+ * and deliberately not named. Personal accounts recover through the member's
+ * own authorization options.
+ */
+export function projectTeamConnectionsNeedingReconnect(
+  accounts: ConnectionAccount[],
+  bindings: AgentConnectionBinding[],
+): TeamConnectionNeedingReconnect[] {
+  const byId = new Map(accounts.map((account) => [account.id, account]));
+  return bindings.flatMap((binding) => {
+    const account = byId.get(binding.connectionAccountId);
+    return account && binding.enabled && account.providerId === binding.providerId &&
+        account.ownerKind === 'team' && account.lifecycle === 'needs_attention'
+      ? [{ providerId: account.providerId, label: account.label }]
+      : [];
   });
 }
 

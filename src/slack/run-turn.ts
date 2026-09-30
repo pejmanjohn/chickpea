@@ -2550,6 +2550,7 @@ async function freezeRuntimePlanForTurn(input: {
   ].join('\n');
   const allEffectiveConnections = connectionContext?.effective ?? [];
   const connectionAuthorizations = connectionContext?.authorizations;
+  const teamReconnects = connectionContext?.teamReconnects;
   const sameActorThread = previous && input.turn.actorMembershipId &&
     previous.actorMembershipId === input.turn.actorMembershipId &&
     previous.agentId === input.assignment.agentId &&
@@ -2633,6 +2634,7 @@ async function freezeRuntimePlanForTurn(input: {
     ...(connectionAuthorizations ? { connectionAuthorizations } : {}),
     connectionChoices: connectionResolution.ambiguous,
     connectionSelections: connectionResolution.selections,
+    ...(teamReconnects ? { teamReconnects } : {}),
   });
   const decision = input.persist
     ? await input.persist(candidate)

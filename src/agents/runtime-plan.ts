@@ -36,7 +36,10 @@ import {
   projectEffectiveMcpConnections,
 } from '../connections/runtime.ts';
 import type { ConnectionAccountSelection, EffectiveConnectionAccount } from '../connections/types.ts';
-import type { PersonalConnectionAuthorizationOption } from '../connections/types.ts';
+import type {
+  PersonalConnectionAuthorizationOption,
+  TeamConnectionNeedingReconnect,
+} from '../connections/types.ts';
 import {
   frozenRuntimeModelRouteIdentity,
   validateFrozenRuntimeModelRoute,
@@ -152,6 +155,12 @@ export interface RuntimePlanConnectionAuthorizationV2 {
   }>;
 }
 
+/** A team connection bound to this Agent that only an admin can reconnect. */
+export interface RuntimePlanTeamReconnectV1 {
+  providerId: string;
+  label: string;
+}
+
 export interface RuntimePlanConnectionChoiceV2 {
   providerId: string;
   previousAccountUnavailable?: boolean;
@@ -180,6 +189,12 @@ export interface RuntimePlanV2 {
   connectionAuthorizations?: RuntimePlanConnectionAuthorizationV2[];
   /** Providers withheld until the user identifies one plausible account. */
   connectionChoices?: RuntimePlanConnectionChoiceV2[];
+  /**
+   * Team connections bound to this Agent that need an admin to reconnect
+   * them. Present only when non-empty, so every other plan keeps the shape
+   * an earlier release reads; an earlier reader parks a plan that has it.
+   */
+  teamReconnects?: RuntimePlanTeamReconnectV1[];
   /** Object revisions used to explain which live configuration this turn froze. */
   configurationRevision?: {
     agent: number;
@@ -336,6 +351,7 @@ export interface CompileRuntimePlanV2Input {
   connectionAuthorizations?: readonly PersonalConnectionAuthorizationOption[];
   connectionChoices?: readonly RuntimePlanConnectionChoiceV2[];
   connectionSelections?: readonly ConnectionAccountSelection[];
+  teamReconnects?: readonly TeamConnectionNeedingReconnect[];
   /**
    * Thread that artifact tools deliver into. Defaults to
    * the turn's real Slack thread. Scheduled runs must pass the saved routine
@@ -392,6 +408,7 @@ export function compileRuntimePlanV2(input: CompileRuntimePlanV2Input): RuntimeP
   const managedConnections = compileManagedConnections(
     projectEffectiveManagedConnections(effectiveConnections),
   );
+  const teamReconnects = compileTeamReconnects(input.teamReconnects);
   const websiteLogins = input.browserCapability
     ? [...(input.websiteLogins ?? [])]
       .map((login) => ({
@@ -421,6 +438,7 @@ export function compileRuntimePlanV2(input: CompileRuntimePlanV2Input): RuntimeP
       ...(choice.previousAccountUnavailable ? { previousAccountUnavailable: true } : {}),
       choices: choice.choices.map((candidate) => ({ ...candidate })),
     })),
+    ...(teamReconnects.length > 0 ? { teamReconnects } : {}),
     configurationRevision: {
       agent: input.assignment.agent.revision,
       ...(input.assignment.channelRevision
@@ -813,6 +831,7 @@ export function parseRuntimePlanV2(
     'connectionSelections',
     'connectionAuthorizations',
     'connectionChoices',
+    'teamReconnects',
     'configurationRevision',
     'ownerIncarnation',
     'handoffContext',
@@ -843,6 +862,7 @@ export function parseRuntimePlanV2(
     'connectionSelections',
     'connectionAuthorizations',
     'connectionChoices',
+    'teamReconnects',
     'managedConnections',
     'ownerIncarnation',
     'handoffContext',
@@ -892,6 +912,12 @@ export function parseRuntimePlanV2(
   const connectionChoices = record.connectionChoices === undefined
     ? []
     : arrayOf(record.connectionChoices, 'connectionChoices', parseConnectionChoice, 64);
+  const teamReconnects = record.teamReconnects === undefined
+    ? undefined
+    : arrayOf(record.teamReconnects, 'teamReconnects', parseTeamReconnect, TEAM_RECONNECT_LIMIT);
+  if (teamReconnects?.length === 0) {
+    throw new Error('Runtime plan teamReconnects must be absent when empty.');
+  }
   const configurationRevision = record.configurationRevision === undefined
     ? undefined
     : parseConfigurationRevision(record.configurationRevision);
@@ -1039,6 +1065,7 @@ export function parseRuntimePlanV2(
     ...(connectionSelections ? { connectionSelections } : {}),
     ...(record.connectionAuthorizations === undefined ? {} : { connectionAuthorizations }),
     ...(record.connectionChoices === undefined ? {} : { connectionChoices }),
+    ...(teamReconnects ? { teamReconnects } : {}),
     ...(configurationRevision ? { configurationRevision } : {}),
     ...(ownerIncarnation ? { ownerIncarnation } : {}),
     ...(handoffContext?.length ? { handoffContext } : {}),
@@ -1112,6 +1139,31 @@ function compileConnectionAuthorizations(
           lifecycle: account.lifecycle,
         }]),
   })).sort(compareBy('providerId'));
+}
+
+const TEAM_RECONNECT_LIMIT = 64;
+const TEAM_RECONNECT_PROVIDER_ID_MAX = 128;
+const TEAM_RECONNECT_LABEL_MAX = 240;
+
+/**
+ * Freeze a bounded, sorted, de-duplicated list. Labels are clipped rather
+ * than rejected: a notice must never fail the turn it explains.
+ */
+function compileTeamReconnects(
+  connections: readonly TeamConnectionNeedingReconnect[] | undefined,
+): RuntimePlanTeamReconnectV1[] {
+  const byKey = new Map<string, RuntimePlanTeamReconnectV1>();
+  for (const { providerId, label } of connections ?? []) {
+    const entry = {
+      providerId: providerId.slice(0, TEAM_RECONNECT_PROVIDER_ID_MAX),
+      label: label.slice(0, TEAM_RECONNECT_LABEL_MAX),
+    };
+    if (entry.providerId && entry.label) byKey.set(`${entry.providerId}\n${entry.label}`, entry);
+  }
+  return [...byKey.values()]
+    .sort((left, right) =>
+      left.providerId.localeCompare(right.providerId) || left.label.localeCompare(right.label))
+    .slice(0, TEAM_RECONNECT_LIMIT);
 }
 
 function compileSkills(skills: readonly SkillConfig[] | undefined): RuntimePlanSkillV2[] {
@@ -1283,6 +1335,7 @@ function computeHarnessRevision(plan: HarnessRevisionInput): string {
       ...(plan.connectionChoices !== undefined
         ? { connectionChoices: plan.connectionChoices }
         : {}),
+      ...(plan.teamReconnects ? { teamReconnects: plan.teamReconnects } : {}),
       ...(plan.configurationRevision
         ? { configurationRevision: plan.configurationRevision }
         : {}),
@@ -1511,6 +1564,14 @@ function parseConnectionAuthorization(value: unknown): RuntimePlanConnectionAuth
         ] as const),
       };
     }, 32),
+  };
+}
+
+function parseTeamReconnect(value: unknown): RuntimePlanTeamReconnectV1 {
+  const record = exactRecord(value, 'team reconnect', ['providerId', 'label']);
+  return {
+    providerId: boundedString(record.providerId, 'team reconnect providerId', 1, TEAM_RECONNECT_PROVIDER_ID_MAX),
+    label: boundedString(record.label, 'team reconnect label', 1, TEAM_RECONNECT_LABEL_MAX),
   };
 }
 

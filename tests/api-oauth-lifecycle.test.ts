@@ -11,11 +11,12 @@ import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import type { OAuthRefreshTelemetryEvent } from '../src/config/oauth-refresh-telemetry.ts';
 import { apiOAuthLifecycleDependencies } from '../src/connections/api-oauth-lifecycle.ts';
 import {
+  resolveConnectionAccountContext,
   resolveEffectiveConnectionAccounts,
   resolvePersonalConnectionAuthorizationOptions,
 } from '../src/connections/runtime.ts';
 
-async function fixture() {
+async function fixture(ownerKind: 'member' | 'team' = 'member') {
   const config = new SqliteConfigStore(':memory:', { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const agentId = 'agent_oauth';
@@ -29,8 +30,9 @@ async function fixture() {
   await config.ensureWorkspaceInstallation({ workspaceId, transportMode: 'direct', defaultAgentId: agentId });
   const oauthScopes = ['https://www.googleapis.com/auth/gmail.readonly'];
   const account = await config.putConnectionAccount({
-    id: 'connection_oauth', workspaceId, ownerKind: 'member',
-    ownerMembershipId: actorMembershipId, createdByMembershipId: actorMembershipId,
+    id: 'connection_oauth', workspaceId, ownerKind,
+    ...(ownerKind === 'member' ? { ownerMembershipId: actorMembershipId } : {}),
+    createdByMembershipId: actorMembershipId,
     providerId: 'google', label: 'Work', lifecycle: 'ready', secretRefId: 'secret_oauth',
     policy: { kind: 'api', authMode: 'oauth', oauthProvider: 'google', oauthScopes,
       ...googleWorkspaceApiPolicy(oauthScopes) },
@@ -76,6 +78,23 @@ test('native invalid_grant demotes the exact account, pauses dependencies and of
     assert.deepEqual(await resolveEffectiveConnectionAccounts(f.context), []);
     const options = await resolvePersonalConnectionAuthorizationOptions(f.context);
     assert.deepEqual(options[0]?.accounts, [{ id: f.account.id, label: 'Work', lifecycle: 'needs_attention' }]);
+    // A personal account recovers through the member's own authorization.
+    assert.deepEqual((await resolveConnectionAccountContext(f.context)).teamReconnects, []);
+  } finally { f.close(); }
+});
+
+test('a demoted team API account is named for admin reconnect instead of offered to the member', async () => {
+  const f = await fixture('team');
+  try {
+    await assert.rejects(resolveApiOAuthAccessToken({ ref: f.ref, provider: 'google' }, {
+      ...f.dependencies,
+      fetchFn: async () => Response.json({ error: 'invalid_grant' }, { status: 400 }),
+    }), { code: 'reauthorization_required' });
+    assert.equal((await f.config.listConnectionAccounts('T_OAUTH'))[0]?.lifecycle, 'needs_attention');
+    const context = await resolveConnectionAccountContext(f.context);
+    assert.deepEqual(context.effective, []);
+    assert.deepEqual(context.authorizations, []);
+    assert.deepEqual(context.teamReconnects, [{ providerId: 'google', label: 'Work' }]);
   } finally { f.close(); }
 });
 
