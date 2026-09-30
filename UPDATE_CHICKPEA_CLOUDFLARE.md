@@ -117,7 +117,9 @@ sets unreadable records from a later release aside instead of stalling.
 
 Rolling back from v0.1.32 to v0.1.31 needs no extra care. v0.1.31 answers a
 teammate's handed-back answer that is still queued as an ordinary report, so the
-Agent always replies, even where v0.1.32 would have posted nothing.
+Agent always replies, even where v0.1.32 would have posted nothing. A turn
+that had already decided to post nothing but had not finished when you rolled
+back may post the literal text `NO_REPLY` once.
 
 ## 3. Deploy to the same Worker
 
