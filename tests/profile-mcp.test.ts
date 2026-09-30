@@ -679,6 +679,70 @@ test('account-backed runtime MCP resolves OAuth and rechecks live tool and actor
   }
 });
 
+test('an MCP 401 forces one renewal of the rejected OAuth token, then throttles', async (t) => {
+  const directory = mkdtempSync(join(tmpdir(), 'chickpea-account-mcp-401-'));
+  try {
+    await withEnv({ SLACK_STATE_DB_PATH: join(directory, 'state.db'), CHICKPEA_AUTH_DB_PATH: join(directory, 'auth.db') }, async () => {
+      const { getIdentityStore } = await import('../src/config/state-backend.ts');
+      const { connectionAccountOAuthRef } = await import('../src/config/api-oauth.ts');
+      const config = getConfigStore();
+      const identity = getIdentityStore();
+      const policy = { kind: 'mcp', url: 'https://mcp.example.com/mcp', transport: 'streamable-http', authMode: 'oauth', headerNames: [], discoveredTools: [{ name: 'search' }], allowedTools: ['search'] };
+      const account = { id: 'connection_revoked', workspaceId: 'T_TEST', providerId: 'test', label: 'Revoked MCP', ownerKind: 'team', lifecycle: 'ready', revision: 3, policy };
+      const binding = { agentId: 'agent_test', connectionAccountId: account.id, providerId: 'test', enabled: true, allowedCapabilities: [] };
+      t.mock.method(identity, 'getOrganization', async () => ({ id: 'org', slackTeamId: 'T_TEST' }));
+      t.mock.method(identity, 'getMembership', async () => ({ id: 'member', userId: 'user', organizationId: 'org', status: 'active' }));
+      t.mock.method(identity, 'getMembershipAccessOverlay', async () => null);
+      t.mock.method(identity, 'getUser', async () => ({ id: 'user', slackTeamId: 'T_TEST', slackUserId: 'U_TEST' }));
+      t.mock.method(identity, 'resolveSlackIdentity', async () => ({ user: { id: 'user' }, membership: { id: 'member' }, binding: { membershipId: 'member' } }));
+      t.mock.method(config, 'listConnectionAccounts', async () => [account]);
+      t.mock.method(config, 'listAgentConnectionBindings', async () => [binding]);
+      const refreshEvents: Array<Record<string, unknown>> = [];
+      t.mock.method(console, 'info', (event: unknown) => {
+        if ((event as { event?: string })?.event === 'chickpea.oauth.refresh') {
+          refreshEvents.push(event as Record<string, unknown>);
+        }
+      });
+      // Unexpired but revoked upstream. The token endpoint is unreachable, so
+      // the forced renewal fails transiently and keeps the stored credential.
+      await getSettingsStore().setSetting(mcpOAuthSettingKeys(connectionAccountOAuthRef(account.id))[2], JSON.stringify({
+        serverUrl: policy.url, authorizationServerUrl: 'https://127.0.0.1',
+        metadata: { issuer: 'https://127.0.0.1', authorization_endpoint: 'https://127.0.0.1/authorize', token_endpoint: 'https://127.0.0.1/token', response_types_supported: ['code'] },
+        resource: policy.url, clientInformation: { client_id: 'client' },
+        tokens: { access_token: 'revoked-token', refresh_token: 'refresh-token', token_type: 'Bearer', expires_in: 3600 },
+        obtainedAt: Date.now() - 10 * 60_000,
+      }));
+      const presented: Array<string | null> = [];
+      const [definition] = resolveRuntimePlanMcpConnections('agent_test', [{
+        id: account.id, url: policy.url, transport: 'streamable-http', authMode: 'oauth', headerNames: [], allowedTools: ['search'], optional: true,
+      }], undefined, { workspaceId: 'T_TEST', actorMembershipId: 'member' }, {
+        createGuardedFetch: () => (async (input, init) => {
+          presented.push(new Request(input, init).headers.get('authorization'));
+          return new Response('unauthorized', { status: 401 });
+        }) as typeof fetch,
+      });
+
+      // The transport's one 401 retry re-resolves auth, which forces the renewal.
+      await assert.rejects(createMcpConnection(definition!), /refresh failed/);
+      assert.deepEqual(presented, ['Bearer revoked-token']);
+      assert.deepEqual(
+        refreshEvents.map(({ connectionId, trigger, outcome }) => ({ connectionId, trigger, outcome })),
+        [{ connectionId: account.id, trigger: 'unauthorized', outcome: 'unavailable' }],
+      );
+
+      // Within the window a second 401 presents the stored token again instead
+      // of retrying the failing token endpoint.
+      await assert.rejects(createMcpConnection(definition!));
+      assert.deepEqual(presented, ['Bearer revoked-token', 'Bearer revoked-token', 'Bearer revoked-token']);
+      assert.equal(refreshEvents.length, 1);
+    });
+  } finally {
+    t.mock.restoreAll();
+    closeNodeStateStores();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 /**
  * Send one tools/list request through an account-backed RuntimePlanV2 MCP
  * connection whose account row carries `policy`. Returns the outbound headers,

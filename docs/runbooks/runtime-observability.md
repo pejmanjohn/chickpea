@@ -474,7 +474,7 @@ token, client id, URL, tool argument, result, or provider error text.
 | `event` | Emitted | Fields |
 | --- | --- | --- |
 | `chickpea.mcp.http` | Once per HTTP request an Agent turn sends to an MCP server | `connectionId`, `authMode`, `rpcMethod`, `toolName` (tool calls only), `httpMethod`, `status`, `outcome` (`ok`, `http_error`, `network_error`), `durationMs`, `requestBytes`, `responseBytes` |
-| `chickpea.oauth.refresh` | Once per OAuth credential renewal outcome (MCP and Google API connections) | `lane` (`mcp`, `api`), `connectionId`, `trigger` (`turn`, `admin`, `keepalive`), `outcome`, `reason`, `tokenDeleted`, `tokenAgeMs`, `durationMs` |
+| `chickpea.oauth.refresh` | Once per OAuth credential renewal outcome (MCP and Google API connections) | `lane` (`mcp`, `api`), `connectionId`, `trigger` (`turn`, `admin`, `keepalive`, `unauthorized`), `outcome`, `reason`, `tokenDeleted`, `tokenAgeMs`, `durationMs` |
 | `chickpea.oauth.keepalive` | Once per credential keep-alive sweep, every ten minutes from scheduled maintenance | `credentials` (ready OAuth connections checked), `due`, `renewed`, `unavailable`, `rejected`, `skipped` (another caller was renewing, or the connection changed meanwhile), `failed` (an unexpected error, also logged as a `[chickpea] OAuth keep-alive could not renew a credential` warning with its error code), `deferred` (left for the next sweep; the oldest credentials go first), `durationMs` |
 
 `chickpea.oauth.refresh` outcomes:
@@ -505,3 +505,10 @@ connection is unused, because some providers expire refresh tokens after as
 little as a day of inactivity. It renews at most ten credentials per sweep. A
 failed renewal keeps the credential and is retried on each sweep for an hour,
 then hourly, until it succeeds or the provider rejects it.
+
+When an MCP server answers `401` to an OAuth connection's current access token,
+the one retry the MCP client makes renews that credential first, with trigger
+`unauthorized`, so a grant revoked before its expiry is classified at once
+instead of failing until the token expires. A credential issued within the last
+minute is not renewed this way, and each runtime renews a given credential this
+way at most once a minute.

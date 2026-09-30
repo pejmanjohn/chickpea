@@ -28,12 +28,14 @@ import { META_ADS_OAUTH_MANAGEMENT_SCOPE } from './mcp-oauth-clients.ts';
 import {
   isCurrentMcpOAuthConnection,
   resolveMcpOAuthAccessToken,
+  UNAUTHORIZED_REFRESH_MIN_AGE_MS,
   type ResolveMcpOAuthAccessInput,
 } from './mcp-oauth.ts';
 import {
   buildMcpRequestHeaders,
   resolveMcpHeaders,
   resolveMcpSecrets,
+  type McpSecretRef,
 } from './mcp-secrets.ts';
 import { createMcpGuardedFetch, validateMcpUrl } from './mcp-url.ts';
 import { isCloudflareTarget } from './runtime-target.ts';
@@ -193,6 +195,15 @@ export function resolveRuntimePlanMcpConnections(
     const guardedFetch = (testOptions?.createGuardedFetch ?? createMcpGuardedFetch)({
       allowedOrigin: new URL(validated.url).origin,
     });
+    // The OAuth access token this server last answered 401. The MCP transport
+    // retries a 401 once and re-resolves auth first; that resolution renews
+    // the credential so a grant revoked before expiry is classified now.
+    let rejectedAccessToken: string | undefined;
+    const takeRejectedAccessToken = (ref: McpSecretRef): string | undefined => {
+      const token = rejectedAccessToken;
+      rejectedAccessToken = undefined;
+      return token !== undefined && claimUnauthorizedRefresh(ref) ? token : undefined;
+    };
     const liveServer = async (): Promise<{
       server: McpConnectionConfig;
       env: PlatformEnv | undefined;
@@ -260,6 +271,9 @@ export function resolveRuntimePlanMcpConnections(
         assertServerMcpToolInvocation(current, effectiveDeclaration.allowedTools, invocation);
       }
       const response = await guardedFetch(new Request(request, { headers }));
+      if (response.status === 401 && declaration.authMode === 'oauth') {
+        rejectedAccessToken = presentedBearerToken(headers);
+      }
       const advertised = advertisedRequest
         ? await advertiseMetaAdsAccountHelperOutput(advertisedRequest, response)
         : response;
@@ -287,10 +301,14 @@ export function resolveRuntimePlanMcpConnections(
               const { server, env } = await liveServer();
               if (accountContext) {
                 if (server.authMode === 'oauth') {
+                  const ref = connectionAccountOAuthRef(server.id);
+                  const rejected = takeRejectedAccessToken(ref);
                   return resolveMcpOAuthAccessToken({
-                    ref: connectionAccountOAuthRef(server.id), serverUrl: server.url,
+                    ref, serverUrl: server.url,
+                    ...(rejected ? { rejectedAccessToken: rejected } : {}),
                   }, {
                     settings: getSettingsStore(env),
+                    ...(rejected ? { refreshTelemetry: { trigger: 'unauthorized' as const } } : {}),
                     ...mcpOAuthLifecycleDependencies(
                       getConfigStore(env), getSettingsStore(env), accountContext.workspaceId,
                     ),
@@ -311,7 +329,8 @@ export function resolveRuntimePlanMcpConnections(
                   ...(env ? { env } : {}), agentId: profileId, connectionAccountId: server.id,
                 });
               }
-              return resolveLiveMcpBearer(server, { agentId: profileId, env }, true);
+              const rejected = takeRejectedAccessToken({ agentId: profileId, connectionId: server.id });
+              return resolveLiveMcpBearer(server, { agentId: profileId, env }, true, rejected);
             },
           }),
     };
@@ -350,10 +369,33 @@ async function resolveCurrentMcpEnv(): Promise<PlatformEnv | undefined> {
   return getCloudflareContext().env as PlatformEnv;
 }
 
+/** Last forced 401 renewal per OAuth credential in this isolate. */
+const unauthorizedRefreshAt = new Map<string, number>();
+
+/**
+ * Allow one 401-forced renewal per credential per window, so a token endpoint
+ * that fails transiently is not retried on every rejected request.
+ */
+function claimUnauthorizedRefresh(ref: McpSecretRef): boolean {
+  const now = Date.now();
+  for (const [key, at] of unauthorizedRefreshAt) {
+    if (now - at >= UNAUTHORIZED_REFRESH_MIN_AGE_MS) unauthorizedRefreshAt.delete(key);
+  }
+  const key = `${ref.agentId}/${ref.connectionId}`;
+  if (unauthorizedRefreshAt.has(key)) return false;
+  unauthorizedRefreshAt.set(key, now);
+  return true;
+}
+
+function presentedBearerToken(headers: Headers): string | undefined {
+  return /^Bearer\s+(\S+)$/i.exec(headers.get('authorization') ?? '')?.[1];
+}
+
 async function resolveLiveMcpBearer(
   server: McpConnectionConfig,
   opts: ResolveProfileMcpConnectionsOptions,
   connectionAlreadyValidated = false,
+  rejectedAccessToken?: string,
 ): Promise<string> {
   if (server.authMode === 'oauth') {
     const configStore = getConfigStore(opts.env);
@@ -363,6 +405,7 @@ async function resolveLiveMcpBearer(
       ((input) => {
         return resolveMcpOAuthAccessToken(input, {
           settings: getSettingsStore(opts.env),
+          ...(rejectedAccessToken ? { refreshTelemetry: { trigger: 'unauthorized' as const } } : {}),
           validateConnection: (ref, serverUrl) => {
             if (useValidatedConnection) {
               useValidatedConnection = false;
@@ -387,6 +430,7 @@ async function resolveLiveMcpBearer(
     )({
       ref: { agentId: opts.agentId, connectionId: server.id },
       serverUrl: server.url,
+      ...(rejectedAccessToken ? { rejectedAccessToken } : {}),
     });
   }
   if (opts.resolveBearerCredential) return opts.resolveBearerCredential(server.id);
