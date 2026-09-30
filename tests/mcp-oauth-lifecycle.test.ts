@@ -127,6 +127,25 @@ test('later turns name a demoted team MCP connection for an admin until it is re
   } finally { f.close(); }
 });
 
+test('an abandoned admin reconnect of a working team MCP account is named until it completes', async () => {
+  const f = await fixture();
+  try {
+    // Starting a sign-in moves even a working account to pending with a new
+    // attempt; nothing reverts it if the admin never finishes.
+    const started = await f.config.putConnectionAccount({
+      ...f.account,
+      lifecycle: 'pending',
+      policy: { ...f.account.policy, oauthAttemptId: '0b4f2a8e-1c3d-4e5f-8a9b-7c6d5e4f3a2b' },
+    }, f.account.revision);
+    const abandoned = await resolveConnectionAccountContext(f.context);
+    assert.deepEqual(abandoned.effective, []);
+    assert.deepEqual(abandoned.teamReconnects, [{ providerId: 'bugsnag', label: 'BugSnag' }]);
+
+    await f.config.putConnectionAccount({ ...started, lifecycle: 'ready' }, started.revision);
+    assert.deepEqual((await resolveConnectionAccountContext(f.context)).teamReconnects, []);
+  } finally { f.close(); }
+});
+
 test('a transient MCP refresh failure does not report the connection as needing reconnect', async () => {
   const f = await fixture();
   try {
@@ -138,7 +157,7 @@ test('a transient MCP refresh failure does not report the connection as needing 
   } finally { f.close(); }
 });
 
-test('only enabled team bindings of this Agent in needs_attention are named for reconnect', async () => {
+test('only enabled team bindings of this Agent awaiting an admin sign-in are named for reconnect', async () => {
   const f = await fixture();
   try {
     const [account] = await f.config.listConnectionAccounts('T_MCP');
@@ -146,10 +165,14 @@ test('only enabled team bindings of this Agent in needs_attention are named for 
     const binding = (await f.config.listAgentConnectionBindings('agent_triage'))[0]!;
     const named = [{ providerId: 'bugsnag', label: 'BugSnag' }];
     assert.deepEqual(projectTeamConnectionsNeedingReconnect([demoted], [binding]), named);
+    assert.deepEqual(
+      projectTeamConnectionsNeedingReconnect([{ ...demoted, lifecycle: 'pending' }], [binding]),
+      named,
+    );
     for (const [accounts, bindings] of [
       [[account!], [binding]],
       [[{ ...demoted, lifecycle: 'revoked' as const }], [binding]],
-      [[{ ...demoted, lifecycle: 'pending' as const }], [binding]],
+      [[{ ...demoted, lifecycle: 'pending' as const, ownerKind: 'member' as const, ownerMembershipId: 'member_owner' }], [binding]],
       [[{ ...demoted, ownerKind: 'member' as const, ownerMembershipId: 'member_owner' }], [binding]],
       [[demoted], [{ ...binding, enabled: false }]],
       [[demoted], [{ ...binding, providerId: 'sentry' }]],
