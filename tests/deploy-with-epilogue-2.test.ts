@@ -946,7 +946,7 @@ test('sandbox deploy retries the base image pull and prebuilds the image before 
   }));
   assert.equal(result.status, 0, result.stderr);
   const invoked = commands(harness.logPath);
-  assert.equal(invoked.filter((line) => line.startsWith('docker:["pull","--platform","linux/amd64","docker.io/cloudflare/sandbox:0.12.4"]')).length, 2);
+  assert.equal(invoked.filter((line) => line.startsWith('docker:["pull","--platform","linux/amd64","docker.io/cloudflare/sandbox:0.12.10"]')).length, 2);
   const builds = invoked.flatMap((line, index) => /^wrangler:\["containers","build"/.test(line) ? [index] : []);
   assert.equal(builds.length, 2, 'a failed image build is retried before anything is live');
   assert.match(invoked[builds[0]!]!, /"--push".*"--profile","acme"/);

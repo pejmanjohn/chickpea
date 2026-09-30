@@ -96,10 +96,10 @@ test('Docker checks distinguish a missing binary from a stopped daemon and retry
 
   let pulls = 0;
   const sleeps: number[] = [];
-  const pulled = pullBaseImage({ env: {}, image: 'docker.io/cloudflare/sandbox:0.12.4', sleep: (ms: number) => sleeps.push(ms),
+  const pulled = pullBaseImage({ env: {}, image: 'docker.io/cloudflare/sandbox:0.12.10', sleep: (ms: number) => sleeps.push(ms),
     run: (_: string, args: string[]): Run => {
       pulls += 1;
-      assert.deepEqual(args, ['pull', '--platform', 'linux/amd64', 'docker.io/cloudflare/sandbox:0.12.4']);
+      assert.deepEqual(args, ['pull', '--platform', 'linux/amd64', 'docker.io/cloudflare/sandbox:0.12.10']);
       return { status: pulls < 3 ? 1 : 0 };
     } });
   assert.equal(pulled, undefined);
@@ -109,7 +109,7 @@ test('Docker checks distinguish a missing binary from a stopped daemon and retry
 });
 
 test('the base image comes from the Dockerfile and the application name from the artifact', () => {
-  assert.equal(sandboxBaseImage('# comment\nFROM docker.io/cloudflare/sandbox:0.12.4\nRUN x'), 'docker.io/cloudflare/sandbox:0.12.4');
+  assert.equal(sandboxBaseImage('# comment\nFROM docker.io/cloudflare/sandbox:0.12.10\nRUN x'), 'docker.io/cloudflare/sandbox:0.12.10');
   assert.throws(() => sandboxBaseImage('FROM ${BASE}'), /no literal base image/);
   assert.equal(sandboxApplicationName({ name: 'chickpea-acme', containers: [{ class_name: 'Sandbox' }] }), 'chickpea-acme-sandbox');
   assert.equal(sandboxApplicationName({ name: 'x', containers: [{ class_name: 'Sandbox', name: 'custom' }] }), 'custom');
@@ -121,7 +121,7 @@ test('the prebuild pushes from a Dockerfile-only context and retries before anyt
   const root = mkdtempSync(path.join(tmpdir(), 'chickpea-prebuild-'));
   try {
     const dockerfilePath = path.join(root, 'Dockerfile');
-    writeFileSync(dockerfilePath, 'FROM docker.io/cloudflare/sandbox:0.12.4\n');
+    writeFileSync(dockerfilePath, 'FROM docker.io/cloudflare/sandbox:0.12.10\n');
     const calls: string[][] = [];
     const image = await prebuildSandboxImage({
       wranglerBin: '/w.js', projectRoot: root, configPath: '/cfg.json', providerContext: ['--profile', 'p'],
