@@ -732,7 +732,7 @@ function createNodeThreadDrain(
               );
             }
             // Teammates this reply asked; a stopped run asks nobody.
-            if (outcome !== 'stopped' && !raced) await agentAsks.flush();
+            if (outcome !== 'stopped' && !raced) await agentAsks.flush(outcome);
           },
         });
         if (deferredTerminal) return true;

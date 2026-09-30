@@ -1850,6 +1850,78 @@ test('reaction-only delivery settles the V3 session and clears admitted activity
   } finally { h.db.close(); work.close(); }
 });
 
+test('the thread\'s Agent, handed an answer, can end silently: nothing posts and the turn settles', async () => {
+  const answeredBack = (eventId: string): NormalizedSlackTurn => ({
+    ...workTurn(eventId),
+    text: 'Order 4821 was charged $129 twice.',
+    interactionIntent: { disposition: 'reply', reason: 'substantive_request' },
+    agentAsk: {
+      fromAgentId: 'agent_finance', fromAgentName: 'Finance', fromAgentHandle: 'finance',
+      originMessageTs: '1785509000.000100', handedBack: true,
+    },
+  });
+  const run = async (turn: NormalizedSlackTurn, reply: string, runAssignment = assignment) => {
+    const work = new SqliteWorkStore(':memory:');
+    const admitted = await work.admitShadowRun(prepareSlackShadowAdmission({
+      turn, assignment: runAssignment, sourceVisibility: 'private', admittedAt: Date.now(),
+    }));
+    const runId = admitted.run.id;
+    const h = v3PresentationHarness(turn, runId);
+    const effects: string[] = [];
+    let prompt = '';
+    const client = {
+      apiCall: async (_method: string, input: Record<string, unknown>) => {
+        effects.push(`session:${String(input.status)}`);
+        return { ok: true };
+      },
+      assistant: { threads: { setStatus: async (input: Record<string, unknown>) => {
+        effects.push(`activity:${input.status ? 'set' : 'clear'}`);
+        return { ok: true };
+      } } },
+      conversations: { history: async () => ({ ok: true, messages: [] }) },
+      chat: {
+        startStream: async () => { effects.push('post'); return { ok: true, ts: '1785509000.000300' }; },
+        appendStream: async () => ({ ok: true }),
+        stopStream: async () => ({ ok: true }),
+        postMessage: async () => { effects.push('post'); return { ok: true, ts: '1785509000.000300' }; },
+      },
+    } as unknown as WebClient;
+    try {
+      await runTurn(turn, runAssignment, undefined, {
+        client, runId, presentationState: h.state, workStore: work, usageRecordingEnabled: false,
+        onDelivered: async (outcome) => { effects.push(`delivered:${outcome}`); },
+        async agentPrompt(input): Promise<AgentDispatchResult> {
+          prompt = input.message;
+          return {
+            text: reply, requestedModel: runAssignment.model ?? null, returnedModel: null,
+            reportedUsage: null, usageCompleteness: 'not_reported',
+          };
+        },
+      });
+      const stored = h.store.get(runId);
+      return { effects, prompt, stored, run: await work.getRun(runId) };
+    } finally { h.db.close(); work.close(); }
+  };
+
+  const silent = await run(answeredBack('Ev_ANSWERED_BACK_SILENT'), 'NO_REPLY');
+  assert.match(silent.prompt, /reply with exactly NO_REPLY and nothing else/);
+  assert.equal(silent.effects.includes('post'), false, 'nothing is posted');
+  assert.equal(silent.effects.at(-1), 'delivered:no_op');
+  assert.ok(silent.effects.includes('activity:clear'));
+  if (silent.stored?.schemaVersion !== 3) assert.fail('expected V3 presentation');
+  assert.equal(silent.stored.activityProjection.state, 'cleared');
+  assert.equal(silent.stored.lifecyclePhase, 'settled');
+  assert.equal(silent.run?.terminalDisposition, 'no_op');
+
+  // Anything more than the silent reply is delivered as usual.
+  const spoke = await run(answeredBack('Ev_ANSWERED_BACK_SPOKE'), 'Refunding one $129 charge now.');
+  assert.ok(spoke.effects.includes('post'));
+  assert.equal(spoke.effects.at(-1), 'delivered:succeeded');
+  // Only the thread's own Agent may stay silent: a guest's NO_REPLY is its answer.
+  const guest = await run(answeredBack('Ev_GUEST_NO_REPLY'), 'NO_REPLY', { ...assignment, threadGuest: true });
+  assert.ok(guest.effects.includes('post'));
+});
+
 test('a rejected custom status falls back to the native processing indicator', async () => {
   const turn: NormalizedSlackTurn = {
     ...workTurn('Ev_V3_STATUS_FALLBACK'),

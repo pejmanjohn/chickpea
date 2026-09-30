@@ -344,7 +344,7 @@ Agent there, even after the Agent moves to another model, because the older
 release cannot read the thread's earlier turn. Other threads are unaffected,
 and updating again clears it.
 
-A rollback from v0.1.31 to v0.1.30 or earlier stalls the same way on any of
+A rollback from v0.1.31 or later to v0.1.30 or earlier stalls the same way on any of
 three kinds of turn that has not finished: a turn that starts a conversation
 (a new thread, the first turn in an older thread after the update, or a routine
 run), a question one Agent asks another, and a turn whose saved thread context
@@ -352,8 +352,8 @@ includes a post from an app. The Worker logs
 `Flue dispatch target does not match its RuntimePlanV2.`,
 `Runtime plan conversation has unknown field guest.` or
 `Runtime plan handoff context role is invalid.` respectively. Before rolling
-back from v0.1.31, make sure no reply, routine run, coding task or
-Agent-to-Agent question is running. Recover by deploying v0.1.31 forward as
+back, make sure no reply, routine run, coding task or Agent-to-Agent question
+is running. Recover by deploying the release you rolled back from forward as
 above. A person whose latest turn with an Agent in a thread carried an app's
 post gets failed replies from that Agent there until you update again.
 

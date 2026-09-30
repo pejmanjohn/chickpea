@@ -19,10 +19,17 @@ needs a number only Finance has, so its reply says:
    do not count, and an Agent never asks itself.
 2. **The asked Agent answers in the thread.** It sees the whole thread,
    including the asking Agent's message, and knows which Agent asked and which
-   person started the exchange. If the asking Agent needs the answer to
-   continue, the asked Agent mentions it back, and the asking Agent picks the
-   answer up on its next turn.
-3. **The thread stays with its Agent.** An ask never hands the thread over.
+   person started the exchange.
+3. **The answer goes back to the thread's Agent.** An answer that asks
+   nobody is handed back to the thread's own Agent, and it finishes the
+   person's request with it. When the answer already covers the request, as
+   with "How much was each charge?", it posts nothing more, so the person
+   never reads the answer twice. This holds along a chain: when an asked
+   Agent asks another, the last answer still comes back to the thread's
+   Agent. An asked Agent that needs the answer itself asks to be mentioned,
+   and the teammate then mentions it. A run that failed or was stopped hands
+   nothing back.
+4. **The thread stays with its Agent.** An ask never hands the thread over.
    Replies from people that mention nobody still go to the thread's own
    Agent. A person mentioning a different Agent still hands the thread over,
    as before.
@@ -69,9 +76,11 @@ Agent's list of teammates names only Agents it can reach.
 ## Limits
 
 - One message can ask at most 6 Agents, in the order it mentions them.
-- A person's message can lead to at most 8 asks, however they chain. The
-  next ask is not admitted; the Agent that tried to ask posts one line saying
-  it is pausing, and the thread waits for a person. Any new message from a
+- A person's message can lead to at most 8 asks, however they chain, and
+  each answer handed back counts as one. The next ask is not admitted; the
+  Agent that tried to ask posts one line saying it is pausing, and the thread
+  waits for a person. An answer that cannot be handed back at the limit
+  stays in the thread without that line. Any new message from a
   person starts a fresh exchange.
 - A person's stop in the thread holds asks that have not started yet, like
   any other queued message. A reply from a run someone stopped asks nobody.
@@ -102,18 +111,16 @@ Agent that takes a thread over uses the thread's sandbox.
 
 ## Coordinating teammates
 
-One Agent can split work across others: its reply gives each teammate its
-own part, mentioning each once, and they answer one at a time in that
-order. To combine the results, the coordinator asks only the last teammate
-to mention it back when done, so that report comes after every other answer
-and the coordinator reads them all in one turn before giving the person one
-combined answer. Splitting work across N teammates uses N asks, plus one for
-the report back, of the 8 a person's message allows.
-
-If several teammates do mention the coordinator, it still answers once when
-it can: an Agent that already has an ask waiting in the thread for the same
-exchange, not started yet, is not asked again, and the waiting turn reads the
-later reports too.
+The thread's own Agent can split work across others: its reply gives each
+teammate its own part, mentioning each once, and they answer one at a time in
+that order. Each answer goes back to the coordinator, and it answers once when
+it can: an Agent that already has a turn waiting in the thread for the same
+exchange, not started yet, is not given another, and the waiting turn reads
+every later answer too. It then gives the person one combined answer.
+Splitting work across N teammates uses N asks, plus one for the answers going
+back, of the 8 a person's message allows. An asked Agent that coordinates
+others asks only the last one to mention it back, so that report comes after
+every other answer.
 
 ## Logs
 
