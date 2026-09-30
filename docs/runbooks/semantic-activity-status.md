@@ -124,8 +124,14 @@ When adding a first-party capability:
 3. Use an invocation-owner fact only when the owner already validates the input
    and tool identity alone cannot select the closed operation. Only the enum
    and a granted descriptor reference may leave that owner.
-4. Keep customer-authored Agent, skill, repository, MCP/API connection, account,
-   and resource names generic by family. Never promote display names, paths,
+4. Name a custom MCP/API connection or skill only by the name configured for
+   it, chosen by exact lookup: an MCP call's server id, a connection request's
+   matched API connection, or an activated skill's name
+   (`Checking SQL Dash…`, `Using the weekly report skill…`). The model's text
+   never becomes the name. A lookup miss, or a name over 32 characters, with
+   markup, or credential-shaped, keeps the family copy
+   (`Checking a connected service…`, `Using a skill…`). Keep Agent,
+   repository, account, and resource names generic. Never promote paths,
    arguments, or result fields into the descriptor.
 5. Add tests for start, successful review, failure or ambiguity, and the
    unregistered-tool fallback. A new built-in or managed action must be covered

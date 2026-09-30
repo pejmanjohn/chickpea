@@ -12,7 +12,9 @@ import { ATTACH_FILE_TO_CONNECTION_TOOL_NAME } from '../connections/file-upload-
 import { CONNECTION_REQUEST_TOOL_NAME } from '../connections/request-tool.ts';
 import {
   activityStatus,
+  configuredSemanticDescriptor,
   genericSemanticDescriptor,
+  isSafeConfiguredLabel,
   isSemanticActivityDescriptor,
   narrateSemanticActivity,
   safeActivityLabel,
@@ -47,6 +49,7 @@ interface ActivityConnection {
 }
 
 interface ApiConnectionActivity {
+  id?: string;
   displayName: string;
   allowedHosts: readonly string[];
   pathPrefixes: readonly string[];
@@ -73,15 +76,23 @@ export interface ActivityContext {
   enabledFamilies?: readonly SemanticTargetFamily[];
 }
 
-/** Build the content-free context shape shared by RuntimePlan and legacy assembly. */
+/**
+ * Configured names an observed call may select by exact lookup: a skill by
+ * its name, an MCP connection by the server id in its tool name, and an API
+ * connection by the request it matches.
+ */
+export type ActivityNames = Partial<Pick<ActivityContext, 'skills' | 'mcpConnections' | 'apiConnections'>>;
+
+/** Build the context shape shared by RuntimePlan and legacy assembly. */
 export function buildSemanticActivityContext(
   toolDescriptors: readonly ActivityToolDescriptor[],
   enabledFamilies: readonly SemanticTargetFamily[] = [],
+  names: ActivityNames = {},
 ): ActivityContext {
   return {
-    skills: [],
-    mcpConnections: [],
-    apiConnections: [],
+    skills: [...names.skills ?? []],
+    mcpConnections: [...names.mcpConnections ?? []],
+    apiConnections: [...names.apiConnections ?? []],
     toolDescriptors: toolDescriptors.map(({ toolName, descriptor }) => ({
       toolName,
       descriptor: cloneSemanticDescriptor(descriptor),
@@ -94,6 +105,7 @@ interface RegisteredActivityContext {
   skills: Map<string, string>;
   mcpConnections: Map<string, string>;
   apiConnections: Array<{
+    id?: string;
     displayName: string;
     allowedHosts: string[];
     pathPrefixes: string[];
@@ -146,6 +158,7 @@ export function registerActivityContext(instanceId: string, context: ActivityCon
       ]),
     ),
     apiConnections: context.apiConnections.map((connection) => ({
+      ...(connection.id ? { id: connection.id } : {}),
       displayName: safeActivityLabel(connection.displayName),
       allowedHosts: [...connection.allowedHosts],
       pathPrefixes: [...connection.pathPrefixes],
@@ -186,7 +199,7 @@ export function activityStatusForObservation(
   }
   if (typeof event.submissionId === 'string') {
     const descriptor = event.type === 'tool_start' || event.type === 'tool'
-      ? descriptorForObservation(context, event.toolName)
+      ? descriptorForObservation(context, event.toolName, event.args)
       : undefined;
     return activityLifecycle.observe({
       type: event.type,
@@ -212,7 +225,7 @@ export function activityStatusForObservation(
     return undefined;
   }
   if (context.semanticDescriptors) {
-    const descriptor = descriptorForObservation(context, event.toolName);
+    const descriptor = descriptorForObservation(context, event.toolName, event.args);
     return narrateSemanticActivity(
       descriptor ?? unknownSemanticDescriptor(),
       { phase: 'started' },
@@ -237,12 +250,24 @@ function descriptorIsGranted(
   descriptor: SemanticActivityDescriptor,
 ): boolean {
   if (descriptor.target !== 'managed_connector') {
-    return context.enabledFamilies.has(descriptor.target);
+    return context.enabledFamilies.has(descriptor.target) &&
+      (!descriptor.label || isRegisteredName(context, descriptor.label));
   }
   for (const granted of context.semanticDescriptors?.values() ?? []) {
     if (sameSemanticDescriptor(granted, descriptor)) return true;
   }
   return false;
+}
+
+/** A configured name in a fact must be one this Agent registered. */
+function isRegisteredName(
+  context: RegisteredActivityContext,
+  { kind, id, label }: NonNullable<SemanticActivityDescriptor['label']>,
+): boolean {
+  if (kind === 'skill') return context.skills.get(id) === label;
+  if (kind !== 'custom_connection') return false;
+  return context.mcpConnections.get(id) === label || context.apiConnections.some((connection) =>
+    connection.id === id && connection.displayName === label);
 }
 
 function sameSemanticDescriptor(
@@ -259,12 +284,59 @@ function sameSemanticDescriptor(
 function descriptorForObservation(
   context: RegisteredActivityContext,
   toolName: string | undefined,
+  args: unknown,
 ): SemanticActivityDescriptor | undefined {
   if (!toolName || !context.semanticDescriptors) return undefined;
-  return context.semanticDescriptors.get(toolName) ??
-    (toolName.startsWith('mcp__') && context.enabledFamilies.has('custom_connection')
-      ? genericSemanticDescriptor('custom_connection')
-      : unknownSemanticDescriptor());
+  const registered = context.semanticDescriptors.get(toolName);
+  if (registered) return namedDescriptor(context, toolName, registered, args);
+  if (toolName.startsWith('mcp__') && context.enabledFamilies.has('custom_connection')) {
+    const connection = mcpConnectionForTool(context, toolName);
+    return connection
+      ? configuredSemanticDescriptor('custom_connection', connection.id, connection.displayName)
+      : genericSemanticDescriptor('custom_connection');
+  }
+  return unknownSemanticDescriptor();
+}
+
+/**
+ * Name the configured skill or API connection a call selects. Arguments are
+ * lookup keys only; the copy is always the configured name, and a call that
+ * matches nothing keeps the generic family descriptor.
+ */
+function namedDescriptor(
+  context: RegisteredActivityContext,
+  toolName: string,
+  registered: SemanticActivityDescriptor,
+  args: unknown,
+): SemanticActivityDescriptor {
+  if (registered.label) return registered;
+  if (toolName === 'activate_skill' && registered.target === 'skill') {
+    const name = objectString(args, 'name');
+    const label = name === undefined ? undefined : context.skills.get(name);
+    return name && label ? configuredSemanticDescriptor('skill', name, label) : registered;
+  }
+  if (toolName === CONNECTION_REQUEST_TOOL_NAME && registered.target === 'custom_connection') {
+    const connection = apiConnectionForRequestArgs(args, context.apiConnections);
+    return connection?.id
+      ? configuredSemanticDescriptor('custom_connection', connection.id, connection.displayName)
+      : registered;
+  }
+  return registered;
+}
+
+/** Flue names MCP tools `mcp__<server>__<tool>` with a sanitized server id. */
+function mcpConnectionForTool(
+  context: RegisteredActivityContext,
+  toolName: string,
+): { id: string; displayName: string } | undefined {
+  const serverId = mcpServerId(toolName);
+  if (!serverId) return undefined;
+  const [match, extra] = [...context.mcpConnections].filter(([id]) => mcpToolNamePart(id) === serverId);
+  return match && !extra ? { id: match[0], displayName: match[1] } : undefined;
+}
+
+function mcpToolNamePart(value: string): string {
+  return value.replace(/[^A-Za-z0-9_-]/g, '_').replace(/^_+|_+$/g, '') || 'unnamed';
 }
 
 function cloneSemanticDescriptor(
@@ -347,13 +419,7 @@ export function toolActivityStatus(
     return activityStatus('finishing', 'Attaching', 'a saved image');
   }
   if (toolName === CONNECTION_REQUEST_TOOL_NAME) {
-    const url = objectString(args, 'url');
-    const connection = url
-      ? apiConnectionForRequests(
-          [{ url, method: (objectString(args, 'method') ?? 'GET').toUpperCase() }],
-          context?.apiConnections ?? [],
-        )
-      : undefined;
+    const connection = apiConnectionForRequestArgs(args, context?.apiConnections ?? []);
     return activityStatus('checking', 'Calling', connection?.displayName ?? 'a connected service');
   }
   if (toolName === ATTACH_FILE_TO_CONNECTION_TOOL_NAME) {
@@ -366,8 +432,13 @@ export function toolActivityStatus(
   return activityStatus('running', 'Working with', 'a tool');
 }
 
+/** Name the connection being opened when its configured name fits the copy rules. */
 export function connectingActivityStatus(displayName: string): ActivityStatus {
-  return activityStatus('checking', 'Connecting to', displayName);
+  return activityStatus(
+    'checking',
+    'Connecting to',
+    isSafeConfiguredLabel(displayName) ? displayName : 'a connected service',
+  );
 }
 
 /** Fixed truthful admission activity; request content never selects its copy. */
@@ -427,6 +498,19 @@ function bashActivityStatus(
   }
 
   return activityStatus('running', 'Running', 'a workspace command');
+}
+
+function apiConnectionForRequestArgs(
+  args: unknown,
+  apiConnections: RegisteredActivityContext['apiConnections'],
+): RegisteredActivityContext['apiConnections'][number] | undefined {
+  const url = objectString(args, 'url');
+  return url
+    ? apiConnectionForRequests(
+        [{ url, method: (objectString(args, 'method') ?? 'GET').toUpperCase() }],
+        apiConnections,
+      )
+    : undefined;
 }
 
 function apiConnectionForRequests(

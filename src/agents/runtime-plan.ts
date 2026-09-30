@@ -45,6 +45,7 @@ import {
 } from '../config/runtime-model.ts';
 import { isCompiledModelProfileId } from '../model-catalog/profiles.ts';
 import { mcpToolEffect } from '../config/mcp-tool-policy.ts';
+import { AGENT_AUTHORING_SKILL_NAME } from '../management/agent-authoring/index.ts';
 import { GITHUB_OWNER_PATTERN } from '../config/github-app.ts';
 import {
   buildSemanticActivityContext,
@@ -353,7 +354,25 @@ export interface RuntimePlanActivityContextOptions {
   reservedToolNames?: readonly string[];
   /** The render mounted the browser skill and tools. */
   browserMounted?: boolean;
+  /**
+   * Every skill name the render mounted from the plan, including connector
+   * and built-in skills; defaults to the Agent's own skills. The authoring
+   * skill follows `includeAgentAuthoringSkill`.
+   */
+  mountedSkillNames?: readonly string[];
 }
+
+/** Status-line names for skills Chickpea mounts itself. */
+const BUILT_IN_SKILL_LABELS: Readonly<Record<string, string>> = {
+  [AGENT_AUTHORING_SKILL_NAME]: 'Agent setup',
+  'asana-api': 'Asana',
+  browser: 'browser',
+  'github-api': 'GitHub',
+  'google-workspace': 'Google Workspace',
+  repositories: 'repositories',
+  workspace: 'coding workspace',
+  'zendesk-api': 'Zendesk',
+};
 
 /**
  * Compile the only data allowed to cross Flue's durable creation boundary.
@@ -484,9 +503,10 @@ export function compileRuntimePlanV2(input: CompileRuntimePlanV2Input): RuntimeP
 }
 
 /**
- * Project one admitted RuntimePlan into the exact content-free activity
- * declarations mounted by the hook render. Customer-authored names remain
- * lookup keys only; every descriptor is closed, generic, or catalog-owned.
+ * Project one admitted RuntimePlan into the exact activity declarations
+ * mounted by the hook render. Every descriptor is closed, generic, or
+ * catalog-owned; the configured skill and connection names ride alongside so
+ * a call that selects one of them by exact lookup can name it.
  */
 export function buildRuntimePlanActivityContext(
   plan: RuntimePlanV2,
@@ -523,9 +543,9 @@ export function buildRuntimePlanActivityContext(
   }
 
   if (plan.mcpConnections.length > 0) {
-    // MCP server and tool names are customer-authored. The mounted runtime is
-    // already the authority that an observed MCP call is real, so retain only
-    // the closed family grant and classify the stable `mcp__` namespace.
+    // Tool names come from the MCP server. The mounted runtime is already the
+    // authority that an observed MCP call is real, so classify the stable
+    // `mcp__` namespace and name only the configured connection it selects.
     families.add('custom_connection');
   }
 
@@ -581,6 +601,29 @@ export function buildRuntimePlanActivityContext(
   return buildSemanticActivityContext(
     dedupeActivityDescriptors(descriptors),
     [...families],
+    {
+      skills: [
+        ...options.mountedSkillNames ?? plan.skills.map(({ name }) => name),
+        ...(options.includeAgentAuthoringSkill ? [AGENT_AUTHORING_SKILL_NAME] : []),
+      ].map((name) => {
+        // An Agent's own skill keeps its own name even when it shadows a built-in one.
+        const label = plan.skills.some((skill) => skill.name === name)
+          ? undefined
+          : BUILT_IN_SKILL_LABELS[name];
+        return label ? { name, displayName: label } : { name };
+      }),
+      mcpConnections: plan.mcpConnections.flatMap(({ id, displayName }) =>
+        displayName ? [{ id, displayName }] : []),
+      apiConnections: plan.apiConnections.flatMap((connection) => connection.displayName
+        ? [{
+            id: connection.id,
+            displayName: connection.displayName,
+            allowedHosts: connection.allowedHosts,
+            pathPrefixes: connection.pathPrefixes,
+            allowedMethods: connection.allowedMethods,
+          }]
+        : []),
+    },
   );
 }
 
