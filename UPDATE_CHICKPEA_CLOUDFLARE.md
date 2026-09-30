@@ -59,7 +59,7 @@ data, and explain that problem rather than telling the user to wait indefinitely
 
 Some releases add Durable Object migrations; v0.1.27 adds two, on every
 installation: `v10` for coding workers and `v11` for per-thread Slack turn
-runners. v0.1.28 through v0.1.32 add none; an update from v0.1.26 or
+runners. v0.1.28 through v0.1.33 add none; an update from v0.1.26 or
 earlier straight to any of them still applies `v10` and `v11`. Once the deploy applies them,
 Cloudflare refuses `wrangler rollback` and dashboard rollbacks to any version
 from before that release. Recovery from a bad update then means deploying a newer or fixed
@@ -122,6 +122,12 @@ that had already decided to post nothing but had not finished when you rolled
 back may post the literal text `NO_REPLY` once.
 
 ## 3. Deploy to the same Worker
+
+v0.1.33 adds an optional ChatGPT plan connection for Cloudflare. Updating keeps
+the current chat provider and API key. If you connect a ChatGPT plan and later
+roll back to v0.1.32, switch chat back to an API key and disconnect the plan
+first: that older release cannot use or manage the plan connection. An OpenAI
+API key is still required for image generation.
 
 For the core Cloudflare deployment, run the release's guarded command from the
 updated checkout:
