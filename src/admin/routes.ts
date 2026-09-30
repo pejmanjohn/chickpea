@@ -1,6 +1,7 @@
 import { planDependencies, planStatus, preparePlanConnection, pollPlanHandoff, completePlanHandoff, confirmPlanConnection, cancelPlanConnection, disconnectPlan, resolvePlanSession } from '../chatgpt-plan/connection.ts';
 import { ChannelDirectoryCache } from '../slack/channel-directory-cache.ts';
 import { apiOAuthLifecycleDependencies } from '../connections/api-oauth-lifecycle.ts';
+import { mcpOAuthLifecycleDependencies } from '../connections/mcp-oauth-lifecycle.ts';
 import { createHash, randomUUID } from 'node:crypto';
 
 import { Hono, type Context, type Next } from 'hono';
@@ -2903,24 +2904,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       }
       return isCurrentMcpOAuthConnection(store(c), ref, serverUrl);
     },
-    onReauthorizationRequired: async (ref, serverUrl) => {
-      const connectionAccountId = connectionAccountIdFromOAuthRef(ref);
-      if (connectionAccountId) {
-        const account = await findConnectionAccount(store(c), connectionAccountId);
-        if (!account || account.lifecycle === 'revoked' ||
-            !isMcpOAuthAccount(account, serverUrl)) return;
-        await store(c).putConnectionAccount(
-          { ...account, lifecycle: 'needs_attention' },
-          account.revision,
-        );
-        return;
-      }
-      await store(c).markOAuthReauthorizationRequired({
-        lane: 'mcp',
-        ...ref,
-        serverUrl,
-      });
-    },
+    ...mcpOAuthLifecycleDependencies(store(c), settings(c)),
+    refreshTelemetry: { trigger: 'admin' },
     onAuthorizationCancelled: async (
       ref, serverUrl, accountRevision, oauthAttemptId,
     ) => {

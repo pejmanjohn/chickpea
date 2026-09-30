@@ -28,7 +28,7 @@ export async function testManagedMcpConnection(input: {
     if (connection.authMode === 'oauth') {
       resolved.bearer = await resolveMcpOAuthAccessToken(
         { ref, serverUrl: connection.url },
-        { settings: input.settings },
+        { settings: input.settings, refreshTelemetry: { trigger: 'admin' } },
       );
     }
     const result = await discoverMcpTools({

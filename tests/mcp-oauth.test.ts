@@ -30,6 +30,7 @@ import {
   type SettingsPatch,
   type SettingsStore,
 } from '../src/config/settings-store.ts';
+import type { OAuthRefreshTelemetryEvent } from '../src/config/oauth-refresh-telemetry.ts';
 
 const REF = { agentId: 'agent_test', connectionId: 'notion-mcp' };
 const SERVER_URL = 'https://mcp.example.test/mcp';
@@ -2355,3 +2356,143 @@ test('transient refresh failure preserves the existing token bundle for retry', 
     settings.close();
   }
 });
+
+async function connectedFixture(
+  options: FakeOAuthServerOptions,
+  extra: Record<string, unknown> = {},
+) {
+  const settings = new SqliteSettingsStore(':memory:');
+  const oauth = fakeOAuthServer(options);
+  let now = 1_000_000;
+  const events: OAuthRefreshTelemetryEvent[] = [];
+  const reports: Array<{ serverUrl: string; revision?: number }> = [];
+  const dependencies = {
+    settings,
+    fetchFn: oauth.fetchFn,
+    now: () => now,
+    randomId: () => 'nonce',
+    getConnectionRevision: async (): Promise<number | undefined> => 7,
+    onReauthorizationRequired: (_ref: typeof REF, serverUrl: string, revision?: number) => {
+      reports.push({ serverUrl, ...(revision !== undefined ? { revision } : {}) });
+    },
+    refreshTelemetry: { trigger: 'turn' as const, emit: (event: OAuthRefreshTelemetryEvent) => events.push(event) },
+    ...extra,
+  };
+  const started = await startMcpOAuthAuthorization(
+    { ref: REF, serverUrl: SERVER_URL, callbackUrl: CALLBACK_URL },
+    dependencies,
+  );
+  await completeMcpOAuthAuthorization({ code: 'provider-code', state: started.state }, dependencies);
+  return {
+    settings, oauth, events, reports, dependencies,
+    advance(ms: number) { now += ms; },
+    resolve: () => resolveMcpOAuthAccessToken({ ref: REF, serverUrl: SERVER_URL }, dependencies),
+  };
+}
+
+function isReauthorizationRequired(error: unknown): boolean {
+  return error instanceof McpOAuthError && error.code === 'reauthorization_required';
+}
+
+for (const refreshError of ['unauthorized_client', 'invalid_client'] as const) {
+  test(`${refreshError} from a dynamically registered client is terminal and reported with the pre-request revision`, async () => {
+    const f = await connectedFixture({ initialExpiresIn: 1, refreshError });
+    const [clientKey, , tokenKey] = mcpOAuthSettingKeys(REF);
+    try {
+      f.advance(2_000);
+      await assert.rejects(f.resolve(), isReauthorizationRequired);
+      assert.equal(await f.settings.getSetting(tokenKey), undefined);
+      // A rejected dynamic registration is forgotten so reconnect registers again.
+      assert.equal(await f.settings.getSetting(clientKey) === undefined, refreshError === 'invalid_client');
+      assert.deepEqual(f.reports, [{ serverUrl: SERVER_URL, revision: 7 }]);
+      assert.equal(f.events.length, 1);
+      assert.equal(f.events[0]!.outcome, 'rejected');
+      assert.equal(f.events[0]!.reason, refreshError);
+      assert.equal(f.events[0]!.tokenDeleted, true);
+    } finally {
+      f.settings.close();
+    }
+  });
+}
+
+test('invalid_client for a client metadata document is transient and keeps the credential', async () => {
+  const f = await connectedFixture({ cimd: true, initialExpiresIn: 1, refreshError: 'invalid_client' });
+  const tokenKey = mcpOAuthSettingKeys(REF)[2];
+  try {
+    const before = await f.settings.getSetting(tokenKey);
+    f.advance(2_000);
+    await assert.rejects(
+      f.resolve(),
+      (error: unknown) => error instanceof McpOAuthError && error.code === 'oauth_unavailable',
+    );
+    assert.equal(await f.settings.getSetting(tokenKey), before);
+    assert.deepEqual(f.reports, []);
+    assert.equal(f.events[0]!.outcome, 'unavailable');
+    assert.equal(f.events[0]!.reason, 'invalid_client');
+  } finally {
+    f.settings.close();
+  }
+});
+
+test('an access-only credential past hard expiry is retired and reported', async () => {
+  const f = await connectedFixture({ initialExpiresIn: 30, omitInitialRefreshToken: true });
+  const tokenKey = mcpOAuthSettingKeys(REF)[2];
+  try {
+    f.advance(30_000);
+    await assert.rejects(f.resolve(), isReauthorizationRequired);
+    assert.equal(await f.settings.getSetting(tokenKey), undefined);
+    assert.deepEqual(f.reports, [{ serverUrl: SERVER_URL, revision: 7 }]);
+    assert.equal(f.events[0]!.outcome, 'expired');
+  } finally {
+    f.settings.close();
+  }
+});
+
+test('a missing credential is reported only for a revisioned connection account', async () => {
+  const f = await connectedFixture({});
+  const tokenKey = mcpOAuthSettingKeys(REF)[2];
+  try {
+    await f.settings.deleteSetting(tokenKey);
+    await assert.rejects(f.resolve(), isReauthorizationRequired);
+    assert.deepEqual(f.reports, [{ serverUrl: SERVER_URL, revision: 7 }]);
+    assert.deepEqual(f.events.map((event) => event.outcome), ['missing']);
+
+    f.dependencies.getConnectionRevision = async () => undefined;
+    await assert.rejects(f.resolve(), isReauthorizationRequired);
+    assert.equal(f.reports.length, 1);
+    assert.equal(f.events.length, 1);
+  } finally {
+    f.settings.close();
+  }
+});
+
+test('refresh telemetry records bounded outcome fields and never credential material', async () => {
+  const f = await connectedFixture({ initialExpiresIn: 1 });
+  try {
+    f.advance(2_000);
+    assert.equal(await f.resolve(), 'access-refreshed');
+    assert.equal(f.events.length, 1);
+    const event = f.events[0]!;
+    assert.deepEqual(
+      { ...event, durationMs: typeof event.durationMs },
+      {
+        event: 'chickpea.oauth.refresh',
+        lane: 'mcp',
+        connectionId: `${REF.agentId}/${REF.connectionId}`,
+        outcome: 'refreshed',
+        reason: null,
+        tokenDeleted: false,
+        tokenAgeMs: 2_000,
+        durationMs: 'number',
+        trigger: 'turn',
+      },
+    );
+    const serialized = JSON.stringify(f.events);
+    for (const secret of ['access-initial', 'access-refreshed', 'refresh-initial', 'refresh-rotated', 'registered-client']) {
+      assert.equal(serialized.includes(secret), false, secret);
+    }
+  } finally {
+    f.settings.close();
+  }
+});
+

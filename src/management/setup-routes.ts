@@ -125,6 +125,7 @@ import {
   type ManagedAuthorizationFlowDependencies,
 } from '../connections/managed-authorization-flow.ts';
 import { ManagedAuthorizationError } from '../connections/managed-authorization.ts';
+import { mcpOAuthLifecycleDependencies } from '../connections/mcp-oauth-lifecycle.ts';
 import { ManagedProviderRequestError } from '../connections/managed-errors.ts';
 import {
   managedProviderAvailability,
@@ -2684,6 +2685,8 @@ function mcpOAuthDependencies(
 ): McpOAuthDependencies {
   return {
     settings: dependencies.settings,
+    ...mcpOAuthLifecycleDependencies(dependencies.config, dependencies.settings),
+    refreshTelemetry: { trigger: 'admin' },
     ...(validateCatalogAuthorization
       ? {
           validateAuthorization: (
