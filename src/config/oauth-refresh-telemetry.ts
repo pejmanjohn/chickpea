@@ -4,7 +4,8 @@
  * ids, URLs, provider response bodies, or provider error descriptions.
  */
 
-export type OAuthRefreshTrigger = 'turn' | 'admin' | 'keepalive';
+/** `unauthorized`: an MCP server answered 401 to the current access token. */
+export type OAuthRefreshTrigger = 'turn' | 'admin' | 'keepalive' | 'unauthorized';
 
 export type OAuthRefreshOutcome =
   /** The token endpoint issued a new access token. */

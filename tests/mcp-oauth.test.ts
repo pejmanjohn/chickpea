@@ -14,6 +14,7 @@ import {
   mcpOAuthSettingKeys,
   readMcpOAuthSetupContinuation,
   resolveMcpOAuthAccessToken,
+  UNAUTHORIZED_REFRESH_MIN_AGE_MS,
   startMcpOAuthAuthorization,
 } from '../src/config/mcp-oauth.ts';
 import {
@@ -2555,6 +2556,67 @@ test('refreshIfObtainedBefore renews a still-valid credential only when it is ol
       'access-refreshed',
     );
     assert.equal(f.oauth.counts.refreshes, 1);
+  } finally {
+    f.settings.close();
+  }
+});
+
+function resolveRejected(f: Awaited<ReturnType<typeof connectedFixture>>, rejectedAccessToken: string) {
+  return resolveMcpOAuthAccessToken({ ref: REF, serverUrl: SERVER_URL, rejectedAccessToken }, f.dependencies);
+}
+
+test('a 401 on an unexpired access token forces one refresh that classifies a revoked grant', async () => {
+  const f = await connectedFixture({ refreshError: 'invalid_grant' });
+  const tokenKey = mcpOAuthSettingKeys(REF)[2];
+  try {
+    f.advance(UNAUTHORIZED_REFRESH_MIN_AGE_MS);
+    // Without the 401 signal the still-valid token is simply presented again.
+    assert.equal(await f.resolve(), 'access-initial');
+    assert.equal(f.oauth.counts.refreshes, 0);
+
+    await assert.rejects(resolveRejected(f, 'access-initial'), isReauthorizationRequired);
+    assert.equal(f.oauth.counts.refreshes, 1);
+    assert.equal(await f.settings.getSetting(tokenKey), undefined);
+    assert.deepEqual(f.reports, [{ serverUrl: SERVER_URL, revision: 7 }]);
+    assert.deepEqual(
+      f.events.map(({ outcome, reason, tokenDeleted }) => ({ outcome, reason, tokenDeleted })),
+      [{ outcome: 'rejected', reason: 'invalid_grant', tokenDeleted: true }],
+    );
+  } finally {
+    f.settings.close();
+  }
+});
+
+test('a 401-forced refresh renews a still-valid grant, including one without an expiry', async () => {
+  const f = await connectedFixture({});
+  const tokenKey = mcpOAuthSettingKeys(REF)[2];
+  try {
+    const stored = JSON.parse((await f.settings.getSetting(tokenKey))!) as { tokens: Record<string, unknown> };
+    delete stored.tokens.expires_in;
+    await f.settings.setSetting(tokenKey, JSON.stringify(stored));
+    f.advance(UNAUTHORIZED_REFRESH_MIN_AGE_MS);
+    assert.equal(await resolveRejected(f, 'access-initial'), 'access-refreshed');
+    assert.equal(f.oauth.counts.refreshes, 1);
+    assert.deepEqual(f.events.map((event) => event.outcome), ['refreshed']);
+  } finally {
+    f.settings.close();
+  }
+});
+
+test('a 401 forces no refresh for a credential issued moments ago or already replaced', async () => {
+  const f = await connectedFixture({ refreshError: 'invalid_grant' });
+  const tokenKey = mcpOAuthSettingKeys(REF)[2];
+  try {
+    // A server that rejects even a fresh token cannot drive a refresh per request.
+    f.advance(UNAUTHORIZED_REFRESH_MIN_AGE_MS - 1);
+    assert.equal(await resolveRejected(f, 'access-initial'), 'access-initial');
+    // The rejected token is no longer stored: another request already renewed it.
+    f.advance(1);
+    assert.equal(await resolveRejected(f, 'access-superseded'), 'access-initial');
+    assert.equal(f.oauth.counts.refreshes, 0);
+    assert.ok(await f.settings.getSetting(tokenKey));
+    assert.deepEqual(f.reports, []);
+    assert.deepEqual(f.events, []);
   } finally {
     f.settings.close();
   }
