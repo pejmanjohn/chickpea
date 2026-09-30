@@ -17,6 +17,69 @@ var CliError = class extends Error {
   }
 };
 
+// packages/cli/src/origin.ts
+var LOOPBACK_HOSTS = /* @__PURE__ */ new Set(["localhost", "127.0.0.1", "[::1]"]);
+var MCP_RESOURCE_PATH = "/mcp";
+var MCP_WORKSPACE_SCOPE = "chickpea:workspace";
+var MCP_OAUTH_SCOPE = `${MCP_WORKSPACE_SCOPE} offline_access`;
+function isLoopbackHost(hostname) {
+  if (LOOPBACK_HOSTS.has(hostname)) return true;
+  const octets = hostname.split(".");
+  return octets.length === 4 && octets[0] === "127" && octets.every((octet) => /^\d+$/.test(octet) && Number(octet) <= 255);
+}
+function normalizeDeploymentOrigin(input) {
+  const trimmed = input.trim();
+  let parsed;
+  try {
+    parsed = new URL(/^[a-z]+:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`);
+  } catch {
+    throw new CliError("INVALID_URL", `"${trimmed}" is not a deployment URL`, "Pass the origin, for example https://chickpea.example.com");
+  }
+  if (parsed.username || parsed.password) {
+    throw new CliError("INVALID_URL", "The deployment URL must not contain credentials", "Pass the bare origin, for example https://chickpea.example.com");
+  }
+  if (parsed.search || parsed.hash) {
+    throw new CliError("INVALID_URL", "The deployment URL must not contain a query or fragment", "Pass the bare origin, for example https://chickpea.example.com");
+  }
+  const path = parsed.pathname.replace(/\/+$/, "");
+  if (path !== "" && path !== MCP_RESOURCE_PATH) {
+    throw new CliError("INVALID_URL", `The deployment URL must not contain a path (got ${parsed.pathname})`, "Pass the bare origin, for example https://chickpea.example.com");
+  }
+  if (parsed.protocol !== "https:" && !(parsed.protocol === "http:" && isLoopbackHost(parsed.hostname))) {
+    throw new CliError("INVALID_URL", "The deployment URL must use HTTPS (plain HTTP is allowed only for loopback development)", "Use https://<host> or http://127.0.0.1:<port>");
+  }
+  return parsed.origin;
+}
+
+// packages/cli/src/chatgpt-page.ts
+function chatgptReturnPage(deployment) {
+  const origin = normalizeDeploymentOrigin(deployment).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+  return `<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Finish connecting ChatGPT \xB7 Chickpea</title>
+<link rel="icon" href="${origin}/chickpea-mark-128.png">
+<style>
+*{box-sizing:border-box}body{margin:0;min-height:100vh;min-height:100svh;display:grid;place-items:center;padding:32px 20px;background:#f4ebd8;color:#3b3220;font-family:"Avenir Next",ui-rounded,system-ui,-apple-system,sans-serif;-webkit-font-smoothing:antialiased}
+main{width:100%;max-width:520px;padding:38px 40px 32px;background:#fffdf6;border:1px solid #e5dac3;border-radius:28px;box-shadow:0 16px 52px #63502a12}
+.brand{display:flex;align-items:center;gap:10px;margin-bottom:38px}.mark{width:44px;height:44px}.wordmark{width:139px;height:auto}
+.steps{display:flex;align-items:center;gap:12px;margin-bottom:28px;font-size:13px;font-weight:600;color:#6b5c42}.done{color:#4e7a3e}.current{background:#f7e6bd;border-radius:999px;padding:7px 12px;color:#7b5712}.arrow{color:#ab9a7c}
+h1{font-size:34px;line-height:1.15;letter-spacing:-1.1px;margin:0 0 16px;font-weight:750}p{font-size:16px;line-height:1.65;margin:0;color:#6b5c42}
+.continue{display:flex;justify-content:center;align-items:center;gap:12px;width:100%;margin-top:30px;padding:15px 20px;background:#dda033;border:1px solid #d1952a;border-radius:13px;box-shadow:0 3px 0 #b27e1f;color:#3b3220;text-decoration:none;font-size:15px;font-weight:750;transition:background .15s}.continue:hover{background:#e5ac44}.continue:focus-visible{outline:3px solid #7b5712;outline-offset:5px}
+.note{margin-top:25px;padding-top:23px;border-top:1px solid #e9dfcd;font-size:13px;line-height:1.65;color:#7d6b4f}
+@media(max-width:540px){body{padding:24px 16px}main{padding:28px 25px;border-radius:23px}.brand{margin-bottom:30px}h1{font-size:30px}.steps{gap:9px;font-size:12px}}
+@media(prefers-reduced-motion:reduce){.continue{transition:none}}
+</style></head><body>
+<main aria-labelledby="title">
+  <div class="brand" aria-label="Chickpea"><img class="mark" src="${origin}/chickpea-mark-128.png" width="44" height="44" alt=""><img class="wordmark" src="${origin}/chickpea-wordmark-512.png" width="139" height="35" alt="Chickpea"></div>
+  <div class="steps" aria-label="Next step: confirm your account"><span class="done">\u2713 Sign in</span><span class="arrow" aria-hidden="true">\u2192</span><span class="current">Confirm account</span></div>
+  <h1 id="title">One last step.</h1>
+  <p>Head back to Chickpea and confirm your ChatGPT account in <strong>Model providers</strong> to finish connecting.</p>
+  <a class="continue" href="${origin}/admin/settings/providers">Continue to Chickpea <span aria-hidden="true">\u2192</span></a>
+  <p class="note">Already have Chickpea open? You can switch back to that tab to confirm your account.</p>
+</main></body></html>`;
+}
+
 // packages/cli/src/chatgpt.ts
 async function connectChatgpt(origin, deps) {
   const verifier = randomBytes(32).toString("base64url");
@@ -53,8 +116,9 @@ async function connectChatgpt(origin, deps) {
     }
     const url = new URL(req.url ?? "/", redirectUri);
     if (url.pathname === "/complete") {
+      res.setHeader("Content-Security-Policy", `default-src 'none'; img-src ${origin}; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`);
       res.setHeader("content-type", "text/html; charset=utf-8");
-      res.end("<!doctype html><title>Chickpea</title><h1>Return to Chickpea</h1><p>Confirm your ChatGPT account in Model providers to finish connecting. Your terminal will show when the connection is complete.</p>");
+      res.end(chatgptReturnPage(origin));
       return;
     }
     if (url.pathname !== "/auth/callback" || !ready || callbackStarted || url.searchParams.get("state") !== state) {
@@ -132,40 +196,6 @@ async function openBrowserDetached(url) {
       resolve();
     }
   });
-}
-
-// packages/cli/src/origin.ts
-var LOOPBACK_HOSTS = /* @__PURE__ */ new Set(["localhost", "127.0.0.1", "[::1]"]);
-var MCP_RESOURCE_PATH = "/mcp";
-var MCP_WORKSPACE_SCOPE = "chickpea:workspace";
-var MCP_OAUTH_SCOPE = `${MCP_WORKSPACE_SCOPE} offline_access`;
-function isLoopbackHost(hostname) {
-  if (LOOPBACK_HOSTS.has(hostname)) return true;
-  const octets = hostname.split(".");
-  return octets.length === 4 && octets[0] === "127" && octets.every((octet) => /^\d+$/.test(octet) && Number(octet) <= 255);
-}
-function normalizeDeploymentOrigin(input) {
-  const trimmed = input.trim();
-  let parsed;
-  try {
-    parsed = new URL(/^[a-z]+:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`);
-  } catch {
-    throw new CliError("INVALID_URL", `"${trimmed}" is not a deployment URL`, "Pass the origin, for example https://chickpea.example.com");
-  }
-  if (parsed.username || parsed.password) {
-    throw new CliError("INVALID_URL", "The deployment URL must not contain credentials", "Pass the bare origin, for example https://chickpea.example.com");
-  }
-  if (parsed.search || parsed.hash) {
-    throw new CliError("INVALID_URL", "The deployment URL must not contain a query or fragment", "Pass the bare origin, for example https://chickpea.example.com");
-  }
-  const path = parsed.pathname.replace(/\/+$/, "");
-  if (path !== "" && path !== MCP_RESOURCE_PATH) {
-    throw new CliError("INVALID_URL", `The deployment URL must not contain a path (got ${parsed.pathname})`, "Pass the bare origin, for example https://chickpea.example.com");
-  }
-  if (parsed.protocol !== "https:" && !(parsed.protocol === "http:" && isLoopbackHost(parsed.hostname))) {
-    throw new CliError("INVALID_URL", "The deployment URL must use HTTPS (plain HTTP is allowed only for loopback development)", "Use https://<host> or http://127.0.0.1:<port>");
-  }
-  return parsed.origin;
 }
 
 // packages/cli/src/chatgpt-helper.ts

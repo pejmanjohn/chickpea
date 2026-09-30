@@ -24,6 +24,14 @@ test('helper binds callback state and PKCE, hands off once, and waits for owner 
       good.searchParams.set('state', descriptor.state); good.searchParams.set('code', 'one-time-code'); good.searchParams.set('client_id', 'oaiapp_test');
       const result = await fetch(good, { redirect: 'manual' });
       assert.equal(result.status, 303); assert.equal(result.headers.get('location'), '/complete');
+      const complete = await fetch(new URL('/complete', good));
+      assert.equal(complete.status, 200);
+      assert.equal(complete.headers.get('cache-control'), 'no-store');
+      assert.equal(complete.headers.get('referrer-policy'), 'no-referrer');
+      assert.match(complete.headers.get('content-security-policy')!, /default-src 'none'; img-src https:\/\/chickpea\.example\.test;/);
+      const page = await complete.text();
+      assert.match(page, /href="https:\/\/chickpea\.example\.test\/admin\/settings\/providers">Continue to Chickpea/);
+      for (const secret of ['one-time-code', descriptor.state, descriptor.nonce, descriptor.challenge]) assert.ok(!page.includes(secret));
       assert.equal((await fetch(good)).status, 400, 'replayed callback is refused');
     },
     fetch: async (url, init) => {

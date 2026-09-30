@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { createServer } from 'node:http';
 import { setTimeout as delay } from 'node:timers/promises';
+import { chatgptReturnPage } from './chatgpt-page.ts';
 import { CliError } from './errors.ts';
 
 interface ConnectDeps {
@@ -37,8 +38,9 @@ export async function connectChatgpt(origin: string, deps: ConnectDeps): Promise
     if (req.method !== 'GET' || req.headers.host !== new URL(redirectUri).host) { res.writeHead(400).end(); return; }
     const url = new URL(req.url ?? '/', redirectUri);
     if (url.pathname === '/complete') {
+      res.setHeader('Content-Security-Policy', `default-src 'none'; img-src ${origin}; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`);
       res.setHeader('content-type', 'text/html; charset=utf-8');
-      res.end('<!doctype html><title>Chickpea</title><h1>Return to Chickpea</h1><p>Confirm your ChatGPT account in Model providers to finish connecting. Your terminal will show when the connection is complete.</p>');
+      res.end(chatgptReturnPage(origin));
       return;
     }
     if (url.pathname !== '/auth/callback' || !ready || callbackStarted || url.searchParams.get('state') !== state) { res.writeHead(400).end('This sign-in callback is not valid.'); return; }
