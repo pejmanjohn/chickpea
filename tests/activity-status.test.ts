@@ -380,7 +380,11 @@ function registerNamedContext(instanceId: string): void {
     { toolName: 'activate_skill', descriptor: genericSemanticDescriptor('skill') },
     { toolName: 'connection_request', descriptor: genericSemanticDescriptor('custom_connection') },
   ], ['skill', 'custom_connection'], {
-    skills: [{ name: 'weekly-report' }, { name: 'a-skill-whose-name-is-far-too-long-for-status' }],
+    skills: [
+      { name: 'weekly-report' },
+      { name: 'asana-api', displayName: 'Asana' },
+      { name: 'a-skill-whose-name-is-far-too-long-for-status' },
+    ],
     mcpConnections: [
       { id: 'sql-dash', displayName: 'SQL Dash' },
       { id: 'mcp.crm', displayName: 'Dangerous <@U123>' },
@@ -434,6 +438,11 @@ test('skill activation names only a configured skill', () => {
   assert.equal(observeNamed('named-skill', {
     type: 'tool', toolName: 'activate_skill', toolCallId: 's1', isError: false,
   }), 'Following the weekly report skill…');
+
+  registerNamedContext('built-in-skill');
+  assert.equal(observeNamed('built-in-skill', {
+    type: 'tool_start', toolName: 'activate_skill', toolCallId: 's4', args: { name: 'asana-api' },
+  }), 'Using the Asana skill…');
 
   registerNamedContext('invented-skill');
   const invented = observeNamed('invented-skill', {

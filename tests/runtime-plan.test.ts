@@ -553,6 +553,27 @@ test('activity context projects exact mounted declarations, closed families, and
   );
 });
 
+test('activity context names mounted connector and built-in skills', () => {
+  const plan = compile();
+  const context = buildRuntimePlanActivityContext(plan, {
+    mountedSkillNames: ['asana-api', 'research', 'workspace', 'agent-authoring'],
+  });
+  assert.deepEqual(context.skills, [
+    { name: 'asana-api', displayName: 'Asana' },
+    { name: 'research' },
+    { name: 'workspace', displayName: 'coding workspace' },
+    { name: 'agent-authoring', displayName: 'Agent setup' },
+  ]);
+
+  // An Agent's own skill that shadows a built-in name keeps its own name.
+  const shadowing = compile();
+  shadowing.skills = [{ name: 'asana-api', description: 'Custom', instructions: 'Custom' }];
+  assert.deepEqual(
+    buildRuntimePlanActivityContext(shadowing, { mountedSkillNames: ['asana-api'] }).skills,
+    [{ name: 'asana-api' }],
+  );
+});
+
 test('personal authorization choices freeze labels and lifecycle without credential policy', () => {
   const plan = compile({
     turn: turn({ actorMembershipId: 'membership_alice' }),

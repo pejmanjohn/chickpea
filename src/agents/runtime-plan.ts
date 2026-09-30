@@ -353,7 +353,24 @@ export interface RuntimePlanActivityContextOptions {
   reservedToolNames?: readonly string[];
   /** The render mounted the browser skill and tools. */
   browserMounted?: boolean;
+  /**
+   * Every skill name the render mounted, including connector and built-in
+   * skills; defaults to the Agent's own skills.
+   */
+  mountedSkillNames?: readonly string[];
 }
+
+/** Status-line names for skills Chickpea mounts itself. */
+const BUILT_IN_SKILL_LABELS: Readonly<Record<string, string>> = {
+  'agent-authoring': 'Agent setup',
+  'asana-api': 'Asana',
+  browser: 'browser',
+  'github-api': 'GitHub',
+  'google-workspace': 'Google Workspace',
+  repositories: 'repositories',
+  workspace: 'coding workspace',
+  'zendesk-api': 'Zendesk',
+};
 
 /**
  * Compile the only data allowed to cross Flue's durable creation boundary.
@@ -583,7 +600,13 @@ export function buildRuntimePlanActivityContext(
     dedupeActivityDescriptors(descriptors),
     [...families],
     {
-      skills: plan.skills.map(({ name }) => ({ name })),
+      skills: (options.mountedSkillNames ?? plan.skills.map(({ name }) => name)).map((name) => {
+        // An Agent's own skill keeps its own name even when it shadows a built-in one.
+        const label = plan.skills.some((skill) => skill.name === name)
+          ? undefined
+          : BUILT_IN_SKILL_LABELS[name];
+        return label ? { name, displayName: label } : { name };
+      }),
       mcpConnections: plan.mcpConnections.flatMap(({ id, displayName }) =>
         displayName ? [{ id, displayName }] : []),
       apiConnections: plan.apiConnections.flatMap((connection) => connection.displayName

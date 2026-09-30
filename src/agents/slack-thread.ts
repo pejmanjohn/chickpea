@@ -1209,12 +1209,17 @@ export function useRuntimePlanAgent(
     channelId: plan.conversation.channelId,
     threadTs: plan.conversation.threadTs,
   });
+  const skills = runtimePlanSkills(plan, { browser: browserMounted });
   registerActivityContext(id, buildRuntimePlanActivityContext(plan, {
     ...(options.includeAgentAuthoringSkill === undefined
       ? {}
       : { includeAgentAuthoringSkill: options.includeAgentAuthoringSkill }),
     reservedToolNames: [AGENT_AUTHORING_SKILL_NAME],
     browserMounted,
+    mountedSkillNames: [
+      ...skills.map(({ name }) => name),
+      ...(options.includeAgentAuthoringSkill ? [AGENT_AUTHORING_SKILL_NAME] : []),
+    ],
     ...(options.additionalActivityToolDescriptors === undefined
       ? {}
       : { additionalToolDescriptors: options.additionalActivityToolDescriptors }),
@@ -1274,7 +1279,7 @@ export function useRuntimePlanAgent(
         publishActivityStatus(id, activityStatus(kind, action, object));
       })
     : undefined;
-  for (const skill of runtimePlanSkills(plan, { browser: browserMounted })) {
+  for (const skill of skills) {
     useSkill(skill);
   }
   const { restrictions, metaHelperScopes, metaWriteScopes } = projectMcpPolicyInstructions(plan.mcpConnections);
