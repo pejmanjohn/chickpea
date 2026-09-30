@@ -176,6 +176,7 @@ import {
   AGENT_ASK_TURN_LIMIT,
   agentAskOrigin,
   agentSlackHandle,
+  isHandedBackTurn,
   mentionedHandleWords,
   type SlackAgentAskRequest,
 } from '../slack/agent-asks.ts';
@@ -1139,7 +1140,11 @@ const AGENT_ASK_ADMISSION_ATTEMPTS = 3;
  * turn in the same thread. Each turn is admitted like a person's message in
  * that thread, with that person's access, except that no human-only command
  * (approve, stop, check-in, memory) can come from it and it never takes the
- * thread over. Runs where the asking turn ran; failures are logged.
+ * thread over. A guest's answer that asks nobody, in a chain the thread's
+ * own Agent started, is handed back to that Agent the same way, so it can
+ * finish the person's request (or stay silent). Only the thread's own Agent
+ * is handed answers, and its own reply hands nothing back, so this never
+ * loops. Runs where the asking turn ran; failures are logged.
  */
 export async function processSlackAgentAsks(
   request: SlackAgentAskRequest,
@@ -1171,6 +1176,18 @@ export async function processSlackAgentAsks(
       const agent = byHandle.get(word);
       if (!agent || agent.id === from.id || targets.some((target) => target.agent.id === agent.id)) continue;
       if (targets.length < AGENT_ASK_MAX_TARGETS) targets.push({ agent, delivery });
+    }
+  }
+  // The thread's own Agent, if it started this chain: asks made here carry it,
+  // and a guest's answer that asks nobody goes back to it. One that mentions
+  // an Agent is a report or a further ask, whose answer comes back later.
+  const threadOwnerAgentId = request.fromThreadOwner ? from.id : asking.agentAsk?.threadOwnerAgentId;
+  let handedBack = false;
+  if (targets.length === 0 && request.answer && threadOwnerAgentId) {
+    const owner = agents.find((agent) => agent.id === threadOwnerAgentId);
+    if (owner) {
+      targets.push({ agent: owner, delivery: request.answer });
+      handedBack = true;
     }
   }
   if (targets.length === 0) return;
@@ -1213,6 +1230,9 @@ export async function processSlackAgentAsks(
         fromAgentName: from.name,
         ...(fromHandle ? { fromAgentHandle: fromHandle } : {}),
         originMessageTs,
+        ...(handedBack
+          ? { handedBack: true as const }
+          : threadOwnerAgentId ? { threadOwnerAgentId } : {}),
       },
     };
     const payload: SlackEventFixture = {
@@ -1236,13 +1256,16 @@ export async function processSlackAgentAsks(
       turn,
       targetAgentId: agent.id,
       ...(provided?.enqueueTurn ? { enqueueTurn: provided.enqueueTurn } : {}),
-      onLimitReached: (client) => postAgentAskPause({
-        client,
-        stores,
-        platformEnv,
-        turn,
-        from,
-        originMessageTs,
+      // A handed-back answer at the limit asked nobody: no pause to announce.
+      ...(handedBack ? {} : {
+        onLimitReached: (client: ReturnType<typeof createSlackWebClient>) => postAgentAskPause({
+          client,
+          stores,
+          platformEnv,
+          turn,
+          from,
+          originMessageTs,
+        }),
       }),
     };
     await admitHostAddressedTurn(payload, platformEnv, execution, admission);
@@ -2529,7 +2552,19 @@ async function processSlackEvent(
     }
   }
 
-  if (!ui && !deterministicCommand && !browserActionAnswered && !candidateTurn) {
+  // A person handed the thread to another Agent while the chain was out: the
+  // answer is already in the thread for that Agent, and nobody is owed it.
+  if (turn.agentAsk?.handedBack && assignment.threadGuest === true) {
+    console.info('[chickpea] handed-back answer dropped: the thread has a new Agent');
+    await state.claim(evtKey);
+    await state.claim(msgKey);
+    return;
+  }
+  // The thread's own Agent, handed a teammate's answer, replies or stays
+  // silent: it never opens a checklist or reacts instead.
+  const handedBack = isHandedBackTurn(turn, assignment);
+  if (handedBack) turn.interactionIntent = { disposition: 'reply', reason: 'substantive_request' };
+  if (!ui && !deterministicCommand && !browserActionAnswered && !candidateTurn && !handedBack) {
     const immediateIntent = resolveImmediateSlackInteractionIntent({
       workspaceId: turn.workspaceId,
       channelId: turn.channelId,

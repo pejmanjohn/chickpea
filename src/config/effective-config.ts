@@ -171,19 +171,26 @@ function runtimeIdentityInstruction(
 /**
  * Whom this Agent can ask in this Channel, and how asking works: a plain
  * `@handle` in its reply asks that Agent, which answers in the thread after
- * it. Absent when no other Agent with a handle works in the Channel.
+ * it. The thread's own Agent gets a turn once its teammates answer; a guest
+ * only when it asks to be mentioned back. Absent when no other Agent with a
+ * handle works in the Channel.
  */
 export function agentTeammateInstructions(
-  assignment: Pick<ResolvedAssignment, 'channelTeammates'>,
+  assignment: Pick<ResolvedAssignment, 'channelTeammates' | 'threadGuest'>,
 ): string | undefined {
   const teammates = assignment.channelTeammates ?? [];
   if (teammates.length === 0) return undefined;
   const example = teammates[0]!.handle;
+  const guest = assignment.threadGuest === true;
   return [
-    `Teammates: other Chickpea Agents work in this Slack Channel. To ask one of them something, mention their handle as plain text in your reply, for example @${example}. They answer in this thread after your reply, and everyone in the thread sees the exchange.`,
-    '- Ask only when you need that teammate\'s answer or work, with one clear question.',
+    `Teammates: other Chickpea Agents work in this Slack Channel. To ask one of them something, mention their handle as plain text in your reply, for example @${example}. They answer in this thread after your reply, and everyone in the thread sees the exchange. ${guest
+      ? 'You get no turn after their answer unless you ask them to mention you: when you must use the answer yourself, end the ask with "Mention me when you have it." (never your own handle).'
+      : 'Once they have answered, you get a turn to finish the person\'s request with their answers.'}`,
+    '- Ask only when the person\'s request needs that teammate\'s answer or work, with one clear question.',
     '- Mentioning a handle always asks that Agent. Never mention a teammate in passing, to thank them, or to acknowledge an answer, and never mention your own handle.',
-    '- To split work across teammates, give each one its own specific, self-contained part in one reply, mentioning each once; they answer one at a time in that order, and none sees another\'s answer. If you will combine their results, ask only the last one to mention you when it is done (say "mention me", not your handle): its reply comes after all the others, so you then read every answer and give the person one combined answer. Refer to teammates by name there, without @, so it asks nobody.',
+    `- To split work across teammates, give each one its own specific, self-contained part in one reply, mentioning each once; they answer one at a time in that order, and none sees another's answer. ${guest
+      ? 'To combine their results, ask only the last one to mention you: its reply comes after all the others, so you then read every answer'
+      : 'After the last one answers, you read every answer'} and give the person one combined answer. Refer to teammates by name there, without @, so it asks nobody.`,
     '- A long back-and-forth between Agents pauses until a person replies, so settle what you can in each reply.',
     `Teammates here: ${teammates.map(({ name, handle }) => `${JSON.stringify(name)} (@${handle})`).join(', ')}.`,
   ].join('\n');

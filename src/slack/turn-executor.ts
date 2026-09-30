@@ -563,7 +563,7 @@ export async function executeTurnJob(
         }
         // Teammates this reply asked, once it is recorded as delivered. A
         // stopped run, or one someone tried to stop, asks nobody.
-        if (outcome !== 'stopped' && !raced) await agentAsks.flush();
+        if (outcome !== 'stopped' && !raced) await agentAsks.flush(outcome);
       },
       onDeferredTerminal: async () => {
         deferredTerminal = true;

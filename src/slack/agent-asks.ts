@@ -18,6 +18,15 @@ import type { NormalizedSlackTurn } from './types.ts';
 export const AGENT_ASK_TURN_LIMIT = 8;
 /** Agents one message can ask; later mentions in it are not asked. */
 export const AGENT_ASK_MAX_TARGETS = 6;
+/**
+ * The whole reply of the thread's own Agent, handed its teammates' answers,
+ * when those answers already complete the request: nothing is posted.
+ */
+export const AGENT_ASK_SILENT_REPLY = 'NO_REPLY';
+/** Whether a reply is the silent reply, allowing stray markup around it. */
+export function isAgentAskSilentReply(text: string): boolean {
+  return text.trim().replace(/^[`*"']+|[`*"'.!]+$/g, '') === AGENT_ASK_SILENT_REPLY;
+}
 /** Posted as the asking Agent when an exchange of asks reaches its limit. */
 export const AGENT_ASK_PAUSE_TEXT =
   "I'll pause here so this exchange doesn't keep going without you. Reply in this thread to continue.";
@@ -31,8 +40,15 @@ export interface SlackAgentAskRequest {
     'requesterTimezone' | 'agentAsk'
   >;
   fromAgentId: string;
+  /** The replying Agent is the thread's own, not a guest. */
+  fromThreadOwner?: true;
   /** Every Slack message of the reply that mentioned a handle-shaped word. */
   deliveries: Array<{ messageTs: string; text: string }>;
+  /**
+   * The first message of a guest's answer in a chain the thread's own Agent
+   * started: when the reply asks nobody, the host hands it back to that Agent.
+   */
+  answer?: { messageTs: string; text: string };
 }
 
 export type SlackAgentAskDispatcher = (request: SlackAgentAskRequest) => Promise<void>;
@@ -40,6 +56,17 @@ export type SlackAgentAskDispatcher = (request: SlackAgentAskRequest) => Promise
 /** The person's message an exchange of asks started from. */
 export function agentAskOrigin(turn: Pick<NormalizedSlackTurn, 'messageTs' | 'agentAsk'>): string {
   return turn.agentAsk?.originMessageTs ?? turn.messageTs;
+}
+
+/**
+ * Whether this turn is the thread's own Agent handed a teammate's answer: it
+ * finishes the person's request, or stays silent when the answer already did.
+ */
+export function isHandedBackTurn(
+  turn: Pick<NormalizedSlackTurn, 'agentAsk'>,
+  assignment: Pick<ResolvedAssignment, 'threadGuest'>,
+): boolean {
+  return turn.agentAsk?.handedBack === true && assignment.threadGuest !== true;
 }
 
 /**
@@ -119,20 +146,30 @@ export function createAgentAskCollector(input: {
 }): {
   /** Note one delivered message. */
   note(delivery: { messageTs: string; text: string }): void;
-  /** Hand the noted messages over, once; failures are logged, never thrown. */
-  flush(): Promise<void>;
+  /**
+   * Hand the noted messages over, once; failures are logged, never thrown.
+   * A failed run hands no answer back: its notice is not one.
+   */
+  flush(outcome?: 'succeeded' | 'no_op' | 'failed' | 'stopped'): Promise<void>;
 } {
   const deliveries: Array<{ messageTs: string; text: string }> = [];
   const eligible = Boolean(input.dispatch) && turnMayAskAgents(input.turn, input.assignment);
+  // A guest in a chain the thread's own Agent started: its answer goes back.
+  const answersOwner = eligible && input.assignment.threadGuest === true &&
+    Boolean(input.turn.agentAsk?.threadOwnerAgentId);
+  let answer: { messageTs: string; text: string } | undefined;
   let flushed = false;
   return {
     note(delivery) {
-      if (!eligible || flushed || mentionedHandleWords(delivery.text).length === 0) return;
+      if (!eligible || flushed) return;
+      if (answersOwner) answer ??= { messageTs: delivery.messageTs, text: delivery.text };
+      if (mentionedHandleWords(delivery.text).length === 0) return;
       if (deliveries.some(({ messageTs }) => messageTs === delivery.messageTs)) return;
       deliveries.push({ messageTs: delivery.messageTs, text: delivery.text });
     },
-    async flush() {
-      if (flushed || deliveries.length === 0 || !input.dispatch) return;
+    async flush(outcome) {
+      if (outcome === 'failed') answer = undefined;
+      if (flushed || (deliveries.length === 0 && !answer) || !input.dispatch) return;
       flushed = true;
       const { turn } = input;
       try {
@@ -148,7 +185,9 @@ export function createAgentAskCollector(input: {
             ...(turn.agentAsk ? { agentAsk: turn.agentAsk } : {}),
           },
           fromAgentId: input.assignment.agentId,
+          ...(input.assignment.threadGuest === true ? {} : { fromThreadOwner: true as const }),
           deliveries,
+          ...(answer ? { answer } : {}),
         });
       } catch (error) {
         console.warn('[chickpea] agent ask dispatch failed:', error instanceof Error ? error.name : 'unknown');
