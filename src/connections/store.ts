@@ -5,6 +5,7 @@ import {
   saveConnectionAccountSecret,
   tombstoneConnectionAccountSecret,
 } from '../config/connector-secrets.ts';
+import { connectionAccountIdFromOAuthRef } from '../config/api-oauth.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import type { ConfigStore } from '../config/store.ts';
 import {
@@ -950,6 +951,25 @@ function applyManagedValidation(
 async function managedResourceHandle(resourceKey: string, providerRef: string): Promise<string> {
   const hex = await sha256Hex(`${resourceKey}\u0000${providerRef}`);
   return `resource_${hex.slice(0, 32)}`;
+}
+
+/** The connection account an OAuth credential ref belongs to, if any. */
+export async function findConnectionAccountForOAuthRef(
+  config: Pick<ConfigStore, 'listWorkspaceInstallations' | 'listConnectionAccounts'>,
+  ref: { agentId: string; connectionId: string },
+  workspaceId?: string,
+): Promise<ConnectionAccount | undefined> {
+  const id = connectionAccountIdFromOAuthRef(ref);
+  if (!id) return undefined;
+  const workspaces = workspaceId
+    ? [{ workspaceId }]
+    : await config.listWorkspaceInstallations();
+  for (const workspace of workspaces) {
+    const account = (await config.listConnectionAccounts(workspace.workspaceId))
+      .find((candidate) => candidate.id === id);
+    if (account) return account;
+  }
+  return undefined;
 }
 
 /** A rejected native grant may only demote the account observed before refresh. */

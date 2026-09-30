@@ -8,6 +8,7 @@ import {
 import { googleWorkspaceApiPolicy } from '../src/config/api-oauth-policy.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
+import type { OAuthRefreshTelemetryEvent } from '../src/config/oauth-refresh-telemetry.ts';
 import { apiOAuthLifecycleDependencies } from '../src/connections/api-oauth-lifecycle.ts';
 import {
   resolveEffectiveConnectionAccounts,
@@ -140,3 +141,49 @@ for (const failure of ['unavailable', 'timeout'] as const) {
     } finally { f.close(); }
   });
 }
+
+test('a ready account whose credential vanished is demoted instead of failing silently', async () => {
+  const f = await fixture();
+  const events: OAuthRefreshTelemetryEvent[] = [];
+  try {
+    await f.settings.deleteSetting(f.keys[2]);
+    await assert.rejects(resolveApiOAuthAccessToken({ ref: f.ref, provider: 'google' }, {
+      ...f.dependencies,
+      refreshTelemetry: { trigger: 'turn', emit: (event) => events.push(event) },
+      fetchFn: async () => assert.fail('no provider request without a credential'),
+    }), { code: 'reauthorization_required' });
+    assert.equal((await f.config.listConnectionAccounts('T_OAUTH'))[0]?.lifecycle, 'needs_attention');
+    assert.equal((await f.config.getAgentScheduleReference('schedule_mail'))?.state, 'needs_attention');
+    assert.deepEqual(events.map(({ outcome, connectionId }) => ({ outcome, connectionId })), [
+      { outcome: 'missing', connectionId: f.account.id },
+    ]);
+  } finally { f.close(); }
+});
+
+test('API refresh telemetry reports each outcome with bounded reasons', async () => {
+  for (const [label, fetchFn, outcome, reason] of [
+    ['refreshed', async () => Response.json({ access_token: 'fresh', token_type: 'Bearer', expires_in: 3600 }), 'refreshed', null],
+    ['rejected', async () => Response.json({ error: 'invalid_grant' }, { status: 400 }), 'rejected', 'invalid_grant'],
+    ['unregistered code', async () => Response.json({ error: 'Down <b>now</b>' }, { status: 503 }), 'unavailable', 'other'],
+    ['no code', async () => new Response('bad gateway', { status: 502 }), 'unavailable', 'http_502'],
+    ['network', async () => { throw new TypeError('fetch failed'); }, 'unavailable', 'network'],
+  ] as const) {
+    const f = await fixture();
+    const events: OAuthRefreshTelemetryEvent[] = [];
+    try {
+      const result = resolveApiOAuthAccessToken({ ref: f.ref, provider: 'google' }, {
+        ...f.dependencies,
+        refreshTelemetry: { trigger: 'keepalive', emit: (event) => events.push(event) },
+        fetchFn,
+      });
+      if (outcome === 'refreshed') assert.equal(await result, 'fresh');
+      else await assert.rejects(result);
+      assert.equal(events.length, 1, label);
+      assert.equal(events[0]!.outcome, outcome, label);
+      assert.equal(events[0]!.reason, reason, label);
+      assert.equal(events[0]!.trigger, 'keepalive', label);
+      assert.equal(events[0]!.tokenDeleted, outcome === 'rejected', label);
+      assert.equal(JSON.stringify(events).includes('old-refresh'), false, label);
+    } finally { f.close(); }
+  }
+});

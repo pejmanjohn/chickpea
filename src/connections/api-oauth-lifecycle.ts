@@ -6,7 +6,7 @@ import {
 } from '../config/api-oauth.ts';
 import type { ConfigStore } from '../config/store.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
-import { markApiOAuthAccountExpired } from './store.ts';
+import { findConnectionAccountForOAuthRef, markApiOAuthAccountExpired } from './store.ts';
 
 /** Shared by Admin and native runtime; embedded connections retain their own lane. */
 export function apiOAuthLifecycleDependencies(
@@ -14,19 +14,8 @@ export function apiOAuthLifecycleDependencies(
   settings: SettingsStore,
   workspaceId?: string,
 ): Pick<ApiOAuthDependencies, 'getConnectionRevision' | 'onReauthorizationRequired'> {
-  const findAccount = async (ref: ApiOAuthRef) => {
-    const id = connectionAccountIdFromOAuthRef(ref);
-    if (!id) return undefined;
-    const workspaces = workspaceId
-      ? [{ workspaceId }]
-      : await config.listWorkspaceInstallations();
-    for (const workspace of workspaces) {
-      const account = (await config.listConnectionAccounts(workspace.workspaceId))
-        .find((candidate) => candidate.id === id);
-      if (account) return account;
-    }
-    return undefined;
-  };
+  const findAccount = (ref: ApiOAuthRef) =>
+    findConnectionAccountForOAuthRef(config, ref, workspaceId);
   return {
     getConnectionRevision: async (ref) => (await findAccount(ref))?.revision,
     onReauthorizationRequired: async (ref, provider, expectedRevision) => {

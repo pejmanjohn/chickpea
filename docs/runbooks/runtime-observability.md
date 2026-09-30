@@ -464,3 +464,35 @@ A stopped run's ending logs `turn_latency` with `outcome: stopped`. Filter a
 bounded capture with `wrangler tail --search steering.` or, on Node,
 `grep "steering\."`. See [Slack steering](slack-steering.md#operator-view)
 for the retry warnings and the durable stop record.
+
+## Connection logs
+
+MCP connector traffic and OAuth credential renewal each log one structured
+console object per event, on Cloudflare and Node alike. Neither carries a
+token, client id, URL, tool argument, result, or provider error text.
+
+| `event` | Emitted | Fields |
+| --- | --- | --- |
+| `chickpea.mcp.http` | Once per HTTP request an Agent turn sends to an MCP server | `connectionId`, `authMode`, `rpcMethod`, `toolName` (tool calls only), `httpMethod`, `status`, `outcome` (`ok`, `http_error`, `network_error`), `durationMs`, `requestBytes`, `responseBytes` |
+| `chickpea.oauth.refresh` | Once per OAuth credential renewal outcome (MCP and Google API connections) | `lane` (`mcp`, `api`), `connectionId`, `trigger` (`turn`, `admin`), `outcome`, `reason`, `tokenDeleted`, `tokenAgeMs`, `durationMs` |
+
+`chickpea.oauth.refresh` outcomes:
+
+- `refreshed`: the provider issued a new access token.
+- `unavailable`: the renewal failed transiently (network, timeout, 5xx,
+  `temporarily_unavailable`); the credential was kept for the next try.
+- `rejected`: the provider refused the grant (`invalid_grant`,
+  `unauthorized_client`, or `invalid_client` for a dynamically registered MCP
+  client). The credential is deleted and the connection account moves to
+  Needs attention with its dependent schedules paused.
+- `expired`: an access-only credential passed its expiry and cannot be renewed.
+- `missing`: a ready connection account has no stored credential. The account
+  moves to Needs attention.
+
+`reason` is the provider's registered OAuth error code, `http_<status>` when
+the provider sent none, `network` or `timeout` for a failed request,
+`invalid_response` for an unusable token response, or `other` for an
+unrecognized code (the MCP lane reports unrecognized codes as `server_error`). `tokenAgeMs` is the time since the credential was issued or
+last renewed; a `rejected` line with a large `tokenAgeMs` after a quiet period
+points to an expired refresh token. An account that was reconnected or renewed
+concurrently is never demoted by a late report.

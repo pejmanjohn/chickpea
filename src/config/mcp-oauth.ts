@@ -9,7 +9,6 @@ import {
   registerClient,
   startAuthorization,
 } from '@modelcontextprotocol/sdk/client/auth.js';
-import { InvalidGrantError } from '@modelcontextprotocol/sdk/server/auth/errors.js';
 import {
   checkResourceAllowed,
   resourceUrlFromServerUrl,
@@ -63,6 +62,12 @@ import {
   type StoredOAuthLease,
   validateOAuthAttemptId,
 } from './oauth-shared.ts';
+import {
+  oauthRequestFailureReason,
+  reportOAuthRefresh,
+  type OAuthRefreshOutcome,
+  type OAuthRefreshTelemetry,
+} from './oauth-refresh-telemetry.ts';
 import type { SettingsStore } from './settings-store.ts';
 import type { ConfigStore } from './store.ts';
 import {
@@ -127,10 +132,18 @@ export interface McpOAuthDependencies {
     authority: OAuthAuthorizationAuthority | undefined,
     ref: McpSecretRef,
   ) => boolean | Promise<boolean>;
+  /**
+   * Connection-account revision, read before a refresh request so a late
+   * rejection cannot demote a reconnect. Undefined for connections without
+   * a revisioned account (legacy per-Agent lanes).
+   */
+  getConnectionRevision?: (ref: McpSecretRef) => Promise<number | undefined>;
   onReauthorizationRequired?: (
     ref: McpSecretRef,
     serverUrl: string,
+    expectedConnectionRevision?: number,
   ) => void | Promise<void>;
+  refreshTelemetry?: OAuthRefreshTelemetry;
   onAuthorizationCancelled?: (
     ref: McpSecretRef,
     serverUrl: string,
@@ -654,10 +667,8 @@ export async function resolveMcpOAuthAccessToken(
   const raw = await dependencies.settings.getSetting(tokenKey);
   if (!raw) {
     await configuredClientForStart(serverUrl, dependencies);
-    throw new McpOAuthError(
-      'reauthorization_required',
-      'MCP OAuth connection is not authorized',
-    );
+    await reportMissingAuthorization(input.ref, serverUrl, dependencies);
+    throw authorizationMissing();
   }
   const initial = parseStoredTokenBundle(raw);
   assertTokenResource(initial, serverUrl);
@@ -674,10 +685,15 @@ export async function resolveMcpOAuthAccessToken(
       await requireStoredTokenConfiguration(initial, raw, tokenKey, dependencies);
       return initial.tokens.access_token;
     }
-    throw new McpOAuthError(
-      'reauthorization_required',
-      'MCP OAuth access expired without a refresh token',
-    );
+    return rejectStoredAuthorization({
+      ref: input.ref,
+      serverUrl,
+      tokenKey,
+      currentRaw: raw,
+      current: initial,
+      outcome: 'expired',
+      reason: null,
+    }, dependencies);
   }
 
   const leaseRaw = await dependencies.settings.getSetting(refreshLeaseKey);
@@ -696,12 +712,8 @@ export async function resolveMcpOAuthAccessToken(
     dependencies,
     async () => {
       const currentRaw = await dependencies.settings.getSetting(tokenKey);
-      if (!currentRaw) {
-        throw new McpOAuthError(
-          'reauthorization_required',
-          'MCP OAuth connection is not authorized',
-        );
-      }
+      // Whoever deleted the credential already reported it.
+      if (!currentRaw) throw authorizationMissing();
       const current = parseStoredTokenBundle(currentRaw);
       assertTokenResource(current, serverUrl);
       await requireCurrentConnection(
@@ -718,12 +730,19 @@ export async function resolveMcpOAuthAccessToken(
           await requireStoredTokenConfiguration(current, currentRaw, tokenKey, dependencies);
           return current.tokens.access_token;
         }
-        throw new McpOAuthError(
-          'reauthorization_required',
-          'MCP OAuth access expired without a refresh token',
-        );
+        return rejectStoredAuthorization({
+          ref: input.ref,
+          serverUrl,
+          tokenKey,
+          currentRaw,
+          current,
+          outcome: 'expired',
+          reason: null,
+        }, dependencies);
       }
 
+      const revision = await connectionRevision(input.ref, dependencies);
+      const startedAt = oauthNow(dependencies);
       let tokens: OAuthTokens;
       try {
         tokens = await refreshAuthorization(current.authorizationServerUrl, {
@@ -735,35 +754,27 @@ export async function resolveMcpOAuthAccessToken(
         });
       } catch (error) {
         await requireStoredTokenConfiguration(current, currentRaw, tokenKey, dependencies);
-        if (
-          error instanceof InvalidGrantError ||
-          (isRecord(error) && error.errorCode === 'invalid_grant')
-        ) {
-          const deleted = await dependencies.settings.applySettingsPatch({
-            expected: { key: tokenKey, value: currentRaw },
-            delete: [tokenKey],
-          });
-          if (!deleted) {
-            const winner = await dependencies.settings.getSetting(tokenKey);
-            if (winner) {
-              const winnerBundle = parseStoredTokenBundle(winner);
-              assertTokenResource(winnerBundle, serverUrl);
-              await requireCurrentConnection(
-                input.ref, serverUrl, dependencies, undefined, winnerBundle.oauthAttemptId,
-              );
-              await requireStoredTokenConfiguration(
-                winnerBundle, winner, tokenKey, dependencies,
-              );
-              return winnerBundle.tokens.access_token;
-            }
-          }
-          await notifyReauthorizationRequired(input.ref, serverUrl, dependencies);
-          throw new McpOAuthError(
-            'reauthorization_required',
-            'MCP OAuth refresh was rejected',
-            { cause: error },
-          );
+        const code = oauthErrorCode(error);
+        if (isTerminalRefreshRejection(code, current.clientInformation)) {
+          return rejectStoredAuthorization({
+            ref: input.ref,
+            serverUrl,
+            tokenKey,
+            currentRaw,
+            current,
+            outcome: 'rejected',
+            reason: code,
+            connectionRevision: revision,
+            startedAt,
+            cause: error,
+          }, dependencies);
         }
+        reportRefresh(input.ref, 'unavailable', {
+          reason: code ?? oauthRequestFailureReason(error),
+          tokenDeleted: false,
+          obtainedAt: current.obtainedAt,
+          startedAt,
+        }, dependencies);
         throw new McpOAuthError('oauth_unavailable', 'MCP OAuth refresh failed', {
           cause: error,
         });
@@ -796,12 +807,7 @@ export async function resolveMcpOAuthAccessToken(
       });
       if (!stored) {
         const winner = await dependencies.settings.getSetting(tokenKey);
-        if (!winner) {
-          throw new McpOAuthError(
-            'reauthorization_required',
-            'MCP OAuth connection is not authorized',
-          );
-        }
+        if (!winner) throw authorizationMissing();
         const winnerBundle = parseStoredTokenBundle(winner);
         assertTokenResource(winnerBundle, serverUrl);
         await requireCurrentConnection(
@@ -810,6 +816,12 @@ export async function resolveMcpOAuthAccessToken(
         await requireStoredTokenConfiguration(winnerBundle, winner, tokenKey, dependencies);
         return winnerBundle.tokens.access_token;
       }
+      reportRefresh(input.ref, 'refreshed', {
+        reason: null,
+        tokenDeleted: false,
+        obtainedAt: current.obtainedAt,
+        startedAt,
+      }, dependencies);
       try {
         await requireStoredTokenConfiguration(refreshed, refreshedRaw, tokenKey, dependencies);
         await requireCurrentConnection(
@@ -833,13 +845,176 @@ export async function resolveMcpOAuthAccessToken(
   );
 }
 
-async function notifyReauthorizationRequired(
+/**
+ * Retire a credential the provider will never accept again. The delete is
+ * fenced to the exact stored value: if a concurrent refresh or reconnect
+ * already replaced it, that winner's token is used instead of failing.
+ */
+async function rejectStoredAuthorization(
+  input: {
+    ref: McpSecretRef;
+    serverUrl: string;
+    tokenKey: string;
+    currentRaw: string;
+    current: StoredTokenBundle;
+    outcome: Extract<OAuthRefreshOutcome, 'rejected' | 'expired'>;
+    reason: string | null;
+    /**
+     * Captured before a refresh request (possibly unknown), so a late rejection
+     * cannot demote a reconnect. Read now when no request was made.
+     */
+    connectionRevision?: number | undefined;
+    startedAt?: number;
+    cause?: unknown;
+  },
+  dependencies: McpOAuthDependencies,
+): Promise<string> {
+  const { ref, serverUrl, tokenKey, currentRaw, current } = input;
+  const deleted = await dependencies.settings.applySettingsPatch({
+    expected: { key: tokenKey, value: currentRaw },
+    delete: [tokenKey],
+  });
+  if (!deleted) {
+    const winner = await dependencies.settings.getSetting(tokenKey);
+    if (winner) {
+      const winnerBundle = parseStoredTokenBundle(winner);
+      assertTokenResource(winnerBundle, serverUrl);
+      await requireCurrentConnection(
+        ref, serverUrl, dependencies, undefined, winnerBundle.oauthAttemptId,
+      );
+      await requireStoredTokenConfiguration(winnerBundle, winner, tokenKey, dependencies);
+      return winnerBundle.tokens.access_token;
+    }
+  }
+  if (deleted && input.reason === 'invalid_client') {
+    // The authorization server no longer recognizes this dynamic registration.
+    // Reconnecting would reuse it and fail again, so register afresh next time.
+    await forgetDynamicClientRegistration(ref, current.clientInformation, dependencies.settings);
+  }
+  reportRefresh(ref, input.outcome, {
+    reason: input.reason,
+    tokenDeleted: deleted,
+    obtainedAt: current.obtainedAt,
+    ...(input.startedAt !== undefined ? { startedAt: input.startedAt } : {}),
+  }, dependencies);
+  await notifyReauthorizationRequired(
+    ref,
+    serverUrl,
+    dependencies,
+    'connectionRevision' in input ? input.connectionRevision : await connectionRevision(ref, dependencies),
+  );
+  throw new McpOAuthError(
+    'reauthorization_required',
+    input.outcome === 'expired'
+      ? 'MCP OAuth access expired and cannot be renewed; reconnect this connection'
+      : 'MCP OAuth authorization was rejected by the provider; reconnect this connection',
+    input.cause === undefined ? undefined : { cause: input.cause },
+  );
+}
+
+/**
+ * A ready connection account with no stored credential can never recover on
+ * its own. Report it so the account is demoted instead of failing silently on
+ * every turn. Connections without a revisioned account are left unchanged.
+ */
+async function reportMissingAuthorization(
   ref: McpSecretRef,
   serverUrl: string,
   dependencies: McpOAuthDependencies,
 ): Promise<void> {
+  const revision = await connectionRevision(ref, dependencies);
+  if (revision === undefined) return;
+  reportRefresh(ref, 'missing', { reason: null, tokenDeleted: false }, dependencies);
+  await notifyReauthorizationRequired(ref, serverUrl, dependencies, revision);
+}
+
+/**
+ * A lifecycle lookup failure must never block a renewal or mask its outcome;
+ * without a revision the connection is simply not demoted.
+ */
+async function connectionRevision(
+  ref: McpSecretRef,
+  dependencies: McpOAuthDependencies,
+): Promise<number | undefined> {
   try {
-    await dependencies.onReauthorizationRequired?.(ref, serverUrl);
+    return await dependencies.getConnectionRevision?.(ref);
+  } catch {
+    return undefined;
+  }
+}
+
+function reportRefresh(
+  ref: McpSecretRef,
+  outcome: OAuthRefreshOutcome,
+  details: { reason: string | null; tokenDeleted: boolean; obtainedAt?: number; startedAt?: number },
+  dependencies: McpOAuthDependencies,
+): void {
+  reportOAuthRefresh(dependencies.refreshTelemetry, {
+    lane: 'mcp', ref, now: oauthNow(dependencies), outcome, ...details,
+  });
+}
+
+function oauthErrorCode(error: unknown): string | null {
+  return isRecord(error) && typeof error.errorCode === 'string' ? error.errorCode : null;
+}
+
+/**
+ * Provider answers that no retry can fix. `invalid_client` is terminal only
+ * for dynamically registered clients, whose registration the server can drop;
+ * for a published client metadata document it more likely means the server
+ * could not fetch our document, which recovers without user action.
+ */
+function isTerminalRefreshRejection(
+  code: string | null,
+  clientInformation: OAuthClientInformationMixed,
+): boolean {
+  if (code === 'invalid_grant' || code === 'unauthorized_client') return true;
+  return code === 'invalid_client' && !isClientMetadataDocumentId(clientInformation.client_id);
+}
+
+function isClientMetadataDocumentId(clientId: string): boolean {
+  try {
+    return new URL(clientId).protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+async function forgetDynamicClientRegistration(
+  ref: McpSecretRef,
+  rejected: OAuthClientInformationMixed,
+  settings: SettingsStore,
+): Promise<void> {
+  const [clientKey] = mcpOAuthSettingKeys(ref);
+  const raw = await settings.getSetting(clientKey);
+  if (!raw) return;
+  let stored: StoredClient;
+  try {
+    stored = parseStoredClient(raw);
+  } catch {
+    return;
+  }
+  // Only the registration that was rejected; a newer one belongs to a reconnect.
+  if (stored.configurationGeneration !== undefined ||
+      stored.clientInformation.client_id !== rejected.client_id) return;
+  await deleteSettingIfCurrent(clientKey, raw, settings);
+}
+
+function authorizationMissing(): McpOAuthError {
+  return new McpOAuthError(
+    'reauthorization_required',
+    'MCP OAuth authorization is missing; reconnect this connection',
+  );
+}
+
+async function notifyReauthorizationRequired(
+  ref: McpSecretRef,
+  serverUrl: string,
+  dependencies: McpOAuthDependencies,
+  expectedConnectionRevision?: number,
+): Promise<void> {
+  try {
+    await dependencies.onReauthorizationRequired?.(ref, serverUrl, expectedConnectionRevision);
   } catch {
     // Token deletion is authoritative. A cosmetic lifecycle update must never
     // turn a rejected grant into a retry loop or preserve unusable credentials.

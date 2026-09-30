@@ -22,6 +22,12 @@ import {
   parseOAuthAuthorizationAuthority,
   type OAuthAuthorizationAuthority,
 } from './oauth-authorization.ts';
+import {
+  oauthRequestFailureReason,
+  reportOAuthRefresh,
+  type OAuthRefreshOutcome,
+  type OAuthRefreshTelemetry,
+} from './oauth-refresh-telemetry.ts';
 
 const FETCH_TIMEOUT_MS = 10_000;
 const IDENTITY_TEXT_MAX = 160;
@@ -92,6 +98,7 @@ export interface ApiOAuthDependencies {
     provider: ApiOAuthProvider,
     expectedConnectionRevision?: number,
   ) => void | Promise<void>;
+  refreshTelemetry?: OAuthRefreshTelemetry;
 }
 
 type ApiOAuthErrorCode =
@@ -451,7 +458,10 @@ export async function resolveApiOAuthAccessToken(
   const selectedProvider = provider(input.provider);
   const [, , tokenKey, leaseKey] = apiOAuthSettingKeys(input.ref);
   let raw = await dependencies.settings.getSetting(tokenKey);
-  if (!raw) throw reauthorizationRequired();
+  if (!raw) {
+    await reportMissingAuthorization(input.ref, selectedProvider, dependencies);
+    throw reauthorizationRequired();
+  }
   let bundle = parseTokenBundle(raw);
   if (bundle.provider !== selectedProvider) throw invalidStorage();
   await requireCurrentConnection(
@@ -526,20 +536,29 @@ async function refreshAccessToken(
   const connectionRevision = await dependencies.getConnectionRevision?.(ref);
   const client = await readClient(ref, dependencies.settings);
   if (client.provider !== selectedProvider || !bundle.refreshToken) throw invalidStorage();
-  const response = await providerFetch(
-    GOOGLE_TOKEN_ENDPOINT,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        client_id: client.clientId,
-        client_secret: client.clientSecret,
-        grant_type: 'refresh_token',
-        refresh_token: bundle.refreshToken,
-      }),
-    },
-    dependencies,
-  );
+  const startedAt = oauthNow(dependencies);
+  const report = (outcome: OAuthRefreshOutcome, reason: string | null, tokenDeleted = false) =>
+    reportRefresh(ref, outcome, { reason, tokenDeleted, obtainedAt: bundle.obtainedAt, startedAt }, dependencies);
+  let response: Response;
+  try {
+    response = await providerFetch(
+      GOOGLE_TOKEN_ENDPOINT,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          client_id: client.clientId,
+          client_secret: client.clientSecret,
+          grant_type: 'refresh_token',
+          refresh_token: bundle.refreshToken,
+        }),
+      },
+      dependencies,
+    );
+  } catch (error) {
+    report('unavailable', oauthRequestFailureReason(error instanceof Error ? error.cause : error));
+    throw error;
+  }
   if (!response.ok) {
     const error = await safeErrorCode(response);
     if (error === 'invalid_grant') {
@@ -558,14 +577,22 @@ async function refreshAccessToken(
           return winner.accessToken;
         }
       }
+      report('rejected', error, deleted);
       if (deleted) {
         await notifyReauthorizationRequired(ref, selectedProvider, dependencies, connectionRevision);
       }
       throw reauthorizationRequired();
     }
+    report('unavailable', error ?? `http_${response.status}`);
     throw new ApiOAuthError('oauth_unavailable', 'OAuth refresh failed');
   }
-  const refreshed = await tokenResponse(response, bundle.refreshToken);
+  let refreshed: Omit<StoredTokenBundle, 'provider' | 'obtainedAt'>;
+  try {
+    refreshed = await tokenResponse(response, bundle.refreshToken);
+  } catch (error) {
+    report('unavailable', 'invalid_response');
+    throw error;
+  }
   const next: StoredTokenBundle = {
     provider: selectedProvider,
     ...refreshed,
@@ -580,7 +607,10 @@ async function refreshAccessToken(
     set: [{ key: tokenKey, value: JSON.stringify(next) }],
     delete: [leaseKey],
   });
-  if (stored) return next.accessToken;
+  if (stored) {
+    report('refreshed', null);
+    return next.accessToken;
+  }
   const winnerRaw = await dependencies.settings.getSetting(tokenKey);
   if (!winnerRaw) throw reauthorizationRequired();
   const winner = parseTokenBundle(winnerRaw);
@@ -589,6 +619,39 @@ async function refreshAccessToken(
     ref, selectedProvider, dependencies, undefined, winner.oauthAttemptId,
   );
   return winner.accessToken;
+}
+
+/**
+ * A ready connection account with no stored credential can never recover on
+ * its own; report it so the account is demoted instead of failing silently.
+ * Connections without a revisioned account are left unchanged.
+ */
+async function reportMissingAuthorization(
+  ref: ApiOAuthRef,
+  selectedProvider: ApiOAuthProvider,
+  dependencies: ApiOAuthDependencies,
+): Promise<void> {
+  let connectionRevision: number | undefined;
+  try {
+    connectionRevision = await dependencies.getConnectionRevision?.(ref);
+  } catch {
+    // Without a revision the connection is simply not demoted.
+    return;
+  }
+  if (connectionRevision === undefined) return;
+  reportRefresh(ref, 'missing', { reason: null, tokenDeleted: false }, dependencies);
+  await notifyReauthorizationRequired(ref, selectedProvider, dependencies, connectionRevision);
+}
+
+function reportRefresh(
+  ref: ApiOAuthRef,
+  outcome: OAuthRefreshOutcome,
+  details: { reason: string | null; tokenDeleted: boolean; obtainedAt?: number; startedAt?: number },
+  dependencies: ApiOAuthDependencies,
+): void {
+  reportOAuthRefresh(dependencies.refreshTelemetry, {
+    lane: 'api', ref, now: oauthNow(dependencies), outcome, ...details,
+  });
 }
 
 async function notifyReauthorizationRequired(

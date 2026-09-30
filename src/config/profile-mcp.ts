@@ -1,5 +1,6 @@
 import { connectionAccountOAuthRef } from './api-oauth.ts';
 import { isActiveConnectionActor, projectEffectiveMcpConnections, resolveEffectiveConnectionAccounts, resolveConnectionSecretForInvocation } from '../connections/runtime.ts';
+import { mcpOAuthLifecycleDependencies } from '../connections/mcp-oauth-lifecycle.ts';
 import type { McpConnectionDefinition } from '@flue/runtime';
 
 import { withMcpHttpTelemetry } from './mcp-telemetry.ts';
@@ -290,6 +291,9 @@ export function resolveRuntimePlanMcpConnections(
                     ref: connectionAccountOAuthRef(server.id), serverUrl: server.url,
                   }, {
                     settings: getSettingsStore(env),
+                    ...mcpOAuthLifecycleDependencies(
+                      getConfigStore(env), getSettingsStore(env), accountContext.workspaceId,
+                    ),
                     validateConnection: async (_ref, serverUrl, _revision, attemptId) => {
                       await liveServer();
                       const accounts = await resolveEffectiveConnectionAccounts({
