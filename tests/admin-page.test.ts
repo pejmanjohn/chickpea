@@ -337,6 +337,8 @@ function defaultAssignments(): AssignmentFixture[] {
 type OpenAiSubscriptionStatusFixture = {
   state: 'disconnected' | 'authorizing' | 'connected' | 'account_change_confirmation_required' | 'reconnect_required' | 'error';
   updatedAt: number;
+  email?: string;
+  pending?: { state: string; email?: string; challenge?: string };
   accountFingerprint?: string;
   connectedAt?: number;
   failureCode?: string;
@@ -1135,6 +1137,7 @@ function runAdminPageHarness(
   };
   let resolveAgentPatch: (() => void) | undefined;
   const location = {
+    origin: 'http://localhost',
     pathname: options.initialPath ?? '/admin/channels',
     search: options.initialSearch ?? '',
     assign(url: string) {
@@ -13127,7 +13130,7 @@ test('subscription onboarding offers ChatGPT before API keys on Cloudflare', asy
   cloudflare.listeners.click?.({
     target: actionTarget({ 'data-action': 'onboarding-provider-select', 'data-provider': 'openai' }),
   });
-  assert.match(cloudflare.app.innerHTML, /return=onboarding">Continue with ChatGPT/);
+  assert.match(cloudflare.app.innerHTML, /return=onboarding">Connect ChatGPT/);
   assert.match(cloudflare.app.innerHTML, /OpenAI API key/);
   assert.ok(cloudflare.app.innerHTML.indexOf('Continue with ChatGPT') < cloudflare.app.innerHTML.indexOf('id="onboarding-provider-key"'));
 });
@@ -15497,10 +15500,84 @@ test('Settings offers the official Cloudflare ChatGPT flow and keeps API-key ima
   harness.listeners.click?.({ target: actionTarget({ 'data-action': 'open-settings' }) });
   await flushAsync();
 
-  assert.match(harness.app.innerHTML, /Sign in with ChatGPT/);
+  assert.match(harness.app.innerHTML, /Use your ChatGPT plan/);
   assert.match(harness.app.innerHTML, /data-action="chatgpt-plan-open"/);
   assert.match(harness.app.innerHTML, /Image generation requires an OpenAI API key/);
   assert.doesNotMatch(harness.app.innerHTML, /data-action="openai-subscription-start"/);
+});
+
+test('ChatGPT setup copies a public request and follows account confirmation from another tab', async () => {
+  let status: OpenAiSubscriptionStatusFixture = { state: 'disconnected', updatedAt: 0, connectedAt: 0 };
+  const mutations: string[] = [];
+  let modelReads = 0;
+  const harness = runAdminPageHarness({
+    cloudflare: true, installationOwner: true, initialPath: '/admin/settings/providers',
+    providers: [{ id: 'openai', status: 'stored', modelCount: 2, activeAuthMethod: 'api_key', subscriptionAvailable: true, subscriptionProtocol: 'chatgpt-plan', subscription: status }],
+    settingsLoadFetch(path, method) {
+      if (method !== 'GET') mutations.push(path);
+      if (path === '/admin/api/providers/openai/subscription') return Promise.resolve(jsonResponse({ status }));
+      if (path === '/admin/api/providers/openai/models') modelReads++;
+      return undefined;
+    },
+  });
+  await flushAsync();
+  const click = (action: string) => harness.listeners.click?.({ target: actionTarget({ 'data-action': action }) });
+  click('chatgpt-plan-open');
+  assert.match(harness.app.innerHTML, /role="dialog" aria-modal="true"/);
+  assert.match(harness.app.innerHTML, /Codex, Claude Code, or Cursor running on this computer/);
+  assert.doesNotMatch(harness.app.innerHTML, /Download sign-in helper|node chickpea-chatgpt/);
+  click('chatgpt-plan-copy'); await flushAsync();
+  assert.deepEqual(harness.clipboardWrites, ['Connect my ChatGPT account to this Chickpea installation using http://localhost/connect-chatgpt.md. Handle setup, open sign-in in my browser, and help me choose a model.']);
+  assert.match(harness.app.innerHTML, /Copied\. Paste this into your coding agent/);
+  assert.match(harness.app.innerHTML, /Waiting for setup to start/);
+  assert.deepEqual(mutations, [], 'copying a request does not authorize or change the provider');
+  status = { ...status, pending: { state: 'awaiting_signin', challenge: 'test-challenge' } };
+  harness.runNextTimer(); await flushAsync();
+  assert.match(harness.app.innerHTML, /Finish signing in to ChatGPT/);
+  status = { ...status, pending: { state: 'confirm', email: 'owner@example.test', challenge: 'test-challenge' } };
+  harness.runNextTimer(); await flushAsync();
+  assert.match(harness.app.innerHTML, /Use this account/);
+  const readsBefore = modelReads;
+  status = { state: 'connected', email: 'owner@example.test', updatedAt: 1, connectedAt: 100 };
+  harness.runNextTimer(); await flushAsync();
+  assert.match(harness.app.innerHTML, /Connected as <strong>owner@example.test/);
+  assert.match(harness.app.innerHTML, /data-action="chatgpt-plan-model"/);
+  assert.ok(modelReads > readsBefore, 'cross-tab completion reloads the account model catalog');
+  click('chatgpt-plan-model');
+  assert.doesNotMatch(harness.app.innerHTML, /data-role="chatgpt-plan-dialog"/);
+  assert.deepEqual(mutations, [], 'closing and choosing a model do not mutate credentials');
+});
+
+test('ChatGPT setup offers manual copy when clipboard fails and closing stops polling', async () => {
+  const harness = runAdminPageHarness({
+    cloudflare: true, installationOwner: true, initialPath: '/admin/settings/providers', clipboard: 'reject',
+    providers: [{ id: 'openai', status: 'missing', modelCount: null, subscriptionAvailable: true, subscriptionProtocol: 'chatgpt-plan', subscription: { state: 'disconnected', updatedAt: 0 } }],
+  });
+  await flushAsync();
+  const before = harness.scheduledTimerCount();
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'chatgpt-plan-open' }) });
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'chatgpt-plan-copy' }) });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /Could not copy automatically/);
+  assert.match(harness.app.innerHTML, /textarea[^>]+readonly/);
+  harness.listeners.keydown?.({ target: actionTarget({ 'data-action': 'chatgpt-plan-close' }), key: 'Escape', preventDefault() {} });
+  assert.doesNotMatch(harness.app.innerHTML, /data-role="chatgpt-plan-dialog"/);
+  assert.equal(harness.scheduledTimerCount(), before);
+});
+
+test('ChatGPT reconnect does not report success when another tab cancels', async () => {
+  let status: OpenAiSubscriptionStatusFixture = { state: 'connected', updatedAt: 1, connectedAt: 10, pending: { state: 'confirm', email: 'owner@example.test' } };
+  const harness = runAdminPageHarness({
+    cloudflare: true, installationOwner: true, initialPath: '/admin/settings/providers',
+    providers: [{ id: 'openai', status: 'missing', modelCount: null, subscriptionAvailable: true, subscriptionProtocol: 'chatgpt-plan', subscription: status }],
+    settingsLoadFetch(path) { return path === '/admin/api/providers/openai/subscription' ? Promise.resolve(jsonResponse({ status })) : undefined; },
+  });
+  await flushAsync();
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'chatgpt-plan-open' }) });
+  status = { state: 'connected', updatedAt: 1, connectedAt: 10 };
+  harness.runNextTimer(); await flushAsync();
+  assert.match(harness.app.innerHTML, /Sign-in ended/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="chatgpt-plan-model"/);
 });
 
 test('Settings lets Cloudflare recover a persisted subscription selection with an API key', async () => {

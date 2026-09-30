@@ -1,6 +1,7 @@
 import { Hono, type Context } from 'hono';
 
 import { requestOrigin } from '../http/request-origin.ts';
+import { chatgptConnectMarkdown } from './chatgpt-connect.ts';
 import {
   CONNECT_MARKDOWN_PATH,
   CONNECT_PAGE_PATH,
@@ -18,6 +19,14 @@ import {
  */
 export function createConnectRoutes(): Hono {
   const app = new Hono();
+
+  app.get('/connect-chatgpt.md', (c) => {
+    const origin = resolveOrigin(c);
+    if (!origin) return c.notFound();
+    publicHeaders(c);
+    c.header('Content-Type', 'text/markdown; charset=utf-8');
+    return c.body(chatgptConnectMarkdown(origin));
+  });
 
   app.get(CONNECT_MARKDOWN_PATH, (c) => {
     const origin = resolveOrigin(c);

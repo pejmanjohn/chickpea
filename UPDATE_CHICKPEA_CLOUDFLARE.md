@@ -167,3 +167,13 @@ Update any existing private installation notes with the release and checkout
 path. Tell the user which version is installed, whether deployment and Admin
 checks passed, and where the local source lives. They can test Slack themselves
 when convenient.
+
+## Optional: connect a ChatGPT plan
+
+An ordinary update preserves the existing provider and account connection.
+Only when the user asks to connect ChatGPT, follow this installation's
+`/connect-chatgpt.md` guide from their local coding agent. Admin **Settings →
+Models & providers → Connect ChatGPT** also provides a copyable setup request
+for an existing installation. Handle the local setup, let the user sign in,
+confirm the account in Admin, and help them choose an available model. Keep
+any OpenAI API key for image generation. This connection requires no deployment.

@@ -45,6 +45,7 @@ test('ChatGPT requires owner approval, proof, and account confirmation; credenti
   await assert.rejects(confirmPlanConnection(h.d, 'wrong-attempt'));
   await confirmPlanConnection(h.d, h.descriptor.challenge);
   assert.equal((await pollPlanHandoff(h.d, h.verifier)).state, 'connected');
+  assert.equal((await planStatus(h.d)).connectedAt, 1_800_000_000_000);
   assert.deepEqual((await planStatus(h.d)).models, [{ id: 'gpt-future', name: 'Future' }]);
   const record = await h.store.getEncryptedCredentialRevision('chatgpt-plan.session');
   assert.ok(record);
@@ -59,6 +60,7 @@ test('parallel turns rotate one token pair; disconnect revokes the rotated sessi
   const bundles = await Promise.all([resolvePlanSession(h.d), resolvePlanSession(h.d), resolvePlanSession(h.d)]);
   assert.equal(h.counts().refreshes, 1);
   assert.ok(bundles.every(bundle => bundle.session.refreshToken === 'rotated-refresh'));
+  assert.equal((await planStatus(h.d)).connectedAt, 1_800_000_000_000, 'refresh preserves the account confirmation time used by open Admin tabs');
   await disconnectPlan(h.d);
   assert.deepEqual(h.revoked, ['rotated-refresh']);
   await assert.rejects(resolvePlanSession(h.d));

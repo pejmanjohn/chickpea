@@ -33,7 +33,7 @@ interface Pending extends PlanDescriptor {
   hostId: string; registration?: Registration | undefined; expiresAt: number;
   currentRevision: string | null; stateName: 'awaiting_signin' | 'confirm'; email?: string;
 }
-interface Bundle { session: ChatgptPlanSession; models: ChatgptPlanModel[]; modelsAt: number }
+interface Bundle { session: ChatgptPlanSession; models: ChatgptPlanModel[]; modelsAt: number; connectedAt?: number }
 
 export function planDependencies(env?: PlatformEnv, settings?: SettingsStore): PlanDependencies {
   const store = settings ?? getSettingsStore(env);
@@ -164,7 +164,7 @@ export async function confirmPlanConnection(d: PlanDependencies, challenge: unkn
       // A token refresh while the user signs in may rotate the old revision, but not its account.
       if (old && pending.registration && old.bundle.session.subject !== pending.registration.subject) return fail('attempt_forbidden');
       if (old) await (d.revoke ?? revokeChatgptSession)(old.bundle.session, d.fetch);
-      await writeBundle(d, ACTIVE, candidate.bundle, old?.record.revision ?? null);
+      await writeBundle(d, ACTIVE, { ...candidate.bundle, connectedAt: now(d) }, old?.record.revision ?? null);
     }
     const { clientId, subject, email } = candidate.bundle.session;
     await d.settings.applySettingsPatch({ set: [
@@ -197,6 +197,7 @@ export async function planStatus(d: PlanDependencies) {
   return {
     state: active ? 'connected' as const : registration ? 'reconnect_required' as const : 'disconnected' as const,
     email: active?.bundle.session.email ?? registration?.email,
+    connectedAt: active?.bundle.connectedAt ?? 0,
     models: active?.bundle.models ?? [],
     ...(pending && pending.expiresAt > now(d) ? { pending: { state: pending.stateName, email: pending.email, expiresAt: pending.expiresAt, challenge: pending.challenge } } : {}),
   };

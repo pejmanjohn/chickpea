@@ -304,7 +304,7 @@
     // The device authorization capability is intentionally browser-memory only.
     // It is cleared on cancellation, expiry, completion, or navigation and is
     // never rendered or persisted.
-    chatgptPlan: { descriptor: null, helperOpen: false, timer: null },
+    chatgptPlan: { descriptor: null, dialog: false, dialogId: 0, copied: false, copyNotice: "", completed: false, baseline: null, deadline: 0, timer: null, epoch: 0 },
     openAiSubscription: { attempt: null, timer: null, requestId: 0, busy: "", error: "", notice: "" },
     // null = favorites not yet fetched (picker/Settings load them lazily). The
     // profile Model picker distinguishes "not loaded" (fall back to static
@@ -1013,11 +1013,12 @@
     // not pull focus out of the field a person is typing into: remember it and
     // its caret, and put them back below unless the render moves focus itself.
     var typingFocus = captureTypingFocus(app);
+    var chatgptFocusAction = state.chatgptPlan.dialog && document.activeElement && document.activeElement.getAttribute ? document.activeElement.getAttribute("data-action") : "";
     // Native <details> menus carry their open state only in the DOM. Keep the
     // ones the person opened when a background render redraws the page; a
     // render from their own click still closes menus as that action intends.
     var openDetails = renderingForUserEvent() ? null : captureOpenDetails(app);
-    var overlays = installationDialogHtml() + teamConfirmModalHtml() + composioSetupModalHtml() + managedAuthorizationModalHtml() + connectorSettingsConfirmModalHtml() + leavePromptModalHtml() + connectionRemoveModalHtml() + apiConnectionRemoveModalHtml() + slackDisconnectModalHtml() + githubDisconnectModalHtml() + sandboxConfirmModalHtml() + agentScheduleDeleteModalHtml() + websiteLoginDialogHtml() + scheduledRoutineSummaryModalHtml() + scheduledDeleteModalHtml();
+    var overlays = chatgptPlanDialogHtml() + installationDialogHtml() + teamConfirmModalHtml() + composioSetupModalHtml() + managedAuthorizationModalHtml() + connectorSettingsConfirmModalHtml() + leavePromptModalHtml() + connectionRemoveModalHtml() + apiConnectionRemoveModalHtml() + slackDisconnectModalHtml() + githubDisconnectModalHtml() + sandboxConfirmModalHtml() + agentScheduleDeleteModalHtml() + websiteLoginDialogHtml() + scheduledRoutineSummaryModalHtml() + scheduledDeleteModalHtml();
     if (state.view === "onboarding") {
       app.className = "frame onboarding-frame";
       app.innerHTML = onboardingShellHtml() + overlays;
@@ -1034,6 +1035,15 @@
       app.innerHTML = topbarHtml() + '<div class="body">' + railHtml() + mainHtml() + "</div>" + overlays;
     }
     restoreOpenDetails(app, openDetails);
+    if (state.chatgptPlan.dialog) {
+      [document.querySelector(".topbar"), document.querySelector(".body")].forEach(function (region) {
+        if (!region) return;
+        region.inert = true;
+        if (region.setAttribute) region.setAttribute("aria-hidden", "true");
+      });
+      var planFocusTarget = chatgptFocusAction && chatgptFocusAction.indexOf("chatgpt-plan-") === 0 && chatgptFocusAction !== "chatgpt-plan-open" ? chatgptFocusAction : "chatgpt-plan-close";
+      focusAction(document.querySelector('[data-action="' + planFocusTarget + '"]') ? planFocusTarget : "chatgpt-plan-close");
+    }
     if (state.mobileAgentRosterFocus) {
       var mobileRosterFocus = state.mobileAgentRosterFocus === "close"
         ? document.querySelector('[data-action="mobile-agents-close"]')
@@ -2381,7 +2391,7 @@
 
   function onboardingProviderConfigurationHtml(selected, configured) {
     var subscriptionSetup = selected.id === "openai"
-      ? '<div class="onboarding-form-actions"><p class="hint"><strong>Have a ChatGPT subscription?</strong><br>Sign in to use your plan for chat, then return here to choose a model.</p><a class="btn btn-primary" href="/admin/settings/providers?return=onboarding">' + (IS_CLOUDFLARE ? 'Continue with ChatGPT' : 'Connect ChatGPT subscription') + '</a></div>'
+      ? '<div class="onboarding-form-actions"><p class="hint"><strong>Have a ChatGPT subscription?</strong><br>' + (IS_CLOUDFLARE ? 'Connect your plan with a local coding agent, then return here to choose a model.' : 'Sign in to use your plan for chat, then return here to choose a model.') + '</p><a class="btn btn-primary" href="/admin/settings/providers?return=onboarding">' + (IS_CLOUDFLARE ? 'Connect ChatGPT' : 'Connect ChatGPT subscription') + '</a></div>'
       : "";
     return subscriptionSetup + (configured
       ? '<p class="onboarding-provider-ready">' + esc(selected.name) + ' is ready to use.</p>'
@@ -9911,31 +9921,51 @@
   function chatgptPlanControlsHtml(summary) {
     var status = summary.subscription || {};
     var ui = state.openAiSubscription;
-    var setup = state.chatgptPlan;
     var disabled = ui.busy ? ' disabled' : '';
     var copy = status.state === "connected"
       ? 'Connected as <strong>' + esc(status.email || "your ChatGPT account") + '</strong>. This account powers this installation’s Agents.'
-      : 'Use your ChatGPT plan for the models available to your account. Usage shares your plan’s limits.';
+      : 'Use your plan for chat, with the models available to your account. One-time setup with Codex, Claude Code, or Cursor on this computer.';
     var controls = '';
     if (!INSTALLATION_OWNER) {
       controls = '<p class="hint">Ask the installation owner to connect ChatGPT.</p>';
-    } else if (status.pending && status.pending.state === "confirm") {
-      copy = 'Use <strong>' + esc(status.pending.email || "this ChatGPT account") + '</strong> to power this installation’s Agents?';
-      controls = '<button type="button" class="btn btn-primary" data-action="chatgpt-plan-confirm"' + disabled + '>Use this account</button><button type="button" class="btn btn-ghost" data-action="chatgpt-plan-cancel"' + disabled + '>Cancel</button>';
-    } else if (status.pending) {
-      copy = 'Finish signing in with OpenAI in the browser opened by the helper. Return here to confirm your account.';
-      controls = '<button type="button" class="btn btn-ghost" data-action="chatgpt-plan-cancel"' + disabled + '>Cancel sign-in</button>';
-    } else if (setup.descriptor) {
-      copy = 'Your sign-in helper is ready. Continue to open OpenAI and choose the ChatGPT account for this installation.';
-      controls = '<button type="button" class="btn btn-primary" data-action="chatgpt-plan-prepare"' + disabled + '>Continue with ChatGPT</button>';
     } else {
-      controls = '<button type="button" class="btn btn-primary" data-action="chatgpt-plan-open"' + disabled + '>' + (status.state === "connected" ? 'Reconnect ChatGPT' : 'Continue with ChatGPT') + '</button>';
+      if (status.pending) copy = status.pending.state === "confirm" ? 'Your ChatGPT account is ready to confirm.' : 'Finish signing in to ChatGPT, then confirm your account here.';
+      controls = '<button type="button" class="btn btn-primary" data-action="chatgpt-plan-open"' + disabled + '>' + (status.pending || state.chatgptPlan.descriptor ? 'Continue setup' : status.state === "connected" ? 'Reconnect ChatGPT' : 'Connect ChatGPT') + '</button>';
       if (status.state === "connected") controls += '<button type="button" class="btn btn-ghost danger-text" data-action="openai-subscription-disconnect"' + disabled + '>Disconnect</button>';
-      if (setup.helperOpen) controls += '<div class="provider-card-copy"><p>Download the sign-in helper, then run it from the folder where you saved it with Node.js 24. It opens Chickpea and OpenAI in your browser.</p><a class="btn btn-soft btn-sm" href="/chickpea-chatgpt-connect.mjs" download="chickpea-chatgpt-connect.mjs">Download sign-in helper</a><pre class="mono">' + esc('node chickpea-chatgpt-connect.mjs ' + location.origin) + '</pre></div>';
     }
-    return '<div class="provider-card-copy"><p><span class="openai-auth-title">Sign in with ChatGPT</span></p><p class="provider-card-muted">' + copy + '</p><p class="provider-card-muted">Image generation requires an OpenAI API key.</p></div>' +
+    return '<div class="provider-card-copy"><p><span class="openai-auth-title">Use your ChatGPT plan</span></p><p class="provider-card-muted">' + copy + '</p><p class="provider-card-muted">Usage shares your plan’s limits. Image generation requires an OpenAI API key.</p></div>' +
       (ui.error ? '<p class="field-error" role="alert">' + esc(ui.error) + '</p>' : '') +
       (ui.notice ? '<p class="inline-status" role="status">' + esc(ui.notice) + '</p>' : '') + '<div class="prov-actions">' + controls + '</div>';
+  }
+
+  function chatgptSetupRequest() {
+    return 'Connect my ChatGPT account to this Chickpea installation using ' + location.origin + '/connect-chatgpt.md. Handle setup, open sign-in in my browser, and help me choose a model.';
+  }
+
+  function chatgptPlanDialogHtml() {
+    var setup = state.chatgptPlan;
+    if (!setup.dialog || !INSTALLATION_OWNER) return '';
+    var summary = providerSummaryById("openai") || {};
+    var status = summary.subscription || {};
+    var pending = status.pending;
+    var disabled = state.openAiSubscription.busy ? ' disabled' : '';
+    var content;
+    if (setup.completed && status.state === "connected") {
+      content = '<p class="chatgpt-setup-status" role="status">Connected as <strong>' + esc(status.email || 'your ChatGPT account') + '</strong></p><p>This account now powers OpenAI chat for this installation’s Agents. Choose a model to finish setup.</p><button class="btn btn-primary" data-action="chatgpt-plan-model">Choose model</button>';
+    } else if (pending && pending.state === "confirm") {
+      content = '<p class="chatgpt-setup-status" role="status">Confirm your account</p><p>Use <strong>' + esc(pending.email || 'this ChatGPT account') + '</strong> to power this installation’s Agents?</p><div class="prov-actions"><button class="btn btn-primary" data-action="chatgpt-plan-confirm"' + disabled + '>Use this account</button><button class="btn btn-ghost" data-action="chatgpt-plan-cancel"' + disabled + '>Cancel sign-in</button></div>';
+    } else if (pending) {
+      content = '<p class="chatgpt-setup-status" role="status">Finish signing in to ChatGPT</p><p>Continue in the OpenAI browser tab. Come back here to confirm your account.</p><button class="btn btn-ghost" data-action="chatgpt-plan-cancel"' + disabled + '>Cancel sign-in</button>';
+    } else if (setup.descriptor) {
+      content = '<p>Your coding agent is ready. Continue to OpenAI to choose the ChatGPT account for this installation.</p><button class="btn btn-primary" data-action="chatgpt-plan-prepare"' + disabled + '>Continue with ChatGPT</button>';
+    } else {
+      content = '<p>Your coding agent will handle setup and open OpenAI in your browser.</p><ol class="chatgpt-setup-steps"><li>Copy the setup request below.</li><li>Paste it into Codex, Claude Code, or Cursor running on this computer.</li><li>Sign in when OpenAI opens, then confirm your account here.</li></ol><label class="field" for="chatgpt-setup-request"><span class="field-label">Setup request</span><textarea id="chatgpt-setup-request" class="input chatgpt-setup-request" readonly rows="4">' + esc(chatgptSetupRequest()) + '</textarea></label><button class="btn btn-primary" data-action="chatgpt-plan-copy">Copy setup request</button>' +
+        (setup.copyNotice ? '<p class="inline-status" role="status">' + esc(setup.copyNotice) + '</p>' : '') +
+        (setup.copied ? '<p class="hint">Waiting for setup to start. Keep this page open; it will update automatically.</p>' : '');
+    }
+    return '<div class="modal-backdrop"><section class="modal-card chatgpt-setup-dialog" data-role="chatgpt-plan-dialog" role="dialog" aria-modal="true" aria-labelledby="chatgpt-setup-title" tabindex="-1"><h2 class="modal-title" id="chatgpt-setup-title">Connect ChatGPT</h2>' + content +
+      (state.openAiSubscription.error ? '<p class="field-error" role="alert">' + esc(state.openAiSubscription.error) + '</p>' : '') +
+      '<p class="hint">Your ChatGPT plan covers chat. Image generation uses your OpenAI API key.</p><div class="modal-foot">' + (!setup.completed ? '<button class="btn btn-ghost" data-action="chatgpt-plan-check"' + disabled + '>Check status</button>' : '') + '<button class="btn btn-soft" data-action="chatgpt-plan-close">Close</button></div></section></div>';
   }
 
   function chatgptPlanProviderRowHtml(summary, ui, meta) {
@@ -10798,6 +10828,10 @@
       if (requestId !== state.providerSettingsRequestId || !settingsLoadIsCurrent(generation)) return;
       state.settings = body;
       state.settingsLoaded = true;
+      if (state.chatgptPlan.dialog && state.chatgptPlan.baseline == null) {
+        var planSummary = providerSummaryById("openai");
+        state.chatgptPlan.baseline = planSummary && planSummary.subscription ? planSummary.subscription.connectedAt || 0 : 0;
+      }
       scheduleChatgptPlanPoll();
       // Load favorites + the live model lists for the curated providers so their
       // managers render metas and counts. OpenRouter's list is public (no key);
@@ -11580,25 +11614,99 @@
     });
   }
 
+  function openChatgptPlanDialog() {
+    if (!INSTALLATION_OWNER) return;
+    var setup = state.chatgptPlan;
+    var summary = providerSummaryById("openai");
+    setup.dialog = true;
+    setup.dialogId += 1;
+    setup.completed = false;
+    setup.baseline = summary && summary.subscription ? summary.subscription.connectedAt || 0 : 0;
+    setup.deadline = Date.now() + 15 * 60 * 1000;
+    state.openAiSubscription.error = "";
+    render();
+    scheduleChatgptPlanPoll();
+  }
+
+  function closeChatgptPlanDialog() {
+    var setup = state.chatgptPlan;
+    setup.dialog = false;
+    setup.dialogId += 1;
+    setup.epoch += 1;
+    if (setup.timer != null) window.clearTimeout(setup.timer);
+    setup.timer = null;
+    render();
+    focusAction("chatgpt-plan-open");
+  }
+
+  function copyChatgptSetupRequest() {
+    var setup = state.chatgptPlan;
+    var dialogId = setup.dialogId;
+    Promise.resolve().then(function () {
+      if (!navigator.clipboard || !navigator.clipboard.writeText) throw new Error("Clipboard unavailable");
+      return navigator.clipboard.writeText(chatgptSetupRequest());
+    }).then(function () {
+      if (!setup.dialog || setup.dialogId !== dialogId) return;
+      setup.copied = true;
+      setup.copyNotice = "Copied. Paste this into your coding agent to continue.";
+      render();
+    }).catch(function () {
+      if (!setup.dialog || setup.dialogId !== dialogId) return;
+      setup.copyNotice = "Could not copy automatically. Select the setup request above and copy it, then paste it into your coding agent.";
+      render();
+    });
+  }
+
+  function chatgptPlanConnected() {
+    state.chatgptPlan.completed = true;
+    state.chatgptPlan.descriptor = null;
+    state.openAiSubscription.notice = "ChatGPT connected. Choose a model for your Agents or the Workspace default.";
+    providerSummaryById("openai").activeAuthMethod = "subscription";
+    invalidateOpenAiProviderModels();
+    refreshModels();
+    loadProviderModels("openai");
+  }
+
   function scheduleChatgptPlanPoll() {
     var setup = state.chatgptPlan;
     if (setup.timer != null) window.clearTimeout(setup.timer);
     setup.timer = null;
     var summary = providerSummaryById("openai");
-    if (!summary || summary.subscriptionProtocol !== "chatgpt-plan" || !summary.subscription || !summary.subscription.pending || state.view !== "settings" || state.settingsSection !== "providers") return;
-    if (summary.subscription.pending.state === "confirm") return;
+    if (!setup.dialog || setup.completed || !summary || summary.subscriptionProtocol !== "chatgpt-plan" || state.view !== "settings" || state.settingsSection !== "providers") return;
+    if (Date.now() >= setup.deadline) {
+      state.openAiSubscription.error = "Automatic checking paused. Choose Check status when you are ready to continue.";
+      render();
+      return;
+    }
+    var epoch = ++setup.epoch;
     setup.timer = window.setTimeout(function () {
+      setup.timer = null;
+      if (setup.epoch !== epoch || !setup.dialog) return;
+      if (state.openAiSubscription.busy) { scheduleChatgptPlanPoll(); return; }
       api("/admin/api/providers/openai/subscription", { cache: "no-store" }).then(function (body) {
+        if (setup.epoch !== epoch || !setup.dialog) return;
+        var previous = summary.subscription || {};
         applyOpenAiSubscriptionStatus(body.status);
+        if (body.status && body.status.state === "connected" && !body.status.pending && (body.status.connectedAt || 0) !== setup.baseline) chatgptPlanConnected();
+        if (previous.pending && body.status && !body.status.pending && !setup.completed) {
+          setup.descriptor = null;
+          setup.copied = false;
+          setup.copyNotice = "Sign-in ended. Copy the setup request to start again.";
+        }
         render();
         scheduleChatgptPlanPoll();
-      }).catch(function () { state.openAiSubscription.error = "Could not check sign-in. Refresh this page to continue."; render(); });
+      }).catch(function () {
+        if (setup.epoch !== epoch || !setup.dialog) return;
+        state.openAiSubscription.error = "Could not check sign-in. Choose Check status to try again.";
+        render();
+      });
     }, 2000);
   }
 
   function chatgptPlanAction(action) {
     var ui = state.openAiSubscription;
     if (ui.busy || !INSTALLATION_OWNER) return;
+    state.chatgptPlan.epoch += 1;
     ui.busy = action;
     ui.error = "";
     ui.notice = "";
@@ -11607,16 +11715,15 @@
       ui.busy = "";
       if (action !== "prepare") state.chatgptPlan.descriptor = null;
       applyOpenAiSubscriptionStatus(body.status);
-      if (action === "confirm") {
-        ui.notice = "ChatGPT connected. Choose a model for your Agents or the Workspace default.";
-        providerSummaryById("openai").activeAuthMethod = "subscription";
-        invalidateOpenAiProviderModels();
-        refreshModels();
-        loadProviderModels("openai");
+      if (action === "confirm") chatgptPlanConnected();
+      if (action === "cancel") {
+        state.chatgptPlan.copied = false;
+        state.chatgptPlan.copyNotice = "";
+        state.chatgptPlan.baseline = body.status.connectedAt || 0;
       }
       scheduleChatgptPlanPoll();
       render();
-    }).catch(function () { ui.busy = ""; ui.error = "Could not finish ChatGPT setup. Retry, or cancel and run the sign-in helper again."; render(); });
+    }).catch(function () { ui.busy = ""; ui.error = "Could not finish ChatGPT setup. Try again, or cancel sign-in and ask your coding agent to restart setup."; render(); });
   }
 
   function openAiSummary() {
@@ -12726,6 +12833,28 @@
     if (!target) return;
     var action = target.getAttribute("data-action");
 
+    if (state.chatgptPlan.dialog) {
+      if (action === "chatgpt-plan-close") closeChatgptPlanDialog();
+      if (action === "chatgpt-plan-copy") copyChatgptSetupRequest();
+      if (action === "chatgpt-plan-prepare") chatgptPlanAction("prepare");
+      if (action === "chatgpt-plan-confirm") chatgptPlanAction("confirm");
+      if (action === "chatgpt-plan-cancel") chatgptPlanAction("cancel");
+      if (action === "chatgpt-plan-check") {
+        state.chatgptPlan.deadline = Date.now() + 15 * 60 * 1000;
+        state.openAiSubscription.error = "";
+        scheduleChatgptPlanPoll();
+        render();
+      }
+      if (action === "chatgpt-plan-model") {
+        closeChatgptPlanDialog();
+        if (new URLSearchParams(location.search || "").get("return") === "onboarding") { location.assign("/admin/onboarding"); return; }
+        var modelPicker = document.getElementById("workspace-default-model");
+        if (modelPicker && modelPicker.scrollIntoView) modelPicker.scrollIntoView({ block: "center", behavior: "smooth" });
+        if (modelPicker && modelPicker.focus) modelPicker.focus();
+      }
+      return;
+    }
+
     if (state.installation.dialog) {
       if (action === "installation-dialog-close") closeInstallationDialog();
       if (action === "installation-copy-prompt") copyInstallationText(installationUpdatePrompt());
@@ -13396,7 +13525,7 @@
     if (action === "prov-remove") { openProviderRemove(target.getAttribute("data-provider")); }
     if (action === "prov-remove-cancel") { closeProviderRemove(target.getAttribute("data-provider")); }
     if (action === "prov-remove-confirm") { removeProviderKey(target.getAttribute("data-provider")); }
-    if (action === "chatgpt-plan-open") { state.chatgptPlan.helperOpen = true; render(); }
+    if (action === "chatgpt-plan-open") { openChatgptPlanDialog(); }
     if (action === "chatgpt-plan-prepare") { chatgptPlanAction("prepare"); }
     if (action === "chatgpt-plan-confirm") { chatgptPlanAction("confirm"); }
     if (action === "chatgpt-plan-cancel") { chatgptPlanAction("cancel"); }
@@ -14333,7 +14462,7 @@
     if (event.key !== "Tab") return false;
     var dialog = document.querySelector(selector);
     if (!dialog) return false;
-    var controls = Array.prototype.slice.call(dialog.querySelectorAll('a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])'));
+    var controls = Array.prototype.slice.call(dialog.querySelectorAll('a[href], button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])'));
     if (!controls.length) {
       event.preventDefault();
       if (dialog.focus) dialog.focus();
@@ -14355,6 +14484,11 @@
   }
 
   document.addEventListener("keydown", function (event) {
+    if (state.chatgptPlan.dialog) {
+      if (trapModalTab(event, '[data-role="chatgpt-plan-dialog"]')) return;
+      if (event.key === "Escape" || event.key === "Esc") { event.preventDefault(); closeChatgptPlanDialog(); }
+      return;
+    }
     if (state.installation.dialog) {
       if (trapModalTab(event, '[data-role="installation-dialog"]')) return;
       if (event.key === "Escape" || event.key === "Esc") { event.preventDefault(); closeInstallationDialog(); }
@@ -16803,7 +16937,9 @@
       try {
         if (planDescriptor.length > 2048 || !/^[A-Za-z0-9_-]+$/.test(planDescriptor)) throw new Error("Invalid helper request");
         state.chatgptPlan.descriptor = JSON.parse(atob(planDescriptor.replace(/-/g, "+").replace(/_/g, "/")));
-      } catch (_) { state.openAiSubscription.error = "This sign-in helper request is invalid. Run the command again."; }
+        state.chatgptPlan.dialog = INSTALLATION_OWNER;
+        state.chatgptPlan.deadline = Date.now() + 15 * 60 * 1000;
+      } catch (_) { state.openAiSubscription.error = "This setup request is invalid. Ask your coding agent to restart ChatGPT setup."; }
       planParams.delete("chatgpt_connect");
       history.replaceState(null, "", location.pathname + (planParams.toString() ? "?" + planParams.toString() : ""));
     }

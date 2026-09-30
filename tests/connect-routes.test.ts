@@ -16,6 +16,21 @@ import { PUBLIC_ASSET_PATHS } from '../src/assets/public-assets.ts';
 
 const ORIGIN = 'https://chickpea.example.test';
 
+test('ChatGPT setup guide targets this installation and delegates local setup without secrets', async () => {
+  const response = await createConnectRoutes().request(`${ORIGIN}/connect-chatgpt.md`);
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get('content-type') ?? '', /text\/markdown/);
+  assert.equal(response.headers.get('referrer-policy'), 'no-referrer');
+  const guide = await response.text();
+  assert.ok(guide.includes(`${ORIGIN}/chickpea-chatgpt-connect.mjs`));
+  assert.ok(guide.includes(`${ORIGIN}/admin/settings/providers`));
+  assert.match(guide, /same computer as the user's browser/);
+  assert.match(guide, /Do not ask the user to download a helper/);
+  assert.match(guide, /same origin without redirects/);
+  assert.match(guide, /Image generation requires/);
+  for (const marker of SECRET_MARKERS) assert.ok(!guide.includes(marker));
+});
+
 // The connect surface is public and unauthenticated, so nothing it renders may
 // carry a credential or an internal identifier. Checked against both bodies.
 const SECRET_MARKERS = ['xoxb', 'Bearer ', 'Authorization:', 'sk-', 'client_secret'];
@@ -98,7 +113,7 @@ test('an operator pin outranks every request header', async () => {
 
 test('an origin that does not validate renders nothing at all', async () => {
   for (const host of ['chickpea.example.test"', 'chickpea example.test', 'chickpea.example.test/mcp']) {
-    for (const path of ['/connect.md', '/connect']) {
+    for (const path of ['/connect.md', '/connect', '/connect-chatgpt.md']) {
       const response = await connectMd(`https://good.example.test${path}`, { 'x-forwarded-host': host });
       assert.equal(response.status, 404, `${path} with host ${host}`);
     }
