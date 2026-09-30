@@ -15531,6 +15531,15 @@ test('ChatGPT setup copies a public request and follows account confirmation fro
   assert.match(harness.app.innerHTML, /Copied\. Paste this into your coding agent/);
   assert.match(harness.app.innerHTML, /Waiting for setup to start/);
   assert.deepEqual(mutations, [], 'copying a request does not authorize or change the provider');
+  let unchangedRenders = 0;
+  let renderedHtml = harness.app.innerHTML;
+  Object.defineProperty(harness.app, 'innerHTML', {
+    configurable: true,
+    get() { return renderedHtml; },
+    set(value: string) { unchangedRenders++; renderedHtml = value; },
+  });
+  harness.runNextTimer(); await flushAsync();
+  assert.equal(unchangedRenders, 0, 'unchanged polling preserves dialog controls and text selection');
   status = { ...status, pending: { state: 'awaiting_signin', challenge: 'test-challenge' } };
   harness.runNextTimer(); await flushAsync();
   assert.match(harness.app.innerHTML, /Finish signing in to ChatGPT/);

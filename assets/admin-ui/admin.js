@@ -11686,6 +11686,7 @@
       api("/admin/api/providers/openai/subscription", { cache: "no-store" }).then(function (body) {
         if (setup.epoch !== epoch || !setup.dialog) return;
         var previous = summary.subscription || {};
+        var statusChanged = JSON.stringify(previous) !== JSON.stringify(body.status);
         applyOpenAiSubscriptionStatus(body.status);
         if (body.status && body.status.state === "connected" && !body.status.pending && (body.status.connectedAt || 0) !== setup.baseline) chatgptPlanConnected();
         if (previous.pending && body.status && !body.status.pending && !setup.completed) {
@@ -11693,7 +11694,7 @@
           setup.copied = false;
           setup.copyNotice = "Sign-in ended. Copy the setup request to start again.";
         }
-        render();
+        if (statusChanged || setup.completed) render();
         scheduleChatgptPlanPoll();
       }).catch(function () {
         if (setup.epoch !== epoch || !setup.dialog) return;
