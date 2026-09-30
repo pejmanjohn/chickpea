@@ -116,8 +116,9 @@ function projectConnectionAccounts(
  * Team accounts bound to this Agent that need an admin to sign in: a demoted
  * authorization, or one never completed. They drop out of the effective set,
  * and only an admin can reconnect them, so the Agent is told which ones are
- * down instead of silently lacking tools.
- * Personal accounts recover through the member's own authorization options.
+ * down instead of silently lacking tools. A `pending` account is mid-setup
+ * and deliberately not named. Personal accounts recover through the member's
+ * own authorization options.
  */
 export function projectTeamConnectionsNeedingReconnect(
   accounts: ConnectionAccount[],

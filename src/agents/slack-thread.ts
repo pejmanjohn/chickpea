@@ -1054,7 +1054,8 @@ function runtimePlanTeamReconnectsDeclaration(
     'Their tools are not available in this turn. When a request would use one of them, tell the user plainly ' +
     'which connection is unavailable and that an admin needs to reconnect it. Do not say you ' +
     'chose not to use it, do not ask the user to authorize it themselves, and do not guess what it would have returned. ' +
-    'This replaces any other reconnect guidance for these connections.';
+    'This replaces any other reconnect guidance for these connections; a personal account for the same service, ' +
+    'if one is offered, is still the user\'s to authorize.';
 }
 
 /** Name frozen repository grants so the model does not guess at their absence. */

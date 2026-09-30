@@ -174,6 +174,24 @@ test('a demoted team account is named for admin reconnect on later turns until r
   } finally { f.close(); }
 });
 
+test('a previously selected team account demoted mid-thread gets only the admin reconnect guidance', async () => {
+  const f = await fixture();
+  try {
+    await f.run('Use Work');
+    for (const account of await f.config.listConnectionAccounts(f.assignment.workspaceId)) {
+      await f.config.putConnectionAccount({
+        ...account, lifecycle: account.id === 'connection_work' ? 'needs_attention' : 'revoked',
+      }, account.revision);
+    }
+    const next = await f.run('Open the first result');
+    assert.deepEqual(next.plan.connectionChoices, [{ providerId: 'mail', previousAccountUnavailable: true, choices: [] }]);
+    assert.deepEqual(next.plan.teamReconnects, [{ providerId: 'mail', label: 'Work' }]);
+    const instructions = connectionChoiceInstructions(next.plan.connectionChoices!, next.plan.teamReconnects);
+    assert.doesNotMatch(instructions, /ask the user to reconnect/);
+    assert.match(connectionChoiceInstructions(next.plan.connectionChoices!), /ask the user to reconnect/);
+  } finally { f.close(); }
+});
+
 test('unavailable prior account remains withheld across repeated turns until explicit switch', async () => {
   const f = await fixture();
   try {

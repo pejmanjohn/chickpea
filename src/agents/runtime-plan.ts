@@ -1142,6 +1142,8 @@ function compileConnectionAuthorizations(
 }
 
 const TEAM_RECONNECT_LIMIT = 64;
+const TEAM_RECONNECT_PROVIDER_ID_MAX = 128;
+const TEAM_RECONNECT_LABEL_MAX = 240;
 
 /**
  * Freeze a bounded, sorted, de-duplicated list. Labels are clipped rather
@@ -1152,7 +1154,10 @@ function compileTeamReconnects(
 ): RuntimePlanTeamReconnectV1[] {
   const byKey = new Map<string, RuntimePlanTeamReconnectV1>();
   for (const { providerId, label } of connections ?? []) {
-    const entry = { providerId: providerId.slice(0, 128), label: label.slice(0, 240) };
+    const entry = {
+      providerId: providerId.slice(0, TEAM_RECONNECT_PROVIDER_ID_MAX),
+      label: label.slice(0, TEAM_RECONNECT_LABEL_MAX),
+    };
     if (entry.providerId && entry.label) byKey.set(`${entry.providerId}\n${entry.label}`, entry);
   }
   return [...byKey.values()]
@@ -1565,8 +1570,8 @@ function parseConnectionAuthorization(value: unknown): RuntimePlanConnectionAuth
 function parseTeamReconnect(value: unknown): RuntimePlanTeamReconnectV1 {
   const record = exactRecord(value, 'team reconnect', ['providerId', 'label']);
   return {
-    providerId: boundedString(record.providerId, 'team reconnect providerId', 1, 128),
-    label: boundedString(record.label, 'team reconnect label', 1, 240),
+    providerId: boundedString(record.providerId, 'team reconnect providerId', 1, TEAM_RECONNECT_PROVIDER_ID_MAX),
+    label: boundedString(record.label, 'team reconnect label', 1, TEAM_RECONNECT_LABEL_MAX),
   };
 }
 
