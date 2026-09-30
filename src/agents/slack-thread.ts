@@ -1050,7 +1050,7 @@ function runtimePlanTeamReconnectsDeclaration(
 ): string {
   if (!reconnects?.length) return '';
   const labels = reconnects.map(({ label }) => label);
-  return ` Team connections that stopped working and must be reconnected by an admin in Chickpea Admin: ${JSON.stringify(labels)}. ` +
+  return ` Team connections that are unavailable until an admin reconnects them in Chickpea Admin: ${JSON.stringify(labels)}. ` +
     'Their tools are not available in this turn. When a request would use one of them, tell the user plainly ' +
     'which connection is unavailable and that an admin needs to reconnect it. Do not say you ' +
     'chose not to use it, do not ask the user to authorize it themselves, and do not guess what it would have returned. ' +

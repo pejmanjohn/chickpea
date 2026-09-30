@@ -689,7 +689,7 @@ test('the connected-services instruction tells the Agent to name a connection an
   const instruction = runtimePlanConnectedServicesInstruction(compile({
     teamReconnects: [{ providerId: 'bugsnag', label: 'BugSnag' }],
   }));
-  assert.match(instruction, /must be reconnected by an admin in Chickpea Admin: \["BugSnag"\]/);
+  assert.match(instruction, /are unavailable until an admin reconnects them in Chickpea Admin: \["BugSnag"\]/);
   assert.match(instruction, /tell the user plainly which connection is unavailable/);
   assert.match(instruction, /Do not say you chose not to use it/);
   // Non-technical: no provider ids, lifecycle states or error text.
