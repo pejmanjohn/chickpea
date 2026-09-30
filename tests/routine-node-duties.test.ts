@@ -40,6 +40,7 @@ test('Node scheduled duties retry due Slack actions and run routine and retentio
     purgeImages: async (_settings, at) => {
       calls.push(`images:${at}`);
     },
+    keepAliveSchedule: {},
     keepCredentialsAlive: async () => {
       calls.push('keepalive');
       return {} as any;
@@ -77,14 +78,19 @@ test('Node scheduled duties reconcile receipts while no Slack action is due', as
     reconcileReceipts: async ({ at }) => { reconciledAt = at; return 0; },
     runHeartbeat: async () => {},
     purgeImages: async () => {},
+    keepAliveSchedule: {},
     keepCredentialsAlive: async () => ({} as any),
   });
   assert.equal(reconciledAt, 2_000);
 });
 
-test('Node scheduled duties keep OAuth credentials alive only on sweep minutes', async () => {
+test('Node scheduled duties keep OAuth credentials alive every ten elapsed minutes', async () => {
   const sweeps: number[] = [];
-  for (const scheduledTime of [Date.UTC(2026, 8, 30, 6, 10), Date.UTC(2026, 8, 30, 6, 11)]) {
+  const keepAliveSchedule = {};
+  const start = Date.UTC(2026, 8, 30, 6, 7, 30);
+  // A slow scheduler drifts off minute boundaries; the sweep still runs every ten minutes.
+  for (const offset of [0, 1, 9, 10, 13, 20.5]) {
+    const scheduledTime = start + offset * 60_000;
     await runNodeScheduledDuties({ scheduledTime, owner: 'node:test' }, {
       routines: { nextScheduleActionDueAt: async () => scheduledTime + 1 } as any,
       management: {} as any,
@@ -95,11 +101,12 @@ test('Node scheduled duties keep OAuth credentials alive only on sweep minutes',
       reconcileReceipts: async () => 0,
       runHeartbeat: async () => {},
       purgeImages: async () => {},
+      keepAliveSchedule,
       keepCredentialsAlive: async () => {
-        sweeps.push(scheduledTime);
+        sweeps.push(offset);
         return {} as any;
       },
     });
   }
-  assert.deepEqual(sweeps, [Date.UTC(2026, 8, 30, 6, 10)]);
+  assert.deepEqual(sweeps, [0, 10, 20.5]);
 });

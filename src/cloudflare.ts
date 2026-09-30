@@ -3373,7 +3373,21 @@ function rpcError(
 export default createRoutineScheduledHandler({
   heartbeat: runRoutineHeartbeat,
   maintenance: runWorkMaintenance,
+  duties: [keepOAuthCredentialsAlive],
 });
+
+/** Its own duty, so renewals never delay maintenance or the gateway wake. */
+async function keepOAuthCredentialsAlive(
+  scheduledTime: number,
+  rawEnv: Record<string, unknown>,
+): Promise<void> {
+  if (!isOAuthKeepAliveMinute(scheduledTime)) return;
+  const platformEnv = rawEnv as PlatformEnv;
+  await runOAuthKeepAliveSweep({
+    config: getConfigStore(platformEnv),
+    settings: getSettingsStore(platformEnv),
+  });
+}
 
 async function runWorkMaintenance(
   scheduledTime: number,
@@ -3391,14 +3405,6 @@ async function runWorkMaintenance(
     if (checkpoints && isCheckpointSweepMinute(scheduledTime)) {
       try { await sweepExpiredWorkspaceCheckpoints(checkpoints, scheduledTime); }
       catch { console.warn('[chickpea] Coding workspace checkpoint cleanup did not complete'); }
-    }
-    if (isOAuthKeepAliveMinute(scheduledTime)) {
-      try {
-        await runOAuthKeepAliveSweep({
-          config: getConfigStore(platformEnv),
-          settings: getSettingsStore(platformEnv),
-        });
-      } catch { console.warn('[chickpea] OAuth credential keep-alive did not complete'); }
     }
     await repairPendingOAuthContinuationResumes({
       settings: getSettingsStore(platformEnv),

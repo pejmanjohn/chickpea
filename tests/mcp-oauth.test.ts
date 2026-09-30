@@ -2539,3 +2539,23 @@ test('an invalid_client rejection keeps a registration a reconnect already repla
     f.settings.close();
   }
 });
+
+test('refreshIfObtainedBefore renews a still-valid credential only when it is older', async () => {
+  const f = await connectedFixture({});
+  try {
+    f.advance(60_000);
+    const obtainedAt = 1_000_000;
+    assert.equal(
+      await resolveMcpOAuthAccessToken({ ref: REF, serverUrl: SERVER_URL, refreshIfObtainedBefore: obtainedAt }, f.dependencies),
+      'access-initial',
+    );
+    assert.equal(f.oauth.counts.refreshes, 0);
+    assert.equal(
+      await resolveMcpOAuthAccessToken({ ref: REF, serverUrl: SERVER_URL, refreshIfObtainedBefore: obtainedAt + 1 }, f.dependencies),
+      'access-refreshed',
+    );
+    assert.equal(f.oauth.counts.refreshes, 1);
+  } finally {
+    f.settings.close();
+  }
+});

@@ -475,7 +475,7 @@ token, client id, URL, tool argument, result, or provider error text.
 | --- | --- | --- |
 | `chickpea.mcp.http` | Once per HTTP request an Agent turn sends to an MCP server | `connectionId`, `authMode`, `rpcMethod`, `toolName` (tool calls only), `httpMethod`, `status`, `outcome` (`ok`, `http_error`, `network_error`), `durationMs`, `requestBytes`, `responseBytes` |
 | `chickpea.oauth.refresh` | Once per OAuth credential renewal outcome (MCP and Google API connections) | `lane` (`mcp`, `api`), `connectionId`, `trigger` (`turn`, `admin`, `keepalive`), `outcome`, `reason`, `tokenDeleted`, `tokenAgeMs`, `durationMs` |
-| `chickpea.oauth.keepalive` | Once per credential keep-alive sweep, every ten minutes from scheduled maintenance | `credentials` (ready OAuth connections checked), `due`, `renewed`, `unavailable`, `rejected`, `skipped` (another caller was renewing), `deferred` (left for the next sweep), `durationMs` |
+| `chickpea.oauth.keepalive` | Once per credential keep-alive sweep, every ten minutes from scheduled maintenance | `credentials` (ready OAuth connections checked), `due`, `renewed`, `unavailable`, `rejected`, `skipped` (another caller was renewing, or the connection changed meanwhile), `failed` (an unexpected error, also logged as a `[chickpea] OAuth keep-alive could not renew a credential` warning with its error code), `deferred` (left for the next sweep; the oldest credentials go first), `durationMs` |
 
 `chickpea.oauth.refresh` outcomes:
 
@@ -498,7 +498,8 @@ last renewed; a `rejected` line with a large `tokenAgeMs` after a quiet period
 points to an expired refresh token. An account that was reconnected or renewed
 concurrently is never demoted by a late report.
 
-The keep-alive sweep renews any credential with a refresh token and an expiring
+The keep-alive sweep runs as its own scheduled duty, alongside Work
+maintenance rather than inside it, and renews any credential with a refresh token and an expiring
 access token once it has gone eight hours without renewal, including while the
 connection is unused, because some providers expire refresh tokens after as
 little as a day of inactivity. It renews at most ten credentials per sweep. A

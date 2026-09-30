@@ -54,7 +54,10 @@ export interface OAuthKeepAliveSummary {
   renewed: number;
   unavailable: number;
   rejected: number;
+  /** Another caller held the refresh lease, or the connection changed meanwhile. */
   skipped: number;
+  /** An unexpected error; logged separately with its bounded code. */
+  failed: number;
   deferred: number;
   durationMs: number;
 }
@@ -71,10 +74,13 @@ export async function runOAuthKeepAliveSweep(input: {
   const startedAt = now();
   const credentials = await listOAuthCredentials(input.config);
   const tokens = await input.settings.getSettings(credentials.map(tokenKey));
-  const due = credentials.filter((credential, index) => {
+  // Oldest first, so a backlog of failing renewals cannot starve the rest.
+  const due = credentials.flatMap((credential, index) => {
     const renewal = renewalState(credential.lane, tokens[index]);
-    return renewal !== undefined && isOAuthKeepAliveDue(renewal.obtainedAt, startedAt);
-  });
+    return renewal !== undefined && isOAuthKeepAliveDue(renewal.obtainedAt, startedAt)
+      ? [{ credential, obtainedAt: renewal.obtainedAt }]
+      : [];
+  }).sort((a, b) => a.obtainedAt - b.obtainedAt);
   const limit = input.maxRenewals ?? MAX_RENEWALS_PER_SWEEP;
   const summary: OAuthKeepAliveSummary = {
     event: 'chickpea.oauth.keepalive',
@@ -84,10 +90,11 @@ export async function runOAuthKeepAliveSweep(input: {
     unavailable: 0,
     rejected: 0,
     skipped: 0,
+    failed: 0,
     deferred: Math.max(0, due.length - limit),
     durationMs: 0,
   };
-  for (const credential of due.slice(0, limit)) {
+  for (const { credential } of due.slice(0, limit)) {
     summary[await renew(credential, input, now)] += 1;
   }
   summary.durationMs = Math.max(0, now() - startedAt);
@@ -103,15 +110,20 @@ async function renew(
   credential: KeepAliveCredential,
   input: Parameters<typeof runOAuthKeepAliveSweep>[0],
   now: () => number,
-): Promise<'renewed' | 'unavailable' | 'rejected' | 'skipped'> {
-  const before = await input.settings.getSetting(tokenKey(credential));
+): Promise<'renewed' | 'unavailable' | 'rejected' | 'skipped' | 'failed'> {
+  // The refresh reports its own outcome; without a 'refreshed' report, the
+  // lease let another caller renew first and its result stands.
+  let renewed = false;
   const shared = {
     settings: input.settings,
     now,
     ...(input.fetchFn ? { fetchFn: input.fetchFn } : {}),
     refreshTelemetry: {
       trigger: 'keepalive' as const,
-      ...(input.emit ? { emit: input.emit } : {}),
+      emit: (event: OAuthRefreshTelemetryEvent) => {
+        if (event.outcome === 'refreshed') renewed = true;
+        (input.emit ?? ((value) => console.info(value)))(event);
+      },
     },
   };
   const refreshIfObtainedBefore = now() - OAUTH_KEEPALIVE_AGE_MS;
@@ -132,13 +144,16 @@ async function renew(
       });
     }
   } catch (error) {
-    const code = error instanceof Error && 'code' in error ? error.code : undefined;
+    const code = error instanceof Error && 'code' in error ? String(error.code) : undefined;
     if (code === 'oauth_unavailable') return 'unavailable';
     if (code === 'reauthorization_required') return 'rejected';
-    return 'skipped';
+    if (code === 'connection_missing' || code === 'oauth_attempt_superseded') return 'skipped';
+    console.warn(`[chickpea] OAuth keep-alive could not renew a credential (${
+      code && /^[a-z_]{1,64}$/.test(code) ? code : 'unexpected_error'
+    })`);
+    return 'failed';
   }
-  // The token lease let another caller renew first; its result stands.
-  return (await input.settings.getSetting(tokenKey(credential))) === before ? 'skipped' : 'renewed';
+  return renewed ? 'renewed' : 'skipped';
 }
 
 /** Every refreshable-lane OAuth credential that is currently expected to work. */

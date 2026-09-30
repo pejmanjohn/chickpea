@@ -50,8 +50,9 @@ the startup check recovers eligible missed work when Chickpea runs again. The
 wrapper also retries durable Slack schedule actions, performs Work and image
 retention maintenance, and every ten minutes renews OAuth connection
 credentials that have gone eight hours without renewal, so an idle connection
-does not outlive its provider's refresh token. Starting a second production launcher against the same
-state database is refused before the app runtime starts. The development server
+does not outlive its provider's refresh token. Starting a second production
+launcher against the same state database is refused before the app runtime
+starts. The development server
 and raw `dist/server.mjs` entry do not participate in this guard; never run them
 against a production installation's state.
 

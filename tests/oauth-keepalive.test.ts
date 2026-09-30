@@ -98,9 +98,12 @@ async function fixture() {
   await settings.setSetting(mailKeys[2], googleBundle(stale));
   tokenKeys.connection_mail = mailKeys[2];
   tokenKeys.legacy = mcpOAuthSettingKeys({ agentId: 'agent_keep', connectionId: 'legacy' })[2];
-  await settings.setSetting(tokenKeys.legacy!, mcpBundle(stale));
+  // The oldest credential, though enumerated last.
+  await settings.setSetting(tokenKeys.legacy!, mcpBundle(stale - HOUR / 2));
 
   const requests: string[] = [];
+  let googleResponse = (): Response =>
+    Response.json({ access_token: 'google-new', token_type: 'Bearer', expires_in: 3_600 });
   let mcpResponse = (): Response => Response.json({
     access_token: 'access-new', token_type: 'Bearer', expires_in: 3_600, refresh_token: 'refresh-new',
   });
@@ -108,9 +111,7 @@ async function fixture() {
     const url = new Request(input, init).url;
     requests.push(url);
     if (url === MCP_TOKEN_ENDPOINT) return mcpResponse();
-    if (url === GOOGLE_TOKEN_ENDPOINT) {
-      return Response.json({ access_token: 'google-new', token_type: 'Bearer', expires_in: 3_600 });
-    }
+    if (url === GOOGLE_TOKEN_ENDPOINT) return googleResponse();
     throw new Error(`unexpected request ${url}`);
   };
   const events: Array<Record<string, unknown>> = [];
@@ -119,6 +120,7 @@ async function fixture() {
   return {
     config, settings, accounts, tokenKeys, requests, events, obtainedAt, stale,
     rejectMcpRefresh(response: () => Response) { mcpResponse = response; },
+    rejectGoogleRefresh(response: () => Response) { googleResponse = response; },
     sweep: (maxRenewals?: number) => runOAuthKeepAliveSweep({
       config, settings, fetchFn, now: () => NOW,
       emit: (event) => events.push(event as unknown as Record<string, unknown>),
@@ -147,7 +149,7 @@ test('the sweep renews only idle refreshable credentials of ready connections', 
     const summary = await f.sweep();
     assert.deepEqual({ ...summary, durationMs: 0 }, {
       event: 'chickpea.oauth.keepalive', credentials: 5, due: 3,
-      renewed: 3, unavailable: 0, rejected: 0, skipped: 0, deferred: 0, durationMs: 0,
+      renewed: 3, unavailable: 0, rejected: 0, skipped: 0, failed: 0, deferred: 0, durationMs: 0,
     });
     for (const id of ['connection_idle', 'connection_mail', 'legacy']) {
       assert.equal(await f.obtainedAt(id), NOW, id);
@@ -202,5 +204,35 @@ test('the sweep bounds its work and leaves a concurrently leased credential to i
     assert.equal(summary.skipped, 1);
     assert.equal(summary.renewed, 1);
     assert.equal(await f.obtainedAt('connection_idle'), f.stale);
+    // Oldest first: the legacy credential was renewed; the Google one waits.
+    assert.equal(await f.obtainedAt('legacy'), NOW);
+    assert.notEqual(await f.obtainedAt('connection_mail'), NOW);
+  } finally { f.close(); }
+});
+
+test('a rejected Google renewal demotes its connection account', async () => {
+  const f = await fixture();
+  try {
+    f.rejectGoogleRefresh(() => Response.json({ error: 'invalid_grant' }, { status: 400 }));
+    const summary = await f.sweep();
+    assert.equal(summary.rejected, 1);
+    const mail = (await f.config.listConnectionAccounts(WORKSPACE)).find(({ id }) => id === 'connection_mail');
+    assert.equal(mail?.lifecycle, 'needs_attention');
+    assert.equal(await f.settings.getSetting(f.tokenKeys.connection_mail!), undefined);
+  } finally { f.close(); }
+});
+
+test('an unexpected renewal error is counted as failed, not skipped', async (t) => {
+  const f = await fixture();
+  const warn = t.mock.method(console, 'warn', () => {});
+  try {
+    // Parseable enough to be due, but not a valid stored credential.
+    await f.settings.setSetting(f.tokenKeys.connection_idle!, JSON.stringify({
+      tokens: { refresh_token: 'refresh-old', expires_in: 3_600 }, obtainedAt: f.stale,
+    }));
+    const summary = await f.sweep();
+    assert.equal(summary.failed, 1);
+    assert.equal(summary.renewed, 2);
+    assert.match(String(warn.mock.calls[0]?.arguments[0]), /could not renew a credential \(oauth_storage_invalid\)/);
   } finally { f.close(); }
 });
