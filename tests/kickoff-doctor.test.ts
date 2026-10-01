@@ -100,6 +100,11 @@ test('lane problems are sorted into blockers and things only a person can do', (
   const stopped = kickoffReport(facts({ lanes: [lane({ browser: { state: 'stopped' } })] }));
   assert.match(stopped.lanes[0].checks.find((c: any) => c.level === 'block').fix, /npm run lane:browser -- start amber/);
   assert.equal(kickoffReport(facts({ lanes: [lane({ browser: null })] })).ok, true, '--no-browser leaves the lane ready');
+  const readbackLevel = (readback: object) => kickoffReport(facts({ lanes: [lane({ readback })] })).lanes[0].checks.find((c: any) => /readback/i.test(c.text));
+  assert.equal(readbackLevel({ state: 'ok' }).level, 'ok');
+  assert.equal(readbackLevel({ state: 'missing' }).level, 'info', 'a lane without a token is still ready');
+  assert.equal(readbackLevel({ state: 'other_workspace' }).level, 'warn');
+  assert.match(readbackLevel({ state: 'error', error: 'token_revoked' }).text, /did not work: token_revoked/);
   const unread = kickoffReport(facts({ lanes: [lane({ readErrors: ['WORKER_DEPLOYMENT_UNAVAILABLE'], profile: 'unknown', liveVersion: null })] }));
   assert.equal(unread.ok, false, 'a lane Wrangler cannot read would fail its deploy after the claim');
   assert.match(unread.lanes[0].checks.find((c: any) => c.level === 'block').fix, /wrangler whoami/);

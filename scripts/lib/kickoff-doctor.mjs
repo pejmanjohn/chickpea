@@ -237,7 +237,7 @@ export async function checkReadback({ lane, registration, entries, fetchImpl }) 
     const who = await api.whoami(api.slackClient(token, fetchImpl ? { fetchImpl } : {}), registration.workspaceId);
     return { state: who.matchesLane === false ? 'other_workspace' : 'ok' };
   } catch (error) {
-    return { state: 'error', error: error?.code === 'SLACK_ERROR' ? error.message.replace(/^SLACK_ERROR: /u, '') : (error?.code ?? 'unknown') };
+    return { state: 'error', error: error?.code === 'SLACK_ERROR' ? error.message.replace(/^SLACK_ERROR: /u, '') : (typeof error?.code === 'string' ? error.code : error?.name ?? 'unknown') };
   }
 }
 

@@ -17,7 +17,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { QA_LANES } from './lib/qa-lanes.mjs';
-import { parseMessageLink, readHistory, readMessage, readThread, readbackToken, slackClient, whoami } from './lib/slack-readback.mjs';
+import { parseMessageLink, readHistory, readMessage, readThread, readbackToken, readbackTokenHint, SlackReadbackError, slackClient, whoami } from './lib/slack-readback.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const USAGE = `Usage: npm run lane:slack -- <${QA_LANES.join('|')}> <whoami | message LINK | thread LINK | history CHANNEL> [--since ISO] [--until ISO] [--limit N] [--out FILE]\n`;
@@ -60,7 +60,9 @@ export async function main(argv, { env = process.env, stdout = process.stdout, s
   try { options = parseArguments(argv); } catch (error) { stderr.write(`${error.message}\n${USAGE}`); return 2; }
   try {
     const entries = readEntries ? readEntries() : (await import('./lib/lane-secrets.mjs')).readLaneSecretEntries({ env });
-    const call = slackClient(readbackToken(entries, options.lane), { fetchImpl });
+    const token = readbackToken(entries, options.lane);
+    if (!token) throw new SlackReadbackError('NO_READBACK_TOKEN', `This lane has no readback token. Set it up as hosts.md describes.${readbackTokenHint(entries)}`);
+    const call = slackClient(token, { fetchImpl });
     let result;
     if (options.command === 'whoami') {
       const registry = readRegistry ? readRegistry() : (await import('./lib/environment-registry.mjs')).readEnvironmentRegistry();

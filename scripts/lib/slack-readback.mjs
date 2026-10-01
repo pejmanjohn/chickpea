@@ -41,6 +41,11 @@ export function readbackToken(entries, lane) {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
+/** Why a lane has no token, when the file holds one under the shared name by mistake. */
+export function readbackTokenHint(entries) {
+  return entries?.get(READBACK_TOKEN_NAME) ? ` A shared ${READBACK_TOKEN_NAME} is ignored; name it <LANE>__${READBACK_TOKEN_NAME}.` : '';
+}
+
 /**
  * A message link in any form Slack shows: an archives permalink
  * (`/archives/C…/p1700000000123456`, optionally `?thread_ts=…`), or a client
@@ -79,7 +84,8 @@ export function slackClient(token, { fetchImpl = fetch, sleep = (ms) => new Prom
         continue;
       }
       if (!response.ok) fail('SLACK_HTTP', `Slack answered HTTP ${response.status} to ${method}.`);
-      const body = await response.json();
+      let body;
+      try { body = await response.json(); } catch { fail('SLACK_HTTP', `${method} returned a non-JSON body.`); }
       if (body?.ok !== true) {
         const code = typeof body?.error === 'string' ? body.error : 'unknown_error';
         fail('SLACK_ERROR', `${method} returned ${code}. ${HINTS[code] ?? ''}`.trim());
@@ -122,7 +128,8 @@ export async function readThread(call, { channel, threadTs }) {
   let cursor;
   for (let page = 0; page < MAX_PAGES; page += 1) {
     const body = await call('conversations.replies', { channel, ts: threadTs, limit: 200, cursor });
-    messages.push(...(body.messages ?? []));
+    // Every page starts with the thread's root; keep it once.
+    messages.push(...(body.messages ?? []).filter((message) => page === 0 || message.ts !== threadTs));
     cursor = body.response_metadata?.next_cursor;
     if (!cursor) break;
   }
@@ -137,7 +144,7 @@ export async function readMessage(call, link) {
     ? await call('conversations.replies', { channel, ts: threadTs, latest: ts, oldest: ts, inclusive: true, limit: 10 })
     : await call('conversations.history', { channel, latest: ts, oldest: ts, inclusive: true, limit: 1 });
   const found = (body.messages ?? []).find((message) => message.ts === ts);
-  if (!found) fail('MESSAGE_NOT_FOUND', 'No message with that timestamp is visible to the test account.');
+  if (!found) fail('MESSAGE_NOT_FOUND', 'No message with that timestamp is visible to the test account. If it is a thread reply, copy its link from the thread view, which carries thread_ts.');
   return { channel, message: normalizeMessage(found) };
 }
 

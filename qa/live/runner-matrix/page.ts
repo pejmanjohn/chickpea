@@ -1,7 +1,8 @@
 /**
- * The in-page half of the runner matrix. The lane's operator has no Slack
- * token on gateway lanes (hosts.md, "Slack evidence on gateway lanes"), so the
- * only sender and reader is the lane browser's signed-in Slack web client.
+ * The in-page half of the runner matrix. The matrix sends and watches through
+ * the lane browser's signed-in Slack web client, because the shared gateway
+ * app's token never reaches the verifier; exact readback afterwards can use
+ * `npm run lane:slack` (hosts.md, "Slack evidence on gateway lanes").
  * `renderHarness` emits one self-contained function for the lane browser's
  * `evaluate_script`; it posts the planned messages as the signed-in test actor,
  * taps the client's existing websocket for status frames, and reads threads

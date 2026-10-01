@@ -35,6 +35,9 @@ test('message links in permalink and client form resolve to channel, message and
     { channel: 'C0ABC12345', ts: '1790000009.000001', threadTs: '1790000000.123456' });
   assert.deepEqual(parseMessageLink('https://app.slack.com/client/T0LANE/C0ABC12345/thread/C0ABC12345-1790000000.123456'),
     { channel: 'C0ABC12345', ts: '1790000000.123456', threadTs: '1790000000.123456' });
+  assert.deepEqual(parseMessageLink('https://lane.slack.com/archives/D0DM12345/p1790000000123456?thread_ts=bogus'),
+    { channel: 'D0DM12345', ts: '1790000000.123456', threadTs: '1790000000.123456' }, 'a malformed thread_ts falls back to the message');
+  assert.throws(() => parseMessageLink('https://app.slack.com/client/T0LANE/C0ONE12345/thread/C0TWO12345-1790000000.123456'), /INVALID_LINK/);
   assert.throws(() => parseMessageLink('https://example.com/archives/C0ABC12345/p1790000000123456'), /INVALID_LINK: The link is not a Slack link/);
   assert.throws(() => parseMessageLink('https://lane.slack.com/team/U123'), /INVALID_LINK: Use a message permalink/);
 });
@@ -65,12 +68,12 @@ test('readback normalizes sender, files and edits, pages through threads, and fi
   const root = { ts: '1790000000.123456', user: 'U0QA', text: '<@U0AGENT> hello', reply_count: 1 };
   const slack = fakeSlack({
     'conversations.replies': (params) => (params.get('cursor')
-      ? { ok: true, messages: [reply] }
+      ? { ok: true, messages: [root, reply] }
       : params.get('latest') ? { ok: true, messages: [root, reply] } : { ok: true, messages: [root], response_metadata: { next_cursor: 'page2' } }),
   });
   const call = slackClient(TOKEN, { fetchImpl: slack.fetchImpl });
   const thread = await readThread(call, { channel: 'C0ABC12345', threadTs: '1790000000.123456' });
-  assert.deepEqual(thread.messages.map((m: any) => m.ts), ['1790000000.123456', '1790000005.000002']);
+  assert.deepEqual(thread.messages.map((m: any) => m.ts), ['1790000000.123456', '1790000005.000002'], 'the root repeated on a later page is kept once');
   const one = await readMessage(call, 'https://lane.slack.com/archives/C0ABC12345/p1790000005000002?thread_ts=1790000000.123456');
   assert.equal(one.message.sender, 'Chickpea');
   assert.equal(one.message.customName, 'Calendar QA');
@@ -101,7 +104,15 @@ test('a lane reads only its own token, and the CLI never prints it', async (cont
   assert.equal(JSON.parse(readFileSync(file, 'utf8')).message.text, 'hi');
   assert.ok(![out, err, readFileSync(file, 'utf8')].some((text) => text.includes(TOKEN)));
   assert.equal(await main(['cobalt', 'whoami'], io), 1);
-  assert.match(err, /NO_READBACK_TOKEN/);
+  assert.match(err, /NO_READBACK_TOKEN: .*A shared SLACK_READBACK_TOKEN is ignored; name it <LANE>__SLACK_READBACK_TOKEN/);
+  out = '';
+  assert.equal(await main(['amber', 'history', 'C0ABC12345', '--since', '2026-10-01T00:00:00Z', '--limit', '5'], io), 0, err);
+  const history = slack.seen.filter((entry) => entry.method === 'conversations.history').at(-1)!;
+  assert.equal(history.params.get('oldest'), String(Date.parse('2026-10-01T00:00:00Z') / 1000) + '.000000');
+  assert.equal(history.params.get('limit'), '5');
+  assert.equal(JSON.parse(out).messages[0].text, 'hi');
+  assert.equal(await main(['amber', 'history', 'C0ABC12345', '--limit', '500'], io), 2);
+  assert.equal(await main(['amber', 'message', 'https://lane.slack.com/archives/C0ABC12345/p1790000000123456', '--out', path.join(process.cwd(), 'readback.json')], io), 1, 'evidence inside the checkout is refused');
 });
 
 test('the kickoff doctor reports whether a lane has a working readback token', async () => {
@@ -115,4 +126,8 @@ test('the kickoff doctor reports whether a lane has a working readback token', a
   assert.equal(result.state, 'error');
   assert.match(result.error, /token_revoked/);
   assert.ok(!JSON.stringify(result).includes(TOKEN));
+  const offline = await checkReadback({ lane: 'amber', registration: { workspaceId: 'T0LANE' }, entries, fetchImpl: async () => { throw new TypeError('fetch failed'); } });
+  assert.deepEqual(offline, { state: 'error', error: 'TypeError' });
+  const html = await checkReadback({ lane: 'amber', registration: { workspaceId: 'T0LANE' }, entries, fetchImpl: async () => new Response('<html>', { status: 200 }) });
+  assert.deepEqual(html, { state: 'error', error: 'SLACK_HTTP' });
 });
