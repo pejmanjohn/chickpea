@@ -3,7 +3,7 @@ import { spawnSync } from 'node:child_process';
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 // @ts-expect-error Release tooling JavaScript helper.
 import { validateInstallation } from '../scripts/lib/upgrade-installation.mjs';
 // @ts-expect-error Release tooling JavaScript helper.
@@ -62,6 +62,7 @@ export function createHarness() {
     export function assertCloudflareAccountConfig() {}
   `);
   writeFileSync(path.join(scriptsLibDir, 'installed-dependencies.mjs'), `
+    export { staleDependenciesMessage } from ${JSON.stringify(pathToFileURL(path.join(PROJECT_ROOT, 'scripts', 'lib', 'installed-dependencies.mjs')).href)};
     export function lockfileDrift() {
       return process.env.DEPLOY_TEST_STALE_DEPENDENCIES ? JSON.parse(process.env.DEPLOY_TEST_STALE_DEPENDENCIES) : [];
     }
@@ -74,27 +75,27 @@ export function createHarness() {
     }
   `);
   writeFileSync(path.join(scriptsLibDir, 'product-telemetry-preflight.mjs'), `
-    import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
-    import { dirname } from 'node:path';
+    import { appendFileSync, existsSync, writeFileSync } from 'node:fs';
     export class ProductTelemetryPreflightError extends Error {
       constructor(code, receipt) { super(code); this.code = code; this.receipt = receipt; }
     }
     export async function verifyProductTelemetry(options) {
-      appendFileSync(process.env.DEPLOY_TEST_LOG, 'telemetry:' + options.worker + '\\n');
+      appendFileSync(process.env.DEPLOY_TEST_LOG, 'telemetry:' + options.worker + ':' + (options.accountId || 'no-account') + '\\n');
       const failed = process.env.DEPLOY_TEST_TELEMETRY_STATUS === 'failed';
       const receipt = { worker: options.worker, status: failed ? 'failed' : 'passed', failure: failed ? { code: 'UNSAFE_SERVING_VERSION' } : null };
       if (failed) throw new ProductTelemetryPreflightError('UNSAFE_SERVING_VERSION', receipt);
       return receipt;
     }
     export function writeProductTelemetryReceipt(file, receipt) {
-      mkdirSync(dirname(file), { recursive: true });
-      writeFileSync(file, JSON.stringify(receipt));
+      if (existsSync(file)) throw new Error('Telemetry preflight output already exists. Choose a new private path.');
+      writeFileSync(file, JSON.stringify(receipt), { flag: 'wx' });
       appendFileSync(process.env.DEPLOY_TEST_LOG, 'telemetry-receipt:' + file + '\\n');
       return file;
     }
   `);
   writeFileSync(path.join(scriptsLibDir, 'environment-preflight.mjs'), `
-    import { appendFileSync, writeFileSync } from 'node:fs';
+    import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
+    import { join } from 'node:path';
     let calls = 0;
     export async function preflightEnvironmentMutation(target, options = {}) {
       calls += 1;
@@ -108,7 +109,7 @@ export function createHarness() {
       return {
         schemaVersion: 'chickpea-environment-mutation-preflight/v1', target,
         claim: { leaseNonce: 'nonce', claimedRevision: 'revision' },
-        registration: { workerName: 'chickpea-' + target, authDatabaseId: 'test-database-id', providerAuthConfigId: 'standard-' + target },
+        registration: { workerName: 'chickpea-' + target, authDatabaseId: 'test-database-id', providerAuthConfigId: 'standard-' + target, evidenceRoot: (() => { const dir = join(process.env.CHICKPEA_ENVIRONMENT_ROOT, target, 'evidence'); mkdirSync(dir, { recursive: true }); return dir; })() },
         deploymentMetadata: { target, sourceDirty: false, baselineDigest: 'sha256:test' },
       };
     }
@@ -118,7 +119,7 @@ export function createHarness() {
       const preflight = {
         schemaVersion: 'chickpea-environment-mutation-preflight/v1', target,
         claim: { leaseNonce: 'nonce', claimedRevision: 'revision' },
-        registration: { workerName: 'chickpea-' + target, authDatabaseId: 'test-database-id', providerAuthConfigId: 'standard-' + target },
+        registration: { workerName: 'chickpea-' + target, authDatabaseId: 'test-database-id', providerAuthConfigId: 'standard-' + target, evidenceRoot: (() => { const dir = join(process.env.CHICKPEA_ENVIRONMENT_ROOT, target, 'evidence'); mkdirSync(dir, { recursive: true }); return dir; })() },
         deploymentMetadata: { target, sourceDirty: false, baselineDigest: 'sha256:test' },
       };
       return {

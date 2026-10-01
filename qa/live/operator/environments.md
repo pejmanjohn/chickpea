@@ -298,7 +298,7 @@ This is an operator error guard, not a sandbox for untrusted deployment code.
 Before synthetic activity on any deployed target, the serving version needs a
 telemetry isolation receipt. The guarded deploy to a claimed lane produces it:
 after reconciling, it checks the new serving version and writes
-`telemetry-<version>.json` into that lane's private evidence folder, printing
+`telemetry-<version>-<time>.json` into that lane's private evidence folder, printing
 "Telemetry isolation verified" or failing the deploy with the reason. Attach
 that receipt to the target evidence; nothing else is needed. For a lane you did
 not deploy in this run, run `npm run verify:telemetry -- --target <alias>`,

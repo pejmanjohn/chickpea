@@ -205,9 +205,11 @@ test('Phase 1 deploy reconciles live version before receipt and suppresses setup
   const log = commands(harness.logPath);
   const completeAt = log.indexOf('environment-complete:deployed-version');
   assert.ok(completeAt >= 0, 'the claimed deployment is reconciled');
-  assert.equal(log[completeAt + 1], 'telemetry:chickpea-amber-live', 'then the deploy checks telemetry isolation for the serving Worker');
-  const telemetryReceipt = path.join(harness.root, 'no-lane-registry', 'amber', 'evidence', 'telemetry-deployed-version.json');
-  assert.equal(log[completeAt + 2], `telemetry-receipt:${telemetryReceipt}`);
+  assert.equal(log[completeAt + 1], `telemetry:chickpea-amber-live:${'a'.repeat(32)}`, 'then the deploy checks telemetry isolation for the serving Worker, on the pinned account');
+  const receiptLine = log[completeAt + 2] ?? '';
+  const evidence = path.join(harness.root, 'no-lane-registry', 'amber', 'evidence');
+  assert.match(receiptLine, new RegExp(`^telemetry-receipt:${evidence.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/telemetry-deployed-version-\\d{4}-\\d{2}-\\d{2}T`));
+  const telemetryReceipt = receiptLine.slice('telemetry-receipt:'.length);
   assert.equal(JSON.parse(readFileSync(telemetryReceipt, 'utf8')).status, 'passed');
   assert.match(result.stdout, /Telemetry isolation verified for the serving version; receipt /);
   assert.doesNotMatch(result.stdout, /#setup=|PRIVATE SETUP LINK|PRIVATE SETUP PATH/);
@@ -1114,8 +1116,8 @@ test('a claimed lane deploy reports a failed telemetry receipt as a failed deplo
   assert.match(result.stdout, /Claimed environment deployment reconciled/);
   assert.match(result.stderr, /Telemetry isolation failed \(UNSAFE_SERVING_VERSION\)/);
   assert.match(result.stderr, /Do not send synthetic Slack traffic/);
-  const telemetryReceipt = path.join(harness.root, 'no-lane-registry', 'amber', 'evidence', 'telemetry-deployed-version.json');
-  assert.equal(JSON.parse(readFileSync(telemetryReceipt, 'utf8')).status, 'failed', 'the failed receipt is kept as evidence');
+  const receiptLine = commands(harness.logPath).find((entry) => entry.startsWith('telemetry-receipt:')) ?? '';
+  assert.equal(JSON.parse(readFileSync(receiptLine.slice('telemetry-receipt:'.length), 'utf8')).status, 'failed', 'the failed receipt is kept as evidence');
 });
 
 test('a claimed lane deploy refuses stale dependencies and a core deploy over a sandbox lane before building', (context) => {

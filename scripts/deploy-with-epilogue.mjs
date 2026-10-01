@@ -450,17 +450,17 @@ if (guardedSandboxDeploy) {
 // lane is refused after the build anyway; refuse it before spending one).
 if (selectedEnvironmentTarget && !skipBuild && !reuseWorkersBuildArtifact) {
   try {
-    const { lockfileDrift } = await import('./lib/installed-dependencies.mjs');
+    const { lockfileDrift, staleDependenciesMessage } = await import('./lib/installed-dependencies.mjs');
     const drift = lockfileDrift(projectRoot);
-    if (drift.length) {
-      const sample = drift.slice(0, 3).map(({ name, locked, installed }) => `${name} ${installed} (locked ${locked})`).join(', ');
-      throw new Error(`STALE_DEPENDENCIES: node_modules does not match package-lock.json for ${drift.length} package(s): ${sample}. ` +
-        'Run npm ci --strict-allow-scripts with the repository Node version, then deploy again. Nothing was built or changed.');
-    }
-    const workerName = initialEnvironmentPreflight?.registration?.workerName ?? resumedEnvironmentDeployment?.preflight?.registration?.workerName;
-    if (workerName && deploymentProfile === 'core' && !explicitCoreProfile) {
+    if (drift.length) throw new Error(staleDependenciesMessage(drift, 'Nothing was built or changed.'));
+    const workerName = initialEnvironmentPreflight.registration.workerName;
+    if (deploymentProfile === 'core' && !explicitCoreProfile) {
       const { readLiveWorkerProfile } = await import('./lib/environment-capabilities.mjs');
       const live = await readLiveWorkerProfile(workerName, { providerContext: deploymentResourceArgs() });
+      if (live.profile === 'unknown') {
+        process.stdout.write(`! Could not read ${workerName}'s live deploy profile (${live.errors.join(', ') || 'no answer'}); ` +
+          'the post-build check still refuses a core deploy over a sandbox Worker.\n');
+      }
       if (live.profile === 'sandbox' || live.profile === 'mixed') {
         throw new Error(
           `Claimed lane ${selectedEnvironmentTarget} serves the sandbox profile, and this command would deploy the core profile. ` +
@@ -1787,9 +1787,9 @@ child.on('close', async (code) => {
     // has to resolve the Worker and account by hand or act before it exists.
     try {
       const telemetry = await import('./lib/product-telemetry-preflight.mjs');
-      const evidenceRoot = finalEnvironmentPreflight?.registration?.evidenceRoot
-        ?? path.join(claimedLaneRegistryRoot, selectedEnvironmentTarget, 'evidence');
-      const receiptPath = path.join(evidenceRoot, `telemetry-${deployedVersionId || Date.now()}.json`);
+      // One receipt per check: a re-deploy can serve the same version id again.
+      const receiptPath = path.join(finalEnvironmentPreflight.registration.evidenceRoot,
+        `telemetry-${deployedVersionId}-${new Date().toISOString().replace(/[:.]/g, '-')}.json`);
       let receipt;
       try {
         receipt = await telemetry.verifyProductTelemetry({

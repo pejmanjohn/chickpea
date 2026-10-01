@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 
 // @ts-expect-error Executable helpers are JavaScript, shared with the CLI.
 import { runTail } from '../scripts/lib/lane-tail.mjs';
+import { chmodSync } from 'node:fs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -57,6 +58,34 @@ test('a silent tail is restarted after the stall window, and an abort stops it a
   await runTail({ command: process.execPath, args: [silent], out: path.join(dir, 'aborted.json'), durationMs: 60_000, stallMs: 60_000, signal: controller.signal });
   assert.ok(Date.now() - started < 5_000, 'the abort ends the run well before its deadline');
   assert.match(readFileSync(path.join(dir, 'aborted.json.events'), 'utf8'), /stopped\n$/);
+});
+
+test('a child that ignores SIGTERM is killed at the deadline, and a tail that never attaches is fatal', async (context) => {
+  const dir = scratch(context);
+  // Ignores SIGTERM and keeps talking, so only the deadline plus SIGKILL can end it.
+  const stubborn = script(dir, 'stubborn.mjs', "process.on('SIGTERM', () => {}); setInterval(() => process.stdout.write('{}\\n'), 50);\n");
+  const started = Date.now();
+  await runTail({ command: process.execPath, args: [stubborn], out: path.join(dir, 'stubborn.json'), durationMs: 600, stallMs: 60_000, killGraceMs: 300 });
+  assert.ok(Date.now() - started < 4_000, 'the deadline holds even when SIGTERM is ignored');
+  assert.match(readFileSync(path.join(dir, 'stubborn.json.events'), 'utf8'), /deadline reached\n$/);
+
+  // Exits at once with nothing on stdout, like an expired token or a wrong Worker name.
+  const dead = script(dir, 'dead.mjs', "process.stderr.write('not authorized\\n'); process.exit(1);\n");
+  await assert.rejects(
+    runTail({ command: process.execPath, args: [dead], out: path.join(dir, 'dead.json'), durationMs: 60_000, stallMs: 60_000, restartDelayMs: 20 }),
+    /TAIL_NOT_ATTACHING: 3 attaches in a row exited within 10 s with no output \(last exit 1\)/,
+  );
+  const missing = path.join(dir, 'not-executable');
+  writeFileSync(missing, '');
+  chmodSync(missing, 0o644);
+  await assert.rejects(
+    runTail({ command: missing, args: [], out: path.join(dir, 'missing.json'), durationMs: 60_000, stallMs: 60_000 }),
+    /TAIL_NOT_ATTACHING: could not start .*EACCES/,
+  );
+  const aborted = new AbortController();
+  aborted.abort();
+  const none = await runTail({ command: process.execPath, args: [dead], out: path.join(dir, 'aborted-early.json'), durationMs: 60_000, stallMs: 60_000, signal: aborted.signal }) as { attaches: number };
+  assert.equal(none.attaches, 0, 'an already-aborted run starts nothing');
 });
 
 test('the CLI validates its arguments and refuses an output inside the repository', () => {
