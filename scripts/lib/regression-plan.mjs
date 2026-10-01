@@ -17,6 +17,13 @@ export const REGRESSION_AREAS = Object.freeze({
   auth: ['slack-install-oauth', 'slack-oidc', 'auth-principal', 'admin-authorization'],
   admin: ['admin-page', 'agent-admin-routes', 'admin-authorization'],
   providers: ['provider-runtime-models', 'cloudflare-provider', 'runtime-model-route-evidence'],
+  // These four areas name test groups for run records and --area. They have no
+  // source rules on purpose: a change under src/sandbox, src/browser, src/usage
+  // or src/activity stays unclassified and still runs the full suite.
+  sandbox: ['sandbox-artifact-tool', 'sandbox-cloudflare-policy', 'sandbox-coding-task-stop', 'sandbox-deploy-preflight', 'sandbox-egress-handler', 'sandbox-git-identity', 'sandbox-lifecycle', 'sandbox-progress', 'sandbox-reconnect', 'sandbox-select', 'sandbox-session-cap', 'sandbox-settings', 'sandbox-workspace-lifecycle', 'sandbox-workspace-skill', 'sandbox-workspace-task', 'sandbox-workspace-tools', 'agent-guest-sandbox', 'runtime-plan-sandbox', 'admin-sandbox-status', 'slack-coding-task-progress'],
+  browser: ['browser-actions', 'browser-cdp', 'browser-logins', 'browser-mounting', 'browser-page', 'browser-provider', 'browser-settings', 'browser-tools', 'browser-totp', 'browser-turn-session', 'admin-browser-settings', 'slack-browser-action-admission'],
+  usage: ['usage-cloudflare-proxy', 'usage-store-contract', 'usage-telemetry-contract', 'usage-validation', 'admin-usage-routes', 'usage/connector-usage', 'usage/interaction-capture', 'usage/interactive-capture', 'usage/pricing-catalog', 'usage/pricing-estimate', 'usage/provider-guidance', 'usage/retention', 'usage/routine-capture'],
+  activity: ['activity-lifecycle', 'activity-status', 'activity-telemetry', 'admission-activity'],
   verification: ['node-version', 'verification-record', 'verification-regression', 'verification-offline', 'verification-transition', 'verification-host', 'verification-fixtures', 'environment-registry', 'environment-preflight', 'environment-preflight-2', 'environment-preflight-3', 'environment-wait', 'qa-candidate', 'live-contract-coordinator', 'live-contract-lock', 'schedule-contract-evaluation', 'deploy-with-epilogue', 'deploy-with-epilogue-2', 'local-worker-lane', 'live-contract-schema', 'live-contract-runner', 'oss-export'],
 });
 

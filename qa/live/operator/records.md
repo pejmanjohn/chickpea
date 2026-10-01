@@ -51,10 +51,24 @@ npm run verify:live:record -- case-add \
 ```
 
 Common builder refusals: capability kinds are `actor`, `fixture`, `tool`, or
-`target`. The case field is `cleanup`; the CLI flag is `--cleanup-contract`.
-`maxWaitMs` is at most 120000. A non-`model` live case must declare `slack`
-proof, so an Admin-only change needs a Slack-visible consequence as its proof.
-Otherwise record the case as blocked and do not drop the record. Register
+`target`. The case field is `cleanup`; the CLI flag is `--cleanup-contract`. A
+refused field is named in the error together with the fields allowed there.
+Keep `maxWaitMs` at 120000 for a chat reply; a case whose work is declared long
+(a coding task, a recording, an idle window) may set up to 3600000. Areas
+include `sandbox`, `browser`, `usage` and `activity` as well as the regression
+areas. Proof surfaces are `slack`, `admin`, `mcp`, `provider` and `model`. A
+non-`model` live case needs proof from at least one user door: `slack`,
+`admin` or `mcp`. Provider rows or model output alone never accept it. When a
+case cannot run, record why with `blocked`, which spends no attempt, and keep
+the record:
+
+```sh
+npm run verify:live:record -- blocked --case requested-schedule \
+  --reason "Provider quota is exhausted until the owner adds credit." \
+  --category infrastructure --run "$run_dir/run.json"
+```
+
+The case shows `blocked` with that reason until a later `begin`. Register
 fixtures and owned resources before `begin`. A capability refresh while an
 attempt is open invalidates that attempt. Hold working-tree edits outside the
 claimed worktree until the attempt finishes. Use the recorder even when it
@@ -148,7 +162,7 @@ not every historical retrospective row by default.
 ```sh
 npm run verify:regression -- --area routines --record "$run_dir/run.json"
 npm run verify:live:record -- begin --case channel-schedule --run "$run_dir/run.json"
-# Record the returned attempt ID before acting. Perform the authorized journey once.
+# It prints {"attemptId": ..., "deadline": ...}. Keep the ID, then perform the authorized journey once.
 # Save the product result and each required readback before finishing.
 npm run verify:live:record -- finish --run "$run_dir/run.json" \
   --attempt "$attempt_id" --result pass \
@@ -183,7 +197,9 @@ Missing timing categories stay explicitly unmeasured.
 
 `completedAt` is when the product produced the outcome. `observedAt` is when the
 operator obtained its authoritative readback. The event `at` remains the later
-record-write time. Neither timestamp is inferred when omitted. Reports show
+record-write time. Neither timestamp is inferred when omitted. Pass `now` only
+when the readback happened at that moment. A refused timestamp prints the
+attempt's start, the current time and the value given. Reports show
 attempt-start-to-completion time, readback-to-record delay, recording after the observation
 deadline, and completion beyond that deadline separately. `maxWaitMs` remains an
 observation deadline, not a universal product SLA, so lateness is advisory and

@@ -471,7 +471,13 @@ test('actual CLI init, resume, refresh, finish and generated report use the same
   assert.equal(cli('init', '--spec', specFile, '--run', runFile), 0, error);
   assert.equal(cli('preflight', '--run', runFile), 0, error);
   assert.equal(cli('begin', '--case', 'schedule', '--run', runFile), 0, error);
-  const attemptId = JSON.parse(output).id;
+  const attemptId = JSON.parse(output).attemptId;
+  assert.equal(JSON.parse(output).id, attemptId);
+  assert.equal(cli('begin', '--case', 'schedule', '--reason', 'retry', '--run', runFile), 2);
+  assert.match(error, new RegExp(`Prior attempt ${attemptId} is still open`));
+  assert.equal(cli('blocked', '--case', 'recovery', '--reason', 'Waiting on the maintainer to grant the phone check.', '--run', runFile), 0, error);
+  assert.equal(cli('status', '--run', runFile), 0, error);
+  assert.equal(JSON.parse(output).cases[1].result, 'blocked');
   assert.equal(cli('status', '--run', runFile), 0, error);
   assert.equal(JSON.parse(output).cases[0].result, 'in_progress');
   const event = join(f.directory, 'finish.json'); writeFileSync(event, JSON.stringify(f.finish(attemptId)));
@@ -480,7 +486,7 @@ test('actual CLI init, resume, refresh, finish and generated report use the same
   const report = join(f.directory, 'report.md');
   assert.equal(cli('report', '--run', runFile, '--output', report), 0, error);
   assert.match(readFileSync(report, 'utf8'), /local.*synthetic-local.*pass/);
-  assert.match(readFileSync(report, 'utf8'), /Variant group parent .*not_run.*pending: recovery/);
+  assert.match(readFileSync(report, 'utf8'), /Variant group parent .*blocked.*pending: recovery/, 'the recorded block shows until recovery is attempted');
   actual.capabilities.owner.scope.target = 'wrong-lane';
   writeFileSync(specFile, JSON.stringify(actual));
   assert.equal(cli('refresh', '--spec', specFile, '--reason', 'Stale capability after lane change.', '--run', runFile), 0, error);
@@ -506,6 +512,37 @@ test('actual CLI init, resume, refresh, finish and generated report use the same
 
   assert.equal(cli('report', '--run', runFile, '--output', runFile), 2);
   assert.ok(readRun(runFile).events.length > 0);
+});
+
+test('record refusals name the fix: fields, proof doors, long waits, open attempts and time windows', (t) => {
+  const f = fixture(t);
+  const withCase = (patch: object) => { const spec = structuredClone(f.spec) as any; Object.assign(spec.cases[0], patch); return spec; };
+  const make = (spec: object) => createRun(join(f.directory, `run-${Math.random()}.json`), spec, source(), NOW);
+  assert.throws(() => make(withCase({ cleanupContract: 'archive it' })), /Unexpected record fields: cleanupContract\. Allowed here: .*\bcleanup\b/);
+  assert.throws(() => make(withCase({ proof: ['provider'] })), /Live case schedule needs proof from a user door: slack, admin or mcp/);
+  make(withCase({ proof: ['admin'] }));
+  make(withCase({ proof: ['mcp', 'provider'] }));
+  make(withCase({ maxWaitMs: 1_800_000, minObservationMs: 600_000 }));
+  assert.throws(() => make(withCase({ maxWaitMs: 3_600_001 })), /maxWaitMs must be 1\.\.3600000/);
+  for (const area of ['sandbox', 'browser', 'usage', 'activity']) make(withCase({ areas: [area] }));
+  assert.equal(buildResource(f.run, { case: 'schedule', provider: 'chickpea', kind: 'agent', resourceId: 'agent-1', ownership: 'created', cleanupPreset: 'archived', evidence: [f.evidence] }, readPrivateJson).expected.lifecycle, 'archived');
+  assert.match(buildOutcome('finish', { attempt: 'a', result: 'pass', summary: 's', evidence: [f.evidence], proof: [`admin=${f.evidence}`], observedAt: 'now' }).observedAt, /^\d{4}-\d{2}-\d{2}T/);
+
+  const attempt = f.append({ type: 'begin', caseId: 'schedule' });
+  assert.throws(() => f.append({ type: 'begin', caseId: 'schedule', reason: 'retry' }, NOW + 2000), new RegExp(`Prior attempt ${attempt.id} is still open \\(deadline ${attempt.deadline}\\)`));
+  assert.throws(() => f.append({ type: 'case_blocked', caseId: 'schedule', reason: 'Quota exhausted.' }, NOW + 2000), new RegExp(`Attempt ${attempt.id} is still open`));
+  const early = new Date(NOW).toISOString();
+  assert.throws(() => f.append(f.finish(attempt.id, { completedAt: early }), NOW + 3000),
+    new RegExp(`attempt ${attempt.id} began ${new Date(NOW + 1000).toISOString()}, now ${new Date(NOW + 3000).toISOString()}, got ${early}`));
+  f.append(f.finish(attempt.id, { result: 'fail', category: 'infrastructure' }), NOW + 3000);
+  f.append({ type: 'case_blocked', caseId: 'schedule', reason: 'Provider quota is exhausted until the owner adds credit.', category: 'infrastructure' }, NOW + 4000);
+  const blocked = status(f.run, source(), NOW + 5000).cases[0];
+  assert.equal(blocked.result, 'blocked');
+  assert.match(blocked.blockers[0], /recorded block: Provider quota is exhausted/);
+  assert.match(renderReport(status(f.run, source(), NOW + 5000)), /\| schedule \| local \/ synthetic-local \| blocked \| 1 \| recorded block: Provider quota/);
+  const retry = f.append({ type: 'begin', caseId: 'schedule', reason: 'Credit added; same case.' }, NOW + 6000);
+  assert.equal(status(f.run, source(), NOW + 7000).cases[0].result, 'in_progress', 'a later attempt supersedes the recorded block');
+  assert.ok(retry.id);
 });
 
 function repairFixture(t: TestContext) {
