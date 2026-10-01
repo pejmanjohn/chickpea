@@ -10,7 +10,7 @@ import { evidenceRefs, offlineEvent, readRun, updateRun } from './lib/verificati
 import { offlineStepLabel } from './lib/verification-offline.mjs';
 import { assertNodeVersion } from './lib/node-version.mjs';
 import { waitForHostChecks } from './lib/verification-host-wait.mjs';
-import { lockfileDrift } from './lib/installed-dependencies.mjs';
+import { lockfileDrift, staleDependenciesMessage } from './lib/installed-dependencies.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -143,10 +143,7 @@ export async function main(argv) {
     const expensive = plan.steps.some((step) => !isHygieneStep(step));
     if (expensive && !existsSync(path.join(ROOT, 'node_modules', 'tsx'))) throw new Error('Run npm ci first with the repository Node version.');
     const drift = expensive ? lockfileDrift(ROOT) : [];
-    if (drift.length) {
-      const sample = drift.slice(0, 3).map(({ name, locked, installed }) => `${name} ${installed} (locked ${locked})`).join(', ');
-      throw new Error(`STALE_DEPENDENCIES: node_modules does not match package-lock.json for ${drift.length} package(s): ${sample}. Run npm ci with the repository Node version.`);
-    }
+    if (drift.length) throw new Error(staleDependenciesMessage(drift));
     if (options.record) {
       const run = readRun(options.record); // Validate before executing any checks.
       if (run.events.some((event) => event.type === 'offline_begin' && !run.events.some((end) => end.type === 'offline_finish' && end.attemptId === event.id))) {

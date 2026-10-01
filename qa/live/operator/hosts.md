@@ -107,10 +107,13 @@ Proven Slack recipe for these servers:
 
 1. Open `https://app.slack.com/client/<team-id>/<channel-id>` for the lane's QA
    channel and take a snapshot to confirm the signed-in actor and channel.
-2. To mention an Agent or Chickpea, click the composer, type `@` and the name,
-   wait about 1.5 s for autocomplete, press Enter to insert the mention token,
-   then type the message and press Enter. Confirm the posted message shows a
-   linked mention, not plain text.
+2. To mention an Agent or Chickpea, click the composer, then its "Mention
+   someone" button (a typed `@` is often swallowed when text is inserted by a
+   tool), type the name, wait about 1.5 s for autocomplete, and press Enter to
+   insert the mention token. Before sending, confirm the draft holds a
+   `ts-mention` element; if it does not, clear the draft instead of sending.
+   Then type the message and press Enter. A message posted without the token
+   reaches no Agent, so its silence proves nothing.
 3. Read the reply thread by navigating to
    `https://app.slack.com/client/<team-id>/<channel-id>/thread/<channel-id>-<message-ts>`
    instead of clicking the reply counter. Poll the thread every 10 s up to the
@@ -256,7 +259,10 @@ and the Slack web client:
 - Run the guarded lane deploy as one plain command,
   `CHICKPEA_DEPLOY_TARGET=<alias> npm run verify:host -- --wait-ms 300000 npm run deploy`
   (`deploy:sandbox` on a sandbox-profile lane). It serializes the build with
-  the host's other expensive checks and matches the operator allow rules. To
+  the host's other expensive checks and matches the operator allow rules.
+  Before building it refuses stale dependencies and a core deploy over a lane
+  that serves the sandbox profile, naming the command to run instead; after
+  reconciling it writes the serving version's telemetry receipt. To
   deploy a sibling worktree's candidate, add `-- --worktree <absolute path>`
   instead of `cd <worktree> &&`; the wrapper re-runs that checkout's own
   wrapper from there. Do not chain anything in front of the command or
@@ -270,8 +276,8 @@ and the Slack web client:
 Amber, Cobalt and Violet use the shared gateway transport. The operator has no
 Slack token there, so an exact-message `conversations.replies` readback is
 unavailable. Use a visible readback from the signed-in client together with the
-Worker's finalization records from a bounded `wrangler tail --format json`
-attached before the action, and report the exact API readback as a gap. Probe
+Worker's finalization records from a bounded `npm run lane:tail -- <alias>`
+started before the action, and report the exact API readback as a gap. Probe
 builds that log API readbacks are a last resort. Each probe build costs a
 deploy and must be replaced by the clean candidate before any grading.
 

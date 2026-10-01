@@ -238,3 +238,21 @@ test('Wrangler profile and environment context are validated and forwarded to ev
     assert.equal(called, false);
   }
 });
+
+test('CLI takes exactly one of --target or --worker, and names an unknown lane', () => {
+  const both = spawnSync(process.execPath, ['scripts/verify-product-telemetry.mjs', '--worker', 'chickpea-amber-live', '--target', 'amber'], { encoding: 'utf8' });
+  assert.equal(both.status, 1);
+  assert.match(both.stderr, /--target <amber\|cobalt\|violet> \| --worker/u);
+  const neither = spawnSync(process.execPath, ['scripts/verify-product-telemetry.mjs'], { encoding: 'utf8' });
+  assert.equal(neither.status, 1);
+  const root = mkdtempSync(path.join(tmpdir(), 'chickpea-telemetry-target-'));
+  try {
+    const unknown = spawnSync(process.execPath, ['scripts/verify-product-telemetry.mjs', '--target', 'teal'], {
+      encoding: 'utf8', env: { ...process.env, CHICKPEA_ENVIRONMENT_ROOT: root },
+    });
+    assert.equal(unknown.status, 1);
+    assert.match(unknown.stderr, /No registered QA lane named teal|registry/iu);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

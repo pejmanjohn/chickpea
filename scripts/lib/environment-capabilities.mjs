@@ -201,6 +201,18 @@ async function readLiveWorker(workerName, runWrangler, providerContext, errors) 
   return result;
 }
 
+/**
+ * The live deploy profile of one Worker (`core`, `sandbox`, `mixed`, or
+ * `unknown` when Wrangler cannot answer). The guarded deploy reads this before
+ * it builds, so a profile mismatch is refused without a wasted build.
+ */
+export async function readLiveWorkerProfile(workerName, options = {}) {
+  const errors = [];
+  const providerContext = validateCapabilityProviderContext(options.providerContext);
+  const worker = await readLiveWorker(workerName, options.runWrangler ?? defaultWranglerRunner(options), providerContext, errors);
+  return { profile: worker.profile, liveVersion: worker.liveVersion, errors };
+}
+
 /** Same test as the guarded deploy's "The live Worker has the coding sandbox". */
 export function isSandboxBinding(binding) {
   return binding?.type === 'durable_object_namespace'

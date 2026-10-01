@@ -141,10 +141,12 @@ independent cases and record the rest as blocked.
    graded required variants. See the [fixture inventory](environments.md#fixture-inventory).
    Start phase receipts for setup, lane/host/browser/human waits, diagnosis,
    observation, and cleanup. Missing measurements stay unknown.
-   Before synthetic actions on a deployed target, run the serving-version
-   [telemetry isolation check](environments.md#product-telemetry-isolation) and
-   attach its private receipt to the target evidence. This includes disposable
-   fresh-install fixtures before their first Slack connection.
+   Before synthetic actions on a deployed target, attach the serving version's
+   [telemetry isolation receipt](environments.md#product-telemetry-isolation):
+   the guarded lane deploy writes it and prints its path, and
+   `npm run verify:telemetry -- --target <alias>` produces it for a lane you did
+   not deploy. This includes disposable fresh-install fixtures before their
+   first Slack connection.
 4. Run the selected offline checks serially with `verify:regression --record
    <private-run.json>`. For each attended case, record `begin`, act once, then
    use the typed `finish` command with real readbacks. Register exact owned resources and fixture

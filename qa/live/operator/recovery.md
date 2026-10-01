@@ -95,8 +95,13 @@ Separate action completion, first authoritative observation, and notebook entry
 time. An operator's delayed recording cannot establish a slow model response.
 
 Use the owning terminal and Local Explorer for local workerd. On the resolved
-deployed Worker, use a bounded historical query or attach a 30–60 second tail
-before an authorized reproduction and stop it afterward. Wrangler tail emits
+deployed Worker, use a bounded historical query, or start
+`npm run lane:tail -- <alias> --out <private file> --minutes <N>` as one
+background command before an authorized reproduction. It reattaches after a
+deploy replaces the version, restarts after ten silent minutes, records each
+attach, exit and restart in `<file>.events`, and stops at its deadline, so it
+never outlives the run; stop it early with an interrupt. Three attaches in a row
+that exit with no output end it with `TAIL_NOT_ATTACHING`; read `<file>.err`. Wrangler tail emits
 pretty-printed objects, not necessarily JSONL. A repeating rejected delivery-lease
 metric means the run cannot take the thread lease; record the prior owner and
 triggering message. Do not send another request to unstick it.

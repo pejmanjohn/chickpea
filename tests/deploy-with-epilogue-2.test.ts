@@ -202,7 +202,17 @@ test('Phase 1 deploy reconciles live version before receipt and suppresses setup
   });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(existsSync(receiptPath), true);
-  assert.match(commands(harness.logPath).at(-1) ?? '', /^environment-complete:deployed-version$/);
+  const log = commands(harness.logPath);
+  const completeAt = log.indexOf('environment-complete:deployed-version');
+  assert.ok(completeAt >= 0, 'the claimed deployment is reconciled');
+  assert.equal(log[completeAt + 1], `telemetry:chickpea-amber-live:${'a'.repeat(32)}`, 'then the deploy checks telemetry isolation for the serving Worker, on the pinned account');
+  const receiptLine = log[completeAt + 2] ?? '';
+  const evidence = path.join(harness.root, 'no-lane-registry', 'amber', 'evidence');
+  assert.ok(receiptLine.startsWith(`telemetry-receipt:${evidence}/telemetry-deployed-version-`), receiptLine);
+  assert.match(receiptLine, /-\d{4}-\d{2}-\d{2}T[\d-]+Z\.json$/);
+  const telemetryReceipt = receiptLine.slice('telemetry-receipt:'.length);
+  assert.equal(JSON.parse(readFileSync(telemetryReceipt, 'utf8')).status, 'passed');
+  assert.match(result.stdout, /Telemetry isolation verified for the serving version; receipt /);
   assert.doesNotMatch(result.stdout, /#setup=|PRIVATE SETUP LINK|PRIVATE SETUP PATH/);
   const redirect = JSON.parse(readFileSync(path.join(harness.root, '.wrangler/deploy/config.json'), 'utf8'));
   const artifact = JSON.parse(readFileSync(path.resolve(harness.root, '.wrangler/deploy', redirect.configPath), 'utf8'));
@@ -1084,4 +1094,53 @@ test('--worktree runs the named checkout\'s own wrapper from that checkout and s
   const dangling = runHarness(harness, ['--worktree'], {});
   assert.equal(dangling.status, 2);
   assert.match(dangling.stderr, /needs an absolute checkout path/);
+});
+
+
+test('a claimed lane deploy reports a failed telemetry receipt as a failed deploy, after reconciling', (context) => {
+  const harness = createHarness();
+  context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+  writeCutoverArtifact(harness, { target: 'amber', databaseId: 'test-database-id' });
+  const result = runHarness(harness, ['--skip-build'], {
+    CHICKPEA_DEPLOY_TARGET: 'amber',
+    CHICKPEA_DEPLOY_AUTH_DB_ID: 'test-database-id',
+    CHICKPEA_DEPLOY_SCHEMA_GENERATION: 'd1:0002_mcp_oauth;do:v9',
+    DEPLOY_TEST_WORKER_EXISTS: '1',
+    DEPLOY_TEST_SECRET_LIST: JSON.stringify([
+      { name: 'CHICKPEA_AUTH_SECRET' },
+      { name: 'CHICKPEA_CREDENTIAL_KEY_CURRENT_ID' },
+      { name: 'CHICKPEA_CREDENTIAL_KEY_KEY_V1' },
+    ]),
+    DEPLOY_TEST_TELEMETRY_STATUS: 'failed',
+  });
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /Claimed environment deployment reconciled/);
+  assert.match(result.stderr, /Telemetry isolation failed \(UNSAFE_SERVING_VERSION\)/);
+  assert.match(result.stderr, /Do not send synthetic Slack traffic/);
+  const receiptLine = commands(harness.logPath).find((entry) => entry.startsWith('telemetry-receipt:')) ?? '';
+  assert.equal(JSON.parse(readFileSync(receiptLine.slice('telemetry-receipt:'.length), 'utf8')).status, 'failed', 'the failed receipt is kept as evidence');
+});
+
+test('a claimed lane deploy refuses stale dependencies and a core deploy over a sandbox lane before building', (context) => {
+  const stale = createHarness();
+  const sandbox = createHarness();
+  context.after(() => {
+    for (const harness of [stale, sandbox]) rmSync(harness.root, { recursive: true, force: true });
+  });
+  const staleRun = runHarness(stale, [], {
+    CHICKPEA_DEPLOY_TARGET: 'amber',
+    DEPLOY_TEST_STALE_DEPENDENCIES: JSON.stringify([{ name: 'fast-uri', locked: '3.1.8', installed: '3.1.7' }]),
+  });
+  assert.equal(staleRun.status, 1);
+  assert.match(staleRun.stderr, /STALE_DEPENDENCIES: .*fast-uri 3\.1\.7 \(locked 3\.1\.8\)/);
+  assert.match(staleRun.stderr, /Nothing was built or changed/);
+  assert.equal(commands(stale.logPath).some((entry) => entry.startsWith('npm:') || entry.startsWith('wrangler:')), false, 'no build and no Wrangler call');
+
+  const sandboxRun = runHarness(sandbox, [], { CHICKPEA_DEPLOY_TARGET: 'amber', DEPLOY_TEST_LIVE_PROFILE: 'sandbox' });
+  assert.equal(sandboxRun.status, 1);
+  assert.match(sandboxRun.stderr, /serves the sandbox profile, and this command would deploy the core profile/);
+  assert.match(sandboxRun.stderr, /CHICKPEA_DEPLOY_TARGET=amber npm run verify:host -- --wait-ms 300000 npm run deploy:sandbox/);
+  const log = commands(sandbox.logPath);
+  assert.ok(log.includes('live-profile:chickpea-amber'), 'the live profile is read from the claimed registration');
+  assert.equal(log.some((entry) => entry.startsWith('npm:')), false, 'refused before the build');
 });

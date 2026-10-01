@@ -444,6 +444,36 @@ if (guardedSandboxDeploy) {
     process.exit(1);
   }
 }
+// A claimed QA lane gets two cheap checks before the build: dependencies that
+// match the lockfile (a stale install builds a candidate nobody reviewed), and
+// a deploy profile that matches the live Worker (a core deploy over a sandbox
+// lane is refused after the build anyway; refuse it before spending one).
+if (selectedEnvironmentTarget && !skipBuild && !reuseWorkersBuildArtifact) {
+  try {
+    const { lockfileDrift, staleDependenciesMessage } = await import('./lib/installed-dependencies.mjs');
+    const drift = lockfileDrift(projectRoot);
+    if (drift.length) throw new Error(staleDependenciesMessage(drift, 'Nothing was built or changed.'));
+    const workerName = initialEnvironmentPreflight.registration.workerName;
+    if (deploymentProfile === 'core' && !explicitCoreProfile) {
+      const { readLiveWorkerProfile } = await import('./lib/environment-capabilities.mjs');
+      const live = await readLiveWorkerProfile(workerName, { providerContext: deploymentResourceArgs() });
+      if (live.profile === 'unknown') {
+        process.stdout.write(`! Could not read ${workerName}'s live deploy profile (${live.errors.join(', ') || 'no answer'}); ` +
+          'the post-build check still refuses a core deploy over a sandbox Worker.\n');
+      }
+      if (live.profile === 'sandbox' || live.profile === 'mixed') {
+        throw new Error(
+          `Claimed lane ${selectedEnvironmentTarget} serves the sandbox profile, and this command would deploy the core profile. ` +
+          `Run \`CHICKPEA_DEPLOY_TARGET=${selectedEnvironmentTarget} npm run verify:host -- --wait-ms 300000 npm run deploy:sandbox\` instead. ` +
+          'Nothing was built or changed.',
+        );
+      }
+    }
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  }
+}
 if (!skipBuild && !reuseWorkersBuildArtifact) buildCloudflareArtifact();
 
 function sortedUnique(values) {
@@ -1752,6 +1782,39 @@ child.on('close', async (code) => {
     process.stdout.write('\n✔ Upgrade deployment is ready. Existing setup authority preserved.\n');
   } else if (selectedEnvironmentTarget) {
     process.stdout.write('\n✔ Claimed environment deployment reconciled.\n');
+    // The skill requires a telemetry isolation receipt for the serving version
+    // before any synthetic Slack action. Produce it here, so a verifier never
+    // has to resolve the Worker and account by hand or act before it exists.
+    try {
+      const telemetry = await import('./lib/product-telemetry-preflight.mjs');
+      // One receipt per check: a re-deploy can serve the same version id again.
+      const receiptPath = path.join(finalEnvironmentPreflight.registration.evidenceRoot,
+        `telemetry-${deployedVersionId}-${new Date().toISOString().replace(/[:.]/g, '-')}.json`);
+      let receipt;
+      try {
+        receipt = await telemetry.verifyProductTelemetry({
+          worker: builtArtifact.config.name,
+          ...(checkedAccount?.accountId ? { accountId: checkedAccount.accountId } : {}),
+          providerContext: deploymentResourceArgs(),
+          projectRoot,
+        });
+      } catch (error) {
+        if (!(error instanceof telemetry.ProductTelemetryPreflightError)) throw error;
+        receipt = error.receipt;
+      }
+      telemetry.writeProductTelemetryReceipt(receiptPath, receipt, projectRoot);
+      if (receipt.status === 'passed') {
+        process.stdout.write(`✔ Telemetry isolation verified for the serving version; receipt ${receiptPath}\n`);
+      } else {
+        process.stderr.write(`✖ Telemetry isolation failed (${receipt.failure?.code ?? 'unknown'}); receipt ${receiptPath}. ` +
+          'Do not send synthetic Slack traffic to this lane until it passes.\n');
+        process.exitCode = 1;
+      }
+    } catch (error) {
+      process.stderr.write(`✖ Telemetry isolation was not checked: ${error instanceof Error ? error.message : String(error)}. ` +
+        `Run \`npm run verify:telemetry -- --target ${selectedEnvironmentTarget}\` before any synthetic Slack traffic.\n`);
+      process.exitCode = 1;
+    }
     if (finalEnvironmentPreflight?.setupFlow?.proven === false) {
       process.stdout.write(
         '! Setup flow unproven for this revision: the first-run install sources '
