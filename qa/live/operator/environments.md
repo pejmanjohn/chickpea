@@ -75,7 +75,11 @@
    unavailable other lane whose recorded baseline is missing or invalid, so
    its fingerprints cannot stand in. Never print
    the token. Never use a bare/default deploy to reach a QA lane. Preserve
-   source/claim fences. Verification does not imply landing on main.
+   source/claim fences. Verification does not imply landing on main. To deploy
+   a sibling worktree's candidate (a repair batch), run the same command from
+   your own checkout with `-- --worktree <absolute path>`; the wrapper re-runs
+   that checkout's own wrapper from there, so no `cd <worktree> &&` chaining
+   is needed.
 
    Standing provider keys come from the operator's lane secrets file,
    `~/.chickpea/qa-secrets.env` (override the path with

@@ -1049,3 +1049,39 @@ test('a core deploy refuses to silently remove a live coding sandbox', (context)
   });
   assert.equal(removed.status, 0, removed.stderr);
 });
+
+test('--worktree runs the named checkout\'s own wrapper from that checkout and strips the flag', (context) => {
+  const harness = createHarness();
+  const other = mkdtempSync(path.join(tmpdir(), 'chickpea-deploy-other-'));
+  context.after(() => {
+    rmSync(harness.root, { recursive: true, force: true });
+    rmSync(other, { recursive: true, force: true });
+  });
+  mkdirSync(path.join(other, 'scripts'), { recursive: true });
+  writeFileSync(path.join(other, 'scripts', 'deploy-with-epilogue.mjs'),
+    "process.stdout.write(JSON.stringify({ cwd: process.cwd(), args: process.argv.slice(2), profile: process.env.CHICKPEA_DEPLOY_PROFILE ?? null }) + '\\n');\nprocess.exit(7);\n");
+
+  const forwarded = runHarness(harness, ['--worktree', other, '--skip-build'], { CHICKPEA_DEPLOY_TARGET: 'amber', CHICKPEA_DEPLOY_PROFILE: 'sandbox' });
+  assert.equal(forwarded.status, 7, forwarded.stderr);
+  const echoed = JSON.parse(forwarded.stdout.trim().split('\n').pop() ?? '{}') as { cwd: string; args: string[]; profile: string | null };
+  assert.equal(realpathSync(echoed.cwd), realpathSync(other), 'the target wrapper runs from its own checkout');
+  assert.deepEqual(echoed.args, ['--skip-build'], 'the flag is consumed, the rest is forwarded');
+  assert.equal(echoed.profile, 'sandbox', 'the deployment profile travels in the environment');
+  assert.equal(existsSync(harness.logPath), false, 'the calling checkout builds, inspects, and uploads nothing');
+
+  const inline = runHarness(harness, [`--worktree=${other}`], {});
+  assert.equal(inline.status, 7, inline.stderr);
+
+  const relative = runHarness(harness, ['--worktree', 'elsewhere'], {});
+  assert.equal(relative.status, 2);
+  assert.match(relative.stderr, /--worktree must be absolute/);
+  const missing = runHarness(harness, ['--worktree', path.join(other, 'nope')], {});
+  assert.equal(missing.status, 2);
+  assert.match(missing.stderr, /not a Chickpea checkout/);
+  const self = runHarness(harness, ['--worktree', harness.root, '--dry-run'], { CHICKPEA_DEPLOY_TARGET: 'production' });
+  assert.equal(self.status, 0, `the same checkout runs locally: ${self.stderr}`);
+  assert.equal(self.stdout.includes('"cwd"'), false, 'no forwarding to itself');
+  const dangling = runHarness(harness, ['--worktree'], {});
+  assert.equal(dangling.status, 2);
+  assert.match(dangling.stderr, /needs an absolute checkout path/);
+});

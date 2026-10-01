@@ -195,9 +195,11 @@ Recheck actual workspace usage in Slack before provisioning more resources.
 
 ## Safety and evidence contract
 
-1. Use Computer Use for every Slack or browser UI action and observation.
-   Authorized provider APIs/CLI may set up, inventory, deploy, attest, and
-   tear down infrastructure. They cannot perform or score end-user behavior.
+1. Drive every Slack or Admin UI action and observation through the lane
+   browser daemon (`chrome-<lane>`, see the operator skill's hosts.md);
+   Computer Use is the fallback. Authorized provider APIs/CLI may set up,
+   inventory, deploy, attest, and tear down infrastructure. They cannot
+   perform or score end-user behavior.
 2. Respect the actual tool's execution policy and the user's authorized scope.
    Invocation of the verification skill authorizes its declared QA actions in
    both browser and terminal, including consent and confirmation dialogs. Do

@@ -61,7 +61,11 @@ CAPTCHA, billing, or a tool-enforced approval. Use existing authenticated sessio
 and approved credential mechanisms without recording secrets. Do not bypass a
 tool denial. Name the exact blocked action and reason, ask once, retain the
 pending tab, and continue independent checks. Report blocked checks as
-blocked rather than passing them or repeatedly asking the same question.
+blocked rather than passing them or repeatedly asking the same question. Never
+change permission modes or settings to get past a denial, and never stop
+processes by pattern across the host. When the maintainer has instructed a
+shared or production deploy in this session, run it here as one plain command
+instead of handing it back.
 
 ## Node baseline
 
@@ -77,6 +81,15 @@ first check and `npm run build` before a full suite. A stale `node_modules` (for
 example a Flue version behind the lockfile) or a stale git-ignored `dist-cf/`
 produces false failures that look pre-existing.
 
+The maintainer's shell profiles put the pinned Node first for login and
+interactive shells (a block that reads `.nvmrc` and prefers that nvm build), so
+`node -v` in a Claude Code or Codex session already matches. Check it once at
+kickoff. If it does not match, report a host setup gap and continue with the
+checks that do not need the exact pin; never prefix commands with
+`export PATH=...` or `source nvm.sh`, because a chained guarded command reaches
+the permission classifier instead of its allow rule (see
+[hosts.md](hosts.md#slack-and-permission-notes-for-any-browser)).
+
 ## Kickoff preflight
 
 Before claiming a lane, gather every human-dependent prerequisite in one pass,
@@ -86,10 +99,13 @@ so a run does not stall mid-journey while the maintainer is away:
    ([choose a lane by capability](environments.md#choose-a-lane-by-capability)):
    deploy profile, provider keys, image role, default model, and registered
    connector fixtures must cover every selected case.
-2. Confirm the lane's browser is signed in to its Slack workspace and Admin:
-   the per-lane browser server when configured, otherwise exactly one browser
-   connected to the Chrome extension (see [hosts.md](hosts.md#lane-browsers)).
-   Request any Slack desktop computer-use grant now if it will be used.
+2. Run `npm run lane:browser -- status all` and start a stopped lane daemon
+   with `npm run lane:browser -- start <lane>`; then open the lane's QA channel
+   and Admin through `chrome-<lane>` to confirm the profile is signed in (see
+   [hosts.md](hosts.md#lane-browsers)). A `held` profile belongs to another
+   session; ask it to quit. Fall back to the host's own browser tool only when
+   no daemon can start. Request any Slack desktop computer-use grant now if it
+   will be used.
 3. Confirm the required credential fixtures exist on that lane (see
    [fixtures.md](fixtures.md#credentials)). Never ask for a secret in chat.
 4. Name the checks that only a human can do, such as a real-phone view, and

@@ -47,38 +47,61 @@ action evidence and measured browser/human wait time in the existing run record.
 
 ## Lane browsers
 
-Use a dedicated browser per lane, not a shared extension. Each lane has a
-Chrome DevTools MCP server named `chrome-amber`, `chrome-cobalt` or
-`chrome-violet`, configured for both hosts: Claude calls its tools as
-`mcp__chrome-<lane>__*`, and Codex uses the same server names from its own
-MCP configuration. Each server drives one persistent Chrome profile that stays
-signed in to that lane's Slack workspace and Admin. Use only the claimed lane's
-server. Its pages are real foreground targets, so hidden-tab rendering,
-cross-browser routing and focus problems do not apply, and the server's dialog
-tool handles native `confirm()` dialogs. Different lanes run in parallel
-without contention. Chrome locks a profile to one process, so never drive one
-lane's profile from two sessions at once. The claim does not release the
-browser: the session whose server launched it keeps the profile until it quits
-that Chrome, even after it releases its claim. When `chrome-<lane>` reports the
-browser is already running, find that session and ask it to quit its own lane
-Chrome. Never stop another session's browser yourself. Quit your own lane
-Chrome when your run ends.
+Use a dedicated browser per lane, not a shared extension. Each lane's Chrome
+is a daemon: one long-lived, windowed Chrome on that lane's profile, signed in
+to the lane's Slack workspace and Admin, listening on a fixed local debugging
+port (amber 9331, cobalt 9332, violet 9333). Every session's `chrome-amber`,
+`chrome-cobalt` or `chrome-violet` MCP server attaches to that daemon with
+`--browserUrl`. The server launches nothing and holds no profile lock, so any
+number of sessions drive the same lane in their own tabs, and a finished
+session has nothing to quit. Claude calls the tools as `mcp__chrome-<lane>__*`;
+Codex exposes the same servers as `mcp__chrome_<lane>__*` (underscores) and
+its calls take a `pageId`. Use only the claimed lane's server. Its pages are
+real foreground targets, so hidden-tab rendering, cross-browser routing and
+focus problems do not apply, and the server's dialog tool handles native
+`confirm()` dialogs. Different lanes run in parallel without contention.
 
-Host configuration requirements (outside the repository):
+At kickoff run `npm run lane:browser -- status all`:
 
-- Launch Chrome without Puppeteer's default mock keychain
-  (`--ignoreDefaultChromeArg=--use-mock-keychain` and
-  `--ignoreDefaultChromeArg=--password-store=basic`). With the mock keychain,
-  Chrome on macOS cannot decrypt the profile's cookies and drops them, which
-  signs the profile out.
-- Pass `--chromeArg=--hide-crash-restore-bubble` so an interrupted run never
-  leaves a "Restore pages?" prompt.
-- The maintainer signs each profile in once with that window closed afterward,
-  because the server cannot open a profile another Chrome window holds. If a
-  profile is signed out, ask for that one-time sign-in during the kickoff
-  preflight. Google may refuse sign-in inside an automated browser, so use
-  Slack's email code; treat a Google OAuth consent that refuses automation as a
-  human-only step.
+- `running`: attach and go. Signed-in state lives in the profile, so a
+  restarted daemon is still signed in.
+- `stopped`: run `npm run lane:browser -- start <lane>`. It is idempotent and
+  reports a daemon that already answers. In Codex, run it outside the command
+  sandbox (escalated) if the sandbox blocks the launch or the local port. A tool call before that fails with
+  "Could not connect to Chrome. Check if Chrome is running."; that means start
+  the daemon, not that the lane is broken.
+- `held`: a browser from the earlier launch-per-server mode locks the profile
+  and answers on no port. It belongs to the session whose server launched it.
+  Ask that session to quit it; never stop another session's browser yourself.
+  `stop` refuses a browser it did not start.
+
+Leave the daemon running when a run ends; other sessions share it. Stop it
+(`npm run lane:browser -- stop <lane>`) only to sign the profile in again or
+when the maintainer asks.
+
+Host configuration (outside the repository): the user-scope MCP entries and
+`~/.codex/config.toml` run exactly what
+`npm run lane:browser -- attach <lane> --dry-run` prints, which is
+`chrome-devtools-mcp` with `--browserUrl http://127.0.0.1:<port>`, one
+`--workspace` per private evidence folder (`verification`, `qa-runs` and
+`reviews` beside the profile root, plus the temp directories),
+`--screenshotFormat jpeg`, `--screenshotMaxWidth 1400`,
+`--redactNetworkHeaders` and `--no-usage-statistics`. Without `--workspace`
+the server refuses `take_screenshot` and `take_snapshot` paths outside the OS
+temp directory. The profile root's parent itself is never a workspace,
+because it holds the lane secrets file and exported cookie payloads. The
+daemon commands use `--root`, else `CHICKPEA_LANE_CHROME_ROOT`, else
+`~/.chickpea/browsers` when it exists, so they work from any shell. Each
+daemon writes an owner-only log beside its record
+(`<root>/<lane>.daemon.log`). Seeding, `import` and `export` refuse while a
+daemon or another browser has the profile open; stop the daemon first. `start` launches Chrome itself with `--remote-debugging-port`,
+`--hide-crash-restore-bubble` and `--no-first-run`, and on macOS with the real
+keychain, so cookies survive and no "Restore pages?" bubble appears. The
+maintainer signs each profile in once, in the daemon's own window. If a
+profile is signed out, ask for that one-time sign-in during the kickoff
+preflight. Google may refuse sign-in inside an automated browser, so use
+Slack's email code; treat a Google OAuth consent that refuses automation as a
+human-only step.
 
 Proven Slack recipe for these servers:
 
@@ -93,10 +116,10 @@ Proven Slack recipe for these servers:
    instead of clicking the reply counter. Poll the thread every 10 s up to the
    attempt's observation deadline.
 4. Read Admin in the same profile at the lane origin. Close only the pages the
-   run opened. Never kill the lane Chrome process.
+   run opened. Leave the daemon running for the next session.
 
-The Claude-in-Chrome extension remains the fallback when lane browsers are not
-configured.
+The Claude-in-Chrome extension (Claude) or Codex's own browser tool remains the
+fallback only when a lane daemon cannot be started.
 
 ### Cloud sessions
 
@@ -110,15 +133,17 @@ inert on a host that never set it. Set the variable in the cloud environment
 (for example `/root/.chickpea/browsers`); the launcher creates the root and one
 profile directory per lane under it with owner-only permissions. Start the
 session at the repository root, where the relative script path resolves. On a
-Mac whose user configuration already defines these servers, decline the
-project-server prompt: an approved project entry replaces the user-scope one
-even when the variable is unset, and it would fail instead of driving the lane
-profile. Claude Code then lists the duplicate definition and the unset
-variable as diagnostics, which is expected. `verify:hygiene` accepts
+Mac the project entry and the user-scope entry end up in the same place: both
+attach to the lane daemon, and `serve` also starts it when it is stopped. An
+approved project entry replaces the user-scope one and needs
+`CHICKPEA_LANE_CHROME_ROOT` set (the maintainer's user settings set it);
+without the variable it fails to start, and Claude Code lists the duplicate
+definition as a diagnostic, which is expected. `verify:hygiene` accepts
 `.mcp.json` only in exactly this shape.
 
-The launcher runs `chrome-devtools-mcp` with the flags listed above, adding
-`--executablePath` for the environment's Chromium
+`serve` seeds the profile when a new cookie payload is present, starts the
+lane daemon unless one already answers on its port, and attaches
+`chrome-devtools-mcp` to it. The daemon is the environment's Chromium
 (`CHICKPEA_LANE_CHROME_EXECUTABLE`, default `/opt/pw-browsers/chromium`; a
 Playwright browsers directory or build directory resolves to its binary),
 `--headless` whenever Linux has no display (`CHICKPEA_LANE_CHROME_HEADLESS=0`
@@ -128,8 +153,14 @@ macOS keychain exemption above does not apply there. The server comes from
 `node_modules/chrome-devtools-mcp` when it is installed, otherwise from
 `npx chrome-devtools-mcp@1.10.1` (`CHICKPEA_LANE_CHROME_SERVER` names another
 spec or an absolute entry point).
-`npm run lane:browser -- serve <lane> --dry-run` prints the resolved plan and
-seed status as JSON without launching anything.
+`npm run lane:browser -- serve <lane> --dry-run` prints the attach plan, the
+daemon state and launch arguments, and the seed status as JSON without
+starting the daemon; a new cookie payload is still seeded, which launches a
+short headless Chromium. `serve` seeds, may wait up to 20 s for the daemon,
+and may install the server through npx before it answers the MCP handshake,
+so install `chrome-devtools-mcp` from the lockfile or raise the host's MCP
+startup timeout (`MCP_TIMEOUT` in Claude Code) if the server is reported as
+failed to start.
 
 Network: the environment must allow `slack.com` and `*.slack.com` (the web
 client, `edgeapi`, `files`), `*.slack-edge.com` (the client's static assets,
@@ -217,13 +248,22 @@ and the Slack web client:
 - When the auto-mode permission classifier blocks a declared QA action (a
   lane deploy, a `wrangler rollback` to the lane's receipt version, a product
   UI write), name the lane alias and the declared action, and ask once. Never
-  route around the block.
-- Run the guarded lane deploy as its own command, exactly
-  `CHICKPEA_DEPLOY_TARGET=<alias> npm run deploy`, so an operator allow rule
-  for that command matches. Chaining it after `cd`, `export PATH=...` or other
-  commands, or redirecting its output, sends it to the classifier instead. The
-  login shell's `node` must already satisfy `.nvmrc`; report a lower version
-  as a host setup gap rather than prefixing the deploy.
+  route around the block: do not change permission modes or settings to get
+  past it, and never stop processes by pattern across the host (`pkill -f`),
+  which can kill another worktree's gate. When the maintainer has instructed a
+  shared or production deploy in this session, run it here as one plain
+  command rather than handing the command back.
+- Run the guarded lane deploy as one plain command,
+  `CHICKPEA_DEPLOY_TARGET=<alias> npm run verify:host -- --wait-ms 300000 npm run deploy`
+  (`deploy:sandbox` on a sandbox-profile lane). It serializes the build with
+  the host's other expensive checks and matches the operator allow rules. To
+  deploy a sibling worktree's candidate, add `-- --worktree <absolute path>`
+  instead of `cd <worktree> &&`; the wrapper re-runs that checkout's own
+  wrapper from there. Do not chain anything in front of the command or
+  redirect its output: `export PATH=...`, `source nvm.sh` or `cd` send it to
+  the classifier instead of the allow rule. The host shells already put the
+  pinned Node first (SKILL.md, Node baseline); check `node -v` once at kickoff
+  and report a mismatch as a host setup gap rather than prefixing commands.
 
 ## Slack evidence on gateway lanes
 
@@ -234,6 +274,23 @@ Worker's finalization records from a bounded `wrangler tail --format json`
 attached before the action, and report the exact API readback as a gap. Probe
 builds that log API readbacks are a last resort. Each probe build costs a
 deploy and must be replaced by the clean candidate before any grading.
+
+## Host adapter table
+
+The skill is written once for both hosts. Where a tool name differs, use this
+table; a row's "Codex" entry is the equivalent, not a weaker substitute.
+
+| The skill says | Claude Code | Codex |
+| --- | --- | --- |
+| Lane browser tools | `mcp__chrome-<lane>__*` | `mcp__chrome_<lane>__*`; every call takes a `pageId` |
+| Browser fallback when no daemon can start | Claude-in-Chrome extension, then computer use | Codex's own browser tool (`cua`), then its computer use |
+| Arrange a wake before you yield | the monitor tool, or a background shell `until` loop with a deadline | nothing re-invokes a finished turn: keep the turn open and poll in-turn (background exec sessions) up to the deadline, or end with an explicit blocked status |
+| Ask the maintainer once, keep working | `AskUserQuestion` | `request_user_input_async` |
+| Delegate a repair or a review | `Agent` (worktree isolation) and `SendMessage` between sessions | `spawn_agent`; cross-thread messages. A delegated reviewer must not delegate again, and must await any test it starts |
+| A declared QA action is blocked | the auto-mode classifier; allow rules; ask once | Codex's approval policy; ask once |
+| Node | the session inherits the maintainer's shell, pinned Node first | the login shell, pinned Node first; nested `zsh -c` shells inherit it |
+| Skill loading | `/chickpea-live-verification` | `$chickpea-live-verification`; read the canonical [SKILL.md](SKILL.md) in full before the supporting docs |
+| Tools configured but not callable | `/mcp` (human) reconnects a failed server | `codex mcp login`; a configured server may not be callable until then, so the kickoff check tests a call, not the config |
 
 ## Older workflow compatibility
 

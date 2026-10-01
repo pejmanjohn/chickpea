@@ -22,6 +22,7 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -78,6 +79,31 @@ const runnerRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '.
 // use the current runner's reviewed deployment tooling, including recovery.
 const wranglerBin = path.join(runnerRoot, 'node_modules', 'wrangler', 'bin', 'wrangler.js');
 const cliArgs = process.argv.slice(2);
+// `--worktree <path>` deploys another checkout's candidate through that
+// checkout's own reviewed wrapper, from that checkout, so a verifier that
+// batches repairs in a sibling worktree runs one plain command instead of
+// `cd <worktree> && ...`. The flag never applies here; the target's script
+// sees the remaining arguments and the same environment.
+{
+  const index = cliArgs.findIndex((arg) => arg === '--worktree' || arg.startsWith('--worktree='));
+  if (index >= 0) {
+    const inline = cliArgs[index].startsWith('--worktree=');
+    const requested = inline ? cliArgs[index].slice('--worktree='.length) : cliArgs[index + 1];
+    const consumed = inline ? 1 : 2;
+    if (!requested || requested.startsWith('--')) { console.error('--worktree needs an absolute checkout path.'); process.exit(2); }
+    if (!path.isAbsolute(requested)) { console.error(`--worktree must be absolute, not ${requested}.`); process.exit(2); }
+    const target = path.resolve(requested);
+    const script = path.join(target, 'scripts', 'deploy-with-epilogue.mjs');
+    if (!existsSync(script)) { console.error(`${target} is not a Chickpea checkout (no scripts/deploy-with-epilogue.mjs).`); process.exit(2); }
+    cliArgs.splice(index, consumed);
+    if (realpathSync(target) !== realpathSync(runnerRoot)) {
+      const forwarded = spawnSync(process.execPath, [script, ...cliArgs], { cwd: target, stdio: 'inherit', env: process.env });
+      if (forwarded.error) console.error(`Could not run ${script}: ${forwarded.error.message}`);
+      if (forwarded.signal) process.kill(process.pid, forwarded.signal);
+      process.exit(forwarded.status ?? 1);
+    }
+  }
+}
 const deployArgs = cliArgs.filter((arg) => !['--skip-build', '--preflight-only'].includes(arg));
 const skipBuild = cliArgs.includes('--skip-build');
 const preflightOnly = cliArgs.includes('--preflight-only');
