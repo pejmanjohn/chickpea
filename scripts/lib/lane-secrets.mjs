@@ -17,7 +17,7 @@
  * Names and short fingerprints are reported; values never are.
  */
 import { createHash, randomBytes as nodeRandomBytes } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -205,6 +205,47 @@ export function ensureLaneSeedToken(target, { env = process.env, randomBytes = n
 }
 
 /** A short, non-reversible marker for comparing a key across lanes. */
+/** Replace or append `NAME=value`, keeping every other line as it was. */
+export function upsertSecretLine(text, name, value) {
+  if (!NAME.test(name)) throw new Error(`${LABEL}: "${name}" is not an upper-case name.`);
+  if (typeof value !== 'string' || !value || /[\r\n#\s]/u.test(value) || value.length > MAX_VALUE_LENGTH) {
+    throw new Error(`${LABEL}: the value for "${name}" must be one token with no spaces.`);
+  }
+  const line = `${name}=${value}`;
+  const pattern = new RegExp(`^(?:export\\s+)?${name}\\s*=.*$`, 'mu');
+  if (pattern.test(text)) return text.replace(pattern, () => line);
+  return `${text}${text === '' || text.endsWith('\n') ? '' : '\n'}${line}\n`;
+}
+
+/**
+ * Set one name in the lane secrets file and keep every other line. The new
+ * file must parse before it replaces the old one, and it is written owner-only
+ * through a temporary file and a rename. Values are never reported.
+ */
+export function setLaneSecret(name, value, { env = process.env, file = defaultLaneSecretsFile(env) } = {}) {
+  if (!path.isAbsolute(file)) throw new Error(`${LANE_SECRETS_FILE_ENV} must be an absolute path.`);
+  const directory = path.dirname(file);
+  if (!existsSync(directory)) mkdirSync(directory, { recursive: true, mode: 0o700 });
+  assertPrivatePath(directory, { directory: true, label: LABEL });
+  let before = '';
+  if (existsSync(file)) {
+    assertPrivatePath(file, { label: LABEL });
+    before = readFileSync(file, 'utf8');
+  }
+  const after = upsertSecretLine(before, name, value);
+  parseLaneSecrets(after);
+  if (Buffer.byteLength(after) > MAX_FILE_BYTES) throw new Error(`${LABEL} would exceed its size limit.`);
+  const temporary = `${file}.${process.pid}.tmp`;
+  try {
+    writeFileSync(temporary, after, { flag: 'wx', mode: 0o600 });
+    renameSync(temporary, file);
+  } catch (error) {
+    if (existsSync(temporary)) unlinkSync(temporary);
+    throw error;
+  }
+  return { file, name };
+}
+
 export function fingerprint(value) {
   return `sha256:${createHash('sha256').update(value).digest('hex').slice(0, 8)}`;
 }

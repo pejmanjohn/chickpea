@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
@@ -10,6 +10,8 @@ import { normalizeMessage, parseMessageLink, readMessage, readThread, readbackTo
 import { main, parseArguments } from '../scripts/lane-slack.mjs';
 // @ts-expect-error Executable helpers are JavaScript, shared with the CLI.
 import { checkReadback } from '../scripts/lib/kickoff-doctor.mjs';
+// @ts-expect-error Executable helpers are JavaScript, shared with the CLI.
+import { parseLaneSecrets, setLaneSecret, upsertSecretLine } from '../scripts/lib/lane-secrets.mjs';
 
 const TOKEN = 'xoxp-test-readback-token-value';
 
@@ -130,4 +132,62 @@ test('the kickoff doctor reports whether a lane has a working readback token', a
   assert.deepEqual(offline, { state: 'error', error: 'TypeError' });
   const html = await checkReadback({ lane: 'amber', registration: { workspaceId: 'T0LANE' }, entries, fetchImpl: async () => new Response('<html>', { status: 200 }) });
   assert.deepEqual(html, { state: 'error', error: 'SLACK_HTTP' });
+});
+
+test('a lane secret is set in place, keeping every other line, owner-only', (context) => {
+  assert.equal(upsertSecretLine('', 'AMBER__SLACK_READBACK_TOKEN', 'xoxp-1'), 'AMBER__SLACK_READBACK_TOKEN=xoxp-1\n');
+  const before = '# keys\nOPENAI_API_KEY=sk-x\nexport AMBER__SLACK_READBACK_TOKEN=old\nCOBALT__COMPOSIO_API_KEY=c';
+  assert.equal(upsertSecretLine(before, 'AMBER__SLACK_READBACK_TOKEN', 'xoxp-$&-2'), '# keys\nOPENAI_API_KEY=sk-x\nAMBER__SLACK_READBACK_TOKEN=xoxp-$&-2\nCOBALT__COMPOSIO_API_KEY=c');
+  assert.throws(() => upsertSecretLine('', 'AMBER__SLACK_READBACK_TOKEN', 'two words'), /one token with no spaces/);
+  const dir = mkdtempSync(path.join(tmpdir(), 'lane-secret-'));
+  context.after(() => rmSync(dir, { recursive: true, force: true }));
+  chmodSync(dir, 0o700);
+  const file = path.join(dir, 'qa-secrets.env');
+  writeFileSync(file, 'OPENAI_API_KEY=sk-x\n', { mode: 0o600 });
+  setLaneSecret('VIOLET__SLACK_READBACK_TOKEN', 'xoxp-violet', { file });
+  setLaneSecret('VIOLET__SLACK_READBACK_TOKEN', 'xoxp-violet-2', { file });
+  assert.deepEqual([...parseLaneSecrets(readFileSync(file, 'utf8')).entries()], [['OPENAI_API_KEY', 'sk-x'], ['VIOLET__SLACK_READBACK_TOKEN', 'xoxp-violet-2']]);
+  assert.equal(statSync(file).mode & 0o777, 0o600);
+  writeFileSync(file, 'BROKEN LINE\n', { mode: 0o600 });
+  assert.throws(() => setLaneSecret('VIOLET__SLACK_READBACK_TOKEN', 'xoxp-v', { file }), /unreadable line 1/);
+  assert.equal(readFileSync(file, 'utf8'), 'BROKEN LINE\n', 'a file that would not parse is left untouched');
+});
+
+test('store-token finds the lane app, reads its token, checks the workspace, and prints only a fingerprint', async () => {
+  const registry = { targets: {
+    amber: { workspaceId: 'T0AMBER', workspaceLabel: 'Chickpea Amber' },
+    cobalt: { workspaceId: 'T0COBALT', workspaceLabel: 'Chickpea Cobalt' },
+    violet: { workspaceId: 'T0VIOLET', workspaceLabel: 'Chickpea Violet' },
+  } };
+  const tokens: Record<number, string> = { 9331: 'xoxp-amber-secret', 9332: 'xoxp-cobalt-secret', 9333: '' };
+  const probePage = async ({ port, url }: { port: number, url: string }) => {
+    const label = { 9331: 'Chickpea Amber', 9332: 'Chickpea Cobalt', 9333: 'Chickpea Violet' }[port];
+    const team = { 9331: 'T0AMBER', 9332: 'T0COBALT', 9333: 'T0VIOLET' }[port];
+    if (url === 'https://api.slack.com/apps') return { extra: [
+      { href: '/apps/A0SHARED', row: `Chickpea ${label} A0SHARED Modern Publicly Distributed` },
+      { href: `/apps/A0${port}`, row: `Chickpea QA Readback ${label} A0${port} Modern Not distributed` },
+    ] };
+    return { extra: { team, app: `A0${port}`, token: tokens[port] || null } };
+  };
+  const fetchImpl = async (_url: string, init: any) => {
+    const token = init.headers.Authorization.replace('Bearer ', '');
+    const team = token.includes('amber') ? 'T0AMBER' : 'T0ELSEWHERE';
+    return new Response(JSON.stringify({ ok: true, team_id: team }), { status: 200 });
+  };
+  const written: [string, string][] = [];
+  let out = '', err = '';
+  const code = await main(['all', 'store-token'], {
+    env: {}, stdout: { write: (v: string) => { out += v; } }, stderr: { write: (v: string) => { err += v; } },
+    fetchImpl, readRegistry: () => registry, probePage, writeSecret: (name: string, value: string) => written.push([name, value]),
+  });
+  assert.equal(code, 1, 'one lane stored, two refused');
+  assert.deepEqual(written, [['AMBER__SLACK_READBACK_TOKEN', 'xoxp-amber-secret']]);
+  const stored = JSON.parse(out.trim());
+  assert.deepEqual({ lane: stored.lane, appId: stored.appId, workspace: stored.workspace }, { lane: 'amber', appId: 'A09331', workspace: 'Chickpea Amber' });
+  assert.match(stored.fingerprint, /^sha256:[0-9a-f]{8}$/);
+  assert.match(err, /cobalt: READBACK_WRONG_WORKSPACE/);
+  assert.match(err, /violet: READBACK_NOT_INSTALLED/);
+  assert.ok(![out, err].some((text) => /xoxp-/.test(text)), 'no token reaches the output');
+  assert.throws(() => parseArguments(['all', 'whoami']), /Choose a lane/);
+  assert.throws(() => parseArguments(['amber', 'store-token', 'extra']), /no other arguments/);
 });

@@ -216,10 +216,15 @@ Setting up a lane, once, is the maintainer's job, because it handles a token:
    api.slack.com/apps, choosing that workspace. Creating it inside the
    workspace keeps Slack's normal history limits; one app shared by several
    workspaces would be throttled.
-2. Install it to the workspace, then copy its User OAuth Token from
-   OAuth & Permissions.
-3. Add `<LANE>__SLACK_READBACK_TOKEN=<token>` to the lane secrets file. That
-   name is never uploaded to a Worker. Never paste the token into a chat.
+   If Slack's wizard ignores a pasted manifest, the app arrives as "Demo
+   App"; replace its manifest on the app's App Manifest page instead.
+2. Install it to the workspace from the app's OAuth & Permissions page.
+3. Run `npm run lane:slack -- <alias|all> store-token`. It reads the app's
+   user token from that page in the lane browser daemon, checks it against
+   the lane's workspace, and writes `<LANE>__SLACK_READBACK_TOKEN` to the lane
+   secrets file, printing only a fingerprint. That name is never uploaded to a
+   Worker. Copying the token into the file by hand works too; never paste it
+   into a chat.
 4. Run `npm run lane:slack -- <alias> whoami`; the kickoff doctor then shows
    the lane's readback as working.
 

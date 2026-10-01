@@ -153,3 +153,50 @@ export async function readHistory(call, { channel, oldest, latest, limit = 50 })
   const body = await call('conversations.history', { channel, oldest, latest, limit: Math.min(200, Math.max(1, limit)) });
   return { channel, messages: (body.messages ?? []).map(normalizeMessage) };
 }
+
+// ---------------------------------------------------------------------------
+// Storing a lane's token, run by the maintainer once per lane.
+//
+// The token is read from the readback app's own OAuth page in the lane's
+// browser daemon, checked against the lane's workspace, and written to the lane
+// secrets file. Only its fingerprint is ever reported.
+
+export const READBACK_APP_NAME = 'Chickpea QA Readback';
+
+/** Find this lane's readback app in the Slack app console, by name and workspace. */
+export async function findReadbackApp({ probePage, port, workspaceLabel }) {
+  const page = await probePage({
+    port, url: 'https://api.slack.com/apps',
+    extract: `[...document.querySelectorAll('a[href*="/apps/A"]')].map((a) => ({ href: a.getAttribute('href'), row: (a.closest('tr') || a).innerText.replace(/\\s+/g, ' ').trim() }))`,
+    settledWhen: (p) => Array.isArray(p.extra) && p.extra.length > 0,
+  });
+  const rows = Array.isArray(page.extra) ? page.extra : [];
+  const match = rows.find((row) => row.row.startsWith(`${READBACK_APP_NAME} ${workspaceLabel} `));
+  const appId = match?.href?.match(/\/apps\/(A[A-Z0-9]+)/u)?.[1];
+  if (!appId) fail('READBACK_APP_NOT_FOUND', `No "${READBACK_APP_NAME}" app for ${workspaceLabel} in this lane browser. Create it from the manifest first.`);
+  return appId;
+}
+
+/** Read the app's user token from its OAuth page; refuse a page for another workspace. */
+export async function readAppToken({ probePage, port, appId, teamId }) {
+  const page = await probePage({
+    port, url: `https://api.slack.com/apps/${appId}/oauth`,
+    extract: `(() => { const m = location.pathname.match(/app-settings\\/(T[A-Z0-9]+)\\/(A[A-Z0-9]+)\\/oauth/); const v = [...document.querySelectorAll('input')].map((i) => i.value || '').find((x) => /^xoxp-/.test(x)); return { team: m ? m[1] : null, app: m ? m[2] : null, token: v || null }; })()`,
+    settledWhen: (p) => Boolean(p.extra?.token),
+  });
+  const found = page.extra ?? {};
+  if (found.app !== appId || found.team !== teamId) fail('READBACK_APP_MISMATCH', 'The app page does not belong to this lane\'s workspace.');
+  if (!found.token) fail('READBACK_NOT_INSTALLED', 'The app has no user token yet. Install it to the workspace first.');
+  return found.token;
+}
+
+/** Find, read, check and store one lane's token. Returns only what is safe to print. */
+export async function storeLaneToken({ lane, registration, port, probePage, fetchImpl, writeSecret, fingerprint }) {
+  if (!registration?.workspaceId || !registration?.workspaceLabel) fail('LANE_NOT_REGISTERED', `${lane} has no registered workspace.`);
+  const appId = await findReadbackApp({ probePage, port, workspaceLabel: registration.workspaceLabel });
+  const token = await readAppToken({ probePage, port, appId, teamId: registration.workspaceId });
+  const who = await whoami(slackClient(token, fetchImpl ? { fetchImpl } : {}), registration.workspaceId);
+  if (who.matchesLane !== true) fail('READBACK_WRONG_WORKSPACE', 'The token reads a different workspace than this lane.');
+  writeSecret(`${lane.toUpperCase()}__${READBACK_TOKEN_NAME}`, token);
+  return { lane, stored: true, appId, workspace: registration.workspaceLabel, fingerprint: fingerprint(token) };
+}

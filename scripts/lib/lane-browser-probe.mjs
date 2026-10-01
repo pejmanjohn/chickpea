@@ -16,7 +16,7 @@ const STABLE_READS = 3;
  * @returns {Promise<{ url: string, title: string, text: string, settled: boolean }>}
  */
 export async function probePage({
-  port, url, settledWhen = () => true, timeoutMs = PROBE_TIMEOUT_MS,
+  port, url, settledWhen = () => true, timeoutMs = PROBE_TIMEOUT_MS, extract,
   fetchImpl = fetch, WebSocketImpl = globalThis.WebSocket, sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
 }) {
   const base = `http://127.0.0.1:${port}`;
@@ -47,7 +47,8 @@ export async function probePage({
     await send('Page.navigate', { url });
     const read = async () => {
       const reply = await send('Runtime.evaluate', {
-        expression: 'JSON.stringify({ state: document.readyState, url: location.href, title: document.title, text: document.body ? document.body.innerText.slice(0, 20000) : "" })',
+        // `extract` is a caller's own expression (never page or user input), returned as `extra`.
+        expression: `JSON.stringify({ state: document.readyState, url: location.href, title: document.title, text: document.body ? document.body.innerText.slice(0, 20000) : "", extra: ${extract ?? 'null'} })`,
         returnByValue: true,
       });
       try { return JSON.parse(reply.result?.result?.value ?? '{}'); } catch { return {}; }
@@ -62,11 +63,11 @@ export async function probePage({
       stable = loaded && previous !== null && page.text === previous ? stable + 1 : 0;
       previous = loaded ? page.text : null;
       if (loaded && (settledWhen(page) || stable >= STABLE_READS)) {
-        return { url: page.url, title: page.title ?? '', text: page.text ?? '', settled: true };
+        return { url: page.url, title: page.title ?? '', text: page.text ?? '', extra: page.extra ?? null, settled: true };
       }
       await sleep(1_000);
     }
-    return { url: page.url ?? '', title: page.title ?? '', text: page.text ?? '', settled: false };
+    return { url: page.url ?? '', title: page.title ?? '', text: page.text ?? '', extra: page.extra ?? null, settled: false };
   } finally {
     try { socket.close(); } catch { /* already closed */ }
     await fetchImpl(`${base}/json/close/${target.id}`, { signal: AbortSignal.timeout(5_000) }).catch(() => {});
