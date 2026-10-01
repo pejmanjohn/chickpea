@@ -302,6 +302,14 @@ export function appendEvent(run, input, source, now = Date.now()) {
       event.deadline = new Date(now + selected.maxWaitMs).toISOString();
       break;
     }
+    case 'lesson': {
+      // A gotcha learned mid-run, kept for the feature map. It grades nothing.
+      keys(input, ['type', 'text', 'areas', 'caseId']);
+      need(text(input.text) && input.text.length <= 2000, 'A lesson needs text of at most 2000 characters.');
+      need(input.areas === undefined || (list(input.areas) && input.areas.every((area) => Object.hasOwn(REGRESSION_AREAS, area))), 'Lesson areas must be known areas.');
+      need(input.caseId === undefined || selected, 'Lesson case is not selected.');
+      break;
+    }
     case 'case_blocked': {
       keys(input, ['type', 'caseId', 'reason', 'category', 'evidence']);
       need(selected, 'Unknown selected case.');
@@ -497,8 +505,10 @@ export function status(run, source, now = Date.now()) {
   const outcomes = [...new Map(run.events.filter((e) => ['finish', 'resolve'].includes(e.type))
     .map((e) => [e.attemptId, e])).values()];
   for (const e of outcomes) for (const [key, value] of Object.entries(e.timing ?? {})) totals[key] += value;
+  const lessons = run.events.filter((e) => e.type === 'lesson')
+    .map((e) => ({ id: e.id, at: e.at, text: e.text, areas: e.areas ?? [], caseId: e.caseId ?? null }));
   return {
-    runId: run.id, mode: spec.mode, purpose: spec.purpose, source, readiness, cases, groups: groupStatus(spec, cases), optional: [...optionalCases(spec)], resources, ...coordination,
+    runId: run.id, mode: spec.mode, purpose: spec.purpose, source, readiness, cases, lessons, groups: groupStatus(spec, cases), optional: [...optionalCases(spec)], resources, ...coordination,
     releasePending, openOffline, offline, offlinePlans, offlineObligations,
     complete: (cases.length > 0 || offlinePlans.some((p) => p.required)) && cases.every((c) => c.result === 'pass' || optionalCases(spec).has(c.id) && !['in_progress', 'observe_overdue', 'ambiguous'].includes(c.result)) && cleanupPending.length === 0 && !releasePending && openOffline.length === 0 && offlinePlans.filter((p) => p.required).every((p) => p.result === 'pass') && coordination.repairs.every((r) => r.state === 'verified'),
     phases: { intervals: phaseIntervals, open: phaseStarts.filter((start) => !phaseFinishes.some((end) => end.phaseId === start.id)),
@@ -546,6 +556,9 @@ export function renderReport(view) {
     '## Measured phases', '', `Measured interval union: ${view.phases.measuredIntervalUnionMs ?? 'unknown'} ms. This is not a measured critical path.`,
     ...Object.entries(view.phases.totals).map(([key, value]) => `- ${key}: ${value} ms`),
     `Open phases: ${view.phases.open.length ? view.phases.open.map((phase) => `${phase.phase}/${phase.id}`).join(', ') : 'none'}.`, '',
+    ...(view.lessons?.length ? ['## Lessons for the feature map', '',
+      'Fold each into its file under qa/live/features/ before the run\'s PR merges.', '',
+      ...view.lessons.map((l) => `- ${l.areas.length ? `[${cell(l.areas.join(', '))}] ` : ''}${l.caseId ? `${cell(l.caseId)}: ` : ''}${cell(l.text)}`), ''] : []),
     '## Manually measured time and cost', '', `Wall time: ${view.timing.wallMs} ms. Categories can overlap; do not add them to infer wall time.`,
     ...Object.entries(view.timing.measured).map(([key, value]) => `- ${key}: measured subtotal ${value}; unmeasured attended attempts: ${view.timing.unknownByCategory[key]}`),
     `Unmeasured attended attempts: ${view.timing.unmeasuredAttempts}. Known cost: USD ${view.timing.knownCostUsd}. Unknown-cost attempts: ${view.timing.unknownCostAttempts}.`, '');
