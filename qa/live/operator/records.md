@@ -59,8 +59,8 @@ include `sandbox`, `browser`, `usage` and `activity` as well as the regression
 areas. Proof surfaces are `slack`, `admin`, `mcp`, `provider` and `model`. A
 non-`model` live case needs proof from at least one user door: `slack`,
 `admin` or `mcp`. Provider rows or model output alone never accept it. When a
-case cannot run, record why with `blocked`, which spends no attempt, and keep
-the record:
+missing capability or environment keeps a case from running, record why with
+`blocked`, which spends no attempt, and keep the record:
 
 ```sh
 npm run verify:live:record -- blocked --case requested-schedule \
@@ -68,7 +68,11 @@ npm run verify:live:record -- blocked --case requested-schedule \
   --category infrastructure --run "$run_dir/run.json"
 ```
 
-The case shows `blocked` with that reason until a later `begin`. Register
+A case with no outcome shows `blocked` with that reason until a later `begin`;
+on a case that already has an outcome the reason is listed beside it and never
+replaces it. A block that is itself a product defect to repair belongs on an
+attempt instead: `begin`, then `finish --result blocked --category product`, so
+a repair can reference it. Register
 fixtures and owned resources before `begin`. A capability refresh while an
 attempt is open invalidates that attempt. Hold working-tree edits outside the
 claimed worktree until the attempt finishes. Use the recorder even when it
@@ -197,8 +201,9 @@ Missing timing categories stay explicitly unmeasured.
 
 `completedAt` is when the product produced the outcome. `observedAt` is when the
 operator obtained its authoritative readback. The event `at` remains the later
-record-write time. Neither timestamp is inferred when omitted. Pass `now` only
-when the readback happened at that moment. A refused timestamp prints the
+record-write time. Neither timestamp is inferred when omitted. `--observed-at
+now` stamps the command's own time; use it only when the readback happened at
+that moment. Completion has no such shortcut. A refused timestamp prints the
 attempt's start, the current time and the value given. Reports show
 attempt-start-to-completion time, readback-to-record delay, recording after the observation
 deadline, and completion beyond that deadline separately. `maxWaitMs` remains an

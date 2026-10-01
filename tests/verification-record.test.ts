@@ -527,6 +527,7 @@ test('record refusals name the fix: fields, proof doors, long waits, open attemp
   for (const area of ['sandbox', 'browser', 'usage', 'activity']) make(withCase({ areas: [area] }));
   assert.equal(buildResource(f.run, { case: 'schedule', provider: 'chickpea', kind: 'agent', resourceId: 'agent-1', ownership: 'created', cleanupPreset: 'archived', evidence: [f.evidence] }, readPrivateJson).expected.lifecycle, 'archived');
   assert.match(buildOutcome('finish', { attempt: 'a', result: 'pass', summary: 's', evidence: [f.evidence], proof: [`admin=${f.evidence}`], observedAt: 'now' }).observedAt, /^\d{4}-\d{2}-\d{2}T/);
+  assert.equal(buildOutcome('finish', { attempt: 'a', result: 'pass', summary: 's', evidence: [f.evidence], proof: [`admin=${f.evidence}`], completedAt: 'now' }).completedAt, 'now', 'completion is never stamped for the operator');
 
   const attempt = f.append({ type: 'begin', caseId: 'schedule' });
   assert.throws(() => f.append({ type: 'begin', caseId: 'schedule', reason: 'retry' }, NOW + 2000), new RegExp(`Prior attempt ${attempt.id} is still open \\(deadline ${attempt.deadline}\\)`));
@@ -534,15 +535,23 @@ test('record refusals name the fix: fields, proof doors, long waits, open attemp
   const early = new Date(NOW).toISOString();
   assert.throws(() => f.append(f.finish(attempt.id, { completedAt: early }), NOW + 3000),
     new RegExp(`attempt ${attempt.id} began ${new Date(NOW + 1000).toISOString()}, now ${new Date(NOW + 3000).toISOString()}, got ${early}`));
+  assert.throws(() => f.append(f.finish(attempt.id, { completedAt: 'now' }), NOW + 3000), /Completion needs an ISO timestamp/);
   f.append(f.finish(attempt.id, { result: 'fail', category: 'infrastructure' }), NOW + 3000);
   f.append({ type: 'case_blocked', caseId: 'schedule', reason: 'Provider quota is exhausted until the owner adds credit.', category: 'infrastructure' }, NOW + 4000);
-  const blocked = status(f.run, source(), NOW + 5000).cases[0];
-  assert.equal(blocked.result, 'blocked');
-  assert.match(blocked.blockers[0], /recorded block: Provider quota is exhausted/);
-  assert.match(renderReport(status(f.run, source(), NOW + 5000)), /\| schedule \| local \/ synthetic-local \| blocked \| 1 \| recorded block: Provider quota/);
+  const failed = status(f.run, source(), NOW + 5000).cases[0];
+  assert.equal(failed.result, 'fail', 'a recorded block never hides an outcome');
+  assert.match(failed.blockers[0], /recorded block: Provider quota is exhausted/);
   const retry = f.append({ type: 'begin', caseId: 'schedule', reason: 'Credit added; same case.' }, NOW + 6000);
   assert.equal(status(f.run, source(), NOW + 7000).cases[0].result, 'in_progress', 'a later attempt supersedes the recorded block');
-  assert.ok(retry.id);
+  f.append(f.finish(retry.id, { result: 'ambiguous', category: 'tool' }), NOW + 8000);
+  assert.throws(() => f.append({ type: 'case_blocked', caseId: 'schedule', reason: 'Lane gone.' }, NOW + 9000), /is ambiguous\. Reconcile whether it applied/);
+
+  // A case that never ran shows the recorded reason as blocked.
+  f.run.spec.cases.push({ ...f.spec.cases[0], id: 'phone' });
+  f.append({ type: 'case_blocked', caseId: 'phone', reason: 'Needs a real phone.' }, NOW + 10_000);
+  const phone = status(f.run, source(), NOW + 11_000).cases.find((c: any) => c.id === 'phone');
+  assert.equal(phone.result, 'blocked');
+  assert.match(renderReport(status(f.run, source(), NOW + 11_000)), /\| phone \| local \/ synthetic-local \| blocked \| 0 \| recorded block: Needs a real phone/);
 });
 
 function repairFixture(t: TestContext) {

@@ -23,7 +23,7 @@ blocked   --case ID --reason TEXT [--category CATEGORY] [--evidence FILE]
                                     Record why a case cannot run, without spending an attempt
 record    --event FILE               Record outcome, cleanup, repair, batch or candidate_transition
 resource  --case ID --provider ID --kind ID --resource-id ID --ownership TYPE --cleanup-preset PRESET|--expected-file FILE --evidence FILE
-finish|resolve --attempt ID --result RESULT --summary TEXT --evidence FILE --proof SURFACE=FILE [--completed-at ISO|now] [--observed-at ISO|now] [--timing-observation-ms MS]
+finish|resolve --attempt ID --result RESULT --summary TEXT --evidence FILE --proof SURFACE=FILE [--completed-at ISO] [--observed-at ISO|now] [--timing-observation-ms MS]
                                     Proof surfaces: slack, admin, mcp, provider, model. A live case
                                     needs slack, admin or mcp proof. Omit a time you did not observe.
 cleanup   --resource ID --outcome OUTCOME [--observed-file FILE] --evidence FILE
@@ -133,7 +133,7 @@ export function runRecordCli(argv, root = ROOT, io = {}) {
         return appendEvent(run, input, source);
       });
       // The full attempt carries every input digest; the operator needs its ID and deadline.
-      if (command === 'begin') result = { attemptId: result.id, caseId: result.caseId, deadline: result.deadline, id: result.id, sequence: result.sequence, at: result.at };
+      if (command === 'begin') result = { attemptId: result.id, caseId: result.caseId, deadline: result.deadline, id: result.id };
     } else {
       const run = readRun(flags.run);
       if (command === 'preflight') { result = preflight(run); code = result.ready ? 0 : 1; }

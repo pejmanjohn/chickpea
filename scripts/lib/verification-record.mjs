@@ -308,7 +308,10 @@ export function appendEvent(run, input, source, now = Date.now()) {
       need(text(input.reason), 'Say what blocks the case and what would unblock it.');
       need(input.category === undefined || CATEGORIES.includes(input.category), 'Classify product, model, tool, infrastructure, or unknown.');
       const last = attempts(run, selected.id).at(-1);
-      need(!last || resultFor(run, last.id), `Attempt ${last?.id} is still open. Finish it as blocked instead.`);
+      const lastResult = last && resultFor(run, last.id);
+      need(!last || lastResult, `Attempt ${last?.id} is still open. Finish it as blocked instead.`);
+      need(lastResult?.result !== 'ambiguous' || reconcileFor(run, last.id)?.outcome === 'not_applied',
+        `Attempt ${last?.id} is ambiguous. Reconcile whether it applied before recording why the case is blocked.`);
       if (input.evidence !== undefined) event.evidence = evidenceRefs(input.evidence);
       break;
     }
@@ -331,7 +334,7 @@ export function appendEvent(run, input, source, now = Date.now()) {
       if (input.result === 'pass') {
         need(changedInputs(recordedInputs(run, attempt), attendedInputs(run, spec, contract, source)).length === 0, 'Attempt inputs changed; preserve it as a non-pass and retest.');
         need(repairBlocks(run, spec, contract.id).length === 0, 'Dependent actions are suspended by a repair; preserve a non-pass until safe retesting.');
-        need(contract.proof.every((p) => event.proof[p]?.length > 0), 'Pass lacks a required Slack/Admin/provider/model readback.');
+        need(contract.proof.every((p) => event.proof[p]?.length > 0), `Pass lacks a required readback for: ${contract.proof.filter((p) => !(event.proof[p]?.length > 0)).join(', ')}.`);
         need((input.timing?.observationMs ?? 0) >= (contract.minObservationMs ?? 0), 'Declared observation window is incomplete.');
       }
       if (input.timing) {
@@ -345,13 +348,13 @@ export function appendEvent(run, input, source, now = Date.now()) {
       if (input.completedAt !== undefined) {
         need(date(input.completedAt), 'Completion needs an ISO timestamp.');
         completed = Date.parse(input.completedAt);
-        need(completed >= Date.parse(attempt.at) && completed <= now, `Completion must fall between attempt start and record time: attempt ${attempt.id} began ${attempt.at}, now ${new Date(now).toISOString()}, got ${input.completedAt}. Omit it when unknown, or pass now.`);
+        need(completed >= Date.parse(attempt.at) && completed <= now, `Completion must fall between attempt start and record time: attempt ${attempt.id} began ${attempt.at}, now ${new Date(now).toISOString()}, got ${input.completedAt}. Omit it when unknown.`);
         event.completionLatencyMs = completed - Date.parse(attempt.at);
         event.completionBeyondObservationDeadline = completed > Date.parse(attempt.deadline);
       }
       if (input.observedAt !== undefined) {
         need(date(input.observedAt), 'Observation needs an ISO timestamp.'); observed = Date.parse(input.observedAt);
-        need(observed >= Date.parse(attempt.at) && observed <= now, `Observation must fall between attempt start and record time: attempt ${attempt.id} began ${attempt.at}, now ${new Date(now).toISOString()}, got ${input.observedAt}. Omit it when unknown, or pass now.`);
+        need(observed >= Date.parse(attempt.at) && observed <= now, `Observation must fall between attempt start and record time: attempt ${attempt.id} began ${attempt.at}, now ${new Date(now).toISOString()}, got ${input.observedAt}. Omit it when unknown, or pass now if you read it just now.`);
         need(completed === undefined || observed >= completed, 'Observation cannot precede product completion.');
         event.recordingDelayMs = now - observed;
       }
@@ -452,7 +455,9 @@ export function status(run, source, now = Date.now()) {
     const recordedBlock = run.events.findLast((e) => e.type === 'case_blocked' && e.caseId === selected.id
       && (!last || e.sequence > last.sequence));
     const result = last && !outcome ? now >= Date.parse(last.deadline) ? 'observe_overdue' : 'in_progress'
-      : ready.suspendedBy.length || recordedBlock ? 'blocked' : invalidation.length ? 'stale' : outcome?.result ?? (ready.ready ? 'not_run' : 'blocked');
+      : ready.suspendedBy.length ? 'blocked' : invalidation.length ? 'stale'
+        // A recorded block explains a case that has no outcome; it never hides one.
+        : outcome?.result ?? (ready.ready && !recordedBlock ? 'not_run' : 'blocked');
     return { id: selected.id, title: selected.title, grade: spec.contexts[selected.context].grade,
       target: spec.contexts[selected.context].target, result, invalidation, attempts: history.length,
       attemptId: last?.id, blockers: [...(recordedBlock ? [`recorded block: ${recordedBlock.reason}`] : []), ...ready.blockers], warnings: ready.warnings,

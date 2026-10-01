@@ -1,10 +1,13 @@
-import { currentSpec } from './verification-record.mjs';
+import { currentSpec, PROOF_SURFACES as SURFACES } from './verification-record.mjs';
 
 const ARCHIVED_AGENT = { lifecycle: 'archived', channelCount: 0, dmAccess: 'unavailable' };
 const ABSENT = { present: false };
-const PROOF_SURFACES = new Set(['slack', 'admin', 'mcp', 'provider', 'model']);
-/** `now` records the moment of the command; anything else must be an ISO time. */
-const instant = (value) => value === 'now' ? new Date().toISOString() : value;
+const PROOF_SURFACES = new Set(SURFACES);
+/**
+ * `--observed-at now` records the moment of the command, for a readback taken
+ * just now. Completion is when the product finished, so it never defaults.
+ */
+const observedInstant = (value) => value === 'now' ? new Date().toISOString() : value;
 
 const many = (value) => value ?? [];
 const integer = (value, fallback) => value === undefined ? fallback : Number(value);
@@ -57,8 +60,8 @@ export function buildResource(run, flags, readJson) {
 export function buildOutcome(type, flags) {
   return { type, attemptId: flags.attempt, result: flags.result, summary: flags.summary,
     ...(flags.category ? { category: flags.category } : {}), evidence: many(flags.evidence), proof: proofMap(flags.proof),
-    ...(flags.completedAt ? { completedAt: instant(flags.completedAt) } : {}),
-    ...(flags.observedAt ? { observedAt: instant(flags.observedAt) } : {}),
+    ...(flags.completedAt ? { completedAt: flags.completedAt } : {}),
+    ...(flags.observedAt ? { observedAt: observedInstant(flags.observedAt) } : {}),
     ...(flags.timingObservationMs === undefined ? {} : { timing: { observationMs: Number(flags.timingObservationMs) } }),
     ...(flags.costUsd === undefined ? {} : { costUsd: flags.costUsd === 'unknown' ? null : Number(flags.costUsd) }) };
 }

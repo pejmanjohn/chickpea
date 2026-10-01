@@ -216,7 +216,7 @@ only when explicitly operating it.
 
 Saved instructions, frozen proposal identity, fixture values, destination, and
 resource ownership require exact comparisons. Grade explanatory prose by meaning
-unless literal output was requested. Actual Slack/Admin/provider readback is
+unless literal output was requested. Actual Slack, Admin, MCP or provider readback is
 required; an Agent's success claim, a log, build, or simulated cron is insufficient.
 Keep Local, deployed, deterministic, and model-only grades separate. Use the lane's
 actual model without substitution. Missing or sampled telemetry proves no absence.
