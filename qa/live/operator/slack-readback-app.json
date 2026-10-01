@@ -1,0 +1,28 @@
+{
+  "display_information": {
+    "name": "Chickpea QA Readback",
+    "description": "Read-only Slack readback for one Chickpea QA lane. Installed by the lane's test account; it never posts.",
+    "background_color": "#2f3a2f"
+  },
+  "oauth_config": {
+    "scopes": {
+      "user": [
+        "channels:history",
+        "channels:read",
+        "groups:history",
+        "groups:read",
+        "im:history",
+        "im:read",
+        "mpim:history",
+        "mpim:read",
+        "users:read",
+        "files:read"
+      ]
+    }
+  },
+  "settings": {
+    "org_deploy_enabled": false,
+    "socket_mode_enabled": false,
+    "token_rotation_enabled": false
+  }
+}

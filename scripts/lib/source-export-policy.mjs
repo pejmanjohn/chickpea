@@ -152,6 +152,7 @@ export const liveVerifierExportPolicy = Object.freeze({
     exportPath('qa', 'live', 'operator', 'modes.md'),
     exportPath('qa', 'live', 'operator', 'cloud.md'),
     exportPath('qa', 'live', 'operator', 'environments.md'),
+    exportPath('qa', 'live', 'operator', 'slack-readback-app.json'),
     exportPath('qa', 'live', 'operator', 'records.md'),
     exportPath('qa', 'live', 'operator', 'recovery.md'),
     exportPath('qa', 'live', 'operator', 'host-checks.md'),

@@ -161,7 +161,7 @@ test('facts come from injectable readers, and a claim is ours only for this chec
   const gathered = await gatherKickoffFacts({
     root, lanes: ['amber', 'cobalt'],
     readers: {
-      nodeVersion: 'v24.20.0', lockfileDrift: () => [], hostReservation: null,
+      nodeVersion: 'v24.20.0', lockfileDrift: () => [], hostReservation: null, secretEntries: new Map(),
       source: { status: 'current', approvedTip: 'b'.repeat(40) }, localSchema: SCHEMA,
       capabilities: [
         { target: 'amber', health: 'ready', profile: 'core', liveVersion: 'v1', servingVersion: 'v1', schemaGeneration: SCHEMA, errors: [], secrets: { OPENAI_API_KEY: true, BROWSERBASE_API_KEY: false }, defaultChatModel: 'm', modelRoles: 'm / image unset / coding unset', versionMatchesRegistry: true, missingActorAliases: [] },
@@ -185,14 +185,14 @@ test('facts come from injectable readers, and a claim is ours only for this chec
   assert.ok(report.lanes[1].checks.some((c: any) => c.level === 'block' && /WRANGLER_UNAVAILABLE/.test(c.text)));
   // A browser probe that throws becomes a fact, and a registry that cannot be read ends gathering, not the report.
   const thrown = await gatherKickoffFacts({ root, lanes: ['amber'], readers: {
-    nodeVersion: 'v24.20.0', lockfileDrift: () => [], hostReservation: null, source: { status: 'current', approvedTip: 'b'.repeat(40) }, localSchema: SCHEMA,
+    nodeVersion: 'v24.20.0', lockfileDrift: () => [], hostReservation: null, secretEntries: new Map(), source: { status: 'current', approvedTip: 'b'.repeat(40) }, localSchema: SCHEMA,
     capabilities: [{ target: 'amber', health: 'ready', profile: 'core', liveVersion: 'v1', servingVersion: 'v1', schemaGeneration: SCHEMA, errors: [], missingActorAliases: [] }],
     registry: { targets: { amber: { evidenceRoot: evidence } } },
     browser: async () => { throw new Error('no daemon root'); },
   } });
   assert.deepEqual(thrown.lanes[0].browser, { state: 'error', error: 'no daemon root' });
   const broken = await gatherKickoffFacts({ root, lanes: ['amber'], readers: {
-    nodeVersion: 'v24.20.0', lockfileDrift: () => [], hostReservation: null, source: { status: 'current', approvedTip: 'b'.repeat(40) }, localSchema: SCHEMA,
+    nodeVersion: 'v24.20.0', lockfileDrift: () => [], hostReservation: null, secretEntries: new Map(), source: { status: 'current', approvedTip: 'b'.repeat(40) }, localSchema: SCHEMA,
     get capabilities() { throw Object.assign(new Error('missing'), { code: 'TARGET_NOT_REGISTERED' }); },
   } });
   assert.equal(broken.lanesError, 'TARGET_NOT_REGISTERED');

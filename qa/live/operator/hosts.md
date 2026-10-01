@@ -189,11 +189,43 @@ and the Slack web client:
 
 ## Slack evidence on gateway lanes
 
-Amber, Cobalt and Violet use the shared gateway transport. The operator has no
-Slack token there, so an exact-message `conversations.replies` readback is
-unavailable. Use a visible readback from the signed-in client together with the
+Amber, Cobalt and Violet use the shared gateway transport, whose Slack token
+never reaches the verifier. Each lane workspace therefore has its own
+read-only app, installed by the lane's test account, for exact readback of what
+Chickpea posted. Read with it, and keep sending the message a case tests
+through the composer:
+
+```sh
+npm run lane:slack -- <alias> whoami
+npm run lane:slack -- <alias> message <message link> --out <private file>
+npm run lane:slack -- <alias> thread <message link> --out <private file>
+npm run lane:slack -- <alias> history <channel id> --since <ISO time>
+```
+
+It returns each message's sender name, bot and app, custom name, text, blocks,
+files with their owners, edits and reactions, which is the exact `slack` proof
+for a case. It reads only conversations the test account belongs to, never
+posts, and never prints its token. It cannot see ephemeral messages or how a
+message renders, so mention rendering, private notices and phone views still
+need the client.
+
+Setting up a lane, once, is the maintainer's job, because it handles a token:
+
+1. Signed in to the lane workspace as its test account, create an app from
+   the manifest in [slack-readback-app.json](slack-readback-app.json) at
+   api.slack.com/apps, choosing that workspace. Creating it inside the
+   workspace keeps Slack's normal history limits; one app shared by several
+   workspaces would be throttled.
+2. Install it to the workspace, then copy its User OAuth Token from
+   OAuth & Permissions.
+3. Add `<LANE>__SLACK_READBACK_TOKEN=<token>` to the lane secrets file. That
+   name is never uploaded to a Worker. Never paste the token into a chat.
+4. Run `npm run lane:slack -- <alias> whoami`; the kickoff doctor then shows
+   the lane's readback as working.
+
+On a lane without a token, use the signed-in client view together with the
 Worker's finalization records from a bounded `npm run lane:tail -- <alias>`
-started before the action, and report the exact API readback as a gap. Probe
+started before the action, and report the exact readback as a gap. Probe
 builds that log API readbacks are a last resort. Each probe build costs a
 deploy and must be replaced by the clean candidate before any grading.
 

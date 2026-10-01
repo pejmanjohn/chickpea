@@ -36,7 +36,7 @@ Docs: `/slack/conversations/`, `/slack/replies/`, `/slack/handles-and-channels/`
 
 - Reply text does not prove the route. Check the sender name, avatar and footer on the exact message after a fresh load, and that the thread holds one terminal reply.
 - A handoff to an Agent without a grant in the channel changes nothing: the owner keeps the thread and only the sender sees the refusal.
-- Gateway lanes give the operator no Slack token. Pair the signed-in client view with finalization records from a bounded `npm run lane:tail` started before the action, and report the exact API readback as a gap.
+- Read the exact reply with `npm run lane:slack -- <alias> thread <message link>`: sender, custom name, footer blocks and files with their owner. Without a readback token, pair the signed-in client view with finalization records from a bounded `npm run lane:tail` started before the action, and report the exact readback as a gap ([hosts.md](../operator/hosts.md#slack-evidence-on-gateway-lanes)).
 - Slack web paints a final post in two passes, so a partial-then-full sample is not streaming proof. Use the tail's `Slack presentation finalized` record (offer, intent, accepted bytes).
 - Check sender, file owner, footer and attachment separately. The file card names the bot even when the message sender is right; see [Slack message identity](../../../docs/runbooks/slack-message-identity.md).
 - For a link fixture, ask for a standard Markdown link and assert its target. A model-written `<url|label>` showed up literally beside file cards in an earlier run.
