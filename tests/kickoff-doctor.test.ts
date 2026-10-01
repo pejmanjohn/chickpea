@@ -79,8 +79,8 @@ test('lane problems are sorted into blockers and things only a person can do', (
   const amber = report.lanes[0].checks.find((c: any) => c.level === 'block');
   assert.match(amber.text, /Held by another worktree on other-task/);
   assert.match(amber.fix, /never take it/);
-  assert.equal(report.needs.length, 4);
-  assert.match(report.needs.join('\n'), /cobalt: Lane serves schema .*do:v10; the candidate needs .*do:v11/);
+  assert.equal(report.needs.length, 3, 'a schema advance needs no person');
+  assert.ok(report.lanes[1].checks.some((c: any) => c.level === 'warn' && /Lane serves schema .*do:v10; the candidate needs .*do:v11/.test(c.text) && /schema-advance/.test(c.fix)));
   assert.match(report.needs.join('\n'), /cobalt: Lane browser profile is held by another session's Chrome \(PID 63707\)/);
   assert.match(report.needs.join('\n'), /violet: Admin is signed out/);
   assert.match(report.needs.join('\n'), /violet: Slack in chrome-violet is on a different workspace/);
@@ -88,6 +88,8 @@ test('lane problems are sorted into blockers and things only a person can do', (
   assert.ok(report.lanes[2].checks.some((c: any) => c.level === 'warn' && /live version differs/.test(c.text)));
   const own = kickoffReport(facts({ lanes: [lane({ claim: { ownWorktree: true, branch: 'mine', expiresAt: 'later' } })] }));
   assert.equal(own.ok, true);
+  const behind = kickoffReport(facts({ lanes: [lane({ schemaGeneration: 'd1:0002_mcp_oauth;do:v10' })] }));
+  assert.equal(behind.ok, true, 'a lane one schema step behind is still ready; the verifier advances it');
   const stopped = kickoffReport(facts({ lanes: [lane({ browser: { state: 'stopped' } })] }));
   assert.match(stopped.lanes[0].checks.find((c: any) => c.level === 'block').fix, /npm run lane:browser -- start amber/);
   assert.equal(kickoffReport(facts({ lanes: [lane({ browser: null })] })).ok, true, '--no-browser leaves the lane ready');

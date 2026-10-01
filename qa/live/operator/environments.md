@@ -104,24 +104,8 @@
    without the file. Verifiers never write or read the values; the maintainer
    edits the file.
 
-   Claude Code cloud sessions start from a fresh VM that carries only
-   environment variables, so the cloud SessionStart hook
-   (`scripts/cloud-session-start.sh`) runs `scripts/cloud-private-home.mjs` to
-   write the same files there, at the paths the readers already use, from
-   base64 variables in the personal cloud environment: `CHICKPEA_QA_SECRETS_ENV_B64`
-   for `~/.chickpea/qa-secrets.env`, `CHICKPEA_LANE_CREDENTIALS_B64` for the
-   `<lane>-live.json` and `<lane>-seed.json` files under
-   `~/.chickpea/lane-credentials/` (one JSON object keyed by file name, described
-   below), and `CHICKPEA_QA_SEED_JSON_B64` for `~/.chickpea/qa-seed.json`. Run
-   `node scripts/cloud-private-home.mjs encode` on the maintainer's machine to
-   print those lines from the existing files, paste them into the cloud
-   environment's variables, and discard the output: it carries the secrets. The
-   hook writes only when `CLAUDE_CODE_REMOTE=true`, skips an absent variable,
-   fails the session start on a malformed one (naming the variable, never the
-   value), checks each file with its reader before it lands, and writes it
-   owner-only. Live-authority credentials may instead stay as
-   `CHICKPEA_ENV_<COLOR>_LIVE_AUTHORITY_URL` and `_READ_TOKEN`, which need no
-   file. The environment registry is host-bound and is never carried this way.
+   Cloud sessions, now dormant, can carry the same files; see
+   [cloud.md](cloud.md#private-files).
 
    Standing test connections come back the same way after a lane rebuild.
    Each guarded lane deploy also installs the lane's seed token
@@ -235,9 +219,9 @@
 
    A lane records the Durable Object schema generation it serves (the Schema
    column of `env capabilities`). A candidate with a newer generation is
-   refused with `INCOMPATIBLE_SCHEMA_GENERATION`. Advancing a lane is permanent,
-   because Cloudflare cannot roll a Durable Object migration back, so ask the
-   maintainer in the session before you record it:
+   refused with `INCOMPATIBLE_SCHEMA_GENERATION`. The maintainer has approved
+   advancing a lane whenever a candidate needs it, including a migration that
+   is not on `main` yet, so record it without asking:
 
    ```sh
    npm run env -- schema-advance <alias> --worktree <absolute-worktree>
@@ -246,8 +230,11 @@
    It records one step to the candidate's own generation, read from the claimed
    worktree, for this claim; the next guarded deploy applies it. A `restamp`
    carries it when the new HEAD has the same generation and otherwise reports
-   it stale. Without approval, use a lane that already serves the candidate's
-   generation.
+   it stale. The advance is permanent, because Cloudflare cannot roll a Durable
+   Object migration back: that lane can no longer serve older builds, and if an
+   unmerged migration changes before it merges, the lane needs rebuilding. So
+   prefer a lane that already serves the candidate's generation, and name every
+   advance in the run report.
    Only the Slack manifest digest, the required scopes, and
    `src/auth/setup-capability.mjs` are hard-gated against the lane baseline; a
    mismatch refuses with `INSTALL_CONTINUATION_REQUIRED`, and the recovery is to
@@ -296,7 +283,7 @@ section, and keep lane-specific values out of this repository.
 | Deploy profile (`core`, `sandbox`, or `mixed` during a split deployment) and live version | Wrangler: the serving version's `SANDBOX` binding. A core deploy over a sandbox Worker is refused, so use `npm run deploy:sandbox` there. A live version that differs from the registry is shown next to it. |
 | Provider keys by name (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, `BROWSERBASE_API_KEY`, `COMPOSIO_API_KEY`) and `CHICKPEA_ENV_SEED_TOKEN` | Wrangler `secret list`, names only. The seed token column also shows whether the operator holds the lane's seed token file (existence only). |
 | Default chat model and image role | Generated from the lane's QA-only models route, read with the lane seed token. Shows unknown until the lane serves that route; then read Admin Settings › Model providers or the model footer of a one-word Agent reply. |
-| Missing actor aliases, Slack workspace label, transport, schema generation, setup-flow marker, claim | The environment registry, as in `env status`. A candidate needs a lane whose Schema matches its own generation unless the maintainer approves `env schema-advance`. `missing_actor` limits Member-view checks. A `gateway` lane has no operator Slack token (see [hosts.md](hosts.md#slack-evidence-on-gateway-lanes)). |
+| Missing actor aliases, Slack workspace label, transport, schema generation, setup-flow marker, claim | The environment registry, as in `env status`. A candidate needs a lane whose Schema matches its own generation, or an `env schema-advance` first. `missing_actor` limits Member-view checks. A `gateway` lane has no operator Slack token (see [hosts.md](hosts.md#slack-evidence-on-gateway-lanes)). |
 | GitHub App and granted repositories, sandbox runtime on or off | Not generated. Admin Settings › Coding sandbox and GitHub. |
 | Registered connector fixtures and standing QA connections | Not generated. The private fixture inventory ([fixtures.md](fixtures.md)). |
 | Whether Chrome is signed in to Slack and Admin | Not in this table. `npm run verify:live:kickoff` probes it through the lane browser daemon. A lane's workspace can display under an older name. |

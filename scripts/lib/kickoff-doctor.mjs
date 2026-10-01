@@ -81,7 +81,8 @@ function laneVerdict(lane, facts) {
 
   if (!facts.localSchema || !lane.schemaGeneration) checks.push(check('warn', `Schema generation unknown (lane ${lane.schemaGeneration ?? '?'}, candidate ${facts.localSchema ?? '?'})`));
   else if (lane.schemaGeneration === facts.localSchema) checks.push(check('ok', `Schema ${lane.schemaGeneration} matches the candidate`));
-  else checks.push(check('human', `Lane serves schema ${lane.schemaGeneration}; the candidate needs ${facts.localSchema}`, 'Advancing is permanent: get the maintainer\'s approval for npm run env -- schema-advance <lane>, or choose a lane at the candidate\'s generation.'));
+  // The maintainer approved advancing without asking; the advance is permanent, so say so and prefer a matching lane.
+  else checks.push(check('warn', `Lane serves schema ${lane.schemaGeneration}; the candidate needs ${facts.localSchema}`, 'Prefer a lane at the candidate\'s generation; otherwise run npm run env -- schema-advance <lane> after claiming it. The advance is permanent.'));
 
   if (lane.versionMatchesRegistry === false) checks.push(check('warn', `The live version differs from the registry's ${lane.servingVersion?.slice(0, 8) ?? 'record'}; someone deployed outside the guarded wrapper or a deploy is unreconciled`));
   if (lane.modelRoles) checks.push(check('info', `Models: ${lane.modelRoles}`));
