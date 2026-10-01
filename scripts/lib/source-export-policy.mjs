@@ -578,7 +578,7 @@ export function publicSourceManifestFindings(entries) {
 
 /**
  * The one tracked MCP client config. It may define only the lane browser
- * servers of qa/live/operator/hosts.md, each launched through the repository
+ * servers of qa/live/operator/cloud.md, each launched through the repository
  * script with the opt-in root variable, so a cloud session gets the lane
  * browsers and no other host ever runs something else from this file.
  */
