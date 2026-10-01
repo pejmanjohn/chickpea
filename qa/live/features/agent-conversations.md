@@ -31,7 +31,7 @@ Docs: `/slack/conversations/`; operator detail in [Agent conversations](../../..
 - The person should never read the same answer twice, so a silent ending by the thread's Agent is a pass. Prove the silent turn ran from Admin's sessions API (`no_op`).
 - An occasional one-line restatement by the thread's Agent after a hand-back is an accepted known limit.
 - Whether an Agent asks at all is a model choice. Grade it on the lane's configured model, separately from host behaviour such as admission, hand-back and limits. Earlier prompt-only fixes for this flow were unreliable, which is why the hand-back is host-side.
-- An ask that is not admitted is silent by design. Pair it with a healthy positive control and the `agent ask not admitted` line in a bounded tail started before the action.
+- An ask that is not admitted is silent by design. Pair it with a healthy positive control and the `[chickpea] host-addressed turn not admitted` line in a bounded tail started before the action.
 - Asks are admitted only after the asking reply is recorded as delivered. If that reply failed, no ask follows.
 - A person's stop in the thread holds asks that have not started, and a stopped run asks nobody.
 - An Agent with live Slack threads cannot be deleted. Archive it.

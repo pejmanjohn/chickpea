@@ -29,7 +29,7 @@ Docs: `/agents/skills/`. Record areas: `skills`. Legacy contracts: LC-06.
 - Remove the exact skill by name and confirm in a fresh thread that the behaviour has ended.
 - Cross-Agent denial: from Agent A, ask to disable or remove a skill on Agent B, then read Agent B's Skills tab.
 - Case shape: `case-add --area skills --proof slack --proof admin` (or `--proof mcp`) and `--max-wait-ms 120000`.
-- Cleanup: remove run-owned skills and archive the disposable Agent (`--kind agent --cleanup-preset archived-agent`). On the fixtures Agent, restore the exact skill list with `--ownership restore`.
+- Cleanup: remove run-owned skills and archive the disposable Agent (registered with `--kind agent --ownership owned --cleanup-preset archived-agent`). On the fixtures Agent, restore the exact skill list with `--ownership restore`.
 
 ## Proof and gotchas
 

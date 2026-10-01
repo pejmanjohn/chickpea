@@ -35,7 +35,7 @@ Docs: `/agents/models-and-providers/`. Record areas: `providers`. Legacy contrac
 - Admin proof is the saved value plus its notice, for example "Default image model saved. Agents use it on their next request." Confirm the notice; a select that never fired its change event saves nothing.
 - A weak default model can fail in ways that look like product bugs. Grade those `model`; do not substitute a stronger model silently.
 - The image path once failed only under workerd, through a fetch option Node accepts. Node-only tests never prove the deployed image path.
-- Workers AI `gpt-oss` models can emit Harmony framing. No analysis text may reach Slack; the `[chickpea] workers_ai_harmony` log line in `npm run lane:tail` shows normalized or failed closed.
+- Workers AI `gpt-oss` models can emit raw Harmony framing as content. Any `<|channel|>` marker or analysis text that reaches Slack fails the case as `product`.
 - OpenRouter tiers can require provider-account settings and answer 403 or 404 until they are set. That is the provider account, not Chickpea.
 - A hosted catalog that names a profile the install does not compile is rejected whole. `npm run verify:model-catalog:served` checks what is hosted; after any Refresh, confirm every pin and the default are unchanged.
 - Image generation and inspection costs are not yet in Usage, so a Usage readback cannot prove an image call.

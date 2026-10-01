@@ -43,7 +43,7 @@ Docs: `/agents/connect-a-service/`, `/agents/connections/`, `/agents/managed-con
 - Two Agents on one external identity hold two account IDs and bindings. Disconnecting one leaves the other working with its schedules (LC-05).
 - Revocation must show Needs attention and pause dependent schedules, which stay paused until an exact reconnect and a review.
 - Managed disconnect deletes only that Composio account and does not revoke the wider Google grant. Without the project key, Chickpea refuses the disconnect and leaves the row in Needs attention.
-- Standing OAuth fixtures can turn up in Needs attention after a long idle spell because the provider expired the refresh token. Reconnect with Sign in before the case and record it as fixture state.
+- Standing OAuth fixtures can turn up in Needs attention after a long idle spell because the provider expired the refresh token. For a declared test integration, reconnect with Sign in before the case and record it as a fixture repair.
 - A 401 forces a refresh only once the token is at least a minute old, at most once a minute per credential, so wait a minute after sign-in before a revocation test. The shared OAuth fixture Worker can be redeployed by other sessions, which revokes grants mid-test; check its current version before trusting a 401.
 - Starting an admin sign-in moves even a working team account to pending, and nothing reverts an abandoned one. A team OAuth connection added but never signed in starts in Needs attention.
 - BugSnag and Meta Ads grant no tools until they are chosen at sign-in, and rediscovery keeps only tools whose schemas did not change.

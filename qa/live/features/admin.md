@@ -28,7 +28,7 @@ Docs: `/admin/`, `/admin/tour/`, `/admin/sign-in-and-roles/`, `/admin/usage/`. R
 - For Usage, produce one run-marked reply from a disposable Agent, then find it in Recent activity and in the channel and Agent breakdowns.
 - To reproduce a hidden-page load, open the page with an init script that reports `visibilityState` as hidden, because lane browsers load pages visible.
 - For a native dropdown, bring the Admin tab to the front, check `:open` on the active element, and close it by clicking the page. Screenshots do not show the popup.
-- Cleanup: restore any role or access change on a registered actor with `--ownership restore` and its exact before-state. Never Remove a registered actor, and never act on your own row.
+- Changing a registered actor's role or access is not among the declared QA actions unless the run declares it as a capability; otherwise record the variant `blocked`. When declared, register the actor with `--ownership restore` and its exact before-state, and restore it at cleanup. Never Remove a registered actor, and never act on your own row.
 
 ## Proof and gotchas
 

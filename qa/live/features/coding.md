@@ -25,9 +25,9 @@ Docs: `/agents/repositories/`, `/agents/coding-sandbox/`, `/reference/limits/`. 
 
 ## How to drive it on a lane
 
-- Choose with `npm run env -- capabilities all`: the profile column must read `sandbox`. It was last recorded on Cobalt and Violet, with Amber on core. GitHub App grants and runtime state are read in Admin.
+- Choose with `npm run verify:live:kickoff` or `npm run env -- capabilities all`: the profile must read `sandbox`. GitHub App grants and runtime state are read in Admin.
 - Deploy a sandbox lane with `npm run deploy:sandbox` through `verify:host`; a core deploy over it is refused.
-- The standing runtime is Installed but off. Register it with `record resource --ownership restore --expected-file`, enable it with the readiness checkbox, and restore Off at cleanup.
+- The standing runtime is Installed but off. Register it with `record resource --ownership restore --expected-file <exact before-state>` plus the case, provider, kind, ID and evidence flags, enable it with the readiness checkbox, and restore Off at cleanup.
 - Create a run-owned Agent granted the lane's test repository, publish it to the QA channel, and register it with `--kind agent --ownership owned --cleanup-preset archived-agent`.
 - Case shape: `case-add --area sandbox --proof slack --proof provider --proof admin --max-wait-ms 2700000` for a delegated task, and the 3600000 maximum for an idle-window case such as checkpoint restore after 30 idle minutes.
 - Request in a new thread: "<run marker> clone the repo, change one line of the README, run the tests, push a branch and open a draft pull request."

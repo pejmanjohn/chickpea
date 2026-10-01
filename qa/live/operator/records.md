@@ -78,6 +78,10 @@ attempt is open invalidates that attempt. Hold working-tree edits outside the
 claimed worktree until the attempt finishes. Use the recorder even when it
 refuses a field. A handwritten report is not a substitute.
 
+These four contract fields become immutable once present. A refresh may add a
+missing field, but cannot change or remove recorded product intent. Resolve the
+new spec's contexts and capabilities, then pass that file to `init`.
+
 Record a gotcha the moment you learn it, so it reaches the
 [feature map](../features/README.md) instead of private notes:
 
@@ -89,10 +93,6 @@ npm run verify:live:record -- lesson --area delivery --case requested-schedule \
 
 A lesson grades nothing. The report lists every lesson under "Lessons for the
 feature map"; fold each into its feature file before the run's PR merges.
-
-These four contract fields become immutable once present. A refresh may add a
-missing field, but cannot change or remove recorded product intent. Resolve the
-new spec's contexts and capabilities, then pass that file to `init`.
 
 Each context records `grade`, exact `target`, `servingVersion`, actual `model`,
 actor identity, fixture revision/digest, lane `state`, and relevant `config` digest.

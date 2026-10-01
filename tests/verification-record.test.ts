@@ -512,6 +512,8 @@ test('actual CLI init, resume, refresh, finish and generated report use the same
   writeFileSync(childSpecFile, JSON.stringify(childSpec));
   assert.equal(cli('init', '--spec', childSpecFile, '--run', childRunFile, '--parent-run', runFile, '--original-case', 'child-follow-up=linked-later'), 0, error);
   assert.equal(readRun(childRunFile).lineage.originalCases['child-follow-up'].caseId, 'linked-later');
+  assert.equal(cli('report', '--run', childRunFile, '--family'), 0, error);
+  assert.match(output, /- Parent [0-9a-f-]+ lesson \[verification\]: Reconnect MCP servers after the daemon switch\./, 'a follow-up run still shows its parent\'s lessons');
 
   assert.equal(cli('report', '--run', runFile, '--output', runFile), 2);
   assert.ok(readRun(runFile).events.length > 0);

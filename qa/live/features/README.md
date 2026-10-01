@@ -65,3 +65,8 @@ cleanup contract.
 ## Proof and gotchas
 Which readback proves what, and the traps earlier runs hit.
 ```
+
+A "Case shape" line in a feature file lists only the flags to add to a complete
+`case-add`; [agents.md](agents.md) shows a full command, and
+[records.md](../operator/records.md) shows the `resource` flags every
+registration needs.

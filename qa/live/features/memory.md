@@ -28,7 +28,7 @@ Docs: `/agents/memory/`. Record areas: `memory`. Legacy contracts: LC-07.
 - Conflict: keep an unsaved Memory draft in one Admin tab while another tab or Slack saves, then return to the draft.
 - Forget: ask the Agent to forget the fact, or save an empty body in Admin, then ask again from both surfaces.
 - Case shape: `case-add --area memory --proof slack --proof admin` (or `--proof mcp` with `inspect_memory`) and `--max-wait-ms 120000`.
-- Cleanup: archive the disposable Agent (`--kind agent --cleanup-preset archived-agent`). On the fixtures Agent, restore the exact body with `--ownership restore` and keep revision numbers out of the expected file, because every write advances them.
+- Cleanup: archive the disposable Agent (registered with `--kind agent --ownership owned --cleanup-preset archived-agent`). On the fixtures Agent, restore the exact body with `--ownership restore` and keep revision numbers out of the expected file, because every write advances them.
 
 ## Proof and gotchas
 

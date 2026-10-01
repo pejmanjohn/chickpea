@@ -30,7 +30,7 @@ Docs: `/slack/conversations/`, `/slack/replies/`, `/slack/handles-and-channels/`
 - Streaming: use a fresh Agent with no saved memory and ask for a long direct prose answer. Do not write "do not use any tools", which suppresses the declaration.
 - Files: upload a run-owned PNG or PDF in the thread and ask about it; for output, ask for a CSV and a PNG in one reply.
 - Block Kit: ask a question with a few known options, answer by clicking as the requester, and click as a second signed-in actor when one is available.
-- Cleanup: Slack messages are retained residue (`record resource --ownership retain`); archive every run-owned Agent.
+- Cleanup: archive every run-owned Agent. Slack messages stay as residue; register them only when the case declares them, with `--ownership retain` and an exact `--expected-file`.
 
 ## Proof and gotchas
 
