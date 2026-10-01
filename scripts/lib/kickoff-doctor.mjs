@@ -81,7 +81,11 @@ function laneVerdict(lane, facts) {
 
   if (!facts.localSchema || !lane.schemaGeneration) checks.push(check('warn', `Schema generation unknown (lane ${lane.schemaGeneration ?? '?'}, candidate ${facts.localSchema ?? '?'})`));
   else if (lane.schemaGeneration === facts.localSchema) checks.push(check('ok', `Schema ${lane.schemaGeneration} matches the candidate`));
-  else checks.push(check('human', `Lane serves schema ${lane.schemaGeneration}; the candidate needs ${facts.localSchema}`, 'Advancing is permanent: get the maintainer\'s approval for npm run env -- schema-advance <lane>, or choose a lane at the candidate\'s generation.'));
+  // The maintainer approved advancing without asking, but only one recorded step
+  // forward can be advanced; a newer or unreachable lane is refused by the deploy.
+  else if (lane.schemaStep === 'one_step') checks.push(check('warn', `Lane serves schema ${lane.schemaGeneration}; the candidate needs ${facts.localSchema}`, 'Prefer a lane at the candidate\'s generation; otherwise run npm run env -- schema-advance <lane> after claiming it. The advance is permanent.'));
+  else if (lane.schemaStep === 'ahead') checks.push(check('block', `Lane serves schema ${lane.schemaGeneration}, newer than the candidate's ${facts.localSchema}; the guarded deploy refuses it`, 'Choose a lane at the candidate\'s generation, or rebase onto the branch that carries the newer migration.'));
+  else checks.push(check('block', `Lane serves schema ${lane.schemaGeneration}, which the candidate (${facts.localSchema}) cannot reach in one recorded step`, 'Choose a lane at the candidate\'s generation; a lane on a migration that changed or never merged needs rebuilding.'));
 
   if (lane.versionMatchesRegistry === false) checks.push(check('warn', `The live version differs from the registry's ${lane.servingVersion?.slice(0, 8) ?? 'record'}; someone deployed outside the guarded wrapper or a deploy is unreconciled`));
   if (lane.modelRoles) checks.push(check('info', `Models: ${lane.modelRoles}`));
@@ -165,10 +169,12 @@ export async function gatherKickoffFacts({
     }
   });
 
-  facts.localSchema = await load('localSchema', async () => {
-    try { return (await import('./environment-preflight.mjs')).readLocalEnvironmentContract({ projectRoot: root }).schemaGeneration; }
+  const contract = await load('localContract', async () => {
+    try { return (await import('./environment-preflight.mjs')).readLocalEnvironmentContract({ projectRoot: root }); }
     catch { return null; }
   });
+  facts.localSchema = 'localSchema' in readers ? readers.localSchema : contract?.schemaGeneration ?? null;
+  const { schemaStep } = await import('./environment-preflight.mjs');
 
   facts.lanes = [];
   let rows, registry;
@@ -192,6 +198,12 @@ export async function gatherKickoffFacts({
     facts.lanes.push({
       target: row.target, health: row.health, profile: row.profile, liveVersion: row.liveVersion,
       servingVersion: row.servingVersion ?? null, schemaGeneration: row.schemaGeneration ?? registration.schemaGeneration ?? null,
+      schemaStep: (() => {
+        const laneSchema = row.schemaGeneration ?? registration.schemaGeneration;
+        if (!laneSchema || !facts.localSchema) return null;
+        if (laneSchema === facts.localSchema) return 'same';
+        return contract?.schemaHistory ? schemaStep(laneSchema, facts.localSchema, contract.schemaHistory) : 'unreachable';
+      })(),
       readErrors: row.errors ?? [], modelRoles: row.defaultChatModel || row.imageRole || row.codingRole ? row.modelRoles : null,
       providerKeys: row.secrets ? Object.entries(row.secrets).filter(([, present]) => present).map(([name]) => name) : null,
       versionMatchesRegistry: row.versionMatchesRegistry ?? null,

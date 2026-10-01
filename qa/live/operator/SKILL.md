@@ -131,6 +131,10 @@ widen the authorization above.
   ([fixtures.md](fixtures.md)). Keep "remember" or "save" wording out of
   prompts unless the case tests memory.
 - Test on the lane's configured model only, unless the request names others.
+- Advance a lane's schema with `npm run env -- schema-advance <lane>` whenever
+  the candidate needs it, merged or not. Prefer a lane already at the
+  candidate's generation, because an advance is permanent, and name it in the
+  run report.
 
 ## Node baseline
 

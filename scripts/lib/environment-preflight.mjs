@@ -2622,6 +2622,22 @@ function schemaRelation(fromGeneration, toGeneration, history) {
   return differences.includes(1) ? 1 : 0;
 }
 
+/**
+ * How a lane's schema generation relates to a candidate's, judged the way the
+ * guarded deploy and `env schema-advance` judge it: `same`, `one_step` (the one
+ * recorded successor that schema-advance can record), `ahead` (the lane is
+ * newer, so the deploy refuses a rollback), or `unreachable` (more than one
+ * step, or a generation the candidate's history does not know).
+ */
+export function schemaStep(laneGeneration, candidateGeneration, history) {
+  if (laneGeneration === candidateGeneration) return 'same';
+  let relation;
+  try { relation = schemaRelation(laneGeneration, candidateGeneration, history); } catch { return 'unreachable'; }
+  if (relation < 0) return 'ahead';
+  if (relation === 0) return 'same';
+  return isRecordedSchemaSuccessor(laneGeneration, candidateGeneration, history) ? 'one_step' : 'unreachable';
+}
+
 function isRecordedSchemaSuccessor(fromGeneration, toGeneration, history) {
   const from = schemaParts(fromGeneration);
   const to = schemaParts(toGeneration);

@@ -10,13 +10,15 @@ import { deployCommand, gatherKickoffFacts, kickoffReport, renderKickoff, teleme
 import { adminSession, slackSession } from '../scripts/lib/lane-browser-probe.mjs';
 // @ts-expect-error Executable helpers are JavaScript, shared with the CLI.
 import { main, parseArguments } from '../scripts/verify-live-kickoff.mjs';
+// @ts-expect-error Executable helpers are JavaScript, shared with the CLI.
+import { schemaStep } from '../scripts/lib/environment-preflight.mjs';
 
 const SCHEMA = 'd1:0002_mcp_oauth;do:v11';
 
 function lane(overrides: object = {}) {
   return {
     target: 'amber', health: 'ready', profile: 'core', liveVersion: 'b56bcee6-1', servingVersion: 'b56bcee6-1',
-    schemaGeneration: SCHEMA, readErrors: [], modelRoles: null, providerKeys: null, versionMatchesRegistry: true,
+    schemaGeneration: SCHEMA, schemaStep: 'same', readErrors: [], modelRoles: null, providerKeys: null, versionMatchesRegistry: true,
     missingActorAliases: [], setupFlowUnprovenSince: null, claim: null, telemetryReceipt: 'passed',
     browser: { state: 'running', admin: 'signed_in', slack: 'signed_in' }, ...overrides,
   };
@@ -71,7 +73,7 @@ test('host problems block the run and say how to fix them', () => {
 test('lane problems are sorted into blockers and things only a person can do', () => {
   const report = kickoffReport(facts({ lanes: [
     lane({ target: 'amber', claim: { ownWorktree: false, branch: 'other-task', expiresAt: 'later' } }),
-    lane({ target: 'cobalt', schemaGeneration: 'd1:0002_mcp_oauth;do:v10', browser: { state: 'held', holderPid: 63707 } }),
+    lane({ target: 'cobalt', schemaGeneration: 'd1:0002_mcp_oauth;do:v10', schemaStep: 'one_step', browser: { state: 'held', holderPid: 63707 } }),
     lane({ target: 'violet', browser: { state: 'running', admin: 'signed_out', slack: 'other_workspace' }, versionMatchesRegistry: false }),
   ] }));
   assert.equal(report.ok, false);
@@ -79,8 +81,8 @@ test('lane problems are sorted into blockers and things only a person can do', (
   const amber = report.lanes[0].checks.find((c: any) => c.level === 'block');
   assert.match(amber.text, /Held by another worktree on other-task/);
   assert.match(amber.fix, /never take it/);
-  assert.equal(report.needs.length, 4);
-  assert.match(report.needs.join('\n'), /cobalt: Lane serves schema .*do:v10; the candidate needs .*do:v11/);
+  assert.equal(report.needs.length, 3, 'a schema advance needs no person');
+  assert.ok(report.lanes[1].checks.some((c: any) => c.level === 'warn' && /Lane serves schema .*do:v10; the candidate needs .*do:v11/.test(c.text) && /schema-advance/.test(c.fix)));
   assert.match(report.needs.join('\n'), /cobalt: Lane browser profile is held by another session's Chrome \(PID 63707\)/);
   assert.match(report.needs.join('\n'), /violet: Admin is signed out/);
   assert.match(report.needs.join('\n'), /violet: Slack in chrome-violet is on a different workspace/);
@@ -88,6 +90,13 @@ test('lane problems are sorted into blockers and things only a person can do', (
   assert.ok(report.lanes[2].checks.some((c: any) => c.level === 'warn' && /live version differs/.test(c.text)));
   const own = kickoffReport(facts({ lanes: [lane({ claim: { ownWorktree: true, branch: 'mine', expiresAt: 'later' } })] }));
   assert.equal(own.ok, true);
+  const behind = kickoffReport(facts({ lanes: [lane({ schemaGeneration: 'd1:0002_mcp_oauth;do:v10', schemaStep: 'one_step' })] }));
+  assert.equal(behind.ok, true, 'a lane one schema step behind is still ready; the verifier advances it');
+  const ahead = kickoffReport(facts({ lanes: [lane({ schemaGeneration: 'd1:0002_mcp_oauth;do:v12', schemaStep: 'ahead' })] }));
+  assert.equal(ahead.ok, false, 'the deploy refuses a lane on a newer schema');
+  assert.match(ahead.lanes[0].checks.find((c: any) => c.level === 'block').text, /newer than the candidate's/);
+  const far = kickoffReport(facts({ lanes: [lane({ schemaGeneration: 'd1:0002_mcp_oauth;do:v8', schemaStep: 'unreachable' })] }));
+  assert.equal(far.ok, false, 'schema-advance records only one step');
   const stopped = kickoffReport(facts({ lanes: [lane({ browser: { state: 'stopped' } })] }));
   assert.match(stopped.lanes[0].checks.find((c: any) => c.level === 'block').fix, /npm run lane:browser -- start amber/);
   assert.equal(kickoffReport(facts({ lanes: [lane({ browser: null })] })).ok, true, '--no-browser leaves the lane ready');
@@ -120,6 +129,16 @@ test('a telemetry receipt counts only when it covers the serving version, and th
   writeFileSync(join(dir, 'telemetry-broken.json'), '{');
   assert.equal(telemetryReceiptFor(dir, 'v1'), 'passed');
   assert.equal(telemetryReceiptFor(join(dir, 'missing'), 'v1'), null);
+});
+
+test('schema steps are judged the way the deploy and schema-advance judge them', () => {
+  const history = { d1: ['0001', '0002'], durableObject: ['v1', 'v2', 'v3'] };
+  assert.equal(schemaStep('d1:0002;do:v2', 'd1:0002;do:v2', history), 'same');
+  assert.equal(schemaStep('d1:0002;do:v1', 'd1:0002;do:v2', history), 'one_step');
+  assert.equal(schemaStep('d1:0001;do:v2', 'd1:0002;do:v3', history), 'one_step');
+  assert.equal(schemaStep('d1:0002;do:v1', 'd1:0002;do:v3', history), 'unreachable');
+  assert.equal(schemaStep('d1:0002;do:v3', 'd1:0002;do:v2', history), 'ahead');
+  assert.equal(schemaStep('d1:0002;do:v9', 'd1:0002;do:v3', history), 'unreachable', 'a lane on a migration the candidate never had');
 });
 
 test('sign-in classifiers read only the address and visible text', () => {

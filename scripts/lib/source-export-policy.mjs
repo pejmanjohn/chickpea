@@ -150,6 +150,7 @@ export const liveVerifierExportPolicy = Object.freeze({
     exportPath('qa', 'live', 'observers', 'slack.ts'),
     exportPath('qa', 'live', 'operator', 'SKILL.md'),
     exportPath('qa', 'live', 'operator', 'modes.md'),
+    exportPath('qa', 'live', 'operator', 'cloud.md'),
     exportPath('qa', 'live', 'operator', 'environments.md'),
     exportPath('qa', 'live', 'operator', 'records.md'),
     exportPath('qa', 'live', 'operator', 'recovery.md'),
@@ -577,7 +578,7 @@ export function publicSourceManifestFindings(entries) {
 
 /**
  * The one tracked MCP client config. It may define only the lane browser
- * servers of qa/live/operator/hosts.md, each launched through the repository
+ * servers of qa/live/operator/cloud.md, each launched through the repository
  * script with the opt-in root variable, so a cloud session gets the lane
  * browsers and no other host ever runs something else from this file.
  */

@@ -174,7 +174,7 @@ export async function runEnvironmentCli(argv, io = {}) {
         claimedRevision: claim.claimedRevision,
         expiresAt: claim.expiresAt,
         schemaIntent,
-        ...(schemaIntent.startsWith('stale:') ? { next: 'The pending schema intent no longer matches this HEAD; run `env schema-advance` again if the advance is still approved.' } : {}),
+        ...(schemaIntent.startsWith('stale:') ? { next: 'The pending schema intent no longer matches this HEAD; run `env schema-advance` again if the candidate still needs it.' } : {}),
       };
       await sourceAdvisory(claim.canonicalWorktreePath, stderr, io);
     } else if (parsed.command === 'schema-advance') {
