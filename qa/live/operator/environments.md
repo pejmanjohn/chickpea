@@ -194,33 +194,60 @@
    or live-acceptance fences. Read-only reconciliation of an existing intent
    remains available when no new upload occurs.
 
-   A claim is stamped with the worktree's HEAD. Do not commit, amend, or
-   rebase in that worktree while a claimed deploy is running, and re-claim
-   after committing before the next deploy: a HEAD that differs from the
-   claimed revision fails the deploy's final fence with
-   `MUTATION_LEASE_AUTHORITY_CHANGED`, and then `release`, `reclaim`, and
-   `reconciliation` all refuse with `CLAIM_REVISION_MISMATCH`. Recovery is to
+   A claim is stamped with the worktree's branch and HEAD, and every deploy and
+   reconciliation checks that stamp. Do not commit, amend, or rebase in that
+   worktree while a claimed deploy is running: a HEAD that moves mid-deploy
+   fails the final fence with `MUTATION_LEASE_AUTHORITY_CHANGED`, and
+   `reconciliation` then refuses with `CLAIM_REVISION_MISMATCH`. Recovery is to
    check out the claimed revision, run `npm run env -- reconciliation <alias>`
-   (it adopts the uploaded version and clears the intent lock), release, and
-   only then move HEAD again.
+   (it adopts the uploaded version and clears the intent lock), and only then
+   move HEAD again.
 
-   Claims need a named branch. `claim` and `wait-claim` refuse a detached HEAD
-   with `INVALID_WORKTREE`, so create a branch at the candidate first. To land
-   a fix commit during a claimed run, with no deploy in flight:
+   Between deploys, after a fix commit, a rebase or merge of `origin/main`, or
+   a branch switch, move the claim with the worktree:
 
    ```sh
-   git branch <fix-tip>                # keep the new commit
-   git reset --hard <claimed-revision>
-   npm run env -- release <alias> --worktree <absolute-worktree>
-   git reset --hard <fix-tip>
-   npm run env -- wait-claim <alias> --timeout-ms 0 --poll-ms 1000 --worktree <absolute-worktree>
+   npm run env -- restamp <alias> --worktree <absolute-worktree>
    ```
 
-   Batch fixes between deploys to keep these cycles rare. When `main` has
-   moved, the deploy refuses with `QA_SOURCE_BEHIND_MAIN`. Merge or rebase onto
-   the new `origin/main` just before the deploy, re-run affected offline checks,
-   and re-claim at the new HEAD. For stacked candidates, build a local verify
-   branch from `origin/main` plus the needed commits.
+   It keeps the lane, stamps the new branch and HEAD, and carries a pending
+   schema intent (`schemaIntent` in its output). It refuses while a deploy is
+   open and never takes another worktree's lane (`CLAIM_OWNER_MISMATCH`).
+   `release` works from any branch HEAD of the owning worktree. Claims need a
+   named branch: `claim`, `wait-claim`, `restamp` and `release` refuse a
+   detached HEAD with `INVALID_WORKTREE`, so create a branch at the candidate
+   first.
+
+   When `main` has moved, the deploy refuses with `QA_SOURCE_BEHIND_MAIN`.
+   `claim`, `wait-claim` and `restamp` print a one-line source advisory on
+   stderr, so this shows up before a build. Merge or rebase onto the new
+   `origin/main` just before the deploy, re-run affected offline checks, and
+   `restamp`. For stacked candidates, build a local verify branch from
+   `origin/main` plus the needed commits. To verify a published release that
+   `main` has since passed, check out its tag on a branch and add
+   `--release-tag vX.Y.Z` after the lane deploy command (`npm run deploy --
+   --release-tag vX.Y.Z`). It admits HEAD only when the remote publishes that
+   tag at exactly HEAD, the tag is on `main`, and the working tree is clean
+   (`QA_RELEASE_TAG_UNPUBLISHED`, `_MISMATCH`, `_NOT_ON_MAIN`, `_DIRTY`);
+   `npm run verify:live:candidate -- --release-tag vX.Y.Z` runs the same check
+   read-only. A deploy without a lane target refuses the flag. It exists only
+   in releases after v0.1.33, because the deploy runs the tag's own wrapper.
+
+   A lane records the Durable Object schema generation it serves (the Schema
+   column of `env capabilities`). A candidate with a newer generation is
+   refused with `INCOMPATIBLE_SCHEMA_GENERATION`. Advancing a lane is permanent,
+   because Cloudflare cannot roll a Durable Object migration back, so ask the
+   maintainer in the session before you record it:
+
+   ```sh
+   npm run env -- schema-advance <alias> --worktree <absolute-worktree>
+   ```
+
+   It records one step to the candidate's own generation, read from the claimed
+   worktree, for this claim; the next guarded deploy applies it. A `restamp`
+   carries it when the new HEAD has the same generation and otherwise reports
+   it stale. Without approval, use a lane that already serves the candidate's
+   generation.
    Only the Slack manifest digest, the required scopes, and
    `src/auth/setup-capability.mjs` are hard-gated against the lane baseline; a
    mismatch refuses with `INSTALL_CONTINUATION_REQUIRED`, and the recovery is to
@@ -269,7 +296,7 @@ section, and keep lane-specific values out of this repository.
 | Deploy profile (`core`, `sandbox`, or `mixed` during a split deployment) and live version | Wrangler: the serving version's `SANDBOX` binding. A core deploy over a sandbox Worker is refused, so use `npm run deploy:sandbox` there. A live version that differs from the registry is shown next to it. |
 | Provider keys by name (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, `BROWSERBASE_API_KEY`, `COMPOSIO_API_KEY`) and `CHICKPEA_ENV_SEED_TOKEN` | Wrangler `secret list`, names only. The seed token column also shows whether the operator holds the lane's seed token file (existence only). |
 | Default chat model and image role | Generated from the lane's QA-only models route, read with the lane seed token. Shows unknown until the lane serves that route; then read Admin Settings › Model providers or the model footer of a one-word Agent reply. |
-| Missing actor aliases, Slack workspace label, transport, setup-flow marker, claim | The environment registry, as in `env status`. `missing_actor` limits Member-view checks. A `gateway` lane has no operator Slack token (see [hosts.md](hosts.md#slack-evidence-on-gateway-lanes)). |
+| Missing actor aliases, Slack workspace label, transport, schema generation, setup-flow marker, claim | The environment registry, as in `env status`. A candidate needs a lane whose Schema matches its own generation unless the maintainer approves `env schema-advance`. `missing_actor` limits Member-view checks. A `gateway` lane has no operator Slack token (see [hosts.md](hosts.md#slack-evidence-on-gateway-lanes)). |
 | GitHub App and granted repositories, sandbox runtime on or off | Not generated. Admin Settings › Coding sandbox and GitHub. |
 | Registered connector fixtures and standing QA connections | Not generated. The private fixture inventory ([fixtures.md](fixtures.md)). |
 | Whether Chrome is signed in to Slack and Admin | Not generated. The browser. A lane's workspace can display under an older name. |

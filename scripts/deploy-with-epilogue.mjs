@@ -104,6 +104,18 @@ const cliArgs = process.argv.slice(2);
     }
   }
 }
+// `--release-tag vX.Y.Z` admits a published release to a QA lane after main
+// has moved past it: HEAD must be exactly that tag and the tag must be on main.
+let releaseTagOption;
+{
+  const index = cliArgs.findIndex((arg) => arg === '--release-tag' || arg.startsWith('--release-tag='));
+  if (index >= 0) {
+    const inline = cliArgs[index].startsWith('--release-tag=');
+    releaseTagOption = inline ? cliArgs[index].slice('--release-tag='.length) : cliArgs[index + 1];
+    if (!releaseTagOption || releaseTagOption.startsWith('--')) { console.error('--release-tag needs a tag such as v0.1.33.'); process.exit(2); }
+    cliArgs.splice(index, inline ? 1 : 2);
+  }
+}
 const deployArgs = cliArgs.filter((arg) => !['--skip-build', '--preflight-only'].includes(arg));
 const skipBuild = cliArgs.includes('--skip-build');
 const preflightOnly = cliArgs.includes('--preflight-only');
@@ -315,6 +327,10 @@ const selectedEnvironmentTarget = !deployArgs.includes('--dry-run')
   && requestedDeploymentTarget
   ? requestedDeploymentTarget
   : undefined;
+if (releaseTagOption !== undefined && !selectedEnvironmentTarget) {
+  console.error('--release-tag applies only to a QA lane deploy: set CHICKPEA_DEPLOY_TARGET=<lane> and omit --dry-run.');
+  process.exit(2);
+}
 let environmentPreflightApi;
 let initialEnvironmentPreflight;
 let resumedEnvironmentDeployment;
@@ -327,7 +343,7 @@ if (selectedEnvironmentTarget) {
     // Every upload, including a resumed upload, needs it. The separate env
     // reconciliation command can finish old intents without changing source.
     qaCandidateApi = await import('./lib/qa-candidate.mjs');
-    qaSourceAdmission = qaCandidateApi.admitQaCandidate(projectRoot);
+    qaSourceAdmission = qaCandidateApi.admitQaCandidate(projectRoot, releaseTagOption === undefined ? {} : { releaseTag: releaseTagOption });
     process.stdout.write(`QA source includes remote main ${qaSourceAdmission.approvedTip}; tracking ref ${qaSourceAdmission.trackingMatchesRemote ? 'matches' : 'differs (use the admitted tip as --base)'}.\n`);
     environmentPreflightApi = await import('./lib/environment-preflight.mjs');
     resumedEnvironmentDeployment = await environmentPreflightApi.resumeEnvironmentDeployment(

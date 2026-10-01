@@ -97,8 +97,9 @@ so a run does not stall mid-journey while the maintainer is away:
 
 1. Run `npm run env -- capabilities all` and pick the lane
    ([choose a lane by capability](environments.md#choose-a-lane-by-capability)):
-   deploy profile, provider keys, image role, default model, and registered
-   connector fixtures must cover every selected case.
+   deploy profile, provider keys, image role, default model, schema
+   generation, and registered connector fixtures must cover every selected
+   case. `npm run env -- --help` lists every lane command.
 2. Run `npm run lane:browser -- status all` and start a stopped lane daemon
    with `npm run lane:browser -- start <lane>`; then open the lane's QA channel
    and Admin through `chrome-<lane>` to confirm the profile is signed in (see

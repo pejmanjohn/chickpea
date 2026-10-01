@@ -25,13 +25,76 @@ import {
 import {
   reconcileEnvironmentDeployment,
   adoptEnvironmentFromFile,
+  carryEnvironmentSchemaAdvancementIntent,
+  readLocalEnvironmentContract,
   withEnvironmentReleaseFence,
+  writeEnvironmentSchemaAdvancementIntent,
 } from './lib/environment-preflight.mjs';
+
+export const USAGE = `Usage: npm run env -- <command> [lane] [options]
+
+Lanes: ${activeEnvironmentTargets.join(', ')}. Every command takes --worktree <absolute path> (default: the current directory).
+
+  status [lane|--all]            Claims, health, serving version and schema generation.
+  capabilities <lane|all> [--json] [--write]
+                                 Read-only lane capability matrix: profile, keys, models, schema.
+  claim [lane]                   Claim a free lane for this worktree at its current HEAD.
+  wait-claim <lane|any> --timeout-ms MS --poll-ms MS
+                                 Wait for a lane, then claim it (0 timeout = try once).
+  restamp <lane>                 Move this worktree's own claim to its current HEAD after a commit,
+                                 rebase or branch switch. Refused while a deploy is open; never
+                                 takes another worktree's lane. Carries a pending schema intent.
+  schema-advance <lane>          Record this worktree's intent to advance the lane's Durable Object
+                                 schema to the candidate's generation (one recorded step). The next
+                                 guarded deploy applies it. Permanent: Cloudflare cannot roll back.
+  release <lane>                 Give back this worktree's claim from any branch HEAD.
+  reclaim <lane> [--adopt-orphan]
+                                 Renew an expired claim, or adopt one whose worktree is gone.
+  target <lane> | attest <lane>  Doctor inputs for the legacy coordinator.
+  reconciliation [lane]          Adopt an uploaded version after an interrupted deploy.
+  register --registration FILE | migrate-provider-auth --bindings FILE
+  install-reserve|install-start|install-reconcile|install-restore <lane> ...
+                                 Borrow a lane for a fresh install (qa/live/operator/environments.md).
+
+Output is JSON on stdout; errors are JSON on stderr with an "error" code.
+`;
+
+/**
+ * One advisory line on stderr after a claim: whether the worktree's HEAD
+ * already contains remote main. The guarded deploy refuses a candidate behind
+ * main (QA_SOURCE_BEHIND_MAIN); saying so now saves a build and a host wait.
+ */
+async function sourceAdvisory(worktreePath, stderr, io) {
+  if (io.sourceAdvisory === false || process.env.CHICKPEA_ENV_SOURCE_ADVISORY === 'off') return;
+  try {
+    const { admitQaCandidate } = await import('./lib/qa-candidate.mjs');
+    const admission = admitQaCandidate(worktreePath);
+    stderr(`source: contains remote main ${admission.approvedTip.slice(0, 8)}; ready for a guarded deploy\n`);
+  } catch (error) {
+    const code = error?.code ?? 'UNKNOWN';
+    stderr(code === 'QA_SOURCE_BEHIND_MAIN'
+      ? 'source: behind remote main; rebase or merge origin/main, then `npm run env -- restamp <lane>`, before deploying\n'
+      : `source: admission not confirmed (${code}); the guarded deploy will check again\n`);
+  }
+}
+
+/**
+ * The schema contract belongs to the claimed checkout. Without this, a
+ * `--worktree` pointing at another checkout would be judged by the runner's own
+ * migrations.
+ */
+function contractOptions(options, parsed) {
+  return parsed.flags.worktree ? { ...options, projectRoot: parsed.flags.worktree } : options;
+}
 
 export async function runEnvironmentCli(argv, io = {}) {
   const stdout = io.stdout ?? ((value) => process.stdout.write(value));
   const stderr = io.stderr ?? ((value) => process.stderr.write(value));
   try {
+    if (argv.length === 0 || argv.includes('--help') || argv[0] === 'help') {
+      (argv.length === 0 ? stderr : stdout)(USAGE);
+      return argv.length === 0 ? 2 : 0;
+    }
     const parsed = parseArgs(argv);
     const options = {
       ...(parsed.flags.root ? { root: parsed.flags.root } : {}),
@@ -90,6 +153,37 @@ export async function runEnvironmentCli(argv, io = {}) {
       result = migrateEnvironmentProviderAuthConfigsFromFile(parsed.flags.bindings, options);
     } else if (parsed.command === 'claim') {
       result = claimEnvironment(parsed.target, options);
+      await sourceAdvisory(result.canonicalWorktreePath, stderr, io);
+    } else if (parsed.command === 'restamp') {
+      requireTarget(parsed.target);
+      if (Object.keys(parsed.flags).some((flag) => !['root', 'worktree', 'leaseMs'].includes(flag))) {
+        throw new EnvironmentRegistryError('INVALID_ARGUMENT');
+      }
+      let previous;
+      const claim = reclaimEnvironment(parsed.target, {
+        ...options,
+        requireSameWorktree: true,
+        onReclaimed: (change) => { previous = change.previous; },
+      });
+      const schemaIntent = carryEnvironmentSchemaAdvancementIntent(parsed.target, previous?.leaseNonce, contractOptions(options, parsed));
+      result = {
+        target: parsed.target,
+        restamped: true,
+        branch: claim.branch,
+        previousRevision: previous?.claimedRevision ?? null,
+        claimedRevision: claim.claimedRevision,
+        expiresAt: claim.expiresAt,
+        schemaIntent,
+        ...(schemaIntent.startsWith('stale:') ? { next: 'The pending schema intent no longer matches this HEAD; run `env schema-advance` again if the advance is still approved.' } : {}),
+      };
+      await sourceAdvisory(claim.canonicalWorktreePath, stderr, io);
+    } else if (parsed.command === 'schema-advance') {
+      requireTarget(parsed.target);
+      if (Object.keys(parsed.flags).some((flag) => !['root', 'worktree'].includes(flag))) {
+        throw new EnvironmentRegistryError('INVALID_ARGUMENT');
+      }
+      const local = contractOptions(options, parsed);
+      result = writeEnvironmentSchemaAdvancementIntent(parsed.target, readLocalEnvironmentContract(local).schemaGeneration, local);
     } else if (parsed.command === 'wait-claim') {
       if (!parsed.target || !['any', ...activeEnvironmentTargets].includes(parsed.target)
         || parsed.flags.timeoutMs === undefined || parsed.flags.pollMs === undefined
@@ -122,6 +216,7 @@ export async function runEnvironmentCli(argv, io = {}) {
           process.removeListener('SIGTERM', interrupt);
         }
       }
+      if (result?.claim?.canonicalWorktreePath) await sourceAdvisory(result.claim.canonicalWorktreePath, stderr, io);
     } else if (parsed.command === 'capabilities') {
       requireTarget(parsed.target);
       if (Object.keys(parsed.flags).some((flag) => ![
@@ -167,11 +262,12 @@ export async function runEnvironmentCli(argv, io = {}) {
       result = await attestEnvironment(parsed.target, observation, options);
     } else if (parsed.command === 'release') {
       requireTarget(parsed.target);
+      const releaseOptions = { ...options, ownerHeadMayMove: true };
       result = withEnvironmentReleaseFence(
         parsed.target,
-        options,
+        releaseOptions,
         (fence) => releaseEnvironment(parsed.target, {
-          ...options,
+          ...releaseOptions,
           expectedTargetLockRunId: fence.runId,
         }),
       );
