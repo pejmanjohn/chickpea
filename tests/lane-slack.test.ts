@@ -137,7 +137,7 @@ test('the kickoff doctor reports whether a lane has a working readback token', a
 test('a lane secret is set in place, keeping every other line, owner-only', (context) => {
   assert.equal(upsertSecretLine('', 'AMBER__SLACK_READBACK_TOKEN', 'xoxp-1'), 'AMBER__SLACK_READBACK_TOKEN=xoxp-1\n');
   const before = '# keys\nOPENAI_API_KEY=sk-x\nexport AMBER__SLACK_READBACK_TOKEN=old\nCOBALT__COMPOSIO_API_KEY=c';
-  assert.equal(upsertSecretLine(before, 'AMBER__SLACK_READBACK_TOKEN', 'xoxp-$&-2'), '# keys\nOPENAI_API_KEY=sk-x\nAMBER__SLACK_READBACK_TOKEN=xoxp-$&-2\nCOBALT__COMPOSIO_API_KEY=c');
+  assert.equal(upsertSecretLine(before, 'AMBER__SLACK_READBACK_TOKEN', 'xoxp-$&-2'), '# keys\nOPENAI_API_KEY=sk-x\nexport AMBER__SLACK_READBACK_TOKEN=xoxp-$&-2\nCOBALT__COMPOSIO_API_KEY=c');
   assert.throws(() => upsertSecretLine('', 'AMBER__SLACK_READBACK_TOKEN', 'two words'), /one token with no spaces/);
   const dir = mkdtempSync(path.join(tmpdir(), 'lane-secret-'));
   context.after(() => rmSync(dir, { recursive: true, force: true }));
@@ -194,4 +194,28 @@ test('store-token finds the lane app, reads its token, checks the workspace, and
   assert.match(err, /amber: chrome-amber is not running\. Start it with npm run lane:browser -- start amber/);
   assert.throws(() => parseArguments(['all', 'whoami']), /Choose a lane/);
   assert.throws(() => parseArguments(['amber', 'store-token', 'extra']), /no other arguments/);
+});
+
+test('the page expressions run as written, and the app lookup is strict about lane and workspace', async () => {
+  // @ts-expect-error Executable helpers are JavaScript, shared with the CLI.
+  const api = await import('../scripts/lib/slack-readback.mjs');
+  const link = (href: string, row: string) => ({ getAttribute: () => href, closest: () => ({ innerText: row }), innerText: row });
+  const listDocument = { querySelectorAll: () => [link('/apps/A0COB', 'Chickpea QA Readback  Chickpea Cobalt A0COB'), link('/apps/A0AMB', 'Chickpea QA Readback\nChickpea Amber A0AMB')] };
+  const rows = new Function('document', `return ${api.APP_LIST_EXPRESSION}`)(listDocument);
+  assert.deepEqual(rows.map((r: any) => r.row), ['Chickpea QA Readback Chickpea Cobalt A0COB', 'Chickpea QA Readback Chickpea Amber A0AMB']);
+  const tokenDocument = { querySelectorAll: () => [{ value: 'not-a-token' }, { value: 'xoxp-page-token' }] };
+  assert.deepEqual(new Function('document', 'location', `return ${api.APP_TOKEN_EXPRESSION}`)(tokenDocument, { pathname: '/app-settings/T0AMB/A0AMB/oauth' }),
+    { team: 'T0AMB', app: 'A0AMB', token: 'xoxp-page-token' });
+
+  const probe = (extraFor: (url: string) => unknown) => async ({ url }: { url: string }) => ({ extra: extraFor(url) });
+  assert.equal(await api.findReadbackApp({ probePage: probe(() => rows), port: 9331, workspaceLabel: 'Chickpea Amber' }), 'A0AMB', 'another lane\'s readback app is never picked');
+  await assert.rejects(api.findReadbackApp({ probePage: probe(() => rows), port: 9333, workspaceLabel: 'Chickpea Violet' }), /READBACK_APP_NOT_FOUND/);
+  await assert.rejects(api.readAppToken({ probePage: probe(() => ({ team: 'T0OTHER', app: 'A0AMB', token: 'xoxp-x' })), port: 9331, appId: 'A0AMB', teamId: 'T0AMB' }), /READBACK_APP_MISMATCH/);
+});
+
+test('updating a secret keeps an export prefix, an indent and Windows line endings', () => {
+  assert.equal(upsertSecretLine('export A__X=old\nB=1\n', 'A__X', 'new'), 'export A__X=new\nB=1\n');
+  assert.equal(upsertSecretLine('  A__X=old\nB=1\n', 'A__X', 'new'), '  A__X=new\nB=1\n');
+  assert.equal(upsertSecretLine('A__X=old\r\nB=1\r\n', 'A__X', 'new'), 'A__X=new\r\nB=1\r\n');
+  assert.equal(upsertSecretLine('A__XY=keep\n', 'A__X', 'new'), 'A__XY=keep\nA__X=new\n', 'a longer name is a different line');
 });

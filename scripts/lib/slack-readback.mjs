@@ -163,11 +163,15 @@ export async function readHistory(call, { channel, oldest, latest, limit = 50 })
 
 export const READBACK_APP_NAME = 'Chickpea QA Readback';
 
+// Expressions evaluated in the lane browser page; constants, never built from input.
+export const APP_LIST_EXPRESSION = `[...document.querySelectorAll('a[href*="/apps/A"]')].map((a) => ({ href: a.getAttribute('href'), row: (a.closest('tr') || a).innerText.replace(/\\s+/g, ' ').trim() }))`;
+export const APP_TOKEN_EXPRESSION = `(() => { const m = location.pathname.match(/app-settings\\/(T[A-Z0-9]+)\\/(A[A-Z0-9]+)\\/oauth/); const v = [...document.querySelectorAll('input')].map((i) => i.value || '').find((x) => /^xoxp-/.test(x)); return { team: m ? m[1] : null, app: m ? m[2] : null, token: v || null }; })()`;
+
 /** Find this lane's readback app in the Slack app console, by name and workspace. */
 export async function findReadbackApp({ probePage, port, workspaceLabel }) {
   const page = await probePage({
     port, url: 'https://api.slack.com/apps',
-    extract: `[...document.querySelectorAll('a[href*="/apps/A"]')].map((a) => ({ href: a.getAttribute('href'), row: (a.closest('tr') || a).innerText.replace(/\\s+/g, ' ').trim() }))`,
+    extract: APP_LIST_EXPRESSION,
     settledWhen: (p) => Array.isArray(p.extra) && p.extra.length > 0,
   });
   const rows = Array.isArray(page.extra) ? page.extra : [];
@@ -181,7 +185,7 @@ export async function findReadbackApp({ probePage, port, workspaceLabel }) {
 export async function readAppToken({ probePage, port, appId, teamId }) {
   const page = await probePage({
     port, url: `https://api.slack.com/apps/${appId}/oauth`,
-    extract: `(() => { const m = location.pathname.match(/app-settings\\/(T[A-Z0-9]+)\\/(A[A-Z0-9]+)\\/oauth/); const v = [...document.querySelectorAll('input')].map((i) => i.value || '').find((x) => /^xoxp-/.test(x)); return { team: m ? m[1] : null, app: m ? m[2] : null, token: v || null }; })()`,
+    extract: APP_TOKEN_EXPRESSION,
     settledWhen: (p) => Boolean(p.extra?.token),
   });
   const found = page.extra ?? {};

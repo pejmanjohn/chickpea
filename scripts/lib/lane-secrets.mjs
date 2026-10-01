@@ -17,13 +17,13 @@
  * Names and short fingerprints are reported; values never are.
  */
 import { createHash, randomBytes as nodeRandomBytes } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { QA_LANES } from './qa-lanes.mjs';
-import { assertPrivatePath } from './upgrade-receipt.mjs';
+import { assertPrivatePath, writePrivateText } from './upgrade-receipt.mjs';
 
 export const LANE_SECRETS_FILE_ENV = 'CHICKPEA_LANE_SECRETS_FILE';
 export const LANE_SECRETS_TOGGLE_ENV = 'CHICKPEA_LANE_SECRETS';
@@ -204,7 +204,6 @@ export function ensureLaneSeedToken(target, { env = process.env, randomBytes = n
   return seedToken;
 }
 
-/** A short, non-reversible marker for comparing a key across lanes. */
 /** Replace or append `NAME=value`, keeping every other line as it was. */
 export function upsertSecretLine(text, name, value) {
   if (!NAME.test(name)) throw new Error(`${LABEL}: "${name}" is not an upper-case name.`);
@@ -212,8 +211,9 @@ export function upsertSecretLine(text, name, value) {
     throw new Error(`${LABEL}: the value for "${name}" must be one token with no spaces.`);
   }
   const line = `${name}=${value}`;
-  const pattern = new RegExp(`^(?:export\\s+)?${name}\\s*=.*$`, 'mu');
-  if (pattern.test(text)) return text.replace(pattern, () => line);
+  // The parser trims lines and accepts `export`, so match both and keep the prefix.
+  const pattern = new RegExp(`^([ \\t]*(?:export\\s+)?)${name}\\s*=.*$`, 'mu');
+  if (pattern.test(text)) return text.replace(pattern, (_, prefix) => `${prefix}${line}`);
   return `${text}${text === '' || text.endsWith('\n') ? '' : '\n'}${line}\n`;
 }
 
@@ -235,17 +235,11 @@ export function setLaneSecret(name, value, { env = process.env, file = defaultLa
   const after = upsertSecretLine(before, name, value);
   parseLaneSecrets(after);
   if (Buffer.byteLength(after) > MAX_FILE_BYTES) throw new Error(`${LABEL} would exceed its size limit.`);
-  const temporary = `${file}.${process.pid}.tmp`;
-  try {
-    writeFileSync(temporary, after, { flag: 'wx', mode: 0o600 });
-    renameSync(temporary, file);
-  } catch (error) {
-    if (existsSync(temporary)) unlinkSync(temporary);
-    throw error;
-  }
+  writePrivateText(file, after);
   return { file, name };
 }
 
+/** A short, non-reversible marker for comparing a key across lanes. */
 export function fingerprint(value) {
   return `sha256:${createHash('sha256').update(value).digest('hex').slice(0, 8)}`;
 }
