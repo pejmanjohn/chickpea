@@ -82,6 +82,18 @@ These four contract fields become immutable once present. A refresh may add a
 missing field, but cannot change or remove recorded product intent. Resolve the
 new spec's contexts and capabilities, then pass that file to `init`.
 
+Record a gotcha the moment you learn it, so it reaches the
+[feature map](../features/README.md) instead of private notes:
+
+```sh
+npm run verify:live:record -- lesson --area delivery --case requested-schedule \
+  --text "A typed @ is swallowed by the composer; use its mention button." \
+  --run "$run_dir/run.json"
+```
+
+A lesson grades nothing. The report lists every lesson under "Lessons for the
+feature map"; fold each into its feature file before the run's PR merges.
+
 Each context records `grade`, exact `target`, `servingVersion`, actual `model`,
 actor identity, fixture revision/digest, lane `state`, and relevant `config` digest.
 Never put credentials in it. Each case declares source `areas`, prerequisite

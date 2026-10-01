@@ -32,6 +32,11 @@ local workerd. No changes specified
 falls back to core regression. Documentation-only changes need no live journey.
 The mapping is conservative, not proof of complete impact analysis.
 
+Map the selected areas to the [feature map](../features/README.md). Each feature
+file says how to drive and prove that feature on a lane and lists the traps
+earlier runs hit. In `regression` and `release` mode, walk the whole map and
+report each feature without a case as untested.
+
 - Instruction/tool guidance: preserve the full frozen proposal, approve once,
   and inspect the entire saved value. Check no early mutation. Use the existing
   [authoring evaluation](../../../docs/runbooks/agent-authoring-evaluation.md)

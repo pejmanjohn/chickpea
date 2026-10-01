@@ -21,6 +21,8 @@ refresh   --spec FILE --reason TEXT  Refresh observed capabilities and context
 begin     --case ID [--reason TEXT]  Record an attempt before the action; prints its attemptId
 blocked   --case ID --reason TEXT [--category CATEGORY] [--evidence FILE]
                                     Record why a case cannot run, without spending an attempt
+lesson    --text TEXT [--area AREA] [--case ID]
+                                    Keep a gotcha for qa/live/features/; the report lists it
 record    --event FILE               Record outcome, cleanup, repair, batch or candidate_transition
 resource  --case ID --provider ID --kind ID --resource-id ID --ownership TYPE --cleanup-preset PRESET|--expected-file FILE --evidence FILE
 finish|resolve --attempt ID --result RESULT --summary TEXT --evidence FILE --proof SURFACE=FILE [--completed-at ISO] [--observed-at ISO|now] [--timing-observation-ms MS]
@@ -43,7 +45,7 @@ export function runRecordCli(argv, root = ROOT, io = {}) {
   const error = io.stderr ?? ((value) => process.stderr.write(value));
   try {
     const { values: flags, positionals } = parseArgs({ args: argv, allowPositionals: true, options: {
-      ...Object.fromEntries(['run', 'spec', 'reason', 'case', 'event', 'output', 'mode', 'purpose', 'title', 'context', 'max-attempts', 'max-wait-ms', 'min-observation-ms', 'original-request', 'expected-outcome', 'variant', 'cleanup-contract', 'provider', 'kind', 'resource-id', 'ownership', 'cleanup-preset', 'expected-file', 'attempt', 'result', 'summary', 'category', 'completed-at', 'observed-at', 'timing-observation-ms', 'cost-usd', 'resource', 'outcome', 'observed-file', 'phase', 'phase-id', 'parent-run'].map((key) => [key, { type: 'string' }])),
+      ...Object.fromEntries(['run', 'spec', 'reason', 'case', 'event', 'output', 'mode', 'purpose', 'title', 'text', 'context', 'max-attempts', 'max-wait-ms', 'min-observation-ms', 'original-request', 'expected-outcome', 'variant', 'cleanup-contract', 'provider', 'kind', 'resource-id', 'ownership', 'cleanup-preset', 'expected-file', 'attempt', 'result', 'summary', 'category', 'completed-at', 'observed-at', 'timing-observation-ms', 'cost-usd', 'resource', 'outcome', 'observed-file', 'phase', 'phase-id', 'parent-run'].map((key) => [key, { type: 'string' }])),
       area: { type: 'string', multiple: true }, require: { type: 'string', multiple: true }, proof: { type: 'string', multiple: true }, evidence: { type: 'string', multiple: true }, 'original-case': { type: 'string', multiple: true },
       'stop-at': { type: 'string' }, 'max-occurrences': { type: 'string' }, family: { type: 'boolean' },
       help: { type: 'boolean' },
@@ -55,7 +57,7 @@ export function runRecordCli(argv, root = ROOT, io = {}) {
       template: ['mode', 'purpose', 'area', 'output'],
       'case-add': ['spec', 'output', 'case', 'title', 'context', 'area', 'require', 'proof', 'max-attempts', 'max-wait-ms', 'min-observation-ms', 'original-request', 'expected-outcome', 'variant', 'cleanup-contract'],
       init: ['run', 'spec', 'parent-run', 'original-case'], preflight: ['run'], refresh: ['run', 'spec', 'reason'],
-      begin: ['run', 'case', 'reason'], blocked: ['run', 'case', 'reason', 'category', 'evidence'],
+      begin: ['run', 'case', 'reason'], blocked: ['run', 'case', 'reason', 'category', 'evidence'], lesson: ['run', 'text', 'area', 'case'],
       record: ['run', 'event'], status: ['run'], report: ['run', 'output', 'family'],
       resource: ['run', 'case', 'provider', 'kind', 'resource-id', 'ownership', 'cleanup-preset', 'expected-file', 'evidence', 'stop-at', 'max-occurrences'],
       finish: ['run', 'attempt', 'result', 'summary', 'category', 'evidence', 'proof', 'completed-at', 'observed-at', 'timing-observation-ms', 'cost-usd'],
@@ -106,7 +108,7 @@ export function runRecordCli(argv, root = ROOT, io = {}) {
       } else if (flags['original-case']?.length) throw new Error('--original-case needs --parent-run.');
       result = createRun(flags.run, readPrivateJson(flags.spec), sourceInputs(root), Date.now(), lineage);
       result = { runId: result.id, preflight: preflight(result) };
-    } else if (['refresh', 'begin', 'blocked', 'record', 'resource', 'finish', 'resolve', 'cleanup', 'phase-start', 'phase-stop'].includes(command)) {
+    } else if (['refresh', 'begin', 'blocked', 'lesson', 'record', 'resource', 'finish', 'resolve', 'cleanup', 'phase-start', 'phase-stop'].includes(command)) {
       let event;
       if (command === 'record') {
         if (!flags.event) throw new Error('record needs --event.');
@@ -115,7 +117,10 @@ export function runRecordCli(argv, root = ROOT, io = {}) {
         if (!flags.spec) throw new Error('refresh needs --spec.');
         event = { type: 'refresh', spec: readPrivateJson(flags.spec), reason: flags.reason };
       } else if (command === 'begin') event = { type: 'begin', caseId: flags.case, ...(flags.reason ? { reason: flags.reason } : {}) };
-      else if (command === 'blocked') {
+      else if (command === 'lesson') {
+        if (!flags.text) throw new Error('lesson needs --text.');
+        event = { type: 'lesson', text: flags.text, ...(flags.area?.length ? { areas: flags.area } : {}), ...(flags.case ? { caseId: flags.case } : {}) };
+      } else if (command === 'blocked') {
         if (!flags.case || !flags.reason) throw new Error('blocked needs --case and --reason.');
         event = { type: 'case_blocked', caseId: flags.case, reason: flags.reason,
           ...(flags.category ? { category: flags.category } : {}), ...(flags.evidence ? { evidence: flags.evidence } : {}) };

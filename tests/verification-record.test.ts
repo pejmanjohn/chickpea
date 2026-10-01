@@ -476,6 +476,9 @@ test('actual CLI init, resume, refresh, finish and generated report use the same
   assert.equal(cli('begin', '--case', 'schedule', '--reason', 'retry', '--run', runFile), 2);
   assert.match(error, new RegExp(`Prior attempt ${attemptId} is still open`));
   assert.equal(cli('blocked', '--case', 'recovery', '--reason', 'Waiting on the maintainer to grant the phone check.', '--run', runFile), 0, error);
+  assert.equal(cli('lesson', '--text', 'Reconnect MCP servers after the daemon switch.', '--area', 'verification', '--run', runFile), 0, error);
+  assert.equal(JSON.parse(output).type, 'lesson');
+  assert.equal(cli('lesson', '--run', runFile), 2);
   assert.equal(cli('status', '--run', runFile), 0, error);
   assert.equal(JSON.parse(output).cases[1].result, 'blocked');
   assert.equal(cli('status', '--run', runFile), 0, error);
@@ -509,6 +512,8 @@ test('actual CLI init, resume, refresh, finish and generated report use the same
   writeFileSync(childSpecFile, JSON.stringify(childSpec));
   assert.equal(cli('init', '--spec', childSpecFile, '--run', childRunFile, '--parent-run', runFile, '--original-case', 'child-follow-up=linked-later'), 0, error);
   assert.equal(readRun(childRunFile).lineage.originalCases['child-follow-up'].caseId, 'linked-later');
+  assert.equal(cli('report', '--run', childRunFile, '--family'), 0, error);
+  assert.match(output, /- Parent [0-9a-f-]+ lesson \[verification\]: Reconnect MCP servers after the daemon switch\./, 'a follow-up run still shows its parent\'s lessons');
 
   assert.equal(cli('report', '--run', runFile, '--output', runFile), 2);
   assert.ok(readRun(runFile).events.length > 0);
@@ -552,6 +557,22 @@ test('record refusals name the fix: fields, proof doors, long waits, open attemp
   const phone = status(f.run, source(), NOW + 11_000).cases.find((c: any) => c.id === 'phone');
   assert.equal(phone.result, 'blocked');
   assert.match(renderReport(status(f.run, source(), NOW + 11_000)), /\| phone \| local \/ synthetic-local \| blocked \| 0 \| recorded block: Needs a real phone/);
+});
+
+test('lessons are kept for the feature map, grade nothing, and appear in the report', (t) => {
+  const f = fixture(t);
+  f.append({ type: 'lesson', text: 'A typed @ is swallowed by the composer; use its mention button.', areas: ['delivery'], caseId: 'schedule' });
+  f.append({ type: 'lesson', text: 'Wrangler prints a bare newline when a tail cannot attach.' });
+  assert.throws(() => f.append({ type: 'lesson', text: 'x', areas: ['teleport'] }), /Lesson areas must be known areas/);
+  assert.throws(() => f.append({ type: 'lesson', text: '' }), /A lesson needs text/);
+  assert.throws(() => f.append({ type: 'lesson', text: 'x', caseId: 'missing' }), /Lesson case is not selected/);
+  const view = status(f.run, source(), NOW + 5000);
+  assert.equal(view.lessons.length, 2);
+  assert.equal(view.cases[0].result, 'not_run', 'a lesson grades nothing');
+  const report = renderReport(view);
+  assert.match(report, /## Lessons for the feature map\n\nFold each into its file under qa\/live\/features\/ before the run's PR merges\.\n\n- \[delivery\] schedule: A typed @ is swallowed/);
+  assert.match(report, /\n- Wrangler prints a bare newline/);
+  assert.doesNotMatch(renderReport(status(fixture(t).run, source(), NOW)), /Lessons for the feature map/);
 });
 
 function repairFixture(t: TestContext) {
