@@ -188,6 +188,10 @@ test('store-token finds the lane app, reads its token, checks the workspace, and
   assert.match(err, /cobalt: READBACK_WRONG_WORKSPACE/);
   assert.match(err, /violet: READBACK_NOT_INSTALLED/);
   assert.ok(![out, err].some((text) => /xoxp-/.test(text)), 'no token reaches the output');
+  err = '';
+  assert.equal(await main(['amber', 'store-token'], { env: {}, stdout: { write: () => {} }, stderr: { write: (v: string) => { err += v; } },
+    readRegistry: () => registry, daemonUp: async () => false } as any), 1);
+  assert.match(err, /amber: chrome-amber is not running\. Start it with npm run lane:browser -- start amber/);
   assert.throws(() => parseArguments(['all', 'whoami']), /Choose a lane/);
   assert.throws(() => parseArguments(['amber', 'store-token', 'extra']), /no other arguments/);
 });

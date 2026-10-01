@@ -62,7 +62,10 @@ const slackTs = (value) => {
   return (ms / 1000).toFixed(6);
 };
 
-export async function storeTokens(lanes, { env, stdout, stderr, fetchImpl, readRegistry, probePage, writeSecret }) {
+const daemonAnswers = async (port) => fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(3_000) })
+  .then((response) => response.ok, () => false);
+
+export async function storeTokens(lanes, { env, stdout, stderr, fetchImpl, readRegistry, probePage, writeSecret, daemonUp = probePage ? async () => true : daemonAnswers }) {
   const registry = readRegistry ? readRegistry() : (await import('./lib/environment-registry.mjs')).readEnvironmentRegistry();
   const { daemonPort } = await import('./lib/lane-browser.mjs');
   const probe = probePage ?? (await import('./lib/lane-browser-probe.mjs')).probePage;
@@ -71,6 +74,8 @@ export async function storeTokens(lanes, { env, stdout, stderr, fetchImpl, readR
   let failed = 0;
   for (const lane of lanes) {
     try {
+      // The token is read from the lane's own browser, so say plainly when that browser is not running.
+      if (!await daemonUp(daemonPort(lane, env))) throw new Error(`chrome-${lane} is not running. Start it with npm run lane:browser -- start ${lane}, then retry.`);
       const result = await storeLaneToken({ lane, registration: registry.targets?.[lane], port: daemonPort(lane, env), probePage: probe, fetchImpl, writeSecret: write, fingerprint: secrets.fingerprint });
       stdout.write(`${JSON.stringify(result)}\n`);
     } catch (error) {
@@ -81,12 +86,12 @@ export async function storeTokens(lanes, { env, stdout, stderr, fetchImpl, readR
   return failed ? 1 : 0;
 }
 
-export async function main(argv, { env = process.env, stdout = process.stdout, stderr = process.stderr, fetchImpl = fetch, readEntries, readRegistry, probePage, writeSecret } = {}) {
+export async function main(argv, { env = process.env, stdout = process.stdout, stderr = process.stderr, fetchImpl = fetch, readEntries, readRegistry, probePage, writeSecret, daemonUp } = {}) {
   if (argv.length === 0 || argv.includes('--help')) { (argv.length ? stdout : stderr).write(USAGE); return argv.length ? 0 : 2; }
   let options;
   try { options = parseArguments(argv); } catch (error) { stderr.write(`${error.message}\n${USAGE}`); return 2; }
   if (options.command === 'store-token') {
-    return storeTokens(options.lane === 'all' ? QA_LANES : [options.lane], { env, stdout, stderr, fetchImpl, readRegistry, probePage, writeSecret });
+    return storeTokens(options.lane === 'all' ? QA_LANES : [options.lane], { env, stdout, stderr, fetchImpl, readRegistry, probePage, writeSecret, ...(daemonUp ? { daemonUp } : {}) });
   }
   try {
     const entries = readEntries ? readEntries() : (await import('./lib/lane-secrets.mjs')).readLaneSecretEntries({ env });
