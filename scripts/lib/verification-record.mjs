@@ -302,6 +302,14 @@ export function appendEvent(run, input, source, now = Date.now()) {
       event.deadline = new Date(now + selected.maxWaitMs).toISOString();
       break;
     }
+    case 'verdict': {
+      // Whether a non-passing case blocks the PR is the verifier's judgment, recorded with its reason.
+      keys(input, ['type', 'caseId', 'blocksPr', 'reason']);
+      need(selected, 'Unknown selected case.');
+      need(['yes', 'no'].includes(input.blocksPr), 'A verdict says whether the case blocks the PR: yes or no.');
+      need(text(input.reason), 'Give the reason for the verdict.');
+      break;
+    }
     case 'lesson': {
       // A gotcha learned mid-run, kept for the feature map. It grades nothing.
       keys(input, ['type', 'text', 'areas', 'caseId']);
@@ -468,6 +476,7 @@ export function status(run, source, now = Date.now()) {
         : outcome?.result ?? (ready.ready && !recordedBlock ? 'not_run' : 'blocked');
     return { id: selected.id, title: selected.title, grade: spec.contexts[selected.context].grade,
       target: spec.contexts[selected.context].target, result, invalidation, attempts: history.length,
+      verdict: (() => { const v = run.events.findLast((e) => e.type === 'verdict' && e.caseId === selected.id); return v ? { blocksPr: v.blocksPr, reason: v.reason, at: v.at } : null; })(),
       attemptId: last?.id, blockers: [...(recordedBlock ? [`recorded block: ${recordedBlock.reason}`] : []), ...ready.blockers], warnings: ready.warnings,
       originalServingVersion: last?.inputs.context.servingVersion,
       effectiveServingVersion: projection?.inputs.context.servingVersion,
@@ -505,10 +514,21 @@ export function status(run, source, now = Date.now()) {
   const outcomes = [...new Map(run.events.filter((e) => ['finish', 'resolve'].includes(e.type))
     .map((e) => [e.attemptId, e])).values()];
   for (const e of outcomes) for (const [key, value] of Object.entries(e.timing ?? {})) totals[key] += value;
+  // Every reason the run is not complete, mirroring `complete` clause by clause.
+  const incompleteReasons = [
+    ...(cases.length === 0 && !offlinePlans.some((p) => p.required) ? ['no selected cases or required offline checks'] : []),
+    ...cases.filter((c) => !(c.result === 'pass' || optionalCases(spec).has(c.id) && !['in_progress', 'observe_overdue', 'ambiguous'].includes(c.result)))
+      .map((c) => `case ${c.id} is ${c.result}${optionalCases(spec).has(c.id) ? ' (optional, still open)' : ''}`),
+    ...(cleanupPending.length ? [`cleanup not verified for ${cleanupPending.map((r) => r.id).join(', ')}`] : []),
+    ...(releasePending ? [`the Node ${NODE_BASELINE} release checkpoint is missing for the current source`] : []),
+    ...(openOffline.length ? [`${openOffline.length} offline attempt(s) still open`] : []),
+    ...offlinePlans.filter((p) => p.required && p.result !== 'pass').map((p) => `required offline checks on ${p.node} are ${p.result}`),
+    ...coordination.repairs.filter((r) => r.state !== 'verified').map((r) => `repair ${r.repairId} is ${r.state}`),
+  ];
   const lessons = run.events.filter((e) => e.type === 'lesson')
     .map((e) => ({ id: e.id, at: e.at, text: e.text, areas: e.areas ?? [], caseId: e.caseId ?? null }));
   return {
-    runId: run.id, mode: spec.mode, purpose: spec.purpose, source, readiness, cases, lessons, groups: groupStatus(spec, cases), optional: [...optionalCases(spec)], resources, ...coordination,
+    runId: run.id, mode: spec.mode, purpose: spec.purpose, source, readiness, cases, lessons, incompleteReasons, groups: groupStatus(spec, cases), optional: [...optionalCases(spec)], resources, ...coordination,
     releasePending, openOffline, offline, offlinePlans, offlineObligations,
     complete: (cases.length > 0 || offlinePlans.some((p) => p.required)) && cases.every((c) => c.result === 'pass' || optionalCases(spec).has(c.id) && !['in_progress', 'observe_overdue', 'ambiguous'].includes(c.result)) && cleanupPending.length === 0 && !releasePending && openOffline.length === 0 && offlinePlans.filter((p) => p.required).every((p) => p.result === 'pass') && coordination.repairs.every((r) => r.state === 'verified'),
     phases: { intervals: phaseIntervals, open: phaseStarts.filter((start) => !phaseFinishes.some((end) => end.phaseId === start.id)),
@@ -530,6 +550,15 @@ export function renderReport(view) {
     '| Case | Grade / target | Current result | Attempts | Invalidation / blockers |', '| --- | --- | --- | --- | --- |',
     ...view.cases.map((c) => `| ${cell(c.id)}${view.optional.includes(c.id) ? ' (optional)' : ''} | ${cell(c.grade)} / ${cell(c.target)} | ${c.result} | ${c.attempts} | ${cell([...c.invalidation, ...c.blockers].join('; '))} |`), '',
     ...view.groups.map((g) => `Variant group ${cell(g.id)} (${cell(g.grade)} / ${cell(g.target)}): ${g.result}; required: ${cell(g.required.join(', '))}; optional: ${cell(g.optional.join(', '))}; pending: ${cell(g.pending.join(', '))}. Scope: ${cell(g.scopeReason)}`), '',
+    '## Closeout', '',
+    ...(view.complete ? ['Complete: every required case passed, cleanup is verified, and no offline check or repair is open.']
+      : ['Not complete:', ...(view.incompleteReasons ?? []).map((reason) => `- ${cell(reason)}`)]), '',
+    ...(() => {
+      const needing = view.cases.filter((c) => ['fail', 'blocked', 'ambiguous', 'stale', 'observe_overdue'].includes(c.result));
+      if (!needing.length) return [];
+      return ['PR verdicts (does the case block the PR?):',
+        ...needing.map((c) => `- ${cell(c.id)} (${c.result}): ${c.verdict ? `${c.verdict.blocksPr === 'yes' ? 'blocks the PR' : 'does not block the PR'}. ${cell(c.verdict.reason)}` : 'MISSING. Record one with `record verdict`.'}`), ''];
+    })(),
     '## Attempts and first failures', ''];
   for (const c of view.cases) {
     if (c.firstFailure) lines.push(`- ${cell(c.id)} first outcome: ${cell(c.firstFailure.result)} / ${cell(c.firstFailure.category)}. ${cell(c.firstFailure.summary)} Evidence: ${cell(c.firstFailure.evidence.map((e) => e.path).join(', '))}`);

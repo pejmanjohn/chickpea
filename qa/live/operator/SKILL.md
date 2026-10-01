@@ -39,7 +39,8 @@ why each step exists and what to do when one refuses.
 10. After a fix commit or rebase: `npm run env -- restamp <lane>`, redeploy, and
     `record refresh`.
 11. Clean every run-owned resource and record `cleanup` with its readback.
-12. `record report --output <run>/report.md`, then `npm run env -- release <lane>`.
+12. `record verdict` for each failed or blocked case, `record report --output
+    <run>/report.md`, then `npm run env -- release <lane>`.
 
 ## Invocation authorizes the test
 
