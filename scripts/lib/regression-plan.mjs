@@ -24,7 +24,7 @@ export const REGRESSION_AREAS = Object.freeze({
   browser: ['browser-actions', 'browser-cdp', 'browser-logins', 'browser-mounting', 'browser-page', 'browser-provider', 'browser-settings', 'browser-tools', 'browser-totp', 'browser-turn-session', 'admin-browser-settings', 'slack-browser-action-admission'],
   usage: ['usage-cloudflare-proxy', 'usage-store-contract', 'usage-telemetry-contract', 'usage-validation', 'admin-usage-routes', 'usage/connector-usage', 'usage/interaction-capture', 'usage/interactive-capture', 'usage/pricing-catalog', 'usage/pricing-estimate', 'usage/provider-guidance', 'usage/retention', 'usage/routine-capture'],
   activity: ['activity-lifecycle', 'activity-status', 'activity-telemetry', 'admission-activity'],
-  verification: ['node-version', 'verification-record', 'verification-regression', 'verification-offline', 'verification-transition', 'verification-host', 'verification-fixtures', 'environment-registry', 'environment-preflight', 'environment-preflight-2', 'environment-preflight-3', 'environment-wait', 'qa-candidate', 'live-contract-coordinator', 'live-contract-lock', 'schedule-contract-evaluation', 'deploy-with-epilogue', 'deploy-with-epilogue-2', 'local-worker-lane', 'live-contract-schema', 'live-contract-runner', 'oss-export'],
+  verification: ['node-version', 'kickoff-doctor', 'verification-record', 'verification-regression', 'verification-offline', 'verification-transition', 'verification-host', 'verification-fixtures', 'environment-registry', 'environment-preflight', 'environment-preflight-2', 'environment-preflight-3', 'environment-wait', 'qa-candidate', 'live-contract-coordinator', 'live-contract-lock', 'schedule-contract-evaluation', 'deploy-with-epilogue', 'deploy-with-epilogue-2', 'local-worker-lane', 'live-contract-schema', 'live-contract-runner', 'oss-export'],
 });
 
 const rules = [
@@ -43,7 +43,7 @@ const rules = [
   [/^src\/(?:auth|identity)\//, ['auth']],
   [/^(?:src\/admin\/|assets\/admin-ui\/)/, ['admin']],
   [/^src\/(?:cloudflare-provider\.ts|model-compat\/|model-catalog\/)/, ['providers']],
-  [/^(?:qa\/live\/|\.(?:agents|claude)\/skills\/chickpea-live-verification\/|scripts\/(?:verify-regression\.mjs|verification-(?:record|fixtures)\.mjs|verify-qa-candidate\.mjs|live-test-resource-ledger\.mjs|deploy-with-epilogue\.mjs|chickpea-(?:environment|local-worker)\.mjs|lib\/(?:verification-[a-z-]+|qa-candidate|private-evidence|regression-plan|environment-[^/]+|local-worker-(?:lane|inspection))\.mjs))/, ['verification']],
+  [/^(?:qa\/live\/|\.(?:agents|claude)\/skills\/chickpea-live-verification\/|scripts\/(?:verify-regression\.mjs|verification-(?:record|fixtures)\.mjs|verify-qa-candidate\.mjs|verify-live-kickoff\.mjs|live-test-resource-ledger\.mjs|deploy-with-epilogue\.mjs|chickpea-(?:environment|local-worker)\.mjs|lib\/(?:verification-[a-z-]+|kickoff-doctor|lane-browser-probe|qa-candidate|private-evidence|regression-plan|environment-[^/]+|local-worker-(?:lane|inspection))\.mjs))/, ['verification']],
 ];
 
 // The checks after the suite use reserved ports and their own temporary state,
