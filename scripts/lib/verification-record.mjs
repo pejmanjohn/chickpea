@@ -476,7 +476,12 @@ export function status(run, source, now = Date.now()) {
         : outcome?.result ?? (ready.ready && !recordedBlock ? 'not_run' : 'blocked');
     return { id: selected.id, title: selected.title, grade: spec.contexts[selected.context].grade,
       target: spec.contexts[selected.context].target, result, invalidation, attempts: history.length,
-      verdict: (() => { const v = run.events.findLast((e) => e.type === 'verdict' && e.caseId === selected.id); return v ? { blocksPr: v.blocksPr, reason: v.reason, at: v.at } : null; })(),
+      // A verdict judges the case's current outcome or block, so one recorded before a later attempt no longer applies.
+      verdict: (() => {
+        const anchor = Math.max(last?.sequence ?? 0, outcome?.sequence ?? 0, recordedBlock?.sequence ?? 0);
+        const v = run.events.findLast((e) => e.type === 'verdict' && e.caseId === selected.id && e.sequence > anchor);
+        return v ? { blocksPr: v.blocksPr, reason: v.reason, at: v.at } : null;
+      })(),
       attemptId: last?.id, blockers: [...(recordedBlock ? [`recorded block: ${recordedBlock.reason}`] : []), ...ready.blockers], warnings: ready.warnings,
       originalServingVersion: last?.inputs.context.servingVersion,
       effectiveServingVersion: projection?.inputs.context.servingVersion,
@@ -519,7 +524,7 @@ export function status(run, source, now = Date.now()) {
     ...(cases.length === 0 && !offlinePlans.some((p) => p.required) ? ['no selected cases or required offline checks'] : []),
     ...cases.filter((c) => !(c.result === 'pass' || optionalCases(spec).has(c.id) && !['in_progress', 'observe_overdue', 'ambiguous'].includes(c.result)))
       .map((c) => `case ${c.id} is ${c.result}${optionalCases(spec).has(c.id) ? ' (optional, still open)' : ''}`),
-    ...(cleanupPending.length ? [`cleanup not verified for ${cleanupPending.map((r) => r.id).join(', ')}`] : []),
+    ...(cleanupPending.length ? [`cleanup not verified for ${cleanupPending.map((r) => `${r.kind} ${r.immutableId}`).join(', ')}`] : []),
     ...(releasePending ? [`the Node ${NODE_BASELINE} release checkpoint is missing for the current source`] : []),
     ...(openOffline.length ? [`${openOffline.length} offline attempt(s) still open`] : []),
     ...offlinePlans.filter((p) => p.required && p.result !== 'pass').map((p) => `required offline checks on ${p.node} are ${p.result}`),
@@ -554,10 +559,10 @@ export function renderReport(view) {
     ...(view.complete ? ['Complete: every required case passed, cleanup is verified, and no offline check or repair is open.']
       : ['Not complete:', ...(view.incompleteReasons ?? []).map((reason) => `- ${cell(reason)}`)]), '',
     ...(() => {
-      const needing = view.cases.filter((c) => ['fail', 'blocked', 'ambiguous', 'stale', 'observe_overdue'].includes(c.result));
+      const needing = view.cases.filter((c) => ['fail', 'blocked', 'ambiguous', 'stale'].includes(c.result));
       if (!needing.length) return [];
       return ['PR verdicts (does the case block the PR?):',
-        ...needing.map((c) => `- ${cell(c.id)} (${c.result}): ${c.verdict ? `${c.verdict.blocksPr === 'yes' ? 'blocks the PR' : 'does not block the PR'}. ${cell(c.verdict.reason)}` : 'MISSING. Record one with `record verdict`.'}`), ''];
+        ...needing.map((c) => `- ${cell(c.id)}${view.optional.includes(c.id) ? ' (optional)' : ''} (${c.result}): ${c.verdict ? `${c.verdict.blocksPr === 'yes' ? 'blocks the PR' : 'does not block the PR'}. ${cell(c.verdict.reason)}` : 'MISSING. Record one with `record verdict`.'}`), ''];
     })(),
     '## Attempts and first failures', ''];
   for (const c of view.cases) {

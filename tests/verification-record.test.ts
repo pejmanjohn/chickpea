@@ -603,6 +603,11 @@ test('the report closes out: every reason a run is incomplete, and a PR verdict 
   report = renderReport(check(NOW + 8000));
   assert.match(report, /- schedule \(fail\): blocks the PR\. The duplicate delivery is in the changed code\./);
   assert.match(report, /- phone \(blocked\): does not block the PR\. Phone rendering is unchanged by this PR\./);
+  // A verdict judges the outcome it followed; a retest needs its own.
+  const retest = f.append({ type: 'begin', caseId: 'schedule', reason: 'Fixed the duplicate send.' }, NOW + 9000);
+  assert.equal(check(NOW + 10_000).cases[0].verdict, null, 'an open retest carries no earlier verdict');
+  f.append(f.finish(retest.id, { result: 'fail', category: 'product', summary: 'Still delivered twice.' }), NOW + 11_000);
+  assert.match(renderReport(check(NOW + 12_000)), /- schedule \(fail\): MISSING\. Record one with `record verdict`\./);
   const done = fixture(t);
   const pass = done.append({ type: 'begin', caseId: 'schedule' });
   done.append(done.finish(pass.id), NOW + 3000);
