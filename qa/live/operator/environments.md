@@ -295,12 +295,18 @@ This is an operator error guard, not a sandbox for untrusted deployment code.
 
 ## Product telemetry isolation
 
-Before synthetic activity on any deployed target, run
-`npm run verify:telemetry -- --worker <resolved-worker-name>
---account-id <resolved-account-id> --output
-<private-policy-receipt.json>`, including the target's recorded `--profile` and
-`--env` when present. Retain the receipt with the target capability's
-private evidence. Repeat after a serving-version or binding change. Every
+Before synthetic activity on any deployed target, the serving version needs a
+telemetry isolation receipt. The guarded deploy to a claimed lane produces it:
+after reconciling, it checks the new serving version and writes
+`telemetry-<version>.json` into that lane's private evidence folder, printing
+"Telemetry isolation verified" or failing the deploy with the reason. Attach
+that receipt to the target evidence; nothing else is needed. For a lane you did
+not deploy in this run, run `npm run verify:telemetry -- --target <alias>`,
+which reads the Worker from the environment registry and writes the receipt to
+the same folder. For any other Worker, use `--worker <name>` with `--output
+<private-policy-receipt.json>`, adding `--account-id`, `--profile` and `--env`
+only when Wrangler sees more than one account or the target records them.
+Repeat after a serving-version or binding change. Every
 traffic-serving version must explicitly label telemetry `test` or verifiably
 disable it. Enabled telemetry without a `test` label, an unverified opt-out, or a
 serving change blocks dependent live actions until resolved through the target's

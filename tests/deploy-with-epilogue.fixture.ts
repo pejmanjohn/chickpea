@@ -61,6 +61,38 @@ export function createHarness() {
     }
     export function assertCloudflareAccountConfig() {}
   `);
+  writeFileSync(path.join(scriptsLibDir, 'installed-dependencies.mjs'), `
+    export function lockfileDrift() {
+      return process.env.DEPLOY_TEST_STALE_DEPENDENCIES ? JSON.parse(process.env.DEPLOY_TEST_STALE_DEPENDENCIES) : [];
+    }
+  `);
+  writeFileSync(path.join(scriptsLibDir, 'environment-capabilities.mjs'), `
+    import { appendFileSync } from 'node:fs';
+    export async function readLiveWorkerProfile(workerName) {
+      appendFileSync(process.env.DEPLOY_TEST_LOG, 'live-profile:' + workerName + '\\n');
+      return { profile: process.env.DEPLOY_TEST_LIVE_PROFILE || 'core', liveVersion: null, errors: [] };
+    }
+  `);
+  writeFileSync(path.join(scriptsLibDir, 'product-telemetry-preflight.mjs'), `
+    import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
+    import { dirname } from 'node:path';
+    export class ProductTelemetryPreflightError extends Error {
+      constructor(code, receipt) { super(code); this.code = code; this.receipt = receipt; }
+    }
+    export async function verifyProductTelemetry(options) {
+      appendFileSync(process.env.DEPLOY_TEST_LOG, 'telemetry:' + options.worker + '\\n');
+      const failed = process.env.DEPLOY_TEST_TELEMETRY_STATUS === 'failed';
+      const receipt = { worker: options.worker, status: failed ? 'failed' : 'passed', failure: failed ? { code: 'UNSAFE_SERVING_VERSION' } : null };
+      if (failed) throw new ProductTelemetryPreflightError('UNSAFE_SERVING_VERSION', receipt);
+      return receipt;
+    }
+    export function writeProductTelemetryReceipt(file, receipt) {
+      mkdirSync(dirname(file), { recursive: true });
+      writeFileSync(file, JSON.stringify(receipt));
+      appendFileSync(process.env.DEPLOY_TEST_LOG, 'telemetry-receipt:' + file + '\\n');
+      return file;
+    }
+  `);
   writeFileSync(path.join(scriptsLibDir, 'environment-preflight.mjs'), `
     import { appendFileSync, writeFileSync } from 'node:fs';
     let calls = 0;
