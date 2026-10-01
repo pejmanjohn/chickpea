@@ -7,8 +7,7 @@
  * `kickoffReport` is pure (facts in, verdicts out). `gatherKickoffFacts` does
  * the reads and takes injectable readers for tests.
  */
-import { existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { readdirSync, readFileSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 
 import { laneCredentialsDirectory } from './lane-secrets.mjs';
@@ -105,10 +104,11 @@ function laneVerdict(lane, facts) {
 
   const browser = lane.browser;
   if (!browser) checks.push(check('info', 'Browser not checked (--no-browser)'));
-  else if (browser.state === 'stopped') checks.push(check('block', 'Lane browser is stopped', `npm run lane:browser -- start ${lane.target}`));
+  else if (browser.state === 'stopped') checks.push(check('block', 'Lane browser is stopped and was not started', `npm run lane:browser -- start ${lane.target}`));
   else if (browser.state === 'error') checks.push(check('warn', `Lane browser could not be checked: ${browser.error}`));
   else if (browser.state === 'held') checks.push(check('human', `Lane browser profile is held by another session's Chrome (PID ${browser.holderPid ?? '?'})`, 'Ask that session to quit its browser, then npm run lane:browser -- start <lane>.'));
   else {
+    if (browser.started) checks.push(check('info', `Started chrome-${lane.target}, which was stopped`));
     for (const [surface, label] of [['admin', 'Admin'], ['slack', 'Slack']]) {
       const state = browser[surface];
       if (state === 'signed_in') checks.push(check('ok', `${label} signed in through chrome-${lane.target}`));
@@ -123,7 +123,7 @@ function laneVerdict(lane, facts) {
 
 const MARK = { ok: '✔', info: '·', warn: '!', human: '?', block: '✖' };
 export function renderKickoff(report) {
-  const lines = ['Kickoff doctor: read-only; it claims, deploys and changes nothing.', '', 'Host and source'];
+  const lines = ['Kickoff doctor: it claims, deploys and changes nothing, and starts any stopped lane browser.', '', 'Host and source'];
   const line = (c) => `  ${MARK[c.level]} ${c.text}${c.fix ? `\n      fix: ${c.fix}` : ''}`;
   lines.push(...report.host.map(line), '', 'Lanes');
   for (const lane of report.lanes) {
@@ -140,7 +140,7 @@ export function renderKickoff(report) {
 
 /** Read every fact. Each reader is injectable; failures become facts, never crashes. */
 export async function gatherKickoffFacts({
-  root, lanes = QA_LANES, env = process.env, providerContext, browser = true, now = Date.now,
+  root, lanes = QA_LANES, env = process.env, providerContext, browser = true, startBrowsers = true, now = Date.now,
   readers = {},
 } = {}) {
   // `in`, not `??`: a test may inject null (no reservation) without reading the host.
@@ -221,7 +221,7 @@ export async function gatherKickoffFacts({
       missingActorAliases: row.missingActorAliases ?? [], setupFlowUnprovenSince: row.setupFlowUnprovenSince ?? null,
       claim: claim ? { ownWorktree, branch: claim.branch, expiresAt: claim.expiresAt } : null,
       telemetryReceipt: servingVersion ? telemetryReceiptFor(registration.evidenceRoot, servingVersion) : null,
-      browser: browser ? await checkBrowser(readers.browser ?? probeLaneBrowser, { lane: row.target, registration, env }) : null,
+      browser: browser ? await checkBrowser(readers.browser ?? probeLaneBrowser, { lane: row.target, registration, env, start: startBrowsers }) : null,
       readback: await (readers.readback ?? checkReadback)({ lane: row.target, registration, entries: secretEntries }),
     });
   }
@@ -267,15 +267,19 @@ export function telemetryReceiptFor(evidenceRoot, version) {
   return covering.sort((a, b) => b.at - a.at)[0].status === 'passed' ? 'passed' : 'failed';
 }
 
-/** Daemon state, then Admin and Slack sign-in through one owned tab each. */
-export async function probeLaneBrowser({ lane, registration, env = process.env }) {
+/**
+ * Daemon state, then Admin and Slack sign-in through one owned tab each. A
+ * stopped daemon is started first (unless `start` is false), so nobody has to
+ * start a lane browser by hand; a held profile is only reported.
+ */
+export async function probeLaneBrowser({ lane, registration, env = process.env, start = true }) {
   const browserApi = await import('./lane-browser.mjs');
-  const conventional = path.join(homedir(), '.chickpea', 'browsers');
-  const root = !env[browserApi.ROOT_VARIABLE]?.trim() && existsSync(conventional) ? conventional : browserApi.resolveProfileRoot({ env });
-  const status = await browserApi.daemonStatus({ lane, root, env });
+  const status = start
+    ? await browserApi.ensureDaemon({ lane, env })
+    : { ...await browserApi.daemonStatus({ lane, root: browserApi.verifierRoot({ env }), env }), started: false };
   if (status.state !== 'running') return { state: status.state, holderPid: status.holder?.pid ?? null };
   const probe = await import('./lane-browser-probe.mjs');
-  const result = { state: 'running', admin: 'not_probed', slack: 'not_probed' };
+  const result = { state: 'running', started: status.started === true, admin: 'not_probed', slack: 'not_probed' };
   const origin = laneOrigin(lane, env);
   if (origin) {
     try {

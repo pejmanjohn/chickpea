@@ -190,8 +190,8 @@ test('store-token finds the lane app, reads its token, checks the workspace, and
   assert.ok(![out, err].some((text) => /xoxp-/.test(text)), 'no token reaches the output');
   err = '';
   assert.equal(await main(['amber', 'store-token'], { env: {}, stdout: { write: () => {} }, stderr: { write: (v: string) => { err += v; } },
-    readRegistry: () => registry, daemonUp: async () => false } as any), 1);
-  assert.match(err, /amber: chrome-amber is not running\. Start it with npm run lane:browser -- start amber/);
+    readRegistry: () => registry, ensureBrowser: async () => ({ state: 'held', holder: { pid: 4242 } }) } as any), 1);
+  assert.match(err, /amber: chrome-amber is held by PID 4242; its profile is in use by another browser/);
   assert.throws(() => parseArguments(['all', 'whoami']), /Choose a lane/);
   assert.throws(() => parseArguments(['amber', 'store-token', 'extra']), /no other arguments/);
 });

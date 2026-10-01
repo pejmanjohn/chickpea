@@ -757,3 +757,27 @@ export async function exportCookies({
     },
   };
 }
+
+/**
+ * The daemon root a verifier's own commands use on this host: the
+ * conventional ~/.chickpea/browsers when it exists and no root variable is
+ * set, otherwise the opt-in root variable.
+ */
+export function verifierRoot({ env = process.env, home = homedir() } = {}) {
+  const conventional = path.join(home, '.chickpea', 'browsers');
+  const rootOption = !env[ROOT_VARIABLE]?.trim() && existsSync(conventional) ? conventional : undefined;
+  return ensureOwnerOnlyDirectory(resolveProfileRoot({ root: rootOption, env }));
+}
+
+/**
+ * Make sure a lane's daemon answers: start it when it is stopped, so no person
+ * has to. A profile another browser holds is reported, never taken.
+ */
+export async function ensureDaemon({ lane, env = process.env, root, start = startDaemon, status = daemonStatus } = {}) {
+  const daemonRoot = root ?? verifierRoot({ env });
+  const before = await status({ lane, root: daemonRoot, env });
+  if (before.state !== 'stopped') return { ...before, started: false };
+  await start({ lane, root: daemonRoot, env });
+  const after = await status({ lane, root: daemonRoot, env });
+  return { ...after, started: after.state === 'running' };
+}

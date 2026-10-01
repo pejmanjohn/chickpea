@@ -217,3 +217,31 @@ test('the CLI validates arguments, prints JSON on request and exits 1 when nothi
   assert.equal(JSON.parse(out).ready[0], 'amber');
   assert.equal(await main([], io(facts({ lanes: [lane({ health: 'unreachable' })] }))), 1);
 });
+
+test('a stopped lane browser is started for the verifier; a held one is never taken', async () => {
+  // @ts-expect-error Executable helpers are JavaScript, shared with the CLI.
+  const { ensureDaemon } = await import('../scripts/lib/lane-browser.mjs');
+  const run = async (states: string[]) => {
+    const started: string[] = [];
+    let index = 0;
+    const result = await ensureDaemon({ lane: 'cobalt', root: '/tmp/lanes', env: {},
+      status: async () => ({ state: states[Math.min(index++, states.length - 1)] }),
+      start: async ({ lane }: { lane: string }) => { started.push(lane); } });
+    return { result, started };
+  };
+  const stopped = await run(['stopped', 'running']);
+  assert.deepEqual(stopped.started, ['cobalt']);
+  assert.equal(stopped.result.started, true);
+  const held = await run(['held']);
+  assert.deepEqual(held.started, [], 'another browser\'s profile is left alone');
+  assert.equal(held.result.state, 'held');
+  const running = await run(['running']);
+  assert.deepEqual(running.started, []);
+  assert.equal(running.result.started, false);
+
+  const report = kickoffReport(facts({ lanes: [lane({ browser: { state: 'running', started: true, admin: 'signed_in', slack: 'signed_in' } })] }));
+  assert.ok(report.lanes[0].checks.some((c: any) => c.level === 'info' && /Started chrome-amber, which was stopped/.test(c.text)));
+  assert.equal(report.ok, true);
+  assert.equal(parseArguments(['--no-start']).start, false);
+  assert.equal(parseArguments([]).start, true);
+});
