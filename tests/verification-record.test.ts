@@ -479,6 +479,9 @@ test('actual CLI init, resume, refresh, finish and generated report use the same
   assert.equal(cli('lesson', '--text', 'Reconnect MCP servers after the daemon switch.', '--area', 'verification', '--run', runFile), 0, error);
   assert.equal(JSON.parse(output).type, 'lesson');
   assert.equal(cli('lesson', '--run', runFile), 2);
+  assert.equal(cli('verdict', '--case', 'recovery', '--blocks-pr', 'no', '--reason', 'The phone check is unrelated to this change.', '--run', runFile), 0, error);
+  assert.equal(JSON.parse(output).blocksPr, 'no');
+  assert.equal(cli('verdict', '--case', 'recovery', '--run', runFile), 2);
   assert.equal(cli('status', '--run', runFile), 0, error);
   assert.equal(JSON.parse(output).cases[1].result, 'blocked');
   assert.equal(cli('status', '--run', runFile), 0, error);
@@ -573,6 +576,46 @@ test('lessons are kept for the feature map, grade nothing, and appear in the rep
   assert.match(report, /## Lessons for the feature map\n\nFold each into its file under qa\/live\/features\/ before the run's PR merges\.\n\n- \[delivery\] schedule: A typed @ is swallowed/);
   assert.match(report, /\n- Wrangler prints a bare newline/);
   assert.doesNotMatch(renderReport(status(fixture(t).run, source(), NOW)), /Lessons for the feature map/);
+});
+
+test('the report closes out: every reason a run is incomplete, and a PR verdict per failed or blocked case', (t) => {
+  const f = fixture(t);
+  f.run.spec.cases.push({ ...f.spec.cases[0], id: 'phone' });
+  const check = (at: number) => {
+    const view = status(f.run, source(), at);
+    assert.equal(view.complete, view.incompleteReasons.length === 0, 'reasons mirror the completion flag');
+    return view;
+  };
+  let view = check(NOW + 1000);
+  assert.deepEqual(view.incompleteReasons, ['case schedule is not_run', 'case phone is not_run']);
+  const attempt = f.append({ type: 'begin', caseId: 'schedule' });
+  f.append(f.finish(attempt.id, { result: 'fail', category: 'product', summary: 'Delivered twice.' }), NOW + 3000);
+  f.append({ type: 'case_blocked', caseId: 'phone', reason: 'Needs a real phone.' }, NOW + 4000);
+  view = check(NOW + 5000);
+  assert.deepEqual(view.incompleteReasons, ['case schedule is fail', 'case phone is blocked']);
+  let report = renderReport(view);
+  assert.match(report, /## Closeout\n\nNot complete:\n- case schedule is fail\n- case phone is blocked\n/);
+  assert.match(report, /- schedule \(fail\): MISSING\. Record one with `record verdict`\./);
+  assert.throws(() => f.append({ type: 'verdict', caseId: 'schedule', blocksPr: 'maybe', reason: 'x' }), /blocks the PR: yes or no/);
+  assert.throws(() => f.append({ type: 'verdict', caseId: 'schedule', blocksPr: 'yes', reason: '' }), /reason for the verdict/);
+  f.append({ type: 'verdict', caseId: 'schedule', blocksPr: 'yes', reason: 'The duplicate delivery is in the changed code.' }, NOW + 6000);
+  f.append({ type: 'verdict', caseId: 'phone', blocksPr: 'no', reason: 'Phone rendering is unchanged by this PR.' }, NOW + 7000);
+  report = renderReport(check(NOW + 8000));
+  assert.match(report, /- schedule \(fail\): blocks the PR\. The duplicate delivery is in the changed code\./);
+  assert.match(report, /- phone \(blocked\): does not block the PR\. Phone rendering is unchanged by this PR\./);
+  // A verdict judges the outcome it followed; a retest needs its own.
+  const retest = f.append({ type: 'begin', caseId: 'schedule', reason: 'Fixed the duplicate send.' }, NOW + 9000);
+  assert.equal(check(NOW + 10_000).cases[0].verdict, null, 'an open retest carries no earlier verdict');
+  f.append(f.finish(retest.id, { result: 'fail', category: 'product', summary: 'Still delivered twice.' }), NOW + 11_000);
+  assert.match(renderReport(check(NOW + 12_000)), /- schedule \(fail\): MISSING\. Record one with `record verdict`\./);
+  const done = fixture(t);
+  const pass = done.append({ type: 'begin', caseId: 'schedule' });
+  done.append(done.finish(pass.id), NOW + 3000);
+  const finished = status(done.run, source(), NOW + 4000);
+  assert.equal(finished.complete, true);
+  assert.deepEqual(finished.incompleteReasons, []);
+  assert.match(renderReport(finished), /## Closeout\n\nComplete: every required case passed/);
+  assert.doesNotMatch(renderReport(finished), /PR verdicts/);
 });
 
 function repairFixture(t: TestContext) {

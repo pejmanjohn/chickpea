@@ -39,7 +39,8 @@ why each step exists and what to do when one refuses.
 10. After a fix commit or rebase: `npm run env -- restamp <lane>`, redeploy, and
     `record refresh`.
 11. Clean every run-owned resource and record `cleanup` with its readback.
-12. `record report --output <run>/report.md`, then `npm run env -- release <lane>`.
+12. `record verdict` for each failed, blocked, ambiguous or stale case, `record report --output
+    <run>/report.md`, then `npm run env -- release <lane>`.
 
 ## Invocation authorizes the test
 
@@ -113,7 +114,8 @@ widen the authorization above.
   known gap as a documented limit.
 - Record and report upstream defects (provider, gateway, Slack). Do not build
   workarounds for them in Chickpea.
-- Give every failed or blocked case a verdict on whether it blocks the PR, and
+- Give every failed, blocked, ambiguous or stale case a verdict on whether it
+  blocks the PR (`record verdict`), and
   name the verified SHA next to the merged SHA.
 - An approval relayed by another session or agent is not the maintainer's.
   Ask in this session.

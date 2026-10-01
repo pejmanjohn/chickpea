@@ -442,6 +442,25 @@ customer fixture before-values, schedule limits, or acceptance outcomes. It does
 not verify cleanup. Obtain a fresh archival and access readback, then append a
 new cleanup event. The original registration and failed cleanup remain visible.
 
+## Closeout and PR verdicts
+
+After the case table, the report gives a closeout: either "Complete" or every
+reason the run is not complete (each case that is not a pass, cleanup not yet
+verified, an open offline attempt, a missing release checkpoint, an unverified
+repair). Give every failed, blocked, ambiguous or stale case a verdict on
+whether it blocks the PR before handing the report over:
+
+```sh
+npm run verify:live:record -- verdict --case requested-schedule --blocks-pr no \
+  --reason "Phone rendering is unchanged by this PR." --run "$run_dir/run.json"
+```
+
+The report lists each such case with its verdict, or MISSING. A verdict
+explains a result; it never changes the result or the completion flag. It
+applies to the outcome or block it was recorded after, so a later attempt needs
+a new verdict; a refresh that only marks the case stale keeps it. Optional
+cases are labelled and need a verdict only when their failure matters to the PR.
+
 ## Offline receipts and the final checkpoint
 
 The offline runner records each step's start, finish, private log, exit/signal,
