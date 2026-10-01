@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test, type TestContext } from 'node:test';
@@ -8,7 +8,6 @@ import { fileURLToPath } from 'node:url';
 
 // @ts-expect-error Executable helpers are JavaScript, shared with the CLI.
 import { runTail } from '../scripts/lib/lane-tail.mjs';
-import { chmodSync } from 'node:fs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -65,9 +64,9 @@ test('a child that ignores SIGTERM is killed at the deadline, and a tail that ne
   // Ignores SIGTERM and keeps talking, so only the deadline plus SIGKILL can end it.
   const stubborn = script(dir, 'stubborn.mjs', "process.on('SIGTERM', () => {}); setInterval(() => process.stdout.write('{}\\n'), 50);\n");
   const started = Date.now();
-  await runTail({ command: process.execPath, args: [stubborn], out: path.join(dir, 'stubborn.json'), durationMs: 600, stallMs: 60_000, killGraceMs: 300 });
+  await runTail({ command: process.execPath, args: [stubborn], out: path.join(dir, 'stubborn.json'), durationMs: 600, stallMs: 2_000, killGraceMs: 300 });
   assert.ok(Date.now() - started < 4_000, 'the deadline holds even when SIGTERM is ignored');
-  assert.match(readFileSync(path.join(dir, 'stubborn.json.events'), 'utf8'), /deadline reached\n$/);
+  assert.match(readFileSync(path.join(dir, 'stubborn.json.events'), 'utf8'), /sent SIGKILL\n.*deadline reached\n$/s);
 
   // Exits at once like Wrangler for a missing Worker or an expired token: an error on stderr and a bare newline on stdout.
   const dead = script(dir, 'dead.mjs', "process.stdout.write('\\n'); process.stderr.write('This Worker does not exist\\n'); process.exit(1);\n");

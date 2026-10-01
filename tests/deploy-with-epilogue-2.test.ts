@@ -208,7 +208,8 @@ test('Phase 1 deploy reconciles live version before receipt and suppresses setup
   assert.equal(log[completeAt + 1], `telemetry:chickpea-amber-live:${'a'.repeat(32)}`, 'then the deploy checks telemetry isolation for the serving Worker, on the pinned account');
   const receiptLine = log[completeAt + 2] ?? '';
   const evidence = path.join(harness.root, 'no-lane-registry', 'amber', 'evidence');
-  assert.match(receiptLine, new RegExp(`^telemetry-receipt:${evidence.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/telemetry-deployed-version-\\d{4}-\\d{2}-\\d{2}T`));
+  assert.ok(receiptLine.startsWith(`telemetry-receipt:${evidence}/telemetry-deployed-version-`), receiptLine);
+  assert.match(receiptLine, /-\d{4}-\d{2}-\d{2}T[\d-]+Z\.json$/);
   const telemetryReceipt = receiptLine.slice('telemetry-receipt:'.length);
   assert.equal(JSON.parse(readFileSync(telemetryReceipt, 'utf8')).status, 'passed');
   assert.match(result.stdout, /Telemetry isolation verified for the serving version; receipt /);

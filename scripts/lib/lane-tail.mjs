@@ -50,10 +50,15 @@ export async function runTail({
   let current = null;
   let quickExits = 0;
   let killedAt = null;
+  let forced = false;
   const terminate = (child) => {
     if (!child || child.exitCode !== null || child.signalCode !== null) return;
     if (killedAt === null) { killedAt = now(); child.kill('SIGTERM'); }
-    else if (now() - killedAt >= killGraceMs) child.kill('SIGKILL');
+    else if (!forced && now() - killedAt >= killGraceMs) {
+      forced = true;
+      note(`no exit ${Math.round(killGraceMs / 1000)} s after SIGTERM; sent SIGKILL`);
+      child.kill('SIGKILL');
+    }
   };
   const stop = () => { stopped = true; terminate(current); };
   signal?.addEventListener('abort', stop, { once: true });
@@ -64,6 +69,7 @@ export async function runTail({
       const startedAt = now();
       let sawOutput = false;
       killedAt = null;
+      forced = false;
       const child = spawnImpl(command, args, { env, stdio: ['ignore', 'pipe', 'pipe'] });
       current = child;
       let lastOutput = now();
@@ -75,18 +81,28 @@ export async function runTail({
         if (!sawOutput && chunk.toString('utf8').trim() !== '') sawOutput = true;
       });
       child.stderr.on('data', (chunk) => { writeSync(errDescriptor, chunk); });
-      // `close` fires after the child's streams end, so no write can follow the descriptors closing.
+      // `close` fires after the child's streams end, so no write can follow the
+      // descriptors closing. If something the child left behind still holds the
+      // pipes, stop reading them a grace period after the exit instead of
+      // waiting past the deadline.
+      let pipeGrace;
       const closed = new Promise((resolve) => {
         child.once('error', (error) => { spawnError = error; resolve({ code: null, signal: null }); });
         child.once('close', (code, exitSignal) => resolve({ code, signal: exitSignal }));
+        child.once('exit', (code, exitSignal) => {
+          pipeGrace = setTimeout(() => {
+            child.stdout.destroy(); child.stderr.destroy();
+            resolve({ code, signal: exitSignal });
+          }, killGraceMs);
+        });
       });
       const watchdog = setInterval(() => {
-        if (now() >= deadline || stopped) { terminate(child); return; }
-        if (killedAt !== null) { terminate(child); return; }
+        if (now() >= deadline || stopped || killedAt !== null) { terminate(child); return; }
         if (now() - lastOutput >= stallMs) { stalled = true; terminate(child); }
       }, Math.max(50, Math.min(1_000, Math.floor(stallMs / 4))));
       const result = await closed;
       clearInterval(watchdog);
+      clearTimeout(pipeGrace);
       current = null;
       if (spawnError) {
         note(`spawn error ${spawnError.code ?? spawnError.message}`);
