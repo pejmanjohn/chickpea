@@ -402,7 +402,7 @@ export function createHarness() {
       }
     `,
   );
-  writeFileSync(path.join(root, 'Dockerfile'), 'FROM docker.io/cloudflare/sandbox:0.12.4\nEXPOSE 3000\n');
+  writeFileSync(path.join(root, 'Dockerfile'), 'FROM docker.io/cloudflare/sandbox:0.12.10\nEXPOSE 3000\n');
   const dockerStub = path.join(root, 'fake-docker.mjs');
   writeFileSync(dockerStub, `#!${process.execPath}
     import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';

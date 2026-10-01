@@ -24,7 +24,7 @@ function instanceReplaced(): Error {
 }
 
 /**
- * The shape `@cloudflare/sandbox` 0.12.4 actually throws for exec, exists,
+ * The shape `@cloudflare/sandbox` 0.12.10 actually throws for exec, exists,
  * readFile, writeFile and the other methods its `getSandbox` proxy wraps
  * (`createPlatformInterruptedError`): the platform error survives only as
  * `cause`, and the wrapper carries no `retryable` flag. The SDK cannot load
