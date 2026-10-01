@@ -11,12 +11,15 @@ import { existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 
+import { laneCredentialsDirectory } from './lane-secrets.mjs';
+import { QA_LANES } from './qa-lanes.mjs';
+
 export const KICKOFF_SCHEMA = 'chickpea-kickoff-doctor/v1';
-const LANES = ['amber', 'cobalt', 'violet'];
 
 const check = (level, text, fix) => ({ level, text, ...(fix ? { fix } : {}) });
 
 export function deployCommand(lane, profile) {
+  if (profile !== 'core' && profile !== 'sandbox') return null;
   const script = profile === 'sandbox' ? 'deploy:sandbox' : 'deploy';
   return `CHICKPEA_DEPLOY_TARGET=${lane} npm run verify:host -- --wait-ms 300000 npm run ${script}`;
 }
@@ -37,20 +40,23 @@ export function kickoffReport(facts) {
 
   const owner = facts.hostReservation;
   if (!owner) host.push(check('ok', 'Host reservation is free'));
-  else if (owner.alive) host.push(check('info', `Host checks are reserved by PID ${owner.pid} in ${owner.cwd} since ${owner.startedAt}; a guarded deploy waits for it with --wait-ms`));
-  else host.push(check('human', `Host reservation names PID ${owner.pid} in ${owner.cwd}, which is no longer running`, 'Ask the maintainer before removing the stale reservation; never remove another task\'s lock on your own.'));
+  else if (owner.alive === true) host.push(check('info', `Host checks are reserved by PID ${owner.pid} in ${owner.cwd} since ${owner.startedAt}; a guarded deploy waits for it with --wait-ms`));
+  else if (owner.alive === 'unknown') host.push(check('human', `Host reservation names PID ${owner.pid} in ${owner.cwd}, which this user cannot inspect; verify:host refuses it`, 'Ask the maintainer who owns that process.'));
+  else host.push(check('human', `Host reservation names PID ${owner.pid} in ${owner.cwd}, which is no longer running; verify:host refuses it`, 'Ask the maintainer before removing the stale reservation; never remove another task\'s lock on your own.'));
 
   const { source } = facts;
   if (source.status === 'current') host.push(check('ok', `Source contains remote main ${source.approvedTip.slice(0, 8)}`));
   else if (source.status === 'behind') host.push(check('block', 'Source is behind remote main, so a guarded deploy would refuse it', 'Rebase or merge origin/main, rerun the affected offline checks, then npm run env -- restamp <lane> if you hold one.'));
   else host.push(check('warn', `Source admission not confirmed (${source.code ?? 'unknown'}); the guarded deploy checks again`));
+  if (facts.lanesError) host.push(check('block', `Could not read the lane registry or capabilities: ${facts.lanesError}`, 'npm run env -- status shows the registry problem.'));
 
   const lanes = facts.lanes.map((lane) => laneVerdict(lane, facts));
   const needs = [
     ...host.filter((c) => c.level === 'human').map((c) => c.text),
     ...lanes.flatMap((lane) => lane.checks.filter((c) => c.level === 'human').map((c) => `${lane.target}: ${c.text}`)),
   ];
-  const hostBlocked = host.some((c) => c.level === 'block');
+  // A person-only host problem (a stale reservation) stops a guarded deploy as surely as a blocker.
+  const hostBlocked = host.some((c) => c.level === 'block' || c.level === 'human');
   const ready = lanes.filter((lane) => lane.ready).map((lane) => lane.target);
   return {
     schemaVersion: KICKOFF_SCHEMA, generatedAt: facts.generatedAt, worktree: facts.worktree, localSchema: facts.localSchema,
@@ -61,11 +67,13 @@ export function kickoffReport(facts) {
 function laneVerdict(lane, facts) {
   const checks = [];
   if (lane.health !== 'ready') checks.push(check('block', `Lane health is ${lane.health}`, 'npm run env -- status <lane> shows why; repair it or choose another lane.'));
-  if (lane.readErrors?.length) checks.push(check('warn', `Live read errors: ${lane.readErrors.join('; ')}`));
+  // Without a live read the deploy would fail at Wrangler after the claim.
+  if (lane.readErrors?.length) checks.push(check('block', `Wrangler could not read the live Worker: ${lane.readErrors.join('; ')}`, 'Run npx wrangler whoami; sign in, or pass --profile/--env as for other env commands.'));
   const version = lane.liveVersion ?? lane.servingVersion;
-  if (lane.profile && lane.profile !== 'unknown') {
-    checks.push(check(lane.profile === 'mixed' ? 'warn' : 'info', `${lane.profile} profile, serving ${version ? version.slice(0, 8) : 'unknown'}; deploy with: ${deployCommand(lane.target, lane.profile)}`));
-  } else checks.push(check('warn', 'Deploy profile unknown (Wrangler could not read the live Worker)'));
+  const command = deployCommand(lane.target, lane.profile);
+  if (command) checks.push(check('info', `${lane.profile} profile, serving ${version ? version.slice(0, 8) : 'unknown'}; deploy with: ${command}`));
+  else if (lane.profile === 'mixed') checks.push(check('warn', `Mixed profile, serving ${version ? version.slice(0, 8) : 'unknown'}: a split deployment is in progress, so no deploy command applies`, 'npm run env -- status <lane>, then wait or reconcile.'));
+  else if (!lane.readErrors?.length) checks.push(check('warn', 'Deploy profile unknown'));
 
   if (!lane.claim) checks.push(check('ok', 'Free'));
   else if (lane.claim.ownWorktree) checks.push(check('ok', `Claimed by this worktree (${lane.claim.branch ?? 'branch unknown'}) until ${lane.claim.expiresAt}`));
@@ -80,12 +88,14 @@ function laneVerdict(lane, facts) {
   if (lane.providerKeys) checks.push(check('info', `Worker secrets present: ${lane.providerKeys.join(', ') || 'none'}`));
   if (lane.missingActorAliases?.length) checks.push(check('warn', `No registered actor for ${lane.missingActorAliases.join(', ')}; Member-view and denial cases need a second person`));
   if (lane.setupFlowUnprovenSince) checks.push(check('warn', `Setup flow unproven since ${lane.setupFlowUnprovenSince.slice(0, 8)}; report it in the run`));
-  if (lane.telemetryReceipt) checks.push(check('ok', 'Telemetry isolation receipt exists for the serving version'));
-  else checks.push(check('info', 'No telemetry receipt for the serving version yet; the guarded deploy writes one, or run npm run verify:telemetry -- --target <lane>'));
+  if (lane.telemetryReceipt === 'passed') checks.push(check('ok', 'A passed telemetry isolation receipt covers the serving version'));
+  else if (lane.telemetryReceipt === 'failed') checks.push(check('block', 'The latest telemetry receipt for the serving version failed; no synthetic Slack traffic until it passes', 'Redeploy through the guarded wrapper, or fix the telemetry setting and run npm run verify:telemetry -- --target <lane>.'));
+  else checks.push(check('info', 'No telemetry receipt covers the serving version yet; the guarded deploy writes one, or run npm run verify:telemetry -- --target <lane>'));
 
   const browser = lane.browser;
   if (!browser) checks.push(check('info', 'Browser not checked (--no-browser)'));
   else if (browser.state === 'stopped') checks.push(check('block', 'Lane browser is stopped', `npm run lane:browser -- start ${lane.target}`));
+  else if (browser.state === 'error') checks.push(check('warn', `Lane browser could not be checked: ${browser.error}`));
   else if (browser.state === 'held') checks.push(check('human', `Lane browser profile is held by another session's Chrome (PID ${browser.holderPid ?? '?'})`, 'Ask that session to quit its browser, then npm run lane:browser -- start <lane>.'));
   else {
     for (const [surface, label] of [['admin', 'Admin'], ['slack', 'Slack']]) {
@@ -119,10 +129,11 @@ export function renderKickoff(report) {
 
 /** Read every fact. Each reader is injectable; failures become facts, never crashes. */
 export async function gatherKickoffFacts({
-  root, lanes = LANES, env = process.env, providerContext, browser = true, now = Date.now,
+  root, lanes = QA_LANES, env = process.env, providerContext, browser = true, now = Date.now,
   readers = {},
 } = {}) {
-  const load = async (name, fallback) => readers[name] ?? fallback();
+  // `in`, not `??`: a test may inject null (no reservation) without reading the host.
+  const load = async (name, fallback) => (name in readers ? readers[name] : fallback());
   const nodeVersion = await import('./node-version.mjs');
   const facts = {
     generatedAt: new Date(now()).toISOString(),
@@ -140,7 +151,7 @@ export async function gatherKickoffFacts({
     let owner;
     try { owner = JSON.parse(readFileSync(HOST_CHECK_LOCK, 'utf8')); } catch { return null; }
     let alive = false;
-    try { process.kill(owner.pid, 0); alive = true; } catch (error) { alive = error.code === 'EPERM'; }
+    try { process.kill(owner.pid, 0); alive = true; } catch (error) { alive = error.code === 'EPERM' ? 'unknown' : false; }
     return { pid: owner.pid, cwd: owner.cwd, startedAt: owner.startedAt, alive };
   });
 
@@ -159,38 +170,64 @@ export async function gatherKickoffFacts({
     catch { return null; }
   });
 
-  const rows = await load('capabilities', async () => {
-    const { readEnvironmentCapabilities } = await import('./environment-capabilities.mjs');
-    const report = await readEnvironmentCapabilities(lanes.length === 1 ? lanes[0] : 'all', { env, ...(providerContext ? { providerContext } : {}) });
-    return report.lanes.filter((row) => lanes.includes(row.target));
-  });
-  const registry = await load('registry', async () => (await import('./environment-registry.mjs')).readEnvironmentRegistry());
-
   facts.lanes = [];
+  let rows, registry;
+  try {
+    rows = await load('capabilities', async () => {
+      const { readEnvironmentCapabilities } = await import('./environment-capabilities.mjs');
+      const report = await readEnvironmentCapabilities(lanes.length === 1 ? lanes[0] : 'all', { env, ...(providerContext ? { providerContext } : {}) });
+      return report.lanes.filter((row) => lanes.includes(row.target));
+    });
+    registry = await load('registry', async () => (await import('./environment-registry.mjs')).readEnvironmentRegistry());
+  } catch (error) {
+    facts.lanesError = error?.code ?? error?.message ?? String(error);
+    return facts;
+  }
   for (const row of rows) {
     const registration = registry.targets?.[row.target] ?? {};
     const claim = registration.claim;
     let ownWorktree = false;
     try { ownWorktree = Boolean(claim?.canonicalWorktreePath) && realpathSync(claim.canonicalWorktreePath) === facts.worktree; } catch { ownWorktree = false; }
-    const servingVersion = row.liveVersion ?? registration.servingVersion ?? null;
+    const servingVersion = row.liveVersion ?? row.servingVersion ?? null;
     facts.lanes.push({
       target: row.target, health: row.health, profile: row.profile, liveVersion: row.liveVersion,
-      servingVersion: registration.servingVersion ?? null, schemaGeneration: row.schemaGeneration ?? registration.schemaGeneration ?? null,
+      servingVersion: row.servingVersion ?? null, schemaGeneration: row.schemaGeneration ?? registration.schemaGeneration ?? null,
       readErrors: row.errors ?? [], modelRoles: row.defaultChatModel || row.imageRole || row.codingRole ? row.modelRoles : null,
       providerKeys: row.secrets ? Object.entries(row.secrets).filter(([, present]) => present).map(([name]) => name) : null,
       versionMatchesRegistry: row.versionMatchesRegistry ?? null,
       missingActorAliases: row.missingActorAliases ?? [], setupFlowUnprovenSince: row.setupFlowUnprovenSince ?? null,
       claim: claim ? { ownWorktree, branch: claim.branch, expiresAt: claim.expiresAt } : null,
-      telemetryReceipt: servingVersion ? hasTelemetryReceipt(registration.evidenceRoot, servingVersion) : false,
-      browser: browser ? await (readers.browser ?? probeLaneBrowser)({ lane: row.target, registration, env }) : null,
+      telemetryReceipt: servingVersion ? telemetryReceiptFor(registration.evidenceRoot, servingVersion) : null,
+      browser: browser ? await checkBrowser(readers.browser ?? probeLaneBrowser, { lane: row.target, registration, env }) : null,
     });
   }
   return facts;
 }
 
-function hasTelemetryReceipt(evidenceRoot, version) {
-  try { return readdirSync(evidenceRoot).some((name) => name.startsWith(`telemetry-${version}`) && name.endsWith('.json')); }
-  catch { return false; }
+async function checkBrowser(probe, input) {
+  try { return await probe(input); } catch (error) { return { state: 'error', error: error?.message ?? String(error) }; }
+}
+
+/**
+ * The newest receipt that covers this serving version decides: `passed`,
+ * `failed`, or null when none does. Receipts are read, not trusted by name,
+ * because the deploy keeps failed receipts and `verify:telemetry --target`
+ * names its receipts by time only.
+ */
+export function telemetryReceiptFor(evidenceRoot, version) {
+  let names;
+  try { names = readdirSync(evidenceRoot).filter((name) => /^telemetry-.*\.json$/u.test(name)); } catch { return null; }
+  const covering = [];
+  for (const name of names) {
+    try {
+      const receipt = JSON.parse(readFileSync(path.join(evidenceRoot, name), 'utf8'));
+      if (Array.isArray(receipt.versions) && receipt.versions.some((entry) => entry?.version === version)) {
+        covering.push({ at: Date.parse(receipt.observedAt) || 0, status: receipt.status });
+      }
+    } catch { /* an unreadable receipt covers nothing */ }
+  }
+  if (!covering.length) return null;
+  return covering.sort((a, b) => b.at - a.at)[0].status === 'passed' ? 'passed' : 'failed';
 }
 
 /** Daemon state, then Admin and Slack sign-in through one owned tab each. */
@@ -220,7 +257,7 @@ export async function probeLaneBrowser({ lane, registration, env = process.env }
 
 function laneOrigin(lane, env) {
   try {
-    const directory = env.CHICKPEA_LANE_CREDENTIALS_DIR?.trim() || path.join(homedir(), '.chickpea', 'lane-credentials');
+    const directory = laneCredentialsDirectory(env);
     const origin = new URL(JSON.parse(readFileSync(path.join(directory, `${lane}-live.json`), 'utf8')).origin);
     return origin.protocol === 'https:' && !origin.username && !origin.password ? origin.origin : null;
   } catch { return null; }

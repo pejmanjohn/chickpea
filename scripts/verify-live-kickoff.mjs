@@ -15,9 +15,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { gatherKickoffFacts, kickoffReport, renderKickoff } from './lib/kickoff-doctor.mjs';
+import { QA_LANES as LANES } from './lib/qa-lanes.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const LANES = ['amber', 'cobalt', 'violet'];
 const USAGE = 'Usage: npm run verify:live:kickoff -- [--lane amber|cobalt|violet|all] [--no-browser] [--json] [--profile P] [--env E]\n';
 
 export function parseArguments(argv) {

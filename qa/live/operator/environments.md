@@ -299,7 +299,7 @@ section, and keep lane-specific values out of this repository.
 | Missing actor aliases, Slack workspace label, transport, schema generation, setup-flow marker, claim | The environment registry, as in `env status`. A candidate needs a lane whose Schema matches its own generation unless the maintainer approves `env schema-advance`. `missing_actor` limits Member-view checks. A `gateway` lane has no operator Slack token (see [hosts.md](hosts.md#slack-evidence-on-gateway-lanes)). |
 | GitHub App and granted repositories, sandbox runtime on or off | Not generated. Admin Settings › Coding sandbox and GitHub. |
 | Registered connector fixtures and standing QA connections | Not generated. The private fixture inventory ([fixtures.md](fixtures.md)). |
-| Whether Chrome is signed in to Slack and Admin | Not generated. The browser. A lane's workspace can display under an older name. |
+| Whether Chrome is signed in to Slack and Admin | Not in this table. `npm run verify:live:kickoff` probes it through the lane browser daemon. A lane's workspace can display under an older name. |
 
 Rerun the command after any deploy, profile switch, or secret upload. Update
 the hand-written notes with their observation date after any model or fixture

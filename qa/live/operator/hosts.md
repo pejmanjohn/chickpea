@@ -61,7 +61,9 @@ real foreground targets, so hidden-tab rendering, cross-browser routing and
 focus problems do not apply, and the server's dialog tool handles native
 `confirm()` dialogs. Different lanes run in parallel without contention.
 
-At kickoff run `npm run lane:browser -- status all`:
+At kickoff, `npm run verify:live:kickoff` reports each lane browser's state
+and whether it is signed in to Admin and Slack. `npm run lane:browser -- status
+all` shows the daemons alone:
 
 - `running`: attach and go. Signed-in state lives in the profile, so a
   restarted daemon is still signed in.

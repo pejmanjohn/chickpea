@@ -1,11 +1,16 @@
 /**
- * Read-only page probes through a running lane browser daemon. A probe opens
- * one tab of its own over the Chrome DevTools protocol, waits for the page,
- * reads its address, title and text, and closes the tab. It never clicks,
- * types, or reads cookies, so it cannot change product state or leak a session.
+ * Page probes through a running lane browser daemon. A probe opens one tab of
+ * its own over the Chrome DevTools protocol, waits for the page, reads its
+ * address, title and text, and closes the tab. It never clicks, types, or reads
+ * cookies. Loading a page still has the page's ordinary side effects: Admin
+ * records an authorization check and refreshes the session, and the Slack
+ * client marks the test account active, as any visit by the verifier would.
  */
 
 const PROBE_TIMEOUT_MS = 30_000;
+const CALL_TIMEOUT_MS = 5_000;
+/** A page that is complete and unchanged for this many reads has settled, even if unrecognised. */
+const STABLE_READS = 3;
 
 /**
  * @returns {Promise<{ url: string, title: string, text: string, settled: boolean }>}
@@ -24,14 +29,20 @@ export async function probePage({
     });
     let sequence = 0;
     const pending = new Map();
+    const failAll = (reason) => { for (const { reject } of pending.values()) reject(new Error(reason)); pending.clear(); };
     socket.onmessage = (message) => {
       const data = JSON.parse(String(message.data));
-      if (data.id && pending.has(data.id)) { pending.get(data.id)(data); pending.delete(data.id); }
+      if (data.id && pending.has(data.id)) { pending.get(data.id).resolve(data); pending.delete(data.id); }
     };
-    const send = (method, params = {}) => new Promise((resolve) => {
+    // A closed tab or a stopped daemon must end the probe, not leave it waiting forever.
+    socket.onclose = () => failAll('The DevTools socket closed.');
+    socket.onerror = () => failAll('The DevTools socket failed.');
+    const send = (method, params = {}) => new Promise((resolve, reject) => {
       sequence += 1;
-      pending.set(sequence, resolve);
-      socket.send(JSON.stringify({ id: sequence, method, params }));
+      const id = sequence;
+      const timer = setTimeout(() => { pending.delete(id); reject(new Error(`${method} timed out.`)); }, CALL_TIMEOUT_MS);
+      pending.set(id, { resolve: (value) => { clearTimeout(timer); resolve(value); }, reject: (error) => { clearTimeout(timer); reject(error); } });
+      socket.send(JSON.stringify({ id, method, params }));
     });
     await send('Page.navigate', { url });
     const read = async () => {
@@ -43,9 +54,14 @@ export async function probePage({
     };
     const deadline = Date.now() + timeoutMs;
     let page = {};
+    let previous = null;
+    let stable = 0;
     while (Date.now() < deadline) {
-      page = await read();
-      if (page.state === 'complete' && page.url && page.url !== 'about:blank' && settledWhen(page)) {
+      try { page = await read(); } catch { break; }
+      const loaded = page.state === 'complete' && page.url && page.url !== 'about:blank';
+      stable = loaded && previous !== null && page.text === previous ? stable + 1 : 0;
+      previous = loaded ? page.text : null;
+      if (loaded && (settledWhen(page) || stable >= STABLE_READS)) {
         return { url: page.url, title: page.title ?? '', text: page.text ?? '', settled: true };
       }
       await sleep(1_000);

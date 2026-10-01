@@ -108,8 +108,9 @@ so a run does not stall mid-journey while the maintainer is away:
    `npm run env -- --help` lists every lane command.
 2. Start a stopped lane daemon with `npm run lane:browser -- start <lane>`
    (see [hosts.md](hosts.md#lane-browsers)). A `held` profile belongs to
-   another session; ask it to quit. Fall back to the host's own browser tool
-   only when no daemon can start. Request any Slack desktop computer-use grant
+   another session; ask it to quit. Rerun the doctor for that lane to confirm
+   both sign-ins. Fall back to the host's own browser tool only when no daemon
+   can start. Request any Slack desktop computer-use grant
    now if it will be used.
 3. Confirm the required credential fixtures exist on that lane (see
    [fixtures.md](fixtures.md#credentials)). Never ask for a secret in chat.
