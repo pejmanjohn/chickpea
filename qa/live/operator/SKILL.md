@@ -95,18 +95,22 @@ the permission classifier instead of its allow rule (see
 Before claiming a lane, gather every human-dependent prerequisite in one pass,
 so a run does not stall mid-journey while the maintainer is away:
 
-1. Run `npm run env -- capabilities all` and pick the lane
+1. Run `npm run verify:live:kickoff` (add `--lane <alias>` to check one). In
+   one read-only pass it checks host Node and `node_modules`, the host
+   reservation, source freshness against remote main, and for each lane its
+   health, claim, deploy profile and exact deploy command, schema generation
+   against the candidate, models, Worker secrets, actors, telemetry receipt,
+   and whether its browser daemon is signed in to Admin and Slack. It ends
+   with what needs a person and the ready lanes. Fix its blockers before
+   claiming. Then pick the lane by capability
    ([choose a lane by capability](environments.md#choose-a-lane-by-capability)):
-   deploy profile, provider keys, image role, default model, schema
-   generation, and registered connector fixtures must cover every selected
-   case. `npm run env -- --help` lists every lane command.
-2. Run `npm run lane:browser -- status all` and start a stopped lane daemon
-   with `npm run lane:browser -- start <lane>`; then open the lane's QA channel
-   and Admin through `chrome-<lane>` to confirm the profile is signed in (see
-   [hosts.md](hosts.md#lane-browsers)). A `held` profile belongs to another
-   session; ask it to quit. Fall back to the host's own browser tool only when
-   no daemon can start. Request any Slack desktop computer-use grant now if it
-   will be used.
+   registered connector fixtures and the selected cases' models must also fit.
+   `npm run env -- --help` lists every lane command.
+2. Start a stopped lane daemon with `npm run lane:browser -- start <lane>`
+   (see [hosts.md](hosts.md#lane-browsers)). A `held` profile belongs to
+   another session; ask it to quit. Fall back to the host's own browser tool
+   only when no daemon can start. Request any Slack desktop computer-use grant
+   now if it will be used.
 3. Confirm the required credential fixtures exist on that lane (see
    [fixtures.md](fixtures.md#credentials)). Never ask for a secret in chat.
 4. Name the checks that only a human can do, such as a real-phone view, and
