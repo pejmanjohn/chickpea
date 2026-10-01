@@ -107,10 +107,13 @@ Proven Slack recipe for these servers:
 
 1. Open `https://app.slack.com/client/<team-id>/<channel-id>` for the lane's QA
    channel and take a snapshot to confirm the signed-in actor and channel.
-2. To mention an Agent or Chickpea, click the composer, type `@` and the name,
-   wait about 1.5 s for autocomplete, press Enter to insert the mention token,
-   then type the message and press Enter. Confirm the posted message shows a
-   linked mention, not plain text.
+2. To mention an Agent or Chickpea, click the composer, then its "Mention
+   someone" button (a typed `@` is often swallowed when text is inserted by a
+   tool), type the name, wait about 1.5 s for autocomplete, and press Enter to
+   insert the mention token. Before sending, confirm the draft holds a
+   `ts-mention` element; if it does not, clear the draft instead of sending.
+   Then type the message and press Enter. A message posted without the token
+   reaches no Agent, so its silence proves nothing.
 3. Read the reply thread by navigating to
    `https://app.slack.com/client/<team-id>/<channel-id>/thread/<channel-id>-<message-ts>`
    instead of clicking the reply counter. Poll the thread every 10 s up to the
