@@ -69,8 +69,8 @@ test('a child that ignores SIGTERM is killed at the deadline, and a tail that ne
   assert.ok(Date.now() - started < 4_000, 'the deadline holds even when SIGTERM is ignored');
   assert.match(readFileSync(path.join(dir, 'stubborn.json.events'), 'utf8'), /deadline reached\n$/);
 
-  // Exits at once with nothing on stdout, like an expired token or a wrong Worker name.
-  const dead = script(dir, 'dead.mjs', "process.stderr.write('not authorized\\n'); process.exit(1);\n");
+  // Exits at once like Wrangler for a missing Worker or an expired token: an error on stderr and a bare newline on stdout.
+  const dead = script(dir, 'dead.mjs', "process.stdout.write('\\n'); process.stderr.write('This Worker does not exist\\n'); process.exit(1);\n");
   await assert.rejects(
     runTail({ command: process.execPath, args: [dead], out: path.join(dir, 'dead.json'), durationMs: 60_000, stallMs: 60_000, restartDelayMs: 20 }),
     /TAIL_NOT_ATTACHING: 3 attaches in a row exited within 10 s with no output \(last exit 1\)/,

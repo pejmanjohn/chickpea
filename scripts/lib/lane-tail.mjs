@@ -34,7 +34,7 @@ function appendOnly(file) {
  * and stderr to `<out>.err`, and one line per attach, exit, stall restart and
  * stop to `<out>.events`. A child that ignores SIGTERM is killed after a grace
  * period. A command that cannot start, or exits three times in a row without
- * output, is fatal (`TAIL_NOT_ATTACHING`) rather than retried for the window.
+ * printing anything but whitespace, is fatal (`TAIL_NOT_ATTACHING`) rather than retried for the window.
  */
 export async function runTail({
   command, args, out, env = process.env, durationMs, stallMs, restartDelayMs = RESTART_DELAY_MS,
@@ -70,7 +70,9 @@ export async function runTail({
       let stalled = false;
       let spawnError = null;
       child.stdout.on('data', (chunk) => {
-        lastOutput = now(); sawOutput = true; counts.bytes += chunk.length; writeSync(outDescriptor, chunk);
+        lastOutput = now(); counts.bytes += chunk.length; writeSync(outDescriptor, chunk);
+        // Wrangler prints a bare newline to stdout when an attach fails, so only real text counts as attached.
+        if (!sawOutput && chunk.toString('utf8').trim() !== '') sawOutput = true;
       });
       child.stderr.on('data', (chunk) => { writeSync(errDescriptor, chunk); });
       // `close` fires after the child's streams end, so no write can follow the descriptors closing.
@@ -96,9 +98,10 @@ export async function runTail({
         note(`no output for ${Math.round(stallMs / 1000)} s; restarting`);
       } else {
         counts.exits += 1;
-        note(`exited ${result.code ?? result.signal ?? 'unknown'}; reattaching`);
         quickExits = !sawOutput && now() - startedAt < quickExitMs ? quickExits + 1 : 0;
-        if (quickExits >= MAX_QUICK_EXITS) {
+        const giveUp = quickExits >= MAX_QUICK_EXITS;
+        note(`exited ${result.code ?? result.signal ?? 'unknown'}; ${giveUp ? 'not attaching, giving up' : 'reattaching'}`);
+        if (giveUp) {
           throw new LaneTailError('TAIL_NOT_ATTACHING', `${MAX_QUICK_EXITS} attaches in a row exited within ${Math.round(quickExitMs / 1000)} s ` +
             `with no output (last exit ${result.code ?? result.signal ?? 'unknown'}); see ${out}.err`);
         }
