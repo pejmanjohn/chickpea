@@ -100,6 +100,11 @@ test('lane problems are sorted into blockers and things only a person can do', (
   const stopped = kickoffReport(facts({ lanes: [lane({ browser: { state: 'stopped' } })] }));
   assert.match(stopped.lanes[0].checks.find((c: any) => c.level === 'block').fix, /npm run lane:browser -- start amber/);
   assert.equal(kickoffReport(facts({ lanes: [lane({ browser: null })] })).ok, true, '--no-browser leaves the lane ready');
+  const readbackLevel = (readback: object) => kickoffReport(facts({ lanes: [lane({ readback })] })).lanes[0].checks.find((c: any) => /readback/i.test(c.text));
+  assert.equal(readbackLevel({ state: 'ok' }).level, 'ok');
+  assert.equal(readbackLevel({ state: 'missing' }).level, 'info', 'a lane without a token is still ready');
+  assert.equal(readbackLevel({ state: 'other_workspace' }).level, 'warn');
+  assert.match(readbackLevel({ state: 'error', error: 'token_revoked' }).text, /did not work: token_revoked/);
   const unread = kickoffReport(facts({ lanes: [lane({ readErrors: ['WORKER_DEPLOYMENT_UNAVAILABLE'], profile: 'unknown', liveVersion: null })] }));
   assert.equal(unread.ok, false, 'a lane Wrangler cannot read would fail its deploy after the claim');
   assert.match(unread.lanes[0].checks.find((c: any) => c.level === 'block').fix, /wrangler whoami/);
@@ -161,7 +166,7 @@ test('facts come from injectable readers, and a claim is ours only for this chec
   const gathered = await gatherKickoffFacts({
     root, lanes: ['amber', 'cobalt'],
     readers: {
-      nodeVersion: 'v24.20.0', lockfileDrift: () => [], hostReservation: null,
+      nodeVersion: 'v24.20.0', lockfileDrift: () => [], hostReservation: null, secretEntries: new Map(),
       source: { status: 'current', approvedTip: 'b'.repeat(40) }, localSchema: SCHEMA,
       capabilities: [
         { target: 'amber', health: 'ready', profile: 'core', liveVersion: 'v1', servingVersion: 'v1', schemaGeneration: SCHEMA, errors: [], secrets: { OPENAI_API_KEY: true, BROWSERBASE_API_KEY: false }, defaultChatModel: 'm', modelRoles: 'm / image unset / coding unset', versionMatchesRegistry: true, missingActorAliases: [] },
@@ -185,14 +190,14 @@ test('facts come from injectable readers, and a claim is ours only for this chec
   assert.ok(report.lanes[1].checks.some((c: any) => c.level === 'block' && /WRANGLER_UNAVAILABLE/.test(c.text)));
   // A browser probe that throws becomes a fact, and a registry that cannot be read ends gathering, not the report.
   const thrown = await gatherKickoffFacts({ root, lanes: ['amber'], readers: {
-    nodeVersion: 'v24.20.0', lockfileDrift: () => [], hostReservation: null, source: { status: 'current', approvedTip: 'b'.repeat(40) }, localSchema: SCHEMA,
+    nodeVersion: 'v24.20.0', lockfileDrift: () => [], hostReservation: null, secretEntries: new Map(), source: { status: 'current', approvedTip: 'b'.repeat(40) }, localSchema: SCHEMA,
     capabilities: [{ target: 'amber', health: 'ready', profile: 'core', liveVersion: 'v1', servingVersion: 'v1', schemaGeneration: SCHEMA, errors: [], missingActorAliases: [] }],
     registry: { targets: { amber: { evidenceRoot: evidence } } },
     browser: async () => { throw new Error('no daemon root'); },
   } });
   assert.deepEqual(thrown.lanes[0].browser, { state: 'error', error: 'no daemon root' });
   const broken = await gatherKickoffFacts({ root, lanes: ['amber'], readers: {
-    nodeVersion: 'v24.20.0', lockfileDrift: () => [], hostReservation: null, source: { status: 'current', approvedTip: 'b'.repeat(40) }, localSchema: SCHEMA,
+    nodeVersion: 'v24.20.0', lockfileDrift: () => [], hostReservation: null, secretEntries: new Map(), source: { status: 'current', approvedTip: 'b'.repeat(40) }, localSchema: SCHEMA,
     get capabilities() { throw Object.assign(new Error('missing'), { code: 'TARGET_NOT_REGISTERED' }); },
   } });
   assert.equal(broken.lanesError, 'TARGET_NOT_REGISTERED');

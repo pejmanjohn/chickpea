@@ -96,6 +96,13 @@ function laneVerdict(lane, facts) {
   else if (lane.telemetryReceipt === 'failed') checks.push(check('block', 'The latest telemetry receipt for the serving version failed; no synthetic Slack traffic until it passes', 'Redeploy through the guarded wrapper, or fix the telemetry setting and run npm run verify:telemetry -- --target <lane>.'));
   else checks.push(check('info', 'No telemetry receipt covers the serving version yet; the guarded deploy writes one, or run npm run verify:telemetry -- --target <lane>'));
 
+  const readback = lane.readback;
+  if (!readback) { /* not checked */ }
+  else if (readback.state === 'ok') checks.push(check('ok', 'Slack readback token reads this lane\'s workspace'));
+  else if (readback.state === 'missing') checks.push(check('info', 'No Slack readback token for this lane, so message checks rely on the client view', 'Set one up as hosts.md "Slack evidence on gateway lanes" describes.'));
+  else if (readback.state === 'other_workspace') checks.push(check('warn', 'The Slack readback token belongs to a different workspace', 'Replace it with a token from this lane\'s own readback app.'));
+  else checks.push(check('warn', `Slack readback token did not work: ${readback.error}`, 'Reinstall the readback app and replace the token if it was revoked.'));
+
   const browser = lane.browser;
   if (!browser) checks.push(check('info', 'Browser not checked (--no-browser)'));
   else if (browser.state === 'stopped') checks.push(check('block', 'Lane browser is stopped', `npm run lane:browser -- start ${lane.target}`));
@@ -177,6 +184,10 @@ export async function gatherKickoffFacts({
   const { schemaStep } = await import('./environment-preflight.mjs');
 
   facts.lanes = [];
+  let secretEntries;
+  try {
+    secretEntries = 'secretEntries' in readers ? readers.secretEntries : (await import('./lane-secrets.mjs')).readLaneSecretEntries({ env });
+  } catch { secretEntries = undefined; }
   let rows, registry;
   try {
     rows = await load('capabilities', async () => {
@@ -211,9 +222,23 @@ export async function gatherKickoffFacts({
       claim: claim ? { ownWorktree, branch: claim.branch, expiresAt: claim.expiresAt } : null,
       telemetryReceipt: servingVersion ? telemetryReceiptFor(registration.evidenceRoot, servingVersion) : null,
       browser: browser ? await checkBrowser(readers.browser ?? probeLaneBrowser, { lane: row.target, registration, env }) : null,
+      readback: await (readers.readback ?? checkReadback)({ lane: row.target, registration, entries: secretEntries }),
     });
   }
   return facts;
+}
+
+/** auth.test with the lane's readback token: a read that changes nothing and names the workspace. */
+export async function checkReadback({ lane, registration, entries, fetchImpl }) {
+  const api = await import('./slack-readback.mjs');
+  const token = entries ? api.readbackToken(entries, lane) : undefined;
+  if (!token) return { state: 'missing' };
+  try {
+    const who = await api.whoami(api.slackClient(token, fetchImpl ? { fetchImpl } : {}), registration.workspaceId);
+    return { state: who.matchesLane === false ? 'other_workspace' : 'ok' };
+  } catch (error) {
+    return { state: 'error', error: error?.code === 'SLACK_ERROR' ? error.message.replace(/^SLACK_ERROR: /u, '') : (typeof error?.code === 'string' ? error.code : error?.name ?? 'unknown') };
+  }
 }
 
 async function checkBrowser(probe, input) {

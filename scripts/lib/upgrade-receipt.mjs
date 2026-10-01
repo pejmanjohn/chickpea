@@ -19,13 +19,18 @@ export function readPrivateJson(file, { label = 'Upgrade state' } = {}) {
 }
 
 export function writePrivateJson(file, value) {
+  writePrivateText(file, `${JSON.stringify(value, null, 2)}\n`);
+}
+
+/** Replace a private file atomically: owner-only temp file, fsync, rename, then fsync the directory. */
+export function writePrivateText(file, text) {
   assertPrivatePath(path.dirname(file), { directory: true });
   if (existsSync(file)) assertPrivatePath(file);
   const temporary = `${file}.${randomBytes(8).toString('hex')}.tmp`;
   let fd;
   try {
     fd = openSync(temporary, 'wx', 0o600);
-    writeFileSync(fd, `${JSON.stringify(value, null, 2)}\n`);
+    writeFileSync(fd, text);
     fsyncSync(fd); closeSync(fd); fd = undefined;
     renameSync(temporary, file);
     const directoryFd = openSync(path.dirname(file), 'r');

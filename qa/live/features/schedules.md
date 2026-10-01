@@ -43,5 +43,5 @@ Docs: `/agents/schedules/`. Record areas: `routines`, `delivery`. Legacy contrac
 - Admin omission of a DM schedule proves privacy, not existence. Ask the Agent to list schedules in that DM, and check Admin as a separate Admin actor.
 - The authority-loss variant needs a distinct registered actor declared as a `member` capability whose access may be suspended and restored; otherwise record it `blocked`. The DM schedule must reach disabled with no duplicate delivery.
 - Archiving the Agent or suspending the Runs as member pauses its schedules. A missing connection fails the run with `connection_unavailable`.
-- On gateway lanes there is no exact Slack API readback. Use the signed-in client view plus an `npm run lane:tail` started before the due time.
+- Read the due post exactly with `npm run lane:slack -- <alias> history <channel id> --since <due time>` (see [hosts.md](../operator/hosts.md#slack-evidence-on-gateway-lanes)). Without a readback token, use the signed-in client view plus an `npm run lane:tail` started before the due time.
 - Run-now starts are capped at 10 per rolling day for the whole deployment, so plan run-now cases across the day.
