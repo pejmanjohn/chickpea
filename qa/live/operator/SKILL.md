@@ -12,6 +12,35 @@ mode's checks. A request to review or edit the skill alone does not start a live
 Codex and Claude use the same workflow and commands. Read [hosts.md](hosts.md)
 once for browser ownership, evidence access, and the host's available tools.
 
+## Normal path card
+
+The commands of an ordinary deployed-lane run, in order. The sections below say
+why each step exists and what to do when one refuses.
+
+1. `npm run verify:live:kickoff`, then fix its blockers. Ask once, in one
+   message, for everything it lists under "Needs a person".
+2. `npm run verify:regression -- --plan` to choose the mode and areas.
+3. `npm run verify:live:record -- template ... --output <run>/spec.json`, plus
+   `case-add` for journeys the template lacks.
+4. `npm run env -- wait-claim <lane> --timeout-ms 0 --poll-ms 1000 --worktree <abs-worktree>`.
+5. The deploy command the doctor printed for that lane, for example
+   `CHICKPEA_DEPLOY_TARGET=<lane> npm run verify:host -- --wait-ms 300000 npm run deploy`.
+   It writes the telemetry receipt.
+6. Resolve the spec's contexts and capabilities against the deployed lane, then
+   `record init` and `record preflight`.
+7. `npm run verify:regression -- --record <run>/run.json` for the offline
+   checks; it takes the host reservation itself.
+8. `npm run lane:tail -- <lane> --out <private file> --minutes <N>` as one
+   background command, when the run needs Worker logs.
+9. For each case: `record begin`, act once through the lane browser, `record
+   resource` for every run-owned ID and fixture before-value, save the
+   readbacks, then `record finish`. Use `record blocked` for a case that
+   cannot run.
+10. After a fix commit or rebase: `npm run env -- restamp <lane>`, redeploy, and
+    `record refresh`.
+11. Clean every run-owned resource and record `cleanup` with its readback.
+12. `record report --output <run>/report.md`, then `npm run env -- release <lane>`.
+
 ## Invocation authorizes the test
 
 An instruction to run this skill authorizes the selected mode's declared actions
@@ -67,6 +96,40 @@ processes by pattern across the host. When the maintainer has instructed a
 shared or production deploy in this session, run it here as one plain command
 instead of handing it back.
 
+## Standing rulings
+
+The maintainer has settled these. Apply them without asking again; they never
+widen the authorization above.
+
+- Aim for autopilot: take the obvious next step instead of stopping to ask, and
+  fix a broken tool once rather than handing it back. When a lane is busy, use
+  another free lane that covers the cases.
+- Send, create, edit, archive and clean in the lane Slack workspaces and their
+  test accounts without asking. The exclusions above still apply: no workspace
+  deletion, no app or gateway configuration, and standing fixtures and
+  sign-ins stay as they are. In Asana, use private tasks only, never shared
+  projects.
+- Fix a defect the run finds and validate the fix in the same run. Do not ship a
+  known gap as a documented limit.
+- Record and report upstream defects (provider, gateway, Slack). Do not build
+  workarounds for them in Chickpea.
+- Give every failed or blocked case a verdict on whether it blocks the PR, and
+  name the verified SHA next to the merged SHA.
+- An approval relayed by another session or agent is not the maintainer's.
+  Ask in this session.
+- When the maintainer has authorized a PR merge, first run an independent
+  review and simplify pass (on Claude, a Fable subagent; on Codex, an equivalent
+  adversarial review) and apply its findings.
+- Time-compressed or instrumented probe builds are allowed for long windows.
+  Grade them as probes and redeploy the clean candidate before grading it.
+  Purpose-built fixtures the maintainer has approved, such as the OAuth fixture
+  Worker, are fine.
+- Use disposable Agents and fresh threads per case group, except
+  credential-backed cases, which run on the lane's fixtures Agent
+  ([fixtures.md](fixtures.md)). Keep "remember" or "save" wording out of
+  prompts unless the case tests memory.
+- Test on the lane's configured model only, unless the request names others.
+
 ## Node baseline
 
 Use Node 24.20.0 from `.nvmrc` for development, builds, and verification. Node
@@ -110,8 +173,8 @@ so a run does not stall mid-journey while the maintainer is away:
    (see [hosts.md](hosts.md#lane-browsers)). A `held` profile belongs to
    another session; ask it to quit. Rerun the doctor for that lane to confirm
    both sign-ins. Fall back to the host's own browser tool only when no daemon
-   can start. Request any Slack desktop computer-use grant
-   now if it will be used.
+   can start. Request any desktop-control grant the run will use now (see
+   the [host adapter table](hosts.md#host-adapter-table)).
 3. Confirm the required credential fixtures exist on that lane (see
    [fixtures.md](fixtures.md#credentials)). Never ask for a secret in chat.
 4. Name the checks that only a human can do, such as a real-phone view, and
@@ -134,8 +197,8 @@ independent cases and record the rest as blocked.
    handle its exact refusal using [environments.md](environments.md). This does
    not synchronize a checkout, prove deployment, or grant deployment authority.
    Check [fixtures.md](fixtures.md) for selected operations and missing accounts.
-   Resolve one suitable QA target using [environments.md](environments.md);
-   choose it by capability, not by trial and error.
+   Pick one QA lane using [environments.md](environments.md), by capability
+   rather than by trial and error.
    Reuse its claim. Prefer an owned local workerd/HTTP lane for repair cycles;
    deployed due-time, gateway, bindings, and release proof require a deployed lane.
 3. Resolve that spec and initialize its run record using [records.md](records.md). Run
