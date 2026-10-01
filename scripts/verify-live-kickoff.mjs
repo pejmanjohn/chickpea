@@ -2,9 +2,10 @@
 /**
  * Live verification kickoff doctor.
  *
- *   npm run verify:live:kickoff -- [--lane amber|cobalt|violet|all] [--no-browser] [--json] [--profile P] [--env E]
+ *   npm run verify:live:kickoff -- [--lane amber|cobalt|violet|all] [--no-browser] [--no-start] [--json] [--profile P] [--env E]
  *
- * One read-only pass before claiming a lane: host Node and node_modules, the
+ * One pass before claiming a lane, changing nothing but starting a stopped
+ * lane browser: host Node and node_modules, the
  * host reservation, source freshness against remote main, and for each lane its
  * health, claim, deploy profile and command, schema generation against the
  * candidate, actors, telemetry receipt, and whether its browser daemon is
@@ -18,10 +19,10 @@ import { gatherKickoffFacts, kickoffReport, renderKickoff } from './lib/kickoff-
 import { QA_LANES as LANES } from './lib/qa-lanes.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const USAGE = 'Usage: npm run verify:live:kickoff -- [--lane amber|cobalt|violet|all] [--no-browser] [--json] [--profile P] [--env E]\n';
+const USAGE = 'Usage: npm run verify:live:kickoff -- [--lane amber|cobalt|violet|all] [--no-browser] [--no-start] [--json] [--profile P] [--env E]\n';
 
 export function parseArguments(argv) {
-  const options = { lanes: LANES, browser: true, json: false, providerContext: [] };
+  const options = { lanes: LANES, browser: true, start: true, json: false, providerContext: [] };
   for (let index = 0; index < argv.length; index += 1) {
     const flag = argv[index];
     const value = () => {
@@ -35,6 +36,7 @@ export function parseArguments(argv) {
       if (lane !== 'all' && !LANES.includes(lane)) throw new Error(`Choose a lane: ${LANES.join(', ')} or all.`);
       options.lanes = lane === 'all' ? LANES : [lane];
     } else if (flag === '--no-browser') options.browser = false;
+    else if (flag === '--no-start') options.start = false;
     else if (flag === '--json') options.json = true;
     else if (flag === '--profile' || flag === '--env') options.providerContext.push(flag, value());
     else throw new Error(`Unknown argument "${flag}".`);
@@ -48,7 +50,7 @@ export async function main(argv, { stdout = process.stdout, stderr = process.std
   try { options = parseArguments(argv); } catch (error) { stderr.write(`${error.message}\n${USAGE}`); return 2; }
   try {
     const facts = await gather({
-      root: ROOT, lanes: options.lanes, browser: options.browser,
+      root: ROOT, lanes: options.lanes, browser: options.browser, startBrowsers: options.start,
       ...(options.providerContext.length ? { providerContext: options.providerContext } : {}),
     });
     const report = kickoffReport(facts);

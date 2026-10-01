@@ -62,21 +62,22 @@ const slackTs = (value) => {
   return (ms / 1000).toFixed(6);
 };
 
-const daemonAnswers = async (port) => fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(3_000) })
-  .then((response) => response.ok, () => false);
-
-export async function storeTokens(lanes, { env, stdout, stderr, fetchImpl, readRegistry, probePage, writeSecret, daemonUp = probePage ? async () => true : daemonAnswers }) {
+export async function storeTokens(lanes, { env, stdout, stderr, fetchImpl, readRegistry, probePage, writeSecret, ensureBrowser }) {
   const registry = readRegistry ? readRegistry() : (await import('./lib/environment-registry.mjs')).readEnvironmentRegistry();
-  const { daemonPort } = await import('./lib/lane-browser.mjs');
+  const browserApi = await import('./lib/lane-browser.mjs');
+  // The token is read from the lane's own browser, so start it when it is stopped.
+  const ensure = ensureBrowser ?? (probePage ? async () => ({ state: 'running' }) : (lane) => browserApi.ensureDaemon({ lane, env }));
   const probe = probePage ?? (await import('./lib/lane-browser-probe.mjs')).probePage;
   const secrets = await import('./lib/lane-secrets.mjs');
   const write = writeSecret ?? ((name, value) => secrets.setLaneSecret(name, value, { env }));
   let failed = 0;
   for (const lane of lanes) {
     try {
-      // The token is read from the lane's own browser, so say plainly when that browser is not running.
-      if (!await daemonUp(daemonPort(lane, env))) throw new Error(`chrome-${lane} is not running. Start it with npm run lane:browser -- start ${lane}, then retry.`);
-      const result = await storeLaneToken({ lane, registration: registry.targets?.[lane], port: daemonPort(lane, env), probePage: probe, fetchImpl, writeSecret: write, fingerprint: secrets.fingerprint });
+      const daemon = await ensure(lane);
+      if (daemon.state === 'held') throw new Error(`chrome-${lane} is held by ${daemon.holder?.pid ? `PID ${daemon.holder.pid}` : 'another browser'}; its profile is in use by another browser.`);
+      if (daemon.state !== 'running') throw new Error(`chrome-${lane} did not start; see its daemon log beside the profile.`);
+      if (daemon.started) stderr.write(`${lane}: started chrome-${lane}, which was stopped\n`);
+      const result = await storeLaneToken({ lane, registration: registry.targets?.[lane], port: browserApi.daemonPort(lane, env), probePage: probe, fetchImpl, writeSecret: write, fingerprint: secrets.fingerprint });
       stdout.write(`${JSON.stringify(result)}\n`);
     } catch (error) {
       failed += 1;
@@ -86,12 +87,12 @@ export async function storeTokens(lanes, { env, stdout, stderr, fetchImpl, readR
   return failed ? 1 : 0;
 }
 
-export async function main(argv, { env = process.env, stdout = process.stdout, stderr = process.stderr, fetchImpl = fetch, readEntries, readRegistry, probePage, writeSecret, daemonUp } = {}) {
+export async function main(argv, { env = process.env, stdout = process.stdout, stderr = process.stderr, fetchImpl = fetch, readEntries, readRegistry, probePage, writeSecret, ensureBrowser } = {}) {
   if (argv.length === 0 || argv.includes('--help')) { (argv.length ? stdout : stderr).write(USAGE); return argv.length ? 0 : 2; }
   let options;
   try { options = parseArguments(argv); } catch (error) { stderr.write(`${error.message}\n${USAGE}`); return 2; }
   if (options.command === 'store-token') {
-    return storeTokens(options.lane === 'all' ? QA_LANES : [options.lane], { env, stdout, stderr, fetchImpl, readRegistry, probePage, writeSecret, ...(daemonUp ? { daemonUp } : {}) });
+    return storeTokens(options.lane === 'all' ? QA_LANES : [options.lane], { env, stdout, stderr, fetchImpl, readRegistry, probePage, writeSecret, ensureBrowser });
   }
   try {
     const entries = readEntries ? readEntries() : (await import('./lib/lane-secrets.mjs')).readLaneSecretEntries({ env });

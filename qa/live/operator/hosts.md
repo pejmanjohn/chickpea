@@ -61,14 +61,16 @@ real foreground targets, so hidden-tab rendering, cross-browser routing and
 focus problems do not apply, and the server's dialog tool handles native
 `confirm()` dialogs. Different lanes run in parallel without contention.
 
-At kickoff, `npm run verify:live:kickoff` reports each lane browser's state
-and whether it is signed in to Admin and Slack. `npm run lane:browser -- status
-all` shows the daemons alone:
+At kickoff, `npm run verify:live:kickoff` starts any stopped lane browser and
+reports whether each is signed in to Admin and Slack. Daemons do not restart
+on their own after a reboot or after Chrome is quit, so starting them is the
+verifier's job, never the maintainer's. `npm run lane:browser -- status all`
+shows the daemons alone:
 
 - `running`: attach and go. Signed-in state lives in the profile, so a
   restarted daemon is still signed in.
-- `stopped`: run `npm run lane:browser -- start <lane>`. It is idempotent and
-  reports a daemon that already answers. In Codex, run it outside the command
+- `stopped`: run `npm run lane:browser -- start <lane>` yourself. It is
+  idempotent and reports a daemon that already answers. In Codex, run it outside the command
   sandbox (escalated) if the sandbox blocks the launch or the local port. A tool call before that fails with
   "Could not connect to Chrome. Check if Chrome is running."; that means start
   the daemon, not that the lane is broken.

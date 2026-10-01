@@ -757,3 +757,49 @@ export async function exportCookies({
     },
   };
 }
+
+/**
+ * The daemon root a verifier's own commands use on this host: the
+ * conventional ~/.chickpea/browsers when it exists and no root variable is
+ * set, otherwise the opt-in root variable.
+ */
+export function verifierRoot({ env = process.env, home = homedir(), create = true } = {}) {
+  const conventional = path.join(home, '.chickpea', 'browsers');
+  const rootOption = !env[ROOT_VARIABLE]?.trim() && existsSync(conventional) ? conventional : undefined;
+  const root = resolveProfileRoot({ root: rootOption, env });
+  return create ? ensureOwnerOnlyDirectory(root) : root;
+}
+
+/**
+ * Make sure a lane's daemon answers: start it when it is stopped, so no person
+ * has to. A profile another browser holds is reported, never taken.
+ */
+export async function ensureDaemon({
+  lane, env = process.env, root, start = startDaemon, status = daemonStatus,
+  settleMs = 5_000, pollMs = 250, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+} = {}) {
+  const daemonRoot = root ?? verifierRoot({ env });
+  const read = () => status({ lane, root: daemonRoot, env });
+  // A daemon another session is starting locks its profile a moment before
+  // its port answers, so `held` is provisional until it persists.
+  const settle = async (current) => {
+    let state = current;
+    for (let waited = 0; state.state === 'held' && waited < settleMs; waited += pollMs) {
+      await sleep(pollMs);
+      state = await read();
+    }
+    return state;
+  };
+  const before = await settle(await read());
+  // A cloud session seeds the profile through `serve`; starting it here first would skip the seed.
+  if (before.state !== 'stopped' || env[cookieVariable(lane)]?.trim()) return { ...before, started: false };
+  let result;
+  try { result = await start({ lane, root: daemonRoot, env }); }
+  catch (error) {
+    const after = await settle(await read());
+    if (after.state === 'running') return { ...after, started: false };
+    throw error;
+  }
+  const after = await settle(await read());
+  return { ...after, started: result?.status === 'started' && after.state === 'running' };
+}

@@ -165,7 +165,8 @@ Before claiming a lane, gather every human-dependent prerequisite in one pass,
 so a run does not stall mid-journey while the maintainer is away:
 
 1. Run `npm run verify:live:kickoff` (add `--lane <alias>` to check one). In
-   one read-only pass it checks host Node and `node_modules`, the host
+   one pass that changes nothing but starting any stopped lane browser, it
+   checks host Node and `node_modules`, the host
    reservation, source freshness against remote main, and for each lane its
    health, claim, deploy profile and exact deploy command, schema generation
    against the candidate, models, Worker secrets, actors, telemetry receipt,
@@ -175,11 +176,12 @@ so a run does not stall mid-journey while the maintainer is away:
    ([choose a lane by capability](environments.md#choose-a-lane-by-capability)):
    registered connector fixtures and the selected cases' models must also fit.
    `npm run env -- --help` lists every lane command.
-2. Start a stopped lane daemon with `npm run lane:browser -- start <lane>`
-   (see [hosts.md](hosts.md#lane-browsers)). A `held` profile belongs to
-   another session; ask it to quit. Rerun the doctor for that lane to confirm
-   both sign-ins. Fall back to the host's own browser tool only when no daemon
-   can start. Request any desktop-control grant the run will use now (see
+2. Lane browsers are yours to run: the doctor starts a stopped one, and if a
+   `chrome-<lane>` tool cannot connect later, run
+   `npm run lane:browser -- start <lane>` yourself and retry (see
+   [hosts.md](hosts.md#lane-browsers)). Never ask the maintainer to start one.
+   A `held` profile belongs to another session; ask it to quit. Fall back to
+   the host's own browser tool only when no daemon can start. Request any desktop-control grant the run will use now (see
    the [host adapter table](hosts.md#host-adapter-table)).
 3. Confirm the required credential fixtures exist on that lane (see
    [fixtures.md](fixtures.md#credentials)). Never ask for a secret in chat.
