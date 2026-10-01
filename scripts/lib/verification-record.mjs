@@ -18,12 +18,22 @@ const RESULTS = ['pass', 'fail', 'blocked', 'ambiguous'];
 const CATEGORIES = ['product', 'model', 'tool', 'infrastructure', 'unknown'];
 const PHASES = ['lane-wait', 'host-wait', 'browser-wait', 'setup', 'deployment', 'request', 'observation', 'repair', 'review-wait', 'human-input', 'cleanup'];
 const CASE_CONTRACT = ['originalRequest', 'expectedOutcome', 'variant', 'cleanup'];
+export const PROOF_SURFACES = Object.freeze(['slack', 'admin', 'mcp', 'provider', 'model']);
+// People reach Chickpea through three doors. A live case is accepted on at
+// least one of them; provider rows and model output alone never are.
+const USER_DOORS = ['slack', 'admin', 'mcp'];
+// Most observations are a chat reply. Coding tasks, recordings and idle
+// windows legitimately take longer, so a case may declare up to an hour.
+export const MAX_WAIT_MS = 3_600_000;
 const text = (v) => typeof v === 'string' && v.trim().length > 0;
 const need = (v, message) => { if (!v) throw new Error(message); };
 const list = (v) => Array.isArray(v) && v.every(text);
 const number = (v) => Number.isFinite(v) && v >= 0;
-const keys = (v, allowed) => need(v && typeof v === 'object' && !Array.isArray(v)
-  && Object.keys(v).every((key) => allowed.includes(key)), 'Unexpected record fields.');
+const keys = (v, allowed) => {
+  need(v && typeof v === 'object' && !Array.isArray(v), 'Expected a record object.');
+  const unexpected = Object.keys(v).filter((key) => !allowed.includes(key));
+  need(unexpected.length === 0, `Unexpected record fields: ${unexpected.join(', ')}. Allowed here: ${allowed.join(', ')}.`);
+};
 const date = (v) => text(v) && Number.isFinite(Date.parse(v));
 
 function noSecrets(value) {
@@ -84,10 +94,10 @@ export function validateSpec(spec) {
     need(text(selected.title) && spec.contexts[selected.context], 'Case needs a title and a known context.');
     need(list(selected.areas) && selected.areas.length > 0 && selected.areas.every((area) => Object.hasOwn(REGRESSION_AREAS, area)), 'Case needs known dependency areas.');
     need(list(selected.requires) && selected.requires.length > 0, 'Declare case capabilities, including required actors and fixtures.');
-    need(list(selected.proof) && selected.proof.length > 0 && selected.proof.every((p) => ['slack', 'admin', 'provider', 'model'].includes(p)), 'Declare proof surfaces.');
-    if (spec.contexts[selected.context].grade !== 'model') need(selected.proof.includes('slack'), 'Live cases require Slack proof.');
+    need(list(selected.proof) && selected.proof.length > 0 && selected.proof.every((p) => PROOF_SURFACES.includes(p)), `Declare proof surfaces from: ${PROOF_SURFACES.join(', ')}.`);
+    if (spec.contexts[selected.context].grade !== 'model') need(selected.proof.some((p) => USER_DOORS.includes(p)), `Live case ${selected.id} needs proof from a user door: slack, admin or mcp.`);
     need(Number.isSafeInteger(selected.maxAttempts) && selected.maxAttempts > 0 && selected.maxAttempts <= (spec.purpose === 'reliability' ? 100 : 3), 'Attempt budget must be 1..3, or 1..100 for reliability.');
-    need(number(selected.maxWaitMs) && selected.maxWaitMs > 0 && selected.maxWaitMs <= 120_000, 'Each observation wait must be bounded to 120 seconds.');
+    need(number(selected.maxWaitMs) && selected.maxWaitMs > 0 && selected.maxWaitMs <= MAX_WAIT_MS, `Case ${selected.id}: maxWaitMs must be 1..${MAX_WAIT_MS} (one hour). Keep 120000 unless the work is declared long.`);
     need(number(selected.minObservationMs ?? 0) && (selected.minObservationMs ?? 0) <= selected.maxWaitMs, 'Invalid minimum observation duration.');
     for (const field of CASE_CONTRACT) need(selected[field] === undefined || text(selected[field]), `Case ${field} must be nonempty text.`);
   }
@@ -283,13 +293,26 @@ export function appendEvent(run, input, source, now = Date.now()) {
       need(prior.length < selected.maxAttempts, 'Attempt budget exhausted. Preserve the failure and choose an explicitly bounded follow-up run.');
       if (prior.length) {
         const last = prior.at(-1), result = resultFor(run, last.id), reconciliation = reconcileFor(run, last.id);
-        need(result, 'Prior attempt is still open. Observe it and finish it before retrying.');
+        need(result, `Prior attempt ${last.id} is still open (deadline ${last.deadline}). Observe it and finish it before retrying.`);
         need(result.result !== 'ambiguous' || reconciliation?.outcome === 'not_applied', 'Ambiguous action needs authoritative not_applied readback before replay.');
         need(text(input.reason), 'Retest needs a diagnosis and changed variable.');
       }
       event.inputs = attendedInputs(run, spec, selected, source);
       event.source = source;
       event.deadline = new Date(now + selected.maxWaitMs).toISOString();
+      break;
+    }
+    case 'case_blocked': {
+      keys(input, ['type', 'caseId', 'reason', 'category', 'evidence']);
+      need(selected, 'Unknown selected case.');
+      need(text(input.reason), 'Say what blocks the case and what would unblock it.');
+      need(input.category === undefined || CATEGORIES.includes(input.category), 'Classify product, model, tool, infrastructure, or unknown.');
+      const last = attempts(run, selected.id).at(-1);
+      const lastResult = last && resultFor(run, last.id);
+      need(!last || lastResult, `Attempt ${last?.id} is still open. Finish it as blocked instead.`);
+      need(lastResult?.result !== 'ambiguous' || reconcileFor(run, last.id)?.outcome === 'not_applied',
+        `Attempt ${last?.id} is ambiguous. Reconcile whether it applied before recording why the case is blocked.`);
+      if (input.evidence !== undefined) event.evidence = evidenceRefs(input.evidence);
       break;
     }
     case 'finish':
@@ -304,14 +327,14 @@ export function appendEvent(run, input, source, now = Date.now()) {
       event.evidence = evidenceRefs(input.evidence);
       need(input.proof && typeof input.proof === 'object' && !Array.isArray(input.proof), 'Proof must map surfaces to evidence paths.');
       event.proof = Object.fromEntries(Object.entries(input.proof).map(([surface, refs]) => {
-        need(['slack', 'admin', 'provider', 'model'].includes(surface), 'Unknown proof surface.');
+        need(PROOF_SURFACES.includes(surface), `Unknown proof surface ${surface}. Use: ${PROOF_SURFACES.join(', ')}.`);
         return [surface, evidenceRefs(refs)];
       }));
       const contract = spec.cases.find((c) => c.id === attempt.caseId);
       if (input.result === 'pass') {
         need(changedInputs(recordedInputs(run, attempt), attendedInputs(run, spec, contract, source)).length === 0, 'Attempt inputs changed; preserve it as a non-pass and retest.');
         need(repairBlocks(run, spec, contract.id).length === 0, 'Dependent actions are suspended by a repair; preserve a non-pass until safe retesting.');
-        need(contract.proof.every((p) => event.proof[p]?.length > 0), 'Pass lacks a required Slack/Admin/provider/model readback.');
+        need(contract.proof.every((p) => event.proof[p]?.length > 0), `Pass lacks a required readback for: ${contract.proof.filter((p) => !(event.proof[p]?.length > 0)).join(', ')}.`);
         need((input.timing?.observationMs ?? 0) >= (contract.minObservationMs ?? 0), 'Declared observation window is incomplete.');
       }
       if (input.timing) {
@@ -325,13 +348,13 @@ export function appendEvent(run, input, source, now = Date.now()) {
       if (input.completedAt !== undefined) {
         need(date(input.completedAt), 'Completion needs an ISO timestamp.');
         completed = Date.parse(input.completedAt);
-        need(completed >= Date.parse(attempt.at) && completed <= now, 'Completion must fall between attempt start and record time.');
+        need(completed >= Date.parse(attempt.at) && completed <= now, `Completion must fall between attempt start and record time: attempt ${attempt.id} began ${attempt.at}, now ${new Date(now).toISOString()}, got ${input.completedAt}. Omit it when unknown.`);
         event.completionLatencyMs = completed - Date.parse(attempt.at);
         event.completionBeyondObservationDeadline = completed > Date.parse(attempt.deadline);
       }
       if (input.observedAt !== undefined) {
         need(date(input.observedAt), 'Observation needs an ISO timestamp.'); observed = Date.parse(input.observedAt);
-        need(observed >= Date.parse(attempt.at) && observed <= now, 'Observation must fall between attempt start and record time.');
+        need(observed >= Date.parse(attempt.at) && observed <= now, `Observation must fall between attempt start and record time: attempt ${attempt.id} began ${attempt.at}, now ${new Date(now).toISOString()}, got ${input.observedAt}. Omit it when unknown, or pass now if you read it just now.`);
         need(completed === undefined || observed >= completed, 'Observation cannot precede product completion.');
         event.recordingDelayMs = now - observed;
       }
@@ -429,11 +452,15 @@ export function status(run, source, now = Date.now()) {
     const refs = outcome ? [...outcome.evidence, ...Object.values(outcome.proof).flat()] : [];
     if (outcome && !intact(refs)) invalidation.push('evidence');
     const ready = readiness.cases.find((c) => c.id === selected.id);
+    const recordedBlock = run.events.findLast((e) => e.type === 'case_blocked' && e.caseId === selected.id
+      && (!last || e.sequence > last.sequence));
     const result = last && !outcome ? now >= Date.parse(last.deadline) ? 'observe_overdue' : 'in_progress'
-      : ready.suspendedBy.length ? 'blocked' : invalidation.length ? 'stale' : outcome?.result ?? (ready.ready ? 'not_run' : 'blocked');
+      : ready.suspendedBy.length ? 'blocked' : invalidation.length ? 'stale'
+        // A recorded block explains a case that has no outcome; it never hides one.
+        : outcome?.result ?? (ready.ready && !recordedBlock ? 'not_run' : 'blocked');
     return { id: selected.id, title: selected.title, grade: spec.contexts[selected.context].grade,
       target: spec.contexts[selected.context].target, result, invalidation, attempts: history.length,
-      attemptId: last?.id, blockers: ready.blockers, warnings: ready.warnings,
+      attemptId: last?.id, blockers: [...(recordedBlock ? [`recorded block: ${recordedBlock.reason}`] : []), ...ready.blockers], warnings: ready.warnings,
       originalServingVersion: last?.inputs.context.servingVersion,
       effectiveServingVersion: projection?.inputs.context.servingVersion,
       transitionIds: projection?.transitionIds ?? [],

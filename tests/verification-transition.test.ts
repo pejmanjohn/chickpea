@@ -59,6 +59,21 @@ function fixture(t: TestContext) {
   return { run, spec, source: source(), nextSource, nextSpec, passes, append, refresh, transition, project, directory, evidence, proof };
 }
 
+test('a record begun before newer areas existed can still carry passes across a transition', (t) => {
+  const f = fixture(t);
+  const added = ['sandbox', 'browser', 'usage', 'activity'];
+  for (const event of f.run.events) if (event.type === 'begin') for (const area of added) delete event.source.areas[area];
+  f.refresh(f.nextSpec, f.nextSource);
+  const receipt = f.transition(f.nextSpec, f.nextSource);
+  assert.deepEqual(receipt.changedAreas, ['routines'], 'areas the old record never fingerprinted are not counted when no case uses them');
+  assert.deepEqual(receipt.carried.map((entry: any) => entry.caseId), ['memory', 'connection']);
+  // Once a case in the context depends on such an area, it cannot be compared and counts as changed.
+  const withSandbox = structuredClone(f.nextSpec);
+  withSandbox.cases.push({ ...withSandbox.cases[0], id: 'sandbox-case', areas: ['sandbox'] });
+  assert.throws(() => f.transition(withSandbox, f.nextSource), /Declared impact must include every changed source area/);
+  assert.deepEqual(f.transition(withSandbox, f.nextSource, { impactAreas: ['routines', 'sandbox'] }).changedAreas, ['routines', 'sandbox']);
+});
+
 test('actual deployed serving-version change carries only unaffected passes and preserves provenance', (t) => {
   const f = fixture(t), originals = structuredClone(f.passes);
   f.refresh(f.nextSpec, f.nextSource);
