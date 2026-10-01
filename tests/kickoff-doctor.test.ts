@@ -221,12 +221,12 @@ test('the CLI validates arguments, prints JSON on request and exits 1 when nothi
 test('a stopped lane browser is started for the verifier; a held one is never taken', async () => {
   // @ts-expect-error Executable helpers are JavaScript, shared with the CLI.
   const { ensureDaemon } = await import('../scripts/lib/lane-browser.mjs');
-  const run = async (states: string[]) => {
+  const run = async (states: string[], { startResult = 'started', startThrows = false, env = {} }: { startResult?: string, startThrows?: boolean, env?: object } = {}) => {
     const started: string[] = [];
     let index = 0;
-    const result = await ensureDaemon({ lane: 'cobalt', root: '/tmp/lanes', env: {},
+    const result = await ensureDaemon({ lane: 'cobalt', root: '/tmp/lanes', env, sleep: async () => {}, settleMs: 1000, pollMs: 250,
       status: async () => ({ state: states[Math.min(index++, states.length - 1)] }),
-      start: async ({ lane }: { lane: string }) => { started.push(lane); } });
+      start: async ({ lane }: { lane: string }) => { started.push(lane); if (startThrows) throw new Error('per-session browser'); return { status: startResult }; } });
     return { result, started };
   };
   const stopped = await run(['stopped', 'running']);
@@ -238,10 +238,33 @@ test('a stopped lane browser is started for the verifier; a held one is never ta
   const running = await run(['running']);
   assert.deepEqual(running.started, []);
   assert.equal(running.result.started, false);
+  const starting = await run(['held', 'held', 'running']);
+  assert.deepEqual(starting.started, [], 'a daemon another session is starting is waited for, not started twice');
+  assert.equal(starting.result.state, 'running');
+  const lostRace = await run(['stopped', 'running'], { startThrows: true });
+  assert.equal(lostRace.result.state, 'running', 'losing a concurrent start still ends with a running daemon');
+  assert.equal(lostRace.result.started, false);
+  const alreadyUp = await run(['stopped', 'running'], { startResult: 'running' });
+  assert.equal(alreadyUp.result.started, false, 'only a start this call made reports "Started"');
+  const cloud = await run(['stopped'], { env: { CHICKPEA_LANE_COOKIES_COBALT: 'payload' } });
+  assert.deepEqual(cloud.started, [], 'a cloud profile is left for serve to seed');
 
-  const report = kickoffReport(facts({ lanes: [lane({ browser: { state: 'running', started: true, admin: 'signed_in', slack: 'signed_in' } })] }));
+  const report = kickoffReport(facts({ startsBrowsers: true, lanes: [lane({ browser: { state: 'running', started: true, admin: 'signed_in', slack: 'signed_in' } })] }));
+  assert.match(renderKickoff(report), /^Kickoff doctor: it claims, deploys and changes nothing, and starts any stopped lane browser\./);
+  assert.match(renderKickoff(kickoffReport(facts())), /^Kickoff doctor: it claims, deploys and changes nothing\.\n/);
   assert.ok(report.lanes[0].checks.some((c: any) => c.level === 'info' && /Started chrome-amber, which was stopped/.test(c.text)));
   assert.equal(report.ok, true);
   assert.equal(parseArguments(['--no-start']).start, false);
   assert.equal(parseArguments([]).start, true);
+});
+
+test('the verifier root matches the lane browser CLI: the root variable wins, then the conventional folder', async (context) => {
+  // @ts-expect-error Executable helpers are JavaScript, shared with the CLI.
+  const { verifierRoot } = await import('../scripts/lib/lane-browser.mjs');
+  const home = mkdtempSync(join(tmpdir(), 'kickoff-home-'));
+  context.after(() => rmSync(home, { recursive: true, force: true }));
+  mkdirSync(join(home, '.chickpea', 'browsers'), { recursive: true });
+  const explicit = join(home, 'elsewhere');
+  assert.equal(verifierRoot({ env: {}, home, create: false }), join(home, '.chickpea', 'browsers'));
+  assert.equal(verifierRoot({ env: { CHICKPEA_LANE_CHROME_ROOT: explicit }, home, create: false }), explicit);
 });

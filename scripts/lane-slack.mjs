@@ -74,7 +74,8 @@ export async function storeTokens(lanes, { env, stdout, stderr, fetchImpl, readR
   for (const lane of lanes) {
     try {
       const daemon = await ensure(lane);
-      if (daemon.state !== 'running') throw new Error(`chrome-${lane} is ${daemon.state}${daemon.holder?.pid ? ` by PID ${daemon.holder.pid}` : ''}; its profile is in use by another browser.`);
+      if (daemon.state === 'held') throw new Error(`chrome-${lane} is held by ${daemon.holder?.pid ? `PID ${daemon.holder.pid}` : 'another browser'}; its profile is in use by another browser.`);
+      if (daemon.state !== 'running') throw new Error(`chrome-${lane} did not start; see its daemon log beside the profile.`);
       if (daemon.started) stderr.write(`${lane}: started chrome-${lane}, which was stopped\n`);
       const result = await storeLaneToken({ lane, registration: registry.targets?.[lane], port: browserApi.daemonPort(lane, env), probePage: probe, fetchImpl, writeSecret: write, fingerprint: secrets.fingerprint });
       stdout.write(`${JSON.stringify(result)}\n`);

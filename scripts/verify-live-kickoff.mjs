@@ -2,7 +2,7 @@
 /**
  * Live verification kickoff doctor.
  *
- *   npm run verify:live:kickoff -- [--lane amber|cobalt|violet|all] [--no-browser] [--json] [--profile P] [--env E]
+ *   npm run verify:live:kickoff -- [--lane amber|cobalt|violet|all] [--no-browser] [--no-start] [--json] [--profile P] [--env E]
  *
  * One pass before claiming a lane, changing nothing but starting a stopped
  * lane browser: host Node and node_modules, the

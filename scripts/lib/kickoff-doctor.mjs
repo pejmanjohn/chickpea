@@ -1,8 +1,9 @@
 /**
- * The live verification kickoff doctor: one read-only pass over everything a
- * run needs before it claims a lane, so a run does not stall mid-journey on a
- * stale install, a signed-out browser, a held lane or a schema it cannot serve.
- * It claims, deploys, starts and changes nothing.
+ * The live verification kickoff doctor: one pass over everything a run needs
+ * before it claims a lane, so a run does not stall mid-journey on a stale
+ * install, a signed-out browser, a held lane or a schema it cannot serve. It
+ * claims, deploys and changes nothing; unless told not to, it starts a
+ * stopped lane browser so nobody has to.
  *
  * `kickoffReport` is pure (facts in, verdicts out). `gatherKickoffFacts` does
  * the reads and takes injectable readers for tests.
@@ -59,6 +60,7 @@ export function kickoffReport(facts) {
   const ready = lanes.filter((lane) => lane.ready).map((lane) => lane.target);
   return {
     schemaVersion: KICKOFF_SCHEMA, generatedAt: facts.generatedAt, worktree: facts.worktree, localSchema: facts.localSchema,
+    startsBrowsers: facts.startsBrowsers === true,
     host, lanes, needs, ready, ok: !hostBlocked && ready.length > 0,
   };
 }
@@ -123,7 +125,7 @@ function laneVerdict(lane, facts) {
 
 const MARK = { ok: '✔', info: '·', warn: '!', human: '?', block: '✖' };
 export function renderKickoff(report) {
-  const lines = ['Kickoff doctor: it claims, deploys and changes nothing, and starts any stopped lane browser.', '', 'Host and source'];
+  const lines = [`Kickoff doctor: it claims, deploys and changes nothing${report.startsBrowsers ? ', and starts any stopped lane browser' : ''}.`, '', 'Host and source'];
   const line = (c) => `  ${MARK[c.level]} ${c.text}${c.fix ? `\n      fix: ${c.fix}` : ''}`;
   lines.push(...report.host.map(line), '', 'Lanes');
   for (const lane of report.lanes) {
@@ -149,6 +151,7 @@ export async function gatherKickoffFacts({
   const facts = {
     generatedAt: new Date(now()).toISOString(),
     worktree: realpathSync(root),
+    startsBrowsers: browser && startBrowsers,
     node: { version: readers.nodeVersion ?? process.version, baseline: nodeVersion.NODE_BASELINE,
       supported: nodeVersion.isSupportedNodeVersion(readers.nodeVersion ?? process.version) },
   };
@@ -276,7 +279,7 @@ export async function probeLaneBrowser({ lane, registration, env = process.env, 
   const browserApi = await import('./lane-browser.mjs');
   const status = start
     ? await browserApi.ensureDaemon({ lane, env })
-    : { ...await browserApi.daemonStatus({ lane, root: browserApi.verifierRoot({ env }), env }), started: false };
+    : { ...await browserApi.daemonStatus({ lane, root: browserApi.verifierRoot({ env, create: false }), env }), started: false };
   if (status.state !== 'running') return { state: status.state, holderPid: status.holder?.pid ?? null };
   const probe = await import('./lane-browser-probe.mjs');
   const result = { state: 'running', started: status.started === true, admin: 'not_probed', slack: 'not_probed' };
