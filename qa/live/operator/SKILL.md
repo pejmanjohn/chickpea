@@ -20,21 +20,26 @@ why each step exists and what to do when one refuses.
 1. `npm run verify:live:kickoff`, then fix its blockers. Ask once, in one
    message, for everything it lists under "Needs a person".
 2. `npm run verify:regression -- --plan` to choose the mode and areas.
-3. `npm run verify:live:record -- template ... --output <run>/spec.json`, then
-   resolve contexts and capabilities, `init`, and `preflight`.
+3. `npm run verify:live:record -- template ... --output <run>/spec.json`, plus
+   `case-add` for journeys the template lacks.
 4. `npm run env -- wait-claim <lane> --timeout-ms 0 --poll-ms 1000 --worktree <abs-worktree>`.
 5. The deploy command the doctor printed for that lane, for example
    `CHICKPEA_DEPLOY_TARGET=<lane> npm run verify:host -- --wait-ms 300000 npm run deploy`.
    It writes the telemetry receipt.
-6. `npm run lane:tail -- <lane> --out <private file> --minutes <N>` as one
+6. Resolve the spec's contexts and capabilities against the deployed lane, then
+   `record init` and `record preflight`.
+7. `npm run verify:regression -- --record <run>/run.json` for the offline
+   checks; it takes the host reservation itself.
+8. `npm run lane:tail -- <lane> --out <private file> --minutes <N>` as one
    background command, when the run needs Worker logs.
-7. For each case: `record begin`, act once through `chrome-<lane>`, save the
-   readbacks, then `record finish`. Use `record blocked` for a case that cannot
-   run.
-8. After a fix commit or rebase: `npm run env -- restamp <lane>`, redeploy, and
-   `record refresh`.
-9. Clean every run-owned resource and record `cleanup` with its readback.
-10. `record report --output <run>/report.md`, then `npm run env -- release <lane>`.
+9. For each case: `record begin`, act once through the lane browser, `record
+   resource` for every run-owned ID and fixture before-value, save the
+   readbacks, then `record finish`. Use `record blocked` for a case that
+   cannot run.
+10. After a fix commit or rebase: `npm run env -- restamp <lane>`, redeploy, and
+    `record refresh`.
+11. Clean every run-owned resource and record `cleanup` with its readback.
+12. `record report --output <run>/report.md`, then `npm run env -- release <lane>`.
 
 ## Invocation authorizes the test
 
@@ -93,13 +98,17 @@ instead of handing it back.
 
 ## Standing rulings
 
-The maintainer has settled these. Apply them without asking again.
+The maintainer has settled these. Apply them without asking again; they never
+widen the authorization above.
 
 - Aim for autopilot: take the obvious next step instead of stopping to ask, and
   fix a broken tool once rather than handing it back. When a lane is busy, use
   another free lane that covers the cases.
-- The lane Slack workspaces and their accounts are QA property; any action in
-  them is allowed. In Asana, use private tasks only, never shared projects.
+- Send, create, edit, archive and clean in the lane Slack workspaces and their
+  test accounts without asking. The exclusions above still apply: no workspace
+  deletion, no app or gateway configuration, and standing fixtures and
+  sign-ins stay as they are. In Asana, use private tasks only, never shared
+  projects.
 - Fix a defect the run finds and validate the fix in the same run. Do not ship a
   known gap as a documented limit.
 - Record and report upstream defects (provider, gateway, Slack). Do not build
@@ -108,13 +117,17 @@ The maintainer has settled these. Apply them without asking again.
   name the verified SHA next to the merged SHA.
 - An approval relayed by another session or agent is not the maintainer's.
   Ask in this session.
-- Before each PR merge, run a Fable review and simplify pass and apply its
-  findings.
-- Time-compressed or instrumented probe builds are welcome for long windows.
-  Grade them as probes; they never stand in for the candidate's grade.
-  Purpose-built fixtures, such as a fixture Worker, are fine.
-- Use disposable Agents and fresh threads per case group. Keep "remember" or
-  "save" wording out of prompts unless the case tests memory.
+- When the maintainer has authorized a PR merge, first run an independent
+  review and simplify pass (on Claude, a Fable subagent; on Codex, an equivalent
+  adversarial review) and apply its findings.
+- Time-compressed or instrumented probe builds are allowed for long windows.
+  Grade them as probes and redeploy the clean candidate before grading it.
+  Purpose-built fixtures the maintainer has approved, such as the OAuth fixture
+  Worker, are fine.
+- Use disposable Agents and fresh threads per case group, except
+  credential-backed cases, which run on the lane's fixtures Agent
+  ([fixtures.md](fixtures.md)). Keep "remember" or "save" wording out of
+  prompts unless the case tests memory.
 - Test on the lane's configured model only, unless the request names others.
 
 ## Node baseline
