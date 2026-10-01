@@ -213,9 +213,10 @@
    It keeps the lane, stamps the new branch and HEAD, and carries a pending
    schema intent (`schemaIntent` in its output). It refuses while a deploy is
    open and never takes another worktree's lane (`CLAIM_OWNER_MISMATCH`).
-   `release` works from any HEAD of the owning worktree. Claims need a named
-   branch: `claim`, `wait-claim` and `restamp` refuse a detached HEAD with
-   `INVALID_WORKTREE`, so create a branch at the candidate first.
+   `release` works from any branch HEAD of the owning worktree. Claims need a
+   named branch: `claim`, `wait-claim`, `restamp` and `release` refuse a
+   detached HEAD with `INVALID_WORKTREE`, so create a branch at the candidate
+   first.
 
    When `main` has moved, the deploy refuses with `QA_SOURCE_BEHIND_MAIN`.
    `claim`, `wait-claim` and `restamp` print a one-line source advisory on
@@ -224,11 +225,13 @@
    `restamp`. For stacked candidates, build a local verify branch from
    `origin/main` plus the needed commits. To verify a published release that
    `main` has since passed, check out its tag on a branch and add
-   `--release-tag vX.Y.Z` after the deploy command (`npm run deploy --
-   --release-tag vX.Y.Z`). It admits HEAD only when HEAD is exactly that tag's
-   commit and the tag is on `main`; `npm run verify:live:candidate --
-   --release-tag vX.Y.Z` runs the same check read-only. The flag exists only in
-   releases after v0.1.33, because the deploy runs the tag's own wrapper.
+   `--release-tag vX.Y.Z` after the lane deploy command (`npm run deploy --
+   --release-tag vX.Y.Z`). It admits HEAD only when the remote publishes that
+   tag at exactly HEAD, the tag is on `main`, and the working tree is clean
+   (`QA_RELEASE_TAG_UNPUBLISHED`, `_MISMATCH`, `_NOT_ON_MAIN`, `_DIRTY`);
+   `npm run verify:live:candidate -- --release-tag vX.Y.Z` runs the same check
+   read-only. A deploy without a lane target refuses the flag. It exists only
+   in releases after v0.1.33, because the deploy runs the tag's own wrapper.
 
    A lane records the Durable Object schema generation it serves (the Schema
    column of `env capabilities`). A candidate with a newer generation is
@@ -240,9 +243,11 @@
    npm run env -- schema-advance <alias> --worktree <absolute-worktree>
    ```
 
-   It records one step to the candidate's generation (or `--to <generation>`)
-   for this claim; the next guarded deploy applies it. Without approval, use a
-   lane that already serves the candidate's generation.
+   It records one step to the candidate's own generation, read from the claimed
+   worktree, for this claim; the next guarded deploy applies it. A `restamp`
+   carries it when the new HEAD has the same generation and otherwise reports
+   it stale. Without approval, use a lane that already serves the candidate's
+   generation.
    Only the Slack manifest digest, the required scopes, and
    `src/auth/setup-capability.mjs` are hard-gated against the lane baseline; a
    mismatch refuses with `INSTALL_CONTINUATION_REQUIRED`, and the recovery is to

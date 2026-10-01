@@ -160,8 +160,8 @@ export function createHarness() {
   writeFileSync(path.join(scriptsLibDir, 'qa-candidate.mjs'), `
     import { appendFileSync } from 'node:fs';
     let rechecks = 0;
-    export function admitQaCandidate() {
-      if (process.env.DEPLOY_TEST_SOURCE_LOG === '1') appendFileSync(process.env.DEPLOY_TEST_LOG, 'source-admission\\n');
+    export function admitQaCandidate(_root, options = {}) {
+      if (process.env.DEPLOY_TEST_SOURCE_LOG === '1') appendFileSync(process.env.DEPLOY_TEST_LOG, 'source-admission' + (options.releaseTag ? ':' + options.releaseTag : '') + '\\n');
       if (process.env.DEPLOY_TEST_SOURCE_REFUSED === '1') throw new Error('QA_SOURCE_BEHIND_MAIN');
       return { approvedTip: 'a'.repeat(40), trackingMatchesRemote: true };
     }

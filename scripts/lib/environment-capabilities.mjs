@@ -98,7 +98,7 @@ export function readRegisteredLanes(target, options = {}) {
       missingActorAliases: Array.isArray(registration.missingActorAliases)
         ? [...registration.missingActorAliases] : [],
       setupFlowUnprovenSince: entry.setupFlowUnprovenSince ?? null,
-      schemaGeneration: entry.schemaGeneration ?? registration.schemaGeneration ?? null,
+      schemaGeneration: entry.schemaGeneration ?? null,
       servingVersion: entry.servingVersion ?? null,
       sourceSha: entry.sourceSha ?? null,
       claim: entry.claim

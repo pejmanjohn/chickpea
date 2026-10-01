@@ -104,6 +104,20 @@ test('QA source admission refuses stale new and resumed uploads before any build
   }
 });
 
+test('--release-tag reaches QA source admission for a lane deploy and is refused without one', (context) => {
+  const harness = createHarness();
+  context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+  const unlaned = runHarness(harness, ['--release-tag', 'v0.1.34']);
+  assert.equal(unlaned.status, 2);
+  assert.match(unlaned.stderr, /--release-tag applies only to a QA lane deploy/);
+  assert.equal(runHarness(harness, ['--release-tag']).status, 2);
+  const laned = runHarness(harness, ['--release-tag=v0.1.34'], {
+    CHICKPEA_DEPLOY_TARGET: 'amber', DEPLOY_TEST_SOURCE_REFUSED: '1', DEPLOY_TEST_SOURCE_LOG: '1',
+  });
+  assert.equal(laned.status, 1);
+  assert.deepEqual(commands(harness.logPath), ['source-admission:v0.1.34']);
+});
+
 test('QA contents are rechecked after awaited preparation, before D1 and before upload', (context) => {
   for (const resumed of [false, true]) for (const changedAt of [1, 2, 3, 4]) {
     const harness = createHarness();

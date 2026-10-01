@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -18,7 +18,11 @@ function fixture(t: TestContext) {
   writeFileSync(join(root, 'source.txt'), 'current transport'); git('add', '.'); git('commit', '-m', 'current transport');
   const tip = git('rev-parse', 'HEAD'); git('remote', 'add', 'origin', 'git@github.com:pejmanjohn/chickpea.git');
   git('update-ref', 'refs/remotes/origin/main', old);
-  const observeRemote = () => ({ status: 0, stdout: `${tip}\trefs/heads/main\n` });
+  // The fixture repository stands in for the remote: main is the tip, and a
+  // tag is published exactly as `git ls-remote` would list it, peeled or not.
+  const observeRemote = ({ reference }: { reference: string }) => reference === 'refs/heads/main'
+    ? { status: 0, stdout: `${tip}\trefs/heads/main\n` }
+    : spawnSync('git', ['ls-remote', '--exit-code', '--tags', root, reference, `${reference}^{}`], { encoding: 'utf8' });
   return { root, git, old, tip, observeRemote };
 }
 
@@ -133,6 +137,15 @@ test('a published release tag on main is admitted after main moves past it; anyt
   // A tag that never reached main is refused even when HEAD is exactly that tag.
   f.git('tag', 'v0.2.0'); 
   assert.throws(() => admitQaCandidate(f.root, { observeRemote: f.observeRemote, releaseTag: 'v0.2.0' }), /QA_RELEASE_TAG_NOT_ON_MAIN/);
+  // Only the published tag counts, and only a clean checkout of it.
+  f.git('checkout', '-q', '-B', 'verify-v0.1.9', 'v0.1.9');
+  assert.throws(() => admitQaCandidate(f.root, { releaseTag: 'v0.1.9',
+    observeRemote: (o: { reference: string }) => o.reference === 'refs/heads/main' ? f.observeRemote(o) : { status: 2, stdout: '' } }), /QA_RELEASE_TAG_UNPUBLISHED/);
+  assert.throws(() => admitQaCandidate(f.root, { releaseTag: 'v0.1.9',
+    observeRemote: (o: { reference: string }) => o.reference === 'refs/heads/main' ? f.observeRemote(o) : { status: 0, stdout: `${f.tip}\trefs/tags/v0.1.9\n` } }), /QA_RELEASE_TAG_MISMATCH: origin publishes v0.1.9 at/);
+  writeFileSync(join(f.root, 'source.txt'), 'uncommitted edit');
+  assert.throws(() => admitQaCandidate(f.root, { observeRemote: f.observeRemote, releaseTag: 'v0.1.9' }), /QA_RELEASE_TAG_DIRTY/);
+  f.git('checkout', '--', 'source.txt');
   // On current main the tag is irrelevant: ordinary admission, no releaseTag recorded.
   f.git('checkout', '-q', f.tip);
   assert.equal(admitQaCandidate(f.root, { observeRemote: f.observeRemote, releaseTag: 'v0.1.9' }).releaseTag, undefined);

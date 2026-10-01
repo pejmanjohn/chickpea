@@ -44,11 +44,10 @@ Lanes: ${activeEnvironmentTargets.join(', ')}. Every command takes --worktree <a
   restamp <lane>                 Move this worktree's own claim to its current HEAD after a commit,
                                  rebase or branch switch. Refused while a deploy is open; never
                                  takes another worktree's lane. Carries a pending schema intent.
-  schema-advance <lane> [--to GENERATION]
-                                 Record this worktree's intent to advance the lane's Durable Object
+  schema-advance <lane>          Record this worktree's intent to advance the lane's Durable Object
                                  schema to the candidate's generation (one recorded step). The next
                                  guarded deploy applies it. Permanent: Cloudflare cannot roll back.
-  release <lane>                 Give back this worktree's claim, whatever its HEAD is now.
+  release <lane>                 Give back this worktree's claim from any branch HEAD.
   reclaim <lane> [--adopt-orphan]
                                  Renew an expired claim, or adopt one whose worktree is gone.
   target <lane> | attest <lane>  Doctor inputs for the legacy coordinator.
@@ -77,6 +76,15 @@ async function sourceAdvisory(worktreePath, stderr, io) {
       ? 'source: behind remote main; rebase or merge origin/main, then `npm run env -- restamp <lane>`, before deploying\n'
       : `source: admission not confirmed (${code}); the guarded deploy will check again\n`);
   }
+}
+
+/**
+ * The schema contract belongs to the claimed checkout. Without this, a
+ * `--worktree` pointing at another checkout would be judged by the runner's own
+ * migrations.
+ */
+function contractOptions(options, parsed) {
+  return parsed.flags.worktree ? { ...options, projectRoot: parsed.flags.worktree } : options;
 }
 
 export async function runEnvironmentCli(argv, io = {}) {
@@ -157,7 +165,7 @@ export async function runEnvironmentCli(argv, io = {}) {
         requireSameWorktree: true,
         onReclaimed: (change) => { previous = change.previous; },
       });
-      const schemaIntent = carryEnvironmentSchemaAdvancementIntent(parsed.target, previous?.leaseNonce, options);
+      const schemaIntent = carryEnvironmentSchemaAdvancementIntent(parsed.target, previous?.leaseNonce, contractOptions(options, parsed));
       result = {
         target: parsed.target,
         restamped: true,
@@ -166,15 +174,16 @@ export async function runEnvironmentCli(argv, io = {}) {
         claimedRevision: claim.claimedRevision,
         expiresAt: claim.expiresAt,
         schemaIntent,
+        ...(schemaIntent.startsWith('stale:') ? { next: 'The pending schema intent no longer matches this HEAD; run `env schema-advance` again if the advance is still approved.' } : {}),
       };
       await sourceAdvisory(claim.canonicalWorktreePath, stderr, io);
     } else if (parsed.command === 'schema-advance') {
       requireTarget(parsed.target);
-      if (Object.keys(parsed.flags).some((flag) => !['root', 'worktree', 'to'].includes(flag))) {
+      if (Object.keys(parsed.flags).some((flag) => !['root', 'worktree'].includes(flag))) {
         throw new EnvironmentRegistryError('INVALID_ARGUMENT');
       }
-      const toGeneration = parsed.flags.to ?? readLocalEnvironmentContract(options).schemaGeneration;
-      result = writeEnvironmentSchemaAdvancementIntent(parsed.target, toGeneration, options);
+      const local = contractOptions(options, parsed);
+      result = writeEnvironmentSchemaAdvancementIntent(parsed.target, readLocalEnvironmentContract(local).schemaGeneration, local);
     } else if (parsed.command === 'wait-claim') {
       if (!parsed.target || !['any', ...activeEnvironmentTargets].includes(parsed.target)
         || parsed.flags.timeoutMs === undefined || parsed.flags.pollMs === undefined
@@ -342,7 +351,6 @@ function parseArgs(argv) {
       '--runtime-env': 'runtimeEnv',
       '--profile': 'profile',
       '--env': 'environment',
-      '--to': 'to',
     }[value];
     if (field) {
       const next = argv[index + 1];
@@ -363,7 +371,6 @@ function parseArgs(argv) {
   if ((flags.json || flags.write) && positional[0] !== 'capabilities') throw new EnvironmentRegistryError('INVALID_ARGUMENT');
   if (flags.registration && positional[0] !== 'register') throw new EnvironmentRegistryError('INVALID_ARGUMENT');
   if (flags.installation && !['install-reserve', 'install-restore'].includes(positional[0])) throw new EnvironmentRegistryError('INVALID_ARGUMENT');
-  if (flags.to !== undefined && positional[0] !== 'schema-advance') throw new EnvironmentRegistryError('INVALID_ARGUMENT');
   if (positional[0] !== 'wait-claim'
     && (flags.timeoutMs !== undefined || flags.pollMs !== undefined)) {
     throw new EnvironmentRegistryError('INVALID_ARGUMENT');

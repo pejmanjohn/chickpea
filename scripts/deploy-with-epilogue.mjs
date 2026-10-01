@@ -327,6 +327,10 @@ const selectedEnvironmentTarget = !deployArgs.includes('--dry-run')
   && requestedDeploymentTarget
   ? requestedDeploymentTarget
   : undefined;
+if (releaseTagOption !== undefined && !selectedEnvironmentTarget) {
+  console.error('--release-tag applies only to a QA lane deploy: set CHICKPEA_DEPLOY_TARGET=<lane> and omit --dry-run.');
+  process.exit(2);
+}
 let environmentPreflightApi;
 let initialEnvironmentPreflight;
 let resumedEnvironmentDeployment;

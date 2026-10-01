@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
@@ -109,4 +110,16 @@ test('env --help prints the command list; no arguments prints it as an error', a
   const none = cli();
   assert.equal(await runEnvironmentCli([], none.io), 2);
   assert.match(none.stderr.join(''), /Usage: npm run env/);
+});
+
+test('schema-advance reads the named checkout\'s contract and takes no --to', async (context) => {
+  const empty = mkdtempSync(join(tmpdir(), 'chickpea-not-a-checkout-'));
+  context.after(() => rmSync(empty, { recursive: true, force: true }));
+  // The runner's own contract is valid; an empty --worktree must not borrow it.
+  const run = cli();
+  assert.equal(await runEnvironmentCli(['schema-advance', 'amber', '--worktree', empty], run.io), 2);
+  assert.match(run.stderr.join(''), /INVALID_LOCAL_CONTRACT/);
+  const legacy = cli();
+  assert.equal(await runEnvironmentCli(['schema-advance', 'amber', '--to', 'd1:0002;do:v11'], legacy.io), 2);
+  assert.match(legacy.stderr.join(''), /INVALID_ARGUMENT/);
 });

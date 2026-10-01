@@ -87,10 +87,28 @@ export function admitQaCandidate(root, options = {}) {
     if (git(canonical, ['merge-base', '--is-ancestor', head, approvedTip]).status !== 0) {
       fail('QA_RELEASE_TAG_NOT_ON_MAIN', `${options.releaseTag} is not on remote main ${approvedTip}; only a release cut from main is admitted this way.`);
     }
+    // A local tag proves nothing: anyone can tag an old main commit. Observe
+    // the published tag (peeled, when annotated) and require it to be HEAD.
+    const tagRef = `refs/tags/${options.releaseTag}`;
+    const published = options.observeRemote
+      ? options.observeRemote({ root: canonical, remote, reference: tagRef })
+      : git(canonical, ['ls-remote', '--exit-code', '--tags', remote, tagRef, `${tagRef}^{}`]);
+    const lines = published.status === 0 ? published.stdout.trim().split('\n')
+      .map((line) => line.match(/^([a-f0-9]{40}(?:[a-f0-9]{24})?)\s+(\S+)$/u)).filter(Boolean) : [];
+    const publishedCommit = (lines.find((m) => m[2] === `${tagRef}^{}`) ?? lines.find((m) => m[2] === tagRef))?.[1];
+    if (!publishedCommit) {
+      fail('QA_RELEASE_TAG_UNPUBLISHED', `${options.releaseTag} is not published on ${remote}; only a pushed release tag is admitted.`);
+    }
+    if (publishedCommit !== head) {
+      fail('QA_RELEASE_TAG_MISMATCH', `${remote} publishes ${options.releaseTag} at ${publishedCommit}, not HEAD ${head}. Fetch the tag and check it out again.`);
+    }
     releaseTag = options.releaseTag;
   }
   const source = sourceInputs(canonical);
   if (source.head !== head) fail('QA_SOURCE_CHANGED', 'HEAD changed during admission. Rerun from stable source.');
+  if (releaseTag && source.dirty) {
+    fail('QA_RELEASE_TAG_DIRTY', `The working tree has changes, so it is not ${releaseTag}. Commit or discard them, or verify them as an ordinary candidate.`);
+  }
   const trackingTip = revision(canonical, `refs/remotes/${remote}/main`);
   return { schema: 'chickpea-qa-source-admission/v1', root: canonical, repository: expected,
     remote, reference, approvedTip, ...(releaseTag ? { releaseTag } : {}), trackingTip, trackingMatchesRemote: trackingTip === approvedTip,
