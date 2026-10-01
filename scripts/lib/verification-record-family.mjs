@@ -38,9 +38,10 @@ export function familyStatus(family) {
   const [current, ...ancestors] = family.records;
   return { current: current.view, complete: !family.missingAncestor && current.view.complete && ancestors.every((entry) => entry.view.complete),
     ancestors: ancestors.map((entry) => ({ path: entry.path, runId: entry.run.id, complete: entry.view.complete, statusSource: entry.statusSource, asOf: entry.asOf,
-      unresolvedCases: entry.view.cases.filter((item) => item.result !== 'pass').map((item) => ({ id: item.id, result: item.result })),
+      unresolvedCases: entry.view.cases.filter((item) => item.result !== 'pass').map((item) => ({ id: item.id, result: item.result, verdict: item.verdict ?? null })),
       cleanupPending: entry.view.resources.filter((item) => item.cleanup !== 'verified').map((item) => item.id),
-      firstFailures: entry.view.cases.filter((item) => item.firstFailure).map((item) => ({ caseId: item.id, outcome: item.firstFailure })) })),
+      firstFailures: entry.view.cases.filter((item) => item.firstFailure).map((item) => ({ caseId: item.id, outcome: item.firstFailure })),
+      lessons: entry.view.lessons ?? [] })),
     missingAncestor: family.missingAncestor };
 }
 
@@ -48,8 +49,10 @@ export function renderFamilyReport(view, renderCurrent) {
   const lines = [renderCurrent(view.current), '', '## Run family', '',
     `Family completion: ${view.complete}. A child run cannot satisfy incomplete ancestor scope.`];
   for (const ancestor of view.ancestors) {
-    lines.push(`- Historical parent ${ancestor.runId} at ${ancestor.path}, graded as of ${ancestor.asOf} against its latest recorded source: complete ${ancestor.complete}; unresolved cases ${ancestor.unresolvedCases.map((item) => `${item.id}/${item.result}`).join(', ') || 'none'}; pending cleanup ${ancestor.cleanupPending.join(', ') || 'none'}.`);
+    lines.push(`- Historical parent ${ancestor.runId} at ${ancestor.path}, graded as of ${ancestor.asOf} against its latest recorded source: complete ${ancestor.complete}; unresolved cases ${ancestor.unresolvedCases.map((item) => `${item.id}/${item.result}${item.verdict ? ` (${item.verdict.blocksPr === 'yes' ? 'blocks the PR' : 'does not block the PR'})` : ''}`).join(', ') || 'none'}; pending cleanup ${ancestor.cleanupPending.join(', ') || 'none'}.`);
     for (const failure of ancestor.firstFailures) lines.push(`- Parent ${ancestor.runId} first failure for ${failure.caseId}: ${failure.outcome.result} / ${failure.outcome.category}. ${failure.outcome.summary}`);
+    // Lessons are easiest to lose across a follow-up run, so the family report carries every ancestor's.
+    for (const lesson of ancestor.lessons) lines.push(`- Parent ${ancestor.runId} lesson${lesson.areas.length ? ` [${lesson.areas.join(', ')}]` : ''}: ${String(lesson.text).replace(/\r?\n/g, ' ')}`);
   }
   if (view.missingAncestor) lines.push(`- Missing ancestor ${view.missingAncestor.runId ?? 'unknown'} at ${view.missingAncestor.path}: ${view.missingAncestor.error}`);
   return lines.join('\n');

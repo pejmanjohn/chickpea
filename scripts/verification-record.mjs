@@ -18,10 +18,18 @@ case-add  --spec FILE --output FILE --case ID --title TEXT --context ID --area A
 init      --spec FILE [--parent-run FILE] [--original-case CHILD=PARENT]
 preflight                         Show runnable cases, blockers, registry warnings
 refresh   --spec FILE --reason TEXT  Refresh observed capabilities and context
-begin     --case ID [--reason TEXT]  Record an attempt before the action
+begin     --case ID [--reason TEXT]  Record an attempt before the action; prints its attemptId
+blocked   --case ID --reason TEXT [--category CATEGORY] [--evidence FILE]
+                                    Record why a case cannot run, without spending an attempt
+verdict   --case ID --blocks-pr yes|no --reason TEXT
+                                    Say whether a failed or blocked case blocks the PR
+lesson    --text TEXT [--area AREA] [--case ID]
+                                    Keep a gotcha for qa/live/features/; the report lists it
 record    --event FILE               Record outcome, cleanup, repair, batch or candidate_transition
 resource  --case ID --provider ID --kind ID --resource-id ID --ownership TYPE --cleanup-preset PRESET|--expected-file FILE --evidence FILE
-finish|resolve --attempt ID --result RESULT --summary TEXT --evidence FILE --proof SURFACE=FILE [--completed-at ISO] [--observed-at ISO] [--timing-observation-ms MS]
+finish|resolve --attempt ID --result RESULT --summary TEXT --evidence FILE --proof SURFACE=FILE [--completed-at ISO] [--observed-at ISO|now] [--timing-observation-ms MS]
+                                    Proof surfaces: slack, admin, mcp, provider, model. A live case
+                                    needs slack, admin or mcp proof. Omit a time you did not observe.
 cleanup   --resource ID --outcome OUTCOME [--observed-file FILE] --evidence FILE
 phase-start --phase NAME [--case ID] [--attempt ID]
 phase-stop --phase-id ID
@@ -39,7 +47,7 @@ export function runRecordCli(argv, root = ROOT, io = {}) {
   const error = io.stderr ?? ((value) => process.stderr.write(value));
   try {
     const { values: flags, positionals } = parseArgs({ args: argv, allowPositionals: true, options: {
-      ...Object.fromEntries(['run', 'spec', 'reason', 'case', 'event', 'output', 'mode', 'purpose', 'title', 'context', 'max-attempts', 'max-wait-ms', 'min-observation-ms', 'original-request', 'expected-outcome', 'variant', 'cleanup-contract', 'provider', 'kind', 'resource-id', 'ownership', 'cleanup-preset', 'expected-file', 'attempt', 'result', 'summary', 'category', 'completed-at', 'observed-at', 'timing-observation-ms', 'cost-usd', 'resource', 'outcome', 'observed-file', 'phase', 'phase-id', 'parent-run'].map((key) => [key, { type: 'string' }])),
+      ...Object.fromEntries(['run', 'spec', 'reason', 'case', 'event', 'output', 'mode', 'purpose', 'title', 'text', 'context', 'max-attempts', 'max-wait-ms', 'min-observation-ms', 'original-request', 'expected-outcome', 'variant', 'cleanup-contract', 'provider', 'kind', 'resource-id', 'ownership', 'cleanup-preset', 'expected-file', 'attempt', 'result', 'summary', 'category', 'completed-at', 'observed-at', 'timing-observation-ms', 'cost-usd', 'resource', 'outcome', 'observed-file', 'phase', 'phase-id', 'parent-run', 'blocks-pr'].map((key) => [key, { type: 'string' }])),
       area: { type: 'string', multiple: true }, require: { type: 'string', multiple: true }, proof: { type: 'string', multiple: true }, evidence: { type: 'string', multiple: true }, 'original-case': { type: 'string', multiple: true },
       'stop-at': { type: 'string' }, 'max-occurrences': { type: 'string' }, family: { type: 'boolean' },
       help: { type: 'boolean' },
@@ -51,7 +59,8 @@ export function runRecordCli(argv, root = ROOT, io = {}) {
       template: ['mode', 'purpose', 'area', 'output'],
       'case-add': ['spec', 'output', 'case', 'title', 'context', 'area', 'require', 'proof', 'max-attempts', 'max-wait-ms', 'min-observation-ms', 'original-request', 'expected-outcome', 'variant', 'cleanup-contract'],
       init: ['run', 'spec', 'parent-run', 'original-case'], preflight: ['run'], refresh: ['run', 'spec', 'reason'],
-      begin: ['run', 'case', 'reason'], record: ['run', 'event'], status: ['run'], report: ['run', 'output', 'family'],
+      begin: ['run', 'case', 'reason'], blocked: ['run', 'case', 'reason', 'category', 'evidence'], lesson: ['run', 'text', 'area', 'case'], verdict: ['run', 'case', 'blocks-pr', 'reason'],
+      record: ['run', 'event'], status: ['run'], report: ['run', 'output', 'family'],
       resource: ['run', 'case', 'provider', 'kind', 'resource-id', 'ownership', 'cleanup-preset', 'expected-file', 'evidence', 'stop-at', 'max-occurrences'],
       finish: ['run', 'attempt', 'result', 'summary', 'category', 'evidence', 'proof', 'completed-at', 'observed-at', 'timing-observation-ms', 'cost-usd'],
       resolve: ['run', 'attempt', 'result', 'summary', 'category', 'evidence', 'proof', 'completed-at', 'observed-at', 'timing-observation-ms', 'cost-usd'],
@@ -101,7 +110,7 @@ export function runRecordCli(argv, root = ROOT, io = {}) {
       } else if (flags['original-case']?.length) throw new Error('--original-case needs --parent-run.');
       result = createRun(flags.run, readPrivateJson(flags.spec), sourceInputs(root), Date.now(), lineage);
       result = { runId: result.id, preflight: preflight(result) };
-    } else if (['refresh', 'begin', 'record', 'resource', 'finish', 'resolve', 'cleanup', 'phase-start', 'phase-stop'].includes(command)) {
+    } else if (['refresh', 'begin', 'blocked', 'lesson', 'verdict', 'record', 'resource', 'finish', 'resolve', 'cleanup', 'phase-start', 'phase-stop'].includes(command)) {
       let event;
       if (command === 'record') {
         if (!flags.event) throw new Error('record needs --event.');
@@ -110,6 +119,17 @@ export function runRecordCli(argv, root = ROOT, io = {}) {
         if (!flags.spec) throw new Error('refresh needs --spec.');
         event = { type: 'refresh', spec: readPrivateJson(flags.spec), reason: flags.reason };
       } else if (command === 'begin') event = { type: 'begin', caseId: flags.case, ...(flags.reason ? { reason: flags.reason } : {}) };
+      else if (command === 'verdict') {
+        if (!flags.case || !flags['blocks-pr'] || !flags.reason) throw new Error('verdict needs --case, --blocks-pr yes|no and --reason.');
+        event = { type: 'verdict', caseId: flags.case, blocksPr: flags['blocks-pr'], reason: flags.reason };
+      } else if (command === 'lesson') {
+        if (!flags.text) throw new Error('lesson needs --text.');
+        event = { type: 'lesson', text: flags.text, ...(flags.area?.length ? { areas: flags.area } : {}), ...(flags.case ? { caseId: flags.case } : {}) };
+      } else if (command === 'blocked') {
+        if (!flags.case || !flags.reason) throw new Error('blocked needs --case and --reason.');
+        event = { type: 'case_blocked', caseId: flags.case, reason: flags.reason,
+          ...(flags.category ? { category: flags.category } : {}), ...(flags.evidence ? { evidence: flags.evidence } : {}) };
+      }
       else if (command !== 'resource') {
         const named = { ...flags, completedAt: flags['completed-at'], observedAt: flags['observed-at'], timingObservationMs: flags['timing-observation-ms'], costUsd: flags['cost-usd'], observedFile: flags['observed-file'], phaseId: flags['phase-id'] };
         if (command === 'finish' || command === 'resolve') event = buildOutcome(command, named);
@@ -122,6 +142,8 @@ export function runRecordCli(argv, root = ROOT, io = {}) {
         const input = command === 'resource' ? buildResource(run, { ...flags, resourceId: flags['resource-id'], cleanupPreset: flags['cleanup-preset'], expectedFile: flags['expected-file'], stopAt: flags['stop-at'], maxOccurrences: flags['max-occurrences'] }, readPrivateJson) : event;
         return appendEvent(run, input, source);
       });
+      // The full attempt carries every input digest; the operator needs its ID and deadline.
+      if (command === 'begin') result = { attemptId: result.id, caseId: result.caseId, deadline: result.deadline, id: result.id };
     } else {
       const run = readRun(flags.run);
       if (command === 'preflight') { result = preflight(run); code = result.ready ? 0 : 1; }

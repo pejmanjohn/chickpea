@@ -126,7 +126,7 @@ every other answer.
 
 | Line | Meaning |
 |---|---|
-| `[chickpea] agent ask not admitted: <reason>` | Routing refused the ask, for example `not_available` for an Agent without a grant, or `not_eligible` when admission could not authorize it. |
+| `[chickpea] host-addressed turn not admitted: <reason>` | Routing refused the ask, for example `not_available` for an Agent without a grant, or `not_eligible` when admission could not authorize it. |
 | `[chickpea] agent ask limit reached; exchange paused` | The exchange used its asks and the pause line was posted. |
 | `[chickpea] agent ask was not admitted: <error>` | Admission failed after its retries. The asked Agent does not answer. |
 | `[chickpea] agent ask dispatch failed: <name>` | The executor could not hand the reply's asks over. |

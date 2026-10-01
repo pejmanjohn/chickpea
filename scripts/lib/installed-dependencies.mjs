@@ -20,3 +20,10 @@ export function lockfileDrift(root) {
   }
   return drift;
 }
+
+/** One sentence for a drift list, shared by the regression gate and the guarded deploy. */
+export function staleDependenciesMessage(drift, consequence = '') {
+  const sample = drift.slice(0, 3).map(({ name, locked, installed }) => `${name} ${installed} (locked ${locked})`).join(', ');
+  return `STALE_DEPENDENCIES: node_modules does not match package-lock.json for ${drift.length} package(s): ${sample}. ` +
+    `Run npm ci --strict-allow-scripts with the repository Node version, then retry.${consequence ? ` ${consequence}` : ''}`;
+}

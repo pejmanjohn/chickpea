@@ -11,8 +11,14 @@ const outcomeFor = (run, id) => run.events.findLast((event) => ['finish', 'resol
 const readbacks = (outcome) => [...(outcome.evidence ?? []), ...Object.values(outcome.proof ?? {}).flat()];
 const withoutVersion = (context) => { const { servingVersion, ...stable } = context; return stable; };
 const stableInputs = (inputs) => ({ ...inputs, context: withoutVersion(inputs.context) });
-const fullSource = (source) => source && text(source.tree) && /^[a-f0-9]{40}$/.test(source.head)
-  && source.dirty === false && source.areas && Object.keys(REGRESSION_AREAS).every((area) => text(source.areas[area]));
+// The current source fingerprints every area. A record begun before an area
+// existed has no fingerprint for it, so a recorded source is complete when
+// every area it recorded has one; changedAreas below decides what a missing
+// area means.
+const cleanSource = (source) => source && text(source.tree) && /^[a-f0-9]{40}$/.test(source.head)
+  && source.dirty === false && source.areas && Object.keys(source.areas).length > 0
+  && Object.values(source.areas).every(text);
+const fullSource = (source) => cleanSource(source) && Object.keys(REGRESSION_AREAS).every((area) => text(source.areas[area]));
 const attendedInputs = (run, spec, selected, source) => ({ ...caseInputs(spec, selected, source), ...repairInputs(run, selected.id) });
 
 function usablePrerequisites(spec, selected, receipts, now, intact) {
@@ -82,7 +88,7 @@ export function recordTransition(run, spec, input, source, evidenceRefs, intact,
   const beforeSource = anchor.type === 'begin' ? anchor.source : anchor.afterSource;
   const beforeContext = anchor.type === 'begin' ? anchor.inputs.context : anchor.afterContext;
   const afterContext = spec.contexts[input.context];
-  need(fullSource(beforeSource) && fullSource(source), 'Carry-forward requires clean complete recorded source fingerprints; unknown source impact requires fresh evidence.');
+  need(cleanSource(beforeSource) && fullSource(source), 'Carry-forward requires clean complete recorded source fingerprints; unknown source impact requires fresh evidence.');
   need(beforeContext.servingVersion !== afterContext.servingVersion, 'Truthfully refresh to a different serving version before recording its transition.');
   need(same(withoutVersion(beforeContext), withoutVersion(afterContext)), 'Changed runtime, target, grade, model, actor, fixtures, state or configuration requires fresh evidence.');
   const refresh = run.events.findLast((event) => event.type === 'refresh');
@@ -105,7 +111,11 @@ export function recordTransition(run, spec, input, source, evidenceRefs, intact,
     const cleanup = run.events.findLast((end) => end.type === 'cleanup' && end.resourceId === event.id);
     return cleanup?.outcome !== 'verified' || !intact(cleanup.evidence);
   }), 'Record exact cleanup of this target before a candidate transition.');
-  const changedAreas = Object.keys(REGRESSION_AREAS).filter((area) => beforeSource.areas[area] !== source.areas[area]);
+  // An area one side never recorded cannot be compared. It counts as changed
+  // only when a case in this context depends on it.
+  const contextAreas = new Set(spec.cases.filter((selected) => selected.context === input.context).flatMap((selected) => selected.areas));
+  const changedAreas = Object.keys(REGRESSION_AREAS).filter((area) => (Object.hasOwn(beforeSource.areas, area) && Object.hasOwn(source.areas, area)
+    ? beforeSource.areas[area] !== source.areas[area] : contextAreas.has(area)));
   need(Array.isArray(input.impactAreas) && new Set(input.impactAreas).size === input.impactAreas.length
     && input.impactAreas.every((area) => Object.hasOwn(REGRESSION_AREAS, area))
     && changedAreas.every((area) => input.impactAreas.includes(area)), 'Declared impact must include every changed source area.');

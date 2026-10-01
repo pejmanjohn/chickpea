@@ -104,6 +104,20 @@ test('QA source admission refuses stale new and resumed uploads before any build
   }
 });
 
+test('--release-tag reaches QA source admission for a lane deploy and is refused without one', (context) => {
+  const harness = createHarness();
+  context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+  const unlaned = runHarness(harness, ['--release-tag', 'v0.1.34']);
+  assert.equal(unlaned.status, 2);
+  assert.match(unlaned.stderr, /--release-tag applies only to a QA lane deploy/);
+  assert.equal(runHarness(harness, ['--release-tag']).status, 2);
+  const laned = runHarness(harness, ['--release-tag=v0.1.34'], {
+    CHICKPEA_DEPLOY_TARGET: 'amber', DEPLOY_TEST_SOURCE_REFUSED: '1', DEPLOY_TEST_SOURCE_LOG: '1',
+  });
+  assert.equal(laned.status, 1);
+  assert.deepEqual(commands(harness.logPath), ['source-admission:v0.1.34']);
+});
+
 test('QA contents are rechecked after awaited preparation, before D1 and before upload', (context) => {
   for (const resumed of [false, true]) for (const changedAt of [1, 2, 3, 4]) {
     const harness = createHarness();
@@ -202,7 +216,17 @@ test('Phase 1 deploy reconciles live version before receipt and suppresses setup
   });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(existsSync(receiptPath), true);
-  assert.match(commands(harness.logPath).at(-1) ?? '', /^environment-complete:deployed-version$/);
+  const log = commands(harness.logPath);
+  const completeAt = log.indexOf('environment-complete:deployed-version');
+  assert.ok(completeAt >= 0, 'the claimed deployment is reconciled');
+  assert.equal(log[completeAt + 1], `telemetry:chickpea-amber-live:${'a'.repeat(32)}`, 'then the deploy checks telemetry isolation for the serving Worker, on the pinned account');
+  const receiptLine = log[completeAt + 2] ?? '';
+  const evidence = path.join(harness.root, 'no-lane-registry', 'amber', 'evidence');
+  assert.ok(receiptLine.startsWith(`telemetry-receipt:${evidence}/telemetry-deployed-version-`), receiptLine);
+  assert.match(receiptLine, /-\d{4}-\d{2}-\d{2}T[\d-]+Z\.json$/);
+  const telemetryReceipt = receiptLine.slice('telemetry-receipt:'.length);
+  assert.equal(JSON.parse(readFileSync(telemetryReceipt, 'utf8')).status, 'passed');
+  assert.match(result.stdout, /Telemetry isolation verified for the serving version; receipt /);
   assert.doesNotMatch(result.stdout, /#setup=|PRIVATE SETUP LINK|PRIVATE SETUP PATH/);
   const redirect = JSON.parse(readFileSync(path.join(harness.root, '.wrangler/deploy/config.json'), 'utf8'));
   const artifact = JSON.parse(readFileSync(path.resolve(harness.root, '.wrangler/deploy', redirect.configPath), 'utf8'));
@@ -1048,4 +1072,89 @@ test('a core deploy refuses to silently remove a live coding sandbox', (context)
     DEPLOY_TEST_URL: 'https://chickpea.example.workers.dev',
   });
   assert.equal(removed.status, 0, removed.stderr);
+});
+
+test('--worktree runs the named checkout\'s own wrapper from that checkout and strips the flag', (context) => {
+  const harness = createHarness();
+  const other = mkdtempSync(path.join(tmpdir(), 'chickpea-deploy-other-'));
+  context.after(() => {
+    rmSync(harness.root, { recursive: true, force: true });
+    rmSync(other, { recursive: true, force: true });
+  });
+  mkdirSync(path.join(other, 'scripts'), { recursive: true });
+  writeFileSync(path.join(other, 'scripts', 'deploy-with-epilogue.mjs'),
+    "process.stdout.write(JSON.stringify({ cwd: process.cwd(), args: process.argv.slice(2), profile: process.env.CHICKPEA_DEPLOY_PROFILE ?? null }) + '\\n');\nprocess.exit(7);\n");
+
+  const forwarded = runHarness(harness, ['--worktree', other, '--skip-build'], { CHICKPEA_DEPLOY_TARGET: 'amber', CHICKPEA_DEPLOY_PROFILE: 'sandbox' });
+  assert.equal(forwarded.status, 7, forwarded.stderr);
+  const echoed = JSON.parse(forwarded.stdout.trim().split('\n').pop() ?? '{}') as { cwd: string; args: string[]; profile: string | null };
+  assert.equal(realpathSync(echoed.cwd), realpathSync(other), 'the target wrapper runs from its own checkout');
+  assert.deepEqual(echoed.args, ['--skip-build'], 'the flag is consumed, the rest is forwarded');
+  assert.equal(echoed.profile, 'sandbox', 'the deployment profile travels in the environment');
+  assert.equal(existsSync(harness.logPath), false, 'the calling checkout builds, inspects, and uploads nothing');
+
+  const inline = runHarness(harness, [`--worktree=${other}`], {});
+  assert.equal(inline.status, 7, inline.stderr);
+
+  const relative = runHarness(harness, ['--worktree', 'elsewhere'], {});
+  assert.equal(relative.status, 2);
+  assert.match(relative.stderr, /--worktree must be absolute/);
+  const missing = runHarness(harness, ['--worktree', path.join(other, 'nope')], {});
+  assert.equal(missing.status, 2);
+  assert.match(missing.stderr, /not a Chickpea checkout/);
+  const self = runHarness(harness, ['--worktree', harness.root, '--dry-run'], { CHICKPEA_DEPLOY_TARGET: 'production' });
+  assert.equal(self.status, 0, `the same checkout runs locally: ${self.stderr}`);
+  assert.equal(self.stdout.includes('"cwd"'), false, 'no forwarding to itself');
+  const dangling = runHarness(harness, ['--worktree'], {});
+  assert.equal(dangling.status, 2);
+  assert.match(dangling.stderr, /needs an absolute checkout path/);
+});
+
+
+test('a claimed lane deploy reports a failed telemetry receipt as a failed deploy, after reconciling', (context) => {
+  const harness = createHarness();
+  context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+  writeCutoverArtifact(harness, { target: 'amber', databaseId: 'test-database-id' });
+  const result = runHarness(harness, ['--skip-build'], {
+    CHICKPEA_DEPLOY_TARGET: 'amber',
+    CHICKPEA_DEPLOY_AUTH_DB_ID: 'test-database-id',
+    CHICKPEA_DEPLOY_SCHEMA_GENERATION: 'd1:0002_mcp_oauth;do:v9',
+    DEPLOY_TEST_WORKER_EXISTS: '1',
+    DEPLOY_TEST_SECRET_LIST: JSON.stringify([
+      { name: 'CHICKPEA_AUTH_SECRET' },
+      { name: 'CHICKPEA_CREDENTIAL_KEY_CURRENT_ID' },
+      { name: 'CHICKPEA_CREDENTIAL_KEY_KEY_V1' },
+    ]),
+    DEPLOY_TEST_TELEMETRY_STATUS: 'failed',
+  });
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /Claimed environment deployment reconciled/);
+  assert.match(result.stderr, /Telemetry isolation failed \(UNSAFE_SERVING_VERSION\)/);
+  assert.match(result.stderr, /Do not send synthetic Slack traffic/);
+  const receiptLine = commands(harness.logPath).find((entry) => entry.startsWith('telemetry-receipt:')) ?? '';
+  assert.equal(JSON.parse(readFileSync(receiptLine.slice('telemetry-receipt:'.length), 'utf8')).status, 'failed', 'the failed receipt is kept as evidence');
+});
+
+test('a claimed lane deploy refuses stale dependencies and a core deploy over a sandbox lane before building', (context) => {
+  const stale = createHarness();
+  const sandbox = createHarness();
+  context.after(() => {
+    for (const harness of [stale, sandbox]) rmSync(harness.root, { recursive: true, force: true });
+  });
+  const staleRun = runHarness(stale, [], {
+    CHICKPEA_DEPLOY_TARGET: 'amber',
+    DEPLOY_TEST_STALE_DEPENDENCIES: JSON.stringify([{ name: 'fast-uri', locked: '3.1.8', installed: '3.1.7' }]),
+  });
+  assert.equal(staleRun.status, 1);
+  assert.match(staleRun.stderr, /STALE_DEPENDENCIES: .*fast-uri 3\.1\.7 \(locked 3\.1\.8\)/);
+  assert.match(staleRun.stderr, /Nothing was built or changed/);
+  assert.equal(commands(stale.logPath).some((entry) => entry.startsWith('npm:') || entry.startsWith('wrangler:')), false, 'no build and no Wrangler call');
+
+  const sandboxRun = runHarness(sandbox, [], { CHICKPEA_DEPLOY_TARGET: 'amber', DEPLOY_TEST_LIVE_PROFILE: 'sandbox' });
+  assert.equal(sandboxRun.status, 1);
+  assert.match(sandboxRun.stderr, /serves the sandbox profile, and this command would deploy the core profile/);
+  assert.match(sandboxRun.stderr, /CHICKPEA_DEPLOY_TARGET=amber npm run verify:host -- --wait-ms 300000 npm run deploy:sandbox/);
+  const log = commands(sandbox.logPath);
+  assert.ok(log.includes('live-profile:chickpea-amber'), 'the live profile is read from the claimed registration');
+  assert.equal(log.some((entry) => entry.startsWith('npm:')), false, 'refused before the build');
 });

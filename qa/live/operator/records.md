@@ -51,10 +51,28 @@ npm run verify:live:record -- case-add \
 ```
 
 Common builder refusals: capability kinds are `actor`, `fixture`, `tool`, or
-`target`. The case field is `cleanup`; the CLI flag is `--cleanup-contract`.
-`maxWaitMs` is at most 120000. A non-`model` live case must declare `slack`
-proof, so an Admin-only change needs a Slack-visible consequence as its proof.
-Otherwise record the case as blocked and do not drop the record. Register
+`target`. The case field is `cleanup`; the CLI flag is `--cleanup-contract`. A
+refused field is named in the error together with the fields allowed there.
+Keep `maxWaitMs` at 120000 for a chat reply; a case whose work is declared long
+(a coding task, a recording, an idle window) may set up to 3600000. Areas
+include `sandbox`, `browser`, `usage` and `activity` as well as the regression
+areas. Proof surfaces are `slack`, `admin`, `mcp`, `provider` and `model`. A
+non-`model` live case needs proof from at least one user door: `slack`,
+`admin` or `mcp`. Provider rows or model output alone never accept it. When a
+missing capability or environment keeps a case from running, record why with
+`blocked`, which spends no attempt, and keep the record:
+
+```sh
+npm run verify:live:record -- blocked --case requested-schedule \
+  --reason "Provider quota is exhausted until the owner adds credit." \
+  --category infrastructure --run "$run_dir/run.json"
+```
+
+A case with no outcome shows `blocked` with that reason until a later `begin`;
+on a case that already has an outcome the reason is listed beside it and never
+replaces it. A block that is itself a product defect to repair belongs on an
+attempt instead: `begin`, then `finish --result blocked --category product`, so
+a repair can reference it. Register
 fixtures and owned resources before `begin`. A capability refresh while an
 attempt is open invalidates that attempt. Hold working-tree edits outside the
 claimed worktree until the attempt finishes. Use the recorder even when it
@@ -63,6 +81,18 @@ refuses a field. A handwritten report is not a substitute.
 These four contract fields become immutable once present. A refresh may add a
 missing field, but cannot change or remove recorded product intent. Resolve the
 new spec's contexts and capabilities, then pass that file to `init`.
+
+Record a gotcha the moment you learn it, so it reaches the
+[feature map](../features/README.md) instead of private notes:
+
+```sh
+npm run verify:live:record -- lesson --area delivery --case requested-schedule \
+  --text "A typed @ is swallowed by the composer; use its mention button." \
+  --run "$run_dir/run.json"
+```
+
+A lesson grades nothing. The report lists every lesson under "Lessons for the
+feature map"; fold each into its feature file before the run's PR merges.
 
 Each context records `grade`, exact `target`, `servingVersion`, actual `model`,
 actor identity, fixture revision/digest, lane `state`, and relevant `config` digest.
@@ -148,7 +178,7 @@ not every historical retrospective row by default.
 ```sh
 npm run verify:regression -- --area routines --record "$run_dir/run.json"
 npm run verify:live:record -- begin --case channel-schedule --run "$run_dir/run.json"
-# Record the returned attempt ID before acting. Perform the authorized journey once.
+# It prints {"attemptId": ..., "deadline": ...}. Keep the ID, then perform the authorized journey once.
 # Save the product result and each required readback before finishing.
 npm run verify:live:record -- finish --run "$run_dir/run.json" \
   --attempt "$attempt_id" --result pass \
@@ -183,7 +213,10 @@ Missing timing categories stay explicitly unmeasured.
 
 `completedAt` is when the product produced the outcome. `observedAt` is when the
 operator obtained its authoritative readback. The event `at` remains the later
-record-write time. Neither timestamp is inferred when omitted. Reports show
+record-write time. Neither timestamp is inferred when omitted. `--observed-at
+now` stamps the command's own time; use it only when the readback happened at
+that moment. Completion has no such shortcut. A refused timestamp prints the
+attempt's start, the current time and the value given. Reports show
 attempt-start-to-completion time, readback-to-record delay, recording after the observation
 deadline, and completion beyond that deadline separately. `maxWaitMs` remains an
 observation deadline, not a universal product SLA, so lateness is advisory and
@@ -408,6 +441,25 @@ This narrowly corrects an owned Agent's cleanup contract; it cannot change
 customer fixture before-values, schedule limits, or acceptance outcomes. It does
 not verify cleanup. Obtain a fresh archival and access readback, then append a
 new cleanup event. The original registration and failed cleanup remain visible.
+
+## Closeout and PR verdicts
+
+After the case table, the report gives a closeout: either "Complete" or every
+reason the run is not complete (each case that is not a pass, cleanup not yet
+verified, an open offline attempt, a missing release checkpoint, an unverified
+repair). Give every failed, blocked, ambiguous or stale case a verdict on
+whether it blocks the PR before handing the report over:
+
+```sh
+npm run verify:live:record -- verdict --case requested-schedule --blocks-pr no \
+  --reason "Phone rendering is unchanged by this PR." --run "$run_dir/run.json"
+```
+
+The report lists each such case with its verdict, or MISSING. A verdict
+explains a result; it never changes the result or the completion flag. It
+applies to the outcome or block it was recorded after, so a later attempt needs
+a new verdict; a refresh that only marks the case stale keeps it. Optional
+cases are labelled and need a verdict only when their failure matters to the PR.
 
 ## Offline receipts and the final checkpoint
 

@@ -98,6 +98,7 @@ export function readRegisteredLanes(target, options = {}) {
       missingActorAliases: Array.isArray(registration.missingActorAliases)
         ? [...registration.missingActorAliases] : [],
       setupFlowUnprovenSince: entry.setupFlowUnprovenSince ?? null,
+      schemaGeneration: entry.schemaGeneration ?? null,
       servingVersion: entry.servingVersion ?? null,
       sourceSha: entry.sourceSha ?? null,
       claim: entry.claim
@@ -145,6 +146,7 @@ async function readLaneRow(lane, { runWrangler, providerContext, env, now, readM
     workspaceLabel: lane.workspaceLabel,
     missingActorAliases: Object.freeze([...lane.missingActorAliases]),
     setupFlowUnprovenSince: lane.setupFlowUnprovenSince,
+    schemaGeneration: lane.schemaGeneration ?? null,
     claim: lane.claim,
     verifierLock: lane.verifierLock,
     observedAt: new Date(now()).toISOString(),
@@ -199,6 +201,18 @@ async function readLiveWorker(workerName, runWrangler, providerContext, errors) 
   // guessed: a core deploy over a sandbox Worker is refused either way.
   result.profile = sandboxed.every(Boolean) ? 'sandbox' : sandboxed.some(Boolean) ? 'mixed' : 'core';
   return result;
+}
+
+/**
+ * The live deploy profile of one Worker (`core`, `sandbox`, `mixed`, or
+ * `unknown` when Wrangler cannot answer). The guarded deploy reads this before
+ * it builds, so a profile mismatch is refused without a wasted build.
+ */
+export async function readLiveWorkerProfile(workerName, options = {}) {
+  const errors = [];
+  const providerContext = validateCapabilityProviderContext(options.providerContext);
+  const worker = await readLiveWorker(workerName, options.runWrangler ?? defaultWranglerRunner(options), providerContext, errors);
+  return { profile: worker.profile, liveVersion: worker.liveVersion, errors };
 }
 
 /** Same test as the guarded deploy's "The live Worker has the coding sandbox". */
@@ -304,7 +318,7 @@ function defaultWranglerRunner(options) {
 const COLUMNS = Object.freeze([
   'Lane', 'Health', 'Profile', 'Live version', 'Provider keys (Worker secrets)', 'Seed token (Worker / file)',
   'Default chat model / image role / coding role', 'Missing actors', 'Slack workspace', 'Transport',
-  'Setup flow unproven', 'Claim', 'Observed',
+  'Schema', 'Setup flow unproven', 'Claim', 'Observed',
 ]);
 
 export function renderCapabilityTable(report) {
@@ -340,6 +354,7 @@ function capabilityCells(lane) {
     lane.missingActorAliases.length ? lane.missingActorAliases.join(', ') : 'none',
     lane.workspaceLabel ?? 'unknown',
     lane.transport ?? 'unknown',
+    lane.schemaGeneration ?? 'unknown',
     lane.setupFlowUnprovenSince ? lane.setupFlowUnprovenSince.slice(0, 8) : 'no',
     `${claim}${lane.verifierLock && lane.verifierLock !== 'clear' ? `; verifier lock ${lane.verifierLock}` : ''}`,
     lane.observedAt,

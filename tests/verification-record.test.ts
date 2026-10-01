@@ -471,7 +471,19 @@ test('actual CLI init, resume, refresh, finish and generated report use the same
   assert.equal(cli('init', '--spec', specFile, '--run', runFile), 0, error);
   assert.equal(cli('preflight', '--run', runFile), 0, error);
   assert.equal(cli('begin', '--case', 'schedule', '--run', runFile), 0, error);
-  const attemptId = JSON.parse(output).id;
+  const attemptId = JSON.parse(output).attemptId;
+  assert.equal(JSON.parse(output).id, attemptId);
+  assert.equal(cli('begin', '--case', 'schedule', '--reason', 'retry', '--run', runFile), 2);
+  assert.match(error, new RegExp(`Prior attempt ${attemptId} is still open`));
+  assert.equal(cli('blocked', '--case', 'recovery', '--reason', 'Waiting on the maintainer to grant the phone check.', '--run', runFile), 0, error);
+  assert.equal(cli('lesson', '--text', 'Reconnect MCP servers after the daemon switch.', '--area', 'verification', '--run', runFile), 0, error);
+  assert.equal(JSON.parse(output).type, 'lesson');
+  assert.equal(cli('lesson', '--run', runFile), 2);
+  assert.equal(cli('verdict', '--case', 'recovery', '--blocks-pr', 'no', '--reason', 'The phone check is unrelated to this change.', '--run', runFile), 0, error);
+  assert.equal(JSON.parse(output).blocksPr, 'no');
+  assert.equal(cli('verdict', '--case', 'recovery', '--run', runFile), 2);
+  assert.equal(cli('status', '--run', runFile), 0, error);
+  assert.equal(JSON.parse(output).cases[1].result, 'blocked');
   assert.equal(cli('status', '--run', runFile), 0, error);
   assert.equal(JSON.parse(output).cases[0].result, 'in_progress');
   const event = join(f.directory, 'finish.json'); writeFileSync(event, JSON.stringify(f.finish(attemptId)));
@@ -480,7 +492,7 @@ test('actual CLI init, resume, refresh, finish and generated report use the same
   const report = join(f.directory, 'report.md');
   assert.equal(cli('report', '--run', runFile, '--output', report), 0, error);
   assert.match(readFileSync(report, 'utf8'), /local.*synthetic-local.*pass/);
-  assert.match(readFileSync(report, 'utf8'), /Variant group parent .*not_run.*pending: recovery/);
+  assert.match(readFileSync(report, 'utf8'), /Variant group parent .*blocked.*pending: recovery/, 'the recorded block shows until recovery is attempted');
   actual.capabilities.owner.scope.target = 'wrong-lane';
   writeFileSync(specFile, JSON.stringify(actual));
   assert.equal(cli('refresh', '--spec', specFile, '--reason', 'Stale capability after lane change.', '--run', runFile), 0, error);
@@ -503,9 +515,107 @@ test('actual CLI init, resume, refresh, finish and generated report use the same
   writeFileSync(childSpecFile, JSON.stringify(childSpec));
   assert.equal(cli('init', '--spec', childSpecFile, '--run', childRunFile, '--parent-run', runFile, '--original-case', 'child-follow-up=linked-later'), 0, error);
   assert.equal(readRun(childRunFile).lineage.originalCases['child-follow-up'].caseId, 'linked-later');
+  assert.equal(cli('report', '--run', childRunFile, '--family'), 0, error);
+  assert.match(output, /- Parent [0-9a-f-]+ lesson \[verification\]: Reconnect MCP servers after the daemon switch\./, 'a follow-up run still shows its parent\'s lessons');
 
   assert.equal(cli('report', '--run', runFile, '--output', runFile), 2);
   assert.ok(readRun(runFile).events.length > 0);
+});
+
+test('record refusals name the fix: fields, proof doors, long waits, open attempts and time windows', (t) => {
+  const f = fixture(t);
+  const withCase = (patch: object) => { const spec = structuredClone(f.spec) as any; Object.assign(spec.cases[0], patch); return spec; };
+  const make = (spec: object) => createRun(join(f.directory, `run-${Math.random()}.json`), spec, source(), NOW);
+  assert.throws(() => make(withCase({ cleanupContract: 'archive it' })), /Unexpected record fields: cleanupContract\. Allowed here: .*\bcleanup\b/);
+  assert.throws(() => make(withCase({ proof: ['provider'] })), /Live case schedule needs proof from a user door: slack, admin or mcp/);
+  make(withCase({ proof: ['admin'] }));
+  make(withCase({ proof: ['mcp', 'provider'] }));
+  make(withCase({ maxWaitMs: 1_800_000, minObservationMs: 600_000 }));
+  assert.throws(() => make(withCase({ maxWaitMs: 3_600_001 })), /maxWaitMs must be 1\.\.3600000/);
+  for (const area of ['sandbox', 'browser', 'usage', 'activity']) make(withCase({ areas: [area] }));
+  assert.equal(buildResource(f.run, { case: 'schedule', provider: 'chickpea', kind: 'agent', resourceId: 'agent-1', ownership: 'created', cleanupPreset: 'archived', evidence: [f.evidence] }, readPrivateJson).expected.lifecycle, 'archived');
+  assert.match(buildOutcome('finish', { attempt: 'a', result: 'pass', summary: 's', evidence: [f.evidence], proof: [`admin=${f.evidence}`], observedAt: 'now' }).observedAt, /^\d{4}-\d{2}-\d{2}T/);
+  assert.equal(buildOutcome('finish', { attempt: 'a', result: 'pass', summary: 's', evidence: [f.evidence], proof: [`admin=${f.evidence}`], completedAt: 'now' }).completedAt, 'now', 'completion is never stamped for the operator');
+
+  const attempt = f.append({ type: 'begin', caseId: 'schedule' });
+  assert.throws(() => f.append({ type: 'begin', caseId: 'schedule', reason: 'retry' }, NOW + 2000), new RegExp(`Prior attempt ${attempt.id} is still open \\(deadline ${attempt.deadline}\\)`));
+  assert.throws(() => f.append({ type: 'case_blocked', caseId: 'schedule', reason: 'Quota exhausted.' }, NOW + 2000), new RegExp(`Attempt ${attempt.id} is still open`));
+  const early = new Date(NOW).toISOString();
+  assert.throws(() => f.append(f.finish(attempt.id, { completedAt: early }), NOW + 3000),
+    new RegExp(`attempt ${attempt.id} began ${new Date(NOW + 1000).toISOString()}, now ${new Date(NOW + 3000).toISOString()}, got ${early}`));
+  assert.throws(() => f.append(f.finish(attempt.id, { completedAt: 'now' }), NOW + 3000), /Completion needs an ISO timestamp/);
+  f.append(f.finish(attempt.id, { result: 'fail', category: 'infrastructure' }), NOW + 3000);
+  f.append({ type: 'case_blocked', caseId: 'schedule', reason: 'Provider quota is exhausted until the owner adds credit.', category: 'infrastructure' }, NOW + 4000);
+  const failed = status(f.run, source(), NOW + 5000).cases[0];
+  assert.equal(failed.result, 'fail', 'a recorded block never hides an outcome');
+  assert.match(failed.blockers[0], /recorded block: Provider quota is exhausted/);
+  const retry = f.append({ type: 'begin', caseId: 'schedule', reason: 'Credit added; same case.' }, NOW + 6000);
+  assert.equal(status(f.run, source(), NOW + 7000).cases[0].result, 'in_progress', 'a later attempt supersedes the recorded block');
+  f.append(f.finish(retry.id, { result: 'ambiguous', category: 'tool' }), NOW + 8000);
+  assert.throws(() => f.append({ type: 'case_blocked', caseId: 'schedule', reason: 'Lane gone.' }, NOW + 9000), /is ambiguous\. Reconcile whether it applied/);
+
+  // A case that never ran shows the recorded reason as blocked.
+  f.run.spec.cases.push({ ...f.spec.cases[0], id: 'phone' });
+  f.append({ type: 'case_blocked', caseId: 'phone', reason: 'Needs a real phone.' }, NOW + 10_000);
+  const phone = status(f.run, source(), NOW + 11_000).cases.find((c: any) => c.id === 'phone');
+  assert.equal(phone.result, 'blocked');
+  assert.match(renderReport(status(f.run, source(), NOW + 11_000)), /\| phone \| local \/ synthetic-local \| blocked \| 0 \| recorded block: Needs a real phone/);
+});
+
+test('lessons are kept for the feature map, grade nothing, and appear in the report', (t) => {
+  const f = fixture(t);
+  f.append({ type: 'lesson', text: 'A typed @ is swallowed by the composer; use its mention button.', areas: ['delivery'], caseId: 'schedule' });
+  f.append({ type: 'lesson', text: 'Wrangler prints a bare newline when a tail cannot attach.' });
+  assert.throws(() => f.append({ type: 'lesson', text: 'x', areas: ['teleport'] }), /Lesson areas must be known areas/);
+  assert.throws(() => f.append({ type: 'lesson', text: '' }), /A lesson needs text/);
+  assert.throws(() => f.append({ type: 'lesson', text: 'x', caseId: 'missing' }), /Lesson case is not selected/);
+  const view = status(f.run, source(), NOW + 5000);
+  assert.equal(view.lessons.length, 2);
+  assert.equal(view.cases[0].result, 'not_run', 'a lesson grades nothing');
+  const report = renderReport(view);
+  assert.match(report, /## Lessons for the feature map\n\nFold each into its file under qa\/live\/features\/ before the run's PR merges\.\n\n- \[delivery\] schedule: A typed @ is swallowed/);
+  assert.match(report, /\n- Wrangler prints a bare newline/);
+  assert.doesNotMatch(renderReport(status(fixture(t).run, source(), NOW)), /Lessons for the feature map/);
+});
+
+test('the report closes out: every reason a run is incomplete, and a PR verdict per failed or blocked case', (t) => {
+  const f = fixture(t);
+  f.run.spec.cases.push({ ...f.spec.cases[0], id: 'phone' });
+  const check = (at: number) => {
+    const view = status(f.run, source(), at);
+    assert.equal(view.complete, view.incompleteReasons.length === 0, 'reasons mirror the completion flag');
+    return view;
+  };
+  let view = check(NOW + 1000);
+  assert.deepEqual(view.incompleteReasons, ['case schedule is not_run', 'case phone is not_run']);
+  const attempt = f.append({ type: 'begin', caseId: 'schedule' });
+  f.append(f.finish(attempt.id, { result: 'fail', category: 'product', summary: 'Delivered twice.' }), NOW + 3000);
+  f.append({ type: 'case_blocked', caseId: 'phone', reason: 'Needs a real phone.' }, NOW + 4000);
+  view = check(NOW + 5000);
+  assert.deepEqual(view.incompleteReasons, ['case schedule is fail', 'case phone is blocked']);
+  let report = renderReport(view);
+  assert.match(report, /## Closeout\n\nNot complete:\n- case schedule is fail\n- case phone is blocked\n/);
+  assert.match(report, /- schedule \(fail\): MISSING\. Record one with `record verdict`\./);
+  assert.throws(() => f.append({ type: 'verdict', caseId: 'schedule', blocksPr: 'maybe', reason: 'x' }), /blocks the PR: yes or no/);
+  assert.throws(() => f.append({ type: 'verdict', caseId: 'schedule', blocksPr: 'yes', reason: '' }), /reason for the verdict/);
+  f.append({ type: 'verdict', caseId: 'schedule', blocksPr: 'yes', reason: 'The duplicate delivery is in the changed code.' }, NOW + 6000);
+  f.append({ type: 'verdict', caseId: 'phone', blocksPr: 'no', reason: 'Phone rendering is unchanged by this PR.' }, NOW + 7000);
+  report = renderReport(check(NOW + 8000));
+  assert.match(report, /- schedule \(fail\): blocks the PR\. The duplicate delivery is in the changed code\./);
+  assert.match(report, /- phone \(blocked\): does not block the PR\. Phone rendering is unchanged by this PR\./);
+  // A verdict judges the outcome it followed; a retest needs its own.
+  const retest = f.append({ type: 'begin', caseId: 'schedule', reason: 'Fixed the duplicate send.' }, NOW + 9000);
+  assert.equal(check(NOW + 10_000).cases[0].verdict, null, 'an open retest carries no earlier verdict');
+  f.append(f.finish(retest.id, { result: 'fail', category: 'product', summary: 'Still delivered twice.' }), NOW + 11_000);
+  assert.match(renderReport(check(NOW + 12_000)), /- schedule \(fail\): MISSING\. Record one with `record verdict`\./);
+  const done = fixture(t);
+  const pass = done.append({ type: 'begin', caseId: 'schedule' });
+  done.append(done.finish(pass.id), NOW + 3000);
+  const finished = status(done.run, source(), NOW + 4000);
+  assert.equal(finished.complete, true);
+  assert.deepEqual(finished.incompleteReasons, []);
+  assert.match(renderReport(finished), /## Closeout\n\nComplete: every required case passed/);
+  assert.doesNotMatch(renderReport(finished), /PR verdicts/);
 });
 
 function repairFixture(t: TestContext) {

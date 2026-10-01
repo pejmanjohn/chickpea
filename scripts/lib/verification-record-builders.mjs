@@ -1,8 +1,13 @@
-import { currentSpec } from './verification-record.mjs';
+import { currentSpec, PROOF_SURFACES as SURFACES } from './verification-record.mjs';
 
 const ARCHIVED_AGENT = { lifecycle: 'archived', channelCount: 0, dmAccess: 'unavailable' };
 const ABSENT = { present: false };
-const PROOF_SURFACES = new Set(['slack', 'admin', 'provider', 'model']);
+const PROOF_SURFACES = new Set(SURFACES);
+/**
+ * `--observed-at now` records the moment of the command, for a readback taken
+ * just now. Completion is when the product finished, so it never defaults.
+ */
+const observedInstant = (value) => value === 'now' ? new Date().toISOString() : value;
 
 const many = (value) => value ?? [];
 const integer = (value, fallback) => value === undefined ? fallback : Number(value);
@@ -24,7 +29,7 @@ export function proofMap(values) {
     const separator = value.indexOf('=');
     if (separator <= 0 || separator === value.length - 1) throw new Error('Proof must use SURFACE=/absolute/evidence/path.');
     const surface = value.slice(0, separator), path = value.slice(separator + 1);
-    if (!PROOF_SURFACES.has(surface)) throw new Error('Unknown proof surface.');
+    if (!PROOF_SURFACES.has(surface)) throw new Error(`Unknown proof surface ${surface}. Use: ${[...PROOF_SURFACES].join(', ')}.`);
     (proof[surface] ??= []).push(path);
   }
   return proof;
@@ -39,10 +44,10 @@ export function buildResource(run, flags, readJson) {
     if (flags.cleanupPreset || !flags.expectedFile) throw new Error('Restore and retain resources require an exact --expected-file and do not accept presets.');
     expected = readJson(flags.expectedFile); before = structuredClone(expected);
   } else if (flags.cleanupPreset === 'absent') expected = structuredClone(ABSENT);
-  else if (flags.cleanupPreset === 'archived-agent') {
+  else if (flags.cleanupPreset === 'archived-agent' || flags.cleanupPreset === 'archived') {
     if (flags.kind !== 'agent') throw new Error('The archived-agent preset only applies to Agent resources.');
     expected = structuredClone(ARCHIVED_AGENT);
-  } else if (flags.cleanupPreset) throw new Error('Unknown cleanup preset.');
+  } else if (flags.cleanupPreset) throw new Error('Unknown cleanup preset. Use absent or archived-agent (alias archived).');
   else if (flags.expectedFile) expected = readJson(flags.expectedFile);
   else throw new Error('Resource needs --cleanup-preset or --expected-file.');
   return { type: 'resource', caseId: flags.case, target: spec.contexts[selected.context].target,
@@ -56,7 +61,7 @@ export function buildOutcome(type, flags) {
   return { type, attemptId: flags.attempt, result: flags.result, summary: flags.summary,
     ...(flags.category ? { category: flags.category } : {}), evidence: many(flags.evidence), proof: proofMap(flags.proof),
     ...(flags.completedAt ? { completedAt: flags.completedAt } : {}),
-    ...(flags.observedAt ? { observedAt: flags.observedAt } : {}),
+    ...(flags.observedAt ? { observedAt: observedInstant(flags.observedAt) } : {}),
     ...(flags.timingObservationMs === undefined ? {} : { timing: { observationMs: Number(flags.timingObservationMs) } }),
     ...(flags.costUsd === undefined ? {} : { costUsd: flags.costUsd === 'unknown' ? null : Number(flags.costUsd) }) };
 }

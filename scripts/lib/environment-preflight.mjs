@@ -509,6 +509,26 @@ export function writeEnvironmentSchemaAdvancementIntent(target, toGeneration, op
   return intent;
 }
 
+/**
+ * A schema-advancement intent is bound to the claim nonce that wrote it, so a
+ * restamp would otherwise orphan it. Rewrite this worktree's intent for the
+ * new claim after re-validating it against the local contract. Returns
+ * `none`, `carried`, `other_claim` (left untouched) or `stale:<code>`.
+ */
+export function carryEnvironmentSchemaAdvancementIntent(target, previousNonce, options = {}) {
+  const context = assertLiveEnvironmentClaim(target, options);
+  const intentPath = join(context.registration.evidenceRoot, SCHEMA_INTENT_FILE);
+  if (!lstatIfPresent(intentPath)) return 'none';
+  const intent = readSchemaIntent(intentPath);
+  if (intent.target !== target || intent.claimNonce !== previousNonce) return 'other_claim';
+  try {
+    writeEnvironmentSchemaAdvancementIntent(target, intent.toGeneration, options);
+    return 'carried';
+  } catch (error) {
+    return `stale:${error?.code ?? 'INVALID_SCHEMA_ADVANCEMENT'}`;
+  }
+}
+
 export function recoverEnvironmentSchemaAdvancement(target, options = {}) {
   const context = assertLiveEnvironmentClaim(target, options);
   const intentPath = join(context.registration.evidenceRoot, SCHEMA_INTENT_FILE);
@@ -2600,6 +2620,22 @@ function schemaRelation(fromGeneration, toGeneration, history) {
   });
   if (differences.includes(-1)) return -1;
   return differences.includes(1) ? 1 : 0;
+}
+
+/**
+ * How a lane's schema generation relates to a candidate's, judged the way the
+ * guarded deploy and `env schema-advance` judge it: `same`, `one_step` (the one
+ * recorded successor that schema-advance can record), `ahead` (the lane is
+ * newer, so the deploy refuses a rollback), or `unreachable` (more than one
+ * step, or a generation the candidate's history does not know).
+ */
+export function schemaStep(laneGeneration, candidateGeneration, history) {
+  if (laneGeneration === candidateGeneration) return 'same';
+  let relation;
+  try { relation = schemaRelation(laneGeneration, candidateGeneration, history); } catch { return 'unreachable'; }
+  if (relation < 0) return 'ahead';
+  if (relation === 0) return 'same';
+  return isRecordedSchemaSuccessor(laneGeneration, candidateGeneration, history) ? 'one_step' : 'unreachable';
 }
 
 function isRecordedSchemaSuccessor(fromGeneration, toGeneration, history) {

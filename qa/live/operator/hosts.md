@@ -47,140 +47,92 @@ action evidence and measured browser/human wait time in the existing run record.
 
 ## Lane browsers
 
-Use a dedicated browser per lane, not a shared extension. Each lane has a
-Chrome DevTools MCP server named `chrome-amber`, `chrome-cobalt` or
-`chrome-violet`, configured for both hosts: Claude calls its tools as
-`mcp__chrome-<lane>__*`, and Codex uses the same server names from its own
-MCP configuration. Each server drives one persistent Chrome profile that stays
-signed in to that lane's Slack workspace and Admin. Use only the claimed lane's
-server. Its pages are real foreground targets, so hidden-tab rendering,
-cross-browser routing and focus problems do not apply, and the server's dialog
-tool handles native `confirm()` dialogs. Different lanes run in parallel
-without contention. Chrome locks a profile to one process, so never drive one
-lane's profile from two sessions at once. The claim does not release the
-browser: the session whose server launched it keeps the profile until it quits
-that Chrome, even after it releases its claim. When `chrome-<lane>` reports the
-browser is already running, find that session and ask it to quit its own lane
-Chrome. Never stop another session's browser yourself. Quit your own lane
-Chrome when your run ends.
+Use a dedicated browser per lane, not a shared extension. Each lane's Chrome
+is a daemon: one long-lived, windowed Chrome on that lane's profile, signed in
+to the lane's Slack workspace and Admin, listening on a fixed local debugging
+port (amber 9331, cobalt 9332, violet 9333). Every session's `chrome-amber`,
+`chrome-cobalt` or `chrome-violet` MCP server attaches to that daemon with
+`--browserUrl`. The server launches nothing and holds no profile lock, so any
+number of sessions drive the same lane in their own tabs, and a finished
+session has nothing to quit. Claude calls the tools as `mcp__chrome-<lane>__*`;
+Codex exposes the same servers as `mcp__chrome_<lane>__*` (underscores) and
+its calls take a `pageId`. Use only the claimed lane's server. Its pages are
+real foreground targets, so hidden-tab rendering, cross-browser routing and
+focus problems do not apply, and the server's dialog tool handles native
+`confirm()` dialogs. Different lanes run in parallel without contention.
 
-Host configuration requirements (outside the repository):
+At kickoff, `npm run verify:live:kickoff` starts any stopped lane browser and
+reports whether each is signed in to Admin and Slack. Daemons do not restart
+on their own after a reboot or after Chrome is quit, so starting them is the
+verifier's job, never the maintainer's. `npm run lane:browser -- status all`
+shows the daemons alone:
 
-- Launch Chrome without Puppeteer's default mock keychain
-  (`--ignoreDefaultChromeArg=--use-mock-keychain` and
-  `--ignoreDefaultChromeArg=--password-store=basic`). With the mock keychain,
-  Chrome on macOS cannot decrypt the profile's cookies and drops them, which
-  signs the profile out.
-- Pass `--chromeArg=--hide-crash-restore-bubble` so an interrupted run never
-  leaves a "Restore pages?" prompt.
-- The maintainer signs each profile in once with that window closed afterward,
-  because the server cannot open a profile another Chrome window holds. If a
-  profile is signed out, ask for that one-time sign-in during the kickoff
-  preflight. Google may refuse sign-in inside an automated browser, so use
-  Slack's email code; treat a Google OAuth consent that refuses automation as a
-  human-only step.
+- `running`: attach and go. Signed-in state lives in the profile, so a
+  restarted daemon is still signed in.
+- `stopped`: run `npm run lane:browser -- start <lane>` yourself. It is
+  idempotent and reports a daemon that already answers. In Codex, run it outside the command
+  sandbox (escalated) if the sandbox blocks the launch or the local port. A tool call before that fails with
+  "Could not connect to Chrome. Check if Chrome is running."; that means start
+  the daemon, not that the lane is broken.
+- `held`: a browser from the earlier launch-per-server mode locks the profile
+  and answers on no port. It belongs to the session whose server launched it.
+  Ask that session to quit it; never stop another session's browser yourself.
+  `stop` refuses a browser it did not start.
+
+Leave the daemon running when a run ends; other sessions share it. Stop it
+(`npm run lane:browser -- stop <lane>`) only to sign the profile in again or
+when the maintainer asks.
+
+Host configuration (outside the repository): the user-scope MCP entries and
+`~/.codex/config.toml` run exactly what
+`npm run lane:browser -- attach <lane> --dry-run` prints, which is
+`chrome-devtools-mcp` with `--browserUrl http://127.0.0.1:<port>`, one
+`--workspace` per private evidence folder (`verification`, `qa-runs` and
+`reviews` beside the profile root, plus the temp directories),
+`--screenshotFormat jpeg`, `--screenshotMaxWidth 1400`,
+`--redactNetworkHeaders` and `--no-usage-statistics`. Without `--workspace`
+the server refuses `take_screenshot` and `take_snapshot` paths outside the OS
+temp directory. The profile root's parent itself is never a workspace,
+because it holds the lane secrets file and exported cookie payloads. The
+daemon commands use `--root`, else `CHICKPEA_LANE_CHROME_ROOT`, else
+`~/.chickpea/browsers` when it exists, so they work from any shell. Each
+daemon writes an owner-only log beside its record
+(`<root>/<lane>.daemon.log`). Seeding, `import` and `export` refuse while a
+daemon or another browser has the profile open; stop the daemon first. `start` launches Chrome itself with `--remote-debugging-port`,
+`--hide-crash-restore-bubble` and `--no-first-run`, and on macOS with the real
+keychain, so cookies survive and no "Restore pages?" bubble appears. The
+maintainer signs each profile in once, in the daemon's own window. If a
+profile is signed out, ask for that one-time sign-in during the kickoff
+preflight. Google may refuse sign-in inside an automated browser, so use
+Slack's email code; treat a Google OAuth consent that refuses automation as a
+human-only step.
 
 Proven Slack recipe for these servers:
 
 1. Open `https://app.slack.com/client/<team-id>/<channel-id>` for the lane's QA
    channel and take a snapshot to confirm the signed-in actor and channel.
-2. To mention an Agent or Chickpea, click the composer, type `@` and the name,
-   wait about 1.5 s for autocomplete, press Enter to insert the mention token,
-   then type the message and press Enter. Confirm the posted message shows a
-   linked mention, not plain text.
+2. To mention an Agent or Chickpea, click the composer, then its "Mention
+   someone" button (a typed `@` is often swallowed when text is inserted by a
+   tool), type the name, wait about 1.5 s for autocomplete, and press Enter to
+   insert the mention token. Before sending, confirm the draft holds a
+   `ts-mention` element; if it does not, clear the draft instead of sending.
+   Then type the message and press Enter. A message posted without the token
+   reaches no Agent, so its silence proves nothing.
 3. Read the reply thread by navigating to
    `https://app.slack.com/client/<team-id>/<channel-id>/thread/<channel-id>-<message-ts>`
    instead of clicking the reply counter. Poll the thread every 10 s up to the
    attempt's observation deadline.
 4. Read Admin in the same profile at the lane origin. Close only the pages the
-   run opened. Never kill the lane Chrome process.
+   run opened. Leave the daemon running for the next session.
 
-The Claude-in-Chrome extension remains the fallback when lane browsers are not
-configured.
+The Claude-in-Chrome extension (Claude) or Codex's own browser tool remains the
+fallback only when a lane daemon cannot be started.
 
 ### Cloud sessions
 
-A Claude Code cloud session has none of the host-configured servers above, so
-the repository's `.mcp.json` defines the same three servers, `chrome-amber`,
-`chrome-cobalt` and `chrome-violet`, each as
-`node scripts/lane-browser.mjs serve <lane> --root ${CHICKPEA_LANE_CHROME_ROOT}`.
-They are opt-in: the launcher refuses to start until `CHICKPEA_LANE_CHROME_ROOT`
-names an absolute, owner-only directory outside the repository, so the file is
-inert on a host that never set it. Set the variable in the cloud environment
-(for example `/root/.chickpea/browsers`); the launcher creates the root and one
-profile directory per lane under it with owner-only permissions. Start the
-session at the repository root, where the relative script path resolves. On a
-Mac whose user configuration already defines these servers, decline the
-project-server prompt: an approved project entry replaces the user-scope one
-even when the variable is unset, and it would fail instead of driving the lane
-profile. Claude Code then lists the duplicate definition and the unset
-variable as diagnostics, which is expected. `verify:hygiene` accepts
-`.mcp.json` only in exactly this shape.
-
-The launcher runs `chrome-devtools-mcp` with the flags listed above, adding
-`--executablePath` for the environment's Chromium
-(`CHICKPEA_LANE_CHROME_EXECUTABLE`, default `/opt/pw-browsers/chromium`; a
-Playwright browsers directory or build directory resolves to its binary),
-`--headless` whenever Linux has no display (`CHICKPEA_LANE_CHROME_HEADLESS=0`
-forces a window), and `--no-sandbox` only when it runs as root. Puppeteer's
-basic password store stays on Linux, where it is the only cookie store, so the
-macOS keychain exemption above does not apply there. The server comes from
-`node_modules/chrome-devtools-mcp` when it is installed, otherwise from
-`npx chrome-devtools-mcp@1.10.1` (`CHICKPEA_LANE_CHROME_SERVER` names another
-spec or an absolute entry point).
-`npm run lane:browser -- serve <lane> --dry-run` prints the resolved plan and
-seed status as JSON without launching anything.
-
-Network: the environment must allow `slack.com` and `*.slack.com` (the web
-client, `edgeapi`, `files`), `*.slack-edge.com` (the client's static assets,
-without which app.slack.com never boots), `*.workers.dev` together with every
-lane Admin origin from the private lane matrix, `api.cloudflare.com` for
-Wrangler, and `registry.npmjs.org` unless `chrome-devtools-mcp` is installed
-from the lockfile. All traffic passes through the session proxy, which does
-not upgrade WebSocket connections. Slack's real-time channel therefore never
-connects: the client shows a reconnecting state, new messages appear only
-after a fresh navigation, and presence, typing indicators and live thread
-updates are unavailable. Read threads by URL and poll them as in the recipe
-above; nothing in this workflow depends on the socket. Admin pages load
-normally.
-
-Profiles are seeded from cookies, not by signing in. Slack's web sign-in needs
-an email code, which the transcript must never relay, and a proxy-injected
-`Cookie` header (an environment credential on some plans) cannot be verified
-from inside the sandbox and would collide with the cookies Chromium sends
-itself. Instead the maintainer exports each signed-in lane profile once, on
-the Mac, with that lane's Chrome quit:
-
-```sh
-npm run lane:browser -- export amber --root "$HOME/.chickpea/browsers" \
-  --to-file "$HOME/.chickpea/lane-cookies/amber.b64" --host <lane-admin-host>
-```
-
-The file is owner-only base64 of a `chickpea-lane-cookies/v1` document: the
-profile's `slack.com` cookies plus every `--host` given, such as the lane
-Admin host so Admin stays signed in (without it, sign in to Admin through
-Sign in with Slack inside the seeded profile). The command reports cookie
-names, domains, sizes and a digest; it never prints a value, and there is no
-stdout mode. Paste the file's content into the cloud environment variable
-`CHICKPEA_LANE_COOKIES_AMBER` (`_COBALT`, `_VIOLET` likewise; environment
-variables are readable only by that environment's users), then delete the
-file. The next `serve` imports the payload into the fresh profile over the
-DevTools pipe, checks the readback by name and domain, quits Chromium so the
-profile is written, and stores `chickpea-lane-seed.json` in the profile with
-the payload digest, cookie names and domains. Cookies without an expiry are
-skipped, because Chromium drops them at exit. Neither the browser nor the
-server child inherits any `CHICKPEA_LANE_COOKIES_*` variable, and no value
-reaches stdout, stderr, the marker, a run record or an error: a payload that
-fails validation is reported by cookie position and field.
-
-Rotation: export again and replace the variable. The changed digest makes the
-next `serve` reseed on its own; `npm run lane:browser -- import <lane> --replace`
-does it immediately inside a running session. Record the export date per lane
-in the hand-written part of the private lane matrix. Revocation: on the lane's
-Slack account, sign out of all other sessions from the account settings page,
-which invalidates the exported session everywhere; remove the variable from
-the environment; delete the cloud profile root. A cookie value that appears in
-any transcript or record is a leaked secret: stop using it, revoke, re-export.
+Cloud sessions are dormant: they cannot claim a lane, because claims live only
+in the host's environment registry, and they could not watch Slack live. Their
+lane browser and private-file setup is kept in [cloud.md](cloud.md).
 
 ## Browser and Slack practice with the extension (fallback)
 
@@ -217,23 +169,89 @@ and the Slack web client:
 - When the auto-mode permission classifier blocks a declared QA action (a
   lane deploy, a `wrangler rollback` to the lane's receipt version, a product
   UI write), name the lane alias and the declared action, and ask once. Never
-  route around the block.
-- Run the guarded lane deploy as its own command, exactly
-  `CHICKPEA_DEPLOY_TARGET=<alias> npm run deploy`, so an operator allow rule
-  for that command matches. Chaining it after `cd`, `export PATH=...` or other
-  commands, or redirecting its output, sends it to the classifier instead. The
-  login shell's `node` must already satisfy `.nvmrc`; report a lower version
-  as a host setup gap rather than prefixing the deploy.
+  route around the block: do not change permission modes or settings to get
+  past it, and never stop processes by pattern across the host (`pkill -f`),
+  which can kill another worktree's gate. When the maintainer has instructed a
+  shared or production deploy in this session, run it here as one plain
+  command rather than handing the command back.
+- Run the guarded lane deploy as one plain command,
+  `CHICKPEA_DEPLOY_TARGET=<alias> npm run verify:host -- --wait-ms 300000 npm run deploy`
+  (`deploy:sandbox` on a sandbox-profile lane). It serializes the build with
+  the host's other expensive checks and matches the operator allow rules.
+  Before building it refuses stale dependencies and a core deploy over a lane
+  that serves the sandbox profile, naming the command to run instead; after
+  reconciling it writes the serving version's telemetry receipt. To
+  deploy a sibling worktree's candidate, add `-- --worktree <absolute path>`
+  instead of `cd <worktree> &&`; the wrapper re-runs that checkout's own
+  wrapper from there. Do not chain anything in front of the command or
+  redirect its output: `export PATH=...`, `source nvm.sh` or `cd` send it to
+  the classifier instead of the allow rule. The host shells already put the
+  pinned Node first (SKILL.md, Node baseline); check `node -v` once at kickoff
+  and report a mismatch as a host setup gap rather than prefixing commands.
 
 ## Slack evidence on gateway lanes
 
-Amber, Cobalt and Violet use the shared gateway transport. The operator has no
-Slack token there, so an exact-message `conversations.replies` readback is
-unavailable. Use a visible readback from the signed-in client together with the
-Worker's finalization records from a bounded `wrangler tail --format json`
-attached before the action, and report the exact API readback as a gap. Probe
+Amber, Cobalt and Violet use the shared gateway transport, whose Slack token
+never reaches the verifier. Each lane workspace therefore has its own
+read-only app, installed by the lane's test account, for exact readback of what
+Chickpea posted. Read with it, and keep sending the message a case tests
+through the composer:
+
+```sh
+npm run lane:slack -- <alias> whoami
+npm run lane:slack -- <alias> message <message link> --out <private file>
+npm run lane:slack -- <alias> thread <message link> --out <private file>
+npm run lane:slack -- <alias> history <channel id> --since <ISO time>
+```
+
+It returns each message's sender name, bot and app, custom name, text, blocks,
+files with their owners, edits and reactions, which is the exact `slack` proof
+for a case. It reads only conversations the test account belongs to, never
+posts, and never prints its token. It cannot see ephemeral messages or how a
+message renders, so mention rendering, private notices and phone views still
+need the client.
+
+Setting up a lane, once, is the maintainer's job, because it handles a token:
+
+1. Signed in to the lane workspace as its test account, create an app from
+   the manifest in [slack-readback-app.json](slack-readback-app.json) at
+   api.slack.com/apps, choosing that workspace. Creating it inside the
+   workspace keeps Slack's normal history limits; one app shared by several
+   workspaces would be throttled.
+   If Slack's wizard ignores a pasted manifest, the app arrives as "Demo
+   App"; replace its manifest on the app's App Manifest page instead.
+2. Install it to the workspace from the app's OAuth & Permissions page.
+3. Run `npm run lane:slack -- <alias|all> store-token`. It reads the app's
+   user token from that page in the lane browser daemon, checks it against
+   the lane's workspace, and writes `<LANE>__SLACK_READBACK_TOKEN` to the lane
+   secrets file, printing only a fingerprint. That name is never uploaded to a
+   Worker. Copying the token into the file by hand works too; never paste it
+   into a chat.
+4. Run `npm run lane:slack -- <alias> whoami`; the kickoff doctor then shows
+   the lane's readback as working.
+
+On a lane without a token, use the signed-in client view together with the
+Worker's finalization records from a bounded `npm run lane:tail -- <alias>`
+started before the action, and report the exact readback as a gap. Probe
 builds that log API readbacks are a last resort. Each probe build costs a
 deploy and must be replaced by the clean candidate before any grading.
+
+## Host adapter table
+
+The skill is written once for both hosts. Where a tool name differs, use this
+table; a row's "Codex" entry is the equivalent, not a weaker substitute.
+
+| The skill says | Claude Code | Codex |
+| --- | --- | --- |
+| Lane browser tools | `mcp__chrome-<lane>__*` | `mcp__chrome_<lane>__*`; every call takes a `pageId` |
+| Browser fallback when no daemon can start | Claude-in-Chrome extension, then computer use | Codex's own browser tool (`cua`), then its computer use |
+| Arrange a wake before you yield | the monitor tool, or a background shell `until` loop with a deadline | nothing re-invokes a finished turn: keep the turn open and poll in-turn (background exec sessions) up to the deadline, or end with an explicit blocked status |
+| Ask the maintainer once, keep working | `AskUserQuestion` | `request_user_input_async` |
+| Delegate a repair or a review | `Agent` (worktree isolation) and `SendMessage` between sessions | `spawn_agent`; cross-thread messages. A delegated reviewer must not delegate again, and must await any test it starts |
+| A declared QA action is blocked | the auto-mode classifier; allow rules; ask once | Codex's approval policy; ask once |
+| Node | the session inherits the maintainer's shell, pinned Node first | the login shell, pinned Node first; nested `zsh -c` shells inherit it |
+| Skill loading | `/chickpea-live-verification` | `$chickpea-live-verification`; read the canonical [SKILL.md](SKILL.md) in full before the supporting docs |
+| Tools configured but not callable | `/mcp` (human) reconnects a failed server | `codex mcp login`; a configured server may not be callable until then, so the kickoff check tests a call, not the config |
 
 ## Older workflow compatibility
 

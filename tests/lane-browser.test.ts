@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test, type TestContext } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 // @ts-expect-error Executable helpers are JavaScript, shared with the launcher.
-import { cookieMatchesHosts, decodeCookiePayload, encodeCookiePayload, payloadDigest, resolveChromiumExecutable, resolveProfileRoot, SEED_MARKER_FILE, serverCommand, serverPlan } from '../scripts/lib/lane-browser.mjs';
+import { cookieMatchesHosts, decodeCookiePayload, encodeCookiePayload, headlessDefault, payloadDigest, resolveChromiumExecutable, resolveProfileRoot, SEED_MARKER_FILE, serverCommand } from '../scripts/lib/lane-browser.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const CLI = path.join(ROOT, 'scripts', 'lane-browser.mjs');
@@ -17,7 +17,7 @@ const VALUES = { slack: 'FAKE-SLACK-SESSION-9f8e7d6c5b4a', admin: 'FAKE-ADMIN-SE
 const POSIX = process.platform !== 'win32';
 
 type Cookie = { name: string; value: string; domain: string; path?: string; expires?: number; httpOnly?: boolean; secure?: boolean; sameSite?: string };
-type Plan = { profile: string; executable: string | null; headless: boolean; command: string; args: string[]; cookieVariable: string };
+type Plan = { profile: string; executable: string | null; headless: boolean; command: string; args: string[] };
 type Marker = { schemaVersion: string; lane: string; payloadDigest: string; cookieCount: number; names: string[]; domains: string[]; skipped: { expired: number; sessionOnly: number } };
 
 function scratch(context: TestContext): string {
@@ -46,9 +46,12 @@ function payloadFor(lane: string): string {
   return encodeCookiePayload({ lane, cookies: cookies(), exportedAt: '2026-09-25T00:00:00.000Z' }) as string;
 }
 
+// Lane daemons on the host listen on the fixed ports; tests never touch them.
+const ISOLATED_PORTS = { CHICKPEA_LANE_CHROME_PORT_AMBER: '65431', CHICKPEA_LANE_CHROME_PORT_COBALT: '65432', CHICKPEA_LANE_CHROME_PORT_VIOLET: '65433' };
+
 function run(args: string[], env: Record<string, string>) {
   const result = spawnSync(process.execPath, [CLI, ...args], {
-    cwd: ROOT, encoding: 'utf8', env: { PATH: process.env.PATH ?? '', HOME: process.env.HOME ?? '', ...env },
+    cwd: ROOT, encoding: 'utf8', env: { PATH: process.env.PATH ?? '', HOME: process.env.HOME ?? '', ...ISOLATED_PORTS, ...env },
   });
   assertNoValues(`${result.stdout}\n${result.stderr}`);
   return result;
@@ -74,7 +77,7 @@ test('the profile root is opt-in, absolute, expands ~, and never sits inside the
   assert.throws(() => resolveProfileRoot({ root: ROOT }), /outside the repository/);
 });
 
-test('the server plan mirrors the host servers per platform and finds Playwright Chromium layouts', (context) => {
+test('Chromium resolution finds Playwright layouts, headless follows the display, and the server comes from node_modules or npx', (context) => {
   const dir = scratch(context);
   const browsers = path.join(dir, 'pw-browsers');
   for (const build of ['chromium-1100', 'chromium-1194']) {
@@ -88,37 +91,15 @@ test('the server plan mirrors the host servers per platform and finds Playwright
   assert.throws(() => resolveChromiumExecutable({ env: { CHICKPEA_LANE_CHROME_EXECUTABLE: dir }, platform: 'linux' }), /no Chromium binary/);
   assert.equal(resolveChromiumExecutable({ env: {}, platform: 'darwin' }), undefined);
 
-  const linux = serverPlan({ lane: 'amber', root: path.join(dir, 'root'), env: { CHICKPEA_LANE_CHROME_EXECUTABLE: browsers }, platform: 'linux', uid: 0, repositoryRoot: dir, execPath: '/usr/bin/node' }) as Plan;
-  assert.equal(linux.profile, path.join(dir, 'root', 'amber'));
-  assert.equal(linux.executable, newest);
-  assert.equal(linux.headless, true);
-  assert.equal(linux.command, 'npx');
-  assert.deepEqual(linux.args.slice(0, 2), ['-y', 'chrome-devtools-mcp@1.10.1']);
-  for (const expected of [
-    ['--userDataDir', path.join(dir, 'root', 'amber')], ['--executablePath', newest], ['--headless'],
-    ['--chromeArg=--hide-crash-restore-bubble'], ['--chromeArg=--no-first-run'], ['--chromeArg=--no-sandbox'], ['--chromeArg=--disable-dev-shm-usage'],
-    ['--viewport', '1440x900'], ['--screenshotFormat', 'jpeg'], ['--screenshotMaxWidth', '1400'], ['--redactNetworkHeaders'], ['--no-usage-statistics'],
-  ]) assert.ok(linux.args.join('\0').includes(expected.join('\0')), `linux plan lacks ${expected.join(' ')}`);
-  assert.equal(linux.args.some((argument) => argument.startsWith('--ignoreDefaultChromeArg')), false);
-  assert.equal(linux.cookieVariable, 'CHICKPEA_LANE_COOKIES_AMBER');
-
-  const windowed = serverPlan({ lane: 'amber', root: dir, env: { CHICKPEA_LANE_CHROME_EXECUTABLE: browsers, DISPLAY: ':1' }, platform: 'linux', uid: 1000, repositoryRoot: dir }) as Plan;
-  assert.equal(windowed.headless, false);
-  assert.equal(windowed.args.includes('--chromeArg=--no-sandbox'), false);
-  assert.equal((serverPlan({ lane: 'amber', root: dir, env: { CHICKPEA_LANE_CHROME_EXECUTABLE: browsers, DISPLAY: ':1', CHICKPEA_LANE_CHROME_HEADLESS: '1' }, platform: 'linux', uid: 1000, repositoryRoot: dir }) as Plan).headless, true);
-
-  const darwin = serverPlan({ lane: 'violet', root: dir, env: {}, platform: 'darwin', uid: 501, repositoryRoot: dir }) as Plan;
-  assert.equal(darwin.executable, null);
-  assert.equal(darwin.headless, false);
-  assert.equal(darwin.args.includes('--executablePath'), false);
-  assert.ok(darwin.args.includes('--ignoreDefaultChromeArg=--use-mock-keychain'));
-  assert.ok(darwin.args.includes('--ignoreDefaultChromeArg=--password-store=basic'));
-  assert.equal(darwin.args.includes('--chromeArg=--no-sandbox'), false);
-  assert.throws(() => serverPlan({ lane: 'teal', root: dir, env: {}, platform: 'darwin' }), /Choose a lane/);
+  assert.equal(headlessDefault({ env: {}, platform: 'linux' }), true);
+  assert.equal(headlessDefault({ env: { DISPLAY: ':1' }, platform: 'linux' }), false);
+  assert.equal(headlessDefault({ env: { DISPLAY: ':1', CHICKPEA_LANE_CHROME_HEADLESS: '1' }, platform: 'linux' }), true);
+  assert.equal(headlessDefault({ env: {}, platform: 'darwin' }), false);
 
   const entry = path.join(dir, 'entry.js');
   assert.deepEqual(serverCommand({ env: { CHICKPEA_LANE_CHROME_SERVER: entry }, repositoryRoot: dir, execPath: '/usr/bin/node' }), { command: '/usr/bin/node', args: [entry] });
   assert.deepEqual(serverCommand({ env: { CHICKPEA_LANE_CHROME_SERVER: 'chrome-devtools-mcp@latest' }, repositoryRoot: dir }), { command: 'npx', args: ['-y', 'chrome-devtools-mcp@latest'] });
+  assert.deepEqual(serverCommand({ env: {}, repositoryRoot: dir }), { command: 'npx', args: ['-y', 'chrome-devtools-mcp@1.10.1'] });
   const local = path.join(dir, 'node_modules', 'chrome-devtools-mcp', 'build', 'src', 'bin');
   mkdirSync(local, { recursive: true });
   writeFileSync(path.join(local, 'chrome-devtools-mcp.js'), '');
@@ -213,12 +194,17 @@ test('serve seeds before printing its plan; a rejected payload, refused cookies,
   const env = { CHICKPEA_LANE_CHROME_ROOT: root, CHICKPEA_LANE_CHROME_EXECUTABLE: executable, CHICKPEA_LANE_COOKIES_VIOLET: payloadFor('violet') };
   const dry = run(['serve', 'violet', '--dry-run'], env);
   assert.equal(dry.status, 0, dry.stderr);
-  const plan = JSON.parse(dry.stdout) as Plan & { seed: string; marker: Marker };
+  const plan = JSON.parse(dry.stdout) as Plan & { seed: string; marker: Marker; url: string; daemon: { state: string; launchArgs: string[] } };
   assert.equal(plan.seed, 'seeded');
   assert.deepEqual(plan.marker.names, ['better-auth.session_token', 'd']);
   assert.equal(plan.profile, path.join(root, 'violet'));
   assert.equal(plan.executable, executable);
-  assert.ok(plan.args.includes('--chromeArg=--hide-crash-restore-bubble'));
+  assert.equal(plan.daemon.state, 'stopped', 'a dry run launches nothing');
+  assert.equal(plan.url, 'http://127.0.0.1:65433');
+  assert.ok(plan.args.includes('--browserUrl'), 'serve attaches to the daemon');
+  assert.equal(plan.args.includes('--userDataDir'), false, 'serve never launches Chromium through the server');
+  assert.ok(plan.daemon.launchArgs.includes('--hide-crash-restore-bubble'));
+  assert.ok(plan.daemon.launchArgs.includes(`--user-data-dir=${path.join(root, 'violet')}`));
   assert.equal((JSON.parse(run(['serve', 'violet', '--dry-run'], env).stdout) as { seed: string }).seed, 'already_seeded');
   assert.equal((JSON.parse(run(['serve', 'violet', '--dry-run', '--no-seed'], env).stdout) as { seed: string }).seed, 'skipped');
 
@@ -281,4 +267,180 @@ test('export writes an owner-only payload of the selected hosts, prints no value
   const empty = run(['export', 'amber', '--to-file', path.join(dir, 'amber.b64')], env);
   assert.equal(empty.status, 1);
   assert.match(empty.stderr, /No amber profile at/);
+});
+
+// @ts-expect-error Executable helpers are JavaScript, shared with the launcher.
+import { attachPlan, DAEMON_PORTS, daemonLaunchArguments, daemonPort, daemonRecordPath, daemonStatus, evidenceWorkspaces, startDaemon, stopDaemon } from '../scripts/lib/lane-browser.mjs';
+import { createServer } from 'node:net';
+
+const DAEMON_FIXTURE = path.join(ROOT, 'tests', 'lane-browser-daemon.fixture.mjs');
+
+function fakeDaemonChromium(dir: string): string {
+  const wrapper = path.join(dir, 'fake-daemon-chromium');
+  writeFileSync(wrapper, `#!/bin/sh\nexec "${process.execPath}" "${DAEMON_FIXTURE}" "$@"\n`);
+  chmodSync(wrapper, 0o755);
+  return wrapper;
+}
+
+async function freePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = createServer();
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const { port } = server.address() as { port: number };
+      server.close(() => resolve(port));
+    });
+  });
+}
+
+type DaemonStatus = { state: string; port: number; url: string; browser: string | null; record: { pid: number } | null; holder: { pid: number } | null };
+
+test('the attach plan targets the lane daemon port and allows evidence roots outside the temp directory', () => {
+  assert.deepEqual(DAEMON_PORTS, { amber: 9331, cobalt: 9332, violet: 9333 });
+  assert.equal(daemonPort('cobalt', {}), 9332);
+  assert.equal(daemonPort('cobalt', { CHICKPEA_LANE_CHROME_PORT_COBALT: '9444' }), 9444);
+  assert.throws(() => daemonPort('cobalt', { CHICKPEA_LANE_CHROME_PORT_COBALT: '80' }), /between 1024 and 65535/);
+  assert.throws(() => daemonPort('teal', {}), /Choose a lane/);
+  const roots = evidenceWorkspaces({ root: '/private/home/qa/browsers', workspaces: ['/private/home/qa/runs'], platform: 'linux', temp: '/tmp' }) as string[];
+  assert.deepEqual(roots, ['/private/home/qa/verification', '/private/home/qa/qa-runs', '/private/home/qa/reviews', '/tmp', '/private/home/qa/runs']);
+  assert.equal(roots.includes('/private/home/qa'), false, 'the parent holds lane secrets and cookie payloads, so it is never a workspace');
+  assert.ok((evidenceWorkspaces({ root: '/home/qa/.chickpea/browsers', platform: 'darwin', temp: '/var/folders/x' }) as string[]).includes('/private/tmp'));
+
+  const plan = attachPlan({ lane: 'violet', root: '/private/home/qa/browsers', env: {}, platform: 'linux', repositoryRoot: '/nowhere', execPath: '/usr/bin/node' }) as { url: string; port: number; command: string; args: string[]; profile: string };
+  assert.equal(plan.port, 9333);
+  assert.equal(plan.url, 'http://127.0.0.1:9333');
+  assert.equal(plan.profile, '/private/home/qa/browsers/violet');
+  assert.equal(plan.command, 'npx');
+  const joined = plan.args.join('\0');
+  assert.ok(joined.includes(['--browserUrl', 'http://127.0.0.1:9333'].join('\0')));
+  assert.ok(joined.includes(['--workspace', '/private/home/qa/verification'].join('\0')));
+  for (const flag of ['--userDataDir', '--executablePath', '--headless', '--viewport']) assert.equal(plan.args.includes(flag), false, `${flag} belongs to a launch, not an attach`);
+  assert.ok(plan.args.includes('--redactNetworkHeaders'));
+
+  const launch = daemonLaunchArguments({ profile: '/p/amber', port: 9331, platform: 'darwin', uid: 501 }) as string[];
+  assert.ok(launch.includes('--user-data-dir=/p/amber'));
+  assert.ok(launch.includes('--remote-debugging-port=9331'));
+  assert.ok(launch.includes('--remote-debugging-address=127.0.0.1'));
+  assert.ok(launch.includes('--hide-crash-restore-bubble'));
+  assert.equal(launch.includes('--use-mock-keychain'), false, 'macOS lane profiles use the keychain');
+  assert.equal(launch.includes('--headless'), false, 'the daemon is a real window');
+  assert.ok((daemonLaunchArguments({ profile: '/p/amber', port: 9331, platform: 'linux', uid: 0 }) as string[]).includes('--no-sandbox'));
+  assert.ok((daemonLaunchArguments({ profile: '/p/amber', port: 9331, headless: true, platform: 'linux', uid: 0 }) as string[]).includes('--headless'));
+});
+
+test('start launches one daemon per lane, status reports it, a second start reuses it, and stop ends only that process', async (context) => {
+  const dir = scratch(context);
+  const root = path.join(dir, 'browsers');
+  const port = await freePort();
+  const env = { CHICKPEA_LANE_CHROME_PORT_AMBER: String(port), CHICKPEA_LANE_CHROME_EXECUTABLE: fakeDaemonChromium(dir), CHICKPEA_LANE_COOKIES_AMBER: payloadFor('amber') };
+  const stopped = await daemonStatus({ lane: 'amber', root, env }) as DaemonStatus;
+  assert.equal(stopped.state, 'stopped');
+  assert.equal(stopped.port, port);
+
+  const started = await startDaemon({ lane: 'amber', root, env, timeoutMs: 15_000 }) as { status: string; browser: string; record: { pid: number; port: number } };
+  context.after(() => { try { process.kill(started.record.pid, 'SIGKILL'); } catch { /* already gone */ } });
+  assert.equal(started.status, 'started');
+  assert.equal(started.browser, 'FakeChrome/1.0');
+  assert.equal(started.record.port, port);
+  const record = readJson<{ schemaVersion: string; lane: string; pid: number }>(daemonRecordPath(root, 'amber') as string);
+  assert.equal(record.schemaVersion, 'chickpea-lane-daemon/v1');
+  assert.equal(record.pid, started.record.pid);
+  assert.equal((statSync(path.join(root, 'amber')).mode & 0o077), 0, 'the profile stays owner-only');
+  const argv = readJson<string[]>(path.join(root, 'amber', 'fake-daemon-argv.json'));
+  assert.ok(argv.includes(`--remote-debugging-port=${port}`));
+  assert.ok(argv.includes(`--user-data-dir=${path.join(root, 'amber')}`));
+  const daemonEnv = readJson<string[]>(path.join(root, 'amber', 'fake-daemon-env.json'));
+  assert.equal(daemonEnv.some((name) => name.startsWith('CHICKPEA_LANE_COOKIES_')), false, 'no cookie payload reaches the daemon');
+  assert.equal(existsSync(path.join(root, 'amber.daemon.log')), true, 'the daemon writes an owner-only log');
+  assert.equal((statSync(path.join(root, 'amber.daemon.log')).mode & 0o077), 0);
+
+  const running = await daemonStatus({ lane: 'amber', root, env }) as DaemonStatus;
+  assert.equal(running.state, 'running');
+  assert.equal(running.browser, 'FakeChrome/1.0');
+  assert.equal(running.record?.pid, started.record.pid);
+  const again = await startDaemon({ lane: 'amber', root, env }) as { status: string };
+  assert.equal(again.status, 'running', 'a second start attaches to the same daemon instead of launching another');
+
+  const status = run(['status', 'all', '--root', root], env);
+  assert.equal(status.status, 0, 'a completed report exits 0 even when lanes are stopped');
+  assert.match(status.stdout, new RegExp(`chrome-amber: running: FakeChrome/1.0 on http://127.0.0.1:${port}`));
+  assert.match(status.stdout, /chrome-cobalt: stopped/);
+  const json = run(['status', 'amber', '--root', root, '--json'], env);
+  assert.equal(json.status, 0);
+  assert.equal((JSON.parse(json.stdout) as DaemonStatus).state, 'running');
+
+  // Seeding, import and export refuse a profile the daemon has open; Chrome would hand off and exit.
+  const importing = run(['import', 'amber', '--root', root], env);
+  assert.equal(importing.status, 1);
+  assert.match(importing.stderr, /The amber daemon is running .* Stop it first/);
+  const exporting = run(['export', 'amber', '--root', root, '--to-file', path.join(dir, 'out.b64')], env);
+  assert.equal(exporting.status, 1);
+  assert.match(exporting.stderr, /Stop it first/);
+  const serving = JSON.parse(run(['serve', 'amber', '--root', root, '--dry-run'], env).stdout) as { seed: string; daemon: { state: string } };
+  assert.equal(serving.seed, 'profile_running', 'serve never seeds under a running daemon');
+  assert.equal(serving.daemon.state, 'running');
+
+  const ended = await stopDaemon({ lane: 'amber', root, env }) as { status: string; pid: number };
+  assert.equal(ended.status, 'stopped');
+  assert.equal(ended.pid, started.record.pid);
+  assert.equal(existsSync(daemonRecordPath(root, 'amber') as string), false, 'stop removes the record');
+  const after = await daemonStatus({ lane: 'amber', root, env }) as DaemonStatus;
+  assert.equal(after.state, 'stopped');
+  await assert.rejects(stopDaemon({ lane: 'amber', root, env }), /No amber daemon record/);
+});
+
+test('start refuses a profile a per-session browser still holds, and stop never signals a process the record does not describe', async (context) => {
+  const dir = scratch(context);
+  const root = path.join(dir, 'browsers');
+  const port = await freePort();
+  const env = { CHICKPEA_LANE_CHROME_PORT_COBALT: String(port), CHICKPEA_LANE_CHROME_EXECUTABLE: fakeDaemonChromium(dir), FAKE_DAEMON_SILENT: '1' };
+  // A Chrome that holds the profile lock but answers on no port: the old launch-per-server mode.
+  const profile = path.join(root, 'cobalt');
+  mkdirSync(profile, { recursive: true, mode: 0o700 });
+  const holder = spawnSync('/bin/sh', ['-c', `"${env.CHICKPEA_LANE_CHROME_EXECUTABLE}" --user-data-dir=${profile} --remote-debugging-port=${port} >/dev/null 2>&1 & echo $!`], { encoding: 'utf8', env: { ...process.env, ...env } });
+  const holderPid = Number(holder.stdout.trim());
+  context.after(() => { try { process.kill(holderPid, 'SIGKILL'); } catch { /* already gone */ } });
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  const held = await daemonStatus({ lane: 'cobalt', root, env }) as DaemonStatus;
+  assert.equal(held.state, 'held');
+  assert.equal(held.holder?.pid, holderPid);
+  await assert.rejects(startDaemon({ lane: 'cobalt', root, env, timeoutMs: 2_000 }), new RegExp(`held by pid ${holderPid}`));
+
+  process.kill(holderPid, 'SIGKILL');
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  // A lock left behind by a crash, now naming an unrelated live process (this test runner), holds nothing.
+  rmSync(path.join(profile, 'SingletonLock'), { force: true });
+  symlinkSync(`somehost-${process.pid}`, path.join(profile, 'SingletonLock'));
+  assert.equal(((await daemonStatus({ lane: 'cobalt', root, env })) as DaemonStatus).state, 'stopped', 'a stale lock with a reused pid is not a holder');
+  // A sibling profile such as cobalt-old never counts as cobalt.
+  assert.equal(((await daemonStatus({ lane: 'cobalt', root: path.join(dir, 'other-root'), env })) as DaemonStatus).state, 'stopped');
+
+  // A record naming a live process that is not the daemon (this test runner) is refused, not killed.
+  writeFileSync(daemonRecordPath(root, 'cobalt') as string, JSON.stringify({ schemaVersion: 'chickpea-lane-daemon/v1', lane: 'cobalt', port, pid: process.pid }));
+  await assert.rejects(stopDaemon({ lane: 'cobalt', root, env }), /is not the cobalt daemon/);
+  // A record whose process is gone is cleared without a signal.
+  writeFileSync(daemonRecordPath(root, 'cobalt') as string, JSON.stringify({ schemaVersion: 'chickpea-lane-daemon/v1', lane: 'cobalt', port, pid: 2 ** 22 - 1 }));
+  assert.equal(((await stopDaemon({ lane: 'cobalt', root, env })) as { status: string }).status, 'not_running');
+  assert.equal(existsSync(daemonRecordPath(root, 'cobalt') as string), false);
+
+  // The CLI's attach plan is printable without a daemon, and points at the same port.
+  const plan = run(['attach', 'cobalt', '--root', root, '--workspace', dir, '--dry-run'], env);
+  assert.equal(plan.status, 0, plan.stderr);
+  const parsed = JSON.parse(plan.stdout) as { url: string; args: string[] };
+  assert.equal(parsed.url, `http://127.0.0.1:${port}`);
+  assert.ok(parsed.args.includes(dir), 'an extra --workspace is passed through');
+  assert.equal(run(['attach', 'cobalt', '--root', root, '--workspace', 'relative'], env).status, 2);
+  assert.equal(run(['status', 'teal', '--root', root], env).status, 2);
+});
+
+test('a daemon Chrome that cannot be executed is reported, not thrown', async (context) => {
+  const dir = scratch(context);
+  const root = path.join(dir, 'browsers');
+  const port = await freePort();
+  const notExecutable = path.join(dir, 'chrome-without-exec-bit');
+  writeFileSync(notExecutable, '#!/bin/sh\nexit 0\n');
+  chmodSync(notExecutable, 0o644);
+  const env = { CHICKPEA_LANE_CHROME_PORT_VIOLET: String(port), CHICKPEA_LANE_CHROME_EXECUTABLE: notExecutable };
+  await assert.rejects(startDaemon({ lane: 'violet', root, env, timeoutMs: 5_000 }), /Chrome could not start from .*EACCES/);
+  assert.equal(existsSync(daemonRecordPath(root, 'violet') as string), false, 'no record for a daemon that never ran');
 });

@@ -1,23 +1,23 @@
 /**
- * Lane browsers on hosts that have no hand-configured Chrome DevTools MCP
- * servers, such as a Claude Code cloud session. One persistent Chromium
- * profile per QA lane lives under an owner-only root outside the repository;
- * `scripts/lane-browser.mjs` serves it through `chrome-devtools-mcp` with the
- * flags qa/live/operator/hosts.md requires, and seeds a fresh profile from a
- * cookie payload the maintainer exported from a signed-in lane profile.
+ * Lane browsers. One persistent Chromium profile per QA lane lives under an
+ * owner-only root outside the repository and runs as a daemon on a fixed local
+ * debugging port; `scripts/lane-browser.mjs` starts it, attaches
+ * `chrome-devtools-mcp` to it with the flags qa/live/operator/hosts.md
+ * requires, and, in a cloud session, first seeds a fresh profile from a cookie
+ * payload the maintainer exported from a signed-in lane profile.
  *
  * Cookie values travel only from the payload to Chromium over the DevTools
  * pipe. They never reach argv, a child environment, stdout, stderr, the seed
  * marker, or an error message: validation failures name a cookie position and
  * field, and readback checks compare names and domains.
  */
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
-  chmodSync, closeSync, constants, existsSync, mkdirSync, openSync, readdirSync, readFileSync,
+  chmodSync, closeSync, constants, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync,
   realpathSync, renameSync, rmSync, statSync, writeSync,
 } from 'node:fs';
-import { homedir, platform as hostPlatform } from 'node:os';
+import { homedir, platform as hostPlatform, tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isQaLane, QA_LANES } from './qa-lanes.mjs';
@@ -185,15 +185,10 @@ export function chromiumArguments({ platform = hostPlatform(), uid = currentUid(
 }
 
 /**
- * Cookie encryption must agree between a direct launch and the server's
- * Puppeteer launch. Puppeteer passes `--password-store=basic` and
- * `--use-mock-keychain` by default; macOS lane profiles drop both to use the
- * keychain (hosts.md), while Linux keeps the basic store, the only one there.
+ * Cookie encryption must agree between every launch of a profile. macOS lane
+ * profiles use the keychain (hosts.md); Linux keeps Puppeteer's basic store,
+ * the only one there, so a profile seeded by one launch decrypts in the next.
  */
-export function keychainServerArguments(platform = hostPlatform()) {
-  return platform === 'darwin' ? ['--ignoreDefaultChromeArg=--use-mock-keychain', '--ignoreDefaultChromeArg=--password-store=basic'] : [];
-}
-
 export function keychainLaunchArguments(platform = hostPlatform()) {
   return platform === 'darwin' ? [] : ['--password-store=basic', '--use-mock-keychain'];
 }
@@ -210,37 +205,287 @@ export function profileLaunchArguments({ profile, platform = hostPlatform(), uid
   ];
 }
 
-/** The chrome-devtools-mcp invocation for one lane, mirroring the host servers in hosts.md. */
-export function serverPlan({
-  lane, root, env = process.env, platform = hostPlatform(), uid = currentUid(), executable, headless,
-  repositoryRoot = REPOSITORY_ROOT, execPath = process.execPath,
+/*
+ * Lane browser daemons. On a maintainer's Mac each lane's Chrome runs as one
+ * long-lived process on a fixed local debugging port, and every session's
+ * `chrome-<lane>` server attaches to it with `--browserUrl`. Nothing holds
+ * the profile lock on a session's behalf, so two sessions can drive the same
+ * lane (in their own tabs) and a finished session leaves nothing to quit.
+ */
+export const DAEMON_PORTS = Object.freeze({ amber: 9331, cobalt: 9332, violet: 9333 });
+/** Private evidence folders under the root's parent that a lane server may write screenshots and snapshots into. */
+export const EVIDENCE_DIRECTORIES = Object.freeze(['verification', 'qa-runs', 'reviews']);
+const DAEMON_RECORD_SCHEMA = 'chickpea-lane-daemon/v1';
+const PORT_VARIABLE_PREFIX = 'CHICKPEA_LANE_CHROME_PORT_';
+const DAEMON_START_TIMEOUT_MS = 20_000;
+const DAEMON_STOP_TIMEOUT_MS = 10_000;
+const DAEMON_POLL_MS = 250;
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** The lane's debugging port: `CHICKPEA_LANE_CHROME_PORT_<LANE>` overrides the fixed table. */
+export function daemonPort(lane, env = process.env) {
+  assertLane(lane);
+  const variable = `${PORT_VARIABLE_PREFIX}${lane.toUpperCase()}`;
+  const raw = (env[variable] ?? '').trim();
+  if (!raw) return DAEMON_PORTS[lane];
+  const port = Number(raw);
+  if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new LaneBrowserError(`${variable} must be a port between 1024 and 65535, not ${raw}.`);
+  return port;
+}
+
+const daemonUrl = (port) => `http://127.0.0.1:${port}`;
+
+export function daemonRecordPath(root, lane) {
+  return path.join(root, `${assertLane(lane)}.daemon.json`);
+}
+
+export function daemonLogPath(root, lane) {
+  return path.join(root, `${assertLane(lane)}.daemon.log`);
+}
+
+function readDaemonRecord(root, lane) {
+  const file = daemonRecordPath(root, lane);
+  if (!existsSync(file)) return null;
+  try {
+    const record = JSON.parse(readFileSync(file, 'utf8'));
+    return record?.schemaVersion === DAEMON_RECORD_SCHEMA && Number.isInteger(record.pid) ? record : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Chrome's own launch arguments for a lane daemon (windowed unless headless); the keychain rule matches `profileLaunchArguments`. */
+export function daemonLaunchArguments({ profile, port, headless = false, platform = hostPlatform(), uid = currentUid() }) {
+  return [
+    `--user-data-dir=${profile}`,
+    `--remote-debugging-port=${port}`,
+    '--remote-debugging-address=127.0.0.1',
+    '--no-default-browser-check',
+    '--window-size=1440,900',
+    ...(headless ? ['--headless'] : []),
+    ...chromiumArguments({ platform, uid }),
+    ...keychainLaunchArguments(platform),
+    'about:blank',
+  ];
+}
+
+/**
+ * Where a lane server may write files: the private evidence folders beside
+ * the profile root (never the root's parent itself, which holds the lane
+ * secrets and exported cookie payloads), the temp directories, and extras.
+ */
+export function evidenceWorkspaces({ root, workspaces = [], platform = hostPlatform(), temp = tmpdir() }) {
+  const parent = path.dirname(root);
+  return [...new Set([
+    ...EVIDENCE_DIRECTORIES.map((name) => path.join(parent, name)), temp, ...(platform === 'darwin' ? ['/private/tmp'] : []), ...workspaces,
+  ])];
+}
+
+/** The chrome-devtools-mcp invocation that attaches to a running lane daemon; this is what the host MCP entries run. */
+export function attachPlan({
+  lane, root, env = process.env, platform = hostPlatform(), workspaces = [], repositoryRoot = REPOSITORY_ROOT, execPath = process.execPath,
 } = {}) {
   assertLane(lane);
-  const profile = path.join(root, lane);
-  const chromium = resolveChromiumExecutable({ executable, env, platform });
-  const headlessMode = headless ?? headlessDefault({ env, platform });
+  const port = daemonPort(lane, env);
   const server = serverCommand({ env, repositoryRoot, execPath });
   return {
     lane,
-    profile,
-    executable: chromium ?? null,
-    headless: headlessMode,
+    port,
+    url: daemonUrl(port),
+    profile: path.join(root, lane),
     command: server.command,
     args: [
       ...server.args,
-      '--userDataDir', profile,
-      ...(chromium ? ['--executablePath', chromium] : []),
-      ...(headlessMode ? ['--headless'] : []),
-      ...keychainServerArguments(platform),
-      ...chromiumArguments({ platform, uid }).map((argument) => `--chromeArg=${argument}`),
-      '--viewport', '1440x900',
+      '--browserUrl', daemonUrl(port),
+      ...evidenceWorkspaces({ root, workspaces, platform }).flatMap((workspace) => ['--workspace', workspace]),
       '--screenshotFormat', 'jpeg',
       '--screenshotMaxWidth', '1400',
       '--redactNetworkHeaders',
       '--no-usage-statistics',
     ],
-    cookieVariable: cookieVariable(lane),
   };
+}
+
+/** `/json/version` of a running Chrome on the port, or null when nothing answers. */
+async function fetchDaemonVersion(port, { fetchImpl = globalThis.fetch, timeoutMs = 2_000 } = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetchImpl(`${daemonUrl(port)}/json/version`, { signal: controller.signal });
+    if (!response.ok) return null;
+    const version = await response.json();
+    return typeof version?.Browser === 'string' ? version : null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function processAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; } catch (error) { return error.code === 'EPERM'; }
+}
+
+function processCommand(pid) {
+  if (process.platform === 'win32' || !processAlive(pid)) return '';
+  const result = spawnSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf8' });
+  return result.status === 0 ? String(result.stdout).trim() : '';
+}
+
+/** True when a command line launched Chrome on exactly this profile (not a sibling such as `amber-old`). */
+function usesProfile(command, profile) {
+  const flag = `--user-data-dir=${profile}`;
+  const at = command.indexOf(flag);
+  if (at < 0) return false;
+  const next = command.charAt(at + flag.length);
+  return next === '' || /\s/.test(next);
+}
+
+/**
+ * Who holds a profile: the pid in Chrome's `SingletonLock` symlink (`host-pid`)
+ * when that process really runs Chrome on this profile, else any running
+ * process launched with this `--user-data-dir`. A lock left by a crash or a
+ * reboot, whose pid now belongs to something else, holds nothing.
+ */
+function profileHolder(profile) {
+  try {
+    const target = readlinkSync(path.join(profile, 'SingletonLock'));
+    const pid = Number(target.split('-').pop());
+    const command = processCommand(pid);
+    if (usesProfile(command, profile)) return { pid, command };
+  } catch { /* no lock, or not a symlink */ }
+  if (process.platform === 'win32') return null;
+  const listing = spawnSync('ps', ['-axo', 'pid=,command='], { encoding: 'utf8' });
+  for (const line of String(listing.stdout ?? '').split('\n')) {
+    const match = /^\s*(\d+)\s+(.*)$/.exec(line);
+    if (match && usesProfile(match[2], profile) && !/Helper/.test(match[2])) return { pid: Number(match[1]), command: match[2] };
+  }
+  return null;
+}
+
+function lastLogLine(file) {
+  try { return readFileSync(file, 'utf8').trim().split('\n').filter(Boolean).pop() ?? ''; } catch { return ''; }
+}
+
+/**
+ * Start the lane daemon unless one already answers. Refuses a profile a
+ * per-session Chrome still holds. When two sessions start the same lane at
+ * once, the second Chrome hands off to the first and exits; that start
+ * reports the running daemon and never overwrites its record.
+ */
+export async function startDaemon({
+  lane, root, env = process.env, executable, headless, platform = hostPlatform(), uid = currentUid(), spawnImpl = spawn, fetchImpl,
+  now = Date.now, timeoutMs = DAEMON_START_TIMEOUT_MS, pollMs = DAEMON_POLL_MS,
+}) {
+  assertLane(lane);
+  const profile = ensureOwnerOnlyDirectory(path.join(root, lane));
+  const port = daemonPort(lane, env);
+  const headlessMode = headless ?? headlessDefault({ env, platform });
+  const running = await fetchDaemonVersion(port, { fetchImpl });
+  if (running) return { status: 'running', lane, port, url: daemonUrl(port), browser: running.Browser, headless: headlessMode, record: readDaemonRecord(root, lane) };
+  const holder = profileHolder(profile);
+  if (holder) {
+    throw new LaneBrowserError(`The ${lane} profile is held by pid ${holder.pid} (${holder.command.slice(0, 160) || 'unknown command'}), ` +
+      `which does not answer on port ${port}. That is a per-session browser from the launch-per-server mode: ask its session to quit it, ` +
+      'then start again.');
+  }
+  const chromium = resolveChromiumExecutable({ executable, env, platform, required: true });
+  const log = daemonLogPath(root, lane);
+  const logDescriptor = openSync(log, constants.O_CREAT | constants.O_WRONLY | constants.O_TRUNC, 0o600);
+  let child;
+  let spawnError = null;
+  try {
+    child = spawnImpl(chromium, daemonLaunchArguments({ profile, port, headless: headlessMode, platform, uid }), {
+      detached: true, stdio: ['ignore', logDescriptor, logDescriptor], env: childEnvironment(env),
+    });
+  } finally {
+    closeSync(logDescriptor);
+  }
+  child.once('error', (error) => { spawnError = error; });
+  child.unref();
+  const deadline = now() + timeoutMs;
+  let version = null;
+  while (!version && !spawnError && child.exitCode === null && now() < deadline) {
+    await sleep(pollMs);
+    version = await fetchDaemonVersion(port, { fetchImpl });
+  }
+  if (spawnError) throw new LaneBrowserError(`Chrome could not start from ${chromium}: ${spawnError.code ?? spawnError.message}.`);
+  if (!version && child.exitCode !== null) version = await fetchDaemonVersion(port, { fetchImpl });
+  if (!version) {
+    const detail = lastLogLine(log);
+    throw new LaneBrowserError(`Chrome did not answer on ${daemonUrl(port)} within ${timeoutMs} ms` +
+      `${child.exitCode !== null ? ` (it exited with ${child.exitCode})` : ` (pid ${child.pid} is still starting or the port is taken)`}.` +
+      `${detail ? ` Last log line: ${detail.slice(0, 200)}` : ''} Log: ${log}`);
+  }
+  const owner = profileHolder(profile);
+  if (child.exitCode !== null || owner?.pid !== child.pid) {
+    return { status: 'running', lane, port, url: daemonUrl(port), browser: version.Browser, headless: headlessMode, record: readDaemonRecord(root, lane) };
+  }
+  const record = {
+    schemaVersion: DAEMON_RECORD_SCHEMA, lane, port, pid: child.pid, executable: chromium, headless: headlessMode, browser: version.Browser,
+    startedAt: new Date(now()).toISOString(),
+  };
+  writeOwnerOnlyFile(daemonRecordPath(root, lane), `${JSON.stringify(record, null, 2)}\n`);
+  return { status: 'started', lane, port, url: daemonUrl(port), browser: version.Browser, headless: headlessMode, record };
+}
+
+export async function daemonStatus({ lane, root, env = process.env, fetchImpl } = {}) {
+  assertLane(lane);
+  const profile = path.join(root, lane);
+  const port = daemonPort(lane, env);
+  const version = await fetchDaemonVersion(port, { fetchImpl });
+  const holder = existsSync(profile) ? profileHolder(profile) : null;
+  return {
+    lane, port, url: daemonUrl(port), profile,
+    state: version ? 'running' : holder ? 'held' : 'stopped',
+    browser: version?.Browser ?? null,
+    record: readDaemonRecord(root, lane), holder,
+  };
+}
+
+/** Stop the daemon this root started; a browser the record does not name is never touched. */
+export async function stopDaemon({
+  lane, root, env = process.env, killImpl = (pid, signal) => process.kill(pid, signal), now = Date.now,
+  timeoutMs = DAEMON_STOP_TIMEOUT_MS, pollMs = DAEMON_POLL_MS,
+}) {
+  assertLane(lane);
+  const profile = path.join(root, lane);
+  const port = daemonPort(lane, env);
+  const record = readDaemonRecord(root, lane);
+  if (!record) {
+    throw new LaneBrowserError(`No ${lane} daemon record at ${daemonRecordPath(root, lane)}. ` +
+      'A browser on that profile without a record belongs to the session that launched it.');
+  }
+  if (!processAlive(record.pid)) {
+    rmSync(daemonRecordPath(root, lane), { force: true });
+    return { status: 'not_running', lane, port, pid: record.pid };
+  }
+  const command = processCommand(record.pid);
+  if (!usesProfile(command, profile)) {
+    throw new LaneBrowserError(`pid ${record.pid} is not the ${lane} daemon (${command.slice(0, 160) || 'unknown command'}); refusing to stop it. ` +
+      `Remove ${daemonRecordPath(root, lane)} if the daemon is gone.`);
+  }
+  killImpl(record.pid, 'SIGTERM');
+  const deadline = now() + timeoutMs;
+  while (processAlive(record.pid) && now() < deadline) await sleep(pollMs);
+  if (processAlive(record.pid)) {
+    killImpl(record.pid, 'SIGKILL');
+    await sleep(pollMs);
+  }
+  rmSync(daemonRecordPath(root, lane), { force: true });
+  return { status: 'stopped', lane, port, pid: record.pid };
+}
+
+/** Refuse a second Chromium on a profile a daemon or another browser has open; Chrome would hand off and exit. */
+export async function assertProfileFree({ lane, root, env = process.env, fetchImpl } = {}) {
+  const status = await daemonStatus({ lane, root, env, fetchImpl });
+  if (status.state === 'running') {
+    throw new LaneBrowserError(`The ${lane} daemon is running on ${status.url}. Stop it first (npm run lane:browser -- stop ${lane}), then retry.`);
+  }
+  if (status.state === 'held') {
+    throw new LaneBrowserError(`The ${lane} profile is open in pid ${status.holder.pid}; quit that browser first, then retry.`);
+  }
 }
 
 function rejected(message) {
@@ -511,4 +756,50 @@ export async function exportCookies({
       bytes: text.length,
     },
   };
+}
+
+/**
+ * The daemon root a verifier's own commands use on this host: the
+ * conventional ~/.chickpea/browsers when it exists and no root variable is
+ * set, otherwise the opt-in root variable.
+ */
+export function verifierRoot({ env = process.env, home = homedir(), create = true } = {}) {
+  const conventional = path.join(home, '.chickpea', 'browsers');
+  const rootOption = !env[ROOT_VARIABLE]?.trim() && existsSync(conventional) ? conventional : undefined;
+  const root = resolveProfileRoot({ root: rootOption, env });
+  return create ? ensureOwnerOnlyDirectory(root) : root;
+}
+
+/**
+ * Make sure a lane's daemon answers: start it when it is stopped, so no person
+ * has to. A profile another browser holds is reported, never taken.
+ */
+export async function ensureDaemon({
+  lane, env = process.env, root, start = startDaemon, status = daemonStatus,
+  settleMs = 5_000, pollMs = 250, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+} = {}) {
+  const daemonRoot = root ?? verifierRoot({ env });
+  const read = () => status({ lane, root: daemonRoot, env });
+  // A daemon another session is starting locks its profile a moment before
+  // its port answers, so `held` is provisional until it persists.
+  const settle = async (current) => {
+    let state = current;
+    for (let waited = 0; state.state === 'held' && waited < settleMs; waited += pollMs) {
+      await sleep(pollMs);
+      state = await read();
+    }
+    return state;
+  };
+  const before = await settle(await read());
+  // A cloud session seeds the profile through `serve`; starting it here first would skip the seed.
+  if (before.state !== 'stopped' || env[cookieVariable(lane)]?.trim()) return { ...before, started: false };
+  let result;
+  try { result = await start({ lane, root: daemonRoot, env }); }
+  catch (error) {
+    const after = await settle(await read());
+    if (after.state === 'running') return { ...after, started: false };
+    throw error;
+  }
+  const after = await settle(await read());
+  return { ...after, started: result?.status === 'started' && after.state === 'running' };
 }

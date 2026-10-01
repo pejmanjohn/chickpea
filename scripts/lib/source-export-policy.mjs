@@ -117,6 +117,23 @@ export const liveVerifierExportPolicy = Object.freeze({
     exportPath('qa', 'live', 'coordinator.ts'),
     exportPath('qa', 'live', 'doctor.ts'),
     exportPath('qa', 'live', 'drivers', 'operator.ts'),
+    exportPath('qa', 'live', 'features', 'README.md'),
+    exportPath('qa', 'live', 'features', 'activity-status.md'),
+    exportPath('qa', 'live', 'features', 'admin.md'),
+    exportPath('qa', 'live', 'features', 'agent-conversations.md'),
+    exportPath('qa', 'live', 'features', 'agents.md'),
+    exportPath('qa', 'live', 'features', 'browser.md'),
+    exportPath('qa', 'live', 'features', 'coding.md'),
+    exportPath('qa', 'live', 'features', 'connections.md'),
+    exportPath('qa', 'live', 'features', 'installation.md'),
+    exportPath('qa', 'live', 'features', 'management-mcp.md'),
+    exportPath('qa', 'live', 'features', 'memory.md'),
+    exportPath('qa', 'live', 'features', 'models.md'),
+    exportPath('qa', 'live', 'features', 'schedules.md'),
+    exportPath('qa', 'live', 'features', 'skills.md'),
+    exportPath('qa', 'live', 'features', 'slack-conversations.md'),
+    exportPath('qa', 'live', 'features', 'slack-reading.md'),
+    exportPath('qa', 'live', 'features', 'steering.md'),
     exportPath('qa', 'live', 'fixtures', 'skills', 'qa-style-guard', 'SKILL.md'),
     exportPath('qa', 'live', 'generated', 'feature-map.md'),
     exportPath('qa', 'live', 'lessons', 'agent-and-routing.md'),
@@ -133,7 +150,9 @@ export const liveVerifierExportPolicy = Object.freeze({
     exportPath('qa', 'live', 'observers', 'slack.ts'),
     exportPath('qa', 'live', 'operator', 'SKILL.md'),
     exportPath('qa', 'live', 'operator', 'modes.md'),
+    exportPath('qa', 'live', 'operator', 'cloud.md'),
     exportPath('qa', 'live', 'operator', 'environments.md'),
+    exportPath('qa', 'live', 'operator', 'slack-readback-app.json'),
     exportPath('qa', 'live', 'operator', 'records.md'),
     exportPath('qa', 'live', 'operator', 'recovery.md'),
     exportPath('qa', 'live', 'operator', 'host-checks.md'),
@@ -560,7 +579,7 @@ export function publicSourceManifestFindings(entries) {
 
 /**
  * The one tracked MCP client config. It may define only the lane browser
- * servers of qa/live/operator/hosts.md, each launched through the repository
+ * servers of qa/live/operator/cloud.md, each launched through the repository
  * script with the opt-in root variable, so a cloud session gets the lane
  * browsers and no other host ever runs something else from this file.
  */

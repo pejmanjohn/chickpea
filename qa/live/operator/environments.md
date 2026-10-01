@@ -75,7 +75,11 @@
    unavailable other lane whose recorded baseline is missing or invalid, so
    its fingerprints cannot stand in. Never print
    the token. Never use a bare/default deploy to reach a QA lane. Preserve
-   source/claim fences. Verification does not imply landing on main.
+   source/claim fences. Verification does not imply landing on main. To deploy
+   a sibling worktree's candidate (a repair batch), run the same command from
+   your own checkout with `-- --worktree <absolute path>`; the wrapper re-runs
+   that checkout's own wrapper from there, so no `cd <worktree> &&` chaining
+   is needed.
 
    Standing provider keys come from the operator's lane secrets file,
    `~/.chickpea/qa-secrets.env` (override the path with
@@ -100,24 +104,8 @@
    without the file. Verifiers never write or read the values; the maintainer
    edits the file.
 
-   Claude Code cloud sessions start from a fresh VM that carries only
-   environment variables, so the cloud SessionStart hook
-   (`scripts/cloud-session-start.sh`) runs `scripts/cloud-private-home.mjs` to
-   write the same files there, at the paths the readers already use, from
-   base64 variables in the personal cloud environment: `CHICKPEA_QA_SECRETS_ENV_B64`
-   for `~/.chickpea/qa-secrets.env`, `CHICKPEA_LANE_CREDENTIALS_B64` for the
-   `<lane>-live.json` and `<lane>-seed.json` files under
-   `~/.chickpea/lane-credentials/` (one JSON object keyed by file name, described
-   below), and `CHICKPEA_QA_SEED_JSON_B64` for `~/.chickpea/qa-seed.json`. Run
-   `node scripts/cloud-private-home.mjs encode` on the maintainer's machine to
-   print those lines from the existing files, paste them into the cloud
-   environment's variables, and discard the output: it carries the secrets. The
-   hook writes only when `CLAUDE_CODE_REMOTE=true`, skips an absent variable,
-   fails the session start on a malformed one (naming the variable, never the
-   value), checks each file with its reader before it lands, and writes it
-   owner-only. Live-authority credentials may instead stay as
-   `CHICKPEA_ENV_<COLOR>_LIVE_AUTHORITY_URL` and `_READ_TOKEN`, which need no
-   file. The environment registry is host-bound and is never carried this way.
+   Cloud sessions, now dormant, can carry the same files; see
+   [cloud.md](cloud.md#private-files).
 
    Standing test connections come back the same way after a lane rebuild.
    Each guarded lane deploy also installs the lane's seed token
@@ -190,33 +178,63 @@
    or live-acceptance fences. Read-only reconciliation of an existing intent
    remains available when no new upload occurs.
 
-   A claim is stamped with the worktree's HEAD. Do not commit, amend, or
-   rebase in that worktree while a claimed deploy is running, and re-claim
-   after committing before the next deploy: a HEAD that differs from the
-   claimed revision fails the deploy's final fence with
-   `MUTATION_LEASE_AUTHORITY_CHANGED`, and then `release`, `reclaim`, and
-   `reconciliation` all refuse with `CLAIM_REVISION_MISMATCH`. Recovery is to
+   A claim is stamped with the worktree's branch and HEAD, and every deploy and
+   reconciliation checks that stamp. Do not commit, amend, or rebase in that
+   worktree while a claimed deploy is running: a HEAD that moves mid-deploy
+   fails the final fence with `MUTATION_LEASE_AUTHORITY_CHANGED`, and
+   `reconciliation` then refuses with `CLAIM_REVISION_MISMATCH`. Recovery is to
    check out the claimed revision, run `npm run env -- reconciliation <alias>`
-   (it adopts the uploaded version and clears the intent lock), release, and
-   only then move HEAD again.
+   (it adopts the uploaded version and clears the intent lock), and only then
+   move HEAD again.
 
-   Claims need a named branch. `claim` and `wait-claim` refuse a detached HEAD
-   with `INVALID_WORKTREE`, so create a branch at the candidate first. To land
-   a fix commit during a claimed run, with no deploy in flight:
+   Between deploys, after a fix commit, a rebase or merge of `origin/main`, or
+   a branch switch, move the claim with the worktree:
 
    ```sh
-   git branch <fix-tip>                # keep the new commit
-   git reset --hard <claimed-revision>
-   npm run env -- release <alias> --worktree <absolute-worktree>
-   git reset --hard <fix-tip>
-   npm run env -- wait-claim <alias> --timeout-ms 0 --poll-ms 1000 --worktree <absolute-worktree>
+   npm run env -- restamp <alias> --worktree <absolute-worktree>
    ```
 
-   Batch fixes between deploys to keep these cycles rare. When `main` has
-   moved, the deploy refuses with `QA_SOURCE_BEHIND_MAIN`. Merge or rebase onto
-   the new `origin/main` just before the deploy, re-run affected offline checks,
-   and re-claim at the new HEAD. For stacked candidates, build a local verify
-   branch from `origin/main` plus the needed commits.
+   It keeps the lane, stamps the new branch and HEAD, and carries a pending
+   schema intent (`schemaIntent` in its output). It refuses while a deploy is
+   open and never takes another worktree's lane (`CLAIM_OWNER_MISMATCH`).
+   `release` works from any branch HEAD of the owning worktree. Claims need a
+   named branch: `claim`, `wait-claim`, `restamp` and `release` refuse a
+   detached HEAD with `INVALID_WORKTREE`, so create a branch at the candidate
+   first.
+
+   When `main` has moved, the deploy refuses with `QA_SOURCE_BEHIND_MAIN`.
+   `claim`, `wait-claim` and `restamp` print a one-line source advisory on
+   stderr, so this shows up before a build. Merge or rebase onto the new
+   `origin/main` just before the deploy, re-run affected offline checks, and
+   `restamp`. For stacked candidates, build a local verify branch from
+   `origin/main` plus the needed commits. To verify a published release that
+   `main` has since passed, check out its tag on a branch and add
+   `--release-tag vX.Y.Z` after the lane deploy command (`npm run deploy --
+   --release-tag vX.Y.Z`). It admits HEAD only when the remote publishes that
+   tag at exactly HEAD, the tag is on `main`, and the working tree is clean
+   (`QA_RELEASE_TAG_UNPUBLISHED`, `_MISMATCH`, `_NOT_ON_MAIN`, `_DIRTY`);
+   `npm run verify:live:candidate -- --release-tag vX.Y.Z` runs the same check
+   read-only. A deploy without a lane target refuses the flag. It exists only
+   in releases after v0.1.33, because the deploy runs the tag's own wrapper.
+
+   A lane records the Durable Object schema generation it serves (the Schema
+   column of `env capabilities`). A candidate with a newer generation is
+   refused with `INCOMPATIBLE_SCHEMA_GENERATION`. The maintainer has approved
+   advancing a lane whenever a candidate needs it, including a migration that
+   is not on `main` yet, so record it without asking:
+
+   ```sh
+   npm run env -- schema-advance <alias> --worktree <absolute-worktree>
+   ```
+
+   It records one step to the candidate's own generation, read from the claimed
+   worktree, for this claim; the next guarded deploy applies it. A `restamp`
+   carries it when the new HEAD has the same generation and otherwise reports
+   it stale. The advance is permanent, because Cloudflare cannot roll a Durable
+   Object migration back: that lane can no longer serve older builds, and if an
+   unmerged migration changes before it merges, the lane needs rebuilding. So
+   prefer a lane that already serves the candidate's generation, and name every
+   advance in the run report.
    Only the Slack manifest digest, the required scopes, and
    `src/auth/setup-capability.mjs` are hard-gated against the lane baseline; a
    mismatch refuses with `INSTALL_CONTINUATION_REQUIRED`, and the recovery is to
@@ -265,10 +283,10 @@ section, and keep lane-specific values out of this repository.
 | Deploy profile (`core`, `sandbox`, or `mixed` during a split deployment) and live version | Wrangler: the serving version's `SANDBOX` binding. A core deploy over a sandbox Worker is refused, so use `npm run deploy:sandbox` there. A live version that differs from the registry is shown next to it. |
 | Provider keys by name (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, `BROWSERBASE_API_KEY`, `COMPOSIO_API_KEY`) and `CHICKPEA_ENV_SEED_TOKEN` | Wrangler `secret list`, names only. The seed token column also shows whether the operator holds the lane's seed token file (existence only). |
 | Default chat model and image role | Generated from the lane's QA-only models route, read with the lane seed token. Shows unknown until the lane serves that route; then read Admin Settings › Model providers or the model footer of a one-word Agent reply. |
-| Missing actor aliases, Slack workspace label, transport, setup-flow marker, claim | The environment registry, as in `env status`. `missing_actor` limits Member-view checks. A `gateway` lane has no operator Slack token (see [hosts.md](hosts.md#slack-evidence-on-gateway-lanes)). |
+| Missing actor aliases, Slack workspace label, transport, schema generation, setup-flow marker, claim | The environment registry, as in `env status`. A candidate needs a lane whose Schema matches its own generation, or an `env schema-advance` first. `missing_actor` limits Member-view checks. A `gateway` lane reads Slack exactly through its own readback app, which the kickoff doctor checks (see [hosts.md](hosts.md#slack-evidence-on-gateway-lanes)). |
 | GitHub App and granted repositories, sandbox runtime on or off | Not generated. Admin Settings › Coding sandbox and GitHub. |
 | Registered connector fixtures and standing QA connections | Not generated. The private fixture inventory ([fixtures.md](fixtures.md)). |
-| Whether Chrome is signed in to Slack and Admin | Not generated. The browser. A lane's workspace can display under an older name. |
+| Whether Chrome is signed in to Slack and Admin | Not in this table. `npm run verify:live:kickoff` probes it through the lane browser daemon. A lane's workspace can display under an older name. |
 
 Rerun the command after any deploy, profile switch, or secret upload. Update
 the hand-written notes with their observation date after any model or fixture
@@ -291,12 +309,18 @@ This is an operator error guard, not a sandbox for untrusted deployment code.
 
 ## Product telemetry isolation
 
-Before synthetic activity on any deployed target, run
-`npm run verify:telemetry -- --worker <resolved-worker-name>
---account-id <resolved-account-id> --output
-<private-policy-receipt.json>`, including the target's recorded `--profile` and
-`--env` when present. Retain the receipt with the target capability's
-private evidence. Repeat after a serving-version or binding change. Every
+Before synthetic activity on any deployed target, the serving version needs a
+telemetry isolation receipt. The guarded deploy to a claimed lane produces it:
+after reconciling, it checks the new serving version and writes
+`telemetry-<version>-<time>.json` into that lane's private evidence folder, printing
+"Telemetry isolation verified" or failing the deploy with the reason. Attach
+that receipt to the target evidence; nothing else is needed. For a lane you did
+not deploy in this run, run `npm run verify:telemetry -- --target <alias>`,
+which reads the Worker from the environment registry and writes the receipt to
+the same folder. For any other Worker, use `--worker <name>` with `--output
+<private-policy-receipt.json>`, adding `--account-id`, `--profile` and `--env`
+only when Wrangler sees more than one account or the target records them.
+Repeat after a serving-version or binding change. Every
 traffic-serving version must explicitly label telemetry `test` or verifiably
 disable it. Enabled telemetry without a `test` label, an unverified opt-out, or a
 serving change blocks dependent live actions until resolved through the target's

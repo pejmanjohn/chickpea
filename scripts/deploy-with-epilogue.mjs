@@ -22,6 +22,7 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -78,6 +79,43 @@ const runnerRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '.
 // use the current runner's reviewed deployment tooling, including recovery.
 const wranglerBin = path.join(runnerRoot, 'node_modules', 'wrangler', 'bin', 'wrangler.js');
 const cliArgs = process.argv.slice(2);
+// `--worktree <path>` deploys another checkout's candidate through that
+// checkout's own reviewed wrapper, from that checkout, so a verifier that
+// batches repairs in a sibling worktree runs one plain command instead of
+// `cd <worktree> && ...`. The flag never applies here; the target's script
+// sees the remaining arguments and the same environment.
+{
+  const index = cliArgs.findIndex((arg) => arg === '--worktree' || arg.startsWith('--worktree='));
+  if (index >= 0) {
+    const inline = cliArgs[index].startsWith('--worktree=');
+    const requested = inline ? cliArgs[index].slice('--worktree='.length) : cliArgs[index + 1];
+    const consumed = inline ? 1 : 2;
+    if (!requested || requested.startsWith('--')) { console.error('--worktree needs an absolute checkout path.'); process.exit(2); }
+    if (!path.isAbsolute(requested)) { console.error(`--worktree must be absolute, not ${requested}.`); process.exit(2); }
+    const target = path.resolve(requested);
+    const script = path.join(target, 'scripts', 'deploy-with-epilogue.mjs');
+    if (!existsSync(script)) { console.error(`${target} is not a Chickpea checkout (no scripts/deploy-with-epilogue.mjs).`); process.exit(2); }
+    cliArgs.splice(index, consumed);
+    if (realpathSync(target) !== realpathSync(runnerRoot)) {
+      const forwarded = spawnSync(process.execPath, [script, ...cliArgs], { cwd: target, stdio: 'inherit', env: process.env });
+      if (forwarded.error) console.error(`Could not run ${script}: ${forwarded.error.message}`);
+      if (forwarded.signal) process.kill(process.pid, forwarded.signal);
+      process.exit(forwarded.status ?? 1);
+    }
+  }
+}
+// `--release-tag vX.Y.Z` admits a published release to a QA lane after main
+// has moved past it: HEAD must be exactly that tag and the tag must be on main.
+let releaseTagOption;
+{
+  const index = cliArgs.findIndex((arg) => arg === '--release-tag' || arg.startsWith('--release-tag='));
+  if (index >= 0) {
+    const inline = cliArgs[index].startsWith('--release-tag=');
+    releaseTagOption = inline ? cliArgs[index].slice('--release-tag='.length) : cliArgs[index + 1];
+    if (!releaseTagOption || releaseTagOption.startsWith('--')) { console.error('--release-tag needs a tag such as v0.1.33.'); process.exit(2); }
+    cliArgs.splice(index, inline ? 1 : 2);
+  }
+}
 const deployArgs = cliArgs.filter((arg) => !['--skip-build', '--preflight-only'].includes(arg));
 const skipBuild = cliArgs.includes('--skip-build');
 const preflightOnly = cliArgs.includes('--preflight-only');
@@ -289,6 +327,10 @@ const selectedEnvironmentTarget = !deployArgs.includes('--dry-run')
   && requestedDeploymentTarget
   ? requestedDeploymentTarget
   : undefined;
+if (releaseTagOption !== undefined && !selectedEnvironmentTarget) {
+  console.error('--release-tag applies only to a QA lane deploy: set CHICKPEA_DEPLOY_TARGET=<lane> and omit --dry-run.');
+  process.exit(2);
+}
 let environmentPreflightApi;
 let initialEnvironmentPreflight;
 let resumedEnvironmentDeployment;
@@ -301,7 +343,7 @@ if (selectedEnvironmentTarget) {
     // Every upload, including a resumed upload, needs it. The separate env
     // reconciliation command can finish old intents without changing source.
     qaCandidateApi = await import('./lib/qa-candidate.mjs');
-    qaSourceAdmission = qaCandidateApi.admitQaCandidate(projectRoot);
+    qaSourceAdmission = qaCandidateApi.admitQaCandidate(projectRoot, releaseTagOption === undefined ? {} : { releaseTag: releaseTagOption });
     process.stdout.write(`QA source includes remote main ${qaSourceAdmission.approvedTip}; tracking ref ${qaSourceAdmission.trackingMatchesRemote ? 'matches' : 'differs (use the admitted tip as --base)'}.\n`);
     environmentPreflightApi = await import('./lib/environment-preflight.mjs');
     resumedEnvironmentDeployment = await environmentPreflightApi.resumeEnvironmentDeployment(
@@ -412,6 +454,36 @@ if (guardedSandboxDeploy) {
     if (problems.length) {
       console.error(formatPreflightProblems(problems));
       process.exit(1);
+    }
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  }
+}
+// A claimed QA lane gets two cheap checks before the build: dependencies that
+// match the lockfile (a stale install builds a candidate nobody reviewed), and
+// a deploy profile that matches the live Worker (a core deploy over a sandbox
+// lane is refused after the build anyway; refuse it before spending one).
+if (selectedEnvironmentTarget && !skipBuild && !reuseWorkersBuildArtifact) {
+  try {
+    const { lockfileDrift, staleDependenciesMessage } = await import('./lib/installed-dependencies.mjs');
+    const drift = lockfileDrift(projectRoot);
+    if (drift.length) throw new Error(staleDependenciesMessage(drift, 'Nothing was built or changed.'));
+    const workerName = initialEnvironmentPreflight.registration.workerName;
+    if (deploymentProfile === 'core' && !explicitCoreProfile) {
+      const { readLiveWorkerProfile } = await import('./lib/environment-capabilities.mjs');
+      const live = await readLiveWorkerProfile(workerName, { providerContext: deploymentResourceArgs() });
+      if (live.profile === 'unknown') {
+        process.stdout.write(`! Could not read ${workerName}'s live deploy profile (${live.errors.join(', ') || 'no answer'}); ` +
+          'the post-build check still refuses a core deploy over a sandbox Worker.\n');
+      }
+      if (live.profile === 'sandbox' || live.profile === 'mixed') {
+        throw new Error(
+          `Claimed lane ${selectedEnvironmentTarget} serves the sandbox profile, and this command would deploy the core profile. ` +
+          `Run \`CHICKPEA_DEPLOY_TARGET=${selectedEnvironmentTarget} npm run verify:host -- --wait-ms 300000 npm run deploy:sandbox\` instead. ` +
+          'Nothing was built or changed.',
+        );
+      }
     }
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
@@ -1726,6 +1798,39 @@ child.on('close', async (code) => {
     process.stdout.write('\n✔ Upgrade deployment is ready. Existing setup authority preserved.\n');
   } else if (selectedEnvironmentTarget) {
     process.stdout.write('\n✔ Claimed environment deployment reconciled.\n');
+    // The skill requires a telemetry isolation receipt for the serving version
+    // before any synthetic Slack action. Produce it here, so a verifier never
+    // has to resolve the Worker and account by hand or act before it exists.
+    try {
+      const telemetry = await import('./lib/product-telemetry-preflight.mjs');
+      // One receipt per check: a re-deploy can serve the same version id again.
+      const receiptPath = path.join(finalEnvironmentPreflight.registration.evidenceRoot,
+        `telemetry-${deployedVersionId}-${new Date().toISOString().replace(/[:.]/g, '-')}.json`);
+      let receipt;
+      try {
+        receipt = await telemetry.verifyProductTelemetry({
+          worker: builtArtifact.config.name,
+          ...(checkedAccount?.accountId ? { accountId: checkedAccount.accountId } : {}),
+          providerContext: deploymentResourceArgs(),
+          projectRoot,
+        });
+      } catch (error) {
+        if (!(error instanceof telemetry.ProductTelemetryPreflightError)) throw error;
+        receipt = error.receipt;
+      }
+      telemetry.writeProductTelemetryReceipt(receiptPath, receipt, projectRoot);
+      if (receipt.status === 'passed') {
+        process.stdout.write(`✔ Telemetry isolation verified for the serving version; receipt ${receiptPath}\n`);
+      } else {
+        process.stderr.write(`✖ Telemetry isolation failed (${receipt.failure?.code ?? 'unknown'}); receipt ${receiptPath}. ` +
+          'Do not send synthetic Slack traffic to this lane until it passes.\n');
+        process.exitCode = 1;
+      }
+    } catch (error) {
+      process.stderr.write(`✖ Telemetry isolation was not checked: ${error instanceof Error ? error.message : String(error)}. ` +
+        `Run \`npm run verify:telemetry -- --target ${selectedEnvironmentTarget}\` before any synthetic Slack traffic.\n`);
+      process.exitCode = 1;
+    }
     if (finalEnvironmentPreflight?.setupFlow?.proven === false) {
       process.stdout.write(
         '! Setup flow unproven for this revision: the first-run install sources '

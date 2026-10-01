@@ -32,6 +32,11 @@ local workerd. No changes specified
 falls back to core regression. Documentation-only changes need no live journey.
 The mapping is conservative, not proof of complete impact analysis.
 
+Map the selected areas to the [feature map](../features/README.md). Each feature
+file says how to drive and prove that feature on a lane and lists the traps
+earlier runs hit. In `regression` and `release` mode, walk the whole map and
+report each feature without a case as untested.
+
 - Instruction/tool guidance: preserve the full frozen proposal, approve once,
   and inspect the entire saved value. Check no early mutation. Use the existing
   [authoring evaluation](../../../docs/runbooks/agent-authoring-evaluation.md)
@@ -92,7 +97,8 @@ Changed source or a failed check requires the relevant validation again.
 Keep the serving candidate fixed throughout each scenario and its observation
 window. At the checkpoint, finish or reconcile open attempts and refresh source,
 context, and prerequisites under the existing [deployment fences](environments.md).
-Run the affected Local journeys with the actual model. Use one guarded QA deploy
+After integrating, `npm run env -- restamp <alias>` moves the lane claim to the
+new HEAD; there is no need to release and re-claim. Run the affected Local journeys with the actual model. Use one guarded QA deploy
 for the batch when dependent deployed proof is required and authorized, then
 retest each original failure and the combined impact on that candidate. Record
 the hypothesis and changed variables; use fresh conversation roots for instruction
