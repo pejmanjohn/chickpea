@@ -10,6 +10,7 @@ const fail = (code, message) => { throw new QaCandidateError(code, message); };
 const SHA = /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/u;
 const DEFAULT_SOURCE_REPOSITORY = 'pejmanjohn/chickpea';
 const REPOSITORY_IDENTITY = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?\/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/u;
+export const RELEASE_TAG = /^v\d+\.\d+\.\d+$/u;
 
 function git(root, args) {
   return spawnSync('git', args, { cwd: root, encoding: 'utf8', timeout: 15_000,
@@ -71,14 +72,28 @@ export function admitQaCandidate(root, options = {}) {
   }
   const head = revision(canonical, 'HEAD');
   const ancestry = git(canonical, ['merge-base', '--is-ancestor', approvedTip, head ?? 'HEAD']);
+  let releaseTag = null;
   if (ancestry.status !== 0) {
-    fail('QA_SOURCE_BEHIND_MAIN', `Candidate must contain remote main ${approvedTip}. Rebase or move the intended changes onto that base before QA deployment; do not import another task's unmerged branch.`);
+    // A published release stays verifiable after main moves on: the candidate
+    // must be exactly the tagged commit, and that commit must be on remote main.
+    if (options.releaseTag === undefined) {
+      fail('QA_SOURCE_BEHIND_MAIN', `Candidate must contain remote main ${approvedTip}. Rebase or move the intended changes onto that base before QA deployment; do not import another task's unmerged branch. To verify a published release as tagged, deploy its tag with --release-tag <tag>.`);
+    }
+    if (!RELEASE_TAG.test(options.releaseTag)) fail('QA_RELEASE_TAG_INVALID', 'Name a release tag such as v0.1.33.');
+    const tagged = revision(canonical, `refs/tags/${options.releaseTag}`);
+    if (!tagged || tagged !== head) {
+      fail('QA_RELEASE_TAG_MISMATCH', `HEAD must be the commit tagged ${options.releaseTag}. Check the tag out on a branch (git switch -c verify-${options.releaseTag} ${options.releaseTag}) and claim from there.`);
+    }
+    if (git(canonical, ['merge-base', '--is-ancestor', head, approvedTip]).status !== 0) {
+      fail('QA_RELEASE_TAG_NOT_ON_MAIN', `${options.releaseTag} is not on remote main ${approvedTip}; only a release cut from main is admitted this way.`);
+    }
+    releaseTag = options.releaseTag;
   }
   const source = sourceInputs(canonical);
   if (source.head !== head) fail('QA_SOURCE_CHANGED', 'HEAD changed during admission. Rerun from stable source.');
   const trackingTip = revision(canonical, `refs/remotes/${remote}/main`);
   return { schema: 'chickpea-qa-source-admission/v1', root: canonical, repository: expected,
-    remote, reference, approvedTip, trackingTip, trackingMatchesRemote: trackingTip === approvedTip,
+    remote, reference, approvedTip, ...(releaseTag ? { releaseTag } : {}), trackingTip, trackingMatchesRemote: trackingTip === approvedTip,
     observedAt: new Date().toISOString(), source,
     coverage: 'Source ancestry and working contents only; claim, install, schema and runtime fences still apply. No live acceptance.' };
 }

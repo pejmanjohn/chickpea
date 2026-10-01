@@ -116,3 +116,24 @@ test('invalid configured repository identities are refused before remote observa
     }), /QA_SOURCE_REPOSITORY_INVALID/u);
   }
 });
+
+test('a published release tag on main is admitted after main moves past it; anything else is still refused', (t) => {
+  const f = fixture(t);
+  f.git('tag', '-a', 'v0.1.9', f.old, '-m', 'release v0.1.9');
+  f.git('checkout', '-b', 'verify-v0.1.9', 'v0.1.9');
+  assert.throws(() => admitQaCandidate(f.root, { observeRemote: f.observeRemote }), /QA_SOURCE_BEHIND_MAIN.*--release-tag/);
+  const admission = admitQaCandidate(f.root, { observeRemote: f.observeRemote, releaseTag: 'v0.1.9' });
+  assert.equal(admission.releaseTag, 'v0.1.9');
+  assert.equal(admission.approvedTip, f.tip);
+  assert.throws(() => admitQaCandidate(f.root, { observeRemote: f.observeRemote, releaseTag: 'release-9' }), /QA_RELEASE_TAG_INVALID/);
+  assert.throws(() => admitQaCandidate(f.root, { observeRemote: f.observeRemote, releaseTag: 'v0.1.10' }), /QA_RELEASE_TAG_MISMATCH/);
+  // A commit on top of the tag is not the release.
+  writeFileSync(join(f.root, 'patch.txt'), 'local patch'); f.git('add', '.'); f.git('commit', '-m', 'patch on the tag');
+  assert.throws(() => admitQaCandidate(f.root, { observeRemote: f.observeRemote, releaseTag: 'v0.1.9' }), /QA_RELEASE_TAG_MISMATCH/);
+  // A tag that never reached main is refused even when HEAD is exactly that tag.
+  f.git('tag', 'v0.2.0'); 
+  assert.throws(() => admitQaCandidate(f.root, { observeRemote: f.observeRemote, releaseTag: 'v0.2.0' }), /QA_RELEASE_TAG_NOT_ON_MAIN/);
+  // On current main the tag is irrelevant: ordinary admission, no releaseTag recorded.
+  f.git('checkout', '-q', f.tip);
+  assert.equal(admitQaCandidate(f.root, { observeRemote: f.observeRemote, releaseTag: 'v0.1.9' }).releaseTag, undefined);
+});

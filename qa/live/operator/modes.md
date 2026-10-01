@@ -92,7 +92,8 @@ Changed source or a failed check requires the relevant validation again.
 Keep the serving candidate fixed throughout each scenario and its observation
 window. At the checkpoint, finish or reconcile open attempts and refresh source,
 context, and prerequisites under the existing [deployment fences](environments.md).
-Run the affected Local journeys with the actual model. Use one guarded QA deploy
+After integrating, `npm run env -- restamp <alias>` moves the lane claim to the
+new HEAD; there is no need to release and re-claim. Run the affected Local journeys with the actual model. Use one guarded QA deploy
 for the batch when dependent deployed proof is required and authorized, then
 retest each original failure and the combined impact on that candidate. Record
 the hypothesis and changed variables; use fresh conversation roots for instruction

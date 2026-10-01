@@ -348,6 +348,11 @@ export function reclaimEnvironment(target, options = {}) {
     const previous = registry.targets[target].claim;
     if (!previous) throw fail('CLAIM_REQUIRED');
     const sameWorktree = previous.canonicalWorktreePath === worktree.path;
+    // `restamp` moves this worktree's own claim to its current HEAD and never
+    // takes a lane from anyone else, live or expired.
+    if (options.requireSameWorktree === true && !sameWorktree) {
+      throw fail('CLAIM_OWNER_MISMATCH', publicClaim(previous, now));
+    }
     let adoptedOrphan = false;
     if (Date.parse(previous.expiresAt) > now && !sameWorktree) {
       // A live lease normally belongs to its holder until it expires or is
@@ -366,6 +371,7 @@ export function reclaimEnvironment(target, options = {}) {
     next.revision = nextRevision;
     next.targets[target].claim = claim;
     next.audit.push(auditEvent(adoptedOrphan ? 'claim_adopted_orphan' : 'claim_reclaimed', target, now, nextRevision));
+    if (options.onReclaimed) options.onReclaimed(Object.freeze({ previous: Object.freeze({ ...previous }), claim }));
     trimAudit(next.audit);
     validateRegistry(next, options.allowLegacyRegistryRecovery === true);
     const markerPath = environmentMarkerPath(worktree.path);
@@ -1383,9 +1389,15 @@ function assertMatchingClaim(registry, target, worktree, options) {
   const claim = registry.targets[target].claim;
   if (!claim) throw fail('CLAIM_REQUIRED');
   if (claim.hostFingerprint !== registry.hostFingerprint) throw fail('HOST_MISMATCH');
-  if (claim.canonicalWorktreePath !== worktree.path || claim.branch !== worktree.branch) {
-    throw fail('CLAIM_OWNER_MISMATCH');
+  if (claim.canonicalWorktreePath !== worktree.path) throw fail('CLAIM_OWNER_MISMATCH');
+  // Giving a lane back needs only proof of ownership: the same worktree and its
+  // marker. Every mutation keeps the strict branch and revision fence below.
+  if (options.ownerHeadMayMove === true) {
+    const marker = readMarker(environmentMarkerPath(worktree.path));
+    if (!sameClaim(marker, claim)) throw fail('MARKER_MISMATCH');
+    return claim;
   }
+  if (claim.branch !== worktree.branch) throw fail('CLAIM_OWNER_MISMATCH');
   if (claim.claimedRevision !== worktree.revision) {
     const rolledBack = gitIsAncestor(worktree.path, worktree.revision, claim.claimedRevision, options);
     throw fail(rolledBack ? 'ROLLBACK_REVISION' : 'CLAIM_REVISION_MISMATCH');
