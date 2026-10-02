@@ -176,6 +176,10 @@ test('production private seam survives real workerd, D1, and isolate restart', {
       Math.abs(epoch(session.absoluteExpiresAt) - createdAt - SESSION_ABSOLUTE_MS) < 5_000,
       true,
     );
+    const absolute = await getJson(origin, '/test/absolute-expiry');
+    assert.equal(absolute.body.storedType, 'string', 'D1 stores Better Auth dates as ISO text');
+    assert.equal(absolute.body.parsed, new Date(absolute.body.stored).toISOString(),
+      'the backend reads the stored absolute expiry for the session refresh cap');
 
     const followUp = await fetch(`${origin}/api/auth/get-session`, { headers: { cookie } });
     assert.equal(followUp.status, 200);

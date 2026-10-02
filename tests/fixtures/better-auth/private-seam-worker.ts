@@ -139,8 +139,23 @@ async function dispatch(request: Request, env: Env): Promise<Response> {
     });
   }
 
+  if (url.pathname === '/test/absolute-expiry') {
+    // Reads the stored row through the backend, as the session refresh cap does.
+    const row = await env.AUTH_DB.prepare(
+      'SELECT token, absoluteExpiresAt FROM session ORDER BY createdAt DESC LIMIT 1',
+    ).first<{ token: string; absoluteExpiresAt: unknown }>();
+    const parsed = row ? await backend.absoluteExpiryForToken(row.token) : null;
+    return Response.json({
+      storedType: typeof row?.absoluteExpiresAt,
+      stored: row?.absoluteExpiresAt ?? null,
+      parsed: parsed?.toISOString() ?? null,
+    });
+  }
+
   if (url.pathname === '/test/expire-sessions' && request.method === 'POST') {
-    await env.AUTH_DB.prepare('UPDATE session SET absoluteExpiresAt = ?').bind(Date.now() - 1).run();
+    // Better Auth writes D1 dates as ISO text, so expire the row the same way.
+    await env.AUTH_DB.prepare('UPDATE session SET absoluteExpiresAt = ?')
+      .bind(new Date(Date.now() - 1).toISOString()).run();
     return Response.json({ ok: true });
   }
 
