@@ -362,18 +362,20 @@ function withoutKeyInErrors(source: AssistantMessageEventStream, apiKey: string)
 
 /**
  * Forward a provider stream into another, passing each error and the final
- * result through `map`. As Pi forwards a stream, the final result is read
- * last, since it may arrive without an event.
+ * result through `map` when one is given; without it every event passes as
+ * it is. As Pi forwards a stream, the final result is read last, since it
+ * may arrive without an event.
  */
 async function forwardStream(
   source: AssistantMessageEventStream,
   target: AssistantMessageEventStream,
-  map: (message: AssistantMessage) => AssistantMessage = (message) => message,
+  map?: (message: AssistantMessage) => AssistantMessage,
 ): Promise<void> {
   for await (const event of source) {
-    target.push(event.type === 'error' ? { ...event, error: map(event.error) } : event);
+    target.push(map && event.type === 'error' ? { ...event, error: map(event.error) } : event);
   }
-  target.end(map(await source.result()));
+  const result = await source.result();
+  target.end(map ? map(result) : result);
 }
 
 export function resetModelAccessForTests(): void {
