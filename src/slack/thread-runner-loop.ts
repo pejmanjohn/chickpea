@@ -765,6 +765,8 @@ export function runnerPresentationState(input: {
   remote: Pick<SlackPresentationStatePort, 'matchFlueObservation' | 'getLatestThreadSessionGeneration'> &
     RunnerSharedBudgets;
   putRemote(presentation: SlackRunPresentation): Promise<unknown>;
+  /** The state store's shared read budget, under installation tenancy (SlackPresentationStatePort). */
+  sharedSlackReads?: SlackPresentationStatePort['sharedSlackReads'];
   now?: () => number;
   publishIntervalMs?: number;
   generationCacheMs?: number;
@@ -820,6 +822,7 @@ export function runnerPresentationState(input: {
     state: {
       ...base,
       ...runnerSharedBudgets(input.remote, base, now),
+      ...(input.sharedSlackReads ? { sharedSlackReads: input.sharedSlackReads } : {}),
       // The shared store sees every presentation of this Slack thread,
       // including ones other executors own; generations never change, and a
       // newer one appears only with a new message, so a brief cache is safe.

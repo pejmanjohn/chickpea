@@ -3954,10 +3954,7 @@ export async function classifyCandidateTurn(
   const hydrated = await hydrateTurnSlackContext({
     client,
     turn,
-    ...(dependencies.installation ? {
-      transportMode: dependencies.installation.transportMode,
-      ...(dependencies.installation.botUserId ? { botUserId: dependencies.installation.botUserId } : {}),
-    } : {}),
+    ...(dependencies.installation?.botUserId ? { botUserId: dependencies.installation.botUserId } : {}),
     sharedAppReads: sharesSlackAppReadBudget({
       transportMode: dependencies.installation?.transportMode, env: platformEnv, client,
     }),

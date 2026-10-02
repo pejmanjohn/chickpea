@@ -2316,6 +2316,7 @@ async function finishSetup(
   });
   const presentationState = slackPresentationStatePort(
     getSlackStateStore(dependencies.platformEnv),
+    dependencies.platformEnv,
   );
   const presentation = presentationState
     ? {

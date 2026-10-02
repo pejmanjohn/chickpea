@@ -50,14 +50,14 @@ import {
 import type { ProgressiveEligibilityDecision } from './progressive-eligibility.ts';
 import { SlackTransportError } from './transport/types.ts';
 import { slackClientMessageId } from './transport/message-id.ts';
-import { setAgentSessionStatus } from './gateway/web-client.ts';
+import { isGatewaySlackWebClient, setAgentSessionStatus } from './gateway/web-client.ts';
 import {
   createSlackReadGate,
   isSlackRateLimitError,
-  sharesSlackAppReadBudget,
   slackRetryAfterMs,
   type SlackReadGate,
 } from './read-budget.ts';
+import type { SlackStateStore } from './claim-store.ts';
 import {
   MAX_SLACK_CONTINUATION_PARTS,
   MAX_SLACK_CONTINUATION_RESPLITS,
@@ -110,6 +110,12 @@ export interface SlackPresentationStatePort {
     instanceId: string,
     submissionId?: string,
   ): MaybePromise<FlueObservationTarget | undefined>;
+  /**
+   * The workspace's shared read budget, set where every installation draws
+   * on it (a deployment serving many): receipt reads book from it. Without
+   * it only the shared gateway app's receipt reads are paced, in this isolate.
+   */
+  sharedSlackReads?: Pick<SlackStateStore, 'reserveSlackRead' | 'applySlackReadCooldown'>;
 }
 
 type SlackActivityCleanupPreparation =
@@ -2677,11 +2683,11 @@ export class SlackAgentViewPresentation {
     // A receipt read is worth less than the next turn's context read. When the
     // shared app's budget has none left, the receipt stays unknown and the
     // caller tries again later, exactly as after a failed read.
+    const shared = this.options.state.sharedSlackReads;
     const gate = this.options.readGate ?? createSlackReadGate({
-      state: undefined,
+      state: shared,
       workspaceId: presentation.root.workspaceId,
-      // No installation context here: a deployment serving many still gates.
-      gated: sharesSlackAppReadBudget({ client: this.options.client }),
+      gated: shared !== undefined || isGatewaySlackWebClient(this.options.client),
     });
     if (!(await gate.reserve('conversations.replies')).ok) return undefined;
     try {

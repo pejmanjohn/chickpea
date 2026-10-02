@@ -39,7 +39,7 @@ export interface SlackInstallationExecutionContext {
   workspaceId: string;
   transportMode: 'direct' | 'gateway';
   /** Whether its reads draw on a shared app's budget (sharesSlackAppReadBudget). */
-  sharedAppReads?: boolean;
+  sharedAppReads: boolean;
   botToken?: string;
   botUserId: string;
   displayName?: string;

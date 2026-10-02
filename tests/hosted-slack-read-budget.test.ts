@@ -19,7 +19,13 @@ import {
   writeSlackInstallationCredentials,
 } from '../src/slack/installation-credentials.ts';
 import { resolveSlackInstallationExecutionContext } from '../src/slack/installation-execution.ts';
+import {
+  localSlackPresentationStatePort,
+  slackPresentationStatePort,
+} from '../src/slack/presentation-state-port.ts';
 import { sharesSlackAppReadBudget } from '../src/slack/read-budget.ts';
+import { SlackRunPresentationStoreLogic } from '../src/slack/run-presentations.ts';
+import { openStateDb } from '../src/state/node-state-db.ts';
 import { runTurn } from '../src/slack/run-turn.ts';
 import { hydrateTurnSlackContext } from '../src/slack/turn-context-reads.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
@@ -108,7 +114,7 @@ test('the turn reader pages a hosted installation\'s thread from the budget, 15 
   const hosted = repliesClient();
   const state = budget();
   const context = await hydrateTurnSlackContext({
-    client: hosted as never, turn: turn(), transportMode: 'direct', sharedAppReads: true, state,
+    client: hosted as never, turn: turn(), sharedAppReads: true, state,
   });
   assert.deepEqual(state.reserved, ['T1:conversations.replies']);
   assert.equal(hosted.calls.length, 1, 'one capped page, not the whole thread');
@@ -118,7 +124,7 @@ test('the turn reader pages a hosted installation\'s thread from the budget, 15 
   // Standalone direct is unchanged: large pages, no budget.
   const standalone = repliesClient();
   const unpaced = budget();
-  await hydrateTurnSlackContext({ client: standalone as never, turn: turn(), transportMode: 'direct', state: unpaced });
+  await hydrateTurnSlackContext({ client: standalone as never, turn: turn(), sharedAppReads: false, state: unpaced });
   assert.deepEqual(unpaced.reserved, []);
   assert.equal(standalone.calls[0]?.limit, 200);
 });
@@ -231,4 +237,69 @@ test('the execution context reports whether an installation shares the app\'s bu
   })) as unknown as typeof fetch;
   const context = await resolveSlackInstallationExecutionContext('T1');
   assert.equal(context.sharedAppReads, false, 'a customer\'s own app reads with its own limits');
+});
+
+test('a hosted turn without a resolved context gates its reads from the deployment', async (t) => {
+  const keys = ['TAG_DB_PATH', 'SLACK_STATE_DB_PATH', 'CHICKPEA_AUTH_DB_PATH'] as const;
+  const previous = keys.map((key) => process.env[key]);
+  for (const key of keys) process.env[key] = ':memory:';
+  closeNodeStateStores();
+  t.after(() => {
+    closeNodeStateStores();
+    keys.forEach((key, index) => {
+      if (previous[index] === undefined) delete process.env[key];
+      else process.env[key] = previous[index];
+    });
+  });
+  const replies = repliesClient();
+  const client = {
+    ...replies,
+    assistant: { threads: { setStatus: async () => ({ ok: true }) } },
+    chat: {
+      startStream: async () => ({ ok: true, ts: 'final-ts' }),
+      stopStream: async () => ({ ok: true }),
+      postMessage: async () => ({ ok: true, channel: 'C1', ts: 'final-ts' }),
+    },
+  } as unknown as WebClient;
+  const config = resolveStores().config;
+  const agent = await config.createAgent({
+    id: 'agent_reader', name: 'Reader', instructions: '', enabled: true, lifecycle: 'active',
+    creatorMembershipId: 'owner', editPolicy: 'creator_and_admins', skills: [], mcpServers: [],
+    apiConnections: [], repositories: [], model: 'local-stub/reader',
+  });
+  await runTurn({ ...turn(), interactionIntent: { disposition: 'reply', reason: 'substantive_request' } }, {
+    workspaceId: 'T1', channelId: 'C1', agentId: agent.id, agent, runtimeContract: 'legacy', model: 'local-stub/reader',
+  }, HOSTED, { client, replayText: 'Done.', usageRecordingEnabled: false });
+  assert.equal(replies.calls.length, 1);
+  assert.equal(replies.calls[0]?.limit, PACED_SLACK_READ_LIMIT);
+});
+
+test('a hosted installation\'s presentation ports carry its workspace read budget', async (t) => {
+  const presentations = new SlackRunPresentationStoreLogic(openStateDb(':memory:'));
+  const local = (sharedReadsEnv?: Record<string, unknown>) => localSlackPresentationStatePort({
+    presentations, matchFlueObservation: () => undefined, ...(sharedReadsEnv ? { sharedReadsEnv } : {}),
+  });
+  assert.equal(local().sharedSlackReads, undefined, 'a runner\'s own store holds no shared budget');
+  assert.equal(local({}).sharedSlackReads, undefined);
+  const hosted = local(HOSTED).sharedSlackReads;
+  assert.ok(hosted);
+  assert.equal((await hosted.reserveSlackRead!('T1', 'conversations.replies')).outcome, 'reserved');
+  assert.equal((await hosted.reserveSlackRead!('T1', 'conversations.replies')).outcome, 'exhausted',
+    'the same workspace row the turn reads book from');
+
+  const keys = ['TAG_DB_PATH', 'SLACK_STATE_DB_PATH', 'CHICKPEA_AUTH_DB_PATH'] as const;
+  const previous = keys.map((key) => process.env[key]);
+  for (const key of keys) process.env[key] = ':memory:';
+  closeNodeStateStores();
+  t.after(() => {
+    closeNodeStateStores();
+    keys.forEach((key, index) => {
+      if (previous[index] === undefined) delete process.env[key];
+      else process.env[key] = previous[index];
+    });
+  });
+  const state = resolveStores().slackState;
+  assert.ok(slackPresentationStatePort(state, HOSTED)?.sharedSlackReads);
+  assert.equal(slackPresentationStatePort(state)?.sharedSlackReads, undefined);
+  assert.equal(slackPresentationStatePort(state, {})?.sharedSlackReads, undefined);
 });

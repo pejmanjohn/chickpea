@@ -71,6 +71,7 @@ test('managed connector receipts post once into the exact thread as the Agent pe
     resolveInstallation: async (workspaceId) => ({
       workspaceId,
       transportMode: 'direct',
+      sharedAppReads: false,
       botUserId: 'U_BOT',
       client: {
         chat: {
@@ -122,6 +123,7 @@ test('private schedule receipts add a content-free reaction to the requesting me
     resolveInstallation: async (workspaceId) => ({
       workspaceId,
       transportMode: 'direct',
+      sharedAppReads: false,
       botUserId: 'U_BOT',
       client: {
         reactions: {
@@ -148,6 +150,7 @@ test('a gateway-shaped existing-reaction rejection is an idempotent delivery suc
     resolveInstallation: async (workspaceId) => ({
       workspaceId,
       transportMode: 'gateway',
+      sharedAppReads: true,
       botUserId: 'U_BOT',
       client: {
         reactions: {
@@ -268,6 +271,7 @@ test('an existing schedule acknowledgement reaction is an idempotent delivery su
     resolveInstallation: async (workspaceId) => ({
       workspaceId,
       transportMode: 'direct',
+      sharedAppReads: false,
       botUserId: 'U_BOT',
       client: {
         reactions: {
@@ -317,6 +321,7 @@ test('Agent welcome uses its persona and falls back to Chickpea when customize s
     resolveInstallation: async (workspaceId) => ({
       workspaceId,
       transportMode: 'direct',
+      sharedAppReads: false,
       botUserId: 'U_BOT',
       client: {
         chat: {
@@ -510,6 +515,7 @@ test('source-Channel-only partial creation still posts with the Agent persona an
     resolveInstallation: async (workspaceId) => ({
       workspaceId,
       transportMode: 'direct',
+      sharedAppReads: false,
       botUserId: 'U_BOT',
       client: {
         chat: {
@@ -567,6 +573,7 @@ test('an acknowledged Agent welcome is not retried when post-delivery bookkeepin
     resolveInstallation: async (workspaceId) => ({
       workspaceId,
       transportMode: 'direct',
+      sharedAppReads: false,
       botUserId: 'U_BOT',
       client: {
         chat: {
@@ -617,6 +624,7 @@ test('Chickpea introduction opens one Slack DM and posts bounded capability guid
     resolveInstallation: async (workspaceId) => ({
       workspaceId,
       transportMode: 'direct',
+      sharedAppReads: false,
       botUserId: 'U_BOT',
       client: {
         conversations: {

@@ -466,7 +466,7 @@ function createNodeThreadDrain(
     const discardTurn = state.discardTurn.bind(state);
     const turnJobView = state.turnJobView?.bind(state);
     const finishTurnStop = state.finishTurnStop?.bind(state);
-    const presentationState = slackPresentationStatePort(state);
+    const presentationState = slackPresentationStatePort(state, env);
     const runJob = async (listed: NodePendingTurn): Promise<boolean> => {
       // The loop listed this row before the turns ahead of it ran: a stop
       // since then may have held it, or dropped it with no run (KTD2).
@@ -848,7 +848,7 @@ async function drainNodeWakePassOnce(options: NodeTurnRelayDrainOptions): Promis
   if (!options.state) {
     const identity = getIdentityStore(env);
     const config = getConfigStore(env);
-    const presentationState = slackPresentationStatePort(state);
+    const presentationState = slackPresentationStatePort(state, env);
     const presentation = presentationState
       ? {
           state: presentationState,
@@ -899,7 +899,7 @@ async function drainPresentationRepairs(
   env: PlatformEnv | undefined,
   resolveInstallation?: SlackInstallationExecutionResolver,
 ): Promise<void> {
-  const presentationState = slackPresentationStatePort(state);
+  const presentationState = slackPresentationStatePort(state, env);
   if (!state.listRunPresentationsForRepair || !presentationState) return;
   const presentations = (await state.listRunPresentationsForRepair())
     .filter((presentation) => presentation.schemaVersion === 3);
@@ -1005,8 +1005,8 @@ async function drainLedgerRuns(input: {
         markError: state.markTurnError.bind(state),
       },
       executeTurn: input.executeTurn,
-      ...(slackPresentationStatePort(state)
-        ? { presentationState: slackPresentationStatePort(state)! }
+      ...(slackPresentationStatePort(state, input.env)
+        ? { presentationState: slackPresentationStatePort(state, input.env)! }
         : {}),
       setActiveWork: (key, generation, active) =>
         state.setActiveWork(key, generation, active),

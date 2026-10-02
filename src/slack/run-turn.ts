@@ -472,10 +472,9 @@ async function runTurnAttempt(
     throw new SlackInstallationUnavailableError(turnWorkspaceId, 'execution_workspace_mismatch');
   }
   const client = installationContext?.client ?? options.client ?? (await getClient(platformEnv));
-  // Every read of a shared app's installation draws on its workspace budget.
-  const sharedAppReads = installationContext?.sharedAppReads ?? sharesSlackAppReadBudget({
-    transportMode: installationContext?.transportMode, env: platformEnv, client,
-  });
+  const sharedAppReads = installationContext
+    ? installationContext.sharedAppReads
+    : sharesSlackAppReadBudget({ env: platformEnv, client });
   // A frozen assignment (from a thread snapshot) carries its model; otherwise
   // resolve it from the agent via policy.
   const resolvedModel = resolvedAssignmentModel(assignment);
@@ -1587,10 +1586,7 @@ async function runTurnAttempt(
       : await hydrateTurnSlackContext({
           client,
           turn,
-          ...(installationContext ? {
-            transportMode: installationContext.transportMode,
-            botUserId: installationContext.botUserId,
-          } : {}),
+          ...(installationContext ? { botUserId: installationContext.botUserId } : {}),
           sharedAppReads,
           state: options.appStores?.slackState ?? getSlackStateStore(platformEnv),
           ...(threadRecord ? { record: threadRecord } : {}),
