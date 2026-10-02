@@ -7,6 +7,7 @@ import { resolvedAssignmentFromEffectiveConfig } from '../config/effective-confi
 import { prepareMemoryTurn } from '../memory/runtime.ts';
 import { createSlackWebClient } from '../slack/run-turn.ts';
 import { resolveSlackContextNames } from '../slack/context-names.ts';
+import { sharesSlackAppReadBudget } from '../slack/read-budget.ts';
 import { hydrateTurnSlackContext } from '../slack/turn-context-reads.ts';
 import type { NormalizedSlackTurn } from '../slack/types.ts';
 import {
@@ -113,6 +114,7 @@ export async function prepareRoutinePrompt(
         client: readClient,
         turn: readTurn,
         state: getSlackStateStore(env),
+        sharedAppReads: sharesSlackAppReadBudget({ env, client: readClient }),
         ...(access.botUserId ? { botUserId: access.botUserId } : {}),
         ...(options?.maxMessages !== undefined ? { maxMessages: options.maxMessages } : {}),
       }));

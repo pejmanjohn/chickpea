@@ -1595,6 +1595,7 @@ test('runTurn resolves the authenticated self-mention placeholder before Slack d
     installationContext: {
       workspaceId: assignment.workspaceId,
       transportMode: 'direct',
+      sharedAppReads: false,
       botToken: 'xoxb-test',
       botUserId: 'U_CHICKPEA',
       displayName: 'Chickpea Renamed',

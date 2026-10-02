@@ -1,7 +1,6 @@
 import type { WebClient } from '@slack/web-api';
 
 import type { SlackStateStore } from './claim-store.ts';
-import { isGatewaySlackWebClient } from './gateway/web-client.ts';
 import { seedSlackThreadRecord } from './public-context.ts';
 import { createSlackReadGate } from './read-budget.ts';
 import { currentMessageOnlyContext, type SlackTurnContext } from './thread-context.ts';
@@ -33,8 +32,8 @@ type ThreadRecordStore = {
 export async function hydrateTurnSlackContext(input: {
   client: WebClient;
   turn: NormalizedSlackTurn;
-  /** 'gateway' is the shared app. Unknown falls back to the client's own marker. */
-  transportMode?: 'direct' | 'gateway';
+  /** Whether the installation's reads draw on a shared app's budget (sharesSlackAppReadBudget). */
+  sharedAppReads: boolean;
   botUserId?: string;
   state?: Pick<SlackStateStore, 'reserveSlackRead' | 'applySlackReadCooldown'>;
   record?: ThreadRecordStore;
@@ -48,9 +47,7 @@ export async function hydrateTurnSlackContext(input: {
   maxPages?: number;
 }): Promise<SlackTurnContext> {
   const { client, turn } = input;
-  const gated = input.transportMode
-    ? input.transportMode === 'gateway'
-    : isGatewaySlackWebClient(client);
+  const gated = input.sharedAppReads;
   const threadRecord = turn.contextMode === 'thread' && input.record
     ? await listThreadRecord(input.record, turn)
     : undefined;

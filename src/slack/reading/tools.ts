@@ -158,7 +158,7 @@ async function buildService(
     gate: createSlackReadGate({
       state: getSlackStateStore(env),
       workspaceId: signal.workspaceId,
-      gated: installation.transportMode === 'gateway',
+      gated: installation.sharedAppReads,
     }),
     authority,
     self: { botUserId: installation.botUserId },

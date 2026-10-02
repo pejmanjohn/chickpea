@@ -23,7 +23,7 @@ import {
 } from '@earendil-works/pi-ai';
 import type { FlueExecutionContext, FlueExecutionInterceptor } from '@flue/runtime';
 
-import { deploymentTenancy } from './installation-scope.ts';
+import { deploymentServesManyInstallations } from './installation-scope.ts';
 import type { PlatformEnv } from './state-backend.ts';
 import {
   ANTHROPIC_COMPAT_PROVIDER_ID,
@@ -116,16 +116,6 @@ export function modelAccessResolverConfigured(): boolean {
 function requireResolver(): ModelAccessResolver {
   if (!resolver) throw new Error('No model access resolver is configured.');
   return resolver;
-}
-
-/**
- * Whether the deployment serves many installations, from the env a caller
- * passes and from the deployment's own variables, so a caller that passes no
- * env still never gets standalone credential rules on such a deployment. A
- * malformed declaration throws, as it does for installation routing.
- */
-export function deploymentServesManyInstallations(env?: PlatformEnv): boolean {
-  return deploymentTenancy(env) === 'installation' || deploymentTenancy(process.env) === 'installation';
 }
 
 /** The installation-supplied provider a registered provider id routes for, if any. */

@@ -238,7 +238,7 @@ test('a private once occurrence reattaches a legacy catalog hash and delivers to
         effectiveConnections: [],
       }),
       installationExecution: async () => ({
-        workspaceId: routine.workspaceId, transportMode: 'gateway',
+        workspaceId: routine.workspaceId, transportMode: 'gateway', sharedAppReads: true,
         botUserId: 'UBOT', client: client as never,
       }),
     });

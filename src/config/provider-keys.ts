@@ -1,5 +1,4 @@
-import { installationCacheKey } from './installation-scope.ts';
-import { deploymentServesManyInstallations } from './model-access.ts';
+import { deploymentServesManyInstallations, installationCacheKey } from './installation-scope.ts';
 import {
   deploymentModelKeyring,
   hostedModelCredentialSaved,

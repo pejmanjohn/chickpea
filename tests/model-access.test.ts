@@ -22,6 +22,7 @@ import {
   withStatelessModelAccess,
 } from '../src/config/installation-model-access.ts';
 import {
+  deploymentServesManyInstallations,
   installationOwnershipOf,
   installationScopeOf,
   scopeInstallationEnv,
@@ -31,7 +32,6 @@ import {
   ModelAccessError,
   configureModelAccessResolver,
   createModelAccessInterceptor,
-  deploymentServesManyInstallations,
   resetModelAccessForTests,
   withDeploymentLane,
   withModelAccess,

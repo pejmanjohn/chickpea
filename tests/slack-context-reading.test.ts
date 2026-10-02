@@ -278,7 +278,7 @@ test('the turn reader seeds what it read and skips Slack once the record holds t
       applySlackReadCooldown: async () => ({ cooldownUntil: 0, budgetVersion: 1 }),
     };
     const first = await hydrateTurnSlackContext({
-      client: client as never, turn: turn(), transportMode: 'gateway', state, record: store,
+      client: client as never, turn: turn(), sharedAppReads: true, state, record: store,
     });
     assert.equal(reads.calls, 1);
     assert.ok(first.messages.some((message) => message.ts === ROOT));
@@ -289,7 +289,7 @@ test('the turn reader seeds what it read and skips Slack once the record holds t
     ]);
 
     const second = await hydrateTurnSlackContext({
-      client: client as never, turn: turn({ messageTs: '1020.000100' }), transportMode: 'gateway', state, record: store,
+      client: client as never, turn: turn({ messageTs: '1020.000100' }), sharedAppReads: true, state, record: store,
     });
     assert.equal(reads.calls, 1);
     const assembled = await assembleRetainedSlackContext(second, turn({ messageTs: '1020.000100' }), {
@@ -304,7 +304,7 @@ test('the install\'s own app reads without the budget and keeps reading large pa
     { messages: [PAGERDUTY_ALERT], next_cursor: '1' },
     { messages: [{ type: 'message', user: 'U_DANA', ts: '1005.000100', thread_ts: ROOT, text: 'latest' }] },
   ]);
-  const context = await hydrateTurnSlackContext({ client: client as never, turn: turn(), transportMode: 'direct' });
+  const context = await hydrateTurnSlackContext({ client: client as never, turn: turn(), sharedAppReads: false });
   assert.equal(client.calls.length, 2);
   assert.equal(client.calls[0]?.limit, 200);
   assert.deepEqual(context.messages.map((message) => message.ts), [ROOT, '1005.000100', turn().messageTs]);
@@ -595,7 +595,7 @@ test('a thread read from the record keeps its images, including the request that
     } as never, { botUserId: 'UBOT' });
     const client = repliesClient([]);
     const context = await hydrateTurnSlackContext({
-      client: client as never, turn: turn(), transportMode: 'gateway', state: GRANTING_STATE, record: store,
+      client: client as never, turn: turn(), sharedAppReads: true, state: GRANTING_STATE, record: store,
     });
     assert.equal(client.calls.length, 0);
     assert.deepEqual(context.images?.map(({ fileId, origin, messageTs, byteLength }) =>
@@ -637,7 +637,7 @@ test('an image the Agent posted stays in a record-only turn\'s inventory', async
     ]);
     const client = repliesClient([]);
     const context = await hydrateTurnSlackContext({
-      client: client as never, turn: turn(), transportMode: 'gateway', state: GRANTING_STATE, record: store,
+      client: client as never, turn: turn(), sharedAppReads: true, state: GRANTING_STATE, record: store,
     });
     assert.equal(client.calls.length, 0);
     assert.deepEqual(context.images?.map(({ fileId, origin, messageTs, byteLength }) =>
@@ -654,7 +654,7 @@ test('a record seeded from a capped read says what it is missing on later turns'
     // The shared app's capped page: the root, then only the newest replies.
     const client = repliesClient([{ messages: [PAGERDUTY_ALERT, newest, trigger], next_cursor: '1' }]);
     const first = await hydrateTurnSlackContext({
-      client: client as never, turn: turn(), transportMode: 'gateway', state: GRANTING_STATE, record: store,
+      client: client as never, turn: turn(), sharedAppReads: true, state: GRANTING_STATE, record: store,
     });
     assert.equal(first.truncated, true);
     const [root] = await store.listSlackPublicContext('T1', 'C1', ROOT);
@@ -662,7 +662,7 @@ test('a record seeded from a capped read says what it is missing on later turns'
 
     const later = turn({ messageTs: '1020.000100' });
     const second = await hydrateTurnSlackContext({
-      client: client as never, turn: later, transportMode: 'gateway', state: GRANTING_STATE, record: store,
+      client: client as never, turn: later, sharedAppReads: true, state: GRANTING_STATE, record: store,
     });
     assert.equal(client.calls.length, 1);
     assert.equal(second.truncated, true);
@@ -696,7 +696,7 @@ test('a turn lists the record once and seeds only rows it does not hold', async 
       { type: 'message', user: 'U_SAM', ts: '1002.000100', thread_ts: ROOT, text: 'new' },
     ] }]);
     const hydrated = await hydrateTurnSlackContext({
-      client: client as never, turn: turn(), transportMode: 'direct', record,
+      client: client as never, turn: turn(), sharedAppReads: false, record,
     });
     const assembled = await assembleRetainedSlackContext(hydrated, turn(), { store: record, agentId: 'agent_oncall' });
     assert.equal(lists, 1);
@@ -710,7 +710,7 @@ test('classifying a message leaves the shared app\'s read to the turn', async ()
   await withStore(async (store) => {
     const client = repliesClient([{ messages: [PAGERDUTY_ALERT] }]);
     const unread = await hydrateTurnSlackContext({
-      client: client as never, turn: turn(), transportMode: 'gateway', state: GRANTING_STATE, record: store,
+      client: client as never, turn: turn(), sharedAppReads: true, state: GRANTING_STATE, record: store,
       pacedReads: false,
     });
     assert.equal(client.calls.length, 0);
@@ -718,7 +718,7 @@ test('classifying a message leaves the shared app\'s read to the turn', async ()
 
     // The install's own app has no shared budget to protect.
     await hydrateTurnSlackContext({
-      client: client as never, turn: turn(), transportMode: 'direct', record: store, pacedReads: false,
+      client: client as never, turn: turn(), sharedAppReads: false, record: store, pacedReads: false,
     });
     assert.equal(client.calls.length, 1);
   });

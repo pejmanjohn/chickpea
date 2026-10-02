@@ -49,6 +49,8 @@ function harness(input: {
   sessionError?: unknown;
   onNativeStarted?: () => Promise<void>;
   readGate?: SlackReadGate;
+  /** The workspace read budget a deployment serving many shares (SlackPresentationStatePort). */
+  sharedSlackReads?: SlackPresentationStatePort['sharedSlackReads'];
   persona?: { name: string; avatarUrl: string; avatarRevision: number };
   owner?:
     | { kind: 'selected_agent'; persona: { name: string; avatarUrl: string; avatarRevision: number } }
@@ -190,6 +192,7 @@ function harness(input: {
         mode: 'observe',
       },
     }),
+    ...(input.sharedSlackReads ? { sharedSlackReads: input.sharedSlackReads } : {}),
   };
   const presentation = new SlackAgentViewPresentation({
     client,
@@ -1109,6 +1112,43 @@ test('a receipt read waits for the shared app\'s read budget and leaves the rece
     assert.equal(stored?.schemaVersion === 3 && stored.currentActivity?.operation.certainty, 'unknown');
   } finally {
     h.db.close();
+  }
+});
+
+test('a receipt read of a deployment serving many installations books from the workspace read budget', async () => {
+  const booked: string[] = [];
+  let reads = 1;
+  const sharedSlackReads = {
+    async reserveSlackRead(workspaceId: string, method: string) {
+      booked.push(`${workspaceId}:${method}`);
+      return reads-- > 0
+        ? { outcome: 'reserved' as const, budgetVersion: 1 }
+        : { outcome: 'exhausted' as const, retryAt: 60_000, budgetVersion: 1 };
+    },
+    async applySlackReadCooldown() { return { cooldownUntil: 0, budgetVersion: 1 }; },
+  };
+  for (const shared of [sharedSlackReads, undefined]) {
+    const h = harness({ schemaVersion: 3, owner: { kind: 'chickpea' }, ...(shared ? { sharedSlackReads: shared } : {}) });
+    try {
+      const prepared = await h.presentation.beginActivity({
+        kind: 'reading', action: 'Reading', object: 'the request', text: 'Reading the request',
+      }, 'message');
+      assert.ok(prepared);
+      await h.presentation.recordActivityReceipt(prepared.operationId, 'unknown');
+      // An incomplete page leaves the receipt unknown, so a later pass reads again.
+      h.setThreadReplies([], false);
+      await h.presentation.reconcileActivityReceipts();
+      await h.presentation.reconcileActivityReceipts();
+      const replies = h.calls.filter((call) => call.method === 'conversations.replies').length;
+      if (shared) {
+        assert.deepEqual(booked, [`${ROOT.workspaceId}:conversations.replies`, `${ROOT.workspaceId}:conversations.replies`]);
+        assert.equal(replies, 1, 'the second read waits for the workspace\'s next minute');
+      } else {
+        assert.equal(replies, 2, 'a customer\'s own app reads its receipts unpaced');
+      }
+    } finally {
+      h.db.close();
+    }
   }
 });
 

@@ -1,7 +1,11 @@
 import { randomUUID } from 'node:crypto';
 
-import { InstallationContextError, requireInstallationScope } from './installation-scope.ts';
-import { deploymentServesManyInstallations, providerPrefix } from './model-access.ts';
+import {
+  deploymentServesManyInstallations,
+  InstallationContextError,
+  requireInstallationScope,
+} from './installation-scope.ts';
+import { providerPrefix } from './model-access.ts';
 import { modelCredentialSettingKeys } from './model-credential-settings.ts';
 import type { ProviderKeyId } from './provider-keys.ts';
 import {

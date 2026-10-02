@@ -2365,11 +2365,12 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
         }
         const presentationRepairs = await drainTerminalPresentationRepairs(
           stores,
+          this.env as PlatformEnv,
           resolveInstallation,
           carriedJobIds(),
         );
         const scheduleActions = await drainCloudflareScheduleActions(stores, this.env as PlatformEnv);
-        await drainCloudflareManagementReceipts(stores, resolveInstallation, this.presentationRunnerOf);
+        await drainCloudflareManagementReceipts(stores, this.env as PlatformEnv, resolveInstallation, this.presentationRunnerOf);
         return { ledgerDrain, presentationRepairs, scheduleActions };
       });
       const turnRetry = gatewayNeedsRetry || stores.gatewayInbox.hasPending() ||
@@ -2420,7 +2421,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       turnJobs: alarmTurnJobsPort(stores),
       slack: stores.slack,
       config: stores.config,
-      presentationState: localSlackPresentationState(stores),
+      presentationState: localSlackPresentationState(stores, this.env as PlatformEnv),
       settingsStore: localSettingsStore(stores),
       usageStore,
       workStore: stores.work as unknown as WorkStore,
@@ -2487,9 +2488,9 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       // own to finish; the tail picks them up once it returns.
       tick: async (runningJobIds) => {
         await drainSlackInteractionCleanups(stores, resolveInstallation, runningJobIds);
-        await drainTerminalPresentationRepairs(stores, resolveInstallation, runningJobIds);
+        await drainTerminalPresentationRepairs(stores, this.env as PlatformEnv, resolveInstallation, runningJobIds);
         await drainCloudflareScheduleActions(stores, this.env as PlatformEnv);
-        await drainCloudflareManagementReceipts(stores, resolveInstallation, this.presentationRunnerOf);
+        await drainCloudflareManagementReceipts(stores, this.env as PlatformEnv, resolveInstallation, this.presentationRunnerOf);
       },
       startConcurrency: MAX_TURN_DRAIN_BATCH,
       maxActiveThreads: MAX_TURN_DRAIN_BATCH,
@@ -2528,11 +2529,12 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       await drainSlackInteractionCleanups(stores, resolveInstallation, carriedJobIds());
       const presentationRepairs = await drainTerminalPresentationRepairs(
         stores,
+        this.env as PlatformEnv,
         resolveInstallation,
         carriedJobIds(),
       );
       const scheduleActions = await drainCloudflareScheduleActions(stores, this.env as PlatformEnv);
-      await drainCloudflareManagementReceipts(stores, resolveInstallation, this.presentationRunnerOf);
+      await drainCloudflareManagementReceipts(stores, this.env as PlatformEnv, resolveInstallation, this.presentationRunnerOf);
       return { presentationRepairs, scheduleActions };
     });
     needsRetry ||= stores.turnJobs.hasPending('legacy') ||
@@ -2951,6 +2953,7 @@ async function drainSlackInteractionCleanups(
 
 async function drainTerminalPresentationRepairs(
   stores: TagStateStores,
+  env: PlatformEnv,
   resolveInstallation: SlackInstallationExecutionResolver,
   excludeTurnJobIds: ReadonlySet<string> = new Set(),
 ): Promise<SlackPresentationRepairDrainResult> {
@@ -2960,7 +2963,7 @@ async function drainTerminalPresentationRepairs(
     .filter((presentation) => !excludeTurnJobIds.has(presentation.turnJobId));
   return drainSlackPresentationRepairs({
     presentations,
-    state: localSlackPresentationState(stores),
+    state: localSlackPresentationState(stores, env),
     resolveClient: async (workspaceId) => (await resolveInstallation(workspaceId)).client,
     onFailure: (_presentation, error) => {
       console.warn('[chickpea] Slack presentation repair failed:', sanitizeError(error));
@@ -2970,13 +2973,14 @@ async function drainTerminalPresentationRepairs(
 
 async function drainCloudflareManagementReceipts(
   stores: TagStateStores,
+  env: PlatformEnv,
   resolveInstallation: SlackInstallationExecutionResolver,
   presentationRunner: (runId: string) => SlackThreadRunnerRpc | undefined = () => undefined,
 ): Promise<void> {
   // ManagementStoreLogic is the in-DO synchronous implementation of every
   // ManagementStore operation; the shared drain awaits its return values, so
   // one implementation owns claim, backoff, terminal settling, and logging.
-  const local = localSlackPresentationState(stores);
+  const local = localSlackPresentationState(stores, env);
   // A runner-executed turn's presentation lives in its thread runner.
   const runnerCopy = (runId: string) => {
     const runner = presentationRunner(runId);
@@ -3099,7 +3103,7 @@ async function drainLedgerRuns(
       platformEnv,
       settingsStore: localSettingsStore(stores),
       usageStore: localUsageStore(stores),
-      presentationState: localSlackPresentationState(stores),
+      presentationState: localSlackPresentationState(stores, platformEnv),
       setActiveWork: (key, generation, active) =>
         stores.slack.setActiveWork(key, generation, active),
       markCodingActiveWork: (key, generation) =>
@@ -3367,9 +3371,10 @@ function alarmTurnJobsPort(stores: TagStateStores): TurnExecutionPorts['turnJobs
   };
 }
 
-function localSlackPresentationState(stores: TagStateStores): SlackPresentationStatePort {
+function localSlackPresentationState(stores: TagStateStores, env: PlatformEnv): SlackPresentationStatePort {
   return localSlackPresentationStatePort({
     presentations: stores.presentations,
+    sharedReadsEnv: env,
     matchFlueObservation: (instanceId, submissionId) =>
       stores.turnJobs.matchFlueObservation(instanceId, submissionId),
   });

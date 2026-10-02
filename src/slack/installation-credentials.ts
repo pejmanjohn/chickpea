@@ -1,6 +1,6 @@
 import * as sqliteIdentityStoreModule from '../identity/store.ts';
 import {
-  deploymentTenancy,
+  deploymentServesManyInstallations,
   InstallationContextError,
   requireInstallationScope,
 } from '../config/installation-scope.ts';
@@ -291,7 +291,7 @@ export async function resolveSlackInstallationCredentials(
     // does not load says nothing about this installation's data, so service
     // stops without locking every installation it touches into recovery.
     const resolutionEnv = isStateDependencies(explicit) ? explicit.env ?? env : env;
-    if (servesManyInstallations(resolutionEnv)) throw new SlackCredentialUnavailableError();
+    if (deploymentServesManyInstallations(resolutionEnv)) throw new SlackCredentialUnavailableError();
     await enterCredentialRecoveryOnly(state);
     throw new SlackCredentialRecoveryOnlyError();
   }
@@ -748,15 +748,6 @@ export async function replaceUnreadableHostedSlackBotBundle(
   await audit(unreadable);
   await leaveCredentialRecoveryOnly(state);
   return promoted;
-}
-
-/**
- * Whether the deployment serves many installations, from the env or, for a
- * caller that passes none, the deployment's own variables (as
- * deploymentServesManyInstallations decides it for model access).
- */
-function servesManyInstallations(env: PlatformEnv | undefined): boolean {
-  return deploymentTenancy(env) === 'installation' || deploymentTenancy(process.env) === 'installation';
 }
 
 /** Why the current keyring cannot read `revision`, or undefined when it can. Never latches recovery. */

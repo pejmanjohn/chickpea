@@ -4,12 +4,13 @@ import { DurableObject, type DurableObjectState } from 'cloudflare:workers';
 import { activityStatus, isSafeTypedActivityStatus, type TypedActivityStatus } from '../activity/status.ts';
 import { CfTurnJobsForRunner } from '../config/cf-state-proxies.ts';
 import { cloudflareWorkerVersionId } from '../config/cloudflare-version.ts';
-import { assertInstallationOwnership, objectInstallationEnv } from '../config/installation-scope.ts';
+import { assertInstallationOwnership, deploymentTenancy, objectInstallationEnv } from '../config/installation-scope.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import {
   getConfigStore,
   getIdentityStore,
   getSettingsStore,
+  getSlackStateStore,
   type PlatformEnv,
 } from '../config/state-backend.ts';
 import type { SlackPublicContextEntryInput } from '../config/types.ts';
@@ -318,6 +319,7 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
       local,
       remote: rows,
       putRemote: (value) => rows.putPresentation(value),
+      ...(deploymentTenancy(env) === 'installation' ? { sharedSlackReads: getSlackStateStore(env) } : {}),
     });
     // Resolved at most once per identity per alarm, so credential rotation
     // is observed by the next alarm. A turn's own resolution reuses what its

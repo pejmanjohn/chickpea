@@ -68,6 +68,16 @@ export function deploymentTenancy(env: Env | undefined): DeploymentTenancy {
   );
 }
 
+/**
+ * Whether the deployment serves many installations, from the env a caller
+ * passes and from the deployment's own variables, so a caller that passes no
+ * env still never gets standalone rules on such a deployment. A malformed
+ * declaration throws, as it does for installation routing.
+ */
+export function deploymentServesManyInstallations(env?: Env): boolean {
+  return deploymentTenancy(env) === 'installation' || deploymentTenancy(process.env) === 'installation';
+}
+
 /** An env that serves exactly one installation. The input is never changed. */
 export function scopeInstallationEnv<E extends Env>(env: E, scope: InstallationScope): E {
   if (deploymentTenancy(env) !== 'installation') {
