@@ -72,8 +72,9 @@
   including test messages, product approvals, and OAuth with registered test
   accounts. Do not request the same permission at every step. Use its mode and
   authorization boundaries; production/shared infrastructure are outside scope.
-  If skill discovery is unavailable, read `qa/live/operator/SKILL.md` before
-  acting. It points to the public catalog and runbook. Keep target coordinates,
+  If skill discovery is unavailable, read the entrypoint
+  `.claude/skills/chickpea-live-verification/SKILL.md` (it names the profile),
+  then `qa/live/operator/SKILL.md`, before acting. It points to the public catalog and runbook. Keep target coordinates,
   resolved aliases, journals, transcripts, screenshots, and evidence outside
   this repository.
 - For runtime failures, unexplained behavior, or timing issues, consult existing

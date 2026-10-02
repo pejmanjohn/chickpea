@@ -59,6 +59,11 @@ Violet test environments:
   before-values, and restoring them; using the configured test model for bounded
   journeys and the selected real-model regression cases.
 - Dismissing ordinary native confirmation dialogs that implement those actions.
+- Sending, creating, editing, archiving and cleaning in the lane Slack
+  workspaces and their test accounts without asking. The shared exclusions
+  still apply: no workspace deletion, no app or gateway configuration, and
+  standing fixtures and sign-ins stay as they are. In Asana, use private tasks
+  only, never shared projects.
 
 A fresh Slack installation may borrow any eligible free registered lane using
 the [installation reservation](../environments.md#borrow-a-lane-for-a-fresh-install).
@@ -93,13 +98,6 @@ Missing credentials, occupied lanes and unresolved restoration remain blockers.
 3. Confirm the required credential fixtures exist on that lane (see
    [fixtures.md](../fixtures.md#credentials)). Never ask for a secret in chat.
 
-## Lane schema
-
-- Advance a lane's schema with `npm run env -- schema-advance <lane>` whenever
-  the candidate needs it, merged or not. Prefer a lane already at the
-  candidate's generation, because an advance is permanent, and name it in the
-  run report.
-
 ## Targets, candidate admission and telemetry
 
 These complete the shared normal path's steps 2 and 3 on lanes.
@@ -112,6 +110,10 @@ These complete the shared normal path's steps 2 and 3 on lanes.
   rather than by trial and error. Reuse its claim. Prefer an owned local
   workerd/HTTP lane for repair cycles; deployed due-time, gateway, bindings, and
   release proof require a deployed lane.
+- Advance a lane's schema with `npm run env -- schema-advance <lane>` whenever
+  the candidate needs it, merged or not, without asking. Prefer a lane already
+  at the candidate's generation, because an advance is permanent, and name it
+  in the run report.
 - Before synthetic actions on a deployed target, attach the serving version's
   [telemetry isolation receipt](../environments.md#product-telemetry-isolation):
   the guarded lane deploy writes it and prints its path, and

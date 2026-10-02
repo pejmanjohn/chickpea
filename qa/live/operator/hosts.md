@@ -1,6 +1,7 @@
 # Codex and Claude hosts
 
-The `.agents` and `.claude` skill entrypoints both load [SKILL.md](SKILL.md).
+The `.agents` and `.claude` skill entrypoints both load [SKILL.md](SKILL.md) and
+name its profile.
 Keep workflow policy and executable helpers here; a host adapter only explains
 tool access. Both hosts use the same Node commands, private records, and lane
 claims. Neither host's task list is an acceptance record.
@@ -250,7 +251,7 @@ table; a row's "Codex" entry is the equivalent, not a weaker substitute.
 | Delegate a repair or a review | `Agent` (worktree isolation) and `SendMessage` between sessions | `spawn_agent`; cross-thread messages. A delegated reviewer must not delegate again, and must await any test it starts |
 | A declared QA action is blocked | the auto-mode classifier; allow rules; ask once | Codex's approval policy; ask once |
 | Node | the session inherits the maintainer's shell, pinned Node first | the login shell, pinned Node first; nested `zsh -c` shells inherit it |
-| Skill loading | `/chickpea-live-verification` | `$chickpea-live-verification`; read the canonical [SKILL.md](SKILL.md) in full before the supporting docs |
+| Skill loading | `/chickpea-live-verification` | `$chickpea-live-verification`; read the canonical [SKILL.md](SKILL.md) and its profile in full before the supporting docs |
 | Tools configured but not callable | `/mcp` (human) reconnects a failed server | `codex mcp login`; a configured server may not be callable until then, so the kickoff check tests a call, not the config |
 
 ## Older workflow compatibility

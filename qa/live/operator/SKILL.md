@@ -24,13 +24,14 @@ actions for its targets. Everything else here applies to every profile.
   repository on its QA lanes and borrowed fresh installs. It is valid only when
   the project root is a checkout of this repository.
 - `hosted` verifies the private hosted edition. Its entrypoint and profile live
-  in that repository, which reads this workflow from its pinned copy of this one.
+  in that repository, which reads this workflow from its pinned Core checkout.
 
 Stop before claiming anything when the entrypoint names no profile, the named
 profile's file is missing, the project root does not belong to the profile, or
-more than one entrypoint for this skill is visible from the project root. Never
-choose a profile from a URL, credential, diff or target name, and never fall back
-to another profile's targets.
+more than one entrypoint for this skill is visible from the project root. The
+entrypoint, not the request, selects the profile: never choose one from a URL,
+credential, diff or target name, and never fall back to another profile's
+targets.
 
 ## Invocation authorizes the test
 
@@ -69,11 +70,6 @@ widen the authorization above.
 - Aim for autopilot: take the obvious next step instead of stopping to ask, and
   fix a broken tool once rather than handing it back. When a lane is busy, use
   another free lane that covers the cases.
-- Send, create, edit, archive and clean in the lane Slack workspaces and their
-  test accounts without asking. The exclusions above still apply: no workspace
-  deletion, no app or gateway configuration, and standing fixtures and
-  sign-ins stay as they are. In Asana, use private tasks only, never shared
-  projects.
 - Fix a defect the run finds and validate the fix in the same run. Do not ship a
   known gap as a documented limit.
 - Record and report upstream defects (provider, gateway, Slack). Do not build
