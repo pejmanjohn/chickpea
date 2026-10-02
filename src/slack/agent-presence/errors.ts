@@ -153,7 +153,7 @@ export function agentPresenceRecovery(
   if (desiredState === 'disabled') {
     return {
       title: `Slack could not finish archiving @${handle}`,
-      explanation: 'The Agent is not archived yet because its Slack handle could not be disabled. Retry will finish archiving it, without reactivating the handle.',
+      explanation: 'The Agent is not archived yet because its Slack handle could not be disabled. Retry will finish archiving it, without reactivating the handle. If you chose a replacement default Agent, it is already in place.',
       steps: error.code === 'user_group_policy_denied'
         ? [
             `Ask an authorized Slack Workspace Owner or Admin to deactivate the @${handle} user group: in Slack, open Directories → User Groups, select @${handle}, and deactivate it from its ⋮ menu.`,

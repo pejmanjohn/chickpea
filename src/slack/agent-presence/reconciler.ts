@@ -552,19 +552,11 @@ export class AgentPresenceReconciler {
     const defaultInstallations = (await config.listWorkspaceInstallations()).filter(
       (installation) => installation.defaultAgentId === agentId,
     );
-    if (defaultInstallations.length > 0 && !options.replacementDefaultAgentId) {
+    const replacement = options.replacementDefaultAgentId;
+    if (defaultInstallations.length > 0 && !replacement) {
       throw new AgentPresenceError(
         'slack_operation_failed',
         `Choose a replacement default Agent before archiving ${agent.name}.`,
-      );
-    }
-    // The replacement comes with this request only. Apply it before Slack is
-    // asked, so a Retry after a denied disable no longer needs one.
-    for (const installation of defaultInstallations) {
-      await config.setWorkspaceDefaultAgent(
-        installation.workspaceId,
-        options.replacementDefaultAgentId!,
-        installation.revision,
       );
     }
     const presence = requiredPresence(agent);
@@ -579,6 +571,14 @@ export class AgentPresenceReconciler {
       },
       agent.revision,
     );
+    // The replacement comes with this request only. Apply it once the Agent
+    // is marked for archiving and before Slack is asked, so a Retry after a
+    // denied disable no longer needs one.
+    if (replacement) {
+      for (const installation of defaultInstallations) {
+        await config.setWorkspaceDefaultAgent(installation.workspaceId, replacement, installation.revision);
+      }
+    }
     if (presence.userGroupId) {
       try {
         const group = await transport.lookupUserGroup(presence.userGroupId);
@@ -609,12 +609,7 @@ export class AgentPresenceReconciler {
       },
       agent.revision,
     );
-    return config.archiveAgent(agent.id, {
-      expectedRevision: agent.revision,
-      ...(options.replacementDefaultAgentId
-        ? { replacementDefaultAgentId: options.replacementDefaultAgentId }
-        : {}),
-    });
+    return config.archiveAgent(agent.id, { expectedRevision: agent.revision });
   }
 
   async restore(agentId: string): Promise<CustomAgentConfig> {
@@ -702,7 +697,8 @@ export class AgentPresenceReconciler {
  * Disable an Agent's user group. Slack answers `already_disabled` when an
  * Owner or Admin deactivated it first, which is the state archive wants; a
  * group the workspace's list no longer has, and that Slack cannot find,
- * leaves no live handle either.
+ * leaves no live handle either. A not-found answer for a group still listed
+ * is a failure.
  */
 async function disableUserGroup(
   transport: SlackTransport,
@@ -714,7 +710,7 @@ async function disableUserGroup(
   } catch (error) {
     if (!(error instanceof SlackTransportError)) throw error;
     if (error.code === 'already_disabled') return;
-    if (options.missing && error.code === 'subteam_not_found') return;
+    if (options.missing && USER_GROUP_NOT_FOUND.has(error.code)) return;
     throw error;
   }
 }
@@ -728,6 +724,9 @@ async function enableUserGroup(transport: SlackTransport, userGroupId: string): 
     throw error;
   }
 }
+
+/** An unknown user group: Slack documents `no_such_subteam`; `subteam_not_found` is accepted too. */
+const USER_GROUP_NOT_FOUND = new Set(['no_such_subteam', 'subteam_not_found']);
 
 function requiredPresence(agent: CustomAgentConfig): AgentSlackPresence {
   if (!agent.slackPresence) throw new Error(`Agent ${agent.id} has no Slack presence`);
