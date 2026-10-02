@@ -290,9 +290,8 @@ export async function resolveSlackInstallationCredentials(
     // A deployment serving many installations shares one keyring: one that
     // does not load says nothing about this installation's data, so service
     // stops without locking every installation it touches into recovery.
-    if (deploymentTenancy(isStateDependencies(explicit) ? explicit.env ?? env : env) === 'installation') {
-      throw new SlackCredentialUnavailableError();
-    }
+    const resolutionEnv = isStateDependencies(explicit) ? explicit.env ?? env : env;
+    if (servesManyInstallations(resolutionEnv)) throw new SlackCredentialUnavailableError();
     await enterCredentialRecoveryOnly(state);
     throw new SlackCredentialRecoveryOnlyError();
   }
@@ -653,13 +652,15 @@ export async function stageMissingSlackCredentialBundle(
  * Owner here.
  *
  * Every live revision must be this installation's bot for that app and
- * team, and the active one must really be unreadable; one that reads is
- * replaced as an ordinary reinstall (writeHostedSlackBotCredentials). The
- * unreadable revision is tombstoned (every live one, when the epoch moves to
- * the deployment's current key), the fresh bundle is staged and promoted,
- * the replacement is audited (key_missing or decrypt_failed), and the gate
- * is cleared. A replacement interrupted after its tombstone resumes on the
- * next grant (replacement_resumed).
+ * team. An unreadable active revision is replaced in one promotion, which
+ * tombstones and scrubs it, so the installation always has an active bundle;
+ * when the deployment's key changed, the epoch first moves to its current
+ * key and the other live revisions are tombstoned. The replacement is
+ * audited (key_missing or decrypt_failed) and the gate cleared. An active
+ * bundle that already reads (a replacement interrupted after its promotion,
+ * or a key slot restored) is kept, and the gate is cleared with the audit
+ * replacement_completed; an ordinary reinstall of a readable bundle goes
+ * through writeHostedSlackBotCredentials.
  */
 export async function replaceUnreadableHostedSlackBotBundle(
   dependencies: SlackCredentialDependencies & { env: PlatformEnv },
@@ -692,14 +693,26 @@ export async function replaceUnreadableHostedSlackBotBundle(
     throw refuse('This installation holds credentials for another Slack app or workspace.');
   }
   const active = await state.getActiveSlackCredentialRevision(HOSTED_SLACK_INSTALLATION_ID);
-  // A replacement interrupted after its tombstone has no active revision left; it resumes.
-  const unreadable = active
-    ? await unreadableRevisionReason(dependencies, control.deploymentId, active)
-    : await state.hasSlackCredentialHistory(HOSTED_SLACK_INSTALLATION_ID) ? 'replacement_resumed' : undefined;
-  if (!active && !unreadable) throw refuse('This installation has no Slack bot credentials to replace.');
-  if (!unreadable) throw refuse('This installation\'s Slack bot credentials can still be read.');
+  if (!active) throw refuse('This installation has no Slack bot credentials to replace.');
+  const unreadable = await unreadableRevisionReason(dependencies, control.deploymentId, active);
+  const audit = (reasonCode: string) => state.recordAuthAudit({
+    event: 'authorization',
+    outcome: 'success',
+    action: 'slack_credentials.hosted_bundle_replaced',
+    correlationId: input.correlationId,
+    authenticatorKind: 'slack_install_grant',
+    userId: owner.user.id,
+    membershipId: owner.membership.id,
+    reasonCode,
+  });
+  if (!unreadable) {
+    await audit('replacement_completed');
+    await leaveCredentialRecoveryOnly(state);
+    return active;
+  }
   if (control.currentKeyId !== keyring.currentKeyId) {
     for (const revision of live) {
+      if (revision.revision === active.revision) continue;
       await state.tombstoneSlackCredentialRevision({
         identityId: revision.identityId,
         revision: revision.revision,
@@ -711,12 +724,6 @@ export async function replaceUnreadableHostedSlackBotBundle(
       expectedCurrentKeyId: control.currentKeyId,
       nextKeyId: keyring.currentKeyId,
     });
-  } else if (active) {
-    await state.tombstoneSlackCredentialRevision({
-      identityId: active.identityId,
-      revision: active.revision,
-      expectedRotationEpoch: control.rotationEpoch,
-    });
   }
   deploymentIdByState.set(state, control.deploymentId);
   cacheByDeployment.get(control.deploymentId)?.delete(HOSTED_SLACK_INSTALLATION_ID);
@@ -724,7 +731,7 @@ export async function replaceUnreadableHostedSlackBotBundle(
     identityId: HOSTED_SLACK_INSTALLATION_ID,
     identityClass: 'workspace_installation',
     purpose: 'connected_credentials',
-    expectedActiveRevision: null,
+    expectedActiveRevision: active.revision,
     appId: input.expectedAppId,
     teamId: input.expectedTeamId,
     botUserId: input.botUserId,
@@ -736,20 +743,20 @@ export async function replaceUnreadableHostedSlackBotBundle(
   const promoted = await promoteSlackCredentialBundle(dependencies, {
     identityId: HOSTED_SLACK_INSTALLATION_ID,
     candidateRevision: candidate.revision,
-    expectedActiveRevision: null,
+    expectedActiveRevision: active.revision,
   });
-  await state.recordAuthAudit({
-    event: 'authorization',
-    outcome: 'success',
-    action: 'slack_credentials.hosted_bundle_replaced',
-    correlationId: input.correlationId,
-    authenticatorKind: 'slack_install_grant',
-    userId: owner.user.id,
-    membershipId: owner.membership.id,
-    reasonCode: unreadable,
-  });
+  await audit(unreadable);
   await leaveCredentialRecoveryOnly(state);
   return promoted;
+}
+
+/**
+ * Whether the deployment serves many installations, from the env or, for a
+ * caller that passes none, the deployment's own variables (as
+ * deploymentServesManyInstallations decides it for model access).
+ */
+function servesManyInstallations(env: PlatformEnv | undefined): boolean {
+  return deploymentTenancy(env) === 'installation' || deploymentTenancy(process.env) === 'installation';
 }
 
 /** Why the current keyring cannot read `revision`, or undefined when it can. Never latches recovery. */
