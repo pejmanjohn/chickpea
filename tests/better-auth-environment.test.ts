@@ -4,12 +4,14 @@ import { test, type TestContext } from 'node:test';
 import type { BetterAuthDatabaseBackend } from '../src/auth/better-auth-backend.ts';
 import { D1BetterAuthBackend } from '../src/auth/better-auth-cloudflare.ts';
 import {
+  resolveBetterAuthAccessRevoker,
   resolveBetterAuthBootstrapEnvironment,
   resolveBetterAuthEnvironment,
   withBetterAuthBackend,
 } from '../src/auth/better-auth-environment.ts';
 import { installationScopeOf, scopeInstallationEnv } from '../src/config/installation-scope.ts';
 import type { AuthControl } from '../src/identity/types.ts';
+import { withEnv } from './helpers/env.ts';
 
 const ORIGIN = 'https://chickpea.example.com';
 const AUTH_SECRET = 'A'.repeat(43);
@@ -88,4 +90,26 @@ test('a host backend still needs the stable auth secret and an active control', 
     }),
     /must encode exactly 32 random bytes/,
   );
+});
+
+test('a deactivation under installation tenancy is refused rather than leaving sessions behind', async () => {
+  const hosted = scopeInstallationEnv(HOSTED as Record<string, unknown>, { installationId: 'inst_a' });
+  // Without the request's backend, revoking would silently skip sessions and MCP grants.
+  await assert.rejects(
+    resolveBetterAuthAccessRevoker({ control: ACTIVE_CONTROL, platformEnv: hosted }),
+    /access cannot be revoked; nothing was changed/,
+  );
+  assert.equal(
+    await resolveBetterAuthAccessRevoker({ control: ACTIVE_CONTROL, platformEnv: withBetterAuthBackend(hosted, HOST_BACKEND) }),
+    HOST_BACKEND,
+  );
+  // Where Better Auth is not active there is nothing to revoke, hosted or not.
+  for (const control of [undefined, { ...ACTIVE_CONTROL, healthGate: 'recovery_only' } as AuthControl,
+    { ...ACTIVE_CONTROL, authMode: 'unconfigured' } as AuthControl]) {
+    assert.equal(await resolveBetterAuthAccessRevoker({ control, platformEnv: hosted }), undefined);
+  }
+  // Standalone keeps today's optional path: no secret, no backend, no refusal.
+  await withEnv({ CHICKPEA_AUTH_SECRET: undefined }, async () => {
+    assert.equal(await resolveBetterAuthAccessRevoker({ control: ACTIVE_CONTROL, platformEnv: {} }), undefined);
+  });
 });

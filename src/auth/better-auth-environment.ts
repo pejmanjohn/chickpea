@@ -56,13 +56,38 @@ function hostBetterAuthBackend(env: PlatformEnv | undefined): BetterAuthDatabase
   return (env as { [HOST_BACKEND]?: BetterAuthDatabaseBackend } | undefined)?.[HOST_BACKEND];
 }
 
+/**
+ * The backend that ends a person's sessions and MCP grants when a background
+ * event (a Slack deactivation) removes their access. Where Better Auth is not
+ * active there is none and the change applies without it. A deployment
+ * serving many installations whose request carries no backend refuses
+ * instead, so the membership is never suspended while its sessions and
+ * grants survive.
+ */
+export async function resolveBetterAuthAccessRevoker(input: {
+  control: AuthControl | undefined;
+  platformEnv?: PlatformEnv | undefined;
+}): Promise<BetterAuthDatabaseBackend | undefined> {
+  if (!input.control) return undefined;
+  const environment = await resolveBetterAuthEnvironment({ control: input.control, platformEnv: input.platformEnv });
+  if (!environment && betterAuthActive(input.control) && deploymentTenancy(input.platformEnv) === 'installation') {
+    throw new Error('No Better Auth backend serves this request, so access cannot be revoked; nothing was changed.');
+  }
+  return environment?.backend;
+}
+
+/** Whether this installation signs people in through Better Auth now. */
+function betterAuthActive(
+  control: AuthControl,
+): control is AuthControl & { canonicalAdminOrigin: string; betterAuthOrganizationId: string } {
+  return control.authMode === 'slack_active' && control.healthGate === 'normal' &&
+    Boolean(control.canonicalAdminOrigin) && Boolean(control.betterAuthOrganizationId);
+}
+
 export async function resolveBetterAuthEnvironment(
   input: ResolveBetterAuthEnvironmentInput,
 ): Promise<BetterAuthEnvironment | undefined> {
-  if (input.control.authMode !== 'slack_active' ||
-      input.control.healthGate !== 'normal' ||
-      !input.control.canonicalAdminOrigin ||
-      !input.control.betterAuthOrganizationId) return undefined;
+  if (!betterAuthActive(input.control)) return undefined;
   return resolveBetterAuthBootstrapEnvironment({
     canonicalOrigin: input.control.canonicalAdminOrigin,
     platformEnv: input.platformEnv,
