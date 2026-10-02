@@ -41,6 +41,8 @@ export function adminUiConfig(input: {
   usageAdminUi: boolean;
   workspaceAdminUi: boolean;
   installationOwner?: boolean;
+  /** False on a deployment serving many installations, which offers no browser. */
+  browserOffered?: boolean;
   targetChip: string;
 }): Record<string, unknown> {
   return {
@@ -48,6 +50,7 @@ export function adminUiConfig(input: {
     usageAdminUi: input.usageAdminUi,
     workspaceAdminUi: input.workspaceAdminUi,
     installationOwner: input.installationOwner === true,
+    browserOffered: input.browserOffered !== false,
     targetChip: input.targetChip,
     connectorPresets: CONNECTOR_PRESETS,
     googleWorkspaceServicePresets: GOOGLE_WORKSPACE_SERVICE_PRESETS,
@@ -69,7 +72,13 @@ function adminUiConfigJson(input: Parameters<typeof adminUiConfig>[0]): string {
 }
 
 export function renderAdminPage(
-  options: { usageAdminUi?: boolean; workspaceAdminUi?: boolean; installationOwner?: boolean; assetVersion?: string } = {},
+  options: {
+    usageAdminUi?: boolean;
+    workspaceAdminUi?: boolean;
+    installationOwner?: boolean;
+    browserOffered?: boolean;
+    assetVersion?: string;
+  } = {},
 ): string {
   // Target-aware setup and provider copy differs between the Node and
   // Cloudflare runtimes. The primary Admin chrome intentionally stays
@@ -112,7 +121,8 @@ ${CHICKPEA_FAVICON_HTML}
   </div>
 </div>
 <script id="chickpea-admin-config" type="application/json">${adminUiConfigJson({
-    isCloudflare, usageAdminUi, workspaceAdminUi, installationOwner: options.installationOwner === true, targetChip,
+    isCloudflare, usageAdminUi, workspaceAdminUi, installationOwner: options.installationOwner === true,
+    browserOffered: options.browserOffered !== false, targetChip,
   })}</script>
 <script src="${adminUiAssetUrl(ADMIN_UI_SCRIPT_PATH, assetVersion)}"></script>
 </body>

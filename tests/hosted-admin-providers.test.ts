@@ -125,6 +125,34 @@ test('hosted Admin reports a saved key it cannot open as missing in the model li
   });
 });
 
+test('hosted Admin says saved keys are temporarily unavailable while the keyring will not load, never missing', async (t) => {
+  await withHostedProviders(async () => {
+    const { request, close } = hostedAdmin();
+    t.mock.method(console, 'warn', () => {});
+    try {
+      const saved = await request('/admin/api/providers/anthropic/key', {
+        method: 'POST',
+        body: JSON.stringify({ apiKey: FAKE_PROVIDER_KEYS.anthropic }),
+      });
+      assert.equal(saved.status, 200);
+      writeFileSync(process.env.CHICKPEA_CREDENTIAL_KEYRING_PATH!, 'not a keyring', { mode: 0o600 });
+
+      const providers = await request('/admin/api/providers');
+      assert.equal(providers.status, 503);
+      assert.deepEqual(await providers.json(), {
+        error: 'model_credentials_unavailable',
+        message: 'Model provider keys are temporarily unavailable. Try again shortly.',
+      });
+      invalidateProviderModelCache();
+      const models = await request('/admin/api/providers/anthropic/models?refresh=1');
+      assert.equal(models.status, 503);
+      assert.equal(((await models.json()) as { error: string }).error, 'model_credentials_unavailable');
+    } finally {
+      close();
+    }
+  });
+});
+
 test('hosted Admin offers no Workers AI, ChatGPT plan or OpenAI subscription lane', async () => {
   await withHostedProviders(async () => {
     const { request, close } = hostedAdmin();

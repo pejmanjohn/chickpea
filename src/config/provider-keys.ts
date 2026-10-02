@@ -1,8 +1,7 @@
 import { deploymentServesManyInstallations, installationCacheKey } from './installation-scope.ts';
 import {
-  deploymentModelKeyring,
-  hostedModelCredentialSaved,
   readHostedModelCredential,
+  savedHostedModelProviders,
   rotateInstallationModelCredential,
 } from './model-credential-refs.ts';
 import {
@@ -93,11 +92,9 @@ export async function describeProviderKeySources(
   if (deploymentServesManyInstallations(env)) {
     // Which keys are saved and readable, from their metadata and the
     // deployment keyring's key IDs; nothing is decrypted to learn it.
-    const settings = store ?? getSettingsStore(env);
-    const keyring = deploymentModelKeyring(env);
-    const saved = await Promise.all(PROVIDER_KEY_IDS.map((id) => hostedModelCredentialSaved(id, settings, keyring)));
+    const saved = await savedHostedModelProviders(PROVIDER_KEY_IDS, env, store ?? getSettingsStore(env));
     return Object.fromEntries(
-      PROVIDER_KEY_IDS.map((id, index) => [id, saved[index] ? 'stored' : 'missing']),
+      PROVIDER_KEY_IDS.map((id) => [id, saved.has(id) ? 'stored' : 'missing']),
     ) as Record<ProviderKeyId, ProviderKeySource>;
   }
   const envSources = Object.fromEntries(

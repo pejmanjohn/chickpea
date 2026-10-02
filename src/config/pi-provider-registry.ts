@@ -198,23 +198,24 @@ function phaseOnlySignature(signature: string | undefined): { textSignature?: st
 /**
  * The one place every model request passes, from Flue (each step, retry,
  * compaction and subagent task) and from Chickpea's stateless callers: it
- * injects the run's model access (or refuses before egress) and restores an
- * interrupted stream's partial, on both entry points Pi dispatches.
+ * injects the run's model access (or refuses before egress), sends only for an
+ * admitted installation, and restores an interrupted stream's partial, on both
+ * entry points Pi dispatches.
  */
 function withChickpeaProviderPolicy(provider: Provider): Provider {
   // A proxy, not a copy: a provider may be a class instance whose other
   // members rely on their own `this`.
   const stream: Provider['stream'] = (model, context, options) => {
     const request = modelAccessRequest(provider.id, model, options);
-    return request.redact(
+    return request.admit(() => request.redact(
       provider.stream(request.model, restoreForRequest(request.model, context), request.options),
-    );
+    ));
   };
   const streamSimple: Provider['streamSimple'] = (model, context, options) => {
     const request = modelAccessRequest(provider.id, model, options);
-    return request.redact(
+    return request.admit(() => request.redact(
       provider.streamSimple(request.model, restoreForRequest(request.model, context), request.options),
-    );
+    ));
   };
   return new Proxy(provider, {
     get(target, property) {

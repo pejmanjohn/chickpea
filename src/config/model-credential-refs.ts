@@ -10,6 +10,7 @@ import { modelCredentialSettingKeys } from './model-credential-settings.ts';
 import type { ProviderKeyId } from './provider-keys.ts';
 import {
   isModelCredentialStore,
+  sameEnvelope,
   type ModelCredentialRecord,
   type ModelCredentialStore,
   type SettingsStore,
@@ -22,7 +23,7 @@ import {
   hasDisallowedControlCharacter,
   trimmedNonEmpty,
 } from '../security/content-validation.ts';
-import { loadCredentialKeyring } from '../slack/credential-keyring.ts';
+import { CREDENTIAL_KEYRING_UNAVAILABLE, loadCredentialKeyring } from '../slack/credential-keyring.ts';
 import {
   decryptModelProviderKeyEnvelope,
   encryptModelProviderKeyEnvelope,
@@ -79,6 +80,20 @@ export class ModelCredentialUnavailableError extends Error {
   constructor(readonly credentialRefId: string) {
     super('The saved model credential could not be read. Save the provider key again.');
     this.name = 'ModelCredentialUnavailableError';
+  }
+}
+
+/**
+ * The deployment's keyring did not load, so no installation's saved model
+ * key can be read until it does. Unlike an unreadable key, it asks nobody to
+ * save their key again; parallel to SlackCredentialUnavailableError.
+ */
+export class ModelCredentialKeyringUnavailableError extends Error {
+  readonly name = 'ModelCredentialKeyringUnavailableError';
+  readonly code = CREDENTIAL_KEYRING_UNAVAILABLE;
+  readonly retryable = true;
+  constructor() {
+    super('Model credentials are unavailable until the deployment keyring loads (keyring_unavailable).');
   }
 }
 
@@ -147,10 +162,8 @@ export async function resolveModelCredentialAttribution(
     }
     if (hosted) {
       // Only a key saved encrypted and readable with the deployment keyring counts; nothing is decrypted.
-      const current = savedHostedCredential(
-        await hostedModelCredentialStore(settings).readModelCredential(id),
-        deploymentModelKeyring(platformEnv),
-      );
+      const record = await hostedModelCredentialStore(settings).readModelCredential(id);
+      const current = savedHostedCredential(record, hasEnvelope(record) ? deploymentModelKeyring(platformEnv) : undefined);
       if (!current) return null;
       return registerCredential(storedRegistration(id, current));
     }
@@ -322,15 +335,17 @@ async function rotateHostedModelCredential(
  * other current credential, or none, is refused as a revision change before
  * anything is decrypted: a superseded version is never served the newer key.
  * A key encrypted under a key ID the deployment keyring no longer has is not
- * saved, exactly as every readiness check sees it.
+ * saved, exactly as every readiness check sees it. A saved key while the
+ * keyring will not load is temporarily unavailable, never missing.
  */
 export async function readHostedModelCredential(
   id: ProviderKeyId,
   input: HostedModelCredentialRead,
   expected?: { credentialRefId: string; version: number },
 ): Promise<{ apiKey: string; metadata: StoredCredentialMetadata } | undefined> {
-  const keyring = input.keyring ?? deploymentModelKeyring(input.env);
-  const current = savedHostedCredential(await hostedModelCredentialStore(input.settings).readModelCredential(id), keyring);
+  const record = await hostedModelCredentialStore(input.settings).readModelCredential(id);
+  const keyring = input.keyring ?? (hasEnvelope(record) ? deploymentModelKeyring(input.env) : undefined);
+  const current = savedHostedCredential(record, keyring);
   if (expected && (current?.credentialRefId !== expected.credentialRefId || current.version !== expected.version)) {
     throw new ModelCredentialRevisionError(expected.credentialRefId, expected.version);
   }
@@ -355,44 +370,62 @@ export async function readHostedModelCredential(
  * one installation's saved keys still under an older key ID, keeping its
  * version, so runs frozen to it keep resolving. The Slack encryption rotation
  * neither rewraps nor counts these envelopes: a prior key ID may be retired
- * only once this leaves nothing remaining in every installation. A key whose
- * key ID the keyring has already lost cannot be rewrapped and remains.
+ * only once this leaves nothing remaining in every installation.
+ *
+ * Each key is judged from the state the write leaves, never from the write's
+ * own answer (a replay of a write that a later rewrap superseded answers
+ * false): `rewrapped` when the envelope this call encrypted is stored,
+ * `remaining` while it is still under the key ID this call found, and
+ * `alreadyCurrent` when another writer (a concurrent save, a replay, an
+ * earlier run) moved it on. A key whose key ID the keyring no longer has, or
+ * that will not decrypt, cannot be rewrapped and remains. A store or RPC
+ * error propagates, so a driver retries instead of counting a false remainder.
  */
 export async function rewrapHostedModelCredentials(
   input: HostedModelCredentialRead & { keyring: CredentialKeyring },
-): Promise<{ rewrapped: ProviderKeyId[]; remaining: ProviderKeyId[] }> {
+): Promise<{ rewrapped: ProviderKeyId[]; alreadyCurrent: ProviderKeyId[]; remaining: ProviderKeyId[] }> {
   const installationId = hostedInstallationId(input.env);
   const store = hostedModelCredentialStore(input.settings);
   const rewrapped: ProviderKeyId[] = [];
+  const alreadyCurrent: ProviderKeyId[] = [];
   const remaining: ProviderKeyId[] = [];
   for (const id of BUILTIN_PROVIDERS) {
     const current = await store.readModelCredential(id);
     const envelope = current?.active ? current.envelope : undefined;
     if (!current || !envelope || envelope.keyId === input.keyring.currentKeyId) continue;
-    let published = false;
+    const context = modelProviderKeyContext(installationId, id, current);
+    let apiKey: string | undefined;
     if (Object.hasOwn(input.keyring.keys, envelope.keyId)) {
-      const context = modelProviderKeyContext(installationId, id, current);
       try {
-        const apiKey = await decryptModelProviderKeyEnvelope(input.keyring, context, envelope);
-        published = await store.rewrapModelCredential({
-          providerId: id,
-          expectedVersion: current.version,
-          expectedKeyId: envelope.keyId,
-          envelope: await encryptModelProviderKeyEnvelope(input.keyring, context, apiKey),
-        });
+        apiKey = await decryptModelProviderKeyEnvelope(input.keyring, context, envelope);
       } catch {
-        published = false;
+        // Tampered with, or bound to other metadata: it cannot be rewrapped.
       }
     }
-    if (published) {
-      rewrapped.push(id);
+    if (apiKey === undefined) {
+      remaining.push(id);
       continue;
     }
-    // A concurrent save already published under the current key; anything else still waits.
+    const next = await encryptModelProviderKeyEnvelope(input.keyring, context, apiKey);
+    await store.rewrapModelCredential({
+      providerId: id,
+      expectedVersion: current.version,
+      expectedKeyId: envelope.keyId,
+      envelope: next,
+    });
     const latest = await store.readModelCredential(id);
-    if (latest?.active && latest.envelope && latest.envelope.keyId !== input.keyring.currentKeyId) remaining.push(id);
+    const stored = latest?.active ? latest.envelope : undefined;
+    // Deleted meanwhile: nothing of this key remains to rewrap.
+    if (!stored) continue;
+    if (sameEnvelope(stored, next)) {
+      rewrapped.push(id);
+    } else if (stored.keyId === envelope.keyId) {
+      remaining.push(id);
+    } else {
+      alreadyCurrent.push(id);
+    }
   }
-  return { rewrapped, remaining };
+  return { rewrapped, alreadyCurrent, remaining };
 }
 
 /**
@@ -444,27 +477,43 @@ export async function migratePlaintextModelCredentials(
 }
 
 /**
- * Whether an installation of a deployment serving many has a saved key the
- * deployment keyring can read, without decrypting it.
+ * The providers an installation of a deployment serving many has a saved key
+ * for that the deployment keyring can read, without decrypting any. A saved
+ * key while the keyring will not load is unavailable, never missing.
  */
-export async function hostedModelCredentialSaved(
-  id: ProviderKeyId,
+export async function savedHostedModelProviders(
+  ids: readonly ProviderKeyId[],
+  env: PlatformEnv | undefined,
   settings: SettingsStore,
-  keyring: CredentialKeyring | undefined,
-): Promise<boolean> {
-  return Boolean(savedHostedCredential(await hostedModelCredentialStore(settings).readModelCredential(id), keyring));
+): Promise<Set<ProviderKeyId>> {
+  const store = hostedModelCredentialStore(settings);
+  const records = await Promise.all(ids.map((id) => store.readModelCredential(id)));
+  const keyring = records.some(hasEnvelope) ? deploymentModelKeyring(env) : undefined;
+  return new Set(ids.filter((_id, index) => savedHostedCredential(records[index], keyring)));
 }
 
+let keyringUnavailableLogged = false;
+
 /**
- * The deployment keyring as a reader sees it: none when it cannot be loaded,
- * in which case no saved key is readable. Saving still loads it strictly.
+ * The deployment keyring, for reading a saved hosted key: one that will not
+ * load is logged once per isolate and throws the transient
+ * ModelCredentialKeyringUnavailableError, so readers report the keys as
+ * temporarily unavailable rather than missing. Saving loads it strictly.
  */
-export function deploymentModelKeyring(env: PlatformEnv | undefined): CredentialKeyring | undefined {
+function deploymentModelKeyring(env: PlatformEnv | undefined): CredentialKeyring {
   try {
     return loadCredentialKeyring(env);
   } catch {
-    return undefined;
+    if (!keyringUnavailableLogged && deploymentServesManyInstallations(env)) {
+      keyringUnavailableLogged = true;
+      console.warn(JSON.stringify({ component: 'model_credentials', event: 'keyring_unavailable' }));
+    }
+    throw new ModelCredentialKeyringUnavailableError();
   }
+}
+
+export function resetModelKeyringWarningForTests(): void {
+  keyringUnavailableLogged = false;
 }
 
 /**
@@ -680,6 +729,10 @@ function hostedModelCredentialStore(settings: SettingsStore): SettingsStore & Mo
     throw new Error('This settings store cannot hold encrypted model credentials.');
   }
   return settings;
+}
+
+function hasEnvelope(record: ModelCredentialRecord | undefined): boolean {
+  return Boolean(record?.active && record.envelope);
 }
 
 /**

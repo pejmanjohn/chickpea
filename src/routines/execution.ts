@@ -28,6 +28,8 @@ import {
   type FrozenRuntimeModelRoute,
   type ProviderAuthRoute,
 } from '../config/runtime-model.ts';
+import { installationRefusesWork, isInstallationRefusal } from '../config/installation-admission.ts';
+import { isCredentialKeyringUnavailable } from '../slack/credential-keyring.ts';
 import { resolveModelCredentialAttribution } from '../config/model-credential-refs.ts';
 import {
   imageCapabilityForResolution,
@@ -186,6 +188,17 @@ export async function executeRoutineOccurrence(
   const admission = (await input.store.listAdmissions(current.id))
     .find((candidate) => candidate.attempt === input.attempt);
   if (!admission) return 'superseded';
+  // A suspended or ended installation starts nothing and is delivered
+  // nothing: the occurrence is skipped, with no notice, no pause and no
+  // failure counted, and never replayed on resume. An attempt already
+  // dispatched is stopped first; its result, if any, is never delivered.
+  if (await installationRefusesWork(input.env)) {
+    if (admission.flueAgentReceipt && !current.flueAgentSettlement) {
+      await abortRefusedAttempt(current, admission.flueAgentReceipt, dependencies);
+    }
+    await skipRun(input.store, current.id, now(), REFUSED_SKIP);
+    return 'completed';
+  }
 
   let prepared: PreparedExecution;
   let access: RoutineRuntimeAccess | undefined;
@@ -206,6 +219,9 @@ export async function executeRoutineOccurrence(
     );
   } catch (error) {
     if (error instanceof RoutineSupersededError) return 'superseded';
+    // The deployment keyring not loading is transient: the occurrence waits
+    // for a later heartbeat, and nothing is failed, paused or posted for it.
+    if (isCredentialKeyringUnavailable(error)) return 'resumable';
     const failure = runtimeFailure(error, false);
     if ([
       'assignment_missing',
@@ -233,7 +249,11 @@ export async function executeRoutineOccurrence(
       current.status === 'admitting' &&
       routine.destination.kind === 'channel'
     ) {
-      await skipUnresolvedRun(input.store, current.id, failure.publicError, now());
+      await skipRun(input.store, current.id, now(), {
+        failureClass: 'assignment_missing',
+        publicError: failure.publicError,
+        skipReason: 'unresolved_assignment',
+      });
     } else {
       await failUnsettledRun(
         input.store,
@@ -280,6 +300,8 @@ export async function executeRoutineOccurrence(
   let receipt = prepared.receipt;
   const toolCalls = new ToolCallCounter('submit_routine_result');
   let modelSettled = false;
+  // Why the attempt ended without a result to post: refused, or an outage.
+  let withoutResult: SkipReason | undefined;
   let settledUsage: RoutineAgentUsageV1 | null = null;
   let settlement: RoutineAgentSettlementV1;
   // Only model execution and result validation belong to this catch. Once a
@@ -372,7 +394,12 @@ export async function executeRoutineOccurrence(
     };
   } catch (error) {
     const toolCallCount = toolCalls.count;
-    const failure = runtimeFailure(error, toolCallCount > 0);
+    // A model request the installation's admission refused, or the deployment
+    // keyring not loading, ended the attempt: not the routine's failure.
+    withoutResult = isInstallationRefusal(error) ? REFUSED_SKIP
+      : isCredentialKeyringUnavailable(error) ? KEYRING_UNAVAILABLE_SKIP
+      : undefined;
+    const failure = withoutResult ?? runtimeFailure(error, toolCallCount > 0);
     settlement = {
       schemaVersion: 1,
       outcome: error instanceof AgentRunError && error.outcome === 'aborted' ? 'aborted' : 'failed',
@@ -397,6 +424,17 @@ export async function executeRoutineOccurrence(
       occurrenceId: prepared.run.id,
       settlement,
     });
+    // Refused while the attempt ran: the settlement is kept, the occurrence
+    // is skipped, and nothing is posted or counted against the routine.
+    withoutResult ??= await installationRefusesWork(input.env) ? REFUSED_SKIP : undefined;
+    if (withoutResult) {
+      await prepared.workLifecycle?.settleWithoutDelivery({
+        terminalDisposition: 'skipped',
+        safeFailureCode: withoutResult.skipReason,
+      });
+      await skipRun(input.store, prepared.run.id, now(), withoutResult);
+      return 'completed';
+    }
     return await finalizeSettlement(prepared, settlement, now());
   } finally {
     await prepared.usageRecorder?.repairAfterTerminal();
@@ -1229,23 +1267,54 @@ async function failUnsettledRun(
   });
 }
 
-async function skipUnresolvedRun(
+interface SkipReason {
+  failureClass: RoutineFailureClass;
+  publicError: string;
+  skipReason: string;
+}
+
+/** An occurrence the installation's admission refused: skipped, with no notice and no failure counted. */
+const REFUSED_SKIP: SkipReason = {
+  failureClass: 'policy_denied',
+  publicError: 'Routine admission was refused before execution began.',
+  skipReason: 'installation_not_admitted',
+};
+
+/** An attempt the deployment keyring stopped: skipped like a refusal, never the routine's failure. */
+const KEYRING_UNAVAILABLE_SKIP: SkipReason = {
+  failureClass: 'credential_unavailable',
+  publicError: 'The deployment\'s credentials were temporarily unavailable.',
+  skipReason: 'keyring_unavailable',
+};
+
+/** Skip an occurrence that has not settled; one already terminal is left as it is. */
+async function skipRun(
   store: RoutineStore,
   occurrenceId: string,
-  publicError: string,
   at: number,
+  reason: SkipReason,
 ): Promise<void> {
   const run = await store.getRun(occurrenceId);
-  if (!run || run.status !== 'admitting') return;
-  await store.transitionRun({
-    occurrenceId: run.id,
-    from: ['admitting'],
-    to: 'skipped',
-    at,
-    failureClass: 'assignment_missing',
-    publicError,
-    skipReason: 'unresolved_assignment',
-  });
+  if (!run || (run.status !== 'admitting' && run.status !== 'running')) return;
+  await store.transitionRun({ occurrenceId: run.id, from: [run.status], to: 'skipped', at, ...reason });
+}
+
+/** Stop a dispatched attempt of a refused installation; its next model request is refused regardless. */
+async function abortRefusedAttempt(
+  run: RoutineRun,
+  receipt: RoutineAgentReceiptV1,
+  dependencies: RoutineExecutionDependencies,
+): Promise<void> {
+  if (!run.flueAgentEnvelope) return;
+  try {
+    const handle = dependencies.handle ?? init(
+      (await import('../agents/routine-execution.ts')).ChickpeaRoutineExecution,
+      { id: run.flueAgentEnvelope.instanceId, ...(receipt.uid ? { uid: receipt.uid } : {}) },
+    );
+    await handle.abort();
+  } catch {
+    console.warn('[chickpea] a refused routine attempt could not be stopped; its next model request is refused');
+  }
 }
 
 async function deliverFailureNoticeBestEffort(

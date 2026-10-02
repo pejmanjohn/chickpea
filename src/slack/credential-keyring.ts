@@ -20,6 +20,27 @@ import {
 } from './secret-envelope.ts';
 
 export const WORKER_CREDENTIAL_CURRENT_ID = 'CHICKPEA_CREDENTIAL_KEY_CURRENT_ID';
+
+/**
+ * The code a deployment keyring that will not load carries, on its Slack and
+ * model-key errors alike: transient, so work waits for it rather than asking
+ * anyone to reconnect or save a key again.
+ */
+export const CREDENTIAL_KEYRING_UNAVAILABLE = 'keyring_unavailable';
+
+/** Whether an error, or one it carries, is the deployment keyring failing to load. */
+export function isCredentialKeyringUnavailable(error: unknown): boolean {
+  const seen = new Set<unknown>();
+  for (let current = error, depth = 0; current && depth < 5 && !seen.has(current); depth += 1) {
+    seen.add(current);
+    const record = current as { code?: unknown; reasonCode?: unknown; message?: unknown; cause?: unknown };
+    if (record.code === CREDENTIAL_KEYRING_UNAVAILABLE || record.reasonCode === CREDENTIAL_KEYRING_UNAVAILABLE) return true;
+    // Carried as text in a Flue submission's failure.
+    if (typeof record.message === 'string' && record.message.includes(`(${CREDENTIAL_KEYRING_UNAVAILABLE})`)) return true;
+    current = record.cause;
+  }
+  return false;
+}
 export const WORKER_CREDENTIAL_KEY_PREFIX = 'CHICKPEA_CREDENTIAL_KEY_';
 const KEYRING_VERSION = 1;
 

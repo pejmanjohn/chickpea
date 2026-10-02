@@ -15,6 +15,10 @@ import {
 } from '@earendil-works/pi-ai';
 
 import {
+  configureInstallationAdmission,
+  resetInstallationAdmissionForTests,
+} from '../src/config/installation-admission.ts';
+import {
   createInstallationModelAccessResolver,
   installationModelAccessGrant,
   RuntimeModelReadinessError,
@@ -73,6 +77,8 @@ const AGENT_OPERATION = { type: 'agent', operationId: 'op', operationKind: 'prom
 function hostedInstallations(t: TestContext) {
   resetModelAccessForTests();
   invalidateProviderKeyCache();
+  // The host's registry admits both, as a deployment serving many installs it.
+  configureInstallationAdmission(async () => 'admitted');
   const envA = scopeInstallationEnv(HOSTED as Record<string, unknown>, { installationId: 'inst_a' });
   const envB = scopeInstallationEnv(HOSTED as Record<string, unknown>, { installationId: 'inst_b' });
   const settings = new Map([['inst_a', new SqliteSettingsStore(':memory:')], ['inst_b', new SqliteSettingsStore(':memory:')]]);
@@ -82,6 +88,7 @@ function hostedInstallations(t: TestContext) {
     for (const store of settings.values()) store.close();
     usage.close();
     resetModelAccessForTests();
+    resetInstallationAdmissionForTests();
   });
   const settingsOf = (env: PlatformEnv | undefined) => settings.get(installationScopeOf(env)?.installationId ?? '')!;
   // Every reader and writer loads the deployment keyring, as in production.
@@ -330,9 +337,9 @@ test('a key whose keyring slot was retired reads as missing everywhere, and a re
     const rotated = { currentKeyId: next.currentKeyId, keys: { ...keyring.keys, ...next.keys } };
     writeFileSync(process.env.CHICKPEA_CREDENTIAL_KEYRING_PATH!, `${JSON.stringify({ version: 1, ...rotated })}\n`, { mode: 0o600 });
     assert.deepEqual(await rewrapHostedModelCredentials({ env: envA, settings: settingsOf(envA), keyring: rotated }),
-      { rewrapped: ['anthropic'], remaining: [] });
+      { rewrapped: ['anthropic'], alreadyCurrent: [], remaining: [] });
     assert.deepEqual(await rewrapHostedModelCredentials({ env: envA, settings: settingsOf(envA), keyring: rotated }),
-      { rewrapped: [], remaining: [] }, 'nothing left under the old key');
+      { rewrapped: [], alreadyCurrent: [], remaining: [] }, 'nothing left under the old key');
     assert.equal((await settingsOf(envA).getEncryptedCredentialRevision('model_provider.anthropic'))?.envelope.keyId, 'key_next');
     assert.equal((await storedCredentialMetadata('anthropic', settingsOf(envA)))?.version, savedA.version, 'the version stays');
 
@@ -353,7 +360,7 @@ test('a key whose keyring slot was retired reads as missing everywhere, and a re
       (error: unknown) => error instanceof RuntimeModelReadinessError && error.status === 'provider_setup_required',
     );
     assert.deepEqual(await rewrapHostedModelCredentials({ env: envB, settings: settingsOf(envB), keyring: retired }),
-      { rewrapped: [], remaining: ['anthropic'] }, 'a key under a lost key ID cannot be rewrapped');
+      { rewrapped: [], alreadyCurrent: [], remaining: ['anthropic'] }, 'a key under a lost key ID cannot be rewrapped');
     // Saving the key again repairs it.
     await rotate(envB, { kind: 'save', apiKey: KEY_2 });
     assert.equal((await resolveProviderApiKey('anthropic', envB, settingsOf(envB))).apiKey, KEY_2);
@@ -493,9 +500,12 @@ test('the migration removes a stale plaintext without reviving a deleted key, an
 
 test('nothing runs the plaintext migration on its own', () => {
   const root = fileURLToPath(new URL('../src/', import.meta.url));
-  const callers = readdirSync(root, { recursive: true, encoding: 'utf8' })
-    .filter((path) => path.endsWith('.ts'))
-    .filter((path) => readFileSync(join(root, path), 'utf8').includes('migratePlaintextModelCredentials('));
-  assert.deepEqual(callers, [join('config', 'model-credential-refs.ts')],
-    'only its definition: an operator invokes it explicitly');
+  const sources = readdirSync(root, { recursive: true, encoding: 'utf8' }).filter((path) => path.endsWith('.ts'));
+  const callersOf = (name: string) =>
+    sources.filter((path) => readFileSync(join(root, path), 'utf8').includes(`${name}(`)).sort();
+  assert.deepEqual(callersOf('migratePlaintextModelCredentials'),
+    [join('config', 'hosted-credential-operations.ts'), join('config', 'model-credential-refs.ts')],
+    'its definition and the host\'s per-installation entry point');
+  assert.deepEqual(callersOf('migrateInstallationPlaintextModelCredentials'),
+    [join('config', 'hosted-credential-operations.ts')], 'only its definition: an operator job invokes it explicitly');
 });

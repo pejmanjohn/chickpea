@@ -40,6 +40,7 @@ import {
   renderDisplayComponents,
 } from './ui/host-surfaces.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
+import { installationRefusesWork } from '../config/installation-admission.ts';
 import { installationOwnershipOf } from '../config/installation-scope.ts';
 import type { TurnEnvelopeV1 } from '../agents/turn-envelope.ts';
 import { buildTurnEnvelope } from './turn-envelope-builder.ts';
@@ -81,6 +82,7 @@ import { resolveSlackCredentials, resolveSlackPublicUrl } from './credentials.ts
 import { agentAvatarInstallation, agentAvatarUrlForPresentation } from './agent-presence/avatar-assets.ts';
 import type { SlackStatusUpdate } from './replies.ts';
 import { activityStatus, initialActivityStatus } from '../activity/status.ts';
+import { abandonTerminalSlackPresentationBestEffort } from './presentation-repair.ts';
 import { defaultSlackStatusRegistry, type SlackStatusRegistry } from './status-registry.ts';
 import { createCodingTaskProgress } from './coding-task-progress.ts';
 import { currentMessageOnlyContext } from './thread-context.ts';
@@ -1872,6 +1874,25 @@ async function runTurnAttempt(
           safeFailureCode: agentFailureSafeCode(err),
         });
         await usageRecorder?.recordFailure();
+        // A suspended or ended installation gets no new Slack output: its
+        // refused attempt ends without any reply, only its activity cleared.
+        if (await installationRefusesWork(platformEnv)) {
+          await statusTurn.prepareFinal();
+          // A partial answer already streamed stays as shown, ended rather than left streaming.
+          await agentViewPresentation?.sealStreamWithoutReply().catch(() => {
+            console.warn('[chickpea] Slack stream of a refused turn could not be ended; durable repair owns it');
+          });
+          if (options.runId) {
+            await abandonTerminalSlackPresentationBestEffort({
+              runId: options.runId,
+              state: options.presentationState,
+              client,
+            });
+          }
+          await finishStatus('failure');
+          await finishDelivery('failed');
+          return;
+        }
         const recoveredText = await options.beforeDelivery?.();
         if (recoveredText) {
           await preparedMemory?.confirmInjection();

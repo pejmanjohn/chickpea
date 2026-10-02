@@ -14,6 +14,7 @@ import {
 } from './errors.ts';
 import type { UiSurfaceRpcRequest } from '../slack/ui/surface-store.ts';
 import type {
+  EncryptedCredentialCensusStore,
   EncryptedCredentialStore,
   ModelCredentialStore,
   PublishModelCredentialInput,
@@ -326,7 +327,8 @@ const REPLAY_SAFE_STATE_METHODS = new Set([
   'configListAgentScheduleReferences', 'configListAgents', 'configListChannels',
   'configListConnectionAccounts', 'configListRecentSlackPublicContext', 'configListSlackPublicContext',
   'configListUserAgents', 'configListWorkspaceInstallations', 'configPreflightChickpeaCutover',
-  'configSummarizeAdoptionInventory', 'encryptedCredentialGet', 'modelCredentialRead', 'runtimeDrainStatus', 'settingGet',
+  'configSummarizeAdoptionInventory', 'encryptedCredentialCensus', 'encryptedCredentialGet', 'modelCredentialRead',
+  'runtimeDrainStatus', 'settingGet',
   'settingGetMany', 'slackAgentBindingGet', 'slackFlueObservationMatch',
   'slackInstallationPendingDeliveryCount', 'slackPresentationGet',
   'slackPresentationLatestThreadGeneration', 'slackPresentationRepairList', 'slackPresentationSummary',
@@ -2394,7 +2396,8 @@ export class CfTurnJobsForRunner implements RunnerTurnJobsPort {
   }
 }
 
-export class CfSettingsStore implements SettingsStore, EncryptedCredentialStore, ModelCredentialStore {
+export class CfSettingsStore
+implements SettingsStore, EncryptedCredentialStore, EncryptedCredentialCensusStore, ModelCredentialStore {
   constructor(private readonly stub: TagStateStubSource) {}
 
   async getSetting(key: string): Promise<string | undefined> {
@@ -2430,6 +2433,10 @@ export class CfSettingsStore implements SettingsStore, EncryptedCredentialStore,
       'encryptedCredentialReplace',
       (stub) => stub.encryptedCredentialReplace(input),
     ));
+  }
+
+  async censusEncryptedCredentialRevisions() {
+    return rpcVia(this.stub, 'encryptedCredentialCensus', (stub) => stub.encryptedCredentialCensus());
   }
 
   async deleteEncryptedCredentialRevision(key: string, expectedRevision: string) {

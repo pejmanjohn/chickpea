@@ -116,6 +116,7 @@ import {
   ComposioConfigurationMutationError,
   ComposioConfigurationStateError,
   composioConfigurationIsMutable,
+  composioProviderLineage,
   describeComposioConfiguration,
   disableStoredComposioConfiguration,
   resolveComposioConfiguration,
@@ -332,6 +333,7 @@ import {
   validateProviderApiKey,
   type AdminProviderId,
 } from '../config/provider-models.ts';
+import { ModelCredentialKeyringUnavailableError } from '../config/model-credential-refs.ts';
 import {
   listRuntimeModelProviders,
   type RuntimeModelProvider,
@@ -1758,7 +1760,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           c.env as PlatformEnv | undefined,
         ),
         generation: resolved.generation,
-        lineage: resolved.keyFingerprint ?? resolved.lastKeyFingerprint ?? '0'.repeat(24),
+        lineage: composioProviderLineage(resolved),
         readOnly: resolved.readOnly,
         ...platformEnv,
       };
@@ -1859,8 +1861,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     return task();
   };
   // A host serving many installations owns first-run setup, recovery, Slack
-  // install and sign-in, the gateway and deployment activation; under
-  // installation tenancy those surfaces are not found, before any store read.
+  // install and sign-in, the gateway and deployment activation, and does not
+  // offer the browser; under installation tenancy those surfaces are not
+  // found, before any store read.
   app.use('*', async (c, next) => {
     if (deploymentTenancy(c.env as PlatformEnv | undefined) === 'installation' &&
         standaloneOnlyRoute(c.req.method, c.req.path)) return c.notFound();
@@ -2613,7 +2616,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const inspected = await reconcileManagedProviderAccounts(store(c), {
         adapterId: 'composio',
         generation: resolved.generation,
-        lineage: resolved.keyFingerprint ?? resolved.lastKeyFingerprint ?? '0'.repeat(24),
+        lineage: composioProviderLineage(resolved),
         inspect,
         maxInspections: 25,
       });
@@ -6087,6 +6090,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     return c.html(renderAdminPage({
       usageAdminUi: usageAdminUi(c),
       installationOwner: Boolean(principal && principal.role === 'owner' && !principal.machine),
+      browserOffered: deploymentTenancy(c.env as PlatformEnv | undefined) !== 'installation',
       workspaceAdminUi: Boolean(
         principal && permissionForRole(principal.role).has('admin.configure'),
       ),
@@ -6967,10 +6971,16 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const settingsStore = settings(c);
     if (deploymentServesManyInstallations(platformEnv)) {
       // Only this installation's own keys; no subscription or Workers AI lane.
-      const [sources, activeAuthMethod] = await Promise.all([
-        describeProviderKeySources(platformEnv, settingsStore),
-        resolveOpenAiAuthMethod(settingsStore),
-      ]);
+      let sources: Awaited<ReturnType<typeof describeProviderKeySources>>;
+      let activeAuthMethod: Awaited<ReturnType<typeof resolveOpenAiAuthMethod>>;
+      try {
+        [sources, activeAuthMethod] = await Promise.all([
+          describeProviderKeySources(platformEnv, settingsStore),
+          resolveOpenAiAuthMethod(settingsStore),
+        ]);
+      } catch (err) {
+        return internalError(c, err);
+      }
       return c.json({
         providers: PROVIDER_KEY_IDS.map((id) => ({
           ...providerSummary(id, sources[id], platformEnv),
@@ -11668,8 +11678,8 @@ function isAdminPageGet(c: Context): boolean {
 
 // Standalone-only surfaces: first-run and manual setup, recovery, the Slack
 // app's install and sign-in, the gateway, deployment activation, the QA lane
-// environment bridge, the legacy configuration cutover and the ChatGPT plan
-// handoff.
+// environment bridge, the legacy configuration cutover, the ChatGPT plan
+// handoff, and the browser (its Browserbase key and website logins).
 const STANDALONE_ONLY_PREFIXES = [
   '/admin/setup',
   '/admin/recovery',
@@ -11679,6 +11689,13 @@ const STANDALONE_ONLY_PREFIXES = [
   '/internal/environment',
   '/admin/api/chickpea-cutover',
   '/auth/chatgpt-plan',
+  '/admin/api/browser',
+] as const;
+
+// Standalone-only surfaces inside paths that are otherwise served: an
+// Agent's website logins belong to the browser.
+const STANDALONE_ONLY_PATTERNS = [
+  /^\/admin\/api\/agents\/[^/]+\/website-logins(?:\/|$)/,
 ] as const;
 
 /** Whether a request names a standalone-only surface, however its path repeats or ends in slashes. */
@@ -11686,7 +11703,8 @@ function standaloneOnlyRoute(method: string, path: string): boolean {
   const canonical = path.replace(/\/{2,}/g, '/').replace(/(.)\/$/, '$1');
   // Removing the stored Slack credentials is the host's installation lifecycle.
   if (method === 'DELETE' && canonical === '/admin/api/slack-connection') return true;
-  return STANDALONE_ONLY_PREFIXES.some((prefix) => canonical === prefix || canonical.startsWith(`${prefix}/`));
+  return STANDALONE_ONLY_PREFIXES.some((prefix) => canonical === prefix || canonical.startsWith(`${prefix}/`)) ||
+    STANDALONE_ONLY_PATTERNS.some((pattern) => pattern.test(canonical));
 }
 
 function permissionForAdminRequest(c: Context, _principal: AuthPrincipal): Permission {
@@ -12726,9 +12744,17 @@ async function providerRemovalImpact(
 // Never echo internal error text (raw SQLite messages) to API clients; log it
 // server-side and return a stable retriable status instead.
 function internalError(
-  c: { json(body: { error: string }, status: 500): Response },
+  c: { json(body: { error: string; message?: string }, status: 500 | 503): Response },
   err: unknown,
 ): Response {
+  // A hosted deployment whose keyring will not load: every saved model key is
+  // temporarily unreadable, which is not the same as missing.
+  if (err instanceof ModelCredentialKeyringUnavailableError) {
+    return c.json({
+      error: 'model_credentials_unavailable',
+      message: 'Model provider keys are temporarily unavailable. Try again shortly.',
+    }, 503);
+  }
   console.error('[chickpea] admin API failure:', err instanceof Error ? err.message : String(err));
   return c.json({ error: 'internal_error' }, 500);
 }

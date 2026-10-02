@@ -17,10 +17,21 @@
  * coding worker has no persisted run of its own here. Standalone binds the
  * installation's current keys for it (today's live read); a deployment
  * serving many installations does not run coding workers.
+ *
+ * Routine intent has no dispatch site and no persisted run. Standalone keeps
+ * today's live keys for it; a deployment serving many installations refuses
+ * it outright, so a future dispatcher fails loudly instead of running on an
+ * installation's current key. Such a dispatcher would persist the attempt's
+ * plan, with its frozen credential and installation, before `init`, and this
+ * lookup would read it by instance as it does for routine execution.
  */
 import type { FlueExecutionContext } from '@flue/runtime';
 
-import { CHICKPEA_ROUTINE_EXECUTION_AGENT_NAME, CHICKPEA_SLACK_AGENT_NAME } from './names.ts';
+import {
+  CHICKPEA_ROUTINE_EXECUTION_AGENT_NAME,
+  CHICKPEA_ROUTINE_INTENT_AGENT_NAME,
+  CHICKPEA_SLACK_AGENT_NAME,
+} from './names.ts';
 import { parseRoutineExecutionInitialData } from './routine-execution-data.ts';
 import { assertRuntimePlanInstallation, type RuntimePlanV2 } from './runtime-plan.ts';
 import { readStagedSlackTurnInput } from './turn-input.ts';
@@ -31,7 +42,7 @@ import {
   modelAccessInstallationId,
   providerSetupRequired,
 } from '../config/installation-model-access.ts';
-import { assertInstallationOwnership } from '../config/installation-scope.ts';
+import { assertInstallationOwnership, deploymentServesManyInstallations } from '../config/installation-scope.ts';
 import {
   ModelAccessError,
   createModelAccessInterceptor,
@@ -67,6 +78,14 @@ export async function lookupAttemptModelAccess(
     case CHICKPEA_ROUTINE_EXECUTION_AGENT_NAME:
       if (instanceId) plan = await routineOccurrencePlan(instanceId, env);
       break;
+    case CHICKPEA_ROUTINE_INTENT_AGENT_NAME:
+      if (deploymentServesManyInstallations(env)) {
+        throw new ModelAccessError(
+          'provider_not_offered',
+          'Routine intent is not offered on a deployment serving many installations.',
+        );
+      }
+      return { env };
     default:
       return { env };
   }

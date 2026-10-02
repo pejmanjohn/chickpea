@@ -34,6 +34,25 @@ export interface EncryptedCredentialStore {
   deleteEncryptedCredentialRevision(key: string, expectedRevision: string): Promise<boolean>;
 }
 
+/** How many encrypted revisions one class of keys holds under one key ID. */
+export interface EncryptedCredentialCensusRow {
+  /** The credential key's first segment: `model_provider`, `website_login`, ... */
+  credentialClass: string;
+  keyId: string;
+  count: number;
+}
+
+/** A key-ID census of the encrypted realm, which never reads a value. */
+export interface EncryptedCredentialCensusStore {
+  censusEncryptedCredentialRevisions(): Promise<EncryptedCredentialCensusRow[]>;
+}
+
+export function isEncryptedCredentialCensusStore(
+  store: SettingsStore,
+): store is SettingsStore & EncryptedCredentialCensusStore {
+  return typeof (store as Partial<EncryptedCredentialCensusStore>).censusEncryptedCredentialRevisions === 'function';
+}
+
 /** One provider's current model credential: version metadata and, while active, its key's envelope. */
 export interface ModelCredentialRecord {
   /**
@@ -281,6 +300,20 @@ export class SettingsStoreLogic {
     });
   }
 
+  censusEncryptedCredentialRevisions(): EncryptedCredentialCensusRow[] {
+    return (this.db.all(
+      `SELECT substr(credential_key, 1, instr(credential_key || '.', '.') - 1) AS credential_class,
+         key_id, COUNT(*) AS count
+       FROM app_encrypted_credential_revisions
+       GROUP BY credential_class, key_id
+       ORDER BY credential_class, key_id`,
+    ) as Record<string, unknown>[]).map((row) => ({
+      credentialClass: String(row.credential_class),
+      keyId: String(row.key_id),
+      count: Number(row.count),
+    }));
+  }
+
   deleteEncryptedCredentialRevision(key: string, expectedRevision: string): boolean {
     return this.db.run(
       `DELETE FROM app_encrypted_credential_revisions
@@ -399,7 +432,8 @@ export class SettingsStoreLogic {
 }
 
 /** Node backend: the target-neutral logic over `node:sqlite`, async-wrapped. */
-export interface SqliteSettingsStore extends SettingsStore, EncryptedCredentialStore, ModelCredentialStore {
+export interface SqliteSettingsStore
+  extends SettingsStore, EncryptedCredentialStore, EncryptedCredentialCensusStore, ModelCredentialStore {
   close(): void;
 }
 
@@ -409,7 +443,8 @@ export class SqliteSettingsStore {
     // The Proxy facade drops the `implements` compile check, so this typed
     // binding is the conformance assertion that keeps it: a logic method that
     // stops matching SettingsStore fails typecheck here.
-    const _conforms: SettingsStore & EncryptedCredentialStore & ModelCredentialStore = promisify(
+    const _conforms: SettingsStore & EncryptedCredentialStore & EncryptedCredentialCensusStore &
+      ModelCredentialStore = promisify(
       new SettingsStoreLogic(db, now), {
         close: () => db.close(),
       });
@@ -490,7 +525,8 @@ function storedNonNegativeInteger(raw: string | undefined): number | undefined {
   return Number.isSafeInteger(value) ? value : undefined;
 }
 
-function sameEnvelope(left: SlackSecretEnvelope | undefined, right: SlackSecretEnvelope | undefined): boolean {
+/** Whether two envelopes are the same encryption, byte for byte (each carries its own nonce). */
+export function sameEnvelope(left: SlackSecretEnvelope | undefined, right: SlackSecretEnvelope | undefined): boolean {
   return left === undefined || right === undefined
     ? left === right
     : left.version === right.version && left.algorithm === right.algorithm && left.keyId === right.keyId &&

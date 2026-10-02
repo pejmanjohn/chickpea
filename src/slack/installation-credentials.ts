@@ -13,7 +13,11 @@ import type {
   SlackCredentialRevision,
   StageSlackCredentialRevisionInput,
 } from '../identity/types.ts';
-import { generateCredentialKeyring, loadCredentialKeyring } from './credential-keyring.ts';
+import {
+  CREDENTIAL_KEYRING_UNAVAILABLE,
+  generateCredentialKeyring,
+  loadCredentialKeyring,
+} from './credential-keyring.ts';
 import { assertSlackInstallationCredentialId } from './hosted-slack-app.ts';
 import {
   decryptSlackSecretEnvelope,
@@ -138,8 +142,10 @@ export class SlackCredentialRecoveryOnlyError extends Error {
  */
 export class SlackCredentialUnavailableError extends Error {
   readonly name = 'SlackCredentialUnavailableError';
+  readonly code = CREDENTIAL_KEYRING_UNAVAILABLE;
+  readonly retryable = true;
   constructor() {
-    super('Slack credentials are unavailable until the deployment keyring loads.');
+    super('Slack credentials are unavailable until the deployment keyring loads (keyring_unavailable).');
   }
 }
 
@@ -536,6 +542,62 @@ export async function rotateSlackCredentialEncryption(
     control.rotationEpoch,
   );
   return { rotationEpoch: control.rotationEpoch, rewrapped, remainingPreviousKey };
+}
+
+/**
+ * A host's per-installation rewrap: begin, or resume, the rotation to the
+ * keyring's current key from whatever key the installation's control holds,
+ * and rewrap every live revision that opens. Unlike
+ * rotateSlackCredentialEncryption it judges an unreadable revision by what
+ * reads it: an unreadable active bundle latches recovery, exactly as its next
+ * read would; a parked candidate, which nothing reads, is left for retention
+ * to scrub and reported. `remaining` counts live revisions under any key but
+ * the current one. Running it again changes nothing.
+ */
+export async function rewrapSlackCredentialsToCurrentKey(
+  dependencies: SlackCredentialDependencies,
+): Promise<{ rewrapped: number; unreadableCandidates: number; recoveryOnly: boolean; remaining: number }> {
+  const { state, keyring } = dependencies;
+  let control = await state.getSlackCredentialControl();
+  if (!control) return { rewrapped: 0, unreadableCandidates: 0, recoveryOnly: false, remaining: 0 };
+  if (control.currentKeyId !== keyring.currentKeyId) {
+    control = await state.beginSlackCredentialRotation({
+      expectedEpoch: control.rotationEpoch,
+      expectedCurrentKeyId: control.currentKeyId,
+      nextKeyId: keyring.currentKeyId,
+    });
+  }
+  let rewrapped = 0;
+  let unreadableCandidates = 0;
+  let recoveryOnly = false;
+  for (const revision of await state.listLiveSlackCredentialRevisions()) {
+    if (!revision.envelope || revision.envelope.keyId === control.currentKeyId) continue;
+    if (await unreadableRevisionReason(dependencies, control.deploymentId, revision)) {
+      if (revision.status === 'active') {
+        await enterCredentialRecoveryOnly(state);
+        recoveryOnly = true;
+      } else {
+        unreadableCandidates += 1;
+      }
+      continue;
+    }
+    const context = revisionContext(control.deploymentId, revision);
+    const secrets = await decryptSlackSecretEnvelope<Record<string, string>>(keyring, context, revision.envelope);
+    await state.rewrapSlackCredentialRevision({
+      identityId: revision.identityId,
+      revision: revision.revision,
+      expectedKeyId: revision.envelope.keyId,
+      expectedRotationEpoch: control.rotationEpoch,
+      envelope: await encryptSlackSecretEnvelope(keyring, context, secrets),
+    });
+    rewrapped += 1;
+    deploymentIdByState.set(state, control.deploymentId);
+    cacheByDeployment.get(control.deploymentId)?.delete(revision.identityId);
+  }
+  const currentKeyId = control.currentKeyId;
+  const remaining = (await state.listLiveSlackCredentialRevisions())
+    .filter((revision) => revision.envelope && revision.envelope.keyId !== currentKeyId).length;
+  return { rewrapped, unreadableCandidates, recoveryOnly, remaining };
 }
 
 /**

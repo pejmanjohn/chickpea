@@ -1,3 +1,4 @@
+import { isCredentialKeyringUnavailable } from '../slack/credential-keyring.ts';
 import type { WebClient } from '@slack/web-api';
 
 import {
@@ -134,7 +135,9 @@ export async function resolveRoutineRuntimeAccess(
       botToken = installation.botToken;
       botUserId = installation.botUserId;
       client = installation.client;
-    } catch {
+    } catch (error) {
+      // The deployment keyring not loading is transient; the routine waits for it.
+      if (isCredentialKeyringUnavailable(error)) throw error;
       throw new RoutineRuntimeError(
         'credential_unavailable',
         'The Slack connection is unavailable for this routine.',

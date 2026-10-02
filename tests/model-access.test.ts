@@ -15,6 +15,10 @@ import { lookupAttemptModelAccess } from '../src/agents/model-access-lookup.ts';
 import { compileRuntimePlanV2, deriveRuntimePlanInstanceId, type RuntimePlanV2 } from '../src/agents/runtime-plan.ts';
 import { createSlackTurnInput, rememberInProcessTurnInput } from '../src/agents/turn-input.ts';
 import {
+  configureInstallationAdmission,
+  resetInstallationAdmissionForTests,
+} from '../src/config/installation-admission.ts';
+import {
   createInstallationModelAccessResolver,
   installationModelAccessGrant,
   installationModelAccessGrants,
@@ -142,6 +146,8 @@ async function modelCall(model: Model<string>, step: string): Promise<AssistantM
 async function twoInstallations(t: TestContext) {
   resetModelAccessForTests();
   invalidateProviderKeyCache();
+  // The host's registry admits both, as a deployment serving many installs it.
+  configureInstallationAdmission(async () => 'admitted');
   const envA = scopeInstallationEnv(HOSTED as Record<string, unknown>, { installationId: 'inst_a' });
   const envB = scopeInstallationEnv(HOSTED as Record<string, unknown>, { installationId: 'inst_b' });
   const settings = new Map([['inst_a', new SqliteSettingsStore(':memory:')], ['inst_b', new SqliteSettingsStore(':memory:')]]);
@@ -150,6 +156,7 @@ async function twoInstallations(t: TestContext) {
     for (const store of settings.values()) store.close();
     usage.close();
     resetModelAccessForTests();
+    resetInstallationAdmissionForTests();
   });
   const settingsOf = (env: PlatformEnv | undefined) => settings.get(installationScopeOf(env)?.installationId ?? '')!;
   const keyring = useDeploymentKeyring(t);
@@ -497,6 +504,36 @@ test('standalone binds the coding worker to the installation\'s current keys in 
       ['openai', 'sk-openai-worker-secret'],
       ['workers-ai', undefined],
     ]);
+  });
+});
+
+test('routine intent is refused on a deployment serving many installations, with nothing sent; standalone keeps live keys', async (t) => {
+  const { envA, grant } = await withEnv(NO_DEPLOYMENT_KEYS, () => twoInstallations(t));
+  const savedGrant = await withEnv(NO_DEPLOYMENT_KEYS, () => grant(envA, 'sub_intent'));
+  // A deployment key is present too: the refusal comes first, by name.
+  await withEnv({ ...NO_DEPLOYMENT_KEYS, ANTHROPIC_API_KEY: 'sk-ant-deployment-key' }, async () => {
+    const sent: SentRequest[] = [];
+    const anthropic = recordingProvider('anthropic', sent);
+    const interceptor = createModelAccessInterceptor({
+      lookup: (context) => lookupAttemptModelAccess(context, async () => envA),
+      installationGrants: async () => [savedGrant],
+    });
+    const intent = { instanceId: 'i1~inst_a~routineintent_x', submissionId: 'sub_intent', agentName: 'chickpea-routine-intent-v2' };
+    await assert.rejects(
+      interceptor(AGENT_OPERATION, intent, () => modelCall(anthropic, 'intent')),
+      (error: unknown) => error instanceof ModelAccessError && error.code === 'provider_not_offered' &&
+        /Routine intent is not offered/.test(error.message),
+    );
+    // A caller that passes no env still gets the deployment's own tenancy.
+    await withEnv({ CHICKPEA_TENANCY: 'installation' }, () => assert.rejects(
+      lookupAttemptModelAccess(intent, async () => undefined),
+      (error: unknown) => error instanceof ModelAccessError && error.code === 'provider_not_offered',
+    ));
+    assert.deepEqual(sent, [], 'no request left the process');
+
+    // Standalone binds the installation's current keys for it, as before.
+    const standalone = await lookupAttemptModelAccess({ ...intent, instanceId: 'routineintent_x' }, async () => undefined);
+    assert.deepEqual(standalone, { env: undefined });
   });
 });
 

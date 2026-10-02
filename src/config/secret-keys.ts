@@ -4,6 +4,22 @@
  * overrides the same way and keep the same style of durable deletion marker,
  * so only the lane prefix and its error wording differ.
  */
+import { nonEmpty } from '../security/content-validation.ts';
+import { deploymentServesManyInstallations } from './installation-scope.ts';
+
+/**
+ * The deployment variable that overrides a stored connection credential.
+ * Agent and connection IDs are local to an installation, so on a deployment
+ * serving many installations one variable would answer for every
+ * installation that has those IDs: there it is never read, and only the
+ * installation's own setting answers.
+ */
+export function deploymentSecretOverride(
+  name: string,
+  env: Record<string, unknown> | undefined,
+): string | undefined {
+  return deploymentServesManyInstallations(env) ? undefined : nonEmpty(process.env[name]);
+}
 
 /**
  * Encode a validated id/header segment into a shell-safe, reversible spelling.

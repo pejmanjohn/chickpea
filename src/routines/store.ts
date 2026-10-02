@@ -4507,7 +4507,8 @@ function validTransition(from: RoutineRunStatus, to: RoutineRunStatus): boolean 
   const allowed: Record<RoutineRunStatus, readonly RoutineRunStatus[]> = {
     queued: ['admitting', 'skipped', 'cancelled'],
     admitting: ['running', 'failed', 'skipped', 'superseded', 'cancelled'],
-    running: ['succeeded', 'no_op', 'failed'],
+    // `skipped`: an installation's admission refused the occurrence.
+    running: ['succeeded', 'no_op', 'failed', 'skipped'],
     succeeded: [],
     no_op: [],
     failed: [],

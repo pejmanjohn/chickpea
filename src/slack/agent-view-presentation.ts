@@ -1663,6 +1663,37 @@ export class SlackAgentViewPresentation {
     return await this.options.state.getRunPresentation(this.options.runId) !== undefined;
   }
 
+  /**
+   * End an open stream exactly as Slack shows it, adding nothing: for a run
+   * that posts no reply (its installation's admission refused it). The stop
+   * carries no chunks, as the recovery stop does, so the streamed prefix
+   * stays whole and is no longer streaming. A stream Slack already sealed
+   * is recorded as ended.
+   */
+  async sealStreamWithoutReply(): Promise<void> {
+    let presentation = await this.requirePresentation();
+    if (presentation.stream.state !== 'streaming' || !presentation.stream.messageTs ||
+        presentation.stream.pendingAppend) return;
+    presentation = await this.transition(presentation, {
+      kind: 'close_stream',
+      outcome: presentation.stream.acknowledgedByteLength > 0 ? 'progressive' : 'terminal_only',
+      terminalSuffixBytes: 0,
+    });
+    presentation = await this.transition(presentation, { kind: 'mark_finalizing' });
+    try {
+      await this.options.client.chat.stopStream({
+        channel: presentation.root.channelId,
+        ts: presentation.stream.messageTs!,
+      });
+    } catch (error) {
+      if (!streamNoLongerOpen(error)) throw error;
+    }
+    await this.transition(presentation, {
+      kind: 'mark_artifact_delivered',
+      outcome: presentation.stream.presentationOutcome ?? 'terminal_only',
+    });
+  }
+
   async markCanonicalFinalized(): Promise<void> {
     const presentation = await this.requirePresentation();
     if (presentation.stream.state === 'absent') {

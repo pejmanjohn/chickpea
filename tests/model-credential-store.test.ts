@@ -223,3 +223,26 @@ test('only the envelope published with the current reference and version is read
     store.close();
   }
 });
+
+test('the encrypted census counts revisions per class and key ID, locally and through the RPC, without a value', async () => {
+  const logic = new SettingsStoreLogic(new NodeStateDb(new DatabaseSync(':memory:')));
+  assert.equal(logic.publishModelCredential(publication(0, await envelopeFor(1, 'sk-ant-census'))), true);
+  const login = await envelopeFor(1, 'login-secret', nextKeyring);
+  for (const key of ['website_login.login_1', 'website_login.login_2']) {
+    logic.replaceEncryptedCredentialRevision({
+      key, expectedRevision: null, revision: 'v1', contextId: 'login_context_000001', envelope: login,
+    });
+  }
+  const expected = [
+    { credentialClass: 'model_provider', keyId: 'key_store', count: 1 },
+    { credentialClass: 'website_login', keyId: 'key_next', count: 2 },
+  ];
+  assert.deepEqual(logic.censusEncryptedCredentialRevisions(), expected);
+  const stub = {
+    encryptedCredentialCensus: () => Promise.resolve({ ok: true as const, value: structuredClone(logic.censusEncryptedCredentialRevisions()) }),
+  } as unknown as TagStateRpc;
+  const census = await new CfSettingsStore(new FreshTagStateStubs(() => stub)).censusEncryptedCredentialRevisions();
+  assert.deepEqual(census, expected);
+  assert.doesNotMatch(JSON.stringify(census), /sk-ant|login-secret/);
+  assert.equal(replaySafeStateRpc('encryptedCredentialCensus'), true, 'a read, so a lost call is replayed');
+});

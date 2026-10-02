@@ -1,4 +1,5 @@
 import type {
+  EncryptedCredentialCensusRow,
   EncryptedCredentialRevision,
   ModelCredentialRecord,
   PublishModelCredentialInput,
@@ -622,6 +623,8 @@ export interface TagStateRpc {
     key: string,
     expectedRevision: string,
   ): Promise<StateRpcResult<boolean>>;
+  /** Encrypted revisions per class and key ID; no value is read. */
+  encryptedCredentialCensus(): Promise<StateRpcResult<EncryptedCredentialCensusRow[]>>;
   modelCredentialRead(providerId: string): Promise<StateRpcResult<ModelCredentialRecord | null>>;
   /** Version-fenced: metadata and envelope publish (or the envelope goes) in one transaction. */
   modelCredentialPublish(input: PublishModelCredentialInput): Promise<StateRpcResult<boolean>>;

@@ -1,5 +1,5 @@
 import { nonEmpty } from '../security/content-validation.ts';
-import { createSecretCleanupKeys, encodeEnvSegment } from './secret-keys.ts';
+import { createSecretCleanupKeys, deploymentSecretOverride, encodeEnvSegment } from './secret-keys.ts';
 import type { SettingsStore } from './settings-store.ts';
 import { getSettingsStore, type PlatformEnv } from './state-backend.ts';
 
@@ -8,7 +8,8 @@ import { getSettingsStore, type PlatformEnv } from './state-backend.ts';
  *
  * The raw credential is stored separately from profile policy. In particular,
  * `headerValuePrefix` is not baked into this value; turn-time injection applies
- * that policy later. Environment variables always win over stored values.
+ * that policy later. On standalone, environment variables win over stored
+ * values; a deployment serving many installations reads only the stored ones.
  *
  * No cache here: connector credentials are resolved per-use, so a stale cache
  * would be a footgun.
@@ -58,7 +59,7 @@ export async function resolveConnectionAccountSecret(
   store?: SettingsStore,
 ): Promise<string | undefined> {
   const settings = store ?? getSettingsStore(env);
-  const fromEnv = nonEmpty(process.env[connectionAccountSecretEnvVar(ref.secretRefId)]);
+  const fromEnv = deploymentSecretOverride(connectionAccountSecretEnvVar(ref.secretRefId), env);
   if (fromEnv) return fromEnv;
   return nonEmpty(await settings.getSetting(connectionAccountSecretSettingKey(ref.secretRefId)));
 }
@@ -154,7 +155,7 @@ export async function resolveConnectorCredential(
   store?: SettingsStore,
 ): Promise<string | undefined> {
   const settings = store ?? getSettingsStore(env);
-  const fromEnv = nonEmpty(process.env[connectorCredentialEnvVar(ref.agentId, ref.connectionId)]);
+  const fromEnv = deploymentSecretOverride(connectorCredentialEnvVar(ref.agentId, ref.connectionId), env);
   if (fromEnv) return fromEnv;
   return nonEmpty(
     await settings.getSetting(connectorCredentialSettingKey(ref.agentId, ref.connectionId)),
@@ -189,7 +190,7 @@ export async function describeConnectorCredentialSource(
   store?: SettingsStore,
 ): Promise<ConnectorCredentialSource> {
   const settings = store ?? getSettingsStore(env);
-  if (nonEmpty(process.env[connectorCredentialEnvVar(agentId, connectionId)])) {
+  if (deploymentSecretOverride(connectorCredentialEnvVar(agentId, connectionId), env)) {
     return 'env';
   }
   return nonEmpty(await settings.getSetting(connectorCredentialSettingKey(agentId, connectionId)))
