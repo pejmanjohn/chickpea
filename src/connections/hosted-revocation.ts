@@ -15,13 +15,21 @@
  * succeeds or fails on its own, and a host calls this again until `done`.
  * Standalone is refused.
  */
+import { ConnectionAccountRevisionConflictError } from '../config/errors.ts';
 import { InstallationContextError, requireInstallationScope } from '../config/installation-scope.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import { getConfigStore, getSettingsStore, type PlatformEnv } from '../config/state-backend.ts';
 import type { ConfigStore } from '../config/store.ts';
 import type { ConnectionAccount, ConnectionAccountOwnerKind } from '../config/types.ts';
 import { resolveDefaultManagedConnectionProviderRegistry, type ManagedConnectionProviderRegistry } from './managed.ts';
-import { ConnectionAccountService, deleteRevokedConnectionOAuthSettings } from './store.ts';
+import { ManagedProviderRequestError } from './managed-errors.ts';
+import { COMPOSIO_KEY_MISSING, COMPOSIO_REVOKE_FAILED } from './providers/composio.ts';
+import {
+  ConnectionAccountService,
+  ConnectionScheduleConflictError,
+  deleteRevokedConnectionOAuthSettings,
+  ManagedConnectionProviderUnavailableError,
+} from './store.ts';
 
 export interface ConnectionRevocationOutcome {
   readonly connectionAccountId: string;
@@ -33,7 +41,31 @@ export interface ConnectionRevocationOutcome {
   readonly outcome: 'revoked' | 'already_revoked' | 'failed';
   /** Failed accounts: the error's name, never its detail. */
   readonly error?: string;
+  /** Failed accounts: why, as a content-free code (see `revocationFailureCode`). */
+  readonly code?: RevocationFailureCode;
 }
+
+/**
+ * Why one account's revocation failed, read from the error's class or one of
+ * the fixed messages Core's provider fails with, never from its detail:
+ * - `provider_unavailable`: no provider serves the managed account's adapter;
+ * - `provider_not_configured`: its provider has no key;
+ * - `remote_revoke_failed`: the provider did not delete the remote account;
+ * - `provider_<code>`: the provider refused the request (throttled, ...);
+ * - `dependent_schedules_changed`: dependent schedules changed mid-revoke;
+ * - `account_changed`: the account changed mid-revoke;
+ * - `oauth_settings_cleanup_failed`: revoked, but its OAuth settings remain;
+ * - `unclassified`: anything else.
+ */
+export type RevocationFailureCode =
+  | 'provider_unavailable'
+  | 'provider_not_configured'
+  | 'remote_revoke_failed'
+  | `provider_${ManagedProviderRequestError['code']}`
+  | 'dependent_schedules_changed'
+  | 'account_changed'
+  | 'oauth_settings_cleanup_failed'
+  | 'unclassified';
 
 export interface InstallationConnectionRevocation {
   readonly accounts: readonly ConnectionRevocationOutcome[];
@@ -95,12 +127,21 @@ export async function revokeInstallationConnections(
       ...(account.policy.kind === 'managed' ? { adapterId: account.policy.adapterId } : {}),
       ownerKind: account.ownerKind,
     };
+    let stage: 'revoke' | 'oauth_cleanup' = 'revoke';
     try {
       const revoked = await service.revokeWithSystemAuthority(account.id);
+      stage = 'oauth_cleanup';
       await deleteRevokedConnectionOAuthSettings(revoked, env, settings);
       outcomes.push({ ...described, outcome: account.lifecycle === 'revoked' ? 'already_revoked' : 'revoked' });
     } catch (error) {
-      outcomes.push({ ...described, outcome: 'failed', error: error instanceof Error ? error.name : 'Error' });
+      const code = stage === 'oauth_cleanup' ? 'oauth_settings_cleanup_failed' : revocationFailureCode(error);
+      const name = error instanceof Error ? error.name : 'Error';
+      outcomes.push({ ...described, outcome: 'failed', error: name, code });
+      // Content-free: the kind, the provider and the code, never an ID, message or secret.
+      console.warn(JSON.stringify({
+        component: 'connections', event: 'installation_connection_revoke_failed',
+        kind: described.kind, ...(described.adapterId ? { adapterId: described.adapterId } : {}), code,
+      }));
     }
   }
   const count = (outcome: ConnectionRevocationOutcome['outcome']) =>
@@ -112,4 +153,14 @@ export async function revokeInstallationConnections(
     failed: count('failed'),
     done: count('failed') === 0,
   };
+}
+
+function revocationFailureCode(error: unknown): RevocationFailureCode {
+  if (error instanceof ManagedConnectionProviderUnavailableError) return 'provider_unavailable';
+  if (error instanceof ManagedProviderRequestError) return `provider_${error.code}`;
+  if (error instanceof ConnectionScheduleConflictError) return 'dependent_schedules_changed';
+  if (error instanceof ConnectionAccountRevisionConflictError) return 'account_changed';
+  if (error instanceof Error && error.message === COMPOSIO_KEY_MISSING) return 'provider_not_configured';
+  if (error instanceof Error && error.message === COMPOSIO_REVOKE_FAILED) return 'remote_revoke_failed';
+  return 'unclassified';
 }

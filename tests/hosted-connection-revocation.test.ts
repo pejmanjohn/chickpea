@@ -10,6 +10,7 @@ import { SqliteConfigStore } from '../src/config/store.ts';
 import type { ConnectionAccountInput } from '../src/config/types.ts';
 import { revokeInstallationConnections } from '../src/connections/hosted-revocation.ts';
 import { createManagedConnectionProviderRegistry, type ManagedConnectionProvider } from '../src/connections/managed.ts';
+import { ComposioManagedConnectionProvider } from '../src/connections/providers/composio.ts';
 
 /**
  * Before an installation's data is erased, its host revokes every connection
@@ -20,13 +21,12 @@ import { createManagedConnectionProviderRegistry, type ManagedConnectionProvider
 
 const TEAM = 'T_REVOKE';
 
-function provider(deleted: string[], fail = false): ManagedConnectionProvider {
+function provider(deleted: string[]): ManagedConnectionProvider {
   return {
     id: 'composio',
     validate: async () => undefined,
     execute: async () => { throw new Error('unused'); },
     revoke: async ({ policy }) => {
-      if (fail) throw new Error('Composio is unreachable');
       deleted.push(policy.accountRef);
     },
   };
@@ -135,23 +135,36 @@ test('every connection of one installation is revoked, managed accounts first, a
   assert.deepEqual(deleted, ['ca_inst_revoke_a']);
 });
 
-test('a managed account whose provider fails stays fail-closed and is revoked on the next call', async (t) => {
+test('a managed account whose provider fails stays fail-closed, is reported by a content-free code, and is revoked on the next call', async (t) => {
+  const warnings = t.mock.method(console, 'warn', () => undefined);
   const a = await installation(t, 'inst_revoke_retry');
   const deleted: string[] = [];
-  const failing = await revokeInstallationConnections(a.env, {
-    config: a.config, settings: a.settings, providers: createManagedConnectionProviderRegistry([provider(deleted, true)]),
-  });
-  assert.equal(failing.done, false);
-  assert.deepEqual(failing.accounts.filter(({ outcome }) => outcome === 'failed').map(({ connectionAccountId, error }) => [connectionAccountId, error]),
-    [['connection_managed', 'Error']]);
+  const failed = async (provider: ManagedConnectionProvider) => (await revokeInstallationConnections(a.env, {
+    config: a.config, settings: a.settings, providers: createManagedConnectionProviderRegistry([provider]),
+  })).accounts.filter(({ outcome }) => outcome === 'failed').map(({ connectionAccountId, error, code }) => [connectionAccountId, error, code]);
+
+  // Composio did not delete the remote account; its own detail is never kept.
+  assert.deepEqual(await failed(new ComposioManagedConnectionProvider({
+    apiKey: 'composio-test-key',
+    revokeAccount: async () => { throw new Error('upstream refused token sk_live_detail for ca_inst_revoke_retry'); },
+  })), [['connection_managed', 'Error', 'remote_revoke_failed']]);
   // Paused and unusable, never quietly ready while its remote account lives.
   assert.equal((await a.state()).accounts.connection_managed, 'needs_attention');
   assert.equal((await a.state()).schedule, 'needs_attention');
+  assert.deepEqual(await failed(new ComposioManagedConnectionProvider({})),
+    [['connection_managed', 'Error', 'provider_not_configured']]);
   const unavailable = await revokeInstallationConnections(a.env, {
     config: a.config, settings: a.settings, providers: createManagedConnectionProviderRegistry([]),
   });
-  assert.deepEqual(unavailable.accounts.filter(({ outcome }) => outcome === 'failed').map(({ error }) => error),
-    ['ManagedConnectionProviderUnavailableError']);
+  assert.deepEqual(unavailable.accounts.filter(({ outcome }) => outcome === 'failed').map(({ error, code }) => [error, code]),
+    [['ManagedConnectionProviderUnavailableError', 'provider_unavailable']]);
+  assert.equal(unavailable.done, false);
+  // One log line per failure: the kind, the provider and the code, nothing else.
+  assert.deepEqual(warnings.mock.calls.map(({ arguments: [line] }) => JSON.parse(String(line))), [
+    'remote_revoke_failed', 'provider_not_configured', 'provider_unavailable',
+  ].map((code) => ({
+    component: 'connections', event: 'installation_connection_revoke_failed', kind: 'managed', adapterId: 'composio', code,
+  })));
 
   const retried = await revokeInstallationConnections(a.env, {
     config: a.config, settings: a.settings, providers: createManagedConnectionProviderRegistry([provider(deleted)]),
