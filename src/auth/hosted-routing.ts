@@ -1,5 +1,4 @@
 import { Hono } from 'hono';
-import type { JWK } from 'jose';
 
 import { InstallationContextError, requireInstallationScope } from '../config/installation-scope.ts';
 import { getIdentityStore, type PlatformEnv } from '../config/state-backend.ts';
@@ -11,28 +10,13 @@ import { createBetterAuthPublicHandler, type BetterAuthPublicHandlerInput } from
 import { betterAuthPublicRoutes } from './better-auth-runtime.ts';
 import { hostedLoginAgrees, withHostedLogin, type HostedLogin } from './hosted-login.ts';
 import {
+  betterAuthJwks,
   mcpAccessForbidden,
   mcpAuthorizationChallenge,
   mcpBearerToken,
   mountMcpOAuthBrowserRoutes,
   verifyMcpAccessToken,
 } from './mcp-oauth-routes.ts';
-
-// How a host serving many installations hands Core its requests. All of
-// Better Auth is shared: one origin, one secret, one database (PostgreSQL).
-//
-// 1. serveHostedSharedAuth answers what belongs to no installation (OAuth
-//    discovery, JWKS, client registration, authorize, consent, token and
-//    refresh, revoke, sign-out, the MCP sign-in continuation and consent
-//    pages). Every token it issues is first checked against the user's
-//    installation.
-// 2. routeHostedRequest finds the installation of everything else from its
-//    credential alone: the browser session (for /mcp, the MCP access token)
-//    names a Better Auth user, the user's one Slack account names a
-//    workspace, and the host's registry names that workspace's active
-//    installation. The installation's stored binding must agree.
-// 3. Core's application serves the request with the env that returns. The
-//    installation's directory serves a principal only for that login.
 
 /** A host's Better Auth and registry for one request. */
 export interface HostedRouting<E extends PlatformEnv> {
@@ -86,8 +70,10 @@ export function isHostedSharedAuthPath(pathname: string): boolean {
 }
 
 /**
- * Answers a request that belongs to no installation, or returns undefined
- * for the host to route. Run it before routeHostedRequest. Throttle client
+ * Answers a request that belongs to no installation (Better Auth is shared:
+ * one origin, secret and database), or returns undefined for the host to
+ * route; every token it issues waits for the user's installation to admit
+ * them. Run it before routeHostedRequest. Throttle client
  * registration (`POST /api/auth/oauth2/register`) per source before it: no
  * installation's limiter applies here (see `mcpRegistrationPolicy`).
  */
@@ -109,31 +95,29 @@ export async function serveHostedSharedAuth<E extends PlatformEnv>(
 }
 
 /**
- * The installation a request belongs to, found from its credential: the
- * browser session, or for /mcp the MCP access token. No organization ID,
- * header or URL the client sends takes part.
+ * The installation a request belongs to, found from its credential alone
+ * (resolveHostedLogin, then the host's registry); its stored binding for the
+ * login must agree. No organization ID, header or URL the client sends
+ * takes part. Core's app then serves the returned env, whose directory
+ * serves a principal only for that login.
  */
 export async function routeHostedRequest<E extends PlatformEnv>(
   request: Request,
   routing: HostedRouting<E>,
 ): Promise<HostedRoute<E>> {
-  const logins = hostedLogins(routing.environment);
-  if (new URL(request.url).pathname === MCP_PATH) {
-    const token = mcpBearerToken(request);
-    const login = token ? await logins.fromAccessToken(token) : undefined;
-    if (!login) {
-      return {
-        kind: 'unauthenticated',
-        response: mcpAuthorizationChallenge(routing.environment.baseURL, token !== undefined),
-      };
-    }
-    const env = await installationFor(routing, login);
-    return env ? { kind: 'installation', env, login } : { kind: 'refused', response: mcpAccessForbidden() };
+  const mcp = new URL(request.url).pathname === MCP_PATH;
+  const login = await resolveHostedLogin(request, routing.environment);
+  if (!login) {
+    return mcp
+      ? {
+          kind: 'unauthenticated',
+          response: mcpAuthorizationChallenge(routing.environment.baseURL, mcpBearerToken(request) !== undefined),
+        }
+      : { kind: 'unauthenticated' };
   }
-  const login = await logins.fromSession(request);
-  if (!login) return { kind: 'unauthenticated' };
   const env = await installationFor(routing, login);
-  return env ? { kind: 'installation', env, login } : { kind: 'refused' };
+  if (env) return { kind: 'installation', env, login };
+  return mcp ? { kind: 'refused', response: mcpAccessForbidden() } : { kind: 'refused' };
 }
 
 /**
@@ -186,11 +170,7 @@ function hostedLogins(environment: BetterAuthEnvironment) {
     async fromAccessToken(token: string): Promise<HostedLogin | undefined> {
       const claims = await verifyMcpAccessToken(token, {
         baseURL: environment.baseURL,
-        getJwks: async () => {
-          const api = betterAuth().api as unknown as { getJwks(): Promise<{ keys?: JWK[] }> };
-          const result = await api.getJwks();
-          return { keys: Array.isArray(result.keys) ? result.keys : [] };
-        },
+        getJwks: () => betterAuthJwks(betterAuth()),
       });
       return typeof claims?.sub === 'string' && claims.sub ? forUser(claims.sub) : undefined;
     },

@@ -66,9 +66,7 @@ export function betterAuthPublicRoutes(dispatch: (c: Context) => Promise<Respons
 
 async function dispatch(c: Context, options: BetterAuthRuntimeOptions): Promise<Response> {
   const platformEnv = c.env as PlatformEnv | undefined;
-  // Every installation of a deployment serving many shares one Better Auth,
-  // which its host serves before resolving any installation
-  // (serveHostedSharedAuth), so token issuance always checks the installation.
+  // Under installation tenancy the host serves these, shared (serveHostedSharedAuth).
   if (deploymentTenancy(platformEnv) === 'installation') return new Response('Not Found', { status: 404 });
   const identity = options.identity ?? getIdentityStore(platformEnv);
   const control = await identity.getAuthControl();

@@ -112,11 +112,12 @@ export async function withBetterAuthAccessRevoker<T>(
   use: (revoker: BetterAuthAccessRevoker | undefined) => Promise<T>,
 ): Promise<T> {
   const { control, platformEnv } = input;
-  const opened = platformEnv && control && betterAuthActive(control) &&
-      deploymentTenancy(platformEnv) === 'installation' && !hostBetterAuthBackend(platformEnv)
-    ? backgroundBackend?.(platformEnv)
-    : undefined;
-  if (!platformEnv || !opened) return use(await resolveBetterAuthAccessRevoker(input));
+  if (!platformEnv || !control || !betterAuthActive(control) ||
+      deploymentTenancy(platformEnv) !== 'installation' || hostBetterAuthBackend(platformEnv)) {
+    return use(await resolveBetterAuthAccessRevoker(input));
+  }
+  const opened = backgroundBackend?.(platformEnv);
+  if (!opened) return use(await resolveBetterAuthAccessRevoker(input));
   try {
     return await use(await resolveBetterAuthAccessRevoker({
       control,

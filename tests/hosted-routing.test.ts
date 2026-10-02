@@ -672,18 +672,20 @@ test('resolving a login reads the credential the route uses and nothing else', {
   assert.equal((await hosted.backend.pool.query('SELECT count(*)::int AS count FROM session')).rows[0].count, 0);
 });
 
-test('a Slack deactivation handled with no request, as in a Durable Object alarm, ends sessions and grants through the host\'s backend factory', { timeout: 120_000 }, async (t) => {
+test('a Slack deactivation with no request backend revokes through a backend the host\'s factory opens, then closes it', { timeout: 120_000 }, async (t) => {
   const hosted = await hostedDeployment(t);
   if (!hosted) return;
   t.after(() => configureBetterAuthBackendFactory(undefined));
   const acme = await hosted.install('TACME', 'org_acme', 'UOWNERA');
   const member = await acme.member('UMEMBERA');
   const grant = await hosted.mcpGrant(member.cookie);
-  // A Durable Object's env: scoped by the object's own name, with no request backend.
-  const alarmEnv = scopeInstallationEnv(HOSTED as PlatformEnv, { installationId: acme.installationId });
-  // processGatewaySlackEnvelope's user_change branch, as the alarm's inbox drain runs it.
+  // An env with no request backend, like a Durable Object's (scoped by its own name). Hosted
+  // has the gateway session off, so today none reaches the gateway inbox; H07's direct ingress
+  // and anything finished after its acknowledgement are the consumers.
+  const backgroundEnv = scopeInstallationEnv(HOSTED as PlatformEnv, { installationId: acme.installationId });
+  // The user_change branch both Slack paths now run.
   const deactivate = async (eventId: string) => withBetterAuthAccessRevoker({
-    control: await acme.identity.getAuthControl(), platformEnv: alarmEnv,
+    control: await acme.identity.getAuthControl(), platformEnv: backgroundEnv,
   }, (betterAuth) => applyGatewaySlackUserChange({
     identity: acme.identity,
     ...(betterAuth ? { betterAuth } : {}),
@@ -715,7 +717,7 @@ test('a Slack deactivation handled with no request, as in a Durable Object alarm
   const result = await deactivate('Ev_ALARM');
   assert.equal(result.outcome, 'suspended');
   assert.equal(opened.length, 1, 'one backend for the piece of work');
-  assert.equal(opened[0]!.env, alarmEnv);
+  assert.equal(opened[0]!.env, backgroundEnv);
   assert.equal(opened[0]!.closed, true, 'and closed when it settled');
   // Its sessions and MCP grants ended in PostgreSQL along with the membership.
   assert.equal((await acme.identity.getMembership(member.membershipId))?.status, 'suspended');

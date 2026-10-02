@@ -89,6 +89,13 @@ export async function verifyMcpAccessToken(
   }
 }
 
+/** The keys Better Auth signs its MCP access tokens with. */
+export async function betterAuthJwks(auth: ReturnType<typeof createBetterAuth>): Promise<{ keys: JWK[] }> {
+  const api = auth.api as unknown as { getJwks(): Promise<{ keys?: JWK[] }> };
+  const result = await api.getJwks();
+  return { keys: Array.isArray(result.keys) ? result.keys : [] };
+}
+
 /** The bearer token of an `Authorization` header, if it carries one. */
 export function mcpBearerToken(request: Request): string | undefined {
   return bearerToken(request.headers.get('authorization'));
@@ -101,11 +108,6 @@ export function mcpBearerToken(request: Request): string | undefined {
 export function mcpAuthorizationChallenge(baseURL: string, invalidToken: boolean): Response {
   const metadata = `${new URL(baseURL).origin}/.well-known/oauth-protected-resource/mcp`;
   return oauthChallenge(401, metadata, invalidToken ? 'invalid_token' : undefined);
-}
-
-/** The MCP resource's answer when current access does not permit the request. */
-export function mcpAccessForbidden(): Response {
-  return forbidden();
 }
 
 export function createMcpAuthenticatedRequestHandler(
@@ -148,7 +150,7 @@ export function createMcpAuthenticatedRequestHandler(
       emitManagementMetric('oauth.request', {
         stage: 'membership', outcome: 'denied', reason: 'live_access_denied',
       });
-      return forbidden();
+      return mcpAccessForbidden();
     }
     const server = await input.createServer({ ...resolved, clientId });
     emitManagementMetric('oauth.request', {
@@ -367,11 +369,7 @@ function authenticatedRuntimeHandler(input: {
   });
   return createMcpAuthenticatedRequestHandler({
     baseURL: input.environment.baseURL,
-    getJwks: async () => {
-      const api = auth.api as unknown as { getJwks(): Promise<{ keys?: JWK[] }> };
-      const result = await api.getJwks();
-      return { keys: Array.isArray(result.keys) ? result.keys : [] };
-    },
+    getJwks: () => betterAuthJwks(auth),
     resolvePrincipal: async (betterAuthUserId) => {
       const resolution = await directory.resolveBetterAuthUser(betterAuthUserId);
       if (!resolution || resolution.membership.status !== 'active') return undefined;
@@ -434,7 +432,8 @@ function oauthChallenge(
   });
 }
 
-function forbidden(): Response {
+/** The MCP resource's answer when current access does not permit the request. */
+export function mcpAccessForbidden(): Response {
   return Response.json({
     jsonrpc: '2.0',
     error: { code: -32003, message: 'Current Chickpea access does not permit this request.' },
