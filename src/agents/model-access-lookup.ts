@@ -54,12 +54,18 @@ export async function lookupAttemptModelAccess(
   const env = await currentPlatformEnv();
   const { instanceId, submissionId } = context;
   if (!instanceId || !submissionId) return { env };
+  const runAgent = context.agentName === CHICKPEA_SLACK_AGENT_NAME ||
+    context.agentName === CHICKPEA_ROUTINE_EXECUTION_AGENT_NAME;
   const plan = context.agentName === CHICKPEA_SLACK_AGENT_NAME
     ? await slackTurnPlan(instanceId, submissionId, env)
     : context.agentName === CHICKPEA_ROUTINE_EXECUTION_AGENT_NAME
       ? await routineOccurrencePlan(instanceId, env)
       : undefined;
-  return plan ? planModelAccess(plan, instanceId, submissionId, env) : { env };
+  if (plan) return planModelAccess(plan, instanceId, submissionId, env);
+  // Standalone then binds the installation's current keys (an instance from
+  // before turn staging); a deployment serving many fails the attempt closed.
+  if (runAgent) console.warn('[chickpea] model access found no persisted run for an attempt');
+  return { env };
 }
 
 /** A plan's frozen credential as a grant, or the installation's current one when it froze none. */
