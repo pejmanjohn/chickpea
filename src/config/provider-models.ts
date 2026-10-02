@@ -1,5 +1,5 @@
 import { installationCacheKey } from './installation-scope.ts';
-import { ModelCredentialUnavailableError } from './model-credential-refs.ts';
+import { ModelCredentialKeyringUnavailableError, ModelCredentialUnavailableError } from './model-credential-refs.ts';
 import type { ProviderKeyId } from './provider-keys.ts';
 import { isProviderKeyId, resolveProviderApiKey } from './provider-keys.ts';
 import type { SettingsStore } from './settings-store.ts';
@@ -210,11 +210,15 @@ async function fetchProviderModels(
   if (id === 'workers-ai') {
     return fetchWorkersAiModels(env, timeoutMs);
   }
-  // A saved key that cannot be opened reads as missing, as it does for turns.
+  // A saved key that cannot be opened reads as missing, as it does for turns;
+  // one the deployment keyring cannot read yet is temporarily unavailable.
   const apiKey = await resolveProviderApiKey(id, env, store).then(
     (resolved) => resolved.apiKey,
     (error: unknown) => {
       if (error instanceof ModelCredentialUnavailableError) return undefined;
+      if (error instanceof ModelCredentialKeyringUnavailableError) {
+        throw new ProviderModelsUnavailableError(id, 'model_credentials_unavailable', 503);
+      }
       throw error;
     },
   );

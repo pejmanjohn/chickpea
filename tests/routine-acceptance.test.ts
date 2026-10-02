@@ -20,6 +20,7 @@ import {
   type InstallationAdmission,
 } from '../src/config/installation-admission.ts';
 import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
+import { ModelCredentialKeyringUnavailableError } from '../src/config/model-credential-refs.ts';
 import { closeNodeStateStores } from '../src/config/state-backend.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import { drainRoutinePauseNotices } from '../src/routines/delivery.ts';
@@ -615,6 +616,61 @@ test('a dispatched occurrence of a refused installation is stopped and skipped, 
     assert.equal(midRun.failureClass, 'policy_denied');
     assert.equal(midRun.flueAgentSettlement?.outcome, 'failed');
     assert.deepEqual(await afterResume(store, routine.id, env), UNHARMED, 'no failure notice, pause or failure count');
+  } finally {
+    store.close();
+  }
+});
+
+test('a keyring outage defers an occurrence, and stops a dispatched one without a failure, notice or pause', async (context) => {
+  const directory = mkdtempSync(join(tmpdir(), 'chickpea-routine-keyring-'));
+  context.after(() => rmSync(directory, { recursive: true, force: true }));
+  let now = new Date().setUTCMinutes(59, 0, 0);
+  const store = new SqliteRoutineStore(join(directory, 'state.sqlite'), () => now);
+  const { env } = hostedRoutineInstallation(context, () => now);
+  try {
+    const routine = await hourlyChannelRoutine(store, () => now, 'keyring:seed');
+    let keyringLoads = false;
+    let outageRead = true;
+    const agent = handle();
+    agent.read = async () => {
+      if (!outageRead) return handle().read({} as never);
+      throw { name: 'AgentRunError', message: 'agent submission failed',
+        cause: { message: new ModelCredentialKeyringUnavailableError().message } };
+    };
+    const scheduler = () => new RoutineScheduler(store, new RoutineAdmissionController(store, {
+      execute: (run, attempt) => executeRoutineOccurrence({
+        env, store, occurrenceId: run.id, attempt: attempt.attempt,
+      }, {
+        ...executionDependencies(() => now),
+        resolveModel: async () => {
+          if (!keyringLoads) throw new ModelCredentialKeyringUnavailableError();
+          return { model: config.model };
+        },
+        handle: agent,
+      }),
+    }));
+
+    // The keyring will not load: the occurrence waits, nothing fails.
+    now += 60_000;
+    assert.equal((await scheduler().heartbeat(now, 'heartbeat-outage')).admissions.deferred, 1);
+    const [waiting] = await store.listRuns({ routineId: routine.id });
+    assert.equal(waiting?.status, 'admitting');
+    assert.deepEqual(await afterResume(store, routine.id, env), UNHARMED);
+
+    // It loads again, but the dispatched attempt's own key read still fails: skipped, not failed.
+    keyringLoads = true;
+    now += ROUTINE_LIMITS.admissionLeaseMs + 1;
+    await scheduler().heartbeat(now, 'heartbeat-dispatched');
+    const stopped = (await store.getRun(waiting!.id))!;
+    assert.equal(stopped.status, 'skipped');
+    assert.equal(stopped.skipReason, 'keyring_unavailable');
+    assert.deepEqual(await afterResume(store, routine.id, env), UNHARMED);
+
+    // The next slot runs normally.
+    outageRead = false;
+    now += 60 * 60_000;
+    await scheduler().heartbeat(now, 'heartbeat-next');
+    assert.equal((await store.listRuns({ routineId: routine.id })).find((run) => run.id !== waiting!.id)?.status, 'no_op');
   } finally {
     store.close();
   }

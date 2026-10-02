@@ -29,6 +29,7 @@ import {
   type ProviderAuthRoute,
 } from '../config/runtime-model.ts';
 import { installationRefusesWork, isInstallationRefusal } from '../config/installation-admission.ts';
+import { isCredentialKeyringUnavailable } from '../slack/credential-keyring.ts';
 import { resolveModelCredentialAttribution } from '../config/model-credential-refs.ts';
 import {
   imageCapabilityForResolution,
@@ -218,6 +219,9 @@ export async function executeRoutineOccurrence(
     );
   } catch (error) {
     if (error instanceof RoutineSupersededError) return 'superseded';
+    // The deployment keyring not loading is transient: the occurrence waits
+    // for a later heartbeat, and nothing is failed, paused or posted for it.
+    if (isCredentialKeyringUnavailable(error)) return 'resumable';
     const failure = runtimeFailure(error, false);
     if ([
       'assignment_missing',
@@ -296,7 +300,8 @@ export async function executeRoutineOccurrence(
   let receipt = prepared.receipt;
   const toolCalls = new ToolCallCounter('submit_routine_result');
   let modelSettled = false;
-  let refused = false;
+  // Why the attempt ended without a result to post: refused, or an outage.
+  let withoutResult: SkipReason | undefined;
   let settledUsage: RoutineAgentUsageV1 | null = null;
   let settlement: RoutineAgentSettlementV1;
   // Only model execution and result validation belong to this catch. Once a
@@ -389,9 +394,12 @@ export async function executeRoutineOccurrence(
     };
   } catch (error) {
     const toolCallCount = toolCalls.count;
-    // A model request the installation's admission refused ended the attempt.
-    refused = isInstallationRefusal(error);
-    const failure = refused ? REFUSED_SKIP : runtimeFailure(error, toolCallCount > 0);
+    // A model request the installation's admission refused, or the deployment
+    // keyring not loading, ended the attempt: not the routine's failure.
+    withoutResult = isInstallationRefusal(error) ? REFUSED_SKIP
+      : isCredentialKeyringUnavailable(error) ? KEYRING_UNAVAILABLE_SKIP
+      : undefined;
+    const failure = withoutResult ?? runtimeFailure(error, toolCallCount > 0);
     settlement = {
       schemaVersion: 1,
       outcome: error instanceof AgentRunError && error.outcome === 'aborted' ? 'aborted' : 'failed',
@@ -418,12 +426,13 @@ export async function executeRoutineOccurrence(
     });
     // Refused while the attempt ran: the settlement is kept, the occurrence
     // is skipped, and nothing is posted or counted against the routine.
-    if (refused || await installationRefusesWork(input.env)) {
+    withoutResult ??= await installationRefusesWork(input.env) ? REFUSED_SKIP : undefined;
+    if (withoutResult) {
       await prepared.workLifecycle?.settleWithoutDelivery({
         terminalDisposition: 'skipped',
-        safeFailureCode: 'installation_not_admitted',
+        safeFailureCode: withoutResult.skipReason,
       });
-      await skipRun(input.store, prepared.run.id, now(), REFUSED_SKIP);
+      await skipRun(input.store, prepared.run.id, now(), withoutResult);
       return 'completed';
     }
     return await finalizeSettlement(prepared, settlement, now());
@@ -1258,19 +1267,32 @@ async function failUnsettledRun(
   });
 }
 
+interface SkipReason {
+  failureClass: RoutineFailureClass;
+  publicError: string;
+  skipReason: string;
+}
+
 /** An occurrence the installation's admission refused: skipped, with no notice and no failure counted. */
-const REFUSED_SKIP = {
+const REFUSED_SKIP: SkipReason = {
   failureClass: 'policy_denied',
   publicError: 'Routine admission was refused before execution began.',
   skipReason: 'installation_not_admitted',
-} as const;
+};
+
+/** An attempt the deployment keyring stopped: skipped like a refusal, never the routine's failure. */
+const KEYRING_UNAVAILABLE_SKIP: SkipReason = {
+  failureClass: 'credential_unavailable',
+  publicError: 'The deployment\'s credentials were temporarily unavailable.',
+  skipReason: 'keyring_unavailable',
+};
 
 /** Skip an occurrence that has not settled; one already terminal is left as it is. */
 async function skipRun(
   store: RoutineStore,
   occurrenceId: string,
   at: number,
-  reason: { failureClass: RoutineFailureClass; publicError: string; skipReason: string },
+  reason: SkipReason,
 ): Promise<void> {
   const run = await store.getRun(occurrenceId);
   if (!run || (run.status !== 'admitting' && run.status !== 'running')) return;

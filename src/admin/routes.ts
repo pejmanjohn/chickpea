@@ -332,6 +332,7 @@ import {
   validateProviderApiKey,
   type AdminProviderId,
 } from '../config/provider-models.ts';
+import { ModelCredentialKeyringUnavailableError } from '../config/model-credential-refs.ts';
 import {
   listRuntimeModelProviders,
   type RuntimeModelProvider,
@@ -6968,10 +6969,16 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const settingsStore = settings(c);
     if (deploymentServesManyInstallations(platformEnv)) {
       // Only this installation's own keys; no subscription or Workers AI lane.
-      const [sources, activeAuthMethod] = await Promise.all([
-        describeProviderKeySources(platformEnv, settingsStore),
-        resolveOpenAiAuthMethod(settingsStore),
-      ]);
+      let sources: Awaited<ReturnType<typeof describeProviderKeySources>>;
+      let activeAuthMethod: Awaited<ReturnType<typeof resolveOpenAiAuthMethod>>;
+      try {
+        [sources, activeAuthMethod] = await Promise.all([
+          describeProviderKeySources(platformEnv, settingsStore),
+          resolveOpenAiAuthMethod(settingsStore),
+        ]);
+      } catch (err) {
+        return internalError(c, err);
+      }
       return c.json({
         providers: PROVIDER_KEY_IDS.map((id) => ({
           ...providerSummary(id, sources[id], platformEnv),
@@ -7282,7 +7289,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     } catch (err) {
       if (err instanceof OpenAiSubscriptionError) return openAiSubscriptionRouteError(c, err);
       if (err instanceof ProviderModelsUnavailableError) {
-        return c.json({ error: err.code, provider: err.provider }, err.status as 409 | 502);
+        return c.json({ error: err.code, provider: err.provider }, err.status as 409 | 502 | 503);
       }
       if (err instanceof ProviderUnreachableError) {
         return c.json({ error: 'provider_unreachable', provider: err.provider }, 502);
@@ -12730,9 +12737,17 @@ async function providerRemovalImpact(
 // Never echo internal error text (raw SQLite messages) to API clients; log it
 // server-side and return a stable retriable status instead.
 function internalError(
-  c: { json(body: { error: string }, status: 500): Response },
+  c: { json(body: { error: string; message?: string }, status: 500 | 503): Response },
   err: unknown,
 ): Response {
+  // A hosted deployment whose keyring will not load: every saved model key is
+  // temporarily unreadable, which is not the same as missing.
+  if (err instanceof ModelCredentialKeyringUnavailableError) {
+    return c.json({
+      error: 'model_credentials_unavailable',
+      message: 'Model provider keys are temporarily unavailable. Try again shortly.',
+    }, 503);
+  }
   console.error('[chickpea] admin API failure:', err instanceof Error ? err.message : String(err));
   return c.json({ error: 'internal_error' }, 500);
 }

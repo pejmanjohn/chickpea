@@ -1,3 +1,4 @@
+import { CREDENTIAL_KEYRING_UNAVAILABLE, isCredentialKeyringUnavailable } from './credential-keyring.ts';
 import type { WebClient } from '@slack/web-api';
 
 import type { ConfigStore } from '../config/store.ts';
@@ -131,10 +132,12 @@ export async function resolveSlackInstallationExecutionContext(
       env,
       options.credentialDependencies ?? options.settings,
     );
-  } catch {
-    throw new SlackInstallationUnavailableError(workspaceId, 'credential_resolution_failed', {
-      retryable: true,
-    });
+  } catch (error) {
+    throw new SlackInstallationUnavailableError(
+      workspaceId,
+      isCredentialKeyringUnavailable(error) ? CREDENTIAL_KEYRING_UNAVAILABLE : 'credential_resolution_failed',
+      { retryable: true },
+    );
   }
   if (!credentials.botToken) {
     throw new SlackInstallationUnavailableError(workspaceId, 'credentials_missing');

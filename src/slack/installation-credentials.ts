@@ -13,7 +13,11 @@ import type {
   SlackCredentialRevision,
   StageSlackCredentialRevisionInput,
 } from '../identity/types.ts';
-import { generateCredentialKeyring, loadCredentialKeyring } from './credential-keyring.ts';
+import {
+  CREDENTIAL_KEYRING_UNAVAILABLE,
+  generateCredentialKeyring,
+  loadCredentialKeyring,
+} from './credential-keyring.ts';
 import { assertSlackInstallationCredentialId } from './hosted-slack-app.ts';
 import {
   decryptSlackSecretEnvelope,
@@ -138,8 +142,10 @@ export class SlackCredentialRecoveryOnlyError extends Error {
  */
 export class SlackCredentialUnavailableError extends Error {
   readonly name = 'SlackCredentialUnavailableError';
+  readonly code = CREDENTIAL_KEYRING_UNAVAILABLE;
+  readonly retryable = true;
   constructor() {
-    super('Slack credentials are unavailable until the deployment keyring loads.');
+    super('Slack credentials are unavailable until the deployment keyring loads (keyring_unavailable).');
   }
 }
 

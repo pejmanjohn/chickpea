@@ -18,20 +18,28 @@ import { InstallationContextError, scopeInstallationEnv } from '../src/config/in
 import {
   ModelCredentialKeyringUnavailableError,
   readHostedModelCredential,
+  resolveModelCredentialAttribution,
   resetModelKeyringWarningForTests,
   rewrapHostedModelCredentials,
   rotateInstallationModelCredential,
 } from '../src/config/model-credential-refs.ts';
-import { invalidateProviderKeyCache, resolveProviderApiKey } from '../src/config/provider-keys.ts';
+import {
+  describeProviderKeySources,
+  invalidateProviderKeyCache,
+  resolveProviderApiKey,
+} from '../src/config/provider-keys.ts';
 import { SqliteSettingsStore, type RewrapModelCredentialInput } from '../src/config/settings-store.ts';
 import type { PlatformEnv } from '../src/config/state-backend.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
-import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
+import { generateCredentialKeyring, isCredentialKeyringUnavailable } from '../src/slack/credential-keyring.ts';
 import {
   invalidateSlackInstallationCredentialCache,
   resolveSlackInstallationCredentials,
+  SlackCredentialUnavailableError,
   writeHostedSlackBotCredentials,
 } from '../src/slack/installation-credentials.ts';
+import { SlackInstallationUnavailableError } from '../src/slack/installation-execution.ts';
+import { isRetryableDependencyFailure } from '../src/slack/transport/types.ts';
 import { HOSTED_SLACK_INSTALLATION_ID } from '../src/config/types.ts';
 import type { CredentialKeyring } from '../src/slack/secret-envelope.ts';
 import { SqliteUsageStore } from '../src/usage/store.ts';
@@ -117,8 +125,13 @@ test('a keyring that will not load is logged once and reads as unavailable, neve
     await assert.rejects(resolver.resolve(grantA, a.env), unavailable, 'a run is told it is unavailable, not to set up again');
     await assert.rejects(resolveProviderApiKey('anthropic', a.env, a.settings), unavailable);
     await assert.rejects(readHostedModelCredential('anthropic', { env: a.env, settings: a.settings }), unavailable);
+    // Admission's attribution, a stateless grant and Admin's listing say the same, never "missing".
+    await assert.rejects(resolveModelCredentialAttribution('anthropic/claude-haiku-4-5', a.env, a.settings, usage), unavailable);
+    await assert.rejects(installationModelAccessGrant('anthropic', a.env, 'run', a.settings), unavailable);
+    await assert.rejects(describeProviderKeySources(a.env, a.settings), unavailable);
     // An installation with no saved key is told the truth: it needs setup.
     assert.deepEqual(await resolveProviderApiKey('anthropic', b.env, b.settings), { apiKey: undefined, source: 'missing' });
+    assert.equal((await describeProviderKeySources(b.env, b.settings)).anthropic, 'missing');
     assert.deepEqual(warned.map((line) => JSON.parse(line)),
       [{ component: 'model_credentials', event: 'keyring_unavailable' }], 'logged once per isolate');
     // Saving still loads the keyring strictly.
@@ -126,6 +139,23 @@ test('a keyring that will not load is logged once and reads as unavailable, neve
       env: b.env, settings: b.settings, usage,
     }));
   });
+});
+
+test('a keyring outage reads as transient wherever it travels, for model keys and Slack alike', () => {
+  const flueFailure = { name: 'AgentRunError', message: 'agent submission failed',
+    cause: { type: 'operation_failed', message: new ModelCredentialKeyringUnavailableError().message } };
+  for (const error of [
+    new ModelCredentialKeyringUnavailableError(),
+    new SlackCredentialUnavailableError(),
+    new SlackInstallationUnavailableError('T1', 'keyring_unavailable', { retryable: true }),
+    flueFailure,
+  ]) {
+    assert.equal(isCredentialKeyringUnavailable(error), true);
+  }
+  assert.equal(isRetryableDependencyFailure(new ModelCredentialKeyringUnavailableError()), true);
+  assert.equal(isRetryableDependencyFailure(new SlackCredentialUnavailableError()), true);
+  assert.equal(isCredentialKeyringUnavailable(new Error('provider failed')), false);
+  assert.equal(isCredentialKeyringUnavailable(new SlackInstallationUnavailableError('T1', 'credential_resolution_failed')), false);
 });
 
 test('a standalone keyring failure logs nothing on this path', async (t) => {

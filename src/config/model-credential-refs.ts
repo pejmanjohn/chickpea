@@ -22,7 +22,7 @@ import {
   hasDisallowedControlCharacter,
   trimmedNonEmpty,
 } from '../security/content-validation.ts';
-import { loadCredentialKeyring } from '../slack/credential-keyring.ts';
+import { CREDENTIAL_KEYRING_UNAVAILABLE, loadCredentialKeyring } from '../slack/credential-keyring.ts';
 import {
   decryptModelProviderKeyEnvelope,
   encryptModelProviderKeyEnvelope,
@@ -89,8 +89,10 @@ export class ModelCredentialUnavailableError extends Error {
  */
 export class ModelCredentialKeyringUnavailableError extends Error {
   readonly name = 'ModelCredentialKeyringUnavailableError';
+  readonly code = CREDENTIAL_KEYRING_UNAVAILABLE;
+  readonly retryable = true;
   constructor() {
-    super('Model credentials are unavailable until the deployment keyring loads.');
+    super('Model credentials are unavailable until the deployment keyring loads (keyring_unavailable).');
   }
 }
 
@@ -159,10 +161,8 @@ export async function resolveModelCredentialAttribution(
     }
     if (hosted) {
       // Only a key saved encrypted and readable with the deployment keyring counts; nothing is decrypted.
-      const current = savedHostedCredential(
-        await hostedModelCredentialStore(settings).readModelCredential(id),
-        deploymentModelKeyring(platformEnv),
-      );
+      const record = await hostedModelCredentialStore(settings).readModelCredential(id);
+      const current = savedHostedCredential(record, hasEnvelope(record) ? deploymentModelKeyring(platformEnv) : undefined);
       if (!current) return null;
       return registerCredential(storedRegistration(id, current));
     }
@@ -343,11 +343,7 @@ export async function readHostedModelCredential(
   expected?: { credentialRefId: string; version: number },
 ): Promise<{ apiKey: string; metadata: StoredCredentialMetadata } | undefined> {
   const record = await hostedModelCredentialStore(input.settings).readModelCredential(id);
-  let keyring = input.keyring;
-  if (!keyring && record?.active && record.envelope) {
-    keyring = deploymentModelKeyring(input.env);
-    if (!keyring) throw new ModelCredentialKeyringUnavailableError();
-  }
+  const keyring = input.keyring ?? (hasEnvelope(record) ? deploymentModelKeyring(input.env) : undefined);
   const current = savedHostedCredential(record, keyring);
   if (expected && (current?.credentialRefId !== expected.credentialRefId || current.version !== expected.version)) {
     throw new ModelCredentialRevisionError(expected.credentialRefId, expected.version);
@@ -480,26 +476,30 @@ export async function migratePlaintextModelCredentials(
 }
 
 /**
- * Whether an installation of a deployment serving many has a saved key the
- * deployment keyring can read, without decrypting it.
+ * The providers an installation of a deployment serving many has a saved key
+ * for that the deployment keyring can read, without decrypting any. A saved
+ * key while the keyring will not load is unavailable, never missing.
  */
-export async function hostedModelCredentialSaved(
-  id: ProviderKeyId,
+export async function savedHostedModelProviders(
+  ids: readonly ProviderKeyId[],
+  env: PlatformEnv | undefined,
   settings: SettingsStore,
-  keyring: CredentialKeyring | undefined,
-): Promise<boolean> {
-  return Boolean(savedHostedCredential(await hostedModelCredentialStore(settings).readModelCredential(id), keyring));
+): Promise<Set<ProviderKeyId>> {
+  const store = hostedModelCredentialStore(settings);
+  const records = await Promise.all(ids.map((id) => store.readModelCredential(id)));
+  const keyring = records.some(hasEnvelope) ? deploymentModelKeyring(env) : undefined;
+  return new Set(ids.filter((_id, index) => savedHostedCredential(records[index], keyring)));
 }
 
 let keyringUnavailableLogged = false;
 
 /**
- * The deployment keyring as a reader sees it: none when it cannot be loaded,
- * in which case no saved key is readable. Saving still loads it strictly. On
- * a deployment serving many installations a load failure is logged once per
- * isolate: no installation's saved key can be read until the keyring loads.
+ * The deployment keyring, for reading a saved hosted key: one that will not
+ * load is logged once per isolate and throws the transient
+ * ModelCredentialKeyringUnavailableError, so readers report the keys as
+ * temporarily unavailable rather than missing. Saving loads it strictly.
  */
-export function deploymentModelKeyring(env: PlatformEnv | undefined): CredentialKeyring | undefined {
+function deploymentModelKeyring(env: PlatformEnv | undefined): CredentialKeyring {
   try {
     return loadCredentialKeyring(env);
   } catch {
@@ -507,7 +507,7 @@ export function deploymentModelKeyring(env: PlatformEnv | undefined): Credential
       keyringUnavailableLogged = true;
       console.warn(JSON.stringify({ component: 'model_credentials', event: 'keyring_unavailable' }));
     }
-    return undefined;
+    throw new ModelCredentialKeyringUnavailableError();
   }
 }
 
@@ -728,6 +728,10 @@ function hostedModelCredentialStore(settings: SettingsStore): SettingsStore & Mo
     throw new Error('This settings store cannot hold encrypted model credentials.');
   }
   return settings;
+}
+
+function hasEnvelope(record: ModelCredentialRecord | undefined): boolean {
+  return Boolean(record?.active && record.envelope);
 }
 
 /**
