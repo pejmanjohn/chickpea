@@ -9,7 +9,7 @@ import {
   providerSetupRequired,
   requireNoDeploymentModelKeys,
 } from './installation-model-access.ts';
-import { deploymentServesManyInstallations } from './model-access.ts';
+import { deploymentServesManyInstallations, providerPrefix } from './model-access.ts';
 import {
   isProviderKeyId,
   resolveProviderApiKey,
@@ -398,11 +398,6 @@ export function canonicalRuntimeModel(model: string): string {
     ? `openai/${model.slice(separator + 1)}`
     : model;
   return canonicalCompatibilityModel(canonical);
-}
-
-function providerPrefix(model: string): string {
-  const separator = model.indexOf('/');
-  return separator > 0 ? model.slice(0, separator) : model;
 }
 
 function authLaneForCanonicalModel(

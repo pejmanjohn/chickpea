@@ -22,6 +22,7 @@ import type {
   RuntimePlanImageCapabilityV3,
 } from '../agents/runtime-plan.ts';
 import type { FrozenRuntimeModelRoute } from './runtime-model.ts';
+import { providerPrefix } from './model-access.ts';
 
 // Accepts `model: null` alongside the stored shape so admin PATCH previews
 // (where null means "clear the pin") can be checked without re-shaping.
@@ -146,11 +147,6 @@ function noteResolvedModel(model: string): string {
       'binding provider: auto-compaction is disabled and long DM transcripts grow unbounded.',
   );
   return model;
-}
-
-function providerPrefix(model: string): string {
-  const separator = model.indexOf('/');
-  return separator > 0 ? model.slice(0, separator) : model;
 }
 
 function activatedAttribution(

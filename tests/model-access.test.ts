@@ -495,7 +495,7 @@ test('standalone binds the coding worker to the installation\'s current keys in 
 });
 
 test('the Slack lookup binds the plan staged for the attempt\'s TurnJob, and never falls back without it', async () => {
-  await withEnv({ ...NO_DEPLOYMENT_KEYS, ANTHROPIC_API_KEY: 'sk-ant-worker-secret' }, async () => {
+  await withEnv({ ...NO_DEPLOYMENT_KEYS, ANTHROPIC_API_KEY: 'sk-ant-worker-secret', SLACK_STATE_DB_PATH: ':memory:' }, async () => {
     const plan = compiledPlan();
     const instanceId = deriveRuntimePlanInstanceId(plan);
     rememberInProcessTurnInput(createSlackTurnInput({ turnJobId: 'turn_lookup', instanceId, runtimePlan: plan }));
