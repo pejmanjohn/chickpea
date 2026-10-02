@@ -22,6 +22,8 @@ import {
   saveMcpSecrets,
 } from '../src/config/mcp-secrets.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
+import { SqliteConfigStore } from '../src/config/store.ts';
+import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
 import { withEnv } from './helpers/env.ts';
 
 /**
@@ -134,4 +136,16 @@ test('under tenancy no turn or occurrence is offered the browser, even with a de
   assert.equal(await browserCapabilityForTurn(settings, { ...ENV_A, ...key }), undefined);
   assert.equal(await browserCapabilityForTurn(settings, scopeInstallationEnv({ ...HOSTED, ...key }, { installationId: 'inst_guard_a' })), undefined);
   assert.deepEqual(await browserCapabilityForTurn(settings, key), { provider: 'browserbase' }, 'standalone is unchanged');
+});
+
+test('the hosted Admin page tells its client the browser is not offered; standalone\'s says it is', async (t) => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const store = new SqliteConfigStore(':memory:', { agents: [] });
+  t.after(() => { settings.close(); store.close(); });
+  const routes = createAdminRoutes({ store, settings, ...testAdminAuthority('feature-guard-token') });
+  const page = async (env?: Record<string, unknown>) => (await routes.request('http://localhost/admin', {
+    headers: testAdminHeaders('feature-guard-token'),
+  }, env)).text();
+  assert.match(await page(ENV_A), /"browserOffered":false/);
+  assert.match(await page(), /"browserOffered":true/);
 });

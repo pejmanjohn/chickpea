@@ -11,6 +11,9 @@
   var USAGE_ADMIN_UI = CONFIG.usageAdminUi === true;
   var WORKSPACE_ADMIN_UI = CONFIG.workspaceAdminUi !== false;
   var INSTALLATION_OWNER = CONFIG.installationOwner === true;
+  // A deployment serving many installations offers no browser: no Browser
+  // settings and no Websites tab, rather than sections that cannot load.
+  var BROWSER_OFFERED = CONFIG.browserOffered !== false;
   var CONNECTOR_PRESETS = CONFIG.connectorPresets;
   var GOOGLE_WORKSPACE_SERVICE_PRESETS = CONFIG.googleWorkspaceServicePresets;
   var MANAGED_CONNECTOR_PRESETS = CONFIG.managedConnectorPresets;
@@ -761,9 +764,12 @@
   // Open a profile's edit screen (from a click or a route), resetting every
   // transient editor state.
   function normalizedProfileTab(tab) {
-    return ["instructions", "skills", "connections", "repositories", "websites", "memory", "schedules", "model"].includes(tab)
-      ? tab
-      : "instructions";
+    return profileTabOrder().includes(tab) ? tab : "instructions";
+  }
+
+  function profileTabOrder() {
+    var order = ["instructions", "skills", "connections", "repositories", "websites", "memory", "schedules", "model"];
+    return BROWSER_OFFERED ? order : order.filter(function (tab) { return tab !== "websites"; });
   }
 
   function requestedProfileTab(search) {
@@ -1767,7 +1773,7 @@
       { id: "browser", name: "Browser", meta: "Real browser for Agents" },
       { id: "outbound", name: "Outbound access", meta: "Network policy" },
       codingAgents
-    ] : [codingAgents];
+    ].filter(function (section) { return BROWSER_OFFERED || section.id !== "browser"; }) : [codingAgents];
     if (WORKSPACE_ADMIN_UI && INSTALLATION_OWNER) sections.push({ id: "updates", name: "About &amp; updates", meta: "Version and support" });
     var primaryShell = isPrimaryAdminSurface();
     var html = '<nav class="rail' + (primaryShell ? ' primary-shell-sidebar' : '') + '" aria-label="Settings">' +
@@ -4808,7 +4814,7 @@
       { id: "schedules", label: "Schedules", count: state.agentSchedules.agentId === draft.id ? state.agentSchedules.schedules.length : 0, icon: "clock", tone: "schedule", description: "Recurring and one-time work owned by this Agent." },
       { id: "model", label: "Model", count: 0, icon: "robot", tone: "model", description: "The intelligence this Agent uses for every response. Changes apply to new threads." }
     ];
-    var bar = tabs.map(function (tab) {
+    var bar = tabs.filter(function (tab) { return BROWSER_OFFERED || tab.id !== "websites"; }).map(function (tab) {
       var on = tab.id === active;
       return '<button type="button" id="ptab-' + tab.id + '" class="ptab' + (on ? " on" : "") + '" role="tab" aria-selected="' + (on ? "true" : "false") + '" tabindex="' + (on ? "0" : "-1") + '" aria-controls="ptab-panel-' + tab.id + '" data-action="profile-tab" data-tab="' + tab.id + '">' + tab.label +
         (tab.count ? '<span class="ptab-count">' + tab.count + '</span>' : "") +
@@ -4838,7 +4844,7 @@
       panel(tabs[1], skillsPanelHtml(draft)) +
       panel(tabs[2], connectionsPanelHtml(draft)) +
       panel(tabs[3], repositoriesPanelHtml(draft)) +
-      panel(tabs[4], websitesPanelHtml(draft, readOnly)) +
+      (BROWSER_OFFERED ? panel(tabs[4], websitesPanelHtml(draft, readOnly)) : "") +
       panel(tabs[5], ownerMemoryPanelHtml("agent", draft.id, draft.name)) +
       panel(tabs[6], agentSchedulesPanelHtml(draft)) +
       panel(tabs[7], '<div class="agent-model-row agent-model-tab-row">' + modelFieldHtml(draft) + imageModelFieldHtml(draft) + '</div>') +
@@ -6677,7 +6683,7 @@
   function ensureProfileWebsiteLogins() {
     var draft = state.profileDraft;
     if (
-      state.view !== "profiles" || state.profileScreen !== "edit" ||
+      !BROWSER_OFFERED || state.view !== "profiles" || state.profileScreen !== "edit" ||
       state.profileTab !== "websites" || !draft || !draft.id
     ) return Promise.resolve();
     return loadWebsiteLogins(draft.id, false);
@@ -10301,6 +10307,7 @@
     // A member's only Settings page is Coding agents.
     if (!WORKSPACE_ADMIN_UI) return "agents-clients";
     if (section === "updates" && INSTALLATION_OWNER) return section;
+    if (section === "browser" && !BROWSER_OFFERED) return "providers";
     return ["slack", "connectors", "providers", "github", "sandbox", "browser", "outbound", "agents-clients"].includes(section) ? section : "providers";
   }
 
@@ -14706,7 +14713,7 @@
     var tabButton = event.target && event.target.closest && event.target.closest(".ptab");
     if (tabButton && (event.key === "ArrowLeft" || event.key === "ArrowRight" || event.key === "Home" || event.key === "End")) {
       event.preventDefault();
-      var order = ["instructions", "skills", "connections", "repositories", "websites", "memory", "schedules", "model"];
+      var order = profileTabOrder();
       var current = order.indexOf(state.profileTab || "instructions");
       var next =
         event.key === "ArrowLeft" ? (current + order.length - 1) % order.length :

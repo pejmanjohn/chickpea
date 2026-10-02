@@ -6090,6 +6090,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     return c.html(renderAdminPage({
       usageAdminUi: usageAdminUi(c),
       installationOwner: Boolean(principal && principal.role === 'owner' && !principal.machine),
+      browserOffered: deploymentTenancy(c.env as PlatformEnv | undefined) !== 'installation',
       workspaceAdminUi: Boolean(
         principal && permissionForRole(principal.role).has('admin.configure'),
       ),
@@ -11691,14 +11692,19 @@ const STANDALONE_ONLY_PREFIXES = [
   '/admin/api/browser',
 ] as const;
 
+// Standalone-only surfaces inside paths that are otherwise served: an
+// Agent's website logins belong to the browser.
+const STANDALONE_ONLY_PATTERNS = [
+  /^\/admin\/api\/agents\/[^/]+\/website-logins(?:\/|$)/,
+] as const;
+
 /** Whether a request names a standalone-only surface, however its path repeats or ends in slashes. */
 function standaloneOnlyRoute(method: string, path: string): boolean {
   const canonical = path.replace(/\/{2,}/g, '/').replace(/(.)\/$/, '$1');
   // Removing the stored Slack credentials is the host's installation lifecycle.
   if (method === 'DELETE' && canonical === '/admin/api/slack-connection') return true;
-  // An Agent's website logins belong to the browser.
-  if (/^\/admin\/api\/agents\/[^/]+\/website-logins(?:\/|$)/.test(canonical)) return true;
-  return STANDALONE_ONLY_PREFIXES.some((prefix) => canonical === prefix || canonical.startsWith(`${prefix}/`));
+  return STANDALONE_ONLY_PREFIXES.some((prefix) => canonical === prefix || canonical.startsWith(`${prefix}/`)) ||
+    STANDALONE_ONLY_PATTERNS.some((pattern) => pattern.test(canonical));
 }
 
 function permissionForAdminRequest(c: Context, _principal: AuthPrincipal): Permission {

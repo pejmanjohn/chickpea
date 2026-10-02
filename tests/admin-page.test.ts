@@ -223,8 +223,13 @@ const MCP_CLIENTS_FIXTURE = {
   ],
 };
 
-function inlineScript(usageAdminUi = false, workspaceAdminUi = true, installationOwner = false): string {
-  const script = renderAdminPage({ usageAdminUi, workspaceAdminUi, installationOwner })
+function inlineScript(
+  usageAdminUi = false,
+  workspaceAdminUi = true,
+  installationOwner = false,
+  browserOffered = true,
+): string {
+  const script = renderAdminPage({ usageAdminUi, workspaceAdminUi, installationOwner, browserOffered })
     .match(/<script>([\s\S]*?)<\/script>/)?.[1];
   assert.ok(script, 'admin page should include one inline script');
   return script;
@@ -498,6 +503,8 @@ function runAdminPageHarness(
     putAssignmentError?: { status: number; error: string; message?: string };
     cloudflare?: boolean;
     installationOwner?: boolean;
+    /** False renders a deployment serving many installations, which offers no browser. */
+    browserOffered?: boolean;
     installationUpdates?: () => unknown;
     agents?: unknown[];
     agentsGetError?: { status: number; error: string };
@@ -2985,6 +2992,7 @@ function runAdminPageHarness(
       options.usageAdminUi ?? false,
       options.workspaceAdminUi ?? true,
       options.installationOwner ?? false,
+      options.browserOffered ?? true,
     ),
     {
       document,
@@ -3254,15 +3262,16 @@ function inlineScriptFor(
   usageAdminUi = false,
   workspaceAdminUi = true,
   installationOwner = false,
+  browserOffered = true,
 ): string {
-  if (!cloudflare) return inlineScript(usageAdminUi, workspaceAdminUi, installationOwner);
+  if (!cloudflare) return inlineScript(usageAdminUi, workspaceAdminUi, installationOwner, browserOffered);
   const previous = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
   Object.defineProperty(globalThis, 'navigator', {
     value: { userAgent: 'Cloudflare-Workers' },
     configurable: true,
   });
   try {
-    return inlineScript(usageAdminUi, workspaceAdminUi, installationOwner);
+    return inlineScript(usageAdminUi, workspaceAdminUi, installationOwner, browserOffered);
   } finally {
     if (previous) Object.defineProperty(globalThis, 'navigator', previous);
     else delete (globalThis as { navigator?: unknown }).navigator;
@@ -17571,6 +17580,24 @@ function websiteLoginsHarness(
   });
   return { harness, calls };
 }
+
+test('without the browser (a deployment serving many installations) neither Browser settings nor the Websites tab appear', async () => {
+  const settings = runAdminPageHarness({ initialPath: '/admin/settings/browser', browserOffered: false });
+  await flushAsync();
+  await flushAsync();
+  assert.doesNotMatch(settings.app.innerHTML, /data-section="browser"/);
+  assert.doesNotMatch(settings.app.innerHTML, /<h1 class="page-title">Browser<\/h1>/);
+  assert.match(settings.app.innerHTML, /data-section="providers"[^>]*aria-current="page"/, 'the default section instead');
+  assert.ok(!settings.fetchCalls.some((call) => call.path === '/admin/api/browser/status'));
+
+  const { harness, calls } = websiteLoginsHarness(websiteLoginFixtures(), { browserOffered: false });
+  await flushAsync();
+  assert.doesNotMatch(harness.app.innerHTML, /ptab-websites/);
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'websites' }) });
+  await flushAsync();
+  assert.doesNotMatch(harness.app.innerHTML, /ptab-websites|ptab-panel-websites/);
+  assert.equal(calls.gets, 0, 'website logins are never requested');
+});
 
 test('the Websites tab lists signed-in websites and shows an empty state', async () => {
   const { harness, calls } = websiteLoginsHarness(websiteLoginFixtures());
