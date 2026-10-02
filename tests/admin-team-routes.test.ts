@@ -218,7 +218,7 @@ test('Owner updates an existing membership while Admin cannot', async () => {
   }
 });
 
-test('a changed membership ends that person\'s browser sessions and MCP grants', async () => {
+test('a suspended membership ends MCP grants and sessions; a role change ends sessions only', async () => {
   const revoked: string[] = [];
   const team = await harness('owner', { revoked });
   const patch = (body: Record<string, string>) => team.app.request(
@@ -226,11 +226,15 @@ test('a changed membership ends that person\'s browser sessions and MCP grants',
     { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) },
   );
   try {
+    // A role change needs new sessions only: MCP rereads the role per request.
+    const promoted = await patch({ role: 'admin' });
+    assert.equal(promoted.status, 200, await promoted.clone().text());
+    assert.deepEqual(revoked, ['sessions:ba_user_member']);
     const suspended = await patch({ status: 'suspended' });
     assert.equal(suspended.status, 200, await suspended.clone().text());
-    assert.deepEqual(revoked, ['sessions:ba_user_member', 'oauth-grants:ba_user_member']);
+    assert.deepEqual(revoked, ['sessions:ba_user_member', 'oauth-grants:ba_user_member', 'sessions:ba_user_member']);
     assert.equal((await patch({ status: 'suspended' })).status, 200);
-    assert.equal(revoked.length, 2, 'an unchanged membership keeps its access');
+    assert.equal(revoked.length, 3, 'an unchanged membership keeps its access');
   } finally {
     team.identity.close();
   }
@@ -278,7 +282,7 @@ test('membership updates delegate to the shared management service', async () =>
     );
     assert.equal(response.status, 200, await response.clone().text());
     assert.equal((await identity.getMembership(member.resolution!.membership.id))?.status, 'suspended');
-    assert.deepEqual(revoked, ['sessions:ba_user_managed', 'oauth-grants:ba_user_managed']);
+    assert.deepEqual(revoked, ['oauth-grants:ba_user_managed', 'sessions:ba_user_managed']);
   } finally {
     identity.close();
     config.close();

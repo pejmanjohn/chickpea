@@ -134,11 +134,15 @@ export interface BetterAuthDatabaseBackend {
 export type BetterAuthAccessRevoker =
   Pick<BetterAuthDatabaseBackend, 'deleteSessionsForUser' | 'revokeOAuthGrantsForUser'>;
 
-/** Ends one user's browser sessions and MCP OAuth grants when their membership changes. */
+/**
+ * Ends one user's MCP OAuth grants and browser sessions when their membership
+ * is suspended or removed. Grants go first: a retry after a failure finds the
+ * membership unchanged and would not revoke again.
+ */
 export async function revokeBetterAuthUserAccess(
   backend: BetterAuthAccessRevoker,
   userId: string,
 ): Promise<void> {
-  await backend.deleteSessionsForUser(userId);
   await backend.revokeOAuthGrantsForUser(userId);
+  await backend.deleteSessionsForUser(userId);
 }

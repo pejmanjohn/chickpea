@@ -42,9 +42,13 @@ interface TeamAdminApiOptions {
 
 export function createTeamAdminApi(options: TeamAdminApiOptions): Hono {
   const app = new Hono();
-  const revokeAccess = async (c: Context, betterAuthUserId: string) => {
+  // A status change ends MCP grants too; a role change only needs new
+  // sessions, because the MCP resource rereads the role on every request.
+  const revokeAccess = async (c: Context, betterAuthUserId: string, statusChanged: boolean) => {
     const backend = await options.betterAuthBackend?.(c);
-    if (backend) await revokeBetterAuthUserAccess(backend, betterAuthUserId);
+    if (!backend) return;
+    if (statusChanged) await revokeBetterAuthUserAccess(backend, betterAuthUserId);
+    else await backend.deleteSessionsForUser(betterAuthUserId);
   };
   // requiredPrincipal() runs before each handler's own try/catch, so in legacy
   // token mode (no request principal) its AuthorizationError would otherwise
@@ -152,7 +156,9 @@ export function createTeamAdminApi(options: TeamAdminApiOptions): Hono {
         const membership = await identity.getMembership(membershipId);
         if (!membership) return c.json({ error: 'membership_unavailable' }, 404);
         if (membership.role !== target.role || membership.status !== target.status) {
-          if (binding.betterAuthUserId) await revokeAccess(c, binding.betterAuthUserId);
+          if (binding.betterAuthUserId) {
+            await revokeAccess(c, binding.betterAuthUserId, membership.status !== target.status);
+          }
         }
         return c.json({ membership });
       }
@@ -174,7 +180,7 @@ export function createTeamAdminApi(options: TeamAdminApiOptions): Hono {
         slackUserId: binding.slackUserId,
       });
       if (result.changed && binding.betterAuthUserId) {
-        await revokeAccess(c, binding.betterAuthUserId);
+        await revokeAccess(c, binding.betterAuthUserId, result.membership.status !== target.status);
       }
       return c.json({ membership: result.membership });
     } catch (error) {

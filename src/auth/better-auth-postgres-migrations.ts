@@ -38,7 +38,7 @@ export async function applyPostgresBetterAuthMigrations(
   try {
     await client.query('BEGIN');
     await client.query(`SELECT pg_advisory_xact_lock(${MIGRATION_LOCK_KEY})`);
-    // The schema unqualified names resolve to and new tables are created in.
+    // The schema new tables are created in (the first on search_path).
     const existing = new Set((await client.query<{ table_name: string }>(
       `SELECT table_name FROM information_schema.tables
        WHERE table_schema = current_schema() AND table_name = ANY($1)`,

@@ -63,10 +63,10 @@ test('revision-bound user_change suspends the exact active member and is replay 
   };
   assert.equal((await applySlackUserChange(input)).outcome, 'suspended');
   assert.equal((await applySlackUserChange(input)).outcome, 'duplicate');
-  // Suspension ends browser sessions and MCP OAuth grants, once.
+  // Suspension ends MCP OAuth grants and browser sessions, once.
   assert.deepEqual(revoked, [
-    `sessions:${owner.binding.betterAuthUserId}`,
     `oauth-grants:${owner.binding.betterAuthUserId}`,
+    `sessions:${owner.binding.betterAuthUserId}`,
   ]);
   assert.equal((await identity.getMembershipAccessOverlay(owner.membership.id))?.accessStatus, 'suspended');
 
@@ -114,10 +114,10 @@ test('gateway-bound user_change suspends the exact provisioned member without lo
   };
   assert.equal((await applyGatewaySlackUserChange(input)).outcome, 'suspended');
   assert.equal((await applyGatewaySlackUserChange(input)).outcome, 'duplicate');
-  // Suspension ends browser sessions and MCP OAuth grants, once.
+  // Suspension ends MCP OAuth grants and browser sessions, once.
   assert.deepEqual(revoked, [
-    `sessions:${owner.binding.betterAuthUserId}`,
     `oauth-grants:${owner.binding.betterAuthUserId}`,
+    `sessions:${owner.binding.betterAuthUserId}`,
   ]);
   assert.equal((await identity.getMembershipAccessOverlay(owner.membership.id))?.accessStatus, 'suspended');
 });

@@ -20,6 +20,8 @@ export type PostgresTestClusterStart =
 const USER = 'chickpea';
 const PORT = 5432;
 
+const SKIP_HINT = '\nSet CHICKPEA_TEST_POSTGRES_BIN to an empty value to skip the PostgreSQL backend tests.';
+
 /**
  * Starts a private, disposable PostgreSQL server for one test file. The
  * tests are skipped only when CHICKPEA_TEST_POSTGRES_BIN is set to an empty
@@ -50,7 +52,7 @@ export async function startPostgresTestCluster(): Promise<PostgresTestClusterSta
     ], { stdio: 'pipe' });
   } catch (error) {
     rmSync(root, { recursive: true, force: true });
-    throw new Error(`initdb could not create a test cluster: ${failureText(error)}`);
+    throw new Error(`initdb could not create a test cluster: ${failureText(error)}${SKIP_HINT}`);
   }
   const server = spawn(path.join(bin, 'postgres'), [
     '-D', data, '-k', root, '-p', String(PORT), '-c', 'listen_addresses=',
@@ -79,7 +81,7 @@ export async function startPostgresTestCluster(): Promise<PostgresTestClusterSta
       await client.end().catch(() => {});
       if (attempt >= 100 || server.exitCode !== null) {
         await stop();
-        throw new Error(`The PostgreSQL test server did not start:\n${log.trim()}`);
+        throw new Error(`The PostgreSQL test server did not start:\n${log.trim()}${SKIP_HINT}`);
       }
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
