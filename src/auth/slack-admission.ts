@@ -24,6 +24,7 @@ import type { BetterAuthEnvironment } from './better-auth-environment.ts';
 import {
   SlackOidcError,
   SlackOidcGateway,
+  standaloneSlackOidcCredentials,
   type SlackOidcProvider,
   type SlackOidcGatewayDependencies,
 } from './slack-oidc.ts';
@@ -108,7 +109,7 @@ export class SlackAdmissionService {
     this.now = dependencies.now ?? Date.now;
     this.randomBytes = dependencies.randomBytes ?? ((length) => nodeRandomBytes(length));
     this.gateway = dependencies.gateway ?? new SlackOidcGateway({
-      credentials: dependencies.credentials,
+      credentials: standaloneSlackOidcCredentials(dependencies.credentials),
       ...(dependencies.fetch ? { fetch: dependencies.fetch } : {}),
       ...(dependencies.slackApiBaseUrl
         ? {
@@ -753,7 +754,8 @@ export class SlackAdmissionService {
   }
 }
 
-function activeAdmission(operation: AuthOperation | undefined): BetterAuthAdmissionOperation | null {
+/** The admission a session may be issued for: an activated operation, fully reconciled. */
+export function activeAdmission(operation: AuthOperation | undefined): BetterAuthAdmissionOperation | null {
   if (!operation || operation.status !== 'active' || !operation.chickpeaRole ||
       !operation.betterAuthUserId || !operation.betterAuthOrganizationId ||
       !operation.betterAuthMembershipId || !operation.chickpeaMembershipId) return null;
