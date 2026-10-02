@@ -68,11 +68,14 @@ export interface CreateBetterAuthInput {
   secret: string;
   privateSeam?: BetterAuthPrivateSeam;
   /**
-   * Asked before every MCP token issuance for a user, from a code or a
-   * refresh token, before anything is written: false refuses it with
-   * `invalid_grant`. A host serving many installations answers from the
-   * user's installation, so a grant outlives neither its membership nor an
-   * active installation.
+   * Asked before MCP tokens are issued to a user from a code or a refresh
+   * token: false refuses with `invalid_grant`, leaving the refresh token
+   * unrotated (a refused code is spent). A host serving many installations
+   * answers from the user's installation, so a grant outlives neither its
+   * membership nor an active installation. Not asked when the provider
+   * replays a rotation within its 30-second reuse window: that returns the
+   * tokens already issued, which the MCP resource and the next refresh
+   * still check.
    */
   mayIssueTokens?: (betterAuthUserId: string) => Promise<boolean>;
 }
@@ -228,8 +231,8 @@ function createOptions(
 
 /**
  * The provider calls this before it creates any token row for a code or
- * refresh grant, so throwing refuses the grant and leaves the presented
- * refresh token unrotated.
+ * refresh grant (after spending the code), so throwing refuses the grant
+ * and leaves a presented refresh token unrotated.
  */
 function tokenIssuanceGate(mayIssueTokens: (betterAuthUserId: string) => Promise<boolean>) {
   return async ({ user }: { user?: { id?: unknown } | null }): Promise<Record<string, unknown>> => {

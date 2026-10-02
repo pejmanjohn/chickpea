@@ -433,7 +433,7 @@ test('removed membership blocks a live session, an MCP grant and its refresh on 
   assert.equal((await hosted.serve(hosted.adminRequest('/admin/api/team', acme.ownerCookie))).response?.status, 200);
 });
 
-test('a membership suspended without revoking grants still cannot refresh, and nothing is rotated meanwhile', { timeout: 120_000 }, async (t) => {
+test('a membership suspended without revoking grants still cannot refresh, and its refresh token stays unrotated', { timeout: 120_000 }, async (t) => {
   const hosted = await hostedDeployment(t);
   if (!hosted) return;
   const acme = await hosted.install('TACME', 'org_acme', 'UOWNERA');
@@ -459,10 +459,57 @@ test('a membership suspended without revoking grants still cannot refresh, and n
   assert.equal((await exchanged.json() as { error: string }).error, 'invalid_grant');
   assert.equal((await hosted.serve(hosted.mcpRequest(grant.accessToken))).response?.status, 403);
   assert.equal((await hosted.serve(hosted.adminRequest('/admin/api/mcp-clients', member.cookie))).response?.status, 401);
-  // The refused refresh rotated nothing: once active again the same refresh token works.
+  // The refused refresh left its token unrotated (the refused code is spent): once active
+  // again the same refresh token works.
   await setStatus('active');
   const renewed = await hosted.refresh(grant);
   assert.equal(renewed.status, 200, await renewed.clone().text());
+});
+
+test('a refresh replayed inside the reuse window returns only tokens that are refused when used', { timeout: 120_000 }, async (t) => {
+  const hosted = await hostedDeployment(t);
+  if (!hosted) return;
+  const acme = await hosted.install('TACME', 'org_acme', 'UOWNERA');
+  const owner = (await acme.identity.listMemberships()).find((membership) => membership.role === 'owner')!;
+  const rotate = async (grant: { clientId: string; refreshToken: string }) => {
+    const response = await hosted.refresh(grant);
+    assert.equal(response.status, 200, await response.clone().text());
+    const tokens = await response.json() as { access_token: string; refresh_token: string };
+    return { clientId: grant.clientId, accessToken: tokens.access_token, refreshToken: tokens.refresh_token };
+  };
+
+  // Suspended without revoking: the provider replays the rotation it just made
+  // (MCP's 30-second reuse window) without asking the installation again.
+  const suspended = await acme.member('UMEMBERA');
+  const before = await hosted.mcpGrant(suspended.cookie);
+  const rotated = await rotate(before);
+  await acme.identity.updateMembershipAuthority({
+    membershipId: suspended.membershipId, status: 'suspended', actorMembershipId: owner.id,
+    authenticationSurface: 'better_auth', correlationId: 'request_suspend', reasonCode: 'owner_suspended_member',
+  });
+  const replay = await hosted.refresh(before);
+  assert.equal(replay.status, 200, 'the window returns the tokens already issued');
+  const replayed = await replay.json() as { access_token: string; refresh_token: string };
+  assert.equal(replayed.refresh_token, rotated.refreshToken);
+  // Those tokens reach nothing: the MCP resource refuses, and the next refresh asks again.
+  assert.equal((await hosted.serve(hosted.mcpRequest(replayed.access_token))).response?.status, 403);
+  const next = await hosted.refresh({ clientId: before.clientId, refreshToken: replayed.refresh_token });
+  assert.equal(next.status, 400);
+  assert.equal((await next.json() as { error: string }).error, 'invalid_grant');
+
+  // Removed through Admin: the rotated family is revoked, so there is nothing to replay.
+  const removed = await acme.member('UMEMBERB');
+  const grant = await hosted.mcpGrant(removed.cookie);
+  await rotate(grant);
+  const patched = await hosted.serve(hosted.adminRequest(`/admin/api/team/memberships/${removed.membershipId}`, acme.ownerCookie, {
+    method: 'PATCH',
+    headers: { origin: ORIGIN, 'sec-fetch-site': 'same-origin', 'content-type': 'application/json' },
+    body: JSON.stringify({ status: 'removed' }),
+  }));
+  assert.equal(patched.response?.status, 200);
+  const refused = await hosted.refresh(grant);
+  assert.equal(refused.status, 400);
+  assert.equal((await refused.json() as { error: string }).error, 'invalid_grant');
 });
 
 test('a suspended, revoked or provisioning installation fails closed for sessions, MCP and refresh, naming nothing', { timeout: 120_000 }, async (t) => {
