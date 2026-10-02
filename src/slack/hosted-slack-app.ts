@@ -123,11 +123,11 @@ export function hostedSlackEventRoute(payload: unknown): HostedSlackDeliveryRout
   const body = asRecord(payload);
   const teamId = slackId(body?.team_id);
   if (!body || !teamId) return drop('malformed');
+  const authorizations = body.authorizations ?? [];
+  if (!Array.isArray(authorizations)) return drop('malformed');
   let receiving: string | undefined;
-  const authorizations = body.authorizations;
-  if (authorizations !== undefined && authorizations !== null &&
-      !(Array.isArray(authorizations) && authorizations.length === 0)) {
-    const authorization = Array.isArray(authorizations) ? asRecord(authorizations[0]) : undefined;
+  if (authorizations.length > 0) {
+    const authorization = asRecord(authorizations[0]);
     if (!authorization) return drop('malformed');
     if (authorization.is_enterprise_install === true) return drop('enterprise');
     receiving = slackId(authorization.team_id);

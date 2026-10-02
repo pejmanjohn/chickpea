@@ -246,6 +246,35 @@ test('a hosted delivery verifies only with the host app\'s signing secret, and o
   });
 });
 
+test('a hosted delivery with a bad signature is refused before any store is read', async (t) => {
+  await withHostedInstallation(t, async (h) => {
+    const reads: string[] = [];
+    const spy = (store: object, name: string) => {
+      const target = store as Record<string, (...args: unknown[]) => unknown>;
+      const original = target[name]!;
+      target[name] = (...args: unknown[]) => {
+        reads.push(name);
+        return original.apply(store, args);
+      };
+      t.after(() => { delete target[name]; });
+    };
+    for (const name of ['getActiveSlackCredentialRevision', 'getSlackCredentialControl', 'getAuthControl']) {
+      spy(h.stores.identity, name);
+    }
+    spy(h.stores.config, 'getWorkspaceInstallation');
+    spy(h.stores.settings, 'getSetting');
+    const home = h.event({ type: 'app_home_opened', user: 'U1', tab: 'home' });
+    assert.equal((await h.deliver('events', home, { secret: 'forged-secret' })).status, 401);
+    assert.equal((await h.deliver('interactions', {
+      type: 'block_actions', api_app_id: APP.appId, team: { id: TEAM }, user: { id: 'U1' }, actions: [],
+    }, { secret: 'forged-secret' })).status, 401);
+    assert.equal(reads.length, 0, reads.join());
+    // A verified delivery reads the installation's own state as before.
+    assert.equal((await h.deliver('events', home)).status, 200);
+    assert.ok(reads.includes('getWorkspaceInstallation'));
+  });
+});
+
 test('a hosted app\'s url_verification is answered without recording a challenge or finishing a setup', async (t) => {
   await withHostedInstallation(t, async (h) => {
     const response = await h.deliver('events', { token: '', type: 'url_verification', challenge: 'challenge-value' });

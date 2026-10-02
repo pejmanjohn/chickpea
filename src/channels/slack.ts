@@ -365,8 +365,6 @@ export async function resolveBotUserId(
  * replaces the instance instead of being ignored.
  */
 const MAX_VERIFIED_SLACK_CHANNELS = 4;
-/** Under installation tenancy there is one entry per installation and revision. */
-const MAX_HOSTED_VERIFIED_SLACK_CHANNELS = 64;
 interface VerifiedSlackChannel {
   credentialRevision: string | null;
   signingSecret: string;
@@ -378,11 +376,8 @@ const verifiedChannels = new Map<string, VerifiedSlackChannel>();
 function channelForInstallation(
   signingSecret: string,
   credentialRevision: string | null,
-  installationId = '',
+  key = credentialRevision ?? 'current',
 ): SlackChannel {
-  const key = installationId
-    ? `${installationId}:${credentialRevision ?? 'current'}`
-    : credentialRevision ?? 'current';
   const cached = verifiedChannels.get(key);
   if (cached?.signingSecret === signingSecret) return cached.channel;
   const entry: VerifiedSlackChannel = {
@@ -396,8 +391,7 @@ function channelForInstallation(
     }),
   };
   verifiedChannels.set(key, entry);
-  const limit = installationId ? MAX_HOSTED_VERIFIED_SLACK_CHANNELS : MAX_VERIFIED_SLACK_CHANNELS;
-  while (verifiedChannels.size > limit) {
+  while (verifiedChannels.size > MAX_VERIFIED_SLACK_CHANNELS) {
     const oldest = verifiedChannels.keys().next().value as string | undefined;
     if (!oldest) break;
     verifiedChannels.delete(oldest);
@@ -432,13 +426,13 @@ const verifiedEventsHandler: SlackRouteHandler = async (c, next) => {
   const route = channelForInstallation(
     verification.signingSecret,
     verification.credentialRevision,
-    verification.installationId,
+    verification.cacheKey,
   ).routes.find((candidate) => candidate.path === '/events');
   if (!route) throw new Error('Slack channel lost its /events route');
   const response = await route.handler(c, next);
   // A hosted app's Request URL is verified once, at the app; no installation
   // waits on a per-install Events URL proof.
-  if (verification.installationId) return response;
+  if (verification.hosted) return response;
   if (response.ok && isSlackUrlVerification(rawBody)) {
     const recorded = await recordPendingSlackChallenge(
       resolveStores(platformEnv).settings,
@@ -464,33 +458,35 @@ const verifiedEventsHandler: SlackRouteHandler = async (c, next) => {
 /**
  * The signing secret a delivery must carry, and the bot credential revision
  * its handlers act for. Standalone: both from the customer-owned app's
- * bundle. Installation tenancy: the secret only from the host's app (an
- * installation's bundle holds just its bot token), and the revision read
- * without decrypting anything.
+ * bundle. Installation tenancy: the host's app alone, the same for every
+ * installation, so nothing is read before the signature is checked; the
+ * handlers read the installation's own state once it is.
  */
 async function slackDeliveryVerification(
   platformEnv: PlatformEnv | undefined,
-): Promise<{ signingSecret: string; credentialRevision: string | null; installationId: string } | undefined> {
-  const scope = requireInstallationScope(platformEnv);
-  if (scope) {
+): Promise<{
+  signingSecret: string;
+  credentialRevision: string | null;
+  cacheKey: string;
+  hosted: boolean;
+} | undefined> {
+  if (requireInstallationScope(platformEnv)) {
     const app = hostedSlackAppOf(platformEnv);
-    if (!app) return undefined;
-    const active = await readActiveSlackCredentialMetadata(
-      slackInstallationCredentialId(platformEnv),
-      platformEnv,
-    );
-    return {
-      signingSecret: app.signingSecret,
-      credentialRevision: active?.revision ?? null,
-      installationId: scope.installationId,
-    };
+    return app
+      ? { signingSecret: app.signingSecret, credentialRevision: null, cacheKey: `hosted:${app.appId}`, hosted: true }
+      : undefined;
   }
   const credentials = await resolveSlackInstallationCredentials(
     slackInstallationCredentialId(platformEnv),
     platformEnv,
   );
   return credentials.signingSecret
-    ? { signingSecret: credentials.signingSecret, credentialRevision: credentials.connectionRevision, installationId: '' }
+    ? {
+        signingSecret: credentials.signingSecret,
+        credentialRevision: credentials.connectionRevision,
+        cacheKey: credentials.connectionRevision ?? 'current',
+        hosted: false,
+      }
     : undefined;
 }
 
@@ -546,7 +542,7 @@ const verifiedInteractionsHandler: SlackRouteHandler = async (c, next) => {
   const route = channelForInstallation(
     verification.signingSecret,
     verification.credentialRevision,
-    verification.installationId,
+    verification.cacheKey,
   ).routes.find((candidate) => candidate.path === '/interactions');
   if (!route) throw new Error('Slack channel lost its /interactions route');
   return route.handler(c, next);
@@ -1034,11 +1030,17 @@ async function processSlackUserChange(
   platformEnv: PlatformEnv | undefined,
   credentialRevision: string | null,
 ): Promise<void> {
-  if (payload.event.type !== 'user_change' || !credentialRevision) return;
+  if (payload.event.type !== 'user_change') return;
+  // A host's app verified it, so it is checked against the installation's
+  // current bot; standalone, against the bundle whose secret verified it.
+  const revision = hostedSlackAppOf(platformEnv)
+    ? (await readActiveSlackCredentialMetadata(slackInstallationCredentialId(platformEnv), platformEnv))?.revision
+    : credentialRevision;
+  if (!revision) return;
   const change = {
     identity: stores.identity,
     credentialIdentityId: slackInstallationCredentialId(platformEnv),
-    credentialRevision,
+    credentialRevision: revision,
     payloadTeamId: payload.team_id,
     apiAppId: payload.api_app_id,
     eventId: payload.event_id,

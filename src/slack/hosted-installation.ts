@@ -17,18 +17,6 @@ import {
   type SlackCredentialResolutionDependencies,
 } from './installation-credentials.ts';
 
-/**
- * The workspace installation record of a hosted installation: what every
- * Slack path in Core looks up by the delivery's team before it acts.
- *
- * Standalone writes it during its own install, and promotes a credential only
- * after Slack verifies the customer's Events URL for that app and team. A
- * hosted app's Request URL is verified once, at the app, so no per-install
- * challenge ever arrives: the host validates the bot live at install time and
- * writes this record, which starts waiting for events and turns healthy at the
- * first signed delivery routed to it. Health only reports; it never blocks.
- */
-
 /** The marker standalone uses while it waits for Slack's events proof. */
 const AWAITING_EVENTS = 'events_verification_pending';
 const SLACK_ID = /^[A-Z][A-Z0-9]{1,63}$/;
@@ -44,11 +32,21 @@ export interface HostedWorkspaceInstallationInput {
 }
 
 /**
- * Writes the record for the installation `env` serves, after its bot bundle:
- * a direct installation of `teamId` for the hosted app and its bot user. The
- * first write materializes the Chickpea Agent and the workspace model default
- * as standalone's does, and waits for events. A repeat is a no-op; a new bot
- * user (a reinstall Slack gave another) is recorded without resetting health.
+ * Writes the workspace installation record of the installation `env` serves,
+ * the record every Slack path in Core looks up by the delivery's team before
+ * it acts: a direct installation of `teamId` for the hosted app and its bot
+ * user, written after the bot bundle.
+ *
+ * Standalone writes it during its own install, and promotes a credential only
+ * after Slack verifies the customer's Events URL for that app and team. A
+ * hosted app's Request URL is verified once, at the app, so no per-install
+ * challenge arrives: the host validates the bot live at install time, and
+ * this record waits for events until the first signed delivery routed to it
+ * (recordFirstHostedSlackDelivery). Health only reports; it never blocks.
+ *
+ * The first write materializes the Chickpea Agent and the workspace model
+ * default as standalone's does. A repeat is a no-op; a new bot user (a
+ * reinstall Slack gave another) is recorded without resetting health.
  * Another team, another app, a gateway record or an ended one is refused: a
  * workspace that ends is installed again as a new installation.
  */
@@ -97,8 +95,11 @@ export async function syncHostedWorkspaceInstallation(
 
 /**
  * The record for an installation provisioned before hosts wrote it, from the
- * installation's own bot bundle, which must be for `expected`'s app and team
- * and name its bot user. The bot user is returned for the host's registry.
+ * installation's own bot bundle, which must be a bot grant for `expected`'s
+ * app and team and name its bot user. The bot user is returned for the host's
+ * registry. The record's createdAt is the backfill time, so Core's own check
+ * for lifecycle events older than the installation starts there; the host's
+ * check uses its registry's time.
  */
 export async function backfillHostedWorkspaceInstallation(
   env: PlatformEnv,
@@ -114,7 +115,8 @@ export async function backfillHostedWorkspaceInstallation(
     env,
     dependencies.credentials ?? getSlackCredentialResolutionDependencies(env),
   );
-  if (!active || active.appId !== expected.appId || active.teamId !== expected.teamId || !active.botUserId) {
+  if (!active || active.purpose !== 'connected_credentials' || active.appId !== expected.appId ||
+      active.teamId !== expected.teamId || !active.botUserId) {
     throw new Error('This installation has no bot credentials for the expected Slack app and workspace.');
   }
   const installation = await syncHostedWorkspaceInstallation(env, {
