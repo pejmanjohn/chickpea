@@ -1280,18 +1280,20 @@ async function failUnsettledRun(
   });
 }
 
-interface SkipReason {
-  failureClass: RoutineFailureClass;
-  publicError: string;
-  skipReason: string;
+export interface SkipReason {
+  readonly failureClass: RoutineFailureClass;
+  readonly publicError: string;
+  readonly skipReason: string;
 }
 
 /**
  * An occurrence the installation's admission refused, before or during its
  * attempt: skipped, with no notice and no failure counted. Like any skipped
- * occurrence of a one-time routine, it completes that routine unrun.
+ * occurrence of a one-time routine, it completes that routine unrun. A host
+ * cancelling an installation's pending work skips its occurrences with this
+ * too (state/pending-work.ts), so members see one wording either way.
  */
-const REFUSED_SKIP: SkipReason = {
+export const REFUSED_SKIP: SkipReason = {
   failureClass: 'policy_denied',
   publicError: 'The workspace was not admitted to run this occurrence.',
   skipReason: 'installation_not_admitted',

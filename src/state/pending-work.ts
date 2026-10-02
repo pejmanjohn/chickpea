@@ -1,5 +1,6 @@
 import { init } from '@flue/runtime';
 
+import { REFUSED_SKIP } from '../routines/execution.ts';
 import { abortSlackThreadAgent, type SlackThreadAgentTarget } from '../slack/flue-dispatch.ts';
 import type { TagStateStores } from './tag-state-stores.ts';
 
@@ -33,18 +34,6 @@ export type AgentStopTarget =
   | { readonly kind: 'routine_agent'; readonly target: { instanceId: string; uid?: string } };
 
 /**
- * Routine occurrences are skipped exactly as an installation whose admission
- * refuses work skips them (routines/execution.ts): the cancellation runs only
- * while the host keeps the installation suspended, and it adds no new copy to
- * a member's run history.
- */
-const CANCELLED_OCCURRENCE = {
-  failureClass: 'policy_denied',
-  publicError: 'Routine admission was refused before execution began.',
-  skipReason: 'installation_not_admitted',
-} as const;
-
-/**
  * Park every pending turn, skip every unfinished routine occurrence and
  * close every undelivered notice and receipt in one installation's state
  * store. Returns the counts and the Flue submissions to abort. Safe to repeat.
@@ -56,7 +45,10 @@ export function cancelStatePendingWork(
   readonly agents: readonly AgentStopTarget[];
 } {
   const turns = stores.turnJobs.cancelPendingWork();
-  const routines = stores.routines.cancelPendingWork(at, CANCELLED_OCCURRENCE);
+  // Skipped exactly as a refused installation's occurrences are: the host
+  // cancels only while it keeps the installation suspended, and a member's
+  // run history reads the same as for any refusal.
+  const routines = stores.routines.cancelPendingWork(at, REFUSED_SKIP);
   const managementReceipts = stores.management.cancelPendingReceipts(at);
   return {
     turns: turns.turns,

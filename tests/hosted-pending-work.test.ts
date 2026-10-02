@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import { compileRuntimePlanV2 } from '../src/agents/runtime-plan.ts';
 import { installationOwnershipOf, scopedObjectName } from '../src/config/installation-scope.ts';
 import type { ResolvedAssignment } from '../src/config/types.ts';
+import { REFUSED_SKIP } from '../src/routines/execution.ts';
 import { hashRoutineValue } from '../src/routines/ids.ts';
 import type { RoutineConfirmationDraft } from '../src/routines/types.ts';
 import { CHICKPEA_SLACK_AGENT_BINDING } from '../src/slack/bounded-agent-observation.ts';
@@ -136,7 +137,9 @@ function receipts(installation: HostedInstallation) {
 function snapshot(installation: HostedInstallation) {
   return {
     turns: installation.db.all('SELECT id, delivered, status, recovery_reason FROM turn_jobs ORDER BY id'),
-    runs: installation.db.all('SELECT id, status, skip_reason FROM routine_runs ORDER BY id'),
+    runs: installation.db.all(
+      'SELECT id, status, failure_class, public_error, skip_reason FROM routine_runs ORDER BY id',
+    ),
     notices: installation.db.all('SELECT occurrence_id, status FROM routine_recovery_deliveries ORDER BY occurrence_id'),
     receipts: installation.db.all('SELECT outbox_id, status, failure_code FROM management_receipt_outbox ORDER BY outbox_id'),
     alarm: installation.storage.alarm,
@@ -178,8 +181,12 @@ test('cancelling an installation\'s pending work parks its turns, skips its occu
     { id: turnsA.queued.id, delivered: 0, status: 'recovery_required', recovery_reason: 'operator_cancelled' },
     { id: turnsA.running.id, delivered: 0, status: 'recovery_required', recovery_reason: 'operator_cancelled' },
   ]);
-  assert.deepEqual(after.runs.map(({ status, skip_reason }) => [status, skip_reason]),
-    [['skipped', 'installation_not_admitted'], ['skipped', 'installation_not_admitted'], ['skipped', 'installation_not_admitted']]);
+  // Skipped exactly as a refused installation's occurrences are: one wording in a member's run history.
+  const refused = {
+    status: 'skipped', failure_class: REFUSED_SKIP.failureClass, public_error: REFUSED_SKIP.publicError,
+    skip_reason: REFUSED_SKIP.skipReason,
+  };
+  assert.deepEqual(after.runs.map(({ id: _id, ...run }) => run), [refused, refused, refused]);
   assert.deepEqual(after.notices.map(({ status }) => status), ['unknown']);
   assert.deepEqual(after.receipts, [
     { outbox_id: 'outbox_delivered', status: 'delivered', failure_code: null },
