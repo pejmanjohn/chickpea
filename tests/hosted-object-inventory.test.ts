@@ -343,53 +343,124 @@ test('an installation records only instances its own name scopes', () => {
 });
 
 /**
- * Every place Core addresses a Durable Object, and the inventory kind that
- * covers the names it addresses under installation tenancy. A new site fails
- * here until its names are recorded where they are first persisted and the
- * site is listed.
+ * Every place Core addresses a Durable Object, pinned by its code (the call's
+ * line, and the next one when the call continues there), with what covers
+ * the names it addresses under installation tenancy. A new site, or a site
+ * whose code changes, fails here until its names are recorded where they are
+ * first persisted and the site is listed again.
  */
-const ADDRESSING_SITES: Record<string, { count: number; covered: string }> = {
-  'config/state-rpc.ts': { count: 1, covered: 'state store, named after the installation' },
-  'slack/thread-runner-rpc.ts': { count: 1, covered: 'thread_runner, recorded at turn enqueue' },
-  'agents/turn-input.ts': { count: 1, covered: 'slack_agent, recorded when the turn freezes its plan' },
-  'slack/bounded-agent-observation.ts': { count: 1, covered: 'slack_agent of a dispatched envelope' },
-  'slack/flue-dispatch.ts': { count: 1, covered: 'slack_agent of a dispatched envelope (Flue init)' },
-  'routines/execution.ts': { count: 2, covered: 'routine_agent, recorded with the attempt envelope (Flue init)' },
-  'state/pending-work.ts': { count: 1, covered: 'routine_agent of a persisted envelope (Flue init)' },
-  'state/installation-objects.ts': { count: 2, covered: 'host functions, recorded names only' },
-  'admin/routes.ts': { count: 2, covered: 'gateway session: standalone only' },
-  'slack/gateway/cloudflare-session.ts': { count: 1, covered: 'gateway session: returns early under tenancy' },
-  'cloudflare.ts': { count: 1, covered: 'coding Sandbox: off under tenancy' },
-  'sandbox/select.ts': { count: 1, covered: 'coding Sandbox probe: off under tenancy' },
-  'sandbox/coding-task-stop.ts': { count: 1, covered: 'coding worker: off under tenancy' },
-  'agents/coding-worker-task.ts': { count: 2, covered: 'coding worker and Sandbox: off under tenancy' },
-  'agents/coding-worker.ts': { count: 1, covered: 'coding Sandbox: off under tenancy' },
-  'agents/slack-thread.ts': { count: 2, covered: 'coding Sandbox: off under tenancy' },
-  'slack/thread-runner.ts': { count: 1, covered: 'coding Sandbox: off under tenancy' },
+const ADDRESSING_SITES: Record<string, { covered: string; sites: readonly string[] }> = {
+  'config/state-rpc.ts': {
+    covered: 'state store, named after the installation',
+    sites: ['return namespace.getByName(tagStateInstanceName(env));'],
+  },
+  'slack/thread-runner-rpc.ts': {
+    covered: 'thread_runner, recorded at turn enqueue',
+    sites: ['return namespace.getByName(installationObjectName(env, threadKey));'],
+  },
+  'agents/turn-input.ts': {
+    covered: 'slack_agent, recorded when the turn freezes its plan',
+    sites: ['const stub = binding.get(binding.idFromName(input.instanceId));'],
+  },
+  'slack/bounded-agent-observation.ts': {
+    covered: 'slack_agent of a dispatched envelope',
+    sites: ['const stub = binding.get(binding.idFromName(instanceId));'],
+  },
+  'slack/flue-dispatch.ts': {
+    covered: 'slack_agent of a dispatched envelope (Flue init)',
+    sites: ['return init(agent, { id: target.instanceId, ...(target.uid === undefined ? {} : { uid: target.uid }) });'],
+  },
+  'routines/execution.ts': {
+    covered: 'routine_agent, recorded with the attempt envelope (Flue init)',
+    sites: [
+      'const handle = dependencies.handle ?? init(ChickpeaRoutineExecution, { id: prepared.envelope.instanceId,',
+      "const attempt = handle ?? init( (await import('../agents/routine-execution.ts')).ChickpeaRoutineExecution,",
+    ],
+  },
+  'state/pending-work.ts': {
+    covered: 'routine_agent of a persisted envelope (Flue init)',
+    sites: ['await init(ChickpeaRoutineExecution, { id: agent.target.instanceId,'],
+  },
+  'state/installation-objects.ts': {
+    covered: 'host functions, recorded names only',
+    sites: [
+      'return namespace.getByName(object.name) as AnyObjectHostRpc;',
+      'return namespace.get(namespace.idFromName(object.name)) as AnyObjectHostRpc;',
+    ],
+  },
+  'admin/routes.ts': {
+    covered: 'gateway session: standalone only',
+    sites: [
+      "await namespace.get(namespace.idFromName('deployment')).restart();",
+      "const stub = namespace.get(namespace.idFromName('deployment'));",
+    ],
+  },
+  'slack/gateway/cloudflare-session.ts': {
+    covered: 'gateway session: returns early under tenancy',
+    sites: ["await namespace.get(namespace.idFromName('deployment')).wake();"],
+  },
+  'cloudflare.ts': {
+    covered: 'coding Sandbox: off under tenancy',
+    sites: ['return workerEnv.SANDBOX.get(workerEnv.SANDBOX.idFromString(containerId));'],
+  },
+  'sandbox/select.ts': {
+    covered: 'coding Sandbox probe: off under tenancy',
+    sites: ['const stub = namespace.get(namespace.idFromName(SANDBOX_CONTAINER_PROBE_NAME));'],
+  },
+  'sandbox/coding-task-stop.ts': {
+    covered: 'coding worker: off under tenancy',
+    sites: ['const stub = binding.get(binding.idFromName(instanceId));'],
+  },
+  'agents/coding-worker-task.ts': {
+    covered: 'coding worker and Sandbox: off under tenancy',
+    sites: [
+      'return getSandbox( binding as Parameters<typeof getSandbox>[0],',
+      'return init(CodingWorker, { id: instanceId });',
+    ],
+  },
+  'agents/coding-worker.ts': {
+    covered: 'coding Sandbox: off under tenancy',
+    sites: ['getSandbox( namespace as Parameters<typeof getSandbox>[0],'],
+  },
+  'agents/slack-thread.ts': {
+    covered: 'coding Sandbox: off under tenancy',
+    sites: [
+      'return getSandbox( binding as Parameters<typeof getSandbox>[0],',
+      'getSandbox( options.binding as Parameters<typeof getSandbox>[0],',
+    ],
+  },
+  'slack/thread-runner.ts': {
+    covered: 'coding Sandbox: off under tenancy',
+    sites: ['reconnectingSandboxStub(() => getSandbox( binding as Parameters<typeof getSandbox>[0],'],
+  },
 };
 
 const ADDRESSING = /\.(?:getByName|idFromName|idFromString|newUniqueId)\(|\b(?:getAgentByName|getServerByName|getSandbox)\(|(?<![.\w])init\(/g;
 
 test('every Durable Object addressing site in Core is covered by the inventory or never runs under tenancy', () => {
   const sourceRoot = join(ROOT, 'src');
-  const found: Record<string, number> = {};
+  const found: Record<string, string[]> = {};
   const walk = (directory: string) => {
     for (const entry of readdirSync(directory)) {
       const path = join(directory, entry);
       if (statSync(path).isDirectory()) walk(path);
       else if (path.endsWith('.ts')) {
-        // Comment lines name these calls too; only code addresses objects.
-        const code = readFileSync(path, 'utf8').split('\n')
-          .filter((line) => !/^\s*(?:\*|\/\/|\/\*)/.test(line)).join('\n');
-        const count = code.match(ADDRESSING)?.length ?? 0;
-        if (count > 0) found[relative(sourceRoot, path)] = count;
+        const lines = readFileSync(path, 'utf8').split('\n');
+        lines.forEach((line, index) => {
+          // Comment lines name these calls too; only code addresses objects.
+          if (/^\s*(?:\*|\/\/|\/\*)/.test(line)) return;
+          const site = line.trim();
+          // A call that continues on the next line is pinned with it, which carries its first argument.
+          const pinned = /[({]$/.test(site) ? `${site} ${lines[index + 1]?.trim() ?? ''}` : site;
+          for (const _match of line.match(ADDRESSING) ?? []) (found[relative(sourceRoot, path)] ??= []).push(pinned);
+        });
       }
     }
   };
   walk(sourceRoot);
   assert.deepEqual(
     found,
-    Object.fromEntries(Object.entries(ADDRESSING_SITES).map(([file, site]) => [file, site.count])),
+    Object.fromEntries(Object.entries(ADDRESSING_SITES).map(([file, { sites }]) => [file, [...sites]])),
     'record a new addressing site\'s names in the object inventory, then list it here',
   );
 });
