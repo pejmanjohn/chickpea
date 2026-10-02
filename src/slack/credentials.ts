@@ -221,25 +221,41 @@ export async function resolveSlackPublicUrl(
   return value;
 }
 
+let backfillFailureLogged = false;
+
 /**
- * Store, once, the canonical Admin origin a standalone install pinned before
- * its setup steps stored it as the public URL: an install signed in through
- * Slack never makes the unsigned Admin request that would. After this the
- * stored read answers and no identity read happens. A host names its own URL.
+ * Store the canonical Admin origin a standalone install pinned before its
+ * setup steps stored it as the public URL: an install signed in through Slack
+ * never makes the unsigned Admin request that would. Once it is stored, the
+ * stored read answers with no identity read; an install with no pinned origin
+ * reads identity on every identity-carrying call. A host names its own URL.
+ * The URL is presentation, so a failure here resolves to nothing (logged once)
+ * rather than failing the turn that asked.
  */
 async function backfillCanonicalAdminOrigin(
   env: PlatformEnv | undefined,
   settings: SettingsStore,
   identity: Pick<IdentityStore, 'getAuthControl'>,
 ): Promise<string | undefined> {
-  if (deploymentServesManyInstallations(env)) return undefined;
-  const origin = (await identity.getAuthControl())?.canonicalAdminOrigin ?? undefined;
-  if (!origin) return undefined;
-  await settings.applySettingsPatch({
-    expected: { key: SLACK_SETTING_KEYS.publicUrl, value: null },
-    set: [{ key: SLACK_SETTING_KEYS.publicUrl, value: origin }],
-  });
-  return origin;
+  try {
+    if (deploymentServesManyInstallations(env)) return undefined;
+    const origin = (await identity.getAuthControl())?.canonicalAdminOrigin ?? undefined;
+    if (!origin) return undefined;
+    await settings.applySettingsPatch({
+      expected: { key: SLACK_SETTING_KEYS.publicUrl, value: null },
+      set: [{ key: SLACK_SETTING_KEYS.publicUrl, value: origin }],
+    });
+    return origin;
+  } catch (error) {
+    if (!backfillFailureLogged) {
+      backfillFailureLogged = true;
+      console.warn(
+        '[chickpea] Slack public URL backfill failed:',
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+    return undefined;
+  }
 }
 
 /** Prime the public-URL cache so the isolate that stored it resolves it now. */

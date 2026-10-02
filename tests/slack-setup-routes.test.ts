@@ -517,12 +517,14 @@ test('public bot-install routes use an independent narrow browser cookie and nev
       configurationToken: CONFIG_TOKEN,
     });
 
+    await settings.deleteSetting('slack.publicUrl');
     const start = await app.request(`${ORIGIN}/auth/slack/install/start`, {
       method: 'POST', headers: formHeaders(), body: new URLSearchParams({
         capability: authority.capability, destination: '/admin/channels',
       }),
     }, env);
     assert.equal(start.status, 200, await start.clone().text());
+    assert.equal(await settings.getSetting('slack.publicUrl'), ORIGIN);
     assert.equal(start.headers.get('location'), null);
     const handoffHtml = await start.clone().text();
     assert.match(handoffHtml, /Opening Slack/);
@@ -607,6 +609,7 @@ test('public bot-install routes use an independent narrow browser cookie and nev
     assert.equal((await recordPendingSlackChallenge(settings, {
       rawBody: eventBody, signature, timestamp,
     }, { now: routeNow })).accepted, true);
+    await settings.deleteSetting('slack.publicUrl');
     const finalized = await app.request(`${ORIGIN}/auth/slack/install/finalize`, {
       method: 'POST', headers: formHeaders(), body: new URLSearchParams({
         capability: authority.capability, destination: '/admin/channels',
@@ -618,6 +621,7 @@ test('public bot-install routes use an independent narrow browser cookie and nev
       '/admin/setup?slack_install=bot_installed&destination=%2Fadmin%2Fchannels',
     );
     assert.equal((await identity.getSlackSetupTransaction('setup_default'))?.state, 'bot_installed');
+    assert.equal(await settings.getSetting('slack.publicUrl'), ORIGIN);
 
     const replay = await app.request(callbackUrl, { headers: { cookie: resumedCookie } }, env);
     assert.equal(replay.status, 400);
@@ -711,6 +715,40 @@ test('Slack authorization handoff renderer rejects non-Slack and non-OAuth desti
   assert.doesNotThrow(() => renderSlackAuthorizationHandoffPage(
     'https://slack.com/openid/connect/authorize?state=safe-state',
   ));
+});
+
+test('first-Owner Slack sign-in stores the origin it pins as the Slack public URL', async () => {
+  // This step opens its setup on the real clock.
+  const identity = new SqliteIdentityStore(':memory:');
+  const settings = new SqliteSettingsStore(':memory:');
+  const authority = await mintSetupCapability();
+  const state = 'state-0123456789abcdefghijklmnopqrstuvwxyz';
+  const service = {
+    async startFirstOwner() {
+      return {
+        attemptId: 'slackoidc_owner', state, nonce: 'nonce-0123456789abcdefghijklmnopqrstuvwxyz',
+        expiresAt: Date.now() + 900_000,
+        authorizationUrl: `https://slack.com/openid/connect/authorize?state=${state}`,
+      };
+    },
+  } as unknown as SlackAdmissionService;
+  try {
+    const app = createAdminRoutes({
+      identity, settings, slackAdmissionService: service,
+      authSecret: Buffer.alloc(32, 5).toString('base64url'),
+    });
+    const start = await app.request(`${ORIGIN}/auth/slack/oidc/start`, {
+      method: 'POST', headers: formHeaders(), body: new URLSearchParams({
+        purpose: 'first_owner', capability: authority.capability, destination: '/admin/channels',
+      }),
+    }, setupEnv(authority));
+    assert.equal(start.status, 200, await start.clone().text());
+    assert.equal((await identity.getAuthControl())?.canonicalAdminOrigin, ORIGIN);
+    assert.equal(await settings.getSetting('slack.publicUrl'), ORIGIN);
+  } finally {
+    identity.close();
+    settings.close();
+  }
 });
 
 test('Slack-only sign-in uses a narrow nonce cookie and restores the safe Admin destination', async () => {

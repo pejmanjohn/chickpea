@@ -151,3 +151,17 @@ test('the public URL is backfilled once from the pinned origin, and never read f
     assert.equal(unread.reads, 0);
   });
 });
+
+test('a failed backfill resolves no public URL, logged once, rather than failing the turn', async (t) => {
+  await withAppHomeInstall(t, async ({ stores, warnings }) => {
+    const unreadable = {
+      async getAuthControl(): Promise<AuthControl> { throw new Error('state store unavailable'); },
+    };
+    assert.equal(await resolveSlackPublicUrl(undefined, stores.settings, unreadable), undefined);
+    const unwritable = Object.create(stores.settings) as typeof stores.settings;
+    unwritable.applySettingsPatch = async () => { throw new Error('settings write refused'); };
+    assert.equal(await resolveSlackPublicUrl(undefined, unwritable, countingIdentity(ORIGIN)), undefined);
+    assert.equal(await stores.settings.getSetting('slack.publicUrl'), undefined);
+    assert.equal(warnings.filter((line) => /Slack public URL backfill failed/.test(line)).length, 1);
+  });
+});

@@ -3240,7 +3240,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         ...(form.destination === undefined ? {} : { destination: form.destination }),
         ...(options.slackInstallNow ? { now: options.slackInstallNow } : {}),
       });
-      await persistPinnedSetupOrigin(c, settings(c), requestOrigin(c));
+      await persistPinnedSetupOrigin(settings(c), requestOrigin(c), c.env as PlatformEnv | undefined);
       await limiter.assertAllowed('slack_install_start_operation', setup.id);
       const browserBinding = `${randomUUID().replaceAll('-', '')}${randomUUID().replaceAll('-', '')}`;
       const startInput = {
@@ -3312,7 +3312,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         ...(form.destination === undefined ? {} : { destination: form.destination }),
         ...(options.slackInstallNow ? { now: options.slackInstallNow } : {}),
       });
-      await persistPinnedSetupOrigin(c, settings(c), requestOrigin(c));
+      await persistPinnedSetupOrigin(settings(c), requestOrigin(c), c.env as PlatformEnv | undefined);
       await limiter.assertAllowed('slack_install_finalize_operation', setup.id);
       const result = await service.finalizeWaitingInstallation(setup.id);
       await Promise.all([
@@ -3440,7 +3440,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           canonicalAdminOrigin: requestOrigin(c),
           ...(form.destination === undefined ? {} : { destination: form.destination }),
         });
-        await persistPinnedSetupOrigin(c, settings(c), requestOrigin(c));
+        await persistPinnedSetupOrigin(settings(c), requestOrigin(c), c.env as PlatformEnv | undefined);
         operationKey = setup.id;
         retryDestination = setup.destination;
         await limiter.assertAllowed('slack_oidc_start_operation', operationKey);
@@ -3689,7 +3689,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         destination: rawForm.destination ?? '/admin/onboarding',
         ...(options.slackAppCreationNow ? { now: options.slackAppCreationNow } : {}),
       });
-      await persistPinnedSetupOrigin(c, settings(c), origin);
+      await persistPinnedSetupOrigin(settings(c), origin, c.env as PlatformEnv | undefined);
       await Promise.all([
         limiter.assertAllowed(`slack_manual_setup_operation_${action}`, setup.id),
         limiter.assertAllowed('slack_setup_deployment', 'deployment'),
@@ -3837,7 +3837,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         destination: rawForm.destination ?? '/admin/onboarding',
         ...(options.slackAppCreationNow ? { now: options.slackAppCreationNow } : {}),
       });
-      await persistPinnedSetupOrigin(c, settings(c), origin);
+      await persistPinnedSetupOrigin(settings(c), origin, c.env as PlatformEnv | undefined);
       await Promise.all([
         limiter.assertAllowed(`slack_setup_operation_${action}`, setup.id),
         limiter.assertAllowed('slack_setup_deployment', 'deployment'),
@@ -11650,12 +11650,16 @@ async function persistRequestOrigin(c: Context, store: SettingsStore): Promise<v
  * rare, so this reads the stored value rather than trusting that function's
  * per-isolate memo, which cannot see a different store.
  */
-async function persistPinnedSetupOrigin(c: Context, store: SettingsStore, origin: string): Promise<void> {
+async function persistPinnedSetupOrigin(
+  store: SettingsStore,
+  origin: string,
+  env: PlatformEnv | undefined,
+): Promise<void> {
   try {
     if (await store.getSetting(SLACK_SETTING_KEYS.publicUrl) !== origin) {
       await store.setSetting(SLACK_SETTING_KEYS.publicUrl, origin);
     }
-    primeStoredSlackPublicUrl(origin, c.env as PlatformEnv | undefined);
+    primeStoredSlackPublicUrl(origin, env);
   } catch (err) {
     console.error(
       '[chickpea] failed to persist slack.publicUrl:',
