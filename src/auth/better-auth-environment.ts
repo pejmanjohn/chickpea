@@ -1,3 +1,4 @@
+import { deploymentTenancy } from '../config/installation-scope.ts';
 import {
   isCloudflareTarget,
   type PlatformEnv,
@@ -34,6 +35,27 @@ interface ResolveBetterAuthBootstrapEnvironmentInput {
   authSecret?: string | undefined;
 }
 
+const HOST_BACKEND = Symbol('chickpea.better-auth-backend');
+
+/**
+ * An env whose Better Auth database is `backend`, for a host that opens one
+ * per request (PostgreSQL through Hyperdrive) and closes it once the request's
+ * work has settled. The backend rides in a frozen copy under a module-private
+ * symbol, like an installation scope, so only the host holding it can attach
+ * it; the input is never changed. A deployment serving many installations
+ * reads Better Auth only from here, never from a deployment-wide database.
+ */
+export function withBetterAuthBackend<E extends PlatformEnv>(
+  env: E,
+  backend: BetterAuthDatabaseBackend,
+): E {
+  return Object.freeze({ ...env, [HOST_BACKEND]: backend });
+}
+
+function hostBetterAuthBackend(env: PlatformEnv | undefined): BetterAuthDatabaseBackend | undefined {
+  return (env as { [HOST_BACKEND]?: BetterAuthDatabaseBackend } | undefined)?.[HOST_BACKEND];
+}
+
 export async function resolveBetterAuthEnvironment(
   input: ResolveBetterAuthEnvironmentInput,
 ): Promise<BetterAuthEnvironment | undefined> {
@@ -53,6 +75,13 @@ export async function resolveBetterAuthBootstrapEnvironment(
 ): Promise<BetterAuthEnvironment | undefined> {
   const stableSecret = input.authSecret ?? authSecret(input.platformEnv);
   if (!stableSecret) return undefined;
+
+  const hostBackend = hostBetterAuthBackend(input.platformEnv);
+  if (hostBackend) {
+    return { backend: hostBackend, baseURL: input.canonicalOrigin, secret: stableSecret };
+  }
+  // Each request's host supplies the database; nothing deployment-wide stands in.
+  if (deploymentTenancy(input.platformEnv) === 'installation') return undefined;
 
   if (isCloudflareTarget()) {
     const cloudflareEnv = cloudflareAuthEnv(input.platformEnv);
