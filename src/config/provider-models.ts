@@ -72,13 +72,14 @@ const MODEL_CACHE_TTL_MS = 60 * 60 * 1000;
 const DEFAULT_PROVIDER_FETCH_TIMEOUT_MS = 8_000;
 const OPENAI_CHAT_MODEL_PREFIXES = ['gpt-', 'o1', 'o3', 'o4', 'o5', 'chatgpt-', 'codex-'];
 
-// Keyed by installation and provider: a model list is what one installation's
-// key can see, so another installation never reads it.
+// An Anthropic or OpenAI list is what one installation's key can see, so it
+// is cached per installation; OpenRouter's public catalog and the Workers AI
+// list are the same for every installation.
 const modelCache = new Map<string, { expiresAt: number; models: ProviderModel[] }>();
 const cachedModelCounts = new Map<string, number>();
 
 function modelCacheKey(id: AdminProviderId, env: PlatformEnv | undefined): string {
-  return `${installationCacheKey(env)}|${id}`;
+  return id === 'anthropic' || id === 'openai' ? `${installationCacheKey(env)}|${id}` : `|${id}`;
 }
 
 export function isAdminProviderId(id: string): id is AdminProviderId {
