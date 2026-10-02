@@ -37,6 +37,7 @@ import { installationScopeOf, scopeInstallationEnv } from '../src/config/install
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import type { PlatformEnv } from '../src/config/state-backend.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { holdUntilResponseEnds } from '../src/http/response-lifetime.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
 import { startPostgresTestCluster, type PostgresTestClusterStart } from './helpers/postgres-cluster.ts';
 
@@ -652,4 +653,57 @@ test('a Slack deactivation handled with no request, as in a Durable Object alarm
   const refused = await hosted.refresh(grant);
   assert.equal(refused.status, 400);
   assert.equal((await hosted.backend.pool.query('SELECT count(*)::int AS count FROM "oauthRefreshToken"')).rows[0].count, 0);
+});
+
+test('a streamed response keeps the request database open until its body ends', { timeout: 120_000 }, async (t) => {
+  const hosted = await hostedDeployment(t);
+  if (!hosted) return;
+  // What a host does around Core: one database per request, closed once
+  // every piece of work handed to waitUntil has settled.
+  async function serveWithRequestDatabase(hold: boolean) {
+    const backend = openPostgresBetterAuthBackend(hosted!.config);
+    const pending = new Set<Promise<unknown>>();
+    const waitUntil = (promise: Promise<unknown>) => {
+      pending.add(promise);
+      void promise.finally(() => pending.delete(promise));
+    };
+    let produce!: () => void;
+    const producing = new Promise<void>((resolve) => { produce = resolve; });
+    // Core's handler returns at once; its body runs a query as it is written,
+    // like an MCP tool call inside an event stream.
+    const body = new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        await producing;
+        const { rows } = await backend.pool.query<{ answer: number }>('SELECT 42 AS answer');
+        controller.enqueue(new TextEncoder().encode(`data: ${rows[0]!.answer}\n\n`));
+        controller.close();
+      },
+    });
+    const returned = new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream', 'x-kept': 'yes' } });
+    const response = hold ? holdUntilResponseEnds(returned, waitUntil) : returned;
+    const closed = (async () => {
+      while (pending.size) await Promise.allSettled([...pending]);
+      await backend.close();
+    })();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    produce();
+    const text = await response.text().catch((error: Error) => `failed: ${error.message}`);
+    await closed;
+    return { response, text };
+  }
+  const held = await serveWithRequestDatabase(true);
+  assert.equal(held.text, 'data: 42\n\n');
+  assert.equal(held.response.status, 200);
+  assert.equal(held.response.headers.get('content-type'), 'text/event-stream');
+  assert.equal(held.response.headers.get('x-kept'), 'yes');
+  // The control: without it the database closes as the handler returns.
+  assert.match((await serveWithRequestDatabase(false)).text, /failed: Cannot use a pool after calling end/);
+
+  // A client that goes away settles it too; a response without a body is untouched.
+  const waits: Promise<unknown>[] = [];
+  const endless = holdUntilResponseEnds(new Response(new ReadableStream({ pull() {} })), (promise) => waits.push(promise));
+  await endless.body!.cancel();
+  await Promise.all(waits);
+  const empty = new Response(null, { status: 204 });
+  assert.equal(holdUntilResponseEnds(empty, () => assert.fail('nothing to wait for')), empty);
 });
