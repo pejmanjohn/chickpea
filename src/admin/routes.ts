@@ -6901,13 +6901,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     return c.json({
       providers: [
         ...PROVIDER_KEY_IDS.map((id) => ({
-          ...providerSummary(id, sources[id]),
+          ...providerSummary(id, sources[id], platformEnv),
           ...(id === 'openai'
             ? { activeAuthMethod, subscription, subscriptionAvailable, subscriptionProtocol: isCloudflareTarget() ? 'chatgpt-plan' : 'codex' }
             : {}),
         })),
         {
-          ...providerSummary('workers-ai', workersAiStatus(platformEnv)),
+          ...providerSummary('workers-ai', workersAiStatus(platformEnv), platformEnv),
           enabled: workersAiEnabled,
         },
       ],
@@ -7063,10 +7063,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       if (id === 'openai' && current.source === 'missing') {
         await initializeAuthenticatedWorkspaceImageDefault(c, OPENAI_API_IMAGE_DEFAULT_MODEL_ID);
       }
-      primeProviderModelCache(id, models);
+      primeProviderModelCache(id, models, platformEnv);
       return c.json({
         ok: true,
-        provider: providerSummary(id, 'stored'),
+        provider: providerSummary(id, 'stored', platformEnv),
         models,
       });
     } catch (err) {
@@ -7129,7 +7129,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const impact = await providerRemovalImpact(store(c), id);
       return c.json({
         ok: true,
-        provider: providerSummary(id, source),
+        provider: providerSummary(id, source, platformEnv),
         ...impact,
       });
     }
@@ -7142,7 +7142,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const impact = await providerRemovalImpact(store(c), id);
     return c.json({
       ok: true,
-      provider: providerSummary(id, resolved.source),
+      provider: providerSummary(id, resolved.source, platformEnv),
       ...impact,
     });
   });
@@ -12473,11 +12473,15 @@ interface ProviderSummary {
   modelCount: number | null;
 }
 
-function providerSummary(id: AdminProviderId, status: ProviderKeySource): ProviderSummary {
+function providerSummary(
+  id: AdminProviderId,
+  status: ProviderKeySource,
+  env: PlatformEnv | undefined,
+): ProviderSummary {
   return {
     id,
     status,
-    modelCount: cachedProviderModelCount(id) ?? null,
+    modelCount: cachedProviderModelCount(id, env) ?? null,
   };
 }
 
