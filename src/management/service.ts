@@ -2718,11 +2718,7 @@ export class WorkspaceManagementService {
     return url.href;
   }
 
-  /**
-   * The Agent's Admin link, or undefined when the deployment has no public
-   * URL; never throws. It is presentation on a change that has already
-   * committed, so a missing URL must not turn a created Agent into a failure.
-   */
+  /** The Agent's Admin link, or undefined without a public URL; never throws after a commit. */
   private async agentEditorUrl(agentId: string): Promise<string | undefined> {
     if (!this.stores.setupBaseUrl) return undefined;
     const baseUrl = await this.optionalSetupBaseUrl();
