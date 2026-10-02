@@ -9,6 +9,7 @@ import {
   splitInstallationObjectName,
 } from '../../src/config/installation-scope.ts';
 import type { PlatformEnv } from '../../src/config/state-backend.ts';
+import type { RoutinePersistenceTelemetrySink } from '../../src/routines/telemetry.ts';
 import { agentObjectBindingName, CHICKPEA_SLACK_AGENT_BINDING } from '../../src/slack/bounded-agent-observation.ts';
 import { ThreadRunnerJobStore } from '../../src/slack/thread-runner-jobs.ts';
 import { DoSqlStateDb } from '../../src/state/do-state-db.ts';
@@ -171,6 +172,7 @@ interface DeploymentObject {
  */
 export function hostedDeployment(installationIds: readonly string[], options: {
   stopAgents?: (agents: readonly AgentStopTarget[]) => Promise<{ stopped: number; notStopped: number }>;
+  persistenceTelemetrySink?: RoutinePersistenceTelemetrySink;
 } = {}) {
   const objects = new Map<string, DeploymentObject>();
   const installations = new Map<string, HostedInstallation>();
@@ -194,6 +196,7 @@ export function hostedDeployment(installationIds: readonly string[], options: {
           ),
           onErased: () => { stores = undefined; },
           ...(options.stopAgents ? { stopAgents: options.stopAgents } : {}),
+          ...(options.persistenceTelemetrySink ? { persistenceTelemetrySink: options.persistenceTelemetrySink } : {}),
         }) as unknown as DeploymentObject['host'],
       };
     } else {

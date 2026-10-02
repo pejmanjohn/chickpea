@@ -1,4 +1,7 @@
 import { InstallationContextError } from '../config/installation-scope.ts';
+import type { PlatformEnv } from '../config/state-backend.ts';
+import type { RoutinePersistenceTelemetrySink } from '../routines/telemetry.ts';
+import { promisify } from './async-facade.ts';
 import {
   assertObjectHostCall,
   eraseObjectStorage,
@@ -13,6 +16,7 @@ import {
 import type { InstallationObjectBackfill, InstallationObjectInventoryPage } from './object-inventory.ts';
 import {
   cancelStatePendingWork,
+  settleCancelledOccurrences,
   stopCancelledAgents,
   type AgentStopTarget,
   type StatePendingWorkCancellation,
@@ -42,6 +46,8 @@ export function stateStoreHostFunctions(store: {
   readonly stores: () => TagStateStores;
   readonly onErased: () => void;
   readonly stopAgents?: (agents: readonly AgentStopTarget[]) => Promise<{ stopped: number; notStopped: number }>;
+  /** Where a cancelled occurrence's settlement is reported (the log, by default). */
+  readonly persistenceTelemetrySink?: RoutinePersistenceTelemetrySink;
 }): StateStoreHostRpc {
   const stores = (request: ObjectHostRequest): TagStateStores => {
     assertObjectHostCall(store.env, request);
@@ -79,7 +85,16 @@ export function stateStoreHostFunctions(store: {
       return erased;
     },
     async chickpeaHostCancelPendingWork(request) {
-      const { agents, ...cancelled } = cancelStatePendingWork(stores(request), Date.now());
+      const local = stores(request);
+      const at = Date.now();
+      const { agents, occurrences, ...cancelled } = cancelStatePendingWork(local, at);
+      // This store's own Work and usage records, through their async views.
+      await settleCancelledOccurrences(occurrences, store.env as PlatformEnv, {
+        workStore: promisify(local.work, { close: () => undefined }),
+        usageStore: promisify(local.usage, { close: () => undefined }),
+        now: () => at,
+        ...(store.persistenceTelemetrySink ? { persistenceTelemetrySink: store.persistenceTelemetrySink } : {}),
+      });
       await store.storage.deleteAlarm();
       const { stopped, notStopped } = await (store.stopAgents ?? stopCancelledAgents)(agents);
       return { alarmCleared: true, ...cancelled, agentsStopped: stopped, agentsNotStopped: notStopped };

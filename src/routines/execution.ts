@@ -1362,16 +1362,21 @@ function refusedExecutionSettlement(dispatched: boolean) {
  * access no longer resolves: its Work execution settles and its Run is
  * skipped, and its usage terminal is recorded with spend unknown. Each part
  * is best effort, one already settled is left as it is, and one left open
- * is reported as unrepaired, as a prepared occurrence's gaps are.
+ * is reported as unrepaired, as a prepared occurrence's gaps are. A host
+ * cancelling an installation's pending work settles each running occurrence
+ * it skips this way too (state/pending-work.ts).
  */
-async function settleRefusedWithoutPreparation(
+export async function settleRefusedWithoutPreparation(
   input: {
     env: PlatformEnv;
     run: RoutineRun;
     admission: RoutineAdmissionAttempt;
     attempt: number;
   },
-  dependencies: RoutineExecutionDependencies,
+  dependencies: Pick<
+    RoutineExecutionDependencies,
+    'now' | 'usageRecordingEnabled' | 'usageStore' | 'workStore' | 'persistenceTelemetrySink'
+  >,
 ): Promise<void> {
   const { env, run, admission, attempt } = input;
   const now = dependencies.now ?? Date.now;

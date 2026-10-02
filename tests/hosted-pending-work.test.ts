@@ -14,6 +14,8 @@ import {
   installationStateStoreObject,
 } from '../src/state/installation-objects.ts';
 import { stopCancelledAgents, type AgentStopTarget } from '../src/state/pending-work.ts';
+import { promisify } from '../src/state/async-facade.ts';
+import { RoutineUsageRecorder } from '../src/usage/runtime-recorder.ts';
 import { opaqueId } from '../src/work/admission.ts';
 import { hostedDeployment, runnerJobs, type HostedInstallation } from './helpers/installation-objects.ts';
 
@@ -62,8 +64,8 @@ function turns(installation: HostedInstallation, team: string) {
   return { delivered: delivered!, queued: queued!, running: running!, instanceId: frozen.instanceId };
 }
 
-/** A queued occurrence, one admitting, and one dispatched with a receipt. */
-function routines(installation: HostedInstallation, team: string) {
+/** A queued occurrence, one admitting, and one dispatched with a receipt and its usage admitted. */
+async function routines(installation: HostedInstallation, team: string) {
   const routineStore = installation.stores.routines;
   const now = Date.now();
   const occurrence = (suffix: string) => {
@@ -117,6 +119,14 @@ function routines(installation: HostedInstallation, team: string) {
     occurrenceId: running.id, attempt: admission.attempt, at: now + 3,
     receipt: { submissionId: 'sub_routine', acceptedAt: '2027-01-15T08:00:00.000Z', uid: UID },
   });
+  // Preparing the attempt admitted its usage, as routine execution does.
+  await new RoutineUsageRecorder({
+    operationId: running.id, executionId: `exec:${running.id}:${admission.attemptId}`, startedAt: now + 2,
+    workspaceId: team, channelId: 'C_PENDING', agentId: 'agent_pending', agentLabel: 'Pending',
+    routineId: running.routineId, routineLabel: 'Steward running', requestedModel: 'anthropic/claude-haiku-4-5',
+    credentialRefId: null, credentialVersion: null, platformEnv: installation.env, persistenceMode: 'durable',
+    store: promisify(installation.stores.usage, { close: () => undefined }), now: () => now + 2,
+  }).admit();
   installation.db.run(
     `INSERT INTO routine_recovery_deliveries (occurrence_id, claimed_at, status, failure_class, updated_at)
      VALUES (?, 0, 'pending', 'deadline_exceeded', ?)`,
@@ -142,25 +152,31 @@ function snapshot(installation: HostedInstallation) {
     ),
     notices: installation.db.all('SELECT occurrence_id, status FROM routine_recovery_deliveries ORDER BY occurrence_id'),
     receipts: installation.db.all('SELECT outbox_id, status, failure_code FROM management_receipt_outbox ORDER BY outbox_id'),
+    usage: installation.db.all('SELECT operation_id, status FROM usage_operations ORDER BY operation_id'),
     alarm: installation.storage.alarm,
   };
 }
 
 test('cancelling an installation\'s pending work parks its turns, skips its occurrences, closes its notices and stops its submissions', async () => {
   const stopped: AgentStopTarget[] = [];
+  const reports = { info: [] as string[], errors: [] as string[] };
   const deployment = hostedDeployment(['inst_pending_a', 'inst_pending_b'], {
     stopAgents: async (agents) => {
       stopped.push(...agents);
       return { stopped: agents.length, notStopped: 0 };
     },
+    persistenceTelemetrySink: {
+      info: (message) => reports.info.push(JSON.stringify(message)),
+      error: (message) => reports.errors.push(JSON.stringify(message)),
+    },
   });
   const a = deployment.installation('inst_pending_a');
   const b = deployment.installation('inst_pending_b');
   const turnsA = turns(a, 'T_A');
-  const routinesA = routines(a, 'T_A');
+  const routinesA = await routines(a, 'T_A');
   receipts(a);
   turns(b, 'T_B');
-  routines(b, 'T_B');
+  await routines(b, 'T_B');
   receipts(b);
   for (const installation of [a, b]) await installation.storage.setAlarm(Date.now() + 1_000);
   const neighbour = snapshot(b);
@@ -187,6 +203,13 @@ test('cancelling an installation\'s pending work parks its turns, skips its occu
     skip_reason: REFUSED_SKIP.skipReason,
   };
   assert.deepEqual(after.runs.map(({ id: _id, ...run }) => run), [refused, refused, refused]);
+  // The running occurrence's attempt settles as a refused one's does: its usage terminal is recorded.
+  const usage = await a.stores.usage.getOperation(routinesA.running.id);
+  assert.equal(usage?.operation.status, 'failed');
+  assert.equal(usage?.measurements[0]?.usageUnknownReason, 'provider_request_unknown');
+  assert.equal(reports.info.length, 1);
+  assert.match(reports.info[0]!, /"usage":"recorded","work":"not_linked"/);
+  assert.deepEqual(reports.errors, []);
   assert.deepEqual(after.notices.map(({ status }) => status), ['unknown']);
   assert.deepEqual(after.receipts, [
     { outbox_id: 'outbox_delivered', status: 'delivered', failure_code: null },
@@ -205,6 +228,7 @@ test('cancelling an installation\'s pending work parks its turns, skips its occu
     agentsStopped: 1, agentsNotStopped: 0,
   });
   assert.deepEqual(stopped.map(({ kind }) => kind), ['slack_agent']);
+  assert.equal(reports.info.length, 1, 'a settled occurrence is not settled again');
 });
 
 test('a thread runner settles its open jobs unrun and a Flue instance loses its alarm', async () => {

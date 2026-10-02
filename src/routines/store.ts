@@ -1661,28 +1661,42 @@ export class RoutineStoreLogic {
    * An operator stops every occurrence that has not finished, as after
    * restoring an installation's objects: each queued, admitting or running
    * occurrence is skipped with `reason` (no notice, nothing delivered), and
-   * every recovery notice still pending is closed unsent. Returns how many,
-   * and the Flue instance of each skipped attempt that was dispatched and
-   * not settled, for the caller to abort. Safe to repeat.
+   * every recovery notice still pending is closed unsent. Returns how many;
+   * the Flue instance of each skipped attempt that was dispatched and not
+   * settled, for the caller to abort; and each skipped running occurrence as
+   * it was, with the attempt it prepared, for the caller to settle what that
+   * attempt opened (its Work execution and usage). Safe to repeat.
    */
   cancelPendingWork(
     at: number,
     reason: Pick<TransitionRoutineRunInput, 'failureClass' | 'publicError' | 'skipReason'>,
-  ): { runs: number; notices: number; dispatched: Array<{ instanceId: string; uid?: string }> } {
+  ): {
+    runs: number;
+    notices: number;
+    dispatched: Array<{ instanceId: string; uid?: string }>;
+    prepared: Array<{ run: RoutineRun; admission: RoutineAdmissionAttempt }>;
+  } {
     const dispatched: Array<{ instanceId: string; uid?: string }> = [];
+    const prepared: Array<{ run: RoutineRun; admission: RoutineAdmissionAttempt }> = [];
     let runs = 0;
     for (const row of this.db.all(
       "SELECT id FROM routine_runs WHERE status IN ('queued', 'admitting', 'running') ORDER BY queued_at, id",
     )) {
       const run = this.getRun(String(row.id));
       if (!run || !['queued', 'admitting', 'running'].includes(run.status)) continue;
+      const admissions = this.listAdmissions(run.id);
       if (run.flueAgentEnvelope && !run.flueAgentSettlement) {
-        const receipt = this.listAdmissions(run.id).map((admission) => admission.flueAgentReceipt)
+        const receipt = admissions.map((admission) => admission.flueAgentReceipt)
           .filter((candidate) => candidate !== null).at(-1);
         if (receipt) {
           dispatched.push({ instanceId: run.flueAgentEnvelope.instanceId, ...(receipt.uid ? { uid: receipt.uid } : {}) });
         }
       }
+      // A running occurrence's latest attempt prepared it, opening its Work
+      // execution and usage. One admitting is only skipped, as routine
+      // execution skips a refused one.
+      const admission = admissions.at(-1);
+      if (run.status === 'running' && admission) prepared.push({ run, admission });
       // Each occurrence is its own transaction: a retry finishes what one interrupted.
       this.transitionRun({ occurrenceId: run.id, from: [run.status], to: 'skipped', at, ...reason });
       runs += 1;
@@ -1691,7 +1705,7 @@ export class RoutineStoreLogic {
       "UPDATE routine_recovery_deliveries SET status = 'unknown', updated_at = ? WHERE status = 'pending'",
       at,
     ).changes;
-    return { runs, notices, dispatched };
+    return { runs, notices, dispatched, prepared };
   }
 
   countAdmittingOrRunningOccurrences(): number {

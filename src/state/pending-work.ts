@@ -1,7 +1,12 @@
 import { init } from '@flue/runtime';
 
-import { REFUSED_SKIP } from '../routines/execution.ts';
+import type { PlatformEnv } from '../config/state-backend.ts';
+import { REFUSED_SKIP, settleRefusedWithoutPreparation } from '../routines/execution.ts';
+import type { RoutinePersistenceTelemetrySink } from '../routines/telemetry.ts';
+import type { RoutineAdmissionAttempt, RoutineRun } from '../routines/types.ts';
 import { abortSlackThreadAgent, type SlackThreadAgentTarget } from '../slack/flue-dispatch.ts';
+import type { UsageStore } from '../usage/types.ts';
+import type { WorkStore } from '../work/types.ts';
 import type { TagStateStores } from './tag-state-stores.ts';
 
 /**
@@ -16,7 +21,10 @@ export interface StatePendingWorkCancellation {
   readonly alarmCleared: true;
   /** Undelivered Slack turns parked for the operator, never run or delivered. */
   readonly turns: number;
-  /** Queued, admitting or running routine occurrences skipped, with no notice. */
+  /**
+   * Queued, admitting or running routine occurrences skipped, with no notice.
+   * A running one's Work execution and usage settle as a refused attempt's do.
+   */
   readonly routineRuns: number;
   /** Routine recovery notices closed unsent. */
   readonly routineNotices: number;
@@ -33,16 +41,25 @@ export type AgentStopTarget =
   | { readonly kind: 'slack_agent'; readonly target: SlackThreadAgentTarget }
   | { readonly kind: 'routine_agent'; readonly target: { instanceId: string; uid?: string } };
 
+/** A running occurrence the cancellation skipped, as it was, with the attempt that prepared it. */
+export interface CancelledOccurrence {
+  readonly run: RoutineRun;
+  readonly admission: RoutineAdmissionAttempt;
+}
+
 /**
  * Park every pending turn, skip every unfinished routine occurrence and
  * close every undelivered notice and receipt in one installation's state
- * store. Returns the counts and the Flue submissions to abort. Safe to repeat.
+ * store. Returns the counts, the Flue submissions to abort and the skipped
+ * occurrences whose attempts must settle (`settleCancelledOccurrences`).
+ * Safe to repeat.
  */
 export function cancelStatePendingWork(
   stores: Pick<TagStateStores, 'turnJobs' | 'routines' | 'management'>,
   at: number,
 ): Omit<StatePendingWorkCancellation, 'alarmCleared' | 'agentsStopped' | 'agentsNotStopped'> & {
   readonly agents: readonly AgentStopTarget[];
+  readonly occurrences: readonly CancelledOccurrence[];
 } {
   const turns = stores.turnJobs.cancelPendingWork();
   // Skipped exactly as a refused installation's occurrences are: the host
@@ -59,7 +76,31 @@ export function cancelStatePendingWork(
       ...turns.dispatched.map((target) => ({ kind: 'slack_agent' as const, target })),
       ...routines.dispatched.map((target) => ({ kind: 'routine_agent' as const, target })),
     ],
+    occurrences: routines.prepared,
   };
+}
+
+/**
+ * Settle what each skipped occurrence's attempt opened, by the one rule a
+ * refused occurrence settles by (routines/execution.ts): its Work execution
+ * `ambiguous` when the attempt was dispatched and `not_submitted` when it was
+ * not, both `policy_denied`; its Work run skipped; its usage terminal
+ * recorded with spend unknown. A part already settled is left as it is, and
+ * one that cannot be written is reported as unrepaired, never thrown.
+ */
+export async function settleCancelledOccurrences(
+  occurrences: readonly CancelledOccurrence[],
+  env: PlatformEnv,
+  dependencies: {
+    readonly workStore: WorkStore;
+    readonly usageStore: UsageStore;
+    readonly now: () => number;
+    readonly persistenceTelemetrySink?: RoutinePersistenceTelemetrySink;
+  },
+): Promise<void> {
+  for (const { run, admission } of occurrences) {
+    await settleRefusedWithoutPreparation({ env, run, admission, attempt: admission.attempt }, dependencies);
+  }
 }
 
 /**
