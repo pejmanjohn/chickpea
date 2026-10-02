@@ -40,13 +40,15 @@ import {
 } from '../src/config/model-access.ts';
 import {
   ModelCredentialRevisionError,
-  rotateStoredModelCredential,
+  rotateInstallationModelCredential,
+  type ModelCredentialAction,
 } from '../src/config/model-credential-refs.ts';
 import {
   describeProviderKeySources,
   invalidateProviderKeyCache,
   listInstallationModelProviders,
   resolveProviderApiKey,
+  type ProviderKeyId,
 } from '../src/config/provider-keys.ts';
 import {
   cachedProviderModelCount,
@@ -62,6 +64,7 @@ import { getRoutineStore, type PlatformEnv } from '../src/config/state-backend.t
 import type { ResolvedAssignment } from '../src/config/types.ts';
 import { createWorkModelInvocationInterceptor } from '../src/work/model-invocation.ts';
 import { SqliteUsageStore } from '../src/usage/store.ts';
+import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
 import { withEnv } from './helpers/env.ts';
 
 const HOSTED = { CHICKPEA_TENANCY: 'installation' } as const;
@@ -149,12 +152,15 @@ async function twoInstallations(t: TestContext) {
     resetModelAccessForTests();
   });
   const settingsOf = (env: PlatformEnv | undefined) => settings.get(installationScopeOf(env)?.installationId ?? '')!;
-  configureModelAccessResolver(createInstallationModelAccessResolver({ settings: settingsOf }));
-  await rotateStoredModelCredential('anthropic', { kind: 'save', apiKey: KEY_A1 }, settingsOf(envA), usage);
-  await rotateStoredModelCredential('anthropic', { kind: 'save', apiKey: KEY_B }, settingsOf(envB), usage);
+  const keyring = generateCredentialKeyring('key_model_access');
+  configureModelAccessResolver(createInstallationModelAccessResolver({ settings: settingsOf, keyring: () => keyring }));
+  const rotate = (env: PlatformEnv, provider: ProviderKeyId, action: ModelCredentialAction) =>
+    rotateInstallationModelCredential(provider, action, { env, settings: settingsOf(env), usage, keyring });
+  await rotate(envA, 'anthropic', { kind: 'save', apiKey: KEY_A1 });
+  await rotate(envB, 'anthropic', { kind: 'save', apiKey: KEY_B });
   const grant = async (env: PlatformEnv, runId: string) =>
     (await installationModelAccessGrant('anthropic', env, runId, settingsOf(env)))!;
-  return { envA, envB, settingsOf, usage, grant };
+  return { envA, envB, settingsOf, usage, grant, rotate };
 }
 
 /** Flue's coordinates for one attempt, as its coordinator opens the agent operation. */
@@ -237,7 +243,7 @@ test('interleaved attempts of two installations each send only their own key', a
 });
 
 test('rotation mid-attempt keeps the running attempt on its version; the next attempt is refused, then deletion fails closed', async (t) => {
-  const { envA, envB, settingsOf, usage, grant } = await twoInstallations(t);
+  const { envA, envB, settingsOf, grant, rotate } = await twoInstallations(t);
   const sent: SentRequest[] = [];
   const model = recordingProvider('anthropic', sent);
   const frozenA = await grant(envA, 'sub_agent_a');
@@ -254,7 +260,7 @@ test('rotation mid-attempt keeps the running attempt on its version; the next at
 
   await attempt('agent_a', async () => {
     await modelCall(model, 'A-before-rotation');
-    await rotateStoredModelCredential('anthropic', { kind: 'save', apiKey: KEY_A2 }, settingsOf(envA), usage);
+    await rotate(envA, 'anthropic', { kind: 'save', apiKey: KEY_A2 });
     // The running stream and the attempt's later steps keep the version they started with.
     await modelCall(model, 'A-after-rotation');
     // Another instance's attempt started from inside A's cell binds its own.
@@ -281,7 +287,7 @@ test('rotation mid-attempt keeps the running attempt on its version; the next at
 
   // Deleting A's key fails A closed while B keeps working.
   sent.length = 0;
-  await rotateStoredModelCredential('anthropic', { kind: 'delete' }, settingsOf(envA), usage);
+  await rotate(envA, 'anthropic', { kind: 'delete' });
   await assert.rejects(attempt('agent_a', () => modelCall(model, 'A-after-delete')), ModelCredentialRevisionError);
   assert.equal(await installationModelAccessGrant('anthropic', envA, 'run', settingsOf(envA)), undefined);
   await attempt('agent_b', () => modelCall(model, 'B-after-delete'));
@@ -394,8 +400,8 @@ test('a caller that passes no env still gets the deployment\'s own tenancy, and 
 
 test('each installation lists only its own configured providers and model counts', async (t) => {
   await withEnv(NO_DEPLOYMENT_KEYS, async () => {
-    const { envA, envB, settingsOf } = await twoInstallations(t);
-    await rotateStoredModelCredential('openai', { kind: 'save', apiKey: 'sk-openai-tenant-b' }, settingsOf(envB), new SqliteUsageStore(':memory:'));
+    const { envA, envB, settingsOf, rotate } = await twoInstallations(t);
+    await rotate(envB, 'openai', { kind: 'save', apiKey: 'sk-openai-tenant-b' });
     // Deployment lanes registered in this isolate are not an installation's to use.
     recordRegisteredProvider('cloudflare-workers-ai');
     recordRegisteredProvider('local-stub');
@@ -435,7 +441,7 @@ test('standalone resolves the deployment environment key first, then the key sav
       error.message === 'Provider anthropic needs setup before this model can run.' &&
       error.repairPath === '/admin/settings#model-providers');
 
-    await rotateStoredModelCredential('anthropic', { kind: 'save', apiKey: 'sk-ant-stored-admin-key' }, settings, usage);
+    await rotateInstallationModelCredential('anthropic', { kind: 'save', apiKey: 'sk-ant-stored-admin-key' }, { env: undefined, settings, usage });
     await call('stored');
     await withEnv({ ANTHROPIC_API_KEY: 'sk-ant-worker-secret', ANTHROPIC_BASE_URL: 'http://127.0.0.1:9/anthropic' }, async () => {
       await call('environment');
@@ -467,7 +473,7 @@ test('standalone binds the coding worker to the installation\'s current keys in 
     const usage = new SqliteUsageStore(':memory:');
     t.after(() => { settings.close(); usage.close(); resetModelAccessForTests(); });
     configureModelAccessResolver(createInstallationModelAccessResolver({ settings: () => settings }));
-    await rotateStoredModelCredential('anthropic', { kind: 'save', apiKey: 'sk-ant-stored-admin-key' }, settings, usage);
+    await rotateInstallationModelCredential('anthropic', { kind: 'save', apiKey: 'sk-ant-stored-admin-key' }, { env: undefined, settings, usage });
     const reads: string[][] = [];
     const counting = Object.create(settings) as SqliteSettingsStore;
     counting.getSettings = async (keys) => { reads.push([...keys]); return settings.getSettings(keys); };
