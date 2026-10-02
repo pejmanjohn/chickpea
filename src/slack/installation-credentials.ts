@@ -1,4 +1,5 @@
 import * as sqliteIdentityStoreModule from '../identity/store.ts';
+import { deploymentTenancy } from '../config/installation-scope.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import { IdentityStateError } from '../identity/errors.ts';
 import { getIdentityStore, type PlatformEnv } from '../config/state-backend.ts';
@@ -122,6 +123,18 @@ export class SlackCredentialRecoveryOnlyError extends Error {
   readonly name = 'SlackCredentialRecoveryOnlyError';
   constructor() {
     super('Slack credentials require deployment recovery.');
+  }
+}
+
+/**
+ * The deployment's keyring did not load, so no installation's Slack
+ * credentials can be read until it does; no installation is put into
+ * recovery for it.
+ */
+export class SlackCredentialUnavailableError extends Error {
+  readonly name = 'SlackCredentialUnavailableError';
+  constructor() {
+    super('Slack credentials are unavailable until the deployment keyring loads.');
   }
 }
 
@@ -258,6 +271,12 @@ export async function resolveSlackInstallationCredentials(
         }
       : explicit ? compatibilityDependencies(explicit) : { state, keyring: loadCredentialKeyring(env) };
   } catch {
+    // A deployment serving many installations shares one keyring: one that
+    // does not load says nothing about this installation's data, so service
+    // stops without locking every installation it touches into recovery.
+    if (deploymentTenancy(isStateDependencies(explicit) ? explicit.env ?? env : env) === 'installation') {
+      throw new SlackCredentialUnavailableError();
+    }
     await enterCredentialRecoveryOnly(state);
     throw new SlackCredentialRecoveryOnlyError();
   }
