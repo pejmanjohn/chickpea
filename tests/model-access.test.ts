@@ -15,6 +15,10 @@ import { lookupAttemptModelAccess } from '../src/agents/model-access-lookup.ts';
 import { compileRuntimePlanV2, deriveRuntimePlanInstanceId, type RuntimePlanV2 } from '../src/agents/runtime-plan.ts';
 import { createSlackTurnInput, rememberInProcessTurnInput } from '../src/agents/turn-input.ts';
 import {
+  configureInstallationAdmission,
+  resetInstallationAdmissionForTests,
+} from '../src/config/installation-admission.ts';
+import {
   createInstallationModelAccessResolver,
   installationModelAccessGrant,
   installationModelAccessGrants,
@@ -142,6 +146,8 @@ async function modelCall(model: Model<string>, step: string): Promise<AssistantM
 async function twoInstallations(t: TestContext) {
   resetModelAccessForTests();
   invalidateProviderKeyCache();
+  // The host's registry admits both, as a deployment serving many installs it.
+  configureInstallationAdmission(async () => 'admitted');
   const envA = scopeInstallationEnv(HOSTED as Record<string, unknown>, { installationId: 'inst_a' });
   const envB = scopeInstallationEnv(HOSTED as Record<string, unknown>, { installationId: 'inst_b' });
   const settings = new Map([['inst_a', new SqliteSettingsStore(':memory:')], ['inst_b', new SqliteSettingsStore(':memory:')]]);
@@ -150,6 +156,7 @@ async function twoInstallations(t: TestContext) {
     for (const store of settings.values()) store.close();
     usage.close();
     resetModelAccessForTests();
+    resetInstallationAdmissionForTests();
   });
   const settingsOf = (env: PlatformEnv | undefined) => settings.get(installationScopeOf(env)?.installationId ?? '')!;
   const keyring = useDeploymentKeyring(t);

@@ -1,0 +1,131 @@
+/**
+ * Whether an installation of a deployment serving many may start work now.
+ *
+ * The host's registry decides: an active installation is admitted, and a
+ * suspended, revoked, uninstalled or deleted one is refused. The host's own
+ * boundaries (Slack ingress, Admin, sign-in, its cron) refuse first. Core
+ * asks again where tenant work starts or continues, at every top-level agent
+ * operation and every model step, so a turn queued before a suspension, a
+ * resumed attempt, or the next step of a running one stops within about 30
+ * seconds. Nothing is mirrored into the tenant store: a restored store must
+ * never bring back a stale answer.
+ *
+ * Standalone never asks. A deployment serving many installations that has no
+ * check configured refuses, as the model resolver does: the host installs one
+ * once, at module scope.
+ */
+import { deploymentServesManyInstallations, installationScopeOf } from './installation-scope.ts';
+
+export type InstallationAdmission = 'admitted' | 'refused';
+
+/** The host's answer for one installation, from its registry. */
+export type InstallationAdmissionCheck = (installationId: string) => Promise<InstallationAdmission>;
+
+/** The installation is not admitted to start work: suspended, ended, or unknown. */
+export class InstallationNotAdmittedError extends Error {
+  readonly name = 'InstallationNotAdmittedError';
+  readonly code = 'installation_not_admitted';
+  constructor() {
+    super('This installation is not admitted to start work (installation_not_admitted).');
+  }
+}
+
+/** How long one answer serves an installation in this isolate. */
+export const INSTALLATION_ADMISSION_TTL_MS = 30_000;
+/** How long a last known answer stands while the check cannot be read. */
+export const INSTALLATION_ADMISSION_LAST_KNOWN_MS = 10 * 60_000;
+const MAX_CACHED_INSTALLATIONS = 1_024;
+const UNAVAILABLE_LOG_INTERVAL_MS = 60_000;
+
+interface CachedAdmission {
+  readonly answer: InstallationAdmission;
+  readonly at: number;
+}
+
+let check: InstallationAdmissionCheck | undefined;
+let clock: () => number = Date.now;
+const answers = new Map<string, CachedAdmission>();
+const pending = new Map<string, Promise<InstallationAdmission>>();
+let missingLogged = false;
+let unavailableLoggedAt = Number.NEGATIVE_INFINITY;
+
+/** The composition seam: the host's registry check, installed once at module scope. */
+export function configureInstallationAdmission(next: InstallationAdmissionCheck | undefined): void {
+  check = next;
+  answers.clear();
+  pending.clear();
+}
+
+/**
+ * The installation's admission, cached per isolate for 30 seconds. When the
+ * check cannot be read, the last known answer stands while it is under ten
+ * minutes old; with none, the work is admitted and logged, because the host's
+ * boundaries remain the primary gate.
+ */
+export async function installationAdmission(installationId: string): Promise<InstallationAdmission> {
+  if (!check) {
+    if (!missingLogged) {
+      missingLogged = true;
+      console.error(JSON.stringify({ component: 'installation_admission', event: 'admission_check_missing' }));
+    }
+    return 'refused';
+  }
+  const cached = answers.get(installationId);
+  if (cached && clock() - cached.at < INSTALLATION_ADMISSION_TTL_MS) return cached.answer;
+  const inFlight = pending.get(installationId);
+  if (inFlight) return inFlight;
+  const read = readAdmission(check, installationId, cached);
+  pending.set(installationId, read);
+  try {
+    return await read;
+  } finally {
+    if (pending.get(installationId) === read) pending.delete(installationId);
+  }
+}
+
+/** Throws InstallationNotAdmittedError unless the installation is admitted. */
+export async function requireInstallationAdmitted(installationId: string): Promise<void> {
+  if (await installationAdmission(installationId) !== 'admitted') throw new InstallationNotAdmittedError();
+}
+
+/**
+ * Whether the installation an env serves is refused new work. Standalone,
+ * never; a deployment serving many installations, by the check, and an env
+ * that names no installation is refused.
+ */
+export async function installationRefusesWork(env: Record<string, unknown> | undefined): Promise<boolean> {
+  if (!deploymentServesManyInstallations(env)) return false;
+  const scope = installationScopeOf(env);
+  return !scope || await installationAdmission(scope.installationId) !== 'admitted';
+}
+
+async function readAdmission(
+  current: InstallationAdmissionCheck,
+  installationId: string,
+  cached: CachedAdmission | undefined,
+): Promise<InstallationAdmission> {
+  let answer: InstallationAdmission;
+  try {
+    answer = await current(installationId) === 'admitted' ? 'admitted' : 'refused';
+  } catch {
+    const at = clock();
+    if (at - unavailableLoggedAt >= UNAVAILABLE_LOG_INTERVAL_MS) {
+      unavailableLoggedAt = at;
+      console.warn(JSON.stringify({ component: 'installation_admission', event: 'admission_check_unavailable' }));
+    }
+    return cached && at - cached.at < INSTALLATION_ADMISSION_LAST_KNOWN_MS ? cached.answer : 'admitted';
+  }
+  // A check replaced while this read was in flight does not answer for it.
+  if (check !== current) return answer;
+  answers.delete(installationId);
+  answers.set(installationId, { answer, at: clock() });
+  if (answers.size > MAX_CACHED_INSTALLATIONS) answers.delete(answers.keys().next().value!);
+  return answer;
+}
+
+export function resetInstallationAdmissionForTests(options: { now?: () => number } = {}): void {
+  configureInstallationAdmission(undefined);
+  clock = options.now ?? Date.now;
+  missingLogged = false;
+  unavailableLoggedAt = Number.NEGATIVE_INFINITY;
+}

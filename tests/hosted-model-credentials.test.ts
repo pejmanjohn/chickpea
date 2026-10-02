@@ -15,6 +15,10 @@ import {
 } from '@earendil-works/pi-ai';
 
 import {
+  configureInstallationAdmission,
+  resetInstallationAdmissionForTests,
+} from '../src/config/installation-admission.ts';
+import {
   createInstallationModelAccessResolver,
   installationModelAccessGrant,
   RuntimeModelReadinessError,
@@ -73,6 +77,8 @@ const AGENT_OPERATION = { type: 'agent', operationId: 'op', operationKind: 'prom
 function hostedInstallations(t: TestContext) {
   resetModelAccessForTests();
   invalidateProviderKeyCache();
+  // The host's registry admits both, as a deployment serving many installs it.
+  configureInstallationAdmission(async () => 'admitted');
   const envA = scopeInstallationEnv(HOSTED as Record<string, unknown>, { installationId: 'inst_a' });
   const envB = scopeInstallationEnv(HOSTED as Record<string, unknown>, { installationId: 'inst_b' });
   const settings = new Map([['inst_a', new SqliteSettingsStore(':memory:')], ['inst_b', new SqliteSettingsStore(':memory:')]]);
@@ -82,6 +88,7 @@ function hostedInstallations(t: TestContext) {
     for (const store of settings.values()) store.close();
     usage.close();
     resetModelAccessForTests();
+    resetInstallationAdmissionForTests();
   });
   const settingsOf = (env: PlatformEnv | undefined) => settings.get(installationScopeOf(env)?.installationId ?? '')!;
   // Every reader and writer loads the deployment keyring, as in production.

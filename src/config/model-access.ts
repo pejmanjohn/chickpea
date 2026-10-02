@@ -9,7 +9,10 @@
  * turns the grant into the installation's key once per attempt, and
  * Chickpea's provider proxy injects that key on every request. With no cell,
  * or a cell for another provider, a request is refused before it leaves the
- * process, whatever keys the deployment holds.
+ * process, whatever keys the deployment holds. On a deployment serving many
+ * installations the host's admission check is asked at each agent operation
+ * and each model step, so a suspended or ended installation starts no attempt
+ * and takes no further step (see installation-admission.ts).
  */
 import { AsyncLocalStorage } from 'node:async_hooks';
 
@@ -23,7 +26,8 @@ import {
 } from '@earendil-works/pi-ai';
 import type { FlueExecutionContext, FlueExecutionInterceptor } from '@flue/runtime';
 
-import { deploymentServesManyInstallations } from './installation-scope.ts';
+import { requireInstallationAdmitted } from './installation-admission.ts';
+import { deploymentServesManyInstallations, installationScopeOf } from './installation-scope.ts';
 import type { PlatformEnv } from './state-backend.ts';
 import {
   ANTHROPIC_COMPAT_PROVIDER_ID,
@@ -93,11 +97,13 @@ interface BoundAccess {
 /**
  * One attempt's access by provider (empty when it has none), the instance it
  * was bound for, and whether its deployment serves many installations, which
- * the proxy reads instead of any process-wide setting.
+ * the proxy reads instead of any process-wide setting. A hosted cell names
+ * its installation, whose admission each model step asks again.
  */
 interface ModelAccessCell {
   readonly instanceId: string | undefined;
   readonly hosted: boolean;
+  readonly installationId: string | undefined;
   readonly bound: ReadonlyMap<ModelAccessProviderId, BoundAccess>;
 }
 
@@ -181,6 +187,8 @@ export function createModelAccessInterceptor(
       if (!cell || (cell.hosted && cell.bound.size === 0)) {
         throw new ModelAccessError('scope_missing', 'No model access is in scope for this model call.');
       }
+      // The step a running attempt is about to take, cached for 30 seconds.
+      if (cell.installationId) await requireInstallationAdmitted(cell.installationId);
       return next();
     }
     if (operation.type !== 'agent') return next();
@@ -188,13 +196,16 @@ export function createModelAccessInterceptor(
     if (active && (context.instanceId === undefined || context.instanceId === active.instanceId)) return next();
     const attempt = await options.lookup(context);
     const hosted = deploymentServesManyInstallations(attempt.env);
+    // A new, retried or resumed attempt, before anything is decrypted.
+    const installationId = hosted ? installationScopeOf(attempt.env)?.installationId : undefined;
+    if (installationId) await requireInstallationAdmitted(installationId);
     let grants: readonly ModelAccessGrant[] = [];
     if ('grant' in attempt) {
       grants = [attempt.grant];
     } else if (!('deploymentLane' in attempt) && !hosted) {
       grants = await options.installationGrants(attempt.env, context.submissionId ?? context.instanceId ?? 'attempt');
     }
-    return cells.run(await resolveCell(grants, attempt.env, hosted, context.instanceId), next);
+    return cells.run(await resolveCell(grants, attempt.env, hosted, context.instanceId, installationId), next);
   };
 }
 
@@ -229,13 +240,14 @@ async function resolveCell(
   env: PlatformEnv | undefined,
   hosted: boolean,
   instanceId: string | undefined,
+  installationId?: string,
 ): Promise<ModelAccessCell> {
   const bound = new Map<ModelAccessProviderId, BoundAccess>();
   for (const grant of grants) {
     const access = await requireResolver().resolve(grant, env);
     bound.set(grant.providerId, Object.freeze({ grant, access }));
   }
-  return Object.freeze({ instanceId, hosted, bound });
+  return Object.freeze({ instanceId, hosted, installationId, bound });
 }
 
 function providerNotOffered(provider: string): ModelAccessError {
