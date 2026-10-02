@@ -10,7 +10,7 @@
  * build during a rollout, a disconnect), this isolate paces itself from its
  * own copy rather than stopping reads or turning the budget off.
  */
-import { deploymentServesManyInstallations } from '../config/model-access.ts';
+import { deploymentServesManyInstallations } from '../config/installation-scope.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import { emitRuntimeLatency, type RuntimeLatencySink } from '../observability/runtime-latency.ts';
 import type { SlackStateStore } from './claim-store.ts';

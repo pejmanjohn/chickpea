@@ -1,8 +1,11 @@
 import type { Model } from '@earendil-works/pi-ai';
 import { getBuiltinModel } from './pi-builtin-models.ts';
 
-import { InstallationContextError, installationScopeOf } from '../config/installation-scope.ts';
-import { deploymentServesManyInstallations } from '../config/model-access.ts';
+import {
+  deploymentServesManyInstallations,
+  InstallationContextError,
+  installationScopeOf,
+} from '../config/installation-scope.ts';
 
 import {
   ANTHROPIC_COMPAT_PROVIDER_ID,

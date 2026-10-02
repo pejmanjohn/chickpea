@@ -9,7 +9,8 @@ import {
   providerSetupRequired,
   requireNoDeploymentModelKeys,
 } from './installation-model-access.ts';
-import { deploymentServesManyInstallations, providerPrefix } from './model-access.ts';
+import { deploymentServesManyInstallations } from './installation-scope.ts';
+import { providerPrefix } from './model-access.ts';
 import {
   isProviderKeyId,
   resolveProviderApiKey,

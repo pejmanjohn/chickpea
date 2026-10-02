@@ -10,11 +10,10 @@
  * while the deployment holds a provider key of its own.
  */
 import { STANDALONE_INSTALLATION_IDENTITY } from '../identity/installation-binding.ts';
-import { requireInstallationScope } from './installation-scope.ts';
+import { deploymentServesManyInstallations, requireInstallationScope } from './installation-scope.ts';
 import {
   MODEL_ACCESS_PROVIDER_IDS,
   ModelAccessError,
-  deploymentServesManyInstallations,
   isModelAccessProviderId,
   modelAccessProviderId,
   providerPrefix,

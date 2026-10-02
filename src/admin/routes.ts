@@ -316,7 +316,6 @@ import {
   saveProviderApiKey,
   type ProviderKeySource,
 } from '../config/provider-keys.ts';
-import { deploymentServesManyInstallations } from '../config/model-access.ts';
 import {
   cachedProviderModelCount,
   getProviderFavorites,
@@ -368,7 +367,11 @@ import {
   readRuntimeDrainStatus,
   type PlatformEnv,
 } from '../config/state-backend.ts';
-import { deploymentTenancy, installationCacheKey } from '../config/installation-scope.ts';
+import {
+  deploymentServesManyInstallations,
+  deploymentTenancy,
+  installationCacheKey,
+} from '../config/installation-scope.ts';
 import { cloudflareBuildSource } from '../config/runtime-target.ts';
 import type { AgentSnapshotStore } from '../config/snapshot-store.ts';
 import type { RuntimeDrainStatus } from '../config/state-rpc.ts';
