@@ -5,6 +5,7 @@ import type {
   BetterAuthMcpOAuthContinuationRecord,
   BetterAuthOAuthGrantRevocation,
   BetterAuthMembershipRecord,
+  BetterAuthOrganizationErasure,
   BetterAuthOrganizationRecord,
   BetterAuthUserRecord,
 } from './better-auth-backend.ts';
@@ -14,6 +15,8 @@ import {
   mapBetterAuthOrganization,
   mapBetterAuthUser,
   parseBetterAuthDate,
+  SQLITE_ORGANIZATION_ERASURE,
+  sqliteOrganizationErasure,
 } from './better-auth-backend.ts';
 
 export interface CloudflareBetterAuthEnv {
@@ -104,6 +107,15 @@ export class D1BetterAuthBackend implements BetterAuthDatabaseBackend {
       `SELECT id, organizationId, userId, role, createdAt FROM member
        WHERE userId = ? AND organizationId = ? LIMIT 1`,
     ).bind(userId, organizationId).first());
+  }
+
+  async eraseOrganization(slug: string): Promise<BetterAuthOrganizationErasure> {
+    // A D1 batch commits or rolls back as one transaction, one result per statement.
+    const [counted] = await this.database.batch([
+      this.database.prepare(SQLITE_ORGANIZATION_ERASURE.count).bind(slug),
+      ...SQLITE_ORGANIZATION_ERASURE.steps.map((sql) => this.database.prepare(sql).bind(slug)),
+    ]);
+    return sqliteOrganizationErasure(counted?.results?.[0] as Record<string, unknown> | undefined);
   }
 
   async countMcpOAuthClients(): Promise<number> {

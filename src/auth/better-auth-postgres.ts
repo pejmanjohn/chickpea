@@ -6,6 +6,7 @@ import type {
   BetterAuthMcpOAuthContinuationRecord,
   BetterAuthMembershipRecord,
   BetterAuthOAuthGrantRevocation,
+  BetterAuthOrganizationErasure,
   BetterAuthOrganizationRecord,
   BetterAuthUserRecord,
 } from './better-auth-backend.ts';
@@ -146,6 +147,61 @@ export class PostgresBetterAuthBackend implements BetterAuthDatabaseBackend {
       [userId, organizationId],
     );
     return mapBetterAuthMembership(row);
+  }
+
+  /**
+   * One transaction on one checked-out connection. The organization row is
+   * locked first, so two erasures of it serialize; its members' logins are
+   * locked next, so a sign-in adding a membership elsewhere either commits
+   * first (and the login is kept) or waits for the erasure.
+   */
+  async eraseOrganization(slug: string): Promise<BetterAuthOrganizationErasure> {
+    const erasure: BetterAuthOrganizationErasure = {
+      organizations: 0, members: 0, invitations: 0, users: 0, usersKept: 0, sessions: 0, accounts: 0,
+      oauthAccessTokens: 0, oauthRefreshTokens: 0, oauthConsents: 0, oauthClients: 0,
+    };
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const [organization] = (await client.query<{ id: string }>(
+        'SELECT id FROM organization WHERE slug = $1 FOR UPDATE', [slug],
+      )).rows;
+      if (organization) {
+        const memberRows = (await client.query<{ userId: string }>(
+          'SELECT "userId" FROM member WHERE "organizationId" = $1', [organization.id],
+        )).rows;
+        const formerMembers = [...new Set(memberRows.map((row) => row.userId))];
+        await client.query('SELECT id FROM "user" WHERE id = ANY($1::uuid[]) ORDER BY id FOR UPDATE', [formerMembers]);
+        const erasable = (await client.query<{ id: string }>(
+          `SELECT u.id FROM "user" AS u WHERE u.id = ANY($1::uuid[])
+             AND NOT EXISTS (SELECT 1 FROM member AS m WHERE m."userId" = u.id AND m."organizationId" <> $2)`,
+          [formerMembers, organization.id],
+        )).rows.map((row) => row.id);
+        const removed = async (sql: string, params: unknown[]) => (await client.query(sql, params)).rowCount ?? 0;
+        erasure.organizations = 1;
+        erasure.members = memberRows.length;
+        erasure.oauthAccessTokens = await removed('DELETE FROM "oauthAccessToken" WHERE "userId" = ANY($1::uuid[])', [erasable]);
+        erasure.oauthRefreshTokens = await removed('DELETE FROM "oauthRefreshToken" WHERE "userId" = ANY($1::uuid[])', [erasable]);
+        erasure.oauthConsents = await removed('DELETE FROM "oauthConsent" WHERE "userId" = ANY($1::uuid[])', [erasable]);
+        erasure.sessions = await removed('DELETE FROM session WHERE "userId" = ANY($1::uuid[])', [erasable]);
+        erasure.accounts = await removed('DELETE FROM account WHERE "userId" = ANY($1::uuid[])', [erasable]);
+        erasure.oauthClients = await removed('DELETE FROM "oauthClient" WHERE "userId" = ANY($1::uuid[])', [erasable]);
+        erasure.invitations = await removed(
+          'DELETE FROM invitation WHERE "organizationId" = $2 OR "inviterId" = ANY($1::uuid[])', [erasable, organization.id],
+        );
+        erasure.users = await removed('DELETE FROM "user" WHERE id = ANY($1::uuid[])', [erasable]);
+        erasure.usersKept = formerMembers.length - erasure.users;
+        await client.query('DELETE FROM member WHERE "organizationId" = $1', [organization.id]);
+        await client.query('DELETE FROM organization WHERE id = $1', [organization.id]);
+      }
+      await client.query('COMMIT');
+      return erasure;
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   async countMcpOAuthClients(): Promise<number> {
