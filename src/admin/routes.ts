@@ -4559,8 +4559,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const env = c.env as PlatformEnv | undefined;
       const sources = await describeProviderKeySources(env, settings(c));
       for (const id of PROVIDER_KEY_IDS) details.providers[id] = sources[id] === 'missing' ? 'missing' : 'configured';
-      const subscription = await chatSubscriptionStatus(settings(c), c.env as PlatformEnv | undefined);
-      if (subscription.state === 'connected') details.providers.openai = 'configured';
+      if (!deploymentServesManyInstallations(env)) {
+        const subscription = await chatSubscriptionStatus(settings(c), env);
+        if (subscription.state === 'connected') details.providers.openai = 'configured';
+      }
       details.providers['workers-ai'] = workersAiStatus(env) === 'missing' ? 'missing' : 'configured';
     } catch { details.errors.push('provider-status-unavailable'); }
     return details;
@@ -6462,17 +6464,20 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   app.get('/admin/api/models', async (c) => {
     const settingsStore = settings(c);
     await refreshCatalog(c, false);
+    // A deployment serving many offers its installations no subscription lane.
+    const subscriptionAvailable = !deploymentServesManyInstallations(c.env as PlatformEnv | undefined);
     const [subscription, activeAuthMethod, workersAiEnabled] = await Promise.all([
-      chatSubscriptionStatus(settingsStore, c.env as PlatformEnv | undefined),
+      subscriptionAvailable ? chatSubscriptionStatus(settingsStore, c.env as PlatformEnv | undefined) : undefined,
       resolveOpenAiAuthMethod(settingsStore),
       getWorkersAiEnabled(settingsStore),
     ]);
     const openAiApiModels = activeCatalogModels('openai_api_key');
-    const subscriptionModels = isCloudflareTarget()
+    const subscriptionModels = !subscriptionAvailable
+      ? []
+      : isCloudflareTarget()
       ? (await planStatus(planDependencies(c.env as PlatformEnv | undefined, settingsStore))).models.map(model => ({ ...model, canonical: `openai/${model.id}` }))
       : activeCatalogModels('openai_subscription');
     const anthropicApiModels = activeCatalogModels('anthropic_api_key');
-    const subscriptionAvailable = true;
     const providers = await Promise.all(
       (await modelProviders(c))
         .filter((provider) => provider.id !== 'cloudflare' || workersAiEnabled)
@@ -6482,7 +6487,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           return {
             ...provider,
             configured: subscriptionActive
-              ? subscriptionAvailable && openAiSubscriptionIsReady(subscription)
+              ? subscription !== undefined && openAiSubscriptionIsReady(subscription)
               : provider.configured,
             source: subscriptionActive ? 'ChatGPT subscription' : provider.source,
             suggestions: subscriptionActive
@@ -6494,7 +6499,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
             authMethods: {
               activeMethod: activeAuthMethod,
               apiKeyConfigured: provider.configured,
-              subscription,
+              ...(subscription ? { subscription } : {}),
               subscriptionAvailable,
             },
           };
@@ -6873,6 +6878,22 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
   });
 
+  // An installation of a deployment serving many is offered only the providers
+  // it brings its own key for; the deployment-funded and subscription lanes
+  // do not exist for it.
+  const deploymentLaneRoute = async (c: Context, next: Next) =>
+    deploymentServesManyInstallations(c.env as PlatformEnv | undefined)
+      ? c.json({ error: 'unknown_provider' }, 404)
+      : next();
+  for (const path of [
+    '/admin/api/providers/workers-ai/*',
+    '/admin/api/providers/openai/subscription',
+    '/admin/api/providers/openai/subscription/*',
+    '/admin/api/providers/openai/chatgpt-plan/*',
+  ]) {
+    app.use(path, deploymentLaneRoute);
+  }
+
   for (const action of ['prepare', 'confirm', 'cancel'] as const) {
     app.post(`/admin/api/providers/openai/chatgpt-plan/${action}`, async (c) => {
       if (!isCloudflareTarget()) return c.notFound();
@@ -6891,6 +6912,19 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   app.get('/admin/api/providers', async (c) => {
     const platformEnv = c.env as PlatformEnv | undefined;
     const settingsStore = settings(c);
+    if (deploymentServesManyInstallations(platformEnv)) {
+      // Only this installation's own keys; no subscription or Workers AI lane.
+      const [sources, activeAuthMethod] = await Promise.all([
+        describeProviderKeySources(platformEnv, settingsStore),
+        resolveOpenAiAuthMethod(settingsStore),
+      ]);
+      return c.json({
+        providers: PROVIDER_KEY_IDS.map((id) => ({
+          ...providerSummary(id, sources[id], platformEnv),
+          ...(id === 'openai' ? { activeAuthMethod, subscriptionAvailable: false } : {}),
+        })),
+      });
+    }
     const [sources, subscription, activeAuthMethod, workersAiEnabled] = await Promise.all([
       describeProviderKeySources(platformEnv, settingsStore),
       chatSubscriptionStatus(settingsStore, c.env as PlatformEnv | undefined),
@@ -6934,13 +6968,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     if (!parsed.success) return invalidRequest(c);
     const method = parsed.output.method;
     const settingsStore = settings(c);
+    if (method === 'subscription' && deploymentServesManyInstallations(c.env as PlatformEnv | undefined)) {
+      return c.json({ error: 'unknown_provider' }, 404);
+    }
     if (method === 'api_key') {
-      const key = await resolveProviderApiKey(
-        'openai',
-        c.env as PlatformEnv | undefined,
-        settingsStore,
-      );
-      if (key.source === 'missing') {
+      const sources = await describeProviderKeySources(c.env as PlatformEnv | undefined, settingsStore);
+      if (sources.openai === 'missing') {
         return c.json({
           error: 'openai_api_key_missing',
           message: 'Add an OpenAI API key before selecting it.',
@@ -7052,7 +7085,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
 
     const platformEnv = c.env as PlatformEnv | undefined;
     const settingsStore = settings(c);
-    const current = await resolveProviderApiKey(id, platformEnv, settingsStore);
+    // Where the current key comes from; nothing is decrypted to learn it.
+    const current = { source: (await describeProviderKeySources(platformEnv, settingsStore))[id] };
     if (current.source === 'env') {
       return c.json({ error: 'provider_key_read_only', provider: id }, 409);
     }
@@ -7155,7 +7189,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     try {
       const platformEnv = c.env as PlatformEnv | undefined;
       const settingsStore = settings(c);
-      if (id === 'openai' && await resolveOpenAiAuthMethod(settingsStore) === 'subscription') {
+      if (id === 'openai' && !deploymentServesManyInstallations(platformEnv) &&
+          await resolveOpenAiAuthMethod(settingsStore) === 'subscription') {
         if (isCloudflareTarget()) {
           const bundle = await resolvePlanSession(planDependencies(platformEnv, settingsStore));
           return c.json({ provider: id, models: bundle.models.map(model => ({ id: model.id, display_name: model.name })), cached: true });
@@ -9690,20 +9725,16 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         workersAiStatus(c.env as PlatformEnv | undefined) !== 'missing';
     }
     if (!isProviderKeyId(providerId)) return false;
+    const env = c.env as PlatformEnv | undefined;
     if (providerId === 'openai') {
       const settingsStore = settings(c);
       const method = await resolveOpenAiAuthMethod(settingsStore);
       if (method === 'subscription') {
-        return openAiSubscriptionIsReady(
-          await chatSubscriptionStatus(settingsStore, c.env as PlatformEnv | undefined),
-        );
+        return !deploymentServesManyInstallations(env) &&
+          openAiSubscriptionIsReady(await chatSubscriptionStatus(settingsStore, env));
       }
     }
-    return (await resolveProviderApiKey(
-      providerId,
-      c.env as PlatformEnv | undefined,
-      settings(c),
-    )).source !== 'missing';
+    return (await describeProviderKeySources(env, settings(c)))[providerId] !== 'missing';
   };
 
   const onboardingModelOptions = async (
@@ -9721,6 +9752,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     if (providerId === 'openai') {
       const method = await resolveOpenAiAuthMethod(settings(c));
       if (method === 'subscription') {
+        if (deploymentServesManyInstallations(c.env as PlatformEnv | undefined)) return [];
         if (isCloudflareTarget()) return (await planStatus(planDependencies(c.env as PlatformEnv | undefined, settings(c)))).models.map(model => `openai/${model.id}`);
         return openAiSubscriptionAvailable()
           ? activeCatalogModels('openai_subscription').map((model) => model.canonical)
