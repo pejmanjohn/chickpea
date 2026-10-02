@@ -144,6 +144,37 @@ async function dispatch(request: Request, env: Env): Promise<Response> {
     return Response.json({ ok: true });
   }
 
+  if (url.pathname === '/test/revoke-oauth-grants' && request.method === 'POST') {
+    const body = await request.json() as { seed?: string[]; revoke?: string };
+    const now = new Date().toISOString();
+    const later = new Date(Date.now() + 3_600_000).toISOString();
+    for (const userId of body.seed ?? []) {
+      const client = `client-${userId}`;
+      await env.AUTH_DB.batch([
+        env.AUTH_DB.prepare(
+          `INSERT INTO oauthClient (id, clientId, redirectUris, tokenEndpointAuthMethod, createdAt, updatedAt)
+           VALUES (?, ?, '["http://127.0.0.1/callback"]', 'none', ?, ?)`,
+        ).bind(client, client, now, now),
+        env.AUTH_DB.prepare(
+          `INSERT INTO oauthConsent (id, clientId, userId, scopes, createdAt, updatedAt)
+           VALUES (?, ?, ?, '["chickpea:workspace"]', ?, ?)`,
+        ).bind(`consent-${userId}`, client, userId, now, now),
+        env.AUTH_DB.prepare(
+          `INSERT INTO oauthRefreshToken (id, token, clientId, userId, expiresAt, createdAt, scopes)
+           VALUES (?, ?, ?, ?, ?, ?, '["chickpea:workspace"]')`,
+        ).bind(`refresh-${userId}`, `refresh-${userId}`, client, userId, later, now),
+        env.AUTH_DB.prepare(
+          `INSERT INTO oauthAccessToken (id, token, clientId, userId, refreshId, expiresAt, createdAt, scopes)
+           VALUES (?, ?, ?, ?, ?, ?, ?, '["chickpea:workspace"]')`,
+        ).bind(`access-${userId}`, `access-${userId}`, client, userId, `refresh-${userId}`, later, now),
+      ]);
+    }
+    const userId = requiredString(body.revoke);
+    const revoked = await backend.revokeOAuthGrantsForUser(userId);
+    const again = await backend.revokeOAuthGrantsForUser(userId);
+    return Response.json({ revoked, again });
+  }
+
   if (url.pathname.startsWith('/api/auth/')) {
     return createBetterAuthPublicHandler({
       backend,

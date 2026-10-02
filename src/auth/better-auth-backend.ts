@@ -38,6 +38,13 @@ export interface BetterAuthMcpOAuthContinuationRecord {
   createdAt: number;
 }
 
+/** Rows removed by revoking one user's MCP OAuth grants. */
+export interface BetterAuthOAuthGrantRevocation {
+  consents: number;
+  accessTokens: number;
+  refreshTokens: number;
+}
+
 export function mapBetterAuthUser(row: unknown): BetterAuthUserRecord | null {
   if (!row) return null;
   const value = row as Record<string, unknown>;
@@ -101,6 +108,11 @@ export interface BetterAuthDatabaseBackend {
   absoluteExpiryForToken(token: string): Promise<Date | null>;
   /** Revoke every Better Auth browser session for one canonical user. */
   deleteSessionsForUser(userId: string): Promise<number>;
+  /**
+   * Remove one canonical user's MCP OAuth consents and access and refresh
+   * tokens together, so no refresh grant outlives a membership removal.
+   */
+  revokeOAuthGrantsForUser(userId: string): Promise<BetterAuthOAuthGrantRevocation>;
   getUser(userId: string): Promise<BetterAuthUserRecord | null>;
   findUserByEmail(email: string): Promise<BetterAuthUserRecord | null>;
   getOrganization(organizationId: string): Promise<BetterAuthOrganizationRecord | null>;

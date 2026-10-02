@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { test, type TestContext } from 'node:test';
 
 import {
@@ -25,6 +25,8 @@ export interface BetterAuthBackendContract {
 }
 
 const ORIGIN = 'https://chickpea.example';
+const RESOURCE = `${ORIGIN}/mcp`;
+const RENEWABLE_SCOPE = 'chickpea:workspace offline_access';
 const REDIRECT = 'http://127.0.0.1:47321/callback';
 
 /** One behavior contract for every Better Auth database backend. */
@@ -145,6 +147,45 @@ export function testBetterAuthBackendContract(contract: BetterAuthBackendContrac
     assert.equal(await f.count('organization'), 2);
     assert.equal(await f.count('member'), 9);
   });
+
+  it('revoking a login\'s OAuth grants stops its refresh and spares the other installation', async (f) => {
+    const a = await f.reconcile('TAAAA', 'U0001', 'chickpea-org_a');
+    const b = await f.reconcile('TBBBB', 'U0001', 'chickpea-org_b');
+    // Without a resource the access token is opaque and stored; with one it is a JWT.
+    const grantA = await f.grant(await f.signIn(a, 'TAAAA', 'U0001'), { resource: false });
+    const grantB = await f.grant(await f.signIn(b, 'TBBBB', 'U0001'), { resource: true });
+    const before = {
+      consents: await f.count('oauthConsent'),
+      accessTokens: await f.count('oauthAccessToken'),
+      refreshTokens: await f.count('oauthRefreshToken'),
+    };
+    assert.deepEqual(before, { consents: 2, accessTokens: 1, refreshTokens: 2 });
+
+    assert.deepEqual(await f.backend.revokeOAuthGrantsForUser(a.userId),
+      { consents: 1, accessTokens: 1, refreshTokens: 1 });
+    assert.deepEqual({
+      consents: await f.count('oauthConsent'),
+      accessTokens: await f.count('oauthAccessToken'),
+      refreshTokens: await f.count('oauthRefreshToken'),
+    }, { consents: 1, accessTokens: 0, refreshTokens: 1 });
+
+    const refusedA = await f.refresh(grantA);
+    assert.equal(refusedA.status, 400);
+    assert.equal((await refusedA.json() as { error: string }).error, 'invalid_grant');
+    assert.equal((await f.refresh(grantB)).status, 200);
+    assert.deepEqual(await f.backend.revokeOAuthGrantsForUser(a.userId),
+      { consents: 0, accessTokens: 0, refreshTokens: 0 });
+    for (const id of [randomUUID(), 'not-a-canonical-id']) {
+      assert.deepEqual(await f.backend.revokeOAuthGrantsForUser(id),
+        { consents: 0, accessTokens: 0, refreshTokens: 0 });
+    }
+  });
+}
+
+interface Grant {
+  clientId: string;
+  refreshToken: string;
+  resource?: string;
 }
 
 interface Fixture extends BetterAuthBackendSubject {
@@ -152,6 +193,9 @@ interface Fixture extends BetterAuthBackendSubject {
   reconcile(team: string, user: string, slug: string): Promise<ReconciledSlackIdentity>;
   signIn(identity: ReconciledSlackIdentity, team: string, user: string): Promise<string>;
   session(cookie: string): Promise<{ user: { id: string }; session: { token: string } } | null>;
+  /** A dynamically registered MCP client's renewable grant, through consent. */
+  grant(cookie: string, options: { resource: boolean }): Promise<Grant>;
+  refresh(grant: Grant): Promise<Response>;
 }
 
 async function openFixture(t: TestContext, contract: BetterAuthBackendContract): Promise<Fixture | undefined> {
@@ -191,7 +235,45 @@ async function openFixture(t: TestContext, contract: BetterAuthBackendContract):
       return response.headers.getSetCookie().map((value) => value.split(';', 1)[0]).join('; ');
     },
     session: async (cookie) => await auth.api.getSession({ headers: new Headers({ cookie }) }),
+    async grant(cookie, { resource: withResource }) {
+      const resource = withResource ? { resource: RESOURCE } : {};
+      const handler = createBetterAuthPublicHandler(options);
+      const registered = await handler(json('/api/auth/oauth2/register', registration('Grant')));
+      assert.equal(registered.status, 201, await registered.clone().text());
+      const clientId = (await registered.json() as { client_id: string }).client_id;
+      const verifier = randomBytes(32).toString('base64url');
+      const authorize = await handler(new Request(`${ORIGIN}/api/auth/oauth2/authorize?${new URLSearchParams({
+        response_type: 'code', client_id: clientId, redirect_uri: REDIRECT, scope: RENEWABLE_SCOPE,
+        state: 'contract', ...resource, code_challenge_method: 'S256',
+        code_challenge: createHash('sha256').update(verifier).digest('base64url'),
+      })}`, { headers: { cookie } }));
+      assert.equal(authorize.status, 302, await authorize.clone().text());
+      const consentQuery = new URL(authorize.headers.get('location')!, ORIGIN).search.slice(1);
+      const consent = await handler(json('/api/auth/oauth2/consent',
+        { accept: true, oauth_query: consentQuery }, { cookie }));
+      assert.equal(consent.status, 200, await consent.clone().text());
+      const code = new URL((await consent.json() as { url: string }).url).searchParams.get('code')!;
+      const exchanged = await token(handler, {
+        grant_type: 'authorization_code', client_id: clientId, code, code_verifier: verifier,
+        redirect_uri: REDIRECT, ...resource,
+      });
+      assert.equal(exchanged.status, 200, await exchanged.clone().text());
+      const refreshToken = (await exchanged.json() as { refresh_token: string }).refresh_token;
+      return { clientId, refreshToken, ...resource };
+    },
+    refresh: (grant) => token(createBetterAuthPublicHandler(options), {
+      grant_type: 'refresh_token', client_id: grant.clientId,
+      refresh_token: grant.refreshToken, ...(grant.resource ? { resource: grant.resource } : {}),
+    }),
   };
+}
+
+function token(handler: (request: Request) => Promise<Response>, body: Record<string, string>) {
+  return handler(new Request(`${ORIGIN}/api/auth/oauth2/token`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams(body),
+  }));
 }
 
 function registration(name: string) {

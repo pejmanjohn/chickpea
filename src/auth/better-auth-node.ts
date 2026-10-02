@@ -7,6 +7,7 @@ import { resolveStateDbPath } from '../state/node-state-db.ts';
 import type {
   BetterAuthDatabaseBackend,
   BetterAuthMcpOAuthContinuationRecord,
+  BetterAuthOAuthGrantRevocation,
   BetterAuthMembershipRecord,
   BetterAuthOrganizationRecord,
   BetterAuthUserRecord,
@@ -55,6 +56,24 @@ export class NodeBetterAuthBackend implements BetterAuthDatabaseBackend {
 
   async deleteSessionsForUser(userId: string): Promise<number> {
     return Number(this.database.prepare('DELETE FROM session WHERE userId = ?').run(userId).changes);
+  }
+
+  async revokeOAuthGrantsForUser(userId: string): Promise<BetterAuthOAuthGrantRevocation> {
+    const remove = (table: string) =>
+      Number(this.database.prepare(`DELETE FROM ${table} WHERE userId = ?`).run(userId).changes);
+    this.database.exec('BEGIN IMMEDIATE;');
+    try {
+      const revoked = {
+        accessTokens: remove('oauthAccessToken'),
+        refreshTokens: remove('oauthRefreshToken'),
+        consents: remove('oauthConsent'),
+      };
+      this.database.exec('COMMIT;');
+      return revoked;
+    } catch (error) {
+      this.database.exec('ROLLBACK;');
+      throw error;
+    }
   }
 
   async getUser(userId: string): Promise<BetterAuthUserRecord | null> {

@@ -3,6 +3,7 @@ import type { D1Database } from '@cloudflare/workers-types';
 import type {
   BetterAuthDatabaseBackend,
   BetterAuthMcpOAuthContinuationRecord,
+  BetterAuthOAuthGrantRevocation,
   BetterAuthMembershipRecord,
   BetterAuthOrganizationRecord,
   BetterAuthUserRecord,
@@ -41,6 +42,19 @@ export class D1BetterAuthBackend implements BetterAuthDatabaseBackend {
   async deleteSessionsForUser(userId: string): Promise<number> {
     const result = await this.database.prepare('DELETE FROM session WHERE userId = ?').bind(userId).run();
     return Number(result.meta.changes ?? 0);
+  }
+
+  async revokeOAuthGrantsForUser(userId: string): Promise<BetterAuthOAuthGrantRevocation> {
+    // A D1 batch commits or rolls back as one transaction.
+    const [accessTokens, refreshTokens, consents] = await this.database.batch(
+      ['oauthAccessToken', 'oauthRefreshToken', 'oauthConsent'].map((table) =>
+        this.database.prepare(`DELETE FROM ${table} WHERE userId = ?`).bind(userId)),
+    );
+    return {
+      accessTokens: Number(accessTokens?.meta.changes ?? 0),
+      refreshTokens: Number(refreshTokens?.meta.changes ?? 0),
+      consents: Number(consents?.meta.changes ?? 0),
+    };
   }
 
   async getUser(userId: string): Promise<BetterAuthUserRecord | null> {
