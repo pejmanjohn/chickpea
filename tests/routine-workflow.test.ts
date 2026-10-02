@@ -14,6 +14,11 @@ import type { NonChatModelRole } from '../src/config/types.ts';
 import { createDemoStarterAgent } from '../src/config/seed.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import {
+  configureInstallationAdmission,
+  resetInstallationAdmissionForTests,
+} from '../src/config/installation-admission.ts';
+import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
+import {
   executeRoutineOccurrence,
 } from '../src/routines/execution.ts';
 import {
@@ -40,7 +45,7 @@ import {
 import { SqliteUsageStore } from '../src/usage/store.ts';
 import type { UsageStore } from '../src/usage/types.ts';
 import { SqliteWorkStore } from '../src/work/store.ts';
-import type { RunExecutionId, WorkStore } from '../src/work/types.ts';
+import type { RunExecutionId, RunId, WorkStore } from '../src/work/types.ts';
 import type { ProductTelemetryEventInput } from '../src/telemetry/events.ts';
 import { withEnv } from './helpers/env.ts';
 
@@ -1471,6 +1476,61 @@ test('routine Usage and Work settle with the same canonical execution correlatio
     );
     assert.match(telemetry.info[0]!, /"usage":"recorded","work":"recorded"/);
     assert.deepEqual(telemetry.errors, []);
+  } finally {
+    work.close();
+    usage.close();
+    configuration.close();
+    routines.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('a dispatched occurrence a refused installation stops still settles its Work and Usage', async (t) => {
+  const directory = mkdtempSync(join(tmpdir(), 'chickpea-routine-refused-settles-'));
+  const path = join(directory, 'state.sqlite');
+  const configuration = new SqliteConfigStore(path, { agents: [createDemoStarterAgent()] });
+  const routines = new SqliteRoutineStore(path, () => NOW);
+  const usage = new SqliteUsageStore(':memory:');
+  const work = new SqliteWorkStore(path, { now: () => NOW });
+  const env = scopeInstallationEnv({ CHICKPEA_TENANCY: 'installation' }, { installationId: 'inst_refused_work' });
+  resetInstallationAdmissionForTests();
+  configureInstallationAdmission(async () => 'admitted');
+  t.after(() => resetInstallationAdmissionForTests());
+  try {
+    const fixture = await admittedFixture(
+      routines,
+      'refused_settles',
+      (routine) => linkAgentSchedule(configuration, routine),
+      'public',
+    );
+    assert.ok(fixture.run.canonicalRunId);
+    const execute = (handle: AgentInstanceHandle) => executeRoutineOccurrence({
+      env, store: routines, occurrenceId: fixture.run.id, attempt: fixture.attempt.attempt,
+    }, {
+      ...dependencies(), usageRecordingEnabled: true, usageStore: usage, workStore: work, handle,
+      persistenceTelemetrySink: telemetrySink().sink,
+    });
+    // Dispatched, then the read is interrupted: its Work execution and Usage operation are open.
+    const events: string[] = [];
+    assert.equal(await execute(fakeHandle({ events, readError: new DOMException('restarted', 'AbortError') })), 'resumable');
+    assert.equal((await work.getRun(fixture.run.canonicalRunId as RunId))?.terminalDisposition, null);
+    assert.equal((await usage.getOperation(fixture.run.id))?.operation.status, 'admitted');
+
+    // Suspended (a fresh check, so no cached answer): the attempt is stopped,
+    // the occurrence skipped, and both settle.
+    configureInstallationAdmission(async () => 'refused');
+    const aborted: string[] = [];
+    const stopping = fakeHandle({ events });
+    stopping.abort = async () => { aborted.push('abort'); };
+    assert.equal(await execute(stopping), 'completed');
+    assert.deepEqual(aborted, ['abort']);
+    assert.equal(events.filter((event) => event === 'read').length, 1, 'the refused attempt is not read again');
+    assert.equal((await routines.getRun(fixture.run.id))?.status, 'skipped');
+    assert.equal((await work.getRun(fixture.run.canonicalRunId as RunId))?.terminalDisposition, 'skipped');
+    const operation = await usage.getOperation(fixture.run.id);
+    assert.equal(operation?.operation.status, 'failed', 'the Usage operation has its terminal');
+    assert.equal(operation?.measurements[0]?.inputTokens, null);
+    assert.ok(operation?.measurements[0]?.usageUnknownReason, 'what it spent is unknown, and says so');
   } finally {
     work.close();
     usage.close();
