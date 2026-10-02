@@ -18,19 +18,27 @@ import type { WebClient } from '@slack/web-api';
 import {
   configureInstallationAdmission,
   installationAdmission,
+  installationAdmissionConfigured,
+  InstallationAdmissionNotConfiguredError,
   installationRefusesWork,
   InstallationNotAdmittedError,
+  requireInstallationAdmissionConfigured,
   INSTALLATION_ADMISSION_LAST_KNOWN_MS,
   INSTALLATION_ADMISSION_TTL_MS,
   resetInstallationAdmissionForTests,
   type InstallationAdmission,
 } from '../src/config/installation-admission.ts';
 import { compileRuntimePlanV2, deriveRuntimePlanInstanceId } from '../src/agents/runtime-plan.ts';
-import { installationOwnershipOf, scopeInstallationEnv } from '../src/config/installation-scope.ts';
+import {
+  InstallationContextError,
+  installationOwnershipOf,
+  scopeInstallationEnv,
+} from '../src/config/installation-scope.ts';
 import {
   configureModelAccessResolver,
   createModelAccessInterceptor,
   resetModelAccessForTests,
+  withModelAccess,
   type AttemptModelAccess,
   type ModelAccessGrant,
 } from '../src/config/model-access.ts';
@@ -178,8 +186,8 @@ test('standalone never asks the admission check, even when one is configured', a
   assert.deepEqual(host.reads, [], 'standalone never reads the registry');
 });
 
-test('without a configured check, a deployment serving many refuses an attempt before any key is opened', async (t) => {
-  clock(t);
+test('without a configured check, a deployment serving many refuses an attempt before any key is opened, loudly', async (t) => {
+  const time = clock(t);
   const logged: string[] = [];
   t.mock.method(console, 'error', (line: string) => { logged.push(line); });
   const sent: Sent[] = [];
@@ -193,8 +201,17 @@ test('without a configured check, a deployment serving many refuses an attempt b
   assert.deepEqual(sent, []);
   assert.deepEqual(resolved, [], 'no key was resolved for a refused attempt');
   assert.equal(await installationRefusesWork(ENV_A), true);
-  assert.deepEqual(logged.map((line) => JSON.parse(line)),
-    [{ component: 'installation_admission', event: 'admission_check_missing' }], 'logged once per isolate');
+  assert.equal(installationAdmissionConfigured(), false, 'a boot or readiness check can see it');
+  assert.throws(() => requireInstallationAdmissionConfigured(ENV_A), InstallationAdmissionNotConfiguredError);
+  requireInstallationAdmissionConfigured({});
+  const missing = { component: 'installation_admission', event: 'admission_check_missing' };
+  assert.deepEqual(logged.map((line) => JSON.parse(line)), [missing], 'at most once a minute');
+  time.now += 60_000;
+  await assert.rejects(attempt('agent_a', () => step('agent_a', model, 'A2')), InstallationNotAdmittedError);
+  assert.deepEqual(logged.map((line) => JSON.parse(line)), [missing, missing], 'and again the next minute');
+  configureInstallationAdmission(async () => 'admitted');
+  assert.equal(installationAdmissionConfigured(), true);
+  requireInstallationAdmissionConfigured(ENV_A);
 });
 
 test('a refused installation starts no attempt, while the other installation in the isolate keeps running', async (t) => {
@@ -251,7 +268,9 @@ test('a suspension refuses a running attempt\'s next model step within 30 second
     releaseFirst();
     outcomes.push(((await first) as AssistantMessage).stopReason, ((await second) as AssistantMessage).stopReason);
     time.now += 1;
-    await assert.rejects(step('agent_a', model, 'A3'), InstallationNotAdmittedError);
+    const refused = await step('agent_a', model, 'A3') as AssistantMessage;
+    assert.equal(refused.stopReason, 'error', 'the step ends as a provider failure would, not retried');
+    assert.match(refused.errorMessage ?? '', /installation_not_admitted/);
     // B, in the same isolate, is not suspended.
     await attempt('agent_b', () => step('agent_b', model, 'B1'));
   });
@@ -291,6 +310,10 @@ test('answers are cached for 30 seconds per installation, and a read error keeps
   host.statuses.set('inst_a', new Error('registry unavailable'));
   time.now += INSTALLATION_ADMISSION_TTL_MS;
   assert.equal(await installationAdmission('inst_a'), 'refused', 'the last answer stands on a read error');
+  const readsDuringOutage = host.reads.length;
+  time.now += INSTALLATION_ADMISSION_TTL_MS - 1;
+  assert.equal(await installationAdmission('inst_a'), 'refused');
+  assert.equal(host.reads.length, readsDuringOutage, 'the fallback is cached: an outage costs one read per 30 seconds');
   time.now += INSTALLATION_ADMISSION_LAST_KNOWN_MS;
   assert.equal(await installationAdmission('inst_a'), 'admitted',
     'past ten minutes nothing is known, so the host boundaries decide alone');
@@ -302,11 +325,35 @@ test('answers are cached for 30 seconds per installation, and a read error keeps
     'the outage is logged at most once a minute (here ten minutes apart), naming no installation');
 });
 
-test('an env that names no installation is refused on a deployment serving many', async (t) => {
+test('work that names no installation on a deployment serving many is a wiring error', async (t) => {
   clock(t);
   configureInstallationAdmission(async () => 'admitted');
-  assert.equal(await installationRefusesWork(HOSTED as unknown as PlatformEnv), true);
+  await assert.rejects(installationRefusesWork(HOSTED as unknown as PlatformEnv), InstallationContextError);
   assert.equal(await installationRefusesWork(ENV_A), false);
+});
+
+test('stateless calls and requests inside an attempt, such as compaction, are refused before egress too', async (t) => {
+  const time = clock(t);
+  const host = registry({ inst_a: 'admitted' });
+  configureInstallationAdmission(host.check);
+  const sent: Sent[] = [];
+  const model = recordingProvider(sent);
+  const { attempt } = interceptorFor(t, new Map<string, AttemptModelAccess>([
+    ['agent_a', { env: ENV_A, grant: grant('inst_a', 'sub_agent_a') }],
+  ]));
+  // A classifier at a host boundary, and a request Flue sends without a model step.
+  assert.equal((await withModelAccess(grant('inst_a', 'classifier'), ENV_A, () => modelCall(model, 'C1'))).stopReason, 'stop');
+  await attempt('agent_a', async () => {
+    assert.equal((await modelCall(model, 'compaction-1')).stopReason, 'stop');
+    host.statuses.set('inst_a', 'refused');
+    time.now += INSTALLATION_ADMISSION_TTL_MS;
+    const compaction = await modelCall(model, 'compaction-2');
+    assert.equal(compaction.stopReason, 'error');
+    assert.match(compaction.errorMessage ?? '', /installation_not_admitted/);
+  });
+  const classifier = await withModelAccess(grant('inst_a', 'classifier'), ENV_A, () => modelCall(model, 'C2'));
+  assert.equal(classifier.stopReason, 'error');
+  assert.deepEqual(sent.map(({ step }) => step), ['C1', 'compaction-1'], 'nothing was sent once refused');
 });
 
 // ── a Slack turn, with a durable presentation and a recorded Slack ───────

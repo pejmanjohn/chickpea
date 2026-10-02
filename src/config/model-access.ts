@@ -10,9 +10,10 @@
  * Chickpea's provider proxy injects that key on every request. With no cell,
  * or a cell for another provider, a request is refused before it leaves the
  * process, whatever keys the deployment holds. On a deployment serving many
- * installations the host's admission check is asked at each agent operation
- * and each model step, so a suspended or ended installation starts no attempt
- * and takes no further step (see installation-admission.ts).
+ * installations the host's admission check is asked when an attempt starts
+ * and before every request the proxy sends (each step, retry, compaction and
+ * stateless call), so a suspended or ended installation starts no attempt and
+ * sends no further request (see installation-admission.ts).
  */
 import { AsyncLocalStorage } from 'node:async_hooks';
 
@@ -98,7 +99,7 @@ interface BoundAccess {
  * One attempt's access by provider (empty when it has none), the instance it
  * was bound for, and whether its deployment serves many installations, which
  * the proxy reads instead of any process-wide setting. A hosted cell names
- * its installation, whose admission each model step asks again.
+ * its installation, whose admission each request the proxy sends asks again.
  */
 interface ModelAccessCell {
   readonly instanceId: string | undefined;
@@ -187,8 +188,6 @@ export function createModelAccessInterceptor(
       if (!cell || (cell.hosted && cell.bound.size === 0)) {
         throw new ModelAccessError('scope_missing', 'No model access is in scope for this model call.');
       }
-      // The step a running attempt is about to take, cached for 30 seconds.
-      if (cell.installationId) await requireInstallationAdmitted(cell.installationId);
       return next();
     }
     if (operation.type !== 'agent') return next();
@@ -205,7 +204,7 @@ export function createModelAccessInterceptor(
     } else if (!('deploymentLane' in attempt) && !hosted) {
       grants = await options.installationGrants(attempt.env, context.submissionId ?? context.instanceId ?? 'attempt');
     }
-    return cells.run(await resolveCell(grants, attempt.env, hosted, context.instanceId, installationId), next);
+    return cells.run(await resolveCell(grants, attempt.env, hosted, context.instanceId), next);
   };
 }
 
@@ -240,13 +239,13 @@ async function resolveCell(
   env: PlatformEnv | undefined,
   hosted: boolean,
   instanceId: string | undefined,
-  installationId?: string,
 ): Promise<ModelAccessCell> {
   const bound = new Map<ModelAccessProviderId, BoundAccess>();
   for (const grant of grants) {
     const access = await requireResolver().resolve(grant, env);
     bound.set(grant.providerId, Object.freeze({ grant, access }));
   }
+  const installationId = hosted ? installationScopeOf(env)?.installationId : undefined;
   return Object.freeze({ instanceId, hosted, installationId, bound });
 }
 
@@ -262,6 +261,12 @@ interface ModelAccessRequest<TModel, TOptions> {
   options: TOptions;
   /** The provider's stream with the injected key removed from any error text. */
   redact(stream: AssistantMessageEventStream): AssistantMessageEventStream;
+  /**
+   * Sends the request once the cell's installation is admitted (cached for
+   * 30 seconds). Refused, nothing is sent and the stream ends in an error, as
+   * a provider failure would; a cell with no installation sends at once.
+   */
+  admit(send: () => AssistantMessageEventStream): AssistantMessageEventStream;
 }
 
 /**
@@ -278,9 +283,11 @@ export function modelAccessRequest<TModel extends Model<Api>, TOptions extends S
   const cell = cells.getStore();
   if (!cell) throw new ModelAccessError('scope_missing', `No model access is in scope for provider ${registeredId}.`);
   const providerId = modelAccessProviderId(registeredId);
+  const admit = (send: () => AssistantMessageEventStream) =>
+    cell.installationId ? admittedStream(cell.installationId, model, send) : send();
   if (!providerId) {
     if (cell.hosted) throw providerNotOffered(registeredId);
-    return { model, options, redact: (stream) => stream };
+    return { model, options, redact: (stream) => stream, admit };
   }
   const bound = cell.bound.get(providerId);
   if (!bound) {
@@ -298,6 +305,42 @@ export function modelAccessRequest<TModel extends Model<Api>, TOptions extends S
       ...(access.headers ? { headers: { ...options?.headers, ...access.headers } } : {}),
     } as TOptions,
     redact: (stream) => withoutKeyInErrors(stream, access.apiKey),
+    admit,
+  };
+}
+
+/** The request's stream once the installation is admitted; refused, an error with nothing sent. */
+function admittedStream(
+  installationId: string,
+  model: Model<Api>,
+  send: () => AssistantMessageEventStream,
+): AssistantMessageEventStream {
+  const target = createAssistantMessageEventStream();
+  void (async () => {
+    let source: AssistantMessageEventStream;
+    try {
+      await requireInstallationAdmitted(installationId);
+      source = send();
+    } catch (error) {
+      const failed = errorMessageFor(model, error instanceof Error ? error.message : String(error));
+      target.push({ type: 'error', reason: 'error', error: failed });
+      target.end(failed);
+      return;
+    }
+    for await (const event of source) target.push(event);
+    target.end(await source.result());
+  })();
+  return target;
+}
+
+function errorMessageFor(model: Model<Api>, errorMessage: string): AssistantMessage {
+  return {
+    role: 'assistant', content: [], api: model.api, provider: model.provider, model: model.id,
+    stopReason: 'error', errorMessage, timestamp: Date.now(),
+    usage: {
+      input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    },
   };
 }
 
