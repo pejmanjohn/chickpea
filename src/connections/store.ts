@@ -2,10 +2,20 @@ import { sha256Hex } from '../security/digest.ts';
 import type { AuthPrincipal } from '../auth/types.ts';
 import { canEditAgent, canManageOwnedResource, requirePermission, AuthorizationError } from '../auth/permissions.ts';
 import {
+  finishConnectorSecretCleanup,
   saveConnectionAccountSecret,
+  stageConnectorSettingCleanup,
   tombstoneConnectionAccountSecret,
 } from '../config/connector-secrets.ts';
-import { connectionAccountIdFromOAuthRef } from '../config/api-oauth.ts';
+import {
+  apiOAuthSettingKeys,
+  connectionAccountIdFromOAuthRef,
+  connectionAccountOAuthRef,
+  deleteApiOAuthSettings,
+} from '../config/api-oauth.ts';
+import { deleteMcpOAuthSettings, mcpOAuthSettingKeys } from '../config/mcp-oauth.ts';
+import { finishMcpSecretCleanup, stageMcpSecretCleanup } from '../config/mcp-secrets.ts';
+import type { PlatformEnv } from '../config/state-backend.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import type { ConfigStore } from '../config/store.ts';
 import {
@@ -111,6 +121,30 @@ export class ManagedResourceSelectionError extends Error {
 
   constructor(readonly code: 'invalid' | 'stale' | 'unavailable', message: string) {
     super(message);
+  }
+}
+
+/**
+ * After a revoke, a connection's OAuth settings (its client registration,
+ * pending authorization and tokens) are deleted behind a durable cleanup
+ * marker, so a retry after a failure finishes the job. Admin's revoke and a
+ * host's revocation both run it.
+ */
+export async function deleteRevokedConnectionOAuthSettings(
+  account: ConnectionAccount,
+  env: PlatformEnv | undefined,
+  settings: SettingsStore,
+): Promise<void> {
+  if (account.policy.kind === 'mcp' && account.policy.authMode === 'oauth') {
+    const oauthRef = connectionAccountOAuthRef(account.id);
+    await stageMcpSecretCleanup(oauthRef.agentId, mcpOAuthSettingKeys(oauthRef), settings);
+    await deleteMcpOAuthSettings(oauthRef, settings);
+    await finishMcpSecretCleanup(oauthRef.agentId, settings);
+  } else if (account.policy.kind === 'api' && account.policy.authMode === 'oauth') {
+    const oauthRef = connectionAccountOAuthRef(account.id);
+    await stageConnectorSettingCleanup(oauthRef.agentId, apiOAuthSettingKeys(oauthRef), env, settings);
+    await deleteApiOAuthSettings(oauthRef, settings);
+    await finishConnectorSecretCleanup(oauthRef.agentId, env, settings);
   }
 }
 
@@ -454,6 +488,16 @@ export class ConnectionAccountService {
     const account = await this.findAccount(input.connectionAccountId);
     this.requireManage(input.principal, account);
     return this.revokeOwnedAccount(account);
+  }
+
+  /**
+   * Revoke one account on the deployment's own authority, exactly as its
+   * owner's revoke does, for a host's operator revoking an installation's
+   * access (connections/hosted-revocation.ts). No principal is checked:
+   * callers decide authority before calling.
+   */
+  async revokeWithSystemAuthority(connectionAccountId: string): Promise<ConnectionAccount> {
+    return this.revokeOwnedAccount(await this.findAccount(connectionAccountId));
   }
 
   private async revokeOwnedAccount(account: ConnectionAccount): Promise<ConnectionAccount> {

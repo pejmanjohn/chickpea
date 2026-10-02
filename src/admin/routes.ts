@@ -68,6 +68,7 @@ import { prepareSeededCatalogConnection, replaceCatalogConnection } from '../man
 import {
   ConnectionScheduleConflictError,
   ConnectionAccountService,
+  deleteRevokedConnectionOAuthSettings,
   ManagedConnectionConflictError,
   ManagedConnectionProviderUnavailableError,
   ManagedResourceSelectionError,
@@ -8875,29 +8876,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         principal,
         connectionAccountId: c.req.param('connectionAccountId'),
       });
-      const oauthRef = connectionAccountOAuthRef(account.id);
-      if (account.policy.kind === 'mcp' && account.policy.authMode === 'oauth') {
-        await stageMcpSecretCleanup(
-          oauthRef.agentId,
-          mcpOAuthSettingKeys(oauthRef),
-          settings(c),
-        );
-        await deleteMcpOAuthSettings(oauthRef, settings(c));
-        await finishMcpSecretCleanup(oauthRef.agentId, settings(c));
-      } else if (account.policy.kind === 'api' && account.policy.authMode === 'oauth') {
-        await stageConnectorSettingCleanup(
-          oauthRef.agentId,
-          apiOAuthSettingKeys(oauthRef),
-          c.env as PlatformEnv | undefined,
-          settings(c),
-        );
-        await deleteApiOAuthSettings(oauthRef, settings(c));
-        await finishConnectorSecretCleanup(
-          oauthRef.agentId,
-          c.env as PlatformEnv | undefined,
-          settings(c),
-        );
-      }
+      await deleteRevokedConnectionOAuthSettings(account, c.env as PlatformEnv | undefined, settings(c));
       return c.json({ account: toConnectionAccountView(account) });
     } catch (error) {
       if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
