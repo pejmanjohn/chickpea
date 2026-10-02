@@ -82,11 +82,16 @@ export function mapBetterAuthMembership(row: unknown): BetterAuthMembershipRecor
 }
 
 function betterAuthEpoch(value: unknown): number {
-  if (value instanceof Date) return value.getTime();
-  if (value === null || value === undefined) return 0;
+  return parseBetterAuthDate(value)?.getTime() ?? 0;
+}
+
+/** SQLite stores Better Auth dates as ISO text (or epoch numbers); PostgreSQL returns a Date. */
+export function parseBetterAuthDate(value: unknown): Date | null {
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
+  if (value === null || value === undefined) return null;
   const numeric = typeof value === 'number' ? value : Number(value);
   const date = new Date(Number.isFinite(numeric) ? numeric : String(value));
-  return Number.isNaN(date.getTime()) ? 0 : date.getTime();
+  return Number.isNaN(date.getTime()) ? null : date;
 }
 
 export interface BetterAuthDatabaseBackend {

@@ -12,6 +12,7 @@ import {
   mapBetterAuthMembership,
   mapBetterAuthOrganization,
   mapBetterAuthUser,
+  parseBetterAuthDate,
 } from './better-auth-backend.ts';
 
 export interface CloudflareBetterAuthEnv {
@@ -33,12 +34,8 @@ export class D1BetterAuthBackend implements BetterAuthDatabaseBackend {
     const row = await this.database.prepare(
       'SELECT absoluteExpiresAt FROM session WHERE token = ? LIMIT 1',
     ).bind(token).first<{ absoluteExpiresAt: number | string | null }>();
-    if (row?.absoluteExpiresAt === null || row?.absoluteExpiresAt === undefined) return null;
-    const value = typeof row.absoluteExpiresAt === 'number'
-      ? row.absoluteExpiresAt
-      : Number(row.absoluteExpiresAt);
-    const date = new Date(value);
-    return Number.isNaN(date.getTime()) ? null : date;
+    // Better Auth writes ISO text to D1; numeric values remain readable.
+    return parseBetterAuthDate(row?.absoluteExpiresAt);
   }
 
   async deleteSessionsForUser(userId: string): Promise<number> {
