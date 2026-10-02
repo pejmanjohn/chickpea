@@ -4,9 +4,11 @@ import { test } from 'node:test';
 import type { BetterAuthDatabaseBackend } from '../src/auth/better-auth-backend.ts';
 import { D1BetterAuthBackend } from '../src/auth/better-auth-cloudflare.ts';
 import {
+  configureBetterAuthBackendFactory,
   resolveBetterAuthAccessRevoker,
   resolveBetterAuthBootstrapEnvironment,
   resolveBetterAuthEnvironment,
+  withBetterAuthAccessRevoker,
   withBetterAuthBackend,
 } from '../src/auth/better-auth-environment.ts';
 import { installationScopeOf, scopeInstallationEnv } from '../src/config/installation-scope.ts';
@@ -113,4 +115,77 @@ test('a deactivation under installation tenancy is refused rather than leaving s
   await withEnv({ CHICKPEA_AUTH_SECRET: undefined }, async () => {
     assert.equal(await resolveBetterAuthAccessRevoker({ control: ACTIVE_CONTROL, platformEnv: {} }), undefined);
   });
+});
+
+test('work no request carries gets the host factory\'s backend under tenancy, closed once it settles', async (t) => {
+  t.after(() => configureBetterAuthBackendFactory(undefined));
+  const alarmEnv = scopeInstallationEnv(HOSTED as Record<string, unknown>, { installationId: 'inst_a' });
+  const opened: Array<{ env: Record<string, unknown>; closed: number }> = [];
+  configureBetterAuthBackendFactory((env) => {
+    const record = { env, closed: 0 };
+    opened.push(record);
+    return Object.assign(Object.create(HOST_BACKEND) as BetterAuthDatabaseBackend, {
+      close: async () => { record.closed += 1; },
+    });
+  });
+  const seen: unknown[] = [];
+  const result = await withBetterAuthAccessRevoker({ control: ACTIVE_CONTROL, platformEnv: alarmEnv }, async (revoker) => {
+    seen.push(revoker);
+    assert.equal(opened[0]?.closed, 0, 'open while the work runs');
+    return 'done';
+  });
+  assert.equal(result, 'done');
+  assert.equal(opened.length, 1);
+  assert.equal(opened[0]!.env, alarmEnv, 'opened for the installation the work runs in');
+  assert.equal(opened[0]!.closed, 1);
+  assert.ok(Object.getPrototypeOf(seen[0]) === HOST_BACKEND, 'the work revokes through the opened backend');
+
+  // Closed when the work fails too, and a failed close never masks the work's outcome.
+  await assert.rejects(
+    withBetterAuthAccessRevoker({ control: ACTIVE_CONTROL, platformEnv: alarmEnv }, async () => { throw new Error('work failed'); }),
+    /work failed/,
+  );
+  assert.equal(opened[1]!.closed, 1);
+  configureBetterAuthBackendFactory(() => Object.assign(Object.create(HOST_BACKEND) as BetterAuthDatabaseBackend, {
+    close: async () => { throw new Error('close failed'); },
+  }));
+  const logged = t.mock.method(console, 'error', () => {});
+  assert.equal(await withBetterAuthAccessRevoker({ control: ACTIVE_CONTROL, platformEnv: alarmEnv }, async () => 'kept'), 'kept');
+  assert.match(String(logged.mock.calls[0]?.arguments.join(' ')), /Closing a Better Auth backend failed: close failed/);
+});
+
+test('the factory stands in only for a missing request backend on a deployment serving many installations', async (t) => {
+  t.after(() => configureBetterAuthBackendFactory(undefined));
+  let calls = 0;
+  configureBetterAuthBackendFactory(() => {
+    calls += 1;
+    return undefined;
+  });
+  const hosted = scopeInstallationEnv(HOSTED as Record<string, unknown>, { installationId: 'inst_a' });
+  // A request's own backend is used as is.
+  assert.equal(
+    await withBetterAuthAccessRevoker({ control: ACTIVE_CONTROL, platformEnv: withBetterAuthBackend(hosted, HOST_BACKEND) },
+      async (revoker) => revoker),
+    HOST_BACKEND,
+  );
+  // Better Auth not active: nothing to revoke, nothing opened.
+  assert.equal(await withBetterAuthAccessRevoker({
+    control: { ...ACTIVE_CONTROL, healthGate: 'recovery_only' } as AuthControl, platformEnv: hosted,
+  }, async (revoker) => revoker), undefined);
+  // Standalone never asks the factory and keeps today's optional path.
+  await withEnv({ CHICKPEA_AUTH_SECRET: undefined }, async () => {
+    assert.equal(await withBetterAuthAccessRevoker({ control: ACTIVE_CONTROL, platformEnv: {} }, async (revoker) => revoker), undefined);
+  });
+  assert.equal(calls, 0);
+  // A factory that cannot open one leaves the refusal in place.
+  await assert.rejects(
+    withBetterAuthAccessRevoker({ control: ACTIVE_CONTROL, platformEnv: hosted }, async () => 'changed'),
+    /access cannot be revoked; nothing was changed/,
+  );
+  assert.equal(calls, 1);
+  configureBetterAuthBackendFactory(undefined);
+  await assert.rejects(
+    withBetterAuthAccessRevoker({ control: ACTIVE_CONTROL, platformEnv: hosted }, async () => 'changed'),
+    /access cannot be revoked; nothing was changed/,
+  );
 });

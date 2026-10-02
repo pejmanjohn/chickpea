@@ -6,7 +6,11 @@ import type { ExecutionContext } from 'hono';
 import pg from 'pg';
 
 import { createAdminRoutes } from '../src/admin/routes.ts';
-import { withBetterAuthBackend } from '../src/auth/better-auth-environment.ts';
+import {
+  configureBetterAuthBackendFactory,
+  withBetterAuthAccessRevoker,
+  withBetterAuthBackend,
+} from '../src/auth/better-auth-environment.ts';
 import { openPostgresBetterAuthBackend } from '../src/auth/better-auth-postgres.ts';
 import { applyPostgresBetterAuthMigrations } from '../src/auth/better-auth-postgres-migrations.ts';
 import { BetterAuthDirectory } from '../src/auth/better-auth-principal.ts';
@@ -21,6 +25,7 @@ import {
 } from '../src/auth/hosted-routing.ts';
 import { activateInstallerOwner } from '../src/auth/installer-owner.ts';
 import { signInSlackMember } from '../src/auth/member-sign-in.ts';
+import { applyGatewaySlackUserChange } from '../src/auth/slack-membership-events.ts';
 import { createMcpOAuthRuntimeRoutes } from '../src/auth/mcp-oauth-routes.ts';
 import {
   resolveInstallationEnv,
@@ -252,7 +257,7 @@ async function hostedDeployment(t: TestContext) {
   });
 
   return {
-    backend, environment, routing, records, lookup, stores, storeOf,
+    config, backend, environment, routing, records, lookup, stores, storeOf,
     install, shared, mcpGrant, authorizationCode, token, refresh, serve, mcpRequest, adminRequest,
   };
 }
@@ -593,4 +598,58 @@ test('resolving a login reads the credential the route uses and nothing else', {
   await hosted.backend.pool.query(`UPDATE session SET "absoluteExpiresAt" = now() - interval '1 minute'`);
   assert.equal(await resolveHostedLogin(hosted.adminRequest('/admin', acme.ownerCookie), hosted.environment), undefined);
   assert.equal((await hosted.backend.pool.query('SELECT count(*)::int AS count FROM session')).rows[0].count, 0);
+});
+
+test('a Slack deactivation handled with no request, as in a Durable Object alarm, ends sessions and grants through the host\'s backend factory', { timeout: 120_000 }, async (t) => {
+  const hosted = await hostedDeployment(t);
+  if (!hosted) return;
+  t.after(() => configureBetterAuthBackendFactory(undefined));
+  const acme = await hosted.install('TACME', 'org_acme', 'UOWNERA');
+  const member = await acme.member('UMEMBERA');
+  const grant = await hosted.mcpGrant(member.cookie);
+  // A Durable Object's env: scoped by the object's own name, with no request backend.
+  const alarmEnv = scopeInstallationEnv(HOSTED as PlatformEnv, { installationId: acme.installationId });
+  // processGatewaySlackEnvelope's user_change branch, as the alarm's inbox drain runs it.
+  const deactivate = async (eventId: string) => withBetterAuthAccessRevoker({
+    control: await acme.identity.getAuthControl(), platformEnv: alarmEnv,
+  }, (betterAuth) => applyGatewaySlackUserChange({
+    identity: acme.identity,
+    ...(betterAuth ? { betterAuth } : {}),
+    payloadTeamId: 'TACME',
+    apiAppId: 'A12345678',
+    eventId,
+    event: {
+      type: 'user_change', event_ts: '1786100000.000100',
+      user: { id: 'UMEMBERA', team_id: 'TACME', deleted: true, is_bot: false, is_app_user: false },
+    },
+  }));
+
+  // Without a factory the deactivation is refused and changes nothing.
+  await assert.rejects(deactivate('Ev_NO_FACTORY'), /access cannot be revoked; nothing was changed/);
+  assert.equal((await acme.identity.getMembership(member.membershipId))?.status, 'active');
+
+  const opened: Array<{ env: PlatformEnv; closed: boolean }> = [];
+  configureBetterAuthBackendFactory((env) => {
+    const backend = openPostgresBetterAuthBackend(hosted.config);
+    const record = { env, closed: false };
+    opened.push(record);
+    return Object.assign(backend, {
+      close: async () => {
+        record.closed = true;
+        await backend.pool.end();
+      },
+    });
+  });
+  const result = await deactivate('Ev_ALARM');
+  assert.equal(result.outcome, 'suspended');
+  assert.equal(opened.length, 1, 'one backend for the piece of work');
+  assert.equal(opened[0]!.env, alarmEnv);
+  assert.equal(opened[0]!.closed, true, 'and closed when it settled');
+  // Its sessions and MCP grants ended in PostgreSQL along with the membership.
+  assert.equal((await acme.identity.getMembership(member.membershipId))?.status, 'suspended');
+  assert.deepEqual(await routeHostedRequest(hosted.adminRequest('/admin/api/mcp-clients', member.cookie), hosted.routing),
+    { kind: 'unauthenticated' });
+  const refused = await hosted.refresh(grant);
+  assert.equal(refused.status, 400);
+  assert.equal((await hosted.backend.pool.query('SELECT count(*)::int AS count FROM "oauthRefreshToken"')).rows[0].count, 0);
 });
