@@ -40,6 +40,7 @@ import {
   resolveProviderApiKey,
   saveProviderApiKey,
 } from '../src/config/provider-keys.ts';
+import { ModelCredentialUnavailableError } from '../src/config/model-credential-refs.ts';
 import { forgetRegisteredProvider, knownProviderIds } from '../src/config/providers.ts';
 import { resolveRuntimeModel } from '../src/config/runtime-model.ts';
 import { SettingsStoreLogic, SqliteSettingsStore } from '../src/config/settings-store.ts';
@@ -442,13 +443,17 @@ test('an installation of a deployment serving many never reads a deployment envi
 test('each installation saves and reads its own model keys', async (t) => {
   invalidateProviderKeyCache();
   forgetRegisteredProvider('anthropic');
-  // Any read that missed its installation's cache would open this store.
+  // A read that left its installation's store would open this one.
   const sentinel = join(mkdtempSync(join(tmpdir(), 'chickpea-keys-')), 'ambient.db');
   const previousPath = process.env.SLACK_STATE_DB_PATH;
+  const previousKeyring = process.env.CHICKPEA_CREDENTIAL_KEYRING_PATH;
   process.env.SLACK_STATE_DB_PATH = sentinel;
+  process.env.CHICKPEA_CREDENTIAL_KEYRING_PATH = join(dirname(sentinel), 'deployment-keyring.json');
   t.after(() => {
     if (previousPath === undefined) delete process.env.SLACK_STATE_DB_PATH;
     else process.env.SLACK_STATE_DB_PATH = previousPath;
+    if (previousKeyring === undefined) delete process.env.CHICKPEA_CREDENTIAL_KEYRING_PATH;
+    else process.env.CHICKPEA_CREDENTIAL_KEYRING_PATH = previousKeyring;
     rmSync(dirname(sentinel), { recursive: true, force: true });
   });
   const envA = scopeInstallationEnv(HOSTED as Record<string, unknown>, { installationId: A.installationId });
@@ -458,15 +463,18 @@ test('each installation saves and reads its own model keys', async (t) => {
   try {
     await saveProviderApiKey('anthropic', 'sk-tenant-a', envA, settingsA, usageA);
     await saveProviderApiKey('anthropic', 'sk-tenant-b', envB, settingsB, usageB);
-    // Saving primed each installation's own cache entry; neither read touches a store.
-    assert.equal((await resolveProviderApiKey('anthropic', envA)).apiKey, 'sk-tenant-a');
-    assert.equal((await resolveProviderApiKey('anthropic', envB)).apiKey, 'sk-tenant-b');
+    // Each key is saved encrypted for its own installation and decrypted per read, never cached.
+    assert.equal(await settingsA.getSetting('provider.anthropic.apiKey'), undefined);
+    assert.equal((await resolveProviderApiKey('anthropic', envA, settingsA)).apiKey, 'sk-tenant-a');
+    assert.equal((await resolveProviderApiKey('anthropic', envB, settingsB)).apiKey, 'sk-tenant-b');
+    // Another installation's store is no way around that: its key never opens under this installation.
+    await assert.rejects(resolveProviderApiKey('anthropic', envA, settingsB), ModelCredentialUnavailableError);
     assert.equal(knownProviderIds({}).has('anthropic'), false, 'no save bound the shared provider');
 
     const deleted = await deleteProviderApiKey('anthropic', envA, settingsA, usageA);
     assert.equal(deleted.source, 'missing');
-    assert.equal((await resolveProviderApiKey('anthropic', envA)).apiKey, undefined);
-    assert.equal((await resolveProviderApiKey('anthropic', envB)).apiKey, 'sk-tenant-b');
+    assert.equal((await resolveProviderApiKey('anthropic', envA, settingsA)).apiKey, undefined);
+    assert.equal((await resolveProviderApiKey('anthropic', envB, settingsB)).apiKey, 'sk-tenant-b');
     assert.equal(knownProviderIds({}).has('anthropic'), false);
     assert.equal(existsSync(sentinel), false, 'every read was served from its own installation');
   } finally {

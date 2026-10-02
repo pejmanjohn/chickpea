@@ -5,8 +5,9 @@
  * Standalone resolves today's sources in today's order (the deployment
  * environment's key, then the key saved in Admin) and keeps the deployment's
  * endpoint override. An installation of a deployment serving many resolves
- * only the key it saved, through its own scoped env, and every model call is
- * refused while the deployment holds a provider key of its own.
+ * only the key it saved, encrypted, through its own scoped env, and only for
+ * the exact credential version its grant froze; every model call is refused
+ * while the deployment holds a provider key of its own.
  */
 import { STANDALONE_INSTALLATION_IDENTITY } from '../identity/installation-binding.ts';
 import { requireInstallationScope } from './installation-scope.ts';
@@ -27,9 +28,11 @@ import {
 } from './model-access.ts';
 import {
   ModelCredentialRevisionError,
+  ModelCredentialUnavailableError,
   customCredentialRefId,
   environmentCredentialRefId,
   environmentCredentialVersion,
+  readHostedModelCredential,
   readStoredModelCredentials,
   resolveModelCredentialAttribution,
 } from './model-credential-refs.ts';
@@ -44,6 +47,7 @@ import type { SettingsStore } from './settings-store.ts';
 import { getSettingsStore, type PlatformEnv } from './state-backend.ts';
 import type { ModelCredentialAttribution } from './types.ts';
 import { nonEmpty, trimmedNonEmpty } from '../security/content-validation.ts';
+import type { CredentialKeyring } from '../slack/secret-envelope.ts';
 
 export class RuntimeModelReadinessError extends Error {
   readonly repairPath = '/admin/settings#model-providers';
@@ -92,6 +96,8 @@ interface InstallationCredential {
 
 export function createInstallationModelAccessResolver(options: {
   settings?: (env: PlatformEnv | undefined) => SettingsStore;
+  /** The deployment's credential keyring; by default loaded through the env. */
+  keyring?: (env: PlatformEnv | undefined) => CredentialKeyring;
 } = {}): ModelAccessResolver {
   const settingsFor = options.settings ?? ((env) => getSettingsStore(env));
   return {
@@ -106,6 +112,26 @@ export function createInstallationModelAccessResolver(options: {
         throw new ModelAccessError('funding_not_offered', 'This deployment offers only customer-funded model access.');
       }
       requireNoDeploymentModelKeys(env);
+      if (deploymentServesManyInstallations(env)) {
+        // Only the saved key of exactly the grant's version, decrypted after that check.
+        if (!isProviderKeyId(grant.providerId)) {
+          throw new ModelCredentialRevisionError(grant.credentialRefId, grant.credentialVersion);
+        }
+        let saved: Awaited<ReturnType<typeof readHostedModelCredential>>;
+        try {
+          saved = await readHostedModelCredential(grant.providerId, {
+            env,
+            settings: settingsFor(env),
+            ...(options.keyring ? { keyring: options.keyring(env) } : {}),
+          }, { credentialRefId: grant.credentialRefId, version: grant.credentialVersion });
+        } catch (error) {
+          // A key that will not decrypt asks for the same repair as a missing one.
+          if (error instanceof ModelCredentialUnavailableError) throw providerSetupRequired(grant.providerId);
+          throw error;
+        }
+        if (!saved) throw new ModelCredentialRevisionError(grant.credentialRefId, grant.credentialVersion);
+        return Object.freeze({ apiKey: saved.apiKey });
+      }
       const current = (await currentInstallationCredentials([grant.providerId], env, settingsFor(env)))
         .get(grant.providerId);
       if (
@@ -166,7 +192,8 @@ export async function installationModelAccessGrant(
 
 /**
  * Standalone: a grant for every credential the one installation has, read
- * live (in one settings read) as each attempt starts.
+ * live (in one settings read) as each attempt starts. An installation of a
+ * deployment serving many gets none: each of its runs carries its own grant.
  */
 export async function installationModelAccessGrants(
   env: PlatformEnv | undefined,
@@ -174,6 +201,7 @@ export async function installationModelAccessGrants(
   settings: SettingsStore = getSettingsStore(env),
 ): Promise<ModelAccessGrant[]> {
   requireNoDeploymentModelKeys(env);
+  if (deploymentServesManyInstallations(env)) return [];
   const installationId = modelAccessInstallationId(env);
   const credentials = await currentInstallationCredentials(MODEL_ACCESS_PROVIDER_IDS, env, settings);
   return [...credentials].map(([providerId, credential]) => Object.freeze({
@@ -216,9 +244,9 @@ export async function resolveInstallationModelAccess(
 }
 
 /**
- * The installation's current credential for each provider that has one:
- * standalone's environment key first (with its endpoint override), then the
- * key saved in Admin; only the saved key on a deployment serving many.
+ * Standalone's current credential for each provider that has one: the
+ * environment key first (with its endpoint override), then the key saved in
+ * Admin. An installation of a deployment serving many never reads these.
  */
 async function currentInstallationCredentials(
   providerIds: readonly ModelAccessProviderId[],
@@ -235,10 +263,9 @@ async function currentInstallationCredentials(
       baseUrl: localStub,
     });
   }
-  const hosted = deploymentServesManyInstallations(env);
   const storedIds: ProviderKeyId[] = [];
   for (const providerId of providerIds.filter(isProviderKeyId)) {
-    const environmentKey = hosted ? undefined : process.env[PROVIDER_KEY_ENV_VARS[providerId]];
+    const environmentKey = process.env[PROVIDER_KEY_ENV_VARS[providerId]];
     if (environmentKey && trimmedNonEmpty(environmentKey)) {
       credentials.set(providerId, withBaseUrl(providerId, env, {
         credentialRefId: environmentCredentialRefId(providerId),

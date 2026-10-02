@@ -388,7 +388,7 @@ export async function resolveRoutineAgentAuthority(
     channelId: reference.channelId,
     agentId: agent.id,
     agent,
-  }, config);
+  }, config, process.env, undefined, env);
   return { reference, agent, assignment, actorSlackUserId,
     effectiveConnections: effectiveConnections.filter(({ account }) => reference.requiredConnectionAccountIds.includes(account.id)) };
 

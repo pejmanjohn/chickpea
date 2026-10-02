@@ -95,7 +95,7 @@ import {
   saveProviderApiKey,
   type ProviderKeyId,
 } from '../config/provider-keys.ts';
-import { storedCredentialMetadata } from '../config/model-credential-refs.ts';
+import { installationModelCredentialVersion } from '../config/model-credential-refs.ts';
 import {
   getConfigStore,
   getIdentityStore,
@@ -2498,7 +2498,7 @@ async function assertExactTarget(
       dependencies.platformEnv,
       dependencies.settings,
     ))[providerId];
-    const revision = (await storedCredentialMetadata(providerId, dependencies.settings))?.version ?? 0;
+    const revision = await installationModelCredentialVersion(providerId, dependencies.platformEnv, dependencies.settings);
     if (source === 'env' || revision !== setup.target.expectedRevision ||
         (setup.target.replacement ? source !== 'stored' : source !== 'missing')) {
       throw new Error('target_changed');

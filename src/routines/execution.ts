@@ -198,7 +198,7 @@ export async function executeRoutineOccurrence(
       );
     }
     const settingsStore = dependencies.settingsStore ?? getSettingsStore(input.env);
-    await (dependencies.loadCatalog ?? loadModelCatalog)(settingsStore).catch(() => undefined);
+    await (dependencies.loadCatalog ?? loadModelCatalog)(settingsStore, input.env).catch(() => undefined);
     access = await resolveAccess(current, routine, input.env);
     prepared = await prepareExecution(
       { ...input, run: current, routine, admission, access, settingsStore },
@@ -447,7 +447,7 @@ async function prepareExecution(
       });
   const runtimeModelRoute = frozenInitialData
     ? frozenInitialData.runtimePlan.runtimeModelRoute
-    : freezeRuntimeModelRoute(access.config.model, runtimeModel.providerAuthRoute);
+    : freezeRuntimeModelRoute(access.config.model, runtimeModel.providerAuthRoute, input.env);
   const modelCredential = access.config.modelCredential ?? await (
     dependencies.resolveCredential ?? resolveModelCredentialAttribution
   )(
@@ -604,6 +604,7 @@ async function prepareExecution(
     providerAuthRoute: runtimeModel.providerAuthRoute,
     modelCredential: modelCredential ?? undefined,
     workStore: dependencies.workStore ?? getWorkStore(input.env),
+    env: input.env,
     attemptNumber: input.attempt,
     now,
     onGap: () => persistence.recordWorkGap(),
@@ -763,6 +764,7 @@ async function createRoutineShadowLifecycle(
       | NonNullable<Awaited<ReturnType<typeof resolveModelCredentialAttribution>>>
       | undefined;
     workStore: WorkStore;
+    env: PlatformEnv | undefined;
     attemptNumber?: number;
     now?: () => number;
     onGap?: () => void;
@@ -775,6 +777,7 @@ async function createRoutineShadowLifecycle(
     providerAuthRoute,
     modelCredential,
     workStore,
+    env,
     attemptNumber = 1,
     now = Date.now,
     onGap,
@@ -793,6 +796,7 @@ async function createRoutineShadowLifecycle(
           access.config.model,
           providerAuthRoute,
           modelCredential,
+          env,
         ),
       }, {
         mode: 'observe',

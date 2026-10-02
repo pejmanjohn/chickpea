@@ -11,6 +11,13 @@ export type SlackCredentialPurpose =
   | 'chatgpt_plan'
   | 'website_login';
 
+/**
+ * The purpose of an installation's model provider key. It is not a Slack
+ * purpose: its envelope context and associated data are its own, so neither
+ * kind of envelope can be opened as the other.
+ */
+export type ModelCredentialPurpose = 'model_provider_key';
+
 export interface CredentialKeyring {
   currentKeyId: string;
   /** Base64url-encoded 256-bit AES keys, indexed by stable key ID. */
@@ -50,6 +57,20 @@ export function workspaceCredentialContext(input: {
   };
 }
 
+/**
+ * What one model provider key is bound to: the installation that saved it,
+ * the provider, and the credential reference and version it was published
+ * under. A key published for one version never decrypts under another, so a
+ * grant frozen to a superseded version can never be served the newer key.
+ */
+export interface ModelProviderKeyEnvelopeContext {
+  purpose: ModelCredentialPurpose;
+  installationId: string;
+  providerId: string;
+  credentialRefId: string;
+  credentialVersion: number;
+}
+
 export interface SlackSecretEnvelope {
   version: typeof SLACK_SECRET_ENVELOPE_VERSION;
   algorithm: typeof SLACK_SECRET_ENVELOPE_ALGORITHM;
@@ -69,9 +90,68 @@ export async function encryptSlackSecretEnvelope<T extends Record<string, string
 ): Promise<SlackSecretEnvelope> {
   validateContext(context);
   validateSecrets(secrets);
+  return sealEnvelope(keyring, associatedData(context), secrets, 'Slack credential encryption key is unavailable.');
+}
+
+/**
+ * Decrypt only at the request-local consumer. Every failure is deliberately
+ * indistinguishable and excludes key IDs, metadata, and secret material.
+ */
+export async function decryptSlackSecretEnvelope<T extends Record<string, string>>(
+  keyring: CredentialKeyring,
+  context: SlackSecretEnvelopeContext,
+  envelope: SlackSecretEnvelope,
+): Promise<T> {
+  try {
+    validateContext(context);
+    return await openEnvelope(keyring, associatedData(context), envelope) as T;
+  } catch {
+    throw new Error('Slack credential envelope could not be decrypted.');
+  }
+}
+
+/** Encrypt one model provider key for exactly the context it is published under. */
+export async function encryptModelProviderKeyEnvelope(
+  keyring: CredentialKeyring,
+  context: ModelProviderKeyEnvelopeContext,
+  apiKey: string,
+): Promise<SlackSecretEnvelope> {
+  validateModelProviderKeyContext(context);
+  const secrets = { apiKey };
+  validateSecrets(secrets);
+  return sealEnvelope(
+    keyring,
+    modelProviderKeyAssociatedData(context),
+    secrets,
+    'Model credential encryption key is unavailable.',
+  );
+}
+
+/** Decrypt one model provider key; any context but its own fails, indistinguishably. */
+export async function decryptModelProviderKeyEnvelope(
+  keyring: CredentialKeyring,
+  context: ModelProviderKeyEnvelopeContext,
+  envelope: SlackSecretEnvelope,
+): Promise<string> {
+  try {
+    validateModelProviderKeyContext(context);
+    const secrets = await openEnvelope(keyring, modelProviderKeyAssociatedData(context), envelope);
+    if (Object.keys(secrets).join() !== 'apiKey' || !secrets.apiKey) throw new Error('invalid plaintext');
+    return secrets.apiKey;
+  } catch {
+    throw new Error('Model credential envelope could not be decrypted.');
+  }
+}
+
+async function sealEnvelope(
+  keyring: CredentialKeyring,
+  additionalData: Uint8Array,
+  secrets: Record<string, string>,
+  unavailable: string,
+): Promise<SlackSecretEnvelope> {
   const keyId = requireKeyId(keyring.currentKeyId);
   const rawKey = keyring.keys[keyId];
-  if (!rawKey) throw new Error('Slack credential encryption key is unavailable.');
+  if (!rawKey) throw new Error(unavailable);
   const key = await importAesKey(rawKey, ['encrypt']);
   const nonceBytes = new Uint8Array(12);
   globalThis.crypto.getRandomValues(nonceBytes);
@@ -79,7 +159,7 @@ export async function encryptSlackSecretEnvelope<T extends Record<string, string
     {
       name: 'AES-GCM',
       iv: arrayBuffer(nonceBytes),
-      additionalData: arrayBuffer(associatedData(context)),
+      additionalData: arrayBuffer(additionalData),
       tagLength: 128,
     },
     key,
@@ -94,48 +174,64 @@ export async function encryptSlackSecretEnvelope<T extends Record<string, string
   };
 }
 
-/**
- * Decrypt only at the request-local consumer. Every failure is deliberately
- * indistinguishable and excludes key IDs, metadata, and secret material.
- */
-export async function decryptSlackSecretEnvelope<T extends Record<string, string>>(
+/** Each caller replaces every failure here with its own indistinguishable error. */
+async function openEnvelope(
   keyring: CredentialKeyring,
-  context: SlackSecretEnvelopeContext,
+  additionalData: Uint8Array,
   envelope: SlackSecretEnvelope,
-): Promise<T> {
-  try {
-    validateContext(context);
-    if (
-      envelope.version !== SLACK_SECRET_ENVELOPE_VERSION ||
-      envelope.algorithm !== SLACK_SECRET_ENVELOPE_ALGORITHM
-    ) {
-      throw new Error('unsupported envelope');
+): Promise<Record<string, string>> {
+  if (
+    envelope.version !== SLACK_SECRET_ENVELOPE_VERSION ||
+    envelope.algorithm !== SLACK_SECRET_ENVELOPE_ALGORITHM
+  ) {
+    throw new Error('unsupported envelope');
+  }
+  const keyId = requireKeyId(envelope.keyId);
+  const rawKey = keyring.keys[keyId];
+  if (!rawKey) throw new Error('unknown key');
+  const nonce = decodeBase64Url(envelope.nonce);
+  if (nonce.byteLength !== 12) throw new Error('invalid nonce');
+  const ciphertext = decodeBase64Url(envelope.ciphertext);
+  const key = await importAesKey(rawKey, ['decrypt']);
+  const plaintext = await globalThis.crypto.subtle.decrypt(
+    {
+      name: 'AES-GCM',
+      iv: arrayBuffer(nonce),
+      additionalData: arrayBuffer(additionalData),
+      tagLength: 128,
+    },
+    key,
+    arrayBuffer(ciphertext),
+  );
+  const parsed = JSON.parse(textDecoder.decode(plaintext)) as unknown;
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('invalid plaintext');
+  }
+  validateSecrets(parsed as Record<string, unknown>);
+  return parsed as Record<string, string>;
+}
+
+function modelProviderKeyAssociatedData(context: ModelProviderKeyEnvelopeContext): Uint8Array {
+  // Its own domain tag, so no Slack context encodes to the same bytes.
+  return textEncoder.encode(JSON.stringify([
+    'chickpea-model-credential-v1',
+    context.purpose,
+    context.installationId,
+    context.providerId,
+    context.credentialRefId,
+    context.credentialVersion,
+  ]));
+}
+
+function validateModelProviderKeyContext(context: ModelProviderKeyEnvelopeContext): void {
+  if (context.purpose !== 'model_provider_key' ||
+      !Number.isSafeInteger(context.credentialVersion) || context.credentialVersion < 1) {
+    throw new Error('Model credential envelope context is invalid.');
+  }
+  for (const value of [context.installationId, context.providerId, context.credentialRefId]) {
+    if (typeof value !== 'string' || value.length < 1 || value.length > 256) {
+      throw new Error('Model credential envelope context is invalid.');
     }
-    const keyId = requireKeyId(envelope.keyId);
-    const rawKey = keyring.keys[keyId];
-    if (!rawKey) throw new Error('unknown key');
-    const nonce = decodeBase64Url(envelope.nonce);
-    if (nonce.byteLength !== 12) throw new Error('invalid nonce');
-    const ciphertext = decodeBase64Url(envelope.ciphertext);
-    const key = await importAesKey(rawKey, ['decrypt']);
-    const plaintext = await globalThis.crypto.subtle.decrypt(
-      {
-        name: 'AES-GCM',
-        iv: arrayBuffer(nonce),
-        additionalData: arrayBuffer(associatedData(context)),
-        tagLength: 128,
-      },
-      key,
-      arrayBuffer(ciphertext),
-    );
-    const parsed = JSON.parse(textDecoder.decode(plaintext)) as unknown;
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      throw new Error('invalid plaintext');
-    }
-    validateSecrets(parsed as Record<string, unknown>);
-    return parsed as T;
-  } catch {
-    throw new Error('Slack credential envelope could not be decrypted.');
   }
 }
 

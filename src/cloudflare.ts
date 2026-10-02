@@ -55,7 +55,9 @@ import {
   SANDBOX_SETTING_KEYS,
 } from './config/sandbox-settings.ts';
 import type {
+  PublishModelCredentialInput,
   ReplaceEncryptedCredentialRevisionInput,
+  RewrapModelCredentialInput,
   SettingsPatch,
   SettingsStore,
 } from './config/settings-store.ts';
@@ -1883,6 +1885,18 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       key,
       expectedRevision,
     ));
+  }
+
+  async modelCredentialRead(providerId: string) {
+    return this.call((stores) => stores.settings.readModelCredential(providerId) ?? null);
+  }
+
+  async modelCredentialPublish(input: PublishModelCredentialInput) {
+    return this.call((stores) => stores.settings.publishModelCredential(input));
+  }
+
+  async modelCredentialRewrap(input: RewrapModelCredentialInput) {
+    return this.call((stores) => stores.settings.rewrapModelCredential(input));
   }
 
   // ── memory + generic audit envelope ─────────────────────────────────────

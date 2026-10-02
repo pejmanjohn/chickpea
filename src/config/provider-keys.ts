@@ -1,6 +1,11 @@
 import { installationCacheKey } from './installation-scope.ts';
 import { deploymentServesManyInstallations } from './model-access.ts';
-import { rotateStoredModelCredential } from './model-credential-refs.ts';
+import {
+  deploymentModelKeyring,
+  hostedModelCredentialSaved,
+  readHostedModelCredential,
+  rotateInstallationModelCredential,
+} from './model-credential-refs.ts';
 import {
   listRuntimeModelProviders,
   registeredDeploymentProviders,
@@ -48,7 +53,8 @@ const STORED_CACHE_TTL_MS = 5_000;
 
 type StoredProviderKeys = Partial<Record<ProviderKeyId, string>>;
 
-// Keyed by installation: a deployment serving many keeps each one's keys apart.
+// Standalone's plaintext saved keys only: an installation of a deployment
+// serving many decrypts its key per call and nothing here ever holds it.
 const storedCache = new Map<string, { expiresAt: number; values: StoredProviderKeys }>();
 const STORED_CACHE_MAX_INSTALLATIONS = 64;
 
@@ -59,13 +65,19 @@ export function isProviderKeyId(id: string): id is ProviderKeyId {
 /**
  * An installation's key for a provider. Standalone keeps its order: the
  * deployment environment's key, then the key saved in Admin. An installation
- * of a deployment serving many has only the key it saved.
+ * of a deployment serving many has only the key it saved, decrypted here for
+ * this call and never cached; one under a key ID the deployment keyring no
+ * longer has is missing, as every readiness check sees it.
  */
 export async function resolveProviderApiKey(
   id: ProviderKeyId,
   env?: PlatformEnv,
   store?: SettingsStore,
 ): Promise<ResolvedProviderApiKey> {
+  if (deploymentServesManyInstallations(env)) {
+    const saved = await readHostedModelCredential(id, { env, settings: store ?? getSettingsStore(env) });
+    return saved ? { apiKey: saved.apiKey, source: 'stored' } : { apiKey: undefined, source: 'missing' };
+  }
   const fromEnv = deploymentApiKey(id, env);
   if (fromEnv) {
     return { apiKey: fromEnv, source: 'env' };
@@ -79,6 +91,16 @@ export async function describeProviderKeySources(
   env?: PlatformEnv,
   store?: SettingsStore,
 ): Promise<Record<ProviderKeyId, ProviderKeySource>> {
+  if (deploymentServesManyInstallations(env)) {
+    // Which keys are saved and readable, from their metadata and the
+    // deployment keyring's key IDs; nothing is decrypted to learn it.
+    const settings = store ?? getSettingsStore(env);
+    const keyring = deploymentModelKeyring(env);
+    const saved = await Promise.all(PROVIDER_KEY_IDS.map((id) => hostedModelCredentialSaved(id, settings, keyring)));
+    return Object.fromEntries(
+      PROVIDER_KEY_IDS.map((id, index) => [id, saved[index] ? 'stored' : 'missing']),
+    ) as Record<ProviderKeyId, ProviderKeySource>;
+  }
   const envSources = Object.fromEntries(
     PROVIDER_KEY_IDS.map((id) => [id, deploymentApiKey(id, env) ? 'env' : undefined]),
   ) as Partial<Record<ProviderKeyId, ProviderKeySource>>;
@@ -112,6 +134,10 @@ export async function listInstallationModelProviders(
   });
 }
 
+/**
+ * Save or rotate an installation's key (see `rotateInstallationModelCredential`
+ * for where each kind of deployment keeps it).
+ */
 export async function saveProviderApiKey(
   id: ProviderKeyId,
   apiKey: string,
@@ -121,14 +147,12 @@ export async function saveProviderApiKey(
   expectedVersion?: number,
 ): Promise<void> {
   const settings = store ?? getSettingsStore(env);
-  await rotateStoredModelCredential(
-    id,
-    { kind: 'save', apiKey },
+  await rotateInstallationModelCredential(id, { kind: 'save', apiKey }, {
+    env,
     settings,
-    usageStore ?? getUsageStore(env),
-    Date.now,
-    expectedVersion,
-  );
+    usage: usageStore ?? getUsageStore(env),
+    ...(expectedVersion === undefined ? {} : { expectedVersion }),
+  });
   await primeStoredProviderKeysFromStore(env, settings);
 }
 
@@ -139,12 +163,11 @@ export async function deleteProviderApiKey(
   usageStore?: UsageStore,
 ): Promise<ResolvedProviderApiKey> {
   const settings = store ?? getSettingsStore(env);
-  await rotateStoredModelCredential(
-    id,
-    { kind: 'delete' },
+  await rotateInstallationModelCredential(id, { kind: 'delete' }, {
+    env,
     settings,
-    usageStore ?? getUsageStore(env),
-  );
+    usage: usageStore ?? getUsageStore(env),
+  });
   await primeStoredProviderKeysFromStore(env, settings);
   return resolveProviderApiKey(id, env, settings);
 }
@@ -191,6 +214,7 @@ async function primeStoredProviderKeysFromStore(
   env: PlatformEnv | undefined,
   store: SettingsStore,
 ): Promise<void> {
+  if (deploymentServesManyInstallations(env)) return;
   cacheStoredProviderKeys(env, {
     expiresAt: Date.now() + STORED_CACHE_TTL_MS,
     values: await readStoredProviderKeys(env, store),

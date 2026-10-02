@@ -15,7 +15,10 @@ import {
 import type { UiSurfaceRpcRequest } from '../slack/ui/surface-store.ts';
 import type {
   EncryptedCredentialStore,
+  ModelCredentialStore,
+  PublishModelCredentialInput,
   ReplaceEncryptedCredentialRevisionInput,
+  RewrapModelCredentialInput,
   SettingsPatch,
   SettingsStore,
 } from './settings-store.ts';
@@ -321,7 +324,7 @@ const REPLAY_SAFE_STATE_METHODS = new Set([
   'configListAgentScheduleReferences', 'configListAgents', 'configListChannels',
   'configListConnectionAccounts', 'configListRecentSlackPublicContext', 'configListSlackPublicContext',
   'configListUserAgents', 'configListWorkspaceInstallations', 'configPreflightChickpeaCutover',
-  'configSummarizeAdoptionInventory', 'encryptedCredentialGet', 'runtimeDrainStatus', 'settingGet',
+  'configSummarizeAdoptionInventory', 'encryptedCredentialGet', 'modelCredentialRead', 'runtimeDrainStatus', 'settingGet',
   'settingGetMany', 'slackAgentBindingGet', 'slackFlueObservationMatch',
   'slackInstallationPendingDeliveryCount', 'slackPresentationGet',
   'slackPresentationLatestThreadGeneration', 'slackPresentationRepairList', 'slackPresentationSummary',
@@ -335,6 +338,8 @@ const REPLAY_SAFE_STATE_METHODS = new Set([
   'slackTurnStopFinish', // the first stop ending stands and is returned again
   'slackTurnDirectThreads', 'slackRunFacts', // reads (a DM lookup keys old rows idempotently)
   'slackPresentationTransition', // compare-and-swap on the projection version
+  // Version-fenced; a replay finds exactly what the committed call wrote and succeeds.
+  'modelCredentialPublish', 'modelCredentialRewrap',
 ]);
 
 /** Kinds sent through a store's `*Execute` RPC. */
@@ -2375,7 +2380,7 @@ export class CfTurnJobsForRunner implements RunnerTurnJobsPort {
   }
 }
 
-export class CfSettingsStore implements SettingsStore, EncryptedCredentialStore {
+export class CfSettingsStore implements SettingsStore, EncryptedCredentialStore, ModelCredentialStore {
   constructor(private readonly stub: TagStateStubSource) {}
 
   async getSetting(key: string): Promise<string | undefined> {
@@ -2418,6 +2423,18 @@ export class CfSettingsStore implements SettingsStore, EncryptedCredentialStore 
       'encryptedCredentialDelete',
       (stub) => stub.encryptedCredentialDelete(key, expectedRevision),
     );
+  }
+
+  async readModelCredential(providerId: string) {
+    return orUndefined(await rpcVia(this.stub, 'modelCredentialRead', (stub) => stub.modelCredentialRead(providerId)));
+  }
+
+  async publishModelCredential(input: PublishModelCredentialInput) {
+    return rpcVia(this.stub, 'modelCredentialPublish', (stub) => stub.modelCredentialPublish(input));
+  }
+
+  async rewrapModelCredential(input: RewrapModelCredentialInput) {
+    return rpcVia(this.stub, 'modelCredentialRewrap', (stub) => stub.modelCredentialRewrap(input));
   }
 }
 

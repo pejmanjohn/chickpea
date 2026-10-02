@@ -1,8 +1,15 @@
 import { randomUUID } from 'node:crypto';
 
+import { InstallationContextError, requireInstallationScope } from './installation-scope.ts';
 import { deploymentServesManyInstallations, providerPrefix } from './model-access.ts';
+import { modelCredentialSettingKeys } from './model-credential-settings.ts';
 import type { ProviderKeyId } from './provider-keys.ts';
-import type { SettingsStore } from './settings-store.ts';
+import {
+  isModelCredentialStore,
+  type ModelCredentialRecord,
+  type ModelCredentialStore,
+  type SettingsStore,
+} from './settings-store.ts';
 import { getSettingsStore, getUsageStore, type PlatformEnv } from './state-backend.ts';
 import type { ModelCredentialAttribution } from './types.ts';
 import type { UsageStore } from '../usage/types.ts';
@@ -11,6 +18,14 @@ import {
   hasDisallowedControlCharacter,
   trimmedNonEmpty,
 } from '../security/content-validation.ts';
+import { loadCredentialKeyring } from '../slack/credential-keyring.ts';
+import {
+  decryptModelProviderKeyEnvelope,
+  encryptModelProviderKeyEnvelope,
+  type CredentialKeyring,
+  type ModelProviderKeyEnvelopeContext,
+  type SlackSecretEnvelope,
+} from '../slack/secret-envelope.ts';
 
 const ENV_KEY_NAMES: Record<ProviderKeyId, string> = {
   anthropic: 'ANTHROPIC_API_KEY',
@@ -43,6 +58,44 @@ export class ModelCredentialRevisionError extends Error {
     super('The frozen model credential changed. Retry this request after provider setup is repaired.');
     this.name = 'ModelCredentialRevisionError';
   }
+}
+
+/** A save, rotation or deletion that lost to another writer, or was made against a stale version. */
+export class ModelCredentialConflictError extends Error {
+  constructor() {
+    super('Provider credential metadata changed concurrently.');
+    this.name = 'ModelCredentialConflictError';
+  }
+}
+
+/** A saved key that cannot be decrypted (its keyring slot is gone, or it was tampered with). */
+export class ModelCredentialUnavailableError extends Error {
+  readonly repairPath = '/admin/settings#model-providers';
+
+  constructor(readonly credentialRefId: string) {
+    super('The saved model credential could not be read. Save the provider key again.');
+    this.name = 'ModelCredentialUnavailableError';
+  }
+}
+
+export type ModelCredentialAction = { kind: 'save'; apiKey: string } | { kind: 'delete' };
+
+export interface InstallationModelCredentialInput {
+  env: PlatformEnv | undefined;
+  settings: SettingsStore;
+  usage: UsageStore;
+  now?: () => number;
+  /** Fence the change on the version the caller read. */
+  expectedVersion?: number;
+  /** The deployment's credential keyring; loaded through `env` when absent. */
+  keyring?: CredentialKeyring;
+}
+
+/** What an installation of a deployment serving many needs to read its saved key. */
+export interface HostedModelCredentialRead {
+  env: PlatformEnv | undefined;
+  settings: SettingsStore;
+  keyring?: CredentialKeyring;
 }
 
 interface ResolveCredentialOptions {
@@ -88,7 +141,16 @@ export async function resolveModelCredentialAttribution(
         activeFrom: 0,
       });
     }
-    const apiKey = await settings.getSetting(providerApiKeySetting(id));
+    if (hosted) {
+      // Only a key saved encrypted and readable with the deployment keyring counts; nothing is decrypted.
+      const current = savedHostedCredential(
+        await hostedModelCredentialStore(settings).readModelCredential(id),
+        deploymentModelKeyring(platformEnv),
+      );
+      if (!current) return null;
+      return registerCredential(storedRegistration(id, current));
+    }
+    const apiKey = await settings.getSetting(modelCredentialSettingKeys(id).apiKey);
     if (!trimmedNonEmpty(apiKey)) return null;
     const metadata = await ensureStoredCredentialMetadata(id, settings, now);
     if (!metadata.active) return null;
@@ -176,9 +238,250 @@ export async function revalidateModelCredentialAttribution(
   }
 }
 
-export async function rotateStoredModelCredential(
+/**
+ * Save, rotate or delete an installation's stored key, advancing its version
+ * under one stable reference and keeping usage attribution per version.
+ * Standalone keeps the key in settings, as before. An installation of a
+ * deployment serving many keeps it only encrypted, published with its
+ * metadata in one version-fenced write.
+ */
+export async function rotateInstallationModelCredential(
   id: ProviderKeyId,
-  action: { kind: 'save'; apiKey: string } | { kind: 'delete' },
+  action: ModelCredentialAction,
+  input: InstallationModelCredentialInput,
+): Promise<StoredCredentialMetadata> {
+  return deploymentServesManyInstallations(input.env)
+    ? rotateHostedModelCredential(id, action, input)
+    : rotateStoredModelCredential(id, action, input.settings, input.usage, input.now, input.expectedVersion);
+}
+
+/**
+ * The key is encrypted for the version it will publish before the store's
+ * short transaction begins, so a failure anywhere before publication leaves
+ * the previous version and key exactly as they were. Without an expected
+ * version, a lost race retries on the newer version; with one, it is a
+ * conflict.
+ */
+async function rotateHostedModelCredential(
+  id: ProviderKeyId,
+  action: ModelCredentialAction,
+  input: InstallationModelCredentialInput,
+): Promise<StoredCredentialMetadata> {
+  const installationId = hostedInstallationId(input.env);
+  const store = hostedModelCredentialStore(input.settings);
+  const now = input.now ?? Date.now;
+  let keyring = input.keyring;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const current = await store.readModelCredential(id);
+    const currentVersion = current?.version ?? 0;
+    if (input.expectedVersion !== undefined && currentVersion !== input.expectedVersion) {
+      throw new ModelCredentialConflictError();
+    }
+    const timestamp = now();
+    const next: StoredCredentialMetadata = {
+      // Damaged metadata has no reference; the save repairs it under a new one.
+      credentialRefId: current?.credentialRefId || `cred_${id}_${randomUUID()}`,
+      version: currentVersion + 1,
+      active: action.kind === 'save',
+      activeFrom: timestamp,
+    };
+    let envelope: SlackSecretEnvelope | undefined;
+    if (action.kind === 'save') {
+      keyring ??= loadCredentialKeyring(input.env);
+      envelope = await encryptModelProviderKeyEnvelope(keyring, modelProviderKeyContext(installationId, id, next), action.apiKey);
+    }
+    // Any active version is retired, including one whose key predates encryption.
+    const previous = current?.active ? current : undefined;
+    if (previous) await input.usage.putCredential(storedRegistration(id, previous));
+    const published = await store.publishModelCredential({
+      providerId: id,
+      expectedVersion: currentVersion,
+      credentialRefId: next.credentialRefId,
+      version: next.version,
+      activeFrom: next.activeFrom,
+      ...(envelope ? { envelope } : {}),
+    });
+    if (!published) {
+      if (input.expectedVersion !== undefined) throw new ModelCredentialConflictError();
+      continue;
+    }
+    if (previous) await input.usage.retireCredential(previous.credentialRefId, previous.version, timestamp);
+    if (next.active) await input.usage.putCredential(storedRegistration(id, next));
+    return next;
+  }
+  throw new ModelCredentialConflictError();
+}
+
+/**
+ * The saved key of an installation of a deployment serving many, with its
+ * metadata. With `expected` (a grant's frozen reference and version), any
+ * other current credential, or none, is refused as a revision change before
+ * anything is decrypted: a superseded version is never served the newer key.
+ * A key encrypted under a key ID the deployment keyring no longer has is not
+ * saved, exactly as every readiness check sees it.
+ */
+export async function readHostedModelCredential(
+  id: ProviderKeyId,
+  input: HostedModelCredentialRead,
+  expected?: { credentialRefId: string; version: number },
+): Promise<{ apiKey: string; metadata: StoredCredentialMetadata } | undefined> {
+  const keyring = input.keyring ?? deploymentModelKeyring(input.env);
+  const current = savedHostedCredential(await hostedModelCredentialStore(input.settings).readModelCredential(id), keyring);
+  if (expected && (current?.credentialRefId !== expected.credentialRefId || current.version !== expected.version)) {
+    throw new ModelCredentialRevisionError(expected.credentialRefId, expected.version);
+  }
+  if (!current || !keyring) return undefined;
+  const installationId = hostedInstallationId(input.env);
+  let apiKey: string;
+  try {
+    apiKey = await decryptModelProviderKeyEnvelope(
+      keyring,
+      modelProviderKeyContext(installationId, id, current),
+      current.envelope,
+    );
+  } catch {
+    throw new ModelCredentialUnavailableError(current.credentialRefId);
+  }
+  const { credentialRefId, version, activeFrom } = current;
+  return { apiKey, metadata: { credentialRefId, version, active: true, activeFrom } };
+}
+
+/**
+ * After the deployment keyring gains a new current key, re-encrypt each of
+ * one installation's saved keys still under an older key ID, keeping its
+ * version, so runs frozen to it keep resolving. The Slack encryption rotation
+ * neither rewraps nor counts these envelopes: a prior key ID may be retired
+ * only once this leaves nothing remaining in every installation. A key whose
+ * key ID the keyring has already lost cannot be rewrapped and remains.
+ */
+export async function rewrapHostedModelCredentials(
+  input: HostedModelCredentialRead & { keyring: CredentialKeyring },
+): Promise<{ rewrapped: ProviderKeyId[]; remaining: ProviderKeyId[] }> {
+  const installationId = hostedInstallationId(input.env);
+  const store = hostedModelCredentialStore(input.settings);
+  const rewrapped: ProviderKeyId[] = [];
+  const remaining: ProviderKeyId[] = [];
+  for (const id of BUILTIN_PROVIDERS) {
+    const current = await store.readModelCredential(id);
+    const envelope = current?.active ? current.envelope : undefined;
+    if (!current || !envelope || envelope.keyId === input.keyring.currentKeyId) continue;
+    let published = false;
+    if (Object.hasOwn(input.keyring.keys, envelope.keyId)) {
+      const context = modelProviderKeyContext(installationId, id, current);
+      try {
+        const apiKey = await decryptModelProviderKeyEnvelope(input.keyring, context, envelope);
+        published = await store.rewrapModelCredential({
+          providerId: id,
+          expectedVersion: current.version,
+          expectedKeyId: envelope.keyId,
+          envelope: await encryptModelProviderKeyEnvelope(input.keyring, context, apiKey),
+        });
+      } catch {
+        published = false;
+      }
+    }
+    if (published) {
+      rewrapped.push(id);
+      continue;
+    }
+    // A concurrent save already published under the current key; anything else still waits.
+    const latest = await store.readModelCredential(id);
+    if (latest?.active && latest.envelope && latest.envelope.keyId !== input.keyring.currentKeyId) remaining.push(id);
+  }
+  return { rewrapped, remaining };
+}
+
+/**
+ * An explicit, operator-run migration for one installation of a deployment
+ * serving many; nothing calls it on its own. A key an earlier build saved in
+ * the clear is published encrypted under the next version of the same
+ * reference, and its plaintext removed, in the store's one version-fenced
+ * write; runs frozen to the old version then fail as a revision change
+ * rather than reading a key the store no longer has in that form. A
+ * plaintext left beside a deleted or already-encrypted credential is
+ * removed without publishing anything. Running it again changes nothing.
+ * Standalone keeps its plaintext keys and is refused.
+ */
+export async function migratePlaintextModelCredentials(
+  input: Omit<InstallationModelCredentialInput, 'expectedVersion'>,
+): Promise<{ migrated: ProviderKeyId[]; removed: ProviderKeyId[] }> {
+  if (!deploymentServesManyInstallations(input.env)) {
+    throw new Error('Only an installation of a deployment serving many stores its model keys encrypted.');
+  }
+  hostedInstallationId(input.env);
+  const store = hostedModelCredentialStore(input.settings);
+  const migrated: ProviderKeyId[] = [];
+  const removed: ProviderKeyId[] = [];
+  for (const id of BUILTIN_PROVIDERS) {
+    const keys = modelCredentialSettingKeys(id);
+    const plaintext = await input.settings.getSetting(keys.apiKey);
+    if (plaintext === undefined) continue;
+    const current = await store.readModelCredential(id);
+    // Damaged metadata (no reference) counts as none: the plaintext is migrated under a new reference.
+    if (!trimmedNonEmpty(plaintext) || (current?.credentialRefId && (!current.active || current.envelope))) {
+      const cleared = await input.settings.applySettingsPatch({
+        expectedAll: [
+          { key: keys.apiKey, value: plaintext },
+          { key: keys.version, value: current ? String(current.version) : null },
+        ],
+        delete: [keys.apiKey],
+      });
+      if (!cleared) throw new ModelCredentialConflictError();
+      removed.push(id);
+      continue;
+    }
+    await rotateHostedModelCredential(id, { kind: 'save', apiKey: plaintext }, {
+      ...input,
+      expectedVersion: current?.version ?? 0,
+    });
+    migrated.push(id);
+  }
+  return { migrated, removed };
+}
+
+/**
+ * Whether an installation of a deployment serving many has a saved key the
+ * deployment keyring can read, without decrypting it.
+ */
+export async function hostedModelCredentialSaved(
+  id: ProviderKeyId,
+  settings: SettingsStore,
+  keyring: CredentialKeyring | undefined,
+): Promise<boolean> {
+  return Boolean(savedHostedCredential(await hostedModelCredentialStore(settings).readModelCredential(id), keyring));
+}
+
+/**
+ * The deployment keyring as a reader sees it: none when it cannot be loaded,
+ * in which case no saved key is readable. Saving still loads it strictly.
+ */
+export function deploymentModelKeyring(env: PlatformEnv | undefined): CredentialKeyring | undefined {
+  try {
+    return loadCredentialKeyring(env);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The model credential version an installation's revision readers
+ * (management, setup) fence on: on a deployment serving many, the version its
+ * store's publication fence sees, even when the metadata around it is damaged.
+ */
+export async function installationModelCredentialVersion(
+  id: ProviderKeyId,
+  env: PlatformEnv | undefined,
+  settings: SettingsStore,
+): Promise<number> {
+  if (deploymentServesManyInstallations(env)) {
+    return (await hostedModelCredentialStore(settings).readModelCredential(id))?.version ?? 0;
+  }
+  return (await storedCredentialMetadata(id, settings))?.version ?? 0;
+}
+
+async function rotateStoredModelCredential(
+  id: ProviderKeyId,
+  action: ModelCredentialAction,
   settings: SettingsStore,
   usage: UsageStore,
   now: () => number = Date.now,
@@ -187,7 +490,7 @@ export async function rotateStoredModelCredential(
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const current = await storedCredentialMetadata(id, settings);
     if (expectedVersion !== undefined && (current?.version ?? 0) !== expectedVersion) {
-      throw new Error('Provider credential metadata changed concurrently.');
+      throw new ModelCredentialConflictError();
     }
     const timestamp = now();
     const next: StoredCredentialMetadata = {
@@ -197,36 +500,28 @@ export async function rotateStoredModelCredential(
       activeFrom: timestamp,
     };
     if (current?.active) {
-      await usage.putCredential({
-        credentialRefId: current.credentialRefId,
-        version: current.version,
-        providerId: id,
-        sourceKind: 'stored',
-        label: `Stored ${providerDisplayName(id)} credential`,
-        scopeLabel: null,
-        unknownRotation: false,
-        activeFrom: current.activeFrom,
-      });
+      await usage.putCredential(storedRegistration(id, current));
     }
+    const keys = modelCredentialSettingKeys(id);
     const applied = await settings.applySettingsPatch({
       expected: {
-        key: credentialVersionSetting(id),
+        key: keys.version,
         value: current ? String(current.version) : null,
       },
       set: [
         ...(action.kind === 'save'
-          ? [{ key: providerApiKeySetting(id), value: action.apiKey }]
+          ? [{ key: keys.apiKey, value: action.apiKey }]
           : []),
-        { key: credentialRefSetting(id), value: next.credentialRefId },
-        { key: credentialVersionSetting(id), value: String(next.version) },
-        { key: credentialActiveSetting(id), value: String(next.active) },
-        { key: credentialActiveFromSetting(id), value: String(next.activeFrom) },
+        { key: keys.credentialRefId, value: next.credentialRefId },
+        { key: keys.version, value: String(next.version) },
+        { key: keys.active, value: String(next.active) },
+        { key: keys.activeFrom, value: String(next.activeFrom) },
       ],
-      ...(action.kind === 'delete' ? { delete: [providerApiKeySetting(id)] } : {}),
+      ...(action.kind === 'delete' ? { delete: [keys.apiKey] } : {}),
     });
     if (!applied) {
       if (expectedVersion !== undefined) {
-        throw new Error('Provider credential metadata changed concurrently.');
+        throw new ModelCredentialConflictError();
       }
       continue;
     }
@@ -234,31 +529,23 @@ export async function rotateStoredModelCredential(
       await usage.retireCredential(current.credentialRefId, current.version, timestamp);
     }
     if (next.active) {
-      await usage.putCredential({
-        credentialRefId: next.credentialRefId,
-        version: next.version,
-        providerId: id,
-        sourceKind: 'stored',
-        label: `Stored ${providerDisplayName(id)} credential`,
-        scopeLabel: null,
-        unknownRotation: false,
-        activeFrom: next.activeFrom,
-      });
+      await usage.putCredential(storedRegistration(id, next));
     }
     return next;
   }
-  throw new Error('Provider credential metadata changed concurrently.');
+  throw new ModelCredentialConflictError();
 }
 
 export async function storedCredentialMetadata(
   id: ProviderKeyId,
   settings: SettingsStore,
 ): Promise<StoredCredentialMetadata | null> {
+  const keys = modelCredentialSettingKeys(id);
   const [ref, versionRaw, activeRaw, activeFromRaw] = await settings.getSettings([
-    credentialRefSetting(id),
-    credentialVersionSetting(id),
-    credentialActiveSetting(id),
-    credentialActiveFromSetting(id),
+    keys.credentialRefId,
+    keys.version,
+    keys.active,
+    keys.activeFrom,
   ]);
   const version = positiveEpoch(versionRaw);
   const activeFrom = nonNegativeInteger(activeFromRaw);
@@ -272,21 +559,18 @@ export async function storedCredentialMetadata(
 }
 
 /**
- * Stored keys with their version metadata, all in one read, so a concurrent
- * rotation can never pair one version's key with another version's metadata.
- * A provider with no active stored key is absent.
+ * Standalone's stored keys with their version metadata, all in one read, so a
+ * concurrent rotation can never pair one version's key with another
+ * version's metadata. A provider with no active stored key is absent.
  */
 export async function readStoredModelCredentials(
   ids: readonly ProviderKeyId[],
   settings: SettingsStore,
 ): Promise<Map<ProviderKeyId, { apiKey: string; metadata: StoredCredentialMetadata }>> {
-  const keysPerProvider = (id: ProviderKeyId) => [
-    providerApiKeySetting(id),
-    credentialRefSetting(id),
-    credentialVersionSetting(id),
-    credentialActiveSetting(id),
-    credentialActiveFromSetting(id),
-  ];
+  const keysPerProvider = (id: ProviderKeyId) => {
+    const keys = modelCredentialSettingKeys(id);
+    return [keys.apiKey, keys.credentialRefId, keys.version, keys.active, keys.activeFrom];
+  };
   const values = await settings.getSettings(ids.flatMap(keysPerProvider));
   const credentials = new Map<ProviderKeyId, { apiKey: string; metadata: StoredCredentialMetadata }>();
   ids.forEach((id, index) => {
@@ -331,13 +615,14 @@ async function ensureStoredCredentialMetadata(
     active: true,
     activeFrom: now(),
   };
+  const keys = modelCredentialSettingKeys(id);
   const applied = await settings.applySettingsPatch({
-    expected: { key: credentialVersionSetting(id), value: null },
+    expected: { key: keys.version, value: null },
     set: [
-      { key: credentialRefSetting(id), value: created.credentialRefId },
-      { key: credentialVersionSetting(id), value: '1' },
-      { key: credentialActiveSetting(id), value: 'true' },
-      { key: credentialActiveFromSetting(id), value: String(created.activeFrom) },
+      { key: keys.credentialRefId, value: created.credentialRefId },
+      { key: keys.version, value: '1' },
+      { key: keys.active, value: 'true' },
+      { key: keys.activeFrom, value: String(created.activeFrom) },
     ],
   });
   if (applied) return created;
@@ -375,24 +660,65 @@ function credentialAttribution(row: CredentialRegistration): ModelCredentialAttr
   };
 }
 
-function providerApiKeySetting(id: ProviderKeyId): string {
-  return `provider.${id}.apiKey`;
+function hostedInstallationId(env: PlatformEnv | undefined): string {
+  const scope = requireInstallationScope(env);
+  if (!scope) {
+    throw new InstallationContextError(
+      'installation_context_missing',
+      'An encrypted model credential belongs to one installation and the request has none.',
+    );
+  }
+  return scope.installationId;
 }
 
-function credentialRefSetting(id: ProviderKeyId): string {
-  return `provider.${id}.credentialRefId`;
+function hostedModelCredentialStore(settings: SettingsStore): SettingsStore & ModelCredentialStore {
+  if (!isModelCredentialStore(settings)) {
+    throw new Error('This settings store cannot hold encrypted model credentials.');
+  }
+  return settings;
 }
 
-function credentialVersionSetting(id: ProviderKeyId): string {
-  return `provider.${id}.credentialVersion`;
+/**
+ * The current credential when it is active with its key saved encrypted under
+ * a key ID the deployment keyring still has. No decryption happens here.
+ */
+function savedHostedCredential(
+  record: ModelCredentialRecord | undefined,
+  keyring: CredentialKeyring | undefined,
+): (ModelCredentialRecord & Required<Pick<ModelCredentialRecord, 'envelope'>>) | undefined {
+  return record?.active && record.envelope && keyring && Object.hasOwn(keyring.keys, record.envelope.keyId)
+    ? record as ModelCredentialRecord & Required<Pick<ModelCredentialRecord, 'envelope'>>
+    : undefined;
 }
 
-function credentialActiveSetting(id: ProviderKeyId): string {
-  return `provider.${id}.credentialActive`;
+function modelProviderKeyContext(
+  installationId: string,
+  providerId: ProviderKeyId,
+  credential: Pick<StoredCredentialMetadata, 'credentialRefId' | 'version'>,
+): ModelProviderKeyEnvelopeContext {
+  return {
+    purpose: 'model_provider_key',
+    installationId,
+    providerId,
+    credentialRefId: credential.credentialRefId,
+    credentialVersion: credential.version,
+  };
 }
 
-function credentialActiveFromSetting(id: ProviderKeyId): string {
-  return `provider.${id}.credentialActiveFrom`;
+function storedRegistration(
+  id: ProviderKeyId,
+  credential: Pick<StoredCredentialMetadata, 'credentialRefId' | 'version' | 'activeFrom'>,
+): CredentialRegistration {
+  return {
+    credentialRefId: credential.credentialRefId,
+    version: credential.version,
+    providerId: id,
+    sourceKind: 'stored',
+    label: `Stored ${providerDisplayName(id)} credential`,
+    scopeLabel: null,
+    unknownRotation: false,
+    activeFrom: credential.activeFrom,
+  };
 }
 
 function environmentScope(id: ProviderKeyId, env: NodeJS.ProcessEnv): string | null {

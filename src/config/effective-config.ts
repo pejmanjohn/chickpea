@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 
 import { ModelResolutionError } from './errors.ts';
 import { resolveAssignment, surfaceForChannelId, type ConfigStores } from './resolver.ts';
+import type { PlatformEnv } from './state-backend.ts';
 import type {
   CustomAgentConfig,
   ModelCredentialAttribution,
@@ -64,6 +65,7 @@ export async function resolveEffectiveSlackConfig(
   stores: ConfigStores,
   env: NodeJS.ProcessEnv = process.env,
   agentId?: string,
+  platformEnv?: PlatformEnv,
 ): Promise<EffectiveSlackConfig> {
   // The durable agent and admin resolve from a thread key / channel id (no live
   // turn), so the surface is inferred from the channel id (D… = direct).
@@ -71,6 +73,7 @@ export async function resolveEffectiveSlackConfig(
     surface: surfaceForChannelId(channelId),
     env,
     ...(agentId ? { agentId } : {}),
+    ...(platformEnv ? { platformEnv } : {}),
   });
   return effectiveSlackConfigFromAssignment(assignment);
 }
