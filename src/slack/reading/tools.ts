@@ -14,7 +14,7 @@ import { parseSlackManagementSignal } from '../../management/slack-tools.ts';
 import { resolveSlackInstallationExecutionContext } from '../installation-execution.ts';
 import { assertSlackListsAccess } from '../lists/tools.ts';
 import { SlackListError } from '../lists/types.ts';
-import { createSlackReadGate } from '../read-budget.ts';
+import { createSlackReadGate, sharesSlackAppReadBudget } from '../read-budget.ts';
 import { slackReadAuthorityPorts } from './authority.ts';
 import { SlackReadError, SLACK_READ_MESSAGES } from './errors.ts';
 import { resolveSlackReadTarget } from './links.ts';
@@ -158,7 +158,8 @@ async function buildService(
     gate: createSlackReadGate({
       state: getSlackStateStore(env),
       workspaceId: signal.workspaceId,
-      gated: installation.transportMode === 'gateway',
+      gated: installation.sharedAppReads ??
+        sharesSlackAppReadBudget({ transportMode: installation.transportMode, env }),
     }),
     authority,
     self: { botUserId: installation.botUserId },

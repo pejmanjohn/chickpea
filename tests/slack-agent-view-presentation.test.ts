@@ -1112,6 +1112,29 @@ test('a receipt read waits for the shared app\'s read budget and leaves the rece
   }
 });
 
+test('a receipt read of a deployment serving many installations is paced even without a read gate', async () => {
+  const previous = process.env.CHICKPEA_TENANCY;
+  process.env.CHICKPEA_TENANCY = 'installation';
+  const h = harness({ schemaVersion: 3, owner: { kind: 'chickpea' } });
+  try {
+    const prepared = await h.presentation.beginActivity({
+      kind: 'reading', action: 'Reading', object: 'the request', text: 'Reading the request',
+    }, 'message');
+    assert.ok(prepared);
+    await h.presentation.recordActivityReceipt(prepared.operationId, 'unknown');
+    // An incomplete page leaves the receipt unknown, so a later pass reads again.
+    h.setThreadReplies([], false);
+    await h.presentation.reconcileActivityReceipts();
+    await h.presentation.reconcileActivityReceipts();
+    assert.equal(h.calls.filter((call) => call.method === 'conversations.replies').length, 1,
+      'the second read waits for the workspace\'s next minute');
+  } finally {
+    h.db.close();
+    if (previous === undefined) delete process.env.CHICKPEA_TENANCY;
+    else process.env.CHICKPEA_TENANCY = previous;
+  }
+});
+
 test('V3 reconciles unknown activity posts and cleanup receipts without replaying incomplete reads', async () => {
   const h = harness({ schemaVersion: 3, owner: { kind: 'chickpea' } });
   try {

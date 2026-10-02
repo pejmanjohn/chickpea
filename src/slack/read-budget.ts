@@ -10,8 +10,11 @@
  * build during a rollout, a disconnect), this isolate paces itself from its
  * own copy rather than stopping reads or turning the budget off.
  */
+import { deploymentServesManyInstallations } from '../config/model-access.ts';
+import type { PlatformEnv } from '../config/state-backend.ts';
 import { emitRuntimeLatency, type RuntimeLatencySink } from '../observability/runtime-latency.ts';
 import type { SlackStateStore } from './claim-store.ts';
+import { isGatewaySlackWebClient } from './gateway/web-client.ts';
 import { DEFAULT_SLACK_READ_BUDGET, type SlackReadMethod } from './run-presentations.ts';
 import { SlackTransportError } from './transport/types.ts';
 
@@ -42,6 +45,22 @@ const localNextReadAt = new Map<string, number>();
 let lastLocalWarningAt = Number.NEGATIVE_INFINITY;
 
 const OK: SlackReadGateDecision = Object.freeze({ ok: true });
+
+/**
+ * Whether an installation's reads draw on a shared app's budget: every
+ * installation of a deployment serving many (the host's one app is not on
+ * the Marketplace) and the standalone shared gateway app. A customer's own
+ * app reads with its ordinary limits. Without a transport, the client's own
+ * gateway marker decides, as it did before installations had a context.
+ */
+export function sharesSlackAppReadBudget(input: {
+  transportMode?: 'direct' | 'gateway' | undefined;
+  env?: PlatformEnv | undefined;
+  client?: unknown;
+}): boolean {
+  if (deploymentServesManyInstallations(input.env)) return true;
+  return input.transportMode ? input.transportMode === 'gateway' : isGatewaySlackWebClient(input.client);
+}
 
 export const UNGATED_SLACK_READS: SlackReadGate = Object.freeze({
   gated: false,

@@ -129,7 +129,7 @@ import {
 import { slackSemanticActivityStatusEnabled } from '../slack/semantic-status-flag.ts';
 import { hydrateSlackPublicHandoffFallback } from '../slack/web-client-context.ts';
 import { hydrateTurnSlackContext } from '../slack/turn-context-reads.ts';
-import { createSlackReadGate } from '../slack/read-budget.ts';
+import { createSlackReadGate, sharesSlackAppReadBudget } from '../slack/read-budget.ts';
 import {
   assembleRetainedSlackContext,
   reconcileSlackPublicContextMutation,
@@ -2223,7 +2223,7 @@ async function processSlackEvent(
             readGate: createSlackReadGate({
               state,
               workspaceId: turn.workspaceId,
-              gated: installation.transportMode === 'gateway',
+              gated: sharesSlackAppReadBudget({ transportMode: installation.transportMode, env: platformEnv }),
             }),
             ...(installation.botUserId ? { self: { botUserId: installation.botUserId } } : {}),
           },
@@ -3958,6 +3958,9 @@ export async function classifyCandidateTurn(
       transportMode: dependencies.installation.transportMode,
       ...(dependencies.installation.botUserId ? { botUserId: dependencies.installation.botUserId } : {}),
     } : {}),
+    sharedAppReads: sharesSlackAppReadBudget({
+      transportMode: dependencies.installation?.transportMode, env: platformEnv, client,
+    }),
     state: getSlackStateStore(platformEnv),
     ...(assignment.runtimeContract === 'chickpea-v1' && dependencies.config
       ? { record: dependencies.config }

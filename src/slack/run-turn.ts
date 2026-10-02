@@ -105,8 +105,7 @@ import type {
 } from './turn-job-types.ts';
 import { slackContextSinceWatermark, threadContinuityNote } from './thread-continuity.ts';
 import { hydrateTurnSlackContext } from './turn-context-reads.ts';
-import { createSlackReadGate } from './read-budget.ts';
-import { isGatewaySlackWebClient } from './gateway/web-client.ts';
+import { createSlackReadGate, sharesSlackAppReadBudget } from './read-budget.ts';
 import { resolveSlackContextNames } from './context-names.ts';
 import type { FlueDispatchReceiptV1 } from './turn-job-types.ts';
 import type { SlackProgressiveReadRelay } from './progressive-relay.ts';
@@ -473,6 +472,10 @@ async function runTurnAttempt(
     throw new SlackInstallationUnavailableError(turnWorkspaceId, 'execution_workspace_mismatch');
   }
   const client = installationContext?.client ?? options.client ?? (await getClient(platformEnv));
+  // Every read of a shared app's installation draws on its workspace budget.
+  const sharedAppReads = installationContext?.sharedAppReads ?? sharesSlackAppReadBudget({
+    transportMode: installationContext?.transportMode, env: platformEnv, client,
+  });
   // A frozen assignment (from a thread snapshot) carries its model; otherwise
   // resolve it from the agent via policy.
   const resolvedModel = resolvedAssignmentModel(assignment);
@@ -618,7 +621,7 @@ async function runTurnAttempt(
         readGate: createSlackReadGate({
           state: options.appStores?.slackState ?? getSlackStateStore(platformEnv),
           workspaceId: turn.workspaceId,
-          gated: installationContext ? installationContext.transportMode === 'gateway' : isGatewaySlackWebClient(client),
+          gated: sharedAppReads,
         }),
         runId: options.runId,
         runFencingToken: options.runFencingToken ?? 0,
@@ -1588,6 +1591,7 @@ async function runTurnAttempt(
             transportMode: installationContext.transportMode,
             botUserId: installationContext.botUserId,
           } : {}),
+          sharedAppReads,
           state: options.appStores?.slackState ?? getSlackStateStore(platformEnv),
           ...(threadRecord ? { record: threadRecord } : {}),
         });

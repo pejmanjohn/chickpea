@@ -50,8 +50,14 @@ import {
 import type { ProgressiveEligibilityDecision } from './progressive-eligibility.ts';
 import { SlackTransportError } from './transport/types.ts';
 import { slackClientMessageId } from './transport/message-id.ts';
-import { isGatewaySlackWebClient, setAgentSessionStatus } from './gateway/web-client.ts';
-import { createSlackReadGate, isSlackRateLimitError, slackRetryAfterMs, type SlackReadGate } from './read-budget.ts';
+import { setAgentSessionStatus } from './gateway/web-client.ts';
+import {
+  createSlackReadGate,
+  isSlackRateLimitError,
+  sharesSlackAppReadBudget,
+  slackRetryAfterMs,
+  type SlackReadGate,
+} from './read-budget.ts';
 import {
   MAX_SLACK_CONTINUATION_PARTS,
   MAX_SLACK_CONTINUATION_RESPLITS,
@@ -2674,7 +2680,8 @@ export class SlackAgentViewPresentation {
     const gate = this.options.readGate ?? createSlackReadGate({
       state: undefined,
       workspaceId: presentation.root.workspaceId,
-      gated: isGatewaySlackWebClient(this.options.client),
+      // No installation context here: a deployment serving many still gates.
+      gated: sharesSlackAppReadBudget({ client: this.options.client }),
     });
     if (!(await gate.reserve('conversations.replies')).ok) return undefined;
     try {

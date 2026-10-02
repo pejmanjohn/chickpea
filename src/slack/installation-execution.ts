@@ -17,6 +17,7 @@ import {
   resolveSlackInstallationCredentials,
   type SlackCredentialResolutionDependencies,
 } from './installation-credentials.ts';
+import { sharesSlackAppReadBudget } from './read-budget.ts';
 import { createSlackWebClient } from './web-client.ts';
 import { SlackTransportError } from './transport/types.ts';
 import { GatewayDeploymentClient } from './gateway/client.ts';
@@ -37,6 +38,8 @@ interface SlackInstallationReader {
 export interface SlackInstallationExecutionContext {
   workspaceId: string;
   transportMode: 'direct' | 'gateway';
+  /** Whether its reads draw on a shared app's budget (sharesSlackAppReadBudget). */
+  sharedAppReads?: boolean;
   botToken?: string;
   botUserId: string;
   displayName?: string;
@@ -158,6 +161,7 @@ export async function resolveSlackInstallationExecutionContext(
   return {
     workspaceId,
     transportMode: 'direct',
+    sharedAppReads: sharesSlackAppReadBudget({ transportMode: 'direct', env }),
     botToken: credentials.botToken,
     botUserId: auth.botUserId,
     ...(auth.botName ? { displayName: auth.botName } : {}),
@@ -261,6 +265,7 @@ async function resolveGatewayExecutionContext(
   return {
     workspaceId: installation.workspaceId,
     transportMode: 'gateway',
+    sharedAppReads: true,
     botUserId,
     client,
   };
