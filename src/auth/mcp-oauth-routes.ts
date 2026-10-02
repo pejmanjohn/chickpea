@@ -20,6 +20,7 @@ import {
   mcpResourceForOrigin,
 } from './mcp-oauth.ts';
 import { BetterAuthMcpOAuthContinuationStore } from './mcp-oauth-continuation.ts';
+import { hostedLoginFence, type HostedLoginFence } from './hosted-login.ts';
 import { validateBrowserMutationProvenance } from './request-provenance.ts';
 import { createWorkspaceManagementMcpHandler } from '../management/mcp.ts';
 import type { ProductTelemetryCapture } from '../telemetry/client.ts';
@@ -271,6 +272,7 @@ async function dispatchMcp(c: Context, options: McpOAuthRuntimeOptions): Promise
     environment: runtime.environment,
     identity: runtime.identity,
     betterAuthOrganizationId: runtime.betterAuthOrganizationId,
+    hostedLogin: hostedLoginFence(c.env as PlatformEnv | undefined),
     createServer: options.createServer ?? ((principal) =>
       createWorkspaceManagementMcpHandler(
         principal,
@@ -309,6 +311,7 @@ function authenticatedRuntimeHandler(input: {
   environment: BetterAuthEnvironment;
   identity: IdentityStore;
   betterAuthOrganizationId: string;
+  hostedLogin: HostedLoginFence | undefined;
   createServer: McpServerFactory;
 }): McpRequestHandler {
   // Built on first use, so a request refused before its token is checked starts nothing.
@@ -318,6 +321,7 @@ function authenticatedRuntimeHandler(input: {
     access: input.identity,
     organizationId: input.betterAuthOrganizationId,
     canonicalAdminOrigin: input.environment.baseURL,
+    hostedLogin: input.hostedLogin,
   });
   return createMcpAuthenticatedRequestHandler({
     baseURL: input.environment.baseURL,

@@ -8,6 +8,7 @@ import type {
 } from '../identity/types.ts';
 import type { BetterAuthDatabaseBackend } from './better-auth-backend.ts';
 import { createBetterAuth } from './better-auth.ts';
+import { hostedLoginAgrees, type HostedLoginFence } from './hosted-login.ts';
 import type {
   AuthPrincipal,
   PrincipalAuthenticationResult,
@@ -19,6 +20,13 @@ interface BetterAuthDirectoryInput {
   access: IdentityStore;
   organizationId: string;
   canonicalAdminOrigin: string;
+  /**
+   * Under installation tenancy (`hostedLoginFence(env)`): a Better Auth user
+   * resolves only if they are the login the host routed the request by, and
+   * only while this installation's stored binding and organization agree
+   * with that login's Slack account. Without a login nobody resolves.
+   */
+  hostedLogin?: HostedLoginFence | undefined;
 }
 
 /** Chickpea's Slack-keyed TAG_STATE directory remains authoritative. */
@@ -46,6 +54,8 @@ export class BetterAuthDirectory implements HumanIdentityDirectory {
   }
 
   async resolveBetterAuthUser(betterAuthUserId: string): Promise<IdentityResolution | undefined> {
+    const fence = this.input.hostedLogin;
+    if (fence && fence.login?.betterAuthUserId !== betterAuthUserId) return undefined;
     const direct = await this.input.access.resolveBetterAuthIdentity(betterAuthUserId);
     if (!direct) return undefined;
     const { binding } = direct;
@@ -67,6 +77,7 @@ export class BetterAuthDirectory implements HumanIdentityDirectory {
         binding.organizationId !== organization.id) {
       return undefined;
     }
+    if (fence && !(fence.login && hostedLoginAgrees(fence.login, binding, organization))) return undefined;
     if (overlay && (overlay.organizationId !== membership.organizationId ||
         overlay.accessStatus !== 'active')) return undefined;
     return { user, binding, membership };

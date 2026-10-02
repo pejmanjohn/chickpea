@@ -568,6 +568,7 @@ import {
   BetterAuthDirectory,
   BetterAuthSessionAuthenticator,
 } from '../auth/better-auth-principal.ts';
+import { hostedLoginFence } from '../auth/hosted-login.ts';
 import {
   resolveBetterAuthEnvironment,
   resolveBetterAuthBootstrapEnvironment,
@@ -2818,6 +2819,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           access: identityStore,
           organizationId: control.betterAuthOrganizationId,
           canonicalAdminOrigin: control.canonicalAdminOrigin,
+          hostedLogin: hostedLoginFence(c.env as PlatformEnv | undefined),
         }),
         organizationId: control.betterAuthOrganizationId,
       };
@@ -2840,7 +2842,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           directory,
           organizationId,
         }),
-        personalTokens: new PersonalTokenService(identityStore, { directory }),
+        // A host serving many installations routes Admin by the browser
+        // session alone; a personal token names no installation to route by.
+        ...(hostedLoginFence(c.env as PlatformEnv | undefined)
+          ? {}
+          : { personalTokens: new PersonalTokenService(identityStore, { directory }) }),
         authControl: () => requestAuthControl(c),
         background: (task) => backgroundTask(c, task),
       });
