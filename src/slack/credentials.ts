@@ -5,6 +5,7 @@ import {
   installationCacheKey,
 } from '../config/installation-scope.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
+import type { IdentityStore } from '../identity/types.ts';
 import {
   getIdentityStore,
   getSettingsStore,
@@ -195,11 +196,13 @@ function envPublicUrl(env?: PlatformEnv): string | undefined {
  * `slack.publicUrl` → a standalone install's canonical Admin origin →
  * undefined. An explicit `store` bypasses the cache (tests); otherwise the
  * stored read is cached for the TTL. Env is never cached — a process env is
- * already a cheap read and must reflect changes immediately.
+ * already a cheap read and must reflect changes immediately. A caller inside
+ * the state store passes its local `identity`, as it passes its settings.
  */
 export async function resolveSlackPublicUrl(
   env?: PlatformEnv,
   store?: SettingsStore,
+  identity?: Pick<IdentityStore, 'getAuthControl'>,
 ): Promise<string | undefined> {
   const fromEnv = envPublicUrl(env);
   if (fromEnv) {
@@ -213,16 +216,20 @@ export async function resolveSlackPublicUrl(
   }
   const settings = store ?? getSettingsStore(env);
   const stored = await settings.getSetting(SLACK_SETTING_KEYS.publicUrl);
-  const value = stored ? stored.replace(/\/+$/, '') : await canonicalAdminOrigin(env);
+  const value = stored ? stored.replace(/\/+$/, '') : await canonicalAdminOrigin(env, identity);
   if (!store) cachePublicUrl(key, value, now);
   return value;
 }
 
 /** The Admin origin a standalone install's setup pinned; a host names its own URL. */
-async function canonicalAdminOrigin(env?: PlatformEnv): Promise<string | undefined> {
+async function canonicalAdminOrigin(
+  env?: PlatformEnv,
+  identity?: Pick<IdentityStore, 'getAuthControl'>,
+): Promise<string | undefined> {
   try {
     if (deploymentServesManyInstallations(env)) return undefined;
-    return (await getIdentityStore(env).getAuthControl())?.canonicalAdminOrigin ?? undefined;
+    return (await (identity ?? getIdentityStore(env)).getAuthControl())?.canonicalAdminOrigin ??
+      undefined;
   } catch {
     return undefined;
   }

@@ -225,6 +225,11 @@ test('the public URL falls back to a standalone install\'s canonical Admin origi
       'https://env.example',
     );
     await h.stores.settings.deleteSetting('slack.publicUrl');
+    // A caller inside the state store reads its own local identity, not a proxy.
+    const local = {
+      getAuthControl: async () => ({ canonicalAdminOrigin: 'https://local.example' }) as never,
+    };
+    assert.equal(await resolveSlackPublicUrl(undefined, h.stores.settings, local), 'https://local.example');
     // A host serving many installations names its own public URL.
     const hosted = scopeInstallationEnv({ CHICKPEA_TENANCY: 'installation' }, { installationId: 'inst_a' });
     assert.equal(await resolveSlackPublicUrl(hosted, h.stores.settings), undefined);
