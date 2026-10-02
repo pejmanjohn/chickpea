@@ -500,9 +500,12 @@ test('the migration removes a stale plaintext without reviving a deleted key, an
 
 test('nothing runs the plaintext migration on its own', () => {
   const root = fileURLToPath(new URL('../src/', import.meta.url));
-  const callers = readdirSync(root, { recursive: true, encoding: 'utf8' })
-    .filter((path) => path.endsWith('.ts'))
-    .filter((path) => readFileSync(join(root, path), 'utf8').includes('migratePlaintextModelCredentials('));
-  assert.deepEqual(callers, [join('config', 'model-credential-refs.ts')],
-    'only its definition: an operator invokes it explicitly');
+  const sources = readdirSync(root, { recursive: true, encoding: 'utf8' }).filter((path) => path.endsWith('.ts'));
+  const callersOf = (name: string) =>
+    sources.filter((path) => readFileSync(join(root, path), 'utf8').includes(`${name}(`)).sort();
+  assert.deepEqual(callersOf('migratePlaintextModelCredentials'),
+    [join('config', 'hosted-credential-operations.ts'), join('config', 'model-credential-refs.ts')],
+    'its definition and the host\'s per-installation entry point');
+  assert.deepEqual(callersOf('migrateInstallationPlaintextModelCredentials'),
+    [join('config', 'hosted-credential-operations.ts')], 'only its definition: an operator job invokes it explicitly');
 });
