@@ -71,7 +71,7 @@ export function agentAvatarUrlForPresentation(
   installationId?: string,
 ): string | undefined {
   const stored = agent.slackPresence?.avatar.url;
-  if (stored) return namedAvatarUrl(stored, publicOrigin, installationId);
+  if (stored) return namedAvatarUrl(stored, agent.id, publicOrigin, installationId);
   if (!publicOrigin || !agent.slackPresence) return undefined;
   return agentAvatarUrl(publicOrigin, agent.id, agent.slackPresence.avatar.revision, installationId);
 }
@@ -79,14 +79,21 @@ export function agentAvatarUrlForPresentation(
 /**
  * A stored URL in the unnamed form on this origin, saved before avatar URLs
  * named their installation, in the form a host serving many installations
- * serves. Any other URL (a gateway-published avatar, another origin) is kept.
+ * serves. Any other URL (a gateway-published avatar, another origin, another
+ * Agent's path) is kept.
  */
-function namedAvatarUrl(url: string, publicOrigin: string | undefined, installationId: string | undefined): string {
+function namedAvatarUrl(
+  url: string,
+  agentId: string,
+  publicOrigin: string | undefined,
+  installationId: string | undefined,
+): string {
   if (!installationId || !publicOrigin) return url;
   try {
     const parsed = new URL(url);
     const unnamed = /^\/assets\/agents\/([^/]+)\/avatar\/(\d+)$/.exec(parsed.pathname);
-    if (!unnamed || parsed.search || parsed.hash || parsed.origin !== new URL(publicOrigin).origin) return url;
+    if (!unnamed || parsed.search || parsed.hash || parsed.origin !== new URL(publicOrigin).origin
+      || decodeURIComponent(unnamed[1]!) !== agentId) return url;
     return `${parsed.origin}/assets/i/${encodeURIComponent(installationId)}/agents/${unnamed[1]}/avatar/${unnamed[2]}`;
   } catch {
     return url;

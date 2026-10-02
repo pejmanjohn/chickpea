@@ -92,6 +92,7 @@ test('a stored avatar URL from before installations were named is served in the 
     'https://avatars.example.test/agent_support.png',
     'https://other.example/assets/agents/agent_support/avatar/2',
     `${ORIGIN}/assets/agents/agent_support/avatar/2?v=1`,
+    `${ORIGIN}/assets/agents/agent_other/avatar/2`,
     `${ORIGIN}/assets/i/inst_tenant_a/agents/agent_support/avatar/2`,
   ]) {
     assert.equal(agentAvatarUrlForPresentation(stored(url), ORIGIN, 'inst_tenant_a'), url, url);
