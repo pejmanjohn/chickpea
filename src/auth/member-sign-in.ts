@@ -2,9 +2,8 @@ import { createHash } from 'node:crypto';
 
 import type { IdentityStore } from '../identity/types.ts';
 import { IdentityStateError } from '../identity/errors.ts';
-import { activeAdmission } from './admission-operation.ts';
-import { createBetterAuth, requireSupportedOrigin } from './better-auth.ts';
 import type { BetterAuthEnvironment } from './better-auth-environment.ts';
+import { installationBetterAuth } from './installation-better-auth.ts';
 import { SLACK_OIDC_ATTEMPT_TTL_MS } from './slack-admission.ts';
 import { SlackOidcError, type SlackOidcProof } from './slack-oidc.ts';
 
@@ -15,8 +14,9 @@ import { SlackOidcError, type SlackOidcProof } from './slack-oidc.ts';
  * decided exactly as a standalone sign-in decides it: an active Owner, Admin
  * or Member who signed in before is signed in again, an active Member whom
  * Slack provisioned is bound to a browser identity on their first sign-in,
- * and anyone else is refused with `user_mismatch`. A proof the app's bot
- * could not check (`eligibility: 'install_grant'`) is refused.
+ * and anyone else is refused with `user_mismatch`; any other store failure
+ * is thrown as it is. A proof the app's bot could not check
+ * (`eligibility: 'install_grant'`) is refused.
  *
  * The host keeps `capability` (32+ random characters) with its own attempt;
  * the person's next sign-in replaces an unfinished one.
@@ -33,9 +33,9 @@ export async function signInSlackMember(input: {
   if (proof.eligibility === 'install_grant') throw new SlackOidcError('inactive_user');
   if (input.capability.length < 32) throw new Error('The sign-in capability is too short.');
   const capabilityHash = createHash('sha256').update(input.capability).digest('hex');
-  const origin = requireSupportedOrigin(input.environment.baseURL);
+  const auth = installationBetterAuth(identity, input.environment);
   const control = await identity.getAuthControl();
-  if (!control?.canonicalAdminOrigin || control.canonicalAdminOrigin !== origin ||
+  if (!control?.canonicalAdminOrigin || control.canonicalAdminOrigin !== auth.origin ||
       !control.betterAuthOrganizationId) {
     throw new SlackOidcError('stale_revision');
   }
@@ -48,21 +48,17 @@ export async function signInSlackMember(input: {
       expiresAt: (input.now ?? Date.now)() + SLACK_OIDC_ATTEMPT_TTL_MS,
     });
   } catch (error) {
-    if (error instanceof IdentityStateError) throw new SlackOidcError('user_mismatch');
+    // Not admissible here: no active membership, or no authority to sign in with.
+    if (error instanceof IdentityStateError && error.code === 'auth_operation_unavailable') {
+      throw new SlackOidcError('user_mismatch');
+    }
     throw error;
   }
-  const auth = createBetterAuth({
-    ...input.environment,
-    baseURL: origin,
-    privateSeam: {
-      resolveAdmissionOperation: async (id) => activeAdmission(await identity.getAuthOperation(id)),
-    },
-  });
   if (operation.status !== 'active') {
     const organization = await identity.getOrganization();
     if (!organization || organization.id !== operation.organizationId) throw new SlackOidcError('invalid_state');
     // The installation's Better Auth organization, as activateInstallerOwner named it.
-    const reconciled = await auth.chickpea.reconcileSlackIdentity({
+    const reconciled = await auth.reconcileSlackIdentity({
       slackTeamId: proof.slackTeamId,
       slackUserId: proof.slackUserId,
       displayName: proof.displayName,
@@ -83,12 +79,5 @@ export async function signInSlackMember(input: {
       ...(proof.contactEmail === undefined ? {} : { contactEmail: proof.contactEmail }),
     });
   }
-  let response: Response;
-  try {
-    response = await auth.chickpea.issueSession(operation.id, input.request);
-  } catch {
-    throw new SlackOidcError('session_unavailable');
-  }
-  if (!response.ok) throw new SlackOidcError('session_unavailable');
-  return response;
+  return auth.issueSession(operation.id, input.request);
 }

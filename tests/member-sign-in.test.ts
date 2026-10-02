@@ -7,6 +7,7 @@ import { BetterAuthDirectory, BetterAuthSessionAuthenticator } from '../src/auth
 import { activateInstallerOwner } from '../src/auth/installer-owner.ts';
 import { signInSlackMember } from '../src/auth/member-sign-in.ts';
 import type { SlackOidcProof } from '../src/auth/slack-oidc.ts';
+import { IdentityStateError } from '../src/identity/errors.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
 
 const NOW = 1_786_000_000_000;
@@ -97,6 +98,14 @@ test('a returning Owner and a Slack-provisioned Member sign in to their installa
       code('stale_revision'),
     );
     await assert.rejects(tenant.signIn(OWNER, 'short', { capability: 'too-short' }), /too short/);
+    // Only a refused admission is a refusal; any other store failure is thrown as it is.
+    const failing = new Proxy(tenant.identity, {
+      get(target, property, receiver) {
+        if (property !== 'admitSlackLogin') return Reflect.get(target, property, receiver);
+        return async () => { throw new IdentityStateError('auth_operation_conflict', 'Concurrent sign-in.'); };
+      },
+    });
+    await assert.rejects(tenant.signIn(OWNER, 'owner-conflict', { identity: failing }), code('auth_operation_conflict'));
   } finally {
     tenant.identity.close();
     backend.close();
