@@ -257,7 +257,7 @@ test('retention never prunes the inventory', async () => {
   assert.deepEqual([...before].filter((name) => !inventoryNames(installation).has(name)), []);
 });
 
-test('the backfill recovers the names that survive from before the inventory, and counts what cannot be named', async () => {
+test('the backfill recovers the names that survive from before the inventory, and counts a lower bound of what cannot be named', async () => {
   const installation = hostedInstallation('inst_inventory_backfill', recordingBindings().bindings);
   // A release before the inventory wrote these rows: nothing recorded them.
   const legacyTurns = new TurnJobStoreLogic(installation.db);
@@ -287,6 +287,8 @@ test('the backfill recovers the names that survive from before the inventory, an
   assert.deepEqual(backfill, {
     // One thread's runner from the turns, plus incarnations 1 and 2 of the routed thread.
     recovered: { routine_agent: 1, slack_agent: 1, thread_runner: 3 },
+    // The Flue instance the Work ledger saw. A runner whose turns aged out
+    // leaves no reference anywhere, so the residue is a lower bound.
     unknownResidue: 1,
   });
   const names = inventoryNames(installation);

@@ -47,7 +47,13 @@ export interface InstallationObjectInventoryPage {
 export interface InstallationObjectBackfill {
   /** Names recorded from the store's surviving records, per kind (already-recorded names included). */
   readonly recovered: Readonly<Record<InstallationObjectKind, number>>;
-  /** Agent instances the Work ledger saw run whose names nothing left can tell: they cannot be addressed. */
+  /**
+   * At least this many objects exist that cannot be addressed: Flue
+   * instances the Work ledger saw run whose names nothing left can tell. A
+   * lower bound, not a count: thread runners whose turns aged out of
+   * `turn_jobs`, guest runners especially, are not counted, because the Work
+   * ledger keeps no reference to a runner.
+   */
   readonly unknownResidue: number;
 }
 
@@ -150,6 +156,7 @@ export class InstallationObjectInventoryLogic implements InstallationObjectRecor
    * routes (runner keys of every owner incarnation). Safe to repeat. What
    * aged out of all of them is counted from the Work ledger, which keeps an
    * opaque reference to every Flue instance that ran but cannot name one.
+   * That count is a lower bound: a thread runner leaves no such reference.
    */
   backfill(): InstallationObjectBackfill {
     this.requireEnabled();
@@ -208,6 +215,7 @@ export class InstallationObjectInventoryLogic implements InstallationObjectRecor
     return { recovered, unknownResidue: this.unknownResidue() };
   }
 
+  /** Flue instances the Work ledger saw run that the inventory cannot name; runners are not counted. */
   private unknownResidue(): number {
     if (!this.hasTable('run_executions')) return 0;
     const known = new Set(this.db.all(

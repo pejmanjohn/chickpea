@@ -73,7 +73,9 @@ export async function listInstallationObjects(
 /**
  * Record the objects created before the inventory existed, from what the
  * installation's stores still hold, and count the Flue instances the Work
- * ledger saw run that nothing can name any more. Safe to repeat.
+ * ledger saw run that nothing can name any more: a lower bound on what
+ * cannot be addressed, since runners whose turns aged out leave no trace.
+ * Safe to repeat.
  */
 export async function backfillInstallationObjects(
   env: Record<string, unknown>,
