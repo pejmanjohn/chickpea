@@ -3,6 +3,7 @@ import { Hono, type Context } from 'hono';
 import { constantTimeEqual, makeSignature } from 'better-auth/crypto';
 
 import { escapeHtml } from '../security/html-escape.ts';
+import { deploymentTenancy } from '../config/installation-scope.ts';
 import {
   getIdentityStore,
   type PlatformEnv,
@@ -20,6 +21,7 @@ import {
   mcpResourceForOrigin,
 } from './mcp-oauth.ts';
 import { BetterAuthMcpOAuthContinuationStore } from './mcp-oauth-continuation.ts';
+import { hostedLoginFence, type HostedLoginFence } from './hosted-login.ts';
 import { validateBrowserMutationProvenance } from './request-provenance.ts';
 import { createWorkspaceManagementMcpHandler } from '../management/mcp.ts';
 import type { ProductTelemetryCapture } from '../telemetry/client.ts';
@@ -64,11 +66,53 @@ interface McpOAuthRuntimeOptions {
   productTelemetry?: (c: Context) => ProductTelemetryCapture;
 }
 
+/**
+ * The claims of an MCP access token this origin's Better Auth issued for its
+ * MCP resource (signature, issuer, audience, age), or undefined.
+ */
+export async function verifyMcpAccessToken(
+  token: string,
+  input: Pick<McpAuthenticatedRequestHandlerInput, 'baseURL' | 'getJwks'>,
+): Promise<JWTPayload | undefined> {
+  try {
+    const jwks = await input.getJwks();
+    const verified = await jwtVerify(token, createLocalJWKSet(jwks), {
+      algorithms: ['EdDSA'],
+      issuer: `${new URL(input.baseURL).origin}${BETTER_AUTH_BASE_PATH}`,
+      audience: mcpResourceForOrigin(input.baseURL),
+      clockTolerance: 30,
+      maxTokenAge: '20m',
+    });
+    return verified.payload;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The keys Better Auth signs its MCP access tokens with. */
+export async function betterAuthJwks(auth: ReturnType<typeof createBetterAuth>): Promise<{ keys: JWK[] }> {
+  const api = auth.api as unknown as { getJwks(): Promise<{ keys?: JWK[] }> };
+  const result = await api.getJwks();
+  return { keys: Array.isArray(result.keys) ? result.keys : [] };
+}
+
+/** The bearer token of an `Authorization` header, if it carries one. */
+export function mcpBearerToken(request: Request): string | undefined {
+  return bearerToken(request.headers.get('authorization'));
+}
+
+/**
+ * The MCP resource's answer to a request without a usable access token: the
+ * challenge that starts OAuth discovery at this origin.
+ */
+export function mcpAuthorizationChallenge(baseURL: string, invalidToken: boolean): Response {
+  const metadata = `${new URL(baseURL).origin}/.well-known/oauth-protected-resource/mcp`;
+  return oauthChallenge(401, metadata, invalidToken ? 'invalid_token' : undefined);
+}
+
 export function createMcpAuthenticatedRequestHandler(
   input: McpAuthenticatedRequestHandlerInput,
 ): McpRequestHandler {
-  const resource = mcpResourceForOrigin(input.baseURL);
-  const issuer = `${new URL(input.baseURL).origin}${BETTER_AUTH_BASE_PATH}`;
   const metadata = `${new URL(input.baseURL).origin}/.well-known/oauth-protected-resource/mcp`;
 
   return async (request) => {
@@ -80,18 +124,8 @@ export function createMcpAuthenticatedRequestHandler(
       return oauthChallenge(401, metadata);
     }
 
-    let claims: JWTPayload;
-    try {
-      const jwks = await input.getJwks();
-      const verified = await jwtVerify(token, createLocalJWKSet(jwks), {
-        algorithms: ['EdDSA'],
-        issuer,
-        audience: resource,
-        clockTolerance: 30,
-        maxTokenAge: '20m',
-      });
-      claims = verified.payload;
-    } catch {
+    const claims = await verifyMcpAccessToken(token, input);
+    if (!claims) {
       emitManagementMetric('oauth.request', {
         stage: 'bearer', outcome: 'denied', reason: 'invalid_token',
       });
@@ -116,7 +150,7 @@ export function createMcpAuthenticatedRequestHandler(
       emitManagementMetric('oauth.request', {
         stage: 'membership', outcome: 'denied', reason: 'live_access_denied',
       });
-      return forbidden();
+      return mcpAccessForbidden();
     }
     const server = await input.createServer({ ...resolved, clientId });
     emitManagementMetric('oauth.request', {
@@ -128,10 +162,6 @@ export function createMcpAuthenticatedRequestHandler(
 
 export function createMcpOAuthRuntimeRoutes(options: McpOAuthRuntimeOptions = {}): Hono {
   const app = new Hono();
-  app.use('/auth/mcp/consent', actualBodyLimit({
-    maxSize: MCP_BROWSER_BODY_LIMIT_BYTES,
-    onError: (c) => c.json({ error: 'request_too_large' }, 413),
-  }));
   app.use('/mcp', async (c, next) => {
     const ingress = await readMcpProtocolBody(c.req.raw);
     if (!ingress.ok) {
@@ -145,10 +175,11 @@ export function createMcpOAuthRuntimeRoutes(options: McpOAuthRuntimeOptions = {}
     }
     await next();
   });
-  app.get('/auth/mcp/login', (c) => beginMcpLogin(c, options));
-  app.get('/auth/mcp/resume/:continuation', (c) => resumeMcpLogin(c, options));
-  app.get('/auth/mcp/consent', (c) => showMcpConsent(c, options));
-  app.post('/auth/mcp/consent', (c) => submitMcpConsent(c, options));
+  // Under installation tenancy these pages are shared by every installation,
+  // and a host serves them before resolving one (serveHostedSharedAuth).
+  mountMcpOAuthBrowserRoutes(app, async (c) => deploymentTenancy(c.env as PlatformEnv | undefined) === 'installation'
+    ? undefined
+    : (await resolveMcpRuntime(c, options))?.environment);
   app.all('/mcp', async (c) => {
     try {
       return await dispatchMcp(c, options);
@@ -161,6 +192,29 @@ export function createMcpOAuthRuntimeRoutes(options: McpOAuthRuntimeOptions = {}
     }
   });
   return app;
+}
+
+/**
+ * The MCP OAuth browser pages (sign-in continuation and consent) on the
+ * Better Auth `environmentFor` gives a request; none answers 404.
+ */
+export function mountMcpOAuthBrowserRoutes(
+  app: Hono,
+  environmentFor: (c: Context) => Promise<BetterAuthEnvironment | undefined>,
+): void {
+  const withEnvironment = (page: (c: Context, environment: BetterAuthEnvironment) => Promise<Response>) =>
+    async (c: Context) => {
+      const environment = await environmentFor(c);
+      return environment ? page(c, environment) : c.notFound();
+    };
+  app.use('/auth/mcp/consent', actualBodyLimit({
+    maxSize: MCP_BROWSER_BODY_LIMIT_BYTES,
+    onError: (c) => c.json({ error: 'request_too_large' }, 413),
+  }));
+  app.get('/auth/mcp/login', withEnvironment(beginMcpLogin));
+  app.get('/auth/mcp/resume/:continuation', withEnvironment(resumeMcpLogin));
+  app.get('/auth/mcp/consent', withEnvironment(showMcpConsent));
+  app.post('/auth/mcp/consent', withEnvironment(submitMcpConsent));
 }
 
 async function readMcpProtocolBody(
@@ -177,14 +231,12 @@ async function readMcpProtocolBody(
   };
 }
 
-async function beginMcpLogin(c: Context, options: McpOAuthRuntimeOptions): Promise<Response> {
-  const runtime = await resolveMcpRuntime(c, options);
-  if (!runtime) return c.notFound();
+async function beginMcpLogin(c: Context, environment: BetterAuthEnvironment): Promise<Response> {
   const query = new URL(c.req.url).searchParams;
-  if (!await verifySignedOAuthQuery(query, runtime.environment.secret)) {
+  if (!await verifySignedOAuthQuery(query, environment.secret)) {
     return invalidBrowserRequest();
   }
-  const store = new BetterAuthMcpOAuthContinuationStore({ backend: runtime.environment.backend });
+  const store = new BetterAuthMcpOAuthContinuationStore({ backend: environment.backend });
   const continuation = await store.issue({
     authorizationPath: `${BETTER_AUTH_BASE_PATH}/oauth2/authorize?${query.toString()}`,
   });
@@ -192,10 +244,8 @@ async function beginMcpLogin(c: Context, options: McpOAuthRuntimeOptions): Promi
   return noStoreRedirect(`/auth/slack/sign-in?${new URLSearchParams({ destination })}`);
 }
 
-async function resumeMcpLogin(c: Context, options: McpOAuthRuntimeOptions): Promise<Response> {
-  const runtime = await resolveMcpRuntime(c, options);
-  if (!runtime) return c.notFound();
-  const store = new BetterAuthMcpOAuthContinuationStore({ backend: runtime.environment.backend });
+async function resumeMcpLogin(c: Context, environment: BetterAuthEnvironment): Promise<Response> {
+  const store = new BetterAuthMcpOAuthContinuationStore({ backend: environment.backend });
   const continuation = await store.consume(c.req.param('continuation') ?? '');
   if (!continuation) {
     return browserError('This authorization request expired or was already used.', 410);
@@ -203,15 +253,13 @@ async function resumeMcpLogin(c: Context, options: McpOAuthRuntimeOptions): Prom
   return noStoreRedirect(continuation.authorizationPath);
 }
 
-async function showMcpConsent(c: Context, options: McpOAuthRuntimeOptions): Promise<Response> {
-  const runtime = await resolveMcpRuntime(c, options);
-  if (!runtime) return c.notFound();
+async function showMcpConsent(c: Context, environment: BetterAuthEnvironment): Promise<Response> {
   const query = new URL(c.req.url).searchParams;
-  if (!await verifySignedOAuthQuery(query, runtime.environment.secret)) {
+  if (!await verifySignedOAuthQuery(query, environment.secret)) {
     return invalidBrowserRequest();
   }
   const clientName = await lookupMcpClientName(
-    runtime.environment, query.get('client_id') ?? '', c.req.raw.headers,
+    environment, query.get('client_id') ?? '', c.req.raw.headers,
   );
   const scope = query.get('scope') ?? MCP_WORKSPACE_SCOPE;
   return new Response(renderMcpConsentPage({ clientName, scope, oauthQuery: query.toString() }), {
@@ -220,11 +268,9 @@ async function showMcpConsent(c: Context, options: McpOAuthRuntimeOptions): Prom
   });
 }
 
-async function submitMcpConsent(c: Context, options: McpOAuthRuntimeOptions): Promise<Response> {
-  const runtime = await resolveMcpRuntime(c, options);
-  if (!runtime) return c.notFound();
+async function submitMcpConsent(c: Context, environment: BetterAuthEnvironment): Promise<Response> {
   const provenance = validateBrowserMutationProvenance(c.req.raw, {
-    canonicalOrigin: runtime.environment.baseURL,
+    canonicalOrigin: environment.baseURL,
     maxBodyBytes: MCP_BROWSER_BODY_LIMIT_BYTES,
     requireJson: false,
     allowOpaqueOriginFormNavigation: true,
@@ -239,18 +285,18 @@ async function submitMcpConsent(c: Context, options: McpOAuthRuntimeOptions): Pr
   const form = await c.req.parseBody();
   const oauthQuery = typeof form.oauth_query === 'string' ? form.oauth_query : '';
   const query = new URLSearchParams(oauthQuery);
-  if (!await verifySignedOAuthQuery(query, runtime.environment.secret)) {
+  if (!await verifySignedOAuthQuery(query, environment.secret)) {
     return invalidBrowserRequest();
   }
   const accept = form.decision === 'allow';
-  const handler = createBetterAuthPublicHandler(runtime.environment);
+  const handler = createBetterAuthPublicHandler(environment);
   const body = JSON.stringify({ accept, oauth_query: oauthQuery });
   const headers = new Headers(c.req.raw.headers);
   headers.set('content-type', 'application/json');
   headers.set('content-length', String(Buffer.byteLength(body)));
-  headers.set('origin', runtime.environment.baseURL);
+  headers.set('origin', environment.baseURL);
   const result = await handler(new Request(
-    `${runtime.environment.baseURL}${BETTER_AUTH_BASE_PATH}/oauth2/consent`,
+    `${environment.baseURL}${BETTER_AUTH_BASE_PATH}/oauth2/consent`,
     { method: 'POST', headers, body },
   ));
   if (!result.ok) return result;
@@ -271,6 +317,7 @@ async function dispatchMcp(c: Context, options: McpOAuthRuntimeOptions): Promise
     environment: runtime.environment,
     identity: runtime.identity,
     betterAuthOrganizationId: runtime.betterAuthOrganizationId,
+    hostedLogin: hostedLoginFence(c.env as PlatformEnv | undefined),
     createServer: options.createServer ?? ((principal) =>
       createWorkspaceManagementMcpHandler(
         principal,
@@ -309,6 +356,7 @@ function authenticatedRuntimeHandler(input: {
   environment: BetterAuthEnvironment;
   identity: IdentityStore;
   betterAuthOrganizationId: string;
+  hostedLogin: HostedLoginFence | undefined;
   createServer: McpServerFactory;
 }): McpRequestHandler {
   const auth = createBetterAuth(input.environment);
@@ -317,14 +365,11 @@ function authenticatedRuntimeHandler(input: {
     access: input.identity,
     organizationId: input.betterAuthOrganizationId,
     canonicalAdminOrigin: input.environment.baseURL,
+    hostedLogin: input.hostedLogin,
   });
   return createMcpAuthenticatedRequestHandler({
     baseURL: input.environment.baseURL,
-    getJwks: async () => {
-      const api = auth.api as unknown as { getJwks(): Promise<{ keys?: JWK[] }> };
-      const result = await api.getJwks();
-      return { keys: Array.isArray(result.keys) ? result.keys : [] };
-    },
+    getJwks: () => betterAuthJwks(auth),
     resolvePrincipal: async (betterAuthUserId) => {
       const resolution = await directory.resolveBetterAuthUser(betterAuthUserId);
       if (!resolution || resolution.membership.status !== 'active') return undefined;
@@ -387,7 +432,8 @@ function oauthChallenge(
   });
 }
 
-function forbidden(): Response {
+/** The MCP resource's answer when current access does not permit the request. */
+export function mcpAccessForbidden(): Response {
   return Response.json({
     jsonrpc: '2.0',
     error: { code: -32003, message: 'Current Chickpea access does not permit this request.' },

@@ -6,6 +6,7 @@ import { escapeHtml } from '../security/html-escape.ts';
 import { isRecord } from '../security/content-validation.ts';
 import { sha256HexNode } from '../security/digest.ts';
 import { BetterAuthDirectory, BetterAuthSessionAuthenticator } from '../auth/better-auth-principal.ts';
+import { hostedLoginFence } from '../auth/hosted-login.ts';
 import { resolveBetterAuthEnvironment } from '../auth/better-auth-environment.ts';
 import { setCookieValues } from '../auth/cookies.ts';
 import {
@@ -2087,6 +2088,7 @@ async function authenticateSetupPrincipal(
     access: identity,
     organizationId: control.betterAuthOrganizationId,
     canonicalAdminOrigin: control.canonicalAdminOrigin,
+    hostedLogin: hostedLoginFence(platformEnv),
   });
   const auth = new AuthService({
     identity,

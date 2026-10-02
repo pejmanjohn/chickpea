@@ -568,6 +568,7 @@ import {
   BetterAuthDirectory,
   BetterAuthSessionAuthenticator,
 } from '../auth/better-auth-principal.ts';
+import { hostedLoginFence } from '../auth/hosted-login.ts';
 import {
   resolveBetterAuthEnvironment,
   resolveBetterAuthBootstrapEnvironment,
@@ -612,6 +613,8 @@ interface BetterAuthContext {
   environment: BetterAuthEnvironment;
   directory: BetterAuthDirectory;
   organizationId: string;
+  /** Served for an installation its host routed by a login (installation tenancy). */
+  hosted: boolean;
 }
 
 const ADMIN_ENVIRONMENT_HEALTH = [
@@ -2811,6 +2814,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         });
       if (!environment) return undefined;
       if (environment.baseURL !== control.canonicalAdminOrigin) return undefined;
+      const hostedLogin = hostedLoginFence(c.env as PlatformEnv | undefined);
       return {
         environment,
         directory: new BetterAuthDirectory({
@@ -2818,8 +2822,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           access: identityStore,
           organizationId: control.betterAuthOrganizationId,
           canonicalAdminOrigin: control.canonicalAdminOrigin,
+          hostedLogin,
         }),
         organizationId: control.betterAuthOrganizationId,
+        hosted: hostedLogin !== undefined,
       };
     })();
     betterAuthByContext.set(c, pending);
@@ -2832,15 +2838,23 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const identityStore = identity(c);
     const context = await betterAuthContext(c);
     if (context) {
-      const { environment, directory, organizationId } = context;
+      const { environment, directory, organizationId, hosted } = context;
+      // A host serving many installations routes Admin by the browser session
+      // alone; a personal token names no installation to route by, so a
+      // bearer is refused there before any session check, and the request
+      // builds no session authenticator (its Better Auth would start database
+      // work past a per-request database's lifetime).
+      const refusedBearer = hosted && c.req.header('authorization') !== undefined;
       return new AuthService({
         identity: identityStore,
-        sessionAuthenticator: new BetterAuthSessionAuthenticator({
-          ...environment,
-          directory,
-          organizationId,
+        ...(refusedBearer ? {} : {
+          sessionAuthenticator: new BetterAuthSessionAuthenticator({
+            ...environment,
+            directory,
+            organizationId,
+          }),
         }),
-        personalTokens: new PersonalTokenService(identityStore, { directory }),
+        ...(hosted ? {} : { personalTokens: new PersonalTokenService(identityStore, { directory }) }),
         authControl: () => requestAuthControl(c),
         background: (task) => backgroundTask(c, task),
       });

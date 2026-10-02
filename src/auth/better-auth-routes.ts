@@ -35,6 +35,7 @@ export interface BetterAuthPublicHandlerInput {
   baseURL: string;
   secret: string;
   privateSeam?: BetterAuthPrivateSeam;
+  mayIssueTokens?: (betterAuthUserId: string) => Promise<boolean>;
   mcpRegistrationPolicy?: Partial<McpRegistrationPolicy>;
 }
 

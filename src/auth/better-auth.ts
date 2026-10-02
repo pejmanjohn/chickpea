@@ -1,5 +1,5 @@
 import { betterAuth, type BetterAuthOptions, type BetterAuthPlugin } from 'better-auth';
-import { createAuthEndpoint, createAuthMiddleware } from 'better-auth/api';
+import { APIError, createAuthEndpoint, createAuthMiddleware } from 'better-auth/api';
 import { setSessionCookie } from 'better-auth/cookies';
 import { createLocalAccountIssuer } from 'better-auth/db';
 import { getOrgAdapter, jwt, organization } from 'better-auth/plugins';
@@ -67,6 +67,17 @@ export interface CreateBetterAuthInput {
   baseURL: string;
   secret: string;
   privateSeam?: BetterAuthPrivateSeam;
+  /**
+   * Asked before MCP tokens are issued to a user from a code or a refresh
+   * token: false refuses with `invalid_grant`, leaving the refresh token
+   * unrotated (a refused code is spent). A host serving many installations
+   * answers from the user's installation, so a grant outlives neither its
+   * membership nor an active installation. Not asked when the provider
+   * replays a rotation within its 30-second reuse window: that returns the
+   * tokens already issued, which the MCP resource and the next refresh
+   * still check.
+   */
+  mayIssueTokens?: (betterAuthUserId: string) => Promise<boolean>;
 }
 
 export function createBetterAuth(input: CreateBetterAuthInput) {
@@ -210,10 +221,28 @@ function createOptions(
         clientRegistrationDefaultScopes: [...MCP_OAUTH_SCOPES],
         clientRegistrationAllowedScopes: [],
         clientRegistrationRequirePKCE: true,
+        ...(input.mayIssueTokens ? { customTokenResponseFields: tokenIssuanceGate(input.mayIssueTokens) } : {}),
       }) as unknown as BetterAuthPlugin,
       createPrivateSessionPlugin(input.privateSeam, internalMarker),
     ],
     telemetry: { enabled: false },
+  };
+}
+
+/**
+ * The provider calls this before it creates any token row for a code or
+ * refresh grant (after spending the code), so throwing refuses the grant
+ * and leaves a presented refresh token unrotated.
+ */
+function tokenIssuanceGate(mayIssueTokens: (betterAuthUserId: string) => Promise<boolean>) {
+  return async ({ user }: { user?: { id?: unknown } | null }): Promise<Record<string, unknown>> => {
+    if (typeof user?.id !== 'string' || !(await mayIssueTokens(user.id))) {
+      throw new APIError('BAD_REQUEST', {
+        error: 'invalid_grant',
+        error_description: 'Current Chickpea access does not permit this grant.',
+      });
+    }
+    return {};
   };
 }
 

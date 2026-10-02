@@ -4,7 +4,7 @@ import {
   type PlatformEnv,
 } from '../config/state-backend.ts';
 import type { AuthControl } from '../identity/types.ts';
-import type { BetterAuthDatabaseBackend } from './better-auth-backend.ts';
+import type { BetterAuthAccessRevoker, BetterAuthDatabaseBackend } from './better-auth-backend.ts';
 import {
   D1BetterAuthBackend,
   type CloudflareBetterAuthEnv,
@@ -55,8 +55,29 @@ export function withBetterAuthBackend<E extends PlatformEnv>(
   return Object.freeze({ ...env, [HOST_BACKEND]: backend });
 }
 
-function hostBetterAuthBackend(env: PlatformEnv | undefined): BetterAuthDatabaseBackend | undefined {
+/** The backend a host attached to `env` with withBetterAuthBackend, if any. */
+export function hostBetterAuthBackend(env: PlatformEnv | undefined): BetterAuthDatabaseBackend | undefined {
   return (env as { [HOST_BACKEND]?: BetterAuthDatabaseBackend } | undefined)?.[HOST_BACKEND];
+}
+
+/** A Better Auth backend opened for one piece of work, closed once it settles. */
+export type ClosableBetterAuthBackend = BetterAuthDatabaseBackend & { close(): Promise<void> };
+
+let backgroundBackend: ((env: PlatformEnv) => ClosableBetterAuthBackend | undefined) | undefined;
+
+/**
+ * The composition seam for work no request carries, such as a Durable Object
+ * alarm draining Slack deliveries or a Slack event finished after its
+ * acknowledgement. A host serving many installations installs it once, at
+ * module scope, so every isolate (Worker or Durable Object) can open its
+ * Better Auth database (PostgreSQL through Hyperdrive) for such work; the
+ * opener returns undefined where it cannot. Requests keep their own backend
+ * (withBetterAuthBackend), whose lifetime the host already manages.
+ */
+export function configureBetterAuthBackendFactory(
+  open: ((env: PlatformEnv) => ClosableBetterAuthBackend | undefined) | undefined,
+): void {
+  backgroundBackend = open;
 }
 
 /**
@@ -77,6 +98,37 @@ export async function resolveBetterAuthAccessRevoker(input: {
     throw new Error('No Better Auth backend serves this request, so access cannot be revoked; nothing was changed.');
   }
   return environment?.backend;
+}
+
+/**
+ * Runs `use` with the backend that ends a person's sessions and MCP grants
+ * (resolveBetterAuthAccessRevoker). Under installation tenancy, work that
+ * no request's backend serves gets one from the host's factory
+ * (configureBetterAuthBackendFactory), opened for `use` and closed once it
+ * settles; without either it is refused as before. Standalone is unchanged.
+ */
+export async function withBetterAuthAccessRevoker<T>(
+  input: { control: AuthControl | undefined; platformEnv?: PlatformEnv | undefined },
+  use: (revoker: BetterAuthAccessRevoker | undefined) => Promise<T>,
+): Promise<T> {
+  const { control, platformEnv } = input;
+  if (!platformEnv || !control || !betterAuthActive(control) ||
+      deploymentTenancy(platformEnv) !== 'installation' || hostBetterAuthBackend(platformEnv)) {
+    return use(await resolveBetterAuthAccessRevoker(input));
+  }
+  const opened = backgroundBackend?.(platformEnv);
+  if (!opened) return use(await resolveBetterAuthAccessRevoker(input));
+  try {
+    return await use(await resolveBetterAuthAccessRevoker({
+      control,
+      platformEnv: withBetterAuthBackend(platformEnv, opened),
+    }));
+  } finally {
+    await opened.close().catch((error: unknown) => {
+      console.error('[chickpea] Closing a Better Auth backend failed:',
+        error instanceof Error ? error.message : String(error));
+    });
+  }
 }
 
 /** Whether this installation signs people in through Better Auth now. */

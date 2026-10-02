@@ -6,7 +6,7 @@ import {
 } from '@flue/slack';
 import { createChannelRouter } from '@flue/runtime';
 
-import { resolveBetterAuthAccessRevoker } from '../auth/better-auth-environment.ts';
+import { withBetterAuthAccessRevoker } from '../auth/better-auth-environment.ts';
 import {
   applyGatewaySlackUserChange,
   applySlackUserChange,
@@ -952,19 +952,18 @@ async function processSlackUserChange(
   credentialRevision: string | null,
 ): Promise<void> {
   if (payload.event.type !== 'user_change' || !credentialRevision) return;
-  const betterAuth = await resolveBetterAuthAccessRevoker({
-    control: await stores.identity.getAuthControl(),
-    platformEnv,
-  });
-  await applySlackUserChange({
+  const change = {
     identity: stores.identity,
-    ...(betterAuth ? { betterAuth } : {}),
     credentialRevision,
     payloadTeamId: payload.team_id,
     apiAppId: payload.api_app_id,
     eventId: payload.event_id,
     event: payload.event,
-  });
+  };
+  await withBetterAuthAccessRevoker({
+    control: await stores.identity.getAuthControl(),
+    platformEnv,
+  }, (betterAuth) => applySlackUserChange({ ...change, ...(betterAuth ? { betterAuth } : {}) }));
 }
 
 async function recordSlackInstallationLifecycleEvent(
@@ -1082,18 +1081,17 @@ export async function processGatewaySlackEnvelope(
     return 'accepted';
   }
   if (envelope.event.type === 'user_change') {
-    const betterAuth = await resolveBetterAuthAccessRevoker({
-      control: await stores.identity.getAuthControl(),
-      platformEnv,
-    });
-    await applyGatewaySlackUserChange({
+    const change = {
       identity: stores.identity,
-      ...(betterAuth ? { betterAuth } : {}),
       payloadTeamId: envelope.workspaceId,
       apiAppId: installation.appId,
       eventId: envelope.eventId,
       event: envelope.event,
-    });
+    };
+    await withBetterAuthAccessRevoker({
+      control: await stores.identity.getAuthControl(),
+      platformEnv,
+    }, (betterAuth) => applyGatewaySlackUserChange({ ...change, ...(betterAuth ? { betterAuth } : {}) }));
     return 'accepted';
   }
   await processSlackEvent(payload, platformEnv, {
