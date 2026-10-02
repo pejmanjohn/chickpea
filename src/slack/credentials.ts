@@ -1,7 +1,11 @@
 import { createHash } from 'node:crypto';
 
-import { installationCacheKey } from '../config/installation-scope.ts';
+import {
+  deploymentServesManyInstallations,
+  installationCacheKey,
+} from '../config/installation-scope.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
+import type { IdentityStore } from '../identity/types.ts';
 import {
   getSettingsStore,
   type PlatformEnv,
@@ -161,11 +165,12 @@ export async function readSlackConnectionRevision(
 //
 // The "Configure" reply-footer / onboarding deep link needs the install's own
 // public origin. On a Node deploy the operator usually sets SLACK_TAG_PUBLIC_URL;
-// on a Cloudflare button deploy nobody does, so the admin persists the origin it
-// resolved for the manifest link (slack.publicUrl) and this resolver reads it as
-// the fallback. Env still wins outright. Cached briefly per isolate like the
-// cred resolver so the events hot path pays no store read per turn, one entry
-// per installation.
+// on a Cloudflare button deploy nobody does, so the origin is persisted
+// (slack.publicUrl) and this resolver reads it as the fallback: Admin stores
+// the origin of an unsigned request, and each Slack setup step stores the
+// canonical origin it pins. Env still wins outright. Cached briefly per
+// isolate like the cred resolver so the events hot path pays no store read per
+// turn, one entry per installation.
 
 const MAX_PUBLIC_URL_CACHE_ENTRIES = 64;
 const publicUrlCache = new Map<string, { expiresAt: number; value: string | undefined }>();
@@ -185,13 +190,17 @@ function envPublicUrl(env?: PlatformEnv): string | undefined {
 
 /**
  * Resolve the install's public origin: `SLACK_TAG_PUBLIC_URL` (env) → stored
- * `slack.publicUrl` → undefined. An explicit `store` bypasses the cache (tests);
- * otherwise the stored read is cached for the TTL. Env is never cached — a
- * process env is already a cheap read and must reflect changes immediately.
+ * `slack.publicUrl` → undefined. A caller holding its own settings (a request's
+ * stores, the state store's local ones, a runner's prefetch) passes `store`,
+ * which is read directly; otherwise the stored read is cached for the TTL. Env
+ * is never cached — a process env is already a cheap read and must reflect
+ * changes immediately. A caller that passes `identity` also backfills an
+ * install set up before setup stored the URL (see backfillCanonicalAdminOrigin).
  */
 export async function resolveSlackPublicUrl(
   env?: PlatformEnv,
   store?: SettingsStore,
+  identity?: Pick<IdentityStore, 'getAuthControl'>,
 ): Promise<string | undefined> {
   const fromEnv = envPublicUrl(env);
   if (fromEnv) {
@@ -205,9 +214,48 @@ export async function resolveSlackPublicUrl(
   }
   const settings = store ?? getSettingsStore(env);
   const stored = await settings.getSetting(SLACK_SETTING_KEYS.publicUrl);
-  const value = stored ? stored.replace(/\/+$/, '') : undefined;
+  const value = stored
+    ? stored.replace(/\/+$/, '')
+    : identity ? await backfillCanonicalAdminOrigin(env, settings, identity) : undefined;
   if (!store) cachePublicUrl(key, value, now);
   return value;
+}
+
+let backfillFailureLogged = false;
+
+/**
+ * Store the canonical Admin origin a standalone install pinned before its
+ * setup steps stored it as the public URL: an install signed in through Slack
+ * never makes the unsigned Admin request that would. Once it is stored, the
+ * stored read answers with no identity read; an install with no pinned origin
+ * reads identity on every identity-carrying call. A host names its own URL.
+ * The URL is presentation, so a failure here resolves to nothing (logged once)
+ * rather than failing the turn that asked.
+ */
+async function backfillCanonicalAdminOrigin(
+  env: PlatformEnv | undefined,
+  settings: SettingsStore,
+  identity: Pick<IdentityStore, 'getAuthControl'>,
+): Promise<string | undefined> {
+  try {
+    if (deploymentServesManyInstallations(env)) return undefined;
+    const origin = (await identity.getAuthControl())?.canonicalAdminOrigin ?? undefined;
+    if (!origin) return undefined;
+    await settings.applySettingsPatch({
+      expected: { key: SLACK_SETTING_KEYS.publicUrl, value: null },
+      set: [{ key: SLACK_SETTING_KEYS.publicUrl, value: origin }],
+    });
+    return origin;
+  } catch (error) {
+    if (!backfillFailureLogged) {
+      backfillFailureLogged = true;
+      console.warn(
+        '[chickpea] Slack public URL backfill failed:',
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+    return undefined;
+  }
 }
 
 /** Prime the public-URL cache so the isolate that stored it resolves it now. */

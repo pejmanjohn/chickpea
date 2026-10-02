@@ -438,9 +438,13 @@ const verifiedEventsHandler: SlackRouteHandler = async (c, next) => {
       resolveStores(platformEnv).settings,
       { rawBody, signature, timestamp },
     );
+    // Slack allows the challenge three seconds, and a cold state store can
+    // take most of that. The recorded envelope is the proof, so answer now
+    // and promote the pending install past the response; the setup page's
+    // Events check finishes it from the same envelope if this is cut short.
     if (recorded.accepted) {
       const stores = resolveStores(platformEnv);
-      await finalizePendingWorkspaceInstallation(
+      detach(c, finalizePendingWorkspaceInstallation(
         stores,
         platformEnv,
         createPlatformProductTelemetry({
@@ -449,7 +453,7 @@ const verifiedEventsHandler: SlackRouteHandler = async (c, next) => {
           config: stores.config,
           lifecycle: createRequestTelemetryLifecycle(c),
         }),
-      );
+      ));
     }
   }
   return response;
@@ -933,12 +937,16 @@ async function seedAgentAppHomeThread(input: {
     return;
   }
   const avatarUrl = await resolvedAgentAvatarUrl(agent, input.stores, input.platformEnv);
-  if (!avatarUrl) return;
+  // Without an avatar URL the Agent's replies come from the app itself
+  // (selectSlackPresentationOwner), so the starter does too.
+  if (!avatarUrl) {
+    console.warn('[chickpea] App Home starter posted as the app: the Agent avatar URL is unavailable');
+  }
   const dm = await input.transport.openDirectConversation(input.userId);
   const root = await input.transport.postMessage({
     channelId: dm.id,
     text: agentAppHomeStarterMessage(agent.name),
-    persona: { name: agent.name, avatarUrl },
+    ...(avatarUrl ? { persona: { name: agent.name, avatarUrl } } : {}),
     ...(input.deliveryId
       ? { idempotencyKey: input.deliveryId }
       : {}),
@@ -982,7 +990,9 @@ async function resolvedAgentAvatarUrl(
 ): Promise<string | undefined> {
   const installationId = agentAvatarInstallation(platformEnv);
   if (agent.slackPresence?.avatar.url && !installationId) return agent.slackPresence.avatar.url;
-  const origin = await resolveSlackPublicUrl(platformEnv, stores.settings);
+  // Every admitted turn and App Home seed passes here first, with the
+  // request's (or the state store's local) stores: the one backfill point.
+  const origin = await resolveSlackPublicUrl(platformEnv, stores.settings, stores.identity);
   return agentAvatarUrlForPresentation(agent, origin, installationId);
 }
 

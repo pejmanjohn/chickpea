@@ -1,26 +1,12 @@
 import assert from 'node:assert/strict';
-import { createHmac } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { test } from 'node:test';
 
-import { Hono } from 'hono';
-
-import { channel as slackChannel, processGatewaySlackEnvelope } from '../src/channels/slack.ts';
+import { processGatewaySlackEnvelope } from '../src/channels/slack.ts';
 import { closeNodeStateStores, resolveStores, type AppStores } from '../src/config/state-backend.ts';
-import { WORKSPACE_SLACK_INSTALLATION_ID } from '../src/config/types.ts';
-import { buildSlackAppManifest, slackManifestFingerprint } from '../src/slack/app-manifest.ts';
-import { loadCredentialKeyring } from '../src/slack/credential-keyring.ts';
 import type { GatewayDeploymentClient } from '../src/slack/gateway/client.ts';
-import {
-  invalidateSlackInstallationCredentialCache,
-  promoteSlackCredentialBundle,
-  stageSlackCredentialBundle,
-} from '../src/slack/installation-credentials.ts';
-import { stopNodeTurnRelay } from '../src/slack/node-turn-relay.ts';
 import type { TurnJob } from '../src/slack/turn-job-types.ts';
 import { parseSlackAgentSessionStopped } from '../src/slack/types.ts';
+import { withDirectSlackInstall } from './helpers/direct-slack-install.ts';
 import { createSlackOwner } from './helpers/slack-owner.ts';
 
 /**
@@ -582,29 +568,27 @@ test('a message posted before the press is held by the stop; one posted after it
 
 test('a customer-owned app\'s signed Stop event (direct transport) stops the run the same way', async () => {
   // On Node a new stop wakes the relay, which takes it in process (see
-  // tests/node-turn-relay-stop.test.ts); keep this process's relay stopped so
-  // no wake runs the stopped turn under these assertions.
-  await stopNodeTurnRelay();
-  const envKeys = [
-    'TAG_DB_PATH', 'SLACK_STATE_DB_PATH', 'CHICKPEA_AUTH_DB_PATH', 'CHICKPEA_CREDENTIAL_KEYRING_PATH',
-  ] as const;
-  const previousEnv = envKeys.map((key) => process.env[key]);
-  const directory = mkdtempSync(join(tmpdir(), 'chickpea-stop-button-'));
-  process.env.TAG_DB_PATH = ':memory:';
-  process.env.SLACK_STATE_DB_PATH = ':memory:';
-  process.env.CHICKPEA_AUTH_DB_PATH = ':memory:';
-  process.env.CHICKPEA_CREDENTIAL_KEYRING_PATH = join(directory, 'credential-keyring.json');
-  const previousFetch = globalThis.fetch;
-  const slackCalls: string[] = [];
-  closeNodeStateStores();
-  invalidateSlackInstallationCredentialCache();
-  const stores = resolveStores();
-  try {
-    const owner = await createSlackOwner(stores.identity, { teamId: 'T1', userId: 'U1' });
+  // tests/node-turn-relay-stop.test.ts); the harness keeps this process's
+  // relay stopped so no wake runs the stopped turn under these assertions.
+  await withDirectSlackInstall({
+    signingSecret: 'stop-button-signing-secret',
+    botToken: 'xoxb-stop-button',
+    answer: (method, form) => method === 'users.info'
+      ? {
+          ok: true,
+          user: {
+            deleted: false, is_bot: false, is_app_user: false, is_restricted: false,
+            is_ultra_restricted: false, is_stranger: false, ...USERS[form.get('user') ?? ''],
+          },
+        }
+      : method === 'conversations.members'
+        ? { ok: true, members: ['U1', 'U2', 'UBOT'], response_metadata: { next_cursor: '' } }
+        : undefined,
+  }, async ({ stores, ownerMembershipId, calls, deliver }) => {
     await stores.config.createAgent({
       id: 'agent_ops', name: 'ops', instructions: '', enabled: true, lifecycle: 'active',
       model: 'local-stub/steering',
-      creatorMembershipId: owner.membership.id, editPolicy: 'creator_and_admins',
+      creatorMembershipId: ownerMembershipId, editPolicy: 'creator_and_admins',
       skills: [], mcpServers: [], apiConnections: [], repositories: [],
       slackPresence: {
         requestedHandle: 'ops', normalizedHandle: 'ops', desiredState: 'active',
@@ -612,45 +596,16 @@ test('a customer-owned app\'s signed Stop event (direct transport) stops the run
         avatar: { kind: 'generated', revision: 1, seed: 'ops' },
       },
     });
-    await stores.config.ensureWorkspaceInstallation({
-      workspaceId: 'T1', transportMode: 'direct', appId: 'A1', botUserId: 'UBOT', teamId: 'T1',
-    });
     await stores.config.putChannel({ workspaceId: 'T1', channelId: 'C1', label: 'ops', lifecycle: 'active' }, 0);
     await stores.config.putAgentChannelGrant({
       workspaceId: 'T1', channelId: 'C1', agentId: 'agent_ops', status: 'active',
-      createdByMembershipId: owner.membership.id, channelLabel: 'ops', channelIsPrivate: false,
+      createdByMembershipId: ownerMembershipId, channelLabel: 'ops', channelIsPrivate: false,
     }, 0);
     const agent = await stores.config.getAgent('agent_ops');
     await stores.config.putAgentThreadRoute({
       workspaceId: 'T1', channelId: 'C1', threadTs: ROOT_TS, agentId: 'agent_ops',
       agentGeneration: agent!.configurationGeneration ?? agent!.revision, ownerIncarnation: 1,
     }, 0);
-
-    // The installation's encrypted credentials, as setup leaves them.
-    const signingSecret = 'stop-button-signing-secret';
-    const credentials = { state: stores.identity, keyring: loadCredentialKeyring() };
-    const manifestFingerprint = slackManifestFingerprint(
-      buildSlackAppManifest({ kind: 'workspace_app', origin: 'https://chickpea.example' }),
-    );
-    const app = await stageSlackCredentialBundle(credentials, {
-      identityId: WORKSPACE_SLACK_INSTALLATION_ID, identityClass: 'workspace_installation',
-      purpose: 'app_credentials', expectedActiveRevision: null, appId: 'A1', manifestFingerprint,
-      secrets: { clientId: '123.456', clientSecret: 'client-secret', signingSecret },
-    });
-    await promoteSlackCredentialBundle(credentials, {
-      identityId: WORKSPACE_SLACK_INSTALLATION_ID, candidateRevision: app.revision, expectedActiveRevision: null,
-    });
-    const connected = await stageSlackCredentialBundle(credentials, {
-      identityId: WORKSPACE_SLACK_INSTALLATION_ID, identityClass: 'workspace_installation',
-      purpose: 'connected_credentials', expectedActiveRevision: app.revision,
-      appId: 'A1', teamId: 'T1', botUserId: 'UBOT', grantedScopes: ['chat:write'], validatedAt: Date.now(),
-      manifestFingerprint,
-      secrets: { clientId: '123.456', clientSecret: 'client-secret', signingSecret, botToken: 'xoxb-stop-button' },
-    });
-    await promoteSlackCredentialBundle(credentials, {
-      identityId: WORKSPACE_SLACK_INSTALLATION_ID, candidateRevision: connected.revision,
-      expectedActiveRevision: app.revision,
-    });
 
     // A running turn in the Agent's thread.
     await stores.slackState.enqueueTurn!({
@@ -663,44 +618,13 @@ test('a customer-owned app\'s signed Stop event (direct transport) stops the run
       assignment: { runtimeContract: 'chickpea-v1', agentId: 'agent_ops', agent: { id: 'agent_ops' } },
     } as unknown as TurnJob);
 
-    // Slack's Web API, as the direct transport calls it.
-    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-      const method = new URL(String(input instanceof Request ? input.url : input)).pathname.split('/').at(-1)!;
-      slackCalls.push(method);
-      const form = new URLSearchParams(typeof init?.body === 'string' ? init.body : '');
-      const body = method === 'users.info'
-        ? {
-            ok: true,
-            user: {
-              deleted: false, is_bot: false, is_app_user: false, is_restricted: false,
-              is_ultra_restricted: false, is_stranger: false, ...USERS[form.get('user') ?? ''],
-            },
-          }
-        : method === 'conversations.members'
-          ? { ok: true, members: ['U1', 'U2', 'UBOT'], response_metadata: { next_cursor: '' } }
-          : { ok: true };
-      return Response.json(body);
-    }) as typeof fetch;
-
-    const payload = JSON.stringify({
+    const response = await deliver('events', {
       token: '', team_id: 'T1', api_app_id: 'A1', event_id: 'EvStopDirect', event_time: 1800000010,
       type: 'event_callback',
       event: {
         type: 'agent_session_stopped', channel: 'C1', thread_ts: ROOT_TS, user: 'U2',
         event_ts: '1800000010.000100', streaming_message_ts: [],
       },
-    });
-    const timestamp = String(Math.floor(Date.now() / 1_000));
-    const ingress = new Hono();
-    ingress.route('/channels/slack', slackChannel.route());
-    const response = await ingress.request('/channels/slack/events', {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-slack-request-timestamp': timestamp,
-        'x-slack-signature': `v0=${createHmac('sha256', signingSecret).update(`v0:${timestamp}:${payload}`).digest('hex')}`,
-      },
-      body: payload,
     });
     assert.equal(response.status, 200, await response.clone().text());
 
@@ -711,21 +635,13 @@ test('a customer-owned app\'s signed Stop event (direct transport) stops the run
       if (stop) break;
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
+    const slackCalls = calls.map(({ method }) => method);
     assert.deepEqual({ ...(stop as Record<string, unknown>), stoppedAt: undefined }, {
       schemaVersion: 1, role: 'stopped', source: 'button', stopperUserId: 'U2',
       cutoffTs: '1800000010.000100', stoppedAt: undefined,
     }, JSON.stringify(slackCalls));
     assert.deepEqual(slackCalls.filter((method) => method.startsWith('chat.')), [], 'nothing posted');
-  } finally {
-    globalThis.fetch = previousFetch;
-    closeNodeStateStores();
-    invalidateSlackInstallationCredentialCache();
-    envKeys.forEach((key, index) => {
-      if (previousEnv[index] === undefined) delete process.env[key];
-      else process.env[key] = previousEnv[index];
-    });
-    rmSync(directory, { recursive: true, force: true });
-  }
+  });
 });
 
 test('the Stop event parser keeps only a usable press', () => {

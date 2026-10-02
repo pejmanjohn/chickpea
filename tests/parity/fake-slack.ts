@@ -955,7 +955,7 @@ export class FakeSlackBackend {
       }
       case 'usergroups.update': {
         const group = this.userGroups.find((candidate) => candidate.id === String(body.usergroup ?? ''));
-        if (!group) return { ok: false, error: 'subteam_not_found' };
+        if (!group) return { ok: false, error: 'no_such_subteam' };
         if (body.name !== undefined) group.name = String(body.name);
         if (body.handle !== undefined) group.handle = String(body.handle);
         if (body.description !== undefined) group.description = String(body.description);
@@ -965,7 +965,7 @@ export class FakeSlackBackend {
       case 'usergroups.disable':
       case 'usergroups.enable': {
         const group = this.userGroups.find((candidate) => candidate.id === String(body.usergroup ?? ''));
-        if (!group) return { ok: false, error: 'subteam_not_found' };
+        if (!group) return { ok: false, error: 'no_such_subteam' };
         group.is_disabled = method === 'usergroups.disable';
         group.date_update = Math.floor(Date.now() / 1000);
         return { ok: true, usergroup: group };

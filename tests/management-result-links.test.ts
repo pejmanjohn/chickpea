@@ -119,6 +119,29 @@ test('the bot user carries the Slack link when the installation has no app id', 
   }
 });
 
+test('an Agent created without a known public URL is reported as created, without links', async () => {
+  // A direct install signed in through Slack may not know its public URL.
+  const f = await createManagementAdapterFixture('result-links-no-public-url', {
+    setupBaseUrl: async () => undefined,
+  });
+  try {
+    const result = await createAgentOverMcp(f, 'links-no-public-url');
+    assert.equal(result.status, 'completed');
+    const [outcome] = result.outcomes;
+    assert.equal(outcome?.disposition, 'applied');
+    assert.equal(outcome?.code, undefined);
+    assert.deepEqual(outcome?.changed?.map(({ kind, id }) => ({ kind, id })), [
+      { kind: 'agent', id: 'agent_support' },
+    ]);
+    assert.equal(outcome?.handoffUrl, undefined);
+    assert.equal(outcome?.links, undefined);
+    assert.equal(result.links, undefined);
+    assert.equal((await f.config.getAgent('agent_support')).name, 'Support Triage');
+  } finally {
+    f.close();
+  }
+});
+
 test('a local setup base URL still produces an Admin link', async () => {
   const f = await createManagementAdapterFixture('result-links-localhost');
   try {

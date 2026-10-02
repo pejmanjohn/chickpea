@@ -15,7 +15,10 @@ import { SqliteIdentityStore } from '../src/identity/store.ts';
 import { SlackAppCreationService, openSlackSetupTransaction } from '../src/slack/app-creation.ts';
 import { generateCredentialKeyring, loadCredentialKeyring } from '../src/slack/credential-keyring.ts';
 import type { SlackCredentialDependencies } from '../src/slack/installation-credentials.ts';
-import { recordPendingSlackChallenge } from '../src/slack/installation-handshake.ts';
+import {
+  recordPendingSlackChallenge,
+  SLACK_PENDING_ENVELOPE_SETTING,
+} from '../src/slack/installation-handshake.ts';
 import { buildSlackAppManifest } from '../src/slack/app-manifest.ts';
 import {
   SLACK_INSTALL_ATTEMPT_TTL_MS,
@@ -147,7 +150,7 @@ test('confidential callback validates the issued bot capabilities and waits for 
   }
 });
 
-test('the canonical signed Events URL automatically promotes its pending encrypted bot revision', async () => {
+test('the canonical signed Events URL answers before promoting its pending encrypted bot revision', async (t) => {
   const directory = mkdtempSync(join(tmpdir(), 'chickpea-slack-install-events-'));
   const databasePath = join(directory, 'state.db');
   const keyringPath = join(directory, 'credential-keyring.json');
@@ -185,22 +188,56 @@ test('the canonical signed Events URL automatically promotes its pending encrypt
         const signature = `v0=${createHmac('sha256', 'signing-secret-value')
           .update(`v0:${timestamp}:${body}`).digest('hex')}`;
         const { channel } = await import('../src/channels/slack.ts');
-        const app = new Hono();
-        app.route('/channels/slack', channel.route());
-        const response = await app.request(
-          '/channels/slack/events',
-          {
-            method: 'POST',
-            headers: {
-              'content-type': 'application/json',
-              'x-slack-request-timestamp': timestamp,
-              'x-slack-signature': signature,
-            },
-            body,
+        // Hold the promotion: the challenge must be answered without it.
+        const finalizeInstall = SlackInstallOAuthService.prototype.finalizeWaitingInstallation;
+        let releaseFinalization!: () => void;
+        const finalizationGate = new Promise<void>((resolve) => { releaseFinalization = resolve; });
+        t.after(() => releaseFinalization());
+        t.mock.method(
+          SlackInstallOAuthService.prototype,
+          'finalizeWaitingInstallation',
+          async function (this: SlackInstallOAuthService, setupId: string) {
+            await finalizationGate;
+            return finalizeInstall.call(this, setupId);
           },
         );
+        const background: Promise<unknown>[] = [];
+        const app = new Hono();
+        app.route('/channels/slack', channel.route());
+        const response = await Promise.race([
+          app.request(
+            '/channels/slack/events',
+            {
+              method: 'POST',
+              headers: {
+                'content-type': 'application/json',
+                'x-slack-request-timestamp': timestamp,
+                'x-slack-signature': signature,
+              },
+              body,
+            },
+            undefined,
+            {
+              waitUntil: (task: Promise<unknown>) => { background.push(task); },
+              passThroughOnException: () => undefined,
+              props: {},
+            },
+          ),
+          new Promise<never>((_resolve, reject) => {
+            setTimeout(() => reject(new Error('The challenge waited on install finalization.')), 5_000)
+              .unref();
+          }),
+        ]);
         assert.equal(response.status, 200, await response.clone().text());
         assert.deepEqual(await response.json(), { challenge: 'challenge-install-ingress' });
+        assert.equal(background.length, 1);
+        assert.equal(
+          (await fixture.identity.getSlackSetupTransaction(fixture.setup.id))?.state,
+          'bot_install_pending',
+        );
+
+        releaseFinalization();
+        await background[0];
         assert.equal(
           (await fixture.identity.getSlackSetupTransaction(fixture.setup.id))?.state,
           'bot_installed',
@@ -218,6 +255,52 @@ test('the canonical signed Events URL automatically promotes its pending encrypt
     });
   } finally {
     rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('a finalization that loses the proof record to a completed install replays it as installed', async () => {
+  const fixture = await installFixture();
+  try {
+    await waitForEvents(fixture, 'lost-proof-code');
+    // B verifies the envelope; the setup page's check (A) then finishes the
+    // whole install before B records its proof.
+    let first: Promise<{ status: string }> | undefined;
+    const settings = Object.create(fixture.settings) as typeof fixture.settings;
+    settings.getSetting = async (key) => {
+      const value = await fixture.settings.getSetting(key);
+      if (key === SLACK_PENDING_ENVELOPE_SETTING && !first) {
+        first = fixture.service.finalizeWaitingInstallation(fixture.setup.id);
+        await first;
+      }
+      return value;
+    };
+    const late = concurrentService(fixture, { settings });
+    assert.equal((await late.finalizeWaitingInstallation(fixture.setup.id)).status, 'bot_installed');
+    assert.equal((await first)?.status, 'bot_installed');
+    await assertInstalled(fixture);
+  } finally {
+    fixture.close();
+  }
+});
+
+test('a finalization that loses the promotion purges the envelope it verified', async () => {
+  const fixture = await installFixture();
+  try {
+    await waitForEvents(fixture, 'lost-promotion-code');
+    // B records the proof; the setup page's check (A) promotes from that
+    // proof, holding no envelope receipt, before B promotes.
+    const identity = Object.create(fixture.identity) as typeof fixture.identity;
+    identity.promoteSlackBotInstallation = async (input) => {
+      assert.equal((await fixture.service.finalizeWaitingInstallation(fixture.setup.id)).status, 'bot_installed');
+      assert.ok(await fixture.settings.getSetting(SLACK_PENDING_ENVELOPE_SETTING), 'A purged nothing');
+      return fixture.identity.promoteSlackBotInstallation(input);
+    };
+    const late = concurrentService(fixture, { identity });
+    assert.equal((await late.finalizeWaitingInstallation(fixture.setup.id)).status, 'bot_installed');
+    assert.equal(await fixture.settings.getSetting(SLACK_PENDING_ENVELOPE_SETTING), undefined);
+    await assertInstalled(fixture);
+  } finally {
+    fixture.close();
   }
 });
 
@@ -731,6 +814,44 @@ type FixtureOptions = {
   transportError?: boolean;
   productEvents?: ProductTelemetryEventInput[];
 };
+
+type InstallFixture = Awaited<ReturnType<typeof installFixture>>;
+
+/** Complete bot OAuth and record a signed challenge, leaving the install waiting for promotion. */
+async function waitForEvents(fixture: InstallFixture, code: string): Promise<void> {
+  const started = await fixture.start();
+  assert.equal((await fixture.service.callback({
+    state: started.state,
+    browserBinding: BROWSER_BINDING,
+    redirectUri: REDIRECT_URI,
+    code,
+  })).status, 'waiting_events');
+  await fixture.recordChallenge();
+}
+
+/** A second finalizer over the fixture's state, with one port interleaved. */
+function concurrentService(
+  fixture: InstallFixture,
+  ports: { identity?: InstallFixture['identity']; settings?: InstallFixture['settings'] },
+): SlackInstallOAuthService {
+  return new SlackInstallOAuthService({
+    identity: ports.identity ?? fixture.identity,
+    credentials: fixture.credentials,
+    config: fixture.config,
+    settings: ports.settings ?? fixture.settings,
+    now: () => NOW,
+  });
+}
+
+async function assertInstalled(fixture: InstallFixture): Promise<void> {
+  const installed = await fixture.identity.getSlackSetupTransaction(fixture.setup.id);
+  assert.equal(installed?.state, 'bot_installed');
+  assert.equal(
+    (await fixture.identity.getActiveSlackCredentialRevision(WORKSPACE_SLACK_INSTALLATION_ID))?.revision,
+    installed?.botCredentialRevision,
+  );
+  assert.equal((await fixture.config.getWorkspaceInstallation('TACME'))?.health, 'healthy');
+}
 
 async function installFixture(options: FixtureOptions = {}) {
   const now = options.now ?? (() => NOW);

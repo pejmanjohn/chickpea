@@ -4,7 +4,11 @@ import type {
   AgentSlackPresence,
   CustomAgentConfig,
 } from '../../config/types.ts';
-import type { SlackTransport, SlackUserGroup } from '../transport/types.ts';
+import {
+  SlackTransportError,
+  type SlackTransport,
+  type SlackUserGroup,
+} from '../transport/types.ts';
 import {
   AgentPresenceError,
   classifyAgentPresenceError,
@@ -548,7 +552,8 @@ export class AgentPresenceReconciler {
     const defaultInstallations = (await config.listWorkspaceInstallations()).filter(
       (installation) => installation.defaultAgentId === agentId,
     );
-    if (defaultInstallations.length > 0 && !options.replacementDefaultAgentId) {
+    const replacement = options.replacementDefaultAgentId;
+    if (defaultInstallations.length > 0 && !replacement) {
       throw new AgentPresenceError(
         'slack_operation_failed',
         `Choose a replacement default Agent before archiving ${agent.name}.`,
@@ -566,15 +571,26 @@ export class AgentPresenceReconciler {
       },
       agent.revision,
     );
+    // The replacement comes with this request only. Apply it once the Agent
+    // is marked for archiving and before Slack is asked, so a Retry after a
+    // denied disable no longer needs one.
+    if (replacement) {
+      for (const installation of defaultInstallations) {
+        await config.setWorkspaceDefaultAgent(installation.workspaceId, replacement, installation.revision);
+      }
+    }
     if (presence.userGroupId) {
       try {
         const group = await transport.lookupUserGroup(presence.userGroupId);
-        if (!group?.disabled) await transport.disableUserGroup(presence.userGroupId);
+        if (!group?.disabled) await disableUserGroup(transport, presence.userGroupId, { missing: !group });
       } catch (error) {
+        // An archived Agent leaves no live handle, so archive waits for an
+        // Owner or Admin to deactivate the group in Slack, then Retry.
         const classified = classifyAgentPresenceError(error);
         const archiveError = classified.code === 'user_group_policy_denied'
           ? new AgentPresenceError(classified.code,
-            'Slack did not allow Chickpea to disable the Agent handle. The Agent is not archived.',
+            `Slack did not allow Chickpea to deactivate the @${presence.normalizedHandle} user group. ` +
+              'The Agent is not archived until that user group is deactivated.',
             classified.options)
           : classified;
         await this.recordFailure(agent, archiveError);
@@ -593,12 +609,7 @@ export class AgentPresenceReconciler {
       },
       agent.revision,
     );
-    return config.archiveAgent(agent.id, {
-      expectedRevision: agent.revision,
-      ...(options.replacementDefaultAgentId
-        ? { replacementDefaultAgentId: options.replacementDefaultAgentId }
-        : {}),
-    });
+    return config.archiveAgent(agent.id, { expectedRevision: agent.revision });
   }
 
   async restore(agentId: string): Promise<CustomAgentConfig> {
@@ -621,7 +632,7 @@ export class AgentPresenceReconciler {
     presence = requiredPresence(agent);
     if (!presence.userGroupId) return agent;
     try {
-      await transport.enableUserGroup(presence.userGroupId);
+      await enableUserGroup(transport, presence.userGroupId);
       return config.updateAgent(
         agent.id,
         {
@@ -681,6 +692,41 @@ export class AgentPresenceReconciler {
     );
   }
 }
+
+/**
+ * Disable an Agent's user group. Slack answers `already_disabled` when an
+ * Owner or Admin deactivated it first, which is the state archive wants; a
+ * group the workspace's list no longer has, and that Slack cannot find,
+ * leaves no live handle either. A not-found answer for a group still listed
+ * is a failure.
+ */
+async function disableUserGroup(
+  transport: SlackTransport,
+  userGroupId: string,
+  options: { missing: boolean },
+): Promise<void> {
+  try {
+    await transport.disableUserGroup(userGroupId);
+  } catch (error) {
+    if (!(error instanceof SlackTransportError)) throw error;
+    if (error.code === 'already_disabled') return;
+    if (options.missing && USER_GROUP_NOT_FOUND.has(error.code)) return;
+    throw error;
+  }
+}
+
+/** Enable an Agent's user group; Slack's `already_enabled` is the state restore wants. */
+async function enableUserGroup(transport: SlackTransport, userGroupId: string): Promise<void> {
+  try {
+    await transport.enableUserGroup(userGroupId);
+  } catch (error) {
+    if (error instanceof SlackTransportError && error.code === 'already_enabled') return;
+    throw error;
+  }
+}
+
+/** An unknown user group: Slack documents `no_such_subteam`; `subteam_not_found` is accepted too. */
+const USER_GROUP_NOT_FOUND = new Set(['no_such_subteam', 'subteam_not_found']);
 
 function requiredPresence(agent: CustomAgentConfig): AgentSlackPresence {
   if (!agent.slackPresence) throw new Error(`Agent ${agent.id} has no Slack presence`);
