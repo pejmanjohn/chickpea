@@ -7291,7 +7291,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     } catch (err) {
       if (err instanceof OpenAiSubscriptionError) return openAiSubscriptionRouteError(c, err);
       if (err instanceof ProviderModelsUnavailableError) {
-        return c.json({ error: err.code, provider: err.provider }, err.status as 409 | 502 | 503);
+        return c.json({ error: err.code, provider: err.provider }, err.status as 409 | 502);
       }
       if (err instanceof ProviderUnreachableError) {
         return c.json({ error: 'provider_unreachable', provider: err.provider }, 502);
