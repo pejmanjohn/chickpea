@@ -813,6 +813,28 @@ class FakeSlackTransport implements SlackTransport {
 }
 
 
+test('archive retry finishes when Slack says an Owner already deactivated the handle', async () => {
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const transport = new FakeSlackTransport();
+  try {
+    await config.createAgent(agent('agent_support', 'Support', 'support'));
+    const reconciler = new AgentPresenceReconciler({ config, transport });
+    await reconciler.publish({ workspaceId: 'TACME', agentId: 'agent_support', channelId: 'C_SUPPORT',
+      actorMembershipId: 'membership_ada', actorSlackUserId: 'UADA' });
+    await config.deleteAgentChannelGrant('TACME', 'C_SUPPORT', 'agent_support');
+    transport.disableError = new SlackTransportError('usergroups.disable', 'permission_denied');
+    await assert.rejects(() => reconciler.archive('agent_support'), AgentPresenceError);
+    // The Owner deactivated it in Slack, but the group list has not caught up.
+    transport.disableError = new SlackTransportError('usergroups.disable', 'already_disabled');
+    const archived = await reconciler.retry('agent_support');
+    assert.equal(archived.lifecycle, 'archived');
+    assert.equal(archived.slackPresence?.desiredState, 'disabled');
+    assert.equal(archived.slackPresence?.health, 'healthy');
+    assert.equal(archived.slackPresence?.errorCode, undefined);
+    assert.equal(transport.enableCalls, 0);
+  } finally { config.close(); }
+});
+
 for (const externallyDisabled of [false, true]) {
   test(`archive retry preserves disabled intent after Slack denial (already disabled: ${externallyDisabled})`, async () => {
     const config = new SqliteConfigStore(':memory:', { agents: [] });
@@ -829,11 +851,14 @@ for (const externallyDisabled of [false, true]) {
       const failed = await config.getAgent('agent_support');
       assert.equal(failed.lifecycle, 'needs_attention');
       assert.equal(failed.slackPresence?.desiredState, 'disabled');
-      assert.match(failed.slackPresence?.errorDetail ?? '', /disable the Agent handle/);
+      assert.equal(failed.slackPresence?.errorDetail,
+        'Slack did not allow Chickpea to deactivate the @support user group. ' +
+          'The Agent is not archived until that user group is deactivated.');
       const recovery = agentPresenceRecovery(new AgentPresenceError('user_group_policy_denied', 'denied'),
         'support', failed.slackPresence?.desiredState);
       assert.match(recovery.title, /archiving @support/);
       assert.match(recovery.explanation, /without reactivating/);
+      assert.match(recovery.steps[0] ?? '', /deactivate the @support user group: in Slack, open Directories → User Groups, select @support/);
       assert.doesNotMatch(recovery.steps.join(' '), /Add Members|create and edit/i);
       await assert.rejects(() => reconciler.retry('agent_support'), AgentPresenceError);
       assert.equal((await config.getAgent('agent_support')).slackPresence?.desiredState, 'disabled');

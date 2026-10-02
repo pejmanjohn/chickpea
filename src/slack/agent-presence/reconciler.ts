@@ -4,7 +4,11 @@ import type {
   AgentSlackPresence,
   CustomAgentConfig,
 } from '../../config/types.ts';
-import type { SlackTransport, SlackUserGroup } from '../transport/types.ts';
+import {
+  SlackTransportError,
+  type SlackTransport,
+  type SlackUserGroup,
+} from '../transport/types.ts';
 import {
   AgentPresenceError,
   classifyAgentPresenceError,
@@ -569,12 +573,15 @@ export class AgentPresenceReconciler {
     if (presence.userGroupId) {
       try {
         const group = await transport.lookupUserGroup(presence.userGroupId);
-        if (!group?.disabled) await transport.disableUserGroup(presence.userGroupId);
+        if (!group?.disabled) await disableUserGroup(transport, presence.userGroupId);
       } catch (error) {
+        // An archived Agent leaves no live handle, so archive waits for an
+        // Owner or Admin to deactivate the group in Slack, then Retry.
         const classified = classifyAgentPresenceError(error);
         const archiveError = classified.code === 'user_group_policy_denied'
           ? new AgentPresenceError(classified.code,
-            'Slack did not allow Chickpea to disable the Agent handle. The Agent is not archived.',
+            `Slack did not allow Chickpea to deactivate the @${presence.normalizedHandle} user group. ` +
+              'The Agent is not archived until that user group is deactivated.',
             classified.options)
           : classified;
         await this.recordFailure(agent, archiveError);
@@ -679,6 +686,19 @@ export class AgentPresenceReconciler {
       },
       current.revision,
     );
+  }
+}
+
+/**
+ * Disable an Agent's user group. Slack answers `already_disabled` when an
+ * Owner or Admin deactivated it first, which is the state archive wants.
+ */
+async function disableUserGroup(transport: SlackTransport, userGroupId: string): Promise<void> {
+  try {
+    await transport.disableUserGroup(userGroupId);
+  } catch (error) {
+    if (error instanceof SlackTransportError && error.code === 'already_disabled') return;
+    throw error;
   }
 }
 
