@@ -137,6 +137,51 @@ test('without an installation a catalog read gets the bundled catalog and an act
   });
 });
 
+test('a busy installation is never the one evicted, and an evicted one reloads its own catalog', async (t) => {
+  await withEnv({ CHICKPEA_TENANCY: undefined }, async () => {
+    const { env, settings } = installations(t);
+    // Every installation accepted the same published document.
+    const shared = settings();
+    await acceptModelCatalogCandidate(shared, { bytes: catalogBytes(60), checkedAt: 1, nextRefreshAt: 2 });
+    const [busy, reloading] = [env('inst_busy'), env('inst_reloading')];
+    await loadModelCatalog(shared, busy);
+    await loadModelCatalog(shared, reloading);
+    // 64 more installations arrive; the busy one keeps routing (a read) and reloading (an unchanged activation).
+    for (let index = 0; index < 64; index += 1) {
+      await loadModelCatalog(shared, env(`inst_arriving_${index}`));
+      if (index % 2 === 0) assert.equal(activeModelCatalogSnapshot(busy).revision, 60);
+      else await loadModelCatalog(shared, busy);
+    }
+    assert.equal(activeModelCatalogSnapshot(busy).revision, 60, 'the busy installation kept its catalog');
+    assert.equal(activeModelCatalogSnapshot(env('inst_arriving_63')).revision, 60);
+    // The least recently used one was evicted: it reads the bundled catalog until its next load.
+    assert.equal(activeModelCatalogSnapshot(reloading).source, 'bundled');
+    assert.equal((await loadModelCatalog(shared, reloading)).status, 'activated');
+    assert.equal(activeModelCatalogSnapshot(reloading).revision, 60);
+  });
+});
+
+test('past its distinct-document limit an isolate leaves a newly arriving installation on the bundled catalog', async (t) => {
+  await withEnv({ CHICKPEA_TENANCY: undefined }, async () => {
+    const { env, settings } = installations(t);
+    for (let revision = 1; revision <= 16; revision += 1) {
+      const store = settings();
+      await acceptModelCatalogCandidate(store, { bytes: catalogBytes(revision), checkedAt: 1, nextRefreshAt: 2 });
+      assert.equal((await loadModelCatalog(store, env(`inst_document_${revision}`))).status, 'activated');
+    }
+    const late = settings();
+    await acceptModelCatalogCandidate(late, { bytes: catalogBytes(17), checkedAt: 1, nextRefreshAt: 2 });
+    const envLate = env('inst_late');
+    // Observable as restart_required; admission then resolves this installation against the bundled catalog.
+    assert.deepEqual(await loadModelCatalog(late, envLate), { status: 'restart_required', revision: 17 });
+    assert.equal(activeModelCatalogSnapshot(envLate).source, 'bundled');
+    await assert.rejects(resolveRuntimeModel('agent', TENANT_MODEL, {
+      settings: late, env: envLate, requireProviderKey: async () => undefined,
+    }), /not supported by this Chickpea release/);
+    assert.equal(activeModelCatalogSnapshot(env('inst_document_16')).revision, 16, 'earlier installations are unaffected');
+  });
+});
+
 test('standalone keeps its one active catalog, with or without an env', async (t) => {
   await withEnv({ CHICKPEA_TENANCY: undefined }, async () => {
     installations(t);

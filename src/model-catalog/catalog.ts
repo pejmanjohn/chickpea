@@ -71,42 +71,62 @@ const bundledSnapshot = buildSnapshot('bundled', 0, BUNDLED_HASH, BUNDLED_MODEL_
 const activeSnapshots = new Map<string, InternalSnapshot>();
 
 /**
- * Standalone: ''. An installation of a deployment serving many: its id.
- * Activating needs an installation there; a read without one gets the
- * bundled catalog, never another installation's.
+ * Standalone: ''. An installation of a deployment serving many: its id, or
+ * none without one, whose reads get the bundled catalog, never another
+ * installation's.
  */
-function snapshotKey(env: CatalogEnv, activating: boolean): string | undefined {
+function snapshotKey(env: CatalogEnv): string | undefined {
   if (!deploymentServesManyInstallations(env)) return '';
-  const scope = installationScopeOf(env);
-  if (scope) return scope.installationId;
-  if (activating) {
+  return installationScopeOf(env)?.installationId;
+}
+
+/** Activating needs an installation on a deployment serving many. */
+function requireSnapshotKey(env: CatalogEnv): string {
+  const key = snapshotKey(env);
+  if (key === undefined) {
     throw new InstallationContextError(
       'installation_context_missing',
       'This deployment serves many installations and the catalog activation has none.',
     );
   }
-  return undefined;
+  return key;
 }
 
 function activeSnapshotFor(env: CatalogEnv): InternalSnapshot {
-  const key = snapshotKey(env, false);
-  return (key === undefined ? undefined : activeSnapshots.get(key)) ?? bundledSnapshot;
+  const key = snapshotKey(env);
+  return (key === undefined ? undefined : touchSnapshot(key)) ?? bundledSnapshot;
+}
+
+/** An installation's snapshot, marked most recently used, so an active installation is never the one evicted. */
+function touchSnapshot(key: string): InternalSnapshot | undefined {
+  const snapshot = activeSnapshots.get(key);
+  if (snapshot) {
+    activeSnapshots.delete(key);
+    activeSnapshots.set(key, snapshot);
+  }
+  return snapshot;
 }
 
 function setActiveSnapshot(key: string, snapshot: InternalSnapshot): void {
   activeSnapshots.delete(key);
   if (activeSnapshots.size >= MAX_INSTALLATION_SNAPSHOTS) {
-    // The least recently activated installation reloads its own on its next request.
+    // The least recently used installation reloads its own on its next request.
     activeSnapshots.delete(activeSnapshots.keys().next().value as string);
   }
   activeSnapshots.set(key, snapshot);
 }
 
 export function activateBundledModelCatalog(env?: CatalogEnv): ActiveModelCatalogSnapshot {
-  setActiveSnapshot(snapshotKey(env, true)!, bundledSnapshot);
+  setActiveSnapshot(requireSnapshotKey(env), bundledSnapshot);
   return publicSnapshot(bundledSnapshot);
 }
 
+/**
+ * Activate a hosted document for `env`'s installation. An isolate registers
+ * at most MAX_HOSTED_ACTIVATIONS distinct documents; past that a new one is
+ * `restart_required` and the installation keeps its current snapshot, which
+ * for an installation new to this isolate is the bundled catalog.
+ */
 export function activateModelCatalog(
   candidate: HostedModelCatalogCandidate,
   env?: CatalogEnv,
@@ -114,8 +134,8 @@ export function activateModelCatalog(
   if (!/^[a-f0-9]{64}$/.test(candidate.sha256)) {
     throw new Error('Hosted model catalog hash is invalid.');
   }
-  const key = snapshotKey(env, true)!;
-  const activeSnapshot = activeSnapshots.get(key) ?? bundledSnapshot;
+  const key = requireSnapshotKey(env);
+  const activeSnapshot = touchSnapshot(key) ?? bundledSnapshot;
   if (activeSnapshot.source === 'hosted') {
     if (candidate.document.revision < activeSnapshot.revision) {
       return { status: 'activated', snapshot: publicSnapshot(activeSnapshot) };
