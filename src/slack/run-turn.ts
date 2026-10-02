@@ -40,6 +40,7 @@ import {
   renderDisplayComponents,
 } from './ui/host-surfaces.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
+import { installationOwnershipOf } from '../config/installation-scope.ts';
 import type { TurnEnvelopeV1 } from '../agents/turn-envelope.ts';
 import { buildTurnEnvelope } from './turn-envelope-builder.ts';
 import { browserCapabilityForTurn, websiteLoginsForTurn } from '../browser/capability.ts';
@@ -2620,7 +2621,9 @@ async function freezeRuntimePlanForTurn(input: {
         ...(input.platformEnv ? { env: input.platformEnv } : {}),
       })
     : undefined;
+  const installation = installationOwnershipOf(input.platformEnv);
   const candidate = compileRuntimePlanV2({
+    ...(installation ? { installation } : {}),
     turn: input.turn,
     assignment: input.assignment,
     runtimeModel: runtimeModel.model,

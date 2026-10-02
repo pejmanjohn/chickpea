@@ -13,8 +13,8 @@ import {
   deriveRuntimePlanInstanceId,
   type RuntimePlanV2,
 } from '../src/agents/runtime-plan.ts';
+import { FLUE_CLOUDFLARE_EXTENSION_BRAND } from '../src/agents/cloudflare-extension.ts';
 import {
-  FLUE_CLOUDFLARE_EXTENSION_BRAND,
   MAX_STAGED_TURN_INPUTS,
   createSlackTurnInput,
   parseSlackTurnInput,
@@ -270,13 +270,16 @@ test('the Cloudflare extension is branded as Flue expects and stages into the ob
 
   const sql = sqlStorage();
   class Base { ctx = { storage: { sql } }; }
-  const Extended = slackThreadCloudflareExtension.base(Base as never) as unknown as new () => {
+  const Extended = slackThreadCloudflareExtension.base(Base as never) as unknown as new (
+    ctx: { id: { name?: string } },
+    env: unknown,
+  ) => {
     chickpeaStageTurnInput(json: string): void;
   };
   const current = plan();
   const instanceId = deriveRuntimePlanInstanceId(current);
   const input = createSlackTurnInput({ turnJobId: 'turn_do', instanceId, runtimePlan: current });
-  new Extended().chickpeaStageTurnInput(serializeSlackTurnInput(input));
+  new Extended({ id: { name: instanceId } }, {}).chickpeaStageTurnInput(serializeSlackTurnInput(input));
   assert.equal(parseSlackTurnInput(readStagedTurnInputJson(sql, 'turn_do')).instanceId, instanceId);
 
   const calls: string[] = [];

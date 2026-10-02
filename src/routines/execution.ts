@@ -61,6 +61,11 @@ import {
   usageRuntimeRecordingEnabled,
 } from '../usage/runtime-recorder.ts';
 import { opaqueId } from '../work/admission.ts';
+import {
+  installationOwnershipOf,
+  scopedObjectName,
+  type InstallationOwnership,
+} from '../config/installation-scope.ts';
 import { externalActionAuthorityInstructions } from '../connections/runtime.ts';
 import { createWorkExecutionLifecycle } from '../work/executor.ts';
 import type { ShadowWorkLifecycle } from '../work/lifecycle.ts';
@@ -516,7 +521,9 @@ async function prepareExecution(
           resolveModel,
         })
       : undefined;
+    const installation = installationOwnershipOf(input.env);
     envelope = createEnvelope({
+      ...(installation ? { installation } : {}),
       routine: input.routine,
       run: input.run,
       access,
@@ -622,6 +629,7 @@ async function prepareExecution(
 }
 
 function createEnvelope(input: {
+  installation?: InstallationOwnership;
   routine: RoutineDefinition;
   run: RoutineRun;
   access: RoutineRuntimeAccess;
@@ -638,6 +646,7 @@ function createEnvelope(input: {
   modelCredential: EffectiveSlackConfig['modelCredential'] | null;
 }): RoutineAgentDispatchEnvelopeV2 {
   const runtimePlan = compileRuntimePlanV2({
+    ...(input.installation ? { installation: input.installation } : {}),
     turn: input.prompt.turn,
     assignment: {
       workspaceId: input.routine.workspaceId,
@@ -683,7 +692,9 @@ function createEnvelope(input: {
   return {
     schemaVersion: 2,
     attemptId: input.attemptId,
-    instanceId: opaqueId('routineagent', input.attemptId),
+    instanceId: input.installation
+      ? scopedObjectName(input.installation, opaqueId('routineagent', input.attemptId))
+      : opaqueId('routineagent', input.attemptId),
     idempotencyKey: input.attemptId,
     message: {
       kind: 'signal',

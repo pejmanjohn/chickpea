@@ -305,6 +305,7 @@ import { bootstrapRuntimeProviders } from '../runtime-bootstrap.ts';
 import {
   buildRuntimePlanActivityContext,
   compileWebsiteLogins,
+  assertRuntimePlanInstallation,
   parseRuntimePlanV2,
   runtimePlanWorkspaceConversationKey,
   type RuntimePlanApiConnectionV2,
@@ -1180,6 +1181,7 @@ export function useRuntimePlanAgent(
     turn?: TurnEnvelopeContext;
   } = {},
 ): void {
+  assertRuntimePlanInstallation(plan, id);
   const { accumulator: artifactAccumulator, writeReceipts: writeArtifactReceipts } = useSlackArtifactReceipts();
   const fileCompletion = useFileDeliveryCompletion(plan, (fileIds) => {
     writeArtifactReceipts({ schemaVersion: 1, receipts: artifactAccumulator.remove(fileIds) });

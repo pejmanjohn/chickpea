@@ -5,6 +5,7 @@ import {
   addBuiltinProviderModelOverlay,
   builtinProviderModelOverlay,
   rebindBuiltinProvider,
+  requireIsolateModelCredentials,
   resolveProviderApiKey,
 } from './provider-keys.ts';
 import { listProviderModels, type ProviderModel } from './provider-models.ts';
@@ -64,6 +65,7 @@ export async function ensureOpenRouterRuntimeModel(
   const template = openRouterTemplate();
   if (!template) return false;
   const runtimeModel = liveOpenRouterModel(discovered, template);
+  requireIsolateModelCredentials(env);
   const { apiKey } = await resolveProviderApiKey('openrouter', env, settings);
   rebindBuiltinProvider('openrouter', apiKey, [runtimeModel]);
   return true;

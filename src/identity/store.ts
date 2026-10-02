@@ -6,6 +6,7 @@ import { promisify } from '../state/async-facade.ts';
 import { openStateDb } from '../state/node-state-db.ts';
 import { schemaInstallRequired, type StateDb } from '../state/state-db.ts';
 import { identityError } from './errors.ts';
+import { STANDALONE_INSTALLATION_IDENTITY, type InstallationIdentity } from './installation-binding.ts';
 import { installIdentityMigrations } from './migrations.ts';
 import type {
   AdvanceAuthOperationInput,
@@ -91,17 +92,24 @@ import type {
   User,
 } from './types.ts';
 
-interface IdentityStoreOptions { now?: () => number }
-
-const DEFAULT_INSTALLATION_ID = 'installation_oss';
-const DEFAULT_ORGANIZATION_ID = 'org_oss';
+interface IdentityStoreOptions {
+  now?: () => number;
+  /**
+   * The IDs this store's records are written under, read when used. A
+   * multi-installation host binds its own (installation-binding.ts);
+   * standalone keeps the fixed IDs.
+   */
+  installation?: () => InstallationIdentity;
+}
 
 export class IdentityStoreLogic {
   private readonly audit: AuditStoreLogic;
   private readonly now: () => number;
+  private readonly installation: () => InstallationIdentity;
 
   constructor(private readonly db: StateDb, options: IdentityStoreOptions = {}) {
     this.now = options.now ?? Date.now;
+    this.installation = options.installation ?? (() => STANDALONE_INSTALLATION_IDENTITY);
     if (schemaInstallRequired(db)) installIdentityMigrations(db);
     this.audit = new AuditStoreLogic(db);
   }
@@ -230,7 +238,7 @@ export class IdentityStoreLogic {
   }
 
   ensureAuthControl(input: EnsureAuthControlInput = {}): AuthControl {
-    const installationId = input.installationId ?? DEFAULT_INSTALLATION_ID;
+    const installationId = input.installationId ?? this.installation().installationId;
     const existing = this.getAuthControl(installationId);
     if (existing) return existing;
     const at = this.now();
@@ -244,13 +252,13 @@ export class IdentityStoreLogic {
     return this.requiredAuthControl(installationId);
   }
 
-  getAuthControl(installationId = DEFAULT_INSTALLATION_ID): AuthControl | undefined {
+  getAuthControl(installationId = this.installation().installationId): AuthControl | undefined {
     const row = this.db.get('SELECT * FROM identity_auth_controls WHERE installation_id = ?', installationId);
     return row ? authControlFromRow(row) : undefined;
   }
 
   updateAuthControl(input: UpdateAuthControlInput): AuthControl {
-    const installationId = input.installationId ?? DEFAULT_INSTALLATION_ID;
+    const installationId = input.installationId ?? this.installation().installationId;
     const current = this.requiredAuthControl(installationId);
     const origin = input.canonicalAdminOrigin === undefined
       ? current.canonicalAdminOrigin
@@ -274,7 +282,7 @@ export class IdentityStoreLogic {
   ensureSlackCredentialControl(
     input: EnsureSlackCredentialControlInput,
   ): SlackCredentialControl {
-    const installationId = input.installationId ?? DEFAULT_INSTALLATION_ID;
+    const installationId = input.installationId ?? this.installation().installationId;
     const existing = this.getSlackCredentialControl(installationId);
     if (existing) return existing;
     const at = this.now();
@@ -294,7 +302,7 @@ export class IdentityStoreLogic {
   }
 
   getSlackCredentialControl(
-    installationId = DEFAULT_INSTALLATION_ID,
+    installationId = this.installation().installationId,
   ): SlackCredentialControl | undefined {
     const row = this.db.get(
       'SELECT * FROM identity_slack_credential_controls WHERE installation_id = ?',
@@ -306,7 +314,7 @@ export class IdentityStoreLogic {
   beginSlackCredentialRotation(
     input: BeginSlackCredentialRotationInput,
   ): SlackCredentialControl {
-    const installationId = input.installationId ?? DEFAULT_INSTALLATION_ID;
+    const installationId = input.installationId ?? this.installation().installationId;
     if (!Number.isSafeInteger(input.expectedEpoch) || input.expectedEpoch < 1) {
       throw identityError('identity_invalid', 'Slack credential rotation epoch is invalid.');
     }
@@ -337,7 +345,7 @@ export class IdentityStoreLogic {
   private stageSlackCredentialRevisionInTransaction(
     input: StageSlackCredentialRevisionInput,
   ): SlackCredentialRevision {
-    const installationId = input.installationId ?? DEFAULT_INSTALLATION_ID;
+    const installationId = input.installationId ?? this.installation().installationId;
     const control = this.requiredSlackCredentialControl(installationId);
     requireCredentialEpoch(control, input.expectedRotationEpoch);
     if (input.envelope.keyId !== control.currentKeyId) {
@@ -427,7 +435,7 @@ export class IdentityStoreLogic {
   private promoteSlackCredentialRevisionInTransaction(
     input: PromoteSlackCredentialRevisionInput,
   ): SlackCredentialRevision {
-    const installationId = input.installationId ?? DEFAULT_INSTALLATION_ID;
+    const installationId = input.installationId ?? this.installation().installationId;
     const control = this.requiredSlackCredentialControl(installationId);
     requireCredentialEpoch(control, input.expectedRotationEpoch);
     const active = this.getActiveSlackCredentialRevision(input.identityId);
@@ -465,7 +473,7 @@ export class IdentityStoreLogic {
   tombstoneSlackCredentialRevision(
     input: TombstoneSlackCredentialRevisionInput,
   ): SlackCredentialRevision {
-    const installationId = input.installationId ?? DEFAULT_INSTALLATION_ID;
+    const installationId = input.installationId ?? this.installation().installationId;
     return this.db.transaction(() => {
       const control = this.requiredSlackCredentialControl(installationId);
       requireCredentialEpoch(control, input.expectedRotationEpoch);
@@ -495,7 +503,7 @@ export class IdentityStoreLogic {
   rewrapSlackCredentialRevision(
     input: RewrapSlackCredentialRevisionInput,
   ): SlackCredentialRevision {
-    const installationId = input.installationId ?? DEFAULT_INSTALLATION_ID;
+    const installationId = input.installationId ?? this.installation().installationId;
     return this.db.transaction(() => {
       const control = this.requiredSlackCredentialControl(installationId);
       requireCredentialEpoch(control, input.expectedRotationEpoch);
@@ -528,7 +536,7 @@ export class IdentityStoreLogic {
     keyId: string,
     expectedRotationEpoch: number,
   ): number {
-    const control = this.requiredSlackCredentialControl(DEFAULT_INSTALLATION_ID);
+    const control = this.requiredSlackCredentialControl(this.installation().installationId);
     requireCredentialEpoch(control, expectedRotationEpoch);
     return Number(this.db.get(
       `SELECT COUNT(*) AS count FROM identity_slack_credential_revisions
@@ -606,7 +614,7 @@ export class IdentityStoreLogic {
   }
 
   createSlackRecoverySession(input: CreateSlackRecoverySessionInput): SlackRecoverySession {
-    const control = this.requiredSlackCredentialControl(DEFAULT_INSTALLATION_ID);
+    const control = this.requiredSlackCredentialControl(this.installation().installationId);
     const active = this.getActiveSlackCredentialRevision(WORKSPACE_SLACK_INSTALLATION_ID);
     const now = this.now();
     if (control.deploymentId !== strictText(input.deploymentId, 'deployment ID', 256) ||
@@ -1378,7 +1386,7 @@ export class IdentityStoreLogic {
     const resultCode = strictText(input.errorCode, 'Slack installation error code', 128);
     return this.db.transaction(() => {
       const setup = this.requiredSlackSetupTransaction(input.setupId);
-      const control = this.requiredSlackCredentialControl(DEFAULT_INSTALLATION_ID);
+      const control = this.requiredSlackCredentialControl(this.installation().installationId);
       requireCredentialEpoch(control, input.expectedRotationEpoch);
       if (setup.state !== 'bot_install_pending' || setup.botCredentialRevision !== input.candidateRevision) {
         throw identityError('auth_operation_conflict', 'Slack installation is not waiting for verification.');
@@ -1908,7 +1916,7 @@ export class IdentityStoreLogic {
       `INSERT INTO identity_organizations (
         organization_id, display_name, slack_team_id, auth_mode, canonical_admin_origin, created_at, updated_at
       ) VALUES (?, ?, ?, 'unconfigured', NULL, ?, ?)`,
-      DEFAULT_ORGANIZATION_ID, strictText(input.displayName, 'display name', 120),
+      this.installation().organizationId, strictText(input.displayName, 'display name', 120),
       input.slackTeamId ? slackId(input.slackTeamId, 'Slack team ID') : null, at, at,
     );
     return this.requiredOrganization();
@@ -2154,7 +2162,7 @@ export class IdentityStoreLogic {
           resolution.binding.betterAuthUserId || resolution.binding.betterAuthMembershipId) {
         throw identityError('external_identity_conflict', 'Slack member browser identity is already bound.');
       }
-      const control = this.requiredAuthControl(DEFAULT_INSTALLATION_ID);
+      const control = this.requiredAuthControl(this.installation().installationId);
       if (!control.betterAuthOrganizationId ||
           control.betterAuthOrganizationId !== input.betterAuthOrganizationId) {
         throw identityError('external_identity_conflict', 'Browser organization identity does not match.');

@@ -15,6 +15,14 @@ interface RoutineExecutionContext {
   waitUntil(promise: Promise<unknown>): void;
 }
 
+export interface RoutineScheduledHandler {
+  scheduled(
+    controller: RoutineScheduledController,
+    env: Record<string, unknown>,
+    context: RoutineExecutionContext,
+  ): void;
+}
+
 export async function settleScheduledDuties(tasks: Array<() => Promise<unknown>>): Promise<void> {
   const results = await Promise.allSettled(tasks.map((task) => Promise.resolve().then(task)));
   const failures = results.flatMap((result) =>
@@ -63,13 +71,7 @@ export function createRoutineScheduledHandler(input: {
   maintenance?: (scheduledTime: number, env: Record<string, unknown>) => Promise<unknown>;
   /** Further duties settled independently, so none can delay or block another. */
   duties?: Array<(scheduledTime: number, env: Record<string, unknown>) => Promise<unknown>>;
-}): {
-  scheduled(
-    controller: RoutineScheduledController,
-    env: Record<string, unknown>,
-    context: RoutineExecutionContext,
-  ): void;
-} {
+}): RoutineScheduledHandler {
   return {
     scheduled(controller, env, context): void {
       const owner = `heartbeat:${controller.scheduledTime}`;

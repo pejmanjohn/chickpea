@@ -14,6 +14,7 @@ import {
   routineDestinationBindingDigest,
   scheduledOccurrenceKey,
 } from './ids.ts';
+import { splitInstallationObjectName } from '../config/installation-scope.ts';
 import { ROUTINE_LIMITS } from './limits.ts';
 import {
   assertRoutineTaskBoundToPrevious,
@@ -3892,7 +3893,8 @@ function validateAgentDispatchInput(input: PrepareRoutineAgentDispatchInput): vo
     !isOpaqueRoutineId(input.traceId) ||
     !validRoutineAgentEnvelope(envelope) ||
     !isOpaqueRoutineId(envelope.attemptId) ||
-    !isOpaqueRoutineId(envelope.instanceId) ||
+    typeof envelope.instanceId !== 'string' ||
+    !isOpaqueRoutineId(splitInstallationObjectName(envelope.instanceId).name) ||
     envelope.idempotencyKey !== envelope.attemptId ||
     encoded.length < 1 || encoded.length > 500_000
   ) {

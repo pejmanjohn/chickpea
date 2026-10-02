@@ -73,6 +73,11 @@ import type {
   RuntimeDrainStatus,
 } from './config/state-rpc.ts';
 import { buildRuntimeDrainStatus, tagStateStub } from './config/state-rpc.ts';
+import {
+  installationOwnershipOf,
+  objectInstallationEnv,
+  requireInstallationScope,
+} from './config/installation-scope.ts';
 import { promiseBackedStatePort } from './config/local-state-port.ts';
 import { localSlackStateStore } from './slack/local-state-store.ts';
 import { UiSurfaceStoreLogic, type UiSurfaceRpcRequest } from './slack/ui/surface-store.ts';
@@ -290,6 +295,12 @@ import type { UsageRpcRequest, UsageRpcResponse, UsageStore } from './usage/type
 import { WorkStoreLogic } from './work/store.ts';
 import { IdentityStateError } from './identity/errors.ts';
 import { IdentityStoreLogic } from './identity/store.ts';
+import {
+  bindStoreInstallation,
+  InstallationBindingLogic,
+  storeInstallationIdentity,
+  type InstallationIdentity,
+} from './identity/installation-binding.ts';
 import type { IdentityStore } from './identity/types.ts';
 import type { IdentityRpcRequest, IdentityRpcResponse } from './identity/types.ts';
 import { ManagementStoreLogic, type ManagementStore } from './management/store.ts';
@@ -785,6 +796,7 @@ const RUNNER_DISPATCH_MAX_PAGES = 16;
  */
 
 interface TagStateStores {
+  installationBinding: InstallationBindingLogic;
   identity: IdentityStoreLogic;
   config: ConfigStoreLogic;
   snapshots: SnapshotStoreLogic;
@@ -842,7 +854,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
   private versionChanged = false;
 
   constructor(ctx: DurableObjectState, env: unknown) {
-    super(ctx, env);
+    super(ctx, objectInstallationEnv(ctx, env));
     this.stores = this.tryInit();
     // Work the previous instance was running stopped with it (a code update,
     // a reset). Arm the alarm now rather than wait for the platform's retry.
@@ -1027,6 +1039,8 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
    */
   private tryInit(): TagStateStores | undefined {
     try {
+      // An object no installation's name addresses serves nothing.
+      requireInstallationScope(this.env as PlatformEnv);
       const fingerprint = stateSchemaFingerprint(
         cloudflareWorkerVersionId(this.env),
         applicationIdentity,
@@ -1071,8 +1085,12 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     // Same construction order as the node backend: each logic class creates
     // its own tables (and the config store runs migrations + seedOnce), so a
     // fresh DO is fully seeded before it answers its first RPC.
+    const installationBinding = new InstallationBindingLogic(db, this.env as PlatformEnv);
     const stores = {
-      identity: new IdentityStoreLogic(db),
+      installationBinding,
+      identity: new IdentityStoreLogic(db, {
+        installation: () => storeInstallationIdentity(installationBinding, this.env as PlatformEnv),
+      }),
       config: new ConfigStoreLogic(db),
       snapshots: new SnapshotStoreLogic(db),
       slack: new SlackStateLogic(db),
@@ -1098,6 +1116,18 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       }),
     };
     return completeStores;
+  }
+
+  /**
+   * Provisioning, on a deployment serving many installations: record the
+   * globally unique IDs its host assigned to this one. Idempotent; a store is
+   * never rebound to other IDs.
+   */
+  async bindInstallation(
+    identity: InstallationIdentity,
+  ): Promise<StateRpcResult<InstallationIdentity>> {
+    return this.call((stores) =>
+      bindStoreInstallation(stores.installationBinding, this.env as PlatformEnv, identity));
   }
 
   // ── config: agents ───────────────────────────────────────────────────────
@@ -2532,8 +2562,14 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     if (!stores || !runner) return false;
     const presentation = job.runId ? stores.presentations.get(job.runId) : undefined;
     const payload: ThreadRunnerJobPayload = presentation ? { presentation } : {};
+    const installation = installationOwnershipOf(this.env as PlatformEnv);
     try {
-      const result = await runner.admit({ id: job.id, threadKey, payload });
+      const result = await runner.admit({
+        id: job.id,
+        threadKey,
+        payload,
+        ...(installation ? { installation } : {}),
+      });
       if (result.refused) throw new Error(result.refused);
     } catch {
       console.warn('[chickpea] Thread runner admission failed; the hand-off is retried');

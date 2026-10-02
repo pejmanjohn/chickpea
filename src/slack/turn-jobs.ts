@@ -6,6 +6,7 @@ import type {
 } from '../config/state-rpc.ts';
 import {
   deriveRuntimePlanInstanceId,
+  isRuntimePlanInstanceId,
   parseRuntimePlanV2,
   runtimePlanInstanceIdMatches,
   type AdmittedRuntimePlanData,
@@ -3075,7 +3076,7 @@ function validateAgentBindingExpectation(input: SlackAgentBindingExpectation): v
 }
 
 function validateOpaqueAgentId(value: unknown, label: string): string {
-  if (typeof value !== 'string' || !/^agent_[a-f0-9]{40}$/.test(value)) {
+  if (!isRuntimePlanInstanceId(value)) {
     throw new Error(`Slack agent ${label} is invalid.`);
   }
   return value;

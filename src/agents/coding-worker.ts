@@ -39,6 +39,7 @@ import type { SandboxTurnContext } from '../sandbox/turn-context.ts';
 import { WORKSPACE_DIR } from '../sandbox/workspace-lifecycle.ts';
 import { useChickpeaResponseMetadata } from '../usage/response-metadata.ts';
 import { TurnEnvelopeContext } from './turn-envelope.ts';
+import { installationAgentExtension } from './cloudflare-extension.ts';
 
 /**
  * A coding worker: one Flue agent instance per coding workspace and binding,
@@ -160,6 +161,7 @@ export async function prepareCodingModel(
 
 // MUST stay a top-level string literal: see the note on ChickpeaRoutineExecution.
 CodingWorker.agentName = 'chickpea-coding-worker-v1';
+export const cloudflare = installationAgentExtension;
 CodingWorker.initialData = v.custom<CodingWorkerBindingV1>((value) => {
   try {
     parseCodingWorkerBinding(value);

@@ -31,6 +31,7 @@ import {
 import type { TurnSteeringRequest, TurnStopNotice } from '../src/slack/turn-job-types.ts';
 import { slackAgentThreadKey } from '../src/slack/thread-key.ts';
 import { compileRuntimePlanV2 } from '../src/agents/runtime-plan.ts';
+import { installationOwnershipOf } from '../src/config/installation-scope.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
 import { turnJob as maintenanceTurnJob } from './fixtures/state-db/maintenance.ts';
 import { createAgentAskCollector } from '../src/slack/agent-asks.ts';
@@ -376,6 +377,7 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
     RUNNER_DISPATCH_MAX_PAGES: 16,
     slackTurnExecutor: (env: Record<string, unknown>) => slackTurnExecutor(env, {}),
     sandboxTurnReaders: () => () => [],
+    installationOwnershipOf,
     threadRunnerStub: (_env: unknown, threadKey: string) => ({
       async admit(admission: RunnerAdmission) {
         assert.equal(admission.threadKey, threadKey, 'each turn goes to its own thread runner');
@@ -784,6 +786,7 @@ test('an OAuth continuation already handed to a thread runner is admitted there 
     console: { warn() {} },
     oauthResumeTurnJobId: (id: string) => `oauthresume:${id}`,
     slackAgentThreadKey: () => 'T1:C1:1.0:owner-i1',
+    installationOwnershipOf,
     threadRunnerStub: (_env: unknown, threadKey: string) => ({
       async admit(job: { id: string }) {
         admissions.push({ id: job.id, threadKey });

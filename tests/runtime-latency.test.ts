@@ -46,6 +46,7 @@ import {
 import { TurnJobStoreLogic } from '../src/slack/turn-jobs.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
 import type { WorkStore } from '../src/work/types.ts';
+import { deploymentTenancy } from '../src/config/installation-scope.ts';
 
 // Keep the ambient config store the Node relay opens off any on-disk database.
 process.env.SLACK_STATE_DB_PATH = ':memory:';
@@ -717,6 +718,7 @@ test('the Cloudflare gateway socket logs gateway_delivery for each admitted fram
       GATEWAY_HTTP_SETTING: 'slack.gateway.httpDelivery.v1',
       Date: { now: () => GATEWAY_NOW },
       DurableObject: class { constructor(_context: unknown, public env: unknown) {} },
+      deploymentTenancy,
       getSettingsStore: () => ({ getSetting: async () => 'configured' }),
       GATEWAY_BINDING_SETTING: 'binding',
       GATEWAY_DURABLE_ADMISSION_CAPABILITY: 'durable',

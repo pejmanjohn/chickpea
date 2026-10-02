@@ -7,6 +7,7 @@ import type {
 } from '../config/state-rpc.ts';
 import type { UsagePersistenceEvent } from '../usage/runtime-recorder.ts';
 import type { WorkspaceInstallation } from '../config/types.ts';
+import { installationObjectName } from '../config/installation-scope.ts';
 import { SLACK_SETTING_KEYS } from './credentials.ts';
 import { GATEWAY_DEPLOYMENT_IDENTITY_SETTING } from './gateway/identity.ts';
 import { GATEWAY_BINDING_SETTING } from './gateway/settings.ts';
@@ -160,5 +161,5 @@ export function threadRunnerStub(
 ): SlackThreadRunnerRpc | undefined {
   const namespace = env?.SLACK_THREAD_RUNNER as ThreadRunnerNamespace | undefined;
   if (!namespace || typeof namespace.getByName !== 'function') return undefined;
-  return namespace.getByName(threadKey);
+  return namespace.getByName(installationObjectName(env, threadKey));
 }
