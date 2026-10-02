@@ -840,6 +840,23 @@ test('a workspace default Agent\'s denied archive takes its replacement now, so 
   } finally { config.close(); }
 });
 
+test('archive finishes when the Agent\'s user group no longer exists in Slack', async () => {
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const transport = new FakeSlackTransport();
+  try {
+    await config.createAgent(agent('agent_support', 'Support', 'support'));
+    const reconciler = new AgentPresenceReconciler({ config, transport });
+    await reconciler.publish({ workspaceId: 'TACME', agentId: 'agent_support', channelId: 'C_SUPPORT',
+      actorMembershipId: 'membership_ada', actorSlackUserId: 'UADA' });
+    await config.deleteAgentChannelGrant('TACME', 'C_SUPPORT', 'agent_support');
+    transport.groups = [];
+    transport.disableError = new SlackTransportError('usergroups.disable', 'subteam_not_found');
+    const archived = await reconciler.archive('agent_support');
+    assert.equal(archived.lifecycle, 'archived');
+    assert.equal(archived.slackPresence?.errorCode, undefined);
+  } finally { config.close(); }
+});
+
 test('restore finishes when Slack says the handle is already enabled', async () => {
   const config = new SqliteConfigStore(':memory:', { agents: [] });
   const transport = new FakeSlackTransport();
@@ -906,6 +923,7 @@ for (const externallyDisabled of [false, true]) {
       assert.match(recovery.title, /archiving @support/);
       assert.match(recovery.explanation, /without reactivating/);
       assert.match(recovery.steps[0] ?? '', /deactivate the @support user group: in Slack, open Directories → User Groups, select @support/);
+      assert.equal(recovery.adminUrl, undefined, 'the handle is deactivated in Slack itself, not its admin site');
       assert.doesNotMatch(recovery.steps.join(' '), /Add Members|create and edit/i);
       await assert.rejects(() => reconciler.retry('agent_support'), AgentPresenceError);
       assert.equal((await config.getAgent('agent_support')).slackPresence?.desiredState, 'disabled');

@@ -162,7 +162,6 @@ export function agentPresenceRecovery(
         : ['Resolve the Slack error, then select Retry to finish archiving the Agent.'],
       actionLabel: 'Retry',
       actionKind: 'retry',
-      ...(error.code === 'user_group_policy_denied' ? { adminUrl: 'https://slack.com/admin' } : {}),
     };
   }
   if (error.code === 'paid_plan_required') {

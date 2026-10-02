@@ -582,7 +582,7 @@ export class AgentPresenceReconciler {
     if (presence.userGroupId) {
       try {
         const group = await transport.lookupUserGroup(presence.userGroupId);
-        if (!group?.disabled) await disableUserGroup(transport, presence.userGroupId);
+        if (!group?.disabled) await disableUserGroup(transport, presence.userGroupId, { missing: !group });
       } catch (error) {
         // An archived Agent leaves no live handle, so archive waits for an
         // Owner or Admin to deactivate the group in Slack, then Retry.
@@ -700,13 +700,21 @@ export class AgentPresenceReconciler {
 
 /**
  * Disable an Agent's user group. Slack answers `already_disabled` when an
- * Owner or Admin deactivated it first, which is the state archive wants.
+ * Owner or Admin deactivated it first, which is the state archive wants; a
+ * group the workspace's list no longer has, and that Slack cannot find,
+ * leaves no live handle either.
  */
-async function disableUserGroup(transport: SlackTransport, userGroupId: string): Promise<void> {
+async function disableUserGroup(
+  transport: SlackTransport,
+  userGroupId: string,
+  options: { missing: boolean },
+): Promise<void> {
   try {
     await transport.disableUserGroup(userGroupId);
   } catch (error) {
-    if (error instanceof SlackTransportError && error.code === 'already_disabled') return;
+    if (!(error instanceof SlackTransportError)) throw error;
+    if (error.code === 'already_disabled') return;
+    if (options.missing && error.code === 'subteam_not_found') return;
     throw error;
   }
 }
