@@ -1,10 +1,13 @@
 import { registerModelCompatibilityApis } from './model-compat/provider.ts';
 import { registerOpenAiSubscriptionApi } from './openai-subscription/provider.ts';
 import {
-  setBuiltinPiProvider,
+  registerBuiltinPiProvider,
   setLocalStubPiProvider,
   setWorkersAiRestPiProvider,
 } from './config/pi-provider.ts';
+// Installs Core's model access resolver unless a composing host installed one.
+import './config/installation-model-access.ts';
+import { PROVIDER_KEY_IDS } from './config/provider-keys.ts';
 import { recordRegisteredProvider } from './config/providers.ts';
 import { openAiSubscriptionAvailable } from './openai-subscription/availability.ts';
 import { WORKERS_AI_CONTEXT_WINDOW_FLOOR, WORKERS_AI_REASONING_MAX_TOKENS } from './config/workers-ai-models.ts';
@@ -17,11 +20,15 @@ let bootstrapped = false;
  * Install app-owned Pi providers exactly once in this module graph. Both the
  * application router and directly executed agent modules call this function,
  * so `flue run src/agents/...` has the same provider surface as Vite.
+ *
+ * The key-backed providers are registered without credentials: each request
+ * carries its run's model access (config/model-access.ts).
  */
 export function bootstrapRuntimeProviders(): void {
   if (bootstrapped) return;
   bootstrapped = true;
 
+  // Deployment-funded lane: a deployment serving many installations refuses it.
   const workersAiBaseUrl =
     process.env.CLOUDFLARE_WORKERS_AI_BASE_URL ||
     `https://api.cloudflare.com/client/v4/accounts/${
@@ -43,17 +50,7 @@ export function bootstrapRuntimeProviders(): void {
   registerModelCompatibilityApis();
   if (openAiSubscriptionAvailable()) registerOpenAiSubscriptionApi();
 
-  for (const [id, apiKey, baseUrl] of [
-    ['anthropic', process.env.ANTHROPIC_API_KEY, process.env.ANTHROPIC_BASE_URL],
-    ['openai', process.env.OPENAI_API_KEY, process.env.OPENAI_BASE_URL],
-    ['openrouter', process.env.OPENROUTER_API_KEY, process.env.OPENROUTER_BASE_URL],
-  ] as const) {
-    setBuiltinPiProvider(id, {
-      ...(apiKey ? { apiKey } : {}),
-      ...(baseUrl ? { baseUrl } : {}),
-    });
-    if (apiKey || baseUrl) recordRegisteredProvider(id);
-  }
+  for (const id of PROVIDER_KEY_IDS) registerBuiltinPiProvider(id);
 
   if (process.env.LOCAL_STUB_URL) {
     const configuredModel = process.env.SLACK_TAG_MODEL?.startsWith('local-stub/')
@@ -65,7 +62,6 @@ export function bootstrapRuntimeProviders(): void {
       .filter((model) => /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/.test(model));
     setLocalStubPiProvider({
       baseUrl: process.env.LOCAL_STUB_URL,
-      apiKey: process.env.LOCAL_STUB_API_KEY ?? 'offline-stub-key',
       modelIds: [configuredModel, ...configuredModels],
     });
     recordRegisteredProvider('local-stub');

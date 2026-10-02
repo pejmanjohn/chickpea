@@ -1,3 +1,6 @@
+import { resolveInstallationModelAccess } from '../config/installation-model-access.ts';
+import { ModelAccessError } from '../config/model-access.ts';
+import { ModelCredentialRevisionError } from '../config/model-credential-refs.ts';
 import { resolveProviderApiKey } from '../config/provider-keys.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
@@ -87,7 +90,17 @@ export async function resolveImageProvider(
     }
   }
 
-  const { apiKey } = await resolveProviderApiKey('openai', env, store);
+  let apiKey: string | undefined;
+  try {
+    // The installation's current key, through the same resolver as every
+    // model call (this client is outside Pi's provider proxy).
+    apiKey = (await resolveInstallationModelAccess('openai', env, 'image-generation', store))?.apiKey;
+  } catch (err) {
+    if (err instanceof ModelAccessError) return { ok: false, reason: 'misconfigured', detail: err.code };
+    // Rotated between reading the credential and resolving it: the next call reads the new one.
+    if (err instanceof ModelCredentialRevisionError) return { ok: false, reason: 'misconfigured', detail: 'credential_changed' };
+    throw err;
+  }
   if (!apiKey) {
     // No credential, no request: the role resolves as unset upstream and the
     // honesty instruction applies instead of a provider auth failure.

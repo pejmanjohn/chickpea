@@ -34,11 +34,9 @@ import {
   splitInstallationObjectName,
 } from '../src/config/installation-scope.ts';
 import {
-  applyResolvedProviderKey,
-  applyResolvedProviderKeys,
   deleteProviderApiKey,
+  describeProviderKeySources,
   invalidateProviderKeyCache,
-  isolateBindsModelCredentials,
   resolveProviderApiKey,
   saveProviderApiKey,
 } from '../src/config/provider-keys.ts';
@@ -421,18 +419,27 @@ test('a Flue agent object hands its base the env of the installation its instanc
   assert.equal(received.length, 3);
 });
 
-test('a deployment serving many installations never binds a model key to the shared isolate', async () => {
+test('an installation of a deployment serving many never reads a deployment environment key', async (t) => {
+  const previous = process.env.ANTHROPIC_API_KEY;
+  process.env.ANTHROPIC_API_KEY = 'sk-deployment-env';
+  t.after(() => {
+    if (previous === undefined) delete process.env.ANTHROPIC_API_KEY;
+    else process.env.ANTHROPIC_API_KEY = previous;
+    invalidateProviderKeyCache();
+  });
   const scoped = scopeInstallationEnv(HOSTED as Record<string, unknown>, { installationId: A.installationId });
-  const reads: string[] = [];
-  const settings = { getSetting: async (key: string) => { reads.push(key); return 'sk-tenant-a'; } } as never;
-  assert.equal(isolateBindsModelCredentials({}), true);
-  assert.equal(isolateBindsModelCredentials(scoped), false);
-  await assert.rejects(applyResolvedProviderKey('anthropic', scoped, settings), /does not bind model credentials/);
-  await applyResolvedProviderKeys(scoped, settings);
-  assert.deepEqual(reads, [], 'neither reads a key it may not bind');
+  const settings = new SqliteSettingsStore(':memory:');
+  t.after(() => settings.close());
+  assert.deepEqual(await resolveProviderApiKey('anthropic', scoped, settings), { apiKey: undefined, source: 'missing' });
+  assert.equal((await describeProviderKeySources(scoped, settings)).anthropic, 'missing');
+  assert.deepEqual(
+    await resolveProviderApiKey('anthropic', {}, settings),
+    { apiKey: 'sk-deployment-env', source: 'env' },
+    'standalone keeps the environment first',
+  );
 });
 
-test('each installation saves and reads its own model keys without binding the isolate', async (t) => {
+test('each installation saves and reads its own model keys', async (t) => {
   invalidateProviderKeyCache();
   forgetRegisteredProvider('anthropic');
   // Any read that missed its installation's cache would open this store.
@@ -470,7 +477,7 @@ test('each installation saves and reads its own model keys without binding the i
   }
 });
 
-test('a ChatGPT plan session is never bound to the isolate a deployment shares between installations', async (t) => {
+test('a deployment serving many installations does not offer the ChatGPT plan lane', async (t) => {
   const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
   Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { userAgent: 'Cloudflare-Workers' } });
   t.after(() => {
@@ -487,6 +494,6 @@ test('a ChatGPT plan session is never bound to the isolate a deployment shares b
       env: env as never,
       loadCatalog: async () => { throw new Error('must not load the catalog'); },
     }),
-    /does not bind model credentials/,
+    /not offered on a deployment serving many installations/,
   );
 });

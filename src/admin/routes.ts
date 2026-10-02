@@ -304,15 +304,16 @@ import {
   saveOpenAiAuthMethod,
 } from '../config/openai-auth.ts';
 import {
-  applyResolvedProviderKeys,
   deleteProviderApiKey,
   describeProviderKeySources,
   isProviderKeyId,
+  listInstallationModelProviders,
   PROVIDER_KEY_IDS,
   resolveProviderApiKey,
   saveProviderApiKey,
   type ProviderKeySource,
 } from '../config/provider-keys.ts';
+import { deploymentServesManyInstallations } from '../config/model-access.ts';
 import {
   cachedProviderModelCount,
   getProviderFavorites,
@@ -330,7 +331,6 @@ import {
   type AdminProviderId,
 } from '../config/provider-models.ts';
 import {
-  knownProviderIds,
   listRuntimeModelProviders,
   type RuntimeModelProvider,
 } from '../config/providers.ts';
@@ -2857,11 +2857,15 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }));
     return undefined;
   };
-  const modelProviders = () =>
+  // The providers this request's installation can use, read per request.
+  const modelProviders = async (c: Context): Promise<RuntimeModelProvider[]> =>
     options.knownProviders
       ? listRuntimeModelProviders({ registeredProviders: options.knownProviders })
-      : listRuntimeModelProviders();
-  const providerIds = () => options.knownProviders ?? knownProviderIds();
+      : listInstallationModelProviders(c.env as PlatformEnv | undefined, settings(c));
+  const providerIds = async (c: Context): Promise<ReadonlySet<string>> =>
+    options.knownProviders ?? new Set(
+      (await modelProviders(c)).filter((provider) => provider.configured).map((provider) => provider.id),
+    );
   // Default to the shared connect+discover routine; tests inject a mock so no
   // real network connect is attempted (same seam idea as the store/settings).
   const discoverMcp = (input: McpConnectInput): Promise<McpDiscoveryResult> =>
@@ -4502,9 +4506,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     // caller-supplied identity header.
     const principal = principalByContext.get(c);
     if (principal) setRequestPrincipal(c.req.raw, principal);
-    const platformEnv = c.env as PlatformEnv | undefined;
     // The cutover drain probe must be observational: do not let the general
-    // admin middleware reconcile provider keys or pin request-origin state.
+    // admin middleware pin request-origin state.
     if (c.req.method === 'GET' &&
         (c.req.path === '/admin/api/runtime/drain' ||
           c.req.path === '/admin/api/runtime/recovery-turns' ||
@@ -4514,9 +4517,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       return next();
     }
     const settingsStore = settings(c);
-    // No explicit store here: the module cache then coalesces the stored-key
-    // read across requests (an explicit store bypasses it, which tests rely on).
-    await timed('pkeys', () => applyResolvedProviderKeys(platformEnv, options.settings));
     // Opportunistically pin the resolved origin so the Slack "Configure" deep
     // link works even on a button deploy that never set SLACK_TAG_PUBLIC_URL.
     // No-op on the steady state.
@@ -6474,7 +6474,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const anthropicApiModels = activeCatalogModels('anthropic_api_key');
     const subscriptionAvailable = true;
     const providers = await Promise.all(
-      modelProviders()
+      (await modelProviders(c))
         .filter((provider) => provider.id !== 'cloudflare' || workersAiEnabled)
         .map(async (provider) => {
         if (provider.id === 'openai') {
@@ -6560,7 +6560,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         configStore,
         settingsStore: settings(c),
         platformEnv: c.env as PlatformEnv | undefined,
-        runtimeProviders: modelProviders(),
+        runtimeProviders: await modelProviders(c),
       }),
     });
   });
@@ -6597,7 +6597,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           configStore,
           settingsStore: settings(c),
           platformEnv: c.env as PlatformEnv | undefined,
-          runtimeProviders: modelProviders(),
+          runtimeProviders: await modelProviders(c),
         }),
       });
     } catch (error) {
@@ -6611,7 +6611,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
             configStore,
             settingsStore: settings(c),
             platformEnv: c.env as PlatformEnv | undefined,
-            runtimeProviders: modelProviders(),
+            runtimeProviders: await modelProviders(c),
           }),
         }, 409);
       }
@@ -6634,7 +6634,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         ...(c.env ? { platformEnv: c.env as PlatformEnv } : {}),
         installation,
         role,
-        runtimeProviders: modelProviders(),
+        runtimeProviders: await modelProviders(c),
       }),
     });
   });
@@ -6667,7 +6667,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
             modelId: parsed.output.modelId,
             settingsStore: settings(c),
             ...(c.env ? { platformEnv: c.env as PlatformEnv } : {}),
-            runtimeProviders: modelProviders(),
+            runtimeProviders: await modelProviders(c),
           })
         : await modelRoleChoiceError({
             settingsStore: settings(c),
@@ -6695,7 +6695,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           installation,
           role,
           availableModels,
-          runtimeProviders: modelProviders(),
+          runtimeProviders: await modelProviders(c),
         }),
       });
     } catch (error) {
@@ -6711,7 +6711,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
             installation,
             role,
             availableModels,
-            runtimeProviders: modelProviders(),
+            runtimeProviders: await modelProviders(c),
           }),
         }, 409);
       }
@@ -6735,7 +6735,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         configStore,
         settingsStore: settings(c),
         platformEnv: c.env as PlatformEnv | undefined,
-        runtimeProviders: modelProviders(),
+        runtimeProviders: await modelProviders(c),
       }),
     ]);
     return c.json({
@@ -6769,7 +6769,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       configStore,
       settingsStore: settings(c),
       platformEnv: c.env as PlatformEnv | undefined,
-      runtimeProviders: modelProviders(),
+      runtimeProviders: await modelProviders(c),
     });
     return c.json({
       cutover: {
@@ -6799,7 +6799,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         configStore,
         settingsStore: settings(c),
         platformEnv: c.env as PlatformEnv | undefined,
-        runtimeProviders: modelProviders(),
+        runtimeProviders: await modelProviders(c),
       }),
     ]);
     if (cutover.blockers.length > 0 || workspaceDefault.health.status !== 'ready') {
@@ -7689,7 +7689,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       }
       return c.json({
         agent: await agentAdminProjectionForRequest(c, created),
-        ...providerWarnings(agent.model, providerIds()),
+        ...providerWarnings(agent.model, await providerIds(c)),
       }, 201);
     } catch (err) {
       if (err instanceof AgentExistsError) {
@@ -9238,7 +9238,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       return c.json({
         agent: await agentAdminProjectionForRequest(c, updated),
         presenceRecovery,
-        ...providerWarnings(next.model, providerIds()),
+        ...providerWarnings(next.model, await providerIds(c)),
       });
     } catch (err) {
       if (err instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
@@ -9711,7 +9711,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     providerId: OnboardingProviderId,
   ): Promise<string[]> => {
     await loadModelCatalog(settings(c));
-    const runtime = modelProviders().find((provider) => provider.id === providerId);
+    const runtime = (await modelProviders(c)).find((provider) => provider.id === providerId);
     if (providerId === 'anthropic') {
       return uniqueStrings([
         ...activeCatalogModels('anthropic_api_key').map((model) => model.canonical),
@@ -9958,7 +9958,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
               configStore: store(c),
               settingsStore: settings(c),
               platformEnv: c.env as PlatformEnv | undefined,
-              runtimeProviders: modelProviders(),
+              runtimeProviders: await modelProviders(c),
             }),
           }, 409);
         }
@@ -12486,6 +12486,8 @@ function providerSummary(
 }
 
 function workersAiStatus(env: PlatformEnv | undefined): ProviderKeySource {
+  // Deployment-funded: not offered to an installation of a deployment serving many.
+  if (deploymentServesManyInstallations(env)) return 'missing';
   if (hasWorkersAiBinding(env)) {
     return 'env';
   }

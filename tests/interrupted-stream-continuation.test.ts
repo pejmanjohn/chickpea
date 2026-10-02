@@ -11,6 +11,11 @@ import {
   registeredPiProvider,
   restoreInterruptedStreamPartials,
 } from '../src/config/pi-provider-registry.ts';
+import {
+  configureModelAccessResolver,
+  modelAccessProviderId,
+  withModelAccess,
+} from '../src/config/model-access.ts';
 import { joinContinuation } from '../src/slack/flue-dispatch.ts';
 
 const model = {
@@ -223,12 +228,20 @@ async function sentPayload(
   const info = console.info;
   console.info = (...args: unknown[]) => { if (args[0] === '[chickpea] partial restore') logs.push(args[1]); };
   let payload: unknown;
+  // A key-backed provider sends only inside its run's model access.
+  configureModelAccessResolver({ resolve: async () => ({ apiKey: 'test-key', baseUrl: 'http://127.0.0.1:9' }) });
+  const grant = {
+    installationId: 'installation_oss', providerId: modelAccessProviderId(providerId)!, credentialRefId: 'cred_test',
+    credentialVersion: 1, runId: 'run_test', fundingSource: 'customer' as const,
+  };
   try {
-    const stream = provider.streamSimple(model, recoveredContext(partial), {
-      apiKey: 'test-key', reasoning: 'medium',
-      onPayload: (body: unknown) => { payload = body; throw new Error('captured'); },
-    } as never);
-    for await (const _event of stream) { /* the captured payload ends the stream */ }
+    await withModelAccess(grant, undefined, async () => {
+      const stream = provider.streamSimple(model, recoveredContext(partial), {
+        reasoning: 'medium',
+        onPayload: (body: unknown) => { payload = body; throw new Error('captured'); },
+      } as never);
+      for await (const _event of stream) { /* the captured payload ends the stream */ }
+    });
   } finally {
     console.info = info;
   }
@@ -237,13 +250,13 @@ async function sentPayload(
 }
 
 test('the restored partial and instruction reach the real OpenAI Responses, Anthropic, and chat-completions requests', async () => {
-  const { setBuiltinPiProvider, setLocalStubPiProvider } = await import('../src/config/pi-provider.ts');
+  const { registerBuiltinPiProvider, setLocalStubPiProvider } = await import('../src/config/pi-provider.ts');
   const cases = [
-    { api: 'openai-responses', id: 'openai', register: () => setBuiltinPiProvider('openai', { apiKey: 'test-key', baseUrl: 'http://127.0.0.1:9' }),
+    { api: 'openai-responses', id: 'openai', register: () => registerBuiltinPiProvider('openai'),
       pick: (m: Model<string>) => m.api === 'openai-responses' && m.reasoning },
-    { api: 'anthropic-messages', id: 'anthropic', register: () => setBuiltinPiProvider('anthropic', { apiKey: 'test-key', baseUrl: 'http://127.0.0.1:9' }),
+    { api: 'anthropic-messages', id: 'anthropic', register: () => registerBuiltinPiProvider('anthropic'),
       pick: (m: Model<string>) => m.api === 'anthropic-messages' && m.reasoning },
-    { api: 'openai-completions', id: 'local-stub', register: () => setLocalStubPiProvider({ baseUrl: 'http://127.0.0.1:9', apiKey: 'test-key', modelIds: ['stub-model'] }),
+    { api: 'openai-completions', id: 'local-stub', register: () => setLocalStubPiProvider({ baseUrl: 'http://127.0.0.1:9', modelIds: ['stub-model'] }),
       pick: () => true },
   ];
   for (const { api, id, register, pick } of cases) {

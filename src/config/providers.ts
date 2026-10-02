@@ -1,10 +1,9 @@
 import { isCloudflareTarget } from './runtime-target.ts';
 
-// Providers usable in this install. The shared runtime bootstrap records every
-// app-owned Pi provider here, and built-in catalog providers count as detected when their
-// standard credential is present — per the Flue models guide they need no
-// registration (ANTHROPIC_API_KEY / OPENAI_API_KEY / OPENROUTER_API_KEY alone
-// enable them).
+// Deployment lanes usable in this install (Workers AI REST, the local stub,
+// the subscription transport): the shared runtime bootstrap records each one
+// here. Key-backed providers are an installation's own, so whether one is
+// configured is read per installation (`listInstallationModelProviders`).
 const appRegistered = new Set<string>();
 const INTERNAL_PROVIDER_IDS = new Set(['openai-subscription']);
 
@@ -87,20 +86,27 @@ export function knownProviderIds(env: NodeJS.ProcessEnv = process.env): Set<stri
   );
 }
 
+export function registeredDeploymentProviders(): ReadonlySet<string> {
+  return appRegistered;
+}
+
 export function listRuntimeModelProviders({
   env = process.env,
   registeredProviders = appRegistered,
+  offered,
 }: {
   env?: NodeJS.ProcessEnv;
   registeredProviders?: ReadonlySet<string>;
+  /** The only providers this installation is offered, when the deployment limits them. */
+  offered?: ReadonlySet<string>;
 } = {}): RuntimeModelProvider[] {
-  const catalog = isCloudflareTarget()
+  const catalog = (isCloudflareTarget()
     ? [...BUILTIN_ENV_PROVIDERS, CF_BINDING_PROVIDER]
-    : BUILTIN_ENV_PROVIDERS;
+    : BUILTIN_ENV_PROVIDERS).filter((entry) => !offered || offered.has(entry.id));
   const catalogById = new Map(catalog.map((entry) => [entry.id, entry]));
   const ids = new Set(
     [...catalogById.keys(), ...registeredProviders].filter(
-      (id) => !INTERNAL_PROVIDER_IDS.has(id),
+      (id) => !INTERNAL_PROVIDER_IDS.has(id) && (!offered || offered.has(id)),
     ),
   );
 

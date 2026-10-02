@@ -26,6 +26,10 @@ export const ALIAS_FAMILIES = {
 
 export type AliasFamily = keyof typeof ALIAS_FAMILIES;
 
+/** The immutable bundled compatibility providers that route the API-key lanes. */
+export const OPENAI_PLATFORM_COMPAT_PROVIDER_ID = 'chickpea-openai-platform-bundled-v1';
+export const ANTHROPIC_COMPAT_PROVIDER_ID = 'chickpea-anthropic-api-bundled-v1';
+
 /** Hosted alias registrations retained per process before a restart is required. */
 export const MAX_HOSTED_ALIAS_REGISTRATIONS = 16;
 

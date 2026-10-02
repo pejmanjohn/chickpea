@@ -9,9 +9,11 @@ import type { AuthPrincipal } from '../src/auth/types.ts';
 import {
   invalidateProviderKeyCache,
   PROVIDER_KEY_SETTING_KEYS,
-  rebindBuiltinProvider,
   resolveProviderApiKey,
 } from '../src/config/provider-keys.ts';
+import { withStatelessModelAccess } from '../src/config/installation-model-access.ts';
+import { modelAccessRequest } from '../src/config/model-access.ts';
+import { registerBuiltinPiProvider } from '../src/config/pi-provider.ts';
 import {
   invalidateProviderModelCache,
   listProviderModels,
@@ -494,45 +496,33 @@ test('cutover activation fails closed when the selected provider is unavailable'
   }
 });
 
-test('built-in provider runtime overrides honor explicit OpenAI-compatible base URLs', async () => {
-  try {
-    await withEnv(
-      {
-        OPENAI_API_KEY: 'openai-fixture-key',
-        OPENAI_BASE_URL: 'http://127.0.0.1:40101/openai/v1',
-        OPENROUTER_API_KEY: 'openrouter-fixture-key',
-        OPENROUTER_BASE_URL: 'http://127.0.0.1:40101/openrouter/v1',
-      },
-      () => {
-        invalidateProviderKeyCache();
-        rebindBuiltinProvider('openai', process.env.OPENAI_API_KEY);
-        rebindBuiltinProvider('openrouter', process.env.OPENROUTER_API_KEY);
-
-        assert.equal(
-          resolveModel('openai/gpt-4.1-mini').baseUrl,
-          'http://127.0.0.1:40101/openai/v1',
-        );
-        assert.equal(
-          resolveModel('openrouter/openai/gpt-4.1').baseUrl,
-          'http://127.0.0.1:40101/openrouter/v1',
-        );
-      },
-    );
-  } finally {
-    await withEnv(
-      {
-        OPENAI_API_KEY: undefined,
-        OPENAI_BASE_URL: undefined,
-        OPENROUTER_API_KEY: undefined,
-        OPENROUTER_BASE_URL: undefined,
-      },
-      () => {
-        invalidateProviderKeyCache();
-        rebindBuiltinProvider('openai', undefined);
-        rebindBuiltinProvider('openrouter', undefined);
-      },
-    );
-  }
+test('built-in provider requests honor explicit OpenAI-compatible base URLs', async () => {
+  await withEnv(
+    {
+      OPENAI_API_KEY: 'openai-fixture-key',
+      OPENAI_BASE_URL: 'http://127.0.0.1:40101/openai/v1',
+      OPENROUTER_API_KEY: 'openrouter-fixture-key',
+      OPENROUTER_BASE_URL: 'http://127.0.0.1:40101/openrouter/v1',
+    },
+    async () => {
+      invalidateProviderKeyCache();
+      registerBuiltinPiProvider('openai');
+      registerBuiltinPiProvider('openrouter');
+      // The endpoint rides with the run's access and is applied per request.
+      for (const [providerId, model, baseUrl, apiKey] of [
+        ['openai', 'openai/gpt-4.1-mini', 'http://127.0.0.1:40101/openai/v1', 'openai-fixture-key'],
+        ['openrouter', 'openrouter/openai/gpt-4.1', 'http://127.0.0.1:40101/openrouter/v1', 'openrouter-fixture-key'],
+      ] as const) {
+        const catalog = resolveModel(model);
+        assert.notEqual(catalog.baseUrl, baseUrl, 'the registered metadata keeps the provider endpoint');
+        const request = await withStatelessModelAccess(model, { env: undefined, runId: 'base-url-test' }, async () =>
+          modelAccessRequest(providerId, catalog, {} as { apiKey?: string }));
+        assert.equal(request.model.baseUrl, baseUrl);
+        assert.equal(request.options.apiKey, apiKey);
+      }
+    },
+  );
+  invalidateProviderKeyCache();
 });
 
 test('provider key POST validates, stores, primes model cache, and rejects bad keys', async () => {

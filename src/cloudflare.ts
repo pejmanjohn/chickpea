@@ -253,6 +253,7 @@ import { StateSchemaMarker, stateSchemaFingerprint } from './state/schema-lifecy
 import { cloudflareWorkerVersionId } from './config/cloudflare-version.ts';
 import { applicationIdentity, viteServeLane } from './release/identity.ts';
 import { registerCloudflareBindingProvider } from './cloudflare-provider.ts';
+import { declareDeploymentTenancy, deploymentServesManyInstallations } from './config/model-access.ts';
 import { MemoryStoreLogic } from './memory/store.ts';
 import { MemoryStateError, type MemoryRpcRequest, type MemoryRpcResponse } from './memory/types.ts';
 import { RoutineStoreLogic } from './routines/store.ts';
@@ -372,6 +373,10 @@ instrument({
 // calls env.AI directly, without the default payload-logging AI Gateway.
 // Importable `env` is Cloudflare's ambient binding object; no I/O runs here.
 registerCloudflareBindingProvider(env.AI);
+
+// A deployment serving many installations offers only run-scoped model
+// access; a malformed declaration is treated as one.
+declareDeploymentTenancy(deploymentServesManyInstallations(env as unknown as Record<string, unknown>) ? 'installation' : 'standalone');
 
 export { ContainerProxy } from '@cloudflare/sandbox';
 

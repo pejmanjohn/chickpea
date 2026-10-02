@@ -42,12 +42,12 @@ const VISION_CALL_TIMEOUT_MS = 60_000;
 /**
  * One stateless vision inference on the frozen chat route: no tools, no
  * conversation history, no retries, bounded to 60 seconds. Returns the
- * joined answer text, which may be empty.
+ * joined answer text, which may be empty. The provider proxy adds the
+ * calling turn's model access.
  */
 export async function runStatelessVisionCall(
   runtimeModel: string,
   call: StatelessVisionCall,
-  apiKey?: string,
 ): Promise<string> {
   const model = resolveModel(runtimeModel);
   if (!model.input.includes('image')) throw new VisionUnavailableError();
@@ -59,7 +59,6 @@ export async function runStatelessVisionCall(
   }, {
     maxTokens: call.maxTokens ?? 1024,
     maxRetries: 0,
-    ...(apiKey ? { apiKey } : {}),
     signal: call.signal ? AbortSignal.any([timeout, call.signal]) : timeout,
   }).result();
   if (response.stopReason === 'error' || response.stopReason === 'aborted' || response.content.some((part) => part.type === 'toolCall')) {
@@ -76,7 +75,6 @@ export async function runStatelessVisionCall(
 export async function inspectImageOutput(
   runtimeModel: string,
   input: ImageInspectionInput,
-  apiKey?: string,
 ): Promise<ImageInspection> {
   try {
     // Fail before preparing previews when the model cannot see them.
@@ -109,7 +107,7 @@ export async function inspectImageOutput(
         ...previews,
       ],
       ...(input.signal ? { signal: input.signal } : {}),
-    }, apiKey);
+    });
     const json = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
     return { status: 'checked', ...v.parse(INSPECTION, JSON.parse(json)) };
   } catch {

@@ -1,19 +1,14 @@
-import { createHash } from 'node:crypto';
-
-import type { Api, Model } from '@earendil-works/pi-ai';
-
-import {
-  deploymentTenancy,
-  installationCacheKey,
-  InstallationContextError,
-} from './installation-scope.ts';
-import { forgetRegisteredProvider, recordRegisteredProvider } from './providers.ts';
-import { setBuiltinPiProvider } from './pi-provider.ts';
+import { deploymentTenancy, installationCacheKey } from './installation-scope.ts';
+import { deploymentServesManyInstallations } from './model-access.ts';
 import { rotateStoredModelCredential } from './model-credential-refs.ts';
+import {
+  listRuntimeModelProviders,
+  registeredDeploymentProviders,
+  type RuntimeModelProvider,
+} from './providers.ts';
 import type { SettingsStore } from './settings-store.ts';
 import { getSettingsStore, getUsageStore, type PlatformEnv } from './state-backend.ts';
 import type { UsageStore } from '../usage/types.ts';
-import { bindModelCompatibilityProvider } from '../model-compat/provider.ts';
 import { nonEmpty } from '../security/content-validation.ts';
 
 export const PROVIDER_KEY_SETTING_KEYS = {
@@ -44,34 +39,34 @@ export interface ResolvedProviderApiKey {
   source: ProviderKeySource;
 }
 
-// Short on purpose: the agent Durable Object isolate reads stored keys through
-// this cache on every turn, so the TTL is the worst-case lag between saving a
-// provider key in /admin and a warm isolate honoring it. 60s read as "my key
-// doesn't work"; 5s reads as instant while still coalescing reads in a turn.
+// Short on purpose: readiness checks read stored keys through this cache on
+// every turn, so the TTL is the worst-case lag between saving a provider key
+// in /admin and a warm isolate calling it ready. 60s read as "my key doesn't
+// work"; 5s reads as instant while still coalescing reads in a turn. A model
+// call never uses this cache: its resolver reads the key with its version.
 const STORED_CACHE_TTL_MS = 5_000;
 
 type StoredProviderKeys = Partial<Record<ProviderKeyId, string>>;
-type ProviderRegistrationOptions = { apiKey?: string; baseUrl?: string };
 
 // Keyed by installation: a deployment serving many keeps each one's keys apart.
 const storedCache = new Map<string, { expiresAt: number; values: StoredProviderKeys }>();
 const STORED_CACHE_MAX_INSTALLATIONS = 64;
-const appliedProviderFingerprints = new Map<ProviderKeyId, string>();
-const appliedProviderModelOverlays = new Map<ProviderKeyId, Map<string, Model<Api>>>();
-// The credential each rebind applied, so an overlay added during a synchronous
-// agent render keeps it. Absent means only the bootstrap env key is bound.
-const appliedProviderApiKeys = new Map<ProviderKeyId, string | undefined>();
 
 export function isProviderKeyId(id: string): id is ProviderKeyId {
   return (PROVIDER_KEY_IDS as readonly string[]).includes(id);
 }
 
+/**
+ * An installation's key for a provider. Standalone keeps its order: the
+ * deployment environment's key, then the key saved in Admin. An installation
+ * of a deployment serving many has only the key it saved.
+ */
 export async function resolveProviderApiKey(
   id: ProviderKeyId,
   env?: PlatformEnv,
   store?: SettingsStore,
 ): Promise<ResolvedProviderApiKey> {
-  const fromEnv = envApiKey(id);
+  const fromEnv = deploymentApiKey(id, env);
   if (fromEnv) {
     return { apiKey: fromEnv, source: 'env' };
   }
@@ -80,36 +75,41 @@ export async function resolveProviderApiKey(
   return { apiKey, source: apiKey ? 'stored' : 'missing' };
 }
 
-/**
- * The API key for one stateless model call outside the Agent harness (a
- * classifier or a visual check) on `model`'s provider: the provider key for
- * keyed providers, the Cloudflare token for Workers AI, and the local stub's
- * key offline.
- */
-export async function resolveModelApiKeyForStatelessCall(
-  model: string,
-  env: PlatformEnv | undefined,
-  settings?: SettingsStore,
-): Promise<string | undefined> {
-  const provider = model.split('/', 1)[0] ?? '';
-  if (isProviderKeyId(provider)) return (await resolveProviderApiKey(provider, env, settings)).apiKey;
-  if (provider === 'cloudflare-workers-ai') return process.env.CLOUDFLARE_API_TOKEN;
-  if (provider === 'local-stub') return process.env.LOCAL_STUB_API_KEY ?? 'offline-stub-key';
-  return undefined;
-}
-
 export async function describeProviderKeySources(
   env?: PlatformEnv,
   store?: SettingsStore,
 ): Promise<Record<ProviderKeyId, ProviderKeySource>> {
   const envSources = Object.fromEntries(
-    PROVIDER_KEY_IDS.map((id) => [id, envApiKey(id) ? 'env' : undefined]),
+    PROVIDER_KEY_IDS.map((id) => [id, deploymentApiKey(id, env) ? 'env' : undefined]),
   ) as Partial<Record<ProviderKeyId, ProviderKeySource>>;
   const needsStored = PROVIDER_KEY_IDS.some((id) => envSources[id] === undefined);
   const stored = needsStored ? await readStoredProviderKeys(env, store) : {};
   return Object.fromEntries(
     PROVIDER_KEY_IDS.map((id) => [id, envSources[id] ?? (stored[id] ? 'stored' : 'missing')]),
   ) as Record<ProviderKeyId, ProviderKeySource>;
+}
+
+/**
+ * The model providers one installation can use. Standalone: the deployment
+ * lanes, and each key-backed provider with a key in the environment or saved
+ * in Admin (or an endpoint override, as before). An installation of a
+ * deployment serving many: only the key-backed providers it saved a key for.
+ */
+export async function listInstallationModelProviders(
+  env: PlatformEnv | undefined,
+  settings: SettingsStore,
+): Promise<RuntimeModelProvider[]> {
+  const hosted = deploymentServesManyInstallations(env);
+  const sources = await describeProviderKeySources(env, settings);
+  const registered = new Set(hosted ? [] : registeredDeploymentProviders());
+  for (const id of PROVIDER_KEY_IDS) {
+    if (sources[id] !== 'missing' || providerBaseUrl(id, env)) registered.add(id);
+  }
+  return listRuntimeModelProviders({
+    env: hosted ? {} : process.env,
+    registeredProviders: registered,
+    ...(hosted ? { offered: new Set<string>(PROVIDER_KEY_IDS) } : {}),
+  });
 }
 
 export async function saveProviderApiKey(
@@ -130,8 +130,6 @@ export async function saveProviderApiKey(
     expectedVersion,
   );
   await primeStoredProviderKeysFromStore(env, settings);
-  const resolved = await resolveProviderApiKey(id, env, settings);
-  if (isolateBindsModelCredentials(env)) rebindBuiltinProvider(id, resolved.apiKey);
 }
 
 export async function deleteProviderApiKey(
@@ -148,112 +146,27 @@ export async function deleteProviderApiKey(
     usageStore ?? getUsageStore(env),
   );
   await primeStoredProviderKeysFromStore(env, settings);
-  const resolved = await resolveProviderApiKey(id, env, settings);
-  if (isolateBindsModelCredentials(env)) rebindBuiltinProvider(id, resolved.apiKey);
-  return resolved;
-}
-
-export async function applyResolvedProviderKeys(
-  env?: PlatformEnv,
-  store?: SettingsStore,
-): Promise<void> {
-  if (!isolateBindsModelCredentials(env)) return;
-  // One stored read covers every provider; resolving each id separately read
-  // the same three settings once per provider on every Admin request.
-  const stored = PROVIDER_KEY_IDS.every((id) => envApiKey(id))
-    ? {}
-    : await readStoredProviderKeys(env, store);
-  for (const id of PROVIDER_KEY_IDS) {
-    rebindBuiltinProvider(id, envApiKey(id) ?? stored[id]);
-  }
-}
-
-/** Resolve and bind only the provider selected for this model operation. */
-export async function applyResolvedProviderKey(
-  id: ProviderKeyId,
-  env?: PlatformEnv,
-  store?: SettingsStore,
-): Promise<void> {
-  requireIsolateModelCredentials(env);
-  const { apiKey } = await resolveProviderApiKey(id, env, store);
-  rebindBuiltinProvider(id, apiKey);
+  return resolveProviderApiKey(id, env, settings);
 }
 
 /**
- * Standalone binds a provider's key to the isolate's built-in provider. A
- * deployment serving many installations shares that isolate between them, so
- * it never does: its model calls fail closed until credentials are bound per
- * run.
+ * The endpoint a standalone deployment points a provider at. An installation
+ * of a deployment serving many uses the provider's own endpoint.
  */
-export function isolateBindsModelCredentials(env: PlatformEnv | undefined): boolean {
-  return deploymentTenancy(env) === 'standalone';
+export function providerBaseUrl(id: ProviderKeyId, env: PlatformEnv | undefined): string | undefined {
+  if (deploymentTenancy(env) === 'installation') return undefined;
+  return nonEmpty(process.env[PROVIDER_BASE_URL_ENV_VARS[id]]);
 }
 
-export function requireIsolateModelCredentials(env: PlatformEnv | undefined): void {
-  if (!isolateBindsModelCredentials(env)) {
-    throw new InstallationContextError(
-      'installation_context_invalid',
-      'A deployment serving many installations does not bind model credentials to the isolate.',
-    );
-  }
-}
-
-/**
- * Re-registering a built-in provider is how a browser-saved key takes effect
- * in the current isolate. Flue replaces the previous registration per provider
- * id, so `{}` deliberately clears a previously stored key after deletion.
- */
-export function rebindBuiltinProvider(
-  id: ProviderKeyId,
-  apiKey: string | undefined,
-  modelOverlays: readonly Model<Api>[] = [],
-): void {
-  const options = providerRegistrationOptions(id, apiKey);
-  const overlays = appliedProviderModelOverlays.get(id) ?? new Map<string, Model<Api>>();
-  for (const model of modelOverlays) overlays.set(model.id, model);
-  if (overlays.size > 0) appliedProviderModelOverlays.set(id, overlays);
-  const models = [...overlays.values()];
-  appliedProviderApiKeys.set(id, apiKey);
-  const fingerprint = keyFingerprint(JSON.stringify({ options, models }));
-  if (appliedProviderFingerprints.get(id) === fingerprint) {
-    return;
-  }
-  setBuiltinPiProvider(id, options, models);
-  if (id === 'anthropic' || id === 'openai') {
-    bindModelCompatibilityProvider(id, apiKey, {
-      ...(options.baseUrl ? { baseUrl: options.baseUrl } : {}),
-    });
-  }
-  appliedProviderFingerprints.set(id, fingerprint);
-  if (apiKey || options.baseUrl) {
-    recordRegisteredProvider(id);
-  } else {
-    forgetRegisteredProvider(id);
-  }
-}
-
-/**
- * Add a model overlay without changing the provider's credential. A key
- * stored in Admin (not the environment) is bound later, before the first
- * model call, by the turn's runtime model preparation.
- */
-export function addBuiltinProviderModelOverlay(id: ProviderKeyId, model: Model<Api>): void {
-  const apiKey = appliedProviderApiKeys.has(id) ? appliedProviderApiKeys.get(id) : envApiKey(id);
-  rebindBuiltinProvider(id, apiKey, [model]);
-}
-
-export function builtinProviderModelOverlay(
-  id: ProviderKeyId,
-  modelId: string,
-): Model<Api> | undefined {
-  return appliedProviderModelOverlays.get(id)?.get(modelId);
+/** Deployment-level provider keys, which a deployment serving many installations must not hold. */
+export function deploymentModelKeyNames(env: PlatformEnv | undefined): string[] {
+  return PROVIDER_KEY_IDS
+    .map((id) => PROVIDER_KEY_ENV_VARS[id])
+    .filter((name) => nonEmpty(process.env[name]) || nonEmpty(stringValue(env?.[name])));
 }
 
 export function invalidateProviderKeyCache(): void {
   storedCache.clear();
-  appliedProviderFingerprints.clear();
-  appliedProviderModelOverlays.clear();
-  appliedProviderApiKeys.clear();
 }
 
 async function readStoredProviderKeys(
@@ -290,31 +203,16 @@ function cacheStoredProviderKeys(
 ): void {
   const key = installationCacheKey(env);
   // An unscoped env under installation tenancy names no installation to cache for.
-  if (!key && !isolateBindsModelCredentials(env)) return;
+  if (!key && deploymentTenancy(env) === 'installation') return;
   if (!storedCache.has(key) && storedCache.size >= STORED_CACHE_MAX_INSTALLATIONS) storedCache.clear();
   storedCache.set(key, entry);
 }
 
-function envApiKey(id: ProviderKeyId): string | undefined {
+function deploymentApiKey(id: ProviderKeyId, env: PlatformEnv | undefined): string | undefined {
+  if (deploymentTenancy(env) === 'installation') return undefined;
   return nonEmpty(process.env[PROVIDER_KEY_ENV_VARS[id]]);
 }
 
-function providerRegistrationOptions(
-  id: ProviderKeyId,
-  apiKey: string | undefined,
-): ProviderRegistrationOptions {
-  const options: ProviderRegistrationOptions = {};
-  const baseUrl = nonEmpty(process.env[PROVIDER_BASE_URL_ENV_VARS[id]]);
-  if (baseUrl) {
-    options.baseUrl = baseUrl;
-  }
-  if (apiKey) {
-    options.apiKey = apiKey;
-  }
-  return options;
-}
-
-
-function keyFingerprint(apiKey: string): string {
-  return createHash('sha256').update(apiKey).digest('hex').slice(0, 16);
+function stringValue(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined;
 }

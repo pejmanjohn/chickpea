@@ -5,9 +5,13 @@ import { createHash } from 'node:crypto';
 
 import { resolveOpenAiAuthMethod } from './openai-auth.ts';
 import {
-  applyResolvedProviderKey,
+  RuntimeModelReadinessError,
+  providerSetupRequired,
+  requireNoDeploymentModelKeys,
+} from './installation-model-access.ts';
+import { deploymentServesManyInstallations } from './model-access.ts';
+import {
   isProviderKeyId,
-  requireIsolateModelCredentials,
   resolveProviderApiKey,
   type ProviderKeyId,
 } from './provider-keys.ts';
@@ -55,6 +59,7 @@ import {
 } from './provider-models.ts';
 
 export type { FrozenOpenRouterLiveModelRoute };
+export { RuntimeModelReadinessError };
 
 export type ProviderAuthRoute = 'openai_api_key' | 'openai_subscription';
 
@@ -80,19 +85,6 @@ export interface FrozenHostedCatalogModelRoute {
   displayName?: string;
   contextWindow?: number;
   maxTokens?: number;
-}
-
-export class RuntimeModelReadinessError extends Error {
-  readonly repairPath = '/admin/settings#model-providers';
-
-  constructor(
-    readonly status: 'provider_setup_required' | 'unsupported',
-    readonly providerId: string,
-    message: string,
-  ) {
-    super(message);
-    this.name = 'RuntimeModelReadinessError';
-  }
 }
 
 export type SafeRuntimeModelRouteEvidence = Omit<
@@ -280,7 +272,11 @@ interface RuntimeModelDependencies {
   settings: SettingsStore;
   env?: PlatformEnv;
   resolveOpenAiAuthorization?: typeof resolveOpenAiAuthMethod;
-  applyProviderKey?: (
+  /**
+   * The readiness of the selected key-backed provider. It binds nothing: the
+   * key reaches a model call only through the run's model access.
+   */
+  requireProviderKey?: (
     id: ProviderKeyId,
     env: PlatformEnv | undefined,
     settings: SettingsStore,
@@ -292,8 +288,9 @@ interface RuntimeModelDependencies {
 
 /**
  * Resolve the one billing lane immediately before Flue constructs an Agent.
- * Subscription selection never reads or binds the Platform API key; any
- * subscription failure escapes directly and cannot cross lanes.
+ * Subscription selection never reads the Platform API key; any subscription
+ * failure escapes directly and cannot cross lanes. A deployment serving many
+ * installations offers only the customer-keyed lanes.
  */
 export async function resolveRuntimeModel(
   _agentId: string,
@@ -307,15 +304,19 @@ export async function resolveRuntimeModel(
   if (isInternalCompatibilityProvider(providerId)) {
     throw new Error('Internal model providers cannot be selected in profiles.');
   }
+  const hosted = deploymentServesManyInstallations(dependencies.env);
+  if (hosted) {
+    requireNoDeploymentModelKeys(dependencies.env);
+    if (!isProviderKeyId(providerId)) throw providerNotOffered(providerId);
+  }
   const openAiAuthorization = providerId === 'openai'
     ? await (dependencies.resolveOpenAiAuthorization ?? resolveOpenAiAuthMethod)(
         dependencies.settings,
       )
     : undefined;
+  if (openAiAuthorization === 'subscription' && hosted) throw providerNotOffered('openai-subscription');
   if (openAiAuthorization === 'subscription' && isCloudflareTarget()) {
     const modelId = canonicalModel.slice('openai/'.length);
-    // The plan session binds per isolate, like a stored key.
-    requireIsolateModelCredentials(dependencies.env);
     await bindChatgptPlanProvider(planDependencies(dependencies.env, dependencies.settings), modelId);
     return { model: `${CHATGPT_PLAN_PROVIDER}/${modelId}`, providerAuthRoute: 'openai_subscription' };
   }
@@ -328,22 +329,12 @@ export async function resolveRuntimeModel(
   if (providerId === 'anthropic') {
     const model = resolveApiKeyModelSpecifier(canonicalModel, 'anthropic');
     await requireProviderKey('anthropic', dependencies);
-    await (dependencies.applyProviderKey ?? applyResolvedProviderKey)(
-      'anthropic',
-      dependencies.env,
-      dependencies.settings,
-    );
     return { model };
   }
   if (providerId !== 'openai') {
     if (isProviderKeyId(providerId)) {
       await requireProviderKey(providerId, dependencies);
-      await (dependencies.applyProviderKey ?? applyResolvedProviderKey)(
-        providerId,
-        dependencies.env,
-        dependencies.settings,
-      );
-      if (providerId === 'openrouter' && !dependencies.applyProviderKey) {
+      if (providerId === 'openrouter' && !dependencies.requireProviderKey) {
         let available: boolean;
         try {
           available = await ensureOpenRouterRuntimeModel(
@@ -380,11 +371,6 @@ export async function resolveRuntimeModel(
   if (authorization === 'api_key') {
     const model = resolveApiKeyModelSpecifier(canonicalModel, 'openai');
     await requireProviderKey('openai', dependencies);
-    await (dependencies.applyProviderKey ?? applyResolvedProviderKey)(
-      'openai',
-      dependencies.env,
-      dependencies.settings,
-    );
     return { model, providerAuthRoute: 'openai_api_key' };
   }
 
@@ -435,20 +421,24 @@ async function requireProviderKey(
   providerId: ProviderKeyId,
   dependencies: RuntimeModelDependencies,
 ): Promise<void> {
-  // Tests and alternate runtimes that inject the provider binding own its
-  // readiness contract. Production uses the same settings/environment reader
-  // as the binding itself, without probing the vendor or invoking a model.
-  if (dependencies.applyProviderKey) return;
+  if (dependencies.requireProviderKey) {
+    await dependencies.requireProviderKey(providerId, dependencies.env, dependencies.settings);
+    return;
+  }
+  // The installation's own key sources, in the resolver's order, without
+  // probing the vendor or invoking a model.
   const key = await (dependencies.resolveProviderKey ?? resolveProviderApiKey)(
     providerId,
     dependencies.env,
     dependencies.settings,
   );
-  if (!key.apiKey) {
-    throw new RuntimeModelReadinessError(
-      'provider_setup_required',
-      providerId,
-      `Provider ${providerId} needs setup before this model can run.`,
-    );
-  }
+  if (!key.apiKey) throw providerSetupRequired(providerId);
+}
+
+function providerNotOffered(providerId: string): RuntimeModelReadinessError {
+  return new RuntimeModelReadinessError(
+    'unsupported',
+    providerId,
+    `Model provider ${providerId} is not offered on a deployment serving many installations.`,
+  );
 }

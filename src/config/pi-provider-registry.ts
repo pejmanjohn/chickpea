@@ -1,6 +1,8 @@
 import type { AssistantMessage, Context, Provider } from '@earendil-works/pi-ai';
 import { setProvider } from '@flue/runtime';
 
+import { modelAccessRequest } from './model-access.ts';
+
 // Flue's provider registry has no public getter. Every app-owned Pi provider
 // registers through this seam so stateless callers (the Slack interaction
 // classifier) can stream against the same provider object Flue dispatches
@@ -9,9 +11,9 @@ import { setProvider } from '@flue/runtime';
 const registered = new Map<string, Provider>();
 
 export function registerPiProvider(provider: Provider): void {
-  const continuing = withInterruptedStreamContinuation(provider);
-  registered.set(provider.id, continuing);
-  setProvider(continuing);
+  const proxied = withChickpeaProviderPolicy(provider);
+  registered.set(provider.id, proxied);
+  setProvider(proxied);
 }
 
 export function registeredPiProvider(id: string): Provider | undefined {
@@ -193,13 +195,27 @@ function phaseOnlySignature(signature: string | undefined): { textSignature?: st
   }
 }
 
-function withInterruptedStreamContinuation(provider: Provider): Provider {
+/**
+ * The one place every model request passes, from Flue (each step, retry,
+ * compaction and subagent task) and from Chickpea's stateless callers: it
+ * injects the run's model access (or refuses before egress) and restores an
+ * interrupted stream's partial, on both entry points Pi dispatches.
+ */
+function withChickpeaProviderPolicy(provider: Provider): Provider {
   // A proxy, not a copy: a provider may be a class instance whose other
   // members rely on their own `this`.
-  const stream: Provider['stream'] = (model, context, options) =>
-    provider.stream(model, restoreForRequest(model, context), options);
-  const streamSimple: Provider['streamSimple'] = (model, context, options) =>
-    provider.streamSimple(model, restoreForRequest(model, context), options);
+  const stream: Provider['stream'] = (model, context, options) => {
+    const request = modelAccessRequest(provider.id, model, options);
+    return request.redact(
+      provider.stream(request.model, restoreForRequest(request.model, context), request.options),
+    );
+  };
+  const streamSimple: Provider['streamSimple'] = (model, context, options) => {
+    const request = modelAccessRequest(provider.id, model, options);
+    return request.redact(
+      provider.streamSimple(request.model, restoreForRequest(request.model, context), request.options),
+    );
+  };
   return new Proxy(provider, {
     get(target, property) {
       if (property === 'stream') return stream;

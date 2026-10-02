@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
+import { deploymentTenancy } from './installation-scope.ts';
 import type { ProviderKeyId } from './provider-keys.ts';
 import type { SettingsStore } from './settings-store.ts';
 import { getSettingsStore, getUsageStore, type PlatformEnv } from './state-backend.ts';
@@ -47,6 +48,8 @@ export class ModelCredentialRevisionError extends Error {
 interface ResolveCredentialOptions {
   processEnv?: NodeJS.ProcessEnv;
   now?: () => number;
+  /** False when only the attribution is needed, not a usage-registry row. */
+  registerUsage?: boolean;
 }
 
 export async function resolveModelCredentialAttribution(
@@ -60,15 +63,20 @@ export async function resolveModelCredentialAttribution(
   const processEnv = options.processEnv ?? process.env;
   const now = options.now ?? Date.now;
   const settings = settingsStore ?? getSettingsStore(platformEnv);
-  const usage = usageStore ?? getUsageStore(platformEnv);
+  const registerCredential = (input: CredentialRegistration) => options.registerUsage === false
+    ? Promise.resolve(credentialAttribution(input))
+    : registeredCredential(usageStore ?? getUsageStore(platformEnv), input);
+  // An installation of a deployment serving many uses only its own stored
+  // keys; deployment credentials are never attributed to it.
+  const hosted = deploymentTenancy(platformEnv) === 'installation';
 
   if (BUILTIN_PROVIDERS.has(providerId as ProviderKeyId)) {
     const id = providerId as ProviderKeyId;
-    if (trimmedNonEmpty(processEnv[ENV_KEY_NAMES[id]])) {
+    if (!hosted && trimmedNonEmpty(processEnv[ENV_KEY_NAMES[id]])) {
       const prefix = ENV_PREFIXES[id];
-      return registerCredential(usage, {
-        credentialRefId: `cred_${id}_environment`,
-        version: positiveEpoch(processEnv[`${prefix}_CREDENTIAL_EPOCH`]) ?? 1,
+      return registerCredential({
+        credentialRefId: environmentCredentialRefId(id),
+        version: environmentCredentialVersion(id, processEnv),
         providerId: id,
         sourceKind: 'environment',
         label: safeLabel(
@@ -84,7 +92,7 @@ export async function resolveModelCredentialAttribution(
     if (!trimmedNonEmpty(apiKey)) return null;
     const metadata = await ensureStoredCredentialMetadata(id, settings, now);
     if (!metadata.active) return null;
-    return registerCredential(usage, {
+    return registerCredential({
       credentialRefId: metadata.credentialRefId,
       version: metadata.version,
       providerId: id,
@@ -96,12 +104,14 @@ export async function resolveModelCredentialAttribution(
     });
   }
 
+  if (hosted) return null;
+
   if (providerId === 'cloudflare-workers-ai') {
     if (!trimmedNonEmpty(processEnv.CLOUDFLARE_API_TOKEN) || !trimmedNonEmpty(processEnv.CLOUDFLARE_ACCOUNT_ID)) {
       return null;
     }
     const epoch = positiveEpoch(processEnv.CLOUDFLARE_WORKERS_AI_CREDENTIAL_EPOCH);
-    return registerCredential(usage, {
+    return registerCredential({
       credentialRefId: 'cred_cloudflare-workers-ai_environment',
       version: epoch ?? 1,
       providerId,
@@ -118,7 +128,7 @@ export async function resolveModelCredentialAttribution(
 
   if (providerId === 'cloudflare' && hasWorkersAiBinding(platformEnv)) {
     const epoch = positiveEpoch(processEnv.CHICKPEA_DEPLOYMENT_EPOCH);
-    return registerCredential(usage, {
+    return registerCredential({
       credentialRefId: 'cred_cloudflare_binding',
       version: epoch ?? 1,
       providerId,
@@ -130,8 +140,8 @@ export async function resolveModelCredentialAttribution(
     });
   }
 
-  return registerCredential(usage, {
-    credentialRefId: `cred_${safeProviderId(providerId)}_custom`,
+  return registerCredential({
+    credentialRefId: customCredentialRefId(providerId),
     version: 1,
     providerId: safeProviderId(providerId),
     sourceKind: 'custom',
@@ -261,6 +271,46 @@ export async function storedCredentialMetadata(
   };
 }
 
+/**
+ * A stored key and its version metadata in one read, so a concurrent
+ * rotation can never pair one version's key with another version's metadata.
+ */
+export async function readStoredModelCredential(
+  id: ProviderKeyId,
+  settings: SettingsStore,
+): Promise<{ apiKey: string; metadata: StoredCredentialMetadata } | null> {
+  const [apiKey, ref, versionRaw, activeRaw, activeFromRaw] = await settings.getSettings([
+    providerApiKeySetting(id),
+    credentialRefSetting(id),
+    credentialVersionSetting(id),
+    credentialActiveSetting(id),
+    credentialActiveFromSetting(id),
+  ]);
+  const version = positiveEpoch(versionRaw);
+  const activeFrom = nonNegativeInteger(activeFromRaw);
+  if (!apiKey || !trimmedNonEmpty(apiKey) || !ref || version === null || activeFrom === null ||
+      activeRaw !== 'true') return null;
+  return { apiKey, metadata: { credentialRefId: ref, version, active: true, activeFrom } };
+}
+
+/** The reference a deployment environment key is attributed under. */
+export function environmentCredentialRefId(id: ProviderKeyId): string {
+  return `cred_${id}_environment`;
+}
+
+/** The reference a custom provider route (the offline local stub) is attributed under. */
+export function customCredentialRefId(providerId: string): string {
+  return `cred_${safeProviderId(providerId)}_custom`;
+}
+
+/** The version a deployment environment key is attributed under. */
+export function environmentCredentialVersion(
+  id: ProviderKeyId,
+  processEnv: NodeJS.ProcessEnv = process.env,
+): number {
+  return positiveEpoch(processEnv[`${ENV_PREFIXES[id]}_CREDENTIAL_EPOCH`]) ?? 1;
+}
+
 async function ensureStoredCredentialMetadata(
   id: ProviderKeyId,
   settings: SettingsStore,
@@ -289,9 +339,11 @@ async function ensureStoredCredentialMetadata(
   return raced;
 }
 
-async function registerCredential(
+type CredentialRegistration = Parameters<UsageStore['putCredential']>[0];
+
+async function registeredCredential(
   store: UsageStore,
-  input: Parameters<UsageStore['putCredential']>[0],
+  input: CredentialRegistration,
 ): Promise<ModelCredentialAttribution> {
   let row = input;
   try {
@@ -301,6 +353,10 @@ async function registerCredential(
     // unavailable when the telemetry store is slow or temporarily unhealthy.
     console.warn('[usage] credential registry write failed; model execution will continue');
   }
+  return credentialAttribution(row);
+}
+
+function credentialAttribution(row: CredentialRegistration): ModelCredentialAttribution {
   return {
     credentialRefId: row.credentialRefId,
     version: row.version,
