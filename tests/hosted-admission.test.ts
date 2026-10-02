@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test, type TestContext } from 'node:test';
 
 import {
@@ -10,6 +13,7 @@ import {
   type StreamOptions,
 } from '@earendil-works/pi-ai';
 import type { FlueExecutionContext } from '@flue/runtime';
+import type { WebClient } from '@slack/web-api';
 
 import {
   configureInstallationAdmission,
@@ -21,7 +25,8 @@ import {
   resetInstallationAdmissionForTests,
   type InstallationAdmission,
 } from '../src/config/installation-admission.ts';
-import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
+import { compileRuntimePlanV2, deriveRuntimePlanInstanceId } from '../src/agents/runtime-plan.ts';
+import { installationOwnershipOf, scopeInstallationEnv } from '../src/config/installation-scope.ts';
 import {
   configureModelAccessResolver,
   createModelAccessInterceptor,
@@ -30,7 +35,17 @@ import {
   type ModelAccessGrant,
 } from '../src/config/model-access.ts';
 import { registerPiProvider, registeredPiProvider } from '../src/config/pi-provider-registry.ts';
-import type { PlatformEnv } from '../src/config/state-backend.ts';
+import { closeNodeStateStores, type PlatformEnv } from '../src/config/state-backend.ts';
+import { SqliteConfigStore } from '../src/config/store.ts';
+import type { ResolvedAssignment } from '../src/config/types.ts';
+import { AgentPromptFailure } from '../src/slack/flue-dispatch.ts';
+import { SlackRunPresentationStoreLogic } from '../src/slack/run-presentations.ts';
+import { runTurn } from '../src/slack/run-turn.ts';
+import { SlackStatusRegistry } from '../src/slack/status-registry.ts';
+import type { NormalizedSlackTurn } from '../src/slack/types.ts';
+import { prepareSlackShadowAdmission } from '../src/slack/work-admission.ts';
+import { openStateDb } from '../src/state/node-state-db.ts';
+import { SqliteWorkStore } from '../src/work/store.ts';
 
 /**
  * The host's registry admits an active installation and refuses a suspended
@@ -292,4 +307,166 @@ test('an env that names no installation is refused on a deployment serving many'
   configureInstallationAdmission(async () => 'admitted');
   assert.equal(await installationRefusesWork(HOSTED as unknown as PlatformEnv), true);
   assert.equal(await installationRefusesWork(ENV_A), false);
+});
+
+// ── a Slack turn, with a durable presentation and a recorded Slack ───────
+
+const TURN_ASSIGNMENT: ResolvedAssignment = {
+  workspaceId: 'T_ADMISSION',
+  channelId: 'D_ADMISSION',
+  agentId: 'agent_admission',
+  model: 'local-stub/admission',
+  modelAttribution: { source: 'pinned', providerId: 'local-stub' },
+  agent: {
+    id: 'agent_admission', kind: 'user', revision: 1, name: 'Admission Agent', instructions: 'Answer directly.',
+    enabled: true, skills: [], mcpServers: [], apiConnections: [], repositories: [],
+  },
+};
+
+function dmTurn(messageTs: string): NormalizedSlackTurn {
+  return {
+    workspaceId: TURN_ASSIGNMENT.workspaceId, channelId: 'D_ADMISSION', channelType: 'im',
+    eventId: `Ev_ADMISSION_${messageTs}`, text: 'Summarize the plan.', userId: 'U_REQUESTER',
+    messageTs, threadTs: messageTs, source: 'dm_message', contextMode: 'dm_history',
+    interactionIntent: { disposition: 'reply', reason: 'substantive_request' },
+  };
+}
+
+/** The local state a turn reads its memory from, created once per test and removed with it. */
+async function turnState(t: TestContext): Promise<void> {
+  const directory = mkdtempSync(join(tmpdir(), 'chickpea-admission-turn-'));
+  const statePath = join(directory, 'state.sqlite');
+  const keys = ['SLACK_STATE_DB_PATH', 'TAG_DB_PATH', 'CHICKPEA_AUTH_DB_PATH'] as const;
+  const previous = keys.map((key) => process.env[key]);
+  for (const key of keys) process.env[key] = statePath;
+  closeNodeStateStores();
+  t.after(() => {
+    closeNodeStateStores();
+    keys.forEach((key, index) => {
+      if (previous[index] === undefined) delete process.env[key];
+      else process.env[key] = previous[index];
+    });
+    rmSync(directory, { recursive: true, force: true });
+  });
+  const config = new SqliteConfigStore(statePath, { agents: [] });
+  await config.createAgent(TURN_ASSIGNMENT.agent);
+  const installation = await config.ensureWorkspaceInstallation({
+    workspaceId: TURN_ASSIGNMENT.workspaceId, transportMode: 'direct', defaultAgentId: TURN_ASSIGNMENT.agentId,
+    teamId: TURN_ASSIGNMENT.workspaceId, botUserId: 'U_CHICKPEA',
+  });
+  await config.updateWorkspaceInstallation(TURN_ASSIGNMENT.workspaceId, { health: 'healthy' }, installation.revision);
+  config.close();
+}
+
+/** A durable presentation for the turn's Run, and a Slack that records every write. */
+async function presentedTurn(t: TestContext, turn: NormalizedSlackTurn) {
+  const work = new SqliteWorkStore(':memory:');
+  const admitted = await work.admitShadowRun(prepareSlackShadowAdmission({
+    turn, assignment: TURN_ASSIGNMENT, sourceVisibility: 'private', admittedAt: Date.now(),
+  }));
+  const runId = admitted.run.id;
+  const db = openStateDb(':memory:');
+  t.after(() => { db.close(); work.close(); });
+  const store = new SlackRunPresentationStoreLogic(db);
+  const sessionGeneration = Number(turn.messageTs.replace('.', ''));
+  store.create({
+    schemaVersion: 3, runId, turnJobId: `turn_${runId}`, bindingId: `binding_${runId}`,
+    workBindingGeneration: 1, runFencingToken: 0,
+    owner: { kind: 'selected_agent', persona: {
+      name: 'Admission Agent', avatarUrl: 'https://chickpea.example/assets/agents/admission/avatar/1', avatarRevision: 1,
+    } },
+    sessionGeneration,
+    currentActivity: {
+      kind: 'preparing', action: 'Preparing', object: 'your request', generation: sessionGeneration, sequence: 1,
+      operation: { operationId: `activity_${runId}_1`, certainty: 'pending' },
+    },
+    root: {
+      workspaceId: turn.workspaceId, channelId: turn.channelId, threadTs: turn.threadTs, requesterUserId: turn.userId,
+    },
+  });
+  const posted: string[] = [];
+  const statuses: string[] = [];
+  const record = (method: string) => async (input: Record<string, unknown>) => {
+    posted.push(method);
+    return { ok: true, ts: `${turn.messageTs.split('.')[0]}.000600`, channel: turn.channelId, input };
+  };
+  const client = {
+    apiCall: async () => ({ ok: true }),
+    assistant: { threads: {
+      setStatus: async (input: Record<string, unknown>) => { statuses.push(String(input.status ?? '')); return { ok: true }; },
+      setTitle: async () => ({ ok: true }),
+    } },
+    conversations: {
+      replies: async () => ({ ok: true, messages: [] }),
+      history: async () => ({ ok: true, messages: [] }),
+    },
+    chat: {
+      startStream: record('chat.startStream'), appendStream: record('chat.appendStream'),
+      stopStream: record('chat.stopStream'), postMessage: record('chat.postMessage'),
+      update: record('chat.update'), delete: record('chat.delete'), postEphemeral: record('chat.postEphemeral'),
+    },
+  } as unknown as WebClient;
+  const state = {
+    getRunPresentation: (id: string) => store.get(id),
+    getLatestThreadSessionGeneration: (root: Parameters<typeof store.getLatestThreadSessionGeneration>[0]) =>
+      store.getLatestThreadSessionGeneration(root),
+    transitionRunPresentation: (input: Parameters<typeof store.transition>[0]) => store.transition(input),
+    reserveSlackAppend: (workspaceId: string) => store.reserveAppend(workspaceId),
+    applySlackAppendCooldown: (workspaceId: string, retryAfterMs: number) =>
+      store.applyAppendCooldown(workspaceId, retryAfterMs),
+    matchFlueObservation: () => undefined,
+  };
+  const outcomes: Array<string | undefined> = [];
+  // The plan the TurnJob froze at admission, owned by the env's installation.
+  const frozen = (env: PlatformEnv | undefined) => {
+    const installation = installationOwnershipOf(env);
+    const runtimePlan = compileRuntimePlanV2({
+      ...(installation ? { installation } : {}),
+      turn, assignment: TURN_ASSIGNMENT, instructions: 'Answer directly.', memoryEpoch: 1,
+    });
+    return { runtimePlan, instanceId: deriveRuntimePlanInstanceId(runtimePlan) };
+  };
+  const run = (env: PlatformEnv | undefined) => runTurn(turn, TURN_ASSIGNMENT, env, {
+    client, runId, turnId: `turn_${runId}`, presentationState: state, statusRegistry: new SlackStatusRegistry(),
+    workStore: work, usageRecordingEnabled: false, runtimePlanDecision: frozen(env),
+    // The attempt failed: the model-access interceptor refused it, or a step failed.
+    agentPrompt: async () => { throw new AgentPromptFailure('provider'); },
+    onDelivered: (outcome) => { outcomes.push(outcome); },
+  });
+  return { store, runId, posted, statuses, outcomes, run };
+}
+
+test('a turn whose installation is refused posts nothing; its activity clears and the turn is settled', async (t) => {
+  clock(t);
+  await turnState(t);
+  const host = registry({ inst_a: 'refused' });
+  configureInstallationAdmission(host.check);
+  const refused = await presentedTurn(t, dmTurn('1790200001.000100'));
+  await refused.run(ENV_A);
+  assert.deepEqual(refused.posted, [], 'no failure text, no stream, no message');
+  assert.deepEqual(refused.outcomes, ['failed'], 'the turn is settled, so nothing retries it');
+  assert.deepEqual(host.reads, ['inst_a']);
+  const stored = refused.store.get(refused.runId);
+  assert.equal(stored?.schemaVersion, 3);
+  if (stored?.schemaVersion !== 3) return;
+  assert.equal(stored.terminalDelivery.state, 'abandoned', 'the Run\'s presentation closes without a reply');
+  assert.equal(stored.activityProjection.state === 'visible', false, 'no activity is left showing');
+
+  // The same failure for an admitted installation still says so.
+  host.statuses.set('inst_b', 'admitted');
+  const admitted = await presentedTurn(t, dmTurn('1790200002.000100'));
+  await admitted.run(ENV_B);
+  assert.ok(admitted.posted.length > 0);
+  assert.deepEqual(admitted.outcomes, ['failed']);
+});
+
+test('a standalone turn\'s failure is posted as before, without asking the admission check', async (t) => {
+  clock(t);
+  await turnState(t);
+  const host = registry({});
+  configureInstallationAdmission(host.check);
+  const standalone = await presentedTurn(t, dmTurn('1790200003.000100'));
+  await standalone.run(undefined);
+  assert.ok(standalone.posted.includes('chat.startStream') || standalone.posted.includes('chat.postMessage'));
+  assert.deepEqual(host.reads, []);
 });
