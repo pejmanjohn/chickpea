@@ -1,3 +1,4 @@
+import { deploymentTenancy } from '../config/installation-scope.ts';
 import type { RepositoryGrant } from '../config/types.ts';
 import { validEnabledRepositoryGrants } from './egress-handler.ts';
 
@@ -19,6 +20,9 @@ interface SandboxSelectionInput {
 export function sandboxBindingInstalled(
   env: { SANDBOX?: unknown; Sandbox?: unknown } | undefined,
 ): boolean {
+  // Sandbox objects are named by hashed workspace keys that carry no
+  // installation, so a deployment serving many installations offers none.
+  if (deploymentTenancy(env) === 'installation') return false;
   return env?.SANDBOX !== undefined || env?.Sandbox !== undefined;
 }
 

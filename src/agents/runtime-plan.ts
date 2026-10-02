@@ -12,6 +12,12 @@ import {
 } from '../config/types.ts';
 import type { WebsiteLogin } from '../browser/logins.ts';
 import { opaqueId } from '../work/admission.ts';
+import {
+  parseInstallationOwnership,
+  scopedObjectName,
+  splitInstallationObjectName,
+  type InstallationOwnership,
+} from '../config/installation-scope.ts';
 import { BROWSER_TOOL_ACTIVITY } from '../browser/tools.ts';
 import {
   ATTACH_FILE_TO_CONNECTION_TOOL_NAME,
@@ -179,6 +185,13 @@ export interface RuntimePlanV2 {
   continuityPolicy: string;
   /** Durable profile identity used only by trusted live resource resolvers. */
   agentId: string;
+  /**
+   * The installation that admitted this turn, on a deployment serving many
+   * (installation-scope.ts). It names the Agent's instance, so the instance is
+   * never shared with another installation. Absent on standalone; an earlier
+   * reader parks a plan that has it.
+   */
+  installation?: InstallationOwnership;
   /** Slack-provisioned product actor; required for personal connection accounts. */
   actorMembershipId?: string;
   /** Credential-free account references frozen for this task. */
@@ -328,6 +341,8 @@ export interface RuntimePlanWebsiteLoginV1 {
 export interface CompileRuntimePlanV2Input {
   turn: NormalizedSlackTurn;
   assignment: ResolvedAssignment;
+  /** The admitting installation, from the scoped env (`installationOwnershipOf`). */
+  installation?: InstallationOwnership;
   /** Complete, already-layered model instruction text. */
   instructions: string;
   memoryEpoch: number;
@@ -426,6 +441,7 @@ export function compileRuntimePlanV2(input: CompileRuntimePlanV2Input): RuntimeP
     schemaVersion: RUNTIME_PLAN_SCHEMA_VERSION,
     continuityPolicy: input.continuityPolicy ?? DEFAULT_CONTINUITY_POLICY,
     agentId: input.assignment.agent.id,
+    ...(input.installation ? { installation: parseInstallationOwnership(input.installation) } : {}),
     ...(input.turn.actorMembershipId
       ? { actorMembershipId: input.turn.actorMembershipId }
       : {}),
@@ -716,7 +732,7 @@ export function deriveRuntimePlanInstanceId(plan: RuntimePlanV2 | AdmittedRuntim
 }
 
 function threadInstanceId(validated: RuntimePlanV2): string {
-  return opaqueId(
+  return installationInstanceId(validated, opaqueId(
     'agent',
     [
       validated.conversation.continuityKey,
@@ -724,7 +740,7 @@ function threadInstanceId(validated: RuntimePlanV2): string {
       validated.continuityPolicy,
       RUNTIME_PLAN_THREAD_CONTINUITY_EPOCH,
     ].join(':'),
-  );
+  ));
 }
 
 /**
@@ -737,10 +753,32 @@ export function deriveLegacyRuntimePlanInstanceId(plan: RuntimePlanV2 | Admitted
 }
 
 function legacyInstanceId(validated: RuntimePlanV2): string {
-  return opaqueId(
+  return installationInstanceId(validated, opaqueId(
     'agent',
     `${validated.conversation.continuityKey}:${validated.harnessRevision}`,
-  );
+  ));
+}
+
+/** A plan's instance is named under the installation that admitted it. */
+function installationInstanceId(plan: RuntimePlanV2, instanceId: string): string {
+  return plan.installation ? scopedObjectName(plan.installation, instanceId) : instanceId;
+}
+
+/** An Agent instance ID either derivation produces, scoped or standalone. */
+export function isRuntimePlanInstanceId(value: unknown): value is string {
+  return typeof value === 'string' &&
+    /^agent_[a-f0-9]{40}$/.test(splitInstallationObjectName(value).name);
+}
+
+/**
+ * The plan was admitted by the installation its instance serves: both name
+ * the same one, or (standalone) neither names any.
+ */
+export function assertRuntimePlanInstallation(plan: RuntimePlanV2, instanceId: string): void {
+  const scope = splitInstallationObjectName(instanceId).scope;
+  if (scope?.installationId !== plan.installation?.installationId) {
+    throw new Error('Runtime plan belongs to another installation.');
+  }
 }
 
 /** Whether `instanceId` is this plan's instance under either derivation. */
@@ -827,6 +865,7 @@ export function parseRuntimePlanV2(
     'schemaVersion',
     'continuityPolicy',
     'agentId',
+    'installation',
     'actorMembershipId',
     'connectionAccountIds',
     'connectionSelections',
@@ -857,6 +896,7 @@ export function parseRuntimePlanV2(
     'artifactDestination',
     'harnessRevision',
   ], [
+    'installation',
     'configurationRevision',
     'actorMembershipId',
     'connectionAccountIds',
@@ -882,6 +922,9 @@ export function parseRuntimePlanV2(
   const schemaVersion = record.schemaVersion;
   const continuityPolicy = boundedString(record.continuityPolicy, 'continuityPolicy', 1, 80);
   const agentId = boundedString(record.agentId, 'agentId', 1, 128);
+  const installation = record.installation === undefined
+    ? undefined
+    : parseInstallationOwnership(record.installation);
   const actorMembershipId = record.actorMembershipId === undefined
     ? undefined
     : boundedString(record.actorMembershipId, 'actorMembershipId', 1, 160);
@@ -1061,6 +1104,7 @@ export function parseRuntimePlanV2(
     schemaVersion,
     continuityPolicy,
     agentId,
+    ...(installation ? { installation } : {}),
     ...(actorMembershipId ? { actorMembershipId } : {}),
     ...(record.connectionAccountIds === undefined ? {} : { connectionAccountIds }),
     ...(connectionSelections ? { connectionSelections } : {}),
@@ -1325,6 +1369,7 @@ function computeHarnessRevision(plan: HarnessRevisionInput): string {
       schemaVersion: plan.schemaVersion,
       continuityPolicy: plan.continuityPolicy,
       agentId: plan.agentId,
+      ...(plan.installation ? { installation: plan.installation } : {}),
       ...(plan.actorMembershipId ? { actorMembershipId: plan.actorMembershipId } : {}),
       ...(plan.connectionAccountIds !== undefined
         ? { connectionAccountIds: plan.connectionAccountIds }

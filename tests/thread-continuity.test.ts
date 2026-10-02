@@ -13,8 +13,8 @@ import {
   deriveRuntimePlanInstanceId,
   type RuntimePlanV2,
 } from '../src/agents/runtime-plan.ts';
+import { FLUE_CLOUDFLARE_EXTENSION_BRAND } from '../src/agents/cloudflare-extension.ts';
 import {
-  FLUE_CLOUDFLARE_EXTENSION_BRAND,
   MAX_STAGED_TURN_INPUTS,
   createSlackTurnInput,
   parseSlackTurnInput,

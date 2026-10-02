@@ -365,6 +365,7 @@ import {
   readRuntimeDrainStatus,
   type PlatformEnv,
 } from '../config/state-backend.ts';
+import { installationCacheKey } from '../config/installation-scope.ts';
 import { cloudflareBuildSource } from '../config/runtime-target.ts';
 import type { AgentSnapshotStore } from '../config/snapshot-store.ts';
 import type { RuntimeDrainStatus } from '../config/state-rpc.ts';
@@ -11474,10 +11475,11 @@ async function readForm(c: Context): Promise<Record<string, string>> {
   return Object.fromEntries(new URLSearchParams(raw));
 }
 
-// Per-isolate memo of the last origin we wrote to slack.publicUrl, so the
-// opportunistic persist below is a no-op read/write on the steady state (every
-// admin request would otherwise hit the settings store).
-let lastPersistedPublicUrl: string | undefined;
+// Per-isolate memo of the last origin we wrote to each installation's
+// slack.publicUrl, so the opportunistic persist below is a no-op read/write on
+// the steady state (every admin request would otherwise hit the settings store).
+const MAX_PERSISTED_PUBLIC_URLS = 64;
+const lastPersistedPublicUrls = new Map<string, string>();
 
 /**
  * Persist the request origin as slack.publicUrl so the Slack reply footer /
@@ -11489,13 +11491,16 @@ let lastPersistedPublicUrl: string | undefined;
  */
 async function persistRequestOrigin(c: Context, store: SettingsStore): Promise<void> {
   const origin = requestOrigin(c);
-  if (!origin || origin === lastPersistedPublicUrl) {
+  const env = c.env as PlatformEnv | undefined;
+  const key = installationCacheKey(env);
+  if (!origin || origin === lastPersistedPublicUrls.get(key)) {
     return;
   }
   try {
     await store.setSetting(SLACK_SETTING_KEYS.publicUrl, origin);
-    primeStoredSlackPublicUrl(origin);
-    lastPersistedPublicUrl = origin;
+    primeStoredSlackPublicUrl(origin, env);
+    if (lastPersistedPublicUrls.size >= MAX_PERSISTED_PUBLIC_URLS) lastPersistedPublicUrls.clear();
+    lastPersistedPublicUrls.set(key, origin);
   } catch (err) {
     console.error(
       '[chickpea] failed to persist slack.publicUrl:',

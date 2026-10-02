@@ -65,7 +65,8 @@ declare module 'cloudflare:workers' {
 
   interface DurableObjectState {
     storage: DurableObjectStorage;
-    id: { toString(): string };
+    /** `name` is the name the object was addressed by, also in its alarms. */
+    id: { toString(): string; readonly name?: string };
     /** Runs `fn` before the object handles any other event. */
     blockConcurrencyWhile<T>(fn: () => Promise<T>): Promise<T>;
   }

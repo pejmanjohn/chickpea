@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 
+import { installationCacheKey } from '../config/installation-scope.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import {
   getSettingsStore,
@@ -162,9 +163,16 @@ export async function readSlackConnectionRevision(
 // on a Cloudflare button deploy nobody does, so the admin persists the origin it
 // resolved for the manifest link (slack.publicUrl) and this resolver reads it as
 // the fallback. Env still wins outright. Cached briefly per isolate like the
-// cred resolver so the events hot path pays no store read per turn.
+// cred resolver so the events hot path pays no store read per turn, one entry
+// per installation.
 
-let publicUrlCache: { expiresAt: number; value: string | undefined } | undefined;
+const MAX_PUBLIC_URL_CACHE_ENTRIES = 64;
+const publicUrlCache = new Map<string, { expiresAt: number; value: string | undefined }>();
+
+function cachePublicUrl(key: string, value: string | undefined, now: number): void {
+  if (!publicUrlCache.has(key) && publicUrlCache.size >= MAX_PUBLIC_URL_CACHE_ENTRIES) publicUrlCache.clear();
+  publicUrlCache.set(key, { expiresAt: now + STORED_CACHE_TTL_MS, value });
+}
 
 function envPublicUrl(env?: PlatformEnv): string | undefined {
   const platformValue = env?.SLACK_TAG_PUBLIC_URL;
@@ -189,29 +197,26 @@ export async function resolveSlackPublicUrl(
     return fromEnv;
   }
   const now = Date.now();
-  if (!store && publicUrlCache && publicUrlCache.expiresAt > now) {
-    return publicUrlCache.value;
+  const key = installationCacheKey(env);
+  const cached = publicUrlCache.get(key);
+  if (!store && cached && cached.expiresAt > now) {
+    return cached.value;
   }
   const settings = store ?? getSettingsStore(env);
   const stored = await settings.getSetting(SLACK_SETTING_KEYS.publicUrl);
   const value = stored ? stored.replace(/\/+$/, '') : undefined;
-  if (!store) {
-    publicUrlCache = { expiresAt: now + STORED_CACHE_TTL_MS, value };
-  }
+  if (!store) cachePublicUrl(key, value, now);
   return value;
 }
 
 /** Prime the public-URL cache so the isolate that stored it resolves it now. */
-export function primeStoredSlackPublicUrl(value: string | undefined): void {
-  publicUrlCache = {
-    expiresAt: Date.now() + STORED_CACHE_TTL_MS,
-    value: value ? value.replace(/\/+$/, '') : undefined,
-  };
+export function primeStoredSlackPublicUrl(value: string | undefined, env?: PlatformEnv): void {
+  cachePublicUrl(installationCacheKey(env), value ? value.replace(/\/+$/, '') : undefined, Date.now());
 }
 
-/** Drop the cached public URL (tests; never needed in production flow). */
+/** Drop the cached public URLs (tests; never needed in production flow). */
 export function invalidateStoredSlackPublicUrl(): void {
-  publicUrlCache = undefined;
+  publicUrlCache.clear();
 }
 
 export interface SlackAuthTestResult {

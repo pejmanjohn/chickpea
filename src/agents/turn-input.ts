@@ -1,6 +1,8 @@
 import { isCloudflareTarget } from '../config/runtime-target.ts';
+import { FLUE_CLOUDFLARE_EXTENSION_BRAND, installationAgentObject } from './cloudflare-extension.ts';
 import {
   deriveRuntimePlanInstanceId,
+  isRuntimePlanInstanceId,
   parseRuntimePlanV2,
   runtimePlanInstanceIdMatches,
   type AdmittedRuntimePlanData,
@@ -91,7 +93,7 @@ export function parseSlackTurnInput(value: unknown): SlackTurnInput {
     throw new Error('Slack turn input schemaVersion is unsupported.');
   }
   const turnJobId = validTurnJobId(record.turnJobId);
-  if (typeof record.instanceId !== 'string' || !/^agent_[a-f0-9]{40}$/.test(record.instanceId)) {
+  if (!isRuntimePlanInstanceId(record.instanceId)) {
     throw new Error('Slack turn input instanceId is invalid.');
   }
   const runtimePlan = parseRuntimePlanV2(record.runtimePlan);
@@ -167,15 +169,6 @@ export function readStagedTurnInputJson(sql: TurnInputSql, turnJobId: string): s
   return typeof row?.input_json === 'string' ? row.input_json : undefined;
 }
 
-/**
- * The branded descriptor Flue's generated Cloudflare entry reads from the
- * agent module's `cloudflare` export. Built here without importing
- * `@flue/runtime/cloudflare`, whose graph needs `cloudflare:workers` and so
- * cannot load where this shared module also runs (Node). The brand is Flue's
- * global-registry symbol; a mismatch fails the Cloudflare build loudly.
- */
-export const FLUE_CLOUDFLARE_EXTENSION_BRAND = Symbol.for('@flue/runtime/cloudflare-extension');
-
 interface AgentObjectInstance {
   ctx: { storage: { sql: TurnInputSql } };
 }
@@ -184,7 +177,9 @@ type AgentObjectClass = new (...args: never[]) => object;
 
 export const slackThreadCloudflareExtension = {
   base: (Base: AgentObjectClass): AgentObjectClass =>
-    class ChickpeaSlackThreadObject extends (Base as new (...args: never[]) => AgentObjectInstance) {
+    class ChickpeaSlackThreadObject extends (
+      installationAgentObject(Base) as new (...args: never[]) => AgentObjectInstance
+    ) {
       /** Host RPC: stage one turn's input before its dispatch. */
       chickpeaStageTurnInput(json: string): void {
         if (typeof json !== 'string') throw new Error('Slack turn input must be serialized.');

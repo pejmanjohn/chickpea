@@ -8,6 +8,7 @@ import { SEED_CLOUDFLARE_MODEL_PIN } from '../config/seed.ts';
 import { RoutineIntentSchema } from '../routines/intent-schema.ts';
 import { useChickpeaResponseMetadata } from '../usage/response-metadata.ts';
 import { bootstrapRuntimeProviders } from '../runtime-bootstrap.ts';
+import { installationAgentExtension } from './cloudflare-extension.ts';
 
 bootstrapRuntimeProviders();
 
@@ -61,6 +62,8 @@ export function ChickpeaRoutineIntent() {
 
 // Must stay a static literal — see the note on ChickpeaRoutineExecution.
 ChickpeaRoutineIntent.agentName = 'chickpea-routine-intent-v2';
+/** Its object serves the installation its instance ID names (cloudflare-extension.ts). */
+export const cloudflare = installationAgentExtension;
 ChickpeaRoutineIntent.initialData = RoutineIntentInitialDataSchema;
 
 export function routineIntentModel(): string {

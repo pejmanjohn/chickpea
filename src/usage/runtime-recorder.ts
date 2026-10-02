@@ -3,6 +3,7 @@ import type { CodingWorkerUsageRecord } from '../slack/coding-worker-run.ts';
 import { slackTimestampMs } from '../slack/timestamp.ts';
 import type { NormalizedSlackTurn } from '../slack/types.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
+import { installationScopeOf } from '../config/installation-scope.ts';
 import type { AgentModelAttribution, ResolvedAssignment } from '../config/types.ts';
 import type {
   AdmitUsageOperationInput,
@@ -684,6 +685,9 @@ function installationId(
   platformEnv: PlatformEnv | undefined,
   processEnv: NodeJS.ProcessEnv = process.env,
 ): string {
+  // A deployment serving many installations records each one's own.
+  const scope = installationScopeOf(platformEnv);
+  if (scope) return scope.installationId;
   const configured = platformEnv?.CHICKPEA_INSTALLATION_ID ?? processEnv.CHICKPEA_INSTALLATION_ID;
   if (typeof configured === 'string' && /^[A-Za-z0-9][A-Za-z0-9:._/@-]{0,255}$/.test(configured)) {
     return configured;

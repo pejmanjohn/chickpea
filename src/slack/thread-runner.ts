@@ -1,9 +1,10 @@
 import { getSandbox } from '@cloudflare/sandbox';
-import { DurableObject } from 'cloudflare:workers';
+import { DurableObject, type DurableObjectState } from 'cloudflare:workers';
 
 import { activityStatus, isSafeTypedActivityStatus, type TypedActivityStatus } from '../activity/status.ts';
 import { CfTurnJobsForRunner } from '../config/cf-state-proxies.ts';
 import { cloudflareWorkerVersionId } from '../config/cloudflare-version.ts';
+import { assertInstallationOwnership, objectInstallationEnv } from '../config/installation-scope.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import {
   getConfigStore,
@@ -120,8 +121,8 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
     },
   });
 
-  constructor(...args: ConstructorParameters<typeof DurableObject>) {
-    super(...args);
+  constructor(ctx: DurableObjectState, env: unknown) {
+    super(ctx, objectInstallationEnv(ctx, env));
     // A job still marked running means the previous instance stopped mid-turn
     // (a code update, an eviction): resume now, not at the next backstop. So
     // does a stop whose abort or coding cascade is still owed.
@@ -172,6 +173,12 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
   }
 
   async admit(job: ThreadRunnerJob): Promise<{ admitted: boolean; refused?: string }> {
+    try {
+      assertInstallationOwnership(job?.installation, this.env as PlatformEnv);
+    } catch {
+      console.warn('[chickpea] thread runner refused a turn of another installation');
+      return { admitted: false, refused: 'installation_mismatch' };
+    }
     const payload = (job?.payload ?? {}) as ThreadRunnerJobPayload;
     // The presentation first: the job never runs here without its copy.
     if (payload.presentation) {

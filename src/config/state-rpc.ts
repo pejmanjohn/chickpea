@@ -111,6 +111,8 @@ import type {
   SlackPresentationRoot,
 } from '../slack/run-presentations.ts';
 import type { TypedActivityStatus } from '../activity/status.ts';
+import { deploymentTenancy, installationObjectName } from './installation-scope.ts';
+import type { InstallationIdentity } from '../identity/installation-binding.ts';
 
 export type { TurnJob } from '../slack/turn-job-types.ts';
 
@@ -696,6 +698,8 @@ export interface TagStateRpc {
   threadRunnerTurn<K extends ThreadRunnerTurnKind>(
     op: ThreadRunnerTurnOp<K>,
   ): Promise<StateRpcResult<ThreadRunnerTurnResult<K>>>;
+  /** Provisioning on a multi-installation host (installation-binding.ts). */
+  bindInstallation(identity: InstallationIdentity): Promise<StateRpcResult<InstallationIdentity>>;
 }
 
 /**
@@ -717,7 +721,11 @@ export const TAG_STATE_INSTANCE = 'singleton';
 
 export function tagStateInstanceName(env: Record<string, unknown> | undefined): string {
   const configured = env?.TAG_STATE_INSTANCE_NAME;
-  if (configured === undefined) return TAG_STATE_INSTANCE;
+  if (configured !== undefined && deploymentTenancy(env) === 'installation') {
+    // Each installation's store is named after it; a fixed name would merge them.
+    throw new Error('TAG_STATE_INSTANCE_NAME cannot be set with installation tenancy.');
+  }
+  if (configured === undefined) return installationObjectName(env, TAG_STATE_INSTANCE);
   if (typeof configured !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(configured)) {
     throw new Error('TAG_STATE_INSTANCE_NAME must be a bounded Durable Object name.');
   }

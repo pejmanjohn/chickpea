@@ -1,3 +1,7 @@
+import {
+  parseInstallationOwnership,
+  type InstallationOwnership,
+} from '../config/installation-scope.ts';
 import type { CodingTaskStopReport } from '../sandbox/coding-task-stop.ts';
 import type { StateDb } from '../state/state-db.ts';
 import type { SlackRunFacts } from './status-registry.ts';
@@ -8,6 +12,8 @@ export interface ThreadRunnerJob {
   id: string;
   threadKey: string;
   payload: unknown;
+  /** The installation that handed it over; absent on standalone. */
+  installation?: InstallationOwnership;
 }
 
 export interface ThreadRunnerStatus {
@@ -45,6 +51,7 @@ export interface ThreadRunnerJobRecord {
   id: string;
   threadKey: string;
   payload: unknown;
+  installation?: InstallationOwnership;
   state: ThreadRunnerJobState;
   retryAt?: number;
   /** A settled outcome the state store has not yet recorded. */
@@ -129,6 +136,9 @@ export class ThreadRunnerJobStore {
     if (!columns.some((column) => column.name === 'deferred_checks')) {
       db.exec('ALTER TABLE runner_jobs ADD COLUMN deferred_checks INTEGER NOT NULL DEFAULT 0');
     }
+    if (!columns.some((column) => column.name === 'installation_id')) {
+      db.exec('ALTER TABLE runner_jobs ADD COLUMN installation_id TEXT');
+    }
     // The run facts of the job's turn (SlackRunFacts), which a check-in reads
     // after an eviction: its start, its fixed-copy step, its last progress and
     // the workspace milestones already counted.
@@ -169,20 +179,23 @@ export class ThreadRunnerJobStore {
       throw new Error('A thread runner job needs an id and a thread key.');
     }
     const payload = JSON.stringify(job.payload ?? null);
+    const installationId = job.installation
+      ? parseInstallationOwnership(job.installation).installationId
+      : null;
     const { changes } = this.db.run(
-      `INSERT INTO runner_jobs (id, thread_key, job_json, state, admitted_at)
-       VALUES (?, ?, ?, 'admitted', ?)
+      `INSERT INTO runner_jobs (id, thread_key, job_json, state, admitted_at, installation_id)
+       VALUES (?, ?, ?, 'admitted', ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          state = 'admitted', job_json = excluded.job_json, retry_at = NULL, settled_at = NULL
        WHERE runner_jobs.state IN ${REVIVABLE_STATES}`,
-      job.id, job.threadKey, payload, now,
+      job.id, job.threadKey, payload, now, installationId,
     );
     return { admitted: changes === 1 };
   }
 
   get(id: string): ThreadRunnerJobRecord | undefined {
     const row = this.db.get(
-      'SELECT id, thread_key, job_json, state, retry_at, terminal_sync FROM runner_jobs WHERE id = ?',
+      'SELECT id, thread_key, job_json, installation_id, state, retry_at, terminal_sync FROM runner_jobs WHERE id = ?',
       id,
     );
     return row ? decodeJob(row) : undefined;
@@ -196,7 +209,7 @@ export class ThreadRunnerJobStore {
   runnable(now: number, limit = 16): ThreadRunnerJobRecord[] {
     const jobs: ThreadRunnerJobRecord[] = [];
     for (const row of this.db.all(
-      `SELECT id, thread_key, job_json, state, retry_at, terminal_sync FROM runner_jobs
+      `SELECT id, thread_key, job_json, installation_id, state, retry_at, terminal_sync FROM runner_jobs
        WHERE state IN ${OPEN_STATES} ORDER BY admitted_at, rowid LIMIT 64`,
     )) {
       const job = decodeJob(row);
@@ -269,7 +282,7 @@ export class ThreadRunnerJobStore {
   /** Settled jobs whose Slack interaction cleanup is due for a check or retry. */
   dueCleanups(now: number, limit = 16): Array<ThreadRunnerJobRecord & { cleanupAttempts: number }> {
     return this.db.all(
-      `SELECT id, thread_key, job_json, state, retry_at, terminal_sync, cleanup_attempts
+      `SELECT id, thread_key, job_json, installation_id, state, retry_at, terminal_sync, cleanup_attempts
        FROM runner_jobs
        WHERE cleanup_at IS NOT NULL AND cleanup_at <= ? AND terminal_sync IS NULL
        ORDER BY admitted_at, rowid LIMIT ?`,
@@ -295,7 +308,7 @@ export class ThreadRunnerJobStore {
 
   pendingActiveClears(limit = 16): ThreadRunnerJobRecord[] {
     return this.db.all(
-      `SELECT id, thread_key, job_json, state, retry_at, terminal_sync FROM runner_jobs
+      `SELECT id, thread_key, job_json, installation_id, state, retry_at, terminal_sync FROM runner_jobs
        WHERE active_clear = 1 ORDER BY admitted_at, rowid LIMIT ?`,
       limit,
     ).map(decodeJob);
@@ -332,7 +345,7 @@ export class ThreadRunnerJobStore {
 
   unsyncedTerminals(limit = 16): ThreadRunnerJobRecord[] {
     return this.db.all(
-      `SELECT id, thread_key, job_json, state, retry_at, terminal_sync FROM runner_jobs
+      `SELECT id, thread_key, job_json, installation_id, state, retry_at, terminal_sync FROM runner_jobs
        WHERE terminal_sync IS NOT NULL ORDER BY admitted_at, rowid LIMIT ?`,
       limit,
     ).map(decodeJob);
@@ -572,6 +585,9 @@ function decodeJob(row: Record<string, unknown>): ThreadRunnerJobRecord {
     id: String(row.id),
     threadKey: String(row.thread_key),
     payload: JSON.parse(String(row.job_json)),
+    ...(typeof row.installation_id === 'string'
+      ? { installation: parseInstallationOwnership({ version: 1, installationId: row.installation_id }) }
+      : {}),
     state: String(row.state) as ThreadRunnerJobState,
     ...(row.retry_at === null || row.retry_at === undefined ? {} : { retryAt: Number(row.retry_at) }),
     ...(row.terminal_sync === 'done' || row.terminal_sync === 'error'
