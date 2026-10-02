@@ -1549,6 +1549,17 @@ async function endedInstallationAccess(): Promise<never> {
   throw new RoutineRuntimeError('credential_unavailable', 'The Slack connection is unavailable for this routine.');
 }
 
+/** A store whose `method` fails as an unavailable owner would; everything else passes through. */
+function failingMethod<T extends object>(store: T, method: keyof T): T {
+  return new Proxy(store, {
+    get(target, property) {
+      if (property === method) return async () => { throw new Error('state owner unavailable'); };
+      const value = Reflect.get(target, property);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+}
+
 for (const dispatched of [true, false]) {
   for (const ended of [false, true]) {
     test(`a refused attempt ${dispatched ? 'dispatched' : 'never dispatched'} settles by one rule ${ended ? 'though an ended installation resolves no access' : 'when it is prepared again'}`, async (t) => {
@@ -1591,9 +1602,36 @@ for (const dispatched of [true, false]) {
       assert.equal(operation?.measurements[0]?.inputTokens, null);
       assert.equal(operation?.measurements[0]?.usageUnknownReason, 'provider_request_unknown');
       assert.equal(operation?.measurements[0]?.runExecutionId, execution?.id);
+      assert.match(h.telemetry.info.join('\n'), /"usage":"recorded","work":"recorded"/);
+      assert.deepEqual(h.telemetry.errors, []);
     });
   }
 }
+
+test('an ended installation\'s settlement that cannot be written is reported, part by part', async (t) => {
+  // The Work execution stays open: its settlement is reported unrepaired.
+  const work = await interruptedHostedAttempt(t, 'ended_work_down', true);
+  assert.equal(await work.refuse({
+    resolveAccess: endedInstallationAccess,
+    workStore: failingMethod<WorkStore>(work.work, 'settleRunExecution'),
+  }), 'completed');
+  assert.equal((await work.routines.getRun(work.fixture.run.id))?.status, 'skipped');
+  assert.equal((await work.work.listRunExecutions(work.runId))[0]?.outcome, 'pending');
+  assert.equal(work.telemetry.errors.length, 1);
+  assert.match(work.telemetry.errors[0]!, /"outcome":"unrepaired","usage":"recorded","work":"unrepaired"/);
+  assert.doesNotMatch(work.telemetry.errors[0]!, /state owner unavailable/);
+
+  // The Usage operation stays admitted: its terminal is reported unrepaired.
+  const usage = await interruptedHostedAttempt(t, 'ended_usage_down', true);
+  assert.equal(await usage.refuse({
+    resolveAccess: endedInstallationAccess,
+    usageStore: failingMethod<UsageStore>(usage.usage, 'recordTerminal'),
+  }), 'completed');
+  assert.equal((await usage.routines.getRun(usage.fixture.run.id))?.status, 'skipped');
+  assert.equal((await usage.usage.getOperation(usage.fixture.run.id))?.operation.status, 'admitted');
+  assert.equal(usage.telemetry.errors.length, 1);
+  assert.match(usage.telemetry.errors[0]!, /"outcome":"unrepaired","usage":"unrepaired","work":"recorded"/);
+});
 
 test('permanent Work initialization failure is one gap and never redispatches', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'chickpea-routine-work-gap-'));

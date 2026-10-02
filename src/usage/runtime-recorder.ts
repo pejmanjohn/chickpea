@@ -659,7 +659,8 @@ export class RoutineUsageRecorder {
  * Record the terminal of a routine execution whose recorder is gone: its
  * occurrence ended before it could be prepared again. The terminal repeats
  * what the operation was admitted with and reports its spend as unknown. An
- * operation never admitted, or an execution already measured, is left as it is.
+ * operation never admitted, or an execution already measured, is left as it
+ * is. Returns whether the execution's terminal is recorded.
  */
 export async function recordRoutineTerminalWithoutRecorder(input: {
   store: UsageStore;
@@ -670,11 +671,10 @@ export async function recordRoutineTerminalWithoutRecorder(input: {
   unknownReason: UsageUnknownReason;
   at: number;
   platformEnv?: PlatformEnv;
-}): Promise<void> {
+}): Promise<boolean> {
   const detail = await input.store.getOperation(input.operationId);
-  if (!detail || detail.measurements.some((measurement) => measurement.executionId === input.executionId)) {
-    return;
-  }
+  if (!detail) return false;
+  if (detail.measurements.some((measurement) => measurement.executionId === input.executionId)) return true;
   const { operation } = detail;
   const terminal = {
     operationId: operation.operationId,
@@ -702,6 +702,7 @@ export async function recordRoutineTerminalWithoutRecorder(input: {
     ...terminal,
     ...estimateForRuntime(terminal, input.platformEnv, undefined),
   });
+  return true;
 }
 
 export function usageRuntimeRecordingEnabled(

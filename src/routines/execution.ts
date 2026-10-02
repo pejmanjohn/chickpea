@@ -1359,7 +1359,8 @@ function refusedExecutionSettlement(dispatched: boolean) {
  * preparing it again fails, as it does once the installation has ended and
  * access no longer resolves: its Work execution settles and its Run is
  * skipped, and its usage terminal is recorded with spend unknown. Each part
- * is best effort, and one already settled is left as it is.
+ * is best effort, one already settled is left as it is, and one left open
+ * is reported as unrepaired, as a prepared occurrence's gaps are.
  */
 async function settleRefusedWithoutPreparation(
   input: {
@@ -1370,27 +1371,46 @@ async function settleRefusedWithoutPreparation(
   },
   dependencies: RoutineExecutionDependencies,
 ): Promise<void> {
+  const { env, run, admission, attempt } = input;
   const now = dependencies.now ?? Date.now;
-  const { run, admission } = input;
-  const receipt = admission.flueAgentReceipt ?? null;
-  const workStore = dependencies.workStore ?? getWorkStore(input.env);
-  const execution = run.canonicalRunId
-    ? await workStore.getRunExecution(shadowRunExecutionId(run.canonicalRunId as RunId, input.attempt))
-      .catch(() => undefined)
-    : undefined;
-  if (execution) await settleRefusedWork(workStore, execution, receipt, now()).catch(() => undefined);
-  const usageEnabled = dependencies.usageRecordingEnabled ?? usageRuntimeRecordingEnabled(input.env);
-  if (!usageEnabled || !admission.attemptId) return;
-  await recordRoutineTerminalWithoutRecorder({
-    store: dependencies.usageStore ?? getUsageStore(input.env),
-    operationId: run.id,
-    executionId: `exec:${run.id}:${admission.attemptId}`,
-    ...(execution ? { runExecutionId: execution.id } : {}),
-    status: 'failed',
-    unknownReason: 'provider_request_unknown',
-    at: now(),
-    platformEnv: input.env,
-  }).catch(() => undefined);
+  const usageEnabled = dependencies.usageRecordingEnabled ?? usageRuntimeRecordingEnabled(env);
+  const persistence = new RoutinePersistenceTracker({
+    usageEnabled,
+    workExpected: Boolean(run.canonicalRunId),
+    sink: dependencies.persistenceTelemetrySink ?? console,
+  });
+  let execution: RunExecutionRecord | undefined;
+  if (run.canonicalRunId) {
+    const workStore = dependencies.workStore ?? getWorkStore(env);
+    try {
+      // One never opened when the attempt was prepared was a gap then, and is reported as one.
+      execution = await workStore.getRunExecution(shadowRunExecutionId(run.canonicalRunId as RunId, attempt));
+      if (execution) {
+        await settleRefusedWork(workStore, execution, admission.flueAgentReceipt, now());
+        persistence.linkWork();
+      }
+    } catch {
+      persistence.recordWorkGap();
+    }
+  }
+  if (usageEnabled && admission.attemptId) {
+    const executionId = `exec:${run.id}:${admission.attemptId}`;
+    const recorded = await recordRoutineTerminalWithoutRecorder({
+      store: dependencies.usageStore ?? getUsageStore(env),
+      operationId: run.id,
+      executionId,
+      ...(execution ? { runExecutionId: execution.id } : {}),
+      status: 'failed',
+      unknownReason: 'provider_request_unknown',
+      at: now(),
+      platformEnv: env,
+    }).catch(() => false);
+    // An operation with its terminal was admitted when the attempt was prepared.
+    for (const phase of ['admission', 'terminal'] as const) {
+      persistence.recordUsage({ phase, outcome: recorded ? 'recorded' : 'failed', executionId });
+    }
+  }
+  persistence.emit();
 }
 
 /** Settle a refused occurrence's Work execution by its id, then skip its Run. */
