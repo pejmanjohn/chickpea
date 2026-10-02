@@ -351,7 +351,7 @@ test('role resolution reads both rows from the store for one Agent and Workspace
 // The tests below exercise the production credential gate,
 // `defaultProviderCredentialCheck`, by omitting `hasProviderCredential` so
 // resolution falls through to the real `isProviderKeyId` +
-// `resolveProviderApiKey` path production actually runs (see
+// `describeProviderKeySources` path production actually runs (see
 // src/agents/slack-thread.ts and the run-turn compile path, neither of which
 // supplies a stub). Every other test in this file injects
 // `hasProviderCredential`, which bypasses this gate entirely.
@@ -434,7 +434,7 @@ test('a provider id with no key lane resolves credential_missing via the real cr
         // workers-ai is a real, known provider id but has no key-bearing
         // lane (no PROVIDER_KEY_SETTING_KEYS / PROVIDER_KEY_ENV_VARS entry),
         // so the gate must short-circuit via `isProviderKeyId` rather than
-        // ever calling `resolveProviderApiKey('workers-ai', ...)`.
+        // ever looking up a key source for 'workers-ai'.
         workspaceRole: { modelId: 'workers-ai/@cf/black-forest-labs/flux-2-schnell' },
         settings,
       });

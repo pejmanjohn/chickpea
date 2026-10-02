@@ -11,7 +11,7 @@ import type {
   WorkspaceModelRole,
   WorkspaceRuntimeContract,
 } from './types.ts';
-import { isProviderKeyId, resolveProviderApiKey } from './provider-keys.ts';
+import { describeProviderKeySources, isProviderKeyId } from './provider-keys.ts';
 import type { SettingsStore } from './settings-store.ts';
 import type { PlatformEnv } from './state-backend.ts';
 import { resolveActiveCatalogRoute } from '../model-catalog/index.ts';
@@ -397,6 +397,6 @@ async function defaultProviderCredentialCheck(
   settings?: SettingsStore,
 ): Promise<boolean> {
   if (!isProviderKeyId(providerId)) return false;
-  const resolved = await resolveProviderApiKey(providerId, env, settings);
-  return Boolean(resolved.apiKey);
+  // Whether a key is there, from where it comes; nothing is decrypted to learn it.
+  return (await describeProviderKeySources(env, settings))[providerId] !== 'missing';
 }

@@ -1,7 +1,7 @@
 import { resolveInstallationModelAccess } from '../config/installation-model-access.ts';
 import { ModelAccessError } from '../config/model-access.ts';
-import { ModelCredentialRevisionError } from '../config/model-credential-refs.ts';
-import { resolveProviderApiKey } from '../config/provider-keys.ts';
+import { ModelCredentialRevisionError, ModelCredentialUnavailableError } from '../config/model-credential-refs.ts';
+import { describeProviderKeySources } from '../config/provider-keys.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import { findImageModel, type ImageModelProfile } from '../model-catalog/image-profiles.ts';
@@ -35,8 +35,7 @@ export async function imageModelProfileReady(
     if (!openAiSubscriptionAvailable() || !store) return false;
     return (await getOpenAiSubscriptionAuthorizationStatus(store)).state === 'connected';
   }
-  const { apiKey } = await resolveProviderApiKey(profile.provider, env, store);
-  return Boolean(apiKey);
+  return (await describeProviderKeySources(env, store))[profile.provider] !== 'missing';
 }
 
 /**
@@ -96,6 +95,7 @@ export async function resolveImageProvider(
   } catch (err) {
     if (err instanceof ModelAccessError) return { ok: false, reason: 'misconfigured', detail: err.code };
     if (err instanceof ModelCredentialRevisionError) return { ok: false, reason: 'misconfigured', detail: 'credential_changed' };
+    if (err instanceof ModelCredentialUnavailableError) return { ok: false, reason: 'misconfigured', detail: 'credential_unavailable' };
     throw err;
   }
   if (!apiKey) {
