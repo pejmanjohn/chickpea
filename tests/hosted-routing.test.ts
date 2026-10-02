@@ -600,6 +600,30 @@ test('discovery, JWKS and the MCP sign-in continuation are served before any ins
   }
 });
 
+test('the host\'s registration limits reach Core\'s registration gate', { timeout: 120_000 }, async (t) => {
+  const hosted = await hostedDeployment(t);
+  if (!hosted) return;
+  const register = (policy: HostedRouting<PlatformEnv>['mcpRegistrationPolicy']) => serveHostedSharedAuth(
+    new Request(`${ORIGIN}/api/auth/oauth2/register`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: ORIGIN },
+      body: JSON.stringify({
+        application_type: 'native', client_name: 'Hosted client', grant_types: ['authorization_code', 'refresh_token'],
+        redirect_uris: [REDIRECT], response_types: ['code'], token_endpoint_auth_method: 'none',
+      }),
+    }),
+    { ...hosted.routing, mcpRegistrationPolicy: policy },
+  ) as Promise<Response>;
+  assert.equal((await register({ maxClients: 1 })).status, 201);
+  const full = await register({ maxClients: 1 });
+  assert.equal(full.status, 429);
+  assert.deepEqual(await full.json(), { error: 'registration_quota_exceeded' });
+  assert.equal((await register({ maxClients: 2 })).status, 201, 'the cap is the host\'s to set');
+  const throttled = await register({ maxRegistrationsPerWindow: 0 });
+  assert.equal(throttled.status, 429);
+  assert.deepEqual(await throttled.json(), { error: 'registration_rate_limited' });
+});
+
 test('under installation tenancy Core\'s own app leaves the shared auth routes to the host', async () => {
   const env = scopeInstallationEnv(HOSTED as PlatformEnv, { installationId: 'inst_any' });
   const unused = new Proxy({}, { get() { throw new Error('no installation store is read'); } });

@@ -7,7 +7,7 @@ import type { IdentityStore } from '../identity/types.ts';
 import { BETTER_AUTH_SLACK_PROVIDER_ID, createBetterAuth, requireSupportedOrigin } from './better-auth.ts';
 import { hostBetterAuthBackend, type BetterAuthEnvironment } from './better-auth-environment.ts';
 import { BetterAuthDirectory } from './better-auth-principal.ts';
-import { createBetterAuthPublicHandler } from './better-auth-routes.ts';
+import { createBetterAuthPublicHandler, type BetterAuthPublicHandlerInput } from './better-auth-routes.ts';
 import { betterAuthPublicRoutes } from './better-auth-runtime.ts';
 import { hostedLoginAgrees, withHostedLogin, type HostedLogin } from './hosted-login.ts';
 import {
@@ -47,6 +47,14 @@ export interface HostedRouting<E extends PlatformEnv> {
   installationEnv(login: HostedLogin): Promise<E>;
   /** The installation's identity store; by default its TagStateStore. */
   identity?: (env: E) => IdentityStore;
+  /**
+   * Client registration limits for the whole deployment, which every
+   * installation shares: set `maxClients` (default 1,000 public clients not
+   * used for 30 days) explicitly. Core's per-source window lives in a handler
+   * that here serves one request, so it never trips; the host throttles
+   * registration per source before calling.
+   */
+  mcpRegistrationPolicy?: BetterAuthPublicHandlerInput['mcpRegistrationPolicy'];
 }
 
 /**
@@ -79,9 +87,9 @@ export function isHostedSharedAuthPath(pathname: string): boolean {
 
 /**
  * Answers a request that belongs to no installation, or returns undefined
- * for the host to route. Run it before routeHostedRequest. The host's own
- * throttle should precede client registration (`POST /api/auth/oauth2/register`):
- * Core's per-installation limiter has no installation here.
+ * for the host to route. Run it before routeHostedRequest. Throttle client
+ * registration (`POST /api/auth/oauth2/register`) per source before it: no
+ * installation's limiter applies here (see `mcpRegistrationPolicy`).
  */
 export async function serveHostedSharedAuth<E extends PlatformEnv>(
   request: Request,
@@ -92,6 +100,7 @@ export async function serveHostedSharedAuth<E extends PlatformEnv>(
   const handler = createBetterAuthPublicHandler({
     ...routing.environment,
     mayIssueTokens: (betterAuthUserId) => mayIssueHostedTokens(routing, logins, betterAuthUserId),
+    ...(routing.mcpRegistrationPolicy ? { mcpRegistrationPolicy: routing.mcpRegistrationPolicy } : {}),
   });
   const app = new Hono();
   app.route('/', betterAuthPublicRoutes((c) => handler(c.req.raw)));
