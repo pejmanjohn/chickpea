@@ -93,7 +93,7 @@ export function isFavoriteProviderId(id: string): id is FavoriteProviderId {
 export async function validateProviderApiKey(
   id: ProviderKeyId,
   apiKey: string,
-  options: { timeoutMs?: number; env?: PlatformEnv } = {},
+  options: { timeoutMs?: number; env?: PlatformEnv | undefined } = {},
 ): Promise<ProviderModel[]> {
   switch (id) {
     case 'anthropic':

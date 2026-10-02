@@ -7093,7 +7093,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
 
     try {
-      const models = await validateProviderApiKey(id, apiKey);
+      const models = await validateProviderApiKey(id, apiKey, { env: platformEnv });
       await saveProviderApiKey(id, apiKey, platformEnv, settingsStore, usage(c));
       if (id === 'openai' && current.source === 'missing') {
         await initializeAuthenticatedWorkspaceImageDefault(c, OPENAI_API_IMAGE_DEFAULT_MODEL_ID);
