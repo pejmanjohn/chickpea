@@ -358,7 +358,7 @@ export class SlackInstallOAuthService {
           verifiedAt: this.now(),
         });
       } catch (error) {
-        const promoted = await this.promotedConcurrently(setup.id);
+        const promoted = await this.promotedConcurrently(setup.id, purgeReceipt);
         if (promoted) return promoted;
         throw error;
       }
@@ -381,7 +381,7 @@ export class SlackInstallOAuthService {
         expectedRotationEpoch: control.rotationEpoch,
       });
     } catch {
-      const promoted = await this.promotedConcurrently(setup.id);
+      const promoted = await this.promotedConcurrently(setup.id, purgeReceipt);
       if (promoted) return promoted;
       await this.failWaiting(setup, 'stale_revision');
       throw new SlackInstallOAuthError('stale_revision');
@@ -400,13 +400,18 @@ export class SlackInstallOAuthService {
   /**
    * The Events delivery finishes its install past the response while the
    * setup page can check the same proof; whichever promotes second answers
-   * as a replay of the first instead of failing the installed setup.
+   * as a replay of the first instead of failing the installed setup. The
+   * first may have promoted from a proof this one recorded, holding no
+   * envelope receipt of its own, so this one purges the envelope it verified.
    */
-  private async promotedConcurrently(setupId: string): Promise<SlackInstallOAuthResult | undefined> {
+  private async promotedConcurrently(
+    setupId: string,
+    purgeReceipt: string | undefined,
+  ): Promise<SlackInstallOAuthResult | undefined> {
     const current = await this.dependencies.identity.getSlackSetupTransaction(setupId);
-    return current?.state === 'bot_installed'
-      ? this.finalizeWaitingInstallation(setupId)
-      : undefined;
+    if (current?.state !== 'bot_installed') return undefined;
+    if (purgeReceipt) await purgePendingSlackChallenge(this.dependencies.settings, purgeReceipt);
+    return this.finalizeWaitingInstallation(setupId);
   }
 
   private async acquireAttempt(
