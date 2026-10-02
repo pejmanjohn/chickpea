@@ -21,14 +21,10 @@ import { startPostgresTestCluster, type PostgresTestClusterStart } from './helpe
 const MIGRATIONS = path.resolve('migrations/better-auth-postgres');
 const ORIGIN = 'https://chickpea.example';
 
+// Skipped only when CHICKPEA_TEST_POSTGRES_BIN is set empty; a missing server fails.
 let started: Promise<PostgresTestClusterStart> | undefined;
-const cluster = () => started ??= startPostgresTestCluster().then((result) => {
-  console.log(result.cluster
-    ? `# PostgreSQL backend tests use ${result.cluster.version}`
-    : `# PostgreSQL backend tests skipped: ${result.unavailable}`);
-  return result;
-});
-after(async () => (await started)?.cluster?.stop());
+const cluster = () => started ??= startPostgresTestCluster();
+after(async () => (await started?.catch(() => undefined))?.cluster?.stop());
 
 /** Cleanup that runs last-in, first-out when the test ends. */
 function deferrals(t: TestContext) {
@@ -43,7 +39,7 @@ function deferrals(t: TestContext) {
 async function database(t: TestContext, defer: ReturnType<typeof deferrals>) {
   const result = await cluster();
   if (!result.cluster) {
-    t.skip(result.unavailable);
+    t.skip(result.skip);
     return undefined;
   }
   const created = await result.cluster.createDatabase();
@@ -62,7 +58,7 @@ async function migrate(config: pg.PoolConfig): Promise<void> {
 
 const contract = betterAuthBackendContract({
   label: 'PostgreSQL',
-  unavailable: async () => (await cluster()).unavailable,
+  skip: async () => (await cluster()).skip,
   async open() {
     const { cluster: running } = await cluster();
     assert.ok(running);
@@ -157,7 +153,8 @@ test('PostgreSQL migrations refuse a changed history or an unledgered schema', a
   defer(() => unledgered.end());
   await unledgered.query('CREATE TABLE "user" (id text PRIMARY KEY)');
   await assert.rejects(applyPostgresBetterAuthMigrations(unledgered), /incompatible Better Auth migration history/);
-  assert.equal((await unledgered.query("SELECT to_regclass('chickpea_better_auth_migrations') AS ledger")).rows[0]?.ledger, null);
+  const ledger = await unledgered.query("SELECT to_regclass('chickpea_better_auth_migrations') AS ledger");
+  assert.equal(ledger.rows[0]?.ledger, null, 'a refused run leaves no ledger behind');
 });
 
 test('concurrent PostgreSQL migration runs apply the schema once', async (t) => {
@@ -251,15 +248,16 @@ async function activeConnections(
   const client = new pg.Client({ ...config, database: 'postgres' });
   await client.connect();
   try {
-    // A closed client's server process can take a moment to exit.
-    for (let attempt = 0; ; attempt += 1) {
+    // A closed client's server process can take a moment to exit; allow a slow host 15 s.
+    const deadline = Date.now() + 15_000;
+    for (;;) {
       const result = await client.query<{ n: number }>(
         'SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname = $1',
         [config.database],
       );
       const count = result.rows[0]?.n ?? 0;
-      if (!settle || count === 0 || attempt >= 40) return count;
-      await new Promise((resolve) => setTimeout(resolve, 25));
+      if (!settle || count === 0 || Date.now() >= deadline) return count;
+      await new Promise((resolve) => setTimeout(resolve, 50));
     }
   } finally {
     await client.end();

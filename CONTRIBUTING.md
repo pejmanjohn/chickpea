@@ -123,6 +123,11 @@ a fixed range outside the OS ephemeral range, locked per host under
 take a probed port back before a child binds it. Use it instead of probing
 `listen(0)` when a test starts a server in a child process.
 
+The PostgreSQL Better Auth backend tests start a disposable PostgreSQL 13+
+server on a Unix socket, so the suite needs `initdb` and `postgres`. Set
+`CHICKPEA_TEST_POSTGRES_BIN` to their directory if they are not found, or to
+an empty value to skip those tests deliberately; otherwise they fail.
+
 The offline verifiers use fake Slack/provider services and isolated local state.
 They do not require production credentials. `verify:cf-smoke` builds both
 Cloudflare profiles and runs the core profile in local workerd with the default

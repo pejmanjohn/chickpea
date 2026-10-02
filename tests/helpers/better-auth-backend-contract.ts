@@ -21,7 +21,7 @@ export interface BetterAuthBackendContract {
   label: string;
   open(): Promise<BetterAuthBackendSubject>;
   /** A reason to skip every case, decided when the cases run. */
-  unavailable?(): Promise<string | undefined>;
+  skip?(): Promise<string | undefined>;
 }
 
 const ORIGIN = 'https://chickpea.example';
@@ -214,7 +214,7 @@ interface Fixture extends BetterAuthBackendSubject {
 }
 
 async function openFixture(t: TestContext, contract: BetterAuthBackendContract): Promise<Fixture | undefined> {
-  const reason = await contract.unavailable?.();
+  const reason = await contract.skip?.();
   if (reason) {
     t.skip(reason);
     return undefined;

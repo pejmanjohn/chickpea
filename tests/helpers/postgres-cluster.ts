@@ -9,30 +9,36 @@ import pg from 'pg';
 export interface PostgresTestCluster {
   /** Unix-socket connection settings; the server has no TCP listener. */
   connection: { host: string; port: number; user: string };
-  version: string;
   createDatabase(): Promise<{ name: string; drop(): Promise<void> }>;
   stop(): Promise<void>;
 }
 
 export type PostgresTestClusterStart =
-  | { cluster: PostgresTestCluster; unavailable?: undefined }
-  | { cluster?: undefined; unavailable: string };
+  | { cluster: PostgresTestCluster; skip?: undefined }
+  | { cluster?: undefined; skip: string };
 
 const USER = 'chickpea';
 const PORT = 5432;
 
 /**
- * Starts a private, disposable PostgreSQL server for one test file, or says
- * why it cannot. CHICKPEA_TEST_POSTGRES_BIN chooses the directory holding
- * `initdb` and `postgres`; set it empty to skip the PostgreSQL tests.
+ * Starts a private, disposable PostgreSQL server for one test file. The
+ * tests are skipped only when CHICKPEA_TEST_POSTGRES_BIN is set to an empty
+ * value; otherwise a missing or broken PostgreSQL fails them, so the gate
+ * never passes on a backend it did not run.
  */
 export async function startPostgresTestCluster(): Promise<PostgresTestClusterStart> {
-  const bin = postgresBinDirectory();
+  const configured = process.env.CHICKPEA_TEST_POSTGRES_BIN;
+  if (configured === '') {
+    return { skip: 'CHICKPEA_TEST_POSTGRES_BIN is empty, so the PostgreSQL backend tests are skipped.' };
+  }
+  const bin = postgresBinDirectory(configured);
   if (!bin) {
-    return {
-      unavailable: 'PostgreSQL server binaries (initdb, postgres) were not found; ' +
-        'install PostgreSQL or set CHICKPEA_TEST_POSTGRES_BIN to run the PostgreSQL backend tests.',
-    };
+    throw new Error(configured
+      ? `CHICKPEA_TEST_POSTGRES_BIN (${configured}) does not contain initdb and postgres.`
+      : 'The PostgreSQL backend tests need PostgreSQL 13 or later (initdb and postgres), ' +
+        'for example `brew install postgresql@17` or `apt install postgresql`. Set ' +
+        'CHICKPEA_TEST_POSTGRES_BIN to their directory if they are not found, or to an ' +
+        'empty value to skip these tests.');
   }
   // A Unix socket path is limited to about 100 bytes, so keep the directory short.
   const root = mkdtempSync(path.join(existsSync('/tmp') ? '/tmp' : tmpdir(), 'chickpea-pg-'));
@@ -44,7 +50,7 @@ export async function startPostgresTestCluster(): Promise<PostgresTestClusterSta
     ], { stdio: 'pipe' });
   } catch (error) {
     rmSync(root, { recursive: true, force: true });
-    return { unavailable: `initdb could not create a test cluster: ${failureText(error)}` };
+    throw new Error(`initdb could not create a test cluster: ${failureText(error)}`);
   }
   const server = spawn(path.join(bin, 'postgres'), [
     '-D', data, '-k', root, '-p', String(PORT), '-c', 'listen_addresses=',
@@ -73,12 +79,11 @@ export async function startPostgresTestCluster(): Promise<PostgresTestClusterSta
       await client.end().catch(() => {});
       if (attempt >= 100 || server.exitCode !== null) {
         await stop();
-        return { unavailable: `the PostgreSQL test server did not start:\n${log.trim()}` };
+        throw new Error(`The PostgreSQL test server did not start:\n${log.trim()}`);
       }
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
   }
-  const version = execFileSync(path.join(bin, 'postgres'), ['--version'], { encoding: 'utf8' }).trim();
   const admin = async <T>(work: (client: pg.Client) => Promise<T>) => {
     const client = new pg.Client({ ...connection, database: 'postgres' });
     await client.connect();
@@ -91,7 +96,6 @@ export async function startPostgresTestCluster(): Promise<PostgresTestClusterSta
   return {
     cluster: {
       connection,
-      version,
       async createDatabase() {
         const name = `chickpea_${randomBytes(6).toString('hex')}`;
         await admin((client) => client.query(`CREATE DATABASE ${name}`));
@@ -107,10 +111,9 @@ export async function startPostgresTestCluster(): Promise<PostgresTestClusterSta
   };
 }
 
-function postgresBinDirectory(): string | undefined {
+function postgresBinDirectory(configured: string | undefined): string | undefined {
   const usable = (directory: string | undefined): directory is string => Boolean(directory) &&
     existsSync(path.join(directory!, 'initdb')) && existsSync(path.join(directory!, 'postgres'));
-  const configured = process.env.CHICKPEA_TEST_POSTGRES_BIN;
   if (configured !== undefined) return usable(configured) ? configured : undefined;
   const pgConfig = spawnSync('pg_config', ['--bindir'], { encoding: 'utf8' });
   const versioned = (parent: string, pattern: RegExp, suffix: string[]) => {
