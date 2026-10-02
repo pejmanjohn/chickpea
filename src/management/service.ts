@@ -2718,10 +2718,15 @@ export class WorkspaceManagementService {
     return url.href;
   }
 
+  /**
+   * The Agent's Admin link, or undefined when the deployment has no public
+   * URL; never throws. It is presentation on a change that has already
+   * committed, so a missing URL must not turn a created Agent into a failure.
+   */
   private async agentEditorUrl(agentId: string): Promise<string | undefined> {
     if (!this.stores.setupBaseUrl) return undefined;
-    const baseUrl = await this.resolveSetupBaseUrl();
-    return new URL(`/admin/agents/${encodeURIComponent(agentId)}`, baseUrl).href;
+    const baseUrl = await this.optionalSetupBaseUrl();
+    return baseUrl ? new URL(`/admin/agents/${encodeURIComponent(agentId)}`, baseUrl).href : undefined;
   }
 
   private async resolveSetupTarget(
@@ -4486,13 +4491,15 @@ export class WorkspaceManagementService {
       let publicationError = error;
       if (options.inferredHandle && error instanceof AgentPresenceError &&
           error.code === 'handle_collision' && error.suggestions[0]) {
-        const recovered = await this.selectInferredAgentHandle(
-          options.requestId,
-          options.prepared,
-          agent.id,
-          error.suggestions[0],
-        );
+        // The Agent is already committed: a failed recovery is reported on
+        // its handle, never as a failed creation.
         try {
+          const recovered = await this.selectInferredAgentHandle(
+            options.requestId,
+            options.prepared,
+            agent.id,
+            error.suggestions[0],
+          );
           return await this.stores.publishAgentPresence({
             actor,
             agentId: recovered.id,

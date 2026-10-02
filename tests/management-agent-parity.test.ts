@@ -2053,6 +2053,54 @@ test('inferred Slack handle collision recovers one Agent with one stable alterna
   }
 });
 
+test('a failed inferred-handle recovery reports the created Agent, not a failed creation', async () => {
+  const f = await createManagementAdapterFixture('inferred-handle-recovery-failed');
+  const context: ManagementActorContext = {
+    userId: f.admin.user.id,
+    membershipId: f.admin.membership.id,
+    organizationId: f.admin.membership.organizationId,
+    origin: { kind: 'mcp', clientId: 'inferred-handle-failed-client' },
+  };
+  // Choosing the alternative handle loses a race after the Agent committed.
+  const config = Object.create(f.config) as typeof f.config;
+  config.updateAgent = async (agentId, patch, expectedRevision) => {
+    if (patch.slackPresence?.requestedHandle === 'support-triage-2') {
+      throw new ManagementError('revision_conflict', 'The Agent changed concurrently.');
+    }
+    return f.config.updateAgent(agentId, patch, expectedRevision);
+  };
+  const service = new WorkspaceManagementService({
+    identity: f.identity,
+    config,
+    management: f.management,
+    randomId: () => 'inferred_handle_recovery_failed',
+    publishAgentPresence: async () => {
+      throw new AgentPresenceError(
+        'handle_collision',
+        'That Slack handle is unavailable.',
+        { suggestions: ['support-triage-2'] },
+      );
+    },
+  });
+  try {
+    const { requestedHandle: _requestedHandle, ...inferredAgentInput } = agentInput;
+    const created = await service.applyWorkspaceChanges({
+      context,
+      idempotencyKey: 'inferred-handle-recovery-failed',
+      operations: [{ itemId: 'create', kind: 'create_agent', agent: inferredAgentInput }],
+    });
+    assert.equal(created.status, 'completed');
+    assert.equal(created.outcomes[0]?.disposition, 'applied');
+    assert.deepEqual(created.outcomes[0]?.changed?.map(({ kind, id }) => ({ kind, id })), [
+      { kind: 'agent', id: agentInput.id },
+    ]);
+    assert.match(created.outcomes[0]?.warning ?? '', /^The Agent was created, but its Slack handle needs attention/);
+    assert.equal((await f.config.getAgent(agentInput.id)).name, agentInput.name);
+  } finally {
+    f.close();
+  }
+});
+
 test('duplicate clarification ignores Agents the member cannot edit', async () => {
   const f = await createManagementAdapterFixture('hidden-duplicate-identity');
   const provisioned = await f.identity.provisionSlackMember({
