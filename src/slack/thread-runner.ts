@@ -24,6 +24,12 @@ import { cloudflareSandboxOptionVariants } from '../sandbox/lifecycle.ts';
 import { reconnectingSandboxStub } from '../sandbox/reconnect.ts';
 import { sandboxThreadKey } from '../sandbox/thread-key.ts';
 import { DoSqlStateDb } from '../state/do-state-db.ts';
+import {
+  objectHostFunctions,
+  type InstallationObjectHostRpc,
+  type ObjectExportRequest,
+  type ObjectHostRequest,
+} from '../state/object-host.ts';
 import { createPlatformProductTelemetry } from '../telemetry/platform.ts';
 import {
   cacheSlackInstallationExecutionContexts,
@@ -91,16 +97,14 @@ export function sandboxTurnReaders(env: PlatformEnv): TurnExecutionPorts['sandbo
  * back to the state store, which stays the record of truth for turn rows.
  * Jobs already handed here always finish here, whatever the switch says.
  */
-export class SlackThreadRunner extends DurableObject implements SlackThreadRunnerRpc {
+export class SlackThreadRunner extends DurableObject implements SlackThreadRunnerRpc, InstallationObjectHostRpc {
   private jobs: ThreadRunnerJobStore | undefined;
   private presentations: SlackRunPresentationStoreLogic | undefined;
-  /** Its turns' live status; run facts outlive an eviction in this object's storage. */
-  private readonly registry = new SlackStatusRegistry({
-    runFacts: {
-      load: (id) => this.store().runFacts(id),
-      save: (id, facts) => this.store().saveRunFacts(id, facts),
-    },
-  });
+  /**
+   * Its turns' live status; run facts outlive an eviction in this object's
+   * storage. Replaced when the runner is erased.
+   */
+  private registry = this.statusRegistry();
   /** Jobs an alarm returned without at its hard cap, still running here. */
   private readonly carried = new Map<string, Promise<void>>();
   /** Wakes a running alarm's drain when a job is admitted. */
@@ -141,6 +145,15 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
   private store(): ThreadRunnerJobStore {
     this.jobs ??= new ThreadRunnerJobStore(new DoSqlStateDb(this.ctx.storage));
     return this.jobs;
+  }
+
+  private statusRegistry(): SlackStatusRegistry {
+    return new SlackStatusRegistry({
+      runFacts: {
+        load: (id) => this.store().runFacts(id),
+        save: (id, facts) => this.store().saveRunFacts(id, facts),
+      },
+    });
   }
 
   /**
@@ -301,6 +314,47 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
 
   async alarm(): Promise<void> {
     await this.runSoon();
+  }
+
+  // ── host functions (installation tenancy; see state/installation-objects.ts) ──
+
+  async chickpeaHostExportPage(request: ObjectExportRequest) {
+    return this.host().chickpeaHostExportPage(request);
+  }
+
+  /**
+   * Delete every table, key-value entry and the alarm of this runner. It must
+   * be the runner's last contact: any later call, an admission or a host
+   * function, creates its job tables again, empty.
+   */
+  async chickpeaHostErase(request: ObjectHostRequest) {
+    return this.host().chickpeaHostErase(request);
+  }
+
+  /** Settle every open job not running without running it, report the running ones, and clear the alarm. */
+  async chickpeaHostCancelPendingWork(request: ObjectHostRequest) {
+    return this.host().chickpeaHostCancelPendingWork(request);
+  }
+
+  private host(): InstallationObjectHostRpc {
+    return objectHostFunctions({
+      env: this.env as PlatformEnv,
+      storage: this.ctx.storage,
+      // Nothing of the erased runner stays in memory: its stores, its turns'
+      // live status, their observation targets and the jobs it carried.
+      onErased: () => {
+        this.jobs = undefined;
+        this.presentations = undefined;
+        this.stopHandling = undefined;
+        this.registry = this.statusRegistry();
+        this.targets.clear();
+        this.carried.clear();
+      },
+      cancel: (now) => {
+        const { settled, running } = this.store().cancelOpen(now);
+        return { runnerJobs: settled, runnerJobsRunning: running };
+      },
+    });
   }
 
   /** The state store, over a fresh stub per call (see CfTurnJobsForRunner). */

@@ -41,6 +41,8 @@ import { parseSlackArtifactReceipts } from './artifact-receipts.ts';
 import { parseSlackAgentCreationTerminalIntents } from './agent-creation-terminal.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
 import { schemaInstallRequired, type StateDb } from '../state/state-db.ts';
+import type { InstallationObjectRecorder } from '../state/object-inventory.ts';
+import type { SlackThreadAgentTarget } from './flue-dispatch.ts';
 import type { SlackRuntimeDrainCounts } from '../config/state-rpc.ts';
 import type { SlackTurnRecoveryItem } from '../config/state-rpc.ts';
 import type { RunExecutionAuthority } from '../work/types.ts';
@@ -166,6 +168,7 @@ const LOGGABLE_TURN_RECOVERY_REASONS = new Set([
   'flue_receipt_conflict',
   'flue_settlement_conflict',
   'flue_unexpected_existing_instance',
+  'operator_cancelled',
   'post_dispatch_attempts_exhausted',
   'post_dispatch_redrive_required',
   'slack_file_fallback_unavailable',
@@ -288,6 +291,16 @@ const TURN_JOB_SELECT_COLUMNS = `id, evt_key, msg_key, turn_json, assignment_jso
   stop_json`;
 
 const PENDING_ROW = "delivered = 0 AND status != 'recovery_required'";
+/**
+ * Turns a host's operator parked after restoring an installation
+ * (`cancelPendingWork`). Neither run nor delivered again, they are left out
+ * of everything an installation's Owner reads (the recovery list and the
+ * runtime drain counts): the reason is the operator's, and the operator's
+ * record is the host function's result. Only that host function writes the
+ * reason, and it refuses on standalone.
+ */
+const OPERATOR_CANCELLED = 'operator_cancelled';
+const NOT_OPERATOR_CANCELLED = `recovery_reason IS NOT '${OPERATOR_CANCELLED}'`;
 
 /** One undelivered row of a thread, as a stop or check-in weighs it. */
 interface StopThreadRow {
@@ -306,6 +319,12 @@ export class TurnJobStoreLogic {
   constructor(
     private readonly db: StateDb,
     private readonly now: () => number = Date.now,
+    /**
+     * Where a store serving one installation of many records the objects its
+     * turns address (state/object-inventory.ts): a thread's runner when the
+     * turn is enqueued, its Flue instance when the plan is frozen.
+     */
+    private readonly objects?: InstallationObjectRecorder,
   ) {
     if (!schemaInstallRequired(db)) return;
     db.exec(
@@ -532,6 +551,8 @@ export class TurnJobStoreLogic {
     const messageTs = validSlackTs(job.turn.messageTs) ? job.turn.messageTs : null;
     const executionAuthority = job.executionAuthority ?? 'legacy';
     const receipt = executionAuthority === 'legacy' ? midRunReceiptOf(job) : undefined;
+    // Before the row: once a turn exists, its runner may be addressed.
+    this.objects?.recordThreadRunner(runnerKeyOf(job));
     const inserted = this.db.run(
       `INSERT OR IGNORE INTO turn_jobs (
         id, evt_key, msg_key, turn_json, assignment_json, run_id, execution_authority,
@@ -1339,6 +1360,7 @@ export class TurnJobStoreLogic {
       const current = this.getFrozenRuntimePlan(id);
       if (current) return current;
       const instanceId = deriveRuntimePlanInstanceId(plan);
+      this.objects?.recordAgentInstance('slack_agent', instanceId);
       const updated = this.db.run(
         `UPDATE turn_jobs
          SET runtime_plan_json = ?, agent_instance_id = ?
@@ -1903,7 +1925,7 @@ export class TurnJobStoreLogic {
     const pending = (executionAuthority: RunExecutionAuthority): number => Number(
       this.db.get(
         `SELECT COUNT(*) AS count FROM turn_jobs
-         WHERE delivered = 0 AND execution_authority = ?`,
+         WHERE delivered = 0 AND execution_authority = ? AND ${NOT_OPERATOR_CANCELLED}`,
         executionAuthority,
       )?.count ?? 0,
     );
@@ -1919,7 +1941,7 @@ export class TurnJobStoreLogic {
       recoveryRequiredTurnJobs: Number(
         this.db.get(
           `SELECT COUNT(*) AS count FROM turn_jobs
-           WHERE delivered = 0 AND status = 'recovery_required'`,
+           WHERE delivered = 0 AND status = 'recovery_required' AND ${NOT_OPERATOR_CANCELLED}`,
         )?.count ?? 0,
       ),
     };
@@ -1932,7 +1954,7 @@ export class TurnJobStoreLogic {
     return this.db.all(
       `SELECT id, execution_authority, recovery_reason, enqueued_at
        FROM turn_jobs
-       WHERE delivered = 0 AND status = 'recovery_required'
+       WHERE delivered = 0 AND status = 'recovery_required' AND ${NOT_OPERATOR_CANCELLED}
        ORDER BY enqueued_at ASC, id ASC LIMIT ?`,
       limit,
     ).map((row) => ({
@@ -1963,6 +1985,46 @@ export class TurnJobStoreLogic {
          AND json_extract(turn_json, '$.workspaceId') = ?`,
       workspaceId,
     ).changes;
+  }
+
+  /**
+   * An operator stops every turn not yet delivered, as after restoring an
+   * installation's objects, so no message is answered twice: each is parked
+   * as `recovery_required` (`operator_cancelled`), which no executor runs or
+   * delivers again and the Owner's recovery list and drain counts leave out,
+   * and its owed stop notice is dropped. Returns how many were parked; the
+   * Flue instances of every cancelled turn whose dispatch is admitted and
+   * unsettled, for the caller to abort (at most `limit`; a repeat returns the
+   * same ones until they settle); and how many such turns cannot be stopped
+   * because their stored dispatch does not read. Safe to repeat.
+   */
+  cancelPendingWork(limit = 100): { turns: number; dispatched: SlackThreadAgentTarget[]; unreadable: number } {
+    const turns = this.db.run(
+      `UPDATE turn_jobs
+       SET status = 'recovery_required', recovery_reason = '${OPERATOR_CANCELLED}', stop_notice_at = NULL
+       WHERE ${PENDING_ROW}`,
+    ).changes;
+    let unreadable = 0;
+    const dispatched = this.db.all(
+      `SELECT id FROM turn_jobs
+       WHERE delivered = 0 AND status = 'recovery_required' AND recovery_reason = '${OPERATOR_CANCELLED}'
+         AND dispatch_receipt_json IS NOT NULL AND flue_settlement_json IS NULL
+       ORDER BY enqueued_at, id LIMIT ?`,
+      limit,
+    ).flatMap((row): SlackThreadAgentTarget[] => {
+      const id = String(row.id);
+      try {
+        const envelope = this.getDispatchEnvelope(id);
+        const uid = this.getFlueReceipt(id)?.uid ?? envelope?.uid;
+        if (envelope) return [{ instanceId: envelope.instanceId, ...(uid ? { uid } : {}) }];
+      } catch {
+        // Counted below.
+      }
+      // A dispatched turn whose stored dispatch cannot name its instance cannot be stopped.
+      unreadable += 1;
+      return [];
+    });
+    return { turns, dispatched, unreadable };
   }
 
   /** Explicit operator terminalization; retained claims continue to dedupe. */
@@ -2429,7 +2491,7 @@ function keyStopThreadRow(
 }
 
 /** The thread runner a row's turn runs on (owner incarnation included). */
-function runnerKeyOf(job: Pick<PendingTurnJob, 'turn' | 'assignment'>): string {
+export function runnerKeyOf(job: Pick<PendingTurnJob, 'turn' | 'assignment'>): string {
   try {
     return slackAgentThreadKey(job.turn, job.assignment);
   } catch {

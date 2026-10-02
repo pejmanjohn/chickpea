@@ -9,6 +9,7 @@ import type {
   BetterAuthMcpOAuthContinuationRecord,
   BetterAuthOAuthGrantRevocation,
   BetterAuthMembershipRecord,
+  BetterAuthOrganizationErasure,
   BetterAuthOrganizationRecord,
   BetterAuthUserRecord,
 } from './better-auth-backend.ts';
@@ -18,6 +19,8 @@ import {
   mapBetterAuthOrganization,
   mapBetterAuthUser,
   parseBetterAuthDate,
+  SQLITE_ORGANIZATION_ERASURE,
+  sqliteOrganizationErasure,
 } from './better-auth-backend.ts';
 
 interface CachedBackend {
@@ -125,6 +128,19 @@ export class NodeBetterAuthBackend implements BetterAuthDatabaseBackend {
       `SELECT id, organizationId, userId, role, createdAt FROM member
        WHERE userId = ? AND organizationId = ? LIMIT 1`,
     ).get(userId, organizationId));
+  }
+
+  async eraseOrganization(slug: string): Promise<BetterAuthOrganizationErasure> {
+    this.database.exec('BEGIN IMMEDIATE;');
+    try {
+      const counts = this.database.prepare(SQLITE_ORGANIZATION_ERASURE.count).get(slug) as Record<string, unknown> | undefined;
+      for (const sql of SQLITE_ORGANIZATION_ERASURE.steps) this.database.prepare(sql).run(slug);
+      this.database.exec('COMMIT;');
+      return sqliteOrganizationErasure(counts);
+    } catch (error) {
+      this.database.exec('ROLLBACK;');
+      throw error;
+    }
   }
 
   async countMcpOAuthClients(): Promise<number> {

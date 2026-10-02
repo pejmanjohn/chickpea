@@ -187,6 +187,13 @@ interface ComposioCapability {
   ): Record<string, unknown>;
 }
 
+/**
+ * The fixed, content-free messages a remote revocation fails with, so a
+ * caller can classify the failure without reading anything else from it.
+ */
+export const COMPOSIO_REVOKE_FAILED = 'Composio managed connection could not be revoked';
+export const COMPOSIO_KEY_MISSING = 'COMPOSIO_API_KEY is not configured';
+
 const COMPOSIO_CAPABILITIES: Readonly<Record<string, ComposioCapability>> = {
   'gmail.profile.read': {
     toolkit: 'gmail',
@@ -2285,7 +2292,7 @@ export class ComposioManagedConnectionProvider implements ManagedConnectionProvi
         signal,
       });
     } catch {
-      throw new Error('Composio managed connection could not be revoked');
+      throw new Error(COMPOSIO_REVOKE_FAILED);
     }
   }
 
@@ -2300,7 +2307,7 @@ export class ComposioManagedConnectionProvider implements ManagedConnectionProvi
 
   private requireApiKey(): string {
     const apiKey = this.options.apiKey?.trim();
-    if (!apiKey) throw new Error('COMPOSIO_API_KEY is not configured');
+    if (!apiKey) throw new Error(COMPOSIO_KEY_MISSING);
     return apiKey;
   }
 

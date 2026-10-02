@@ -61,6 +61,13 @@ declare module 'cloudflare:workers' {
     getAlarm(): Promise<number | null>;
     /** Cancel the pending alarm, if any. */
     deleteAlarm(): Promise<void>;
+    /** Key-value entries in key order; `startAfter` resumes after one key. */
+    list(options?: { startAfter?: string; limit?: number }): Promise<Map<string, unknown>>;
+    /**
+     * Delete every SQL table and key-value entry, and (at compatibility date
+     * 2026-02-24 or later) the alarm.
+     */
+    deleteAll(): Promise<void>;
   }
 
   interface DurableObjectState {

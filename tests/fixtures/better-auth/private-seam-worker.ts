@@ -1,5 +1,6 @@
 import type { D1Database } from '@cloudflare/workers-types';
 
+import { eraseInstallationBetterAuthOrganization } from '../../../src/auth/better-auth-backend.ts';
 import { D1BetterAuthBackend } from '../../../src/auth/better-auth-cloudflare.ts';
 import { createBetterAuthPublicHandler } from '../../../src/auth/better-auth-routes.ts';
 import {
@@ -188,6 +189,30 @@ async function dispatch(request: Request, env: Env): Promise<Response> {
     const revoked = await backend.revokeOAuthGrantsForUser(userId);
     const again = await backend.revokeOAuthGrantsForUser(userId);
     return Response.json({ revoked, again });
+  }
+
+  if (url.pathname === '/test/erase-organization' && request.method === 'POST') {
+    // One installation's organization, its two members, and the owner again in a reinstalled one.
+    const reconcile = (slackTeamId: string, slackUserId: string, slug: string) => auth.chickpea.reconcileSlackIdentity({
+      slackTeamId, slackUserId, displayName: `${slackTeamId} ${slackUserId}`, organization: { name: slug, slug },
+    });
+    const owner = await reconcile('T900', 'U900', 'chickpea-org_erase');
+    const member = await reconcile('T900', 'U901', 'chickpea-org_erase');
+    const reinstalled = await reconcile('T900', 'U900', 'chickpea-org_erase2');
+    const now = new Date().toISOString();
+    await env.AUTH_DB.prepare(
+      `INSERT INTO session (id, expiresAt, token, createdAt, updatedAt, userId, absoluteExpiresAt)
+       VALUES ('session-erase', ?, 'token-erase', ?, ?, ?, ?)`,
+    ).bind(now, now, now, member.userId, now).run();
+    const erased = await eraseInstallationBetterAuthOrganization(backend, { organizationId: 'org_erase' });
+    const again = await eraseInstallationBetterAuthOrganization(backend, { organizationId: 'org_erase' });
+    return Response.json({
+      erased, again,
+      memberRemoved: await backend.getUser(member.userId) === null,
+      ownerKept: (await backend.getUser(owner.userId))?.id === owner.userId,
+      ownerOrganizations: (await backend.listMembershipsForUser(owner.userId)).map((entry) => entry.organizationId),
+      reinstalledOrganization: reinstalled.organizationId,
+    });
   }
 
   if (url.pathname.startsWith('/api/auth/')) {

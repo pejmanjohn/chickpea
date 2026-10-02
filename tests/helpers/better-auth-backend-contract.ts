@@ -8,6 +8,7 @@ import {
   type ReconciledSlackIdentity,
 } from '../../src/auth/better-auth.ts';
 import {
+  eraseInstallationBetterAuthOrganization,
   revokeOrganizationAccess,
   type BetterAuthDatabaseBackend,
 } from '../../src/auth/better-auth-backend.ts';
@@ -224,6 +225,57 @@ export function betterAuthBackendContract(contract: BetterAuthBackendContract): 
     assert.deepEqual(await revokeOrganizationAccess(f.backend, owner.organizationId), { members: 2 });
     assert.equal((await f.session(otherCookie))?.user.id, other.userId);
     assert.deepEqual(await revokeOrganizationAccess(f.backend, randomUUID()), { members: 0 });
+  });
+
+  it('erasing an installation\'s organization removes it and the logins no other organization holds, and spares another', async (f) => {
+    const owner = await f.reconcile('TAAAA', 'U0001', 'chickpea-org_a');
+    const member = await f.reconcile('TAAAA', 'U0002', 'chickpea-org_a');
+    // The workspace was reinstalled: the same person joined the new installation's organization.
+    const reinstalled = await f.reconcile('TAAAA', 'U0001', 'chickpea-org_a2');
+    assert.equal(reinstalled.userId, owner.userId);
+    const other = await f.reconcile('TBBBB', 'U0001', 'chickpea-org_b');
+    const ownerCookie = await f.signIn(owner, 'TAAAA', 'U0001');
+    const memberCookie = await f.signIn(member, 'TAAAA', 'U0002');
+    const otherCookie = await f.signIn(other, 'TBBBB', 'U0001');
+    const memberGrant = await f.grant(memberCookie, { resource: false });
+    const otherGrant = await f.grant(otherCookie, { resource: true });
+    const tables = ['user', 'account', 'session', 'organization', 'member', 'oauthConsent', 'oauthAccessToken', 'oauthRefreshToken'];
+    const before = Object.fromEntries(await Promise.all(tables.map(async (table) => [table, await f.count(table)])));
+
+    const erased = await eraseInstallationBetterAuthOrganization(f.backend, { organizationId: 'org_a' });
+    assert.deepEqual(erased, {
+      organizations: 1, members: 2, invitations: 0, users: 1, usersKept: 1, sessions: 1, accounts: 1,
+      oauthAccessTokens: 1, oauthRefreshTokens: 1, oauthConsents: 1, oauthClients: 0,
+    });
+    assert.equal(await f.backend.getOrganization(owner.organizationId), null);
+    assert.deepEqual(await f.backend.listMemberships(owner.organizationId), []);
+    // The member's login is gone with everything it held.
+    assert.equal(await f.backend.getUser(member.userId), null);
+    assert.equal(await f.session(memberCookie), null);
+    assert.equal((await f.refresh(memberGrant)).status, 400);
+    // The reinstalled person keeps their login, now in the new organization only.
+    assert.equal((await f.backend.getUser(owner.userId))?.id, owner.userId);
+    assert.deepEqual((await f.backend.listMembershipsForUser(owner.userId)).map((membership) => membership.organizationId),
+      [reinstalled.organizationId]);
+    assert.equal((await f.session(ownerCookie))?.user.id, owner.userId);
+    // Another installation is untouched.
+    assert.equal((await f.session(otherCookie))?.user.id, other.userId);
+    assert.equal((await f.refresh(otherGrant)).status, 200);
+    assert.equal((await f.backend.listMemberships(other.organizationId)).length, 1);
+    assert.deepEqual(Object.fromEntries(await Promise.all(tables.map(async (table) => [table, await f.count(table)]))), {
+      ...before,
+      user: before.user - 1, account: before.account - 1, session: before.session - 1,
+      organization: before.organization - 1, member: before.member - 2,
+      oauthConsent: before.oauthConsent - 1, oauthAccessToken: before.oauthAccessToken - 1,
+      oauthRefreshToken: before.oauthRefreshToken,
+    });
+
+    // Safe to repeat: nothing is left to erase.
+    assert.deepEqual(await eraseInstallationBetterAuthOrganization(f.backend, { organizationId: 'org_a' }), {
+      organizations: 0, members: 0, invitations: 0, users: 0, usersKept: 0, sessions: 0, accounts: 0,
+      oauthAccessTokens: 0, oauthRefreshTokens: 0, oauthConsents: 0, oauthClients: 0,
+    });
+    await assert.rejects(eraseInstallationBetterAuthOrganization(f.backend, { organizationId: 'x; DROP' }));
   });
 
   return cases;

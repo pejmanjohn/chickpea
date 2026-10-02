@@ -1622,6 +1622,20 @@ export class ManagementStoreLogic {
     return this.requireOutbox(input.outboxId);
   }
 
+  /**
+   * An operator closes every receipt not yet delivered, unsent
+   * (`operator_cancelled`), as after restoring an installation's objects so
+   * none is posted twice. Returns how many. Safe to repeat.
+   */
+  cancelPendingReceipts(at: number): number {
+    return this.db.run(
+      `UPDATE management_receipt_outbox
+       SET status = 'failed', failure_code = 'operator_cancelled', updated_at = ?
+       WHERE status IN ('pending', 'delivering')`,
+      at,
+    ).changes;
+  }
+
   nextOutboxDueAt(): number | undefined {
     const row = this.db.get(
       `SELECT MIN(next_attempt_at) AS due_at FROM management_receipt_outbox

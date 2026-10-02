@@ -20,13 +20,14 @@ import {
 import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
 import {
   executeRoutineOccurrence,
+  REFUSED_SKIP,
 } from '../src/routines/execution.ts';
 import {
   resolveRoutineRuntimeAccess,
   RoutineRuntimeError,
 } from '../src/routines/runtime.ts';
 import { hashRoutineValue, routineDestinationBindingDigest } from '../src/routines/ids.ts';
-import { SqliteRoutineStore } from '../src/routines/store.ts';
+import { RoutineStoreLogic, SqliteRoutineStore } from '../src/routines/store.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
 import { ChickpeaRoutineExecution } from '../src/agents/routine-execution.ts';
 import { attachedContainerPlan } from './helpers/attached-container-plan.ts';
@@ -42,6 +43,7 @@ import {
   routineArtifactPlan,
   ROUTINE_RESULT_DATA_NAME,
 } from '../src/agents/routine-execution.ts';
+import { settleCancelledOccurrences } from '../src/state/pending-work.ts';
 import { SqliteUsageStore } from '../src/usage/store.ts';
 import type { UsageStore } from '../src/usage/types.ts';
 import { SqliteWorkStore } from '../src/work/store.ts';
@@ -1533,7 +1535,7 @@ async function interruptedHostedAttempt(t: TestContext, name: string, dispatched
   const handle = fakeHandle({ events });
   handle.abort = async () => { events.push('abort'); };
   return {
-    routines, work, usage, fixture, runId, events, telemetry,
+    env, path, routines, work, usage, fixture, runId, events, telemetry,
     refuse(overrides: Parameters<typeof executeRoutineOccurrence>[1] = {}) {
       configureInstallationAdmission(async () => 'refused');
       return executeRoutineOccurrence(input, {
@@ -1631,6 +1633,56 @@ test('an ended installation\'s settlement that cannot be written is reported, pa
   assert.equal((await usage.usage.getOperation(usage.fixture.run.id))?.operation.status, 'admitted');
   assert.equal(usage.telemetry.errors.length, 1);
   assert.match(usage.telemetry.errors[0]!, /"outcome":"unrepaired","usage":"unrepaired","work":"recorded"/);
+});
+
+for (const dispatched of [true, false]) {
+  test(`a host's cancellation settles a running occurrence ${dispatched ? 'dispatched' : 'never dispatched'} by the refusal's rule`, async (t) => {
+    const h = await interruptedHostedAttempt(t, `cancelled_${dispatched ? 'sent' : 'unsent'}`, dispatched);
+    const db = openStateDb(h.path);
+    t.after(() => db.close());
+    const cancelled = new RoutineStoreLogic(db, () => NOW + 2).cancelPendingWork(NOW + 2, REFUSED_SKIP);
+    assert.equal(cancelled.runs, 1);
+    assert.deepEqual(cancelled.prepared.map(({ run, admission }) => [run.id, admission.attempt]),
+      [[h.fixture.run.id, h.fixture.attempt.attempt]]);
+    await settleCancelledOccurrences(cancelled.prepared, h.env, {
+      workStore: h.work, usageStore: h.usage, now: () => NOW + 2, persistenceTelemetrySink: h.telemetry.sink,
+    });
+
+    const skipped = await h.routines.getRun(h.fixture.run.id);
+    assert.deepEqual([skipped?.status, skipped?.failureClass, skipped?.publicError, skipped?.skipReason],
+      ['skipped', REFUSED_SKIP.failureClass, REFUSED_SKIP.publicError, REFUSED_SKIP.skipReason]);
+    // As a refused attempt settles, whether or not it is prepared again.
+    const [execution] = await h.work.listRunExecutions(h.runId);
+    assert.deepEqual(
+      [execution?.outcome, execution?.modelInvocationStatus, execution?.safeFailureCode],
+      dispatched ? ['ambiguous', 'settled', 'policy_denied'] : ['not_submitted', 'not_invoked', 'policy_denied'],
+    );
+    const workRun = await h.work.getRun(h.runId);
+    assert.deepEqual([workRun?.status, workRun?.terminalDisposition, workRun?.safeFailureCode],
+      ['settled', 'skipped', REFUSED_SKIP.skipReason]);
+    const operation = await h.usage.getOperation(h.fixture.run.id);
+    assert.equal(operation?.operation.status, 'failed', 'the Usage operation has its terminal');
+    assert.equal(operation?.measurements[0]?.usageUnknownReason, 'provider_request_unknown');
+    assert.equal(operation?.measurements[0]?.runExecutionId, execution?.id);
+    assert.match(h.telemetry.info.join('\n'), /"usage":"recorded","work":"recorded"/);
+    assert.deepEqual(h.telemetry.errors, []);
+  });
+}
+
+test('a cancelled occurrence\'s settlement that cannot be written is reported, never thrown', async (t) => {
+  const h = await interruptedHostedAttempt(t, 'cancelled_work_down', true);
+  const db = openStateDb(h.path);
+  t.after(() => db.close());
+  const cancelled = new RoutineStoreLogic(db, () => NOW + 2).cancelPendingWork(NOW + 2, REFUSED_SKIP);
+  await settleCancelledOccurrences(cancelled.prepared, h.env, {
+    workStore: failingMethod<WorkStore>(h.work, 'settleRunExecution'), usageStore: h.usage, now: () => NOW + 2,
+    persistenceTelemetrySink: h.telemetry.sink,
+  });
+  assert.equal((await h.routines.getRun(h.fixture.run.id))?.status, 'skipped');
+  assert.equal((await h.work.listRunExecutions(h.runId))[0]?.outcome, 'pending');
+  assert.equal(h.telemetry.errors.length, 1);
+  assert.match(h.telemetry.errors[0]!, /"outcome":"unrepaired","usage":"recorded","work":"unrepaired"/);
+  assert.doesNotMatch(h.telemetry.errors[0]!, /state owner unavailable/);
 });
 
 test('permanent Work initialization failure is one gap and never redispatches', async () => {

@@ -1280,18 +1280,20 @@ async function failUnsettledRun(
   });
 }
 
-interface SkipReason {
-  failureClass: RoutineFailureClass;
-  publicError: string;
-  skipReason: string;
+export interface SkipReason {
+  readonly failureClass: RoutineFailureClass;
+  readonly publicError: string;
+  readonly skipReason: string;
 }
 
 /**
  * An occurrence the installation's admission refused, before or during its
  * attempt: skipped, with no notice and no failure counted. Like any skipped
- * occurrence of a one-time routine, it completes that routine unrun.
+ * occurrence of a one-time routine, it completes that routine unrun. A host
+ * cancelling an installation's pending work skips its occurrences with this
+ * too (state/pending-work.ts), so members see one wording either way.
  */
-const REFUSED_SKIP: SkipReason = {
+export const REFUSED_SKIP: SkipReason = {
   failureClass: 'policy_denied',
   publicError: 'The workspace was not admitted to run this occurrence.',
   skipReason: 'installation_not_admitted',
@@ -1360,16 +1362,21 @@ function refusedExecutionSettlement(dispatched: boolean) {
  * access no longer resolves: its Work execution settles and its Run is
  * skipped, and its usage terminal is recorded with spend unknown. Each part
  * is best effort, one already settled is left as it is, and one left open
- * is reported as unrepaired, as a prepared occurrence's gaps are.
+ * is reported as unrepaired, as a prepared occurrence's gaps are. A host
+ * cancelling an installation's pending work settles each running occurrence
+ * it skips this way too (state/pending-work.ts).
  */
-async function settleRefusedWithoutPreparation(
+export async function settleRefusedWithoutPreparation(
   input: {
     env: PlatformEnv;
     run: RoutineRun;
     admission: RoutineAdmissionAttempt;
     attempt: number;
   },
-  dependencies: RoutineExecutionDependencies,
+  dependencies: Pick<
+    RoutineExecutionDependencies,
+    'now' | 'usageRecordingEnabled' | 'usageStore' | 'workStore' | 'persistenceTelemetrySink'
+  >,
 ): Promise<void> {
   const { env, run, admission, attempt } = input;
   const now = dependencies.now ?? Date.now;

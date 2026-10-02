@@ -2463,11 +2463,13 @@ export class IdentityStoreLogic {
         ? this.requiredMembership(input.actorMembershipId)
         : undefined;
       const systemDeactivation = input.authenticationSurface === 'slack_event' && !actor;
+      const operatorAssignment = input.authenticationSurface === 'host_operator';
+      if (operatorAssignment) this.assertOperatorOwnerAssignment(input, current, actor);
       if (actor && (actor.organizationId !== current.organizationId ||
           actor.role !== 'owner' || actor.status !== 'active')) {
         throw identityError('inviter_not_authorized', 'Only an active Owner can change team authority.');
       }
-      if (!actor && !systemDeactivation) {
+      if (!actor && !systemDeactivation && !operatorAssignment) {
         throw identityError('inviter_not_authorized', 'Membership authority requires an active Owner.');
       }
 
@@ -2545,13 +2547,16 @@ export class IdentityStoreLogic {
         ? this.audit.appendIdempotent.bind(this.audit)
         : this.audit.append.bind(this.audit);
       append({
-        eventId: newId('audit'), domain: 'identity', eventType: 'identity.membership',
+        eventId: newId('audit'), domain: 'identity',
+        eventType: operatorAssignment ? 'identity.owner_assigned_by_operator' : 'identity.membership',
         outcome: 'success', actorClass: input.authenticationSurface,
         actorId: actor?.id ?? null, workspaceId: input.slackTeamId ?? null,
         subjectId: current.id, subjectVersion: membership.updatedAt,
         createdAt: at, reasonCode: safeAudit(input.reasonCode),
         metadataJson: JSON.stringify({
-          action: 'membership.update', correlationId: safeAudit(input.correlationId),
+          action: operatorAssignment ? 'membership.owner_assigned_by_operator' : 'membership.update',
+          correlationId: safeAudit(input.correlationId),
+          ...(operatorAssignment ? { operatorEvidence: safeAudit(input.operatorEvidence!) } : {}),
           authenticationSurface: input.authenticationSurface,
           role: membership.role, status: membership.status,
           slackUserId: input.slackUserId ? safeAudit(input.slackUserId) : null,
@@ -2567,6 +2572,51 @@ export class IdentityStoreLogic {
         revokedBrowserSessionCount,
       };
     });
+  }
+
+  /**
+   * An operator may only make an active member Owner, only while no active
+   * Owner remains to do it (every Owner is suspended, as a Slack deactivation
+   * leaves a sole Owner), and only the member the named Slack account is
+   * bound to; never through an acting member, never for a member whose
+   * access is suspended, never with evidence missing. This checks the
+   * binding, not Slack: verifying the requester with Slack is the host's,
+   * before it calls.
+   */
+  private assertOperatorOwnerAssignment(
+    input: UpdateMembershipAuthorityInput,
+    current: Membership,
+    actor: Membership | undefined,
+  ): void {
+    if (actor || input.role !== 'owner' || (input.status !== undefined && input.status !== 'active')) {
+      throw identityError('inviter_not_authorized', 'An operator may only make an active member Owner.');
+    }
+    if (!input.operatorEvidence || !input.slackTeamId || !input.slackUserId) {
+      throw identityError('identity_invalid', 'An operator assignment needs its verified Slack account and evidence.');
+    }
+    safeAudit(input.operatorEvidence);
+    const activeOwner = this.db.get(
+      `SELECT 1 AS present FROM identity_memberships membership
+       LEFT JOIN identity_membership_access_overlays overlay ON overlay.membership_id = membership.membership_id
+       WHERE membership.organization_id = ? AND membership.role = 'owner' AND membership.status = 'active'
+         AND (overlay.access_status IS NULL OR overlay.access_status != 'suspended')
+       LIMIT 1`,
+      current.organizationId,
+    );
+    if (activeOwner) {
+      throw identityError('active_owner_present', 'An active Owner can change team authority; an operator may not.');
+    }
+    if (current.status !== 'active' || this.getMembershipAccessOverlay(current.id)?.accessStatus === 'suspended') {
+      throw identityError('membership_missing', 'Only an active member can be made Owner.');
+    }
+    const bound = this.db.get(
+      `SELECT 1 AS present FROM identity_slack_bindings
+       WHERE membership_id = ? AND slack_team_id = ? AND slack_user_id = ?`,
+      current.id, input.slackTeamId, input.slackUserId,
+    );
+    if (!bound) {
+      throw identityError('external_identity_conflict', 'The named Slack account is not bound to this member.');
+    }
   }
 
   createInvitation(input: CreateInvitationInput): Invitation {

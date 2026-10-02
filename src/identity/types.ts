@@ -759,8 +759,16 @@ interface UpdateMembershipInput {
 
 export interface UpdateMembershipAuthorityInput extends UpdateMembershipInput {
   correlationId: string;
-  authenticationSurface: 'better_auth' | 'slack_event';
+  /**
+   * `host_operator`: the operator of a host serving many installations makes
+   * an active member Owner when no active Owner remains to do it, after the
+   * host verified the requester with Slack (identity/hosted-owner-assignment.ts).
+   * Accepted for nothing else.
+   */
+  authenticationSurface: 'better_auth' | 'slack_event' | 'host_operator';
   reasonCode: string;
+  /** `host_operator` only: the operator's evidence reference, recorded in the audit. */
+  operatorEvidence?: string;
   idempotencyKey?: string;
   slackTeamId?: string;
   slackUserId?: string;

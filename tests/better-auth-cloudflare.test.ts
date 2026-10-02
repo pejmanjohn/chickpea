@@ -200,6 +200,18 @@ test('production private seam survives real workerd, D1, and isolate restart', {
     });
     assert.equal(await afterAbsoluteExpiry.json(), null);
     assert.equal((await getJson(origin, '/test/snapshot')).body.sessions.length, 0);
+
+    // Erasing an installation's organization on real D1: one batch, numbered parameters.
+    const erasure = await postJson(origin, '/test/erase-organization', {});
+    assert.equal(erasure.response.status, 200, erasure.text);
+    assert.deepEqual(erasure.body.erased, {
+      organizations: 1, members: 2, invitations: 0, users: 1, usersKept: 1, sessions: 1, accounts: 1,
+      oauthAccessTokens: 0, oauthRefreshTokens: 0, oauthConsents: 0, oauthClients: 0,
+    });
+    assert.equal(erasure.body.again.organizations, 0);
+    assert.equal(erasure.body.memberRemoved, true);
+    assert.equal(erasure.body.ownerKept, true);
+    assert.deepEqual(erasure.body.ownerOrganizations, [erasure.body.reinstalledOrganization]);
   } finally {
     if (worker) await stopWorker(worker);
     rmSync(root, { recursive: true, force: true });

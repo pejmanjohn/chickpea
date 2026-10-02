@@ -3,6 +3,7 @@ type IdentityErrorCode =
   | 'owner_claim_conflict'
   | 'owner_claim_missing'
   | 'owner_already_claimed'
+  | 'active_owner_present'
   | 'external_identity_conflict'
   | 'membership_missing'
   | 'membership_conflict'

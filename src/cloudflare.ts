@@ -61,9 +61,7 @@ import type {
   SettingsPatch,
   SettingsStore,
 } from './config/settings-store.ts';
-import { SettingsStoreLogic } from './config/settings-store.ts';
 import { purgeExpiredImageOutputs } from './images/output-store.ts';
-import { SnapshotStoreLogic } from './config/snapshot-store.ts';
 import type {
   StateRpcResult,
   StateRpcErrorCode,
@@ -82,7 +80,7 @@ import {
 } from './config/installation-scope.ts';
 import { promiseBackedStatePort } from './config/local-state-port.ts';
 import { localSlackStateStore } from './slack/local-state-store.ts';
-import { UiSurfaceStoreLogic, type UiSurfaceRpcRequest } from './slack/ui/surface-store.ts';
+import type { UiSurfaceRpcRequest } from './slack/ui/surface-store.ts';
 import {
   getConfigStore,
   getIdentityStore,
@@ -96,7 +94,6 @@ import {
   repairPendingOAuthContinuationResumes,
 } from './connections/oauth-continuation.ts';
 import {
-  ConfigStoreLogic,
   type AgentModelRolePatch,
   type ConfigAgentPatch,
   type OAuthReauthorizationTarget,
@@ -184,11 +181,9 @@ import {
   isGithubPullRequestCreateResponse,
   pullRequestProgressFromGithubResponse,
 } from './sandbox/progress.ts';
-import { SlackStateLogic } from './slack/claim-store.ts';
 import type { SlackCanonicalAdmissionInput } from './slack/claim-store.ts';
 import {
   SlackPresentationStateError,
-  SlackRunPresentationStoreLogic,
 } from './slack/run-presentations.ts';
 import { createLedgerSlackRunHandler } from './slack/ledger-turn-driver.ts';
 import type { SlackPresentationStatePort } from './slack/agent-view-presentation.ts';
@@ -246,18 +241,18 @@ import {
   deliverDueStopNotices,
   MAX_TURN_DRAIN_BATCH,
   oauthResumeTurnJobId,
-  TurnJobStoreLogic,
   type PendingTurnJob,
 } from './slack/turn-jobs.ts';
 import type { TurnSteeringDecision } from './slack/turn-job-types.ts';
 import { DoSqlStateDb } from './state/do-state-db.ts';
+import { buildTagStateStores, type TagStateStores } from './state/tag-state-stores.ts';
+import type { ObjectExportRequest, ObjectHostRequest } from './state/object-host.ts';
+import { stateStoreHostFunctions, type StateStoreHostRpc } from './state/state-store-host.ts';
 import { StateSchemaMarker, stateSchemaFingerprint } from './state/schema-lifecycle.ts';
 import { cloudflareWorkerVersionId } from './config/cloudflare-version.ts';
 import { applicationIdentity, viteServeLane } from './release/identity.ts';
 import { registerCloudflareBindingProvider } from './cloudflare-provider.ts';
-import { MemoryStoreLogic } from './memory/store.ts';
 import { MemoryStateError, type MemoryRpcRequest, type MemoryRpcResponse } from './memory/types.ts';
-import { RoutineStoreLogic } from './routines/store.ts';
 import {
   RoutineStateError,
   type RoutineRpcRequest,
@@ -272,7 +267,6 @@ import {
   gatewayDeliveryFailureReason,
   gatewayDeliveryRetryDelayMs,
   recordGatewayDeliveryDeadLetter,
-  GatewayInboxStoreLogic,
 } from './slack/gateway/inbox.ts';
 import {
   GatewayDeploymentClient,
@@ -291,21 +285,16 @@ import {
   SlackGatewaySession,
   wakeCloudflareGatewaySession,
 } from './slack/gateway/cloudflare-session.ts';
-import { UsageStoreLogic } from './usage/store.ts';
 import { UsageStateError } from './usage/store-error.ts';
 import type { UsageRpcRequest, UsageRpcResponse, UsageStore } from './usage/types.ts';
-import { WorkStoreLogic } from './work/store.ts';
 import { IdentityStateError } from './identity/errors.ts';
-import { IdentityStoreLogic } from './identity/store.ts';
 import {
   bindStoreInstallation,
-  InstallationBindingLogic,
-  storeInstallationIdentity,
   type InstallationIdentity,
 } from './identity/installation-binding.ts';
 import type { IdentityStore } from './identity/types.ts';
 import type { IdentityRpcRequest, IdentityRpcResponse } from './identity/types.ts';
-import { ManagementStoreLogic, type ManagementStore } from './management/store.ts';
+import type { ManagementStore } from './management/store.ts';
 import { createLiveWorkspaceManagementService } from './management/live-service.ts';
 import { createPlatformProductTelemetry } from './telemetry/platform.ts';
 import type { ProductTelemetryCapture } from './telemetry/client.ts';
@@ -798,25 +787,7 @@ const RUNNER_DISPATCH_MAX_PAGES = 16;
  * migration live in wrangler.jsonc (TAG_STATE / migrations v2).
  */
 
-interface TagStateStores {
-  installationBinding: InstallationBindingLogic;
-  identity: IdentityStoreLogic;
-  config: ConfigStoreLogic;
-  snapshots: SnapshotStoreLogic;
-  slack: SlackStateLogic;
-  settings: SettingsStoreLogic;
-  turnJobs: TurnJobStoreLogic;
-  gatewayInbox: GatewayInboxStoreLogic;
-  presentations: SlackRunPresentationStoreLogic;
-  uiSurfaces: UiSurfaceStoreLogic;
-  memory: MemoryStoreLogic;
-  routines: RoutineStoreLogic;
-  usage: UsageStoreLogic;
-  work: WorkStoreLogic;
-  management: ManagementStoreLogic;
-}
-
-export class TagStateStore extends DurableObject implements TagStateRpc {
+export class TagStateStore extends DurableObject implements TagStateRpc, StateStoreHostRpc {
   private stores: TagStateStores | undefined;
   /**
    * Constructor failures are latched instead of thrown: a throwing DO
@@ -839,8 +810,9 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
   /**
    * Stop aborts this store sends for its own alarm's turns, per thread: the
    * alarm starts no turn of a thread while one is out (see StopAbortFence).
+   * Replaced when the store is erased.
    */
-  private readonly stopAborts = new StopAbortFence();
+  private stopAborts = new StopAbortFence();
   private readonly presentationRunnerOf = (runId: string) => this.presentationRunner(runId);
   /** Set while runner-mode alarm work runs: admission hands new turns over at once. */
   private dispatchWake: (() => void) | undefined;
@@ -1087,40 +1059,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
   }
 
   private buildStores(db: DoSqlStateDb): TagStateStores {
-    // Same construction order as the node backend: each logic class creates
-    // its own tables (and the config store runs migrations + seedOnce), so a
-    // fresh DO is fully seeded before it answers its first RPC.
-    const installationBinding = new InstallationBindingLogic(db, this.env as PlatformEnv);
-    const stores = {
-      installationBinding,
-      identity: new IdentityStoreLogic(db, {
-        installation: () => storeInstallationIdentity(installationBinding, this.env as PlatformEnv),
-      }),
-      config: new ConfigStoreLogic(db),
-      snapshots: new SnapshotStoreLogic(db),
-      slack: new SlackStateLogic(db),
-      settings: new SettingsStoreLogic(db),
-      turnJobs: new TurnJobStoreLogic(db),
-      gatewayInbox: new GatewayInboxStoreLogic(db, Date.now, {}, { leaseOwner: this.instanceId }),
-      presentations: new SlackRunPresentationStoreLogic(db),
-      uiSurfaces: new UiSurfaceStoreLogic(db),
-      memory: new MemoryStoreLogic(db),
-      routines: new RoutineStoreLogic(db),
-      usage: new UsageStoreLogic(db),
-      management: new ManagementStoreLogic(db),
-    } as Omit<TagStateStores, 'work'>;
-    const completeStores: TagStateStores = {
-      ...stores,
-      work: new WorkStoreLogic(db, {
-        env: {
-          TAG_RUN_BODY_RETENTION_DAYS:
-            typeof (this.env as PlatformEnv).TAG_RUN_BODY_RETENTION_DAYS === 'string'
-              ? (this.env as PlatformEnv).TAG_RUN_BODY_RETENTION_DAYS as string
-              : undefined,
-        },
-      }),
-    };
-    return completeStores;
+    return buildTagStateStores(db, this.env as PlatformEnv, { gatewayLeaseOwner: this.instanceId });
   }
 
   /**
@@ -1133,6 +1072,52 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
   ): Promise<StateRpcResult<InstallationIdentity>> {
     return this.call((stores) =>
       bindStoreInstallation(stores.installationBinding, this.env as PlatformEnv, identity));
+  }
+
+  // ── host functions (installation tenancy; see state/installation-objects.ts) ──
+  // An operator job's: each refuses on standalone and for any installation
+  // but the one this store's name scopes (state/state-store-host.ts).
+  // Erasure must be the installation's last contact with this store: any
+  // later call, these included, builds an empty, seeded store again.
+
+  async chickpeaHostInventory(request: ObjectHostRequest & { cursor?: string | null; limit?: number }) {
+    return this.host().chickpeaHostInventory(request);
+  }
+
+  async chickpeaHostInventoryBackfill(request: ObjectHostRequest) {
+    return this.host().chickpeaHostInventoryBackfill(request);
+  }
+
+  async chickpeaHostExportPage(request: ObjectExportRequest) {
+    return this.host().chickpeaHostExportPage(request);
+  }
+
+  async chickpeaHostErase(request: ObjectHostRequest) {
+    return this.host().chickpeaHostErase(request);
+  }
+
+  async chickpeaHostCancelPendingWork(request: ObjectHostRequest) {
+    return this.host().chickpeaHostCancelPendingWork(request);
+  }
+
+  private host(): StateStoreHostRpc {
+    return stateStoreHostFunctions({
+      env: this.env as PlatformEnv,
+      storage: this.ctx.storage,
+      stores: () => {
+        this.stores ??= this.tryInit();
+        if (!this.stores) throw new Error(`state store unavailable: init failed (${this.initError ?? 'unknown'})`);
+        return this.stores;
+      },
+      // Nothing of the erased store stays in memory: its stores, the alarm
+      // turns it carried and the stop aborts it fenced. A later call builds
+      // an empty store again.
+      onErased: () => {
+        this.stores = undefined;
+        this.carriedAlarmTurns.clear();
+        this.stopAborts = new StopAbortFence();
+      },
+    });
   }
 
   // ── config: agents ───────────────────────────────────────────────────────
