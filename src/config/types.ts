@@ -150,11 +150,7 @@ export type OpenAiAuthMethod = 'api_key' | 'subscription';
 /** Internal credential-store coordinate for the single customer-owned Slack app. */
 export const WORKSPACE_SLACK_INSTALLATION_ID = 'workspace_slack_installation';
 
-/**
- * The coordinate of an installation's bot on a deployment serving many
- * installations: its bundle holds only the bot token, because the host owns
- * the shared app's client and signing secrets.
- */
+/** Credential-store coordinate of an installation's bot when a host owns the shared app. */
 export const HOSTED_SLACK_INSTALLATION_ID = 'hosted_slack_installation';
 
 export interface AgentChannelReference {

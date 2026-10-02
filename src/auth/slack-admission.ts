@@ -15,11 +15,8 @@ import {
   type SlackCredentialDependencies,
 } from '../slack/installation-credentials.ts';
 import { safeSetupDestination, safeSlackLoginDestination } from './setup-handoff.ts';
-import {
-  createBetterAuth,
-  type BetterAuthAdmissionOperation,
-  type BetterAuthPrivateSeam,
-} from './better-auth.ts';
+import { activeAdmission } from './admission-operation.ts';
+import { createBetterAuth, type BetterAuthPrivateSeam } from './better-auth.ts';
 import type { BetterAuthEnvironment } from './better-auth-environment.ts';
 import {
   SlackOidcError,
@@ -752,23 +749,6 @@ export class SlackAdmissionService {
       resultCode,
     });
   }
-}
-
-/** The admission a session may be issued for: an activated operation, fully reconciled. */
-export function activeAdmission(operation: AuthOperation | undefined): BetterAuthAdmissionOperation | null {
-  if (!operation || operation.status !== 'active' || !operation.chickpeaRole ||
-      !operation.betterAuthUserId || !operation.betterAuthOrganizationId ||
-      !operation.betterAuthMembershipId || !operation.chickpeaMembershipId) return null;
-  return {
-    operationId: operation.id,
-    status: operation.status,
-    chickpeaRole: operation.chickpeaRole,
-    slackTeamId: operation.expectedSlackTeamId,
-    slackUserId: operation.expectedSlackUserId,
-    betterAuthUserId: operation.betterAuthUserId,
-    betterAuthOrganizationId: operation.betterAuthOrganizationId,
-    betterAuthMembershipId: operation.betterAuthMembershipId,
-  };
 }
 
 function requireBrowserBinding(value: string): void {

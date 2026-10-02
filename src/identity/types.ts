@@ -937,6 +937,7 @@ export interface IdentityStore extends HumanIdentityDirectory {
   settleSlackOidcAttempt(input: SettleSlackOidcAttemptInput): Promise<SlackOidcAttempt>;
   createAuthOperation(input: CreateAuthOperationInput): Promise<AuthOperation>;
   reservePendingAuthOperation(input: CreateAuthOperationInput): Promise<{ operation: AuthOperation; created: boolean }>;
+  reserveInstallerOwner(input: CreateAuthOperationInput): Promise<AuthOperation>;
   getAuthOperation(operationId: string): Promise<AuthOperation | undefined>;
   findAuthOperation(kind: AuthOperationKind, capabilityHash: string): Promise<AuthOperation | undefined>;
   listAuthOperations(kind?: AuthOperationKind, organizationId?: string): Promise<AuthOperation[]>;
@@ -1041,6 +1042,7 @@ export type IdentityRpcRequest =
   | { kind: 'settle_slack_oidc_attempt'; input: SettleSlackOidcAttemptInput }
   | { kind: 'create_auth_operation'; input: CreateAuthOperationInput }
   | { kind: 'reserve_pending_auth_operation'; input: CreateAuthOperationInput }
+  | { kind: 'reserve_installer_owner'; input: CreateAuthOperationInput }
   | { kind: 'get_auth_operation'; operationId: string }
   | { kind: 'find_auth_operation'; operationKind: AuthOperationKind; capabilityHash: string }
   | { kind: 'list_auth_operations'; operationKind?: AuthOperationKind; organizationId?: string }

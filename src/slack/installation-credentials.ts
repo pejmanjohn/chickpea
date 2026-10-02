@@ -376,22 +376,12 @@ export async function writeSlackInstallationCredentials(
   return promoted.revision;
 }
 
-/**
- * An installation's bot on a deployment serving many installations: the
- * granted token with the app, team and bot user it was granted for. The app's
- * client and signing secrets stay with the host.
- */
+/** An installation's granted bot token, with the app, team and bot user it was granted for. */
 export async function writeHostedSlackBotCredentials(
   dependencies: SlackCredentialDependencies,
   expectedRevision: string | null,
-  values: {
-    botToken: string;
-    botUserId: string;
-    appId: string;
-    teamId: string;
-    grantedScopes: string[];
-    validatedAt: number;
-  },
+  values: Required<Pick<SlackInstallationCredentialWrite,
+    'botToken' | 'botUserId' | 'appId' | 'teamId' | 'grantedScopes' | 'validatedAt'>>,
 ): Promise<string> {
   const candidate = await stageSlackCredentialBundle(dependencies, {
     identityId: HOSTED_SLACK_INSTALLATION_ID,

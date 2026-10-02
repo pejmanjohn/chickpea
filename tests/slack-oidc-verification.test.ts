@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { createHash, generateKeyPairSync, type KeyObject } from 'node:crypto';
+import { createHash, createSecretKey, generateKeyPairSync, type KeyObject } from 'node:crypto';
 import { test } from 'node:test';
 
 import { createLocalJWKSet, exportJWK, SignJWT, type JWK } from 'jose';
@@ -81,6 +81,9 @@ interface TokenShape {
   issuer?: string;
   audience?: string | string[];
   key?: KeyObject;
+  subject?: string;
+  issuedAt?: number;
+  expiresAt?: number;
 }
 
 async function idToken(shape: TokenShape = {}): Promise<string> {
@@ -94,9 +97,9 @@ async function idToken(shape: TokenShape = {}): Promise<string> {
     .setProtectedHeader({ alg: 'RS256', kid: 'slack-key-1', ...shape.header } as never)
     .setIssuer(shape.issuer ?? 'https://slack.com')
     .setAudience(shape.audience ?? CLIENT_ID)
-    .setSubject(String(shape.claims?.['https://slack.com/user_id'] ?? 'UOWNER'))
-    .setIssuedAt(Math.floor(NOW / 1_000))
-    .setExpirationTime(Math.floor(NOW / 1_000) + 300)
+    .setSubject(shape.subject ?? String(shape.claims?.['https://slack.com/user_id'] ?? 'UOWNER'))
+    .setIssuedAt(shape.issuedAt ?? Math.floor(NOW / 1_000))
+    .setExpirationTime(shape.expiresAt ?? Math.floor(NOW / 1_000) + 300)
     .sign(shape.key ?? privateKey);
 }
 
@@ -147,17 +150,30 @@ test('the ID token must carry the nonce, access-token hash, issuer, audience and
       { issuer: 'https://evil.example' },
       { audience: 'another-client' },
       { header: { jku: 'https://evil.example/keys' } },
+      { header: { x5u: 'https://evil.example/cert' } },
       { header: { kid: undefined } },
+      { header: { alg: 'HS256' }, key: createSecretKey(Buffer.alloc(32, 7)) },
       { key: otherKey },
+      { subject: 'USOMEONE' },
+      { issuedAt: Math.floor(NOW / 1_000) + 600, expiresAt: Math.floor(NOW / 1_000) + 900 },
+      { issuedAt: Math.floor(NOW / 1_000) - 900, expiresAt: Math.floor(NOW / 1_000) - 300 },
     ];
     for (const shape of forged) {
-      const { gateway } = await gatewayFor(port, await idToken(shape));
+      const { gateway, requests } = await gatewayFor(port, await idToken(shape));
       await assert.rejects(
         gateway.exchangeAndVerify({ attempt: attempt({ credentialRevision: revision }), code: 'code', nonce: NONCE }),
         rejectsWith('invalid_token'),
         JSON.stringify(shape),
       );
+      assert.equal(requests.length, 1, 'the token exchange happened, so the token itself was refused');
     }
+    const { gateway: named } = await gatewayFor(port, await idToken());
+    await assert.rejects(
+      named.exchangeAndVerify({
+        attempt: attempt({ credentialRevision: revision, expectedSlackUserId: 'UEXPECTED' }), code: 'code', nonce: NONCE,
+      }),
+      rejectsWith('user_mismatch'),
+    );
     const { gateway } = await gatewayFor(port, await idToken({ claims: { 'https://slack.com/team_id': 'TOTHER' } }), 'TOTHER');
     await assert.rejects(
       gateway.exchangeAndVerify({ attempt: attempt({ credentialRevision: revision }), code: 'code', nonce: NONCE }),
@@ -171,7 +187,11 @@ test('the ID token must carry the nonce, access-token hash, issuer, audience and
 test('a discovery sign-in names no workspace and learns it from the verified token', async () => {
   const { identity, credentials } = store();
   try {
-    const port = hostedSlackOidcCredentials({ app: async () => HOST_APP, installation: credentials });
+    // The host's registry maps a verified team to the store serving it.
+    const port = hostedSlackOidcCredentials({
+      app: async () => HOST_APP,
+      installation: async (teamId) => (teamId === 'TACME' ? credentials : undefined),
+    });
     const { gateway, requests } = await gatewayFor(port, await idToken());
     const url = new URL(gateway.authorizationUrl({
       clientId: CLIENT_ID, redirectUri: REDIRECT_URI, state: 's'.repeat(40), nonce: NONCE,
@@ -211,6 +231,26 @@ test('a discovery sign-in names no workspace and learns it from the verified tok
     await assert.rejects(
       elsewhere.gateway.exchangeAndVerify({ attempt: discovery, code: 'code', nonce: NONCE }),
       rejectsWith('inactive_user'),
+    );
+    // A team the host knows but has not installed may still sign its installer in.
+    const teamBound = attempt({ credentialRevision: HOST_APP.connectionRevision, expectedTeamId: 'TACME' });
+    const beforeInstall = await gatewayFor(hostedSlackOidcCredentials({
+      app: async () => HOST_APP, installation: async () => undefined,
+    }), await idToken());
+    await assert.rejects(
+      beforeInstall.gateway.exchangeAndVerify({ attempt: teamBound, code: 'code', nonce: NONCE }),
+      rejectsWith('stale_revision'),
+    );
+    assert.equal((await beforeInstall.gateway.exchangeAndVerify({
+      attempt: teamBound, code: 'code', nonce: NONCE, eligibility: 'install_grant',
+    })).eligibility, 'install_grant');
+    // A registry lookup that fails after the exchange refuses rather than guessing.
+    const broken = await gatewayFor(hostedSlackOidcCredentials({
+      app: async () => HOST_APP, installation: async () => { throw new Error('registry unavailable'); },
+    }), await idToken());
+    await assert.rejects(
+      broken.gateway.exchangeAndVerify({ attempt: discovery, code: 'code', nonce: NONCE, eligibility: 'install_grant' }),
+      rejectsWith('stale_revision'),
     );
     // A stale app revision is refused before any code is exchanged.
     const stale = await gatewayFor(port, await idToken());
@@ -258,3 +298,22 @@ test('a hosted installation bundle holds only its bot token, and a standalone on
 function json(value: unknown): Response {
   return new Response(JSON.stringify(value), { status: 200, headers: { 'content-type': 'application/json' } });
 }
+
+test("an installation's bot must belong to the signing-in app and confirm an eligible human", async () => {
+  const { identity, credentials } = store();
+  try {
+    await writeHostedSlackBotCredentials(credentials, null, {
+      botToken: 'xoxb-other-app', botUserId: 'UBOT', appId: 'AOTHERAPP', teamId: 'TACME',
+      grantedScopes: [], validatedAt: NOW,
+    });
+    const port = hostedSlackOidcCredentials({ app: async () => HOST_APP, installation: async () => credentials });
+    const discovery = attempt({ credentialRevision: HOST_APP.connectionRevision, expectedTeamId: null });
+    const { gateway, requests } = await gatewayFor(port, await idToken());
+    await assert.rejects(gateway.exchangeAndVerify({ attempt: discovery, code: 'code', nonce: NONCE }),
+      rejectsWith('inactive_user'));
+    assert.equal(requests.some((request) => request.url.endsWith('/users.info')), false,
+      "another app's bot never speaks for this one");
+  } finally {
+    identity.close();
+  }
+});

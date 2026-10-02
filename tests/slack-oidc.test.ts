@@ -100,7 +100,7 @@ test('confidential Slack OIDC validates pinned JWT, userinfo, and active human m
       }) as typeof fetch,
     });
     const proof = await gateway.exchangeAndVerify({
-      attempt: oidcAttempt({
+      attempt: storedAttempt({
         id: 'oidc_attempt', purpose: 'first_owner', operationId: 'operation', invitationId: null,
         setupId: 'setup_default', setupRevision: 9,
         stateHash: 'a'.repeat(64), nonceHash: sha256(nonce), browserHash: 'b'.repeat(64),
@@ -129,7 +129,7 @@ test('confidential Slack OIDC validates pinned JWT, userinfo, and active human m
     userInfoTeam = 'TOTHER';
     await assert.rejects(
       () => gateway.exchangeAndVerify({
-        attempt: oidcAttempt({
+        attempt: storedAttempt({
           id: 'oidc_attempt_2', purpose: 'login', operationId: null, invitationId: null,
           setupId: null, setupRevision: null,
           stateHash: 'c'.repeat(64), nonceHash: sha256(nonce), browserHash: 'd'.repeat(64),
@@ -147,7 +147,7 @@ test('confidential Slack OIDC validates pinned JWT, userinfo, and active human m
     deleted = true;
     await assert.rejects(
       () => gateway.exchangeAndVerify({
-        attempt: oidcAttempt({
+        attempt: storedAttempt({
           id: 'oidc_attempt_3', purpose: 'login', operationId: null, invitationId: null,
           setupId: null, setupRevision: null,
           stateHash: 'e'.repeat(64), nonceHash: sha256(nonce), browserHash: 'f'.repeat(64),
@@ -166,7 +166,8 @@ test('confidential Slack OIDC validates pinned JWT, userinfo, and active human m
   }
 });
 
-function oidcAttempt(attempt: SlackOidcAttempt): SlackOidcAttempt {
+/** A whole stored attempt, as the admission service passes it. */
+function storedAttempt(attempt: SlackOidcAttempt): SlackOidcAttempt {
   return attempt;
 }
 

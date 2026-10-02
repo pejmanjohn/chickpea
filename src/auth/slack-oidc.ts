@@ -60,9 +60,8 @@ export interface SlackOidcProof {
   displayName: string;
   contactEmail?: string;
   /**
-   * Set when no bot of the app could check the person's membership because
-   * the app is not installed in their workspace yet. Only an install grant
-   * naming this same person may admit such a proof; it never yields a session.
+   * No bot of the app could check membership. Only an install grant naming
+   * this person may admit the proof (activateInstallerOwner); never a session.
    */
   eligibility?: 'install_grant';
 }
@@ -81,16 +80,11 @@ export interface SlackOidcAppCredentials {
   connectionRevision: string;
 }
 
-export interface SlackOidcBotCredentials {
-  botToken: string;
-  botUserId: string;
-}
-
 /** Where verification reads the signing-in app and the bot in a workspace. */
 export interface SlackOidcCredentials {
   app(): Promise<SlackOidcAppCredentials>;
   /** The app's bot in `teamId`, current for `attempt`; undefined where it has none. */
-  bot(teamId: string, attempt: SlackOidcAttemptBinding): Promise<SlackOidcBotCredentials | undefined>;
+  bot(teamId: string, attempt: SlackOidcAttemptBinding): Promise<{ botToken: string; botUserId: string } | undefined>;
 }
 
 /** A standalone deployment: one installation's bundle holds the app and its bot. */
@@ -105,42 +99,47 @@ export function standaloneSlackOidcCredentials(credentials: SlackCredentialDepen
         connectionRevision: app.connectionRevision,
       };
     },
-    async bot(teamId, attempt) {
-      const [app, bot] = await Promise.all([
-        resolveSlackControlPlaneAppCredentials(credentials),
-        resolveSlackInstallationCredentials(WORKSPACE_SLACK_INSTALLATION_ID, undefined, credentials),
-      ]);
-      if (app.teamId !== teamId || app.connectionRevision !== attempt.credentialRevision ||
-          bot.connectionRevision !== attempt.credentialRevision || !bot.botToken || !bot.botUserId) {
-        return undefined;
-      }
-      return { botToken: bot.botToken, botUserId: bot.botUserId };
-    },
+    bot: (teamId, attempt) => installedBot(credentials, WORKSPACE_SLACK_INSTALLATION_ID, {
+      teamId, appId: attempt.appId, revision: attempt.credentialRevision,
+    }),
   };
 }
 
 /**
- * A deployment serving many installations: the host owns the app's
- * credentials, and each installation's store holds only its own bot.
+ * A host's app, with each installation's own bot. `installation` resolves
+ * the store serving a verified team from the host's registry; the bot it
+ * holds must be for this app and team.
  */
 export function hostedSlackOidcCredentials(input: {
   app: () => Promise<SlackOidcAppCredentials>;
-  installation: SlackCredentialDependencies;
+  installation: (teamId: string) => Promise<SlackCredentialDependencies | undefined>;
 }): SlackOidcCredentials {
   return {
     app: input.app,
     async bot(teamId, attempt) {
-      const [active, bot] = await Promise.all([
-        input.installation.state.getActiveSlackCredentialRevision(HOSTED_SLACK_INSTALLATION_ID),
-        resolveSlackInstallationCredentials(HOSTED_SLACK_INSTALLATION_ID, undefined, input.installation),
-      ]);
-      if (!active || active.teamId !== teamId || active.appId !== attempt.appId ||
-          bot.connectionRevision !== active.revision || !bot.botToken || !bot.botUserId) {
-        return undefined;
-      }
-      return { botToken: bot.botToken, botUserId: bot.botUserId };
+      const installation = await input.installation(teamId);
+      return installation
+        ? installedBot(installation, HOSTED_SLACK_INSTALLATION_ID, { teamId, appId: attempt.appId })
+        : undefined;
     },
   };
+}
+
+async function installedBot(
+  credentials: SlackCredentialDependencies,
+  identityId: string,
+  expected: { teamId: string; appId: string; revision?: string },
+): Promise<{ botToken: string; botUserId: string } | undefined> {
+  const [active, bot] = await Promise.all([
+    credentials.state.getActiveSlackCredentialRevision(identityId),
+    resolveSlackInstallationCredentials(identityId, undefined, credentials),
+  ]);
+  if (!active || active.teamId !== expected.teamId || active.appId !== expected.appId ||
+      (expected.revision !== undefined && active.revision !== expected.revision) ||
+      bot.connectionRevision !== active.revision || !bot.botToken || !bot.botUserId) {
+    return undefined;
+  }
+  return { botToken: bot.botToken, botUserId: bot.botUserId };
 }
 
 export interface SlackOidcProvider {
@@ -201,8 +200,9 @@ export class SlackOidcGateway implements SlackOidcProvider {
 
   /**
    * `eligibility: 'install_grant'` accepts a person whose workspace has no bot
-   * of the app yet, marking the proof so only that person's install grant can
-   * admit it. Otherwise the bot must confirm an eligible human.
+   * of the app yet and marks the proof; otherwise the bot must confirm an
+   * eligible human. A host decides whether a team is installed from its
+   * registry, never from this marker.
    */
   async exchangeAndVerify(input: {
     attempt: SlackOidcAttemptBinding;
@@ -224,7 +224,7 @@ export class SlackOidcGateway implements SlackOidcProvider {
     if (appCredentials.appId !== input.attempt.appId ||
         appCredentials.clientId !== input.attempt.clientId ||
         appCredentials.connectionRevision !== input.attempt.credentialRevision ||
-        (expectedTeamId && !expectedBot)) {
+        (expectedTeamId && !expectedBot && input.eligibility !== 'install_grant')) {
       throw new SlackOidcError('stale_revision');
     }
 
@@ -278,8 +278,8 @@ export class SlackOidcGateway implements SlackOidcProvider {
       displayName: displayName(userInfo),
       ...(email ? { contactEmail: email } : {}),
     };
-    const botCredentials = expectedBot ?? await this.dependencies.credentials.bot(teamId, input.attempt)
-      .catch(() => { throw new SlackOidcError('stale_revision'); });
+    const botCredentials = expectedBot ?? (expectedTeamId ? undefined : await this.dependencies.credentials
+      .bot(teamId, input.attempt).catch(() => { throw new SlackOidcError('stale_revision'); }));
     if (!botCredentials) {
       if (input.eligibility !== 'install_grant') throw new SlackOidcError('inactive_user');
       return { ...proof, eligibility: 'install_grant' };

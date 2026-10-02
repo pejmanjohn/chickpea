@@ -170,6 +170,7 @@ export class IdentityStoreLogic {
         const result = this.reservePendingAuthOperation(request.input);
         return { kind: 'auth_operation_reservation', ...result };
       }
+      case 'reserve_installer_owner': return { kind: 'auth_operation', operation: this.reserveInstallerOwner(request.input) };
       case 'get_auth_operation': return { kind: 'auth_operation', operation: this.getAuthOperation(request.operationId) ?? null };
       case 'find_auth_operation': return { kind: 'auth_operation', operation: this.findAuthOperation(request.operationKind, request.capabilityHash) ?? null };
       case 'list_auth_operations': return { kind: 'auth_operations', operations: this.listAuthOperations(request.operationKind, request.organizationId) };
@@ -1825,6 +1826,61 @@ export class IdentityStoreLogic {
       return { operation, created: false };
     }
     return { operation: this.createAuthOperation(input), created: true };
+  }
+
+  /**
+   * A host's first-Owner reservation for the person its install grant names,
+   * outside a setup transaction: the operation and the singleton claim in one
+   * transaction. The same capability resumes its reservation while it is
+   * live; once expired, a new capability replaces the same person's stale
+   * reservation, as a first-Owner admission does.
+   */
+  reserveInstallerOwner(input: CreateAuthOperationInput): AuthOperation {
+    return this.db.transaction(() => {
+      if (input.kind !== 'first_owner_claim' || input.chickpeaRole !== 'owner') {
+        throw identityError('identity_invalid', 'An installer reservation claims the first Owner.');
+      }
+      validateOperationInput(input);
+      const claim = this.getOwnerClaim();
+      if (claim?.status === 'active') {
+        throw identityError('owner_already_claimed', 'The first Owner has already been claimed.');
+      }
+      const replay = this.findAuthOperation('first_owner_claim', input.capabilityHash);
+      if (replay) {
+        const live = ['reserved', 'reconciling'].includes(replay.status) && replay.expiresAt > this.now();
+        if (live && claim?.operationId === replay.id) return replay;
+        throw identityError('auth_operation_expired', 'This install attempt expired; start another.');
+      }
+      if (claim) {
+        const prior = this.requiredAuthOperation(claim.operationId);
+        if (claim.slackTeamId !== input.expectedSlackTeamId || claim.slackUserId !== input.expectedSlackUserId ||
+            prior.expiresAt > this.now() || !['reserved', 'reconciling', 'expired'].includes(prior.status)) {
+          throw identityError('owner_claim_conflict', 'The singleton first-Owner claim is already reserved.');
+        }
+        this.db.run(
+          `UPDATE identity_auth_operations SET status = 'expired', updated_at = ?
+           WHERE operation_id = ? AND status IN ('reserved', 'reconciling')`,
+          this.now(), prior.id,
+        );
+      }
+      const operation = this.createAuthOperation(input);
+      if (claim) {
+        const changed = this.db.run(
+          `UPDATE identity_owner_claims SET operation_id = ?, updated_at = ?
+           WHERE claim_key = 'first_owner' AND status = 'reserved' AND operation_id = ?`,
+          operation.id, this.now(), claim.operationId,
+        ).changes;
+        if (changed !== 1) throw identityError('owner_claim_conflict', 'First-Owner claim changed concurrently.');
+      } else {
+        this.createOwnerClaim({
+          operationId: operation.id,
+          slackTeamId: input.expectedSlackTeamId,
+          slackUserId: input.expectedSlackUserId,
+          organizationId: input.organizationId ?? null,
+        });
+      }
+      return operation;
+    });
   }
 
   getAuthOperation(operationId: string): AuthOperation | undefined {
