@@ -3250,3 +3250,60 @@ test('a stopped run marks its unfinished plan rows skipped, never as an error', 
     assert.deepEqual(stored.plan?.tasks.map((task) => task.status), ['complete', 'complete', 'complete']);
   } finally { h.db.close(); }
 });
+
+test('a refused run ends its open stream as shown, adds no text, and records it only once Slack accepts the stop', async () => {
+  const h = harness({ schemaVersion: 3 });
+  try {
+    openStream(h);
+    assert.equal(await h.presentation.sealStreamWithoutReply(), true);
+    const stops = h.calls.filter((call) => call.method === 'chat.stopStream');
+    assert.deepEqual(stops.map((call) => call.input), [{ channel: ROOT.channelId, ts: '1785700100.000201' }]);
+    assert.equal(h.store.get(h.runId)!.stream.state, 'artifact_delivered', 'ended, not finalizing awaiting a repair');
+    assert.equal(await h.presentation.sealStreamWithoutReply(), false, 'an ended stream is not stopped again');
+  } finally {
+    h.db.close();
+  }
+
+  // A stop whose effect is unknown is not recorded: the row stays streaming
+  // (Slack seals an idle stream itself), never finalizing awaiting a repair.
+  const unknown = harness({ schemaVersion: 3, stopStreamError: new SlackTransportError('chat.stopStream', 'internal_error') });
+  try {
+    openStream(unknown);
+    const before = unknown.store.get(unknown.runId)!;
+    await assert.rejects(unknown.presentation.sealStreamWithoutReply());
+    const row = unknown.store.get(unknown.runId)!;
+    assert.equal(row.stream.state, 'streaming');
+    assert.equal(row.repairRequired, before.repairRequired, 'no repair is claimed for it');
+    assert.equal(row.projectionVersion, before.projectionVersion, 'nothing was recorded');
+  } finally {
+    unknown.db.close();
+  }
+
+  // A stream Slack already sealed is recorded as ended.
+  const halted = harness({ schemaVersion: 3, stopStreamError: slackPlatformError('message_not_in_streaming_state') });
+  try {
+    openStream(halted);
+    assert.equal(await halted.presentation.sealStreamWithoutReply(), true);
+    assert.equal(halted.store.get(halted.runId)!.stream.state, 'artifact_delivered');
+  } finally {
+    halted.db.close();
+  }
+});
+
+test('a refused run closes a V2 native task card as failed while ending its stream', async () => {
+  const h = harness({ schemaVersion: 2, native: true, tasks: ['Read the thread', 'Draft a reply'] });
+  try {
+    openStream(h);
+    assert.equal(await h.presentation.sealStreamWithoutReply(), true);
+    const stop = h.calls.find((call) => call.method === 'chat.stopStream')!;
+    const chunks = stop.input.chunks as Array<{ type: string; status?: string }>;
+    assert.ok(chunks.length > 0);
+    assert.ok(chunks.every((chunk) => chunk.type === 'task_update' && chunk.status === 'error'),
+      'task updates only: no text is appended');
+    const row = h.store.get(h.runId)!;
+    assert.ok(row.plan?.tasks.every((task) => task.status === 'error'));
+    assert.equal(row.stream.state, 'artifact_delivered');
+  } finally {
+    h.db.close();
+  }
+});

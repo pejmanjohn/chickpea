@@ -1664,34 +1664,44 @@ export class SlackAgentViewPresentation {
   }
 
   /**
-   * End an open stream exactly as Slack shows it, adding nothing: for a run
-   * that posts no reply (its installation's admission refused it). The stop
-   * carries no chunks, as the recovery stop does, so the streamed prefix
-   * stays whole and is no longer streaming. A stream Slack already sealed
-   * is recorded as ended.
+   * End an open stream exactly as Slack shows it, adding no text: for a run
+   * that posts no reply (its installation's admission refused it). Native
+   * tasks close as failed, as any failed run's do. The stop comes first and
+   * is recorded only once Slack accepts it (or reports the stream already
+   * sealed): a stop that adds no text cannot repeat anything, and one whose
+   * effect is unknown leaves the row streaming instead of claiming a repair
+   * that nothing performs. Slack seals an idle stream on its own. Returns
+   * whether there was an open stream to end.
    */
-  async sealStreamWithoutReply(): Promise<void> {
+  async sealStreamWithoutReply(): Promise<boolean> {
     let presentation = await this.requirePresentation();
-    if (presentation.stream.state !== 'streaming' || !presentation.stream.messageTs ||
-        presentation.stream.pendingAppend) return;
+    const messageTs = presentation.stream.messageTs;
+    if (presentation.stream.state !== 'streaming' || !messageTs || presentation.stream.pendingAppend) return false;
+    const nativeTasks = presentationUsesNativeTasks(presentation);
+    const chunks = nativeTasks ? terminalTaskChunks(presentation, 'error') : [];
+    try {
+      await this.options.client.chat.stopStream({
+        channel: presentation.root.channelId,
+        ts: messageTs,
+        ...(chunks.length > 0 ? { chunks } : {}),
+      });
+    } catch (error) {
+      if (!streamNoLongerOpen(error)) throw error;
+    }
     presentation = await this.transition(presentation, {
       kind: 'close_stream',
       outcome: presentation.stream.acknowledgedByteLength > 0 ? 'progressive' : 'terminal_only',
       terminalSuffixBytes: 0,
     });
-    presentation = await this.transition(presentation, { kind: 'mark_finalizing' });
-    try {
-      await this.options.client.chat.stopStream({
-        channel: presentation.root.channelId,
-        ts: presentation.stream.messageTs!,
-      });
-    } catch (error) {
-      if (!streamNoLongerOpen(error)) throw error;
+    if (presentation.schemaVersion !== 3 && presentation.plan && nativeTasks) {
+      presentation = await this.transition(presentation, { kind: 'set_task_status', status: 'error' });
     }
+    presentation = await this.transition(presentation, { kind: 'mark_finalizing' });
     await this.transition(presentation, {
       kind: 'mark_artifact_delivered',
       outcome: presentation.stream.presentationOutcome ?? 'terminal_only',
     });
+    return true;
   }
 
   async markCanonicalFinalized(): Promise<void> {
