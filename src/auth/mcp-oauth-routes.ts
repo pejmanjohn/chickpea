@@ -357,8 +357,7 @@ function authenticatedRuntimeHandler(input: {
   hostedLogin: HostedLoginFence | undefined;
   createServer: McpServerFactory;
 }): McpRequestHandler {
-  // Built on first use, so a request refused before its token is checked starts nothing.
-  let auth: ReturnType<typeof createBetterAuth> | undefined;
+  const auth = createBetterAuth(input.environment);
   const directory = new BetterAuthDirectory({
     backend: input.environment.backend,
     access: input.identity,
@@ -369,7 +368,6 @@ function authenticatedRuntimeHandler(input: {
   return createMcpAuthenticatedRequestHandler({
     baseURL: input.environment.baseURL,
     getJwks: async () => {
-      auth ??= createBetterAuth(input.environment);
       const api = auth.api as unknown as { getJwks(): Promise<{ keys?: JWK[] }> };
       const result = await api.getJwks();
       return { keys: Array.isArray(result.keys) ? result.keys : [] };
