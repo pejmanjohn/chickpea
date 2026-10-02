@@ -28,6 +28,7 @@ import {
 } from './model-access.ts';
 import {
   ModelCredentialRevisionError,
+  ModelCredentialUnavailableError,
   customCredentialRefId,
   environmentCredentialRefId,
   environmentCredentialVersion,
@@ -116,11 +117,18 @@ export function createInstallationModelAccessResolver(options: {
         if (!isProviderKeyId(grant.providerId)) {
           throw new ModelCredentialRevisionError(grant.credentialRefId, grant.credentialVersion);
         }
-        const saved = await readHostedModelCredential(grant.providerId, {
-          env,
-          settings: settingsFor(env),
-          ...(options.keyring ? { keyring: options.keyring(env) } : {}),
-        }, { credentialRefId: grant.credentialRefId, version: grant.credentialVersion });
+        let saved: Awaited<ReturnType<typeof readHostedModelCredential>>;
+        try {
+          saved = await readHostedModelCredential(grant.providerId, {
+            env,
+            settings: settingsFor(env),
+            ...(options.keyring ? { keyring: options.keyring(env) } : {}),
+          }, { credentialRefId: grant.credentialRefId, version: grant.credentialVersion });
+        } catch (error) {
+          // A key that will not decrypt asks for the same repair as a missing one.
+          if (error instanceof ModelCredentialUnavailableError) throw providerSetupRequired(grant.providerId);
+          throw error;
+        }
         if (!saved) throw new ModelCredentialRevisionError(grant.credentialRefId, grant.credentialVersion);
         return Object.freeze({ apiKey: saved.apiKey });
       }

@@ -447,7 +447,9 @@ export async function clearSlackInstallationCredentials(
 /**
  * Advance the epoch first, then rewrap every live revision. A crash is
  * resumable because old/new keys coexist and old-key writes are already
- * fenced. The caller may retire the prior slot only after the zero count.
+ * fenced. The caller may retire the prior slot only after the zero count,
+ * and only once the settings store's encrypted revisions, which this neither
+ * rewraps nor counts, are under the current key as well.
  */
 export async function rotateSlackCredentialEncryption(
   dependencies: SlackCredentialDependencies,

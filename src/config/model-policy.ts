@@ -397,6 +397,5 @@ async function defaultProviderCredentialCheck(
   settings?: SettingsStore,
 ): Promise<boolean> {
   if (!isProviderKeyId(providerId)) return false;
-  // Whether a key is there, from where it comes; nothing is decrypted to learn it.
   return (await describeProviderKeySources(env, settings))[providerId] !== 'missing';
 }

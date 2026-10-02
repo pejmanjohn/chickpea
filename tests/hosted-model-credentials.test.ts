@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, type TestContext } from 'node:test';
@@ -31,9 +31,11 @@ import {
   ModelCredentialConflictError,
   ModelCredentialRevisionError,
   ModelCredentialUnavailableError,
+  installationModelCredentialVersion,
   migratePlaintextModelCredentials,
   readHostedModelCredential,
   resolveModelCredentialAttribution,
+  rewrapHostedModelCredentials,
   rotateInstallationModelCredential,
   storedCredentialMetadata,
   type ModelCredentialAction,
@@ -51,6 +53,7 @@ import { SqliteSettingsStore, type PublishModelCredentialInput } from '../src/co
 import type { PlatformEnv } from '../src/config/state-backend.ts';
 import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
 import { SqliteUsageStore } from '../src/usage/store.ts';
+import { useDeploymentKeyring } from './helpers/deployment-keyring.ts';
 import { withEnv } from './helpers/env.ts';
 
 const HOSTED = { CHICKPEA_TENANCY: 'installation' } as const;
@@ -74,18 +77,19 @@ function hostedInstallations(t: TestContext) {
   const envB = scopeInstallationEnv(HOSTED as Record<string, unknown>, { installationId: 'inst_b' });
   const settings = new Map([['inst_a', new SqliteSettingsStore(':memory:')], ['inst_b', new SqliteSettingsStore(':memory:')]]);
   const usage = new SqliteUsageStore(':memory:');
-  const keyring = generateCredentialKeyring('key_deployment');
+  const keyring = useDeploymentKeyring(t);
   t.after(() => {
     for (const store of settings.values()) store.close();
     usage.close();
     resetModelAccessForTests();
   });
   const settingsOf = (env: PlatformEnv | undefined) => settings.get(installationScopeOf(env)?.installationId ?? '')!;
-  configureModelAccessResolver(createInstallationModelAccessResolver({ settings: settingsOf, keyring: () => keyring }));
+  // Every reader and writer loads the deployment keyring, as in production.
+  configureModelAccessResolver(createInstallationModelAccessResolver({ settings: settingsOf }));
   const rotate = (env: PlatformEnv, action: ModelCredentialAction, extra: { expectedVersion?: number } = {}) =>
-    rotateInstallationModelCredential('anthropic', action, { env, settings: settingsOf(env), usage, keyring, ...extra });
+    rotateInstallationModelCredential('anthropic', action, { env, settings: settingsOf(env), usage, ...extra });
   const read = (env: PlatformEnv, expected?: { credentialRefId: string; version: number }) =>
-    readHostedModelCredential('anthropic', { env, settings: settingsOf(env), keyring }, expected);
+    readHostedModelCredential('anthropic', { env, settings: settingsOf(env) }, expected);
   return { envA, envB, settingsOf, usage, keyring, rotate, read };
 }
 
@@ -288,7 +292,7 @@ test('deletion fails the next attempt closed while the running attempt keeps its
 
 test('an envelope opens only in its own installation and with the deployment keyring', async (t) => {
   await withEnv(NO_DEPLOYMENT_KEYS, async () => {
-    const { envA, envB, settingsOf, rotate, read } = hostedInstallations(t);
+    const { envA, envB, settingsOf, keyring, rotate, read } = hostedInstallations(t);
     const saved = await rotate(envA, { kind: 'save', apiKey: KEY_1 });
     // Copy A's whole credential (metadata and envelope) into B's store.
     const row = (await settingsOf(envA).getEncryptedCredentialRevision('model_provider.anthropic'))!;
@@ -297,15 +301,83 @@ test('an envelope opens only in its own installation and with the deployment key
     }
     await settingsOf(envB).replaceEncryptedCredentialRevision({ key: row.key, expectedRevision: null, revision: row.revision, contextId: row.contextId, envelope: row.envelope });
     const grantB = (await installationModelAccessGrant('anthropic', envB, 'run', settingsOf(envB)))!;
+    // It will not decrypt for B; a turn gets the repair a missing key gets.
     await assert.rejects(withModelCall(grantB, envB, KEY_1), (error: unknown) =>
+      error instanceof RuntimeModelReadinessError && error.status === 'provider_setup_required' &&
+      !error.message.includes(KEY_1));
+    await assert.rejects(resolveProviderApiKey('anthropic', envB, settingsOf(envB)), (error: unknown) =>
       error instanceof ModelCredentialUnavailableError && !error.message.includes(KEY_1));
-    assert.deepEqual(await resolveProviderApiKey('anthropic', envB, settingsOf(envB)), { apiKey: undefined, source: 'missing' });
 
+    // Other material under the same key ID fails to decrypt; a keyring without that key ID reads nothing.
     await assert.rejects(
-      readHostedModelCredential('anthropic', { env: envA, settings: settingsOf(envA), keyring: generateCredentialKeyring('key_deployment') }),
+      readHostedModelCredential('anthropic', { env: envA, settings: settingsOf(envA), keyring: generateCredentialKeyring(keyring.currentKeyId) }),
       ModelCredentialUnavailableError,
     );
+    assert.equal(await readHostedModelCredential('anthropic', { env: envA, settings: settingsOf(envA), keyring: generateCredentialKeyring('key_other') }), undefined);
     assert.equal((await read(envA))?.apiKey, KEY_1);
+  });
+});
+
+test('a key whose keyring slot was retired reads as missing everywhere, and a rewrap first keeps it', async (t) => {
+  await withEnv(NO_DEPLOYMENT_KEYS, async () => {
+    const { envA, envB, settingsOf, keyring, rotate } = hostedInstallations(t);
+    const savedA = await rotate(envA, { kind: 'save', apiKey: KEY_1 });
+    await rotate(envB, { kind: 'save', apiKey: KEY_2 });
+    const frozenA = (await installationModelAccessGrant('anthropic', envA, 'run_frozen', settingsOf(envA)))!;
+
+    // The deployment keyring gains a new current key; A is rewrapped before the old slot goes, B is not.
+    const next = generateCredentialKeyring('key_next');
+    const rotated = { currentKeyId: next.currentKeyId, keys: { ...keyring.keys, ...next.keys } };
+    writeFileSync(process.env.CHICKPEA_CREDENTIAL_KEYRING_PATH!, `${JSON.stringify({ version: 1, ...rotated })}\n`, { mode: 0o600 });
+    assert.deepEqual(await rewrapHostedModelCredentials({ env: envA, settings: settingsOf(envA), keyring: rotated }),
+      { rewrapped: ['anthropic'], remaining: [] });
+    assert.deepEqual(await rewrapHostedModelCredentials({ env: envA, settings: settingsOf(envA), keyring: rotated }),
+      { rewrapped: [], remaining: [] }, 'nothing left under the old key');
+    assert.equal((await settingsOf(envA).getEncryptedCredentialRevision('model_provider.anthropic'))?.envelope.keyId, 'key_next');
+    assert.equal((await storedCredentialMetadata('anthropic', settingsOf(envA)))?.version, savedA.version, 'the version stays');
+
+    // Retire the old slot.
+    const retired = { currentKeyId: next.currentKeyId, keys: next.keys };
+    writeFileSync(process.env.CHICKPEA_CREDENTIAL_KEYRING_PATH!, `${JSON.stringify({ version: 1, ...retired })}\n`, { mode: 0o600 });
+
+    // A still works, even for the run frozen before the rewrap.
+    await withModelCall(frozenA, envA, KEY_1);
+    assert.equal((await describeProviderKeySources(envA, settingsOf(envA))).anthropic, 'stored');
+
+    // B's key is unreadable now, and every reader says so the same way.
+    assert.equal((await describeProviderKeySources(envB, settingsOf(envB))).anthropic, 'missing');
+    assert.deepEqual(await resolveProviderApiKey('anthropic', envB, settingsOf(envB)), { apiKey: undefined, source: 'missing' });
+    assert.equal(await installationModelAccessGrant('anthropic', envB, 'run', settingsOf(envB)), undefined);
+    await assert.rejects(
+      withStatelessModelAccess('anthropic/claude-haiku-4-5', { env: envB, settings: settingsOf(envB), runId: 'classifier' }, async () => undefined),
+      (error: unknown) => error instanceof RuntimeModelReadinessError && error.status === 'provider_setup_required',
+    );
+    assert.deepEqual(await rewrapHostedModelCredentials({ env: envB, settings: settingsOf(envB), keyring: retired }),
+      { rewrapped: [], remaining: ['anthropic'] }, 'a key under a lost key ID cannot be rewrapped');
+    // Saving the key again repairs it.
+    await rotate(envB, { kind: 'save', apiKey: KEY_2 });
+    assert.equal((await resolveProviderApiKey('anthropic', envB, settingsOf(envB))).apiKey, KEY_2);
+  });
+});
+
+test('damaged metadata reads at the version the fence sees, and the next save repairs it', async (t) => {
+  await withEnv(NO_DEPLOYMENT_KEYS, async () => {
+    const { envA, settingsOf, usage, rotate } = hostedInstallations(t);
+    await settingsOf(envA).applySettingsPatch({
+      set: [
+        { key: 'provider.anthropic.credentialVersion', value: '3' },
+        { key: 'provider.anthropic.credentialActive', value: 'true' },
+      ],
+    });
+    assert.equal(await installationModelCredentialVersion('anthropic', envA, settingsOf(envA)), 3,
+      'management and setup fence on the same version');
+    assert.equal((await describeProviderKeySources(envA, settingsOf(envA))).anthropic, 'missing');
+    const repaired = await rotateInstallationModelCredential('anthropic', { kind: 'save', apiKey: KEY_1 },
+      { env: envA, settings: settingsOf(envA), usage, expectedVersion: 3 });
+    assert.equal(repaired.version, 4);
+    assert.match(repaired.credentialRefId, /^cred_anthropic_/);
+    assert.equal((await resolveProviderApiKey('anthropic', envA, settingsOf(envA))).apiKey, KEY_1);
+    assert.equal((await rotate(envA, { kind: 'save', apiKey: KEY_2 })).version, 5);
   });
 });
 

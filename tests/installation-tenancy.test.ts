@@ -40,6 +40,7 @@ import {
   resolveProviderApiKey,
   saveProviderApiKey,
 } from '../src/config/provider-keys.ts';
+import { ModelCredentialUnavailableError } from '../src/config/model-credential-refs.ts';
 import { forgetRegisteredProvider, knownProviderIds } from '../src/config/providers.ts';
 import { resolveRuntimeModel } from '../src/config/runtime-model.ts';
 import { SettingsStoreLogic, SqliteSettingsStore } from '../src/config/settings-store.ts';
@@ -467,7 +468,7 @@ test('each installation saves and reads its own model keys', async (t) => {
     assert.equal((await resolveProviderApiKey('anthropic', envA, settingsA)).apiKey, 'sk-tenant-a');
     assert.equal((await resolveProviderApiKey('anthropic', envB, settingsB)).apiKey, 'sk-tenant-b');
     // Another installation's store is no way around that: its key never opens under this installation.
-    assert.equal((await resolveProviderApiKey('anthropic', envA, settingsB)).apiKey, undefined);
+    await assert.rejects(resolveProviderApiKey('anthropic', envA, settingsB), ModelCredentialUnavailableError);
     assert.equal(knownProviderIds({}).has('anthropic'), false, 'no save bound the shared provider');
 
     const deleted = await deleteProviderApiKey('anthropic', envA, settingsA, usageA);

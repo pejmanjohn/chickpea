@@ -18,7 +18,7 @@ import {
   describeProviderKeySources,
 } from '../config/provider-keys.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
-import { storedCredentialMetadata } from '../config/model-credential-refs.ts';
+import { installationModelCredentialVersion } from '../config/model-credential-refs.ts';
 import { getProviderFavorites } from '../config/provider-models.ts';
 import { clearRepointedMcpCredentials } from '../config/mcp-connection-lifecycle.ts';
 import { activeModelCatalogSnapshot } from '../model-catalog/index.ts';
@@ -129,7 +129,7 @@ export function createLiveWorkspaceManagementService(
     providerCredentialSource: async (providerId) =>
       (await describeProviderKeySources(env, settings))[providerId],
     providerCredentialRevision: async (providerId) =>
-      (await storedCredentialMetadata(providerId, settings))?.version ?? 0,
+      installationModelCredentialVersion(providerId, env, settings),
     removeProviderCredential: async (providerId) =>
       (await deleteProviderApiKey(
         providerId,

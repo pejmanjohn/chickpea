@@ -309,7 +309,6 @@ import {
   isProviderKeyId,
   listInstallationModelProviders,
   PROVIDER_KEY_IDS,
-  resolveProviderApiKey,
   saveProviderApiKey,
   type ProviderKeySource,
 } from '../config/provider-keys.ts';
@@ -7086,16 +7085,15 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
 
     const platformEnv = c.env as PlatformEnv | undefined;
     const settingsStore = settings(c);
-    // Where the current key comes from; nothing is decrypted to learn it.
-    const current = { source: (await describeProviderKeySources(platformEnv, settingsStore))[id] };
-    if (current.source === 'env') {
+    const source = (await describeProviderKeySources(platformEnv, settingsStore))[id];
+    if (source === 'env') {
       return c.json({ error: 'provider_key_read_only', provider: id }, 409);
     }
 
     try {
       const models = await validateProviderApiKey(id, apiKey, { env: platformEnv });
       await saveProviderApiKey(id, apiKey, platformEnv, settingsStore, usage(c));
-      if (id === 'openai' && current.source === 'missing') {
+      if (id === 'openai' && source === 'missing') {
         await initializeAuthenticatedWorkspaceImageDefault(c, OPENAI_API_IMAGE_DEFAULT_MODEL_ID);
       }
       primeProviderModelCache(id, models, platformEnv);
@@ -12241,8 +12239,8 @@ async function codingModelChoiceError(input: {
   // so Admin never calls ready what a turn would silently replace.
   if (isProviderKeyId(providerId) &&
       !(providerId === 'openai' && openAiAuthMethod === 'subscription')) {
-    const key = await resolveProviderApiKey(providerId, input.platformEnv, input.settingsStore);
-    return key.apiKey ? undefined : notReady;
+    const source = (await describeProviderKeySources(input.platformEnv, input.settingsStore))[providerId];
+    return source === 'missing' ? notReady : undefined;
   }
   return chatModelProviderReady(providerId, {
     runtimeProviders: input.runtimeProviders,

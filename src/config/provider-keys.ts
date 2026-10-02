@@ -1,7 +1,7 @@
 import { installationCacheKey } from './installation-scope.ts';
 import { deploymentServesManyInstallations } from './model-access.ts';
 import {
-  ModelCredentialUnavailableError,
+  deploymentModelKeyring,
   hostedModelCredentialSaved,
   readHostedModelCredential,
   rotateInstallationModelCredential,
@@ -66,7 +66,8 @@ export function isProviderKeyId(id: string): id is ProviderKeyId {
  * An installation's key for a provider. Standalone keeps its order: the
  * deployment environment's key, then the key saved in Admin. An installation
  * of a deployment serving many has only the key it saved, decrypted here for
- * this call and never cached; one that cannot be decrypted needs setup again.
+ * this call and never cached; one under a key ID the deployment keyring no
+ * longer has is missing, as every readiness check sees it.
  */
 export async function resolveProviderApiKey(
   id: ProviderKeyId,
@@ -74,14 +75,8 @@ export async function resolveProviderApiKey(
   store?: SettingsStore,
 ): Promise<ResolvedProviderApiKey> {
   if (deploymentServesManyInstallations(env)) {
-    try {
-      const saved = await readHostedModelCredential(id, { env, settings: store ?? getSettingsStore(env) });
-      return saved ? { apiKey: saved.apiKey, source: 'stored' } : { apiKey: undefined, source: 'missing' };
-    } catch (error) {
-      if (!(error instanceof ModelCredentialUnavailableError)) throw error;
-      console.warn('[providers] a saved model credential could not be decrypted', { provider: id });
-      return { apiKey: undefined, source: 'missing' };
-    }
+    const saved = await readHostedModelCredential(id, { env, settings: store ?? getSettingsStore(env) });
+    return saved ? { apiKey: saved.apiKey, source: 'stored' } : { apiKey: undefined, source: 'missing' };
   }
   const fromEnv = deploymentApiKey(id, env);
   if (fromEnv) {
@@ -97,9 +92,11 @@ export async function describeProviderKeySources(
   store?: SettingsStore,
 ): Promise<Record<ProviderKeyId, ProviderKeySource>> {
   if (deploymentServesManyInstallations(env)) {
-    // Which keys are saved, from their metadata; nothing is decrypted.
+    // Which keys are saved and readable, from their metadata and the
+    // deployment keyring's key IDs; nothing is decrypted to learn it.
     const settings = store ?? getSettingsStore(env);
-    const saved = await Promise.all(PROVIDER_KEY_IDS.map((id) => hostedModelCredentialSaved(id, settings)));
+    const keyring = deploymentModelKeyring(env);
+    const saved = await Promise.all(PROVIDER_KEY_IDS.map((id) => hostedModelCredentialSaved(id, settings, keyring)));
     return Object.fromEntries(
       PROVIDER_KEY_IDS.map((id, index) => [id, saved[index] ? 'stored' : 'missing']),
     ) as Record<ProviderKeyId, ProviderKeySource>;

@@ -1,6 +1,6 @@
-import { resolveInstallationModelAccess } from '../config/installation-model-access.ts';
+import { resolveInstallationModelAccess, RuntimeModelReadinessError } from '../config/installation-model-access.ts';
 import { ModelAccessError } from '../config/model-access.ts';
-import { ModelCredentialRevisionError, ModelCredentialUnavailableError } from '../config/model-credential-refs.ts';
+import { ModelCredentialRevisionError } from '../config/model-credential-refs.ts';
 import { describeProviderKeySources } from '../config/provider-keys.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
@@ -95,7 +95,7 @@ export async function resolveImageProvider(
   } catch (err) {
     if (err instanceof ModelAccessError) return { ok: false, reason: 'misconfigured', detail: err.code };
     if (err instanceof ModelCredentialRevisionError) return { ok: false, reason: 'misconfigured', detail: 'credential_changed' };
-    if (err instanceof ModelCredentialUnavailableError) return { ok: false, reason: 'misconfigured', detail: 'credential_unavailable' };
+    if (err instanceof RuntimeModelReadinessError) return { ok: false, reason: 'misconfigured', detail: 'missing_api_key' };
     throw err;
   }
   if (!apiKey) {

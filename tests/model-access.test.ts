@@ -64,7 +64,7 @@ import { getRoutineStore, type PlatformEnv } from '../src/config/state-backend.t
 import type { ResolvedAssignment } from '../src/config/types.ts';
 import { createWorkModelInvocationInterceptor } from '../src/work/model-invocation.ts';
 import { SqliteUsageStore } from '../src/usage/store.ts';
-import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
+import { useDeploymentKeyring } from './helpers/deployment-keyring.ts';
 import { withEnv } from './helpers/env.ts';
 
 const HOSTED = { CHICKPEA_TENANCY: 'installation' } as const;
@@ -152,7 +152,7 @@ async function twoInstallations(t: TestContext) {
     resetModelAccessForTests();
   });
   const settingsOf = (env: PlatformEnv | undefined) => settings.get(installationScopeOf(env)?.installationId ?? '')!;
-  const keyring = generateCredentialKeyring('key_model_access');
+  const keyring = useDeploymentKeyring(t);
   configureModelAccessResolver(createInstallationModelAccessResolver({ settings: settingsOf, keyring: () => keyring }));
   const rotate = (env: PlatformEnv, provider: ProviderKeyId, action: ModelCredentialAction) =>
     rotateInstallationModelCredential(provider, action, { env, settings: settingsOf(env), usage, keyring });

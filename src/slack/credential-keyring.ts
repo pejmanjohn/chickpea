@@ -111,7 +111,13 @@ export function stageNodeCredentialKeyRotation(
 
 /**
  * Remove a prior Node key after `rotateSlackCredentialEncryption` reports a
- * fenced zero count. The current key can never be retired by this operation.
+ * fenced zero count. That count covers only the Slack credential revisions;
+ * the settings store's encrypted revisions (model provider keys, the
+ * Composio project key, ChatGPT plan sessions, website logins) are neither
+ * rewrapped nor counted, and must be re-encrypted under the current key
+ * first (for model provider keys, `rewrapHostedModelCredentials` per
+ * installation) or they become unreadable. The current key can never be
+ * retired by this operation.
  */
 export function retireNodeCredentialKey(
   keyId: string,
