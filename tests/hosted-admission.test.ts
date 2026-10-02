@@ -12,7 +12,7 @@ import {
   type Model,
   type StreamOptions,
 } from '@earendil-works/pi-ai';
-import type { FlueExecutionContext } from '@flue/runtime';
+import { AgentRunError, type FlueExecutionContext } from '@flue/runtime';
 import type { WebClient } from '@slack/web-api';
 
 import {
@@ -406,7 +406,12 @@ async function turnState(t: TestContext): Promise<void> {
 }
 
 /** A durable presentation for the turn's Run, and a Slack that records every write. */
-async function presentedTurn(t: TestContext, turn: NormalizedSlackTurn) {
+async function presentedTurn(
+  t: TestContext,
+  turn: NormalizedSlackTurn,
+  // The attempt failed: the model-access interceptor refused it, or a step failed.
+  failure: () => unknown = () => new AgentPromptFailure('provider'),
+) {
   const work = new SqliteWorkStore(':memory:');
   const admitted = await work.admitShadowRun(prepareSlackShadowAdmission({
     turn, assignment: TURN_ASSIGNMENT, sourceVisibility: 'private', admittedAt: Date.now(),
@@ -432,9 +437,11 @@ async function presentedTurn(t: TestContext, turn: NormalizedSlackTurn) {
     },
   });
   const posted: string[] = [];
+  const calls: Array<{ method: string; input: Record<string, unknown> }> = [];
   const statuses: string[] = [];
   const record = (method: string) => async (input: Record<string, unknown>) => {
     posted.push(method);
+    calls.push({ method, input });
     return { ok: true, ts: `${turn.messageTs.split('.')[0]}.000600`, channel: turn.channelId, input };
   };
   const client = {
@@ -476,11 +483,29 @@ async function presentedTurn(t: TestContext, turn: NormalizedSlackTurn) {
   const run = (env: PlatformEnv | undefined) => runTurn(turn, TURN_ASSIGNMENT, env, {
     client, runId, turnId: `turn_${runId}`, presentationState: state, statusRegistry: new SlackStatusRegistry(),
     workStore: work, usageRecordingEnabled: false, runtimePlanDecision: frozen(env),
-    // The attempt failed: the model-access interceptor refused it, or a step failed.
-    agentPrompt: async () => { throw new AgentPromptFailure('provider'); },
+    agentPrompt: async () => { throw failure(); },
     onDelivered: (outcome) => { outcomes.push(outcome); },
   });
-  return { store, runId, posted, statuses, outcomes, run };
+  /** The start of an answer already streamed on this Run's presentation, as a running turn has. */
+  const streamPartialAnswer = (): string => {
+    const apply = (mutation: Parameters<typeof store.transition>[0]['mutation']) => {
+      const current = store.get(runId)!;
+      assert.equal(store.transition({
+        runId: current.runId, workBindingGeneration: current.workBindingGeneration,
+        runFencingToken: current.runFencingToken, expectedProjectionVersion: current.projectionVersion,
+        expectedStreamState: current.stream.state, mutation,
+      }).outcome, 'applied');
+    };
+    const streamTs = `${Math.floor(Date.now() / 1000)}.000400`;
+    apply({ kind: 'freeze_progressive_eligibility', eligibility: { allowed: true, reason: 'safe_early_release' } });
+    apply({ kind: 'stream_start_intent' });
+    apply({ kind: 'stream_started', messageTs: streamTs,
+      flue: { instanceId: 'instance_refused', submissionId: 'submission_refused', messageId: 'message_refused' } });
+    apply({ kind: 'append_intent', position: { batch: 5, index: 0 }, from: 0, to: 18, hash: 'a'.repeat(64) });
+    apply({ kind: 'append_acknowledged', cursor: 1, acknowledgedPrefixHash: 'a'.repeat(64) });
+    return streamTs;
+  };
+  return { store, runId, posted, calls, statuses, outcomes, run, streamPartialAnswer };
 }
 
 test('a turn whose installation is refused posts nothing; its activity clears and the turn is settled', async (t) => {
@@ -505,6 +530,28 @@ test('a turn whose installation is refused posts nothing; its activity clears an
   await admitted.run(ENV_B);
   assert.ok(admitted.posted.length > 0);
   assert.deepEqual(admitted.outcomes, ['failed']);
+});
+
+test('a turn refused after part of its answer streamed ends that stream as shown, adding nothing', async (t) => {
+  clock(t);
+  await turnState(t);
+  configureInstallationAdmission(async () => 'refused');
+  // As Flue's read raises it: the submission failed on the proxy's refusal of its next request.
+  const refused = await presentedTurn(t, dmTurn('1790200004.000100'), () => new AgentRunError({
+    outcome: 'failed', submissionId: 'submission_refused',
+    cause: { type: 'operation_failed', message: new InstallationNotAdmittedError().message },
+  }));
+  const streamTs = refused.streamPartialAnswer();
+  await refused.run(ENV_A);
+  assert.deepEqual(refused.calls.map(({ method }) => method), ['chat.stopStream'], 'no failure text, no new message');
+  const stop = refused.calls[0]!.input;
+  assert.equal(stop.ts, streamTs);
+  assert.equal(stop.chunks, undefined, 'nothing is appended to the streamed prefix');
+  assert.deepEqual(refused.outcomes, ['failed']);
+  const stored = refused.store.get(refused.runId);
+  assert.equal(stored?.stream.state === 'streaming', false, 'the stream is ended, not left streaming');
+  assert.equal(stored?.stream.presentationOutcome, 'progressive');
+  assert.equal(stored?.schemaVersion === 3 && stored.terminalDelivery.state, 'abandoned');
 });
 
 test('a standalone turn\'s failure is posted as before, without asking the admission check', async (t) => {
