@@ -245,6 +245,7 @@ import {
   type RecordRoutineDeliveryInput,
   type RecordRoutineRecoveryDeliveryInput,
   type RoutineAdmissionAttempt,
+  type RoutineAgentDispatchEnvelope,
   type RoutineAdminPage,
   type RoutineAdminPageInput,
   type RoutineConfirmation,
@@ -2628,6 +2629,13 @@ export class CfRoutineStore implements RoutineStore {
     const response = await this.execute({ kind: 'prepare_agent_dispatch', input });
     if (response.kind !== 'begin') throw unexpectedRoutineResponse();
     return response.outcome;
+  }
+  async findRunningAgentDispatch(
+    instanceId: string,
+  ): Promise<RoutineAgentDispatchEnvelope | undefined> {
+    const response = await this.execute({ kind: 'find_running_agent_dispatch', instanceId });
+    if (response.kind !== 'agent_dispatch') throw unexpectedRoutineResponse();
+    return orUndefined(response.envelope);
   }
   async recordAgentReceipt(
     input: RecordRoutineAgentReceiptInput,
