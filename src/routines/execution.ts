@@ -28,6 +28,7 @@ import {
   type FrozenRuntimeModelRoute,
   type ProviderAuthRoute,
 } from '../config/runtime-model.ts';
+import { installationRefusesWork } from '../config/installation-admission.ts';
 import { resolveModelCredentialAttribution } from '../config/model-credential-refs.ts';
 import {
   imageCapabilityForResolution,
@@ -186,6 +187,15 @@ export async function executeRoutineOccurrence(
   const admission = (await input.store.listAdmissions(current.id))
     .find((candidate) => candidate.attempt === input.attempt);
   if (!admission) return 'superseded';
+  // A suspended or ended installation starts nothing and is delivered
+  // nothing. An occurrence not yet dispatched is skipped, never replayed on
+  // resume; a dispatched one waits, and retention fails it once past its
+  // deadline, so its result is never delivered late.
+  if (await installationRefusesWork(input.env)) {
+    if (current.status !== 'admitting') return 'resumable';
+    await skipRefusedRun(input.store, current.id, now());
+    return 'completed';
+  }
 
   let prepared: PreparedExecution;
   let access: RoutineRuntimeAccess | undefined;
@@ -397,6 +407,8 @@ export async function executeRoutineOccurrence(
       occurrenceId: prepared.run.id,
       settlement,
     });
+    // Refused while the read ran: the settlement is kept, nothing is posted.
+    if (await installationRefusesWork(input.env)) return 'resumable';
     return await finalizeSettlement(prepared, settlement, now());
   } finally {
     await prepared.usageRecorder?.repairAfterTerminal();
@@ -1245,6 +1257,22 @@ async function skipUnresolvedRun(
     failureClass: 'assignment_missing',
     publicError,
     skipReason: 'unresolved_assignment',
+  });
+}
+
+async function skipRefusedRun(
+  store: RoutineStore,
+  occurrenceId: string,
+  at: number,
+): Promise<void> {
+  await store.transitionRun({
+    occurrenceId,
+    from: ['admitting'],
+    to: 'skipped',
+    at,
+    failureClass: 'policy_denied',
+    publicError: 'Routine admission was refused before execution began.',
+    skipReason: 'installation_not_admitted',
   });
 }
 

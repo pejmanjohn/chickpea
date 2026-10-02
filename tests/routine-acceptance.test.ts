@@ -13,7 +13,16 @@ import {
   computeSnapshotHash,
   type EffectiveSlackConfig,
 } from '../src/config/effective-config.ts';
+import {
+  configureInstallationAdmission,
+  INSTALLATION_ADMISSION_TTL_MS,
+  resetInstallationAdmissionForTests,
+  type InstallationAdmission,
+} from '../src/config/installation-admission.ts';
+import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
+import { closeNodeStateStores } from '../src/config/state-backend.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { ROUTINE_LIMITS } from '../src/routines/limits.ts';
 import { RoutineAdmissionController } from '../src/routines/admission.ts';
 import { hashRoutineValue, routineDestinationBindingDigest } from '../src/routines/ids.ts';
 import { executeRoutineOccurrence } from '../src/routines/execution.ts';
@@ -394,6 +403,156 @@ test('scheduled work crosses creation, v2 receipt, restart, reattached read, and
       runs: Array<{ status: string; flueRunId: string | null }>;
     };
     assert.deepEqual(body.runs.map((run) => [run.status, run.flueRunId]), [['no_op', null]]);
+  } finally {
+    store.close();
+  }
+});
+
+/** A channel routine due at the top of each hour, saved at minute 59. */
+async function hourlyChannelRoutine(store: SqliteRoutineStore, now: () => number, key: string) {
+  const projection = normalizeRoutineSchedule('0 * * * *', 'UTC', now());
+  return new RoutineService(store, { now }).save({
+    action: 'create', actorId: 'U_CREATOR', workspaceId: 'T_ACCEPT', channelId: 'C_ACCEPT',
+    definition: {
+      name: 'Hourly report', description: 'Reports hourly.', taskText: 'report the hourly state.',
+      triggerKind: 'schedule', scheduleInput: '0 * * * *', scheduleJson: projection.scheduleJson,
+      timezone: 'UTC', outputPolicy: 'post', authorityMode: 'live_channel_v1',
+    },
+    nextRunAt: projection.nextRunAt,
+    projectedDailyStarts: projection.projectedDailyStarts,
+    reservations: projection.reservations,
+  }, key);
+}
+
+/** An installation of a deployment serving many, admitted or refused by a registry the test edits. */
+function hostedRoutineInstallation(context: import('node:test').TestContext, now: () => number) {
+  const keys = ['TAG_DB_PATH', 'SLACK_STATE_DB_PATH', 'CHICKPEA_AUTH_DB_PATH'] as const;
+  const previous = keys.map((key) => process.env[key]);
+  for (const key of keys) process.env[key] = ':memory:';
+  closeNodeStateStores();
+  const registry = { status: 'admitted' as InstallationAdmission, reads: 0 };
+  resetInstallationAdmissionForTests({ now });
+  configureInstallationAdmission(async () => { registry.reads += 1; return registry.status; });
+  context.after(() => {
+    resetInstallationAdmissionForTests();
+    closeNodeStateStores();
+    keys.forEach((key, index) => {
+      if (previous[index] === undefined) delete process.env[key];
+      else process.env[key] = previous[index];
+    });
+  });
+  const env = scopeInstallationEnv({ CHICKPEA_TENANCY: 'installation' }, { installationId: 'inst_routines' });
+  return { env, registry };
+}
+
+test('a refused installation\'s due slot is skipped before dispatch, and resume skips missed slots instead of replaying them', async (context) => {
+  const directory = mkdtempSync(join(tmpdir(), 'chickpea-routine-refused-'));
+  context.after(() => rmSync(directory, { recursive: true, force: true }));
+  let now = new Date().setUTCMinutes(59, 0, 0);
+  const store = new SqliteRoutineStore(join(directory, 'state.sqlite'), () => now);
+  const { env, registry } = hostedRoutineInstallation(context, () => now);
+  try {
+    const routine = await hourlyChannelRoutine(store, () => now, 'refused:seed');
+    let dispatches = 0;
+    const agent = handle();
+    agent.dispatch = async () => { dispatches += 1; throw new Error('a refused installation dispatches nothing'); };
+    let accessReads = 0;
+    const scheduler = () => new RoutineScheduler(store, new RoutineAdmissionController(store, {
+      execute: (run, attempt) => executeRoutineOccurrence({
+        env, store, occurrenceId: run.id, attempt: attempt.attempt,
+      }, {
+        ...executionDependencies(() => now),
+        resolveAccess: async (run, saved) => { accessReads += 1; return executionDependencies(() => now).resolveAccess(run, saved); },
+        handle: agent,
+      }),
+    }));
+
+    // The operator suspends the installation; a tick that still reaches it (or
+    // one started before the suspension) admits the due slot and Core skips it.
+    registry.status = 'refused';
+    now += 60_000;
+    await scheduler().heartbeat(now, 'heartbeat-refused');
+    const [refused] = await store.listRuns({ routineId: routine.id });
+    assert.equal(refused?.status, 'skipped');
+    assert.equal(refused?.skipReason, 'installation_not_admitted');
+    assert.equal(refused?.failureClass, 'policy_denied');
+    assert.equal(dispatches, 0);
+    assert.equal(accessReads, 0, 'nothing about the run was resolved, so nothing could post');
+
+    // Three more hours pass with no tick for the suspended installation. On
+    // resume the missed slots are recorded once, skipped, never replayed.
+    registry.status = 'admitted';
+    now += 3 * 60 * 60_000 + INSTALLATION_ADMISSION_TTL_MS;
+    await scheduler().heartbeat(now, 'heartbeat-resumed');
+    const runs = await store.listRuns({ routineId: routine.id });
+    assert.equal(runs.length, 2);
+    const resumed = runs.find((run) => run.id !== refused!.id)!;
+    assert.equal(resumed.status, 'skipped');
+    assert.equal(resumed.skipReason, 'missed_schedule');
+    assert.equal(resumed.missedSlotCount, 3);
+    assert.equal(dispatches, 0);
+  } finally {
+    store.close();
+  }
+});
+
+test('a result that settles while its installation is refused is kept undelivered, and past its deadline it fails without delivery', async (context) => {
+  const directory = mkdtempSync(join(tmpdir(), 'chickpea-routine-refused-result-'));
+  context.after(() => rmSync(directory, { recursive: true, force: true }));
+  let now = new Date().setUTCMinutes(59, 0, 0);
+  const store = new SqliteRoutineStore(join(directory, 'state.sqlite'), () => now);
+  const { env, registry } = hostedRoutineInstallation(context, () => now);
+  try {
+    const routine = await hourlyChannelRoutine(store, () => now, 'refused-result:seed');
+    const posts: unknown[] = [];
+    const client = { chat: { postMessage: async (input: unknown) => {
+      posts.push(input);
+      return { ok: true, channel: 'C_ACCEPT', ts: '1785100061.000100' };
+    } } };
+    const agent = handle();
+    agent.read = async () => {
+      // The installation is suspended while the occurrence runs.
+      registry.status = 'refused';
+      now += INSTALLATION_ADMISSION_TTL_MS;
+      return {
+        submissionId: 'submission_acceptance', uid: 'uid_acceptance', text: 'Report',
+        data: { [ROUTINE_RESULT_DATA_NAME]: [{ outcome: 'succeeded', message: 'Hourly report' }] },
+      };
+    };
+    const scheduler = () => new RoutineScheduler(store, new RoutineAdmissionController(store, {
+      execute: (run, attempt) => executeRoutineOccurrence({
+        env, store, occurrenceId: run.id, attempt: attempt.attempt,
+      }, {
+        ...executionDependencies(() => now),
+        resolveAccess: async (run, saved) => ({
+          ...(await executionDependencies(() => now).resolveAccess(run, saved)), client: client as never,
+        }),
+        handle: agent,
+      }),
+    }));
+
+    now += 60_000;
+    const first = await scheduler().heartbeat(now, 'heartbeat-first');
+    assert.equal(first.admissions.deferred, 1);
+    const [settled] = await store.listRuns({ routineId: routine.id });
+    assert.equal(settled?.status, 'running');
+    assert.equal(settled?.flueAgentSettlement?.outcome, 'completed', 'the settlement is kept');
+    assert.deepEqual(posts, []);
+
+    // While refused, a later visit still delivers nothing.
+    now += 60_000;
+    await scheduler().heartbeat(now, 'heartbeat-refused');
+    assert.deepEqual(posts, []);
+
+    // Resumed only after its deadline: retention fails it before admission
+    // can reattach, so the stale result is never delivered late.
+    registry.status = 'admitted';
+    now = settled!.deadlineAt + ROUTINE_LIMITS.deliveryLeaseMs + 1;
+    await scheduler().heartbeat(now, 'heartbeat-resumed');
+    const reconciled = await store.getRun(settled!.id);
+    assert.equal(reconciled?.status, 'failed');
+    assert.equal(reconciled?.failureClass, 'unknown_external_outcome');
+    assert.deepEqual(posts, []);
   } finally {
     store.close();
   }
