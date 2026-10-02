@@ -3,6 +3,7 @@ import type { D1Database } from '@cloudflare/workers-types';
 import type {
   BetterAuthDatabaseBackend,
   BetterAuthMcpOAuthContinuationRecord,
+  BetterAuthOAuthGrantRevocation,
   BetterAuthMembershipRecord,
   BetterAuthOrganizationRecord,
   BetterAuthUserRecord,
@@ -12,6 +13,7 @@ import {
   mapBetterAuthMembership,
   mapBetterAuthOrganization,
   mapBetterAuthUser,
+  parseBetterAuthDate,
 } from './better-auth-backend.ts';
 
 export interface CloudflareBetterAuthEnv {
@@ -33,17 +35,22 @@ export class D1BetterAuthBackend implements BetterAuthDatabaseBackend {
     const row = await this.database.prepare(
       'SELECT absoluteExpiresAt FROM session WHERE token = ? LIMIT 1',
     ).bind(token).first<{ absoluteExpiresAt: number | string | null }>();
-    if (row?.absoluteExpiresAt === null || row?.absoluteExpiresAt === undefined) return null;
-    const value = typeof row.absoluteExpiresAt === 'number'
-      ? row.absoluteExpiresAt
-      : Number(row.absoluteExpiresAt);
-    const date = new Date(value);
-    return Number.isNaN(date.getTime()) ? null : date;
+    // Better Auth writes ISO text to D1; numeric values remain readable.
+    return parseBetterAuthDate(row?.absoluteExpiresAt);
   }
 
   async deleteSessionsForUser(userId: string): Promise<number> {
     const result = await this.database.prepare('DELETE FROM session WHERE userId = ?').bind(userId).run();
     return Number(result.meta.changes ?? 0);
+  }
+
+  async revokeOAuthGrantsForUser(userId: string): Promise<BetterAuthOAuthGrantRevocation> {
+    // A D1 batch commits or rolls back as one transaction, one result per statement.
+    const [accessTokens = 0, refreshTokens = 0, consents = 0] = (await this.database.batch(
+      ['oauthAccessToken', 'oauthRefreshToken', 'oauthConsent'].map((table) =>
+        this.database.prepare(`DELETE FROM ${table} WHERE userId = ?`).bind(userId)),
+    )).map((result) => Number(result.meta.changes));
+    return { accessTokens, refreshTokens, consents };
   }
 
   async getUser(userId: string): Promise<BetterAuthUserRecord | null> {

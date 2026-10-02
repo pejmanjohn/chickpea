@@ -7,6 +7,7 @@ import { resolveStateDbPath } from '../state/node-state-db.ts';
 import type {
   BetterAuthDatabaseBackend,
   BetterAuthMcpOAuthContinuationRecord,
+  BetterAuthOAuthGrantRevocation,
   BetterAuthMembershipRecord,
   BetterAuthOrganizationRecord,
   BetterAuthUserRecord,
@@ -16,6 +17,7 @@ import {
   mapBetterAuthMembership,
   mapBetterAuthOrganization,
   mapBetterAuthUser,
+  parseBetterAuthDate,
 } from './better-auth-backend.ts';
 
 interface CachedBackend {
@@ -49,11 +51,29 @@ export class NodeBetterAuthBackend implements BetterAuthDatabaseBackend {
     const row = this.database.prepare(
       'SELECT absoluteExpiresAt FROM session WHERE token = ? LIMIT 1',
     ).get(token) as { absoluteExpiresAt?: number | string | null } | undefined;
-    return parseStoredDate(row?.absoluteExpiresAt);
+    return parseBetterAuthDate(row?.absoluteExpiresAt);
   }
 
   async deleteSessionsForUser(userId: string): Promise<number> {
     return Number(this.database.prepare('DELETE FROM session WHERE userId = ?').run(userId).changes);
+  }
+
+  async revokeOAuthGrantsForUser(userId: string): Promise<BetterAuthOAuthGrantRevocation> {
+    const remove = (table: string) =>
+      Number(this.database.prepare(`DELETE FROM ${table} WHERE userId = ?`).run(userId).changes);
+    this.database.exec('BEGIN IMMEDIATE;');
+    try {
+      const revoked = {
+        accessTokens: remove('oauthAccessToken'),
+        refreshTokens: remove('oauthRefreshToken'),
+        consents: remove('oauthConsent'),
+      };
+      this.database.exec('COMMIT;');
+      return revoked;
+    } catch (error) {
+      this.database.exec('ROLLBACK;');
+      throw error;
+    }
   }
 
   async getUser(userId: string): Promise<BetterAuthUserRecord | null> {
@@ -252,13 +272,6 @@ function incompatibleBetterAuthSchema(): Error {
 
 function pathDefaultMigrations(): string {
   return path.resolve(process.cwd(), 'migrations/better-auth');
-}
-
-function parseStoredDate(value: number | string | null | undefined): Date | null {
-  if (value === null || value === undefined) return null;
-  const numeric = typeof value === 'number' ? value : Number(value);
-  const date = new Date(Number.isFinite(numeric) ? numeric : value);
-  return Number.isNaN(date.getTime()) ? null : date;
 }
 
 function isPresent<T>(value: T | null): value is T {

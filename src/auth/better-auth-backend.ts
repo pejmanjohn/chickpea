@@ -38,6 +38,13 @@ export interface BetterAuthMcpOAuthContinuationRecord {
   createdAt: number;
 }
 
+/** Rows removed by revoking one user's MCP OAuth grants. */
+export interface BetterAuthOAuthGrantRevocation {
+  consents: number;
+  accessTokens: number;
+  refreshTokens: number;
+}
+
 export function mapBetterAuthUser(row: unknown): BetterAuthUserRecord | null {
   if (!row) return null;
   const value = row as Record<string, unknown>;
@@ -82,11 +89,16 @@ export function mapBetterAuthMembership(row: unknown): BetterAuthMembershipRecor
 }
 
 function betterAuthEpoch(value: unknown): number {
-  if (value instanceof Date) return value.getTime();
-  if (value === null || value === undefined) return 0;
+  return parseBetterAuthDate(value)?.getTime() ?? 0;
+}
+
+/** SQLite stores Better Auth dates as ISO text (or epoch numbers); PostgreSQL returns a Date. */
+export function parseBetterAuthDate(value: unknown): Date | null {
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
+  if (value === null || value === undefined) return null;
   const numeric = typeof value === 'number' ? value : Number(value);
   const date = new Date(Number.isFinite(numeric) ? numeric : String(value));
-  return Number.isNaN(date.getTime()) ? 0 : date.getTime();
+  return Number.isNaN(date.getTime()) ? null : date;
 }
 
 export interface BetterAuthDatabaseBackend {
@@ -96,6 +108,13 @@ export interface BetterAuthDatabaseBackend {
   absoluteExpiryForToken(token: string): Promise<Date | null>;
   /** Revoke every Better Auth browser session for one canonical user. */
   deleteSessionsForUser(userId: string): Promise<number>;
+  /**
+   * Remove one canonical user's MCP OAuth consents and access and refresh
+   * tokens together, so their stored grants end with their membership. An
+   * authorization code issued earlier can still be exchanged; its tokens are
+   * refused at the MCP resource, which checks membership on every request.
+   */
+  revokeOAuthGrantsForUser(userId: string): Promise<BetterAuthOAuthGrantRevocation>;
   getUser(userId: string): Promise<BetterAuthUserRecord | null>;
   findUserByEmail(email: string): Promise<BetterAuthUserRecord | null>;
   getOrganization(organizationId: string): Promise<BetterAuthOrganizationRecord | null>;
@@ -110,4 +129,20 @@ export interface BetterAuthDatabaseBackend {
   pruneUnusedMcpOAuthClients(createdBefore: string): Promise<number>;
   putMcpOAuthContinuation(record: BetterAuthMcpOAuthContinuationRecord): Promise<void>;
   consumeMcpOAuthContinuation(idHash: string, now: number): Promise<string | null>;
+}
+
+export type BetterAuthAccessRevoker =
+  Pick<BetterAuthDatabaseBackend, 'deleteSessionsForUser' | 'revokeOAuthGrantsForUser'>;
+
+/**
+ * Ends one user's MCP OAuth grants and browser sessions when their membership
+ * is suspended or removed. Grants go first: a retry after a failure finds the
+ * membership unchanged and would not revoke again.
+ */
+export async function revokeBetterAuthUserAccess(
+  backend: BetterAuthAccessRevoker,
+  userId: string,
+): Promise<void> {
+  await backend.revokeOAuthGrantsForUser(userId);
+  await backend.deleteSessionsForUser(userId);
 }

@@ -323,17 +323,25 @@ async function reconcileSlackIdentity(
     context as unknown as Parameters<typeof getOrgAdapter>[0],
   );
   let organizationRecord = await orgAdapter.findOrganizationBySlug(input.organization.slug);
-  if (organizationRecord && input.organization.id && organizationRecord.id !== input.organization.id) {
+  if (!organizationRecord) {
+    try {
+      organizationRecord = await orgAdapter.createOrganization({
+        organization: {
+          ...(input.organization.id ? { id: input.organization.id } : {}),
+          createdAt: new Date(),
+          name: input.organization.name,
+          slug: input.organization.slug,
+        },
+      });
+    } catch (error) {
+      // A concurrent first sign-in may have created it; the slug is unique.
+      organizationRecord = await orgAdapter.findOrganizationBySlug(input.organization.slug);
+      if (!organizationRecord) throw error;
+    }
+  }
+  if (input.organization.id && organizationRecord.id !== input.organization.id) {
     throw new BetterAuthIdentityConflictError('The Better Auth organization slug is already bound.');
   }
-  organizationRecord ??= await orgAdapter.createOrganization({
-    organization: {
-      ...(input.organization.id ? { id: input.organization.id } : {}),
-      createdAt: new Date(),
-      name: input.organization.name,
-      slug: input.organization.slug,
-    },
-  });
 
   let membership = await orgAdapter.findMemberByOrgId({
     userId: user.id,

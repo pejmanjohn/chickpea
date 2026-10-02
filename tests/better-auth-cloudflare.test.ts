@@ -76,6 +76,21 @@ test('production private seam survives real workerd, D1, and isolate restart', {
     assert.equal(first.body.accountId, 'slack:T100:U100');
     assert.equal(otherTeam.body.accountId, 'slack:T200:U100');
 
+    const revoked = await postJson(origin, '/test/revoke-oauth-grants', {
+      seed: [first.body.userId, otherTeam.body.userId],
+      revoke: first.body.userId,
+    });
+    assert.equal(revoked.response.status, 200, revoked.text);
+    assert.deepEqual(revoked.body, {
+      revoked: { accessTokens: 1, refreshTokens: 1, consents: 1 },
+      again: { accessTokens: 0, refreshTokens: 0, consents: 0 },
+    });
+    const spared = await postJson(origin, '/test/revoke-oauth-grants', {
+      revoke: otherTeam.body.userId,
+    });
+    assert.deepEqual(spared.body.revoked, { accessTokens: 1, refreshTokens: 1, consents: 1 },
+      'revoking one login leaves the other installation\'s grants in place');
+
     const beforeAdmission = await getJson(origin, '/test/snapshot');
     assert.equal(beforeAdmission.body.sessions.length, 0);
     assert.deepEqual(
@@ -161,6 +176,10 @@ test('production private seam survives real workerd, D1, and isolate restart', {
       Math.abs(epoch(session.absoluteExpiresAt) - createdAt - SESSION_ABSOLUTE_MS) < 5_000,
       true,
     );
+    const absolute = await getJson(origin, '/test/absolute-expiry');
+    assert.equal(absolute.body.storedType, 'string', 'D1 stores Better Auth dates as ISO text');
+    assert.equal(absolute.body.parsed, new Date(absolute.body.stored).toISOString(),
+      'the backend reads the stored absolute expiry for the session refresh cap');
 
     const followUp = await fetch(`${origin}/api/auth/get-session`, { headers: { cookie } });
     assert.equal(followUp.status, 200);

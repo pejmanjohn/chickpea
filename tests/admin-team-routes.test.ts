@@ -7,6 +7,7 @@ import { createTeamAdminApi } from '../src/admin/team-api.ts';
 import { setRequestPrincipal } from '../src/auth/service.ts';
 import type { AuthPrincipal } from '../src/auth/types.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
+import type { IdentityStore } from '../src/identity/types.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import { WorkspaceManagementService } from '../src/management/service.ts';
 import { SqliteManagementStore } from '../src/management/store.ts';
@@ -30,7 +31,8 @@ function principal(owner: Awaited<ReturnType<typeof createSlackOwner>>, role: 'o
 async function harness(
   role: 'owner' | 'admin' = 'owner',
   overrides: {
-    revokeBetterAuthSessions?: (betterAuthUserId: string) => Promise<number>;
+    /** Gives the member this Better Auth user and records what is revoked for it. */
+    revoked?: string[];
     memberProfile?: (teamId: string, userId: string) => Promise<{
       id: string; teamId: string; name: string; handle: string; displayName: string;
       realName: string; email: string; avatarUrl: string; deleted: boolean; bot: boolean;
@@ -50,13 +52,16 @@ async function harness(
     setRequestPrincipal(c.req.raw, principal(owner, role));
     await next();
   });
+  const store = overrides.revoked
+    ? withBetterAuthUser(identity, member.resolution!.membership.id, 'ba_user_member')
+    : identity;
   app.route('/admin/api', createTeamAdminApi({
-    store: () => identity,
+    store: () => store,
     ...(overrides.memberProfile
       ? { memberProfile: (_c, teamId, userId) => overrides.memberProfile!(teamId, userId) }
       : {}),
-    ...(overrides.revokeBetterAuthSessions
-      ? { revokeBetterAuthSessions: async (_c, userId) => overrides.revokeBetterAuthSessions!(userId) }
+    ...(overrides.revoked
+      ? { betterAuthBackend: async () => revokingBackend(overrides.revoked!) }
       : {}),
   }));
   return { app, identity, owner, member: member.resolution! };
@@ -213,6 +218,28 @@ test('Owner updates an existing membership while Admin cannot', async () => {
   }
 });
 
+test('a suspended membership ends MCP grants and sessions; a role change ends sessions only', async () => {
+  const revoked: string[] = [];
+  const team = await harness('owner', { revoked });
+  const patch = (body: Record<string, string>) => team.app.request(
+    `https://app.example/admin/api/team/memberships/${team.member.membership.id}`,
+    { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) },
+  );
+  try {
+    // A role change needs new sessions only: MCP rereads the role per request.
+    const promoted = await patch({ role: 'admin' });
+    assert.equal(promoted.status, 200, await promoted.clone().text());
+    assert.deepEqual(revoked, ['sessions:ba_user_member']);
+    const suspended = await patch({ status: 'suspended' });
+    assert.equal(suspended.status, 200, await suspended.clone().text());
+    assert.deepEqual(revoked, ['sessions:ba_user_member', 'oauth-grants:ba_user_member', 'sessions:ba_user_member']);
+    assert.equal((await patch({ status: 'suspended' })).status, 200);
+    assert.equal(revoked.length, 3, 'an unchanged membership keeps its access');
+  } finally {
+    team.identity.close();
+  }
+});
+
 test('membership updates delegate to the shared management service', async () => {
   const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
   const owner = await createSlackOwner(identity, { now: NOW, suffix: 'team-management' });
@@ -238,9 +265,12 @@ test('membership updates delegate to the shared management service', async () =>
     setRequestPrincipal(c.req.raw, principal(owner));
     await next();
   });
+  const revoked: string[] = [];
+  const store = withBetterAuthUser(identity, member.resolution!.membership.id, 'ba_user_managed');
   app.route('/admin/api', createTeamAdminApi({
-    store: () => identity,
+    store: () => store,
     management: () => service,
+    betterAuthBackend: async () => revokingBackend(revoked),
   }));
   try {
     const response = await app.request(
@@ -252,6 +282,7 @@ test('membership updates delegate to the shared management service', async () =>
     );
     assert.equal(response.status, 200, await response.clone().text());
     assert.equal((await identity.getMembership(member.resolution!.membership.id))?.status, 'suspended');
+    assert.deepEqual(revoked, ['oauth-grants:ba_user_managed', 'sessions:ba_user_managed']);
   } finally {
     identity.close();
     config.close();
@@ -275,3 +306,29 @@ test('last active Owner protection remains enforced', async () => {
     team.identity.close();
   }
 });
+
+function withBetterAuthUser(identity: IdentityStore, membershipId: string, betterAuthUserId: string): IdentityStore {
+  return new Proxy(identity, {
+    get(target, property) {
+      if (property === 'listExternalIdentities') {
+        return async () => (await target.listExternalIdentities()).map((row) =>
+          row.membershipId === membershipId ? { ...row, betterAuthUserId } : row);
+      }
+      const value: unknown = Reflect.get(target, property);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+}
+
+function revokingBackend(revoked: string[]) {
+  return {
+    async deleteSessionsForUser(userId: string) {
+      revoked.push(`sessions:${userId}`);
+      return 1;
+    },
+    async revokeOAuthGrantsForUser(userId: string) {
+      revoked.push(`oauth-grants:${userId}`);
+      return { consents: 1, accessTokens: 0, refreshTokens: 1 };
+    },
+  };
+}

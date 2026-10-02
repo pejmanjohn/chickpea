@@ -6070,10 +6070,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         return undefined;
       }
     },
-    revokeBetterAuthSessions: async (c, betterAuthUserId) => {
-      const context = await betterAuthContext(c);
-      return context?.environment.backend.deleteSessionsForUser(betterAuthUserId) ?? 0;
-    },
+    betterAuthBackend: async (c) => (await betterAuthContext(c))?.environment.backend,
     rateLimiter: async (c) => {
       const context = await betterAuthContext(c);
       const secret = context?.environment.secret ?? options.authSecret;

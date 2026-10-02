@@ -41,10 +41,10 @@ test('revision-bound user_change suspends the exact active member and is replay 
     expectedActiveRevision: null,
     expectedRotationEpoch: 1,
   });
-  const deletedUsers: string[] = [];
+  const revoked: string[] = [];
   const input = {
     identity,
-    betterAuth: { async deleteSessionsForUser(userId: string) { deletedUsers.push(userId); return 1; } },
+    betterAuth: revokingBackend(revoked),
     credentialRevision: active.revision,
     payloadTeamId: 'T12345678',
     apiAppId: 'A12345678',
@@ -63,7 +63,11 @@ test('revision-bound user_change suspends the exact active member and is replay 
   };
   assert.equal((await applySlackUserChange(input)).outcome, 'suspended');
   assert.equal((await applySlackUserChange(input)).outcome, 'duplicate');
-  assert.deepEqual(deletedUsers, [owner.binding.betterAuthUserId]);
+  // Suspension ends MCP OAuth grants and browser sessions, once.
+  assert.deepEqual(revoked, [
+    `oauth-grants:${owner.binding.betterAuthUserId}`,
+    `sessions:${owner.binding.betterAuthUserId}`,
+  ]);
   assert.equal((await identity.getMembershipAccessOverlay(owner.membership.id))?.accessStatus, 'suspended');
 
   assert.equal((await applySlackUserChange({
@@ -92,10 +96,10 @@ test('user_change never reactivates from an active or out-of-order payload', asy
 test('gateway-bound user_change suspends the exact provisioned member without local Slack credentials', async () => {
   const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
   const owner = await createSlackOwner(identity, { now: NOW });
-  const deletedUsers: string[] = [];
+  const revoked: string[] = [];
   const input = {
     identity,
-    betterAuth: { async deleteSessionsForUser(userId: string) { deletedUsers.push(userId); return 1; } },
+    betterAuth: revokingBackend(revoked),
     payloadTeamId: 'T12345678',
     apiAppId: 'A12345678',
     eventId: 'Ev_GATEWAY_USER_CHANGE_1',
@@ -110,6 +114,23 @@ test('gateway-bound user_change suspends the exact provisioned member without lo
   };
   assert.equal((await applyGatewaySlackUserChange(input)).outcome, 'suspended');
   assert.equal((await applyGatewaySlackUserChange(input)).outcome, 'duplicate');
-  assert.deepEqual(deletedUsers, [owner.binding.betterAuthUserId]);
+  // Suspension ends MCP OAuth grants and browser sessions, once.
+  assert.deepEqual(revoked, [
+    `oauth-grants:${owner.binding.betterAuthUserId}`,
+    `sessions:${owner.binding.betterAuthUserId}`,
+  ]);
   assert.equal((await identity.getMembershipAccessOverlay(owner.membership.id))?.accessStatus, 'suspended');
 });
+
+function revokingBackend(revoked: string[]) {
+  return {
+    async deleteSessionsForUser(userId: string) {
+      revoked.push(`sessions:${userId}`);
+      return 1;
+    },
+    async revokeOAuthGrantsForUser(userId: string) {
+      revoked.push(`oauth-grants:${userId}`);
+      return { consents: 1, accessTokens: 0, refreshTokens: 1 };
+    },
+  };
+}
