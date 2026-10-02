@@ -3,6 +3,8 @@ import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 
 import { compileRuntimePlanV2 } from '../src/agents/runtime-plan.ts';
+import { createWebsiteLogin } from '../src/browser/logins.ts';
+import { saveStoredComposioProjectKey } from '../src/config/composio-settings.ts';
 import {
   InstallationContextError,
   installationOwnershipOf,
@@ -10,7 +12,14 @@ import {
 } from '../src/config/installation-scope.ts';
 import type { ResolvedAssignment } from '../src/config/types.ts';
 import { CHICKPEA_SLACK_AGENT_BINDING } from '../src/slack/bounded-agent-observation.ts';
+import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
+import { GATEWAY_HTTP_SETTING, sealDeliveryKey, type HttpDeliveryState } from '../src/slack/gateway/http-delivery.ts';
+import {
+  GATEWAY_DEPLOYMENT_IDENTITY_SETTING,
+  loadOrCreateGatewayDeploymentIdentity,
+} from '../src/slack/gateway/identity.ts';
 import type { TurnJob } from '../src/slack/turn-job-types.ts';
+import { promisify } from '../src/state/async-facade.ts';
 import {
   eraseInstallationObject,
   exportInstallationObject,
@@ -245,6 +254,73 @@ test('export pages are stable and resumable, and a portable export leaves every 
     t: 'kv', key: 'flue:wake',
     value: { $object: { at: { $date: '2027-01-15T08:00:00.000Z' }, seen: { $set: ['a'] }, $tag: 'T_A' } },
   });
+});
+
+test('a portable export nulls every envelope a setting keeps inside its JSON value, and keeps the rest', async () => {
+  const deployment = hostedDeployment(['inst_export_envelopes']);
+  const a = deployment.installation('inst_export_envelopes');
+  populate(deployment, a, 'T_A');
+  const settings = promisify(a.stores.settings, { close: () => undefined });
+  const keyring = generateCredentialKeyring('export_test');
+  // Each written by the code that writes it in production.
+  const identity = await loadOrCreateGatewayDeploymentIdentity({ settings, keyring });
+  const binding = {
+    bindingId: 'binding_export', workspaceId: 'T_A', appId: 'A_EXPORT', deploymentId: identity.deploymentId,
+    clientId: 'client', botUserId: 'U_BOT', installerSlackUserId: 'U_OWNER', sessionUrl: 'wss://gateway.test/session',
+    installedAt: 1,
+  };
+  const endpointUrl = 'https://worker.account.workers.dev/slack/gateway/delivery';
+  const seal = (keyId: string, routeRevision: number) => sealDeliveryKey(binding, keyring, {
+    operationId: `op_${keyId}`, endpointUrl, routeRevision, keyId, secret: Buffer.alloc(32, routeRevision).toString('base64url'),
+  });
+  const delivery: HttpDeliveryState = {
+    version: 1, bindingId: binding.bindingId, deploymentId: binding.deploymentId, installedAt: binding.installedAt,
+    mode: 'http', revision: 1, active: await seal('key_1', 1), pending: await seal('key_2', 2),
+  };
+  await settings.setSetting(GATEWAY_HTTP_SETTING, JSON.stringify(delivery));
+  await createWebsiteLogin({ store: settings, keyring }, {
+    host: 'app.example.com', label: 'Billing', ownerKind: 'team', createdByMembershipId: 'membership_admin',
+    method: 'credentials', username: 'ops@example.com', password: 'website-password-T_A',
+  });
+  await saveStoredComposioProjectKey(`ak_${'c'.repeat(32)}`, { settings, credentials: { store: settings, keyring } });
+  // A Flue instance's key-value entry holding the same shape.
+  const agent = inventory(a).find((object) => object.kind === 'slack_agent')!;
+  await deployment.object(SLACK_AGENT, agent.name).storage.put('chickpea:delivery', { key: delivery.active });
+
+  const envelopes = [
+    JSON.parse((await settings.getSetting(GATEWAY_DEPLOYMENT_IDENTITY_SETTING))!).privateKeyEnvelope,
+    delivery.active!.secretEnvelope, delivery.pending!.secretEnvelope,
+    ...a.db.all('SELECT nonce, ciphertext FROM app_encrypted_credential_revisions'),
+  ] as Array<{ nonce: string; ciphertext: string }>;
+  assert.equal(envelopes.length, 6, 'a model key, a website login and the Composio key are encrypted revisions');
+  const store = installationStateStoreObject(a.env);
+  const full = (await exportAll(a.env, store, 'full')).text + (await exportAll(a.env, agent, 'full')).text;
+  const portable = (await exportAll(a.env, store, 'portable')).text + (await exportAll(a.env, agent, 'portable')).text;
+  for (const { nonce, ciphertext } of envelopes) {
+    assert.ok(full.includes(ciphertext) && full.includes(nonce), 'a full export keeps every envelope');
+    assert.equal(portable.includes(ciphertext), false, 'a portable export keeps no ciphertext');
+    assert.equal(portable.includes(nonce), false, 'a portable export keeps no nonce');
+  }
+
+  // Only the envelopes go: the records around them stay readable.
+  const records = portable.trim().split('\n').map((line) => JSON.parse(line));
+  const settingText = (key: string): string => records
+    .find((record) => record.t === 'row' && record.table === 'app_settings' && record.row.key === key).row.value;
+  const setting = (key: string) => JSON.parse(settingText(key));
+  assert.deepEqual(setting(GATEWAY_DEPLOYMENT_IDENTITY_SETTING), {
+    version: 1, deploymentId: identity.deploymentId, publicKey: identity.publicKey, privateKeyEnvelope: null,
+    createdAt: JSON.parse((await settings.getSetting(GATEWAY_DEPLOYMENT_IDENTITY_SETTING))!).createdAt,
+  });
+  const { secretEnvelope: _active, ...activeKey } = delivery.active!;
+  const { secretEnvelope: _pending, ...pendingKey } = delivery.pending!;
+  assert.deepEqual(setting(GATEWAY_HTTP_SETTING), {
+    ...delivery, active: { ...activeKey, secretEnvelope: null }, pending: { ...pendingKey, secretEnvelope: null },
+  });
+  const entry = records.find((record) => record.t === 'kv' && record.key === 'chickpea:delivery');
+  assert.deepEqual(entry?.value, { key: { ...activeKey, secretEnvelope: null } });
+  // A value with no envelope is exported byte for byte.
+  assert.equal(settingText('slack.teamName'), 'Team T_A');
+  assert.equal(settingText('managed.composio.configuration'), await settings.getSetting('managed.composio.configuration'));
 });
 
 test('host functions refuse on a standalone deployment', async () => {

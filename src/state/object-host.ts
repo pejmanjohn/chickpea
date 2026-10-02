@@ -24,10 +24,12 @@ export interface ObjectHostRequest {
 
 /**
  * `portable` leaves out what only this deployment can use or must never
- * leave it: envelope ciphertext and nonces, every plaintext secret setting
- * (MCP, API and connection credentials and OAuth state, GitHub, Browserbase,
- * plaintext model keys), the telemetry HMAC key and OAuth continuation state.
- * `full` keeps everything, so it is only as safe as wherever it is stored.
+ * leave it: every envelope (a ciphertext or nonce column, and any JSON
+ * object carrying both a `ciphertext` and a `nonce`, at any depth of a stored
+ * value, is nulled), every plaintext secret setting (MCP, API and connection
+ * credentials and OAuth state, GitHub, Browserbase, plaintext model keys),
+ * the telemetry HMAC key and OAuth continuation state. `full` keeps
+ * everything, so it is only as safe as wherever it is stored.
  */
 export type ObjectExportMode = 'portable' | 'full';
 
@@ -234,7 +236,8 @@ export async function exportObjectPage(
   for (;;) {
     const entries = await storage.list({ ...(startAfter === undefined ? {} : { startAfter }), limit: KV_BATCH });
     for (const [key, value] of entries) {
-      if (!push({ t: 'kv', key, value: encodeStoredValue(value) })) {
+      const encoded = encodeStoredValue(value);
+      if (!push({ t: 'kv', key, value: mode === 'portable' ? withoutEnvelopes(encoded) : encoded })) {
         return page({ v: 1, mode, phase: 'kv', ...(startAfter === undefined ? {} : { kvAfter: startAfter }) });
       }
       startAfter = key;
@@ -355,11 +358,51 @@ function exportedRow(
   }
   const exported: Record<string, unknown> = {};
   for (const [column, value] of Object.entries(row)) {
-    exported[column] = mode === 'portable' && ENVELOPE_COLUMN.test(column) && value !== null
-      ? null
-      : encodeSqlValue(value);
+    if (mode !== 'portable') exported[column] = encodeSqlValue(value);
+    else if (ENVELOPE_COLUMN.test(column) && value !== null) exported[column] = null;
+    else exported[column] = encodeSqlValue(typeof value === 'string' ? withoutEnvelopes(value) : value);
   }
   return exported;
+}
+
+/**
+ * A stored value with every envelope in it nulled: any object that carries
+ * both a `ciphertext` and a `nonce`, at any depth, including inside a string
+ * that parses as a JSON object or array (a setting's value, a record's JSON
+ * column). Settings keep envelopes inside their JSON values, such as the
+ * gateway deployment identity's private key and the HTTP delivery keys, so
+ * redaction follows the structure, not a list of keys. A value with no
+ * envelope is returned as it is, byte for byte.
+ */
+function withoutEnvelopes(value: unknown): unknown {
+  if (typeof value === 'string') {
+    const parsed = jsonStructure(value);
+    if (parsed === undefined) return value;
+    const redacted = withoutEnvelopes(parsed);
+    return redacted === parsed ? value : JSON.stringify(redacted);
+  }
+  if (value === null || typeof value !== 'object') return value;
+  if (Array.isArray(value)) {
+    const items = value.map(withoutEnvelopes);
+    return items.some((item, index) => item !== value[index]) ? items : value;
+  }
+  if (Object.hasOwn(value, 'ciphertext') && Object.hasOwn(value, 'nonce')) return null;
+  const entries = Object.entries(value).map(([key, item]) => [key, withoutEnvelopes(item)] as const);
+  return entries.some(([key, item]) => item !== (value as Record<string, unknown>)[key])
+    ? Object.fromEntries(entries)
+    : value;
+}
+
+/** A string's JSON object or array, or undefined when it holds neither. */
+function jsonStructure(text: string): object | undefined {
+  const first = text.trimStart()[0];
+  if (first !== '{' && first !== '[') return undefined;
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    return parsed !== null && typeof parsed === 'object' ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function encodeSqlValue(value: unknown): unknown {
