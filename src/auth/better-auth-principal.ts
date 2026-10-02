@@ -83,17 +83,19 @@ interface BetterAuthSessionAuthenticatorInput {
 
 export class BetterAuthSessionAuthenticator implements PrincipalAuthenticator {
   readonly kind = 'better_auth';
-  private readonly auth: ReturnType<typeof createBetterAuth>;
+  // Built on first use: creating Better Auth starts database work, which a
+  // request authenticated another way (or refused) would leave running past
+  // a per-request database's lifetime.
+  private auth: ReturnType<typeof createBetterAuth> | undefined;
 
-  constructor(private readonly input: BetterAuthSessionAuthenticatorInput) {
-    this.auth = createBetterAuth({
-      backend: input.backend,
-      baseURL: input.baseURL,
-      secret: input.secret,
-    });
-  }
+  constructor(private readonly input: BetterAuthSessionAuthenticatorInput) {}
 
   async authenticate(request: Request): Promise<PrincipalAuthenticationResult | undefined> {
+    this.auth ??= createBetterAuth({
+      backend: this.input.backend,
+      baseURL: this.input.baseURL,
+      secret: this.input.secret,
+    });
     const result = await this.auth.api.getSession({
       headers: request.headers,
       returnHeaders: true,
