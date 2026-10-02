@@ -20,8 +20,6 @@ import {
 /** What Better Auth (through Kysely) and this backend need from a `pg.Pool`. */
 export type PostgresBetterAuthPool = Pick<Pool, 'connect' | 'query' | 'end'>;
 
-const USER_COLUMNS = 'id, email, name, "createdAt", "updatedAt"';
-const MEMBERSHIP_COLUMNS = 'id, "organizationId", "userId", role, "createdAt"';
 // Better Auth keys every PostgreSQL row by uuid; anything else names no row,
 // and comparing it to a uuid column would raise 22P02 instead.
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -81,13 +79,17 @@ export class PostgresBetterAuthBackend implements BetterAuthDatabaseBackend {
 
   async getUser(userId: string): Promise<BetterAuthUserRecord | null> {
     if (!UUID.test(userId)) return null;
-    const [row] = await this.rows(`SELECT ${USER_COLUMNS} FROM "user" WHERE id = $1 LIMIT 1`, [userId]);
+    const [row] = await this.rows(
+      'SELECT id, email, name, "createdAt", "updatedAt" FROM "user" WHERE id = $1 LIMIT 1',
+      [userId],
+    );
     return mapBetterAuthUser(row);
   }
 
   async findUserByEmail(email: string): Promise<BetterAuthUserRecord | null> {
     const [row] = await this.rows(
-      `SELECT ${USER_COLUMNS} FROM "user" WHERE lower(email) = lower($1) LIMIT 1`,
+      `SELECT id, email, name, "createdAt", "updatedAt" FROM "user"
+       WHERE lower(email) = lower($1) LIMIT 1`,
       [email],
     );
     return mapBetterAuthUser(row);
@@ -105,7 +107,7 @@ export class PostgresBetterAuthBackend implements BetterAuthDatabaseBackend {
   async getMembership(membershipId: string): Promise<BetterAuthMembershipRecord | null> {
     if (!UUID.test(membershipId)) return null;
     const [row] = await this.rows(
-      `SELECT ${MEMBERSHIP_COLUMNS} FROM member WHERE id = $1 LIMIT 1`,
+      'SELECT id, "organizationId", "userId", role, "createdAt" FROM member WHERE id = $1 LIMIT 1',
       [membershipId],
     );
     return mapBetterAuthMembership(row);
@@ -127,7 +129,8 @@ export class PostgresBetterAuthBackend implements BetterAuthDatabaseBackend {
   async listMembershipsForUser(userId: string): Promise<BetterAuthMembershipRecord[]> {
     if (!UUID.test(userId)) return [];
     return (await this.rows(
-      `SELECT ${MEMBERSHIP_COLUMNS} FROM member WHERE "userId" = $1 ORDER BY "createdAt", id`,
+      `SELECT id, "organizationId", "userId", role, "createdAt" FROM member
+       WHERE "userId" = $1 ORDER BY "createdAt", id`,
       [userId],
     )).map(mapBetterAuthMembership).filter(isPresent);
   }
@@ -138,7 +141,7 @@ export class PostgresBetterAuthBackend implements BetterAuthDatabaseBackend {
   ): Promise<BetterAuthMembershipRecord | null> {
     if (!UUID.test(userId) || !UUID.test(organizationId)) return null;
     const [row] = await this.rows(
-      `SELECT ${MEMBERSHIP_COLUMNS} FROM member
+      `SELECT id, "organizationId", "userId", role, "createdAt" FROM member
        WHERE "userId" = $1 AND "organizationId" = $2 LIMIT 1`,
       [userId, organizationId],
     );
@@ -203,7 +206,10 @@ export class PostgresBetterAuthBackend implements BetterAuthDatabaseBackend {
  * Opens a backend whose pool lives only as long as one request or command;
  * close it when that ends. A Worker cannot reuse a socket across requests,
  * and Hyperdrive keeps the long-lived pool. Workers allow six simultaneous
- * connections, so the default leaves room for outbound fetches.
+ * connections, so the default leaves room for outbound fetches. Keep `max`
+ * at 2 or more: a Better Auth hook reads the absolute session expiry on a
+ * second connection, which could wait forever if the only connection were
+ * held by a transaction.
  */
 export function openPostgresBetterAuthBackend(config: PoolConfig): PostgresBetterAuthBackend {
   const pool = new pg.Pool({
@@ -212,7 +218,8 @@ export function openPostgresBetterAuthBackend(config: PoolConfig): PostgresBette
     allowExitOnIdle: true,
     ...config,
   });
-  // A connection that drops while idle is discarded; its next use reports the error.
+  // pg-pool removes a connection that fails while idle and opens a fresh one
+  // on next use; without a listener its 'error' event would crash Node.
   pool.on('error', () => {});
   return new PostgresBetterAuthBackend(pool);
 }

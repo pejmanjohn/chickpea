@@ -21,9 +21,6 @@ export function sqliteD1(database: DatabaseSync): D1Database {
     async run() {
       return execute(database, sql, values);
     },
-    async raw() {
-      return execute(database, sql, values).results.map((row) => Object.values(row));
-    },
     [EXECUTE]: () => execute(database, sql, values),
   });
   return {
@@ -39,6 +36,7 @@ export function sqliteD1(database: DatabaseSync): D1Database {
         throw error;
       }
     },
+    // Never called; Better Auth recognizes a D1 binding by batch, exec and prepare.
     async exec(sql: string) {
       database.exec(sql);
       return { count: 1, duration: 0 };

@@ -45,16 +45,12 @@ export class D1BetterAuthBackend implements BetterAuthDatabaseBackend {
   }
 
   async revokeOAuthGrantsForUser(userId: string): Promise<BetterAuthOAuthGrantRevocation> {
-    // A D1 batch commits or rolls back as one transaction.
-    const [accessTokens, refreshTokens, consents] = await this.database.batch(
+    // A D1 batch commits or rolls back as one transaction, one result per statement.
+    const [accessTokens = 0, refreshTokens = 0, consents = 0] = (await this.database.batch(
       ['oauthAccessToken', 'oauthRefreshToken', 'oauthConsent'].map((table) =>
         this.database.prepare(`DELETE FROM ${table} WHERE userId = ?`).bind(userId)),
-    );
-    return {
-      accessTokens: Number(accessTokens?.meta.changes ?? 0),
-      refreshTokens: Number(refreshTokens?.meta.changes ?? 0),
-      consents: Number(consents?.meta.changes ?? 0),
-    };
+    )).map((result) => Number(result.meta.changes));
+    return { accessTokens, refreshTokens, consents };
   }
 
   async getUser(userId: string): Promise<BetterAuthUserRecord | null> {

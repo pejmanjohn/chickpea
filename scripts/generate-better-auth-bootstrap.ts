@@ -15,29 +15,21 @@ export type BetterAuthBootstrapDialect = 'sqlite' | 'postgres';
 export async function generateBetterAuthBootstrapSql(
   dialect: BetterAuthBootstrapDialect = 'sqlite',
 ): Promise<string> {
-  if (dialect === 'postgres') return generatePostgresBootstrapSql();
+  if (dialect === 'postgres') {
+    return bootstrapSql(' (PostgreSQL)', await compileFreshSchema(emptyPostgresSchema()),
+      POSTGRES_CONTINUATIONS);
+  }
   const database = new DatabaseSync(':memory:');
   try {
-    const generated = await compileFreshSchema(database);
-    return [
-      `-- Generated from better-auth@${PINNED_BETTER_AUTH_VERSION} by scripts/generate-better-auth-bootstrap.ts.`,
-      '-- Fresh empty databases only. Do not edit this fixture by hand.',
-      generated,
-      '',
-      '-- Chickpea natural-key invariants absent from Better Auth 1.7.1 generation.',
-      'CREATE UNIQUE INDEX "account_providerId_accountId_uidx" ON "account" ("providerId", "accountId");',
-      'CREATE UNIQUE INDEX "member_organizationId_userId_uidx" ON "member" ("organizationId", "userId");',
-      '',
-    ].join('\n');
+    return bootstrapSql('', await compileFreshSchema(database), []);
   } finally {
     database.close();
   }
 }
 
-async function generatePostgresBootstrapSql(): Promise<string> {
-  const generated = await compileFreshSchema(emptyPostgresSchema());
+function bootstrapSql(dialectLabel: string, generated: string, chickpeaTables: string[]): string {
   return [
-    `-- Generated from better-auth@${PINNED_BETTER_AUTH_VERSION} (PostgreSQL) by scripts/generate-better-auth-bootstrap.ts.`,
+    `-- Generated from better-auth@${PINNED_BETTER_AUTH_VERSION}${dialectLabel} by scripts/generate-better-auth-bootstrap.ts.`,
     '-- Fresh empty databases only. Do not edit this fixture by hand.',
     generated,
     '',
@@ -45,18 +37,23 @@ async function generatePostgresBootstrapSql(): Promise<string> {
     'CREATE UNIQUE INDEX "account_providerId_accountId_uidx" ON "account" ("providerId", "accountId");',
     'CREATE UNIQUE INDEX "member_organizationId_userId_uidx" ON "member" ("organizationId", "userId");',
     '',
-    '-- Single-use MCP OAuth continuations. Epoch milliseconds need bigint here.',
-    'CREATE TABLE "chickpea_mcp_oauth_continuation" (',
-    '  "id_hash" text NOT NULL PRIMARY KEY,',
-    '  "authorization_path" text NOT NULL,',
-    '  "expires_at" bigint NOT NULL,',
-    '  "created_at" bigint NOT NULL',
-    ');',
-    'CREATE INDEX "chickpea_mcp_oauth_continuation_expires_idx"',
-    '  ON "chickpea_mcp_oauth_continuation" ("expires_at");',
-    '',
+    ...chickpeaTables,
   ].join('\n');
 }
+
+// SQLite gains this table in migration 0002; PostgreSQL history starts with it.
+const POSTGRES_CONTINUATIONS = [
+  '-- Single-use MCP OAuth continuations. Epoch milliseconds need bigint here.',
+  'CREATE TABLE "chickpea_mcp_oauth_continuation" (',
+  '  "id_hash" text NOT NULL PRIMARY KEY,',
+  '  "authorization_path" text NOT NULL,',
+  '  "expires_at" bigint NOT NULL,',
+  '  "created_at" bigint NOT NULL',
+  ');',
+  'CREATE INDEX "chickpea_mcp_oauth_continuation_expires_idx"',
+  '  ON "chickpea_mcp_oauth_continuation" ("expires_at");',
+  '',
+];
 
 async function compileFreshSchema(database: unknown): Promise<string> {
   const backend = { database } as unknown as BetterAuthDatabaseBackend;
