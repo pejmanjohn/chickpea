@@ -231,6 +231,16 @@ export function composioPreparationSettings(
   return platform.settings;
 }
 
+/**
+ * The provider lineage a resolved configuration stamps on managed accounts:
+ * the key's fingerprint, or zeros when no key has ever been seen.
+ */
+export function composioProviderLineage(
+  resolved: Pick<ResolvedComposioConfiguration, 'keyFingerprint' | 'lastKeyFingerprint'>,
+): string {
+  return resolved.keyFingerprint ?? resolved.lastKeyFingerprint ?? '0'.repeat(24);
+}
+
 export async function resolveComposioConfiguration(
   options: ComposioConfigurationOptions = {},
 ): Promise<ResolvedComposioConfiguration> {

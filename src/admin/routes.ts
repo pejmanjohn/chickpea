@@ -116,6 +116,7 @@ import {
   ComposioConfigurationMutationError,
   ComposioConfigurationStateError,
   composioConfigurationIsMutable,
+  composioProviderLineage,
   describeComposioConfiguration,
   disableStoredComposioConfiguration,
   resolveComposioConfiguration,
@@ -1759,7 +1760,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           c.env as PlatformEnv | undefined,
         ),
         generation: resolved.generation,
-        lineage: resolved.keyFingerprint ?? resolved.lastKeyFingerprint ?? '0'.repeat(24),
+        lineage: composioProviderLineage(resolved),
         readOnly: resolved.readOnly,
         ...platformEnv,
       };
@@ -2615,7 +2616,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const inspected = await reconcileManagedProviderAccounts(store(c), {
         adapterId: 'composio',
         generation: resolved.generation,
-        lineage: resolved.keyFingerprint ?? resolved.lastKeyFingerprint ?? '0'.repeat(24),
+        lineage: composioProviderLineage(resolved),
         inspect,
         maxInspections: 25,
       });

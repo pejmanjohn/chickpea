@@ -2,6 +2,7 @@ import { envValue } from '../config/env-value.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import {
   ComposioConfigurationStateError,
+  composioProviderLineage,
   resolveComposioConfiguration,
   type ComposioConfigurationOptions,
   type ResolvedComposioConfiguration,
@@ -370,7 +371,7 @@ export function createResolvedManagedConnectionProviderRegistry(
   return createManagedConnectionProviderRegistry([provider], {
     composio: {
       generation: resolved.generation,
-      lineage: resolved.keyFingerprint ?? resolved.lastKeyFingerprint ?? '0'.repeat(24),
+      lineage: composioProviderLineage(resolved),
     },
   });
 }

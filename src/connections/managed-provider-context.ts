@@ -1,5 +1,6 @@
 import {
   ComposioConfigurationStateError,
+  composioProviderLineage,
   resolveComposioConfiguration,
   type ComposioConfigurationOptions,
 } from '../config/composio-settings.ts';
@@ -39,7 +40,7 @@ export async function resolveManagedAuthorizationProviderContext(input: {
         input.platformEnv,
       ),
       generation: resolved.generation,
-      lineage: resolved.keyFingerprint ?? resolved.lastKeyFingerprint ?? '0'.repeat(24),
+      lineage: composioProviderLineage(resolved),
       ...platformEnv,
     };
   } catch (error) {

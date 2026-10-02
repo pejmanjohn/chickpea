@@ -13,7 +13,7 @@
  * done. It never completes the platform's reconciliation: that stays the
  * operator's, once, for the whole deployment.
  */
-import { resolveComposioConfiguration } from '../config/composio-settings.ts';
+import { composioProviderLineage, resolveComposioConfiguration } from '../config/composio-settings.ts';
 import { InstallationContextError, requireInstallationScope } from '../config/installation-scope.ts';
 import { getConfigStore, type PlatformEnv } from '../config/state-backend.ts';
 import type { ConfigStore } from '../config/store.ts';
@@ -21,13 +21,8 @@ import { ComposioPlatformConfigurationError } from './composio-setup.ts';
 import { inspectComposioConnectedAccount } from './providers/composio.ts';
 import { reconcileManagedProviderAccounts, type ManagedProviderAccountInspection } from './store.ts';
 
-type Inspect = (input: {
-  apiKey: string;
-  accountRef: string;
-  principalRef: string;
-  toolkit: string;
-  signal: AbortSignal;
-}) => Promise<ManagedProviderAccountInspection>;
+type Inspect = (input: Parameters<typeof inspectComposioConnectedAccount>[0]) =>
+  Promise<ManagedProviderAccountInspection>;
 
 export interface InstallationReconciliation {
   /** Accounts confirmed under the platform's current generation in this call. */
@@ -77,7 +72,7 @@ export async function reconcileInstallationManagedConnections(
   const now = options.now ?? Date.now;
   const config = options.config ?? getConfigStore(env);
   const inspectAccount = options.inspect ?? inspectComposioConnectedAccount;
-  const lineage = resolved.keyFingerprint ?? resolved.lastKeyFingerprint ?? '0'.repeat(24);
+  const lineage = composioProviderLineage(resolved);
   let restored = 0;
   let needsAttention = 0;
   let retryable = 0;
