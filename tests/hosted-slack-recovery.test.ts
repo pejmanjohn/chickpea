@@ -4,7 +4,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, type TestContext } from 'node:test';
 
-import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
+import {
+  InstallationContextError,
+  scopeInstallationEnv,
+} from '../src/config/installation-scope.ts';
 import {
   HOSTED_SLACK_INSTALLATION_ID,
   WORKSPACE_SLACK_INSTALLATION_ID,
@@ -14,23 +17,44 @@ import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
 import {
   invalidateSlackInstallationCredentialCache,
   promoteSlackCredentialBundle,
+  replaceUnreadableHostedSlackBotBundle,
   resolveSlackInstallationCredentials,
   SlackCredentialRecoveryOnlyError,
   SlackCredentialUnavailableError,
+  SlackInstallationCredentialRevisionError,
   stageSlackCredentialBundle,
   writeHostedSlackBotCredentials,
+  type ReplaceUnreadableHostedSlackBotBundleInput,
 } from '../src/slack/installation-credentials.ts';
 import type { CredentialKeyring } from '../src/slack/secret-envelope.ts';
 import { createSlackOwner } from './helpers/slack-owner.ts';
 
+/** The recorded replacement, if any. */
+async function replacementAudit(identity: SqliteIdentityStore) {
+  return (await identity.listAuditEvents(20)).find((event) =>
+    (JSON.parse(event.metadataJson) as { action?: string }).action === 'slack_credentials.hosted_bundle_replaced');
+}
+
 /**
- * A deployment keyring that fails to load is the deployment's problem, not
- * each installation's: under installation tenancy it latches nothing.
+ * A hosted installation whose bot-only bundle cannot be read latches
+ * recovery_only and loses Slack, Admin and sign-in. Its way out is a bot
+ * grant the host verified live from an active Owner, which replaces the
+ * unreadable bundle and clears the gate. A deployment keyring that fails to
+ * load is the deployment's problem, not each installation's, and latches
+ * nothing.
  */
 
 const APP = 'AHOSTED1';
 const TEAM = 'TTENANT1';
 const ENV = scopeInstallationEnv({ CHICKPEA_TENANCY: 'installation' }, { installationId: 'inst_tenant_a' });
+
+function grant(patch: Partial<ReplaceUnreadableHostedSlackBotBundleInput> = {}): ReplaceUnreadableHostedSlackBotBundleInput {
+  return {
+    expectedAppId: APP, expectedTeamId: TEAM, installerSlackUserId: 'U1', botToken: 'xoxb-reconnected',
+    botUserId: 'UBOT', grantedScopes: ['chat:write'], validatedAt: 1_800_000_000_000,
+    correlationId: 'recovery_correlation_1', ...patch,
+  };
+}
 
 /** A hosted installation with an Owner and a bot bundle written under `keyring`. */
 async function installation(t: TestContext, keyring: CredentialKeyring) {
@@ -46,6 +70,140 @@ async function installation(t: TestContext, keyring: CredentialKeyring) {
   });
   return { identity, owner };
 }
+
+/** Reads the bundle with `keyring`, latching recovery_only when it cannot. */
+async function latch(identity: SqliteIdentityStore, keyring: CredentialKeyring) {
+  invalidateSlackInstallationCredentialCache();
+  await assert.rejects(
+    resolveSlackInstallationCredentials(HOSTED_SLACK_INSTALLATION_ID, ENV, { state: identity, keyring, env: ENV }),
+    SlackCredentialRecoveryOnlyError,
+  );
+  assert.equal((await identity.getAuthControl())?.healthGate, 'recovery_only');
+}
+
+test('a lost key slot is replaced by the Owner\'s verified grant under the deployment\'s current key', async (t) => {
+  const retired = generateCredentialKeyring('key_v1');
+  const { identity, owner } = await installation(t, retired);
+  // The deployment now holds only a newer key; the bundle's slot is gone.
+  const current = generateCredentialKeyring('key_v2');
+  await latch(identity, current);
+  const before = await identity.getSlackCredentialControl();
+  const unreadable = await identity.getActiveSlackCredentialRevision(HOSTED_SLACK_INSTALLATION_ID);
+
+  const promoted = await replaceUnreadableHostedSlackBotBundle({ state: identity, keyring: current, env: ENV }, grant());
+  assert.equal(promoted.status, 'active');
+  assert.equal(promoted.botUserId, 'UBOT');
+  const control = await identity.getSlackCredentialControl();
+  assert.equal(control?.currentKeyId, 'key_v2');
+  assert.equal(control?.rotationEpoch, (before?.rotationEpoch ?? 0) + 1, 'the epoch moved to the current key');
+  assert.equal((await identity.getSlackCredentialRevision(HOSTED_SLACK_INSTALLATION_ID, unreadable!.revision))?.status,
+    'tombstoned');
+  assert.equal((await identity.getAuthControl())?.healthGate, 'normal', 'the gate is cleared');
+  const audit = await replacementAudit(identity);
+  assert.equal(audit?.reasonCode, 'key_missing');
+  assert.equal(audit?.actorClass, 'slack_install_grant');
+  assert.equal(audit?.actorId, owner.membership.id);
+  // Slack traffic now resolves the reconnected bot.
+  invalidateSlackInstallationCredentialCache();
+  const resolved = await resolveSlackInstallationCredentials(
+    HOSTED_SLACK_INSTALLATION_ID, ENV, { state: identity, keyring: current, env: ENV });
+  assert.equal(resolved.botToken, 'xoxb-reconnected');
+  assert.equal(resolved.connectionRevision, promoted.revision);
+});
+
+test('a bundle that no longer decrypts is replaced under the same key without a rotation', async (t) => {
+  const original = generateCredentialKeyring('key_v1');
+  const { identity } = await installation(t, original);
+  // Same key ID, different material: the envelope fails to open.
+  const replaced = { ...generateCredentialKeyring('key_v1') };
+  await latch(identity, replaced);
+  const before = await identity.getSlackCredentialControl();
+
+  await replaceUnreadableHostedSlackBotBundle({ state: identity, keyring: replaced, env: ENV }, grant());
+  const control = await identity.getSlackCredentialControl();
+  assert.equal(control?.rotationEpoch, before?.rotationEpoch, 'no rotation');
+  assert.equal((await replacementAudit(identity))?.reasonCode, 'decrypt_failed');
+  invalidateSlackInstallationCredentialCache();
+  assert.equal((await resolveSlackInstallationCredentials(
+    HOSTED_SLACK_INSTALLATION_ID, ENV, { state: identity, keyring: replaced, env: ENV })).botToken, 'xoxb-reconnected');
+});
+
+test('a replacement interrupted after its tombstone resumes on the next grant', async (t) => {
+  const retired = generateCredentialKeyring('key_v1');
+  const { identity } = await installation(t, retired);
+  const current = generateCredentialKeyring('key_v2');
+  await latch(identity, current);
+  const control = await identity.getSlackCredentialControl();
+  const active = await identity.getActiveSlackCredentialRevision(HOSTED_SLACK_INSTALLATION_ID);
+  await identity.tombstoneSlackCredentialRevision({
+    identityId: HOSTED_SLACK_INSTALLATION_ID, revision: active!.revision, expectedRotationEpoch: control!.rotationEpoch,
+  });
+  await replaceUnreadableHostedSlackBotBundle({ state: identity, keyring: current, env: ENV }, grant());
+  assert.equal((await identity.getAuthControl())?.healthGate, 'normal');
+  assert.equal((await replacementAudit(identity))?.reasonCode, 'replacement_resumed');
+});
+
+test('the replacement refuses everything but an unreadable bundle of this app and team, reconnected by an active Owner', async (t) => {
+  const retired = generateCredentialKeyring('key_v1');
+  const current = generateCredentialKeyring('key_v2');
+  const { identity, owner } = await installation(t, retired);
+  const dependencies = { state: identity, keyring: current, env: ENV };
+  const refused = (reason: RegExp, input = grant()) => assert.rejects(
+    replaceUnreadableHostedSlackBotBundle(dependencies, input),
+    (error: unknown) => error instanceof SlackInstallationCredentialRevisionError && reason.test(error.message),
+  );
+  const notOwner = /active Owner/;
+
+  // Outside recovery_only.
+  await refused(/not waiting for Slack recovery/);
+  await latch(identity, current);
+  await assert.rejects(
+    replaceUnreadableHostedSlackBotBundle({ ...dependencies, env: {} }, grant()), InstallationContextError);
+  await assert.rejects(
+    replaceUnreadableHostedSlackBotBundle(dependencies, grant({ correlationId: 'short' })), /correlation/);
+  // Another app or team than the bundle's.
+  await refused(/another Slack app or workspace/, grant({ expectedAppId: 'AOTHERAPP' }));
+  await refused(notOwner, grant({ expectedTeamId: 'TOTHER' }));
+  // Someone who is not an active Owner here.
+  await refused(notOwner, grant({ installerSlackUserId: 'U2' }));
+  const member = await identity.provisionSlackMember({ slackTeamId: TEAM, slackUserId: 'U3', displayName: 'Member' });
+  assert.equal(member.resolution.membership.role, 'member');
+  await refused(notOwner, grant({ installerSlackUserId: 'U3' }));
+  await identity.updateMembershipAuthority({
+    membershipId: owner.membership.id, status: 'suspended', authenticationSurface: 'slack_event',
+    correlationId: 'EvSuspend', reasonCode: 'slack_user_deactivated', idempotencyKey: 'suspend-owner',
+    slackTeamId: TEAM, slackUserId: 'U1', credentialRevision: 'gateway:test',
+  });
+  await refused(notOwner);
+  // Nothing changed on the way.
+  assert.equal((await identity.getAuthControl())?.healthGate, 'recovery_only');
+  assert.equal((await identity.listLiveSlackCredentialRevisions()).length, 1);
+});
+
+test('a readable bundle or a foreign live credential is never replaced as recovery', async (t) => {
+  const keyring = generateCredentialKeyring('key_v1');
+  const { identity } = await installation(t, keyring);
+  // A gate latched for another reason: the bundle still reads.
+  const control = await identity.ensureAuthControl();
+  await identity.updateAuthControl({ expectedRevision: control.revision, healthGate: 'recovery_only' });
+  await assert.rejects(
+    replaceUnreadableHostedSlackBotBundle({ state: identity, keyring, env: ENV }, grant()),
+    /can still be read/,
+  );
+  // A standalone credential in the store is not this installation's to replace.
+  const standalone = await stageSlackCredentialBundle({ state: identity, keyring }, {
+    identityId: WORKSPACE_SLACK_INSTALLATION_ID, identityClass: 'workspace_installation',
+    purpose: 'connected_credentials', expectedActiveRevision: null, appId: APP, teamId: TEAM,
+    secrets: { signingSecret: 'secret', botToken: 'xoxb-standalone' },
+  });
+  await promoteSlackCredentialBundle({ state: identity, keyring }, {
+    identityId: WORKSPACE_SLACK_INSTALLATION_ID, candidateRevision: standalone.revision, expectedActiveRevision: null,
+  });
+  await assert.rejects(
+    replaceUnreadableHostedSlackBotBundle({ state: identity, keyring: generateCredentialKeyring('key_v2'), env: ENV }, grant()),
+    /another Slack app or workspace/,
+  );
+});
 
 test('a deployment keyring that fails to load stops hosted service without latching recovery; standalone still latches', async (t) => {
   const directory = mkdtempSync(join(tmpdir(), 'chickpea-keyring-load-'));
