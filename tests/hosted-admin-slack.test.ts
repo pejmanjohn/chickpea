@@ -6,13 +6,19 @@ import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import type { CustomAgentConfig } from '../src/config/types.ts';
+import { SqliteIdentityStore } from '../src/identity/store.ts';
 import {
   agentAvatarInstallation,
   agentAvatarUrl,
   agentAvatarUrlForPresentation,
   uploadAgentAvatar,
 } from '../src/slack/agent-presence/avatar-assets.ts';
-import { testAdminAuthority } from './helpers/admin-auth.ts';
+import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
+import {
+  invalidateSlackInstallationCredentialCache,
+  writeHostedSlackBotCredentials,
+} from '../src/slack/installation-credentials.ts';
+import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
 
 const TOKEN = 'hosted-admin-slack-token';
 const ORIGIN = 'https://hosted.example';
@@ -34,11 +40,14 @@ function agent(id: string): Omit<CustomAgentConfig, 'revision'> {
 function stores(t: TestContext) {
   const config = new SqliteConfigStore(':memory:', { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
+  const identity = new SqliteIdentityStore(':memory:');
   t.after(() => {
     config.close();
     settings.close();
+    identity.close();
+    invalidateSlackInstallationCredentialCache();
   });
-  return { config, settings };
+  return { config, settings, identity };
 }
 
 test('a hosted Agent avatar URL names its installation, and a standalone one is unchanged', async (t) => {
@@ -85,4 +94,56 @@ test('the avatar route serves an installation\'s avatar only under that installa
   assert.equal(standalone.status, 200);
   assert.deepEqual(new Uint8Array(await standalone.arrayBuffer()), new Uint8Array(await hosted.arrayBuffer()));
   assert.equal((await get('/assets/i/inst_tenant_a/agents/agent_support/avatar/1', {})).status, 404);
+});
+
+test('a hosted installation\'s Slack card reports its bot and record, without the standalone app\'s fields', async (t) => {
+  const { config, settings, identity } = stores(t);
+  const keyring = generateCredentialKeyring();
+  const credentials = { state: identity, keyring };
+  await writeHostedSlackBotCredentials(credentials, null, {
+    botToken: 'xoxb-hosted-card', botUserId: 'UBOT', appId: 'AHOSTED1', teamId: 'T_TEST',
+    grantedScopes: ['chat:write'], validatedAt: Date.now(),
+  });
+  const created = await config.ensureWorkspaceInstallation({
+    workspaceId: 'T_TEST', transportMode: 'direct', teamId: 'T_TEST', appId: 'AHOSTED1', botUserId: 'UBOT',
+  });
+  await config.updateWorkspaceInstallation('T_TEST', {
+    health: 'needs_attention', healthDetail: 'events_verification_pending',
+  }, created.revision);
+  const previousFetch = globalThis.fetch;
+  const tokens: string[] = [];
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const request = input instanceof Request ? input : new Request(String(input), init);
+    assert.equal(new URL(request.url).pathname, '/api/auth.test');
+    tokens.push(request.headers.get('authorization') ?? '');
+    return Response.json({ ok: true, team_id: 'T_TEST', team: 'Tenant Workspace', user_id: 'UBOT', app_id: 'AHOSTED1' });
+  }) as typeof fetch;
+  t.after(() => { globalThis.fetch = previousFetch; });
+  const app = createAdminRoutes({
+    store: config, settings, slackCredentials: credentials, ...testAdminAuthority(TOKEN, ORIGIN, identity),
+  });
+
+  const response = await app.request(`${ORIGIN}/admin/api/slack-connection`, { headers: testAdminHeaders(TOKEN) }, ENV_A);
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), {
+    credentials: { botToken: 'stored', botUserId: 'stored' },
+    connected: true,
+    teamId: 'T_TEST',
+    teamName: 'Tenant Workspace',
+    transportMode: 'direct',
+    health: 'needs_attention',
+    healthDetail: 'events_verification_pending',
+    gateway: null,
+    hosted: true,
+  });
+  assert.deepEqual(tokens, ['Bearer xoxb-hosted-card'], 'the workspace name came from the installation\'s bot');
+
+  // The connection test and the channel picker use the same bot.
+  await app.request(`${ORIGIN}/admin/api/slack-connection/test`, { method: 'POST', headers: testAdminHeaders(TOKEN) }, ENV_A);
+  assert.deepEqual([...new Set(tokens)], ['Bearer xoxb-hosted-card']);
+
+  await config.updateWorkspaceInstallation('T_TEST', { health: 'revoked', healthDetail: 'app_uninstalled' });
+  const ended = await (await app.request(`${ORIGIN}/admin/api/slack-connection`,
+    { headers: testAdminHeaders(TOKEN) }, ENV_A)).json() as { health: string; connected: boolean };
+  assert.equal(ended.health, 'revoked');
 });

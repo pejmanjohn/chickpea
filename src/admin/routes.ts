@@ -10344,6 +10344,27 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const installation = connectedTeamId
         ? installations.find((candidate) => candidate.workspaceId === connectedTeamId)
         : installations[0];
+      if (deploymentTenancy(c.env as PlatformEnv | undefined) === 'installation') {
+        // The host owns the Slack app, its signing secret, Request URL and
+        // manifest; this installation stores only its bot.
+        if (installation && !teamInfo.teamName) {
+          const descriptor = await slackWorkspaceDescriptor(c);
+          if (descriptor?.teamId === installation.workspaceId && descriptor.teamName) {
+            teamInfo = { teamId: installation.workspaceId, teamName: descriptor.teamName };
+          }
+        }
+        return c.json({
+          credentials: { botToken: credentials.botToken, botUserId: credentials.botUserId },
+          connected: installation?.transportMode === 'direct' && credentials.botToken !== 'missing',
+          teamId: installation?.workspaceId ?? connectedTeamId ?? null,
+          teamName: teamInfo.teamName ?? null,
+          transportMode: 'direct',
+          health: installation?.health ?? 'pending',
+          healthDetail: installation?.healthDetail ?? null,
+          gateway: null,
+          hosted: true,
+        });
+      }
       const directConnected =
         credentials.botToken !== 'missing' && credentials.signingSecret !== 'missing';
       const gatewayConnected =

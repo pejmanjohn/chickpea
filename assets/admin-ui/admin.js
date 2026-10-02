@@ -2833,6 +2833,8 @@
     }
     var count = connectedAssignmentCount();
     var mutable = slackConnectionMutable();
+    // The host installs, reconnects and removes a hosted installation's app.
+    var hosted = !!state.slack.hosted;
     var connectionBusy = !!state.slackConnectionBusy;
     var slackPresentation = slackConnectionPresentation();
     var workspace = '<section class="section"><div class="section-head"><h2 class="section-title">Connected workspace</h2></div>' +
@@ -2848,17 +2850,17 @@
       '<p class="hint">Manage this Slack workspace connection.</p></div></div>' +
       '<div class="action-well">' + testButton +
       slackConnectionStatusHtml() + '</div>' + slackSessionDiagnosticsHtml() +
-      (!mutable ? '<div class="action-well"><div class="danger-copy"><span class="danger-title">Reconnect the shared Slack app</span>' +
+      (!mutable && !hosted ? '<div class="action-well"><div class="danger-copy"><span class="danger-title">Reconnect the shared Slack app</span>' +
       '<span class="hint">Refresh Slack authorization without changing Agents, Channel grants, or saved settings.</span></div>' +
       '<button type="button" class="btn btn-soft i-lead" data-action="slack-gateway-refresh"' +
       (connectionBusy ? ' disabled' : '') + '>' + (state.slackConnectionBusy === "refresh" ? '<span class="spinner"></span>Opening Slack&hellip;' : icon("arrow-path") + 'Reconnect with Slack') + '</button>' +
       (state.slackReconnectError ? '<span class="inline-status error" role="alert">' + esc(state.slackReconnectError) + '</span>' : '') +
       '<p class="hint" style="flex-basis:100%;">The Slack Owner or Admin who approves this connection grants Chickpea encrypted access only for managing Agent user groups. If that member’s Slack access changes, reconnect as another current Owner or Admin.</p></div>' : '') +
-      '<div class="danger-panel"><div class="danger-copy"><span class="danger-title">Disconnect this workspace</span>' +
+      (hosted ? '' : '<div class="danger-panel"><div class="danger-copy"><span class="danger-title">Disconnect this workspace</span>' +
       '<span class="hint">Stops Chickpea from answering. Agents and Channel configuration stay saved so you can reconnect later. This does not uninstall the Slack app.</span>' +
       (!mutable ? '<span class="hint">This connection is managed by the environment and is read-only here.</span>' : "") +
       (state.slackDisconnectError ? '<span class="inline-status error">' + esc(state.slackDisconnectError) + '</span>' : "") + '</div>' +
-      '<button type="button" class="btn btn-danger" data-action="slack-disconnect-open"' + (mutable && !connectionBusy ? "" : " disabled") + '>Disconnect</button></div></section>';
+      '<button type="button" class="btn btn-danger" data-action="slack-disconnect-open"' + (mutable && !connectionBusy ? "" : " disabled") + '>Disconnect</button></div>') + '</section>';
     return workspace + connection;
   }
 
@@ -4187,9 +4189,10 @@
   }
 
   function slackCredentialsWellHtml(conn) {
+    // A hosted installation stores only its bot; the host owns the signing secret.
     return '<div class="well"><dl>' +
       '<div class="kv"><dt>Bot token</dt><dd>' + slackSourceBadge(conn.credentials.botToken) + '</dd></div>' +
-      '<div class="kv"><dt>Signing secret</dt><dd>' + slackSourceBadge(conn.credentials.signingSecret) + '</dd></div>' +
+      (conn.hosted ? '' : '<div class="kv"><dt>Signing secret</dt><dd>' + slackSourceBadge(conn.credentials.signingSecret) + '</dd></div>') +
       '<div class="kv"><dt>Bot user ID</dt><dd>' + slackSourceBadge(conn.credentials.botUserId) + (conn.credentials.botUserId === "missing" ? ' <span class="hint">Resolved automatically (auth.test) once a bot token exists.</span>' : "") + '</dd></div>' +
       '</dl></div>';
   }

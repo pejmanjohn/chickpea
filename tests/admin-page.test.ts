@@ -14095,6 +14095,31 @@ test('shared Slack settings expose a direct authorization recovery without reope
   assert.deepEqual(harness.assignedUrls, ['https://gateway.example/install/claim_refresh']);
 });
 
+test('a hosted installation\'s Slack settings keep its bot and drop the controls of an app it does not own', async () => {
+  const hostedSlack = {
+    connected: true, health: 'healthy', healthDetail: null, transportMode: 'direct', gateway: null,
+    credentials: { botToken: 'stored', botUserId: 'stored' }, teamId: 'T_DESIGN', teamName: 'Acme Inc', hosted: true,
+  } as unknown as SlackConnectionFixture;
+  const harness = runAdminPageHarness({ initialPath: '/admin/settings/slack', slackConnection: hostedSlack });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /Acme Inc/);
+  assert.match(harness.app.innerHTML, /data-action="slack-test"/);
+  assert.doesNotMatch(harness.app.innerHTML, /Reconnect the shared Slack app|data-action="slack-gateway-refresh"/);
+  assert.doesNotMatch(harness.app.innerHTML, /Disconnect this workspace|data-action="slack-disconnect-open"/);
+
+  // Its connection details name only what the installation stores.
+  const channel = runAdminPageHarness({
+    initialPath: '/admin/channels/T_DESIGN/C0EXR3L9T',
+    slackConnection: hostedSlack,
+    assignments: [],
+    channelIndex: [],
+  });
+  await flushAsync();
+  assert.match(channel.app.innerHTML, /Connection details[\s\S]*Bot token/);
+  assert.doesNotMatch(channel.app.innerHTML, /Signing secret/);
+});
+
 test('leaving Slack settings starts the GitHub, sandbox, and outbound settings loads', async () => {
   const harness = runAdminPageHarness({
     initialPath: '/admin/settings/slack',
