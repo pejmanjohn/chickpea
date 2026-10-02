@@ -1857,6 +1857,14 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
     return task();
   };
+  // A host serving many installations owns first-run setup, recovery, Slack
+  // install and sign-in, the gateway and deployment activation; under
+  // installation tenancy those surfaces are not found, before any store read.
+  app.use('*', async (c, next) => {
+    if (deploymentTenancy(c.env as PlatformEnv | undefined) === 'installation' &&
+        standaloneOnlyRoute(c.req.method, c.req.path)) return c.notFound();
+    return next();
+  });
   // Wall-clock breakdown of the request, reported to authenticated Admin
   // callers as Server-Timing so browser resource timing can show where a
   // slow response spent its time.
@@ -2839,11 +2847,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const context = await betterAuthContext(c);
     if (context) {
       const { environment, directory, organizationId, hosted } = context;
-      // A host serving many installations routes Admin by the browser session
-      // alone; a personal token names no installation to route by, so a
-      // bearer is refused there before any session check, and the request
-      // builds no session authenticator (its Better Auth would start database
-      // work past a per-request database's lifetime).
+      // A host serving many installations routes Admin by the browser session alone.
       const refusedBearer = hosted && c.req.header('authorization') !== undefined;
       return new AuthService({
         identity: identityStore,
@@ -11602,6 +11606,29 @@ function isAdminPageGet(c: Context): boolean {
     pathname === '/admin' ||
     (pathname.startsWith('/admin/') && !pathname.startsWith('/admin/api/'))
   );
+}
+
+// Standalone-only surfaces: first-run and manual setup, recovery, the Slack
+// app's install and sign-in, the gateway, deployment activation, the QA lane
+// environment bridge, the legacy configuration cutover and the ChatGPT plan
+// handoff.
+const STANDALONE_ONLY_PREFIXES = [
+  '/admin/setup',
+  '/admin/recovery',
+  '/admin/slack-gateway',
+  '/auth/slack',
+  '/internal/deployment',
+  '/internal/environment',
+  '/admin/api/chickpea-cutover',
+  '/auth/chatgpt-plan',
+] as const;
+
+/** Whether a request names a standalone-only surface, however its path repeats or ends in slashes. */
+function standaloneOnlyRoute(method: string, path: string): boolean {
+  const canonical = path.replace(/\/{2,}/g, '/').replace(/(.)\/$/, '$1');
+  // Removing the stored Slack credentials is the host's installation lifecycle.
+  if (method === 'DELETE' && canonical === '/admin/api/slack-connection') return true;
+  return STANDALONE_ONLY_PREFIXES.some((prefix) => canonical === prefix || canonical.startsWith(`${prefix}/`));
 }
 
 function permissionForAdminRequest(c: Context, _principal: AuthPrincipal): Permission {
