@@ -49,6 +49,9 @@ export function withBetterAuthBackend<E extends PlatformEnv>(
   env: E,
   backend: BetterAuthDatabaseBackend,
 ): E {
+  const current = hostBetterAuthBackend(env);
+  if (current === backend) return env;
+  if (current) throw new Error('The env already carries another Better Auth backend.');
   return Object.freeze({ ...env, [HOST_BACKEND]: backend });
 }
 

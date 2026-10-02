@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { test, type TestContext } from 'node:test';
+import { test } from 'node:test';
 
 import type { BetterAuthDatabaseBackend } from '../src/auth/better-auth-backend.ts';
 import { D1BetterAuthBackend } from '../src/auth/better-auth-cloudflare.ts';
@@ -26,15 +26,6 @@ const ACTIVE_CONTROL = {
   betterAuthOrganizationId: 'organization-1',
 } as AuthControl;
 
-function onCloudflare(t: TestContext): void {
-  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
-  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { userAgent: 'Cloudflare-Workers' } });
-  t.after(() => {
-    if (descriptor) Object.defineProperty(globalThis, 'navigator', descriptor);
-    else Reflect.deleteProperty(globalThis, 'navigator');
-  });
-}
-
 test('a host backend attached to the request env serves Better Auth there, scope or not', async () => {
   const env = scopeInstallationEnv(HOSTED as Record<string, unknown>, { installationId: 'inst_a' });
   const attached = withBetterAuthBackend(env, HOST_BACKEND);
@@ -54,10 +45,20 @@ test('a host backend attached to the request env serves Better Auth there, scope
   }
   // The env it was attached to is unchanged and still has none.
   assert.equal(await resolveBetterAuthEnvironment({ control: ACTIVE_CONTROL, platformEnv: env }), undefined);
+  // Attaching the same backend again changes nothing; another one is refused.
+  assert.equal(withBetterAuthBackend(attached, HOST_BACKEND), attached);
+  const other = { database: {} } as unknown as BetterAuthDatabaseBackend;
+  assert.throws(() => withBetterAuthBackend(attached, other), /already carries another Better Auth backend/);
+  assert.throws(() => withBetterAuthBackend(scopedLater, other), /already carries another Better Auth backend/);
 });
 
 test('a deployment serving many installations never falls back to a deployment-wide auth database', async (t) => {
-  onCloudflare(t);
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { userAgent: 'Cloudflare-Workers' } });
+  t.after(() => {
+    if (descriptor) Object.defineProperty(globalThis, 'navigator', descriptor);
+    else Reflect.deleteProperty(globalThis, 'navigator');
+  });
   const standalone = await resolveBetterAuthBootstrapEnvironment({
     canonicalOrigin: ORIGIN,
     platformEnv: { AUTH_DB, CHICKPEA_AUTH_SECRET: AUTH_SECRET },
