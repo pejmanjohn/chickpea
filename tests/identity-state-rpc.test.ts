@@ -181,6 +181,31 @@ test('Cloudflare proxy forwards an installer first-Owner reservation', async () 
   assert.deepEqual(calls, [{ kind: 'reserve_installer_owner', input }]);
 });
 
+test('Cloudflare proxy forwards a host sign-in admission and its browser binding', async () => {
+  const calls: IdentityRpcRequest[] = [];
+  const input = { capabilityHash: 'c'.repeat(64), slackTeamId: 'T_ACME', slackUserId: 'U_MEMBER', expiresAt: 20 };
+  const operation = {
+    id: 'authop_login', kind: 'login' as const, organizationId: 'org_acme',
+    expectedSlackTeamId: 'T_ACME', expectedSlackUserId: 'U_MEMBER', chickpeaRole: 'member' as const,
+    capabilityHash: 'c'.repeat(64), status: 'reserved' as const, step: 0,
+    betterAuthUserId: null, betterAuthOrganizationId: null, betterAuthMembershipId: null,
+    chickpeaMembershipId: null, expiresAt: 20, activatedAt: null, tombstonedAt: null,
+    createdAt: 10, updatedAt: 10,
+  };
+  const store = new CfIdentityStore(rpcStub(calls, { kind: 'auth_operation', operation }));
+  assert.deepEqual(await store.admitSlackLogin(input), operation);
+  assert.deepEqual(calls, [{ kind: 'admit_slack_login', input }]);
+
+  const bindingCalls: IdentityRpcRequest[] = [];
+  const bindStore = new CfIdentityStore(rpcStub(bindingCalls, { kind: 'identity_resolution', resolution }));
+  const bindInput = {
+    operationId: 'authop_login', capabilityHash: 'c'.repeat(64), slackTeamId: 'T_ACME', slackUserId: 'U_MEMBER',
+    betterAuthUserId: 'ba_user_member', betterAuthOrganizationId: 'ba_org', betterAuthMembershipId: 'ba_member_member',
+  };
+  assert.deepEqual(await bindStore.bindSlackLoginBrowserIdentity(bindInput), resolution);
+  assert.deepEqual(bindingCalls, [{ kind: 'bind_slack_login_browser_identity', input: bindInput }]);
+});
+
 test('Cloudflare proxy forwards encrypted credential revisions without projection changes', async () => {
   const calls: IdentityRpcRequest[] = [];
   const input = {

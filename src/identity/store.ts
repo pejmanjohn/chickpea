@@ -12,6 +12,7 @@ import type {
   AdvanceAuthOperationInput,
   ActivateInvitationInput,
   ActivateFirstOwnerInput,
+  AdmitSlackLoginInput,
   AdmitSlackOidcAttemptInput,
   AcquireSlackOidcAttemptInput,
   AcquireSlackRecoveryOAuthInput,
@@ -21,6 +22,7 @@ import type {
   AuthRateLimitState,
   BeginSlackAppCreationInput,
   BeginSlackCredentialRotationInput,
+  BindSlackLoginBrowserIdentityInput,
   BindSlackMemberBrowserIdentityInput,
   BrowserSessionRecord,
   ClaimOwnerInput,
@@ -165,6 +167,7 @@ export class IdentityStoreLogic {
       case 'acquire_slack_oidc_attempt': return { kind: 'slack_oidc_attempt', attempt: this.acquireSlackOidcAttempt(request.input) };
       case 'admit_slack_oidc_attempt': return { kind: 'auth_operation', operation: this.admitSlackOidcAttempt(request.input) };
       case 'settle_slack_oidc_attempt': return { kind: 'slack_oidc_attempt', attempt: this.settleSlackOidcAttempt(request.input) };
+      case 'admit_slack_login': return { kind: 'auth_operation', operation: this.admitSlackLogin(request.input) };
       case 'create_auth_operation': return { kind: 'auth_operation', operation: this.createAuthOperation(request.input) };
       case 'reserve_pending_auth_operation': {
         const result = this.reservePendingAuthOperation(request.input);
@@ -191,6 +194,9 @@ export class IdentityStoreLogic {
       };
       case 'bind_slack_member_browser_identity': return {
         kind: 'identity_resolution', resolution: this.bindSlackMemberBrowserIdentity(request.input),
+      };
+      case 'bind_slack_login_browser_identity': return {
+        kind: 'identity_resolution', resolution: this.bindSlackLoginBrowserIdentity(request.input),
       };
       case 'resolve_slack_identity': return { kind: 'identity_resolution', resolution: this.resolveSlackIdentity(request.slackTeamId, request.slackUserId, request.organizationId) ?? null };
       case 'resolve_better_auth_identity': return { kind: 'identity_resolution', resolution: this.resolveBetterAuthIdentity(request.betterAuthUserId, request.organizationId) ?? null };
@@ -1719,32 +1725,7 @@ export class IdentityStoreLogic {
           expiresAt: input.expiresAt,
         });
       } else {
-        const resolution = this.resolveSlackIdentity(teamId, userId);
-        if (!resolution || resolution.membership.status !== 'active') {
-          throw identityError('auth_operation_unavailable', 'Slack identity is not admitted.');
-        }
-        const row = this.db.get(
-          `SELECT * FROM identity_auth_operations
-           WHERE chickpea_membership_id = ? AND status = 'active'
-           ORDER BY activated_at DESC LIMIT 1`,
-          resolution.membership.id,
-        );
-        if (row) {
-          operation = authOperationFromRow(row);
-        } else if (resolution.membership.role === 'member' &&
-            !resolution.binding.betterAuthUserId && !resolution.binding.betterAuthMembershipId) {
-          operation = this.createAuthOperation({
-            kind: 'login',
-            organizationId: resolution.membership.organizationId,
-            expectedSlackTeamId: teamId,
-            expectedSlackUserId: userId,
-            chickpeaRole: 'member',
-            capabilityHash: input.capabilityHash,
-            expiresAt: input.expiresAt,
-          });
-        } else {
-          throw identityError('auth_operation_unavailable', 'Slack authority is not active.');
-        }
+        operation = this.admitMemberLogin(teamId, userId, input.capabilityHash, input.expiresAt);
       }
       const changed = this.db.run(
         `UPDATE identity_slack_oidc_attempts SET status = 'admitted', operation_id = ?,
@@ -1755,6 +1736,56 @@ export class IdentityStoreLogic {
       if (changed !== 1) throw identityError('auth_operation_conflict', 'Slack OIDC admission changed concurrently.');
       return operation;
     });
+  }
+
+  /**
+   * A host's sign-in of a person it verified with its own Sign in with Slack
+   * attempt, admitted as a standalone login attempt is: an active membership
+   * with an active operation signs in through it again, and an active Member
+   * provisioned from Slack who never signed in gets a login operation for
+   * bindSlackLoginBrowserIdentity; anyone else is refused. The same person's
+   * new sign-in replaces their unfinished one, so an interrupted sign-in
+   * never locks them out.
+   */
+  admitSlackLogin(input: AdmitSlackLoginInput): AuthOperation {
+    return this.db.transaction(() => {
+      const teamId = slackId(input.slackTeamId, 'Slack team ID');
+      const userId = slackId(input.slackUserId, 'Slack user ID');
+      this.db.run(
+        `UPDATE identity_auth_operations SET status = 'expired', updated_at = ?
+         WHERE kind = 'login' AND expected_slack_team_id = ? AND expected_slack_user_id = ?
+           AND status IN ('reserved', 'reconciling')`,
+        this.now(), teamId, userId,
+      );
+      return this.admitMemberLogin(teamId, userId, input.capabilityHash, input.expiresAt);
+    });
+  }
+
+  private admitMemberLogin(teamId: string, userId: string, capabilityHash: string, expiresAt: number): AuthOperation {
+    const resolution = this.resolveSlackIdentity(teamId, userId);
+    if (!resolution || resolution.membership.status !== 'active') {
+      throw identityError('auth_operation_unavailable', 'Slack identity is not admitted.');
+    }
+    const row = this.db.get(
+      `SELECT * FROM identity_auth_operations
+       WHERE chickpea_membership_id = ? AND status = 'active'
+       ORDER BY activated_at DESC LIMIT 1`,
+      resolution.membership.id,
+    );
+    if (row) return authOperationFromRow(row);
+    if (resolution.membership.role === 'member' &&
+        !resolution.binding.betterAuthUserId && !resolution.binding.betterAuthMembershipId) {
+      return this.createAuthOperation({
+        kind: 'login',
+        organizationId: resolution.membership.organizationId,
+        expectedSlackTeamId: teamId,
+        expectedSlackUserId: userId,
+        chickpeaRole: 'member',
+        capabilityHash,
+        expiresAt,
+      });
+    }
+    throw identityError('auth_operation_unavailable', 'Slack authority is not active.');
   }
 
   settleSlackOidcAttempt(input: SettleSlackOidcAttemptInput): SlackOidcAttempt {
@@ -2211,57 +2242,79 @@ export class IdentityStoreLogic {
       if (attempt.purpose !== 'login' || attempt.status !== 'admitted' ||
           attempt.leaseGeneration !== input.expectedOidcLeaseGeneration ||
           attempt.operationId !== operation.id || attempt.admittedTeamId !== teamId ||
-          attempt.admittedSlackUserId !== slackUserId || operation.kind !== 'login' ||
-          operation.status !== 'reserved' || operation.chickpeaRole !== 'member' ||
-          !operation.organizationId ||
-          operation.capabilityHash !== credentialHash(input.capabilityHash) ||
-          operation.expectedSlackTeamId !== teamId || operation.expectedSlackUserId !== slackUserId) {
+          attempt.admittedSlackUserId !== slackUserId ||
+          !bindableLoginOperation(operation, input.capabilityHash, teamId, slackUserId)) {
         throw identityError('auth_operation_conflict', 'Slack member browser binding authority changed.');
       }
-      const resolution = this.requiredResolution(teamId, slackUserId, operation.organizationId);
-      if (resolution.membership.status !== 'active' || resolution.membership.role !== 'member' ||
-          resolution.binding.betterAuthUserId || resolution.binding.betterAuthMembershipId) {
-        throw identityError('external_identity_conflict', 'Slack member browser identity is already bound.');
-      }
-      const control = this.requiredAuthControl(this.installation().installationId);
-      if (!control.betterAuthOrganizationId ||
-          control.betterAuthOrganizationId !== input.betterAuthOrganizationId) {
-        throw identityError('external_identity_conflict', 'Browser organization identity does not match.');
-      }
-      const at = input.at ?? this.now();
-      try {
-        this.db.run(
-          `UPDATE identity_slack_bindings SET better_auth_user_id = ?,
-            better_auth_membership_id = ?, revision = revision + 1, updated_at = ?
-           WHERE binding_id = ? AND better_auth_user_id IS NULL AND better_auth_membership_id IS NULL`,
-          nonEmpty(input.betterAuthUserId, 'Better Auth user ID'),
-          nonEmpty(input.betterAuthMembershipId, 'Better Auth membership ID'),
-          at, resolution.binding.id,
-        );
-      } catch {
-        throw identityError('external_identity_conflict', 'Browser identity is already bound elsewhere.');
-      }
-      this.db.run(
-        `UPDATE identity_users SET contact_email = ?, updated_at = ? WHERE user_id = ?`,
-        input.contactEmail === undefined
-          ? resolution.user.contactEmail
-          : cleanContactEmail(input.contactEmail),
-        at, resolution.user.id,
-      );
-      const changed = this.db.run(
-        `UPDATE identity_auth_operations SET status = 'active', step = 1,
-          better_auth_user_id = ?, better_auth_organization_id = ?,
-          better_auth_membership_id = ?, chickpea_membership_id = ?,
-          activated_at = ?, updated_at = ?
-         WHERE operation_id = ? AND status = 'reserved'`,
-        input.betterAuthUserId, input.betterAuthOrganizationId, input.betterAuthMembershipId,
-        resolution.membership.id, at, at, operation.id,
-      ).changes;
-      if (changed !== 1) {
-        throw identityError('auth_operation_conflict', 'Slack member browser binding changed concurrently.');
-      }
-      return this.requiredResolution(teamId, slackUserId, resolution.membership.organizationId);
+      return this.bindLoginBrowserIdentity(operation, teamId, slackUserId, input);
     });
+  }
+
+  /** Binds the browser identity of a login operation `admitSlackLogin` admitted, while it is live. */
+  bindSlackLoginBrowserIdentity(input: BindSlackLoginBrowserIdentityInput): IdentityResolution {
+    return this.db.transaction(() => {
+      const operation = this.requiredAuthOperation(input.operationId);
+      const teamId = slackId(input.slackTeamId, 'Slack team ID');
+      const slackUserId = slackId(input.slackUserId, 'Slack user ID');
+      if (!bindableLoginOperation(operation, input.capabilityHash, teamId, slackUserId)) {
+        throw identityError('auth_operation_conflict', 'Slack member browser binding authority changed.');
+      }
+      if (operation.expiresAt <= (input.at ?? this.now())) {
+        throw identityError('auth_operation_expired', 'Authentication operation has expired.');
+      }
+      return this.bindLoginBrowserIdentity(operation, teamId, slackUserId, input);
+    });
+  }
+
+  private bindLoginBrowserIdentity(
+    operation: AuthOperation & { organizationId: string },
+    teamId: string,
+    slackUserId: string,
+    input: BindSlackLoginBrowserIdentityInput,
+  ): IdentityResolution {
+    const resolution = this.requiredResolution(teamId, slackUserId, operation.organizationId);
+    if (resolution.membership.status !== 'active' || resolution.membership.role !== 'member' ||
+        resolution.binding.betterAuthUserId || resolution.binding.betterAuthMembershipId) {
+      throw identityError('external_identity_conflict', 'Slack member browser identity is already bound.');
+    }
+    const control = this.requiredAuthControl(this.installation().installationId);
+    if (!control.betterAuthOrganizationId ||
+        control.betterAuthOrganizationId !== input.betterAuthOrganizationId) {
+      throw identityError('external_identity_conflict', 'Browser organization identity does not match.');
+    }
+    const at = input.at ?? this.now();
+    try {
+      this.db.run(
+        `UPDATE identity_slack_bindings SET better_auth_user_id = ?,
+          better_auth_membership_id = ?, revision = revision + 1, updated_at = ?
+         WHERE binding_id = ? AND better_auth_user_id IS NULL AND better_auth_membership_id IS NULL`,
+        nonEmpty(input.betterAuthUserId, 'Better Auth user ID'),
+        nonEmpty(input.betterAuthMembershipId, 'Better Auth membership ID'),
+        at, resolution.binding.id,
+      );
+    } catch {
+      throw identityError('external_identity_conflict', 'Browser identity is already bound elsewhere.');
+    }
+    this.db.run(
+      `UPDATE identity_users SET contact_email = ?, updated_at = ? WHERE user_id = ?`,
+      input.contactEmail === undefined
+        ? resolution.user.contactEmail
+        : cleanContactEmail(input.contactEmail),
+      at, resolution.user.id,
+    );
+    const changed = this.db.run(
+      `UPDATE identity_auth_operations SET status = 'active', step = 1,
+        better_auth_user_id = ?, better_auth_organization_id = ?,
+        better_auth_membership_id = ?, chickpea_membership_id = ?,
+        activated_at = ?, updated_at = ?
+       WHERE operation_id = ? AND status = 'reserved'`,
+      input.betterAuthUserId, input.betterAuthOrganizationId, input.betterAuthMembershipId,
+      resolution.membership.id, at, at, operation.id,
+    ).changes;
+    if (changed !== 1) {
+      throw identityError('auth_operation_conflict', 'Slack member browser binding changed concurrently.');
+    }
+    return this.requiredResolution(teamId, slackUserId, resolution.membership.organizationId);
   }
 
   private claimOwnerInTransaction(input: ClaimOwnerInput): IdentityResolution {
@@ -3000,6 +3053,19 @@ export class SqliteIdentityStore {
     });
     return _conforms as unknown as SqliteIdentityStore;
   }
+}
+
+/** A Member's reserved login operation, for this capability and Slack tuple. */
+function bindableLoginOperation(
+  operation: AuthOperation,
+  capabilityHash: string,
+  teamId: string,
+  slackUserId: string,
+): operation is AuthOperation & { organizationId: string } {
+  return operation.kind === 'login' && operation.status === 'reserved' &&
+    operation.chickpeaRole === 'member' && Boolean(operation.organizationId) &&
+    operation.capabilityHash === credentialHash(capabilityHash) &&
+    operation.expectedSlackTeamId === teamId && operation.expectedSlackUserId === slackUserId;
 }
 
 function validateOperationInput(input: CreateAuthOperationInput): void {

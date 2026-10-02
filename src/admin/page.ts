@@ -126,8 +126,12 @@ interface SlackAuthWorkspace {
   teamName?: string;
 }
 
-/** Shared, self-contained shell for every visible Slack identity journey. */
-function renderSlackJourneyPage(input: {
+/**
+ * Shared, self-contained shell for every visible Slack identity journey,
+ * including a host's own sign-in pages. Text fields are escaped; `body` is
+ * trusted HTML the caller built.
+ */
+export function renderSlackJourneyPage(input: {
   surface: string;
   eyebrow: string;
   title: string;

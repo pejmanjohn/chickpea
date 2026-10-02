@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import { createBetterAuth } from '../src/auth/better-auth.ts';
 import { NodeBetterAuthBackend } from '../src/auth/better-auth-node.ts';
 import { BetterAuthDirectory } from '../src/auth/better-auth-principal.ts';
-import { activateInstallerOwner } from '../src/auth/installer-owner.ts';
+import { activateInstallerOwner, claimInstallerOwner } from '../src/auth/installer-owner.ts';
 import type { SlackOidcProof } from '../src/auth/slack-oidc.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
 
@@ -196,6 +196,32 @@ test('each installation has its own Better Auth organization, and an Owner resol
       "another installation's session never resolves here");
   } finally {
     for (const store of [original, reinstalled, beta]) store.close();
+    backend.close();
+  }
+});
+
+test('claiming the first Owner issues no session; activating once the host is ready signs them in', async () => {
+  const identity = hostedStore('org_claim');
+  const backend = new NodeBetterAuthBackend(':memory:');
+  const environment = { backend, baseURL: ORIGIN, secret: SECRET };
+  const sessions = () => backend.database.prepare('SELECT COUNT(*) AS count FROM session').get()?.count;
+  try {
+    const input = { identity, environment, proof: OWNER, installGrant: GRANT, capability: CAPABILITY, now: () => NOW };
+    await assert.rejects(claimInstallerOwner({ ...input, installGrant: { ...GRANT, installerSlackUserId: 'USOMEONE' } }),
+      code('user_mismatch'));
+    await claimInstallerOwner(input);
+    assert.equal((await identity.getOwnerClaim())?.status, 'active');
+    assert.equal(sessions(), 0, 'no session exists until the host asks for one');
+    // Claiming again is the same Owner's; anyone else is refused.
+    await claimInstallerOwner(input);
+    await assert.rejects(claimInstallerOwner({
+      ...input, proof: { ...OWNER, slackUserId: 'USECOND' }, installGrant: { ...GRANT, installerSlackUserId: 'USECOND' },
+    }), code('owner_already_claimed'));
+    const response = await activateInstallerOwner({ ...input, request: new Request(`${ORIGIN}/auth/slack/install/callback`) });
+    assert.match(response.headers.get('set-cookie') ?? '', /session_token/);
+    assert.equal(sessions(), 1);
+  } finally {
+    identity.close();
     backend.close();
   }
 });
