@@ -41,6 +41,7 @@ import { parseSlackArtifactReceipts } from './artifact-receipts.ts';
 import { parseSlackAgentCreationTerminalIntents } from './agent-creation-terminal.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
 import { schemaInstallRequired, type StateDb } from '../state/state-db.ts';
+import type { InstallationObjectRecorder } from '../state/object-inventory.ts';
 import type { SlackRuntimeDrainCounts } from '../config/state-rpc.ts';
 import type { SlackTurnRecoveryItem } from '../config/state-rpc.ts';
 import type { RunExecutionAuthority } from '../work/types.ts';
@@ -306,6 +307,12 @@ export class TurnJobStoreLogic {
   constructor(
     private readonly db: StateDb,
     private readonly now: () => number = Date.now,
+    /**
+     * Where a store serving one installation of many records the objects its
+     * turns address (state/object-inventory.ts): a thread's runner when the
+     * turn is enqueued, its Flue instance when the plan is frozen.
+     */
+    private readonly objects?: InstallationObjectRecorder,
   ) {
     if (!schemaInstallRequired(db)) return;
     db.exec(
@@ -532,6 +539,8 @@ export class TurnJobStoreLogic {
     const messageTs = validSlackTs(job.turn.messageTs) ? job.turn.messageTs : null;
     const executionAuthority = job.executionAuthority ?? 'legacy';
     const receipt = executionAuthority === 'legacy' ? midRunReceiptOf(job) : undefined;
+    // Before the row: once a turn exists, its runner may be addressed.
+    this.objects?.recordThreadRunner(runnerKeyOf(job));
     const inserted = this.db.run(
       `INSERT OR IGNORE INTO turn_jobs (
         id, evt_key, msg_key, turn_json, assignment_json, run_id, execution_authority,
@@ -1339,6 +1348,7 @@ export class TurnJobStoreLogic {
       const current = this.getFrozenRuntimePlan(id);
       if (current) return current;
       const instanceId = deriveRuntimePlanInstanceId(plan);
+      this.objects?.recordAgentInstance('slack_agent', instanceId);
       const updated = this.db.run(
         `UPDATE turn_jobs
          SET runtime_plan_json = ?, agent_instance_id = ?
@@ -2429,7 +2439,7 @@ function keyStopThreadRow(
 }
 
 /** The thread runner a row's turn runs on (owner incarnation included). */
-function runnerKeyOf(job: Pick<PendingTurnJob, 'turn' | 'assignment'>): string {
+export function runnerKeyOf(job: Pick<PendingTurnJob, 'turn' | 'assignment'>): string {
   try {
     return slackAgentThreadKey(job.turn, job.assignment);
   } catch {

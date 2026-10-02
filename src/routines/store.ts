@@ -7,6 +7,7 @@ import { promisify } from '../state/async-facade.ts';
 import { openStateDb, resolveStateDbPath } from '../state/node-state-db.ts';
 import { addColumnIfMissing, installLedgerLinks } from '../state/schema-links.ts';
 import { schemaInstallRequired, type SqlParam, type StateDb } from '../state/state-db.ts';
+import type { InstallationObjectRecorder } from '../state/object-inventory.ts';
 import {
   hashRoutineValue,
   isOpaqueRoutineId,
@@ -319,6 +320,8 @@ export class RoutineStoreLogic {
   constructor(
     private readonly db: StateDb,
     private readonly now: () => number = Date.now,
+    /** Records each attempt's Flue instance on a store serving one installation of many. */
+    private readonly objects?: InstallationObjectRecorder,
   ) {
     this.audit = new AuditStoreLogic(db);
     if (schemaInstallRequired(db)) this.initializeSchema();
@@ -2096,6 +2099,8 @@ export class RoutineStoreLogic {
         );
         return 'superseded';
       }
+      // Before the envelope: once it is saved, the attempt's instance may be addressed.
+      this.objects?.recordAgentInstance('routine_agent', input.envelope.instanceId);
       this.db.run(
         `UPDATE routine_runs SET status = 'running', started_at = ?,
            resolved_access_hash = ?, resolved_agent_id = ?,
