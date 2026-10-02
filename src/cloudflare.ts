@@ -3343,7 +3343,7 @@ function localManagementRuntime(
         memory: local.memory,
         routines: local.routines,
         work: local.work,
-        setupBaseUrl: () => resolveSlackPublicUrl(platformEnv, settings, local.identity),
+        setupBaseUrl: () => resolveSlackPublicUrl(platformEnv, settings),
       },
     }),
   };

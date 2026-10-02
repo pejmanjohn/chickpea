@@ -990,6 +990,8 @@ async function resolvedAgentAvatarUrl(
 ): Promise<string | undefined> {
   const installationId = agentAvatarInstallation(platformEnv);
   if (agent.slackPresence?.avatar.url && !installationId) return agent.slackPresence.avatar.url;
+  // Every admitted turn and App Home seed passes here first, with the
+  // request's (or the state store's local) stores: the one backfill point.
   const origin = await resolveSlackPublicUrl(platformEnv, stores.settings, stores.identity);
   return agentAvatarUrlForPresentation(agent, origin, installationId);
 }
@@ -2048,11 +2050,7 @@ function privateChannelSetupService(execution: PrivateChannelSetupExecution): Pr
 }
 
 async function privateChannelSetupAdminUrl(execution: PrivateChannelSetupExecution): Promise<string | undefined> {
-  const origin = await resolveSlackPublicUrl(
-    execution.platformEnv,
-    execution.stores.settings,
-    execution.stores.identity,
-  );
+  const origin = await resolveSlackPublicUrl(execution.platformEnv, execution.stores.settings);
   return origin ? new URL('/admin/agents', origin).toString() : undefined;
 }
 

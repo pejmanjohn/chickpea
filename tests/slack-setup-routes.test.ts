@@ -506,9 +506,12 @@ test('public bot-install routes use an independent narrow browser cookie and nev
       },
     });
     const env = setupEnv(authority);
+    assert.equal(await settings.getSetting('slack.publicUrl'), undefined);
     await postSetup(app, env, {
       action: 'open', capability: authority.capability, destination: '/admin/channels',
     });
+    // The origin setup pins is the Slack public URL; nothing later must read it from identity.
+    assert.equal(await settings.getSetting('slack.publicUrl'), ORIGIN);
     await postSetup(app, env, {
       action: 'create', capability: authority.capability, destination: '/admin/channels',
       configurationToken: CONFIG_TOKEN,

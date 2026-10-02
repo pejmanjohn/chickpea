@@ -7,7 +7,6 @@ import {
 import type { SettingsStore } from '../config/settings-store.ts';
 import type { IdentityStore } from '../identity/types.ts';
 import {
-  getIdentityStore,
   getSettingsStore,
   type PlatformEnv,
 } from '../config/state-backend.ts';
@@ -162,18 +161,16 @@ export async function readSlackConnectionRevision(
   )).connectionRevision;
 }
 
-// --- Public URL resolution (env > stored > canonical Admin origin) ----------
+// --- Public URL resolution (env > stored) -----------------------------------
 //
 // The "Configure" reply-footer / onboarding deep link needs the install's own
 // public origin. On a Node deploy the operator usually sets SLACK_TAG_PUBLIC_URL;
-// on a Cloudflare button deploy nobody does, so the admin persists the origin it
-// resolved for the manifest link (slack.publicUrl) and this resolver reads it as
-// the fallback. An install signed in through Slack never makes that unsigned
-// Admin request; its setup pinned the canonical Admin origin instead, the
-// origin its manifest's Request URLs name, and that is the last fallback.
-// Env still wins outright. Cached briefly per isolate like the cred resolver
-// so the events hot path pays no store read per turn, one entry per
-// installation.
+// on a Cloudflare button deploy nobody does, so the origin is persisted
+// (slack.publicUrl) and this resolver reads it as the fallback: Admin stores
+// the origin of an unsigned request, and each Slack setup step stores the
+// canonical origin it pins. Env still wins outright. Cached briefly per
+// isolate like the cred resolver so the events hot path pays no store read per
+// turn, one entry per installation.
 
 const MAX_PUBLIC_URL_CACHE_ENTRIES = 64;
 const publicUrlCache = new Map<string, { expiresAt: number; value: string | undefined }>();
@@ -193,11 +190,12 @@ function envPublicUrl(env?: PlatformEnv): string | undefined {
 
 /**
  * Resolve the install's public origin: `SLACK_TAG_PUBLIC_URL` (env) → stored
- * `slack.publicUrl` → a standalone install's canonical Admin origin →
- * undefined. An explicit `store` bypasses the cache (tests); otherwise the
- * stored read is cached for the TTL. Env is never cached — a process env is
- * already a cheap read and must reflect changes immediately. A caller inside
- * the state store passes its local `identity`, as it passes its settings.
+ * `slack.publicUrl` → undefined. A caller holding its own settings (a request's
+ * stores, the state store's local ones, a runner's prefetch) passes `store`,
+ * which is read directly; otherwise the stored read is cached for the TTL. Env
+ * is never cached — a process env is already a cheap read and must reflect
+ * changes immediately. A caller that passes `identity` also backfills an
+ * install set up before setup stored the URL (see backfillCanonicalAdminOrigin).
  */
 export async function resolveSlackPublicUrl(
   env?: PlatformEnv,
@@ -216,23 +214,32 @@ export async function resolveSlackPublicUrl(
   }
   const settings = store ?? getSettingsStore(env);
   const stored = await settings.getSetting(SLACK_SETTING_KEYS.publicUrl);
-  const value = stored ? stored.replace(/\/+$/, '') : await canonicalAdminOrigin(env, identity);
+  const value = stored
+    ? stored.replace(/\/+$/, '')
+    : identity ? await backfillCanonicalAdminOrigin(env, settings, identity) : undefined;
   if (!store) cachePublicUrl(key, value, now);
   return value;
 }
 
-/** The Admin origin a standalone install's setup pinned; a host names its own URL. */
-async function canonicalAdminOrigin(
-  env?: PlatformEnv,
-  identity?: Pick<IdentityStore, 'getAuthControl'>,
+/**
+ * Store, once, the canonical Admin origin a standalone install pinned before
+ * its setup steps stored it as the public URL: an install signed in through
+ * Slack never makes the unsigned Admin request that would. After this the
+ * stored read answers and no identity read happens. A host names its own URL.
+ */
+async function backfillCanonicalAdminOrigin(
+  env: PlatformEnv | undefined,
+  settings: SettingsStore,
+  identity: Pick<IdentityStore, 'getAuthControl'>,
 ): Promise<string | undefined> {
-  try {
-    if (deploymentServesManyInstallations(env)) return undefined;
-    return (await (identity ?? getIdentityStore(env)).getAuthControl())?.canonicalAdminOrigin ??
-      undefined;
-  } catch {
-    return undefined;
-  }
+  if (deploymentServesManyInstallations(env)) return undefined;
+  const origin = (await identity.getAuthControl())?.canonicalAdminOrigin ?? undefined;
+  if (!origin) return undefined;
+  await settings.applySettingsPatch({
+    expected: { key: SLACK_SETTING_KEYS.publicUrl, value: null },
+    set: [{ key: SLACK_SETTING_KEYS.publicUrl, value: origin }],
+  });
+  return origin;
 }
 
 /** Prime the public-URL cache so the isolate that stored it resolves it now. */
