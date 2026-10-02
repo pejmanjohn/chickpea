@@ -2,6 +2,7 @@ import { openStateDb, resolveStateDbPath } from '../state/node-state-db.ts';
 import { promisify } from '../state/async-facade.ts';
 import { schemaInstallRequired, type StateDb } from '../state/state-db.ts';
 import type { SlackSecretEnvelope } from '../slack/secret-envelope.ts';
+import { modelCredentialRevision, modelCredentialSettingKeys } from './model-credential-settings.ts';
 
 export interface EncryptedCredentialRevision {
   key: string;
@@ -27,6 +28,53 @@ export interface EncryptedCredentialStore {
     input: ReplaceEncryptedCredentialRevisionInput,
   ): Promise<EncryptedCredentialRevision | undefined>;
   deleteEncryptedCredentialRevision(key: string, expectedRevision: string): Promise<boolean>;
+}
+
+/** One provider's current model credential: version metadata and, while active, its key's envelope. */
+export interface ModelCredentialRecord {
+  credentialRefId: string;
+  version: number;
+  active: boolean;
+  activeFrom: number;
+  /**
+   * The current key, encrypted for exactly this reference and version. The
+   * store keeps no earlier key: a superseded version has nothing to recover.
+   */
+  envelope?: SlackSecretEnvelope;
+}
+
+export interface PublishModelCredentialInput {
+  providerId: string;
+  /** The version the caller read and encrypted against; 0 when the provider never had one. */
+  expectedVersion: number;
+  credentialRefId: string;
+  /** Always `expectedVersion + 1`: a version names at most one published key. */
+  version: number;
+  activeFrom: number;
+  /** Save or rotate: the new key, already encrypted for this reference and version. Delete: absent. */
+  envelope?: SlackSecretEnvelope;
+}
+
+/**
+ * The model credentials of an installation of a deployment serving many. Its
+ * one write compares the version and publishes metadata and envelope (or
+ * removes the envelope) in a single transaction, which the separate settings
+ * and encrypted-revision compare-and-sets cannot jointly guarantee.
+ */
+export interface ModelCredentialStore {
+  /** The current metadata and envelope, read in one snapshot. */
+  readModelCredential(providerId: string): Promise<ModelCredentialRecord | undefined>;
+  /**
+   * On a version match, publish everything at once and remove any plaintext
+   * key. False, with nothing written, when another writer moved the version.
+   */
+  publishModelCredential(input: PublishModelCredentialInput): Promise<boolean>;
+}
+
+export function isModelCredentialStore(store: SettingsStore): store is SettingsStore & ModelCredentialStore {
+  const candidate = store as Partial<ModelCredentialStore>;
+  return typeof candidate.readModelCredential === 'function' &&
+    typeof candidate.publishModelCredential === 'function';
 }
 
 /**
@@ -200,27 +248,7 @@ export class SettingsStoreLogic {
     return this.db.transaction(() => {
       const current = this.getEncryptedCredentialRevision(key);
       if ((current?.revision ?? null) !== input.expectedRevision) return undefined;
-      const at = this.now();
-      this.db.run(
-        `INSERT INTO app_encrypted_credential_revisions (
-          credential_key, revision, context_id,
-          envelope_version, envelope_algorithm, key_id, nonce, ciphertext,
-          created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(credential_key) DO UPDATE SET
-          revision = excluded.revision,
-          context_id = excluded.context_id,
-          envelope_version = excluded.envelope_version,
-          envelope_algorithm = excluded.envelope_algorithm,
-          key_id = excluded.key_id,
-          nonce = excluded.nonce,
-          ciphertext = excluded.ciphertext,
-          updated_at = excluded.updated_at`,
-        key, revision, contextId,
-        input.envelope.version, input.envelope.algorithm, input.envelope.keyId,
-        input.envelope.nonce, input.envelope.ciphertext,
-        current?.createdAt ?? at, at,
-      );
+      this.writeEncryptedCredentialRevision(key, revision, contextId, input.envelope, current?.createdAt);
       return this.getEncryptedCredentialRevision(key);
     });
   }
@@ -232,10 +260,88 @@ export class SettingsStoreLogic {
       credentialKey(key), credentialRevision(expectedRevision),
     ).changes === 1;
   }
+
+  readModelCredential(providerId: string): ModelCredentialRecord | undefined {
+    const keys = modelCredentialSettingKeys(modelCredentialProviderId(providerId));
+    return this.db.transaction(() => {
+      const [credentialRefId, versionRaw, activeRaw, activeFromRaw] = this.getSettings([
+        keys.credentialRefId, keys.version, keys.active, keys.activeFrom,
+      ]);
+      const version = storedModelCredentialVersion(versionRaw);
+      const activeFrom = activeFromRaw !== undefined && /^\d+$/.test(activeFromRaw) ? Number(activeFromRaw) : NaN;
+      if (!credentialRefId || version === 0 || !Number.isSafeInteger(activeFrom)) return undefined;
+      const active = activeRaw === 'true';
+      const row = active ? this.getEncryptedCredentialRevision(keys.envelope) : undefined;
+      // Only the envelope published with this exact reference and version is this version's key.
+      const envelope = row && row.revision === modelCredentialRevision(version) && row.contextId === credentialRefId
+        ? row.envelope
+        : undefined;
+      return { credentialRefId, version, active, activeFrom, ...(envelope ? { envelope } : {}) };
+    });
+  }
+
+  publishModelCredential(input: PublishModelCredentialInput): boolean {
+    const keys = modelCredentialSettingKeys(modelCredentialProviderId(input.providerId));
+    if (!Number.isSafeInteger(input.expectedVersion) || input.expectedVersion < 0 ||
+        input.version !== input.expectedVersion + 1 ||
+        !Number.isSafeInteger(input.activeFrom) || input.activeFrom < 0) {
+      throw new Error('Model credential publication is invalid.');
+    }
+    const contextId = credentialContextId(input.credentialRefId);
+    if (input.envelope) validEnvelope(input.envelope);
+    return this.db.transaction(() => {
+      if (storedModelCredentialVersion(this.getSetting(keys.version)) !== input.expectedVersion) return false;
+      this.setSetting(keys.credentialRefId, input.credentialRefId);
+      this.setSetting(keys.version, String(input.version));
+      this.setSetting(keys.active, String(Boolean(input.envelope)));
+      this.setSetting(keys.activeFrom, String(input.activeFrom));
+      // The encrypted revision is the only place this store keeps the key.
+      this.deleteSetting(keys.apiKey);
+      if (input.envelope) {
+        const current = this.getEncryptedCredentialRevision(keys.envelope);
+        this.writeEncryptedCredentialRevision(
+          keys.envelope, modelCredentialRevision(input.version), contextId, input.envelope, current?.createdAt,
+        );
+      } else {
+        this.db.run('DELETE FROM app_encrypted_credential_revisions WHERE credential_key = ?', keys.envelope);
+      }
+      return true;
+    });
+  }
+
+  private writeEncryptedCredentialRevision(
+    key: string,
+    revision: string,
+    contextId: string,
+    envelope: SlackSecretEnvelope,
+    createdAt: number | undefined,
+  ): void {
+    const at = this.now();
+    this.db.run(
+      `INSERT INTO app_encrypted_credential_revisions (
+        credential_key, revision, context_id,
+        envelope_version, envelope_algorithm, key_id, nonce, ciphertext,
+        created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(credential_key) DO UPDATE SET
+        revision = excluded.revision,
+        context_id = excluded.context_id,
+        envelope_version = excluded.envelope_version,
+        envelope_algorithm = excluded.envelope_algorithm,
+        key_id = excluded.key_id,
+        nonce = excluded.nonce,
+        ciphertext = excluded.ciphertext,
+        updated_at = excluded.updated_at`,
+      key, revision, contextId,
+      envelope.version, envelope.algorithm, envelope.keyId,
+      envelope.nonce, envelope.ciphertext,
+      createdAt ?? at, at,
+    );
+  }
 }
 
 /** Node backend: the target-neutral logic over `node:sqlite`, async-wrapped. */
-export interface SqliteSettingsStore extends SettingsStore, EncryptedCredentialStore {
+export interface SqliteSettingsStore extends SettingsStore, EncryptedCredentialStore, ModelCredentialStore {
   close(): void;
 }
 
@@ -245,7 +351,7 @@ export class SqliteSettingsStore {
     // The Proxy facade drops the `implements` compile check, so this typed
     // binding is the conformance assertion that keeps it: a logic method that
     // stops matching SettingsStore fails typecheck here.
-    const _conforms: SettingsStore & EncryptedCredentialStore = promisify(
+    const _conforms: SettingsStore & EncryptedCredentialStore & ModelCredentialStore = promisify(
       new SettingsStoreLogic(db, now), {
         close: () => db.close(),
       });
@@ -304,4 +410,25 @@ function credentialContextId(value: string): string {
     throw new Error('Encrypted credential context is invalid.');
   }
   return value;
+}
+
+function modelCredentialProviderId(value: string): string {
+  if (!/^[a-z][a-z0-9-]{0,63}$/.test(value)) throw new Error('Model credential provider is invalid.');
+  return value;
+}
+
+/** 0 when the provider has no (or no readable) version, as its first publication expects. */
+function storedModelCredentialVersion(raw: string | undefined): number {
+  if (!raw || !/^\d+$/.test(raw)) return 0;
+  const version = Number(raw);
+  return Number.isSafeInteger(version) && version > 0 ? version : 0;
+}
+
+function validEnvelope(envelope: SlackSecretEnvelope): void {
+  if (envelope.version !== 1 || envelope.algorithm !== 'AES-GCM-256' ||
+      !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(envelope.keyId) ||
+      !/^[A-Za-z0-9_-]{16}$/.test(envelope.nonce) ||
+      !/^[A-Za-z0-9_-]{1,32768}$/.test(envelope.ciphertext)) {
+    throw new Error('Model credential envelope is invalid.');
+  }
 }

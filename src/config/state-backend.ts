@@ -15,6 +15,7 @@ import { isCloudflareTarget } from './runtime-target.ts';
 import {
   SqliteSettingsStore,
   type EncryptedCredentialStore,
+  type ModelCredentialStore,
   type SettingsStore,
 } from './settings-store.ts';
 import { SqliteAgentSnapshotStore, type AgentSnapshotStore } from './snapshot-store.ts';
@@ -204,7 +205,9 @@ export function getSlackStateStore(env?: PlatformEnv): SlackStateStore {
   return cachedSlackStateStore.store;
 }
 
-export function getSettingsStore(env?: PlatformEnv): SettingsStore & EncryptedCredentialStore {
+export function getSettingsStore(
+  env?: PlatformEnv,
+): SettingsStore & EncryptedCredentialStore & ModelCredentialStore {
   if (isCloudflareTarget()) {
     return new CfSettingsStore(freshTagStateStubs(env));
   }
