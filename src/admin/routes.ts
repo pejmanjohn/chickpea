@@ -4968,7 +4968,29 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const principalRef = ownerKind
         ? managedPrincipalRef(principal, ownerKind, c.env as PlatformEnv | undefined)
         : undefined;
-      if (!connector || !ownerKind || !principalRef) return invalidRequest(c);
+      if (!connector || !ownerKind) return invalidRequest(c);
+      // Whether this deployment offers the connector at all is answered before
+      // who may authorize it: a deployment without its Composio environment
+      // names no principal and is reported as not configured.
+      const capabilities = replacementPolicy
+        ? [...replacementPolicy.allowedCapabilities]
+        : managedCatalog.capabilities(
+            connector.toolkit,
+            'access' in parsed.output ? parsed.output.access : 'read',
+          ).map(({ id }) => id);
+      const providerContext = await resolvedManagedProviderContext(c);
+      authorizationProviders = providerContext.providers;
+      const provider = providerContext.providers.get('composio');
+      const accessLane = connector.capabilities.some(({ id, accessLane }) =>
+        accessLane === 'write' && capabilities.includes(id)) ? 'write' : 'read';
+      if (!provider?.authorize || managedProviderAvailability(provider, {
+        toolkit: connector.toolkit,
+        accessLane,
+      }).status !== 'ready') return c.json({
+        error: 'managed_provider_unavailable',
+        message: `${connector.label} managed access is not configured for this deployment.`,
+      }, 503);
+      if (!principalRef) return invalidRequest(c);
       if (replacement && (
         replacement.account.workspaceId !== parsed.output.workspaceId ||
         replacement.account.lifecycle === 'revoked' ||
@@ -5002,24 +5024,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           }, 409);
         }
       }
-      const capabilities = replacementPolicy
-        ? [...replacementPolicy.allowedCapabilities]
-        : managedCatalog.capabilities(
-            connector.toolkit,
-            'access' in parsed.output ? parsed.output.access : 'read',
-          ).map(({ id }) => id);
-      const providerContext = await resolvedManagedProviderContext(c);
-      authorizationProviders = providerContext.providers;
-      const provider = providerContext.providers.get('composio');
-      const accessLane = connector.capabilities.some(({ id, accessLane }) =>
-        accessLane === 'write' && capabilities.includes(id)) ? 'write' : 'read';
-      if (!provider?.authorize || managedProviderAvailability(provider, {
-        toolkit: connector.toolkit,
-        accessLane,
-      }).status !== 'ready') return c.json({
-        error: 'managed_provider_unavailable',
-        message: `${connector.label} managed access is not configured for this deployment.`,
-      }, 503);
       const existingBrowserSecret = getCookie(c, MANAGED_AUTHORIZATION_BROWSER_COOKIE) ?? '';
       if (existingBrowserSecret) {
         let existingAttempt: ManagedAuthorizationAttempt | undefined;

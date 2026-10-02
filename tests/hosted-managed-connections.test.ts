@@ -1055,6 +1055,21 @@ test('hosted Admin Retry refuses before inspecting any account, even mid-reconci
   });
 });
 
+test('hosted Admin reports a deployment without its Composio environment as not configured', async () => {
+  await withPlatform(async ({ platform, project }) => {
+    await prepare(platform, project);
+    const admin = hostedAdmin('inst_admin', {}, { CHICKPEA_COMPOSIO_ENVIRONMENT: '' });
+    try {
+      await seedAdminAgent(admin);
+      const response = await startAdminConnection(admin);
+      assert.equal(response.status, 503, await response.clone().text());
+      assert.equal((await response.json() as { error: string }).error, 'managed_provider_unavailable');
+    } finally {
+      admin.close();
+    }
+  });
+});
+
 test('standalone ignores a configured platform store and keeps its own preparation', async () => {
   const untouchable: ComposioSettingsStore = {
     async getSetting() { throw new Error('standalone read the platform store'); },
