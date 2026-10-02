@@ -525,7 +525,8 @@ function storedNonNegativeInteger(raw: string | undefined): number | undefined {
   return Number.isSafeInteger(value) ? value : undefined;
 }
 
-function sameEnvelope(left: SlackSecretEnvelope | undefined, right: SlackSecretEnvelope | undefined): boolean {
+/** Whether two envelopes are the same encryption, byte for byte (each carries its own nonce). */
+export function sameEnvelope(left: SlackSecretEnvelope | undefined, right: SlackSecretEnvelope | undefined): boolean {
   return left === undefined || right === undefined
     ? left === right
     : left.version === right.version && left.algorithm === right.algorithm && left.keyId === right.keyId &&

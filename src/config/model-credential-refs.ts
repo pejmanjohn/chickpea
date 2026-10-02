@@ -10,6 +10,7 @@ import { modelCredentialSettingKeys } from './model-credential-settings.ts';
 import type { ProviderKeyId } from './provider-keys.ts';
 import {
   isModelCredentialStore,
+  sameEnvelope,
   type ModelCredentialRecord,
   type ModelCredentialStore,
   type SettingsStore,
@@ -416,7 +417,7 @@ export async function rewrapHostedModelCredentials(
     const stored = latest?.active ? latest.envelope : undefined;
     // Deleted meanwhile: nothing of this key remains to rewrap.
     if (!stored) continue;
-    if (stored.keyId === next.keyId && stored.nonce === next.nonce && stored.ciphertext === next.ciphertext) {
+    if (sameEnvelope(stored, next)) {
       rewrapped.push(id);
     } else if (stored.keyId === envelope.keyId) {
       remaining.push(id);

@@ -7,6 +7,7 @@ import {
   CredentialKeyringChangedError,
   migrateInstallationPlaintextModelCredentials,
   rewrapInstallationCredentials,
+  UNREADABLE_SLACK_CANDIDATE,
   type InstallationRewrapResult,
 } from '../src/config/hosted-credential-operations.ts';
 import {
@@ -103,11 +104,15 @@ async function installations(t: TestContext) {
   return { a, b, keyring, usage, rotate };
 }
 
-function drive(installation: Installation, previousKeyId: string, keyring: CredentialKeyring, extra: object = {}) {
+/** One drive step for one installation, targeting the keyring's current key unless told otherwise. */
+function drive(installation: Installation, keyring: CredentialKeyring, expectedCurrentKeyId = keyring.currentKeyId) {
   return rewrapInstallationCredentials(installation.env, {
-    previousKeyId, keyring, identity: installation.identity, settings: installation.settings, ...extra,
+    expectedCurrentKeyId, keyring, identity: installation.identity, settings: installation.settings,
   });
 }
+
+const SLACK_REWRAPPED = { rewrapped: 1, unreadableCandidates: 0, recoveryOnly: false, remaining: 0 };
+const SLACK_UNCHANGED = { rewrapped: 0, unreadableCandidates: 0, recoveryOnly: false, remaining: 0 };
 
 test('a keyring that will not load is logged once and reads as unavailable, never as setup required; saving still refuses', async (t) => {
   await withEnv(NO_DEPLOYMENT_KEYS, async () => {
@@ -229,19 +234,17 @@ test('a rewrap is judged from the state it leaves: a replay after a later rewrap
 
 test('a drive rewraps each installation on its own; one failing installation leaves the other done, and a retry finishes it', async (t) => {
   await withEnv(NO_DEPLOYMENT_KEYS, async () => {
-    const { a, b, keyring, rotate } = await installations(t);
-    const previousKeyId = keyring.currentKeyId;
+    const { a, b, rotate } = await installations(t);
     const rotated = rotate();
     const failingB = { ...b, settings: Object.create(b.settings) as SqliteSettingsStore };
     failingB.settings.rewrapModelCredential = async () => { throw new Error('tenant store unavailable'); };
 
     // As a host's drive runs it: one bounded step per installation, each settling alone.
-    const results = await Promise.allSettled([a, failingB].map((installation) =>
-      drive(installation, previousKeyId, rotated, { expectedCurrentKeyId: 'key_next' })));
+    const results = await Promise.allSettled([a, failingB].map((installation) => drive(installation, rotated, 'key_next')));
     assert.equal(results[0]!.status, 'fulfilled');
     assert.equal(results[1]!.status, 'rejected');
     const doneA = (results[0] as PromiseFulfilledResult<InstallationRewrapResult>).value;
-    assert.deepEqual(doneA.slack, { rewrapped: 1 });
+    assert.deepEqual(doneA.slack, SLACK_REWRAPPED);
     assert.deepEqual(doneA.modelKeys, { rewrapped: ['anthropic'], alreadyCurrent: [], remaining: [] });
     assert.deepEqual(doneA.census.slackCredentials, { key_next: 1 });
     assert.deepEqual(doneA.census.encryptedSettings, { model_provider: { key_next: 1 } });
@@ -249,12 +252,12 @@ test('a drive rewraps each installation on its own; one failing installation lea
     assert.equal(doneA.done, true);
 
     // B's Slack bundle moved before its store failed; the retry finishes and repeats nothing.
-    const retried = await drive(b, previousKeyId, rotated, { expectedCurrentKeyId: 'key_next' });
+    const retried = await drive(b, rotated, 'key_next');
     assert.equal(retried.done, true);
     assert.deepEqual(retried.census.slackCredentials, { key_next: 1 });
-    const again = await drive(a, previousKeyId, rotated);
+    const again = await drive(a, rotated);
     assert.deepEqual([again.slack, again.modelKeys, again.done],
-      [{ rewrapped: 0 }, { rewrapped: [], alreadyCurrent: [], remaining: [] }, true], 'running it again changes nothing');
+      [SLACK_UNCHANGED, { rewrapped: [], alreadyCurrent: [], remaining: [] }, true], 'running it again changes nothing');
 
     // Both still read their own credentials once the old slot is retired.
     const retired = { currentKeyId: 'key_next', keys: { key_next: rotated.keys.key_next! } };
@@ -269,25 +272,61 @@ test('a drive rewraps each installation on its own; one failing installation lea
   });
 });
 
-test('the census counts every encrypted class, and a class no rewrap covers blocks retiring the key', async (t) => {
+test('the census counts every encrypted class under every older key, and a class no rewrap covers blocks retirement', async (t) => {
   await withEnv(NO_DEPLOYMENT_KEYS, async () => {
     const { a, keyring, rotate } = await installations(t);
-    const previousKeyId = keyring.currentKeyId;
-    // A website login saved under the old key (the browser is off hosted, but its data is counted).
+    const firstKeyId = keyring.currentKeyId;
+    // A website login saved under the first key (the browser is off hosted, but its data is counted).
     const model = (await a.settings.getEncryptedCredentialRevision('model_provider.anthropic'))!;
     await a.settings.replaceEncryptedCredentialRevision({
       key: 'website_login.login_1', expectedRevision: null, revision: 'v1', contextId: 'login_context_000001',
       envelope: model.envelope,
     });
-    const rotated = rotate();
-    const result = await drive(a, previousKeyId, rotated);
+    // Two rotations later (first -> next -> last), the drive targets the last key.
+    const next = rotate();
+    const later = generateCredentialKeyring('key_last');
+    const last = { currentKeyId: later.currentKeyId, keys: { ...next.keys, ...later.keys } };
+    const result = await drive(a, last);
     assert.deepEqual(result.census.encryptedSettings, {
-      model_provider: { key_next: 1 },
-      website_login: { [previousKeyId]: 1 },
+      model_provider: { key_last: 1 },
+      website_login: { [firstKeyId]: 1 },
     });
-    assert.deepEqual(result.unrewrappable, ['website_login']);
-    assert.equal(result.done, false, 'the previous key may not be retired');
+    assert.deepEqual(result.unrewrappable, ['website_login'], 'a key older than the one just replaced still counts');
+    assert.equal(result.done, false, 'no older key may be retired');
     assert.doesNotMatch(JSON.stringify(result), new RegExp(KEY_A));
+  });
+});
+
+test('a parked Slack candidate that will not open is left for retention, never latched; an unreadable active bundle latches', async (t) => {
+  await withEnv(NO_DEPLOYMENT_KEYS, async () => {
+    const { a, b, rotate } = await installations(t);
+    // A parked candidate under the first key whose envelope does not open.
+    const control = (await a.identity.getSlackCredentialControl())!;
+    const active = (await a.identity.getActiveSlackCredentialRevision(HOSTED_SLACK_INSTALLATION_ID))!;
+    await a.identity.stageSlackCredentialRevision({
+      identityId: HOSTED_SLACK_INSTALLATION_ID, identityClass: 'workspace_installation', purpose: 'connected_credentials',
+      revision: 'revision_parked_unreadable', expectedRotationEpoch: control.rotationEpoch,
+      expectedActiveRevision: active.revision, appId: 'AHOSTED', teamId: 'T_OPS_A', botUserId: 'UBOT',
+      grantedScopes: ['chat:write'], validatedAt: 1_700_000_000_000, manifestFingerprint: null,
+      envelope: { ...active.envelope!, ciphertext: 'A'.repeat(40) },
+    });
+    const rotated = rotate();
+
+    const parked = await drive(a, rotated);
+    assert.deepEqual(parked.slack, { rewrapped: 1, unreadableCandidates: 1, recoveryOnly: false, remaining: 1 });
+    assert.notEqual((await a.identity.getAuthControl())?.healthGate, 'recovery_only', 'nothing reads a parked candidate: no latch');
+    assert.deepEqual(parked.unrewrappable, [UNREADABLE_SLACK_CANDIDATE]);
+    assert.equal(parked.done, false);
+    // Retention scrubs the candidate; the next drive step is done.
+    await a.identity.sweepSlackIdentityRetention(Date.now() + 1, 1);
+    assert.equal((await drive(a, rotated)).done, true);
+
+    // An active bundle under a key the keyring lost latches, as its next read would.
+    const lost = { currentKeyId: 'key_next', keys: { key_next: rotated.keys.key_next! } };
+    const latched = await drive(b, lost);
+    assert.equal(latched.slack.recoveryOnly, true);
+    assert.equal((await b.identity.getAuthControl())?.healthGate, 'recovery_only');
+    assert.equal(latched.done, false);
   });
 });
 
@@ -295,12 +334,11 @@ test('a drive whose keyring changed stops with keyring_changed before it touches
   await withEnv(NO_DEPLOYMENT_KEYS, async () => {
     const { a, keyring, rotate } = await installations(t);
     const rotated = rotate();
-    await assert.rejects(drive(a, keyring.currentKeyId, rotated, { expectedCurrentKeyId: 'key_other' }),
+    await assert.rejects(drive(a, rotated, 'key_other'),
       (error: unknown) => error instanceof CredentialKeyringChangedError && error.code === 'keyring_changed');
     const census = await censusInstallationCredentials(a.env, { identity: a.identity, settings: a.settings });
     assert.deepEqual(census.slackCredentials, { [keyring.currentKeyId]: 1 });
     assert.deepEqual(census.encryptedSettings, { model_provider: { [keyring.currentKeyId]: 1 } });
-    await assert.rejects(drive(a, 'key_next', rotated), /previous key is the deployment keyring's current key/);
   });
 });
 
@@ -329,7 +367,7 @@ test('every operation refuses a standalone env', async (t) => {
   t.after(() => { settings.close(); identity.close(); });
   const keyring = generateCredentialKeyring('key_standalone');
   for (const operation of [
-    () => rewrapInstallationCredentials({}, { previousKeyId: 'key_old', keyring, identity, settings }),
+    () => rewrapInstallationCredentials({}, { expectedCurrentKeyId: keyring.currentKeyId, keyring, identity, settings }),
     () => censusInstallationCredentials({}, { identity, settings }),
     () => migrateInstallationPlaintextModelCredentials({}, { settings }),
   ]) {

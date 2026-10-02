@@ -5,10 +5,10 @@
  * safe to run again, so a host drives every installation by running each one
  * on its own and retrying it independently.
  *
- * - `rewrapInstallationCredentials` re-encrypts what the deployment keyring's
- *   previous key still protects (the Slack bot bundle and the saved model
- *   keys) and reports a key-ID census of every encrypted record, naming any
- *   class still under the previous key that no rewrap covers.
+ * - `rewrapInstallationCredentials` re-encrypts the Slack bot bundle and the
+ *   saved model keys under the deployment keyring's current key, and reports
+ *   a key-ID census of every encrypted record, naming anything still under an
+ *   older key that no rewrap covers.
  * - `censusInstallationCredentials` reports that census alone, with which
  *   model providers still hold a plaintext key (never the key).
  * - `migrateInstallationPlaintextModelCredentials` encrypts any model key an
@@ -27,15 +27,15 @@ import { isEncryptedCredentialCensusStore, type SettingsStore } from './settings
 import { getIdentityStore, getSettingsStore, getUsageStore, type PlatformEnv } from './state-backend.ts';
 import type { IdentityStore } from '../identity/types.ts';
 import { loadCredentialKeyring } from '../slack/credential-keyring.ts';
-import {
-  rotateSlackCredentialEncryption,
-  SlackCredentialRecoveryOnlyError,
-} from '../slack/installation-credentials.ts';
+import { rewrapSlackCredentialsToCurrentKey } from '../slack/installation-credentials.ts';
 import type { CredentialKeyring } from '../slack/secret-envelope.ts';
 import type { UsageStore } from '../usage/types.ts';
 
 /** Encrypted settings classes a rewrap covers. Every other class blocks retiring a key it still uses. */
 const REWRAPPED_SETTINGS_CLASSES = new Set(['model_provider']);
+
+/** Named in `unrewrappable` while a parked Slack candidate cannot be opened; retention scrubs it within a day. */
+export const UNREADABLE_SLACK_CANDIDATE = 'slack_credential_candidate';
 
 export interface InstallationCredentialCensus {
   /** Live Slack bot bundle revisions (active and candidate), by key ID. */
@@ -47,17 +47,24 @@ export interface InstallationCredentialCensus {
 }
 
 export interface InstallationRewrapResult {
-  /** The Slack rotation; `recoveryOnly` when a bundle could not be opened and the installation latched. */
-  readonly slack: { readonly rewrapped: number } | { readonly recoveryOnly: true };
+  readonly slack: {
+    readonly rewrapped: number;
+    /** Parked candidates that will not open: left for retention, never latched. */
+    readonly unreadableCandidates: number;
+    /** The active bundle would not open, so the installation latched recovery, as its next read would. */
+    readonly recoveryOnly: boolean;
+    /** Live revisions still under an older key. */
+    readonly remaining: number;
+  };
   readonly modelKeys: {
     readonly rewrapped: readonly ProviderKeyId[];
     readonly alreadyCurrent: readonly ProviderKeyId[];
     readonly remaining: readonly ProviderKeyId[];
   };
   readonly census: InstallationCredentialCensus;
-  /** Classes still holding the previous key that no rewrap covers; each blocks retiring it. */
+  /** What still holds an older key that no rewrap moves; each blocks retiring that key. */
   readonly unrewrappable: readonly string[];
-  /** Nothing in this installation's stores is still under the previous key. */
+  /** Nothing in this installation's stores is under any key but the current one. */
   readonly done: boolean;
 }
 
@@ -77,45 +84,37 @@ interface InstallationStores {
 
 /**
  * Re-encrypt one installation's Slack bot bundle and saved model keys under
- * the keyring's current key, then count what remains under `previousKeyId`.
- * `expectedCurrentKeyId` is the current key the drive recorded when it began:
- * a drive whose keyring changed underneath it stops with `keyring_changed`
- * rather than mixing two targets. Store errors propagate for a retry.
+ * the keyring's current key, then census what any older key still protects.
+ * `expectedCurrentKeyId` is the current key the drive recorded when it
+ * began: a keyring that changed underneath it stops the drive with
+ * `keyring_changed` rather than mixing two targets. Store errors propagate
+ * for a retry.
  */
 export async function rewrapInstallationCredentials(
   env: PlatformEnv,
-  options: InstallationStores & {
-    previousKeyId: string;
-    expectedCurrentKeyId?: string;
-    keyring?: CredentialKeyring;
-  },
+  options: InstallationStores & { expectedCurrentKeyId: string; keyring?: CredentialKeyring },
 ): Promise<InstallationRewrapResult> {
-  hostedInstallation(env);
+  const { identity, settings } = installationStores(env, options);
   const keyring = options.keyring ?? loadCredentialKeyring(env);
-  if (options.expectedCurrentKeyId !== undefined && keyring.currentKeyId !== options.expectedCurrentKeyId) {
-    throw new CredentialKeyringChangedError();
-  }
-  if (options.previousKeyId === keyring.currentKeyId) {
-    throw new Error('The previous key is the deployment keyring\'s current key.');
-  }
-  const identity = options.identity ?? getIdentityStore(env);
-  const settings = options.settings ?? getSettingsStore(env);
-  const slack = await rewrapSlackCredentials(identity, keyring);
+  if (keyring.currentKeyId !== options.expectedCurrentKeyId) throw new CredentialKeyringChangedError();
+  const slack = await rewrapSlackCredentialsToCurrentKey({ state: identity, keyring });
   const modelKeys = await rewrapHostedModelCredentials({ env, settings, keyring });
   const census = await censusInstallationCredentials(env, { identity, settings });
-  const unrewrappable = Object.entries(census.encryptedSettings)
-    .filter(([credentialClass, byKey]) =>
-      !REWRAPPED_SETTINGS_CLASSES.has(credentialClass) && (byKey[options.previousKeyId] ?? 0) > 0)
-    .map(([credentialClass]) => credentialClass);
-  const underPrevious = (census.slackCredentials[options.previousKeyId] ?? 0) +
-    Object.values(census.encryptedSettings)
-      .reduce((total, byKey) => total + (byKey[options.previousKeyId] ?? 0), 0);
+  const older = (byKey: Readonly<Record<string, number>>) =>
+    Object.entries(byKey).some(([keyId, count]) => keyId !== keyring.currentKeyId && count > 0);
+  const unrewrappable = [
+    ...(slack.unreadableCandidates > 0 ? [UNREADABLE_SLACK_CANDIDATE] : []),
+    ...Object.entries(census.encryptedSettings)
+      .filter(([credentialClass, byKey]) => !REWRAPPED_SETTINGS_CLASSES.has(credentialClass) && older(byKey))
+      .map(([credentialClass]) => credentialClass),
+  ];
   return {
     slack,
     modelKeys,
     census,
     unrewrappable,
-    done: !('recoveryOnly' in slack) && underPrevious === 0,
+    done: !slack.recoveryOnly && !older(census.slackCredentials) &&
+      !Object.values(census.encryptedSettings).some(older),
   };
 }
 
@@ -124,9 +123,7 @@ export async function censusInstallationCredentials(
   env: PlatformEnv,
   options: InstallationStores = {},
 ): Promise<InstallationCredentialCensus> {
-  hostedInstallation(env);
-  const identity = options.identity ?? getIdentityStore(env);
-  const settings = options.settings ?? getSettingsStore(env);
+  const { identity, settings } = installationStores(env, options);
   if (!isEncryptedCredentialCensusStore(settings)) {
     throw new Error('This settings store cannot count its encrypted credentials.');
   }
@@ -157,47 +154,28 @@ export async function migrateInstallationPlaintextModelCredentials(
   env: PlatformEnv,
   options: { settings?: SettingsStore; usage?: UsageStore; keyring?: CredentialKeyring } = {},
 ): Promise<{ migrated: ProviderKeyId[]; removed: ProviderKeyId[] }> {
-  hostedInstallation(env);
+  const { settings } = installationStores(env, options);
   return migratePlaintextModelCredentials({
     env,
-    settings: options.settings ?? getSettingsStore(env),
+    settings,
     usage: options.usage ?? getUsageStore(env),
     ...(options.keyring ? { keyring: options.keyring } : {}),
   });
 }
 
-/**
- * Advance the installation's Slack encryption to the keyring's current key,
- * or resume a rotation already begun, and rewrap every live revision. A
- * revision that cannot be opened latches the installation into recovery,
- * exactly as its next read would, and is reported rather than thrown.
- */
-async function rewrapSlackCredentials(
-  identity: IdentityStore,
-  keyring: CredentialKeyring,
-): Promise<InstallationRewrapResult['slack']> {
-  const control = await identity.getSlackCredentialControl();
-  if (!control) return { rewrapped: 0 };
-  const beginning = control.currentKeyId !== keyring.currentKeyId;
-  try {
-    const rotated = await rotateSlackCredentialEncryption({ state: identity, keyring }, {
-      expectedEpoch: beginning ? control.rotationEpoch : control.rotationEpoch - 1,
-      previousKeyId: control.currentKeyId,
-    });
-    return { rewrapped: rotated.rewrapped };
-  } catch (error) {
-    if (error instanceof SlackCredentialRecoveryOnlyError) return { recoveryOnly: true };
-    throw error;
-  }
-}
-
-function hostedInstallation(env: PlatformEnv): string {
-  const scope = requireInstallationScope(env);
-  if (!scope) {
+/** The installation's stores, after refusing an env that serves no single installation. */
+function installationStores(
+  env: PlatformEnv,
+  options: InstallationStores,
+): { identity: IdentityStore; settings: SettingsStore } {
+  if (!requireInstallationScope(env)) {
     throw new InstallationContextError(
       'installation_context_missing',
       'These operations run for one installation of a deployment serving many.',
     );
   }
-  return scope.installationId;
+  return {
+    identity: options.identity ?? getIdentityStore(env),
+    settings: options.settings ?? getSettingsStore(env),
+  };
 }
