@@ -64,11 +64,16 @@ export function scheduledForEachInstallation(
       context.waitUntil(lookupFor(env).listActive().then((installations) => {
         for (const installation of installations) {
           if (installation.status !== 'active') continue;
-          handler.scheduled(
-            controller,
-            scopeInstallationEnv(env, { installationId: installation.identity.installationId }),
-            context,
-          );
+          // One unusable record never holds back every other installation's duties.
+          try {
+            handler.scheduled(
+              controller,
+              scopeInstallationEnv(env, { installationId: installation.identity.installationId }),
+              context,
+            );
+          } catch {
+            console.error('[chickpea] Scheduled duties skipped an installation with an invalid record');
+          }
         }
       }));
     },

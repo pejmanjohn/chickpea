@@ -305,6 +305,7 @@ class MemoryLookup implements InstallationLookup {
 
 test('only an active installation resolves to an env, and cron runs once per active installation', async () => {
   const lookup = new MemoryLookup([
+    { identity: { organizationId: 'org_bad', installationId: '../bad' }, slackTeamId: 'T_BAD', status: 'active' },
     { identity: A, slackTeamId: 'T_A', status: 'active' },
     { identity: B, slackTeamId: 'T_B', status: 'suspended' },
     { identity: { organizationId: 'org_c', installationId: 'inst_c' }, slackTeamId: 'T_C', status: 'active' },
