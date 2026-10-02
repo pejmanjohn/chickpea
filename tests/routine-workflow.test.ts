@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { test } from 'node:test';
+import { test, type TestContext } from 'node:test';
 
 import * as v from 'valibot';
 
@@ -1485,131 +1485,115 @@ test('routine Usage and Work settle with the same canonical execution correlatio
   }
 });
 
-test('a dispatched occurrence a refused installation stops still settles its Work and Usage', async (t) => {
-  const directory = mkdtempSync(join(tmpdir(), 'chickpea-routine-refused-settles-'));
+/**
+ * A hosted occurrence whose first attempt stopped short under an admitted
+ * installation, its read interrupted once dispatched or its dispatch failed,
+ * so its Work execution and Usage operation are open. `refuse` runs it again
+ * with the installation refused.
+ */
+async function interruptedHostedAttempt(t: TestContext, name: string, dispatched: boolean) {
+  const directory = mkdtempSync(join(tmpdir(), `chickpea-routine-${name}-`));
   const path = join(directory, 'state.sqlite');
   const configuration = new SqliteConfigStore(path, { agents: [createDemoStarterAgent()] });
   const routines = new SqliteRoutineStore(path, () => NOW);
   const usage = new SqliteUsageStore(':memory:');
   const work = new SqliteWorkStore(path, { now: () => NOW });
-  const env = scopeInstallationEnv({ CHICKPEA_TENANCY: 'installation' }, { installationId: 'inst_refused_work' });
+  t.after(() => {
+    resetInstallationAdmissionForTests();
+    work.close();
+    usage.close();
+    configuration.close();
+    routines.close();
+    rmSync(directory, { recursive: true, force: true });
+  });
+  const env = scopeInstallationEnv({ CHICKPEA_TENANCY: 'installation' }, { installationId: `inst_${name}` });
   resetInstallationAdmissionForTests();
   configureInstallationAdmission(async () => 'admitted');
-  t.after(() => resetInstallationAdmissionForTests());
-  try {
-    const fixture = await admittedFixture(
-      routines,
-      'refused_settles',
-      (routine) => linkAgentSchedule(configuration, routine),
-      'public',
-    );
-    assert.ok(fixture.run.canonicalRunId);
-    const execute = (handle: AgentInstanceHandle) => executeRoutineOccurrence({
-      env, store: routines, occurrenceId: fixture.run.id, attempt: fixture.attempt.attempt,
-    }, {
-      ...dependencies(), usageRecordingEnabled: true, usageStore: usage, workStore: work, handle,
-      persistenceTelemetrySink: telemetrySink().sink,
+  const fixture = await admittedFixture(
+    routines,
+    name,
+    (routine) => linkAgentSchedule(configuration, routine),
+    'public',
+  );
+  assert.ok(fixture.run.canonicalRunId);
+  const runId = fixture.run.canonicalRunId as RunId;
+  const input = { env, store: routines, occurrenceId: fixture.run.id, attempt: fixture.attempt.attempt };
+  const events: string[] = [];
+  assert.equal(await executeRoutineOccurrence(input, {
+    ...dependencies(), usageRecordingEnabled: true, usageStore: usage, workStore: work,
+    persistenceTelemetrySink: telemetrySink().sink,
+    handle: fakeHandle(dispatched
+      ? { events, readError: new DOMException('restarted', 'AbortError') }
+      : { events, dispatchError: new Error('dispatch unavailable') }),
+  }), 'resumable');
+  assert.equal((await work.listRunExecutions(runId))[0]?.outcome, 'pending');
+  assert.equal((await usage.getOperation(fixture.run.id))?.operation.status, 'admitted');
+
+  const telemetry = telemetrySink();
+  const handle = fakeHandle({ events });
+  handle.abort = async () => { events.push('abort'); };
+  return {
+    routines, work, usage, fixture, runId, events, telemetry,
+    refuse(overrides: Parameters<typeof executeRoutineOccurrence>[1] = {}) {
+      configureInstallationAdmission(async () => 'refused');
+      return executeRoutineOccurrence(input, {
+        ...dependencies(), usageRecordingEnabled: true, usageStore: usage, workStore: work,
+        persistenceTelemetrySink: telemetry.sink, handle, ...overrides,
+      });
+    },
+  };
+}
+
+/** How an ended installation fails access: its Slack installation is revoked. */
+async function endedInstallationAccess(): Promise<never> {
+  throw new RoutineRuntimeError('credential_unavailable', 'The Slack connection is unavailable for this routine.');
+}
+
+for (const dispatched of [true, false]) {
+  for (const ended of [false, true]) {
+    test(`a refused attempt ${dispatched ? 'dispatched' : 'never dispatched'} settles by one rule ${ended ? 'though an ended installation resolves no access' : 'when it is prepared again'}`, async (t) => {
+      const h = await interruptedHostedAttempt(
+        t,
+        `refused_${dispatched ? 'sent' : 'unsent'}_${ended ? 'ended' : 'live'}`,
+        dispatched,
+      );
+      assert.equal(await h.refuse(ended ? {
+        resolveAccess: async () => {
+          h.events.push('access');
+          return endedInstallationAccess();
+        },
+      } : {}), 'completed');
+      if (dispatched) {
+        assert.equal(h.events.filter((event) => event === 'abort').length, 1);
+        if (ended) assert.deepEqual(h.events.slice(-2), ['abort', 'access'], 'stopped before access is tried');
+      } else {
+        assert.ok(!h.events.includes('abort'), 'nothing was dispatched to stop');
+      }
+      assert.equal(h.events.filter((event) => event === 'read').length, dispatched ? 1 : 0);
+
+      const skipped = await h.routines.getRun(h.fixture.run.id);
+      assert.equal(skipped?.status, 'skipped');
+      assert.equal(skipped?.skipReason, 'installation_not_admitted');
+      assert.equal((await h.routines.getRoutine(h.fixture.run.routineId))?.state, 'active', 'nothing is paused');
+      assert.equal(await h.routines.getRecoveryDelivery(h.fixture.run.id), undefined);
+
+      // A dispatched attempt may have reached the model, and what it did is
+      // never read; one never dispatched submitted nothing. Whether the
+      // occurrence could be prepared again changes neither.
+      const [execution] = await h.work.listRunExecutions(h.runId);
+      assert.deepEqual(
+        [execution?.outcome, execution?.modelInvocationStatus, execution?.safeFailureCode],
+        dispatched ? ['ambiguous', 'settled', 'policy_denied'] : ['not_submitted', 'not_invoked', 'policy_denied'],
+      );
+      assert.equal((await h.work.getRun(h.runId))?.terminalDisposition, 'skipped');
+      const operation = await h.usage.getOperation(h.fixture.run.id);
+      assert.equal(operation?.operation.status, 'failed', 'the Usage operation has its terminal');
+      assert.equal(operation?.measurements[0]?.inputTokens, null);
+      assert.equal(operation?.measurements[0]?.usageUnknownReason, 'provider_request_unknown');
+      assert.equal(operation?.measurements[0]?.runExecutionId, execution?.id);
     });
-    // Dispatched, then the read is interrupted: its Work execution and Usage operation are open.
-    const events: string[] = [];
-    assert.equal(await execute(fakeHandle({ events, readError: new DOMException('restarted', 'AbortError') })), 'resumable');
-    assert.equal((await work.getRun(fixture.run.canonicalRunId as RunId))?.terminalDisposition, null);
-    assert.equal((await usage.getOperation(fixture.run.id))?.operation.status, 'admitted');
-
-    // Suspended (a fresh check, so no cached answer): the attempt is stopped,
-    // the occurrence skipped, and both settle.
-    configureInstallationAdmission(async () => 'refused');
-    const aborted: string[] = [];
-    const stopping = fakeHandle({ events });
-    stopping.abort = async () => { aborted.push('abort'); };
-    assert.equal(await execute(stopping), 'completed');
-    assert.deepEqual(aborted, ['abort']);
-    assert.equal(events.filter((event) => event === 'read').length, 1, 'the refused attempt is not read again');
-    assert.equal((await routines.getRun(fixture.run.id))?.status, 'skipped');
-    assert.equal((await work.getRun(fixture.run.canonicalRunId as RunId))?.terminalDisposition, 'skipped');
-    const operation = await usage.getOperation(fixture.run.id);
-    assert.equal(operation?.operation.status, 'failed', 'the Usage operation has its terminal');
-    assert.equal(operation?.measurements[0]?.inputTokens, null);
-    assert.ok(operation?.measurements[0]?.usageUnknownReason, 'what it spent is unknown, and says so');
-  } finally {
-    work.close();
-    usage.close();
-    configuration.close();
-    routines.close();
-    rmSync(directory, { recursive: true, force: true });
   }
-});
-
-test('a dispatched occurrence of an ended installation is stopped and settled though access no longer resolves', async (t) => {
-  const directory = mkdtempSync(join(tmpdir(), 'chickpea-routine-ended-settles-'));
-  const path = join(directory, 'state.sqlite');
-  const configuration = new SqliteConfigStore(path, { agents: [createDemoStarterAgent()] });
-  const routines = new SqliteRoutineStore(path, () => NOW);
-  const usage = new SqliteUsageStore(':memory:');
-  const work = new SqliteWorkStore(path, { now: () => NOW });
-  const env = scopeInstallationEnv({ CHICKPEA_TENANCY: 'installation' }, { installationId: 'inst_ended_work' });
-  resetInstallationAdmissionForTests();
-  configureInstallationAdmission(async () => 'admitted');
-  t.after(() => resetInstallationAdmissionForTests());
-  try {
-    const fixture = await admittedFixture(
-      routines,
-      'ended_settles',
-      (routine) => linkAgentSchedule(configuration, routine),
-      'public',
-    );
-    assert.ok(fixture.run.canonicalRunId);
-    const events: string[] = [];
-    const base = { env, store: routines, occurrenceId: fixture.run.id, attempt: fixture.attempt.attempt };
-    const stores = {
-      usageRecordingEnabled: true, usageStore: usage, workStore: work,
-      persistenceTelemetrySink: telemetrySink().sink,
-    };
-    // Dispatched, then the read is interrupted: its Work execution and Usage operation are open.
-    assert.equal(await executeRoutineOccurrence(base, {
-      ...dependencies(), ...stores,
-      handle: fakeHandle({ events, readError: new DOMException('restarted', 'AbortError') }),
-    }), 'resumable');
-
-    // Uninstalled: its Slack installation is revoked, so access fails the way
-    // the resolver fails it, and nothing can be prepared again.
-    configureInstallationAdmission(async () => 'refused');
-    const stopping = fakeHandle({ events });
-    stopping.abort = async () => { events.push('abort'); };
-    assert.equal(await executeRoutineOccurrence(base, {
-      ...dependencies(), ...stores, handle: stopping,
-      resolveAccess: async () => {
-        events.push('access');
-        throw new RoutineRuntimeError('credential_unavailable', 'The Slack connection is unavailable for this routine.');
-      },
-    }), 'completed');
-    assert.deepEqual(events.slice(-2), ['abort', 'access'], 'the attempt is stopped before access is tried');
-    assert.equal(events.filter((event) => event === 'abort').length, 1);
-
-    const skipped = await routines.getRun(fixture.run.id);
-    assert.equal(skipped?.status, 'skipped');
-    assert.equal(skipped?.skipReason, 'installation_not_admitted');
-    const routine = await routines.getRoutine(fixture.run.routineId);
-    assert.equal(routine?.state, 'active', 'an ended installation pauses nothing');
-    assert.equal(await routines.getRecoveryDelivery(fixture.run.id), undefined);
-
-    const workRun = await work.getRun(fixture.run.canonicalRunId as RunId);
-    assert.equal(workRun?.terminalDisposition, 'skipped');
-    const [execution] = await work.listRunExecutions(fixture.run.canonicalRunId as RunId);
-    assert.equal(execution?.outcome, 'ambiguous', 'what the stopped attempt did is never read');
-    const operation = await usage.getOperation(fixture.run.id);
-    assert.equal(operation?.operation.status, 'failed', 'the Usage operation has its terminal');
-    assert.equal(operation?.measurements[0]?.inputTokens, null);
-    assert.equal(operation?.measurements[0]?.usageUnknownReason, 'provider_request_unknown');
-    assert.equal(operation?.measurements[0]?.runExecutionId, execution?.id);
-  } finally {
-    work.close();
-    usage.close();
-    configuration.close();
-    routines.close();
-    rmSync(directory, { recursive: true, force: true });
-  }
-});
+}
 
 test('permanent Work initialization failure is one gap and never redispatches', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'chickpea-routine-work-gap-'));

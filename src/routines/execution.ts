@@ -428,8 +428,11 @@ export async function executeRoutineOccurrence(
     };
     if (!modelSettled) {
       await prepared.workLifecycle?.settleExecution({
-        outcome: toolCallCount > 0 ? 'ambiguous' : 'failed',
-        rawStatus: toolCallCount > 0 ? 'flue_ambiguous' : 'flue_failed',
+        ...(withoutResult === REFUSED_SKIP
+          ? refusedExecutionSettlement(receipt !== null)
+          : toolCallCount > 0
+            ? { outcome: 'ambiguous' as const, rawStatus: 'flue_ambiguous' }
+            : { outcome: 'failed' as const, rawStatus: 'flue_failed' }),
         safeFailureCode: routineLifecycleFailureCode(failure.failureClass),
         ...(receipt ? { flueSubmissionRef: opaqueId('fluesubmission', receipt.submissionId) } : {}),
       });
@@ -1341,6 +1344,17 @@ async function abortRefusedAttempt(
 }
 
 /**
+ * How a refused attempt's Work execution settles, whether or not it could be
+ * prepared again: one dispatched may have reached the model, and what it did
+ * there is never read; one never dispatched submitted nothing.
+ */
+function refusedExecutionSettlement(dispatched: boolean) {
+  return dispatched
+    ? { outcome: 'ambiguous' as const, rawStatus: 'flue_ambiguous' }
+    : { outcome: 'not_submitted' as const, rawStatus: 'model_not_invoked' };
+}
+
+/**
  * Settle what an earlier preparation of a refused occurrence opened when
  * preparing it again fails, as it does once the installation has ended and
  * access no longer resolves: its Work execution settles and its Run is
@@ -1387,15 +1401,15 @@ async function settleRefusedWork(
   at: number,
 ): Promise<void> {
   if (execution.outcome === 'pending') {
-    // A dispatched attempt may have reached the model, and what it did there is never read.
-    const reached = execution.modelInvocationStatus === 'invoked' ||
-      (execution.modelInvocationStatus === 'ready' && receipt !== null);
-    const rawStatus = reached ? 'flue_ambiguous' : 'model_not_invoked';
+    // An execution whose route was never recorded can only settle unsubmitted.
+    const { outcome, rawStatus } = refusedExecutionSettlement(
+      receipt !== null && execution.modelInvocationStatus !== 'not_invoked',
+    );
     await store.settleRunExecution({
       executionId: execution.id,
       fencingToken: execution.fencingToken,
-      outcome: reached ? 'ambiguous' : 'not_submitted',
-      modelInvocationStatus: reached ? 'settled' : 'not_invoked',
+      outcome,
+      modelInvocationStatus: outcome === 'ambiguous' ? 'settled' : 'not_invoked',
       rawSettlementRef: opaqueId('settlement', `${execution.id}:${rawStatus}`),
       rawSettlementStatus: rawStatus,
       safeFailureCode: routineLifecycleFailureCode(REFUSED_SKIP.failureClass),
