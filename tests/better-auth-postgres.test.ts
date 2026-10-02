@@ -15,7 +15,7 @@ import {
   type PostgresBetterAuthPool,
 } from '../src/auth/better-auth-postgres.ts';
 import { applyPostgresBetterAuthMigrations } from '../src/auth/better-auth-postgres-migrations.ts';
-import { testBetterAuthBackendContract } from './helpers/better-auth-backend-contract.ts';
+import { betterAuthBackendContract } from './helpers/better-auth-backend-contract.ts';
 import { startPostgresTestCluster, type PostgresTestClusterStart } from './helpers/postgres-cluster.ts';
 
 const MIGRATIONS = path.resolve('migrations/better-auth-postgres');
@@ -60,7 +60,7 @@ async function migrate(config: pg.PoolConfig): Promise<void> {
   }
 }
 
-testBetterAuthBackendContract({
+const contract = betterAuthBackendContract({
   label: 'PostgreSQL',
   unavailable: async () => (await cluster()).unavailable,
   async open() {
@@ -86,6 +86,7 @@ testBetterAuthBackendContract({
     };
   },
 });
+for (const { name, run } of contract) test(name, { timeout: 60_000 }, run);
 
 test('PostgreSQL migrations apply once and leave nothing for Better Auth to add', async (t) => {
   const defer = deferrals(t);

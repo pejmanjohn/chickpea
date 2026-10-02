@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { test, type TestContext } from 'node:test';
+import type { TestContext } from 'node:test';
 
 import {
   createBetterAuth,
@@ -29,12 +29,25 @@ const RESOURCE = `${ORIGIN}/mcp`;
 const RENEWABLE_SCOPE = 'chickpea:workspace offline_access';
 const REDIRECT = 'http://127.0.0.1:47321/callback';
 
-/** One behavior contract for every Better Auth database backend. */
-export function testBetterAuthBackendContract(contract: BetterAuthBackendContract): void {
+export interface BetterAuthBackendCase {
+  name: string;
+  run(t: TestContext): Promise<void>;
+}
+
+/**
+ * One behavior contract for every Better Auth database backend. Each test
+ * file registers the cases itself (`test(name, { timeout }, run)`), so the
+ * runner attributes them to that file.
+ */
+export function betterAuthBackendContract(contract: BetterAuthBackendContract): BetterAuthBackendCase[] {
+  const cases: BetterAuthBackendCase[] = [];
   const it = (name: string, body: (fixture: Fixture) => Promise<void>) => {
-    test(`${contract.label}: ${name}`, { timeout: 60_000 }, async (t) => {
-      const fixture = await openFixture(t, contract);
-      if (fixture) await body(fixture);
+    cases.push({
+      name: `${contract.label}: ${name}`,
+      async run(t) {
+        const fixture = await openFixture(t, contract);
+        if (fixture) await body(fixture);
+      },
     });
   };
 
@@ -180,6 +193,8 @@ export function testBetterAuthBackendContract(contract: BetterAuthBackendContrac
         { consents: 0, accessTokens: 0, refreshTokens: 0 });
     }
   });
+
+  return cases;
 }
 
 interface Grant {
@@ -214,11 +229,12 @@ async function openFixture(t: TestContext, contract: BetterAuthBackendContract):
     privateSeam: { resolveAdmissionOperation: async (id: string) => admissions.get(id) ?? null },
   };
   const auth = createBetterAuth(options);
+  const handler = createBetterAuthPublicHandler(options);
   // Better Auth initializes against the database in the background.
   await auth.$context;
   return {
     ...subject,
-    handler: createBetterAuthPublicHandler(options),
+    handler,
     reconcile: (team, user, slug) => auth.chickpea.reconcileSlackIdentity({
       slackTeamId: team, slackUserId: user, displayName: `${team}/${user}`,
       organization: { name: slug, slug },
@@ -237,7 +253,6 @@ async function openFixture(t: TestContext, contract: BetterAuthBackendContract):
     session: async (cookie) => await auth.api.getSession({ headers: new Headers({ cookie }) }),
     async grant(cookie, { resource: withResource }) {
       const resource = withResource ? { resource: RESOURCE } : {};
-      const handler = createBetterAuthPublicHandler(options);
       const registered = await handler(json('/api/auth/oauth2/register', registration('Grant')));
       assert.equal(registered.status, 201, await registered.clone().text());
       const clientId = (await registered.json() as { client_id: string }).client_id;
@@ -261,7 +276,7 @@ async function openFixture(t: TestContext, contract: BetterAuthBackendContract):
       const refreshToken = (await exchanged.json() as { refresh_token: string }).refresh_token;
       return { clientId, refreshToken, ...resource };
     },
-    refresh: (grant) => token(createBetterAuthPublicHandler(options), {
+    refresh: (grant) => token(handler, {
       grant_type: 'refresh_token', client_id: grant.clientId,
       refresh_token: grant.refreshToken, ...(grant.resource ? { resource: grant.resource } : {}),
     }),
