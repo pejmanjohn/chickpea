@@ -6880,11 +6880,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
 
   // An installation of a deployment serving many is offered only the providers
   // it brings its own key for; the deployment-funded and subscription lanes
-  // do not exist for it.
+  // do not exist for it. Each lane handler checks too, so a route registered
+  // above this middleware cannot bypass the refusal.
+  const deploymentLaneRefused = (c: Context) => deploymentServesManyInstallations(c.env as PlatformEnv | undefined);
+  const unknownProvider = (c: Context) => c.json({ error: 'unknown_provider' }, 404);
   const deploymentLaneRoute = async (c: Context, next: Next) =>
-    deploymentServesManyInstallations(c.env as PlatformEnv | undefined)
-      ? c.json({ error: 'unknown_provider' }, 404)
-      : next();
+    deploymentLaneRefused(c) ? unknownProvider(c) : next();
   for (const path of [
     '/admin/api/providers/workers-ai/*',
     '/admin/api/providers/openai/subscription',
@@ -6896,6 +6897,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
 
   for (const action of ['prepare', 'confirm', 'cancel'] as const) {
     app.post(`/admin/api/providers/openai/chatgpt-plan/${action}`, async (c) => {
+      if (deploymentLaneRefused(c)) return unknownProvider(c);
       if (!isCloudflareTarget()) return c.notFound();
       const principal = principalByContext.get(c);
       if (!principal || principal.machine || principal.role !== 'owner') return c.json({ error: 'forbidden' }, 403);
@@ -6949,6 +6951,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   });
 
   app.put('/admin/api/providers/workers-ai/enabled', async (c) => {
+    if (deploymentLaneRefused(c)) return unknownProvider(c);
     const parsed = v.safeParse(workersAiEnabledSchema, await readJson(c.req));
     if (!parsed.success) return invalidRequest(c);
     return c.json({
@@ -6957,20 +6960,20 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     });
   });
 
-  app.get('/admin/api/providers/openai/subscription', async (c) =>
-    c.json({
+  app.get('/admin/api/providers/openai/subscription', async (c) => {
+    if (deploymentLaneRefused(c)) return unknownProvider(c);
+    return c.json({
       status: await chatSubscriptionStatus(settings(c), c.env as PlatformEnv | undefined),
       subscriptionAvailable: true,
-    }));
+    });
+  });
 
   app.put('/admin/api/providers/openai/auth-method', async (c) => {
     const parsed = v.safeParse(openAiAuthMethodSchema, await readJson(c.req));
     if (!parsed.success) return invalidRequest(c);
     const method = parsed.output.method;
     const settingsStore = settings(c);
-    if (method === 'subscription' && deploymentServesManyInstallations(c.env as PlatformEnv | undefined)) {
-      return c.json({ error: 'unknown_provider' }, 404);
-    }
+    if (method === 'subscription' && deploymentLaneRefused(c)) return unknownProvider(c);
     if (method === 'api_key') {
       const sources = await describeProviderKeySources(c.env as PlatformEnv | undefined, settingsStore);
       if (sources.openai === 'missing') {
@@ -6994,6 +6997,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   });
 
   app.post('/admin/api/providers/openai/subscription/start', async (c) => {
+    if (deploymentLaneRefused(c)) return unknownProvider(c);
     const parsed = v.safeParse(openAiSubscriptionStartSchema, await readJson(c.req));
     if (!parsed.success) return invalidRequest(c);
     try {
@@ -7005,6 +7009,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   });
 
   app.post('/admin/api/providers/openai/subscription/poll', async (c) => {
+    if (deploymentLaneRefused(c)) return unknownProvider(c);
     const parsed = v.safeParse(openAiSubscriptionAttemptSchema, await readJson(c.req));
     if (!parsed.success) return invalidRequest(c);
     try {
@@ -7029,6 +7034,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   });
 
   app.post('/admin/api/providers/openai/subscription/confirm-account', async (c) => {
+    if (deploymentLaneRefused(c)) return unknownProvider(c);
     const parsed = v.safeParse(openAiSubscriptionAttemptSchema, await readJson(c.req));
     if (!parsed.success) return invalidRequest(c);
     try {
@@ -7044,6 +7050,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   });
 
   app.post('/admin/api/providers/openai/subscription/cancel', async (c) => {
+    if (deploymentLaneRefused(c)) return unknownProvider(c);
     const parsed = v.safeParse(openAiSubscriptionAttemptSchema, await readJson(c.req));
     if (!parsed.success) return invalidRequest(c);
     try {
@@ -7057,6 +7064,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   });
 
   app.delete('/admin/api/providers/openai/subscription', async (c) => {
+    if (deploymentLaneRefused(c)) return unknownProvider(c);
     try {
       const settingsStore = settings(c);
       if (isCloudflareTarget()) {
@@ -7182,8 +7190,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
 
   app.get('/admin/api/providers/:id/models', async (c) => {
     const id = c.req.param('id');
-    if (!isAdminProviderId(id)) {
-      return c.json({ error: 'unknown_provider' }, 404);
+    if (!isAdminProviderId(id) || (id === 'workers-ai' && deploymentLaneRefused(c))) {
+      return unknownProvider(c);
     }
     try {
       const platformEnv = c.env as PlatformEnv | undefined;
@@ -7233,16 +7241,16 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
 
   app.get('/admin/api/providers/:id/favorites', async (c) => {
     const id = c.req.param('id');
-    if (!isFavoriteProviderId(id)) {
-      return c.json({ error: 'unknown_provider' }, 404);
+    if (!isFavoriteProviderId(id) || (id === 'workers-ai' && deploymentLaneRefused(c))) {
+      return unknownProvider(c);
     }
     return c.json({ provider: id, favorites: await getProviderFavorites(id, settings(c)) });
   });
 
   app.put('/admin/api/providers/:id/favorites', async (c) => {
     const id = c.req.param('id');
-    if (!isFavoriteProviderId(id)) {
-      return c.json({ error: 'unknown_provider' }, 404);
+    if (!isFavoriteProviderId(id) || (id === 'workers-ai' && deploymentLaneRefused(c))) {
+      return unknownProvider(c);
     }
     const favorites = providerFavoritesFromBody(await readJson(c.req));
     if (!favorites) {

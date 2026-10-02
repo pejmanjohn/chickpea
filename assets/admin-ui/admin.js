@@ -10835,10 +10835,11 @@
       scheduleChatgptPlanPoll();
       // Load favorites + the live model lists for the curated providers so their
       // managers render metas and counts. OpenRouter's list is public (no key);
-      // Workers AI needs the binding, present only on the Cloudflare target.
+      // Workers AI needs the binding, present only on the Cloudflare target,
+      // and only an installation offered it lists it.
       loadFavorites("openrouter");
       loadProviderModels("openrouter");
-      if (IS_CLOUDFLARE) {
+      if (IS_CLOUDFLARE && (body.providers || []).some(function (provider) { return provider.id === "workers-ai"; })) {
         loadFavorites("workers-ai");
         loadProviderModels("workers-ai");
       }
