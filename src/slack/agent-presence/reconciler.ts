@@ -637,7 +637,7 @@ export class AgentPresenceReconciler {
     presence = requiredPresence(agent);
     if (!presence.userGroupId) return agent;
     try {
-      await transport.enableUserGroup(presence.userGroupId);
+      await enableUserGroup(transport, presence.userGroupId);
       return config.updateAgent(
         agent.id,
         {
@@ -707,6 +707,16 @@ async function disableUserGroup(transport: SlackTransport, userGroupId: string):
     await transport.disableUserGroup(userGroupId);
   } catch (error) {
     if (error instanceof SlackTransportError && error.code === 'already_disabled') return;
+    throw error;
+  }
+}
+
+/** Enable an Agent's user group; Slack's `already_enabled` is the state restore wants. */
+async function enableUserGroup(transport: SlackTransport, userGroupId: string): Promise<void> {
+  try {
+    await transport.enableUserGroup(userGroupId);
+  } catch (error) {
+    if (error instanceof SlackTransportError && error.code === 'already_enabled') return;
     throw error;
   }
 }

@@ -840,6 +840,26 @@ test('a workspace default Agent\'s denied archive takes its replacement now, so 
   } finally { config.close(); }
 });
 
+test('restore finishes when Slack says the handle is already enabled', async () => {
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const transport = new FakeSlackTransport();
+  try {
+    await config.createAgent(agent('agent_support', 'Support', 'support'));
+    const reconciler = new AgentPresenceReconciler({ config, transport });
+    await reconciler.publish({ workspaceId: 'TACME', agentId: 'agent_support', channelId: 'C_SUPPORT',
+      actorMembershipId: 'membership_ada', actorSlackUserId: 'UADA' });
+    await config.deleteAgentChannelGrant('TACME', 'C_SUPPORT', 'agent_support');
+    assert.equal((await reconciler.archive('agent_support')).lifecycle, 'archived');
+    // Someone re-enabled the group in Slack before the Agent was restored.
+    transport.enableError = new SlackTransportError('usergroups.enable', 'already_enabled');
+    const restored = await reconciler.restore('agent_support');
+    assert.equal(restored.lifecycle, 'active');
+    assert.equal(restored.slackPresence?.desiredState, 'active');
+    assert.equal(restored.slackPresence?.health, 'healthy');
+    assert.equal(restored.slackPresence?.errorCode, undefined);
+  } finally { config.close(); }
+});
+
 test('archive retry finishes when Slack says an Owner already deactivated the handle', async () => {
   const config = new SqliteConfigStore(':memory:', { agents: [] });
   const transport = new FakeSlackTransport();
