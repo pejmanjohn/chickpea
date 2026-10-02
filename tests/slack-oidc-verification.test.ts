@@ -244,6 +244,13 @@ test('a discovery sign-in names no workspace and learns it from the verified tok
     assert.equal((await beforeInstall.gateway.exchangeAndVerify({
       attempt: teamBound, code: 'code', nonce: NONCE, eligibility: 'install_grant',
     })).eligibility, 'install_grant');
+    const wrongWorkspace = await gatewayFor(hostedSlackOidcCredentials({
+      app: async () => HOST_APP, installation: async () => undefined,
+    }), await idToken({ claims: { 'https://slack.com/team_id': 'TOTHER' } }), 'TOTHER');
+    await assert.rejects(
+      wrongWorkspace.gateway.exchangeAndVerify({ attempt: teamBound, code: 'code', nonce: NONCE, eligibility: 'install_grant' }),
+      rejectsWith('workspace_mismatch'),
+    );
     // A registry lookup that fails after the exchange refuses rather than guessing.
     const broken = await gatewayFor(hostedSlackOidcCredentials({
       app: async () => HOST_APP, installation: async () => { throw new Error('registry unavailable'); },

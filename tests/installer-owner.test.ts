@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 
+import { createBetterAuth } from '../src/auth/better-auth.ts';
 import { NodeBetterAuthBackend } from '../src/auth/better-auth-node.ts';
 import { BetterAuthDirectory } from '../src/auth/better-auth-principal.ts';
 import { activateInstallerOwner } from '../src/auth/installer-owner.ts';
@@ -66,62 +67,83 @@ test('the installer becomes the first Owner and is signed in; nobody else can cl
       capability: 'another-install-attempt-0123456789abcdef',
     }), code('owner_already_claimed'));
     assert.equal((await identity.listMemberships()).length, 1);
+    // Not even the Owner is signed in under another Admin origin.
+    await assert.rejects(activate({ environment: { ...environment, baseURL: 'https://elsewhere.example' } }),
+      /pinned to another Admin origin/);
   } finally {
     identity.close();
     backend.close();
   }
 });
 
-test('an interrupted activation resumes while live and is replaced by a new attempt after it expires', async () => {
+test('an interrupted activation resumes, a new attempt by the same person replaces it, and nobody else can', async () => {
   const clock = { now: NOW };
-  const identity = hostedStore('org_acme', clock);
   const backend = new NodeBetterAuthBackend(':memory:');
   const environment = { backend, baseURL: ORIGIN, secret: SECRET };
-  const activate = (capability: string) => activateInstallerOwner({
-    identity, environment, proof: OWNER, installGrant: GRANT, capability,
+  const auth = createBetterAuth(environment);
+  const capabilityHash = (capability: string) => createHash('sha256').update(capability).digest('hex');
+  const activate = (identity: SqliteIdentityStore, capability: string, proof = OWNER) => activateInstallerOwner({
+    identity, environment, proof, capability,
+    installGrant: { slackTeamId: proof.slackTeamId, installerSlackUserId: proof.slackUserId },
     request: new Request(`${ORIGIN}/auth/slack/install/callback`), now: () => clock.now,
   });
-  // What a crash right after the reservation leaves behind.
-  const interrupt = async (capability: string) => identity.reserveInstallerOwner({
-    kind: 'first_owner_claim', organizationId: (await identity.ensureOrganization({
-      displayName: 'Chickpea', slackTeamId: 'TACME',
-    })).id,
-    expectedSlackTeamId: 'TACME', expectedSlackUserId: 'UINSTALLER', chickpeaRole: 'owner',
-    capabilityHash: createHash('sha256').update(capability).digest('hex'),
-    expiresAt: clock.now + 15 * 60_000,
-  });
+  // What a crash leaves behind after the reservation, and optionally after
+  // reconciling with Better Auth and recording it on the operation.
+  const interrupt = async (identity: SqliteIdentityStore, capability: string, through: 'reserve' | 'reconcile' | 'advance', proof = OWNER) => {
+    const organization = await identity.ensureOrganization({ displayName: 'Chickpea', slackTeamId: proof.slackTeamId });
+    const operation = await identity.reserveInstallerOwner({
+      kind: 'first_owner_claim', organizationId: organization.id, chickpeaRole: 'owner',
+      expectedSlackTeamId: proof.slackTeamId, expectedSlackUserId: proof.slackUserId,
+      capabilityHash: capabilityHash(capability), expiresAt: clock.now + 15 * 60_000,
+    });
+    if (through === 'reserve') return operation;
+    const reconciled = await auth.chickpea.reconcileSlackIdentity({
+      slackTeamId: proof.slackTeamId, slackUserId: proof.slackUserId, displayName: proof.displayName,
+      organization: { name: organization.displayName, slug: `chickpea-${organization.id}` },
+    });
+    if (through === 'advance') {
+      await identity.advanceAuthOperation({
+        operationId: operation.id, capabilityHash: capabilityHash(capability), step: 1,
+        betterAuthUserId: reconciled.userId, betterAuthOrganizationId: reconciled.organizationId,
+        betterAuthMembershipId: reconciled.membershipId,
+      });
+    }
+    return operation;
+  };
+  const stores: SqliteIdentityStore[] = [];
+  const fresh = (name: string) => { const store = hostedStore(name, clock); stores.push(store); return store; };
   try {
-    await interrupt(CAPABILITY);
-    clock.now += 60_000;
-    assert.equal((await activate(CAPABILITY)).ok, true, 'a retry inside the window resumes the reservation');
-    assert.equal((await identity.getOwnerClaim())!.status, 'active');
-  } finally {
-    identity.close();
-  }
+    for (const through of ['reserve', 'reconcile', 'advance'] as const) {
+      clock.now = NOW;
+      const identity = fresh(`org_resume_${through}`);
+      await interrupt(identity, CAPABILITY, through);
+      clock.now += 60_000;
+      assert.equal((await activate(identity, CAPABILITY)).ok, true, `resumes after a crash past ${through}`);
+      assert.equal((await identity.getOwnerClaim())!.status, 'active');
+    }
 
-  const expired = hostedStore('org_beta', clock);
-  try {
-    const stale = 'stale-install-attempt-0123456789abcdef';
+    // The same person's new attempt replaces a live or an expired reservation.
     clock.now = NOW;
-    const staleReservation = await expired.reserveInstallerOwner({
-      kind: 'first_owner_claim',
-      organizationId: (await expired.ensureOrganization({ displayName: 'Chickpea', slackTeamId: 'TACME' })).id,
-      expectedSlackTeamId: 'TACME', expectedSlackUserId: 'UINSTALLER', chickpeaRole: 'owner',
-      capabilityHash: createHash('sha256').update(stale).digest('hex'), expiresAt: NOW + 15 * 60_000,
-    });
+    const live = fresh('org_replace_live');
+    const abandoned = await interrupt(live, 'first-install-attempt-0123456789abcdef', 'advance');
+    assert.equal((await activate(live, 'second-install-attempt-0123456789abcdef')).ok, true);
+    assert.notEqual((await live.getOwnerClaim())!.operationId, abandoned.id);
+    const expired = fresh('org_replace_expired');
+    await interrupt(expired, 'stale-install-attempt-0123456789abcdef', 'reserve');
     clock.now = NOW + 16 * 60_000;
-    const retry = (capability: string) => activateInstallerOwner({
-      identity: expired, environment, proof: OWNER, installGrant: GRANT, capability,
-      request: new Request(`${ORIGIN}/auth/slack/install/callback`), now: () => clock.now,
-    });
-    await assert.rejects(retry(stale), code('auth_operation_expired'));
-    assert.equal((await retry('fresh-install-attempt-0123456789abcdef')).ok, true,
-      'a new attempt replaces the stale reservation for the same person');
-    const claim = (await expired.getOwnerClaim())!;
-    assert.equal(claim.status, 'active');
-    assert.notEqual(claim.operationId, staleReservation.id);
+    await assert.rejects(activate(expired, 'stale-install-attempt-0123456789abcdef'), code('auth_operation_expired'));
+    assert.equal((await activate(expired, 'fresh-install-attempt-0123456789abcdef')).ok, true);
+
+    // Another person's reservation keeps everyone else out, live or expired.
+    clock.now = NOW;
+    const held = fresh('org_held');
+    await interrupt(held, 'holder-install-attempt-0123456789abcdef', 'reserve');
+    const other: SlackOidcProof = { slackTeamId: 'TACME', slackUserId: 'UOTHER', displayName: 'Other' };
+    await assert.rejects(activate(held, 'other-install-attempt-0123456789abcdef', other), code('owner_claim_conflict'));
+    clock.now = NOW + 16 * 60_000;
+    await assert.rejects(activate(held, 'other-retry-attempt-0123456789abcdef0', other), code('owner_claim_conflict'));
   } finally {
-    expired.close();
+    for (const store of stores) store.close();
     backend.close();
   }
 });

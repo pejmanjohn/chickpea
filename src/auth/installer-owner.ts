@@ -22,10 +22,10 @@ export interface SlackInstallGrant {
  * (`eligibility: 'install_grant'`) is admitted only here.
  *
  * The host keeps `capability` (32+ random characters) with its install
- * attempt: a retry with it resumes the same reservation, and once that has
- * expired the host starts a new attempt. An installation that already has
- * this Owner signs them in again; anyone else is refused with
- * `owner_already_claimed`.
+ * attempt: a retry with it resumes the same reservation, and the same
+ * person's new attempt replaces it. An installation that already has this
+ * Owner signs them in again; anyone else is refused (`owner_already_claimed`,
+ * or `owner_claim_conflict` while another person's reservation stands).
  */
 export async function activateInstallerOwner(input: {
   identity: IdentityStore;
@@ -49,7 +49,9 @@ export async function activateInstallerOwner(input: {
       (claim.slackTeamId !== proof.slackTeamId || claim.slackUserId !== proof.slackUserId)) {
     throw new IdentityStateError('owner_already_claimed', 'The first Owner has already been claimed.');
   }
-  const auth = createBetterAuth({
+  // Built only once a session or reconcile needs it, so a refusal starts nothing.
+  let auth: ReturnType<typeof createBetterAuth> | undefined;
+  const betterAuth = () => auth ??= createBetterAuth({
     ...input.environment,
     baseURL: origin,
     privateSeam: {
@@ -57,15 +59,18 @@ export async function activateInstallerOwner(input: {
     },
   });
   const issue = async (operationId: string) => {
-    const response = await auth.chickpea.issueSession(operationId, input.request);
+    const response = await betterAuth().chickpea.issueSession(operationId, input.request);
     if (!response.ok) throw new SlackOidcError('session_unavailable');
     return response;
   };
-  if (claim?.status === 'active') return issue(claim.operationId);
-
   const control = await identity.ensureAuthControl();
   if (control.canonicalAdminOrigin && control.canonicalAdminOrigin !== origin) {
     throw new Error('This installation is pinned to another Admin origin.');
+  }
+  if (claim?.status === 'active') {
+    const membership = claim.membershipId ? await identity.getMembership(claim.membershipId) : undefined;
+    if (membership?.status !== 'active') throw new SlackOidcError('inactive_user');
+    return issue(claim.operationId);
   }
   if (!control.canonicalAdminOrigin) {
     await identity.updateAuthControl({ expectedRevision: control.revision, canonicalAdminOrigin: origin });
@@ -85,11 +90,11 @@ export async function activateInstallerOwner(input: {
   });
   // Named after the installation's organization, not the Slack team, so a
   // workspace that reinstalls into a new installation gets a new one.
-  const reconciled = await auth.chickpea.reconcileSlackIdentity({
+  const reconciled = await betterAuth().chickpea.reconcileSlackIdentity({
     slackTeamId: proof.slackTeamId,
     slackUserId: proof.slackUserId,
     displayName: proof.displayName,
-    organization: { name: organization.displayName, slug: `chickpea-${organization.id.toLowerCase()}` },
+    organization: { name: organization.displayName, slug: `chickpea-${organization.id}` },
     ...(operation.betterAuthUserId ? { expectedUserId: operation.betterAuthUserId } : {}),
   });
   await identity.advanceAuthOperation({

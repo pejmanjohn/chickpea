@@ -1832,8 +1832,9 @@ export class IdentityStoreLogic {
    * A host's first-Owner reservation for the person its install grant names,
    * outside a setup transaction: the operation and the singleton claim in one
    * transaction. The same capability resumes its reservation while it is
-   * live; once expired, a new capability replaces the same person's stale
-   * reservation, as a first-Owner admission does.
+   * live; a new capability from the same person replaces their reservation,
+   * live or expired. Another person's reservation, even an expired one,
+   * keeps everyone else out.
    */
   reserveInstallerOwner(input: CreateAuthOperationInput): AuthOperation {
     return this.db.transaction(() => {
@@ -1854,7 +1855,7 @@ export class IdentityStoreLogic {
       if (claim) {
         const prior = this.requiredAuthOperation(claim.operationId);
         if (claim.slackTeamId !== input.expectedSlackTeamId || claim.slackUserId !== input.expectedSlackUserId ||
-            prior.expiresAt > this.now() || !['reserved', 'reconciling', 'expired'].includes(prior.status)) {
+            !['reserved', 'reconciling', 'expired'].includes(prior.status)) {
           throw identityError('owner_claim_conflict', 'The singleton first-Owner claim is already reserved.');
         }
         this.db.run(
