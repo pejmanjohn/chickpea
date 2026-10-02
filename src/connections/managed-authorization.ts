@@ -186,6 +186,8 @@ export async function inspectStaleManagedAuthorization(input: {
 export async function recoverMalformedManagedAuthorization(input: {
   settings: SettingsStore;
   actorMembershipId: string;
+  /** Throws unless the record's remote principal (if any) is the caller's to clean up. */
+  assertPrincipalRef?(principalRef: string | undefined): void;
   cleanupRemoteAccount(input: { adapterId: string; accountRef: string }): Promise<boolean>;
 }): Promise<{ adapterId: string; deletedRemoteAccounts: number }> {
   if (!ID_PATTERN.test(input.actorMembershipId)) throw new ManagedAuthorizationError('invalid');
@@ -198,6 +200,7 @@ export async function recoverMalformedManagedAuthorization(input: {
   } catch (error) {
     if (!(error instanceof ManagedAuthorizationError) || error.code !== 'invalid') throw error;
   }
+  input.assertPrincipalRef?.(malformedPrincipalRef(raw));
   const refs = safeRemoteRefFromMalformedAttempt(raw);
   const accountRefs = [...new Set([refs.authorizationRef, refs.accountRef].filter(
     (value): value is string => value !== undefined,
@@ -462,6 +465,16 @@ function safeRemoteRefFromMalformedAttempt(
     };
   } catch {
     return {};
+  }
+}
+
+/** Kept apart from the logged refs above: it names a membership. */
+function malformedPrincipalRef(raw: string): string | undefined {
+  try {
+    const value: unknown = JSON.parse(raw);
+    return isRecord(value) && typeof value.principalRef === 'string' ? value.principalRef : undefined;
+  } catch {
+    return undefined;
   }
 }
 

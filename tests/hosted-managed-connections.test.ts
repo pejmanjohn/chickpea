@@ -21,6 +21,7 @@ import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
 import { SqliteSettingsStore, type SettingsPatch } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import type { CustomAgentConfig } from '../src/config/types.ts';
+import type { IdentityStore } from '../src/identity/types.ts';
 import { MANAGED_CONNECTOR_CATALOG } from '../src/connections/catalog/index.ts';
 import {
   ComposioPlatformConfigurationError,
@@ -34,6 +35,8 @@ import {
   recordManagedAuthorizationRequest,
 } from '../src/connections/managed-authorization.ts';
 import {
+  cancelManagedAuthorizationFlow,
+  discardManagedAuthorizationAfterAuthorityLoss,
   managedPrincipalRef,
   pollManagedAuthorizationFlow,
   startManagedAuthorizationFlow,
@@ -415,7 +418,7 @@ test('an attempt recorded for another installation is never polled or imported',
       const { started } = await connect(project, a);
       // A copy of A's attempt state lands in B's store (colliding member IDs
       // share the setting key) with the browser secret that opened it.
-      const key = `connections.managed.authorization.${await memberKey('membership_shared')}`;
+      const key = await attemptKey('membership_shared');
       await b.settings.setSetting(key, (await a.settings.getSetting(key))!);
       const linksBefore = project.links.length;
       let polls = 0;
@@ -442,6 +445,50 @@ test('an attempt recorded for another installation is never polled or imported',
       assert.deepEqual(project.revoked, []);
     } finally {
       a.close();
+      b.close();
+    }
+  });
+});
+
+test('cancel, discard and start cleanup never delete what another installation\'s attempt names', async () => {
+  await withPlatform(async ({ platform, project }) => {
+    await prepare(platform, project);
+    const b = await installation('inst_b');
+    const foreignRef = 'chickpea:staging:installation:inst_a:membership:membership_shared';
+    try {
+      const dependencies = {
+        config: b.config,
+        settings: b.settings,
+        catalog: MANAGED_CONNECTOR_CATALOG,
+        providerContext: await project.providerContext(b.env, b.settings),
+      };
+      const fresh = { principal: principal(), agent: b.agent, workspaceId: 'T_SHARED' };
+      const gmail = { ...fresh, ownerKind: 'member' as const, toolkit: 'gmail', access: 'read' as const };
+      const scoped = await plantAttempt(b.settings, FLOW_ATTEMPT, foreignRef, {
+        attemptScopeId: 'setup_shared',
+      });
+      await assert.rejects(cancelManagedAuthorizationFlow(dependencies, {
+        principal: principal(), browserSecret: scoped.browserSecret, attemptScopeId: 'setup_shared',
+      }), AuthorizationError);
+      await assert.rejects(discardManagedAuthorizationAfterAuthorityLoss(dependencies, {
+        principal: principal(), browserSecret: scoped.browserSecret, attemptScopeId: 'setup_shared',
+        attempt: scoped.attempt,
+      }), AuthorizationError);
+      await assert.rejects(startManagedAuthorizationFlow(dependencies, {
+        ...gmail, attemptScopeId: 'setup_shared', existingBrowserSecret: scoped.browserSecret,
+      }), AuthorizationError);
+
+      // A stale member-wide attempt is cleaned up by the next start, unless it
+      // names another installation.
+      await plantAttempt(b.settings, FLOW_ATTEMPT, foreignRef, {
+        now: () => Date.now() - 2 * 60 * 60_000,
+      });
+      await assert.rejects(startManagedAuthorizationFlow(dependencies, gmail), AuthorizationError);
+
+      assert.deepEqual(project.revoked, []);
+      assert.deepEqual(project.links, []);
+      assert.ok(await b.settings.getSetting(await attemptKey('membership_shared')));
+    } finally {
       b.close();
     }
   });
@@ -714,18 +761,28 @@ test('a changed deployment key waits for an explicit operator reconcile', async 
   });
 });
 
-function hostedAdmin(installationId: string, overrides: Parameters<typeof createAdminRoutes>[0] = {}) {
+function hostedAdmin(
+  installationId: string,
+  overrides: Parameters<typeof createAdminRoutes>[0] = {},
+  envOverrides: Record<string, unknown> = {},
+) {
   const config = new SqliteConfigStore(':memory:', { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const app = new Hono();
+  const members = {
+    getMembership: async (id: string) => id === 'membership_test_owner'
+      ? { id, organizationId: 'org_oss', userId: 'user_test_owner', role: 'owner', status: 'active' }
+      : undefined,
+    recordAuthAudit: async () => undefined,
+  } as unknown as IdentityStore;
   app.route('/', createAdminRoutes({
     store: config,
     settings,
     knownProviders: new Set(['local-stub']),
-    ...testAdminAuthority(ADMIN_TOKEN),
+    ...testAdminAuthority(ADMIN_TOKEN, undefined, members),
     ...overrides,
   }));
-  const env = hostedEnv(installationId);
+  const env = hostedEnv(installationId, envOverrides);
   return {
     config,
     settings,
@@ -735,6 +792,63 @@ function hostedAdmin(installationId: string, overrides: Parameters<typeof create
     }, env),
     close: () => { config.close(); settings.close(); },
   };
+}
+
+const ADMIN_ATTEMPT = {
+  workspaceId: 'T_TEST', agentId: 'agent_support', actorMembershipId: 'membership_test_owner',
+};
+const FLOW_ATTEMPT = {
+  workspaceId: 'T_SHARED', agentId: 'agent_shared', actorMembershipId: 'membership_shared',
+};
+
+/** A pending Personal Gmail attempt with an allocated remote request, naming `principalRef`. */
+async function plantAttempt(
+  settings: SqliteSettingsStore,
+  owner: { workspaceId: string; agentId: string; actorMembershipId: string },
+  principalRef: string,
+  options: { attemptScopeId?: string; now?: () => number } = {},
+) {
+  const scope = options.attemptScopeId ? { attemptScopeId: options.attemptScopeId } : {};
+  const clock = options.now ? { now: options.now } : {};
+  const started = await beginManagedAuthorization({
+    settings,
+    input: {
+      ...owner, ...scope,
+      ownerKind: 'member', providerId: 'google', adapterId: 'composio', toolkit: 'gmail',
+      label: 'Gmail · Personal', principalRef,
+      allowedCapabilities: ['gmail.profile.read'], bindingCapabilities: ['gmail.profile.read'],
+      providerGeneration: 1, providerLineage: '0'.repeat(24),
+    },
+    ...clock,
+  });
+  const attempt = await recordManagedAuthorizationRequest({
+    settings, actorMembershipId: owner.actorMembershipId, ...scope, ...clock,
+    browserSecret: started.browserSecret, authorizationRef: 'ca_foreign_request',
+  });
+  return { attempt, browserSecret: started.browserSecret };
+}
+
+function browserCookie(browserSecret: string): Record<string, string> {
+  return { cookie: `__Secure-chickpea_managed_authorization=${browserSecret}` };
+}
+
+async function seedAdminAgent(admin: ReturnType<typeof hostedAdmin>): Promise<void> {
+  await admin.config.createAgent({
+    id: 'agent_support', name: 'Support', creatorMembershipId: 'membership_test_owner',
+    editPolicy: 'creator_and_admins', instructions: 'Answer.', enabled: true,
+    skills: [], mcpServers: [], apiConnections: [], repositories: [],
+  });
+  await admin.config.ensureWorkspaceInstallation({
+    workspaceId: 'T_TEST', teamId: 'T_TEST', transportMode: 'direct', defaultAgentId: 'agent_support',
+  });
+}
+
+function startAdminConnection(admin: ReturnType<typeof hostedAdmin>, headers: Record<string, string> = {}) {
+  return admin.request('/admin/api/agents/agent_support/connections/managed/start', {
+    method: 'POST',
+    body: JSON.stringify({ workspaceId: 'T_TEST', ownerKind: 'member', toolkit: 'gmail', access: 'read' }),
+    headers,
+  });
 }
 
 test('hosted Admin never asks for a Composio key and refuses project-wide setup', async () => {
@@ -808,18 +922,8 @@ test('hosted Admin names its installation in new authorizations and polls only i
     managedConnectionProviders: createManagedConnectionProviderRegistry([provider]),
   });
   try {
-    await admin.config.createAgent({
-      id: 'agent_support', name: 'Support', creatorMembershipId: 'membership_test_owner',
-      editPolicy: 'creator_and_admins', instructions: 'Answer.', enabled: true,
-      skills: [], mcpServers: [], apiConnections: [], repositories: [],
-    });
-    await admin.config.ensureWorkspaceInstallation({
-      workspaceId: 'T_TEST', teamId: 'T_TEST', transportMode: 'direct', defaultAgentId: 'agent_support',
-    });
-    const started = await admin.request('/admin/api/agents/agent_support/connections/managed/start', {
-      method: 'POST',
-      body: JSON.stringify({ workspaceId: 'T_TEST', ownerKind: 'member', toolkit: 'gmail', access: 'read' }),
-    });
+    await seedAdminAgent(admin);
+    const started = await startAdminConnection(admin);
     assert.equal(started.status, 200, await started.clone().text());
     assert.deepEqual(authorized, [
       'chickpea:staging:installation:inst_admin:membership:membership_test_owner',
@@ -827,26 +931,10 @@ test('hosted Admin names its installation in new authorizations and polls only i
 
     // An attempt naming another installation, as if copied into this store.
     const pollWith = async (principalRef: string) => {
-      const key = `connections.managed.authorization.${await memberKey('membership_test_owner')}`;
-      await admin.settings.deleteSetting(key);
-      const attempt = await beginManagedAuthorization({
-        settings: admin.settings,
-        input: {
-          workspaceId: 'T_TEST', agentId: 'agent_support', actorMembershipId: 'membership_test_owner',
-          ownerKind: 'member', providerId: 'google', adapterId: 'composio', toolkit: 'gmail',
-          label: 'Gmail · Personal', principalRef,
-          allowedCapabilities: ['gmail.profile.read'], bindingCapabilities: ['gmail.profile.read'],
-          providerGeneration: 1, providerLineage: '0'.repeat(24),
-        },
-      });
-      await recordManagedAuthorizationRequest({
-        settings: admin.settings, actorMembershipId: 'membership_test_owner',
-        browserSecret: attempt.browserSecret, authorizationRef: 'ca_hosted_admin',
-      });
+      await admin.settings.deleteSetting(await attemptKey('membership_test_owner'));
+      const { browserSecret } = await plantAttempt(admin.settings, ADMIN_ATTEMPT, principalRef);
       return admin.request('/admin/api/agents/agent_support/connections/managed/poll', {
-        method: 'POST',
-        body: '{}',
-        headers: { cookie: `__Secure-chickpea_managed_authorization=${attempt.browserSecret}` },
+        method: 'POST', body: '{}', headers: browserCookie(browserSecret),
       });
     };
     const foreign = await pollWith('chickpea:staging:installation:inst_other:membership:membership_test_owner');
@@ -855,6 +943,69 @@ test('hosted Admin names its installation in new authorizations and polls only i
     const own = await pollWith('chickpea:staging:installation:inst_admin:membership:membership_test_owner');
     assert.equal(own.status, 202, await own.clone().text());
     assert.equal(polls, 1);
+  } finally {
+    admin.close();
+  }
+});
+
+test('hosted Admin cancel, start cleanup and recovery never delete what another installation names', async () => {
+  const deleted: string[] = [];
+  let authorized = 0;
+  const provider: ManagedConnectionProvider = {
+    id: 'composio',
+    async authorize() {
+      authorized += 1;
+      return {
+        authorizationUrl: new URL('https://connect.composio.dev/link/unused'),
+        authorizationRef: 'ca_unused',
+      };
+    },
+    async validate() {},
+    async execute() { return { data: {} }; },
+    async revoke(input) { deleted.push(input.policy.accountRef); },
+    async cleanupRemoteAccount({ accountRef }) { deleted.push(accountRef); },
+  };
+  const admin = hostedAdmin('inst_admin', {
+    managedConnectionProviders: createManagedConnectionProviderRegistry([provider]),
+  });
+  const foreignRef = 'chickpea:staging:installation:inst_other:membership:membership_test_owner';
+  try {
+    await seedAdminAgent(admin);
+    const key = await attemptKey('membership_test_owner');
+    const { browserSecret } = await plantAttempt(admin.settings, ADMIN_ATTEMPT, foreignRef);
+    const cancelled = await admin.request('/admin/api/agents/agent_support/connections/managed/cancel', {
+      method: 'POST', body: '{}', headers: browserCookie(browserSecret),
+    });
+    assert.equal(cancelled.status, 403, await cancelled.clone().text());
+    const restarted = await startAdminConnection(admin, browserCookie(browserSecret));
+    assert.equal(restarted.status, 403, await restarted.clone().text());
+    assert.equal(authorized, 0);
+    assert.ok(await admin.settings.getSetting(key));
+
+    // A record too damaged to parse is recovered only when its principal is
+    // this installation's (or, on standalone, when it names none).
+    const malformed = (principalRef?: string) => JSON.stringify({
+      version: 2, adapterId: 'composio', authorizationRef: 'ca_malformed',
+      ...(principalRef ? { principalRef } : {}),
+    });
+    const recover = () => admin.request('/admin/api/connections/managed/recover', {
+      method: 'POST', body: JSON.stringify({ actorMembershipId: 'membership_test_owner' }),
+    });
+    for (const record of [malformed(foreignRef), malformed()]) {
+      await admin.settings.setSetting(key, record);
+      const refused = await recover();
+      assert.equal(refused.status, 403, await refused.clone().text());
+      assert.equal(await admin.settings.getSetting(key), record);
+    }
+    assert.deepEqual(deleted, []);
+    await admin.settings.setSetting(
+      key,
+      malformed('chickpea:staging:installation:inst_admin:membership:membership_test_owner'),
+    );
+    const recovered = await recover();
+    assert.equal(recovered.status, 200, await recovered.clone().text());
+    assert.deepEqual(deleted, ['ca_malformed']);
+    assert.equal(await admin.settings.getSetting(key), undefined);
   } finally {
     admin.close();
   }
@@ -884,11 +1035,13 @@ test('standalone ignores a configured platform store and keeps its own preparati
   }
 });
 
-async function memberKey(membershipId: string): Promise<string> {
+/** The setting key of a member's unscoped attempt. */
+async function attemptKey(membershipId: string): Promise<string> {
   const digest = new Uint8Array(await crypto.subtle.digest(
     'SHA-256', new TextEncoder().encode(membershipId),
   ));
-  return [...digest].map((byte) => byte.toString(16).padStart(2, '0')).join('').slice(0, 32);
+  const hex = [...digest].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+  return `connections.managed.authorization.${hex.slice(0, 32)}`;
 }
 
 async function waitFor(condition: () => boolean): Promise<void> {

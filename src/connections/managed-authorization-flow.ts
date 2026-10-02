@@ -277,15 +277,7 @@ export async function pollManagedAuthorizationFlow(
     });
     cleanupAttempt = attempt;
     if (attempt.workspaceId !== input.workspaceId) throw new AuthorizationError();
-    // The attempt's remote principal names this installation and member; an
-    // attempt recorded for any other one is never polled or imported here.
-    if (attempt.principalRef !== managedPrincipalRef(
-      input.principal,
-      attempt.ownerKind,
-      dependencies.providerContext.platformEnv,
-    )) {
-      throw new AuthorizationError();
-    }
+    assertManagedAttemptPrincipal(attempt, input.principal, dependencies.providerContext.platformEnv);
     if (attempt.agentId !== input.agent.id || !attempt.authorizationRef) {
       throw new ManagedAuthorizationError('invalid');
     }
@@ -544,6 +536,7 @@ export async function cancelManagedAuthorizationFlow(
         (error.code === 'invalid' || error.code === 'replayed')) return 'none';
     throw error;
   }
+  assertManagedAttemptPrincipal(attempt, input.principal, dependencies.providerContext.platformEnv);
   const service = connectionAccounts(dependencies);
   try {
     requireManagedOwnerLanePermission(input.principal, attempt.ownerKind);
@@ -604,6 +597,21 @@ export function managedPrincipalRef(
   return value.length <= MAX_MANAGED_PRINCIPAL_REF_LENGTH ? value : undefined;
 }
 
+/**
+ * Refuse an attempt whose remote principal is not this installation's and
+ * this member's (or their organization's, for Team). Every path that polls,
+ * imports or deletes an attempt's remote account checks it first.
+ */
+export function assertManagedAttemptPrincipal(
+  attempt: Pick<ManagedAuthorizationAttempt, 'principalRef' | 'ownerKind'>,
+  principal: AuthPrincipal,
+  env: PlatformEnv | undefined,
+): void {
+  if (attempt.principalRef !== managedPrincipalRef(principal, attempt.ownerKind, env)) {
+    throw new AuthorizationError();
+  }
+}
+
 function managedAuthorizationRemoteRef(
   attempt: ManagedAuthorizationAttempt,
 ): string | undefined {
@@ -627,6 +635,11 @@ export async function discardManagedAuthorizationAfterAuthorityLoss(
   if (input.attempt.actorMembershipId !== input.principal.membershipId) {
     throw new AuthorizationError();
   }
+  assertManagedAttemptPrincipal(
+    input.attempt,
+    input.principal,
+    dependencies.providerContext.platformEnv,
+  );
   const remoteRef = managedAuthorizationRemoteRef(input.attempt);
   if (remoteRef) {
     const service = connectionAccounts(dependencies);
@@ -728,6 +741,11 @@ async function cleanupExistingAttempt(
       ? managedAuthorizationRemoteRef(existingAttempt)
       : undefined;
     if (existingAttempt) {
+      assertManagedAttemptPrincipal(
+        existingAttempt,
+        principal,
+        dependencies.providerContext.platformEnv,
+      );
       requireManagedOwnerLanePermission(principal, existingAttempt.ownerKind);
     }
     if (existingAttempt && existingRemoteRef && !await service.hasManagedRemoteRef({
@@ -760,7 +778,10 @@ async function cleanupExistingAttempt(
     if (!(error instanceof ManagedAuthorizationError && error.code === 'invalid')) throw error;
   }
   const staleRemoteRef = staleAttempt ? managedAuthorizationRemoteRef(staleAttempt) : undefined;
-  if (staleAttempt) requireManagedOwnerLanePermission(principal, staleAttempt.ownerKind);
+  if (staleAttempt) {
+    assertManagedAttemptPrincipal(staleAttempt, principal, dependencies.providerContext.platformEnv);
+    requireManagedOwnerLanePermission(principal, staleAttempt.ownerKind);
+  }
   if (staleAttempt && staleRemoteRef && !await service.hasManagedRemoteRef({
     adapterId: staleAttempt.adapterId,
     accountRef: staleRemoteRef,

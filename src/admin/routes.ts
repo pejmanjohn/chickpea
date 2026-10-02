@@ -107,6 +107,7 @@ import {
   assertManagedAuthorizationProvider,
 } from '../connections/managed-authorization.ts';
 import {
+  assertManagedAttemptPrincipal,
   discardManagedAuthorizationAfterAuthorityLoss,
   managedPrincipalRef,
 } from '../connections/managed-authorization-flow.ts';
@@ -4873,6 +4874,17 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const recovered = await recoverMalformedManagedAuthorization({
         settings: settings(c),
         actorMembershipId: membership.id,
+        // Nothing is deleted unless the record names this installation's
+        // member or organization. A record naming none predates principal
+        // names, which only standalone can hold.
+        assertPrincipalRef: (principalRef) => {
+          const env = c.env as PlatformEnv | undefined;
+          const owned = principalRef === undefined
+            ? deploymentTenancy(env) !== 'installation'
+            : principalRef === managedPrincipalRef({ ...principal, membershipId: membership.id }, 'member', env) ||
+              principalRef === managedPrincipalRef(principal, 'team', env);
+          if (!owned) throw new AuthorizationError();
+        },
         cleanupRemoteAccount: async ({ adapterId, accountRef }) => {
           if (await connectionAccounts(c).hasManagedRemoteRef({ adapterId, accountRef })) {
             return false;
@@ -5019,6 +5031,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           ? managedAuthorizationRemoteRef(existingAttempt)
           : undefined;
         if (existingAttempt) {
+          assertManagedAttemptPrincipal(existingAttempt, principal, c.env as PlatformEnv | undefined);
           requirePermission(
             principal,
             existingAttempt.ownerKind === 'team'
@@ -5074,6 +5087,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         ? managedAuthorizationRemoteRef(staleAttempt)
         : undefined;
       if (staleAttempt) {
+        assertManagedAttemptPrincipal(staleAttempt, principal, c.env as PlatformEnv | undefined);
         requirePermission(
           principal,
           staleAttempt.ownerKind === 'team'
@@ -5257,15 +5271,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
             cleanupAttempt = attempt;
             const organization = await identity(c).getOrganization();
             if (organization?.slackTeamId !== attempt.workspaceId) throw new AuthorizationError();
-            // An attempt recorded for another installation or member is never
-            // polled or imported here.
-            if (attempt.principalRef !== managedPrincipalRef(
-              principal,
-              attempt.ownerKind,
-              c.env as PlatformEnv | undefined,
-            )) {
-              throw new AuthorizationError();
-            }
+            assertManagedAttemptPrincipal(attempt, principal, c.env as PlatformEnv | undefined);
             if (attempt.agentId !== agent.id || !attempt.authorizationRef) {
               throw new ManagedAuthorizationError('invalid');
             }
@@ -5289,7 +5295,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
               config: store(c),
               settings: settings(c),
               catalog: managedCatalog,
-              providerContext,
+              providerContext: {
+                ...providerContext,
+                ...(c.env ? { platformEnv: c.env as PlatformEnv } : {}),
+              },
             }, {
               principal,
               browserSecret,
@@ -5559,6 +5568,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       });
       const organization = await identity(c).getOrganization();
       if (organization?.slackTeamId !== attempt.workspaceId) throw new AuthorizationError();
+      assertManagedAttemptPrincipal(attempt, principal, c.env as PlatformEnv | undefined);
       if (attempt.agentId !== agent.id) throw new ManagedAuthorizationError('invalid');
       try {
         requirePermission(
@@ -5574,7 +5584,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           config: store(c),
           settings: settings(c),
           catalog: managedCatalog,
-          providerContext,
+          providerContext: {
+            ...providerContext,
+            ...(c.env ? { platformEnv: c.env as PlatformEnv } : {}),
+          },
         }, {
           principal,
           browserSecret,
