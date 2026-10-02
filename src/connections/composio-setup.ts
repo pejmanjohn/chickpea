@@ -1,13 +1,19 @@
 import {
+  completeComposioReconciliation,
+  composioEnvironmentName,
+  composioPlatformOperatorSettings,
+  composioPreparationSettings,
   inspectComposioAuthConfigOverrides,
   recordComposioPreparationResult,
   resolveComposioConfiguration,
   type ComposioAuthConfigIds,
   type ComposioAuthConfigOverrides,
   type ComposioConfigurationOptions,
+  type ComposioSettingsStore,
 } from '../config/composio-settings.ts';
-import type { SettingsStore } from '../config/settings-store.ts';
-import { getSettingsStore } from '../config/state-backend.ts';
+import { envValue } from '../config/env-value.ts';
+import { deploymentTenancy } from '../config/installation-scope.ts';
+import type { PlatformEnv } from '../config/state-backend.ts';
 import {
   MANAGED_CONNECTOR_CATALOG,
   type ManagedAccessLane,
@@ -98,7 +104,9 @@ export async function validateComposioProjectKey(
 export async function prepareResolvedComposioManagedAuthConfigs(
   options: ComposioSetupOptions = {},
 ): Promise<ComposioPreparationResult> {
-  const settings = options.settings ?? getSettingsStore(options.env);
+  // Installation tenancy refuses here, before any remote call, unless the
+  // operator's platform preparation is the caller.
+  const settings = composioPreparationSettings(options);
   const signal = options.signal
     ? AbortSignal.any([options.signal, AbortSignal.timeout(DEFAULT_SETUP_DEADLINE_MS)])
     : AbortSignal.timeout(DEFAULT_SETUP_DEADLINE_MS);
@@ -133,10 +141,76 @@ export async function prepareResolvedComposioManagedAuthConfigs(
   });
 }
 
+export interface ComposioPlatformPreparation extends ComposioPreparationResult {
+  generation: number;
+  /** The key had changed since the last preparation, and this run accepted it. */
+  reconciled: boolean;
+}
+
+export class ComposioPlatformConfigurationError extends Error {
+  readonly name = 'ComposioPlatformConfigurationError';
+}
+
+/**
+ * The deployment's Composio key differs from the one the platform was last
+ * prepared with. Every installation's managed accounts carry the previous
+ * provider generation, so accepting the new key makes them report reconnect
+ * until reconnected or reconciled per installation. Nothing was written.
+ */
+export class ComposioPlatformReconciliationRequiredError extends Error {
+  readonly name = 'ComposioPlatformReconciliationRequiredError';
+  constructor(readonly generation: number) {
+    super('The deployment Composio key changed since the platform was last prepared.');
+  }
+}
+
+/**
+ * Operator only: prepare (and, after a key change, reconcile) the one Composio
+ * project a deployment serving many installations shares. Writes the
+ * preparation record and holds the setup lease in `settings`, the platform
+ * store the host's `configureComposioPlatformSettings` reader serves to
+ * installations. Idempotent: a rerun relists and reuses the Chickpea defaults.
+ * Installations never call this; their Admin prepare and retry are refused.
+ */
+export async function prepareComposioPlatform(options: {
+  env: PlatformEnv;
+  settings: ComposioSettingsStore;
+  /** Accept a changed deployment key (see `ComposioPlatformReconciliationRequiredError`). */
+  reconcile?: boolean;
+} & Omit<ComposioSetupOptions, 'env' | 'settings' | 'credentials'>): Promise<ComposioPlatformPreparation> {
+  if (deploymentTenancy(options.env) !== 'installation') {
+    throw new ComposioPlatformConfigurationError(
+      'Only a deployment serving many installations prepares a platform Composio project.',
+    );
+  }
+  const apiKey = envValue(options.env, 'COMPOSIO_API_KEY');
+  if (!apiKey) throw new ComposioPlatformConfigurationError('COMPOSIO_API_KEY is not set.');
+  if (!composioEnvironmentName(options.env)) {
+    throw new ComposioPlatformConfigurationError(
+      'CHICKPEA_COMPOSIO_ENVIRONMENT must be a lowercase name such as staging or production.',
+    );
+  }
+  const { reconcile, ...setup } = options;
+  const configuration = { ...setup, settings: composioPlatformOperatorSettings(options.settings) };
+  await validateComposioProjectKey(apiKey, {
+    ...(options.createClient ? { createClient: options.createClient } : {}),
+    ...(options.signal ? { signal: options.signal } : {}),
+  });
+  const resolved = await resolveComposioConfiguration(configuration);
+  let reconciled = false;
+  if (resolved.reconciliationPending) {
+    if (!reconcile) throw new ComposioPlatformReconciliationRequiredError(resolved.generation);
+    await completeComposioReconciliation(resolved.generation, configuration);
+    reconciled = true;
+  }
+  const result = await prepareResolvedComposioManagedAuthConfigs(configuration);
+  return { ...result, generation: resolved.generation, reconciled };
+}
+
 async function prepareWithLease(input: {
   apiKey: string;
   generation: number;
-  settings: SettingsStore;
+  settings: ComposioSettingsStore;
   existingAuthConfigIds: ComposioAuthConfigIds;
   preserveExisting: boolean;
   verifiedOverrides: ComposioAuthConfigOverrides;
@@ -436,7 +510,7 @@ function isEmptyArray(value: string[] | undefined): boolean {
 }
 
 async function acquireSetupLease(input: {
-  settings: SettingsStore;
+  settings: ComposioSettingsStore;
   generation: number;
   now: () => number;
   createAttemptId?: () => string;
@@ -469,7 +543,7 @@ async function acquireSetupLease(input: {
 }
 
 async function releaseSetupLease(
-  settings: SettingsStore,
+  settings: ComposioSettingsStore,
   lease: { raw: string },
 ): Promise<void> {
   await settings.applySettingsPatch({
@@ -479,7 +553,7 @@ async function releaseSetupLease(
 }
 
 async function renewSetupLease(input: {
-  settings: SettingsStore;
+  settings: ComposioSettingsStore;
   lease: { raw: string; value: SetupLease };
   now: () => number;
   leaseDurationMs: number;

@@ -12,7 +12,8 @@ import {
   workspaceCredentialContext,
 } from '../slack/secret-envelope.ts';
 import { envValue } from './env-value.ts';
-import type { EncryptedCredentialStore, SettingsStore } from './settings-store.ts';
+import { deploymentTenancy } from './installation-scope.ts';
+import type { EncryptedCredentialStore, SettingsPatch, SettingsStore } from './settings-store.ts';
 import {
   getSettingsStore,
   type PlatformEnv,
@@ -26,7 +27,9 @@ const METADATA_VERSION = 1 as const;
 const LEGACY_AUTH_CONFIG_CACHE_TTL_MS = 5 * 60_000;
 const LEGACY_AUTH_CONFIG_FAILURE_CACHE_TTL_MS = 5 * 60_000;
 const LEGACY_AUTH_CONFIG_CACHE_LIMIT = 16;
+const COMPOSIO_ENVIRONMENT_PATTERN = /^[a-z][a-z0-9-]{0,31}$/;
 let warnedUnpreparedLegacyAuthConfigIds = false;
+let warnedUnavailablePlatformConfiguration = false;
 
 type ComposioConfigurationSource = 'env' | 'stored' | 'missing';
 type ComposioDesiredState = 'enabled' | 'disabled';
@@ -103,8 +106,11 @@ interface RecordComposioPreparationInput {
   completedAt?: number;
 }
 
+/** The two settings operations Composio configuration and its setup lease use. */
+export type ComposioSettingsStore = Pick<SettingsStore, 'getSetting' | 'applySettingsPatch'>;
+
 export interface ComposioConfigurationDependencies {
-  settings: SettingsStore;
+  settings: ComposioSettingsStore;
   credentials: {
     store: EncryptedCredentialStore;
     keyring: CredentialKeyring;
@@ -112,7 +118,7 @@ export interface ComposioConfigurationDependencies {
 }
 
 interface ComposioConfigurationStorage {
-  settings: SettingsStore;
+  settings: ComposioSettingsStore;
   credentialStore: EncryptedCredentialStore;
 }
 
@@ -141,9 +147,107 @@ export class ComposioConfigurationStateError extends Error {
   }
 }
 
+/**
+ * Where a deployment serving many installations (`CHICKPEA_TENANCY=installation`)
+ * keeps its one Composio preparation.
+ *
+ * Standalone owns its Composio project, so its preparation record and setup
+ * lease live in its own settings. A deployment serving many installations
+ * shares one project, key and set of auth configs across every installation.
+ * Its preparation record and lease must therefore be one platform record:
+ * kept in each installation's store, every installation would prepare the
+ * shared project on its own and no lease would serialize them. The host
+ * supplies that store once, at module scope, and the deployment owns the key
+ * (`COMPOSIO_API_KEY`); no installation setting can replace either.
+ *
+ * Installations only read the prepared record: the store they get is wrapped
+ * read-only, and Admin's key, disable and prepare actions are refused. Only
+ * the operator's `prepareComposioPlatform` writes it.
+ */
+export type ComposioPlatformSettingsSource =
+  (env: PlatformEnv) => ComposioSettingsStore | undefined;
+
+let platformSettingsSource: ComposioPlatformSettingsSource | undefined;
+
+/** Install the platform store reader, once at module scope; undefined removes it. */
+export function configureComposioPlatformSettings(
+  source: ComposioPlatformSettingsSource | undefined,
+): void {
+  platformSettingsSource = source;
+}
+
+const PLATFORM_OPERATOR = Symbol('chickpea.composio-platform-operator');
+
+/**
+ * The platform store as the operator's preparation writes it. Only
+ * `prepareComposioPlatform` calls this; every other caller under installation
+ * tenancy reads the platform record and cannot write it.
+ */
+export function composioPlatformOperatorSettings(
+  settings: ComposioSettingsStore,
+): ComposioSettingsStore {
+  return Object.freeze({
+    getSetting: (key: string) => settings.getSetting(key),
+    applySettingsPatch: (patch: SettingsPatch) => settings.applySettingsPatch(patch),
+    [PLATFORM_OPERATOR]: true,
+  });
+}
+
+/**
+ * The deployment's Composio environment (for example `staging` or
+ * `production`), part of every remote principal a deployment serving many
+ * installations names in its shared project. It must never change while
+ * connections exist: their remote accounts belong to principals named under it.
+ */
+export function composioEnvironmentName(env: PlatformEnv | undefined): string | undefined {
+  const value = envValue(env, 'CHICKPEA_COMPOSIO_ENVIRONMENT');
+  return value && COMPOSIO_ENVIRONMENT_PATTERN.test(value) ? value : undefined;
+}
+
+/** Under installation tenancy: the platform record's store, and whether this caller writes it. */
+function platformPreparationStore(
+  options: ComposioConfigurationOptions,
+): { settings: ComposioSettingsStore; writable: boolean } | undefined {
+  const supplied = options.settings as { [PLATFORM_OPERATOR]?: true } | undefined;
+  if (options.settings && supplied?.[PLATFORM_OPERATOR]) {
+    return { settings: options.settings, writable: true };
+  }
+  const shared = options.env ? platformSettingsSource?.(options.env) : undefined;
+  if (!shared) return undefined;
+  return {
+    settings: {
+      getSetting: (key) => shared.getSetting(key),
+      applySettingsPatch: async () => { throw new ComposioConfigurationMutationError(); },
+    },
+    writable: false,
+  };
+}
+
+/**
+ * The settings that hold the preparation record and setup lease. Standalone:
+ * its own settings, as before. Installation tenancy: only the operator's
+ * platform store, so no installation's request can prepare or reconcile the
+ * shared project.
+ */
+export function composioPreparationSettings(
+  options: ComposioConfigurationOptions,
+): ComposioSettingsStore {
+  if (deploymentTenancy(options.env) !== 'installation') {
+    return options.settings ?? getSettingsStore(options.env);
+  }
+  const platform = platformPreparationStore(options);
+  if (!platform?.writable || !envValue(options.env, 'COMPOSIO_API_KEY')) {
+    throw new ComposioConfigurationMutationError();
+  }
+  return platform.settings;
+}
+
 export async function resolveComposioConfiguration(
   options: ComposioConfigurationOptions = {},
 ): Promise<ResolvedComposioConfiguration> {
+  if (deploymentTenancy(options.env) === 'installation') {
+    return resolvePlatformComposioConfiguration(options);
+  }
   const deploymentOwned = envValue(options.env, 'CHICKPEA_COMPOSIO_CONFIGURATION_MODE') ===
     'deployment';
   const environmentKey = envValue(options.env, 'COMPOSIO_API_KEY');
@@ -256,6 +360,63 @@ export async function resolveComposioConfiguration(
   };
 }
 
+/**
+ * Installation tenancy: the deployment's key with the platform's prepared
+ * auth configs. Never an installation's stored key, and read-only. Missing
+ * pieces read as an unconfigured deployment, so connections stay unavailable
+ * rather than falling back to anything installation-owned.
+ */
+async function resolvePlatformComposioConfiguration(
+  options: ComposioConfigurationOptions,
+): Promise<ResolvedComposioConfiguration> {
+  const environmentKey = envValue(options.env, 'COMPOSIO_API_KEY');
+  const platform = platformPreparationStore(options);
+  const environment = composioEnvironmentName(options.env);
+  if (!environmentKey || !platform || !environment) {
+    if (!warnedUnavailablePlatformConfiguration) {
+      warnedUnavailablePlatformConfiguration = true;
+      console.warn(JSON.stringify({
+        event: 'chickpea.managed_connection.platform_configuration_unavailable',
+        adapterId: 'composio',
+        missing: [
+          ...(environmentKey ? [] : ['COMPOSIO_API_KEY']),
+          ...(platform ? [] : ['platform_settings']),
+          ...(environment ? [] : ['CHICKPEA_COMPOSIO_ENVIRONMENT']),
+        ],
+      }));
+    }
+    return missingConfiguration(true);
+  }
+  const keyFingerprint = fingerprint(environmentKey);
+  const state = platform.writable
+    ? await loadEnvironmentConfigurationState(
+        { ...options, settings: platform.settings },
+        keyFingerprint,
+      )
+    : environmentConfigurationState(
+        await platform.settings.getSetting(ENVIRONMENT_PREPARATION_SETTING),
+        keyFingerprint,
+      );
+  const prepared = state.prepared ? state.metadata : undefined;
+  return {
+    apiKey: environmentKey,
+    source: 'env',
+    readOnly: true,
+    desiredState: 'enabled',
+    generation: state.metadata.generation,
+    reconciliationPending: state.metadata.reconciliationPending,
+    keyFingerprint,
+    lastKeyFingerprint: keyFingerprint,
+    ...(prepared ? { authConfigGeneration: prepared.generation } : {}),
+    authConfigIds: prepared?.authConfigIds ?? {},
+    // The operator reads its setup result from its own run. An installation
+    // gets none, so its Admin never offers a setup retry it cannot perform.
+    ...(platform.writable && prepared?.lastSetupResult
+      ? { lastSetupResult: prepared.lastSetupResult }
+      : {}),
+  };
+}
+
 export async function describeComposioConfiguration(
   options: ComposioConfigurationOptions = {},
 ): Promise<ComposioConfigurationStatus> {
@@ -292,7 +453,7 @@ export async function recordComposioPreparationResult(
       issueCodes.some((code) => !/^[a-z][a-z0-9_.-]{0,127}$/.test(code))) {
     throw new ComposioConfigurationStateError();
   }
-  const settings = options.settings ?? getSettingsStore(options.env);
+  const settings = composioPreparationSettings(options);
   const environmentKey = envValue(options.env, 'COMPOSIO_API_KEY');
   const settingKey = environmentKey
     ? ENVIRONMENT_PREPARATION_SETTING
@@ -444,7 +605,7 @@ export async function completeComposioReconciliation(
   if (!Number.isSafeInteger(expectedGeneration) || expectedGeneration < 1) {
     throw new ComposioConfigurationStateError();
   }
-  const settings = options.settings ?? getSettingsStore(options.env);
+  const settings = composioPreparationSettings(options);
   const environmentKey = envValue(options.env, 'COMPOSIO_API_KEY');
   const settingKey = environmentKey
     ? ENVIRONMENT_PREPARATION_SETTING
@@ -506,8 +667,8 @@ function configurationStorage(
 }
 
 function isEncryptedCredentialStore(
-  value: SettingsStore,
-): value is SettingsStore & EncryptedCredentialStore {
+  value: ComposioSettingsStore,
+): value is ComposioSettingsStore & EncryptedCredentialStore {
   const candidate = value as Partial<EncryptedCredentialStore>;
   return typeof candidate.getEncryptedCredentialRevision === 'function' &&
     typeof candidate.replaceEncryptedCredentialRevision === 'function' &&
@@ -515,17 +676,18 @@ function isEncryptedCredentialStore(
 }
 
 function assertMutable(options: ComposioConfigurationOptions): void {
-  if (envValue(options.env, 'COMPOSIO_API_KEY') ||
-      envValue(options.env, 'CHICKPEA_COMPOSIO_CONFIGURATION_MODE') === 'deployment') {
+  if (!composioConfigurationIsMutable(options)) {
     throw new ComposioConfigurationMutationError();
   }
 }
 
+/** Installation tenancy is always deployment-owned, even before its key is set. */
 export function composioConfigurationIsMutable(
   options: ComposioConfigurationOptions = {},
 ): boolean {
   return !envValue(options.env, 'COMPOSIO_API_KEY') &&
-    envValue(options.env, 'CHICKPEA_COMPOSIO_CONFIGURATION_MODE') !== 'deployment';
+    envValue(options.env, 'CHICKPEA_COMPOSIO_CONFIGURATION_MODE') !== 'deployment' &&
+    deploymentTenancy(options.env) !== 'installation';
 }
 
 function credentialContext(deploymentId: string, revision: string): SlackSecretEnvelopeContext {
