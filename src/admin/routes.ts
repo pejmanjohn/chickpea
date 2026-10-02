@@ -106,7 +106,10 @@ import {
   recordManagedAuthorizationRequest,
   assertManagedAuthorizationProvider,
 } from '../connections/managed-authorization.ts';
-import { discardManagedAuthorizationAfterAuthorityLoss } from '../connections/managed-authorization-flow.ts';
+import {
+  discardManagedAuthorizationAfterAuthorityLoss,
+  managedPrincipalRef,
+} from '../connections/managed-authorization-flow.ts';
 import {
   completeComposioReconciliation,
   ComposioConfigurationMutationError,
@@ -1248,20 +1251,6 @@ const connectionAccountCreateSchema = v.pipe(
     Number(Boolean(input.api)) + Number(Boolean(input.mcp)) === 1,
     'exactly one connection policy is required'),
 );
-
-const MAX_MANAGED_PRINCIPAL_REF_LENGTH = 256;
-
-function managedPrincipalRef(
-  principal: AuthPrincipal,
-  ownerKind: 'team' | 'member',
-): string | undefined {
-  // Composio's user ID identifies the Chickpea authorization principal, never
-  // a caller-supplied label, email, or mutable external identity.
-  const value = ownerKind === 'member'
-    ? `chickpea:membership:${principal.membershipId}`
-    : `chickpea:organization:${principal.organizationId}`;
-  return value.length <= MAX_MANAGED_PRINCIPAL_REF_LENGTH ? value : undefined;
-}
 
 function managedAuthorizationRemoteRef(
   attempt: ManagedAuthorizationAttempt,
@@ -4959,7 +4948,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const connector = toolkit ? managedCatalog.connector(toolkit) : undefined;
       const ownerKind = replacement?.account.ownerKind ??
         ('ownerKind' in parsed.output ? parsed.output.ownerKind : undefined);
-      const principalRef = ownerKind ? managedPrincipalRef(principal, ownerKind) : undefined;
+      const principalRef = ownerKind
+        ? managedPrincipalRef(principal, ownerKind, c.env as PlatformEnv | undefined)
+        : undefined;
       if (!connector || !ownerKind || !principalRef) return invalidRequest(c);
       if (replacement && (
         replacement.account.workspaceId !== parsed.output.workspaceId ||
@@ -5266,6 +5257,15 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
             cleanupAttempt = attempt;
             const organization = await identity(c).getOrganization();
             if (organization?.slackTeamId !== attempt.workspaceId) throw new AuthorizationError();
+            // An attempt recorded for another installation or member is never
+            // polled or imported here.
+            if (attempt.principalRef !== managedPrincipalRef(
+              principal,
+              attempt.ownerKind,
+              c.env as PlatformEnv | undefined,
+            )) {
+              throw new AuthorizationError();
+            }
             if (attempt.agentId !== agent.id || !attempt.authorizationRef) {
               throw new ManagedAuthorizationError('invalid');
             }

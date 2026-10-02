@@ -4,7 +4,10 @@ import {
   requirePermission,
 } from '../auth/permissions.ts';
 import type { AuthPrincipal } from '../auth/types.ts';
+import { composioEnvironmentName } from '../config/composio-settings.ts';
+import { deploymentTenancy, installationScopeOf } from '../config/installation-scope.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
+import type { PlatformEnv } from '../config/state-backend.ts';
 import type { ProductTelemetryCapture } from '../telemetry/client.ts';
 import type { ConfigStore } from '../config/store.ts';
 import type { ConnectionAccount, CustomAgentConfig } from '../config/types.ts';
@@ -46,6 +49,8 @@ export interface ManagedAuthorizationProviderContext {
   providers: ManagedConnectionProviderRegistry;
   generation: number;
   lineage: string;
+  /** The env the providers were resolved for; it names remote principals. */
+  platformEnv?: PlatformEnv;
 }
 
 export interface ManagedAuthorizationFlowDependencies {
@@ -121,7 +126,9 @@ export async function startManagedAuthorizationFlow(
     const toolkit = replacementPolicy?.toolkit ?? input.toolkit;
     const connector = toolkit ? dependencies.catalog.connector(toolkit) : undefined;
     const ownerKind = replacement?.ownerKind ?? input.ownerKind;
-    const principalRef = ownerKind ? managedPrincipalRef(input.principal, ownerKind) : undefined;
+    const principalRef = ownerKind
+      ? managedPrincipalRef(input.principal, ownerKind, dependencies.providerContext.platformEnv)
+      : undefined;
     if (!connector || !ownerKind || !principalRef) throw new ManagedAuthorizationError('invalid');
     if (replacement && (
       replacement.workspaceId !== input.workspaceId ||
@@ -270,6 +277,15 @@ export async function pollManagedAuthorizationFlow(
     });
     cleanupAttempt = attempt;
     if (attempt.workspaceId !== input.workspaceId) throw new AuthorizationError();
+    // The attempt's remote principal names this installation and member; an
+    // attempt recorded for any other one is never polled or imported here.
+    if (attempt.principalRef !== managedPrincipalRef(
+      input.principal,
+      attempt.ownerKind,
+      dependencies.providerContext.platformEnv,
+    )) {
+      throw new AuthorizationError();
+    }
     if (attempt.agentId !== input.agent.id || !attempt.authorizationRef) {
       throw new ManagedAuthorizationError('invalid');
     }
@@ -564,13 +580,32 @@ export async function cancelManagedAuthorizationFlow(
   return committed ? 'committed' : 'discarded';
 }
 
-function managedPrincipalRef(
+/**
+ * The Composio user a Personal or Team authorization belongs to: the Chickpea
+ * authorization principal, never a caller-supplied label, email or mutable
+ * external identity. Standalone owns its Composio project, so the reference
+ * names only the membership or organization, as it always has. A deployment
+ * serving many installations shares one project, so the reference also names
+ * the deployment's Composio environment and the installation; two
+ * installations never share a remote principal, even with colliding local
+ * IDs or a reinstalled workspace. There it is undefined when either is
+ * missing, so nothing is authorized under an unqualified name.
+ */
+export function managedPrincipalRef(
   principal: AuthPrincipal,
   ownerKind: 'team' | 'member',
+  env: PlatformEnv | undefined,
 ): string | undefined {
-  const value = ownerKind === 'member'
-    ? `chickpea:membership:${principal.membershipId}`
-    : `chickpea:organization:${principal.organizationId}`;
+  const local = ownerKind === 'member'
+    ? `membership:${principal.membershipId}`
+    : `organization:${principal.organizationId}`;
+  let value = `chickpea:${local}`;
+  if (deploymentTenancy(env) === 'installation') {
+    const environment = composioEnvironmentName(env);
+    const installationId = installationScopeOf(env)?.installationId;
+    if (!environment || !installationId) return undefined;
+    value = `chickpea:${environment}:installation:${installationId}:${local}`;
+  }
   return value.length <= MAX_MANAGED_PRINCIPAL_REF_LENGTH ? value : undefined;
 }
 

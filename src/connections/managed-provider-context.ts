@@ -18,11 +18,13 @@ export async function resolveManagedAuthorizationProviderContext(input: {
   providers?: ManagedConnectionProviderRegistry;
   composioConfiguration?: Omit<ComposioConfigurationOptions, 'settings' | 'env'>;
 }): Promise<ManagedAuthorizationProviderContext> {
+  const platformEnv = input.platformEnv ? { platformEnv: input.platformEnv } : {};
   if (input.providers) {
     return {
       providers: input.providers,
       generation: 1,
       lineage: '0'.repeat(24),
+      ...platformEnv,
     };
   }
   try {
@@ -38,6 +40,7 @@ export async function resolveManagedAuthorizationProviderContext(input: {
       ),
       generation: resolved.generation,
       lineage: resolved.keyFingerprint ?? resolved.lastKeyFingerprint ?? '0'.repeat(24),
+      ...platformEnv,
     };
   } catch (error) {
     if (!(error instanceof ComposioConfigurationStateError)) throw error;
@@ -45,6 +48,7 @@ export async function resolveManagedAuthorizationProviderContext(input: {
       providers: createManagedConnectionProviderRegistry([]),
       generation: 1,
       lineage: '0'.repeat(24),
+      ...platformEnv,
     };
   }
 }
