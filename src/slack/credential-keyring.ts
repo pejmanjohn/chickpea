@@ -11,6 +11,7 @@ import {
 } from 'node:fs';
 import path from 'node:path';
 
+import { errorChainIncludes } from '../config/error-chain.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import { isCloudflareTarget } from '../config/runtime-target.ts';
 import { resolveStateDbPath } from '../state/node-state-db.ts';
@@ -20,6 +21,8 @@ import {
 } from './secret-envelope.ts';
 
 export const WORKER_CREDENTIAL_CURRENT_ID = 'CHICKPEA_CREDENTIAL_KEY_CURRENT_ID';
+export const WORKER_CREDENTIAL_KEY_PREFIX = 'CHICKPEA_CREDENTIAL_KEY_';
+const KEYRING_VERSION = 1;
 
 /**
  * The code a deployment keyring that will not load carries, on its Slack and
@@ -30,19 +33,11 @@ export const CREDENTIAL_KEYRING_UNAVAILABLE = 'keyring_unavailable';
 
 /** Whether an error, or one it carries, is the deployment keyring failing to load. */
 export function isCredentialKeyringUnavailable(error: unknown): boolean {
-  const seen = new Set<unknown>();
-  for (let current = error, depth = 0; current && depth < 5 && !seen.has(current); depth += 1) {
-    seen.add(current);
-    const record = current as { code?: unknown; reasonCode?: unknown; message?: unknown; cause?: unknown };
-    if (record.code === CREDENTIAL_KEYRING_UNAVAILABLE || record.reasonCode === CREDENTIAL_KEYRING_UNAVAILABLE) return true;
+  return errorChainIncludes(error, (link) =>
+    link.code === CREDENTIAL_KEYRING_UNAVAILABLE || link.reasonCode === CREDENTIAL_KEYRING_UNAVAILABLE ||
     // Carried as text in a Flue submission's failure.
-    if (typeof record.message === 'string' && record.message.includes(`(${CREDENTIAL_KEYRING_UNAVAILABLE})`)) return true;
-    current = record.cause;
-  }
-  return false;
+    (typeof link.message === 'string' && link.message.includes(`(${CREDENTIAL_KEYRING_UNAVAILABLE})`)));
 }
-export const WORKER_CREDENTIAL_KEY_PREFIX = 'CHICKPEA_CREDENTIAL_KEY_';
-const KEYRING_VERSION = 1;
 
 export interface NodeCredentialKeyringOptions {
   path?: string;

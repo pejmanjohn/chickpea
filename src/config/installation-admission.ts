@@ -14,6 +14,7 @@
  * check configured refuses, as the model resolver does, and says so loudly:
  * the host installs one once, at module scope, and proves it is there.
  */
+import { errorChainIncludes } from './error-chain.ts';
 import {
   deploymentServesManyInstallations,
   InstallationContextError,
@@ -139,17 +140,8 @@ export async function installationRefusesWork(env: Record<string, unknown> | und
  * thrown directly, or carried in the text of a Flue submission's failure.
  */
 export function isInstallationRefusal(error: unknown): boolean {
-  const seen = new Set<unknown>();
-  for (let current = error, depth = 0; current && depth < 5 && !seen.has(current); depth += 1) {
-    seen.add(current);
-    if (current instanceof InstallationNotAdmittedError) return true;
-    const record = current as { message?: unknown; type?: unknown; cause?: unknown };
-    if ([record.message, record.type].some((text) => typeof text === 'string' && text.includes('installation_not_admitted'))) {
-      return true;
-    }
-    current = record.cause;
-  }
-  return false;
+  return errorChainIncludes(error, (link) => link instanceof InstallationNotAdmittedError ||
+    [link.message, link.type].some((text) => typeof text === 'string' && text.includes('installation_not_admitted')));
 }
 
 async function readAdmission(

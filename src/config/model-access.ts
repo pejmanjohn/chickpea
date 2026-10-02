@@ -13,7 +13,9 @@
  * installations the host's admission check is asked when an attempt starts
  * and before every request the proxy sends (each step, retry, compaction and
  * stateless call), so a suspended or ended installation starts no attempt and
- * sends no further request (see installation-admission.ts).
+ * sends no further request (see installation-admission.ts). Image generation
+ * is the exception: its client calls the provider outside the proxy, from a
+ * tool call inside an attempt whose start was admitted.
  */
 import { AsyncLocalStorage } from 'node:async_hooks';
 
@@ -327,8 +329,7 @@ function admittedStream(
       target.end(failed);
       return;
     }
-    for await (const event of source) target.push(event);
-    target.end(await source.result());
+    await forwardStream(source, target);
   })();
   return target;
 }
@@ -355,14 +356,24 @@ function withoutKeyInErrors(source: AssistantMessageEventStream, apiKey: string)
       ? { ...message, errorMessage: message.errorMessage.replaceAll(apiKey, '[redacted]') }
       : message;
   const target = createAssistantMessageEventStream();
-  void (async () => {
-    for await (const event of source) {
-      target.push(event.type === 'error' ? { ...event, error: redacted(event.error) } : event);
-    }
-    // As Pi forwards a stream: the final result, which may arrive without an event.
-    target.end(redacted(await source.result()));
-  })();
+  void forwardStream(source, target, redacted);
   return target;
+}
+
+/**
+ * Forward a provider stream into another, passing each error and the final
+ * result through `map`. As Pi forwards a stream, the final result is read
+ * last, since it may arrive without an event.
+ */
+async function forwardStream(
+  source: AssistantMessageEventStream,
+  target: AssistantMessageEventStream,
+  map: (message: AssistantMessage) => AssistantMessage = (message) => message,
+): Promise<void> {
+  for await (const event of source) {
+    target.push(event.type === 'error' ? { ...event, error: map(event.error) } : event);
+  }
+  target.end(map(await source.result()));
 }
 
 export function resetModelAccessForTests(): void {
