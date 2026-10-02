@@ -1,4 +1,9 @@
 import * as sqliteIdentityStoreModule from '../identity/store.ts';
+import {
+  deploymentTenancy,
+  InstallationContextError,
+  requireInstallationScope,
+} from '../config/installation-scope.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import { IdentityStateError } from '../identity/errors.ts';
 import { getIdentityStore, type PlatformEnv } from '../config/state-backend.ts';
@@ -123,6 +128,30 @@ export class SlackCredentialRecoveryOnlyError extends Error {
   constructor() {
     super('Slack credentials require deployment recovery.');
   }
+}
+
+/**
+ * The deployment's keyring did not load, so no installation's Slack
+ * credentials can be read until it does; no installation is put into
+ * recovery for it.
+ */
+export class SlackCredentialUnavailableError extends Error {
+  readonly name = 'SlackCredentialUnavailableError';
+  constructor() {
+    super('Slack credentials are unavailable until the deployment keyring loads.');
+  }
+}
+
+export interface ReplaceUnreadableHostedSlackBotBundleInput {
+  expectedAppId: string;
+  expectedTeamId: string;
+  /** The installer the host's verified install grant names: an active Owner of this installation. */
+  installerSlackUserId: string;
+  botToken: string;
+  botUserId: string;
+  grantedScopes: string[];
+  validatedAt: number;
+  correlationId: string;
 }
 
 interface CachedCredentialBundle {
@@ -258,6 +287,11 @@ export async function resolveSlackInstallationCredentials(
         }
       : explicit ? compatibilityDependencies(explicit) : { state, keyring: loadCredentialKeyring(env) };
   } catch {
+    // A deployment serving many installations shares one keyring: one that
+    // does not load says nothing about this installation's data, so service
+    // stops without locking every installation it touches into recovery.
+    const resolutionEnv = isStateDependencies(explicit) ? explicit.env ?? env : env;
+    if (servesManyInstallations(resolutionEnv)) throw new SlackCredentialUnavailableError();
     await enterCredentialRecoveryOnly(state);
     throw new SlackCredentialRecoveryOnlyError();
   }
@@ -605,6 +639,140 @@ export async function stageMissingSlackCredentialBundle(
     manifestFingerprint: input.manifestFingerprint ?? prior.manifestFingerprint,
     secrets: input.secrets,
   });
+}
+
+/**
+ * The way out of recovery_only for a hosted installation whose bot-only
+ * bundle cannot be read (its key slot is gone or it does not decrypt).
+ * Standalone recovery needs a deployment recovery token, a new key version
+ * and a signed events proof; a hosted installation has none of those, and
+ * its keyring is the deployment's, shared by every installation. Its
+ * authority is instead a bot grant the host verified live, for this
+ * installation's app and team, naming as installer a person who is an active
+ * Owner here.
+ *
+ * Every live revision must be this installation's bot for that app and
+ * team. An unreadable active revision is replaced in one promotion, which
+ * tombstones and scrubs it, so the installation always has an active bundle;
+ * when the deployment's key changed, the epoch first moves to its current
+ * key and the other live revisions are tombstoned. The replacement is
+ * audited (key_missing or decrypt_failed) and the gate cleared. An active
+ * bundle that already reads (a replacement interrupted after its promotion,
+ * or a key slot restored) is kept, and the gate is cleared with the audit
+ * replacement_completed; an ordinary reinstall of a readable bundle goes
+ * through writeHostedSlackBotCredentials.
+ */
+export async function replaceUnreadableHostedSlackBotBundle(
+  dependencies: SlackCredentialDependencies & { env: PlatformEnv },
+  input: ReplaceUnreadableHostedSlackBotBundleInput,
+): Promise<SlackCredentialRevision> {
+  const { state, keyring } = dependencies;
+  if (!requireInstallationScope(dependencies.env)) {
+    throw new InstallationContextError(
+      'installation_context_invalid',
+      'Only an installation of a deployment serving many has a hosted Slack bundle.',
+    );
+  }
+  if (!/^[A-Za-z0-9_-]{8,256}$/.test(input.correlationId)) {
+    throw new Error('Slack credential recovery correlation is invalid.');
+  }
+  const refuse = (message: string) => new SlackInstallationCredentialRevisionError(HOSTED_SLACK_INSTALLATION_ID, message);
+  if ((await state.getAuthControl())?.healthGate !== 'recovery_only') {
+    throw refuse('This installation is not waiting for Slack recovery.');
+  }
+  const owner = await state.resolveSlackIdentity(input.expectedTeamId, input.installerSlackUserId);
+  const access = owner ? await state.getMembershipAccessOverlay(owner.membership.id) : undefined;
+  if (!owner || owner.membership.role !== 'owner' || owner.membership.status !== 'active' ||
+      access?.accessStatus === 'suspended') {
+    throw refuse('Only an active Owner of this installation can reconnect it to Slack.');
+  }
+  let control = await requiredCredentialControl(state);
+  const live = await state.listLiveSlackCredentialRevisions();
+  if (live.some((revision) => revision.identityId !== HOSTED_SLACK_INSTALLATION_ID ||
+      revision.appId !== input.expectedAppId || revision.teamId !== input.expectedTeamId)) {
+    throw refuse('This installation holds credentials for another Slack app or workspace.');
+  }
+  const active = await state.getActiveSlackCredentialRevision(HOSTED_SLACK_INSTALLATION_ID);
+  if (!active) throw refuse('This installation has no Slack bot credentials to replace.');
+  const unreadable = await unreadableRevisionReason(dependencies, control.deploymentId, active);
+  const audit = (reasonCode: string) => state.recordAuthAudit({
+    event: 'authorization',
+    outcome: 'success',
+    action: 'slack_credentials.hosted_bundle_replaced',
+    correlationId: input.correlationId,
+    authenticatorKind: 'slack_install_grant',
+    userId: owner.user.id,
+    membershipId: owner.membership.id,
+    reasonCode,
+  });
+  if (!unreadable) {
+    await audit('replacement_completed');
+    await leaveCredentialRecoveryOnly(state);
+    return active;
+  }
+  if (control.currentKeyId !== keyring.currentKeyId) {
+    for (const revision of live) {
+      if (revision.revision === active.revision) continue;
+      await state.tombstoneSlackCredentialRevision({
+        identityId: revision.identityId,
+        revision: revision.revision,
+        expectedRotationEpoch: control.rotationEpoch,
+      });
+    }
+    control = await state.beginSlackCredentialRotation({
+      expectedEpoch: control.rotationEpoch,
+      expectedCurrentKeyId: control.currentKeyId,
+      nextKeyId: keyring.currentKeyId,
+    });
+  }
+  deploymentIdByState.set(state, control.deploymentId);
+  cacheByDeployment.get(control.deploymentId)?.delete(HOSTED_SLACK_INSTALLATION_ID);
+  const candidate = await stageSlackCredentialBundle(dependencies, {
+    identityId: HOSTED_SLACK_INSTALLATION_ID,
+    identityClass: 'workspace_installation',
+    purpose: 'connected_credentials',
+    expectedActiveRevision: active.revision,
+    appId: input.expectedAppId,
+    teamId: input.expectedTeamId,
+    botUserId: input.botUserId,
+    grantedScopes: input.grantedScopes,
+    validatedAt: input.validatedAt,
+    manifestFingerprint: null,
+    secrets: { botToken: input.botToken },
+  });
+  const promoted = await promoteSlackCredentialBundle(dependencies, {
+    identityId: HOSTED_SLACK_INSTALLATION_ID,
+    candidateRevision: candidate.revision,
+    expectedActiveRevision: active.revision,
+  });
+  await audit(unreadable);
+  await leaveCredentialRecoveryOnly(state);
+  return promoted;
+}
+
+/**
+ * Whether the deployment serves many installations, from the env or, for a
+ * caller that passes none, the deployment's own variables (as
+ * deploymentServesManyInstallations decides it for model access).
+ */
+function servesManyInstallations(env: PlatformEnv | undefined): boolean {
+  return deploymentTenancy(env) === 'installation' || deploymentTenancy(process.env) === 'installation';
+}
+
+/** Why the current keyring cannot read `revision`, or undefined when it can. Never latches recovery. */
+async function unreadableRevisionReason(
+  dependencies: SlackCredentialDependencies,
+  deploymentId: string,
+  revision: SlackCredentialRevision,
+): Promise<'key_missing' | 'decrypt_failed' | undefined> {
+  if (!revision.envelope) return 'decrypt_failed';
+  if (!dependencies.keyring.keys[revision.envelope.keyId]) return 'key_missing';
+  try {
+    await decryptSlackSecretEnvelope(dependencies.keyring, revisionContext(deploymentId, revision), revision.envelope);
+    return undefined;
+  } catch {
+    return 'decrypt_failed';
+  }
 }
 
 export function invalidateSlackInstallationCredentialCache(
