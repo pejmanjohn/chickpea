@@ -1883,6 +1883,10 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     return this.call((stores) => stores.settings.replaceEncryptedCredentialRevision(input) ?? null);
   }
 
+  async encryptedCredentialCensus() {
+    return this.call((stores) => stores.settings.censusEncryptedCredentialRevisions());
+  }
+
   async encryptedCredentialDelete(key: string, expectedRevision: string) {
     return this.call((stores) => stores.settings.deleteEncryptedCredentialRevision(
       key,
