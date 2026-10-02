@@ -106,7 +106,11 @@ import {
   recordManagedAuthorizationRequest,
   assertManagedAuthorizationProvider,
 } from '../connections/managed-authorization.ts';
-import { discardManagedAuthorizationAfterAuthorityLoss } from '../connections/managed-authorization-flow.ts';
+import {
+  assertManagedAttemptPrincipal,
+  discardManagedAuthorizationAfterAuthorityLoss,
+  managedPrincipalRef,
+} from '../connections/managed-authorization-flow.ts';
 import {
   completeComposioReconciliation,
   ComposioConfigurationMutationError,
@@ -1249,20 +1253,6 @@ const connectionAccountCreateSchema = v.pipe(
     'exactly one connection policy is required'),
 );
 
-const MAX_MANAGED_PRINCIPAL_REF_LENGTH = 256;
-
-function managedPrincipalRef(
-  principal: AuthPrincipal,
-  ownerKind: 'team' | 'member',
-): string | undefined {
-  // Composio's user ID identifies the Chickpea authorization principal, never
-  // a caller-supplied label, email, or mutable external identity.
-  const value = ownerKind === 'member'
-    ? `chickpea:membership:${principal.membershipId}`
-    : `chickpea:organization:${principal.organizationId}`;
-  return value.length <= MAX_MANAGED_PRINCIPAL_REF_LENGTH ? value : undefined;
-}
-
 function managedAuthorizationRemoteRef(
   attempt: ManagedAuthorizationAttempt,
 ): string | undefined {
@@ -1669,6 +1659,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     generation: number;
     lineage: string;
     readOnly: boolean;
+    /** The env the providers were resolved for; it names remote principals. */
+    platformEnv?: PlatformEnv;
   };
   const resolvedManagedProvidersByContext = new WeakMap<
     object,
@@ -1727,12 +1719,14 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   const resolvedManagedProviderContext = async (
     c: Context,
   ): Promise<ResolvedManagedProviderContext> => {
+    const platformEnv = c.env ? { platformEnv: c.env as PlatformEnv } : {};
     if (options.managedConnectionProviders) {
       return {
         providers: options.managedConnectionProviders,
         generation: 1,
         lineage: '0'.repeat(24),
         readOnly: false,
+        ...platformEnv,
       };
     }
     const cached = resolvedManagedProvidersByContext.get(c);
@@ -1748,6 +1742,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
             generation: 1,
             lineage: '0'.repeat(24),
             readOnly: false,
+            ...platformEnv,
           };
         }
         throw error;
@@ -1760,6 +1755,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         generation: resolved.generation,
         lineage: resolved.keyFingerprint ?? resolved.lastKeyFingerprint ?? '0'.repeat(24),
         readOnly: resolved.readOnly,
+        ...platformEnv,
       };
     })();
     resolvedManagedProvidersByContext.set(c, resolving);
@@ -4800,6 +4796,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     try {
       const principal = principalByContext.get(c);
       requirePermission(principal, 'admin.configure');
+      // A shared project is reconciled and prepared only by its operator;
+      // refuse before inspecting or re-stamping any account.
+      if (deploymentTenancy(c.env as PlatformEnv | undefined) === 'installation') {
+        throw new ComposioConfigurationMutationError();
+      }
       const reconciled = await resumeComposioReconciliation(c);
       if (!reconciled.apiKey || reconciled.desiredState !== 'enabled') {
         return c.json({
@@ -4884,6 +4885,17 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const recovered = await recoverMalformedManagedAuthorization({
         settings: settings(c),
         actorMembershipId: membership.id,
+        // Nothing is deleted unless the record names this installation's
+        // member or organization. A record naming none predates principal
+        // names, which only standalone can hold.
+        assertPrincipalRef: (principalRef) => {
+          const env = c.env as PlatformEnv | undefined;
+          const owned = principalRef === undefined
+            ? deploymentTenancy(env) !== 'installation'
+            : principalRef === managedPrincipalRef({ ...principal, membershipId: membership.id }, 'member', env) ||
+              principalRef === managedPrincipalRef(principal, 'team', env);
+          if (!owned) throw new AuthorizationError();
+        },
         cleanupRemoteAccount: async ({ adapterId, accountRef }) => {
           if (await connectionAccounts(c).hasManagedRemoteRef({ adapterId, accountRef })) {
             return false;
@@ -4959,8 +4971,32 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const connector = toolkit ? managedCatalog.connector(toolkit) : undefined;
       const ownerKind = replacement?.account.ownerKind ??
         ('ownerKind' in parsed.output ? parsed.output.ownerKind : undefined);
-      const principalRef = ownerKind ? managedPrincipalRef(principal, ownerKind) : undefined;
-      if (!connector || !ownerKind || !principalRef) return invalidRequest(c);
+      const principalRef = ownerKind
+        ? managedPrincipalRef(principal, ownerKind, c.env as PlatformEnv | undefined)
+        : undefined;
+      if (!connector || !ownerKind) return invalidRequest(c);
+      // Whether this deployment offers the connector at all is answered before
+      // who may authorize it: a deployment without its Composio environment
+      // names no principal and is reported as not configured.
+      const capabilities = replacementPolicy
+        ? [...replacementPolicy.allowedCapabilities]
+        : managedCatalog.capabilities(
+            connector.toolkit,
+            'access' in parsed.output ? parsed.output.access : 'read',
+          ).map(({ id }) => id);
+      const providerContext = await resolvedManagedProviderContext(c);
+      authorizationProviders = providerContext.providers;
+      const provider = providerContext.providers.get('composio');
+      const accessLane = connector.capabilities.some(({ id, accessLane }) =>
+        accessLane === 'write' && capabilities.includes(id)) ? 'write' : 'read';
+      if (!provider?.authorize || managedProviderAvailability(provider, {
+        toolkit: connector.toolkit,
+        accessLane,
+      }).status !== 'ready') return c.json({
+        error: 'managed_provider_unavailable',
+        message: `${connector.label} managed access is not configured for this deployment.`,
+      }, 503);
+      if (!principalRef) return invalidRequest(c);
       if (replacement && (
         replacement.account.workspaceId !== parsed.output.workspaceId ||
         replacement.account.lifecycle === 'revoked' ||
@@ -4994,24 +5030,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           }, 409);
         }
       }
-      const capabilities = replacementPolicy
-        ? [...replacementPolicy.allowedCapabilities]
-        : managedCatalog.capabilities(
-            connector.toolkit,
-            'access' in parsed.output ? parsed.output.access : 'read',
-          ).map(({ id }) => id);
-      const providerContext = await resolvedManagedProviderContext(c);
-      authorizationProviders = providerContext.providers;
-      const provider = providerContext.providers.get('composio');
-      const accessLane = connector.capabilities.some(({ id, accessLane }) =>
-        accessLane === 'write' && capabilities.includes(id)) ? 'write' : 'read';
-      if (!provider?.authorize || managedProviderAvailability(provider, {
-        toolkit: connector.toolkit,
-        accessLane,
-      }).status !== 'ready') return c.json({
-        error: 'managed_provider_unavailable',
-        message: `${connector.label} managed access is not configured for this deployment.`,
-      }, 503);
       const existingBrowserSecret = getCookie(c, MANAGED_AUTHORIZATION_BROWSER_COOKIE) ?? '';
       if (existingBrowserSecret) {
         let existingAttempt: ManagedAuthorizationAttempt | undefined;
@@ -5028,6 +5046,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           ? managedAuthorizationRemoteRef(existingAttempt)
           : undefined;
         if (existingAttempt) {
+          assertManagedAttemptPrincipal(existingAttempt, principal, c.env as PlatformEnv | undefined);
           requirePermission(
             principal,
             existingAttempt.ownerKind === 'team'
@@ -5083,6 +5102,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         ? managedAuthorizationRemoteRef(staleAttempt)
         : undefined;
       if (staleAttempt) {
+        assertManagedAttemptPrincipal(staleAttempt, principal, c.env as PlatformEnv | undefined);
         requirePermission(
           principal,
           staleAttempt.ownerKind === 'team'
@@ -5266,6 +5286,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
             cleanupAttempt = attempt;
             const organization = await identity(c).getOrganization();
             if (organization?.slackTeamId !== attempt.workspaceId) throw new AuthorizationError();
+            assertManagedAttemptPrincipal(attempt, principal, c.env as PlatformEnv | undefined);
             if (attempt.agentId !== agent.id || !attempt.authorizationRef) {
               throw new ManagedAuthorizationError('invalid');
             }
@@ -5559,6 +5580,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       });
       const organization = await identity(c).getOrganization();
       if (organization?.slackTeamId !== attempt.workspaceId) throw new AuthorizationError();
+      assertManagedAttemptPrincipal(attempt, principal, c.env as PlatformEnv | undefined);
       if (attempt.agentId !== agent.id) throw new ManagedAuthorizationError('invalid');
       try {
         requirePermission(

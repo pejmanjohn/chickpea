@@ -4,7 +4,10 @@ import {
   requirePermission,
 } from '../auth/permissions.ts';
 import type { AuthPrincipal } from '../auth/types.ts';
+import { composioEnvironmentName } from '../config/composio-settings.ts';
+import { deploymentTenancy, installationScopeOf } from '../config/installation-scope.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
+import type { PlatformEnv } from '../config/state-backend.ts';
 import type { ProductTelemetryCapture } from '../telemetry/client.ts';
 import type { ConfigStore } from '../config/store.ts';
 import type { ConnectionAccount, CustomAgentConfig } from '../config/types.ts';
@@ -46,6 +49,8 @@ export interface ManagedAuthorizationProviderContext {
   providers: ManagedConnectionProviderRegistry;
   generation: number;
   lineage: string;
+  /** The env the providers were resolved for; it names remote principals. */
+  platformEnv?: PlatformEnv;
 }
 
 export interface ManagedAuthorizationFlowDependencies {
@@ -121,8 +126,31 @@ export async function startManagedAuthorizationFlow(
     const toolkit = replacementPolicy?.toolkit ?? input.toolkit;
     const connector = toolkit ? dependencies.catalog.connector(toolkit) : undefined;
     const ownerKind = replacement?.ownerKind ?? input.ownerKind;
-    const principalRef = ownerKind ? managedPrincipalRef(input.principal, ownerKind) : undefined;
-    if (!connector || !ownerKind || !principalRef) throw new ManagedAuthorizationError('invalid');
+    const principalRef = ownerKind
+      ? managedPrincipalRef(input.principal, ownerKind, dependencies.providerContext.platformEnv)
+      : undefined;
+    if (!connector || !ownerKind) throw new ManagedAuthorizationError('invalid');
+    // As in Admin: whether the deployment offers the connector comes before
+    // who may authorize it, so one without its Composio environment (which
+    // names no principal) reports the provider unavailable.
+    const liveCapabilities = dependencies.catalog
+      .capabilities(connector.toolkit, input.access ?? 'read')
+      .map(({ id }) => id);
+    const capabilities = replacementPolicy
+      ? [...replacementPolicy.allowedCapabilities]
+      : input.capabilities
+        ? frozenCapabilities(input.capabilities, liveCapabilities)
+        : liveCapabilities;
+    const provider = providers.get('composio');
+    const accessLane = connector.capabilities.some(({ id, accessLane }) =>
+      accessLane === 'write' && capabilities.includes(id)) ? 'write' : 'read';
+    if (!provider?.authorize || managedProviderAvailability(provider, {
+      toolkit: connector.toolkit,
+      accessLane,
+    }).status !== 'ready') {
+      throw new ManagedConnectionProviderUnavailableError('composio');
+    }
+    if (!principalRef) throw new ManagedAuthorizationError('invalid');
     if (replacement && (
       replacement.workspaceId !== input.workspaceId ||
       replacement.lifecycle === 'revoked' ||
@@ -152,23 +180,6 @@ export async function startManagedAuthorizationFlow(
       if (existingOwnerLane) {
         throw new ManagedConnectionLaneExistsError(ownerKind, connector.label);
       }
-    }
-    const liveCapabilities = dependencies.catalog
-      .capabilities(connector.toolkit, input.access ?? 'read')
-      .map(({ id }) => id);
-    const capabilities = replacementPolicy
-      ? [...replacementPolicy.allowedCapabilities]
-      : input.capabilities
-        ? frozenCapabilities(input.capabilities, liveCapabilities)
-        : liveCapabilities;
-    const provider = providers.get('composio');
-    const accessLane = connector.capabilities.some(({ id, accessLane }) =>
-      accessLane === 'write' && capabilities.includes(id)) ? 'write' : 'read';
-    if (!provider?.authorize || managedProviderAvailability(provider, {
-      toolkit: connector.toolkit,
-      accessLane,
-    }).status !== 'ready') {
-      throw new ManagedConnectionProviderUnavailableError('composio');
     }
     await cleanupExistingAttempt(
       dependencies,
@@ -270,6 +281,7 @@ export async function pollManagedAuthorizationFlow(
     });
     cleanupAttempt = attempt;
     if (attempt.workspaceId !== input.workspaceId) throw new AuthorizationError();
+    assertManagedAttemptPrincipal(attempt, input.principal, dependencies.providerContext.platformEnv);
     if (attempt.agentId !== input.agent.id || !attempt.authorizationRef) {
       throw new ManagedAuthorizationError('invalid');
     }
@@ -528,6 +540,7 @@ export async function cancelManagedAuthorizationFlow(
         (error.code === 'invalid' || error.code === 'replayed')) return 'none';
     throw error;
   }
+  assertManagedAttemptPrincipal(attempt, input.principal, dependencies.providerContext.platformEnv);
   const service = connectionAccounts(dependencies);
   try {
     requireManagedOwnerLanePermission(input.principal, attempt.ownerKind);
@@ -564,14 +577,43 @@ export async function cancelManagedAuthorizationFlow(
   return committed ? 'committed' : 'discarded';
 }
 
-function managedPrincipalRef(
+/**
+ * The Composio user a Personal or Team authorization belongs to. Under
+ * installation tenancy it also names the deployment's Composio environment and
+ * the installation, so installations sharing one project never share a remote
+ * principal; without either it is undefined. Standalone forms are unchanged.
+ */
+export function managedPrincipalRef(
   principal: AuthPrincipal,
   ownerKind: 'team' | 'member',
+  env: PlatformEnv | undefined,
 ): string | undefined {
-  const value = ownerKind === 'member'
-    ? `chickpea:membership:${principal.membershipId}`
-    : `chickpea:organization:${principal.organizationId}`;
+  const local = ownerKind === 'member'
+    ? `membership:${principal.membershipId}`
+    : `organization:${principal.organizationId}`;
+  let value = `chickpea:${local}`;
+  if (deploymentTenancy(env) === 'installation') {
+    const environment = composioEnvironmentName(env);
+    const installationId = installationScopeOf(env)?.installationId;
+    if (!environment || !installationId) return undefined;
+    value = `chickpea:${environment}:installation:${installationId}:${local}`;
+  }
   return value.length <= MAX_MANAGED_PRINCIPAL_REF_LENGTH ? value : undefined;
+}
+
+/**
+ * Refuse an attempt whose remote principal is not this installation's and
+ * this member's (or their organization's, for Team). Every path that polls,
+ * imports or deletes an attempt's remote account checks it first.
+ */
+export function assertManagedAttemptPrincipal(
+  attempt: Pick<ManagedAuthorizationAttempt, 'principalRef' | 'ownerKind'>,
+  principal: AuthPrincipal,
+  env: PlatformEnv | undefined,
+): void {
+  if (attempt.principalRef !== managedPrincipalRef(principal, attempt.ownerKind, env)) {
+    throw new AuthorizationError();
+  }
 }
 
 function managedAuthorizationRemoteRef(
@@ -597,6 +639,11 @@ export async function discardManagedAuthorizationAfterAuthorityLoss(
   if (input.attempt.actorMembershipId !== input.principal.membershipId) {
     throw new AuthorizationError();
   }
+  assertManagedAttemptPrincipal(
+    input.attempt,
+    input.principal,
+    dependencies.providerContext.platformEnv,
+  );
   const remoteRef = managedAuthorizationRemoteRef(input.attempt);
   if (remoteRef) {
     const service = connectionAccounts(dependencies);
@@ -698,6 +745,11 @@ async function cleanupExistingAttempt(
       ? managedAuthorizationRemoteRef(existingAttempt)
       : undefined;
     if (existingAttempt) {
+      assertManagedAttemptPrincipal(
+        existingAttempt,
+        principal,
+        dependencies.providerContext.platformEnv,
+      );
       requireManagedOwnerLanePermission(principal, existingAttempt.ownerKind);
     }
     if (existingAttempt && existingRemoteRef && !await service.hasManagedRemoteRef({
@@ -730,7 +782,10 @@ async function cleanupExistingAttempt(
     if (!(error instanceof ManagedAuthorizationError && error.code === 'invalid')) throw error;
   }
   const staleRemoteRef = staleAttempt ? managedAuthorizationRemoteRef(staleAttempt) : undefined;
-  if (staleAttempt) requireManagedOwnerLanePermission(principal, staleAttempt.ownerKind);
+  if (staleAttempt) {
+    assertManagedAttemptPrincipal(staleAttempt, principal, dependencies.providerContext.platformEnv);
+    requireManagedOwnerLanePermission(principal, staleAttempt.ownerKind);
+  }
   if (staleAttempt && staleRemoteRef && !await service.hasManagedRemoteRef({
     adapterId: staleAttempt.adapterId,
     accountRef: staleRemoteRef,
