@@ -3,7 +3,7 @@ import { cloudflare } from '@cloudflare/vite-plugin';
 import { flue, flueWorkerConfig } from '@flue/vite';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
-import { defineConfig } from 'vite';
+import { defineConfig, type UserConfig } from 'vite';
 import { fileURLToPath } from 'node:url';
 import { buildIdentityDefines, readBuildIdentity } from './scripts/lib/build-identity.mjs';
 
@@ -11,24 +11,49 @@ import { applyCloudflareDeploymentProfile } from './scripts/cloudflare-deploymen
 import { localWorkerViteSettings } from './scripts/lib/local-worker-lane.mjs';
 import { PUBLIC_ASSET_PATHS } from './src/assets/public-assets.ts';
 
-const fluePlugins = flue({
-  providers: ['anthropic', 'openai', 'openrouter', 'cloudflare'],
-  tracing: false,
-});
-// Capture the customizer from the same flue() instance during config
-// evaluation, then compose the optional deployment overlay after Flue has
-// added its generated entry and Durable Object bindings.
-const configureFlueWorker = flueWorkerConfig();
+const projectRoot = fileURLToPath(new URL('.', import.meta.url));
 
-// Flue must run first: its project and agent scan feeds the Cloudflare
-// plugin's generated Worker configuration during the same config pass.
+type CloudflarePluginOptions = NonNullable<Parameters<typeof cloudflare>[0]>;
+type WorkerConfig = Parameters<Extract<CloudflarePluginOptions['config'], (...args: never[]) => unknown>>[0];
+
+/**
+ * A host that builds this Worker from an unmodified checkout of this
+ * repository, supplying its own entries and output. Without a host, the
+ * config is this repository's own build and local Worker lanes.
+ */
+export interface ChickpeaWorkerHost {
+  /** Absolute path of the host's app entry, used instead of src/app.ts. */
+  app: string;
+  /** Absolute path of the host's non-HTTP handlers entry, used instead of src/cloudflare.ts. */
+  cloudflare: string;
+  /** Absolute build output directory, outside this checkout. */
+  outDir: string;
+  /** Adjusts the Worker config after Flue and Chickpea have built it. */
+  configureWorker?: (config: WorkerConfig) => void;
+}
+
 assertNodeVersion();
 
-export default defineConfig(({ command }) => {
-  const local = command === 'serve' ? localWorkerViteSettings() : undefined;
+export function chickpeaWorkerViteConfig(command: 'build' | 'serve', host?: ChickpeaWorkerHost): UserConfig {
+  const fluePlugins = flue({
+    providers: ['anthropic', 'openai', 'openrouter', 'cloudflare'],
+    tracing: false,
+    ...(host ? { app: host.app, cloudflare: host.cloudflare } : {}),
+  });
+  // Capture the customizer from the same flue() instance during config
+  // evaluation, then compose the optional deployment overlay after Flue has
+  // added its generated entry and Durable Object bindings. Flue must run
+  // first: its project and agent scan feeds the Cloudflare plugin's generated
+  // Worker configuration during the same config pass.
+  const configureFlueWorker = flueWorkerConfig();
+  // Local Worker lanes belong to this repository's own development.
+  const local = command === 'serve' && !host ? localWorkerViteSettings() : undefined;
   return {
+    // Explicit so a host running Vite from its own directory still resolves
+    // this project, its source root and its Worker config.
+    root: projectRoot,
     define: {
-      ...buildIdentityDefines(fileURLToPath(new URL('.', import.meta.url))),
+      ...buildIdentityDefines(projectRoot),
       // Explicit build-time mode: every Vite serve lane is local development,
       // where the committed build identity does not track working-tree schema
       // edits. Local serve must never attach to a persisted schema marker.
@@ -68,7 +93,7 @@ export default defineConfig(({ command }) => {
           // not imported by the Worker or copied into the public assets directory.
           const modules = Object.values(bundle).flatMap((output) => output.type === 'chunk'
             ? Object.entries(output.modules).map(([id, module]) => ({
-              id: path.relative(process.cwd(), id),
+              id: path.relative(projectRoot, id),
               renderedLength: module.renderedLength,
             }))
             : []);
@@ -87,7 +112,7 @@ export default defineConfig(({ command }) => {
         config(config) {
           configureFlueWorker(config);
           applyCloudflareDeploymentProfile(config);
-          const identity = readBuildIdentity(fileURLToPath(new URL('.', import.meta.url)));
+          const identity = readBuildIdentity(projectRoot);
           config.vars = {
             ...(config.vars ?? {}),
             CHICKPEA_APP_VERSION: identity.version,
@@ -115,18 +140,19 @@ export default defineConfig(({ command }) => {
               CHICKPEA_TELEMETRY_ENVIRONMENT: 'development',
             };
           }
+          host?.configureWorker?.(config);
         }
       }),
     ],
     resolve: {
       alias: [
         // Never reached on Chickpea's paths; see src/build-stubs/empty-module.ts.
-        { find: /^mimetext$/, replacement: path.resolve('src/build-stubs/empty-module.ts') },
-        { find: /^pusher-js$/, replacement: path.resolve('src/build-stubs/empty-module.ts') },
+        { find: /^mimetext$/, replacement: path.join(projectRoot, 'src/build-stubs/empty-module.ts') },
+        { find: /^pusher-js$/, replacement: path.join(projectRoot, 'src/build-stubs/empty-module.ts') },
       ],
     },
     build: {
-      outDir: 'dist-cf',
+      outDir: host?.outDir ?? 'dist-cf',
       copyPublicDir: false,
       minify: 'oxc',
     },
@@ -152,4 +178,6 @@ export default defineConfig(({ command }) => {
       },
     } : {}),
   };
-});
+}
+
+export default defineConfig(({ command }) => chickpeaWorkerViteConfig(command));
