@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -12,6 +12,7 @@ import { invalidateProviderKeyCache, PROVIDER_KEY_SETTING_KEYS } from '../src/co
 import { invalidateProviderModelCache } from '../src/config/provider-models.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
 import { SqliteUsageStore } from '../src/usage/store.ts';
 import { FAKE_PROVIDER_KEYS, FakeProvidersBackend } from './helpers/fake-providers.ts';
 import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
@@ -94,6 +95,30 @@ test('hosted Admin saves, lists and deletes only this installation\'s own encryp
       assert.equal(await settings.getEncryptedCredentialRevision('model_provider.anthropic'), undefined);
       assert.deepEqual(await settings.getSettings(['provider.anthropic.credentialVersion', 'provider.anthropic.credentialActive']),
         ['2', 'false']);
+    } finally {
+      close();
+    }
+  });
+});
+
+test('hosted Admin reports a saved key it cannot open as missing in the model list', async () => {
+  await withHostedProviders(async () => {
+    const { request, close } = hostedAdmin();
+    try {
+      const saved = await request('/admin/api/providers/anthropic/key', {
+        method: 'POST',
+        body: JSON.stringify({ apiKey: FAKE_PROVIDER_KEYS.anthropic }),
+      });
+      assert.equal(saved.status, 200);
+      // Other material under the same key ID: the envelope no longer opens.
+      const path = process.env.CHICKPEA_CREDENTIAL_KEYRING_PATH!;
+      const { currentKeyId } = JSON.parse(readFileSync(path, 'utf8')) as { currentKeyId: string };
+      writeFileSync(path, `${JSON.stringify({ version: 1, ...generateCredentialKeyring(currentKeyId) })}\n`, { mode: 0o600 });
+
+      invalidateProviderModelCache();
+      const models = await request('/admin/api/providers/anthropic/models?refresh=1');
+      assert.equal(models.status, 409);
+      assert.equal(((await models.json()) as { error: string }).error, 'provider_key_missing');
     } finally {
       close();
     }

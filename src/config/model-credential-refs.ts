@@ -366,7 +366,7 @@ export async function rewrapHostedModelCredentials(
     const envelope = current?.active ? current.envelope : undefined;
     if (!current || !envelope || envelope.keyId === input.keyring.currentKeyId) continue;
     let published = false;
-    if (input.keyring.keys[envelope.keyId]) {
+    if (Object.hasOwn(input.keyring.keys, envelope.keyId)) {
       const context = modelProviderKeyContext(installationId, id, current);
       try {
         const apiKey = await decryptModelProviderKeyEnvelope(input.keyring, context, envelope);
@@ -686,7 +686,7 @@ function savedHostedCredential(
   record: ModelCredentialRecord | undefined,
   keyring: CredentialKeyring | undefined,
 ): (ModelCredentialRecord & Required<Pick<ModelCredentialRecord, 'envelope'>>) | undefined {
-  return record?.active && record.envelope && keyring?.keys[record.envelope.keyId]
+  return record?.active && record.envelope && keyring && Object.hasOwn(keyring.keys, record.envelope.keyId)
     ? record as ModelCredentialRecord & Required<Pick<ModelCredentialRecord, 'envelope'>>
     : undefined;
 }
