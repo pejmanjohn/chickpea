@@ -1,3 +1,6 @@
+import { requireInstallationAdmissionConfigured } from '../config/installation-admission.ts';
+import { deploymentTenancy } from '../config/installation-scope.ts';
+import { runHostedIdentityRetentionDuty } from '../identity/hosted-retention.ts';
 import { RoutineStateError } from './types.ts';
 
 export interface RoutineCapability {
@@ -74,6 +77,9 @@ export function createRoutineScheduledHandler(input: {
 }): RoutineScheduledHandler {
   return {
     scheduled(controller, env, context): void {
+      // A deployment serving many installations without its admission check
+      // fails every tick, visibly, instead of quietly refusing all work.
+      requireInstallationAdmissionConfigured(env);
       const owner = `heartbeat:${controller.scheduledTime}`;
       const tasks: Array<() => Promise<unknown>> = [];
       // Generic Work recovery/retention cannot dispatch an agent, call a model,
@@ -84,6 +90,10 @@ export function createRoutineScheduledHandler(input: {
       tasks.push(() => input.heartbeat(controller.scheduledTime, owner, env, context));
       for (const duty of input.duties ?? []) {
         tasks.push(() => duty(controller.scheduledTime, env));
+      }
+      // Run per installation by the host: its Slack identity retention.
+      if (deploymentTenancy(env) === 'installation') {
+        tasks.push(() => runHostedIdentityRetentionDuty(controller.scheduledTime, env));
       }
       context.waitUntil(settleScheduledDuties(tasks));
     },

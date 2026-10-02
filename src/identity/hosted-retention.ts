@@ -5,9 +5,11 @@
  * records, deletes expired browser sessions and Slack OAuth and OIDC
  * attempts, and scrubs bot credential candidates parked longer than a day.
  * The hosted Slack lifecycle parks a candidate during each install, so under
- * installation tenancy it runs once a day for every installation, at a minute
- * spread by the installation's ID, from Core's scheduled duties that the host
- * runs per installation. Standalone has never run it and still does not.
+ * installation tenancy Core's scheduled handler, which the host runs per
+ * installation, sweeps every installation once an hour, at a minute spread by
+ * its ID. Hourly rather than daily, so an installation the host's tick reaches
+ * late is still swept within the day; the sweep is cheap and idempotent.
+ * Standalone has never run it and still does not.
  */
 import { createHash } from 'node:crypto';
 
@@ -18,11 +20,9 @@ import type { IdentityStore, SlackCredentialRetentionResult } from './types.ts';
 /** A parked bot credential candidate older than this is scrubbed. */
 export const HOSTED_CREDENTIAL_CANDIDATE_MAX_AGE_MS = 24 * 60 * 60 * 1_000;
 
-const MINUTES_PER_DAY = 24 * 60;
-
-/** The minute of the UTC day an installation's retention sweep runs. */
+/** The minute of each hour an installation's retention sweep runs. */
 export function identityRetentionMinute(installationId: string): number {
-  return createHash('sha256').update(installationId).digest().readUInt32BE(0) % MINUTES_PER_DAY;
+  return createHash('sha256').update(installationId).digest().readUInt32BE(0) % 60;
 }
 
 /**
@@ -40,7 +40,7 @@ export async function sweepInstallationIdentityRetention(
   return identity.sweepSlackIdentityRetention(at, HOSTED_CREDENTIAL_CANDIDATE_MAX_AGE_MS);
 }
 
-/** The scheduled duty: nothing on standalone; once a day per installation, at its minute. */
+/** The scheduled duty: nothing on standalone; once an hour per installation, at its minute. */
 export async function runHostedIdentityRetentionDuty(
   scheduledTime: number,
   env: Record<string, unknown>,
@@ -48,6 +48,6 @@ export async function runHostedIdentityRetentionDuty(
 ): Promise<void> {
   if (deploymentTenancy(env) !== 'installation') return;
   const scope = requireInstallationScope(env)!;
-  if (Math.floor(scheduledTime / 60_000) % MINUTES_PER_DAY !== identityRetentionMinute(scope.installationId)) return;
+  if (Math.floor(scheduledTime / 60_000) % 60 !== identityRetentionMinute(scope.installationId)) return;
   await sweepInstallationIdentityRetention(env as PlatformEnv, scheduledTime, identity);
 }
